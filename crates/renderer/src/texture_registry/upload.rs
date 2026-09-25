@@ -320,6 +320,7 @@ impl TextureRegistry {
         self.path_map.insert(normalized, handle);
         self.pending_dds_uploads.push(PendingDdsUpload {
             handle,
+            staged_bytes: crate::vulkan::dds::staged_bytes(&dds_bytes),
             dds_bytes,
             clamp_mode,
             view_kind,
@@ -337,15 +338,13 @@ impl TextureRegistry {
         self.pending_dds_uploads.len()
     }
 
-    /// Total DDS bytes currently queued — the figure the cell loader's
-    /// yield trigger compares against [`MAX_UPLOAD_BATCH_BYTES`] (#4197).
-    /// File bytes slightly over-count the staged size (the DDS header is not
-    /// staged), which is the safe direction for a memory bound.
+    /// Total bytes the queued DDS uploads will stage — the figure the cell
+    /// loader's yield trigger compares against [`MAX_UPLOAD_BATCH_BYTES`]
+    /// (#4197). Priced by [`crate::vulkan::dds::staged_bytes`], the same
+    /// figure the flush budgets its sub-batches by, so it is the expanded
+    /// size for a 16/24-bpp source rather than the file's (#4835).
     pub fn pending_dds_upload_bytes(&self) -> vk::DeviceSize {
-        self.pending_dds_uploads
-            .iter()
-            .map(|upload| upload.dds_bytes.len() as vk::DeviceSize)
-            .sum()
+        queued_upload_sizes(&self.pending_dds_uploads).iter().sum()
     }
 
     /// Drain the queued DDS uploads with one batched submit + fence-wait
@@ -398,10 +397,10 @@ impl TextureRegistry {
         // retains. Drain in sub-batches of at most `MAX_UPLOAD_BATCH_BYTES`;
         // each releases its staging back to the pool before the next one
         // acquires, so peak staging is one sub-batch rather than the queue.
-        let sizes: Vec<vk::DeviceSize> = pending
-            .iter()
-            .map(|upload| upload.dds_bytes.len() as vk::DeviceSize)
-            .collect();
+        // #4835 — sized by what each upload STAGES, not by its file length: a
+        // 128-byte 16/24-bpp header expands to hundreds of MB, and weighing it
+        // at 128 B let the queue exceed the bound this split exists to keep.
+        let sizes = queued_upload_sizes(&pending);
         let batches = upload_batch_ranges(&sizes, MAX_UPLOAD_BATCH_BYTES);
         let batch_count = batches.len();
         let mut remaining = pending.into_iter();
@@ -619,6 +618,14 @@ impl TextureRegistry {
         log::debug!("Flushed DDS upload sub-batch: {staged_count} of {count} staged");
         Ok(staged_count)
     }
+}
+
+/// Bytes each queued upload stages, in queue order — the sizes
+/// [`upload_batch_ranges`] budgets. The one place the queue is priced for
+/// batching, shared by the flush and by [`TextureRegistry::pending_dds_upload_bytes`]
+/// (#4835).
+pub(super) fn queued_upload_sizes(pending: &[PendingDdsUpload]) -> Vec<vk::DeviceSize> {
+    pending.iter().map(|upload| upload.staged_bytes).collect()
 }
 
 /// #4197 — split queued uploads, in queue order, into contiguous sub-batches

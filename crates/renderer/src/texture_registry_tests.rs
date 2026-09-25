@@ -793,6 +793,54 @@ fn pending_dds_upload_bytes_sums_the_queue_and_ignores_cache_hits() {
     );
 }
 
+/// #4835 (REN-D5-2026-09-24-02) — the queue is priced by what a flush stages,
+/// not by file length. A 16/24-bpp `DDPF_RGB` file is CPU-expanded to
+/// R8G8B8A8 at flush, so its staging buffer is up to twice the file; weighing
+/// it at `dds_bytes.len()` let the queue exceed the bound #4197's sub-batching
+/// exists to keep. Both consumers — the yield trigger's total and the flush's
+/// batch budget — read the same `staged_bytes`.
+#[test]
+fn queued_16bpp_dds_is_priced_at_its_expanded_size() {
+    use super::upload::{queued_upload_sizes, upload_batch_ranges};
+    use crate::vulkan::dds::tests::make_rgb_header;
+
+    let mut reg = make_registry_with_entry("chair.dds", 1);
+    // 64x64 at 16 bpp: 8,192 source bytes that stage 16,384 expanded ones.
+    let font = |seed: u8| {
+        make_rgb_header(
+            64,
+            64,
+            16,
+            [0x7C00, 0x03E0, 0x001F, 0x8000],
+            &vec![seed; 64 * 64 * 2],
+        )
+    };
+    let file_len = font(0).len() as u64;
+    reg.queue_or_hit("font_a.dds", font(1), 3).unwrap();
+    reg.queue_or_hit("font_b.dds", font(2), 3).unwrap();
+
+    let staged = 64 * 64 * 4;
+    assert_eq!(
+        queued_upload_sizes(&reg.pending_dds_uploads),
+        vec![staged, staged],
+        "each queued upload is priced at the expanded size, not its file length"
+    );
+    assert_eq!(reg.pending_dds_upload_bytes(), 2 * staged);
+
+    // The scenario the bound exists for: a budget both files fit under by
+    // FILE length but not by STAGED size must split into two submits. Priced
+    // by file length (the pre-fix behaviour) they shared one.
+    let budget = 20_000;
+    assert!(
+        2 * file_len <= budget,
+        "premise: the file lengths alone fit"
+    );
+    assert_eq!(
+        upload_batch_ranges(&queued_upload_sizes(&reg.pending_dds_uploads), budget),
+        vec![0..1, 1..2]
+    );
+}
+
 /// Repeat enqueue of the same `(path, clamp_mode)` pair must hit
 /// the path_map and bump the refcount instead of reserving a
 /// second slot — the cache-hit shape is the SAME as

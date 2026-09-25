@@ -92,6 +92,12 @@ pub const MAX_UPLOAD_BATCH_BYTES: vk::DeviceSize =
 struct PendingDdsUpload {
     handle: TextureHandle,
     dds_bytes: Vec<u8>,
+    /// What flushing this upload stages, per [`crate::vulkan::dds::staged_bytes`]
+    /// — the expanded size for a 16/24-bpp source, not `dds_bytes.len()`. Priced
+    /// once at enqueue, while the file is in hand, and read by both the flush's
+    /// sub-batch budget and the cell loader's yield trigger so neither can
+    /// disagree about what the queue costs (#4835).
+    staged_bytes: vk::DeviceSize,
     clamp_mode: u8,
     view_kind: TextureViewKind,
     color_space: TextureColorSpace,

@@ -509,7 +509,7 @@ pub fn parse_dds(data: &[u8]) -> Result<DdsMetadata> {
                 "Uncompressed {bpp}-bpp DDS has empty RGB channel masks — cannot decode",
             );
             validate_expand_masks(bpp, r_mask, g_mask, b_mask, a_mask)?;
-            Ok(DdsMetadata {
+            let meta = DdsMetadata {
                 width,
                 height,
                 mip_count,
@@ -528,7 +528,25 @@ pub fn parse_dds(data: &[u8]) -> Result<DdsMetadata> {
                     b_mask,
                     a_mask,
                 }),
-            })
+            };
+            // #4835 — every other format is length-checked at upload
+            // (`record_dds_upload` compares the raw file tail against
+            // `total_data_size`), but this arm's upload buffer is SYNTHESISED, so
+            // that comparison passes by construction and a header-only file
+            // would expand into an all-black image of whatever size its header
+            // declares — up to ~358 MB for one 8192² 24-bpp 2D file, ~2.1 GB for
+            // a legacy cubemap. The source bytes have to be counted here, where
+            // they are still the file's own.
+            let needed = expand_source_size(&meta).unwrap_or(0);
+            let available = (data.len() - HEADER_SIZE) as u64;
+            ensure!(
+                available >= needed,
+                "Uncompressed {bpp}-bpp DDS payload too small: {available} bytes for \
+                 {width}x{height} {mip_count} mips x {} layers ({needed} expected) — \
+                 refusing to expand a truncated file into a blank image",
+                meta.array_layers,
+            );
+            Ok(meta)
         } else {
             bail!("Unsupported uncompressed DDS: {bpp} bpp (RGB masks; expected 16/24/32)");
         }
@@ -597,10 +615,23 @@ fn format_for_color_space(format: vk::Format, color_space: TextureColorSpace) ->
 /// little-endian value per pixel, then each channel is extracted via its
 /// mask and bit-expanded to 8 bits. A zero alpha mask yields an opaque
 /// (255) alpha.
+///
+/// #4835 — also returns an empty `Vec` when `data` holds fewer source bytes
+/// than [`expand_source_size`] says `meta` needs, rather than padding the
+/// missing pixels with zeros. The output length is exactly
+/// [`total_data_size`], so a padded buffer makes the caller's payload-length
+/// check (`record_dds_upload`) pass by construction; an empty one fails it, the
+/// way a truncated BC file already does. `parse_dds` rejects such a file before
+/// it gets here, so this is the guard for hand-built metadata, which the public
+/// API admits.
 pub fn expand_uncompressed_rgb(meta: &DdsMetadata, data: &[u8]) -> Vec<u8> {
     let Some(ex) = meta.expand else {
         return Vec::new();
     };
+    let available = data.len().saturating_sub(meta.data_offset) as u64;
+    if available < expand_source_size(meta).unwrap_or(0) {
+        return Vec::new();
+    }
     let src_bpp = (ex.src_bpp / 8) as usize; // source bytes per pixel
     let mut total_pixels = 0usize;
     for _layer in 0..meta.array_layers {
@@ -634,6 +665,38 @@ pub fn expand_uncompressed_rgb(meta: &DdsMetadata, data: &[u8]) -> Vec<u8> {
         }
     }
     out
+}
+
+/// Bytes of source pixel data a 16/24-bpp `DDPF_RGB` file must carry for
+/// `meta` — every mip of every layer at `src_bpp / 8` bytes per pixel — or
+/// `None` when `meta` needs no expansion. This is the SOURCE size the file has
+/// to supply; [`total_data_size`] is the larger EXPANDED size the upload stages
+/// (#4835).
+pub fn expand_source_size(meta: &DdsMetadata) -> Option<u64> {
+    let ex = meta.expand?;
+    // `meta.block_size` is the post-expansion 4 bytes/pixel, so this is the
+    // pixel count over every mip and layer, from the one mip walk that already
+    // prices the upload.
+    let pixels = total_data_size(meta) / u64::from(meta.block_size.max(1));
+    Some(pixels.saturating_mul(u64::from(ex.src_bpp / 8)))
+}
+
+/// Bytes a batched flush stages for the queued DDS file `dds_bytes`: the
+/// figure `flush_pending_uploads` weights its sub-batches by and the cell
+/// loader's yield trigger compares against `MAX_UPLOAD_BATCH_BYTES` (#4197).
+///
+/// That is [`total_data_size`] of the parsed header — what `record_dds_upload`
+/// sizes its staging buffer from. For a 16/24-bpp `DDPF_RGB` source it is the
+/// EXPANDED R8G8B8A8 size, up to twice the file: weighting the queue by file
+/// length priced those uploads at their compressed size, so the bound
+/// #4197 set did not hold for them (#4835). A file whose header does not parse
+/// is dropped at flush without staging anything; its length is the only figure
+/// to hand, and what it costs to hold in the queue until then.
+pub fn staged_bytes(dds_bytes: &[u8]) -> u64 {
+    match parse_dds(dds_bytes) {
+        Ok(meta) => total_data_size(&meta),
+        Err(_) => dds_bytes.len() as u64,
+    }
 }
 
 /// The R8G8B8A8-ready pixel bytes for `meta` (all mips): the expanded
@@ -840,7 +903,7 @@ fn read_u32(data: &[u8], offset: usize) -> u32 {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     /// DDS_PIXELFORMAT alpha-pixels flag (test header construction only).
@@ -1021,7 +1084,9 @@ mod tests {
 
     /// Single-mip uncompressed `DDPF_RGB` header at `bpp` with the given
     /// channel masks, followed by `pixels` of raw source bytes (#1542).
-    fn make_rgb_header(
+    /// `pub(crate)` so the texture registry's queue tests build real files
+    /// rather than a second copy of this layout.
+    pub(crate) fn make_rgb_header(
         width: u32,
         height: u32,
         bpp: u32,
@@ -1055,7 +1120,15 @@ mod tests {
     fn parse_uncompressed_24bpp_marks_expand() {
         // 24-bpp R8G8B8 (masks like FO3's HUD compass). Parses to the
         // post-expansion R8G8B8A8 target with an `expand` descriptor.
-        let data = make_rgb_header(4, 4, 24, [0x00FF_0000, 0x0000_FF00, 0x0000_00FF, 0], &[]);
+        // 4x4 pixels x 3 bytes: the payload has to be there — a header alone is
+        // rejected (#4835).
+        let data = make_rgb_header(
+            4,
+            4,
+            24,
+            [0x00FF_0000, 0x0000_FF00, 0x0000_00FF, 0],
+            &[0u8; 4 * 4 * 3],
+        );
         let meta = parse_dds(&data).unwrap();
         assert_eq!(meta.format, vk::Format::R8G8B8A8_SRGB);
         assert_eq!(meta.block_size, 4);
@@ -1068,7 +1141,13 @@ mod tests {
     #[test]
     fn parse_uncompressed_16bpp_a1r5g5b5_marks_expand() {
         // 16-bpp A1R5G5B5 (FO3 font glyph atlas era).
-        let data = make_rgb_header(2, 2, 16, [0x7C00, 0x03E0, 0x001F, 0x8000], &[]);
+        let data = make_rgb_header(
+            2,
+            2,
+            16,
+            [0x7C00, 0x03E0, 0x001F, 0x8000],
+            &[0u8; 2 * 2 * 2],
+        );
         let meta = parse_dds(&data).unwrap();
         assert_eq!(meta.format, vk::Format::R8G8B8A8_SRGB);
         let ex = meta.expand.expect("16-bpp must set expand");
@@ -1082,6 +1161,152 @@ mod tests {
         // DDPF_RGB with no channel masks can't be decoded — reject, not 0.
         let data = make_rgb_header(1, 1, 24, [0, 0, 0, 0], &[0, 0, 0]);
         assert!(parse_dds(&data).is_err());
+    }
+
+    /// A `DDPF_RGB` header only — no pixels — with `mips` mip levels and,
+    /// optionally, the six legacy cubemap face bits (#4835).
+    fn header_only_rgb(width: u32, height: u32, bpp: u32, mips: u32, cubemap: bool) -> Vec<u8> {
+        let masks = if bpp == 24 {
+            [0x00FF_0000, 0x0000_FF00, 0x0000_00FF, 0]
+        } else {
+            [0x7C00, 0x03E0, 0x001F, 0x8000]
+        };
+        let mut buf = make_rgb_header(width, height, bpp, masks, &[]);
+        buf[28..32].copy_from_slice(&mips.to_le_bytes());
+        if cubemap {
+            let caps2 = DDSCAPS2_CUBEMAP | DDSCAPS2_CUBEMAP_ALL_FACES;
+            buf[112..116].copy_from_slice(&caps2.to_le_bytes());
+        }
+        buf
+    }
+
+    /// #4835 (REN-D5-2026-09-24-02) — the audit's reproducer. The expand arm
+    /// synthesises its upload buffer, so `record_dds_upload`'s payload-length
+    /// check passed by construction and a 128-byte header was accepted: an
+    /// 8192² 14-mip 24-bpp `DDPF_RGB` file expanded to 357,913,940 bytes of
+    /// black (6.3 s in a dev build), and the same header with the six cubemap
+    /// face bits declares 2,147,483,640. Every other format rejects a truncated
+    /// file; this one has to as well, at parse, before anything is sized from
+    /// the header.
+    #[test]
+    fn header_only_expand_dds_is_rejected_instead_of_expanded_to_black() {
+        for (bpp, cubemap) in [(24, false), (16, false), (24, true), (16, true)] {
+            let data = header_only_rgb(8192, 8192, bpp, 14, cubemap);
+            assert_eq!(data.len(), HEADER_SIZE, "the reproducer carries no pixels");
+            let err = parse_dds(&data)
+                .expect_err("a header-only expand DDS must not parse")
+                .to_string();
+            assert!(
+                err.contains("payload too small"),
+                "{bpp}-bpp cubemap={cubemap}: unexpected error: {err}"
+            );
+        }
+    }
+
+    /// The boundary of that check, over a whole mip chain rather than mip 0:
+    /// one byte short is rejected, exactly enough parses, extra trailing bytes
+    /// are tolerated (the same as every other format).
+    #[test]
+    fn expand_payload_must_cover_every_mip_of_every_layer() {
+        // 4x4 -> 2x2 -> 1x1 is 16 + 4 + 1 = 21 pixels, 3 bytes each.
+        let with_payload = |len: usize, mips: u32, cubemap: bool| {
+            let mut data = header_only_rgb(4, 4, 24, mips, cubemap);
+            data.resize(HEADER_SIZE + len, 0);
+            data
+        };
+        let need = 21 * 3;
+        assert!(parse_dds(&with_payload(need - 1, 3, false)).is_err());
+        assert!(parse_dds(&with_payload(need, 3, false)).is_ok());
+        assert!(parse_dds(&with_payload(need + 100, 3, false)).is_ok());
+        // Six faces multiply the requirement; a single face's worth is not enough.
+        assert!(parse_dds(&with_payload(need, 3, true)).is_err());
+        assert!(parse_dds(&with_payload(need * 6, 3, true)).is_ok());
+    }
+
+    /// `expand_source_size` counts what the FILE must carry, which is smaller
+    /// than the expanded size the upload stages.
+    #[test]
+    fn expand_source_size_is_the_file_side_of_the_expansion() {
+        let d24 = make_rgb_header(
+            4,
+            4,
+            24,
+            [0x00FF_0000, 0x0000_FF00, 0x0000_00FF, 0],
+            &[0u8; 48],
+        );
+        let m24 = parse_dds(&d24).unwrap();
+        assert_eq!(expand_source_size(&m24), Some(48));
+        assert_eq!(total_data_size(&m24), 64);
+
+        let d16 = make_rgb_header(2, 2, 16, [0x7C00, 0x03E0, 0x001F, 0x8000], &[0u8; 8]);
+        let m16 = parse_dds(&d16).unwrap();
+        assert_eq!(expand_source_size(&m16), Some(8));
+        assert_eq!(total_data_size(&m16), 16);
+
+        let bc1 = parse_dds(&make_dds_header(64, 64, 1, b"DXT1")).unwrap();
+        assert_eq!(
+            expand_source_size(&bc1),
+            None,
+            "no expansion, no source size"
+        );
+    }
+
+    /// The other half of #4835: `expand_uncompressed_rgb` used to read missing
+    /// source bytes as 0, so its output was exactly `total_data_size` however
+    /// short the file — which is what made the length check downstream
+    /// vacuous. `parse_dds` now rejects such a file, but `DdsMetadata` is
+    /// plain public data, so the expander must not fabricate on its own.
+    #[test]
+    fn expand_refuses_a_source_shorter_than_its_metadata_claims() {
+        let data = make_rgb_header(
+            2,
+            2,
+            24,
+            [0x00FF_0000, 0x0000_FF00, 0x0000_00FF, 0],
+            &[0xAA; 12],
+        );
+        let mut meta = parse_dds(&data).unwrap();
+        // Same 12 source bytes, but the metadata now claims 64x64.
+        meta.width = 64;
+        meta.height = 64;
+        meta.mip_count = 1;
+
+        assert!(
+            expand_uncompressed_rgb(&meta, &data).is_empty(),
+            "no padding the missing pixels with zeros"
+        );
+        // And therefore the buffer the upload path hands `record_dds_upload`
+        // is shorter than `total_data_size`, so its truncation check fires.
+        let pixels = upload_pixels(&meta, &data);
+        assert!((pixels.len() as u64) < total_data_size(&meta));
+    }
+
+    /// `staged_bytes` prices a queued file by what its flush stages.
+    #[test]
+    fn staged_bytes_is_the_upload_size_not_the_file_size() {
+        // 64x64 16-bpp: 8,192 source bytes staging 16,384 expanded ones.
+        let d16 = make_rgb_header(
+            64,
+            64,
+            16,
+            [0x7C00, 0x03E0, 0x001F, 0x8000],
+            &vec![0u8; 64 * 64 * 2],
+        );
+        assert_eq!(d16.len(), HEADER_SIZE + 8192);
+        assert_eq!(staged_bytes(&d16), 64 * 64 * 4);
+
+        // A BC1 file stages exactly its mip chain.
+        let bc1 = make_dds_header(64, 64, 1, b"DXT1");
+        assert_eq!(staged_bytes(&bc1), 16 * 16 * 8);
+
+        // Unparseable: the file length is the only figure to hand.
+        assert_eq!(staged_bytes(&[0u8; 1000]), 1000);
+        // A header-only expand file no longer parses, so it is priced at its
+        // 128 bytes — and dropped at flush without staging anything.
+        assert_eq!(
+            staged_bytes(&header_only_rgb(8192, 8192, 24, 14, false)),
+            HEADER_SIZE as u64
+        );
     }
 
     #[test]
