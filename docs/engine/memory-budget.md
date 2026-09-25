@@ -94,7 +94,7 @@ measured allocations.
 | Light SSBO | `MAX_LIGHTS` = 1023 (`RESERVOIR_LIGHT_MASK`, #8e7582ed — not 512, that's `MAX_LIGHTS_PER_CLUSTER`) | 1023 | 64 B | 64 KB | **128 KB** |
 | Instance SSBO ² | `INITIAL_INSTANCE_CAPACITY` = 65 536, grows to `MAX_INSTANCES` = 262 144 | 65 536 | 160 B (#3231) | 10.5 MB | **21.0 MB** (≤ 83.9 MB) |
 | Previous-model SSBO (`33d9a468`) ² | same | 65 536 | 64 B (`mat4`) | 4.2 MB | **8.4 MB** (≤ 33.6 MB) |
-| Indirect draw SSBO | `MAX_INDIRECT_DRAWS` = 262 144 | 262 144 | 20 B | 5.2 MB | **10.5 MB** |
+| Indirect draw SSBO ³ | `MAX_INDIRECT_DRAWS` = 262 144 | 262 144 | 20 B | 5.2 MB | **10.5 MB** |
 | Material SSBO | `MAX_MATERIALS` = 16 384 | 16 384 | 432 B | 7.1 MB | **14.2 MB** |
 | Terrain tile SSBO | `MAX_TERRAIN_TILES` = 1 024 | 1 024 | 160 B (`GpuTerrainTile`: 3× `[u32; 8]` texture indices + #4057's two `[f32; 4]` cover-affinity rows, `cell_origin_xz`, `water_y`, `canopy_height`, and #4056's ground-cover detail-atlas `uvec4`; pinned by `gpu_terrain_tile_is_160_bytes`) | — | **~160 KB** (single shared buffer, NOT FIF-doubled) |
 | Bone buffers ¹ | `MAX_TOTAL_BONES` = 196 608 | 196 608 | 64 B | 12.6 MB/buffer | **100.6 MB** |
@@ -120,6 +120,29 @@ the caustic set's binding 5), and retires the old pair through the
 deferred-destroy countdown. The parenthesised figures are the ceiling a grown
 slot pair can reach. Measured on MedTek, GPU memory allocated fell by the
 computed 88.1 MB (84.0 MiB).
+
+³ Allocated at the full `MAX_INDIRECT_DRAWS` at init, on purpose (#4615). It
+holds one 20-byte `VkDrawIndexedIndirectCommand` per post-merge batch, and
+almost none of it is ever written: the runtime baselines peak at 196 batches
+(FO4 InstituteBioScience; 283 raster commands at most, FNV
+FreesideAtomicWrangler) and the stepped-camera bench of record at 1 281
+(MedTek, `13545/1281b/29c`) — under 0.5 % of the 262 144 entries. Starting at
+`INITIAL_INSTANCE_CAPACITY` (65 536 entries) would hold 2.6 MB instead of
+10.5 MB, so ≈ 7.9 MB (about 5 % of the scene-buffer total below) is avoidable.
+
+It stays eager because the cost is residency only — `upload_indirect_draws` is
+`O(live)` and content-hash-gated (#1809), so there is no frame-time cost — and
+because sizing it to `MAX_INSTANCES` is what lets the worst case of one batch
+per instance always take the indirect path; `should_use_indirect_draws` only
+falls back to direct draws past `MAX_INDIRECT_DRAWS` batches in one frame.
+
+The alternative is a grow path riding `SceneBuffers::ensure_instance_capacity`
+(batches ≤ instances, so the two can grow together; the buffer is bound only
+through `cmd_draw_indexed_indirect`, so no descriptor rewrite). It would need
+`should_use_indirect_draws`' ceiling (#2751) and `upload_indirect_draws`'
+overflow cap to read the live capacity rather than `MAX_INDIRECT_DRAWS`, and
+the replaced buffers retired through the deferred-destroy countdown. Not done:
+revisit if VRAM headroom becomes the constraint.
 
 **Total resident scene buffers:** ≈ **155 MB** across all copies at the
 starting capacity (≈ 243 MB if both instance pairs grow to the ceiling) —

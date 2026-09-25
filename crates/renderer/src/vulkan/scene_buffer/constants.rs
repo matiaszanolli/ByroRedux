@@ -238,6 +238,13 @@ const _: () = assert!(
 /// drift on the next bump. Real scenes with the instanced batching
 /// from #272 emit a few hundred entries; the cap exists to bound
 /// buffer allocation, not to throttle typical use. See #309 / #992.
+///
+/// The buffer is allocated at this full size at init, deliberately (#4615):
+/// measured scenes peak at ~1.3 K batches, so most of it is never written, but
+/// the cost is 10.5 MB of residency and no frame time. `memory-budget.md`'s
+/// footnote on the indirect row has the measurements. Making it growable
+/// means `should_use_indirect_draws` (#2751) and `upload_indirect_draws`'
+/// overflow cap must read the live capacity instead of this constant.
 pub const MAX_INDIRECT_DRAWS: usize = MAX_INSTANCES;
 
 /// Maximum number of `GpuTerrainTile` slots held in the per-frame

@@ -250,6 +250,40 @@ fn indirect_buffer_capacity_matches_max_draw_constant() {
     );
 }
 
+/// #4615 — the indirect buffer is allocated at the full `MAX_INDIRECT_DRAWS`
+/// on purpose, and `memory-budget.md` is where that decision is recorded. The
+/// ledger row must carry the size the constant actually allocates, and its
+/// footnote must say the eager size is deliberate, so a change to the constant
+/// (or a grow path landing) has to update the page instead of leaving a stale
+/// claim behind.
+#[test]
+fn memory_budget_ledger_records_the_indirect_buffer_as_deliberate() {
+    const BUDGET_MD: &str = include_str!("../../../../../docs/engine/memory-budget.md");
+    let row = BUDGET_MD
+        .lines()
+        .find(|line| line.starts_with("| Indirect draw SSBO"))
+        .expect("memory-budget.md must keep an indirect-draw row");
+
+    let bytes = size_of::<vk::DrawIndexedIndirectCommand>()
+        * MAX_INDIRECT_DRAWS
+        * crate::vulkan::sync::MAX_FRAMES_IN_FLIGHT;
+    let megabytes = format!("{:.1} MB", bytes as f64 / 1.0e6);
+    assert!(
+        row.contains(&megabytes),
+        "the ledger's indirect-draw row must state {megabytes} (every frame in flight of \
+         MAX_INDIRECT_DRAWS commands, decimal MB like the rest of the page): {row}"
+    );
+    assert!(
+        row.contains("³"),
+        "the indirect-draw row must point at its footnote: {row}"
+    );
+    assert!(
+        BUDGET_MD.contains("³ Allocated at the full `MAX_INDIRECT_DRAWS` at init, on purpose"),
+        "memory-budget.md must keep the footnote recording the eager indirect-buffer size as \
+         deliberate (#4615)"
+    );
+}
+
 /// Regression: `MAX_INSTANCES` must stay at or below the
 /// `R32_UINT` mesh_id encoding ceiling (`0x7FFFFFFF`, with bit
 /// 31 reserved for the `ALPHA_BLEND_NO_HISTORY` flag). Past
