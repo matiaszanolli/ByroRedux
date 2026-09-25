@@ -21,6 +21,7 @@ existing ROADMAP numbers were gathered the same way.
 """
 
 import os
+import re
 import subprocess
 import sys
 from collections import defaultdict
@@ -68,6 +69,7 @@ TEXT_COLUMNS = (
     "draws",
     "state_hash",
     "gpu_inactive",
+    "raster_cmds",
 )
 
 MISSING = "-"
@@ -100,6 +102,60 @@ def inactive_columns(row):
         for key in token.split(",")
         if key in INACTIVE_KEY_TO_COLUMN
     }
+
+
+# #4800 — `raster_cmds` is `bench_draws_raster_cmds`: the raster-visible prefix
+# `sort_draw_commands` gates its serial/parallel branch on. `draws` is the
+# complete stream (RT-only occluders included) and cannot answer that. The
+# threshold is read from the source that owns it rather than copied here, so a
+# retune cannot leave this report judging against a stale number.
+SORT_THRESHOLD_SOURCE = os.path.join("byroredux", "src", "render", "mod.rs")
+SORT_THRESHOLD_PATTERN = re.compile(
+    r"const\s+DRAW_SORT_PARALLEL_THRESHOLD\s*:\s*usize\s*=\s*([0-9_]+)\s*;"
+)
+
+
+def sort_parallel_threshold():
+    """`DRAW_SORT_PARALLEL_THRESHOLD` from the engine source, or None."""
+    repo = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+    try:
+        with open(os.path.join(repo, SORT_THRESHOLD_SOURCE)) as handle:
+            match = SORT_THRESHOLD_PATTERN.search(handle.read())
+    except OSError:
+        return None
+    return int(match.group(1).replace("_", "")) if match else None
+
+
+def sort_branch_line(rows):
+    """Which `sort_draw_commands` branch this scene's captures take (#4800)."""
+    counts = [
+        int(row["raster_cmds"])
+        for row in rows
+        if str(row.get("raster_cmds", MISSING)).isdigit()
+    ]
+    if not counts:
+        return (
+            "  sort branch: raster_cmds not recorded (capture predates the "
+            "#4800 column or engine token)"
+        )
+    lo, hi = min(counts), max(counts)
+    span = str(lo) if lo == hi else f"{lo}-{hi}"
+    threshold = sort_parallel_threshold()
+    if threshold is None:
+        return (
+            f"  sort branch: raster_cmds={span}; DRAW_SORT_PARALLEL_THRESHOLD "
+            f"not readable from {SORT_THRESHOLD_SOURCE}"
+        )
+    if hi < threshold:
+        branch = "serial sort_unstable_by_key"
+    elif lo >= threshold:
+        branch = "parallel par_sort_unstable_by_key"
+    else:
+        branch = "STRADDLES the gate - runs took both branches"
+    return (
+        f"  sort branch: raster_cmds={span} vs "
+        f"DRAW_SORT_PARALLEL_THRESHOLD={threshold} -> {branch}"
+    )
 
 
 def median(values):
@@ -338,6 +394,7 @@ def main(path):
             + " + ".join(p.replace("gpu_", "") for p in RENDER_RES_PASSES)
             + " (render-resolution passes only; upscale and present excluded)"
         )
+        print(sort_branch_line(all_rows))
         for config, unmeasured in unmeasured_notes.items():
             print(
                 f"  * {config}: {', '.join(unmeasured)} did not run this "
@@ -372,6 +429,43 @@ def self_test():
             f"cornell\t{config}\t1\t{1000 / wall_ms:.1f}\t{wall_ms}\t0.1\t0.1\t"
             f"{main_ms}\t0.1\t0.1\t0.1\t0.1\t0.15\t0.01\t0.1\t25\t120"
         )
+
+    # #4800 — the harness now appends `raster_cmds`. The threshold comes from
+    # the engine source, so the cases below are placed relative to it; an
+    # unreadable constant fails the self-test loudly rather than letting the
+    # report degrade to "not readable" unnoticed (the pattern going stale
+    # against a reworded declaration is exactly the drift this guards).
+    threshold = sort_parallel_threshold()
+    if threshold is None:
+        print(
+            f"FAIL cannot read DRAW_SORT_PARALLEL_THRESHOLD from "
+            f"{SORT_THRESHOLD_SOURCE} — SORT_THRESHOLD_PATTERN has drifted "
+            "from the declaration"
+        )
+        return 1
+
+    def current_25(taa_raster, quality_raster):
+        return (
+            "# harness=deadbeef engine=cafef00d\n"
+            "scene\tconfig\trun\tmode\tcamera\twall_fps\twall_ms\tfence_ms\tbrd_ms\t"
+            "gpu_main\tgpu_svgf\tgpu_composite\tgpu_ssao\tgpu_volumetrics\t"
+            "gpu_upscale\tgpu_presentation\tgpu_bloom\tsim_time_s\tentities\t"
+            "draws\tlights\ttlas\tstate_hash\tgpu_inactive\traster_cmds\n"
+            "cornell\ttaa\t1\trenderer-stepped\torbit\t323.6\t3.09\t0.1\t0.1\t2.0\t"
+            "0.1\t0.1\t0.1\t0.1\t0.01\t0.01\t0.1\t5.0\t25\t120\t3\t1\tabc123\tnone\t"
+            f"{taa_raster}\n"
+            "cornell\tfsr-quality\t1\trenderer-stepped\torbit\t462.1\t2.16\t0.1\t0.1\t"
+            "1.0\t0.1\t0.1\t0.1\t0.1\t0.16\t0.01\t0.1\t5.0\t25\t120\t3\t1\tabc123\t"
+            f"none\t{quality_raster}\n"
+        )
+
+    # Sort-branch line each case must print. Every schema without a recorded
+    # `raster_cmds` must SAY so — silence would read as "serial".
+    sort_branch_expect = {
+        "current 25-column raster_cmds above the gate": "-> parallel par_sort_unstable_by_key",
+        "current 25-column raster_cmds below the gate": "-> serial sort_unstable_by_key",
+        "current 25-column raster_cmds straddling the gate": "STRADDLES the gate",
+    }
 
     cases = {
         "legacy 17-column": "\n".join(
@@ -411,6 +505,16 @@ def self_test():
             "1.0\t0.1\t0.1\t0.1\t0.1\t0.16\t0.01\t0.1\t5.0\t25\t120\t3\t1\tabc123\t"
             "volumetrics,skin_disp\n"
         ),
+        "current 25-column raster_cmds above the gate": current_25(
+            threshold + 1200, threshold + 1200
+        ),
+        "current 25-column raster_cmds below the gate": current_25(
+            threshold - 1, threshold - 1
+        ),
+        "current 25-column raster_cmds straddling the gate": current_25(
+            threshold - 1, threshold
+        ),
+        "current 25-column raster_cmds unrecorded": current_25(MISSING, MISSING),
     }
 
     failures = []
@@ -466,6 +570,13 @@ def self_test():
             failures.append(
                 f"{label}: an unstamped TSV must say so — silence reads as "
                 "'traced' to whoever pastes the table"
+            )
+        expected_branch = sort_branch_expect.get(label, "raster_cmds not recorded")
+        if expected_branch not in output:
+            failures.append(
+                f"{label}: sort-branch line missing {expected_branch!r} — "
+                "which side of the parallel-sort gate a capture took must be "
+                "readable from the report (#4800)"
             )
         if "# report=" not in output:
             failures.append(

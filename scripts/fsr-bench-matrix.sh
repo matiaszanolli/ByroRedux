@@ -204,7 +204,7 @@ ENGINE_COMMIT="$(git -C "$REPO" rev-parse --short HEAD 2>/dev/null || echo unkno
 {
   printf '# harness=%s engine=%s mode=renderer-stepped camera=%s runs=%s frames=%s\n' \
     "$HARNESS_COMMIT" "$ENGINE_COMMIT" "$CAMERA_PATH" "$RUNS" "$FRAMES"
-  printf 'scene\tconfig\trun\tmode\tcamera\twall_fps\twall_ms\tfence_ms\tbrd_ms\tgpu_main\tgpu_svgf\tgpu_composite\tgpu_ssao\tgpu_volumetrics\tgpu_upscale\tgpu_presentation\tgpu_bloom\tsim_time_s\tentities\tdraws\tlights\ttlas\tstate_hash\tgpu_inactive\n'
+  printf 'scene\tconfig\trun\tmode\tcamera\twall_fps\twall_ms\tfence_ms\tbrd_ms\tgpu_main\tgpu_svgf\tgpu_composite\tgpu_ssao\tgpu_volumetrics\tgpu_upscale\tgpu_presentation\tgpu_bloom\tsim_time_s\tentities\tdraws\tlights\ttlas\tstate_hash\tgpu_inactive\traster_cmds\n'
 } > "$TSV"
 
 for scene in "${SCENES[@]}"; do
@@ -276,6 +276,12 @@ print("\t".join([
     # "measured zero". Appended LAST on purpose: the entity-floor and
     # state-hash gates below `cut` fixed field numbers out of this row.
     token("gpu_inactive"),
+    # #4800 — the count `sort_draw_commands` gates its serial/parallel branch
+    # on. `draws` above is the complete stream, RT-only occluders included, so
+    # it cannot say which side of DRAW_SORT_PARALLEL_THRESHOLD a scene lands
+    # on. `-` = an engine build that predates the bench-line token. Appended
+    # after gpu_inactive for the same field-number reason.
+    token("bench_draws_raster_cmds"),
 ]))
 PY
 )"
