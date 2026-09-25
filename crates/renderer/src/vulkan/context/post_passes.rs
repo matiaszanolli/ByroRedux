@@ -1867,6 +1867,49 @@ mod tests {
         );
     }
 
+    /// The comment-free text of one `impl` method: `signature` up to the
+    /// method's own closing brace (the first line that is exactly `    }`).
+    /// Bounding the slice is the point (#4841) — `&src[start..]` runs to the
+    /// end of the file's production text, so a later function carrying the
+    /// same needle satisfied the assertion — and dropping `//` lines keeps a
+    /// comment that names the needle from satisfying it either.
+    fn method_body(src: &str, signature: &str) -> String {
+        let start = src
+            .find(signature)
+            .unwrap_or_else(|| panic!("`{signature}` must still exist"));
+        let end = start
+            + src[start..]
+                .find("\n    }\n")
+                .unwrap_or_else(|| panic!("`{signature}` must close at impl indentation"));
+        src[start..end]
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// `body` must consult the shared raw-output policy, and the `if` that does
+    /// so must return before `dispatch`. The `return;` is checked inside the
+    /// gate's own block: a `let … else { return; }` between the gate and the
+    /// dispatch (the exposure meter has one) would otherwise stand in for it.
+    fn assert_raw_output_gate_returns_before_dispatch(body: &str, dispatch: &str, pass: &str) {
+        let gate = body
+            .find("render_debug_requires_raw_output(")
+            .unwrap_or_else(|| panic!("{pass} must consult the shared raw-output policy"));
+        let dispatch_pos = body
+            .find(dispatch)
+            .unwrap_or_else(|| panic!("{pass} must still contain `{dispatch}`"));
+        let block_end = gate
+            + body[gate..]
+                .find('}')
+                .unwrap_or_else(|| panic!("{pass}'s raw-output gate must be an `if` block"));
+        assert!(
+            block_end < dispatch_pos && body[gate..block_end].contains("return;"),
+            "{pass} must return from the raw-output gate before `{dispatch}` — a raw \
+             correctness view must not reach the dispatch"
+        );
+    }
+
     /// #3572 (W3.16) — the TAA resolve must consume the SAME post-composite,
     /// post-bloom scene image FSR resolves: composite → bloom → TAA →
     /// upscale. Pin the record_post_passes ordering statically (matching
@@ -1904,27 +1947,22 @@ mod tests {
              dispatch would resolve the raw direct-only attachment again"
         );
 
-        let taa_fn_start = src
-            .find("fn record_taa_pass(")
-            .expect("record_taa_pass must exist");
-        let taa_body = &src[taa_fn_start..];
-        assert!(
-            taa_body.contains("render_debug_requires_raw_output("),
-            "the TAA dispatch must respect the shared raw-output policy — \
-             post-move it filters the final image and would temporally \
-             smooth raw correctness views otherwise"
+        // The TAA dispatch must respect the shared raw-output policy — post-move
+        // it filters the final image and would temporally smooth raw
+        // correctness views otherwise.
+        assert_raw_output_gate_returns_before_dispatch(
+            &method_body(src, "fn record_taa_pass("),
+            "taa.dispatch(",
+            "record_taa_pass",
         );
         // #4591 — the exposure meter carries the same gate: in auto mode it
         // would adapt the persistent per-slot exposure toward the debug
         // image, and dismissing the view pops + re-adapts from the wrong
         // starting value.
-        let meter_fn_start = src
-            .find("fn record_exposure_meter_pass(")
-            .expect("record_exposure_meter_pass must exist");
-        let meter_body = &src[meter_fn_start..];
-        assert!(
-            meter_body.contains("render_debug_requires_raw_output("),
-            "the exposure meter must respect the shared raw-output policy (#4591)"
+        assert_raw_output_gate_returns_before_dispatch(
+            &method_body(src, "fn record_exposure_meter_pass("),
+            "meter.dispatch(",
+            "record_exposure_meter_pass",
         );
         assert!(
             src.contains("scene_color_layout: source_layout,"),
