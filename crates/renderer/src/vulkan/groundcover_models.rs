@@ -95,13 +95,29 @@ struct GpuGroundCoverModelShape {
 // struct's 16-byte std430 alignment), no implicit padding.
 unsafe impl NoUninit for GpuGroundCoverModelShape {}
 
-/// `VkDrawIndexedIndirectCommand` stride. Also the std430 size of the shader's
-/// `GcDrawIndexed`, pinned by `name_diverging_glsl_rust_mirrors_stay_in_lockstep`.
-pub(super) const DRAW_STRIDE: u64 = 20;
-/// Bytes of one `GcModelPoint` in the placement slab — pinned against the
-/// shader's std430 size by `name_diverging_glsl_rust_mirrors_stay_in_lockstep`,
-/// since the slab is sized from this literal rather than a mirrored struct.
-pub(super) const POINT_BYTES: u64 = 32;
+/// One placement point in the slab. Mirrors `GcModelPoint` in
+/// `groundcover_models.comp`.
+///
+/// No host code reads or writes one — the shader fills the slab and reads it
+/// back. The mirror exists so the slab is sized from `size_of` rather than from
+/// a literal stride that had to match the GLSL record by hand (#4849), the same
+/// arrangement `GpuGroundCoverBlade` has for the blade buffer (#4335):
+/// `name_diverging_glsl_rust_mirrors_stay_in_lockstep` fails until both sides
+/// agree, instead of the placement pass writing past the slab.
+#[repr(C)]
+#[derive(Clone, Copy, Default, Debug)]
+pub struct GpuGroundCoverModelPoint {
+    /// xyz = absolute Y-up world position of the root.
+    pub position: [f32; 4],
+    /// x = record | (candidate << 8), y = rank among the chunk's points of
+    /// that record, z = packSnorm2x16(terrain normal .xz), w = candidate hash.
+    pub meta: [u32; 4],
+}
+
+/// Bytes of one indirect draw. The geometry pass strides by the same
+/// `size_of`, and `name_diverging_glsl_rust_mirrors_stay_in_lockstep` pins the
+/// shader's `GcDrawIndexed` to it.
+const DRAW_STRIDE: u64 = std::mem::size_of::<vk::DrawIndexedIndirectCommand>() as u64;
 /// `gcCounts` length — the shared region layout plus the stats words.
 const STATS_WORDS: u64 = GROUNDCOVER_MODEL_STATS_WORDS as u64;
 const COUNT_WORDS: u64 = GROUNDCOVER_MODEL_STATS_REGION as u64 + STATS_WORDS;
@@ -216,7 +232,7 @@ impl ModelBufferBytes {
             stats: STATS_WORDS * 4,
             points: GROUNDCOVER_MAX_CHUNKS as u64
                 * GROUNDCOVER_MODEL_POINTS_PER_CHUNK as u64
-                * POINT_BYTES,
+                * std::mem::size_of::<GpuGroundCoverModelPoint>() as u64,
             counts: COUNT_WORDS * 4,
             draws: GROUNDCOVER_MODEL_MAX_SHAPES as u64 * DRAW_STRIDE,
         }
@@ -907,11 +923,10 @@ mod tests {
     fn host_mirrors_match_the_shader_strides() {
         assert_eq!(std::mem::size_of::<GpuGroundCoverModelRecord>(), 48);
         assert_eq!(std::mem::size_of::<GpuGroundCoverModelShape>(), 112);
+        // Sizes the placement slab, which `docs/engine/memory-budget.md`
+        // ledgers — a change here is a budget change.
+        assert_eq!(std::mem::size_of::<GpuGroundCoverModelPoint>(), 32);
         assert_eq!(std::mem::size_of::<ModelPush>(), 64);
-        assert_eq!(
-            DRAW_STRIDE as usize,
-            std::mem::size_of::<vk::DrawIndexedIndirectCommand>()
-        );
     }
 
     #[test]

@@ -1607,6 +1607,15 @@ fn name_diverging_glsl_rust_mirrors_stay_in_lockstep() {
             groundcover_models_rs,
             "struct GpuGroundCoverModelShape",
         ),
+        // #4849 — never touched by the host, which only sizes the placement
+        // slab from the mirror's `size_of`.
+        (
+            "GcModelPoint",
+            groundcover_models_comp,
+            "struct GcModelPoint",
+            groundcover_models_rs,
+            "struct GpuGroundCoverModelPoint",
+        ),
     ] {
         let glsl = parse_glsl_struct_fields_typed(glsl_src, glsl_decl);
         let rust = parse_rust_struct_fields_typed(rust_src, rust_decl);
@@ -1682,31 +1691,20 @@ fn name_diverging_glsl_rust_mirrors_stay_in_lockstep() {
          read misaligned (#4849)"
     );
 
-    // #4849 — `GcModelPoint` and `GcDrawIndexed` have no Rust struct at all: the
-    // host sizes the placement slab and the indirect-draw buffer from
-    // hand-written byte strides. `host_mirrors_match_the_shader_strides` pins
-    // `DRAW_STRIDE` against `vk::DrawIndexedIndirectCommand` but neither
-    // constant against the GLSL, so growing either struct in the shader would
-    // have written past its buffer with a green suite.
-    use crate::vulkan::groundcover_models::{DRAW_STRIDE, POINT_BYTES};
-    assert_eq!(
-        std430_struct_size(&parse_glsl_struct_fields_typed(
-            groundcover_models_comp,
-            "struct GcModelPoint"
-        )) as u64,
-        POINT_BYTES,
-        "GcModelPoint's std430 stride left `POINT_BYTES` — the placement slab is \
-         sized from that literal, so the shader would write past the slab (#4849)"
-    );
+    // #4849 — `GcDrawIndexed` is the one ground-cover record with no mirror of
+    // its own: it is `VkDrawIndexedIndirectCommand`, an ash type. The host sizes
+    // the indirect-draw buffer and strides the draw call by that type's
+    // `size_of`, so this is the shader's leg — growing `GcDrawIndexed` would
+    // have written past the buffer with a green suite.
     assert_eq!(
         std430_struct_size(&parse_glsl_struct_fields_typed(
             groundcover_models_comp,
             "struct GcDrawIndexed"
-        )) as u64,
-        DRAW_STRIDE,
-        "GcDrawIndexed's std430 stride left `DRAW_STRIDE` — the indirect-draw \
-         buffer is sized from that literal and `host_mirrors_match_the_shader_strides` \
-         ties it to `VkDrawIndexedIndirectCommand`, so this is the shader's leg (#4849)"
+        )),
+        std::mem::size_of::<ash::vk::DrawIndexedIndirectCommand>(),
+        "GcDrawIndexed's std430 stride left `VkDrawIndexedIndirectCommand`'s size — the \
+         model tier's indirect-draw buffer and its draw calls are both sized from it \
+         (#4849)"
     );
 }
 
@@ -1842,18 +1840,14 @@ fn every_shader_struct_is_classified() {
             "GcModelShape",
             Guarded("name_diverging_glsl_rust_mirrors_stay_in_lockstep"),
         ),
-        // Written and read only by `groundcover_models.comp`, but the host
-        // sizes the placement slab from a byte stride (`POINT_BYTES`), so a
-        // counterpart exists — as a literal, not a struct. The guard pins the
-        // GLSL std430 size to it (#4849).
+        // Written and read only by `groundcover_models.comp`; the host sizes the
+        // placement slab from `GpuGroundCoverModelPoint`'s `size_of` (#4849).
         (
             "GcModelPoint",
             Guarded("name_diverging_glsl_rust_mirrors_stay_in_lockstep"),
         ),
-        // The counterpart is `VkDrawIndexedIndirectCommand`, an ash type, via
-        // the host's `DRAW_STRIDE`. The guard pins the GLSL std430 size to that
-        // constant; `host_mirrors_match_the_shader_strides` pins the constant to
-        // the ash type (#4849).
+        // The counterpart is `VkDrawIndexedIndirectCommand`, an ash type; the
+        // guard pins the GLSL std430 size to its `size_of` (#4849).
         (
             "GcDrawIndexed",
             Guarded("name_diverging_glsl_rust_mirrors_stay_in_lockstep"),
