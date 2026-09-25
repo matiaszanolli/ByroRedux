@@ -441,6 +441,22 @@ bool isLocalProfile(float actual, float expected) {
     return abs(actual - expected) < 0.5;
 }
 
+// The one place a raw `profile_params.x` lane is bounded to the generated
+// profile range. The upper bound is the HIGHEST generated profile
+// (FOG_VOLUME_PROFILE_LIGHT_SHAFT); every classification site must read the
+// lane through here. #4828: `evaluateCombustionSource` and
+// `flameSourceSampleRatio` each kept a private clamp whose upper bound was
+// still EXPLOSION_NUCLEAR after LIGHT_SHAFT (6.0) was added above it, so
+// clamp(6.0, .., 5.0) = 5.0 turned every LightShaft / SkyAperture volume into
+// a nuclear-explosion combustion source.
+float volumeProfileKind(GpuFogVolume volume) {
+    return clamp(
+        volume.profile_params.x,
+        FOG_VOLUME_PROFILE_HOMOGENEOUS,
+        FOG_VOLUME_PROFILE_LIGHT_SHAFT
+    );
+}
+
 bool isExplosionProfile(float profileKind) {
     return isLocalProfile(profileKind, FOG_VOLUME_PROFILE_EXPLOSION)
         || isLocalProfile(profileKind, FOG_VOLUME_PROFILE_EXPLOSION_OIL)
@@ -823,11 +839,7 @@ bool evaluateLocalFogVolume(
     } else {
         normalizedRadius = length(normalizedOffset);
     }
-    profileKind = clamp(
-        volume.profile_params.x,
-        FOG_VOLUME_PROFILE_HOMOGENEOUS,
-        FOG_VOLUME_PROFILE_LIGHT_SHAFT
-    );
+    profileKind = volumeProfileKind(volume);
     float timeSeconds = params.temporal_params.z;
     float seed = localVolumeSeed(volume.center_shape.xyz);
     float explosionAge = clamp(volume.profile_params.y, 0.0, 1.0);
@@ -946,11 +958,7 @@ float flameSourceSampleRatio(vec3 fieldWorldPos, vec3 sampleWorldPos) {
             continue;
         }
         GpuFogVolume volume = fogVolumes[volumeIndex];
-        float profileKind = clamp(
-            volume.profile_params.x,
-            FOG_VOLUME_PROFILE_HOMOGENEOUS,
-            FOG_VOLUME_PROFILE_EXPLOSION_NUCLEAR
-        );
+        float profileKind = volumeProfileKind(volume);
         if (!isLocalProfile(profileKind, FOG_VOLUME_PROFILE_FLAME)) {
             continue;
         }
@@ -1058,11 +1066,7 @@ bool evaluateCombustionSource(
     out float stateProfile,
     out vec2 turbulence
 ) {
-    profileKind = clamp(
-        volume.profile_params.x,
-        FOG_VOLUME_PROFILE_HOMOGENEOUS,
-        FOG_VOLUME_PROFILE_EXPLOSION_NUCLEAR
-    );
+    profileKind = volumeProfileKind(volume);
     if (!isTransportedProfile(profileKind)) {
         return false;
     }

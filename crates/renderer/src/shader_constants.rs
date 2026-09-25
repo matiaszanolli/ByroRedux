@@ -2436,4 +2436,80 @@ mod tests {
             }
         }
     }
+
+    /// #4828 — the fog-volume profile lane must be bounded to the HIGHEST
+    /// generated profile everywhere it is classified. `0572bfd5a` added
+    /// `FOG_VOLUME_PROFILE_LIGHT_SHAFT` (6.0) above `EXPLOSION_NUCLEAR`
+    /// (5.0) and widened the clamp at one site; `evaluateCombustionSource`
+    /// kept its private `clamp(.., EXPLOSION_NUCLEAR)`, so `clamp(6.0, .., 5.0)`
+    /// = 5.0 turned every LightShaft / SkyAperture volume into a
+    /// nuclear-explosion combustion source (dense absorbing fuel vapour in the
+    /// very shaft the profile exists to draw). This half pins the constant the
+    /// shader half derives its expected bound from: adding a profile above
+    /// LIGHT_SHAFT fails here, and the shader pin below then demands the
+    /// helper's bound move with it.
+    #[test]
+    fn highest_generated_fog_profile_is_light_shaft() {
+        let (name, _) = FOG_VOLUME_PROFILES
+            .iter()
+            .copied()
+            .fold(None::<(&str, f32)>, |best, (n, v)| match best {
+                Some((_, bv)) if bv >= v => best,
+                _ => Some((n, v)),
+            })
+            .expect("FOG_VOLUME_PROFILES is non-empty");
+        assert_eq!(
+            name, "FOG_VOLUME_PROFILE_LIGHT_SHAFT",
+            "the highest generated fog profile changed: update `volumeProfileKind` in \
+             volumetrics_inject.comp to clamp to it (#4828)"
+        );
+    }
+
+    /// #4828 — shader half. Whitespace-stripped source pins: the raw
+    /// `profile_params.x` lane is clamped in exactly ONE place
+    /// (`volumeProfileKind`), that clamp's upper bound is the highest
+    /// generated profile, and every classification site reads the lane through
+    /// it rather than keeping a private clamp with a stale upper bound.
+    #[test]
+    fn fog_profile_lane_is_clamped_only_through_volume_profile_kind() {
+        let shader: String = include_str!("../shaders/volumetrics_inject.comp")
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect();
+
+        let max_name = "FOG_VOLUME_PROFILE_LIGHT_SHAFT";
+        let helper = format!(
+            "floatvolumeProfileKind(GpuFogVolumevolume){{returnclamp(volume.profile_params.x,\
+             FOG_VOLUME_PROFILE_HOMOGENEOUS,{max_name});}}"
+        );
+        assert!(
+            shader.contains(&helper),
+            "volumeProfileKind must clamp the profile lane to {max_name} — the highest \
+             generated profile (#4828)"
+        );
+        assert_eq!(
+            shader.matches("clamp(volume.profile_params.x,").count(),
+            1,
+            "no site may keep a private clamp of the profile lane: a stale upper bound \
+             reclassifies the highest profile as a lower one (#4828)"
+        );
+        // The three sites that classify a volume by profile.
+        assert!(
+            shader.matches("=volumeProfileKind(volume);").count() >= 3,
+            "evaluateLocalFogVolume, flameSourceSampleRatio and evaluateCombustionSource \
+             must each read the profile through volumeProfileKind (#4828)"
+        );
+
+        // And the concrete regression: `evaluateCombustionSource` must not
+        // bound the lane at the nuclear explosion any more.
+        let start = shader
+            .find("boolevaluateCombustionSource(")
+            .expect("evaluateCombustionSource must exist");
+        let body: String = shader[start..].chars().take(900).collect();
+        assert!(
+            !body.contains("FOG_VOLUME_PROFILE_EXPLOSION_NUCLEAR"),
+            "evaluateCombustionSource must not clamp the profile at EXPLOSION_NUCLEAR \
+             (LightShaft / SkyAperture would classify as a nuclear explosion, #4828)"
+        );
+    }
 }
