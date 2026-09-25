@@ -628,28 +628,49 @@ fn merge_bgsm_arm(
     // spec RGB). Pure dielectric materials keep `diffuse_color`
     // untouched so painted-plastic textures aren't shifted.
     let leaf = &resolved.file;
-    let spec_r = leaf.specular_color[0] * leaf.specular_mult;
-    let spec_g = leaf.specular_color[1] * leaf.specular_mult;
-    let spec_b = leaf.specular_color[2] * leaf.specular_mult;
-    // pbr: spec*mult is F0. Legacy: mult-free specular_color, since
-    // `mult` only scales highlight strength, not F0 — see
-    // `bgsm_metalness` doc comment (#1476).
-    let metalness = if leaf.pbr {
-        bgsm_metalness([spec_r, spec_g, spec_b], true)
-    } else {
-        bgsm_metalness(leaf.specular_color, false)
-    };
-    let roughness = (1.0 - leaf.smoothness).clamp(NEAR_MIRROR_ROUGHNESS_FLOOR, 1.0);
-    material.metalness_override = Some(metalness);
-    // #4654 (PAR-D5-2026-09-21-02) — a BGSM that authored
-    // `specular_enabled = false` keeps the matte roughness DEFAULT: the
-    // audit measured those files carrying authoring-default
-    // smoothness 1.0 (paintings, magazines, signage), so
-    // `1 - smoothness` would fabricate a near-mirror finish the
-    // specular-off choice exists to prevent. Mirrors walker.rs's
-    // NiSpecularProperty handling (#696) on the NIF side.
+    // #4654 (PAR-D5-2026-09-21-02) / #4836 — everything derived from the
+    // specular block is gated on the authored `specular_enabled` bit, because
+    // a disabled block's fields are authoring defaults, not data:
+    //
+    // * roughness — the audit measured those files carrying authoring-default
+    //   smoothness 1.0 (paintings, magazines, signage), so `1 - smoothness`
+    //   would fabricate a near-mirror finish the specular-off choice exists to
+    //   prevent;
+    // * metalness — the same block feeds `bgsm_metalness`, and its defaults
+    //   (white, mult 1) derive 1.0 on the `pbr` branch: a full conductor whose
+    //   specular colour and strength were just zeroed below, which the shader
+    //   renders as an ambient-only metal with no direct light at all. 405 of
+    //   FO76's 25,888 BGSMs are exactly that;
+    // * the conductor diffuse tint — a consequence of that metalness, so it
+    //   must not fire on a metalness that was never derived.
+    //
+    // Left untouched, all three keep whatever the NIF side classified. That
+    // mirrors walker.rs's disabled-NiSpecularProperty arm (#696), which zeroes
+    // the specular colour before `classify_legacy_pbr` runs and so classifies
+    // the surface as a dielectric.
     if leaf.specular_enabled {
+        let spec_r = leaf.specular_color[0] * leaf.specular_mult;
+        let spec_g = leaf.specular_color[1] * leaf.specular_mult;
+        let spec_b = leaf.specular_color[2] * leaf.specular_mult;
+        // pbr: spec*mult is F0. Legacy: mult-free specular_color, since
+        // `mult` only scales highlight strength, not F0 — see
+        // `bgsm_metalness` doc comment (#1476).
+        let metalness = if leaf.pbr {
+            bgsm_metalness([spec_r, spec_g, spec_b], true)
+        } else {
+            bgsm_metalness(leaf.specular_color, false)
+        };
+        let roughness = (1.0 - leaf.smoothness).clamp(NEAR_MIRROR_ROUGHNESS_FLOOR, 1.0);
+        material.metalness_override = Some(metalness);
         material.roughness_override = Some(roughness);
+        if metalness > 0.5 {
+            // #1591 — blend toward the mult-free `specular_color`, NOT
+            // `spec_*` (= specular_color × specular_mult); the mult-bearing
+            // `spec_*` stays for the pbr F0-luminance path above where
+            // mult-as-scale is correct. See `conductor_diffuse_tint`.
+            material.diffuse_color =
+                conductor_diffuse_tint(material.diffuse_color, leaf.specular_color);
+        }
     }
     // #2609 — the flag whose meaning is "authoritative PBR scalars were
     // merged", set at the exact site that merges them. `from_bgsm` above
@@ -658,14 +679,6 @@ fn merge_bgsm_arm(
     // consumer reading `from_bgsm` as "scalars present" is wrong on every
     // effect material. Keep this write adjacent to the two it describes.
     material.bgsm_pbr_scalars_authored = true;
-    if metalness > 0.5 {
-        // #1591 — blend toward the mult-free `specular_color`, NOT
-        // `spec_*` (= specular_color × specular_mult); the mult-bearing
-        // `spec_*` stays for the pbr F0-luminance path above where
-        // mult-as-scale is correct. See `conductor_diffuse_tint`.
-        material.diffuse_color =
-            conductor_diffuse_tint(material.diffuse_color, leaf.specular_color);
-    }
     // #3898 — whether the NIF itself supplied the greyscale LUT before any
     // BGSM in this chain got a turn. `fill` is first-non-empty-wins, so a
     // NIF-supplied slot 3 (#2997) means every BGSM's own greyscale texture

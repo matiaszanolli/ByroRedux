@@ -1462,6 +1462,176 @@ fn bgsm_specular_disabled_zeroes_specular_and_keeps_matte_roughness() {
     );
 }
 
+/// Merge `bgsm` over a mesh whose NIF-side classification is the recognisable
+/// sentinel `NIF_METALNESS`, and translate the result the way the cell loader
+/// does. Returns the merged mesh, the diffuse colour it started with, and the
+/// canonical `Material` the renderer would receive.
+///
+/// Shared by the #4836 tests so each asserts on the same end-to-end path the
+/// audit reproduced through (`merge_external_material` → `translate_material`)
+/// rather than on the merge's intermediate state alone.
+const NIF_METALNESS: f32 = 0.2;
+
+fn merge_and_translate(
+    path: &str,
+    bgsm: BgsmFile,
+) -> (
+    byroredux_nif::import::ImportedMesh,
+    [f32; 3],
+    byroredux_core::ecs::components::material::Material,
+) {
+    use crate::material_translate::{translate_material, ResolvedPaths};
+    let mut pool = byroredux_core::string::StringPool::new();
+    let mut provider = MaterialProvider::new();
+    provider.insert_bgsm_for_test(
+        path,
+        ResolvedMaterial {
+            file: bgsm,
+            parent: None,
+        },
+    );
+    let mut mesh = imported_mesh_with_material_path(&mut pool, path);
+    mesh.material.metalness_override = Some(NIF_METALNESS);
+    // Not white: the conductor tint blends toward the specular colour, so on
+    // the default white diffuse a white specular would leave it unchanged and
+    // every "no tint" assertion below would pass vacuously.
+    mesh.material.diffuse_color = [0.2, 0.4, 0.6];
+    let diffuse_before = mesh.material.diffuse_color;
+
+    assert!(
+        merge_external_material(&mut mesh.material, &mut provider, &mut pool, &|_| false).merged()
+    );
+    let material = translate_material(
+        &mesh.material,
+        None,
+        ResolvedPaths {
+            textures: byroredux_nif::import::MaterialTextureSet::default(),
+            material_path: None,
+            source_base_color: None,
+        },
+        0,
+    );
+    (mesh, diffuse_before, material)
+}
+
+/// #4836 (REN-D6-2026-09-24-01) — the metalness half of #4654. `metalness` is
+/// derived from the same specular block `specular_enabled = false` disables,
+/// and on the `pbr` branch the authoring defaults (white, mult 1) derive 1.0:
+/// a full conductor whose specular colour and strength were just zeroed, which
+/// the shader renders as an ambient-only metal with no direct light. The audit
+/// counted 405 of FO76's 25,888 BGSMs in exactly that state (posters,
+/// magazines, signage); before #4654 the same inputs gave near-mirror chrome.
+///
+/// A disabled block must contribute no metalness: the NIF-side classification
+/// survives, as roughness's does, and nothing downstream sees a conductor.
+#[test]
+fn bgsm_specular_disabled_pbr_does_not_derive_a_conductor() {
+    let (mesh, diffuse_before, material) = merge_and_translate(
+        "materials/tests/specular_disabled_pbr.bgsm",
+        BgsmFile {
+            pbr: true,
+            specular_enabled: false,
+            specular_color: [1.0, 1.0, 1.0],
+            specular_mult: 1.0,
+            smoothness: 1.0,
+            ..Default::default()
+        },
+    );
+    assert_ne!(
+        mesh.material.metalness_override,
+        Some(1.0),
+        "pbr F0 luminance of the disabled block's white default must not \
+         become a full conductor (#4836)"
+    );
+    assert_eq!(
+        mesh.material.metalness_override,
+        Some(NIF_METALNESS),
+        "a disabled specular block leaves the NIF-side metalness alone (#4836)"
+    );
+    assert_eq!(
+        mesh.material.diffuse_color, diffuse_before,
+        "the conductor diffuse tint is a consequence of derived metalness and \
+         must not fire without one (#4836 / #1591)"
+    );
+    // The value the renderer actually receives.
+    assert_eq!(material.metalness, NIF_METALNESS);
+    assert_eq!(
+        (material.specular_strength, material.specular_color),
+        (0.0, [0.0, 0.0, 0.0]),
+        "the #4654 half still holds: specular itself stays zeroed"
+    );
+}
+
+/// The legacy (`pbr = false`) branch has the same defect through saturation
+/// instead of luminance: a disabled block whose authoring-default colour is
+/// tinted derives metalness > 0.5 and tints the diffuse toward it. No vanilla
+/// FO4 file hits it (0 of 467 spec-off), but the gate is one condition, and a
+/// fix that covered only the `pbr` branch would leave the sibling open.
+#[test]
+fn bgsm_specular_disabled_legacy_tinted_spec_does_not_derive_a_conductor() {
+    let (mesh, diffuse_before, material) = merge_and_translate(
+        "materials/tests/specular_disabled_legacy.bgsm",
+        BgsmFile {
+            pbr: false,
+            specular_enabled: false,
+            specular_color: [1.0, 0.5, 0.2],
+            specular_mult: 1.0,
+            smoothness: 0.5,
+            ..Default::default()
+        },
+    );
+    assert_eq!(mesh.material.metalness_override, Some(NIF_METALNESS));
+    assert_eq!(
+        mesh.material.diffuse_color, diffuse_before,
+        "no diffuse tint toward a disabled specular colour (#4836)"
+    );
+    assert_eq!(material.metalness, NIF_METALNESS);
+}
+
+/// The control: with `specular_enabled = true` the derivation still runs on
+/// both branches, so the gate cannot be satisfied by deleting the derivation
+/// or by inverting the condition.
+#[test]
+fn bgsm_specular_enabled_still_derives_metalness_and_tints_conductors() {
+    let (mesh, diffuse_before, material) = merge_and_translate(
+        "materials/tests/specular_enabled_pbr.bgsm",
+        BgsmFile {
+            pbr: true,
+            specular_enabled: true,
+            specular_color: [1.0, 1.0, 1.0],
+            specular_mult: 1.0,
+            smoothness: 0.8,
+            ..Default::default()
+        },
+    );
+    assert_eq!(
+        mesh.material.metalness_override,
+        Some(1.0),
+        "pbr F0 luminance 1.0 → full conductor when specular is enabled"
+    );
+    assert_ne!(
+        mesh.material.diffuse_color, diffuse_before,
+        "a derived conductor still gets the #1591 diffuse tint"
+    );
+    assert_eq!(material.metalness, 1.0);
+
+    let (legacy, _, _) = merge_and_translate(
+        "materials/tests/specular_enabled_legacy.bgsm",
+        BgsmFile {
+            pbr: false,
+            specular_enabled: true,
+            specular_color: [1.0, 0.5, 0.2],
+            specular_mult: 1.0,
+            smoothness: 0.5,
+            ..Default::default()
+        },
+    );
+    assert!(
+        legacy.material.metalness_override.unwrap() > 0.5,
+        "tinted legacy spec derives a conductor when specular is enabled"
+    );
+}
+
 /// Regression for #4428 (FO4-D2-2026-09-16-02), real merge path: a BGSM
 /// authoring `envmap_texture` but leaving `environment_mapping` off must
 /// NOT fill `textures.environment`. Pre-fix the fill was unconditional —
