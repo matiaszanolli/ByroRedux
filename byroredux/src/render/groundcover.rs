@@ -424,7 +424,8 @@ pub(crate) fn collect_groundcover_frame(
                     // diffuse indices from the terrain-tile SSBO through
                     // this slot (#4056). u32::MAX = no splat terrain.
                     terrain_tile_slot: cell.terrain_tile_slot,
-                    pad1: [0.0; 2],
+                    pad1: 0.0,
+                    pad2: 0.0,
                 });
                 let index = (cells.len() - 1) as u32;
                 emitted.insert(candidate.cell, index);

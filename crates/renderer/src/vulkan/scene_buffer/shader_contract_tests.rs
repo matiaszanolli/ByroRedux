@@ -1532,8 +1532,12 @@ fn name_diverging_glsl_rust_mirrors_stay_in_lockstep() {
     let groundcover_rs = include_str!("../groundcover.rs");
     let groundcover_models_comp = include_str!("../../../shaders/groundcover_models.comp");
     let groundcover_models_rs = include_str!("../groundcover_models.rs");
+    let groundcover_bench_rs = include_str!("../groundcover_bench.rs");
+    let groundcover_bench_glsl = include_str!("../../../shaders/include/groundcover_bench.glsl");
+    let groundcover_bench_bake = include_str!("../../../shaders/groundcover_bench_bake.comp");
 
-    for (label, glsl_src, glsl_decl, rust_src, rust_decl) in [
+    const NO_ALIASES: &[NameAlias] = &[];
+    for (label, glsl_src, glsl_decl, rust_src, rust_decl, aliases) in [
         // Three GLSL copies against one Rust struct — comparing each to the
         // same reference also proves the three agree with each other, which is
         // the multi-copy shape `GpuInstance` and `GpuLight` each already have
@@ -1544,6 +1548,7 @@ fn name_diverging_glsl_rust_mirrors_stay_in_lockstep() {
             "struct ClusterEntry",
             compute_rs,
             "struct ClusterEntry",
+            NO_ALIASES,
         ),
         (
             "ClusterEntry (bindings.glsl, the fragment reader)",
@@ -1551,6 +1556,7 @@ fn name_diverging_glsl_rust_mirrors_stay_in_lockstep() {
             "struct ClusterEntry",
             compute_rs,
             "struct ClusterEntry",
+            NO_ALIASES,
         ),
         (
             "ClusterEntry (volumetrics_inject.comp, the fog reader)",
@@ -1558,6 +1564,7 @@ fn name_diverging_glsl_rust_mirrors_stay_in_lockstep() {
             "struct ClusterEntry",
             compute_rs,
             "struct ClusterEntry",
+            NO_ALIASES,
         ),
         (
             "FogClusterEntry",
@@ -1565,6 +1572,7 @@ fn name_diverging_glsl_rust_mirrors_stay_in_lockstep() {
             "struct FogClusterEntry",
             volumetrics_rs,
             "struct GpuFogClusterEntry",
+            NO_ALIASES,
         ),
         (
             "CombustionLightMoment",
@@ -1572,6 +1580,7 @@ fn name_diverging_glsl_rust_mirrors_stay_in_lockstep() {
             "struct CombustionLightMoment",
             volumetrics_rs,
             "struct GpuCombustionLightMoment",
+            NO_ALIASES,
         ),
         // #4335 — no host writer, but the host sizes the blade buffer from the
         // Rust side's `size_of`, so the two must describe the same record.
@@ -1581,6 +1590,7 @@ fn name_diverging_glsl_rust_mirrors_stay_in_lockstep() {
             "struct GroundCoverBlade",
             groundcover_rs,
             "struct GpuGroundCoverBlade",
+            NO_ALIASES,
         ),
         // #4849 — neither side pads (four vec4 + one uvec4, no `pad*`), so the
         // field-for-field comparator applies as it does to the blade record.
@@ -1590,6 +1600,7 @@ fn name_diverging_glsl_rust_mirrors_stay_in_lockstep() {
             "struct GroundCoverSpecies",
             groundcover_rs,
             "struct GpuGroundCoverSpecies",
+            NO_ALIASES,
         ),
         // #4413 — the model tier's per-frame uploads, padded field for field
         // on both sides so this comparator can guard them.
@@ -1599,6 +1610,7 @@ fn name_diverging_glsl_rust_mirrors_stay_in_lockstep() {
             "struct GcModelRecord",
             groundcover_models_rs,
             "struct GpuGroundCoverModelRecord",
+            NO_ALIASES,
         ),
         (
             "GcModelShape",
@@ -1606,6 +1618,7 @@ fn name_diverging_glsl_rust_mirrors_stay_in_lockstep() {
             "struct GcModelShape",
             groundcover_models_rs,
             "struct GpuGroundCoverModelShape",
+            NO_ALIASES,
         ),
         // #4849 — never touched by the host, which only sizes the placement
         // slab from the mirror's `size_of`.
@@ -1615,38 +1628,64 @@ fn name_diverging_glsl_rust_mirrors_stay_in_lockstep() {
             "struct GcModelPoint",
             groundcover_models_rs,
             "struct GpuGroundCoverModelPoint",
+            NO_ALIASES,
+        ),
+        // #4849 — the ground-cover cell / chunk records the blade scatter reads.
+        // Both Rust sides spell their pads out field for field, as GLSL does.
+        (
+            "GroundCoverCell",
+            groundcover_scene,
+            "struct GroundCoverCell",
+            groundcover_rs,
+            "struct GpuGroundCoverCell",
+            NO_ALIASES,
+        ),
+        // Rust calls the flag `active`; the GLSL name says what an inactive slot
+        // means to the scatter. Host code reads `chunk.active` directly.
+        (
+            "GroundCoverChunk",
+            groundcover_scene,
+            "struct GroundCoverChunk",
+            groundcover_rs,
+            "struct GpuGroundCoverChunk",
+            &[("active", "slotActive")],
+        ),
+        // The #4052 bench's records. `BenchCell` is declared twice — once in the
+        // shared header, once in the bake shader — and both feed the same buffer.
+        (
+            "BenchCell (include/groundcover_bench.glsl)",
+            groundcover_bench_glsl,
+            "struct BenchCell",
+            groundcover_bench_rs,
+            "struct GpuBenchCell",
+            NO_ALIASES,
+        ),
+        (
+            "BenchCell (groundcover_bench_bake.comp)",
+            groundcover_bench_bake,
+            "struct BenchCell",
+            groundcover_bench_rs,
+            "struct GpuBenchCell",
+            NO_ALIASES,
+        ),
+        (
+            "BenchChunk",
+            groundcover_bench_glsl,
+            "struct BenchChunk",
+            groundcover_bench_rs,
+            "struct GpuBenchChunk",
+            NO_ALIASES,
         ),
     ] {
-        let glsl = parse_glsl_struct_fields_typed(glsl_src, glsl_decl);
-        let rust = parse_rust_struct_fields_typed(rust_src, rust_decl);
-        assert!(
-            !glsl.is_empty() && !rust.is_empty(),
-            "{label}: one side parsed to zero fields — the declaration moved \
-             or was renamed, so this guard is checking nothing (#3982)"
+        assert_glsl_matches_rust(
+            label,
+            &parse_glsl_struct_fields_typed(glsl_src, glsl_decl),
+            &parse_rust_struct_fields_typed(rust_src, rust_decl),
+            aliases,
+            "The GLSL struct and its Rust mirror must declare the same fields in the same order \
+             with the same types — a size check cannot see a reorder or a uint<->float \
+             reinterpretation (#3982).",
         );
-        assert_eq!(
-            glsl.len(),
-            rust.len(),
-            "{label}: {} GLSL fields vs {} Rust fields (#3982)",
-            glsl.len(),
-            rust.len()
-        );
-        // Both parsers return `(type, name)`.
-        for (i, ((glsl_ty, glsl_name), (rust_ty, rust_name))) in
-            glsl.iter().zip(rust.iter()).enumerate()
-        {
-            assert_eq!(
-                normalize_ident(glsl_name),
-                normalize_ident(rust_name),
-                "{label}: field {i} is `{glsl_name}` in GLSL but `{rust_name}` in \
-                 Rust — order or naming drifted (#3982)"
-            );
-            assert!(
-                rust_glsl_scalar_type_matches(rust_ty, glsl_ty),
-                "{label}: field `{glsl_name}` is `{glsl_ty}` in GLSL but \
-                 `{rust_ty}` in Rust (#3982)"
-            );
-        }
     }
 
     // The stride leg, against the sizes the Rust side asserts for itself.
@@ -1787,27 +1826,18 @@ fn every_shader_struct_is_classified() {
             Guarded("name_diverging_glsl_rust_mirrors_stay_in_lockstep"),
         ),
         // Found by this very walk, after #3982 was filed — the ground-cover
-        // stratum (#4054-#4058) landed five more name-diverging mirrors.
-        // `GroundCoverSpecies` has no padding on either side and is guarded
-        // below. The other two are parked, and the reason is NOT padding: both
-        // GLSL declarations now spell their pads out. What actually stops
-        // `name_diverging_glsl_rust_mirrors_stay_in_lockstep`'s comparator is
-        // named on each entry (#4849).
+        // stratum (#4054-#4058) landed five more name-diverging mirrors, and the
+        // #4052 bench two more. They were parked while the comparator lacked a
+        // `vec2` / `uvec2` type row and the Rust `GpuGroundCoverCell` spelled its
+        // tail `pad1: [f32; 2]` against GLSL `pad1, pad2`; #4849 closed both, so
+        // every one of them is compared field for field now.
         (
             "GroundCoverCell",
-            MirroredPendingGuard(
-                "`rust_glsl_scalar_type_matches` has no `vec2` row, and the tail is \
-                 GLSL `pad1, pad2` (two floats) against Rust `pad1: [f32; 2]` — \
-                 9 fields vs 8, so the count leg fails on a struct that is in sync",
-            ),
+            Guarded("name_diverging_glsl_rust_mirrors_stay_in_lockstep"),
         ),
         (
             "GroundCoverChunk",
-            MirroredPendingGuard(
-                "`rust_glsl_scalar_type_matches` has no `vec2`/`uvec2` row, and \
-                 GLSL `slotActive` is Rust `active` — a name alias `normalize_ident` \
-                 does not fold",
-            ),
+            Guarded("name_diverging_glsl_rust_mirrors_stay_in_lockstep"),
         ),
         (
             "GroundCoverSpecies",
@@ -1815,11 +1845,11 @@ fn every_shader_struct_is_classified() {
         ),
         (
             "BenchCell",
-            MirroredPendingGuard("GpuBenchCell, groundcover_bench.rs"),
+            Guarded("name_diverging_glsl_rust_mirrors_stay_in_lockstep"),
         ),
         (
             "BenchChunk",
-            MirroredPendingGuard("GpuBenchChunk, groundcover_bench.rs"),
+            Guarded("name_diverging_glsl_rust_mirrors_stay_in_lockstep"),
         ),
         // Rust holds a byte stride (`RESERVOIR_BYTES`), not a mirrored struct.
         (
@@ -2347,80 +2377,128 @@ fn gpu_material_glsl_field_order_matches_rust_struct() {
 
     let rust_typed = parse_rust_struct_fields_typed(rust_src, "pub struct GpuMaterial");
     let glsl_typed = parse_glsl_struct_fields_typed(glsl_src, "struct GpuMaterial");
-    let rust_fields: Vec<String> = rust_typed.iter().map(|(_, n)| n.clone()).collect();
-    let glsl_fields: Vec<String> = glsl_typed.iter().map(|(_, n)| n.clone()).collect();
 
     assert!(
-        rust_fields.len() > 60,
+        rust_typed.len() > 60,
         "parsed only {} fields from the Rust `struct GpuMaterial` — parser likely broke",
-        rust_fields.len()
+        rust_typed.len()
     );
     assert!(
-        glsl_fields.len() > 60,
+        glsl_typed.len() > 60,
         "parsed only {} fields from the GLSL `struct GpuMaterial` — parser likely broke",
-        glsl_fields.len()
+        glsl_typed.len()
     );
 
-    let rust_norm: Vec<String> = rust_fields.iter().map(|f| normalize_ident(f)).collect();
-    let glsl_norm: Vec<String> = glsl_fields.iter().map(|f| normalize_ident(f)).collect();
-
-    assert_eq!(
-        rust_norm.len(),
-        glsl_norm.len(),
-        "GpuMaterial field COUNT differs: Rust has {} {:?}, GLSL has {} {:?}. The two \
-         `struct GpuMaterial` declarations (material.rs + include/bindings.glsl) must stay in \
-         lockstep — see #1657 / SF-D8-01.",
-        rust_norm.len(),
-        rust_fields,
-        glsl_norm.len(),
-        glsl_fields,
+    assert_glsl_matches_rust(
+        "GpuMaterial",
+        &glsl_typed,
+        &rust_typed,
+        &[],
+        "The two `struct GpuMaterial` declarations (material.rs + include/bindings.glsl) must \
+         stay in lockstep, field for field in the Rust `#[repr(C)]` struct's order (the offset \
+         source of truth) — see #1657 / SF-D8-01. A within-vec4 reorder keeps the struct size \
+         unchanged but corrupts every lit-surface read; a uint<->float reinterpretation \
+         preserves order and size but corrupts the value read through the mismatched type \
+         (#2688 / SAFE-D6-01).",
     );
-
-    for (i, (r, g)) in rust_norm.iter().zip(glsl_norm.iter()).enumerate() {
-        assert_eq!(
-            r, g,
-            "GpuMaterial field #{i} ORDER mismatch: Rust `{}` vs GLSL `{}`. The GLSL \
-             `struct GpuMaterial` in include/bindings.glsl must declare fields in the SAME order \
-             as the Rust `#[repr(C)]` struct (the offset source of truth). A within-vec4 reorder \
-             keeps the struct size unchanged but corrupts every lit-surface read — see \
-             #1657 / SF-D8-01.",
-            rust_fields[i], glsl_fields[i],
-        );
-    }
-
-    for (i, ((rust_ty, rust_name), (glsl_ty, glsl_name))) in
-        rust_typed.iter().zip(glsl_typed.iter()).enumerate()
-    {
-        assert!(
-            rust_glsl_scalar_type_matches(rust_ty, glsl_ty),
-            "GpuMaterial field #{i} TYPE mismatch: Rust `{rust_name}: {rust_ty}` vs GLSL \
-             `{glsl_ty} {glsl_name}`. Every GpuMaterial field is a bare scalar; a uint<->float \
-             reinterpretation preserves field order and struct size but corrupts the value read \
-             through the mismatched type — see #2688 / SAFE-D6-01.",
-        );
-    }
 }
 
-/// True if a Rust scalar field type and its GLSL mirror are the same bit
-/// pattern's intended interpretation. #2688 / SAFE-D6-01 — covers the
-/// scalar types `GpuMaterial` actually declares; extend if a future field
-/// needs a vector/matrix type here.
+/// True if a Rust field type and its GLSL mirror are the same bit pattern's
+/// intended interpretation. #2688 / SAFE-D6-01 — started as the scalar types
+/// `GpuMaterial` declares and grows a row whenever a mirrored struct needs one;
+/// a type with no row fails the comparison loudly rather than passing.
 ///
 /// #3684 (PERF-D4-2026-08-30-04) — extended with `GpuCamera`'s
 /// fixed-size-array shapes: rustfmt always renders these with the exact
 /// spacing matched here (`[f32; 4]`, `[[f32; 4]; 4]`), so this is a plain
 /// string match, not a general array-type parser.
+///
+/// The `vec2`/`uvec2` and `u64` rows are what the ground-cover cell / chunk /
+/// bench mirrors and `GpuInstance`'s address lanes need. `uvec3` / `vec3` stay
+/// deliberately absent: 16-byte-aligned under std430, the #3231 footgun.
 fn rust_glsl_scalar_type_matches(rust_ty: &str, glsl_ty: &str) -> bool {
     matches!(
         (rust_ty, glsl_ty),
         ("f32", "float")
             | ("u32", "uint")
             | ("i32", "int")
+            | ("u64", "uint64_t")
             | ("bool", "bool")
+            | ("[f32; 2]", "vec2")
+            | ("[u32; 2]", "uvec2")
             | ("[f32; 4]", "vec4")
             | ("[u32; 4]", "uvec4")
             | ("[[f32; 4]; 4]", "mat4")
     )
+}
+
+/// A field the Rust and GLSL sides deliberately name differently, as
+/// `(rust_name, glsl_name)`. Declared per comparison rather than loosening the
+/// name check, so any OTHER name mismatch still fails loud.
+type NameAlias = (&'static str, &'static str);
+
+/// The one GLSL↔Rust field comparison every mirror guard runs. `glsl` and
+/// `rust` are the `(type, name)` lists [`parse_glsl_struct_fields_typed`] and
+/// [`parse_rust_struct_fields_typed`] return. Asserts, in order:
+///
+/// 1. neither side parsed empty — the declaration moved and this checks nothing;
+/// 2. the same field COUNT;
+/// 3. per field, the same NAME in the same position (`normalize_ident` folds
+///    `snake_case` against `camelCase`; `aliases` records deliberate renames);
+/// 4. per field, the same TYPE ([`rust_glsl_scalar_type_matches`]).
+///
+/// The name and type checks are separate because they catch different drift: a
+/// within-vec4 reorder or a `uint`<->`float` reinterpretation each keep the
+/// struct's size, so a size assertion cannot see either.
+///
+/// `context` is appended to every failure — the struct-specific "why this
+/// corrupts" and the issue references live there, so the failure reads the same
+/// as the hand-rolled loops this replaced.
+///
+/// Padding is compared like any other field. Both sides spell their pads out
+/// field for field (#4413), so Rust `pad1: [f32; 2]` against GLSL `pad1, pad2`
+/// is a real mismatch to fix on the Rust side, not something to fold away here.
+fn assert_glsl_matches_rust(
+    label: &str,
+    glsl: &[(String, String)],
+    rust: &[(String, String)],
+    aliases: &[NameAlias],
+    context: &str,
+) {
+    let names = |fields: &[(String, String)]| -> Vec<String> {
+        fields.iter().map(|(_, n)| n.clone()).collect()
+    };
+    assert!(
+        !glsl.is_empty() && !rust.is_empty(),
+        "{label}: one side parsed to zero fields ({} GLSL, {} Rust) — the declaration moved or \
+         was renamed, so this guard is checking nothing. {context}",
+        glsl.len(),
+        rust.len(),
+    );
+    assert_eq!(
+        glsl.len(),
+        rust.len(),
+        "{label}: field COUNT differs — GLSL has {} {:?}, Rust has {} {:?}. {context}",
+        glsl.len(),
+        names(glsl),
+        rust.len(),
+        names(rust),
+    );
+    for (i, ((glsl_ty, glsl_name), (rust_ty, rust_name))) in glsl.iter().zip(rust).enumerate() {
+        let aliased = aliases
+            .iter()
+            .any(|&(r, g)| r == rust_name.as_str() && g == glsl_name.as_str());
+        assert!(
+            aliased || normalize_ident(glsl_name) == normalize_ident(rust_name),
+            "{label}: field #{i} ORDER/NAME mismatch — GLSL `{glsl_name}` vs Rust `{rust_name}`. \
+             {context}"
+        );
+        assert!(
+            rust_glsl_scalar_type_matches(rust_ty, glsl_ty),
+            "{label}: field #{i} TYPE mismatch — Rust `{rust_name}: {rust_ty}` vs GLSL \
+             `{glsl_ty} {glsl_name}`. {context}"
+        );
+    }
 }
 
 /// Slice the body of a top-level function declared by `fn_decl` (e.g.
@@ -2920,34 +2998,18 @@ fn gpu_light_glsl_copies_stay_in_lockstep() {
     // names via `parse_glsl_struct_fields` (leg 1 already proved all four
     // are identical, so any one source stands in for all of them).
     let (_, first_src) = SOURCES[0];
-    let glsl_fields = parse_glsl_struct_fields(first_src, "struct GpuLight");
-    let rust_src = include_str!("gpu_types.rs");
-    let rust_fields = parse_rust_struct_fields(rust_src, "pub struct GpuLight");
-
-    let rust_norm: Vec<String> = rust_fields.iter().map(|f| normalize_ident(f)).collect();
-    let glsl_norm: Vec<String> = glsl_fields.iter().map(|f| normalize_ident(f)).collect();
-
-    assert_eq!(
-        rust_norm.len(),
-        glsl_norm.len(),
-        "GpuLight field COUNT differs: Rust has {} {:?}, GLSL mirrors have {} {:?}. The Rust \
-         `struct GpuLight` (gpu_types.rs) and its four GLSL mirrors must stay in lockstep — \
-         see #3763 / SAFE-2026-08-30-D6-02.",
-        rust_norm.len(),
-        rust_fields,
-        glsl_norm.len(),
-        glsl_fields,
+    let glsl_typed = parse_glsl_struct_fields_typed(first_src, "struct GpuLight");
+    let rust_typed =
+        parse_rust_struct_fields_typed(include_str!("gpu_types.rs"), "pub struct GpuLight");
+    assert_glsl_matches_rust(
+        "GpuLight",
+        &glsl_typed,
+        &rust_typed,
+        &[],
+        "The Rust `struct GpuLight` (gpu_types.rs) and its four GLSL mirrors must stay in \
+         lockstep, field for field in the Rust `#[repr(C)]` struct's order — see #3763 / \
+         SAFE-2026-08-30-D6-02.",
     );
-
-    for (i, (r, g)) in rust_norm.iter().zip(glsl_norm.iter()).enumerate() {
-        assert_eq!(
-            r, g,
-            "GpuLight field #{i} ORDER mismatch: Rust `{}` vs GLSL `{}`. Every GLSL \
-             `struct GpuLight` mirror must declare fields in the SAME order as the Rust \
-             `#[repr(C)]` struct — see #3763 / SAFE-2026-08-30-D6-02.",
-            rust_fields[i], glsl_fields[i],
-        );
-    }
 }
 
 // ── GpuInstance six-way GLSL lockstep (#2748 / REN-D3-2026-08-12-01) ──
@@ -3007,34 +3069,19 @@ fn gpu_instance_glsl_copies_stay_in_lockstep() {
     // `#[repr(C)]` struct's declaration order (the offset source of
     // truth, pinned separately by
     // `gpu_instance_field_offsets_match_shader_contract`).
-    let (_, glsl_fields) = reference.expect("GPU_INSTANCE_GLSL_MIRRORS is non-empty");
-    let rust_src = include_str!("gpu_types.rs");
-    let rust_fields = parse_rust_struct_fields(rust_src, "pub struct GpuInstance");
-
-    let rust_norm: Vec<String> = rust_fields.iter().map(|f| normalize_ident(f)).collect();
-    let glsl_norm: Vec<String> = glsl_fields.iter().map(|f| normalize_ident(f)).collect();
-
-    assert_eq!(
-        rust_norm.len(),
-        glsl_norm.len(),
-        "GpuInstance field COUNT differs: Rust has {} {:?}, GLSL mirrors have {} {:?}. The Rust \
-         `struct GpuInstance` (gpu_types.rs) and its six GLSL mirrors must stay in lockstep — \
-         see #2748 / REN-D3-2026-08-12-01.",
-        rust_norm.len(),
-        rust_fields,
-        glsl_norm.len(),
-        glsl_fields,
+    let (_, first_src) = GPU_INSTANCE_GLSL_MIRRORS[0];
+    let glsl_typed = parse_glsl_struct_fields_typed(first_src, "struct GpuInstance");
+    let rust_typed =
+        parse_rust_struct_fields_typed(include_str!("gpu_types.rs"), "pub struct GpuInstance");
+    assert_glsl_matches_rust(
+        "GpuInstance",
+        &glsl_typed,
+        &rust_typed,
+        &[],
+        "The Rust `struct GpuInstance` (gpu_types.rs) and its six GLSL mirrors must stay in \
+         lockstep, field for field in the Rust `#[repr(C)]` struct's order — see #2748 / \
+         REN-D3-2026-08-12-01.",
     );
-
-    for (i, (r, g)) in rust_norm.iter().zip(glsl_norm.iter()).enumerate() {
-        assert_eq!(
-            r, g,
-            "GpuInstance field #{i} ORDER mismatch: Rust `{}` vs GLSL `{}`. Every GLSL \
-             `struct GpuInstance` mirror must declare fields in the SAME order as the Rust \
-             `#[repr(C)]` struct — see #2748 / REN-D3-2026-08-12-01.",
-            rust_fields[i], glsl_fields[i],
-        );
-    }
 }
 
 /// #3231 — closes a real gap the two tests above cannot: neither checks
@@ -3279,23 +3326,6 @@ fn camera_ubo_glsl_copies_stay_in_lockstep() {
     let rust_src = include_str!("gpu_types.rs");
     let rust_typed = parse_rust_struct_fields_typed(rust_src, "pub struct GpuCamera");
 
-    let rust_fields: Vec<String> = rust_typed.iter().map(|(_, n)| n.clone()).collect();
-    let glsl_fields: Vec<String> = glsl_typed.iter().map(|(_, n)| n.clone()).collect();
-    let rust_norm: Vec<String> = rust_fields.iter().map(|f| normalize_ident(f)).collect();
-    let glsl_norm: Vec<String> = glsl_fields.iter().map(|f| normalize_ident(f)).collect();
-
-    assert_eq!(
-        rust_norm.len(),
-        glsl_norm.len(),
-        "GpuCamera field COUNT differs: Rust has {} {:?}, GLSL mirrors have {} {:?}. The Rust \
-         `struct GpuCamera` (gpu_types.rs) and its five GLSL `CameraUBO` mirrors must stay in \
-         lockstep — see #3684.",
-        rust_norm.len(),
-        rust_fields,
-        glsl_norm.len(),
-        glsl_fields,
-    );
-
     // #3684 — two fields are named differently on purpose between the Rust
     // struct and every GLSL mirror: Rust `position` is GLSL `cameraPos`,
     // and Rust `flags` is GLSL `sceneFlags`. Both are consistent across
@@ -3305,33 +3335,18 @@ fn camera_ubo_glsl_copies_stay_in_lockstep() {
     // side by what the CPU struct field is. Recorded explicitly here
     // rather than silently loosening the check, so any OTHER field name
     // mismatch (a real drift) still fails loud.
-    const KNOWN_NAME_ALIASES: &[(&str, &str)] =
-        &[("position", "cameraPos"), ("flags", "sceneFlags")];
-    for (i, (r_raw, g_raw)) in rust_fields.iter().zip(glsl_fields.iter()).enumerate() {
-        let names_match = normalize_ident(r_raw) == normalize_ident(g_raw);
-        let aliased = KNOWN_NAME_ALIASES
-            .iter()
-            .any(|(rust_name, glsl_name)| rust_name == r_raw && glsl_name == g_raw);
-        assert!(
-            names_match || aliased,
-            "GpuCamera field #{i} ORDER mismatch: Rust `{r_raw}` vs GLSL `{g_raw}`. Every GLSL \
-             `uniform CameraUBO` mirror must declare fields in the SAME order as the Rust \
-             `#[repr(C)]` struct — see #3684.",
-        );
-    }
-
-    for (i, ((rust_ty, rust_name), (glsl_ty, glsl_name))) in
-        rust_typed.iter().zip(glsl_typed.iter()).enumerate()
-    {
-        assert!(
-            rust_glsl_scalar_type_matches(rust_ty, glsl_ty),
-            "GpuCamera field #{i} TYPE mismatch: Rust `{rust_name}: {rust_ty}` vs GLSL \
-             `{glsl_ty} {glsl_name}`. A within-size type reinterpretation (e.g. `uvec4` <-> \
-             `vec4`) preserves field order and struct size but corrupts the value read through \
-             the mismatched type — see #3684 (the #2688 GpuMaterial precedent for this exact \
-             class of defect).",
-        );
-    }
+    const KNOWN_NAME_ALIASES: &[NameAlias] = &[("position", "cameraPos"), ("flags", "sceneFlags")];
+    assert_glsl_matches_rust(
+        "GpuCamera",
+        &glsl_typed,
+        &rust_typed,
+        KNOWN_NAME_ALIASES,
+        "The Rust `struct GpuCamera` (gpu_types.rs) and its five GLSL `CameraUBO` mirrors must \
+         stay in lockstep, field for field in the Rust `#[repr(C)]` struct's order — see #3684. \
+         A within-size type reinterpretation (e.g. `uvec4` <-> `vec4`) preserves field order and \
+         struct size but corrupts the value read through the mismatched type (the #2688 \
+         GpuMaterial precedent for this exact class of defect).",
+    );
 }
 
 /// The bounded GI path must remain material-aware. The pre-fix implementation

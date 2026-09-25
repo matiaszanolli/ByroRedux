@@ -102,7 +102,11 @@ pub struct GpuGroundCoverCell {
     /// base (#4056). `u32::MAX` when the cell has no splat terrain; a valid
     /// slot can be 0, so "absent" cannot be 0.
     pub terrain_tile_slot: u32,
-    pub pad1: [f32; 2],
+    /// Padding to the 64 B record. Two scalars rather than `[f32; 2]` so the
+    /// declaration matches the GLSL `pad1, pad2` field for field, which is what
+    /// lets `name_diverging_glsl_rust_mirrors_stay_in_lockstep` guard it (#4849).
+    pub pad1: f32,
+    pub pad2: f32,
 }
 // SAFETY: `#[repr(C)]` over `f32`/`u32` only, explicitly padded to 64 bytes
 // with named fields, so every byte is initialised by a field write.
