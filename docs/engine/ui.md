@@ -838,7 +838,14 @@ profile with a ninth font slot).
   pixels. M48.5 adds the FO3-era `<tile>` repeat mode: 1:1 texel
   tiling across the tile rect with `cropx` as a *wrapping* scroll
   offset — the tick-mark meters and the seamlessly scrolling
-  compass strip both ride it.
+  compass strip both ride it. **Menu XML is untrusted input** (#4715):
+  the pixel loops of `blit` and `blit_sub` (the glyph path) are clamped
+  to the framebuffer, the outermost clip, so a `16000 x 16000` tile costs
+  at most one blend per framebuffer pixel instead of 256M iterations per
+  HUD render; non-finite geometry (`inf`, `NaN`, or `1e39`, which
+  `str::parse::<f32>` turns into `inf`) draws nothing instead of
+  saturating the loop bound to `i64::MAX`; and the tiled texel-index math
+  wraps rather than overflowing on a saturated `as i64`.
 - `tex.rs` / `font.rs` — own DDS decoder (BC1/BC2/BC3 + masked
   uncompressed; the `image` crate rejects some vanilla headers) and the
   `.fnt` + `.tex` bitmap-font pair (296-byte header, 256×56-byte glyph
@@ -867,7 +874,9 @@ profile with a ninth font slot).
 **Engine integration** (`byroredux/src/hud.rs`): `--hud` discovers
 the game from the corpus itself — whichever vanilla Misc BSA sits
 beside `--esm` (`Fallout - Misc.bsa` vs `Oblivion - Misc.bsa`;
-FO3/FNV split by the master's name) selects an `HudGameProfile`:
+FO3 vs FNV decided by the load order, #4718: a base ESM named in
+`--master`/`--esm`, else the one beside the corpus, else FO3) selects an
+`HudGameProfile`:
 archive names, `MenuProfile`, bar count/labels/AVIF keys, and the
 assembly style. **Oblivion** is *authored* — the XML ships the
 bar/compass art and the driver only pushes `hudmain_*`
