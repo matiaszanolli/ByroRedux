@@ -245,9 +245,11 @@ const HEADER_LEN: usize = 32;
 
 /// The serialised world state.
 ///
-/// Columns are keyed by the stable registry name. `BTreeMap` keeps the
-/// JSON output deterministic (stable diffs, reproducible CRCs across
-/// runs at equal state).
+/// Columns and resources are keyed by the stable registry name, so their
+/// outer names serialize in order. Component rows are separately sorted by
+/// entity id. Resource values use their own `Serialize` implementations;
+/// nested `HashMap`/`HashSet` iteration can vary between runs, so the whole
+/// payload is not guaranteed deterministic for equal logical state.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Snapshot {
     /// The entity-id high-water mark at save time. Restored verbatim so

@@ -20,7 +20,7 @@
 //! | `0x1059` / `0x1000` | Message / MessageBox | effect-log entry (HUD is later work) |
 //! | `0x100c` | GetSecondsPassed | per-script elapsed since last tick |
 //! | `0x101f` | GetButtonPressed | −1 (no message menu this phase) |
-//! | everything else | — | traced no-op returning 0, counted in [`ObScriptDiagnostics`] |
+//! | everything else | — | traced no-op returning 0, counted in [`ObScriptQuestTimers`] |
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -91,7 +91,11 @@ impl Resource for ObScriptQuestTimers {}
 /// where the `EsmIndex` is in hand. Start-game-enabled quests are started
 /// immediately (their script loops begin ticking on the next scheduler run),
 /// matching the original engine's `Start Game Enabled` flag.
-pub fn install_quest_scripts(world: &mut World, quests: &HashMap<u32, QustRecord>, scripts: &HashMap<u32, ScriptRecord>) {
+pub fn install_quest_scripts(
+    world: &mut World,
+    quests: &HashMap<u32, QustRecord>,
+    scripts: &HashMap<u32, ScriptRecord>,
+) {
     let mut table = QuestScriptTable::default();
     let mut installed = 0usize;
     for quest in quests.values() {
@@ -132,7 +136,11 @@ pub fn install_quest_scripts(world: &mut World, quests: &HashMap<u32, QustRecord
 
 /// Execute one quest script's GameMode block against the world.
 /// Returns the outcome (diagnostics).
-pub fn run_quest_game_mode(world: &World, quest_form_id: u32, elapsed: f32) -> Option<BlockOutcome> {
+pub fn run_quest_game_mode(
+    world: &World,
+    quest_form_id: u32,
+    elapsed: f32,
+) -> Option<BlockOutcome> {
     let table = world.try_resource::<QuestScriptTable>()?;
     let quest_script = table.scripts.get(&quest_form_id)?;
     let script = quest_script.script.clone();
@@ -356,7 +364,7 @@ pub fn obscript_quest_tick_system(world: &World, dt: f32) {
 #[cfg(test)]
 mod real_data_tests {
     use super::*;
-    use crate::obscript_vm::{ObScriptHost, ObScriptProgram, ObScriptValue, BLOCK_GAME_MODE};
+    use crate::obscript_vm::{BLOCK_GAME_MODE, ObScriptHost, ObScriptProgram, ObScriptValue};
 
     /// Real-data harness: executes vanilla `Oblivion.esm` quest scripts
     /// through the interpreter with a recording host. Opt-in (`#[ignore]`)
@@ -431,7 +439,7 @@ mod real_data_tests {
                 }
                 BlockOutcome::Completed | BlockOutcome::Returned => {
                     executed += 1;
-                    if host.calls.iter().any(|(cmd, _, )| *cmd == 0x1039) {
+                    if host.calls.iter().any(|(cmd, _)| *cmd == 0x1039) {
                         setstage_scripts += 1;
                     }
                 }
@@ -474,9 +482,7 @@ mod real_data_tests {
             BlockOutcome::Completed
         );
         assert!(
-            host.calls
-                .iter()
-                .any(|(cmd, ..)| *cmd == 0x1039),
+            host.calls.iter().any(|(cmd, ..)| *cmd == 0x1039),
             "MS23 must issue SetStage under a zeroed world"
         );
     }

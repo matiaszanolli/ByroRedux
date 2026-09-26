@@ -409,6 +409,7 @@ fn audio_system_no_op_when_audio_world_inactive() {
     let inactive = AudioWorld {
         active_sounds: Vec::new(),
         pending_oneshots: VecDeque::new(),
+        oneshots_requested: 0,
         music: None,
         reverb_send: None,
         reverb_send_db: f32::NEG_INFINITY,
@@ -474,6 +475,7 @@ fn set_reverb_send_db_persists() {
     let mut world = AudioWorld {
         active_sounds: Vec::new(),
         pending_oneshots: VecDeque::new(),
+        oneshots_requested: 0,
         music: None,
         reverb_send: None,
         reverb_send_db: f32::NEG_INFINITY,
@@ -535,6 +537,7 @@ fn play_music_no_op_when_inactive() {
     let mut audio_world = AudioWorld {
         active_sounds: Vec::new(),
         pending_oneshots: VecDeque::new(),
+        oneshots_requested: 0,
         music: None,
         reverb_send: None,
         reverb_send_db: f32::NEG_INFINITY,
@@ -894,6 +897,7 @@ fn play_oneshot_drops_when_manager_inactive() {
     let mut audio_world = AudioWorld {
         active_sounds: Vec::new(),
         pending_oneshots: VecDeque::new(),
+        oneshots_requested: 0,
         music: None,
         reverb_send: None,
         reverb_send_db: f32::NEG_INFINITY,
@@ -936,6 +940,7 @@ fn play_oneshot_drops_when_manager_inactive() {
         "inactive audio must drop one-shots, not queue them; got {}",
         audio_world.pending_oneshot_count()
     );
+    assert_eq!(audio_world.oneshots_requested(), 300);
     assert_eq!(
         Arc::strong_count(&sound),
         1,
@@ -963,6 +968,7 @@ fn play_oneshot_queue_caps_at_max_pending_when_active() {
     let mut audio_world = AudioWorld {
         active_sounds: Vec::new(),
         pending_oneshots: VecDeque::new(),
+        oneshots_requested: 0,
         music: None,
         reverb_send: None,
         reverb_send_db: f32::NEG_INFINITY,

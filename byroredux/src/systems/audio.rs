@@ -1,4 +1,4 @@
-//! Audio routing systems — reverb zones, footstep emitters.
+//! Audio routing systems — reverb zones, footstep emitters, and water audio.
 
 use byroredux_core::ecs::components::water::SubmersionState;
 use byroredux_core::ecs::{ActiveCamera, EntityId, GlobalTransform, World};
@@ -223,10 +223,10 @@ pub(crate) fn footstep_system(world: &World, _dt: f32) {
     }
 }
 
-/// Dispatch one-shot water-entry sounds emitted by the water interaction
-/// system. Ripple markers intentionally remain presentation/gameplay data;
-/// only the edge-triggered splash is audible, preventing a looping sound on
-/// every frame an actor remains near the surface.
+/// Dispatch one-shot water sounds emitted by the water interaction system.
+/// Splashes are edge-triggered; when no splash fires, at most one ready
+/// ripple plays at ×0.45 volume. Ripples have a per-surface cooldown, so a
+/// persistent marker does not play every frame.
 pub(crate) fn water_audio_system(world: &World, dt: f32) {
     // Keep the audio filter state in lockstep with the camera submersion
     // result, even on frames with no splash/ripple event. `audio_system`
@@ -357,8 +357,8 @@ pub(crate) fn water_audio_system(world: &World, dt: f32) {
 mod footstep_tests {
     use super::*;
     use crate::components::{
-        FootstepConfig, FootstepEmitter, FootstepScratch, WaterAudioConfig, WaterAudioState,
-        DEFAULT_STRIDE_THRESHOLD_BU,
+        DEFAULT_STRIDE_THRESHOLD_BU, FootstepConfig, FootstepEmitter, FootstepScratch,
+        WaterAudioConfig, WaterAudioState,
     };
     use byroredux_audio::{Frame, Sound, SoundSettings};
     use byroredux_core::ecs::{Transform, World};
@@ -679,10 +679,12 @@ mod footstep_tests {
             },
         );
         water_audio_system(&world, 0.016);
-        assert!(world
-            .resource::<WaterAudioState>()
-            .ripple_cooldowns
-            .contains_key(&water));
+        assert!(
+            world
+                .resource::<WaterAudioState>()
+                .ripple_cooldowns
+                .contains_key(&water)
+        );
     }
 
     #[test]

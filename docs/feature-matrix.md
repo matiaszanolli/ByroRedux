@@ -145,7 +145,7 @@ layouts); see the gaps table below.
 | Feature | Status |
 |---|---|
 | 3D spatial audio (kira 0.10) | ✓ |
-| BSA WAV decode + cache | ✓ |
+| BSA WAV decode | ✓ (combat one-shots cache decoded paths locally; shared `SoundCache` is not installed) |
 | One-shot sounds + footstep system | ✓ |
 | Looping ambient (tweened stop on despawn) | ✓ |
 | Streaming music (OGG, crossfade) | ✓ |
@@ -153,7 +153,7 @@ layouts); see the gaps table below.
 | Underwater low-pass (submersion-driven, 900 Hz wet / dry bypass) | ✓ |
 | Water-surface splash + ripple one-shots (WATAL events) | ✓ |
 | Per-material footsteps (FOOT records) | ✗ |
-| Region ambient (REGN) — background music | ✓ |
+| Region ambient (REGN) — background music | ◐ dispatch mechanism ✓; no supported game's `music_form` currently resolves to a decodable SOUN path; playback awaits #3816 (MUSC/MUST/MSET/RDMD decode) |
 | Region ambient (REGN) — incidental/loop sounds | ✗ |
 
 ---

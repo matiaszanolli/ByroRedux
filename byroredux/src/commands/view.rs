@@ -193,9 +193,13 @@ impl ConsoleCommand for CombatStatusCommand {
             });
         let cooldown_ready = melee.is_some_and(|melee| melee.cooldown_remaining <= 0.0);
         let melee = melee.unwrap_or_default();
+        let oneshots_requested = world
+            .try_resource::<byroredux_audio::AudioWorld>()
+            .map(|audio| audio.oneshots_requested())
+            .unwrap_or(0);
         let mut lines = vec!["Combat status:".to_string()];
         lines.push(format!(
-            "  cooldown={:.3} blocking={} attacks={} hits={} kills={} cooldown_ready={cooldown_ready}",
+            "  cooldown={:.3} blocking={} attacks={} hits={} kills={} cooldown_ready={cooldown_ready} oneshots_requested={oneshots_requested}",
             melee.cooldown_remaining,
             melee.blocking,
             state.attacks_started,

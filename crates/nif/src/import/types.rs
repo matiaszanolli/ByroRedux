@@ -554,7 +554,8 @@ mod material_texture_set_tests {
     fn dark_role_has_one_writer_and_carries_its_census_doc() {
         let types_src = include_str!("types.rs");
         assert!(
-            types_src.contains("#4523 census, 2026-09-20") && types_src.contains("8 meshes in 6 files"),
+            types_src.contains("#4523 census, 2026-09-20")
+                && types_src.contains("8 meshes in 6 files"),
             "the dark role's doc must carry its measured census (Oblivion: 8 \
              meshes; everywhere else zero) — re-run the translation_\
              completeness dark-role harness if the population premise changes"
@@ -719,6 +720,9 @@ pub struct ImportedMaterial {
     /// it is the correct gate for any heuristic that would otherwise overwrite
     /// resolved roughness.
     pub bgsm_pbr_scalars_authored: bool,
+    /// True only when the NIF legacy keyword classifier produced the PBR
+    /// overrides. Other importers may set deliberate overrides directly.
+    pub pbr_classified_at_import: bool,
     pub metalness_override: Option<f32>,
     pub roughness_override: Option<f32>,
     pub translucency_subsurface_color: [f32; 3],
@@ -881,6 +885,7 @@ impl Default for ImportedMaterial {
             glass_blur_scale: byroredux_core::ecs::components::material::DEFAULT_GLASS_BLUR_SCALE,
             glass_blur_scale_factor: 1.0,
             bgsm_pbr_scalars_authored: false,
+            pbr_classified_at_import: false,
             metalness_override: None,
             roughness_override: None,
             translucency_subsurface_color: [0.0; 3],

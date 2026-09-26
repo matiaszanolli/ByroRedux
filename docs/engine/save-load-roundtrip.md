@@ -55,8 +55,12 @@ scripting-fragment resources). Each registration site carries its own
 comment explaining *why* that type is saved, which is more durable than
 a count. `save_world` (`crates/save/src/driver.rs:28`) walks the
 registry's component/resource entries and a `StringPool` dump (symbol
-order) into a `Snapshot` (`crates/save/src/snapshot.rs:78`); rows are
-sorted by entity id first for a reproducible CRC.
+order) into a `Snapshot` (`crates/save/src/snapshot.rs:78`); component
+rows are sorted by entity id, and the outer column/resource names are
+ordered. Resource values keep each resource's own serialization order:
+`HashMap`/`HashSet` backed resources can therefore vary between saves,
+so the payload CRC detects byte corruption but does not promise a
+reproducible CRC for equal logical state.
 
 Entity ids round-trip **exactly** — load doesn't remap ids from scratch
 the way a delta-log system would; `World::set_next_entity` +

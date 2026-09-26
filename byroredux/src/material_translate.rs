@@ -86,8 +86,8 @@
 //! the `translate()` step, not a new type.
 
 use crate::components::{
-    decal_uses_implicit_alpha_blend, AlphaBlend, IsDecalMesh, MaterialTextureHandles, NoSorter,
-    TwoSided,
+    AlphaBlend, IsDecalMesh, MaterialTextureHandles, NoSorter, TwoSided,
+    decal_uses_implicit_alpha_blend,
 };
 use byroredux_core::ecs::components::material::{EffectFalloff, Material};
 use byroredux_core::ecs::components::water::{
@@ -600,15 +600,13 @@ pub(crate) fn translate_material(
     // against at NIF-import time. Only meaningful for the keyword-classified
     // legacy path (`!bgsm_pbr_scalars_authored`) — BGSM-authored scalars are
     // an explicit external-file signal, not a keyword classification, and
-    // are never re-derived here. `metalness_override.is_some()` mirrors
-    // `classify_legacy_pbr`'s own `!no_pbr_signal` gate without needing to
-    // re-derive that private condition: it's `Some` exactly when the
-    // classifier's result was stored at import time.
+    // are never re-derived here. The provenance flag distinguishes the NIF
+    // keyword classifier from other producers that set deliberate overrides.
     let overlay_changed_base_color =
         source_base_color.is_some() && source_base_color != texture_path;
     let recomputed_pbr = if overlay_changed_base_color
         && !source.bgsm_pbr_scalars_authored
-        && source.metalness_override.is_some()
+        && source.pbr_classified_at_import
     {
         Some(
             byroredux_core::ecs::components::material::classify_pbr_keyword(
@@ -1772,16 +1770,20 @@ mod tests {
 
     #[test]
     fn degenerate_phantom_bounds_fall_back_to_the_mesh_volume() {
-        assert!(water_volume_from_phantom(
-            ([0.0, -10.0, 0.0], [0.0, 0.0, 5.0]),
-            (Vec3::ZERO, Quat::IDENTITY, 1.0)
-        )
-        .is_none());
-        assert!(water_volume_from_phantom(
-            ([f32::NAN, -10.0, 0.0], [1.0, 0.0, 5.0]),
-            (Vec3::ZERO, Quat::IDENTITY, 1.0)
-        )
-        .is_none());
+        assert!(
+            water_volume_from_phantom(
+                ([0.0, -10.0, 0.0], [0.0, 0.0, 5.0]),
+                (Vec3::ZERO, Quat::IDENTITY, 1.0)
+            )
+            .is_none()
+        );
+        assert!(
+            water_volume_from_phantom(
+                ([f32::NAN, -10.0, 0.0], [1.0, 0.0, 5.0]),
+                (Vec3::ZERO, Quat::IDENTITY, 1.0)
+            )
+            .is_none()
+        );
     }
 
     #[test]
@@ -2196,7 +2198,8 @@ mod tests {
         };
         let material = translate_material(&source, Some("SFDisplayGlass:0"), paths, 0);
         assert_eq!(
-            material.material_kind, byroredux_renderer::MATERIAL_KIND_GLASS,
+            material.material_kind,
+            byroredux_renderer::MATERIAL_KIND_GLASS,
             "a keyword-matched effect carrier with ANY resolved external \
              material description is glass — the CDB is as corroborating \
              as a .bgem"
@@ -2351,9 +2354,8 @@ mod tests {
 
         // The plain wrapper serves populations with no source record —
         // no flag there either.
-        let plain = translate_texture_only_material(Some(
-            "textures\\landscape\\dirt02.dds".to_string(),
-        ));
+        let plain =
+            translate_texture_only_material(Some("textures\\landscape\\dirt02.dds".to_string()));
         assert_eq!(plain.effect_shader_flags & MODEL_SPACE_NORMALS, 0);
     }
 
@@ -2689,7 +2691,9 @@ mod tests {
             let after = &rest[at..];
             // The signature may carry doc comments / other attributes
             // between the marker and `fn`; skip to the fn keyword.
-            let Some(fn_at) = after.find("fn ") else { break };
+            let Some(fn_at) = after.find("fn ") else {
+                break;
+            };
             let Some(brace) = after[fn_at..].find('{') else {
                 break;
             };
@@ -3058,11 +3062,11 @@ mod tests {
 /// fill rates — the #2214 complaint about the raw-tier harness.
 #[cfg(test)]
 mod canonical_completeness_harness {
-    use super::*;
     use super::tests::{
         pins_field, strip_comments_and_literals, strip_inline_test_modules, test_fn_bodies,
         test_module_bodies,
     };
+    use super::*;
     use byroredux_core::ecs::components::material::EmissiveSource;
     use byroredux_nif::import::{BsEffectShaderData, MaterialTextureSet, NoLightingFalloff};
 
@@ -3586,7 +3590,10 @@ mod canonical_completeness_harness {
         for at in &test_attrs {
             let mut probe = &bodies[at + needle.len()..];
             while probe.starts_with("    ///") || probe.starts_with("    //") {
-                probe = &probe[probe.find(char::from(10)).map(|i| i + 1).unwrap_or(probe.len())..];
+                probe = &probe[probe
+                    .find(char::from(10))
+                    .map(|i| i + 1)
+                    .unwrap_or(probe.len())..];
             }
             let t = probe.trim_start();
             assert!(
@@ -3632,7 +3639,10 @@ mod canonical_completeness_harness {
             !pins_field(&prose, "alpha_threshold"),
             "string-literal prose must not pin"
         );
-        assert!(pins_field(&prose, "roughness"), "the real assertion still pins");
+        assert!(
+            pins_field(&prose, "roughness"),
+            "the real assertion still pins"
+        );
     }
 
     /// A `BsEffectShaderData` falloff must win over `no_lighting_falloff`
@@ -3816,6 +3826,7 @@ mod overlay_pbr_divergence_tests {
             metalness_override: Some(0.9),
             roughness_override: Some(0.55),
             bgsm_pbr_scalars_authored: false, // legacy keyword-classified path
+            pbr_classified_at_import: true,
             ..ImportedMaterial::default()
         }
     }
@@ -3848,6 +3859,31 @@ mod overlay_pbr_divergence_tests {
             "an overlay swap to a wood-keyword texture must recompute roughness \
              from the new path, not carry over the stale metal classification"
         );
+    }
+
+    #[test]
+    fn overlay_swap_preserves_direct_non_keyword_pbr_overrides() {
+        let source = ImportedMaterial {
+            metalness_override: Some(0.0),
+            roughness_override: Some(0.85),
+            // SpeedTree's placeholder values are authored directly, not by
+            // the texture keyword classifier.
+            pbr_classified_at_import: false,
+            ..ImportedMaterial::default()
+        };
+        let paths = ResolvedPaths {
+            textures: MaterialTextureSet {
+                base_color: Some("textures/glass/replacement.dds".to_string()),
+                ..MaterialTextureSet::default()
+            },
+            material_path: None,
+            source_base_color: Some(
+                "textures/foliage/ShrubGenericElderberryLeaves.dds".to_string(),
+            ),
+        };
+        let material = translate_material(&source, Some("Elderberry"), paths, 0);
+        assert_eq!(material.metalness, 0.0);
+        assert_eq!(material.roughness, 0.85);
     }
 
     /// No overlay divergence (`source_base_color == textures.base_color`,

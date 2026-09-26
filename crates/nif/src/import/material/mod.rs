@@ -1,5 +1,6 @@
 //! NIF material and texture property extraction.
 
+use crate::blocks::NiObject;
 use crate::blocks::properties::{
     NiAlphaProperty, NiFlagProperty, NiMaterialProperty, NiStencilProperty, NiTexturingProperty,
     NiVertexColorProperty, TexDesc,
@@ -12,7 +13,6 @@ use crate::blocks::shader::{
 };
 use crate::blocks::texture::NiSourceTexture;
 use crate::blocks::tri_shape::NiTriShape;
-use crate::blocks::NiObject;
 use crate::scene::NifScene;
 use crate::types::BlockRef;
 use byroredux_core::string::{FixedString, StringPool};
@@ -52,8 +52,8 @@ mod walker;
 pub use shader_data::ShaderTypeFields;
 pub(crate) use shader_data::{apply_shader_type_data, capture_effect_shader_data};
 pub use slot_role::{
-    canonical_shader_type, slot_to_colocated_role, slot_to_role, unrouted_texture_slot_bindings,
-    TextureRole, TextureSlotContext, TextureSlotLayout,
+    TextureRole, TextureSlotContext, TextureSlotLayout, canonical_shader_type,
+    slot_to_colocated_role, slot_to_role, unrouted_texture_slot_bindings,
 };
 // Re-exported only for the per-mod test sibling
 // `shader_type_data_tests.rs` — production callers go through
@@ -154,7 +154,7 @@ pub(super) fn is_decal_from_modern_shader_flags(
     sf1_crcs: &[u32],
     sf2_crcs: &[u32],
 ) -> bool {
-    use crate::shader_flags::bs_shader_crc32::{contains_any, DECAL, DYNAMIC_DECAL as DD_CRC};
+    use crate::shader_flags::bs_shader_crc32::{DECAL, DYNAMIC_DECAL as DD_CRC, contains_any};
     if flags1 & (DECAL_SINGLE_PASS | DYNAMIC_DECAL) != 0 {
         return true;
     }
@@ -177,7 +177,7 @@ pub(super) fn is_two_sided_from_modern_shader_flags(
     sf1_crcs: &[u32],
     sf2_crcs: &[u32],
 ) -> bool {
-    use crate::shader_flags::bs_shader_crc32::{contains_any, TWO_SIDED};
+    use crate::shader_flags::bs_shader_crc32::{TWO_SIDED, contains_any};
     if flags2 & SF2_DOUBLE_SIDED != 0 {
         return true;
     }
@@ -1564,6 +1564,7 @@ impl MaterialInfo {
             // authored scalars. Consumers gating on "authoritative" must see
             // false here even when `metalness_override` is `Some`.
             bgsm_pbr_scalars_authored: false,
+            pbr_classified_at_import: !no_pbr_signal,
             // #2707 (SF-D8-01) — `None` when `classify_legacy_pbr` had
             // literally no signal to classify from (the Starfield
             // material-reference stub case), so `translate_material` seeds

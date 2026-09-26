@@ -139,11 +139,11 @@
 //! - Per-cell acoustic reverb zones (kira's `ReverbBuilder`) keyed off
 //!   cell acoustics; raycast occlusion attenuation.
 
+use byroredux_core::ecs::Resource;
 use byroredux_core::ecs::components::{GlobalTransform, Transform};
 use byroredux_core::ecs::sparse_set::SparseSetStorage;
 use byroredux_core::ecs::storage::{Component, EntityId};
 use byroredux_core::ecs::world::World;
-use byroredux_core::ecs::Resource;
 use byroredux_core::lighting::BETHESDA_UNITS_PER_METER;
 use glam::Vec3;
 use kira::effect::filter::{FilterBuilder, FilterHandle, FilterMode};
@@ -260,11 +260,7 @@ fn underwater_cutoff_hz(underwater: bool) -> f64 {
 /// Wet/dry mix for a given submersion state. `Mix::DRY` above water is what
 /// makes the filter transparent; see [`apply_underwater_filter`].
 fn underwater_mix(underwater: bool) -> Mix {
-    if underwater {
-        Mix::WET
-    } else {
-        Mix::DRY
-    }
+    if underwater { Mix::WET } else { Mix::DRY }
 }
 
 /// Convert a linear gameplay volume (1.0 = "as authored", 0.5 = half-loud)
@@ -310,10 +306,10 @@ fn reverb_send_gate_open(reverb_send_db: f32) -> bool {
 // `Arc<StaticSoundData>` (in `Resource`s, components, etc.) without
 // pulling kira as a direct dependency. The audio crate is the canon
 // owner of the audio-engine surface.
+pub use kira::Frame;
 pub use kira::sound::static_sound::{
     StaticSoundData as Sound, StaticSoundSettings as SoundSettings,
 };
-pub use kira::Frame;
 
 // Headroom over kira's defaults. Each active spatial sound (entity-
 // path one-shot, queue-path one-shot, looping emitter) holds one
@@ -403,6 +399,9 @@ pub struct AudioWorld {
     /// path in `play_oneshot` is O(1) `pop_front` rather than O(n)
     /// `Vec::remove(0)` shift-down. See #852.
     pending_oneshots: VecDeque<PendingOneShot>,
+    /// Monotonic count of one-shot dispatch requests, including headless
+    /// calls discarded before queueing. Used by device-less smoke gates.
+    oneshots_requested: u64,
     /// Single-slot music handle (Phase 5). Music is non-spatial —
     /// it routes through the main track, not a spatial sub-track.
     /// Calling `play_music` while a track is already playing fades
@@ -514,6 +513,7 @@ impl AudioWorld {
         Self {
             active_sounds: Vec::new(),
             pending_oneshots: VecDeque::new(),
+            oneshots_requested: 0,
             music: None,
             reverb_send: None,
             reverb_send_db: f32::NEG_INFINITY,
@@ -550,6 +550,12 @@ impl AudioWorld {
         self.pending_oneshots.len()
     }
 
+    /// Total calls to [`Self::play_oneshot`], including calls discarded
+    /// because this world has no active audio manager.
+    pub fn oneshots_requested(&self) -> u64 {
+        self.oneshots_requested
+    }
+
     /// Fire-and-forget one-shot dispatch from a context that cannot
     /// allocate ECS entities (i.e., a System with `&World`). The
     /// next `audio_system` tick drains the queue and plays each
@@ -575,6 +581,7 @@ impl AudioWorld {
         attenuation: Attenuation,
         volume: f32,
     ) {
+        self.oneshots_requested = self.oneshots_requested.saturating_add(1);
         if self.manager.is_none() {
             return;
         }

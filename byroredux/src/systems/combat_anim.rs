@@ -43,7 +43,7 @@ use rustc_hash::FxHashMap;
 
 use crate::combat::CombatState;
 use crate::components::{
-    CombatTake, DraugrCombatAnim, DraugrCombatClips, AnimationTarget, WalkAnimSnapshot,
+    AnimationTarget, CombatTake, DraugrCombatAnim, DraugrCombatClips, WalkAnimSnapshot,
 };
 use crate::systems::{PlayerEntity, PlayerMode};
 
@@ -106,11 +106,7 @@ struct FeedbackScratch {
     hit_events: Vec<(EntityId, EntityId)>,
 }
 
-fn combat_feedback_system_inner(
-    world: &World,
-    dt: f32,
-    scratch: &mut FeedbackScratch,
-) {
+fn combat_feedback_system_inner(world: &World, dt: f32, scratch: &mut FeedbackScratch) {
     // #4605 — take the Copy in a scoped expression so the resource guard
     // dies at the copy (the #3444 rule): holding it through the read,
     // write and sound passes below recorded a spurious
@@ -236,9 +232,7 @@ fn combat_feedback_system_inner(
             // 3. Hit reaction — this actor was struck (deduped by the
             //    take.is_none() gate above: the transient event can be
             //    visible for more than one read).
-            if let Some(&(_, aggressor)) =
-                hit_events.iter().find(|&&(target, _)| target == actor)
-            {
+            if let Some(&(_, aggressor)) = hit_events.iter().find(|&&(target, _)| target == actor) {
                 let _ = aggressor;
                 scratch.decisions.push(FeedbackDecision {
                     actor,
@@ -316,22 +310,20 @@ fn combat_feedback_system_inner(
                         }
                     }
                 },
-                TakeAction::Restore => {
-                    match decision.snapshot {
-                        Some(snapshot) => {
-                            if let Some(player) = pq.get_mut(decision.actor) {
-                                player.clip_handle = snapshot.clip_handle;
-                                player.local_time = snapshot.local_time;
-                                player.prev_time = snapshot.prev_time;
-                                player.speed = snapshot.speed;
-                                player.playing = snapshot.playing;
-                            }
-                        }
-                        None => {
-                            pq.remove(decision.actor);
+                TakeAction::Restore => match decision.snapshot {
+                    Some(snapshot) => {
+                        if let Some(player) = pq.get_mut(decision.actor) {
+                            player.clip_handle = snapshot.clip_handle;
+                            player.local_time = snapshot.local_time;
+                            player.prev_time = snapshot.prev_time;
+                            player.speed = snapshot.speed;
+                            player.playing = snapshot.playing;
                         }
                     }
-                }
+                    None => {
+                        pq.remove(decision.actor);
+                    }
+                },
                 TakeAction::Tick { .. } | TakeAction::LatchDeath | TakeAction::SeenAlive => {}
             }
         }
@@ -343,10 +335,7 @@ fn combat_feedback_system_inner(
             };
             match &decision.action {
                 TakeAction::Install {
-                    kind,
-                    secs,
-                    death,
-                    ..
+                    kind, secs, death, ..
                 } => {
                     if *death {
                         state.death_played = true;
@@ -449,14 +438,22 @@ fn play_oneshot_cached(
             let decoded = world
                 .try_resource::<crate::asset_provider::SoundArchiveProvider>()
                 .filter(|provider| !provider.is_empty())
-                .and_then(|provider| provider.extract(path))
-                .and_then(|bytes| match byroredux_audio::load_sound_from_bytes(bytes) {
-                    Ok(data) => Some(std::sync::Arc::new(data)),
-                    Err(e) => {
-                        log::warn!("combat sound: decode '{path}' failed: {e}");
+                .and_then(|provider| match provider.extract(path) {
+                    Some(bytes) => Some(bytes),
+                    None => {
+                        log::warn!("combat sound: '{path}' not found in any --sounds-bsa archive");
                         None
                     }
-                });
+                })
+                .and_then(
+                    |bytes| match byroredux_audio::load_sound_from_bytes(bytes) {
+                        Ok(data) => Some(std::sync::Arc::new(data)),
+                        Err(e) => {
+                            log::warn!("combat sound: decode '{path}' failed: {e}");
+                            None
+                        }
+                    },
+                );
             scratch.sounds.insert(path, decoded.clone());
             decoded
         }
@@ -542,10 +539,7 @@ mod tests {
         world.register::<Dead>();
         let actor = world.spawn();
         let skeleton = world.spawn();
-        world.insert(
-            actor,
-            byroredux_core::ecs::components::Transform::default(),
-        );
+        world.insert(actor, byroredux_core::ecs::components::Transform::default());
         world.insert(actor, GlobalTransform::default());
         world.insert(
             actor,
@@ -559,7 +553,11 @@ mod tests {
             let pre = AnimationPlayer::new(999).with_root(skeleton);
             world.insert(actor, pre);
         }
-        Fixture { world, actor, skeleton }
+        Fixture {
+            world,
+            actor,
+            skeleton,
+        }
     }
 
     fn clip_handle(world: &World, actor: EntityId) -> Option<u32> {
@@ -614,7 +612,11 @@ mod tests {
 
         hit_event(&mut world, actor, 7);
         combat_feedback_system(&world, 1.0 / 60.0);
-        assert_eq!(clip_handle(&world, actor), Some(HIT), "stagger take installed");
+        assert_eq!(
+            clip_handle(&world, actor),
+            Some(HIT),
+            "stagger take installed"
+        );
         let state = combat_anim_state(&world, actor);
         assert_eq!(state.take, Some(CombatTake::Hit));
         assert!((state.take_remaining - HIT_SECS).abs() < 1e-4);
@@ -673,7 +675,11 @@ mod tests {
     /// insert/RemovePlayer contract.
     #[test]
     fn hit_take_inserts_a_player_and_removes_it_on_restore() {
-        let Fixture { world, actor, skeleton } = spawn_actor(false);
+        let Fixture {
+            world,
+            actor,
+            skeleton,
+        } = spawn_actor(false);
         let mut world = world;
         install_clips(&mut world);
 
@@ -873,14 +879,34 @@ mod tests {
         ] {
             assert!(anim.contains(path), "catalog lost the pinned path {path}");
         }
-        let here = include_str!("combat_anim.rs");
-        for path in [
-            SWING_SOUND_PATH,
-            IMPACT_SOUND_PATH,
-            DEATH_VOICE_PATH,
-        ] {
-            assert!(here.contains(path));
-        }
         let _ = AnimationClipRegistry::default();
+    }
+
+    #[test]
+    #[ignore = "needs Skyrim - Sounds.bsa on disk"]
+    fn draugr_combat_sound_assets_extract_and_decode_when_available() {
+        let data_dir = std::env::var_os("BYROREDUX_SKYRIM_DATA")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| {
+                std::path::PathBuf::from(
+                    "/mnt/data/SteamLibrary/steamapps/common/Skyrim Special Edition/Data",
+                )
+            });
+        let archive = data_dir.join("Skyrim - Sounds.bsa");
+        if !archive.is_file() {
+            panic!("missing real-data fixture {}", archive.display());
+        }
+        let args = vec![
+            "--sounds-bsa".to_owned(),
+            archive.to_string_lossy().into_owned(),
+        ];
+        let provider = crate::asset_provider::build_sound_archive_provider(&args);
+        for path in [SWING_SOUND_PATH, IMPACT_SOUND_PATH, DEATH_VOICE_PATH] {
+            let bytes = provider
+                .extract(path)
+                .unwrap_or_else(|| panic!("{path} missing from {}", archive.display()));
+            byroredux_audio::load_sound_from_bytes(bytes)
+                .unwrap_or_else(|error| panic!("{path} failed to decode: {error}"));
+        }
     }
 }

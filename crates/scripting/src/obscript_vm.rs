@@ -49,6 +49,9 @@ pub const CMD_SET_GLOBAL: u16 = u16::MAX;
 /// every quest-script GameMode block carries `0x0000`).
 pub const BLOCK_GAME_MODE: u16 = 0;
 
+/// Maximum recursive nesting accepted from untrusted compiled ObScript.
+const MAX_OBSCRIPT_VM_NESTING: usize = 32;
+
 /// A runtime value crossing the host boundary. ObScript variables are
 /// numerics (short/long/float — computed in f32, narrowed on assignment by
 /// the declared local type); references ride as their form id.
@@ -213,7 +216,10 @@ fn is_flow_op(op: u16) -> bool {
 /// The printable argument/expression escape tags recovered from the corpus.
 /// Any other first byte in an argument stream is a u16 integer literal.
 fn is_escape_tag(b: u8) -> bool {
-    matches!(b, b'G' | b'X' | b'Y' | b'Z' | b'f' | b'n' | b'r' | b's' | b'z')
+    matches!(
+        b,
+        b'G' | b'X' | b'Y' | b'Z' | b'f' | b'n' | b'r' | b's' | b'z'
+    )
 }
 
 impl<'a> Vm<'a> {
@@ -233,7 +239,7 @@ impl<'a> Vm<'a> {
                     return BlockOutcome::Returned;
                 }
                 0x16 => {
-                    let Some(after) = self.exec_if_chain(offset) else {
+                    let Some(after) = self.exec_if_chain(offset, 1) else {
                         return BlockOutcome::Malformed(offset);
                     };
                     offset = after;
@@ -285,7 +291,10 @@ impl<'a> Vm<'a> {
     /// If/ElseIf/Else chain rooted at the `0x16`/`0x18` in `offset`. Only
     /// `0x16` nests; `0x17`/`0x18` are arms at this level. Returns the
     /// offset just past the chain's EndIf.
-    fn exec_if_chain(&mut self, mut offset: usize) -> Option<usize> {
+    fn exec_if_chain(&mut self, mut offset: usize, depth: usize) -> Option<usize> {
+        if depth > MAX_OBSCRIPT_VM_NESTING {
+            return None;
+        }
         loop {
             let op = read_u16(self.bytes, offset)?;
             match op {
@@ -300,7 +309,7 @@ impl<'a> Vm<'a> {
                     let taken = self.eval_expr(cond_start, cond_end) != 0.0;
                     let after = next_statement(self.bytes, offset, op)?;
                     if taken {
-                        return self.run_arm_body(after);
+                        return self.run_arm_body(after, depth);
                     }
                     offset = self.skip_to_next_arm(after)?;
                 }
@@ -308,7 +317,7 @@ impl<'a> Vm<'a> {
                     // Else — its body is the arm that runs when nothing
                     // before it matched.
                     let after = next_statement(self.bytes, offset, op)?;
-                    return self.run_arm_body(after);
+                    return self.run_arm_body(after, depth);
                 }
                 0x19 => return next_statement(self.bytes, offset, op),
                 _ => return None,
@@ -319,7 +328,7 @@ impl<'a> Vm<'a> {
     /// Run a taken arm's body until the chain's EndIf. Nested `0x16` chains
     /// recurse; reaching a sibling `0x17`/`0x18` header means the body is
     /// complete — skip the remaining arms.
-    fn run_arm_body(&mut self, mut offset: usize) -> Option<usize> {
+    fn run_arm_body(&mut self, mut offset: usize, depth: usize) -> Option<usize> {
         loop {
             if self.returned {
                 // Return inside an arm exits the whole block — skip the
@@ -331,7 +340,7 @@ impl<'a> Vm<'a> {
                 0x19 => return next_statement(self.bytes, offset, op),
                 0x17 | 0x18 => return self.skip_to_chain_end(offset),
                 0x16 => {
-                    offset = self.exec_if_chain(offset)?;
+                    offset = self.exec_if_chain(offset, depth + 1)?;
                 }
                 0x1e => {
                     self.returned = true;
@@ -555,6 +564,18 @@ impl<'a> Vm<'a> {
 
     /// Decode `[u16 count][count typed args]` call arguments.
     fn decode_args(&mut self, start: usize, end: usize) -> Option<Vec<ObScriptValue>> {
+        self.decode_args_at_depth(start, end, 0)
+    }
+
+    fn decode_args_at_depth(
+        &mut self,
+        start: usize,
+        end: usize,
+        depth: usize,
+    ) -> Option<Vec<ObScriptValue>> {
+        if depth > MAX_OBSCRIPT_VM_NESTING {
+            return None;
+        }
         let mut args = Vec::new();
         if start == end {
             return Some(args);
@@ -626,7 +647,7 @@ impl<'a> Vm<'a> {
                     if inner_end > end {
                         return None;
                     }
-                    let inner = self.decode_args(inner_start, inner_end)?;
+                    let inner = self.decode_args_at_depth(inner_start, inner_end, depth + 1)?;
                     let result = self.host.call(cmd, &inner, None);
                     args.push(result.unwrap_or(ObScriptValue::Num(0.0)));
                     o = inner_end;
@@ -904,11 +925,7 @@ mod tests {
         // set x to 2 + 3   (s1 = 5)
         let expr = b"2 3 + ";
         let body = set_stmt(b's', 1, expr.as_slice(), 0);
-        let script = script(
-            wrap_body(body),
-            vec![local(1, "x", 1)],
-            vec![],
-        );
+        let script = script(wrap_body(body), vec![local(1, "x", 1)], vec![]);
         let program = ObScriptProgram::new(&script);
         let mut state = VmState::default();
         let mut host = Recorder::default();
@@ -1011,17 +1028,51 @@ mod tests {
     }
 
     #[test]
+    fn excessive_nested_if_chains_are_malformed() {
+        let mut body = Vec::new();
+        for _ in 0..=MAX_OBSCRIPT_VM_NESTING {
+            body.extend(arm_stmt(0x16, b"1 "));
+        }
+        body.extend(simple_stmt(0x19));
+        for _ in 0..=MAX_OBSCRIPT_VM_NESTING {
+            body.extend(simple_stmt(0x19));
+        }
+        let script = script(wrap_body(body), vec![], vec![]);
+        let mut state = VmState::default();
+        let mut host = Recorder::default();
+        assert!(matches!(
+            ObScriptProgram::new(&script).run_block(BLOCK_GAME_MODE, &mut state, &mut host),
+            BlockOutcome::Malformed(_)
+        ));
+    }
+
+    #[test]
+    fn excessive_nested_x_arguments_are_rejected() {
+        let mut args = args_blob(&[]);
+        for _ in 0..=MAX_OBSCRIPT_VM_NESTING {
+            let inner = args;
+            args = vec![1, 0, b'X', 0x39, 0x10];
+            args.extend_from_slice(&(inner.len() as u16).to_le_bytes());
+            args.extend(inner);
+        }
+        let body = stmt_call(SETSTAGE, &args);
+        let script = script(wrap_body(body), vec![], vec![]);
+        let mut state = VmState::default();
+        let mut host = Recorder::default();
+        assert!(matches!(
+            ObScriptProgram::new(&script).run_block(BLOCK_GAME_MODE, &mut state, &mut host),
+            BlockOutcome::Malformed(_)
+        ));
+    }
+
+    #[test]
     fn expression_call_and_ref_arguments() {
         // set x to GetStage QuestRef + 1
         // args for the X call: count=1, [r1]
         let x_args = args_blob(&[ra(1)]);
         let expr = [x(GETSTAGE, &x_args), b"1 + ".to_vec()].concat();
         let body = set_stmt(b'f', 1, &expr, 0);
-        let script = script(
-            wrap_body(body),
-            vec![local(1, "x", 0)],
-            vec![0x000ABCDE],
-        );
+        let script = script(wrap_body(body), vec![local(1, "x", 0)], vec![0x000ABCDE]);
         let program = ObScriptProgram::new(&script);
         let mut state = VmState::default();
         let mut host = Recorder::default();
@@ -1029,8 +1080,7 @@ mod tests {
         assert_eq!(outcome, BlockOutcome::Completed);
         assert_eq!(state.locals.get(&1), Some(&43.0)); // GetStage stub 42 + 1
         assert!(host.calls.iter().any(|(cmd, args, _)| {
-            *cmd == GETSTAGE
-                && matches!(args.first(), Some(ObScriptValue::Ref(0x000ABCDE)))
+            *cmd == GETSTAGE && matches!(args.first(), Some(ObScriptValue::Ref(0x000ABCDE)))
         }));
     }
 
@@ -1072,7 +1122,7 @@ mod tests {
     #[test]
     fn return_stops_the_block() {
         let body = [
-            simple_stmt(0x1e),                                // Return
+            simple_stmt(0x1e),                                 // Return
             stmt_call(SETSTAGE, &args_blob(&[ra(1), na(99)])), // must not run
         ]
         .concat();

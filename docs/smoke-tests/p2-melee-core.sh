@@ -308,6 +308,14 @@ total_hits=$((expected_hits + blocked_swing_count))
 grep -Fq "attacks=$total_hits hits=$total_hits kills=1" "$status_log" \
     || fail "final counters are not exactly $total_hits attacks / $total_hits hits / 1 kill"
 grep -Fq "killed=true" "$status_log" || fail "zero Health did not mark the kill"
+if [[ "$SMOKE_GAME" == "skyrim_se" ]]; then
+    oneshots_requested="$(sed -nE 's/.*oneshots_requested=([0-9]+).*/\1/p' "$status_log" | tail -1)"
+    [[ "$oneshots_requested" =~ ^[0-9]+$ ]] \
+        || fail "combat.status did not expose oneshots_requested"
+    (( oneshots_requested > 0 )) \
+        || fail "Skyrim combat completed without requesting any audio one-shots"
+    echo "smoke[p2-melee-core]: PASS -- audio dispatch requested $oneshots_requested one-shots (headless-safe)"
+fi
 if [[ -n "${P2_RAGDOLL_BODIES:-}" ]]; then
     grep -Fq "ragdoll activated ($P2_RAGDOLL_BODIES bodies)" "$status_log" \
         || fail "death did not activate the frozen target's $P2_RAGDOLL_BODIES-body ragdoll"
