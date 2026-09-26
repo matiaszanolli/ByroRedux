@@ -46,6 +46,10 @@ impl FrameTimeBudget {
                 .is_some_and(|deadline| Instant::now() >= deadline)
     }
 
+    pub(crate) fn is_limited(&self) -> bool {
+        self.deadline.is_some()
+    }
+
     pub(crate) fn complete_unit(&mut self) {
         self.completed_units += 1;
     }

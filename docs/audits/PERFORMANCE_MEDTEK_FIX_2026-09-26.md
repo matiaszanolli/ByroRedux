@@ -1,5 +1,8 @@
 # MedTek TLAS and streaming fixes — 2026-09-26
 
+The next implementation batch is recorded in
+[CPU, streaming and GPU follow-up](PERFORMANCE_CPU_STREAM_GPU_2026-09-26.md).
+
 ## Cause and implementation
 
 The renderer sorted TLAS instances only by BLAS address. Multiple placements

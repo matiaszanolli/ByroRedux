@@ -27,7 +27,7 @@ use byroredux_core::ecs::sparse_set::SparseSetStorage;
 use byroredux_core::ecs::storage::{Component, EntityId};
 use byroredux_core::ecs::world::World;
 use byroredux_core::math::{Quat, Vec3};
-use std::collections::{HashMap, HashSet};
+use rustc_hash::FxHashSet;
 
 /// The primitive shape of a trigger volume (`XPRM` shape-type 1 / 3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -126,7 +126,18 @@ pub fn register(world: &mut World) {
 /// this sparse side table covers NPC-driven patrol/package crossings.
 #[derive(Debug, Default)]
 struct TriggerOccupancyState {
-    inside: HashMap<(EntityId, EntityId), bool>,
+    // Every actor/volume combination is checked on an observed tick. A pair
+    // absent from `inside` was outside iff both IDs were observed, otherwise
+    // it is a cold start. This stores O(actors + volumes + overlaps), rather
+    // than materializing the usually-outside Cartesian product twice.
+    inside: FxHashSet<(EntityId, EntityId)>,
+    observed_actors: FxHashSet<EntityId>,
+    observed_volumes: FxHashSet<EntityId>,
+    next_inside: FxHashSet<(EntityId, EntityId)>,
+    tethered_horses: FxHashSet<EntityId>,
+    actors: Vec<(EntityId, Vec3, bool, u32)>,
+    volumes: Vec<(EntityId, TriggerVolume)>,
+    entered: Vec<(EntityId, EntityId)>,
 }
 
 impl byroredux_core::ecs::resource::Resource for TriggerOccupancyState {}
@@ -149,10 +160,27 @@ pub fn trigger_detection_system(world: &World) {
         return;
     };
 
+    // This resource is private to this detector. Its buffers survive ticks,
+    // while spatial queries are released before evaluating conditions.
+    let Some(mut occupancy) = world.try_resource_mut::<TriggerOccupancyState>() else {
+        return;
+    };
+    let TriggerOccupancyState {
+        inside: previous_inside,
+        observed_actors,
+        observed_volumes,
+        next_inside,
+        tethered_horses,
+        actors,
+        volumes,
+        entered,
+    } = &mut *occupancy;
+    entered.clear();
+    volumes.clear();
+
     // Phase 1 (read+update): flip each volume's occupancy and record the
     // entities that just entered. Mutating `occupant_inside` here keeps
     // the edge-trigger state on the component itself.
-    let mut entered: Vec<(EntityId, EntityId)> = Vec::new();
     {
         let Some(mut vols) = world.query_mut::<TriggerVolume>() else {
             return;
@@ -171,7 +199,12 @@ pub fn trigger_detection_system(world: &World) {
                 }
             }
             vol.occupant_inside = Some(inside);
+            volumes.push((entity, *vol));
         }
+    }
+
+    if volumes.is_empty() && observed_volumes.is_empty() {
+        return;
     }
 
     // Quest/scene references can drive triggers too (vanilla MQ101 uses a
@@ -181,128 +214,140 @@ pub fn trigger_detection_system(world: &World) {
     // streaming first materializes a trigger around one already inside, that
     // first observation is a real entry rather than the player's load-time
     // cold-start case and must be delivered.
-    let tethered_horses: HashSet<EntityId> = world
-        .query::<crate::HorseTetherState>()
-        .map(|query| query.iter().map(|(_, tether)| tether.horse).collect())
-        .unwrap_or_default();
-    let actors: Vec<(EntityId, Vec3, bool, u32)> = world
-        .query::<crate::scene::SceneAliasCandidate>()
-        .map(|query| {
-            query
-                .iter()
-                .filter(|(entity, _)| *entity != player)
-                .filter_map(|(entity, identity)| {
-                    world.get::<GlobalTransform>(entity).map(|transform| {
-                        (
-                            entity,
-                            transform.translation,
-                            tethered_horses.contains(&entity),
-                            identity.base_form_id,
-                        )
-                    })
-                })
-                .collect()
-        })
-        .unwrap_or_default();
+    tethered_horses.clear();
+    if let Some(query) = world.query::<crate::HorseTetherState>() {
+        tethered_horses.extend(query.iter().map(|(_, tether)| tether.horse));
+    }
+    actors.clear();
+    if let Some(query) = world.query::<crate::scene::SceneAliasCandidate>() {
+        actors.extend(query.iter().filter(|(entity, _)| *entity != player).map(
+            |(entity, identity)| {
+                (
+                    entity,
+                    Vec3::ZERO,
+                    tethered_horses.contains(&entity),
+                    identity.base_form_id,
+                )
+            },
+        ));
+    }
+    // One storage lock for the complete candidate list. Keep it separate
+    // from the identity query so no nested component lock order is needed.
+    if let Some(transforms) = world.query::<GlobalTransform>() {
+        actors.retain_mut(|(entity, position, _, _)| {
+            if let Some(transform) = transforms.get(*entity) {
+                *position = transform.translation;
+                true
+            } else {
+                false
+            }
+        });
+    } else {
+        actors.clear();
+    }
     if !actors.is_empty() {
         let advances = world.query::<crate::papyrus_demo::quest_advance::QuestAdvanceOnActivate>();
-        let volumes: Vec<(EntityId, TriggerVolume)> = world
-            .query::<TriggerVolume>()
-            .map(|query| {
-                query
-                    .iter()
-                    .map(|(entity, volume)| (entity, *volume))
-                    .collect()
-            })
-            .unwrap_or_default();
-        if let Some(mut occupancy) = world.try_resource_mut::<TriggerOccupancyState>() {
-            let mut observed = HashSet::new();
-            for (trigger, volume) in volumes {
-                for (actor, position, active_mover, base_form_id) in &actors {
-                    let inside = if *active_mover {
-                        volume.intersects_sphere(*position, TETHERED_HORSE_TRIGGER_RADIUS)
-                    } else {
-                        volume.contains(*position)
-                    };
-                    if *active_mover
-                        && (*position - volume.center).length_squared() <= 2048.0 * 2048.0
-                        && advances.as_ref().is_some_and(|advances| {
-                            advances.get(trigger).is_some_and(|advance| {
-                                matches!(
-                                    advance.activator_gate,
-                                    crate::papyrus_demo::quest_advance::ActivatorGate::BaseForm(
-                                        expected
-                                    ) if expected == *base_form_id
-                                )
-                            })
+        next_inside.clear();
+        for &(trigger, volume) in volumes.iter() {
+            for (actor, position, active_mover, base_form_id) in actors.iter() {
+                let inside = if *active_mover {
+                    volume.intersects_sphere(*position, TETHERED_HORSE_TRIGGER_RADIUS)
+                } else {
+                    volume.contains(*position)
+                };
+                if *active_mover
+                    && (*position - volume.center).length_squared() <= 2048.0 * 2048.0
+                    && advances.as_ref().is_some_and(|advances| {
+                        advances.get(trigger).is_some_and(|advance| {
+                            matches!(
+                                advance.activator_gate,
+                                crate::papyrus_demo::quest_advance::ActivatorGate::BaseForm(
+                                    expected
+                                ) if expected == *base_form_id
+                            )
                         })
-                    {
-                        log::debug!(
-                            "base-gated trigger {trigger} actor {actor} base=0x{base_form_id:08X} position={position:?} center={:?} inside={inside}",
-                            volume.center
-                        );
-                    }
-                    let key = (trigger, *actor);
-                    observed.insert(key);
-                    let was_inside = occupancy.inside.insert(key, inside);
-                    // If a native mover entered before this trigger's quest
-                    // prerequisites became true, Papyrus declined the first
-                    // event while the actor remained inside. Re-deliver once
-                    // the authored condition becomes ready; the target-stage
-                    // done check makes this an edge, not a per-frame pulse.
-                    let became_ready_inside = inside
-                        && *active_mover
-                        && was_inside == Some(true)
-                        && advances.as_ref().is_some_and(|advances| {
-                            advances.get(trigger).is_some_and(|advance| {
-                                matches!(
-                                    advance.activator_gate,
-                                    crate::papyrus_demo::quest_advance::ActivatorGate::BaseForm(
-                                        expected
-                                    ) if expected == *base_form_id
-                                ) && {
-                                    // #3580 — bind and DROP the
-                                    // `QuestStageState` guard before
-                                    // `condition::evaluate` runs. A
-                                    // `try_resource(...).is_some_and(..) &&
-                                    // evaluate(..)` chain keeps the guard's
-                                    // temporary alive to the end of the whole
-                                    // expression, so `evaluate` ran underneath
-                                    // it — and its `IsSceneActionComplete` arm
-                                    // takes `SceneRegistry`. That recorded
-                                    // `QuestStageState -> SceneRegistry`,
-                                    // closing a cycle against
-                                    // `actor_quest_trigger_is_in_sequence`
-                                    // below, which holds `SceneRegistry`
-                                    // across its own `QuestStageState`
-                                    // acquisition.
-                                    let already_done = world
-                                        .try_resource::<crate::quest_stages::QuestStageState>()
-                                        .is_some_and(|stages| {
-                                            stages.get_stage_done(
-                                                advance.owning_quest,
-                                                advance.target_stage,
-                                            )
-                                        });
-                                    !already_done
-                                } && crate::condition::evaluate(
-                                    &advance.conditions,
-                                    world,
-                                    &crate::condition::ConditionContext::for_subject(trigger),
-                                )
-                            })
-                        });
-                    if inside
-                        && (was_inside == Some(false)
-                            || (was_inside.is_none() && *active_mover)
-                            || became_ready_inside)
-                    {
-                        entered.push((trigger, *actor));
-                    }
+                    })
+                {
+                    log::debug!(
+                        "base-gated trigger {trigger} actor {actor} base=0x{base_form_id:08X} position={position:?} center={:?} inside={inside}",
+                        volume.center
+                    );
+                }
+                // Outside pairs need neither an entry nor a hash lookup.
+                // Their previous state is encoded by the observed ID sets.
+                if !inside {
+                    continue;
+                }
+                let key = (trigger, *actor);
+                next_inside.insert(key);
+                let was_inside = if previous_inside.contains(&key) {
+                    Some(true)
+                } else if observed_actors.contains(actor) && observed_volumes.contains(&trigger) {
+                    Some(false)
+                } else {
+                    None
+                };
+                // If a native mover entered before this trigger's quest
+                // prerequisites became true, Papyrus declined the first
+                // event while the actor remained inside. Re-deliver once
+                // the authored condition becomes ready; the target-stage
+                // done check makes this an edge, not a per-frame pulse.
+                let became_ready_inside = inside
+                    && *active_mover
+                    && was_inside == Some(true)
+                    && advances.as_ref().is_some_and(|advances| {
+                        advances.get(trigger).is_some_and(|advance| {
+                            matches!(
+                                advance.activator_gate,
+                                crate::papyrus_demo::quest_advance::ActivatorGate::BaseForm(
+                                    expected
+                                ) if expected == *base_form_id
+                            ) && {
+                                // #3580 — bind and DROP the
+                                // `QuestStageState` guard before
+                                // `condition::evaluate` runs. A
+                                // `try_resource(...).is_some_and(..) &&
+                                // evaluate(..)` chain keeps the guard's
+                                // temporary alive to the end of the whole
+                                // expression, so `evaluate` ran underneath
+                                // it — and its `IsSceneActionComplete` arm
+                                // takes `SceneRegistry`. That recorded
+                                // `QuestStageState -> SceneRegistry`,
+                                // closing a cycle against
+                                // `actor_quest_trigger_is_in_sequence`
+                                // below, which holds `SceneRegistry`
+                                // across its own `QuestStageState`
+                                // acquisition.
+                                let already_done = world
+                                    .try_resource::<crate::quest_stages::QuestStageState>()
+                                    .is_some_and(|stages| {
+                                        stages.get_stage_done(
+                                            advance.owning_quest,
+                                            advance.target_stage,
+                                        )
+                                    });
+                                !already_done
+                            } && crate::condition::evaluate(
+                                &advance.conditions,
+                                world,
+                                &crate::condition::ConditionContext::for_subject(trigger),
+                            )
+                        })
+                    });
+                if inside
+                    && (was_inside == Some(false)
+                        || (was_inside.is_none() && *active_mover)
+                        || became_ready_inside)
+                {
+                    entered.push((trigger, *actor));
                 }
             }
-            occupancy.inside.retain(|key, _| observed.contains(key));
         }
+        std::mem::swap(previous_inside, next_inside);
+        observed_actors.clear();
+        observed_actors.extend(actors.iter().map(|(entity, ..)| *entity));
+        observed_volumes.clear();
+        observed_volumes.extend(volumes.iter().map(|(entity, _)| *entity));
     }
 
     // Phase 2 (write): emit the enter markers. Separate borrow so the
@@ -317,7 +362,7 @@ pub fn trigger_detection_system(world: &World) {
     let Some(mut events) = world.query_mut::<OnTriggerEnterEvent>() else {
         return;
     };
-    for (entity, triggerer) in entered {
+    for &(entity, triggerer) in entered.iter() {
         log::debug!("trigger {entity} emitted OnTriggerEnter for actor {triggerer}");
         if let Some(event) = events.get_mut(entity) {
             if !event.triggerers.contains(&triggerer) {

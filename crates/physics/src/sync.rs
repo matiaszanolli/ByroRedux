@@ -1212,7 +1212,7 @@ fn push_kinematic(world: &World) {
     let mut pw = world.resource_mut::<PhysicsWorld>();
     let mut pushed = false;
     for (body_handle, target) in targets {
-        if let Some(body) = pw.bodies.get_mut(body_handle) {
+        if let Some(body) = pw.bodies.get(body_handle) {
             let cur = *body.position();
             // Only re-target a keyframed body whose pose actually changed.
             // Re-pushing an idle body (a closed door) every frame gives it a
@@ -1224,6 +1224,13 @@ fn push_kinematic(world: &World) {
             let dt = (cur.translation.vector - target.translation.vector).norm();
             let dr = cur.rotation.angle_to(&target.rotation);
             if dt * dt > 1e-6 || dr > 1e-5 {
+                // Mutable access alone adds this body to Rapier's modified
+                // list. Idle keyframes must remain read-only, including when
+                // another moving body makes the pipeline step this frame.
+                let body = pw
+                    .bodies
+                    .get_mut(body_handle)
+                    .expect("kinematic body was just read under exclusive set access");
                 body.set_next_kinematic_position(target);
                 pushed = true;
             }

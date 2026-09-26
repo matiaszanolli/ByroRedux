@@ -289,12 +289,17 @@ fn restore_invalid_dynamic_bodies(
     let mut restored = 0;
     let mut detached_articulations: Vec<RigidBodyHandle> = Vec::new();
     for snapshot in snapshots {
-        let Some(body) = bodies.get_mut(snapshot.handle) else {
+        let Some(body) = bodies.get(snapshot.handle) else {
             continue;
         };
         if !body_needs_recovery(body, &snapshot) {
             continue;
         }
+        // Rapier's get_mut marks a body modified even when the caller only
+        // reads it. Keep healthy snapshots out of the next step's dirty list.
+        let body = bodies
+            .get_mut(snapshot.handle)
+            .expect("recovery body was just read under exclusive set access");
         body.set_position(snapshot.position, false);
         // Multibody links must remain dynamic in Rapier. Sleep the damaged
         // island rather than changing its motion type, which would turn a
@@ -689,7 +694,7 @@ impl PhysicsWorld {
     fn recover_pre_broken_bodies(&mut self) {
         let mut parked = 0usize;
         for &handle in &self.dynamic_bodies {
-            let Some(body) = self.bodies.get_mut(handle) else {
+            let Some(body) = self.bodies.get(handle) else {
                 continue;
             };
             if body.body_type() != RigidBodyType::Dynamic
@@ -698,6 +703,12 @@ impl PhysicsWorld {
             {
                 continue;
             }
+            // The finite-state check is read-only; enqueue a Rapier user
+            // change only for the rare body that actually needs parking.
+            let body = self
+                .bodies
+                .get_mut(handle)
+                .expect("pre-broken body was just read under exclusive set access");
             body.set_linvel(Vector::zeros(), false);
             body.set_angvel(Vector::zeros(), false);
             body.sleep();

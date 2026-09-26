@@ -11,7 +11,7 @@ use super::*;
 use byroredux_core::ecs::SpeedTreeWind;
 use byroredux_core::string::FixedString;
 use byroredux_nif::import::{
-    TextureRole, TextureSlotContext, slot_to_colocated_role, slot_to_role,
+    slot_to_colocated_role, slot_to_role, TextureRole, TextureSlotContext,
 };
 
 /// Effective per-mesh texture-slot paths, resolved in one StringPool
@@ -683,6 +683,18 @@ pub(super) fn prepare_mesh_uploads(
     cached: &CachedNifImport,
     paths: &[ResolvedMeshPaths],
 ) -> Vec<PreparedMeshUpload> {
+    prepare_mesh_upload_range(ctx, pc, cached, paths, 0..cached.meshes.len())
+}
+
+/// Upload a consecutive group without renumbering the source mesh cache keys.
+/// Earlier representative meshes remain resident while a placement yields.
+pub(super) fn prepare_mesh_upload_range(
+    ctx: &mut VulkanContext,
+    pc: &PlacementCtx,
+    cached: &CachedNifImport,
+    paths: &[ResolvedMeshPaths],
+    range: std::ops::Range<usize>,
+) -> Vec<PreparedMeshUpload> {
     let imported = &cached.meshes;
     let beam_volumes = cached.beam_volumes(pc.mesh_cache_key);
     let mut prepared = vec![PreparedMeshUpload::Failed; imported.len()];
@@ -703,7 +715,12 @@ pub(super) fn prepare_mesh_uploads(
     );
     let mut shared: Vec<usize> = Vec::new();
 
-    for (sub_mesh_index, mesh) in imported.iter().enumerate() {
+    for (sub_mesh_index, mesh) in imported
+        .iter()
+        .enumerate()
+        .take(range.end)
+        .skip(range.start)
+    {
         if let Some(volumes) = &beam_volumes[sub_mesh_index] {
             prepared[sub_mesh_index] = PreparedMeshUpload::FogGroup(volumes.clone());
             continue;
@@ -822,10 +839,11 @@ pub(super) fn prepare_mesh_uploads(
         Ok(handles) => {
             for (fresh_mesh, handle) in fresh.iter().zip(handles) {
                 if fresh_mesh.shareable {
-                    ctx.mesh_registry.register_scene_geometry_for_sharing_with_fingerprint(
-                        handle,
-                        fresh_mesh.geometry_fingerprint,
-                    );
+                    ctx.mesh_registry
+                        .register_scene_geometry_for_sharing_with_fingerprint(
+                            handle,
+                            fresh_mesh.geometry_fingerprint,
+                        );
                 }
                 note_cell_upload_provenance(
                     ctx,
@@ -887,10 +905,11 @@ pub(super) fn prepare_mesh_uploads(
                 match upload_result {
                     Ok(handle) => {
                         if fresh_mesh.shareable {
-                            ctx.mesh_registry.register_scene_geometry_for_sharing_with_fingerprint(
-                                handle,
-                                fresh_mesh.geometry_fingerprint,
-                            );
+                            ctx.mesh_registry
+                                .register_scene_geometry_for_sharing_with_fingerprint(
+                                    handle,
+                                    fresh_mesh.geometry_fingerprint,
+                                );
                         }
                         note_cell_upload_provenance(
                             ctx,

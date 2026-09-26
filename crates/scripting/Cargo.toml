@@ -29,6 +29,7 @@ byroredux-papyrus = { workspace = true }
 byroredux-pex = { workspace = true }
 byroredux-sdk = { workspace = true }
 log = { workspace = true }
+rustc-hash = { workspace = true }
 
 [dev-dependencies]
 # Opt-in end-to-end test: extract a real vanilla `.pex` from a game archive

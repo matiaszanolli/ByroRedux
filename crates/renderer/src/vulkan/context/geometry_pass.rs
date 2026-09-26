@@ -4,9 +4,10 @@
 //! single `unsafe` scope, barrier order, and recording order are
 //! unchanged from the pre-split `draw_frame`.
 
-use super::super::pipeline::{default_depth_compare_op, depth_compare_op, PipelineKey};
-use super::super::water::{water_instance_slot, WaterDrawCommand};
-use super::draw::{group_state, needs_two_sided_blend_split, should_use_indirect_draws, DrawBatch};
+use super::super::gpu_timers::GeometryTimerPhase;
+use super::super::pipeline::{PipelineKey, default_depth_compare_op, depth_compare_op};
+use super::super::water::{WaterDrawCommand, water_instance_slot};
+use super::draw::{DrawBatch, group_state, needs_two_sided_blend_split, should_use_indirect_draws};
 use super::{DrawCommand, VulkanContext};
 use ash::vk;
 
@@ -246,15 +247,33 @@ impl VulkanContext {
             // pipeline, so its shapes go in before the first blended batch:
             // a transparent surface in front of a plant must blend over it.
             let mut groundcover_models_drawn = false;
+            // Sorted raster batches put all opaque/alpha-tested draws before
+            // blended draws. Time their existing boundary without changing
+            // indirect groups, draw order, or synchronization.
+            let mut triangle_phase = batches.first().and_then(|batch| {
+                matches!(batch.pipeline_key, PipelineKey::Opaque { .. })
+                    .then_some(GeometryTimerPhase::MainOpaque)
+            });
+            let mut phase_draw_start = self.last_draw_call_stats.indirect_call_count;
+            if let (Some(timers), Some(phase)) = (&mut self.gpu_timers, triangle_phase) {
+                timers.cmd_geometry_phase_start(&self.device, cmd, frame, phase);
+            }
             let mut i = 0;
             while i < batches.len() {
                 let batch = &batches[i];
                 if !groundcover_models_drawn
                     && matches!(batch.pipeline_key, PipelineKey::Blended { .. })
                 {
+                    if self.last_draw_call_stats.indirect_call_count > phase_draw_start {
+                        if let (Some(timers), Some(phase)) = (&mut self.gpu_timers, triangle_phase)
+                        {
+                            timers.cmd_geometry_phase_end(&self.device, cmd, frame, phase);
+                        }
+                    }
                     groundcover_models_drawn = true;
                     self.draw_groundcover_models(
                         cmd,
+                        frame,
                         global_bound,
                         &mut last_pipeline_key,
                         &mut last_render_layer,
@@ -263,6 +282,18 @@ impl VulkanContext {
                         &mut last_z_function,
                         &mut last_cull_mode,
                     );
+                    // Models belong to their own raster interval, between
+                    // the opaque and blended triangle intervals.
+                    triangle_phase = Some(GeometryTimerPhase::MainBlended);
+                    phase_draw_start = self.last_draw_call_stats.indirect_call_count;
+                    if let Some(timers) = &mut self.gpu_timers {
+                        timers.cmd_geometry_phase_start(
+                            &self.device,
+                            cmd,
+                            frame,
+                            GeometryTimerPhase::MainBlended,
+                        );
+                    }
                 }
 
                 // Switch pipeline when rendering mode changes.
@@ -511,9 +542,15 @@ impl VulkanContext {
                 }
             }
 
+            if self.last_draw_call_stats.indirect_call_count > phase_draw_start {
+                if let (Some(timers), Some(phase)) = (&mut self.gpu_timers, triangle_phase) {
+                    timers.cmd_geometry_phase_end(&self.device, cmd, frame, phase);
+                }
+            }
             if !groundcover_models_drawn {
                 self.draw_groundcover_models(
                     cmd,
+                    frame,
                     global_bound,
                     &mut last_pipeline_key,
                     &mut last_render_layer,
@@ -601,6 +638,7 @@ impl VulkanContext {
                             self.texture_registry.descriptor_set(frame), // #1258 — set 0
                             self.scene_buffers.descriptor_set(frame), // #1258 — set 1
                         );
+                        let mut water_drawn = false;
                         for (water_index, wc) in water_commands.iter().enumerate() {
                             // `wc.instance_index` is a `draw_commands`
                             // position; the SSBO slot is its `instance_map`
@@ -639,12 +677,33 @@ impl VulkanContext {
                                     0,
                                     vk::IndexType::UINT32,
                                 );
+                                if !water_drawn {
+                                    if let Some(timers) = &mut self.gpu_timers {
+                                        timers.cmd_geometry_phase_start(
+                                            &self.device,
+                                            cmd,
+                                            frame,
+                                            GeometryTimerPhase::MainWater,
+                                        );
+                                    }
+                                    water_drawn = true;
+                                }
                                 water.record_draw(
                                     &self.device,
                                     cmd,
                                     water_index as u32,
                                     mesh.index_count,
                                     instance_slot,
+                                );
+                            }
+                        }
+                        if water_drawn {
+                            if let Some(timers) = &mut self.gpu_timers {
+                                timers.cmd_geometry_phase_end(
+                                    &self.device,
+                                    cmd,
+                                    frame,
+                                    GeometryTimerPhase::MainWater,
                                 );
                             }
                         }
@@ -669,13 +728,31 @@ impl VulkanContext {
             // skipped. Viewport and scissor stay dynamic and are already set
             // for the pass.
             if let Some(ref gc) = self.groundcover {
-                gc.record_draw(
+                if let Some(timers) = &mut self.gpu_timers {
+                    timers.cmd_geometry_phase_start(
+                        &self.device,
+                        cmd,
+                        frame,
+                        GeometryTimerPhase::GroundcoverBladeDraw,
+                    );
+                }
+                let drawn = gc.record_draw(
                     &self.device,
                     cmd,
                     frame,
                     self.texture_registry.descriptor_set(frame),
                     self.scene_buffers.descriptor_set(frame),
                 );
+                if drawn {
+                    if let Some(timers) = &mut self.gpu_timers {
+                        timers.cmd_geometry_phase_end(
+                            &self.device,
+                            cmd,
+                            frame,
+                            GeometryTimerPhase::GroundcoverBladeDraw,
+                        );
+                    }
+                }
             }
 
             self.device.cmd_end_render_pass(cmd);
@@ -737,8 +814,9 @@ impl VulkanContext {
     /// the draws index the global pools.
     #[allow(clippy::too_many_arguments)]
     fn draw_groundcover_models(
-        &self,
+        &mut self,
         cmd: vk::CommandBuffer,
+        frame: usize,
         global_bound: bool,
         last_pipeline_key: &mut PipelineKey,
         last_render_layer: &mut Option<byroredux_core::ecs::components::RenderLayer>,
@@ -757,6 +835,17 @@ impl VulkanContext {
         else {
             return;
         };
+        if shapes.is_empty() {
+            return;
+        }
+        if let Some(timers) = &mut self.gpu_timers {
+            timers.cmd_geometry_phase_start(
+                &self.device,
+                cmd,
+                frame,
+                GeometryTimerPhase::GroundcoverModelDraw,
+            );
+        }
         let opaque = PipelineKey::Opaque { wireframe: false };
         // SAFETY: called from `record_geometry_pass`'s render-pass scope, so
         // `cmd` is recording inside the main render pass with the scene
@@ -804,6 +893,14 @@ impl VulkanContext {
                     std::mem::size_of::<vk::DrawIndexedIndirectCommand>() as u32,
                 );
             }
+        }
+        if let Some(timers) = &mut self.gpu_timers {
+            timers.cmd_geometry_phase_end(
+                &self.device,
+                cmd,
+                frame,
+                GeometryTimerPhase::GroundcoverModelDraw,
+            );
         }
     }
 }

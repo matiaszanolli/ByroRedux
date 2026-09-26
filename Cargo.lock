@@ -1023,6 +1023,7 @@ dependencies = [
  "byroredux-plugin",
  "byroredux-sdk",
  "log",
+ "rustc-hash 2.1.2",
  "serde",
 ]
 

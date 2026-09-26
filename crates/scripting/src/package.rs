@@ -45,7 +45,10 @@ const MOVE_STALL_TIMEOUT_SECONDS: f32 = 5.0;
 /// Parsed PACK definitions keyed in global load-order FormID space.
 #[derive(Debug, Clone, Default)]
 pub struct PackageRegistry {
-    packages: HashMap<u32, Arc<PackRecord>>,
+    // Runtime snapshots release the ECS guard before evaluating conditions.
+    // Sharing the table keeps that snapshot independent of the installed
+    // plugin's package count; only installation needs mutable ownership.
+    packages: Arc<HashMap<u32, Arc<PackRecord>>>,
 }
 
 impl Resource for PackageRegistry {}
@@ -53,8 +56,9 @@ impl Resource for PackageRegistry {}
 impl PackageRegistry {
     pub fn from_records(records: impl IntoIterator<Item = PackRecord>) -> Self {
         let mut registry = Self::default();
+        let packages = Arc::make_mut(&mut registry.packages);
         for record in records {
-            registry.packages.insert(record.form_id, Arc::new(record));
+            packages.insert(record.form_id, Arc::new(record));
         }
         registry
     }
@@ -76,9 +80,12 @@ impl PackageRegistry {
 /// not spawned into the render world.
 #[derive(Debug, Clone, Default)]
 pub struct PackageTargetRegistry {
-    positions: HashMap<u32, Vec3>,
-    directions: HashMap<u32, Vec3>,
-    linked_references: HashMap<u32, Vec<(u32, u32)>>,
+    // Scene execution snapshots these tables every frame. Copy on write
+    // preserves snapshot isolation without copying every placed reference
+    // and its linked-reference vectors on each tick.
+    positions: Arc<HashMap<u32, Vec3>>,
+    directions: Arc<HashMap<u32, Vec3>>,
+    linked_references: Arc<HashMap<u32, Vec<(u32, u32)>>>,
 }
 
 impl Resource for PackageTargetRegistry {}
@@ -242,8 +249,9 @@ pub fn install_package_records(
     let records: Vec<PackRecord> = records.into_iter().collect();
     let count = records.len();
     let mut registry = world.resource_mut::<PackageRegistry>();
+    let packages = Arc::make_mut(&mut registry.packages);
     for record in records {
-        registry.packages.insert(record.form_id, Arc::new(record));
+        packages.insert(record.form_id, Arc::new(record));
     }
     count
 }
@@ -259,7 +267,7 @@ pub fn install_package_target_positions(
     let positions: Vec<(u32, Vec3)> = positions.into_iter().collect();
     let count = positions.len();
     let mut registry = world.resource_mut::<PackageTargetRegistry>();
-    registry.positions.extend(positions);
+    Arc::make_mut(&mut registry.positions).extend(positions);
     count
 }
 
@@ -273,10 +281,8 @@ pub fn install_package_linked_references(
     }
     let links: Vec<(u32, Vec<(u32, u32)>)> = links.into_iter().collect();
     let count = links.len();
-    world
-        .resource_mut::<PackageTargetRegistry>()
-        .linked_references
-        .extend(links);
+    let mut registry = world.resource_mut::<PackageTargetRegistry>();
+    Arc::make_mut(&mut registry.linked_references).extend(links);
     count
 }
 
@@ -290,10 +296,8 @@ pub fn install_package_target_directions(
     }
     let directions: Vec<(u32, Vec3)> = directions.into_iter().collect();
     let count = directions.len();
-    world
-        .resource_mut::<PackageTargetRegistry>()
-        .directions
-        .extend(directions);
+    let mut registry = world.resource_mut::<PackageTargetRegistry>();
+    Arc::make_mut(&mut registry.directions).extend(directions);
     count
 }
 

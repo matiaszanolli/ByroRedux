@@ -49,10 +49,10 @@ use ash::vk;
 
 use super::allocator::SharedAllocator;
 use super::buffer::{GpuBuffer, NoUninit};
-use super::reflect::{validate_set_layout, ReflectedShader};
+use super::reflect::{ReflectedShader, validate_set_layout};
 use super::sync::MAX_FRAMES_IN_FLIGHT;
 use crate::shader_constants::{
-    GROUNDCOVER_BLADES_PER_POINT, GROUNDCOVER_BLADE_SEGMENTS_MID, GROUNDCOVER_BLADE_SEGMENTS_NEAR,
+    GROUNDCOVER_BLADE_SEGMENTS_MID, GROUNDCOVER_BLADE_SEGMENTS_NEAR, GROUNDCOVER_BLADES_PER_POINT,
     GROUNDCOVER_CHUNKS_PER_CELL_SIDE, GROUNDCOVER_INTERACTION_MAX_DISTURBERS,
     GROUNDCOVER_INTERACTION_TEXELS, GROUNDCOVER_INTERACTION_UNITS,
     GROUNDCOVER_INTERACTION_WORKGROUP, GROUNDCOVER_MAX_BLADES_PER_CHUNK, GROUNDCOVER_MAX_CHUNKS,
@@ -1754,7 +1754,8 @@ impl GroundCoverPipeline {
     }
 
     /// Record the blade (or debug-point) draw. Must be INSIDE the main
-    /// geometry render pass, after opaque geometry.
+    /// geometry render pass, after opaque geometry. Returns whether any
+    /// indirect draw commands were recorded (their GPU instance count may be zero).
     pub fn record_draw(
         &self,
         device: &ash::Device,
@@ -1762,9 +1763,9 @@ impl GroundCoverPipeline {
         frame: usize,
         texture_set: vk::DescriptorSet,
         scene_set: vk::DescriptorSet,
-    ) {
+    ) -> bool {
         if self.frame_chunk_count == 0 {
-            return;
+            return false;
         }
         let indirect = self.indirect_buffer.as_ref().expect("created in new()");
         let pipeline = if self.frame_debug_points {
@@ -1778,7 +1779,7 @@ impl GroundCoverPipeline {
         // field images and descriptor pool are still torn down by `destroy`;
         // dropping it here to signal the failure would leak every one of them.
         if pipeline == vk::Pipeline::null() {
-            return;
+            return false;
         }
         // SAFETY: `cmd` is recording inside the render pass this pipeline was
         // created against; the descriptor sets and the indirect buffer are
@@ -1822,6 +1823,7 @@ impl GroundCoverPipeline {
                 );
             }
         }
+        true
     }
 
     /// The frame's chunk and cell records, the terrain vertex buffer and the

@@ -100,7 +100,7 @@ Steady-state apply uses one `StreamingCellApplyJob` and a cooperative **4 ms
 deadline** per frame (`STREAMING_APPLY_BUDGET`). The deadline spans:
 
 1. main-thread completion of worker-parsed NIFs, one NIF per atomic unit;
-2. terrain/water/precombine setup as one guaranteed-progress unit;
+2. terrain/water setup and resumable precombine preparation/spawning;
 3. placed-reference spawning, one synthetic SCOL/PKIN child per unit;
 4. NPC assembly below that boundary: placement setup, skeleton, each body/head
    part, each eye/hair/brow part, and each armor NIF are separate units on both
@@ -114,6 +114,21 @@ removing the matching pending generation on a boundary crossing immediately
 cancels it through the normal `unload_cell` path. Queued texture uploads are
 flushed per yielded reference slice instead of accumulating into one final
 cell-sized fence wait.
+
+CSG geometry-only precombines yield between consecutive groups of at most
+eight submeshes and approximately 4 MiB of vertex/index input. One oversized
+submesh still runs to completion. Preparation can yield before uploads; each
+group finishes its BLAS work before yielding. The cursor retains the placement
+root and original submesh indices, so representative geometry sharing and
+normal cell cancellation continue across groups. Ordinary NIF fallbacks remain
+atomic, and unlimited bootstrap keeps whole-hash batching. The per-cell
+`precombine_timing` line includes `spawn_groups` and `spawn_group_max_ms`.
+
+Geometry admission still respects the existing pool limits. At a capacity
+failure, earlier successful groups remain resident; the previous whole-hash
+transaction could roll back more geometry. A capacity-limited traversal can
+therefore retain more valid geometry after this change and is not necessarily
+a content-identical benchmark comparison.
 
 Foreground/full-radius bootstrap still calls `consume_streaming_payload`
 synchronously, but both drivers share the same import helper, exterior apply
@@ -193,8 +208,9 @@ genuinely open items, per that row:
 - Main-thread NIF finalization and the high-cardinality REFR walk now share a
   measured frame deadline. SCOL/PKIN expansions yield between children, and NPC
   actors yield between their top-level NIF parts. Individual NIFs, ordinary
-  static placements, and terrain/water/precombine setup remain atomic, so one
-  unusually complex unit can still exceed the target.
+  static placements, terrain/water setup, precombine preparation and individual
+  oversized submeshes remain atomic, so one unusually complex unit can still
+  exceed the target. Precombine geometry uploads now yield between groups.
 - Distant terrain/object LOD-ring construction is incremental, but its budget
   is an operation count. One `.lod` placement cell can parse and upload far
   more geometry than one terrain block, so the cap bounds work quantity, not

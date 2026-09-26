@@ -2,8 +2,8 @@
 //!
 //! Bracketing GPU hot spots with `vkCmdWriteTimestamp` so per-pass
 //! cost can be measured rather than guessed. Owns one `VkQueryPool`
-//! per frame-in-flight slot, `QUERIES_PER_FRAME` (46) TIMESTAMP queries
-//! each — 20 start/end brackets, bumped from 32/16 by #4052's
+//! per frame-in-flight slot, `QUERIES_PER_FRAME` (56) TIMESTAMP queries
+//! each — 28 start/end brackets, bumped from 32/16 by #4052's
 //! ground-cover-bench bracket (#4210), again from 34/17 by the SKYAL
 //! sky-cubemap bake, again from 36/18 by the production ground-cover
 //! scatter (#4315), and again from 38/19 by the exposure meter (#4618):
@@ -56,6 +56,16 @@
 //! | 43 | volumetrics inject — end |
 //! | 44 | volumetrics integrate — start |
 //! | 45 | volumetrics integrate — end |
+//! | 46 | main_opaque raster — start |
+//! | 47 | main_opaque raster — end |
+//! | 48 | main_blended raster — start |
+//! | 49 | main_blended raster — end |
+//! | 50 | main_water raster — start |
+//! | 51 | main_water raster — end |
+//! | 52 | groundcover_model_draw raster — start |
+//! | 53 | groundcover_model_draw raster — end |
+//! | 54 | groundcover_blade_draw raster — start |
+//! | 55 | groundcover_blade_draw raster — end |
 //!
 //! The original four brackets (skin dispatch / skin palette / BLAS refit / TAA) shipped
 //! with the #1194 perf-bisect work. The four added in debug-UI
@@ -108,7 +118,7 @@ use super::sync::MAX_FRAMES_IN_FLIGHT;
 
 /// Two TIMESTAMP queries per bracket (start, end); the module doc's table is
 /// the one place that counts them.
-const QUERIES_PER_FRAME: u32 = 46;
+const QUERIES_PER_FRAME: u32 = 56;
 
 const Q_SKIN_DISPATCH_START: u32 = 0;
 const Q_SKIN_DISPATCH_END: u32 = 1;
@@ -289,6 +299,14 @@ pub struct GpuTimerSnapshot {
     pub groundcover_models_ms: f32,
     pub volumetrics_inject_ms: f32,
     pub volumetrics_integrate_ms: f32,
+    // BOTTOM_OF_PIPE phase-completion intervals inside main_render.
+    // GPU overlap can move work across boundaries; these are not isolated
+    // shader timings and exclude main-pass setup/clear/store overhead.
+    pub main_opaque_ms: f32,
+    pub main_blended_ms: f32,
+    pub main_water_ms: f32,
+    pub groundcover_model_draw_ms: f32,
+    pub groundcover_blade_draw_ms: f32,
 
     // ── Per-bracket "ran this frame" flags (#2278 / PERF-D9-01) ───────
     //
@@ -322,11 +340,17 @@ pub struct GpuTimerSnapshot {
     pub groundcover_models_active: bool,
     pub volumetrics_inject_active: bool,
     pub volumetrics_integrate_active: bool,
+    pub main_opaque_active: bool,
+    pub main_blended_active: bool,
+    pub main_water_active: bool,
+    pub groundcover_model_draw_active: bool,
+    pub groundcover_blade_draw_active: bool,
 }
 
 /// Per-frame-in-flight TIMESTAMP query pools.
 pub struct GpuPerFrameTimers {
-    volumetrics_state: [byroredux_core::ecs::resources::VolumetricsFrameState; MAX_FRAMES_IN_FLIGHT],
+    volumetrics_state:
+        [byroredux_core::ecs::resources::VolumetricsFrameState; MAX_FRAMES_IN_FLIGHT],
     pools: [vk::QueryPool; MAX_FRAMES_IN_FLIGHT],
     /// Ticks → milliseconds multiplier
     /// (`timestamp_period_ns * 1e-6`).
@@ -375,6 +399,31 @@ const BIT_EXPOSURE_METER: u32 = 0x0008_0000;
 const BIT_GROUNDCOVER_MODELS: u32 = 1 << 20;
 const BIT_VOLUMETRICS_INJECT: u32 = 1 << 21;
 const BIT_VOLUMETRICS_INTEGRATE: u32 = 1 << 22;
+
+/// Consecutive raster phases inside the inclusive main-render bracket.
+///
+/// Both timestamps use BOTTOM_OF_PIPE: each boundary observes completion of
+/// preceding graphics work. Following work may already overlap it, so the
+/// difference is a completed-phase interval, not exclusive execution time.
+/// No additional pipeline barrier or draw reordering is introduced.
+#[derive(Clone, Copy)]
+pub(crate) enum GeometryTimerPhase {
+    MainOpaque = 0,
+    MainBlended = 1,
+    MainWater = 2,
+    GroundcoverModelDraw = 3,
+    GroundcoverBladeDraw = 4,
+}
+
+impl GeometryTimerPhase {
+    fn query_start(self) -> u32 {
+        46 + 2 * self as u32
+    }
+
+    fn active_bit(self) -> u32 {
+        1 << (23 + self as u32)
+    }
+}
 
 /// Build a [`GpuTimerSnapshot`] from a raw batched TIMESTAMP read.
 /// Pulled out of [`GpuPerFrameTimers::read_and_reset`] as a pure
@@ -487,6 +536,30 @@ fn snapshot_from_bits(
     if snap.volumetrics_integrate_active {
         snap.volumetrics_integrate_ms = bracket_ms(Q_VOLUMETRICS_INTEGRATE_START);
     }
+    snap.main_opaque_active = bits & GeometryTimerPhase::MainOpaque.active_bit() != 0;
+    if snap.main_opaque_active {
+        snap.main_opaque_ms = bracket_ms(GeometryTimerPhase::MainOpaque.query_start());
+    }
+    snap.main_blended_active = bits & GeometryTimerPhase::MainBlended.active_bit() != 0;
+    if snap.main_blended_active {
+        snap.main_blended_ms = bracket_ms(GeometryTimerPhase::MainBlended.query_start());
+    }
+    snap.main_water_active = bits & GeometryTimerPhase::MainWater.active_bit() != 0;
+    if snap.main_water_active {
+        snap.main_water_ms = bracket_ms(GeometryTimerPhase::MainWater.query_start());
+    }
+    snap.groundcover_model_draw_active =
+        bits & GeometryTimerPhase::GroundcoverModelDraw.active_bit() != 0;
+    if snap.groundcover_model_draw_active {
+        snap.groundcover_model_draw_ms =
+            bracket_ms(GeometryTimerPhase::GroundcoverModelDraw.query_start());
+    }
+    snap.groundcover_blade_draw_active =
+        bits & GeometryTimerPhase::GroundcoverBladeDraw.active_bit() != 0;
+    if snap.groundcover_blade_draw_active {
+        snap.groundcover_blade_draw_ms =
+            bracket_ms(GeometryTimerPhase::GroundcoverBladeDraw.query_start());
+    }
     snap
 }
 
@@ -593,6 +666,27 @@ impl GpuPerFrameTimers {
             self.last_snapshot.volumetrics_state = self.volumetrics_state[frame];
         }
         self.volumetrics_state[frame] = Default::default();
+        static PROFILE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        if self.last_snapshot.main_render_active
+            && *PROFILE.get_or_init(|| std::env::var_os("BYRO_PROFILE").is_some())
+        {
+            let snap = self.last_snapshot;
+            log::info!(
+                "gpu_geometry phases: main={:.3}ms opaque={:.3}ms({}) blended={:.3}ms({}) \
+                 water={:.3}ms({}) gc_models={:.3}ms({}) gc_blades={:.3}ms({})",
+                snap.main_render_ms,
+                snap.main_opaque_ms,
+                snap.main_opaque_active,
+                snap.main_blended_ms,
+                snap.main_blended_active,
+                snap.main_water_ms,
+                snap.main_water_active,
+                snap.groundcover_model_draw_ms,
+                snap.groundcover_model_draw_active,
+                snap.groundcover_blade_draw_ms,
+                snap.groundcover_blade_draw_active,
+            );
+        }
 
         // Reset the slot for the upcoming frame's writes.
         // SAFETY: the fence preceding `read_and_reset` guarantees all GPU work for
@@ -603,7 +697,11 @@ impl GpuPerFrameTimers {
         self.active_bits[frame] = 0;
     }
 
-    pub fn note_volumetrics_state(&mut self, frame: usize, state: byroredux_core::ecs::resources::VolumetricsFrameState) {
+    pub fn note_volumetrics_state(
+        &mut self,
+        frame: usize,
+        state: byroredux_core::ecs::resources::VolumetricsFrameState,
+    ) {
         self.volumetrics_state[frame] = state;
     }
 
@@ -611,6 +709,47 @@ impl GpuPerFrameTimers {
     /// until the second pipelined cycle completes.
     pub fn last_snapshot(&self) -> GpuTimerSnapshot {
         self.last_snapshot
+    }
+
+    /// Start a raster phase; inactive/empty phases need not end their bracket.
+    pub(crate) fn cmd_geometry_phase_start(
+        &mut self,
+        device: &ash::Device,
+        cmd: vk::CommandBuffer,
+        frame: usize,
+        phase: GeometryTimerPhase,
+    ) {
+        // SAFETY: recording command buffer, live frame pool, phase slots are
+        // within QUERIES_PER_FRAME and written at most once per frame.
+        unsafe {
+            device.cmd_write_timestamp(
+                cmd,
+                vk::PipelineStageFlags::BOTTOM_OF_PIPE,
+                self.pools[frame],
+                phase.query_start(),
+            );
+        }
+    }
+
+    /// Mark active only when the phase recorded at least one draw command.
+    pub(crate) fn cmd_geometry_phase_end(
+        &mut self,
+        device: &ash::Device,
+        cmd: vk::CommandBuffer,
+        frame: usize,
+        phase: GeometryTimerPhase,
+    ) {
+        // SAFETY: the matching start was recorded in this frame's pool;
+        // END is an unused slot within QUERIES_PER_FRAME.
+        unsafe {
+            device.cmd_write_timestamp(
+                cmd,
+                vk::PipelineStageFlags::BOTTOM_OF_PIPE,
+                self.pools[frame],
+                phase.query_start() + 1,
+            );
+        }
+        self.active_bits[frame] |= phase.active_bit();
     }
 
     /// Write the skin-dispatch START timestamp. Caller must pair

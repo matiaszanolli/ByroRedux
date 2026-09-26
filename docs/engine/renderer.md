@@ -368,6 +368,17 @@ Every fallible Vulkan call propagates as a Rust `Result` and aborts the
 submit cleanly so the swapchain stays consistent. Each major pass is
 bracketed with a `gpu_timers` timestamp pair when the timer pool is active.
 
+The timestamp pool has 56 slots (28 pairs). Five pairs subdivide the inclusive
+main-render bracket into opaque/alpha-tested geometry, blended geometry,
+water, authored groundcover model draws, and procedural groundcover blade
+draws. `BYRO_PROFILE=1` emits `gpu_geometry phases:` with each duration and an
+active flag; a skipped phase is inactive and reports zero. The model-draw pair
+is distinct from the existing `groundcover_models_ms` compute-generation timer.
+Both ends of these internal pairs use `BOTTOM_OF_PIPE`. They measure completion
+intervals under normal GPU overlap, not isolated shader instruction costs;
+setup, clears and attachment stores are not all inside the child intervals.
+Do not add the children to their inclusive main-render parent.
+
 ## Resize
 
 `recreate_swapchain(size)` in [`vulkan/context/resize.rs`](../../crates/renderer/src/vulkan/context/resize.rs):

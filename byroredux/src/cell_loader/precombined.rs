@@ -121,9 +121,9 @@ pub(crate) fn absorbed_refs_or_empty(
 
 /// Resumable cursor over one cell's precombined hashes.
 ///
-/// Each hash is one atomic parse/decode/upload/BLAS unit. Keeping the CSG
-/// handle and ownership resolution here avoids reopening the large shared-
-/// geometry archive on every frame; the outer cursor yields between hashes.
+/// Keeping the CSG handle and ownership resolution here avoids reopening the
+/// large shared-geometry archive on every frame. Shared CSG placements yield
+/// between submesh groups; fallback NIFs retain their atomic placement path.
 pub(super) struct PrecombinedSpawnJob {
     form_id: u32,
     total_hashes: usize,
@@ -142,6 +142,9 @@ pub(super) struct PrecombinedSpawnJob {
     max_blas: Duration,
     max_total: Duration,
     max_total_hash: u32,
+    pending_placement: Option<(super::spawn::PrecombinedPlacement, Duration)>,
+    spawn_groups: usize,
+    max_spawn_group: Duration,
 }
 
 /// Which `<Plugin> - Geometry.csg` each `BSPackedGeomObject::filename_hash`
@@ -195,6 +198,9 @@ impl PrecombinedSpawnJob {
             max_blas: Duration::ZERO,
             max_total: Duration::ZERO,
             max_total_hash: 0,
+            pending_placement: None,
+            spawn_groups: 0,
+            max_spawn_group: Duration::ZERO,
         })
     }
 
@@ -230,7 +236,10 @@ impl PrecombinedSpawnJob {
                 reg.get(&path).and_then(|opt| opt.clone())
             };
 
-            let cached = if let Some(c) = cached {
+            let pending = self.pending_placement.take();
+            let cached = if let Some((placement, _)) = &pending {
+                Arc::clone(&placement.cached)
+            } else if let Some(c) = cached {
                 // #1217 / D2 FIND-3 — cache-hit on a zero-mesh entry surfaces
                 // post-mortem visibility for the CSG-deferred fallback. The
                 // first cache MISS fires the zero-contribution warn in
@@ -426,38 +435,78 @@ impl PrecombinedSpawnJob {
                     }
                 }
             };
-            let prepare_elapsed = hash_started.elapsed();
+            let prepare_elapsed = pending
+                .as_ref()
+                .map_or_else(|| hash_started.elapsed(), |(_, elapsed)| *elapsed);
 
             let spawn_started = Instant::now();
             let first_entity = world.next_entity_id();
-            let (_placement_root, count, spawn_timings) = spawn_placed_instances(
-                world,
-                ctx,
-                &cached,
-                tex_provider,
-                cell_origin,
-                Quat::IDENTITY,
-                1.0,
-                None,
-                0,
-                0,
-                // #2439 (NIFAL-D2-01) — precombined architecture carries no
-                // LIGH data (`light_data: None` above), so these are unused
-                // defaults, matching the `0, 0` animation/shadow flags above.
-                // The `1.0` falloff is the same inert `Emitter` default.
-                byroredux_core::ecs::LightKind::Point,
-                [0.0, 0.0, 0.0],
-                0.0,
-                1.0,
-                None,
-                None,
-                RenderLayer::Architecture,
-                Some(&path),
-                None,
-                None,
-                None,
-                mat_provider.as_deref_mut(),
-            );
+            // A full representative map is produced only by the shared CSG
+            // decoder's geometry-only cache constructor. Its representatives
+            // precede aliases, so previous groups are available on resume.
+            let resumable = !cached.geometry_dedup.is_empty()
+                && cached.geometry_dedup.len() == cached.meshes.len()
+                && cached
+                    .geometry_dedup
+                    .iter()
+                    .enumerate()
+                    .all(|(i, &r)| r as usize <= i);
+            let (count, spawn_timings, spawn_elapsed) = if resumable {
+                let mut placement = pending.map(|(placement, _)| placement).unwrap_or_else(|| {
+                    // Parsing/material resolution is itself a cooperative unit.
+                    // An over-budget prepare must not immediately start uploads.
+                    budget.complete_unit();
+                    super::spawn::PrecombinedPlacement::new(
+                        world,
+                        Arc::clone(&cached),
+                        tex_provider,
+                        cell_origin,
+                        mat_provider.as_deref_mut(),
+                    )
+                });
+                let done = placement.advance(world, ctx, tex_provider, cell_origin, &path, budget);
+                if !done {
+                    for eid in first_entity..world.next_entity_id() {
+                        world.insert(eid, PrecombinedMesh);
+                    }
+                    self.pending_placement = Some((placement, prepare_elapsed));
+                    return PrecombinedSpawnProgress::Pending(self);
+                }
+                self.spawn_groups += placement.groups;
+                self.max_spawn_group = self.max_spawn_group.max(placement.max_group);
+                (placement.count, placement.timings, placement.elapsed)
+            } else {
+                let (_placement_root, count, spawn_timings) = spawn_placed_instances(
+                    world,
+                    ctx,
+                    &cached,
+                    tex_provider,
+                    cell_origin,
+                    Quat::IDENTITY,
+                    1.0,
+                    None,
+                    0,
+                    0,
+                    // #2439 (NIFAL-D2-01) — precombined architecture carries no
+                    // LIGH data (`light_data: None` above), so these are unused
+                    // defaults, matching the `0, 0` animation/shadow flags above.
+                    // The `1.0` falloff is the same inert `Emitter` default.
+                    byroredux_core::ecs::LightKind::Point,
+                    [0.0, 0.0, 0.0],
+                    0.0,
+                    1.0,
+                    None,
+                    None,
+                    RenderLayer::Architecture,
+                    Some(&path),
+                    None,
+                    None,
+                    None,
+                    mat_provider.as_deref_mut(),
+                );
+                budget.complete_unit();
+                (count, spawn_timings, spawn_started.elapsed())
+            };
             // #2369 (EX-15) — stamp the entities this call just spawned as
             // precombine-owned, distinct from ordinary per-REFR
             // architecture, so `world.owners` can track them as their own
@@ -470,8 +519,8 @@ impl PrecombinedSpawnJob {
             for eid in first_entity..last_entity {
                 world.insert(eid, PrecombinedMesh);
             }
-            let spawn_elapsed = spawn_started.elapsed();
-            let total_elapsed = hash_started.elapsed();
+            // Sum active work only: a resumable hash can span many frames.
+            let total_elapsed = prepare_elapsed + spawn_elapsed;
             self.timed_hashes += 1;
             self.max_prepare = self.max_prepare.max(prepare_elapsed);
             self.max_spawn = self.max_spawn.max(spawn_elapsed);
@@ -483,7 +532,6 @@ impl PrecombinedSpawnJob {
             }
             self.spawned += count;
             self.next_hash += 1;
-            budget.complete_unit();
         }
 
         if self.misses > 0 {
@@ -503,7 +551,7 @@ impl PrecombinedSpawnJob {
         log::info!(
             "precombine_timing: cell={:08X} timed_hashes={} csg_open_ms={:.2} hash_max_ms={:.2} \
              hash={:08x} prepare_max_ms={:.2} spawn_total_max_ms={:.2} \
-             spawn_cpu_max_ms={:.2} blas_max_ms={:.2}",
+             spawn_cpu_max_ms={:.2} blas_max_ms={:.2} spawn_groups={} spawn_group_max_ms={:.2}",
             self.form_id,
             self.timed_hashes,
             self.csg_open.as_secs_f64() * 1000.0,
@@ -513,6 +561,8 @@ impl PrecombinedSpawnJob {
             self.max_spawn.as_secs_f64() * 1000.0,
             self.max_spawn_cpu.as_secs_f64() * 1000.0,
             self.max_blas.as_secs_f64() * 1000.0,
+            self.spawn_groups,
+            self.max_spawn_group.as_secs_f64() * 1000.0,
         );
 
         PrecombinedSpawnProgress::Complete {
