@@ -16,11 +16,14 @@ use crate::ecs::storage::Component;
 /// there are two `HitEvent` producers: the player's melee in `combat.rs`
 /// and `npc_combat_ai_system` (`byroredux/src/systems/combat_ai.rs`,
 /// `f61ea044`), which strikes for `attack_damage`'s value. A creature
-/// therefore hits for its authored damage once combat is armed on it — but
-/// combat is armed only by a script's `Actor.StartCombat`; there is no
-/// ambient hostility, so most of the 692 FNV / 186 FO3 creatures that author
-/// a non-zero damage never attack. (#4105 recorded the earlier state, when
-/// the player was the only producer.)
+/// therefore hits for its authored damage once combat is armed on it. Combat
+/// is armed by a script's `Actor.StartCombat` or, since #4414, ambiently by
+/// `faction_hostility_system` (`byroredux/src/systems/faction_hostility.rs`)
+/// for a creature whose `AIDT` disposition and faction relations say it
+/// attacks what it sees. (#4105 recorded the earlier state, when the player
+/// was the only producer; before #4414 only `StartCombat` armed it, so most
+/// of the 692 FNV / 186 FO3 creatures that author a non-zero damage never
+/// attacked.)
 ///
 /// Deliberately **not** an actor value: inventing an `AVIF` FO3/FNV do not
 /// publish would be a guess (the same reasoning that keeps `CreatureStats`'

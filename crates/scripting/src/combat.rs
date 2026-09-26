@@ -16,14 +16,23 @@ use byroredux_core::ecs::world::World;
 use byroredux_sdk::identity::FormRef;
 use byroredux_sdk::relationships::CombatReaction;
 
-/// An actor forced into combat against `target` by `Effect::StartCombat`.
+/// An actor in combat against `target`. Two producers arm it:
+/// `Effect::StartCombat` (a quest fragment forces the fight) and, since
+/// #4414, `byroredux`'s `faction_hostility_system` (an actor sees a target
+/// its faction relations and aggression say it attacks). The ambient
+/// producer never overwrites a state a script already set.
 ///
 /// Not saved: `target` is a session-local `EntityId` (the same #4139/
 /// #1696 hazard class `ActorCinematicState::vehicle` and
 /// `PendingFragmentActivations` are already documented against), and
-/// losing an in-progress scripted combat across a save/reload is the same
-/// posture the player-combat siblings `CombatState`/`MeleeState` already
-/// take (see their save-registry allowlist entries).
+/// losing an in-progress combat across a save/reload is the same posture
+/// the player-combat siblings `CombatState`/`MeleeState` already take (see
+/// their save-registry allowlist entries). What that loses differs by
+/// producer: ambient combat is re-derived, because
+/// `faction_hostility_system` re-creates it within one
+/// `EVALUATION_PERIOD_SECS` (0.5 s) when the pair is still in range and in
+/// sight; only a scripted combat against a target that is not otherwise
+/// hostile is gone.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AiCombatState {
     pub target: EntityId,

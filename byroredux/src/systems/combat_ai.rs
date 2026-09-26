@@ -2,7 +2,8 @@
 //! ROADMAP.md's "MQ101 end-to-end playability" entry). `Faction.SetEnemy`/
 //! `Actor.StartCombat` had no runtime consumer at all before this: this
 //! is the smallest slice that gives an `AiCombatState`-armed actor
-//! (`byroredux_scripting::AiCombatState`, installed by `Effect::StartCombat`)
+//! (`byroredux_scripting::AiCombatState`, installed by `Effect::StartCombat`
+//! or, since #4414, by `faction_hostility.rs`)
 //! behavior a player can see and be a party to — chase in a straight line,
 //! strike on cooldown once in range — reusing the exact same `HitEvent` ->
 //! `combat_damage_system` damage/death pipeline the player's own melee

@@ -183,11 +183,14 @@ fn stamp_actor_values(
 /// attack had no reader — this stamp makes it available to a future combat
 /// consumer. **Corrected (#4105 / D5-03), updated for #4324:** that consumer
 /// now exists. `attack_damage` is called by `combat_input_system` for the
-/// player and by `npc_combat_ai_system` for any actor a quest fragment arms
-/// with `StartCombat`, so `HitEvent` has two producers and a creature in
-/// scripted combat strikes with the `DATA.Damage` this stamps (692 FNV / 186
-/// FO3 creatures author a non-zero value). Creatures still start no combat of
-/// their own — there is no ambient AI aggro — so the value is reached only
+/// player and by `npc_combat_ai_system` for any actor carrying an
+/// `AiCombatState`, so `HitEvent` has two producers and a creature in combat
+/// strikes with the `DATA.Damage` this stamps (692 FNV / 186 FO3 creatures
+/// author a non-zero value). `AiCombatState` has two producers too: a quest
+/// fragment's `StartCombat`, and, since #4414, `faction_hostility_system`,
+/// which starts combat for any actor whose stamped `CombatDisposition` and
+/// faction relations say it attacks what it sees — creatures included, wherever
+/// their `AIDT` decodes. The value is therefore reached ambiently, not only
 /// through a scripted `StartCombat`.
 ///
 /// No-op for `NPC_` (no `creature_stats`) and for a creature whose `DATA`
