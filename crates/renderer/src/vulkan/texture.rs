@@ -59,9 +59,17 @@ pub struct Texture {
     /// as a returned error instead of addressing a different-sized image
     /// (#4515 — previously nothing retained the creation extent).
     creation_extent: vk::Extent3D,
+    /// Only single-mip, single-layer sRGB RGBA images accept raw replacements.
+    rgba_updateable: bool,
 }
 
 impl Texture {
+    pub(crate) fn can_update_rgba(&self, width: u32, height: u32) -> bool {
+        self.rgba_updateable
+            && self.creation_extent.width == width
+            && self.creation_extent.height == height
+    }
+
     /// Create a texture from raw RGBA pixel data.
     ///
     /// Thin wrapper around [`Self::from_dds_with_mip_chain`]: a 1-mip
@@ -122,10 +130,9 @@ impl Texture {
     /// pixels, so a mismatched upload would have addressed a smaller
     /// image). The image, view, and bindless descriptor stay untouched:
     /// no allocation, no rebind, one small staging copy.
-    /// [`TextureRegistry::update_rgba`] reallocates a full image + view +
-    /// descriptor write per call — fine for occasional content swaps,
-    /// pathological for a per-frame overlay (the first live HUD run
-    /// pinned a machine that way).
+    /// This low-level path submits and waits immediately. Frame-driven callers
+    /// use `TextureRegistry::write_rgba_inplace` or `update_rgba`, which queue
+    /// the copy in the normal frame submission and retain staging per slot.
     ///
     /// # Hazard contract
     ///
@@ -619,6 +626,8 @@ impl Texture {
                     height: meta.height,
                     depth: 1,
                 },
+                rgba_updateable: meta.format == vk::Format::R8G8B8A8_SRGB
+                    && meta.mip_count == 1 && meta.array_layers == 1 && !meta.is_cubemap,
             },
             staging,
             staging_capacity,
@@ -792,7 +801,7 @@ fn build_dds_copy_regions(meta: &super::dds::DdsMetadata) -> (Vec<vk::BufferImag
 /// caller's extent must match the extent the image was created with. The
 /// check exists so a second consumer can rely on the documented contract;
 /// mismatches fail as a returned error, not an assertion.
-fn validate_rgba_upload(
+pub(crate) fn validate_rgba_upload(
     creation_extent: vk::Extent3D,
     width: u32,
     height: u32,
@@ -805,7 +814,9 @@ fn validate_rgba_upload(
         creation_extent.width,
         creation_extent.height,
     );
-    let expected = u64::from(width) * u64::from(height) * 4;
+    let expected = u64::from(width).checked_mul(u64::from(height))
+        .and_then(|size| size.checked_mul(4))
+        .context("RGBA upload byte size overflow")?;
     ensure!(
         pixel_data_len as u64 == expected,
         "pixel data must be width*height*4 RGBA bytes: got {pixel_data_len}, \

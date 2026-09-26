@@ -289,6 +289,7 @@ impl VulkanContext {
         underwater: [f32; 4],
         image_space_modifier: ImageSpaceModifier,
         ui_instance_idx: Option<u32>,
+        fog_cluster_ns: &mut u64,
     ) {
         self.record_svgf_pass(cmd, frame);
         self.record_caustic_splat_pass(cmd, frame, caustic_history_valid);
@@ -316,6 +317,7 @@ impl VulkanContext {
                 wind_gust,
                 fog_volumes,
             },
+            fog_cluster_ns,
         );
         self.record_ssao_pass(cmd, frame, vp, inv_vp_arr, camera_pos, render_origin);
         self.record_composite_pass(cmd, frame);
@@ -543,6 +545,7 @@ impl VulkanContext {
         cmd: vk::CommandBuffer,
         frame: usize,
         inputs: VolumetricsPassInputs<'_>,
+        fog_cluster_ns: &mut u64,
     ) {
         let VolumetricsPassInputs {
             camera_pos,
@@ -830,7 +833,7 @@ impl VulkanContext {
                                 vol.dispatch(&self.device, cmd, frame, &vol_params, fog_volumes,
                                     self.gpu_timers.as_mut(), self.scene_buffers.current_ray_budget(
                                         self.renderer_config.rt_test_ray_quality_tier,
-                                    ).quality_tier);
+                                    ).quality_tier, fog_cluster_ns);
                             if let Some(ref mut timers) = self.gpu_timers {
                                 timers.cmd_volumetrics_end(&self.device, cmd, frame);
                             }

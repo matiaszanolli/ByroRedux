@@ -51,6 +51,27 @@ static ALLOC: dhat::Alloc = dhat::Alloc;
 // a few hundred bytes; it is not once one is 16 KB (#4617).
 static DHAT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+/// #4796: a large bulk array must allocate only its final typed output.
+/// Peak-byte bounds on tiny whole-NIF fixtures cannot detect a scratch copy.
+#[test]
+fn bulk_array_allocates_exactly_one_output_buffer() {
+    use byroredux_nif::{header::NifHeader, stream::NifStream, version::NifVersion};
+
+    let _dhat_guard = DHAT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let count = 65_536;
+    let data: Vec<u8> = (0..count as u32).flat_map(u32::to_le_bytes).collect();
+    let header = NifHeader::detached(NifVersion::V20_2_0_7, 0, 0);
+    let mut stream = NifStream::new(&data, &header);
+    let _profiler = dhat::Profiler::builder().testing().build();
+    let before = dhat::HeapStats::get();
+    let values = stream.read_u32_array(count).unwrap();
+    let after = dhat::HeapStats::get();
+    assert_eq!(after.total_blocks - before.total_blocks, 1);
+    assert_eq!(after.total_bytes - before.total_bytes, (count * 4) as u64);
+    assert_eq!(stream.position(), data.len() as u64);
+    assert!(values.iter().enumerate().all(|(i, &v)| v == i as u32));
+}
+
 // ── Synthetic Skyrim SE fixture (single NiNode root) ────────────────
 //
 // Mirrors `tests/synthetic_fixtures.rs::build_skyrim_se_nif` — kept

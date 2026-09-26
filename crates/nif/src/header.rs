@@ -427,7 +427,7 @@ fn read_u32_le(cursor: &mut Cursor<&[u8]>) -> io::Result<u32> {
 /// `#[must_use]` for the same reason as its `NifStream` twin
 /// [`crate::stream::NifStream::read_pod_vec`] (#831/#1246, restored here by
 /// #4165): dropping the binding still runs the full
-/// `count * size_of::<T>()` zero-init and `read_exact`, then discards the
+/// `count * size_of::<T>()` allocation and copy, then discards the
 /// result — the cursor advances but the data is thrown away, which is
 /// never what a caller means. Both current call sites bind correctly; this
 /// closes the asymmetry that would have let a future one not.

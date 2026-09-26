@@ -11,8 +11,8 @@ use std::io::{self, Cursor, Read};
 use std::sync::Arc;
 
 // NIF format is little-endian by spec. The bulk-array readers below
-// (`read_ni_point3_array`, `read_u16_array`, …) cast a typed `Vec<T>`
-// into a `&mut [u8]` and pass that to `read_exact`, so the host's
+// (`read_ni_point3_array`, `read_u16_array`, …) copy file bytes into
+// a typed `Vec<T>` without swapping, so the host's
 // endianness has to match the file's. Every supported target
 // (x86_64, aarch64) is LE; any future big-endian port will need a
 // per-element byte swap in those readers and should remove this
@@ -20,13 +20,13 @@ use std::sync::Arc;
 // file are host-agnostic and unaffected. See #833.
 #[cfg(target_endian = "big")]
 compile_error!(
-    "NIF parser requires a little-endian host (bulk-array readers cast Vec<T> to &mut [u8])"
+    "NIF parser requires a little-endian host (bulk-array readers copy native-layout values)"
 );
 
 /// All-bit-patterns-valid marker for the bulk-read fast path (MEM-05, #1439).
 ///
 /// [`NifStream::read_pod_vec`] (and the header parser's
-/// `read_pod_vec_from_cursor`) `read_exact` raw little-endian file bytes
+/// `read_pod_vec_from_cursor`) copy raw little-endian file bytes
 /// straight into a typed `Vec<T>`, so every `size_of::<T>()`-byte sequence
 /// the file can supply must be a sound, fully-initialized `T`. That holds
 /// for the integer / float primitives and `#[repr(C)]` aggregates of them;
@@ -38,8 +38,8 @@ compile_error!(
 /// silently reading uninitialized-pattern UB. This trait pins the
 /// requirement at the type level: adding a new element type now forces an
 /// explicit, auditable `unsafe impl` rather than compiling by accident.
-/// (Equivalent in intent to `bytemuck::AnyBitPattern`, kept local to avoid
-/// a new dependency.)
+/// This local trait additionally forbids padding, unlike
+/// `bytemuck::AnyBitPattern`.
 ///
 /// # Safety
 /// Implement only for types where any bit pattern of `size_of::<Self>()`
@@ -415,21 +415,18 @@ impl<'a> NifStream<'a> {
 
     // ── Bulk reads (geometry hot path) ────────────────────────────────
     //
-    // Read entire arrays in a single `read_exact` call instead of per-
+    // Read entire arrays in a single copy instead of per-
     // element calls, reducing function call + bounds check overhead from
     // O(N) to O(1) (#291). #833 collapses the previous two-allocation
     // pattern (intermediate `Vec<u8>` byte buffer + final `Vec<T>` typed
     // output via `chunks_exact + map + collect`) into a single allocation
-    // by reading directly into a zero-initialized typed `Vec<T>` cast as
-    // `&mut [u8]`. `T` must be POD (any byte pattern is a valid value)
-    // and have alignment >= 1 — every type we instantiate this for
-    // (`u16`, `u32`, `f32`, `[f32; 2]`, `[f32; 4]`, `NiPoint3`) is POD,
-    // and the cast direction (typed → bytes) only weakens alignment so
-    // the slice fundamentals hold. The compile-error at the top of this
-    // module pins the LE-host requirement.
+    // by copying directly from the cursor's checked input slice into
+    // aligned Vec capacity (#4796). No uninitialized slice is exposed to
+    // a safe Read implementation (#4594). The local AnyBitPattern bound
+    // requires padding-free POD, and the compile-error above pins LE hosts.
 
-    /// Read `count` POD values directly into a zero-initialized typed
-    /// `Vec<T>` via a single `read_exact`, then return the populated
+    /// Read `count` POD values directly into typed `Vec<T>` capacity
+    /// via a single copy from the cursor's input slice, then return the populated
     /// vector. `T: AnyBitPattern` enforces at the type level that any bit
     /// pattern is a sound, padding-free value (the unsafe marker above —
     /// true for `u16`, `u32`, `f32`, `[f32; N]`, and `#[repr(C)]`
@@ -437,7 +434,7 @@ impl<'a> NifStream<'a> {
     ///
     /// `#[must_use]` symmetry with [`Self::allocate_vec`] (#831): a
     /// `stream.read_pod_vec(n)?;` call that drops the binding silently
-    /// runs the full `count * size_of::<T>()` zero-init + read_exact
+    /// runs the full `count * size_of::<T>()` allocation + copy
     /// and discards the result. Use [`Self::skip`] to advance the
     /// cursor without reading. The public `read_*_array` wrappers
     /// carry the attribute independently because `#[must_use]` does
@@ -791,51 +788,98 @@ impl<'a> NifStream<'a> {
 /// The single `unsafe` site behind both [`NifStream::read_pod_vec`] and
 /// `header::read_pod_vec_from_cursor` — they differ only in how they bound
 /// the allocation, which each does before calling here. `byte_count` must
-/// equal `count * size_of::<T>()`; the callers compute it with `checked_mul`
-/// and pass it in rather than recomputing.
+/// equal `count * size_of::<T>()`; this is checked before allocation.
 ///
 /// #3062 / PERF-D8-01 — this used to start from `vec![T::default(); count]`,
 /// whose initialization was discarded by the read. The uninitialized-capacity
 /// optimization avoided that pass, but #4594 correctly rejected passing spare
-/// Vec capacity to a general `Read` implementation. The current path
-/// initializes the final Vec to a valid zero pattern, then reads directly
-/// into it: it keeps the safety guarantee and avoids the separate scratch
-/// buffer and byte copy.
-// #4594 — this function is generic over `io::Read` only to reuse the
-// `read_exact` bounds/progress contract; it is instantiated exclusively with
-// `Cursor<&[u8]>` (both callers), whose `read_exact` is a `memcpy` over the
-// cursor's own slice. `Read` is a SAFE trait: implementations may both read
-// and write the buffer, so `read_exact` over uninitialised memory is UB by
-// std's own docs regardless of how benign our reader is. Initialize the
-// destination values first, then let the reader fill their storage directly;
-// this keeps the soundness fix without a second byte-buffer allocation/copy.
+/// Vec capacity to a general `Read` implementation. #4796 takes the concrete
+/// cursor shared by both callers instead: validate its input slice, copy into
+/// aligned spare capacity, then publish the initialized elements. No safe
+/// reader can observe uninitialized memory, and no scratch or zero-fill is needed.
 pub(crate) fn read_pod_vec_from<T: AnyBitPattern>(
-    reader: &mut impl io::Read,
+    cursor: &mut Cursor<&[u8]>,
     count: usize,
     byte_count: usize,
 ) -> io::Result<Vec<T>> {
-    debug_assert_eq!(byte_count, count * std::mem::size_of::<T>());
-    // AnyBitPattern's safety contract guarantees the zero bit pattern is a
-    // valid value. Initializing the final Vec gives Read a fully initialized
-    // byte slice to fill, with no scratch allocation or copy.
-    // SAFETY: zero is one of the valid bit patterns required by AnyBitPattern.
-    let zero = unsafe { std::mem::zeroed::<T>() };
-    let mut out = vec![zero; count];
-    // SAFETY: `AnyBitPattern` promises that every byte pattern is valid and
-    // has no padding. The Vec owns `count * size_of::<T>() == byte_count`
-    // initialized bytes, and no typed reference to its elements is live while
-    // `read_exact` writes through this byte view. Partial reads still leave
-    // every element valid if `read_exact` returns an error.
-    let bytes = unsafe {
-        std::slice::from_raw_parts_mut(out.as_mut_ptr().cast::<u8>(), byte_count)
-    };
-    reader.read_exact(bytes)?;
+    if count.checked_mul(std::mem::size_of::<T>()) != Some(byte_count) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid POD byte count",
+        ));
+    }
+    let start = usize::try_from(cursor.position())
+        .map_err(|_| io::Error::from(io::ErrorKind::UnexpectedEof))?;
+    let end = start
+        .checked_add(byte_count)
+        .ok_or_else(|| io::Error::from(io::ErrorKind::UnexpectedEof))?;
+    let source = cursor
+        .get_ref()
+        .get(start..end)
+        .ok_or_else(|| io::Error::from(io::ErrorKind::UnexpectedEof))?;
+    let mut out = Vec::<T>::with_capacity(count);
+    // SAFETY: source is a checked initialized slice of exactly byte_count
+    // bytes. The fresh Vec owns non-overlapping capacity for count aligned
+    // elements, whose checked byte size equals byte_count. Copying through
+    // u8 pointers imposes no alignment on the input. Every copied bit pattern
+    // is a valid T by the local AnyBitPattern contract; all elements are
+    // initialized before set_len, and no reference to spare capacity is made.
+    unsafe {
+        std::ptr::copy_nonoverlapping(source.as_ptr(), out.as_mut_ptr().cast::<u8>(), byte_count);
+        out.set_len(count);
+    }
+    cursor.set_position(end as u64);
     Ok(out)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pod_cursor_copy_checks_bounds_before_allocation_and_preserves_position_on_error() {
+        let data = [0xff, 0x34, 0x12, 0x78, 0x56];
+        let mut cursor = Cursor::new(data.as_slice());
+        cursor.set_position(1); // Deliberately unaligned input.
+        assert_eq!(
+            read_pod_vec_from::<u16>(&mut cursor, 2, 4).unwrap(),
+            [0x1234, 0x5678]
+        );
+        assert_eq!(cursor.position(), 5);
+        assert!(
+            read_pod_vec_from::<u32>(&mut cursor, 0, 0)
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(cursor.position(), 5);
+        assert_eq!(
+            read_pod_vec_from::<u16>(&mut cursor, 1, 2)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::UnexpectedEof
+        );
+        assert_eq!(cursor.position(), 5);
+        assert_eq!(
+            read_pod_vec_from::<u16>(&mut cursor, 1, 3)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::InvalidData
+        );
+        assert_eq!(
+            read_pod_vec_from::<u16>(&mut cursor, usize::MAX, 0)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::InvalidData
+        );
+        cursor.set_position(u64::MAX);
+        assert_eq!(
+            read_pod_vec_from::<u16>(&mut cursor, 1, 2)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::UnexpectedEof
+        );
+        assert_eq!(cursor.position(), u64::MAX);
+    }
 
     /// MEM-05 (#1439): every type `read_pod_vec` / `read_pod_vec_from_cursor`
     /// is instantiated for across the crate must carry the `AnyBitPattern`

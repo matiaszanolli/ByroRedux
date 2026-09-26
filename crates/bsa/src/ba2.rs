@@ -1199,6 +1199,44 @@ pub(crate) fn normalize_path(path: &str) -> String {
 mod tests {
     use super::*;
 
+    /// #3659: neither GNRL nor DX10 may inflate while holding the file lock.
+    #[test]
+    fn archive_file_guard_ends_before_both_decompression_paths() {
+        let source = include_str!("ba2.rs");
+        let extract = source
+            .split("pub fn extract(&self, path: &str)")
+            .nth(1)
+            .unwrap()
+            .split("/// Defense-in-depth")
+            .next()
+            .unwrap();
+        let (read, finish) = extract
+            .split_once("drop(file);")
+            .expect("release the archive guard");
+        assert!(read.contains("poisoned.into_inner()"));
+        assert!(read.contains("read_chunk_payload("));
+        assert!(read.contains("read_dx10_chunk_payloads("));
+        assert!(!read.contains("finish_chunk_payload("));
+        assert!(!read.contains("finish_dx10_payload("));
+        assert!(!read.contains("decompress_chunk("));
+        assert!(finish.contains("finish_chunk_payload(payload, self.compression)"));
+        assert!(finish.contains("finish_dx10_payload(info, chunks, self.compression)"));
+        // The read helpers themselves must remain I/O-only too.
+        for (start, end) in [
+            ("fn read_chunk_payload<", "fn finish_chunk_payload("),
+            ("fn read_dx10_chunk_payloads<", "fn finish_dx10_payload("),
+        ] {
+            let helper = source
+                .split(start)
+                .nth(1)
+                .unwrap()
+                .split(end)
+                .next()
+                .unwrap();
+            assert!(!helper.contains("decompress_chunk("));
+        }
+    }
+
     #[test]
     fn normalize_path_works() {
         assert_eq!(

@@ -28,6 +28,7 @@ pub use crate::vulkan::dds::TextureColorSpace;
 
 /// Gamebryo `TexClampMode` address pairs in their on-disk enum order.
 mod lookup;
+mod dynamic_rgba;
 mod release;
 mod upload;
 
@@ -170,6 +171,7 @@ struct TextureEntry {
 /// All textures are stored in a `sampler2D textures[max_textures]` descriptor
 /// array. Two copies exist (per frame-in-flight) for safe descriptor updates.
 pub struct TextureRegistry {
+    dynamic_rgba: dynamic_rgba::DynamicRgbaUploads,
     textures: Vec<TextureEntry>,
     path_map: HashMap<String, TextureHandle>,
     /// Magenta-checker handle — "this entity should have had a
@@ -438,6 +440,7 @@ impl TextureRegistry {
         // no `Drop` impl, so `destroy()` + the subsequent `return` frees the
         // GPU resources exactly once.
         let mut partial = Self {
+            dynamic_rgba: Default::default(),
             textures: Vec::new(),
             path_map: HashMap::new(),
             fallback_handle: 0,
@@ -690,6 +693,7 @@ impl TextureRegistry {
     /// buffer is pending against `bindless_sets[slot]`, so
     /// `apply_descriptor_write` may no longer write into it immediately.
     pub fn note_frame_submitted(&mut self, slot: usize) {
+        self.dynamic_rgba.submitted(slot);
         if self.fence_confirmed_idle_slot == Some(slot) {
             self.fence_confirmed_idle_slot = None;
         }
@@ -833,8 +837,9 @@ impl TextureRegistry {
 
     /// Replace the texture data for an existing handle with new RGBA pixels.
     ///
-    /// Uses deferred destruction: the replaced texture is kept alive until
-    /// `MAX_FRAMES_IN_FLIGHT` frames have elapsed. See issue #134.
+    /// Matching RGBA images are updated in the next frame's command buffer.
+    /// Multiple updates before submission coalesce to the latest pixels.
+    /// Extent/format changes replace the image and defer the old one's destroy.
     pub fn update_rgba(
         &mut self,
         ctx: GpuUploadCtx,
@@ -843,6 +848,11 @@ impl TextureRegistry {
         height: u32,
         pixels: &[u8],
     ) -> Result<()> {
+        let entry = self.textures.get(handle as usize)
+            .ok_or_else(|| anyhow::anyhow!("update_rgba: unknown handle {handle}"))?;
+        if entry.texture.as_ref().is_some_and(|texture| texture.can_update_rgba(width, height)) {
+            return self.dynamic_rgba.queue(handle, width, height, pixels);
+        }
         let current_frame_id = self.current_frame_id;
         let entry = &mut self.textures[handle as usize];
 
@@ -868,6 +878,7 @@ impl TextureRegistry {
             self.staging_pool.as_mut(),
         )
         .context("Failed to create updated dynamic RGBA texture")?;
+        self.dynamic_rgba.updates.remove(&handle);
         if let Some(prev) = entry.texture.replace(new_texture) {
             entry.pending_destroy.push_back((current_frame_id, prev));
         }
@@ -889,38 +900,29 @@ impl TextureRegistry {
     /// In-place mip-0 overwrite of an existing RGBA texture — the
     /// streaming companion to [`Self::update_rgba`].
     ///
-    /// [`Self::update_rgba`] allocates a fresh image + view + bindless
-    /// descriptor write per call (right for occasional content swaps,
-    /// pathological for a per-frame overlay). This writes the pixels into
-    /// the texture the handle already points at: no allocation, no
-    /// rebind, one pooled-staging copy.
-    ///
-    /// # Hazard contract
-    ///
-    /// The caller must guarantee no in-flight frame still samples this
-    /// handle — the HUD's triple-buffer rotation owns that policy. The
-    /// extent must match the texture's creation extent (asserted in
-    /// [`Texture::overwrite_rgba_pixels`] by the caller-supplied
-    /// `width`/`height`, which the overlay keeps fixed at launch).
+    /// Queues a pixel replacement in the frame's own command buffer, with
+    /// the same persistent image and per-frame staging used by `update_rgba`.
+    /// Unlike `update_rgba`, an extent/format mismatch is an error. Graphics
+    /// queue barriers order prior sampling before the copy and new sampling
+    /// after it; callers need no separate image-rotation/fence protocol.
     pub fn write_rgba_inplace(
         &mut self,
-        ctx: GpuUploadCtx,
+        _ctx: GpuUploadCtx,
         handle: TextureHandle,
         width: u32,
         height: u32,
         pixels: &[u8],
     ) -> Result<()> {
-        let TextureRegistry {
-            textures, staging_pool, ..
-        } = self;
-        let entry = textures
+        let entry = self.textures
             .get_mut(handle as usize)
             .ok_or_else(|| anyhow::anyhow!("write_rgba_inplace: unknown handle {handle}"))?;
         let texture = entry
             .texture
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("write_rgba_inplace: handle {handle} has no live texture"))?;
-        texture.overwrite_rgba_pixels(ctx, width, height, pixels, staging_pool.as_mut())
+        anyhow::ensure!(texture.can_update_rgba(width, height),
+            "write_rgba_inplace: extent or format mismatch for handle {handle}");
+        self.dynamic_rgba.queue(handle, width, height, pixels)
     }
 
     /// Number of loaded textures (including fallback).
@@ -1090,6 +1092,7 @@ impl TextureRegistry {
 
     /// Destroy all textures, descriptor pool, and layout.
     pub fn destroy(&mut self, device: &ash::Device, allocator: &SharedAllocator) {
+        self.dynamic_rgba.destroy(device, allocator);
         // #732 — factored the per-entry pending_destroy drain into
         // `drain_pending_destroys` so the App-level shutdown sweep can
         // call the same drain explicitly before `Drop`. Per-texture

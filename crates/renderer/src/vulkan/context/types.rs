@@ -983,6 +983,15 @@ pub struct FrameTimings {
     /// Instance SSBO fill loop (773 × GpuInstance) + `upload_instances`
     /// memcpy + `upload_indirect_draws`. Dominant CPU-side work per frame.
     pub ssbo_build_ns: u64,
+    /// Blend variant discovery, compilation and pipeline-cache persistence.
+    pub pipeline_compile_ns: u64,
+    /// Post-instance parameter construction/uploads and pre-render barriers.
+    pub parameter_upload_ns: u64,
+    /// Fog cluster construction and mapped buffer uploads, excluded from
+    /// `cmd_record_ns` even though they execute during command recording.
+    pub fog_cluster_ns: u64,
+    /// Scratch and acceleration-buffer maintenance after presentation.
+    pub post_present_ns: u64,
     /// `MeshRegistry::rebuild_geometry_ssbo` — the resumable global geometry
     /// SSBO copy (#3298), including its per-frame chunk. Drained from the
     /// registry rather than measured here because the call happens in
@@ -990,8 +999,8 @@ pub struct FrameTimings {
     /// copy on a one-time command buffer, so no GPU timer can bracket it
     /// (#3467). Zero on every frame with no rebuild in flight.
     pub geometry_rebuild_ns: u64,
-    /// `begin_render_pass` through `end_command_buffer` — Vulkan command
-    /// recording for geometry, UI, SVGF, TAA, SSAO, composite.
+    /// Main geometry recording through `end_command_buffer`, including
+    /// geometry and post passes. Excludes separately measured fog preparation.
     pub cmd_record_ns: u64,
     /// `queue_submit` + `queue_present` — driver overhead + vsync stall.
     pub submit_present_ns: u64,

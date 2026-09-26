@@ -118,6 +118,7 @@ fn frame_counter_math_is_wrap_safe() {
 /// `TextureRegistry` without touching Vulkan.
 fn make_registry_for_overflow_test(max_textures: u32, occupied: usize) -> TextureRegistry {
     TextureRegistry {
+        dynamic_rgba: Default::default(),
         textures: (0..occupied)
             .map(|_| TextureEntry {
                 texture: None,

@@ -43,13 +43,79 @@ const COMPOSITE_FRAG_SPV: &[u8] = include_bytes!("../../shaders/composite.frag.s
 pub const MAX_SKY_APERTURES: usize =
     crate::shader_constants::MAX_COMPOSITE_SKY_APERTURES as usize;
 
-/// Camera-relative window plane consumed by the composite sky mask.
+/// Window plane consumed by the composite sky mask. Spare lanes hold a
+/// conservative square in UV space, preserving the 48-byte stride and the
+/// Vulkan minimum 16 KiB uniform-buffer range for all 256 apertures.
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
 pub struct CompositeSkyAperture {
-    pub center: [f32; 4],
+    /// xyz: camera origin in aperture coordinates; w: screen-bound center X.
+    pub camera_local_origin: [f32; 4],
+    /// xy: plane half extents; z: screen-bound center Y; w: screen half size.
     pub half_extents: [f32; 4],
     pub inverse_rotation: [f32; 4],
+}
+
+/// Project the four corners of the aperture's source plane once per frame.
+/// Eye-plane crossings use the whole viewport: dividing a crossing edge by
+/// W would produce an unbounded rectangle. No far/near depth cull is applied
+/// because the shader's plane contract uses ray distance, not clip depth.
+pub(super) fn prepare_sky_aperture(
+    volume: &super::volumetrics::GpuFogVolume,
+    camera: byroredux_core::math::Vec3,
+    render_origin: byroredux_core::math::Vec3,
+    view_proj: byroredux_core::math::Mat4,
+) -> Option<CompositeSkyAperture> {
+    use byroredux_core::math::{Quat, Vec2, Vec3};
+    let center = Vec3::from_slice(&volume.center_shape[..3]);
+    let half = Vec2::from_slice(&volume.half_extents_extinction[..2]);
+    let inverse = Quat::from_array(volume.inverse_rotation);
+    if !center.is_finite()
+        || !half.is_finite()
+        || half.min_element() <= 0.0
+        || !inverse.is_finite()
+        || !camera.is_finite()
+    {
+        return None;
+    }
+    let origin = inverse * (camera - center);
+    let rotation = inverse.conjugate();
+    let corners = [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)].map(|(x, y)| {
+        let point = center - render_origin + rotation * Vec3::new(x * half.x, y * half.y, 0.0);
+        view_proj * point.extend(1.0)
+    });
+    let mut lo = Vec2::ZERO;
+    let mut hi = Vec2::ONE;
+    if corners.iter().all(|p| p.is_finite()) {
+        if corners.iter().all(|p| p.w <= 0.0) {
+            return None;
+        }
+        if corners.iter().all(|p| p.w > 1.0e-5) {
+            lo = Vec2::splat(f32::INFINITY);
+            hi = Vec2::splat(f32::NEG_INFINITY);
+            for p in corners {
+                let uv = Vec2::new(p.x, p.y) / p.w * 0.5 + Vec2::splat(0.5);
+                lo = lo.min(uv);
+                hi = hi.max(uv);
+            }
+            // Outward padding covers projection/rotation rounding at the
+            // exact aperture edge. Clamp only after the off-screen reject.
+            lo -= Vec2::splat(2.0e-4);
+            hi += Vec2::splat(2.0e-4);
+            if hi.x < 0.0 || hi.y < 0.0 || lo.x > 1.0 || lo.y > 1.0 {
+                return None;
+            }
+            lo = lo.max(Vec2::ZERO);
+            hi = hi.min(Vec2::ONE);
+        }
+    }
+    let screen_center = (lo + hi) * 0.5;
+    let screen_half_size = (hi - lo).max_element() * 0.5 + 1.0e-6;
+    Some(CompositeSkyAperture {
+        camera_local_origin: [origin.x, origin.y, origin.z, screen_center.x],
+        half_extents: [half.x, half.y, screen_center.y, screen_half_size],
+        inverse_rotation: volume.inverse_rotation,
+    })
 }
 
 /// Composite parameter UBO — fog state + sky rendering parameters.
@@ -1505,6 +1571,118 @@ mod composite_params_layout_tests {
     use std::mem::{offset_of, size_of};
 
     #[test]
+    fn aperture_projection_rejects_offscreen_and_behind_camera_planes() {
+        use byroredux_core::math::{Mat4, Vec3};
+        let projection = Mat4::perspective_rh(1.0, 1.5, 0.1, 1000.0);
+        let mut volume = super::super::volumetrics::GpuFogVolume::default();
+        volume.inverse_rotation = [0.0, 0.0, 0.0, 1.0];
+        volume.half_extents_extinction = [1.0, 2.0, 0.5, 0.0];
+        for center in [[100.0, 0.0, -10.0, 2.0], [0.0, 0.0, 10.0, 2.0]] {
+            volume.center_shape = center;
+            assert!(prepare_sky_aperture(&volume, Vec3::ZERO, Vec3::ZERO, projection).is_none());
+        }
+        volume.center_shape = [0.0, 0.0, -10.0, 2.0];
+        let aperture = prepare_sky_aperture(&volume, Vec3::ZERO, Vec3::ZERO, projection).unwrap();
+        assert!(
+            aperture.half_extents[3] < 0.5,
+            "visible plane needs a bounded screen region"
+        );
+        assert_eq!(aperture.camera_local_origin[..3], [0.0, 0.0, 10.0]);
+    }
+
+    #[test]
+    fn aperture_screen_bounds_preserve_brute_force_ray_hits() {
+        use byroredux_core::math::{Mat4, Quat, Vec2, Vec3};
+        let camera = Vec3::new(4100.0, 20.0, 8190.0);
+        let render_origin = Vec3::new(4096.0, 0.0, 8192.0);
+        let relative_camera = camera - render_origin;
+        let view = Mat4::look_at_rh(relative_camera, relative_camera - Vec3::Z, Vec3::Y);
+        let mut hits = 0;
+        for y_flip in [1.0, -1.0] {
+            let mut projection = Mat4::perspective_rh(1.0, 1.5, 0.1, 1000.0);
+            projection.y_axis.y *= y_flip;
+            let vp = projection * view;
+            let inverse_vp = vp.inverse();
+            for angle in [0.0, 0.4, 1.45] {
+                let rotation = Quat::from_rotation_y(angle);
+                for x in [-30.0, 0.0, 12.0] {
+                    for z in [-30.0, -0.01, 30.0] {
+                        let center = camera + Vec3::new(x, 0.0, z);
+                        let mut volume = super::super::volumetrics::GpuFogVolume::default();
+                        volume.center_shape = [center.x, center.y, center.z, 2.0];
+                        volume.half_extents_extinction = [8.0, 5.0, 1.0, 0.0];
+                        volume.inverse_rotation = rotation.conjugate().to_array();
+                        let aperture = prepare_sky_aperture(&volume, camera, render_origin, vp);
+                        let local_origin = rotation.conjugate() * (camera - center);
+                        for py in 0..37 {
+                            for px in 0..65 {
+                                let uv = Vec2::new(px as f32 / 64.0, py as f32 / 36.0);
+                                let world =
+                                    inverse_vp * (uv * 2.0 - Vec2::ONE).extend(1.0).extend(1.0);
+                                let ray = (world.truncate() / world.w.abs().max(1.0e-6)
+                                    - relative_camera)
+                                    .normalize();
+                                let local_ray = rotation.conjugate() * ray;
+                                if local_ray.z.abs() <= 1.0e-5 {
+                                    continue;
+                                }
+                                let reach = -local_origin.z / local_ray.z;
+                                let hit = local_origin + reach * local_ray;
+                                if reach <= 0.05
+                                    || reach > 1000.0
+                                    || hit.x.abs() > 8.0
+                                    || hit.y.abs() > 5.0
+                                {
+                                    continue;
+                                }
+                                hits += 1;
+                                let prepared =
+                                    aperture.as_ref().expect("a visible ray hit was culled");
+                                let screen_center = Vec2::new(
+                                    prepared.camera_local_origin[3],
+                                    prepared.half_extents[2],
+                                );
+                                assert!(
+                                    (uv - screen_center).abs().max_element()
+                                        <= prepared.half_extents[3],
+                                    "screen bound lost hit at {uv:?}, angle={angle} center={center:?}"
+                                );
+                                assert!(
+                                    (Vec3::from_slice(&prepared.camera_local_origin[..3])
+                                        - local_origin)
+                                        .length()
+                                        < 1.0e-4
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            hits > 1000,
+            "comparison needs substantial visible coverage: {hits}"
+        );
+    }
+
+    #[test]
+    fn aperture_screen_reject_precedes_shader_rotation() {
+        let shader = include_str!("../../shaders/composite.frag");
+        let body = shader
+            .split("bool skyThroughAuthoredWindow(")
+            .nth(1)
+            .unwrap()
+            .split("void main()")
+            .next()
+            .unwrap();
+        let reject = body.find("greaterThan(abs(uv - screenCenter)").unwrap();
+        let rotate = body.find("rotateByApertureQuaternion(").unwrap();
+        assert!(reject < rotate);
+        assert_eq!(body.matches("rotateByApertureQuaternion(").count(), 1);
+        assert!(body.contains("vec3 localOrigin = aperture.camera_local_origin.xyz;"));
+    }
+
+    #[test]
     fn composite_params_is_16_byte_aligned_std140_shape() {
         // Every field is vec4 (16 B) or mat4 (64 B = 4 × vec4). std140
         // requires vec4 alignment on both, so offsets are trivially
@@ -1561,6 +1739,9 @@ mod composite_params_layout_tests {
         assert_eq!(offset_of!(CompositeParams, sky_aperture_count), 496);
         assert_eq!(offset_of!(CompositeParams, sky_apertures), 512);
         assert_eq!(size_of::<CompositeSkyAperture>(), 48);
+        assert_eq!(offset_of!(CompositeSkyAperture, camera_local_origin), 0);
+        assert_eq!(offset_of!(CompositeSkyAperture, half_extents), 16);
+        assert_eq!(offset_of!(CompositeSkyAperture, inverse_rotation), 32);
         assert_eq!(
             size_of::<CompositeParams>(),
             512 + MAX_SKY_APERTURES * 48,

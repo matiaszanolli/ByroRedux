@@ -620,12 +620,22 @@ inside the render driver, and it is bounded three times (#3540, #4180):
 
 | Bound | Constant / symbol | Value | What it stops |
 |---|---|---|---|
-| Fit projection | `predicates.rs::plan_static_blas_restore` | — | Declines the pass **entirely** when the visible set cannot fit the budget: restoring anything would only displace something else the same frame needs. This is the one code path that can silently leave RT geometry missing on an over-budget cell. |
+| Required residency | `predicates.rs::plan_static_blas_restore` | — | Declines the pass when already-resident BLAS required by the upcoming TLAS consume the budget. It does **not** project the size of the missing visible set. The builder admits actual allocations under the budget; the current working set is protected from eviction. |
 | Per-frame cap | `MAX_STATIC_BLAS_RESTORES_PER_FRAME` | 256 | Bounds how many rebuilds one frame may issue. Without it, Starfield's `citycydoniamainlevel` sat single-threaded on frame 0 for ~10 minutes with RSS oscillating 12 → 20.6 GB. |
 | Time bound | the caller's `deadline` (`step_streaming`'s, else `STREAMING_APPLY_BUDGET`) | 16 ms allowance, shared | Rebuilds in chunks of 1, 2, 4, … and stops between chunks once the deadline passes; the first chunk is always admitted. A count cap alone admitted ~100 ms stalls: restores measured ~0.2–0.5 ms per mesh on the FNV `grid-soak` (#4180). |
 
 Both are in `acceleration/constants.rs` / `acceleration/predicates.rs` and had
 no row here until #3998.
+
+The required-residency policy replaced the mean-size fit projection in
+`b9e961eeb`. It allows small missing meshes to be restored even when large
+unused meshes inflate the resident average. As the camera moves, handles can
+leave the protected working set, become idle eviction candidates, and later
+need restoration again. The count/deadline limits bound each recovery slice;
+they do not prove that sustained eviction/rebuild churn is absent. #4795 still
+requires an old/new moving-camera comparison under a constrained BLAS budget,
+including restore/eviction counts, RT completeness and frame-time percentiles,
+before selecting any re-admission hysteresis.
 
 ---
 

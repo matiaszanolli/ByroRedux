@@ -835,6 +835,15 @@ pub struct CpuFrameTimings {
     /// Instance SSBO fill + upload (memcpy + indirect draws).
     /// Dominant CPU-side work per frame on dense cells.
     pub ssbo_build_ms: f32,
+    /// Blend variant discovery, compilation and pipeline-cache persistence.
+    pub pipeline_compile_ms: f32,
+    /// Post-instance parameter construction/uploads and pre-render barriers.
+    pub parameter_upload_ms: f32,
+    /// Fog cluster construction and mapped uploads. This is excluded from
+    /// `cmd_record_ms`, although it runs during the recording interval.
+    pub fog_cluster_ms: f32,
+    /// Scratch and acceleration-buffer maintenance after presentation.
+    pub post_present_ms: f32,
     /// The resumable global-geometry SSBO rebuild (#3298), including
     /// its per-frame chunk. Its own constant is documented as
     /// "chosen conservatively pending live tuning"; this is the
@@ -843,8 +852,8 @@ pub struct CpuFrameTimings {
     /// `build_render_data`, material interning and the UI tick
     /// (#3467). Zero on frames with no rebuild in flight.
     pub geometry_rebuild_ms: f32,
-    /// All command-buffer recording between begin_render_pass
-    /// and end_command_buffer.
+    /// Main geometry recording through `end_command_buffer`, including
+    /// geometry and post passes, excluding separately measured fog preparation.
     pub cmd_record_ms: f32,
     /// `vkQueueSubmit` + `vkQueuePresentKHR` — driver overhead
     /// plus any vsync / present-mode-FIFO stall. The other place
@@ -895,12 +904,11 @@ pub struct CpuFrameTimings {
     /// manager (Ruffle SWF) tick + texture upload, geometry SSBO
     /// rebuild check. Phase 15.
     pub rof_pre_draw_ms: f32,
-    /// Wall time of the `draw_frame` CPU call itself. Subtract
-    /// the sum of `acquire_ms + fence_wait_ms + cmd_record_ms +
-    /// ssbo_build_ms + tlas_build_ms + submit_present_ms` to see
-    /// how much hidden host wait the GPU brackets miss
-    /// (egui set_textures' internal queue submit, implicit
-    /// barriers, etc.). Phase 15.
+    /// Wall time of the `draw_frame` CPU call itself. Its sub-buckets are
+    /// acquire, fence wait, SSBO build, pipeline compile, parameter upload,
+    /// TLAS build, fog cluster, command recording, submit/present and
+    /// post-present maintenance. The residual also includes other host work
+    /// (for example egui texture setup); it is not proof of a driver wait.
     pub rof_draw_call_ms: f32,
     /// `render_one_frame`'s post-draw_frame phase: FrameTimings
     /// fold into `CpuFrameTimings`, bench accumulator update,

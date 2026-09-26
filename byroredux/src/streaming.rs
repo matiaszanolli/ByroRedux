@@ -1555,7 +1555,9 @@ fn pre_parse_cell(
     //     queue on the mutex and pay both the lock-acquire overhead
     //     and a context switch per worker — the worst case shape for
     //     a short-blob hot path. Doing the I/O serially on one thread
-    //     pays zero lock contention.
+    //     avoids contention between the parse workers. Both BSA and BA2
+    //     release the file mutex before zlib/LZ4 decompression (#3659), so
+    //     concurrent main-thread extracts wait only for seek/read, not inflate.
     //   Phase 2 — PARALLEL parse + import on the `(path, bytes)` pairs.
     //     The CPU-bound parse / import work fans out cleanly across
     //     rayon workers without any shared-mutex bottleneck.
@@ -1571,8 +1573,8 @@ fn pre_parse_cell(
     // the negative result and downstream placements skip silently.
     let model_paths: Vec<String> = model_paths.into_iter().collect();
 
-    // Phase 1: serial extract. One BSA mutex acquire per NIF, no
-    // contention. `None` for paths the BSA doesn't carry (skipped
+    // Phase 1: serial extract. One archive mutex acquire per NIF, no
+    // contention between parse workers. `None` for absent paths (skipped
     // silently — same semantics as the pre-#877 inline check).
     let extracted: Vec<(String, Option<Vec<u8>>)> = model_paths
         .into_iter()

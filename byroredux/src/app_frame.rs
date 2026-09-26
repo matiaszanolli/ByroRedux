@@ -653,6 +653,10 @@ impl App {
                         cpu_t.fence_wait_ms = ft.fence_wait_ns as f32 * NS_TO_MS;
                         cpu_t.tlas_build_ms = ft.tlas_build_ns as f32 * NS_TO_MS;
                         cpu_t.ssbo_build_ms = ft.ssbo_build_ns as f32 * NS_TO_MS;
+                        cpu_t.pipeline_compile_ms = ft.pipeline_compile_ns as f32 * NS_TO_MS;
+                        cpu_t.parameter_upload_ms = ft.parameter_upload_ns as f32 * NS_TO_MS;
+                        cpu_t.fog_cluster_ms = ft.fog_cluster_ns as f32 * NS_TO_MS;
+                        cpu_t.post_present_ms = ft.post_present_ns as f32 * NS_TO_MS;
                         cpu_t.geometry_rebuild_ms = ft.geometry_rebuild_ns as f32 * NS_TO_MS;
                         cpu_t.cmd_record_ms = ft.cmd_record_ns as f32 * NS_TO_MS;
                         cpu_t.submit_present_ms = ft.submit_present_ns as f32 * NS_TO_MS;
@@ -669,6 +673,10 @@ impl App {
                             b.fence_wait_ns += ft.fence_wait_ns;
                             b.tlas_build_ns += ft.tlas_build_ns;
                             b.ssbo_build_ns += ft.ssbo_build_ns;
+                            b.pipeline_compile_ns += ft.pipeline_compile_ns;
+                            b.parameter_upload_ns += ft.parameter_upload_ns;
+                            b.fog_cluster_ns += ft.fog_cluster_ns;
+                            b.post_present_ns += ft.post_present_ns;
                             b.geometry_rebuild_ns += ft.geometry_rebuild_ns;
                             b.cmd_record_ns += ft.cmd_record_ns;
                             b.submit_present_ns += ft.submit_present_ns;

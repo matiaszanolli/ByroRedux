@@ -865,6 +865,7 @@ impl VulkanContext {
         // The subset check after the walk also lets us skip the
         // creation pass entirely when every seen key is cached —
         // the common steady-state path.
+        let pipeline_t0 = Instant::now();
         self.scratch.blend_seen_scratch.clear();
         for batch in &batches {
             if let PipelineKey::Blended {
@@ -909,6 +910,7 @@ impl VulkanContext {
                 .collect();
             let mut created = 0usize;
             for (src, dst, wireframe, preserve_opaque_gbuffer) in missing {
+                let variant_t0 = Instant::now();
                 match self.get_or_create_blend_pipeline(
                     src,
                     dst,
@@ -922,6 +924,11 @@ impl VulkanContext {
                          draws using this combo will fall back to opaque pipeline"
                     ),
                 }
+                log::info!(
+                    "Blend pipeline src={src} dst={dst} wireframe={wireframe} \
+                     preserve_opaque_gbuffer={preserve_opaque_gbuffer}: {:.3} ms",
+                    variant_t0.elapsed().as_secs_f64() * 1000.0,
+                );
             }
             // A blend variant is compiled from the full triangle.frag the
             // first time its combo becomes visible; against a cold driver
@@ -936,6 +943,8 @@ impl VulkanContext {
                 super::helpers::save_pipeline_cache_if_grown(&self.device, self.pipeline_cache);
             }
         }
+        t.pipeline_compile_ns = pipeline_t0.elapsed().as_nanos() as u64;
+        let parameter_t0 = Instant::now();
 
         // Upload composite params (fog + sky) up-front so the bulk host
         // barrier below covers this UBO's HOST_WRITE too (#909 /
@@ -1218,6 +1227,7 @@ impl VulkanContext {
             unsafe { wca.clear_pre_render_pass(&self.device, cmd, frame) };
         }
 
+        t.parameter_upload_ns = parameter_t0.elapsed().as_nanos() as u64;
         BuildInstancesOutput {
             gpu_instances,
             previous_models,

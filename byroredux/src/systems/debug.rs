@@ -119,6 +119,10 @@ fn gpu_breakdown(cov: &SkinCoverageStats) -> String {
 /// Format the CPU-side per-phase wall-clock breakdown from
 /// [`CpuFrameTimings`] (populated unconditionally every frame). This is the
 /// decisive localizer for a multi-second frame whose GPU passes are cheap:
+/// `pipeline_compile` identifies lazy blend compilation/cache persistence;
+/// `fog_cluster` identifies CPU fog preparation and is excluded from
+/// `cmd_record`. The residual in `rof_draw_call` includes other host work,
+/// so it must not be attributed to driver waits without further evidence.
 /// `fence_wait` large ⇒ the GPU is hung on a PRIOR submission (the host is
 /// blocked in `wait_for_fences` until the driver resets); `atw_post` large
 /// with small `fence_wait` and `rof_*` ⇒ the stall is in the remaining
@@ -143,6 +147,7 @@ fn gpu_breakdown(cov: &SkinCoverageStats) -> String {
 fn cpu_breakdown(t: &CpuFrameTimings) -> String {
     format!(
         "fence_wait={:.0} acquire={:.0} submit_present={:.0} ssbo_build={:.0} \
+         pipeline_compile={:.0} parameter_upload={:.0} fog_cluster={:.0} post_present={:.0} \
          geom_rebuild={:.0} tlas_build={:.0} cmd_record={:.0} rof_pre_draw={:.0} \
          rof_draw_call={:.0} rof_post_draw={:.0} atw_pre={:.0} atw_scheduler={:.0} \
          atw_post={:.0} between_frames={:.0}",
@@ -150,6 +155,10 @@ fn cpu_breakdown(t: &CpuFrameTimings) -> String {
         t.acquire_ms,
         t.submit_present_ms,
         t.ssbo_build_ms,
+        t.pipeline_compile_ms,
+        t.parameter_upload_ms,
+        t.fog_cluster_ms,
+        t.post_present_ms,
         t.geometry_rebuild_ms,
         t.tlas_build_ms,
         t.cmd_record_ms,
@@ -354,4 +363,43 @@ mod tests {
              compositor's fault or mine?' (#3692), got: {line}"
         );
     }
+
+    #[test]
+    fn cpu_preparation_costs_reach_every_telemetry_consumer() {
+        let timings = CpuFrameTimings {
+            pipeline_compile_ms: 11.0,
+            parameter_upload_ms: 12.0,
+            fog_cluster_ms: 13.0,
+            post_present_ms: 14.0,
+            ..Default::default()
+        };
+        let line = cpu_breakdown(&timings);
+        let frame = include_str!("../app_frame.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .unwrap();
+        let bench = include_str!("../app_events.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .unwrap();
+        let metrics = include_str!("metrics.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .unwrap();
+        for (name, value) in [
+            ("pipeline_compile", 11),
+            ("parameter_upload", 12),
+            ("fog_cluster", 13),
+            ("post_present", 14),
+        ] {
+            assert!(line.contains(&format!("{name}={value}")), "{line}");
+            assert!(frame.contains(&format!("cpu_t.{name}_ms = ft.{name}_ns")));
+            assert!(frame.contains(&format!("b.{name}_ns += ft.{name}_ns")));
+            assert!(bench.contains(&format!("let {name}_ms = ft.{name}_ns")));
+            assert!(bench.contains(&format!("{name}_ms={{:.2}}")));
+            assert!(metrics.contains(&format!("\"{name}\".to_string(), cpu.{name}_ms")));
+        }
+    }
+
+
 }

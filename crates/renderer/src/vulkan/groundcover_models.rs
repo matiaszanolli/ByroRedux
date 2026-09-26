@@ -926,6 +926,49 @@ fn barrier(
 mod tests {
     use super::*;
 
+    /// #4866: decoding a timer pair alone does not prove the GPU work writes it.
+    #[test]
+    fn model_timer_encloses_all_phases_and_stats_copy() {
+        let source = crate::source_scan::production_text(include_str!("groundcover_models.rs"));
+        let start = source
+            .find("timers.cmd_groundcover_models_start(device, cmd, frame)")
+            .expect("model tier must begin its GPU bracket");
+        let end = source
+            .find("timers.cmd_groundcover_models_end(device, cmd, frame)")
+            .expect("model tier must end its GPU bracket");
+        let bracket = &source[start..end];
+        for command in [
+            "(GROUNDCOVER_MODEL_PHASE_PLACE, scatter.chunk_count)",
+            "(GROUNDCOVER_MODEL_PHASE_LAYOUT, 1)",
+            "(GROUNDCOVER_MODEL_PHASE_EMIT, scatter.chunk_count)",
+            "device.cmd_dispatch(cmd, groups, 1, 1)",
+            "device.cmd_copy_buffer(",
+        ] {
+            assert!(
+                bracket.contains(command),
+                "GPU bracket must include {command}"
+            );
+        }
+        let timers = crate::source_scan::production_text(include_str!("gpu_timers.rs"));
+        let start_method = timers
+            .split("pub fn cmd_groundcover_models_start(")
+            .nth(1)
+            .unwrap()
+            .split("pub fn cmd_groundcover_models_end(")
+            .next()
+            .unwrap();
+        assert!(start_method.contains("vk::PipelineStageFlags::COMPUTE_SHADER"));
+        let end_method = timers
+            .split("pub fn cmd_groundcover_models_end(")
+            .nth(1)
+            .unwrap()
+            .split("pub fn cmd_volumetrics_inject_start(")
+            .next()
+            .unwrap();
+        assert!(end_method.contains("vk::PipelineStageFlags::BOTTOM_OF_PIPE"));
+        assert!(end_method.contains("self.active_bits[frame] |= BIT_GROUNDCOVER_MODELS"));
+    }
+
     #[test]
     fn host_mirrors_match_the_shader_strides() {
         assert_eq!(std::mem::size_of::<GpuGroundCoverModelRecord>(), 48);

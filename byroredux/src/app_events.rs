@@ -1063,6 +1063,10 @@ impl ApplicationHandler for App {
                     // device one.
                     let cpu_tlas_ms = ft.tlas_build_ns as f64 / n / 1e6;
                     let ssbo_ms = ft.ssbo_build_ns as f64 / n / 1e6;
+                    let pipeline_compile_ms = ft.pipeline_compile_ns as f64 / n / 1e6;
+                    let parameter_upload_ms = ft.parameter_upload_ns as f64 / n / 1e6;
+                    let fog_cluster_ms = ft.fog_cluster_ns as f64 / n / 1e6;
+                    let post_present_ms = ft.post_present_ns as f64 / n / 1e6;
                     // #3467 — the resumable geometry-rebuild slice. Reported
                     // here so `GEOMETRY_REBUILD_CHUNK_BYTES` can finally be
                     // re-picked against a measured number instead of the
@@ -1196,7 +1200,8 @@ impl ApplicationHandler for App {
                          frame_max_over_p95={:.1} \
                          brd_ms={:.2} ui_ms={:.2} draw_ms={:.2} \
                          [fence={:.2} cpu_tlas_ms={:.2} ssbo={:.2} geom_rebuild={:.2} \
-                         cmd={:.2} submit={:.2}] \
+                         cmd={:.2} submit={:.2} pipeline_compile_ms={:.2} \
+                         parameter_upload_ms={:.2} fog_cluster_ms={:.2} post_present_ms={:.2}] \
                          [gpu_skin_disp={:.3} gpu_blas_refit={:.3} gpu_taa={:.3} \
                          gpu_upscale={:.3} gpu_main_render={:.3} gpu_svgf={:.3} \
                          gpu_composite={:.3} gpu_ssao={:.3} gpu_bloom={:.3} \
@@ -1236,6 +1241,10 @@ impl ApplicationHandler for App {
                         geom_rebuild_ms,
                         cmd_ms,
                         submit_ms,
+                        pipeline_compile_ms,
+                        parameter_upload_ms,
+                        fog_cluster_ms,
+                        post_present_ms,
                         gpu[0],
                         gpu[1],
                         gpu[2],
@@ -1730,5 +1739,37 @@ mod app_scratch_telemetry_coverage_tests {
             "\n{}\n(add a row in `about_to_wait`, or a NOT_SCRATCH entry saying why it is not a scratch — #4610)",
             problems.join("\n")
         );
+    }
+}
+
+#[cfg(test)]
+mod screenshot_timing_tests {
+    use super::*;
+
+    #[test]
+    fn screenshot_waits_publish_all_cpu_phases_before_returning() {
+        let source = include_str!("app_events.rs");
+        let screenshot = source
+            .split("if let Some(path) = self.screenshot_path.clone() {")
+            .nth(1)
+            .unwrap()
+            .split("screenshot: timed out")
+            .next()
+            .unwrap();
+        for branch in screenshot.split("return; // keep").take(2) {
+            assert!(branch.contains("record_about_to_wait_timings("));
+            for phase in ["atw_pre_ns", "atw_scheduler_ns", "atw_post_t0"] {
+                assert!(branch.contains(phase));
+            }
+        }
+        assert_eq!(screenshot.matches("return; // keep").count(), 2);
+        let mut world = byroredux_core::ecs::World::new();
+        world.insert_resource(byroredux_core::ecs::CpuFrameTimings::default());
+        let started = Instant::now() - std::time::Duration::from_millis(1);
+        record_about_to_wait_timings(&world, 2_000_000, 3_000_000, started);
+        let timing = world.resource::<byroredux_core::ecs::CpuFrameTimings>();
+        assert_eq!(timing.atw_pre_ms, 2.0);
+        assert_eq!(timing.atw_scheduler_ms, 3.0);
+        assert!(timing.atw_post_ms >= 1.0);
     }
 }

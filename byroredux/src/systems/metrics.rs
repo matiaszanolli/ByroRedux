@@ -240,10 +240,9 @@ pub fn metrics_sample_system(world: &World, _dt: f32) {
     if let Some(cpu) = world.try_resource::<CpuFrameTimings>() {
         // Names match the `FrameTimings` field names so a reader
         // can grep one term across both the bench output and the
-        // overlay panel. Phase 10 atw_* split `between_frames`
-        // into pre / scheduler / post — should sum close to
-        // between_frames since about_to_wait runs entirely
-        // inside that gap.
+        // overlay panel. The atw_* phases are sequential siblings; atw_post
+        // contains render_one_frame. between_frames measures the preceding
+        // gap outside render_one_frame, not the complete about_to_wait call.
         cpu_pass_ms.insert("acquire".to_string(), cpu.acquire_ms);
         cpu_pass_ms.insert("atw_post".to_string(), cpu.atw_post_ms);
         cpu_pass_ms.insert("atw_pre".to_string(), cpu.atw_pre_ms);
@@ -255,6 +254,10 @@ pub fn metrics_sample_system(world: &World, _dt: f32) {
         cpu_pass_ms.insert("rof_post_draw".to_string(), cpu.rof_post_draw_ms);
         cpu_pass_ms.insert("rof_pre_draw".to_string(), cpu.rof_pre_draw_ms);
         cpu_pass_ms.insert("ssbo_build".to_string(), cpu.ssbo_build_ms);
+        cpu_pass_ms.insert("pipeline_compile".to_string(), cpu.pipeline_compile_ms);
+        cpu_pass_ms.insert("parameter_upload".to_string(), cpu.parameter_upload_ms);
+        cpu_pass_ms.insert("fog_cluster".to_string(), cpu.fog_cluster_ms);
+        cpu_pass_ms.insert("post_present".to_string(), cpu.post_present_ms);
         // #3467 — exported so a bench run can chart the rebuild slice that
         // `GEOMETRY_REBUILD_CHUNK_BYTES` is supposed to bound.
         cpu_pass_ms.insert("geometry_rebuild".to_string(), cpu.geometry_rebuild_ms);

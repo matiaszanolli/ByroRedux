@@ -75,6 +75,26 @@ impl VulkanContext {
             }
         }
 
+        // SAFETY: begin_frame followed this slot's fence wait; cmd is now
+        // recording outside a render pass on the graphics queue. Submission
+        // success is acknowledged by texture_registry.note_frame_submitted.
+        let upload_result = unsafe {
+            self.texture_registry.record_pending_rgba_uploads(
+                &self.device,
+                self.allocator.as_ref().expect("live renderer allocator"),
+                cmd,
+                frame,
+            )
+        };
+        if let Err(e) = upload_result {
+            // SAFETY: this acquired frame has not been submitted. Replacing
+            // its acquire semaphore follows the same recovery as begin failure.
+            let _ = unsafe {
+                self.frame_sync.recreate_image_available_for_frame(&self.device, frame)
+            };
+            return Err(e);
+        }
+
         // 8 color attachments + depth. Order must match the render pass:
         //   0 HDR, 1 normal, 2 motion, 3 mesh_id, 4 raw_indirect, 5 albedo,
         //   6 fsr_reactive, 7 fsr_transparency, 8 depth.

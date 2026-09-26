@@ -891,7 +891,8 @@ mod tests {
     /// authored Show Sky interior background gate adds one (56), and the
     /// bounded-opening depth probes add seventeen more, then the interior
     /// underwater-sun guard adds one (74). Authored window-plane intersection
-    /// and its bounded surface-depth gate add fourteen (88). Pins the
+    /// and its bounded surface-depth gate add fourteen (88). The projected
+    /// aperture screen-bound reject adds one (89, #4806). Pins the
     /// current count so a future stale-recompile of this file fails
     /// loudly instead of shipping silently, the same failure mode #1447
     /// fixed for `CameraUBO` size.
@@ -900,8 +901,8 @@ mod tests {
         let spv = include_bytes!("../../shaders/composite.frag.spv");
         let count = count_branch_conditionals(spv).expect("reflect composite.frag.spv");
         assert_eq!(
-            count, 88,
-            "composite.frag.spv has {count} OpBranchConditional instructions, expected 88 — \
+            count, 89,
+            "composite.frag.spv has {count} OpBranchConditional instructions, expected 89 — \
              the committed .spv looks stale relative to composite.frag; recompile it \
              (glslangValidator -V composite.frag -o composite.frag.spv from \
              crates/renderer/shaders). The raw correctness-debug guard is intentionally \

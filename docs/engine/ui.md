@@ -117,7 +117,7 @@ offscreen wgpu TextureTarget (RGBA8) on Ruffle's own wgpu/Vulkan device
 RGBA pixel buffer (cached; only re-emitted when `dirty`)
         │
         ▼  byroredux::app_frame → texture_registry.update_rgba(ui_texture_handle, …)
-existing Vulkan VkImage replaced in place (deferred-destroy of the old one)
+queued pixels copied into the existing VkImage by the next frame submission
         │
         ▼  presentation pass: fullscreen tone-map triangle writes the swapchain
         ▼  then bind the overlay pipeline (no depth, alpha blend, bindless sampler)
@@ -413,15 +413,19 @@ ordinary entry in the renderer's `TextureRegistry`:
 - Each frame, when `UiManager::render()` returns a fresh buffer, the main
   loop calls `texture_registry.update_rgba(handle, w, h, pixels)`.
 
-`update_rgba` **replaces the texture in place** (rebuilding the `VkImage`
-from the new RGBA) and uses **deferred destruction** (issue #134): the
-replaced image is parked on a per-entry `pending_destroy` ring and only
-freed once `MAX_FRAMES_IN_FLIGHT` frames have elapsed (drained via
-`tick_deferred_destroy`). That is what makes per-frame UI texture updates
-stall-free — without it, every UI frame would need a `device_wait_idle`
-to know the previous frame finished sampling the old texture before
-freeing it. The bindless descriptor slot reactivates on the descriptor
-write that `update_rgba` queues.
+For matching single-mip RGBA images, `update_rgba` queues the latest pixels
+in a retained CPU buffer. After the frame-slot fence wait, the renderer copies
+them into that slot's retained staging arena and records the image transfer
+at the start of the frame command buffer. Graphics-queue barriers order prior
+sampling, the overwrite, and subsequent sampling. The image, image view and
+bindless descriptor stay fixed; steady updates require no one-shot submission
+or upload fence wait (#3429). Updates coalesce until recording and are consumed
+only after a successful frame submission, so an abandoned frame retries them.
+
+An extent/format change still creates a replacement image. The old image enters
+the existing deferred-destroy ring and descriptor writes follow the per-slot
+fence protocol. Initial registration and these resize/format replacements
+still use the synchronous upload path.
 
 The fullscreen quad mesh itself is registered once via
 `VulkanContext::register_ui_quad()` (called from `scene.rs`), which uploads
@@ -893,9 +897,8 @@ ids (`Health` / `ActionPoints`) through `PlayerVitals` each load —
 real-content entity carried them and the bars always drew full. The driver
 registers **three**
 overlay textures, and rotates uploads across them
-(`Texture::overwrite_rgba_pixels` / `write_rgba_inplace` — in-place mip-0
-copies, no image/view/descriptor churn; `TextureRegistry::update_rgba`
-reallocates all three per call and is not viable per frame). A change
+(`write_rgba_inplace` queues mip-0 copies through the same frame submission
+path as `update_rgba`, with no image/view/descriptor churn). A change
 signature (bar bits + heading×10 + visibility) plus a 33 ms cadence cap
 keeps a static HUD at zero raster cost. Bar values come from pinned
 console values or the PLAYER's `ActorValues` (resolved through

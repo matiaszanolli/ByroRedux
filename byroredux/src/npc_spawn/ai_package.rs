@@ -1297,6 +1297,33 @@ mod tests {
         assert!(!world.has::<WanderBehavior>(actor));
     }
 
+    /// #4824: behavior tests alone cannot detect a wasted candidate clone.
+    #[test]
+    fn suspended_actors_are_filtered_before_candidate_stacks_are_cloned() {
+        let source = include_str!("ai_package.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .unwrap();
+        let system = source
+            .split("fn ambient_ai_package_system(")
+            .nth(1)
+            .unwrap();
+        let clone = system
+            .find("query.get(actor).map(|r| (actor, r.clone()))")
+            .unwrap();
+        for filter in [
+            "due.retain(|&actor| dead.get(actor).is_none())",
+            "due.retain(|&actor| combat.get(actor).is_none())",
+        ] {
+            assert!(
+                system
+                    .find(filter)
+                    .expect("suspended actors must be filtered")
+                    < clone
+            );
+        }
+    }
+
     /// #4703 — `StartCombat` on a Wander-active actor: the combat tick
     /// suspends the package (no ambient mover left to fight the chase),
     /// the package system leaves it alone while combat lasts, and it is

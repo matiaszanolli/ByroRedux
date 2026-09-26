@@ -35,8 +35,8 @@ layout(set = 0, binding = 0) uniform sampler2D hdrTex;       // direct light
 layout(set = 0, binding = 1) uniform sampler2D indirectTex;  // demodulated indirect
 layout(set = 0, binding = 2) uniform sampler2D albedoTex;    // surface albedo (multiplies demodulated indirect)
 struct SkyAperture {
-    vec4 center;
-    vec4 half_extents;
+    vec4 camera_local_origin; // xyz = local origin, w = screen-bound center X
+    vec4 half_extents; // xy = plane extents, z = screen-bound center Y, w = half size
     vec4 inverse_rotation;
 };
 layout(set = 0, binding = 3) uniform CompositeParams {
@@ -469,10 +469,9 @@ bool skyThroughAuthoredWindow(vec2 uv, float depth, bool hasSurface) {
     vec3 ray = screen_to_world_dir(uv);
     for (uint i = 0u; i < count; ++i) {
         SkyAperture aperture = params.sky_apertures[i];
-        vec3 localOrigin = rotateByApertureQuaternion(
-            params.camera_pos.xyz - aperture.center.xyz,
-            aperture.inverse_rotation
-        );
+        vec2 screenCenter = vec2(aperture.camera_local_origin.w, aperture.half_extents.z);
+        if (any(greaterThan(abs(uv - screenCenter), vec2(aperture.half_extents.w)))) continue;
+        vec3 localOrigin = aperture.camera_local_origin.xyz;
         vec3 localRay = rotateByApertureQuaternion(ray, aperture.inverse_rotation);
         if (abs(localRay.z) <= 1.0e-5) continue;
         float reach = -localOrigin.z / localRay.z;

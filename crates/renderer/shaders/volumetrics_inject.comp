@@ -20,7 +20,7 @@
 // test used by every modern RT volumetric path — but per froxel this
 // is NOT a single ray. Worst case: 1 opaque sun ray, +1 glass-masked
 // sun ray for interiors, +4 architectural-rim probes for an unmarked
-// opening, then up to MAX_FROXEL_LIGHTS local lights x up to 2
+// opening above ray tier 0, then up to MAX_FROXEL_LIGHTS local lights x up to 2
 // rays each (opaque mask, then glass mask) = up to 14 ray-query
 // traversals per froxel. At the default froxel_xy_divisor=8 160x90x64
 // grid (1280x720 render extent) that is a worst-case ~12.9M ray
@@ -162,7 +162,8 @@ struct GpuFogVolume {
 
 layout(std430, set = 0, binding = 7) readonly buffer FogVolumeBuffer {
     uint fogVolumeCount;
-    uint _fogPad0, _fogPad1, _fogPad2;
+    uint fogRayQualityTier;
+    uint _fogPad1, _fogPad2;
     GpuFogVolume fogVolumes[];
 };
 
@@ -2982,7 +2983,10 @@ void main() {
                 ray_origin, ray_dir, params.volume_params.x
             );
             visibility = sawGlass || (
-                dot(scattering_coef, vec3(1.0)) > 1.0e-7
+                // #4793 — tier 0 retains explicit aperture/glass visibility,
+                // but sheds the four closest-hit probes for unmarked openings.
+                fogRayQualityTier > 0u
+                && dot(scattering_coef, vec3(1.0)) > 1.0e-7
                 && dot(params.sun_color.rgb, vec3(1.0)) > 1.0e-5
                 && hasArchitectureRimAroundSkyRay(
                     ray_origin, ray_dir, params.volume_params.x
@@ -3015,8 +3019,10 @@ void main() {
     // gets a real visibility ray: full-shadow sources query all opaque
     // geometry, while no-prop-shadow sources query the Architecture-only TLAS
     // mask. Letting the latter bypass visibility made fog glow through dungeon
-    // walls even when surface lighting was corrected.
-    {
+    // walls even when surface lighting was corrected. #4785: emission and
+    // authored inscatter above do not need visibility; a zero-scattering
+    // froxel has no local-light term, so skip its rays and soot marches.
+    if (any(greaterThan(scattering_coef, vec3(0.0)))) {
         // Mirrors `getClusterIndex` (`include/clusters.glsl`) exactly,
         // so a froxel maps to the SAME cluster the fragment shader
         // would at this world distance — using `params.sun_color.a`

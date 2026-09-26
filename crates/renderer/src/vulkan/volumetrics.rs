@@ -322,6 +322,7 @@ fn combustion_transport_active(
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct GpuFogVolumeUpload {
+    /// x: volume count; y: adaptive/pinned ray quality tier; zw: padding.
     count: [u32; 4],
     volumes: [GpuFogVolume; MAX_GPU_FOG_VOLUMES],
 }
@@ -873,6 +874,18 @@ fn build_fog_volume_clusters(
                     }
                 }
             }
+        }
+
+        // #4807 — an aperture with no extinction contributes no scattering
+        // or emission (both are multiplied by sigma_t in sampleLocalMedium).
+        // Keep its sun-swept portal references above, but do not consume the
+        // density list's capacity or evaluate its procedural profile. Positive
+        // densities remain exact; choosing a low-density cutoff needs images
+        // and measurements, not an arbitrary epsilon here.
+        if (volume.profile_params[0] - FOG_VOLUME_PROFILE_LIGHT_SHAFT).abs() < 0.5
+            && volume.half_extents_extinction[3] <= 0.0
+        {
+            continue;
         }
 
         let mut ranges = [(0usize, 0usize); 3];
@@ -1474,6 +1487,7 @@ impl VolumetricsPipeline {
         fog_volumes: &[GpuFogVolume],
         mut timers: Option<&mut super::gpu_timers::GpuPerFrameTimers>,
         rt_tier: u32,
+        fog_cluster_ns: &mut u64,
     ) -> Result<()> {
         // #1105 / REN-D18-003 — injection descriptor binding 2 (TLAS) is
         // not written at construction; caller is required to call
@@ -1558,6 +1572,7 @@ impl VolumetricsPipeline {
         // buffer remains zero and does not need a host drain.
         self.combustion_moment_dirty[frame] |= combustion_active;
         let fog_far = self.far_distance_world().max(1.0);
+        let fog_cluster_t0 = std::time::Instant::now();
         // #2242 (REN-D16-04) — `fog_volume_upload.count` (the shader's
         // `fogVolumeCount`) is rewritten unconditionally in BOTH branches
         // below, even though the cluster/index GPU buffer writes further
@@ -1601,6 +1616,9 @@ impl VolumetricsPipeline {
             index_len = build.index_len;
             build.grid
         };
+        // Header lane 1 was padding. Publish the actual adaptive/pinned tier
+        // even with zero local volumes: global interior dust can use rim rays.
+        self.fog_volume_upload.count[1] = rt_tier;
         if let Some(timers) = timers.as_deref_mut() {
             let (max_density_count, max_portal_count) = self.fog_cluster_entries[..cluster_hi]
                 .iter().fold((0, 0), |(density, portal), entry| {
@@ -1648,6 +1666,7 @@ impl VolumetricsPipeline {
             }
             self.fog_cluster_dirty_range[frame] = (cluster_lo, cluster_hi);
         }
+        *fog_cluster_ns = fog_cluster_t0.elapsed().as_nanos() as u64;
         // HOST → COMPUTE_SHADER (UBO flush). Defense-in-depth, not a spec
         // requirement (#4182): mapped writes made before `queue_submit` are
         // already visible per Vulkan 1.3 §7.9 host-write ordering; the
@@ -2540,6 +2559,50 @@ mod unit_tests {
         assert!(
             !before_gate[sun_block_start..].contains("traceShadowBinary("),
             "no sun-visibility ray may be traced before the sunTermLive gate"
+        );
+    }
+
+    #[test]
+    fn local_visibility_work_is_gated_on_nonzero_scattering() {
+        let shader = include_str!("../../shaders/volumetrics_inject.comp");
+        let gated = shader
+            .split("if (any(greaterThan(scattering_coef, vec3(0.0)))) {")
+            .nth(1)
+            .expect("empty froxels must skip local lighting")
+            .split("vec4 current = vec4(inscatter, extinction_coef)")
+            .next()
+            .unwrap();
+        assert!(gated.contains("for (uint ci = 0u; ci < lightLoopCount; ++ci)"));
+        assert!(gated.contains("traceShadowBinary("));
+        assert!(gated.contains("transportedCombustionTransmittance("));
+        assert!(gated.contains("inscatter += scattering_coef * localPhase"));
+    }
+
+    #[test]
+    fn tier_zero_sheds_unmarked_rim_rays_but_preserves_explicit_windows() {
+        let shader = include_str!("../../shaders/volumetrics_inject.comp");
+        assert!(shader.contains("uint fogRayQualityTier;"));
+        let main = shader.split("void main()").nth(1).unwrap();
+        let tier_gate = main.find("fogRayQualityTier > 0u").unwrap();
+        assert!(main.find("localSkyAperture(ray_origin, ray_dir").unwrap() < tier_gate);
+        assert!(main.find("traceArchitecturalWindowGlass(").unwrap() < tier_gate);
+        assert!(tier_gate < main.find("hasArchitectureRimAroundSkyRay(").unwrap());
+        let host = crate::source_scan::production_text(include_str!("volumetrics.rs"));
+        let dispatch = host.split("pub unsafe fn dispatch(").nth(1).unwrap();
+        let tier_write = dispatch
+            .find("self.fog_volume_upload.count[1] = rt_tier;")
+            .unwrap();
+        assert!(
+            dispatch
+                .find("frame_params.local_volume_grid = if fog_volumes.is_empty()")
+                .unwrap()
+                < tier_write
+        );
+        assert!(
+            tier_write
+                < dispatch
+                    .find("self.fog_volume_buffers[frame].write_mapped_prefix(")
+                    .unwrap()
         );
     }
 
@@ -3786,6 +3849,59 @@ mod unit_tests {
             emission_temperature: [0.0; 4],
             profile_params: [FOG_VOLUME_PROFILE_SMOKE, 0.0, 0.0, 0.0],
         }
+    }
+
+    #[test]
+    fn empty_apertures_keep_portal_references_without_consuming_density_slots() {
+        let shaft = GpuFogVolume {
+            center_shape: [0.0, 0.0, 0.0, 3.0],
+            half_extents_extinction: [10.0, 10.0, 2.0, 0.0],
+            inverse_rotation: Quat::IDENTITY.to_array(),
+            profile_params: [FOG_VOLUME_PROFILE_LIGHT_SHAFT, 0.0, 0.0, 0.0],
+            ..GpuFogVolume::default()
+        };
+        let mut upload = GpuFogVolumeUpload::default();
+        let mut entries = fog_cluster_entries();
+        let mut indices = vec![0; FOG_VOLUME_INDEX_COUNT].into_boxed_slice();
+        cluster_frame(
+            &[shaft],
+            [0.0, 1.0, 0.0],
+            &mut upload,
+            &mut entries,
+            &mut indices,
+        );
+        assert!(entries.iter().all(|e| e.count == 0));
+        assert!(entries.iter().any(|e| e.portal_count > 0));
+
+        let mut volumes = vec![shaft; MAX_FOG_VOLUMES_PER_CLUSTER + 1];
+        let smoke_index = volumes.len() as u32;
+        volumes.push(smoke_at([0.0; 3], 5.0));
+        cluster_frame(
+            &volumes,
+            [0.0, 1.0, 0.0],
+            &mut upload,
+            &mut entries,
+            &mut indices,
+        );
+        assert!(entries.iter().any(|e| e.count == 1));
+        for entry in entries.iter().filter(|e| e.count > 0) {
+            assert_eq!(entry.count, 1);
+            assert_eq!(indices[entry.offset as usize], smoke_index);
+        }
+
+        // Even extremely thin authored medium still scatters and must not
+        // disappear just because it shares its profile with a pure aperture.
+        let mut thin = shaft;
+        thin.half_extents_extinction[3] = 1.0e-9;
+        cluster_frame(
+            &[thin],
+            [0.0, 1.0, 0.0],
+            &mut upload,
+            &mut entries,
+            &mut indices,
+        );
+        assert!(entries.iter().any(|e| e.count > 0));
+        assert!(entries.iter().any(|e| e.portal_count > 0));
     }
 
     #[test]

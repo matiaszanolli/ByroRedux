@@ -305,14 +305,10 @@ pub(crate) struct MenuXmlHud {
     /// Compass strip texels per degree of heading (0 = strip unknown —
     /// the compass stays at cropx 0 rather than guessing).
     px_per_degree: f32,
-    /// Triple-buffered overlay textures, cycled per *upload*. In-flight
-    /// frames (two, per the renderer's frames-in-flight) may sample the
-    /// current and previous buffers, so uploads always target the buffer
-    /// last sampled three frames ago — the hazard contract
-    /// [`Texture::overwrite_rgba_pixels`] requires. Fixed handles also
-    /// mean zero allocations and zero bindless descriptor writes after
-    /// launch, where [`TextureRegistry::update_rgba`] would reallocate a
-    /// full image per call.
+    /// Overlay textures cycled per upload. Fixed handles avoid image and
+    /// descriptor churn. The registry now records in-place copies into the
+    /// frame command buffer and owns synchronization (#3429); this rotation
+    /// remains the HUD driver's choice, rather than its hazard protection.
     texture_handles: [u32; 3],
     current: usize,
     width: u32,

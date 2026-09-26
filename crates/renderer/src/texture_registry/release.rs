@@ -41,6 +41,7 @@ impl TextureRegistry {
     }
 
     fn drop_released_texture(&mut self, device: &ash::Device, handle: TextureHandle) {
+        self.dynamic_rgba.updates.remove(&handle);
         let Some(entry) = self.textures.get_mut(handle as usize) else {
             return;
         };

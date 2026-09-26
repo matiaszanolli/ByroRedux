@@ -809,6 +809,7 @@ pub(super) fn build_composite_params(
         super::super::composite::MAX_SKY_APERTURES];
     let mut aperture_count = 0usize;
     if !is_exterior && interior_portal_sky {
+        let aperture_view_proj = byroredux_core::math::Mat4::from_cols_array_2d(&inv_vp_arr).inverse();
         for volume in sky_aperture_volumes {
             if volume.center_shape[3] < 1.5
                 || volume.center_shape[3] > 2.5
@@ -823,16 +824,15 @@ pub(super) fn build_composite_params(
             if aperture_count == sky_apertures.len() {
                 break;
             }
-            sky_apertures[aperture_count] = super::super::composite::CompositeSkyAperture {
-                center: [
-                    volume.center_shape[0] - render_origin.x,
-                    volume.center_shape[1] - render_origin.y,
-                    volume.center_shape[2] - render_origin.z,
-                    0.0,
-                ],
-                half_extents: volume.half_extents_extinction,
-                inverse_rotation: volume.inverse_rotation,
+            let Some(aperture) = super::super::composite::prepare_sky_aperture(
+                volume,
+                byroredux_core::math::Vec3::from_array(camera_pos),
+                render_origin,
+                aperture_view_proj,
+            ) else {
+                continue;
             };
+            sky_apertures[aperture_count] = aperture;
             aperture_count += 1;
         }
     }
@@ -1254,8 +1254,8 @@ mod composite_params_tests {
         assert_eq!(composite.sky_zenith[..3], [0.7, 0.2, 0.1]);
         assert_eq!(composite.height_fog_params[3], 0.0);
         assert_eq!(composite.sky_aperture_count[0], 1);
-        assert_eq!(composite.sky_apertures[0].center[..3], [90.0, 180.0, 270.0]);
-        assert_eq!(composite.sky_apertures[0].half_extents[..3], [10.0, 20.0, 5.0]);
+        assert_eq!(composite.sky_apertures[0].camera_local_origin[..3], [-100.0, -200.0, -300.0]);
+        assert_eq!(composite.sky_apertures[0].half_extents[..2], [10.0, 20.0]);
         assert_eq!(cube.depth_params[0], 1.0);
         assert_eq!(cube.sky_lower[3], 0.0);
         assert_eq!(cube.sky_zenith[..3], [0.7, 0.2, 0.1]);
@@ -2334,6 +2334,7 @@ impl VulkanContext {
                 underwater,
                 image_space_modifier,
                 ui_instance_idx,
+                &mut t.fog_cluster_ns,
             );
 
             // Debug-UI overlay (Phase 4 of the debug-UI plan).
@@ -2427,7 +2428,8 @@ impl VulkanContext {
             self.rollback_skin_frame_state(frame);
             return Err(e);
         }
-        t.cmd_record_ns = cmd_t0.elapsed().as_nanos() as u64;
+        t.cmd_record_ns = (cmd_t0.elapsed().as_nanos() as u64)
+            .saturating_sub(t.fog_cluster_ns);
 
         // Submit.
         let submit_t0 = Instant::now();
@@ -2639,9 +2641,7 @@ impl VulkanContext {
         };
 
         t.submit_present_ns = submit_t0.elapsed().as_nanos() as u64;
-        if let Some(out) = timings {
-            *out = t;
-        }
+        let post_present_t0 = Instant::now();
 
         self.current_frame = (self.current_frame + 1) % MAX_FRAMES_IN_FLIGHT;
         self.frame_counter = self.frame_counter.wrapping_add(1);
@@ -2695,6 +2695,10 @@ impl VulkanContext {
             }
         }
 
+        t.post_present_ns = post_present_t0.elapsed().as_nanos() as u64;
+        if let Some(out) = timings {
+            *out = t;
+        }
         Ok(suboptimal || present_suboptimal)
     }
 }
@@ -3955,6 +3959,68 @@ mod should_use_indirect_draws_tests {
 
 #[cfg(test)]
 mod draw_frame_size_budget_tests {
+    #[test]
+    fn cpu_preparation_spans_bracket_the_work_and_do_not_overlap() {
+        fn ordered(source: &str, needles: &[&str]) {
+            let mut rest = source;
+            for needle in needles {
+                let pos = rest
+                    .find(needle)
+                    .unwrap_or_else(|| panic!("missing or out of order: {needle}"));
+                rest = &rest[pos + needle.len()..];
+            }
+        }
+        let upload = include_str!("build_and_upload_instances.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .unwrap();
+        ordered(
+            upload,
+            &[
+                "t.ssbo_build_ns =",
+                "let pipeline_t0 = Instant::now();",
+                "let variant_t0 = Instant::now();",
+                "self.get_or_create_blend_pipeline(",
+                "variant_t0.elapsed()",
+                "save_pipeline_cache_if_grown(",
+                "t.pipeline_compile_ns = pipeline_t0.elapsed()",
+                "let parameter_t0 = Instant::now();",
+                "let composite_inputs =",
+                "t.parameter_upload_ns = parameter_t0.elapsed()",
+            ],
+        );
+        let fog = include_str!("../volumetrics.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .unwrap();
+        ordered(
+            fog,
+            &[
+                "let fog_cluster_t0 = std::time::Instant::now();",
+                "let build = build_fog_volume_clusters(",
+                "self.param_buffers[frame].write_mapped(",
+                "self.fog_volume_buffers[frame].write_mapped_prefix(",
+                "self.fog_cluster_buffers[frame].write_mapped_at(",
+                "*fog_cluster_ns = fog_cluster_t0.elapsed()",
+            ],
+        );
+        ordered(
+            super::draw_frame_body(),
+            &[
+                "let cmd_t0 = Instant::now();",
+                "&mut t.fog_cluster_ns,",
+                "t.cmd_record_ns =",
+                ".saturating_sub(t.fog_cluster_ns)",
+                "t.submit_present_ns =",
+                "let post_present_t0 = Instant::now();",
+                "self.shrink_frame_scratch()",
+                "accel.shrink_tlas_scratch_to_fit(",
+                "t.post_present_ns = post_present_t0.elapsed()",
+                "*out = t;",
+            ],
+        );
+    }
+
     /// Headroom over `draw_frame`'s length after #4767's extraction (704
     /// lines). Raise it only alongside a deliberate decision, not to absorb
     /// an inline addition.
