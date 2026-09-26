@@ -127,9 +127,19 @@ fn walk_children(
     let mut depth: Vec<(usize, f32)> = doc.tiles[parent]
         .children
         .iter()
-        .map(|&c| (c, num(eval, c, "depth")))
+        .map(|&c| {
+            let d = num(eval, c, "depth");
+            // `total_cmp` orders -0.0 before +0.0; the dialect treats them as
+            // the same depth (document-order tiebreak), so fold the sign away.
+            (c, if d == 0.0 { 0.0 } else { d })
+        })
         .collect();
-    depth.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+    // `total_cmp`, not `partial_cmp().unwrap_or(Equal)` (#4716): a `NaN` depth
+    // is authorable (`<depth>NaN</depth>` parses) and makes that comparator a
+    // non-total order, which `sort_by` panics on. `total_cmp` places `NaN`
+    // deterministically (positive `NaN` last, so it draws on top) and the sort
+    // stays stable for equal depths.
+    depth.sort_by(|a, b| a.1.total_cmp(&b.1));
 
     for (child, _) in depth {
         if doc.tiles[child].kind == TileKind::Template {

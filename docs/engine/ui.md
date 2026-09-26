@@ -823,7 +823,11 @@ profile with a ninth font slot).
   Only `visible` defaults true; `alpha/red/green/blue` default 255.
 - `layout.rs` — locus-chain positioning, depth sort (document order
   tiebreak), `clipwindow` scissor accumulation. Rect tiles never paint
-  (vanilla's screen-wide grab zones are invisible hit targets).
+  (vanilla's screen-wide grab zones are invisible hit targets). The
+  depth sort uses `f32::total_cmp` (#4716): `<depth>NaN</depth>` parses,
+  and the old `partial_cmp().unwrap_or(Equal)` comparator is not a total
+  order, which `sort_by` panics on. `NaN` sorts last (draws on top); `-0`
+  is folded to `0` so it still ties by document order.
 - `raster.rs` — CPU source-over rasterizer. The image blit implements
   the CS-Wiki zoom contract: **default (unauthored) zoom draws texels
   1:1 clipped to the tile rect** — the ribbon art is power-of-2 padded

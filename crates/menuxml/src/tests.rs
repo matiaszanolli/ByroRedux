@@ -592,6 +592,79 @@ fn depth_sorts_siblings() {
     assert_eq!(items[0].tile(), back, "depth-0 back draws first");
 }
 
+/// #4716 — a `NaN` depth (authorable directly: `"NaN".parse::<f32>()`
+/// succeeds) made `partial_cmp().unwrap_or(Equal)` a non-total order, and
+/// `slice::sort_by` panics on that once it has enough elements to notice. Forty
+/// siblings with every third depth `NaN` is the audit's reproduction; the
+/// draw must complete, and the siblings with a real depth must still come out
+/// in ascending depth order.
+#[test]
+fn nan_depth_siblings_do_not_panic_the_depth_sort() {
+    let mut xml = String::from(r#"<menu name="M">"#);
+    for i in 0..40 {
+        // Real depths run against document order so a sort that gave up
+        // would show. Every third sibling is NaN.
+        let depth = if i % 3 == 0 {
+            "NaN".to_string()
+        } else {
+            format!("{}", 100 - i)
+        };
+        xml.push_str(&format!(
+            r#"<image name="t{i}"> <depth> {depth} </depth> <filename> a.dds </filename> </image>"#
+        ));
+    }
+    xml.push_str("</menu>");
+    let (doc, _memo) = eval_all(&xml);
+    let strings = HashMap::new();
+    let overrides = Overrides::new();
+    let mut eval = EvalState::new(&doc, ScreenTraits::new(1280.0, 720.0), &strings, &overrides);
+
+    let items = build_draw_list(&doc, &mut eval);
+
+    assert_eq!(items.len(), 40, "every sibling still draws");
+    let real_order: Vec<usize> = items
+        .iter()
+        .map(|item| {
+            doc.name_index
+                .iter()
+                .find(|(_, &t)| t == item.tile())
+                .unwrap()
+                .0
+        })
+        .filter_map(|name| name[1..].parse::<usize>().ok())
+        .filter(|i| i % 3 != 0)
+        .collect();
+    let expected: Vec<usize> = (0..40).rev().filter(|i| i % 3 != 0).collect();
+    assert_eq!(
+        real_order, expected,
+        "siblings with a real depth keep ascending-depth order (descending index here)"
+    );
+}
+
+/// #4716 — `total_cmp` orders -0.0 before +0.0, but they are the same depth:
+/// siblings at `-0` and `0` keep document order, as they did under
+/// `partial_cmp`.
+#[test]
+fn negative_zero_depth_ties_with_zero_in_document_order() {
+    let (doc, _memo) = eval_all(
+        r#"
+        <menu name="M">
+            <image name="first"> <depth> 0 </depth> <filename> a.dds </filename> </image>
+            <image name="second"> <depth> -0 </depth> <filename> a.dds </filename> </image>
+            <image name="third"> <depth> 0 </depth> <filename> a.dds </filename> </image>
+        </menu>"#,
+    );
+    let strings = HashMap::new();
+    let overrides = Overrides::new();
+    let mut eval = EvalState::new(&doc, ScreenTraits::new(1280.0, 720.0), &strings, &overrides);
+    let order: Vec<usize> = build_draw_list(&doc, &mut eval)
+        .iter()
+        .map(|item| item.tile())
+        .collect();
+    let expected = ["first", "second", "third"].map(|name| doc.name_index[name]);
+    assert_eq!(order, expected);
+}
+
 // ---------------------------------------------------------------------------
 // Rasterizer
 // ---------------------------------------------------------------------------
