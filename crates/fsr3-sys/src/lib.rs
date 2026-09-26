@@ -582,15 +582,22 @@ mod tests {
 
     #[test]
     fn dispatch_abi_structs_are_plain_and_pointer_width_stable() {
+        assert_eq!(std::mem::size_of::<RawVersion>(), 24);
+        assert_eq!(std::mem::offset_of!(RawVersion, provider_id), 16);
         assert_eq!(
             std::mem::align_of::<RawImage>(),
             std::mem::align_of::<u64>()
         );
         assert_eq!(std::mem::size_of::<RawImage>(), 24);
+        assert_eq!(std::mem::size_of::<RawCreateDesc>(), 48);
+        assert_eq!(std::mem::offset_of!(RawCreateDesc, depth_inverted), 42);
+        assert_eq!(std::mem::size_of::<RawDispatchDesc>(), 248);
         assert_eq!(
             std::mem::offset_of!(RawDispatchDesc, color),
             std::mem::size_of::<usize>()
         );
+        assert_eq!(std::mem::offset_of!(RawDispatchDesc, reset), 216);
+        assert_eq!(std::mem::offset_of!(RawDispatchDesc, depth_inverted), 244);
         assert!(std::mem::size_of::<RawDispatchDesc>() >= 7 * std::mem::size_of::<RawImage>());
     }
 }

@@ -2564,6 +2564,23 @@ mod unit_tests {
     }
 
     #[test]
+    fn architectural_glass_portal_checks_every_candidate_layer() {
+        let shader = include_str!("../../shaders/volumetrics_inject.comp");
+        let function = shader
+            .split_once("bool traceArchitecturalWindowGlass(")
+            .expect("architectural glass query")
+            .1
+            .split_once("bool traceArchitectureDistance(")
+            .expect("next helper")
+            .0;
+        assert!(!function.contains("gl_RayFlagsTerminateOnFirstHitEXT"));
+        assert!(function.contains("while (rayQueryProceedEXT(rq))"));
+        assert!(function.contains("rayQueryGetIntersectionTypeEXT(rq, false)"));
+        assert!(function.contains("rayQueryGetIntersectionInstanceCustomIndexEXT(rq, false)"));
+        assert!(function.contains("if (layer == 0u) return true"));
+    }
+
+    #[test]
     fn local_visibility_work_is_gated_on_nonzero_scattering() {
         let shader = include_str!("../../shaders/volumetrics_inject.comp");
         let gated = shader

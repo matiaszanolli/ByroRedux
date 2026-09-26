@@ -197,18 +197,19 @@ void main() {
     uint dbgFlags = floatBitsToUint(jitter.z);
     uint debugMode = renderDebug.x;
     bool legacyDebugMode = debugMode == RENDER_DEBUG_LEGACY_FLAGS;
+    uint vizFlags = legacyDebugMode ? dbgFlags : 0u;
     bool viewShadowVisibility = debugMode == RENDER_DEBUG_SHADOW_VISIBILITY
         || (legacyDebugMode
-            && (dbgFlags & DBG_VIZ_SHADOW_VISIBILITY) == DBG_VIZ_SHADOW_VISIBILITY);
+            && (vizFlags & DBG_VIZ_SHADOW_VISIBILITY) == DBG_VIZ_SHADOW_VISIBILITY);
     bool viewSelectedLight = debugMode == RENDER_DEBUG_SELECTED_LIGHT
-        || (legacyDebugMode && (dbgFlags & DBG_VIZ_SELECTED_LIGHT) != 0u);
+        || (legacyDebugMode && (vizFlags & DBG_VIZ_SELECTED_LIGHT) != 0u);
     bool viewDirectOnly = debugMode == RENDER_DEBUG_DIRECT_ONLY
-        || (legacyDebugMode && (dbgFlags & DBG_VIZ_DIRECT) != 0u);
+        || (legacyDebugMode && (vizFlags & DBG_VIZ_DIRECT) != 0u);
     bool viewIndirectOnly = debugMode == RENDER_DEBUG_INDIRECT_ONLY
-        || (legacyDebugMode && (dbgFlags & DBG_VIZ_RAW_INDIRECT) != 0u);
+        || (legacyDebugMode && (vizFlags & DBG_VIZ_RAW_INDIRECT) != 0u);
     bool viewMaterialLobe = debugMode == RENDER_DEBUG_MATERIAL_LOBE
         || (legacyDebugMode
-            && (dbgFlags & DBG_VIZ_MATERIAL_LOBES) == DBG_VIZ_MATERIAL_LOBES);
+            && (vizFlags & DBG_VIZ_MATERIAL_LOBES) == DBG_VIZ_MATERIAL_LOBES);
     bool viewMaterialRole = debugMode == RENDER_DEBUG_MATERIAL_ROLE;
     bool viewFacingRatio = debugMode == RENDER_DEBUG_FACING_RATIO;
     bool viewRestirLight = debugMode == RENDER_DEBUG_RESTIR_LIGHT;
@@ -217,7 +218,7 @@ void main() {
         || debugMode == RENDER_DEBUG_WATER_NORMAL
         || debugMode == RENDER_DEBUG_WATER_REFL;
     bool viewRtLod = debugMode == RENDER_DEBUG_RT_LOD
-        || (legacyDebugMode && (dbgFlags & DBG_VIZ_RT_LOD) == DBG_VIZ_RT_LOD);
+        || (legacyDebugMode && (vizFlags & DBG_VIZ_RT_LOD) == DBG_VIZ_RT_LOD);
 
     // Read per-instance + per-material data up-front — parallax-
     // occlusion mapping displaces `fragUV` before the base-albedo
@@ -799,14 +800,14 @@ void main() {
     // to the diffuse carving — the carving's bumps should align
     // exactly with the colour gradient under this view. See
     // BYROREDUX_RENDER_DEBUG=0x4.
-    if ((dbgFlags & DBG_VIZ_NORMALS) != 0u) {
+    if ((vizFlags & DBG_VIZ_NORMALS) != 0u) {
         vec3 nViz = N * 0.5 + 0.5;
         outColor = vec4(nViz, 1.0);
         outRawIndirect = vec4(0.0);
         outAlbedo = vec4(nViz, 1.0);
         return;
     }
-    if ((dbgFlags & DBG_VIZ_SHADOW_OFFSET) != 0u) {
+    if ((vizFlags & DBG_VIZ_SHADOW_OFFSET) != 0u) {
         vec3 offsetNormal = dot(
             geometricNormal, cameraPos.xyz - fragWorldPos) < 0.0
             ? -geometricNormal : geometricNormal;
@@ -825,7 +826,7 @@ void main() {
         outAlbedo = vec4(viz, 1.0);
         return;
     }
-    if ((dbgFlags & DBG_VIZ_NORMAL_DIVERGENCE) != 0u) {
+    if ((vizFlags & DBG_VIZ_NORMAL_DIVERGENCE) != 0u) {
         float divergence = acos(clamp(
             abs(dot(normalize(geometricNormal), normalize(N))),
             0.0,
@@ -837,7 +838,7 @@ void main() {
         outAlbedo = vec4(viz, 1.0);
         return;
     }
-    if ((dbgFlags & DBG_VIZ_TANGENT) != 0u) {
+    if ((vizFlags & DBG_VIZ_TANGENT) != 0u) {
         // Green = authored tangent present (Path 1 fires).
         // Red = zero tangent → screen-space derivative fallback (Path 2).
         vec3 viz = (dot(fragTangent.xyz, fragTangent.xyz) > 1e-4)
@@ -854,7 +855,7 @@ void main() {
     //   1 Clutter      → cyan   (papers, books, ammo on tables)
     //   2 Actor        → magenta (NPC bodies)
     //   3 Decal        → yellow (rugs, blood splats, bullet holes)
-    if ((dbgFlags & DBG_VIZ_RENDER_LAYER) != 0u) {
+    if ((vizFlags & DBG_VIZ_RENDER_LAYER) != 0u) {
         uint layer = (inst.flags >> INSTANCE_RENDER_LAYER_SHIFT) & INSTANCE_RENDER_LAYER_MASK;
         vec3 tint = layer == 0u ? vec3(0.5, 0.5, 0.5)
                   : layer == 1u ? vec3(0.0, 1.0, 1.0)
@@ -877,7 +878,7 @@ void main() {
     // VARIES with depth ⇒ real camera parallax (correct). Scale is large
     // (×64) so the few-pixel stuck offset in the report is clearly visible.
     // See BYROREDUX_RENDER_DEBUG=0x20000.
-    if ((dbgFlags & DBG_VIZ_MOTION) != 0u) {
+    if ((vizFlags & DBG_VIZ_MOTION) != 0u) {
         vec3 mViz = vec3(clamp(0.5 + outMotion.x * 64.0, 0.0, 1.0),
                          clamp(0.5 + outMotion.y * 64.0, 0.0, 1.0),
                          0.5);
@@ -898,7 +899,7 @@ void main() {
     // FSR produced it; this view stays correct under either upscaler.
     // `renderOrigin.w` is hard-zeroed by the TAA branch, so under TAA the
     // third (blue) channel here always reads 0 — expected, not a bug.
-    if ((dbgFlags & DBG_VIZ_FSR_TEMPORAL) != 0u) {
+    if ((vizFlags & DBG_VIZ_FSR_TEMPORAL) != 0u) {
         vec2 pixelJitter = vec2(
             jitter.x * screen.x * 0.5,
             -jitter.y * screen.y * 0.5
@@ -1298,7 +1299,8 @@ void main() {
         outRawIndirect = vec4(0.0);
         outAlbedo = vec4(0.0);
         // The sampled background does not share this proxy's motion vector.
-        // Force temporal reconstruction to treat it as changing composition.
+        // Its composition changes independently of that motion, so both FSR
+        // masks reject the history at full strength.
         outFsrReactive = 1.0;
         outFsrTransparency = 1.0;
         return;
@@ -2439,7 +2441,7 @@ void main() {
             // Glass passthru diagnostic — paint the fragment by loop
             // terminus class. Skips the rest of the IOR shading so
             // the color is unambiguous (no Fresnel / glassTint mix).
-            if ((dbgFlags & DBG_VIZ_GLASS_PASSTHRU) != 0u) {
+            if ((vizFlags & DBG_VIZ_GLASS_PASSTHRU) != 0u) {
                 vec3 dbgColor;
                 if (!hit) {
                     dbgColor = vec3(1.0, 0.0, 0.0); // red — escaped
@@ -2702,7 +2704,7 @@ void main() {
         // that did not enter the IOR branch (thin or globally disabled).
         // The IOR branch's own diagnostic returned above for fragments that
         // did enter.
-        if ((dbgFlags & DBG_VIZ_GLASS_PASSTHRU) != 0u) {
+        if ((vizFlags & DBG_VIZ_GLASS_PASSTHRU) != 0u) {
             outColor = vec4(0.0, 0.0, 0.0, 1.0);
             outNormal = octEncode(normalize(fragNormalEffective));
             outRawIndirect = vec4(0.0);
@@ -4512,7 +4514,7 @@ void main() {
         outColor = vec4(selectedColor, 1.0);
         outRawIndirect = vec4(0.0);
         outAlbedo = vec4(1.0);
-    } else if ((dbgFlags & DBG_VIZ_NONFINITE) != 0u) {
+    } else if ((vizFlags & DBG_VIZ_NONFINITE) != 0u) {
         // #2218 — bisect which shading term first goes non-finite. Checked
         // upstream to downstream since a non-finite value poisons every sum
         // it feeds: `indirect` (raw GI bounce) → `indirectLight` (+ambient
@@ -4532,14 +4534,14 @@ void main() {
         outColor = vec4(nfViz, 1.0);
         outRawIndirect = vec4(0.0);
         outAlbedo = vec4(1.0);
-    } else if ((dbgFlags & DBG_VIZ_GI_BOUNCE) != 0u) {
+    } else if ((vizFlags & DBG_VIZ_GI_BOUNCE) != 0u) {
         // `indirect` is the stochastic ray-query bounce before authored
         // ambient and AO are folded into `indirectLight` below. Route it via
         // the direct attachment to bypass SVGF and local-albedo modulation.
         outColor = vec4(indirect, 1.0);
         outRawIndirect = vec4(0.0);
         outAlbedo = vec4(1.0);
-    } else if ((dbgFlags & DBG_VIZ_AO) != 0u) {
+    } else if ((vizFlags & DBG_VIZ_AO) != 0u) {
         // Raw SSAO occlusion as sampled by this fragment — before the 0.2
         // floor, before the DALC/ambient floors, before it multiplies
         // anything. White = unoccluded, black = fully occluded; sky pixels
@@ -4567,7 +4569,7 @@ void main() {
         outColor = vec4(directLight, 1.0);
         outRawIndirect = vec4(0.0);
         outAlbedo = vec4(1.0);
-    } else if ((dbgFlags & DBG_VIZ_MATERIAL_STATE) != 0u) {
+    } else if ((vizFlags & DBG_VIZ_MATERIAL_STATE) != 0u) {
         // Precedence matches the questions under investigation: glass is a
         // distinct semantic material even when it also uses alpha blend;
         // otherwise blend outranks test because a shape carrying both states

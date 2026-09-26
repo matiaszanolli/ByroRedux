@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -76,6 +77,17 @@ typedef struct ByroFsr3DispatchDesc {
        ordering FSR3 expects under inverted depth. */
     bool depth_inverted;
 } ByroFsr3DispatchDesc;
+
+#ifdef __cplusplus
+static_assert(sizeof(ByroFsr3Version) == 24, "ByroFsr3Version ABI drift");
+static_assert(offsetof(ByroFsr3Version, provider_id) == 16, "ByroFsr3Version.provider_id ABI drift");
+static_assert(sizeof(ByroFsr3Image) == 24, "ByroFsr3Image ABI drift");
+static_assert(sizeof(ByroFsr3CreateDesc) == 48, "ByroFsr3CreateDesc ABI drift");
+static_assert(offsetof(ByroFsr3CreateDesc, depth_inverted) == 42, "ByroFsr3CreateDesc.depth_inverted ABI drift");
+static_assert(sizeof(ByroFsr3DispatchDesc) == 248, "ByroFsr3DispatchDesc ABI drift");
+static_assert(offsetof(ByroFsr3DispatchDesc, reset) == 216, "ByroFsr3DispatchDesc.reset ABI drift");
+static_assert(offsetof(ByroFsr3DispatchDesc, depth_inverted) == 244, "ByroFsr3DispatchDesc.depth_inverted ABI drift");
+#endif
 
 uint32_t byro_fsr3_query_version(ByroFsr3Version* out_version);
 uint32_t byro_fsr3_query_render_resolution(

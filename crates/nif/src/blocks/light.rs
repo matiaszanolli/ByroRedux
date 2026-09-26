@@ -214,9 +214,9 @@ impl NiPointLight {
 pub struct NiSpotLight {
     /// Inherits NiPointLight (which in turn wraps NiLightBase).
     pub point: NiPointLight,
-    /// Outer cone angle in radians.
+    /// Outer cone half-angle in degrees, as authored by Gamebryo.
     pub outer_spot_angle: f32,
-    /// Inner cone angle in radians (since 20.2.0.5 — zero for Oblivion).
+    /// Inner cone half-angle in degrees (since 20.2.0.5 — zero for Oblivion).
     pub inner_spot_angle: f32,
     /// Falloff exponent within the cone.
     pub exponent: f32,

@@ -17,8 +17,7 @@
 use super::allocator::SharedAllocator;
 use super::buffer::GpuBuffer;
 use super::descriptors::{
-    write_combined_image_sampler, write_storage_image, write_uniform_buffer,
-    DescriptorPoolBuilder,
+    write_combined_image_sampler, write_storage_image, write_uniform_buffer, DescriptorPoolBuilder,
 };
 use super::reflect::{validate_set_layout, ReflectedShader};
 use super::sync::MAX_FRAMES_IN_FLIGHT;
@@ -198,8 +197,7 @@ impl ExposureMeterPipeline {
                 offset: 0,
                 range: param_size,
             }];
-            let write =
-                write_uniform_buffer(partial.descriptor_sets[frame], 2, &ubo_info);
+            let write = write_uniform_buffer(partial.descriptor_sets[frame], 2, &ubo_info);
             // SAFETY: freshly allocated set + buffer, not yet bound.
             unsafe { device.update_descriptor_sets(&[write], &[]) };
         }
@@ -296,10 +294,9 @@ impl ExposureMeterPipeline {
             // GENERAL → SHADER_READ: the written texel must be visible to
             // this frame's FSR dispatch (compute) and presentation pass
             // (fragment), both later in this same command buffer.
-            let to_shader_read = super::descriptors::image_barrier_general_to_shader_read(
-                exposure_image,
-            )
-            .dst_access_mask(vk::AccessFlags::SHADER_READ);
+            let to_shader_read =
+                super::descriptors::image_barrier_general_to_shader_read(exposure_image)
+                    .dst_access_mask(vk::AccessFlags::SHADER_READ);
             device.cmd_pipeline_barrier(
                 cmd,
                 vk::PipelineStageFlags::COMPUTE_SHADER,
@@ -375,18 +372,31 @@ mod tests {
         let src = include_str!("../../shaders/exposure_meter.comp");
         // The count reduction rides the same tree loop as the log sum.
         assert!(
-            src.contains("shared_count[gl_LocalInvocationID.x] += shared_count[gl_LocalInvocationID.x + s];"),
+            src.contains(
+                "shared_count[gl_LocalInvocationID.x] += shared_count[gl_LocalInvocationID.x + s];"
+            ),
             "shared_count must reduce in the same tree loop as shared_log_sum (#4597)"
         );
         // The divisor is the reduced total, not the per-invocation count.
         assert!(
-            src.contains("float samples = max(float(shared_count[0]), 1.0);"),
+            src.contains("float samples = float(shared_count[0]);"),
             "the average must divide by the reduced total count (#4597)"
         );
         assert!(
             !src.contains("float samples = max(float(count), 1.0);"),
             "the per-invocation `count` must not be the divisor (#4597)"
         );
+    }
+
+    #[test]
+    fn auto_meter_skips_nonfinite_void_samples_and_covers_the_image_extent() {
+        let src = include_str!("../../shaders/exposure_meter.comp");
+        assert!(src.contains("any(isnan(rgb)) || any(isinf(rgb))"));
+        assert!(src.contains("if (!(l > 1.0e-4)) continue"));
+        assert!(src.contains("log2(min(l, 1.0e4))"));
+        assert!(src.contains(": 1.0e-4;"));
+        assert!(src.contains("((grid * 2 + 1) * extent) / (side * 2)"));
+        assert!(!src.contains("extent / side"));
     }
 
     #[test]

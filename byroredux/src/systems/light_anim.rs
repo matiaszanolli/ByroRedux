@@ -24,9 +24,9 @@
 // (see the note in `animate_lights_system`). Re-enabling it means adding
 // back the `Transform` write pass and its import.
 use byroredux_core::ecs::{
-    EntityId, LIGHT_FLAG_FLICKER, LIGHT_FLAG_FLICKER_SLOW, LIGHT_FLAG_PULSE, LIGHT_FLAG_PULSE_SLOW,
-    LIGHT_FLAG_SHADOW_MASK, LIGHT_FLAG_SHADOW_OMNIDIRECTIONAL, LIGHT_FLAG_SHADOW_SPOTLIGHT,
-    LIGHT_FLAG_SPOT, LightFlicker, LightKind, LightSource, World,
+    EntityId, LightFlicker, LightKind, LightSource, World, LIGHT_FLAG_FLICKER,
+    LIGHT_FLAG_FLICKER_SLOW, LIGHT_FLAG_PULSE, LIGHT_FLAG_PULSE_SLOW, LIGHT_FLAG_SHADOW_MASK,
+    LIGHT_FLAG_SHADOW_SPOTLIGHT, LIGHT_FLAG_SPOT,
 };
 use byroredux_plugin::esm::reader::GameKind;
 
@@ -101,69 +101,10 @@ pub(crate) fn canonical_light_animation_flags(game: GameKind, source_flags: u32)
 /// gated. A verified per-game divergence gets its own `match` arm here,
 /// exactly like `GameKind::Fallout4` does above.
 ///
-/// ## The asymmetry with the animation sibling is deliberate (#2517)
-///
-/// These two canonicalizers apply *opposite* defaults to bits that a
-/// game's own LIGH layout does not name, and that is a decision rather
-/// than drift:
-///
-/// * **Animation decode is strict-by-default.** `FO4`/`FO76` are narrowed
-///   to `FLICKER|PULSE` precisely because `0x40`/`0x100` are unnamed
-///   there, and an unnamed bit must not decode into *motion* — a light
-///   that visibly pulses when the record never asked for it is an obvious,
-///   reported artifact.
-/// * **Shadow decode is permissive-by-default.** Dropping a shadow bit
-///   that a game *does* name is the strictly worse error: the light
-///   silently stops casting RT shadows and the scene just looks flat, with
-///   nothing to trace it back to. So an unverified bit stays enabled.
-///
-/// The concrete open question this leaves: of the three bits, only `0x400`
-/// (Spot Shadow) is believed to be named in the Oblivion / FO3 / FNV
-/// layouts, so an Oblivion LIGH carrying `0x800`/`0x1000` as reserved junk
-/// would be promoted to "casts shadows". Narrowing those games to
-/// `LIGHT_FLAG_SHADOW_SPOTLIGHT` alone requires reading xEdit's
-/// `wbDefinitionsTES4.pas` / `wbDefinitionsFNV.pas` LIGH flag lists
-/// directly — the same authority `equip.rs` cites for biped slots. Those
-/// files are not vendored in this tree, and narrowing on the *assumption*
-/// that the bits are unnamed would be exactly the guess the shadow-side
-/// default exists to avoid. Left permissive pending that evidence; see
-/// #2517 for the measurement that would settle it.
-///
-/// `GameKind::Starfield` used to be excluded from that default, and #3987
-/// removed the exception rather than the policy.
-///
-/// The exclusion rested entirely on one claim (#2251): that SF1Edit's LIGH
-/// definition "has no named Flags field at all" in the restructured `DAT2`,
-/// so there was nothing to be permissive *about*. That claim is false. Our
-/// own `DAT2` decoder reads `{12} UInt16 Flags` from an offset table it
-/// introduces as verified against `wbDefinitionsSF1.pas`, and the shipped
-/// data agrees: over all 1,575 `Starfield.esm` LIGH records the word at
-/// `DAT2+12` is a populated sparse bitfield (16 distinct values, union
-/// `0x17F1`) with the following u16 zero in every record.
-///
-/// That puts Starfield in exactly the position Oblivion / FO3 / FNV are in
-/// two paragraphs above — a real, named flags word whose individual bit
-/// meanings this tree has not independently verified — and those games get
-/// the shared mask, on the stated grounds that narrowing on an *assumption*
-/// "would be exactly the guess the shadow-side default exists to avoid".
-/// Applying the same default to Starfield is consistency, not a new claim.
-///
-/// At the time the behaviour this restored was not marginal. With the zero
-/// mask, `LightSource::from_legacy_world_units` computed
-/// `VisibilityMask::for_legacy_projection(false)` for **every** placed
-/// Starfield light — then `ARCHITECTURE` only, broadened to
-/// `ARCHITECTURE | DYNAMIC_ACTOR` by `3ce970a5a` — so props, foliage, glass
-/// and effects cast no shadow from any of them: the whole-game version of
-/// the silent-flatness failure this default was written to prevent.
-///
-/// #4557 — history, not the current mask: since `b9e961eeb` (lighting
-/// unification) `for_legacy_projection` returns `VisibilityMask::FULL`
-/// whatever its argument, so shadow flags no longer narrow any light's
-/// visibility query. They are still carried through to `LightSource` for
-/// diagnostics, which is what the canonicalization below preserves.
-///
-/// The animation sibling stays at `0`, and the asymmetry is the documented
-/// one: an unverified bit must not create motion, but it may cast a shadow.
+/// Preserve the verified source shadow bits for diagnostics. Since #4557,
+/// legacy projection flags no longer select the renderer's visibility mask;
+/// that policy is shared by all legacy lights. Starfield's Light Type enum
+/// is the one explicit translation into a canonical shadow-technique bit.
 pub(crate) fn canonical_light_shadow_flags(
     game: GameKind,
     source_flags: u32,
@@ -180,17 +121,9 @@ pub(crate) fn canonical_light_shadow_flags(
     if game == GameKind::Starfield && starfield_light_type == 1 {
         return LIGHT_FLAG_SHADOW_SPOTLIGHT;
     }
-    // Fallout 3 / New Vegas' shipped interiors use zero projection bits for
-    // ordinary room lights. Prospector's Saloon has 24 placed LIGH records,
-    // all with zero projection bits; treating zero as an unshadowed fallback
-    // removes static-prop shadows from the entire cell. The RT renderer uses
-    // an omnidirectional query instead, matching the visual role of those
-    // local sources while retaining authored projection choices when present.
-    if game == GameKind::Fallout3NV && authored == 0 {
-        LIGHT_FLAG_SHADOW_OMNIDIRECTIONAL
-    } else {
-        authored
-    }
+    // Projection flags are retained as authored diagnostics. Visibility
+    // policy is resolved separately and does not synthesize legacy bits.
+    authored
 }
 
 /// The geometry half of a canonical [`LightSource`] derived from an ESM
@@ -661,11 +594,8 @@ mod tests {
         );
     }
 
-    /// And the enum's shadow split maps onto the canonical technique bits:
-    /// `1 = Shadow Spotlight` traces spot-cone shadows; `2 =
-    /// NonShadow Spotlight` keeps the cone with no spotlight-shadow
-    /// technique; `0` keeps the pre-existing #3987 permissive-mask
-    /// behavior for the flags word.
+    /// The enum's shadow split maps onto canonical diagnostic bits:
+    /// `1 = Shadow Spotlight`; `2 = NonShadow Spotlight`.
     #[test]
     fn starfield_shadow_technique_follows_the_light_type_enum() {
         use byroredux_core::ecs::LIGHT_FLAG_SHADOW_MASK;
@@ -977,13 +907,12 @@ mod tests {
     }
 
     #[test]
-    fn fallout3nv_zero_projection_lights_get_omnidirectional_rt_visibility() {
-        use byroredux_core::ecs::{LIGHT_FLAG_SHADOW_OMNIDIRECTIONAL, LIGHT_FLAG_SHADOW_SPOTLIGHT};
+    fn fallout3nv_zero_projection_flags_remain_zero_diagnostics() {
+        use byroredux_core::ecs::LIGHT_FLAG_SHADOW_SPOTLIGHT;
         assert_eq!(
             canonical_light_shadow_flags(GameKind::Fallout3NV, 0, 0),
-            LIGHT_FLAG_SHADOW_OMNIDIRECTIONAL,
-            "FO3/FNV room lights commonly author no legacy projection bit; \
-             leaving them at zero makes the scene's RT shadows disappear"
+            0,
+            "missing source flags must not be fabricated into diagnostic data"
         );
         assert_eq!(
             canonical_light_shadow_flags(GameKind::Fallout3NV, LIGHT_FLAG_SHADOW_SPOTLIGHT, 0),
@@ -1016,8 +945,8 @@ mod tests {
     }
 
     /// #3987 — Starfield's `DAT2` flags word is real; its bit legend is not.
-    /// The two canonicalizers therefore split, along the documented
-    /// strict-animation / permissive-shadow asymmetry.
+    /// The animation bits remain strict; shadow bits remain authored
+    /// diagnostic data and do not select the renderer's visibility mask.
     ///
     /// This test used to be named
     /// `starfield_has_no_verified_flags_field_for_either_canonicalization`
@@ -1030,7 +959,7 @@ mod tests {
     /// one. A test that asserts a false premise is worse than no test, because
     /// it makes the premise look checked.
     #[test]
-    fn starfield_flags_are_strict_for_animation_and_permissive_for_shadows() {
+    fn starfield_animation_flags_are_strict_and_shadow_diagnostics_are_preserved() {
         use byroredux_core::ecs::LIGHT_FLAG_SHADOW_MASK;
         let all_bits_set = LIGHT_FLAG_FLICKER
             | LIGHT_FLAG_FLICKER_SLOW
@@ -1048,23 +977,14 @@ mod tests {
         assert_eq!(
             canonical_light_shadow_flags(GameKind::Starfield, all_bits_set, 0),
             LIGHT_FLAG_SHADOW_MASK,
-            "Starfield must take the same permissive shadow mask as every other \
-             game: its flags word is real. Zeroing it (#3987) once narrowed every \
-             placed Starfield light to the conservative legacy mask; the mask is \
-             FULL for every light since the lighting unification, but the \
-             decoded flags must still reach LightSource intact"
+            "Starfield source shadow bits remain diagnostic data; they do not select visibility"
         );
     }
 
-    /// The layer the zero mask was felt at. When #3987 landed,
-    /// `VisibilityMask::for_legacy_projection(false)` was a conservative
-    /// subset (`ARCHITECTURE`, later `| DYNAMIC_ACTOR`), so a Starfield
-    /// light decoding no shadow bits cast nothing on the rest. Since the
-    /// lighting unification the projection mask is `FULL` either way; the
-    /// pin now guards that the decoded shadow bits survive to `LightSource`
-    /// (#4557).
+    /// Shadow bits survive canonicalization as diagnostics; the renderer's
+    /// visibility mask is selected independently.
     #[test]
-    fn a_starfield_shadow_bit_survives_into_the_projection_mask() {
+    fn a_starfield_shadow_bit_survives_as_diagnostic_data() {
         use byroredux_core::ecs::LIGHT_FLAG_SHADOW_MASK;
         let decoded = canonical_light_shadow_flags(GameKind::Starfield, LIGHT_FLAG_SHADOW_MASK, 0);
         assert_ne!(

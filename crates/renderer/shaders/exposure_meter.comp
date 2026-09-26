@@ -56,22 +56,21 @@ void main() {
     }
 
     ivec2 extent = textureSize(sceneTex, 0);
-    // ~64x64 grid over the frame = 4096 samples regardless of resolution.
+    // 64x64 samples cover the full image, including the right/bottom edges.
     int side = 64;
-    ivec2 step = max(extent / side, ivec2(1));
 
     float log_sum = 0.0;
     int count = 0;
     for (int idx = int(gl_LocalInvocationID.x); idx < side * side; idx += 64) {
-        ivec2 texel = ivec2(idx % side, idx / side) * step;
-        if (texel.x >= extent.x || texel.y >= extent.y) {
-            continue;
-        }
+        ivec2 grid = ivec2(idx % side, idx / side);
+        ivec2 texel = min(((grid * 2 + 1) * extent) / (side * 2), extent - 1);
         vec3 rgb = texelFetch(sceneTex, texel, 0).rgb;
+        if (any(isnan(rgb)) || any(isinf(rgb))) continue;
         float l = dot(rgb, vec3(0.2126, 0.7152, 0.0722));
-        // Guard log2(0); a black frame still meters as a very dark scene
-        // rather than producing -inf.
-        log_sum += log2(max(l, 1.0e-6));
+        // Exclude clear/void samples and cap finite HDR outliers. Both
+        // policies keep the log-average tied to visible scene content.
+        if (!(l > 1.0e-4)) continue;
+        log_sum += log2(min(l, 1.0e4));
         count += 1;
     }
 
@@ -92,8 +91,10 @@ void main() {
     }
 
     if (gl_LocalInvocationID.x == 0) {
-        float samples = max(float(shared_count[0]), 1.0);
-        float avg_luminance = exp2(shared_log_sum[0] / samples);
+        float samples = float(shared_count[0]);
+        float avg_luminance = samples > 0.0
+            ? exp2(shared_log_sum[0] / samples)
+            : 1.0e-4;
         // EV100 = log2(L * S / K), S = 100, K = 12.5 -> log2(L * 8.0).
         float ev100 = log2(max(avg_luminance, 1.0e-6) * 8.0);
         float target = 1.2 * exp2(-ev100);

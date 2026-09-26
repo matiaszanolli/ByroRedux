@@ -65,7 +65,7 @@ vec3 aces(vec3 x) {
 // AgX — Minimal AgX implementation (c) 2023 Benjamin Wrensch (IOLITE engine,
 // https://iolite-engine.com/blog_posts/minimal_agx_implementation), a compact
 // port of Troy Sobotka's AgX display transform. MIT licensed; notice in
-// THIRD_PARTY_NOTICES.md. Behavioural mirror + licence pin: renderer's
+// THIRD_PARTY_NOTICES.md. The CPU reference and behavior pins live in
 // `tonemap.rs`.
 //
 // Output convention matches `aces()` above: LINEAR display-light — the

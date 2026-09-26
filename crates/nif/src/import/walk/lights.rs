@@ -88,7 +88,7 @@ pub(crate) fn walk_node_lights(
             &l.point.base,
             LightKind::Spot,
             radius,
-            l.outer_spot_angle,
+            l.outer_spot_angle.to_radians(),
         ));
         return;
     }

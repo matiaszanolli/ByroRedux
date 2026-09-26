@@ -587,6 +587,7 @@ mod switch_node_walker_tests {
         }));
         assert_eq!(light.kind, LightKind::Spot);
         assert_eq!(light.direction, [0.0, 0.0, -1.0]);
+        assert!((light.outer_angle - 0.5_f32.to_radians()).abs() < 1.0e-6);
     }
 
     /// Regression for #4395 — `NiDirectionalLight` shares the (1,0,0) model

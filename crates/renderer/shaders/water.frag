@@ -662,6 +662,8 @@ float rainSurfaceNoise(vec2 uv, float time) {
 }
 
 void main() {
+    // Water's wave, reflection and refraction terms are not represented by
+    // the plane's surface motion; mark the full pixel as reactive/composited.
     outFsrReactive = 1.0;
     outFsrTransparency = 1.0;
     // Seeded here alongside the FSR masks so the attachment is never left

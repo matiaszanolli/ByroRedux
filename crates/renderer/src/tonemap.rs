@@ -106,11 +106,11 @@ fn agx_contrast_approx(x: f32) -> f32 {
         - 0.002_32
 }
 
-/// Mirror of the minimal AgX chain in `presentation.frag`: inset → clamp →
-/// log2 → EV window → contrast approx → outset → reference EOTF.
+/// Mirror of the minimal AgX chain in `presentation.frag`: inset → log2 →
+/// EV clamp → normalize → contrast approx → outset → reference EOTF.
 ///
-/// The input clamp to `[0, 1]` matches the GLSL; the final clamp exists on
-/// the Rust side as well because the outset matrix can produce small
+/// The log-space clamp preserves highlights above 1.0; the final clamp exists
+/// on the Rust side as well because the outset matrix can produce small
 /// negatives that `powf(2.2)` would turn into NaN.
 pub fn agx(val: [f32; 3]) -> [f32; 3] {
     let mut v = row_vec_times_mat(val, AGX_MAT);
@@ -323,6 +323,22 @@ mod tests {
     #[test]
     fn shaders_pin_the_mirror_constants() {
         let frag = include_str!("../shaders/presentation.frag");
+        let agx = frag
+            .split_once("vec3 agx(vec3 val)")
+            .expect("GLSL AgX function")
+            .1
+            .split_once("// Display-transform dispatch")
+            .expect("AgX function terminator")
+            .0;
+        assert!(agx.contains("log2(max(val, 1.0e-10))"));
+        let ev_clamp = agx
+            .find("clamp(log2(max(val, 1.0e-10)), min_ev, max_ev)")
+            .expect("AgX must clamp in log space");
+        let normalize = agx
+            .find("(val - min_ev) / (max_ev - min_ev)")
+            .expect("AgX must normalize the clamped EV");
+        assert!(ev_clamp < normalize);
+        assert!(!agx.contains("clamp(val, 0.0, 1.0)"));
         for constant in [
             "2.51", "0.03", "2.43", "0.59", "0.14", // ACES
             "0.842479062253094", "0.0423282422610123", "0.0423756549057051",

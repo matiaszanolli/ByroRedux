@@ -295,21 +295,25 @@ bool traceArchitecturalWindowGlass(vec3 origin, vec3 direction, float tMax) {
     rayQueryInitializeEXT(
         rq,
         topLevelAS,
-        gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT,
+        gl_RayFlagsOpaqueEXT,
         VISIBILITY_LAYER_GLASS,
         origin,
         0.05,
         direction,
         tMax
     );
-    rayQueryProceedEXT(rq);
-    if (rayQueryGetIntersectionTypeEXT(rq, true)
-        == gl_RayQueryCommittedIntersectionNoneEXT) return false;
-    uint index = uint(rayQueryGetIntersectionInstanceCustomIndexEXT(rq, true));
-    if (index >= boundaryInstances.length()) return false;
-    uint layer = (boundaryInstances[index].flags >> INSTANCE_RENDER_LAYER_SHIFT)
-        & INSTANCE_RENDER_LAYER_MASK;
-    return layer == 0u; // RenderLayer::Architecture
+    // Search every candidate: the nearest glass can be clutter, while a
+    // farther architectural pane still establishes the outdoor portal.
+    while (rayQueryProceedEXT(rq)) {
+        if (rayQueryGetIntersectionTypeEXT(rq, false)
+            != gl_RayQueryCandidateIntersectionTriangleEXT) continue;
+        uint index = uint(rayQueryGetIntersectionInstanceCustomIndexEXT(rq, false));
+        if (index >= boundaryInstances.length()) continue;
+        uint layer = (boundaryInstances[index].flags >> INSTANCE_RENDER_LAYER_SHIFT)
+            & INSTANCE_RENDER_LAYER_MASK;
+        if (layer == 0u) return true; // RenderLayer::Architecture
+    }
+    return false;
 }
 
 // A bare sun-ray miss in an interior is ambiguous: it can pass through a

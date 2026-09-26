@@ -719,6 +719,84 @@ mod tests {
     }
 
     #[test]
+    fn outdoor_sky_consumers_keep_the_exterior_gate() {
+        let bindings = include_str!("../shaders/include/bindings.glsl");
+        let raytrace = include_str!("../shaders/include/raytrace.glsl");
+        let lighting = include_str!("../shaders/include/lighting.glsl");
+        let water = include_str!("../shaders/water.frag");
+        let diffuse = bindings
+            .split_once("vec3 exteriorSkyDiffuseOr(")
+            .unwrap()
+            .1
+            .split_once("vec3 exteriorSkyRadianceOr(")
+            .unwrap()
+            .0;
+        assert!(diffuse.contains("jitter.w <= 0.5 || exteriorSkyTint.w <= 0.5"));
+        let reflection = raytrace.split_once("vec4 traceReflection(").unwrap().1;
+        assert!(reflection.contains("bool _isExt = jitter.w > 0.5;"));
+        assert!(reflection.contains("vec3 missCol = _isExt"));
+        let environment = lighting
+            .split_once("vec3 pathEnvironmentRadiance(")
+            .unwrap()
+            .1;
+        assert!(environment.contains("if (jitter.w > 0.5) {"));
+        assert!(environment.contains("exteriorSkyRadianceOr(rayDir"));
+        let water_main = water.split_once("void main()").unwrap().1;
+        let sky_sample = water_main.find("exteriorSkyRadianceOr(R,").unwrap();
+        assert!(water_main[..sky_sample]
+            .rfind("if (jitter.w > 0.5) {")
+            .is_some());
+    }
+
+    #[test]
+    fn legacy_visualization_bits_are_disabled_in_named_debug_modes() {
+        let triangle = include_str!("../shaders/triangle.frag");
+        assert!(triangle.contains("uint vizFlags = legacyDebugMode ? dbgFlags : 0u;"));
+        for bit in [
+            "DBG_VIZ_NORMALS",
+            "DBG_VIZ_TANGENT",
+            "DBG_VIZ_RENDER_LAYER",
+            "DBG_VIZ_GLASS_PASSTHRU",
+            "DBG_VIZ_AO",
+            "DBG_VIZ_MOTION",
+            "DBG_VIZ_MATERIAL_STATE",
+            "DBG_VIZ_GI_BOUNCE",
+            "DBG_VIZ_FSR_TEMPORAL",
+            "DBG_VIZ_NONFINITE",
+            "DBG_VIZ_SHADOW_OFFSET",
+            "DBG_VIZ_NORMAL_DIVERGENCE",
+        ] {
+            assert!(
+                triangle.contains(&format!("vizFlags & {bit}")),
+                "{bit} uses the legacy-only mask"
+            );
+            assert!(
+                !triangle.contains(&format!("dbgFlags & {bit}")),
+                "{bit} bypasses the legacy-only mask"
+            );
+        }
+    }
+
+    #[test]
+    fn water_and_composition_proxy_use_full_fsr_masks() {
+        let water = include_str!("../shaders/water.frag");
+        let triangle = include_str!("../shaders/triangle.frag");
+        let water_main = water.split_once("void main()").unwrap().1;
+        assert!(water_main.contains("Water's wave, reflection and refraction"));
+        assert!(water_main.contains("outFsrReactive = 1.0;"));
+        assert!(water_main.contains("outFsrTransparency = 1.0;"));
+        let proxy = triangle
+            .split_once("if (proxyCoverage < 0.01)")
+            .unwrap()
+            .1
+            .split_once("// ── FO3/FNV BSShaderNoLightingProperty")
+            .unwrap()
+            .0;
+        assert!(proxy.contains("outFsrReactive = 1.0;"));
+        assert!(proxy.contains("outFsrTransparency = 1.0;"));
+    }
+
+    #[test]
     fn vertex_stride_matches_vertex_struct() {
         assert_eq!(
             (VERTEX_STRIDE_FLOATS * 4) as usize,
@@ -1451,11 +1529,11 @@ mod tests {
             DBG_VIZ_MATERIAL_STATE | DBG_VIZ_SELECTED_LIGHT
         );
         let src = include_str!("../shaders/triangle.frag");
-        assert!(src.contains("(dbgFlags & DBG_VIZ_MATERIAL_LOBES) == DBG_VIZ_MATERIAL_LOBES"));
+        assert!(src.contains("(vizFlags & DBG_VIZ_MATERIAL_LOBES) == DBG_VIZ_MATERIAL_LOBES"));
         assert!(src.contains("MAT_FLAG_TRANSLUCENCY"));
         assert!(src.contains("MAT_FLAG_PBR_BSDF"));
         let lobe_view = src
-            .find("(dbgFlags & DBG_VIZ_MATERIAL_LOBES) == DBG_VIZ_MATERIAL_LOBES")
+            .find("(vizFlags & DBG_VIZ_MATERIAL_LOBES) == DBG_VIZ_MATERIAL_LOBES")
             .expect("material-lobe compound view branch");
         let glass_ior = src
             .find("if (glassIORAllowed)")
@@ -1471,10 +1549,10 @@ mod tests {
         assert_eq!(DBG_VIZ_RT_LOD, DBG_VIZ_MATERIAL_STATE | DBG_VIZ_GI_BOUNCE);
         let src = include_str!("../shaders/triangle.frag");
         let compound = src
-            .find("(dbgFlags & DBG_VIZ_RT_LOD) == DBG_VIZ_RT_LOD")
+            .find("(vizFlags & DBG_VIZ_RT_LOD) == DBG_VIZ_RT_LOD")
             .expect("rtLOD compound view branch");
         let constituent = src
-            .find("(dbgFlags & DBG_VIZ_GI_BOUNCE) != 0u")
+            .find("(vizFlags & DBG_VIZ_GI_BOUNCE) != 0u")
             .expect("GI constituent view branch");
         assert!(compound < constituent);
         let glass_ior = src
@@ -1530,13 +1608,13 @@ mod tests {
         );
         let src = include_str!("../shaders/triangle.frag");
         let visibility = src
-            .find("(dbgFlags & DBG_VIZ_SHADOW_VISIBILITY) == DBG_VIZ_SHADOW_VISIBILITY")
+            .find("(vizFlags & DBG_VIZ_SHADOW_VISIBILITY) == DBG_VIZ_SHADOW_VISIBILITY")
             .expect("shadow-visibility compound view branch");
         let selected = src
-            .find("(dbgFlags & DBG_VIZ_SELECTED_LIGHT) != 0u")
+            .find("(vizFlags & DBG_VIZ_SELECTED_LIGHT) != 0u")
             .expect("selected-light constituent view branch");
         let direct = src
-            .find("(dbgFlags & DBG_VIZ_DIRECT) != 0u")
+            .find("(vizFlags & DBG_VIZ_DIRECT) != 0u")
             .expect("direct constituent view branch");
         assert!(visibility < selected && visibility < direct);
         assert!(src.contains("selectedVisibilityDebug = visibility"));
@@ -2056,7 +2134,10 @@ mod tests {
             .find("bool legacyArm = !useRestir && !viewRestirLight;")
             .map(|i| gate_pos + i)
             .expect("legacy pass 2 must carry the explicit legacyArm skip flag (#4582)");
-        assert!(skip_pos > gate_pos, "the legacyArm flag belongs inside the gate");
+        assert!(
+            skip_pos > gate_pos,
+            "the legacyArm flag belongs inside the gate"
+        );
     }
 
     /// The renderer-evaluation suite relies on these switches representing
