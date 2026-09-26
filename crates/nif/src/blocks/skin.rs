@@ -5,7 +5,7 @@
 
 use crate::impl_ni_object;
 use crate::stream::NifStream;
-use crate::types::{BlockRef, NiTransform};
+use crate::types::{BlockRef, NiMatrix3, NiPoint3, NiTransform};
 use crate::version::{bsver, NifVersion};
 use std::io;
 
@@ -42,7 +42,7 @@ impl NiSkinInstance {
         };
         let skeleton_root_ref = stream.read_block_ref()?;
         let num_bones = stream.read_u32_le()?;
-        let mut bone_refs = stream.allocate_vec(num_bones)?;
+        let mut bone_refs = stream.allocate_vec_sized::<BlockRef>(num_bones)?;
         for _ in 0..num_bones {
             bone_refs.push(stream.read_block_ref()?);
         }
@@ -116,7 +116,8 @@ impl NiSkinData {
             true
         };
 
-        let mut bones = stream.allocate_vec(num_bones)?;
+        // Transform (52) + sphere (16) + weight count (2), before any weights.
+        let mut bones = stream.allocate_vec_min_bytes(num_bones, 70)?;
         for _ in 0..num_bones {
             let bone_transform = stream.read_ni_transform_struct()?;
 
@@ -129,7 +130,8 @@ impl NiSkinData {
             let num_vertices = stream.read_u16_le()? as u32;
 
             let vertex_weights = if has_vertex_weights {
-                let mut weights = stream.allocate_vec(num_vertices)?;
+                // Packed u16 + f32 has no Rust alignment padding on disk.
+                let mut weights = stream.allocate_vec_min_bytes(num_vertices, 6)?;
                 for _ in 0..num_vertices {
                     let vertex_index = stream.read_u16_le()?;
                     let weight = stream.read_f32_le()?;
@@ -413,7 +415,7 @@ impl BsDismemberSkinInstance {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         let base = NiSkinInstance::parse(stream)?;
         let num_partitions = stream.read_u32_le()?;
-        let mut partitions = stream.allocate_vec(num_partitions)?;
+        let mut partitions = stream.allocate_vec_sized::<BodyPartInfo>(num_partitions)?;
         for _ in 0..num_partitions {
             let part_flag = stream.read_u16_le()?;
             let body_part = stream.read_u16_le()?;
@@ -445,12 +447,12 @@ impl BsSkinInstance {
         let skeleton_root_ref = stream.read_block_ref()?;
         let bone_data_ref = stream.read_block_ref()?;
         let num_bones = stream.read_u32_le()?;
-        let mut bone_refs = stream.allocate_vec(num_bones)?;
+        let mut bone_refs = stream.allocate_vec_sized::<BlockRef>(num_bones)?;
         for _ in 0..num_bones {
             bone_refs.push(stream.read_block_ref()?);
         }
         let num_scales = stream.read_u32_le()?;
-        let mut scales = stream.allocate_vec(num_scales)?;
+        let mut scales = stream.allocate_vec_sized::<[f32; 3]>(num_scales)?;
         for _ in 0..num_scales {
             scales.push([
                 stream.read_f32_le()?,
@@ -494,7 +496,7 @@ pub struct BsSkinBoneData {
 impl BsSkinBoneData {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         let num_bones = stream.read_u32_le()?;
-        let mut bones = stream.allocate_vec(num_bones)?;
+        let mut bones = stream.allocate_vec_sized::<BsSkinBoneTrans>(num_bones)?;
         // Each bone is a fixed 17-float layout (4 bsphere + 9 rotation + 3 translation + 1 scale).
         let flat = stream.read_f32_array(num_bones as usize * 17)?;
         for chunk in flat.chunks_exact(17) {
@@ -504,12 +506,19 @@ impl BsSkinBoneData {
                 [chunk[7], chunk[8], chunk[9]],
                 [chunk[10], chunk[11], chunk[12]],
             ];
-            let translation = [chunk[13], chunk[14], chunk[15]];
-            let scale = chunk[16];
+            // #4621: this bulk layout bypasses the NiTransform readers.
+            let rotation = crate::rotation::sanitize_rotation(NiMatrix3 { rows: rotation }).rows;
+            let mut translation = NiPoint3 {
+                x: chunk[13],
+                y: chunk[14],
+                z: chunk[15],
+            };
+            let mut scale = chunk[16];
+            crate::rotation::sanitize_transform_translation_and_scale(&mut translation, &mut scale);
             bones.push(BsSkinBoneTrans {
                 bounding_sphere,
                 rotation,
-                translation,
+                translation: [translation.x, translation.y, translation.z],
                 scale,
             });
         }
@@ -532,6 +541,55 @@ mod tests {
     use crate::header::NifHeader;
     use crate::stream::NifStream;
     use crate::version::NifVersion;
+
+    #[test]
+    fn bs_bone_data_sanitizes_transforms_and_preserves_valid_bones() {
+        let valid = [
+            2.0f32, 3.0, 4.0, 5.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 6.0, 7.0, 8.0, 2.5,
+        ];
+        let mut nonfinite = valid;
+        nonfinite[4] = f32::NAN;
+        nonfinite[13] = f32::INFINITY;
+        nonfinite[14] = f32::NEG_INFINITY;
+        nonfinite[16] = f32::NAN;
+        let mut scaled = valid;
+        scaled[4] = 3.0;
+        scaled[8] = 3.0;
+        scaled[12] = 3.0;
+        let mut bytes = 3u32.to_le_bytes().to_vec();
+        for bone in [valid, nonfinite, scaled] {
+            for value in bone {
+                bytes.extend_from_slice(&value.to_le_bytes());
+            }
+        }
+        for bsver in [130, 155, 172] {
+            let header = NifHeader::detached(NifVersion::V20_2_0_7, 12, bsver);
+            let mut stream = NifStream::new(&bytes, &header);
+            let parsed = BsSkinBoneData::parse(&mut stream).unwrap();
+            assert_eq!(stream.position() as usize, bytes.len());
+            assert_eq!(parsed.bones[0].translation, [6.0, 7.0, 8.0]);
+            assert_eq!(parsed.bones[0].scale, 2.5);
+            assert_eq!(parsed.bones[0].bounding_sphere, [2.0, 3.0, 4.0, 5.0]);
+            assert_eq!(parsed.bones[1].translation, [0.0, 0.0, 8.0]);
+            assert_eq!(parsed.bones[1].scale, 1.0);
+            for bone in &parsed.bones {
+                assert_eq!(bone.rotation, NiMatrix3::default().rows);
+            }
+        }
+    }
+
+    #[test]
+    fn bs_bone_data_rejects_forged_count_before_reading_payload() {
+        let header = NifHeader::test_fo4();
+        let mut bytes = 2u32.to_le_bytes().to_vec();
+        bytes.extend_from_slice(&[0; 68]); // enough for one bone, not two
+        let mut stream = NifStream::new(&bytes, &header);
+        assert_eq!(
+            BsSkinBoneData::parse(&mut stream).unwrap_err().kind(),
+            io::ErrorKind::UnexpectedEof
+        );
+        assert_eq!(stream.position(), 4);
+    }
 
     #[test]
     fn parse_skin_partition_fnv_one_partition() {

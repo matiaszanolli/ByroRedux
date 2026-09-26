@@ -56,7 +56,14 @@ impl NiGeomMorpherController {
         // weight float is absent on disk. Reading it consumed a phantom 4 bytes
         // per morph interpolator, misaligning morph-weight refs and corrupting
         // NiMorphData downstream (facial morphs, animated gates). (#1302)
-        let mut interpolator_weights = stream.allocate_vec(num_interpolators)?;
+        let mut interpolator_weights = stream.allocate_vec_min_bytes(
+            num_interpolators,
+            if stream.version() >= NifVersion::V20_1_0_3 {
+                8
+            } else {
+                4
+            },
+        )?;
         if stream.version() >= NifVersion::V20_1_0_3 {
             // Since 20.1.0.3: MorphWeight = block_ref(4 B) + weight_f32(4 B)
             for _ in 0..num_interpolators {

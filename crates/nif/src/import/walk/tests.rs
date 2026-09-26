@@ -862,11 +862,7 @@ mod particle_local_transform_tests {
         let cases = [
             // (host rotation, block rotation, expected composed)
             (yaw90_zup(), crate::types::NiMatrix3::default(), yaw90_zup()),
-            (
-                crate::types::NiMatrix3::default(),
-                yaw90_zup(),
-                yaw90_zup(),
-            ),
+            (crate::types::NiMatrix3::default(), yaw90_zup(), yaw90_zup()),
             (yaw90_zup(), yaw90_zup(), yaw180_zup),
         ];
         for (host_rot, block_rot, expected_composed) in cases {
@@ -1146,14 +1142,12 @@ mod emitter_rate_tests {
         ctlr.base.target_ref = BlockRef(2u32);
         scene.blocks.push(Box::new(ctlr));
         // [2] the particle system; its chain head is [3].
-        scene
-            .blocks
-            .push(Box::new(particle_system(BlockRef(3u32))));
+        scene.blocks.push(Box::new(particle_system(BlockRef(3u32))));
         // [3] the sibling controller the chain actually starts with —
         // parses to the opaque marker, so the walk cannot advance past it.
-        scene.blocks.push(Box::new(NiPSysBlock::marker(
-            "NiPSysModifierActiveCtlr",
-        )));
+        scene
+            .blocks
+            .push(Box::new(NiPSysBlock::marker("NiPSysModifierActiveCtlr")));
 
         assert_eq!(
             extract_emitter_rate(&scene, BlockRef(3u32)),
@@ -1217,18 +1211,14 @@ mod emitter_rate_tests {
         ctlr_a.base.target_ref = BlockRef(2u32);
         scene.blocks.push(Box::new(ctlr_a));
         // [2] system A, chain head [3] (opaque marker).
-        scene
-            .blocks
-            .push(Box::new(particle_system(BlockRef(3u32))));
+        scene.blocks.push(Box::new(particle_system(BlockRef(3u32))));
         // [3] system A's opaque sibling head.
         scene
             .blocks
             .push(Box::new(NiPSysBlock::marker("NiPSysModifierActiveCtlr")));
         // [4] system B, chain head [5] (also an opaque marker) — a
         // different system whose ctlr does not exist in this scene.
-        scene
-            .blocks
-            .push(Box::new(particle_system(BlockRef(5u32))));
+        scene.blocks.push(Box::new(particle_system(BlockRef(5u32))));
         // [5] system B's opaque sibling head.
         scene.blocks.push(Box::new(NiPSysBlock::marker(
             "BSPSysMultiTargetEmitterCtlr",
@@ -1389,42 +1379,6 @@ mod emitter_rate_tests {
     /// emitter meshes now surface an authored rate.
     #[test]
     fn manager_controlled_blend_recovers_rate_from_a_controller_sequence() {
-        use crate::blocks::controller::{ControlledBlock, NiControllerSequence};
-        use std::sync::Arc;
-
-        fn emitter_sequence(name: &str, interp_block: u32) -> NiControllerSequence {
-            NiControllerSequence {
-                name: Some(Arc::from(name)),
-                controlled_blocks: vec![ControlledBlock {
-                    interpolator_ref: BlockRef(interp_block),
-                    controller_ref: BlockRef::NULL,
-                    priority: 0,
-                    node_name: None,
-                    property_type: None,
-                    controller_type: Some(Arc::from("NiPSysEmitterCtlr")),
-                    controller_id: None,
-                    interpolator_id: None,
-                    string_palette_ref: BlockRef::NULL,
-                    node_name_offset: 0,
-                    property_type_offset: 0,
-                    controller_type_offset: 0,
-                    controller_id_offset: 0,
-                    interpolator_id_offset: 0,
-                }],
-                array_grow_by: 0,
-                weight: 1.0,
-                text_keys_ref: BlockRef::NULL,
-                cycle_type: 0,
-                frequency: 1.0,
-                phase: 0.0,
-                start_time: 0.0,
-                stop_time: 1.0,
-                manager_ref: BlockRef::NULL,
-                accum_root_name: None,
-                anim_note_refs: Vec::new(),
-            }
-        }
-
         let mut scene = NifScene::default();
         // [0] the empty-items manager blend the controller points at, with a
         //     non-positive `value` so tier (c) fails too — the real shape.
@@ -1464,6 +1418,44 @@ mod emitter_rate_tests {
         );
     }
 
+    fn emitter_sequence(
+        name: &str,
+        interp_block: u32,
+    ) -> crate::blocks::controller::NiControllerSequence {
+        use crate::blocks::controller::{ControlledBlock, NiControllerSequence};
+        use std::sync::Arc;
+        NiControllerSequence {
+            name: Some(Arc::from(name)),
+            controlled_blocks: vec![ControlledBlock {
+                interpolator_ref: BlockRef(interp_block),
+                controller_ref: BlockRef(1u32),
+                priority: 0,
+                node_name: None,
+                property_type: None,
+                controller_type: Some(Arc::from("NiPSysEmitterCtlr")),
+                controller_id: None,
+                interpolator_id: None,
+                string_palette_ref: BlockRef::NULL,
+                node_name_offset: 0,
+                property_type_offset: 0,
+                controller_type_offset: 0,
+                controller_id_offset: 0,
+                interpolator_id_offset: 0,
+            }],
+            array_grow_by: 0,
+            weight: 1.0,
+            text_keys_ref: BlockRef::NULL,
+            cycle_type: 0,
+            frequency: 1.0,
+            phase: 0.0,
+            start_time: 0.0,
+            stop_time: 1.0,
+            manager_ref: BlockRef::NULL,
+            accum_root_name: None,
+            anim_note_refs: Vec::new(),
+        }
+    }
+
     /// With no `Idle`-ish sequence present, a transient one is still far
     /// better than the name-heuristic preset — the fallback must not require
     /// a steady-state loop to exist.
@@ -1494,7 +1486,7 @@ mod emitter_rate_tests {
             name: Some(Arc::from("Forward")),
             controlled_blocks: vec![ControlledBlock {
                 interpolator_ref: BlockRef(2u32),
-                controller_ref: BlockRef::NULL,
+                controller_ref: BlockRef(1u32),
                 priority: 0,
                 node_name: None,
                 property_type: None,
@@ -1555,7 +1547,7 @@ mod emitter_rate_tests {
             name: Some(Arc::from("Idle")),
             controlled_blocks: vec![ControlledBlock {
                 interpolator_ref: BlockRef(2u32),
-                controller_ref: BlockRef::NULL,
+                controller_ref: BlockRef(1u32),
                 priority: 0,
                 node_name: None,
                 property_type: None,
@@ -1588,6 +1580,109 @@ mod emitter_rate_tests {
             None,
             "an alpha channel is not a birth rate (#3329)"
         );
+    }
+
+    #[test]
+    fn sequence_rates_belong_to_each_system_in_both_curve_passes() {
+        for names_only in [false, true] {
+            for curves in [false, true] {
+                let mut scene = NifScene::default();
+                scene.blocks.push(Box::new(NiBlendFloatInterpolator {
+                    base: NiBlendInterpolator {
+                        flags: 1,
+                        array_size: 0,
+                        weight_threshold: 0.0,
+                        manager_controlled: true,
+                        interp_count: 0,
+                        single_index: 0,
+                        items: Vec::new(),
+                    },
+                    value: 0.0,
+                })); // 0 shared empty blend
+                for (target, head, name) in [(2, 1, "Smoke"), (4, 8, "Sparks")] {
+                    let mut ctlr = emitter_ctlr(BlockRef(0));
+                    ctlr.base.target_ref = BlockRef(target);
+                    scene.blocks.push(Box::new(ctlr)); // 1 / 3
+                    let mut system = particle_system(BlockRef(head));
+                    system.name = Some(name.into());
+                    scene.blocks.push(Box::new(system)); // 2 / 4
+                }
+                for (rate, data) in [(30.0, 9), (150.0, 10)] {
+                    scene.blocks.push(Box::new(NiFloatInterpolator {
+                        value: if curves { -f32::MAX } else { rate },
+                        data_ref: if curves {
+                            BlockRef(data)
+                        } else {
+                            BlockRef::NULL
+                        },
+                    })); // 5 / 6
+                }
+                let mut sequence = emitter_sequence("Idle", 5);
+                sequence.controlled_blocks[0].node_name = Some("Smoke".into());
+                if names_only {
+                    sequence.controlled_blocks[0].controller_ref = BlockRef::NULL;
+                }
+                let mut second = emitter_sequence("Idle", 6).controlled_blocks.pop().unwrap();
+                second.interpolator_ref = BlockRef(6);
+                second.controller_ref = if names_only {
+                    BlockRef::NULL
+                } else {
+                    BlockRef(3)
+                };
+                second.node_name = Some("Sparks".into());
+                sequence.controlled_blocks.push(second);
+                scene.blocks.push(Box::new(sequence)); // 7
+                scene
+                    .blocks
+                    .push(Box::new(NiPSysBlock::marker("NiPSysModifierActiveCtlr"))); // 8 opaque chain head
+                for peak in [60.0, 300.0] {
+                    scene.blocks.push(Box::new(NiFloatData {
+                        keys: KeyGroup {
+                            key_type: KeyType::Linear,
+                            keys: vec![key(0.0, 0.0), key(1.0, peak)],
+                        },
+                    })); // 9 / 10, means 30 / 150
+                }
+                assert_eq!(extract_emitter_rate(&scene, BlockRef(1)), Some(30.0));
+                assert_eq!(extract_emitter_rate(&scene, BlockRef(8)), Some(150.0));
+
+                // An unlinked system cannot borrow a sibling's sequence.
+                scene.blocks.push(Box::new(emitter_ctlr(BlockRef(0)))); // 11, no named target
+                assert_eq!(extract_emitter_rate(&scene, BlockRef(11)), None);
+            }
+        }
+    }
+
+    #[test]
+    fn sequence_controller_ref_overrides_a_conflicting_node_name() {
+        let mut scene = NifScene::default();
+        scene.blocks.push(Box::new(NiBlendFloatInterpolator {
+            base: NiBlendInterpolator {
+                flags: 1,
+                array_size: 0,
+                weight_threshold: 0.0,
+                manager_controlled: true,
+                interp_count: 0,
+                single_index: 0,
+                items: Vec::new(),
+            },
+            value: 0.0,
+        }));
+        let mut ctlr = emitter_ctlr(BlockRef(0));
+        ctlr.base.target_ref = BlockRef(2);
+        scene.blocks.push(Box::new(ctlr));
+        let mut system = particle_system(BlockRef(1));
+        system.name = Some("Smoke".into());
+        scene.blocks.push(Box::new(system));
+        scene.blocks.push(Box::new(NiFloatInterpolator {
+            value: 90.0,
+            data_ref: BlockRef::NULL,
+        }));
+        let mut seq = emitter_sequence("Idle", 3);
+        seq.controlled_blocks[0].controller_ref = BlockRef(99);
+        seq.controlled_blocks[0].node_name = Some("Smoke".into());
+        scene.blocks.push(Box::new(seq));
+        assert_eq!(extract_emitter_rate(&scene, BlockRef(1)), None);
     }
 
     // ── #3754 — authored ramp-up / burst curves ──────────────────────
@@ -1765,7 +1860,11 @@ mod emitter_rate_tests {
             key(3.0, 60.0),
         ]);
         // Clamped: segments are 0, 0, 30, 60 → area 90 over 3 s.
-        approx(extract_emitter_rate(&scene, ctlr_ref), 30.0, "clamped negative");
+        approx(
+            extract_emitter_rate(&scene, ctlr_ref),
+            30.0,
+            "clamped negative",
+        );
     }
 }
 

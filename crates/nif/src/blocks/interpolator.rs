@@ -804,7 +804,7 @@ impl NiBoolData {
             });
         }
         let key_type = KeyType::from_u32(stream.read_u32_le()?)?;
-        let mut keys: Vec<FloatKey> = stream.allocate_vec(num_keys)?;
+        let mut keys: Vec<FloatKey> = stream.allocate_vec_min_bytes(num_keys, 5)?;
         for _ in 0..num_keys {
             let time = stream.read_f32_le()?;
             // Bool keys store the value as a u8 (byte)

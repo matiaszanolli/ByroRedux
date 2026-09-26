@@ -1178,7 +1178,7 @@ pub fn parse_particle_system(
         // 12 KB into the next block. See #388 / #407 / #831 (allocate_vec
         // is the crate-standard bound-check + pre-allocate, matching
         // `read_block_ref_list` and every other bulk-ref site).
-        modifier_refs = stream.allocate_vec(num_modifiers)?;
+        modifier_refs = stream.allocate_vec_sized::<BlockRef>(num_modifiers)?;
         for _ in 0..num_modifiers {
             modifier_refs.push(stream.read_block_ref()?);
         }

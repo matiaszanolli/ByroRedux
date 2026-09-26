@@ -655,7 +655,7 @@ impl<'a> NifStream<'a> {
     /// can't OOM the process before the inner reads fail. See #764.
     pub fn read_block_ref_list(&mut self) -> io::Result<Vec<BlockRef>> {
         let count = self.read_u32_le()?;
-        let mut refs = self.allocate_vec(count)?;
+        let mut refs = self.allocate_vec_sized::<BlockRef>(count)?;
         for _ in 0..count {
             refs.push(self.read_block_ref()?);
         }
@@ -846,11 +846,9 @@ mod tests {
             [0x1234, 0x5678]
         );
         assert_eq!(cursor.position(), 5);
-        assert!(
-            read_pod_vec_from::<u32>(&mut cursor, 0, 0)
-                .unwrap()
-                .is_empty()
-        );
+        assert!(read_pod_vec_from::<u32>(&mut cursor, 0, 0)
+            .unwrap()
+            .is_empty());
         assert_eq!(cursor.position(), 5);
         assert_eq!(
             read_pod_vec_from::<u16>(&mut cursor, 1, 2)

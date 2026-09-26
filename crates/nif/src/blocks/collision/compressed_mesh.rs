@@ -114,7 +114,7 @@ impl BhkCompressedMeshShapeData {
 
         // Chunk materials: (SkyrimHavokMaterial, HavokFilter) = 2×u32 = 8 bytes each
         let num_chunk_materials = stream.read_u32_le()?;
-        let mut chunk_materials = stream.allocate_vec(num_chunk_materials)?;
+        let mut chunk_materials = stream.allocate_vec_sized::<[u32; 2]>(num_chunk_materials)?;
         for _ in 0..num_chunk_materials {
             chunk_materials.push([stream.read_u32_le()?, stream.read_u32_le()?]);
         }
@@ -123,7 +123,7 @@ impl BhkCompressedMeshShapeData {
 
         // Chunk transforms
         let num_transforms = stream.read_u32_le()?;
-        let mut chunk_transforms = stream.allocate_vec(num_transforms)?;
+        let mut chunk_transforms = stream.allocate_vec_sized::<CmsTransform>(num_transforms)?;
         for _ in 0..num_transforms {
             let translation = read_vec4(stream)?;
             let rotation = read_vec4(stream)?;
@@ -140,7 +140,7 @@ impl BhkCompressedMeshShapeData {
 
         // Big tris
         let num_big_tris = stream.read_u32_le()?;
-        let mut big_tris = stream.allocate_vec(num_big_tris)?;
+        let mut big_tris = stream.allocate_vec_min_bytes(num_big_tris, 12)?;
         for _ in 0..num_big_tris {
             let v1 = stream.read_u16_le()?;
             let v2 = stream.read_u16_le()?;
@@ -155,9 +155,9 @@ impl BhkCompressedMeshShapeData {
             });
         }
 
-        // Chunks (variable-size)
+        // Chunks: 24-byte fixed prefix + four u32 array counts, then payloads.
         let num_chunks = stream.read_u32_le()?;
-        let mut chunks = stream.allocate_vec(num_chunks)?;
+        let mut chunks = stream.allocate_vec_min_bytes(num_chunks, 40)?;
         for _ in 0..num_chunks {
             let translation = read_vec4(stream)?;
             let material_index = stream.read_u32_le()?;

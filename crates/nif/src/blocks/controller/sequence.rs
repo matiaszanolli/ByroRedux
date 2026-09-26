@@ -17,7 +17,7 @@ impl NiMultiTargetTransformController {
         // NiInterpController layer (base + Manager Controlled bool, #1506).
         let base = parse_interp_controller_base(stream)?;
         let num_extra_targets = stream.read_u16_le()? as u32;
-        let mut extra_targets = stream.allocate_vec(num_extra_targets)?;
+        let mut extra_targets = stream.allocate_vec_sized::<BlockRef>(num_extra_targets)?;
         for _ in 0..num_extra_targets {
             extra_targets.push(stream.read_block_ref()?);
         }
@@ -42,7 +42,7 @@ impl NiControllerManager {
         // cumulative is a byte bool based on observed block sizes
         let cumulative = stream.read_byte_bool()?;
         let num_sequences = stream.read_u32_le()?;
-        let mut sequence_refs = stream.allocate_vec(num_sequences)?;
+        let mut sequence_refs = stream.allocate_vec_sized::<BlockRef>(num_sequences)?;
         for _ in 0..num_sequences {
             sequence_refs.push(stream.read_block_ref()?);
         }
@@ -453,7 +453,7 @@ impl NiControllerSequence {
         // see one shape. Older BSVERs (< 24) carry no anim notes at all.
         let anim_note_refs = if bsver > bsver::ANIM_NOTES_THRESHOLD {
             let num = stream.read_u16_le()? as u32;
-            let mut refs = stream.allocate_vec(num)?;
+            let mut refs = stream.allocate_vec_sized::<BlockRef>(num)?;
             for _ in 0..num {
                 refs.push(stream.read_block_ref()?);
             }

@@ -387,6 +387,13 @@ pub fn parse_havok_packfile(data: &[u8]) -> io::Result<HavokPackfile> {
     let file_version = read_u32_le(data, 12)?;
     let layout_rules = [data[16], data[17], data[18], data[19]];
     let num_sections = read_u32_le(data, 20)?;
+    // #4624: validate the complete table before reserving host structs.
+    if num_sections as usize > (data.len() - SECTION_TABLE_START) / SECTION_HEADER_SIZE {
+        return Err(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            "havok packfile: section count exceeds available section headers",
+        ));
+    }
     let reserved_after_num_sections = read_u32_le(data, 24)?;
     let reserved_before_version_string = read_u32_le(data, 36)?;
     let contents_version = read_cstr(data, 40, 16)?;
@@ -395,9 +402,6 @@ pub fn parse_havok_packfile(data: &[u8]) -> io::Result<HavokPackfile> {
     let mut sections = Vec::with_capacity(num_sections as usize);
     for i in 0..num_sections as usize {
         let base = SECTION_TABLE_START + i * SECTION_HEADER_SIZE;
-        if base + SECTION_HEADER_SIZE > data.len() {
-            break;
-        }
         let name = read_cstr(data, base, SECTION_NAME_FIELD_LEN)?;
         let f = base + 20; // past the 19-byte name field + 0xFF terminator
         let absolute_data_start = read_u32_le(data, f)?;
@@ -478,6 +482,21 @@ mod tests {
     /// its test fixtures.
     fn build_synthetic_packfile(class_names: &[&str], data_payload: &[u8]) -> Vec<u8> {
         build_synthetic_packfile_with_fixups(class_names, data_payload, &[], &[], &[])
+    }
+
+    #[test]
+    fn section_count_is_bounded_before_allocation() {
+        let mut bytes = build_synthetic_packfile(&[], &[]);
+        assert_eq!(parse_havok_packfile(&bytes).unwrap().sections.len(), 3);
+        bytes.truncate(SECTION_TABLE_START);
+        for count in [1u32, u32::MAX] {
+            bytes[20..24].copy_from_slice(&count.to_le_bytes());
+            let error = parse_havok_packfile(&bytes).unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::UnexpectedEof);
+            assert!(error.to_string().contains("section count"));
+        }
+        bytes[20..24].copy_from_slice(&0u32.to_le_bytes());
+        assert!(parse_havok_packfile(&bytes).unwrap().sections.is_empty());
     }
 
     /// As above, but `__data__` also carries the three fixup tables. The

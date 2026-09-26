@@ -421,15 +421,17 @@ fn find_own_emitter_ctlr_refs(
 ) -> Option<EmitterCtlrRefs> {
     use crate::blocks::particle::{NiPSysEmitterCtlr, NiParticleSystem};
 
-    let refs = |ctlr: &NiPSysEmitterCtlr| EmitterCtlrRefs {
+    let refs = |idx: usize, ctlr: &NiPSysEmitterCtlr| EmitterCtlrRefs {
+        controller: BlockRef(idx as u32),
+        target: ctlr.base.target_ref,
         interpolator: ctlr.interpolator_ref,
         legacy_data: ctlr.data_ref,
     };
     let mut found: Option<EmitterCtlrRefs> = None;
-    crate::anim::walk_controller_chain(scene, controller_ref, |_idx, block, _base| {
+    crate::anim::walk_controller_chain(scene, controller_ref, |idx, block, _base| {
         if found.is_none() {
             if let Some(ctlr) = block.as_any().downcast_ref::<NiPSysEmitterCtlr>() {
-                found = Some(refs(ctlr));
+                found = Some(refs(idx, ctlr));
             }
         }
     });
@@ -442,7 +444,7 @@ fn find_own_emitter_ctlr_refs(
     // no chain at all — matching it would claim ctlrs belonging to OTHER
     // chainless systems, so the fallback is gated on a real head.
     let _controller_idx = controller_ref.index()?;
-    scene.blocks.iter().find_map(|b| {
+    scene.blocks.iter().enumerate().find_map(|(idx, b)| {
         b.as_any()
             .downcast_ref::<NiPSysEmitterCtlr>()
             .filter(|ctlr| {
@@ -453,7 +455,7 @@ fn find_own_emitter_ctlr_refs(
                     .and_then(|tb| tb.as_any().downcast_ref::<NiParticleSystem>())
                     .is_some_and(|sys| sys.controller_ref == controller_ref)
             })
-            .map(refs)
+            .map(|ctlr| refs(idx, ctlr))
     })
 }
 
@@ -462,6 +464,8 @@ fn find_own_emitter_ctlr_refs(
 /// chain-walk callback).
 #[derive(Clone, Copy)]
 struct EmitterCtlrRefs {
+    controller: BlockRef,
+    target: BlockRef,
     /// `NiSingleInterpController.Interpolator` (10.1.0.104+).
     interpolator: BlockRef,
     /// Pre-10.1.0.104 `Data` link to `NiPSysEmitterCtlrData` (#4560).
@@ -587,8 +591,8 @@ pub(crate) fn extract_emitter_rate(scene: &NifScene, controller_ref: BlockRef) -
     /// `NiControllerSequence` blocks when the emitter controller's own
     /// interpolator is a manager-driven blend with no items.
     ///
-    /// Walks every sequence's `controlled_blocks` for one whose resolved
-    /// `controller_type` names an emitter controller, and runs its
+    /// Walks every sequence's `controlled_blocks` for this system's own
+    /// emitter controller (#4620), and runs its
     /// `interpolator_ref` through the same `float_interpolator_rate` the
     /// direct tiers use — so the four chains cannot diverge.
     ///
@@ -597,7 +601,11 @@ pub(crate) fn extract_emitter_rate(scene: &NifScene, controller_ref: BlockRef) -
     /// *different* rates: an ignition ramp or a one-shot burst is not the
     /// density the emitter runs at while the player is looking at it. Names
     /// are ranked, and a tie falls back to block order.
-    fn sequence_emitter_rate(scene: &NifScene, curves: CurveTier) -> Option<f32> {
+    fn sequence_emitter_rate(
+        scene: &NifScene,
+        own: EmitterCtlrRefs,
+        curves: CurveTier,
+    ) -> Option<f32> {
         use crate::anim::{resolve_cb_string, CbString};
         use crate::blocks::controller::NiControllerSequence;
 
@@ -613,6 +621,12 @@ pub(crate) fn extract_emitter_rate(scene: &NifScene, controller_ref: BlockRef) -
             }
         }
 
+        let system_name = own
+            .target
+            .index()
+            .and_then(|idx| scene.get_as::<crate::blocks::particle::NiParticleSystem>(idx))
+            .and_then(|system| system.name.as_deref())
+            .filter(|name| !name.is_empty());
         let mut best: Option<(u8, f32)> = None;
         for seq in scene
             .blocks
@@ -625,6 +639,18 @@ pub(crate) fn extract_emitter_rate(scene: &NifScene, controller_ref: BlockRef) -
                 continue;
             }
             for cb in &seq.controlled_blocks {
+                // #4620: a real controller ref is authoritative. Only a
+                // missing ref may fall back to the target system's name.
+                let matches = if cb.controller_ref.index().is_some() {
+                    cb.controller_ref == own.controller
+                } else {
+                    system_name.is_some_and(|name| {
+                        resolve_cb_string(scene, cb, CbString::NodeName).as_deref() == Some(name)
+                    })
+                };
+                if !matches {
+                    continue;
+                }
                 let Some(ctype) = resolve_cb_string(scene, cb, CbString::ControllerType) else {
                     continue;
                 };
@@ -665,7 +691,8 @@ pub(crate) fn extract_emitter_rate(scene: &NifScene, controller_ref: BlockRef) -
     fn resolve(scene: &NifScene, controller_ref: BlockRef, curves: CurveTier) -> Option<f32> {
         let own = find_own_emitter_ctlr_refs(scene, controller_ref);
         // Modern: controller → interpolator → (keyed data | constant).
-        if let Some(interp_ref) = own.map(|refs| refs.interpolator) {
+        if let Some(refs) = own {
+            let interp_ref = refs.interpolator;
             if let Some(interp_idx) = interp_ref.index() {
                 if let Some(r) = float_interpolator_rate(scene, interp_idx, curves) {
                     return Some(r);
@@ -714,7 +741,7 @@ pub(crate) fn extract_emitter_rate(scene: &NifScene, controller_ref: BlockRef) -
                     .get_as::<NiBlendFloatInterpolator>(interp_idx)
                     .is_some()
                 {
-                    if let Some(r) = sequence_emitter_rate(scene, curves) {
+                    if let Some(r) = sequence_emitter_rate(scene, refs, curves) {
                         return Some(r);
                     }
                 }

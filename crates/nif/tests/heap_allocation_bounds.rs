@@ -51,6 +51,30 @@ static ALLOC: dhat::Alloc = dhat::Alloc;
 // a few hundred bytes; it is not once one is 16 KB (#4617).
 static DHAT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+/// #4623: rejecting the bulk float read is too late if the bone Vec has
+/// already reserved 68 bytes per claimed element. Measure the reservation,
+/// since both the old and corrected parser otherwise return the same EOF.
+#[test]
+fn forged_bone_count_does_not_allocate_the_bone_array() {
+    use byroredux_nif::{blocks::skin::BsSkinBoneData, header::NifHeader, stream::NifStream};
+
+    let _dhat_guard = DHAT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let count = 16_384u32;
+    let mut bytes = count.to_le_bytes().to_vec();
+    bytes.resize(4 + count as usize, 0); // passes the old one-byte-per-bone bound
+    let header = NifHeader::detached(byroredux_nif::version::NifVersion::V20_2_0_7, 12, 130);
+    let mut stream = NifStream::new(&bytes, &header);
+    let _profiler = dhat::Profiler::builder().testing().build();
+    let before = dhat::HeapStats::get();
+    let result = BsSkinBoneData::parse(&mut stream);
+    let after = dhat::HeapStats::get();
+    assert!(result.is_err());
+    assert!(
+        after.total_bytes - before.total_bytes < 4096,
+        "a rejected count must allocate only its diagnostic, not a 1 MiB bone array"
+    );
+}
+
 /// #4796: a large bulk array must allocate only its final typed output.
 /// Peak-byte bounds on tiny whole-NIF fixtures cannot detect a scratch copy.
 #[test]
@@ -721,8 +745,7 @@ fn build_skin_blocks_nif() -> Vec<u8> {
     let skin_data_start = nif.len();
     nif.extend_from_slice(&ni_skin_data_block());
     let skin_data_size = (nif.len() - skin_data_start) as u32;
-    nif[block_sizes_offset..block_sizes_offset + 4]
-        .copy_from_slice(&skin_data_size.to_le_bytes());
+    nif[block_sizes_offset..block_sizes_offset + 4].copy_from_slice(&skin_data_size.to_le_bytes());
 
     let partition_start = nif.len();
     nif.extend_from_slice(&ni_skin_partition_block());

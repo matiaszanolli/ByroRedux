@@ -178,7 +178,8 @@ impl BhkRigidBody {
 
         // Constraint refs
         let num_constraints = stream.read_u32_le()?;
-        let mut constraint_refs: Vec<BlockRef> = stream.allocate_vec(num_constraints)?;
+        let mut constraint_refs: Vec<BlockRef> =
+            stream.allocate_vec_sized::<BlockRef>(num_constraints)?;
         for _ in 0..num_constraints {
             constraint_refs.push(stream.read_block_ref()?);
         }
@@ -263,7 +264,8 @@ impl BhkRigidBody {
         stream.skip(12)?; // Unused (bethVer < 83, non-FO4)
 
         let num_constraints = stream.read_u32_le()?;
-        let mut constraint_refs: Vec<BlockRef> = stream.allocate_vec(num_constraints)?;
+        let mut constraint_refs: Vec<BlockRef> =
+            stream.allocate_vec_sized::<BlockRef>(num_constraints)?;
         for _ in 0..num_constraints {
             constraint_refs.push(stream.read_block_ref()?);
         }
@@ -372,7 +374,8 @@ impl BhkRigidBody {
 
         // Constraint refs
         let num_constraints = stream.read_u32_le()?;
-        let mut constraint_refs: Vec<BlockRef> = stream.allocate_vec(num_constraints)?;
+        let mut constraint_refs: Vec<BlockRef> =
+            stream.allocate_vec_sized::<BlockRef>(num_constraints)?;
         for _ in 0..num_constraints {
             constraint_refs.push(stream.read_block_ref()?);
         }

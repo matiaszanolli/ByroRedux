@@ -326,6 +326,7 @@ fn read_and_skip_bounding_volume(stream: &mut NifStream, depth: u32) -> io::Resu
     }
     let bv_type = stream.read_u32_le()?;
     match bv_type {
+        u32::MAX => {} // BASE_BV has no payload.
         0 => {
             // SPHERE: center(3×f32) + radius(f32) = 16 bytes
             stream.skip(16)?;
@@ -338,6 +339,15 @@ fn read_and_skip_bounding_volume(stream: &mut NifStream, depth: u32) -> io::Resu
             // CAPSULE: center(3×f32) + origin(3×f32) + extent(f32) + radius(f32) = 32 bytes
             stream.skip(32)?;
         }
+        3 => {
+            // LOZENGE: radius + center + two axes; 4.2.1.0 adds two extents.
+            // See OpenMW components/nif/node.cpp, BoundingVolume::read.
+            stream.skip(if stream.version() >= NifVersion::V4_2_1_0 {
+                48
+            } else {
+                40
+            })?;
+        }
         4 => {
             // UNION: num_bv(u32) + BoundingVolume[num_bv]
             let count = stream.read_u32_le()?;
@@ -346,8 +356,12 @@ fn read_and_skip_bounding_volume(stream: &mut NifStream, depth: u32) -> io::Resu
             }
         }
         5 => {
-            // HALF_SPACE: plane(4×f32) + center(3×f32) = 28 bytes
-            stream.skip(28)?;
+            // HALF_SPACE: plane, plus an origin starting at 4.2.1.0.
+            stream.skip(if stream.version() >= NifVersion::V4_2_1_0 {
+                28
+            } else {
+                16
+            })?;
         }
         _ => {
             // #4150 — every other arm consumes its body via `stream.skip`;
@@ -551,6 +565,41 @@ mod bounding_volume_tests {
 
     fn header() -> NifHeader {
         NifHeader::detached(NifVersion::V4_2_1_0, 0, 0)
+    }
+
+    #[test]
+    fn legacy_bounding_volume_layouts_preserve_the_following_field() {
+        for version in [
+            NifVersion(0x04000002),
+            NifVersion::V4_2_1_0,
+            NifVersion(0x04020200),
+        ] {
+            let modern = version >= NifVersion::V4_2_1_0;
+            for (kind, size) in [
+                (u32::MAX, 0),
+                (3, if modern { 48 } else { 40 }),
+                (5, if modern { 28 } else { 16 }),
+            ] {
+                let header = NifHeader::detached(version, 0, 0);
+                let mut bytes = 4u32.to_le_bytes().to_vec(); // UNION also checks recursive handling
+                bytes.extend_from_slice(&1u32.to_le_bytes());
+                bytes.extend_from_slice(&kind.to_le_bytes());
+                bytes.resize(bytes.len() + size, 0);
+                bytes.extend_from_slice(&0x12345678u32.to_le_bytes());
+                let mut stream = NifStream::new(&bytes, &header);
+                read_and_skip_bounding_volume(&mut stream, 0).unwrap();
+                assert_eq!(
+                    stream.read_u32_le().unwrap(),
+                    0x12345678,
+                    "{version:?}, kind {kind}"
+                );
+                assert_eq!(stream.position() as usize, bytes.len());
+                if size > 0 {
+                    let mut truncated = NifStream::new(&bytes[..bytes.len() - 5], &header);
+                    assert!(read_and_skip_bounding_volume(&mut truncated, 0).is_err());
+                }
+            }
+        }
     }
 
     /// Regression for #4148 — an unbounded `UNION` chain must not overflow

@@ -416,7 +416,8 @@ pub(crate) fn check_vertex_desc_offsets(
 }
 
 impl BsTriShape {
-    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+    pub fn parse(stream: &mut NifStream, block_size: Option<u32>) -> io::Result<Self> {
+        let block_end = block_size.map(|size| stream.position() + u64::from(size));
         let av = NiAVObjectData::parse_no_properties(stream)?;
 
         // BSTriShape-specific: bounding sphere
@@ -477,14 +478,14 @@ impl BsTriShape {
         // #621 / SK-D1-05: when the assertion fails AND
         // (data_size − num_triangles*6) is a clean multiple of
         // num_vertices, prefer the data_size-derived stride for the
-        // per-vertex loop. data_size is the on-disk authority — pre-fix
+        // per-vertex loop, provided the payload fits the enclosing block
+        // (#4622). Both sizes can be malformed — pre-fix
         // the parser logged the mismatch but plowed ahead with the
         // suspect `vertex_size_quads * 4` stride, silently misaligning
         // every vertex past the first. block_size recovery hid the
         // slip from the parse-rate metric. The non-standard FO4 padding
         // mentioned above is exactly the case where data_size > expected
-        // — and routing through the derived stride aligns the loop
-        // correctly across all such content.
+        // — and a bounded derived stride preserves that legitimate padding.
         //
         // Hoisted here (both are pure computations over `vertex_attrs` /
         // `stream.bsver()` with no stream side effects) so the override
@@ -534,7 +535,14 @@ impl BsTriShape {
                 // let the normal trailing-skip / guard machinery handle
                 // it exactly as it would have without this whole block.
                 let min_needed = min_vertex_bytes(vertex_attrs, full_precision, is_skinned);
-                let safe_stride = derived_stride.filter(|&s| s >= min_needed);
+                // #4622: data_size can itself be corrupt. Never let its
+                // stride override consume a following block's bytes.
+                let safe_stride = derived_stride.filter(|&s| {
+                    s >= min_needed
+                        && block_end.is_none_or(|end| {
+                            u64::from(data_size) <= end.saturating_sub(stream.position())
+                        })
+                });
                 log::warn!(
                     "BSTriShape data_size mismatch: stored {} vs derived {} \
                      (vertex_size_quads={}, num_vertices={}, num_triangles={}) — {}",
@@ -546,9 +554,8 @@ impl BsTriShape {
                     match (derived_stride, safe_stride) {
                         (_, Some(s)) => format!("trusting data_size-derived stride ({s} bytes/vertex)"),
                         (Some(s), None) => format!(
-                            "data_size-derived stride ({s} bytes/vertex) is below the {min_needed}-byte \
-                             structural minimum for this vertex_attrs — falling back to descriptor stride \
-                             to avoid turning a recoverable mismatch into a hard parse failure"
+                            "data_size-derived stride ({s} bytes/vertex) violates the {min_needed}-byte \
+                             structural minimum or block boundary — falling back to descriptor stride"
                         ),
                         (None, None) => "irrational; falling back to descriptor stride".to_string(),
                     },
@@ -609,6 +616,14 @@ impl BsTriShape {
         let mut tangents: Vec<[f32; 4]> = Vec::new();
 
         if data_size > 0 {
+            let payload_bytes =
+                (num_vertices as u64) * (vertex_size_bytes as u64) + u64::from(num_triangles) * 6;
+            if block_end.is_some_and(|end| payload_bytes > end.saturating_sub(stream.position())) {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "BSTriShape geometry exceeds block boundary",
+                ));
+            }
             // #388/#408 — bounds-check every file-driven count before
             // allocation. Now safely below the `data_size > 0` gate so
             // empty-payload LOD blocks aren't measured against impossible
@@ -728,15 +743,16 @@ impl BsTriShape {
     /// `shape.vertices` arrives here empty, not "often zero placeholders".
     /// The trailing float4 array is the *only* position source. See
     /// issues #157 and #341.
-    pub fn parse_dynamic(stream: &mut NifStream) -> io::Result<Self> {
-        let mut shape = Self::parse(stream)?;
+    pub fn parse_dynamic(stream: &mut NifStream, block_size: Option<u32>) -> io::Result<Self> {
+        let mut shape = Self::parse(stream, block_size)?;
         let dynamic_data_size = stream.read_u32_le()?;
         let dynamic_count = (dynamic_data_size / 16) as usize;
         let mut dynamic_bitangent_x = Vec::new();
         if dynamic_count > 0 {
             // #388: bound the file-driven count through allocate_vec.
-            let mut dynamic_vertices: Vec<NiPoint3> = stream.allocate_vec(dynamic_count as u32)?;
-            dynamic_bitangent_x = stream.allocate_vec(dynamic_count as u32)?;
+            let mut dynamic_vertices: Vec<NiPoint3> =
+                stream.allocate_vec_min_bytes(dynamic_count as u32, 16)?;
+            dynamic_bitangent_x = stream.allocate_vec_min_bytes(dynamic_count as u32, 16)?;
             for _ in 0..dynamic_count {
                 let x = stream.read_f32_le()?;
                 let y = stream.read_f32_le()?;
@@ -809,8 +825,8 @@ impl BsTriShape {
     /// an intermediate `LOD` kind here that the dispatch arm immediately
     /// discarded via `with_kind(MeshLOD)`, so the cutoffs never reached a
     /// real parse. See #157, #560, #2283.
-    pub fn parse_lod(stream: &mut NifStream) -> io::Result<Self> {
-        let mut shape = Self::parse(stream)?;
+    pub fn parse_lod(stream: &mut NifStream, block_size: Option<u32>) -> io::Result<Self> {
+        let mut shape = Self::parse(stream, block_size.map(|size| size.saturating_sub(12)))?;
         let lod0 = stream.read_u32_le()?;
         let lod1 = stream.read_u32_le()?;
         let lod2 = stream.read_u32_le()?;
@@ -841,7 +857,7 @@ impl BsTriShape {
     ///   + ssf_filename` (u16-prefixed string).
     pub fn parse_sub_index(stream: &mut NifStream, block_size: Option<u32>) -> io::Result<Self> {
         let block_start = stream.position();
-        let mut shape = Self::parse(stream)?;
+        let mut shape = Self::parse(stream, block_size)?;
         let segmentation_start = stream.position();
         match BsSubIndexTriShapeData::parse(stream, &shape) {
             Ok(sub_data) => {
@@ -1004,7 +1020,7 @@ impl BsSubIndexTriShapeData {
                 let parent_array_index = stream.read_u32_le()?;
                 let num_sub_segments = stream.read_u32_le()?;
                 let mut sub_segments: Vec<BsGeometrySubSegment> =
-                    stream.allocate_vec(num_sub_segments)?;
+                    stream.allocate_vec_sized(num_sub_segments)?;
                 for _ in 0..num_sub_segments {
                     sub_segments.push(BsGeometrySubSegment {
                         start_index: stream.read_u32_le()?,
@@ -1148,13 +1164,12 @@ pub(crate) fn decode_bs_vertex_stream(
     // sibling decoder). Left to push-doubling this cost log2(n)
     // realloc+copy cycles per mesh block on every normal-mapped SE+/FO4+/
     // Starfield mesh.
-    let mut tangents: Vec<[f32; 4]> = if vertex_attrs & VF_TANGENTS != 0
-        && vertex_attrs & VF_NORMALS != 0
-    {
-        stream.allocate_vec(nv_u32)?
-    } else {
-        Vec::new()
-    };
+    let mut tangents: Vec<[f32; 4]> =
+        if vertex_attrs & VF_TANGENTS != 0 && vertex_attrs & VF_NORMALS != 0 {
+            stream.allocate_vec(nv_u32)?
+        } else {
+            Vec::new()
+        };
     let mut bone_weights: Vec<[f32; 4]> = Vec::new();
     let mut bone_indices: Vec<[u8; 4]> = Vec::new();
     if is_skinned {

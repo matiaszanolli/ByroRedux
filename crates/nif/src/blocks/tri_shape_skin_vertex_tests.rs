@@ -1447,3 +1447,47 @@ fn ni_tri_shape_reads_shader_alpha_refs_on_hybrid_unknown_bsver_over_34() {
          a revert to the game-variant helper would end 8 bytes short"
     );
 }
+
+// #4622: reproduce the SS2 226-byte block's counts and descriptor, with
+// distinct synthetic positions and a following block large enough to mask EOF.
+#[test]
+fn overstated_data_size_cannot_borrow_the_next_blocks_vertex_bytes() {
+    for kind in [
+        "BSTriShape",
+        "BSMeshLODTriShape",
+        "BSDynamicTriShape",
+        "BSSubIndexTriShape",
+    ] {
+        let header = NifHeader::test_fo4();
+        let mut bytes = minimal_bs_tri_shape_bytes()[..100].to_vec();
+        bytes.extend_from_slice(&0x0003b00005430206u64.to_le_bytes());
+        bytes.extend_from_slice(&2u32.to_le_bytes());
+        bytes.extend_from_slice(&4u16.to_le_bytes());
+        bytes.extend_from_slice(&324u32.to_le_bytes()); // actual geometry is 108 B
+        for x in [0x3c00u16, 0x4000, 0x4200, 0x4400] {
+            bytes.extend_from_slice(&x.to_le_bytes());
+            bytes.extend_from_slice(&[0; 22]);
+        }
+        for index in [0u16, 1, 2, 1, 2, 3] {
+            bytes.extend_from_slice(&index.to_le_bytes());
+        }
+        assert_eq!(bytes.len(), 226);
+        match kind {
+            "BSMeshLODTriShape" | "BSSubIndexTriShape" => bytes.extend_from_slice(&[0; 12]),
+            "BSDynamicTriShape" => bytes.extend_from_slice(&[0; 4]),
+            _ => {}
+        }
+        let block_size = bytes.len();
+        bytes.extend_from_slice(&[0xab; 512]);
+        let mut stream = crate::stream::NifStream::new(&bytes, &header);
+        let block = parse_block(kind, &mut stream, Some(block_size as u32)).unwrap();
+        let shape = block.as_any().downcast_ref::<BsTriShape>().unwrap();
+        assert_eq!(
+            shape.vertices.iter().map(|v| v.x).collect::<Vec<_>>(),
+            vec![1.0, 2.0, 3.0, 4.0],
+            "{kind}"
+        );
+        assert_eq!(shape.triangles, vec![[0, 1, 2], [1, 2, 3]], "{kind}");
+        assert_eq!(stream.position() as usize, block_size, "{kind}");
+    }
+}

@@ -464,7 +464,7 @@ fn parse_block_inner(
         // array. Previously aliased to plain NiTriShape, leaving those
         // bytes unread and relying on block-loop realignment. See #146.
         "BSSegmentedTriShape" => Ok(Box::new(NiTriShape::parse_segmented(stream)?)),
-        "BSTriShape" => Ok(Box::new(tri_shape::BsTriShape::parse(stream)?)),
+        "BSTriShape" => Ok(Box::new(tri_shape::BsTriShape::parse(stream, block_size)?)),
         // BSLODTriShape and BSMeshLODTriShape look identical at the
         // dispatch level (both have the trailing `[lod0, lod1, lod2]`
         // u32 triplet) but inherit from DIFFERENT bodies per nif.xml:
@@ -486,7 +486,7 @@ fn parse_block_inner(
         // a prior `with_kind(MeshLOD)` override here discarded the parsed
         // cutoffs on every real parse (they were never a bare unit kind
         // to begin with — see `BsTriShapeKind::MeshLOD` docs).
-        "BSMeshLODTriShape" => Ok(Box::new(tri_shape::BsTriShape::parse_lod(stream)?)),
+        "BSMeshLODTriShape" => Ok(Box::new(tri_shape::BsTriShape::parse_lod(stream, block_size)?)),
         // BSSubIndexTriShape: ubiquitous in Skyrim SE DLC and all FO4 actor
         // meshes (clothing segmentation for dismemberment). #404 replaced
         // the previous `block_size`-driven skip with a structured decode
@@ -513,7 +513,7 @@ fn parse_block_inner(
         // BSDynamicTriShape: Skyrim facegen head meshes — BSTriShape body
         // + CPU-mutable trailing Vector4 vertex array. Routing this to
         // NiUnknown caused invisible faces on every NPC. See issue #157.
-        "BSDynamicTriShape" => Ok(Box::new(tri_shape::BsTriShape::parse_dynamic(stream)?)),
+        "BSDynamicTriShape" => Ok(Box::new(tri_shape::BsTriShape::parse_dynamic(stream, block_size)?)),
         // BSGeometry: Starfield-era replacement for BSTriShape /
         // BSSubIndexTriShape. The .nif holds bounds + skin/shader/alpha
         // refs + up to 4 mesh-LOD slots; each slot carries either an

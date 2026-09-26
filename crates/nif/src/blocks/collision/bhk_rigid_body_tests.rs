@@ -401,3 +401,28 @@ fn bhk_rigid_body_fo4_consumes_full_cinfo2014_body() {
          delay read — a drifted read would land on different bytes"
     );
 }
+
+#[test]
+fn constraint_counts_are_rejected_before_reading_refs_in_all_layouts() {
+    let (skyrim, _) = minimal_skyrim_bhk_rigid_body_bytes();
+    let (fo4, _) = minimal_fo4_bhk_rigid_body_bytes();
+    // Old Oblivion: 36 B prefix + 128 B transforms + 20 B dynamics +
+    // 4 B motion + 12 B unused, then the constraint count and u32 flags.
+    let old = vec![0; 208];
+    for (mut bytes, header, flags_width) in [
+        (old, NifHeader::detached(NifVersion::V10_0_1_0, 0, 0), 4),
+        (skyrim, NifHeader::test_skyrim_se(), 2),
+        (fo4, NifHeader::test_fo4(), 2),
+    ] {
+        let count_offset = bytes.len() - flags_width - 4;
+        bytes[count_offset..count_offset + 4].copy_from_slice(&2u32.to_le_bytes());
+        let mut stream = crate::stream::NifStream::new(&bytes, &header);
+        let error = BhkRigidBody::parse(&mut stream).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::UnexpectedEof);
+        assert_eq!(
+            stream.position() as usize,
+            count_offset + 4,
+            "must reject before any ref read"
+        );
+    }
+}

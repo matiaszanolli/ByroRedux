@@ -1006,7 +1006,7 @@ impl BsPackedCombinedGeomDataExtra {
             // SharedGeomData (header-only, no vertex / triangle arrays).
             // #388: allocate_vec bounds the count against the stream
             // budget so a corrupt num_data can't OOM.
-            let mut objects: Vec<BsPackedGeomObject> = stream.allocate_vec(num_data)?;
+            let mut objects: Vec<BsPackedGeomObject> = stream.allocate_vec_sized(num_data)?;
             for _ in 0..num_data {
                 let filename_hash = stream.read_u32_le()?;
                 let data_offset = stream.read_u32_le()?;
@@ -1068,7 +1068,7 @@ fn parse_common_geom_header(stream: &mut NifStream) -> io::Result<CommonGeomHead
     let tri_count_lod2 = stream.read_u32_le()?;
     let tri_offset_lod2 = stream.read_u32_le()?;
     let num_combined = stream.read_u32_le()?;
-    let mut combined: Vec<BsPackedGeomDataCombined> = stream.allocate_vec(num_combined)?;
+    let mut combined: Vec<BsPackedGeomDataCombined> = stream.allocate_vec_sized(num_combined)?;
     for _ in 0..num_combined {
         combined.push(BsPackedGeomDataCombined::parse(stream)?);
     }
@@ -1209,7 +1209,7 @@ impl BsFurnitureMarker {
         let name = stream.read_extra_data_name()?;
         let count = stream.read_u32_le()?;
         let legacy = stream.bsver() <= crate::version::bsver::FO3_FNV;
-        let mut positions = stream.allocate_vec(count)?;
+        let mut positions = stream.allocate_vec_min_bytes(count, if legacy { 16 } else { 20 })?;
         for _ in 0..count {
             let offset = [
                 stream.read_f32_le()?,
@@ -1366,7 +1366,7 @@ pub struct BsAnimNotes {
 impl BsAnimNotes {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         let count = stream.read_u16_le()? as u32;
-        let mut notes = stream.allocate_vec(count)?;
+        let mut notes = stream.allocate_vec_sized::<BlockRef>(count)?;
         for _ in 0..count {
             notes.push(stream.read_block_ref()?);
         }
