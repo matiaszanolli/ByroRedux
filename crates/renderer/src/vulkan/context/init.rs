@@ -1675,6 +1675,7 @@ impl VulkanContext {
             },
             pipeline_cache,
             pipeline: pipelines.opaque,
+            pipeline_early: pipelines.opaque_early,
             pipeline_wireframe: pipelines.opaque_wireframe,
             blend_pipeline_cache: FxHashMap::default(),
             scratch: ScratchBuffers {

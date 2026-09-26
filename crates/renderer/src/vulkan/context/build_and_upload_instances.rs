@@ -533,6 +533,7 @@ impl VulkanContext {
                 }
             } else {
                 PipelineKey::Opaque {
+                    early_tests: draw_cmd.allows_early_fragment_tests(),
                     wireframe: draw_cmd.wireframe,
                 }
             };

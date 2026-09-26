@@ -1109,6 +1109,8 @@ pub struct VulkanContext {
     /// CULL_MODE` the static value is ignored, so they compiled to
     /// identical machine code.
     pipeline: vk::Pipeline,
+    /// Discard-free opaque shader with explicit early fragment tests.
+    pipeline_early: vk::Pipeline,
     /// Opaque wireframe pipeline (`polygon_mode = LINE`). `None` when
     /// the device lacks `fillModeNonSolid`; the draw-time selector
     /// falls back to `pipeline` (filled) when this is `None`. #869.

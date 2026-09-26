@@ -536,9 +536,10 @@ lighting-influence value for `MAT_FLAG_EFFECT_LIT` materials, read as
 | 102 | `MATERIAL_KIND_NO_LIGHTING` | BSShaderNoLightingProperty — fullbright, no lights/GI |
 | 103 | `MATERIAL_KIND_FIRE_REFRACTION` | Fire-proxy heat haze. `shadow_transport.glsl` folds it into `effectCard` so fire proxies cast no shadow (#2224); `triangle.frag` reinterprets `mat.ior` as a 0–1 distortion scalar rather than a refractive index (#2232) |
 
-### `GpuLight` — 64 bytes, SSBO (Set 1, Binding 0)
+### `GpuLight` — 80 bytes, SSBO (Set 1, Binding 0)
 
-Prefixed by a 16-byte header (`u32 count` + 3 × `u32` padding). Up to
+Prefixed by a 4112-byte header: `u32 count`, 3 × `u32` padding, then
+1024 × `u32` previous-to-current light indices (`0xffffffff` = no match). Up to
 `MAX_LIGHTS` = 1023 entries per frame. Index 1023 (`0x3ff`) remains the packed
 ReSTIR invalid-selection sentinel and is never occupied by a real light.
 
@@ -554,6 +555,7 @@ ReSTIR invalid-selection sentinel and is never occupied by a real light.
 | 52 | `shadow_segment_radius` | Finite luminous-source radius used by shadow segments |
 | 56 | `visibility_mask` | Exact f32 encoding of `VisibilityMask` bits; decoded to the ray-query cull mask by `decodeVisibilityMask` |
 | 60 | `attenuation_model` | `ATTENUATION_MODEL_*` discriminant encoded as f32 |
+| 64–79 | `history_id` | Stable producer identity; all zero disables selection reuse for this light |
 
 ---
 

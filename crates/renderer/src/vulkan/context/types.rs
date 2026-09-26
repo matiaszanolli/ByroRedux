@@ -367,6 +367,22 @@ pub struct DrawCommand {
 }
 
 impl DrawCommand {
+    /// Conservative certificate for the early-test shader. This is evaluated
+    /// from the current draw, including animated alpha/depth state, not cached
+    /// at import. Only the default lit material kind (0) is admitted: new kinds
+    /// must explicitly be reviewed against every discard in triangle.frag.
+    pub fn allows_early_fragment_tests(&self) -> bool {
+        !self.alpha_blend
+            && self.alpha_threshold == 0.0
+            && self.material_kind == 0
+            && self.z_test
+            && self.z_write
+            && matches!(self.z_function, 1 | 3)
+            && !self.wireframe
+            && !self.is_decal
+            && self.render_layer != byroredux_core::ecs::components::RenderLayer::Decal
+    }
+
     /// Project the per-material fields onto a [`GpuMaterial`] for the
     /// per-frame [`MaterialTable`]. Per-DRAW state (model matrix,
     /// mesh refs, bone offset, sort depth, visibility flags,

@@ -732,12 +732,16 @@ Located in [`vulkan/scene_buffer/`](../../crates/renderer/src/vulkan/scene_buffe
 The renderer uses an SSBO (not a UBO) so the shader can iterate a variable
 number of lights without recompiling the pipeline (`MAX_LIGHTS = 1023`). The
 ceiling leaves packed ReSTIR index `0x3ff` reserved as "no selection". Each
-`GpuLight` is a 64-byte struct of four `vec4`s: `position_radius`
+`GpuLight` is an 80-byte struct of four `vec4`s and a `uvec4` identity: `position_radius`
 (xyz = world position, w = radius), `color_type` (rgb = color, w = type:
 0 point / 1 spot / 2 directional), `direction_angle` (xyz = direction,
 w = spot outer-angle cosine), and `params` (x = `falloff_exponent` from the
 LIGH DATA record, y = finite source radius, z = explicit `VisibilityMask`
-bits, w = `AttenuationModel`). The fragment shader evaluates the current
+bits, w = `AttenuationModel`). `history_id` identifies the producer across
+light animation and priority reordering; zero declines selection reuse. A
+4096-byte previous-index-to-current-index table follows the SSBO's 16-byte
+count prefix, so temporal and spatial ReSTIR candidates still name the same
+light after sorting. The fragment shader evaluates the current
 cluster's candidates with the standardized attenuation contract
 (`fc338d90`), then the ReSTIR-DI reservoir path selects and validates the
 shadowed sample against the TLAS. It is not an unconditional ray-per-light

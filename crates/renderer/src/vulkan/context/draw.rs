@@ -3683,7 +3683,10 @@ mod group_state_tests {
     fn batch() -> DrawBatch {
         DrawBatch {
             mesh_handle: 1,
-            pipeline_key: PipelineKey::Opaque { wireframe: false },
+            pipeline_key: PipelineKey::Opaque {
+                wireframe: false,
+                early_tests: false,
+            },
             two_sided: false,
             render_layer: RenderLayer::Clutter,
             first_instance: 0,
@@ -3707,6 +3710,17 @@ mod group_state_tests {
         b.mesh_handle = 99;
         b.first_instance = 1;
         assert_eq!(group_state(&a), group_state(&b));
+    }
+
+    #[test]
+    fn early_test_shader_boundary_splits_indirect_groups() {
+        let late = batch();
+        let mut early = batch();
+        early.pipeline_key = PipelineKey::Opaque {
+            wireframe: false,
+            early_tests: true,
+        };
+        assert_ne!(group_state(&late), group_state(&early));
     }
 
     /// A two_sided boundary must split the group: a CULL_NONE batch can't
@@ -3861,7 +3875,10 @@ mod needs_two_sided_blend_split_tests {
     #[test]
     fn does_not_split_when_opaque() {
         let mut b = blended_two_sided_batch(true, true);
-        b.pipeline_key = PipelineKey::Opaque { wireframe: false };
+        b.pipeline_key = PipelineKey::Opaque {
+            wireframe: false,
+            early_tests: false,
+        };
         assert!(!needs_two_sided_blend_split(&b));
     }
 

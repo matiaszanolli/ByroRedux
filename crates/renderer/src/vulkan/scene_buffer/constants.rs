@@ -7,7 +7,8 @@
 use ash::vk;
 
 /// Maximum lights we can upload per frame. The SSBO is pre-allocated to this size.
-/// 1023 lights × 64 bytes is just under 64 KB per frame. Raised from 512 after
+/// 1023 lights × 80 bytes plus the 4112-byte remap header is about 84 KiB
+/// per frame. Raised from 512 after
 /// the R2 integrity oracle measured 656 authored lights in Cydonia; the old
 /// cap discarded 144 before cluster assignment. The non-power-of-two ceiling
 /// is deliberate: ReSTIR packs the selected index into 10 bits and reserves

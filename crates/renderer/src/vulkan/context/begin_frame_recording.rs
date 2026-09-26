@@ -95,6 +95,9 @@ impl VulkanContext {
             return Err(e);
         }
 
+        // Publish previous-frame history and invalidate holes in this slot.
+        self.reservoir_buffers.begin_frame(&self.device, cmd, frame);
+
         // 8 color attachments + depth. Order must match the render pass:
         //   0 HDR, 1 normal, 2 motion, 3 mesh_id, 4 raw_indirect, 5 albedo,
         //   6 fsr_reactive, 7 fsr_transparency, 8 depth.

@@ -9,6 +9,7 @@ use byroredux_core::ecs::components::camera::ACTIVE_DEPTH_MAPPING;
 /// texture_registry) can reflect them during descriptor layout validation (#427).
 pub const TRIANGLE_VERT_SPV: &[u8] = include_bytes!("../../shaders/triangle.vert.spv");
 pub const TRIANGLE_FRAG_SPV: &[u8] = include_bytes!("../../shaders/triangle.frag.spv");
+pub const TRIANGLE_EARLY_FRAG_SPV: &[u8] = include_bytes!("../../shaders/triangle_early.frag.spv");
 pub const UI_VERT_SPV: &[u8] = include_bytes!("../../shaders/ui.vert.spv");
 pub const UI_FRAG_SPV: &[u8] = include_bytes!("../../shaders/ui.frag.spv");
 
@@ -96,7 +97,8 @@ pub(crate) fn create_compute_pipeline(
 
 /// Pipeline selection key for a single draw.
 ///
-/// The renderer keeps a single opaque pipeline (depth-write on, no blend)
+/// The renderer keeps late-test and certified early-test opaque pipelines
+/// (depth-write on, no blend)
 /// plus a lazily-populated cache of blended pipelines keyed by the exact
 /// Gamebryo (src, dst) factor pair. This key is what batching logic
 /// in `draw.rs` groups by. See #392 / #930.
@@ -116,7 +118,9 @@ pub enum PipelineKey {
     /// `wireframe=true` selects the `vk::PolygonMode::LINE` variant
     /// for `NiWireframeProperty`-flagged content (#869); falls back
     /// to FILL when the device lacks `fillModeNonSolid`.
-    Opaque { wireframe: bool },
+    /// `early_tests` is certified by `DrawCommand::allows_early_fragment_tests`;
+    /// it must be false for wireframe, cutouts and discard-capable materials.
+    Opaque { wireframe: bool, early_tests: bool },
     /// Blended: depth write off, blend on. `src`/`dst` are raw
     /// Gamebryo `AlphaFunction` enum values (0=ONE ... 10=SRC_ALPHA_SATURATE);
     /// see [`gamebryo_to_vk_blend_factor`]. Two-sided behavior comes from
@@ -235,13 +239,15 @@ pub fn gamebryo_to_vk_blend_factor(v: u8, default: vk::BlendFactor) -> vk::Blend
     }
 }
 
-/// Pipeline set: the single opaque pipeline plus the shared layout.
+/// Pipeline set: opaque shader variants plus the shared layout.
 /// All blended variants are created lazily via [`create_blend_pipeline`]
 /// and cached on the VulkanContext by (src, dst). Two-sided rendering
 /// uses dynamic `cmd_set_cull_mode` rather than a distinct pipeline —
 /// see [`PipelineKey`] for the rationale (#930).
 pub struct PipelineSet {
     pub opaque: vk::Pipeline,
+    /// Default lit, discard-free, filled opaque surfaces only.
+    pub opaque_early: vk::Pipeline,
     /// Wireframe variant (`polygon_mode = LINE`). `None` when the device
     /// doesn't expose `fillModeNonSolid`; callers fall back to `opaque`
     /// in that case so `NiWireframeProperty` content still renders
@@ -317,7 +323,35 @@ fn triangle_pipeline_inner(
     wireframe_supported: bool,
 ) -> Result<PipelineSet> {
     let vert_module = load_shader_module(device, TRIANGLE_VERT_SPV)?;
-    let frag_module = load_shader_module(device, TRIANGLE_FRAG_SPV)?;
+    let frag_module = match load_shader_module(device, TRIANGLE_FRAG_SPV) {
+        Ok(module) => module,
+        Err(error) => {
+            // SAFETY: the module was created above and has no pipeline users.
+            unsafe { device.destroy_shader_module(vert_module, None) };
+            return Err(error);
+        }
+    };
+    // Diagnostic A/B keeps classification, batching and draw order identical.
+    // Only the shader execution mode changes; read once per pipeline creation.
+    let early_tests = std::env::var_os("BYRO_DISABLE_OPAQUE_EARLY_TESTS").is_none();
+    let early_module = match load_shader_module(
+        device,
+        if early_tests {
+            TRIANGLE_EARLY_FRAG_SPV
+        } else {
+            TRIANGLE_FRAG_SPV
+        },
+    ) {
+        Ok(module) => module,
+        Err(error) => {
+            // SAFETY: both modules are live and have no pipeline users.
+            unsafe {
+                device.destroy_shader_module(vert_module, None);
+                device.destroy_shader_module(frag_module, None);
+            }
+            return Err(error);
+        }
+    };
 
     let entry_point = c"main";
 
@@ -331,6 +365,8 @@ fn triangle_pipeline_inner(
             .module(frag_module)
             .name(entry_point),
     ];
+    let mut early_shader_stages = shader_stages;
+    early_shader_stages[1] = early_shader_stages[1].module(early_module);
 
     // Vertex input from buffer — position + color per vertex.
     let binding_descriptions = [Vertex::binding_description()];
@@ -479,7 +515,7 @@ fn triangle_pipeline_inner(
         .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
         .depth_bias_enable(true);
 
-    let mut pipeline_infos: Vec<vk::GraphicsPipelineCreateInfo> = Vec::with_capacity(2);
+    let mut pipeline_infos: Vec<vk::GraphicsPipelineCreateInfo> = Vec::with_capacity(3);
     // Opaque pipeline — depth write on, no blend. Two-sided behavior
     // comes from dynamic `cmd_set_cull_mode` per draw, not a separate
     // pipeline (#930).
@@ -516,23 +552,18 @@ fn triangle_pipeline_inner(
         );
     }
 
-    let pipelines = unsafe {
+    // Only filled draws are eligible; wireframe retains the late-test module.
+    let early_index = pipeline_infos.len();
+    pipeline_infos.push(pipeline_infos[0].stages(&early_shader_stages));
+    let result = unsafe {
         // SAFETY: `device` + `pipeline_cache` are live; every `pipeline_infos`
         // entry borrows state (stages, vertex input, dynamic state) that
         // outlives this call and references live device-owned handles —
         // `pipeline_layout`, `render_pass`, and the `vert_module`/`frag_module`
         // shader modules (destroyed just below); the returned pipelines are
         // caller-owned.
-        device
-            .create_graphics_pipelines(pipeline_cache, &pipeline_infos, None)
-            .map_err(|(_, err)| err)
-            .context("Failed to create graphics pipelines")?
+        device.create_graphics_pipelines(pipeline_cache, &pipeline_infos, None)
     };
-
-    log::info!(
-        "Graphics pipeline created (opaque + {} wireframe; blend variants lazy-cached by (src, dst, wireframe))",
-        if wireframe_supported { "1" } else { "0 (fillModeNonSolid unavailable)" }
-    );
 
     // SAFETY: Shader modules are compiled into the pipeline objects during
     // create_graphics_pipelines and are no longer needed. Destroy them
@@ -541,7 +572,21 @@ fn triangle_pipeline_inner(
     unsafe {
         device.destroy_shader_module(vert_module, None);
         device.destroy_shader_module(frag_module, None);
+        device.destroy_shader_module(early_module, None);
     }
+    let pipelines = result
+        .map_err(|(partial, error)| {
+            // SAFETY: failed creation can return successful partial pipelines;
+            // none have been submitted or published to the context yet.
+            unsafe {
+                for pipeline in partial {
+                    device.destroy_pipeline(pipeline, None);
+                }
+            }
+            error
+        })
+        .context("Failed to create graphics pipelines")?;
+    log::info!("Graphics pipelines created (opaque early tests={early_tests}, wireframe={wireframe_supported}; blend variants lazy-cached)");
 
     let opaque_wireframe = if wireframe_supported {
         Some(pipelines[1])
@@ -550,6 +595,7 @@ fn triangle_pipeline_inner(
     };
     Ok(PipelineSet {
         opaque: pipelines[0],
+        opaque_early: pipelines[early_index],
         opaque_wireframe,
         layout: pipeline_layout,
     })
@@ -1277,7 +1323,10 @@ mod tests {
             wireframe: false,
             preserve_opaque_gbuffer: false,
         };
-        let opaque = PipelineKey::Opaque { wireframe: false };
+        let opaque = PipelineKey::Opaque {
+            wireframe: false,
+            early_tests: false,
+        };
 
         let all = [alpha, additive, glass_modulate, premul_additive, opaque];
         for (i, a) in all.iter().enumerate() {
@@ -1294,8 +1343,14 @@ mod tests {
     /// #869 — wireframe is a key axis; FILL and LINE must not collide.
     #[test]
     fn pipeline_key_wireframe_is_distinct_axis() {
-        let opaque_fill = PipelineKey::Opaque { wireframe: false };
-        let opaque_line = PipelineKey::Opaque { wireframe: true };
+        let opaque_fill = PipelineKey::Opaque {
+            wireframe: false,
+            early_tests: false,
+        };
+        let opaque_line = PipelineKey::Opaque {
+            wireframe: true,
+            early_tests: false,
+        };
         assert_ne!(opaque_fill, opaque_line);
         let blend_fill = PipelineKey::Blended {
             src: 6,

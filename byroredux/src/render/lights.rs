@@ -87,6 +87,7 @@ pub(super) fn gpu_light_from_emitter(
     let radiant_intensity = emitter.radiant_intensity.scaled(intensity_scale);
 
     byroredux_renderer::GpuLight {
+        history_id: [0; 4],
         position_radius: [
             position[0],
             position[1],
@@ -179,6 +180,7 @@ pub(super) fn collect_lights(
         );
         if dir_color.iter().any(|channel| *channel > 0.0) {
             gpu_lights.push(byroredux_renderer::GpuLight {
+                history_id: [0, 2, 0, 0],
                 position_radius: [0.0, 0.0, 0.0, 0.0],
                 color_type: [dir_color[0], dir_color[1], dir_color[2], 2.0],
                 direction_angle: [
@@ -234,11 +236,13 @@ pub(super) fn collect_lights(
                 // radius/flags into `Emitter`; this shared boundary performs
                 // the same final unit conversion and packing for authored and
                 // procedural sources.
-                gpu_lights.push(gpu_light_from_emitter(
+                let mut gpu_light = gpu_light_from_emitter(
                     [t.translation.x, t.translation.y, t.translation.z],
                     light.emitter,
                     scale,
-                ));
+                );
+                gpu_light.history_id = [entity, 1, 0, 0];
+                gpu_lights.push(gpu_light);
             }
         }
     }
@@ -613,12 +617,14 @@ mod gi_light_priority_tests {
     #[test]
     fn priority_score_favors_brighter_and_farther_reaching_lights() {
         let dim_small = byroredux_renderer::GpuLight {
+            history_id: [0; 4],
             position_radius: [0.0, 0.0, 0.0, 100.0],
             color_type: [0.05, 0.05, 0.05, 0.0],
             direction_angle: [0.0; 4],
             params: [1.0, 0.0, 0.0, 0.0],
         };
         let bright_large = byroredux_renderer::GpuLight {
+            history_id: [0; 4],
             position_radius: [0.0, 0.0, 0.0, 1000.0],
             color_type: [0.9, 0.8, 0.7, 0.0],
             direction_angle: [0.0; 4],
@@ -637,12 +643,14 @@ mod gi_light_priority_tests {
     #[test]
     fn priority_score_orders_by_radius_at_equal_brightness() {
         let near = byroredux_renderer::GpuLight {
+            history_id: [0; 4],
             position_radius: [0.0, 0.0, 0.0, 200.0],
             color_type: [0.5, 0.5, 0.5, 0.0],
             direction_angle: [0.0; 4],
             params: [1.0, 0.0, 0.0, 0.0],
         };
         let far = byroredux_renderer::GpuLight {
+            history_id: [0; 4],
             position_radius: [0.0, 0.0, 0.0, 800.0],
             color_type: [0.5, 0.5, 0.5, 0.0],
             direction_angle: [0.0; 4],
@@ -766,6 +774,27 @@ mod gi_light_priority_tests {
     /// the lowest-scoring tail deterministically (and, before #4017, it
     /// was also what kept `giHitIrradiance`'s fixed GI prefix
     /// meaningful).
+    #[test]
+    fn light_history_identity_survives_animated_priority_reordering() {
+        let mut world = World::new();
+        spawn_point_light(&mut world, [0.0; 3], [0.1; 3], 100.0);
+        spawn_point_light(&mut world, [10.0; 3], [0.8; 3], 100.0);
+        let mut lights = Vec::new();
+        let mut scratch = Vec::new();
+        collect_lights(&world, &mut lights, &mut scratch);
+        let before: Vec<_> = lights.iter().map(|l| l.history_id).collect();
+        assert_ne!(before[0], before[1]);
+        assert!(before.iter().all(|id| *id != [0; 4]));
+        {
+            let mut query = world.query_mut::<LightSource>().unwrap();
+            query.get_mut(before[0][0]).unwrap().dimmer = 0.01;
+        }
+        lights.clear();
+        collect_lights(&world, &mut lights, &mut scratch);
+        assert_eq!(lights[0].history_id, before[1]);
+        assert_eq!(lights[1].history_id, before[0]);
+    }
+
     #[test]
     fn collect_lights_sorts_point_lights_brightest_first() {
         let mut world = World::new();
@@ -1044,6 +1073,7 @@ mod sort_scratch_reuse_tests {
         let mut scratch = vec![(
             f32::MAX,
             byroredux_renderer::GpuLight {
+                history_id: [0; 4],
                 position_radius: [7.0, 7.0, 7.0, 12_345.0],
                 color_type: [9.0, 9.0, 9.0, 0.0],
                 direction_angle: [0.0; 4],

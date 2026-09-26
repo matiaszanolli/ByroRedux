@@ -53,11 +53,13 @@ struct GpuLight {
     vec4 color_type;
     vec4 direction_angle;
     vec4 params;  // x = falloff, y = source radius, z = visibility bits, w = attenuation model
+    uvec4 history_id;
 };
 
 layout(std430, set = 0, binding = 3) readonly buffer LightBuffer {
     uint lightCount;
     uint _lpad0, _lpad1, _lpad2;
+    uint previousLightToCurrent[MAX_LIGHTS + 1u];
     GpuLight lights[];
 };
 

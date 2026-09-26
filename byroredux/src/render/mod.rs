@@ -683,8 +683,8 @@ fn compute_directional_upload(
 ///                 (Oblivion's alpha-tested bit-13 shapes reach the opaque
 ///                 branch) would cut its whole population in two and
 ///                 duplicate the state ladder for nothing.
-///   Opaque      — slots 4/5 = render layer/two-sided; slots 6/7 = 0
-///                 (blend factors unused); slot 8 = depth_state; slot 9 =
+///   Opaque      — slots 4/5 = render layer/two-sided; slot 6 = early-test
+///                 shader eligibility; slot 7 unused; slot 8 = depth_state; slot 9 =
 ///                 mesh (cluster key); slot 10 = the high 10 bits of
 ///                 sortable `sort_depth` (coarse front-to-back); slot 11 =
 ///                 entity_id tiebreaker (#506). The coarse bucket keeps
@@ -879,7 +879,7 @@ pub(crate) fn draw_sort_key(
             // Oblivion shapes do carry) must not partition this branch.
             cmd.render_layer as u32,
             cmd.two_sided as u32,
-            0,
+            cmd.allows_early_fragment_tests() as u32, // distinct shader/batch
             0,
             pack_depth_state(cmd) as u32,
             cmd.mesh_handle,                     // group identical meshes

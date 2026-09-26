@@ -399,6 +399,7 @@ impl Drop for VulkanContext {
             destroy_render_pass_pipelines(
                 &self.device,
                 &mut self.pipeline,
+                &mut self.pipeline_early,
                 &mut self.pipeline_wireframe,
                 &mut self.blend_pipeline_cache,
             );

@@ -1264,6 +1264,7 @@ fn combustion_light_from_moment(
     );
 
     Some(GpuLight {
+        history_id: [0; 4], // Transported field samples have no persistent emitter identity.
         position_radius: [
             position[0],
             position[1],

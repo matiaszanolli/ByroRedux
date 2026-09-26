@@ -54,9 +54,17 @@ for shader in "${shaders[@]}"; do
     fi
 done
 
+# Same source, separate execution mode; no duplicated material implementation.
+"${compiler}" -V -I"${shader_root}" -DBYRO_OPAQUE_EARLY_TESTS=1 \
+    "${shader_root}/triangle.frag" -o "${scratch}/triangle_early.frag.spv" >/dev/null
+if ! cmp -s "${shader_root}/triangle_early.frag.spv" "${scratch}/triangle_early.frag.spv"; then
+    echo "DRIFT crates/renderer/shaders/triangle_early.frag.spv" >&2
+    drift=1
+fi
+
 if [[ "${drift}" -ne 0 ]]; then
     echo "check-shader-artifacts: committed SPIR-V is not reproducible from GLSL" >&2
     exit 1
 fi
 
-echo "check-shader-artifacts: ${#shaders[@]} shader artifacts match glslang ${actual_version}"
+echo "check-shader-artifacts: ${#shaders[@]} shaders + opaque early-test variant match glslang ${actual_version}"

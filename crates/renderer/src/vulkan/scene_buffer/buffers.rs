@@ -17,6 +17,7 @@ use super::*;
 use anyhow::{Context, Result};
 use ash::vk;
 
+#[repr(C)]
 #[derive(Clone, Copy)]
 pub(super) struct LightHeader {
     /// Light count for this frame. Rust never reads it back — the value
@@ -26,12 +27,16 @@ pub(super) struct LightHeader {
     #[allow(dead_code)]
     pub(super) count: u32,
     pub(super) _pad: [u32; 3],
+    // Include the invalid-light sentinel, and preserve the 16-byte alignment
+    // of the following GpuLight array (MAX_LIGHTS == 1023).
+    pub(super) previous_to_current: [u32; MAX_LIGHTS + 1],
 }
 
 /// Per-frame scene buffers and their descriptor sets.
 pub struct SceneBuffers {
     /// One SSBO per frame-in-flight (header + light array).
     pub(super) light_buffers: Vec<GpuBuffer>,
+    pub(super) light_history: super::light_history::LightHistory,
     /// Sibling dirty-gate for [`SceneBuffers::upload_lights`] — light
     /// buffers are only a few KB/frame so the win is small, but this
     /// closes the one per-frame SSBO upload that was still
@@ -1024,6 +1029,7 @@ impl SceneBuffers {
 
         Ok(Self {
             light_buffers: bufs.light_buffers,
+            light_history: Default::default(),
             camera_buffers: bufs.camera_buffers,
             bone_device_buffers: bufs.bone_device_buffers,
             bone_world_staging_buffers: bufs.bone_world_staging_buffers,

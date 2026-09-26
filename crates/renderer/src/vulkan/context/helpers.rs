@@ -715,11 +715,14 @@ pub(super) fn init_depth_history_layout(
 pub(super) unsafe fn destroy_render_pass_pipelines(
     device: &ash::Device,
     pipeline: &mut vk::Pipeline,
+    pipeline_early: &mut vk::Pipeline,
     pipeline_wireframe: &mut Option<vk::Pipeline>,
     blend_pipeline_cache: &mut rustc_hash::FxHashMap<(u8, u8, bool, bool), vk::Pipeline>,
 ) {
     device.destroy_pipeline(*pipeline, None);
     *pipeline = vk::Pipeline::null();
+    device.destroy_pipeline(*pipeline_early, None);
+    *pipeline_early = vk::Pipeline::null();
     if let Some(wf) = pipeline_wireframe.take() {
         device.destroy_pipeline(wf, None);
     }

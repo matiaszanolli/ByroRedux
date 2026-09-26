@@ -21,6 +21,7 @@ mod buffers;
 mod constants;
 mod descriptors;
 mod gpu_types;
+mod light_history;
 mod ray_budget;
 mod upload;
 

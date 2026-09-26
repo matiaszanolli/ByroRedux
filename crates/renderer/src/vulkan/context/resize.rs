@@ -224,6 +224,7 @@ impl VulkanContext {
                 destroy_render_pass_pipelines(
                     &self.device,
                     &mut self.pipeline,
+                    &mut self.pipeline_early,
                     &mut self.pipeline_wireframe,
                     &mut self.blend_pipeline_cache,
                 );
@@ -351,6 +352,7 @@ impl VulkanContext {
                 self.device_caps.fill_mode_non_solid_supported,
             )?;
             self.pipeline = pipelines.opaque;
+            self.pipeline_early = pipelines.opaque_early;
             self.pipeline_wireframe = pipelines.opaque_wireframe;
 
             // The UI overlay pipeline is not rebuilt here — since #3426 it

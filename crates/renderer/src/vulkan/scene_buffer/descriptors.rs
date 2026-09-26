@@ -520,7 +520,7 @@ pub(super) fn hash_indirect_slice(draws: &[ash::vk::DrawIndexedIndirectCommand])
 /// that was still unconditional while every sibling had already gained
 /// the gate.
 ///
-/// `GpuLight` is `#[repr(C)]` with four plain `[f32; 4]` fields and no
+/// `GpuLight` is `#[repr(C)]` with four `[f32; 4]` fields, one `[u32; 4]` identity, and no
 /// implicit padding. The hash covers the clamped
 /// prefix actually written (`lights[..count]`), so its length changing
 /// (e.g. the scene going from N lights to 0) always changes the hash
@@ -541,10 +541,10 @@ pub(super) fn hash_light_slice(lights: &[super::gpu_types::GpuLight]) -> u64 {
 /// hash-view conversion is one auditable unit; the invariant it states
 /// is the same one `upload_lights`' raw `copy_nonoverlapping` already
 /// rests on.
-// SAFETY: `GpuLight` is `#[repr(C)]` and all four fields are `[f32; 4]`
-// (16 B each, 64 B total) — homogeneous scalar arrays tile the declared
+// SAFETY: `GpuLight` is `#[repr(C)]` with four `[f32; 4]` fields and
+// one `[u32; 4]` identity (16 B each, 80 B total) — homogeneous scalar arrays tile the declared
 // size with no implicit padding, so every byte of a valid instance is
 // initialised. Same argument as `unsafe impl NoUninit for
-// GpuSelectedRayProbe` in `gpu_types.rs`; `gpu_light_is_64_bytes` (in
+// GpuSelectedRayProbe` in `gpu_types.rs`; `gpu_light_is_80_bytes` (in
 // `gpu_instance_layout_tests.rs`) holds the layout fixed.
 unsafe impl crate::vulkan::buffer::NoUninit for super::gpu_types::GpuLight {}

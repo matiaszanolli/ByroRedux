@@ -737,6 +737,10 @@ mod tests {
                 "triangle.frag",
                 include_bytes!("../../shaders/triangle.frag.spv"),
             ),
+            (
+                "triangle_early.frag",
+                include_bytes!("../../shaders/triangle_early.frag.spv"),
+            ),
             ("water.frag", include_bytes!("../../shaders/water.frag.spv")),
         ];
         for (name, spv) in shaders {
@@ -1246,6 +1250,56 @@ mod tests {
              8 color attachments at locations 0..=7 — a G-buffer attachment was added/removed \
              without mirroring the blend arrays in pipeline.rs / water.rs and color_refs in \
              context/helpers.rs (#1564 / #1583)."
+        );
+    }
+
+    #[test]
+    fn opaque_early_test_module_preserves_outputs_and_selects_execution_mode() {
+        let late = include_bytes!("../../shaders/triangle.frag.spv").as_slice();
+        let early = include_bytes!("../../shaders/triangle_early.frag.spv").as_slice();
+        assert_eq!(
+            reflect_output_locations(late).unwrap(),
+            reflect_output_locations(early).unwrap()
+        );
+        fn without_early_tests(bytes: &[u8]) -> (Vec<u32>, bool) {
+            let words: Vec<_> = bytes
+                .chunks_exact(4)
+                .map(|b| u32::from_le_bytes(b.try_into().unwrap()))
+                .collect();
+            let mut offset = 5;
+            let mut found = false;
+            let mut stripped = words[..5].to_vec();
+            while offset < words.len() {
+                let count = (words[offset] >> 16) as usize;
+                assert!(count > 0 && offset + count <= words.len());
+                // OpExecutionMode=16, EarlyFragmentTests=9 (SPIR-V).
+                if words[offset] & 0xffff == 16 && count >= 3 && words[offset + 2] == 9 {
+                    found = true;
+                } else {
+                    stripped.extend_from_slice(&words[offset..offset + count]);
+                }
+                offset += count;
+            }
+            (stripped, found)
+        }
+        let (late_code, late_mode) = without_early_tests(late);
+        let (early_code, early_mode) = without_early_tests(early);
+        assert!(!late_mode, "cutouts must keep late depth writes");
+        assert!(
+            early_mode,
+            "eligible opaque draws must reject hidden fragments early"
+        );
+        assert_eq!(
+            late_code, early_code,
+            "only execution ordering may differ, not shading or resource interfaces"
+        );
+        // A new discard needs a fresh review of the CPU eligibility certificate.
+        assert_eq!(
+            include_str!("../../shaders/triangle.frag")
+                .matches("discard;")
+                .count(),
+            6,
+            "review DrawCommand::allows_early_fragment_tests for the new coverage path"
         );
     }
 

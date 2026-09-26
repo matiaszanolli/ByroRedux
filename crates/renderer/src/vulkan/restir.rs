@@ -19,8 +19,8 @@
 //!
 //! With `MAX_FRAMES_IN_FLIGHT == 2`, frame N writes slot N and reads slot
 //! `(N+1) % 2` as its temporal history — identical to the SVGF history
-//! scheme. The per-frame fence guarantees slot `(N+1)%2` was fully written
-//! two frames ago before the new read.
+//! scheme. Frame acquisition waits both slots; `begin_frame` publishes the
+//! preceding frame's writes and clears the current slot before reuse.
 
 use super::allocator::SharedAllocator;
 use super::buffer::GpuBuffer;
@@ -114,6 +114,59 @@ impl ReservoirBuffers {
     /// Byte size of one reservoir buffer (for the descriptor range).
     pub fn buffer_size(&self) -> vk::DeviceSize {
         Self::byte_size(self.width, self.height)
+    }
+
+    /// Start a fresh history image. Pixels with no eligible fragment this
+    /// frame must not retain an older light index: the remap describes only
+    /// the immediately preceding frame. Also publish its shader writes.
+    pub fn begin_frame(&self, device: &ash::Device, cmd: vk::CommandBuffer, frame: usize) {
+        let buffer_barrier = |buffer| {
+            vk::BufferMemoryBarrier::default()
+                .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                .buffer(buffer)
+                .offset(0)
+                .size(self.buffer_size())
+        };
+        let before = [
+            buffer_barrier(self.curr_buffer(frame))
+                .src_access_mask(
+                    vk::AccessFlags::SHADER_READ
+                        | vk::AccessFlags::SHADER_WRITE
+                        | vk::AccessFlags::TRANSFER_WRITE,
+                )
+                .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE),
+            buffer_barrier(self.prev_buffer(frame))
+                .src_access_mask(vk::AccessFlags::SHADER_WRITE | vk::AccessFlags::TRANSFER_WRITE)
+                .dst_access_mask(vk::AccessFlags::SHADER_READ),
+        ];
+        let after = [buffer_barrier(self.curr_buffer(frame))
+            .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+            .dst_access_mask(vk::AccessFlags::SHADER_WRITE)];
+        // SAFETY: called after beginning this slot's fenced command buffer,
+        // outside a render pass. Both buffers remain live through submission;
+        // the barriers order prior reads/writes, the clear, and new writes.
+        unsafe {
+            device.cmd_pipeline_barrier(
+                cmd,
+                vk::PipelineStageFlags::FRAGMENT_SHADER | vk::PipelineStageFlags::TRANSFER,
+                vk::PipelineStageFlags::TRANSFER | vk::PipelineStageFlags::FRAGMENT_SHADER,
+                vk::DependencyFlags::empty(),
+                &[],
+                &before,
+                &[],
+            );
+            device.cmd_fill_buffer(cmd, self.curr_buffer(frame), 0, vk::WHOLE_SIZE, 0);
+            device.cmd_pipeline_barrier(
+                cmd,
+                vk::PipelineStageFlags::TRANSFER,
+                vk::PipelineStageFlags::FRAGMENT_SHADER,
+                vk::DependencyFlags::empty(),
+                &[],
+                &after,
+                &[],
+            );
+        }
     }
 
     /// Recreate at a new extent after a swapchain resize. History is

@@ -84,13 +84,13 @@ fn gpu_camera_is_368_bytes() {
 /// pins those four against each other), but unlike `GpuInstance` (160 B)
 /// and `GpuCamera` (368 B) had no `size_of` pin against the Rust struct at
 /// all. Four `[f32; 4]` fields (`position_radius` / `color_type` /
-/// `direction_angle` / `params`) = 64 B.
+/// `direction_angle` / `params`) plus one uvec4 identity = 80 B.
 #[test]
-fn gpu_light_is_64_bytes() {
+fn gpu_light_is_80_bytes() {
     assert_eq!(
         size_of::<GpuLight>(),
-        64,
-        "GpuLight must stay 64 B to match its four GLSL mirrors' std430 layout"
+        80,
+        "GpuLight must stay 80 B to match its four GLSL mirrors' std430 layout"
     );
 }
 

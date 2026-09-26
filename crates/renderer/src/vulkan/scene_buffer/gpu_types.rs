@@ -308,7 +308,7 @@ impl Default for GpuInstance {
     }
 }
 
-/// GPU-side light struct (64 bytes, std430 layout).
+/// GPU-side light struct (80 bytes, std430 layout).
 ///
 /// Shader Struct Sync: every shader that declares `struct GpuLight`
 /// must mirror this layout (currently `include/bindings.glsl`
@@ -356,6 +356,10 @@ pub struct GpuLight {
     /// z = explicit `VisibilityMask` bits encoded as an exact f32 integer;
     /// w = `AttenuationModel` discriminant encoded as f32.
     pub params: [f32; 4],
+    /// Stable producer identity for ReSTIR remapping. All zero means that
+    /// identity is unavailable, so this light is sampled fresh only.
+    /// Authored lights use [entity_id, 1, 0, 0]; the scene key uses [0, 2, 0, 0].
+    pub history_id: [u32; 4],
 }
 
 impl GpuLight {

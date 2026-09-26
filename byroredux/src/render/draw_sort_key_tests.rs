@@ -1,5 +1,52 @@
 use super::{draw_sort_key, sort_draw_commands, DrawCommand};
 
+#[test]
+fn opaque_early_tests_reject_every_uncertified_coverage_or_depth_state() {
+    let ordinary = cmd(false, false, false);
+    assert!(ordinary.allows_early_fragment_tests());
+    for mutate in [
+        (|c: &mut DrawCommand| c.alpha_blend = true) as fn(&mut DrawCommand),
+        |c| c.alpha_threshold = 0.5,
+        |c| c.alpha_threshold = f32::NAN,
+        |c| c.alpha_threshold = -0.1,
+        |c| c.z_test = false,
+        |c| c.z_write = false,
+        |c| c.wireframe = true,
+        |c| c.is_decal = true,
+        |c| c.render_layer = byroredux_core::ecs::components::RenderLayer::Decal,
+    ] {
+        let mut other = cmd(false, false, false);
+        mutate(&mut other);
+        assert!(!other.allows_early_fragment_tests());
+        assert_ne!(draw_sort_key(&ordinary), draw_sort_key(&other));
+    }
+    // Reject unknown future kinds as well as today's effects/glass/refraction.
+    for kind in (1..=104).chain([u32::MAX]) {
+        let mut other = cmd(false, false, false);
+        other.material_kind = kind;
+        assert!(!other.allows_early_fragment_tests());
+        assert_ne!(draw_sort_key(&ordinary), draw_sort_key(&other));
+    }
+    for function in 0..=u8::MAX {
+        let mut other = cmd(false, false, false);
+        other.z_function = function;
+        assert_eq!(
+            other.allows_early_fragment_tests(),
+            matches!(function, 1 | 3)
+        );
+    }
+}
+
+#[test]
+fn animated_cutout_threshold_reselects_the_late_test_path() {
+    let mut draw = cmd(false, false, false);
+    assert!(draw.allows_early_fragment_tests());
+    draw.alpha_threshold = 1.0 / 255.0;
+    assert!(!draw.allows_early_fragment_tests());
+    draw.alpha_threshold = 0.0;
+    assert!(draw.allows_early_fragment_tests());
+}
+
 /// Minimal DrawCommand builder — only the fields that affect the
 /// sort key are interesting. Everything else is zeroed.
 fn cmd(alpha_blend: bool, is_decal: bool, two_sided: bool) -> DrawCommand {

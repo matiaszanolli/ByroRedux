@@ -290,11 +290,13 @@ struct GpuLight {
     vec4 color_type;       // rgb=color, w=type (0=point, 1=spot, 2=directional)
     vec4 direction_angle;  // xyz = direction, w = spot angle cosine
     vec4 params;           // x = falloff, y = source radius, z = visibility bits, w = attenuation model
+    uvec4 history_id;
 };
 
 layout(std430, set = 1, binding = 0) readonly buffer LightBuffer {
     uint lightCount;
     uint _pad0, _pad1, _pad2;
+    uint previousLightToCurrent[MAX_LIGHTS + 1u];
     GpuLight lights[];
 };
 

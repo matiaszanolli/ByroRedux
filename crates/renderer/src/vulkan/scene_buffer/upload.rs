@@ -118,14 +118,21 @@ impl super::buffers::SceneBuffers {
         // that drops trailing lights still re-uploads when the kept
         // prefix changes, and a count change (including to/from zero)
         // always changes the hashed byte length.
-        let hash = hash_light_slice(&lights[..count]);
+        let previous_to_current = self.light_history.remap(frame_index, &lights[..count]);
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        hash_light_slice(&lights[..count]).hash(&mut hasher);
+        previous_to_current.hash(&mut hasher);
+        let hash = hasher.finish();
         if self.last_uploaded_light_hash[frame_index] == Some(hash) {
+            self.light_history.commit(frame_index, &lights[..count]);
             return Ok(());
         }
 
         let header = LightHeader {
             count: count as u32,
             _pad: [0; 3],
+            previous_to_current,
         };
 
         let header_size = std::mem::size_of::<LightHeader>();
@@ -182,6 +189,7 @@ impl super::buffers::SceneBuffers {
         // leaves the buffer in an indeterminate state, so we want the
         // next call to re-upload rather than skip.
         self.last_uploaded_light_hash[frame_index] = Some(hash);
+        self.light_history.commit(frame_index, &lights[..count]);
         Ok(())
     }
 

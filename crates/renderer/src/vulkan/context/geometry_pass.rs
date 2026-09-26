@@ -302,12 +302,19 @@ impl VulkanContext {
                 // `draw_cmd.two_sided`), not a separate pipeline (#930).
                 if batch.pipeline_key != last_pipeline_key {
                     let pipe = match batch.pipeline_key {
-                        PipelineKey::Opaque { wireframe: false } => self.pipeline,
+                        PipelineKey::Opaque {
+                            early_tests: true, ..
+                        } => self.pipeline_early,
+                        PipelineKey::Opaque {
+                            wireframe: false,
+                            early_tests: false,
+                        } => self.pipeline,
                         // Wireframe falls back to FILL on devices
                         // without `fillModeNonSolid`. #869.
-                        PipelineKey::Opaque { wireframe: true } => {
-                            self.pipeline_wireframe.unwrap_or(self.pipeline)
-                        }
+                        PipelineKey::Opaque {
+                            wireframe: true,
+                            early_tests: false,
+                        } => self.pipeline_wireframe.unwrap_or(self.pipeline),
                         PipelineKey::Blended {
                             src,
                             dst,
@@ -846,7 +853,10 @@ impl VulkanContext {
                 GeometryTimerPhase::GroundcoverModelDraw,
             );
         }
-        let opaque = PipelineKey::Opaque { wireframe: false };
+        let opaque = PipelineKey::Opaque {
+            wireframe: false,
+            early_tests: false,
+        };
         // SAFETY: called from `record_geometry_pass`'s render-pass scope, so
         // `cmd` is recording inside the main render pass with the scene
         // descriptor sets and the global VB/IB bound; `buffer` is the tier's
