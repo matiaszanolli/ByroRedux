@@ -150,15 +150,20 @@ vec2 transformRayHitUV(GpuMaterial mat, vec2 uv) {
          + vec2(mat.uvOffsetU, mat.uvOffsetV);
 }
 
-// Vertex ABI matches skin_vertices.comp: bone indices at floats 12..15,
-// weights at 16..19. Unweighted vertices retain the rigid model transform.
+// Vertex ABI matches skin_vertices.comp. Bone lane positions come from the
+// generated VERTEX_BONE_*_OFFSET_FLOATS constants. Unweighted vertices retain
+// the rigid model transform.
 mat3 getHitVertexTransform(GpuInstance inst, uint base) {
-    vec4 weights = vec4(vertexData[base + 16u], vertexData[base + 17u],
-                        vertexData[base + 18u], vertexData[base + 19u]);
+    vec4 weights = vec4(vertexData[base + VERTEX_BONE_WEIGHTS_OFFSET_FLOATS],
+                        vertexData[base + VERTEX_BONE_WEIGHTS_OFFSET_FLOATS + 1u],
+                        vertexData[base + VERTEX_BONE_WEIGHTS_OFFSET_FLOATS + 2u],
+                        vertexData[base + VERTEX_BONE_WEIGHTS_OFFSET_FLOATS + 3u]);
     if (dot(weights, vec4(1.0)) < 0.001) return mat3(inst.model);
-    uvec4 indices = min(floatBitsToUint(vec4(
-        vertexData[base + 12u], vertexData[base + 13u],
-        vertexData[base + 14u], vertexData[base + 15u])),
+    uvec4 indices = min(uvec4(
+        floatBitsToUint(vertexData[base + VERTEX_BONE_INDICES_OFFSET_FLOATS]),
+        floatBitsToUint(vertexData[base + VERTEX_BONE_INDICES_OFFSET_FLOATS + 1u]),
+        floatBitsToUint(vertexData[base + VERTEX_BONE_INDICES_OFFSET_FLOATS + 2u]),
+        floatBitsToUint(vertexData[base + VERTEX_BONE_INDICES_OFFSET_FLOATS + 3u])),
         uvec4(MAX_BONES_PER_MESH - 1u));
     return mat3(weights.x * bones[inst.boneOffset + indices.x]
               + weights.y * bones[inst.boneOffset + indices.y]

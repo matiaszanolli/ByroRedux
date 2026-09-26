@@ -449,7 +449,7 @@ impl Texture {
             device.get_image_memory_requirements(image)
         };
 
-        let image_alloc = allocator
+        let image_alloc = match allocator
             .lock()
             .expect("allocator lock poisoned")
             .allocate(&vk_alloc::AllocationCreateDesc {
@@ -459,7 +459,15 @@ impl Texture {
                 linear: false,
                 allocation_scheme: vk_alloc::AllocationScheme::GpuAllocatorManaged,
             })
-            .context("Failed to allocate DDS texture image memory")?;
+        {
+            Ok(allocation) => allocation,
+            Err(error) => {
+                // Allocation failed before the image was bound or referenced
+                // by a command buffer, so the unbound image can be destroyed.
+                unsafe { device.destroy_image(image, None) };
+                return Err(error).context("Failed to allocate DDS texture image memory");
+            }
+        };
 
         // #2178 / PERF-D3-03 — free the sub-allocation on bind failure. This is
         // the most reachable instance of the pattern: unlike the startup
@@ -486,6 +494,43 @@ impl Texture {
             }
             return Err(error).context("Failed to bind DDS texture image memory");
         }
+
+        // #4854 — create the CPU-side view before recording any commands that
+        // name `image`. A queued batch may skip a failed upload and still
+        // submit its command buffer, so failure cleanup must precede recording.
+        let view_kind = if meta.is_cubemap {
+            TextureViewKind::Cube
+        } else {
+            TextureViewKind::D2
+        };
+        let view_info = vk::ImageViewCreateInfo::default()
+            .image(image)
+            .view_type(if meta.is_cubemap {
+                vk::ImageViewType::CUBE
+            } else {
+                vk::ImageViewType::TYPE_2D
+            })
+            .format(meta.format)
+            .subresource_range(color_subresource_mips_layers(
+                meta.mip_count,
+                meta.array_layers,
+            ));
+        let image_view = match unsafe {
+            // SAFETY: `device` is live, and `view_info` describes a view of
+            // the bound image and its declared mip/layer range.
+            device.create_image_view(&view_info, None)
+        } {
+            Ok(view) => view,
+            Err(error) => {
+                unsafe { device.destroy_image(image, None) };
+                allocator
+                    .lock()
+                    .expect("allocator lock poisoned")
+                    .free(image_alloc)
+                    .ok();
+                return Err(error).context("Failed to create DDS texture image view");
+            }
+        };
 
         // Build per-mip copy regions. The walk returns the exact byte
         // total the regions address — the same walk `dds::total_data_size`
@@ -557,51 +602,6 @@ impl Texture {
                 &[barrier_to_read],
             );
         }
-
-        // 7. Image view (CPU-only, independent of GPU work).
-        let view_kind = if meta.is_cubemap {
-            TextureViewKind::Cube
-        } else {
-            TextureViewKind::D2
-        };
-        let view_info = vk::ImageViewCreateInfo::default()
-            .image(image)
-            .view_type(if meta.is_cubemap {
-                vk::ImageViewType::CUBE
-            } else {
-                vk::ImageViewType::TYPE_2D
-            })
-            .format(meta.format)
-            .subresource_range(color_subresource_mips_layers(
-                meta.mip_count,
-                meta.array_layers,
-            ));
-
-        let image_view = match unsafe {
-            // SAFETY: `device` is the live logical device; `view_info` is a
-            // stack-local `ImageViewCreateInfo` that outlives this call and
-            // references the device-owned `image` created above, with a
-            // subresource range spanning its `meta.mip_count` mips.
-            device.create_image_view(&view_info, None)
-        } {
-            Ok(view) => view,
-            Err(error) => {
-                // #4854 — until the `Texture` is assembled below, these
-                // locals own the image and allocation. A failed view create
-                // must unwind both, just like the bind-failure arm above.
-                unsafe {
-                    // SAFETY: view creation failed, so no view references the
-                    // image; the image is not yet submitted to GPU work.
-                    device.destroy_image(image, None);
-                }
-                allocator
-                    .lock()
-                    .expect("allocator lock poisoned")
-                    .free(image_alloc)
-                    .ok();
-                return Err(error).context("Failed to create DDS texture image view");
-            }
-        };
 
         log::info!(
             "DDS texture recorded: {}x{}, {:?}, {} mips, {:?}",
@@ -1328,6 +1328,37 @@ mod dds_upload_guard_tests {
             !pre.contains("assert!("),
             "the DDS payload gate regressed to a release assert!: {pre}",
         );
+    }
+
+    /// #4854 — allocation/view creation must clean up while the image has
+    /// not yet been named by this batch's command buffer. A view failure is
+    /// recoverable per queued upload, so the batch may still submit.
+    #[test]
+    fn dds_image_setup_failures_unwind_before_recording_copy_commands() {
+        let src = crate::source_scan::production_text(include_str!("texture.rs"));
+        let upload_at = src
+            .find("fn record_dds_upload(")
+            .expect("record_dds_upload production method");
+        let upload = &src[upload_at..src[upload_at..]
+            .find("/// Destroy the texture")
+            .map(|n| upload_at + n)
+            .expect("record_dds_upload method end")];
+        let create_view = upload
+            .find("device.create_image_view(&view_info, None)")
+            .expect("image view creation");
+        let record_barrier = upload
+            .find("device.cmd_pipeline_barrier(")
+            .expect("first image transition command");
+        assert!(create_view < record_barrier);
+        let view_failure = &upload[create_view..record_barrier];
+        assert!(view_failure.contains("device.destroy_image(image, None)"));
+        assert!(view_failure.contains(".free(image_alloc)"));
+
+        let allocation = upload
+            .find("Failed to allocate DDS texture image memory")
+            .expect("image allocation error context");
+        let allocation_failure = &upload[allocation.saturating_sub(260)..allocation + 80];
+        assert!(allocation_failure.contains("device.destroy_image(image, None)"));
     }
 
     /// #4512 — the staging release capacity must be the requested

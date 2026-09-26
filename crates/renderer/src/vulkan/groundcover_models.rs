@@ -931,6 +931,27 @@ fn barrier(
 mod tests {
     use super::*;
 
+    /// #4847 — the model emitter must preserve every host-packed draw flag
+    /// except the non-uniform bit, which is recomputed from placement scale.
+    #[test]
+    fn model_emission_preserves_flat_shading_and_render_layer_flags() {
+        let shader = include_str!("../../shaders/groundcover_models.comp");
+        let emit = shader
+            .split_once("void emit(")
+            .expect("groundcover model emit function")
+            .1
+            .split_once("void main()")
+            .expect("emit must end before main")
+            .0;
+        assert!(emit.contains("shape.flags & ~GROUNDCOVER_MODEL_SHAPE_FLAG_NON_UNIFORM"));
+        assert!(emit.contains("INSTANCE_FLAG_NON_UNIFORM_SCALE"));
+        assert!(
+            !emit.contains("inst.flags = (!uniformScale")
+                || emit.contains("shape.flags & ~GROUNDCOVER_MODEL_SHAPE_FLAG_NON_UNIFORM"),
+            "the emitted flags must not collapse to the non-uniform bit"
+        );
+    }
+
     /// #4866: decoding a timer pair alone does not prove the GPU work writes it.
     #[test]
     fn model_timer_encloses_all_phases_and_stats_copy() {

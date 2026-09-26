@@ -824,6 +824,16 @@ mod tests {
                 VERTEX_TANGENT_OFFSET_FLOATS,
                 std::mem::offset_of!(crate::Vertex, tangent),
             ),
+            (
+                "bone_indices",
+                VERTEX_BONE_INDICES_OFFSET_FLOATS,
+                std::mem::offset_of!(crate::Vertex, bone_indices),
+            ),
+            (
+                "bone_weights",
+                VERTEX_BONE_WEIGHTS_OFFSET_FLOATS,
+                std::mem::offset_of!(crate::Vertex, bone_weights),
+            ),
         ] {
             assert_eq!(
                 (shader_offset * 4) as usize,
@@ -831,6 +841,24 @@ mod tests {
                 "VERTEX_{name}_OFFSET_FLOATS must match Vertex::{name}"
             );
         }
+        assert_eq!(
+            RENDER_LAYER_ARCHITECTURE,
+            byroredux_core::ecs::components::RenderLayer::Architecture as u32
+        );
+        assert_eq!(
+            [
+                FOG_VOLUME_SHAPE_SPHERE,
+                FOG_VOLUME_SHAPE_ELLIPSOID,
+                FOG_VOLUME_SHAPE_BOX,
+                FOG_VOLUME_SHAPE_CONE,
+            ],
+            [
+                byroredux_core::ecs::components::FogShape::Sphere as u32,
+                byroredux_core::ecs::components::FogShape::Ellipsoid as u32,
+                byroredux_core::ecs::components::FogShape::Box as u32,
+                byroredux_core::ecs::components::FogShape::Cone as u32,
+            ]
+        );
     }
 
     /// Verify the generated GLSL header contains the expected #define lines.
@@ -923,7 +951,14 @@ mod tests {
             ("VERTEX_COLOR_OFFSET_FLOATS", format!("#define VERTEX_COLOR_OFFSET_FLOATS {VERTEX_COLOR_OFFSET_FLOATS}u")),
             ("VERTEX_NORMAL_OFFSET_FLOATS", format!("#define VERTEX_NORMAL_OFFSET_FLOATS {VERTEX_NORMAL_OFFSET_FLOATS}u")),
             ("VERTEX_UV_OFFSET_FLOATS", format!("#define VERTEX_UV_OFFSET_FLOATS {VERTEX_UV_OFFSET_FLOATS}u")),
+            ("VERTEX_BONE_INDICES_OFFSET_FLOATS", format!("#define VERTEX_BONE_INDICES_OFFSET_FLOATS {VERTEX_BONE_INDICES_OFFSET_FLOATS}u")),
+            ("VERTEX_BONE_WEIGHTS_OFFSET_FLOATS", format!("#define VERTEX_BONE_WEIGHTS_OFFSET_FLOATS {VERTEX_BONE_WEIGHTS_OFFSET_FLOATS}u")),
             ("VERTEX_TANGENT_OFFSET_FLOATS", format!("#define VERTEX_TANGENT_OFFSET_FLOATS {VERTEX_TANGENT_OFFSET_FLOATS}u")),
+            ("RENDER_LAYER_ARCHITECTURE", format!("#define RENDER_LAYER_ARCHITECTURE {RENDER_LAYER_ARCHITECTURE}u")),
+            ("FOG_VOLUME_SHAPE_SPHERE", format!("#define FOG_VOLUME_SHAPE_SPHERE {FOG_VOLUME_SHAPE_SPHERE}u")),
+            ("FOG_VOLUME_SHAPE_ELLIPSOID", format!("#define FOG_VOLUME_SHAPE_ELLIPSOID {FOG_VOLUME_SHAPE_ELLIPSOID}u")),
+            ("FOG_VOLUME_SHAPE_BOX", format!("#define FOG_VOLUME_SHAPE_BOX {FOG_VOLUME_SHAPE_BOX}u")),
+            ("FOG_VOLUME_SHAPE_CONE", format!("#define FOG_VOLUME_SHAPE_CONE {FOG_VOLUME_SHAPE_CONE}u")),
             ("VISIBILITY_LAYER_ARCHITECTURE", format!("#define VISIBILITY_LAYER_ARCHITECTURE {VISIBILITY_LAYER_ARCHITECTURE}u")),
             ("VISIBILITY_LAYER_STATIC_PROP", format!("#define VISIBILITY_LAYER_STATIC_PROP {VISIBILITY_LAYER_STATIC_PROP}u")),
             ("VISIBILITY_LAYER_DYNAMIC_ACTOR", format!("#define VISIBILITY_LAYER_DYNAMIC_ACTOR {VISIBILITY_LAYER_DYNAMIC_ACTOR}u")),

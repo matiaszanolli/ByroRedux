@@ -311,7 +311,7 @@ bool traceArchitecturalWindowGlass(vec3 origin, vec3 direction, float tMax) {
         if (index >= boundaryInstances.length()) continue;
         uint layer = (boundaryInstances[index].flags >> INSTANCE_RENDER_LAYER_SHIFT)
             & INSTANCE_RENDER_LAYER_MASK;
-        if (layer == 0u) return true; // RenderLayer::Architecture
+        if (layer == RENDER_LAYER_ARCHITECTURE) return true;
     }
     return false;
 }
@@ -778,7 +778,8 @@ bool localSkyAperture(vec3 worldPos, vec3 sunDirection, out float nearestWindowR
         uint volumeIndex = fogClusterIndices[cluster.portalOffset + i];
         if (volumeIndex >= fogVolumeCount) continue;
         GpuFogVolume volume = fogVolumes[volumeIndex];
-        if (volume.center_shape.w < 1.5
+        if ((volume.center_shape.w != float(FOG_VOLUME_SHAPE_BOX)
+                && volume.center_shape.w != float(FOG_VOLUME_SHAPE_CONE))
             || !isLocalProfile(volume.profile_params.x, FOG_VOLUME_PROFILE_LIGHT_SHAFT)) {
             continue;
         }
@@ -787,7 +788,7 @@ bool localSkyAperture(vec3 worldPos, vec3 sunDirection, out float nearestWindowR
             volume.inverse_rotation
         );
         vec3 localSun = rotateByQuaternion(sunDirection, volume.inverse_rotation);
-        if (volume.center_shape.w > 2.5) {
+        if (volume.center_shape.w == float(FOG_VOLUME_SHAPE_CONE)) {
             if (localSun.y <= 1.0e-4) continue;
             float reach = (volume.half_extents_extinction.y - localOrigin.y) / localSun.y;
             vec2 apertureHit = localOrigin.xz + reach * localSun.xz;

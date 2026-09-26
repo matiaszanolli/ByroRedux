@@ -45,7 +45,7 @@ pub const MAX_FRAMES_IN_FLIGHT: usize = 2;
 // #3643 — read that as written: **(a) alone is NOT sufficient.** The
 // depth image is the resource this assert is named after, not the only
 // one riding on the both-slots wait. Per-FIF-ing depth would let the
-// assert be deleted while these other non-per-FIF resources
+// assert be deleted while the following non-per-FIF resources
 // silently lose their only guarantee:
 //
 //   1. `acceleration/blas_skinned.rs`'s `blas_scratch_buffer` —

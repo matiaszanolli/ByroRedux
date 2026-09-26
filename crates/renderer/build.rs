@@ -13,6 +13,24 @@
 use std::fmt::Write as FmtWrite;
 use std::path::Path;
 
+// `shader_constants_data.rs` is included in both this build script and the
+// renderer crate. The library derives vertex word offsets from its real
+// `crate::Vertex`; this layout mirror gives the build script the same
+// `offset_of!` expressions without pulling the renderer (or ash) into itself.
+#[repr(C)]
+#[allow(dead_code)]
+struct Vertex {
+    position: [f32; 3],
+    color: [f32; 4],
+    normal: [f32; 3],
+    uv: [f32; 2],
+    bone_indices: [u32; 4],
+    bone_weights: [f32; 4],
+    splat_weights_0: [u8; 4],
+    splat_weights_1: [u8; 4],
+    tangent: [f32; 4],
+}
+
 // Pull the same constants that shader_constants.rs uses. Because build.rs
 // runs in a separate compilation context it cannot import from the crate, so
 // we share the raw data file via include!.
@@ -172,6 +190,16 @@ fn main() {
     writeln!(
         out,
         "#define VERTEX_UV_OFFSET_FLOATS {VERTEX_UV_OFFSET_FLOATS}u"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "#define VERTEX_BONE_INDICES_OFFSET_FLOATS {VERTEX_BONE_INDICES_OFFSET_FLOATS}u"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "#define VERTEX_BONE_WEIGHTS_OFFSET_FLOATS {VERTEX_BONE_WEIGHTS_OFFSET_FLOATS}u"
     )
     .unwrap();
     writeln!(
@@ -555,11 +583,20 @@ fn main() {
         "#define MATERIAL_KIND_FIRE_REFRACTION {MATERIAL_KIND_FIRE_REFRACTION}u"
     )
     .unwrap();
+    writeln!(
+        out,
+        "#define RENDER_LAYER_ARCHITECTURE {RENDER_LAYER_ARCHITECTURE}u"
+    )
+    .unwrap();
     // #4584 — presentation display-transform operator ids (push constant).
     // Authoritative consumer: tonemap.rs.
     writeln!(out, "#define TONEMAP_OP_ACES {TONEMAP_OP_ACES}u").unwrap();
     writeln!(out, "#define TONEMAP_OP_AGX {TONEMAP_OP_AGX}u").unwrap();
     for (name, value) in [
+        ("FOG_VOLUME_SHAPE_SPHERE", FOG_VOLUME_SHAPE_SPHERE),
+        ("FOG_VOLUME_SHAPE_ELLIPSOID", FOG_VOLUME_SHAPE_ELLIPSOID),
+        ("FOG_VOLUME_SHAPE_BOX", FOG_VOLUME_SHAPE_BOX),
+        ("FOG_VOLUME_SHAPE_CONE", FOG_VOLUME_SHAPE_CONE),
         (
             "VISIBILITY_LAYER_ARCHITECTURE",
             VISIBILITY_LAYER_ARCHITECTURE,

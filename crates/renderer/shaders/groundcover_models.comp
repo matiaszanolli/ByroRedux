@@ -444,10 +444,13 @@ void emit(uint chunkIdx, uint lane) {
             inst.vertexOffset = shape.vertexOffset;
             inst.indexOffset = shape.indexOffset;
             inst.vertexCount = shape.vertexCount;
-            inst.flags = (!uniformScale && rec.heightRange > 0.0)
-                    || (shape.flags & GROUNDCOVER_MODEL_SHAPE_FLAG_NON_UNIFORM) != 0u
-                ? INSTANCE_FLAG_NON_UNIFORM_SCALE
-                : 0u;
+            // Keep host-packed flat-shading and render-layer bits; replace
+            // only the transform-derived non-uniform-scale bit.
+            inst.flags = (shape.flags & ~GROUNDCOVER_MODEL_SHAPE_FLAG_NON_UNIFORM)
+                | (((!uniformScale && rec.heightRange > 0.0)
+                    || (shape.flags & GROUNDCOVER_MODEL_SHAPE_FLAG_NON_UNIFORM) != 0u)
+                    ? INSTANCE_FLAG_NON_UNIFORM_SCALE
+                    : 0u);
             inst.materialId = shape.materialId;
             inst.ior = shape.ior;
             inst.avgAlbedoR = shape.avgAlbedoR;

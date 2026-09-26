@@ -811,8 +811,9 @@ pub(super) fn build_composite_params(
     if !is_exterior && interior_portal_sky {
         let aperture_view_proj = byroredux_core::math::Mat4::from_cols_array_2d(&inv_vp_arr).inverse();
         for volume in sky_aperture_volumes {
-            if volume.center_shape[3] < 1.5
-                || volume.center_shape[3] > 2.5
+            if (volume.center_shape[3] != crate::shader_constants::FOG_VOLUME_SHAPE_BOX as f32
+                && volume.center_shape[3]
+                    != crate::shader_constants::FOG_VOLUME_SHAPE_CONE as f32)
                 || (volume.profile_params[0]
                     - super::super::volumetrics::FOG_VOLUME_PROFILE_LIGHT_SHAFT)
                     .abs()
@@ -1220,7 +1221,7 @@ mod composite_params_tests {
         window.profile_params[0] = FOG_VOLUME_PROFILE_LIGHT_SHAFT;
         window.profile_params[3] = 1.0;
         let mut cone = window;
-        cone.center_shape[3] = 3.0;
+        cone.center_shape[3] = crate::shader_constants::FOG_VOLUME_SHAPE_CONE as f32;
         let mut unmarked_beam = window;
         unmarked_beam.profile_params[3] = 0.0;
         let aperture_volumes = [cone, unmarked_beam, window];

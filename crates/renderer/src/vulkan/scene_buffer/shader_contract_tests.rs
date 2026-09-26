@@ -13,6 +13,37 @@
 use super::*;
 use crate::shader_constants::{RESERVOIR_LIGHT_BITS, RESERVOIR_LIGHT_MASK, RESERVOIR_SURFACE_MASK};
 
+/// #4846 — generated discriminants and the vertex's two bone lanes must stay
+/// the only definitions consumed by the ray and compute paths.
+#[test]
+fn shader_discriminants_and_bone_lanes_use_generated_constants() {
+    let header = include_str!("../../../shaders/include/shader_constants.glsl");
+    let ray_hit = include_str!("../../../shaders/include/ray_hit.glsl");
+    let skin = include_str!("../../../shaders/skin_vertices.comp");
+    let inject = include_str!("../../../shaders/volumetrics_inject.comp");
+    let draw = include_str!("../context/draw.rs");
+    for constant in [
+        "VERTEX_BONE_INDICES_OFFSET_FLOATS",
+        "VERTEX_BONE_WEIGHTS_OFFSET_FLOATS",
+        "RENDER_LAYER_ARCHITECTURE",
+        "FOG_VOLUME_SHAPE_SPHERE",
+        "FOG_VOLUME_SHAPE_ELLIPSOID",
+        "FOG_VOLUME_SHAPE_BOX",
+        "FOG_VOLUME_SHAPE_CONE",
+    ] {
+        assert!(header.contains(&format!("#define {constant} ")));
+    }
+    assert!(ray_hit.contains("VERTEX_BONE_INDICES_OFFSET_FLOATS"));
+    assert!(ray_hit.contains("VERTEX_BONE_WEIGHTS_OFFSET_FLOATS"));
+    assert!(skin.contains("VERTEX_BONE_INDICES_OFFSET_FLOATS"));
+    assert!(skin.contains("VERTEX_BONE_WEIGHTS_OFFSET_FLOATS"));
+    assert!(inject.contains("layer == RENDER_LAYER_ARCHITECTURE"));
+    assert!(inject.contains("FOG_VOLUME_SHAPE_BOX"));
+    assert!(inject.contains("FOG_VOLUME_SHAPE_CONE"));
+    assert!(draw.contains("FOG_VOLUME_SHAPE_BOX as f32"));
+    assert!(draw.contains("FOG_VOLUME_SHAPE_CONE as f32"));
+}
+
 /// The ReSTIR history packs a selected light into ten bits and uses the
 /// all-ones value as an invalid sentinel. The upload cap must leave that value
 /// unoccupied; otherwise real light 1023 and "no selection" alias in temporal
@@ -1807,7 +1838,11 @@ fn every_shader_struct_is_classified() {
         ),
         (
             "SkyAperture",
-            Guarded("composite_params_is_16_byte_aligned_std140_shape"),
+            Guarded("composite_and_volumetrics_uniforms_match_rust_field_order"),
+        ),
+        (
+            "VolumetricsParams",
+            Guarded("composite_and_volumetrics_uniforms_match_rust_field_order"),
         ),
         (
             "GpuBoundaryInstance",

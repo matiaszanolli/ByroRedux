@@ -445,7 +445,7 @@ mod tests {
     }
 
     #[test]
-    fn candle_room_legacy_visibility_is_resolved_at_import() {
+    fn legacy_projection_visibility_is_full_scene() {
         let fill = Emitter::from_legacy_world_units(
             350.0,
             [1.0, 0.55, 0.2],
@@ -453,7 +453,7 @@ mod tests {
             [0.0; 3],
             0.0,
             1.0,
-            VisibilityMask::for_legacy_projection(false),
+            VisibilityMask::for_legacy_projection(),
         );
         assert!(fill.visibility.contains(VisibilityMask::ARCHITECTURE));
         assert!(fill.visibility.contains(VisibilityMask::DYNAMIC_ACTOR));
@@ -461,7 +461,7 @@ mod tests {
         assert!(fill.visibility.contains(VisibilityMask::GLASS));
 
         let shadowed = Emitter {
-            visibility: VisibilityMask::for_legacy_projection(true),
+            visibility: VisibilityMask::for_legacy_projection(),
             ..fill
         };
         assert!(shadowed.visibility.contains(VisibilityMask::STATIC_PROP));

@@ -40,8 +40,7 @@ use ash::vk;
 const COMPOSITE_VERT_SPV: &[u8] = include_bytes!("../../shaders/composite.vert.spv");
 const COMPOSITE_FRAG_SPV: &[u8] = include_bytes!("../../shaders/composite.frag.spv");
 
-pub const MAX_SKY_APERTURES: usize =
-    crate::shader_constants::MAX_COMPOSITE_SKY_APERTURES as usize;
+pub const MAX_SKY_APERTURES: usize = crate::shader_constants::MAX_COMPOSITE_SKY_APERTURES as usize;
 
 /// Window plane consumed by the composite sky mask. Spare lanes hold a
 /// conservative square in UV space, preserving the 48-byte stride and the
@@ -1352,8 +1351,7 @@ impl CompositePipeline {
         // The shader only reads entries below `sky_aperture_count.x`. Keep
         // the fixed std140 block allocation/layout, but avoid copying and
         // flushing the unused 12 KB aperture tail on ordinary frames.
-        let aperture_count = (params.sky_aperture_count[0] as usize)
-            .min(MAX_SKY_APERTURES);
+        let aperture_count = (params.sky_aperture_count[0] as usize).min(MAX_SKY_APERTURES);
         let prefix_bytes = std::mem::offset_of!(CompositeParams, sky_apertures)
             + aperture_count * std::mem::size_of::<CompositeSkyAperture>();
         self.param_buffers[frame].write_mapped_prefix(
@@ -1569,6 +1567,87 @@ mod composite_params_layout_tests {
 
     use super::*;
     use std::mem::{offset_of, size_of};
+
+    fn rust_struct_fields(source: &str, name: &str) -> Vec<String> {
+        let marker = format!("pub struct {name} {{");
+        let body = source
+            .split_once(&marker)
+            .unwrap_or_else(|| panic!("Rust struct {name} must exist"))
+            .1
+            .split_once("\n}")
+            .expect("Rust struct body must close")
+            .0;
+        body.lines()
+            .filter_map(|line| {
+                let line = line.trim();
+                let field = line.strip_prefix("pub ")?.split_once(':')?.0.trim();
+                Some(field.to_string())
+            })
+            .collect()
+    }
+
+    fn glsl_fields(source: &str, marker: &str) -> Vec<String> {
+        let body = source
+            .split_once(marker)
+            .unwrap_or_else(|| panic!("GLSL declaration {marker} must exist"))
+            .1
+            .split_once("};")
+            .expect("GLSL declaration must close")
+            .0;
+        let uncommented = body
+            .lines()
+            .map(|line| line.split("//").next().unwrap_or_default())
+            .collect::<Vec<_>>()
+            .join("\n");
+        uncommented
+            .split(';')
+            .filter_map(|declaration| {
+                let declaration = declaration.trim();
+                if declaration.is_empty() {
+                    return None;
+                }
+                let name = declaration.split_whitespace().last()?;
+                Some(name.split('[').next().unwrap_or(name).to_string())
+            })
+            .collect()
+    }
+
+    /// #4848 / #4778 — size and Rust offsets alone cannot catch a GLSL-only
+    /// transposition between same-typed vec4 members. Pin each UBO and struct
+    /// declaration order against the corresponding host declaration.
+    #[test]
+    fn composite_and_volumetrics_uniforms_match_rust_field_order() {
+        let composite_rs = include_str!("composite.rs");
+        let composite_glsl = include_str!("../../shaders/composite.frag");
+        let volumetrics_rs = include_str!("volumetrics.rs");
+        let volumetrics_glsl = include_str!("../../shaders/volumetrics_inject.comp");
+
+        for (name, rust, glsl, marker) in [
+            (
+                "SkyAperture",
+                rust_struct_fields(composite_rs, "CompositeSkyAperture"),
+                glsl_fields(composite_glsl, "struct SkyAperture {"),
+                "struct SkyAperture {",
+            ),
+            (
+                "CompositeParams",
+                rust_struct_fields(composite_rs, "CompositeParams"),
+                glsl_fields(composite_glsl, "uniform CompositeParams {"),
+                "uniform CompositeParams {",
+            ),
+            (
+                "VolumetricsParams",
+                rust_struct_fields(volumetrics_rs, "VolumetricsParams"),
+                glsl_fields(volumetrics_glsl, "uniform VolumetricsParams {"),
+                "uniform VolumetricsParams {",
+            ),
+        ] {
+            assert_eq!(
+                rust, glsl,
+                "{name} Rust fields must match GLSL declaration order at {marker}"
+            );
+        }
+    }
 
     #[test]
     fn aperture_projection_rejects_offscreen_and_behind_camera_planes() {

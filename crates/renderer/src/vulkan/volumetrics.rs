@@ -2577,7 +2577,8 @@ mod unit_tests {
         assert!(function.contains("while (rayQueryProceedEXT(rq))"));
         assert!(function.contains("rayQueryGetIntersectionTypeEXT(rq, false)"));
         assert!(function.contains("rayQueryGetIntersectionInstanceCustomIndexEXT(rq, false)"));
-        assert!(function.contains("if (layer == 0u) return true"));
+        assert!(function.contains("if (layer == RENDER_LAYER_ARCHITECTURE) return true"));
+        assert!(function.contains("return false;"));
     }
 
     #[test]

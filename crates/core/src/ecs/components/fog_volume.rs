@@ -123,6 +123,7 @@ impl FogBounds {
 /// Analytic density primitive evaluated by the froxel inject shader.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
+#[repr(u32)]
 pub enum FogShape {
     Sphere,
     Ellipsoid,

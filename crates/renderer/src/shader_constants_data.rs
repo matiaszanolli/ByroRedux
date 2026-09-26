@@ -128,12 +128,32 @@ pub const VERTEX_COLOR_OFFSET_FLOATS: u32 = 3;
 pub const VERTEX_NORMAL_OFFSET_FLOATS: u32 = 7;
 pub const VERTEX_UV_OFFSET_FLOATS: u32 = 10;
 pub const VERTEX_TANGENT_OFFSET_FLOATS: u32 = 22;
+// Bone lanes are u32/f32 at these byte offsets; GLSL views the packed
+// vertex SSBO through float words, so derive the corresponding word indices
+// from the host ABI instead of repeating the lane numbers in shaders.
+pub const VERTEX_BONE_INDICES_OFFSET_FLOATS: u32 =
+    (std::mem::offset_of!(crate::Vertex, bone_indices) / 4) as u32;
+pub const VERTEX_BONE_WEIGHTS_OFFSET_FLOATS: u32 =
+    (std::mem::offset_of!(crate::Vertex, bone_weights) / 4) as u32;
+
 // Splat lanes are packed 4×u8 unorm, NOT floats — see the WARNING block above
 // `GlobalVertices` in include/bindings.glsl. Recover with
 // `unpackUnorm4x8(floatBitsToUint(vertexData[base + N]))`; reading them as
 // floats yields NaN/denormal garbage.
 pub const VERTEX_SPLAT0_OFFSET_FLOATS: u32 = 20;
 pub const VERTEX_SPLAT1_OFFSET_FLOATS: u32 = 21;
+
+// Render-layer and analytic fog-shape ids are enum-backed GPU discriminants.
+pub const RENDER_LAYER_ARCHITECTURE: u32 =
+    byroredux_core::ecs::components::RenderLayer::Architecture as u32;
+pub const FOG_VOLUME_SHAPE_SPHERE: u32 =
+    byroredux_core::ecs::components::FogShape::Sphere as u32;
+pub const FOG_VOLUME_SHAPE_ELLIPSOID: u32 =
+    byroredux_core::ecs::components::FogShape::Ellipsoid as u32;
+pub const FOG_VOLUME_SHAPE_BOX: u32 =
+    byroredux_core::ecs::components::FogShape::Box as u32;
+pub const FOG_VOLUME_SHAPE_CONE: u32 =
+    byroredux_core::ecs::components::FogShape::Cone as u32;
 
 // Exterior LAND terrain grid (#4052). Re-exported from
 // `byroredux_core::math::coord` rather than retyped: the ground-cover scatter

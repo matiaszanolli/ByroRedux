@@ -31,8 +31,8 @@
 //   3..6   color RGBA
 //   7..9   normal
 //   10..11 uv
-//   12..15 bone indices (uvec4, bit-cast through floatBitsToUint)
-//   16..19 bone weights
+//   VERTEX_BONE_INDICES_OFFSET_FLOATS..+3 bone indices
+//   VERTEX_BONE_WEIGHTS_OFFSET_FLOATS..+3 bone weights
 //   20     splat_weights_0 (4×u8 packed)
 //   21     splat_weights_1 (4×u8 packed)
 //   22..25 tangent (xyz + bitangent sign) — #783 / M-NORMALS
@@ -153,16 +153,16 @@ void main() {
     // struct; the SSBO sees 4 floats with the same bit pattern. Use
     // floatBitsToUint to recover the indices without a bitcast layout.
     uvec4 boneIdx = uvec4(
-        floatBitsToUint(inputVertexData[src_base + 12u]),
-        floatBitsToUint(inputVertexData[src_base + 13u]),
-        floatBitsToUint(inputVertexData[src_base + 14u]),
-        floatBitsToUint(inputVertexData[src_base + 15u])
+        floatBitsToUint(inputVertexData[src_base + VERTEX_BONE_INDICES_OFFSET_FLOATS]),
+        floatBitsToUint(inputVertexData[src_base + VERTEX_BONE_INDICES_OFFSET_FLOATS + 1u]),
+        floatBitsToUint(inputVertexData[src_base + VERTEX_BONE_INDICES_OFFSET_FLOATS + 2u]),
+        floatBitsToUint(inputVertexData[src_base + VERTEX_BONE_INDICES_OFFSET_FLOATS + 3u])
     );
     vec4 boneW = vec4(
-        inputVertexData[src_base + 16u],
-        inputVertexData[src_base + 17u],
-        inputVertexData[src_base + 18u],
-        inputVertexData[src_base + 19u]
+        inputVertexData[src_base + VERTEX_BONE_WEIGHTS_OFFSET_FLOATS],
+        inputVertexData[src_base + VERTEX_BONE_WEIGHTS_OFFSET_FLOATS + 1u],
+        inputVertexData[src_base + VERTEX_BONE_WEIGHTS_OFFSET_FLOATS + 2u],
+        inputVertexData[src_base + VERTEX_BONE_WEIGHTS_OFFSET_FLOATS + 3u]
     );
 
     // Rigid vs skinned vertex selection.

@@ -170,10 +170,12 @@ fn gpu_volume_from_ecs_with_explosion_age(
     );
 
     let shape = match bounds.shape {
-        FogShape::Sphere => 0.0,
-        FogShape::Ellipsoid => 1.0,
-        FogShape::Box => 2.0,
-        FogShape::Cone => 3.0,
+        FogShape::Sphere => byroredux_renderer::shader_constants::FOG_VOLUME_SHAPE_SPHERE as f32,
+        FogShape::Ellipsoid => {
+            byroredux_renderer::shader_constants::FOG_VOLUME_SHAPE_ELLIPSOID as f32
+        }
+        FogShape::Box => byroredux_renderer::shader_constants::FOG_VOLUME_SHAPE_BOX as f32,
+        FogShape::Cone => byroredux_renderer::shader_constants::FOG_VOLUME_SHAPE_CONE as f32,
     };
     let inverse_rotation = rotation.conjugate();
     let profile = match volume.profile {
