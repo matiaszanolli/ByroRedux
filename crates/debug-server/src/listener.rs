@@ -15,6 +15,12 @@ use std::sync::{Arc, Mutex, Weak};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
+/// Allow cold scene and pipeline stalls to finish before a debug request is
+/// abandoned. The previous five-second limit dropped the initial water
+/// diagnostics on FO3's exterior fixture, leaving its above-surface capture
+/// without a response.
+const COMMAND_RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// A pending command: the request and a channel to send the response back.
 pub(crate) struct PendingCommand {
     pub request: DebugRequest,
@@ -23,8 +29,8 @@ pub(crate) struct PendingCommand {
     /// it has abandoned the wait. Cross-frame consumers (the
     /// `DebugDrainSystem` screenshot path) check the flag each frame
     /// and cancel any pending GPU work + cleanup the bridge state when
-    /// it's set. Avoids the pre-#1007 leak where the client's 5 s
-    /// `recv_timeout` outraced the engine's 10-frame ceiling on a
+    /// it's set. Avoids the pre-#1007 leak where a short client response
+    /// timeout outraced the engine's 10-frame ceiling on a
     /// paused / GPU-stalled engine, producing stale PNG bytes that
     /// the *next* request would mistakenly claim. See #1007.
     pub cancel: Arc<AtomicBool>,
@@ -359,7 +365,7 @@ fn handle_client(stream: Arc<TcpStream>, queue: CommandQueue, shutdown: Arc<Atom
         };
 
         // Wait for the drain system to process it (next frame).
-        match rx.recv_timeout(Duration::from_secs(5)) {
+        match rx.recv_timeout(COMMAND_RESPONSE_TIMEOUT) {
             Ok(response) => {
                 if let Err(e) = wire::send(&mut writer, &response) {
                     log::warn!("Debug client write error: {}", e);

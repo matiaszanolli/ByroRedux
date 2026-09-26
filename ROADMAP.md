@@ -12,7 +12,7 @@ proposes a single synchronised edit across ROADMAP / HISTORY / README.
 Ritual-driven, not hook-driven — one checkpoint per session, not N per
 commit.
 
-**Last verified**: 2026-09-23 (session close, HEAD `5570c221`). Tests
+**Last full workspace census**: 2026-09-23 (session close, HEAD `5570c221`). Tests
 **8521, 0 failing** (233 ignored), +135 vs Session 89's 8386. Rust `src/` LOC
 **~630 571**, +10 637; total `.rs` LOC **~677 328**, +12 103. Source files
 **1173** (1084 outside `tests/`), +15/+13. Workspace members **34**. Open issue
@@ -27,18 +27,27 @@ work beside the wave:
 - Direct interior loads spawn on the authored `COCMarkerHeading`.
 - Runtime-assembled Oblivion/FO3/FNV NPCs get spawn-time skin-seam blending.
 
-**The CI clippy gate (`cargo clippy --workspace -- -D warnings`) is red again at
-HEAD.** Two fixes from this window each stop their crate:
+**Current worktree checks** (2026-09-26, based on HEAD `e26441c34`):
+`scripts/check-shader-artifacts.sh` passes, and
+`docs/smoke-tests/m-exteriors.sh all water` passes the waterline and reflection
+gates on all five installed profiles (FNV, FO3, Oblivion, Skyrim, FO4). The
+smoke covers open-water surface/submerged behavior; it does not close the
+shoreline/LOD visual gate below. These checks do not refresh the workspace test
+census above.
+
+**Last clippy result** (2026-09-23, HEAD `5570c221`; not rechecked on current
+worktree): the CI gate (`cargo clippy --workspace -- -D warnings`) was red.
+Two fixes from that window each stop their crate:
 `crates/hkx/src/animation.rs:354` (`manual_range_contains`, from #4655's
 `a323138d`) and `crates/menuxml/src/parse.rs:749` (`too_many_arguments`, from
 #4650's `20faaf89`). Because those crates fail, clippy cannot re-check #4765's
-three bin-crate errors. #4700 was verified at HEAD: Skyrim's production route
-never inserts the P2 combat-tail marker (see the playable-slice section). A
-75-run bench matrix was captured at `cb44d99f6`, and 19 of its 25 medians are
-slower than the `4c9a5b36` record. It has no same-machine control, and every
-scene fingerprint differs from the record's, so it is neither the new record
-nor a confirmed regression. The live record is 579 commits stale;
-**R6a-stale-22** below covers both.
+three bin-crate errors. The P2 combat-tail caveat recorded at that checkpoint
+has since been fixed (see the playable-slice section). The 75-run bench matrix
+captured at `cb44d99f6` had 19 of 25 medians slower than the `4c9a5b36` record.
+It has no same-machine control, and every scene fingerprint differs from the
+record's, so it is neither the new record nor a confirmed regression. At that
+checkpoint the live record was 579 commits stale; **R6a-stale-22** below covers
+both.
 
 **Current state in one paragraph.** The FSR 3.1 integration plan is complete
 through phase 7: FSR 3.1.4 Quality is the engine default, all four presets
@@ -177,6 +186,12 @@ it. The underlying closure contract
 remains in
 [`docs/engine/playable-vertical-slice.md`](docs/engine/playable-vertical-slice.md#water-focus--playable-traversal--ex-13-visual-closure),
 and the render/physics design remains in [`docs/engine/watal.md`](docs/engine/watal.md).
+**W0 recheck (2026-09-26):** the all-profile water smoke passed for FNV, FO3,
+Oblivion, Skyrim, and FO4, including WATR provenance, waterline image delta,
+and reflection-oracle checks. The run also exposed a debug-command response
+timeout on FO3; the local diagnostic timeout was raised to 30 seconds so the
+smoke can collect its full evidence. The W2 shoreline/LOD view set still needs
+to be captured and assessed before choosing a visual defect to fix.
 
 **Superseded bench-of-record** (R6a-stale-15 refresh, HEAD `8a668eff`,
 2026-07-18, wall-clock bench, 300 frames × 3 runs/scene averaged, RTX 4070 Ti,
@@ -771,13 +786,11 @@ per [`docs/engine/playable-vertical-slice.md`](docs/engine/playable-vertical-sli
 the player body is a bare capsule (so player equip toggles find no meshes),
 consumption-specific live Vulkan and save/reload smokes, and P5's soak.
 
-**P2 combat-tail caveat (#4700, verified at HEAD `5570c221`, 2026-09-23):** on
-Skyrim the tail above does not fire in production. The only production insert
-of `DraugrCombatAnim` is in the runtime-FaceGen finalize in
-`npc_spawn/resumable.rs`, and `has_runtime_facegen_recipe()` returns true only
-for Oblivion/FO3/FNV. The frozen Draugr therefore never carries the marker the
-attack/hit/death takes and combat sounds are gated on. P2's animation-and-sound
-leg stays open on the target game until the Skyrim spawn path inserts the marker.
+**P2 combat-tail caveat (#4700): fixed after the 2026-09-23 checkpoint.**
+Commit `3978b5184` adds the combat marker to the Skyrim Draugr spawn path and
+ensures its death animation plays once, independently of ragdoll timing. The
+2026-09-23 production-route caveat above is closed; other P2 animation and
+sound gates remain tracked in the playable-slice section.
 
 **Two axes.** Milestones (`M…`) ship user-visible capability.
 Risk-reducers (`R…`) are structural fixes flagged in the 2026-04-22
