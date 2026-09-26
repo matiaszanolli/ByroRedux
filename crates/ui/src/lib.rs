@@ -12,6 +12,7 @@ mod catalog;
 mod host;
 mod input;
 mod navigator;
+mod pacing;
 mod player;
 mod prepare;
 mod profile;
@@ -32,6 +33,7 @@ pub use input::{
     UiMouseWheelDelta, UiNamedKey, UiPhysicalKey, UiTextControlCode,
 };
 pub use navigator::{ScaleformResourceLoad, ScaleformResourceProvider};
+pub use pacing::RenderPacing;
 pub use player::SwfPlayer;
 pub use profile::ScaleformProfile;
 /// What [`UiManager::render`] wants the compositor to do this frame.
@@ -322,6 +324,26 @@ impl UiManager {
             }
             None => false,
         }
+    }
+
+    /// Pace the active menu's render-and-readback (see [`RenderPacing`],
+    /// #4717) — the always-on HUD route opts in so a static movie stops
+    /// paying a full-target readback at its own frame rate. Modal menus
+    /// leave it off. No-op without a loaded menu.
+    pub fn set_render_pacing(&mut self, pacing: RenderPacing) -> bool {
+        match self.player.as_mut() {
+            Some(player) => {
+                player.set_render_pacing(pacing);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Render-and-readback passes the active menu has run (0 without one).
+    /// Telemetry for [`Self::set_render_pacing`] — `hud.debug` mirrors it.
+    pub fn render_passes(&self) -> u64 {
+        self.player.as_ref().map_or(0, SwfPlayer::render_passes)
     }
 
     // #2723 (SAFEUI-07) — a `close()` unloading the active menu

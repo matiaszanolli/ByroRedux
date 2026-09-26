@@ -36,11 +36,25 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use byroredux_core::ecs::World;
-use byroredux_ui::{ScaleformHostBridge, ScaleformValue, UiManager};
+use byroredux_ui::{RenderPacing, ScaleformHostBridge, ScaleformValue, UiManager};
 
 use crate::asset_provider::Archive;
 use crate::hud::{fraction, HudBackend, HudControl, HUD_REFRESH_INTERVAL};
 use crate::inventory::PlayerVitals;
+
+/// #4717 — how often the always-on HUD may render and read back its Ruffle
+/// target. A live movie asks for a render at its own frame rate (24–30 Hz)
+/// even when nothing on screen moves, each pass costing 5–8 ms on the main
+/// thread at 1080p. The active cadence is the shared HUD cadence
+/// ([`HUD_REFRESH_INTERVAL`]); after eight byte-identical passes with no push
+/// or input the HUD is idle and passes drop to a 250 ms probe, which still
+/// finds a movie that starts animating on its own. Engine policy — no source
+/// documents what the original engine did.
+const HUD_RENDER_PACING: RenderPacing = RenderPacing {
+    active_interval: HUD_REFRESH_INTERVAL,
+    idle_interval: std::time::Duration::from_millis(250),
+    idle_after: 8,
+};
 
 /// Which Scaleform game's HUD this driver serves. Selection is
 /// structural: whichever vanilla interface archive sits beside `--esm`.
@@ -150,6 +164,9 @@ pub struct ScaleformHudDiag {
     /// The last computed frame's values (bars, heading) — proof the
     /// driver tick loop is alive.
     pub last_push: Option<(f32, f32, f32, f32)>,
+    /// Ruffle render-and-readback passes run so far (#4717) — a static HUD
+    /// should grow this at the idle probe rate, not the movie's frame rate.
+    pub render_passes: u64,
 }
 
 impl byroredux_core::ecs::Resource for ScaleformHudDiag {}
@@ -232,6 +249,9 @@ pub(crate) fn launch(
     // transparent wherever the movie drew nothing. (`--menu` keeps the
     // opaque stage — modal menus own the whole screen by design.)
     ui.set_stage_transparent();
+    // #4717 — the HUD is up all session, so its render + full-target readback
+    // is paced instead of running at the movie's own frame rate.
+    ui.set_render_pacing(HUD_RENDER_PACING);
     // A HUD is not a modal menu: world input (fly camera, console) must
     // keep working. `install_player` grabbed focus at load.
     ui.set_input_focus(false);
@@ -340,7 +360,6 @@ impl ScaleformHudDriver {
             return;
         };
 
-
         // Mirror the console's visibility into the player: `render()`
         // answers `UiFrame::Hidden` while this is false, which stops the
         // UI quad entirely — `hud.off` really hides a Scaleform HUD (the
@@ -402,6 +421,7 @@ impl ScaleformHudDriver {
                 diag.callbacks = self.callbacks.clone();
                 diag.unknown_methods = self.bridge.unknown_methods();
                 diag.unanswered_methods = self.bridge.unanswered_methods();
+                diag.render_passes = ui.render_passes();
             }
         }
     }

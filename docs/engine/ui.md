@@ -227,7 +227,9 @@ was applied.
 `tick(dt)` advances Ruffle's clock (`Player::tick(FloatDuration::from_secs(dt))`)
 and runs any ActionScript that wants to fire (timers, frame scripts,
 button handlers), pumps any newly queued archive future after releasing the
-player lock, then marks the player **dirty**.
+player lock, then marks the player **dirty** when Ruffle reports
+`needs_render`. That flag is raised after *every* frame that runs, so a live
+movie is dirty at its own frame rate even when nothing on screen moves.
 
 `render()` is a no-op fast path when not dirty. When dirty it calls
 `Player::render()`, downcasts the boxed renderer back to the concrete
@@ -240,6 +242,24 @@ pixels are unchanged and at least one upload has already gone out
 (`uploaded_once`). A render that produced identical pixels therefore costs
 no GPU upload. The width/height are the renderer-side surface
 dimensions, **not** the SWF's native size — Ruffle scales internally.
+
+**Render pacing (#4717).** Gating the upload on content still left the render
+and the blocking full-target readback running on every dirty tick — measured
+at 5–8 ms per pass at 1080p, 24–30 times a second, for a static always-on HUD.
+`SwfPlayer::set_render_pacing(RenderPacing)` (opt-in; modal menus stay
+unpaced) thins those passes out. Ruffle offers no finer "the picture changed"
+signal than `needs_render` (its `Stage::invalidated` is raised only by
+ActionScript's `Stage.invalidate()`), so the pacer learns from the one exact
+signal: whether the last readback differed from the one before. While the
+picture is changing, or the host has just written to the movie (`handle_input`,
+`set_mouse_in_stage`, `invoke_callback`, `set_stage_transparent`), passes run at
+most every `active_interval`. After `idle_after` consecutive byte-identical
+passes with no host write, they drop to one per `idle_interval` — a probe, not a
+freeze: a movie that starts animating on its own is found within one interval
+and is active again. Time is the sum of the `dt`s given to `tick`. The Scaleform
+HUD route installs 33 ms (the shared HUD cadence) / 250 ms / 8;
+`SwfPlayer::render_passes()` counts the passes that ran. A static 30 Hz movie
+drops from 150 passes per 150 ticks to 26.
 
 ## UiManager
 

@@ -20,6 +20,7 @@ use ruffle_render_wgpu::target::TextureTarget;
 
 use crate::avm2_host::DESTROY_CALLBACK;
 use crate::navigator::{ScaleformNavigator, ScaleformNavigatorRuntime};
+use crate::pacing::{RenderPacer, RenderPacing};
 use crate::prepare::prepare_movie;
 use crate::{
     ScaleformHostBridge, ScaleformHostObjectState, ScaleformProfile, ScaleformResourceLoad,
@@ -163,6 +164,12 @@ pub struct SwfPlayer {
     height: u32,
     pixel_buffer: Vec<u8>,
     dirty: bool,
+    /// Render-and-readback pacing (#4717). Unpaced unless the host opts in
+    /// with [`Self::set_render_pacing`].
+    pacer: RenderPacer,
+    /// Render passes that reached Ruffle's `render()` — the expensive
+    /// submit-and-readback the pacer exists to thin out.
+    render_passes: u64,
     /// Whether [`Self::render`] has handed its buffer to the caller at least
     /// once, so the content comparison in #2719 can't suppress the very first
     /// upload (see there).
@@ -370,6 +377,8 @@ impl SwfPlayer {
             height,
             pixel_buffer,
             dirty: true,
+            pacer: RenderPacer::new(),
+            render_passes: 0,
             uploaded_once: false,
             host_bridge,
             host_object_state,
@@ -393,6 +402,9 @@ impl SwfPlayer {
     /// still suppresses the tick, but for a bounded number of frames and with a
     /// log line and an observable state, instead of silently forever.
     pub fn tick(&mut self, dt: f64) {
+        // Before the preload early-return below: the pacer's clock is the sum
+        // of every tick, whether or not the movie advanced.
+        self.pacer.advance(dt);
         if self.navigator_runtime.is_some() && !self.drive_archive_preload() {
             self.preload_stall_frames = self.preload_stall_frames.saturating_add(1);
             if !self.preload_stalled {
@@ -438,7 +450,33 @@ impl SwfPlayer {
         // one-time submit, ahead of `draw_frame`, for a picture that did not
         // move. Ruffle raises this flag whenever a frame ran or the mouse
         // state changed, and clears it in `Player::render`.
+        //
+        // #4717 — `needs_render` is raised after *every* frame that runs, so
+        // for a movie parked on one frame it is true at the movie's frame
+        // rate with nothing moving. It marks the surface dirty but does not
+        // wake the pacer: only the host's own writes do (see `invalidate`).
         self.dirty |= needs_render;
+    }
+
+    /// The host changed something the movie will draw (input, a pushed
+    /// value, the stage mode): mark the surface dirty and take the pacer out
+    /// of idle, so the change is rendered at the active cadence.
+    fn invalidate(&mut self) {
+        self.dirty = true;
+        self.pacer.wake();
+    }
+
+    /// Pace [`Self::render`] for an overlay that stays up all session. See
+    /// [`RenderPacing`] for the two rates; without this every dirty tick
+    /// renders, which is right for a modal menu and wasteful for a HUD.
+    pub fn set_render_pacing(&mut self, pacing: RenderPacing) {
+        self.pacer.set_pacing(pacing);
+    }
+
+    /// How many render-and-readback passes have run. Telemetry for the
+    /// pacing (#4717): a static overlay should grow this slowly.
+    pub fn render_passes(&self) -> u64 {
+        self.render_passes
     }
 
     /// Forward a platform-neutral input event to Ruffle.
@@ -447,14 +485,14 @@ impl SwfPlayer {
     /// focus ownership, rather than this value, to decide modal capture.
     pub fn handle_input(&mut self, event: UiInputEvent) -> bool {
         let handled = self.player.lock().unwrap().handle_event(event.into());
-        self.dirty = true;
+        self.invalidate();
         handled
     }
 
     /// Tell Ruffle whether the native pointer is currently inside the movie.
     pub fn set_mouse_in_stage(&mut self, is_in_stage: bool) {
         self.player.lock().unwrap().set_mouse_in_stage(is_in_stage);
-        self.dirty = true;
+        self.invalidate();
     }
 
     /// Clear the stage to transparent instead of the movie's background
@@ -467,7 +505,7 @@ impl SwfPlayer {
     /// `--menu` launches keep the default opaque stage.
     pub fn set_stage_transparent(&mut self) {
         self.player.lock().unwrap().set_window_mode("transparent");
-        self.dirty = true;
+        self.invalidate();
     }
 
     /// Render the current frame to the internal pixel buffer.
@@ -486,12 +524,18 @@ impl SwfPlayer {
         if !self.dirty {
             return None;
         }
+        // #4717 — dirty stays set while a pass is not yet due, so the next
+        // tick asks again; `None` is "keep showing the texture you have".
+        if !self.pacer.is_due() {
+            return None;
+        }
 
         // Render the frame (submits draw commands to the wgpu backend).
         {
             let mut player = self.player.lock().unwrap();
             player.render();
         }
+        self.render_passes += 1;
 
         // Capture the rendered frame by downcasting to the concrete backend type.
         // This follows the same pattern as Ruffle's exporter crate.
@@ -536,6 +580,7 @@ impl SwfPlayer {
         }
 
         self.dirty = false;
+        self.pacer.note_render(changed);
         // The very first render must always be handed over: the caller has no
         // texture yet, and an all-zero movie would otherwise compare equal to
         // the freshly zeroed buffer and never upload.
@@ -680,7 +725,7 @@ impl SwfPlayer {
             .lock()
             .unwrap()
             .call_internal_interface(name, arguments);
-        self.dirty = true;
+        self.invalidate();
         Some(ScaleformValue::from(&result))
     }
 
@@ -918,6 +963,118 @@ mod render_failure_tests {
         assert!(
             player.dirty,
             "a failed capture must leave dirty set so the next tick retries (#2722)"
+        );
+    }
+}
+
+#[cfg(test)]
+mod render_pacing_tests {
+    use super::SwfPlayer;
+    use crate::RenderPacing;
+    use std::time::Duration;
+
+    const FRAME: f64 = 1.0 / 30.0;
+
+    /// A single-frame AVM1 movie at 30 fps: Ruffle runs its frame (and so
+    /// reports `needs_render`) every 1/30 s while nothing on screen moves.
+    /// That is the always-on HUD shape #4717 measured.
+    fn static_30fps_swf() -> Vec<u8> {
+        let mut header = swf::Header::default_with_swf_version(6);
+        header.num_frames = 1;
+        header.frame_rate = swf::Fixed8::from_f32(30.0);
+        let mut bytes = Vec::new();
+        swf::write_swf(&header, &[swf::Tag::ShowFrame], &mut bytes)
+            .expect("writing a fixed, minimal in-memory SWF cannot fail");
+        bytes
+    }
+
+    /// The pacing the always-on HUD route installs.
+    fn hud_pacing() -> RenderPacing {
+        RenderPacing {
+            active_interval: Duration::from_millis(33),
+            idle_interval: Duration::from_millis(250),
+            idle_after: 8,
+        }
+    }
+
+    fn drive(player: &mut SwfPlayer, ticks: usize) {
+        for _ in 0..ticks {
+            player.tick(FRAME);
+            let _ = player.render();
+        }
+    }
+
+    /// #4717 — the regression pin. A static movie (frames run, nothing
+    /// pushed, no input, pixels never change) used to cost one full render +
+    /// readback per tick: 150 passes in 5 s at 30 Hz, none of them changing
+    /// the picture. Paced, it proves it is static in `idle_after` passes and
+    /// then only probes. The unpaced player is the control, so a change to
+    /// the fixture that stopped Ruffle asking for renders would fail loudly
+    /// instead of passing vacuously.
+    #[test]
+    fn a_paced_static_movie_renders_far_fewer_passes() {
+        if !super::vulkan_adapter_available() {
+            eprintln!("skipped: no Vulkan adapter (headless CI) — #4595");
+            return;
+        }
+        let ticks = 150;
+        let mut unpaced = SwfPlayer::new(&static_30fps_swf(), 4, 4).unwrap();
+        drive(&mut unpaced, ticks);
+        assert_eq!(
+            unpaced.render_passes(),
+            ticks as u64,
+            "control: an unpaced static movie renders on every tick"
+        );
+
+        let mut paced = SwfPlayer::new(&static_30fps_swf(), 4, 4).unwrap();
+        paced.set_render_pacing(hud_pacing());
+        drive(&mut paced, ticks);
+        // 8 passes to prove the picture is static, then one probe per
+        // 250 ms (every 8th tick at 30 Hz) over the other 142 ticks.
+        assert!(
+            (8..=30).contains(&paced.render_passes()),
+            "5 s of a static 30 Hz movie ran {} passes (unpaced: {ticks})",
+            paced.render_passes()
+        );
+    }
+
+    /// A host write leaves idle at once: the change is rendered on the very
+    /// next tick, not at the next 250 ms probe.
+    #[test]
+    fn a_host_write_wakes_an_idle_player() {
+        if !super::vulkan_adapter_available() {
+            eprintln!("skipped: no Vulkan adapter (headless CI) — #4595");
+            return;
+        }
+        let mut player = SwfPlayer::new(&static_30fps_swf(), 4, 4).unwrap();
+        player.set_render_pacing(hud_pacing());
+        drive(&mut player, 60);
+        let idle_passes = player.render_passes();
+
+        player.set_mouse_in_stage(true);
+        player.tick(FRAME);
+        let _ = player.render();
+        assert_eq!(
+            player.render_passes(),
+            idle_passes + 1,
+            "an invalidated player renders on the next tick"
+        );
+    }
+
+    /// A paced player still hands over its first frame: the caller has no
+    /// texture yet, and pacing must not starve the initial upload.
+    #[test]
+    fn the_first_frame_is_delivered_immediately_under_pacing() {
+        if !super::vulkan_adapter_available() {
+            eprintln!("skipped: no Vulkan adapter (headless CI) — #4595");
+            return;
+        }
+        let mut player = SwfPlayer::new(&static_30fps_swf(), 4, 4).unwrap();
+        player.set_render_pacing(hud_pacing());
+        player.tick(FRAME);
+        assert!(
+            player.render().is_some(),
+            "the first render must be handed to the caller"
         );
     }
 }

@@ -227,12 +227,13 @@ impl ConsoleCommand for HudDebugCommand {
                     })
                     .unwrap_or_else(|| "(never)".to_string());
                 CommandOutput::line(format!(
-                    "hud.debug (scaleform, {}): {}\n{}\n{}\nlast_push: {}",
+                    "hud.debug (scaleform, {}): {}\n{}\n{}\nlast_push: {}\nrender_passes: {}",
                     diag.game,
                     list("callbacks", &diag.callbacks),
                     list("unknown_methods", &diag.unknown_methods),
                     list("unanswered_methods", &diag.unanswered_methods),
                     bars,
+                    diag.render_passes,
                 ))
             }
             None => {
