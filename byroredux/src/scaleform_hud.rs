@@ -331,10 +331,15 @@ impl ScaleformHudDriver {
     /// bridge diagnostics to the console resource, and (on change, at
     /// the shared HUD cadence) push state into the movie.
     pub(crate) fn tick(&mut self, world: &World, ui: &mut UiManager, cam_forward: [f32; 3]) {
-        let Some(control) = world.try_resource::<HudControl>() else {
+        // Copy the control out and drop its read guard here: `let control =
+        // *control;` shadows the guard without releasing it, and the `live`
+        // write below then takes a write lock on the same resource while
+        // that read lock is held — a same-thread deadlock (a panic under the
+        // debug lock tracker) on the first tick of every Scaleform HUD.
+        let Some(control) = world.try_resource::<HudControl>().map(|control| *control) else {
             return;
         };
-        let control = *control;
+
 
         // Mirror the console's visibility into the player: `render()`
         // answers `UiFrame::Hidden` while this is false, which stops the
@@ -428,5 +433,44 @@ impl ScaleformHudDriver {
             };
             let _ = ui.invoke_callback(name, args);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use byroredux_ui::ScaleformProfile;
+
+    fn driver() -> ScaleformHudDriver {
+        ScaleformHudDriver {
+            game: ScaleformGame::Skyrim,
+            bridge: ScaleformHostBridge::new(ScaleformProfile::SkyrimAvm1),
+            snapshot: Rc::new(RefCell::new(HudSnapshot::default())),
+            callbacks: Vec::new(),
+            last_signature: 0,
+            last_push: std::time::Instant::now(),
+            last_diag_refresh: std::time::Instant::now(),
+        }
+    }
+
+    /// `tick` reads `HudControl` and writes its `live` bars back in the same
+    /// call. The read guard used to outlive the copy (`let control =
+    /// *control;` shadows without releasing), so the write took a write lock
+    /// on a resource this thread still held for reading: the debug lock
+    /// tracker panicked on the first tick of every Scaleform `--hud` launch
+    /// (regression from #4675).
+    #[test]
+    fn tick_publishes_live_bars_without_deadlocking_on_hud_control() {
+        let mut world = World::new();
+        world.insert_resource(HudControl::default());
+        let mut ui = UiManager::new(4, 4);
+
+        driver().tick(&world, &mut ui, [0.0, 0.0, -1.0]);
+
+        assert_eq!(
+            world.resource::<HudControl>().live[0],
+            Some(1.0),
+            "the driver publishes the live bar fractions each tick"
+        );
     }
 }
