@@ -575,6 +575,161 @@ mod tests {
         assert!(world.get::<AiCombatState>(player).is_none());
     }
 
+    fn run_once(world: &World) {
+        make_faction_hostility_system()(world, EVALUATION_PERIOD_SECS);
+    }
+
+    /// #4826 — a corpse neither perceives nor is perceived. Every dead actor
+    /// here is the nearest candidate, so a regression that drops the `Dead`
+    /// skip shows up as a wrong target as well as a missing one.
+    #[test]
+    fn dead_actors_are_neither_perceivers_nor_targets() {
+        let frenzied = disposition(Aggression::Frenzied);
+        let calm = disposition(Aggression::Unaggressive);
+
+        // Dead perceiver and dead nearest target in one fixture. The only
+        // live target is farther from `hunter` than the corpse is.
+        let mut world = fixture();
+        let prey = spawn_actor(&mut world, Vec3::ZERO, GUARDS, Some(calm));
+        let corpse = spawn_actor(&mut world, Vec3::X * 20.0, BANDITS, Some(frenzied));
+        world.insert(corpse, Dead);
+        let hunter = spawn_actor(&mut world, Vec3::X * 100.0, BANDITS, Some(frenzied));
+        run_once(&world);
+        assert_eq!(
+            world.get::<AiCombatState>(hunter).map(|s| s.target),
+            Some(prey),
+            "the corpse is nearer, but it is not a target"
+        );
+        assert!(
+            world.get::<AiCombatState>(corpse).is_none(),
+            "a dead perceiver starts no combat"
+        );
+        assert!(world.get::<AiCombatState>(prey).is_none());
+
+        // A dead player is not a target; a living one is (the control).
+        let player_target = |dead: bool| {
+            let mut world = fixture();
+            let hunter = spawn_actor(&mut world, Vec3::ZERO, BANDITS, Some(frenzied));
+            let player = spawn_actor(&mut world, Vec3::X * 50.0, PLAYER_FACTION, None);
+            if dead {
+                world.insert(player, Dead);
+            }
+            world.insert_resource(crate::systems::PlayerEntity(Some(player)));
+            run_once(&world);
+            (world.get::<AiCombatState>(hunter).map(|s| s.target), player)
+        };
+        let (target, player) = player_target(false);
+        assert_eq!(target, Some(player), "control: the live player is attacked");
+        assert_eq!(player_target(true).0, None, "a dead player is not");
+    }
+
+    /// #4826 — combat a script already started is never retargeted, even by
+    /// a nearer actor the perceiver would attack, and its strike cooldown is
+    /// not reset. The free hunter shows that nearer actor is attackable.
+    #[test]
+    fn a_scripted_combat_target_is_kept() {
+        let frenzied = disposition(Aggression::Frenzied);
+        let calm = disposition(Aggression::Unaggressive);
+        let mut world = fixture();
+        let scripted_target = spawn_actor(&mut world, Vec3::X * 400.0, GUARDS, Some(calm));
+        let prey = spawn_actor(&mut world, Vec3::X * 50.0, GUARDS, Some(calm));
+        let scripted = spawn_actor(&mut world, Vec3::ZERO, BANDITS, Some(frenzied));
+        let state = AiCombatState {
+            target: scripted_target,
+            attack_cooldown_remaining: 0.3,
+        };
+        world.insert(scripted, state);
+        let free = spawn_actor(&mut world, Vec3::X * 80.0, BANDITS, Some(frenzied));
+
+        run_once(&world);
+        assert_eq!(
+            world.get::<AiCombatState>(scripted).map(|s| *s),
+            Some(state)
+        );
+        assert_eq!(
+            world.get::<AiCombatState>(free).map(|s| s.target),
+            Some(prey),
+            "control: the nearer actor is a valid target for an unarmed hunter"
+        );
+    }
+
+    /// #4826 — sight is blocked by a wall but not by the player's own
+    /// kinematic capsule, which a ray aimed at the player always ends inside.
+    /// Both hunters are allied, so the player is the only thing either sees;
+    /// the wall stands between the second hunter and the player only.
+    #[test]
+    fn sight_ignores_the_player_capsule_but_not_a_wall() {
+        use byroredux_core::ecs::components::collision::{
+            CollisionShape, MotionType, RigidBodyData,
+        };
+        let centre = crate::npc_spawn::FALLBACK_ACTOR_CAPSULE_CENTRE_HEIGHT;
+        let mut world = fixture();
+        world.register::<byroredux_physics::RapierHandles>();
+        world.insert_resource(byroredux_physics::PhysicsWorld::new());
+        let very = disposition(Aggression::VeryAggressive);
+        let clear = spawn_actor(&mut world, Vec3::ZERO, BANDITS, Some(very));
+        let walled = spawn_actor(
+            &mut world,
+            Vec3::new(1000.0, 0.0, 800.0),
+            BANDITS,
+            Some(very),
+        );
+        world.resource_mut::<FactionRelations>().set_reaction(
+            form(BANDITS),
+            form(BANDITS),
+            CombatReaction::Ally,
+        );
+        let player_at = Vec3::new(0.0, centre, 800.0);
+        let player = spawn_actor(&mut world, player_at, PLAYER_FACTION, None);
+        world.insert(
+            player,
+            CollisionShape::Capsule {
+                half_height: 46.0,
+                radius: 18.0,
+            },
+        );
+        world.insert(
+            player,
+            RigidBodyData {
+                motion_type: MotionType::CharacterKinematic,
+                ..RigidBodyData::STATIC
+            },
+        );
+        world.insert_resource(crate::systems::PlayerEntity(Some(player)));
+        let wall_at = Vec3::new(500.0, centre, 800.0);
+        let wall = world.spawn();
+        world.insert(wall, Transform::new(wall_at, Default::default(), 1.0));
+        world.insert(wall, GlobalTransform::new(wall_at, Default::default(), 1.0));
+        world.insert(
+            wall,
+            CollisionShape::Cuboid {
+                half_extents: Vec3::new(10.0, 300.0, 300.0),
+            },
+        );
+        world.insert(wall, RigidBodyData::STATIC);
+        assert_eq!(
+            byroredux_physics::register_newcomers_and_refresh_queries(&world),
+            2,
+            "the wall and the player capsule are both in the physics world"
+        );
+
+        run_once(&world);
+        assert_eq!(
+            world.get::<AiCombatState>(clear).map(|s| s.target),
+            Some(player),
+            "the player's own capsule must not occlude the ray aimed at it"
+        );
+        assert!(
+            world.get::<AiCombatState>(walled).is_none(),
+            "a wall between the hunter and the player blocks sight"
+        );
+    }
+
+    // The mid-spawn window (#4817: a root is a valid perceiver before its
+    // saved `Dead` and body land) is not pinned here. The fix decides where
+    // the guard lives (a completion stamp or a marker this system reads), so
+    // its test ships with that fix.
+
     #[test]
     fn no_detection_config_means_no_ambient_hostility() {
         let mut world = fixture();
