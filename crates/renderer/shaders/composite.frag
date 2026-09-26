@@ -459,7 +459,12 @@ vec3 rotateByApertureQuaternion(vec3 value, vec4 q) {
 bool skyThroughAuthoredWindow(vec2 uv, float depth, bool hasSurface) {
     uint count = min(params.sky_aperture_count.x, MAX_COMPOSITE_SKY_APERTURES);
     if (count == 0u) return false;
-    float surfaceDistance = params.fog_params.y;
+    // With clear depth there is no surface to occlude the aperture. Fog far
+    // controls atmospheric attenuation, not whether an outdoor ray can reach
+    // the opening, so use +infinity for this arm.
+    float surfaceDistance = hasSurface
+        ? params.fog_params.y
+        : uintBitsToFloat(0x7f800000u);
     if (hasSurface) {
         vec4 clip = vec4(uv * 2.0 - 1.0, depth, 1.0);
         vec4 world = params.inv_view_proj * clip;

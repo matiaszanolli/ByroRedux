@@ -1683,6 +1683,21 @@ mod composite_params_layout_tests {
     }
 
     #[test]
+    fn clear_depth_apertures_are_not_limited_by_authored_fog_far() {
+        let shader = include_str!("../../shaders/composite.frag");
+        let body = shader
+            .split("bool skyThroughAuthoredWindow(")
+            .nth(1)
+            .unwrap()
+            .split("void main()")
+            .next()
+            .unwrap();
+        assert!(body.contains("surfaceDistance = hasSurface"));
+        assert!(body.contains("uintBitsToFloat(0x7f800000u)"));
+        assert!(body.contains("reach > surfaceDistance + FOG_APERTURE_RIM_PLANE_TOLERANCE_BU"));
+    }
+
+    #[test]
     fn composite_params_is_16_byte_aligned_std140_shape() {
         // Every field is vec4 (16 B) or mat4 (64 B = 4 × vec4). std140
         // requires vec4 alignment on both, so offsets are trivially

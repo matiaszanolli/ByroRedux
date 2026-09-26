@@ -577,14 +577,30 @@ impl Texture {
                 meta.array_layers,
             ));
 
-        let image_view = unsafe {
+        let image_view = match unsafe {
             // SAFETY: `device` is the live logical device; `view_info` is a
             // stack-local `ImageViewCreateInfo` that outlives this call and
             // references the device-owned `image` created above, with a
             // subresource range spanning its `meta.mip_count` mips.
-            device
-                .create_image_view(&view_info, None)
-                .context("Failed to create DDS texture image view")?
+            device.create_image_view(&view_info, None)
+        } {
+            Ok(view) => view,
+            Err(error) => {
+                // #4854 — until the `Texture` is assembled below, these
+                // locals own the image and allocation. A failed view create
+                // must unwind both, just like the bind-failure arm above.
+                unsafe {
+                    // SAFETY: view creation failed, so no view references the
+                    // image; the image is not yet submitted to GPU work.
+                    device.destroy_image(image, None);
+                }
+                allocator
+                    .lock()
+                    .expect("allocator lock poisoned")
+                    .free(image_alloc)
+                    .ok();
+                return Err(error).context("Failed to create DDS texture image view");
+            }
         };
 
         log::info!(

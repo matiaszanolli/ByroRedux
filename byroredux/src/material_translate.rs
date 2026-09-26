@@ -826,7 +826,7 @@ pub(crate) fn translate_material(
             .unwrap_or(byroredux_core::ecs::components::material::DEFAULT_PARALLAX_MAX_PASSES),
     };
     material.resolve_pbr();
-    crate::helpers::classify_glass_into_material(
+    crate::helpers::classify_glass_into_material_with_provenance(
         &mut material,
         mesh_name,
         texture_path.as_deref(),
@@ -846,6 +846,9 @@ pub(crate) fn translate_material(
         // Starfield's CDB record); Skyrim's inline effect shaders never
         // set it, so their keyword-sharing haze layers stay effects.
         source.external_material_resolved,
+        // #4855 — only BGSM provenance authorizes replacing a non-default
+        // lit dispatch; a Starfield CDB material only supplies scalars.
+        source.from_bgsm,
         // #4237 / FO3-D1-2026-09-11-02 — authored FO3/FNV window/eye
         // environment-mapping bit: a positive glass signal independent of
         // the keyword/mesh-name match, for windows whose filename doesn't
@@ -2206,6 +2209,30 @@ mod tests {
         );
     }
 
+    #[test]
+    fn cdb_resolution_does_not_override_an_authored_lit_dispatch() {
+        let source = ImportedMaterial {
+            material_kind: 5, // Authored SkinTint dispatch
+            external_material_resolved: true,
+            from_bgsm: false,
+            has_alpha: true,
+            ..ImportedMaterial::default()
+        };
+        let paths = ResolvedPaths {
+            textures: MaterialTextureSet {
+                base_color: Some("textures/glass/keyword_match.dds".to_owned()),
+                ..MaterialTextureSet::default()
+            },
+            material_path: None,
+            source_base_color: None,
+        };
+        let material = translate_material(&source, Some("GlassMesh"), paths, 0);
+        assert_eq!(
+            material.material_kind, 5,
+            "CDB scalar presence is not BGSM shader-dispatch provenance (#4855)"
+        );
+    }
+
     /// Regression for #4391 — the FO3/FNV window/eye environment-mapping
     /// bit promotes a keyword-less surface to glass only with BLENDED
     /// coverage. Drives the signal through `translate_material` itself (not
@@ -2420,43 +2447,100 @@ mod tests {
 
         let mut checked_files: Vec<String> = Vec::new();
         for root in SPAWNER_ROOTS {
-            let dir = crate_src.join(root);
-            let mut pending = vec![dir.clone()];
-            while let Some(dir) = pending.pop() {
-                for entry in std::fs::read_dir(&dir)
-                    .unwrap_or_else(|e| panic!("read_dir {}: {e}", dir.display()))
-                {
-                    let path = entry.expect("readable dir entry").path();
-                    if path.is_dir() {
-                        pending.push(path);
+            let mut pending = vec![crate_src.join(root)];
+            while let Some(path) = pending.pop() {
+                if path.is_dir() {
+                    for entry in std::fs::read_dir(&path)
+                        .unwrap_or_else(|e| panic!("read_dir {}: {e}", path.display()))
+                    {
+                        pending.push(entry.expect("readable dir entry").path());
+                    }
+                    continue;
+                }
+                if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                    continue;
+                }
+                let name = path
+                    .strip_prefix(&crate_src)
+                    .unwrap_or(&path)
+                    .to_string_lossy()
+                    .into_owned();
+                if name.ends_with("_tests.rs") {
+                    continue; // test-only siblings — mock MeshHandles, not spawners
+                }
+                let src = std::fs::read_to_string(&path)
+                    .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+                let production = strip_inline_test_modules(&src);
+                let inserts: Vec<usize> = production
+                    .match_indices(", MeshHandle(")
+                    .map(|(at, _)| at)
+                    .collect();
+                if inserts.is_empty() {
+                    continue;
+                }
+
+                let mut function_starts = Vec::new();
+                let mut line_at = 0;
+                for line in production.lines() {
+                    let trimmed = line.trim_start();
+                    let is_function_signature = trimmed.starts_with("fn ")
+                        || trimmed.starts_with("pub ") && trimmed.contains(" fn ")
+                        || trimmed.starts_with("pub(") && trimmed.contains(" fn ")
+                        || trimmed.starts_with("async fn ")
+                        || trimmed.starts_with("unsafe fn ");
+                    if is_function_signature {
+                        function_starts.push(line_at);
+                    }
+                    line_at += line.len() + 1;
+                }
+
+                for &insert_at in &inserts {
+                    let entity = production[..insert_at]
+                        .rfind("insert(")
+                        .map(|at| production[at + "insert(".len()..insert_at].trim())
+                        .unwrap_or_default()
+                        .trim_end_matches(',')
+                        .trim();
+                    // `scene.rs`'s cube/quad/triangle demo primitives are
+                    // intentionally material-free. Keep the file in the
+                    // scan, but exempt those four inserts by entity name.
+                    if name == "scene.rs"
+                        && ["cube", "quad", "red_tri", "blue_tri"].contains(&entity)
+                    {
                         continue;
                     }
-                    if path.extension().and_then(|e| e.to_str()) != Some("rs") {
-                        continue;
-                    }
-                    let name = path
-                        .strip_prefix(&crate_src)
-                        .unwrap_or(&path)
-                        .to_string_lossy()
-                        .into_owned();
-                    if name.ends_with("_tests.rs") {
-                        continue; // test-only siblings — mock MeshHandles, not spawners
-                    }
-                    let src = std::fs::read_to_string(&path)
-                        .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
-                    let production = strip_inline_test_modules(&src);
-                    if !production.contains(", MeshHandle(") {
-                        continue; // not a mesh spawner at all
-                    }
+
+                    // Count boundary calls against inserts in their enclosing
+                    // function, not the whole file: a healthy first spawner
+                    // cannot mask a second one in a sibling function (#4856).
+                    let start = function_starts
+                        .iter()
+                        .copied()
+                        .take_while(|start| *start <= insert_at)
+                        .last()
+                        .unwrap_or(0);
+                    let end = function_starts
+                        .iter()
+                        .copied()
+                        .find(|start| *start > insert_at)
+                        .unwrap_or(production.len());
+                    let region = &production[start..end];
+                    let mesh_insert_count = inserts
+                        .iter()
+                        .filter(|&&at| at >= start && at < end)
+                        .count();
+                    let boundary_count: usize = boundary_fns
+                        .iter()
+                        .map(|needle| region.matches(needle).count())
+                        .sum();
                     assert!(
-                        boundary_fns.iter().any(|f| production.contains(f)),
-                        "{name}: spawned draws must get their canonical `Material` from the \
-                         translation boundary ({boundary_fns:?}). Without one they fall into \
-                         the render path's no-`Material` arm and shade against hardcoded \
-                         literals — a second materialization site outside the single source \
-                         of truth (#2444)."
+                        boundary_count >= mesh_insert_count,
+                        "{name}: function containing MeshHandle insert for `{entity}` has \
+                         {mesh_insert_count} mesh inserts but only {boundary_count} canonical \
+                         material translations ({boundary_fns:?}); every spawned draw needs \
+                         its own boundary material (#2444, #4856)."
                     );
-                    checked_files.push(name);
+                    checked_files.push(name.clone());
                 }
             }
         }
@@ -2488,12 +2572,20 @@ mod tests {
         }
     }
 
-    /// Directories under `byroredux/src` that own mesh-spawning code, walked
-    /// recursively by [`every_exterior_spawner_inserts_a_boundary_material`].
+    /// Directory and sibling-file roots under `byroredux/src` that own
+    /// mesh-spawning code, walked by
+    /// [`every_exterior_spawner_inserts_a_boundary_material`].
     ///
     /// A list rather than the whole crate: see that test's doc for the two
     /// debug-scene files a crate-wide walk would pull in.
-    const SPAWNER_ROOTS: [&str; 3] = ["cell_loader", "scene", "npc_spawn"];
+    const SPAWNER_ROOTS: [&str; 6] = [
+        "cell_loader",
+        "cell_loader.rs",
+        "scene",
+        "scene.rs",
+        "npc_spawn",
+        "npc_spawn.rs",
+    ];
 
     /// Remove every top-level `#[cfg(test)] mod … { … }` block from `src`,
     /// leaving the production half.

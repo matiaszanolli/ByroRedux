@@ -81,6 +81,21 @@ pub const MAX_FRAMES_IN_FLIGHT: usize = 2;
 //      rewrites that slot's descriptor sets. Its "must be called after
 //      slot `frame`'s fence has been waited" contract holds only through
 //      the PREVIOUS `draw_frame`'s all-slots wait.
+//   9. `groundcover_models.rs`'s `prepare` / `harvest` — runs before
+//      `draw_frame`, host-writes the slot's record/table/shape buffers, and
+//      reads its stats readback. Its slot-local fence contract depends on
+//      the PREVIOUS `draw_frame` having waited for every slot.
+//  10. `SkinSlot::output_buffer` — `skin_vertices.comp` rewrites the single
+//      buffer while an earlier frame may still read it during BLAS
+//      build/refit, fragment shading, or caustic splatting; in-frame RAW
+//      barriers do not retire another submission.
+//  11. The skinned BLAS itself is refit in place (`src == dst == entry.accel`),
+//      so an earlier frame's readers must retire before the next refit.
+//  12. `bind_inverse_upload_staging` is a single host-visible staging buffer;
+//      rewriting it requires the previous frame's copy to have completed.
+//  13. `SkinSlot::destroy` / `SkinComputePipeline::destroy_slot` /
+//      `MorphSlot::destroy` immediately free resources for pending unload
+//      victims, so their prior-frame users must have retired first.
 //
 // #4601 — the wait's own argument is now pinned: the all-slots spelling
 // `wait_for_fences(&self.frame_sync.in_flight, true, u64::MAX)` is
@@ -109,8 +124,10 @@ const _: () = assert!(
      MAX_FRAMES_IN_FLIGHT == 2; see #870 for the safety contract. \
      Per-FIF-ing the depth image is NOT enough to delete this assert: \
      the skinned BLAS scratch free, the depth-capture/screenshot \
-     staging destroys, the terrain tile buffer, the mapped morph \
-     weight buffer all rest on the same both-slots wait (#3643). \
+     staging destroys, the terrain tile buffer, mapped morph weights, \
+     ground-cover model buffers/readback, and the skinned output/BLAS/ \
+     bind-inverse staging/immediate unload frees all rest on the same \
+     both-slots wait (#3643, #4851, #4852). \
      The HUD rotation dependency was removed by #3429."
 );
 
@@ -651,7 +668,34 @@ mod tests {
                 include_str!("scene_buffer/upload.rs"),
             ),
             ("screenshot_staging", include_str!("context/screenshot.rs")),
-            ("weight_buffer", crate::source_scan::production_text(include_str!("morph_compute.rs"))),
+            (
+                "weight_buffer",
+                crate::source_scan::production_text(include_str!("morph_compute.rs")),
+            ),
+            (
+                "output_buffer",
+                crate::source_scan::production_text(include_str!("skin_compute.rs")),
+            ),
+            (
+                "bind_inverse_upload_staging",
+                crate::source_scan::production_text(include_str!("scene_buffer/buffers.rs")),
+            ),
+            (
+                "entry.accel",
+                crate::source_scan::production_text(include_str!("acceleration/blas_skinned.rs")),
+            ),
+            (
+                "destroy_slot",
+                crate::source_scan::production_text(include_str!("skin_compute.rs")),
+            ),
+            (
+                "MorphSlot",
+                crate::source_scan::production_text(include_str!("morph_compute.rs")),
+            ),
+            (
+                "groundcover_models",
+                crate::source_scan::production_text(include_str!("groundcover_models.rs")),
+            ),
         ] {
             assert!(
                 owner.contains(resource),
@@ -678,6 +722,12 @@ mod tests {
              BOTH-slots wait as its guarantee — the slot-local argument \
              alone is insufficient and would keep reading correct at 3+ \
              slots (#3643)",
+        );
+        let groundcover_models =
+            crate::source_scan::production_text(include_str!("groundcover_models.rs"));
+        assert!(
+            groundcover_models.contains("# fence contract"),
+            "ground-cover model prepare must document its both-slots fence dependency (#4851)"
         );
         // #3429 removes the HUD rotation's dependence on the all-slots wait.
         // Its retained transfer source must continue to be per frame slot.

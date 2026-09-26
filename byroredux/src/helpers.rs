@@ -67,7 +67,8 @@ fn is_mirror_pane(
 /// Call AFTER `Material::resolve_pbr` so the behavior write wins over
 /// source-derived PBR scalars.
 #[allow(clippy::too_many_arguments)] // One flag per independent glass signal (#4391).
-pub(crate) fn classify_glass_into_material(
+#[cfg(test)]
+fn classify_glass_into_material(
     material: &mut Material,
     mesh_name: Option<&str>,
     texture_path: Option<&str>,
@@ -75,6 +76,30 @@ pub(crate) fn classify_glass_into_material(
     is_decal: bool,
     bgem_glass: bool,
     external_material_resolved: bool,
+    window_env_mapping: bool,
+) {
+    classify_glass_into_material_with_provenance(
+        material,
+        mesh_name,
+        texture_path,
+        has_transparent_coverage,
+        is_decal,
+        bgem_glass,
+        external_material_resolved,
+        false,
+        window_env_mapping,
+    );
+}
+
+pub(crate) fn classify_glass_into_material_with_provenance(
+    material: &mut Material,
+    mesh_name: Option<&str>,
+    texture_path: Option<&str>,
+    has_transparent_coverage: bool,
+    is_decal: bool,
+    bgem_glass: bool,
+    external_material_resolved: bool,
+    from_bgsm: bool,
     window_env_mapping: bool,
 ) {
     let keyword_match = texture_path.is_some_and(is_glass_keyword_path)
@@ -113,10 +138,8 @@ pub(crate) fn classify_glass_into_material(
     // engine-synthesized. The guard below already protects the synthesized
     // range; a NON-DEFAULT authored lit shader type needs the identical
     // protection, or a bare keyword match silently discards a real, specific
-    // dispatch with no way back. The provenance discriminator is the same
-    // "an external `.bgsm` was resolved for this material" signal
-    // `effect_glass_carrier` uses — kept on `from_bgsm` here because this
-    // gate asks specifically "did a BGSM re-specify the shader type",
+    // dispatch with no way back. This gate asks specifically "did a BGSM
+    // re-specify the shader type",
     // which the CDB fallback does not (it patches scalars, and effect
     // carriers sit at kind 0/101 outside this 2..=20 range anyway, so
     // #4283's split changes nothing for this gate); a keyword alone on
@@ -142,11 +165,9 @@ pub(crate) fn classify_glass_into_material(
     // (`is_glass_keyword_path` no longer treats ice as glass), not by
     // shader-type partition.
     //
-    // The bgsm-provenance read is taken from the parameter the caller
-    // forwards; `external_material_resolved` cannot substitute here — see
-    // the note above.
-    let lit_carrier_authored_dispatch = (2..=20).contains(&material.material_kind)
-        && !external_material_resolved;
+    // `external_material_resolved` is too broad here: Starfield's CDB
+    // fallback supplies scalars but does not author the shader dispatch.
+    let lit_carrier_authored_dispatch = (2..=20).contains(&material.material_kind) && !from_bgsm;
 
     // Engine-synthesized behavior already selected — preserve it unless this
     // is the source-format effect carrier used to author an explicit glass
@@ -809,20 +830,39 @@ mod glass_classification_tests {
     fn from_bgsm_still_allows_override_of_a_non_default_shader_type() {
         let mut m = mat();
         m.material_kind = 5; // SkinTint
-        classify_glass_into_material(
+        classify_glass_into_material_with_provenance(
             &mut m,
             Some("SomeMesh"),
             Some("textures/glass_override.dds"),
             true,
             false,
             false,
-            true, // from_bgsm — authoritative external-material signal
+            true, // external material was resolved
+            true, // from_bgsm — authoritative dispatch provenance
             false,
         );
         assert_eq!(
             m.material_kind, GLASS,
             "an external BGSM's authoritative signal must still be able to override"
         );
+    }
+
+    #[test]
+    fn cdb_resolution_does_not_authorize_overriding_a_lit_dispatch() {
+        let mut m = mat();
+        m.material_kind = 5; // SkinTint
+        classify_glass_into_material_with_provenance(
+            &mut m,
+            Some("SomeMesh"),
+            Some("textures/glass_override.dds"),
+            true,
+            false,
+            false,
+            true,  // CDB resolved
+            false, // no BGSM shader-dispatch authoring
+            false,
+        );
+        assert_eq!(m.material_kind, 5);
     }
 
     /// Sibling fix (SIBLING checklist item): `is_mirror_pane`'s unconditional

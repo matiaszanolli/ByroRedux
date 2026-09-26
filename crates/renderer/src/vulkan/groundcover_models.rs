@@ -482,6 +482,11 @@ impl GroundCoverModelTier {
         texture_registry: &crate::texture_registry::TextureRegistry,
         input: &GroundCoverModelFrame<'_>,
     ) -> bool {
+        // # fence contract (#4851): this runs before draw_frame's all-slots
+        // wait, so the prior draw_frame's wait must have retired every slot
+        // before harvest reads stats_readback[frame] or these host-visible
+        // buffers are rewritten. Do not narrow that wait until this tier is
+        // made per-FIF or its old resources are deferred-destroyed.
         self.harvest(device, frame);
         self.frame_recorded = false;
         self.frame_record_count = 0;

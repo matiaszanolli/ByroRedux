@@ -72,7 +72,7 @@ impl LightSource {
     ) -> Self {
         // One visibility contract for every legacy game. Projection flags
         // remain diagnostic data; the transport shader resolves coverage.
-        let visibility = VisibilityMask::for_legacy_local_light(shadow_flags);
+        let visibility = VisibilityMask::for_legacy_local_light();
         Self {
             emitter: Emitter::from_legacy_world_units(
                 radius,

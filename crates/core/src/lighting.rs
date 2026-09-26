@@ -155,19 +155,15 @@ impl VisibilityMask {
         (self.0 & other.0) == other.0
     }
 
-    /// All imported lights use the same material-aware visibility query.
-    /// Shadow-map allocation in a source engine is not a physical property
-    /// of its light. Alpha cutouts and glass transmission are resolved by the
-    /// shared transport shader; effect cards remain non-occluding there.
-    pub const fn for_legacy_projection(_casts_full_scene_shadows: bool) -> Self {
+    /// Legacy light visibility is always full-scene; projection flags remain
+    /// diagnostic data and do not select this mask.
+    pub const fn for_legacy_projection() -> Self {
         Self::FULL
     }
 
-    /// Single import policy for NIF lights and ESM LIGH records in every
-    /// game. Projection flags are preserved on `LightSource` for diagnostics
-    /// but cannot remove objects or actors from a light's visibility query.
-    pub const fn for_legacy_local_light(shadow_flags: u32) -> Self {
-        Self::for_legacy_projection(shadow_flags != 0)
+    /// Shared policy for NIF lights and ESM LIGH records in every game.
+    pub const fn for_legacy_local_light() -> Self {
+        Self::for_legacy_projection()
     }
 }
 
@@ -357,31 +353,15 @@ fn sanitize_direction(direction: [f32; 3]) -> [f32; 3] {
 mod tests {
     use super::*;
 
-    /// W2.10 — the [`VisibilityMask::for_legacy_local_light`] decision
-    /// table, pinned flag-class by flag-class so any policy change is a
-    /// deliberate edit to the table (and its doc), never a silent
-    /// producer-side drift.
+    /// Legacy projection flags do not narrow physical visibility.
     #[test]
-    fn legacy_local_light_shadow_policy_table() {
-        use crate::ecs::components::light::{
-            LIGHT_FLAG_SHADOW_HEMISPHERE, LIGHT_FLAG_SHADOW_OMNIDIRECTIONAL,
-            LIGHT_FLAG_SHADOW_SPOTLIGHT,
-        };
-        // An absent projection bit must behave just like every authored one.
-        for flags in [
-            0,
-            LIGHT_FLAG_SHADOW_SPOTLIGHT,
-            LIGHT_FLAG_SHADOW_HEMISPHERE,
-            LIGHT_FLAG_SHADOW_OMNIDIRECTIONAL,
-        ] {
-            assert_eq!(
-                VisibilityMask::for_legacy_local_light(flags),
-                VisibilityMask::FULL,
-                "flags {flags:#06x} must not change physical visibility"
-            );
-        }
+    fn legacy_local_light_visibility_is_full_scene() {
         assert_eq!(
-            VisibilityMask::for_legacy_projection(false),
+            VisibilityMask::for_legacy_local_light(),
+            VisibilityMask::FULL
+        );
+        assert_eq!(
+            VisibilityMask::for_legacy_projection(),
             VisibilityMask::FULL
         );
     }

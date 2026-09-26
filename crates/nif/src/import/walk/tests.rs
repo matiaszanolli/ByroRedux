@@ -567,9 +567,10 @@ mod switch_node_walker_tests {
         lights.remove(0)
     }
 
-    /// Regression for #4395 — a `NiSpotLight` emits along the FIRST column
-    /// of its world rotation (Gamebryo model direction (1,0,0),
-    /// `NiSpotLight.h`), and a spot's canonical direction points outward.
+    /// Regression for #4395 / #4859 — the angle fixture is in Gamebryo
+    /// degrees, converted to canonical radians at import. A `NiSpotLight`
+    /// emits along the FIRST column of its world rotation (model direction
+    /// (1,0,0), `NiSpotLight.h`), and a spot's direction points outward.
     /// Z-up (0,1,0) → Y-up (0,0,-1). The pre-fix "-Z" derivation gave
     /// Y-up (0,-1,0).
     #[test]
@@ -581,13 +582,13 @@ mod switch_node_walker_tests {
                 linear_attenuation: 0.0,
                 quadratic_attenuation: 1.0,
             },
-            outer_spot_angle: 0.5,
-            inner_spot_angle: 0.25,
+            outer_spot_angle: 45.0,
+            inner_spot_angle: 15.0,
             exponent: 1.0,
         }));
         assert_eq!(light.kind, LightKind::Spot);
         assert_eq!(light.direction, [0.0, 0.0, -1.0]);
-        assert!((light.outer_angle - 0.5_f32.to_radians()).abs() < 1.0e-6);
+        assert!((light.outer_angle - 45.0_f32.to_radians()).abs() < 1.0e-6);
     }
 
     /// Regression for #4395 — `NiDirectionalLight` shares the (1,0,0) model

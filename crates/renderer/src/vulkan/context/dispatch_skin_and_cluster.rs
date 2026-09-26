@@ -840,6 +840,53 @@ mod palette_dirty_plan_tests {
 }
 
 #[cfg(test)]
+mod palette_publish_barrier_consumer_tests {
+    #[test]
+    fn palette_publish_barrier_covers_fragment_bone_readers() {
+        let shader_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("shaders");
+        let ray_hit = std::fs::read_to_string(shader_dir.join("include/ray_hit.glsl"))
+            .expect("ray_hit.glsl must be readable");
+        let bindings = std::fs::read_to_string(shader_dir.join("include/bindings.glsl"))
+            .expect("bindings.glsl must be readable");
+        assert!(bindings.contains("set = 1, binding = 3") && bindings.contains("mat4 bones[]"));
+        assert!(ray_hit.contains("bones["));
+
+        let mut fragment_consumers = Vec::new();
+        for entry in std::fs::read_dir(&shader_dir).expect("shaders/ must be readable") {
+            let path = entry.expect("readable shader entry").path();
+            if path.extension().and_then(|e| e.to_str()) != Some("frag") {
+                continue;
+            }
+            let source = std::fs::read_to_string(&path).expect("readable fragment shader");
+            if source.contains("include/ray_hit.glsl") && source.contains("include/bindings.glsl") {
+                fragment_consumers.push(path.file_name().unwrap().to_string_lossy().into_owned());
+            }
+        }
+        assert!(
+            !fragment_consumers.is_empty(),
+            "no fragment shader that includes the bone reader was discovered"
+        );
+
+        let src = include_str!("dispatch_skin_and_cluster.rs");
+        let production = &src[..src.find("#[cfg(test)]").expect("test modules")];
+        let barrier_at = production
+            .find("let palette_barrier =")
+            .expect("palette publish barrier");
+        let call_at = production[barrier_at..]
+            .find("self.device.cmd_pipeline_barrier(")
+            .map(|i| i + barrier_at)
+            .expect("palette barrier call");
+        let call = &production[call_at..];
+        let call = &call[..call.find("                );").expect("barrier call end")];
+        assert!(
+            call.contains("vk::PipelineStageFlags::FRAGMENT_SHADER"),
+            "fragment consumers {fragment_consumers:?} read bones[] at set 1 binding 3, \
+             so the palette publish dst mask must include FRAGMENT_SHADER (#4853)"
+        );
+    }
+}
+
+#[cfg(test)]
 mod stale_tlas_compute_gate_tests {
     /// Regression: #4779 / CONC-D1-2026-09-23-01 — after a failed
     /// `build_tlas`, the slot's previous AS stays alive (#2673), so
@@ -893,6 +940,20 @@ mod stale_tlas_compute_gate_tests {
         assert!(
             !vol.contains("tlas_handle("),
             "the volumetrics recorder must not resolve the raw, possibly stale TLAS"
+        );
+
+        let models_at = this
+            .find("pub(super) fn record_groundcover_models(")
+            .expect("the model-tier recorder must still exist");
+        let models = &this[models_at..];
+        let models = &models[..models.find("\n    }\n").expect("model recorder body end")];
+        assert!(
+            models.contains("self.ray_query_tlas(frame)"),
+            "ground-cover model ray queries must use the build-gated TLAS (#4851)"
+        );
+        assert!(
+            !models.contains("tlas_handle("),
+            "ground-cover model ray queries must not resolve a potentially stale TLAS"
         );
     }
 }
