@@ -1171,6 +1171,67 @@ mod tests {
         assert_eq!(resident_vwd_refr_cells(&world), vec![(0, 0)]);
     }
 
+    /// The hoisted version's own edges (#3142): a marker whose entity carries no
+    /// transform is skipped rather than reported at the origin cell, and a world
+    /// with the marker but no `GlobalTransform` storage at all answers empty
+    /// instead of panicking on the second query handle.
+    #[test]
+    fn resident_vwd_refr_cells_skips_a_marker_with_no_transform() {
+        let mut world = World::new();
+        let orphan = world.spawn();
+        world.insert(orphan, VisibleWhenDistant);
+        assert!(
+            resident_vwd_refr_cells(&world).is_empty(),
+            "no GlobalTransform storage exists yet"
+        );
+
+        spawn_at(&mut world, 4096.0 * 3.0, 0.0, true); // cell (3, 0)
+        assert_eq!(
+            resident_vwd_refr_cells(&world),
+            vec![(3, 0)],
+            "the transform-less marker must not contribute cell (0, 0)"
+        );
+    }
+
+    /// #3142 — `resident_vwd_refr_cells` runs on every LOD reconcile, hundreds of
+    /// VWD placements deep. It must take the `GlobalTransform` storage lock once,
+    /// through a hoisted query handle, and not re-acquire it per hit with
+    /// `world.get` (a `TypeId` lookup, tracker scope and `RwLock` round trip per
+    /// entity). The result is identical either way, so no behavioural test can see
+    /// it; this pins the shape statically, like
+    /// `app_step::scene_centroid_distance_acquires_global_transform_before_mesh_handle`.
+    /// Scoped to the function body (to its closing brace at column 0) so a
+    /// mention elsewhere in the file cannot produce a false pass, and it fails
+    /// loudly rather than passing vacuously if the function is renamed or split.
+    #[test]
+    fn resident_vwd_refr_cells_hoists_its_storage_locks_out_of_the_loop() {
+        let src = include_str!("streaming_helpers.rs");
+        let fn_start = src
+            .find("\nfn resident_vwd_refr_cells(")
+            .expect("resident_vwd_refr_cells must still exist under this name");
+        let body = &src[fn_start + 1..];
+        let body = &body[..body
+            .find("\n}\n")
+            .expect("resident_vwd_refr_cells' closing brace (column 0) not found")];
+
+        let loop_pos = body
+            .find("for (entity, _) in")
+            .expect("resident_vwd_refr_cells must still iterate the marker storage");
+        let last_query = body
+            .rfind("world.query::<")
+            .expect("resident_vwd_refr_cells must acquire its queries via world.query");
+        assert!(
+            last_query < loop_pos,
+            "every storage query must be acquired before the loop, not inside it (#3142)"
+        );
+        assert!(
+            !body.contains("world.get::<") && !body.contains("world.get("),
+            "a per-entity `world.get` re-acquires the storage lock for every VWD \
+             placement on every LOD reconcile; look the transform up through the \
+             hoisted query handle (#3142)"
+        );
+    }
+
     #[test]
     fn resident_vwd_refr_cells_reports_every_distinct_occupied_cell() {
         let mut world = World::new();
