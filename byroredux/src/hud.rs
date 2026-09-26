@@ -33,7 +33,7 @@ use byroredux_menuxml::profile::{FontArchive, MenuProfile};
 use byroredux_menuxml::tex::Rgba8;
 use byroredux_menuxml::{MenuRenderer, ScreenTraits};
 
-use crate::asset_provider::Archive;
+use crate::asset_provider::{open_with_numeric_siblings, Archive};
 use crate::inventory::PlayerVitals;
 use crate::systems::PlayerEntity;
 
@@ -90,7 +90,10 @@ pub(crate) struct HudGameProfile {
     pub(crate) label: &'static str,
     /// The BSA carrying the menu XML corpus (+ Oblivion's fonts).
     misc_bsa: &'static str,
-    /// The texture archive menu art defaults to (overridable).
+    /// The texture archive menu art defaults to (overridable). Opened
+    /// through `open_with_numeric_siblings`, so FNV's `Textures2` art rides
+    /// in on the FO3-shaped `Fallout - Textures.bsa` anchor — the same
+    /// transparent split the texture provider gives `--textures-bsa`.
     default_textures_bsa: &'static str,
     menu_path: &'static str,
     menu: MenuProfile,
@@ -159,13 +162,12 @@ impl HudGameProfile {
         Self {
             label,
             misc_bsa: "Fallout - Misc.bsa",
-            // FNV keeps its interface art in Textures2 (FO3: Textures);
-            // both default via this field and can be overridden.
-            default_textures_bsa: if label == "Fallout 3" {
-                "Fallout - Textures.bsa"
-            } else {
-                "Fallout - Textures2.bsa"
-            },
+            // FNV keeps its interface art and every font in `Textures2`
+            // (FO3 has no such archive). Both anchor on `Textures.bsa`: the
+            // numeric-sibling rule adds `Textures2` when it exists, so the
+            // choice needs no per-game archive name and a wrong game guess
+            // degrades to a missing font table, not a transparent HUD (#4718).
+            default_textures_bsa: "Fallout - Textures.bsa",
             menu_path: "menus\\main\\hud_main_menu.xml",
             menu,
             style: HudStyle::Assembled {
@@ -184,12 +186,23 @@ impl HudGameProfile {
     }
 }
 
-/// The two archives a HUD render needs, plus the profile that says
-/// which one carries fonts (Oblivion: Misc; FO3/FNV: the texture BSA).
+/// The archives a HUD render needs, plus the profile that says which one
+/// carries fonts (Oblivion: Misc; FO3/FNV: the texture pool).
 pub(crate) struct HudAssets {
     misc: Archive,
-    textures: Archive,
+    /// The named texture archive followed by its numeric siblings, in open
+    /// order. Last-listed wins, as in `TextureProvider::extract`.
+    textures: Vec<Archive>,
     profile: HudGameProfile,
+}
+
+impl HudAssets {
+    fn extract_texture(&self, path: &str) -> Option<Vec<u8>> {
+        self.textures
+            .iter()
+            .rev()
+            .find_map(|archive| archive.extract(path).ok())
+    }
 }
 
 impl MenuAssets for HudAssets {
@@ -197,23 +210,21 @@ impl MenuAssets for HudAssets {
         self.misc.extract(path).ok()
     }
     fn texture(&self, path: &str) -> Option<Vec<u8>> {
-        self.textures.extract(path).ok()
+        self.extract_texture(path)
     }
     fn font(&self, index: u8) -> Option<Vec<u8>> {
         let path = self.profile.menu.font_paths.get(index as usize - 1)?;
         match self.profile.menu.font_archive {
             FontArchive::Misc => self.misc.extract(path).ok(),
-            FontArchive::Textures => self.textures.extract(path).ok(),
+            FontArchive::Textures => self.extract_texture(path),
         }
     }
     fn font_texture(&self, path: &str) -> Option<Vec<u8>> {
         match self.profile.menu.font_archive {
             FontArchive::Misc => self.misc.extract(path).ok(),
             FontArchive::Textures => self
-                .textures
-                .extract(path)
-                .or_else(|_| self.misc.extract(path))
-                .ok(),
+                .extract_texture(path)
+                .or_else(|| self.misc.extract(path).ok()),
         }
     }
 }
@@ -326,13 +337,52 @@ pub(crate) struct MenuXmlHud {
 pub(crate) const HUD_REFRESH_INTERVAL: std::time::Duration =
     std::time::Duration::from_millis(33);
 
+/// The base ESM a New Vegas load order is rooted at.
+const FNV_BASE_ESM: &str = "FalloutNV.esm";
+/// The base ESM a Fallout 3 load order is rooted at.
+const FO3_BASE_ESM: &str = "Fallout3.esm";
+
+/// Pick FO3 or FNV for a launch whose corpus is `Fallout - Misc.bsa`.
+///
+/// Both games ship that archive, so the corpus cannot say which it is, and
+/// the font table differs (FNV adds a ninth slot). The load order can: every
+/// DLC and mod plugin masters to its game's base ESM, so
+/// `--master FalloutNV.esm --esm HonestHearts.esm` is New Vegas although
+/// `--esm` names neither game (#4718 — this used to pattern-match the
+/// `--esm` file name and gave every DLC or mod launch the FO3 profile).
+///
+/// Precedence: a base ESM named in the load order; else the one sitting
+/// beside the corpus (a plugin launched without listing its master); else
+/// Fallout 3. `load_order` holds plugin file names, compared
+/// case-insensitively like Bethesda's own filesystem lookups.
+fn fallout_profile(load_order: &[&str], data_dir: &std::path::Path) -> HudGameProfile {
+    let lists = |base: &str| {
+        load_order
+            .iter()
+            .any(|plugin| plugin.eq_ignore_ascii_case(base))
+    };
+    let new_vegas = if lists(FNV_BASE_ESM) {
+        true
+    } else if lists(FO3_BASE_ESM) {
+        false
+    } else {
+        data_dir.join(FNV_BASE_ESM).is_file()
+    };
+    if new_vegas {
+        HudGameProfile::fallout_nv()
+    } else {
+        HudGameProfile::fallout3()
+    }
+}
+
 /// Resolve `--hud` into archives + a game profile.
 ///
 /// The game is discovered from the corpus itself: whichever vanilla
-/// Misc BSA sits beside `--esm` (FO3 vs FNV split by the master's
-/// name). Requires the Misc BSA (menus + Oblivion fonts); the texture
-/// BSA defaults per profile and can be overridden with
-/// `--hud-textures <path>`.
+/// Misc BSA sits beside `--esm`, with FO3 vs FNV decided by the load order
+/// (`--master`s then `--esm`, see [`fallout_profile`]). Requires the Misc
+/// BSA (menus + Oblivion fonts); the texture BSA defaults per profile and
+/// can be overridden with `--hud-textures <path>`. Either way the texture
+/// archive is opened with its numeric siblings, like `--textures-bsa`.
 fn hud_archive_args(args: &[String]) -> Result<Option<(String, String, HudGameProfile)>, String> {
     if !args.iter().any(|arg| arg == "--hud") {
         return Ok(None);
@@ -349,17 +399,19 @@ fn hud_archive_args(args: &[String]) -> Result<Option<(String, String, HudGamePr
         .map(|d| d.to_path_buf())
         .ok_or_else(|| "--hud: cannot resolve the --esm directory".to_string())?;
 
+    let load_order: Vec<&str> = args
+        .iter()
+        .enumerate()
+        .filter(|(_, arg)| *arg == "--master")
+        .filter_map(|(i, _)| args.get(i + 1))
+        .filter(|value| !value.starts_with("--"))
+        .map(String::as_str)
+        .chain(std::iter::once(esm.as_str()))
+        .filter_map(|plugin| std::path::Path::new(plugin).file_name()?.to_str())
+        .collect();
     let candidates = [
         HudGameProfile::oblivion(),
-        {
-            // FO3 vs FNV share `Fallout - Misc.bsa`; the master's stem
-            // decides the font table (FNV adds a ninth slot).
-            if esm.to_lowercase().contains("falloutnv") {
-                HudGameProfile::fallout_nv()
-            } else {
-                HudGameProfile::fallout3()
-            }
-        }
+        fallout_profile(&load_order, &esm_dir),
     ];
     let profile = candidates
         .iter()
@@ -426,16 +478,30 @@ pub(crate) fn launch_hud(
             return None;
         }
     };
-    let assets = match (Archive::open(&misc_path), Archive::open(&textures_path)) {
-        (Ok(misc), Ok(textures)) => HudAssets {
-            misc,
-            textures,
-            profile,
-        },
-        (Err(e), _) | (_, Err(e)) => {
+    let misc = match Archive::open(&misc_path) {
+        Ok(misc) => misc,
+        Err(e) => {
             log::error!("hud: archive open failed: {e}");
             return None;
         }
+    };
+    // `open_with_numeric_siblings` reports a failed open as a warning and
+    // pushes nothing, so an empty pool is the failure signal.
+    let mut textures = Vec::new();
+    open_with_numeric_siblings(
+        &textures_path,
+        "HUD textures",
+        &mut textures,
+        &mut std::collections::HashSet::new(),
+    );
+    if textures.is_empty() {
+        log::error!("hud: texture archive open failed: '{textures_path}'");
+        return None;
+    }
+    let assets = HudAssets {
+        misc,
+        textures,
+        profile,
     };
 
     let (w, h) = ctx.swapchain_extent();
@@ -517,11 +583,12 @@ pub(crate) fn launch_hud(
                 (Ok(h0), Ok(h1), Ok(h2)) => {
                     log::info!(
                         "hud: loaded {} misc='{}' textures='{}' textures={h0}/{h1}/{h2} \
-                         ({w}x{h}, {} NIF tiles skipped)",
+                         ({w}x{h}, {} NIF tiles skipped) profile='{}'",
                         profile.menu_path,
                         misc_path,
                         textures_path,
-                        renderer.nif_tiles
+                        renderer.nif_tiles,
+                        profile.label
                     );
                     let mut control = HudControl {
                         bar_count: profile.bar_count() as u8,
@@ -795,4 +862,129 @@ pub(crate) fn hash_signature(sig: (u32, u32, u32, i32, u8)) -> u64 {
         hash = (hash.rotate_left(5) ^ part).wrapping_mul(0x2545_f491_4f6c_dd1d);
     }
     hash
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn argv(values: &[&str]) -> Vec<String> {
+        values.iter().map(|v| v.to_string()).collect()
+    }
+
+    /// A data directory holding the named (empty) files — `hud_archive_args`
+    /// only checks that archives exist beside the ESM; opening is later.
+    fn data_dir(files: &[&str]) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        for file in files {
+            std::fs::write(dir.path().join(file), b"").unwrap();
+        }
+        dir
+    }
+
+    /// #4718 — the game is decided by the load order, not by what `--esm`
+    /// is called. A DLC or mod plugin masters to its game's base ESM.
+    #[test]
+    fn fallout_profile_follows_the_load_order_not_the_esm_name() {
+        let empty = data_dir(&[]);
+        let dir = empty.path();
+        assert_eq!(
+            fallout_profile(&["FalloutNV.esm"], dir).label,
+            "Fallout: New Vegas"
+        );
+        assert_eq!(fallout_profile(&["Fallout3.esm"], dir).label, "Fallout 3");
+        // The reported shape: a New Vegas DLC listed as `--esm`.
+        assert_eq!(
+            fallout_profile(&["FalloutNV.esm", "HonestHearts.esm"], dir).label,
+            "Fallout: New Vegas"
+        );
+        assert_eq!(
+            fallout_profile(&["Fallout3.esm", "Anchorage.esm"], dir).label,
+            "Fallout 3"
+        );
+        // File names compare case-insensitively.
+        assert_eq!(
+            fallout_profile(&["falloutnv.esm", "MyMod.esp"], dir).label,
+            "Fallout: New Vegas"
+        );
+    }
+
+    /// A plugin launched without naming its master falls back to which base
+    /// ESM sits beside the corpus; with neither, Fallout 3 is the default.
+    #[test]
+    fn fallout_profile_falls_back_to_the_base_esm_beside_the_corpus() {
+        let new_vegas = data_dir(&["FalloutNV.esm"]);
+        assert_eq!(
+            fallout_profile(&["MyMod.esm"], new_vegas.path()).label,
+            "Fallout: New Vegas"
+        );
+        let neither = data_dir(&[]);
+        assert_eq!(
+            fallout_profile(&["MyMod.esm"], neither.path()).label,
+            "Fallout 3"
+        );
+        // An explicitly listed Fallout 3 master beats a stray FalloutNV.esm.
+        assert_eq!(
+            fallout_profile(&["Fallout3.esm", "MyMod.esm"], new_vegas.path()).label,
+            "Fallout 3"
+        );
+    }
+
+    /// End to end through `hud_archive_args`: the New Vegas DLC launch that
+    /// used to resolve the FO3 profile and a transparent HUD.
+    #[test]
+    fn a_new_vegas_dlc_launch_resolves_the_new_vegas_profile() {
+        // No `FalloutNV.esm` on disk: the `--master` argument alone must
+        // decide, not the directory fallback.
+        let dir = data_dir(&[
+            "HonestHearts.esm",
+            "Fallout - Misc.bsa",
+            "Fallout - Textures.bsa",
+            "Fallout - Textures2.bsa",
+        ]);
+        let esm = dir.path().join("HonestHearts.esm");
+        let master = std::path::Path::new("elsewhere").join("FalloutNV.esm");
+        let args = argv(&[
+            "--master",
+            master.to_str().unwrap(),
+            "--esm",
+            esm.to_str().unwrap(),
+            "--hud",
+        ]);
+        let (misc, textures, profile) = hud_archive_args(&args).unwrap().unwrap();
+        assert_eq!(profile.label, "Fallout: New Vegas");
+        assert_eq!(profile.menu.font_paths.len(), 9, "FNV's ninth font slot");
+        assert_eq!(
+            std::path::Path::new(&misc).file_name().unwrap(),
+            "Fallout - Misc.bsa"
+        );
+        // The anchor is `Textures.bsa`; `open_with_numeric_siblings` adds
+        // `Textures2.bsa`, which carries FNV's HUD art and every font.
+        assert_eq!(
+            std::path::Path::new(&textures).file_name().unwrap(),
+            "Fallout - Textures.bsa"
+        );
+        assert!(
+            byroredux_bsa::numeric_sibling_paths(&textures)
+                .iter()
+                .any(|sibling| sibling.ends_with("Fallout - Textures2.bsa")),
+            "the anchor must pull FNV's Textures2 in"
+        );
+    }
+
+    /// The Fallout 3 launch is unchanged, and an explicit `--hud-textures`
+    /// still wins over the profile default.
+    #[test]
+    fn a_fallout_3_launch_and_the_textures_override_still_resolve() {
+        let dir = data_dir(&["Fallout3.esm", "Fallout - Misc.bsa", "Fallout - Textures.bsa"]);
+        let esm = dir.path().join("Fallout3.esm");
+        let mut args = argv(&["--esm", esm.to_str().unwrap(), "--hud"]);
+        let (_, textures, profile) = hud_archive_args(&args).unwrap().unwrap();
+        assert_eq!(profile.label, "Fallout 3");
+        assert!(textures.ends_with("Fallout - Textures.bsa"));
+
+        args.extend(argv(&["--hud-textures", "elsewhere/My Textures.bsa"]));
+        let (_, textures, _) = hud_archive_args(&args).unwrap().unwrap();
+        assert_eq!(textures, "elsewhere/My Textures.bsa");
+    }
 }
