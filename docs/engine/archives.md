@@ -454,3 +454,32 @@ Full byte-layout spec with validation notes at
 See [Testing](testing.md) for the full test inventory and
 [Game Compatibility](game-compatibility.md) for per-game extraction +
 parse rate numbers.
+
+## Exterior streaming overlap
+
+The cell-stream coordinator extracts unique uncached NIFs through the existing
+archive provider while a dedicated Rayon pool parses/imports earlier inputs.
+Archive selection, canonical-key deduplication, missing-file results and
+per-NIF panic recovery use the same paths as synchronous extraction. The scope
+joins before publishing the cell payload; world mutation stays on the main
+thread. Cells with fewer than eight fresh NIFs remain serial.
+
+Queued/running parse tasks hold at most **64 MiB of decoded NIF buffer capacity**
+and at most **twice the private pool's worker count, capped at 32 tasks**. An
+input larger than 64 MiB is admitted alone. The coordinator can additionally
+hold **one lookahead input** while waiting, because the provider returns the
+decoded size only after extraction. This is an input budget, not a process
+memory cap: archive packed buffers/decompression scratch, parser allocations,
+Starfield external mesh resolution and accumulated parsed cell results are
+outside it. Reads and decompression remain serial on the coordinator; they
+now overlap with parsing without adding a global pool or async runtime.
+
+With `RUST_LOG=byroredux::streaming=debug`, each nonempty cell reports pipeline
+wall time, serial extraction time (including inflate), summed parse-task elapsed
+time, permit wait time, peak task input bytes/tasks and the largest input.
+Task elapsed times overlap and may include external-mesh archive waits; their
+sum is not a wall-time phase breakdown. Permit wait includes mutex acquisition.
+These changes target exterior cell readiness and streaming stalls; they do not
+establish an improvement to MedTek's stationary GPU rendering time. Fresh
+texture and FO4 precombine preparation and GPU upload waits remain separate
+work.

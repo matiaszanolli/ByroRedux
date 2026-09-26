@@ -26,8 +26,9 @@ use crate::vulkan::upscaling::{FrameExtentSet, VolumetricsConfig};
 use crate::vulkan::volumetrics::{FROXEL_BYTES_PER_SLOT, froxel_extent};
 use anyhow::{Context, Result};
 use ash::vk;
+use byroredux_core::ecs::storage::EntityId;
 
-/// Canonicalize TLAS instance order by BLAS device address.
+/// Canonicalize TLAS instance order by (BLAS device address, full entity ID).
 ///
 /// TLAS instance order is not part of the shader-visible identity: the
 /// instance custom index still points at the matching compacted SSBO entry.
@@ -35,9 +36,14 @@ use ash::vk;
 /// when the raster draw list is re-permuted by frustum partitioning or
 /// depth-primary alpha sorting. That lets a same-address-set frame use
 /// Vulkan UPDATE/refit instead of rebuilding solely because the draw order
-/// changed (#3666).
+/// changed (#3666). Instances sharing a mesh must also keep their entity-to-leaf
+/// assignment: sorting only by address lets raster reorderings swap distant
+/// transforms between equal-address leaves and progressively degrades refit
+/// traversal. `entity_ids_by_ssbo` supplies the full CPU identity; the packed
+/// 24-bit custom index remains the current shader payload, never a sort identity.
 pub(super) fn sort_tlas_instances_by_blas_address(
     instances: &mut [vk::AccelerationStructureInstanceKHR],
+    entity_ids_by_ssbo: &[EntityId],
 ) {
     instances.sort_unstable_by(|a, b| {
         let a_address = unsafe {
@@ -50,7 +56,11 @@ pub(super) fn sort_tlas_instances_by_blas_address(
             // BLAS entries, so `device_handle` is the active union variant.
             b.acceleration_structure_reference.device_handle
         };
-        a_address.cmp(&b_address)
+        a_address.cmp(&b_address).then_with(|| {
+            let a_entity = entity_ids_by_ssbo[a.instance_custom_index_and_mask.low_24() as usize];
+            let b_entity = entity_ids_by_ssbo[b.instance_custom_index_and_mask.low_24() as usize];
+            a_entity.cmp(&b_entity)
+        })
     });
 }
 

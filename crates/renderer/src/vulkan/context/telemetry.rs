@@ -196,6 +196,23 @@ impl VulkanContext {
                 capacity,
                 elem_size_bytes: size_of::<u64>(),
             });
+            for (name, (len, capacity)) in [
+                (
+                    "tlas_entity_ids_scratch",
+                    accel.tlas_entity_ids_scratch_telemetry(),
+                ),
+                (
+                    "tlas_entity_ids_cache",
+                    accel.tlas_entity_ids_cache_telemetry(),
+                ),
+            ] {
+                rows.push(ScratchRow {
+                    name,
+                    len,
+                    capacity,
+                    elem_size_bytes: size_of::<byroredux_core::ecs::storage::EntityId>(),
+                });
+            }
             let (len, capacity) = accel.tlas_missing_samples_scratch_telemetry();
             rows.push(ScratchRow {
                 name: "tlas_missing_samples_scratch",
@@ -216,6 +233,14 @@ impl VulkanContext {
                 capacity: 0,
                 elem_size_bytes: size_of::<u64>(),
             });
+            for name in ["tlas_entity_ids_scratch", "tlas_entity_ids_cache"] {
+                rows.push(ScratchRow {
+                    name,
+                    len: 0,
+                    capacity: 0,
+                    elem_size_bytes: size_of::<byroredux_core::ecs::storage::EntityId>(),
+                });
+            }
             rows.push(ScratchRow {
                 name: "tlas_missing_samples_scratch",
                 len: 0,

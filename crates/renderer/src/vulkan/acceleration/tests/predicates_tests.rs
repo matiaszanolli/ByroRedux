@@ -547,7 +547,7 @@ fn tlas_instance_sort_key_is_independent_of_draw_order() {
         },
     ];
 
-    sort_tlas_instances_by_blas_address(&mut instances);
+    sort_tlas_instances_by_blas_address(&mut instances, &[0]);
 
     let addresses: Vec<_> = instances
         .iter()

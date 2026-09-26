@@ -514,6 +514,20 @@ bench-of-record refresh.**
 
 [`acceleration/constants.rs`](../../crates/renderer/src/vulkan/acceleration/constants.rs)
 
+### CPU instance identity storage
+
+TLAS canonicalization sorts by `(BLAS address, full EntityId)` so raster draw
+reordering cannot exchange distant transforms between refit leaves sharing a
+mesh. It retains one SSBO-indexed entity-ID lookup and one canonical ID vector
+per live frame-in-flight slot. With the current 4-byte `EntityId`, the logical
+storage is `4 × (draw count + TLAS count × 2)` bytes, about **3.15 MB** when all
+three counts reach the 262,144-instance ceiling. Vec capacity can exceed the
+logical length. All three buffers reuse capacity and shrink above
+`2 × max(working set, 512)` entries; per-slot caches shrink when that slot next
+records successfully. `ctx.scratch` exposes the lookup as
+`tlas_entity_ids_scratch` and the aggregate slot caches as
+`tlas_entity_ids_cache`. This is host memory, not additional VRAM.
+
 ### Scratch buffers
 
 | Constant | Value | Role |

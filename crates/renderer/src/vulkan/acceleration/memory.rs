@@ -550,6 +550,26 @@ impl AccelerationManager {
         )
     }
 
+    /// SSBO-indexed full entity IDs used by TLAS canonicalization.
+    /// Element size is `size_of::<EntityId>()`; capacity follows the draw set.
+    pub fn tlas_entity_ids_scratch_telemetry(&self) -> (usize, usize) {
+        (
+            self.tlas_entity_ids_scratch.len(),
+            self.tlas_entity_ids_scratch.capacity(),
+        )
+    }
+
+    /// Aggregate identity-cache storage across the live frame-in-flight TLAS
+    /// slots. Each slot retains one full `EntityId` per canonical instance.
+    pub fn tlas_entity_ids_cache_telemetry(&self) -> (usize, usize) {
+        self.tlas.iter().flatten().fold((0, 0), |(len, capacity), tlas| {
+            (
+                len + tlas.last_entity_ids.len(),
+                capacity + tlas.last_entity_ids.capacity(),
+            )
+        })
+    }
+
     /// CPU-side "which instance addresses are missing a BLAS" sample Vec
     /// — `(len, capacity)`, bounded by `MISSING_BLAS_SAMPLE_LIMIT`.
     /// Element size is `size_of::<String>()` (the struct's own stack

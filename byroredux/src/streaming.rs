@@ -27,10 +27,9 @@ use byroredux_core::math::coord::EXTERIOR_CELL_UNITS;
 use byroredux_core::math::Vec3;
 use byroredux_core::string::StringPool;
 use byroredux_renderer::VulkanContext;
-use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
 use std::sync::mpsc;
-use std::sync::Arc;
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -1101,7 +1100,7 @@ pub fn join_with_timeout(
 }
 
 /// Build the dedicated rayon pool the cell-stream worker uses for its
-/// Phase 2 parallel parse (#3089). Half the logical cores, floored at 1
+/// pipelined parallel parse (#3089). Half the logical cores, floored at 1
 /// so single-core CI runners still get a working (if serial-equivalent)
 /// pool.
 ///
@@ -1148,8 +1147,8 @@ fn cell_pre_parse_worker(
 ) {
     log::info!("cell-stream worker thread started");
     // #3089 — CONC-2026-08-16-01. Built once for the life of this thread,
-    // not per request: `pre_parse_cell`'s Phase 2 fan-out runs inside
-    // `stream_pool.install(..)` instead of going to rayon's *global*
+    // not per request: `pre_parse_cell`'s fan-out runs inside
+    // `stream_pool.in_place_scope_fifo(..)` instead of rayon's *global*
     // pool, which the ECS scheduler's `Stage::Update` parallel batch
     // (`scheduler.rs`) also dispatches into. Without a dedicated pool the
     // two competed for the same workers the moment a cell crossed
@@ -1330,38 +1329,158 @@ const PRE_PARSE_RAYON_MIN: usize = 8;
 
 type ParsedNifResult = (String, Option<PartialNifImport>);
 
-/// Execute Phase 2 on the worker-owned rayon pool and expose the threads that
-/// actually ran it. No lock is acquired inside the closure: every task returns
-/// its thread name alongside its parse result and the caller deduplicates only
-/// after the parallel collect has completed.
+/// Bounds decoded input buffers held by queued/running parse tasks. Extraction
+/// exposes the decoded size only after allocating it, so the coordinator may
+/// additionally hold one lookahead buffer while waiting for capacity. Parsed
+/// output, parser scratch, and Starfield external meshes are outside this budget.
+const STREAM_PARSE_INPUT_BYTES: usize = 64 * 1024 * 1024;
+const STREAM_PARSE_MAX_TASKS: usize = 32;
+
+#[derive(Default)]
+struct ParseInputUsage {
+    bytes: usize,
+    tasks: usize,
+    peak_bytes: usize,
+    peak_tasks: usize,
+}
+
+struct ParseInputBudget {
+    usage: Mutex<ParseInputUsage>,
+    released: Condvar,
+    max_tasks: usize,
+}
+
+impl ParseInputBudget {
+    fn acquire(&self, bytes: usize) -> ParseInputPermit<'_> {
+        let mut usage = self.usage.lock().unwrap_or_else(|e| e.into_inner());
+        // An oversized input is admitted alone, so a valid large asset cannot
+        // wait forever for a byte limit it can never satisfy.
+        while usage.tasks >= self.max_tasks
+            || (usage.tasks > 0
+                && (usage.bytes > STREAM_PARSE_INPUT_BYTES
+                    || bytes > STREAM_PARSE_INPUT_BYTES.saturating_sub(usage.bytes)))
+        {
+            usage = self.released.wait(usage).unwrap_or_else(|e| e.into_inner());
+        }
+        usage.bytes += bytes;
+        usage.tasks += 1;
+        usage.peak_bytes = usage.peak_bytes.max(usage.bytes);
+        usage.peak_tasks = usage.peak_tasks.max(usage.tasks);
+        ParseInputPermit {
+            budget: self,
+            bytes,
+        }
+    }
+}
+
+/// The permit outlives the owned input, including during unwinding. Releasing
+/// capacity must never depend on the result channel or on parser success.
+struct ParseInputPermit<'a> {
+    budget: &'a ParseInputBudget,
+    bytes: usize,
+}
+
+impl Drop for ParseInputPermit<'_> {
+    fn drop(&mut self) {
+        let mut usage = self.budget.usage.lock().unwrap_or_else(|e| e.into_inner());
+        usage.bytes -= self.bytes;
+        usage.tasks -= 1;
+        self.budget.released.notify_one();
+    }
+}
+
+#[derive(Default)]
+struct ParsePipelineStats {
+    /// Sum of task elapsed durations; overlapping tasks make this different
+    /// from wall time and it includes any external-mesh archive waits.
+    parse_task_time: Duration,
+    backpressure: Duration,
+    peak_input_bytes: usize,
+    peak_tasks: usize,
+}
+
+/// Consume a lazy extraction iterator on the cell coordinator while the private
+/// pool parses earlier inputs. `in_place_scope_fifo` keeps the coordinator off
+/// the pool: waiting on its budget cannot occupy the sole worker on small CPUs.
+/// The scope joins all tasks before returning or propagating an extraction panic.
+fn parse_nif_pipeline(
+    extracted: impl ExactSizeIterator<Item = (String, Option<Vec<u8>>)>,
+    stream_pool: &rayon::ThreadPool,
+    mesh_resolver: &TextureProvider,
+) -> (Vec<ParsedNifResult>, Vec<String>, ParsePipelineStats) {
+    let count = extracted.len();
+    let mut stats = ParsePipelineStats::default();
+    if count < PRE_PARSE_RAYON_MIN {
+        let results = extracted
+            .map(|item| {
+                stats.peak_input_bytes = stats
+                    .peak_input_bytes
+                    .max(item.1.as_ref().map_or(0, Vec::capacity));
+                stats.peak_tasks = 1;
+                let started = Instant::now();
+                let result = parse_one_nif(item, mesh_resolver);
+                stats.parse_task_time += started.elapsed();
+                result
+            })
+            .collect();
+        return (results, Vec::new(), stats);
+    }
+
+    let budget = ParseInputBudget {
+        usage: Mutex::new(ParseInputUsage::default()),
+        released: Condvar::new(),
+        max_tasks: stream_pool
+            .current_num_threads()
+            .saturating_mul(2)
+            .clamp(1, STREAM_PARSE_MAX_TASKS),
+    };
+    // Results already constitute the whole cell payload; this channel adds no
+    // extra input retention. Indices preserve the serial iterator's output order.
+    let (tx, rx) = mpsc::channel();
+    stream_pool.in_place_scope_fifo(|scope| {
+        for (index, item) in extracted.enumerate() {
+            let bytes = item.1.as_ref().map_or(0, Vec::capacity);
+            let waiting = Instant::now();
+            let permit = budget.acquire(bytes);
+            stats.backpressure += waiting.elapsed();
+            let tx = tx.clone();
+            scope.spawn_fifo(move |_| {
+                let started = Instant::now();
+                let thread_name = std::thread::current().name().map(str::to_string);
+                let result = parse_one_nif(item, mesh_resolver);
+                let elapsed = started.elapsed();
+                drop(permit);
+                let _ = tx.send((index, result, thread_name, elapsed));
+            });
+        }
+    });
+    drop(tx);
+    let mut observed: Vec<_> = rx.into_iter().collect();
+    observed.sort_unstable_by_key(|(index, _, _, _)| *index);
+    let mut results = Vec::with_capacity(count);
+    let mut names = Vec::new();
+    for (_, result, name, elapsed) in observed {
+        results.push(result);
+        names.extend(name);
+        stats.parse_task_time += elapsed;
+    }
+    names.sort_unstable();
+    names.dedup();
+    let usage = budget.usage.lock().unwrap_or_else(|e| e.into_inner());
+    stats.peak_input_bytes = usage.peak_bytes;
+    stats.peak_tasks = usage.peak_tasks;
+    (results, names, stats)
+}
+
+// Preserve the existing dedicated-pool regression fixture's entry point while
+// production feeds a lazy extraction iterator into the same implementation.
+#[cfg(test)]
 fn parse_extracted_nifs(
     extracted: Vec<(String, Option<Vec<u8>>)>,
     stream_pool: &rayon::ThreadPool,
     mesh_resolver: &TextureProvider,
 ) -> (Vec<ParsedNifResult>, Vec<String>) {
-    if extracted.len() < PRE_PARSE_RAYON_MIN {
-        return (
-            extracted
-                .into_iter()
-                .map(|item| parse_one_nif(item, mesh_resolver))
-                .collect(),
-            Vec::new(),
-        );
-    }
-
-    let observed: Vec<(ParsedNifResult, Option<String>)> = stream_pool.install(|| {
-        extracted
-            .into_par_iter()
-            .map(|item| {
-                let thread_name = std::thread::current().name().map(str::to_string);
-                (parse_one_nif(item, mesh_resolver), thread_name)
-            })
-            .collect()
-    });
-    let (results, names): (Vec<_>, Vec<_>) = observed.into_iter().unzip();
-    let mut names: Vec<String> = names.into_iter().flatten().collect();
-    names.sort_unstable();
-    names.dedup();
+    let (results, names, _) = parse_nif_pipeline(extracted.into_iter(), stream_pool, mesh_resolver);
     (results, names)
 }
 
@@ -1409,8 +1528,8 @@ fn pre_parse_model_skip_reason(
 ///
 /// The coordinator resolves the CELL, canonicalizes and deduplicates its
 /// model paths, skips the caller's cache snapshot (#862), extracts bytes
-/// serially through the archive provider, then delegates the CPU parse/import
-/// phase to [`parse_extracted_nifs`]. `load_one_exterior_cell` can therefore
+/// serially through the archive provider while [`parse_nif_pipeline`] parses
+/// earlier inputs on its private pool. `load_one_exterior_cell` can therefore
 /// spawn cached REFR assets directly while consuming this payload only for
 /// cache misses.
 ///
@@ -1548,62 +1667,39 @@ fn pre_parse_cell(
         );
     }
 
-    // Two-phase pre-parse (#877 / NIF-PERF-13):
-    //   Phase 1 — SERIAL BSA extract on one thread. The BSA / BA2
-    //     readers wrap `File` in `Mutex<File>` (`bsa/archive.rs:119`,
-    //     `bsa/ba2.rs:78`), so concurrent `extract_mesh` calls would
-    //     queue on the mutex and pay both the lock-acquire overhead
-    //     and a context switch per worker — the worst case shape for
-    //     a short-blob hot path. Doing the I/O serially on one thread
-    //     avoids contention between the parse workers. Both BSA and BA2
-    //     release the file mutex before zlib/LZ4 decompression (#3659), so
-    //     concurrent main-thread extracts wait only for seek/read, not inflate.
-    //   Phase 2 — PARALLEL parse + import on the `(path, bytes)` pairs.
-    //     The CPU-bound parse / import work fans out cleanly across
-    //     rayon workers without any shared-mutex bottleneck.
-    //
-    // Pre-#877 the entire pipeline ran inside the rayon closure,
-    // including the BSA mutex acquire — workers spent most of their
-    // wall-clock queued on the mutex on small-NIF-heavy interior
-    // cells. Original #830 / NIF-PERF-06 closeout already shipped the
-    // ~6-7× single-core → multi-core speedup; this lift on top is the
-    // remaining ~10-20% the mutex was eating.
-    //
-    // Errors are recorded as `None` entries so the drain step caches
-    // the negative result and downstream placements skip silently.
+    // Keep archive lookup precedence and serial extraction on the coordinator,
+    // but start parse/import as soon as each NIF is available. Unlike the former
+    // extract-all barrier, this overlaps archive read/inflate with parse and
+    // avoids retaining the entire cell's decoded input before work can start.
+    // Cells with fewer than eight fresh paths keep the serial fast path.
     let model_paths: Vec<String> = model_paths.into_iter().collect();
-
-    // Phase 1: serial extract. One archive mutex acquire per NIF, no
-    // contention between parse workers. `None` for absent paths (skipped
-    // silently — same semantics as the pre-#877 inline check).
-    let extracted: Vec<(String, Option<Vec<u8>>)> = model_paths
-        .into_iter()
-        .map(|p| {
-            let bytes = tex_provider.extract_mesh(&p);
-            (p, bytes)
-        })
-        .collect();
-
-    // Phase 2: parse + import. Each worker owns its `Vec<u8>` and its
-    // `StringPool` for the whole closure — no world-resource access on the
-    // hot path. The immutable texture provider is safe to share; its archive
-    // file handles already serialize extraction internally.
-    //
-    // #1262 / NIF-D5-NEW-02 — rayon's worker-wake + join overhead
-    // (~50-200 µs typical) dominates at small N. Post-#862 the NIF
-    // import cache absorbs most cell-load work and the typical fresh-
-    // parse count is 0-6 per cell (the Riverwood log confirms "6 new
-    // unique meshes parsed, NIF cache hits/misses 156/6 this cell").
-    // Drop to serial iteration below the threshold; keep rayon for
-    // session-start fresh-cell bursts where N is genuinely large.
-    //
-    // Threshold: 8. Empirically chosen against the steady-state
-    // streaming pattern — at N≤7 the parallel dispatch is net-loss
-    // or break-even; N≥8 the parallel speedup outpaces wake-overhead.
-    // #3089 — `parse_extracted_nifs` dispatches the fan-out into the worker's
-    // dedicated pool and returns the actual worker names as an observable.
-    let (results, parallel_parse_threads) =
-        parse_extracted_nifs(extracted, stream_pool, tex_provider);
+    let input_count = model_paths.len();
+    let pipeline_started = Instant::now();
+    let mut extract_time = Duration::ZERO;
+    let mut largest_input = 0usize;
+    let extracted = model_paths.into_iter().map(|path| {
+        let started = Instant::now();
+        let bytes = tex_provider.extract_mesh(&path);
+        extract_time += started.elapsed();
+        largest_input = largest_input.max(bytes.as_ref().map_or(0, Vec::capacity));
+        (path, bytes)
+    });
+    let (results, parallel_parse_threads, pipeline) =
+        parse_nif_pipeline(extracted, stream_pool, tex_provider);
+    if input_count > 0 {
+        log::debug!(
+            "[stream-worker] cell ({gx},{gy}) pipeline: inputs={input_count} wall_ms={:.3} \
+             extract_ms={:.3} parse_task_sum_ms={:.3} backpressure_ms={:.3} \
+             peak_task_input_bytes={} largest_input_bytes={} peak_tasks={}",
+            pipeline_started.elapsed().as_secs_f64() * 1000.0,
+            extract_time.as_secs_f64() * 1000.0,
+            pipeline.parse_task_time.as_secs_f64() * 1000.0,
+            pipeline.backpressure.as_secs_f64() * 1000.0,
+            pipeline.peak_input_bytes,
+            largest_input,
+            pipeline.peak_tasks,
+        );
+    }
     // Record only keys for which this request emitted a result, including a
     // negative result. A parser panic caught by the outer request guard
     // therefore does not poison the rest of the batch with keys it never

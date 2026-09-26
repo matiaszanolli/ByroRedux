@@ -1,5 +1,11 @@
 # Performance investigation — MedTek, 2026-09-26
 
+> **Implementation follow-up:** the subsequent matched-snapshot investigation
+> identified unstable equal-BLAS TLAS instance ordering as the dominant defect.
+> See [the fix and measurements](PERFORMANCE_MEDTEK_FIX_2026-09-26.md).
+> The original observations below are retained as the investigation record;
+> their unresolved-cause status predates that follow-up.
+
 ## Executive summary
 
 **Scope:** dense-scene GPU cost, archive/streaming boundaries, and attribution telemetry (performance-audit dimensions 5, 7, 8). This is an investigation, not a shipping optimization or a complete workspace audit.

@@ -6,6 +6,7 @@
 
 use super::super::buffer::GpuBuffer;
 use ash::vk;
+use byroredux_core::ecs::storage::EntityId;
 
 /// Raw device-buffer slice used to build one static mesh BLAS.
 ///
@@ -142,6 +143,11 @@ pub struct TlasState {
     /// mask, and flags, but NOT to `acceleration_structure_reference`.
     /// See #247.
     pub last_blas_addresses: Vec<vk::DeviceAddress>,
+    /// Full entity IDs in canonical TLAS order at the last recorded BUILD.
+    /// Address/count equality alone cannot detect replacement of instances
+    /// sharing the same mesh; that membership change needs a fresh spatial
+    /// partition instead of refitting unrelated transforms into old leaves.
+    pub last_entity_ids: Vec<EntityId>,
     /// `true` when the next build must be a full BUILD (either the
     /// TLAS was just (re)created, or the instance layout changed).
     /// Reset to `false` after each successful BUILD.

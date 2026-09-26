@@ -116,6 +116,24 @@ impl AccelerationManager {
             &current_addresses_scratch,
         );
 
+        // Vulkan allows transforms to change, but refitting a different entity
+        // into an old leaf can destroy traversal quality while remaining legal.
+        // Detect same-address, same-count membership replacement as well as the
+        // address checks above. The identity map is full-width CPU data; SSBO
+        // indices can change freely with raster order.
+        if use_update
+            && !tlas
+                .last_entity_ids
+                .iter()
+                .copied()
+                .eq(instances.iter().map(|instance| {
+                    self.tlas_entity_ids_scratch
+                        [instance.instance_custom_index_and_mask.low_24() as usize]
+                }))
+        {
+            use_update = false;
+        }
+
         // VUID-vkCmdBuildAccelerationStructuresKHR-pInfos-03708: UPDATE must
         // use the same primitiveCount as the source BUILD. Any mismatch —
         // growth or shrink — is a VUID violation that corrupts the BVH on
@@ -368,6 +386,16 @@ impl AccelerationManager {
         // just above; nothing fallible runs between that arm and here.
         let tlas = self.tlas[frame_index].as_mut().unwrap();
 
+        if !use_update {
+            tlas.last_entity_ids.clear();
+            tlas.last_entity_ids.extend(instances.iter().map(|instance| {
+                self.tlas_entity_ids_scratch
+                    [instance.instance_custom_index_and_mask.low_24() as usize]
+            }));
+        }
+        shrink_scratch_if_oversized(&mut tlas.last_entity_ids, instance_count as usize, 512);
+        debug_assert_eq!(tlas.last_entity_ids.len(), instance_count as usize);
+
         // Promote this frame's addresses to be next frame's "last", and
         // recover the previous "last" Vec into the manager-level scratch
         // for next frame to refill (#660). Pre-fix this was a fresh
@@ -419,6 +447,11 @@ impl AccelerationManager {
         // cell transition. See #504.
         self.tlas_instances_scratch = instances;
         shrink_scratch_if_oversized(
+            &mut self.tlas_entity_ids_scratch,
+            draw_commands.len(),
+            512,
+        );
+        shrink_scratch_if_oversized(
             &mut self.tlas_instances_scratch,
             instance_count as usize,
             512,
@@ -462,6 +495,9 @@ impl AccelerationManager {
         let mut instances = std::mem::take(&mut self.tlas_instances_scratch);
         instances.clear();
         instances.reserve(draw_commands.len());
+        // The compacted SSBO has at most one entry per draw. Reuse this dense
+        // lookup rather than allocating keyed instance tuples every frame.
+        self.tlas_entity_ids_scratch.resize(draw_commands.len(), 0);
         // Recovery protects the previous draw set between frames. Refresh
         // ownership from these actual draws in the existing gather, so newly
         // visible casters are protected during subsequent streaming too.
@@ -705,6 +741,7 @@ impl AccelerationManager {
                     None => {}
                 }
             }
+            self.tlas_entity_ids_scratch[ssbo_idx as usize] = draw_cmd.entity_id;
             instances.push(vk::AccelerationStructureInstanceKHR {
                 transform,
                 // #419 — SSBO-compacted index from the shared map, NOT
@@ -723,13 +760,13 @@ impl AccelerationManager {
         }
 
         // #3666 — TLAS instance order is independent of raster compositing
-        // order. Canonicalize by BLAS address before the instance upload and
+        // order. Canonicalize by (BLAS address, full entity ID) before upload and
         // the BUILD-vs-UPDATE cache snapshot so frustum churn and
         // depth-primary alpha sorting cannot turn the same BLAS multiset into
         // a false layout mismatch. `instance_custom_index` remains attached
         // to each instance, so ray hits still resolve to the correct SSBO
         // entry after the reorder.
-        sort_tlas_instances_by_blas_address(&mut instances);
+        sort_tlas_instances_by_blas_address(&mut instances, &self.tlas_entity_ids_scratch);
 
         let instance_count = instances.len() as u32;
         let missing_blas_total = missing_skinned_blas + missing_rigid_blas + missing_ssbo_instance;
@@ -1098,6 +1135,7 @@ impl AccelerationManager {
                 instance_buffer_device,
                 max_instances: padded_count as u32,
                 last_blas_addresses: Vec::with_capacity(padded_count),
+                last_entity_ids: Vec::with_capacity(padded_count),
                 // A freshly-created TLAS has no source to refit from —
                 // the first frame after creation must do a full BUILD.
                 needs_full_rebuild: true,
@@ -1122,6 +1160,15 @@ impl AccelerationManager {
             self.tlas_shrink_pending[frame_index] = false;
         }
         Ok(())
+    }
+
+    /// Discard record-time TLAS bookkeeping when a frame was never submitted.
+    /// Its identity/address cache may describe a BUILD the GPU never executed,
+    /// so the next use of this slot must not select UPDATE from that cache.
+    pub(in crate::vulkan) fn invalidate_tlas_recording(&mut self, frame_index: usize) {
+        if let Some(tlas) = self.tlas[frame_index].as_mut() {
+            tlas.needs_full_rebuild = true;
+        }
     }
 
     /// Get the TLAS acceleration structure handle for a frame slot (for descriptor binding).

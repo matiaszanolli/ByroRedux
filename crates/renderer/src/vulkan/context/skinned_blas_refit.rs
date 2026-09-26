@@ -60,6 +60,10 @@ impl VulkanContext {
         // an earlier successful frame established is cleared here.
         self.skin_pending_populated.clear();
         if let Some(ref mut accel) = self.accel_manager {
+            // TLAS identity/address caches are committed when recording its
+            // build. Abandoning that recording must also prevent UPDATE from
+            // assuming the recorded BUILD reached the GPU.
+            accel.invalidate_tlas_recording(frame);
             let dropped = accel.rollback_provisional_skinned_blas();
             if dropped > 0 {
                 log::warn!(

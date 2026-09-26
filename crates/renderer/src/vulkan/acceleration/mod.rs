@@ -183,6 +183,10 @@ pub struct AccelerationManager {
     /// panic-safe restore + capacity-amortisation lag behaviours as
     /// `tlas_instances_scratch` (REN-D8-NEW-03 / NEW-09).
     pub(super) tlas_addresses_scratch: Vec<u64>,
+    /// Full entity identity indexed by this frame's compacted SSBO index.
+    /// Used to stabilize equal-BLAS TLAS leaves without changing the shader
+    /// payload. Reused across frames and shrunk with the draw working set.
+    pub(super) tlas_entity_ids_scratch: Vec<EntityId>,
     /// Reusable scratch for the bounded sample of missing-BLAS log
     /// strings emitted by `build_tlas`. Pre-#1142 this allocated a
     /// fresh `Vec<String>` every frame regardless of whether anything
@@ -412,6 +416,7 @@ impl AccelerationManager {
             blas_scratch_buffer: None,
             tlas_instances_scratch: Vec::new(),
             tlas_addresses_scratch: Vec::new(),
+            tlas_entity_ids_scratch: Vec::new(),
             tlas_missing_samples_scratch: Vec::new(),
             tlas_integrity: TlasIntegritySnapshot::default(),
             shadow_mask_census: ShadowMaskSnapshot::default(),
