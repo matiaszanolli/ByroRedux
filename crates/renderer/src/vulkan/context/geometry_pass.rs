@@ -257,6 +257,9 @@ impl VulkanContext {
             let mut phase_draw_start = self.last_draw_call_stats.indirect_call_count;
             if let (Some(timers), Some(phase)) = (&mut self.gpu_timers, triangle_phase) {
                 timers.cmd_geometry_phase_start(&self.device, cmd, frame, phase);
+                if matches!(phase, GeometryTimerPhase::MainOpaque) {
+                    timers.cmd_opaque_fragment_invocations_start(&self.device, cmd, frame);
+                }
             }
             let mut i = 0;
             while i < batches.len() {
@@ -268,6 +271,11 @@ impl VulkanContext {
                         if let (Some(timers), Some(phase)) = (&mut self.gpu_timers, triangle_phase)
                         {
                             timers.cmd_geometry_phase_end(&self.device, cmd, frame, phase);
+                        }
+                    }
+                    if matches!(triangle_phase, Some(GeometryTimerPhase::MainOpaque)) {
+                        if let Some(timers) = &mut self.gpu_timers {
+                            timers.cmd_opaque_fragment_invocations_end(&self.device, cmd, frame);
                         }
                     }
                     groundcover_models_drawn = true;
@@ -552,6 +560,11 @@ impl VulkanContext {
             if self.last_draw_call_stats.indirect_call_count > phase_draw_start {
                 if let (Some(timers), Some(phase)) = (&mut self.gpu_timers, triangle_phase) {
                     timers.cmd_geometry_phase_end(&self.device, cmd, frame, phase);
+                }
+            }
+            if matches!(triangle_phase, Some(GeometryTimerPhase::MainOpaque)) {
+                if let Some(timers) = &mut self.gpu_timers {
+                    timers.cmd_opaque_fragment_invocations_end(&self.device, cmd, frame);
                 }
             }
             if !groundcover_models_drawn {

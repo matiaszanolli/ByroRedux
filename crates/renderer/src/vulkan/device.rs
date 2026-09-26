@@ -122,6 +122,10 @@ pub struct DeviceCapabilities {
     /// Vulkan 1.2 core; universally available on every RT-capable
     /// desktop GPU, so the BLAS-compaction path is unaffected.
     pub host_query_reset_supported: bool,
+    /// Whether `pipelineStatisticsQuery` is supported. It is enabled only
+    /// in opt-in profiling runs because query instrumentation can perturb
+    /// rendering performance.
+    pub pipeline_statistics_query_supported: bool,
     /// True if the physical device advertises `VK_KHR_shader_float16_int8`
     /// *and* the `shaderFloat16` feature.
     ///
@@ -183,6 +187,16 @@ impl DeviceCapabilities {
     /// the single source of truth for that gate. See #1478 / #1636.
     pub fn gpu_timers_supported(&self) -> bool {
         self.timestamp_supported && self.host_query_reset_supported
+    }
+
+    /// Shared gate for logical-device feature enablement and the optional
+    /// opaque fragment-invocation query pool.
+    pub fn fragment_invocation_query_enabled(&self) -> bool {
+        self.fragment_invocation_query_enabled_for(std::env::var_os("BYRO_PROFILE").is_some())
+    }
+
+    fn fragment_invocation_query_enabled_for(&self, profiling: bool) -> bool {
+        self.pipeline_statistics_query_supported && self.gpu_timers_supported() && profiling
     }
 
     /// Whether the engine's indirect-draw paths may be used on this device.
@@ -698,6 +712,7 @@ fn is_device_suitable(
                 timestamp_supported: properties.limits.timestamp_compute_and_graphics == vk::TRUE,
                 synchronization2_supported,
                 host_query_reset_supported,
+                pipeline_statistics_query_supported: features.pipeline_statistics_query == vk::TRUE,
                 shader_float16_supported,
                 memory_budget_supported,
                 texture_compression_bc,
@@ -770,6 +785,8 @@ pub fn create_logical_device(
         // GPUs; the RT mipmap system won't compile pipelines without it.
         // VUID-RuntimeSpirv-NonWritable-06340.
         .fragment_stores_and_atomics(true);
+    device_features =
+        device_features.pipeline_statistics_query(caps.fragment_invocation_query_enabled());
 
     // Build extension list: required + optional RT/FidelityFX facilities.
     let mut extensions: Vec<*const i8> = REQUIRED_EXTENSIONS.iter().map(|e| e.as_ptr()).collect();
@@ -1172,6 +1189,22 @@ mod caps_tests {
         assert!(!caps(true, false, true).gpu_timers_supported());
         assert!(!caps(false, true, true).gpu_timers_supported());
         assert!(!caps(false, false, false).gpu_timers_supported());
+    }
+
+    #[test]
+    fn fragment_invocation_queries_are_opt_in_and_require_all_device_features() {
+        let caps = |statistics: bool, timestamp: bool, host_reset: bool| DeviceCapabilities {
+            pipeline_statistics_query_supported: statistics,
+            timestamp_supported: timestamp,
+            host_query_reset_supported: host_reset,
+            ..Default::default()
+        };
+
+        assert!(caps(true, true, true).fragment_invocation_query_enabled_for(true));
+        assert!(!caps(true, true, true).fragment_invocation_query_enabled_for(false));
+        assert!(!caps(false, true, true).fragment_invocation_query_enabled_for(true));
+        assert!(!caps(true, false, true).fragment_invocation_query_enabled_for(true));
+        assert!(!caps(true, true, false).fragment_invocation_query_enabled_for(true));
     }
 
     /// #4827 — indirect draws need BOTH `multiDrawIndirect` and

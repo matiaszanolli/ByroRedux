@@ -180,6 +180,12 @@ fn eval_metrics(world: &World) -> DebugResponse {
         vram_used_mb: snap.vram_used_mb,
         vram_reserved_mb: snap.vram_reserved_mb,
         vram_budget_mb: snap.vram_budget_mb,
+        gpu_busy_pct: snap.gpu_busy_pct,
+        gpu_memory_busy_pct: snap.gpu_memory_busy_pct,
+        driver_vram_used_mb: snap.driver_vram_used_mb,
+        driver_vram_total_mb: snap.driver_vram_total_mb,
+        vulkan_heap_used_mb: snap.vulkan_heap_used_mb,
+        vulkan_heap_budget_mb: snap.vulkan_heap_budget_mb,
         // `BTreeMap` already iterates in key order — preserve that
         // for the wire response so the UI's rendering of pass times
         // doesn't shuffle frame-to-frame.

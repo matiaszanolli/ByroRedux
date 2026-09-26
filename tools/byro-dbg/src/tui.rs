@@ -186,6 +186,12 @@ struct MetricsView {
     vram_used_mb: u64,
     vram_reserved_mb: u64,
     vram_budget_mb: u64,
+    gpu_busy_pct: Option<f32>,
+    gpu_memory_busy_pct: Option<f32>,
+    driver_vram_used_mb: Option<u64>,
+    driver_vram_total_mb: Option<u64>,
+    vulkan_heap_used_mb: Option<u64>,
+    vulkan_heap_budget_mb: Option<u64>,
     /// `None` per-entry means the bracket didn't run this snapshot
     /// cycle. #2513 / REN-D20-NEW-03.
     gpu_pass_ms: Vec<(String, Option<f32>)>,
@@ -215,6 +221,12 @@ impl App {
                 vram_used_mb,
                 vram_reserved_mb,
                 vram_budget_mb,
+                gpu_busy_pct,
+                gpu_memory_busy_pct,
+                driver_vram_used_mb,
+                driver_vram_total_mb,
+                vulkan_heap_used_mb,
+                vulkan_heap_budget_mb,
                 gpu_pass_ms,
             } => {
                 self.metrics = Some(MetricsView {
@@ -226,6 +238,12 @@ impl App {
                     vram_used_mb,
                     vram_reserved_mb,
                     vram_budget_mb,
+                    gpu_busy_pct,
+                    gpu_memory_busy_pct,
+                    driver_vram_used_mb,
+                    driver_vram_total_mb,
+                    vulkan_heap_used_mb,
+                    vulkan_heap_budget_mb,
                     gpu_pass_ms,
                 });
             }
@@ -510,6 +528,24 @@ fn render_metrics(f: &mut ratatui::Frame, area: Rect, app: &App) {
     f.render_widget(vram_gauge, chunks[2]);
 
     let mut lines = vec![Line::from(format!("sampled at unix={}", m.sampled_at_secs))];
+    if let Some(busy) = m.gpu_busy_pct {
+        lines.push(Line::from(format!("GPU busy (NVIDIA): {busy:.0}%")));
+    }
+    if let Some(busy) = m.gpu_memory_busy_pct {
+        lines.push(Line::from(format!(
+            "GPU memory-controller busy (NVIDIA): {busy:.0}%"
+        )));
+    }
+    if let (Some(used), Some(total)) = (m.driver_vram_used_mb, m.driver_vram_total_mb) {
+        lines.push(Line::from(format!(
+            "NVIDIA VRAM: {used} / {total} MB (driver-wide)"
+        )));
+    }
+    if let (Some(used), Some(budget)) = (m.vulkan_heap_used_mb, m.vulkan_heap_budget_mb) {
+        lines.push(Line::from(format!(
+            "Vulkan heap: {used} / {budget} MB (live)"
+        )));
+    }
     if m.gpu_pass_ms.is_empty() {
         lines.push(Line::from("(no GPU pass times reported)"));
     } else {

@@ -227,6 +227,20 @@ impl ApplicationHandler for App {
                     ),
                 );
 
+                // Match NVML sampling to the Vulkan-selected NVIDIA adapter.
+                // Driver monitoring is optional; missing NVML, unsupported
+                // vendors, or ambiguous device matches leave its metrics n/a.
+                let selected_gpu = unsafe {
+                    ctx.instance
+                        .get_physical_device_properties(ctx.physical_device)
+                };
+                let selected_gpu_name =
+                    unsafe { std::ffi::CStr::from_ptr(selected_gpu.device_name.as_ptr()) }
+                        .to_string_lossy();
+                self.world
+                    .resource::<crate::systems::MetricsState>()
+                    .configure_nvidia_monitor(selected_gpu.vendor_id, &selected_gpu_name);
+
                 // Phase 4 of the debug-UI plan — initialise the
                 // egui overlay before the first frame.
                 let mut ctx = ctx;
@@ -839,6 +853,15 @@ impl ApplicationHandler for App {
         if let Some(ref ctx) = self.renderer {
             let mut cov = self.world.resource_mut::<SkinCoverageStats>();
             ctx.fill_skin_coverage_stats(&mut cov);
+        }
+        let live_vulkan_memory = self
+            .renderer
+            .as_mut()
+            .and_then(VulkanContext::sample_live_memory_budget);
+        if let Some((usage_bytes, budget_bytes)) = live_vulkan_memory {
+            self.world
+                .resource_mut::<byroredux_renderer::vulkan::allocator::GpuMemoryBudget>()
+                .update_live(usage_bytes, budget_bytes);
         }
         if let Some(ref ctx) = self.renderer {
             let mut integrity = self.world.resource_mut::<RtIntegrityStats>();

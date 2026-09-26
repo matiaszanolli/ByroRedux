@@ -204,6 +204,10 @@ const Q_VOLUMETRICS_INTEGRATE_END: u32 = 45;
 #[derive(Debug, Default, Clone, Copy)]
 pub struct GpuTimerSnapshot {
     pub volumetrics_state: byroredux_core::ecs::resources::VolumetricsFrameState,
+    /// Pipeline-statistics query for fragment-shader invocations in the
+    /// opaque/alpha-tested geometry phase. `None` means the opt-in query was
+    /// unavailable or that this frame had no opaque phase.
+    pub opaque_fragment_invocations: Option<u64>,
     pub skin_dispatch_ms: f32,
     /// Bone-world / bind-inverse transfer commands plus `skin_palette.comp`.
     /// Host-side staging memcpys are intentionally not included: timestamps
@@ -352,6 +356,10 @@ pub struct GpuPerFrameTimers {
     volumetrics_state:
         [byroredux_core::ecs::resources::VolumetricsFrameState; MAX_FRAMES_IN_FLIGHT],
     pools: [vk::QueryPool; MAX_FRAMES_IN_FLIGHT],
+    /// Optional per-frame pipeline-statistics pool. Created only when
+    /// `BYRO_PROFILE` is set and the device supports the feature.
+    fragment_invocation_pools: Option<[vk::QueryPool; MAX_FRAMES_IN_FLIGHT]>,
+    fragment_invocation_active: [bool; MAX_FRAMES_IN_FLIGHT],
     /// Ticks → milliseconds multiplier
     /// (`timestamp_period_ns * 1e-6`).
     ticks_to_ms: f32,
@@ -605,8 +613,56 @@ impl GpuPerFrameTimers {
                 device.reset_query_pool(*slot, 0, QUERIES_PER_FRAME);
             }
         }
+        let fragment_invocation_pools = if caps.fragment_invocation_query_enabled() {
+            let mut candidate = [vk::QueryPool::null(); MAX_FRAMES_IN_FLIGHT];
+            let statistic = vk::QueryPipelineStatisticFlags::FRAGMENT_SHADER_INVOCATIONS;
+            let mut failed = None;
+            for (i, slot) in candidate.iter_mut().enumerate() {
+                let info = vk::QueryPoolCreateInfo::default()
+                    .query_type(vk::QueryType::PIPELINE_STATISTICS)
+                    .query_count(1)
+                    .pipeline_statistics(statistic);
+                // SAFETY: logical-device creation enabled pipelineStatisticsQuery
+                // through `fragment_invocation_query_enabled()` above.
+                match unsafe { device.create_query_pool(&info, None) } {
+                    Ok(pool) => {
+                        *slot = pool;
+                        // SAFETY: the pool is newly created and no command has
+                        // referenced it; hostQueryReset is part of the shared
+                        // timer gate above.
+                        unsafe { device.reset_query_pool(pool, 0, 1) };
+                    }
+                    Err(error) => {
+                        failed = Some((i, error));
+                        break;
+                    }
+                }
+            }
+            if let Some((slot, error)) = failed {
+                for pool in candidate {
+                    if pool != vk::QueryPool::null() {
+                        // SAFETY: no commands reference these partial-init pools.
+                        unsafe { device.destroy_query_pool(pool, None) };
+                    }
+                }
+                log::warn!(
+                    "opaque fragment-invocation query creation failed at slot {slot}: {error}; \
+                     keeping timestamp profiling enabled"
+                );
+                None
+            } else {
+                log::info!(
+                    "opaque fragment-invocation statistics enabled; query overhead may perturb timing"
+                );
+                Some(candidate)
+            }
+        } else {
+            None
+        };
         Ok(Some(Self {
             pools,
+            fragment_invocation_pools,
+            fragment_invocation_active: [false; MAX_FRAMES_IN_FLIGHT],
             ticks_to_ms: caps.timestamp_period_ns * 1.0e-6,
             active_bits: [0; MAX_FRAMES_IN_FLIGHT],
             volumetrics_state: [Default::default(); MAX_FRAMES_IN_FLIGHT],
@@ -662,6 +718,40 @@ impl GpuPerFrameTimers {
         }
 
         self.last_snapshot = snapshot_from_bits(bits, &ticks, self.ticks_to_ms);
+        self.last_snapshot.opaque_fragment_invocations =
+            self.fragment_invocation_pools.as_ref().and_then(|pools| {
+                let query_pool = pools[frame];
+                let active = self.fragment_invocation_active[frame];
+                self.fragment_invocation_active[frame] = false;
+                let result = if active {
+                    let mut value = [0u64; 1];
+                    // SAFETY: the frame fence was waited before this method;
+                    // the query is read only after its matching end command
+                    // was recorded, and the one-element result matches the
+                    // pool's single statistics bit.
+                    match unsafe {
+                        device.get_query_pool_results(
+                            query_pool,
+                            0,
+                            &mut value,
+                            vk::QueryResultFlags::TYPE_64,
+                        )
+                    } {
+                        Ok(()) => Some(value[0]),
+                        Err(vk::Result::NOT_READY) => None,
+                        Err(error) => {
+                            log::warn!("opaque fragment-invocation query read failed: {error}");
+                            None
+                        }
+                    }
+                } else {
+                    None
+                };
+                // SAFETY: the same per-frame fence proves all work using this
+                // query has completed; reset before the next command buffer.
+                unsafe { device.reset_query_pool(query_pool, 0, 1) };
+                result
+            });
         if self.last_snapshot.volumetrics_inject_active {
             self.last_snapshot.volumetrics_state = self.volumetrics_state[frame];
         }
@@ -672,11 +762,12 @@ impl GpuPerFrameTimers {
         {
             let snap = self.last_snapshot;
             log::info!(
-                "gpu_geometry phases: main={:.3}ms opaque={:.3}ms({}) blended={:.3}ms({}) \
+                "gpu_geometry phases: main={:.3}ms opaque={:.3}ms({}) opaque_frag_invocations={:?} blended={:.3}ms({}) \
                  water={:.3}ms({}) gc_models={:.3}ms({}) gc_blades={:.3}ms({})",
                 snap.main_render_ms,
                 snap.main_opaque_ms,
                 snap.main_opaque_active,
+                snap.opaque_fragment_invocations,
                 snap.main_blended_ms,
                 snap.main_blended_active,
                 snap.main_water_ms,
@@ -750,6 +841,38 @@ impl GpuPerFrameTimers {
             );
         }
         self.active_bits[frame] |= phase.active_bit();
+    }
+
+    /// Start counting fragment-shader invocations for the opaque phase.
+    /// Pipeline-statistics queries are enabled only in `BYRO_PROFILE` runs.
+    pub(crate) fn cmd_opaque_fragment_invocations_start(
+        &mut self,
+        device: &ash::Device,
+        cmd: vk::CommandBuffer,
+        frame: usize,
+    ) {
+        let Some(pools) = self.fragment_invocation_pools.as_ref() else {
+            return;
+        };
+        // SAFETY: pool creation is gated on the enabled pipeline-statistics
+        // feature; this graphics command buffer is recording, and the query
+        // is begun only once per frame slot.
+        unsafe { device.cmd_begin_query(cmd, pools[frame], 0, vk::QueryControlFlags::empty()) };
+    }
+
+    /// End the matching opaque fragment-invocation query.
+    pub(crate) fn cmd_opaque_fragment_invocations_end(
+        &mut self,
+        device: &ash::Device,
+        cmd: vk::CommandBuffer,
+        frame: usize,
+    ) {
+        let Some(pools) = self.fragment_invocation_pools.as_ref() else {
+            return;
+        };
+        // SAFETY: balances the begin in this command buffer and query slot.
+        unsafe { device.cmd_end_query(cmd, pools[frame], 0) };
+        self.fragment_invocation_active[frame] = true;
     }
 
     /// Write the skin-dispatch START timestamp. Caller must pair
@@ -1592,6 +1715,16 @@ impl GpuPerFrameTimers {
                     device.destroy_query_pool(*pool, None);
                 }
                 *pool = vk::QueryPool::null();
+            }
+        }
+        if let Some(pools) = self.fragment_invocation_pools.as_mut() {
+            for pool in pools {
+                if *pool != vk::QueryPool::null() {
+                    // SAFETY: caller has waited for queue idle; this timer
+                    // object owns each optional statistics query pool.
+                    unsafe { device.destroy_query_pool(*pool, None) };
+                    *pool = vk::QueryPool::null();
+                }
             }
         }
     }

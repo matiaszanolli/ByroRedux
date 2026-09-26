@@ -238,6 +238,17 @@ pub enum DebugResponse {
         /// Sum of `DEVICE_LOCAL` heap capacities, in MB. Constant
         /// after device pick.
         vram_budget_mb: u64,
+        /// NVIDIA GPU busy percentage and driver-wide framebuffer memory.
+        /// `None` means NVML is unavailable or the Vulkan adapter could not
+        /// be matched uniquely.
+        gpu_busy_pct: Option<f32>,
+        gpu_memory_busy_pct: Option<f32>,
+        driver_vram_used_mb: Option<u64>,
+        driver_vram_total_mb: Option<u64>,
+        /// Live DEVICE_LOCAL Vulkan heap usage/budget from
+        /// VK_EXT_memory_budget, when exposed by the driver.
+        vulkan_heap_used_mb: Option<u64>,
+        vulkan_heap_budget_mb: Option<u64>,
         /// Per-pass GPU elapsed time in milliseconds, ordered by
         /// pass name. Surfaces `SkinCoverageStats::gpu_*_ms` today
         /// (`"skin"`, `"skin_blas_refit"`, `"taa"`); extensible

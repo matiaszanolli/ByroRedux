@@ -3191,6 +3191,12 @@ void main() {
         const float RESTIR_LUMA_Z = LUMA_REC709.z;
         const float RESTIR_M_CAP = 20.0; // bound temporal history → limit ghosting
         uint  restirY = 0xFFFFFFFFu;     // selected light index
+        // Keep the selected sample's current-surface evaluation live through
+        // finalize. Fresh, temporal, and spatial candidates already evaluate
+        // this radiance to compute pHat; recomputing it after visibility was
+        // redundant. This is a register-local cache, so it needs no history
+        // invalidation or additional VRAM traffic.
+        vec3  restirSelectedRadiance = vec3(0.0);
         float restirWSum = 0.0;          // running reservoir weight sum
         float restirM = 0.0;             // effective sample count
         float restirPHat = 0.0;          // target pdf of the selected sample
@@ -3413,6 +3419,7 @@ void main() {
                     if (u * restirWSum < w_i) {
                         restirY = i;
                         restirPHat = w_i;
+                        restirSelectedRadiance = shadowableRadiance;
                     }
                 }
 #if ENABLE_LEGACY_WRS
@@ -3551,6 +3558,7 @@ void main() {
                     if (u * restirWSum < wPrev) {
                         restirY = rpLightIndex;
                         restirPHat = rpPHat;
+                        restirSelectedRadiance = rpRad;
                     }
                 }
                 // Radiance is stricter than selection reuse: it is only valid
@@ -3671,6 +3679,7 @@ void main() {
                         if (u * restirWSum < wN) {
                             restirY = rnLightIndex;
                             restirPHat = rnPHat;
+                            restirSelectedRadiance = rnRad;
                         }
                     }
                 }
@@ -3790,10 +3799,7 @@ void main() {
                     // (unshadowed). Matches the legacy-WRS subtraction scaling.
                     visibility = mix(vec3(1.0), transmissionFrame, shadowFade);
                 } // end shadow-ray trace (shadowFade > 0.01)
-                vec3 rad = shadowableLightRadiance(
-                    i, N, V, NdotV, F0, albedo, lightingMask, backLightingMap,
-                    roughness, aaRoughness, metalness,
-                    specStrength, specColor, mat, fragTangent, fragWorldPos, dbgFlags);
+                vec3 rad = restirSelectedRadiance;
                 // This frame's unbiased ReSTIR estimate of the pixel's direct
                 // shadowed radiance: rad·W·V̄ (V̄ = K-ray averaged visibility,
                 // distance-faded toward fully-lit per #2554).

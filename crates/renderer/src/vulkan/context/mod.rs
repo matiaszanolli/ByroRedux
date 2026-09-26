@@ -547,6 +547,9 @@ pub struct VulkanContext {
     /// SVGF read the raw u32 directly (no precision issue on the
     /// Rust side).
     pub frame_counter: u32,
+    /// Last host-side `VK_EXT_memory_budget` read; throttled to the same
+    /// half-second cadence as the engine metrics dashboard.
+    pub(crate) last_live_memory_sample: std::time::Instant,
     /// Exact publication state of `GpuCamera.flags[0]` for the last frame
     /// recorded by `draw_frame` (including first-slot post-build patching).
     rt_flag_last_frame: bool,

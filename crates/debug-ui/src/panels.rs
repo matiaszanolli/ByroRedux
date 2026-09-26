@@ -317,6 +317,12 @@ pub struct MetricsSnapshotView {
     pub vram_used_mb: u64,
     pub vram_reserved_mb: u64,
     pub vram_budget_mb: u64,
+    pub gpu_busy_pct: Option<f32>,
+    pub gpu_memory_busy_pct: Option<f32>,
+    pub driver_vram_used_mb: Option<u64>,
+    pub driver_vram_total_mb: Option<u64>,
+    pub vulkan_heap_used_mb: Option<u64>,
+    pub vulkan_heap_budget_mb: Option<u64>,
     /// `None` per-entry means the bracket didn't run this snapshot
     /// cycle — distinct from `Some(0.0)`, a bracket that genuinely
     /// completed sub-microsecond. #2513 / REN-D20-NEW-03.
@@ -1219,6 +1225,23 @@ fn draw_metrics(ui: &mut egui::Ui, snap: Option<&MetricsSnapshotView>) {
     ui.label(vram_label);
     let vram_ratio = ratio(m.vram_used_mb, m.vram_budget_mb);
     ui.add(egui::ProgressBar::new(vram_ratio as f32));
+
+    if let (Some(used), Some(budget)) = (m.vulkan_heap_used_mb, m.vulkan_heap_budget_mb) {
+        ui.label(format!(
+            "Vulkan heap: {used} / {budget} MB (live device-wide)"
+        ));
+    }
+    if let (Some(used), Some(total)) = (m.driver_vram_used_mb, m.driver_vram_total_mb) {
+        ui.label(format!("NVIDIA VRAM: {used} / {total} MB (driver-wide)"));
+    }
+    if let Some(busy) = m.gpu_busy_pct {
+        ui.label(format!("GPU busy (NVIDIA): {busy:.0}%"));
+        ui.add(egui::ProgressBar::new((busy / 100.0).clamp(0.0, 1.0)));
+    }
+    if let Some(busy) = m.gpu_memory_busy_pct {
+        ui.label(format!("GPU memory-controller busy (NVIDIA): {busy:.0}%"));
+        ui.add(egui::ProgressBar::new((busy / 100.0).clamp(0.0, 1.0)));
+    }
 
     // GPU passes
     //

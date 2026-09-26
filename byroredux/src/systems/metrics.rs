@@ -37,8 +37,22 @@ const SAMPLE_PERIOD_SECS: f32 = 0.5;
 /// sample needed to compute `%`-since-last-tick.
 pub struct MetricsState {
     sys: Mutex<System>,
+    nvml: Mutex<Option<NvmlSampler>>,
     pid: Option<Pid>,
     last_sample_secs: f32,
+}
+
+struct NvmlSampler {
+    nvml: nvml_wrapper::Nvml,
+    device_index: u32,
+}
+
+#[derive(Default, Clone, Copy)]
+struct NvidiaSample {
+    gpu_busy_pct: Option<f32>,
+    memory_busy_pct: Option<f32>,
+    vram_used_bytes: Option<u64>,
+    vram_total_bytes: Option<u64>,
 }
 
 impl Resource for MetricsState {}
@@ -47,11 +61,74 @@ impl MetricsState {
     pub fn new() -> Self {
         Self {
             sys: Mutex::new(System::new()),
+            nvml: Mutex::new(None),
             // PID lookup is infallible on every supported OS; the
             // `Option` is sysinfo's idiom, not a real failure mode.
             pid: sysinfo::get_current_pid().ok(),
             last_sample_secs: f32::NEG_INFINITY,
         }
+    }
+
+    /// Match NVML telemetry to the physical device selected by Vulkan.
+    /// Exact model-name matching avoids reporting another NVIDIA adapter on
+    /// hybrid or multi-GPU systems. Unsupported devices fail closed.
+    pub fn configure_nvidia_monitor(&self, vendor_id: u32, vulkan_device_name: &str) {
+        const NVIDIA_VENDOR_ID: u32 = 0x10DE;
+        if vendor_id != NVIDIA_VENDOR_ID {
+            *self.nvml.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            return;
+        }
+
+        let result = (|| -> Result<NvmlSampler, String> {
+            let nvml = nvml_wrapper::Nvml::init().map_err(|e| e.to_string())?;
+            let device_count = nvml.device_count().map_err(|e| e.to_string())?;
+            let mut matches = Vec::new();
+            for index in 0..device_count {
+                let device = nvml.device_by_index(index).map_err(|e| e.to_string())?;
+                let name = device.name().map_err(|e| e.to_string())?;
+                if name.trim().eq_ignore_ascii_case(vulkan_device_name.trim()) {
+                    matches.push(index);
+                }
+            }
+            match matches.as_slice() {
+                [device_index] => Ok(NvmlSampler {
+                    nvml,
+                    device_index: *device_index,
+                }),
+                [] => Err(format!(
+                    "no NVIDIA device matched Vulkan device '{vulkan_device_name}'"
+                )),
+                _ => Err(format!(
+                    "multiple NVIDIA devices matched Vulkan device '{vulkan_device_name}'"
+                )),
+            }
+        })();
+
+        let mut sampler = self.nvml.lock().unwrap_or_else(|e| e.into_inner());
+        match result {
+            Ok(value) => {
+                log::info!("NVML GPU telemetry enabled for '{vulkan_device_name}'");
+                *sampler = Some(value);
+            }
+            Err(error) => {
+                log::info!("NVML GPU telemetry unavailable: {error}");
+                *sampler = None;
+            }
+        }
+    }
+
+    fn sample_nvidia_monitor(&self) -> Option<NvidiaSample> {
+        let sampler = self.nvml.lock().unwrap_or_else(|e| e.into_inner());
+        let sampler = sampler.as_ref()?;
+        let device = sampler.nvml.device_by_index(sampler.device_index).ok()?;
+        let utilization = device.utilization_rates().ok();
+        let memory = device.memory_info().ok();
+        Some(NvidiaSample {
+            gpu_busy_pct: utilization.as_ref().map(|rates| rates.gpu as f32),
+            memory_busy_pct: utilization.as_ref().map(|rates| rates.memory as f32),
+            vram_used_bytes: memory.as_ref().map(|info| info.used),
+            vram_total_bytes: memory.as_ref().map(|info| info.total),
+        })
     }
 }
 
@@ -79,7 +156,7 @@ pub fn metrics_sample_system(world: &World, _dt: f32) {
     // Throttle: acquire MetricsState mutably, gate, then collect the
     // sysinfo readings inside the same write scope so the lock window
     // covers exactly one `refresh + read` pair.
-    let (cpu_pct, ram_used_b, ram_total_b, process_ram_b) = {
+    let (cpu_pct, ram_used_b, ram_total_b, process_ram_b, nvidia_metrics) = {
         let mut state = world.resource_mut::<MetricsState>();
         if now_secs - state.last_sample_secs < SAMPLE_PERIOD_SECS {
             return;
@@ -105,7 +182,9 @@ pub fn metrics_sample_system(world: &World, _dt: f32) {
         } else {
             0
         };
-        (cpu, ram_used, ram_total, proc_ram)
+        drop(sys);
+        let nvidia_metrics = state.sample_nvidia_monitor();
+        (cpu, ram_used, ram_total, proc_ram, nvidia_metrics)
     };
 
     let (vram_used_b, vram_reserved_b) =
@@ -128,6 +207,16 @@ pub fn metrics_sample_system(world: &World, _dt: f32) {
         .try_resource::<GpuMemoryBudget>()
         .map(|b| b.total_vram_bytes)
         .unwrap_or(0);
+    let (vulkan_heap_used_mb, vulkan_heap_budget_mb) = world
+        .try_resource::<GpuMemoryBudget>()
+        .and_then(|budget| {
+            Some((
+                budget.live_heap_usage_bytes?,
+                budget.live_heap_budget_bytes?,
+            ))
+        })
+        .map(|(usage, budget)| (Some(usage / (1024 * 1024)), Some(budget / (1024 * 1024))))
+        .unwrap_or((None, None));
 
     let mut gpu_pass_ms: BTreeMap<String, Option<f32>> = BTreeMap::new();
     if let Some(cov) = world.try_resource::<SkinCoverageStats>() {
@@ -310,6 +399,16 @@ pub fn metrics_sample_system(world: &World, _dt: f32) {
     snap.vram_used_mb = vram_used_b / (1024 * 1024);
     snap.vram_reserved_mb = vram_reserved_b / (1024 * 1024);
     snap.vram_budget_mb = vram_budget_b / (1024 * 1024);
+    snap.gpu_busy_pct = nvidia_metrics.and_then(|sample| sample.gpu_busy_pct);
+    snap.gpu_memory_busy_pct = nvidia_metrics.and_then(|sample| sample.memory_busy_pct);
+    snap.driver_vram_used_mb = nvidia_metrics
+        .and_then(|sample| sample.vram_used_bytes)
+        .map(|bytes| bytes / (1024 * 1024));
+    snap.driver_vram_total_mb = nvidia_metrics
+        .and_then(|sample| sample.vram_total_bytes)
+        .map(|bytes| bytes / (1024 * 1024));
+    snap.vulkan_heap_used_mb = vulkan_heap_used_mb;
+    snap.vulkan_heap_budget_mb = vulkan_heap_budget_mb;
     snap.gpu_pass_ms = gpu_pass_ms;
     snap.cpu_pass_ms = cpu_pass_ms;
     snap.top_systems_ms = top_systems_ms;

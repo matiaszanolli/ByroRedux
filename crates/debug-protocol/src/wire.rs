@@ -172,6 +172,12 @@ mod tests {
                 vram_used_mb: 1024,
                 vram_reserved_mb: 1536,
                 vram_budget_mb: 12_288,
+                gpu_busy_pct: Some(97.0),
+                gpu_memory_busy_pct: Some(62.0),
+                driver_vram_used_mb: Some(4096),
+                driver_vram_total_mb: Some(12_288),
+                vulkan_heap_used_mb: Some(4352),
+                vulkan_heap_budget_mb: Some(10_240),
                 gpu_pass_ms: vec![
                     ("skin".to_string(), Some(0.42)),
                     ("skin_blas_refit".to_string(), Some(1.18)),

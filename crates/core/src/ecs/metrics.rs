@@ -50,6 +50,19 @@ pub struct MetricsSnapshot {
     /// `DEVICE_LOCAL` heap capacities. Constant after device pick;
     /// zero when no physical device has been selected yet.
     pub vram_budget_mb: u64,
+    /// Live device-wide GPU busy percentage from NVML. `None` when NVML
+    /// is unavailable or the selected Vulkan device cannot be matched.
+    pub gpu_busy_pct: Option<f32>,
+    /// Live NVIDIA memory-controller utilization percentage from NVML.
+    pub gpu_memory_busy_pct: Option<f32>,
+    /// Device-wide framebuffer memory usage from NVML. These are kept
+    /// separate from `vram_used_mb`, which counts this process's allocator.
+    pub driver_vram_used_mb: Option<u64>,
+    pub driver_vram_total_mb: Option<u64>,
+    /// Live sum of DEVICE_LOCAL Vulkan heap usage and budget from
+    /// VK_EXT_memory_budget. `None` when the extension is unavailable.
+    pub vulkan_heap_used_mb: Option<u64>,
+    pub vulkan_heap_budget_mb: Option<u64>,
     /// Per-pass GPU elapsed time in milliseconds. Map keys are
     /// the pass-name strings (`"skin"`, `"skin_blas_refit"`,
     /// `"taa"` today; extensible without breaking the wire

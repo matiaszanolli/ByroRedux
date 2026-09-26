@@ -13,8 +13,26 @@ use super::super::scene_buffer;
 use super::draw;
 use super::{VulkanContext, SKIN_MAX_SLOTS};
 use ash::vk;
+use std::time::{Duration, Instant};
 
 impl VulkanContext {
+    /// Sample live Vulkan heap usage/budget twice per second. These
+    /// physical-device property reads are host-side and do not synchronize a
+    /// GPU queue; unsupported drivers simply leave the reading unavailable.
+    pub fn sample_live_memory_budget(&mut self) -> Option<(u64, u64)> {
+        if !self.device_caps.memory_budget_supported
+            || self.last_live_memory_sample.elapsed() < Duration::from_millis(500)
+        {
+            return None;
+        }
+        self.last_live_memory_sample = Instant::now();
+        super::super::allocator::query_live_memory_budget(
+            &self.instance,
+            self.physical_device,
+            true,
+        )
+    }
+
     /// Refresh the world-visible upscaler telemetry. Only rewrites the
     /// string when the described state actually changed (context creation,
     /// resize, preset switch, or a latched dispatch failure), so the steady

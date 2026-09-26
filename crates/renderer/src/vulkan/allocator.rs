@@ -65,6 +65,12 @@ pub struct GpuMemoryBudget {
     /// Smallest `DEVICE_LOCAL` heap size. Zero when no `DEVICE_LOCAL`
     /// heap is exposed (pure-SoC / software rasteriser).
     pub smallest_heap_bytes: u64,
+    /// Last live sum of `heapUsage` for DEVICE_LOCAL heaps from
+    /// VK_EXT_memory_budget. `None` until the first supported sample.
+    pub live_heap_usage_bytes: Option<u64>,
+    /// Last live sum of `heapBudget` for DEVICE_LOCAL heaps from
+    /// VK_EXT_memory_budget. `None` until the first supported sample.
+    pub live_heap_budget_bytes: Option<u64>,
 }
 
 impl Resource for GpuMemoryBudget {}
@@ -79,8 +85,60 @@ impl GpuMemoryBudget {
                 instance,
                 physical_device,
             ),
+            live_heap_usage_bytes: None,
+            live_heap_budget_bytes: None,
         }
     }
+
+    /// Store a fresh live heap-budget sample. The Vulkan query is performed
+    /// by `VulkanContext` only on its throttled telemetry cadence.
+    pub fn update_live(&mut self, usage_bytes: u64, budget_bytes: u64) {
+        self.live_heap_usage_bytes = Some(usage_bytes);
+        self.live_heap_budget_bytes = Some(budget_bytes);
+    }
+}
+
+/// Query current device-wide usage/budget for DEVICE_LOCAL heaps through
+/// VK_EXT_memory_budget. Returns `None` when the extension is unavailable.
+pub fn query_live_memory_budget(
+    instance: &ash::Instance,
+    physical_device: vk::PhysicalDevice,
+    extension_supported: bool,
+) -> Option<(u64, u64)> {
+    if !extension_supported {
+        return None;
+    }
+
+    let mut budget = vk::PhysicalDeviceMemoryBudgetPropertiesEXT::default();
+    let mut properties = vk::PhysicalDeviceMemoryProperties2::default().push_next(&mut budget);
+    // SAFETY: both handles are owned by the live VulkanContext. This is a
+    // host-side physical-device property query and does not touch GPU queues.
+    unsafe {
+        instance.get_physical_device_memory_properties2(physical_device, &mut properties);
+    }
+
+    Some(aggregate_live_memory_budget(
+        &properties.memory_properties,
+        &budget,
+    ))
+}
+
+fn aggregate_live_memory_budget(
+    memory: &vk::PhysicalDeviceMemoryProperties,
+    budget: &vk::PhysicalDeviceMemoryBudgetPropertiesEXT,
+) -> (u64, u64) {
+    let mut usage_bytes = 0u64;
+    let mut budget_bytes = 0u64;
+    for (index, heap) in memory.memory_heaps[..memory.memory_heap_count as usize]
+        .iter()
+        .enumerate()
+    {
+        if heap.flags.contains(vk::MemoryHeapFlags::DEVICE_LOCAL) {
+            usage_bytes = usage_bytes.saturating_add(budget.heap_usage[index]);
+            budget_bytes = budget_bytes.saturating_add(budget.heap_budget[index]);
+        }
+    }
+    (usage_bytes, budget_bytes)
 }
 
 /// Per-block fragmentation snapshot derived from a
@@ -381,6 +439,30 @@ mod tests {
             total_allocated_bytes: total_allocated,
             total_capacity_bytes: block_size,
         }
+    }
+
+    #[test]
+    fn live_budget_totals_only_device_local_heaps() {
+        let mut memory = vk::PhysicalDeviceMemoryProperties::default();
+        memory.memory_heap_count = 2;
+        memory.memory_heaps[0] = vk::MemoryHeap {
+            size: 8_000,
+            flags: vk::MemoryHeapFlags::DEVICE_LOCAL,
+        };
+        memory.memory_heaps[1] = vk::MemoryHeap {
+            size: 4_000,
+            flags: vk::MemoryHeapFlags::empty(),
+        };
+        let mut budget = vk::PhysicalDeviceMemoryBudgetPropertiesEXT::default();
+        budget.heap_usage[0] = 3_000;
+        budget.heap_budget[0] = 7_000;
+        budget.heap_usage[1] = 2_000;
+        budget.heap_budget[1] = 3_500;
+
+        assert_eq!(
+            aggregate_live_memory_budget(&memory, &budget),
+            (3_000, 7_000)
+        );
     }
 
     /// Smoke check for the warn-threshold math. `smallest_device_local_heap_bytes`

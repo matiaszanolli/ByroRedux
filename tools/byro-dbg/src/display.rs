@@ -229,6 +229,12 @@ pub fn print_response(response: &DebugResponse) {
             vram_used_mb,
             vram_reserved_mb,
             vram_budget_mb,
+            gpu_busy_pct,
+            gpu_memory_busy_pct,
+            driver_vram_used_mb,
+            driver_vram_total_mb,
+            vulkan_heap_used_mb,
+            vulkan_heap_budget_mb,
             gpu_pass_ms,
         } => {
             println!("Metrics (sampled at unix={}):", sampled_at_secs);
@@ -246,6 +252,18 @@ pub fn print_response(response: &DebugResponse) {
                 "  VRAM: {} used / {} reserved / {} budget",
                 vram_used_mb, vram_reserved_mb, vram_label,
             );
+            if let (Some(used), Some(budget)) = (vulkan_heap_used_mb, vulkan_heap_budget_mb) {
+                println!("  Vulkan heap: {} / {} MB (live)", used, budget);
+            }
+            if let (Some(used), Some(total)) = (driver_vram_used_mb, driver_vram_total_mb) {
+                println!("  NVIDIA VRAM: {} / {} MB (driver-wide)", used, total);
+            }
+            if let Some(busy) = gpu_busy_pct {
+                println!("  GPU busy (NVIDIA): {:.0}%", busy);
+            }
+            if let Some(busy) = gpu_memory_busy_pct {
+                println!("  GPU memory-controller busy (NVIDIA): {:.0}%", busy);
+            }
             if gpu_pass_ms.is_empty() {
                 println!("  GPU passes: (none reported)");
             } else {
