@@ -42,7 +42,7 @@ jobs:
       - name: Run requested gate
         env:
           GAME: ${{ inputs.game }}
-          BYROREDUX_SKYRIM_DATA: ${{ vars.BYROREDUX_SKYRIM_DATA }}
+          BYROREDUX_SKYRIMSE_DATA: ${{ vars.BYROREDUX_SKYRIMSE_DATA || vars.BYROREDUX_SKYRIM_DATA }}
           BYROREDUX_FNV_DATA: ${{ vars.BYROREDUX_FNV_DATA }}
           BYROREDUX_FO3_DATA: ${{ vars.BYROREDUX_FO3_DATA }}
           BYROREDUX_FO4_DATA: ${{ vars.BYROREDUX_FO4_DATA }}

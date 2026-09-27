@@ -9,4 +9,5 @@ log = { workspace = true }
 
 [dev-dependencies]
 byroredux-bsa = { workspace = true }
+byroredux-plugin = { workspace = true }
 
