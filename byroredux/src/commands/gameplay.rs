@@ -73,6 +73,14 @@ impl ConsoleCommand for InventoryStatusCommand {
             .get::<EquipmentSlots>(player)
             .map_or(0, |slots| slots.equipped_indices().count());
         let weapon = world.get::<EquippedWeapon>(player).map(|weapon| *weapon);
+        // #4711 — resolve through the same helpers combat swings with, so the
+        // printed damage includes the CHARAL Melee Damage bonus (FO3/FNV
+        // `STR × 0.5`) instead of the weapon's raw authored field. Called
+        // after the `EquippedWeapon` snapshot above, so no guard is held
+        // across the helpers' own resource/component acquisitions.
+        let damage = crate::combat::attack_damage(world, player);
+        let reach = crate::combat::attack_reach_bu(world, player);
+        let cooldown = crate::combat::attack_cooldown_seconds(world, player);
 
         let mut lines = vec!["Inventory status:".to_owned()];
         lines.push(format!(
@@ -80,12 +88,11 @@ impl ConsoleCommand for InventoryStatusCommand {
         ));
         match weapon {
             Some(weapon) => lines.push(format!(
-                "  equipped_weapon=0x{:08X} inventory_index={} damage={:.1} source=weapon",
-                weapon.base_form_id, weapon.inventory_index.0, weapon.damage
+                "  equipped_weapon=0x{:08X} inventory_index={} damage={damage:.1} source=weapon reach_bu={reach:.1} cooldown_s={cooldown:.2}",
+                weapon.base_form_id, weapon.inventory_index.0
             )),
             None => lines.push(format!(
-                "  equipped_weapon=none damage={:.1} source=unarmed",
-                crate::combat::UNARMED_DAMAGE
+                "  equipped_weapon=none damage={damage:.1} source=unarmed reach_bu={reach:.1} cooldown_s={cooldown:.2}"
             )),
         }
         CommandOutput::lines(lines)
@@ -176,6 +183,51 @@ mod tests {
         assert!(output.contains("stack_rows=1 item_count=2 occupied_slots=1"));
         assert!(output
             .contains("equipped_weapon=0x0001CB64 inventory_index=0 damage=18.0 source=weapon"));
+    }
+
+    /// #4711 — with a nonzero CHARAL Melee Damage bonus the printed damage
+    /// is what `attack_damage` resolves (weapon + STR × 0.5), not the raw
+    /// `EquippedWeapon::damage` field.
+    #[test]
+    fn inventory_status_damage_matches_attack_damage_with_str_bonus() {
+        use byroredux_core::character::{
+            CharacterRuleset, DerivedInput, DerivedStatFormula, LevelingModel, MeleeDamageConfig,
+        };
+        use byroredux_core::ecs::components::ActorValues;
+        const STRENGTH: u32 = 0x05;
+        const MELEE_DAMAGE: u32 = 0x2D2;
+
+        let mut world = World::new();
+        let player = world.spawn();
+        world.insert_resource(crate::systems::PlayerEntity(Some(player)));
+        let mut ruleset = CharacterRuleset::new(LevelingModel::FNV);
+        ruleset.push_derived(
+            MELEE_DAMAGE,
+            DerivedStatFormula::affine(DerivedInput::actor_value(STRENGTH), 0.5, 0.0),
+        );
+        world.insert_resource(ruleset);
+        world.insert_resource(MeleeDamageConfig {
+            melee_damage_avif: MELEE_DAMAGE,
+        });
+        world.insert(player, ActorValues::from_pairs([(STRENGTH, 10.0)]));
+        world.insert(
+            player,
+            EquippedWeapon {
+                inventory_index: InventoryIndex(0),
+                base_form_id: 0x0001_CB64,
+                damage: 18.0,
+                reach: 0.0,
+                speed: 0.0,
+            },
+        );
+
+        let resolved = crate::combat::attack_damage(&world, player);
+        assert_eq!(resolved, 23.0, "18.0 weapon + 10 STR × 0.5");
+        let output = InventoryStatusCommand.execute(&world, "").lines.join("\n");
+        assert!(
+            output.contains(&format!("damage={resolved:.1} source=weapon")),
+            "{output}"
+        );
     }
 
     #[test]
