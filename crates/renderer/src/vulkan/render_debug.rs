@@ -140,6 +140,10 @@ pub struct SelectedRayProbeResult {
     pub ray_direction: [f32; 3],
     pub ray_t_max: f32,
     pub committed_hit_instance: Option<u32>,
+    /// ECS entity mapped from the hit's compacted instance-SSBO index.
+    /// Resolved on the CPU after readback for diagnostics; absent if the
+    /// matching TLAS membership has already changed.
+    pub committed_hit_entity_id: Option<u32>,
     pub committed_hit_distance: Option<f32>,
     pub averaged_visibility: [f32; 3],
     /// Exact four-`vec4` GPU light record addressed by the selected index.
@@ -183,6 +187,7 @@ impl SelectedRayProbeResult {
             ],
             ray_t_max: record.direction_tmax[3],
             committed_hit_instance: valid_index(record.ids[2]),
+            committed_hit_entity_id: None,
             committed_hit_distance: (record.hit_visibility[0].is_finite())
                 .then_some(record.hit_visibility[0]),
             averaged_visibility: [

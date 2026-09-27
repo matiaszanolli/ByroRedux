@@ -1244,7 +1244,12 @@ fn apply_pending_debug_requests(
         ctx.request_selected_ray_probe(pixel)
             .map(|generation| (pixel, generation))
     });
-    let completed_probe = ctx.take_selected_ray_probe_result();
+    let completed_probe = ctx.take_selected_ray_probe_result().map(|mut probe| {
+        probe.committed_hit_entity_id = probe
+            .committed_hit_instance
+            .and_then(|index| ctx.selected_ray_hit_entity_id(index));
+        probe
+    });
     if let Some(mut control) = world.try_resource_mut::<crate::components::RenderDebugControl>() {
         control.active_mode = ctx.render_debug_mode();
         if let Some(result) = probe_request_result {

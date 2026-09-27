@@ -1091,16 +1091,26 @@ pub(crate) fn build_render_data(
     let took =
         |s: Option<std::time::Instant>| s.map_or(0.0, |i| i.elapsed().as_secs_f32() * 1000.0);
 
-    // First pass: skinned-mesh palette assembly — see
-    // `render::skinned::build_skinned_palettes`. Allocates pool slots,
-    // writes per-entity bone_world matrices into sparse slots, and
-    // queues first-sight `bind_inverses` uploads on the pool.
-    let t_skin = mark(profile);
-    skinned::build_skinned_palettes(world, frame_count, bone_world, skin_offsets, skin_slot_pool);
-    let ms_skin = took(t_skin);
-
-    // Camera view-projection + frustum + cam_pos — see
-    // `render::camera::assemble_camera`.
+    // Palette assembly and camera extraction are independent read snapshots:
+    // palette assembly writes only caller-owned skin scratch, while camera
+    // extraction reads camera/transform components. Join them before static
+    // mesh extraction, which consumes both the camera view and skin offsets.
+    // This keeps the dependency explicit and leaves Vulkan work on the render
+    // thread.
+    let (ms_skin, camera_view) = rayon::join(
+        || {
+            let start = mark(profile);
+            skinned::build_skinned_palettes(
+                world,
+                frame_count,
+                bone_world,
+                skin_offsets,
+                skin_slot_pool,
+            );
+            took(start)
+        },
+        || camera::assemble_camera(world),
+    );
     let camera::CameraView {
         view_proj,
         frustum,
@@ -1116,27 +1126,48 @@ pub(crate) fn build_render_data(
         camera_fov_y,
         aperture,
         focus_dist,
-    } = camera::assemble_camera(world);
+    } = camera_view;
 
-    fog_volumes::collect_fog_volumes(world, &frustum, cam_pos, gpu_fog_volumes);
-
-    // Height-fog reference altitude — see `fog_height_reference` doc.
-    let fog_height_ref = fog_height_reference(world, cam_pos);
-
-    // Static mesh main loop — see `render::static_meshes::collect_static_mesh_draws`.
-    let t_static = mark(profile);
-    let static_summary = static_meshes::collect_static_mesh_draws(
-        world,
-        &frustum,
-        vp_mat,
-        cam_pos,
-        skin_offsets,
-        draw_commands,
-        cover_template_draws,
-        material_table,
+    // Scene extraction is a read-only snapshot stage. Static meshes, lights,
+    // and fog volumes query separate ECS component sets and write disjoint
+    // frame buffers, so let the shared Rayon pool prepare them concurrently.
+    // Keep the join here: every task reads the same immutable World snapshot,
+    // and the render thread still owns the final frame assembly and Vulkan
+    // submission. This is the first seam for the renderer-wide visibility
+    // pipeline; no game-specific data or policy belongs in these tasks.
+    let ((static_summary, ms_static), (ms_lights, ((), fog_height_ref))) = rayon::join(
+        || {
+            let start = mark(profile);
+            let summary = static_meshes::collect_static_mesh_draws(
+                world,
+                &frustum,
+                vp_mat,
+                cam_pos,
+                skin_offsets,
+                draw_commands,
+                cover_template_draws,
+                material_table,
+            );
+            (summary, took(start))
+        },
+        || {
+            rayon::join(
+                || {
+                    let start = mark(profile);
+                    lights::collect_lights(world, gpu_lights, light_sort_scratch);
+                    took(start)
+                },
+                || {
+                    rayon::join(
+                        || fog_volumes::collect_fog_volumes(world, &frustum, cam_pos, gpu_fog_volumes),
+                        || fog_height_reference(world, cam_pos),
+                    )
+                },
+            )
+        },
     );
     let tlas_policy = static_summary.tlas_policy;
-    let ms_static = took(t_static);
+
     let n_draws = draw_commands.len();
     // Particle billboards — see `render::particles::emit_particles`.
     let t_particles = mark(profile);
@@ -1238,11 +1269,6 @@ pub(crate) fn build_render_data(
     // `byroredux_renderer::vulkan::water::water_commands_match_draw_slots`
     // — see the function's doc-comment for the predicate.
 
-    // Collect lights from ECS — cell directional + placed point lights.
-    // See `render::lights::collect_lights`.
-    let t_lights = mark(profile);
-    lights::collect_lights(world, gpu_lights, light_sort_scratch);
-    let ms_lights = took(t_lights);
     if profile {
         log::info!(
             "build_render_data: skinned={ms_skin:.2}ms static_loop={ms_static:.2}ms ({n_draws} draws, {raster_draws} raster) particles={ms_particles:.2}ms sort={ms_sort:.2}ms lights={ms_lights:.2}ms"
@@ -1401,6 +1427,7 @@ mod skinned;
 mod sky;
 pub(crate) mod static_meshes;
 mod water;
+mod visibility;
 pub(crate) use water::WaterDrawIndexScratch;
 
 #[cfg(test)]

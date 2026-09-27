@@ -38,6 +38,7 @@ use crate::components::{
 };
 
 use super::camera::FrustumPlanes;
+use super::visibility::{self, VisibilityCandidate};
 use super::{f32_sortable_u32, quantize_fade};
 
 /// Include an LOD sphere when any part of it can intersect the conservative
@@ -473,13 +474,12 @@ pub(super) fn collect_static_mesh_draws(
                 .as_ref()
                 .and_then(|q| q.get(entity))
                 .map(|template| template.record);
-            let in_raster = no_cull
-                || cover_template.is_some()
-                || match world_bound {
-                    Some(wb) if wb.radius > 0.0 => frustum.contains_sphere(wb.center, wb.radius),
-                    _ => true,
-                };
-
+            let in_raster = visibility::raster_visible(
+                world_bound,
+                cover_template.is_some(),
+                frustum,
+                no_cull,
+            );
             // Resolve the two consumption predicates before touching the
             // remaining optional components or hashing a material. A draw
             // outside the frustum that is also excluded from the TLAS cannot
@@ -493,8 +493,15 @@ pub(super) fn collect_static_mesh_draws(
             let mat = mat_q.as_ref().and_then(|q| q.get(entity));
             let material_kind = mat.map(|m| m.material_kind).unwrap_or(0);
             // #4053 — one policy, three named reasons. See `tlas_exclusion`.
-            let tlas_verdict =
-                tlas_exclusion(is_lod, world_bound, cam_pos, is_decal_mesh, material_kind);
+            let tlas_verdict = visibility::ray_exclusion(
+                VisibilityCandidate {
+                    world_bound: world_bound.copied(),
+                    is_lod,
+                    is_decal_mesh,
+                    material_kind,
+                },
+                cam_pos,
+            );
             // The tier is receive-only, so a template never enters the TLAS
             // and does not count toward the policy's census.
             if cover_template.is_none() {

@@ -1030,10 +1030,13 @@ fn format_selected_ray_probe(probe: byroredux_renderer::SelectedRayProbeResult) 
         probe.ray_t_max,
     ));
     lines.push(format!(
-        "    committed_hit={} distance={} visibility=({:.6},{:.6},{:.6})",
+        "    committed_hit_ssbo_index={} entity_id={} distance={} visibility=({:.6},{:.6},{:.6})",
         probe
             .committed_hit_instance
             .map_or_else(|| "none".to_string(), |index| index.to_string()),
+        probe
+            .committed_hit_entity_id
+            .map_or_else(|| "unresolved".to_string(), |entity| entity.to_string()),
         probe
             .committed_hit_distance
             .map_or_else(|| "none".to_string(), |distance| format!("{distance:.6}")),
