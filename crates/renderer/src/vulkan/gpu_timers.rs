@@ -363,6 +363,9 @@ pub struct GpuPerFrameTimers {
     /// Ticks → milliseconds multiplier
     /// (`timestamp_period_ns * 1e-6`).
     ticks_to_ms: f32,
+    /// Width of this graphics queue's timestamp counter; timestamps wrap at
+    /// this bit count rather than at the u64 boundary.
+    timestamp_valid_bits: u32,
     /// Per-frame "was this bracket's pair written?" — set by the
     /// END writer, cleared on reset. Slot index matches the frame
     /// slot the pool reads from. Each u32 packs `BIT_*` flags
@@ -443,10 +446,24 @@ fn snapshot_from_bits(
     ticks: &[u64; QUERIES_PER_FRAME as usize],
     ticks_to_ms: f32,
 ) -> GpuTimerSnapshot {
+    snapshot_from_bits_with_valid_bits(bits, ticks, ticks_to_ms, 64)
+}
+
+fn snapshot_from_bits_with_valid_bits(
+    bits: u32,
+    ticks: &[u64; QUERIES_PER_FRAME as usize],
+    ticks_to_ms: f32,
+    timestamp_valid_bits: u32,
+) -> GpuTimerSnapshot {
+    let timestamp_mask = match timestamp_valid_bits {
+        0 => 0,
+        1..=63 => (1u64 << timestamp_valid_bits) - 1,
+        _ => u64::MAX,
+    };
     let bracket_ms = |start: u32| -> f32 {
         let s = ticks[start as usize];
         let e = ticks[start as usize + 1];
-        e.saturating_sub(s) as f32 * ticks_to_ms
+        (e.wrapping_sub(s) & timestamp_mask) as f32 * ticks_to_ms
     };
 
     let mut snap = GpuTimerSnapshot {
@@ -664,6 +681,7 @@ impl GpuPerFrameTimers {
             fragment_invocation_pools,
             fragment_invocation_active: [false; MAX_FRAMES_IN_FLIGHT],
             ticks_to_ms: caps.timestamp_period_ns * 1.0e-6,
+            timestamp_valid_bits: caps.timestamp_valid_bits,
             active_bits: [0; MAX_FRAMES_IN_FLIGHT],
             volumetrics_state: [Default::default(); MAX_FRAMES_IN_FLIGHT],
             last_snapshot: GpuTimerSnapshot::default(),
@@ -717,7 +735,12 @@ impl GpuPerFrameTimers {
             }
         }
 
-        self.last_snapshot = snapshot_from_bits(bits, &ticks, self.ticks_to_ms);
+        self.last_snapshot = snapshot_from_bits_with_valid_bits(
+            bits,
+            &ticks,
+            self.ticks_to_ms,
+            self.timestamp_valid_bits,
+        );
         self.last_snapshot.opaque_fragment_invocations =
             self.fragment_invocation_pools.as_ref().and_then(|pools| {
                 let query_pool = pools[frame];
@@ -1773,6 +1796,24 @@ mod tests {
         let snap = snapshot_from_bits(BIT_MAIN_RENDER, &ticks, 0.5);
         assert!(snap.main_render_active);
         assert_eq!(snap.main_render_ms, (3_000u64 - 1_000) as f32 * 0.5);
+    }
+
+    #[test]
+    fn timestamp_valid_bits_make_wrapping_brackets_report_elapsed_time() {
+        const VALID_BITS: u32 = 36;
+        let mask = (1u64 << VALID_BITS) - 1;
+        let mut ticks = [0u64; QUERIES_PER_FRAME as usize];
+        ticks[Q_MAIN_RENDER_START as usize] = mask - 2;
+        ticks[Q_MAIN_RENDER_START as usize + 1] = 3;
+
+        let snap = snapshot_from_bits_with_valid_bits(
+            BIT_MAIN_RENDER,
+            &ticks,
+            0.5,
+            VALID_BITS,
+        );
+        assert!(snap.main_render_active);
+        assert_eq!(snap.main_render_ms, 6.0 * 0.5);
     }
 
     #[test]

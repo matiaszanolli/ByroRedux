@@ -615,11 +615,13 @@ height/POM, environment, tint, or base. Both views are source-format agnostic.
 material-level) stay on `GpuInstance.flags`:
 `INSTANCE_FLAG_NON_UNIFORM_SCALE`, `_ALPHA_BLEND`, `_CAUSTIC_SOURCE`,
 `_TERRAIN_SPLAT`, `_PRESKINNED`, `_FLAT_SHADING`.
+`_LOD_BLOCK`, `_DIFFUSE_ALPHA`.
 
-> **Shader Struct Sync (CRITICAL).** `GpuInstance` is declared at five GLSL
+> **Shader Struct Sync (CRITICAL).** `GpuInstance` is declared at six GLSL
 > sites (`include/bindings.glsl` — shared by `triangle.frag` and
 > `water.frag` — plus standalone hand-mirrored copies in `triangle.vert`,
-> `ui.vert`, `caustic_splat.comp`, and `water.vert`); `GpuCamera` across
+> `ui.vert`, `caustic_splat.comp`, `water.vert`, and
+> `groundcover_models.comp`); `GpuCamera` across
 > `triangle.vert/frag`, `water.vert/frag`, `cluster_cull.comp`,
 > `caustic_splat.comp`. Post-R1 the contract narrowed so only
 > `triangle.frag` mirrors the full `GpuMaterial`. The
@@ -776,8 +778,9 @@ mistaken for an occluder hit.
 
 The operator-facing path is `render.debug <mode>` rather than a compound flag
 word. Modes are `final`, `shadow_visibility`, `selected_light`, `direct_only`,
-`indirect_only`, `material_lobe`, `composite_term`, `rt_lod`, and
-`material_role`; the legacy
+`indirect_only`, `material_lobe`, `composite_term`, `rt_lod`, `material_role`,
+`volumetric_term`, `water_term`, `water_normal`, `terrain_lod`, `water_refl`,
+`facing_ratio`, and `restir_light`; the legacy
 bitmask remains for orthogonal feature ablations. Appending `<x> <y>` (render
 pixels, upper-left origin), or using `render.debug probe <x> <y>`, arms one
 bounded selected-ray record. A later no-argument `render.debug` prints whether

@@ -83,23 +83,20 @@ pub struct DeviceCapabilities {
     /// Zero when `ray_query_supported` is false. See #659 / #260 R-05.
     pub min_accel_struct_scratch_offset_alignment: u32,
     /// `VkPhysicalDeviceLimits::timestampPeriod` — nanoseconds per
-    /// `vkCmdWriteTimestamp` tick on this device. Multiply
-    /// `(end_tick - start_tick) * timestamp_period_ns` to get the
-    /// elapsed time in ns for the bracketed work. Typically `1.0` on
+    /// `vkCmdWriteTimestamp` tick on this device. Multiply the masked,
+    /// wrap-aware tick delta by this value to get elapsed nanoseconds.
+    /// Typically `1.0` on
     /// NVIDIA + AMD desktop drivers, `52.083...` on Intel Arc, but
     /// the spec only guarantees > 0. Used by the per-pass GPU timer
     /// (#1194 / PERF-DIM7-INSTR) — zero if `timestamp_supported`
     /// is false (host driver lacks query support entirely).
     pub timestamp_period_ns: f32,
-    /// `timestampComputeAndGraphics` from `VkPhysicalDeviceLimits`:
-    /// when true, both compute and graphics queues support
-    /// `vkCmdWriteTimestamp`. We only use the graphics queue today
-    /// so the weaker `timestamp_valid_bits[graphics_queue_family] > 0`
-    /// would suffice, but `timestampComputeAndGraphics` is the
-    /// universal-true guarantee and matches our usage. Zero on every
-    /// shipped desktop GPU is unheard of; the gate exists so the
-    /// query pool creation skips cleanly on a hypothetical driver
-    /// that lacks it.
+    /// `timestampValidBits` for the selected graphics queue family. Vulkan
+    /// timestamp values wrap at this width; `GpuPerFrameTimers` masks
+    /// wrap-aware deltas with it. Zero disables timestamp queries.
+    pub timestamp_valid_bits: u32,
+    /// `timestampComputeAndGraphics` from `VkPhysicalDeviceLimits`, combined
+    /// with a non-zero graphics-family `timestamp_valid_bits`.
     pub timestamp_supported: bool,
     /// `synchronization2` from `VkPhysicalDeviceVulkan13Features`.
     /// Required by the renderer: `PipelineStageFlags::NONE` (== 0) is
@@ -186,7 +183,7 @@ impl DeviceCapabilities {
     /// feature disabled (VUID-vkResetQueryPool-None-02665). This predicate is
     /// the single source of truth for that gate. See #1478 / #1636.
     pub fn gpu_timers_supported(&self) -> bool {
-        self.timestamp_supported && self.host_query_reset_supported
+        self.timestamp_supported && self.timestamp_valid_bits > 0 && self.host_query_reset_supported
     }
 
     /// Shared gate for logical-device feature enablement and the optional
@@ -689,35 +686,43 @@ fn is_device_suitable(
     }
 
     match (graphics, present) {
-        (Some(g), Some(p)) => Ok(Some((
-            QueueFamilyIndices {
-                graphics: g,
-                present: p,
-            },
-            DeviceCapabilities {
-                ray_query_supported,
-                sampler_anisotropy_supported,
-                max_sampler_anisotropy,
-                max_sampler_lod_bias: properties.limits.max_sampler_lod_bias,
-                multi_draw_indirect_supported,
-                draw_indirect_first_instance_supported,
-                fill_mode_non_solid_supported,
-                max_bindless_sampled_images,
-                min_accel_struct_scratch_offset_alignment,
-                // #1194 — TIMESTAMP query support. `timestamp_period`
-                // is nanoseconds-per-tick (e.g. 1.0 on NVIDIA);
-                // `timestampComputeAndGraphics == true` means the
-                // graphics queue's timestamp_valid_bits is non-zero.
-                timestamp_period_ns: properties.limits.timestamp_period,
-                timestamp_supported: properties.limits.timestamp_compute_and_graphics == vk::TRUE,
-                synchronization2_supported,
-                host_query_reset_supported,
-                pipeline_statistics_query_supported: features.pipeline_statistics_query == vk::TRUE,
-                shader_float16_supported,
-                memory_budget_supported,
-                texture_compression_bc,
-            },
-        ))),
+        (Some(g), Some(p)) => {
+            let timestamp_valid_bits = queue_families
+                .get(g as usize)
+                .map_or(0, |family| family.timestamp_valid_bits);
+            Ok(Some((
+                QueueFamilyIndices {
+                    graphics: g,
+                    present: p,
+                },
+                DeviceCapabilities {
+                    ray_query_supported,
+                    sampler_anisotropy_supported,
+                    max_sampler_anisotropy,
+                    max_sampler_lod_bias: properties.limits.max_sampler_lod_bias,
+                    multi_draw_indirect_supported,
+                    draw_indirect_first_instance_supported,
+                    fill_mode_non_solid_supported,
+                    max_bindless_sampled_images,
+                    min_accel_struct_scratch_offset_alignment,
+                    // #1194 / #4868 — timestamps wrap at the selected queue
+                    // family's `timestamp_valid_bits`; the timer applies this
+                    // mask when computing each bracket delta.
+                    timestamp_period_ns: properties.limits.timestamp_period,
+                    timestamp_valid_bits,
+                    timestamp_supported:
+                        properties.limits.timestamp_compute_and_graphics == vk::TRUE
+                            && timestamp_valid_bits > 0,
+                    synchronization2_supported,
+                    host_query_reset_supported,
+                    pipeline_statistics_query_supported: features.pipeline_statistics_query
+                        == vk::TRUE,
+                    shader_float16_supported,
+                    memory_budget_supported,
+                    texture_compression_bc,
+                },
+            )))
+        }
         _ => Ok(None),
     }
 }
@@ -1175,9 +1180,10 @@ mod caps_tests {
     /// feature disabled on a timestamp-capable, RT-less GPU
     /// (VUID-vkResetQueryPool-None-02665).
     #[test]
-    fn gpu_timers_gate_requires_both_flags_independent_of_rt() {
+    fn gpu_timers_gate_requires_timestamp_bits_and_host_reset_independent_of_rt() {
         let caps = |timestamp: bool, host_reset: bool, rt: bool| DeviceCapabilities {
             timestamp_supported: timestamp,
+            timestamp_valid_bits: if timestamp { 64 } else { 0 },
             host_query_reset_supported: host_reset,
             ray_query_supported: rt,
             ..Default::default()
@@ -1189,6 +1195,13 @@ mod caps_tests {
         assert!(!caps(true, false, true).gpu_timers_supported());
         assert!(!caps(false, true, true).gpu_timers_supported());
         assert!(!caps(false, false, false).gpu_timers_supported());
+        assert!(!DeviceCapabilities {
+            timestamp_supported: true,
+            timestamp_valid_bits: 0,
+            host_query_reset_supported: true,
+            ..Default::default()
+        }
+        .gpu_timers_supported());
     }
 
     #[test]
@@ -1196,6 +1209,7 @@ mod caps_tests {
         let caps = |statistics: bool, timestamp: bool, host_reset: bool| DeviceCapabilities {
             pipeline_statistics_query_supported: statistics,
             timestamp_supported: timestamp,
+            timestamp_valid_bits: if timestamp { 64 } else { 0 },
             host_query_reset_supported: host_reset,
             ..Default::default()
         };

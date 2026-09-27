@@ -129,7 +129,8 @@ pub struct CompositeParams {
     /// Legacy XCLL curve inputs retained for the offline physical-fit
     /// conversion. Runtime fog does not evaluate this linear/cubic ramp.
     pub fog_params: [f32; 4],
-    /// x = is_exterior (1.0 = sky enabled), y = legacy render-debug flags
+    /// x = exterior-cell flag for outdoor weather/fog; Show-Sky interior sky
+    /// is carried separately by `sky_lower.w`. y = legacy render-debug flags
     /// bitcast through `f32`, z = structured `RenderDebugMode` discriminant
     /// bitcast through `f32`, w = frame index for pre-resolve blue-noise
     /// dither. The z lane was the vestigial volumetric-consumed flag until
@@ -241,9 +242,9 @@ pub struct CompositeParams {
     pub sky_apertures: [CompositeSkyAperture; MAX_SKY_APERTURES],
 }
 
-// SAFETY: every field is `[f32; 4]` or `[[f32; 4]; 4]` — homogeneous
-// scalar/vector arrays tile the struct's declared size with no implicit
-// padding (#3761).
+// SAFETY: every field is a 16-byte lane. `sky_aperture_count` is `[u32; 4]`;
+// all other fields are `[f32; 4]` or `[[f32; 4]; 4]`. The arrays tile the
+// declared size with no implicit padding (#3761).
 unsafe impl crate::vulkan::buffer::NoUninit for CompositeParams {}
 
 /// HDR color format. RGBA16F = 8 bytes/pixel, sufficient dynamic range
@@ -1591,7 +1592,7 @@ mod composite_params_layout_tests {
             .split_once(marker)
             .unwrap_or_else(|| panic!("GLSL declaration {marker} must exist"))
             .1
-            .split_once("};")
+            .split_once('}')
             .expect("GLSL declaration must close")
             .0;
         let uncommented = body
@@ -1617,7 +1618,7 @@ mod composite_params_layout_tests {
     /// declaration order against the corresponding host declaration.
     #[test]
     fn composite_and_volumetrics_uniforms_match_rust_field_order() {
-        let composite_rs = include_str!("composite.rs");
+        let composite_rs = crate::source_scan::production_text(include_str!("composite.rs"));
         let composite_glsl = include_str!("../../shaders/composite.frag");
         let volumetrics_rs = include_str!("volumetrics.rs");
         let volumetrics_glsl = include_str!("../../shaders/volumetrics_inject.comp");

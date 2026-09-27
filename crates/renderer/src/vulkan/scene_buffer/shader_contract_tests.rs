@@ -1841,10 +1841,6 @@ fn every_shader_struct_is_classified() {
             Guarded("composite_and_volumetrics_uniforms_match_rust_field_order"),
         ),
         (
-            "VolumetricsParams",
-            Guarded("composite_and_volumetrics_uniforms_match_rust_field_order"),
-        ),
-        (
             "GpuBoundaryInstance",
             Guarded("gpu_boundary_instance_stride_matches_gpu_instance"),
         ),

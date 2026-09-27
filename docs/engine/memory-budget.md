@@ -118,8 +118,12 @@ slot's pair, capped at `MAX_INSTANCES`, when a frame needs more: it runs after
 that slot's fence wait, rewrites the slot's scene-set bindings 4 and 18 (and
 the caustic set's binding 5), and retires the old pair through the
 deferred-destroy countdown. The parenthesised figures are the ceiling a grown
-slot pair can reach. Measured on MedTek, GPU memory allocated fell by the
-computed 88.1 MB (84.0 MiB).
+slot pair can reach. Authored ground-cover models can drive each slot from
+65,536 to 131,072 or 262,144 entries, adding **0, 14, or 28 MiB per slot**
+(0, 28, or 56 MiB across two FIF), depending on the highest capacity reached.
+The previous fixed 14 MiB model-tail estimate missed growth of the entire
+instance pair. Measured on MedTek, GPU memory allocated fell by the computed
+88.1 MB (84.0 MiB).
 
 ³ Allocated at the full `MAX_INDIRECT_DRAWS` at init, on purpose (#4615). It
 holds one 20-byte `VkDrawIndexedIndirectCommand` per post-merge batch, and
@@ -415,6 +419,11 @@ which the boot log and a regression test both read):
 
 Formula: `ceil(width / 8) × ceil(height / 8) × 64 froxels × 44 B × 2 FIF`
 
+The pipeline also owns a private 64³ + 32³ R8 density-noise texture pair
+(`volumetrics_base_noise` and `volumetrics_detail_noise`), **294,912 B
+(288 KiB)** total. This is a second copy of the texels held by the shared
+SKYAL `CloudNoiseVolumes` pair; both are resident and must be counted.
+
 One device-limit wrinkle (#4781): the grid's X/Y are 3D-image dimensions,
 bounded by `maxImageDimension3D` (2048 on Mesa ANV and lavapipe), not by the
 2D limit the render extent itself is checked against. When an explicit
@@ -587,8 +596,9 @@ The compaction pass passes the exact `total_before + total_after` peak
 rather than `0`, because it is the only site that sees a batch's real
 residency peak — the compaction destinations are allocated while every Phase-1
 original is still live. Mid-batch check interval:
-`BATCH_EVICTION_CHECK_INTERVAL` = 64 BLAS builds. LRU victim = the BLAS
-with the smallest last-used frame tick.
+`BATCH_EVICTION_CHECK_INTERVAL` = 64 BLAS builds. `StaticBlasWorkingSet::can_evict`
+protects entries required by the current working set; among eligible victims,
+LRU chooses the BLAS with the smallest last-used frame tick.
 
 One more call site (#1911 / REN-D1-01), with `pending_bytes = 0` (#1792 —
 it has no in-flight batch context to report on top of): a per-frame call at
@@ -808,12 +818,14 @@ reading them from an in-flight frame.
 | Item | Value |
 |---|---|
 | Countdown depth | `DEFAULT_COUNTDOWN` = `MAX_FRAMES_IN_FLIGHT` = 2 frames |
-| Implementation | `VecDeque<(frame_id, T)>` per resource type |
+| Implementation | `DeferredDestroyQueue<T>` stores `Vec<(T, u32)>` countdown entries; the texture registry separately uses `VecDeque<(frame_id, T)>` |
 | Tick site | `draw_frame()` step 4 — after the in-flight fence wait, before recording |
 
-Resources are not freed until `current_frame - frame_id >= countdown`.
-The fence wait in step 1 of `draw_frame` guarantees all GPU work for
-the fence slot is complete before the tick runs (#418).
+Queued resources are destroyed after their countdown reaches zero, on the
+`DEFAULT_COUNTDOWN + 1`th tick. The fence wait in step 1 of `draw_frame`
+guarantees that slot's GPU work is complete before the tick runs (#418).
+`SceneBuffers` also retires replaced instance-buffer pairs through a separate
+countdown queue.
 
 ## Morph-target GPU resources — #3661
 
@@ -902,9 +914,9 @@ allocation code uses — and held to this table by
 | Owner | Function | Resident | What it is |
 |---|---|---|---|
 | EXAL ground cover | `groundcover::groundcover_resident_bytes` | **67,690,884 B** (64.6 MiB) | Allocated on every RT device whether or not the scene has ground cover. 67,108,864 B of it is the device-local blade arena (`GROUNDCOVER_MAX_CHUNKS` 256 × `GROUNDCOVER_MAX_BLADES_PER_CHUNK` 16,384 × 16 B `GpuGroundCoverBlade`), sized for a chunk-size sweep rather than today's visible set; 524,288 B the §12.4 interaction field (256² × 4 B × 2 halves); 12,288 B the indirect buffer (256 chunks × 16 B × 3 LOD streams); 1,132 B the counters. The per-slot host-visible chunk / cell / species / table / field-state / disturber buffers and counter readback add 22,156 B × 2 FIF |
-| EXAL ground-cover model tier | `groundcover_models::groundcover_model_resident_bytes` | **8,730,672 B** (8.3 MiB) | §12.12 Phase C's authored-model tier (#4413), allocated beside the blade pipeline. 8,388,608 B is the device-local placement slab (`GROUNDCOVER_MAX_CHUNKS` 256 × `GROUNDCOVER_MODEL_POINTS_PER_CHUNK` 1,024 × 32 B points); 265,232 B the counters (per-chunk × per-record counts and bases, chunk totals, per-shape layout, stats); 5,120 B the per-shape indexed indirect draws. The per-slot host-visible record / selection-table / shape uploads and stats readback add 35,856 B × 2 FIF. **Not counted here:** while a worldspace has authored cover, each slot's main instance and previous-model SSBOs grow to hold `GROUNDCOVER_MODEL_MAX_INSTANCES` 32,768 extra entries (32,768 × (160 + 64) B = 7 MiB per slot, 14 MiB across 2 FIF), through the same grow-on-demand path as the scene's own instances |
+| EXAL ground-cover model tier | `groundcover_models::groundcover_model_resident_bytes` | **8,730,672 B** (8.3 MiB) | §12.12 Phase C's authored-model tier (#4413), allocated beside the blade pipeline. 8,388,608 B is the device-local placement slab (`GROUNDCOVER_MAX_CHUNKS` 256 × `GROUNDCOVER_MODEL_POINTS_PER_CHUNK` 1,024 × 32 B points); 265,232 B the counters (per-chunk × per-record counts and bases, chunk totals, per-shape layout, stats); 5,120 B the per-shape indexed indirect draws. The per-slot host-visible record / selection-table / shape uploads and stats readback add 35,856 B × 2 FIF. Authored instances can also grow the separate instance pair by 0, 14, or 28 MiB per slot; see Scene Buffers. |
 | SKYAL sky bake | `sky_cube::sky_bake_resident_bytes` | **2,098,048 B** (2.0 MiB) | Per FIF slot: the RGBA16F 128² cubemap with its full GGX mip chain (`sky_cube_bytes_per_frame`, 1,048,560 B), the 144 B SH irradiance buffer (Set 1 binding 21) and the param UBO. Absent when `SkyCubePipeline` fails to initialise |
-| SKYAL cloud noise | `cloud_noise::cloud_noise_bytes` | **294,912 B** (288 KiB) | The shared 64³ + 32³ R8 density volumes (`CloudNoiseVolumes`), one pair, not per FIF. `VolumetricsPipeline` still uploads its own copy of the same texels, counted in its section |
+| SKYAL cloud noise | `cloud_noise::cloud_noise_bytes` | **294,912 B** (288 KiB) | The shared 64³ + 32³ R8 density volumes (`CloudNoiseVolumes`), one pair, not per FIF. Volumetrics owns a separate copy; see its section |
 
 About 19.8 MB together, flat across resolutions.
 

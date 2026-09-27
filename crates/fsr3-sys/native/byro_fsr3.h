@@ -82,6 +82,10 @@ typedef struct ByroFsr3DispatchDesc {
 static_assert(sizeof(ByroFsr3Version) == 24, "ByroFsr3Version ABI drift");
 static_assert(offsetof(ByroFsr3Version, provider_id) == 16, "ByroFsr3Version.provider_id ABI drift");
 static_assert(sizeof(ByroFsr3Image) == 24, "ByroFsr3Image ABI drift");
+static_assert(offsetof(ByroFsr3Image, vk_format) == 8, "ByroFsr3Image.vk_format ABI drift");
+static_assert(offsetof(ByroFsr3Image, vk_usage) == 12, "ByroFsr3Image.vk_usage ABI drift");
+static_assert(offsetof(ByroFsr3Image, width) == 16, "ByroFsr3Image.width ABI drift");
+static_assert(offsetof(ByroFsr3Image, height) == 20, "ByroFsr3Image.height ABI drift");
 static_assert(sizeof(ByroFsr3CreateDesc) == 48, "ByroFsr3CreateDesc ABI drift");
 static_assert(offsetof(ByroFsr3CreateDesc, depth_inverted) == 42, "ByroFsr3CreateDesc.depth_inverted ABI drift");
 static_assert(sizeof(ByroFsr3DispatchDesc) == 248, "ByroFsr3DispatchDesc ABI drift");
@@ -90,6 +94,9 @@ static_assert(offsetof(ByroFsr3DispatchDesc, depth_inverted) == 244, "ByroFsr3Di
 #endif
 
 uint32_t byro_fsr3_query_version(ByroFsr3Version* out_version);
+/* Layout probe for the Rust side's ABI regression test. Entries are documented
+   in the companion test and deliberately contain only sizes/offsets. */
+void byro_fsr3_abi_layout(size_t* out_layout);
 uint32_t byro_fsr3_query_render_resolution(
     uint32_t display_width,
     uint32_t display_height,

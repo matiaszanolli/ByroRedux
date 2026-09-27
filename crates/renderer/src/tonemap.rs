@@ -107,7 +107,7 @@ fn agx_contrast_approx(x: f32) -> f32 {
 }
 
 /// Mirror of the minimal AgX chain in `presentation.frag`: inset → log2 →
-/// EV clamp → normalize → contrast approx → outset → reference EOTF.
+/// log-space EV clamp → normalize → contrast approx → outset → reference EOTF.
 ///
 /// The log-space clamp preserves highlights above 1.0; the final clamp exists
 /// on the Rust side as well because the outset matrix can produce small
@@ -206,9 +206,9 @@ mod tests {
         }
     }
 
-    /// Per-channel monotonicity on saturated primaries. ACES: strict. AgX:
-    /// its inset table clamps at 1.0 (inputs above ~1.19 pin the channel)
-    /// and the negative outset off-diagonals pull a driven channel DOWN as
+    /// Per-channel monotonicity on saturated primaries. ACES: strict. AgX's
+    /// per-channel input is clamped in log space, preserving highlights;
+    /// negative outset off-diagonals pull a driven channel DOWN as
     /// the other channels' sigmoid outputs rise (hue coupling) — observed
     /// dips of ~0.01 for red at 1.25→1.5. Both are reference behaviour; the
     /// gate is that a channel never *inverts* materially while its own
@@ -323,6 +323,11 @@ mod tests {
     #[test]
     fn shaders_pin_the_mirror_constants() {
         let frag = include_str!("../shaders/presentation.frag");
+        let notices = include_str!("../../../THIRD_PARTY_NOTICES.md");
+        assert!(frag.contains("Minimal AgX implementation (c) 2023 Benjamin Wrensch"));
+        assert!(frag.contains("MIT licensed; notice in"));
+        assert!(notices.contains("## Minimal AgX (Benjamin Wrensch / IOLITE engine)"));
+        assert!(notices.contains("Licensed under the\nMIT License"));
         let agx = frag
             .split_once("vec3 agx(vec3 val)")
             .expect("GLSL AgX function")

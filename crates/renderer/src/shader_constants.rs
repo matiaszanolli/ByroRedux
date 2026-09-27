@@ -724,6 +724,7 @@ mod tests {
         let raytrace = include_str!("../shaders/include/raytrace.glsl");
         let lighting = include_str!("../shaders/include/lighting.glsl");
         let water = include_str!("../shaders/water.frag");
+        let triangle = include_str!("../shaders/triangle.frag");
         let diffuse = bindings
             .split_once("vec3 exteriorSkyDiffuseOr(")
             .unwrap()
@@ -746,6 +747,16 @@ mod tests {
         assert!(water_main[..sky_sample]
             .rfind("if (jitter.w > 0.5) {")
             .is_some());
+        // The one intentionally ungated triangle.frag call is the window-
+        // portal escape: that ray has crossed out of an interior and must see
+        // the outdoor sky. The remaining glass/environment sites are exterior
+        // only, and the count catches new consumers that lack a guard.
+        assert_eq!(triangle.matches("exteriorSkyRadianceOr(").count(), 4);
+        assert!(triangle.contains("if (!hitsInterior)"));
+        assert!(triangle.contains("bool isExteriorGlass = jitter.w > 0.5;"));
+        assert!(triangle.contains("vec3 reflColor = isExteriorGlass\n            ? exteriorSkyRadianceOr"));
+        assert!(triangle.contains("refrColor = isExteriorGlass\n                    ? exteriorSkyRadianceOr"));
+        assert!(triangle.contains("if (jitter.w > 0.5) {\n                ambientFallback = exteriorSkyRadianceOr"));
     }
 
     #[test]

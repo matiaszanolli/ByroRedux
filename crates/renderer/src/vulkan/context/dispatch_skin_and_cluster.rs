@@ -687,14 +687,7 @@ mod bind_inverse_upload_failure_latch_tests {
 mod bind_inverse_upload_failure_is_rate_limited_tests {
     #[test]
     fn upload_pending_bind_inverses_failure_arm_is_once_gated_and_counted() {
-        let src = include_str!("dispatch_skin_and_cluster.rs");
-        // Scoped to the production portion — an unscoped search would match
-        // this very module's own literals, same hazard the sibling latch
-        // test above documents.
-        let module_start = src
-            .find("mod bind_inverse_upload_failure_is_rate_limited_tests")
-            .expect("this test module must still exist under its own name");
-        let src = &src[..module_start];
+        let src = crate::source_scan::production_text(include_str!("dispatch_skin_and_cluster.rs"));
 
         assert!(
             src.contains("if !self.bind_inverse_upload_warned {"),

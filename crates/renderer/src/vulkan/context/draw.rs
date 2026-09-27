@@ -1254,7 +1254,9 @@ mod composite_params_tests {
         assert_eq!(composite.sky_lower[3], 2.0);
         assert_eq!(composite.sky_zenith[..3], [0.7, 0.2, 0.1]);
         assert_eq!(composite.height_fog_params[3], 0.0);
-        assert_eq!(composite.sky_aperture_count[0], 1);
+        // Both the marked cone and box window are valid exterior apertures;
+        // the unmarked beam is excluded by its profile flag.
+        assert_eq!(composite.sky_aperture_count[0], 2);
         assert_eq!(composite.sky_apertures[0].camera_local_origin[..3], [-100.0, -200.0, -300.0]);
         assert_eq!(composite.sky_apertures[0].half_extents[..2], [10.0, 20.0]);
         assert_eq!(cube.depth_params[0], 1.0);
@@ -3292,20 +3294,6 @@ fn draw_frame_body() -> &'static str {
     &src[start..end]
 }
 
-/// Regression for #1211 / REN-SAFETY. `draw_frame` must early-return
-/// when `self.swapchain.framebuffers` is empty (the state left behind when
-/// `recreate_swapchain` fails partway). Without the guard the first
-/// indexing access at the `RenderPassBeginInfo::framebuffer(...)` site
-/// panics with `index out of bounds`, taking the process down on
-/// surface-lost events that are normal Vulkan (window minimize,
-/// monitor disconnect, compositor restart, NVIDIA driver mismatch
-/// falling back to RADV).
-///
-/// Live unit test against a mocked `VulkanContext` is impractical —
-/// 70+ Vulkan-loader fields with no safe defaults. Static source
-/// assertion mirrors the precedent set by
-/// `resize.rs::old_image_views_destroyed_between_new_swapchain_creation_and_old_destroy`
-/// (#654 ordering check).
 #[cfg(test)]
 mod host_readback_flush_edge_tests {
     use super::draw_frame_body;
@@ -3370,6 +3358,20 @@ mod host_readback_flush_edge_tests {
     }
 }
 
+/// Regression for #1211 / REN-SAFETY. `draw_frame` must early-return
+/// when `self.swapchain.framebuffers` is empty (the state left behind when
+/// `recreate_swapchain` fails partway). Without the guard the first
+/// indexing access at the `RenderPassBeginInfo::framebuffer(...)` site
+/// panics with `index out of bounds`, taking the process down on
+/// surface-lost events that are normal Vulkan (window minimize,
+/// monitor disconnect, compositor restart, NVIDIA driver mismatch
+/// falling back to RADV).
+///
+/// Live unit test against a mocked `VulkanContext` is impractical —
+/// 70+ Vulkan-loader fields with no safe defaults. Static source
+/// assertion mirrors the precedent set by
+/// `resize.rs::old_image_views_destroyed_between_new_swapchain_creation_and_old_destroy`
+/// (#654 ordering check).
 #[cfg(test)]
 mod framebuffers_empty_guard_tests {
     /// #4604 — this test was vacuous since #3282 moved the wait and the

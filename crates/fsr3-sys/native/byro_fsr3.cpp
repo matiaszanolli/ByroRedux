@@ -116,6 +116,23 @@ extern "C" uint32_t byro_fsr3_query_version(ByroFsr3Version* out_version) {
     return query_single_version(out_version);
 }
 
+extern "C" void byro_fsr3_abi_layout(size_t* out_layout) {
+    if (!out_layout) return;
+    out_layout[0] = sizeof(ByroFsr3Version);
+    out_layout[1] = offsetof(ByroFsr3Version, provider_id);
+    out_layout[2] = sizeof(ByroFsr3CreateDesc);
+    out_layout[3] = offsetof(ByroFsr3CreateDesc, depth_inverted);
+    out_layout[4] = sizeof(ByroFsr3Image);
+    out_layout[5] = offsetof(ByroFsr3Image, vk_format);
+    out_layout[6] = offsetof(ByroFsr3Image, vk_usage);
+    out_layout[7] = offsetof(ByroFsr3Image, width);
+    out_layout[8] = offsetof(ByroFsr3Image, height);
+    out_layout[9] = sizeof(ByroFsr3DispatchDesc);
+    out_layout[10] = offsetof(ByroFsr3DispatchDesc, color);
+    out_layout[11] = offsetof(ByroFsr3DispatchDesc, reset);
+    out_layout[12] = offsetof(ByroFsr3DispatchDesc, depth_inverted);
+}
+
 extern "C" uint32_t byro_fsr3_query_render_resolution(
     uint32_t display_width,
     uint32_t display_height,

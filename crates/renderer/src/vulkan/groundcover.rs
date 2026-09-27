@@ -1499,9 +1499,9 @@ impl GroundCoverPipeline {
             return;
         }
         // The scatter statically uses binding 6, so it cannot run against an
-        // unwritten one. Ground cover is created only on ray-query devices,
-        // where init builds an (empty) TLAS for every slot, so `None` means
-        // the acceleration manager itself is gone — skip the frame rather
+        // unwritten one. `ray_query_tlas(frame)` returns `None` both when the
+        // acceleration manager is gone and when this frame's TLAS build did
+        // not succeed. Skip the frame and clear its active chunk counts rather
         // than draw last frame's indirect list over this frame's scene.
         let Some(tlas) = tlas else {
             self.frame_chunk_count = 0;

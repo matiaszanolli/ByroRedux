@@ -632,7 +632,7 @@ mod tests {
     /// build rather than leaving a comment that reads correct and is not.
     #[test]
     fn frames_in_flight_contract_names_every_dependent_resource() {
-        const SYNC_RS: &str = include_str!("sync.rs");
+        let sync_rs = crate::source_scan::production_text(include_str!("sync.rs"));
 
         // #3442 — both needles are composed at runtime. A literal here
         // matches this test's OWN source (`SYNC_RS` includes it), so a
@@ -642,7 +642,7 @@ mod tests {
         // `render_finished_is_sized_and_indexed_per_swapchain_image` below.
         let heading = "// Bumping this constant".to_string() + " still requires:";
         let assert_open = "const _: () = ".to_string() + "assert!(";
-        let block = SYNC_RS
+        let block = sync_rs
             .split_once(heading.as_str())
             .expect("the #870 remediation block")
             .1
@@ -678,11 +678,11 @@ mod tests {
             ),
             (
                 "bind_inverse_upload_staging",
-                crate::source_scan::production_text(include_str!("scene_buffer/buffers.rs")),
+                include_str!("scene_buffer/buffers.rs"),
             ),
             (
                 "entry.accel",
-                crate::source_scan::production_text(include_str!("acceleration/blas_skinned.rs")),
+                include_str!("acceleration/blas_skinned.rs"),
             ),
             (
                 "destroy_slot",
@@ -723,8 +723,7 @@ mod tests {
              alone is insufficient and would keep reading correct at 3+ \
              slots (#3643)",
         );
-        let groundcover_models =
-            crate::source_scan::production_text(include_str!("groundcover_models.rs"));
+        let groundcover_models = include_str!("groundcover_models.rs");
         assert!(
             groundcover_models.contains("# fence contract"),
             "ground-cover model prepare must document its both-slots fence dependency (#4851)"

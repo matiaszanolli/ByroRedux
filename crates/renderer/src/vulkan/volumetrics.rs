@@ -199,7 +199,8 @@ const FOG_VOLUME_INDEX_COUNT: usize = FOG_VOLUME_CLUSTER_COUNT * FOG_CLUSTER_IND
 #[repr(C, align(16))]
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct GpuFogVolume {
-    /// xyz = absolute center; w = shape (0 sphere, 1 ellipsoid, 2 box).
+    /// xyz = absolute center; w = shape (0 sphere, 1 ellipsoid, 2 box,
+    /// 3 cone).
     pub center_shape: [f32; 4],
     /// xyz = world-space half extents; w = extinction per world unit. For a
     /// cone, x = bottom radius, y = half height, z = top radius.
@@ -1597,7 +1598,7 @@ impl VolumetricsPipeline {
             ]
         } else {
             // #4792 — mirrors the shader: `localSkyAperture` runs only when
-            // `render_origin.w` is not open sky, and its visibility only
+            // `render_origin.w` does not permit open-sky misses, and its visibility only
             // scales `sun_color.rgb`.
             let sealed_interior = frame_params.render_origin[3] <= 0.5;
             let sun_radiates = frame_params.sun_color[..3].iter().any(|c| *c > 0.0);

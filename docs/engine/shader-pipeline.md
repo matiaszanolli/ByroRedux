@@ -47,6 +47,7 @@ renderer architecture (BLAS/TLAS, sync, swapchain, teardown ordering) see
 | `sky_irradiance.comp` | SH irradiance projection of the baked sky (step 5a) |
 | `groundcover_interaction.comp` | EXAL §12.4 wind/disturber field update (step 5c) |
 | `groundcover_scatter.comp` | EXAL blade scatter — TLAS-traced placement, writes the blade buffer + indirect draw list (step 5c) |
+| `groundcover_models.comp` | EXAL authored-model placement, layout, and indirect-draw emission (recorded after instance upload, before the main render pass) |
 | `ssao.comp` | Screen-space ambient occlusion texture generation |
 | `svgf_temporal.comp` | Temporal denoiser — motion-vector reprojection + color/moments accumulation for indirect lighting |
 | `svgf_atrous.comp` | Spatial denoiser — edge-stopping à-trous wavelet filter, `ATROUS_ITERATIONS` = 3 ping-pong passes after the temporal dispatch; final slot feeds composite (Dugout ablation capped the footprint at 14 render pixels) |
@@ -116,9 +117,9 @@ it where that is not `draw_frame` itself.
                            skinned-BLAS refit (`record_skinned_blas_refit`,
                            which runs just above it). Emitted on both arms —
                            a failed TLAS build deliberately keeps the previous
-                           AS alive (#2673), so volumetrics still ray-queries
-                           from COMPUTE against skinned BLAS whose refit writes
-                           would otherwise never be made visible (#415 / #2931).
+                           AS alive for lifetime safety (#2673), but the frame's
+                           build-success gate makes compute ray-query consumers
+                           skip queries against that stale TLAS (#4779).
 5  cluster_cull.comp     ─  per-froxel light lists (cluster grid +
                            light-index list); consumed by both the
                            triangle.frag fragment shader AND
@@ -137,13 +138,15 @@ it where that is not `draw_frame` itself.
                             on the indirect counters plus the seed fills,
                             sequenced by TRANSFER→COMPUTE barriers; the
                             scatter dispatch itself — it traces the TLAS
-                            step 4 just published (via `tlas_handle(frame)`,
+                            step 4 just published (via `ray_query_tlas(frame)`,
                             not a pre-build handle) to keep blades off
                             placed geometry; the publish barrier
                             COMPUTE_SHADER → DRAW_INDIRECT / VERTEX_SHADER /
                             TRANSFER, whose TRANSFER_READ half exists for
                             the `vkCmdCopyBuffer` readback the EXAL tuning
-                            telemetry reads (#4181 / CONC-D2-01).
+                            telemetry reads (#4181 / CONC-D2-01). The global
+                            device→host flush edge in step 22b publishes this
+                            copy before any host readback.
 5a sky_cube.comp        ─  SKYAL sky bake (`SkyCubePipeline::record_bake`, in
    sky_prefilter.comp       `build_and_upload_instances`, only when the
    sky_irradiance.comp      pipeline exists): bakes this slot's cubemap from
@@ -174,6 +177,11 @@ it where that is not `draw_frame` itself.
                            made earlier in `draw_frame`. The barrier guards a
                            future non-coherent memory type or a
                            post-recording host write.
+5d groundcover_models.comp ─  model-tier ground-cover instance generation
+                           (`record_groundcover_models`) after the instance
+                           list upload and before step 6. It appends model
+                           instances to the same SSBO, so the main render pass
+                           sees both blade and model tiers.
 6  [Main render pass]   ─  raster (BEGIN → END):
      triangle.vert / .frag  geometry + RT ray-queries
      water.vert / .frag     water + caustic imageAtomicAdd
@@ -216,20 +224,22 @@ it where that is not `draw_frame` itself.
                            consumer (SSAO, SVGF, composite, FSR).
 8  [Barrier]               SHADER_READ_ONLY_OPTIMAL on all G-buffer attachments
 9  [Barrier]               caustic accum atomic-add → SHADER_READ
-10 svgf_temporal.comp   ─  temporal denoiser (indirect lighting)
+10 svgf_temporal.comp   ─  temporal denoiser (indirect lighting,
+                           `record_svgf_pass`)
 11 svgf_atrous.comp ×3  ─  à-trous spatial denoiser (ATROUS_ITERATIONS),
    [COMPUTE→COMPUTE]        ping-pong slots gated each iteration by a
                            COMPUTE→COMPUTE barrier; final (odd count → slot 0)
                            is what composite samples via indirect_view(frame)
-12 caustic_splat.comp   ─  caustic scatter
+12 caustic_splat.comp   ─  caustic scatter (`record_caustic_splat_pass`)
 13 volumetrics_inject   ─┐ froxel grid (output consumed by composite,
                            VOLUMETRIC_OUTPUT_CONSUMED = true); reads
                            cluster_cull's cluster grid + light-index list
-                           from step 5
+                           from step 5 (`record_volumetrics_pass`)
 14 volumetrics_integrate ─┘
-15 ssao.comp             ─  SSAO texture
+15 ssao.comp             ─  SSAO texture (`record_ssao_pass`)
 16 [Composite render pass]─ raster:
      composite.vert / .frag  HDR combine → intermediate HDR image
+                           (`record_composite_pass`)
                            (`R16G16B16A16_SFLOAT`, `SHADER_READ_ONLY_OPTIMAL`;
                            no tone-map, does NOT write the swapchain; does
                            NOT add bloom — see step 17, #2796)
@@ -249,7 +259,7 @@ it where that is not `draw_frame` itself.
                            presentation read. Fixed mode (the default)
                            writes the authored constant; raw debug views
                            skip the dispatch (#4591).
-18 taa.comp              ─  TAA resolve — runs AFTER composite + bloom
+18 taa.comp              ─  TAA resolve (`record_taa_pass`) — runs AFTER composite + bloom
                            (#3572): it resolves the SAME fully-composited,
                            post-bloom scene image the upscale consumes, so
                            sky / denoised indirect / volumetrics / caustics /
@@ -258,11 +268,13 @@ it where that is not `draw_frame` itself.
                            only). Composite reads the raw HDR attachment
                            directly; TAA's output feeds the
                            upscale/presentation tap below.
-19 frame_upscaler.record  ─  FSR 3.1 SDK dispatch (Quality preset default) or
+19 frame_upscaler.record  ─  FSR 3.1 SDK dispatch (`record_upscale_pass`,
+                           Quality preset default) or
                            native-blit fallback (`--upscaler taa`) — render-
                            resolution HDR → output-resolution HDR. Raw
                            correctness debug views force the native path.
-20 [Presentation pass]    ─  raster: composite.vert / presentation.frag —
+20 [Presentation pass]    ─  raster (`record_presentation_pass`):
+                           composite.vert / presentation.frag —
                            `tonemap(graded * exposureTex)` (the meter's
                            exposure; ACES|AgX via `tonemap.rs`), underwater
                            extinction,
@@ -281,6 +293,9 @@ it where that is not `draw_frame` itself.
                            look transforms but not this check.
 21 [Egui render pass]    ─  egui overlay (blended on swapchain)
 22 [Screenshot copy]     ─  transfer blit → staging buffer (if requested)
+22b [Host flush edge]    ─  final device→host memory dependency (#4602),
+                           publishing counter/statistics copies and other
+                           readbacks before fence-delayed CPU reads
 23 Queue submit
 24 Present
 ```
@@ -438,7 +453,8 @@ One entry per draw call (up to `MAX_INSTANCES` = 262 144).
 | 4–5 | render layer | 2-bit packed layer index: `(flags >> 4) & 0x3` |
 | 6 | `INSTANCE_FLAG_PRESKINNED` | Reserved: pre-skinned vertex offset |
 | 7 | `INSTANCE_FLAG_FLAT_SHADING` | Flat shading via screen-space derivative normal |
-| 8 | `INSTANCE_FLAG_DIFFUSE_ALPHA` | BC1 diffuse texture carries alpha (guards `NiAlphaProperty`-less alpha test) |
+| 8 | `INSTANCE_FLAG_DIFFUSE_ALPHA` | Diffuse format has alpha (BC2/BC3/BC7/RGBA; BC1 is deliberately excluded) and guards `NiAlphaProperty`-less alpha test |
+| 9 | `INSTANCE_FLAG_LOD_BLOCK` | Exclude this draw from the RT LOD path |
 | 16–31 | terrain tile index | `(flags >> 16) & 0xFFFF` (when bit 3 set) |
 
 ### `GpuMaterial` — 432 bytes, SSBO (Set 1, Binding 13)
@@ -571,7 +587,7 @@ ReSTIR invalid-selection sentinel and is never occupied by a real light.
 | `MAX_MATERIALS` | 16 384 | 432 B each; deduplicated per frame |
 | `MAX_TOTAL_BONES` | 196 608 | `floor(196 608 / 144)` = 1 365 palette slots, minus reserved slot 0 → **1 364 allocatable** skinned meshes (M29.6). Not an exact product: 1 365 × 144 = 196 560 leaves a 48-bone unused tail |
 | `MAX_PENDING_BIND_INVERSE_UPLOADS_PER_FRAME` | 1 366 | First-sight bind-inverse upload cap |
-| `MAX_TERRAIN_TILES` | 1 024 | 32 B each |
+| `MAX_TERRAIN_TILES` | 1 024 | 160 B each (`GpuTerrainTile`) |
 | `IDENTITY_BONE_SLOT` | 0 | Slot 0 is always the identity matrix |
 
 ---

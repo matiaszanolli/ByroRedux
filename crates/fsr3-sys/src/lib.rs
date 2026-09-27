@@ -86,6 +86,8 @@ struct RawDispatchDesc {
 
 extern "C" {
     fn byro_fsr3_query_version(out_version: *mut RawVersion) -> u32;
+    #[cfg(test)]
+    fn byro_fsr3_abi_layout(out_layout: *mut usize);
     fn byro_fsr3_query_render_resolution(
         display_width: u32,
         display_height: u32,
@@ -582,6 +584,26 @@ mod tests {
 
     #[test]
     fn dispatch_abi_structs_are_plain_and_pointer_width_stable() {
+        let mut c_layout = [0usize; 13];
+        // SAFETY: the shim writes the documented 13 size/offset values into
+        // this fixed-size array; the C function accepts a writable pointer.
+        unsafe { byro_fsr3_abi_layout(c_layout.as_mut_ptr()) };
+        let rust_layout = [
+            std::mem::size_of::<RawVersion>(),
+            std::mem::offset_of!(RawVersion, provider_id),
+            std::mem::size_of::<RawCreateDesc>(),
+            std::mem::offset_of!(RawCreateDesc, depth_inverted),
+            std::mem::size_of::<RawImage>(),
+            std::mem::offset_of!(RawImage, vk_format),
+            std::mem::offset_of!(RawImage, vk_usage),
+            std::mem::offset_of!(RawImage, width),
+            std::mem::offset_of!(RawImage, height),
+            std::mem::size_of::<RawDispatchDesc>(),
+            std::mem::offset_of!(RawDispatchDesc, color),
+            std::mem::offset_of!(RawDispatchDesc, reset),
+            std::mem::offset_of!(RawDispatchDesc, depth_inverted),
+        ];
+        assert_eq!(rust_layout, c_layout, "Rust/C FSR3 ABI layout drift");
         assert_eq!(std::mem::size_of::<RawVersion>(), 24);
         assert_eq!(std::mem::offset_of!(RawVersion, provider_id), 16);
         assert_eq!(

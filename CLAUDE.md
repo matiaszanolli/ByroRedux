@@ -129,6 +129,7 @@ crates/
       constants.rs           BLAS / TLAS slack margins, reserve floors, eviction thresholds
       types.rs               BlasEntry, TlasState data structs
       predicates.rs          Pure decision fns (`scratch_should_shrink`, `decide_use_update`, …)
+      static_working_set.rs  Protects the current static-BLAS working set from LRU eviction
       blas_static.rs         Static (mesh-keyed) BLAS lifecycle + builds + eviction
       blas_skinned.rs        Per-entity skinned BLAS lifecycle + refit
       tlas.rs                TLAS build / refit + `tlas_handle` accessor

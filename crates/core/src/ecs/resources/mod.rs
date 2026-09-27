@@ -948,10 +948,10 @@ impl Resource for ImageHealth {}
 
 /// Last completed renderer integrity snapshot for RT lighting.
 ///
-/// This joins the three gates that must all hold before a shadow-ray result is
-/// meaningful: the camera UBO actually published RT, every TLAS-eligible draw
-/// became an instance, the light SSBO retained every submitted light, and
-/// clustered-light assignment did not exceed its fixed per-cluster capacity.
+/// This joins the five conditions that must all hold before a shadow-ray
+/// result is meaningful: the camera UBO published RT, the current TLAS build
+/// succeeded, every eligible draw became an instance, submitted lights were
+/// retained, and clustered-light assignment stayed within its capacity.
 /// The renderer fills the resource once per frame; `rt.integrity` and finite
 /// benchmark summaries expose the same stable line.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -1149,8 +1149,9 @@ pub struct LodCoverageStats {
 }
 
 impl LodCoverageStats {
-    /// Stable three-state verdict mirroring [`RtIntegrityStats::verdict`]'s
-    /// shape, for the console command and smoke-test gates alike.
+    /// Stable three-state verdict for the console command and smoke-test
+    /// gates. Unlike [`RtIntegrityStats::verdict`], this has no separate
+    /// `UNSUPPORTED` state.
     pub fn verdict(&self) -> &'static str {
         if !self.sampled {
             "PENDING"

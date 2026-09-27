@@ -528,7 +528,7 @@ pub struct GpuCamera {
     /// w = FSR history-reset-pending diagnostic bit (zero on the TAA path).
     /// The same field name is separately
     /// overloaded in `VolumetricsParams::render_origin` (`volumetrics.rs`),
-    /// where w packs `is_exterior` (read by `volumetrics_inject.comp`) — a
+    /// where w packs open-sky permission (read by `volumetrics_inject.comp`) — a
     /// distinct struct with its own layout, not a shared UBO slot. Don't
     /// assume `GpuCamera`'s w is free to repurpose without checking that
     /// sibling struct too (#1928 / REN-D10-01).
@@ -645,9 +645,9 @@ impl Default for GpuCamera {
     }
 }
 
-// SAFETY: every field is `[f32; 4]`, `[u32; 4]`, or `[[f32; 4]; 4]` —
-// homogeneous scalar/vector arrays tile the struct's declared size with no
-// implicit padding (#3761).
+// SAFETY: every field is `[f32; 4]` or `[[f32; 4]; 4]` — homogeneous
+// scalar/vector arrays tile the struct's declared size with no implicit
+// padding (#3761).
 unsafe impl NoUninit for GpuCamera {}
 
 /// 6-axis directional ambient cube uploaded to set 1 binding 14 as a

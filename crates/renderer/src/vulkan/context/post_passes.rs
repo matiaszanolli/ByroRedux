@@ -243,7 +243,7 @@ impl VulkanContext {
     /// `*.dispatch()` / `*.record()` calls are actually unsafe at.
     ///
     /// Deliberately infallible (`()`, not `Result<()>` — #2503 /
-    /// D12-2026-08-07-01): every one of the eight `record_*_pass` helpers
+    /// D12-2026-08-07-01): every one of the ten `record_*_pass` helpers
     /// below returns `()`, and `record_upscale_pass` in particular *must*
     /// stay that way. It runs after `svgf.dispatch`/`taa.dispatch` have
     /// latched `dispatched_this_frame`, so an error escaping from here to
@@ -251,7 +251,7 @@ impl VulkanContext {
     /// leaving those latches set for a dispatch that never reached the GPU
     /// — stale-history / ghosting on the next frame (#2146). Keeping this
     /// signature infallible turns any future `?` added inside one of the
-    /// eight helpers into a compile error at the point of introduction,
+    /// ten helpers into a compile error at the point of introduction,
     /// rather than a silent reopening of that hazard.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn record_post_passes(
@@ -527,7 +527,7 @@ impl VulkanContext {
     /// lighting remain cell-authored. Both lanes are dark below the horizon.
     ///
     /// The inject shader distinguishes "real window" from "geometry gap" via
-    /// `render_origin.w` (is_exterior) — see the two-pass shadow-ray note
+    /// `render_origin.w` (open-sky permission) — see the two-pass shadow-ray note
     /// on `VolumetricsParams::render_origin` in `volumetrics.rs` and the
     /// interior-godray investigation: a `--cell`-loaded interior has no
     /// complete ceiling mesh (never seen from inside, so Bethesda
@@ -1494,6 +1494,26 @@ fn skip_clear_decision(ran: bool, already_cleared: bool) -> (bool, bool) {
 #[cfg(test)]
 mod tests {
     use super::{skip_clear_decision, volumetric_open_sky_flag, volumetric_sun, SkyParams};
+
+    #[test]
+    fn shader_pipeline_documents_every_record_pass_helper() {
+        let source = crate::source_scan::production_text(include_str!("post_passes.rs"));
+        let docs = include_str!("../../../../../docs/engine/shader-pipeline.md");
+        let helpers: Vec<&str> = source
+            .lines()
+            .filter_map(|line| {
+                let name = line.trim_start().strip_prefix("fn ")?.split_once('(')?.0;
+                name.starts_with("record_").then_some(name)
+            })
+            .collect();
+        assert_eq!(helpers.len(), 10, "update the documented pass inventory");
+        for helper in helpers {
+            assert!(
+                docs.contains(helper),
+                "{helper} exists in post_passes.rs but is missing from shader-pipeline.md"
+            );
+        }
+    }
 
     #[test]
     fn volumetric_sun_uses_portal_lane_only_inside() {

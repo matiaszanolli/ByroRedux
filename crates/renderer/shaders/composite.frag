@@ -46,7 +46,7 @@ layout(set = 0, binding = 3) uniform CompositeParams {
     // Runtime no longer evaluates this non-physical curve. It remains in the
     // contract until XCLL/WTHR values are fitted offline into sigma_t tables.
     vec4 fog_params;
-    vec4 depth_params;   // x = is_exterior (outdoor weather/fog gate), y = uintBitsToFloat(debug flags),
+    vec4 depth_params;   // x = is_exterior (weather/fog gate; Show Sky is in sky_lower.w), y = uintBitsToFloat(debug flags),
                          // z = uintBitsToFloat(structured debug mode),
                          // w = frame index
     vec4 volume_params;  // x = grid far, y = linear floor, z = linear fraction, w = dither amplitude

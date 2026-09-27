@@ -88,7 +88,7 @@ mod tests {
         ("vulkan/skin_compute.rs", 2),
         ("vulkan/sky_cube.rs", 2),
         ("vulkan/svgf.rs", 4),
-        ("vulkan/sync.rs", 2),
+        ("vulkan/sync.rs", 1),
         ("vulkan/taa.rs", 1),
         ("vulkan/texture.rs", 3),
         ("vulkan/water.rs", 2),
