@@ -445,6 +445,30 @@ fn merge_from_later_plugin_wins_on_overlapping_statics() {
     );
 }
 
+/// #4904 — the production load path starts from an empty index and merges
+/// every plugin, master included. `landscape_grasses` was missing from the
+/// merge, so the LTEX→GRAS map arrived empty on every real load.
+#[test]
+fn merge_from_carries_landscape_grasses_with_last_writer_winning() {
+    let mut merged = EsmCellIndex::default();
+    let mut master = EsmCellIndex::default();
+    master.landscape_grasses.insert(0x0000_0A01, vec![0x0000_0B01, 0x0000_0B02]);
+    master.landscape_grasses.insert(0x0000_0A02, vec![0x0000_0B03]);
+    merged.merge_from(master);
+    assert_eq!(
+        merged.landscape_grasses.get(&0x0000_0A01),
+        Some(&vec![0x0000_0B01, 0x0000_0B02]),
+        "a master's GNAM arrays must survive the merge into the empty index"
+    );
+
+    // An override re-authors the whole GNAM array for its LTEX.
+    let mut update = EsmCellIndex::default();
+    update.landscape_grasses.insert(0x0000_0A01, vec![0x0000_0B09]);
+    merged.merge_from(update);
+    assert_eq!(merged.landscape_grasses.get(&0x0000_0A01), Some(&vec![0x0000_0B09]));
+    assert_eq!(merged.landscape_grasses.get(&0x0000_0A02), Some(&vec![0x0000_0B03]));
+}
+
 #[test]
 fn merge_from_exterior_cells_merge_per_worldspace() {
     // Master defines Tamriel grid (0,0); child defines Tamriel

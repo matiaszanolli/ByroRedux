@@ -1497,6 +1497,28 @@ impl EsmCellIndex {
     ///
     /// See M46.0 / #561.
     pub fn merge_from(&mut self, other: EsmCellIndex) {
+        // #4904 — exhaustive destructuring (no `..`): a new `EsmCellIndex`
+        // field is a compile error here instead of a silently unmerged map.
+        // The hand-written extend list dropped `landscape_grasses` (#4642's
+        // LTEX→GRAS arrays), so every production load — which starts from
+        // `EsmIndex::default()` and merges each plugin, master included —
+        // ended with an empty map.
+        let EsmCellIndex {
+            cells: other_cells,
+            exterior_cells: other_exterior_cells,
+            worldspace_persistent_cells: other_worldspace_persistent_cells,
+            statics,
+            landscape_textures,
+            landscape_texture_sets,
+            landscape_grasses,
+            worldspaces,
+            worldspace_climates,
+            texture_sets,
+            scols,
+            packins,
+            movables,
+            material_swaps,
+        } = other;
         // #3362 — a REFR is a globally-unique FormID: deleting it removes the
         // object wherever it lives, and the CELL GRUP the tombstone happens
         // to be authored under is not part of its identity.
@@ -1520,11 +1542,10 @@ impl EsmCellIndex {
         // pins. Doing it after the loops would need a "but not what `other`
         // re-placed" guard, which cannot tell a stale base copy from a fresh
         // placement.
-        let tombstones: HashSet<u32> = other
-            .cells
+        let tombstones: HashSet<u32> = other_cells
             .values()
-            .chain(other.worldspace_persistent_cells.values())
-            .chain(other.exterior_cells.values().flat_map(|g| g.values()))
+            .chain(other_worldspace_persistent_cells.values())
+            .chain(other_exterior_cells.values().flat_map(|g| g.values()))
             .flat_map(|c| c.deleted_refs.iter().copied())
             .collect();
         if !tombstones.is_empty() {
@@ -1548,7 +1569,7 @@ impl EsmCellIndex {
             .iter()
             .map(|(key, cell)| (cell.form_id, key.clone()))
             .collect();
-        for (key, mut over_cell) in other.cells {
+        for (key, mut over_cell) in other_cells {
             let previous_key = interior_keys_by_form.get(&over_cell.form_id).cloned();
             let base = previous_key
                 .as_ref()
@@ -1566,7 +1587,7 @@ impl EsmCellIndex {
             self.cells.insert(insert_key, over_cell);
         }
 
-        for (worldspace, grids) in other.exterior_cells {
+        for (worldspace, grids) in other_exterior_cells {
             let entry = self.exterior_cells.entry(worldspace).or_default();
             for (coord, mut over_cell) in grids {
                 if let Some(base) = entry.get(&coord) {
@@ -1576,7 +1597,7 @@ impl EsmCellIndex {
             }
         }
 
-        for (worldspace, mut over_cell) in other.worldspace_persistent_cells {
+        for (worldspace, mut over_cell) in other_worldspace_persistent_cells {
             if let Some(base) = self.worldspace_persistent_cells.get(&worldspace) {
                 merge_cell_override(base, &mut over_cell);
             }
@@ -1584,17 +1605,19 @@ impl EsmCellIndex {
                 .insert(worldspace, over_cell);
         }
 
-        self.statics.extend(other.statics);
-        self.landscape_textures.extend(other.landscape_textures);
-        self.landscape_texture_sets
-            .extend(other.landscape_texture_sets);
-        self.worldspaces.extend(other.worldspaces);
-        self.worldspace_climates.extend(other.worldspace_climates);
-        self.texture_sets.extend(other.texture_sets);
-        self.scols.extend(other.scols);
-        self.packins.extend(other.packins);
-        self.movables.extend(other.movables);
-        self.material_swaps.extend(other.material_swaps);
+        self.statics.extend(statics);
+        self.landscape_textures.extend(landscape_textures);
+        self.landscape_texture_sets.extend(landscape_texture_sets);
+        // Last writer per LTEX wins: an override re-authors the whole GNAM
+        // array, so replacing (not appending to) the list is correct.
+        self.landscape_grasses.extend(landscape_grasses);
+        self.worldspaces.extend(worldspaces);
+        self.worldspace_climates.extend(worldspace_climates);
+        self.texture_sets.extend(texture_sets);
+        self.scols.extend(scols);
+        self.packins.extend(packins);
+        self.movables.extend(movables);
+        self.material_swaps.extend(material_swaps);
     }
 
     /// Locate the parent cell of a placed REFR by its placement-level
