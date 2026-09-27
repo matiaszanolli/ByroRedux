@@ -26,3 +26,6 @@ url = "2"
 # Error handling
 anyhow.workspace = true
 log.workspace = true
+
+[dev-dependencies]
+byroredux-plugin = { workspace = true }

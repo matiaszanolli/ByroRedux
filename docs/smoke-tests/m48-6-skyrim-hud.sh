@@ -22,7 +22,7 @@
 #   4. Pixel gate: the compass chrome band (top-center) carries bright
 #      ink; a control band at the same height does not.
 #
-# Pre-conditions: Skyrim SE installed (BYROREDUX_SKYRIM_DATA /
+# Pre-conditions: Skyrim SE installed (BYROREDUX_SKYRIMSE_DATA /
 # BYROREDUX_SKYRIMSE_DATA or the default path), Vulkan device, Xvfb.
 #
 # Usage: docs/smoke-tests/m48-6-skyrim-hud.sh
@@ -31,7 +31,7 @@
 
 set -euo pipefail
 
-DATA="${BYROREDUX_SKYRIM_DATA:-${BYROREDUX_SKYRIMSE_DATA:-/mnt/data/SteamLibrary/steamapps/common/Skyrim Special Edition/Data}}"
+DATA="${BYROREDUX_SKYRIMSE_DATA:-${BYROREDUX_SKYRIMSE_DATA:-/mnt/data/SteamLibrary/steamapps/common/Skyrim Special Edition/Data}}"
 PORT="${BYRO_DEBUG_PORT:-9913}"
 BENCH_FRAMES="${BYROREDUX_SMOKE_FRAMES:-30}"
 OUT_DIR="$(mktemp -d)"

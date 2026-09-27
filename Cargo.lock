@@ -778,6 +778,7 @@ dependencies = [
 name = "byroredux-boot-request"
 version = "0.1.0"
 dependencies = [
+ "byroredux-core",
  "serde",
  "tempfile",
  "thiserror 2.0.18",
@@ -871,6 +872,7 @@ version = "0.1.0"
 dependencies = [
  "byroredux-bsa",
  "byroredux-core",
+ "byroredux-plugin",
  "log",
  "serde",
  "tempfile",
@@ -1076,6 +1078,7 @@ dependencies = [
  "anyhow",
  "async-channel",
  "byroredux-bsa",
+ "byroredux-plugin",
  "futures",
  "log",
  "ruffle_core",

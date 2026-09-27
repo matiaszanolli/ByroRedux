@@ -1765,7 +1765,7 @@ mod tests {
     #[test]
     #[ignore = "needs Skyrim SE game data on disk"]
     fn real_skyrim_esm_ambient_packages_now_resolve_for_previously_blind_npcs() {
-        let data = std::env::var("BYROREDUX_SKYRIM_DATA")
+        let data = std::env::var(byroredux_plugin::esm::test_paths::SKYRIM_SE_ENV)
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|_| {
                 std::path::PathBuf::from(

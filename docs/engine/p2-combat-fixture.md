@@ -46,7 +46,7 @@ The data contract can be rechecked without Vulkan or archive loading:
 
 ```bash
 cargo run -p byroredux-plugin --example probe_combat_fixture -- \
-  "$BYROREDUX_SKYRIM_DATA/Skyrim.esm" BleakFallsBarrow01
+  "$BYROREDUX_SKYRIMSE_DATA/Skyrim.esm" BleakFallsBarrow01
 ```
 
 The probe must report CELL `000371DE`, direct NPC reference `000383F7`, both

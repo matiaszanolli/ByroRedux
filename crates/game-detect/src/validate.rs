@@ -21,6 +21,7 @@ use std::path::{Path, PathBuf};
 
 use byroredux_bsa::{numeric_sibling_paths, Ba2Archive, BsaArchive};
 use byroredux_core::ecs::GameProfileEntry;
+use byroredux_plugin::esm::reader::EsmReader;
 
 /// How bad one finding is.
 ///
@@ -113,6 +114,14 @@ fn archive_opens(path: &Path) -> Result<(), String> {
     result
 }
 
+fn esm_opens(path: &Path) -> Result<(), String> {
+    let bytes = std::fs::read(path).map_err(|error| error.to_string())?;
+    EsmReader::new(&bytes)
+        .read_file_header()
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
 /// Validate one profile against a resolved data directory.
 ///
 /// `data_dir` is passed explicitly rather than read from `entry.root`, because
@@ -154,12 +163,21 @@ pub fn validate(entry: &GameProfileEntry, data_dir: &Path) -> ValidationReport {
             format!("{} is missing", entry.esm),
         ));
     } else {
-        let size_mb = esm.metadata().map(|m| m.len()).unwrap_or(0) / (1024 * 1024);
-        checks.push(Check::new(
-            Severity::Ok,
-            "Main plugin",
-            format!("{} ({size_mb} MB)", entry.esm),
-        ));
+        match esm_opens(&esm) {
+            Ok(()) => {
+                let size_mb = esm.metadata().map(|m| m.len()).unwrap_or(0) / (1024 * 1024);
+                checks.push(Check::new(
+                    Severity::Ok,
+                    "Main plugin",
+                    format!("{} ({size_mb} MB)", entry.esm),
+                ));
+            }
+            Err(error) => checks.push(Check::new(
+                Severity::Fail,
+                "Main plugin",
+                format!("{} could not be opened ({error})", entry.esm),
+            )),
+        }
     }
 
     for (label, names, missing_severity) in categories(entry) {
@@ -257,6 +275,18 @@ mod tests {
         fs::write(path, bytes).unwrap();
     }
 
+    /// Minimal well-formed TES5+ TES4 record header with an empty payload.
+    fn write_empty_esm(path: &Path) {
+        let mut bytes = Vec::from(&b"TES4"[..]);
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // payload size
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // flags
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // form id
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // version control
+        bytes.extend_from_slice(&0u16.to_le_bytes()); // record version
+        bytes.extend_from_slice(&0u16.to_le_bytes()); // unknown
+        fs::write(path, bytes).unwrap();
+    }
+
     #[test]
     fn a_missing_data_dir_reports_once_and_stops() {
         let report = validate(&entry(), Path::new("/nonexistent/Data"));
@@ -268,7 +298,7 @@ mod tests {
     #[test]
     fn a_complete_install_is_launchable() {
         let dir = tempfile::tempdir().unwrap();
-        fs::write(dir.path().join("Test.esm"), b"TES4").unwrap();
+        write_empty_esm(&dir.path().join("Test.esm"));
         write_empty_bsa(&dir.path().join("Test - Meshes.bsa"));
         write_empty_bsa(&dir.path().join("Test - Textures0.bsa"));
 
@@ -277,12 +307,30 @@ mod tests {
         assert!(report.is_launchable());
     }
 
+    #[test]
+    fn a_present_but_truncated_main_plugin_fails_validation() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("Test.esm"), b"TES4").unwrap();
+        write_empty_bsa(&dir.path().join("Test - Meshes.bsa"));
+        write_empty_bsa(&dir.path().join("Test - Textures0.bsa"));
+
+        let report = validate(&entry(), dir.path());
+        let main_plugin = report
+            .checks
+            .iter()
+            .find(|check| check.label == "Main plugin")
+            .unwrap();
+        assert_eq!(main_plugin.severity, Severity::Fail);
+        assert!(main_plugin.detail.contains("could not be opened"));
+        assert!(!report.is_launchable());
+    }
+
     /// The sibling rule, in the direction that matters: present siblings are
     /// counted, and the absent ones in the series are never reported.
     #[test]
     fn present_siblings_are_counted_and_absent_ones_are_not_reported() {
         let dir = tempfile::tempdir().unwrap();
-        fs::write(dir.path().join("Test.esm"), b"TES4").unwrap();
+        write_empty_esm(&dir.path().join("Test.esm"));
         write_empty_bsa(&dir.path().join("Test - Meshes.bsa"));
         write_empty_bsa(&dir.path().join("Test - Textures0.bsa"));
         // Only two of the nine possible siblings exist, which is normal.
@@ -307,7 +355,7 @@ mod tests {
     #[test]
     fn a_missing_mesh_archive_fails_but_a_missing_sound_archive_only_warns() {
         let dir = tempfile::tempdir().unwrap();
-        fs::write(dir.path().join("Test.esm"), b"TES4").unwrap();
+        write_empty_esm(&dir.path().join("Test.esm"));
         write_empty_bsa(&dir.path().join("Test - Textures0.bsa"));
 
         let mut with_sounds = entry();
@@ -331,7 +379,7 @@ mod tests {
     #[test]
     fn a_corrupt_archive_fails_regardless_of_its_category() {
         let dir = tempfile::tempdir().unwrap();
-        fs::write(dir.path().join("Test.esm"), b"TES4").unwrap();
+        write_empty_esm(&dir.path().join("Test.esm"));
         write_empty_bsa(&dir.path().join("Test - Meshes.bsa"));
         write_empty_bsa(&dir.path().join("Test - Textures0.bsa"));
         fs::write(dir.path().join("Test - Sounds.bsa"), b"not an archive").unwrap();
@@ -356,7 +404,7 @@ mod tests {
     #[test]
     fn a_profile_with_no_mesh_archives_is_not_silently_ready() {
         let dir = tempfile::tempdir().unwrap();
-        fs::write(dir.path().join("Test.esm"), b"TES4").unwrap();
+        write_empty_esm(&dir.path().join("Test.esm"));
 
         let bare = GameProfileEntry {
             name: "Bare".into(),
@@ -396,7 +444,7 @@ mod tests {
     #[test]
     fn an_alternate_release_is_validated_against_its_own_archives() {
         let dir = tempfile::tempdir().unwrap();
-        fs::write(dir.path().join("Test.esm"), b"TES4").unwrap();
+        write_empty_esm(&dir.path().join("Test.esm"));
         write_empty_bsa(&dir.path().join("Old - Meshes.bsa"));
         write_empty_bsa(&dir.path().join("Old - Textures.bsa"));
 
@@ -429,7 +477,7 @@ mod tests {
     #[test]
     fn an_incomplete_install_is_reported_against_the_primary_release() {
         let dir = tempfile::tempdir().unwrap();
-        fs::write(dir.path().join("Test.esm"), b"TES4").unwrap();
+        write_empty_esm(&dir.path().join("Test.esm"));
         write_empty_bsa(&dir.path().join("Old - Meshes.bsa"));
 
         let report = validate(&entry_with_release(), dir.path());
@@ -447,7 +495,7 @@ mod tests {
     #[test]
     fn an_empty_archive_category_produces_no_check() {
         let dir = tempfile::tempdir().unwrap();
-        fs::write(dir.path().join("Test.esm"), b"TES4").unwrap();
+        write_empty_esm(&dir.path().join("Test.esm"));
         write_empty_bsa(&dir.path().join("Test - Meshes.bsa"));
         write_empty_bsa(&dir.path().join("Test - Textures0.bsa"));
 

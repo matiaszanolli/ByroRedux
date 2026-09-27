@@ -946,7 +946,7 @@ mod tests {
     #[test]
     #[ignore = "needs Skyrim SE game data on disk; ~1 GB resident"]
     fn skyrim_cart_idle_catalog_installs_real_assets_when_available() {
-        let data_dir = std::env::var_os("BYROREDUX_SKYRIM_DATA")
+        let data_dir = std::env::var_os(byroredux_plugin::esm::test_paths::SKYRIM_SE_ENV)
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|| {
                 std::path::PathBuf::from(
@@ -1038,7 +1038,7 @@ mod tests {
     #[test]
     #[ignore = "needs Skyrim SE game data on disk; ~1 GB resident"]
     fn draugr_combat_clips_install_real_assets_when_available() {
-        let data_dir = std::env::var_os("BYROREDUX_SKYRIM_DATA")
+        let data_dir = std::env::var_os(byroredux_plugin::esm::test_paths::SKYRIM_SE_ENV)
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|| {
                 std::path::PathBuf::from(

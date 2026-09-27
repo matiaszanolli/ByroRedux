@@ -130,11 +130,39 @@ impl RootOverrides {
             path: path.to_path_buf(),
             source: std::io::Error::other(error),
         })?;
-        std::fs::write(path, text).map_err(|source| OverrideError::Write {
-            path: path.to_path_buf(),
-            source,
-        })
+        let temp_path = atomic_temp_path(path);
+        match byroredux_core::atomic_file::atomic_write(path, &temp_path, text.as_bytes()) {
+            Ok(()) => Ok(()),
+            Err(rename_error) if path.exists() => {
+                std::fs::write(
+                    path,
+                    std::fs::read(&temp_path).map_err(|source| OverrideError::Write {
+                        path: path.to_path_buf(),
+                        source,
+                    })?,
+                )
+                .map_err(|source| OverrideError::Write {
+                    path: path.to_path_buf(),
+                    source,
+                })?;
+                let _ = std::fs::remove_file(&temp_path);
+                let _ = rename_error;
+                Ok(())
+            }
+            Err(source) => Err(OverrideError::Write {
+                path: path.to_path_buf(),
+                source,
+            }),
+        }
     }
+}
+
+fn atomic_temp_path(path: &Path) -> PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
+    let id = NEXT_TEMP.fetch_add(1, Ordering::Relaxed);
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    path.with_file_name(format!(".{name}.{}.{}.tmp", std::process::id(), id))
 }
 
 #[cfg(test)]
@@ -148,6 +176,11 @@ mod tests {
                 .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
                 .collect(),
         }
+    }
+
+    #[test]
+    fn merge_uses_the_shared_atomic_file_writer() {
+        assert!(include_str!("overrides.rs").contains("byroredux_core::atomic_file::atomic_write"));
     }
 
     #[test]

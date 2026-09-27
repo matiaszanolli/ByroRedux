@@ -98,9 +98,57 @@ fn register_component<T>(
     registry.insert(desc);
 }
 
+/// `FactionReputation` is inspectable state but is not part of the save
+/// serialization surface. Expose a read-only JSON projection without adding
+/// serde derives to the saved component model.
+fn register_faction_reputation(registry: &mut ComponentRegistry) {
+    use byroredux_core::character::FactionReputation;
+
+    registry.insert(ComponentDescriptor {
+        name: "FactionReputation",
+        field_names: vec!["entries"],
+        get_json: Box::new(|world_any, entity| {
+            let world = world_any.downcast_ref::<World>()?;
+            let component = world.get::<FactionReputation>(entity)?;
+            Some(serde_json::json!({
+                "entries": component.entries.iter().map(|entry| serde_json::json!({
+                    "repu_form_id": entry.repu_form_id,
+                    "fame": entry.fame,
+                    "infamy": entry.infamy,
+                })).collect::<Vec<_>>()
+            }))
+        }),
+        list_entities: Box::new(|world_any| {
+            let Some(world) = world_any.downcast_ref::<World>() else {
+                return Vec::new();
+            };
+            world
+                .query::<FactionReputation>()
+                .map(|query| query.iter().map(|(entity, _)| entity).collect())
+                .unwrap_or_default()
+        }),
+        get_field: Box::new(|world_any, entity, field| {
+            if field != "entries" && field != "0" {
+                return None;
+            }
+            let world = world_any.downcast_ref::<World>()?;
+            let component = world.get::<FactionReputation>(entity)?;
+            Some(serde_json::json!({
+                "entries": component.entries.iter().map(|entry| serde_json::json!({
+                    "repu_form_id": entry.repu_form_id,
+                    "fame": entry.fame,
+                    "infamy": entry.infamy,
+                })).collect::<Vec<_>>()
+            }))
+        }),
+        set_field: Box::new(|_, _, _, _| Err("FactionReputation is read-only".into())),
+    });
+}
+
 /// Register all inspectable components with the registry.
 pub fn register_all(registry: &mut ComponentRegistry) {
     use byroredux_core::animation::{AnimationPlayer, AnimationStack};
+    use byroredux_core::character::Perks;
     use byroredux_core::ecs::components::*;
 
     register_component::<Transform>(
@@ -282,6 +330,17 @@ pub fn register_all(registry: &mut ComponentRegistry) {
     // and `docs/smoke-tests/m41-equip.sh`.
     register_component::<Inventory>(registry, "Inventory", vec!["items"]);
     register_component::<EquipmentSlots>(registry, "EquipmentSlots", vec!["occupants"]);
+    register_component::<ActorValues>(registry, "ActorValues", vec!["values"]);
+    register_component::<ActorVitals>(registry, "ActorVitals", vec!["health"]);
+    register_component::<EquippedWeapon>(
+        registry,
+        "EquippedWeapon",
+        vec!["inventory_index", "base_form_id", "damage", "reach", "speed"],
+    );
+    register_component::<Dead>(registry, "Dead", vec![]);
+    register_component::<CreatureAttack>(registry, "CreatureAttack", vec!["damage"]);
+    register_component::<Perks>(registry, "Perks", vec!["entries"]);
+    register_faction_reputation(registry);
 }
 
 /// #4063 — the roster pin.
@@ -350,6 +409,58 @@ mod roster_tests {
              `byro-dbg` cannot inspect an actor running them (#4063). Add a \
              `register_component` call beside the others, and register the \
              matching `*State` marker too."
+        );
+    }
+
+    #[test]
+    fn requested_gameplay_components_are_registered() {
+        let registrations = include_str!("registration.rs")
+            .split_once("#[cfg(test)]")
+            .expect("this file has a test module")
+            .0;
+        let requested = [
+            "ActorValues",
+            "ActorVitals",
+            "CreatureAttack",
+            "Dead",
+            "EquippedWeapon",
+            "EquipmentSlots",
+            "Inventory",
+            "Perks",
+        ];
+        let mut missing: Vec<_> = requested
+            .iter()
+            .filter(|name| {
+                let needle = format!("{}{}{}>", "register_component", "::<", name);
+                !registrations.contains(&needle)
+            })
+            .copied()
+            .collect();
+        if !registrations.contains("register_faction_reputation(registry);") {
+            missing.push("FactionReputation");
+        }
+        assert!(
+            missing.is_empty(),
+            "gameplay components required by #4755 are not registered: {missing:?}"
+        );
+    }
+
+    #[test]
+    fn debug_cli_component_counts_match_the_registry() {
+        let production = include_str!("registration.rs")
+            .split_once("#[cfg(test)]")
+            .expect("this file has a test module")
+            .0;
+        let count = production.matches("register_component::<").count()
+            + production.matches("register_faction_reputation(registry);").count();
+        let docs = include_str!("../../../docs/engine/debug-cli.md");
+        assert!(
+            docs.contains(&format!("Currently registered ({count} components)")),
+            "debug-cli.md component heading must report {count}"
+        );
+        assert!(
+            docs.contains(&format!("({count} components)")),
+            "debug-cli.md example must report {count}"
         );
     }
 }

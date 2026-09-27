@@ -13,6 +13,7 @@ edition.workspace = true
 [dependencies]
 byroredux-bsa = { workspace = true }
 byroredux-core = { workspace = true }
+byroredux-plugin = { workspace = true }
 log = { workspace = true }
 serde = { workspace = true }
 toml = { workspace = true }

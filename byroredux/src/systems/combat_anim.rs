@@ -862,7 +862,7 @@ mod tests {
     #[test]
     #[ignore = "needs Skyrim - Sounds.bsa on disk"]
     fn draugr_combat_sound_assets_extract_and_decode_when_available() {
-        let data_dir = std::env::var_os("BYROREDUX_SKYRIM_DATA")
+        let data_dir = std::env::var_os(byroredux_plugin::esm::test_paths::SKYRIM_SE_ENV)
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|| {
                 std::path::PathBuf::from(

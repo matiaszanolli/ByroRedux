@@ -335,6 +335,12 @@ fn eval_inspect_skinned_mesh(world: &World, entity: u32) -> DebugResponse {
 // `SkinnedMesh` and `MeshHandle` (the two component types that decide
 // whether the entity actually contributes draw calls).
 
+const MAX_WALK_DEPTH: u32 = 64;
+
+fn bounded_walk_depth(requested: u32) -> u32 {
+    requested.min(MAX_WALK_DEPTH)
+}
+
 fn eval_walk_entity(world: &World, root: u32, max_depth: u32) -> DebugResponse {
     use byroredux_core::ecs::components::{Children, MeshHandle, Name, Parent};
     use byroredux_core::ecs::{GlobalTransform, SkinnedMesh, Transform};
@@ -355,11 +361,16 @@ fn eval_walk_entity(world: &World, root: u32, max_depth: u32) -> DebugResponse {
     let name_q = world.query::<Name>();
     let pool = world.try_resource::<byroredux_core::string::StringPool>();
 
+    let max_depth = bounded_walk_depth(max_depth);
+    let mut visited = std::collections::HashSet::new();
     let mut nodes: Vec<HierarchyNode> = Vec::new();
     let mut stack: Vec<(u32, u32)> = vec![(root, 0)];
 
     while let Some((entity, depth)) = stack.pop() {
         if depth > max_depth {
+            continue;
+        }
+        if !visited.insert(entity) {
             continue;
         }
 
@@ -885,6 +896,12 @@ fn resolve_entity_name(world: &World, entity: u32) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn walk_depth_is_capped_even_for_untrusted_requests() {
+        assert_eq!(super::bounded_walk_depth(u32::MAX), 64);
+        assert_eq!(super::bounded_walk_depth(12), 12);
+    }
 
     /// Regression for #2388. The canonical acquisition order for the
     /// hierarchy / skinning cluster is documented in `docs/engine/ecs.md`;

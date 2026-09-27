@@ -249,7 +249,18 @@ impl ConsoleCommand for TexDumpCommand {
         let out_path = parts
             .get(2)
             .cloned()
-            .unwrap_or_else(|| "/tmp/tex_dump.png".to_string());
+            .unwrap_or_else(|| "tex_dump.png".to_string());
+
+        if !configured_debug_archive(archive_path) {
+            return CommandOutput::error(
+                "tex.dump: archive must be one of the archives configured at engine startup",
+            );
+        }
+        let Some(out_path) = safe_tex_dump_path(&out_path) else {
+            return CommandOutput::error(
+                "tex.dump: output must be a filename inside texture-dumps/",
+            );
+        };
 
         let archive = match crate::asset_provider::Archive::open(archive_path) {
             Ok(archive) => archive,
@@ -284,7 +295,8 @@ impl ConsoleCommand for TexDumpCommand {
         };
 
         let mut png = Vec::new();
-        let encoder = byroredux_renderer::image::codecs::png::PngEncoder::new(std::io::Cursor::new(&mut png));
+        let encoder =
+            byroredux_renderer::image::codecs::png::PngEncoder::new(std::io::Cursor::new(&mut png));
         if let Err(e) = byroredux_renderer::image::ImageEncoder::write_image(
             encoder,
             &tex.pixels,
@@ -294,18 +306,55 @@ impl ConsoleCommand for TexDumpCommand {
         ) {
             return CommandOutput::error(format!("tex.dump: PNG encode: {e}"));
         }
-        if let Err(e) = std::fs::write(&out_path, &png) {
-            return CommandOutput::error(format!("tex.dump: write '{out_path}': {e}"));
+        let mut output = match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&out_path)
+        {
+            Ok(file) => file,
+            Err(e) => {
+                return CommandOutput::error(format!("tex.dump: write '{}': {e}", out_path.display()))
+            }
+        };
+        if let Err(e) = std::io::Write::write_all(&mut output, &png) {
+            let _ = std::fs::remove_file(&out_path);
+            return CommandOutput::error(format!("tex.dump: write '{}': {e}", out_path.display()));
         }
         CommandOutput::line(format!(
             "tex.dump: {}x{} ({}) -> {} [{}]",
             tex.width,
             tex.height,
             if is_font_tex { "font atlas" } else { "dds" },
-            out_path,
+            out_path.display(),
             hit
         ))
     }
+}
+
+fn configured_debug_archive(path: &str) -> bool {
+    let requested = std::path::Path::new(path).canonicalize().ok();
+    let args = crate::cli_args::effective_args();
+    args.windows(2).any(|pair| {
+        matches!(
+            pair[0].as_str(),
+            "--bsa" | "--textures-bsa" | "--scripts-bsa" | "--sounds-bsa" | "--materials-bsa"
+        ) && std::path::Path::new(&pair[1]).canonicalize().ok() == requested
+            && requested.is_some()
+    })
+}
+
+fn safe_tex_dump_path(name: &str) -> Option<std::path::PathBuf> {
+    use std::path::{Component, Path};
+    let path = Path::new(name);
+    let mut components = path.components();
+    if !matches!(components.next(), Some(Component::Normal(_))) || components.next().is_some() {
+        return None;
+    }
+    let root = Path::new("texture-dumps");
+    std::fs::create_dir_all(root).ok()?;
+    let root = root.canonicalize().ok()?;
+    let cwd = std::env::current_dir().ok()?.canonicalize().ok()?;
+    root.starts_with(cwd).then(|| root.join(path))
 }
 
 /// Whitespace split honoring double-quoted segments — archive paths like
@@ -378,6 +427,13 @@ fn decode_tex_dump_bytes(key: &str, bytes: &[u8]) -> Result<byroredux_menuxml::t
 mod tex_dump_tests {
     use super::*;
     use byroredux_core::ecs::World;
+
+    #[test]
+    fn output_path_is_confined_to_the_dump_directory() {
+        assert!(safe_tex_dump_path("../outside.png").is_none());
+        assert!(safe_tex_dump_path("/tmp/outside.png").is_none());
+        assert!(safe_tex_dump_path("nested/out.png").is_none());
+    }
 
     // ── arg split (ae572745f) ──────────────────────────────────────
     //
@@ -541,7 +597,7 @@ mod tex_dump_tests {
     }
 
     #[test]
-    fn unopenable_archive_reports_the_open_error() {
+    fn unconfigured_archive_is_rejected_before_opening() {
         let world = World::new();
         let out = TexDumpCommand.execute(
             &world,
@@ -549,8 +605,8 @@ mod tex_dump_tests {
         );
         let line = out.lines.join("\n");
         assert!(
-            line.contains("tex.dump: open 'tex-dump-tests-definitely-missing-8a6f.bsa'"),
-            "the open failure must name the archive: {line}"
+            line.contains("archive must be one of the archives configured at engine startup"),
+            "unconfigured paths must be rejected before archive IO: {line}"
         );
     }
 }

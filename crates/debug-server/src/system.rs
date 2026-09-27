@@ -87,11 +87,9 @@ impl System for DebugDrainSystem {
                 // bytes intended for the CLI screenshot path.
                 if let Some(png_bytes) = bridge.take_result_for(SCREENSHOT_OWNER_DEBUG_SERVER) {
                     let response = match &pending.save_path {
-                        Some(path) => match std::fs::write(path, &png_bytes) {
-                            Ok(()) => DebugResponse::ScreenshotSaved { path: path.clone() },
-                            Err(e) => {
-                                DebugResponse::error(format!("failed to write screenshot: {}", e))
-                            }
+                        Some(path) => match write_screenshot(path, &png_bytes) {
+                            Ok(path) => DebugResponse::ScreenshotSaved { path },
+                            Err(e) => DebugResponse::error(e),
                         },
                         None => {
                             // No path specified — save to timestamped file.
@@ -102,12 +100,9 @@ impl System for DebugDrainSystem {
                                     .unwrap_or_default()
                                     .as_secs()
                             );
-                            match std::fs::write(&auto_path, &png_bytes) {
-                                Ok(()) => DebugResponse::ScreenshotSaved { path: auto_path },
-                                Err(e) => DebugResponse::error(format!(
-                                    "failed to write screenshot: {}",
-                                    e
-                                )),
+                            match write_screenshot(&auto_path, &png_bytes) {
+                                Ok(path) => DebugResponse::ScreenshotSaved { path },
+                                Err(e) => DebugResponse::error(e),
                             }
                         }
                     };
@@ -198,6 +193,53 @@ impl System for DebugDrainSystem {
 
     fn name(&self) -> &'static str {
         "debug_drain_system"
+    }
+}
+
+/// Save debug screenshots under the working directory's `screenshots/` folder.
+/// Only a single relative filename is accepted, so absolute paths and `..`
+/// cannot escape the debug output directory.
+fn write_screenshot(name: &str, bytes: &[u8]) -> Result<String, String> {
+    use std::path::{Component, Path};
+    let path = Path::new(name);
+    let mut components = path.components();
+    if !matches!(components.next(), Some(Component::Normal(_))) || components.next().is_some() {
+        return Err("screenshot path must be a filename inside screenshots/".into());
+    }
+    let root = Path::new("screenshots");
+    std::fs::create_dir_all(root).map_err(|e| format!("failed to create screenshots/: {e}"))?;
+    let root = root
+        .canonicalize()
+        .map_err(|e| format!("failed to resolve screenshots/: {e}"))?;
+    let cwd = std::env::current_dir()
+        .and_then(|path| path.canonicalize())
+        .map_err(|e| format!("failed to resolve working directory: {e}"))?;
+    if !root.starts_with(&cwd) {
+        return Err("screenshots/ must remain inside the working directory".into());
+    }
+    let output = root.join(path);
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&output)
+        .map_err(|e| format!("failed to create screenshot: {e}"))?;
+    use std::io::Write;
+    if let Err(error) = file.write_all(bytes) {
+        let _ = std::fs::remove_file(&output);
+        return Err(format!("failed to write screenshot: {error}"));
+    }
+    Ok(output.to_string_lossy().into_owned())
+}
+
+#[cfg(test)]
+mod screenshot_path_tests {
+    use super::write_screenshot;
+
+    #[test]
+    fn rejects_absolute_and_parent_paths() {
+        assert!(write_screenshot("../outside.png", b"x").is_err());
+        assert!(write_screenshot("/tmp/outside.png", b"x").is_err());
+        assert!(write_screenshot("nested/out.png", b"x").is_err());
     }
 }
 

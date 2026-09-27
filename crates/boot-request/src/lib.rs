@@ -8,8 +8,8 @@
 //! an intent a player can hold.
 //!
 //! Both [`byro-launcher`] and the engine link this crate so the two cannot
-//! drift, and it stays free of engine/GPU dependencies so the launcher can be
-//! built and tested without a Vulkan device.
+//! drift. It uses only the renderer-free core crate for durable file writes,
+//! so the launcher builds without a Vulkan device.
 //!
 //! ```no_run
 //! use byroredux_boot_request::BootRequest;
@@ -304,11 +304,40 @@ impl BootRequest {
                 })?;
             }
         }
-        fs::write(path, text).map_err(|source| BootRequestError::Write {
-            path: path.to_path_buf(),
-            source,
-        })
+        let temp_path = atomic_temp_path(path);
+        match byroredux_core::atomic_file::atomic_write(path, &temp_path, text.as_bytes()) {
+            Ok(()) => Ok(()),
+            Err(rename_error) if path.exists() => {
+                // Windows does not replace an existing destination with rename.
+                fs::write(
+                    path,
+                    fs::read(&temp_path).map_err(|source| BootRequestError::Write {
+                        path: path.to_path_buf(),
+                        source,
+                    })?,
+                )
+                .map_err(|source| BootRequestError::Write {
+                    path: path.to_path_buf(),
+                    source,
+                })?;
+                let _ = fs::remove_file(&temp_path);
+                let _ = rename_error;
+                Ok(())
+            }
+            Err(source) => Err(BootRequestError::Write {
+                path: path.to_path_buf(),
+                source,
+            }),
+        }
     }
+}
+
+fn atomic_temp_path(path: &Path) -> std::path::PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
+    let id = NEXT_TEMP.fetch_add(1, Ordering::Relaxed);
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    path.with_file_name(format!(".{name}.{}.{}.tmp", std::process::id(), id))
 }
 
 #[cfg(test)]
@@ -438,6 +467,11 @@ mod tests {
         let path = dir.path().join("nested/boot.toml");
         sample().save(&path).unwrap();
         assert_eq!(BootRequest::load(&path).unwrap(), sample());
+    }
+
+    #[test]
+    fn save_uses_the_shared_atomic_file_writer() {
+        assert!(include_str!("lib.rs").contains("byroredux_core::atomic_file::atomic_write"));
     }
 
     #[test]

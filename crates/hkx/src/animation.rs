@@ -1244,7 +1244,7 @@ mod tests {
                 "/home/matias/Games/skyrim-original/drive_c/Program Files (x86)/The Elder Scrolls V Skyrim/Data",
             ),
             animations_archive(
-                "BYROREDUX_SKYRIM_DATA",
+                byroredux_plugin::esm::test_paths::SKYRIM_SE_ENV,
                 "/mnt/data/SteamLibrary/steamapps/common/Skyrim Special Edition/Data",
             ),
         ) else {
@@ -1310,7 +1310,7 @@ mod tests {
     #[test]
     #[ignore = "needs Skyrim SE game data on disk"]
     fn skyrim_cart_player_idle_decodes_when_assets_are_available() {
-        let data_dir = std::env::var_os("BYROREDUX_SKYRIM_DATA")
+        let data_dir = std::env::var_os(byroredux_plugin::esm::test_paths::SKYRIM_SE_ENV)
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|| {
                 std::path::PathBuf::from(

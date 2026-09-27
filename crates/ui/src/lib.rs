@@ -143,7 +143,7 @@ impl UiManager {
     fn install_player(&mut self, player: SwfPlayer, name: &str) {
         self.set_input_focus(false);
         self.player = Some(player);
-        self.menu_name = name.to_string();
+        self.menu_name = canonical_menu_name(name).unwrap_or_else(|| name.to_string());
         self.visible = true;
         self.set_input_focus(true);
         log::info!(
@@ -355,6 +355,50 @@ impl UiManager {
     // a real menu stack must define which visible layer receives focus"
     // note. Deleted rather than left as unreachable API surface; trivial
     // to re-add once that policy exists and needs it.
+}
+
+/// Convert known Bethesda movie filenames to the menu identifiers exposed to
+/// Papyrus. This boundary is shared by archive-loaded and developer-loaded SWFs.
+fn canonical_menu_name(name: &str) -> Option<String> {
+    let basename = name.rsplit(['/', '\\']).next().unwrap_or(name);
+    let stem = basename.rsplit_once('.').map_or(basename, |(stem, _)| stem);
+    let canonical = match stem.to_ascii_lowercase().as_str() {
+        "hudmenu" => "HUDMenu",
+        "inventorymenu" => "InventoryMenu",
+        "magicmenu" => "MagicMenu",
+        "statsmenu" => "StatsMenu",
+        "mapmenu" => "MapMenu",
+        "questjournal" => "Journal Menu",
+        "messageboxmenu" => "MessageBoxMenu",
+        "loadingmenu" => "LoadingMenu",
+        "mainmenu" => "MainMenu",
+        "pausemenu" => "PauseMenu",
+        "containermenu" => "ContainerMenu",
+        "bartermenu" => "BarterMenu",
+        "favoritesmenu" => "FavoritesMenu",
+        "dialoguemenu" => "Dialogue Menu",
+        "crafting menu" => "Crafting Menu",
+        _ => return None,
+    };
+    Some(canonical.to_string())
+}
+
+#[cfg(test)]
+mod menu_name_tests {
+    use super::canonical_menu_name;
+
+    #[test]
+    fn archive_and_dev_paths_resolve_to_bethesda_menu_names() {
+        assert_eq!(
+            canonical_menu_name("Interface\\HUDMenu.SWF").as_deref(),
+            Some("HUDMenu")
+        );
+        assert_eq!(
+            canonical_menu_name("inventorymenu.swf").as_deref(),
+            Some("InventoryMenu")
+        );
+        assert_eq!(canonical_menu_name("modmenu.swf"), None);
+    }
 }
 
 #[cfg(test)]

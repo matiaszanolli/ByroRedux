@@ -367,7 +367,17 @@ fn handle_client(stream: Arc<TcpStream>, queue: CommandQueue, shutdown: Arc<Atom
         // Wait for the drain system to process it (next frame).
         match rx.recv_timeout(COMMAND_RESPONSE_TIMEOUT) {
             Ok(response) => {
-                if let Err(e) = wire::send(&mut writer, &response) {
+                let send_result = match wire::send(&mut writer, &response) {
+                    Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
+                        let fallback = DebugResponse::error(format!(
+                            "response exceeded the {} byte debug-protocol limit",
+                            byroredux_debug_protocol::wire::MAX_MESSAGE_SIZE
+                        ));
+                        wire::send(&mut writer, &fallback)
+                    }
+                    result => result,
+                };
+                if let Err(e) = send_result {
                     log::warn!("Debug client write error: {}", e);
                     return;
                 }

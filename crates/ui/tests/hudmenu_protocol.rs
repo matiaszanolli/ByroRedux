@@ -1,6 +1,6 @@
 //! Skyrim `hudmenu.swf` protocol pins (M48.6).
 //!
-//! Gated on `BYROREDUX_SKYRIM_DATA` (or `BYROREDUX_SKYRIMSE_DATA`)
+//! Gated on the canonical `BYROREDUX_SKYRIMSE_DATA` test path.
 //! pointing at a real Skyrim SE `Data/` directory, so `cargo test` stays
 //! hermetic without the game installed.
 //!
@@ -21,7 +21,7 @@ use byroredux_ui::ScaleformHostCatalog;
 use byroredux_ui::ScaleformProfile;
 
 fn data_dir() -> Option<std::path::PathBuf> {
-    for var in ["BYROREDUX_SKYRIM_DATA", "BYROREDUX_SKYRIMSE_DATA"] {
+    for var in [byroredux_plugin::esm::test_paths::SKYRIM_SE_ENV] {
         if let Some(dir) = std::env::var(var).ok() {
             return Some(std::path::PathBuf::from(dir));
         }

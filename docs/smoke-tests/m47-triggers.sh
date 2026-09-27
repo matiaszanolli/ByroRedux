@@ -120,7 +120,7 @@ if [[ "${1:-}" == "--self-test" ]]; then
     exit 0
 fi
 
-SKYRIM_DATA="${BYROREDUX_SKYRIM_DATA:-/mnt/data/SteamLibrary/steamapps/common/Skyrim Special Edition/Data}"
+SKYRIM_DATA="${BYROREDUX_SKYRIMSE_DATA:-/mnt/data/SteamLibrary/steamapps/common/Skyrim Special Edition/Data}"
 PORT="${BYRO_DEBUG_PORT:-9876}"
 BENCH_FRAMES="${BYROREDUX_SMOKE_FRAMES:-30}"
 # #3160 — whether the cell is the pinned default decides the recognition

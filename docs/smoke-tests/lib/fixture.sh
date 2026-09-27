@@ -74,7 +74,7 @@ smoke_load_fixture() {
     fi
 
     # Per-game data directory: the fixture names its override variable
-    # (BYROREDUX_SKYRIM_DATA, BYROREDUX_FNV_DATA, …) and its canonical
+    # (BYROREDUX_SKYRIMSE_DATA, BYROREDUX_FNV_DATA, …) and its canonical
     # default, matching the table in docs/smoke-tests/README.md.
     SMOKE_DATA="${!FIXTURE_DATA_ENV:-$FIXTURE_DATA_DEFAULT}"
 

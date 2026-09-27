@@ -74,6 +74,23 @@ use winit::window::{CursorGrabMode, Window};
 
 use crate::components::InputState;
 
+fn debug_server_allowed(debug_build: bool, opt_in: Option<&str>) -> bool {
+    debug_build || matches!(opt_in, Some("1" | "true" | "yes"))
+}
+
+#[cfg(test)]
+mod debug_server_gate_tests {
+    use super::debug_server_allowed;
+
+    #[test]
+    fn release_debug_server_requires_explicit_opt_in() {
+        assert!(!debug_server_allowed(false, None));
+        assert!(!debug_server_allowed(false, Some("0")));
+        assert!(debug_server_allowed(false, Some("1")));
+        assert!(debug_server_allowed(true, None));
+    }
+}
+
 fn main() -> Result<()> {
     let mut args = std::env::args_os();
     let executable = args.next().unwrap_or_else(|| "byroredux".into());
@@ -155,7 +172,6 @@ const BENCH_GPU_KEYS: [&str; 22] = [
     "groundcover_models",
     "volumetrics_inject",
     "volumetrics_integrate",
-
 ];
 
 /// Value of the `bench:` line's `gpu_inactive=` token — the brackets whose
@@ -840,7 +856,10 @@ impl App {
         // states this precondition ("Call this after all systems have
         // been added to the scheduler").
         #[cfg(feature = "debug-server")]
-        let debug_server = {
+        let debug_server = if debug_server_allowed(
+            cfg!(debug_assertions),
+            std::env::var("BYRO_DEBUG_SERVER").ok().as_deref(),
+        ) {
             let debug_port: u16 = std::env::var("BYRO_DEBUG_PORT")
                 .ok()
                 .and_then(|s| s.parse().ok())
@@ -852,6 +871,9 @@ impl App {
                     None
                 }
             }
+        } else {
+            log::info!("Debug server disabled (set BYRO_DEBUG_SERVER=1 to opt in)");
+            None
         };
 
         boot::install_runtime_registries(&mut world, &scheduler);

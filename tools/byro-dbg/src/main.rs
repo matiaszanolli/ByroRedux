@@ -34,6 +34,10 @@ fn main() {
             std::process::exit(1);
         }
     };
+    if let Err(e) = configure_read_timeout(&stream) {
+        eprintln!("Failed to configure socket read timeout: {}", e);
+        std::process::exit(1);
+    }
 
     if tui_mode {
         if let Err(e) = tui::run(stream) {
@@ -153,5 +157,38 @@ fn parse_shorthand(input: &str) -> Option<DebugRequest> {
                 None
             }
         }
+    }
+}
+
+fn configure_read_timeout(stream: &TcpStream) -> io::Result<()> {
+    stream.set_read_timeout(Some(std::time::Duration::from_secs(10)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_common_shorthand_requests() {
+        assert!(matches!(parse_shorthand("ping"), Some(DebugRequest::Ping)));
+        assert!(matches!(
+            parse_shorthand("STATS"),
+            Some(DebugRequest::Stats)
+        ));
+        assert!(
+            matches!(parse_shorthand("entities Transform"), Some(DebugRequest::ListEntities { component: Some(name) }) if name == "Transform")
+        );
+        assert!(parse_shorthand("unknown command").is_none());
+    }
+
+    #[test]
+    fn configures_a_ten_second_read_timeout() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        configure_read_timeout(&client).unwrap();
+        assert_eq!(
+            client.read_timeout().unwrap(),
+            Some(std::time::Duration::from_secs(10))
+        );
     }
 }

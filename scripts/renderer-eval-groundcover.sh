@@ -9,7 +9,7 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 fnv_data="${BYROREDUX_FNV_DATA:-/mnt/data/SteamLibrary/steamapps/common/Fallout New Vegas/Data}"
-skyrim_data="${BYROREDUX_SKYRIM_DATA:-/mnt/data/SteamLibrary/steamapps/common/Skyrim Special Edition/Data}"
+skyrim_data="${BYROREDUX_SKYRIMSE_DATA:-/mnt/data/SteamLibrary/steamapps/common/Skyrim Special Edition/Data}"
 output_root="${BYROREDUX_GROUNDCOVER_EVAL_OUT:-${repo_root}/target/renderer-eval-groundcover}"
 frames="${BYROREDUX_GROUNDCOVER_EVAL_FRAMES:-180}"
 runner="${BYROREDUX_RENDER_EVAL_RUNNER:-}"

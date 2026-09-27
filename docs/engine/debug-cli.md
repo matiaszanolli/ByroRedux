@@ -12,6 +12,12 @@ console commands (`tex.missing`, `mesh.info`, …) dispatch through the engine's
 **Tests:** wire, evaluator, listener, command-dispatch, and command-family tests
 live beside their implementations.
 
+The listener starts automatically in debug builds. Release builds require
+`BYRO_DEBUG_SERVER=1` to opt in. Debug screenshots accept a filename under
+`screenshots/`; `tex.dump` reads only archives configured at engine startup and
+writes under `texture-dumps/`. Loose `LoadNif` paths stay within configured game
+data roots.
+
 > Last reconciled 2026-08-25 (Session 72 closeout). The doc was substantially
 > rewritten 2026-05-11 (`478b9c0`); since then the debug-UI plan (Phases 1–5)
 > added the `Metrics` / `LoadNif` / `Load*Cell` / `ListGameProfiles`
@@ -176,7 +182,7 @@ using the generic `register_component::<T>()` helper, called from
 `byroredux-core`). The registry is owned by the `DebugDrainSystem`
 (`DebugDrainSystem.registry`), not stored as a World resource.
 
-### Currently registered (23 components)
+### Currently registered (49 components)
 
 | Component | Fields |
 |-----------|--------|
@@ -199,10 +205,36 @@ using the generic `register_component::<T>()` helper, called from
 | `AnimatedSpecularColor` | (tuple) — `NiMaterialColorController` target 2 |
 | `AnimatedEmissiveColor` | (tuple) — `NiMaterialColorController` target 3 (neon signs, plasma glow, muzzle flashes) |
 | `AnimatedShaderColor` | (tuple) — `BSEffect/BSLightingShaderPropertyColorController` |
+| `AnimatedUvTransform` | (tuple) — animated texture-coordinate transform |
 | `AnimationPlayer` | clip_handle, local_time, playing, speed, reverse_direction, root_entity, prev_time (#486 ping-pong snapshot) |
 | `AnimationStack` | layers, root_entity |
 | `Inventory` | items — M41 Phase 2 equip slice (#896 / be4663b), surfaces NPC outfit contents to byro-dbg |
 | `EquipmentSlots` | occupants — biped-slot bitmask coverage, pairs with `Inventory` for the M41 smoke-test workflow |
+| `FogVolume` | bounds, extinction_per_meter, single_scatter_albedo, edge_softness, source |
+| `Furniture` | markers — authored sit, sleep, and lean points |
+| `SandboxBehavior` | (state marker) — idle-in-area procedure |
+| `Seated` | furniture — active furniture reference |
+| `WanderBehavior` | wander_radius, form_id |
+| `WanderState` | home, target, phase, pick_count |
+| `TravelBehavior` | radius, target_form_id, form_id |
+| `TravelState` | destination |
+| `Traveled` | (marker) — travel package completion |
+| `FollowBehavior` | target_form_id, follow_distance |
+| `FollowState` | target_entity |
+| `EscortBehavior` | target_form_id, destination_form_id, destination_radius, collect_distance, form_id |
+| `EscortState` | target_entity, destination |
+| `Escorted` | (marker) — escort relationship state |
+| `GuardBehavior` | anchor, leash radius, form_id |
+| `GuardState` | anchor |
+| `PatrolBehavior` | patrol package parameters |
+| `PatrolState` | route, target, phase |
+| `ActorValues` | values — actor-value layers keyed by AVIF FormID |
+| `ActorVitals` | health — resolved per-game health AVIF FormID |
+| `EquippedWeapon` | inventory_index, base_form_id, damage, reach, speed |
+| `Dead` | (marker) — actor death state |
+| `CreatureAttack` | damage — creature attack profile |
+| `Perks` | entries — owned perk ranks |
+| `FactionReputation` | entries — faction reputation values |
 
 Post-#517 the single `AnimatedColor` slot is split into one component per
 target. An entity with both a diffuse and an emissive controller now carries
@@ -273,12 +305,13 @@ commands were unreachable from `byro-dbg` because `tex.missing` parsed as
 
 The console commands are registered in `byroredux/src/commands/mod.rs`
 (`build_command_registry()`) plus the save/load implementations in
-`byroredux/src/save_io.rs`. Current registered commands (**68**) grouped by
+`byroredux/src/save_io.rs`. Current registered commands (**92**) grouped by
 purpose:
 
 ```
 # Engine state
 help                        → list every registered command
+hardcore                    → show or change the active hardcore ruleset
 stats                       → FPS / frame time / entity / mesh / texture counts
 entities [<Component>]      → list entities (optionally filtered by component)
 systems                     → registered ECS systems in execution order
@@ -375,6 +408,9 @@ studio.remove <id> / studio.clear → take assets back out (GPU refs reclaimed v
 studio.overlay <on|off>     → hide the Studio window so screenshots show only the room
 
 # Renderer and ownership integrity
+exposure                    → inspect live auto-exposure state
+tonemap                     → inspect or select the presentation tone mapper
+rt.masks                    → inspect ray-tracing shadow-mask state
 r.health                    → renderer health summary
 rt.integrity                → ray-tracing structure integrity checks
 lod.coverage                → current LOD coverage diagnostics
@@ -391,6 +427,7 @@ time.pause / time.resume    → pause while retaining the last non-zero rate
 time.advance <hours>        → advance game hours with multi-day rollover
 
 # World streaming + scripting
+cell.owners                 → list cell ownership diagnostics
 door.teleport <entity_id>   → inspect a door's XTEL destination (FormID,
                              Z-up position/rotation, resolved parent cell).
                              M40 Phase 2 door-teleport triage
@@ -401,6 +438,18 @@ quest.show / quest.aliases  → inspect quest state, objectives, and aliases
 scene.show                  → inspect a live scene and its phase/action state
 quest.start / quest.stop    → control quest running state
 quest.setstage              → advance a quest through the canonical stage path
+quest.effects               → inspect the quest effect log
+
+# Legacy HUD + focused diagnostics
+hud.on / hud.off            → show or hide the active legacy HUD
+hud.values                  → inspect current HUD trait values
+hud.heading                 → inspect the active HUD heading
+hud.status                  → report HUD profile and visibility
+hud.debug                   → toggle HUD diagnostics
+depth.stats                 → inspect depth-buffer precision statistics
+npc.appearance              → inspect NPC appearance and FaceGen state
+ragdoll.status              → report active ragdoll state
+sdk.compat                  → summarize SDK compatibility adapters
 
 # Save/load
 save <slot>                 → queue an atomic snapshot write
@@ -1152,7 +1201,7 @@ byro> components
   TextureHandle
   Transform
   WorldBound
-(23 components)
+(49 components)
 
 byro> entities Inventory
   Entity 12 "saadia"

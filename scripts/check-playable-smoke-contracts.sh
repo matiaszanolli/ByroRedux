@@ -34,7 +34,7 @@ for name in p0-door-interaction p1-character-traversal p2-melee-core p5-save-res
             done
         fi
         set +e
-        output="$(BYROREDUX_SKYRIM_DATA="$MISSING_DATA" \
+        output="$(BYROREDUX_SKYRIMSE_DATA="$MISSING_DATA" \
             BYROREDUX_FNV_DATA="$MISSING_DATA" \
             BYROREDUX_FO3_DATA="$MISSING_DATA" \
             BYROREDUX_FO4_DATA="$MISSING_DATA" "$smoke" "$game" 2>&1)"
@@ -59,7 +59,7 @@ done
 for name in m48-menu-load; do
     smoke="$ROOT_DIR/docs/smoke-tests/$name.sh"
     set +e
-    output="$(BYROREDUX_SKYRIM_DATA="$MISSING_DATA" BYROREDUX_FO4_DATA="$MISSING_DATA" "$smoke" 2>&1)"
+    output="$(BYROREDUX_SKYRIMSE_DATA="$MISSING_DATA" BYROREDUX_FO4_DATA="$MISSING_DATA" "$smoke" 2>&1)"
     status=$?
     set -e
     [[ $status -eq 77 ]] \

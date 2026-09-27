@@ -7,7 +7,7 @@
 
 set -euo pipefail
 
-SKYRIM_DATA="${BYROREDUX_SKYRIM_DATA:-/mnt/data/SteamLibrary/steamapps/common/Skyrim Special Edition/Data}"
+SKYRIM_DATA="${BYROREDUX_SKYRIMSE_DATA:-/mnt/data/SteamLibrary/steamapps/common/Skyrim Special Edition/Data}"
 PORT="${BYRO_DEBUG_PORT:-9876}"
 BENCH_FRAMES="${BYROREDUX_SMOKE_FRAMES:-30}"
 CELL="${BYROREDUX_QUEST_CELL:-WhiterunBanneredMare}"

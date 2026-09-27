@@ -12,7 +12,7 @@
 //!     "<Skyrim Special Edition>/Data"
 //! ```
 //!
-//! With no positional argument the probe uses `BYROREDUX_SKYRIM_DATA`, then
+//! With no positional argument the probe uses `BYROREDUX_SKYRIMSE_DATA`, then
 //! falls back to the repository's conventional local Steam path.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -427,7 +427,7 @@ fn data_dir_from_args() -> Result<PathBuf, String> {
     let first = args.next();
     if matches!(first.as_deref(), Some("-h" | "--help")) {
         println!("usage: mq101_conformance [SKYRIM_DATA_DIR]");
-        println!("       defaults to BYROREDUX_SKYRIM_DATA, then {DEFAULT_SKYRIM_DATA}");
+        println!("       defaults to BYROREDUX_SKYRIMSE_DATA, then {DEFAULT_SKYRIM_DATA}");
         std::process::exit(0);
     }
     if let Some(extra) = args.next() {
@@ -435,7 +435,7 @@ fn data_dir_from_args() -> Result<PathBuf, String> {
     }
     Ok(first
         .map(PathBuf::from)
-        .or_else(|| std::env::var_os("BYROREDUX_SKYRIM_DATA").map(PathBuf::from))
+        .or_else(|| std::env::var_os(byroredux_plugin::esm::test_paths::SKYRIM_SE_ENV).map(PathBuf::from))
         .unwrap_or_else(|| PathBuf::from(DEFAULT_SKYRIM_DATA)))
 }
 

@@ -172,5 +172,33 @@ pub(crate) fn build_command_registry() -> CommandRegistry {
 }
 
 #[cfg(test)]
+mod debug_cli_doc_tests {
+    use super::build_command_registry;
+
+    #[test]
+    fn every_registered_command_is_named_in_debug_cli_docs() {
+        let docs = include_str!("../../../docs/engine/debug-cli.md");
+        let registry = build_command_registry();
+        let commands = registry.list();
+        assert!(
+            docs.contains(&format!(
+                "Current registered commands (**{}**)",
+                commands.len()
+            )),
+            "debug-cli.md command count must match the live registry ({})",
+            commands.len()
+        );
+        let missing: Vec<_> = commands
+            .iter()
+            .filter(|(name, _)| !docs.contains(name))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "commands missing from debug-cli.md: {missing:?}"
+        );
+    }
+}
+
+#[cfg(test)]
 #[path = "../commands_tests.rs"]
 mod tests;

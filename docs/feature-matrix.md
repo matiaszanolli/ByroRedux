@@ -145,7 +145,7 @@ layouts); see the gaps table below.
 | Feature | Status |
 |---|---|
 | 3D spatial audio (kira 0.10) | ✓ |
-| BSA WAV decode | ✓ (combat one-shots cache decoded paths locally; shared `SoundCache` is not installed) |
+| BSA WAV decode | ✓ (combat one-shots use the engine-wide `SoundCache`, which caches decoded paths and misses) |
 | One-shot sounds + footstep system | ✓ |
 | Looping ambient (tweened stop on despawn) | ✓ |
 | Streaming music (OGG, crossfade) | ✓ |

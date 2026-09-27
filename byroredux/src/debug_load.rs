@@ -149,10 +149,39 @@ fn exec_load_nif(world: &mut World, ctx: &mut VulkanContext, path: &str, label: 
 /// Try `path` as a loose file first; on a miss, scan every `--bsa`
 /// CLI arg for a hit.
 fn resolve_nif_bytes(path: &str) -> Option<Vec<u8>> {
-    if let Ok(bytes) = std::fs::read(path) {
-        return Some(bytes);
-    }
+    use std::path::{Component, Path};
     let args: Vec<String> = crate::cli_args::effective_args();
+    let allowed_roots: Vec<_> = args
+        .windows(2)
+        .filter(|pair| {
+            matches!(
+                pair[0].as_str(),
+                "--esm"
+                    | "--bsa"
+                    | "--textures-bsa"
+                    | "--scripts-bsa"
+                    | "--sounds-bsa"
+                    | "--materials-bsa"
+            )
+        })
+        .filter_map(|pair| Path::new(&pair[1]).parent()?.canonicalize().ok())
+        .collect();
+    let requested = Path::new(path);
+    if requested.is_relative()
+        && requested
+            .components()
+            .all(|part| matches!(part, Component::Normal(_) | Component::CurDir))
+    {
+        for root in &allowed_roots {
+            if let Ok(candidate) = root.join(requested).canonicalize() {
+                if candidate.starts_with(root) {
+                    if let Ok(bytes) = std::fs::read(candidate) {
+                        return Some(bytes);
+                    }
+                }
+            }
+        }
+    }
     for window in args.windows(2) {
         if window[0] != "--bsa" {
             continue;

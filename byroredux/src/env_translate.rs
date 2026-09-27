@@ -2954,7 +2954,7 @@ mod tests {
     #[test]
     #[ignore = "needs Skyrim SE game data on disk"]
     fn riverwater_flowne_real_record_layers_run_downstream() {
-        let data_dir = std::env::var_os("BYROREDUX_SKYRIM_DATA")
+        let data_dir = std::env::var_os(byroredux_plugin::esm::test_paths::SKYRIM_SE_ENV)
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|| {
                 std::path::PathBuf::from(

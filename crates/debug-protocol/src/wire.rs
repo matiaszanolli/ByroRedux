@@ -6,13 +6,24 @@ use serde::{de::DeserializeOwned, Serialize};
 use std::io::{self, Read, Write};
 
 /// Maximum message size (16 MB) — sanity check against corrupt streams.
-const MAX_MESSAGE_SIZE: u32 = 16 * 1024 * 1024;
+pub const MAX_MESSAGE_SIZE: usize = 16 * 1024 * 1024;
 
 /// Encode a message as length-prefixed JSON bytes.
 pub fn encode<T: Serialize>(msg: &T) -> io::Result<Vec<u8>> {
     let json =
         serde_json::to_vec(msg).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-    let len = json.len() as u32;
+    if json.len() > MAX_MESSAGE_SIZE {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "message too large: {} bytes (max {})",
+                json.len(),
+                MAX_MESSAGE_SIZE
+            ),
+        ));
+    }
+    let len =
+        u32::try_from(json.len()).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
     let mut buf = Vec::with_capacity(4 + json.len());
     buf.extend_from_slice(&len.to_be_bytes());
     buf.extend_from_slice(&json);
@@ -25,7 +36,7 @@ pub fn decode<T: DeserializeOwned>(reader: &mut impl Read) -> io::Result<T> {
     reader.read_exact(&mut len_buf)?;
     let len = u32::from_be_bytes(len_buf);
 
-    if len > MAX_MESSAGE_SIZE {
+    if len as usize > MAX_MESSAGE_SIZE {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             format!(
@@ -100,7 +111,7 @@ mod tests {
 
     #[test]
     fn rejects_oversized_message() {
-        let fake_len = (MAX_MESSAGE_SIZE + 1).to_be_bytes();
+        let fake_len = (MAX_MESSAGE_SIZE as u32 + 1).to_be_bytes();
         let mut cursor = Cursor::new(fake_len.to_vec());
         let result: io::Result<DebugRequest> = decode(&mut cursor);
         assert!(result.is_err());
@@ -108,6 +119,14 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("message too large"));
+    }
+
+    #[test]
+    fn encode_rejects_response_payloads_over_the_protocol_limit() {
+        let response = DebugResponse::error("x".repeat(MAX_MESSAGE_SIZE));
+        let error = encode(&response).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("message too large"));
     }
 
     /// Phase 1 — pin every new request variant's JSON shape so an

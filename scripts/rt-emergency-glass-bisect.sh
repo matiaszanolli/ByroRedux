@@ -6,7 +6,7 @@ set -uo pipefail
 
 script_repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 repo="${BYROREDUX_RT_BISECT_REPO:-${script_repo}}"
-data="${BYROREDUX_SKYRIM_DATA:-/mnt/data/SteamLibrary/steamapps/common/Skyrim Special Edition/Data}"
+data="${BYROREDUX_SKYRIMSE_DATA:-/mnt/data/SteamLibrary/steamapps/common/Skyrim Special Edition/Data}"
 artifact_root="${BYROREDUX_RT_BISECT_OUT:-/tmp/byroredux-rt-glass-bisect}"
 frames="${BYROREDUX_RT_BISECT_FRAMES:-60}"
 good_luma="${BYROREDUX_RT_BISECT_GOOD_LUMA:-0.30}"
