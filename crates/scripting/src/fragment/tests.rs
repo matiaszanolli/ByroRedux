@@ -2794,7 +2794,7 @@ fn dispatch_activate_then_set_open_updates_mq101_style_gate() {
     quest_fragment_dispatch_system(&world);
 
     // #2654 — the activation is queued, not inserted: the real schedule
-    // runs three of the four `ActivateEvent` consumers *before* fragment
+    // runs most `ActivateEvent` consumers *before* fragment
     // dispatch, so a marker inserted here would be drained at Stage::Late
     // having reached none of them. It must not be live yet...
     assert!(

@@ -1052,8 +1052,8 @@ fn apply_scene_effect(
             };
             // Queue rather than insert: `quest_fragment_dispatch_system` is
             // the LAST producer of `ActivateEvent` in Stage::Update, but
-            // three of the four consumers (rumble, quest_advance,
-            // two_state_activator) are scheduled earlier and
+            // most consumers (container loot, rumble, quest_advance,
+            // two_state_activator, mg07) are scheduled earlier and
             // `event_cleanup_system` drains the marker at Stage::Late the
             // same frame — so a directly-inserted marker reached none of
             // them, ever (#2654). `fragment_activation_flush_system` turns

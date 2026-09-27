@@ -151,6 +151,21 @@ pub(super) fn register_update_systems(scheduler: &mut Scheduler) {
             .reads_resource::<byroredux_scripting::ReferenceEnableState>()
             .writes::<byroredux_scripting::ActivateEvent>(),
     );
+    // #2654 — quest fragments queue their `<Ref>.Activate()` targets rather
+    // than inserting `ActivateEvent` directly, because
+    // `quest_fragment_dispatch` runs *after* most of the consumers below (it
+    // has to: it consumes the `QuestStageAdvanced` markers
+    // `quest_advance_dispatch` emits) and `event_cleanup_system` drains the
+    // marker at Stage::Late the same frame. Flush the queue here, directly
+    // after the canonical player-interaction producer, so a fragment
+    // activation reaches every consumer exactly once on the following frame.
+    // #4712 — that includes `container_loot_system` immediately below: a
+    // flush registered after it turned a scripted `ContainerRef.Activate()`
+    // or loose-item `Activate()` into a silent no-op.
+    scheduler.add_exclusive(
+        Stage::Update,
+        byroredux_scripting::fragment_activation_flush_system,
+    );
     scheduler.add_exclusive_with_access(
         Stage::Update,
         crate::inventory::container_loot_system,
@@ -279,18 +294,6 @@ pub(super) fn register_update_systems(scheduler: &mut Scheduler) {
             .writes::<byroredux_core::animation::AnimationPlayer>()
             .writes::<byroredux_core::animation::AnimationStack>(),
     );
-    // #2654 — quest fragments queue their `<Ref>.Activate()` targets rather
-    // than inserting `ActivateEvent` directly, because
-    // `quest_fragment_dispatch` runs *after* three of the four consumers
-    // below (it has to: it consumes the `QuestStageAdvanced` markers
-    // `quest_advance_dispatch` emits) and `event_cleanup_system` drains the
-    // marker at Stage::Late the same frame. Flush the queue here, alongside
-    // the canonical player-interaction producer, so a fragment activation
-    // reaches every consumer exactly once on the following frame.
-    scheduler.add_exclusive(
-        Stage::Update,
-        byroredux_scripting::fragment_activation_flush_system,
-    );
     scheduler.add_exclusive(Stage::Update, rumble_on_activate_dispatch);
     scheduler.add_exclusive(
         Stage::Update,
@@ -357,8 +360,8 @@ pub(super) fn register_update_systems(scheduler: &mut Scheduler) {
     // `PendingFragmentActivations` rather than inserting it here (#3936),
     // because `scene_package_system` above runs after
     // `rumble_on_activate_dispatch` and `quest_advance_dispatch`. The
-    // head-of-frame `fragment_activation_flush_system` delivers it to all
-    // four consumers next frame. This registration consumes the flushed
+    // early `fragment_activation_flush_system` delivers it to every
+    // consumer next frame. This registration consumes the flushed
     // marker so GetVMScriptVariable phase gates observe the updated
     // two-state activator, before end-of-frame event cleanup.
     scheduler.add_exclusive(

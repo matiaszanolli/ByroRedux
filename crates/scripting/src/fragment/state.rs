@@ -385,8 +385,9 @@ impl FragmentExecutionQueue {
 /// by [`fragment_activation_flush_system`] at the head of the next frame.
 ///
 /// Why a frame of latency instead of a direct insert: `Stage::Update`
-/// schedules the `ActivateEvent` consumers (`rumble_on_activate_dispatch`,
-/// `quest_advance_system`, `two_state_activator_system`) *before*
+/// schedules the `ActivateEvent` consumers (`container_loot_system`,
+/// `rumble_on_activate_dispatch`, `quest_advance_system`,
+/// `two_state_activator_system`, `mg07_on_activate_system`) *before*
 /// `quest_fragment_dispatch_system`, because fragment dispatch consumes the
 /// `QuestStageAdvanced` markers `quest_advance_system` produces — the order
 /// cannot simply be swapped. With `event_cleanup_system` draining the marker

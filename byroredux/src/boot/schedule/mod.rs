@@ -43,8 +43,8 @@ pub(crate) fn build_scheduler() -> Scheduler {
 #[cfg(test)]
 mod fragment_activation_order_tests {
     //! SCR-D6-NEW11-01 / #2654 — `quest_fragment_dispatch` is the last
-    //! producer of `ActivateEvent` in `Stage::Update`, but three of the
-    //! four consumers are scheduled before it (and it cannot simply move
+    //! producer of `ActivateEvent` in `Stage::Update`, but most of the
+    //! consumers are scheduled before it (and it cannot simply move
     //! earlier: it consumes the `QuestStageAdvanced` markers
     //! `quest_advance_dispatch` emits). Fragment activations are therefore
     //! queued and flushed at the head of the next frame — which only works
@@ -71,11 +71,17 @@ mod fragment_activation_order_tests {
         };
 
         // Match the *registration* sites, not the `fn` definitions above them.
+        // #4712 / #4116 — `container_loot_system` and
+        // `mg07_on_activate_dispatch` are real Update-stage consumers too;
+        // the former was registered ahead of the flush, so a scripted
+        // container/pickup `Activate()` never looted.
         let flush = pos("byroredux_scripting::fragment_activation_flush_system");
         for consumer in [
+            "crate::inventory::container_loot_system",
             "Stage::Update, rumble_on_activate_dispatch)",
             "Stage::Update, quest_advance_dispatch)",
             "byroredux_scripting::two_state_activator_system",
+            "Stage::Update, mg07_on_activate_dispatch)",
         ] {
             assert!(
                 flush < pos(consumer),

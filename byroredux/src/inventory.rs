@@ -2433,6 +2433,32 @@ mod tests {
         );
     }
 
+    /// #4712 — a scripted `ContainerRef.Activate(PlayerRef)` from a quest
+    /// fragment or package leaf is queued, then turned into an
+    /// `ActivateEvent` by `fragment_activation_flush_system`. Run in the
+    /// schedule's order (flush, then loot — pinned by
+    /// `activation_flush_is_scheduled_before_every_activate_event_consumer`),
+    /// the queued activation must actually loot the container.
+    #[test]
+    fn scripted_fragment_activate_loots_the_container() {
+        let (mut world, player) = fixture();
+        world.register::<byroredux_scripting::ActivateEvent>();
+        let container = activated_container(&mut world, player);
+        world.remove::<byroredux_scripting::ActivateEvent>(container);
+        let mut queue = byroredux_scripting::PendingFragmentActivations::default();
+        queue.push(container, player);
+        world.insert_resource(queue);
+
+        byroredux_scripting::fragment_activation_flush_system(&world, 0.0);
+        container_loot_system(&world, 0.0);
+
+        assert!(world.get::<Inventory>(container).unwrap().is_empty());
+        assert_eq!(
+            world.get::<Inventory>(player).unwrap().items.last(),
+            Some(&ItemStack::new(0x5678, 7))
+        );
+    }
+
     #[test]
     fn container_loot_rejects_locked_nonplayer_and_noncontainer_targets() {
         let (mut world, player) = fixture();
