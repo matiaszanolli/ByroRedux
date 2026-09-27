@@ -12,20 +12,23 @@ proposes a single synchronised edit across ROADMAP / HISTORY / README.
 Ritual-driven, not hook-driven — one checkpoint per session, not N per
 commit.
 
-**Last full workspace census**: 2026-09-23 (session close, HEAD `5570c221`). Tests
-**8521, 0 failing** (233 ignored), +135 vs Session 89's 8386. Rust `src/` LOC
-**~630 571**, +10 637; total `.rs` LOC **~677 328**, +12 103. Source files
-**1173** (1084 outside `tests/`), +15/+13. Workspace members **34**. Open issue
-dirs **4733**, +224. Session 90 was the fix half of Session 89's rebuilt audit
-roster. Every owner ran over 2026-09-21/22, including all six per-game audits,
-and a four-leg volumetrics-deep suite ran on 09-23: 34 reports in total. 171
-issues closed in the window, and every one is traceable to a commit. Feature
-work beside the wave:
-- Starfield scene data is lifted from meters to Bethesda units at the parser
-  boundary.
-- Immutable scene geometry is shared by exact content.
-- Direct interior loads spawn on the authored `COCMarkerHeading`.
-- Runtime-assembled Oblivion/FO3/FNV NPCs get spawn-time skin-seam blending.
+**Last full workspace census**: 2026-09-27 (session close, HEAD `bad6ef2e`). Tests
+**8785, 0 failing** (240 ignored), +264 vs Session 90's 8521. Rust `src/` LOC
+**~653 089**, +22 518; total `.rs` LOC **~700 990**, +23 662. Source files
+**1191** (1102 outside `tests/`), +18/+18. Workspace members **34**. Open issue
+dirs **4841**, +108. Session 91 was a measured performance teardown plus a fix
+wave from four new audits (gameplay, renderer ×2, exterior). The census needed
+one closeout fix first: `63c0aee3b` left `byroredux-hkx`'s tests without the
+`byroredux-plugin` dev-dependency, so the workspace test build did not compile
+at `bad6ef2e`. Work beside the wave:
+- TLAS instances sort by `(BLAS address, EntityId)`, which removed most of
+  MedTek's GPU frame in diagnostic captures (`PERFORMANCE_MEDTEK_FIX_2026-09-26.md`).
+- ReSTIR light identity is stable across re-sorts (`GpuLight` 64 → 80 B), and
+  opaque default-lit geometry uses early fragment tests.
+- Interior godrays and sky apertures are a working vertical slice
+  (`docs/engine/interior-godrays-status.md`).
+- EXAL ground cover Phase C draws every GRAS record's own model (#4413).
+- NPCs start combat on sight from faction relations and AIDT (#4414).
 
 **Current worktree checks** (2026-09-26, based on HEAD `e26441c34`):
 `scripts/check-shader-artifacts.sh` passes, and
@@ -35,19 +38,14 @@ smoke covers open-water surface/submerged behavior; it does not close the
 shoreline/LOD visual gate below. These checks do not refresh the workspace test
 census above.
 
-**Last clippy result** (2026-09-23, HEAD `5570c221`; not rechecked on current
-worktree): the CI gate (`cargo clippy --workspace -- -D warnings`) was red.
-Two fixes from that window each stop their crate:
+**Last clippy result** (per-crate recheck 2026-09-27, HEAD `bad6ef2e`): the CI
+gate (`cargo clippy --workspace -- -D warnings`) is still red. The same two
+fixes from Session 90 each stop their crate:
 `crates/hkx/src/animation.rs:354` (`manual_range_contains`, from #4655's
 `a323138d`) and `crates/menuxml/src/parse.rs:749` (`too_many_arguments`, from
 #4650's `20faaf89`). Because those crates fail, clippy cannot re-check #4765's
-three bin-crate errors. The P2 combat-tail caveat recorded at that checkpoint
-has since been fixed (see the playable-slice section). The 75-run bench matrix
-captured at `cb44d99f6` had 19 of 25 medians slower than the `4c9a5b36` record.
-It has no same-machine control, and every scene fingerprint differs from the
-record's, so it is neither the new record nor a confirmed regression. At that
-checkpoint the live record was 579 commits stale; **R6a-stale-22** below covers
-both.
+three bin-crate errors. The bench-of-record is 708 commits stale, and the
+harness itself has since changed; **R6a-stale-22** below covers both.
 
 **Current state in one paragraph.** The FSR 3.1 integration plan is complete
 through phase 7: FSR 3.1.4 Quality is the engine default, all four presets
@@ -1343,6 +1341,22 @@ live ECS inspection (`find`, `entities(Component)`, screenshot).
   - Frame scope: a host flush before `end_command_buffer` (#4602), and the end-of-frame scratch shrink moved out of `draw_frame` under a budget (#4767).
 
   `GpuMaterial` is still pinned at 432 B. Do not publish a new FPS/ms claim from `cb44d99f6`, and do not call it a regression, until the control has run.
+
+  **Updated 2026-09-27 at Session 91 close (HEAD `bad6ef2e`, 708 commits past `4c9a5b36`).** The same-machine control still hasn't run, and the comparison has become harder:
+  - **The harness is no longer byte-stable.** `scripts/check-bench-harness-provenance.sh` now reports both `4c9a5b36` and `cb44d99f6` as DIVERGED. Two commits (#4800's `8d2a9ebad` and `88c23887b`) touched the harness pair. Both only *append* TSV columns: `raster_cmds`, and sky-cube/TLAS/cluster-cull/ground-cover-model/volumetric-phase timers plus volumetric state. Existing columns keep their positions, but the gate cannot prove that.
+  - **`gpu_main` changed meaning.** #4808 starts the main-render timer at COMPUTE instead of TOP. HEAD's `gpu_main` is therefore not comparable to the record's. `wall_fps`, `wall_ms` and `fence_ms` still are.
+  - **The `bench:` GPU fields are last-completed-frame snapshots, not capture averages.** This was found during the 09-26 early-depth work and applies to the record's GPU columns too. The 09-26 reports use per-capture means of the `gpu_geometry phases` readbacks instead.
+  - The next refresh should therefore re-run *both* `4c9a5b36` and HEAD on HEAD's harness, and compare wall/fence first.
+
+  Hot-path changes in this range. Several are expected to be large, and all are measured only in diagnostic captures under `docs/audits/*_2026-09-26.*`, not in the matrix:
+  - TLAS equal-BLAS leaves are sorted stably, and a membership change forces a BUILD (`5eb07a4f3`).
+  - Opaque default-lit geometry takes an early-fragment-test pipeline, and ReSTIR light identity is remapped across re-sorts. This adds a 29.49 MB per-frame reservoir clear at 1280×720 (`186234944`).
+  - Interior sky apertures and godrays add work to `composite.frag` and `volumetrics_inject.comp` (`0572bfd5a`).
+  - The ground-cover Phase C authored-model tier adds a new compute pass and indirect draws, on exteriors only (#4413).
+  - Composite aperture culling and volumetric visibility and transport gates are expected to *reduce* work (`e2f99ad55`, #4785–#4788).
+  - Cooperative CSG precombine spawning affects cell load, not steady-state frames (`078f650ec`).
+
+  `GpuMaterial` is still 432 B; `GpuLight` is now 80 B. Do not publish a new FPS/ms claim until both sides have run on the current harness.
 - [x] **REND-#1447** HIGH (filed 2026-06-02, `AUDIT_RENDERER_2026-06-02`): **Closed 2026-06-02** (`e6df0f5b`) — SPIR-V recompiled after DoF CameraUBO extension.
 - [x] **REND-#1448** LOW (filed 2026-06-02, `AUDIT_RENDERER_2026-06-02`): **Closed 2026-06-02** (`f8e5daad`) — screenshot extent captured at record time, survives same-frame resize.
 - [x] **BUILD-SFMATERIAL** (2026-06-03): **Closed 2026-06-03.** `ee727346` removed `pub use chunk::ChunkType` and broke `crate::StringTable` / `crate::ChunkType` in internal modules + integration test. Fixed: `ChunkType` re-exported from `lib.rs`; internal `reader.rs` and `error.rs` use module-local paths.
@@ -1600,17 +1614,17 @@ live ECS inspection (`find`, `entities(Component)`, screenshot).
 
 ## Project Stats
 
-Ground-truth as of 2026-09-23 (session close, HEAD `5570c221`). Every
+Ground-truth as of 2026-09-27 (session close, HEAD `bad6ef2e`). Every
 figure in this table was measured at that HEAD, not carried forward.
 
 | Metric                                  | Value                        |
 |-----------------------------------------|------------------------------|
-| Rust source lines (`src/` dirs)         | ~630 571                      |
-| Rust total lines (all `.rs`, excl. `target/`) | ~677 328                 |
-| Source files (`.rs`, excl. `target/`)   | 1173 total · 1084 outside `tests/` dirs (+15 / +13 since the 2026-09-21 close) |
+| Rust source lines (`src/` dirs)         | ~653 089                      |
+| Rust total lines (all `.rs`, excl. `target/`) | ~700 990                 |
+| Source files (`.rs`, excl. `target/`)   | 1191 total · 1102 outside `tests/` dirs (+18 / +18 since the 2026-09-23 close) |
 | Workspace members                       | 34 (count the `[workspace] members` block only — an unscoped `grep -c '^\s*"' Cargo.toml` returns 39, picking up quoted lines elsewhere in the file; 29 crates (incl. `menuxml`, added in Session 88) + `byroredux` binary + 4 tools: `byro-detect`, `byro-launcher`, `byro-dbg`, `texture-upscale`; `tools/nifskope` exists on disk but is not a workspace member) |
-| Tests                                   | **8521 passing, 0 failing** (`cargo test --workspace --no-fail-fast`, 2026-09-23; 233 ignored). Clean full-workspace run, including doc-tests. Always pass `--no-fail-fast` for the ground-truth count — without it, `cargo test --workspace` stops after the first binary with a failure and silently omits every crate queued behind it (Session 77 saw this first-hand: 1836 vs the true 6905) — and beware shell pipes: `cargo test … | tail` reports the *pipe's* exit code, which masked a toolchain-version failure here before the 2026-09-18 session caught it. |
-| Open issue directories                  | 4733 (`.claude/issues/`)     |
+| Tests                                   | **8785 passing, 0 failing** (`cargo test --workspace --no-fail-fast`, 2026-09-27; 240 ignored). Clean full-workspace run, including doc-tests, after the closeout added `byroredux-plugin` to `byroredux-hkx`'s dev-dependencies (at `bad6ef2e` the test build did not compile). Always pass `--no-fail-fast` for the ground-truth count — without it, `cargo test --workspace` stops after the first binary with a failure and silently omits every crate queued behind it (Session 77 saw this first-hand: 1836 vs the true 6905) — and beware shell pipes: `cargo test … | tail` reports the *pipe's* exit code, which masked a toolchain-version failure here before the 2026-09-18 session caught it. |
+| Open issue directories                  | 4841 (`.claude/issues/`)     |
 | NIFs in per-game integration sweeps     | **604 787** across seven games (2026-08-29, #3369 + #3466 took this from 184 886 by widening the gates to every mesh-bearing archive each game ships; Oblivion re-measured 2026-09-07 under #3925 to include its eight DLC archives). Oblivion 9 612 · FO3 17 172 · FNV 20 746 · Skyrim SE 33 424 · FO4 235 082 · FO76 168 208 · Starfield 120 543. |
 | Per-game NIF clean-parse rate           | See the [compatibility matrix](#compatibility-matrix) — it is the single home for per-game parse rates, sweep dates and residual truncation tails. Summary only: 100% clean on Oblivion / FO3 / FNV / Skyrim SE / FO4 / Starfield (Starfield re-measured 2026-09-24, #4440); **FO76 98.18%** — the 2026-08-29 corpus widening (#3466) exposed a 3 056-NIF truncation tail in its two `GeneratedMeshes` archives that no gate had ever opened. Recoverable 100% on all seven. |
 | Supported archive formats               | BSA v103/v104/v105, BA2 v1/v2/v3/v7/v8 |
