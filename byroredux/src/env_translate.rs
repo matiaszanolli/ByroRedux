@@ -70,14 +70,40 @@ pub(crate) const fn terrain_lod_layout(game: GameKind) -> TerrainLodLayout {
 }
 
 /// One authored diffuse quad translated to the common LOD-ring contract.
-/// `quad_origin` and `quad_cells` describe the image's world-cell footprint
-/// and therefore the UV remap independently of its source naming scheme.
+/// `quad_origin` and `quad_cells` describe the image's world-cell footprint;
+/// `u_runs_west` is the image orientation over that footprint. Together they
+/// define the UV remap ([`Self::uv_at`]) independently of the source naming
+/// scheme.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct TranslatedTerrainLodTexture {
     pub(crate) diffuse_path: String,
     pub(crate) normal_path: String,
     pub(crate) quad_origin: (i32, i32),
     pub(crate) quad_cells: i32,
+    /// #4898 — image U increases toward world west (FO3/FNV) rather than
+    /// east (Oblivion). Image V increases toward world north for both
+    /// legacy families. Read from Bethesda's own LOD meshes, which map
+    /// their quad corners as follows (S = quad size, Z-up world):
+    ///
+    /// | Mesh | (0,0) | (S,0) | (0,S) |
+    /// |---|---|---|---|
+    /// | FNV `wastelandnv.level4.x0.y56`, `x44.y60`; FO3 `wasteland.level4.x0.y0`, `x-20.y16` | (1,0) | (0,0) | (1,1) |
+    /// | Oblivion `60.00.00.32.nif` | (0,0) | (1,0) | (0,1) |
+    ///
+    /// Confirmed independently by LAND height gradients against the decoded
+    /// normal texels, and by seam continuity across shared quad edges.
+    pub(crate) u_runs_west: bool,
+}
+
+impl TranslatedTerrainLodTexture {
+    /// Image UV for a Z-up world position inside this quad's footprint.
+    pub(crate) fn uv_at(&self, world_x: f32, world_y_zup: f32) -> [f32; 2] {
+        use byroredux_core::math::coord::EXTERIOR_CELL_UNITS;
+        let size = self.quad_cells as f32 * EXTERIOR_CELL_UNITS;
+        let s = (world_x - self.quad_origin.0 as f32 * EXTERIOR_CELL_UNITS) / size;
+        let t = (world_y_zup - self.quad_origin.1 as f32 * EXTERIOR_CELL_UNITS) / size;
+        [if self.u_runs_west { 1.0 - s } else { s }, t]
+    }
 }
 
 fn fmt_oblivion_lod_coord(coord: i32) -> String {
@@ -129,6 +155,7 @@ pub(crate) fn translate_terrain_lod_textures(
                 ),
                 quad_origin: (ox, oy),
                 quad_cells: QUAD_CELLS,
+                u_runs_west: false,
             })
         }
         TerrainLodLayout::FalloutLegacy if level > 0 => {
@@ -142,6 +169,7 @@ pub(crate) fn translate_terrain_lod_textures(
                 ),
                 quad_origin: (qx, qy),
                 quad_cells: level,
+                u_runs_west: true,
             })
         }
         TerrainLodLayout::FalloutLegacy | TerrainLodLayout::Combined | TerrainLodLayout::None => {
@@ -1744,6 +1772,42 @@ mod tests {
         );
         assert_eq!(translated.quad_origin, (0, -32));
         assert_eq!(translated.quad_cells, 32);
+    }
+
+    /// #4898 — the UV contract reproduces the corner UVs of Bethesda's own
+    /// LOD meshes (quad-local Z-up offsets over a quad of size S).
+    fn assert_lod_corners(lod: &TranslatedTerrainLodTexture, corners: [([f32; 2], [f32; 2]); 3]) {
+        use byroredux_core::math::coord::EXTERIOR_CELL_UNITS;
+        let size = lod.quad_cells as f32 * EXTERIOR_CELL_UNITS;
+        let ox = lod.quad_origin.0 as f32 * EXTERIOR_CELL_UNITS;
+        let oy = lod.quad_origin.1 as f32 * EXTERIOR_CELL_UNITS;
+        for (local, expected) in corners {
+            let uv = lod.uv_at(ox + local[0] * size, oy + local[1] * size);
+            assert!(
+                (uv[0] - expected[0]).abs() < 1e-6 && (uv[1] - expected[1]).abs() < 1e-6,
+                "{}: quad-local {local:?} maps to {uv:?}, Bethesda's mesh authors {expected:?}",
+                lod.diffuse_path
+            );
+        }
+    }
+
+    #[test]
+    fn fallout_lod_quads_run_u_west_and_v_north_like_bethesdas_meshes() {
+        // FNV wastelandnv.level4.x0.y56 / x44.y60, FO3 wasteland.level4.x0.y0:
+        // (0,0)→(1,0), (S,0)→(0,0), (0,S)→(1,1).
+        for (world, qx, qy) in [("WastelandNV", 0, 56), ("WastelandNV", 44, 60), ("Wasteland", 0, 0)] {
+            let lod = translate_terrain_lod_textures(GameKind::Fallout3NV, world, 0, 4, qx, qy)
+                .expect("Fallout legacy layout");
+            assert_lod_corners(&lod, [([0.0, 0.0], [1.0, 0.0]), ([1.0, 0.0], [0.0, 0.0]), ([0.0, 1.0], [1.0, 1.0])]);
+        }
+    }
+
+    #[test]
+    fn oblivion_lod_quads_run_u_east_and_v_north_like_bethesdas_meshes() {
+        // Oblivion 60.00.00.32.nif: (0,0)→(0,0), (S,0)→(1,0), (0,S)→(0,1).
+        let lod = translate_terrain_lod_textures(GameKind::Oblivion, "Tamriel", 0x3C, 32, 0, 0)
+            .expect("Oblivion legacy layout");
+        assert_lod_corners(&lod, [([0.0, 0.0], [0.0, 0.0]), ([1.0, 0.0], [1.0, 0.0]), ([0.0, 1.0], [0.0, 1.0])]);
     }
 
     #[test]

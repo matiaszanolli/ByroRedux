@@ -68,6 +68,11 @@ const SAMPLES_PER_CELL: usize = 32 / STRIDE;
 /// World-space spacing between adjacent block-mesh vertices (BU).
 const VERT_SPACING: f32 = EXTERIOR_CELL_UNITS / 32.0 * STRIDE as f32; // 1024.0
 
+/// #4898 — shading tangent for baked legacy LOD quads: world east (+X, Y-up
+/// engine frame) with a +1 bitangent sign, so `B = cross(N, T)` is world
+/// north. The quads' normal maps are world-oriented, not image-oriented.
+const LOD_QUAD_WORLD_TANGENT: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
+
 /// Map a block-vertex index `v ∈ [0, k·SAMPLES_PER_CELL]` to the
 /// `(cell_offset ∈ [0, k), local ∈ [0, 32])` it samples. The block's far
 /// edge index belongs to the previous cell's local-32 seam, not a phantom
@@ -796,17 +801,23 @@ fn spawn_lod_block(
     // the LTEX path uses. `world_y_zup = -position.z` is the
     // algebraic inverse of `zup_to_yup_pos`'s Z component (`z_yup = -y_zup`),
     // not a fresh derivation — no forward swizzle to replace here.
+    //
+    // #4898 — the image orientation over the footprint comes from the
+    // translate contract (`uv_at`), not a hard-coded convention: FO3/FNV
+    // quads run U west, Oblivion's U east, and both run V north.
+    //
+    // The baked normal maps are world-oriented (R = east, G = north), so the
+    // shading frame must not follow the UV orientation. The explicit tangent
+    // pins T = world east (+X); with w = +1 `perturbNormal` builds
+    // B = cross(N, T) = -Z = world north for an up-facing N. That is the frame
+    // the screen-derivative fallback used to build from the old
+    // u = x, v = 1 - y mapping. Under the corrected mapping that fallback would
+    // flip to (west, south) and invert the relief. (LAND's `new_terrain` uses
+    // w = -1 because its own V is row-flipped; that sign does not apply here.)
     if let Some(lod) = translated_lod.as_ref() {
-        let quad_origin_x = lod.quad_origin.0 as f32 * EXTERIOR_CELL_UNITS;
-        let quad_origin_y = lod.quad_origin.1 as f32 * EXTERIOR_CELL_UNITS;
-        let quad_bu = lod.quad_cells as f32 * EXTERIOR_CELL_UNITS;
         for v in vertices.iter_mut() {
-            let wx = v.position[0];
-            let wy_zup = -v.position[2];
-            v.uv = [
-                (wx - quad_origin_x) / quad_bu,
-                1.0 - (wy_zup - quad_origin_y) / quad_bu,
-            ];
+            v.uv = lod.uv_at(v.position[0], -v.position[2]);
+            v.tangent = LOD_QUAD_WORLD_TANGENT;
         }
     }
 
@@ -936,6 +947,26 @@ fn block_bound(vertices: &[Vertex], holes: &[bool]) -> WorldBound {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #4898 — the baked-quad tangent must yield the world-oriented frame the
+    /// legacy LOD normal maps encode (R = east, G = north), whatever the UV
+    /// orientation. Mirrors `perturbNormalGrad`'s Path 1:
+    /// `B = sign(w) * cross(N, T)`.
+    #[test]
+    fn lod_quad_tangent_frame_is_world_east_north() {
+        let t = Vec3::new(
+            LOD_QUAD_WORLD_TANGENT[0],
+            LOD_QUAD_WORLD_TANGENT[1],
+            LOD_QUAD_WORLD_TANGENT[2],
+        );
+        let sign = if LOD_QUAD_WORLD_TANGENT[3] < 0.0 { -1.0 } else { 1.0 };
+        let up = Vec3::from(zup_to_yup_pos([0.0, 0.0, 1.0]));
+        let east = Vec3::from(zup_to_yup_pos([1.0, 0.0, 0.0]));
+        let north = Vec3::from(zup_to_yup_pos([0.0, 1.0, 0.0]));
+        assert!((t - east).length() < 1e-6, "T {t:?} is not world east {east:?}");
+        let b = sign * up.cross(t);
+        assert!((b - north).length() < 1e-6, "B {b:?} is not world north {north:?}");
+    }
 
     /// `sample_to_cell` walks cleanly across cell boundaries and maps the
     /// block's far edge to the previous cell's shared seam (local 32),
