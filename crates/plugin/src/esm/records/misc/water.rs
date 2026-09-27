@@ -286,9 +286,10 @@ pub struct WaterParams {
     pub specular_magnitude: f32,
     /// Skyrim's authored specular-radius control; zero is the legacy sentinel.
     pub specular_radius: f32,
-    /// Authored normal-layer wind directions (radians) and UV speeds. Zero
-    /// entries are sentinels for layouts without per-layer motion controls;
-    /// FO76/Starfield NAM0 linear velocity fills each missing layer.
+    /// Authored normal-layer wind directions (radians, the record's own
+    /// DNAM frame) and UV speeds. Zero entries are sentinels for layouts
+    /// without per-layer motion controls. Never filled from NAM0, which
+    /// is carried only as `WatrRecord::linear_velocity` (#4900).
     pub noise_wind_directions: [f32; 3],
     pub noise_wind_speeds: [f32; 3],
     /// Skyrim SE-only flow-map tile scale at DNAM offset 228. A zero
@@ -1489,31 +1490,23 @@ pub fn parse_watr(
     // renderer's X/Z plane (the Y component becomes -Z after the global
     // coordinate conversion). This is water-local motion, not the shared
     // weather wind used by SpeedTree.
+    //
+    // #4900 — `linear_velocity` is NAM0's only carrier. The per-layer
+    // `noise_wind_*` fields and `wind_direction` hold record-frame DNAM
+    // bearings that the translate rotates into engine XZ
+    // (`watr_angle_to_engine_xz`, #4727); writing this engine-frame vector
+    // into them (the old per-layer "fill") got rotated a second time and
+    // slid the layer across the current it was copied from, with a BU/s
+    // speed in a UV/s slot. The translate already composes the NAM0
+    // current onto every scroll layer from `linear_velocity`.
     if let Some(sub) = subs.iter().find(|sub| sub.sub_type == *b"NAM0") {
         if let (Some(x), Some(y)) = (read_f32_at(&sub.data, 0), read_f32_at(&sub.data, 4)) {
-            let speed = x.hypot(y);
-            if speed.is_finite() {
+            if x.hypot(y).is_finite() {
                 // Preserve an authored all-zero NAM0 as an explicit
                 // sentinel. The translation boundary distinguishes that
                 // from a nonzero current, while retaining provenance for
                 // diagnostics and future per-game consumers.
                 out.linear_velocity = Some([x, -y]);
-            }
-            if speed.is_finite() && speed > 1.0e-5 {
-                out.params.wind_speed = speed;
-                out.params.wind_direction = (-y).atan2(x);
-                // FO76 (and other records that use NAM0) carries one
-                // record-level linear velocity instead of the three
-                // per-layer DNAM vectors. Populate every missing layer so
-                // the authored normal stack moves as one coherent surface;
-                // retain a non-zero per-layer value when a newer layout
-                // supplied one explicitly.
-                for layer in 0..3 {
-                    if out.params.noise_wind_speeds[layer] <= 1.0e-5 {
-                        out.params.noise_wind_speeds[layer] = speed;
-                        out.params.noise_wind_directions[layer] = out.params.wind_direction;
-                    }
-                }
             }
         }
     }
@@ -2185,10 +2178,14 @@ mod tests {
             GameKind::Skyrim,
             &None,
         );
-        assert_eq!(w.params.wind_speed, 5.0);
-        assert!((w.params.wind_direction - (-4.0f32).atan2(3.0)).abs() < 1e-6);
-        assert_eq!(w.params.noise_wind_speeds[0], 5.0);
         assert_eq!(w.linear_velocity, Some([3.0, -4.0]));
+        // #4900 — NAM0 must not leak into the record-frame DNAM fields: the
+        // translate rotates those into engine XZ, so an engine-frame vector
+        // written here would be rotated twice.
+        assert_eq!(w.params.noise_wind_speeds, [0.0; 3]);
+        assert_eq!(w.params.noise_wind_directions, [0.0; 3]);
+        assert_eq!(w.params.wind_speed, 0.0);
+        assert_eq!(w.params.wind_direction, 0.0);
     }
 
     #[test]

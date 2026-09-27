@@ -2990,6 +2990,55 @@ mod tests {
         }
     }
 
+    /// #4900 — parse→translate: a NAM0 water whose DNAM leaves a layer at
+    /// zero speed (FO4 `IntOldGulletWaterSlow`: NAM0 (0.08, 0, 0), layer
+    /// speeds (0.0072, 0.0, 0.0145)). The parser used to fill that layer
+    /// from NAM0 in the engine frame; the translate then rotated it +90°
+    /// again, so it slid across the current at 4× the flow term. Only the
+    /// synthesized perpendicular shear may cross the current.
+    #[test]
+    fn nam0_water_layers_never_run_across_the_current_after_parse() {
+        use byroredux_plugin::esm::reader::SubRecord;
+        let mut dnam = vec![0u8; 228];
+        // Skyrim DNAM layer bearings (100/104/108, degrees) and speeds
+        // (112/116/120). 270° in the record frame is +X in engine XZ,
+        // parallel to the NAM0 current below.
+        for (offset, value) in [(100, 270.0f32), (108, 270.0), (112, 0.0072), (120, 0.0145)] {
+            dnam[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+        }
+        let mut nam0 = Vec::new();
+        for component in [0.08f32, 0.0, 0.0] {
+            nam0.extend_from_slice(&component.to_le_bytes());
+        }
+        let rec = byroredux_plugin::esm::records::parse_watr(
+            0x001E_214D,
+            &[
+                SubRecord { sub_type: *b"DNAM", data: dnam },
+                SubRecord { sub_type: *b"NAM0", data: nam0 },
+            ],
+            GameKind::Skyrim,
+            &None,
+        );
+        let waters = HashMap::from([(rec.form_id, rec)]);
+        let (mat, kind, flow, _, _) = resolve_water_material(&waters, Some(0x001E_214D));
+        assert!(matches!(kind, WaterKind::River));
+        let flow = flow.expect("a nonzero NAM0 is an authored current");
+        assert!((flow.direction[0] - 1.0).abs() < 1e-6 && flow.direction[2].abs() < 1e-6);
+
+        // Layers 0 and 2 are authored along the current: no cross-stream part.
+        assert!(mat.scroll_a[1].abs() < 1e-6, "scroll_a crosses the current: {:?}", mat.scroll_a);
+        assert!(mat.scroll_c[1].abs() < 1e-6, "scroll_c crosses the current: {:?}", mat.scroll_c);
+        // Layer 1 is unauthored: exactly the canonical perpendicular shear
+        // of the (SPEED_MIN-clamped) canonical current.
+        let shear = flow.speed * WATER_SCROLL_UV_PER_BU_PER_S * WATER_PERPENDICULAR_SHEAR_SCROLL;
+        assert!(mat.scroll_b[0].abs() < 1e-6);
+        assert!(
+            (mat.scroll_b[1] - shear).abs() < 1e-6,
+            "scroll_b {:?} is not the bare shear {shear}",
+            mat.scroll_b
+        );
+    }
+
     #[test]
     fn modern_fnam_flowmap_flag_gates_nam5_but_keeps_authored_current() {
         let mut disabled = calm_watr(0x000A_0003, "LocalizedWater", WaterParams::default());
