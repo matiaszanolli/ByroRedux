@@ -186,6 +186,7 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     // `None` and every subsequent audio operation no-ops. Boot
     // never fails on a missing audio device.
     world.insert_resource(byroredux_audio::AudioWorld::new());
+    world.insert_resource(byroredux_audio::SoundCache::new());
     // M44 Phase 3.5 — footstep config. `default_sound` is None
     // until/unless the cell loader (or a future asset-provider
     // hook) decodes a BSA-archived sound and stores it here.

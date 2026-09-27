@@ -68,6 +68,10 @@ fn lod_shadow_caster_in_range(center: Vec3, radius: f32, cam_pos: Vec3) -> bool 
 /// and the design text had not caught up.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum TlasExclusion {
+    /// Diagnostic-only switch (`BYRO_RT_FRUSTUM_ONLY=1`) that drops any
+    /// candidate outside the camera frustum. This intentionally suppresses
+    /// valid off-screen ray contributors and is not a normal visibility rule.
+    OffFrustumDiagnostic,
     /// A distant-terrain / distant-object LOD block outside the conservative
     /// shadow-caster reach around the camera (#view-dist).
     ///
@@ -100,6 +104,7 @@ impl TlasExclusion {
     /// harness can grep `excluded_<token>=`.
     fn token(self) -> &'static str {
         match self {
+            TlasExclusion::OffFrustumDiagnostic => "off_frustum_diagnostic",
             TlasExclusion::DistantLodBlock => "distant_lod_block",
             TlasExclusion::DecalSurface => "decal_surface",
             TlasExclusion::FireRefraction => "fire_refraction",
@@ -225,6 +230,12 @@ fn apply_texture_flip_roles(
 pub(crate) struct TlasPolicyCounts {
     /// Draws the policy admitted.
     pub included: u32,
+    /// Policy-admitted draws outside the camera frustum. They skip raster
+    /// work but remain in the TLAS as possible off-screen ray contributors.
+    /// This is the population a future conservative visibility stage can
+    /// reduce without conflating it with ordinary raster frustum culling.
+    pub off_frustum_admitted: u32,
+    pub off_frustum_diagnostic: u32,
     pub distant_lod_block: u32,
     pub decal_surface: u32,
     pub fire_refraction: u32,
@@ -234,6 +245,7 @@ impl TlasPolicyCounts {
     fn record(&mut self, verdict: Option<TlasExclusion>) {
         match verdict {
             None => self.included += 1,
+            Some(TlasExclusion::OffFrustumDiagnostic) => self.off_frustum_diagnostic += 1,
             Some(TlasExclusion::DistantLodBlock) => self.distant_lod_block += 1,
             Some(TlasExclusion::DecalSurface) => self.decal_surface += 1,
             Some(TlasExclusion::FireRefraction) => self.fire_refraction += 1,
@@ -243,8 +255,11 @@ impl TlasPolicyCounts {
     /// `tlas-policy:` summary row, one `key=value` per verdict.
     pub(crate) fn bench_line(&self) -> String {
         format!(
-            "tlas-policy: included={} excluded_{}={} excluded_{}={} excluded_{}={}",
+            "tlas-policy: included={} off_frustum_admitted={} excluded_{}={} excluded_{}={} excluded_{}={} excluded_{}={}",
             self.included,
+            self.off_frustum_admitted,
+            TlasExclusion::OffFrustumDiagnostic.token(),
+            self.off_frustum_diagnostic,
             TlasExclusion::DistantLodBlock.token(),
             self.distant_lod_block,
             TlasExclusion::DecalSurface.token(),
@@ -418,6 +433,14 @@ pub(super) fn collect_static_mesh_draws(
         static NO_CULL: OnceLock<bool> = OnceLock::new();
         *NO_CULL.get_or_init(|| std::env::var_os("BYRO_NO_CULL").is_some())
     };
+    // Diagnostic-only A/B switch. It measures the cost and visual impact of
+    // excluding every off-frustum ray candidate. Those candidates can cast
+    // valid shadows or appear in reflections, so this is not a shipping rule.
+    let frustum_only_rt = {
+        use std::sync::OnceLock;
+        static FRUSTUM_ONLY_RT: OnceLock<bool> = OnceLock::new();
+        *FRUSTUM_ONLY_RT.get_or_init(|| std::env::var_os("BYRO_RT_FRUSTUM_ONLY").is_some())
+    };
     if let (Some(tq), Some(mq)) = (tq, mq) {
         for (entity, mesh) in mq.iter() {
             // #1377 / D2-NEW-04 (#1805): single lookup instead of a
@@ -493,19 +516,26 @@ pub(super) fn collect_static_mesh_draws(
             let mat = mat_q.as_ref().and_then(|q| q.get(entity));
             let material_kind = mat.map(|m| m.material_kind).unwrap_or(0);
             // #4053 — one policy, three named reasons. See `tlas_exclusion`.
-            let tlas_verdict = visibility::ray_exclusion(
-                VisibilityCandidate {
-                    world_bound: world_bound.copied(),
-                    is_lod,
-                    is_decal_mesh,
-                    material_kind,
-                },
-                cam_pos,
-            );
+            let tlas_verdict = if frustum_only_rt && !in_raster {
+                Some(TlasExclusion::OffFrustumDiagnostic)
+            } else {
+                visibility::ray_exclusion(
+                    VisibilityCandidate {
+                        world_bound: world_bound.copied(),
+                        is_lod,
+                        is_decal_mesh,
+                        material_kind,
+                    },
+                    cam_pos,
+                )
+            };
             // The tier is receive-only, so a template never enters the TLAS
             // and does not count toward the policy's census.
             if cover_template.is_none() {
                 tlas_policy.record(tlas_verdict);
+                if !in_raster && tlas_verdict.is_none() {
+                    tlas_policy.off_frustum_admitted += 1;
+                }
             }
             let in_tlas = cover_template.is_none() && tlas_verdict.is_none();
             if !in_raster && !in_tlas {
@@ -1677,10 +1707,13 @@ mod tests {
         counts.record(Some(TlasExclusion::DecalSurface));
         counts.record(Some(TlasExclusion::DecalSurface));
         counts.record(Some(TlasExclusion::FireRefraction));
+        counts.record(Some(TlasExclusion::OffFrustumDiagnostic));
         assert_eq!(
             counts,
             TlasPolicyCounts {
                 included: 2,
+                off_frustum_admitted: 0,
+                off_frustum_diagnostic: 1,
                 distant_lod_block: 1,
                 decal_surface: 2,
                 fire_refraction: 1,
@@ -1689,7 +1722,9 @@ mod tests {
         assert_eq!(
             counts.bench_line(),
             concat!(
-                "tlas-policy: included=2 excluded_distant_lod_block=1 ",
+                "tlas-policy: included=2 off_frustum_admitted=0 ",
+                "excluded_off_frustum_diagnostic=1 ",
+                "excluded_distant_lod_block=1 ",
                 "excluded_decal_surface=2 excluded_fire_refraction=1",
             )
         );

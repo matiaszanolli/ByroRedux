@@ -64,13 +64,10 @@ pub(crate) fn sample_ecs_owners(world: &World, out: &mut OwnershipSnapshot) {
         out.audio_pending_oneshots = audio.pending_oneshot_count() as u64;
     }
 
-    // `SoundCache` is a registered `Resource` type that nothing installs yet;
-    // `try_resource` keeps this at zero until it is wired, rather than the
-    // sampler needing a follow-up edit at that point.
-    out.sound_cache_entries = world
-        .try_resource::<byroredux_audio::SoundCache>()
-        .map(|c| c.len() as u64)
-        .unwrap_or(0);
+    if let Some(cache) = world.try_resource::<byroredux_audio::SoundCache>() {
+        out.sound_cache_entries = cache.len() as u64;
+        out.sound_cache_bytes = cache.bytes_estimate() as u64;
+    }
 }
 
 /// Sample the GPU-side owners.

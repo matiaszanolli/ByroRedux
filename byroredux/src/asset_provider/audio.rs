@@ -490,13 +490,12 @@ mod tests {
     }
 
     /// `music_form: None` (no REGN directive, or the winning entry omits
-    /// `music`) must stop playback rather than error — exercised against a
-    /// real (headless-fallback) `AudioWorld` so `stop_music`'s no-op path
-    /// is actually reached.
+    /// `music`) must stop playback rather than error — exercised against an
+    /// explicitly headless `AudioWorld` so `stop_music`'s no-op path is reached.
     #[test]
     fn dispatch_with_no_music_form_stops_playback_without_panic() {
         let mut world = World::new();
-        world.insert_resource(byroredux_audio::AudioWorld::default());
+        world.insert_resource(byroredux_audio::AudioWorld::headless());
         let sounds = HashMap::new();
         dispatch_region_ambient_music(&mut world, &sounds, None);
         assert!(!world
@@ -506,13 +505,13 @@ mod tests {
 
     /// #3914 — a `music_form` whose SOUN is folder-form must fail closed
     /// (stop playback) *before* any archive lookup, so the folder is never
-    /// mistaken for a missing file. Exercised with a real (headless)
+    /// mistaken for a missing file. Exercised with an explicitly headless
     /// `AudioWorld` and a registered-but-empty provider so every layer the
     /// folder branch precedes is actually present.
     #[test]
     fn dispatch_with_folder_form_soun_stops_playback_without_archive_lookup() {
         let mut world = World::new();
-        world.insert_resource(byroredux_audio::AudioWorld::default());
+        world.insert_resource(byroredux_audio::AudioWorld::headless());
         world.insert_resource(SoundArchiveProvider::new());
         let mut sounds = HashMap::new();
         sounds.insert(0x77, soun(0x77, "fx\\amb\\ceilingcrumble\\"));
@@ -534,7 +533,7 @@ mod tests {
     #[test]
     fn dispatch_with_unresolvable_form_id_stops_playback() {
         let mut world = World::new();
-        world.insert_resource(byroredux_audio::AudioWorld::default());
+        world.insert_resource(byroredux_audio::AudioWorld::headless());
         world.insert_resource(SoundArchiveProvider::new());
         let sounds = HashMap::new();
         // 0xDEAD_BEEF stands in for a real MSET FormID here: authored

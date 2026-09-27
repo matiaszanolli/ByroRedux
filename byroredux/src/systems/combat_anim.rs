@@ -4,21 +4,14 @@
 //! Asset family pinned by `docs/engine/p2-combat-anim-sound-fixture.md`;
 //! the clips arrive pre-decoded in [`crate::components::DraugrCombatClips`]
 //! (populated beside the walk clip), the sounds are decoded lazily from
-//! `--sounds-bsa` archives on first use and cached in the system's closure
-//! scratch.
+//! `--sounds-bsa` archives on first use and cached in the shared `SoundCache`.
 //!
 //! Event edges consumed (all produced upstream in the same frame):
 //!
-//! * `ActionState` attack edge → `combat_input_system` arms
-//!   `CombatState.attacks_started`; the counter DELTA — not the raw input
-//!   edge, because the cooldown gate has already armed by PostUpdate, so
-//!   re-deriving `was_pressed` here would both miss gated swings and
-//!   double-count nothing — fires the swing one-shot at the player's
-//!   position.
 //! * `HitEvent` (transient, scripting-Late cleanup) → impact one-shot at
-//!   the target; on a Draugr family member, an attack take on the
-//!   AGGRESSOR (NPC strikes carry the aggressor, #4324) and a hit take on
-//!   the target.
+//!   every marked target, independently of whether an animation take is
+//!   active. A marked aggressor starts its attack take and swing sound at
+//!   its own position.
 //! * `Dead` → death take + death voice, latched once via
 //!   `DraugrCombatAnim.death_played`. Death keeps no snapshot — the `Dead`
 //!   marker owns the pose from there, and walk_anim's abandon rule already
@@ -33,19 +26,14 @@
 //! yield rule (someone else swapped the clip → walk loses ownership
 //! without stomping).
 
-use std::collections::VecDeque;
-
 use byroredux_core::animation::AnimationPlayer;
 use byroredux_core::ecs::components::{Dead, GlobalTransform};
 use byroredux_core::ecs::{EntityId, World};
 use byroredux_core::math::Vec3;
-use rustc_hash::FxHashMap;
 
-use crate::combat::CombatState;
 use crate::components::{
     AnimationTarget, CombatTake, DraugrCombatAnim, DraugrCombatClips, WalkAnimSnapshot,
 };
-use crate::systems::{PlayerEntity, PlayerMode};
 
 /// Sound paths pinned by the fixture doc (plain PCM WAV — the M44
 /// symphonia path decodes them as-is). The `.fuz` draugr dialogue family
@@ -85,23 +73,20 @@ struct FeedbackDecision {
     /// Pre-take player snapshot + skeleton root, read before any write.
     snapshot: Option<WalkAnimSnapshot>,
     skeleton_root: Option<EntityId>,
-    sound: Option<FeedbackSound>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum FeedbackSound {
+    Swing,
     Impact,
     DeathVoice,
 }
 
-/// Closure-persistent scratch: the lazily-decoded sound cache, the swing
-/// counter from last frame, and this tick's decision buffer.
+/// Closure-persistent buffers reused by the feedback system.
 #[derive(Default)]
 struct FeedbackScratch {
-    sounds: FxHashMap<&'static str, Option<std::sync::Arc<byroredux_audio::Sound>>>,
-    last_attacks_started: u64,
-    swings: VecDeque<Vec3>,
     decisions: Vec<FeedbackDecision>,
+    sound_events: Vec<(EntityId, FeedbackSound)>,
     /// This tick's `(target, aggressor)` HitEvent snapshot (#4613).
     hit_events: Vec<(EntityId, EntityId)>,
 }
@@ -122,6 +107,7 @@ fn combat_feedback_system_inner(world: &World, dt: f32, scratch: &mut FeedbackSc
     // ── Read pass: events + per-actor state → buffered decisions. Every
     // query here is read-only, so all borrows drop before the write pass.
     scratch.decisions.clear();
+    scratch.sound_events.clear();
     {
         // #4613 — refilled in place; a fresh `collect` allocated every frame
         // of an active fight.
@@ -135,155 +121,133 @@ fn combat_feedback_system_inner(world: &World, dt: f32, scratch: &mut FeedbackSc
         }
         let hit_events = &scratch.hit_events;
 
-        // Swing sound — `attacks_started` advanced this frame. Position is
-        // the player's; a swing without a resolvable player pose (fly-cam,
-        // no player yet) is skipped rather than fired at the world origin.
-        let attacks_started = world
-            .try_resource::<CombatState>()
-            .map(|state| state.attacks_started)
-            .unwrap_or(0);
-        if attacks_started != scratch.last_attacks_started {
-            scratch.last_attacks_started = attacks_started;
-            if let Some(position) = world
-                .try_resource::<PlayerEntity>()
-                .and_then(|player| player.0)
-                .and_then(|player| {
-                    world
-                        .query::<GlobalTransform>()
-                        .and_then(|gt| gt.get(player).map(|gt| gt.translation))
-                })
-                .filter(|_| {
-                    world
-                        .try_resource::<PlayerMode>()
-                        .is_some_and(|mode| *mode == PlayerMode::Character)
-                })
-            {
-                scratch.swings.push_back(position);
-            }
-        }
+        if let Some(anim_q) = world.query::<DraugrCombatAnim>() {
+            for (actor, state) in anim_q.iter() {
+                // Sound follows transient gameplay events, not animation-slot
+                // availability. Keep each event, including repeated hits on one
+                // target, even if the actor is already in a take or dies below.
+                for _ in hit_events.iter().filter(|&&(target, _)| target == actor) {
+                    scratch.sound_events.push((actor, FeedbackSound::Impact));
+                }
+                let dead = world.get::<Dead>(actor).is_some();
 
-        let Some(anim_q) = world.query::<DraugrCombatAnim>() else {
-            return;
-        };
-        for (actor, state) in anim_q.iter() {
-            let dead = world.get::<Dead>(actor).is_some();
+                // 1. Death — terminal, latched, checked first so the killing
+                //    blow produces the death take, never a hit take.
+                if dead {
+                    if !state.death_played {
+                        let skeleton_root = read_skeleton_root(world, actor);
+                        // #4708 — (b) a corpse restored dead (revisit, save
+                        // load) died in some earlier session: latch, replay
+                        // nothing. (a) The killing blow's `reconcile_dead_actor`
+                        // already removed the actor's players and handed the
+                        // skeleton to physics; a take re-inserted now would
+                        // sample over the ragdoll — the voice alone plays.
+                        let replayed = !state.seen_alive;
+                        let ragdolled = skeleton_root.is_some_and(|root| {
+                            world.get::<crate::ragdoll::RagdollActive>(root).is_some()
+                        });
+                        if !replayed {
+                            scratch
+                                .sound_events
+                                .push((actor, FeedbackSound::DeathVoice));
+                        }
+                        scratch.decisions.push(FeedbackDecision {
+                            actor,
+                            action: if replayed || ragdolled {
+                                TakeAction::LatchDeath
+                            } else {
+                                TakeAction::Install {
+                                    kind: CombatTake::Hit,
+                                    handle: clips.death,
+                                    secs: 0.0,
+                                    death: true,
+                                }
+                            },
+                            snapshot: read_player_snapshot(world, actor),
+                            skeleton_root,
+                        });
+                    }
+                    continue;
+                }
 
-            // 1. Death — terminal, latched, checked first so the killing
-            //    blow produces the death take, never a hit take.
-            if dead {
-                if !state.death_played {
-                    let skeleton_root = read_skeleton_root(world, actor);
-                    // #4708 — (b) a corpse restored dead (revisit, save
-                    // load) died in some earlier session: latch, replay
-                    // nothing. (a) The killing blow's `reconcile_dead_actor`
-                    // already removed the actor's players and handed the
-                    // skeleton to physics; a take re-inserted now would
-                    // sample over the ragdoll — the voice alone plays.
-                    let replayed = !state.seen_alive;
-                    let ragdolled = skeleton_root.is_some_and(|root| {
-                        world.get::<crate::ragdoll::RagdollActive>(root).is_some()
-                    });
+                // 2. An active take ticks down (hit reactions only — death
+                //    never reaches here with an active take because death
+                //    latches and takes aren't persisted into it).
+                if let Some(kind) = state.take {
+                    let remaining = state.take_remaining - dt;
+                    if remaining <= 0.0 {
+                        scratch.decisions.push(FeedbackDecision {
+                            actor,
+                            action: TakeAction::Restore,
+                            snapshot: state.captured,
+                            skeleton_root: None,
+                        });
+                    } else {
+                        scratch.decisions.push(FeedbackDecision {
+                            actor,
+                            action: TakeAction::Tick { remaining },
+                            snapshot: None,
+                            skeleton_root: None,
+                        });
+                    }
+                    let _ = kind;
+                    continue;
+                }
+
+                // 3. Hit reaction — animation takes still avoid replacing an
+                //    active take; impact audio was already queued above.
+                if let Some(&(_, aggressor)) =
+                    hit_events.iter().find(|&&(target, _)| target == actor)
+                {
+                    let _ = aggressor;
                     scratch.decisions.push(FeedbackDecision {
                         actor,
-                        action: if replayed || ragdolled {
-                            TakeAction::LatchDeath
-                        } else {
-                            TakeAction::Install {
-                                kind: CombatTake::Hit,
-                                handle: clips.death,
-                                secs: 0.0,
-                                death: true,
-                            }
+                        action: TakeAction::Install {
+                            kind: CombatTake::Hit,
+                            handle: clips.hit,
+                            secs: clips.hit_secs,
+                            death: false,
                         },
                         snapshot: read_player_snapshot(world, actor),
-                        skeleton_root,
-                        sound: (!replayed).then_some(FeedbackSound::DeathVoice),
+                        skeleton_root: read_skeleton_root(world, actor),
                     });
+                    continue;
                 }
-                continue;
-            }
 
-            // 2. An active take ticks down (hit reactions only — death
-            //    never reaches here with an active take because death
-            //    latches and takes aren't persisted into it).
-            if let Some(kind) = state.take {
-                let remaining = state.take_remaining - dt;
-                if remaining <= 0.0 {
+                // 4. Attack take — this marked actor struck someone. The enemy
+                //    owns the attack sound and its world-space position.
+                if hit_events.iter().any(|&(_, aggressor)| aggressor == actor) {
+                    scratch.sound_events.push((actor, FeedbackSound::Swing));
                     scratch.decisions.push(FeedbackDecision {
                         actor,
-                        action: TakeAction::Restore,
-                        snapshot: state.captured,
-                        skeleton_root: None,
-                        sound: None,
+                        action: TakeAction::Install {
+                            kind: CombatTake::Attack,
+                            handle: clips.attack,
+                            secs: clips.attack_secs,
+                            death: false,
+                        },
+                        snapshot: read_player_snapshot(world, actor),
+                        skeleton_root: read_skeleton_root(world, actor),
                     });
-                } else {
+                    continue;
+                }
+
+                // 5. Alive with nothing to play: record the first sighting.
+                if !state.seen_alive {
                     scratch.decisions.push(FeedbackDecision {
                         actor,
-                        action: TakeAction::Tick { remaining },
+                        action: TakeAction::SeenAlive,
                         snapshot: None,
                         skeleton_root: None,
-                        sound: None,
                     });
                 }
-                let _ = kind;
-                continue;
-            }
-
-            // 3. Hit reaction — this actor was struck (deduped by the
-            //    take.is_none() gate above: the transient event can be
-            //    visible for more than one read).
-            if let Some(&(_, aggressor)) = hit_events.iter().find(|&&(target, _)| target == actor) {
-                let _ = aggressor;
-                scratch.decisions.push(FeedbackDecision {
-                    actor,
-                    action: TakeAction::Install {
-                        kind: CombatTake::Hit,
-                        handle: clips.hit,
-                        secs: clips.hit_secs,
-                        death: false,
-                    },
-                    snapshot: read_player_snapshot(world, actor),
-                    skeleton_root: read_skeleton_root(world, actor),
-                    sound: Some(FeedbackSound::Impact),
-                });
-                continue;
-            }
-
-            // 4. Attack take — this actor struck someone (their swing).
-            //    The player aggressor carries no marker and never reaches
-            //    this loop, so the player's own swings get only the sound.
-            if hit_events.iter().any(|&(_, aggressor)| aggressor == actor) {
-                scratch.decisions.push(FeedbackDecision {
-                    actor,
-                    action: TakeAction::Install {
-                        kind: CombatTake::Attack,
-                        handle: clips.attack,
-                        secs: clips.attack_secs,
-                        death: false,
-                    },
-                    snapshot: read_player_snapshot(world, actor),
-                    skeleton_root: read_skeleton_root(world, actor),
-                    sound: None,
-                });
-                continue;
-            }
-
-            // 5. Alive with nothing to play: record the first sighting.
-            if !state.seen_alive {
-                scratch.decisions.push(FeedbackDecision {
-                    actor,
-                    action: TakeAction::SeenAlive,
-                    snapshot: None,
-                    skeleton_root: None,
-                    sound: None,
-                });
             }
         }
     }
 
     // ── Write pass: player swaps + component state. One storage write at
     // a time, mirroring walk_anim's apply pass.
-    if scratch.decisions.is_empty() && scratch.swings.is_empty() {
+    if scratch.decisions.is_empty() && scratch.sound_events.is_empty() {
         return;
     }
     if let Some(mut pq) = world.query_mut::<AnimationPlayer>() {
@@ -376,33 +340,22 @@ fn combat_feedback_system_inner(world: &World, dt: f32, scratch: &mut FeedbackSc
     }
 
     // ── Sound dispatch — after every component write, locks dropped.
-    while let Some(position) = scratch.swings.pop_front() {
-        play_oneshot_cached(world, scratch, SWING_SOUND_PATH, position);
-    }
-    // `play_oneshot_cached` needs `&mut scratch`, so the decisions are taken
-    // for the loop — and put back after it (#4613): an unrestored take
-    // regrew `decisions` from zero capacity every frame of an active take.
-    let decisions = std::mem::take(&mut scratch.decisions);
-    for decision in &decisions {
-        let Some(sound) = decision.sound else {
-            continue;
-        };
+    let sound_events = std::mem::take(&mut scratch.sound_events);
+    for &(actor, sound) in &sound_events {
         let Some(position) = world
             .query::<GlobalTransform>()
-            .and_then(|gt| gt.get(decision.actor).map(|gt| gt.translation))
+            .and_then(|gt| gt.get(actor).map(|gt| gt.translation))
         else {
             continue;
         };
-        match sound {
-            FeedbackSound::Impact => {
-                play_oneshot_cached(world, scratch, IMPACT_SOUND_PATH, position)
-            }
-            FeedbackSound::DeathVoice => {
-                play_oneshot_cached(world, scratch, DEATH_VOICE_PATH, position)
-            }
-        }
+        let path = match sound {
+            FeedbackSound::Swing => SWING_SOUND_PATH,
+            FeedbackSound::Impact => IMPACT_SOUND_PATH,
+            FeedbackSound::DeathVoice => DEATH_VOICE_PATH,
+        };
+        play_oneshot_cached(world, path, position);
     }
-    scratch.decisions = decisions;
+    scratch.sound_events = sound_events;
 }
 
 fn read_player_snapshot(world: &World, actor: EntityId) -> Option<WalkAnimSnapshot> {
@@ -426,38 +379,22 @@ fn read_skeleton_root(world: &World, actor: EntityId) -> Option<EntityId> {
 /// Lazily decode (or reuse) a one-shot and enqueue it. Headless (no
 /// `AudioWorld`) and archive-less (no provider / decode failure) paths
 /// both collapse to a silent skip — sound is never a hard dependency.
-fn play_oneshot_cached(
-    world: &World,
-    scratch: &mut FeedbackScratch,
-    path: &'static str,
-    position: Vec3,
-) {
-    let data = match scratch.sounds.get(path) {
-        Some(cached) => cached.clone(),
-        None => {
-            let decoded = world
-                .try_resource::<crate::asset_provider::SoundArchiveProvider>()
-                .filter(|provider| !provider.is_empty())
-                .and_then(|provider| match provider.extract(path) {
-                    Some(bytes) => Some(bytes),
-                    None => {
-                        log::warn!("combat sound: '{path}' not found in any --sounds-bsa archive");
-                        None
-                    }
+fn play_oneshot_cached(world: &World, path: &'static str, position: Vec3) {
+    let data = world
+        .try_resource_mut::<byroredux_audio::SoundCache>()
+        .and_then(|mut cache| {
+            cache.get_or_load(path, || {
+                let provider =
+                    world.try_resource::<crate::asset_provider::SoundArchiveProvider>()?;
+                if provider.is_empty() {
+                    return None;
+                }
+                provider.extract(path).or_else(|| {
+                    log::warn!("combat sound: '{path}' not found in any --sounds-bsa archive");
+                    None
                 })
-                .and_then(
-                    |bytes| match byroredux_audio::load_sound_from_bytes(bytes) {
-                        Ok(data) => Some(std::sync::Arc::new(data)),
-                        Err(e) => {
-                            log::warn!("combat sound: decode '{path}' failed: {e}");
-                            None
-                        }
-                    },
-                );
-            scratch.sounds.insert(path, decoded.clone());
-            decoded
-        }
-    };
+            })
+        });
     let Some(data) = data else {
         return;
     };
@@ -477,8 +414,7 @@ fn play_oneshot_cached(
     }
 }
 
-/// System factory — returns a closure with persistent scratch (the sound
-/// cache + swing counter), mirroring
+/// System factory — returns a closure with persistent scratch, mirroring
 /// [`crate::systems::make_npc_walk_animation_system`]. Wire with
 /// `add_exclusive(Stage::PostUpdate, …)` AFTER the walk-animation system:
 /// a death take must be installed after walk_anim's abandon pass so the
@@ -655,6 +591,11 @@ mod tests {
         combat_feedback_system_inner(&world, 1.0 / 60.0, &mut scratch);
         assert_eq!(clip_handle(&world, actor), Some(HIT), "the take fired");
         assert!(
+            scratch
+                .sound_events
+                .contains(&(actor, FeedbackSound::Impact))
+        );
+        assert!(
             scratch.decisions.capacity() > 0,
             "decisions must survive the sound tail's take"
         );
@@ -663,6 +604,12 @@ mod tests {
 
         hit_event(&mut world, actor, 7);
         combat_feedback_system_inner(&world, 1.0 / 60.0, &mut scratch);
+        assert!(
+            scratch
+                .sound_events
+                .contains(&(actor, FeedbackSound::Impact)),
+            "a second hit during the active take still dispatches an impact"
+        );
         assert_eq!(
             (scratch.decisions.as_ptr(), scratch.hit_events.as_ptr()),
             buffers,
@@ -711,13 +658,19 @@ mod tests {
         let Fixture { world, actor, .. } = spawn_actor(true);
         let mut world = world;
         install_clips(&mut world);
+        let mut scratch = FeedbackScratch::default();
         // Seen alive first: only a death the system watched happen plays.
-        combat_feedback_system(&world, 1.0 / 60.0);
+        combat_feedback_system_inner(&world, 1.0 / 60.0, &mut scratch);
         world.insert(actor, Dead);
 
-        combat_feedback_system(&world, 1.0 / 60.0);
+        combat_feedback_system_inner(&world, 1.0 / 60.0, &mut scratch);
         assert_eq!(clip_handle(&world, actor), Some(DEATH));
         assert!(combat_anim_state(&world, actor).death_played);
+        assert!(
+            scratch
+                .sound_events
+                .contains(&(actor, FeedbackSound::DeathVoice))
+        );
 
         // Repeat ticks must not re-fire (no restart) nor restore.
         for _ in 0..6 {
@@ -738,10 +691,21 @@ mod tests {
         world.insert(actor, Dead);
         hit_event(&mut world, actor, 7);
 
-        combat_feedback_system(&world, 1.0 / 60.0);
+        let mut scratch = FeedbackScratch::default();
+        combat_feedback_system_inner(&world, 1.0 / 60.0, &mut scratch);
         assert_eq!(clip_handle(&world, actor), Some(DEATH));
         assert!(combat_anim_state(&world, actor).death_played);
         assert_eq!(combat_anim_state(&world, actor).take, None);
+        assert!(
+            scratch
+                .sound_events
+                .contains(&(actor, FeedbackSound::Impact))
+        );
+        assert!(
+            scratch
+                .sound_events
+                .contains(&(actor, FeedbackSound::DeathVoice))
+        );
     }
 
     /// #4708 (b) — a corpse respawned or reloaded dead (`Dead` from its
@@ -802,11 +766,17 @@ mod tests {
 
         // The draugr struck the human: draugr takes ATTACK.
         hit_event(&mut world, human, actor);
-        combat_feedback_system(&world, 1.0 / 60.0);
+        let mut scratch = FeedbackScratch::default();
+        combat_feedback_system_inner(&world, 1.0 / 60.0, &mut scratch);
         assert_eq!(
             clip_handle(&world, actor),
             Some(ATTACK),
             "the attacking draugr takes the attack clip"
+        );
+        assert!(
+            scratch
+                .sound_events
+                .contains(&(actor, FeedbackSound::Swing))
         );
         assert!(
             clip_handle(&world, human).is_none(),
@@ -845,14 +815,19 @@ mod tests {
         assert!(!combat_anim_state(&world, actor).death_played);
     }
 
-    /// A headless swing (attacks_started advanced, audio manager absent)
-    /// must not panic and must not disturb actor state — the sound half
-    /// degrades silently, the animation half stays independent.
+    /// Player input without a marked Draugr does not create a generic
+    /// two-handed-blade sound or leave feedback work queued across ticks.
     #[test]
-    fn headless_swing_delta_is_a_safe_no_op() {
-        let Fixture { world, actor, .. } = spawn_actor(true);
-        let mut world = world;
-        install_clips(&mut world);
+    fn player_swing_without_marked_draugr_does_not_queue_feedback() {
+        let mut world = World::new();
+        world.register::<GlobalTransform>();
+        world.insert_resource(clips_resource());
+        world.insert_resource(byroredux_audio::AudioWorld::headless());
+        world.insert_resource(byroredux_audio::SoundCache::new());
+        let player = world.spawn();
+        world.insert(player, GlobalTransform::default());
+        world.insert_resource(crate::systems::PlayerEntity(Some(player)));
+        world.insert_resource(crate::systems::PlayerMode::Character);
         world.insert_resource(crate::combat::CombatState {
             attacks_started: 3,
             hits_landed: 0,
@@ -860,9 +835,11 @@ mod tests {
             last: None,
         });
 
-        combat_feedback_system(&world, 1.0 / 60.0);
-        combat_feedback_system(&world, 1.0 / 60.0);
-        assert_eq!(clip_handle(&world, actor), Some(999), "no spurious takes");
+        let mut scratch = FeedbackScratch::default();
+        combat_feedback_system_inner(&world, 1.0 / 60.0, &mut scratch);
+        assert!(scratch.sound_events.is_empty());
+        combat_feedback_system_inner(&world, 1.0 / 60.0, &mut scratch);
+        assert!(scratch.sound_events.is_empty());
     }
 
     /// The registry path pins what the real-data catalog test asserts

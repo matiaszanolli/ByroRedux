@@ -232,11 +232,9 @@ pub(super) fn register_late_systems(scheduler: &mut Scheduler) {
     // registration authority for this ordering contract.
     //
     // M27 Phase 3 — registered as **exclusive** so it sequences
-    // after the Late parallel batch. The ordering comment at
-    // line 650-656 above ("MUST run BEFORE audio_system" /
-    // "Must run BEFORE audio_system") encodes a real
-    // dependency that the parallel batch can't guarantee on its
-    // own; exclusive sequencing makes the dependency structural.
+    // after the Late parallel batch. `camera_follow_system` authors
+    // the camera pose this system reads; exclusive sequencing places
+    // this after that batch and makes the dependency structural.
     // Side effect: removes two analyzer-visible conflicts
     // (camera_follow ↔ audio on GlobalTransform; reverb_zone ↔
     // audio on AudioWorld) — exclusive systems aren't paired

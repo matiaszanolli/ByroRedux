@@ -139,6 +139,8 @@ pub struct OwnershipSnapshot {
     pub audio_pending_oneshots: u64,
     /// `SoundCache` entries — a documented retain-across-cells cache.
     pub sound_cache_entries: u64,
+    /// Estimated decoded PCM bytes retained by `SoundCache`.
+    pub sound_cache_bytes: u64,
     /// Live `ScriptVariables` rows (per-entity Papyrus VM state).
     pub script_variable_rows: u64,
     /// Live `ScriptTimer` rows.
@@ -298,6 +300,11 @@ impl OwnershipSnapshot {
                 policy: Bounded,
             },
             OwnerClass {
+                name: "sound_cache_bytes",
+                value: self.sound_cache_bytes,
+                policy: Bounded,
+            },
+            OwnerClass {
                 name: "script_variable_rows",
                 value: self.script_variable_rows,
                 policy: Exact,
@@ -376,6 +383,7 @@ impl OwnershipSnapshot {
         self.audio_active_sounds = next();
         self.audio_pending_oneshots = next();
         self.sound_cache_entries = next();
+        self.sound_cache_bytes = next();
         self.script_variable_rows = next();
         self.script_timer_rows = next();
         self.particle_emitters = next();

@@ -4,6 +4,15 @@
 
 use super::*;
 
+fn test_sound() -> Arc<StaticSoundData> {
+    Arc::new(StaticSoundData {
+        sample_rate: 22_050,
+        frames: Arc::new([Frame::ZERO; 50]),
+        settings: kira::sound::static_sound::StaticSoundSettings::default(),
+        slice: None,
+    })
+}
+
 #[test]
 fn explicit_headless_world_discards_playback_without_retaining_sound() {
     let mut audio = AudioWorld::headless();
@@ -244,16 +253,22 @@ fn sound_cache_get_or_load_invokes_loader_only_on_miss() {
     let mut cache = SoundCache::new();
     let calls = Cell::new(0_usize);
 
-    // Miss: loader fires, but our synthesised junk bytes won't
-    // decode → returns None. The cache stays empty (we only
-    // insert on successful decode).
+    // An extraction miss is remembered. Repeating the lookup must
+    // not probe the archive again.
     let result = cache.get_or_load(r"sound\fx\bar.wav", || {
         calls.set(calls.get() + 1);
-        vec![0u8; 16] // not a valid audio file
+        None
     });
     assert!(result.is_none());
     assert_eq!(calls.get(), 1);
     assert!(cache.is_empty());
+
+    let result = cache.get_or_load(r"SOUND\FX\BAR.WAV", || {
+        calls.set(calls.get() + 1);
+        Some(vec![0u8; 16])
+    });
+    assert!(result.is_none());
+    assert_eq!(calls.get(), 1, "negative cache hit must skip the loader");
 
     // Insert a real synthetic sound at that path. Subsequent
     // get_or_load must hit the cache without invoking the loader.
@@ -399,42 +414,10 @@ fn spawn_oneshot_at_creates_correct_component_bundle() {
 /// would crash on null-handle play.
 #[test]
 fn audio_system_no_op_when_audio_world_inactive() {
-    use kira::sound::static_sound::StaticSoundSettings;
     let mut world = byroredux_core::ecs::World::new();
+    world.insert_resource(AudioWorld::headless());
 
-    // Force-construct an inactive AudioWorld. We can't reliably
-    // hit the cpal-init failure path on a dev machine that has
-    // a sound card, so build the variant by hand — same shape
-    // `AudioWorld::new()` produces when init fails.
-    let inactive = AudioWorld {
-        active_sounds: Vec::new(),
-        pending_oneshots: VecDeque::new(),
-        oneshots_requested: 0,
-        music: None,
-        reverb_send: None,
-        reverb_send_db: f32::NEG_INFINITY,
-        listener: None,
-        manager: None,
-        multi_listener_warned: false,
-        underwater: false,
-    };
-    world.insert_resource(inactive);
-
-    let sound = Arc::new(StaticSoundData {
-        sample_rate: 22_050,
-        frames: Arc::from(
-            vec![
-                kira::Frame {
-                    left: 0.0,
-                    right: 0.0
-                };
-                50
-            ]
-            .into_boxed_slice(),
-        ),
-        settings: StaticSoundSettings::default(),
-        slice: None,
-    });
+    let sound = test_sound();
     let pos = glam::Vec3::ZERO;
     let entity = spawn_oneshot_at(&mut world, sound, pos, Attenuation::default(), 1.0);
 
@@ -472,18 +455,7 @@ fn reverb_send_defaults_to_silent() {
 /// running stream needs the real-data lifecycle test for that.
 #[test]
 fn set_reverb_send_db_persists() {
-    let mut world = AudioWorld {
-        active_sounds: Vec::new(),
-        pending_oneshots: VecDeque::new(),
-        oneshots_requested: 0,
-        music: None,
-        reverb_send: None,
-        reverb_send_db: f32::NEG_INFINITY,
-        listener: None,
-        manager: None,
-        multi_listener_warned: false,
-        underwater: false,
-    };
+    let mut world = AudioWorld::headless();
     world.set_reverb_send_db(-12.0);
     assert!((world.reverb_send_db() - (-12.0)).abs() < 1e-6);
     world.set_reverb_send_db(f32::NEG_INFINITY);
@@ -516,7 +488,7 @@ fn reverb_parameters_are_named_and_in_kiras_documented_range() {
 
 #[test]
 fn underwater_listener_state_persists() {
-    let mut world = AudioWorld::new();
+    let mut world = AudioWorld::headless();
     assert!(!world.underwater());
     world.set_underwater(true);
     assert!(world.underwater());
@@ -534,18 +506,7 @@ fn play_music_no_op_when_inactive() {
     // that decode, so this test only exercises the early-return
     // branch (manager.is_none() → silent return). is_music_active
     // and stop_music are also pinned along the inactive path.
-    let mut audio_world = AudioWorld {
-        active_sounds: Vec::new(),
-        pending_oneshots: VecDeque::new(),
-        oneshots_requested: 0,
-        music: None,
-        reverb_send: None,
-        reverb_send_db: f32::NEG_INFINITY,
-        listener: None,
-        manager: None,
-        multi_listener_warned: false,
-        underwater: false,
-    };
+    let mut audio_world = AudioWorld::headless();
     assert!(!audio_world.is_music_active());
     audio_world.stop_music(0.5); // No-op on no-music + no-manager.
     assert!(!audio_world.is_music_active());
@@ -893,34 +854,8 @@ fn non_looping_emitter_stops_on_emitter_remove_regression_858() {
 /// flip this test deliberately.
 #[test]
 fn play_oneshot_drops_when_manager_inactive() {
-    use kira::sound::static_sound::StaticSoundSettings;
-    let mut audio_world = AudioWorld {
-        active_sounds: Vec::new(),
-        pending_oneshots: VecDeque::new(),
-        oneshots_requested: 0,
-        music: None,
-        reverb_send: None,
-        reverb_send_db: f32::NEG_INFINITY,
-        listener: None,
-        manager: None,
-        multi_listener_warned: false,
-        underwater: false,
-    };
-    let sound = Arc::new(StaticSoundData {
-        sample_rate: 22_050,
-        frames: Arc::from(
-            vec![
-                kira::Frame {
-                    left: 0.0,
-                    right: 0.0
-                };
-                50
-            ]
-            .into_boxed_slice(),
-        ),
-        settings: StaticSoundSettings::default(),
-        slice: None,
-    });
+    let mut audio_world = AudioWorld::headless();
+    let sound = test_sound();
 
     // Hammer the API on an inactive world.
     for i in 0..300 {

@@ -1457,27 +1457,19 @@ pub fn load_streaming_sound_from_file(
 /// exits scope to bound memory across long sessions with mod-loaded
 /// SFX (Project Nevada / TTW / FCO stacks push past 1 GB without it).
 /// [`Self::bytes_estimate`] is intended to surface the cache footprint
-/// to telemetry once a `stats` consumer wires `SoundCache`, so an
-/// unbounded-growth regression would show up in `stats` output rather
-/// than at OOM. No `stats` consumer exists today (the cache is dormant
-/// — see the #859 note below). If a real LRU is ever needed (1000+ unique
+/// to ownership telemetry so an unbounded-growth regression shows up
+/// before OOM. If a real LRU is ever needed (1000+ unique
 /// sounds with frequent rotation), bolt it on without touching the
 /// call sites. See #850 / AUD-D6-NEW-09.
 ///
-/// **Dormant API (#859):** the engine binary currently has zero
-/// call sites for `SoundCache`. The footstep dispatch path at
-/// `byroredux/src/asset_provider/texture.rs::try_load_default_footstep` writes
-/// directly into `FootstepConfig.default_sound: Option<Arc<Sound>>`,
-/// bypassing the cache; the decoded `Arc` is held by exactly one
-/// `Resource` (`FootstepConfig`) for the engine lifetime. The "no
-/// eviction → unbounded growth" concern surfaces only when a future
-/// commit wires a real consumer (FOOT records, REGN ambient,
-/// multi-sound SFX dispatch). Until then `len() == 0` is the steady
-/// state. The decoupled API + tests stay so a producer can land
-/// without a structural rewrite — but anyone wiring the first real
-/// consumer should also wire eviction at the same time.
+/// `None` values represent negative-cache entries and are not counted by
+/// `len()` or `bytes_estimate()`: telemetry measures decoded audio retained
+/// for playback, while missing/invalid paths stay cached to avoid repeated
+/// archive work.
 pub struct SoundCache {
-    map: HashMap<String, Arc<StaticSoundData>>,
+    // `None` is a negative-cache entry: a missing archive member or a
+    // malformed sound is not probed again on every gameplay event.
+    map: HashMap<String, Option<Arc<StaticSoundData>>>,
 }
 
 impl Default for SoundCache {
@@ -1493,11 +1485,13 @@ impl SoundCache {
         }
     }
 
-    /// Look up a cached sound by path. Returns `None` on a miss —
-    /// callers should follow up with [`Self::insert`] after extracting
-    /// + decoding the bytes.
+    /// Look up a decoded sound by path. `None` means either no entry or a
+    /// negative-cache entry; use [`Self::get_or_load`] when loading so cached
+    /// misses do not trigger another archive probe.
     pub fn get(&self, path: &str) -> Option<Arc<StaticSoundData>> {
-        self.map.get(&path.to_ascii_lowercase()).cloned()
+        self.map
+            .get(&path.to_ascii_lowercase())
+            .and_then(|sound| sound.clone())
     }
 
     /// Insert a decoded sound at `path`. Returns the `Arc` so callers
@@ -1507,32 +1501,40 @@ impl SoundCache {
     pub fn insert(&mut self, path: &str, sound: StaticSoundData) -> Arc<StaticSoundData> {
         let key = path.to_ascii_lowercase();
         let arc = Arc::new(sound);
-        self.map.insert(key, Arc::clone(&arc));
+        self.map.insert(key, Some(Arc::clone(&arc)));
         arc
     }
 
-    /// Convenience: cache hit → reuse, cache miss → decode the bytes
-    /// returned by `loader` and insert. The loader is only invoked
-    /// on a miss, so callers can pay the BSA-extract cost lazily.
+    /// Convenience: cache hit → reuse, cache miss → extract and decode
+    /// through `loader`. The loader is only invoked on a miss, so callers
+    /// can pay the BSA-extract cost lazily. A miss or decode failure is
+    /// cached too, preventing repeated archive probes for unavailable SFX.
     ///
-    /// Returns `None` if the cache missed AND the decode failed —
-    /// the loader's bytes were unusable. Callers can log + skip.
+    /// Returns `None` when the loader has no bytes or the bytes fail to
+    /// decode. Callers can log + skip; subsequent calls for this path do
+    /// not invoke the loader again. Use [`Self::clear`] to retry after
+    /// changing the archive set.
     pub fn get_or_load<F>(&mut self, path: &str, loader: F) -> Option<Arc<StaticSoundData>>
     where
-        F: FnOnce() -> Vec<u8>,
+        F: FnOnce() -> Option<Vec<u8>>,
     {
         let key = path.to_ascii_lowercase();
         if let Some(existing) = self.map.get(&key) {
-            return Some(Arc::clone(existing));
+            return existing.as_ref().map(Arc::clone);
         }
-        match load_sound_from_bytes(loader()) {
+        let Some(bytes) = loader() else {
+            self.map.insert(key, None);
+            return None;
+        };
+        match load_sound_from_bytes(bytes) {
             Ok(sound) => {
                 let arc = Arc::new(sound);
-                self.map.insert(key, Arc::clone(&arc));
+                self.map.insert(key, Some(Arc::clone(&arc)));
                 Some(arc)
             }
             Err(e) => {
                 log::warn!("M44: decode failed for sound '{path}': {e}");
+                self.map.insert(key, None);
                 None
             }
         }
@@ -1542,11 +1544,11 @@ impl SoundCache {
     /// growth burst during a cell load is the canonical signal that
     /// SFX dispatch is firing per-NPC instead of per-archive-load.
     pub fn len(&self) -> usize {
-        self.map.len()
+        self.map.values().filter(|sound| sound.is_some()).count()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.map.is_empty()
+        self.map.values().all(Option::is_none)
     }
 
     /// Drop every cached sound. Existing `StaticSoundHandle`s playing
@@ -1566,14 +1568,13 @@ impl SoundCache {
     /// right }` (8 B/frame for stereo). Does NOT count the
     /// `Arc<StaticSoundData>` header, `StaticSoundSettings`, or the
     /// `HashMap` overhead — those are O(entries) and small next to
-    /// the PCM blob. Intended for `stats` console output (once a
-    /// `SoundCache` consumer is wired) so an unbounded-growth regression
-    /// would surface in telemetry rather than at OOM. Not yet wired — no
-    /// non-test caller exists. See #850 / AUD-D6-NEW-09.
+    /// the PCM blob. Sampled into ownership telemetry so an unbounded-growth
+    /// regression surfaces before OOM. See #850 / AUD-D6-NEW-09.
     pub fn bytes_estimate(&self) -> usize {
         let frame_size = std::mem::size_of::<kira::Frame>();
         self.map
             .values()
+            .filter_map(Option::as_ref)
             .map(|sound| sound.frames.len() * frame_size)
             .sum()
     }
