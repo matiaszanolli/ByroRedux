@@ -448,8 +448,17 @@ pub(crate) fn parse_ltex_group(
     ltex_to_txst: &mut HashMap<u32, u32>,
     direct_paths: &mut HashMap<u32, String>,
     ltex_to_grass: &mut HashMap<u32, Vec<u32>>,
+    editor_ids: &mut HashMap<u32, String>,
 ) -> Result<()> {
-    parse_ltex_group_inner(reader, end, ltex_to_txst, direct_paths, ltex_to_grass, 0)
+    parse_ltex_group_inner(
+        reader,
+        end,
+        ltex_to_txst,
+        direct_paths,
+        ltex_to_grass,
+        editor_ids,
+        0,
+    )
 }
 
 fn parse_ltex_group_inner(
@@ -458,6 +467,7 @@ fn parse_ltex_group_inner(
     ltex_to_txst: &mut HashMap<u32, u32>,
     direct_paths: &mut HashMap<u32, String>,
     ltex_to_grass: &mut HashMap<u32, Vec<u32>>,
+    editor_ids: &mut HashMap<u32, String>,
     depth: u32,
 ) -> Result<()> {
     while reader.position() < end && reader.remaining() > 0 {
@@ -474,6 +484,7 @@ fn parse_ltex_group_inner(
                 ltex_to_txst,
                 direct_paths,
                 ltex_to_grass,
+                editor_ids,
                 depth + 1,
             )?;
             continue;
@@ -484,6 +495,16 @@ fn parse_ltex_group_inner(
             let subs = reader.read_sub_records(&header)?;
             for sub in &subs {
                 match sub.sub_type.as_slice() {
+                    // #4899 — the editor ID is what the ground-cover
+                    // affinity table was derived from (`exal-groundcover.md`
+                    // §12.1). Grass/NoGrass variants of one landscape share a
+                    // diffuse texture, so only the EDID tells them apart.
+                    b"EDID" => {
+                        let editor_id = read_zstring(&sub.data);
+                        if !editor_id.is_empty() {
+                            editor_ids.insert(header.form_id, editor_id);
+                        }
+                    }
                     // FO3/FNV/Skyrim: TNAM → TXST form ID.
                     b"TNAM" if sub.data.len() >= 4 => {
                         // #3314 — the map KEY (`header.form_id`) is already

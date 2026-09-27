@@ -76,11 +76,14 @@ fn hard_surfaces_get_no_cover_even_when_named_grass() {
 }
 
 #[test]
-fn oblivion_icon_paths_resolve_like_editor_ids() {
-    // Oblivion supplies LTEX via ICON (a texture path); every other game via
-    // TNAM -> TXST (an editor ID). One code path must handle both shapes.
+fn texture_paths_still_classify_as_the_fallback_name() {
+    // #4899 — production classifies the LTEX editor ID
+    // (`cell_loader::terrain::cover_affinity_key`); a texture path is only the
+    // fallback for a layer with no EDID. Real paths still resolve sensibly.
+    // (The old fixture here asserted on `DementiaMoss01NoGrass.dds`, a path
+    // that does not exist: the NoGrass variant ships the plain
+    // `DementiaMoss01.dds`, which is exactly why the EDID is the key.)
     assert!(layer_affinity(r"Dementia\DementiaMoss01.dds") > 0.0);
-    assert_eq!(layer_affinity(r"Dementia\DementiaMoss01NoGrass.dds"), 0.0);
     assert_ranked(
         r"Ordered\OrderedCrackedEarth01.dds",
         r"Ordered\OrderedRock01.dds",

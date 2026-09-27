@@ -249,6 +249,7 @@ pub struct EsmCellIndex {
     pub landscape_textures:          HashMap<u32, String>,                             // LTEX → texture path
     pub landscape_texture_sets:      HashMap<u32, TextureSet>,                         // LTEX → its TXST bundle
     pub landscape_grasses:           HashMap<u32, Vec<u32>>,                          // LTEX → authored GRAS FormIDs (GNAM array, authored order — #4642)
+    pub landscape_texture_names:     HashMap<u32, String>,                            // LTEX → EDID; the ground-cover affinity key (#4899)
     pub worldspaces:                 HashMap<String, WorldspaceRecord>,
     pub worldspace_climates:         HashMap<String, u32>,                             // worldspace → CLMT FormID
     pub texture_sets:                HashMap<u32, TextureSet>,                         // TXST → 8-slot bundle

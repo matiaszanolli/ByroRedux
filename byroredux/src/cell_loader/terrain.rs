@@ -95,6 +95,7 @@ pub(super) fn build_cell_splat_layers(
     tex_provider: &TextureProvider,
     landscape_textures: &HashMap<u32, String>,
     landscape_texture_sets: &HashMap<u32, TextureSet>,
+    landscape_texture_names: &HashMap<u32, String>,
     land: &esm::cell::LandscapeData,
     canonical_base_ltex: Option<u32>,
     default_land: Option<DefaultLandTexture>,
@@ -181,6 +182,7 @@ pub(super) fn build_cell_splat_layers(
             tex_provider,
             landscape_textures,
             landscape_texture_sets,
+            landscape_texture_names,
             base_ltex,
             default_land,
             per_quadrant_alpha,
@@ -192,6 +194,7 @@ pub(super) fn build_cell_splat_layers(
             tex_provider,
             landscape_textures,
             landscape_texture_sets,
+            landscape_texture_names,
             Some(ltex),
             default_land,
             per_quadrant_alpha,
@@ -280,6 +283,7 @@ fn resolve_cell_splat_layer(
     tex_provider: &TextureProvider,
     landscape_textures: &HashMap<u32, String>,
     landscape_texture_sets: &HashMap<u32, TextureSet>,
+    landscape_texture_names: &HashMap<u32, String>,
     ltex: Option<u32>,
     default_land: Option<DefaultLandTexture>,
     per_quadrant_alpha: PerQuadrantAlpha,
@@ -321,7 +325,11 @@ fn resolve_cell_splat_layer(
         });
     CellSplatLayer {
         ltex_form_id: ltex,
-        cover_affinity: crate::groundcover_translate::layer_affinity(texture_path.unwrap_or("")),
+        cover_affinity: crate::groundcover_translate::layer_affinity(cover_affinity_key(
+            ltex,
+            landscape_texture_names,
+            texture_path,
+        )),
         diffuse_index,
         normal_index: resolve_optional_terrain_texture(ctx, tex_provider, normal_path.as_deref()),
         specular_index: resolve_optional_terrain_texture(ctx, tex_provider, specular_path),
@@ -343,6 +351,25 @@ fn resolve_cell_splat_layer(
 /// executable's default land texture). The authored-card consumer tier
 /// (#4413) picks its species mix per lane from this list instead of the
 /// single last-wins grass the pre-fix map kept.
+/// The name a splat layer's ground-cover affinity is classified from.
+///
+/// #4899 — the LTEX editor ID, which is what the keyword table was derived
+/// from. `NoGrass` / `…Grass` variants reuse their sibling's diffuse texture,
+/// so classifying the texture path scored every `NoGrass` variant as full
+/// grass and every grassy variant of barren ground as barren. The path is the
+/// fallback only for a layer with no editor ID (the engine's default land
+/// texture, or an LTEX authored without `EDID`).
+pub(super) fn cover_affinity_key<'a>(
+    ltex: Option<u32>,
+    landscape_texture_names: &'a HashMap<u32, String>,
+    texture_path: Option<&'a str>,
+) -> &'a str {
+    ltex.and_then(|id| landscape_texture_names.get(&id))
+        .map(String::as_str)
+        .or(texture_path)
+        .unwrap_or("")
+}
+
 pub(super) fn authored_grass_for_splat_layers(
     layers: &[CellSplatLayer],
     landscape_grasses: &HashMap<u32, Vec<u32>>,
@@ -700,6 +727,8 @@ pub(super) struct TerrainSpawnCtx<'a> {
     pub landscape_texture_sets: &'a HashMap<u32, TextureSet>,
     /// LTEX.GNAM associations keyed by the LAND layer's LTEX form ID.
     pub landscape_grasses: &'a HashMap<u32, Vec<u32>>,
+    /// LTEX editor IDs: the ground-cover affinity key (#4899).
+    pub landscape_texture_names: &'a HashMap<u32, String>,
     pub blas_specs: &'a mut Vec<(u32, u32, u32)>,
     /// Y-up water-plane height for this cell, or `None` when it has none.
     ///
@@ -781,6 +810,7 @@ pub(super) fn spawn_terrain_mesh(
         landscape_textures,
         landscape_texture_sets,
         landscape_grasses,
+        landscape_texture_names,
         blas_specs,
         water_y,
         game,
@@ -801,6 +831,7 @@ pub(super) fn spawn_terrain_mesh(
         tex_provider,
         landscape_textures,
         landscape_texture_sets,
+        landscape_texture_names,
         land,
         land.quadrants.iter().find_map(|q| q.base),
         DefaultLandTexture::for_game(game),

@@ -164,10 +164,12 @@ const AFFINITY_KEYWORDS: &[(&str, f32)] = &[
 
 /// Resolve a landscape-texture name to its `cover_affinity` weight.
 ///
-/// `name` may be an editor ID (`LGrassGreenSuburbs`) or a texture path
-/// (`Dementia\DementiaMoss01.dds`) — Oblivion supplies the latter via `LTEX`'s
-/// `ICON`, every other game the former via `TNAM` → `TXST`. Matching is
-/// case-insensitive substring, so both shapes work without a separate path.
+/// `name` is the LTEX editor ID (`LGrassGreenSuburbs`), which is what the
+/// table was derived from. The terrain spawner falls back to the texture path
+/// (`Dementia\DementiaMoss01.dds`) only for a layer with no editor ID
+/// (`cell_loader::terrain::cover_affinity_key`, #4899). A path cannot stand in
+/// for the ID in general: `NoGrass` variants reuse their grassy sibling's
+/// texture. Matching is case-insensitive substring, so both shapes parse.
 pub fn layer_affinity(name: &str) -> f32 {
     let lowered = name.to_ascii_lowercase();
     if SUPPRESSION_KEYWORDS.iter().any(|k| lowered.contains(k)) {

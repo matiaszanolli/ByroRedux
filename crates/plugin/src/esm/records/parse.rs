@@ -156,6 +156,7 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
     let mut texture_sets: HashMap<u32, TextureSet> = HashMap::new();
     let mut ltex_to_txst: HashMap<u32, u32> = HashMap::new();
     let mut landscape_grasses: HashMap<u32, Vec<u32>> = HashMap::new();
+    let mut landscape_texture_names: HashMap<u32, String> = HashMap::new();
     let mut scols: HashMap<u32, ScolRecord> = HashMap::new();
     let mut packins: HashMap<u32, PkinRecord> = HashMap::new();
     let mut movables: HashMap<u32, MovableStaticRecord> = HashMap::new();
@@ -244,6 +245,7 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
                     &mut ltex_to_txst,
                     &mut landscape_textures,
                     &mut landscape_grasses,
+                    &mut landscape_texture_names,
                 )?
             }
             b"TXST" => parse_txst_group(
@@ -532,6 +534,7 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
         landscape_textures,
         landscape_texture_sets,
         landscape_grasses,
+        landscape_texture_names,
         worldspaces,
         worldspace_climates,
         texture_sets,

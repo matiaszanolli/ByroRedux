@@ -719,6 +719,13 @@ fn ltex_gnam_array_survives_decode_in_authored_order() {
         (0x0000_2002, vec![0xB7u32]),
     ] {
         let mut sub_data = Vec::new();
+        // #4899 — the first LTEX carries an editor ID; the second has none.
+        if form_id == 0x0000_2001 {
+            let edid = b"LFieldGrass01NoGrass\0";
+            sub_data.extend_from_slice(b"EDID");
+            sub_data.extend_from_slice(&(edid.len() as u16).to_le_bytes());
+            sub_data.extend_from_slice(edid);
+        }
         for g in grasses {
             sub_data.extend_from_slice(b"GNAM");
             sub_data.extend_from_slice(&4u16.to_le_bytes());
@@ -746,14 +753,22 @@ fn ltex_gnam_array_survives_decode_in_authored_order() {
     let mut ltex_to_txst: HashMap<u32, u32> = HashMap::new();
     let mut direct_paths: HashMap<u32, String> = HashMap::new();
     let mut ltex_to_grass: HashMap<u32, Vec<u32>> = HashMap::new();
+    let mut editor_ids: HashMap<u32, String> = HashMap::new();
     parse_ltex_group(
         &mut reader,
         end,
         &mut ltex_to_txst,
         &mut direct_paths,
         &mut ltex_to_grass,
+        &mut editor_ids,
     )
     .expect("parse must succeed");
+    assert_eq!(
+        editor_ids.get(&0x0000_2001).map(String::as_str),
+        Some("LFieldGrass01NoGrass"),
+        "#4899 — the LTEX editor ID must be captured for the cover-affinity table"
+    );
+    assert!(!editor_ids.contains_key(&0x0000_2002), "an absent EDID stays absent");
 
     assert_eq!(
         ltex_to_grass.get(&0x0000_2001),

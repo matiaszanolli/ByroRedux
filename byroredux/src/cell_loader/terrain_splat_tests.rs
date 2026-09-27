@@ -7,7 +7,7 @@
 //! handling. Pure-Rust, no GPU.
 use super::terrain::{
     authored_grass_for_splat_layers, base_transition_alpha, base_transition_layers_for_bases,
-    quadrant_samples_for_vertex, splat_weight_for_vertex, CellSplatLayer,
+    cover_affinity_key, quadrant_samples_for_vertex, splat_weight_for_vertex, CellSplatLayer,
 };
 
 fn mk_layer(per_quadrant_alpha: [Option<Vec<f32>>; 4]) -> CellSplatLayer {
@@ -202,4 +202,33 @@ fn btxt_transition_plan_ignores_absent_land_quadrants() {
         Some(0x10),
     );
     assert!(transitions.is_empty());
+}
+
+/// #4899 — a splat layer's cover affinity is classified from its LTEX editor
+/// ID, not its diffuse path. Vanilla `LFieldGrass01NoGrass` reuses its grassy
+/// sibling's `Landscape\FieldGrass01.dds`; classified by path it scored 0.95
+/// (full grass) on ground authored to suppress vegetation.
+#[test]
+fn cover_affinity_is_keyed_on_the_ltex_editor_id_not_the_shared_path() {
+    use crate::groundcover_translate::layer_affinity;
+    let shared_path = r"Landscape\FieldGrass01.dds";
+    let names = std::collections::HashMap::from([
+        (0x0000_0A01_u32, "LFieldGrass01".to_string()),
+        (0x0000_0A02, "LFieldGrass01NoGrass".to_string()),
+    ]);
+    let grassy = cover_affinity_key(Some(0x0000_0A01), &names, Some(shared_path));
+    let suppressed = cover_affinity_key(Some(0x0000_0A02), &names, Some(shared_path));
+    assert_eq!(suppressed, "LFieldGrass01NoGrass");
+    assert!(layer_affinity(grassy) > 0.0, "{grassy} must stay vegetated");
+    assert_eq!(layer_affinity(suppressed), 0.0, "{suppressed} authors no cover");
+    assert!(
+        layer_affinity(shared_path) > 0.0,
+        "premise: the shared path alone cannot tell the pair apart"
+    );
+
+    // No editor ID (the engine's default land texture, an EDID-less LTEX):
+    // the path is the only name there is.
+    assert_eq!(cover_affinity_key(Some(0x0000_0A03), &names, Some(shared_path)), shared_path);
+    assert_eq!(cover_affinity_key(None, &names, Some(shared_path)), shared_path);
+    assert_eq!(cover_affinity_key(None, &names, None), "");
 }

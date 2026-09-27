@@ -1224,6 +1224,15 @@ pub struct EsmCellIndex {
     /// Consumers must remap the LAND layer's LTEX form ID through this
     /// table before selecting authored ground-cover models.
     pub landscape_grasses: HashMap<u32, Vec<u32>>,
+    /// LTEX form ID → the LTEX's editor ID (`EDID`).
+    ///
+    /// #4899 — the ground-cover affinity table (`groundcover_translate`,
+    /// `exal-groundcover.md` §12.1) was derived by tokenising LTEX editor
+    /// IDs, and its strongest rule is a `NoGrass` suffix. Grass/NoGrass
+    /// variants of one landscape share a diffuse texture, so classifying the
+    /// texture path instead inverted every such pair. LTEX records without
+    /// an `EDID` are absent here.
+    pub landscape_texture_names: HashMap<u32, String>,
     /// Full decoded WRLD records, keyed by lowercased EDID. The
     /// `worldspace_climates` map below is preserved for back-compat
     /// with the cell loader's CLMT lookup; `worldspaces` is the
@@ -1511,6 +1520,7 @@ impl EsmCellIndex {
             landscape_textures,
             landscape_texture_sets,
             landscape_grasses,
+            landscape_texture_names,
             worldspaces,
             worldspace_climates,
             texture_sets,
@@ -1611,6 +1621,7 @@ impl EsmCellIndex {
         // Last writer per LTEX wins: an override re-authors the whole GNAM
         // array, so replacing (not appending to) the list is correct.
         self.landscape_grasses.extend(landscape_grasses);
+        self.landscape_texture_names.extend(landscape_texture_names);
         self.worldspaces.extend(worldspaces);
         self.worldspace_climates.extend(worldspace_climates);
         self.texture_sets.extend(texture_sets);
