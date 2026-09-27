@@ -522,7 +522,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("DialogueLineCompletionBatch", "one-shot presentation-ingress batch, snapshotted+drained every tick"),
         ("DialoguePlayback", "documented #1696-style rationale on the type itself (#2294)"),
         ("DialoguePresentationEventBatch", "one-shot presentation batch, drained at the start of every tick before being repopulated the same tick"),
-        ("ItemEventBatch", "one-shot item-transfer presentation batch, drained into the HUD/console before the next frame — same posture as DialoguePresentationEventBatch"),
+        ("ItemEventBatch", "one-shot item-transfer event batch, drained by event_cleanup_system at end of frame; no reader yet (#4713)"),
         ("DialogueRegistry", "populated once from parsed DIAL/INFO ESM records, only ever read afterward"),
         ("Dlc2Ttr4aPlayerScript", "forward-latent — no live production spawn site exists outside tests/examples"),
         ("EquipItemCatalog", "populated once at cell/plugin load, only ever read afterward"),

@@ -186,11 +186,12 @@ impl Component for OnCellLoadEvent {
     type Storage = SparseSetStorage<Self>;
 }
 
-/// One item entering or leaving a wearer's [`Inventory`] — the P3
-/// `OnItemAdded`/`OnItemRemoved` pair. Covers loot transfers (whole or
-/// selective), world pickups, and consumption; equip/unequip keeps its own
-/// [`EquipmentChange`] channel because it is a state transition on
-/// `EquipmentSlots`, not a stack-count change.
+/// One item entering or leaving a wearer's [`Inventory`] — the P3 shape for
+/// a future `OnItemAdded`/`OnItemRemoved` pair. Emitted today by loot
+/// transfers (whole or selective) and world pickups only; consumption does
+/// not emit (#4713 — deferred until a consumer exists to observe it).
+/// Equip/unequip keeps its own [`EquipmentChange`] channel because it is a
+/// state transition on `EquipmentSlots`, not a stack-count change.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub struct ItemTransfer {
     /// Base-item FormID of the moved stack.
@@ -210,9 +211,16 @@ pub struct ItemTransfer {
 /// move in one looted-stack pass and must not overwrite one another in a
 /// sparse component slot.
 ///
-/// Pattern A (see `cleanup.rs` house rules): no single owning consumer —
-/// notification UI, quest fragments, and future crime systems all observe it
-/// in the frame it was raised; `event_cleanup_system` drains it.
+/// Pattern A (see `cleanup.rs` house rules): `event_cleanup_system` drains it
+/// at end of frame.
+///
+/// **No consumer yet (#4713).** Nothing reads this batch: player-visible
+/// loot notifications are pushed directly by the inventory code, and neither
+/// the Papyrus provider nor the extension dispatchers observe it (they only
+/// consume [`EquipmentEventBatch`]). A Papyrus `OnItemAdded` bridge would
+/// also need the source/destination reference, which [`ItemTransfer`] does
+/// not carry. Quest, notification, or crime logic cannot observe loot
+/// through this channel until a reader is wired.
 #[derive(Debug, Clone, Default, Eq, PartialEq)]
 pub struct ItemEventBatch(pub Vec<ItemTransfer>);
 

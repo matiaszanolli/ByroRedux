@@ -68,7 +68,8 @@ pub fn emit_equipment_changes(
 }
 
 /// Append ordered item transfers to the wearer's one-frame batch — the
-/// `OnItemAdded`/`OnItemRemoved` channel. Same extend-or-insert shape as
+/// intended `OnItemAdded`/`OnItemRemoved` channel, which has no reader yet
+/// (see [`ItemEventBatch`], #4713). Same extend-or-insert shape as
 /// [`emit_equipment_changes`] so several same-frame producers (a looted
 /// stack pass, a consumption, a pickup) merge instead of overwriting.
 pub fn emit_item_transfers(

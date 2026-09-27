@@ -184,9 +184,10 @@ pub fn register(world: &mut World) {
     world.register::<OnInitEvent>();
     world.register::<OnTriggerEnterEvent>();
     world.register::<EquipmentEventBatch>();
-    // P3 — item add/remove channel (`OnItemAdded`/`OnItemRemoved`). Emitted
-    // by loot transfers (whole/selective), world pickups, and consumption;
-    // drained by `event_cleanup_system` like the equipment batch above.
+    // P3 — item add/remove channel (future `OnItemAdded`/`OnItemRemoved`).
+    // Emitted by loot transfers (whole/selective) and world pickups; drained
+    // by `event_cleanup_system` like the equipment batch above. No reader
+    // yet (#4713).
     world.register::<ItemEventBatch>();
     // M47.2 — trigger-volume storage. The cell loader attaches a
     // `TriggerVolume` to each invisible trigger REFR; `trigger_detection_system`
