@@ -88,10 +88,9 @@ const MAX_RECORDED_RESOURCE_LOADS: usize = 64;
 /// logical device is retained after the last menu's player is dropped.
 ///
 /// A failed creation is deliberately **not** cached, so a transient failure
-/// doesn't permanently disable the UI. If two threads race the very first
-/// call, the loser drops its device and adopts the winner's; menus are built
-/// on the main thread, so this is a correctness guard rather than a live
-/// path.
+/// doesn't permanently disable the UI. First creation is serialized: wgpu
+/// device construction is process-wide work, and racing several Vulkan
+/// device requests from parallel menu/test loads can crash some drivers.
 /// #4595 — true when a Vulkan wgpu adapter exists in this process.
 /// CI's ubuntu-latest runners have no GPU, and the eight SwfPlayer tests
 /// that build a real Ruffle device panic with "Ruffle requires hardware
@@ -146,6 +145,12 @@ fn get_or_try_init<T>(
     slot: &OnceLock<Arc<T>>,
     make: impl FnOnce() -> Result<Arc<T>>,
 ) -> Result<Arc<T>> {
+    // OnceLock's `get_or_init` cannot cache a fallible result, so the old
+    // helper ran `make` outside its lock and allowed concurrent first callers
+    // to create several devices. Keep the retry-on-error behavior while
+    // ensuring only one expensive initialization is in flight.
+    static INIT_LOCK: Mutex<()> = Mutex::new(());
+    let _guard = INIT_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     if let Some(existing) = slot.get() {
         return Ok(Arc::clone(existing));
     }
@@ -849,6 +854,35 @@ mod shared_descriptor_tests {
         let recovered = get_or_try_init(&SLOT, &mut make).expect("retry succeeds");
         assert_eq!(*recovered, 42);
         assert_eq!(attempts.load(Ordering::Relaxed), 2, "the retry really ran");
+    }
+
+    #[test]
+    fn concurrent_first_callers_run_the_initializer_once() {
+        use std::sync::Barrier;
+        use std::time::Duration;
+
+        static SLOT: OnceLock<Arc<u32>> = OnceLock::new();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let start = Arc::new(Barrier::new(8));
+        let threads: Vec<_> = (0..8)
+            .map(|_| {
+                let calls = Arc::clone(&calls);
+                let start = Arc::clone(&start);
+                std::thread::spawn(move || {
+                    start.wait();
+                    get_or_try_init(&SLOT, || {
+                        calls.fetch_add(1, Ordering::Relaxed);
+                        std::thread::sleep(Duration::from_millis(5));
+                        Ok(Arc::new(17))
+                    })
+                    .unwrap()
+                })
+            })
+            .collect();
+        let values: Vec<_> = threads.into_iter().map(|thread| thread.join().unwrap()).collect();
+
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+        assert!(values.iter().all(|value| Arc::ptr_eq(&values[0], value)));
     }
 }
 

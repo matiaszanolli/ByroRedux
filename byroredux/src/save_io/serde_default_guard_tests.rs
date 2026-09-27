@@ -92,8 +92,14 @@ fn save_type_sources() -> Vec<PathBuf> {
         let Ok(source) = std::fs::read_to_string(path) else {
             return false;
         };
+        // `inspect` derives make components readable by the debug registry;
+        // they do not make the component part of a save. Including every
+        // inspect-only file swept render-derived state such as WaterMaterial
+        // into the save fingerprint even though WaterPlane is deliberately
+        // NOT_SAVED_BY_DESIGN. Saved roots are covered by the live registry
+        // name scan, with feature-gated save derives covering standalone
+        // serialized payloads.
         source.contains("cfg_attr(feature = \"save\"")
-            || source.contains("cfg_attr(feature = \"inspect\"")
             || registered.iter().any(|name| defines_type(&source, name))
     });
     // Non-turbofish and nested payloads cannot be derived from the registry's
@@ -644,7 +650,10 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // (a `Vec<FactionReactionOverride>` of directed `FormRef` pairs and a
     // raw reaction, `crates/scripting/src/combat.rs`) joined the saved
     // registry as a new resource column.
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x26d7_7651_0249_fc74;
+    // The source scope is limited to saved derives and registered save roots;
+    // inspect-only files no longer affect this hash (#4755 debug visibility
+    // does not change the on-disk schema).
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x0b0b_5903_0412_4229;
     // ---- earlier refresh history (kept for the false-positive record) ----
     // 2026-09-21 (W2.10 flip) — refreshed WITHOUT a major bump, the same
     // `VisibilityMask` tuple-struct sweep class as the two entries below:

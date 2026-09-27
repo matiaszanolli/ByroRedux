@@ -2443,6 +2443,9 @@ mod tests {
             "translate_texture_only_material(",
             "translate_texture_only_material_with_authored_msn(",
             "translate_material(",
+            // `.bto` sub-meshes delegate to this wrapper, which translates
+            // their ImportedMaterial and attaches the canonical result.
+            "insert_object_lod_submesh_material(",
         ];
 
         let mut checked_files: Vec<String> = Vec::new();
