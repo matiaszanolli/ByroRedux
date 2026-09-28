@@ -1216,6 +1216,18 @@ impl ApplicationHandler for App {
                         .unwrap_or(0);
                     let vol_state = self.world.try_resource::<SkinCoverageStats>()
                         .map(|s| s.volumetrics_state).unwrap_or_default();
+                    let (upscaler_token, render_extent_token, output_extent_token) = self
+                        .renderer
+                        .as_ref()
+                        .map(|ctx| {
+                            let e = &ctx.frame_extents;
+                            (
+                                ctx.renderer_config.upscaler.to_string(),
+                                format!("{}x{}", e.render.width, e.render.height),
+                                format!("{}x{}", e.output.width, e.output.height),
+                            )
+                        })
+                        .unwrap_or_else(|| ("none".into(), "0x0".into(), "0x0".into()));
                     let rt_integrity_line = self
                         .world
                         .try_resource::<RtIntegrityStats>()
@@ -1243,7 +1255,8 @@ impl ApplicationHandler for App {
                          sim_time_s={:.6} entities={} meshes={} textures={} \
                          draws={}/{}b/{}c bench_draws_raster_cmds={} \
                          lights={} tlas={} state_hash={:016x} \
-                         skin={}/{}+{} rt_tier={} volumetric_rt_tier={} volumetric_light_cap={} froxel_x={} froxel_y={} froxel_z={} transport_armed={} fog_volume_count={} fog_cluster_max_density={} fog_cluster_max_portal={}",
+                         skin={}/{}+{} rt_tier={} volumetric_rt_tier={} volumetric_light_cap={} froxel_x={} froxel_y={} froxel_z={} transport_armed={} fog_volume_count={} fog_cluster_max_density={} fog_cluster_max_portal={} \
+                         upscaler={} render_extent={} output_extent={}",
                         bench_mode,
                         bench_mode.gate_label(),
                         bench_mode.dt_label(),
@@ -1345,6 +1358,13 @@ impl ApplicationHandler for App {
                         vol_state.fog_volume_count,
                         vol_state.max_density_count,
                         vol_state.max_portal_count,
+                        // #4947 — the reconstruction path this run actually
+                        // exercised. A persisted `render.upscaler` can replace
+                        // the no-flag default, so a harness must read the
+                        // effective mode here, not assume it from the CLI.
+                        upscaler_token,
+                        render_extent_token,
+                        output_extent_token,
                     );
                     if let Some(line) = rt_integrity_line {
                         println!("{line}");

@@ -64,6 +64,21 @@ pub(super) fn sort_tlas_instances_by_blas_address(
     });
 }
 
+/// Full-width entity identity of each TLAS instance, in instance order.
+///
+/// `entity_ids_by_ssbo` is indexed by the instance's 24-bit custom index (its
+/// compacted SSBO slot). Used for the [`decide_use_update`] membership compare
+/// and for the `last_entity_ids` refresh after a BUILD, so both see the same
+/// sequence.
+pub(super) fn tlas_instance_entity_ids<'a>(
+    instances: &'a [vk::AccelerationStructureInstanceKHR],
+    entity_ids_by_ssbo: &'a [EntityId],
+) -> impl Iterator<Item = EntityId> + 'a {
+    instances.iter().map(move |instance| {
+        entity_ids_by_ssbo[instance.instance_custom_index_and_mask.low_24() as usize]
+    })
+}
+
 /// Convert a column-major `[f32; 16]` model matrix (glam / shader
 /// convention) into the row-major 3×4 layout `VkTransformMatrixKHR`
 /// expects. The bottom row of an affine model matrix is always
@@ -244,6 +259,14 @@ pub(super) fn validate_refit_flags(
 /// flag short-circuit logic introduced in #300 can be unit-tested
 /// without a Vulkan context.
 ///
+/// Beyond the address layout, a same-address, same-count frame whose entity
+/// membership differs also BUILDs (#4948): Vulkan allows transforms to
+/// change under UPDATE, but refitting a different entity into an old leaf can
+/// destroy traversal quality while remaining legal. `cached_entity_ids` is
+/// the sequence recorded at the last BUILD and `current_entity_ids` this
+/// frame's canonical sequence ([`tlas_instance_entity_ids`]). SSBO indices can
+/// change freely with raster order; only the full-width identity counts.
+///
 /// Returns `(use_update, did_zip)`:
 ///   - `use_update` is the gate fed to `build_geometry_info.mode`.
 ///   - `did_zip` reports whether the per-instance address comparison
@@ -255,6 +278,8 @@ pub(super) fn decide_use_update(
     current_gen: u64,
     cached_addresses: &[vk::DeviceAddress],
     current_addresses: &[vk::DeviceAddress],
+    cached_entity_ids: &[EntityId],
+    current_entity_ids: impl IntoIterator<Item = EntityId>,
 ) -> (bool, bool) {
     // Empty current frame → must BUILD (#657). The naive zip-compare
     // would treat two empty lists as identical and pick UPDATE, then
@@ -289,7 +314,9 @@ pub(super) fn decide_use_update(
             .iter()
             .zip(current_addresses.iter())
             .all(|(a, b)| a == b);
-    (layout_matches, true)
+    let membership_matches =
+        layout_matches && cached_entity_ids.iter().copied().eq(current_entity_ids);
+    (membership_matches, true)
 }
 
 /// Build the shared `draw_idx → ssbo_idx` mapping that

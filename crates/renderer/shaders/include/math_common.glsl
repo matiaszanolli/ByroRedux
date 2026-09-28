@@ -41,9 +41,17 @@ const float PI = 3.14159265359;
 // Interleaved gradient noise (Jimenez 2014) — excellent spatial distribution,
 // cheap to compute, and when seeded with frame counter gives temporally
 // varying patterns that average to smooth penumbra over a few frames.
+//
+// #4951 — the frame term is wrapped to Jimenez's 64-frame period before the
+// multiply. Unwrapped, `frameCount * 5.588238` grows to ~9e7 over a session
+// (`frameCount` runs to 2^24), and the f32 sum with `fragCoord` drops the
+// pixel coordinate's low bits: ~1 M frames left 32 distinct outputs and 81 %
+// of vertically adjacent pixels equal. `mod` by a power of two is exact in
+// f32, so the wrapped term stays below 64 * 5.588238 for the whole session.
 float interleavedGradientNoise(vec2 fragCoord, float frameCount) {
     vec3 magic = vec3(0.06711056, 0.00583715, 52.9829189);
-    float shifted = fract(magic.z * fract(dot(fragCoord + frameCount * vec2(5.588238, 5.588238), magic.xy)));
+    float frame = mod(frameCount, 64.0);
+    float shifted = fract(magic.z * fract(dot(fragCoord + frame * vec2(5.588238, 5.588238), magic.xy)));
     return shifted;
 }
 

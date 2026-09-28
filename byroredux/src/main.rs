@@ -792,7 +792,9 @@ fn install_universal_settings(
     let explicit_upscaler = args
         .iter()
         .any(|arg| arg == "--upscaler" || arg == "--fsr-quality");
+    let mut upscaler_source = boot::UpscalerSource::Default;
     if explicit_upscaler {
+        upscaler_source = boot::UpscalerSource::Cli;
         let active_upscaler = renderer_config.upscaler.to_string();
         if let Err(error) = settings.set(
             byroredux_debug_ui::UPSCALER_SETTING_ID,
@@ -800,15 +802,24 @@ fn install_universal_settings(
         ) {
             log::warn!("could not seed the upscaler setting from '{active_upscaler}': {error}");
         }
-    } else if let Some(SettingValue::Choice(spec)) = settings
-        .get(byroredux_debug_ui::UPSCALER_SETTING_ID)
-        .map(|entry| &entry.value)
-    {
-        match cli_args::parse_upscaler_spec(spec) {
-            Ok(mode) => renderer_config.upscaler = mode,
-            Err(error) => log::warn!("persisted upscaler '{spec}' is invalid: {error}"),
+    } else if let Some(entry) = settings.get(byroredux_debug_ui::UPSCALER_SETTING_ID) {
+        if let SettingValue::Choice(spec) = &entry.value {
+            match cli_args::parse_upscaler_spec(spec) {
+                Ok(mode) => {
+                    renderer_config.upscaler = mode;
+                    if entry.value != entry.default {
+                        upscaler_source = boot::UpscalerSource::Persisted;
+                    }
+                }
+                Err(error) => log::warn!("persisted upscaler '{spec}' is invalid: {error}"),
+            }
         }
     }
+    boot::log_upscaler_selection(
+        renderer_config.upscaler,
+        upscaler_source,
+        settings_persistence.path(),
+    );
     world.insert_resource(settings);
     world.insert_resource(settings_persistence);
     interaction::sync_registered_settings(world);

@@ -112,6 +112,50 @@ fn init_tracing() {
     }
 }
 
+/// Where the effective upscaler came from (#4947).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum UpscalerSource {
+    /// `--upscaler` / `--fsr-quality` on the command line.
+    Cli,
+    /// A non-default `render.upscaler` in the persisted settings file.
+    Persisted,
+    /// Neither: the CLI's no-flag default.
+    Default,
+}
+
+impl std::fmt::Display for UpscalerSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Cli => "cli",
+            Self::Persisted => "settings.toml",
+            Self::Default => "default",
+        })
+    }
+}
+
+/// #4947 — the one upscaler log line, emitted by `install_universal_settings`
+/// after a persisted `render.upscaler` may have replaced the CLI default, and
+/// naming where the value came from. Logged from this module so the
+/// `byroredux::boot=info` filter every bench harness passes keeps it;
+/// `scripts/check-bench-determinism.sh` scrapes it.
+pub(crate) fn log_upscaler_selection(
+    upscaler: byroredux_renderer::UpscalerMode,
+    source: UpscalerSource,
+    settings_path: &std::path::Path,
+) {
+    match source {
+        UpscalerSource::Persisted => log::info!(
+            "Renderer upscaler selection: {upscaler} (source: {source} at {}; \
+             pass --upscaler or set {} to override)",
+            settings_path.display(),
+            crate::settings_io::SETTINGS_PATH_ENV,
+        ),
+        UpscalerSource::Cli | UpscalerSource::Default => {
+            log::info!("Renderer upscaler selection: {upscaler} (source: {source})")
+        }
+    }
+}
+
 /// Entry point body, extracted verbatim from the former `fn main()`
 /// (#1858 / TD1-003) so `main.rs` becomes a one-line dispatcher.
 pub(crate) fn run() -> Result<()> {
@@ -333,8 +377,10 @@ pub(crate) fn run() -> Result<()> {
         }
     }
 
+    // The effective upscaler is logged once, by `install_universal_settings`,
+    // after a persisted `render.upscaler` may have replaced the CLI default
+    // (#4947). Logging it here stated the pre-override value.
     let renderer_config = parse_renderer_config(&args)?;
-    log::info!("Renderer upscaler selection: {}", renderer_config.upscaler);
     if renderer_config.rt_test_lod_scale_bits.is_some()
         || renderer_config.rt_test_lod_telemetry
         || renderer_config.rt_test_ray_quality_tier.is_some()
@@ -706,6 +752,27 @@ mod sources_ordering_tests {
                  test in this crate reads that string, so an omitted file is coverage \
                  that silently disappears rather than a test that fails."
             );
+        }
+    }
+}
+
+#[cfg(test)]
+mod upscaler_source_tests {
+    use super::UpscalerSource;
+
+    /// #4947 — `scripts/check-bench-determinism.sh` extracts the source from
+    /// `Renderer upscaler selection: <mode> (source: <label>…` with a
+    /// `[^ )]*` capture, so every label must be one space-free word.
+    #[test]
+    fn source_labels_are_single_words() {
+        for (source, label) in [
+            (UpscalerSource::Cli, "cli"),
+            (UpscalerSource::Persisted, "settings.toml"),
+            (UpscalerSource::Default, "default"),
+        ] {
+            let shown = source.to_string();
+            assert_eq!(shown, label);
+            assert!(!shown.contains([' ', ')']), "{shown:?} would break the harness scrape");
         }
     }
 }

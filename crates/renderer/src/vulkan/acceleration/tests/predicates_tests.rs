@@ -7,6 +7,31 @@
 use super::super::predicates::*;
 use super::super::*;
 use super::make_draw_command;
+use byroredux_core::ecs::storage::EntityId;
+
+/// `decide_use_update` for the address-only tests: each instance's entity is
+/// derived from its address, so membership matches exactly when the address
+/// layout does and only the address logic is under test.
+fn decide_addresses(
+    needs_full_rebuild: bool,
+    tlas_last_gen: u64,
+    current_gen: u64,
+    cached_addresses: &[vk::DeviceAddress],
+    current_addresses: &[vk::DeviceAddress],
+) -> (bool, bool) {
+    let entities = |addresses: &[vk::DeviceAddress]| -> Vec<EntityId> {
+        addresses.iter().map(|&a| a as EntityId).collect()
+    };
+    decide_use_update(
+        needs_full_rebuild,
+        tlas_last_gen,
+        current_gen,
+        cached_addresses,
+        current_addresses,
+        &entities(cached_addresses),
+        entities(current_addresses),
+    )
+}
 
 // ── #1024 / F-WAT-03 — water TLAS-exclusion contract ──────────
 
@@ -472,7 +497,7 @@ fn decide_skips_zip_when_needs_full_rebuild() {
     // BUILD and the zip is not run.
     let cached = vec![1u64, 2, 3];
     let current = vec![1u64, 2, 3];
-    let (use_update, did_zip) = decide_use_update(true, 0, 0, &cached, &current);
+    let (use_update, did_zip) = decide_addresses(true, 0, 0, &cached, &current);
     assert!(!use_update, "needs_full_rebuild forces BUILD");
     assert!(!did_zip, "comparison must be skipped — short-circuit");
 }
@@ -486,7 +511,7 @@ fn decide_skips_zip_when_blas_map_dirty() {
     let cached = vec![1u64, 2, 3];
     let current = vec![1u64, 2, 3];
     // last_gen=5, current=7 → BLAS map changed since last build.
-    let (use_update, did_zip) = decide_use_update(false, 5, 7, &cached, &current);
+    let (use_update, did_zip) = decide_addresses(false, 5, 7, &cached, &current);
     assert!(!use_update, "blas_map_dirty forces BUILD");
     assert!(!did_zip, "comparison must be skipped — short-circuit");
 }
@@ -498,7 +523,7 @@ fn decide_skips_zip_when_blas_map_dirty() {
 fn decide_runs_zip_when_steady_state_layout_matches() {
     let cached = vec![1u64, 2, 3];
     let current = vec![1u64, 2, 3];
-    let (use_update, did_zip) = decide_use_update(false, 7, 7, &cached, &current);
+    let (use_update, did_zip) = decide_addresses(false, 7, 7, &cached, &current);
     assert!(use_update, "matching steady state must use UPDATE");
     assert!(did_zip, "comparison must run to verify per-slot match");
 }
@@ -510,7 +535,7 @@ fn decide_runs_zip_when_steady_state_layout_matches() {
 fn decide_forces_build_when_layout_diverges() {
     let cached = vec![1u64, 2, 3];
     let current = vec![1u64, 2, 99]; // slot 2 now refers to a different BLAS
-    let (use_update, did_zip) = decide_use_update(false, 7, 7, &cached, &current);
+    let (use_update, did_zip) = decide_addresses(false, 7, 7, &cached, &current);
     assert!(!use_update, "diverging slot forces BUILD");
     assert!(did_zip, "comparison must run — that's how we noticed");
 }
@@ -559,6 +584,115 @@ fn tlas_instance_sort_key_is_independent_of_draw_order() {
     assert_eq!(addresses, [10, 20, 30]);
 }
 
+fn tlas_instance(address: u64, ssbo_index: u32) -> vk::AccelerationStructureInstanceKHR {
+    vk::AccelerationStructureInstanceKHR {
+        transform: vk::TransformMatrixKHR { matrix: [0.0; 12] },
+        instance_custom_index_and_mask: vk::Packed24_8::new(ssbo_index, 0),
+        instance_shader_binding_table_record_offset_and_flags: vk::Packed24_8::new(0, 0),
+        acceleration_structure_reference: vk::AccelerationStructureReferenceKHR {
+            device_handle: address,
+        },
+    }
+}
+
+fn addresses_of(instances: &[vk::AccelerationStructureInstanceKHR]) -> Vec<u64> {
+    instances
+        .iter()
+        .map(|instance| unsafe {
+            // SAFETY: each test instance is initialized with device_handle.
+            instance.acceleration_structure_reference.device_handle
+        })
+        .collect()
+}
+
+/// #4948 — instances sharing a BLAS address are ordered by full entity ID,
+/// whatever order the raster draw list (and so the SSBO) presents them in.
+/// Sorting by address alone lets a re-permuted draw list swap distant
+/// transforms between equal-address leaves.
+#[test]
+fn tlas_instance_sort_breaks_address_ties_by_entity_id() {
+    // SSBO slot → entity. Three instances of mesh 10, one of mesh 5.
+    let entity_ids_by_ssbo: [EntityId; 4] = [900, 7, 400, 12];
+    let expected_entities = [12, 7, 400, 900];
+    let permutations: [[u32; 4]; 3] = [[0, 1, 2, 3], [3, 2, 1, 0], [2, 0, 3, 1]];
+    for order in permutations {
+        let mut instances: Vec<_> = order
+            .iter()
+            .map(|&slot| tlas_instance(if slot == 3 { 5 } else { 10 }, slot))
+            .collect();
+        sort_tlas_instances_by_blas_address(&mut instances, &entity_ids_by_ssbo);
+        assert_eq!(addresses_of(&instances), [5, 10, 10, 10]);
+        let entities: Vec<_> = tlas_instance_entity_ids(&instances, &entity_ids_by_ssbo).collect();
+        assert_eq!(
+            entities, expected_entities,
+            "equal-address instances must be ordered by entity ID (input order {order:?})"
+        );
+    }
+}
+
+/// #4948 — same address multiset, same count, but one leaf now belongs to a
+/// different entity (one actor despawned while another using the same mesh
+/// entered view). The address zip matches; the membership compare must still
+/// force BUILD, or the new entity is refit into the old one's leaf.
+#[test]
+fn decide_forces_build_when_entity_membership_changes() {
+    let addresses = [10u64, 10, 20];
+    let cached_entities: [EntityId; 3] = [1, 2, 3];
+    let entity_ids_by_ssbo: [EntityId; 3] = [1, 5, 3];
+    let mut instances = vec![
+        tlas_instance(10, 0),
+        tlas_instance(10, 1),
+        tlas_instance(20, 2),
+    ];
+    sort_tlas_instances_by_blas_address(&mut instances, &entity_ids_by_ssbo);
+    let (use_update, did_zip) = decide_use_update(
+        false,
+        7,
+        7,
+        &addresses,
+        &addresses_of(&instances),
+        &cached_entities,
+        tlas_instance_entity_ids(&instances, &entity_ids_by_ssbo),
+    );
+    assert!(did_zip);
+    assert!(
+        !use_update,
+        "a swapped entity under an unchanged address layout must force BUILD"
+    );
+}
+
+/// #4948 — unchanged membership whose SSBO slots were permuted by raster
+/// reordering must still UPDATE: after the canonical sort the entity sequence
+/// is identical, and the SSBO index is never part of the identity.
+#[test]
+fn decide_keeps_update_when_only_ssbo_indices_permute() {
+    let addresses = [10u64, 10, 20];
+    let cached_entities: [EntityId; 3] = [1, 2, 3];
+    // Last frame: slots [0, 1, 2] held entities [1, 2, 3]. This frame the
+    // raster order reversed them.
+    let entity_ids_by_ssbo: [EntityId; 3] = [3, 2, 1];
+    let mut instances = vec![
+        tlas_instance(20, 0),
+        tlas_instance(10, 1),
+        tlas_instance(10, 2),
+    ];
+    sort_tlas_instances_by_blas_address(&mut instances, &entity_ids_by_ssbo);
+    let (use_update, did_zip) = decide_use_update(
+        false,
+        7,
+        7,
+        &addresses,
+        &addresses_of(&instances),
+        &cached_entities,
+        tlas_instance_entity_ids(&instances, &entity_ids_by_ssbo),
+    );
+    assert!(did_zip);
+    assert!(
+        use_update,
+        "a permutation of SSBO slots with unchanged membership must stay UPDATE"
+    );
+}
+
 /// Length mismatch (entity spawned/despawned without the BLAS map
 /// noticing — e.g. an entity with an existing-mesh handle joined
 /// the in_tlas set). The zip-compare's length check catches this.
@@ -566,7 +700,7 @@ fn tlas_instance_sort_key_is_independent_of_draw_order() {
 fn decide_forces_build_when_lengths_differ() {
     let cached = vec![1u64, 2, 3];
     let current = vec![1u64, 2, 3, 4];
-    let (use_update, did_zip) = decide_use_update(false, 7, 7, &cached, &current);
+    let (use_update, did_zip) = decide_addresses(false, 7, 7, &cached, &current);
     assert!(!use_update);
     assert!(did_zip);
 }
@@ -579,7 +713,7 @@ fn decide_forces_build_when_lengths_differ() {
 fn decide_first_frame_after_tlas_creation_builds() {
     let cached: Vec<u64> = Vec::new();
     let current = vec![1u64, 2, 3];
-    let (use_update, did_zip) = decide_use_update(true, u64::MAX, 0, &cached, &current);
+    let (use_update, did_zip) = decide_addresses(true, u64::MAX, 0, &cached, &current);
     assert!(!use_update);
     assert!(!did_zip);
 }
@@ -594,14 +728,14 @@ fn decide_first_frame_after_tlas_creation_builds() {
 fn decide_empty_current_forces_build() {
     let cached: Vec<u64> = Vec::new();
     let current: Vec<u64> = Vec::new();
-    let (use_update, did_zip) = decide_use_update(false, 7, 7, &cached, &current);
+    let (use_update, did_zip) = decide_addresses(false, 7, 7, &cached, &current);
     assert!(!use_update, "empty instance list must force BUILD");
     assert!(!did_zip, "must short-circuit before zip");
 
     // And with a non-empty cached prior frame too — the previous
     // frame had instances, this one does not.
     let cached_nonempty = vec![1u64, 2, 3];
-    let (use_update, did_zip) = decide_use_update(false, 7, 7, &cached_nonempty, &current);
+    let (use_update, did_zip) = decide_addresses(false, 7, 7, &cached_nonempty, &current);
     assert!(!use_update);
     assert!(!did_zip);
 }
@@ -630,7 +764,7 @@ fn decide_use_update_skip_then_add_round_trip_forces_build() {
 
     // Same generation across both frames (no BLAS-map mutation), no
     // forced full rebuild — the address-zip is the only signal.
-    let (use_update, did_zip) = decide_use_update(false, 7, 7, &cached_after_skip, &current_full);
+    let (use_update, did_zip) = decide_addresses(false, 7, 7, &cached_after_skip, &current_full);
     assert!(
         !use_update,
         "skip→add transition (address-set change) must force BUILD, \
@@ -642,7 +776,7 @@ fn decide_use_update_skip_then_add_round_trip_forces_build() {
     // evicted). Same expectation — address-set change → BUILD.
     let cached_full = vec![1u64, 2, 3];
     let current_after_evict = vec![1u64, 3];
-    let (use_update, _) = decide_use_update(false, 7, 7, &cached_full, &current_after_evict);
+    let (use_update, _) = decide_addresses(false, 7, 7, &cached_full, &current_after_evict);
     assert!(
         !use_update,
         "BLAS eviction (entry disappearing from address sequence) \
@@ -709,7 +843,7 @@ impl TlasBookkeeping {
     /// 5. Clear `needs_full_rebuild` and remember `map_gen`.
     fn submit_frame(&mut self, map_gen: u64, mut current_addresses: Vec<u64>) {
         let instance_count = current_addresses.len() as u32;
-        let (mut use_update, _did_zip) = decide_use_update(
+        let (mut use_update, _did_zip) = decide_addresses(
             self.needs_full_rebuild,
             self.last_blas_map_gen,
             map_gen,

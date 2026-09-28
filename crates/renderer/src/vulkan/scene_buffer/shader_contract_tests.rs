@@ -3944,9 +3944,53 @@ fn translucency_drives_the_per_light_contribution_gate() {
     );
 
     // And the block it feeds must still be there, driven by that same term.
+    // #4946 moved it into `shadowableLightRadiance`, whose `rawNdotL` is the
+    // same `dot(N, L)` the gate folds.
+    let lighting = include_str!("../../../shaders/include/lighting.glsl");
     assert!(
-        frag.contains("float backDotL = max(-dot(N, L), 0.0);"),
+        lighting.contains("float backDotL = max(-rawNdotL, 0.0);"),
         "the Phase 2b subsurface block's driver moved — re-derive the gate term to match"
+    );
+}
+
+/// #4946 / REN-D10-2026-09-27-01 — the #1147 Phase 2b translucency lobe is a
+/// direct-light lobe, so it must be evaluated inside `shadowableLightRadiance`
+/// with the Skyrim back-light lobe. Only there do ReSTIR selection, finalize
+/// visibility and the legacy WRS subtraction all see it. It used to be added
+/// to `Lo` in the cluster loop from `lightColor * atten`, with no visibility
+/// term for any light, the sun included: foliage in a building's shadow kept
+/// full sun transmission, and a lamp behind a wall lit the far side's SSS.
+#[test]
+fn translucency_lobe_is_shadowed_with_the_other_direct_lobes() {
+    let lighting = include_str!("../../../shaders/include/lighting.glsl");
+    let body = lighting
+        .split_once("vec3 shadowableLightRadiance(")
+        .expect("lighting.glsl must define shadowableLightRadiance")
+        .1;
+    let body = &body[..body
+        .find("return brdfResult * unshadowedRadiance;")
+        .expect("shadowableLightRadiance must return brdfResult * unshadowedRadiance")];
+    let back = body
+        .find("bethesdaBackFactor(mat, rawNdotL)")
+        .expect("the back-light lobe must stay in shadowableLightRadiance");
+    let sss = body
+        .find("(mat.materialFlags & MAT_FLAG_TRANSLUCENCY) != 0u")
+        .expect("the translucency lobe must be evaluated in shadowableLightRadiance (#4946)");
+    assert!(back < sss, "the translucency lobe belongs beside the back-light lobe");
+    assert!(
+        body[sss..].contains("brdfResult += sssTint"),
+        "the translucency lobe must fold into brdfResult, which the shadowed return scales"
+    );
+
+    let frag = include_str!("../../../shaders/triangle.frag");
+    assert!(
+        !frag.contains("unshadowedRadiance"),
+        "triangle.frag must not rebuild an unshadowed per-light radiance; every direct \
+         lobe goes through shadowableLightRadiance (#4946)"
+    );
+    assert!(
+        !frag.contains("float thicknessShape"),
+        "the translucency lobe must not be duplicated back into triangle.frag (#4946)"
     );
 }
 
@@ -6119,17 +6163,24 @@ fn window_portal_orients_gate_ray_and_sky_sample_from_the_viewer() {
         "if (windowFacing > 0.1) {",
         "offsetRayOriginForDirection(\n                fragWorldPos, N_bias, throughDir)",
         "windowOrigin,\n                0.0,\n                throughDir,",
-        // The sky the pane transmits is sampled along the ray that established
-        // the portal, not along a re-derived direction.
-        "exteriorSkyRadianceOr(throughDir, exteriorSkyTint.rgb)",
+        // #4950 — the sky the pane transmits is sampled along the camera ray.
+        // Thin clear glass does not bend the view; `throughDir` is the pane
+        // normal, constant across a flat pane, so sampling it painted one
+        // view-independent texel (the sun disc, on a pane facing the sun).
+        "exteriorSkyRadianceOr(-V, exteriorSkyTint.rgb)",
     ] {
         assert!(
             code.contains(required),
-            "the window portal lost `{required}` (#4832) — gate, ray and sky sample must \
-             all derive from the viewer-facing N_bias / throughDir:\n{code}"
+            "the window portal lost `{required}` (#4832 / #4950) — gate and ray derive \
+             from the viewer-facing N_bias / throughDir, the sky sample from -V:\n{code}"
         );
     }
-    for banned in ["dot(-V, N)", "= -N;", "exteriorSkyRadianceOr(-N"] {
+    for banned in [
+        "dot(-V, N)",
+        "= -N;",
+        "exteriorSkyRadianceOr(-N",
+        "exteriorSkyRadianceOr(throughDir",
+    ] {
         assert!(
             !code.contains(banned),
             "the window portal regained `{banned}` — that is the authored-normal-sign \
@@ -6426,4 +6477,74 @@ fn dark_combine_is_the_pinned_bare_multiply_in_both_paths() {
              depend on exactly this combine"
         );
     }
+}
+
+/// #4951 / REN-D2-2026-09-27-03 — `interleavedGradientNoise` must wrap its
+/// frame term before the multiply. `cameraPos.w` runs to 2^24, and the f32
+/// `fragCoord + frameCount * 5.588238` then loses the pixel coordinate's low
+/// bits: after ~1 M frames the rough-glass scatter collapsed to 32 distinct
+/// values, with 81 % of vertically adjacent pixels equal.
+#[test]
+fn interleaved_gradient_noise_keeps_its_resolution_over_a_session() {
+    let math = include_str!("../../../shaders/include/math_common.glsl");
+    let body = math
+        .split_once("float interleavedGradientNoise(vec2 fragCoord, float frameCount) {")
+        .expect("math_common.glsl must define interleavedGradientNoise")
+        .1
+        .split_once("\n}")
+        .unwrap()
+        .0;
+    let code = code_lines(body);
+    assert!(
+        code.contains("float frame = mod(frameCount, 64.0);")
+            && code.contains("fragCoord + frame * vec2(5.588238, 5.588238)")
+            && !code.contains("frameCount * vec2"),
+        "IGN must multiply the 64-wrapped frame, never the raw frame count (#4951):\n{code}"
+    );
+
+    // f32 mirror of the GLSL, evaluated as the shader does (every op in f32).
+    fn ign(x: f32, y: f32, frame_count: f32, wrap: bool) -> f32 {
+        let frame = if wrap {
+            frame_count - 64.0 * (frame_count / 64.0).floor()
+        } else {
+            frame_count
+        };
+        let (px, py) = (x + frame * 5.588238, y + frame * 5.588238);
+        let inner = (px * 0.06711056 + py * 0.00583715).fract();
+        (52.9829189f32 * inner).fract()
+    }
+    fn distinct_and_vertical_equal(frame_count: f32, wrap: bool) -> (usize, f32) {
+        let mut values = Vec::new();
+        let mut equal = 0usize;
+        for y in 0..256 {
+            for x in 0..256 {
+                let (fx, fy) = (x as f32 + 0.5, y as f32 + 0.5);
+                let v = ign(fx, fy, frame_count, wrap);
+                values.push(v.to_bits());
+                if v == ign(fx, fy + 1.0, frame_count, wrap) {
+                    equal += 1;
+                }
+            }
+        }
+        values.sort_unstable();
+        values.dedup();
+        (values.len(), equal as f32 / 65536.0)
+    }
+
+    let early = distinct_and_vertical_equal(37.0, true);
+    for frames in [1_000_037.0f32, 3_000_037.0, 16_777_000.0] {
+        let wrapped = distinct_and_vertical_equal(frames, true);
+        assert!(
+            wrapped.0 >= early.0 / 2 && wrapped.1 < 0.05,
+            "wrapped IGN at frame {frames} must keep frame-37 resolution: \
+             {wrapped:?} vs {early:?}"
+        );
+    }
+    // Fixture sanity: the unwrapped form really did degrade (the defect).
+    let (distinct, vertical_equal) = distinct_and_vertical_equal(1_000_037.0, false);
+    assert!(
+        distinct <= 64 && vertical_equal > 0.5,
+        "fixture sanity: the unwrapped product must collapse by ~1 M frames \
+         ({distinct} distinct, {vertical_equal} vertical-equal)"
+    );
 }

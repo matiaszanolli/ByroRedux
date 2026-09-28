@@ -67,6 +67,12 @@ scene_args_text="$(printf '%q ' "${scene_args[@]}")"
 run_once() {
     local index="$1"
     local log="${work_dir}/run-${index}.log"
+    # #4947 — a fresh, absent settings file per run. The engine otherwise
+    # loads the user's persisted `render.upscaler` (and every other menu
+    # setting) over the no-flag defaults, so "no flag" stops meaning the
+    # documented default path. Pass `--upscaler` in the scene args to pin one.
+    local settings="${work_dir}/run-${index}.settings.toml"
+    rm -f -- "${settings}"
     set +e
     if [[ -n "${runner}" ]]; then
         # Keep xvfb-run itself in the foreground. Debian's wrapper waits for
@@ -75,6 +81,7 @@ run_once() {
         # and launch winit before DISPLAY accepts connections. Redirect only
         # the engine child from inside the ready wrapper.
         RUST_LOG="${BYROREDUX_BENCH_LOG:-error,byroredux::boot=info,byroredux_renderer::vulkan::device=info,byroredux_renderer::vulkan::context=info}" \
+            BYROREDUX_SETTINGS_PATH="${settings}" \
             "${runner_args[@]}" env \
             -u WAYLAND_DISPLAY -u GDK_BACKEND \
             XDG_SESSION_TYPE=x11 \
@@ -87,6 +94,7 @@ run_once() {
             --bench-camera "${camera}"
     else
         RUST_LOG="${BYROREDUX_BENCH_LOG:-error,byroredux::boot=info,byroredux_renderer::vulkan::device=info,byroredux_renderer::vulkan::context=info}" \
+            BYROREDUX_SETTINGS_PATH="${settings}" \
             "${engine}" \
             "${scene_args[@]}" \
             --bench-frames "${frames}" \
@@ -111,7 +119,9 @@ run_once() {
     local selected_gpu
     selected_gpu="$(sed -n 's/.*Selected GPU: \("[^"]*"\).*/\1/p' "${log}" | tail -n 1)"
     local selected_upscaler
-    selected_upscaler="$(sed -n 's/.*Renderer upscaler selection: //p' "${log}" | tail -n 1)"
+    selected_upscaler="$(sed -n 's/.*Renderer upscaler selection: \([^ ]*\).*/\1/p' "${log}" | tail -n 1)"
+    local upscaler_source
+    upscaler_source="$(sed -n 's/.*Renderer upscaler selection: [^ ]* (source: \([^ )]*\).*/\1/p' "${log}" | tail -n 1)"
     local render_extent
     render_extent="$(sed -n 's/.*Frame extents: render=\([^,]*\), output=.*/\1/p' "${log}" | tail -n 1)"
     local output_extent
@@ -132,6 +142,7 @@ run_once() {
         "${scene_args_text}" \
         "${selected_gpu}" \
         "${selected_upscaler}" \
+        "${upscaler_source}" \
         "${render_extent}" \
         "${output_extent}" <<'PY'
 import json
@@ -154,6 +165,7 @@ import sys
     scene_args,
     selected_gpu,
     selected_upscaler,
+    upscaler_source,
     render_extent,
     output_extent,
 ) = sys.argv[1:]
@@ -177,6 +189,14 @@ keys = (
     "state_hash",
 )
 values = {key: token(key) for key in keys}
+# #4947 — the bench line reports the upscaler the run actually exercised.
+# The boot log must agree with it, or the manifest would stamp a mode the
+# run never used.
+ran_upscaler = token("upscaler")
+if ran_upscaler != selected_upscaler:
+    raise SystemExit(
+        f"boot log selected upscaler {selected_upscaler!r} but the run used {ran_upscaler!r}"
+    )
 fingerprint = "|".join(values[key] for key in keys)
 
 manifest = {
@@ -193,6 +213,7 @@ manifest = {
     "scene_args_shell": scene_args.strip(),
     "selected_gpu": selected_gpu.strip('"'),
     "selected_upscaler": selected_upscaler,
+    "upscaler_source": upscaler_source,
     "render_extent": render_extent,
     "output_extent": output_extent,
     "summary": values,

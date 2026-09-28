@@ -380,6 +380,12 @@ fi
 # --- 2. launch, and resolve the ENGINE's pid ---------------------------------
 
 log "launching ${label}"
+# #4947 — a fresh, absent settings file, so the user's persisted menu settings
+# (`render.upscaler` above all) cannot replace the no-flag defaults the
+# baselines were captured with.
+settings_file="${OUT}/${label}.settings.toml"
+rm -f -- "${settings_file}"
+BYROREDUX_SETTINGS_PATH="${settings_file}" \
 xvfb-run -a --server-args="-screen 0 1280x720x24" \
     "${ENGINE_BIN}" --game "${GAME}" ${CELL:+--cell "${CELL}"} \
     --bench-frames "${FRAMES}" --bench-mode "${BENCH_MODE}" --bench-hold \

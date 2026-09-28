@@ -10,7 +10,8 @@ use super::constants::{MIN_TLAS_INSTANCE_RESERVE, UPDATABLE_AS_FLAGS};
 use super::predicates::{
     align_scratch_address, decide_use_update, draw_command_eligible_for_tlas, mask_divert_cause,
     scratch_alignment_padding, scratch_needs_growth, shadow_mask_for_instance,
-    shrink_scratch_if_oversized, sort_tlas_instances_by_blas_address, tlas_instance_transform,
+    shrink_scratch_if_oversized, sort_tlas_instances_by_blas_address, tlas_instance_entity_ids,
+    tlas_instance_transform,
     MaskDivertCause,
 };
 use super::types::TlasState;
@@ -108,31 +109,17 @@ impl AccelerationManager {
                 inst.acceleration_structure_reference.device_handle
             });
         }
+        // Same-address, same-count membership replacement also BUILDs (#4948);
+        // see `decide_use_update`.
         let (mut use_update, _did_zip) = decide_use_update(
             tlas.needs_full_rebuild,
             tlas.last_blas_map_gen,
             map_gen,
             &tlas.last_blas_addresses,
             &current_addresses_scratch,
+            &tlas.last_entity_ids,
+            tlas_instance_entity_ids(&instances, &self.tlas_entity_ids_scratch),
         );
-
-        // Vulkan allows transforms to change, but refitting a different entity
-        // into an old leaf can destroy traversal quality while remaining legal.
-        // Detect same-address, same-count membership replacement as well as the
-        // address checks above. The identity map is full-width CPU data; SSBO
-        // indices can change freely with raster order.
-        if use_update
-            && !tlas
-                .last_entity_ids
-                .iter()
-                .copied()
-                .eq(instances.iter().map(|instance| {
-                    self.tlas_entity_ids_scratch
-                        [instance.instance_custom_index_and_mask.low_24() as usize]
-                }))
-        {
-            use_update = false;
-        }
 
         // VUID-vkCmdBuildAccelerationStructuresKHR-pInfos-03708: UPDATE must
         // use the same primitiveCount as the source BUILD. Any mismatch —
@@ -388,10 +375,10 @@ impl AccelerationManager {
 
         if !use_update {
             tlas.last_entity_ids.clear();
-            tlas.last_entity_ids.extend(instances.iter().map(|instance| {
-                self.tlas_entity_ids_scratch
-                    [instance.instance_custom_index_and_mask.low_24() as usize]
-            }));
+            tlas.last_entity_ids.extend(tlas_instance_entity_ids(
+                &instances,
+                &self.tlas_entity_ids_scratch,
+            ));
         }
         shrink_scratch_if_oversized(&mut tlas.last_entity_ids, instance_count as usize, 512);
         debug_assert_eq!(tlas.last_entity_ids.len(), instance_count as usize);

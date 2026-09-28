@@ -555,13 +555,17 @@ impl AccelerationManager {
         let vertex_stride = crate::shader_constants::SKIN_OUTPUT_STRIDE_BYTES;
         // #3469 — `vertex_address` arrives cached on the `SkinSlot`; this
         // used to be a third `vkGetBufferDeviceAddress` here. The remaining
-        // two (index, scratch) stay queries on purpose: the index buffer is
-        // the `MeshRegistry`'s global SSBO and the scratch buffer is
+        // two (index, scratch) stay queries. The index buffer is the mesh's
+        // own dedicated buffer (`rt_capable` meshes always own one; see
+        // `global_only_meshes_are_never_rt_capable`), fixed for the mesh's
+        // lifetime and untouched by the geometry-SSBO rebuild or compaction,
+        // so its address could be cached safely; it is re-queried only
+        // because it is a nanosecond-scale call on a once-per-*moving*-actor
+        // path (#4949). The scratch buffer is the one that moves: it is
         // reallocated from three separate sites (`memory.rs`,
-        // `blas_static.rs`, and this file's own grow path), so caching those
-        // trades a nanosecond-scale win on a once-per-*moving*-actor path for
-        // a stale-address GPU fault if any realloc site forgets to refresh.
-        // Not worth it without the invalidation being structural.
+        // `blas_static.rs`, and this file's own grow path), so caching it
+        // would risk a stale-address GPU fault if any realloc site forgot to
+        // refresh. Not worth it without the invalidation being structural.
         //
         // SAFETY: index_buffer is live with SHADER_DEVICE_ADDRESS usage.
         let index_address = unsafe {

@@ -1987,11 +1987,17 @@ void main() {
             // shader onto it: everything else reading a stale exterior sky
             // from inside is the #2226 leak.
             // The interior composite stays local, while the cubemap is baked
-            // from the outdoor weather palette. Sample in the same outward
-            // direction whose clear ray established this portal, so a window
-            // sees the actual horizon, sun and clouds instead of one zenith
-            // swatch. The helper falls back to the zenith if the bake is absent.
-            vec3 skyColor = exteriorSkyRadianceOr(throughDir, exteriorSkyTint.rgb);
+            // from the outdoor weather palette, so a window sees the actual
+            // horizon, sun and clouds instead of one zenith swatch. The helper
+            // falls back to the zenith if the bake is absent.
+            // #4950 — sample along the camera ray `-V`, not `throughDir`. The
+            // escape ray above rides the pane normal on purpose (#421: `-V`
+            // clips interior side walls at oblique angles), but thin clear
+            // glass does not bend the view: the sky seen through it lies
+            // along `-V`. `-N_bias` is constant across a flat pane, so every
+            // pixel returned one view-independent texel, and a pane whose
+            // normal faced the sun read the sun disc from every viewpoint.
+            vec3 skyColor = exteriorSkyRadianceOr(-V, exteriorSkyTint.rgb);
             // Use the authored glass color directly instead of biasing
             // toward white. Pre-fix this mix started from pure white
             // and leaned heavily that way for low-alpha clear glass
@@ -3212,7 +3218,6 @@ void main() {
             // see `byroredux/src/render/lights.rs`. Directionals use the
             // shared radius=0 renderer contract in every scene type.
             float radius = lights[i].position_radius.w;
-            vec3 lightColor = lights[i].color_type.rgb;
             float lightType = lights[i].color_type.w;
 
             vec3 L;
@@ -3305,9 +3310,8 @@ void main() {
             // Disney-vs-Lambert diffuse) now lives in
             // shadowableLightRadiance() so the shadow pass recomputes
             // the identical value from the light index rather than
-            // caching it per reservoir. `unshadowedRadiance` is kept
-            // locally for the SSS translucency term below.
-            vec3 unshadowedRadiance = lightColor * atten;
+            // caching it per reservoir. The #1147 Phase 2b translucency
+            // lobe lives there too (#4946), so it is shadowed like the rest.
             vec3 shadowableRadiance = shadowableLightRadiance(
                 i, N, V, NdotV, F0, albedo, lightingMask, backLightingMap,
                 roughness, aaRoughness, metalness,
@@ -3321,59 +3325,6 @@ void main() {
             // walls, objects and actors all participate in the same query.
             if (!useRestir || !needsVisibility) {
                 Lo += shadowableRadiance;
-            }
-
-            // #1147 Phase 2b — subsurface translucency. Adds a back-
-            // side wraparound term so light leaks through thin
-            // translucent surfaces (skin, leaves, paper, frost-rimed
-            // glass). Gated on `MAT_FLAG_TRANSLUCENCY` so legacy
-            // content (every NIF without a v>=8 BGSM) gets exactly
-            // zero contribution. The math is a Bethesda-style "fake
-            // SSS" — back-light approximation by inverted N·L, mixed
-            // with the authored subsurface colour. Cheap (no extra
-            // texture sample, no extra ray), visible on authored
-            // materials.
-            if ((mat.materialFlags & MAT_FLAG_TRANSLUCENCY) != 0u) {
-                // Back-side wraparound: when the surface faces away
-                // from the light (NdotL low), some light "wraps"
-                // through. `clamp(-N·L, 0, 1)` would peak at the
-                // anti-light direction; the half-wrap `(1 + N·L) * 0.5`
-                // peaks at NdotL=1 instead — we want the back side, so
-                // use the inversion.
-                float backDotL = max(-dot(N, L), 0.0);
-                // Optional turbulence — noise perturbation so SSS
-                // doesn't look like a uniform back-light. Cheap
-                // sinusoidal proxy (no extra sample).
-                float turb = mat.translucencyTurbulence;
-                float turbMod = 1.0 + turb * 0.5
-                    * sin(NdotV * 11.0 + fragWorldPos.x * 0.013);
-                // Thick-object: when set (skin, wax), the transmission
-                // is more diffuse and less view-dependent — fold the
-                // back-side term less aggressively. When clear (thin
-                // sheet — leaf, paper), the transmission spikes near
-                // the silhouette and falls off fast.
-                float thicknessShape =
-                    ((mat.materialFlags & MAT_FLAG_TRANSLUCENCY_THICK_OBJECT) != 0u)
-                        ? backDotL
-                        : pow(backDotL, 4.0);
-                // Mix-albedo: the transmitted colour tints the
-                // authored subsurface RGB by the surface albedo
-                // (skin-like) vs uses the subsurface RGB raw
-                // (foliage-like with chlorophyll-driven greens).
-                vec3 subsurfaceCol = vec3(
-                    mat.translucencySubsurfaceR,
-                    mat.translucencySubsurfaceG,
-                    mat.translucencySubsurfaceB
-                );
-                vec3 sssTint =
-                    ((mat.materialFlags & MAT_FLAG_TRANSLUCENCY_MIX_ALBEDO) != 0u)
-                        ? subsurfaceCol * albedo
-                        : subsurfaceCol;
-                Lo += sssTint
-                    * mat.translucencyTransmissiveScale
-                    * thicknessShape
-                    * turbMod
-                    * unshadowedRadiance;
             }
 
             // (Per-light ambient fill REMOVED here — 2026-05-27.)

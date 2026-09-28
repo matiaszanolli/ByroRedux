@@ -340,6 +340,48 @@ vec3 shadowableLightRadiance(
         brdfResult += albedo * max(backLightingMap, vec3(0.0))
             * back * (1.0 - metalness);
     }
+
+    // #1147 Phase 2b — BGSM v>=8 subsurface translucency. A back-side
+    // wraparound term so light leaks through thin translucent surfaces
+    // (skin, leaves, paper, frost-rimed glass). Gated on
+    // `MAT_FLAG_TRANSLUCENCY` so legacy content (every NIF without a v>=8
+    // BGSM) gets exactly zero contribution. Bethesda-style "fake SSS":
+    // back-light by inverted N·L, mixed with the authored subsurface colour.
+    // #4946 — evaluated here, beside the Skyrim back-light lobe, so it is
+    // shadowed like every other direct lobe: ReSTIR pHat, the finalize
+    // visibility and the legacy subtraction all see it. It used to be added
+    // to `Lo` from the unshadowed radiance of every cluster light (sun
+    // included), leaking through walls and terrain shadow.
+    if ((mat.materialFlags & MAT_FLAG_TRANSLUCENCY) != 0u) {
+        // Peaks at the anti-light direction: the back side.
+        float backDotL = max(-rawNdotL, 0.0);
+        // Optional turbulence — cheap sinusoidal proxy so SSS doesn't look
+        // like a uniform back-light (no extra sample).
+        float turb = mat.translucencyTurbulence;
+        float turbMod = 1.0 + turb * 0.5
+            * sin(NdotV * 11.0 + fragWorldPos.x * 0.013);
+        // Thick-object (skin, wax): diffuse, less view-dependent transmission.
+        // Thin sheet (leaf, paper): spikes near the silhouette, falls off fast.
+        float thicknessShape =
+            ((mat.materialFlags & MAT_FLAG_TRANSLUCENCY_THICK_OBJECT) != 0u)
+                ? backDotL
+                : pow(backDotL, 4.0);
+        // Mix-albedo tints the authored subsurface RGB by the surface albedo
+        // (skin-like); otherwise the subsurface RGB is used raw (foliage).
+        vec3 subsurfaceCol = vec3(
+            mat.translucencySubsurfaceR,
+            mat.translucencySubsurfaceG,
+            mat.translucencySubsurfaceB
+        );
+        vec3 sssTint =
+            ((mat.materialFlags & MAT_FLAG_TRANSLUCENCY_MIX_ALBEDO) != 0u)
+                ? subsurfaceCol * albedo
+                : subsurfaceCol;
+        brdfResult += sssTint
+            * mat.translucencyTransmissiveScale
+            * thicknessShape
+            * turbMod;
+    }
     return brdfResult * unshadowedRadiance;
 }
 

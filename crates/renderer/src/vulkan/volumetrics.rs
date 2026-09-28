@@ -2597,6 +2597,10 @@ mod unit_tests {
             .expect("next helper")
             .0;
         assert!(!function.contains("gl_RayFlagsTerminateOnFirstHitEXT"));
+        // #4945 — all BLAS geometry is OPAQUE, so an opaque-flagged query
+        // commits every hit internally and the candidate loop never runs.
+        assert!(function.contains("gl_RayFlagsNoOpaqueEXT"));
+        assert!(!function.contains("gl_RayFlagsOpaqueEXT"));
         assert!(function.contains("while (rayQueryProceedEXT(rq))"));
         assert!(function.contains("rayQueryGetIntersectionTypeEXT(rq, false)"));
         assert!(function.contains("rayQueryGetIntersectionInstanceCustomIndexEXT(rq, false)"));

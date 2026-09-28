@@ -295,7 +295,11 @@ bool traceArchitecturalWindowGlass(vec3 origin, vec3 direction, float tMax) {
     rayQueryInitializeEXT(
         rq,
         topLevelAS,
-        gl_RayFlagsOpaqueEXT,
+        // #4945 — every BLAS geometry is built OPAQUE, and opaque triangle
+        // hits are committed during traversal without ever surfacing as
+        // candidates. NoOpaque overrides that, so each glass triangle is
+        // returned to the loop below; none is ever confirmed.
+        gl_RayFlagsNoOpaqueEXT,
         VISIBILITY_LAYER_GLASS,
         origin,
         0.05,
