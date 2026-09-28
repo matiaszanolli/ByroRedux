@@ -29,9 +29,9 @@ All issue numbers link to `https://github.com/matiaszanolli/ByroRedux/issues/<nu
 | [4803](https://github.com/matiaszanolli/ByroRedux/issues/4803) | Implemented | Geometry lookup returns a fingerprint reused for fresh-batch deduplication and registration, including NPC and Cornell paths. Full geometry equality still resolves collisions. The index-sanitization regression verifies lookup/registration fingerprint agreement. |
 | [4797](https://github.com/matiaszanolli/ByroRedux/issues/4797) | Implemented | `WaterSurfaceMesh` builds a bounded XZ grid over shared triangles. Large triangles use a separate candidate list. Tests compare against a full scan at grid edges, holes, overlapping layers, source-order ties, degenerate and nonfinite input. Existing camera/player/physics callers use the same component method. |
 | [4796](https://github.com/matiaszanolli/ByroRedux/issues/4796) | Implemented | Both NIF bulk callers use a concrete `Cursor<&[u8]>` helper. It validates byte count and input range before one copy into aligned Vec capacity, then sets length and cursor position. No zero-fill or scratch allocation remains. The local unsafe trait explicitly forbids padding. Tests cover unaligned input, count overflow, EOF and cursor preservation; a dhat test pins one 256 KiB allocation for a 256 KiB array. |
-| [4795](https://github.com/matiaszanolli/ByroRedux/issues/4795) | Measurement required | Corrected the stale fit-projection documentation. No speculative eviction policy change: the issue explicitly asks to measure moving-camera churn before adding hysteresis. Details below. |
+| [4795](https://github.com/matiaszanolli/ByroRedux/issues/4795) | Measured 2026-09-28: no churn | Corrected the stale fit-projection documentation. No speculative eviction policy change: the issue explicitly asks to measure moving-camera churn before adding hysteresis. Details below. |
 | [4794](https://github.com/matiaszanolli/ByroRedux/issues/4794) | Implemented | Shared bounded tone-mip cache; common immutable NIF import cache for inspection and spawn hooks; private copy-on-write actor deformation; in-place EGM conversion; neighbor vertex buckets. Tests prove tone-sample equivalence, cache reuse/bounds, preserved neighbor order, and zero extra import-cache parses for repeated hand hooks. Material resolution remains part of the cached import. |
-| [4793](https://github.com/matiaszanolli/ByroRedux/issues/4793) | Partial; cache design and measurement required | The whole sun term is gated by live radiance/scattering. Tier 0 now skips unmarked rim detection while retaining authored apertures, glass and opaque visibility. Shader/host header tests pin tier publication. Coarse verdict caching and noon/midnight comparison remain outstanding. |
+| [4793](https://github.com/matiaszanolli/ByroRedux/issues/4793) | Implemented; cache measured unwarranted 2026-09-28 | The whole sun term is gated by live radiance/scattering. Tier 0 now skips unmarked rim detection while retaining authored apertures, glass and opaque visibility. Shader/host header tests pin tier publication. Coarse verdict caching and noon/midnight comparison remain outstanding. |
 | [4789](https://github.com/matiaszanolli/ByroRedux/issues/4789) | Implemented | Separate inject/integrate timers, COMPUTE-stage starts, and fence-associated volumetrics state reach debug/metrics/bench/TSV consumers. State includes tier, cap, froxel extent, transport activity, volume count and cluster maxima. Timer/consumer tests pass. This enables attribution; it does not replace controlled A/B measurements. |
 | [4788](https://github.com/matiaszanolli/ByroRedux/issues/4788) | Implemented | Cluster writes use the union of current and previous per-slot `[lo, hi)` ranges with byte offsets; indices use their live prefix. Tests cover untouched prefixes, disappearing volumes, stale-count clearing and repacking. |
 | [4787](https://github.com/matiaszanolli/ByroRedux/issues/4787) | Implemented | `sampleLocalMedium` rejects transported profiles before density/noise evaluation. Combustion shader contract tests cover the ordering. |
@@ -83,6 +83,27 @@ and midnight with pinned `--rt-test-ray-quality-tier`, fixed camera and equal
 render extent; report inject time and image differences. None of those A/B
 measurements has been performed here.
 
+**Measured 2026-09-28 (HEAD `55dd8fa7e`) — cache not warranted.** Rather than
+infer the rim share from noon/midnight, two release binaries were built that
+differ only in `volumetrics_inject.comp.spv`: A is the checked-in shader, B
+replaces the rim gate with `false` (each binary was checked to embed exactly
+its own SPIR-V). Both ran `--bench-mode renderer-static
+--rt-test-ray-quality-tier 3`, 300 frames, 1280×720 render extent (160×90×64
+froxels), default direct-boot clock 10:00 so the portal sun is live, runs
+interleaved A/B ×3 after a warm-up of each. `state_hash` was identical across
+all runs of a scene.
+
+| Scene | A inject ms (rim on) | B inject ms (rim off) | Median delta |
+| --- | --- | --- | --- |
+| FNV `GSProspectorSaloonInterior` | 0.355 / 0.338 / 0.341 | 0.317 / 0.321 / 0.321 | ≈ 0.02 ms |
+| Skyrim `WhiterunBanneredMare` | 0.803 / 0.521 / 0.718 | 0.768 / 0.525 / 0.789 | below noise (±0.14 ms bimodal) |
+
+The complete rim fallback costs about 0.02 ms per frame where it is
+resolvable. A coarse-block verdict cache could at most recover that. It would
+also bring in the boundary-crossing and invalidation hazards listed above. The
+sun-term gate and tier-0 shedding already landed (`90c779748`), and together
+they close #4793.
+
 ### #3813 — parallel plugin parse, ordered merge
 
 Current `records/parse.rs::parse_esm_with_load_order` constructs a private reader,
@@ -110,6 +131,35 @@ RT completeness. Static-camera convergence does not answer this issue. Only if
 the moving-camera comparison demonstrates churn should a re-admission cooldown
 be selected; all frees must continue through deferred BLAS destruction. No
 hysteresis value or claimed win is inferred from the unit tests.
+
+**Measured 2026-09-28 (HEAD `55dd8fa7e`) — no churn, no cooldown added.**
+
+*Premise at HEAD.* The issue's churn mechanism needs a TLAS set that changes
+every frame of travel. `render/static_meshes.rs::tlas_exclusion` now
+distance-gates only LOD terrain blocks. An ordinary static draw is in the
+TLAS set whenever it exists, frustum or not. Between streaming events the set
+changes only at LOD-block ring transitions.
+
+*Setup.* One release binary with a temporary env toggle restored the
+pre-`b9e961eeb` fit projection (`mean_resident_size × visible > budget`
+declines the set). Both arms ran FNV `--grid 0,0 --radius 3 --bench-mode
+renderer-stepped --bench-camera grid-cross --rt-test-blas-budget-bytes
+16777216`. The 16 MB budget puts required residency (~14–18 MB) right at the
+budget, which is the regime in question. Restore attempts (`Restored …`) and
+`BLAS eviction` events were counted.
+
+| Arm | Restore bursts with work | Summed restore time | Eviction events |
+| --- | --- | --- | --- |
+| new (HEAD) | 5 | ≈ 34 ms | 8 |
+| old (fit projection) | 8 | ≈ 85 ms | 9 |
+
+*Result.* In both arms, restores cluster at cell-load events and none fire
+per frame. The current policy finishes recovery in fewer, cheaper bursts.
+
+*Limit.* Both runs, and a Skyrim grid-cross run, were cut short after the
+first cell crossing. The cause is an unrelated Rapier MultiSAP panic
+(`sap_axis.rs:61`) on a collider at ~1e10–1e11 BU. So this comparison covers
+one boundary crossing per arm. The structural argument above covers the rest.
 
 ### #4807, #4808 and #3659 — quantitative follow-up
 
