@@ -754,6 +754,17 @@ bounds it. FO4 Commonwealth grid-cross on a 12 GB card: the per-crossing
 374–432 MiB rebuilds moved from the idle path (210–310 ms frames) to the
 resumable one.
 
+**Host side: the CPU pools compact in place.** After cell unloads leave
+holes, `plan_geometry_compaction` squeezes the survivors of
+`pending_vertices` / `pending_indices` down with `copy_within`, in slot
+order. It used to copy them into two freshly allocated pools, which briefly
+held both the old and the new pool in host RAM (up to ~2× the pool-cap rows
+above) and cost 150–210 ms of first-touch page faults per FO4 crossing. The
+move requires survivors to be ascending and disjoint in slot order, which
+uploads produce and compaction preserves. It is checked each time; any other
+layout takes the old allocating copy. The pools now keep their high-water
+capacity between compactions, still bounded by the pool caps.
+
 **Plus a second, distinct retained staging pool — the mesh side.** This is
 separate from `TextureRegistry::staging_pool` (the "Staging pool cap" row in
 the [Texture Registry](#texture-registry) section above); `MeshRegistry`

@@ -186,31 +186,64 @@ impl MeshRegistry {
             return None;
         }
 
-        let mut new_vertices: Vec<Vertex> = Vec::with_capacity(self.pending_vertices.len());
-        let mut new_indices: Vec<u32> = Vec::with_capacity(self.pending_indices.len());
+        // Every surviving scene mesh's (slot, vertex range, index range), in
+        // slot order — the order the compacted layout follows.
+        let meshes = &self.meshes;
+        let survivors = || {
+            meshes.iter().enumerate().filter_map(|(idx, slot)| {
+                let mesh = slot.as_ref().filter(|mesh| mesh.is_scene_mesh)?;
+                let v_start = mesh.global_vertex_offset as usize;
+                let i_start = mesh.global_index_offset as usize;
+                Some((
+                    idx,
+                    v_start..v_start + mesh.vertex_count as usize,
+                    i_start..i_start + mesh.index_count as usize,
+                ))
+            })
+        };
         let mut offsets: Vec<(usize, u32, u32)> = Vec::new();
 
-        for (idx, slot) in self.meshes.iter().enumerate() {
-            let Some(mesh) = slot.as_ref() else { continue };
-            if !mesh.is_scene_mesh {
-                continue;
+        // Compact in place when survivors are ascending and disjoint in slot
+        // order: each then moves to a lower offset (or stays), so shifting
+        // the ranges left with `copy_within`, in order, never overwrites one
+        // still to be moved. Uploads append in slot order and compaction
+        // preserves it, and sharing hands out an existing handle instead of
+        // aliasing a range — but it is checked, not assumed; the allocating
+        // copy below handles any layout. Both produce the same pools and
+        // offsets. Allocating two fresh pools per compaction cost 150-210 ms
+        // on FO4 crossings (~400 MiB of first-touch page faults); the in-place
+        // move touches only resident memory, and nothing before the first
+        // hole.
+        let in_place = survivors()
+            .zip(survivors().skip(1))
+            .all(|((_, v0, i0), (_, v1, i1))| v0.end <= v1.start && i0.end <= i1.start);
+        if in_place {
+            let (mut v_write, mut i_write) = (0usize, 0usize);
+            for (idx, v_range, i_range) in survivors() {
+                let (v_len, i_len) = (v_range.len(), i_range.len());
+                if v_range.start != v_write {
+                    self.pending_vertices.copy_within(v_range, v_write);
+                }
+                if i_range.start != i_write {
+                    self.pending_indices.copy_within(i_range, i_write);
+                }
+                offsets.push((idx, v_write as u32, i_write as u32));
+                v_write += v_len;
+                i_write += i_len;
             }
-            let v_start = mesh.global_vertex_offset as usize;
-            let v_end = v_start + mesh.vertex_count as usize;
-            let i_start = mesh.global_index_offset as usize;
-            let i_end = i_start + mesh.index_count as usize;
-
-            let new_v_offset = new_vertices.len() as u32;
-            let new_i_offset = new_indices.len() as u32;
-
-            new_vertices.extend_from_slice(&self.pending_vertices[v_start..v_end]);
-            new_indices.extend_from_slice(&self.pending_indices[i_start..i_end]);
-
-            offsets.push((idx, new_v_offset, new_i_offset));
+            self.pending_vertices.truncate(v_write);
+            self.pending_indices.truncate(i_write);
+        } else {
+            let mut new_vertices: Vec<Vertex> = Vec::with_capacity(self.pending_vertices.len());
+            let mut new_indices: Vec<u32> = Vec::with_capacity(self.pending_indices.len());
+            for (idx, v_range, i_range) in survivors() {
+                offsets.push((idx, new_vertices.len() as u32, new_indices.len() as u32));
+                new_vertices.extend_from_slice(&self.pending_vertices[v_range]);
+                new_indices.extend_from_slice(&self.pending_indices[i_range]);
+            }
+            self.pending_vertices = new_vertices;
+            self.pending_indices = new_indices;
         }
-
-        self.pending_vertices = new_vertices;
-        self.pending_indices = new_indices;
         // A cell unload may have taken the pools back below the strict
         // admission limit. Let the next streaming transaction fill reclaimed
         // space instead of carrying a previous scene's saturation forever.
@@ -1088,6 +1121,115 @@ mod deferred_compaction_tests {
         assert!(
             planned_v < c_v_before,
             "compaction should move the survivor down; got {planned_v} vs {c_v_before}"
+        );
+    }
+
+    /// Each survivor's (vertex bytes, indices), read at its current offsets.
+    fn survivor_payload(reg: &MeshRegistry, handle: u32) -> (Vec<u8>, Vec<u32>) {
+        let mesh = reg.get(handle).unwrap();
+        let v = mesh.global_vertex_offset as usize;
+        let i = mesh.global_index_offset as usize;
+        (
+            vertex_slice_bytes(&reg.pending_vertices[v..v + mesh.vertex_count as usize]).to_vec(),
+            reg.pending_indices[i..i + mesh.index_count as usize].to_vec(),
+        )
+    }
+
+    /// The in-place compaction (ascending, disjoint survivors — the layout
+    /// uploads produce) moves every survivor's bytes to exactly the offsets
+    /// the plan publishes, and the pools end at the survivors' total.
+    #[test]
+    fn in_place_compaction_moves_each_survivor_with_its_bytes() {
+        let mut reg = MeshRegistry::new();
+        let (a, b, c) = three_scene_meshes(&mut reg);
+        let (qv, qi) = quad_vertices();
+        let d = reg.upload_scene_mesh_global_only(&qv, &qi).unwrap();
+        let expected: Vec<_> = [b, d]
+            .iter()
+            .map(|&h| (h, survivor_payload(&reg, h)))
+            .collect();
+        assert!(
+            reg.drop_mesh(a) && reg.drop_mesh(c),
+            "holes at the front and the middle"
+        );
+
+        let plan = reg.plan_geometry_compaction().expect("drops leave holes");
+        reg.apply_compaction_plan(&plan);
+
+        for (handle, payload) in &expected {
+            assert_eq!(
+                &survivor_payload(&reg, *handle),
+                payload,
+                "mesh {handle} lost its bytes"
+            );
+        }
+        let (v_total, i_total) = expected.iter().fold((0, 0), |(v, i), (h, _)| {
+            let mesh = reg.get(*h).unwrap();
+            (
+                v + mesh.vertex_count as usize,
+                i + mesh.index_count as usize,
+            )
+        });
+        assert_eq!(reg.pending_vertices.len(), v_total);
+        assert_eq!(reg.pending_indices.len(), i_total);
+        assert_eq!(
+            reg.get(b).unwrap().global_vertex_offset,
+            0,
+            "first survivor moves to 0"
+        );
+    }
+
+    /// A layout whose slot order is not offset order cannot be compacted in
+    /// place (a later slot's range would be overwritten before it moves), so
+    /// the allocating copy runs — and still keeps every survivor's bytes.
+    #[test]
+    fn out_of_order_layout_falls_back_to_the_allocating_copy() {
+        let mut reg = MeshRegistry::new();
+        let (a, b, c) = three_scene_meshes(&mut reg);
+        let before_a = survivor_payload(&reg, a);
+        let before_b = survivor_payload(&reg, b);
+        // Rebuild the pools as [b, a, c] and point the slots at them, so
+        // slot a (lower) now owns the range after slot b's.
+        let (av, bv) = (
+            reg.get(a).unwrap().vertex_count,
+            reg.get(b).unwrap().vertex_count,
+        );
+        let (ai, bi) = (
+            reg.get(a).unwrap().index_count,
+            reg.get(b).unwrap().index_count,
+        );
+        let (cv0, ci0) = (
+            reg.get(c).unwrap().global_vertex_offset as usize,
+            reg.get(c).unwrap().global_index_offset as usize,
+        );
+        let mut vertices = reg.pending_vertices[av as usize..(av + bv) as usize].to_vec();
+        vertices.extend_from_slice(&reg.pending_vertices[..av as usize]);
+        vertices.extend_from_slice(&reg.pending_vertices[cv0..]);
+        let mut indices = reg.pending_indices[ai as usize..(ai + bi) as usize].to_vec();
+        indices.extend_from_slice(&reg.pending_indices[..ai as usize]);
+        indices.extend_from_slice(&reg.pending_indices[ci0..]);
+        reg.pending_vertices = vertices;
+        reg.pending_indices = indices;
+        for (handle, v, i) in [(b, 0, 0), (a, bv, bi)] {
+            let mesh = reg.meshes[handle as usize].as_mut().unwrap();
+            mesh.global_vertex_offset = v;
+            mesh.global_index_offset = i;
+        }
+        assert_eq!(survivor_payload(&reg, a), before_a);
+        assert_eq!(survivor_payload(&reg, b), before_b);
+        assert!(reg.drop_mesh(c));
+
+        let plan = reg
+            .plan_geometry_compaction()
+            .expect("the drop leaves a hole");
+        reg.apply_compaction_plan(&plan);
+
+        assert_eq!(survivor_payload(&reg, a), before_a);
+        assert_eq!(survivor_payload(&reg, b), before_b);
+        assert_eq!(
+            reg.get(a).unwrap().global_vertex_offset,
+            0,
+            "the allocating copy lays survivors out in slot order"
         );
     }
 
