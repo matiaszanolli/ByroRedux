@@ -1800,3 +1800,45 @@ mod screenshot_timing_tests {
         assert!(timing.atw_post_ms >= 1.0);
     }
 }
+
+/// #4208: the `CpuFrameTimings` field docs and `cpu_breakdown` state that the
+/// three `about_to_wait` brackets are sequential siblings and that `atw_post`
+/// contains the whole `render_one_frame` call. Moving a bracket edge makes
+/// both docs wrong again without any compile error, so pin the order.
+#[cfg(test)]
+mod atw_bracket_nesting_tests {
+    #[test]
+    fn atw_brackets_are_siblings_and_atw_post_contains_render_one_frame() {
+        let production = include_str!("app_events.rs")
+            .split_once("\n#[cfg(test)]\nmod ")
+            .expect("app_events.rs has test modules")
+            .0;
+        let body = &production[production
+            .find("fn about_to_wait(")
+            .expect("App must still implement about_to_wait")..];
+        let body = &body[..body.find("\n    }\n").expect("about_to_wait's closing brace")];
+        let pos = |needle: &str| {
+            body.find(needle)
+                .unwrap_or_else(|| panic!("about_to_wait no longer contains `{needle}`"))
+        };
+
+        let order = [
+            pos("let atw_pre_t0 = Instant::now();"),
+            pos("let atw_pre_ns = atw_pre_t0.elapsed()"),
+            pos("let systems_t0 = Instant::now();"),
+            pos("self.scheduler.run(&self.world, dt);"),
+            pos("let atw_scheduler_ns = systems_t0.elapsed()"),
+            pos("let atw_post_t0 = Instant::now();"),
+            pos("self.render_one_frame(event_loop);"),
+            body.rfind("record_about_to_wait_timings(")
+                .expect("about_to_wait must publish its timings at the tail"),
+        ];
+        assert!(
+            order.windows(2).all(|w| w[0] < w[1]),
+            "about_to_wait's brackets moved: atw_pre must close before the scheduler \
+             starts, atw_scheduler before atw_post starts, and render_one_frame must \
+             run inside atw_post. Update the CpuFrameTimings and cpu_breakdown docs \
+             to match (#4208)."
+        );
+    }
+}
