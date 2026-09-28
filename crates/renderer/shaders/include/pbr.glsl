@@ -142,12 +142,16 @@ vec3 fresnelSchlickPower(float cosTheta, vec3 F0, float authoredPower) {
 // representable. Reference: knightcrawler25/GLSL-PathTracer
 // (MIT) `src/shaders/common/disney.glsl:56-57`. See #1248.
 float dielectricF0FromIor(float eta) {
-    // #1253 — defense-in-depth: clamp η > 0 so an importer-side bug
-    // shipping uninitialized `mat.ior = 0` doesn't yield `F0 = 1.0`
-    // (mirror-class) on what should be a dielectric. The 1e-3 floor
-    // is below any physically-meaningful refractive index but above
-    // the divide-by-zero / sign-flip regimes.
-    float e = max(eta, 1e-3);
+    // #1253 / #4973 — defense-in-depth against an importer-side bug
+    // shipping uninitialized `mat.ior = 0`, which would otherwise give
+    // `F0 = 1.0` (mirror-class) on what should be a dielectric. The
+    // floor must be vacuum (η = 1 → F0 = 0), not a small positive
+    // epsilon: `((1-η)/(1+η))²` is symmetric under η ↔ 1/η, so any
+    // floor below 1 maps a near-zero η straight back to mirror-class
+    // F0 (η = 1e-3 still gives 0.996). The only singularity is at
+    // η = -1. Every caller passes an absolute IOR (never a relative
+    // exit ratio), so this is the one floor — callers do not re-clamp.
+    float e = max(eta, 1.0);
     float r = (1.0 - e) / (1.0 + e);
     return r * r;
 }
@@ -483,7 +487,7 @@ vec3 evaluatePathBsdf(
     float G1V = ggxSmithG1(NdotV, safeRoughness);
     float G = G1V * ggxSmithG1(NdotL, safeRoughness);
     vec3 F0 = mix(
-        vec3(dielectricF0FromIor(max(ior, 1e-3))),
+        vec3(dielectricF0FromIor(ior)),
         clamp(baseColor, vec3(0.0), vec3(1.0)),
         clamp(metalness, 0.0, 1.0));
     vec3 F = fresnelSchlick(VdotH, F0);
@@ -506,7 +510,7 @@ float pathSpecularProbability(
 ) {
     float NdotV = max(dot(N, V), 0.0);
     vec3 F0 = mix(
-        vec3(dielectricF0FromIor(max(ior, 1e-3))),
+        vec3(dielectricF0FromIor(ior)),
         clamp(baseColor, vec3(0.0), vec3(1.0)),
         clamp(metalness, 0.0, 1.0));
     vec3 F = fresnelSchlick(NdotV, F0);

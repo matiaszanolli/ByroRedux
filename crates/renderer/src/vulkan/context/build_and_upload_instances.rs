@@ -1205,6 +1205,17 @@ impl VulkanContext {
         } else {
             *armed_selected_ray_probe_generation =
                 selected_ray_probe_request.map(|(generation, _)| generation);
+            // #4978 — `dispatch_skin_and_cluster` already ran this frame's
+            // TLAS gather, so the manager's SSBO→entity map is the one the
+            // probe ray will be traced against. Snapshot it for the slot;
+            // readback happens frames later, after the map has moved on.
+            let entity_ids = self
+                .accel_manager
+                .as_ref()
+                .filter(|_| self.tlas_build_succeeded_last_frame)
+                .map(|accel| accel.tlas_entity_ids_scratch.as_slice());
+            self.selected_ray_probe_entity_maps[frame]
+                .capture(*armed_selected_ray_probe_generation, entity_ids);
         }
 
         // Barrier: make the instance SSBO host write (and any remaining

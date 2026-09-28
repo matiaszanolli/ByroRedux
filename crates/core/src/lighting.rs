@@ -240,7 +240,8 @@ impl Default for Emitter {
             outer_cone_cos: 0.0,
             falloff_exponent: 1.0,
             attenuation: AttenuationModel::LegacySoftRange,
-            visibility: VisibilityMask::ARCHITECTURE,
+            // #4972 — the same single visibility policy every producer uses.
+            visibility: VisibilityMask::for_legacy_local_light(),
         }
     }
 }
@@ -363,6 +364,16 @@ mod tests {
         assert_eq!(
             VisibilityMask::for_legacy_projection(),
             VisibilityMask::FULL
+        );
+    }
+
+    /// #4972 — the default emitter (and so `LightSource::default()`) is not a
+    /// narrower-visibility construction path than the importers.
+    #[test]
+    fn default_emitter_uses_the_shared_local_light_visibility() {
+        assert_eq!(
+            Emitter::default().visibility,
+            VisibilityMask::for_legacy_local_light()
         );
     }
 

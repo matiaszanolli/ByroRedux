@@ -77,7 +77,7 @@ mod tests {
         ("vulkan/context/teardown.rs", 1),
         ("vulkan/device.rs", 2),
         ("vulkan/egui_pass.rs", 1),
-        ("vulkan/frame_upscaler.rs", 5),
+        ("vulkan/frame_upscaler.rs", 4),
         ("vulkan/gpu_timers.rs", 2),
         ("vulkan/groundcover.rs", 3),
         ("vulkan/image.rs", 1),

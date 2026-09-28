@@ -1260,7 +1260,7 @@ fn draw_metrics(ui: &mut egui::Ui, snap: Option<&MetricsSnapshotView>) {
     // this cycle. A `None` entry (skipped bracket) contributing a clean
     // `0.0` made the sum look more complete/trustworthy than it was —
     // the sibling gap REN-D20-NEW-02 flagged in the same report.
-    let gpu_total: f32 = m.gpu_pass_ms.iter().filter_map(|(_, v)| *v).sum();
+    let gpu_total = gpu_pass_upper_bound_ms(&m.gpu_pass_ms);
     ui.label(
         egui::RichText::new(format!("GPU passes — Σ upper bound {:.3} ms", gpu_total)).strong(),
     )
@@ -1269,7 +1269,9 @@ fn draw_metrics(ui: &mut egui::Ui, snap: Option<&MetricsSnapshotView>) {
              time from prior in-flight work can be absorbed into it. This sum \
              is a ceiling, not a precise attribution — overlapping queue-wait \
              may be double-counted across adjacent brackets. Brackets that \
-             didn't run this cycle (n/a) are excluded, not counted as zero.",
+             didn't run this cycle (n/a) are excluded, not counted as zero, \
+             and child brackets nested inside a listed parent (volumetrics_inject \
+             / volumetrics_integrate inside volumetrics) are shown but not summed.",
     );
     if m.gpu_pass_ms.is_empty() {
         ui.label("(none reported)");
@@ -1616,6 +1618,22 @@ fn setting_matches(entry: &SettingEntry, filter: &str) -> bool {
         || entry.section.to_lowercase().contains(filter)
         || entry.label.to_lowercase().contains(filter)
         || entry.description.to_lowercase().contains(filter)
+}
+
+/// `gpu_pass_ms` rows whose GPU bracket is recorded *inside* another listed
+/// bracket, so the parent's time already includes theirs (#4977):
+/// `record_volumetrics_pass` wraps `VolumetricsPipeline::dispatch`, which
+/// stamps the inject and integrate brackets. Shown as rows, never summed.
+const NESTED_GPU_BRACKETS: &[&str] = &["volumetrics_inject", "volumetrics_integrate"];
+
+/// The overlay's "GPU passes Σ": every bracket that ran this cycle (#2513),
+/// excluding [`NESTED_GPU_BRACKETS`] so no pass is counted twice (#4977).
+fn gpu_pass_upper_bound_ms(gpu_pass_ms: &[(String, Option<f32>)]) -> f32 {
+    gpu_pass_ms
+        .iter()
+        .filter(|(name, _)| !NESTED_GPU_BRACKETS.contains(&name.as_str()))
+        .filter_map(|(_, v)| *v)
+        .sum()
 }
 
 /// Render one `gpu_pass_ms` grid cell's value text — the millisecond
@@ -1972,5 +1990,29 @@ mod tests {
         assert_eq!(format_gpu_pass_ms(None), "n/a");
         assert_eq!(format_gpu_pass_ms(Some(0.0)), "0.000 ms");
         assert_eq!(format_gpu_pass_ms(Some(1.184)), "1.184 ms");
+    }
+
+    /// #4977 — the volumetrics inject/integrate brackets are nested inside
+    /// the `volumetrics` bracket, so the Σ over a snapshot carrying all three
+    /// equals the parent-only sum.
+    #[test]
+    fn gpu_pass_sum_excludes_nested_child_brackets() {
+        let rows = vec![
+            ("svgf".to_string(), Some(0.5)),
+            ("volumetrics".to_string(), Some(1.0)),
+            ("volumetrics_inject".to_string(), Some(0.6)),
+            ("volumetrics_integrate".to_string(), Some(0.3)),
+            ("ssao".to_string(), None),
+        ];
+        assert_eq!(gpu_pass_upper_bound_ms(&rows), 1.5);
+        let parents_only: Vec<_> = rows
+            .iter()
+            .filter(|(n, _)| !n.starts_with("volumetrics_"))
+            .cloned()
+            .collect();
+        assert_eq!(
+            gpu_pass_upper_bound_ms(&rows),
+            gpu_pass_upper_bound_ms(&parents_only)
+        );
     }
 }

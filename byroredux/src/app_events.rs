@@ -166,6 +166,9 @@ impl ApplicationHandler for App {
             self.renderer_config,
         ) {
             Ok(ctx) => {
+                // #4975 — a failed FSR context promotes to TAA inside
+                // `VulkanContext::new` (#2480); the setting must say so.
+                crate::record_active_upscaler(&self.world, ctx.renderer_config.upscaler, false);
                 // #3308 — depth-capture bridge for the `depth.stats`
                 // console command. The renderer copies the depth attachment
                 // into a staging buffer on request; `Camera::analyze_depth_

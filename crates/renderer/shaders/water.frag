@@ -201,6 +201,7 @@ layout(location = 7) out float outFsrTransparency;
 // global vertex/index buffers to FRAGMENT shaders, so this adds no host-side
 // descriptor or pipeline-layout surface.
 #include "include/bindings.glsl"
+#include "include/render_debug_view.glsl"
 #include "include/ray_hit.glsl"
 #include "include/shadow_common.glsl"
 #include "include/shadow_transport.glsl"
@@ -1303,6 +1304,13 @@ void main() {
     }
     if (renderDebug.x == RENDER_DEBUG_WATER_NORMAL) {
         outColor = vec4(Nperturbed * 0.5 + 0.5, 1.0);
+        outRawIndirect.a = 1.0;
+        return;
+    }
+    // #4979 — every other raw view belongs to triangle.frag; recede, opaque,
+    // exactly as the non-water surfaces do under the water views above.
+    if (renderDebugSurfaceRecedes(renderDebug.x)) {
+        outColor = vec4(RENDER_DEBUG_NON_PARTICIPANT_GREY, 1.0);
         outRawIndirect.a = 1.0;
         return;
     }

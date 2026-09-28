@@ -377,7 +377,10 @@ is distinct from the existing `groundcover_models_ms` compute-generation timer.
 Both ends of these internal pairs use `BOTTOM_OF_PIPE`. They measure completion
 intervals under normal GPU overlap, not isolated shader instruction costs;
 setup, clears and attachment stores are not all inside the child intervals.
-Do not add the children to their inclusive main-render parent.
+Do not add the children to their inclusive main-render parent. The same holds
+for `volumetrics_inject` / `volumetrics_integrate`, which are recorded inside
+the `volumetrics` bracket: the debug overlay lists them but leaves them out of
+its GPU Σ (#4977).
 
 ## Resize
 
@@ -789,10 +792,16 @@ pixels, upper-left origin), or using `render.debug probe <x> <y>`, arms one
 bounded selected-ray record. A later no-argument `render.debug` prints whether
 the fragment/ray existed, the selected GPU index and exact four-vec4 light
 record, origin/direction/tMin/tMax, decoded visibility mask, averaged RGB
-transmission, and the first committed instance/distance.
+transmission, and the first committed instance/distance. The committed
+instance resolves to an entity through the SSBO→entity map captured when the
+probe was armed, i.e. the frame the ray was traced in (#4978).
 
 These categorical/scalar views, plus `DBG_VIZ_DIRECT` and
 `DBG_VIZ_RAW_INDIRECT`, are raw frame-graph oracles, not graded looks.
+Main-pass surfaces that do not implement the active view paint flat 0.08
+grey: non-water surfaces under the water views, and water plus procedural
+grass blades under every other raw view (`include/render_debug_view.glsl`,
+#4979).
 Composite returns the direct attachment before fog, caustics, bloom and
 dither; the upscaler uses deterministic native linear blit instead of temporal
 FSR; presentation returns the clamped raw value before lens effects, colour

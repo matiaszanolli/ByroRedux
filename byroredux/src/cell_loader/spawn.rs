@@ -1136,14 +1136,16 @@ pub(crate) fn spawn_nif_lights(
             LightSource::from_legacy_world_units(
                 radius,
                 light.color,
-                // A direct NiLight has no ESM LIGH DATA flags. Preserve its
-                // authored physical visibility explicitly at this boundary.
-                byroredux_core::ecs::LIGHT_FLAG_SHADOW_OMNIDIRECTIONAL,
+                // #4972 — a direct NiLight has no ESM LIGH DATA flags, so both
+                // raw flag words stay zero. They are diagnostic-only (the
+                // `light` console command prints them); visibility comes from
+                // `VisibilityMask::for_legacy_local_light()` regardless.
+                0,
                 0.0,
                 light.kind,
                 world_direction,
                 light.outer_angle,
-                byroredux_core::ecs::LIGHT_FLAG_SHADOW_OMNIDIRECTIONAL,
+                0,
             ),
         );
         // #983 — attach the NIF light's own block name so the

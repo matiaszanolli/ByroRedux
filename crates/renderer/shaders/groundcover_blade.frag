@@ -64,6 +64,7 @@ layout(location = 6) out float outFsrReactive;
 layout(location = 7) out float outFsrTransparency;
 
 #include "include/bindings.glsl"
+#include "include/render_debug_view.glsl"
 #include "include/math_common.glsl"
 #include "include/ray_origin.glsl"
 #include "include/pbr.glsl"
@@ -286,6 +287,13 @@ void main() {
     vec3 colour = albedo * (lit + sheenAmbient) + transmissionColour * transmitted;
     outColor = vec4(colour, 1.0);
     outAlbedo = vec4(albedo * skyVisibility, 1.0);
+    // #4979 — procedural blades implement no structured view; under any raw
+    // one they recede like every other non-participant. Motion and the FSR
+    // masks below stay live so temporal state is unaffected.
+    if (renderDebugSurfaceRecedes(renderDebug.x)) {
+        outColor = vec4(RENDER_DEBUG_NON_PARTICIPANT_GREY, 1.0);
+        outAlbedo = vec4(1.0);
+    }
 
     // Match triangle.frag's current-UV → previous-UV convention. The two
     // positions are unjittered; TAA jitter is only applied to gl_Position.

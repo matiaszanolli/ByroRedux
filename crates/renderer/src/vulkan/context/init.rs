@@ -1793,6 +1793,7 @@ impl VulkanContext {
             render_debug_mode: parse_render_debug_mode_env(),
             pending_selected_ray_probe: None,
             selected_ray_probe_result: None,
+            selected_ray_probe_entity_maps: Default::default(),
             next_selected_ray_probe_generation: 1,
             // REND-#1451 — default knee = 0.5 (authored radius at half
             // the cull radius). `light_atten_legacy` starts false; the

@@ -787,7 +787,12 @@ impl App {
         if let Err(error) = ctx.set_upscaler_mode(mode, [size.width, size.height]) {
             log::error!("upscaler switch to {mode} failed unrecoverably: {error:#}");
             event_loop.exit();
+            return;
         }
+        // #4975 — record what is running now: `mode` on success, the
+        // previous upscaler if the rebuild rolled back (#2156).
+        let active = ctx.renderer_config.upscaler;
+        crate::record_active_upscaler(&self.world, active, active == mode);
     }
 
     /// Drain a queued live save-load (M45.1). Reloads the saved interior

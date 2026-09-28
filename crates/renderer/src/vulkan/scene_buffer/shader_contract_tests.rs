@@ -6621,3 +6621,120 @@ fn layer_and_fog_shape_discriminants_are_never_hand_typed() {
         );
     }
 }
+
+/// #4973 — `dielectricF0FromIor` floors η at vacuum. `((1-η)/(1+η))²` is
+/// symmetric under η ↔ 1/η, so the old `1e-3` floor still mapped an unset
+/// `ior = 0` to mirror-class F0; and no shader may re-clamp an IOR below 1.
+#[test]
+fn dielectric_ior_floor_is_vacuum_everywhere() {
+    fn f0(eta: f32) -> f32 {
+        let r = (1.0 - eta) / (1.0 + eta);
+        r * r
+    }
+    assert!(f0(1e-3) > 0.99, "an epsilon floor does not prevent mirror F0");
+    assert_eq!(f0(1.0), 0.0);
+
+    let pbr = include_str!("../../../shaders/include/pbr.glsl");
+    let helper = pbr
+        .split("float dielectricF0FromIor(float eta) {")
+        .nth(1)
+        .expect("dielectricF0FromIor")
+        .split('}')
+        .next()
+        .unwrap();
+    assert!(helper.contains("float e = max(eta, 1.0);"));
+
+    let sources = [
+        ("pbr.glsl", pbr),
+        ("triangle.frag", include_str!("../../../shaders/triangle.frag")),
+        (
+            "shadow_transport.glsl",
+            include_str!("../../../shaders/include/shadow_transport.glsl"),
+        ),
+        ("water.frag", include_str!("../../../shaders/water.frag")),
+    ];
+    for (name, src) in sources {
+        for sub_vacuum in ["ior, 1e-3)", "ior, 1.001)", "eta, 1e-3)"] {
+            assert!(
+                !src.contains(sub_vacuum),
+                "{name} floors an IOR below vacuum (`{sub_vacuum}`)"
+            );
+        }
+    }
+}
+
+/// #4979 — every main-pass fragment shader writing attachment 0 takes part in
+/// the structured debug views: it implements the view or recedes to the flat
+/// non-participant grey. Water and procedural blades used to write lit HDR
+/// colour into raw oracles. Walks the shader directory so a new `.frag` must
+/// be classified here.
+#[test]
+fn main_pass_fragment_shaders_honour_structured_debug_views() {
+    // Post passes consume the views; the two ground-cover harness shaders are
+    // a never-rasterised bench and the Phase 1 distribution debug view.
+    const NOT_MAIN_PASS: &[&str] = &[
+        "composite.frag",
+        "presentation.frag",
+        "ui.frag",
+        "groundcover_bench.frag",
+        "groundcover_debug.frag",
+    ];
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("shaders");
+    let mut main_pass = Vec::new();
+    for entry in std::fs::read_dir(&dir).unwrap() {
+        let path = entry.unwrap().path();
+        let name = path.file_name().unwrap().to_str().unwrap().to_string();
+        if name.ends_with(".frag") && !NOT_MAIN_PASS.contains(&name.as_str()) {
+            main_pass.push((name, std::fs::read_to_string(&path).unwrap()));
+        }
+    }
+    main_pass.sort();
+    let names: Vec<&str> = main_pass.iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(
+        names,
+        ["groundcover_blade.frag", "triangle.frag", "water.frag"],
+        "classify the new fragment shader for #4979"
+    );
+
+    let view = include_str!("../../../shaders/include/render_debug_view.glsl");
+    let predicate = view
+        .split("bool renderDebugSurfaceRecedes(uint mode) {")
+        .nth(1)
+        .unwrap()
+        .split('}')
+        .next()
+        .unwrap();
+    for kept in [
+        "RENDER_DEBUG_FINAL",
+        "RENDER_DEBUG_LEGACY_FLAGS",
+        "RENDER_DEBUG_COMPOSITE_TERM",
+        "RENDER_DEBUG_VOLUMETRIC_TERM",
+    ] {
+        assert!(predicate.contains(&format!("mode != {kept}")), "{kept}");
+    }
+
+    for (name, src) in &main_pass {
+        if name == "triangle.frag" {
+            // Implements the views itself and recedes under the water ones.
+            assert!(src.contains("bool viewWaterDebug = debugMode == RENDER_DEBUG_WATER_TERM"));
+            continue;
+        }
+        assert!(
+            src.contains("#include \"include/render_debug_view.glsl\""),
+            "{name} must include the shared participation rule"
+        );
+        let recede = src
+            .find("if (renderDebugSurfaceRecedes(renderDebug.x)) {")
+            .unwrap_or_else(|| panic!("{name} must recede under views it does not own"));
+        let branch = &src[recede..];
+        let branch = &branch[..branch.find("\n    }").unwrap()];
+        assert!(
+            branch.contains("outColor = vec4(RENDER_DEBUG_NON_PARTICIPANT_GREY, 1.0);"),
+            "{name}"
+        );
+        // Its own views must be tested before the recede rule claims them.
+        for (own_at, _) in src.match_indices("if (renderDebug.x == RENDER_DEBUG_") {
+            assert!(own_at < recede, "{name}: own view tested after the recede rule");
+        }
+    }
+}

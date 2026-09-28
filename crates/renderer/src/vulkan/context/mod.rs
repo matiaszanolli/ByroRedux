@@ -610,6 +610,10 @@ pub struct VulkanContext {
     pub render_debug_mode: super::render_debug::RenderDebugMode,
     pub(super) pending_selected_ray_probe: Option<super::render_debug::SelectedRayProbeRequest>,
     pub(super) selected_ray_probe_result: Option<super::render_debug::SelectedRayProbeResult>,
+    /// #4978 — per frame slot, the SSBO→entity map a probe armed in that
+    /// slot must resolve its hit against at readback.
+    pub(super) selected_ray_probe_entity_maps:
+        [super::render_debug::SelectedRayProbeEntityMap; MAX_FRAMES_IN_FLIGHT],
     pub(super) next_selected_ray_probe_generation: u32,
     /// REND-#1451 — live-tunable point/spot attenuation knee fraction,
     /// uploaded into `GpuCamera.dof_params.z`. `knee = kneeFrac × cull

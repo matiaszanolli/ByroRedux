@@ -2137,7 +2137,10 @@ void main() {
         // that 1.5 is DEFAULT_DIELECTRIC_IOR, the generic-dielectric
         // fallback rather than a glass-specific figure. Authored values
         // (BGSM v9+, Starfield .mat) take effect either way.
-        float GLASS_IOR = max(mat.ior, 1e-3);
+        // #4973 — vacuum floor, matching `dielectricF0FromIor` and the
+        // shadow / water transport paths: an unset `ior` refracts straight
+        // through instead of dividing by an epsilon.
+        float GLASS_IOR = max(mat.ior, 1.0);
         float ETA_AIR_TO_GLASS = 1.0 / GLASS_IOR;
 
         // Two view-aligned normals — one bump-mapped, one smooth:
@@ -4180,7 +4183,7 @@ void main() {
                         hitBase.rgb
                         * vec3(hitMat.diffuseR, hitMat.diffuseG, hitMat.diffuseB),
                         vec3(0.05), vec3(1.0));
-                    float ior = max(hitMat.ior, 1.001);
+                    float ior = max(hitMat.ior, 1.0);
                     float eta = frontFace ? (1.0 / ior) : ior;
                     float cosTheta = clamp(dot(-pathDir, hitN), 0.0, 1.0);
                     float f0 = dielectricF0FromIor(ior);

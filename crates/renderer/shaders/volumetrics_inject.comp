@@ -3059,8 +3059,18 @@ void main() {
         ClusterEntry cluster = clusters[clusterIdx];
         uint adaptiveLightCap = uint(clamp(
             floor(params.fog_reference.z + 0.5), 1.0, float(MAX_FROXEL_LIGHTS)));
-        uint lightLoopCount = min(cluster.count, adaptiveLightCap);
-        for (uint ci = 0u; ci < lightLoopCount; ++ci) {
+        // #4971 — walk the whole cluster list and charge the tier's
+        // `adaptiveLightCap` only for local lights that actually reach this
+        // froxel (the `caustic_splat.comp` budget pattern). The directional
+        // sits in every cluster's list and a light at zero attenuation adds
+        // nothing, so neither may spend a slot. The list itself is in
+        // `cluster_cull.comp` atomic-append order, which is unordered: when
+        // more than `adaptiveLightCap` lights contribute, the retained subset
+        // is arbitrary, not priority-ranked.
+        uint budgetedLocalLights = 0u;
+        for (uint ci = 0u;
+             ci < cluster.count && budgetedLocalLights < adaptiveLightCap;
+             ++ci) {
             uint li = clusterLightIndices[cluster.offset + ci];
             float radius = lights[li].position_radius.w;
             float lightType = lights[li].color_type.w;
@@ -3111,10 +3121,14 @@ void main() {
                 // point lights.
                 atten *= clamp((spotFactor - spotAngle) / max(1.0 - spotAngle, 1e-4), 0.0, 1.0);
             }
+            if (atten <= 1.0e-4) {
+                continue;
+            }
+            budgetedLocalLights++;
             float localVisibility = 1.0;
             float shadowDist = max(dist - lights[li].params.y, 0.05);
             bool needsVisibility = visibilityMaskNeedsTrace(lights[li].params.z);
-            if (needsVisibility && atten > 1.0e-4) {
+            if (needsVisibility) {
                 // Stop at the finite luminous shell (`params.y`) instead of
                 // tracing into the middle of a bulb/flame and letting the
                 // fixture nullify its own volumetric glow.
@@ -3132,9 +3146,7 @@ void main() {
                     localVisibility = 0.75;
                 }
             }
-            if (transportedMediumActive
-                && localVisibility > 1.0e-4
-                && atten > 1.0e-4) {
+            if (transportedMediumActive && localVisibility > 1.0e-4) {
                 localVisibility *= transportedCombustionTransmittance(
                     world_pos,
                     toLightDir,

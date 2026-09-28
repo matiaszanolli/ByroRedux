@@ -426,13 +426,30 @@ pub(crate) enum GeometryTimerPhase {
     GroundcoverBladeDraw = 4,
 }
 
+/// #4980 — the geometry phases sit directly after the last named bracket, in
+/// both the query pool and `active_bits`. Derived from the last named
+/// constants so a new named bracket must move these bases rather than
+/// silently aliasing `MainOpaque`'s slot and bit; the `const` asserts below
+/// and `every_timer_slot_and_active_bit_is_unique_and_in_range` pin the rest.
+const Q_GEOMETRY_PHASE_BASE: u32 = Q_VOLUMETRICS_INTEGRATE_END + 1;
+const GEOMETRY_PHASE_BIT_BASE: u32 = BIT_VOLUMETRICS_INTEGRATE.trailing_zeros() + 1;
+const GEOMETRY_TIMER_PHASE_COUNT: u32 = 5;
+const _: () = assert!(
+    Q_GEOMETRY_PHASE_BASE + 2 * GEOMETRY_TIMER_PHASE_COUNT == QUERIES_PER_FRAME,
+    "geometry phases must end exactly at QUERIES_PER_FRAME"
+);
+const _: () = assert!(
+    GEOMETRY_PHASE_BIT_BASE + GEOMETRY_TIMER_PHASE_COUNT <= u32::BITS,
+    "geometry phase active bits must fit active_bits' u32"
+);
+
 impl GeometryTimerPhase {
     fn query_start(self) -> u32 {
-        46 + 2 * self as u32
+        Q_GEOMETRY_PHASE_BASE + 2 * self as u32
     }
 
     fn active_bit(self) -> u32 {
-        1 << (23 + self as u32)
+        1 << (GEOMETRY_PHASE_BIT_BASE + self as u32)
     }
 }
 
@@ -440,7 +457,9 @@ impl GeometryTimerPhase {
 /// Pulled out of [`GpuPerFrameTimers::read_and_reset`] as a pure
 /// function (no `&self`/device access) so the bit-gating logic —
 /// the part #2278 / PERF-D9-01 is actually about — is unit-testable
-/// without a real `ash::Device`.
+/// without a real `ash::Device`. Test-only: production reads through
+/// [`snapshot_from_bits_with_valid_bits`] with the device's valid-bit count.
+#[cfg(test)]
 fn snapshot_from_bits(
     bits: u32,
     ticks: &[u64; QUERIES_PER_FRAME as usize],
@@ -2015,6 +2034,94 @@ mod tests {
     /// slot rows (`| N |`, `N` in `0..QUERIES_PER_FRAME`) so a future
     /// bracket addition that updates the constant but not the table (or
     /// vice versa) fails loudly here instead of silently drifting again.
+    /// #4980 — every bracket's START slot (named `Q_*_START` constants plus
+    /// the geometry phases) is even, distinct and in range, each `Q_*_END` is
+    /// its START + 1, and every active bit (named `BIT_*` plus the phases) is a
+    /// distinct single bit. The named constants are read out of this file's
+    /// production text, so a newly added bracket is covered without being
+    /// listed here.
+    #[test]
+    fn every_timer_slot_and_active_bit_is_unique_and_in_range() {
+        let src = crate::source_scan::production_text(include_str!("gpu_timers.rs"));
+        let consts = |prefix: &str| -> Vec<(String, String)> {
+            src.lines()
+                .filter_map(|line| {
+                    let rest = line.trim().strip_prefix("const ")?;
+                    let (name, value) = rest.split_once(": u32 = ")?;
+                    name.starts_with(prefix).then(|| {
+                        (name.to_string(), value.trim_end_matches(';').to_string())
+                    })
+                })
+                .collect()
+        };
+        let starts: Vec<(String, u32)> = consts("Q_")
+            .into_iter()
+            .filter(|(name, _)| name.ends_with("_START"))
+            .map(|(name, v)| {
+                let slot = v.parse().unwrap_or_else(|_| panic!("{name} = {v}"));
+                (name, slot)
+            })
+            .collect();
+        let ends = consts("Q_")
+            .into_iter()
+            .filter(|(name, _)| name.ends_with("_END"))
+            .count();
+        assert_eq!(starts.len(), ends, "every Q_*_START needs a Q_*_END");
+        assert!(starts.len() >= 20, "parsed too few named brackets");
+        for (name, start) in &starts {
+            let end_name = format!("{}_END", name.trim_end_matches("_START"));
+            let end = consts(&end_name)
+                .into_iter()
+                .find(|(n, _)| *n == end_name)
+                .unwrap_or_else(|| panic!("{end_name} missing"))
+                .1
+                .parse::<u32>()
+                .unwrap();
+            assert_eq!(end, start + 1, "{end_name}");
+        }
+
+        let phases = [
+            GeometryTimerPhase::MainOpaque,
+            GeometryTimerPhase::MainBlended,
+            GeometryTimerPhase::MainWater,
+            GeometryTimerPhase::GroundcoverModelDraw,
+            GeometryTimerPhase::GroundcoverBladeDraw,
+        ];
+        assert_eq!(phases.len() as u32, GEOMETRY_TIMER_PHASE_COUNT);
+
+        let mut slots: Vec<u32> = starts.iter().map(|(_, s)| *s).collect();
+        slots.extend(phases.iter().map(|p| p.query_start()));
+        let mut seen = std::collections::HashSet::new();
+        for slot in &slots {
+            assert_eq!(slot % 2, 0, "START slot {slot} must be even");
+            assert!(slot + 1 < QUERIES_PER_FRAME, "slot {slot} out of range");
+            assert!(seen.insert(*slot), "START slot {slot} used twice");
+        }
+        assert_eq!(slots.len() as u32 * 2, QUERIES_PER_FRAME);
+
+        let mut bits: Vec<u32> = consts("BIT_")
+            .into_iter()
+            .map(|(name, v)| {
+                if let Some(hex) = v.strip_prefix("0x") {
+                    u32::from_str_radix(&hex.replace('_', ""), 16)
+                        .unwrap_or_else(|_| panic!("{name} = {v}"))
+                } else if let Some(shift) = v.strip_prefix("1 << ") {
+                    1 << shift.parse::<u32>().unwrap_or_else(|_| panic!("{name} = {v}"))
+                } else {
+                    panic!("unparsable active bit {name} = {v}")
+                }
+            })
+            .collect();
+        assert_eq!(bits.len(), starts.len(), "one active bit per named bracket");
+        bits.extend(phases.iter().map(|p| p.active_bit()));
+        let mut union = 0u32;
+        for bit in bits {
+            assert_eq!(bit.count_ones(), 1, "active bit {bit:#x} must be one bit");
+            assert_eq!(union & bit, 0, "active bit {bit:#x} used twice");
+            union |= bit;
+        }
+    }
+
     #[test]
     fn doc_table_slot_count_matches_queries_per_frame() {
         let src = include_str!("gpu_timers.rs");

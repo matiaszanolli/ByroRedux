@@ -141,8 +141,10 @@ pub struct SelectedRayProbeResult {
     pub ray_t_max: f32,
     pub committed_hit_instance: Option<u32>,
     /// ECS entity mapped from the hit's compacted instance-SSBO index.
-    /// Resolved on the CPU after readback for diagnostics; absent if the
-    /// matching TLAS membership has already changed.
+    /// Resolved on the CPU at readback against the SSBO→entity map captured
+    /// when this probe was armed, i.e. the TLAS gather of the frame the ray
+    /// was traced in (#4978). Absent when there was no hit or no map for
+    /// that frame (the TLAS build failed, or RT is off).
     pub committed_hit_entity_id: Option<u32>,
     pub committed_hit_distance: Option<f32>,
     pub averaged_visibility: [f32; 3],
@@ -151,6 +153,52 @@ pub struct SelectedRayProbeResult {
     pub light_color_type: [f32; 4],
     pub light_direction_angle: [f32; 4],
     pub light_params: [f32; 4],
+}
+
+/// #4978 — the instance-SSBO→entity map of the frame a selected-ray probe
+/// was armed in, one per frame-in-flight slot.
+///
+/// SSBO indices are the compacted per-frame draw order, and the probe's
+/// record is read back `MAX_FRAMES_IN_FLIGHT` frames after it was traced.
+/// Resolving the hit through the acceleration manager's live map at that
+/// point used a later frame's order and could name an unrelated entity.
+/// Probes are one-shot, so the copy is bounded to the frames that arm one.
+#[derive(Debug, Default)]
+pub(crate) struct SelectedRayProbeEntityMap {
+    /// Probe generation the map was captured for; 0 = none.
+    generation: u32,
+    entity_ids: Vec<u32>,
+}
+
+impl SelectedRayProbeEntityMap {
+    /// Record this frame's map for an armed probe, or forget any previous
+    /// one. `entity_ids` is `None` when no TLAS was built for the frame, so
+    /// no hit it reports can be attributed.
+    pub(crate) fn capture(&mut self, generation: Option<u32>, entity_ids: Option<&[u32]>) {
+        self.entity_ids.clear();
+        match (generation, entity_ids) {
+            (Some(generation), Some(ids)) => {
+                self.generation = generation;
+                self.entity_ids.extend_from_slice(ids);
+            }
+            _ => self.generation = 0,
+        }
+    }
+
+    /// Fill `result.committed_hit_entity_id` from the map captured for its
+    /// generation, then release the map.
+    pub(crate) fn resolve(&mut self, result: &mut SelectedRayProbeResult) {
+        result.committed_hit_entity_id = if self.generation != 0
+            && self.generation == result.generation
+        {
+            result
+                .committed_hit_instance
+                .and_then(|index| self.entity_ids.get(index as usize).copied())
+        } else {
+            None
+        };
+        self.capture(None, None);
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -206,6 +254,44 @@ impl SelectedRayProbeResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn probe_result(generation: u32, hit: Option<u32>) -> SelectedRayProbeResult {
+        let mut record = crate::vulkan::scene_buffer::GpuSelectedRayProbe::armed(generation, [0, 0]);
+        record.ids[2] = hit.unwrap_or(u32::MAX);
+        SelectedRayProbeResult::from_gpu(record)
+    }
+
+    /// #4978 — a probe hit resolves through the map captured when it was
+    /// armed, not through whatever the SSBO order is at readback.
+    #[test]
+    fn probe_hit_entity_resolves_against_the_armed_frames_map() {
+        let mut map = SelectedRayProbeEntityMap::default();
+        map.capture(Some(7), Some(&[100, 200, 300]));
+        let mut result = probe_result(7, Some(1));
+        map.resolve(&mut result);
+        assert_eq!(result.committed_hit_entity_id, Some(200));
+
+        // The map is one-shot: a later result for the same slot has none.
+        let mut again = probe_result(7, Some(1));
+        map.resolve(&mut again);
+        assert_eq!(again.committed_hit_entity_id, None);
+
+        // A result from another generation is never attributed.
+        map.capture(Some(8), Some(&[100, 200, 300]));
+        let mut stale = probe_result(9, Some(1));
+        map.resolve(&mut stale);
+        assert_eq!(stale.committed_hit_entity_id, None);
+
+        // No TLAS that frame → no attribution, and out-of-range stays None.
+        map.capture(Some(10), None);
+        let mut no_tlas = probe_result(10, Some(0));
+        map.resolve(&mut no_tlas);
+        assert_eq!(no_tlas.committed_hit_entity_id, None);
+        map.capture(Some(11), Some(&[5]));
+        let mut out_of_range = probe_result(11, Some(4));
+        map.resolve(&mut out_of_range);
+        assert_eq!(out_of_range.committed_hit_entity_id, None);
+    }
 
     #[test]
     fn render_debug_mode_parser_accepts_canonical_names_and_aliases() {

@@ -2628,10 +2628,38 @@ mod unit_tests {
             .split("vec4 current = vec4(inscatter, extinction_coef)")
             .next()
             .unwrap();
-        assert!(gated.contains("for (uint ci = 0u; ci < lightLoopCount; ++ci)"));
+        assert!(gated.contains("ci < cluster.count && budgetedLocalLights < adaptiveLightCap"));
         assert!(gated.contains("traceShadowBinary("));
         assert!(gated.contains("transportedCombustionTransmittance("));
         assert!(gated.contains("inscatter += scattering_coef * localPhase"));
+    }
+
+    /// #4971 — the froxel local-light budget is charged only for local lights
+    /// that reach the froxel. Truncating the cluster list to the cap first
+    /// let the directional (present in every cluster) and zero-attenuation
+    /// entries spend slots the loop then discarded.
+    #[test]
+    fn froxel_light_budget_charges_only_contributing_local_lights() {
+        let shader = include_str!("../../shaders/volumetrics_inject.comp");
+        let body = shader
+            .split("uint budgetedLocalLights = 0u;")
+            .nth(1)
+            .expect("froxel local-light budget counter")
+            .split("vec4 current = vec4(inscatter, extinction_coef)")
+            .next()
+            .unwrap();
+        assert!(
+            !shader.contains("min(cluster.count, adaptiveLightCap)"),
+            "the cluster list must not be truncated to the cap before rejection"
+        );
+        let directional = body.find("if (lightType > 1.5) {").expect("directional skip");
+        let zero_atten = body.find("if (atten <= 1.0e-4) {").expect("zero-atten skip");
+        let charge = body.find("budgetedLocalLights++;").expect("budget charge");
+        let trace = body.find("traceShadowBinary(").expect("visibility trace");
+        assert!(directional < charge, "the directional must be skipped uncharged");
+        assert!(zero_atten < charge, "unreachable lights must be skipped uncharged");
+        assert!(charge < trace, "a traced light must be charged before its ray");
+        assert_eq!(body.matches("budgetedLocalLights++").count(), 1);
     }
 
     #[test]

@@ -13,7 +13,7 @@
 
 pub mod presets;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -33,6 +33,9 @@ pub const SETTINGS_PATH_ENV: &str = "BYROREDUX_SETTINGS_PATH";
 #[derive(Debug, Clone)]
 pub struct SettingsPersistence {
     path: PathBuf,
+    /// Ids whose live registry value is a one-launch override (#4974). `save`
+    /// leaves their stored value untouched until [`Self::unpin_stored`].
+    pinned: BTreeSet<String>,
 }
 
 impl Resource for SettingsPersistence {}
@@ -41,16 +44,35 @@ impl SettingsPersistence {
     pub fn discover() -> Self {
         Self {
             path: discover_settings_path(),
+            pinned: BTreeSet::new(),
         }
     }
 
-    #[cfg(test)]
-    fn at(path: PathBuf) -> Self {
-        Self { path }
+    /// Persistence at an explicit path, e.g. a test's temporary directory.
+    pub fn at(path: PathBuf) -> Self {
+        Self {
+            path,
+            pinned: BTreeSet::new(),
+        }
     }
 
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// Keep `id`'s stored value on disk whatever the registry holds, for a
+    /// value seeded for this launch only — an explicit CLI flag, say, that the
+    /// registry must show but that must not become the persisted default the
+    /// next time an unrelated setting is saved (#4974).
+    pub fn pin_stored(&mut self, id: impl Into<String>) {
+        self.pinned.insert(id.into());
+    }
+
+    /// Persist `id` from the registry again — the user made an explicit
+    /// in-session choice that supersedes the launch override. Returns whether
+    /// `id` was pinned.
+    pub fn unpin_stored(&mut self, id: &str) -> bool {
+        self.pinned.remove(id)
     }
 }
 
@@ -85,7 +107,7 @@ pub fn load(registry: &mut SettingsRegistry, persistence: &SettingsPersistence) 
 }
 
 pub fn save(registry: &SettingsRegistry, persistence: &SettingsPersistence) {
-    if let Err(error) = save_to_path(registry, persistence.path()) {
+    if let Err(error) = save_to_path(registry, persistence.path(), &persistence.pinned) {
         log::warn!(
             "settings: could not save {}: {error}",
             persistence.path().display()
@@ -137,7 +159,14 @@ fn load_from_path(registry: &mut SettingsRegistry, path: &Path) -> std::io::Resu
 ///
 /// The same rule protects the engine from itself: a subsystem that has not
 /// registered yet at save time no longer costs the user its values.
-fn save_to_path(registry: &SettingsRegistry, path: &Path) -> std::io::Result<()> {
+///
+/// Pinned ids ([`SettingsPersistence::pin_stored`]) keep whatever the file
+/// already holds for them, and stay absent if it holds nothing.
+fn save_to_path(
+    registry: &SettingsRegistry,
+    path: &Path,
+    pinned: &BTreeSet<String>,
+) -> std::io::Result<()> {
     let mut settings: BTreeMap<String, toml::Value> = match fs::read_to_string(path) {
         Ok(existing) => toml::from_str::<StoredSettings>(&existing)
             .map(|stored| stored.settings)
@@ -145,6 +174,9 @@ fn save_to_path(registry: &SettingsRegistry, path: &Path) -> std::io::Result<()>
         Err(_) => BTreeMap::new(),
     };
     for entry in registry.entries() {
+        if pinned.contains(&entry.id) {
+            continue;
+        }
         settings.insert(entry.id.clone(), encode_value(&entry.value));
     }
     let source = toml::to_string_pretty(&StoredSettings {
@@ -357,6 +389,48 @@ mod tests {
         );
     }
 
+    /// #4974 — a pinned (one-launch) value is shown by the registry but an
+    /// unrelated save keeps the stored value; once unpinned it persists.
+    #[test]
+    fn pinned_launch_override_is_not_persisted_by_an_unrelated_save() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut persistence = SettingsPersistence::at(dir.path().join("settings.toml"));
+        let stored = |persistence: &SettingsPersistence| {
+            let mut reloaded = registry();
+            load(&mut reloaded, persistence);
+            reloaded.get("render.upscaler").unwrap().value.clone()
+        };
+
+        let mut live = registry();
+        live.set("render.upscaler", SettingValue::Choice("taa".into()))
+            .unwrap();
+        save(&live, &persistence);
+
+        // Launch override: seeded into the registry, pinned on disk.
+        persistence.pin_stored("render.upscaler");
+        live.set("render.upscaler", SettingValue::Choice("fsr3/quality".into()))
+            .unwrap();
+        live.set("controls.sensitivity", SettingValue::Number(2.0))
+            .unwrap();
+        save(&live, &persistence);
+        assert_eq!(stored(&persistence), SettingValue::Choice("taa".into()));
+        let mut reloaded = registry();
+        load(&mut reloaded, &persistence);
+        assert_eq!(
+            reloaded.get("controls.sensitivity").unwrap().value,
+            SettingValue::Number(2.0),
+            "the unrelated change itself must still persist"
+        );
+
+        // An explicit in-session choice releases the pin.
+        assert!(persistence.unpin_stored("render.upscaler"));
+        save(&live, &persistence);
+        assert_eq!(
+            stored(&persistence),
+            SettingValue::Choice("fsr3/quality".into())
+        );
+    }
+
     fn registry() -> SettingsRegistry {
         let mut registry = SettingsRegistry::default();
         registry
@@ -414,7 +488,7 @@ mod tests {
                 SettingValue::Choice("fsr3/quality".to_owned()),
             )
             .unwrap();
-        save_to_path(&source, persistence.path()).unwrap();
+        save_to_path(&source, persistence.path(), &BTreeSet::new()).unwrap();
 
         let mut restored = registry();
         let report = load_from_path(&mut restored, persistence.path()).unwrap();

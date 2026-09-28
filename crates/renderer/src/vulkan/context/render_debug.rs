@@ -59,17 +59,6 @@ impl VulkanContext {
     pub fn take_selected_ray_probe_result(&mut self) -> Option<SelectedRayProbeResult> {
         self.selected_ray_probe_result.take()
     }
-
-    /// Resolve a ray-query custom index to the ECS entity recorded for the
-    /// current TLAS gather. The shader index is an instance-SSBO slot, not an
-    /// entity ID or TLAS leaf ordinal.
-    pub fn selected_ray_hit_entity_id(&self, instance_ssbo_index: u32) -> Option<u32> {
-        self.accel_manager
-            .as_ref()?
-            .tlas_entity_ids_scratch
-            .get(instance_ssbo_index as usize)
-            .copied()
-    }
 }
 
 #[cfg(test)]

@@ -72,6 +72,14 @@ fn spawn_nif_lights_attaches_light_source_for_spawnable_light() {
         512.0,
         "authored radius (no ESM override) must survive"
     );
+    // #4972 — a NiLight carries no LIGH DATA flags; none may be fabricated
+    // into the diagnostic flag words the `light` console command prints.
+    assert_eq!(light_source.flags, 0);
+    assert_eq!(light_source.shadow_flags, 0);
+    assert_eq!(
+        light_source.emitter.visibility,
+        byroredux_core::lighting::VisibilityMask::for_legacy_local_light()
+    );
 }
 
 /// #3232 — NiLight direction is NIF-local just like its translation. A

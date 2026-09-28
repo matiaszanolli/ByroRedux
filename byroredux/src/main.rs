@@ -784,7 +784,7 @@ fn install_universal_settings(
         .expect("debug-UI built-in settings must be valid and unique");
     interaction::register_input_settings(&mut settings)
         .expect("input settings must be valid and unique");
-    let settings_persistence = settings_io::SettingsPersistence::discover();
+    let mut settings_persistence = settings_io::SettingsPersistence::discover();
     settings_io::load(&mut settings, &settings_persistence);
 
     // Explicit CLI selection wins for reproducible benchmarks; ordinary
@@ -802,6 +802,9 @@ fn install_universal_settings(
         ) {
             log::warn!("could not seed the upscaler setting from '{active_upscaler}': {error}");
         }
+        // #4974 — the flag wins for this launch only. The menu shows it, but
+        // a later unrelated settings save must not make it the default.
+        settings_persistence.pin_stored(byroredux_debug_ui::UPSCALER_SETTING_ID);
     } else if let Some(entry) = settings.get(byroredux_debug_ui::UPSCALER_SETTING_ID) {
         if let SettingValue::Choice(spec) = &entry.value {
             match cli_args::parse_upscaler_spec(spec) {
@@ -823,6 +826,153 @@ fn install_universal_settings(
     world.insert_resource(settings);
     world.insert_resource(settings_persistence);
     interaction::sync_registered_settings(world);
+}
+
+/// #4975 — the one writer of the upscaler setting once the renderer exists.
+///
+/// Records the mode the renderer is actually running: after startup (where a
+/// failed FSR context promotes to TAA) and after every menu / `r.upscaler`
+/// switch (where a failed rebuild rolls back to the previous mode). Neither
+/// requester writes the registry itself, so the menu and `settings.toml` can
+/// never claim a mode that is not running. `chosen` is true when a requested
+/// switch landed: that is an explicit in-session choice, so it also releases a
+/// CLI launch override (#4974) and is persisted.
+pub(crate) fn record_active_upscaler(
+    world: &World,
+    active: byroredux_renderer::vulkan::upscaling::UpscalerMode,
+    chosen: bool,
+) {
+    let spec = active.to_string();
+    let Some(changed) = world.try_resource_mut::<SettingsRegistry>().map(|mut settings| {
+        settings
+            .set(
+                byroredux_debug_ui::UPSCALER_SETTING_ID,
+                SettingValue::Choice(spec.clone()),
+            )
+            .unwrap_or_else(|error| {
+                log::warn!("could not record the active upscaler '{spec}': {error}");
+                false
+            })
+    }) else {
+        return;
+    };
+    // Scoped so the persistence write lock is released before the registry
+    // read below — no nested resource locks.
+    let Some((released, persistence)) = world
+        .try_resource_mut::<settings_io::SettingsPersistence>()
+        .map(|mut persistence| {
+            let released =
+                chosen && persistence.unpin_stored(byroredux_debug_ui::UPSCALER_SETTING_ID);
+            (released, persistence.clone())
+        })
+    else {
+        return;
+    };
+    if changed || released {
+        let settings = world.resource::<SettingsRegistry>();
+        settings_io::save(&settings, &persistence);
+    }
+}
+
+#[cfg(test)]
+mod active_upscaler_setting_tests {
+    use super::*;
+    use byroredux_renderer::vulkan::upscaling::{FsrQuality, UpscalerMode};
+
+    fn world_at(path: std::path::PathBuf) -> World {
+        let mut settings = SettingsRegistry::default();
+        byroredux_debug_ui::register_builtin_settings(&mut settings).unwrap();
+        let mut world = World::new();
+        world.insert_resource(settings);
+        world.insert_resource(settings_io::SettingsPersistence::at(path));
+        world
+    }
+
+    fn stored_upscaler(path: &std::path::Path) -> Option<String> {
+        let text = std::fs::read_to_string(path).ok()?;
+        let line = text
+            .lines()
+            .find(|line| line.contains(byroredux_debug_ui::UPSCALER_SETTING_ID))?;
+        Some(line.split_once('=')?.1.trim().trim_matches('"').to_string())
+    }
+
+    fn live_upscaler(world: &World) -> SettingValue {
+        world
+            .resource::<SettingsRegistry>()
+            .get(byroredux_debug_ui::UPSCALER_SETTING_ID)
+            .unwrap()
+            .value
+            .clone()
+    }
+
+    /// #4974 / #4975 — with a CLI launch override pinned, recording the
+    /// running mode (e.g. the #2480 startup promotion to TAA) updates the
+    /// menu but not the file; an explicit in-session switch that lands
+    /// releases the pin and persists.
+    #[test]
+    fn launch_override_stays_off_disk_until_an_in_session_choice_lands() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.toml");
+        let world = world_at(path.clone());
+        world
+            .resource_mut::<settings_io::SettingsPersistence>()
+            .pin_stored(byroredux_debug_ui::UPSCALER_SETTING_ID);
+
+        record_active_upscaler(&world, UpscalerMode::Taa, false);
+        assert_eq!(live_upscaler(&world), SettingValue::Choice("taa".into()));
+        assert_eq!(stored_upscaler(&path), None, "a pinned override must not persist");
+
+        let chosen = UpscalerMode::Fsr3(FsrQuality::Quality);
+        record_active_upscaler(&world, chosen, true);
+        assert_eq!(stored_upscaler(&path), Some(chosen.to_string()));
+    }
+
+    /// #4975 — a switch that rolled back records the previous (running)
+    /// mode; with nothing pinned it is what the file holds.
+    #[test]
+    fn rolled_back_switch_persists_the_running_mode_not_the_request() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.toml");
+        let world = world_at(path.clone());
+        record_active_upscaler(&world, UpscalerMode::Taa, false);
+        assert_eq!(stored_upscaler(&path), Some("taa".to_string()));
+        assert_eq!(live_upscaler(&world), SettingValue::Choice("taa".into()));
+    }
+
+    /// #4975 — the menu change loop stages the upscaler without writing the
+    /// registry; only `record_active_upscaler` does, after the switch runs.
+    #[test]
+    fn setting_change_loop_stages_the_upscaler_without_writing_the_registry() {
+        // Needles are composed at runtime so this test's own text cannot
+        // satisfy them (#3442) — this module sits above the loop it scans.
+        let src = include_str!("main.rs");
+        let loop_head = ["for change in ", "outputs.setting_changes {"].concat();
+        let mut loops = src.split(loop_head.as_str());
+        let loop_body = loops.nth(1).expect("setting change loop");
+        assert!(loops.next().is_none(), "exactly one setting change loop");
+        let staged = loop_body
+            .find(&["if change.id == ", "byroredux_debug_ui::UPSCALER_SETTING_ID {"].concat())
+            .expect("upscaler staging branch");
+        let registry_write = loop_body
+            .find(&["settings.set(", "&change.id"].concat())
+            .expect("generic registry write");
+        assert!(staged < registry_write, "the upscaler must be diverted first");
+        let branch = &loop_body[staged..registry_write];
+        assert!(branch.contains(&[".request(", "spec.clone())"].concat()));
+        assert!(branch.contains("continue;"));
+        let step = include_str!("app_step.rs");
+        let switch = step
+            .split(["pub(crate) fn ", "step_upscaler_switch("].concat().as_str())
+            .nth(1)
+            .unwrap()
+            .split("\n    }\n")
+            .next()
+            .unwrap();
+        assert!(
+            switch.find(&["ctx.", "set_upscaler_mode("].concat()).unwrap()
+                < switch.find(&["crate::", "record_active_upscaler("].concat()).unwrap()
+        );
+    }
 }
 
 impl App {
@@ -1354,6 +1504,22 @@ fn apply_debug_ui_outputs(
         }
     }
     for change in outputs.setting_changes {
+        // The upscaler entry cannot be applied here: switching rebuilds every
+        // render-resolution target and needs `&mut VulkanContext`. Stage it
+        // for the frame boundary, where `step_upscaler_switch` drains it.
+        // #4975 — the registry is NOT set here: `record_active_upscaler`
+        // writes the mode that actually lands (or the rollback target) after
+        // the switch, so neither the menu nor a same-tick save of another
+        // setting can persist a mode that never ran.
+        if change.id == byroredux_debug_ui::UPSCALER_SETTING_ID {
+            if let byroredux_core::settings::SettingValue::Choice(ref spec) = change.value {
+                world
+                    .resource_mut::<byroredux_core::ecs::PendingUpscalerSwitch>()
+                    .request(spec.clone());
+                log::info!("upscaler setting change staged: {spec}");
+            }
+            continue;
+        }
         let result = {
             let mut settings = world.resource_mut::<SettingsRegistry>();
             settings.set(&change.id, change.value.clone())
@@ -1375,17 +1541,6 @@ fn apply_debug_ui_outputs(
                     settings_changed |= companion_changed;
                 }
                 apply_camera_setting(world, &change);
-                // The upscaler entry cannot be applied here: switching
-                // rebuilds every render-resolution target and needs
-                // `&mut VulkanContext`. Stage it for the frame boundary,
-                // where `step_upscaler_switch` drains it.
-                if change.id == byroredux_debug_ui::UPSCALER_SETTING_ID {
-                    if let byroredux_core::settings::SettingValue::Choice(ref spec) = change.value {
-                        world
-                            .resource_mut::<byroredux_core::ecs::PendingUpscalerSwitch>()
-                            .request(spec.clone());
-                    }
-                }
                 log::info!(
                     "universal setting changed: {} = {:?}",
                     change.id,
