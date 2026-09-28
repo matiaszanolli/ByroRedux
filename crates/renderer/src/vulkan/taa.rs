@@ -168,8 +168,9 @@ pub struct TaaPipeline {
     dispatched_this_frame: bool,
 }
 
-/// The four per-frame G-buffer view slices TAA samples — HDR color,
-/// motion, mesh-ID, and normal (each of length `MAX_FRAMES_IN_FLIGHT`). Groups the
+/// The five per-frame G-buffer view slices TAA samples — HDR color,
+/// motion, mesh-ID, normal and the reactive mask (each of length
+/// `MAX_FRAMES_IN_FLIGHT`). Groups the
 /// view arguments that travel together into the TAA constructor and resize
 /// path.
 #[derive(Clone, Copy)]
@@ -185,6 +186,10 @@ pub struct TaaInputViews<'a> {
     pub mesh_id_views: &'a [vk::ImageView],
     /// Octahedral normal views (same-instance surface validation).
     pub normal_views: &'a [vk::ImageView],
+    /// FSR reactive-mask views (G-buffer attachment 6). #4944 — water and
+    /// other surfaces whose colour depth + motion cannot describe raise the
+    /// current-frame weight, the same signal FSR receives.
+    pub reactive_views: &'a [vk::ImageView],
 }
 
 impl TaaPipeline {
@@ -200,6 +205,7 @@ impl TaaPipeline {
         debug_assert_eq!(views.motion_views.len(), MAX_FRAMES_IN_FLIGHT);
         debug_assert_eq!(views.mesh_id_views.len(), MAX_FRAMES_IN_FLIGHT);
         debug_assert_eq!(views.normal_views.len(), MAX_FRAMES_IN_FLIGHT);
+        debug_assert_eq!(views.reactive_views.len(), MAX_FRAMES_IN_FLIGHT);
 
         let result = Self::new_inner(device, allocator, pipeline_cache, views, width, height);
         if let Err(ref e) = result {
@@ -221,6 +227,7 @@ impl TaaPipeline {
             motion_views,
             mesh_id_views,
             normal_views,
+            reactive_views,
         } = views;
         let mut partial = Self {
             pipeline: vk::Pipeline::null(),
@@ -355,6 +362,11 @@ impl TaaPipeline {
                 .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                 .descriptor_count(1)
                 .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(9)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::COMPUTE),
         ];
         validate_set_layout(
             0,
@@ -423,7 +435,14 @@ impl TaaPipeline {
                 .context("TAA descriptor sets")
         });
 
-        partial.write_descriptor_sets(device, src_color_views, motion_views, mesh_id_views, normal_views);
+        partial.write_descriptor_sets(
+            device,
+            src_color_views,
+            motion_views,
+            mesh_id_views,
+            normal_views,
+            reactive_views,
+        );
 
         log::info!("TAA pipeline created: {}x{}", width, height);
         Ok(partial)
@@ -465,6 +484,7 @@ impl TaaPipeline {
         motion_views: &[vk::ImageView],
         mesh_id_views: &[vk::ImageView],
         normal_views: &[vk::ImageView],
+        reactive_views: &[vk::ImageView],
     ) {
         let param_size = std::mem::size_of::<TaaParams>() as vk::DeviceSize;
         for f in 0..MAX_FRAMES_IN_FLIGHT {
@@ -517,6 +537,14 @@ impl TaaPipeline {
                 .sampler(self.point_sampler)
                 .image_view(normal_views[prev])
                 .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
+            // #4944 — current frame only; the main render pass leaves every
+            // colour attachment (this one included) in SHADER_READ_ONLY_OPTIMAL
+            // behind its COMPUTE_SHADER / SHADER_READ outgoing dependency, the
+            // same path the normal and mesh-ID reads above rely on.
+            let reactive = [vk::DescriptorImageInfo::default()
+                .sampler(self.point_sampler)
+                .image_view(reactive_views[f])
+                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
             let prev_hist = [vk::DescriptorImageInfo::default()
                 .sampler(self.linear_sampler)
                 .image_view(self.history[prev].view)
@@ -541,6 +569,7 @@ impl TaaPipeline {
                 write_uniform_buffer(set, 6, &params),
                 write_combined_image_sampler(set, 7, &curr_normal),
                 write_combined_image_sampler(set, 8, &prev_normal),
+                write_combined_image_sampler(set, 9, &reactive),
             ];
             // SAFETY: descriptor sets owned by `self`; `writes` references
             // image views / buffer owned by `self` and `hdr_views` /
@@ -792,6 +821,7 @@ impl TaaPipeline {
             motion_views,
             mesh_id_views,
             normal_views,
+            reactive_views,
         } = views;
         for mut slot in self.history.drain(..) {
             // `recreate_on_resize` is called from the swapchain-resize path,
@@ -831,7 +861,14 @@ impl TaaPipeline {
             return result;
         }
 
-        self.write_descriptor_sets(device, src_color_views, motion_views, mesh_id_views, normal_views);
+        self.write_descriptor_sets(
+            device,
+            src_color_views,
+            motion_views,
+            mesh_id_views,
+            normal_views,
+            reactive_views,
+        );
 
         // #1031 — walk fresh history images from UNDEFINED to GENERAL.
         // SAFETY: fenced-resize contract — no concurrent reader on
@@ -921,6 +958,37 @@ impl TaaPipeline {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #4944 (REN-D7-2026-09-27-03) — TAA must read the FSR reactive mask.
+    /// Water writes no mesh ID, normal or motion, so the bed's stable values
+    /// sit under it and every other bypass signal passes; the mask (1.0 on
+    /// water) is the only thing that tells TAA the pixel's colour does not
+    /// follow that motion. The descriptor side is checked against the shader
+    /// by `validate_set_layout` at construction; this pins that the shader
+    /// declares the input and that it reaches both the bypass and the α.
+    #[test]
+    fn taa_resolve_consumes_the_reactive_mask() {
+        let shader = include_str!("../../shaders/taa.comp");
+        assert!(
+            shader.contains("layout(set = 0, binding = 9) uniform sampler2D uReactive;"),
+            "taa.comp must bind the reactive mask at binding 9 (#4944)"
+        );
+        let main = shader.split_once("void main()").expect("taa.comp main").1;
+        assert!(main.contains("texelFetch(uReactive, pix, 0)"));
+        assert!(
+            main.contains("|| reactive >= 1.0) {"),
+            "a fully reactive pixel (water) must bypass history (#4944)"
+        );
+        assert!(
+            main.contains("float alpha = max(params.params.x, reactive);"),
+            "a partially reactive pixel must raise the current-frame weight (#4944)"
+        );
+
+        let production = crate::source_scan::production_text(include_str!("taa.rs"));
+        assert!(production.contains(".binding(9)"));
+        assert!(production.contains("write_combined_image_sampler(set, 9, &reactive)"));
+        assert!(production.contains(".image_view(reactive_views[f])"));
+    }
 
     /// NCPS-05 — CPU-side guard for the first-frame flag. The shader's
     /// `params.params.y > 0.5` branch skips the temporal tap when history

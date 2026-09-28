@@ -1177,6 +1177,7 @@ impl VulkanContext {
                     motion_views: &views.motion_views,
                     mesh_id_views: &views.mesh_id_views,
                     normal_views: &views.normal_views,
+                    reactive_views: &views.reactive_views,
                 },
                 self.frame_extents.render.width,
                 self.frame_extents.render.height,
@@ -1521,6 +1522,8 @@ impl VulkanContext {
             (0..MAX_FRAMES_IN_FLIGHT).map(|i| gbuffer.mesh_id_view(i)).collect();
         let normal_views: Vec<vk::ImageView> =
             (0..MAX_FRAMES_IN_FLIGHT).map(|i| gbuffer.normal_view(i)).collect();
+        let reactive_views: Vec<vk::ImageView> =
+            (0..MAX_FRAMES_IN_FLIGHT).map(|i| gbuffer.reactive_view(i)).collect();
         let allocator = self
             .allocator
             .as_ref()
@@ -1536,6 +1539,7 @@ impl VulkanContext {
                 motion_views: &motion_views,
                 mesh_id_views: &mesh_id_views,
                 normal_views: &normal_views,
+                reactive_views: &reactive_views,
             },
             self.frame_extents.render.width,
             self.frame_extents.render.height,

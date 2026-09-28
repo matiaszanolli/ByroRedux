@@ -857,10 +857,10 @@ void main() {
     //   3 Decal        → yellow (rugs, blood splats, bullet holes)
     if ((vizFlags & DBG_VIZ_RENDER_LAYER) != 0u) {
         uint layer = (inst.flags >> INSTANCE_RENDER_LAYER_SHIFT) & INSTANCE_RENDER_LAYER_MASK;
-        vec3 tint = layer == 0u ? vec3(0.5, 0.5, 0.5)
-                  : layer == 1u ? vec3(0.0, 1.0, 1.0)
-                  : layer == 2u ? vec3(1.0, 0.0, 1.0)
-                  :               vec3(1.0, 1.0, 0.0);
+        vec3 tint = layer == RENDER_LAYER_ARCHITECTURE ? vec3(0.5, 0.5, 0.5)
+                  : layer == RENDER_LAYER_CLUTTER      ? vec3(0.0, 1.0, 1.0)
+                  : layer == RENDER_LAYER_ACTOR        ? vec3(1.0, 0.0, 1.0)
+                  :                                      vec3(1.0, 1.0, 0.0);
         // Mix the tint with the texture so material outlines stay
         // visible under the colour overlay — easier to identify which
         // mesh got which classification.
@@ -1755,7 +1755,7 @@ void main() {
         && (mat.materialFlags & MAT_FLAG_THIN_GLASS) != 0u;
     uint renderLayer =
         (inst.flags >> INSTANCE_RENDER_LAYER_SHIFT) & INSTANCE_RENDER_LAYER_MASK;
-    bool isArchitecturalGlass = renderLayer == 0u;
+    bool isArchitecturalGlass = renderLayer == RENDER_LAYER_ARCHITECTURE;
     // Low alpha is not enough to identify a window: Bethesda cups, bottles,
     // pitchers and broken mirrors use the same alpha range. Their portal ray
     // can escape through an unrelated gap in the cell and paint the whole prop
@@ -3180,8 +3180,9 @@ void main() {
         // crawling IGN "moiré lines"). One visibility ray on the final
         // selected sample (re-validated every frame ⇒ no light leaks).
         // Energy: additive single-sample RIS estimator, W = wSum/(M·pHat),
-        // pHat = luminance(shadowableRadiance) — expectation equals the
-        // legacy subtractive Σ radiance_i·V_i. The legacy WRS path is kept
+        // pHat = luminance(shadowableRadiance), with the enumerated fresh
+        // candidates weighted N·pHat (#4940) — expectation equals the legacy
+        // subtractive Σ radiance_i·V_i. The legacy WRS path is kept
         // verbatim below (gated) for live A/B via `0x8000`, when
         // ENABLE_LEGACY_WRS == 1 (#1799 / PERF-D5-NEW-01).
 #if ENABLE_LEGACY_WRS
@@ -3208,6 +3209,11 @@ void main() {
         float restirWSum = 0.0;          // running reservoir weight sum
         float restirM = 0.0;             // effective sample count
         float restirPHat = 0.0;          // target pdf of the selected sample
+        // #4942 — the exact unshadowed direct radiance of every light streamed
+        // into the reservoir, this frame. The accumulator below filters only
+        // the shadow RATIO and rescales by this, so intensity animation
+        // (flicker, pulse, toggles) reaches the pixel undelayed.
+        vec3  restirUnshadowedSum = vec3(0.0);
         ClusterEntry cluster = clusters[clusterIdx];
         for (uint ci = 0; ci < cluster.count; ci++) {
             uint i = clusterLightIndices[cluster.offset + ci];
@@ -3367,6 +3373,7 @@ void main() {
                     // decorrelated so temporal reuse accumulates diversity.
                     restirWSum += w_i;
                     restirM += 1.0;
+                    restirUnshadowedSum += shadowableRadiance;
                     float u = hash2_pixel_frame(uvec2(gl_FragCoord.xy),
                         uint(resFrameSeed) * 64u + ci).x;
                     if (u * restirWSum < w_i) {
@@ -3394,25 +3401,48 @@ void main() {
 #endif
             }
         }
+        // #4940 — the stream above ENUMERATES every candidate light once
+        // instead of drawing M samples from a proposal. Enumeration is the
+        // uniform proposal p = 1/N with M = N, whose RIS weight is
+        // pHat/p = N·pHat, not pHat. Streaming bare pHat left the finalize
+        // W = wSum / (M·pHat_y) returning the MEAN of the shadow-casting
+        // lights' radiance instead of their SUM: every cluster with N > 1
+        // such lights lit its direct term at 1/N. Scaling after the stream is
+        // the same as weighting each candidate by N·pHat — selection among
+        // them is unchanged — and keeps M in the confidence units the
+        // temporal / spatial combines below cap against (RESTIR_M_CAP,
+        // SPATIAL_M_CAP): the fresh reservoir contributes M·ΣpHat, exactly as
+        // a reused reservoir contributes W·pHat·M. The legacy WRS arm had no
+        // count factor and was always energy-correct.
+        if (restirM > 0.0) {
+            restirWSum *= restirM;
+        }
         if (useRestir) {
             // ── ReSTIR finalize: temporal combine + accumulated soft shadow ─
             uint scrW = uint(screen.x);
             uint pixelIdx = uint(gl_FragCoord.y) * scrW + uint(gl_FragCoord.x);
             float frameCount = cameraPos.w;
 
-            // Radiance history (the SOFT-shadow accumulator). One per-frame
+            // Shadow-ratio history (the SOFT-shadow accumulator). One per-frame
             // visibility ray is BINARY ("a shadow without alpha"); we jitter
-            // the penumbra sample FRESH every frame and EMA-accumulate the
-            // resulting SHADED RADIANCE (rad·W·V — a colour) across frames.
+            // the penumbra sample FRESH every frame and EMA-accumulate across
+            // frames.
             //
-            // We accumulate the COLOUR, not the per-light visibility: each
-            // frame's rad·W·V is an INDEPENDENT UNBIASED estimate of the
-            // pixel's direct shadowed radiance, so averaging converges no
-            // matter which light each frame's ReSTIR pick landed on. (The
-            // earlier per-light-visibility accumulator reset whenever the
-            // selection flipped — which is exactly what happens at the front
-            // of the box where two lights compete, leaving that region in
-            // per-frame binary noise: the "moiré at the front".)
+            // What is accumulated is the per-channel RATIO of this frame's
+            // shaded estimate (rad·W·V — an independent unbiased estimate of
+            // Σ rad_i·V_i, whichever light the pick landed on) to the exact
+            // unshadowed sum Σ rad_i (`restirUnshadowedSum`), and the pixel is
+            // shaded by that ratio times THIS frame's unshadowed sum. This is
+            // the ratio estimator of Heitz et al. 2018 ("Combining Analytic
+            // Direct Illumination and Stochastic Shadows"). #4942 — it used to
+            // accumulate the shaded COLOUR itself, which low-pass filtered the
+            // light's own intensity with the shadow noise: a 12 Hz torch
+            // flicker reached the pixel at ~9 % of its authored amplitude
+            // while moving and ~2 % when parked, and a light switched off
+            // faded over ~40 frames. The ratio is still a whole-reservoir
+            // quantity, not a per-light visibility, so it converges across
+            // selection flips (the earlier per-light-visibility accumulator
+            // reset on every flip — the "moiré at the front").
             vec3 prevAccum = vec3(0.0);
             float histPrev = 0.0;
             bool reprojValid = false;
@@ -3768,22 +3798,39 @@ void main() {
             // static receiver, so let the validated per-surface history
             // converge instead of forcing a permanent 10% frame-to-frame
             // update (visible as whole-room shadow flicker in dense interiors).
+            //
+            // #4942 — the long parked history keys on the same scene-static
+            // signal as SVGF's progressive mode (#4046), not the bare camera
+            // flag: `dofParams.w > 1.5` is "camera parked AND nothing else
+            // changed last build" (`restir_history_mode`). A moving occluder,
+            // a looted object or a moving light drops the cap back to 16, so
+            // the EMA restarts from there instead of holding a 64-frame tail.
+            //
+            // Where a channel's unshadowed sum is ~0 the ratio is undefined;
+            // keep the history's (or "unshadowed") ratio there so a light that
+            // turns back on does not start from a fabricated full shadow.
+            vec3 ratioFallback = reprojValid ? prevAccum : vec3(1.0);
+            bvec3 ratioLive = greaterThan(restirUnshadowedSum, vec3(1e-6));
+            vec3 ratioFrame = mix(
+                ratioFallback,
+                frameContribution / max(restirUnshadowedSum, vec3(1e-6)),
+                vec3(ratioLive));
             vec3 accum;
             float histLen;
             if (reprojValid) {
-                bool cameraStatic = dofParams.w > 0.5;
-                float historyCap = cameraStatic ? 64.0 : 16.0;
-                float alphaFloor = cameraStatic ? 0.025 : 0.1;
+                bool sceneStatic = dofParams.w > 1.5;
+                float historyCap = sceneStatic ? 64.0 : 16.0;
+                float alphaFloor = sceneStatic ? 0.025 : 0.1;
                 histLen = min(histPrev + 1.0, historyCap);
                 float alpha = max(1.0 / histLen, alphaFloor);
-                accum = mix(prevAccum, frameContribution, alpha);
+                accum = mix(prevAccum, ratioFrame, alpha);
             } else {
                 histLen = 1.0;
-                accum = frameContribution;
+                accum = ratioFrame;
             }
-            Lo += accum;
+            Lo += restirUnshadowedSum * accum;
 
-            // Persist selection + radiance history for next-frame reuse.
+            // Persist selection + shadow-ratio history for next-frame reuse.
             Reservoir rc;
             rc.lightAndSurface = packReservoirLightAndSurface(restirY, surfaceId);
             rc.W = restirW;
@@ -4343,7 +4390,7 @@ void main() {
     // noisy diffuse alpha make solid furniture see-through. Glass, decals and
     // HairTint retain their dedicated blend semantics.
     bool coverageOnlyBlend = isAlphaBlend && !isGlass
-        && renderLayer != 3u && mat.materialKind != 6u;
+        && renderLayer != RENDER_LAYER_DECAL && mat.materialKind != 6u;
     if (coverageOnlyBlend) {
         finalAlpha = clamp(mat.materialAlpha, 0.0, 1.0);
     }

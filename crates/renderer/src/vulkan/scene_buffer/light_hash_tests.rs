@@ -4,8 +4,14 @@
 //! Pins the dirty-gate contract for `upload_lights` (#2036 / PERF-D4-01).
 //! Each test mirrors a counterpart in `instance_hash_tests.rs`.
 
-use super::descriptors::hash_light_slice;
+use super::descriptors::hash_light_upload;
 use super::gpu_types::GpuLight;
+
+/// The gate always hashes a full `MAX_LIGHTS + 1` remap; the light tests below
+/// hold it fixed so only the light slice varies.
+fn hash_light_slice(lights: &[GpuLight]) -> u64 {
+    hash_light_upload(lights, &[u32::MAX; super::MAX_LIGHTS + 1])
+}
 
 fn sample_light(seed: u32) -> GpuLight {
     // Touch a representative subset of fields so the hash depends on
@@ -73,4 +79,20 @@ fn empty_slice_hash_is_deterministic() {
     let h1 = hash_light_slice(&[]);
     let h2 = hash_light_slice(&[]);
     assert_eq!(h1, h2);
+}
+
+/// #4954 — the previous→current remap is part of what `upload_lights` writes,
+/// so a remap change alone must re-upload. Folding it into the Fx gate (it
+/// used to go through a SipHash `DefaultHasher`) must not drop it.
+#[test]
+fn remap_change_changes_hash() {
+    let lights: Vec<GpuLight> = (0..8).map(sample_light).collect();
+    let mut remap = [u32::MAX; super::MAX_LIGHTS + 1];
+    let before = hash_light_upload(&lights, &remap);
+    remap[2] = 5;
+    assert_ne!(
+        before,
+        hash_light_upload(&lights, &remap),
+        "a remap-only change must shift the hash, or the shader reads a stale remap"
+    );
 }

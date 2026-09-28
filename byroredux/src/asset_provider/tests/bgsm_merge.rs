@@ -1480,6 +1480,20 @@ fn merge_and_translate(
     [f32; 3],
     byroredux_core::ecs::components::material::Material,
 ) {
+    merge_and_translate_over(path, bgsm, NIF_METALNESS)
+}
+
+/// [`merge_and_translate`] over an explicit NIF-side metalness, for the
+/// keyword-classified inputs (`0.9` metal / `0.95` precious-metal arms).
+fn merge_and_translate_over(
+    path: &str,
+    bgsm: BgsmFile,
+    nif_metalness: f32,
+) -> (
+    byroredux_nif::import::ImportedMesh,
+    [f32; 3],
+    byroredux_core::ecs::components::material::Material,
+) {
     use crate::material_translate::{translate_material, ResolvedPaths};
     let mut pool = byroredux_core::string::StringPool::new();
     let mut provider = MaterialProvider::new();
@@ -1491,7 +1505,7 @@ fn merge_and_translate(
         },
     );
     let mut mesh = imported_mesh_with_material_path(&mut pool, path);
-    mesh.material.metalness_override = Some(NIF_METALNESS);
+    mesh.material.metalness_override = Some(nif_metalness);
     // Not white: the conductor tint blends toward the specular colour, so on
     // the default white diffuse a white specular would leave it unchanged and
     // every "no tint" assertion below would pass vacuously.
@@ -1522,8 +1536,9 @@ fn merge_and_translate(
 /// counted 405 of FO76's 25,888 BGSMs in exactly that state (posters,
 /// magazines, signage); before #4654 the same inputs gave near-mirror chrome.
 ///
-/// A disabled block must contribute no metalness: the NIF-side classification
-/// survives, as roughness's does, and nothing downstream sees a conductor.
+/// A disabled block authors a dielectric (#4941): metalness resolves to 0.0
+/// rather than the NIF-side classification, and nothing downstream sees a
+/// conductor.
 #[test]
 fn bgsm_specular_disabled_pbr_does_not_derive_a_conductor() {
     let (mesh, diffuse_before, material) = merge_and_translate(
@@ -1545,8 +1560,8 @@ fn bgsm_specular_disabled_pbr_does_not_derive_a_conductor() {
     );
     assert_eq!(
         mesh.material.metalness_override,
-        Some(NIF_METALNESS),
-        "a disabled specular block leaves the NIF-side metalness alone (#4836)"
+        Some(0.0),
+        "a disabled specular block authors a dielectric (#4836 / #4941)"
     );
     assert_eq!(
         mesh.material.diffuse_color, diffuse_before,
@@ -1554,7 +1569,7 @@ fn bgsm_specular_disabled_pbr_does_not_derive_a_conductor() {
          must not fire without one (#4836 / #1591)"
     );
     // The value the renderer actually receives.
-    assert_eq!(material.metalness, NIF_METALNESS);
+    assert_eq!(material.metalness, 0.0);
     assert_eq!(
         (material.specular_strength, material.specular_color),
         (0.0, [0.0, 0.0, 0.0]),
@@ -1580,12 +1595,54 @@ fn bgsm_specular_disabled_legacy_tinted_spec_does_not_derive_a_conductor() {
             ..Default::default()
         },
     );
-    assert_eq!(mesh.material.metalness_override, Some(NIF_METALNESS));
+    assert_eq!(mesh.material.metalness_override, Some(0.0));
     assert_eq!(
         mesh.material.diffuse_color, diffuse_before,
         "no diffuse tint toward a disabled specular colour (#4836)"
     );
-    assert_eq!(material.metalness, NIF_METALNESS);
+    assert_eq!(material.metalness, 0.0);
+}
+
+/// #4941 (REN-D6-2026-09-27-01) — the input #4836's fixture never reached: an
+/// FO4 NIF that inlines a metal-keyword diffuse (`trimmetalresidential01_d`,
+/// `wroughtiron01_d`) arrives keyword-classified at metalness 0.9 (0.95 for the
+/// gold/silver/bronze/copper arm), and its BGSM disables specular. Deferring to
+/// the NIF side kept that conductor while #4654 zeroed its specular, so 33
+/// vanilla shapes — Sanctuary and Concord residential trim, wrought-iron
+/// fences and gates — shaded at 10% diffuse with no highlight.
+#[test]
+fn bgsm_specular_disabled_overrides_a_keyword_metal_classification() {
+    for (nif_metalness, path) in [
+        (0.9, "materials/tests/trimmetalresidential01.bgsm"),
+        (0.95, "materials/tests/goldtrim_specoff.bgsm"),
+    ] {
+        let (mesh, diffuse_before, material) = merge_and_translate_over(
+            path,
+            BgsmFile {
+                pbr: false,
+                specular_enabled: false,
+                specular_color: [1.0, 1.0, 1.0],
+                specular_mult: 1.0,
+                smoothness: 1.0,
+                ..Default::default()
+            },
+            nif_metalness,
+        );
+        assert_eq!(
+            mesh.material.metalness_override,
+            Some(0.0),
+            "a spec-off BGSM must not keep the keyword classifier's {nif_metalness} \
+             conductor guess (#4941)"
+        );
+        assert!(mesh.material.bgsm_pbr_scalars_authored);
+        assert_eq!(mesh.material.diffuse_color, diffuse_before);
+        assert_eq!(material.metalness, 0.0, "the renderer must receive a dielectric");
+        assert_eq!(
+            (material.specular_strength, material.specular_color),
+            (0.0, [0.0, 0.0, 0.0]),
+            "specular stays disabled (#4654)"
+        );
+    }
 }
 
 /// The control: with `specular_enabled = true` the derivation still runs on

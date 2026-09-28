@@ -583,11 +583,15 @@ fn main() {
         "#define MATERIAL_KIND_FIRE_REFRACTION {MATERIAL_KIND_FIRE_REFRACTION}u"
     )
     .unwrap();
-    writeln!(
-        out,
-        "#define RENDER_LAYER_ARCHITECTURE {RENDER_LAYER_ARCHITECTURE}u"
-    )
-    .unwrap();
+    // #4955 — every render-layer discriminant, not just the one #4846 named.
+    for (name, value) in [
+        ("RENDER_LAYER_ARCHITECTURE", RENDER_LAYER_ARCHITECTURE),
+        ("RENDER_LAYER_CLUTTER", RENDER_LAYER_CLUTTER),
+        ("RENDER_LAYER_ACTOR", RENDER_LAYER_ACTOR),
+        ("RENDER_LAYER_DECAL", RENDER_LAYER_DECAL),
+    ] {
+        writeln!(out, "#define {name} {value}u").unwrap();
+    }
     // #4584 — presentation display-transform operator ids (push constant).
     // Authoritative consumer: tonemap.rs.
     writeln!(out, "#define TONEMAP_OP_ACES {TONEMAP_OP_ACES}u").unwrap();

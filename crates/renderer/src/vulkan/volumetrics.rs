@@ -37,6 +37,7 @@ use crate::shader_constants::{
     COMBUSTION_LIGHT_GRID_X, COMBUSTION_LIGHT_GRID_Y, COMBUSTION_LIGHT_GRID_Z,
     COMBUSTION_LIGHT_HALF_EXTENT_XZ_METERS, COMBUSTION_LIGHT_HALF_EXTENT_Y_METERS,
     COMBUSTION_LIGHT_VOLUME_FIXED_SCALE, FOG_VOLUME_CLUSTER_DIM as GLSL_FOG_VOLUME_CLUSTER_DIM,
+    FOG_VOLUME_SHAPE_BOX, FOG_VOLUME_SHAPE_CONE, FOG_VOLUME_SHAPE_SPHERE,
     MAX_FOG_PORTALS_PER_CLUSTER as GLSL_MAX_FOG_PORTALS_PER_CLUSTER,
     MAX_FOG_VOLUMES_PER_CLUSTER as GLSL_MAX_FOG_VOLUMES_PER_CLUSTER, MAX_LIGHTS,
     VISIBILITY_MASK_FULL, WORKGROUP_X, WORKGROUP_Y, WORKGROUP_Z,
@@ -584,6 +585,14 @@ pub fn hybrid_slice_coordinate(
 /// so a few authored shafts filled unrelated clusters before nearby media
 /// could enter the bounded list. A rotated local box remains conservative for
 /// spheres, ellipsoids, boxes, and the cone's base-radius cylinder.
+/// Whether `volume` carries analytic shape `id` (a generated `FOG_VOLUME_SHAPE_*`
+/// constant). An exact compare, not an `x.5` threshold, so reordering
+/// `FogShape` cannot silently re-route a shape (#4955). The id is written as
+/// `shape as u32 as f32`, which is exact.
+fn fog_volume_is_shape(volume: &GpuFogVolume, id: u32) -> bool {
+    volume.center_shape[3] == id as f32
+}
+
 fn fog_volume_world_aabb_half_extents(volume: &GpuFogVolume) -> Option<[f32; 3]> {
     let extent = Vec3::from_array([
         volume.half_extents_extinction[0],
@@ -593,9 +602,9 @@ fn fog_volume_world_aabb_half_extents(volume: &GpuFogVolume) -> Option<[f32; 3]>
     if !extent.is_finite() || extent.min_element() <= 0.0 {
         return None;
     }
-    let local = if volume.center_shape[3] < 0.5 {
+    let local = if fog_volume_is_shape(volume, FOG_VOLUME_SHAPE_SPHERE) {
         Vec3::splat(extent.x)
-    } else if volume.center_shape[3] > 2.5 {
+    } else if fog_volume_is_shape(volume, FOG_VOLUME_SHAPE_CONE) {
         Vec3::new(extent.x, extent.y, extent.x)
     } else {
         extent
@@ -681,8 +690,9 @@ fn fog_portal_swept_bounds(
     far: f32,
 ) -> Option<FogPortalSweep> {
     if (volume.profile_params[0] - FOG_VOLUME_PROFILE_LIGHT_SHAFT).abs() >= 0.5
-        || volume.center_shape[3] < 1.5
-        || (volume.center_shape[3] < 2.5 && volume.profile_params[3] < 0.5)
+        || !(fog_volume_is_shape(volume, FOG_VOLUME_SHAPE_CONE)
+            || (fog_volume_is_shape(volume, FOG_VOLUME_SHAPE_BOX)
+                && volume.profile_params[3] >= 0.5))
         || !sun_direction.is_finite()
         || sun_direction.length_squared() <= 1.0e-8
     {
@@ -705,7 +715,7 @@ fn fog_portal_swept_bounds(
         volume.center_shape[1],
         volume.center_shape[2],
     ]);
-    let is_cone = volume.center_shape[3] > 2.5;
+    let is_cone = fog_volume_is_shape(volume, FOG_VOLUME_SHAPE_CONE);
     let radius = if is_cone {
         half_extents.z
     } else {
@@ -4068,7 +4078,7 @@ mod unit_tests {
     fn volume_grid_filter_keeps_intersecting_extents_and_remote_sun_apertures() {
         let large = smoke_at([150.0, 0.0, 0.0], 60.0);
         let mut portal = smoke_at([0.0, 200.0, 0.0], 5.0);
-        portal.center_shape[3] = 2.0;
+        portal.center_shape[3] = FOG_VOLUME_SHAPE_BOX as f32;
         portal.profile_params = [FOG_VOLUME_PROFILE_LIGHT_SHAFT, 0.0, 0.0, 1.0];
         let distant = smoke_at([500.0, 0.0, 0.0], 5.0);
         let invalid = smoke_at([f32::NAN, 0.0, 0.0], 5.0);

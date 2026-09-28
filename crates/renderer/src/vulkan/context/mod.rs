@@ -658,6 +658,13 @@ pub struct VulkanContext {
     /// player standing still while a torch-carrying NPC walks past keeps
     /// a ~3 s caustic ghost of the old pool.
     prev_caustic_scene_key: u64,
+    /// #4942 — the previous build's `caustic_scene_static` (nothing but the
+    /// camera could have changed the image: light rig, caustic sources, rigid
+    /// instances and their set, skinned poses). The camera UBO is assembled
+    /// before this frame's instance build computes the signal, so the ReSTIR
+    /// direct-light EMA reads it one frame late through `dof_params.w`; see
+    /// [`restir_history_mode`](assemble_camera_and_lights::restir_history_mode).
+    scene_static_last_build: bool,
     /// Set each frame right after `upload_indirect_draws` (`true` on
     /// success or a hash-matched skip, `false` on upload failure).
     /// `record_geometry_pass` ANDs this into `use_indirect` so a failed

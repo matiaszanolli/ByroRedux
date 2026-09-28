@@ -70,6 +70,21 @@ pub(super) struct CameraAssemblyOutput {
     pub(super) fsr_frame: Option<FsrFrameParameters>,
 }
 
+/// #4942 — `GpuCamera.dof_params.w`: `0.0` while the camera moves, `1.0`
+/// when it is parked, `2.0` when it is parked AND the last build saw no other
+/// change (`caustic_scene_static`, the signal SVGF's progressive mode uses
+/// since #4046). The ReSTIR direct-light EMA took its 64-frame, 0.025-floor
+/// history from the bare camera flag, so an occluder moving, an object being
+/// looted or a light moving in front of a parked player kept direct lighting
+/// on a ~40-frame lag that SVGF's indirect had already dropped.
+pub(super) fn restir_history_mode(camera_static: bool, scene_static: bool) -> f32 {
+    match (camera_static, scene_static) {
+        (false, _) => 0.0,
+        (true, false) => 1.0,
+        (true, true) => 2.0,
+    }
+}
+
 impl VulkanContext {
     /// Drain combustion-field lights, upload lights + camera + DALC UBOs,
     /// resolve TAA/FSR jitter and DOF, detect camera cuts, and update the
@@ -496,14 +511,16 @@ impl VulkanContext {
             // consumed by `pointSpotAtten` in triangle.frag (0 → shader
             // default 0.5). Live-tunable via the `light.atten` console
             // command for the controlled bench.
-            // w = camera_static flag (1.0 = parked). triangle.frag reads it
-            // to advance the GI noise seed every frame when parked, so the
-            // dark indirect-lit floor converges ~4× faster (TARGET 1).
+            // w = history mode (`restir_history_mode`): 0 = camera moving,
+            // 1 = parked, 2 = parked with an unchanged scene. triangle.frag's
+            // GI seed reads `> 0.5` (advance the noise seed every frame when
+            // parked, so the dark indirect-lit floor converges ~4× faster —
+            // TARGET 1); the ReSTIR direct EMA reads `> 1.5` (#4942).
             dof_params: [
                 active_dof.aperture,
                 active_dof.focus_dist,
                 self.light_atten_knee,
-                if camera_static { 1.0 } else { 0.0 },
+                restir_history_mode(camera_static, self.scene_static_last_build),
             ],
             // #markarth-precision — camera-relative render origin in xyz.
             // Vertex/deferred shaders add this back to recover the absolute
@@ -709,5 +726,24 @@ mod taa_jitter_gate_tests {
             arm.contains("render_debug_requires_raw_output("),
             "the TAA arm must consult the shared raw-output policy (#4513)"
         );
+    }
+}
+
+#[cfg(test)]
+mod restir_history_mode_tests {
+    use super::restir_history_mode;
+
+    /// #4942 — both shader thresholds must read the lane the way they did
+    /// before the scene-static bit existed: `> 0.5` (GI seed) is "camera
+    /// parked" regardless of the scene; only `> 1.5` (ReSTIR EMA) adds it.
+    #[test]
+    fn history_mode_keeps_the_camera_threshold_and_adds_the_scene_one() {
+        for scene_static in [false, true] {
+            assert!(restir_history_mode(false, scene_static) < 0.5);
+            assert!(restir_history_mode(true, scene_static) > 0.5);
+        }
+        assert!(restir_history_mode(true, false) < 1.5);
+        assert!(restir_history_mode(true, true) > 1.5);
+        assert!(restir_history_mode(false, true) < 1.5, "a moving camera is never scene-static");
     }
 }

@@ -644,11 +644,20 @@ fn merge_bgsm_arm(
     // * the conductor diffuse tint — a consequence of that metalness, so it
     //   must not fire on a metalness that was never derived.
     //
-    // Left untouched, all three keep whatever the NIF side classified. That
-    // mirrors walker.rs's disabled-NiSpecularProperty arm (#696), which zeroes
-    // the specular colour before `classify_legacy_pbr` runs and so classifies
-    // the surface as a dielectric.
-    if leaf.specular_enabled {
+    // Roughness and the tint are left to whatever the NIF side classified.
+    // Metalness is not (#4941): FO4's spec-gloss model expresses a conductor
+    // only through its specular block, so a disabled block authors a
+    // dielectric. Deferring to the NIF side was assumed to land there too —
+    // but `classify_pbr_keyword`'s metal arms (`metal`/`steel`/`iron`…,
+    // `gold`/`silver`…) return 0.9 / 0.95 from the diffuse path alone, before
+    // specular is consulted. Every FO4 NIF that inlines its diffuse beside the
+    // `.bgsm` name was keyword-classified that way, so 33 vanilla shapes
+    // (Sanctuary / Concord residential trim `trimmetalresidential01`,
+    // `wroughtiron01` fences and gates, Diamond City railings) became
+    // zero-specular conductors: 10% of the diffuse and no highlight.
+    if !leaf.specular_enabled {
+        material.metalness_override = Some(0.0);
+    } else {
         let spec_r = leaf.specular_color[0] * leaf.specular_mult;
         let spec_g = leaf.specular_color[1] * leaf.specular_mult;
         let spec_b = leaf.specular_color[2] * leaf.specular_mult;
@@ -673,7 +682,9 @@ fn merge_bgsm_arm(
         }
     }
     // #2609 — the flag whose meaning is "authoritative PBR scalars were
-    // merged", set at the exact site that merges them. `from_bgsm` above
+    // merged", set at the exact site that merges them. Both arms above merge
+    // one: the enabled arm both scalars, the disabled arm the dielectric
+    // metalness its disabled block implies (#4941). `from_bgsm` above
     // cannot serve that role: the BGEM arm sets it too while leaving both
     // overrides `None` (BGEM authors no smoothness/specular), so a
     // consumer reading `from_bgsm` as "scalars present" is wrong on every

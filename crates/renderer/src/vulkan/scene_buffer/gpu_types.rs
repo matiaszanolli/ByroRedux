@@ -645,9 +645,9 @@ impl Default for GpuCamera {
     }
 }
 
-// SAFETY: every field is `[f32; 4]` or `[[f32; 4]; 4]` — homogeneous
-// scalar/vector arrays tile the struct's declared size with no implicit
-// padding (#3761).
+// SAFETY: every field is `[f32; 4]`, `[u32; 4]` (`render_debug`), or
+// `[[f32; 4]; 4]` — homogeneous 16-byte-lane arrays tile the struct's
+// declared size with no implicit padding (#3761, #4953).
 unsafe impl NoUninit for GpuCamera {}
 
 /// 6-axis directional ambient cube uploaded to set 1 binding 14 as a

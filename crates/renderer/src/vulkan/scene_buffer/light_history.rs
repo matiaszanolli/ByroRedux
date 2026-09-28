@@ -1,7 +1,7 @@
 //! Translate reservoir indices across the per-frame light priority sort.
 use super::{GpuLight, MAX_LIGHTS};
 use crate::vulkan::sync::MAX_FRAMES_IN_FLIGHT;
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 
 const INVALID: u32 = u32::MAX;
 type Identity = [u32; 4];
@@ -11,7 +11,9 @@ pub(super) struct LightHistory {
     ids: [Vec<Identity>; MAX_FRAMES_IN_FLIGHT],
     // Previous index/count and current index/count. Duplicate identities on
     // either side are ambiguous and must never silently select another lamp.
-    scratch: HashMap<Identity, (u32, u32, u32, u32)>,
+    // #4954 — Fx, not SipHash: this runs every frame from `upload_lights`
+    // (the #2923 hot-path hashing rule).
+    scratch: FxHashMap<Identity, (u32, u32, u32, u32)>,
 }
 
 impl LightHistory {
@@ -52,6 +54,24 @@ impl LightHistory {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #4954 — `remap` and `upload_lights`' dirty gate run every frame; the
+    /// #2923 hot-path rule keeps both on Fx hashing.
+    #[test]
+    fn per_frame_light_upload_does_not_use_siphash() {
+        // `upload.rs` interleaves test modules with production code, so it is
+        // scanned whole (no test there names either type); this file drops its
+        // own test module, which spells the banned names out.
+        let own = crate::source_scan::production_text(include_str!("light_history.rs"));
+        for (name, production) in [("light_history.rs", own), ("upload.rs", include_str!("upload.rs"))] {
+            for banned in ["std::collections::HashMap", "DefaultHasher"] {
+                assert!(
+                    !production.contains(banned),
+                    "{name} uses `{banned}` on the per-frame light upload path (#4954 / #2923)"
+                );
+            }
+        }
+    }
 
     fn light(id: u32) -> GpuLight {
         GpuLight {

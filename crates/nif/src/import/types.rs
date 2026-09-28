@@ -710,7 +710,9 @@ pub struct ImportedMaterial {
     pub glass_blur_scale_factor: f32,
     /// #2609 — the BGSM arm of `merge_external_material` resolved authoritative
     /// spec-glossiness scalars and wrote them into
-    /// [`Self::metalness_override`] / [`Self::roughness_override`].
+    /// [`Self::metalness_override`] / [`Self::roughness_override`]. With the
+    /// specular block disabled only metalness is written, as the dielectric
+    /// `0.0` the disabled block implies (#4941); roughness keeps the NIF side's.
     ///
     /// Distinct from [`Self::from_bgsm`], which is set on the BGEM arm as well
     /// even though BGEM leaves both overrides `None`. It is also distinct from

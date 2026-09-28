@@ -529,10 +529,19 @@ pub(super) fn hash_indirect_slice(draws: &[ash::vk::DrawIndexedIndirectCommand])
 ///
 /// Routed through the crate's bounded byte view (`byte_view`, #4521)
 /// like its three siblings.
-pub(super) fn hash_light_slice(lights: &[super::gpu_types::GpuLight]) -> u64 {
+/// #4954 — the gate covers everything `upload_lights` writes: the light count,
+/// the `previous_to_current` remap of the header and the light slice. One
+/// `FxHasher` over byte views; the remap used to go through a SipHash
+/// `DefaultHasher` and `Hash`, element by element, every frame.
+pub(super) fn hash_light_upload(
+    lights: &[super::gpu_types::GpuLight],
+    previous_to_current: &[u32],
+) -> u64 {
     use std::hash::Hasher;
     let mut hasher = rustc_hash::FxHasher::default();
+    hasher.write_usize(lights.len());
     hasher.write(crate::vulkan::buffer::byte_view(lights));
+    hasher.write(crate::vulkan::buffer::byte_view(previous_to_current));
     hasher.finish()
 }
 

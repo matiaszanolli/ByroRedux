@@ -560,9 +560,9 @@ struct Reservoir {
     float W;           // unbiased contribution weight (w_sum / (M * pHat))
     float M;           // effective sample count (capped)
     float histLenAndDepth; // bitcast packHalf2x16(history length, camera distance)
-    float accumR;      // accumulated direct-shadow radiance — R
-    float accumG;      // accumulated direct-shadow radiance — G
-    float accumB;      // accumulated direct-shadow radiance — B
+    float accumR;      // accumulated direct-shadow ratio (shaded / unshadowed,
+    float accumG;      //   #4942) — R, G, B; triangle.frag rescales it by
+    float accumB;      //   the current frame's unshadowed sum
     float pad0;        // geometric normal: octEncode → packSnorm2x16 → float
                        // bits. Consumed by temporal + spatial rejection;
                        // keeps the struct at 32 B.

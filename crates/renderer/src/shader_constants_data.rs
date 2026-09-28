@@ -146,6 +146,9 @@ pub const VERTEX_SPLAT1_OFFSET_FLOATS: u32 = 21;
 // Render-layer and analytic fog-shape ids are enum-backed GPU discriminants.
 pub const RENDER_LAYER_ARCHITECTURE: u32 =
     byroredux_core::ecs::components::RenderLayer::Architecture as u32;
+pub const RENDER_LAYER_CLUTTER: u32 = byroredux_core::ecs::components::RenderLayer::Clutter as u32;
+pub const RENDER_LAYER_ACTOR: u32 = byroredux_core::ecs::components::RenderLayer::Actor as u32;
+pub const RENDER_LAYER_DECAL: u32 = byroredux_core::ecs::components::RenderLayer::Decal as u32;
 pub const FOG_VOLUME_SHAPE_SPHERE: u32 =
     byroredux_core::ecs::components::FogShape::Sphere as u32;
 pub const FOG_VOLUME_SHAPE_ELLIPSOID: u32 =

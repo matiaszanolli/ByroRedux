@@ -20,8 +20,8 @@ use super::super::scene_buffer::{
 use super::draw::{
     CompositeParamsInputs, DrawBatch, build_composite_params, build_sky_cube_params,
     is_caustic_source, is_refractive_glass, morph_gpu_fields_for_draw, morph_slot_backs_mesh,
-    rebase_model_matrix, skin_slot_backs_mesh, skinned_vertex_address_for_draw,
-    uses_rigid_motion_history,
+    rebase_model_matrix, rigid_instance_set_changed, skin_slot_backs_mesh,
+    skinned_vertex_address_for_draw, uses_rigid_motion_history,
 };
 use super::{DrawCommand, FrameTimings, SkyParams, VulkanContext};
 use ash::vk;
@@ -192,6 +192,11 @@ impl VulkanContext {
         let suppress_rigid_history =
             std::mem::take(&mut self.history.suppress_rigid_history_next_build);
         let mut rigid_instance_moved = false;
+        // #4943 — a rigid instance with no previous model this build (first
+        // sight: spawned, enabled, streamed back in). Its own pixels reject
+        // history by mesh ID, but the surfaces around it do not.
+        let mut rigid_instance_first_sight = false;
+        let rigid_history_live = !camera_cut && !suppress_rigid_history;
         let mut caustic_scene_key = crate::vulkan::caustic::caustic_key_seed();
 
         // Sort contract for draw_commands is owned by render.rs
@@ -211,11 +216,10 @@ impl VulkanContext {
             let current_model = rebase_model_matrix(m, render_origin);
             let uses_rigid_history =
                 uses_rigid_motion_history(draw_cmd.bone_offset, draw_cmd.alpha_blend);
-            let previous_source = if uses_rigid_history && !camera_cut && !suppress_rigid_history {
-                self.history
-                    .previous_rigid_models
-                    .get(&draw_cmd.entity_id)
-                    .unwrap_or(m)
+            let previous_source = if uses_rigid_history && rigid_history_live {
+                let previous = self.history.previous_rigid_models.get(&draw_cmd.entity_id);
+                rigid_instance_first_sight |= previous.is_none();
+                previous.unwrap_or(m)
             } else {
                 m
             };
@@ -704,12 +708,22 @@ impl VulkanContext {
         // The accumulator's history is valid only when nothing that
         // determines a splat's landing point changed: the camera (the
         // pre-#2468 gate), the light rig or caustic-source placement (the
-        // key), rigid instances (the compare in the loop above), or
-        // skinned poses (`pose_dirty` — a walking NPC's torch shadow).
+        // key), rigid instances (the compare in the loop above) or the
+        // rigid instance SET (#4943: spawn/despawn/enable/disable, loot
+        // pickup), or skinned poses (`pose_dirty` — a walking NPC's torch
+        // shadow). SVGF reuses this signal (#4046), so a set change also
+        // drops its parked-camera long history.
         let caustic_scene_static = !rigid_instance_moved
+            && !(rigid_history_live
+                && rigid_instance_set_changed(
+                    rigid_instance_first_sight,
+                    self.history.previous_rigid_models.len(),
+                    current_rigid_models.len(),
+                ))
             && pose_dirty.is_empty()
             && caustic_scene_key == self.prev_caustic_scene_key;
         self.prev_caustic_scene_key = caustic_scene_key;
+        self.scene_static_last_build = caustic_scene_static;
         let caustic_history_valid = camera_static && caustic_scene_static;
 
         // #647 / RP-1 — guard against `gl_InstanceIndex` outrunning
@@ -1529,7 +1543,8 @@ mod rigid_history_suppression_tests {
              for the one build after the discontinuity"
         );
         assert!(
-            src.contains("if uses_rigid_history && !camera_cut && !suppress_rigid_history {"),
+            src.contains("let rigid_history_live = !camera_cut && !suppress_rigid_history;")
+                && src.contains("if uses_rigid_history && rigid_history_live {"),
             "the previous-transform lookup must be gated on the latch alongside \
              camera_cut — without it a discontinuity signalled from record_post_passes \
              is undone by draw_frame's end-of-frame swap before it takes effect (#4007)"
@@ -1601,6 +1616,35 @@ mod svgf_scene_static_signal_tests {
              (camera AND light rig both unchanged), not the bare camera_static flag — \
              regressing this drops GI convergence back to lagging a light-rig change \
              by up to the ~4s 1/(histAge+1) time constant (#4046)"
+        );
+    }
+
+    /// #4943 (REN-D7-2026-09-27-02) — the signal must also see the rigid
+    /// instance SET change, not only instances moving: first sight is
+    /// recorded at the history lookup, and the set compare is folded into
+    /// `caustic_scene_static` (which SVGF reuses above) while rigid history
+    /// was live.
+    #[test]
+    fn scene_static_signal_sees_rigid_instance_set_changes() {
+        let src =
+            crate::source_scan::production_text(include_str!("build_and_upload_instances.rs"));
+        assert!(
+            src.contains("rigid_instance_first_sight |= previous.is_none();"),
+            "a rigid draw with no previous model must be recorded as first sight (#4943)"
+        );
+        let fold = src
+            .split_once("let caustic_scene_static = !rigid_instance_moved")
+            .expect("the scene-static fold must still start from rigid_instance_moved")
+            .1
+            .split_once(';')
+            .unwrap()
+            .0;
+        assert!(
+            fold.contains("rigid_instance_set_changed(")
+                && fold.contains("rigid_instance_first_sight")
+                && fold.contains("previous_rigid_models.len()")
+                && fold.contains("current_rigid_models.len()"),
+            "caustic_scene_static must fold in the rigid instance set change (#4943):\n{fold}"
         );
     }
 }

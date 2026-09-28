@@ -6548,3 +6548,76 @@ fn interleaved_gradient_noise_keeps_its_resolution_over_a_session() {
          ({distinct} distinct, {vertical_equal} vertical-equal)"
     );
 }
+
+/// #4955 / REN-D3-2026-09-27-04 — render-layer and fog-shape discriminants
+/// come from the generated `RENDER_LAYER_*` / `FOG_VOLUME_SHAPE_*` constants
+/// (derived from core's `RenderLayer` / `FogShape`), never hand-typed. #4846
+/// converted only the sites it named; the literals left behind would keep
+/// every test green while reordering either enum silently broke
+/// architectural-glass classification, decal blending and the froxel shape
+/// dispatch.
+#[test]
+fn layer_and_fog_shape_discriminants_are_never_hand_typed() {
+    let sources = [
+        ("triangle.frag", include_str!("../../../shaders/triangle.frag")),
+        ("volumetrics_inject.comp", include_str!("../../../shaders/volumetrics_inject.comp")),
+        ("volumetrics.rs", include_str!("../volumetrics.rs")),
+        ("context/draw.rs", include_str!("../context/draw.rs")),
+    ];
+    for (name, src) in sources {
+        let code = code_lines(src);
+        for line in code.lines() {
+            let compact: String = line.split_whitespace().collect();
+            for subject in ["renderLayer", "layer"] {
+                for op in ["==", "!="] {
+                    let needle = format!("{subject}{op}");
+                    let mut rest = compact.as_str();
+                    while let Some(at) = rest.find(&needle) {
+                        let after = &rest[at + needle.len()..];
+                        let is_word_start = at == 0
+                            || !rest[..at]
+                                .chars()
+                                .last()
+                                .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_');
+                        assert!(
+                            !(is_word_start && after.starts_with(|c: char| c.is_ascii_digit())),
+                            "{name}: render layer compared against a literal — use \
+                             RENDER_LAYER_* (#4955): {line}"
+                        );
+                        rest = after;
+                    }
+                }
+            }
+            for shape in ["center_shape.w", "center_shape[3]"] {
+                for op in ['<', '>'] {
+                    assert!(
+                        !compact.contains(&format!("{shape}{op}")),
+                        "{name}: fog shape classified by a threshold — compare against \
+                         FOG_VOLUME_SHAPE_* exactly (#4955): {line}"
+                    );
+                }
+            }
+            // `shape > 2.5`-style dispatch on the local copy of the shape lane.
+            for op in ['<', '>'] {
+                let needle = format!("(shape{op}");
+                if let Some(at) = compact.find(&needle) {
+                    let after = &compact[at + needle.len()..];
+                    let number: String =
+                        after.chars().take_while(|c| c.is_ascii_digit() || *c == '.').collect();
+                    assert!(
+                        !number.ends_with(".5"),
+                        "{name}: fog shape classified by a threshold (#4955): {line}"
+                    );
+                }
+            }
+        }
+    }
+    // The dispatch must name each generated id it routes on.
+    let inject = include_str!("../../../shaders/volumetrics_inject.comp");
+    for id in ["FOG_VOLUME_SHAPE_CONE", "FOG_VOLUME_SHAPE_BOX", "FOG_VOLUME_SHAPE_SPHERE"] {
+        assert!(
+            inject.contains(&format!("shape == float({id})")),
+            "volumetrics_inject.comp's shape dispatch must compare against {id} (#4955)"
+        );
+    }
+}

@@ -145,6 +145,24 @@ pub(super) fn uses_rigid_motion_history(bone_offset: u32, alpha_blend: bool) -> 
     bone_offset == 0 && !alpha_blend
 }
 
+/// #4943 — whether the set of rigid-history instances changed this build, as
+/// opposed to an instance moving (`rigid_instance_moved`). `first_sight` is
+/// "some rigid draw had no previous model"; after that is ruled out, every
+/// current key is a previous key, so a count difference can only be a removal.
+/// Only meaningful when rigid history was live this build (no camera cut, no
+/// suppression); the caller gates on that.
+///
+/// A spawn, despawn, `disable`/`enable` or looted item changes no transform,
+/// so the moved-compare alone reported the scene static and SVGF kept its
+/// parked-camera ~1/256 α over the neighbouring surfaces' GI for seconds.
+pub(super) fn rigid_instance_set_changed(
+    first_sight: bool,
+    previous_len: usize,
+    current_len: usize,
+) -> bool {
+    first_sight || previous_len != current_len
+}
+
 /// Resolve the `GpuInstance.skinned_vertex_address` value for a draw
 /// (REN-2026-07-28-02 / #2219). Pure decision function, extracted from the
 /// live `vkGetBufferDeviceAddress` call site so the branch logic is
@@ -561,7 +579,18 @@ mod camera_cut_tests {
 
 #[cfg(test)]
 mod rigid_motion_history_tests {
-    use super::uses_rigid_motion_history;
+    use super::{rigid_instance_set_changed, uses_rigid_motion_history};
+
+    /// #4943 — an unchanged set is static; a spawn (first sight) and a
+    /// despawn (fewer current keys) are both set changes, including a swap
+    /// that keeps the count (one removal plus one first sight).
+    #[test]
+    fn rigid_instance_set_change_covers_spawn_despawn_and_swap() {
+        assert!(!rigid_instance_set_changed(false, 3, 3), "unchanged set");
+        assert!(rigid_instance_set_changed(true, 3, 4), "spawn");
+        assert!(rigid_instance_set_changed(false, 3, 2), "despawn / loot");
+        assert!(rigid_instance_set_changed(true, 3, 3), "swap at equal count");
+    }
 
     /// #2160 regression guard: a rigid, opaque draw is exactly the case
     /// the map exists for.

@@ -321,10 +321,115 @@ mod tests {
             "spatial reuse may borrow light candidates, never old surface radiance"
         );
         assert!(
-            src.contains("bool cameraStatic = dofParams.w > 0.5")
-                && src.contains("cameraStatic ? 64.0 : 16.0")
-                && src.contains("cameraStatic ? 0.025 : 0.1"),
-            "direct-light history must converge when parked and remain responsive in motion"
+            src.contains("bool sceneStatic = dofParams.w > 1.5;")
+                && src.contains("sceneStatic ? 64.0 : 16.0")
+                && src.contains("sceneStatic ? 0.025 : 0.1"),
+            "direct-light history must converge when camera AND scene are static and \
+             remain responsive otherwise (#4942: not the bare camera flag)"
+        );
+    }
+
+    /// #4940 (REN-D2-2026-09-27-01) — the fresh stream enumerates each
+    /// shadow-casting light once. The scale after the loop must sit between
+    /// the stream and the reuse combines, so every reused reservoir combines
+    /// against the corrected fresh weight.
+    #[test]
+    fn fresh_enumeration_is_weighted_by_candidate_count() {
+        let src = include_str!("../../shaders/triangle.frag");
+        let stream = src.find("restirM += 1.0;").expect("fresh stream");
+        let scale = src.find("restirWSum *= restirM;").expect("#4940 scale");
+        let temporal = src.find("float wPrev = rp.W * rpPHat * mPrev;").expect("temporal combine");
+        let finalize = src
+            .find("restirW = min(restirWSum / (restirM * restirPHat), RESERVOIR_W_CLAMP);")
+            .expect("finalize");
+        assert!(stream < scale && scale < temporal && temporal < finalize);
+    }
+
+    /// CPU mirror of the fresh stream + finalize: streaming WRS over the
+    /// enumerated lights (selection ∝ pHat), then `W = wSum·M / (M·pHat_y)`.
+    /// Returns the exact expectation of `rad_y · W` over the selection.
+    fn fresh_estimate(rads: &[[f32; 3]], count_factor: bool) -> [f32; 3] {
+        let luma = |c: [f32; 3]| 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+        let p_hat: Vec<f32> = rads.iter().map(|&r| luma(r).max(1e-6)).collect();
+        let w_sum: f32 = p_hat.iter().sum();
+        let m = rads.len() as f32;
+        let scaled = if count_factor { w_sum * m } else { w_sum };
+        let mut expected = [0.0f32; 3];
+        for (y, rad) in rads.iter().enumerate() {
+            let probability = p_hat[y] / w_sum;
+            let w = scaled / (m * p_hat[y]);
+            for c in 0..3 {
+                expected[c] += probability * rad[c] * w;
+            }
+        }
+        expected
+    }
+
+    #[test]
+    fn fresh_estimator_expectation_is_the_sum_of_light_radiance() {
+        for rads in [
+            vec![[1.0, 1.0, 1.0], [1.0, 1.0, 1.0]],
+            vec![[2.0, 0.5, 0.1], [0.3, 0.3, 0.9], [5.0, 4.0, 3.0]],
+            vec![[0.7, 0.2, 0.1]],
+        ] {
+            let truth = rads.iter().fold([0.0f32; 3], |acc, r| {
+                [acc[0] + r[0], acc[1] + r[1], acc[2] + r[2]]
+            });
+            let got = fresh_estimate(&rads, true);
+            for c in 0..3 {
+                assert!(
+                    (got[c] - truth[c]).abs() <= 1e-4 * truth[c].max(1.0),
+                    "E[rad·W] must equal Σ rad ({rads:?}): {got:?} vs {truth:?}"
+                );
+            }
+            // Fixture sanity: without the count factor the estimate is the
+            // mean — exactly the defect, and invisible with one light.
+            let biased = fresh_estimate(&rads, false);
+            let n = rads.len() as f32;
+            for c in 0..3 {
+                assert!((biased[c] - truth[c] / n).abs() <= 1e-4 * truth[c].max(1.0));
+            }
+        }
+    }
+
+    /// #4942 (REN-D7-2026-09-27-01) — the accumulator filters the shadow
+    /// RATIO and rescales by the current frame's unshadowed sum, so the
+    /// light's own intensity animation passes through undelayed.
+    #[test]
+    fn direct_history_accumulates_a_shadow_ratio_not_radiance() {
+        let src = include_str!("../../shaders/triangle.frag");
+        assert!(src.contains("restirUnshadowedSum += shadowableRadiance;"));
+        assert!(src.contains("frameContribution / max(restirUnshadowedSum, vec3(1e-6))"));
+        assert!(src.contains("accum = mix(prevAccum, ratioFrame, alpha);"));
+        assert!(
+            src.contains("Lo += restirUnshadowedSum * accum;"),
+            "the pixel is shaded by the accumulated ratio times THIS frame's unshadowed sum"
+        );
+        assert!(
+            !src.contains("accum = mix(prevAccum, frameContribution, alpha);"),
+            "accumulating the shaded colour low-pass filters light flicker (#4942)"
+        );
+
+        // Mirror: a 12 Hz flicker at 60 fps under a constant 50 % shadow,
+        // parked (α = 0.025). The shaded result must track intensity × 0.5
+        // every frame; the retired colour EMA reached ~2 % of the amplitude.
+        let alpha = 0.025f32;
+        let visibility = 0.5f32;
+        let (mut ratio, mut colour) = (visibility, visibility);
+        let mut colour_swing = (f32::MAX, f32::MIN);
+        for frame in 0..600 {
+            let intensity = 1.0 + 0.5 * (frame as f32 * std::f32::consts::TAU / 5.0).sin();
+            let shaded = intensity * visibility; // this frame's rad·W·V
+            ratio += (shaded / intensity - ratio) * alpha;
+            colour += (shaded - colour) * alpha;
+            assert!((intensity * ratio - shaded).abs() < 1e-4);
+            if frame > 300 {
+                colour_swing = (colour_swing.0.min(colour), colour_swing.1.max(colour));
+            }
+        }
+        assert!(
+            colour_swing.1 - colour_swing.0 < 0.05,
+            "fixture sanity: the colour EMA really did flatten the flicker"
         );
     }
 

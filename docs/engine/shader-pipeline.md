@@ -603,7 +603,7 @@ pipeline. Defined in
 |---|---|---|---|---|
 | 0 | 0 | `COMBINED_IMAGE_SAMPLER` (bindless array) | All scene textures | triangle, water, ui, composite |
 | 0 | 1 | `STORAGE_IMAGE` (bindless) | Per-pass read/write images | bloom, svgf, taa |
-| 1 | 0 | `STORAGE_BUFFER` | Light buffer (`u32 count` + `GpuLight[]`) | triangle, cluster_cull |
+| 1 | 0 | `STORAGE_BUFFER` | Light buffer (`u32 count` + 3 pad + 1024-entry `previousLightToCurrent` remap + `GpuLight[]` at offset 4112) | triangle, groundcover_blade |
 | 1 | 1 | `UNIFORM_BUFFER` | `GpuCamera` (368 B) | triangle, water, cluster_cull |
 | 1 | 2 | `ACCELERATION_STRUCTURE` | TLAS | triangle, water |
 | 1 | 3 | `STORAGE_BUFFER` | Bone palette (current frame; vertex + fragment visibility) | triangle; water/groundcover secondary-hit frames |
@@ -660,7 +660,7 @@ relying on this table for a new binding):
 | 0 | `STORAGE_IMAGE` (`rgba16f`, write-only) | Froxel grid (injection output) |
 | 1 | `UNIFORM_BUFFER` | `VolumetricsParams` |
 | 2 | `ACCELERATION_STRUCTURE` | TLAS (shadow-visibility rays into the froxel grid) |
-| 3 | `STORAGE_BUFFER` | Light buffer (`u32 count` + `GpuLight[]`) |
+| 3 | `STORAGE_BUFFER` | Light buffer (`u32 count` + 3 pad + 1024-entry `previousLightToCurrent` remap + `GpuLight[]` at offset 4112) |
 | 4 | `STORAGE_BUFFER` | Cluster grid (`ClusterEntry[]`) |
 | 5 | `STORAGE_BUFFER` | Cluster light index list |
 | 6 | `COMBINED_IMAGE_SAMPLER` (`sampler3D`) | Previous frame's froxel grid (temporal reprojection) |

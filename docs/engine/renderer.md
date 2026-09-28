@@ -531,7 +531,10 @@ Per-frame flow:
    motion vector via a Catmull-Rom 9-tap resample, clamps it against the
    current-frame 3×3 YCoCg neighborhood min/max (γ = 1.25), rejects it
    outright when mesh IDs disagree, and blends with α = 0.1 weighted by luma
-   to damp bright-pixel ghosting.
+   to damp bright-pixel ghosting. The FSR reactive mask (G-buffer attachment
+   6) raises that α to the mask value and bypasses history where it is 1.0
+   (#4944): water keeps the bed's mesh ID, normal and motion underneath it,
+   so without the mask TAA reprojected animated water as the lake bed.
 3. TAA writes its resolve into its own history image; the upscale and
    presentation passes consume that output when TAA is active
    (`scene_color_layout = GENERAL`), or composite's HDR directly otherwise

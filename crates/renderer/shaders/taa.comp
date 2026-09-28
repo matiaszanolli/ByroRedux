@@ -35,6 +35,12 @@ layout(set = 0, binding = 6) uniform TaaParams {
 } params;
 layout(set = 0, binding = 7) uniform sampler2D uCurrNormal;
 layout(set = 0, binding = 8) uniform sampler2D uPrevNormal;
+// #4944 — the FSR reactive mask (G-buffer attachment 6), the same "trust the
+// current frame" signal FSR receives. Water writes 1.0 and keeps no mesh ID,
+// normal or motion of its own (the bed's stay underneath), so without this
+// TAA accepted the bed's history for animated water and reprojected it with
+// the bed's motion. Opaque content writes 0 and is unaffected.
+layout(set = 0, binding = 9) uniform sampler2D uReactive;
 
 // Octahedral decode — the exact inverse of the `octEncode` that wrote the
 // RG16_SNORM normal attachment this pass samples. It feeds the
@@ -204,11 +210,13 @@ void main() {
     // surfaces, which is the right tradeoff for their known-unstable
     // depth winner.
     bool alphaBlend = !meshIdHasStableHistory(currMid);
+    float reactive = clamp(texelFetch(uReactive, pix, 0).r, 0.0, 1.0);
 
     // Blended coverage is not a stable single-surface signal. Always bypass
     // TAA history for it; a parked camera does not make stochastic refraction,
     // animation, particles, or draw-order changes safe to accumulate.
-    if (offscreen || background || disocclusion || surfaceMismatch || alphaBlend) {
+    if (offscreen || background || disocclusion || surfaceMismatch || alphaBlend
+        || reactive >= 1.0) {
         imageStore(uOutput, pix, vec4(currRgb, currA));
         return;
     }
@@ -277,7 +285,9 @@ void main() {
     // Luma-weighted blend reduces flicker on bright highlights.
     // Fixed bounded history weight. Monte-Carlo convergence belongs to the
     // surface-validated SVGF/ReSTIR histories; TAA must stay responsive.
-    float alpha = params.params.x;
+    // A partially reactive pixel (ground-cover blend transitions write 0.9)
+    // leans on the current frame in proportion, as FSR does with the mask.
+    float alpha = max(params.params.x, reactive);
     float lumCurr = max(dot(currRgb, LUMA_REC709), 1e-4);
     float lumHist = max(dot(clampedHist, LUMA_REC709), 1e-4);
     float wCurr = 1.0 / (1.0 + lumCurr);

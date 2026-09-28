@@ -853,8 +853,18 @@ mod tests {
             );
         }
         assert_eq!(
-            RENDER_LAYER_ARCHITECTURE,
-            byroredux_core::ecs::components::RenderLayer::Architecture as u32
+            [
+                RENDER_LAYER_ARCHITECTURE,
+                RENDER_LAYER_CLUTTER,
+                RENDER_LAYER_ACTOR,
+                RENDER_LAYER_DECAL,
+            ],
+            [
+                byroredux_core::ecs::components::RenderLayer::Architecture as u32,
+                byroredux_core::ecs::components::RenderLayer::Clutter as u32,
+                byroredux_core::ecs::components::RenderLayer::Actor as u32,
+                byroredux_core::ecs::components::RenderLayer::Decal as u32,
+            ]
         );
         assert_eq!(
             [
@@ -966,6 +976,9 @@ mod tests {
             ("VERTEX_BONE_WEIGHTS_OFFSET_FLOATS", format!("#define VERTEX_BONE_WEIGHTS_OFFSET_FLOATS {VERTEX_BONE_WEIGHTS_OFFSET_FLOATS}u")),
             ("VERTEX_TANGENT_OFFSET_FLOATS", format!("#define VERTEX_TANGENT_OFFSET_FLOATS {VERTEX_TANGENT_OFFSET_FLOATS}u")),
             ("RENDER_LAYER_ARCHITECTURE", format!("#define RENDER_LAYER_ARCHITECTURE {RENDER_LAYER_ARCHITECTURE}u")),
+            ("RENDER_LAYER_CLUTTER", format!("#define RENDER_LAYER_CLUTTER {RENDER_LAYER_CLUTTER}u")),
+            ("RENDER_LAYER_ACTOR", format!("#define RENDER_LAYER_ACTOR {RENDER_LAYER_ACTOR}u")),
+            ("RENDER_LAYER_DECAL", format!("#define RENDER_LAYER_DECAL {RENDER_LAYER_DECAL}u")),
             ("FOG_VOLUME_SHAPE_SPHERE", format!("#define FOG_VOLUME_SHAPE_SPHERE {FOG_VOLUME_SHAPE_SPHERE}u")),
             ("FOG_VOLUME_SHAPE_ELLIPSOID", format!("#define FOG_VOLUME_SHAPE_ELLIPSOID {FOG_VOLUME_SHAPE_ELLIPSOID}u")),
             ("FOG_VOLUME_SHAPE_BOX", format!("#define FOG_VOLUME_SHAPE_BOX {FOG_VOLUME_SHAPE_BOX}u")),

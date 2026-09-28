@@ -1476,6 +1476,7 @@ impl VulkanContext {
                     motion_views: &motion_views_seed,
                     mesh_id_views: &mesh_id_views_seed,
                     normal_views: &normal_views_seed,
+                    reactive_views: &reactive_views,
                 },
                 render_extent.width,
                 render_extent.height,
@@ -1812,6 +1813,7 @@ impl VulkanContext {
                 suppress_rigid_history_next_build: false,
             },
             prev_caustic_scene_key: 0,
+            scene_static_last_build: false,
             indirect_upload_ok: true,
         };
 

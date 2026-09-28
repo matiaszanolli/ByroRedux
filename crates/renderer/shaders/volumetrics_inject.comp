@@ -831,9 +831,11 @@ bool evaluateLocalFogVolume(
         volume.inverse_rotation
     );
     normalizedOffset = localOffset / extents;
+    // #4955 — exact generated ids, not `x.5` thresholds that silently
+    // re-route if `FogShape` is reordered.
     float shape = volume.center_shape.w;
     float normalizedRadius;
-    if (shape > 2.5) {
+    if (shape == float(FOG_VOLUME_SHAPE_CONE)) {
         // The cone narrows from its bottom radius at local y=-halfHeight to
         // its top radius at +halfHeight. Store both radii in the existing
         // extents lanes, avoiding a second GPU primitive ABI.
@@ -842,12 +844,12 @@ bool evaluateLocalFogVolume(
         float radius = mix(extents.x, extents.z, t);
         normalizedOffset.z = localOffset.z / extents.x;
         normalizedRadius = max(abs(axial), length(localOffset.xz) / max(radius, 1.0e-4));
-    } else if (shape > 1.5) {
+    } else if (shape == float(FOG_VOLUME_SHAPE_BOX)) {
         normalizedRadius = max(
             abs(normalizedOffset.x),
             max(abs(normalizedOffset.y), abs(normalizedOffset.z))
         );
-    } else if (shape < 0.5) {
+    } else if (shape == float(FOG_VOLUME_SHAPE_SPHERE)) {
         normalizedRadius = length(localOffset) / extents.x;
     } else {
         normalizedRadius = length(normalizedOffset);
@@ -1101,7 +1103,9 @@ bool evaluateCombustionSource(
         volume.inverse_rotation
     ) / extents;
     vec2 interval;
-    bool intersects = volume.center_shape.w > 1.5
+    // Box and cone both bound with the unit box (the cone's radii fit it).
+    bool intersects = volume.center_shape.w == float(FOG_VOLUME_SHAPE_BOX)
+            || volume.center_shape.w == float(FOG_VOLUME_SHAPE_CONE)
         ? intersectUnitBoxSegment(localStart, localEnd, interval)
         : intersectUnitSphereSegment(localStart, localEnd, interval);
     if (!intersects) {

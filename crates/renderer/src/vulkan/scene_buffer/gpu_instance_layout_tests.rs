@@ -284,6 +284,62 @@ fn memory_budget_ledger_records_the_indirect_buffer_as_deliberate() {
     );
 }
 
+/// #4952 — the light SSBO is a `LightHeader` (count, pads and the
+/// `MAX_LIGHTS + 1` previous→current remap) followed by `GpuLight[]`. The
+/// ledger row billed 64 B lights with no header, and both descriptor tables
+/// said `u32 count` + `GpuLight[]`, placing `lights[]` at 16 instead of 4112.
+#[test]
+fn light_ssbo_docs_state_the_real_header_and_entry_size() {
+    const BUDGET_MD: &str = include_str!("../../../../../docs/engine/memory-budget.md");
+    const PIPELINE_MD: &str = include_str!("../../../../../docs/engine/shader-pipeline.md");
+    let header = size_of::<super::buffers::LightHeader>();
+    let entry = size_of::<super::gpu_types::GpuLight>();
+    let slot = header + entry * super::constants::MAX_LIGHTS;
+    // The page groups thousands with a space ("4 112").
+    let grouped = |n: usize| {
+        let digits = n.to_string();
+        let mut out = String::new();
+        for (i, c) in digits.chars().enumerate() {
+            if i > 0 && (digits.len() - i) % 3 == 0 {
+                out.push(' ');
+            }
+            out.push(c);
+        }
+        out
+    };
+
+    let row = BUDGET_MD
+        .lines()
+        .find(|line| line.starts_with("| Light SSBO"))
+        .expect("memory-budget.md must keep a Light SSBO row");
+    let entry_claim = format!("{entry} B + {} B header", grouped(header));
+    let per_frame = format!("{:.0} KB", slot as f64 / 1.0e3);
+    let total = format!(
+        "{:.0} KB",
+        (slot * crate::vulkan::sync::MAX_FRAMES_IN_FLIGHT) as f64 / 1.0e3
+    );
+    for claim in [&entry_claim, &per_frame, &total] {
+        assert!(
+            row.contains(claim.as_str()),
+            "the Light SSBO row must state `{claim}` (header {header} B + {entry} B × \
+             MAX_LIGHTS = {slot} B per frame in flight): {row}"
+        );
+    }
+
+    let offset_claim = format!("`GpuLight[]` at offset {header}");
+    let light_rows: Vec<_> = PIPELINE_MD
+        .lines()
+        .filter(|line| line.contains("`STORAGE_BUFFER` | Light buffer"))
+        .collect();
+    assert!(light_rows.len() >= 2, "shader-pipeline.md lost a light-buffer binding row");
+    for row in light_rows {
+        assert!(
+            row.contains(&offset_claim) && row.contains("previousLightToCurrent"),
+            "light-buffer binding rows must describe the remap header and `{offset_claim}`: {row}"
+        );
+    }
+}
+
 /// Regression: `MAX_INSTANCES` must stay at or below the
 /// `R32_UINT` mesh_id encoding ceiling (`0x7FFFFFFF`, with bit
 /// 31 reserved for the `ALPHA_BLEND_NO_HISTORY` flag). Past

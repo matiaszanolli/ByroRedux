@@ -45,7 +45,7 @@ pub unsafe trait NoUninit: Copy {}
 /// so the safety argument lives once rather than once per entry point.
 ///
 /// #4521 — the scene_buffer dirty-gate hash views (`hash_instance_slice` /
-/// `hash_previous_model_slice` / `hash_light_slice`) also route through
+/// `hash_previous_model_slice` / `hash_light_upload`) also route through
 /// here. One documented exemption keeps this claim true:
 /// `hash_indirect_slice` (`scene_buffer/descriptors.rs`) hand-rolls its
 /// `from_raw_parts` because `VkDrawIndexedIndirectCommand` is ash-owned

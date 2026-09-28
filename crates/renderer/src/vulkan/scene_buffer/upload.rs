@@ -11,7 +11,7 @@ use super::super::buffer::GpuBuffer;
 use super::super::sync::MAX_FRAMES_IN_FLIGHT;
 use super::buffers::LightHeader;
 use super::descriptors::{
-    hash_indirect_slice, hash_instance_slice, hash_light_slice, hash_material_slice,
+    hash_indirect_slice, hash_instance_slice, hash_light_upload, hash_material_slice,
     hash_previous_model_slice,
 };
 use super::*;
@@ -119,11 +119,7 @@ impl super::buffers::SceneBuffers {
         // prefix changes, and a count change (including to/from zero)
         // always changes the hashed byte length.
         let previous_to_current = self.light_history.remap(frame_index, &lights[..count]);
-        use std::hash::{Hash, Hasher};
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        hash_light_slice(&lights[..count]).hash(&mut hasher);
-        previous_to_current.hash(&mut hasher);
-        let hash = hasher.finish();
+        let hash = hash_light_upload(&lights[..count], &previous_to_current);
         if self.last_uploaded_light_hash[frame_index] == Some(hash) {
             self.light_history.commit(frame_index, &lights[..count]);
             return Ok(());
