@@ -145,6 +145,12 @@ pub(super) struct PrecombinedSpawnJob {
     pending_placement: Option<(super::spawn::PrecombinedPlacement, Duration)>,
     spawn_groups: usize,
     max_spawn_group: Duration,
+    /// Summed active work across every timed hash, so the log shows what the
+    /// job cost the main thread in total, not only its worst hash.
+    prepare_total: Duration,
+    spawn_total: Duration,
+    /// Main-thread texture archive reads charged while this job ran.
+    texture_extract: crate::asset_provider::ResolveExtractTotals,
 }
 
 /// Which `<Plugin> - Geometry.csg` each `BSPackedGeomObject::filename_hash`
@@ -201,6 +207,9 @@ impl PrecombinedSpawnJob {
             pending_placement: None,
             spawn_groups: 0,
             max_spawn_group: Duration::ZERO,
+            prepare_total: Duration::ZERO,
+            spawn_total: Duration::ZERO,
+            texture_extract: Default::default(),
         })
     }
 
@@ -217,9 +226,11 @@ impl PrecombinedSpawnJob {
     ) -> PrecombinedSpawnProgress {
         debug_assert_eq!(cell.form_id, self.form_id);
         debug_assert_eq!(cell.precombined_mesh_hashes.len(), self.total_hashes);
+        let texture_extract_before = tex_provider.resolve_extract_totals();
 
         while self.next_hash < self.total_hashes {
             if budget.should_yield() {
+                self.charge_texture_extract(tex_provider, texture_extract_before);
                 return PrecombinedSpawnProgress::Pending(self);
             }
             let hash = cell.precombined_mesh_hashes[self.next_hash];
@@ -470,6 +481,7 @@ impl PrecombinedSpawnJob {
                         world.insert(eid, PrecombinedMesh);
                     }
                     self.pending_placement = Some((placement, prepare_elapsed));
+                    self.charge_texture_extract(tex_provider, texture_extract_before);
                     return PrecombinedSpawnProgress::Pending(self);
                 }
                 self.spawn_groups += placement.groups;
@@ -522,6 +534,8 @@ impl PrecombinedSpawnJob {
             // Sum active work only: a resumable hash can span many frames.
             let total_elapsed = prepare_elapsed + spawn_elapsed;
             self.timed_hashes += 1;
+            self.prepare_total += prepare_elapsed;
+            self.spawn_total += spawn_elapsed;
             self.max_prepare = self.max_prepare.max(prepare_elapsed);
             self.max_spawn = self.max_spawn.max(spawn_elapsed);
             self.max_spawn_cpu = self.max_spawn_cpu.max(spawn_timings.cpu_upload);
@@ -534,6 +548,7 @@ impl PrecombinedSpawnJob {
             self.next_hash += 1;
         }
 
+        self.charge_texture_extract(tex_provider, texture_extract_before);
         if self.misses > 0 {
             log::info!(
                 "  PreCombined: {} hashes — {} entities spawned, {} misses (#1188)",
@@ -551,7 +566,8 @@ impl PrecombinedSpawnJob {
         log::info!(
             "precombine_timing: cell={:08X} timed_hashes={} csg_open_ms={:.2} hash_max_ms={:.2} \
              hash={:08x} prepare_max_ms={:.2} spawn_total_max_ms={:.2} \
-             spawn_cpu_max_ms={:.2} blas_max_ms={:.2} spawn_groups={} spawn_group_max_ms={:.2}",
+             spawn_cpu_max_ms={:.2} blas_max_ms={:.2} spawn_groups={} spawn_group_max_ms={:.2} \
+             prepare_total_ms={:.2} spawn_total_ms={:.2} tex_extracts={} tex_extract_ms={:.2}",
             self.form_id,
             self.timed_hashes,
             self.csg_open.as_secs_f64() * 1000.0,
@@ -563,12 +579,29 @@ impl PrecombinedSpawnJob {
             self.max_blas.as_secs_f64() * 1000.0,
             self.spawn_groups,
             self.max_spawn_group.as_secs_f64() * 1000.0,
+            self.prepare_total.as_secs_f64() * 1000.0,
+            self.spawn_total.as_secs_f64() * 1000.0,
+            self.texture_extract.count,
+            self.texture_extract.elapsed.as_secs_f64() * 1000.0,
         );
 
         PrecombinedSpawnProgress::Complete {
             spawned: self.spawned,
             misses: self.misses,
         }
+    }
+
+    /// Add the texture-resolve reads charged since `before` (this advance
+    /// call's start) to the job's running total.
+    fn charge_texture_extract(
+        &mut self,
+        tex_provider: &TextureProvider,
+        before: crate::asset_provider::ResolveExtractTotals,
+    ) {
+        let delta = tex_provider.resolve_extract_totals().since(before);
+        self.texture_extract.elapsed += delta.elapsed;
+        self.texture_extract.count += delta.count;
+        self.texture_extract.prefetched += delta.prefetched;
     }
 
     /// Open (once per job) every `<Plugin> - Geometry.csg` named by
