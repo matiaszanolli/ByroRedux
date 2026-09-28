@@ -399,3 +399,49 @@ fn skyrimse_meshes_bsa_v105_brute_force_extract_zero_errors() {
         );
     }
 }
+
+/// `declared_size` is what the streaming worker budgets decoded input
+/// with before it extracts, so it must equal what `extract` then returns.
+/// One archive per BSA version: v103 zlib with per-file compression
+/// toggles, v104 (FNV, embedded names on some archives), v105 LZ4 frame.
+#[test]
+#[ignore = "needs Oblivion, FNV and Skyrim SE game data on disk"]
+fn declared_size_matches_extract_across_bsa_versions() {
+    let cases = [
+        (oblivion_data_dir(), "Oblivion - Meshes.bsa"),
+        (fnv_data_dir(), "Fallout - Meshes.bsa"),
+        (skyrimse_data_dir(), "Skyrim - Meshes0.bsa"),
+    ];
+    for (dir, name) in cases {
+        let Some(path) = dir.map(|d| d.join(name)).filter(|p| p.is_file()) else {
+            eprintln!("Skipping missing archive: {name}");
+            continue;
+        };
+        let archive = BsaArchive::open(&path).unwrap_or_else(|e| panic!("open {name}: {e}"));
+        let mut mismatches = Vec::new();
+        let files = archive.list_files();
+        for file in &files {
+            let declared = archive
+                .declared_size(file)
+                .unwrap_or_else(|e| panic!("{name}: declared_size({file}): {e}"));
+            let extracted = archive
+                .extract(file)
+                .unwrap_or_else(|e| panic!("{name}: extract({file}): {e}"))
+                .len();
+            if declared != extracted {
+                mismatches.push((file.to_string(), declared, extracted));
+            }
+        }
+        eprintln!(
+            "{name}: {} files, {} mismatches",
+            files.len(),
+            mismatches.len()
+        );
+        assert!(
+            mismatches.is_empty(),
+            "{name}: declared != extracted for {} files, first: {:?}",
+            mismatches.len(),
+            &mismatches[..mismatches.len().min(5)]
+        );
+    }
+}

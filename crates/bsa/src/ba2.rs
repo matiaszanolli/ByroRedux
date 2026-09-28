@@ -417,6 +417,41 @@ impl Ba2Archive {
         })
     }
 
+    /// The decoded size the archive declares for `path`, without extracting
+    /// it — straight from the file table: a GNRL record's unpacked size, or
+    /// a DX10 record's synthesized DDS header plus its chunks' unpacked
+    /// sizes. Lets a caller budget memory before paying for the read +
+    /// inflate. A chunk whose decode runs short (tolerated, see
+    /// `decompress_chunk`) extracts a few bytes under this.
+    pub fn declared_size(&self, path: &str) -> io::Result<usize> {
+        let key = normalize_path(path);
+        let entry = self.files.get(&key).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("file not found in BA2: {}", path),
+            )
+        })?;
+        Ok(match entry {
+            Ba2Entry::General { unpacked_size, .. } => *unpacked_size as usize,
+            Ba2Entry::Dx10 {
+                dxgi_format,
+                width,
+                height,
+                num_mips,
+                is_cubemap,
+                chunks,
+            } => {
+                // The header's length depends only on the format fields;
+                // the pixel data feeds nothing but its pitch value.
+                build_dds_header(*dxgi_format, *width, *height, *num_mips, *is_cubemap, &[]).len()
+                    + chunks
+                        .iter()
+                        .map(|chunk| chunk.unpacked_size as usize)
+                        .sum::<usize>()
+            }
+        })
+    }
+
     /// Extract a file from the archive.
     ///
     /// For GNRL entries, returns the raw (decompressed if needed) bytes.

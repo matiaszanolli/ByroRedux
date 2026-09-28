@@ -756,3 +756,49 @@ fn fo3_bsa_corpus_opens_and_lists() {
     );
     eprintln!("[FO3] opened {opened} BSA archives");
 }
+
+/// `declared_size` is what the streaming worker budgets decoded input
+/// with before it extracts, so it must equal what `extract` then returns —
+/// GNRL records (FO4 meshes, zlib) and DX10 records (synthesized DDS
+/// header + chunks).
+#[test]
+#[ignore = "needs FO4 game data on disk"]
+fn fo4_declared_size_matches_extract_for_gnrl_and_dx10() {
+    let Some(data) = fo4_data_dir() else {
+        eprintln!("Skipping: BYROREDUX_FO4_DATA not set and default path missing");
+        return;
+    };
+    for name in ["Fallout4 - Meshes.ba2", "Fallout4 - Textures1.ba2"] {
+        let path = data.join(name);
+        if !path.is_file() {
+            eprintln!("Skipping: {path:?} not found");
+            continue;
+        }
+        let archive = Ba2Archive::open(&path).unwrap_or_else(|e| panic!("open {name}: {e}"));
+        let mut mismatches = Vec::new();
+        let files = archive.list_files();
+        for file in &files {
+            let declared = archive
+                .declared_size(file)
+                .unwrap_or_else(|e| panic!("{name}: declared_size({file}): {e}"));
+            let extracted = archive
+                .extract(file)
+                .unwrap_or_else(|e| panic!("{name}: extract({file}): {e}"))
+                .len();
+            if declared != extracted {
+                mismatches.push((file.to_string(), declared, extracted));
+            }
+        }
+        eprintln!(
+            "{name}: {} files, {} mismatches",
+            files.len(),
+            mismatches.len()
+        );
+        assert!(
+            mismatches.is_empty(),
+            "{name}: declared != extracted for {} files, first: {:?}",
+            mismatches.len(),
+            &mismatches[..mismatches.len().min(5)]
+        );
+    }
+}

@@ -10,10 +10,22 @@ use crate::read_at::ReadAt;
 use crate::safety::{checked_chunk_size, checked_chunk_size_usize};
 use std::io;
 
+/// Where a file's stored body starts and how it is stored, once the
+/// embedded-name prefix (if any) has been stepped over.
+struct StoredBody {
+    /// Absolute offset of the body (the original-size header, for a
+    /// compressed file).
+    pos: u64,
+    /// Body length on disk, name prefix excluded.
+    data_size: usize,
+    compressed: bool,
+}
+
 impl BsaArchive {
-    /// Extract a file's contents from the archive.
-    /// Path matching is case-insensitive and normalizes separators.
-    pub fn extract(&self, path: &str) -> io::Result<Vec<u8>> {
+    /// Locate `path`'s stored body. Shared by [`Self::extract`] and
+    /// [`Self::declared_size`] so both step over the name prefix and apply
+    /// the #352 size guard identically.
+    fn stored_body(&self, path: &str) -> io::Result<StoredBody> {
         let key = normalize_path(path);
         let entry = self.files.get(&key).ok_or_else(|| {
             io::Error::new(
@@ -73,6 +85,40 @@ impl BsaArchive {
                     ),
                 )
             })?;
+
+        Ok(StoredBody {
+            pos,
+            data_size,
+            compressed: is_compressed,
+        })
+    }
+
+    /// The decoded size the archive declares for `path`, without extracting
+    /// it: the record size for a stored file, or the 4-byte original-size
+    /// header for a compressed one (one small positional read). Lets a
+    /// caller budget memory before paying for the read + inflate. A
+    /// compressed file with a known padding delta can extract a few bytes
+    /// short of this (see the post-decompression warning in `extract`).
+    pub fn declared_size(&self, path: &str) -> io::Result<usize> {
+        let body = self.stored_body(path)?;
+        if body.compressed {
+            let mut size_buf = [0u8; 4];
+            self.file.read_exact_at(&mut size_buf, body.pos)?;
+            checked_chunk_size(u32::from_le_bytes(size_buf), "BSA original_size")
+        } else {
+            checked_chunk_size_usize(body.data_size, "BSA data_size")
+        }
+    }
+
+    /// Extract a file's contents from the archive.
+    /// Path matching is case-insensitive and normalizes separators.
+    pub fn extract(&self, path: &str) -> io::Result<Vec<u8>> {
+        let file = &self.file;
+        let StoredBody {
+            mut pos,
+            data_size,
+            compressed: is_compressed,
+        } = self.stored_body(path)?;
 
         if is_compressed {
             // First 4 bytes are the original uncompressed size
