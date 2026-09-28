@@ -6,6 +6,7 @@
 //! the per-frame injection of alias-derived overlays (factions, inventory
 //! grants) onto resolved actors. Contents moved verbatim.
 
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 
 use byroredux_core::ecs::components::{Dead, FactionRanks, GlobalTransform, Inventory, ItemStack};
@@ -265,6 +266,120 @@ fn candidate_matches_fill(fill: &AliasFillType, candidate: &SceneAliasCandidate)
     }
 }
 
+/// Candidate positions (indices into one refresh's ordered candidate list)
+/// keyed by every field an alias fill matches on. Each alias then visits only
+/// the candidates its fill can accept: the full scan was aliases × candidates
+/// — 1 455 × ~8 500 ≈ 11 M checks and ~840 ms per refresh on FO4
+/// Commonwealth — although every fill but a condition-only one matches a
+/// single field exactly. Buckets hold ascending positions, so visiting one
+/// preserves the candidate order that first-eligible and closest selection
+/// depend on.
+#[derive(Default)]
+struct CandidateIndex {
+    by_entity: HashMap<EntityId, usize>,
+    by_reference: HashMap<u32, Vec<usize>>,
+    by_base: HashMap<u32, Vec<usize>>,
+    by_location_ref_type: HashMap<u32, Vec<usize>>,
+    /// Candidates with a linked ref targeting this form id.
+    by_linked_target: HashMap<u32, Vec<usize>>,
+}
+
+impl CandidateIndex {
+    fn new(candidates: &[(EntityId, SceneAliasCandidate)]) -> Self {
+        // Positions arrive in ascending order, so a candidate listing one key
+        // twice only ever repeats the bucket's last entry.
+        fn push(bucket: &mut Vec<usize>, position: usize) {
+            if bucket.last() != Some(&position) {
+                bucket.push(position);
+            }
+        }
+        let mut index = Self::default();
+        for (position, (entity, candidate)) in candidates.iter().enumerate() {
+            index.by_entity.insert(*entity, position);
+            push(
+                index
+                    .by_reference
+                    .entry(candidate.reference_form_id)
+                    .or_default(),
+                position,
+            );
+            push(
+                index.by_base.entry(candidate.base_form_id).or_default(),
+                position,
+            );
+            for &ref_type in &candidate.location_ref_types {
+                push(
+                    index.by_location_ref_type.entry(ref_type).or_default(),
+                    position,
+                );
+            }
+            for &(_, target) in &candidate.linked_refs {
+                push(index.by_linked_target.entry(target).or_default(), position);
+            }
+        }
+        index
+    }
+
+    fn bucket(map: &HashMap<u32, Vec<usize>>, key: u32) -> Cow<'_, [usize]> {
+        Cow::Borrowed(map.get(&key).map_or(&[][..], Vec::as_slice))
+    }
+
+    /// Every position whose candidate can pass `alias`'s fill test (the
+    /// `fill_matches` half of the refresh's `eligible`), in candidate order;
+    /// `None` when that is every candidate — a condition-only fill. A
+    /// superset is harmless (`eligible` re-checks the fill); omitting a
+    /// match would change the binding, so each arm mirrors
+    /// [`candidate_matches_fill`] or the `NearAlias` link test exactly.
+    fn fill_positions(
+        &self,
+        alias: &QuestAlias,
+        quest: QuestFormId,
+        resolved: &HashMap<(QuestFormId, i32), EntityId>,
+        candidates: &[(EntityId, SceneAliasCandidate)],
+    ) -> Option<Cow<'_, [usize]>> {
+        let none = Cow::Borrowed(&[][..]);
+        Some(match alias.fill_type.as_ref() {
+            Some(AliasFillType::ForcedReference(reference)) => {
+                Self::bucket(&self.by_reference, *reference)
+            }
+            Some(AliasFillType::UniqueActor(base)) => Self::bucket(&self.by_base, *base),
+            Some(AliasFillType::LocationAliasReference {
+                ref_type: Some(ref_type),
+                ..
+            }) => Self::bucket(&self.by_location_ref_type, *ref_type),
+            Some(AliasFillType::NearAlias {
+                alias_id,
+                relation: 0 | 1,
+            }) => {
+                let Some(source) = resolved
+                    .get(&(quest, *alias_id))
+                    .and_then(|entity| self.by_entity.get(entity))
+                    .map(|&position| &candidates[position].1)
+                else {
+                    return Some(none);
+                };
+                // Candidates the source links to, plus candidates linking to
+                // the source — the two halves of the `NearAlias` test.
+                let mut positions: Vec<usize> = source
+                    .linked_refs
+                    .iter()
+                    .flat_map(|(_, target)| Self::bucket(&self.by_reference, *target).into_owned())
+                    .chain(
+                        Self::bucket(&self.by_linked_target, source.reference_form_id).into_owned(),
+                    )
+                    .collect();
+                positions.sort_unstable();
+                positions.dedup();
+                Cow::Owned(positions)
+            }
+            // Every other fill is rejected by `candidate_matches_fill`.
+            Some(_) => none,
+            None if alias.match_conditions.is_empty() => none,
+            None => return None,
+        })
+    }
+}
+
 fn apply_alias_injections(
     world: &World,
     quests: &[(QuestFormId, Vec<QuestAlias>)],
@@ -509,6 +624,7 @@ pub fn refresh_scene_actor_bindings(world: &World) -> usize {
         })
         .unwrap_or_default();
     candidates.sort_by_key(|(entity, _)| (world.has::<RemoteSceneActorStub>(*entity), *entity));
+    let index = CandidateIndex::new(&candidates);
 
     let mut quests: Vec<(QuestFormId, Vec<QuestAlias>)> = world
         .resource::<SceneQuestAliasRegistry>()
@@ -562,12 +678,8 @@ pub fn refresh_scene_actor_bindings(world: &World) -> usize {
                         relation: 0 | 1,
                     }) => resolved
                         .get(&(*quest, *alias_id))
-                        .and_then(|source| {
-                            candidates
-                                .iter()
-                                .find(|(entity, _)| entity == source)
-                                .map(|(_, source)| source)
-                        })
+                        .and_then(|source| index.by_entity.get(source))
+                        .map(|&position| &candidates[position].1)
                         .is_some_and(|source| {
                             source
                                 .linked_refs
@@ -620,9 +732,12 @@ pub fn refresh_scene_actor_bindings(world: &World) -> usize {
                         .get::<GlobalTransform>(entity)
                         .map(|gt| gt.translation)
                 });
+            let positions = index
+                .fill_positions(alias, *quest, &resolved, &candidates)
+                .unwrap_or_else(|| Cow::Owned((0..candidates.len()).collect()));
+            let mut in_fill = positions.iter().map(|&position| &candidates[position]);
             let chosen = if let Some(anchor) = anchor {
-                candidates
-                    .iter()
+                in_fill
                     .filter_map(|candidate| {
                         let entity = eligible(candidate)?;
                         let position = world.get::<GlobalTransform>(entity)?.translation;
@@ -631,7 +746,7 @@ pub fn refresh_scene_actor_bindings(world: &World) -> usize {
                     .min_by(|left, right| left.1.total_cmp(&right.1))
                     .map(|(entity, _)| entity)
             } else {
-                candidates.iter().find_map(eligible)
+                in_fill.find_map(eligible)
             };
             if let Some(entity) = chosen {
                 resolved.insert((*quest, alias.alias_id), entity);

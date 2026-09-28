@@ -735,6 +735,80 @@ fn quest_alias_near_alias_resolves_linked_ref_child() {
     );
 }
 
+/// The other half of the `NearAlias` link test: the candidate links to the
+/// source (source → candidate is covered above). The refresh visits only
+/// candidates indexed under the fill's fields, so this direction must be
+/// reachable through the linked-target index, not just the full scan.
+#[test]
+fn quest_alias_near_alias_resolves_candidate_linking_to_source() {
+    let mut world = World::new();
+    crate::register(&mut world);
+    let unrelated = world.spawn();
+    let source = world.spawn();
+    let parent = world.spawn();
+    for (entity, candidate) in [
+        (
+            unrelated,
+            SceneAliasCandidate {
+                reference_form_id: 0xA2,
+                base_form_id: 0xB1,
+                linked_refs: vec![(0, 0xA9)],
+                location_ref_types: Vec::new(),
+            },
+        ),
+        (
+            source,
+            SceneAliasCandidate {
+                reference_form_id: 0xA0,
+                base_form_id: 0xB0,
+                linked_refs: Vec::new(),
+                location_ref_types: Vec::new(),
+            },
+        ),
+        (
+            parent,
+            SceneAliasCandidate {
+                reference_form_id: 0xA1,
+                base_form_id: 0xB1,
+                linked_refs: vec![(0, 0xA0)],
+                location_ref_types: Vec::new(),
+            },
+        ),
+    ] {
+        world.insert(entity, candidate);
+    }
+    install_scene_quest_aliases(
+        &mut world,
+        [QustRecord {
+            form_id: QUEST,
+            aliases: vec![
+                QuestAlias {
+                    alias_id: 0,
+                    fill_type: Some(AliasFillType::ForcedReference(0xA0)),
+                    ..Default::default()
+                },
+                QuestAlias {
+                    alias_id: 1,
+                    fill_type: Some(AliasFillType::NearAlias {
+                        alias_id: 0,
+                        relation: 1,
+                    }),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        }],
+    );
+
+    refresh_scene_actor_bindings(&world);
+    assert_eq!(
+        world
+            .resource::<SceneActorBindings>()
+            .resolve(QuestFormId(QUEST), 1),
+        Some(parent)
+    );
+}
+
 #[test]
 fn quest_aliases_exclude_dead_actors_unless_allowed() {
     let mut world = World::new();
