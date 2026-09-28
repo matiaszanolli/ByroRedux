@@ -486,6 +486,13 @@ impl DebugStats {
     pub fn frame_index(&self) -> usize {
         self.frame_index
     }
+
+    /// Frames recorded so far, saturating at the rolling window's size.
+    /// Unlike [`Self::frame_index`] (the window's wrapping write cursor) it
+    /// never returns to 0, so it can tell startup frames from later ones.
+    pub fn frames_recorded(&self) -> usize {
+        self.frame_count
+    }
 }
 
 /// One row of renderer-side scratch-buffer telemetry: name, current
@@ -1620,6 +1627,19 @@ mod tests {
         }
         assert_eq!(stats.frame_index, 200 % FRAME_HISTORY_SIZE);
         assert!((stats.avg_fps() - 62.5).abs() < 1.0);
+    }
+
+    /// `frames_recorded` must not follow `frame_index` back to 0 when the
+    /// window wraps: the SLOW FRAME warning reads it to skip only the
+    /// startup frames, and the wrapping cursor muted 4 of every 128.
+    #[test]
+    fn frames_recorded_does_not_wrap_with_the_cursor() {
+        let mut stats = DebugStats::default();
+        for _ in 0..FRAME_HISTORY_SIZE {
+            stats.push_frame_time(0.016);
+        }
+        assert_eq!(stats.frame_index(), 0, "cursor wrapped");
+        assert_eq!(stats.frames_recorded(), FRAME_HISTORY_SIZE);
     }
 
     #[test]

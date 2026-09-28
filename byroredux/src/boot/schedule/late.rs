@@ -252,7 +252,8 @@ pub(super) fn register_late_systems(scheduler: &mut Scheduler) {
             // gate is invisible to the analyzer, so both must be declared
             // unconditionally — same shape as #1787's `ContactConfig`.
             .reads_resource::<SkinCoverageStats>()
-            .reads_resource::<byroredux_core::ecs::CpuFrameTimings>(),
+            .reads_resource::<byroredux_core::ecs::CpuFrameTimings>()
+            .reads_resource::<byroredux_core::ecs::SchedulerSystemTimings>(),
     );
     // Debug-UI metrics sampler — throttles itself to ~2 Hz, so the
     // per-frame cost is a single resource read + compare. On a

@@ -732,7 +732,11 @@ impl ApplicationHandler for App {
         };
         {
             let mut stats = self.world.resource_mut::<DebugStats>();
-            stats.push_frame_time(dt);
+            // Wall clock, not the simulation `dt`: a finite bench fixes `dt`
+            // at 1/60 s (and a loading screen holds it at 0), which made the
+            // FPS readouts claim 60 and hid every bench hitch from the
+            // SLOW FRAME warning — the frames it exists to catch.
+            stats.push_frame_time(wall_dt);
             stats.entity_count = self.world.next_entity_id();
             // Off-cadence frames keep the previous values (still fresh to
             // within ~1 second) rather than stale-to-zero.

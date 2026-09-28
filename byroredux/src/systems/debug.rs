@@ -1,8 +1,8 @@
 //! Debug / demo systems — spinning cube, stats logging.
 
 use byroredux_core::ecs::{
-    format_gpu_bracket_ms, CpuFrameTimings, DebugStats, DeltaTime, SkinCoverageStats, TotalTime,
-    Transform, World,
+    format_gpu_bracket_ms, CpuFrameTimings, DebugStats, DeltaTime, SchedulerSystemTimings,
+    SkinCoverageStats, TotalTime, Transform, World,
 };
 use byroredux_core::math::Quat;
 
@@ -51,9 +51,11 @@ pub(crate) fn crosses_one_second_boundary(total: f32, dt: f32) -> bool {
 /// standing up a `World`. Skips the first few frames: the initial scene
 /// load (parse ESM + load the startup cell ring) is counted as one giant
 /// "frame 0" delta (seconds), with all per-pass timers still zero — a
-/// benign false-positive, not an in-game hitch.
-fn is_slow_frame(frame_time_ms: f32, frame_index: usize) -> bool {
-    frame_time_ms > SLOW_FRAME_WARN_MS && frame_index > 3
+/// benign false-positive, not an in-game hitch. `frames_recorded` is
+/// [`DebugStats::frames_recorded`]: the wrapping `frame_index` cursor used to
+/// be passed here, which also muted 4 of every 128 later frames.
+fn is_slow_frame(frame_time_ms: f32, frames_recorded: usize) -> bool {
+    frame_time_ms > SLOW_FRAME_WARN_MS && frames_recorded > 3
 }
 
 /// Format the per-pass GPU timer breakdown from [`SkinCoverageStats`] (the
@@ -172,6 +174,17 @@ fn cpu_breakdown(t: &CpuFrameTimings) -> String {
     )
 }
 
+/// The `n` slowest systems from [`SchedulerSystemTimings`] (already sorted
+/// descending), as `name=ms` pairs.
+fn top_systems(systems: &[(&'static str, f32)], n: usize) -> String {
+    systems
+        .iter()
+        .take(n)
+        .map(|(name, ms)| format!("{name}={ms:.1}"))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// Logs engine stats once per second using DebugStats; additionally warns
 /// on any single frame slower than [`SLOW_FRAME_WARN_MS`] with the GPU
 /// per-pass breakdown (TDR-hunting instrumentation, WATAL §0).
@@ -195,7 +208,7 @@ pub(crate) fn log_stats_system(world: &World, _dt: f32) {
     // majority (~120 wasted String allocs/s at 60 fps) — erosion of the
     // once-a-second gating intent the surrounding comments describe.
     //
-    let slow_frame = is_slow_frame(stats.frame_time_ms, stats.frame_index());
+    let slow_frame = is_slow_frame(stats.frame_time_ms, stats.frames_recorded());
     let boundary = crosses_one_second_boundary(total, dt);
     let want_breakdown = slow_frame || boundary;
 
@@ -212,6 +225,15 @@ pub(crate) fn log_stats_system(world: &World, _dt: f32) {
         .then(|| world.try_resource::<CpuFrameTimings>())
         .flatten()
         .map(|t| cpu_breakdown(&t));
+    // When per-system timings are armed (`BYRO_PROFILE=1` or the Metrics
+    // panel), name the systems behind the hitch: an `atw_scheduler`-heavy
+    // SLOW FRAME is otherwise unattributable. The scheduler rewrites the
+    // resource at the end of each run, so this frame's Late stage still
+    // sees the slow frame's timings, the same frame `cpu` describes.
+    let systems = slow_frame
+        .then(|| world.try_resource::<SchedulerSystemTimings>())
+        .flatten()
+        .map(|t| top_systems(&t.systems, 6));
 
     // Per-frame slow-frame warning — fires on hitches regardless of the
     // once-per-second boundary, so a cell-load / RT-cost spike that walks
@@ -219,10 +241,13 @@ pub(crate) fn log_stats_system(world: &World, _dt: f32) {
     if slow_frame {
         log::warn!(
             target: "engine::stats",
-            "SLOW FRAME dt={:.1}ms (watchdog ~2000ms)\n  gpu[lag~2f]: {}\n  cpu_ms: {}",
+            "SLOW FRAME dt={:.1}ms (watchdog ~2000ms)\n  gpu[lag~2f]: {}\n  cpu_ms: {}{}",
             stats.frame_time_ms,
             gpu.as_deref().unwrap_or("unavailable"),
             cpu.as_deref().unwrap_or("unavailable"),
+            systems
+                .map(|top| format!("\n  systems_ms: {top}"))
+                .unwrap_or_default(),
         );
     }
 
