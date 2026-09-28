@@ -350,8 +350,17 @@ fn warn_threshold_bytes(instance: &ash::Instance, physical_device: vk::PhysicalD
     if heap == 0 {
         SMALL_VRAM_THRESHOLD_BYTES
     } else {
-        (heap / 5) * 4 // 80% without losing precision to floats
+        approaching_oom_line(heap)
     }
+}
+
+/// The engine's "approaching OOM" line for a device-local capacity: 80% of
+/// it, computed without losing precision to floats. Shared by the usage
+/// warning above and the geometry rebuild's duplication gate
+/// (`mesh::geometry_rebuild_needs_idle`), so both treat the same fraction as
+/// the edge.
+pub(crate) fn approaching_oom_line(capacity_bytes: u64) -> u64 {
+    (capacity_bytes / 5) * 4
 }
 
 #[inline]

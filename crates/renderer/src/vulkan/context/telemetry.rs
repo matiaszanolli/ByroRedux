@@ -26,10 +26,18 @@ impl VulkanContext {
             return None;
         }
         self.last_live_memory_sample = Instant::now();
+        self.live_memory_budget()
+    }
+
+    /// Unthrottled DEVICE_LOCAL `(usage, budget)` — for a decision that must
+    /// see the headroom as it is now (the geometry rebuild's duplication
+    /// gate, `MeshRegistry::rebuild_geometry_ssbo`), not the last half-second
+    /// telemetry sample. `None` when the driver lacks `VK_EXT_memory_budget`.
+    pub fn live_memory_budget(&self) -> Option<(u64, u64)> {
         super::super::allocator::query_live_memory_budget(
             &self.instance,
             self.physical_device,
-            true,
+            self.device_caps.memory_budget_supported,
         )
     }
 

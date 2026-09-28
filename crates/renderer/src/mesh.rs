@@ -34,12 +34,15 @@ pub const VERTEX_POOL_HARD_CAP: usize = VERTEX_POOL_SOFT_CAP;
 pub const INDEX_POOL_SOFT_CAP: usize = 16_000_000;
 pub const INDEX_POOL_HARD_CAP: usize = INDEX_POOL_SOFT_CAP;
 
-/// Large global-geometry rebuilds cannot safely keep two prior SSBO
+/// Fixed duplication ceiling for a global-geometry rebuild on a device
+/// without `VK_EXT_memory_budget`: large rebuilds cannot safely keep two SSBO
 /// generations alive while allocating the replacement on mid-range GPUs.
 /// Above 256 MiB, prefer a one-time device-idle reclamation over a recoverable
 /// allocation failure escalating into `VK_ERROR_DEVICE_LOST` (FO4 boundary
-/// traversal, #2374). EX-07 tracks replacing this safety path with a
-/// capacity-managed append/update buffer that remains fully asynchronous.
+/// traversal, #2374). With the extension, [`geometry_rebuild_needs_idle`]
+/// measures the headroom instead. EX-07 tracks replacing this safety path
+/// with a capacity-managed append/update buffer that remains fully
+/// asynchronous.
 pub const GEOMETRY_REBUILD_IDLE_THRESHOLD_BYTES: u64 = 256 * 1024 * 1024;
 
 /// Per-`advance_geometry_rebuild`-call byte budget for a resumable global
@@ -130,11 +133,41 @@ pub(crate) fn check_pool_growth(
     Ok(crossed_soft)
 }
 
+/// Whether a rebuild must idle-reclaim the old generation before building the
+/// replacement, instead of holding both through a resumable copy.
+/// `live_budget` is `(usage, budget)` summed over the DEVICE_LOCAL heaps by
+/// `VK_EXT_memory_budget` ([`crate::vulkan::allocator::query_live_memory_budget`]).
+///
+/// With a live reading, duplication is allowed only while the new
+/// generation keeps usage at or under the engine's approaching-OOM line, 80%
+/// of the live budget ([`crate::vulkan::allocator::approaching_oom_line`]).
+/// The budget is the extension's estimate of what the process can allocate
+/// before allocations "may fail or cause performance degradation", which is
+/// the spill #2374 / #3443 guard against. `heapUsage` already counts every
+/// generation still allocated, the bound one and any awaiting deferred
+/// destroy, so the stacked generations of repeated rebuilds (#2374) are
+/// refused as usage climbs. The remaining 20% absorbs what streaming
+/// allocates during the multi-frame copy. On a 12 GB card an FO4 crossing's
+/// ~400 MiB rebuild now streams in chunks instead of idling the device; a
+/// small rebuild on a nearly full card now idles where it used to duplicate.
+///
+/// Without a reading, the fixed [`GEOMETRY_REBUILD_IDLE_THRESHOLD_BYTES`]
+/// rule applies unchanged. A first build has no old generation to reclaim.
 pub(crate) fn geometry_rebuild_needs_idle(
     projected_bytes: u64,
     has_existing_buffers: bool,
+    live_budget: Option<(u64, u64)>,
 ) -> bool {
-    has_existing_buffers && projected_bytes >= GEOMETRY_REBUILD_IDLE_THRESHOLD_BYTES
+    if !has_existing_buffers {
+        return false;
+    }
+    match live_budget {
+        Some((usage, budget)) => {
+            usage.saturating_add(projected_bytes)
+                > crate::vulkan::allocator::approaching_oom_line(budget)
+        }
+        None => projected_bytes >= GEOMETRY_REBUILD_IDLE_THRESHOLD_BYTES,
+    }
 }
 
 /// Cache key for the refcounted scene-mesh dedup layer (#879). The
@@ -1722,7 +1755,7 @@ mod pool_growth_cap_tests {
             .map_or(body, |(before, _)| before);
 
         let gate = body
-            .find("geometry_rebuild_needs_idle(projected_bytes, has_existing_buffers)")
+            .find("geometry_rebuild_needs_idle(projected_bytes, has_existing_buffers, live_budget)")
             .expect(
                 "the chunked path must consult geometry_rebuild_needs_idle — without it a \
                  >= 256 MiB rebuild duplicates the largest non-texture allocation class \
@@ -1738,14 +1771,47 @@ mod pool_growth_cap_tests {
         );
     }
 
+    /// Without a `VK_EXT_memory_budget` reading the fixed 256 MiB rule holds.
     #[test]
     fn large_rebuilds_idle_only_when_replacing_existing_buffers() {
         let threshold = GEOMETRY_REBUILD_IDLE_THRESHOLD_BYTES;
-        assert!(!geometry_rebuild_needs_idle(threshold - 1, true));
-        assert!(geometry_rebuild_needs_idle(threshold, true));
-        assert!(geometry_rebuild_needs_idle(threshold + 1, true));
+        assert!(!geometry_rebuild_needs_idle(threshold - 1, true, None));
+        assert!(geometry_rebuild_needs_idle(threshold, true, None));
+        assert!(geometry_rebuild_needs_idle(threshold + 1, true, None));
         assert!(
-            !geometry_rebuild_needs_idle(threshold * 2, false),
+            !geometry_rebuild_needs_idle(threshold * 2, false, None),
+            "initial build has no old generation to reclaim",
+        );
+    }
+
+    /// With a live reading, the gate is the approaching-OOM line (80% of the
+    /// live budget) after adding the duplicate, not the fixed 256 MiB.
+    #[test]
+    fn live_budget_gates_duplication_at_the_approaching_oom_line() {
+        const MIB: u64 = 1024 * 1024;
+        const GIB: u64 = 1024 * MIB;
+        // Replacing an existing generation, with a live (usage, budget).
+        let idles = |projected: u64, usage: u64, budget: u64| {
+            geometry_rebuild_needs_idle(projected, true, Some((usage, budget)))
+        };
+        // 12 GB dev card mid-crossing: a ~430 MiB FO4 rebuild streams.
+        assert!(!idles(430 * MIB, 3 * GIB, 11 * GIB));
+        // Exactly at the line duplicates; one byte past it idles.
+        let budget = 10 * GIB;
+        let line = budget / 5 * 4;
+        assert!(!idles(GIB, line - GIB, budget));
+        assert!(idles(GIB + 1, line - GIB, budget));
+        // Nearly full 6 GB card: even a sub-256 MiB rebuild idles now,
+        // where the fixed rule would have duplicated it.
+        assert!(idles(128 * MIB, 4400 * MIB, 5500 * MIB));
+        // Stacked generations count through usage: the same rebuild that
+        // fits at low usage is refused once earlier ones are still resident.
+        assert!(!idles(900 * MIB, 2 * GIB, 6 * GIB));
+        assert!(idles(900 * MIB, 4 * GIB, 6 * GIB));
+        // A zero budget can never admit a duplicate.
+        assert!(idles(1, 0, 0));
+        assert!(
+            !geometry_rebuild_needs_idle(GIB, false, Some((0, 0))),
             "initial build has no old generation to reclaim",
         );
     }
@@ -2183,11 +2249,18 @@ mod memory_budget_doc_pin_tests {
             .map(|(head, _)| head)
             .unwrap_or(section);
 
+        assert_eq!(
+            crate::vulkan::allocator::approaching_oom_line(100),
+            80,
+            "the documented duplication gate is 80% of the live budget",
+        );
         for needle in [
             "GEOMETRY_REBUILD_IDLE_THRESHOLD_BYTES",
             "256 MiB",
             "GEOMETRY_REBUILD_CHUNK_BYTES",
             "64 MiB",
+            "80%",
+            "VK_EXT_memory_budget",
         ] {
             assert!(
                 section.contains(needle),

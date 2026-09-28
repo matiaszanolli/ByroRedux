@@ -732,20 +732,27 @@ The pool rows above are **single-generation** figures. Growing the global
 geometry SSBO takes one of two paths, and one of them is transiently
 double-buffered:
 
-| Path | Gate | Resident generations | Extra peak |
+| Path | Gate (`geometry_rebuild_needs_idle`) | Resident generations | Extra peak |
 |---|---|---|---|
-| Resumable (`GeometryRebuildInProgress`) | projected < `GEOMETRY_REBUILD_IDLE_THRESHOLD_BYTES` (256 MiB) | 2 | up to ~512 MiB total, i.e. 2× the projected size |
-| Atomic idle-reclaim | projected ≥ 256 MiB, existing buffers present | 1 | — (old released before new is allocated) |
+| Resumable (`GeometryRebuildInProgress`) | the duplicate fits: device-local usage plus the projected size stays at or under 80% of the live `VK_EXT_memory_budget` budget. Without a budget reading: projected < `GEOMETRY_REBUILD_IDLE_THRESHOLD_BYTES` (256 MiB) | 2 | the projected size, admitted only below the 80% line (≤ 256 MiB without a reading) |
+| Atomic idle-reclaim | the duplicate does not fit, or its allocation failed; existing buffers present | 1 | — (old released before new is allocated) |
 
 The resumable path allocates the full-size replacement **while the old
 generation is still bound and serving draws**, and swaps only when both
 targets are fully copied — an accepted trade (#3298) that turns a
 multi-hundred-ms atomic stall into bounded per-frame chunks. `#3443`
-restored the idle gate, so this doubling is *bounded by the 256 MiB
-threshold*: it cannot reach the `VERTEX_POOL_HARD_CAP` +
-`INDEX_POOL_HARD_CAP` figures, because a rebuild that large takes the
-atomic path instead. Any budget arithmetic that doubles the hard caps is
-therefore wrong post-#3443.
+restored the idle gate; it now measures the headroom instead of assuming
+it. The 80% line is the same "approaching OOM" fraction the allocator's
+usage warning uses (`allocator::approaching_oom_line`), and `heapUsage`
+counts every generation still allocated, so stacked generations push a
+later rebuild onto the atomic path. With a budget reading the doubling is
+**headroom-bounded, not size-bounded**: on a card with room it can reach
+2× the `VERTEX_POOL_HARD_CAP` + `INDEX_POOL_HARD_CAP` figures, so budget
+arithmetic from this page must use the 80% line, not the 256 MiB constant.
+Without a reading (no `VK_EXT_memory_budget`) the 256 MiB ceiling still
+bounds it. FO4 Commonwealth grid-cross on a 12 GB card: the per-crossing
+374–432 MiB rebuilds moved from the idle path (210–310 ms frames) to the
+resumable one.
 
 **Plus a second, distinct retained staging pool — the mesh side.** This is
 separate from `TextureRegistry::staging_pool` (the "Staging pool cap" row in

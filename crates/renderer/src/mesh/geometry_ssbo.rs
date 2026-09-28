@@ -56,20 +56,23 @@ pub(super) struct CompactionPlan {
 /// `MeshRegistry::advance_geometry_rebuild` swaps them out, and only once
 /// both targets are fully copied. That means two full geometry SSBO
 /// generations are resident in device-local memory at once for the
-/// rebuild's duration. This is an accepted trade-off (#3298) *below*
-/// [`super::GEOMETRY_REBUILD_IDLE_THRESHOLD_BYTES`]: it smooths a
-/// multi-hundred-ms atomic stall into several bounded per-frame chunks, at
-/// the cost of a temporarily higher VRAM high-water mark.
+/// rebuild's duration. This is an accepted trade-off (#3298) only while the
+/// duplicate fits — [`super::geometry_rebuild_needs_idle`]: under 80% of the
+/// live device-local budget after adding it, or under
+/// [`super::GEOMETRY_REBUILD_IDLE_THRESHOLD_BYTES`] when the driver reports
+/// no budget. It smooths a multi-hundred-ms atomic stall into several
+/// bounded per-frame chunks, at the cost of a temporarily higher VRAM
+/// high-water mark.
 ///
-/// #3443 — at or above that threshold the caller
+/// #3443 — when the duplicate does not fit, the caller
 /// (`MeshRegistry::rebuild_geometry_ssbo`) never starts one of these at
 /// all; the rebuild goes to the atomic idle-reclaim path up front. #3298
-/// shipped this state with no size condition, which routed around the very
+/// shipped this state with no condition, which routed around the very
 /// case #2374 filed the threshold for: on a 6 GB card an FO4 boundary
 /// crossing duplicates ~800-900 MiB, the largest non-texture allocation
 /// class, on top of a ~1.7 GB steady state. A duplicate allocation that
 /// *succeeds* there and dies later cannot be caught by the `Err` arm.
-/// The allocation-failure fallback still exists for the sub-threshold case.
+/// The allocation-failure fallback still exists, and reclaims first.
 ///
 /// (#4090 — this doc comment previously sat orphaned in `mesh.rs`, ahead of
 /// an unrelated function, with nothing between it and its actual subject
@@ -345,14 +348,22 @@ impl MeshRegistry {
     /// idle-reclaim-then-build path
     /// ([`Self::rebuild_geometry_ssbo_atomic_fallback`]) instead:
     ///
-    /// 1. The projected size is at or above
-    ///    [`GEOMETRY_REBUILD_IDLE_THRESHOLD_BYTES`] and an old generation
-    ///    exists — [`geometry_rebuild_needs_idle`] (#2374 / #3443). This is
-    ///    checked **before** allocating, because the hazard the threshold
-    ///    guards against is the duplicate allocation *succeeding* on a
-    ///    constrained device and escalating to `VK_ERROR_DEVICE_LOST` later.
+    /// 1. An old generation exists and duplicating it does not fit —
+    ///    [`geometry_rebuild_needs_idle`] (#2374 / #3443): with a
+    ///    `live_budget` reading, the duplicate would take device-local usage
+    ///    past 80% of the live budget; without one, the projected size is at
+    ///    or above [`GEOMETRY_REBUILD_IDLE_THRESHOLD_BYTES`]. This is checked
+    ///    **before** allocating, because the hazard is the duplicate
+    ///    allocation *succeeding* on a constrained device and escalating to
+    ///    `VK_ERROR_DEVICE_LOST` later.
     /// 2. The up-front allocation for the second (temporarily duplicate)
-    ///    generation fails outright.
+    ///    generation fails outright. The atomic path then idle-reclaims
+    ///    first: the headroom reading was wrong, so it must not hold two
+    ///    generations again.
+    ///
+    /// `live_budget` is the DEVICE_LOCAL `(usage, budget)` from
+    /// `VK_EXT_memory_budget`, read fresh by the caller; it only matters when
+    /// this call starts a rebuild, not while one is advancing.
     ///
     /// So #2374's device-loss protection is a size-gated route, not merely
     /// a post-hoc `Err` recovery.
@@ -363,6 +374,7 @@ impl MeshRegistry {
         queue: &std::sync::Mutex<vk::Queue>,
         command_pool: vk::CommandPool,
         rt_enabled: bool,
+        live_budget: Option<(u64, u64)>,
     ) -> Result<()> {
         // #3467 — bracket the whole call, resumable chunk included. The chunk
         // is bounded in BYTES, not time, and each one is a synchronous staged
@@ -376,8 +388,14 @@ impl MeshRegistry {
         // be re-picked against a real number, its own doc's "chosen
         // conservatively pending live tuning" has no path to a tuned value.
         let rebuild_t0 = std::time::Instant::now();
-        let result =
-            self.rebuild_geometry_ssbo_inner(device, allocator, queue, command_pool, rt_enabled);
+        let result = self.rebuild_geometry_ssbo_inner(
+            device,
+            allocator,
+            queue,
+            command_pool,
+            rt_enabled,
+            live_budget,
+        );
         self.geometry_rebuild_ns = self
             .geometry_rebuild_ns
             .saturating_add(rebuild_t0.elapsed().as_nanos() as u64);
@@ -402,6 +420,7 @@ impl MeshRegistry {
         queue: &std::sync::Mutex<vk::Queue>,
         command_pool: vk::CommandPool,
         rt_enabled: bool,
+        live_budget: Option<(u64, u64)>,
     ) -> Result<()> {
         if self.geometry_rebuild.is_some() {
             return self.advance_geometry_rebuild(device, allocator, queue, command_pool);
@@ -440,26 +459,37 @@ impl MeshRegistry {
         // in `rebuild_geometry_ssbo_atomic_fallback`.
         //
         // #3443 — and only while duplicating that generation is *safe*.
-        // `GEOMETRY_REBUILD_IDLE_THRESHOLD_BYTES` exists precisely because
-        // above 256 MiB a mid-range GPU may **succeed** at the second
-        // full-size allocation (driver-managed residency / system-memory
-        // spill) and then escalate to an unrecoverable
-        // `VK_ERROR_DEVICE_LOST` under later pressure — which the `Err` arm
-        // below cannot catch, because there is no `Err`. #3298 landed the
-        // chunked path with no size condition at all, leaving
-        // `geometry_rebuild_needs_idle` reachable only from the fallback it
-        // routes around. At or above the threshold the rebuild takes
-        // #2374's atomic idle-reclaim route again; below it, the chunked
-        // path duplicates as designed. On the FO4 boundary crossing that is
-        // ~800-900 MiB against a documented 6 GB RT minimum, on top of a
-        // ~1.7 GB steady state.
-        let duplicate_is_safe = !geometry_rebuild_needs_idle(projected_bytes, has_existing_buffers);
-        if has_existing_buffers && !duplicate_is_safe {
-            log::info!(
-                "Geometry SSBO rebuild ({:.1} MiB) is at or above the {} MiB duplication                  ceiling — taking the atomic idle-reclaim path instead of holding two                  generations resident (#2374 / #3443)",
-                projected_bytes as f64 / (1024.0 * 1024.0),
-                GEOMETRY_REBUILD_IDLE_THRESHOLD_BYTES / (1024 * 1024),
-            );
+        // On a constrained device the second full-size allocation may
+        // **succeed** (driver-managed residency / system-memory spill) and
+        // then escalate to an unrecoverable `VK_ERROR_DEVICE_LOST` under
+        // later pressure — which the `Err` arm below cannot catch, because
+        // there is no `Err`. #3298 landed the chunked path with no condition
+        // at all. The gate measures the live headroom when the driver
+        // reports it and falls back to the fixed 256 MiB ceiling when it
+        // cannot; see `geometry_rebuild_needs_idle` for the rule.
+        let duplicate_is_safe =
+            !geometry_rebuild_needs_idle(projected_bytes, has_existing_buffers, live_budget);
+        let mut reclaim_before_rebuild = has_existing_buffers && !duplicate_is_safe;
+        if reclaim_before_rebuild {
+            let mib = |bytes: u64| bytes as f64 / (1024.0 * 1024.0);
+            match live_budget {
+                Some((usage, budget)) => log::info!(
+                    "Geometry SSBO rebuild ({:.1} MiB) would take device-local usage from \
+                     {:.1} to {:.1} MiB, past 80% of the {:.1} MiB live budget — taking the \
+                     atomic idle-reclaim path instead of holding two generations (#2374 / #3443)",
+                    mib(projected_bytes),
+                    mib(usage),
+                    mib(usage.saturating_add(projected_bytes)),
+                    mib(budget),
+                ),
+                None => log::info!(
+                    "Geometry SSBO rebuild ({:.1} MiB) is at or above the {} MiB duplication \
+                     ceiling (no VK_EXT_memory_budget reading) — taking the atomic idle-reclaim \
+                     path instead of holding two generations (#2374 / #3443)",
+                    mib(projected_bytes),
+                    GEOMETRY_REBUILD_IDLE_THRESHOLD_BYTES / (1024 * 1024),
+                ),
+            }
         }
         if has_existing_buffers && duplicate_is_safe {
             let rt_usage = if rt_enabled {
@@ -494,6 +524,9 @@ impl MeshRegistry {
                          falling back to the atomic idle-reclaim path (#2374)",
                         projected_bytes as f64 / (1024.0 * 1024.0),
                     );
+                    // The headroom reading said two generations fit and the
+                    // driver disagreed: reclaim before allocating again.
+                    reclaim_before_rebuild = true;
                 }
             }
         }
@@ -509,6 +542,7 @@ impl MeshRegistry {
             queue,
             command_pool,
             rt_enabled,
+            reclaim_before_rebuild,
         )
     }
 
@@ -730,8 +764,11 @@ impl MeshRegistry {
     /// synchronous call. Kept as the fallback when there isn't enough
     /// device-local headroom to hold two full generations at once —
     /// [`Self::rebuild_geometry_ssbo`] tries the chunked path first and only
-    /// reaches this when that allocation fails, or on any build with no
-    /// prior generation to keep serving draws.
+    /// reaches this when duplicating does not fit, when that allocation
+    /// fails, or on any build with no prior generation to keep serving
+    /// draws. The caller decides `reclaim_before_rebuild`: `true` in the first
+    /// two cases, so the old generation is gone before the new one is
+    /// allocated.
     fn rebuild_geometry_ssbo_atomic_fallback(
         &mut self,
         device: &ash::Device,
@@ -739,14 +776,11 @@ impl MeshRegistry {
         queue: &std::sync::Mutex<vk::Queue>,
         command_pool: vk::CommandPool,
         rt_enabled: bool,
+        reclaim_before_rebuild: bool,
     ) -> Result<()> {
         let projected_bytes = (self.pending_vertices.len() * std::mem::size_of::<Vertex>()
             + self.pending_indices.len() * std::mem::size_of::<u32>())
             as u64;
-        let has_existing_buffers =
-            self.global_vertex_buffer.is_some() || self.global_index_buffer.is_some();
-        let reclaim_before_rebuild =
-            geometry_rebuild_needs_idle(projected_bytes, has_existing_buffers);
 
         // Defer destruction of old SSBOs instead of stalling with
         // device_wait_idle. The old buffers survive for MAX_FRAMES_IN_FLIGHT

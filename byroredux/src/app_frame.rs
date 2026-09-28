@@ -338,12 +338,20 @@ impl App {
             if rebuild_in_progress
                 || (ctx.mesh_registry.is_geometry_dirty() && !defer_geometry_rebuild)
             {
+                // Only a rebuild that starts here consults the headroom, so
+                // read it fresh then and skip the query while one advances.
+                let live_budget = if rebuild_in_progress {
+                    None
+                } else {
+                    ctx.live_memory_budget()
+                };
                 if let Err(e) = ctx.mesh_registry.rebuild_geometry_ssbo(
                     &ctx.device,
                     ctx.allocator.as_ref().unwrap(),
                     &ctx.graphics_queue,
                     ctx.transfer_pool,
                     ctx.device_caps.ray_query_supported,
+                    live_budget,
                 ) {
                     log::warn!("Failed to rebuild geometry SSBO: {e}");
                 }
