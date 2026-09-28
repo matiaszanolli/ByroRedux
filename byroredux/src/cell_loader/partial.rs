@@ -66,7 +66,33 @@ pub(crate) fn finish_partial_import(
         lights,
         particle_emitters,
         embedded_clip,
+        precombine_geometry,
     } = partial;
+
+    // M49 — an FO4 precombine the worker decoded from its `Geometry.csg`.
+    // Same cache entry the main-thread `PrecombinedSpawnJob` builds for it
+    // (geometry-only, precombine material merge), so the job's cache lookup
+    // hits and it goes straight to spawning.
+    if let Some(geometry_dedup) = precombine_geometry {
+        {
+            let mut pool = world.resource_mut::<byroredux_core::string::StringPool>();
+            reintern_imported_meshes(&mut meshes, &worker_pool, &mut pool);
+            if let Some(provider) = mat_provider {
+                super::precombined::merge_precombine_materials(
+                    &mut meshes,
+                    provider,
+                    &mut pool,
+                    texture_exists,
+                );
+            }
+        }
+        let cached = Arc::new(super::precombined::geometry_only_cached(
+            meshes,
+            geometry_dedup,
+        ));
+        insert_cached_import(world, cache_key, cached, None);
+        return;
+    }
 
     let collision_authoring =
         byroredux_nif::import::collision::summarize_collision_authoring(&scene);
@@ -158,6 +184,19 @@ pub(crate) fn finish_partial_import(
         pre_merge_materials,
     });
 
+    insert_cached_import(world, cache_key, cached, clip_handle);
+}
+
+/// Cache `cached` under `cache_key` (recording its clip handle, if any) and
+/// release the keyframes of any clip handles whose owning cache entries the
+/// insert LRU-evicted (#863). No-op release when `BYRO_NIF_CACHE_MAX=0`
+/// (default unlimited mode).
+fn insert_cached_import(
+    world: &mut World,
+    cache_key: String,
+    cached: Arc<CachedNifImport>,
+    clip_handle: Option<u32>,
+) {
     let freed_clip_handles = {
         let mut reg = world.resource_mut::<NifImportRegistry>();
         let freed = reg.insert(cache_key.clone(), Some(cached));
@@ -166,9 +205,6 @@ pub(crate) fn finish_partial_import(
         }
         freed
     };
-    // Release the keyframes of any clip handles whose owning cache
-    // entries were just LRU-evicted (#863). No-op when
-    // `BYRO_NIF_CACHE_MAX=0` (default unlimited mode).
     if !freed_clip_handles.is_empty() {
         let mut clip_reg = world.resource_mut::<byroredux_core::animation::AnimationClipRegistry>();
         for h in freed_clip_handles {

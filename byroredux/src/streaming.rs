@@ -637,6 +637,11 @@ pub struct PartialNifImport {
     pub particle_emitters: Vec<byroredux_nif::import::ImportedParticleEmitterFlat>,
     /// Embedded animation clip — pool-free import path.
     pub embedded_clip: Option<byroredux_nif::anim::AnimationClip>,
+    /// `Some(geometry_dedup)` for an FO4 precombine `_oc.nif` whose geometry
+    /// the worker decoded from its `Geometry.csg` (M49): `meshes` are the
+    /// placed instances, and the drain builds the same geometry-only cache
+    /// entry `PrecombinedSpawnJob` would, with the precombine material merge.
+    pub precombine_geometry: Option<Vec<u32>>,
 }
 
 // #1171 / CONC-D6-NEW-05 — compile-time guarantee that
@@ -1218,6 +1223,9 @@ fn cell_pre_parse_worker(
     // This bounds the set by one dispatch and prevents a later, independent
     // crossing from losing a needed payload to an old memo entry.
     let mut batch_keys = HashSet::new();
+    // `Geometry.csg` handles for precombine decode, opened once per plugin
+    // for the thread's life (M49).
+    let mut csg_handles = crate::cell_loader::precombined::CsgHandleCache::default();
     while let Some(req) = recv_next_batch_request(&request_rx, &mut batch_keys) {
         let LoadCellRequest {
             gx,
@@ -1239,6 +1247,7 @@ fn cell_pre_parse_worker(
                 &cached_keys,
                 &mut batch_keys,
                 &stream_pool,
+                &mut csg_handles,
             )
         });
         payload.timings.queue_wait = worker_started.saturating_duration_since(queued_at);
@@ -1321,10 +1330,13 @@ where
 /// the worker thread (#854). Preserved verbatim across the #877
 /// refactor; extracted in #1262 (NIF-D5-NEW-02) to avoid duplicating
 /// the closure between the serial / parallel branches.
-fn parse_one_nif(
-    (path, bytes): (String, Option<Vec<u8>>),
-    mesh_resolver: &TextureProvider,
-) -> (String, Option<PartialNifImport>) {
+fn parse_one_nif(input: PreParseInput, ctx: &PreParseContext<'_>) -> ParsedNifResult {
+    let PreParseInput {
+        key: path,
+        bytes,
+        precombine,
+    } = input;
+    let mesh_resolver = ctx.mesh_resolver;
     let parsed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let Some(bytes) = bytes else {
             log::debug!("[stream-worker] NIF not in BSA: '{}'", path);
@@ -1337,6 +1349,33 @@ fn parse_one_nif(
                 return None;
             }
         };
+        // M49 — a shared-variant precombine carries its geometry in the
+        // companion `.csg`; the walk-based import below would produce zero
+        // meshes for it. Same decision the main-thread `PrecombinedSpawnJob`
+        // makes: CSG decode when it yields meshes, else the ordinary import.
+        if precombine {
+            let mut worker_pool = StringPool::new();
+            if let Some((meshes, geometry_dedup)) =
+                crate::cell_loader::precombined::decode_precombine_csg(
+                    &scene,
+                    ctx.csg_blobs,
+                    &mut worker_pool,
+                )
+            {
+                return Some(PartialNifImport {
+                    scene,
+                    meshes,
+                    collisions: Vec::new(),
+                    worker_pool,
+                    bsx: 0,
+                    root_flags: 0,
+                    lights: Vec::new(),
+                    particle_emitters: Vec::new(),
+                    embedded_clip: None,
+                    precombine_geometry: Some(geometry_dedup),
+                });
+            }
+        }
         let bsx = byroredux_nif::import::extract_bsx_flags(&scene);
         let root_flags = byroredux_nif::import::extract_root_flags(&scene);
         let lights = byroredux_nif::import::import_nif_lights(&scene);
@@ -1369,6 +1408,7 @@ fn parse_one_nif(
             lights,
             particle_emitters,
             embedded_clip,
+            precombine_geometry: None,
         })
     }))
     .unwrap_or_else(|_| {
@@ -1384,6 +1424,22 @@ fn parse_one_nif(
 const PRE_PARSE_RAYON_MIN: usize = 8;
 
 type ParsedNifResult = (String, Option<PartialNifImport>);
+
+/// One fresh key the worker pre-parses, with its extracted bytes.
+struct PreParseInput {
+    key: String,
+    bytes: Option<Vec<u8>>,
+    /// An FO4 precombine `_oc.nif`: try the `Geometry.csg` decode first.
+    precombine: bool,
+}
+
+/// What every parse task of one cell borrows.
+struct PreParseContext<'a> {
+    mesh_resolver: &'a TextureProvider,
+    /// `BSPackedGeomObject::filename_hash` → the blob that answers to it,
+    /// for the cell's precombine inputs. Empty when the cell has none.
+    csg_blobs: &'a HashMap<u32, Arc<byroredux_bsa::CsgArchive>>,
+}
 
 /// Bounds decoded input buffers held by queued/running parse tasks. Extraction
 /// exposes the decoded size only after allocating it, so the coordinator may
@@ -1460,9 +1516,9 @@ struct ParsePipelineStats {
 /// the pool: waiting on its budget cannot occupy the sole worker on small CPUs.
 /// The scope joins all tasks before returning or propagating an extraction panic.
 fn parse_nif_pipeline(
-    extracted: impl ExactSizeIterator<Item = (String, Option<Vec<u8>>)>,
+    extracted: impl ExactSizeIterator<Item = PreParseInput>,
     stream_pool: &rayon::ThreadPool,
-    mesh_resolver: &TextureProvider,
+    ctx: &PreParseContext<'_>,
 ) -> (Vec<ParsedNifResult>, Vec<String>, ParsePipelineStats) {
     let count = extracted.len();
     let mut stats = ParsePipelineStats::default();
@@ -1471,10 +1527,10 @@ fn parse_nif_pipeline(
             .map(|item| {
                 stats.peak_input_bytes = stats
                     .peak_input_bytes
-                    .max(item.1.as_ref().map_or(0, Vec::capacity));
+                    .max(item.bytes.as_ref().map_or(0, Vec::capacity));
                 stats.peak_tasks = 1;
                 let started = Instant::now();
-                let result = parse_one_nif(item, mesh_resolver);
+                let result = parse_one_nif(item, ctx);
                 stats.parse_task_time += started.elapsed();
                 result
             })
@@ -1495,7 +1551,7 @@ fn parse_nif_pipeline(
     let (tx, rx) = mpsc::channel();
     stream_pool.in_place_scope_fifo(|scope| {
         for (index, item) in extracted.enumerate() {
-            let bytes = item.1.as_ref().map_or(0, Vec::capacity);
+            let bytes = item.bytes.as_ref().map_or(0, Vec::capacity);
             let waiting = Instant::now();
             let permit = budget.acquire(bytes);
             stats.backpressure += waiting.elapsed();
@@ -1503,7 +1559,7 @@ fn parse_nif_pipeline(
             scope.spawn_fifo(move |_| {
                 let started = Instant::now();
                 let thread_name = std::thread::current().name().map(str::to_string);
-                let result = parse_one_nif(item, mesh_resolver);
+                let result = parse_one_nif(item, ctx);
                 let elapsed = started.elapsed();
                 drop(permit);
                 let _ = tx.send((index, result, thread_name, elapsed));
@@ -1536,7 +1592,17 @@ fn parse_extracted_nifs(
     stream_pool: &rayon::ThreadPool,
     mesh_resolver: &TextureProvider,
 ) -> (Vec<ParsedNifResult>, Vec<String>) {
-    let (results, names, _) = parse_nif_pipeline(extracted.into_iter(), stream_pool, mesh_resolver);
+    let no_csgs = HashMap::new();
+    let ctx = PreParseContext {
+        mesh_resolver,
+        csg_blobs: &no_csgs,
+    };
+    let inputs = extracted.into_iter().map(|(key, bytes)| PreParseInput {
+        key,
+        bytes,
+        precombine: false,
+    });
+    let (results, names, _) = parse_nif_pipeline(inputs, stream_pool, &ctx);
     (results, names)
 }
 
@@ -1607,6 +1673,7 @@ fn pre_parse_cell(
     cached_keys: &HashSet<String>,
     batch_keys: &mut HashSet<String>,
     stream_pool: &rayon::ThreadPool,
+    csg_handles: &mut crate::cell_loader::precombined::CsgHandleCache,
 ) -> LoadCellPayload {
     let mut parsed: HashMap<String, Option<PartialNifImport>> = HashMap::new();
     let cells_map = match wctx
@@ -1712,6 +1779,33 @@ fn pre_parse_cell(
             None => unreachable!("just inserted"),
         }
     }
+    // M49 — the cell's FO4 precombine `_oc.nif`s, keyed exactly as
+    // `PrecombinedSpawnJob` looks them up (the path is already canonical).
+    // Pre-parsing them here moves their read, parse and CSG decode off the
+    // main thread; the drain's precombine merge and the job's cache hit do
+    // the rest. They go first: CSG decode is the heaviest task per input.
+    let mut precombine_paths: Vec<String> = Vec::new();
+    let mut csg_blobs = HashMap::new();
+    if !cell.precombined_mesh_hashes.is_empty() {
+        let load_order_paths: Vec<&str> = wctx.plugin_paths.iter().map(String::as_str).collect();
+        let mut seen = HashSet::new();
+        for key in crate::cell_loader::precombined::precombine_oc_nif_paths(
+            cell,
+            &wctx.plugin_path,
+            &load_order_paths,
+        ) {
+            match pre_parse_model_skip_reason(&key, cached_keys, batch_keys) {
+                Some(PreParseModelSkip::Cached) => skipped_cached += 1,
+                Some(PreParseModelSkip::BatchDuplicate) => skipped_batch_duplicates += 1,
+                None if seen.insert(key.clone()) => precombine_paths.push(key),
+                None => {}
+            }
+        }
+        if !precombine_paths.is_empty() {
+            csg_blobs =
+                csg_handles.blobs_for_cell(cell.form_id, &wctx.plugin_path, &load_order_paths);
+        }
+    }
     if skipped_cached > 0 || skipped_batch_duplicates > 0 {
         log::debug!(
             "[stream-worker] cell ({},{}): {} cached models skipped, {} batch duplicates skipped, {} unique to parse",
@@ -1719,7 +1813,7 @@ fn pre_parse_cell(
             gy,
             skipped_cached,
             skipped_batch_duplicates,
-            model_paths.len(),
+            model_paths.len() + precombine_paths.len(),
         );
     }
 
@@ -1728,23 +1822,37 @@ fn pre_parse_cell(
     // extract-all barrier, this overlaps archive read/inflate with parse and
     // avoids retaining the entire cell's decoded input before work can start.
     // Cells with fewer than eight fresh paths keep the serial fast path.
-    let model_paths: Vec<String> = model_paths.into_iter().collect();
-    let input_count = model_paths.len();
+    let precombine_count = precombine_paths.len();
+    let inputs: Vec<(String, bool)> = precombine_paths
+        .into_iter()
+        .map(|key| (key, true))
+        .chain(model_paths.into_iter().map(|key| (key, false)))
+        .collect();
+    let input_count = inputs.len();
     let pipeline_started = Instant::now();
     let mut extract_time = Duration::ZERO;
     let mut largest_input = 0usize;
-    let extracted = model_paths.into_iter().map(|path| {
+    let extracted = inputs.into_iter().map(|(key, precombine)| {
         let started = Instant::now();
-        let bytes = tex_provider.extract_mesh(&path);
+        let bytes = tex_provider.extract_mesh(&key);
         extract_time += started.elapsed();
         largest_input = largest_input.max(bytes.as_ref().map_or(0, Vec::capacity));
-        (path, bytes)
+        PreParseInput {
+            key,
+            bytes,
+            precombine,
+        }
     });
+    let ctx = PreParseContext {
+        mesh_resolver: tex_provider,
+        csg_blobs: &csg_blobs,
+    };
     let (results, parallel_parse_threads, pipeline) =
-        parse_nif_pipeline(extracted, stream_pool, tex_provider);
+        parse_nif_pipeline(extracted, stream_pool, &ctx);
     if input_count > 0 {
         log::debug!(
-            "[stream-worker] cell ({gx},{gy}) pipeline: inputs={input_count} wall_ms={:.3} \
+            "[stream-worker] cell ({gx},{gy}) pipeline: inputs={input_count} \
+             precombines={precombine_count} wall_ms={:.3} \
              extract_ms={:.3} parse_task_sum_ms={:.3} backpressure_ms={:.3} \
              peak_task_input_bytes={} largest_input_bytes={} peak_tasks={}",
             pipeline_started.elapsed().as_secs_f64() * 1000.0,

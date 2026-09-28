@@ -63,6 +63,7 @@ fn dummy_partial_with(bsx: u32) -> crate::streaming::PartialNifImport {
         lights: Vec::new(),
         particle_emitters: Vec::new(),
         embedded_clip: None,
+        precombine_geometry: None,
     }
 }
 
@@ -165,6 +166,7 @@ fn partial_with_marker_scene(include_real_geometry: bool) -> crate::streaming::P
         lights: Vec::new(),
         particle_emitters: Vec::new(),
         embedded_clip: None,
+        precombine_geometry: None,
     }
 }
 
@@ -202,6 +204,7 @@ fn finish_partial_import_reinterns_worker_material_symbols() {
         lights: Vec::new(),
         particle_emitters: Vec::new(),
         embedded_clip: None,
+        precombine_geometry: None,
     };
     let mut world = world_with_registries();
     // Ensure worker and world symbol indices differ; the test must exercise
@@ -238,6 +241,57 @@ fn finish_partial_import_reinterns_worker_material_symbols() {
         Some("materials\\worker.bgsm")
     );
     assert_eq!(world_pool.resolve(base_color), Some("textures\\worker.dds"));
+}
+
+/// M49 — a precombine the worker decoded from its `Geometry.csg` becomes
+/// the same geometry-only cache entry `PrecombinedSpawnJob` builds: the
+/// representative map survives (the job's resumable spawn requires it), the
+/// worker symbols are re-interned, and nothing NIF-only is attached.
+#[test]
+fn finish_partial_import_builds_precombine_geometry_entry() {
+    let mut worker_pool = StringPool::new();
+    let mut mesh = byroredux_nif::import::ImportedMesh::from_geometry(
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    );
+    mesh.material.textures.base_color = Some(worker_pool.intern("textures\\wall_d.dds"));
+    let partial = crate::streaming::PartialNifImport {
+        meshes: vec![mesh.clone(), mesh],
+        worker_pool,
+        precombine_geometry: Some(vec![0, 0]),
+        ..dummy_partial()
+    };
+    let mut world = world_with_registries();
+    world
+        .resource_mut::<StringPool>()
+        .intern("world/preexisting-symbol");
+
+    let key = "meshes\\precombined\\0000e400_3831aac9_oc.nif";
+    finish_partial_import(&mut world, None, key, partial, &|_| false);
+
+    let reg = world.resource::<NifImportRegistry>();
+    let cached = reg
+        .get(key)
+        .expect("precombine inserted under its own path")
+        .as_ref()
+        .expect("positive entry");
+    assert_eq!(cached.geometry_dedup, vec![0, 0]);
+    assert_eq!(cached.meshes.len(), 2);
+    assert!(cached.collisions.is_empty() && cached.pre_merge_materials.is_empty());
+    let base = cached.meshes[1]
+        .material
+        .textures
+        .base_color
+        .expect("texture kept");
+    assert_eq!(
+        world.resource::<StringPool>().resolve(base),
+        Some("textures\\wall_d.dds")
+    );
+    assert_eq!(reg.clip_handle_for(key), None);
 }
 
 /// Pre-cached positive entry — `finish_partial_import` must early-out
@@ -476,6 +530,7 @@ fn finish_partial_import_populates_furniture_and_flame_offset() {
         lights: Vec::new(),
         particle_emitters: Vec::new(),
         embedded_clip: None,
+        precombine_geometry: None,
     };
 
     finish_partial_import(&mut world, None, "furnace01.nif", partial, &|_| false);

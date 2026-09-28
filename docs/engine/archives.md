@@ -483,8 +483,47 @@ time, permit wait time, peak task input bytes/tasks and the largest input.
 Task elapsed times overlap and may include external-mesh archive waits; their
 sum is not a wall-time phase breakdown. Permit wait includes mutex acquisition.
 These changes target exterior cell readiness and streaming stalls; they do not
-establish an improvement to MedTek's stationary GPU rendering time. FO4
-precombine preparation and GPU upload waits remain separate work.
+establish an improvement to MedTek's stationary GPU rendering time. GPU
+upload waits remain separate work.
+
+## FO4 precombines on the worker
+
+A Commonwealth cell carries 38–79 precombine `_oc.nif` hashes. The main-thread
+`PrecombinedSpawnJob` used to read, parse and CSG-decode each one inside its
+Spawn step, then BGSM-merge and spawn it. Summed over the nine streamed cells
+of the grid-cross capture below, that prepare work was **915 ms of a 2 377 ms
+apply**, and the spawns' inline texture reads another 355 ms.
+
+The worker now adds each cell's uncached `_oc.nif` paths
+(`precombined::precombine_oc_nif_paths`, the job's own owner resolution) to
+its pipeline, ahead of the REFR models. A precombine task tries
+`precombined::decode_precombine_csg` against `Geometry.csg` handles the worker
+opens once per plugin (`CsgHandleCache`). If that yields nothing, it falls back
+to the ordinary import, which is the same decision the job makes. The drain
+(`finish_partial_import`) re-interns the symbols and runs the job's
+blend-preserving `merge_precombine_materials`. It then caches
+`geometry_only_cached(meshes, dedup)` under the path, which is already a
+canonical key (`oc_nif_paths_are_already_canonical_cache_keys`). The job
+finds that entry and only spawns. Because the entries pass through
+`FinishImports`, their textures are prefetched as well (see "Texture
+prefetch" below).
+
+Same capture, two runs each. Per-cell precombine hashes, entities, misses and
+absorbed-REFR skips are identical to the main-thread path on all 18 cell
+loads:
+
+| | texture prefetch only | + worker precombines |
+|---|---|---|
+| main-thread precombine prepare (9 streamed cells) | 915 ms | 0 ms |
+| precombine spawns' inline texture reads | 355 ms | 18 / 2 ms |
+| apply total | 2 492 / 2 497 ms | 1 319 / 1 335 ms |
+| apply slices / worst slice | 116–120 / 75 ms | 70 / 50 ms |
+| full-detail ready per crossing | 8.2 / 8.0 s | 6.9 / 7.3 s |
+| worker per payload (avg) | ≈15 ms | 21 / 15 ms |
+
+Readiness falls less than apply. Every streaming phase now peaks at 68 ms or
+less, yet whole-frame p95 stays near 800 ms. The frames that still gate
+readiness are outside the streaming CPU phases measured here.
 
 ## Texture prefetch
 
@@ -508,9 +547,9 @@ takes the staged bytes instead of reading the archive
   withdrawn and read inline. Only a read already running is waited for.
 - Staged bytes are capped at 256 MiB. The store is cleared when the cell's
   apply completes, is cancelled, or is dropped.
-- REFR-overlay paths (XATO / XTXR / MSWP) and FO4 precombines are not
-  predicted. Precombines are parsed, imported and spawned in one Spawn step,
-  so their textures have no lead time to prefetch into.
+- REFR-overlay paths (XATO / XTXR / MSWP) are not predicted. FO4
+  precombines are, now that the worker pre-parses them (see "FO4
+  precombines on the worker" above).
 
 Same capture, two runs each (`apply_tex_*` / `tex_prefetch_*` on the
 `streaming:` bench line):

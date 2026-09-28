@@ -319,72 +319,22 @@ impl PrecombinedSpawnJob {
                                 mat_provider.as_deref_mut(),
                                 budget,
                             );
-                            if csgs.is_empty() {
-                                return None;
-                            }
-                            let (meshes, geometry_dedup) = {
+                            let (mut meshes, geometry_dedup) = {
                                 let mut pool = world.resource_mut::<StringPool>();
-                                let (mut meshes, geometry_dedup) = build_precombine_meshes(
-                                    &scene,
-                                    &|h| csgs.get(&h).cloned(),
-                                    &mut pool,
-                                );
-                                // Apply BGSM material flags (two_sided / decal /
-                                // alpha_test) to the CSG-decoded meshes. FO4
-                                // authors these in the `.bgsm`, not the NIF, so
-                                // `precombine_material_from_shape` (NIF-only)
-                                // can't see them. The REFR and fallback
-                                // (`parse_and_import_nif`) paths run this merge; the
-                                // shared-precombine CSG path did not — leaving
-                                // precombine foliage/decals with no alpha-test
-                                // (opaque-black cards clipping through walls) and no
-                                // two-sided / decal routing. `merge_external_material`
-                                // no-ops for meshes without a `material_path`.
-                                //
-                                // BUT do NOT take the BGSM alpha-BLEND on this path.
-                                // FO4 authors the "Standard" blend mode (function=1,
-                                // src=6, dst=7) identically on transparent lab glass
-                                // AND opaque metal architecture (institutemetal01a,
-                                // flatmetalpanelsdetails01); `merge_external_material`
-                                // turns any function>0 into `has_alpha`, so applying
-                                // it here made the whole precombined Institute shell
-                                // alpha-blend against its diffuse alpha (specular
-                                // data on lit metal, not opacity) → see-through walls
-                                // (#1619 follow-up; the efd3c41b regression). Keep
-                                // the merge's other flags but restore the pre-merge
-                                // (NIF-shape) alpha-blend state so opaque precombine
-                                // architecture stays opaque.
-                                if let Some(provider) = mat_provider.as_deref_mut() {
-                                    for mesh in &mut meshes {
-                                        let blend = (
-                                            mesh.material.has_alpha,
-                                            mesh.material.src_blend_mode,
-                                            mesh.material.dst_blend_mode,
-                                        );
-                                        // #2709 (SF-D9-03) — outcome discarded
-                                        // deliberately; this path already
-                                        // selectively reverts part of the merge
-                                        // (the blend restore below) and has no
-                                        // per-cell material tally to feed.
-                                        let _ = crate::asset_provider::merge_external_material(
-                                            &mut mesh.material,
-                                            provider,
-                                            &mut pool,
-                                            // #4636 — same dead-path probe as
-                                            // the resolver arm below.
-                                            &|p| tex_provider.has_texture(p),
-                                        );
-                                        (
-                                            mesh.material.has_alpha,
-                                            mesh.material.src_blend_mode,
-                                            mesh.material.dst_blend_mode,
-                                        ) = blend;
-                                    }
-                                }
-                                (meshes, geometry_dedup)
+                                decode_precombine_csg(&scene, &csgs, &mut pool)?
                             };
-                            (!meshes.is_empty())
-                                .then(|| Arc::new(geometry_only_cached(meshes, geometry_dedup)))
+                            if let Some(provider) = mat_provider.as_deref_mut() {
+                                let mut pool = world.resource_mut::<StringPool>();
+                                merge_precombine_materials(
+                                    &mut meshes,
+                                    provider,
+                                    &mut pool,
+                                    // #4636 — same dead-path probe as the
+                                    // resolver arm below.
+                                    &|p| tex_provider.has_texture(p),
+                                );
+                            }
+                            Some(Arc::new(geometry_only_cached(meshes, geometry_dedup)))
                         }
                         Err(e) => {
                             log::warn!(
@@ -903,10 +853,132 @@ pub(super) fn build_precombine_meshes(
     (meshes, geometry_dedup)
 }
 
+/// Decode an `_oc.nif`'s shared-geometry objects out of the blobs in
+/// `csgs` (keyed by `BSPackedGeomObject::filename_hash`). `None` when none
+/// of the blobs the scene names is open, or when nothing decoded — both mean
+/// the caller falls back to the ordinary NIF import (baked variant, or
+/// content with no companion `.csg`). Shared by the main-thread
+/// [`PrecombinedSpawnJob`] and the streaming worker so the two routes cannot
+/// drift.
+pub(crate) fn decode_precombine_csg(
+    scene: &NifScene,
+    csgs: &std::collections::HashMap<u32, Arc<CsgArchive>>,
+    pool: &mut StringPool,
+) -> Option<(Vec<ImportedMesh>, Vec<u32>)> {
+    let named = byroredux_nif::import::precombine::precombine_csg_filename_hashes(scene);
+    if !named.iter().any(|hash| csgs.contains_key(hash)) {
+        return None;
+    }
+    let (meshes, geometry_dedup) = build_precombine_meshes(scene, &|h| csgs.get(&h).cloned(), pool);
+    (!meshes.is_empty()).then_some((meshes, geometry_dedup))
+}
+
+/// Apply BGSM material flags (two_sided / decal / alpha_test) to
+/// CSG-decoded precombine meshes. FO4 authors these in the `.bgsm`, not the
+/// NIF, so `precombine_material_from_shape` (NIF-only) can't see them. The
+/// REFR and fallback (`parse_and_import_nif`) paths run this merge; the
+/// shared-precombine CSG path did not — leaving precombine foliage/decals
+/// with no alpha-test (opaque-black cards clipping through walls) and no
+/// two-sided / decal routing. `merge_external_material` no-ops for meshes
+/// without a `material_path`.
+///
+/// BUT do NOT take the BGSM alpha-BLEND on this path. FO4 authors the
+/// "Standard" blend mode (function=1, src=6, dst=7) identically on
+/// transparent lab glass AND opaque metal architecture (institutemetal01a,
+/// flatmetalpanelsdetails01); `merge_external_material` turns any
+/// function>0 into `has_alpha`, so applying it here made the whole
+/// precombined Institute shell alpha-blend against its diffuse alpha
+/// (specular data on lit metal, not opacity) → see-through walls (#1619
+/// follow-up; the efd3c41b regression). Keep the merge's other flags but
+/// restore the pre-merge (NIF-shape) alpha-blend state so opaque precombine
+/// architecture stays opaque.
+///
+/// Shared by the main-thread job and the streaming drain
+/// (`finish_partial_import`) so both apply the same restore.
+pub(super) fn merge_precombine_materials(
+    meshes: &mut [ImportedMesh],
+    provider: &mut MaterialProvider,
+    pool: &mut StringPool,
+    texture_exists: &dyn Fn(&str) -> bool,
+) {
+    for mesh in meshes {
+        let blend = (
+            mesh.material.has_alpha,
+            mesh.material.src_blend_mode,
+            mesh.material.dst_blend_mode,
+        );
+        // #2709 (SF-D9-03) — outcome discarded deliberately; this path
+        // already selectively reverts part of the merge (the blend restore
+        // below) and has no per-cell material tally to feed.
+        let _ = crate::asset_provider::merge_external_material(
+            &mut mesh.material,
+            provider,
+            pool,
+            texture_exists,
+        );
+        (
+            mesh.material.has_alpha,
+            mesh.material.src_blend_mode,
+            mesh.material.dst_blend_mode,
+        ) = blend;
+    }
+}
+
+/// Archive paths of every `_oc.nif` a cell's precombine pass loads, in hash
+/// order, through the same owner resolution [`PrecombinedSpawnJob`] uses —
+/// so the streaming worker pre-parses exactly the keys the job looks up.
+pub(crate) fn precombine_oc_nif_paths(
+    cell: &CellData,
+    plugin_path: &str,
+    load_order_paths: &[&str],
+) -> Vec<String> {
+    let (_, owning_subdir) = resolve_precombine_owner(cell.form_id, load_order_paths, plugin_path);
+    cell.precombined_mesh_hashes
+        .iter()
+        .map(|&hash| precombine_oc_nif_path(cell.form_id, hash, owning_subdir.as_deref()))
+        .collect()
+}
+
+/// `<Plugin> - Geometry.csg` handles the streaming worker opens once per
+/// plugin for its lifetime, separate from the main thread's
+/// `MaterialProvider` cache (which is `&mut`, main-thread only). Reads are
+/// positional, so one handle serves every parallel decode task.
+#[derive(Default)]
+pub(crate) struct CsgHandleCache {
+    by_plugin: std::collections::HashMap<String, Option<Arc<CsgArchive>>>,
+}
+
+impl CsgHandleCache {
+    /// Every blob a cell's `_oc.nif`s may name, keyed by filename hash —
+    /// the routing [`PrecombinedSpawnJob`] builds (#2369), opened up front
+    /// so the decode tasks only read.
+    pub(crate) fn blobs_for_cell(
+        &mut self,
+        cell_form_id: u32,
+        plugin_path: &str,
+        load_order_paths: &[&str],
+    ) -> std::collections::HashMap<u32, Arc<CsgArchive>> {
+        let (owner, _) = resolve_precombine_owner(cell_form_id, load_order_paths, plugin_path);
+        csg_paths_by_name_hash(load_order_paths, owner)
+            .into_iter()
+            .filter_map(|(name_hash, path)| {
+                let opened = self
+                    .by_plugin
+                    .entry(path)
+                    .or_insert_with_key(|path| open_geometry_csg(path).map(Arc::new));
+                opened.clone().map(|csg| (name_hash, csg))
+            })
+            .collect()
+    }
+}
+
 /// Wrap precombine-decoded meshes in a geometry-only [`CachedNifImport`]
 /// (no collisions / lights / clips / particles) so the existing
 /// [`spawn_placed_instances`] path uploads + spawns them.
-fn geometry_only_cached(meshes: Vec<ImportedMesh>, geometry_dedup: Vec<u32>) -> CachedNifImport {
+pub(super) fn geometry_only_cached(
+    meshes: Vec<ImportedMesh>,
+    geometry_dedup: Vec<u32>,
+) -> CachedNifImport {
     CachedNifImport {
         meshes,
         beam_volumes: Default::default(),
@@ -965,6 +1037,22 @@ mod tests {
     }
 
     /// #1590 (a) — the CSG + subdir follow the cell's owning plugin (form-id
+    /// The streaming worker pre-parses precombines under the key the drain
+    /// derives with `canonical_model_path_key`, while `PrecombinedSpawnJob`
+    /// looks the raw path up. The two only meet if the raw path is already
+    /// canonical, so a case or separator change here would silently send
+    /// every streamed precombine back through the main-thread parse.
+    #[test]
+    fn oc_nif_paths_are_already_canonical_cache_keys() {
+        for sub in [None, Some("dlccoast.esm")] {
+            let path = precombine_oc_nif_path(0x02AB_CDEF, 0x0123_ABCD, sub);
+            assert_eq!(
+                super::super::nif_import_registry::canonical_model_path_key(&path),
+                path
+            );
+        }
+    }
+
     /// mod-index byte → load order), not the last-loaded `--esm`.
     #[test]
     fn resolve_precombine_owner_follows_form_id_mod_index() {
