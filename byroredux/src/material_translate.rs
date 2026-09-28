@@ -2428,12 +2428,22 @@ mod tests {
     ///   truncating at the first or last `#[cfg(test)]` silently drops a real
     ///   spawner — re-creating this bug while looking fixed.
     ///
-    /// Deliberately out of scope: `cornell.rs` and `scene.rs` spawn debug
-    /// primitives (the Cornell room, the demo cube/quad/triangles) with no
-    /// authored material of any kind. They are not draw populations from game
-    /// content, which is what the NIFAL boundary invariant is about. Widening
-    /// [`SPAWNER_ROOTS`] to the whole crate would pull them in and turn this
-    /// guard into a demand that debug scaffolding materialize like a REFR.
+    /// Scope — what the scan leaves out, and why (#4964):
+    ///
+    /// - `cornell.rs` is outside [`SPAWNER_ROOTS`] by choice. Its Cornell
+    ///   room is a synthetic RT fixture with hand-built `Material`s, not a
+    ///   draw population from game content, which is what the NIFAL boundary
+    ///   invariant is about.
+    /// - `scene.rs` is a root (#4856) and is scanned like any other file, so a
+    ///   real spawner added there fails this test. Only its four
+    ///   material-free demo primitives — `cube`, `quad`, `red_tri`,
+    ///   `blue_tri` — are exempt, by entity name.
+    /// - Two drawn surfaces are recorded exemptions that no insert scan here
+    ///   can reach. Save `restore_world` (`crates/save`) reinserts saved
+    ///   `Material`s through the save registry. EXAL ground-cover blades are
+    ///   GPU-generated, shade from `GroundCoverPalette` with no `Material`,
+    ///   and insert no `MeshHandle`. `docs/engine/nifal.md` §3 ("Drawn-surface
+    ///   exemptions, recorded", #4304) lists them with Cornell.
     #[test]
     fn every_exterior_spawner_inserts_a_boundary_material() {
         let crate_src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
@@ -2579,8 +2589,10 @@ mod tests {
     /// mesh-spawning code, walked by
     /// [`every_exterior_spawner_inserts_a_boundary_material`].
     ///
-    /// A list rather than the whole crate: see that test's doc for the two
-    /// debug-scene files a crate-wide walk would pull in.
+    /// A list rather than the whole crate so `cornell.rs`'s synthetic fixture
+    /// stays out; `scene.rs` is in, with its demo primitives exempted by
+    /// name. See that test's doc for the full scope and the exemptions
+    /// recorded elsewhere.
     const SPAWNER_ROOTS: [&str; 6] = [
         "cell_loader",
         "cell_loader.rs",

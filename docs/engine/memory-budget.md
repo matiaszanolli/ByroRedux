@@ -108,6 +108,40 @@ Trimming or lazily-populating those is a separate, unscoped follow-up.
 
 ---
 
+## Texture Prefetch Store (CPU-side)
+
+[`byroredux/src/asset_provider/texture_prefetch.rs`](../../byroredux/src/asset_provider/texture_prefetch.rs)
+(`a3632909a`, #4963). Host RAM, not VRAM. While a streamed cell applies, the
+stream pool reads and inflates its NIFs' texture paths ahead of the resolves
+that need them. `PrefetchStore` holds the extracted DDS bytes until a resolve
+takes them. Taken bytes leave this store and move into the texture
+registry's pending-upload queue until the cell's batched flush.
+
+| Item | Value |
+|---|---|
+| `STAGED_BYTE_CAP` | 256 MiB (`256 << 20`) of ready bytes: extracted, not yet taken |
+| Past the cap | `reserve` queues no new key, and `finish` drops a read that would cross the cap (counted in `tex_prefetch_dropped`). Their resolves read inline |
+| Cleared | by `end_apply_texture_prefetch` when the cell's apply ends: completed (with or without anything to spawn), failed, cancelled, or superseded as stale. Freed with its owning `TextureProvider` |
+| Measured peak | 111 MiB staged on an FO4 Commonwealth 0,0 r1 grid-cross (`a3632909a`) |
+
+**The cap counts ready bytes only.** A read in flight (`Slot::Running`) holds
+its whole extracted `Vec<u8>` on a stream-pool thread until `finish`. A read
+that would cross the cap is fully extracted before it is dropped. The
+transient can therefore exceed 256 MiB by up to one texture per stream-pool
+thread, times the largest DDS in flight. The pool has
+`available_parallelism() / 2` threads, floored at 1 (`build_stream_parse_pool`
+in `byroredux/src/streaming.rs`): 16 on the 32-thread dev box. Queued keys
+hold no bytes.
+
+Telemetry is on the `streaming:` bench line. `tex_prefetch_peak_mib` is the
+session high of ready bytes, so it does not see in-flight reads either.
+`tex_prefetch_dropped` counts cap drops, and `tex_prefetch_unused` counts
+entries no resolve took before their clear. `tex_prefetch_queued` and
+`tex_prefetch_withdrawn` count reads queued ahead and reads a resolve pulled
+back to run inline.
+
+---
+
 ## Scene Buffers (per-frame SSBOs / UBOs)
 
 Resident for the lifetime of `VulkanContext`. Double-buffered
@@ -811,8 +845,9 @@ the 128 MiB budget and was evicted largest-first, leaving the pool near
 empty — #3298 changed the mesh pool's steady state, not its cap.
 
 Source of truth for the doubling is `GeometryRebuildInProgress`'s own doc
-comment (`crates/renderer/src/mesh.rs`); this row exists so a budget
-decision made from this page does not silently assume one generation.
+comment (`crates/renderer/src/mesh/geometry_ssbo.rs` since #3451); this row
+exists so a budget decision made from this page does not silently assume one
+generation.
 
 ---
 
@@ -969,8 +1004,15 @@ About 19.8 MB together, flat across resolutions.
 ### Not yet ledgered
 
 A grep of this page for the owning subsystem name is the cheapest way to
-find a gap in it. One is known and unquantified:
+find a gap in it. Two are known and unquantified:
 
+- **Per-mesh scene vertex / index buffers.** `upload_scene_mesh` and
+  `upload_scene_meshes_batched` give every scene mesh its own device-local
+  vertex + index buffer (the per-mesh draw fallback, and the BLAS build input
+  with RT on). They hold the same bytes as that mesh's span of the global
+  pools, and they stay resident until `drop_mesh`. The rough-budget "Vertex /
+  index pools" row counts the global generation only. Global-only uploads
+  (distant terrain and object LOD, #1370) carry none.
 - **`StagingPool` retained capacity** beyond the geometry rebuild's 64 MiB
   above. The pool's budget is a *retention* bound (128 MiB default), not an
   in-flight bound, and texture uploads share it. Texture uploads' in-flight
@@ -1002,8 +1044,8 @@ authoritative rather than re-derived.
 | Bloom pyramid (2 FIF) | ~11 MB (1080p) | ~44 MB (4K) |
 | Volumetrics froxel grid (6 volumes, 44 B/froxel/slot, 2 FIF) | ~183 MB (1080p native) | **~730 MB (4K native)** — ~81 MB at 1080p / ~324 MB at 4K with FSR Quality |
 | FSR 3.1 upscaler output (2 FIF, output resolution) | ~33 MB (1080p) | ~133 MB (4K). Both this row and the SDK's own working memory are now billed to the BLAS residency reservation (#3988); the SDK figure is still allocated outside `gpu-allocator` and so does not appear in `ctx.memory` |
-| Vertex / index pools | ~208 MB | ~1.66 GB cap |
-| Global geometry SSBO rebuild (#3298) | — (idle) | +2× projected, ≤ ~512 MB, + up to 128 MiB retained mesh-side staging (one 64 MiB vertex-chunk entry + one 64 MiB index-chunk entry, #3298's chunked path) |
+| Vertex / index pools (one global geometry SSBO generation) | ~208 MB | ~480 MB cap (`VERTEX_POOL_HARD_CAP` 4 M × 104 B + `INDEX_POOL_HARD_CAP` 16 M × 4 B, see [Mesh Registry](#mesh-registry)) |
+| Global geometry SSBO rebuild (#3298 / #3443) | — (idle) | +1× projected — the replacement generation, allocated while the old one still serves draws, so up to ~480 MB at the pool caps (~960 MB with the old one). Admitted only while device-local usage stays at or under 80% of the live `VK_EXT_memory_budget` budget, and under 256 MiB without a reading; see [the rebuild section](#global-geometry-ssbo-rebuild-3298--3463). Plus up to 128 MiB retained mesh-side staging (one 64 MiB vertex-chunk entry + one 64 MiB index-chunk entry, #3298's chunked path) |
 | Sky bake + cloud noise + ground cover (fixed size, see [Sky and Ground Cover](#sky-and-ground-cover-fixed-size)) | ~79 MB | ~79 MB |
 | Scaleform UI (Ruffle wgpu device + target + readback + engine image) | ~25 MB (one menu) | ~42 MB + a second logical device |
 | MenuXml HUD overlay textures (3 × swapchain extent, RGBA8, see [Scaleform UI](#scaleform-ui-ruffle--wgpu--3431)) | ~25 MB (1080p) | ~100 MB (4K) |
@@ -1011,7 +1053,7 @@ authoritative rather than re-derived.
 | BLAS structures | ~300 MB | ~1 GB (heavy scene) |
 | TLAS + scratch | ~50 MB | ~256 MB |
 | Pipeline cache blob | < 10 MB | — |
-| **Estimated total** | **~1.95 GB** | **~4.28 GB at native 4K** — includes the fixed volumetric medium/aperture index budget (~6.5 MB). #4300 corrected the scene-SSBO row to its section's own sum (~155 / ~243 MB, from a flat ~223 MB) and added the ~20 MB fixed-size sky / ground-cover row. #3993 added the previously-unledgered composite/depth (~83 MB / ~332 MB) and cluster light-index (~14 MB) rows, and the 4K native peak crosses the < 4 GB target as a result. It was only ever inside that target here by omission; FSR Quality, the shipped default, brings it back well under — see the per-preset table in the Volumetrics section. The MenuXml HUD overlay row (~25 / ~100 MB, REN-D5-2026-09-20-04) was added 2026-09-20 and moved both totals by its own amount. #4413 corrected the fixed-size sky / ground-cover row from ~20 MB to its section's own sum (~79 MB): the blade arena had grown to 64 MiB in `7996edf61` without it, and the authored-model tier adds 8.3 MiB. While a worldspace has authored cover the scene-SSBO row also grows by the tier's 14 MiB instance tail |
+| **Estimated total** | **~1.95 GB** | **~4.28 GB at native 4K** — every resolution-scaled row at 4K, the fixed-size rows and the scene-SSBO peak, plus the content rows (vertex / index pools, textures, BLAS, TLAS) at their *typical* figures: a typical FNV interior rendered at 4K, not every cap at once. Neither total counts the geometry-rebuild transient or the Scaleform rows. So the pools row's cap correction (~1.66 GB → ~480 MB, #4961) moved neither total. Includes the fixed volumetric medium/aperture index budget (~6.5 MB). #4300 corrected the scene-SSBO row to its section's own sum (~155 / ~243 MB, from a flat ~223 MB) and added the ~20 MB fixed-size sky / ground-cover row. #3993 added the previously-unledgered composite/depth (~83 MB / ~332 MB) and cluster light-index (~14 MB) rows, and the 4K native peak crosses the < 4 GB target as a result. It was only ever inside that target here by omission; FSR Quality, the shipped default, brings it back well under — see the per-preset table in the Volumetrics section. The MenuXml HUD overlay row (~25 / ~100 MB, REN-D5-2026-09-20-04) was added 2026-09-20 and moved both totals by its own amount. #4413 corrected the fixed-size sky / ground-cover row from ~20 MB to its section's own sum (~79 MB): the blade arena had grown to 64 MiB in `7996edf61` without it, and the authored-model tier adds 8.3 MiB. While a worldspace has authored cover the scene-SSBO row also grows by the tier's 14 MiB instance tail |
 
 The 6 GB RT-minimum and 4 GB whole-renderer target remain design targets.
 Static BLAS residency is separately enforced at 1 GiB, so a Vulkan driver

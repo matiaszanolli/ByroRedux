@@ -234,6 +234,24 @@ impl MeshRegistry {
             self.pending_vertices.truncate(v_write);
             self.pending_indices.truncate(i_write);
         } else {
+            // #4960 — no upload path reaches this today, and its result is
+            // identical to the in-place move, so nothing downstream would
+            // notice one that did. Say so once: every compaction after it
+            // pays the fresh-pool allocation and page faults again.
+            static ALLOCATING_COMPACTION_WARNED: std::sync::Once = std::sync::Once::new();
+            ALLOCATING_COMPACTION_WARNED.call_once(|| {
+                log::warn!(
+                    "Geometry compaction fell back to copying {:.1} MiB into freshly \
+                     allocated pools: surviving scene meshes are not ascending and disjoint \
+                     in slot order, so an upload path reserved slots out of order. Output is \
+                     unchanged, but each such compaction repeats the first-touch stall the \
+                     in-place move avoids (150-210 ms per FO4 crossing, #4960).",
+                    (self.pending_vertices.len() * std::mem::size_of::<Vertex>()
+                        + self.pending_indices.len() * std::mem::size_of::<u32>())
+                        as f64
+                        / (1024.0 * 1024.0),
+                );
+            });
             let mut new_vertices: Vec<Vertex> = Vec::with_capacity(self.pending_vertices.len());
             let mut new_indices: Vec<u32> = Vec::with_capacity(self.pending_indices.len());
             for (idx, v_range, i_range) in survivors() {
@@ -938,9 +956,12 @@ mod compaction_gate_tests {
     //!
     //! Comparing pool CONTENTS therefore cannot detect the regression — a
     //! redundant pass and a skipped pass agree on every element. These tests
-    //! observe the allocation instead: compaction always installs freshly
-    //! built `Vec`s, so `as_ptr()` moves iff the pass ran. Pools are kept
-    //! non-empty so the pointers are real rather than dangling.
+    //! used to observe the allocation instead, back when every pass installed
+    //! freshly built `Vec`s. Since `7e9da5dcc` compacts in place, a pass over
+    //! a hole-free layout moves nothing and leaves `as_ptr()` where it was
+    //! (#4960), so the pointer no longer shows whether the pass ran. The core
+    //! pin observes the plan instead: `plan_geometry_compaction` returns
+    //! `None` iff it skipped.
     use super::super::*;
 
     /// Upload two scene meshes through the device-free global-only path.
@@ -976,27 +997,14 @@ mod compaction_gate_tests {
             "survivor geometry remains"
         );
 
-        let v_ptr = reg.pending_vertices.as_ptr();
-        let i_ptr = reg.pending_indices.as_ptr();
-        let v_len = reg.pending_vertices.len();
-        let i_len = reg.pending_indices.len();
-
-        // Second pass with nothing dropped in between: must be a no-op.
-        reg.compact_pending_geometry();
-
-        assert_eq!(
-            reg.pending_vertices.as_ptr(),
-            v_ptr,
-            "vertex pool was reallocated by a compaction that had nothing to \
-             compact — the #2678 redundant full-pool copy is back"
+        // Second pass with nothing dropped in between: must not run. A pointer
+        // check cannot see this any more — the in-place pass it would run
+        // moves nothing on a hole-free layout (see the module doc).
+        assert!(
+            reg.plan_geometry_compaction().is_none(),
+            "a compaction with nothing to compact ran anyway — the #2678 \
+             redundant full-pool pass is back"
         );
-        assert_eq!(
-            reg.pending_indices.as_ptr(),
-            i_ptr,
-            "index pool was reallocated by a no-op compaction (#2678)"
-        );
-        assert_eq!(reg.pending_vertices.len(), v_len);
-        assert_eq!(reg.pending_indices.len(), i_len);
     }
 
     /// The flag must not be derivable from the slot table: after a drop AND a
@@ -1152,10 +1160,25 @@ mod deferred_compaction_tests {
             reg.drop_mesh(a) && reg.drop_mesh(c),
             "holes at the front and the middle"
         );
+        // #4960 — the allocating fallback yields the same pools and offsets,
+        // so every payload check below passes on either branch. Only the
+        // allocation tells them apart: the in-place move never reallocates.
+        let (v_ptr, i_ptr) = (reg.pending_vertices.as_ptr(), reg.pending_indices.as_ptr());
 
         let plan = reg.plan_geometry_compaction().expect("drops leave holes");
         reg.apply_compaction_plan(&plan);
 
+        assert_eq!(
+            reg.pending_vertices.as_ptr(),
+            v_ptr,
+            "an upload-order layout reallocated the vertex pool — compaction took the \
+             allocating fallback, bringing back its 150-210 ms first-touch stall (#4960)"
+        );
+        assert_eq!(
+            reg.pending_indices.as_ptr(),
+            i_ptr,
+            "an upload-order layout reallocated the index pool (#4960)"
+        );
         for (handle, payload) in &expected {
             assert_eq!(
                 &survivor_payload(&reg, *handle),
@@ -1218,12 +1241,19 @@ mod deferred_compaction_tests {
         assert_eq!(survivor_payload(&reg, a), before_a);
         assert_eq!(survivor_payload(&reg, b), before_b);
         assert!(reg.drop_mesh(c));
+        let v_ptr = reg.pending_vertices.as_ptr();
 
         let plan = reg
             .plan_geometry_compaction()
             .expect("the drop leaves a hole");
         reg.apply_compaction_plan(&plan);
 
+        assert_ne!(
+            reg.pending_vertices.as_ptr(),
+            v_ptr,
+            "this layout must take the allocating copy, the only branch that \
+             reallocates (#4960)"
+        );
         assert_eq!(survivor_payload(&reg, a), before_a);
         assert_eq!(survivor_payload(&reg, b), before_b);
         assert_eq!(

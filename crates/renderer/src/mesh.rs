@@ -1757,9 +1757,10 @@ mod pool_growth_cap_tests {
         let gate = body
             .find("geometry_rebuild_needs_idle(projected_bytes, has_existing_buffers, live_budget)")
             .expect(
-                "the chunked path must consult geometry_rebuild_needs_idle — without it a \
-                 >= 256 MiB rebuild duplicates the largest non-texture allocation class \
-                 and routes around #2374",
+                "the chunked path must consult geometry_rebuild_needs_idle — without it every \
+                 rebuild duplicates the largest non-texture allocation class, past the 80% \
+                 live-budget line (or at >= 256 MiB with no budget reading), and routes \
+                 around #2374",
             );
         let allocate = body
             .find("try_allocate_empty_geometry_buffers(")
@@ -2218,10 +2219,14 @@ mod upload_geometry_guard_tests {
 /// and the page is cited as authoritative by `/audit-performance`,
 /// `/audit-renderer` and `/audit-safety` rather than re-derived. Pin the
 /// pair so a constant change cannot silently invalidate a published budget
-/// figure — the same drift class as #3117 and the SVGF row (#2679).
+/// figure — the same drift class as #3117 and the SVGF row (#2679). #4961
+/// adds the pool hard caps, which the page's rough-budget rows derive from.
 #[cfg(test)]
 mod memory_budget_doc_pin_tests {
-    use super::{GEOMETRY_REBUILD_CHUNK_BYTES, GEOMETRY_REBUILD_IDLE_THRESHOLD_BYTES};
+    use super::{
+        Vertex, GEOMETRY_REBUILD_CHUNK_BYTES, GEOMETRY_REBUILD_IDLE_THRESHOLD_BYTES,
+        INDEX_POOL_HARD_CAP, VERTEX_POOL_HARD_CAP,
+    };
 
     const BUDGET_MD: &str = include_str!("../../../docs/engine/memory-budget.md");
 
@@ -2269,13 +2274,68 @@ mod memory_budget_doc_pin_tests {
             );
         }
 
-        // #3443 landed the idle gate, so the doubling cannot reach the hard
-        // caps. A page that doubles those is arithmetic against a path the
-        // code no longer takes.
+        // #4962 — with a `VK_EXT_memory_budget` reading the gate is the 80%
+        // headroom line, not a size: on a card with room the doubling reaches
+        // twice the pool hard caps, and only a device without a reading is
+        // held under 256 MiB. This used to assert the literal `#3443` under a
+        // message claiming the gate kept the doubling below 256 MiB — the
+        // reverse of the section it pinned. Pin the claim itself.
+        for needle in [
+            "headroom-bounded, not size-bounded",
+            "2× the `VERTEX_POOL_HARD_CAP` + `INDEX_POOL_HARD_CAP`",
+        ] {
+            assert!(
+                section.contains(needle),
+                "the section must say \"{needle}\": with a budget reading the doubling is \
+                 bounded by the 80% line and can reach twice the pool hard caps, and only \
+                 without a reading by 256 MiB — budget arithmetic that assumes 256 MiB \
+                 undercounts it (#4962)",
+            );
+        }
+    }
+
+    /// #4961 — the VRAM Rough Budget rows for the pools and the rebuild had
+    /// drifted from the sections they summarise: the pools' peak still read
+    /// "~1.66 GB cap" against ~480 MB of hard caps, and the rebuild row still
+    /// read "+2× projected, ≤ ~512 MB" after the gate became the 80% headroom
+    /// line. The pool figure is derived here from the constants.
+    #[test]
+    fn rough_budget_geometry_rows_match_the_pool_caps() {
+        let row = |name: &str| {
+            BUDGET_MD
+                .lines()
+                .find(|line| line.starts_with(&format!("| {name}")))
+                .unwrap_or_else(|| panic!("memory-budget.md lost its `{name}` rough-budget row"))
+        };
+        // Decimal MB, the page's convention: 416 MB + 64 MB.
+        let pool_cap_mb = (VERTEX_POOL_HARD_CAP * std::mem::size_of::<Vertex>()
+            + INDEX_POOL_HARD_CAP * std::mem::size_of::<u32>())
+            / 1_000_000;
+
+        let pools = row("Vertex / index pools");
         assert!(
-            section.contains("#3443"),
-            "the row must record that #3443's idle gate bounds the doubling below the \
-             256 MiB threshold, or a reader will double the hard caps (#3463)",
+            pools.contains(&format!("~{pool_cap_mb} MB cap")),
+            "the pools row's peak must be one generation at the hard caps, \
+             ~{pool_cap_mb} MB (#4961): {pools}",
+        );
+
+        let rebuild = row("Global geometry SSBO rebuild");
+        for needle in [
+            "+1× projected".to_string(),
+            format!("~{pool_cap_mb} MB at the pool caps"),
+            "80%".to_string(),
+            "256 MiB".to_string(),
+        ] {
+            assert!(
+                rebuild.contains(&needle),
+                "the rebuild row must carry `{needle}`: one extra generation, bounded by \
+                 the 80% headroom line with a budget reading and 256 MiB without (#4961): \
+                 {rebuild}",
+            );
+        }
+        assert!(
+            !rebuild.contains("2× projected"),
+            "the extra resident generation is one projected copy, not two (#4961): {rebuild}",
         );
     }
 }

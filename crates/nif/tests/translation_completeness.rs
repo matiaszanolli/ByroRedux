@@ -131,6 +131,17 @@ struct MaterialStats {
     with_metalness_override: usize,
     /// Meshes whose `roughness_override` is `Some`.
     with_roughness_override: usize,
+    /// #4965 — the PBR classifier's other signal classes, counted one by
+    /// one. An override is `Some` when any classifier signal is present
+    /// (`MaterialInfo::has_no_pbr_classifier_signal`): these three plus
+    /// `texture_path` and `normal_map`, which have their own counters.
+    /// Meshes whose `specular_authored` is set (a bound `NiMaterialProperty`
+    /// or `BSLightingShaderProperty`).
+    with_specular_authored: usize,
+    /// Meshes whose gloss-map (`smooth_spec`) slot is populated.
+    with_gloss_map: usize,
+    /// Meshes whose `env_map_scale` clears the classifier's `> 0.3` gate.
+    with_env_map_signal: usize,
     /// Meshes whose `normal_map` slot is populated.
     with_normal_map: usize,
     /// Meshes whose `tangents` vector is non-empty (tangent extraction
@@ -161,6 +172,15 @@ impl MaterialStats {
         }
         if mesh.material.roughness_override.is_some() {
             self.with_roughness_override += 1;
+        }
+        if mesh.material.specular_authored {
+            self.with_specular_authored += 1;
+        }
+        if mesh.material.textures.smooth_spec.is_some() {
+            self.with_gloss_map += 1;
+        }
+        if mesh.material.env_map_scale > 0.3 {
+            self.with_env_map_signal += 1;
         }
         if mesh.material.textures.normal.is_some() {
             self.with_normal_map += 1;
@@ -203,7 +223,7 @@ impl MaterialStats {
 
     fn print_row(&self, label: &str) {
         eprintln!(
-            "  {:<12} meshes={:>4}  tex={:>5.1}%  mat_path={:>5.1}%  m_kind={:>5.1}%  metO={:>5.1}%  rghO={:>5.1}%  nrm={:>5.1}%  tan={:>5.1}%  consistent={:>5.1}%",
+            "  {:<12} meshes={:>4}  tex={:>5.1}%  mat_path={:>5.1}%  m_kind={:>5.1}%  metO={:>5.1}%  rghO={:>5.1}%  spec={:>5.1}%  gloss={:>5.1}%  env={:>5.1}%  nrm={:>5.1}%  tan={:>5.1}%  consistent={:>5.1}%",
             label,
             self.imported_meshes,
             Self::pct(self.with_texture_path, self.imported_meshes),
@@ -211,6 +231,9 @@ impl MaterialStats {
             Self::pct(self.with_material_kind, self.imported_meshes),
             Self::pct(self.with_metalness_override, self.imported_meshes),
             Self::pct(self.with_roughness_override, self.imported_meshes),
+            Self::pct(self.with_specular_authored, self.imported_meshes),
+            Self::pct(self.with_gloss_map, self.imported_meshes),
+            Self::pct(self.with_env_map_signal, self.imported_meshes),
             Self::pct(self.with_normal_map, self.imported_meshes),
             Self::pct(self.with_tangents, self.imported_meshes),
             Self::pct(self.structurally_consistent, self.imported_meshes),
@@ -250,6 +273,26 @@ fn assert_pbr_override_ceiling(s: &MaterialStats, label: &str, ceiling: f64) {
         roughness <= ceiling,
         "[{label}] roughness_override fill > {ceiling:.1}% (got {roughness:.1}%) — \
          an unauthored value may be counting as a classifier signal (#4393)"
+    );
+}
+
+/// Upper bound for one PBR classifier signal class, for a game where
+/// another class is authored on every mesh. There the override fill sits at
+/// 100% by construction, so [`assert_pbr_override_ceiling`] can neither pass
+/// meaningfully nor see a placeholder in any other class — each needs its
+/// own ceiling (#4965).
+fn assert_pbr_signal_ceiling(
+    s: &MaterialStats,
+    label: &str,
+    signal: &str,
+    count: usize,
+    ceiling: f64,
+) {
+    let fill = MaterialStats::pct(count, s.imported_meshes);
+    assert!(
+        fill <= ceiling,
+        "[{label}] {signal} fill > {ceiling:.1}% (got {fill:.1}%) — an unauthored value may \
+         be counting as a classifier signal (#4393, #4965)"
     );
 }
 
@@ -365,7 +408,7 @@ fn collect_stats(archive: &MeshArchive, resolver: Option<&dyn MeshResolver>) -> 
 fn cross_game_translation_completeness() {
     eprintln!("\n=== #1277 Task 8: cross-game translation completeness ===");
     eprintln!(
-        "  {:<12} {:>14}  {:>10}  {:>13}  {:>10}  {:>9}  {:>9}  {:>9}  {:>9}  {:>16}",
+        "  {:<12} {:>14}  {:>10}  {:>13}  {:>10}  {:>9}  {:>9}  {:>9}  {:>10}  {:>8}  {:>9}  {:>9}  {:>16}",
         "game",
         "imported",
         "tex%",
@@ -373,6 +416,9 @@ fn cross_game_translation_completeness() {
         "m_kind%",
         "metO%",
         "rghO%",
+        "spec%",
+        "gloss%",
+        "env%",
         "nrm%",
         "tan%",
         "consistent%",
@@ -475,7 +521,33 @@ fn cross_game_translation_completeness() {
                     MaterialStats::pct(s.with_tangents, s.imported_meshes)
                 );
                 assert_pbr_override_fill(s, label, 90.0);
-                assert_pbr_override_ceiling(s, label, 99.0);
+                // #4965 — no override-fill ceiling: the fill is 100% by
+                // construction. Every Oblivion mesh binds a
+                // `NiMaterialProperty`, which sets `specular_authored`, which
+                // is a classifier signal on its own — so #4566's 99.0 ceiling
+                // could never pass. Pin that reason instead, and ceiling the
+                // other signal classes one by one: a placeholder in any of
+                // them (#4393's failure mode) would hide under the saturated
+                // fill. Measured 2026-09-28 (stratified, 567 meshes): spec
+                // 100.0%, tex 91.4%, nrm / gloss / env 0.0%; ceilings keep
+                // the other lanes' ~5pp margin.
+                assert_eq!(
+                    s.with_specular_authored, s.imported_meshes,
+                    "[{label}] specular_authored on {} of {} meshes — a mesh without a \
+                     NiMaterialProperty means the override fill is no longer 100% by \
+                     construction; re-measure and restore an override-fill ceiling (#4965)",
+                    s.with_specular_authored, s.imported_meshes,
+                );
+                assert_pbr_signal_ceiling(s, label, "texture_path", s.with_texture_path, 96.0);
+                assert_pbr_signal_ceiling(s, label, "normal_map", s.with_normal_map, 5.0);
+                assert_pbr_signal_ceiling(s, label, "gloss_map", s.with_gloss_map, 5.0);
+                assert_pbr_signal_ceiling(
+                    s,
+                    label,
+                    "env_map_scale > 0.3",
+                    s.with_env_map_signal,
+                    5.0,
+                );
                 // No normal_map floor: measured 0.0% across the stratified
                 // (multi-content-class) sample, not just the pre-#2213
                 // architecture-only one. `apply_texturing_property`
