@@ -13,7 +13,7 @@ use super::{
     JoinTimeout, LoadCellPayload, LoadedCell, PayloadDecision, PreParseModelSkip, StreamingDeltas,
     StreamingLatencySummary, StreamingTelemetry, StreamingWorkerTimings,
 };
-use crate::asset_provider::TextureProvider;
+use crate::asset_provider::{ResolveExtractTotals, TextureProvider};
 use crate::cell_loader::UnloadPhaseTimings;
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::math::Vec3;
@@ -249,8 +249,23 @@ fn streaming_telemetry_records_independent_ready_deadlines() {
         batch_duplicate_skips: 4,
         ..StreamingWorkerTimings::default()
     });
-    telemetry.record_apply_slice(Duration::from_millis(3), true);
-    telemetry.record_apply_slice(Duration::from_millis(99), false);
+    telemetry.record_apply_slice(
+        Duration::from_millis(3),
+        true,
+        ResolveExtractTotals {
+            elapsed: Duration::from_millis(2),
+            count: 5,
+        },
+    );
+    // Idle slices are not samples, and neither is their texture extraction.
+    telemetry.record_apply_slice(
+        Duration::from_millis(99),
+        false,
+        ResolveExtractTotals {
+            elapsed: Duration::from_millis(40),
+            count: 9,
+        },
+    );
     telemetry.record_lod_slice(Duration::from_millis(4), 2);
     telemetry.record_lod_slice(Duration::from_millis(99), 0);
 
@@ -268,6 +283,11 @@ fn streaming_telemetry_records_independent_ready_deadlines() {
     assert_eq!(telemetry.full_detail.samples, 1);
     assert_eq!(telemetry.lod.samples, 1);
     assert_eq!(telemetry.apply_slices.samples, 1);
+    assert_eq!(
+        telemetry.apply_texture_extract.total,
+        Duration::from_millis(2)
+    );
+    assert_eq!(telemetry.apply_texture_extracts, 5);
     assert_eq!(telemetry.lod_slices.samples, 1);
     assert_eq!(telemetry.worker_parse.samples, 1);
     assert_eq!(telemetry.worker_batch_duplicate_skips, 4);
@@ -285,6 +305,10 @@ fn streaming_telemetry_records_independent_ready_deadlines() {
     assert!(telemetry
         .bench_line()
         .contains("worker_batch_duplicate_skips=4"));
+    assert!(telemetry.bench_line().contains(
+        "apply_total_ms=3.00 apply_tex_extracts=5 apply_tex_extract_total_ms=2.00 \
+         apply_tex_extract_max_ms=2.00"
+    ));
 }
 
 /// EX-06 / #2376 — every phase must report a distribution, not just an
@@ -340,7 +364,11 @@ fn bench_line_emits_per_phase_distributions() {
     let mut telemetry = StreamingTelemetry::default();
     let start = Instant::now();
     telemetry.begin_boundary((1, 0), start);
-    telemetry.record_apply_slice(Duration::from_millis(3), true);
+    telemetry.record_apply_slice(
+        Duration::from_millis(3),
+        true,
+        ResolveExtractTotals::default(),
+    );
     telemetry.record_unload_slice(Duration::from_millis(2), 1);
     telemetry.record_lod_slice(Duration::from_millis(1), 1);
     telemetry.record_worker(StreamingWorkerTimings {
@@ -355,6 +383,7 @@ fn bench_line_emits_per_phase_distributions() {
         "queue_wait",
         "worker_parse",
         "apply",
+        "apply_tex_extract",
         "unload",
         "lod_slice",
         "full_detail",

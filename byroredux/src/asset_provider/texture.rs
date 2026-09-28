@@ -13,6 +13,37 @@ pub(crate) struct TextureProvider {
     /// titles resident at once and they ship *different* files under one path
     /// (FO76 re-authors FO4's, SE re-exports LE's). `None` everywhere else.
     registry_namespace: Option<String>,
+    /// Archive reads + inflates on the texture-resolve miss path — the DDS
+    /// extraction the main thread pays when a REFR names a texture the
+    /// registry hasn't loaded yet. Cumulative; streaming telemetry diffs it
+    /// around each apply slice to attribute that slice's extract cost.
+    resolve_extract: ResolveExtractCounters,
+}
+
+/// Cumulative texture-resolve extraction cost. Atomics because the provider
+/// is shared (`Arc`) with the streaming worker, though only the main thread's
+/// resolve path records into it.
+#[derive(Default)]
+struct ResolveExtractCounters {
+    nanos: std::sync::atomic::AtomicU64,
+    count: std::sync::atomic::AtomicU64,
+}
+
+/// Snapshot of [`TextureProvider::resolve_extract_totals`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct ResolveExtractTotals {
+    pub elapsed: std::time::Duration,
+    pub count: u64,
+}
+
+impl ResolveExtractTotals {
+    /// Cost accrued since `earlier`.
+    pub(crate) fn since(self, earlier: Self) -> Self {
+        Self {
+            elapsed: self.elapsed.saturating_sub(earlier.elapsed),
+            count: self.count.saturating_sub(earlier.count),
+        }
+    }
 }
 
 impl TextureProvider {
@@ -21,7 +52,29 @@ impl TextureProvider {
             texture_archives: Vec::new(),
             mesh_archives: Vec::new(),
             registry_namespace: None,
+            resolve_extract: ResolveExtractCounters::default(),
         }
+    }
+
+    /// Total texture-resolve extraction cost so far (see `resolve_extract`).
+    pub(crate) fn resolve_extract_totals(&self) -> ResolveExtractTotals {
+        use std::sync::atomic::Ordering::Relaxed;
+        ResolveExtractTotals {
+            elapsed: std::time::Duration::from_nanos(self.resolve_extract.nanos.load(Relaxed)),
+            count: self.resolve_extract.count.load(Relaxed),
+        }
+    }
+
+    /// Extract a texture on the resolve miss path, charging the read +
+    /// inflate time to [`Self::resolve_extract_totals`].
+    fn extract_for_resolve(&self, path: &str) -> Option<Vec<u8>> {
+        use std::sync::atomic::Ordering::Relaxed;
+        let started = std::time::Instant::now();
+        let bytes = self.extract(path);
+        let nanos = started.elapsed().as_nanos().min(u64::MAX as u128) as u64;
+        self.resolve_extract.nanos.fetch_add(nanos, Relaxed);
+        self.resolve_extract.count.fetch_add(1, Relaxed);
+        bytes
     }
 
     /// Scope this provider's texture-registry entries to `namespace`.
@@ -649,7 +702,7 @@ fn resolve_texture_view_with_clamp(
     if let Some(cached) = cached {
         return cached;
     }
-    if let Some(dds_bytes) = tex_provider.extract(tex_path) {
+    if let Some(dds_bytes) = tex_provider.extract_for_resolve(tex_path) {
         // #881 / CELL-PERF-03 — enqueue rather than upload
         // synchronously. The bindless slot is reserved eagerly with
         // the descriptor pointing at the fallback so this REFR's

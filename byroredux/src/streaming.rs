@@ -33,7 +33,7 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use crate::asset_provider::{MaterialProvider, TextureProvider};
+use crate::asset_provider::{MaterialProvider, ResolveExtractTotals, TextureProvider};
 use crate::cell_loader::{canonical_model_path_key, ExteriorWorldContext, UnloadPhaseTimings};
 
 /// One loaded cell tracked by [`WorldStreamingState`]. The
@@ -183,6 +183,12 @@ pub struct StreamingTelemetry {
     /// (#3670).
     pub worker_batch_duplicate_skips: u64,
     pub apply_slices: StreamingLatencySummary,
+    /// Per apply slice: main-thread texture archive extraction (read +
+    /// inflate on the resolve miss path) inside that slice. Same samples as
+    /// `apply_slices`, so the two totals give extraction's share of apply.
+    pub apply_texture_extract: StreamingLatencySummary,
+    /// Textures extracted inside counted apply slices.
+    pub apply_texture_extracts: u64,
     pub lod_slices: StreamingLatencySummary,
     pub superseded_full_detail: u64,
     pub superseded_lod: u64,
@@ -223,9 +229,18 @@ impl StreamingTelemetry {
         self.peak_pending = self.peak_pending.max(pending);
     }
 
-    pub(crate) fn record_apply_slice(&mut self, elapsed: Duration, worked: bool) {
+    pub(crate) fn record_apply_slice(
+        &mut self,
+        elapsed: Duration,
+        worked: bool,
+        texture_extract: ResolveExtractTotals,
+    ) {
         if self.active.is_some() && worked {
             self.apply_slices.record(elapsed);
+            self.apply_texture_extract.record(texture_extract.elapsed);
+            self.apply_texture_extracts = self
+                .apply_texture_extracts
+                .saturating_add(texture_extract.count);
         }
     }
 
@@ -337,9 +352,11 @@ impl StreamingTelemetry {
              worker_queue_avg_ms={:.2} worker_queue_max_ms={:.2} \
              worker_avg_ms={:.2} worker_max_ms={:.2} \
              worker_batch_duplicate_skips={} \
-             apply_samples={} apply_avg_ms={:.2} apply_max_ms={:.2} \
+             apply_samples={} apply_avg_ms={:.2} apply_max_ms={:.2} apply_total_ms={:.2} \
+             apply_tex_extracts={} apply_tex_extract_total_ms={:.2} \
+             apply_tex_extract_max_ms={:.2} \
              lod_slice_avg_ms={:.2} lod_slice_max_ms={:.2} peak_pending={} \
-             unsettled_full={} unsettled_lod={} {} {} {} {} {} {}",
+             unsettled_full={} unsettled_lod={} {} {} {} {} {} {} {}",
             self.boundary_crossings,
             self.full_detail.samples,
             self.full_detail.average_ms(),
@@ -370,6 +387,10 @@ impl StreamingTelemetry {
             self.apply_slices.samples,
             self.apply_slices.average_ms(),
             self.apply_slices.max_ms(),
+            self.apply_slices.total.as_secs_f64() * 1000.0,
+            self.apply_texture_extracts,
+            self.apply_texture_extract.total.as_secs_f64() * 1000.0,
+            self.apply_texture_extract.max_ms(),
             self.lod_slices.average_ms(),
             self.lod_slices.max_ms(),
             self.peak_pending,
@@ -382,6 +403,7 @@ impl StreamingTelemetry {
             phase_distribution("queue_wait", &self.worker_queue),
             phase_distribution("worker_parse", &self.worker_parse),
             phase_distribution("apply", &self.apply_slices),
+            phase_distribution("apply_tex_extract", &self.apply_texture_extract),
             phase_distribution("unload", &self.unload_slices),
             phase_distribution("lod_slice", &self.lod_slices),
             phase_distribution("full_detail", &self.full_detail),

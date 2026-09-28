@@ -227,11 +227,17 @@ impl App {
         self.frame_work_deadline = Some(streaming_deadline);
         let mut apply_budget = cell_loader::FrameTimeBudget::until(streaming_deadline);
         let apply_started = Instant::now();
+        let tex_extract_before = state.tex_provider.resolve_extract_totals();
         let full_detail_worked =
             advance_streaming_apply(&mut self.world, ctx, state, &mut apply_budget);
-        state
-            .telemetry
-            .record_apply_slice(apply_started.elapsed(), full_detail_worked);
+        state.telemetry.record_apply_slice(
+            apply_started.elapsed(),
+            full_detail_worked,
+            state
+                .tex_provider
+                .resolve_extract_totals()
+                .since(tex_extract_before),
+        );
         state.telemetry.observe_pending(state.pending.len());
         if state.pending.is_empty()
             && state.active_apply.is_none()
