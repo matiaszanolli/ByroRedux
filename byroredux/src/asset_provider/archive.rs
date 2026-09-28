@@ -50,6 +50,15 @@ impl Archive {
         }
     }
 
+    /// The decoded size `path` extracts to, from the archive's own index —
+    /// see `BsaArchive::declared_size` / `Ba2Archive::declared_size`.
+    pub(crate) fn declared_size(&self, path: &str) -> Result<usize, std::io::Error> {
+        match self {
+            Archive::Bsa(a) => a.declared_size(path),
+            Archive::Ba2(a) => a.declared_size(path),
+        }
+    }
+
     /// Whether `path` is present, without extracting (and decompressing)
     /// it. Both backends answer from their in-memory file table, so this is
     /// a hash lookup — cheap enough for the per-quad availability probe the

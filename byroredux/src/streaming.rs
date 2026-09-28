@@ -1330,12 +1330,12 @@ where
 /// the worker thread (#854). Preserved verbatim across the #877
 /// refactor; extracted in #1262 (NIF-D5-NEW-02) to avoid duplicating
 /// the closure between the serial / parallel branches.
-fn parse_one_nif(input: PreParseInput, ctx: &PreParseContext<'_>) -> ParsedNifResult {
-    let PreParseInput {
-        key: path,
-        bytes,
-        precombine,
-    } = input;
+fn parse_one_nif(
+    path: String,
+    bytes: Option<Vec<u8>>,
+    precombine: bool,
+    ctx: &PreParseContext<'_>,
+) -> ParsedNifResult {
     let mesh_resolver = ctx.mesh_resolver;
     let parsed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let Some(bytes) = bytes else {
@@ -1425,12 +1425,45 @@ const PRE_PARSE_RAYON_MIN: usize = 8;
 
 type ParsedNifResult = (String, Option<PartialNifImport>);
 
-/// One fresh key the worker pre-parses, with its extracted bytes.
+/// One fresh key the worker pre-parses.
 struct PreParseInput {
     key: String,
-    bytes: Option<Vec<u8>>,
     /// An FO4 precombine `_oc.nif`: try the `Geometry.csg` decode first.
     precombine: bool,
+    /// Decoded size the archive index declares for `key` (0 when no archive
+    /// has it) — what the input budget admits the task against before the
+    /// task extracts.
+    declared_bytes: usize,
+}
+
+/// One task's measurements, summed into [`ParsePipelineStats`].
+struct PreParseTaskTimings {
+    extract: Duration,
+    parse: Duration,
+    input_bytes: usize,
+}
+
+/// Extract `input`'s bytes and parse them. Runs inside the pool task, so
+/// archive reads and inflates proceed in parallel instead of one at a time
+/// on the coordinator (the readers are lock-free — positional reads).
+fn pre_parse_one(
+    input: PreParseInput,
+    ctx: &PreParseContext<'_>,
+) -> (ParsedNifResult, PreParseTaskTimings) {
+    let started = Instant::now();
+    let bytes = ctx.mesh_resolver.extract_mesh(&input.key);
+    let extract = started.elapsed();
+    let input_bytes = bytes.as_ref().map_or(0, Vec::capacity);
+    let parse_started = Instant::now();
+    let result = parse_one_nif(input.key, bytes, input.precombine, ctx);
+    (
+        result,
+        PreParseTaskTimings {
+            extract,
+            parse: parse_started.elapsed(),
+            input_bytes,
+        },
+    )
 }
 
 /// What every parse task of one cell borrows.
@@ -1441,10 +1474,11 @@ struct PreParseContext<'a> {
     csg_blobs: &'a HashMap<u32, Arc<byroredux_bsa::CsgArchive>>,
 }
 
-/// Bounds decoded input buffers held by queued/running parse tasks. Extraction
-/// exposes the decoded size only after allocating it, so the coordinator may
-/// additionally hold one lookahead buffer while waiting for capacity. Parsed
-/// output, parser scratch, and Starfield external meshes are outside this budget.
+/// Bounds decoded input buffers held by queued/running parse tasks. A task is
+/// admitted against the size its archive index declares
+/// ([`TextureProvider::mesh_declared_size`]) before it extracts, so nothing is
+/// allocated ahead of admission. Parsed output, parser scratch, and Starfield
+/// external meshes are outside this budget.
 const STREAM_PARSE_INPUT_BYTES: usize = 64 * 1024 * 1024;
 const STREAM_PARSE_MAX_TASKS: usize = 32;
 
@@ -1503,35 +1537,45 @@ impl Drop for ParseInputPermit<'_> {
 
 #[derive(Default)]
 struct ParsePipelineStats {
-    /// Sum of task elapsed durations; overlapping tasks make this different
+    /// Sum of task parse durations; overlapping tasks make this different
     /// from wall time and it includes any external-mesh archive waits.
     parse_task_time: Duration,
+    /// Sum of task extraction (archive read + inflate) durations; overlaps
+    /// like `parse_task_time`.
+    extract_task_time: Duration,
     backpressure: Duration,
     peak_input_bytes: usize,
     peak_tasks: usize,
+    largest_input: usize,
 }
 
-/// Consume a lazy extraction iterator on the cell coordinator while the private
-/// pool parses earlier inputs. `in_place_scope_fifo` keeps the coordinator off
-/// the pool: waiting on its budget cannot occupy the sole worker on small CPUs.
-/// The scope joins all tasks before returning or propagating an extraction panic.
+impl ParsePipelineStats {
+    fn record_task(&mut self, timings: &PreParseTaskTimings) {
+        self.extract_task_time += timings.extract;
+        self.parse_task_time += timings.parse;
+        self.largest_input = self.largest_input.max(timings.input_bytes);
+    }
+}
+
+/// Admit each input against the decoded-input budget on the cell coordinator
+/// and hand it to the private pool, where the task extracts and parses it.
+/// `in_place_scope_fifo` keeps the coordinator off the pool: waiting on its
+/// budget cannot occupy the sole worker on small CPUs. The scope joins all
+/// tasks before returning or propagating a task panic.
 fn parse_nif_pipeline(
-    extracted: impl ExactSizeIterator<Item = PreParseInput>,
+    inputs: impl ExactSizeIterator<Item = PreParseInput>,
     stream_pool: &rayon::ThreadPool,
     ctx: &PreParseContext<'_>,
 ) -> (Vec<ParsedNifResult>, Vec<String>, ParsePipelineStats) {
-    let count = extracted.len();
+    let count = inputs.len();
     let mut stats = ParsePipelineStats::default();
     if count < PRE_PARSE_RAYON_MIN {
-        let results = extracted
-            .map(|item| {
-                stats.peak_input_bytes = stats
-                    .peak_input_bytes
-                    .max(item.bytes.as_ref().map_or(0, Vec::capacity));
+        let results = inputs
+            .map(|input| {
+                let (result, timings) = pre_parse_one(input, ctx);
+                stats.record_task(&timings);
+                stats.peak_input_bytes = stats.largest_input;
                 stats.peak_tasks = 1;
-                let started = Instant::now();
-                let result = parse_one_nif(item, ctx);
-                stats.parse_task_time += started.elapsed();
                 result
             })
             .collect();
@@ -1550,19 +1594,16 @@ fn parse_nif_pipeline(
     // extra input retention. Indices preserve the serial iterator's output order.
     let (tx, rx) = mpsc::channel();
     stream_pool.in_place_scope_fifo(|scope| {
-        for (index, item) in extracted.enumerate() {
-            let bytes = item.bytes.as_ref().map_or(0, Vec::capacity);
+        for (index, input) in inputs.enumerate() {
             let waiting = Instant::now();
-            let permit = budget.acquire(bytes);
+            let permit = budget.acquire(input.declared_bytes);
             stats.backpressure += waiting.elapsed();
             let tx = tx.clone();
             scope.spawn_fifo(move |_| {
-                let started = Instant::now();
                 let thread_name = std::thread::current().name().map(str::to_string);
-                let result = parse_one_nif(item, ctx);
-                let elapsed = started.elapsed();
+                let (result, timings) = pre_parse_one(input, ctx);
                 drop(permit);
-                let _ = tx.send((index, result, thread_name, elapsed));
+                let _ = tx.send((index, result, thread_name, timings));
             });
         }
     });
@@ -1571,10 +1612,10 @@ fn parse_nif_pipeline(
     observed.sort_unstable_by_key(|(index, _, _, _)| *index);
     let mut results = Vec::with_capacity(count);
     let mut names = Vec::new();
-    for (_, result, name, elapsed) in observed {
+    for (_, result, name, timings) in observed {
         results.push(result);
         names.extend(name);
-        stats.parse_task_time += elapsed;
+        stats.record_task(&timings);
     }
     names.sort_unstable();
     names.dedup();
@@ -1584,11 +1625,11 @@ fn parse_nif_pipeline(
     (results, names, stats)
 }
 
-// Preserve the existing dedicated-pool regression fixture's entry point while
-// production feeds a lazy extraction iterator into the same implementation.
+// The dedicated-pool regression fixture's entry point: plain model keys,
+// extracted through `mesh_resolver` inside the tasks exactly as in production.
 #[cfg(test)]
-fn parse_extracted_nifs(
-    extracted: Vec<(String, Option<Vec<u8>>)>,
+fn parse_model_keys(
+    keys: Vec<String>,
     stream_pool: &rayon::ThreadPool,
     mesh_resolver: &TextureProvider,
 ) -> (Vec<ParsedNifResult>, Vec<String>) {
@@ -1597,11 +1638,15 @@ fn parse_extracted_nifs(
         mesh_resolver,
         csg_blobs: &no_csgs,
     };
-    let inputs = extracted.into_iter().map(|(key, bytes)| PreParseInput {
-        key,
-        bytes,
-        precombine: false,
-    });
+    let inputs: Vec<PreParseInput> = keys
+        .into_iter()
+        .map(|key| PreParseInput {
+            declared_bytes: mesh_resolver.mesh_declared_size(&key).unwrap_or(0),
+            key,
+            precombine: false,
+        })
+        .collect();
+    let inputs = inputs.into_iter();
     let (results, names, _) = parse_nif_pipeline(inputs, stream_pool, &ctx);
     (results, names)
 }
@@ -1822,45 +1867,41 @@ fn pre_parse_cell(
     // extract-all barrier, this overlaps archive read/inflate with parse and
     // avoids retaining the entire cell's decoded input before work can start.
     // Cells with fewer than eight fresh paths keep the serial fast path.
+    // Archive lookup precedence is the provider's (`extract_mesh` /
+    // `mesh_declared_size` agree on it); each task extracts its own input,
+    // so reads and inflates run in parallel. Cells with fewer than eight
+    // fresh inputs keep the serial fast path.
     let precombine_count = precombine_paths.len();
-    let inputs: Vec<(String, bool)> = precombine_paths
+    let inputs: Vec<PreParseInput> = precombine_paths
         .into_iter()
         .map(|key| (key, true))
         .chain(model_paths.into_iter().map(|key| (key, false)))
+        .map(|(key, precombine)| PreParseInput {
+            declared_bytes: tex_provider.mesh_declared_size(&key).unwrap_or(0),
+            key,
+            precombine,
+        })
         .collect();
     let input_count = inputs.len();
     let pipeline_started = Instant::now();
-    let mut extract_time = Duration::ZERO;
-    let mut largest_input = 0usize;
-    let extracted = inputs.into_iter().map(|(key, precombine)| {
-        let started = Instant::now();
-        let bytes = tex_provider.extract_mesh(&key);
-        extract_time += started.elapsed();
-        largest_input = largest_input.max(bytes.as_ref().map_or(0, Vec::capacity));
-        PreParseInput {
-            key,
-            bytes,
-            precombine,
-        }
-    });
     let ctx = PreParseContext {
         mesh_resolver: tex_provider,
         csg_blobs: &csg_blobs,
     };
     let (results, parallel_parse_threads, pipeline) =
-        parse_nif_pipeline(extracted, stream_pool, &ctx);
+        parse_nif_pipeline(inputs.into_iter(), stream_pool, &ctx);
     if input_count > 0 {
         log::debug!(
             "[stream-worker] cell ({gx},{gy}) pipeline: inputs={input_count} \
              precombines={precombine_count} wall_ms={:.3} \
-             extract_ms={:.3} parse_task_sum_ms={:.3} backpressure_ms={:.3} \
+             extract_task_sum_ms={:.3} parse_task_sum_ms={:.3} backpressure_ms={:.3} \
              peak_task_input_bytes={} largest_input_bytes={} peak_tasks={}",
             pipeline_started.elapsed().as_secs_f64() * 1000.0,
-            extract_time.as_secs_f64() * 1000.0,
+            pipeline.extract_task_time.as_secs_f64() * 1000.0,
             pipeline.parse_task_time.as_secs_f64() * 1000.0,
             pipeline.backpressure.as_secs_f64() * 1000.0,
             pipeline.peak_input_bytes,
-            largest_input,
+            pipeline.largest_input,
             pipeline.peak_tasks,
         );
     }

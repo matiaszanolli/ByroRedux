@@ -8,7 +8,7 @@
 
 use super::{
     build_stream_parse_pool, classify_payload, compute_streaming_deltas, join_with_timeout,
-    lod_water_recenter_delta, parse_extracted_nifs, pre_parse_cell_panic_safe,
+    lod_water_recenter_delta, parse_model_keys, pre_parse_cell_panic_safe,
     pre_parse_model_skip_reason, recv_next_batch_request, stale_pending_coords, world_pos_to_grid,
     JoinTimeout, LoadCellPayload, LoadedCell, PayloadDecision, PreParseModelSkip, StreamingDeltas,
     StreamingLatencySummary, StreamingTelemetry, StreamingWorkerTimings,
@@ -712,10 +712,10 @@ fn stream_parse_pool_runs_tasks_on_its_own_dedicated_threads() {
 fn pre_parse_parallel_branch_uses_the_dedicated_pool() {
     let pool = build_stream_parse_pool();
     let tex_provider = TextureProvider::new();
-    let extracted = (0..8)
-        .map(|index| (format!("meshes\\synthetic-{index}.nif"), None))
+    let keys = (0..8)
+        .map(|index| format!("meshes\\synthetic-{index}.nif"))
         .collect();
-    let (results, thread_names) = parse_extracted_nifs(extracted, &pool, &tex_provider);
+    let (results, thread_names) = parse_model_keys(keys, &pool, &tex_provider);
 
     assert_eq!(results.len(), 8, "fixture must cross PRE_PARSE_RAYON_MIN");
     assert!(

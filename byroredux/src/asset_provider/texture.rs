@@ -221,6 +221,18 @@ impl TextureProvider {
         None
     }
 
+    /// The decoded size [`Self::extract_mesh`] returns for `path`, read from
+    /// the archive index of the archive that extraction would use
+    /// (last-listed wins) — so a caller can budget memory before paying for
+    /// the read + inflate. `None` when no mesh archive has it.
+    pub(crate) fn mesh_declared_size(&self, path: &str) -> Option<usize> {
+        let normalised = normalize_mesh_path(path);
+        self.mesh_archives
+            .iter()
+            .rev()
+            .find_map(|archive| archive.declared_size(normalised.as_ref()).ok())
+    }
+
     /// Whether a mesh exists, without paying for extraction + decompression.
     ///
     /// The baked-LOD band selector (`cell_loader::lod_bands`) probes one

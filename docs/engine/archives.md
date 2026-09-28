@@ -458,33 +458,42 @@ parse rate numbers.
 
 ## Exterior streaming overlap
 
-The cell-stream coordinator extracts unique uncached NIFs through the existing
-archive provider while a dedicated Rayon pool parses/imports earlier inputs.
-Archive selection, canonical-key deduplication, missing-file results and
-per-NIF panic recovery use the same paths as synchronous extraction. The scope
-joins before publishing the cell payload; world mutation stays on the main
-thread. Cells with fewer than eight fresh NIFs remain serial.
+The cell-stream coordinator collects a cell's unique uncached NIFs (and, on
+FO4, its precombine `_oc.nif`s — see below) and hands each to a dedicated
+Rayon pool task that extracts and then parses/imports it. Archive selection,
+canonical-key deduplication, missing-file results and per-NIF panic recovery
+use the same paths as synchronous extraction. The archive readers take no lock
+(positional reads), so tasks read and inflate in parallel. The scope joins
+before publishing the cell payload; world mutation stays on the main thread.
+Cells with fewer than eight fresh NIFs remain serial.
 
 Queued/running parse tasks hold at most **64 MiB of decoded NIF buffer capacity**
 and at most **twice the private pool's worker count, capped at 32 tasks**. An
-input larger than 64 MiB is admitted alone. The coordinator can additionally
-hold **one lookahead input** while waiting, because the provider returns the
-decoded size only after extraction. This is an input budget, not a process
-memory cap: archive packed buffers/decompression scratch, parser allocations,
-Starfield external mesh resolution and accumulated parsed cell results are
-outside it. Reads and decompression remain serial on the coordinator; they
-now overlap with parsing without adding a global pool or async runtime. The
-archive readers themselves take no lock (positional reads), so moving
-extraction into the parse tasks needs no reader change.
+input larger than 64 MiB is admitted alone. The coordinator admits each task
+against the size the archive index declares for it
+(`TextureProvider::mesh_declared_size`, backed by `BsaArchive::declared_size` /
+`Ba2Archive::declared_size`) before the task extracts, so nothing is allocated
+ahead of admission. The declared size equals the extracted length for all
+105 189 files in the FO4 Meshes/Textures1, Oblivion, FNV and Skyrim SE mesh
+archives (`declared_size_matches_extract_*`). This is an input budget, not a
+process memory cap: archive packed buffers/decompression scratch, parser
+allocations, Starfield external mesh resolution and accumulated parsed cell
+results are outside it.
 
 With `RUST_LOG=byroredux::streaming=debug`, each nonempty cell reports pipeline
-wall time, serial extraction time (including inflate), summed parse-task elapsed
-time, permit wait time, peak task input bytes/tasks and the largest input.
-Task elapsed times overlap and may include external-mesh archive waits; their
-sum is not a wall-time phase breakdown. Permit wait includes mutex acquisition.
-These changes target exterior cell readiness and streaming stalls; they do not
-establish an improvement to MedTek's stationary GPU rendering time. GPU
-upload waits remain separate work.
+wall time, summed task extraction time (read + inflate), summed parse-task
+elapsed time, permit wait time, peak task input bytes/tasks and the largest
+input. Task times overlap and parse time may include external-mesh archive
+waits; neither sum is a wall-time phase breakdown. Permit wait includes mutex
+acquisition. These changes target exterior cell readiness and streaming stalls;
+they do not establish an improvement to MedTek's stationary GPU rendering time.
+GPU upload waits remain separate work.
+
+Moving extraction into the tasks took the FO4 grid-cross capture's worker
+pipeline from 489 / 445 ms to 286 / 281 ms of summed wall time over 18 cells
+(two runs each). Extraction had been ~80% of that wall time, serial on the
+coordinator. The worker runs ahead of the main-thread apply, so this shortens
+only the wait for a crossing's first payload, not apply time or readiness.
 
 ## FO4 precombines on the worker
 
