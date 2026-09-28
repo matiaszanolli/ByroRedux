@@ -375,18 +375,6 @@ pub(super) fn build_remap_for_plugin(
     })
 }
 
-/// #1553 / SK-D4-02 — load a Localized plugin's companion `.STRINGS` /
-/// `.DLSTRINGS` / `.ILSTRINGS` tables and install them into the
-/// thread-local string table for the duration of the returned guard.
-///
-/// `localized` is the caller's already-read TES4 `0x80` flag. Returns
-/// `None` (identity behaviour — placeholders survive) for a non-localized
-/// plugin. The loader + RAII guard already existed (`esm::strings_table`);
-/// this is the missing wiring that turns `<lstring 0xNNNNNNNN>`
-/// placeholders into authored names. All three table kinds are covered by
-/// `StringTableSet::load`. The guard MUST be held by the caller across the
-/// record walk so `resolve_lstring` sees the tables, then dropped before
-/// the next plugin.
 /// #4073 — true when a plugin resolved none of the three companion string
 /// tables. Extracted as a pure predicate so the "should we warn" decision
 /// is unit-testable without a live logger.
@@ -394,12 +382,24 @@ fn all_string_tables_missing(tables: &esm::StringTableSet) -> bool {
     tables.strings.is_none() && tables.dlstrings.is_none() && tables.ilstrings.is_none()
 }
 
-fn install_strings_guard<F>(
+/// #1553 / SK-D4-02 — load a Localized plugin's companion `.STRINGS` /
+/// `.DLSTRINGS` / `.ILSTRINGS` tables.
+///
+/// `localized` is the caller's already-read TES4 `0x80` flag. Returns
+/// `None` (identity behaviour — placeholders survive) for a non-localized
+/// plugin. This is the wiring that turns `<lstring 0xNNNNNNNN>`
+/// placeholders into authored names; all three table kinds are covered by
+/// `StringTableSet::load_with_archive`. The tables only take effect through
+/// an `esm::StringsTableGuard`, whose thread-local must be installed on the
+/// thread that runs this plugin's record walk and dropped before that thread
+/// walks another plugin — since #3813 that is a pool thread, not the one
+/// loading the tables here.
+fn load_string_tables<F>(
     localized: bool,
     plugin_path: &str,
     language: &str,
     read_archive: &mut F,
-) -> Option<esm::StringsTableGuard>
+) -> Option<esm::StringTableSet>
 where
     F: FnMut(&Path, &str) -> Option<Vec<u8>>,
 {
@@ -414,8 +414,8 @@ where
     // #4073 (ESM-2026-09-09-D6-02) — a plugin that resolves ZERO string
     // tables (loose miss, then archive miss, on all three extensions) is
     // otherwise silent: `load_file`'s absent-file arm doesn't log (only a
-    // parse failure does), and the empty `StringTableSet` is installed
-    // unconditionally below. Every subsequent `read_lstring_or_zstring`
+    // parse failure does), and the empty `StringTableSet` is still
+    // installed for the walk. Every subsequent `read_lstring_or_zstring`
     // call then quietly hands back a placeholder, indistinguishable from
     // normal operation in the logs — precisely what makes a whole-game
     // localization failure invisible (this is also why a #4072-class "id 0
@@ -429,7 +429,7 @@ where
              `<lstring 0x…>` placeholder"
         );
     }
-    Some(esm::StringsTableGuard::new(tables))
+    Some(tables)
 }
 
 /// Lazily opened archive set used only for localized companion strings.
@@ -518,14 +518,30 @@ pub(crate) fn parse_record_indexes_in_load_order(
     plugin_paths: &[&str],
 ) -> anyhow::Result<(esm::records::EsmIndex, LoadOrder)> {
     let mut archive_source = ArchiveStringSource::default();
-    parse_record_indexes_in_load_order_with_archive(plugin_paths, |plugin_path, relative_path| {
-        archive_source.read(plugin_path, relative_path)
-    })
+    parse_record_indexes_in_load_order_with_archive(
+        plugin_paths,
+        |plugin_path, relative_path| archive_source.read(plugin_path, relative_path),
+        PluginWalk::Parallel,
+    )
+}
+
+/// Where each plugin's record walk runs (#3813).
+#[derive(Clone, Copy, Debug)]
+enum PluginWalk {
+    /// On the rayon pool, overlapping the other plugins' walks and this
+    /// thread's reads of the plugins after it.
+    Parallel,
+    /// On the calling thread, finished before the next plugin is read: the
+    /// pre-#3813 schedule, kept as the reference the equality tests compare
+    /// the parallel walk against.
+    #[cfg(test)]
+    Inline,
 }
 
 fn parse_record_indexes_in_load_order_with_archive<F>(
     plugin_paths: &[&str],
     mut read_archive: F,
+    walk: PluginWalk,
 ) -> anyhow::Result<(esm::records::EsmIndex, LoadOrder)>
 where
     F: FnMut(&Path, &str) -> Option<Vec<u8>>,
@@ -557,7 +573,6 @@ where
     let strings_language =
         std::env::var("BYRO_STRINGS_LANG").unwrap_or_else(|_| "english".to_string());
 
-    let mut merged = esm::records::EsmIndex::default();
     // #1554 — global-slot assignment. Regular plugins consume a full
     // top-byte slot (0x00–0xFD); ESL / light-master plugins share the
     // 0xFE byte via a 12-bit sub-index; Starfield medium masters (#4639)
@@ -570,59 +585,100 @@ where
     let mut next_light: u16 = 0;
     let mut next_medium: u16 = 0;
 
-    for (idx, path) in plugin_paths.iter().enumerate() {
-        let bytes = std::fs::read(path)
-            .map_err(|e| anyhow::anyhow!("Failed to read ESM '{}': {}", path, e))?;
-        log::info!(
-            "Parsing plugin {}/{} '{}' ({:.1} MB) at load-order index {}…",
-            idx + 1,
-            plugin_paths.len(),
-            path,
-            bytes.len() as f64 / 1_048_576.0,
-            idx,
-        );
+    // #3813 — a plugin's record walk reads nothing but its own bytes, remap
+    // and string tables, so it runs on the rayon pool while this thread
+    // reads the plugins after it. Everything order-dependent stays on this
+    // thread, in load order: slot allocation, remaps (built from the slots
+    // allocated so far), `read_archive`, and the `merge_from` fold below,
+    // whose rules (#3403's last non-empty `game`, #3384's first non-NONE
+    // `character_rules`, later records overriding earlier ones, #3543
+    // tombstones) follow the fold order, never the order walks finish in.
+    // The cost is memory: the largest plugin's bytes stay resident while
+    // the others' indexes finish, so the parse-time peak rises by about that
+    // file's size (`docs/engine/memory-budget.md`, "ESM Index").
+    let plugin_count = plugin_paths.len();
+    let mut walked: Vec<Option<anyhow::Result<esm::records::EsmIndex>>> =
+        plugin_paths.iter().map(|_| None).collect();
+    let plugins = plugin_paths.iter().enumerate().zip(walked.iter_mut());
+    rayon::in_place_scope(|scope| -> anyhow::Result<()> {
+        for ((idx, path), walked) in plugins {
+            let bytes = std::fs::read(path)
+                .map_err(|e| anyhow::anyhow!("Failed to read ESM '{}': {}", path, e))?;
+            log::info!(
+                "Parsing plugin {}/{} '{}' ({:.1} MB) at load-order index {}…",
+                idx + 1,
+                plugin_count,
+                path,
+                bytes.len() as f64 / 1_048_576.0,
+                idx,
+            );
 
-        // Read the TES4 header once: masters (for the remap), the ESL
-        // flag (slot assignment, #1554), and the Localized flag (the
-        // .STRINGS guard, #1553).
-        let header = {
-            let mut reader = esm::reader::EsmReader::new(&bytes);
-            reader
-                .read_file_header()
-                .map_err(|e| anyhow::anyhow!("Failed to read TES4 header for '{}': {}", path, e))?
-        };
+            // Read the TES4 header once: masters (for the remap), the ESL
+            // flag (slot assignment, #1554), and the Localized flag (the
+            // .STRINGS guard, #1553).
+            let header = {
+                let mut reader = esm::reader::EsmReader::new(&bytes);
+                reader.read_file_header().map_err(|e| {
+                    anyhow::anyhow!("Failed to read TES4 header for '{}': {}", path, e)
+                })?
+            };
 
-        let plugin_slot = allocate_global_slot(
-            header.light_master,
-            header.medium_master,
-            &mut next_regular,
-            &mut next_light,
-            &mut next_medium,
-        )?;
-        slots.push(plugin_slot);
+            let plugin_slot = allocate_global_slot(
+                header.light_master,
+                header.medium_master,
+                &mut next_regular,
+                &mut next_light,
+                &mut next_medium,
+            )?;
+            slots.push(plugin_slot);
 
-        let remap = build_remap_for_plugin(path, &header, plugin_slot, &load_order, &slots)?;
-        let plugin_dependencies = header
-            .master_files
-            .iter()
-            .map(|master| {
-                let master = master.to_ascii_lowercase();
-                load_order
-                    .iter()
-                    .position(|name| name == &master)
-                    .and_then(|position| u32::try_from(position).ok())
-                    .expect("validated master is present earlier in bounded load order")
-            })
-            .collect();
-        dependencies.push(plugin_dependencies);
-        // #1553 — install this plugin's companion string tables for the
-        // record walk so localized FULL/DESC/etc. lstring indices resolve
-        // to authored names instead of `<lstring 0xNNNNNNNN>`. RAII guard:
-        // alive across the parse, dropped before the next plugin so each
-        // plugin sees only its own tables.
-        let _strings_guard =
-            install_strings_guard(header.localized, path, &strings_language, &mut read_archive);
-        let plugin_records = esm::records::parse_esm_with_load_order(&bytes, Some(remap))
+            let remap = build_remap_for_plugin(path, &header, plugin_slot, &load_order, &slots)?;
+            let plugin_dependencies = header
+                .master_files
+                .iter()
+                .map(|master| {
+                    let master = master.to_ascii_lowercase();
+                    load_order
+                        .iter()
+                        .position(|name| name == &master)
+                        .and_then(|position| u32::try_from(position).ok())
+                        .expect("validated master is present earlier in bounded load order")
+                })
+                .collect();
+            dependencies.push(plugin_dependencies);
+            // #1553 — this plugin's companion string tables, so localized
+            // FULL/DESC/etc. lstring indices resolve to authored names
+            // instead of `<lstring 0xNNNNNNNN>`. The RAII guard installs them
+            // on the walking thread for exactly this plugin's walk, so each
+            // plugin sees only its own tables.
+            let tables =
+                load_string_tables(header.localized, path, &strings_language, &mut read_archive);
+            let walk_plugin = move || {
+                let started = std::time::Instant::now();
+                let _strings_guard = tables.map(esm::StringsTableGuard::new);
+                let plugin_records = esm::records::parse_esm_with_load_order(&bytes, Some(remap));
+                log::info!(
+                    "Walked plugin {}/{} '{}' in {:.2} s",
+                    idx + 1,
+                    plugin_count,
+                    path,
+                    started.elapsed().as_secs_f64(),
+                );
+                plugin_records
+            };
+            match walk {
+                PluginWalk::Parallel => scope.spawn(move |_| *walked = Some(walk_plugin())),
+                #[cfg(test)]
+                PluginWalk::Inline => *walked = Some(walk_plugin()),
+            }
+        }
+        Ok(())
+    })?;
+
+    let mut merged = esm::records::EsmIndex::default();
+    for (path, plugin_records) in plugin_paths.iter().zip(walked) {
+        let plugin_records = plugin_records
+            .expect("the scope joins every walk it spawned before returning")
             .unwrap_or_else(|e| {
                 log::warn!("Record parse failed for '{}': {}", path, e);
                 esm::records::EsmIndex::default()
@@ -880,7 +936,11 @@ mod tests {
 
     /// FO3+/TES5 24-byte-header record: `type + size + flags + form_id +
     /// 8-byte trailer`, then `[subtype, u16 len, data]` sub-records.
-    fn build_record(typ: &[u8; 4], form_id: u32, subs: &[(&[u8; 4], Vec<u8>)]) -> Vec<u8> {
+    pub(super) fn build_record(
+        typ: &[u8; 4],
+        form_id: u32,
+        subs: &[(&[u8; 4], Vec<u8>)],
+    ) -> Vec<u8> {
         let mut sub_data = Vec::new();
         for (st, data) in subs {
             sub_data.extend_from_slice(*st);
@@ -897,7 +957,7 @@ mod tests {
         buf
     }
 
-    fn wrap_group(label: &[u8; 4], record: &[u8]) -> Vec<u8> {
+    pub(super) fn wrap_group(label: &[u8; 4], record: &[u8]) -> Vec<u8> {
         let total = 24 + record.len();
         let mut buf = Vec::new();
         buf.extend_from_slice(b"GRUP");
@@ -930,7 +990,7 @@ mod tests {
 
     /// Synthetic `.STRINGS`: `[count][data_size][id,offset…][blob]` with
     /// bare null-terminated strings (no length prefix).
-    fn build_strings_file(entries: &[(u32, &str)]) -> Vec<u8> {
+    pub(super) fn build_strings_file(entries: &[(u32, &str)]) -> Vec<u8> {
         let mut blob = Vec::new();
         let mut offsets = Vec::new();
         for (_, s) in entries {
@@ -949,18 +1009,12 @@ mod tests {
         out
     }
 
-    /// A single-WEAP plugin (FULL = lstring id 0x0001) with TES4 `flags`
-    /// and the WEAP at raw `weap_form_id`, written to `dir/<stem>.esm`.
-    /// Returns the path.
-    fn write_weap_plugin(
-        dir: &Path,
-        stem: &str,
-        flags: u32,
-        weap_form_id: u32,
-    ) -> std::path::PathBuf {
+    /// A WEAP record at raw `form_id` whose FULL sub-record carries `full`:
+    /// a 4-byte lstring id in a Localized plugin, a zstring otherwise.
+    pub(super) fn build_weap(form_id: u32, full: &[u8]) -> Vec<u8> {
         let mut weap_subs = Vec::<(&[u8; 4], Vec<u8>)>::new();
         weap_subs.push((b"EDID", b"TestBlade\0".to_vec()));
-        weap_subs.push((b"FULL", 0x0001u32.to_le_bytes().to_vec()));
+        weap_subs.push((b"FULL", full.to_vec()));
         weap_subs.push((b"DATA", {
             let mut d = Vec::new();
             d.extend_from_slice(&100u32.to_le_bytes()); // value
@@ -971,7 +1025,19 @@ mod tests {
             d.push(0);
             d
         }));
-        let weap = build_record(b"WEAP", weap_form_id, &weap_subs);
+        build_record(b"WEAP", form_id, &weap_subs)
+    }
+
+    /// A single-WEAP plugin (FULL = lstring id 0x0001) with TES4 `flags`
+    /// and the WEAP at raw `weap_form_id`, written to `dir/<stem>.esm`.
+    /// Returns the path.
+    fn write_weap_plugin(
+        dir: &Path,
+        stem: &str,
+        flags: u32,
+        weap_form_id: u32,
+    ) -> std::path::PathBuf {
+        let weap = build_weap(weap_form_id, &0x0001u32.to_le_bytes());
         let group = wrap_group(b"WEAP", &weap);
         let mut esm_bytes = build_tes4(flags);
         esm_bytes.extend_from_slice(&group);
@@ -1061,6 +1127,7 @@ mod tests {
                 requested.push(relative_path.to_owned());
                 (relative_path == r"strings\PackedPlugin_english.STRINGS").then(|| packed.clone())
             },
+            PluginWalk::Parallel,
         )
         .unwrap();
 
@@ -1165,7 +1232,7 @@ mod tests {
     /// capability) — the parser only reads `MAST`'s null-terminated name,
     /// no companion `DATA` size placeholder, so this is the minimum wire
     /// form `read_file_header` needs.
-    fn build_tes4_with_masters(flags: u32, masters: &[&str]) -> Vec<u8> {
+    pub(super) fn build_tes4_with_masters(flags: u32, masters: &[&str]) -> Vec<u8> {
         let mut hedr = Vec::new();
         hedr.extend_from_slice(b"HEDR");
         hedr.extend_from_slice(&12u16.to_le_bytes());
@@ -1445,6 +1512,10 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "load_order_parallel_tests.rs"]
+mod parallel_tests;
 
 /// #4639 — medium masters (Starfield TES4 `0x400`) allocate from the
 /// `0xFD` space with an 8-bit sub-index, and their presence shrinks the

@@ -128,7 +128,9 @@ entry stays valid under any load order.
 
 [`parse_record_indexes_in_load_order`](../../byroredux/src/cell_loader/load_order.rs)
 parses each plugin with `parse_esm_with_load_order` and folds it into one
-`EsmIndex` with `merged.merge_from(plugin_records)`, in load order.
+`EsmIndex` with `merged.merge_from(plugin_records)`, in load order. The
+per-plugin walks run in parallel (#3813) and see no merged state; only the
+fold is sequential, so errata belong in the fold loop, never in a walk.
 
 Record errata MUST apply to the **merged index once the game's official
 content is merged and before the first user plugin merges.** Official content

@@ -73,6 +73,34 @@ Survivable on a 12 GB+ dev box; not necessarily on a 16 GB machine with a
 modded FO76/Starfield load order, especially once other subsystems' RAM
 residency (streaming caches, asset-provider archive index) is added on top.
 
+**Whole load orders (#3813).** `parse_record_indexes_in_load_order` walks a
+load order's plugins in parallel and folds them in load order, so the merged
+index is identical but the largest plugin's file bytes stay resident while
+the other plugins' indexes finish: the parse-time peak rises by about that
+file's size. Measured 2026-09-28, release, vanilla load orders, headless
+`--list-cells` on a non-matching filter, median of 3 interleaved runs against
+the serial build (wall is the whole process):
+
+| Load order | Plugins | Wall, serial → parallel | Peak RSS, serial → parallel |
+|---|---|---|---|
+| Oblivion + DLC `.esp`s | 11 | 2.32 → 2.37 s | 1 583 → 1 542 MB |
+| FO3 + DLC | 6 | 2.04 → 1.86 s | 1 186 → 1 274 MB |
+| FNV + DLC | 10 | 1.93 → 1.63 s | 939 → 1 120 MB |
+| Skyrim SE + DLC | 5 | 3.00 → 2.08 s | 1 468 → 1 667 MB |
+| FO4 + DLC | 8 | 3.69 → 2.85 s | 1 780 → 2 020 MB |
+| FO76 (`SeventySix` + `NW`) | 2 | 6.44 → 6.79 s | 3 778 → 3 895 MB |
+| Starfield + DLC | 14 | 11.85 → 7.72 s | 4 366 → 5 314 MB |
+
+The rows with nothing to overlap (Oblivion's DLC are ~5 MB of `.esp`s,
+FO76's second plugin 27 MB) gain nothing, and FO76 reads ~5% slower only
+because the serial `--list-cells` process parsed single-threaded, where
+glibc malloc skips its locking. The engine is multi-threaded by the time it
+loads ESMs, and inside a multi-threaded process the two schedules time the
+same on `Starfield.esm` alone (5.57–5.78 s either way) while FO76's pair favours the
+parallel walk (4.89–5.89 s vs 5.05–6.05 s). The per-thread malloc arenas
+also retain about 0.1 GB after the parse (steady RSS with the index alive:
+FO4 1 763 → ~1 865 MB, Starfield ~4 000 → ~4 120 MB).
+
 Most of the maps are lean, but a meaningful fraction — `camera_shots`,
 `menu_icons`, `voice_types`, and the ~30 `MinimalEsmRecord` stub maps — are
 `EDID`-only stubs with no consumer, each retaining a `String` per record.
