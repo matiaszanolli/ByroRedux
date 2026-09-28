@@ -9,6 +9,8 @@ use byroredux_core::ecs::components::MotionType;
 use byroredux_core::ecs::resource::Resource;
 use rapier3d::prelude::*;
 
+use crate::broad_phase::FixedPairFilterBroadPhase;
+
 /// Fixed physics tick in seconds. 60 Hz matches Skyrim/FO4.
 pub const PHYSICS_DT: f32 = 1.0 / 60.0;
 /// Cap on substeps per frame to prevent spiral-of-death.
@@ -195,7 +197,7 @@ pub struct PhysicsWorld {
     pub impulse_joints: ImpulseJointSet,
     pub multibody_joints: MultibodyJointSet,
     pub islands: IslandManager,
-    pub broad_phase: DefaultBroadPhase,
+    pub broad_phase: FixedPairFilterBroadPhase,
     pub narrow_phase: NarrowPhase,
     pub ccd_solver: CCDSolver,
     pub query_pipeline: QueryPipeline,
@@ -349,7 +351,7 @@ impl PhysicsWorld {
             impulse_joints: ImpulseJointSet::new(),
             multibody_joints: MultibodyJointSet::new(),
             islands: IslandManager::new(),
-            broad_phase: DefaultBroadPhase::new(),
+            broad_phase: FixedPairFilterBroadPhase::new(),
             narrow_phase: NarrowPhase::new(),
             ccd_solver: CCDSolver::new(),
             query_pipeline: QueryPipeline::new(),
@@ -617,7 +619,14 @@ impl PhysicsWorld {
         let Some(body) = self.bodies.get_mut(handle) else {
             return false;
         };
+        let was_fixed = body.body_type() == RigidBodyType::Fixed;
         body.set_body_type(body_type, wake_up);
+        // The broad phase withholds pairs of two fixed bodies and reports an
+        // overlap only once, so a body leaving the fixed type has to have
+        // its overlaps with fixed colliders reported again.
+        if was_fixed && body_type != RigidBodyType::Fixed {
+            self.broad_phase.body_left_fixed(body.colliders());
+        }
         if wake_up {
             self.wake();
         }

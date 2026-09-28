@@ -63,6 +63,7 @@ below.)
 ```
 crates/physics/src/
 ├── lib.rs         Crate root, re-exports
+├── broad_phase.rs FixedPairFilterBroadPhase — Rapier's broad phase without fixed-on-fixed pairs
 ├── config.rs      ContactConfig resource — TriMesh flags, contact skin, KCC offset
 ├── convert.rs     glam ↔ nalgebra conversions + collision_shape_to_parts
 ├── components.rs  RapierHandles (body + collider) + CharacterController (M28.5)
@@ -181,6 +182,16 @@ when more than one substep ran.
 `PHYSICS_DT` — the normal case above 60 fps, where several frames bank
 sub-tick time before one full tick is due. A `0` return is not "the
 simulation is idle" (#2879).
+
+The pipeline runs over `FixedPairFilterBroadPhase` (`broad_phase.rs`)
+rather than Rapier's `DefaultBroadPhase` directly. Rapier 0.22 turns
+every broad-phase overlap into a narrow-phase graph edge and discards
+fixed-on-fixed pairs only as it walks those edges each step; static
+placements overlap densely, so the wrapper withholds such pairs up front.
+A pair is reported only once, when the overlap begins, so a body that
+leaves the fixed type (`PhysicsWorld::set_motion_type`, Papyrus
+`SetMotionType`) has its overlaps with fixed colliders reported again on
+the next step.
 
 **Phase 4 — Pull dynamic transforms back.** For every `RapierHandles`
 entity whose `RigidBodyData.motion_type == Dynamic`, read the
