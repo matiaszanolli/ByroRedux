@@ -6,8 +6,9 @@
 //! versions — the version branch is the codec dispatch only.
 
 use super::{normalize_path, BsaArchive, BSA_V_SKYRIM_SE};
+use crate::read_at::ReadAt;
 use crate::safety::{checked_chunk_size, checked_chunk_size_usize};
-use std::io::{self, Read, Seek, SeekFrom};
+use std::io;
 
 impl BsaArchive {
     /// Extract a file's contents from the archive.
@@ -21,32 +22,14 @@ impl BsaArchive {
             )
         })?;
 
-        // Reuse the long-lived file handle stored at open time. Pre-#360
-        // every extract did `BufReader::new(File::open(&self.path)?)` —
-        // one `open()` syscall per file with hundreds of meshes per cell
-        // load. Mutex serialises the seek/read pair so concurrent
-        // extracts can't trample each other's file cursor.
-        //
-        // #1170 — recover from poison instead of re-panicking. The file
-        // position state is fully reset by the `seek(SeekFrom::Start(...))`
-        // immediately below, so poison carries no recovery-required
-        // invariant: a previous panic mid-extract is bounded to that one
-        // failed extract, not a permanent worker-killer. The per-NIF
-        // rayon panic guard in `streaming::pre_parse_cell` was otherwise
-        // turning one parser panic into N panics across every subsequent
-        // extract.
-        let mut file = match self.file.lock() {
-            Ok(g) => g,
-            Err(poisoned) => {
-                log::warn!(
-                    "BSA file mutex was poisoned (parser panic in a prior \
-                     extract); recovering for path {}",
-                    path
-                );
-                poisoned.into_inner()
-            }
-        };
-        file.seek(SeekFrom::Start(entry.offset))?;
+        // Positional reads against the long-lived handle stored at open
+        // time. Pre-#360 every extract reopened the archive (one `open()`
+        // syscall per file, hundreds per cell load); after #360 a
+        // `Mutex<File>` serialised the seek/read pair. `read_exact_at`
+        // carries its own offset, so concurrent extracts share the handle
+        // without a lock (and without the #1170 poison-recovery path).
+        let file = &self.file;
+        let mut pos = entry.offset;
 
         // Skip embedded file name prefix (bstring: 1 byte length + name).
         // Driven by the archive-level 0x100 flag alone, matching openmw
@@ -63,9 +46,9 @@ impl BsaArchive {
         let file_embeds_name = self.embed_file_names;
         let name_prefix_len = if file_embeds_name {
             let mut len_buf = [0u8; 1];
-            file.read_exact(&mut len_buf)?;
+            file.read_exact_at(&mut len_buf, pos)?;
             let name_len = len_buf[0] as usize;
-            file.seek(SeekFrom::Current(name_len as i64))?;
+            pos += 1 + name_len as u64;
             1 + name_len
         } else {
             0
@@ -94,7 +77,8 @@ impl BsaArchive {
         if is_compressed {
             // First 4 bytes are the original uncompressed size
             let mut size_buf = [0u8; 4];
-            file.read_exact(&mut size_buf)?;
+            file.read_exact_at(&mut size_buf, pos)?;
+            pos += 4;
             // Cap the decompression target buffer. BSA compressed files
             // top out at vanilla mesh LODs around ~30 MB uncompressed;
             // `MAX_CHUNK_BYTES` (1 GB, widened by `4a2b8200` to fit FO76
@@ -124,11 +108,7 @@ impl BsaArchive {
             // restatement of the mask). #586.
             let compressed_len = checked_chunk_size_usize(compressed_len, "BSA compressed_len")?;
             let mut compressed = vec![0u8; compressed_len];
-            file.read_exact(&mut compressed)?;
-            // Drop the lock before the decompression CPU work — the file
-            // handle isn't needed for decompression and other extracts
-            // shouldn't have to wait.
-            drop(file);
+            file.read_exact_at(&mut compressed, pos)?;
 
             // v103/v104 uses zlib, v105 uses LZ4 frame format.
             //
@@ -191,7 +171,7 @@ impl BsaArchive {
             // constant rather than relying on the mask alone. #586.
             let data_size = checked_chunk_size_usize(data_size, "BSA data_size")?;
             let mut data = vec![0u8; data_size];
-            file.read_exact(&mut data)?;
+            file.read_exact_at(&mut data, pos)?;
             Ok(data)
         }
     }

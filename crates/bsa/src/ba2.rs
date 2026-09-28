@@ -37,9 +37,9 @@
 //!    [`Ba2Archive::compression`] and consulted once per extracted chunk.
 //! 2. **Per-chunk on-off** — a `packed_size == 0` marker on a GNRL file
 //!    record or a DX10 chunk record means the payload is stored RAW
-//!    (no decode). Independent of the codec choice above. Both
-//!    [`Ba2Archive::extract_general`] and [`Ba2Archive::extract_dx10`]
-//!    branch on this per chunk before invoking the codec.
+//!    (no decode). Independent of the codec choice above. The GNRL and
+//!    DX10 extract paths both branch on this per chunk (`read_chunk_payload`)
+//!    before invoking the codec.
 //!
 //! Treating compression as "the archive is zlib" or "the archive is LZ4"
 //! loses the per-chunk axis — vanilla FO4 archives ship a non-trivial
@@ -57,6 +57,7 @@
 //! }
 //! ```
 
+use crate::read_at::ReadAt;
 use crate::safety::{
     checked_chunk_size, checked_chunk_size_usize, checked_chunk_total, checked_entry_count,
 };
@@ -64,7 +65,6 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::{self, BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
-use std::sync::Mutex;
 
 const MAGIC_BTDX: &[u8; 4] = b"BTDX";
 const MAGIC_GNRL: &[u8; 4] = b"GNRL";
@@ -120,9 +120,9 @@ enum Ba2Compression {
 /// BA2 archive opened for reading.
 pub struct Ba2Archive {
     /// Long-lived file handle reused across `extract` calls — see #360.
-    /// Mutex serialises seek/read pairs so concurrent extracts can't
-    /// trample each other's file cursor.
-    file: Mutex<File>,
+    /// Read only through positional reads ([`ReadAt`]), so concurrent
+    /// extracts share it without a lock.
+    file: File,
     version: u32,
     variant: Ba2Variant,
     compression: Ba2Compression,
@@ -361,13 +361,12 @@ impl Ba2Archive {
         }
 
         // Take ownership of the file handle for reuse across extracts
-        // — see the `BsaArchive` Drop / locking notes; the same #360
-        // rationale applies. BufReader was right for the sequential
-        // header parse above; for the random-access extract path we
-        // use the bare File so each seek doesn't waste read-ahead.
+        // — the same #360 rationale as `BsaArchive`. BufReader was right
+        // for the sequential header parse above; the random-access
+        // extract path uses positional reads on the bare File.
         let file = reader.into_inner();
         Ok(Self {
-            file: Mutex::new(file),
+            file,
             version,
             variant,
             compression,
@@ -432,36 +431,19 @@ impl Ba2Archive {
             )
         })?;
 
-        // Reuse the long-lived file handle — see #360.
-        //
-        // #1170 — recover from poison instead of re-panicking. Each
-        // extract path (`extract_general` / `extract_dx10`) seeks to its
-        // own offset, so file position state is fully reset; a prior
-        // panic mid-extract poisons the mutex but carries no recovery-
-        // required invariant. Matches the sibling fix in
-        // `crates/bsa/src/archive/extract.rs`.
-        let mut file = match self.file.lock() {
-            Ok(g) => g,
-            Err(poisoned) => {
-                log::warn!(
-                    "BA2 file mutex was poisoned (parser panic in a prior \
-                     extract); recovering for path {}",
-                    path
-                );
-                poisoned.into_inner()
-            }
-        };
-        let payload = match entry {
+        // Positional reads against the long-lived handle (#360): no
+        // cursor, so no lock, and each extract inflates on its own thread
+        // without waiting on another's read (#3659 kept the old mutex off
+        // the inflate; this removes it from the read too).
+        match entry {
             Ba2Entry::General {
                 offset,
                 packed_size,
                 unpacked_size,
-            } => Ba2ExtractPayload::General(read_chunk_payload(
-                &mut *file,
-                *offset,
-                *packed_size,
-                *unpacked_size,
-            )?),
+            } => finish_chunk_payload(
+                read_chunk_payload(&self.file, *offset, *packed_size, *unpacked_size)?,
+                self.compression,
+            ),
             Ba2Entry::Dx10 {
                 dxgi_format,
                 width,
@@ -469,25 +451,17 @@ impl Ba2Archive {
                 num_mips,
                 is_cubemap,
                 chunks,
-            } => Ba2ExtractPayload::Dx10 {
-                info: Dx10TexInfo {
+            } => finish_dx10_payload(
+                Dx10TexInfo {
                     dxgi_format: *dxgi_format,
                     width: *width,
                     height: *height,
                     num_mips: *num_mips,
                     is_cubemap: *is_cubemap,
                 },
-                chunks: read_dx10_chunk_payloads(&mut *file, chunks)?,
-            },
-        };
-        drop(file);
-        match payload {
-            Ba2ExtractPayload::General(payload) => {
-                finish_chunk_payload(payload, self.compression)
-            }
-            Ba2ExtractPayload::Dx10 { info, chunks } => {
-                finish_dx10_payload(info, chunks, self.compression)
-            }
+                read_dx10_chunk_payloads(&self.file, chunks)?,
+                self.compression,
+            ),
         }
     }
 }
@@ -888,31 +862,25 @@ fn decompress_chunk(
 
 enum ChunkPayload {
     Raw(Vec<u8>),
-    Compressed { bytes: Vec<u8>, unpacked_size: usize },
-}
-
-enum Ba2ExtractPayload {
-    General(ChunkPayload),
-    Dx10 {
-        info: Dx10TexInfo,
-        chunks: Vec<ChunkPayload>,
+    Compressed {
+        bytes: Vec<u8>,
+        unpacked_size: usize,
     },
 }
 
-fn read_chunk_payload<R: Read + Seek>(
-    reader: &mut R,
+fn read_chunk_payload<R: ReadAt + ?Sized>(
+    reader: &R,
     offset: u64,
     packed_size: u32,
     unpacked_size: u32,
 ) -> io::Result<ChunkPayload> {
-    reader.seek(SeekFrom::Start(offset))?;
     if packed_size == 0 {
         let mut buf = vec![0u8; unpacked_size as usize];
-        reader.read_exact(&mut buf)?;
+        reader.read_exact_at(&mut buf, offset)?;
         Ok(ChunkPayload::Raw(buf))
     } else {
         let mut packed = vec![0u8; packed_size as usize];
-        reader.read_exact(&mut packed)?;
+        reader.read_exact_at(&mut packed, offset)?;
         Ok(ChunkPayload::Compressed {
             bytes: packed,
             unpacked_size: unpacked_size as usize,
@@ -920,10 +888,7 @@ fn read_chunk_payload<R: Read + Seek>(
     }
 }
 
-fn finish_chunk_payload(
-    payload: ChunkPayload,
-    compression: Ba2Compression,
-) -> io::Result<Vec<u8>> {
+fn finish_chunk_payload(payload: ChunkPayload, compression: Ba2Compression) -> io::Result<Vec<u8>> {
     match payload {
         ChunkPayload::Raw(bytes) => Ok(bytes),
         ChunkPayload::Compressed {
@@ -946,8 +911,8 @@ struct Dx10TexInfo {
 }
 
 #[cfg(test)]
-fn extract_dx10<R: Read + Seek>(
-    reader: &mut R,
+fn extract_dx10<R: ReadAt + ?Sized>(
+    reader: &R,
     info: Dx10TexInfo,
     chunks: &[Dx10Chunk],
     compression: Ba2Compression,
@@ -956,19 +921,14 @@ fn extract_dx10<R: Read + Seek>(
     finish_dx10_payload(info, payloads, compression)
 }
 
-fn read_dx10_chunk_payloads<R: Read + Seek>(
-    reader: &mut R,
+fn read_dx10_chunk_payloads<R: ReadAt + ?Sized>(
+    reader: &R,
     chunks: &[Dx10Chunk],
 ) -> io::Result<Vec<ChunkPayload>> {
     chunks
         .iter()
         .map(|chunk| {
-            read_chunk_payload(
-                reader,
-                chunk.offset,
-                chunk.packed_size,
-                chunk.unpacked_size,
-            )
+            read_chunk_payload(reader, chunk.offset, chunk.packed_size, chunk.unpacked_size)
         })
         .collect()
 }
@@ -1199,42 +1159,73 @@ pub(crate) fn normalize_path(path: &str) -> String {
 mod tests {
     use super::*;
 
-    /// #3659: neither GNRL nor DX10 may inflate while holding the file lock.
+    /// Concurrent extracts from one archive must each read their own
+    /// record's bytes. Pins the positional-read contract: with a shared
+    /// seek cursor and no lock, interleaved extracts would return another
+    /// entry's payload.
     #[test]
-    fn archive_file_guard_ends_before_both_decompression_paths() {
-        let source = include_str!("ba2.rs");
-        let extract = source
-            .split("pub fn extract(&self, path: &str)")
-            .nth(1)
-            .unwrap()
-            .split("/// Defense-in-depth")
-            .next()
-            .unwrap();
-        let (read, finish) = extract
-            .split_once("drop(file);")
-            .expect("release the archive guard");
-        assert!(read.contains("poisoned.into_inner()"));
-        assert!(read.contains("read_chunk_payload("));
-        assert!(read.contains("read_dx10_chunk_payloads("));
-        assert!(!read.contains("finish_chunk_payload("));
-        assert!(!read.contains("finish_dx10_payload("));
-        assert!(!read.contains("decompress_chunk("));
-        assert!(finish.contains("finish_chunk_payload(payload, self.compression)"));
-        assert!(finish.contains("finish_dx10_payload(info, chunks, self.compression)"));
-        // The read helpers themselves must remain I/O-only too.
-        for (start, end) in [
-            ("fn read_chunk_payload<", "fn finish_chunk_payload("),
-            ("fn read_dx10_chunk_payloads<", "fn finish_dx10_payload("),
-        ] {
-            let helper = source
-                .split(start)
-                .nth(1)
-                .unwrap()
-                .split(end)
-                .next()
-                .unwrap();
-            assert!(!helper.contains("decompress_chunk("));
+    fn concurrent_extracts_read_their_own_entries() {
+        const N: u32 = 16;
+        let payload = |i: u32| {
+            format!("entry {i:02} ")
+                .repeat(64 + i as usize)
+                .into_bytes()
+        };
+        let records_end = 24u64 + N as u64 * 36;
+        let mut data = Vec::new();
+        let mut records = Vec::new();
+        for i in 0..N {
+            let body = payload(i);
+            let mut rec = [0u8; 36];
+            rec[0..4].copy_from_slice(&i.to_le_bytes());
+            rec[16..24].copy_from_slice(&(records_end + data.len() as u64).to_le_bytes());
+            rec[24..28].copy_from_slice(&0u32.to_le_bytes()); // stored raw
+            rec[28..32].copy_from_slice(&(body.len() as u32).to_le_bytes());
+            rec[32..36].copy_from_slice(&0xBAADF00Du32.to_le_bytes());
+            records.extend_from_slice(&rec);
+            data.extend_from_slice(&body);
         }
+        let name_table_offset = records_end + data.len() as u64;
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"BTDX");
+        bytes.extend_from_slice(&1u32.to_le_bytes());
+        bytes.extend_from_slice(b"GNRL");
+        bytes.extend_from_slice(&N.to_le_bytes());
+        bytes.extend_from_slice(&name_table_offset.to_le_bytes());
+        bytes.extend_from_slice(&records);
+        bytes.extend_from_slice(&data);
+        for i in 0..N {
+            let name = format!("meshes\\e{i:02}.nif");
+            bytes.extend_from_slice(&(name.len() as u16).to_le_bytes());
+            bytes.extend_from_slice(name.as_bytes());
+        }
+
+        let path = std::env::temp_dir().join(format!(
+            "byroredux_concurrent_ba2_{}_{}.ba2",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .subsec_nanos()
+        ));
+        std::fs::write(&path, &bytes).expect("write temp BA2");
+        let archive = Ba2Archive::open(&path).expect("open synthetic BA2");
+        let _ = std::fs::remove_file(&path);
+
+        std::thread::scope(|scope| {
+            for t in 0..8u32 {
+                let archive = &archive;
+                scope.spawn(move || {
+                    for round in 0..200u32 {
+                        let i = (t * 7 + round) % N;
+                        let got = archive
+                            .extract(&format!("meshes/e{i:02}.nif"))
+                            .expect("extract");
+                        assert_eq!(got, payload(i), "thread {t} round {round} entry {i}");
+                    }
+                });
+            }
+        });
     }
 
     #[test]
@@ -1724,9 +1715,8 @@ mod tests {
             },
         ];
 
-        let mut reader = std::io::Cursor::new(body);
         let dds = extract_dx10(
-            &mut reader,
+            &body[..],
             Dx10TexInfo {
                 dxgi_format: 71, // BC1 — matches the fixed-148-byte-header test above
                 width: 256,

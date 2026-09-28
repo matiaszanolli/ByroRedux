@@ -22,10 +22,11 @@
 //! `data_offset` indexes straight into that space; [`CsgArchive::read_psg`]
 //! resolves it, decompressing (and caching) only the chunks it touches.
 
+use crate::read_at::ReadAt;
 use crate::safety::{checked_chunk_size, checked_chunk_size_usize, checked_entry_count};
 use std::collections::{HashMap, VecDeque};
 use std::fs::File;
-use std::io::{self, Read, Seek, SeekFrom};
+use std::io::{self, Read};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
@@ -126,14 +127,13 @@ impl ChunkCache {
     }
 }
 
-struct CsgInner {
-    file: File,
-    cache: ChunkCache,
-}
-
 /// Random-access reader over a `<Plugin> - Geometry.csg` blob.
 pub struct CsgArchive {
-    inner: Mutex<CsgInner>,
+    /// Read only through positional reads, so concurrent `read_psg`
+    /// calls share it without a lock.
+    file: File,
+    /// Held only for lookup/insert — never across the read or inflate.
+    cache: Mutex<ChunkCache>,
     chunks: Vec<ChunkEntry>,
     num_objects: u32,
     file_len: u64,
@@ -185,10 +185,8 @@ impl CsgArchive {
         }
 
         Ok(Self {
-            inner: Mutex::new(CsgInner {
-                file,
-                cache: ChunkCache::new(cache_chunks),
-            }),
+            file,
+            cache: Mutex::new(ChunkCache::new(cache_chunks)),
             chunks,
             num_objects,
             file_len,
@@ -309,8 +307,10 @@ impl CsgArchive {
     /// Inflate chunk `idx` (cached). Returns the decompressed bytes —
     /// `CSG_CHUNK_SIZE` for every chunk but the last.
     fn chunk_bytes(&self, idx: u32) -> io::Result<Arc<[u8]>> {
-        let mut inner = self.inner.lock().unwrap();
-        if let Some(hit) = inner.cache.get(idx) {
+        // Poison-tolerant: a panic can't leave the FIFO half-updated in a
+        // way that returns wrong bytes, so a prior panic isn't fatal here.
+        let cache = || self.cache.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(hit) = cache().get(idx) {
             return Ok(hit);
         }
         let entry = self.chunks[idx as usize];
@@ -320,8 +320,11 @@ impl CsgArchive {
         let avail = self.file_len.saturating_sub(entry.file_offset as u64) as usize;
         let read_len = comp_len.min(avail);
         let mut comp = vec![0u8; read_len];
-        inner.file.seek(SeekFrom::Start(entry.file_offset as u64))?;
-        inner.file.read_exact(&mut comp)?;
+        // Two threads missing on the same chunk both inflate it; the
+        // second `insert` is a no-op. That duplicate work is cheaper than
+        // serialising every miss behind one lock.
+        self.file
+            .read_exact_at(&mut comp, entry.file_offset as u64)?;
 
         // #3410 — the over-size check below used to run AFTER an unbounded
         // `read_to_end`, so a bomb chunk was fully inflated (and could abort
@@ -361,7 +364,7 @@ impl CsgArchive {
             ));
         }
         let arc: Arc<[u8]> = Arc::from(raw.into_boxed_slice());
-        inner.cache.insert(idx, arc.clone());
+        cache().insert(idx, arc.clone());
         Ok(arc)
     }
 }

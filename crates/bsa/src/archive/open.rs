@@ -11,7 +11,6 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::{self, BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
-use std::sync::Mutex;
 
 impl BsaArchive {
     /// Open a BSA archive and read its directory structure.
@@ -446,12 +445,11 @@ impl BsaArchive {
         // Take ownership of the file handle (BufReader::into_inner is
         // infallible — it just returns the wrapped reader). The buffered
         // reader was right for the sequential header parse above; for
-        // the random-access seek-and-read pattern in `extract`, an
-        // unbuffered `File` is what we want anyway (each seek would
-        // invalidate the BufReader's read-ahead). See #360.
+        // the random-access positional reads in `extract`, an unbuffered
+        // `File` is what we want anyway. See #360.
         let file = reader.into_inner();
         Ok(BsaArchive {
-            file: Mutex::new(file),
+            file,
             version,
             compressed_by_default,
             embed_file_names,

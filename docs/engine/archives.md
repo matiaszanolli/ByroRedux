@@ -356,8 +356,9 @@ on real Oblivion NetImmerse-era content.
   file handle open for the lifetime of the archive object instead of
   re-opening on every `extract()`. Exterior 3×3 grid loads hit the same
   archive dozens of times per cell; the re-open cost was dominating
-  extraction time. Handles are thread-safe (`Arc<Mutex<File>>` internally)
-  so the cell-loader worker pool can share the same archive.
+  extraction time. Handles were originally shared behind a `Mutex<File>`;
+  extraction now uses positional reads (`crates/bsa/src/read_at.rs`), so
+  concurrent extracts from one archive share the handle without a lock.
 - **Arithmetic underflow guard** (#352) — a malformed BSA could trigger
   `u32` underflow when computing remaining bytes after the embedded-name
   prefix skip. Guarded with a checked subtraction that returns an
@@ -472,7 +473,9 @@ decoded size only after extraction. This is an input budget, not a process
 memory cap: archive packed buffers/decompression scratch, parser allocations,
 Starfield external mesh resolution and accumulated parsed cell results are
 outside it. Reads and decompression remain serial on the coordinator; they
-now overlap with parsing without adding a global pool or async runtime.
+now overlap with parsing without adding a global pool or async runtime. The
+archive readers themselves take no lock (positional reads), so moving
+extraction into the parse tasks needs no reader change.
 
 With `RUST_LOG=byroredux::streaming=debug`, each nonempty cell reports pipeline
 wall time, serial extraction time (including inflate), summed parse-task elapsed

@@ -615,8 +615,8 @@ pub struct WorldStreamingState {
     pub wctx: Arc<ExteriorWorldContext>,
     /// Long-lived texture archive provider (BSA / BA2 readers). Behind
     /// `Arc` so the worker thread can extract NIF bytes off-thread —
-    /// `BsaArchive` / `Ba2Archive` already serialise their inner `File`
-    /// access via `Mutex`, so concurrent extracts are safe.
+    /// `BsaArchive` / `Ba2Archive` read through positional reads with no
+    /// shared cursor, so concurrent extracts are safe and never block.
     pub tex_provider: Arc<TextureProvider>,
     /// Long-lived BGSM material provider. Stays main-thread only —
     /// `merge_external_material` needs `&mut MaterialProvider` (writes to

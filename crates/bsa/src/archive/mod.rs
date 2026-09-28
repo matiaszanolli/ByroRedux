@@ -26,7 +26,6 @@ mod tests;
 
 use std::collections::HashMap;
 use std::fs::File;
-use std::sync::Mutex;
 
 /// BSA format version number for Oblivion.
 pub(super) const BSA_V_OBLIVION: u32 = 103;
@@ -44,9 +43,9 @@ pub(super) const BSA_V_SKYRIM_SE: u32 = 105;
 pub struct BsaArchive {
     /// Long-lived file handle reused across `extract` calls. Pre-#360
     /// every extract reopened the archive (one `open()` syscall per
-    /// extracted file — hundreds per cell load); the mutex lets us
-    /// reuse a single FD even though `extract` takes `&self`.
-    file: Mutex<File>,
+    /// extracted file — hundreds per cell load). `extract` reads it only
+    /// through positional reads, so no lock guards it.
+    file: File,
     version: u32,
     compressed_by_default: bool,
     /// When set (flag 0x100), each file's data starts with a bstring name prefix to skip.

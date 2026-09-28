@@ -39,8 +39,8 @@ const MAX_IMPORT_ASSET_PATHS: usize = 512;
 ///
 /// `Send + Sync` (#2734): the provider is held behind an `Arc` so the archive
 /// extract can move off the main loop to a worker. `BsaArchive`/`Ba2Archive`
-/// already satisfy this — each serialises its `File` cursor behind a `Mutex`
-/// so `extract` can take `&self` (#360) — so the bound costs nothing today
+/// already satisfy this — each reads its `File` through positional reads, so
+/// `extract` takes `&self` with no shared cursor (#360) — so the bound costs nothing today
 /// and is what makes sharing the streaming worker's provider possible rather
 /// than a fresh archive handle per menu.
 pub trait ScaleformResourceProvider: Send + Sync {

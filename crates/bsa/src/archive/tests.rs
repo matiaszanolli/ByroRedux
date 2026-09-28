@@ -10,7 +10,6 @@ use super::*;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io;
-use std::sync::Mutex;
 
 /// Real-data path helpers — env-var override falling back to the
 /// canonical Steam install on the reference dev machine (#1058).
@@ -315,7 +314,7 @@ fn archive_with_payload(
     let mut files = HashMap::new();
     files.insert(normalize_path(entry_path), entry);
     BsaArchive {
-        file: Mutex::new(file),
+        file,
         version,
         compressed_by_default,
         embed_file_names,
@@ -392,6 +391,45 @@ fn extract_rejects_compressed_payload_too_short() {
         msg.contains("compressed payload too short"),
         "expected payload-too-short error, got: {msg}"
     );
+}
+
+/// Embedded name prefix + compressed body: `extract` reads positionally, so
+/// the bstring skip and the 4-byte original-size header are pure offset
+/// arithmetic. A one-byte slip here returns a garbage inflate, not a short
+/// read, so pin the whole layout end to end.
+#[test]
+fn extract_skips_embedded_name_before_compressed_body() {
+    use flate2::write::ZlibEncoder;
+    use flate2::Compression;
+    use std::io::Write;
+
+    let body = b"embedded-name + zlib body, read at explicit offsets".repeat(4);
+    let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
+    encoder.write_all(&body).unwrap();
+    let compressed = encoder.finish().unwrap();
+
+    let name = b"meshes\\a.nif";
+    let mut payload = vec![0xAA; 7]; // bytes before the record's offset
+    payload.push(name.len() as u8);
+    payload.extend_from_slice(name);
+    payload.extend_from_slice(&(body.len() as u32).to_le_bytes());
+    payload.extend_from_slice(&compressed);
+    let size = (payload.len() - 7) as u32;
+
+    let archive = archive_with_payload(
+        &payload,
+        true, // embed_file_names
+        true, // compressed by default
+        104,
+        "meshes\\a.nif",
+        FileEntry {
+            offset: 7,
+            size,
+            compression_toggle: false,
+            unknown_size_flag: false,
+        },
+    );
+    assert_eq!(archive.extract("meshes/a.nif").expect("extract"), body);
 }
 
 /// #3367 — bit 31 of the size word is NOT acted on: the embedded-name skip
