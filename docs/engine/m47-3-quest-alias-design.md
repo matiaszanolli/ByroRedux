@@ -303,6 +303,17 @@ Actor, loaded Find Matching, Location Alias Reference, External Alias, and
 Force Into Alias are supported. Reuse and cross-quest reservations are
 deterministic in authored order; missing/unloaded values simply stay unbound.
 
+A refresh visits only the candidates each fill can accept. Fills that match
+one field (Forced Reference, Unique Actor, XLRT reference type, Near Alias
+links) read an index keyed by that field. A Find Matching fill is judged once
+before its scan (`subject_requirement`): a CTDA block no candidate can pass —
+for instance one built only from functions outside the M47.1 catalog, a
+constant 0.0 — leaves it unbound without a scan, and a block gated on
+`GetIsID` / `GetIsRace` / `GetIsClass` limits the scan to candidates carrying
+that identity. Both are exact — the binding a scan of every candidate would
+make — which `subject_requirement_never_excludes_a_passing_subject` pins
+across every one-to-three-condition list of its shapes.
+
 ### Phase 2 — Consumers — done
 Alias-bound VMAD object properties and `RunOn::QuestAlias` both resolve
 through `SceneActorBindings`. Scene actors, objective markers, packages,

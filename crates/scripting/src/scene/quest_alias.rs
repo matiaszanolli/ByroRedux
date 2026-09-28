@@ -20,7 +20,10 @@ use byroredux_plugin::esm::records::{
 };
 
 use super::{register, SceneActorBindings};
-use crate::condition::{evaluate, ConditionContext};
+use crate::condition::{
+    evaluate, subject_requirement, ConditionContext, ConditionFunction, IdentityTest,
+    SubjectRequirement,
+};
 use crate::papyrus_demo::PapyrusPlayerEntity;
 use crate::quest_stages::{QuestFormId, QuestStageState};
 
@@ -380,6 +383,64 @@ impl CandidateIndex {
     }
 }
 
+/// Candidate positions keyed by the id each identity-test function reads off
+/// the candidate — [`ConditionFunction::run_on_identity`], the value the
+/// evaluator itself compares with `param_1` — built per function on first use
+/// in a refresh.
+///
+/// It serves condition-only fills, which [`CandidateIndex`] cannot narrow:
+/// on FO4 Commonwealth such a fill evaluated its conditions against all
+/// ~8 500 candidates each refresh, ~1–2 ms apiece, even when an identity test
+/// such as `GetIsRace` admits only a handful of them.
+#[derive(Default)]
+struct IdentityIndex {
+    by_function: HashMap<ConditionFunction, HashMap<u32, Vec<usize>>>,
+}
+
+impl IdentityIndex {
+    /// Positions that can pass every one of `blocks`, in candidate order —
+    /// those passing an identity test of whichever block admits the fewest —
+    /// or `None` when there is no block to narrow by.
+    fn narrowest(
+        &mut self,
+        blocks: &[Vec<IdentityTest>],
+        world: &World,
+        candidates: &[(EntityId, SceneAliasCandidate)],
+    ) -> Option<Cow<'_, [usize]>> {
+        for test in blocks.iter().flatten() {
+            self.by_function.entry(test.function).or_insert_with(|| {
+                let mut buckets: HashMap<u32, Vec<usize>> = HashMap::new();
+                for (position, (entity, _)) in candidates.iter().enumerate() {
+                    if let Some(id) = test.function.run_on_identity(*entity, world) {
+                        buckets.entry(id).or_default().push(position);
+                    }
+                }
+                buckets
+            });
+        }
+        let bucket = |test: &IdentityTest| {
+            self.by_function[&test.function]
+                .get(&test.id)
+                .map_or(&[][..], Vec::as_slice)
+        };
+        let block = blocks
+            .iter()
+            .min_by_key(|block| block.iter().map(|test| bucket(test).len()).sum::<usize>())?;
+        Some(match block.as_slice() {
+            [test] => Cow::Borrowed(bucket(test)),
+            tests => {
+                let mut positions: Vec<usize> = tests
+                    .iter()
+                    .flat_map(|test| bucket(test).iter().copied())
+                    .collect();
+                positions.sort_unstable();
+                positions.dedup();
+                Cow::Owned(positions)
+            }
+        })
+    }
+}
+
 fn apply_alias_injections(
     world: &World,
     quests: &[(QuestFormId, Vec<QuestAlias>)],
@@ -623,23 +684,45 @@ pub fn refresh_scene_actor_bindings(world: &World) -> usize {
                 .collect()
         })
         .unwrap_or_default();
-    candidates.sort_by_key(|(entity, _)| (world.has::<RemoteSceneActorStub>(*entity), *entity));
+    // Loaded candidates ahead of remote stubs, each group in entity order.
+    // Stubs are few, so collect them once instead of probing their storage
+    // from the comparator — a lock round trip per comparison, ~1 ms of every
+    // FO4 Commonwealth refresh.
+    let stubs: HashSet<EntityId> = world
+        .query::<RemoteSceneActorStub>()
+        .map(|query| query.iter().map(|(entity, _)| entity).collect())
+        .unwrap_or_default();
+    candidates.sort_unstable_by_key(|(entity, _)| (stubs.contains(entity), *entity));
     let index = CandidateIndex::new(&candidates);
+    let mut identities = IdentityIndex::default();
 
-    let mut quests: Vec<(QuestFormId, Vec<QuestAlias>)> = world
+    let registered_quests: HashSet<QuestFormId> = world
         .resource::<SceneQuestAliasRegistry>()
         .aliases
-        .iter()
-        .map(|(&quest, aliases)| (quest, aliases.clone()))
+        .keys()
+        .copied()
         .collect();
-    quests.sort_by_key(|(quest, _)| quest.0);
-    let registered_quests: HashSet<QuestFormId> = quests.iter().map(|(quest, _)| *quest).collect();
     // Alias values exist only for running quest instances. Unit-test/tool
     // worlds that intentionally omit the lifecycle store retain the old
     // data-only behavior; the live engine always installs QuestStageState.
-    if let Some(stages) = world.try_resource::<QuestStageState>() {
-        quests.retain(|(quest, _)| stages.is_running(*quest));
-    }
+    let running: Vec<QuestFormId> = match world.try_resource::<QuestStageState>() {
+        Some(stages) => registered_quests
+            .iter()
+            .copied()
+            .filter(|quest| stages.is_running(*quest))
+            .collect(),
+        None => registered_quests.iter().copied().collect(),
+    };
+    // Clone only what this refresh fills: 274 of FO4's 1 336 alias-bearing
+    // quests run at startup.
+    let mut quests: Vec<(QuestFormId, Vec<QuestAlias>)> = {
+        let registry = world.resource::<SceneQuestAliasRegistry>();
+        running
+            .into_iter()
+            .filter_map(|quest| Some((quest, registry.aliases.get(&quest)?.clone())))
+            .collect()
+    };
+    quests.sort_by_key(|(quest, _)| quest.0);
     let mut resolved = world.resource::<SceneActorBindings>().actors.clone();
     resolved.retain(|(quest, _), _| !registered_quests.contains(quest));
     let mut external_aliases = Vec::new();
@@ -732,9 +815,26 @@ pub fn refresh_scene_actor_bindings(world: &World) -> usize {
                         .get::<GlobalTransform>(entity)
                         .map(|gt| gt.translation)
                 });
-            let positions = index
-                .fill_positions(alias, *quest, &resolved, &candidates)
-                .unwrap_or_else(|| Cow::Owned((0..candidates.len()).collect()));
+            let positions = match index.fill_positions(alias, *quest, &resolved, &candidates) {
+                Some(positions) => positions,
+                // A condition-only fill would evaluate its conditions against
+                // every candidate. Judge once what they demand of any
+                // candidate: a block none can pass empties the scan, and one
+                // gated on identity tests visits only the candidates carrying
+                // those identities.
+                None => match subject_requirement(
+                    &alias.match_conditions,
+                    world,
+                    &ConditionContext::for_subject(EntityId::MAX)
+                        .with_quest(*quest)
+                        .with_pending_alias_bindings(&resolved),
+                ) {
+                    SubjectRequirement::Unsatisfiable => Cow::Borrowed(&[][..]),
+                    SubjectRequirement::IdentityBlocks(blocks) => identities
+                        .narrowest(&blocks, world, &candidates)
+                        .unwrap_or_else(|| Cow::Owned((0..candidates.len()).collect())),
+                },
+            };
             let mut in_fill = positions.iter().map(|&position| &candidates[position]);
             let chosen = if let Some(anchor) = anchor {
                 in_fill

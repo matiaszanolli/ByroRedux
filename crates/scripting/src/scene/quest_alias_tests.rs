@@ -1027,3 +1027,182 @@ fn quest_aliases_fill_only_while_the_quest_is_running() {
     );
     assert!(world.get::<QuestAliasRuntimeOverlays>(actor).is_none());
 }
+
+/// `GetIsRace(race) == 1` on the subject — the gate of FO4's condition-only
+/// fills such as `defaultProtectron` and `DogmeatCompanion`.
+fn is_race(race: u32, or_next: bool) -> byroredux_plugin::esm::records::condition::Condition {
+    use byroredux_plugin::esm::records::condition::{ComparisonOp, Condition, ConditionValue};
+    Condition {
+        function_index: 69,
+        comparator: ComparisonOp::Eq,
+        comparand: ConditionValue::Literal(1.0),
+        param_1: race,
+        or_next,
+        ..Default::default()
+    }
+}
+
+/// A function outside the condition catalog (a constant 0.0) compared
+/// against `value`.
+fn unknown_function_eq(value: f32) -> byroredux_plugin::esm::records::condition::Condition {
+    use byroredux_plugin::esm::records::condition::{ComparisonOp, Condition, ConditionValue};
+    Condition {
+        function_index: 71,
+        comparator: ComparisonOp::Eq,
+        comparand: ConditionValue::Literal(value),
+        ..Default::default()
+    }
+}
+
+/// A condition-only fill gated on identity tests visits only the candidates
+/// carrying one of those identities, and must bind exactly what evaluating
+/// every candidate did: the first eligible one in candidate order, or the
+/// eligible one nearest its anchor.
+#[test]
+fn condition_only_identity_fill_binds_what_the_full_scan_would() {
+    use byroredux_core::character::Background;
+    use byroredux_core::math::{Quat, Vec3};
+
+    let mut world = World::new();
+    crate::register(&mut world);
+    world.register::<GlobalTransform>();
+    world.register::<Background>();
+    const OTHER_QUEST: u32 = 0x201;
+    let anchor = world.spawn();
+    let wrong_race = world.spawn();
+    let dead = world.spawn();
+    let far = world.spawn();
+    let near = world.spawn();
+    for (entity, reference, race, x) in [
+        (anchor, 0xA0, None, 0.0),
+        (wrong_race, 0xA1, Some(0x11), 1.0),
+        (dead, 0xA2, Some(0x10), 2.0),
+        (far, 0xA3, Some(0x10), 30.0),
+        (near, 0xA4, Some(0x12), 5.0),
+    ] {
+        world.insert(
+            entity,
+            SceneAliasCandidate {
+                reference_form_id: reference,
+                base_form_id: 0xB0,
+                linked_refs: Vec::new(),
+                location_ref_types: Vec::new(),
+            },
+        );
+        world.insert(
+            entity,
+            GlobalTransform::new(Vec3::new(x, 0.0, 0.0), Quat::IDENTITY, 1.0),
+        );
+        if let Some(race_form_id) = race {
+            world.insert(
+                entity,
+                Background {
+                    race_form_id,
+                    class_form_id: 0,
+                },
+            );
+        }
+    }
+    world.insert(dead, Dead);
+    install_scene_quest_aliases(
+        &mut world,
+        [
+            QustRecord {
+                form_id: QUEST,
+                aliases: vec![QuestAlias {
+                    alias_id: 1,
+                    match_conditions: vec![is_race(0x10, false)],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+            QustRecord {
+                form_id: OTHER_QUEST,
+                aliases: vec![
+                    QuestAlias {
+                        alias_id: 0,
+                        fill_type: Some(AliasFillType::ForcedReference(0xA0)),
+                        ..Default::default()
+                    },
+                    QuestAlias {
+                        alias_id: 1,
+                        match_conditions: vec![is_race(0x10, true), is_race(0x12, false)],
+                        closest_to_alias: Some(0),
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            },
+        ],
+    );
+
+    refresh_scene_actor_bindings(&world);
+    let bindings = world.resource::<SceneActorBindings>();
+    assert_eq!(
+        bindings.resolve(QuestFormId(QUEST), 1),
+        Some(far),
+        "the first live candidate of the race, in candidate order"
+    );
+    assert_eq!(
+        bindings.resolve(QuestFormId(OTHER_QUEST), 1),
+        Some(near),
+        "the nearest live candidate of either race"
+    );
+}
+
+/// A condition-only fill with a block no candidate can pass — here a
+/// function outside the catalog, a constant 0.0, tested `== 1`: the shape of
+/// FO4's `CommandActor`, `Companion` and `Doctor` fills — stays unbound
+/// without evaluating its conditions per candidate, and takes nothing from
+/// the aliases after it.
+#[test]
+fn alias_gated_by_a_block_no_candidate_can_pass_stays_unbound() {
+    use byroredux_core::character::Background;
+
+    let mut world = World::new();
+    crate::register(&mut world);
+    world.register::<Background>();
+    let actor = world.spawn();
+    world.insert(
+        actor,
+        SceneAliasCandidate {
+            reference_form_id: 0xA1,
+            base_form_id: 0xB1,
+            linked_refs: Vec::new(),
+            location_ref_types: Vec::new(),
+        },
+    );
+    world.insert(
+        actor,
+        Background {
+            race_form_id: 0x10,
+            class_form_id: 0,
+        },
+    );
+    install_scene_quest_aliases(
+        &mut world,
+        [QustRecord {
+            form_id: QUEST,
+            aliases: vec![
+                QuestAlias {
+                    alias_id: 1,
+                    match_conditions: vec![unknown_function_eq(1.0)],
+                    ..Default::default()
+                },
+                QuestAlias {
+                    alias_id: 3,
+                    // `== 0` holds for every candidate, so only the race test
+                    // decides.
+                    match_conditions: vec![unknown_function_eq(0.0), is_race(0x10, false)],
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        }],
+    );
+
+    assert_eq!(refresh_scene_actor_bindings(&world), 1);
+    let bindings = world.resource::<SceneActorBindings>();
+    assert_eq!(bindings.resolve(QuestFormId(QUEST), 1), None);
+    assert_eq!(bindings.resolve(QuestFormId(QUEST), 3), Some(actor));
+}

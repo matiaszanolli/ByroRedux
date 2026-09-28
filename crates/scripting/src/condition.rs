@@ -54,6 +54,7 @@
 //! future-catalog tracking.
 
 use std::collections::HashMap;
+use std::ops::RangeInclusive;
 
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::world::World;
@@ -69,7 +70,7 @@ use crate::scene::SceneActorBindings;
 /// New functions land by adding a variant + a match arm in
 /// [`evaluate_function`]. Unknown indices fall through to
 /// [`Self::Unknown`] which evaluates to `0.0`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ConditionFunction {
     /// `GetActorValue(avif_form_id) → f32`. Reads the Run-On's composed value
     /// for the `param_1` actor value from its `ActorValues` component
@@ -263,6 +264,79 @@ impl ConditionFunction {
             .copied()
             .find(|f| f.name().eq_ignore_ascii_case(name))
     }
+
+    /// Whether the value depends on the entity the Run-On resolves to.
+    /// `false` for functions that read only their parameters or global
+    /// state — quest stages, scene progress, the Hardcore flag,
+    /// `GetVMScriptVariable` (whose object is an explicit parameter) — and
+    /// for every index outside the catalog, a constant 0.0.
+    ///
+    /// Exhaustive on purpose: [`subject_requirement`] evaluates a `false`
+    /// function once on behalf of every subject, so a new variant has to be
+    /// classified here rather than inherit a default.
+    pub fn reads_run_on_entity(self) -> bool {
+        match self {
+            Self::GetDistance
+            | Self::GetActorValue
+            | Self::GetDead
+            | Self::GetInCell
+            | Self::GetIsClass
+            | Self::GetIsRace
+            | Self::GetIsID
+            | Self::GetFactionRank
+            | Self::GetLevel
+            | Self::GetEquipped
+            | Self::HasPerk
+            | Self::GetXPForNextLevel
+            | Self::HasLoaded3D
+            | Self::GetReputation
+            | Self::GetReputationThreshold => true,
+            Self::GetStage
+            | Self::GetStageDone
+            | Self::IsSceneActionComplete
+            | Self::IsHardcore
+            | Self::GetVMScriptVariable
+            | Self::Unknown(_) => false,
+        }
+    }
+
+    /// Whether this is an identity test: 1.0 exactly when
+    /// [`Self::run_on_identity`] equals `param_1`, else 0.0.
+    pub fn is_identity_test(self) -> bool {
+        matches!(self, Self::GetIsClass | Self::GetIsRace | Self::GetIsID)
+    }
+
+    /// The id an identity test compares with `param_1`. `None` when the
+    /// entity carries no such id (the test is then 0.0) and for every
+    /// function that is not an identity test.
+    pub fn run_on_identity(self, entity: EntityId, world: &World) -> Option<u32> {
+        use byroredux_core::character::Background;
+        match self {
+            // The actor's `Background.class` / `.race`, a remapped `CLAS` /
+            // `RACE` FormID. Compared in the actor's stored space —
+            // identity-equal to a remapped `param_1` in single-plugin loads,
+            // same contract as `GetFactionRank`.
+            Self::GetIsClass => world.get::<Background>(entity).map(|b| b.class_form_id),
+            Self::GetIsRace => world.get::<Background>(entity).map(|b| b.race_form_id),
+            Self::GetIsID => {
+                // The CTDA form-id remap (#1666, applied at parse time in the
+                // plugin crate) has already promoted `param_1` into global
+                // load-order space — the same space the entity's
+                // `FormIdComponent` resolves to via `FormIdPool` — so this is
+                // a direct, false-positive-free compare across multi-plugin
+                // loads (no lower-24-bits shortcut).
+                use byroredux_core::ecs::components::FormIdComponent;
+                use byroredux_core::form_id::FormIdPool;
+                let fid_comp = world.get::<FormIdComponent>(entity)?;
+                let pool = world.try_resource::<FormIdPool>()?;
+                // `local` carries the full global FormID — the cell loader
+                // stores the remapped placement/base id as the LocalFormId
+                // (references.rs), so `pair.local.0` is directly comparable.
+                pool.resolve(fid_comp.0).map(|pair| pair.local.0)
+            }
+            _ => None,
+        }
+    }
 }
 
 /// Per-evaluation context — the abstract Run-On targets a CTDA may
@@ -407,20 +481,26 @@ pub fn evaluate_condition(condition: &Condition, world: &World, ctx: &ConditionC
     let function = ConditionFunction::from_index(condition.function_index);
     let function_result = evaluate_function(function, condition, entity, world);
 
-    // Resolve comparand — Globals route through the `Globals` resource
-    // (mirrored from `EsmIndex.globals`, #1668). `form_id` is already in
-    // global load-order space (remapped at CTDA parse time), matching the
-    // resource's key space. A missing resource or unknown GLOB resolves to
-    // 0.0 — Bethesda's "missing GLOB defaults to 0".
-    let comparand = match condition.comparand {
+    condition
+        .comparator
+        .apply(function_result, comparand_value(condition, world))
+}
+
+/// The value a condition's function result is compared against.
+///
+/// Globals route through the `Globals` resource (mirrored from
+/// `EsmIndex.globals`, #1668). `form_id` is already in global load-order
+/// space (remapped at CTDA parse time), matching the resource's key space. A
+/// missing resource or unknown GLOB resolves to 0.0 — Bethesda's "missing
+/// GLOB defaults to 0".
+fn comparand_value(condition: &Condition, world: &World) -> f32 {
+    match condition.comparand {
         ConditionValue::Literal(v) => v,
         ConditionValue::Global(form_id) => world
             .try_resource::<crate::globals::Globals>()
             .and_then(|g| g.get(form_id))
             .unwrap_or(0.0),
-    };
-
-    condition.comparator.apply(function_result, comparand)
+    }
 }
 
 /// Resolve a global-load-order FormID to the entity that carries it.
@@ -724,19 +804,14 @@ pub fn evaluate_function(
                     }
                 })
         }
-        ConditionFunction::GetIsClass => {
-            // GetIsClass(class_form_id) → 1.0 iff the actor's `Background.class`
-            // matches `param_1` (a remapped `CLAS` FormID). Compared in the
-            // actor's stored space — identity-equal to a remapped `param_1` in
-            // single-plugin loads, same contract as `GetFactionRank`.
-            use byroredux_core::character::Background;
-            world.get::<Background>(entity).map_or(0.0, |b| {
-                if b.class_form_id == condition.param_1 {
-                    1.0
-                } else {
-                    0.0
-                }
-            })
+        ConditionFunction::GetIsClass
+        | ConditionFunction::GetIsRace
+        | ConditionFunction::GetIsID => {
+            if function.run_on_identity(entity, world) == Some(condition.param_1) {
+                1.0
+            } else {
+                0.0
+            }
         }
         ConditionFunction::HasLoaded3D => {
             // A loaded reference has joined the spatial ECS and therefore
@@ -747,42 +822,6 @@ pub fn evaluate_function(
                 1.0
             } else {
                 0.0
-            }
-        }
-        ConditionFunction::GetIsRace => {
-            // GetIsRace(race_form_id) → 1.0 iff the actor's `Background.race`
-            // matches `param_1` (a remapped `RACE` FormID). Same space contract
-            // as `GetIsClass`.
-            use byroredux_core::character::Background;
-            world.get::<Background>(entity).map_or(0.0, |b| {
-                if b.race_form_id == condition.param_1 {
-                    1.0
-                } else {
-                    0.0
-                }
-            })
-        }
-        ConditionFunction::GetIsID => {
-            // Test the Run-On entity's identity against `param_1`. The CTDA
-            // form-id remap (#1666, applied at parse time in the plugin crate)
-            // has already promoted `param_1` into global load-order space — the
-            // same space the entity's `FormIdComponent` resolves to via
-            // `FormIdPool` — so this is a direct, false-positive-free compare
-            // across multi-plugin loads (no lower-24-bits shortcut).
-            use byroredux_core::ecs::components::FormIdComponent;
-            use byroredux_core::form_id::FormIdPool;
-            let Some(fid_comp) = world.get::<FormIdComponent>(entity) else {
-                return 0.0;
-            };
-            let Some(pool) = world.try_resource::<FormIdPool>() else {
-                return 0.0;
-            };
-            // `local` carries the full global FormID — the cell loader stores
-            // the remapped placement/base id as the LocalFormId
-            // (references.rs), so `pair.local.0` is directly comparable.
-            match pool.resolve(fid_comp.0) {
-                Some(pair) if pair.local.0 == condition.param_1 => 1.0,
-                _ => 0.0,
             }
         }
         ConditionFunction::IsHardcore => {
@@ -882,12 +921,25 @@ pub fn evaluate_function(
 /// scan early. Any OR-block returning `true` finishes the block and
 /// moves on without evaluating the remaining OR members.
 pub fn evaluate(conditions: &ConditionList, world: &World, ctx: &ConditionContext) -> bool {
-    if conditions.is_empty() {
-        return true; // "no conditions = always fires" contract
-    }
+    // An empty list has no blocks: "no conditions = always fires". A false
+    // block fails the whole AND chain; within a block, single-condition
+    // blocks (no preceding OR flag) reduce to one evaluation and
+    // multi-condition blocks are OR-combined with short-circuit.
+    or_blocks(conditions).all(|block| {
+        conditions[block]
+            .iter()
+            .any(|condition| evaluate_condition(condition, world, ctx))
+    })
+}
 
+/// The OR blocks of `conditions`, in order, as index ranges — the units
+/// [`evaluate`] AND-combines.
+fn or_blocks(conditions: &[Condition]) -> impl Iterator<Item = RangeInclusive<usize>> + '_ {
     let mut i = 0usize;
-    while i < conditions.len() {
+    std::iter::from_fn(move || {
+        if i >= conditions.len() {
+            return None;
+        }
         // Discover the end of the current OR block. A block extends
         // while the CURRENT condition's `or_next` flag is set.
         let block_start = i;
@@ -901,23 +953,84 @@ pub fn evaluate(conditions: &ConditionList, world: &World, ctx: &ConditionContex
         // malformed/truncated CTDA tail leaves the OR bit set), the inner
         // loop walks `i` to `len`, which the inclusive range would index
         // out of bounds. A trailing OR flag is meaningless (no `next`), so
-        // terminate the block at its last real member — `while i < len`
-        // guarantees `len >= 1`, so the subtraction can't underflow.
+        // terminate the block at its last real member — `i < len` held on
+        // entry, so `len >= 1` and the subtraction can't underflow.
         let block_end_inclusive = i.min(conditions.len() - 1);
         i += 1; // step past the block for next iteration
+        Some(block_start..=block_end_inclusive)
+    })
+}
 
-        // Evaluate the block. Single-condition blocks (no preceding
-        // OR flag) reduce to one evaluation; multi-condition blocks
-        // are OR-combined with short-circuit.
-        let block_result = (block_start..=block_end_inclusive)
-            .any(|j| evaluate_condition(&conditions[j], world, ctx));
-        if !block_result {
-            // AND-combine with the surrounding chain — false block
-            // fails the whole list.
-            return false;
+/// A test a subject passes when `function`'s
+/// [`run_on_identity`](ConditionFunction::run_on_identity) equals `id`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IdentityTest {
+    pub function: ConditionFunction,
+    pub id: u32,
+}
+
+/// What a condition list demands of its subject, for a caller about to
+/// evaluate the same list against many subjects in one context.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SubjectRequirement {
+    /// A block is false whatever the subject, so [`evaluate`] is false for
+    /// every subject.
+    Unsatisfiable,
+    /// A subject can pass only by passing one identity test from each listed
+    /// block. Necessary, not sufficient — the list still has to be evaluated
+    /// for each subject that does. Empty when no block constrains the
+    /// subject that way.
+    IdentityBlocks(Vec<Vec<IdentityTest>>),
+}
+
+/// Work out, once, what `conditions` demand of any subject evaluated in
+/// `ctx`. `ctx.subject` is never read, so any placeholder will do.
+///
+/// A condition that cannot depend on the subject — its Run-On names another
+/// slot, or its function ignores the entity
+/// ([`ConditionFunction::reads_run_on_entity`]) — has the same value for
+/// every subject, so it is evaluated here once: a block with one true member
+/// is always true, and a block whose members are all false in this way is
+/// always false. A subject-dependent member narrows its block only when it
+/// is an identity test that fails on a 0.0 result; then the block can only
+/// pass where one of those identities matches.
+pub fn subject_requirement(
+    conditions: &ConditionList,
+    world: &World,
+    ctx: &ConditionContext,
+) -> SubjectRequirement {
+    let mut identity_blocks = Vec::new();
+    'blocks: for block in or_blocks(conditions) {
+        let mut tests = Vec::new();
+        let mut unconstrained = false;
+        for condition in &conditions[block] {
+            let function = ConditionFunction::from_index(condition.function_index);
+            if !matches!(condition.run_on, RunOn::Subject) || !function.reads_run_on_entity() {
+                if evaluate_condition(condition, world, ctx) {
+                    continue 'blocks;
+                }
+            } else if function.is_identity_test()
+                && !condition
+                    .comparator
+                    .apply(0.0, comparand_value(condition, world))
+            {
+                tests.push(IdentityTest {
+                    function,
+                    id: condition.param_1,
+                });
+            } else {
+                unconstrained = true;
+            }
         }
+        if unconstrained {
+            continue;
+        }
+        if tests.is_empty() {
+            return SubjectRequirement::Unsatisfiable;
+        }
+        identity_blocks.push(tests);
     }
-    true
+    SubjectRequirement::IdentityBlocks(identity_blocks)
 }
 
 #[cfg(test)]
@@ -1800,6 +1913,167 @@ mod tests {
         let mut eq = cond(58, ComparisonOp::Eq, 0.0, false).with_param_1(0xAA);
         eq.comparand = ConditionValue::Global(0x0100_0099);
         assert!(evaluate(&vec![eq], &world, &ctx(0)));
+    }
+
+    // ── subject_requirement ────────────────────────────────────────────
+
+    /// Subjects that differ in everything the shapes below read, and the
+    /// condition shapes: identity tests that do and don't fail on 0.0, a
+    /// subject-dependent non-identity test, and unknown functions (a
+    /// constant 0.0) that are false and true for every subject.
+    fn requirement_fixture() -> (World, Vec<EntityId>, Vec<Condition>) {
+        use byroredux_core::character::Background;
+        use byroredux_core::ecs::components::{Dead, FormIdComponent};
+        use byroredux_core::form_id::{FormIdPair, FormIdPool, LocalFormId, PluginId};
+
+        let mut world = World::new();
+        let mut pool = FormIdPool::new();
+        let mut form_id = |local| {
+            FormIdComponent(pool.intern(FormIdPair {
+                plugin: PluginId::from_filename("Fallout4.esm"),
+                local: LocalFormId(local),
+            }))
+        };
+        let subjects: Vec<EntityId> = (0..4).map(|_| world.spawn()).collect();
+        let (a0, a1) = (form_id(0xA0), form_id(0xA1));
+        world.insert(subjects[0], a0);
+        world.insert(subjects[1], a1);
+        world.insert(subjects[2], a0);
+        world.insert_resource(pool);
+        world.insert(
+            subjects[0],
+            Background {
+                race_form_id: 0x10,
+                class_form_id: 0x20,
+            },
+        );
+        world.insert(
+            subjects[1],
+            Background {
+                race_form_id: 0x11,
+                class_form_id: 0x20,
+            },
+        );
+        world.insert(
+            subjects[3],
+            Background {
+                race_form_id: 0x10,
+                class_form_id: 0x21,
+            },
+        );
+        world.insert(subjects[1], Dead);
+
+        let shapes = vec![
+            cond(69, ComparisonOp::Eq, 1.0, false).with_param_1(0x10),
+            cond(69, ComparisonOp::Ne, 0.0, false).with_param_1(0x11),
+            cond(69, ComparisonOp::Eq, 0.0, false).with_param_1(0x10),
+            cond(68, ComparisonOp::Ge, 1.0, false).with_param_1(0x20),
+            cond(72, ComparisonOp::Eq, 1.0, false).with_param_1(0xA0),
+            cond(46, ComparisonOp::Eq, 1.0, false),
+            cond(71, ComparisonOp::Eq, 1.0, false),
+            cond(74, ComparisonOp::Eq, 0.0, false),
+        ];
+        (world, subjects, shapes)
+    }
+
+    /// Every list of one to three shapes, under every `or_next` pattern
+    /// (trailing flag included): a requirement must never rule out a subject
+    /// `evaluate` passes, so an alias scan narrowed by it binds exactly what
+    /// the full scan would.
+    #[test]
+    fn subject_requirement_never_excludes_a_passing_subject() {
+        let (world, subjects, shapes) = requirement_fixture();
+        let mut lists = Vec::new();
+        for len in 1..=3u32 {
+            for picks in 0..shapes.len().pow(len) {
+                for ors in 0..1u32 << len {
+                    let list: Vec<Condition> = (0..len)
+                        .map(|slot| {
+                            let pick = picks / shapes.len().pow(slot) % shapes.len();
+                            let mut condition = shapes[pick].clone();
+                            condition.or_next = ors >> slot & 1 == 1;
+                            condition
+                        })
+                        .collect();
+                    lists.push(list);
+                }
+            }
+        }
+
+        let (mut unsatisfiable, mut narrowed) = (0, 0);
+        for list in &lists {
+            let requirement = subject_requirement(list, &world, &ctx(EntityId::MAX));
+            for &subject in &subjects {
+                if !evaluate(list, &world, &ctx(subject)) {
+                    continue;
+                }
+                match &requirement {
+                    SubjectRequirement::Unsatisfiable => {
+                        panic!("{list:?} is unsatisfiable yet passes subject {subject}")
+                    }
+                    SubjectRequirement::IdentityBlocks(blocks) => {
+                        for block in blocks {
+                            assert!(
+                                block.iter().any(|test| {
+                                    test.function.run_on_identity(subject, &world) == Some(test.id)
+                                }),
+                                "{list:?} passes subject {subject} outside block {block:?}"
+                            );
+                        }
+                    }
+                }
+            }
+            match requirement {
+                SubjectRequirement::Unsatisfiable => unsatisfiable += 1,
+                SubjectRequirement::IdentityBlocks(blocks) if !blocks.is_empty() => narrowed += 1,
+                SubjectRequirement::IdentityBlocks(_) => {}
+            }
+        }
+        // Not vacuous: plenty of lists exercise both outcomes.
+        assert!(
+            unsatisfiable > 100 && narrowed > 100,
+            "{unsatisfiable} / {narrowed}"
+        );
+    }
+
+    #[test]
+    fn subject_requirement_reports_what_each_block_demands() {
+        let (world, _, shapes) = requirement_fixture();
+        let race = |id| IdentityTest {
+            function: ConditionFunction::GetIsRace,
+            id,
+        };
+        let judge = |list: Vec<Condition>| subject_requirement(&list, &world, &ctx(EntityId::MAX));
+        let or = |mut condition: Condition| {
+            condition.or_next = true;
+            condition
+        };
+
+        // An unknown function is 0.0 for everyone: `== 1` fails them all.
+        assert_eq!(
+            judge(vec![shapes[6].clone()]),
+            SubjectRequirement::Unsatisfiable
+        );
+        // `== 0` passes them all, leaving the identity block to narrow by.
+        assert_eq!(
+            judge(vec![shapes[7].clone(), shapes[0].clone()]),
+            SubjectRequirement::IdentityBlocks(vec![vec![race(0x10)]])
+        );
+        // An OR block of identity tests admits either identity.
+        assert_eq!(
+            judge(vec![or(shapes[0].clone()), shapes[1].clone()]),
+            SubjectRequirement::IdentityBlocks(vec![vec![race(0x10), race(0x11)]])
+        );
+        // A test that passes on 0.0, or a non-identity member, leaves its
+        // block unconstrained.
+        assert_eq!(
+            judge(vec![shapes[2].clone()]),
+            SubjectRequirement::IdentityBlocks(vec![])
+        );
+        assert_eq!(
+            judge(vec![or(shapes[0].clone()), shapes[5].clone()]),
+            SubjectRequirement::IdentityBlocks(vec![])
+        );
     }
 
     // ── Helper: chainable param_1 setter for compact test construction ──
