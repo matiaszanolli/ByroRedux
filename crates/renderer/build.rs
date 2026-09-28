@@ -1277,6 +1277,11 @@ fn main() {
         "#define WATER_COLUMN_ABSORPTION_SHAPE {WATER_COLUMN_ABSORPTION_SHAPE:?}"
     )
     .unwrap();
+    writeln!(
+        out,
+        "#define WATER_FLOW_MAP_CYCLE_SECONDS {WATER_FLOW_MAP_CYCLE_SECONDS:?}"
+    )
+    .unwrap();
     writeln!(out).unwrap();
 
     writeln!(

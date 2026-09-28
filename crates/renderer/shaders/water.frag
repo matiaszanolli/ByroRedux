@@ -72,7 +72,8 @@ struct WaterParams {
     vec4 shallow;
     // rgb = deep_color (linear), a = fog_far
     vec4 deep;
-    // xy = scroll_a (world units/s), zw = scroll_b
+    // xy = scroll_a (UV/s — the pattern velocity; features travel along
+    // +scroll, #4728), zw = scroll_b
     vec4 scroll;
     // xy = scroll_c for the authored third normal layer; zw = underwater
     // fog near/far for the camera-below-surface presentation.
@@ -364,6 +365,22 @@ vec3 sampleScrollingNormal(uint normalMapIndex, vec2 uvBase, vec2 originOffset, 
     // Scale the tangent-space tilt by the authored amplitude, keep the
     // sign of the up component, renormalise (mirrors the procedural path).
     return normalize(vec3(n.xy * ampScale, n.z));
+}
+
+// #4930 — one normal layer advected by a BGSM flow map, dual-phase: two
+// samples whose flow offsets each saw-tooth over `WATER_FLOW_MAP_CYCLE_SECONDS`
+// half a cycle apart, cross-faded so each phase is invisible at its own
+// reset. The offset is therefore bounded (it used to grow as `flow·t` for
+// the whole uptime) and is SUBTRACTED like `sampleScrollingNormal`'s
+// scroll term, so features travel along +flow (#4728). `phaseBlend == 0`
+// (no flow map, or the instant phase 1 resets) costs a single sample.
+vec3 sampleFlowAdvectedNormal(uint normalMapIndex, vec2 uvBase, vec2 originOffset, vec2 uvOffset, vec2 flowOffset0, vec2 flowOffset1, float phaseBlend, vec2 scroll, float scale, float time, float ampScale, float freqScale, bool offsetNoise) {
+    vec3 n0 = sampleScrollingNormal(normalMapIndex, uvBase, originOffset, uvOffset - flowOffset0, scroll, scale, time, ampScale, freqScale, offsetNoise);
+    if (phaseBlend <= 0.0) {
+        return n0;
+    }
+    vec3 n1 = sampleScrollingNormal(normalMapIndex, uvBase, originOffset, uvOffset - flowOffset1, scroll, scale, time, ampScale, freqScale, offsetNoise);
+    return normalize(mix(n0, n1, phaseBlend));
 }
 
 vec2 sampleFlowMap(uint flowMapIndex, vec2 uv) {
@@ -695,10 +712,21 @@ void main() {
     // field bends the normal-map UVs over time; the world-WindField scroll is
     // still added by the CPU, so authored flow and atmospheric wind compose
     // instead of one replacing the other. Cell WATR water keeps the sentinel.
-    vec2 flowOffset = vec2(0.0);
+    // #4930 — dual-phase (see `sampleFlowAdvectedNormal`): each phase's
+    // offset restarts every cycle, so it stays bounded at any uptime.
+    vec2 flowOffset0 = vec2(0.0);
+    vec2 flowOffset1 = vec2(0.0);
+    float flowPhaseBlend = 0.0;
     if (flowMapIndex != 0xFFFFFFFFu) {
         vec2 flowDirection = sampleFlowMap(flowMapIndex, vUV);
-        flowOffset = flowDirection * time * 0.02 * clamp(push.uv_offset.w, 0.05, 8.0);
+        float flowRate = 0.02 * clamp(push.uv_offset.w, 0.05, 8.0);
+        float phase0 = fract(time / WATER_FLOW_MAP_CYCLE_SECONDS);
+        float phase1 = fract(phase0 + 0.5);
+        flowOffset0 = flowDirection * flowRate * phase0 * WATER_FLOW_MAP_CYCLE_SECONDS;
+        flowOffset1 = flowDirection * flowRate * phase1 * WATER_FLOW_MAP_CYCLE_SECONDS;
+        // Phase 1's weight: 1 while phase 0 resets (phase0 at 0/1), 0 while
+        // phase 1 resets (phase0 = 0.5).
+        flowPhaseBlend = abs(1.0 - 2.0 * phase0);
     }
 
     // Imported NIF water meshes are not guaranteed to carry a valid tangent
@@ -778,7 +806,9 @@ void main() {
         // Flow-map vectors are tangent/UV-space, so they cannot establish
         // a dependable world-down direction on legacy waterfall meshes.
         // The canonical WaterFlow above owns motion for this representation.
-        flowOffset = vec2(0.0);
+        flowOffset0 = vec2(0.0);
+        flowOffset1 = vec2(0.0);
+        flowPhaseBlend = 0.0;
     } else {
         // Use world XZ — flat-plane water.
         uvWorld = vWorldPos.xz;
@@ -788,12 +818,12 @@ void main() {
     // case). For River/Rapids/Waterfall, layer A's scroll vector is
     // baked from `flow` on the CPU side, so we don't have to branch
     // here. Push constants carry the final scroll vectors.
-    vec2 normalUvOffset = push.uv_offset.xy + flowOffset;
+    vec2 normalUvOffset = push.uv_offset.xy;
     // `WaterNormalEncoding` rides `optical.y` (0 = unit tangent normal,
     // 1 = FO3/FNV offset noise).
     bool offsetNoise = push.optical.y > 0.5;
-    vec3 nA = sampleScrollingNormal(noiseMapA, uvWorld, uvOrigin, normalUvOffset, normalScrollA, push.tune.x, time, ampScale * max(push.detail.y, 0.05) * max(push.depth.z, 0.0), freqScale, offsetNoise);
-    vec3 nB = sampleScrollingNormal(noiseMapB, uvWorld, uvOrigin, normalUvOffset, normalScrollB, push.tune.y, time, ampScale * max(push.detail.z, 0.05) * max(push.depth.z, 0.0), freqScale, offsetNoise);
+    vec3 nA = sampleFlowAdvectedNormal(noiseMapA, uvWorld, uvOrigin, normalUvOffset, flowOffset0, flowOffset1, flowPhaseBlend, normalScrollA, push.tune.x, time, ampScale * max(push.detail.y, 0.05) * max(push.depth.z, 0.0), freqScale, offsetNoise);
+    vec3 nB = sampleFlowAdvectedNormal(noiseMapB, uvWorld, uvOrigin, normalUvOffset, flowOffset0, flowOffset1, flowPhaseBlend, normalScrollB, push.tune.y, time, ampScale * max(push.detail.z, 0.05) * max(push.depth.z, 0.0), freqScale, offsetNoise);
 
     // A distinct authored NAM4 layer contributes on every horizontal water
     // kind. Rapids uses the faster flow-biased path for whitewater; calm and
@@ -810,11 +840,14 @@ void main() {
             ? vec2(push.flow.x, push.flow.z) * push.flow.w * 2.0
             : normalScrollC;
         float thirdWeight = kind == WATER_RAPIDS ? 0.7 : 0.35;
-        vec3 nC = sampleScrollingNormal(
+        vec3 nC = sampleFlowAdvectedNormal(
             noiseMapC,
             uvWorld,
             uvOrigin,
             normalUvOffset,
+            flowOffset0,
+            flowOffset1,
+            flowPhaseBlend,
             thirdScroll,
             push.detail.x,
             time,

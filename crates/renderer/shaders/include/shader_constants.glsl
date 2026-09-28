@@ -359,6 +359,7 @@
 #define DEFAULT_WATER_WAVE_AMPLITUDE 0.05
 #define DEFAULT_WATER_WAVE_FREQUENCY 0.6
 #define WATER_COLUMN_ABSORPTION_SHAPE 2.0
+#define WATER_FLOW_MAP_CYCLE_SECONDS 4.0
 
 // BGEM v21+ glass neutral pivots — `triangle.frag` divides the
 // authored scalars by these (#3459).

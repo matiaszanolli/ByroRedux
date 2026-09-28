@@ -218,7 +218,26 @@ pub struct WaterParams {
     /// 0/4/40/43/60/76/78/90/120/145/180/183/211/300/360), which Skyrim already
     /// promotes here via `apply_skyrim_dnam_tail`. That field is unreachable on
     /// the FO3/FNV arm while the prefix decode stops at byte 52 — see #3107.
+    ///
+    /// Frame: see [`Self::noise_wind_directions`].
     pub wind_direction: f32,
+    /// #4931 — whether [`Self::wind_direction`] is an authored heading,
+    /// decided per layout at parse time, never re-derived from the value.
+    ///
+    /// - Legacy `DATA`/`DNAM[4]` field (FO3/FNV, and Skyrim's prefix before
+    ///   `apply_skyrim_dnam_tail` promotes over it): authored only when
+    ///   present, finite and not the dead editor default
+    ///   [`LEGACY_DEAD_WIND_DIRECTION_DEGREES`] (#3144 census, #4734).
+    /// - Oblivion `DATA[4]`: authored when present — the one title that
+    ///   varies it (0° included).
+    /// - Skyrim tail / FO4 / FO76 / Starfield: authored when the promoted
+    ///   noise-layer-1 angle was actually read; an exact 90° there is a
+    ///   genuine bearing (FO4 authors it on two layers).
+    ///
+    /// A missing or short payload leaves it `false`, so its zero default is
+    /// never treated as a heading (the #3185 class). Consumers must not
+    /// fabricate a physics current when it is `false`.
+    pub wind_direction_authored: bool,
     /// Skyrim-family WATR `NAM1` angular velocity vector. The renderer uses
     /// the source Z component (the Gamebryo up axis) as the surface yaw rate;
     /// the horizontal components are retained for provenance but do not
@@ -286,10 +305,25 @@ pub struct WaterParams {
     pub specular_magnitude: f32,
     /// Skyrim's authored specular-radius control; zero is the legacy sentinel.
     pub specular_radius: f32,
-    /// Authored normal-layer wind directions (radians, the record's own
-    /// DNAM frame) and UV speeds. Zero entries are sentinels for layouts
-    /// without per-layer motion controls. Never filled from NAM0, which
-    /// is carried only as `WatrRecord::linear_velocity` (#4900).
+    /// Authored normal-layer wind directions (radians) and UV speeds. Zero
+    /// entries are sentinels for layouts without per-layer motion controls.
+    /// Never filled from NAM0, which is carried only as
+    /// `WatrRecord::linear_velocity` (#4900).
+    ///
+    /// **Frame (#4932).** The field holds one of two conventions, both
+    /// stored untransformed (the translate boundary,
+    /// `watr_angle_to_engine_xz`, applies the one +90° rotation to either):
+    ///
+    /// - Skyrim / FO4 / FO76 / Starfield DNAM layer angles and FO3/FNV
+    ///   `DNAM[100]`: degrees on the wire, a wind-FROM compass bearing in
+    ///   the record's Z-up frame — 0 blows from game north (the pattern
+    ///   travels south), 90° from east, clockwise seen from above.
+    /// - Oblivion layer 0: `atan2(y, x)` of the `DATA[28..36]` scroll-speed
+    ///   pair — a direction-of-travel angle counter-clockwise from the
+    ///   pair's own x axis, not a wind-FROM bearing. It shares the slot
+    ///   because Oblivion authors no per-layer angle.
+    ///
+    /// Per-game detail is in `docs/engine/watal.md` §2.
     pub noise_wind_directions: [f32; 3],
     pub noise_wind_speeds: [f32; 3],
     /// Skyrim SE-only flow-map tile scale at DNAM offset 228. A zero
@@ -313,16 +347,17 @@ pub struct WaterParams {
     pub silt_dark_color: [f32; 3],
 }
 
-impl WaterParams {
-    /// #4734 — the dead editor default (`wind_direction` doc above): 90.0°
-    /// on the wire, converted to radians by every producer. A record whose
-    /// value equals this carries **no authored heading** — #2872 ruled a
-    /// zero-variance field cannot be authored velocity, and #3185 ruled a
-    /// name establishes the water's kind but not its axis. Consumers must
-    /// not fabricate a physics current from it.
-    pub fn wind_direction_is_dead_default(&self) -> bool {
-        self.wind_direction == 90.0f32.to_radians()
-    }
+/// #4734 / #4931 — the dead editor default of the legacy `wind_direction`
+/// field (`DATA[4]` / `DNAM[4]`, degrees): 90.0 on 53/53 FO3, 78/78 FNV and
+/// 34/34 Skyrim records (#3144). #2872 ruled a zero-variance field cannot
+/// be authored velocity. Scoped to that field's decoders — the FO4+
+/// noise-layer angles legitimately author 90°.
+pub const LEGACY_DEAD_WIND_DIRECTION_DEGREES: f32 = 90.0;
+
+/// Whether a legacy `DATA[4]`/`DNAM[4]` wind direction (degrees) is an
+/// authored heading rather than the dead editor default.
+fn legacy_wind_direction_authored(degrees: f32) -> bool {
+    degrees.is_finite() && degrees != LEGACY_DEAD_WIND_DIRECTION_DEGREES
 }
 
 impl Default for WaterParams {
@@ -344,6 +379,7 @@ impl Default for WaterParams {
             fresnel: 0.02,
             wind_speed: 1.0,
             wind_direction: 0.0,
+            wind_direction_authored: false,
             angular_velocity: [0.0; 3],
             wave_amplitude: DEFAULT_WATER_WAVE_AMPLITUDE,
             wave_frequency: DEFAULT_WATER_WAVE_FREQUENCY,
@@ -470,6 +506,7 @@ fn decode_data_short(data: &[u8]) -> WaterParams {
     if let Ok(v) = r.f32_finite() {
         // Degrees on the wire (#3144) — see `WaterParams::wind_direction`.
         p.wind_direction = v.to_radians();
+        p.wind_direction_authored = legacy_wind_direction_authored(v);
     }
     if let Ok(v) = r.f32_finite() {
         p.wave_amplitude = v;
@@ -546,6 +583,9 @@ fn decode_data_oblivion(data: &[u8]) -> WaterParams {
     // prefix that needs a unit conversion.
     if let Some(degrees) = read_f32_at(data, 4) {
         p.wind_direction = degrees.to_radians();
+        // #4931 — Oblivion genuinely varies this field (0° included), so
+        // presence is authorship; no dead-default rule on this arm.
+        p.wind_direction_authored = degrees.is_finite();
     }
     if let Some(value) = read_f32_at(data, 16) {
         p.sun_specular_power = value.clamp(1.0, 2048.0);
@@ -651,6 +691,7 @@ fn decode_data_fo3nv(data: &[u8]) -> WaterParams {
     }
     if let Some(degrees) = read_f32_at(data, 4).filter(|value| value.is_finite()) {
         p.wind_direction = degrees.to_radians();
+        p.wind_direction_authored = legacy_wind_direction_authored(degrees);
     }
     if let Some(value) = read_f32_at(data, 16) {
         p.sun_specular_power = value.clamp(1.0, 2048.0);
@@ -838,6 +879,7 @@ fn decode_dnam_pre_fo4(data: &[u8]) -> WaterParams {
         // already-converted noise layer 1, so this conversion is only
         // observable on the FO3/FNV arm and on short Skyrim fixtures.
         p.wind_direction = v.to_radians();
+        p.wind_direction_authored = legacy_wind_direction_authored(v);
     }
     if let Ok(v) = r.f32_finite() {
         p.wave_amplitude = v;
@@ -960,6 +1002,9 @@ fn apply_skyrim_dnam_tail(p: &mut WaterParams, data: &[u8]) {
         }
     }
     p.wind_direction = p.noise_wind_directions[0];
+    // #4931 — promoted from the noise layer 1 angle: authored exactly when
+    // that angle was read (an exact 90° here is a real bearing).
+    p.wind_direction_authored = read_f32_at(data, 100).is_some_and(f32::is_finite);
     p.wind_speed = p.noise_wind_speeds[0];
     if let Some(v) = read_f32_at(data, 172) {
         p.noise_uv_scale_a = normalize_noise_uv_scale(v);
@@ -1165,6 +1210,9 @@ fn decode_dnam_fo4(data: &[u8]) -> WaterParams {
         }
     }
     p.wind_direction = p.noise_wind_directions[0];
+    // #4931 — promoted from the noise layer 1 angle: authored exactly when
+    // that angle was read (an exact 90° here is a real bearing).
+    p.wind_direction_authored = read_f32_at(data, 128).is_some_and(f32::is_finite);
     p.wind_speed = p.noise_wind_speeds[0];
 
     // FO4's three noise amplitudes and tile lengths map directly to the
@@ -1325,6 +1373,9 @@ fn decode_dnam_starfield(data: &[u8]) -> WaterParams {
         p.roughness = roughness.clamp(0.0, 1.0);
     }
     p.wind_direction = p.noise_wind_directions[0];
+    // #4931 — promoted from the noise layer 1 angle: authored exactly when
+    // that angle was read (an exact 90° here is a real bearing).
+    p.wind_direction_authored = read_f32_at(data, 84).is_some_and(f32::is_finite);
     p.wind_speed = p.noise_wind_speeds[0];
     p
 }
@@ -2596,5 +2647,66 @@ mod tests {
         // Same flag byte on both — the bit cannot be what separates them.
         assert_eq!(reflective.legacy_flags, matte.legacy_flags);
         assert_eq!(reflective.legacy_flags, Some(0x02));
+    }
+
+    /// #4931 — `wind_direction_authored` is decided per layout at parse
+    /// time. The legacy DATA/DNAM[4] field's dead 90° default is not a
+    /// heading on the arms whose census found it dead; the promoted FO4+/
+    /// Skyrim-tail layer angle is authored even at exactly 90°; Oblivion's
+    /// field is authored when present (0° included); and a missing field or
+    /// short DNAM never counts as authored (#3185 class).
+    #[test]
+    fn wind_direction_authored_is_decided_per_layout() {
+        let with_f32 = |len: usize, offset: usize, value: f32| {
+            let mut buf = vec![0u8; len];
+            buf[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+            buf
+        };
+        let authored = |game: GameKind, sub_type: &[u8; 4], bytes: &[u8]| {
+            parse_watr(0xA11, &[sub(sub_type, bytes)], game, &None)
+                .params
+                .wind_direction_authored
+        };
+        // FO3/FNV — every carrier of the legacy field.
+        for (label, len) in [("DATA long", 186), ("DATA short", 48)] {
+            assert!(
+                !authored(GameKind::Fallout3NV, b"DATA", &with_f32(len, 4, 90.0)),
+                "FO3/FNV {label}: the dead 90° default is not a heading"
+            );
+            assert!(
+                authored(GameKind::Fallout3NV, b"DATA", &with_f32(len, 4, 45.0)),
+                "FO3/FNV {label}: a non-default value is authored"
+            );
+        }
+        assert!(!authored(GameKind::Fallout3NV, b"DNAM", &with_f32(196, 4, 90.0)));
+        assert!(authored(GameKind::Fallout3NV, b"DNAM", &with_f32(196, 4, 211.0)));
+        // A short DNAM leaves the zero default — not a heading.
+        assert!(!authored(GameKind::Fallout3NV, b"DNAM", &[0u8; 20]));
+
+        // Oblivion varies the field; 0° is a real authored value.
+        assert!(authored(GameKind::Oblivion, b"DATA", &with_f32(64, 4, 0.0)));
+        assert!(authored(GameKind::Oblivion, b"DATA", &with_f32(64, 4, 90.0)));
+
+        // Skyrim — the tail promotes noise layer 1 (DNAM[100]); an exact
+        // 90° there is authored. Without the tail the DNAM[4] prefix value
+        // is the dead default.
+        assert!(authored(GameKind::Skyrim, b"DNAM", &with_f32(228, 100, 90.0)));
+        let mut prefix_only = with_f32(52, 4, 90.0);
+        assert!(!authored(GameKind::Skyrim, b"DNAM", &prefix_only));
+        prefix_only[4..8].copy_from_slice(&30.0f32.to_le_bytes());
+        assert!(authored(GameKind::Skyrim, b"DNAM", &prefix_only));
+
+        // FO4 authors exactly 90° on real layers (DNAM[128]).
+        assert!(authored(GameKind::Fallout4, b"DNAM", &with_f32(160, 128, 90.0)));
+        assert!(!authored(GameKind::Fallout4, b"DNAM", &[0u8; 64]));
+        // FO76 / Starfield promote DNAM[84].
+        for game in [GameKind::Fallout76, GameKind::Starfield] {
+            assert!(authored(game, b"DNAM", &with_f32(160, 84, 90.0)));
+            assert!(!authored(game, b"DNAM", &[0u8; 40]));
+        }
+        // No DATA/DNAM at all.
+        assert!(!parse_watr(0xA12, &[], GameKind::Fallout4, &None)
+            .params
+            .wind_direction_authored);
     }
 }

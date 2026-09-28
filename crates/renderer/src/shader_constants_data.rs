@@ -1354,6 +1354,12 @@ pub const DEFAULT_WATER_WAVE_FREQUENCY: f32 =
 // normalised so the column reaches exactly the deep tint at the end of the
 // authored fog ramp. Empirical shape; the saturation is the contract.
 pub const WATER_COLUMN_ABSORPTION_SHAPE: f32 = 2.0;
+/// Period of `water.frag`'s dual-phase BGSM flow-map advection (#4930):
+/// each phase's UV offset saw-tooths over this many seconds, so the
+/// offset stays bounded at any uptime. Engine presentation constant, not
+/// authored data: at the canonical `0.02` UV/s rate (flow-map scale 1) one
+/// phase travels 0.08 UV — under a tenth of a tile — before it resets.
+pub const WATER_FLOW_MAP_CYCLE_SECONDS: f32 = 4.0;
 
 // Local fog-volume clustering (M55/Session 62). Lockstep with
 // `volumetrics_inject.comp`'s `sampleLocalMedium` and

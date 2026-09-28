@@ -565,9 +565,13 @@ const WATER_SCROLL_UV_PER_BU_PER_S: f32 = 0.045_651;
 const WATER_PERPENDICULAR_SHEAR_SCROLL: f32 = 0.5;
 
 /// #4727 — WATR's authored noise-wind angles (the per-layer DNAM offsets,
-/// and the `wind_direction` alias Skyrim promotes from DNAM) are
-/// compass-style bearings in the record's Z-up frame; the engine XZ plane
-/// reads them rotated +90° (φ = β + 90°). Census over the shipped masters:
+/// and the `wind_direction` alias Skyrim promotes from DNAM) are wind-FROM
+/// compass bearings β in the record's Z-up frame: β = 0 blows from game
+/// north (the pattern travels south), 90° from east, clockwise seen from
+/// above. The engine XZ angle φ (from +X, toward +Z = game south, since
+/// Z-up (x, y, z) maps to Y-up (x, z, −y)) is the direction of travel,
+/// β + 180° as a bearing, which lands at φ = β + 90°. Census over the
+/// shipped masters:
 /// layer-minus-flow circular mean −84.1° raw on Skyrim's 51 non-zero
 /// layers (R = 0.72, 48/51 negative, Rayleigh p ≈ 6e-12) and −87.7° on
 /// FO4's 108 (R = 0.65, 96/108 negative, p ≈ 1e-19); under this conversion
@@ -888,7 +892,7 @@ fn resolve_water_layer_motion(rec: &esm::records::misc::WatrRecord, layer: usize
     let speed = rec.params.noise_wind_speeds[layer];
     let direction = rec.params.noise_wind_directions[layer];
     if speed.is_finite() && speed > 0.0 && direction.is_finite() {
-        // #4727 — the authored angle is a Z-up compass bearing; the
+        // #4727 — the authored angle is a Z-up wind-FROM bearing; the
         // Z-up→Y-up frame conversion happens HERE, at the parse→canonical
         // boundary, never re-derived at render time.
         let (sin_theta, cos_theta) = watr_angle_to_engine_xz(direction).sin_cos();
@@ -935,8 +939,10 @@ fn classify_water_kind_and_flow(
         // establishes the water's kind but not its axis — this is that
         // same defect class, axis-fallback edition. Emit no physics flow
         // rather than fabricate a due-south current; the surface still
-        // scrolls from its authored layers.
-        let authored_heading_available = !rec.params.wind_direction_is_dead_default();
+        // scrolls from its authored layers. #4931 — the parser decides
+        // authorship per layout (a missing field or short DNAM is not a
+        // heading either); nothing here re-tests the value.
+        let authored_heading_available = rec.params.wind_direction_authored;
         let canonical = rec
             .linear_velocity
             .filter(|velocity| {
@@ -2596,6 +2602,7 @@ mod tests {
                 fresnel: 0.04,
                 wind_speed: 0.0,
                 wind_direction: 0.0,
+                wind_direction_authored: false,
                 angular_velocity: [0.0; 3],
                 wave_amplitude: 0.0,
                 wave_frequency: 0.0,
@@ -2906,6 +2913,86 @@ mod tests {
         );
     }
 
+    /// #4734 (restored by #4931 — `a6a210eb9` deleted it) — a River-by-name
+    /// FO3/FNV creek with no NAM0/XWCU and no authored heading must produce
+    /// **no** physics current: #2872 ruled the zero-variance field cannot be
+    /// authored velocity, #3185 ruled a name establishes kind but not axis.
+    /// Pre-#4734 the fallback fabricated a due-south current for every such
+    /// creek. Its authored layer motion still scrolls (through the #4727
+    /// frame conversion), and a record with an authored NAM0 keeps its flow.
+    #[test]
+    fn dead_default_wind_direction_yields_no_physics_flow_for_named_creeks() {
+        let mut rec = calm_watr(
+            0x000A_0005,
+            "CreekWater01",
+            WaterParams {
+                wind_direction: 90.0f32.to_radians(),
+                wind_direction_authored: false,
+                noise_wind_directions: [0.25, 0.0, 1.2],
+                noise_wind_speeds: [0.10, 0.0, 0.20],
+                ..WaterParams::default()
+            },
+        );
+        // `CreekWater01` classifies River by name alone.
+        let mut waters = HashMap::new();
+        waters.insert(rec.form_id, rec.clone());
+
+        let (mat, kind, flow, _, _) = resolve_water_material(&waters, Some(rec.form_id));
+        assert!(matches!(kind, WaterKind::River), "the name alone classifies the kind");
+        assert!(
+            flow.is_none(),
+            "an unauthored heading must not fabricate a physics current (#4734)"
+        );
+        // Authored layer motion still scrolls the surface verbatim, in the
+        // engine frame (A and C here; layer B's zero speed leaves the
+        // sentinel default in place).
+        let layer = |speed: f32, bearing: f32| {
+            let (sin, cos) = watr_angle_to_engine_xz(bearing).sin_cos();
+            [cos * speed, sin * speed]
+        };
+        let close = |got: [f32; 2], want: [f32; 2]| {
+            (got[0] - want[0]).abs() < 1e-6 && (got[1] - want[1]).abs() < 1e-6
+        };
+        assert!(close(mat.scroll_a, layer(0.10, 0.25)), "{:?}", mat.scroll_a);
+        assert_eq!(mat.scroll_b, WaterMaterial::default().scroll_b);
+        assert!(close(mat.scroll_c, layer(0.20, 1.2)), "{:?}", mat.scroll_c);
+
+        // The contrast: an authored NAM0 keeps the flow (and its scroll
+        // synthesis) — the refusal is specifically about the missing heading.
+        rec.linear_velocity = Some([1.0, 0.0]);
+        waters.insert(rec.form_id, rec);
+        let (_, _, flow, _, _) = resolve_water_material(&waters, Some(0x000A_0005));
+        let flow = flow.expect("an authored NAM0 current must survive");
+        assert!((flow.speed - 1.0).abs() < 1.0e-6);
+    }
+
+    /// #4931 — the flag, not the value, gates the fallback: a NAM0-less
+    /// River whose parser marked the heading authored keeps a current even
+    /// at exactly 90° (FO4 authors that bearing), and an unauthored 0° (a
+    /// missing/short DNAM's default) emits none.
+    #[test]
+    fn nam0_less_flow_fallback_follows_the_parse_side_authored_flag() {
+        for (degrees, authored) in [(90.0f32, true), (0.0, false), (0.0, true)] {
+            let rec = calm_watr(
+                0x000A_0006,
+                "CreekWater02",
+                WaterParams {
+                    wind_direction: degrees.to_radians(),
+                    wind_direction_authored: authored,
+                    ..WaterParams::default()
+                },
+            );
+            let waters = HashMap::from([(rec.form_id, rec)]);
+            let (_, kind, flow, _, _) = resolve_water_material(&waters, Some(0x000A_0006));
+            assert!(matches!(kind, WaterKind::River));
+            assert_eq!(
+                flow.is_some(),
+                authored,
+                "{degrees}° authored={authored}: the parse-side flag alone decides"
+            );
+        }
+    }
+
     #[test]
     fn authored_layer_motion_runs_downstream_and_composes_verbatim() {
         let mut rec = calm_watr(
@@ -2913,6 +3000,9 @@ mod tests {
             "LocalizedWater",
             WaterParams {
                 wind_direction: 0.0,
+                // An authored 0° bearing (e.g. an Oblivion record) — the
+                // NAM0-less fallback may use it (#4931).
+                wind_direction_authored: true,
                 noise_wind_directions: [0.0, std::f32::consts::FRAC_PI_2, 0.25],
                 noise_wind_speeds: [0.10, 0.20, 0.30],
                 ..WaterParams::default()
@@ -2927,9 +3017,11 @@ mod tests {
         let (mat, kind, flow, _, _) = resolve_water_material(&waters, Some(0x000A_0002));
         assert!(matches!(kind, WaterKind::River));
         let flow = flow.expect("flowing water must carry its canonical current");
-        // wind_direction 0 is a raw Z-up bearing; under the corrected frame
-        // (#4727: φ = β + 90°) it reads as engine +Z, so the current runs
-        // north and the perpendicular shear is the scroll-x lane.
+        // wind_direction 0 is a raw Z-up wind-FROM bearing (from game
+        // north); under the corrected frame (#4727: φ = β + 90°) it reads
+        // as engine +Z — game SOUTH, since Z-up (x, y, z) maps to Y-up
+        // (x, z, −y) — so the current runs south and the perpendicular
+        // shear is the scroll-x lane.
         let scroll = flow.speed * WATER_SCROLL_UV_PER_BU_PER_S;
         // Layer A: raw bearing 0 converts to (−sin 0, cos 0) = +Z — fully
         // along-flow — and composes on top of the current-driven term.
@@ -3105,7 +3197,15 @@ mod tests {
 
     #[test]
     fn modern_fnam_flowmap_flag_gates_nam5_but_keeps_authored_current() {
-        let mut disabled = calm_watr(0x000A_0003, "LocalizedWater", WaterParams::default());
+        let mut disabled = calm_watr(
+            0x000A_0003,
+            "LocalizedWater",
+            WaterParams {
+                // An authored heading, so the NAM0-less fallback runs (#4931).
+                wind_direction_authored: true,
+                ..WaterParams::default()
+            },
+        );
         disabled.flow_noise_texture_path = "textures\\water\\flow.dds".to_string();
         disabled.water_flags = Some(0x00);
         disabled.blend_normals = Some(false);
@@ -3143,6 +3243,7 @@ mod tests {
                 // Raw −90° reads as engine +X under the corrected frame
                 // (#4727), keeping this test's along-X current.
                 wind_direction: -std::f32::consts::FRAC_PI_2,
+                wind_direction_authored: true,
                 ..WaterParams::default()
             },
         );
@@ -3402,9 +3503,18 @@ mod tests {
 
     #[test]
     fn zero_nam0_velocity_on_named_river_uses_kind_current() {
-        let mut rec = calm_watr(0x000A_000B, "RiverWater", WaterParams::default());
+        let mut rec = calm_watr(
+            0x000A_000B,
+            "RiverWater",
+            WaterParams {
+                // An authored heading, so the NAM0-less fallback runs (#4931).
+                wind_direction_authored: true,
+                ..WaterParams::default()
+            },
+        );
         // A zero NAM0 is an explicit sentinel on newer records; the EDID
-        // still identifies this surface as a flowing body.
+        // still identifies this surface as a flowing body, and its authored
+        // heading supplies the axis (#4734 — the name alone does not).
         rec.linear_velocity = Some([0.0, 0.0]);
         let mut waters = HashMap::new();
         waters.insert(rec.form_id, rec);
@@ -3470,6 +3580,8 @@ mod tests {
                 WaterParams {
                     wind_speed,
                     wind_direction: 0.0,
+                    // An authored heading, so the fallback runs (#4931).
+                    wind_direction_authored: true,
                     ..WaterParams::default()
                 },
             );
@@ -3507,7 +3619,12 @@ mod tests {
     fn flow_speed_ladder_is_ordered_and_bounded() {
         let mut waters = HashMap::new();
         for (form, edid) in [(0x000C_0001, "WhiteRapidsFast"), (0x000C_0002, "RiverSlow")] {
-            waters.insert(form, calm_watr(form, edid, WaterParams::default()));
+            let params = WaterParams {
+                // An authored heading, so the NAM0-less fallback runs (#4931).
+                wind_direction_authored: true,
+                ..WaterParams::default()
+            };
+            waters.insert(form, calm_watr(form, edid, params));
         }
         let (_, rapids_kind, rapids, _, _) = resolve_water_material(&waters, Some(0x000C_0001));
         let (_, river_kind, river, _, _) = resolve_water_material(&waters, Some(0x000C_0002));

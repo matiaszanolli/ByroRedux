@@ -269,9 +269,12 @@ pub struct WaterMaterial {
     /// plus the record's converted layer-0 motion; vector 1 is the
     /// perpendicular shear at half the downstream rate
     /// (`WATER_PERPENDICULAR_SHEAR_SCROLL`) plus the converted layer-1
-    /// motion; vector 2 carries the converted layer-3 motion verbatim, or
-    /// mirrors vector 0 when the record authors none. `Calm` water keeps
-    /// authored vectors verbatim when present. The weather wind term (same
+    /// motion; vector 2 carries the converted layer-2 (third layer) motion
+    /// verbatim, or mirrors vector 0 when the record authors none. `Calm`
+    /// water — and a `River` / `Rapids` record with neither a NAM0 current
+    /// nor an authored heading, which emits no physics flow (#4734) —
+    /// keeps the converted authored vectors verbatim when present, with no
+    /// flow or shear term. The weather wind term (same
     /// world-space convention) is added on top in `render/water.rs`.
     pub scroll_a: [f32; 2],
     pub scroll_b: [f32; 2],

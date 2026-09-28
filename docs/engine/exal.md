@@ -153,7 +153,7 @@ single translate site for WATR→`WaterMaterial`. **Good.** The leak is the
 (`exterior.rs:88`): an inline `if game == Oblivion { Z=0 } else { DNAM }`. This is
 exactly the kind of per-game branch EXAL routes through the GameVariant table (§4).
 
-### LOD distance rendering — **terrain LOD exists; object/tree LOD absent; no canonical model**
+### LOD distance rendering — **terrain + object LOD live on every legacy and Creation title; tree LOD absent; no canonical model**
 
 `terrain_lod.rs` synthesizes distant terrain from the LAND heightmap directly
 (4×4-cell blocks, 12-block Chebyshev radius, stride-8 sampling, single base
@@ -161,13 +161,19 @@ texture, no BLAS). This is game-agnostic and works, and as of step 6 (below) it
 is now the **universal fallback** behind the games' prebaked assets:
 - Skyrim+/FO4 prebaked **`.btr` terrain meshes** + per-quad diffuse are consumed
   (step 6, 2026-06-19) as a per-block source upgrade inside the synth ring, so
-  distant terrain is textured rather than flat there; Oblivion/FO3/FNV
-  `Landscape\LOD\*.nif` + `_lod` textures are still un-consumed (synth-only);
-- distant **object LOD** is consumed for Skyrim+/FO4 (baked per-quad `.bto`
-  macro-meshes + object atlas, step 6) **and** for Oblivion via the
-  `DistantLOD\*.lod` → `_far.nif` placement scheme (`PlacementLodProvider`,
-  `cell_loader/placement_lod.rs`, #1726 — format reverse-engineered from the
-  vanilla Oblivion corpus, see §Q3 below);
+  distant terrain is textured rather than flat there. On Oblivion/FO3/FNV
+  the authored legacy LOD diffuse/normal quads (`_lod` textures) texture the
+  synthesized blocks (`b50a8e6a9`); only the legacy `Landscape\LOD\*.nif`
+  terrain *meshes* stay un-consumed (geometry is still synthesized);
+- distant **object LOD** is consumed for Skyrim+/FO4/FO76 (baked per-quad
+  `.bto` macro-meshes + object atlas, step 6), for FO3/FNV via the
+  `landscape\lod\<world>\blocks\` combined quads
+  (`ObjectLodScheme::FalloutLegacyBlocks`, #3321, §5.2), **and** for Oblivion
+  via the `DistantLOD\*.lod` → `_far.nif` placement scheme
+  (`PlacementLodProvider`, `cell_loader/placement_lod.rs`, #1726 — format
+  reverse-engineered from the vanilla Oblivion corpus, see §Q3 below);
+- distant **tree LOD** (Skyrim `meshes\terrain\<world>\trees\*.btt`) is
+  not consumed;
 - there is still **no single canonical LOD model** — `terrain_lod` /
   `terrain_lod_btr` / `object_lod` are the per-game providers, fused to the
   streaming ring, with `IsLodTerrain` as the shared renderer-facing marker
@@ -256,7 +262,7 @@ translate functions:
 | XCLL extended tail | base | +40-byte FNV tail | +92-byte Skyrim tail | Skyrim-like | `CellLightingRes` extended fields |
 | Per-cell water type (XCWT) | — | worldspace NAM2 only | XCWT override | XCWT override | cell `xcwt` |
 | Distant terrain source | `Landscape\LOD\*.nif` + `_lod` tex | same | `<World>.<lvl>.<x>.<y>.btr` + per-quad DDS | same (`.btr`) | §5 |
-| Distant object source | `DistantLOD\<W>_<x>_<y>.lod` → `_far.nif` | **neither scheme** — vanilla archives ship zero `distantlod\*.lod` files (FO3-D4-01/#2086); landmark LOD folds into the terrain-LOD block tree instead | baked `.bto` per quad + atlas, VWD-gated | same (`.bto`) | §5 |
+| Distant object source | `DistantLOD\<W>_<x>_<y>.lod` → `_far.nif` | `landscape\lod\<W>\blocks\<W>.level<L>.x<qx>.y<qy>.nif` combined quads + `<W>.buildings[_n].dds` atlas (`ObjectLodScheme::FalloutLegacyBlocks`, #3321) — zero `distantlod\*.lod` files ship (#2086), but the `blocks\` scheme does | baked `.bto` per quad + atlas, VWD-gated | same (`.bto`) | §5 |
 
 The current `default_water_for_worldspace` is the *prototype* of this pattern
 (it already branches on `GameKind`); EXAL generalises it so every row above is one
@@ -798,10 +804,11 @@ independent lineages — HIGH confidence.)
   entry originally claimed the scheme was shared across "Oblivion/FO3/FNV" —
   it was reverse-engineered and validated only against Oblivion's `.lod`
   corpus (see the #1726 write-up below). A direct probe of every real FO3/FNV
-  vanilla archive found **zero** `distantlod\` files; FO3/FNV ship neither
-  this scheme nor the Skyrim+/FO4 `.bto` scheme for distant objects (see §4
-  and §5.2). The engine now gates `PlacementLodProvider` to
-  `GameKind::Oblivion` only.
+  vanilla archive found **zero** `distantlod\` files, so FO3/FNV do not ship
+  this scheme, and the engine gates `PlacementLodProvider` to
+  `GameKind::Oblivion` only. (The same probe's further conclusion — that
+  FO3/FNV ship no distant-object scheme at all — was falsified by #3321:
+  they ship the `blocks\` combined-quad scheme, see §4 and §5.2.)
 
 This is why §5.2 splits into `CombinedLodProvider` (Skyrim+/FO4) and
 `PlacementLodProvider` (older) rather than a single unified path, and why §5.4

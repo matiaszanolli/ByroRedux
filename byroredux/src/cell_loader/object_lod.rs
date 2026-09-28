@@ -464,6 +464,14 @@ fn spawn_object_lod_quad(
                 continue;
             }
         };
+        // #4936 — census the `.bto` / FO3-FNV `blocks\` upload as LOD like
+        // the terrain and placement LOD siblings, not as `Other`.
+        ctx.mesh_registry.note_mesh_provenance(
+            handle,
+            byroredux_renderer::MeshUploadSource::Lod,
+            false,
+            Some(path.as_str()),
+        );
 
         let pos = Vec3::from_array(mesh.translation);
         let rot = Quat::from_xyzw(
@@ -1174,7 +1182,8 @@ mod tests {
         assert_eq!(
             object_lod_scheme(GameKind::Fallout76),
             Some(BakedBto),
-            "FO76 ships the same .bto family over appalachia — see #4488's census"
+            "FO76 ships the same .bto family (L4/8/16/32) over appalachia, across \
+             GeneratedMeshes01/02 — see #4736's census"
         );
         assert_eq!(object_lod_scheme(GameKind::Oblivion), None);
         assert_eq!(
@@ -1274,5 +1283,59 @@ mod lod_clamp_resolve_tests {
         let src = production(include_str!("placement_lod.rs"));
         assert!(src.contains("material.texture_clamp_mode,"));
         assert!(!src.contains("resolve_texture(ctx"));
+    }
+}
+
+/// #4936 — every LOD-family mesh upload in `cell_loader/*lod*.rs` must tag
+/// itself `MeshUploadSource::Lod`; an untagged upload censuses as `Other`
+/// (object LOD, the largest family, shipped that way). The needles are
+/// split with `concat!` so this module's own text never matches.
+#[cfg(test)]
+mod lod_mesh_provenance_tests {
+    const LOD_SOURCES: &[(&str, &str)] = &[
+        ("lod_bands.rs", include_str!("lod_bands.rs")),
+        ("lod_coverage.rs", include_str!("lod_coverage.rs")),
+        ("lod_support.rs", include_str!("lod_support.rs")),
+        ("object_lod.rs", include_str!("object_lod.rs")),
+        ("placement_lod.rs", include_str!("placement_lod.rs")),
+        ("terrain_lod.rs", include_str!("terrain_lod.rs")),
+        ("terrain_lod_btr.rs", include_str!("terrain_lod_btr.rs")),
+    ];
+
+    #[test]
+    fn every_lod_mesh_upload_is_tagged_lod() {
+        let uploads = [
+            concat!(".upload_scene_mesh", "("),
+            concat!(".upload_scene_mesh", "_global_only("),
+            concat!(".upload_scene_mesh", "es_batched("),
+        ];
+        let tag = concat!("MeshUploadSource", "::Lod,");
+        let mut total_uploads = 0;
+        for (name, src) in LOD_SOURCES {
+            let n_uploads: usize = uploads.iter().map(|u| src.matches(u).count()).sum();
+            total_uploads += n_uploads;
+            assert_eq!(
+                src.matches(tag).count(),
+                n_uploads,
+                "{name}: every mesh upload must be followed by a \
+                 note_mesh_provenance tag with the Lod source"
+            );
+        }
+        // terrain, `.btr`, placement and object LOD — a rename of the upload
+        // API must not turn this into a vacuous 0 == 0.
+        assert!(total_uploads >= 4, "found only {total_uploads} LOD uploads");
+    }
+
+    #[test]
+    fn lod_source_list_covers_every_lod_module() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cell_loader");
+        let mut on_disk: Vec<String> = std::fs::read_dir(&dir)
+            .expect("cell_loader dir")
+            .filter_map(|e| e.ok()?.file_name().into_string().ok())
+            .filter(|n| n.ends_with(".rs") && n.contains("lod") && !n.ends_with("_tests.rs"))
+            .collect();
+        on_disk.sort();
+        let listed: Vec<&str> = LOD_SOURCES.iter().map(|(n, _)| *n).collect();
+        assert_eq!(on_disk, listed, "add new cell_loader/*lod*.rs files to LOD_SOURCES");
     }
 }

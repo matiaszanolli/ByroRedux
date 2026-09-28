@@ -1176,6 +1176,45 @@ mod tests {
         );
     }
 
+    /// #4930 — the BGSM flow-map offset follows the #4728 convention and
+    /// stays bounded. Pre-fix it was ADDED to the normal UVs (features ran
+    /// against the authored flow) as `flowDirection * time * rate`, which
+    /// grows without bound with uptime. Now both dual-phase offsets are
+    /// subtracted and each saw-tooths over `WATER_FLOW_MAP_CYCLE_SECONDS`.
+    #[test]
+    fn flow_map_offset_is_subtracted_and_bounded() {
+        let frag = include_str!("../../shaders/water.frag");
+        assert!(
+            frag.contains("uvOffset - flowOffset0") && frag.contains("uvOffset - flowOffset1"),
+            "both flow-map phases must be subtracted so features travel along +flow"
+        );
+        assert!(
+            !frag.contains("+ flowOffset"),
+            "an added flow-map offset runs the pattern upstream (pre-#4930)"
+        );
+        assert!(
+            !frag.contains("flowDirection * time"),
+            "a flow offset linear in uptime grows without bound (pre-#4930)"
+        );
+        assert!(
+            frag.contains("fract(time / WATER_FLOW_MAP_CYCLE_SECONDS)")
+                && frag.contains("fract(phase0 + 0.5)"),
+            "the two flow phases must restart every cycle, half a cycle apart"
+        );
+        assert!(
+            frag.contains("abs(1.0 - 2.0 * phase0)"),
+            "the cross-fade must hide each phase at its own reset"
+        );
+        for call in ["sampleFlowAdvectedNormal(noiseMapA", "sampleFlowAdvectedNormal(noiseMapB"] {
+            assert!(frag.contains(call), "{call} must sample through the flow-map blend");
+        }
+        let header = include_str!("../../shaders/include/shader_constants.glsl");
+        assert!(header.contains(&format!(
+            "#define WATER_FLOW_MAP_CYCLE_SECONDS {:?}",
+            crate::shader_constants::WATER_FLOW_MAP_CYCLE_SECONDS
+        )));
+    }
+
     #[test]
     fn water_fragment_shader_uses_authored_underwater_response() {
         let src = include_str!("../../shaders/water.frag");
@@ -1228,7 +1267,9 @@ mod tests {
         assert!(src.contains("normalScrollB = vec2(0.0, length(push.scroll.zw));"));
         assert!(src.contains("normalScrollC = vec2(0.0, length(push.scroll_c.xy));"));
         assert!(!src.contains("normalScrollA = vec2(0.0, -length("));
-        assert!(src.contains("flowOffset = vec2(0.0);"));
+        // #4930 — both flow-map phases and their blend are zeroed on the
+        // waterfall sheet; the canonical WaterFlow owns its motion.
+        assert!(src.contains("flowOffset0 = vec2(0.0);\n        flowOffset1 = vec2(0.0);\n        flowPhaseBlend = 0.0;"));
     }
 
     #[test]
@@ -2088,7 +2129,11 @@ mod absorption_ramp_tests {
         assert!(
             src.contains("bool offsetNoise = push.optical.y > 0.5;")
                 && src.contains("if (offsetNoise) {\n        n.z += 1.0;\n    }")
-                && src.matches("freqScale, offsetNoise)").count() == 2,
+                // nA + nB call sites, plus the two phase samples inside
+                // `sampleFlowAdvectedNormal` (#4930) that every layer —
+                // nC included — routes through.
+                && src.matches("freqScale, offsetNoise)").count() == 4
+                && src.matches("scale, time, ampScale, freqScale, offsetNoise)").count() == 2,
             "water.frag must decode WaterNormalEncoding::OffsetNoise on every normal layer"
         );
 

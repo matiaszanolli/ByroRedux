@@ -389,6 +389,25 @@ The bounded Vulkan exterior smoke also passes for all four installed profiles;
 the wider FO3/FO76/Starfield visual matrix still depends on those game data
 sets being available.
 
+**Wind-angle frame per game (#4932).** `WaterParams::noise_wind_directions` (and
+the `wind_direction` alias) is stored untransformed, in the record's own frame;
+`watr_angle_to_engine_xz` applies the single +90° rotation at the translate
+boundary. The field carries two conventions:
+
+| Game | Source | Convention |
+|---|---|---|
+| Skyrim | DNAM[100/104/108], degrees; layer 1 promoted into `wind_direction` | wind-FROM compass bearing, Z-up: 0 = from game north (pattern travels south), 90° = from east, clockwise from above |
+| FO4 | DNAM[128/132/136], degrees; layer 1 promoted | same wind-FROM bearing |
+| FO76 / Starfield | DNAM[84/88/92], degrees; layer 1 promoted | same wind-FROM bearing |
+| FO3 / FNV | layers: DNAM/DATA[100/104/108], degrees; `wind_direction`: DATA/DNAM[4] | layers: same wind-FROM bearing. `wind_direction` is the dead editor default 90.0 on every shipped record, so it never counts as authored |
+| Oblivion | layer 0: `atan2(y, x)` of the DATA[28]/[32] scroll-speed pair; `wind_direction`: DATA[4] | layer 0 is a direction-of-travel angle counter-clockwise from the pair's x axis, not a bearing; `wind_direction` varies per record and is authored when present |
+
+Engine XZ: φ is measured from +X toward +Z, and +Z is game **south**, because
+Z-up (x, y, z) maps to Y-up (x, z, −y). Whether `wind_direction` is an authored
+heading is decided at parse time (`WaterParams::wind_direction_authored`, #4931),
+never re-tested at translate time. A missing field or a short DNAM is not
+authored.
+
 ### Spawn — **functional, coarse**
 
 `cell_loader/water.rs` spawns one tessellated plane per cell (interior: a
@@ -430,8 +449,9 @@ paint flat 0.08 grey) and `m-exteriors.sh water` floors its capture mean —
 shape.
 
 **Directional-scroll frame (#4544 superseded by #4727, 2026-09-24):** WATR's
-per-layer wind angles are compass-style bearings in the record's Z-up frame,
-and the engine XZ plane reads them rotated +90° — the conversion lives at the
+per-layer wind angles are wind-FROM compass bearings in the record's Z-up
+frame (0 = from game north; see the §2 per-game table), and the engine XZ plane
+reads them rotated +90° — the conversion lives at the
 translate boundary (`watr_angle_to_engine_xz` in `env_translate.rs`), so the
 authored layers run downstream and compose with the flow term verbatim. The
 #4544 paragraph this replaces treated the same measurement as authoring: it
@@ -443,8 +463,12 @@ returns to the documented 0.5× (`WATER_PERPENDICULAR_SHEAR_SCROLL`). Census:
 Skyrim's 51 non-zero layers sit −84.1° off their own NAM0 raw (R = 0.72,
 Rayleigh p ≈ 6e-12), +5.9° under the fix; FO4's 108 layers −87.7° → +2.3°.
 The physics current fallback for NAM0-less records reads the same field
-through the same conversion. Pinned by
+through the same conversion, and only when the parser marked it authored
+(`wind_direction_authored`, #4734 / #4931). Otherwise no physics flow is
+emitted and the surface scrolls from its converted authored layers alone.
+Pinned by
 `authored_layer_motion_runs_downstream_and_composes_verbatim`,
+`dead_default_wind_direction_yields_no_physics_flow_for_named_creeks`,
 `riverwater_flowne_layers_run_downstream_under_the_corrected_frame`, and the
 ignored real-data sibling `riverwater_flowne_real_record_layers_run_downstream`
 in `env_translate.rs`.

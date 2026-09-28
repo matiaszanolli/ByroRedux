@@ -205,16 +205,34 @@ grep -Fq 'hard_fail=1' "$M47_SMOKE" \
 # the workflow's declared `gate` options that route through the dynamic
 # `*` arm. Comment text is stripped first so prose mentioning run_gate
 # cannot satisfy — or break — the scan.
+#
+# #4937 — the gate token runs to the next whitespace or quote, not the
+# next non-identifier character. Stopping at `.` turned the exact #4730
+# regression line into `m-exteriors`, which resolved and passed. Quoted
+# arguments (`run_gate "$gate"`) are dynamic and deliberately unmatched.
 WORKFLOW="$ROOT_DIR/.github/workflows/playable-smoke.yml"
-mapfile -t LITERAL_GATES < <(
-    sed 's/#.*//' "$WORKFLOW" \
-        | grep -oE 'run_(declared_)?gate [a-zA-Z0-9-]+' \
+literal_gates() {
+    sed 's/#.*//' \
+        | grep -oE 'run_(declared_)?gate [^[:space:]"]+' \
         | sed -E 's/run_(declared_)?gate //' | sort -u
-)
+}
+gate_resolves() {
+    [[ "$1" != *.sh && -f "$ROOT_DIR/docs/smoke-tests/$1.sh" ]]
+}
+# Self-test the scan on the #4730 line itself, and on its corrected form,
+# so the extraction cannot silently regress to a guard that always passes.
+selftest_gate="$(literal_gates <<<'              run_gate m-exteriors.sh "$ext_game" static')"
+[[ "$selftest_gate" == "m-exteriors.sh" ]] \
+    || fail "literal run_gate scan truncated the #4730 regression token to '$selftest_gate'"
+! gate_resolves "$selftest_gate" \
+    || fail "literal run_gate check accepts the #4730 regression (run_gate m-exteriors.sh)"
+gate_resolves "$(literal_gates <<<'              run_gate m-exteriors "$ext_game" static')" \
+    || fail "literal run_gate check rejects the corrected m-exteriors call"
+mapfile -t LITERAL_GATES < <(literal_gates < "$WORKFLOW")
 (( ${#LITERAL_GATES[@]} >= 1 )) \
     || fail "playable-smoke.yml declares no literal run_gate calls — did the dispatch shape change?"
 for gate in "${LITERAL_GATES[@]}"; do
-    [[ -f "$ROOT_DIR/docs/smoke-tests/$gate.sh" ]] \
+    gate_resolves "$gate" \
         || fail "playable-smoke.yml calls run_gate $gate but docs/smoke-tests/$gate.sh does not exist (run_gate appends .sh itself)"
 done
 echo "playable-smoke-contracts: PASS -- literal run_gate calls resolve to scripts (${LITERAL_GATES[*]})"
