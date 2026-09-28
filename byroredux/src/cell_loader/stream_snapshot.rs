@@ -47,7 +47,7 @@ use byroredux_core::ecs::components::{FormIdComponent, Transform};
 use byroredux_core::ecs::resource::Resource;
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::World;
-use byroredux_core::form_id::FormIdPool;
+use byroredux_core::form_id::{FormId, FormIdPool};
 use byroredux_core::math::Vec3;
 use std::collections::HashMap;
 
@@ -176,55 +176,89 @@ pub(crate) fn capture_actor_snapshots(world: &mut World, victims: &[EntityId]) {
     if victims.is_empty() || world.try_resource::<StreamStateSnapshots>().is_none() {
         return;
     }
-    // #4616 — the probes are hoisted out of the per-victim loop: one shared
-    // query guard per component plus one FormIdPool read, acquired once
-    // instead of a TypeId lookup + tracked read per probe per victim. Every
-    // guard is a shared read and drops at the end of this block; the
-    // `StreamStateSnapshots` write below happens strictly after, keeping
-    // the no-guard-across-resource-write rule.
+    // #4616 — one guard per component per call, not a TypeId lookup +
+    // tracked read per probe per victim. #4982 — and only ONE guard live at
+    // a time: each probe is its own pass over the surviving victims. Holding
+    // them together recorded `TravelState → Traveled`,
+    // `FormIdComponent → Transform` and `Seated → AmbientPackageRuntime`,
+    // the reverse of `travel_system`, the ambient movers' FormID resolve and
+    // the sandbox seat scan, and kept the lock-order lane red even though
+    // `&mut World` rules out a live deadlock here. The
+    // `StreamStateSnapshots` write happens strictly after every pass.
     let captured = {
-        let form_q = world.query::<FormIdComponent>();
-        let xform_q = world.query::<Transform>();
-        let seated_q = world.query::<Seated>();
-        let package_q = world.query::<AmbientPackageRuntime>();
-        let travel_q = world.query::<TravelState>();
-        let traveled_q = world.query::<Traveled>();
-        let pool = world.try_resource::<FormIdPool>();
-        // `global_form_id` through the hoisted guards — victims and seated
+        let mut raw: Vec<(EntityId, FormId)> = Vec::with_capacity(victims.len());
+        if let Some(form_q) = world.query::<FormIdComponent>() {
+            raw.extend(
+                victims
+                    .iter()
+                    .filter_map(|&victim| form_q.get(victim).map(|c| (victim, c.0))),
+            );
+        }
+        let mut rows: Vec<(EntityId, FormId, ActorStreamSnapshot)> = Vec::new();
+        if let Some(xform_q) = world.query::<Transform>() {
+            rows.extend(raw.into_iter().filter_map(|(victim, fid)| {
+                let position = xform_q.get(victim)?.translation;
+                Some((
+                    victim,
+                    fid,
+                    ActorStreamSnapshot {
+                        position,
+                        active_package_form_id: None,
+                        travel_destination: None,
+                        traveled: false,
+                        seated_furniture_form_id: None,
+                        seated_animation_restore: None,
+                    },
+                ))
+            }));
+        }
+        let mut seated: Vec<Option<Seated>> = vec![None; rows.len()];
+        if let Some(seated_q) = world.query::<Seated>() {
+            for ((victim, _, _), slot) in rows.iter().zip(&mut seated) {
+                *slot = seated_q.get(*victim).copied();
+            }
+        }
+        let mut furniture_fids: Vec<Option<FormId>> = vec![None; rows.len()];
+        if let Some(form_q) = world.query::<FormIdComponent>() {
+            for (seat, slot) in seated.iter().zip(&mut furniture_fids) {
+                *slot = seat.and_then(|seat| form_q.get(seat.furniture).map(|c| c.0));
+            }
+        }
+        if let Some(package_q) = world.query::<AmbientPackageRuntime>() {
+            for (victim, _, snapshot) in &mut rows {
+                snapshot.active_package_form_id = package_q
+                    .get(*victim)
+                    .and_then(|runtime| runtime.active_package_form_id);
+            }
+        }
+        if let Some(travel_q) = world.query::<TravelState>() {
+            for (victim, _, snapshot) in &mut rows {
+                snapshot.travel_destination = travel_q.get(*victim).map(|state| state.destination);
+            }
+        }
+        if let Some(traveled_q) = world.query::<Traveled>() {
+            for (victim, _, snapshot) in &mut rows {
+                snapshot.traveled = traveled_q.get(*victim).is_some();
+            }
+        }
+        // `global_form_id` last, under the pool alone — victims and seated
         // furniture both resolve here.
-        let form_id_of = |entity: EntityId| -> Option<u32> {
-            let fid = form_q.as_ref()?.get(entity)?.0;
-            pool.as_ref()?.resolve(fid).map(|pair| pair.local.0)
+        let Some(pool) = world.try_resource::<FormIdPool>() else {
+            return;
         };
+        let global = |fid: FormId| pool.resolve(fid).map(|pair| pair.local.0);
         let mut captured: Vec<(u32, ActorStreamSnapshot)> = Vec::new();
-        for &victim in victims {
-            let Some(form_id) = form_id_of(victim) else {
+        for (((_, fid, mut snapshot), seat), furniture) in
+            rows.into_iter().zip(seated).zip(furniture_fids)
+        {
+            let Some(form_id) = global(fid) else {
                 continue;
             };
-            let Some(position) = xform_q.as_ref().and_then(|q| q.get(victim)).map(|t| t.translation)
-            else {
-                continue;
-            };
-            let seated = seated_q.as_ref().and_then(|q| q.get(victim)).copied();
-            let seated_furniture_form_id =
-                seated.as_ref().and_then(|seated| form_id_of(seated.furniture));
-            let seated_animation_restore = seated_furniture_form_id
-                .and(seated)
-                .map(|seated| seated.animation_restore);
-            let snapshot = ActorStreamSnapshot {
-                position,
-                active_package_form_id: package_q
-                    .as_ref()
-                    .and_then(|q| q.get(victim))
-                    .and_then(|runtime| runtime.active_package_form_id),
-                travel_destination: travel_q
-                    .as_ref()
-                    .and_then(|q| q.get(victim))
-                    .map(|state| state.destination),
-                traveled: traveled_q.as_ref().is_some_and(|q| q.get(victim).is_some()),
-                seated_furniture_form_id,
-                seated_animation_restore,
-            };
+            snapshot.seated_furniture_form_id = furniture.and_then(global);
+            snapshot.seated_animation_restore = snapshot
+                .seated_furniture_form_id
+                .and(seat)
+                .map(|seat| seat.animation_restore);
             if snapshot.has_package_state() {
                 captured.push((form_id, snapshot));
             }

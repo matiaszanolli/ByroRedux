@@ -477,6 +477,9 @@ fn ai_procedure_state_and_terminal_markers_survive_save_load_round_trip() {
         WanderPhase::Paused { remaining: 2.5 }
     );
     assert_eq!(restored_wander.pick_count, 7);
+    // #4984 — one query guard at a time: an overlapping test guard records
+    // an edge production never takes and reddens BYRO_LOCK_ORDER_CHECK.
+    drop(wq);
 
     let tq = dst.query::<Traveled>().unwrap();
     assert_eq!(
@@ -484,6 +487,7 @@ fn ai_procedure_state_and_terminal_markers_survive_save_load_round_trip() {
         1,
         "Traveled must round-trip — losing it makes an already-arrived NPC redo its Travel"
     );
+    drop(tq);
 
     let sq = dst.query::<Seated>().unwrap();
     let (_, restored_seated) = sq.iter().next().expect("Seated must round-trip");

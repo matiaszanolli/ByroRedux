@@ -1135,17 +1135,19 @@ pub(crate) fn pickup_loot(
     // A `&World` system inserts through the query write guard (the
     // `apply_player_drowning_damage` pattern), which needs the storage to
     // exist — `boot/world.rs` pre-registers `PickedUp` for exactly this.
+    // #4571 — the marker hides the placement's MESHES, but the meshes are
+    // descendants: the root never carries a MeshHandle
+    // (spawn_placement_root), and both render skips read the marker on the
+    // mesh/skinned entity itself. Stamp the subtree like the
+    // NpcAppearanceHidden sibling does, so the consumers see it without a
+    // per-frame ancestor walk. #4983 — walk BEFORE taking the marker write:
+    // holding it across the `Children`/`MeshHandle` walk recorded
+    // `PickedUp → Children`, closing a cycle against the render skips'
+    // `GlobalTransform → … → PickedUp` read. `PickedUp` stays a sink.
+    let meshes = crate::npc_spawn::loot_appearance::mesh_entities_under(world, target);
     if let Some(mut markers) = world.query_mut::<PickedUp>() {
         markers.insert(target, PickedUp);
-        // #4571 — the marker hides the placement's MESHES, but the meshes
-        // are descendants: the root never carries a MeshHandle
-        // (spawn_placement_root), and both render skips read the marker on
-        // the mesh/skinned entity itself. Stamp the subtree like the
-        // NpcAppearanceHidden sibling does, so the consumers see it without
-        // a per-frame ancestor walk.
-        for entity in
-            crate::npc_spawn::loot_appearance::mesh_entities_under(world, target)
-        {
+        for entity in meshes {
             markers.insert(entity, PickedUp);
         }
     }
@@ -1635,9 +1637,12 @@ mod tests {
         crate::helpers::add_child(&mut world, root, mesh);
         world.insert(mesh, MeshHandle(7));
 
+        // Same shape as `pickup_loot`: walk first, then take the marker write
+        // (#4983).
+        let meshes = crate::npc_spawn::loot_appearance::mesh_entities_under(&world, root);
         if let Some(mut markers) = world.query_mut::<PickedUp>() {
             markers.insert(root, PickedUp);
-            for entity in crate::npc_spawn::loot_appearance::mesh_entities_under(&world, root) {
+            for entity in meshes {
                 markers.insert(entity, PickedUp);
             }
         }
@@ -3354,6 +3359,9 @@ mod tests {
             200.0,
             "95 + 20·5 + 5·1"
         );
+        // #4984 — release before the ActorVitals read: production takes
+        // `ActorVitals → ActorValues` (`commit_actor_value_deaths`).
+        drop(values);
         assert_eq!(
             world.get::<ActorVitals>(player).map(|v| *v),
             Some(ActorVitals {

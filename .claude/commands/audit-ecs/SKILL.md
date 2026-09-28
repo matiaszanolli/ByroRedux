@@ -24,6 +24,12 @@ dimension whose Paths have no commits since the last report
 
 Paths: `crates/core/src/ecs/{world,lock_tracker,query,resource}.rs`
 First step: `cargo test -p byroredux-core lock_tracker` then `BYRO_LOCK_ORDER_CHECK=1 cargo test -p byroredux-core`
+AND `BYRO_LOCK_ORDER_CHECK=1 cargo test -p byroredux` (or read the last main run's `ABBA lock-order detector`
+job conclusion via `gh run view <id> --json jobs`). **Never skip this step on a delta-scoped run**, even when
+this dimension's Paths are unchanged: the process-wide graph is built by every *caller*, and the cycles live in
+the binary's graph, not core's — core stayed green through the whole 2026-09-22..28 red streak (#4985, #4982).
+A `&mut World` function still records edges the detector cannot tell apart from `&World` ones, so hoisting
+several read guards into one block for speed (#4616) reddens the lane.
 
 A wrong lock order is HIGH. This dimension owns the *machinery*; system-level cycles, canonical-order
 adherence and CI detector coverage are `/audit-concurrency` Dim 3 and Dim 5.

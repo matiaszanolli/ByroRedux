@@ -496,6 +496,10 @@ mod tests {
             Some(player),
             "0x14 must resolve to the PapyrusPlayerEntity body"
         );
+        // #4984 — drop before the Transform read: production takes
+        // `Transform → FollowState`, so holding the reverse here closes a
+        // cycle under BYRO_LOCK_ORDER_CHECK.
+        drop(sq);
         let tq = world.query::<Transform>().expect("Transform registered");
         assert!(
             tq.get(actor).unwrap().translation.x > 0.0,

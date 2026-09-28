@@ -100,98 +100,120 @@ pub(crate) fn capture(world: &mut World, victims: &[EntityId]) {
     let player = world
         .try_resource::<crate::systems::PlayerEntity>()
         .and_then(|p| p.0);
-    // #4616 — the probes are hoisted out of the per-victim loop: one shared
-    // query guard per component plus the FormIdPool / ItemInstancePool
-    // reads, acquired once instead of a TypeId lookup + tracked read per
-    // probe per victim. Every guard is a shared read and drops at the end
-    // of this block; the `PersistentReferenceStates` write below happens
-    // strictly after, keeping the no-guard-across-resource-write rule.
-    let rows = {
-        let form_q = world.query::<FormIdComponent>();
-        let inventory_q = world.query::<Inventory>();
-        let dead_q = world.query::<Dead>();
-        let picked_up_q = world.query::<crate::inventory::PickedUp>();
-        let equipment_q = world.query::<EquipmentSlots>();
-        let weapon_q = world.query::<EquippedWeapon>();
-        let values_q = world.query::<ActorValues>();
-        let pool = world.try_resource::<FormIdPool>();
-        let instances = world.try_resource::<ItemInstancePool>();
-        let mut rows = Vec::new();
-        for &entity in victims {
-            if player == Some(entity) {
-                continue;
-            }
-            let Some(pair) = form_q
-                .as_ref()
-                .and_then(|q| q.get(entity).map(|c| c.0))
-                .and_then(|id| pool.as_ref().and_then(|pool| pool.resolve(id).copied()))
-            else {
-                continue;
-            };
-            let inventory = inventory_q
-                .as_ref()
-                .and_then(|q| q.get(entity))
-                .map(|inv| inv.items.clone());
-            let dead = dead_q.as_ref().is_some_and(|q| q.get(entity).is_some());
-            let picked_up = picked_up_q
-                .as_ref()
-                .is_some_and(|q| q.get(entity).is_some());
-        if inventory.is_none() && !dead && !picked_up {
-            continue;
-        }
-        let stored = inventory.map(|items| {
-            items
-                .into_iter()
-                .map(|stack| {
-                    let instance = match stack.instance {
-                        Some(id) => Some(instances.as_ref()?.get(id)?.clone()),
-                        None => None,
-                    };
-                    Some(StoredStack {
-                        base_form_id: stack.base_form_id,
-                        count: stack.count,
-                        instance,
-                    })
-                })
-                .collect::<Option<Vec<_>>>()
-        });
-        let inventory = match stored {
-            Some(Some(items)) => Some(items),
-            Some(None) => {
-                log::error!(
-                    "reference-state: dangling item instance on {pair:?}; cannot capture inventory"
-                );
-                continue;
-            }
-            None => None,
+    // #4616 — one guard per component per call, not a TypeId lookup +
+    // tracked read per probe per victim. #4982 — and only ONE guard live at
+    // a time: each probe is its own pass over the surviving victims. Holding
+    // them together recorded `Dead → ActorValues` and
+    // `Inventory → ItemInstancePool`, the reverse of
+    // `commit_actor_value_deaths` and `validate_inventory_instances`, and
+    // kept the lock-order lane red even though `&mut World` rules out a
+    // live deadlock here. The `PersistentReferenceStates` write happens
+    // strictly after every pass.
+    let mut raw_ids: Vec<(EntityId, _)> = Vec::with_capacity(victims.len());
+    if let Some(form_q) = world.query::<FormIdComponent>() {
+        raw_ids.extend(
+            victims
+                .iter()
+                .filter(|&&entity| player != Some(entity))
+                .filter_map(|&entity| form_q.get(entity).map(|c| (entity, c.0))),
+        );
+    }
+    let mut rows: Vec<(EntityId, FormIdPair, ReferenceState)> = {
+        let Some(pool) = world.try_resource::<FormIdPool>() else {
+            return;
         };
-            rows.push((
-                pair,
-                ReferenceState {
-                    inventory,
-                    equipment: equipment_q
-                        .as_ref()
-                        .and_then(|q| q.get(entity))
-                        .cloned(),
-                    weapon: weapon_q
-                        .as_ref()
-                        .and_then(|q| q.get(entity))
-                        .copied(),
-                    actor_values: values_q
-                        .as_ref()
-                        .and_then(|q| q.get(entity))
-                        .cloned(),
-                    dead,
-                    picked_up,
-                },
-            ));
-        }
-        rows
+        raw_ids
+            .into_iter()
+            .filter_map(|(entity, id)| {
+                let pair = *pool.resolve(id)?;
+                Some((
+                    entity,
+                    pair,
+                    ReferenceState {
+                        inventory: None,
+                        equipment: None,
+                        weapon: None,
+                        actor_values: None,
+                        dead: false,
+                        picked_up: false,
+                    },
+                ))
+            })
+            .collect()
     };
+    if let Some(dead_q) = world.query::<Dead>() {
+        for (entity, _, state) in &mut rows {
+            state.dead = dead_q.get(*entity).is_some();
+        }
+    }
+    if let Some(picked_up_q) = world.query::<crate::inventory::PickedUp>() {
+        for (entity, _, state) in &mut rows {
+            state.picked_up = picked_up_q.get(*entity).is_some();
+        }
+    }
+    let mut live_items: Vec<Option<Vec<ItemStack>>> = vec![None; rows.len()];
+    if let Some(inventory_q) = world.query::<Inventory>() {
+        for ((entity, _, _), items) in rows.iter().zip(&mut live_items) {
+            *items = inventory_q.get(*entity).map(|inv| inv.items.clone());
+        }
+    }
+    // Instance payloads resolve after the `Inventory` guard is gone.
+    {
+        let instances = world.try_resource::<ItemInstancePool>();
+        let mut kept = Vec::with_capacity(rows.len());
+        for ((entity, pair, mut state), items) in rows.into_iter().zip(live_items) {
+            if items.is_none() && !state.dead && !state.picked_up {
+                continue;
+            }
+            let stored = items.map(|items| {
+                items
+                    .into_iter()
+                    .map(|stack| {
+                        let instance = match stack.instance {
+                            Some(id) => Some(instances.as_ref()?.get(id)?.clone()),
+                            None => None,
+                        };
+                        Some(StoredStack {
+                            base_form_id: stack.base_form_id,
+                            count: stack.count,
+                            instance,
+                        })
+                    })
+                    .collect::<Option<Vec<_>>>()
+            });
+            state.inventory = match stored {
+                Some(Some(items)) => Some(items),
+                Some(None) => {
+                    log::error!(
+                        "reference-state: dangling item instance on {pair:?}; cannot capture inventory"
+                    );
+                    continue;
+                }
+                None => None,
+            };
+            kept.push((entity, pair, state));
+        }
+        rows = kept;
+    }
+    if let Some(equipment_q) = world.query::<EquipmentSlots>() {
+        for (entity, _, state) in &mut rows {
+            state.equipment = equipment_q.get(*entity).cloned();
+        }
+    }
+    if let Some(weapon_q) = world.query::<EquippedWeapon>() {
+        for (entity, _, state) in &mut rows {
+            state.weapon = weapon_q.get(*entity).copied();
+        }
+    }
+    if let Some(values_q) = world.query::<ActorValues>() {
+        for (entity, _, state) in &mut rows {
+            state.actor_values = values_q.get(*entity).cloned();
+        }
+    }
     world
         .resource_mut::<PersistentReferenceStates>()
         .rows
-        .extend(rows);
+        .extend(rows.into_iter().map(|(_, pair, state)| (pair, state)));
 }
 
 /// Restore after authored inventory/equipment/AI have been attached. Consuming
@@ -250,10 +272,10 @@ pub(crate) fn restore(world: &mut World, entity: EntityId) -> bool {
         // the marker lands on the subtree's mesh entities too (the render
         // skips read it there, not on this root).
         world.insert(entity, crate::inventory::PickedUp);
+        // #4983 — walk before taking the marker write (see `pickup_loot`).
+        let meshes = crate::npc_spawn::loot_appearance::mesh_entities_under(world, entity);
         if let Some(mut markers) = world.query_mut::<crate::inventory::PickedUp>() {
-            for mesh in
-                crate::npc_spawn::loot_appearance::mesh_entities_under(world, entity)
-            {
+            for mesh in meshes {
                 markers.insert(mesh, crate::inventory::PickedUp);
             }
         }
@@ -398,6 +420,96 @@ mod tests {
             .is_empty());
         assert!(restore(&mut world, old));
         assert!(world.get::<Inventory>(old).unwrap().is_empty());
+    }
+
+    fn lock_order_check_enabled() -> bool {
+        std::env::var_os("BYRO_LOCK_ORDER_CHECK").as_deref() == Some(std::ffi::OsStr::new("1"))
+    }
+
+    /// #4982 — both unload capture passes probe one storage at a time. The
+    /// orders below are the ones production systems take
+    /// (`commit_actor_value_deaths`, `validate_inventory_instances`,
+    /// `travel_system_inner`, the ambient movers' FormID resolve); a capture
+    /// that holds the reverse pair closes a cycle and the detector panics.
+    #[test]
+    fn unload_captures_do_not_invert_production_lock_orders() {
+        if !lock_order_check_enabled() {
+            return;
+        }
+        use super::super::stream_snapshot::{capture_actor_snapshots, StreamStateSnapshots};
+        use byroredux_core::ecs::components::travel::{TravelState, Traveled};
+        use byroredux_core::ecs::components::Transform;
+
+        let mut world = world();
+        world.insert_resource(StreamStateSnapshots::default());
+        world.register::<TravelState>();
+        world.register::<Traveled>();
+        world.register::<crate::inventory::PickedUp>();
+        world.register::<crate::components::AmbientPackageRuntime>();
+        world.register::<byroredux_core::ecs::components::sandbox::Seated>();
+        let actor = reference(&mut world, "Skyrim.esm", 0x300);
+        world.insert(actor, Transform::IDENTITY);
+        world.insert(actor, Traveled);
+        world.insert(actor, Dead);
+        world.insert(actor, Inventory::new());
+        world.insert(actor, ActorValues::from_pairs([(0x2D4, 10.0)]));
+        world.insert(actor, EquipmentSlots::new());
+
+        {
+            let _values = world.query::<ActorValues>().unwrap();
+            let _dead = world.query::<Dead>().unwrap();
+        }
+        {
+            let _pool = world.resource::<ItemInstancePool>();
+            let _inventory = world.query::<Inventory>().unwrap();
+        }
+        {
+            let _traveled = world.query::<Traveled>().unwrap();
+            let _state = world.query::<TravelState>().unwrap();
+        }
+        {
+            let _transform = world.query::<Transform>().unwrap();
+            let _form = world.query::<FormIdComponent>().unwrap();
+        }
+
+        capture_actor_snapshots(&mut world, &[actor]);
+        capture(&mut world, &[actor]);
+        assert_eq!(world.resource::<StreamStateSnapshots>().len(), 1);
+        assert_eq!(world.resource::<PersistentReferenceStates>().rows.len(), 1);
+    }
+
+    /// #4983 — `restore` walks the placement's meshes before it takes the
+    /// `PickedUp` write, so the marker stays a sink after the hierarchy/skin
+    /// cluster the render skips hold (`Children → GlobalTransform →
+    /// PickedUp`).
+    #[test]
+    fn picked_up_restore_walks_meshes_before_taking_the_marker() {
+        if !lock_order_check_enabled() {
+            return;
+        }
+        use byroredux_core::ecs::components::{Children, GlobalTransform, MeshHandle, Parent};
+
+        let mut world = world();
+        world.register::<crate::inventory::PickedUp>();
+        world.register::<GlobalTransform>();
+        world.register::<MeshHandle>();
+        world.register::<Parent>();
+        world.register::<Children>();
+        let root = reference(&mut world, "Skyrim.esm", 0x400);
+        let mesh = world.spawn();
+        world.insert(mesh, Parent(root));
+        crate::helpers::add_child(&mut world, root, mesh);
+        world.insert(mesh, MeshHandle(3));
+        mark_picked_up(&world, root);
+
+        {
+            let _children = world.query::<Children>().unwrap();
+            let _global = world.query::<GlobalTransform>().unwrap();
+            let _picked = world.query::<crate::inventory::PickedUp>().unwrap();
+        }
+
+        assert!(restore(&mut world, root));
+        assert!(world.get::<crate::inventory::PickedUp>(mesh).is_some());
     }
 
     #[test]

@@ -615,6 +615,13 @@ while taking the Transform read closed
 against walk_anim's tail — so: **Transform before cinematic state,
 AnimationTarget before ActorCinematicState**, everywhere.
 
+The render-skip markers `PickedUp` and `NpcAppearanceHidden` are **sinks**
+after the hierarchy/skin cluster: `build_skinned_palettes` and the static-mesh
+loop read them under `GlobalTransform` / `SkinnedMesh`, so a producer must run
+its `mesh_entities_under` walk (`Children` / `MeshHandle`) *before* taking the
+marker write, never inside it (#4983 — holding it closed
+`PickedUp → Children → GlobalTransform → PickedUp`).
+
 Acquire a subset in that relative order; skipping types is fine, reordering
 them is not. `character_controller_system` establishes the physics prelude,
 `make_transform_propagation_system` the hierarchy span,
