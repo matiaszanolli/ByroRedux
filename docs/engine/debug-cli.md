@@ -305,7 +305,7 @@ commands were unreachable from `byro-dbg` because `tex.missing` parsed as
 
 The console commands are registered in `byroredux/src/commands/mod.rs`
 (`build_command_registry()`) plus the save/load implementations in
-`byroredux/src/save_io.rs`. Current registered commands (**92**) grouped by
+`byroredux/src/save_io.rs`. Current registered commands (**94**) grouped by
 purpose:
 
 ```
@@ -390,6 +390,8 @@ input.press <action>        → inject a one-frame logical input action
 input.hold <action> <frames> → inject a bounded multi-frame input hold
 input.look <yaw> <pitch>    → inject a camera-look delta
 player.status               → report player mode, pose, and control state
+player.view [first|third]   → show or switch the player camera view (V key)
+player.body                 → report the assembled player body (root, meshes, view, equipment parts)
 inventory.status            → report the player's live inventory/equipment state
 settings.status             → report loaded gameplay settings
 setav / modav               → inspect or mutate an actor value

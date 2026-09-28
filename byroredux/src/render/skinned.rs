@@ -84,6 +84,10 @@ pub(super) fn build_skinned_palettes(
     // P3 — picked-up placements stay resident but draw nothing (see the
     // matching consult in `static_meshes.rs`).
     let picked_up = world.query::<crate::inventory::PickedUp>();
+    // P3 player body — the first-person camera sits inside the body, so its
+    // meshes carry `HiddenFirstPerson` until the view switches to third
+    // person (`player_body::set_player_view`).
+    let first_person_hidden = world.query::<crate::player_body::HiddenFirstPerson>();
     let (Some(gt_q), Some(skin_q)) = (gt_q, skin_q) else {
         return;
     };
@@ -102,6 +106,9 @@ pub(super) fn build_skinned_palettes(
             .as_ref()
             .is_some_and(|q| q.get(entity).is_some())
             || picked_up.as_ref().is_some_and(|q| q.get(entity).is_some())
+            || first_person_hidden
+                .as_ref()
+                .is_some_and(|q| q.get(entity).is_some())
         {
             continue;
         }

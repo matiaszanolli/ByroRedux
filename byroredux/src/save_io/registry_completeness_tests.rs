@@ -663,6 +663,14 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("NpcEquipmentPart", "spawn-derived armor-root ownership and intrinsic race-skin classification; rebuilt with the actor, never serialize process-local entity IDs"),
         ("NpcLootAppearance", "spawn-derived corpse body restoration recipe and temporary mesh staging; rebuilt then reconciled from saved Dead/Inventory/EquipmentSlots"),
         ("NpcAppearanceHidden", "derived visibility for staged body meshes and superseded corpse gear; rebuilt by corpse appearance reconciliation, not animation state"),
+        // P3 player body: the assembled root is spawned by the player-body
+        // attach inside the process (parented to the player capsule, which
+        // outlives cell unload), and both markers below are re-stamped by
+        // the same attach/toggle paths on every boot.
+        ("PlayerBodyRoot", "marker on the assembled player-body placement root; the root is respawned by player_body::attach_player_body at Character-mode spawn, never serialized"),
+        ("PlayerBodyRootEntity", "process-lifetime pointer to the player-body root (same posture as PlayerEntity); set once at attach, not gameplay state"),
+        ("HiddenFirstPerson", "derived visibility marker on the player body's meshes from the PlayerCameraView toggle; restamped by set_player_view on every view switch"),
+        ("PlayerCameraView", "first/third-person camera-view flag toggled live by the V key / player.view command; presentation-only, not gameplay state"),
         ("PickedUp", "volatile pickup marker; the durable half is the saved PersistentReferenceStates tombstone row, and reference_state::restore re-stamps the marker at load"),
         ("RegionAmbientRes", "resolved REGN Sound-entry FormIDs for the resident cell/tile (EX-16 item 1 / #2372), rederived identically from the cell's XCLR list + the plugin's parsed REGN map every cell load — same posture as CellLightingRes/NavmeshTile"),
         ("SandboxSitClip", "resolved once at cell load from the archive provider, read-only afterward"),

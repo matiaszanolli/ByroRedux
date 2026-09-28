@@ -358,6 +358,9 @@ pub(super) fn collect_static_mesh_draws(
     // P3 — picked-up placements stay resident but draw nothing (the item is
     // in the player's inventory; the tombstone keeps a respawned copy gone).
     let picked_up = world.query::<crate::inventory::PickedUp>();
+    // P3 player body — first-person hides the body meshes (the camera sits
+    // inside them); same consult contract as `NpcAppearanceHidden`.
+    let first_person_hidden = world.query::<crate::player_body::HiddenFirstPerson>();
     let mat_q = world.query::<Material>();
     // #4413 — authored ground-cover templates: built like any draw (so their
     // material is interned this frame) but handed to the model tier.
@@ -464,6 +467,9 @@ pub(super) fn collect_static_mesh_draws(
             if !visible
                 || appearance_hidden.as_ref().is_some_and(|q| q.get(entity).is_some())
                 || picked_up.as_ref().is_some_and(|q| q.get(entity).is_some())
+                || first_person_hidden
+                    .as_ref()
+                    .is_some_and(|q| q.get(entity).is_some())
             {
                 continue;
             }

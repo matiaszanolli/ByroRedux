@@ -213,7 +213,14 @@ pub fn parse_renderer_config(args: &[String]) -> Result<RendererConfig> {
         "agx" => TonemapOp::Agx,
         value => bail!("--tonemap requires 'aces' or 'agx', got '{value}'"),
     };
-    let auto_exposure = args.iter().any(|arg| arg == "--auto-exposure");
+    // 2026-09-28 — auto metering is the DEFAULT operating point. The stage-1
+    // increment shipped it opt-in behind `--auto-exposure`, and the default
+    // path stayed at the historical fixed 0.85 × ACES; a live A/B at the
+    // Bannered Mare threshold measured the default frame at median luminance
+    // 21/255 against 87/255 metered (user report: "overdriving darkness").
+    // `--no-auto-exposure` restores the fixed constant (the `exposure fixed`
+    // console command remains the runtime switch either way).
+    let auto_exposure = !args.iter().any(|arg| arg == "--no-auto-exposure");
     Ok(RendererConfig {
         upscaler,
         volumetrics,
@@ -511,5 +518,27 @@ mod tests {
             "ultra"
         ]))
         .is_err());
+    }
+
+    /// 2026-09-28 — auto metering is the default operating point (see the
+    /// comment at the parse site for the measurement behind the flip).
+    /// `--auto-exposure` stays accepted as the explicit opt-in it was before;
+    /// `--no-auto-exposure` restores the fixed constant.
+    #[test]
+    fn auto_exposure_is_the_default_and_no_auto_exposure_opts_out() {
+        assert!(
+            parse_renderer_config(&args(&["byroredux"]))
+                .unwrap()
+                .auto_exposure
+        );
+        assert!(parse_renderer_config(&args(&["byroredux", "--auto-exposure"]))
+            .unwrap()
+            .auto_exposure);
+        assert!(!parse_renderer_config(&args(&[
+            "byroredux",
+            "--no-auto-exposure"
+        ]))
+        .unwrap()
+        .auto_exposure);
     }
 }

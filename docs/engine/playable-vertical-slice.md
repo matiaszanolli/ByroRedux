@@ -1261,6 +1261,40 @@ are observed but find no meshes — closing that needs a visible third-person
 player body first (race skeleton + skin via the NPC assembly paths), which is
 the next structural step for this phase.
 
+**Player body attach (2026-09-28):** the structural step above is closed —
+the player is no longer a bare capsule. `player_body::attach_player_body`
+(called from `spawn_player_body`, Character mode only) resolves the same
+`NPC_ 0x7` record `attach_to_player` consumed, then drives a
+`NpcSpawnJob` **player-body variant** (`as_player_body()`,
+`npc_spawn/resumable.rs`) to completion with an unlimited budget: race
+skeleton, race-skin/outfit armor meshes, and the standard
+`NpcEquipmentPart` ownership stamps — the exact machinery every placed NPC
+takes. The assembled root parents under the player capsule with the feet
+offset (capsule half-extent), and the post-pass retargets every part's
+ownership to the player entity (the wearer whose equip events
+`equipment_appearance_system` matches) and strips any bhk-derived collision
+the imports created. Deliberate NPC-path exclusions (all via the job flag,
+pinned by tests): no identity stamps (no phantom second actor beside the
+player), no inventory/equipment writes (would orphan the player's real
+instance handles), no AI package, no loot-appearance state, no walk/idle
+clips, and no bone colliders or ragdoll template — the player's physics
+presence stays the capsule, the single body every interaction/occlusion/
+combat ray excludes. The two camera-view pieces that make the body
+observable: `PlayerCameraView` (FirstPerson default, V key /
+`player.view [first|third]`) hides the body's meshes via `HiddenFirstPerson`
+in first person and reveals them in third person, and a third-person boom
+(`camera_follow_system`, 180 BU along the look direction, no wall collision
+yet) plus body yaw following the look accumulator orient it. Gate:
+[`p3-player-body.sh`](../smoke-tests/p3-player-body.sh) — Skyrim Bannered
+Mare Character mode asserts the attach log, meshes + skeleton + part
+ownership via the new `player.body` command, no self-targeting in
+`interaction.status`, the first→third→first view toggle, and retains a
+third-person capture. Still open: third-person walk/idle animation (the
+body moves rigid with the capsule), mid-life gear import for newly acquired
+items (shared with the NPC re-equip scope note above), and player FaceGen
+(vanilla ships no facegeom for the player record — the graceful miss leaves
+the race-default head).
+
 ### P4 — Authored objective and dialogue loop
 
 Goal: a small piece of shipping content can be followed and completed.

@@ -1107,6 +1107,13 @@ fn spawn_player_body(
     // `character_controller_system` will then take over per-frame
     // updates; `camera_follow_system` re-pins the camera to the body
     // head each frame.
+    //
+    // P3 player body — pre-insert both view resources so `&World`
+    // consumers (the facing system, `player.view`/`player.body`
+    // commands) can read/write them through interior mutability
+    // regardless of whether the attach below succeeds.
+    world.insert_resource(crate::player_body::PlayerBodyRootEntity(None));
+    world.insert_resource(crate::player_body::PlayerCameraView::default());
     if player_mode == crate::systems::PlayerMode::Character {
         let plan = spawn_plan.expect("Character mode requires a resolved spawn plan");
         let cc = plan.controller;
@@ -1227,6 +1234,21 @@ fn spawn_player_body(
         // set_stage. M47.1 condition functions GetStage / GetStageDone
         // already use try_resource so they're safe on absence.
         world.insert_resource(byroredux_scripting::quest_stages::QuestStageState::default());
+        // P3 structural step — assemble the player's visible body from the
+        // same NPC_ 0x7 record `attach_to_player` consumed, via the NPC
+        // spawn machinery's player-body variant. First person keeps it
+        // hidden (`player_body::PlayerCameraView`); V / `player.view`
+        // reveals it in third person. Bare-capsule fallbacks (no plugin
+        // index, no player record) log and continue — nothing else in boot
+        // depends on the body existing.
+        crate::player_body::attach_player_body(
+            world,
+            ctx,
+            body,
+            body_pos,
+            cc.half_height,
+            cc.radius,
+        );
         log::info!(
             "M28.5 player character spawned at ({:.1}, {:.1}, {:.1}); eyes at ({:.1}, {:.1}, {:.1})",
             body_pos.x,

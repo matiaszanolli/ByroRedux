@@ -45,6 +45,15 @@ pub(crate) struct NpcSpawnJob {
     ref_scale: f32,
     state: NpcSpawnState,
     work_wall: Duration,
+    /// P3 player-body attach: the job assembles the *player's* visual body
+    /// off `NPC_ 0x7`. The player entity already carries its identity
+    /// (FormID sentinel, ActorValues, Inventory/EquipmentSlots, scene-alias
+    /// candidate), so the placement root gets no identity stamps, no AI
+    /// package, no loot-appearance state, and no bone colliders or ragdoll
+    /// template — the player's physics presence stays the Character-mode
+    /// capsule, and interaction/combat rays keep excluding exactly one body.
+    /// See `crate::player_body`.
+    player_body: bool,
 }
 
 // Runtime/Prebaked carry their whole scratch state by value; boxing them
@@ -128,6 +137,9 @@ struct RuntimeNpcState {
     /// RACE editor id (`DraugrRace*`), the same discriminator the body
     /// meshes follow; humans never set it.
     combat_anim_draugr: bool,
+    /// Player-body attach (`NpcSpawnJob::player_body`) — carried so the
+    /// finalize unit can skip the player entity's already-owned state.
+    player_body: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -167,6 +179,8 @@ struct PrebakedNpcState {
     /// #4700 — [`RuntimeNpcState::combat_anim_draugr`]'s pre-baked twin,
     /// from the same `Use Traits`-resolved race.
     combat_anim_draugr: bool,
+    /// Player-body attach — same finalize-skip contract as the runtime twin.
+    player_body: bool,
     phase: PrebakedPhase,
 }
 
@@ -231,7 +245,17 @@ impl NpcSpawnJob {
             ref_scale,
             state: NpcSpawnState::BeginRuntime,
             work_wall: Duration::ZERO,
+            player_body: false,
         }
+    }
+
+    /// Mark this job as assembling the player's body (`crate::player_body`).
+    /// Same phase machine, stripped of everything that would duplicate the
+    /// player entity's already-stamped state or add physics presence beside
+    /// the Character-mode capsule.
+    pub(crate) fn as_player_body(mut self) -> Self {
+        self.player_body = true;
+        self
     }
 
     /// Begin a pre-baked-FaceGen spawn (Skyrim / FO4 / FO76 / Starfield) —
@@ -272,6 +296,7 @@ impl NpcSpawnJob {
                 plugin_name: plugin_name.to_owned(),
             },
             work_wall: Duration::ZERO,
+            player_body: false,
         }
     }
 
@@ -316,6 +341,7 @@ impl NpcSpawnJob {
                             self.ref_rot,
                             self.ref_scale,
                             index,
+                            self.player_body,
                         )));
                         UnitOutcome::Continue
                     }
@@ -333,6 +359,7 @@ impl NpcSpawnJob {
                             self.ref_rot,
                             self.ref_scale,
                             index,
+                            self.player_body,
                         ));
                         UnitOutcome::Continue
                     }
@@ -481,8 +508,10 @@ fn prepare_runtime_state(
     ref_rot: Quat,
     ref_scale: f32,
     index: &EsmIndex,
+    player_body: bool,
 ) -> RuntimeNpcState {
-    let (placement_root, resolved) = spawn_placement_root(world, npc, ref_pos, ref_rot, ref_scale, index);
+    let (placement_root, resolved) =
+        spawn_placement_root(world, npc, ref_pos, ref_rot, ref_scale, index, player_body);
     log::info!(
         "NPC {:08X} ({}) spawning at world [{:.0},{:.0},{:.0}] scale={:.2}",
         npc.form_id,
@@ -680,6 +709,7 @@ fn prepare_runtime_state(
         blend_skin_seams: matches!(game, GameKind::Oblivion | GameKind::Fallout3NV),
         seam_context: None,
         combat_anim_draugr: is_draugr_race(race),
+        player_body,
         phase: RuntimePhase::Skeleton,
     }
 }
@@ -789,6 +819,8 @@ fn prepare_creature_state(
         seam_context: None,
         // CREA creatures don't use the humanoid Draugr clip family.
         combat_anim_draugr: false,
+        // A creature cannot be the player's body (NPC_ 0x7 is never CREA).
+        player_body: false,
         phase: RuntimePhase::Skeleton,
     }
 }
@@ -837,8 +869,19 @@ fn advance_runtime_unit(
                 None,
                 None,
             );
-            let fallback_collider =
-                keyframe_live_ragdoll_bones(world, state.placement_root, &skel_map);
+            // Player bodies get no bone colliders: the bone bodies are
+            // separate Rapier bodies mapped to the actor through
+            // `ActorColliderOwner`, and every interaction/occlusion/combat
+            // ray excludes exactly one body — the player's capsule. Keyframed
+            // bone bodies beside it would intercept those rays and make the
+            // player target/occlude against itself. The post-spawn pass in
+            // `crate::player_body` strips any bhk-derived collision
+            // components the skeleton import created.
+            let fallback_collider = if state.player_body {
+                None
+            } else {
+                keyframe_live_ragdoll_bones(world, state.placement_root, &skel_map)
+            };
             if let Some(root) = skel_root {
                 parent_part(world, state.placement_root, root);
                 if let Some(fallback) = fallback_collider {
@@ -1145,23 +1188,28 @@ fn advance_runtime_unit(
                     state.inventory.as_ref().map_or(0, Inventory::len),
                 );
             }
-            world.insert(
-                state.placement_root,
-                state.inventory.take().unwrap_or_default(),
-            );
-            let mut equipment_slots = state.equipment_slots.take().unwrap_or_default();
-            let weapon = state.equipped_weapon.take();
-            // #3112 — mirror the wielded weapon into `EquipmentSlots::weapon`
-            // so "is this equipped?" consumers (CTDA `GetEquipped`) see it.
-            // The equip pipeline only fills `equipped_weapon`; the weapon slot
-            // is deliberately outside the biped occupancy array, so nothing
-            // else writes it.
-            if let Some(weapon) = weapon {
-                equipment_slots.equip_weapon(weapon.inventory_index);
-            }
-            world.insert(state.placement_root, equipment_slots);
-            if let Some(weapon) = weapon {
-                world.insert(state.placement_root, weapon);
+            // Player bodies keep the player entity's own inventory state
+            // (see `prepare_prebaked_state`'s mirrored note): only the mesh
+            // assembly and `NpcEquipmentPart` ownership stamps are wanted.
+            if !state.player_body {
+                world.insert(
+                    state.placement_root,
+                    state.inventory.take().unwrap_or_default(),
+                );
+                let mut equipment_slots = state.equipment_slots.take().unwrap_or_default();
+                let weapon = state.equipped_weapon.take();
+                // #3112 — mirror the wielded weapon into `EquipmentSlots::weapon`
+                // so "is this equipped?" consumers (CTDA `GetEquipped`) see it.
+                // The equip pipeline only fills `equipped_weapon`; the weapon slot
+                // is deliberately outside the biped occupancy array, so nothing
+                // else writes it.
+                if let Some(weapon) = weapon {
+                    equipment_slots.equip_weapon(weapon.inventory_index);
+                }
+                world.insert(state.placement_root, equipment_slots);
+                if let Some(weapon) = weapon {
+                    world.insert(state.placement_root, weapon);
+                }
             }
             if let Some(skeleton) = state.skel_root {
                 world.insert(
@@ -1177,7 +1225,7 @@ fn advance_runtime_unit(
                 // the family marker. Inserted only with a skeleton —
                 // without one there is nothing for a take to animate
                 // (`docs/engine/p2-combat-anim-sound-fixture.md`).
-                if state.combat_anim_draugr {
+                if state.combat_anim_draugr && !state.player_body {
                     world.insert(
                         state.placement_root,
                         crate::components::DraugrCombatAnim::default(),
@@ -1189,20 +1237,24 @@ fn advance_runtime_unit(
                 // falling back to it would play nothing. Load-on-finalize
                 // (rather than at prepare) because this is where the
                 // `TextureProvider` is in hand.
-                let idle_handle = match state.idle_kf_path.as_deref() {
-                    Some(path) => {
-                        let handle = load_kf_clip_by_path(world, tex_provider, path);
-                        if handle.is_none() {
-                            log::debug!(
-                                "Creature {:08X} ({}): no idle clip at '{}' — spawning unanimated",
-                                npc.form_id,
-                                npc.editor_id,
-                                path,
-                            );
-                        }
-                        handle
+                let idle_handle = if state.player_body {
+                    // The player body spawns unanimated: the attach passes no
+                    // idle pool, and first-person keeps the body hidden until
+                    // a third-person animation pass lands.
+                    None
+                } else if let Some(path) = state.idle_kf_path.as_deref() {
+                    let handle = load_kf_clip_by_path(world, tex_provider, path);
+                    if handle.is_none() {
+                        log::debug!(
+                            "Creature {:08X} ({}): no idle clip at '{}' — spawning unanimated",
+                            npc.form_id,
+                            npc.editor_id,
+                            path,
+                        );
                     }
-                    None => pick_idle_handle(idle_pool, npc.form_id),
+                    handle
+                } else {
+                    pick_idle_handle(idle_pool, npc.form_id)
                 };
                 if let Some(handle) = idle_handle {
                     let duration = world
@@ -1227,7 +1279,13 @@ fn advance_runtime_unit(
             // while the actor is actually moving. The clip's authored
             // stride (accum-root travel per loop) becomes the actor's
             // `WalkSpeed`, so the step length matches the animation.
-            let walk_handle = if let Some(path) = state.walk_kf_path.as_deref() {
+            let walk_handle = if state.player_body {
+                // No `WalkAnimation`/`WalkSpeed` on the player body: the
+                // capsule controller drives movement, and `npc_walk_animation_system`
+                // would otherwise replay the humanoid walk take on a first-person
+                // body nobody can see.
+                None
+            } else if let Some(path) = state.walk_kf_path.as_deref() {
                 load_kf_clip_by_path(world, tex_provider, path)
             } else if index.game.has_kf_animations() {
                 crate::npc_spawn::humanoid_walk_kf_path(index.game, state.gender, state.is_child)
@@ -1255,22 +1313,26 @@ fn advance_runtime_unit(
                 );
                 world.insert(state.placement_root, crate::components::WalkSpeed(walk_speed));
             }
-            apply_ai_package_behavior(
-                world,
-                state.placement_root,
-                &byroredux_plugin::equip::ResolvedNpc::resolve(npc, index),
-                index,
-            );
+            if !state.player_body {
+                apply_ai_package_behavior(
+                    world,
+                    state.placement_root,
+                    &byroredux_plugin::equip::ResolvedNpc::resolve(npc, index),
+                    index,
+                );
+            }
             // Eviction state restores in stamp_quest_reference after the caller
             // assigns the placed ACHR identity. npc.form_id is only the shared
             // base record and cannot identify a particular actor's snapshot.
             tag_descendants_as_actor(world, state.placement_root);
-            super::loot_appearance::install(
-                world,
-                state.placement_root,
-                std::mem::take(&mut state.appearance),
-                &state.skel_map,
-            );
+            if !state.player_body {
+                super::loot_appearance::install(
+                    world,
+                    state.placement_root,
+                    std::mem::take(&mut state.appearance),
+                    &state.skel_map,
+                );
+            }
             UnitOutcome::Complete(Some(state.placement_root))
         }
     }
@@ -1728,8 +1790,10 @@ fn prepare_prebaked_state(
     ref_rot: Quat,
     ref_scale: f32,
     index: &EsmIndex,
+    player_body: bool,
 ) -> PrebakedNpcState {
-    let (placement_root, resolved) = spawn_placement_root(world, npc, ref_pos, ref_rot, ref_scale, index);
+    let (placement_root, resolved) =
+        spawn_placement_root(world, npc, ref_pos, ref_rot, ref_scale, index, player_body);
     // #4092 (D5-01) — the "Use Traits" terminal off the spawn boundary's
     // one resolution (#4457).
     let traits = resolved.r#traits;
@@ -1759,15 +1823,23 @@ fn prepare_prebaked_state(
             hidden_biped_mask: armor.hidden_biped_mask,
         })
         .collect();
-    world.insert(placement_root, equip.inventory);
-    let mut equipment_slots = equip.equipment_slots;
-    // #3112 — same weapon-slot mirror as the resumable finalize path above.
-    if let Some(weapon) = equip.equipped_weapon {
-        equipment_slots.equip_weapon(weapon.inventory_index);
-    }
-    world.insert(placement_root, equipment_slots);
-    if let Some(weapon) = equip.equipped_weapon {
-        world.insert(placement_root, weapon);
+    // The player body does not insert these: the player entity already owns
+    // its Inventory/EquipmentSlots/EquippedWeapon (stamped from the same
+    // resolved `NPC_ 0x7` by `inventory::attach_to_player`), and its equip
+    // indices reference the shared `ItemInstancePool` handles — overwriting
+    // them with a second resolution's rows would orphan the player's real
+    // instances.
+    if !player_body {
+        world.insert(placement_root, equip.inventory);
+        let mut equipment_slots = equip.equipment_slots;
+        // #3112 — same weapon-slot mirror as the resumable finalize path above.
+        if let Some(weapon) = equip.equipped_weapon {
+            equipment_slots.equip_weapon(weapon.inventory_index);
+        }
+        world.insert(placement_root, equipment_slots);
+        if let Some(weapon) = equip.equipped_weapon {
+            world.insert(placement_root, weapon);
+        }
     }
 
     PrebakedNpcState {
@@ -1782,6 +1854,7 @@ fn prepare_prebaked_state(
         facegen_hidden_mask,
         equipped_armor_count: 0,
         combat_anim_draugr: is_draugr_race(index.races.get(&traits.race_form_id)),
+        player_body,
         phase: PrebakedPhase::Skeleton,
     }
 }
@@ -1821,8 +1894,14 @@ fn advance_prebaked_unit(
                 None,
                 None,
             );
-            let fallback_collider =
-                keyframe_live_ragdoll_bones(world, state.placement_root, &skel_map);
+            // Same no-bone-collider contract as the runtime Skeleton phase:
+            // the player's rays exclude only its capsule, so a player-body
+            // skeleton must not register bone bodies beside it.
+            let fallback_collider = if state.player_body {
+                None
+            } else {
+                keyframe_live_ragdoll_bones(world, state.placement_root, &skel_map)
+            };
             if let Some(root) = skel_root {
                 parent_part(world, state.placement_root, root);
                 if let Some(collider) = fallback_collider {
@@ -1978,7 +2057,7 @@ fn finalize_prebaked(
         // the runtime path. Without it every take and impact/death sound
         // `combat_feedback_system` gates on it stayed silent on Skyrim,
         // the only game with Draugr.
-        if state.combat_anim_draugr {
+        if state.combat_anim_draugr && !state.player_body {
             world.insert(
                 state.placement_root,
                 crate::components::DraugrCombatAnim::default(),
@@ -1986,47 +2065,55 @@ fn finalize_prebaked(
         }
         // M42.10/M42.11 — prebaked-path actors (Skyrim+) resolve
         // the same decoded HKX walk clip the runtime path uses,
-        // with the same authored-stride speed derivation.
-        if let Some(handle) = world
-            .try_resource::<crate::components::SkyrimWalkClip>()
-            .and_then(|r| r.0)
-        {
-            let walk_speed = walk_speed_for(world, handle);
-            let last_pos = world
-                .query::<Transform>()
-                .and_then(|q| q.get(state.placement_root).map(|t| t.translation))
-                .unwrap_or_default();
-            world.insert(
-                state.placement_root,
-                crate::components::WalkAnimation {
-                    walk_handle: handle,
-                    walking: false,
-                    last_pos,
-                    captured: None,
-                    transition_secs: 0.0,
-                },
-            );
-            world.insert(
-                state.placement_root,
-                crate::components::WalkSpeed(walk_speed),
-            );
+        // with the same authored-stride speed derivation. The player
+        // body takes neither: its capsule drives movement and the body
+        // is hidden in first person (see the runtime Finalize twin).
+        if !state.player_body {
+            if let Some(handle) = world
+                .try_resource::<crate::components::SkyrimWalkClip>()
+                .and_then(|r| r.0)
+            {
+                let walk_speed = walk_speed_for(world, handle);
+                let last_pos = world
+                    .query::<Transform>()
+                    .and_then(|q| q.get(state.placement_root).map(|t| t.translation))
+                    .unwrap_or_default();
+                world.insert(
+                    state.placement_root,
+                    crate::components::WalkAnimation {
+                        walk_handle: handle,
+                        walking: false,
+                        last_pos,
+                        captured: None,
+                        transition_secs: 0.0,
+                    },
+                );
+                world.insert(
+                    state.placement_root,
+                    crate::components::WalkSpeed(walk_speed),
+                );
+            }
         }
     }
-    apply_ai_package_behavior(
-        world,
-        state.placement_root,
-        &byroredux_plugin::equip::ResolvedNpc::resolve(npc, index),
-        index,
-    );
+    if !state.player_body {
+        apply_ai_package_behavior(
+            world,
+            state.placement_root,
+            &byroredux_plugin::equip::ResolvedNpc::resolve(npc, index),
+            index,
+        );
+    }
     // The caller restores eviction state after stamping the placed
     // ACHR identity, shared with the runtime-mesh spawn path above.
     tag_descendants_as_actor(world, state.placement_root);
-    super::loot_appearance::install(
-        world,
-        state.placement_root,
-        std::mem::take(&mut state.appearance),
-        &state.skel_map,
-    );
+    if !state.player_body {
+        super::loot_appearance::install(
+            world,
+            state.placement_root,
+            std::mem::take(&mut state.appearance),
+            &state.skel_map,
+        );
+    }
     UnitOutcome::Complete(Some(state.placement_root))
 }
 
@@ -2052,6 +2139,12 @@ fn hide_skin_partitions(scene: &mut byroredux_nif::import::ImportedScene, hidden
 /// stamp cannot read the shell's raw fields by accident and a new consumer
 /// must go through the resolved type. Returns the placement root with the
 /// resolved records so the caller's equip/AI work reuses the same view.
+///
+/// `player_body` roots get transform + name only: every identity stamp
+/// below already has its player-entity counterpart (stamped by
+/// `inventory::attach_to_player` from the same `NPC_ 0x7` record), and a
+/// second actor carrying `ActorValues`/`FactionRanks` beside the player
+/// would be a phantom target for AI and combat scans.
 fn spawn_placement_root<'a>(
     world: &mut World,
     npc: &'a NpcRecord,
@@ -2059,6 +2152,7 @@ fn spawn_placement_root<'a>(
     ref_rot: Quat,
     ref_scale: f32,
     index: &'a EsmIndex,
+    player_body: bool,
 ) -> (EntityId, byroredux_plugin::equip::ResolvedNpc<'a>) {
     let placement_root = world.spawn();
     world.insert(placement_root, Transform::new(ref_pos, ref_rot, ref_scale));
@@ -2074,6 +2168,9 @@ fn spawn_placement_root<'a>(
         world.insert(placement_root, Name(symbol));
     }
     let resolved = byroredux_plugin::equip::ResolvedNpc::resolve(npc, index);
+    if player_body {
+        return (placement_root, resolved);
+    }
     stamp_faction_ranks(world, placement_root, &resolved);
     stamp_combat_disposition(world, placement_root, &resolved);
     stamp_actor_values(world, placement_root, &resolved, index);
@@ -2375,6 +2472,7 @@ mod tests {
             Quat::IDENTITY,
             1.0,
             &index,
+            false,
         );
         assert_eq!(state.skeleton_path.as_deref(), Some(r"meshes\female.nif"));
     }
@@ -2626,6 +2724,7 @@ mod tests {
                 Quat::IDENTITY,
                 1.0,
                 &index,
+                false,
             );
             // The skeleton phase's product; the GPU units in between add
             // meshes, not the marker.
@@ -2661,6 +2760,7 @@ mod tests {
             facegen_hidden_mask: 0,
             equipped_armor_count: 0,
             combat_anim_draugr: false,
+            player_body: false,
             phase: PrebakedPhase::Facegen,
         };
 
@@ -2720,6 +2820,150 @@ mod tests {
             layer_q.get(stale_sibling).is_none(),
             "parent_part must scope tagging to the newly attached subtree, \
              not re-walk placement_root's whole tree (#2276)"
+        );
+    }
+
+    /// P3 player body — the placement root assembled for the player's body
+    /// carries transform + name only. Every identity stamp has its
+    /// player-entity counterpart already (`inventory::attach_to_player`
+    /// resolves the same `NPC_ 0x7`), and a second actor carrying
+    /// `ActorValues`/`FactionRanks` beside the player would be a phantom
+    /// target for AI and combat scans. The control arm pins that the
+    /// ordinary NPC path still stamps the same record.
+    #[test]
+    fn player_body_placement_root_carries_no_identity_stamps() {
+        let npc = NpcRecord {
+            form_id: 0x7,
+            editor_id: "Player".into(),
+            ..NpcRecord::default()
+        };
+        let mut index = EsmIndex::default();
+        index.npcs.insert(0x7, npc.clone());
+
+        let mut world = World::new();
+        world.insert_resource(StringPool::default());
+        let player_root = prepare_prebaked_state(
+            &mut world,
+            &npc,
+            GameKind::Skyrim,
+            "skyrim.esm",
+            Vec3::ZERO,
+            Quat::IDENTITY,
+            1.0,
+            &index,
+            true,
+        )
+        .placement_root;
+        assert!(
+            world.get::<byroredux_core::ecs::components::actor_values::ActorValues>(player_root)
+                .is_none(),
+            "the player body root must not become a second actor with ActorValues"
+        );
+        assert!(world.get::<FactionRanks>(player_root).is_none());
+        assert!(
+            world.get::<Inventory>(player_root).is_none(),
+            "the player entity owns the real inventory; a second resolution's \
+             rows on the body root would orphan its equip indices"
+        );
+
+        let mut world = World::new();
+        world.insert_resource(StringPool::default());
+        let npc_root = prepare_prebaked_state(
+            &mut world,
+            &npc,
+            GameKind::Skyrim,
+            "skyrim.esm",
+            Vec3::ZERO,
+            Quat::IDENTITY,
+            1.0,
+            &index,
+            false,
+        )
+        .placement_root;
+        assert!(
+            world.get::<Inventory>(npc_root).is_some(),
+            "control: the prebaked prepare inserts the NPC's own inventory \
+             (ActorValues are conditional on authored stats, absent in this \
+             empty index)"
+        );
+    }
+
+    /// P3 player body — the finalize unit keeps the player entity's own
+    /// state out of the body root (no inventory/equipment copies, no AI
+    /// package, no loot-appearance state) while still landing the
+    /// `AnimationTarget` the future third-person animation pass will
+    /// consume. The control arm pins the ordinary NPC finalize contract on
+    /// the same state.
+    #[test]
+    fn player_body_finalize_keeps_player_state_out_of_the_body_root() {
+        let npc = NpcRecord {
+            form_id: 0x7,
+            ..NpcRecord::default()
+        };
+        let index = EsmIndex::default();
+
+        let mut world = World::new();
+        let placement_root = world.spawn();
+        let mut state = PrebakedNpcState {
+            skeleton_path: None,
+            appearance: NpcLootAppearance::default(),
+            placement_root,
+            skel_root: Some(world.spawn()),
+            skel_map: HashMap::new(),
+            facegen_path: None,
+            tint_path: None,
+            armor: Vec::new(),
+            facegen_hidden_mask: 0,
+            equipped_armor_count: 0,
+            combat_anim_draugr: false,
+            player_body: true,
+            phase: PrebakedPhase::Finalize,
+        };
+        // The armor phases push worn roots into `original_roots` during a
+        // real spawn; give the appearance one so the player arm's skip is
+        // attributable to the player flag rather than install()'s own
+        // empty-appearance early-return (which the control arm exercises).
+        state.appearance.original_roots.push(world.spawn());
+        assert!(matches!(
+            finalize_prebaked(&mut state, &mut world, &npc, &index),
+            UnitOutcome::Complete(Some(root)) if root == placement_root
+        ));
+        assert!(
+            world.get::<Inventory>(placement_root).is_none(),
+            "the prebaked finalize never inserts inventory (that is prepare's \
+             job) — the player-body gate is the loot/AI/walk skips below"
+        );
+        assert!(
+            world
+                .get::<super::loot_appearance::NpcLootAppearance>(placement_root)
+                .is_none(),
+            "the player is not a loot source; no appearance-restoration state"
+        );
+        assert!(
+            world
+                .get::<crate::components::AnimationTarget>(placement_root)
+                .is_some(),
+            "the skeleton target is the future third-person animation hook"
+        );
+
+        // Control: the same finalize still fully finalizes an ordinary NPC.
+        let mut world = World::new();
+        let placement_root = world.spawn();
+        let mut state = PrebakedNpcState {
+            player_body: false,
+            placement_root,
+            skel_root: Some(world.spawn()),
+            ..state
+        };
+        assert!(matches!(
+            finalize_prebaked(&mut state, &mut world, &npc, &index),
+            UnitOutcome::Complete(Some(root)) if root == placement_root
+        ));
+        assert!(
+            world
+                .get::<super::loot_appearance::NpcLootAppearance>(placement_root)
+                .is_some(),
+            "control: the ordinary NPC finalize installs loot-appearance state"
         );
     }
 }

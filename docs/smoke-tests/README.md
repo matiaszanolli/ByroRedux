@@ -46,6 +46,7 @@ docs/smoke-tests/p5-save-restart.sh fo3          # Fallout 3: Moriarty's Saloon
 docs/smoke-tests/p2-melee-core.sh fo3            # Fallout 3: Moriarty's Saloon corpse save/restart
 docs/smoke-tests/p0-door-interaction.sh fo4      # Fallout 4: Med-Tek Research exit
 docs/smoke-tests/p2-melee-core.sh fo4            # Fallout 4: Med-Tek feral-ghoul corpse save/restart
+docs/smoke-tests/p3-player-body.sh               # Skyrim SE: player body attach + view toggle
 ```
 
 Every game-specific value — data dir, archives, cell, camera pose, destination

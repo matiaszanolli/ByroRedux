@@ -182,6 +182,19 @@ fn delta_columns_removed_at_runtime_have_a_load_reconciler() {
                 "NPC-only carrier; destroyed and rebuilt by the cell reload",
             ),
         ),
+        // player_body.rs' `attach_assembled_root` strips bhk-derived
+        // CollisionShape/RigidBodyData from the assembled player body at
+        // Character-mode boot spawn (the visual-only body must not register
+        // bone bodies beside the capsule). Every carrier is a player-body
+        // subtree entity: no FormIdComponent, spawned after the save
+        // registry exists but before the first frame, and never captured by
+        // any save — the additive overlay cannot meet a removed row.
+        (
+            "RigidBodyData",
+            RemovalDisposition::NoReconcilerNeeded(
+                "boot-time player-body attach on never-saved visual-only subtree entities",
+            ),
+        ),
     ];
 
     let save_io = include_str!("../save_io.rs");

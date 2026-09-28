@@ -42,6 +42,7 @@ mod name_lookup;
 mod npc_spawn;
 mod ownership_sample;
 mod parsed_nif_cache;
+mod player_body;
 mod ragdoll;
 mod render;
 mod save_io;

@@ -26,6 +26,17 @@ const LOCAL_VOLUME_EDGE_SOFTNESS: f32 = 0.45;
 const LOCAL_VOLUME_ALPHA_FALLBACK: f32 = 0.35;
 const SMOKE_FALLBACK_ALBEDO: [f32; 3] = [0.72, 0.67, 0.61];
 
+/// Global base-fog strength applied to every fitted/transmitted medium's
+/// extinction at the frame boundary (the one `fog_extinction_per_meter`
+/// producer in `app_frame.rs`). The legacy-ramp fit and the authored FO4/FO76
+/// height profiles both translate faithfully, but the translated result reads
+/// denser than the vanilla look the user expects — direction from the
+/// 2026-09-28 presentation pass: "go just a bit lower regarding base fog".
+/// 0.8 ≈ −0.32 stops: visibly thinner haze, same colour and falloff shape.
+/// Albedo, coverage and scale height are untouched, so fog hue and altitude
+/// behaviour are exactly the authored ones.
+pub(crate) const BASE_FOG_STRENGTH: f32 = 0.8;
+
 /// Canonical, game-independent fog parameters stored on cell/weather runtime
 /// resources. No legacy near/far distances participate in volumetric shading.
 #[derive(Debug, Clone, Copy, PartialEq)]

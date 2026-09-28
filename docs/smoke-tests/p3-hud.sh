@@ -133,20 +133,27 @@ grep -Fq "modav" "$LOG_DIR/modav.txt" || fail "modav probe did not answer"
 # The screenshot round-trip (request → present → PNG encode → response) can
 # miss byro-dbg's per-command response window while the engine is settling
 # streaming/texture work, so retry until the file lands — the same loop
-# shape p1's wait_for_debug_pattern uses.
+# shape p1's wait_for_debug_pattern uses. The debug screenshot command
+# rejects paths outside the engine's `screenshots/` dir ("screenshot path
+# must be a filename inside screenshots/"), so capture by bare filename in
+# the engine's cwd (SMOKE_DATA) and move the file into the retained log dir.
 sleep 3
 capture_screenshot() {
-    local path="$1" attempt
+    local name="$1" attempt
+    local shot_dir="$SMOKE_DATA/screenshots"
+    mkdir -p "$shot_dir"
+    rm -f "$shot_dir/$name"
     for attempt in 1 2 3 4 5; do
-        debug_command "screenshot $path" >/dev/null 2>&1 || true
+        debug_command "screenshot $name" >/dev/null 2>&1 || true
         sleep 2
-        if [[ -s "$path" ]]; then
+        if [[ -s "$shot_dir/$name" ]]; then
+            mv "$shot_dir/$name" "$LOG_DIR/$name"
             return 0
         fi
     done
     return 1
 }
-capture_screenshot "$LOG_DIR/hud-vitals.png" \
+capture_screenshot "hud-vitals.png" \
     || fail "vitals capture was not written"
 
 # Advance MS01 through the canonical fragment path; its stage-15 fragment
@@ -160,7 +167,7 @@ grep -Fq "$P3_QUEST_OBJECTIVE_LINE" <<<"$quest" \
     || fail "stage $P3_QUEST_STAGE fragment did not display objective 10"
 
 # Capture 2 — bars + the new objective line.
-capture_screenshot "$LOG_DIR/hud-full.png" \
+capture_screenshot "hud-full.png" \
     || fail "full HUD capture was not written"
 
 # Pixel verification — the exact colors panels.rs paints. python3 + PIL are

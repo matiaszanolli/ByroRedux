@@ -607,6 +607,11 @@ pub(crate) fn character_controller_system(world: &World, dt: f32) {
     byroredux_physics::set_kinematic_translation(world, player_entity, new_pos);
 }
 
+/// P3 player body — third-person camera boom length behind the head, in BU.
+/// A human eye height is ~128 BU, so 180 BU keeps the full body in frame at
+/// default FOV without orbiting inside nearby geometry at arm's length.
+const THIRD_PERSON_BOOM_BU: f32 = 180.0;
+
 /// Pin the active camera to the player body's eye-height position
 /// each frame.
 ///
@@ -688,8 +693,23 @@ pub(crate) fn camera_follow_system(world: &World, dt: f32) {
         target_cam_y
     };
 
-    let cam_pos = Vec3::new(body_pos.x, smooth_cam_y, body_pos.z);
+    let head_pos = Vec3::new(body_pos.x, smooth_cam_y, body_pos.z);
     let cam_rot = super::camera_look_rotation(yaw, pitch);
+
+    // P3 player body — third person pulls the camera back along the look
+    // direction (`forward = rotation * -Z`, the `camera_look_rotation`
+    // convention). No boom collision yet: the camera can clip walls at
+    // steep pitch; tracked in the slice doc's follow-ups.
+    let cam_pos = match world
+        .try_resource::<crate::player_body::PlayerCameraView>()
+        .map(|view| *view)
+        .unwrap_or_default()
+    {
+        crate::player_body::PlayerCameraView::FirstPerson => head_pos,
+        crate::player_body::PlayerCameraView::ThirdPerson => {
+            head_pos - (cam_rot * -Vec3::Z) * THIRD_PERSON_BOOM_BU
+        }
+    };
 
     // Write both Transform and GlobalTransform. The camera is a root
     // entity (no Parent), so for it the two are identical — and

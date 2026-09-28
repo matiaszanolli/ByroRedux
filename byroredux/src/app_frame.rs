@@ -570,7 +570,13 @@ impl App {
                 fog_color: frame.fog_color,
                 fog_near: frame.fog_near,
                 fog_far: frame.fog_far,
-                fog_extinction_per_meter: frame.fog_medium.extinction_per_meter,
+                // Base-fog strength (`crate::fog::BASE_FOG_STRENGTH`) — the
+                // single place the world's fitted medium becomes the
+                // renderer's fog inputs, so every producer (XCLL ramp fit,
+                // weather blend, FO4/FO76 authored height profiles, cell
+                // transitions) scales identically.
+                fog_extinction_per_meter: frame.fog_medium.extinction_per_meter
+                    * crate::fog::BASE_FOG_STRENGTH,
                 fog_single_scatter_albedo: frame.fog_medium.single_scatter_albedo,
                 fog_coverage: frame.fog_medium.coverage,
                 // #3956 — already carries the engine default when the weather

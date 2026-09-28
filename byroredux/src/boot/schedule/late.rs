@@ -53,10 +53,32 @@ pub(super) fn register_late_systems(scheduler: &mut Scheduler) {
             .reads_resource::<crate::systems::PlayerEntity>()
             .reads_resource::<ActiveCamera>()
             .reads_resource::<InputState>()
+            // P3 player body — third-person boom consult.
+            .reads_resource::<crate::player_body::PlayerCameraView>()
             .reads::<byroredux_physics::CharacterController>()
             .reads::<byroredux_core::ecs::GlobalTransform>()
             .writes::<byroredux_core::ecs::GlobalTransform>()
             .reads::<Transform>()
+            .writes::<Transform>(),
+    );
+    // P3 player body — third-person facing. Writes the body root's
+    // Transform rotation from the same look accumulator the camera system
+    // above reads. Registered **exclusive**: it declares a Transform write
+    // (the body root), which the parallel batch's conflict analyzer would
+    // serialize against `camera_follow_system`'s Transform writes anyway —
+    // the entities are disjoint, but exclusives keep the
+    // `known_conflict_count() == 0` invariant intact and sequence after the
+    // batch deterministically. The write is composed under the capsule by
+    // PostUpdate propagation the next frame — the same one-frame staleness
+    // every Late pose consumer here already accepts.
+    scheduler.add_exclusive_with_access(
+        Stage::Late,
+        crate::player_body::player_body_facing_system,
+        Access::new()
+            .reads_resource::<crate::systems::PlayerMode>()
+            .reads_resource::<crate::player_body::PlayerBodyRootEntity>()
+            .reads_resource::<InputState>()
+            .reads::<crate::player_body::PlayerBodyRoot>()
             .writes::<Transform>(),
     );
     // #3652 (CONC-D4-2026-08-30-01) — moved here from `Stage::PostUpdate`.

@@ -529,6 +529,14 @@ impl ApplicationHandler for App {
                                 //   place until the user toggles back.
                                 drop(input);
                                 toggle_player_mode(&mut self.world);
+                            } else if code == KeyCode::KeyV && !event.repeat {
+                                // P3 player body — first/third-person view
+                                // toggle (Bethesda's POV switch). Character
+                                // mode only: FlyCam has no body to show. The
+                                // `player.view` console command calls the same
+                                // toggle for smoke gates and byro-dbg sessions.
+                                drop(input);
+                                crate::player_body::toggle_third_person(&mut self.world);
                             } else {
                                 input.keys_held.insert(code);
                             }

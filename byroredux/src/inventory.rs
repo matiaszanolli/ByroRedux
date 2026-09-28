@@ -43,7 +43,7 @@ pub(crate) enum EquipTarget {
 /// reference (`0x00000014`). Every currently supported master preserves the
 /// lineage-wide `Player` base at FormID 7; keeping the exhaustive game table
 /// here makes a future variant divergence an explicit compiler-visible edit.
-fn player_npc_form_id(game: GameKind) -> u32 {
+pub(crate) fn player_npc_form_id(game: GameKind) -> u32 {
     match game {
         GameKind::Oblivion
         | GameKind::Fallout3NV

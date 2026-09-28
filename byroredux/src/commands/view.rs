@@ -742,6 +742,63 @@ impl ConsoleCommand for PlayerStatusCommand {
     }
 }
 
+/// `player.view [first|third]` — switch the player camera view, or report it
+/// with no argument. Same toggle the V key drives (`toggle_third_person`);
+/// the command form exists so smoke gates and byro-dbg sessions can drive
+/// the third-person view without raw-key injection.
+pub(crate) struct PlayerViewCommand;
+impl ConsoleCommand for PlayerViewCommand {
+    fn name(&self) -> &str {
+        "player.view"
+    }
+
+    fn description(&self) -> &str {
+        "Show or switch the player camera view (first|third)"
+    }
+
+    fn execute(&self, world: &World, args: &str) -> CommandOutput {
+        let arg = args.trim().to_ascii_lowercase();
+        if arg.is_empty() {
+            let view = world
+                .try_resource::<crate::player_body::PlayerCameraView>()
+                .map(|view| format!("{:?}", *view))
+                .unwrap_or_else(|| "unset".to_string());
+            return CommandOutput::line(format!("player.view: {view}"));
+        }
+        let view = match arg.as_str() {
+            "first" | "firstperson" | "1" => crate::player_body::PlayerCameraView::FirstPerson,
+            "third" | "thirdperson" | "3" => crate::player_body::PlayerCameraView::ThirdPerson,
+            other => {
+                return CommandOutput::error(format!(
+                    "player.view: unknown view '{other}' (expected first|third)"
+                ))
+            }
+        };
+        crate::player_body::set_player_view(world, view);
+        CommandOutput::line(format!("player.view: {view:?}"))
+    }
+}
+
+/// `player.body` — report the P3 player-body attach: root entity, mesh
+/// count, first-person-hidden count, camera view, skeleton, and the
+/// `NpcEquipmentPart` ownership stamps `equipment_appearance_system` matches
+/// equip events against. The P3 player-body smoke gate's main assertion
+/// surface.
+pub(crate) struct PlayerBodyCommand;
+impl ConsoleCommand for PlayerBodyCommand {
+    fn name(&self) -> &str {
+        "player.body"
+    }
+
+    fn description(&self) -> &str {
+        "Report the assembled player body (root, meshes, view, equipment parts)"
+    }
+
+    fn execute(&self, world: &World, _args: &str) -> CommandOutput {
+        CommandOutput::line(crate::player_body::status_line(world))
+    }
+}
+
 /// `prid <entity_id>` — pick a reference (Bethesda console heritage).
 ///
 /// Sets the world-scoped [`SelectedRef`] to the given entity so that
