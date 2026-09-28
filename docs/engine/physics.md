@@ -120,6 +120,13 @@ the `PhysicsWorld` + `RapierHandles` write locks are taken). For each:
   rest through the parent-body relationship) so the entity is skipped on
   subsequent frames.
 
+The shape flattening runs first, for the whole batch, across the rayon
+pool: it is nearly all of registration's cost (building each TriMesh's BVH
+and edge topology — 851 of 859 ms for the 15 941 bodies of FO4 Commonwealth
+0,0 radius 1) and reads nothing but its own newcomer. Bodies and colliders
+are then inserted serially, in newcomer order, under the `PhysicsWorld`
+lock.
+
 There is no longer a separate "synthesize a capsule for an unshaped
 `PlayerBody` marker" branch. As of M28.5 the player character is spawned
 explicitly (capsule `CollisionShape` + `CharacterKinematic`

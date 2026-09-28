@@ -37,6 +37,7 @@ use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::world::World;
 use byroredux_core::form_id::{FormId, FormIdPool};
 use rapier3d::prelude::{ColliderBuilder, RigidBodyBuilder, RigidBodyType};
+use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
@@ -1011,24 +1012,39 @@ fn register_newcomers(world: &World, newcomers: Vec<Newcomer>) {
         .map(|r| *r)
         .unwrap_or_default();
 
+    // Convert each engine shape into a flat list of Rapier parts.
+    // Compounds are fully flattened and TriMeshes surface as their
+    // own parts — attaching one collider per part is Rapier's
+    // idiomatic path for mixed-composite compositions (#373, which
+    // eliminated the 9,555/30s parry3d panic storm the previous
+    // single-compound path produced on exterior cells).
+    // #2860 — `GlobalTransform::scale` must be baked into the shape here.
+    // Rapier's body isometry below carries translation + rotation only, so
+    // this is the last point at which the placement's uniform scale can
+    // reach the collider at all; dropping it gave every scaled REFR a
+    // collider of the authored size (a 2× rock's collider half the visible
+    // stone) while `compose_trs` still spread its parts apart.
+    //
+    // Conversion is nearly all of registration's cost — building each
+    // TriMesh's BVH and edge topology took 851 of 859 ms registering the
+    // 15 941 bodies of FO4 Commonwealth 0,0 r1, and 21–24 ms of each
+    // streaming frame that brought in 150–260 more — and it reads only its
+    // own newcomer, so it runs across the rayon pool. Insertion below stays
+    // serial and in newcomer order, handing Rapier the same sequence of
+    // bodies and colliders as a serial loop would.
+    let converted: Vec<_> = newcomers
+        .into_par_iter()
+        .map(|n| {
+            let parts = collision_shape_to_parts(&n.shape, n.global.scale, &cfg);
+            (n, parts)
+        })
+        .collect();
+
     let mut pw = world.resource_mut::<PhysicsWorld>();
 
-    let mut registered: Vec<(EntityId, RapierHandles)> = Vec::with_capacity(newcomers.len());
+    let mut registered: Vec<(EntityId, RapierHandles)> = Vec::with_capacity(converted.len());
 
-    for n in newcomers {
-        // Convert the engine shape into a flat list of Rapier parts.
-        // Compounds are fully flattened and TriMeshes surface as their
-        // own parts — attaching one collider per part is Rapier's
-        // idiomatic path for mixed-composite compositions (#373, which
-        // eliminated the 9,555/30s parry3d panic storm the previous
-        // single-compound path produced on exterior cells).
-        // #2860 — `GlobalTransform::scale` must be baked into the shape here.
-        // Rapier's body isometry below carries translation + rotation only, so
-        // this is the last point at which the placement's uniform scale can
-        // reach the collider at all; dropping it gave every scaled REFR a
-        // collider of the authored size (a 2× rock's collider half the visible
-        // stone) while `compose_trs` still spread its parts apart.
-        let parts = collision_shape_to_parts(&n.shape, n.global.scale, &cfg);
+    for (n, parts) in converted {
         // #3067 (PHYS-D3-2026-08-16-04) — `collision_shape_to_parts` always
         // yields at least one part: every `CollisionShape` variant pushes
         // unconditionally, and its own `out.is_empty()` fallback (a tiny

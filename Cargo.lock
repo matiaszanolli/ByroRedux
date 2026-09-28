@@ -952,6 +952,7 @@ dependencies = [
  "log",
  "nalgebra",
  "rapier3d",
+ "rayon",
  "serde",
 ]
 
