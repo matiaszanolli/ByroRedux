@@ -352,6 +352,40 @@ pub(crate) struct CachedNifImport {
 }
 
 impl CachedNifImport {
+    /// Texture paths a placement of this model resolves when no REFR overlay
+    /// applies: every mesh's merged material slot, plus the normal map the
+    /// spawn pre-pass derives when a mesh authors none
+    /// (`resolve_mesh_paths_with_pre_merge`). Raw paths, in mesh order,
+    /// possibly repeated — the prefetch canonicalises and deduplicates.
+    ///
+    /// Overlay-driven paths (XATO / XTXR / MSWP) are deliberately absent:
+    /// those resolves fall back to the inline read.
+    pub(crate) fn texture_prefetch_paths(
+        &self,
+        pool: &byroredux_core::string::StringPool,
+        tex_provider: &crate::asset_provider::TextureProvider,
+    ) -> Vec<String> {
+        let mut paths = Vec::new();
+        for mesh in &self.meshes {
+            let textures = &mesh.material.textures;
+            paths.extend(
+                textures
+                    .roles()
+                    .filter_map(|(_, sym)| sym.and_then(|s| pool.resolve(s)))
+                    .map(str::to_owned),
+            );
+            if textures.normal.is_none() {
+                if let Some(base) = textures.base_color.and_then(|s| pool.resolve(s)) {
+                    paths.extend(crate::asset_provider::derive_present_normal_map_path(
+                        tex_provider,
+                        base,
+                    ));
+                }
+            }
+        }
+        paths
+    }
+
     pub(super) fn beam_volumes(
         &self,
         model_path: Option<&str>,

@@ -64,6 +64,32 @@ impl TextureRegistry {
             .copied()
     }
 
+    /// Whether any cached view of `path` exists — every clamp mode, 2D or
+    /// cube, either colour space. Read-only (no refcount bump).
+    ///
+    /// A caller deciding whether to fetch a DDS ahead of its resolve uses
+    /// this: once any view of the path is resident, the bytes were already
+    /// read once and a prefetch would most likely be wasted work.
+    pub fn has_any_view_of_path(&self, path: &str) -> bool {
+        (0..=3u8).any(|clamp_mode| {
+            [TextureViewKind::D2, TextureViewKind::Cube]
+                .into_iter()
+                .any(|view_kind| {
+                    [TextureColorSpace::Srgb, TextureColorSpace::Linear]
+                        .into_iter()
+                        .any(|color_space| {
+                            self.path_map
+                                .contains_key(&texture_keyed_path_with_color_space(
+                                    path,
+                                    clamp_mode,
+                                    view_kind,
+                                    color_space,
+                                ))
+                        })
+                })
+        })
+    }
+
     /// Acquire a texture handle by path, bumping the refcount on hit.
     ///
     /// Mirror of [`get_by_path`](Self::get_by_path) but with the

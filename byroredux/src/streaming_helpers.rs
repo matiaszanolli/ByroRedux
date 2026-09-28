@@ -691,7 +691,52 @@ pub(crate) fn cancel_active_streaming_apply(
     if let Some(job) = state.active_apply.take() {
         state.pending.remove(&job.coord);
         cancel_streaming_apply_job(world, ctx, job);
+        end_apply_texture_prefetch(state);
     }
+}
+
+/// Queue background reads for the textures of the model just finished into
+/// the import cache under `cache_key`. Its external materials are merged,
+/// so the slot paths are the ones this cell's spawn slices will resolve;
+/// reading them now on the stream pool takes that archive read + inflate
+/// off the main thread (41% of apply time on FO4 before this).
+fn prefetch_import_textures(
+    world: &byroredux_core::ecs::World,
+    ctx: &byroredux_renderer::VulkanContext,
+    state: &mut streaming::WorldStreamingState,
+    cache_key: &str,
+) {
+    let entry = {
+        let reg = world.resource::<cell_loader::NifImportRegistry>();
+        match reg.get(cache_key) {
+            Some(Some(entry)) => std::sync::Arc::clone(entry),
+            _ => return,
+        }
+    };
+    let paths = {
+        let pool = world.resource::<byroredux_core::string::StringPool>();
+        entry.texture_prefetch_paths(&pool, &state.tex_provider)
+    };
+    let mut seen = HashSet::new();
+    let keys = paths
+        .iter()
+        .map(|path| crate::asset_provider::canonical_texture_key(path))
+        .filter(|key| seen.insert(key.clone()) && !state.tex_provider.texture_resident(ctx, key));
+    let queued =
+        crate::asset_provider::prefetch_textures(&state.tex_provider, &state.stream_pool, keys);
+    state
+        .telemetry
+        .record_texture_prefetch(queued, state.tex_provider.prefetch_stats());
+}
+
+/// The apply that queued the staged texture reads is over (complete,
+/// cancelled, or dropped): snapshot the store's stats and discard whatever
+/// no resolve took, so staged bytes never outlive their cell.
+fn end_apply_texture_prefetch(state: &mut streaming::WorldStreamingState) {
+    state
+        .telemetry
+        .record_texture_prefetch(0, state.tex_provider.prefetch_stats());
+    state.tex_provider.clear_prefetch();
 }
 
 /// Advance steady-state main-thread cell application under one shared
@@ -766,13 +811,16 @@ pub(crate) fn advance_streaming_apply(
                 job.generation,
             );
             cancel_streaming_apply_job(world, ctx, job);
+            end_apply_texture_prefetch(state);
             continue;
         }
 
         match job.phase {
             streaming::StreamingCellApplyPhase::FinishImports(mut imports) => {
                 if let Some((model_path, partial)) = imports.next() {
+                    let cache_key = canonical_model_path_key(&model_path);
                     finish_streaming_import(world, state, model_path, partial);
+                    prefetch_import_textures(world, ctx, state, &cache_key);
                     budget.complete_unit();
                     job.phase = streaming::StreamingCellApplyPhase::FinishImports(imports);
                     state.active_apply = Some(job);
@@ -800,9 +848,11 @@ pub(crate) fn advance_streaming_apply(
                     }
                     Ok(None) => {
                         state.pending.remove(&job.coord);
+                        end_apply_texture_prefetch(state);
                     }
                     Err(e) => {
                         state.pending.remove(&job.coord);
+                        end_apply_texture_prefetch(state);
                         log::warn!(
                             "Streaming cell ({},{}) setup failed after pre-parse: {:#}",
                             job.coord.0,
@@ -828,6 +878,7 @@ pub(crate) fn advance_streaming_apply(
                     }
                     cell_loader::ExteriorCellApplyProgress::Complete(info) => {
                         state.pending.remove(&job.coord);
+                        end_apply_texture_prefetch(state);
                         state.loaded.insert(
                             job.coord,
                             streaming::LoadedCell {

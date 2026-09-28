@@ -18,6 +18,9 @@ pub(crate) struct TextureProvider {
     /// registry hasn't loaded yet. Cumulative; streaming telemetry diffs it
     /// around each apply slice to attribute that slice's extract cost.
     resolve_extract: ResolveExtractCounters,
+    /// Background-read results the resolve miss path takes before reading
+    /// the archive itself — see `texture_prefetch`.
+    pub(super) prefetch: super::texture_prefetch::PrefetchStore,
 }
 
 /// Cumulative texture-resolve extraction cost. Atomics because the provider
@@ -27,6 +30,7 @@ pub(crate) struct TextureProvider {
 struct ResolveExtractCounters {
     nanos: std::sync::atomic::AtomicU64,
     count: std::sync::atomic::AtomicU64,
+    prefetched: std::sync::atomic::AtomicU64,
 }
 
 /// Snapshot of [`TextureProvider::resolve_extract_totals`].
@@ -34,6 +38,8 @@ struct ResolveExtractCounters {
 pub(crate) struct ResolveExtractTotals {
     pub elapsed: std::time::Duration,
     pub count: u64,
+    /// Of `count`, how many a background prefetch had already read.
+    pub prefetched: u64,
 }
 
 impl ResolveExtractTotals {
@@ -42,6 +48,7 @@ impl ResolveExtractTotals {
         Self {
             elapsed: self.elapsed.saturating_sub(earlier.elapsed),
             count: self.count.saturating_sub(earlier.count),
+            prefetched: self.prefetched.saturating_sub(earlier.prefetched),
         }
     }
 }
@@ -53,6 +60,7 @@ impl TextureProvider {
             mesh_archives: Vec::new(),
             registry_namespace: None,
             resolve_extract: ResolveExtractCounters::default(),
+            prefetch: Default::default(),
         }
     }
 
@@ -62,19 +70,45 @@ impl TextureProvider {
         ResolveExtractTotals {
             elapsed: std::time::Duration::from_nanos(self.resolve_extract.nanos.load(Relaxed)),
             count: self.resolve_extract.count.load(Relaxed),
+            prefetched: self.resolve_extract.prefetched.load(Relaxed),
         }
     }
 
     /// Extract a texture on the resolve miss path, charging the read +
-    /// inflate time to [`Self::resolve_extract_totals`].
+    /// inflate time (or the wait for a prefetch already reading it) to
+    /// [`Self::resolve_extract_totals`].
     fn extract_for_resolve(&self, path: &str) -> Option<Vec<u8>> {
+        use super::texture_prefetch::Staged;
         use std::sync::atomic::Ordering::Relaxed;
         let started = std::time::Instant::now();
-        let bytes = self.extract(path);
+        let (bytes, prefetched) = match self.prefetch.take(path) {
+            Staged::Bytes(bytes) => (Some(bytes), true),
+            Staged::Missing => (None, true),
+            Staged::NotStaged => (self.extract(path), false),
+        };
         let nanos = started.elapsed().as_nanos().min(u64::MAX as u128) as u64;
         self.resolve_extract.nanos.fetch_add(nanos, Relaxed);
         self.resolve_extract.count.fetch_add(1, Relaxed);
+        if prefetched {
+            self.resolve_extract.prefetched.fetch_add(1, Relaxed);
+        }
         bytes
+    }
+
+    pub(crate) fn prefetch_stats(&self) -> super::PrefetchStats {
+        self.prefetch.stats()
+    }
+
+    /// Drop staged prefetch results — see `texture_prefetch`.
+    pub(crate) fn clear_prefetch(&self) {
+        self.prefetch.clear();
+    }
+
+    /// Whether the registry already holds any view of `path` — the resolve
+    /// would hit its cache, so prefetching the bytes would be wasted.
+    pub(crate) fn texture_resident(&self, ctx: &VulkanContext, canonical: &str) -> bool {
+        ctx.texture_registry
+            .has_any_view_of_path(&self.registry_key(canonical))
     }
 
     /// Scope this provider's texture-registry entries to `namespace`.

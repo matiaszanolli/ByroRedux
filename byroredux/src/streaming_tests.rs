@@ -255,6 +255,7 @@ fn streaming_telemetry_records_independent_ready_deadlines() {
         ResolveExtractTotals {
             elapsed: Duration::from_millis(2),
             count: 5,
+            prefetched: 3,
         },
     );
     // Idle slices are not samples, and neither is their texture extraction.
@@ -264,6 +265,7 @@ fn streaming_telemetry_records_independent_ready_deadlines() {
         ResolveExtractTotals {
             elapsed: Duration::from_millis(40),
             count: 9,
+            prefetched: 9,
         },
     );
     telemetry.record_lod_slice(Duration::from_millis(4), 2);
@@ -288,6 +290,7 @@ fn streaming_telemetry_records_independent_ready_deadlines() {
         Duration::from_millis(2)
     );
     assert_eq!(telemetry.apply_texture_extracts, 5);
+    assert_eq!(telemetry.apply_texture_prefetched, 3);
     assert_eq!(telemetry.lod_slices.samples, 1);
     assert_eq!(telemetry.worker_parse.samples, 1);
     assert_eq!(telemetry.worker_batch_duplicate_skips, 4);
@@ -307,7 +310,7 @@ fn streaming_telemetry_records_independent_ready_deadlines() {
         .contains("worker_batch_duplicate_skips=4"));
     assert!(telemetry.bench_line().contains(
         "apply_total_ms=3.00 apply_tex_extracts=5 apply_tex_extract_total_ms=2.00 \
-         apply_tex_extract_max_ms=2.00"
+         apply_tex_extract_max_ms=2.00 apply_tex_prefetched=3"
     ));
 }
 

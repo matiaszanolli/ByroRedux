@@ -483,6 +483,42 @@ time, permit wait time, peak task input bytes/tasks and the largest input.
 Task elapsed times overlap and may include external-mesh archive waits; their
 sum is not a wall-time phase breakdown. Permit wait includes mutex acquisition.
 These changes target exterior cell readiness and streaming stalls; they do not
-establish an improvement to MedTek's stationary GPU rendering time. Fresh
-texture and FO4 precombine preparation and GPU upload waits remain separate
-work.
+establish an improvement to MedTek's stationary GPU rendering time. FO4
+precombine preparation and GPU upload waits remain separate work.
+
+## Texture prefetch
+
+A texture the registry has not loaded is read and inflated on the main thread
+when a spawn resolves it. On FO4 Commonwealth `(0,0)` radius 1 grid-cross that
+was **41% of streaming apply time** (≈1.47 s of ≈3.56 s, 591 DDS, two runs).
+
+After each `FinishImports` step merges a streamed NIF's external materials,
+the apply driver collects that model's texture slot paths
+(`CachedNifImport::texture_prefetch_paths`), drops any already resident in
+the registry (`TextureRegistry::has_any_view_of_path`), and queues the rest on
+the stream pool (`asset_provider::prefetch_textures`). The resolve miss path
+takes the staged bytes instead of reading the archive
+(`asset_provider/texture_prefetch.rs`):
+
+- The store caches `TextureProvider::extract` results under a key folded
+  like the archives fold theirs (lowercase, `\`), so it cannot change what a
+  resolve returns. A wrong prediction costs pool work; a missed one falls
+  back to the inline read.
+- A resolve never waits behind the pool's queue: a still-queued key is
+  withdrawn and read inline. Only a read already running is waited for.
+- Staged bytes are capped at 256 MiB. The store is cleared when the cell's
+  apply completes, is cancelled, or is dropped.
+- REFR-overlay paths (XATO / XTXR / MSWP) and FO4 precombines are not
+  predicted. Precombines are parsed, imported and spawned in one Spawn step,
+  so their textures have no lead time to prefetch into.
+
+Same capture, two runs each (`apply_tex_*` / `tex_prefetch_*` on the
+`streaming:` bench line):
+
+| | before | with prefetch |
+|---|---|---|
+| main-thread texture extract | 1 493 / 1 446 ms | 569 / 500 ms |
+| apply total | 3 606 / 3 518 ms | 2 492 / 2 497 ms |
+| full-detail ready per crossing | 10.4 / 10.7 s | 8.2 / 8.0 s |
+| resolves served by prefetch | 0 / 591 | 211 / 591 |
+| queued, never taken | — | 251 (peak staged 111 MiB) |

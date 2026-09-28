@@ -33,7 +33,9 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use crate::asset_provider::{MaterialProvider, ResolveExtractTotals, TextureProvider};
+use crate::asset_provider::{
+    MaterialProvider, PrefetchStats, ResolveExtractTotals, TextureProvider,
+};
 use crate::cell_loader::{canonical_model_path_key, ExteriorWorldContext, UnloadPhaseTimings};
 
 /// One loaded cell tracked by [`WorldStreamingState`]. The
@@ -189,6 +191,13 @@ pub struct StreamingTelemetry {
     pub apply_texture_extract: StreamingLatencySummary,
     /// Textures extracted inside counted apply slices.
     pub apply_texture_extracts: u64,
+    /// Of `apply_texture_extracts`, how many a background prefetch had
+    /// already read, so the slice paid at most a wait for a running read.
+    pub apply_texture_prefetched: u64,
+    /// Texture reads queued on the stream pool ahead of their resolve.
+    pub texture_prefetch_queued: u64,
+    /// Latest staging-store snapshot (peak staged bytes, cap drops).
+    pub texture_prefetch: PrefetchStats,
     pub lod_slices: StreamingLatencySummary,
     pub superseded_full_detail: u64,
     pub superseded_lod: u64,
@@ -241,7 +250,15 @@ impl StreamingTelemetry {
             self.apply_texture_extracts = self
                 .apply_texture_extracts
                 .saturating_add(texture_extract.count);
+            self.apply_texture_prefetched = self
+                .apply_texture_prefetched
+                .saturating_add(texture_extract.prefetched);
         }
+    }
+
+    pub(crate) fn record_texture_prefetch(&mut self, queued: usize, stats: PrefetchStats) {
+        self.texture_prefetch_queued = self.texture_prefetch_queued.saturating_add(queued as u64);
+        self.texture_prefetch = stats;
     }
 
     pub(crate) fn record_dispatch_slice(&mut self, elapsed: Duration) {
@@ -354,7 +371,9 @@ impl StreamingTelemetry {
              worker_batch_duplicate_skips={} \
              apply_samples={} apply_avg_ms={:.2} apply_max_ms={:.2} apply_total_ms={:.2} \
              apply_tex_extracts={} apply_tex_extract_total_ms={:.2} \
-             apply_tex_extract_max_ms={:.2} \
+             apply_tex_extract_max_ms={:.2} apply_tex_prefetched={} \
+             tex_prefetch_queued={} tex_prefetch_peak_mib={:.1} tex_prefetch_dropped={} \
+             tex_prefetch_withdrawn={} tex_prefetch_unused={} \
              lod_slice_avg_ms={:.2} lod_slice_max_ms={:.2} peak_pending={} \
              unsettled_full={} unsettled_lod={} {} {} {} {} {} {} {}",
             self.boundary_crossings,
@@ -391,6 +410,12 @@ impl StreamingTelemetry {
             self.apply_texture_extracts,
             self.apply_texture_extract.total.as_secs_f64() * 1000.0,
             self.apply_texture_extract.max_ms(),
+            self.apply_texture_prefetched,
+            self.texture_prefetch_queued,
+            self.texture_prefetch.peak_ready_bytes as f64 / (1024.0 * 1024.0),
+            self.texture_prefetch.dropped_over_cap,
+            self.texture_prefetch.withdrawn,
+            self.texture_prefetch.unused_at_clear,
             self.lod_slices.average_ms(),
             self.lod_slices.max_ms(),
             self.peak_pending,
@@ -640,6 +665,11 @@ pub struct WorldStreamingState {
     /// `BsaArchive` / `Ba2Archive` read through positional reads with no
     /// shared cursor, so concurrent extracts are safe and never block.
     pub tex_provider: Arc<TextureProvider>,
+    /// The dedicated stream pool (#3089): the worker's parallel NIF parse
+    /// and the main thread's texture prefetch
+    /// ([`crate::asset_provider::prefetch_textures`]) both run here, never
+    /// on the global pool the frame's parallel stages use.
+    pub(crate) stream_pool: Arc<rayon::ThreadPool>,
     /// Long-lived BGSM material provider. Stays main-thread only —
     /// `merge_external_material` needs `&mut MaterialProvider` (writes to
     /// `bgsm_cache` / `bgem_cache` / `failed_paths`), and serialising
@@ -839,13 +869,16 @@ impl WorldStreamingState {
         let wctx_climate_form = wctx.climate.as_ref().map(|c| c.form_id);
         let (request_tx, request_rx) = mpsc::channel::<LoadCellRequest>();
         let (payload_tx, payload_rx) = mpsc::channel::<LoadCellPayload>();
+        let stream_pool = Arc::new(build_stream_parse_pool());
+        let worker_pool = Arc::clone(&stream_pool);
         let worker = std::thread::Builder::new()
             .name("byro-cell-stream".into())
-            .spawn(move || cell_pre_parse_worker(request_rx, payload_tx))
+            .spawn(move || cell_pre_parse_worker(request_rx, payload_tx, worker_pool))
             .expect("failed to spawn cell-stream worker thread");
         Self {
             wctx: Arc::new(wctx),
             tex_provider: Arc::new(tex_provider),
+            stream_pool,
             mat_provider,
             loaded: HashMap::new(),
             persistent_root: None,
@@ -1166,17 +1199,18 @@ fn build_stream_parse_pool() -> rayon::ThreadPool {
 fn cell_pre_parse_worker(
     request_rx: mpsc::Receiver<LoadCellRequest>,
     payload_tx: mpsc::Sender<LoadCellPayload>,
+    stream_pool: Arc<rayon::ThreadPool>,
 ) {
     log::info!("cell-stream worker thread started");
-    // #3089 — CONC-2026-08-16-01. Built once for the life of this thread,
-    // not per request: `pre_parse_cell`'s fan-out runs inside
+    // #3089 — CONC-2026-08-16-01. Built once for the streaming state's
+    // life (and shared with the main thread's texture prefetch), not per
+    // request: `pre_parse_cell`'s fan-out runs inside
     // `stream_pool.in_place_scope_fifo(..)` instead of rayon's *global*
     // pool, which the ECS scheduler's `Stage::Update` parallel batch
     // (`scheduler.rs`) also dispatches into. Without a dedicated pool the
     // two competed for the same workers the moment a cell crossed
     // `PRE_PARSE_RAYON_MIN` fresh NIFs, defeating the whole point of
     // running cell parsing on its own thread in the first place.
-    let stream_pool = build_stream_parse_pool();
     // A dispatch queues several cells synchronously, so the receiver's
     // backlog is the natural batch boundary. Keep the memo only while that
     // backlog remains non-empty; once recv_next_batch_request observes an
