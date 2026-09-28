@@ -1862,15 +1862,15 @@ fn pre_parse_cell(
         );
     }
 
-    // Keep archive lookup precedence and serial extraction on the coordinator,
-    // but start parse/import as soon as each NIF is available. Unlike the former
-    // extract-all barrier, this overlaps archive read/inflate with parse and
-    // avoids retaining the entire cell's decoded input before work can start.
-    // Cells with fewer than eight fresh paths keep the serial fast path.
+    // The coordinator only admits inputs against the decoded-input budget;
+    // each pool task extracts (archive read + inflate) and parses its own
+    // input. BSA and BA2 both extract through positional reads with no
+    // per-archive lock (#3659), so reads and inflates run in parallel, and
+    // parse starts as soon as a NIF is available instead of behind an
+    // extract-all barrier that retained the whole cell's decoded input.
     // Archive lookup precedence is the provider's (`extract_mesh` /
-    // `mesh_declared_size` agree on it); each task extracts its own input,
-    // so reads and inflates run in parallel. Cells with fewer than eight
-    // fresh inputs keep the serial fast path.
+    // `mesh_declared_size` agree on it). Cells with fewer than eight fresh
+    // inputs keep the serial fast path.
     let precombine_count = precombine_paths.len();
     let inputs: Vec<PreParseInput> = precombine_paths
         .into_iter()
