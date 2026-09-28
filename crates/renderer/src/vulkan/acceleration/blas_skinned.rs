@@ -740,11 +740,6 @@ impl AccelerationManager {
         self.skinned_blas.contains_key(&entity_id)
     }
 
-    /// Drop a per-skinned-entity BLAS. Routes through `pending_destroy_blas`
-    /// with a [`DEFAULT_COUNTDOWN`]-frame countdown so the acceleration
-    /// structure is never destroyed while a command buffer still references
-    /// it. Mirrors `drop_blas`; `tick_deferred_destroy` and `destroy`
-    /// both drain the queue.
     /// #3991 / #917 — clear this frame's provisional-insert list after
     /// `queue_submit` returned `Ok`. The entries stay; they are simply no
     /// longer provisional.
@@ -777,6 +772,11 @@ impl AccelerationManager {
         count
     }
 
+    /// Drop a per-skinned-entity BLAS. Routes through `pending_destroy_blas`
+    /// with a [`DEFAULT_COUNTDOWN`]-frame countdown so the acceleration
+    /// structure is never destroyed while a command buffer still references
+    /// it. Mirrors `drop_blas`; `tick_deferred_destroy` and `destroy`
+    /// both drain the queue.
     pub fn drop_skinned_blas(&mut self, entity_id: EntityId) {
         if let Some(entry) = self.skinned_blas.remove(&entity_id) {
             // Skinned BLAS aren't tracked in `static_blas_bytes` (see

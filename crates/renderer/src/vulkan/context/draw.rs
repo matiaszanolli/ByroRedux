@@ -598,14 +598,26 @@ const DOF_MIN_FOCUS_DIST: f32 = 1.0e-3;
 /// Build the per-frame depth-of-field view-projection.
 ///
 /// Applies a Halton(5,7) concentric-disk sample to the camera position each
-/// frame and points the jittered eye at a fixed focal point. TAA accumulates
-/// the per-frame shifts into a spatially-varying bokeh blur: surfaces at
-/// `focus_dist` project to identical NDC every frame (zero apparent motion →
-/// full temporal weight → sharp); surfaces at other depths pick up a
-/// frame-to-frame parallax proportional to their defocus (non-zero motion →
-/// reduced TAA weight → blur). Bases 5 and 7 are coprime to the TAA bases
-/// (2 and 3) so the 32-frame DOF period interleaves cleanly with the 16-frame
-/// TAA period without correlated low-discrepancy gaps.
+/// frame and points the jittered eye at a fixed focal point: surfaces at
+/// `focus_dist` project to identical NDC every frame, surfaces at other depths
+/// pick up a frame-to-frame parallax proportional to their defocus. Bases 5
+/// and 7 are coprime to the TAA bases (2 and 3), so the 32-frame DOF period
+/// interleaves with the 16-frame TAA period without correlated gaps.
+///
+/// **This does not produce bokeh through TAA (#4967).** The lens offset lives
+/// inside the matrix, and the caller uploads it as both `view_proj` and next
+/// frame's `prev_view_proj`, so `triangle.vert`'s motion vector contains the
+/// lens parallax. (TAA's sub-pixel jitter, by contrast, is added to
+/// `gl_Position` after the motion clip positions are taken.) `taa.comp` fetches
+/// history at `uv - motion` — which re-aligns each world point — and blends at
+/// a flat α with no motion-dependent weight, so the parallax is undone rather
+/// than integrated and out-of-focus surfaces converge sharp. It also makes
+/// `camera_static` false every frame, which disables SVGF progressive
+/// accumulation and the ReSTIR parked cap. The path is dormant (nothing
+/// authors `aperture > 0`); the chosen direction for real DOF is a dedicated
+/// post-upscale pass (`docs/engine/fsr3-upscaler-integration-plan.md`, DOF
+/// decision). Reviving this path instead would need pinhole motion-vector
+/// matrices with the lens offset applied like the jitter.
 ///
 /// Returns `(view_proj, eye_pos)`. The matrix is camera-relative to
 /// `render_origin` (so the DOF path stays camera-relative like the pinhole
@@ -1951,7 +1963,7 @@ impl VulkanContext {
             self.morph_slots
                 .iter_mut()
                 .map(|(&entity, slot)| (entity, &mut slot.last_used_frame)),
-            self.frame_counter as u64,
+            crate::vulkan::skin_compute::skin_lru_stamp(self.frame_counter),
             is_live,
         );
     }

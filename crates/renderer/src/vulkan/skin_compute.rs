@@ -268,6 +268,24 @@ pub fn should_evict_skin_slot(last_used_frame: u64, current_frame: u64, min_idle
     idle >= min_idle
 }
 
+/// The LRU stamp for a slot used on frame `frame_counter`.
+///
+/// `0` is [`should_evict_skin_slot`]'s "never dispatched" sentinel, which is
+/// never evicted, so no real use may stamp it. `frame_counter` is 0 on the
+/// first frame of a session and again after every swapchain recreate, so that
+/// frame stamps 1 instead — aging the slot one frame later, which is harmless.
+/// The recreate's epoch rebase uses the same value: a stamp of 0 there made
+/// every slot whose entity died just before the recreate unreapable, since a
+/// dead entity is never re-stamped out of the sentinel (#4969).
+#[inline]
+pub const fn skin_lru_stamp(frame_counter: u32) -> u64 {
+    if frame_counter == 0 {
+        1
+    } else {
+        frame_counter as u64
+    }
+}
+
 /// #4294 — stamp the LRU of every slot whose entity is still live.
 ///
 /// A `SkinSlot` is lazily recreated on its next dispatch, so "was
@@ -1529,13 +1547,68 @@ mod tests {
             rebase > reset,
             "the SkinSlot stamp rebase must follow the frame_counter reset"
         );
+        // #4969 — NOT the `never dispatched` sentinel (0). That exempts the
+        // slot from eviction until a re-stamp, which never comes for an entity
+        // despawned just before the recreate: it leaked the slot, its skinned
+        // BLAS and (morph) its weight buffer until shutdown. Rebase to the
+        // new epoch's first stamp instead, so dead slots age out normally.
+        let rebase_arm = &src[rebase..];
+        let rebase_arm = &rebase_arm[..rebase_arm
+            .find("for slot in self.morph_slots.values_mut()")
+            .expect("the MorphSlot sibling rebase must follow (#3231)")];
         assert!(
-            src[rebase..].contains("last_used_frame = 0"),
-            "the rebase must reset each slot to the established \
-             `never dispatched` sentinel (0), so the slot simply skips \
-             eviction until its next dispatch re-stamps it into the new \
-             epoch (#643 / MEM-2-1 semantics reused by #2925)"
+            rebase_arm.contains("last_used_frame = epoch_stamp"),
+            "the SkinSlot rebase must stamp the new epoch's first stamp (#4969)"
         );
+        let morph = src.find("for slot in self.morph_slots.values_mut()").unwrap();
+        let epoch = src
+            .find(
+                "let epoch_stamp = crate::vulkan::skin_compute::skin_lru_stamp(self.frame_counter);",
+            )
+            .expect(
+                "the rebase stamp must come from `skin_lru_stamp` of the reset counter (#4969)",
+            );
+        assert!(reset < epoch && epoch < rebase);
+        assert!(src[morph..].contains("last_used_frame = epoch_stamp"));
+        assert!(
+            !src.contains("last_used_frame = 0"),
+            "no rebase may write the never-dispatched sentinel (#4969)"
+        );
+    }
+
+    /// #4969 — a slot rebased on a recreate and never re-stamped (its entity
+    /// is dead) must still age out; a live stamp is never the sentinel.
+    #[test]
+    fn rebased_slot_of_a_dead_entity_ages_out() {
+        let min_idle = MAX_FRAMES_IN_FLIGHT as u64 + 1;
+        let rebased = skin_lru_stamp(0);
+        assert_ne!(rebased, 0, "the rebase stamp must not be the sentinel");
+        assert!(!should_evict_skin_slot(rebased, 0, min_idle));
+        let evicted_at = (0u32..64)
+            .find(|&now| should_evict_skin_slot(rebased, now as u64, min_idle))
+            .expect("a never-re-stamped slot must become evictable");
+        assert!(evicted_at as u64 <= min_idle + 1);
+        for frame in [0u32, 1, 2, 1000, u32::MAX] {
+            assert_ne!(skin_lru_stamp(frame), 0);
+        }
+        assert_eq!(skin_lru_stamp(1000), 1000);
+    }
+
+    /// Every production stamp site goes through `skin_lru_stamp`, so a
+    /// frame-0 use cannot write the sentinel either (#4969).
+    #[test]
+    fn slot_stamp_sites_use_the_non_sentinel_stamp() {
+        let refit: String = include_str!("context/skinned_blas_refit.rs")
+            .split_whitespace()
+            .collect();
+        assert!(refit.contains(
+            "slot.last_used_frame=super::super::skin_compute::skin_lru_stamp(self.frame_counter);"
+        ));
+        assert!(!refit.contains("slot.last_used_frame=self.frame_counter"));
+        let draw = include_str!("context/draw.rs");
+        let refresh = &draw[draw.find("pub fn refresh_morph_slot_lru(").unwrap()..];
+        let refresh = &refresh[..refresh.find("\n    }\n").unwrap()];
+        assert!(refresh.contains("skin_lru_stamp(self.frame_counter)"));
     }
 
     // ── #1297 / #1298 (DIM12-A-01) — slot-capacity reconciliation ───

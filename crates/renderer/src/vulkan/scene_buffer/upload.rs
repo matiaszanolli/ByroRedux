@@ -1206,12 +1206,16 @@ impl super::buffers::SceneBuffers {
     /// buffers were replaced — the caller must then rebind any descriptor
     /// outside this struct that names them (the caustic pipeline's set).
     ///
-    /// **Must be called after this slot's fence wait and before anything is
-    /// recorded for it**, which is where `build_and_upload_instances` runs.
-    /// That is what makes the swap sound: the only command buffer that ever
-    /// bound this slot's buffers — through this slot's own descriptor set —
-    /// has completed, and the other slot has its own buffers and set, so it
-    /// is untouched even while in flight. The scene set is rewritten
+    /// **Must be called after this slot's fence wait and before any command
+    /// that binds this slot's scene set, or names its instance / previous-model
+    /// buffer, is recorded.** The frame calls it twice (see
+    /// `VulkanContext::grow_instance_ssbos`); the second call runs after
+    /// `begin_frame_recording` and `dispatch_skin_and_cluster` have recorded,
+    /// but neither binds the scene set or names these buffers (#4959). That is
+    /// what makes the swap sound: the only command buffer that ever bound this
+    /// slot's buffers — through this slot's own descriptor set, which has no
+    /// UPDATE_AFTER_BIND — has completed, and the other slot has its own
+    /// buffers and set, so it is untouched even while in flight. The scene set is rewritten
     /// immediately, the same way `write_tlas` rewrites its binding per slot.
     /// The replaced buffers are retired through the deferred-destroy
     /// countdown rather than freed here.
@@ -1275,7 +1279,8 @@ impl super::buffers::SceneBuffers {
         ];
         // SAFETY: `device` is live and `set` is this slot's device-allocated
         // scene set. Per this function's contract the only command buffer that
-        // bound `set` has completed, so updating it is permitted. Both infos
+        // bound `set` has completed, and nothing recorded so far in the one
+        // being built has bound it, so updating it is permitted. Both infos
         // borrow buffers created above, which outlive the call.
         unsafe { device.update_descriptor_sets(&writes, &[]) };
 

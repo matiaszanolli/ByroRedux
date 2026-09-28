@@ -212,9 +212,9 @@ impl VulkanContext {
         // camera position (ssao, composite — origin-invariant differences
         // only). See `GpuCamera::render_origin` (#1492).
         let render_origin = byroredux_core::math::Vec3::from_array(input_render_origin);
-        // DOF aperture-disk jitter, or the pinhole pass-through. The bokeh
-        // rationale and the #1525 degenerate-`focus_dist` guard live in
-        // `dof_effective_view_proj`.
+        // DOF aperture-disk jitter, or the pinhole pass-through. Why this
+        // cannot produce bokeh through TAA (#4967) and the #1525
+        // degenerate-`focus_dist` guard live in `dof_effective_view_proj`.
         // FSR forces the pinhole path — rationale in `fsr_gated_dof`.
         //
         // #2518 — gate on FSR actually *dispatching*, not merely on FSR

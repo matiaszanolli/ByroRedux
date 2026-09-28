@@ -837,6 +837,13 @@ temporally reconstructed.
    true screen-space displacement of that surface point, depth-dependent
    component included. Reprojection is correct.
 
+   That same correctness is why the lens offset cannot produce bokeh through
+   TAA either (#4967): `taa.comp` fetches history at `uv - motion`, which
+   re-aligns each world point, and blends at a flat α with no motion term, so
+   the per-frame parallax is undone rather than integrated and out-of-focus
+   surfaces converge sharp. The stochastic path is not a working TAA-only
+   fallback.
+
    The incompatibility is in accumulation. FSR places accumulated samples on
    the output grid assuming the only sub-pixel variation between frames is the
    `jitterOffset` it reported. A lens offset adds a further displacement that

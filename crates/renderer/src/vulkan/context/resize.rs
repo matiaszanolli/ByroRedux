@@ -1333,15 +1333,17 @@ impl VulkanContext {
         // the resize. Their skinned BLAS is released through the same sweep,
         // so the VRAM stays held too.
         //
-        // Rebase to 0, which is already the established
-        // "never dispatched" sentinel (#643 / MEM-2-1): the affected slots
-        // simply skip eviction until their next dispatch re-stamps them into
-        // the new epoch, after which normal aging resumes. Slots that are
-        // still being drawn re-stamp on the very next frame and are
-        // unaffected; the population this actually rescues is the idle slots
-        // — exactly the ones eviction exists to reclaim.
+        // #4969 — rebase to the new epoch's first stamp (`skin_lru_stamp(0)`,
+        // i.e. 1), NOT to 0. 0 is the #643 "never dispatched" sentinel, which
+        // is never evicted, and a slot leaves it only when re-stamped: a live
+        // entity is re-stamped on the next frame, but one despawned outside
+        // `unload_cell` within `min_idle` frames of the recreate never is, so
+        // its slot, skinned BLAS and (morph) weight buffer leaked until
+        // shutdown. With a real stamp, live slots re-stamp as before and dead
+        // or idle ones age out on the normal threshold in the new epoch.
+        let epoch_stamp = crate::vulkan::skin_compute::skin_lru_stamp(self.frame_counter);
         for slot in self.skin_slots.values_mut() {
-            slot.last_used_frame = 0;
+            slot.last_used_frame = epoch_stamp;
         }
         // #3231 — same epoch-rebase, `MorphSlot` sibling: its eviction
         // sweep in `skinned_blas_refit.rs` reads the identical
@@ -1349,7 +1351,7 @@ impl VulkanContext {
         // call, so it's exposed to the exact same stale-stamp hazard
         // described above.
         for slot in self.morph_slots.values_mut() {
-            slot.last_used_frame = 0;
+            slot.last_used_frame = epoch_stamp;
         }
 
         // Force a few-frame TAA history reset + SVGF α-elevation

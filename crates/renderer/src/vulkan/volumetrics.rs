@@ -628,13 +628,7 @@ pub(crate) fn filter_fog_volumes_for_grid(
     let far = far_distance.max(1.0);
     out.clear();
     out.extend(volumes.iter().filter(|volume| {
-        let center = Vec3::new(volume.center_shape[0], volume.center_shape[1], volume.center_shape[2]);
-        let Some(extent) = fog_volume_world_aabb_half_extents(volume) else { return false };
-        if !center.is_finite() {
-            return false;
-        }
-        let radius = Vec3::from_array(extent).length();
-        center.distance(camera) <= far + radius
+        fog_volume_within_grid_reach(volume, camera, far)
             || (portal_sweep && fog_portal_swept_bounds(
                 volume,
                 Vec3::from_array(sun_direction),
@@ -642,6 +636,32 @@ pub(crate) fn filter_fog_volumes_for_grid(
                 far,
             ).is_some())
     }).copied());
+}
+
+/// The distance half of [`filter_fog_volumes_for_grid`]: whether `volume`'s
+/// conservative world box can overlap the camera-centred grid of reach `far`.
+fn fog_volume_within_grid_reach(volume: &GpuFogVolume, camera: Vec3, far: f32) -> bool {
+    let center = Vec3::new(volume.center_shape[0], volume.center_shape[1], volume.center_shape[2]);
+    let Some(extent) = fog_volume_world_aabb_half_extents(volume) else { return false };
+    if !center.is_finite() {
+        return false;
+    }
+    let radius = Vec3::from_array(extent).length();
+    center.distance(camera) <= far + radius
+}
+
+/// Whether a nuclear source can have contributed to a combustion field
+/// accumulated on the grid centred at `grid_center` (#4968). Uses the same
+/// reach test as [`filter_fog_volumes_for_grid`] — the portal sweep admits
+/// only light shafts, never a nuclear profile — so a cloud the grid culled,
+/// which contributed no moments, does not dim the fires that did.
+fn nuclear_source_reaches_grid(volumes: &[GpuFogVolume], grid_center: [f32; 3], far: f32) -> bool {
+    let camera = Vec3::from_array(grid_center);
+    let far = far.max(1.0);
+    volumes.iter().any(|volume| {
+        (volume.profile_params[0] - FOG_VOLUME_PROFILE_EXPLOSION_NUCLEAR).abs() < 0.5
+            && fog_volume_within_grid_reach(volume, camera, far)
+    })
 }
 
 /// World-space candidate envelope of an authored cone ring or window plane
@@ -1932,9 +1952,11 @@ impl VolumetricsPipeline {
             })
             .sum();
         let authored_count = lights.len();
-        let nuclear_source_active = source_volumes.iter().any(|volume| {
-            (volume.profile_params[0] - FOG_VOLUME_PROFILE_EXPLOSION_NUCLEAR).abs() < 0.5
-        });
+        // #4968 — against the grid these moments were accumulated on, not
+        // the whole submitted list: a distant cloud the grid culled must not
+        // dim every nearby fire's surface light.
+        let nuclear_source_active =
+            nuclear_source_reaches_grid(source_volumes, camera_world, self.far_distance_world());
         let mut decoded_candidates = 0;
         let mut suppressed_candidates = 0;
         self.combustion_light_candidates.clear();
@@ -3023,6 +3045,39 @@ mod unit_tests {
             &[source],
             &[nearby],
         ));
+    }
+
+    /// #4968 — the nuclear surface-light dimmer only counts a cloud the
+    /// grid could have accumulated moments from.
+    #[test]
+    fn nuclear_dimmer_ignores_a_cloud_the_grid_culls() {
+        let far = 1000.0;
+        let cloud = |x: f32| GpuFogVolume {
+            center_shape: [x, 0.0, 0.0, 0.0],
+            half_extents_extinction: [100.0, 100.0, 100.0, 0.0],
+            inverse_rotation: [0.0, 0.0, 0.0, 1.0],
+            profile_params: [FOG_VOLUME_PROFILE_EXPLOSION_NUCLEAR, 0.0, 0.0, 0.0],
+            ..GpuFogVolume::default()
+        };
+        let near = cloud(500.0);
+        let distant = cloud(50_000.0);
+        assert!(nuclear_source_reaches_grid(&[near], [0.0; 3], far));
+        assert!(!nuclear_source_reaches_grid(&[distant], [0.0; 3], far));
+        // Measured from the grid's own centre, not the origin.
+        assert!(nuclear_source_reaches_grid(&[distant], [49_500.0, 0.0, 0.0], far));
+        // A near fire is not a nuclear source.
+        let fire = GpuFogVolume {
+            profile_params: [FOG_VOLUME_PROFILE_FLAME, 0.0, 0.0, 0.0],
+            ..near
+        };
+        assert!(!nuclear_source_reaches_grid(&[fire, distant], [0.0; 3], far));
+
+        // Parity with the grid filter the dispatch uses.
+        let mut kept = Vec::new();
+        let sun = [0.0, 0.0, 1.0];
+        filter_fog_volumes_for_grid(&[near, distant], [0.0; 3], far, sun, true, &mut kept);
+        assert_eq!(kept.len(), 1);
+        assert!(nuclear_source_reaches_grid(&kept, [0.0; 3], far));
     }
 
     #[test]

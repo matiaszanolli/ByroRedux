@@ -56,7 +56,14 @@ impl VulkanContext {
     ///
     /// Sound at either site for the same reason `ensure_instance_capacity`
     /// documents: both run after `sync_and_acquire_frame`'s fence wait and
-    /// before any command that binds this slot's scene set is recorded.
+    /// before any command that binds this slot's scene set is recorded. The
+    /// second site is NOT before everything is recorded: the RGBA copies, the
+    /// reservoir clear and all of `dispatch_skin_and_cluster` precede it. None
+    /// of those binds `scene_buffers.descriptor_set(frame)` or names
+    /// `instance_buffers()[frame]`, and
+    /// `nothing_before_the_final_grow_binds_the_scene_set` pins that (#4959).
+    /// A pass recorded there that did would be invalidated on every frame the
+    /// grow fires, because the scene set has no UPDATE_AFTER_BIND.
     pub(super) fn grow_instance_ssbos(&mut self, frame: usize, needed: usize) {
         let Some(allocator) = self.allocator.as_ref() else {
             return;
@@ -730,10 +737,15 @@ impl VulkanContext {
             });
         }
         // #4199 — the instance SSBOs start at a working capacity and grow per
-        // slot. This is after `sync_and_acquire_frame`'s fence wait and before
-        // anything is recorded for `frame`, which is the window the grow needs
-        // (see `ensure_instance_capacity`). A failed grow leaves the slot as
-        // it was and the upload below clamps to it.
+        // slot. This is after `sync_and_acquire_frame`'s fence wait. It is not
+        // before everything is recorded for `frame` — `begin_frame_recording`
+        // and `dispatch_skin_and_cluster` already have — but it is before
+        // anything that binds this slot's scene set or names its instance
+        // buffers, which is the window the grow needs (see
+        // `ensure_instance_capacity`; pinned by
+        // `nothing_before_the_final_grow_binds_the_scene_set`, #4959). A
+        // failed grow leaves the slot as it was and the upload below clamps
+        // to it.
         // #4413 — plus the ground-cover model tier's tail, which its compute
         // pass writes after this list once the frame has placements.
         let model_tail = self
@@ -1569,7 +1581,8 @@ mod svgf_scene_static_signal_tests {
     /// for that class of function (see the sibling modules above).
     #[test]
     fn svgf_temporal_alpha_is_fed_the_combined_camera_and_light_rig_signal() {
-        let src = crate::source_scan::production_text(include_str!("build_and_upload_instances.rs"));
+        let src =
+            crate::source_scan::production_text(include_str!("build_and_upload_instances.rs"));
 
         assert!(
             src.contains("let caustic_history_valid = camera_static && caustic_scene_static;"),
@@ -1697,6 +1710,99 @@ mod instance_capacity_growth_pin {
         assert!(
             before.contains("instance_map_cap(") && before.contains(".instance_capacity(frame)"),
             "mapped_cap must be the slot's capacity run through `instance_map_cap` (#4833)"
+        );
+    }
+
+    /// #4959 (REN-D4-2026-09-27-02) — the final grow is NOT before everything
+    /// is recorded for the slot: `begin_frame_recording` and all of
+    /// `dispatch_skin_and_cluster` record first. A grow that fires rewrites
+    /// scene-set bindings 4/18 and swaps `instance_buffers()[frame]`; the scene
+    /// set has no UPDATE_AFTER_BIND, so any pass recorded before it that bound
+    /// that set (or baked the old buffer into its own) would be invalidated on
+    /// exactly the rare exterior frames the grow fires. Pin that nothing on the
+    /// pre-grow path does.
+    #[test]
+    fn nothing_before_the_final_grow_binds_the_scene_set() {
+        const FORBIDDEN: [&str; 4] = [
+            "scene_buffers.descriptor_set(",
+            "scene_buffers.descriptor_sets(",
+            "instance_buffers()",
+            "previous_model_buffers()",
+        ];
+        fn check(what: &str, segment: &str) {
+            let flat: String = segment.chars().filter(|c| !c.is_whitespace()).collect();
+            for needle in FORBIDDEN {
+                assert!(
+                    !flat.contains(needle),
+                    "{what} records before the final instance-SSBO grow and uses \
+                     `{needle}`; the grow may rewrite that set / replace that buffer \
+                     mid-recording (#4959)"
+                );
+            }
+        }
+        fn fn_body<'a>(src: &'a str, sig: &str) -> &'a str {
+            let start = src.find(sig).unwrap_or_else(|| panic!("`{sig}` must exist"));
+            let end = start
+                + src[start..]
+                    .find("\n    }\n")
+                    .expect("closing brace at impl indentation");
+            &src[start..end]
+        }
+
+        check(
+            "begin_frame_recording",
+            production(include_str!("begin_frame_recording.rs")),
+        );
+        let dispatch = production(include_str!("dispatch_skin_and_cluster.rs"));
+        check(
+            "dispatch_skin_and_cluster",
+            fn_body(dispatch, "pub(super) fn dispatch_skin_and_cluster("),
+        );
+        check(
+            "record_groundcover_bench",
+            fn_body(dispatch, "fn record_groundcover_bench("),
+        );
+        check(
+            "record_skinned_blas_refit",
+            production(include_str!("skinned_blas_refit.rs")),
+        );
+        check(
+            "assemble_camera_and_lights",
+            production(include_str!("assemble_camera_and_lights.rs")),
+        );
+
+        // `build_and_upload_instances` itself, up to the grow call.
+        let src =
+            crate::source_scan::production_text(include_str!("build_and_upload_instances.rs"));
+        let body = src
+            .find("pub(super) fn build_and_upload_instances(")
+            .expect("build_and_upload_instances must exist");
+        let grow = body
+            + src[body..]
+                .find("self.grow_instance_ssbos(frame, gpu_instances.len() + model_tail)")
+                .expect("the final grow must still be in build_and_upload_instances");
+        check("build_and_upload_instances (pre-grow)", &src[body..grow]);
+
+        // draw_frame between the two recording helpers and the final grow,
+        // and the model tier — which does name the instance buffer — after it.
+        // draw.rs has test modules above `draw_frame`, so it is not cut.
+        let draw = include_str!("draw.rs");
+        let frame_fn = fn_body(draw, "\n    pub fn draw_frame(");
+        let begin = frame_fn
+            .find("self.begin_frame_recording(")
+            .expect("draw_frame must still begin recording");
+        let upload = frame_fn
+            .find("self.build_and_upload_instances(")
+            .expect("draw_frame must still build and upload instances");
+        assert!(begin < upload);
+        check("draw_frame (pre-grow)", &frame_fn[begin..upload]);
+        let model_tier = frame_fn
+            .find("self.record_groundcover_models(")
+            .expect("draw_frame must still record the model tier");
+        assert!(
+            upload < model_tier,
+            "the model tier names `instance_buffers()[frame]`; it must record after \
+             the final grow (#4959)"
         );
     }
 

@@ -516,7 +516,8 @@ impl VulkanContext {
                                 // eviction sweep below sees this
                                 // entity as "active this frame" even
                                 // when the dispatch is skipped.
-                                slot.last_used_frame = self.frame_counter as u64;
+                                slot.last_used_frame =
+                                    super::super::skin_compute::skin_lru_stamp(self.frame_counter);
                                 // #4294 — no `MorphSlot` LRU bump here. This loop skips hidden,
                                 // slot-less and non-RT-capable entities, and a `MorphSlot` is never
                                 // rebuilt once reaped; `VulkanContext::refresh_morph_slot_lru` stamps
