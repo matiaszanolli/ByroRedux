@@ -75,6 +75,16 @@ fn require_game_data(env_var: &str, tried: &std::path::Path) {
     }
 }
 
+/// #4660 — the data directory resolved but lacks an archive the test needs.
+/// Under the strict lane that is a failure naming the file, not a green skip.
+#[track_caller]
+fn require_archive(path: &std::path::Path) {
+    if std::env::var("BYROREDUX_REQUIRE_GAME_DATA").is_ok_and(|v| v != "0") {
+        panic!("BYROREDUX_REQUIRE_GAME_DATA is set, but {path:?} is not a file");
+    }
+    eprintln!("skipping: {path:?} not found");
+}
+
 impl Game {
     const ALL: &'static [Game] = &[Game::FalloutNV, Game::Fallout3];
 
@@ -146,11 +156,24 @@ impl Game {
         None
     }
 
+    /// `None` only when this title's data is legitimately absent (and never
+    /// under the strict lane). #4660 — a present install whose archive fails
+    /// to open, or whose vanilla entry fails to extract, is a reader
+    /// regression; both used to surface as "data not available; skipping".
     fn extract(self, inner: &str) -> Option<Vec<u8>> {
         let dir = self.data_dir()?;
         let bsa_path = dir.join(self.mesh_bsa());
-        let archive = BsaArchive::open(&bsa_path).ok()?;
-        archive.extract(inner).ok()
+        if !bsa_path.is_file() {
+            require_archive(&bsa_path);
+            return None;
+        }
+        let g = self.label();
+        let archive = BsaArchive::open(&bsa_path)
+            .unwrap_or_else(|e| panic!("[{g}] failed to open {bsa_path:?}: {e}"));
+        let bytes = archive
+            .extract(inner)
+            .unwrap_or_else(|e| panic!("[{g}] failed to extract {inner} from {bsa_path:?}: {e}"));
+        Some(bytes)
     }
 }
 

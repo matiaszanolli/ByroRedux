@@ -45,6 +45,17 @@ fn require_game_data(env_var: &str, tried: &std::path::Path) {
     }
 }
 
+/// #4660 — the data directory resolved but lacks an archive the test needs.
+/// Under the strict lane that is a failure naming the file: a green skip here
+/// is exactly the hole #3850 closed for the data directory itself.
+#[track_caller]
+fn require_archive(path: &std::path::Path) {
+    if std::env::var("BYROREDUX_REQUIRE_GAME_DATA").is_ok_and(|v| v != "0") {
+        panic!("BYROREDUX_REQUIRE_GAME_DATA is set, but {path:?} is not a file");
+    }
+    eprintln!("Skipping: {path:?} not found");
+}
+
 fn data_dir(env_var: &str, fallback: &str) -> Option<PathBuf> {
     if let Some(v) = std::env::var(env_var).ok().filter(|s| !s.is_empty()) {
         let p = PathBuf::from(&v);
@@ -103,7 +114,7 @@ fn oblivion_meshes_bsa_v103_extracts_nif_with_gamebryo_magic() {
     };
     let archive_path = data.join("Oblivion - Meshes.bsa");
     if !archive_path.is_file() {
-        eprintln!("Skipping: {archive_path:?} not found");
+        require_archive(&archive_path);
         return;
     }
 
@@ -184,7 +195,7 @@ fn oblivion_all_bsas_v103_brute_force_extract_zero_errors() {
     'archives: for &name in VANILLA_AND_DLC_ARCHIVES {
         let archive_path = data.join(name);
         if !archive_path.is_file() {
-            eprintln!("Skipping missing archive: {archive_path:?}");
+            require_archive(&archive_path);
             continue;
         }
         let archive = BsaArchive::open(&archive_path).unwrap_or_else(|e| panic!("open {name}: {e}"));
@@ -248,7 +259,7 @@ fn fnv_meshes_bsa_v104_extracts_nif_with_gamebryo_magic() {
     };
     let archive_path = data.join("Fallout - Meshes.bsa");
     if !archive_path.is_file() {
-        eprintln!("Skipping: {archive_path:?} not found");
+        require_archive(&archive_path);
         return;
     }
 
@@ -299,7 +310,7 @@ fn skyrimse_meshes_bsa_v105_extracts_nif_with_gamebryo_magic() {
     };
     let archive_path = data.join("Skyrim - Meshes0.bsa");
     if !archive_path.is_file() {
-        eprintln!("Skipping: {archive_path:?} not found");
+        require_archive(&archive_path);
         return;
     }
 
@@ -352,7 +363,7 @@ fn skyrimse_meshes_bsa_v105_brute_force_extract_zero_errors() {
     };
     let archive_path = data.join("Skyrim - Meshes0.bsa");
     if !archive_path.is_file() {
-        eprintln!("Skipping: {archive_path:?} not found");
+        require_archive(&archive_path);
         return;
     }
 
@@ -413,10 +424,15 @@ fn declared_size_matches_extract_across_bsa_versions() {
         (skyrimse_data_dir(), "Skyrim - Meshes0.bsa"),
     ];
     for (dir, name) in cases {
-        let Some(path) = dir.map(|d| d.join(name)).filter(|p| p.is_file()) else {
-            eprintln!("Skipping missing archive: {name}");
+        let Some(dir) = dir else {
+            eprintln!("Skipping: no game data for {name}");
             continue;
         };
+        let path = dir.join(name);
+        if !path.is_file() {
+            require_archive(&path);
+            continue;
+        }
         let archive = BsaArchive::open(&path).unwrap_or_else(|e| panic!("open {name}: {e}"));
         let mut mismatches = Vec::new();
         let files = archive.list_files();

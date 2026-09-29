@@ -165,6 +165,20 @@ impl CsgArchive {
         let num_chunks = checked_entry_count(num_chunks_raw, "CSG chunk")?;
 
         // Chunk table: num_chunks × 8 bytes, immediately after the header.
+        // #4661 — bound it by the file before allocating: the absolute
+        // `checked_entry_count` cap alone still let a 12-byte file size an
+        // 80 MB table. A table the file cannot contain is corrupt, so this
+        // is a named error rather than a clamp.
+        let table_len = num_chunks as u64 * 8;
+        if 12 + table_len > file_len {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "CSG chunk table ({num_chunks} chunks × 8 bytes) runs past EOF \
+                     ({file_len} bytes) — truncated or corrupt blob"
+                ),
+            ));
+        }
         let mut table = vec![0u8; num_chunks * 8];
         file.read_exact(&mut table)?;
         let mut chunks = Vec::with_capacity(num_chunks);
@@ -457,6 +471,24 @@ mod tests {
             Err(e) => assert_eq!(e.kind(), io::ErrorKind::InvalidData),
         }
         std::fs::remove_file(&p).ok();
+    }
+
+    /// #4661 — a 12-byte header claiming a million chunks must be rejected
+    /// by name before its 8 MB table is allocated, not after a bare EOF.
+    #[test]
+    fn chunk_table_past_eof_is_rejected_by_name() {
+        let mut head = Vec::from(&MAGIC[..]);
+        head.extend_from_slice(&0u32.to_le_bytes()); // num_objects
+        head.extend_from_slice(&1_000_000u32.to_le_bytes()); // num_chunks
+        let p = write_temp(&head, "tablepasteof");
+        let result = CsgArchive::open(&p);
+        std::fs::remove_file(&p).ok();
+        let err = match result {
+            Ok(_) => panic!("a 12-byte blob cannot hold a million chunk entries"),
+            Err(e) => e,
+        };
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        assert!(err.to_string().contains("chunk table"), "got: {err}");
     }
 
     #[test]

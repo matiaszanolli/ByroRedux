@@ -60,15 +60,16 @@ impl ScriptProvider {
 
     pub(crate) fn resolve_pex(&self, script_name: &str) -> Option<ResolvedPex> {
         let name = pex_archive_path(script_name);
-        for source in &self.archives {
-            if let Ok(bytes) = source.archive.extract(&name) {
-                return Some(ResolvedPex {
+        // #4658 — a present-but-corrupt `.pex` is named, not silently missed.
+        self.archives.iter().find_map(|source| {
+            source
+                .archive
+                .extract_or_warn(&name)
+                .map(|bytes| ResolvedPex {
                     bytes,
                     principal: source.principal.clone(),
-                });
-            }
-        }
-        None
+                })
+        })
     }
 
     pub(crate) fn principals(&self) -> impl Iterator<Item = &PrincipalId> {

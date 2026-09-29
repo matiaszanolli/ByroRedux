@@ -127,16 +127,14 @@ impl TextureProvider {
     /// Every importable model (`.nif`, plus SpeedTree `.spt`) across the mesh
     /// archives, sorted and de-duplicated, as exact archive keys.
     ///
-    /// Reads each backend's own file table: `Archive::list_files` is blank
-    /// for BSAs on purpose (see its doc), which would hide every pre-FO4 game.
+    /// Reads each backend's own file table (`Archive::all_paths`):
+    /// `Archive::list_files` is blank for BSAs on purpose (see its doc), which
+    /// would hide every pre-FO4 game.
     pub(crate) fn mesh_asset_paths(&self) -> Vec<String> {
         let mut paths: Vec<String> = self
             .mesh_archives
             .iter()
-            .flat_map(|archive| match archive {
-                Archive::Bsa(bsa) => bsa.list_files(),
-                Archive::Ba2(ba2) => ba2.list_files(),
-            })
+            .flat_map(Archive::all_paths)
             .filter(|path| path.ends_with(".nif") || path.ends_with(".spt"))
             .map(str::to_owned)
             .collect();
@@ -162,12 +160,9 @@ impl TextureProvider {
         // order precedence (a later `--textures-bsa` overrides an earlier
         // one). Checking from the end and returning on first hit means the
         // last-listed archive that actually carries the path answers.
-        for archive in self.texture_archives.iter().rev() {
-            if let Ok(data) = archive.extract(normalized.as_ref()) {
-                return Some(data);
-            }
-        }
-        self.extract_via_facegen_tool_path_fallback(&normalized)
+        // #4658 — a present-but-corrupt entry is named, not silently missed.
+        extract_first(self.texture_archives.iter().rev(), normalized.as_ref())
+            .or_else(|| self.extract_via_facegen_tool_path_fallback(&normalized))
     }
 
     /// Whether a texture exists, without extracting or decompressing it.
@@ -193,10 +188,11 @@ impl TextureProvider {
         // #3637 — same last-listed-wins precedence as the primary lookup
         // above.
         for archive in self.texture_archives.iter().rev() {
-            if let Some(key) = archive.find_by_basename(normalized) {
-                if let Ok(data) = archive.extract(&key) {
-                    return Some(data);
-                }
+            if let Some(data) = archive
+                .find_by_basename(normalized)
+                .and_then(|key| archive.extract_or_warn(&key))
+            {
+                return Some(data);
             }
         }
         None
@@ -213,12 +209,7 @@ impl TextureProvider {
     pub(crate) fn extract_mesh(&self, path: &str) -> Option<Vec<u8>> {
         let normalised = normalize_mesh_path(path);
         // #3637 — last-listed archive wins; see `extract`'s doc for why.
-        for archive in self.mesh_archives.iter().rev() {
-            if let Ok(data) = archive.extract(normalised.as_ref()) {
-                return Some(data);
-            }
-        }
-        None
+        extract_first(self.mesh_archives.iter().rev(), normalised.as_ref())
     }
 
     /// The decoded size [`Self::extract_mesh`] returns for `path`, read from
@@ -271,12 +262,7 @@ impl TextureProvider {
     /// [`Self::has_mesh_exact`] for why the `.spt` route needs it.
     pub(crate) fn extract_mesh_exact(&self, path: &str) -> Option<Vec<u8>> {
         // #3637 — last-listed archive wins; see `extract`'s doc for why.
-        for archive in self.mesh_archives.iter().rev() {
-            if let Ok(data) = archive.extract(path) {
-                return Some(data);
-            }
-        }
-        None
+        extract_first(self.mesh_archives.iter().rev(), path)
     }
 }
 

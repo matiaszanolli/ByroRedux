@@ -33,7 +33,7 @@ use byroredux_menuxml::profile::{FontArchive, MenuProfile};
 use byroredux_menuxml::tex::Rgba8;
 use byroredux_menuxml::{MenuRenderer, ScreenTraits};
 
-use crate::asset_provider::{open_with_numeric_siblings, Archive};
+use crate::asset_provider::{extract_first, open_with_numeric_siblings, Archive};
 use crate::inventory::PlayerVitals;
 use crate::systems::PlayerEntity;
 
@@ -198,16 +198,13 @@ pub(crate) struct HudAssets {
 
 impl HudAssets {
     fn extract_texture(&self, path: &str) -> Option<Vec<u8>> {
-        self.textures
-            .iter()
-            .rev()
-            .find_map(|archive| archive.extract(path).ok())
+        extract_first(self.textures.iter().rev(), path)
     }
 }
 
 impl MenuAssets for HudAssets {
     fn menu_xml(&self, path: &str) -> Option<Vec<u8>> {
-        self.misc.extract(path).ok()
+        self.misc.extract_or_warn(path)
     }
     fn texture(&self, path: &str) -> Option<Vec<u8>> {
         self.extract_texture(path)
@@ -215,16 +212,16 @@ impl MenuAssets for HudAssets {
     fn font(&self, index: u8) -> Option<Vec<u8>> {
         let path = self.profile.menu.font_paths.get(index as usize - 1)?;
         match self.profile.menu.font_archive {
-            FontArchive::Misc => self.misc.extract(path).ok(),
+            FontArchive::Misc => self.misc.extract_or_warn(path),
             FontArchive::Textures => self.extract_texture(path),
         }
     }
     fn font_texture(&self, path: &str) -> Option<Vec<u8>> {
         match self.profile.menu.font_archive {
-            FontArchive::Misc => self.misc.extract(path).ok(),
+            FontArchive::Misc => self.misc.extract_or_warn(path),
             FontArchive::Textures => self
                 .extract_texture(path)
-                .or_else(|| self.misc.extract(path).ok()),
+                .or_else(|| self.misc.extract_or_warn(path)),
         }
     }
 }

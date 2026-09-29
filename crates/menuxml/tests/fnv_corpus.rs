@@ -2,9 +2,9 @@
 //!
 //! #4665 (PAR-D4-2026-09-21-03) — the FNV MenuXml corpus had zero tests
 //! while the HUD profile ships and drives it (`hud.rs`'s Fallout: New
-//! Vegas profile). Gated on `BYROREDUX_FNV_DATA` pointing at a real
-//! Fallout: New Vegas `Data/` directory (falls back to the default Steam
-//! install when present), so `cargo test` stays hermetic elsewhere.
+//! Vegas profile). `#[ignore]`d real-data tests: run with `--ignored`
+//! against `BYROREDUX_FNV_DATA` (or the default Steam install), resolved
+//! through `common` under the #3850 strict-lane contract (#4660).
 //! Mirrors `fo3_corpus.rs`; pins the corpus facts the FNV profile
 //! depends on (menu XML set, font table, meter prefab).
 
@@ -14,6 +14,8 @@ use byroredux_bsa::BsaArchive;
 use byroredux_menuxml::font::Font;
 use byroredux_menuxml::menu::MenuAssets;
 use byroredux_menuxml::profile::MenuProfile;
+
+mod common;
 
 const HUD_MENU: &str = "menus\\main\\hud_main_menu.xml";
 const METER_PREFAB: &str = "menus\\prefabs\\meter.xml";
@@ -54,18 +56,17 @@ impl MenuAssets for NvAssets {
 }
 
 fn data_dir() -> Option<PathBuf> {
-    if let Some(dir) = std::env::var("BYROREDUX_FNV_DATA").ok() {
-        return Some(PathBuf::from(dir));
-    }
-    let default = PathBuf::from("/mnt/data/SteamLibrary/steamapps/common/Fallout New Vegas/Data");
-    default.is_dir().then_some(default)
+    common::data_dir(
+        "BYROREDUX_FNV_DATA",
+        "/mnt/data/SteamLibrary/steamapps/common/Fallout New Vegas/Data",
+    )
 }
 
 fn open_assets() -> Option<NvAssets> {
     let dir = data_dir()?;
-    let misc = BsaArchive::open(dir.join("Fallout - Misc.bsa")).ok()?;
-    let textures = BsaArchive::open(dir.join("Fallout - Textures.bsa")).ok()?;
-    let textures2 = BsaArchive::open(dir.join("Fallout - Textures2.bsa")).ok()?;
+    let misc = common::open_archive(&dir, "Fallout - Misc.bsa")?;
+    let textures = common::open_archive(&dir, "Fallout - Textures.bsa")?;
+    let textures2 = common::open_archive(&dir, "Fallout - Textures2.bsa")?;
     Some(NvAssets {
         misc,
         textures,
@@ -78,9 +79,9 @@ fn open_assets() -> Option<NvAssets> {
 /// measured 121 menu XMLs in `Fallout - Misc.bsa`; the floor below only
 /// guards against wholesale corpus loss.
 #[test]
+#[ignore = "needs FNV game data on disk"]
 fn fnv_corpus_facts() {
     let Some(assets) = open_assets() else {
-        eprintln!("skipping: FNV data not found");
         return;
     };
 

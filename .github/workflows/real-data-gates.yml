@@ -11,6 +11,12 @@ name: Real-data corpus gates
 # so a red result names the game, with `BYROREDUX_REQUIRE_GAME_DATA=1` (#3850)
 # so an absent corpus is a failed job rather than a silent `ok`, and a post-run
 # check that the title's filter matched at least one test.
+#
+# #4659 — the `parsers` job generalises the same gate to the non-NIF readers of
+# game-archive input (BSA/BA2/CSG, BGSM/BGEM, Starfield CDB, Havok HKX,
+# FaceGen, MenuXml). Their real-data suites are `#[ignore]`d too, so before this
+# job nothing scheduled them anywhere and a regression in e.g. `Ba2Archive::open`
+# stayed invisible until someone ran them by hand.
 
 on:
   schedule:
@@ -31,6 +37,7 @@ on:
           - fo4
           - fo76
           - starfield
+          - parsers
 
 jobs:
   corpus:
@@ -112,6 +119,74 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: real-data-gates-${{ matrix.game }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: target/real-data-gates
+          if-no-files-found: error
+          retention-days: 30
+
+  parsers:
+    name: parser real-data suites
+    if: github.event_name == 'schedule' || inputs.game == 'all' || inputs.game == 'parsers'
+    runs-on: [self-hosted, linux, x64, byroredux-game-data]
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Run each parser crate's real-data suite
+        env:
+          GAMES_ROOT: ${{ vars.BYROREDUX_GAMES_ROOT }}
+          # The 2011 Skyrim release is not a Steam-root install (it lives in a
+          # Wine prefix on the reference machine), so it has its own variable.
+          SKYRIMLE_DATA: ${{ vars.BYROREDUX_SKYRIMLE_DATA }}
+          # #3850 — an absent install or archive fails instead of skipping.
+          BYROREDUX_REQUIRE_GAME_DATA: "1"
+        run: |
+          set -euo pipefail
+          # Same per-title directories as the corpus matrix above; every one
+          # of the six crates reads a subset of them.
+          export BYROREDUX_OBLIVION_DATA="${GAMES_ROOT}/Oblivion/Data"
+          export BYROREDUX_FO3_DATA="${GAMES_ROOT}/Fallout 3 goty/Data"
+          export BYROREDUX_FNV_DATA="${GAMES_ROOT}/Fallout New Vegas/Data"
+          export BYROREDUX_SKYRIMSE_DATA="${GAMES_ROOT}/Skyrim Special Edition/Data"
+          export BYROREDUX_FO4_DATA="${GAMES_ROOT}/Fallout 4/Data"
+          export BYROREDUX_FO76_DATA="${GAMES_ROOT}/Fallout76/Data"
+          export BYROREDUX_STARFIELD_DATA="${GAMES_ROOT}/Starfield/Data"
+          skip=()
+          if [ -n "${SKYRIMLE_DATA}" ]; then
+            export BYROREDUX_SKYRIMLE_DATA="${SKYRIMLE_DATA}"
+          else
+            # Named, not silent: the one test that needs Skyrim LE is left out
+            # explicitly rather than failing the strict lane on every run.
+            echo "::warning::BYROREDUX_SKYRIMLE_DATA is unset; skipping the hkx LE/SE parity test"
+            skip=(--skip skyrim_le_packfiles_decode_to_the_same_rig_and_clips_as_se)
+          fi
+          mkdir -p target/real-data-gates
+          failed=0
+          for crate in bsa bgsm sfmaterial hkx facegen menuxml; do
+            log="target/real-data-gates/parsers-${crate}.log"
+            if ! cargo test --release -p "byroredux-${crate}" \
+                -- --ignored --test-threads=1 --nocapture "${skip[@]}" 2>&1 | tee "${log}"; then
+              echo "::error::byroredux-${crate} real-data suite failed"
+              failed=1
+              continue
+            fi
+            # Refuse a green no-op, as the corpus job does. Summed from the
+            # per-binary summaries: under --nocapture a test's own output can
+            # split its `test ... ok` line.
+            ran=$(grep -oE 'test result: ok\. [0-9]+ passed' "${log}" | awk '{n += $4} END {print n + 0}')
+            if [ "${ran}" -eq 0 ]; then
+              echo "::error::no real-data test ran for byroredux-${crate}"
+              failed=1
+            else
+              echo "${ran} real-data test(s) ran for byroredux-${crate}"
+            fi
+          done
+          exit "${failed}"
+      - name: Publish gate logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: real-data-gates-parsers-${{ github.run_id }}-${{ github.run_attempt }}
           path: target/real-data-gates
           if-no-files-found: error
           retention-days: 30

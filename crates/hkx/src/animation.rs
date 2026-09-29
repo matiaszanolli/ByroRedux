@@ -1177,12 +1177,27 @@ mod tests {
         r"meshes\actors\character\animations\cartprisonerdexit.hkx",
     ];
 
+    /// #4660 — resolves like the other real-data harnesses: a set `env`
+    /// override is binding (#3850) instead of silently falling back, and
+    /// under `BYROREDUX_REQUIRE_GAME_DATA` an absent archive fails, naming
+    /// the path, instead of skipping green.
     fn animations_archive(env: &str, default: &str) -> Option<byroredux_bsa::BsaArchive> {
-        let data_dir = std::env::var_os(env)
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|| std::path::PathBuf::from(default));
+        let data_dir = match std::env::var(env).ok().filter(|s| !s.is_empty()) {
+            Some(v) => {
+                let p = std::path::PathBuf::from(&v);
+                assert!(p.is_dir(), "{env} points to {v:?}, which is not a directory");
+                p
+            }
+            None => std::path::PathBuf::from(default),
+        };
         let archive_path = data_dir.join("Skyrim - Animations.bsa");
         if !archive_path.is_file() {
+            if std::env::var("BYROREDUX_REQUIRE_GAME_DATA").is_ok_and(|v| v != "0") {
+                panic!(
+                    "BYROREDUX_REQUIRE_GAME_DATA is set, but {archive_path:?} is not a file \
+                     ({env} unset, or pointing at the wrong install)"
+                );
+            }
             eprintln!("SKIP: {} not found (no game data?)", archive_path.display());
             return None;
         }
@@ -1245,7 +1260,7 @@ mod tests {
             ),
             animations_archive(
                 byroredux_plugin::esm::test_paths::SKYRIM_SE_ENV,
-                "/mnt/data/SteamLibrary/steamapps/common/Skyrim Special Edition/Data",
+                byroredux_plugin::esm::test_paths::SKYRIM_SE_DEFAULT,
             ),
         ) else {
             return;
@@ -1310,19 +1325,12 @@ mod tests {
     #[test]
     #[ignore = "needs Skyrim SE game data on disk"]
     fn skyrim_cart_player_idle_decodes_when_assets_are_available() {
-        let data_dir = std::env::var_os(byroredux_plugin::esm::test_paths::SKYRIM_SE_ENV)
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|| {
-                std::path::PathBuf::from(
-                    "/mnt/data/SteamLibrary/steamapps/common/Skyrim Special Edition/Data",
-                )
-            });
-        let archive_path = data_dir.join("Skyrim - Animations.bsa");
-        if !archive_path.is_file() {
-            eprintln!("SKIP: Skyrim - Animations.bsa not found (no game data?)");
+        let Some(archive) = animations_archive(
+            byroredux_plugin::esm::test_paths::SKYRIM_SE_ENV,
+            byroredux_plugin::esm::test_paths::SKYRIM_SE_DEFAULT,
+        ) else {
             return;
-        }
-        let archive = byroredux_bsa::BsaArchive::open(archive_path).unwrap();
+        };
         let skeleton = archive
             .extract(r"meshes\actors\character\character assets\skeleton.hkx")
             .unwrap();

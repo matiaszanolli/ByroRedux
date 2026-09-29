@@ -55,6 +55,22 @@ pub fn checked_entry_count(count: u32, label: &str) -> io::Result<usize> {
     Ok(n)
 }
 
+/// Clamp a [`checked_entry_count`]-validated count to what `remaining_bytes`
+/// of the file can actually hold, for use as a `with_capacity` hint.
+///
+/// #4661 — the absolute [`MAX_ENTRY_COUNT`] cap stops the `u32::MAX` attack,
+/// but still let a 36-byte BSA declaring 10 M files reserve ~1.2 GB of
+/// `HashMap` up front: committed charge on Windows, where overcommit does not
+/// hide it. Every real record occupies at least `min_record_bytes` on disk, so
+/// capacity beyond `remaining_bytes / min_record_bytes` can never be used. The
+/// count itself is untouched — the read loop still fails, attributably, on
+/// the first record the file does not contain. Same idea as sfmaterial's
+/// `count.min(payload.len())` clamp (#2614).
+pub fn capacity_hint(count: usize, remaining_bytes: u64, min_record_bytes: usize) -> usize {
+    let fit = remaining_bytes / min_record_bytes.max(1) as u64;
+    count.min(usize::try_from(fit).unwrap_or(usize::MAX))
+}
+
 /// Validate a payload size read from archive headers before allocating
 /// a buffer for it. Rejects any value exceeding [`MAX_CHUNK_BYTES`].
 /// Same failure shape as [`checked_entry_count`] so operators can
@@ -244,6 +260,21 @@ mod tests {
         let msg = format!("{err}");
         assert!(msg.contains("file_count"), "got: {msg}");
         assert!(msg.contains(&u32::MAX.to_string()), "got: {msg}");
+    }
+
+    /// #4661 — the hint is bounded by the bytes left, not just the absolute
+    /// cap, and never exceeds the declared count.
+    #[test]
+    fn capacity_hint_is_bounded_by_remaining_bytes() {
+        // 36-byte BSA header, 10 M declared files, nothing after the header.
+        assert_eq!(capacity_hint(MAX_ENTRY_COUNT, 0, 16), 0);
+        // 100 bytes of 36-byte BA2 GNRL records hold at most 2.
+        assert_eq!(capacity_hint(MAX_ENTRY_COUNT, 100, 36), 2);
+        // An honest count that fits is returned unchanged.
+        assert_eq!(capacity_hint(1_000, 1_000 * 36, 36), 1_000);
+        assert_eq!(capacity_hint(3, u64::MAX, 36), 3);
+        // A zero record size cannot divide by zero.
+        assert_eq!(capacity_hint(7, 5, 0), 5);
     }
 
     #[test]

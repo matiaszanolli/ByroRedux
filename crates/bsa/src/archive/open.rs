@@ -6,7 +6,7 @@
 //! Result: a `HashMap<normalized_path, FileEntry>` ready for `extract`.
 
 use super::{BsaArchive, FileEntry, BSA_V_FO3_SKYRIM, BSA_V_OBLIVION, BSA_V_SKYRIM_SE};
-use crate::safety::checked_entry_count;
+use crate::safety::{capacity_hint, checked_entry_count};
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{self, BufReader, Read, Seek, SeekFrom};
@@ -107,6 +107,7 @@ impl BsaArchive {
         // further down, which validates each folder's own file-block offset —
         // a different field that cannot catch this one.
         const HEADER_LEN: u64 = 36;
+        let file_len = reader.get_ref().metadata()?.len();
         let folders_offset = u32::from_le_bytes(header[8..12].try_into().unwrap()) as u64;
         if folders_offset < HEADER_LEN {
             return Err(io::Error::new(
@@ -119,12 +120,11 @@ impl BsaArchive {
         if folders_offset != HEADER_LEN {
             // Name the field before the seek so an out-of-range value is a
             // clear diagnostic rather than a downstream UnexpectedEof.
-            let len = reader.get_ref().metadata()?.len();
-            if folders_offset > len {
+            if folders_offset > file_len {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
                     format!(
-                        "BSA folders_offset {folders_offset} is past end of file ({len} bytes)"
+                        "BSA folders_offset {folders_offset} is past end of file ({file_len} bytes)"
                     ),
                 ));
             }
@@ -151,7 +151,12 @@ impl BsaArchive {
             #[cfg(debug_assertions)]
             offset: u64,
         }
-        let mut folder_records: Vec<FolderRecord> = Vec::with_capacity(folder_count);
+        // #4661 — reserve no more folder records than the file can hold.
+        let mut folder_records: Vec<FolderRecord> = Vec::with_capacity(capacity_hint(
+            folder_count,
+            file_len.saturating_sub(folders_offset),
+            folder_record_size,
+        ));
         for _ in 0..folder_count {
             let mut rec = [0u8; 24];
             reader.read_exact(&mut rec[..folder_record_size])?;
@@ -196,7 +201,30 @@ impl BsaArchive {
             hash: u64,
         }
 
-        let mut raw_files: Vec<RawFileRecord> = Vec::with_capacity(file_count);
+        // #4661 — the header's `file_count` is never what the walk below
+        // iterates: the folder records' own counts are. The two are
+        // independent on-disk fields and used to be reconciled nowhere, so a
+        // 36-byte BSA declaring 10 M files and 0 folders opened `Ok` with 0
+        // files — after reserving capacity for all 10 M. Size off the folder
+        // counts, bounded by the 16-byte file records the rest of the file
+        // can hold, and name a disagreement once per archive. A warn, not an
+        // `Err`: the folder counts alone decide what is read, so a mismatch
+        // does not by itself mis-parse anything.
+        let files_in_folders: u64 = folder_records.iter().map(|f| f.count as u64).sum();
+        if files_in_folders != file_count as u64 {
+            log::warn!(
+                "BSA header declares {} files but its {} folder records hold {} — \
+                 archive is corrupt or hand-edited; the folder records are used",
+                file_count,
+                folder_records.len(),
+                files_in_folders,
+            );
+        }
+        let mut raw_files: Vec<RawFileRecord> = Vec::with_capacity(capacity_hint(
+            usize::try_from(files_in_folders).unwrap_or(usize::MAX),
+            file_len.saturating_sub(reader.stream_position()?),
+            16,
+        ));
         // #622 / SK-D2-05: track running consumed lengths for the two
         // header total fields the original parse silently dropped on
         // the floor (`_total_folder_name_length`, `_total_file_name_length`).
@@ -316,7 +344,9 @@ impl BsaArchive {
         }
 
         // -- File Name Table ----------------------------------------------------
-        let mut files = HashMap::with_capacity(file_count);
+        // #4661 — one entry per file record actually read, not per header
+        // `file_count`.
+        let mut files = HashMap::with_capacity(raw_files.len());
         // #4671 (PAR-D6-2026-09-21-02) — count duplicate keys instead of
         // letting `HashMap::insert` silently make them last-wins; logged
         // once per archive below (the #3637 shadow-count precedent).

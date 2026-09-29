@@ -1,10 +1,45 @@
 use std::collections::HashSet;
+use std::sync::Mutex;
 
 /// A game archive that can extract files by path.
 /// Wraps either a BSA (Oblivion–Skyrim SE) or BA2 (FO4–Starfield) archive.
-pub(crate) enum Archive {
+pub(crate) struct Archive {
+    backend: Backend,
+    /// The path the archive was opened from — named in extract diagnostics
+    /// (#4658), since neither backend reader keeps it.
+    path: String,
+    /// Entries whose extraction already failed with something other than
+    /// `NotFound`, so [`Archive::extract_or_warn`] warns once per
+    /// (archive, entry) rather than once per lookup.
+    warned: Mutex<HashSet<String>>,
+}
+
+enum Backend {
     Bsa(byroredux_bsa::BsaArchive),
     Ba2(byroredux_bsa::Ba2Archive),
+}
+
+/// Extract `path` from the first of `archives` that yields it, in iteration
+/// order — callers pass `.iter().rev()` for #3637's last-listed-wins
+/// precedence.
+///
+/// #4658 — every archive fall-through loop used to be
+/// `if let Ok(data) = archive.extract(..)`, which dropped every error on the
+/// floor: a decompression-bomb rejection (#3410), a size-guard trip (#586), a
+/// corrupt LZ4/zlib body and a truncated archive all read as "missing", so a
+/// corrupt override silently resolved to the lower-precedence copy beneath it
+/// (or to the checkerboard), with nothing in the log and `tex.missing`
+/// calling a present file missing. The fall-through policy is kept, and now
+/// explicit: a corrupt entry is skipped in favour of the next archive's copy,
+/// since serving the vanilla asset beats a checkerboard, but it is named once
+/// via [`Archive::extract_or_warn`].
+pub(crate) fn extract_first<'a>(
+    archives: impl IntoIterator<Item = &'a Archive>,
+    path: &str,
+) -> Option<Vec<u8>> {
+    archives
+        .into_iter()
+        .find_map(|archive| archive.extract_or_warn(path))
 }
 
 /// Read exactly the 4 magic bytes from `r` — the testable core of
@@ -34,28 +69,63 @@ impl Archive {
             .map_err(|e| format!("read '{}': {}", path, e))?;
         if &magic == b"BTDX" {
             byroredux_bsa::Ba2Archive::open(path)
-                .map(Archive::Ba2)
+                .map(Backend::Ba2)
                 .map_err(|e| format!("BA2 '{}': {}", path, e))
         } else {
             byroredux_bsa::BsaArchive::open(path)
-                .map(Archive::Bsa)
+                .map(Backend::Bsa)
                 .map_err(|e| format!("BSA '{}': {}", path, e))
         }
+        .map(|backend| Archive {
+            backend,
+            path: path.to_string(),
+            warned: Mutex::new(HashSet::new()),
+        })
     }
 
     pub(crate) fn extract(&self, path: &str) -> Result<Vec<u8>, std::io::Error> {
-        match self {
-            Archive::Bsa(a) => a.extract(path),
-            Archive::Ba2(a) => a.extract(path),
+        match &self.backend {
+            Backend::Bsa(a) => a.extract(path),
+            Backend::Ba2(a) => a.extract(path),
+        }
+    }
+
+    /// [`Self::extract`] for a caller that falls through to another archive
+    /// on failure (see [`extract_first`]). `NotFound` is the ordinary "not in
+    /// this archive" answer and stays silent; any other error means the entry
+    /// is present but unreadable, and is warned once per entry with the
+    /// archive path and the reader's own labelled error (#4658).
+    pub(crate) fn extract_or_warn(&self, path: &str) -> Option<Vec<u8>> {
+        match self.extract(path) {
+            Ok(data) => Some(data),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => {
+                let first = self
+                    .warned
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .insert(path.to_ascii_lowercase());
+                if first {
+                    log::warn!(
+                        "'{}' is present in '{}' but failed to extract: {} — treating it \
+                         as absent from this archive (a lower-precedence copy, if any, \
+                         is used instead)",
+                        path,
+                        self.path,
+                        e,
+                    );
+                }
+                None
+            }
         }
     }
 
     /// The decoded size `path` extracts to, from the archive's own index —
     /// see `BsaArchive::declared_size` / `Ba2Archive::declared_size`.
     pub(crate) fn declared_size(&self, path: &str) -> Result<usize, std::io::Error> {
-        match self {
-            Archive::Bsa(a) => a.declared_size(path),
-            Archive::Ba2(a) => a.declared_size(path),
+        match &self.backend {
+            Backend::Bsa(a) => a.declared_size(path),
+            Backend::Ba2(a) => a.declared_size(path),
         }
     }
 
@@ -65,9 +135,9 @@ impl Archive {
     /// baked-LOD band selector runs every reconcile
     /// (`cell_loader::lod_bands`).
     pub(crate) fn contains(&self, path: &str) -> bool {
-        match self {
-            Archive::Bsa(a) => a.contains(path),
-            Archive::Ba2(a) => a.contains(path),
+        match &self.backend {
+            Backend::Bsa(a) => a.contains(path),
+            Backend::Ba2(a) => a.contains(path),
         }
     }
 
@@ -76,9 +146,9 @@ impl Archive {
     /// return empty: Starfield's component databases ship only in BA2s,
     /// so a BSA can't carry one. Used by Starfield CDB discovery (#1571).
     pub(crate) fn list_files(&self) -> Vec<&str> {
-        match self {
-            Archive::Bsa(_) => Vec::new(),
-            Archive::Ba2(a) => a.list_files(),
+        match &self.backend {
+            Backend::Bsa(_) => Vec::new(),
+            Backend::Ba2(a) => a.list_files(),
         }
     }
 
@@ -115,10 +185,10 @@ impl Archive {
     /// this is honest for both variants. Factored out of
     /// [`Self::find_by_basename`]'s own lookup; also used by the #3637
     /// shadow-count diagnostic in [`open_with_numeric_siblings`].
-    fn all_paths(&self) -> Vec<&str> {
-        match self {
-            Archive::Bsa(a) => a.list_files(),
-            Archive::Ba2(a) => a.list_files(),
+    pub(crate) fn all_paths(&self) -> Vec<&str> {
+        match &self.backend {
+            Backend::Bsa(a) => a.list_files(),
+            Backend::Ba2(a) => a.list_files(),
         }
     }
 }
@@ -568,7 +638,7 @@ pub(crate) use byroredux_bsa::numeric_sibling_paths;
 
 #[cfg(test)]
 mod tests {
-    use super::{mark_opened, sniff_magic_from};
+    use super::{extract_first, mark_opened, sniff_magic_from, Archive};
     use std::collections::HashSet;
     use std::io::Read;
 
@@ -672,5 +742,67 @@ mod tests {
     fn magic_sniff_errors_on_a_too_short_source() {
         let source: &[u8] = b"ab";
         assert!(sniff_magic_from(source).is_err());
+    }
+
+    /// A one-entry v1 GNRL BA2 at a unique temp path. `packed_size == 0`
+    /// stores `payload` raw; non-zero declares it zlib-compressed.
+    fn write_one_entry_ba2(tag: &str, name: &str, payload: &[u8], packed: bool) -> String {
+        let data_offset = 24u64 + 36;
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"BTDX");
+        bytes.extend_from_slice(&1u32.to_le_bytes());
+        bytes.extend_from_slice(b"GNRL");
+        bytes.extend_from_slice(&1u32.to_le_bytes());
+        bytes.extend_from_slice(&(data_offset + payload.len() as u64).to_le_bytes());
+        bytes.extend_from_slice(&[0u8; 16]); // name/ext/dir hashes + flags
+        bytes.extend_from_slice(&data_offset.to_le_bytes());
+        let packed_size = if packed { payload.len() as u32 } else { 0 };
+        bytes.extend_from_slice(&packed_size.to_le_bytes());
+        bytes.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(&0xBAAD_F00Du32.to_le_bytes());
+        bytes.extend_from_slice(payload);
+        bytes.extend_from_slice(&(name.len() as u16).to_le_bytes());
+        bytes.extend_from_slice(name.as_bytes());
+        let path =
+            std::env::temp_dir().join(format!("byroredux_4658_{tag}_{}.ba2", std::process::id()));
+        std::fs::write(&path, bytes).expect("write temp BA2");
+        path.to_string_lossy().into_owned()
+    }
+
+    /// #4658 — a present-but-corrupt entry in the higher-precedence archive
+    /// falls through to the lower one (the explicit policy), but is now
+    /// recorded for a once-per-entry warning instead of being dropped as if
+    /// it were missing; a plain `NotFound` stays silent.
+    #[test]
+    fn corrupt_override_falls_through_and_is_named_once() {
+        let entry = r"textures\override.dds";
+        let base_path = write_one_entry_ba2("base", entry, b"vanilla bytes", false);
+        let over_path = write_one_entry_ba2("over", entry, b"not a zlib stream", true);
+        let base = Archive::open(&base_path);
+        let over = Archive::open(&over_path);
+        let _ = std::fs::remove_file(&base_path);
+        let _ = std::fs::remove_file(&over_path);
+        let archives = [base.expect("open base"), over.expect("open override")];
+
+        assert!(
+            archives[1].extract(entry).is_err(),
+            "fixture must be corrupt"
+        );
+        let got = extract_first(archives.iter().rev(), entry);
+        assert_eq!(got.as_deref(), Some(&b"vanilla bytes"[..]));
+        assert!(
+            archives[1].warned.lock().unwrap().contains(entry),
+            "the corrupt override must be recorded for its warning"
+        );
+        assert!(archives[0].warned.lock().unwrap().is_empty());
+
+        // A second lookup warns no further (one entry, still one record).
+        extract_first(archives.iter().rev(), entry);
+        assert_eq!(archives[1].warned.lock().unwrap().len(), 1);
+
+        // Absent everywhere: `NotFound` is not a warning.
+        assert!(extract_first(archives.iter().rev(), r"textures\absent.dds").is_none());
+        assert_eq!(archives[1].warned.lock().unwrap().len(), 1);
+        assert!(archives[0].warned.lock().unwrap().is_empty());
     }
 }

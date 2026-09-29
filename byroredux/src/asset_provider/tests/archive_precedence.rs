@@ -204,7 +204,13 @@ fn every_content_provider_resolves_collisions_last_wins() {
     // Needle split so this file's own text cannot satisfy the scan — the
     // first attempt composed it as `"for archive in " + ""`, which still
     // left the whole literal in the source and made the test find itself.
-    let needle = format!("{}{}", "for archive ", "in ");
+    // #4658 moved most walks into `extract_first(<archives>, path)`, whose
+    // first argument carries the iteration order, so its call sites are
+    // scanned the same way.
+    let needles = [
+        format!("{}{}", "for archive ", "in "),
+        format!("{}{}", "extract_", "first("),
+    ];
 
     let mut files: Vec<std::path::PathBuf> = Vec::new();
     let mut stack = vec![root.clone()];
@@ -235,7 +241,10 @@ fn every_content_provider_resolves_collisions_last_wins() {
             .to_string();
         let source = std::fs::read_to_string(path).expect("readable source");
 
-        for (offset, _) in source.match_indices(&needle) {
+        let hits = needles
+            .iter()
+            .flat_map(|needle| source.match_indices(needle.as_str()));
+        for (offset, _) in hits {
             let line_end = source[offset..]
                 .find('\n')
                 .map_or(source.len(), |i| offset + i);

@@ -115,6 +115,12 @@ pub enum Error {
     #[error("{what} count {raw} is negative — corrupt or adversarial CDB data")]
     NegativeCount { what: &'static str, raw: i32 },
 
+    #[error(
+        "CDB value nesting exceeds {limit} levels — a self-referential or adversarial \
+         class graph (vanilla nesting is shallow)"
+    )]
+    NestingTooDeep { limit: usize },
+
     #[error("CDB parse budget exceeded: {requested} instances (limit {limit})")]
     ParseBudgetExceeded { requested: usize, limit: usize },
 

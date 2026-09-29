@@ -138,12 +138,7 @@ impl SoundArchiveProvider {
     /// policy decision no consumer has made yet, so there is deliberately no
     /// `extract_any_in(folder)` sibling.
     pub(crate) fn extract(&self, archive_path: &str) -> Option<Vec<u8>> {
-        for archive in self.archives.iter().rev() {
-            if let Ok(data) = archive.extract(archive_path) {
-                return Some(data);
-            }
-        }
-        None
+        extract_first(self.archives.iter().rev(), archive_path)
     }
 }
 

@@ -9,7 +9,7 @@
 //!
 //! See M46.0 / #561 / #445 for the multi-plugin landing.
 
-use crate::asset_provider::Archive;
+use crate::asset_provider::{extract_first, Archive};
 use byroredux_core::ecs::Resource;
 use byroredux_core::form_id::{FormIdPair, PluginId};
 use byroredux_plugin::esm;
@@ -446,9 +446,7 @@ impl ArchiveStringSource {
             .by_plugin
             .entry(plugin_path.to_path_buf())
             .or_insert_with(|| Self::discover(plugin_path));
-        archives
-            .iter()
-            .find_map(|archive| archive.extract(relative_path).ok())
+        extract_first(archives.iter(), relative_path)
     }
 
     fn discover(plugin_path: &Path) -> Vec<Archive> {

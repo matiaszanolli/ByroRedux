@@ -9,6 +9,16 @@ const SIGNATURE_BETH: u32 = 0x48544542;
 const HEADER_SIZE: u32 = 8;
 const FILE_VERSION: u32 = 4;
 
+/// #4657 — ceiling on struct / reference nesting while reading or skipping a
+/// value. The value readers recurse through `read_user_class` and
+/// `read_primitive_ref` (and their `skip_*` twins) with no other bound: a
+/// `CLAS` whose inline field has its own class as type recurses without
+/// consuming a byte, and an 84-byte file overflowed the stack and aborted
+/// the process. [`ParseLimits::max_instances`] counts top-level chunks only
+/// and cannot catch it. Vanilla nesting is shallow — the full vanilla
+/// `materialsbeta.cdb` validates under this cap — so 64 is ample.
+const MAX_NESTING_DEPTH: usize = 64;
+
 /// Top-level CDB document. Mirrors `Gibbed.Starfield.FileFormats.
 /// ComponentDatabaseFile` but typed.
 #[derive(Debug)]
@@ -199,6 +209,7 @@ fn parse_schema(bytes: &[u8], limits: ParseLimits) -> Result<State<'_>> {
         classes: Vec::new(),
         class_by_name_offset: HashMap::new(),
         strings: StringTable::new(Vec::new()),
+        depth: 0,
     };
     let strt_bytes = state.consume_chunk(ChunkType::Strt)?;
     state.strings = StringTable::new(strt_bytes.to_vec());
@@ -385,6 +396,24 @@ struct State<'a> {
     classes: Vec<Class>,
     class_by_name_offset: HashMap<i32, usize>,
     strings: StringTable,
+    /// Current value-nesting depth; see [`MAX_NESTING_DEPTH`].
+    depth: usize,
+}
+
+/// Run one level of value nesting under the [`MAX_NESTING_DEPTH`] cap.
+fn nested<'a, T>(
+    state: &mut State<'a>,
+    body: impl FnOnce(&mut State<'a>) -> Result<T>,
+) -> Result<T> {
+    if state.depth >= MAX_NESTING_DEPTH {
+        return Err(Error::NestingTooDeep {
+            limit: MAX_NESTING_DEPTH,
+        });
+    }
+    state.depth += 1;
+    let result = body(state);
+    state.depth -= 1;
+    result
 }
 
 impl<'a> State<'a> {
@@ -742,6 +771,17 @@ fn skip_user_class(
     cur: &mut Cursor<'_>,
     is_diff: bool,
 ) -> Result<()> {
+    nested(state, |state| {
+        skip_user_class_body(state, type_ref, cur, is_diff)
+    })
+}
+
+fn skip_user_class_body(
+    state: &mut State,
+    type_ref: TypeReference,
+    cur: &mut Cursor<'_>,
+    is_diff: bool,
+) -> Result<()> {
     let field_layout = state.class_for(type_ref)?.fields.clone();
     let mut chunk_fields = Vec::new();
     if !is_diff {
@@ -826,6 +866,10 @@ fn skip_primitive(
 }
 
 fn skip_primitive_ref(state: &mut State, cur: &mut Cursor<'_>, is_diff: bool) -> Result<()> {
+    nested(state, |state| skip_primitive_ref_body(state, cur, is_diff))
+}
+
+fn skip_primitive_ref_body(state: &mut State, cur: &mut Cursor<'_>, is_diff: bool) -> Result<()> {
     let type_ref = TypeReference::new(cur.read_i32()?);
     if type_ref.is_builtin() {
         // Mirrors `read_primitive`: list/map references resolve to the
@@ -920,6 +964,17 @@ fn insert_field(
 }
 
 fn read_user_class(
+    state: &mut State,
+    type_ref: TypeReference,
+    cur: &mut Cursor<'_>,
+    is_diff: bool,
+) -> Result<Value> {
+    nested(state, |state| {
+        read_user_class_body(state, type_ref, cur, is_diff)
+    })
+}
+
+fn read_user_class_body(
     state: &mut State,
     type_ref: TypeReference,
     cur: &mut Cursor<'_>,
@@ -1022,7 +1077,19 @@ fn read_primitive(
     })
 }
 
+/// Every recursion cycle in the value reader passes through either
+/// [`read_user_class`] (struct nesting) or this function (a `Ref` chain,
+/// which can recurse through `read_primitive` without touching a class), so
+/// guarding both bounds all of them. The `skip_*` walker mirrors it.
 fn read_primitive_ref(state: &mut State, cur: &mut Cursor<'_>, is_diff: bool) -> Result<Value> {
+    nested(state, |state| read_primitive_ref_body(state, cur, is_diff))
+}
+
+fn read_primitive_ref_body(
+    state: &mut State,
+    cur: &mut Cursor<'_>,
+    is_diff: bool,
+) -> Result<Value> {
     let type_id = cur.read_i32()?;
     let type_ref = TypeReference::new(type_id);
 
@@ -1735,6 +1802,7 @@ mod tests {
             classes: Vec::new(),
             class_by_name_offset: HashMap::new(),
             strings: StringTable::new(Vec::new()),
+            depth: 0,
         }
     }
 
@@ -1823,5 +1891,113 @@ mod tests {
             }
             other => panic!("expected Value::List, got {other:?}"),
         }
+    }
+
+    /// Append one `[kind][size][payload]` chunk.
+    fn push_chunk(bytes: &mut Vec<u8>, kind: ChunkType, payload: &[u8]) {
+        bytes.extend_from_slice(&(kind as u32).to_le_bytes());
+        bytes.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(payload);
+    }
+
+    /// BETH header + STRT ("A") + TYPE (1) + one CLAS + one OBJT chunk.
+    fn synthetic_cdb_with_one_object(clas: &[u8], objt: &[u8]) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&SIGNATURE_BETH.to_le_bytes());
+        bytes.extend_from_slice(&HEADER_SIZE.to_le_bytes());
+        bytes.extend_from_slice(&FILE_VERSION.to_le_bytes());
+        bytes.extend_from_slice(&5u32.to_le_bytes()); // chunkCount incl. BETH
+        push_chunk(&mut bytes, ChunkType::Strt, b"A\0");
+        push_chunk(&mut bytes, ChunkType::Type, &1u32.to_le_bytes());
+        push_chunk(&mut bytes, ChunkType::Clas, clas);
+        push_chunk(&mut bytes, ChunkType::Objt, objt);
+        bytes
+    }
+
+    /// #4657 — the audit's self-referential file: an IS_STRUCT class whose
+    /// single inline field has the class itself as its type, plus one OBJT of
+    /// that class. Every level recurses without consuming a byte; pre-fix
+    /// both walkers overflowed the stack and aborted the process.
+    fn self_referential_struct_cdb() -> Vec<u8> {
+        let mut clas = Vec::new();
+        clas.extend_from_slice(&0i32.to_le_bytes()); // name_offset → "A"
+        clas.extend_from_slice(&0u32.to_le_bytes()); // type_id
+        clas.extend_from_slice(&ClassFlags::IS_STRUCT.to_le_bytes());
+        clas.extend_from_slice(&1u16.to_le_bytes()); // field_count
+        clas.extend_from_slice(&0i32.to_le_bytes()); // field name → "A"
+        clas.extend_from_slice(&0i32.to_le_bytes()); // field type → class "A" itself
+        clas.extend_from_slice(&0u16.to_le_bytes()); // offset
+        clas.extend_from_slice(&0u16.to_le_bytes()); // size
+        synthetic_cdb_with_one_object(&clas, &0i32.to_le_bytes())
+    }
+
+    #[test]
+    fn self_referential_struct_is_rejected_instead_of_overflowing_the_stack() {
+        let cdb = self_referential_struct_cdb();
+        let limits = ParseLimits {
+            max_instances: 1_000_000,
+        };
+        let err = ComponentDatabaseFile::parse_with_limits(&cdb, limits)
+            .expect_err("unbounded self-nesting must not parse");
+        assert!(
+            matches!(
+                err,
+                Error::NestingTooDeep {
+                    limit: MAX_NESTING_DEPTH
+                }
+            ),
+            "got {err:?}"
+        );
+        let err = ComponentDatabaseFile::validate_instances_with_limits(&cdb, limits)
+            .expect_err("the skip walker must be bounded too");
+        assert!(matches!(err, Error::NestingTooDeep { .. }), "got {err:?}");
+    }
+
+    /// #4657 — the other recursion cycle: a chain of builtin `Ref`s recurses
+    /// `read_primitive_ref` → `read_primitive` → `read_primitive_ref` without
+    /// ever touching a class, 4 bytes per level. 200 levels is far past the
+    /// cap yet tiny on disk.
+    #[test]
+    fn builtin_ref_chain_is_bounded() {
+        let mut clas = Vec::new();
+        clas.extend_from_slice(&0i32.to_le_bytes());
+        clas.extend_from_slice(&0u32.to_le_bytes());
+        clas.extend_from_slice(&ClassFlags::IS_STRUCT.to_le_bytes());
+        clas.extend_from_slice(&0u16.to_le_bytes()); // no fields
+        let mut objt = Vec::new();
+        objt.extend_from_slice(&(BuiltinType::Ref as u32).to_le_bytes()); // object type
+        for _ in 0..200 {
+            objt.extend_from_slice(&(BuiltinType::Ref as u32).to_le_bytes());
+        }
+        objt.extend_from_slice(&(BuiltinType::Null as u32).to_le_bytes());
+        let cdb = synthetic_cdb_with_one_object(&clas, &objt);
+        let err = ComponentDatabaseFile::parse(&cdb).expect_err("200-deep Ref chain");
+        assert!(matches!(err, Error::NestingTooDeep { .. }), "got {err:?}");
+        let err =
+            ComponentDatabaseFile::validate_instances_with_limits(&cdb, ParseLimits::unlimited())
+                .expect_err("200-deep Ref chain, skip walker");
+        assert!(matches!(err, Error::NestingTooDeep { .. }), "got {err:?}");
+    }
+
+    /// Nesting under the cap still decodes: a 3-deep `Ref` chain ending in
+    /// `Null`, and the depth counter unwinds so a second object parses too.
+    #[test]
+    fn shallow_ref_chain_still_parses() {
+        let mut clas = Vec::new();
+        clas.extend_from_slice(&0i32.to_le_bytes());
+        clas.extend_from_slice(&0u32.to_le_bytes());
+        clas.extend_from_slice(&ClassFlags::IS_STRUCT.to_le_bytes());
+        clas.extend_from_slice(&0u16.to_le_bytes());
+        let mut objt = Vec::new();
+        objt.extend_from_slice(&(BuiltinType::Ref as u32).to_le_bytes());
+        for _ in 0..3 {
+            objt.extend_from_slice(&(BuiltinType::Ref as u32).to_le_bytes());
+        }
+        objt.extend_from_slice(&(BuiltinType::Null as u32).to_le_bytes());
+        let cdb = synthetic_cdb_with_one_object(&clas, &objt);
+        let file = ComponentDatabaseFile::parse(&cdb).expect("shallow chain parses");
+        assert_eq!(file.instances.len(), 1);
+        ComponentDatabaseFile::validate_instances_with_limits(&cdb, ParseLimits::unlimited())
+            .expect("shallow chain validates");
     }
 }

@@ -270,7 +270,7 @@ impl ConsoleCommand for TexDumpCommand {
         let candidates = tex_dump_candidate_keys(texture_path);
         let (hit, bytes) = match candidates
             .iter()
-            .find_map(|key| archive.extract(key).ok().map(|b| (key.clone(), b)))
+            .find_map(|key| archive.extract_or_warn(key).map(|b| (key.clone(), b)))
         {
             Some(hit) => hit,
             None => {

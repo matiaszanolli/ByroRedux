@@ -31,7 +31,7 @@ Audits the *host contract* that decides whether a Bethesda menu works, on two tr
 ## Phase 1: Setup
 
 1. `mkdir -p /tmp/audit/ui`; dedup per `_audit-common.md`; read the latest `docs/audits/AUDIT_UI_*.md` (date D = delta baseline).
-2. `cargo test -p byroredux-ui -p byroredux-menuxml`; record pass/ignored. Data-gated tests **return early (silent pass) without game data**: `crates/menuxml/tests/{vanilla_corpus,fo3_corpus}.rs` (`BYROREDUX_OBLIVION_DATA`, `BYROREDUX_FO3_DATA`), `crates/ui/tests/*_protocol.rs` (`BYROREDUX_SKYRIM_DATA`/`BYROREDUX_SKYRIMSE_DATA`, FO4), and `avm1_host/tests.rs::installed_skyrim_host_calls_are_all_cataloged` is `#[ignore]`d. A "verified" claim resting on one of these is unverified unless you ran it with data.
+2. `cargo test -p byroredux-ui -p byroredux-menuxml`; record pass/ignored. Data-gated tests **return early (silent pass) without game data**: `crates/ui/tests/*_protocol.rs` (`BYROREDUX_SKYRIM_DATA`/`BYROREDUX_SKYRIMSE_DATA`, FO4), and `avm1_host/tests.rs::installed_skyrim_host_calls_are_all_cataloged` is `#[ignore]`d. The menuxml corpora (`crates/menuxml/tests/{vanilla,fnv,fo3}_corpus.rs`) are `#[ignore]`d since #4660 — run them with `--ignored`. A "verified" claim resting on one of these is unverified unless you ran it with data.
 3. **Count, do not trust, catalog sizes.** Re-derive from `crates/ui/src/catalog.rs`: Skyrim array = **142** (74 `Measured` SkyUI-sourced + 68 `HeuristicNamePrefix` from the #3103 corpus sweep); FO4 = **269** (138 + 131, #2966). `docs/engine/ui.md` and the ROADMAP M48 row still quote 74 for Skyrim as of 2026-09-19 (doc rot; a 74 that meant the measured half is not a wrong count, a 74 that claims the whole catalog is).
 
 ## Phase 2: Dimensions

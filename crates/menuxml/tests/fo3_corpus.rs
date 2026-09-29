@@ -1,8 +1,8 @@
 //! FO3 vanilla-corpus integration tests (M48.5 legacy-UI track).
 //!
-//! Gated on `BYROREDUX_FO3_DATA` pointing at a real Fallout 3 `Data/`
-//! directory (falls back to the default Steam install when present), so
-//! `cargo test` stays hermetic elsewhere. These tests pin the corpus
+//! `#[ignore]`d real-data tests: run with `--ignored` against
+//! `BYROREDUX_FO3_DATA` (or the default Steam install), resolved through
+//! `common` under the #3850 strict-lane contract (#4660). They pin the corpus
 //! facts the FO3 profile depends on and render the HUD end-to-end:
 //! meters grafted from the ops-driven `meter.xml` prefab, compass
 //! instantiated from `hudtemplates.xml`. Frames dump to
@@ -12,6 +12,8 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use byroredux_bsa::BsaArchive;
+
+mod common;
 use byroredux_menuxml::font::Font;
 use byroredux_menuxml::menu::{MenuAssets, MenuRenderer};
 use byroredux_menuxml::profile::MenuProfile;
@@ -50,17 +52,16 @@ impl MenuAssets for Fo3Assets {
 }
 
 fn data_dir() -> Option<PathBuf> {
-    if let Some(dir) = std::env::var("BYROREDUX_FO3_DATA").ok() {
-        return Some(PathBuf::from(dir));
-    }
-    let default = PathBuf::from("/mnt/data/SteamLibrary/steamapps/common/Fallout 3 goty/Data");
-    default.is_dir().then_some(default)
+    common::data_dir(
+        "BYROREDUX_FO3_DATA",
+        "/mnt/data/SteamLibrary/steamapps/common/Fallout 3 goty/Data",
+    )
 }
 
 fn open_assets() -> Option<Fo3Assets> {
     let dir = data_dir()?;
-    let misc = BsaArchive::open(dir.join("Fallout - Misc.bsa")).ok()?;
-    let textures = BsaArchive::open(dir.join("Fallout - Textures.bsa")).ok()?;
+    let misc = common::open_archive(&dir, "Fallout - Misc.bsa")?;
+    let textures = common::open_archive(&dir, "Fallout - Textures.bsa")?;
     Some(Fo3Assets {
         misc,
         textures,
@@ -70,9 +71,9 @@ fn open_assets() -> Option<Fo3Assets> {
 
 /// Corpus facts the FO3 profile + HUD driver depend on.
 #[test]
+#[ignore = "needs FO3 game data on disk"]
 fn fo3_corpus_facts() {
     let Some(assets) = open_assets() else {
-        eprintln!("skipping: FO3 data not found");
         return;
     };
 
@@ -131,10 +132,10 @@ fn fo3_corpus_facts() {
 /// `HitPoints`/`ActionPoints` container rects, compass instantiated from
 /// `hudtemplates.xml` — the assembly the source engine performed in C++.
 #[test]
+#[ignore = "needs FO3 game data on disk"]
 fn fo3_hud_renders() {
     let _ = env_logger::builder().is_test(true).try_init();
     let Some(assets) = open_assets() else {
-        eprintln!("skipping: FO3 data not found");
         return;
     };
     let mut hud = MenuRenderer::load_with_profile(

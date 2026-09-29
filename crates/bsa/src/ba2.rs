@@ -59,7 +59,8 @@
 
 use crate::read_at::ReadAt;
 use crate::safety::{
-    checked_chunk_size, checked_chunk_size_usize, checked_chunk_total, checked_entry_count,
+    capacity_hint, checked_chunk_size, checked_chunk_size_usize, checked_chunk_total,
+    checked_entry_count,
 };
 use std::collections::HashMap;
 use std::fs::File;
@@ -319,7 +320,10 @@ impl Ba2Archive {
 
         // ── Name table ──────────────────────────────────────────────
         reader.seek(SeekFrom::Start(name_table_offset))?;
-        let mut names = Vec::with_capacity(file_count);
+        // #4661 — sized off the records actually read, not the header's
+        // `file_count`: `files.len()` equals it here, but only because every
+        // one of those records was really present in the file.
+        let mut names = Vec::with_capacity(files.len());
         for _ in 0..file_count {
             let mut len_buf = [0u8; 2];
             reader.read_exact(&mut len_buf)?;
@@ -340,7 +344,7 @@ impl Ba2Archive {
             ));
         }
 
-        let mut map = HashMap::with_capacity(file_count);
+        let mut map = HashMap::with_capacity(files.len());
         // #4671 — count duplicate names instead of silently letting
         // `HashMap::insert` make them last-wins; logged once per archive
         // (the #3637 shadow-count precedent, mirrored on the BSA side).
@@ -478,6 +482,7 @@ impl Ba2Archive {
             } => finish_chunk_payload(
                 read_chunk_payload(&self.file, *offset, *packed_size, *unpacked_size)?,
                 self.compression,
+                path,
             ),
             Ba2Entry::Dx10 {
                 dxgi_format,
@@ -496,6 +501,7 @@ impl Ba2Archive {
                 },
                 read_dx10_chunk_payloads(&self.file, chunks)?,
                 self.compression,
+                path,
             ),
         }
     }
@@ -545,14 +551,36 @@ fn log_v2_v3_extra_bytes(label: &str, extra: &[u8; 8], name_table_offset: u64, s
     }
 }
 
+/// Bytes left in the file after the reader's current position — the
+/// ceiling on how many records a declared count can really describe.
+fn remaining_bytes(reader: &mut BufReader<File>) -> io::Result<u64> {
+    let len = reader.get_ref().metadata()?.len();
+    Ok(len.saturating_sub(reader.stream_position()?))
+}
+
+/// #4661 — name the record that ran out. A bare `read_exact` failure
+/// ("failed to fill whole buffer") named neither the record kind, its
+/// index, nor the declared count, so a lying `file_count` was
+/// indistinguishable from a reader bug. The kind is kept so callers still
+/// see `UnexpectedEof`.
+fn truncated_record(e: io::Error, what: &str, index: usize, count: usize) -> io::Error {
+    io::Error::new(
+        e.kind(),
+        format!("BA2 {what} {index} of {count} declared: {e} — truncated or corrupt archive"),
+    )
+}
+
 /// Read `count` 36-byte GNRL file records.
 fn read_general_records(reader: &mut BufReader<File>, count: usize) -> io::Result<Vec<Ba2Entry>> {
     // `count` was already capped by `checked_entry_count` at the header
-    // parse site; the `Vec::with_capacity` below is therefore safe.
-    let mut out = Vec::with_capacity(count);
+    // parse site; #4661 additionally bounds the reservation by the bytes
+    // the file has left for 36-byte records.
+    let mut out = Vec::with_capacity(capacity_hint(count, remaining_bytes(reader)?, 36));
     let mut rec = [0u8; 36];
-    for _ in 0..count {
-        reader.read_exact(&mut rec)?;
+    for i in 0..count {
+        reader
+            .read_exact(&mut rec)
+            .map_err(|e| truncated_record(e, "GNRL file record", i, count))?;
         // rec[0..4]   name_hash
         // rec[4..8]   ext
         // rec[8..12]  dir_hash
@@ -589,11 +617,14 @@ fn read_general_records(reader: &mut BufReader<File>, count: usize) -> io::Resul
 /// followed by `num_chunks` chunk headers (24 bytes each).
 fn read_dx10_records(reader: &mut BufReader<File>, count: usize) -> io::Result<Vec<Ba2Entry>> {
     // `count` was capped at the header parse site by
-    // `checked_entry_count`; the `Vec::with_capacity` is safe.
-    let mut out = Vec::with_capacity(count);
-    for _ in 0..count {
+    // `checked_entry_count`; #4661 additionally bounds the reservation by
+    // the bytes left for records of at least the 24-byte base header.
+    let mut out = Vec::with_capacity(capacity_hint(count, remaining_bytes(reader)?, 24));
+    for i in 0..count {
         let mut base = [0u8; 24];
-        reader.read_exact(&mut base)?;
+        reader
+            .read_exact(&mut base)
+            .map_err(|e| truncated_record(e, "DX10 file record", i, count))?;
         // base[0..4]  name_hash
         // base[4..8]  ext ("dds\0")
         // base[8..12] dir_hash
@@ -683,7 +714,9 @@ fn read_dx10_records(reader: &mut BufReader<File>, count: usize) -> io::Result<V
         let mut unpacked_total = 0usize;
         for _ in 0..num_chunks {
             let mut chunk = [0u8; 24];
-            reader.read_exact(&mut chunk)?;
+            reader
+                .read_exact(&mut chunk)
+                .map_err(|e| truncated_record(e, "DX10 chunk header of file record", i, count))?;
             let offset = u64::from_le_bytes(chunk[0..8].try_into().unwrap());
             let packed_size = u32::from_le_bytes(chunk[8..12].try_into().unwrap());
             let unpacked_size = u32::from_le_bytes(chunk[12..16].try_into().unwrap());
@@ -766,10 +799,13 @@ fn read_dx10_records(reader: &mut BufReader<File>, count: usize) -> io::Result<V
 }
 
 /// Decompress a packed chunk using the archive's compression codec.
+/// `path` is the archive entry being extracted — carried only so the
+/// diagnostics below name it (#4662), mirroring the BSA sibling.
 fn decompress_chunk(
     packed: &[u8],
     unpacked_size: usize,
     compression: Ba2Compression,
+    path: &str,
 ) -> io::Result<Vec<u8>> {
     // Defense-in-depth: entries that reached this function already had
     // `unpacked_size` capped at record-read time, but `decompress_chunk`
@@ -785,8 +821,11 @@ fn decompress_chunk(
             // fix in `archive/extract.rs`.
             // #3812 — the zlib-specific sibling, so a checksum-only
             // failure can retry as raw DEFLATE (#3720's recovery, ported).
-            let buf =
-                crate::safety::inflate_bounded_zlib(packed, unpacked_size, "BA2 zlib chunk")?;
+            let buf = crate::safety::inflate_bounded_zlib(
+                packed,
+                unpacked_size,
+                &format!("BA2 zlib chunk of '{path}'"),
+            )?;
             if buf.len() != unpacked_size {
                 // #812 / FO4-D2-NEW-02 — `read_to_end` honours deflate's
                 // self-terminating end-of-stream marker mid-buffer so a
@@ -810,9 +849,10 @@ fn decompress_chunk(
                 // vanilla `Fallout4 - Meshes.ba2`'s `packed_size >
                 // unpacked_size` anomaly.
                 log::warn!(
-                    "BA2 zlib decompressed {} bytes but record declared {}",
+                    "BA2 zlib decompressed {} bytes but record declared {} for '{}'",
                     buf.len(),
-                    unpacked_size
+                    unpacked_size,
+                    path,
                 );
             }
             Ok(buf)
@@ -853,15 +893,17 @@ fn decompress_chunk(
             .map_err(|_| {
                 io::Error::new(
                     io::ErrorKind::InvalidData,
-                    "BA2 LZ4 block decompression panicked (malformed chunk; \
-                     see #2097 — lz4_flex documents `decompress` as may-panic \
-                     when the size hint undershoots)",
+                    format!(
+                        "BA2 LZ4 block decompression of '{path}' panicked (malformed \
+                         chunk; see #2097 — lz4_flex documents `decompress` as \
+                         may-panic when the size hint undershoots)"
+                    ),
                 )
             })?;
             let buf = decoded.map_err(|e| {
                 io::Error::new(
                     io::ErrorKind::InvalidData,
-                    format!("BA2 LZ4 block decompression failed: {}", e),
+                    format!("BA2 LZ4 block decompression of '{}' failed: {}", path, e),
                 )
             })?;
             // #2618 / SF-D1-01 — mirror the zlib arm's mismatch warning.
@@ -884,10 +926,12 @@ fn decompress_chunk(
             // level as the zlib arm above.
             if buf.len() != unpacked_size {
                 log::warn!(
-                    "BA2 LZ4 decompressed {} bytes but record declared {} (under-run — \
-                     lz4_flex silently truncates rather than erroring in this direction)",
+                    "BA2 LZ4 decompressed {} bytes but record declared {} for '{}' \
+                     (under-run — lz4_flex silently truncates rather than erroring in \
+                     this direction)",
                     buf.len(),
-                    unpacked_size
+                    unpacked_size,
+                    path,
                 );
             }
             Ok(buf)
@@ -923,13 +967,17 @@ fn read_chunk_payload<R: ReadAt + ?Sized>(
     }
 }
 
-fn finish_chunk_payload(payload: ChunkPayload, compression: Ba2Compression) -> io::Result<Vec<u8>> {
+fn finish_chunk_payload(
+    payload: ChunkPayload,
+    compression: Ba2Compression,
+    path: &str,
+) -> io::Result<Vec<u8>> {
     match payload {
         ChunkPayload::Raw(bytes) => Ok(bytes),
         ChunkPayload::Compressed {
             bytes,
             unpacked_size,
-        } => decompress_chunk(&bytes, unpacked_size, compression),
+        } => decompress_chunk(&bytes, unpacked_size, compression, path),
     }
 }
 
@@ -951,9 +999,10 @@ fn extract_dx10<R: ReadAt + ?Sized>(
     info: Dx10TexInfo,
     chunks: &[Dx10Chunk],
     compression: Ba2Compression,
+    path: &str,
 ) -> io::Result<Vec<u8>> {
     let payloads = read_dx10_chunk_payloads(reader, chunks)?;
-    finish_dx10_payload(info, payloads, compression)
+    finish_dx10_payload(info, payloads, compression, path)
 }
 
 fn read_dx10_chunk_payloads<R: ReadAt + ?Sized>(
@@ -972,10 +1021,38 @@ fn finish_dx10_payload(
     info: Dx10TexInfo,
     chunks: Vec<ChunkPayload>,
     compression: Ba2Compression,
+    path: &str,
 ) -> io::Result<Vec<u8>> {
     let mut pixel_data = Vec::new();
-    for chunk in chunks {
-        pixel_data.extend_from_slice(&finish_chunk_payload(chunk, compression)?);
+    let last = chunks.len().saturating_sub(1);
+    for (i, chunk) in chunks.into_iter().enumerate() {
+        let declared = match &chunk {
+            ChunkPayload::Raw(bytes) => bytes.len(),
+            ChunkPayload::Compressed { unpacked_size, .. } => *unpacked_size,
+        };
+        let decoded = finish_chunk_payload(chunk, compression, path)?;
+        // #4662 — chunks are concatenated back to back under one synthesized
+        // header, so a non-final chunk that decodes short shifts every later
+        // mip onto the wrong bytes. The renderer's too-short-payload guard
+        // (#4511) only catches that when nothing over-delivers to compensate,
+        // and then blames the DDS, not this archive. Reject it here, naming
+        // the entry — the CSG reader does the same (#1986). A short FINAL
+        // chunk shifts nothing and keeps the lenient warn-only path
+        // `decompress_chunk` already logs. Measured 2026-09-28 by extracting
+        // all 475,421 entries of the 137 installed FO4 / FO76 / Starfield DX10
+        // archives: zero rejections.
+        if i != last && decoded.len() != declared {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "BA2 DX10 '{path}': chunk {i} of {} decoded {} bytes but declared {declared} \
+                     — every later mip would shift under the synthesized DDS header",
+                    last + 1,
+                    decoded.len(),
+                ),
+            ));
+        }
+        pixel_data.extend_from_slice(&decoded);
     }
     let mut dds = build_dds_header(
         info.dxgi_format,
@@ -1145,9 +1222,18 @@ fn pitch_or_linear_size_for(
     };
 
     if let Some(bb) = block_bytes {
-        let bw = width.div_ceil(4).max(1);
-        let bh = height.div_ceil(4).max(1);
-        return (bw * bh * bb, DDSD_LINEARSIZE);
+        // #4656 — widen before multiplying. Both dimensions are file-controlled
+        // u16s: 16384 blocks a side × 16 bytes/block is exactly 2^32, so a
+        // crafted 65535² BC7 record overflowed `u32` here — a debug-build panic
+        // on the main thread at extract time, a silent wrap in release. The DDS
+        // field is only 32 bits wide, so saturate: a size that cannot be
+        // represented is reported as the largest one that can (loaders that
+        // read this legacy field at all only size a buffer from it; the
+        // engine's own `dds.rs` recomputes mip sizes and ignores it).
+        let bw = u64::from(width.div_ceil(4).max(1));
+        let bh = u64::from(height.div_ceil(4).max(1));
+        let linear_size = u32::try_from(bw * bh * u64::from(bb)).unwrap_or(u32::MAX);
+        return (linear_size, DDSD_LINEARSIZE);
     }
 
     // Uncompressed DXGI formats observed in Bethesda BA2 DX10
@@ -1174,13 +1260,18 @@ fn pitch_or_linear_size_for(
         _ => None,
     };
     if let Some(b) = bpp {
+        // Cannot overflow: `width` came from a u16 and `b` is at most 8.
         return (width * b, DDSD_PITCH);
     }
 
     // Unknown format — report the entire pixel payload with
     // LINEARSIZE so loaders at least size their buffer. Pre-#594
-    // behaviour for formats not on either list.
-    (total_bytes as u32, DDSD_LINEARSIZE)
+    // behaviour for formats not on either list. #4656 — saturate rather
+    // than truncate a payload past 4 GiB, same as the block-compressed arm.
+    (
+        u32::try_from(total_bytes).unwrap_or(u32::MAX),
+        DDSD_LINEARSIZE,
+    )
 }
 
 /// Normalize a path for case-insensitive, slash-agnostic lookup.
@@ -1388,6 +1479,35 @@ mod tests {
         let (size, flag) = pitch_or_linear_size_for(98, 512, 256, 0);
         assert_eq!(size, 131072);
         assert_eq!(flag, DDSD_LINEARSIZE);
+    }
+
+    /// #4656 — the largest file-controlled dimensions a DX10 record can carry
+    /// (u16::MAX²) overflowed the old `u32` product for every 16-byte-block
+    /// format and panicked debug builds at extract time. The product now
+    /// saturates; sizes that fit are unchanged.
+    #[test]
+    fn linear_size_saturates_instead_of_overflowing_at_u16_max_dimensions() {
+        for fmt in [74u8, 77, 83, 95, 98] {
+            let (size, flag) = pitch_or_linear_size_for(fmt, 65535, 65535, 0);
+            assert_eq!(size, u32::MAX, "format {fmt}: 16384² blocks × 16 B is 2^32");
+            assert_eq!(flag, DDSD_LINEARSIZE);
+        }
+        // 65532² BC7 is the largest that still fits: 16383² × 16.
+        assert_eq!(
+            pitch_or_linear_size_for(98, 65532, 65532, 0).0,
+            4_294_443_024
+        );
+        // BC1 (8-byte blocks) at u16::MAX² fits exactly as before.
+        assert_eq!(
+            pitch_or_linear_size_for(71, 65535, 65535, 0).0,
+            2_147_483_648
+        );
+        // And the whole synthesized header survives it.
+        let hdr = build_dds_header(98, 65535, 65535, 1, false, &[]);
+        assert_eq!(
+            u32::from_le_bytes(hdr[20..24].try_into().unwrap()),
+            u32::MAX
+        );
     }
 
     #[test]
@@ -1650,7 +1770,13 @@ mod tests {
         encoder.write_all(original).unwrap();
         let compressed = encoder.finish().unwrap();
 
-        let result = decompress_chunk(&compressed, original.len(), Ba2Compression::Zlib).unwrap();
+        let result = decompress_chunk(
+            &compressed,
+            original.len(),
+            Ba2Compression::Zlib,
+            "test.bin",
+        )
+        .unwrap();
         assert_eq!(result, original);
     }
 
@@ -1681,7 +1807,7 @@ mod tests {
         encoder.write_all(actual_payload).unwrap();
         let compressed = encoder.finish().unwrap();
 
-        let result = decompress_chunk(&compressed, 100, Ba2Compression::Zlib)
+        let result = decompress_chunk(&compressed, 100, Ba2Compression::Zlib, "test.bin")
             .expect("lenient mode: short zlib stream must NOT error");
         // Buffer length is what zlib actually decoded, NOT the
         // declared `unpacked_size`. Downstream parsers (NIF, DDS)
@@ -1704,8 +1830,13 @@ mod tests {
         let original = b"Starfield LZ4 block compressed texture chunk data - test payload";
         let compressed = lz4_flex::block::compress(original);
 
-        let result =
-            decompress_chunk(&compressed, original.len(), Ba2Compression::Lz4Block).unwrap();
+        let result = decompress_chunk(
+            &compressed,
+            original.len(),
+            Ba2Compression::Lz4Block,
+            "test.bin",
+        )
+        .unwrap();
         assert_eq!(result, original.as_slice());
     }
 
@@ -1761,6 +1892,7 @@ mod tests {
             },
             &chunks,
             Ba2Compression::Lz4Block,
+            "textures\\test.dds",
         )
         .expect("mixed raw+LZ4-chunk record must decode cleanly");
 
@@ -1781,11 +1913,104 @@ mod tests {
         );
     }
 
+    /// Two LZ4 chunks back to back; the first declares `first_declared`
+    /// bytes, the second is honest.
+    fn two_chunk_record(first_declared: u32, last_declared: u32) -> (Vec<u8>, Vec<Dx10Chunk>) {
+        let first = lz4_flex::block::compress(b"mip0-mip0-mip0-mip0");
+        let second = lz4_flex::block::compress(b"mip1-mip1");
+        let mut body = first.clone();
+        body.extend_from_slice(&second);
+        let chunks = vec![
+            Dx10Chunk {
+                offset: 0,
+                packed_size: first.len() as u32,
+                unpacked_size: first_declared,
+                start_mip: 0,
+                end_mip: 0,
+            },
+            Dx10Chunk {
+                offset: first.len() as u64,
+                packed_size: second.len() as u32,
+                unpacked_size: last_declared,
+                start_mip: 1,
+                end_mip: 1,
+            },
+        ];
+        (body, chunks)
+    }
+
+    fn bc1_info() -> Dx10TexInfo {
+        Dx10TexInfo {
+            dxgi_format: 71,
+            width: 8,
+            height: 8,
+            num_mips: 2,
+            is_cubemap: false,
+        }
+    }
+
+    /// #4662 — a non-final chunk decoding short would shift every later mip
+    /// under the synthesized header. It must be rejected, and the error must
+    /// name the archive entry and the chunk.
+    #[test]
+    fn extract_dx10_rejects_a_short_non_final_chunk_naming_the_entry() {
+        // Chunk 0 decodes to 19 bytes but claims 64.
+        let (body, chunks) = two_chunk_record(64, 9);
+        let err = extract_dx10(
+            &body[..],
+            bc1_info(),
+            &chunks,
+            Ba2Compression::Lz4Block,
+            r"textures\short.dds",
+        )
+        .expect_err("a short non-final chunk must not extract");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        let msg = err.to_string();
+        assert!(
+            msg.contains(r"textures\short.dds"),
+            "entry not named: {msg}"
+        );
+        assert!(msg.contains("chunk 0 of 2"), "chunk not named: {msg}");
+    }
+
+    /// #4662 — a short FINAL chunk shifts nothing, so it keeps the lenient
+    /// (warn-only) behaviour of `decompress_chunk`.
+    #[test]
+    fn extract_dx10_tolerates_a_short_final_chunk() {
+        let (body, chunks) = two_chunk_record(19, 64);
+        let dds = extract_dx10(
+            &body[..],
+            bc1_info(),
+            &chunks,
+            Ba2Compression::Lz4Block,
+            r"textures\short_tail.dds",
+        )
+        .expect("a short final chunk stays lenient");
+        assert!(dds.ends_with(b"mip0-mip0-mip0-mip0mip1-mip1"));
+    }
+
+    /// #4662 — decode failures name the entry instead of reporting a bare
+    /// "BA2 LZ4 block decompression failed".
+    #[test]
+    fn decompress_chunk_errors_name_the_entry() {
+        let err = decompress_chunk(
+            &[0xFF, 0xFE, 0xFD],
+            64,
+            Ba2Compression::Lz4Block,
+            r"textures\broken.dds",
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains(r"textures\broken.dds"),
+            "got: {err}"
+        );
+    }
+
     #[test]
     fn decompress_chunk_lz4_corrupt_data_fails() {
         // Garbage input should fail LZ4 decompression.
         let garbage = [0xFF, 0xFE, 0xFD, 0xFC, 0xFB, 0xFA];
-        let result = decompress_chunk(&garbage, 1024, Ba2Compression::Lz4Block);
+        let result = decompress_chunk(&garbage, 1024, Ba2Compression::Lz4Block, "test.bin");
         assert!(result.is_err());
     }
 
@@ -1809,6 +2034,11 @@ mod tests {
     /// LZ4 arm. Pre-#2618 this condition was completely silent (no log
     /// at any level) and the doc comment on the zlib arm actively
     /// claimed LZ4 "hard-errors on the same condition," which was false.
+    ///
+    /// This is also the coverage pin #2630 (SF-D1-05) asked for. #4663
+    /// removed its byte-identical twin, whose doc still called #2618 open
+    /// and `min_uncompressed_size` a mere `Vec::with_capacity` hint — under
+    /// the pinned `safe-decode` feature it is a hard output bound (#3392).
     #[test]
     fn decompress_chunk_lz4_under_run_returns_actual_length_not_declared() {
         let actual_payload = b"short lz4 payload, well under the declared size";
@@ -1818,6 +2048,7 @@ mod tests {
             &compressed,
             actual_payload.len() + 500,
             Ba2Compression::Lz4Block,
+            "test.bin",
         )
         .expect("lenient mode: an over-declared LZ4 unpacked_size must NOT error");
         assert_eq!(
@@ -1973,44 +2204,6 @@ mod tests {
         );
     }
 
-    /// SF-D1-05 (#2630) — pins the CURRENT LZ4 "under-run" behaviour:
-    /// `unpacked_size` declared LARGER than what the block actually
-    /// decompresses to. Per #2618 (SF-D1-01)'s measurement against the
-    /// pinned `lz4_flex 0.11.6`, `decompress_chunk` does NOT error here
-    /// — `lz4_flex::block::decompress`'s `min_uncompressed_size` is only
-    /// a capacity hint (`Vec::with_capacity`), and the returned buffer is
-    /// silently truncated to the block's real decoded length. This is
-    /// the opposite of what the (stale, pre-#2618) comment on the LZ4
-    /// arm used to claim ("hard-errors on the same condition") and the
-    /// opposite of `decompress_chunk_lz4_corrupt_data_fails`'s outright-
-    /// garbage-input case, which DOES error.
-    ///
-    /// This test intentionally pins the CURRENT silent-truncation
-    /// behaviour as coverage, not a correctness claim — #2618 (MEDIUM,
-    /// open, separate from this LOW-severity test-coverage issue)
-    /// tracks making this warn/error like the zlib arm already does
-    /// (`decompress_chunk_zlib_short_stream_returns_actual_length`).
-    /// Once #2618 lands, this assertion should flip.
-    #[test]
-    fn decompress_chunk_lz4_undersized_declared_size_currently_truncates_silently() {
-        let actual_payload = b"short lz4 payload, well under the declared size";
-        let compressed = lz4_flex::block::compress(actual_payload);
-
-        // Declare an unpacked_size far larger than what the block
-        // actually decompresses to.
-        let result = decompress_chunk(
-            &compressed,
-            actual_payload.len() + 500,
-            Ba2Compression::Lz4Block,
-        )
-        .expect("current behaviour: an over-declared LZ4 unpacked_size does not error (#2618)");
-        assert_eq!(
-            result, actual_payload,
-            "current behaviour: the returned buffer is silently truncated to the block's \
-             real decoded length, not padded/erroring to match the declared unpacked_size"
-        );
-    }
-
     /// #2097 / LZ4-01 — an aggressively undersized `unpacked_size` hint must
     /// come back as `Ok` or `Err`, never as an unwind through the caller.
     ///
@@ -2041,7 +2234,7 @@ mod tests {
         // scan of 19,656 v3 DX10 records found zero such chunks — but the
         // hostile-input case is the point.
         for hint in [0usize, 1, 2, 8, 32, actual_payload.len()] {
-            let result = decompress_chunk(&compressed, hint, Ba2Compression::Lz4Block);
+            let result = decompress_chunk(&compressed, hint, Ba2Compression::Lz4Block, "test.bin");
             // Either outcome is acceptable — the contract under test is that
             // control returns here at all.
             match result {
@@ -2247,6 +2440,36 @@ mod tests {
     /// `InvalidData` error BEFORE the reader allocates a
     /// 4-billion-entry `Vec` / `HashMap`. Pre-fix this would abort the
     /// process on 64-bit targets.
+    /// #4661 — a header-only BA2 declaring 10 M records (under the absolute
+    /// cap) used to fail with a bare "failed to fill whole buffer". The error
+    /// now names the record kind, index and declared count, and keeps the
+    /// `UnexpectedEof` kind. (The reservation itself is bounded by
+    /// `capacity_hint` — see its unit test in `safety.rs`.)
+    #[test]
+    fn truncated_record_table_names_the_record_and_declared_count() {
+        use std::io::Write;
+        let mut hdr = Vec::with_capacity(24);
+        hdr.extend_from_slice(b"BTDX");
+        hdr.extend_from_slice(&1u32.to_le_bytes());
+        hdr.extend_from_slice(b"GNRL");
+        hdr.extend_from_slice(&10_000_000u32.to_le_bytes());
+        hdr.extend_from_slice(&24u64.to_le_bytes()); // name table at EOF
+        let mut path = std::env::temp_dir();
+        path.push(format!("byroredux_ba2_4661_{}.ba2", std::process::id()));
+        std::fs::File::create(&path)
+            .and_then(|mut f| f.write_all(&hdr))
+            .expect("write temp BA2");
+        let result = Ba2Archive::open(&path);
+        let _ = std::fs::remove_file(&path);
+        let err = match result {
+            Ok(_) => panic!("a 24-byte archive cannot hold 10 M records"),
+            Err(e) => e,
+        };
+        assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof);
+        let msg = err.to_string();
+        assert!(msg.contains("GNRL file record 0 of 10000000"), "got: {msg}");
+    }
+
     #[test]
     fn malicious_file_count_u32_max_rejected_before_allocation() {
         use std::io::Write;

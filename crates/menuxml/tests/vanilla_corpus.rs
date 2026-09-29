@@ -1,11 +1,11 @@
 //! Vanilla-corpus integration tests.
 //!
-//! Gated on `BYROREDUX_OBLIVION_DATA` pointing at a real Oblivion
-//! `Data/` directory (the same convention as `docs/smoke-tests/`), so
-//! `cargo test` stays hermetic without the game installed. With it set,
-//! these tests parse every vanilla menu XML, load the HUD with real
-//! fonts and DXT textures, and render frames that are written to
-//! `target/menuxml/` for visual inspection.
+//! `#[ignore]`d real-data tests: run with `--ignored` against
+//! `BYROREDUX_OBLIVION_DATA` (or the default Steam install), resolved
+//! through `common` under the #3850 strict-lane contract (#4660). They
+//! parse every vanilla menu XML, load the HUD with real fonts and DXT
+//! textures, and render frames that are written to `target/menuxml/` for
+//! visual inspection.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -14,6 +14,8 @@ use byroredux_bsa::BsaArchive;
 use byroredux_menuxml::menu::{MenuAssets, MenuRenderer};
 use byroredux_menuxml::parse::{parse_document, MenuFileSource, Scalar};
 use byroredux_menuxml::{Document, MenuProfile, ScreenTraits};
+
+mod common;
 
 struct OblivionAssets {
     misc: BsaArchive,
@@ -46,25 +48,28 @@ impl MenuFileSource for NoSource {
 }
 
 fn data_dir() -> Option<PathBuf> {
-    std::env::var("BYROREDUX_OBLIVION_DATA").ok().map(PathBuf::from)
+    common::data_dir(
+        "BYROREDUX_OBLIVION_DATA",
+        "/mnt/data/SteamLibrary/steamapps/common/Oblivion/Data",
+    )
 }
 
 fn open_assets() -> Option<OblivionAssets> {
     let dir = data_dir()?;
-    let misc = BsaArchive::open(dir.join("Oblivion - Misc.bsa")).ok()?;
-    let textures = BsaArchive::open(dir.join("Oblivion - Textures - Compressed.bsa")).ok()?;
+    let misc = common::open_archive(&dir, "Oblivion - Misc.bsa")?;
+    let textures = common::open_archive(&dir, "Oblivion - Textures - Compressed.bsa")?;
     Some(OblivionAssets { misc, textures })
 }
 
 /// Every vanilla menu XML parses into a non-empty arena, and the HUD in
 /// particular carries its expected named tiles.
 #[test]
+#[ignore = "needs Oblivion game data on disk"]
 fn vanilla_corpus_parses() {
-    let Some(dir) = data_dir() else {
-        eprintln!("skipping: BYROREDUX_OBLIVION_DATA not set");
+    let Some(misc) = data_dir().and_then(|dir| common::open_archive(&dir, "Oblivion - Misc.bsa"))
+    else {
         return;
     };
-    let misc = BsaArchive::open(dir.join("Oblivion - Misc.bsa")).expect("open Misc.bsa");
     let xmls: Vec<String> = misc
         .list_files()
         .into_iter()
@@ -110,10 +115,10 @@ fn vanilla_corpus_parses() {
 /// bars land bottom-left, and a health override shrinks the red bar's
 /// drawn width. Frames are dumped to `target/menuxml/` as PNGs.
 #[test]
+#[ignore = "needs Oblivion game data on disk"]
 fn vanilla_hud_renders() {
     let _ = env_logger::builder().is_test(true).try_init();
     let Some(assets) = open_assets() else {
-        eprintln!("skipping: BYROREDUX_OBLIVION_DATA not set");
         return;
     };
     let mut hud = MenuRenderer::load(
@@ -169,12 +174,12 @@ fn vanilla_hud_renders() {
 /// `strings.xml` traits flow through `strings()` reads (the region-name
 /// text tile is the HUD's live consumer).
 #[test]
+#[ignore = "needs Oblivion game data on disk"]
 fn strings_xml_feeds_selectors() {
-    let Some(dir) = data_dir() else {
-        eprintln!("skipping: BYROREDUX_OBLIVION_DATA not set");
+    let Some(misc) = data_dir().and_then(|dir| common::open_archive(&dir, "Oblivion - Misc.bsa"))
+    else {
         return;
     };
-    let misc = BsaArchive::open(dir.join("Oblivion - Misc.bsa")).unwrap();
     let bytes = misc.extract("menus\\strings.xml").unwrap();
     let text = String::from_utf8(bytes).unwrap();
     let mut src = NoSource;

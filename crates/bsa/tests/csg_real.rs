@@ -39,6 +39,17 @@ fn require_game_data(env_var: &str, tried: &std::path::Path) {
     }
 }
 
+/// #4660 — the data directory resolved but lacks an archive the test needs.
+/// Under the strict lane that is a failure naming the file: a green skip here
+/// is exactly the hole #3850 closed for the data directory itself.
+#[track_caller]
+fn require_archive(path: &std::path::Path) {
+    if std::env::var("BYROREDUX_REQUIRE_GAME_DATA").is_ok_and(|v| v != "0") {
+        panic!("BYROREDUX_REQUIRE_GAME_DATA is set, but {path:?} is not a file");
+    }
+    eprintln!("Skipping: {path:?} not found");
+}
+
 fn fo4_data_dir() -> Option<PathBuf> {
     if let Some(v) = std::env::var("BYROREDUX_FO4_DATA")
         .ok()
@@ -69,7 +80,7 @@ fn fallout4_geometry_csg_header_and_object_decode() {
     };
     let path = data.join("Fallout4 - Geometry.csg");
     if !path.is_file() {
-        eprintln!("Skipping: {path:?} not found");
+        require_archive(&path);
         return;
     }
 

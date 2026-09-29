@@ -313,12 +313,8 @@ impl MaterialProvider {
         // TextureProvider mesh/texture fix (same CLI convention: repeatable,
         // no documented "list mods first" inversion — that's `--scripts-bsa`
         // only, see `ScriptProvider::resolve_pex`'s doc / #1743).
-        for archive in self.archives.iter().rev() {
-            if let Ok(bytes) = archive.extract(&normalized) {
-                return Some(bytes);
-            }
-        }
-        None
+        // #4658 — a present-but-corrupt entry is named, not silently missed.
+        extract_first(self.archives.iter().rev(), &normalized)
     }
 
     /// Resolve a BGSM file + its template chain. Returns `None` when the
@@ -354,12 +350,7 @@ impl MaterialProvider {
                 let normalized = normalize_material_path(path);
                 // #3637 — same last-listed-wins precedence as
                 // `extract_from_archives`.
-                for archive in self.archives.iter().rev() {
-                    if let Ok(bytes) = archive.extract(&normalized) {
-                        return Some(bytes);
-                    }
-                }
-                None
+                extract_first(self.archives.iter().rev(), &normalized)
             }
         }
         let mut reader = ArchiveReader {

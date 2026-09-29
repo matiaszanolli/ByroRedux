@@ -50,6 +50,17 @@ fn require_game_data(env_var: &str, tried: &std::path::Path) {
     }
 }
 
+/// #4660 — the data directory resolved but lacks an archive the test needs.
+/// Under the strict lane that is a failure naming the file: a green skip here
+/// is exactly the hole #3850 closed for the data directory itself.
+#[track_caller]
+fn require_archive(path: &std::path::Path) {
+    if std::env::var("BYROREDUX_REQUIRE_GAME_DATA").is_ok_and(|v| v != "0") {
+        panic!("BYROREDUX_REQUIRE_GAME_DATA is set, but {path:?} is not a file");
+    }
+    eprintln!("Skipping: {path:?} not found");
+}
+
 fn data_dir(env_var: &str, fallback: &str) -> Option<PathBuf> {
     if let Some(v) = std::env::var(env_var).ok().filter(|s| !s.is_empty()) {
         let p = PathBuf::from(&v);
@@ -219,7 +230,7 @@ fn fo4_meshes_ba2_v8_gnrl_extracts_nif_with_gamebryo_magic() {
     };
     let archive_path = data.join("Fallout4 - Meshes.ba2");
     if !archive_path.is_file() {
-        eprintln!("Skipping: {archive_path:?} not found");
+        require_archive(&archive_path);
         return;
     }
 
@@ -262,7 +273,7 @@ fn fo4_textures1_ba2_v7_dx10_synthesizes_cubemap_dds() {
     };
     let archive_path = data.join("Fallout4 - Textures1.ba2");
     if !archive_path.is_file() {
-        eprintln!("Skipping: {archive_path:?} not found");
+        require_archive(&archive_path);
         return;
     }
 
@@ -330,7 +341,7 @@ fn fo4_meshes_ba2_v8_brute_force_extract_zero_errors() {
     };
     let archive_path = data.join("Fallout4 - Meshes.ba2");
     if !archive_path.is_file() {
-        eprintln!("Skipping: {archive_path:?} not found");
+        require_archive(&archive_path);
         return;
     }
 
@@ -402,7 +413,7 @@ fn starfield_meshes01_ba2_v2_gnrl_extracts_nif_with_starfield_magic() {
     };
     let archive_path = data.join("Starfield - Meshes01.ba2");
     if !archive_path.is_file() {
-        eprintln!("Skipping: {archive_path:?} not found");
+        require_archive(&archive_path);
         return;
     }
 
@@ -446,7 +457,7 @@ fn starfield_textures01_ba2_v3_dx10_extracts_lz4_block_dds() {
     };
     let archive_path = data.join("Starfield - Textures01.ba2");
     if !archive_path.is_file() {
-        eprintln!("Skipping: {archive_path:?} not found");
+        require_archive(&archive_path);
         return;
     }
 
@@ -520,10 +531,9 @@ fn starfield_full_corpus_ba2_sweep() {
                     .unwrap_or(false)
             })
             .collect(),
-        Err(e) => {
-            eprintln!("Skipping: unable to read {data:?}: {e}");
-            return;
-        }
+        // #4660 — the directory resolved (`starfield_data_dir` checked it),
+        // so failing to list it is an environment fault, not missing data.
+        Err(e) => panic!("unable to read {data:?}: {e}"),
     };
     archives.sort();
     assert!(
@@ -636,7 +646,7 @@ fn starfield_constellation_textures_ba2_v2_dx10_extracts_zlib_dds() {
     };
     let archive_path = data.join("Constellation - Textures.ba2");
     if !archive_path.is_file() {
-        eprintln!("Skipping: {archive_path:?} not found");
+        require_archive(&archive_path);
         return;
     }
 
@@ -710,7 +720,7 @@ fn fo76_dx10_texture_extract_round_trips() {
     };
     let texture_archive = data.join("SeventySix - GeneratedTextures01.ba2");
     if !texture_archive.is_file() {
-        eprintln!("skipping: {:?} not found", texture_archive);
+        require_archive(&texture_archive);
         return;
     }
     let archive = Ba2Archive::open(&texture_archive).expect("open FO76 textures");
@@ -771,7 +781,7 @@ fn fo4_declared_size_matches_extract_for_gnrl_and_dx10() {
     for name in ["Fallout4 - Meshes.ba2", "Fallout4 - Textures1.ba2"] {
         let path = data.join(name);
         if !path.is_file() {
-            eprintln!("Skipping: {path:?} not found");
+            require_archive(&path);
             continue;
         }
         let archive = Ba2Archive::open(&path).unwrap_or_else(|e| panic!("open {name}: {e}"));

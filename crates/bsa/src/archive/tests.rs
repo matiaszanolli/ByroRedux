@@ -77,14 +77,32 @@ fn skyrim_textures0_bsa() -> std::path::PathBuf {
 }
 
 fn skip_if_missing() -> bool {
-    !fnv_meshes_bsa().exists()
+    archive_missing(&fnv_meshes_bsa())
 }
 
 /// Per-archive availability gate so a test that needs Skyrim data
 /// stays green when only FNV is installed (and vice versa). Mirrors
 /// the FNV `skip_if_missing` pattern.
 fn skip_if_skyrim_missing(path: &std::path::Path) -> bool {
-    !path.exists()
+    archive_missing(path)
+}
+
+/// Whether `path` is absent, so the calling `#[ignore]`d test should skip.
+///
+/// #4660 — these gates never consulted `BYROREDUX_REQUIRE_GAME_DATA` (#3850),
+/// so the strict lane recorded every one of the Steam-disk tests below as a
+/// pass without reading a byte. Under that lane an absent archive is now a
+/// failure naming the path.
+#[track_caller]
+fn archive_missing(path: &std::path::Path) -> bool {
+    if path.is_file() {
+        return false;
+    }
+    if std::env::var("BYROREDUX_REQUIRE_GAME_DATA").is_ok_and(|v| v != "0") {
+        panic!("BYROREDUX_REQUIRE_GAME_DATA is set, but {path:?} is not a file");
+    }
+    eprintln!("skipping: {path:?} not found");
+    true
 }
 
 // ── Hash function unit tests (#361) ────────────────────────────────
@@ -243,7 +261,7 @@ fn extract_nonexistent_fails() {
 #[ignore = "needs FNV game data on disk"]
 fn texture_bsa_extract_dds() {
     let tex_bsa = fnv_textures_bsa();
-    if !tex_bsa.exists() {
+    if archive_missing(&tex_bsa) {
         return;
     }
     let archive = BsaArchive::open(&tex_bsa).unwrap();
@@ -563,6 +581,41 @@ fn extract_zero_data_size_with_embedded_name_is_ok() {
 /// `open()` before the reader allocates a `Vec::with_capacity`
 /// backing 4 billion folder records. Pre-fix this would abort on
 /// 64-bit targets.
+/// #4661 — a 36-byte BSA declaring 10 M files (under the absolute cap) and
+/// zero folders is structurally empty: the folder records, not the header's
+/// `file_count`, decide what is read. It opened `Ok` with 0 files while
+/// reserving a ~10 M-entry `HashMap`; the reservation now follows the records
+/// actually read.
+#[test]
+fn declared_file_count_without_folder_records_reserves_nothing() {
+    use std::io::Write;
+    let mut hdr = Vec::with_capacity(36);
+    hdr.extend_from_slice(b"BSA\0");
+    hdr.extend_from_slice(&104u32.to_le_bytes());
+    hdr.extend_from_slice(&36u32.to_le_bytes());
+    hdr.extend_from_slice(&0b111u32.to_le_bytes());
+    hdr.extend_from_slice(&0u32.to_le_bytes()); // folder_count
+    hdr.extend_from_slice(&10_000_000u32.to_le_bytes()); // file_count
+    hdr.extend_from_slice(&0u32.to_le_bytes());
+    hdr.extend_from_slice(&0u32.to_le_bytes());
+    hdr.extend_from_slice(&0u32.to_le_bytes());
+    assert_eq!(hdr.len(), 36);
+
+    let path = std::env::temp_dir().join(format!("byroredux_bsa_4661_{}.bsa", std::process::id()));
+    File::create(&path)
+        .and_then(|mut f| f.write_all(&hdr))
+        .expect("write temp BSA");
+    let result = BsaArchive::open(&path);
+    let _ = std::fs::remove_file(&path);
+    let archive = result.expect("an empty folder table is still a readable archive");
+    assert_eq!(archive.file_count(), 0);
+    assert!(
+        archive.files.capacity() < 1024,
+        "reserved {} entries for a file with no records",
+        archive.files.capacity()
+    );
+}
+
 #[test]
 fn malicious_bsa_folder_count_u32_max_rejected() {
     use std::io::Write;

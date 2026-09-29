@@ -189,35 +189,31 @@ fn fo76_data_dir() -> Option<PathBuf> {
     None
 }
 
+/// #4660 — the data directory resolved but lacks an archive the test needs.
+/// Under the strict lane that is a failure naming the file, not a green skip.
+#[track_caller]
+fn require_archive(path: &std::path::Path) {
+    if std::env::var("BYROREDUX_REQUIRE_GAME_DATA").is_ok_and(|v| v != "0") {
+        panic!("BYROREDUX_REQUIRE_GAME_DATA is set, but {path:?} is not a file");
+    }
+    eprintln!("skipping: {path:?} not found");
+}
+
 fn open_archive_at(data: &PathBuf, name: &str) -> Option<Ba2Archive> {
     let archive_path = data.join(name);
     if !archive_path.is_file() {
-        eprintln!("skipping: {:?} not found", archive_path);
+        require_archive(&archive_path);
         return None;
     }
-    match Ba2Archive::open(&archive_path) {
-        Ok(a) => Some(a),
-        Err(e) => {
-            eprintln!("skipping: failed to open {:?}: {}", archive_path, e);
-            None
-        }
-    }
+    // #4660 — a present archive that fails to open is a reader regression,
+    // exactly what this harness exists to catch; it used to read as a skip.
+    let archive = Ba2Archive::open(&archive_path)
+        .unwrap_or_else(|e| panic!("failed to open {archive_path:?}: {e}"));
+    Some(archive)
 }
 
 fn open_materials_archive() -> Option<Ba2Archive> {
-    let data = fo4_data_dir()?;
-    let archive_path = data.join("Fallout4 - Materials.ba2");
-    if !archive_path.is_file() {
-        eprintln!("skipping: {:?} not found", archive_path);
-        return None;
-    }
-    match Ba2Archive::open(&archive_path) {
-        Ok(a) => Some(a),
-        Err(e) => {
-            eprintln!("skipping: failed to open {:?}: {}", archive_path, e);
-            None
-        }
-    }
+    open_archive_at(&fo4_data_dir()?, "Fallout4 - Materials.ba2")
 }
 
 /// Walk the archive once, tally outcomes by variant. `expect` filters
