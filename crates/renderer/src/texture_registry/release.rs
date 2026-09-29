@@ -90,6 +90,11 @@ impl TextureRegistry {
             return false;
         }
         self.path_map.retain(|_, &mut h| h != handle);
+        // #4879 — the released slot may still have an upload sitting in the
+        // deferred queue (reserved unflushed, then cancelled). Purge it with
+        // the reference, or the next flush installs a texture onto a
+        // `ref_count == 0` slot that no future release can ever free.
+        self.pending_dds_uploads.retain(|upload| upload.handle != handle);
         true
     }
 
@@ -103,6 +108,9 @@ impl TextureRegistry {
         if !freed.is_empty() {
             let freed_set = freed.iter().copied().collect::<HashSet<_>>();
             self.path_map.retain(|_, h| !freed_set.contains(&*h));
+            // Same #4879 purge as `release_ref`, once for the whole batch.
+            self.pending_dds_uploads
+                .retain(|upload| !freed_set.contains(&upload.handle));
         }
         freed
     }

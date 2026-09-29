@@ -470,6 +470,24 @@ impl TextureRegistry {
             transfer_fence,
             |cmd| {
                 for upload in &pending {
+                    // #4879 — the release path purges queued uploads for
+                    // freed handles, but a slot whose last reference is
+                    // already gone must never be installed: `ref_count == 0`
+                    // means `decrement_ref` will refuse every future
+                    // release, so the texture would orphan for the process
+                    // lifetime. Skip before paying the parse/staging cost.
+                    if self
+                        .textures
+                        .get(upload.handle as usize)
+                        .is_some_and(|entry| entry.ref_count == 0)
+                    {
+                        log::warn!(
+                            "Skipping queued DDS upload '{}': handle {} was released before flush",
+                            upload.path,
+                            upload.handle,
+                        );
+                        continue;
+                    }
                     let meta = match crate::vulkan::dds::parse_dds_with_color_space(
                         &upload.dds_bytes,
                         upload.color_space,

@@ -850,6 +850,17 @@ impl TextureRegistry {
     ) -> Result<()> {
         let entry = self.textures.get(handle as usize)
             .ok_or_else(|| anyhow::anyhow!("update_rgba: unknown handle {handle}"))?;
+        // #4879 — refuse rather than revive. An entry whose last reference
+        // was released has `texture: None` and no `path_map` key; swapping a
+        // fresh image into it would re-arm the bindless slot with nothing
+        // left to ever release it (the invariant below only frees through a
+        // `ref_count` decrement, and `decrement_ref` refuses already-released
+        // handles). Both callers log and skip on `Err`, so refusing is safe.
+        if entry.ref_count == 0 {
+            anyhow::bail!(
+                "update_rgba: handle {handle} was released; refusing to revive it (#4879)"
+            );
+        }
         if entry.texture.as_ref().is_some_and(|texture| texture.can_update_rgba(width, height)) {
             return self.dynamic_rgba.queue(handle, width, height, pixels);
         }
@@ -866,9 +877,9 @@ impl TextureRegistry {
             }
         }
 
-        // Swap in the new texture. If the entry was dropped earlier this
-        // quietly revives it (bindless slot reactivates on the descriptor
-        // write below).
+        // Swap in the new texture. The `ref_count == 0` guard above means
+        // the entry cannot have been dropped earlier — the old "quietly
+        // revives it" hole is closed (#4879).
         let new_texture = Texture::from_rgba(
             ctx,
             width,

@@ -473,6 +473,139 @@ fn release_refs_batch_preserves_holder_counts_and_purges_only_freed_paths() {
     assert!(reg.path_map.contains_key("textures/lamp.dds|3"));
 }
 
+// ── #4879 — cancelled streaming applies must not orphan queued uploads ──
+
+/// Production text for the registry files: unlike the `source_scan`
+/// helper's `\n#[cfg(test)]\nmod ` marker, `mod.rs` declares its test
+/// modules via `#[path]` and `upload.rs` has none, so a plain split is
+/// the honest cut here.
+fn registry_production_text(src: &str) -> &str {
+    src.split("#[cfg(test)]").next().unwrap()
+}
+
+/// A reservation released before its flush (the `ExteriorCellApplyJob::cancel`
+/// → `unload_cell` → `drop_textures` path) must drop its queued
+/// `PendingDdsUpload` with it. The issue's requested pin: `queue_or_hit` →
+/// `release_ref` → the queue no longer names the handle. Without the purge,
+/// the next flush installs a texture onto a `ref_count == 0` slot that no
+/// future release can free — a session-long GPU leak invisible to
+/// `live_slot_count`.
+#[test]
+fn release_ref_purges_the_freed_handles_queued_dds_upload() {
+    let mut reg = make_registry_for_overflow_test(16, 0);
+    let outcome = reg
+        .queue_or_hit("textures/leaves01.dds", vec![0u8; 64], 3)
+        .expect("fresh reserve");
+    let handle = outcome.handle();
+    assert_eq!(reg.pending_dds_uploads.len(), 1);
+    assert_eq!(reg.pending_dds_uploads[0].handle, handle);
+    assert_eq!(reg.textures[handle as usize].ref_count, 1);
+
+    assert!(reg.release_ref(handle), "single holder releases freely");
+    assert!(
+        reg.pending_dds_uploads.is_empty(),
+        "the queued upload must go with its released reservation"
+    );
+    assert_eq!(reg.textures[handle as usize].ref_count, 0);
+}
+
+/// Batch variant: only the freed handles' uploads are purged; a handle that
+/// still holds references keeps its queued upload.
+#[test]
+fn release_refs_batch_purges_only_freed_handles_queued_dds_uploads() {
+    let mut reg = make_registry_for_overflow_test(16, 0);
+    let mut handles = Vec::new();
+    for path in ["a.dds", "b.dds", "c.dds"] {
+        let outcome = reg.queue_or_hit(path, vec![0u8; 64], 3).unwrap();
+        handles.push(outcome.handle());
+        // A second holder on the middle entry so its release lands at 1.
+        if path == "b.dds" {
+            let hit = reg.queue_or_hit(path, vec![0u8; 64], 3).unwrap();
+            assert!(matches!(hit, EnqueueOutcome::Hit(_)));
+        }
+    }
+    assert_eq!(reg.pending_dds_uploads.len(), 3);
+
+    let freed = reg.release_refs_batch(&[handles[0], handles[1]]);
+    assert_eq!(
+        freed,
+        vec![handles[0]],
+        "only the zero-crossing handle is freed; handles[1] still holds one ref"
+    );
+    let queued: std::collections::HashSet<u32> = reg
+        .pending_dds_uploads
+        .iter()
+        .map(|u| u.handle)
+        .collect();
+    assert!(!queued.contains(&handles[0]), "freed handle purged");
+    assert!(
+        queued.contains(&handles[1]),
+        "partially released handle (2→1) keeps its queued upload"
+    );
+    assert!(queued.contains(&handles[2]), "untouched handle keeps its upload");
+}
+
+/// The flush-side skip is the second line of defence (the purge above runs
+/// at release time; this re-checks at install time). It cannot run without
+/// a device, so pin it source-level: the guard must precede the parse and
+/// the `record_dds_upload` call inside `flush_upload_batch`'s record loop.
+#[test]
+fn flush_upload_batch_skips_released_slots_before_parsing_or_staging() {
+    // Raw source, no cut: upload.rs's only `#[cfg(test)]` item is the
+    // test-only `queue_or_hit` constructor, and none of the markers below
+    // appear inside it.
+    let src = include_str!("texture_registry/upload.rs");
+    let batch = src
+        .split("fn flush_upload_batch(")
+        .nth(1)
+        .expect("flush_upload_batch present");
+    let loop_start = batch
+        .find("for upload in &pending {")
+        .expect("record loop present");
+    let guard = batch[loop_start..]
+        .find("entry.ref_count == 0")
+        .expect("#4879 released-slot guard must exist in the record loop");
+    let parse = batch[loop_start..]
+        .find("parse_dds_with_color_space(")
+        .expect("parse call present");
+    let record = batch[loop_start..]
+        .find("record_dds_upload(")
+        .expect("record call present");
+    assert!(
+        guard < parse && guard < record,
+        "the ref_count == 0 skip must fire before any parse or staging work"
+    );
+}
+
+/// `update_rgba`'s extent-change arm used to quietly revive a released
+/// entry (texture back to `Some`, bindless slot re-armed, nothing left to
+/// ever release it). It must refuse instead; pinned source-level because
+/// the full call needs a device.
+#[test]
+fn update_rgba_refuses_released_slots_rather_than_reviving() {
+    let src = registry_production_text(include_str!("texture_registry/mod.rs"));
+    let update = src
+        .split("pub fn update_rgba(")
+        .nth(1)
+        .expect("update_rgba present")
+        .split("pub fn write_rgba_inplace(")
+        .next()
+        .unwrap();
+    let guard = update
+        .find("ref_count == 0")
+        .expect("update_rgba must refuse ref_count == 0 (#4879)");
+    let fast_path = update
+        .find("entry.texture.as_ref().is_some_and(")
+        .expect("extent fast-path present");
+    let swap = update
+        .find("entry.texture.replace(")
+        .expect("extent-change swap present");
+    assert!(
+        guard < fast_path && guard < swap,
+        "the refusal must precede both the fast path and the revive-capable swap"
+    );
+}
+
 /// #3682 — `handle_has_alpha` moved from a `HashMap<TextureHandle, bool>`
 /// probe to a direct `Vec` index on `TextureEntry`. Pin both halves of the
 /// contract the old map's `.get(&handle).copied().unwrap_or(false)`
