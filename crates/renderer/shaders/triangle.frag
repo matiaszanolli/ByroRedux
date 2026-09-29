@@ -3713,10 +3713,17 @@ void main() {
                         : normalize(lights[i].direction_angle.xyz);
                     vec3 Tb, Bb;
                     buildOrthoBasis(L, Tb, Bb);
-                    vec3 shadowOffsetNormal = dot(geometricNormal, V) < 0.0
-                        ? -geometricNormal : geometricNormal;
-                    vec3 rayOrigin = offsetRayOrigin(
-                        fragWorldPos, shadowOffsetNormal);
+                    // #5018 — orient the visibility-ray origin toward the
+                    // LIGHT, not the viewer. The translucency back lobes
+                    // (#4946) are non-zero only when the light is BEHIND the
+                    // surface, so a viewer-side origin starts the ray inside
+                    // the fragment's own triangle; the own instance sits in
+                    // VISIBILITY_MASK_ALL_OPAQUE, the ray commits that hit,
+                    // and the lobe's whole contribution zeroes. For
+                    // front-lit surfaces the direction-aware offset is
+                    // identical to the old viewer-side one (same exit side).
+                    vec3 rayOrigin = offsetRayOriginForDirection(
+                        fragWorldPos, geometricNormal, L);
                     // K shadow rays per frame, each with a FRESH decorrelated disk
                     // sample (PCG hash, not IGN — IGN's per-frame offset crawls;
                     // white noise decorrelates so the EMA converges). Averaging K
@@ -3917,10 +3924,11 @@ void main() {
             buildOrthoBasis(L, T, B);
             vec2 diskSample = concentricDiskSample(noise1, noise2);
 
-            vec3 shadowOffsetNormal = dot(geometricNormal, V) < 0.0
-                ? -geometricNormal : geometricNormal;
-            vec3 rayOrigin = offsetRayOrigin(
-                fragWorldPos, shadowOffsetNormal);
+            // #5018 — direction-aware origin: identical to the viewer-side
+            // offset for front-lit surfaces, starts on the light's side for
+            // the #4946 back lobes (see the ReSTIR finalize arm above).
+            vec3 rayOrigin = offsetRayOriginForDirection(
+                fragWorldPos, geometricNormal, L);
             vec3 rayDir;
             float rayDist;
 

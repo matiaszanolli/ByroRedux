@@ -6738,3 +6738,39 @@ fn main_pass_fragment_shaders_honour_structured_debug_views() {
         }
     }
 }
+
+/// #5018 (REN-D10-2026-09-29-01) — the direct-light visibility ray must
+/// orient its origin toward the LIGHT, not the viewer. The #4946
+/// translucency back lobes are non-zero only when the light is behind the
+/// surface, so a viewer-side origin starts the ray inside the fragment's
+/// own triangle; `traceShadowTransmittanceDetailed` (tMin 0.0,
+/// VISIBILITY_MASK_ALL_OPAQUE) commits that self-hit and zeroes the lobe.
+/// Both finalize sites (ReSTIR + the compiled-out legacy WRS arm) must use
+/// the direction-aware offset.
+#[test]
+fn direct_shadow_rays_orient_their_origin_toward_the_light() {
+    let triangle = include_str!("../../../shaders/triangle.frag");
+    assert!(
+        !triangle.contains("shadowOffsetNormal"),
+        "the viewer-side shadowOffsetNormal origin is back — it self-shadows \
+         the #4946 translucency back lobes (#5018)"
+    );
+    let sites = triangle
+        .matches("offsetRayOriginForDirection(\n                        fragWorldPos, geometricNormal, L)")
+        .count()
+        + triangle
+            .matches("offsetRayOriginForDirection(\n                fragWorldPos, geometricNormal, L)")
+            .count();
+    assert_eq!(
+        sites, 2,
+        "both direct-light finalize sites (ReSTIR + legacy WRS) must build \
+         the ray origin with the direction-aware offset"
+    );
+    // The helper itself must keep its flip-to-exit-side contract.
+    let origin = include_str!("../../../shaders/include/ray_origin.glsl");
+    assert!(
+        origin.contains("vec3 offsetRayOriginForDirection(vec3 p, vec3 n, vec3 direction)")
+            && origin.contains("dot(n, direction) >= 0.0 ? n : -n"),
+        "offsetRayOriginForDirection must flip the normal to the ray's exit side"
+    );
+}
