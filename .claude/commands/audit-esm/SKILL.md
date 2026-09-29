@@ -246,7 +246,7 @@ First step: `git log --since=<last report> --format='%h %cs %s' -- crates/plugin
   Spotlight Beam*, not a shape bit. `DAT2` is gated on LIGH (an AMMO `DAT2` must not
   synthesize light data).
 - `XCLW` water height is tri-state: absent → inherit WRLD default; finite → override;
-  `INT_MIN` / `FLT_MAX` sentinel → suppress (`xclw_water_height` +
+  `INT_MIN` / `FLT_MAX` sentinel → suppress (`gated_water_height` in `esm/cell/helpers.rs` +
   `water_height_is_explicit`; `docs/engine/watal.md`).
 - Exterior grid `XCLC`, worldspace parenting and selective-inheritance flags (`wrld.rs`):
   a child inherits only the flagged categories.

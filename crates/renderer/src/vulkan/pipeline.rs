@@ -490,7 +490,7 @@ fn triangle_pipeline_inner(
     // if the dynamic-state declaration is ever dropped.
     // `stencil_test_enable(false)` is hardcoded, so the stencil state the
     // importer captures at `MaterialInfo.stencil_state` has no effect. That
-    // is a recorded known gap, not work in progress (ROADMAP "Open — Misc",
+    // is a recorded known gap, not work in progress (ROADMAP Known Issues,
     // #4213; #337 closed without the wiring): closing it needs per-material
     // stencil pipeline variants *and* a depth-format flip, since
     // `find_depth_format` prefers `D32_SFLOAT` (no stencil bits), the better

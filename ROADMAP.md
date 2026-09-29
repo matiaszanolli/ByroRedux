@@ -3,223 +3,121 @@
 A Rust + Vulkan rebuild of the Gamebryo/Creation engine lineage, targeting
 the full Oblivion → Starfield range. This document is the live source of
 truth for **what works, what's next, and why**. Session narratives live in
-[HISTORY.md](HISTORY.md); per-commit archaeology lives in `git log`.
+[HISTORY.md](HISTORY.md); per-commit archaeology lives in `git log`; sections
+retired from this file (superseded bench records, closed known issues, full
+milestone implementation logs) live verbatim in
+[`docs/archive/roadmap-history.md`](docs/archive/roadmap-history.md).
 
 **Keeping this document honest.** Run `/session-close` at the end of each
 working session. It diffs stated facts against ground truth (test count,
 LOC, open issues, bench freshness, completeness of repro commands) and
 proposes a single synchronised edit across ROADMAP / HISTORY / README.
 Ritual-driven, not hook-driven — one checkpoint per session, not N per
-commit.
+commit. Live state only: when something closes, it becomes a one-liner under
+[Completed Milestones](#completed-milestones) or leaves the file.
 
-**Last full workspace census**: 2026-09-27 (session close, HEAD `bad6ef2e`). Tests
-**8785, 0 failing** (240 ignored), +264 vs Session 90's 8521. Rust `src/` LOC
-**~653 089**, +22 518; total `.rs` LOC **~700 990**, +23 662. Source files
-**1191** (1102 outside `tests/`), +18/+18. Workspace members **34**. Open issue
-dirs **4841**, +108. Session 91 was a measured performance teardown plus a fix
-wave from four new audits (gameplay, renderer ×2, exterior). The census needed
-one closeout fix first: `63c0aee3b` left `byroredux-hkx`'s tests without the
-`byroredux-plugin` dev-dependency, so the workspace test build did not compile
-at `bad6ef2e`. Work beside the wave:
-- TLAS instances sort by `(BLAS address, EntityId)`, which removed most of
-  MedTek's GPU frame in diagnostic captures (`PERFORMANCE_MEDTEK_FIX_2026-09-26.md`).
-- ReSTIR light identity is stable across re-sorts (`GpuLight` 64 → 80 B), and
-  opaque default-lit geometry uses early fragment tests.
-- Interior godrays and sky apertures are a working vertical slice
-  (`docs/engine/interior-godrays-status.md`).
-- EXAL ground cover Phase C draws every GRAS record's own model (#4413).
-- NPCs start combat on sight from faction relations and AIDT (#4414).
+---
 
-**Current worktree checks** (2026-09-26, based on HEAD `e26441c34`):
-`scripts/check-shader-artifacts.sh` passes, and
-`docs/smoke-tests/m-exteriors.sh all water` passes the waterline and reflection
-gates on all five installed profiles (FNV, FO3, Oblivion, Skyrim, FO4). The
-smoke covers open-water surface/submerged behavior; it does not close the
-shoreline/LOD visual gate below. These checks do not refresh the workspace test
-census above.
+## Status
 
-**Last clippy result** (per-crate recheck 2026-09-27, HEAD `bad6ef2e`): the CI
-gate (`cargo clippy --workspace -- -D warnings`) is still red. The same two
-fixes from Session 90 each stop their crate:
-`crates/hkx/src/animation.rs:354` (`manual_range_contains`, from #4655's
-`a323138d`) and `crates/menuxml/src/parse.rs:749` (`too_many_arguments`, from
-#4650's `20faaf89`). Because those crates fail, clippy cannot re-check #4765's
-three bin-crate errors. The bench-of-record was refreshed on 2026-09-28 at
-`a37fcba3c` (R6a-stale-22 closed), and a same-machine control pins a large FO4
-regression to the `4c9a5b36..99933f87b` range; **R6a-regress-22** below tracks
-the bisect.
+**Last session close:** Session 92, 2026-09-29, HEAD `546e7fbc`. Workspace
+numbers (tests, LOC, files, issue dirs) live in [Project Stats](#project-stats)
+only.
 
-**Current state in one paragraph.** The FSR 3.1 integration plan is complete
-through phase 7: FSR 3.1.4 Quality is the engine default, all four presets
-dispatch with reactive/T&C masks, GPU timing, SDK-memory telemetry, a
-dispatch-failure fallback and runtime `r.upscaler` switching, and an SSIM
-matrix over five deterministic camera paths fences every preset. R4 (the
-SWF/GFx strategic decision) closed on pinned Ruffle plus ByroRedux-owned
-Scaleform host profiles, and M48 now carries Skyrim's 74-method `GameDelegate`
-catalog and Fallout 4's 269-method `BGSCodeObj` catalog. Two regressions were
-found by measurement rather than by report: **PERF-REGRESSION-6c56e311**
-(~2.2× frame time on real content, live and unmeasured for ~80 commits, and
-root-caused to the main-pass fragment shader — see Known Issues, tracked as #2161)
-and a Starfield `Meshes02` parse-rate collapse to 6.10% from an over-broad
-version gate, both fixed or characterised in-session. Carried scope: the FSR
-FP32 shader permutation is unexercised (needs a GPU without `shaderFloat16`),
-and two phase-4 items — the transparency split and moving the UI after
-upscale — remain open. **Session 62** shipped the engine's first cinematic
-vertical slice — SCEN scene records and PACK scene-package actions now have
-an ECS runtime driving Skyrim's MQ101 cart-escape quest end-to-end, backed
-by a new from-scratch Havok HKX packfile reader (`crates/hkx`) decoding
-Skyrim's `hkaSkeleton` + spline-compressed animation tracks (currently
-scoped to that one cinematic catalog, not general NPC locomotion) — plus
-the renderer's biggest single-session feature push since FSR (procedural
-volumetric fog, clustered local fog volumes, material-aware path-traced GI
-extensions) and three streaming-resumability mitigations for large-cell
-frame-time spikes. **Session 63** was a multi-threaded bug-bash/hardening
-session with no single arc: a renderer audit closed ~20 fog/shadow/RT
-correctness issues, exterior streaming picked up a resumability +
-telemetry pass, save/load extended its component-registry completeness
-sweep, a new sandboxed mod-runtime crate (`crates/mod-runtime`) landed,
-and the standing NIF/NIFAL audit cadence closed roughly 60 more issues —
-including a real regression fix (#2283, `BsTriShapeKind::MeshLOD`'s LOD
-cutoffs were unreachable on every real parse) and a collision-import
-hardening fix (#2285, cross-buffer index splicing on corrupt NIFs).
-Session narratives: [HISTORY.md](HISTORY.md) Sessions 60–63.
+**Gates.** `cargo clippy --workspace -- -D warnings` is green (#4765,
+`554ef5c44`); `--all-targets` is not gated and still fails in test and example
+targets. Hosted CI does not yet give a clean all-jobs signal (see
+[Known Issues](#known-issues)). The bench-of-record below is live at
+`a37fcba3c` and carries one open regression, **R6a-regress-22**.
 
-**Active execution focus (2026-08-16): RT lighting and material correctness
-recovery.** New TLAS consumers and unrelated visual goldens are frozen until
-the selected-light/visibility gate closes. The execution spine, current-HEAD
-reconciliation, evidence artifacts, Cornell L0-L5 ladder, material-role closure,
-and commit sequence live in
-[`docs/engine/rt-lighting-material-recovery.md`](docs/engine/rt-lighting-material-recovery.md).
-This is a fix-forward recovery from current `main`: the stepped-camera harness,
-scale-aware ray-origin helper, generated material flags, canonical texture-role
-table, and recent AS synchronization fixes are prerequisites, not revert
-casualties. The first recovery slice is green: physical XCLL directional
-classification landed at `77b540d0`, Vulkan `shaderInt64` device enablement is
-validation-clean on Cornell, and the new three-run R0.1 gate produced identical
-HEAD fingerprints for Cornell static/orbit and Prospector orbit. R0.2's
-two-binary predicate is now implemented and passed three complete 60-frame
-same-binary matrices plus three `c25f61e6`-vs-`77b540d0` anchor matrices across
-static/pan/orbit/dolly/cut. It retains raw stochastic RT error while gating on
-a fixed linear low-pass structural metric, rejects a controlled 64x64
-corruption, and reports correctness separately from the measured same-machine
-p50/p95 performance envelope. The bisect wrapper returns `0` for the clean
-control and `101` for the injected fault. R0 is therefore usable. R1-R3's
-transport-facing spine is now in place: XCLL directionals take the physical
-type-2 path through ReSTIR visibility; four-scene persistent TLAS/cluster
-integrity captures named Cydonia's 656-light SSBO overflow and 305-light
-cluster high-water; capacities are now 1023 lights globally and 512 per
-cluster; every secondary-ray consumer uses the shared scale-aware origin; and
-selected-light, visibility, material-lobe, material-role and RT-LOD views bypass temporal
-upscaling plus the complete composite/presentation look stack. Generated
-`RenderDebugMode` now makes those views live-selectable through
-`render.debug <mode>` without spending another bit, and the same command can
-arm one bounded pixel record that returns the selected uploaded `GpuLight`,
-ray origin/direction/tMin/tMax, visibility mask, averaged transmission and
-committed hit. Generated shader flags, the FO3/FNV TXST↔NIF 2-5 permutation, `light.dump`, and
-`mat.dump` close the principal ingestion/material observability gaps.
-The data-driven `--cornell-oracle l0|l1|l2|l3|l4|l5` scene now covers dark,
-analytic directional, opaque-blocker, open/partitioned volumetric, and
-dielectric/metal/glass/normal-role probes. Its first raw captures found and
-removed the shader's hidden zero-light synthetic sun: L0 is black, L1 is the
-expected constant directional response, and L2 is a white visibility field
-with the blocker plus its predicted hard shadow in black. L3/L4 add a
-volumetric non-leakage gate; L5 adds categorical material populations. The
-canonical 432-byte `GpuMaterial` now also consumes BGEM glass optics and
-source-normalized soft/rim/back/Fresnel/palette inputs. On 2026-09-03 the full
-ignored hardware suite passed serially on the RTX 4070 Ti (five tests covering
-L0-L5, forced BLAS pressure, repeated visibility, and the million-unit
-translation). That run caught a post-composite bloom add contaminating raw
-correctness views; bloom now obeys the shared raw-output policy before it can
-mutate the scene image. The durable RT-CI publication path is now wired through
-the manually dispatched `RT Correctness Gates` workflow, and the provider-backed
-material matrix passed three cold runs each across Oblivion, FNV, Skyrim SE,
-FO4, and Starfield (45 captures plus role/source/oracle logs and checksums).
-Remaining recovery work is the first published self-hosted workflow artifact,
-Starfield CDB `.mat` per-field extraction (the current matrix honestly records
-presence with absent roles), exact residual overlay-source attribution, and the
-R6 documentation-contract close. Detailed status remains in the linked recovery
-plan. Forced BLAS pressure
-is now covered by an explicit one-byte diagnostic budget gate: eligible rigid
-draws are protected before recovery builds, missing retained rigid BLAS are
-restored from dedicated or global geometry buffers before TLAS publication,
-and the pressured Cornell L2 hardware oracle preserves both TLAS instances and
-the analytic blocked/control shadow probes. R3 measurement is now closed:
-`scripts/rt-lod-sweep.sh` measured `{1e-6,6,16,32,64}` across Cornell,
-Prospector, Whiterun, MedTek and Dugout with separate counter/timing passes;
-scale 6 is the largest candidate above the 0.995 linear block-SSIM floor
-(worst 0.996442). A three-repeat L2 gate and a one-million-unit translated
-variant exposed the absolute-space 256-ULP origin jump (16 world units); the
-shared helper now steps in camera-relative space before reconstructing an
-absolute ray origin, restoring blocker hit/visibility agreement.
-The R3 visibility gate now clears renderer-facing water work. WATAL W0 closed
-on 2026-09-04 with frozen, paired waterline captures for Skyrim
-`Tamriel (2,-10)` and FNV Lake Mead `(19,13)`: the new
-`m-exteriors.sh water` mode hard-gates WATR provenance, canonical volume
-membership, authored Skyrim flow, finite output, and a material above/below
-image delta. Its first run also fixed double attenuation of Fresnel reflection
-at low authored opacity and stopped Skyrim mesh water from treating generic
-material defaults as authored optics. **WATAL W1 — real-character water
-traversal — closed 2026-09-09** on the FNV Lake Mead profile:
-[`docs/smoke-tests/w1-water-traversal.sh`](docs/smoke-tests/w1-water-traversal.sh)
-drives the real KCC capsule shore → swim → dive → surface → shore →
-water-adjacent cell boundary through the production action pipeline with no
-teleport in the route. It found four controller defects, each fixed against
-OpenMW's movement solver as the cited reference (WATAL §9 Q3) and unit-pinned:
-"swim down" did not exist at all (the shipped buoyancy spring cancelled the
-pitched swim input ~23 BU below the neutral point, measured), an upward swim
-could launch the capsule out of the lake (no `reject`-style surface clamp), a
-swimmer brushing the lake bed read `grounded` and so kept its terrestrial jump,
-and the water-exit frame handed the spring's velocity to gravity instead of
-starting from rest. The player also now publishes a canonical `WaterContact` —
-it is the one body the dynamic buoyancy pass structurally cannot see — so it
-reaches `water.contacts` and a new `player.status` water line. The gate is
-game-parameterised and **SKIPs Skyrim (77) rather than weakening its route**:
-W0's frozen `(3,-11)` tile is a gorge with no capsule-climbable bank, and at
-`(4,-11)`, where the same river does have banks (enter/swim/clamp/exit all pass
-there), the boundary leg is blocked by a land-side KCC wedge — a grounded
-capsule at `(18441.87,-150.58,42821.87)` refuses all four horizontal directions
-while `phys.census` reports walkable ground 58 BU below it. Every measurement
-is recorded in `docs/smoke-tests/fixtures/skyrim_se.env` for the next attempt
-(fix that P1-class wedge, or pick a lake shore with no bank clutter).
-Dynamic-body contact/current and shoreline/LOD perceptual gates remain after
-it. The underlying closure contract
-remains in
-[`docs/engine/playable-vertical-slice.md`](docs/engine/playable-vertical-slice.md#water-focus--playable-traversal--ex-13-visual-closure),
-and the render/physics design remains in [`docs/engine/watal.md`](docs/engine/watal.md).
-**W0 recheck (2026-09-26):** the all-profile water smoke passed for FNV, FO3,
-Oblivion, Skyrim, and FO4, including WATR provenance, waterline image delta,
-and reflection-oracle checks. The run also exposed a debug-command response
-timeout on FO3; the local diagnostic timeout was raised to 30 seconds so the
-smoke can collect its full evidence. The W2 shoreline/LOD view set still needs
-to be captured and assessed before choosing a visual defect to fix.
+**What works today.**
+- **Content loading.** Interior cells load and render from unmodified game
+  data for Oblivion, FO3, FNV, Skyrim SE and FO4, plus a walkable Starfield
+  Cydonia interior, all through one `cell_loader`. Exterior grids load with
+  LAND terrain and splatting, stream as the player moves (M40), and draw
+  distant LOD: `.btr`/`.bto` with a per-game band ladder on Skyrim/FO4,
+  `_far.nif` on Oblivion/FO3/FNV (M35). FO4 precombines decode from CSG (M49).
+- **Parsers.** NIF parses across seven games, 100% recoverable everywhere; the
+  [compatibility matrix](#compatibility-matrix) is the single home for rates.
+  Archives: BSA v103/v104/v105, BA2 v1/v2/v3/v7/v8. ESM record totals come
+  from the floor-based `parse_rate_fnv_esm` test — prefer its output to any
+  pinned count.
+- **Renderer.** RT-first: ray-query shadows, ReSTIR-DI, RT reflections,
+  bounded material-aware path-traced GI, SVGF, TAA and FSR 3.1 (Quality is the
+  default). Also: clustered lights, volumetric froxel fog with a transported
+  combustion solver, bloom, RT water, EXAL ground cover, and interior
+  godrays / sky apertures (a vertical slice,
+  [`interior-godrays-status.md`](docs/engine/interior-godrays-status.md)).
+  Exposure is auto-metered by default (`a070baaad`), with ACES or AgX. BLAS
+  compaction and LRU eviction, TLAS refit, GPU skinning.
+- **Actors.** NPCs spawn with skeleton, body, FaceGen head and outfit (M41).
+  Seven AI package procedures run by default, with authored walk clips and
+  KCC-backed steps (M42). Faction hostility starts combat on sight and
+  disengages after a grace period (#4414, #4816). FNV-era ragdolls run on
+  Rapier (M41.x).
+- **Player.** Rapier kinematic character controller (M28.5), swimming and
+  diving (WATAL W1), a visual body with a first/third-person toggle
+  (`a070baaad`), and on the P2 fixture a melee → damage → death → loot loop.
+  Native HUD vitals and objective text.
+- **Scripting.** ECS-native event hooks and condition evaluator
+  (M47.0/M47.1). Compiled `.pex` is decompiled and lowered through a
+  recognizer chain, with QUST fragments and aliases, and SCEN/PACK scenes
+  (MQ101 plays end-to-end). An SCDA interpreter runs Oblivion quest scripts
+  (M47.3). A first magic-runtime slice covers spell lists (#4415, open).
+- **Save/load.** Full-ECS snapshot with validation gates, atomic write and
+  live load-apply (M45/M45.1).
+- **Audio.** kira spatial audio: footsteps, ambient, music, per-cell reverb,
+  water routing (M44).
+- **UI.** Ruffle-hosted Scaleform menus with Skyrim (AVM1) and FO4 (AVM2) host
+  profiles (R4). Native MenuXml HUDs for Oblivion/FO3/FNV, and the vanilla
+  Skyrim/FO4 `hudmenu.swf` via `--hud` (M48.4–M48.7).
 
-**Superseded bench-of-record** (R6a-stale-15 refresh, HEAD `8a668eff`,
-2026-07-18, wall-clock bench, 300 frames × 3 runs/scene averaged, RTX 4070 Ti,
-run from each game's `Data/` directory — see Repro-command CWD note below).
-**These numbers are not reproducible at HEAD**: PERF-REGRESSION-6c56e311
-landed on 2026-07-19, one day after this run, and costs ~2.2× frame time on
-real content. The live bench-of-record is the section headed
-"Bench-of-record (LIVE)" below; this table is kept only as the historical TAA
-baseline the regression is measured against. (This sentence named `3a02b02d`
-until 2026-09-09 and `4c9a5b36` until 2026-09-28 — each time a record out of
-date. It now points at the LIVE heading, not a hash, so it cannot go stale.)
+**What doesn't work yet.**
+- AI beyond locomotion: 10 of ~17 package procedures need subsystems that do
+  not exist (item use, package combat, magic, dialogue), and there is no
+  cross-tile NAVM pathfinding.
+- FO4/FO76/Starfield actors have no walk-clip source; their ragdolls wait on
+  the `BhkSystemBinary` blob decoder.
+- Dialogue trees and a dialogue UI, Story Manager events, perk entry-point
+  composition (M43, M47.2).
+- Starfield materials are presence-only until CDB Phase 2 (#3398).
+- Texture streaming (M39). Reversed-Z is implemented but ships `Conventional`
+  until validated on hardware (#3308).
+- Oblivion's CHARAL ruleset is built but unwired: `Oblivion.esm` has no AVIF
+  records, so a legacy actor-value resolver comes first
+  ([`charal.md`](docs/engine/charal.md)).
 
-| Bench | This refresh (`8a668eff`, 3-run avg) | Prior record (`1c26bc25`) | Δ |
-|---|---|---|---|
-| **Prospector Saloon** (FNV) | **145.1 FPS / 6.90 ms / fence=5.06 / brd=0.33 / 3626 ent / 1224 draws** (range 139.7–149.5 FPS) | 76.2 / 13.11 / fence=11.12 / 3516 ent | **FPS +90.4%** · fence −54.5% · ent +3.1% |
-| **Whiterun BanneredMare** (Skyrim SE) | **335.0 FPS / 3.00 ms / fence=1.21 / 3237 ent / ~1298 draws** (range 313.9–364.4 FPS) | 362.8 / 2.76 / fence=0.98 / 3216 ent / 1299 draws | FPS −7.7% · fence +23.5% · ent +0.65% |
-| **FO4 MedTekResearch01** | **74.4 FPS / 13.49 ms / brd=3.63 / fence=7.08 / 31495 ent / 14535 draws** (range 68.0–77.7 FPS, run 1 cold-cache) | 65.2 / 15.34 / brd=3.74 / fence=9.03 / 21414 ent | FPS +14.1% · fence −21.6% · **ent +47.0%**, draws flat |
+**Active focus.**
+- The [playable vertical slice](#playable-vertical-slice) — capability on
+  that route outranks renderer polish.
+- Bisect **R6a-regress-22** (FO4 frame time doubled inside
+  `4c9a5b36..99933f87b`).
+- RT lighting and material recovery: R0–R3 are complete. The rest is tracked
+  in [`rt-lighting-material-recovery.md`](docs/engine/rt-lighting-material-recovery.md).
+- WATAL: W0 and W1 are closed. The next step is choosing the first W2/W3
+  shoreline/LOD defect from the captures
+  ([`watal.md`](docs/engine/watal.md)).
 
-**Interpretation.**
-Prospector confirms #2084's live-sample finding: the fence-recovery gap the R6a-stale-15 tracker framed as "uninvestigated" was already mostly closed as a side effect of work landed between `1c26bc25` and this HEAD (FPS +90.4%, fence 11.12→5.06 ms, −54.5%) — entity count barely moved (3516→3626, +3.1%), so this is a real hot-path win, not a scene-content change. It's still short of the pre-collider target (161.4 FPS / fence=2.62 ms @ ~2564 ent); the residual gap (now fence 5.06→2.62 ms, ~2×) is the honest remaining scope, not the ~4× gap the stale framing implied. Whiterun (control, no code path here changed for #2083/#2085/#2086) recorded a mild *regression* (362.8→335.0 FPS, fence 0.98→1.21 ms) at essentially flat entity count (3216→3237, +0.65%) — this session's desktop had several resident GPU-consuming processes (editor GPU process, compositor) that R6a-stale-14's run didn't document either; treat as a shared-hardware confound to re-check on an idle machine, not a steady-state regression. MedTek's entity count jumped sharply (21414→31495, +47%) while draw count stayed exactly flat at 14535 — consistent with the R6a-stale-14-collider-partial ghost-entity rerouting fix (closed prior session) adding `MeshHandle`-free physics-only ghost entities that enter BLAS but never the draw list; FPS still improved (65.2→74.4, +14.1%) since the added entities carry no per-draw cost. brd=3.63 ms stays sub-dominant to fence=7.08 ms; MedTek remains GPU-bound.
-
-**Caveats:** 3 runs/scene on shared desktop hardware (not an isolated bench box) — a real improvement in direction/magnitude for Prospector and MedTek, a real but likely-confounded regression for Whiterun. Not asserted as a fully controlled baseline; a future re-run on an idle machine would tighten the Whiterun result specifically.
+### How to run a bench
 
 **Repro-command CWD note:** bare `--bsa` / `--textures-bsa` / `--materials-ba2` names resolve against CWD, not the `--esm` folder. Run each bench with CWD set to that game's `Data/` directory. Run from elsewhere → archives silently fail → scene loads near-empty (Prospector: 36 entities / 3 meshes / spurious ~1792 FPS).
 
 **CWD-immune alternative (#3346):** `--game <profile>` (`fnv` / `fo3` / `skyrim` / …) expands to *absolute* `--esm` / `--bsa` / `--textures-bsa` paths from `assets/debug_profiles.toml` via `expand_game_profile_args` (`byroredux/src/boot.rs`), so it works from any CWD and cannot mistype an archive name. Prefer it for ad-hoc runs and audits:
 `cargo run --release -- --game fnv --cell GSProspectorSaloonInterior --bench-frames 300 --bench-hold`.
 The bench-of-record table below deliberately keeps the bare-name + `cd` form for apples-to-apples continuity with the historical record — do not restate those numbers under a different invocation shape.
+
+**Standing methodology.** Every refresh includes a same-machine control:
+rebuild the outgoing record's commit in a worktree and bench it in the same
+session, on the same harness. That control is what proved
+PERF-REGRESSION-6c56e311 was code, and what localised R6a-regress-22. Also
+isolate `BYROREDUX_SETTINGS_PATH` so persisted menu settings cannot leak into
+runs (#4947). A genuinely idle-machine run has never been done. FSR Quality
+is the engine default; the `TAA (native)` column stays the historical
+reference and is reachable with `--upscaler taa`.
+
+Superseded records (R6a-stale-15 at `8a668eff` through `4c9a5b36`) are in
+[`roadmap-history.md` §2](docs/archive/roadmap-history.md#2-superseded-bench-records);
+raw rows for every matrix are in `docs/audits/BENCH_*.tsv`.
 
 ### Bench-of-record (LIVE) — stepped-camera refresh (2026-09-28, HEAD `a37fcba3c`)
 
@@ -287,738 +185,115 @@ Three conclusions, all measured:
 - **The regression is in the 733 commits `4c9a5b36..99933f87b`.** Tracked as
   **R6a-regress-22** below, with a bisect on Dugout TAA as the next step.
 
-### Superseded — stepped-camera refresh (2026-09-09, HEAD `4c9a5b36`)
-
-Full matrix, 5 scenes × 5 configs × 3 runs of 300 frames, median with range,
-1280×720 output, per-scene CWD set to that game's `Data/`. **75 runs, zero
-rejections**, every scene-state fingerprint gate passing. Raw rows:
-`docs/audits/BENCH_stepped-camera_4c9a5b36.tsv`.
-Repro: `scripts/fsr-bench-matrix.sh 3 300`.
-
-**Run conditions recorded this time** (the previous record's Whiterun result
-had to be written off as an undocumented shared-desktop confound): RTX 4070 Ti,
-1404 / 12282 MiB VRAM in use and 29% utilisation at start, with only a
-terminal process resident on the GPU. Still a desktop, not an isolated bench
-box — but a stated one.
-
-| Scene | TAA (native) | FSR Quality | net recovery | FSR Performance |
-|---|---:|---:|---:|---:|
-| Cornell (37 ent, redistributable control) | **108.7 FPS / 9.20 ms** | 150.1 FPS / 6.66 ms | +2.54 ms (+28%) | 219.8 / 4.55 (+51%) |
-| Prospector (3146 ent) | **76.4 FPS / 13.08 ms** | 104.4 FPS / 9.58 ms | +3.50 ms (+27%) | 141.8 / 7.05 (+46%) |
-| Whiterun BanneredMare (5765 ent) | **93.1 FPS / 10.74 ms** | 108.6 FPS / 9.21 ms | +1.53 ms (+14%) | 142.6 / 7.01 (+35%) |
-| MedTek Research 01 (39537 ent) | **26.6 FPS / 37.64 ms** | 45.3 FPS / 22.08 ms | +15.56 ms (+41%) | 47.3 / 21.14 (+44%) |
-| FO4 Dugout Inn (11592 ent) | **90.0 FPS / 11.12 ms** | 104.7 FPS / 9.55 ms | +1.57 ms (+14%) | 160.8 / 6.22 (+44%) |
-
-**The decision shape is unchanged and now measured at HEAD**: FSR Quality is a
-net win on all five scenes (+14% to +41%), Performance reaches +35% to +51%,
-and `native-aa` loses 2% to 7% because it pays reconstruction without reducing
-render resolution. One prior oddity is resolved: MedTek Quality no longer beats
-Performance in wall time (47.3 vs 45.3 FPS), so the last preset step is a win
-again on the heaviest scene.
-
-#### Same-machine control (30 runs at `e6282349`, this session's start commit)
-
-Entity counts are identical to the outgoing record in all five scenes, so
-old-vs-new deltas are not content drift — but 190 commits is far too wide for
-attribution, which is what the control exists to replace. HEAD's harness and
-reporter drove the `e6282349` binary (swapped in), so both sides share one
-measurement path; the archived control TSV's `engine=` stamp is corrected by
-hand because the harness stamps the repo HEAD, not the binary.
-Raw rows: `docs/audits/BENCH_control_e6282349_vs_4c9a5b36.tsv`.
-
-| Scene / config | control (`e6282349`) | HEAD (`4c9a5b36`) | Δ |
-|---|---:|---:|---:|
-| Cornell TAA | 103.6 FPS / 9.65 ms | **108.7 / 9.20** | **+4.9% FPS** |
-| Cornell FSR Quality | 135.7 / 7.37 | **150.1 / 6.66** | +10.6% |
-| Dugout TAA | 99.1 FPS / 10.09 ms | **90.0 / 11.12** | **−9.2% FPS · +1.03 ms** |
-| Dugout FSR Quality | 101.0 / 9.90 | **104.7 / 9.55** | +3.7% |
-
-Cornell got faster in this range and Dugout got slower, so the Dugout result
-is not a global slowdown and not the environment: same machine, same session,
-same harness, same scene fingerprint. It is tracked as its own Known Issue
-below rather than absorbed into the record's prose.
-
-### Superseded — stepped-camera refresh (2026-09-03, HEAD `2da754e7`)
-
-Full matrix, 5 scenes × 5 configs × 3 runs of 300 frames, median with range,
-1280×720 output, per-scene CWD set to that game's `Data/`. **75 runs, zero
-failures**, every scene-state fingerprint gate passing. Raw rows:
-`docs/audits/BENCH_stepped-camera_2da754e7.tsv`.
-Repro: `scripts/fsr-bench-matrix.sh 3 300`.
-
-| Scene | TAA (native) | FSR Quality | net recovery | FSR Performance |
-|---|---:|---:|---:|---:|
-| Prospector (3146 ent) | **74.0 FPS / 13.51 ms** | 95.8 FPS / 10.43 ms | +3.08 ms (+23%) | 136.8 / 7.31 (+46%) |
-| Whiterun BanneredMare (5765 ent) | **89.9 FPS / 11.12 ms** | 108.5 FPS / 9.22 ms | +1.90 ms (+17%) | 143.4 / 6.97 (+37%) |
-| MedTek Research 01 (39537 ent) | **27.1 FPS / 36.95 ms** | 46.8 FPS / 21.36 ms | +15.59 ms (+42%) | 44.4 / 22.51 (+39%) |
-| FO4 Dugout Inn (11592 ent) | **96.4 FPS / 10.38 ms** | 102.6 FPS / 9.75 ms | +0.63 ms (+6%) | 132.5 / 7.55 (+27%) |
-| Cornell (37 ent, redistributable control) | **99.9 FPS / 10.01 ms** | 133.8 FPS / 7.47 ms | +2.54 ms (+25%) | 197.9 / 5.05 (+50%) |
-
-The 1059-commit gap is too large for an uncontrolled old-vs-new attribution:
-entity counts moved materially in four scenes, renderer hot paths changed, and
-this is shared desktop hardware. The new record therefore replaces stale
-absolute claims; it does not pretend every delta from `34074b93` is a code
-regression. What remains stable is the useful decision shape: FSR Quality is a
-net win on all five scenes (+6% to +42%), Performance reaches +27% to +50%,
-and `native-aa` loses 2% to 15% because it pays reconstruction without reducing
-render resolution.
-
-**Dugout remains the weakest Quality case (+6%)**, while MedTek is the strongest
-(+42%). MedTek Quality also beats Performance in wall time in this capture;
-the lower-resolution GPU work is no longer the whole frame there, so CPU/fixed
-cost and shared-desktop variance dominate the last preset step.
-
-The refresh itself exposed a benchmark-integrity bug before yielding this
-record. Two discarded attempts accepted live keyboard input when each new
-focus-stealing window opened; an incidental activation sent Prospector or
-MedTek through a door into exterior streaming, correctly tripping the state
-hash gate. Commit `2da754e7` makes finite named benchmarks own gameplay input
-until their summary is printed (`--bench-hold` releases it afterward). The
-clean pass above is built from that exact commit.
-
-**Caveat:** shared desktop hardware, not an isolated bench box. Cornell and
-Prospector each contain one visibly noisy repetition, but medians are reported
-and all validity/state gates passed.
-
-### Superseded — stepped-camera refresh (2026-08-14, HEAD `34074b93`)
-
-Superseded after 1059 commits by the `2da754e7` refresh above. This was the
-first record reproducible on the corrected orbit harness (#2835): 75 runs,
-zero failures, archived at
-`docs/audits/BENCH_stepped-camera_34074b93.tsv`.
-
-| Scene | TAA (native) | FSR Quality | net recovery | FSR Performance |
-|---|---:|---:|---:|---:|
-| Prospector (3757 ent) | **71.0 FPS / 14.08 ms** | 129.2 FPS / 7.74 ms | +6.34 ms (+45%) | 211.7 / 4.72 (+66%) |
-| Whiterun BanneredMare (5183 ent) | **89.9 FPS / 11.12 ms** | 157.5 FPS / 6.35 ms | +4.77 ms (+43%) | 244.1 / 4.10 (+63%) |
-| MedTek Research 01 (32920 ent) | **42.5 FPS / 23.52 ms** | 69.4 FPS / 14.40 ms | +9.12 ms (+39%) | 86.7 / 11.53 (+51%) |
-| FO4 Dugout Inn (7346 ent) | 81.9 FPS / 12.21 ms | 103.9 FPS / 9.63 ms | +2.58 ms (+21%) | 201.7 / 4.96 (+59%) |
-| Cornell (37 ent, redistributable control) | 175.7 FPS / 5.69 ms | 277.6 FPS / 3.60 ms | +2.09 ms (+37%) | 388.6 / 2.57 (+55%) |
-
-### Superseded — R6a-stale-18 refresh (2026-08-04, HEAD `28155b79`)
-
-Superseded by the stepped-camera refresh above.
-
-Full matrix, 5 scenes × 5 configs × 3 runs of 300 frames, median with range,
-1280×720 output, per-scene CWD set to that game's `Data/`. 75 runs, zero
-failures.
-
-> **Harness provenance (#2835): taken on `e153b50c`, the pre-`f19f7f15`
-> parked-camera harness**, and — for Prospector and Dugout — through the
-> pre-`76373774` orbit radius. Not reproducible on the current harness.
-
-| Scene | TAA (native) | FSR Quality | net recovery | FSR Performance |
-|---|---:|---:|---:|---:|
-| Prospector (3626 ent) | **136.4 FPS / 7.33 ms** | 265.9 FPS / 3.76 ms | +3.57 ms (+49%) | 381.4 / 2.62 (+64%) |
-| Whiterun BanneredMare (5150 ent) | **65.1 FPS / 15.37 ms** | 136.6 FPS / 7.32 ms | +8.05 ms (+52%) | 211.5 / 4.73 (+69%) |
-| MedTek Research 01 (31400 ent) | **18.7 FPS / 53.58 ms** | 37.4 FPS / 26.73 ms | +26.85 ms (+50%) | 56.8 / 17.61 (+67%) |
-| FO4 Dugout Inn (6978 ent) | 24.5 FPS / 40.79 ms | 48.5 FPS / 20.63 ms | +20.16 ms (+49%) | 76.1 / 13.14 (+68%) |
-| Cornell (27 ent, redistributable control) | 301.3 FPS / 3.32 ms | 459.3 FPS / 2.18 ms | +1.14 ms (+34%) | 595.5 / 1.68 (+49%) |
-
-**`native-aa` is a net loss on every scene**, consistent with every prior
-refresh: it reconstructs at full output resolution, so its upscale dispatch
-costs more than the upscaling presets while saving no render-resolution
-work.
-
-**A same-session same-machine control rebuild of the prior record
-(`3a02b02d`) is what makes this refresh trustworthy rather than noise —
-see `#2367`.** A bare comparison against the R6a-stale-17 table below would
-show wild, hard-to-interpret swings (Prospector TAA nearly doubling,
-MedTek/Dugout dropping ~20-25%, Whiterun dropping ~33%). Rebuilding
-`3a02b02d` in a worktree and benching it under identical conditions this
-session, exactly as the R6a-stale-17 refresh's own methodology note
-prescribes, separated real signal from two confounds — machine load and
-Whiterun's entity-count growth:
-
-| Scene | Entities (ctrl→HEAD) | TAA frame ms (ctrl→HEAD) | Verdict |
-|---|---|---|---|
-| Prospector (FNV) | 3626→3626 (flat) | 14.69→7.33 | **Real ~2x improvement — unexplained, see `#2367`** |
-| Cornell (synthetic control) | 25→27 (flat) | 2.76→3.32 | Real but mild slowdown (~20%) |
-| Whiterun (Skyrim SE) | 3406→5150 (+51%) | 9.99→15.37 | Confounded by entity growth — not conclusive on its own |
-| MedTek Research 01 (FO4) | 31495→31400 (flat) | 40.17→53.58 | **Real ~33% regression, flat content — see `#2367`** |
-| Dugout Inn (FO4) | 6978→6978 (flat) | 30.44→40.79 | **Real ~34% regression, flat content — see `#2367`** |
-
-The control run reproduces the original R6a-stale-17 figures closely
-(Prospector 65.3→68.1 FPS, Dugout 31.9→32.9 FPS — within normal
-same-machine noise), which is what makes the HEAD deltas above
-trustworthy rather than contention artifacts. **Filed as `#2367`** — both
-real regressions are Fallout 4 content (MedTek, Dugout); the dramatically
-improved scene is FNV (Prospector); the pattern suggests something
-FO4-specific rather than a universal regression, but that is an
-observation, not yet a root cause. Bisecting `3a02b02d..28155b79` is the
-next step and was explicitly not attempted in this refresh (75 + 75 runs
-already spent on the full matrix + control).
-
-**Whiterun's entity count grew 3406→5150 (+51%) since the last refresh**
-for reasons not yet understood — tracked under `#2367`'s completeness
-checks rather than assumed benign.
-
-**Harness provenance for `#2367`, checked 2026-08-27:** neither `f19f7f15`
-(parked → stepped camera) nor `76373774` (orbit-radius fix) is inside
-`3a02b02d..28155b79` — both land after `28155b79` — so no harness variable
-moved between the control and HEAD runs above. The comparison is internally
-valid; the methodology caveats belong to the *stepped-camera* refresh, not
-to this one. What is now stale is the range itself: HEAD is 815 commits past
-`28155b79`, and the bisection `#2367` asks for has not been run.
-
-FSR is the engine default at Quality (FSR plan phase 7). The `TAA (native)`
-column stays the reference for historical comparison and remains reachable
-via `--upscaler taa` / `r.upscaler taa`.
-
-**Staleness:** superseded by the stepped-camera refresh at HEAD `34074b93`
-(2026-08-14).
-
-### Superseded — R6a-stale-17 refresh (2026-07-26, HEAD `3a02b02d`)
-
-Superseded by the R6a-stale-18 refresh above; retained for the control-run
-comparison in `#2367` and because the phase-7-matrix section below still
-cites it.
-
-Full matrix, 5 scenes × 5 configs × 3 runs of 300 frames, median with range,
-1280×720 output, per-scene CWD set to that game's `Data/`. 75 runs, zero
-failures. Repro: `scripts/fsr-bench-matrix.sh 3 300`.
-
-| Scene | TAA (native) | FSR Quality | net recovery | FSR Performance |
-|---|---:|---:|---:|---:|
-| Prospector (3626 ent) | **65.3 FPS / 15.32 ms** | 123.5 FPS / 8.10 ms | +7.22 ms (+47%) | 187.2 / 5.34 (+65%) |
-| Whiterun BanneredMare (3406 ent) | **97.6 FPS / 10.25 ms** | 161.6 FPS / 6.19 ms | +4.06 ms (+40%) | 233.6 / 4.28 (+58%) |
-| MedTek Research 01 (31495 ent) | **23.1 FPS / 43.28 ms** | 46.3 FPS / 21.59 ms | +21.69 ms (+50%) | 68.0 / 14.72 (+66%) |
-| FO4 Dugout Inn (6978 ent) | 31.9 FPS / 31.39 ms | 63.7 FPS / 15.71 ms | +15.68 ms (+50%) | 99.0 / 10.10 (+68%) |
-| Cornell (25 ent, redistributable control) | 323.6 FPS / 3.09 ms | 462.1 FPS / 2.16 ms | +0.93 ms (+30%) | 568.0 / 1.76 (+43%) |
-
-**`native-aa` is a net loss on every scene** (−9% Cornell, −5% Whiterun, −2%
-Prospector, −1% Dugout, +4% MedTek): it reconstructs at full output resolution,
-so its upscale dispatch costs 0.21–0.62 ms against ~0.15–0.17 ms for the
-upscaling presets while saving no render-resolution work. It exists to separate
-reconstruction quality from upscaling quality, not as a performance option.
-
-**HEAD is flat against the previous record — the 28 intervening commits cost
-and gained nothing measurable.** Established by rebuilding `e153b50c` in a
-worktree and benching it in the same session under the same load, with a
-byte-identical harness (both `fsr-bench-matrix.sh` and `fsr_bench_report.py`
-are unchanged across the two commits). HEAD vs that control: Cornell TAA
-+1.1%, Cornell Quality −0.6%, Prospector TAA +1.2%, Prospector Quality +0.7%,
-MedTek TAA +3.6%, MedTek Quality +7.7%; the widest excursions are Prospector
-Performance −4.4% and Balanced −3.8%. All inside this machine's noise band.
-
-**Two corrections to the superseded phase-7 table, both found by that control
-run — neither was a code change:**
-
-1. **Machine contention, not regression.** Cornell reads −11.9% and Prospector
-   −5.8% against the phase-7 figures *at the phase-7 commit itself*. This
-   desktop carries 3–43% background GPU utilisation (compositor, browser,
-   editor) plus a ~59%-CPU indexer; the effect is largest on Cornell, whose
-   3 ms frame is mostly fixed per-frame overhead. Absolute numbers in this
-   table are therefore ~6–12% pessimistic against an idle machine, uniformly
-   across configs — the *ratios* between configs are unaffected, which is why
-   net-recovery percentages barely moved.
-2. **The phase-7 MedTek TAA row was not reproducible at its own commit.** It
-   recorded 15.2 FPS / 65.88 ms; `e153b50c` re-measures **22.3 FPS / 44.82 ms
-   ±0.72** today, +47% off. Its published `±11.48 ms` spread was the tell. The
-   phase-7 MedTek net-recovery figure (+68%) was inflated by that bad
-   baseline; the real figure is +50%. Do not cite the 15.2 number.
-
-**Prediction that did not hold.** The Session 61 close expected the
-`camera_cut` false-positive fix (#2159) to raise the FSR column, on the
-grounds that FSR Quality was made the default while that bug was forcing a
-permanent single-frame temporal reset. It did not: FSR Quality moved +0.7% on
-Prospector and −0.6% on Cornell. The fix is real and correct, but it does not
-show up in steady-state bench numbers — plausibly because `--bench-camera` was
-not driving the camera in these runs, so the movement that triggered the false
-positive never occurred. A motion-path bench would be the way to measure it.
-
-**Standing methodology note.** Two bench cycles running, the same-machine
-worktree rebuild of the prior commit has been the thing that made the result
-interpretable — it proved PERF-REGRESSION-6c56e311 was code (`8a668eff`
-reproduced 149.6 FPS) and proved this cycle's apparent regressions were not.
-Treat it as part of the refresh, not an optional extra. What is still missing
-after three cycles is a genuinely idle-machine run; "re-check on an idle
-machine" has been carried since R6a-stale-15 and remains unpaid.
-
-FSR is the engine default at Quality (FSR plan phase 7). The `TAA (native)`
-column stays the reference for historical comparison and remains reachable via
-`--upscaler taa` / `r.upscaler taa`.
-
-### Superseded — FSR phase-7 matrix (2026-07-24, HEAD `e153b50c`)
-
-Retained because **PERF-REGRESSION-6c56e311 / #2161** measures itself against
-this table's Prospector TAA column, and because it is the provenance of the
-SSIM matrix figures. Superseded by the R6a-stale-17 refresh above; its MedTek
-TAA row is known bad (see correction 2 above).
-
-| Scene | TAA (native) | FSR Quality | net recovery |
-|---|---:|---:|---:|
-| Prospector (3626 ent) | **68.5 FPS / 14.59 ms** / fence 12.79 | 134.2 FPS / 7.45 ms | +7.14 ms (+49%) |
-| Whiterun BanneredMare (3406 ent) | **100.8 FPS / 9.92 ms** | 168.7 FPS / 5.93 ms | +3.99 ms (+40%) |
-| MedTek Research 01 (31495 ent) | ~~15.2 FPS / 65.88 ms~~ **not reproducible — see above** | 46.7 FPS / 21.41 ms | ~~+68%~~ → +50% |
-| FO4 Dugout Inn (6978 ent) | 32.1 FPS / 31.17 ms | 62.6 FPS / 15.98 ms | +15.19 ms (+49%) |
-| Cornell (25 ent, redistributable control) | 363.1 FPS / 2.75 ms | 535.4 FPS / 1.87 ms | +0.88 ms (+32%) |
-
-**The Prospector TAA drop against R6a-stale-15 is a real regression, not a
-measurement artifact.** 145.1 FPS recorded at `8a668eff` versus 68.5 here;
-rebuilding `8a668eff` in a worktree on the same machine in the same session
-reproduced **149.6 FPS**, so the environment is not the difference. The
-R6a-stale-17 control re-measured this commit at 64.5 FPS, consistent within
-contention — the finding stands unchanged. See **PERF-REGRESSION-6c56e311**
-under Known Issues; it is *not* caused by the FSR work (the pre-FSR-session tip
-`33d6a18e` already measures 65.6 FPS).
-
-**Staleness (2026-07-26):** bench-of-record is HEAD `3a02b02d`, 0 commits
-stale. Next tracker not yet filed; the 30-commit threshold and the
-change-content limb both reset with this refresh.
-
----
-
-## Status
-
-**Rendering, today.** Interior cells load and render end-to-end from
-unmodified Bethesda game data across the lineage — Oblivion (Anvil
-Heinrich Oaken Halls), FNV (Prospector Saloon), FO3 (Megaton at 929
-REFRs), Skyrim SE (WhiterunBanneredMare, full cell with 6 named
-equipped NPCs), and FO4 (MedTekResearch01) all load through the same
-`cell_loader`. Exterior renders 7×7 (radius 3, default) grids from FNV
-WastelandNV with landscape terrain (LAND heightmap + LTEX/TXST splat),
-and world streaming swaps cells as the player walks (M40). **Starfield
-bring-up** went from `no parser` to a walkable Cydonia interior in
-5 days this session (#1289 CDB `.mat` wiring, #1291 XCLL canonical-size
-split, #1292 BSGeometry `geometries\X.mesh` resolution, #1294
-trimesh-fallback gate, #1295 door-teleporter spawn; ESM Phase 0/1 via
-the `sf_smoke` baseline tool). Single-mesh sweetroll ~3000-5000 FPS
-(2026-04-22, RTX 4070 Ti @ 1280×720).
-
-**RT lighting.** Full pipeline: SSBO multi-light, ray-query shadows
-with streaming weighted reservoir sampling (16 reservoirs/fragment, Phase 19;
-unbiased weight clamped at 64×), RT reflections + bounded material-aware
-path-traced GI (two diffuse events, with GGX/glass transport), SVGF
-temporal denoiser with motion-vector reprojection and mesh-id
-disocclusion, composite + ACES tone map, TAA with Halton(2,3) jitter
-and YCoCg variance clamp. BLAS per-mesh with compaction + LRU
-eviction, TLAS refit when layout unchanged. Pipeline cache threaded
-through every create site with disk persistence (10–50 ms cold → <1
-ms warm). SPIR-V reflection cross-checks descriptor layouts against
-shader declarations at pipeline-create time. **R1 (2026-05-01)**:
-per-material data deduplicated into a `MaterialBuffer` SSBO indexed
-by `material_id`; `GpuInstance` collapsed 400 → 112 B (72%
-reduction); future shading variants land in `GpuMaterial` only,
-no longer lockstep across 4 shaders + DrawCommand + GpuInstance.
-
-**Parser coverage.** NIF parses across seven games (604 787 files on
-the latest sweep — see compatibility matrix below). FO3 / FNV /
-Skyrim SE land at 100% clean, as does FO4 (both base mesh archives);
-Oblivion is at 100% (regenerated 2026-08-19, #3082 — the 6 marker_*.nif
-sizeless-truncation cases no longer truncate); Starfield is at 100.00%
-(120 543 / 120 543, re-measured 2026-09-24); and FO76 is at 98.18%, with a truncation tail concentrated
-in its two `GeneratedMeshes` archives (#3466 / Known Issues).
-Recoverable rate is 100% on all seven games. Per-archive breakdowns,
-sweep dates and the residual truncation tails live in the
-compatibility matrix below — the single home for those figures; do not
-restate them here. Archive
-readers cover BSA v103/v104/v105 and BA2 v1/v2/v3/v7/v8 (GNRL + DX10
-with reconstructed DDS headers, zlib + LZ4).
-
-ESM parses structured records across ~25 types on FNV. The living source
-of truth for the record total is the floor-based integration test
-`parse_rate_fnv_esm` (`cargo test -p byroredux-plugin --test parse_real_esm
--- --ignored`), which reports `[FNV] total=77 828` (items 2 643, NPCs
-3 816, quests 436, dialogues 18 215, SCOL 98, …) plus a separate long-tail
-bucket (sounds / idle / grasses / debris) it logs on its own line. The
-older prose "73 054 + 5 625" split reflected a different bucketing, not a
-parse regression — prefer the test output over any hard count pinned here.
-
-**Scripting, physics, UI.** Papyrus `.psc` parses end-to-end —
-lexer + Pratt expression parser + statement/script parsers + full
-AST (M30 Phase 1 → M30.2). Rapier3D physics bridge with a kinematic
-character controller (gravity + collide-and-slide + jump + autostep,
-vanilla-Skyrim capsule, M28.5). Classic Havok collision translates through
-NIFAL; FO4+/FO76/Starfield packed authoring now survives into the cell cache
-and selects layer-aware renderer-free geometry proxies (precise static
-trimeshes for architecture, one placement-following AABB for clutter/actors),
-with once-per-cell approximated/unresolved telemetry. Ruffle/SWF UI overlay renders Skyrim
-SE menus; an embedded egui debug overlay (`byroredux-debug-ui`) draws
-over the composite output. ECS-native scripting runtime shipped: the
-event-hook dispatcher (M47.0) and CTDA condition evaluator (M47.1)
-both wire into engine init, validated by the R5 "go ECS-native"
-prototype that hand-translated `defaultRumbleOnActivate.psc` into
-plain ECS components + dt-driven systems. The per-script transpiler
-that closes the loop on the 1 257 parsed FO3 SCPT records is M47.2
-(Tier 3). 3D spatial audio (M44) plays footsteps / ambient / music
-through `byroredux-audio` (kira 0.10) with a per-cell reverb send.
-
-**NIFAL — the NIF Abstraction Layer (shipped 2026-05-28).** The
-canonical translation tier that resolves a raw per-game `ImportedMesh`
-into engine-native ECS data exactly once, killing the per-game
-branches that used to leak into the renderer and the two duplicated
-load paths. First slices landed this session: a single
-`material_translate::translate_material` boundary
-([`byroredux/src/material_translate.rs`](byroredux/src/material_translate.rs))
-that both `cell_loader/spawn` and `scene/nif_loader` now call —
-`Material.metalness`/`roughness` resolved to plain `f32` (was
-`Option` + per-draw `classify_pbr`), glass classified alpha-aware,
-effect/BGSM flags packed; a particle slice decoding authored
-`NiPSysEmitter` base params + birth rate (`NiPSysEmitterCtlr`) + size
-(`NiPSysGrowFadeModifier`) instead of preset kinematics; and a
-collision-audit fix translating the two previously-dropped
-`BhkMultiSphereShape` / `BhkConvexListShape` (all 13 parsed
-`bhk*Shape` variants now translate). The emissive-scale unification
-was measured and resolved as a no-op. Spec at
-[`docs/engine/nifal.md`](docs/engine/nifal.md); design history for the
-material side at [`docs/engine/material-abstraction.md`](docs/engine/material-abstraction.md).
-
-**What doesn't work yet (as of 2026-05-28).** Skinned rendering and
-world streaming are no longer in this list — both shipped: M29 / M29.5
-verified the skinning chain end-to-end with GPU bone-palette compute,
-and M40 closed the streaming pipeline (`WorldStreamingState` + async
-cell pre-parse + LRU BLAS eviction + interior↔exterior cell-swap).
-The live gaps: **exterior runtime readiness** — Oblivion TES4 worldspace +
-LAND wiring is implemented and game-agnostic, and an on-device Tamriel
-`(0,0)` radius-1 render was already recorded at 4,886 entities / 150.6 FPS.
-The remaining cross-game smoke, safe-entry, streaming-budget, collision/LOD,
-and ownership work is tracked by [#2377](https://github.com/matiaszanolli/ByroRedux/issues/2377). The
-long-running "BSA v103 decompression" framing is a stale premise
-refuted by the 2026-04-17 + 2026-04-25 sweeps; v103 extracts
-147 629 / 147 629 vanilla files end-to-end, see #699). **NPC behavior
-beyond spawn** (AI packages, animation playback wiring) — largely closed
-since M42.10/M42.11 (2026-09-18): ambient AI packages run by default in
-any loaded cell and walking NPCs play authored, archive-verified walk
-clips at gait-matched speed (see the M42 row). The remaining Tier 7
-work is the non-locomotion procedures (eat/sleep/dialogue/combat
-packages) and cross-tile pathfinding.
-**Actor motion** — NPC locomotion is animated and physics-backed
-(Rapier KCC) since M42.10; FO4+/FO76/Starfield actors still lack a walk
-clip source and slide through walk legs. `crates/hkx`
-(Session 62) now decodes Skyrim's Havok 2010 packfiles (Special Edition's
-64-bit layout, and since `fb8173fe` the 2011 release's 32-bit one) —
-`hkaSkeleton` + static/spline-compressed `hkaSplineCompressedAnimation` —
-but only to drive one curated cinematic catalog (the MQ101 cart-idle
-clips, see M47.2); it is not wired into general NPC playback. The FO4
-*skeleton* loads fine —
-the old "FO4 humanoid meshes wait on a `.hkx` skeleton loader" framing
-was a stale premise: `characterassets\skeleton.nif` is a NIF that ships
-in `Fallout4 - Meshes.ba2` and resolves through the corrected path table.
-**M41.x ragdoll (Havok-baseline physics)** — the FNV slice shipped: the
-`bhkRigidBody` + ragdoll/malleable constraint chain parses, threads into
-a Rapier **multibody**, and the `ragdoll <id>` console command runs a
-Bethesda ragdoll on our solver (18-body Doc Mitchell verified). FO4/FO76/
-Starfield ragdolls stay blocked on the `BhkSystemBinary` blob decoder; the
-geometry proxies provide collision presence, not packed-body dynamics or
-constraints. FO3 DLC `bhkSPCollisionObject` is now preserved as phantom
-authoring instead of being folded into the classic rigid-body path.
-**The Papyrus runtime** that executes the 1 257 parsed
-FO3 SCPT records is M47.2 — the event-hook (M47.0) + condition (M47.1)
-foundations ship, plus the `.pex` recognizer slice (Session 51); the full
-transpiler is deferred. **Save/load** (M45 + M45.1) shipped 2026-06-21.
-Weather transitions (fade between WTHR states) and cloud
-layers 2/3 closed in M33.1 (`2bfb622`).
-
-**Per-fragment normal mapping (2026-05-02).** Re-enabled and shipped:
-**M-NORMALS** ([#783](https://github.com/matiaszanolli/ByroRedux/issues/783),
-commits 91e9011 + 82a4563) parses Bethesda's
-`NiBinaryExtraData("Tangent space (binormal & tangent vectors)")` blob
-when present and falls back to a Rust port of nifly's
-`NiTriShapeData::CalcTangentSpace` per-triangle accumulator
-(`crates/nif/src/import/mesh/tangent.rs::synthesize_tangents`) for FO3 / FNV /
-Oblivion content that ships without authored tangents. Vertex stride
-84 → 100 B (`tangent: [f32; 4]` at offset 84, attribute location 8 /
-RGBA32_SFLOAT); `triangle.vert/frag`, `ui.vert`, and
-`skin_vertices.comp` updated in lockstep. **LIGHT-N2**
-([#784](https://github.com/matiaszanolli/ByroRedux/issues/784),
-commit 18bbeae) moves the composite fog mix from HDR-linear pre-ACES
-to display space post-ACES, removing the residual interior yellow
-distance wash. Both ship; the renderer is at the doorstep of
-Oblivion-class interior fidelity for properly-textured cells.
-
-**The "chrome posterized walls" diagnosis was a red herring.** Three
-sessions converged on screen-space-TBN discontinuity as the cause;
-Session 27 (2026-05-02) found the actual bug. `BYROREDUX_RENDER_DEBUG=0x10`
-(`DBG_BYPASS_NORMAL_MAP`, added in commit b2354a4) skips `perturbNormal`
-entirely — bypass and baseline screenshots came out pixel-identical at
-the same camera position. `byro-dbg`'s `tex.missing` reported 39
-unique missing textures × 263 entities for FNV `GSDocMitchellHouse`
-(walls, floor, trim — `nvcraftsmanhomes_interiorwall01.dds` and
-friends). The "chrome" was the magenta-checker placeholder
-compositing with the (correctly loaded) tangent-space normal map.
-Root cause: FNV ships its base textures across `Fallout - Textures.bsa`
-**and** `Fallout - Textures2.bsa`; only the former was loaded.
-Fixed by `open_with_numeric_siblings` in `byroredux/src/asset_provider.rs`
-(commit b2354a4): when `--bsa` / `--textures-bsa` points at an
-unsuffixed `.bsa` / `.ba2`, the loader now also opens
-`<stem>2.bsa` … `<stem>9.bsa` siblings on disk. Inert for Skyrim's
-already-numeric `Skyrim - Meshes0.bsa` style. With the helper in
-place `tex.missing` drops 39 → 1 (the remainder is `<no path,
-no material>` placeholder geometry, legitimate). New diagnostic
-order: when an artifact reads as "chrome / posterized", run
-`tex.missing` *before* opening shader files. The full triage is in
-[docs/engine/debug-cli.md](docs/engine/debug-cli.md) under
-"Fragment-shader bypass / viz bits"; the session narrative is in
-[HISTORY.md](HISTORY.md).
 
 ### Compatibility matrix
 
-Parse-rate columns measured 2026-04-26 against vanilla mesh archives
-on commit 0681fc7 (`cargo test -p byroredux-nif --release --test parse_real_nifs -- --ignored parse_rate`);
-Oblivion / Fallout 4 / Starfield rows refreshed per-row since (dates in
-each row), and Fallout 76 refreshed 2026-07-11 (#1900 / NIF-D3-02 — it had
-gone stale at 97.34% vs a live 100%).
-Clean = no NiUnknown placeholders + no truncation. Recoverable = file
-parses end-to-end (counting NiUnknown / truncation as recoverable).
-Counts are the **full** corpus the gate sweeps — every archive in
-`Game::mesh_archives()` plus the present-only `optional_mesh_archives()`
-tier (#3369 / #3712), not the primary archive alone. Oblivion's row read
-8 032 until 2026-09-07 (#3925); that is `Oblivion - Meshes.bsa` by itself,
-and omitted the 1 580 NIFs in its eight vanilla DLC archives.
-The audit-publish run #684–#688 / #697 / #698 tracked the parse-rate
-work for the games where clean < 100% (all four now CLOSED; residual
-gaps tracked under git log).
+NIF rates come from
+`cargo test -p byroredux-nif --release --test parse_real_nifs -- --ignored parse_rate`,
+which sweeps every archive in `Game::mesh_archives()` plus the present-only
+`optional_mesh_archives()` tier (#3369 / #3712). Clean = no `NiUnknown`
+placeholder and no truncation. Recoverable = the file parses end-to-end.
+Each row carries its own measurement date. This table is the single home for
+parse rates; other sections link here instead of restating them. Frame-time
+figures for the scenes named below are in the bench-of-record, not here.
 
-| Game              | Archive       | NIF parse rate (clean / recoverable)         | Cells                                                    |
-|-------------------|---------------|----------------------------------------------|----------------------------------------------------------|
-| Oblivion          | BSA v103      | **100%** (9 612 / 9 612) · recover 100% (re-measured 2026-09-07, #3925) | Interior (Anvil Heinrich Oaken Halls). Exterior parse + load + render ✓ — Tamriel `(0,0)` radius 1 last measured 6,043 entities / 2,355 draws (2026-08-12 EX-01/EX-05 re-run: image-health + environment-value gates both clean; supersedes the earlier 4,886-entity/150.6 FPS figure, which predated the stepped-camera bench harness and reported FPS rather than draws) — see [`docs/engine/exterior-readiness-plan.md`](docs/engine/exterior-readiness-plan.md) for the live figure; the repeatable readiness matrix is tracked by #2377/#2368. `#687` closed (NiGeomMorpherController + NiControllerSequence Phase fixes; 83 truncations recovered). `#688` / `#698` closed; the 6 truncated NetImmerse-era Oblivion files (pre-Gamebryo v3.3–v4.2 markers, #1611) no longer truncate as of the 2026-08-19 baseline regen (#3082) — 0 hard failures, 0 truncating, clean 100%. |
-| Fallout 3         | BSA v104      | 100% (17 172 across 6 archives — base + 5 DLC; measured 2026-08-28) | Interior (Megaton, 929 REFRs). Exterior wired; fresh GPU bench pending (R6a). |
-| Fallout New Vegas | BSA v104      | 100% (20 746 NIF meshes across all 11 mesh-bearing archives — base + `Update.bsa` + 4 story DLC + 4 pre-order packs; measured 2026-08-28. This column is the NIF-mesh parse rate, **not** an ESM record count; for ESM records see the `parse_rate_fnv_esm` test cited above. Was cited as 14 881 over `Fallout - Meshes.bsa` alone until #3342 — `cd9a5ef2` had moved the gate off `game.mesh_archive()` onto `open_all_mesh_archives`.) | Interior (Prospector **3626 entities @ 145.1 FPS / 6.90 ms / fence=5.06** on RTX 4070 Ti, R6a-stale-15 `8a668eff` 2026-07-18, 3-run avg; +90.4% FPS / fence −54.5% vs R6a-stale-14 (3516 ent / 76.2 FPS / fence=11.12) — most of this session's improvement traces to Session 46-56 landings, not a new fix in this bench cycle. Residual gap to the pre-collider baseline (161.4 FPS / 2.62 ms @ ~2564 ent) is now ~2×, down from ~4×). Exterior 7×7 (radius 3). **#2560 / FNV-D8-01 (2026-08-08):** this 145.1 FPS figure was captured under native TAA and predates `5c7acfe2` (2026-07-24), which made FSR 3.1 Quality the engine default — the bare repro command now measures ~254 FPS (FSR, not TAA) and is not a regression comparison against this number. See the config-labeled `TAA (native)` / `FSR Quality` bench-of-record table above (Prospector row) for the current, upscaler-aware figures. |
-| Skyrim SE         | BSA v105 LZ4  | 100% (**33 424** across 7 archives — `Skyrim - Meshes0/1.bsa` plus the five Creation Club / Anniversary archives `_ResourcePack` + `ccBGSSSE001/025/037` + `ccQDRSSE001`; measured 2026-08-29. Was 32 709 over the two base archives until #3369: the CC/AE set varies per account, so it rides `Game::optional_mesh_archives` — swept present-only by the rate-based gate, and deliberately kept out of the count-keyed baseline corpus.) | Interior (WhiterunBanneredMare **3237 entities @ 335.0 FPS / 3.00 ms / ~1298 draws / fence=1.21**, R6a-stale-15 `8a668eff` 2026-07-18, 3-run avg; −7.7% FPS vs R6a-stale-14 (362.8 FPS) at flat entity count — likely a shared-desktop-hardware confound during this bench run, not a code regression; no renderer-path code changed for Whiterun's hot path between the two bench dates. Session 46 perf wins (#1371–#1379) still hold structurally. The cell loads 246 unique textures across `Skyrim - Textures0..8.bsa` — as of the M35 sibling-auto-load fix (2026-06-19) passing just `Skyrim - Textures0.bsa` auto-opens `Textures1..8` (and `Meshes0.bsa` auto-opens `Meshes1.bsa`): the asset provider now treats a `…0`-suffixed archive as Skyrim's zero-based series start, so the older "list all 9 explicitly" workaround is no longer required). |
-| Fallout 4         | BA2 v1/v7/v8  | **100.00%** (**235 082 / 235 082**) · recover 100% (all 8 mesh-bearing archives — the two base plus the six DLC `Main.ba2`s; re-measured 2026-08-29 under #3466, which took the gate from 166 568 / 70.8% of the shipped corpus. `DLCUltraHighResolution` is textures-only and stays out. This is a **parse** statistic covering 226 009 `.nif` + 9 073 `.bto`/`.btr` distant-LOD meshes; the two halves are not equal in fidelity — 90.01% of the LOD half's shapes (14 054 / 15 614) carry no authored normals and get a fabricated `[0,1,0]`, vs 0.05% of the `.nif` half, tracked separately as #3541.) | Interior (MedTekResearch01 **21414 entities @ 65.2 FPS / 15.34 ms / 14535 draws / brd=3.74 ms / fence=9.03**, R6a-stale-14 refresh `1c26bc25` 2026-06-03; entity/draw growth vs R6a-stale-13 entirely from M49 CSG precombined geometry — scene is larger and richer, not a regression). Both base mesh archives clean, 0 truncated (`Fallout4 - Meshes.ba2` 34 995 + `Fallout4 - MeshesExtra.ba2` 124 871); the former FaceGen truncation tail is gone (2026-06-14 `parse_rate_fo4_all_meshes`). |
-| Fallout 76        | BA2 v1        | **98.18%** (165 152 / **168 208**) · recover 100% (all 20 mesh-bearing archives — base + `StaticMeshes` + both `GeneratedMeshes` + the 16 `*UpdateMain` patch archives; first full sweep 2026-08-29 under #3466, which took the gate from 58 469 / 34.8%.) | **Truncation tail, new to this sweep:** `GeneratedMeshes02` is **0.00% clean** (all 2 049 NIFs truncate) and `GeneratedMeshes01` is 95.03% (1 007 of 20 245). Every other archive is 100.00%. Fully recoverable, which is why the pre-#3466 gate stayed green — see Known Issues. |
-| Starfield         | BA2 v2/v3 LZ4 | **100.00%** aggregate (**120 543 / 120 543**) · recover 100% (all 13 mesh-bearing archives, re-measured 2026-09-24 for #4440 — was 99.98% / 120 524 on 2026-08-29 under #3466, which took the gate from 89 276 over 5 archives / 74.1% of the shipped corpus) | Per-archive, all **100.00%** clean with 0 truncated / 0 failed: Meshes01 (31 058), Meshes02 (7 552), MeshesPatch (29 849), LODMeshes (19 535), FaceMeshes (1 282), LODMeshesPatch (19 540), ShatteredSpace - Main01 (9 198), and six `SFBGS* - Main` archives (003/004/008/00D/047/050, 2 529 NIFs). `ShatteredSpace - Main02` and SFBGS006/007 are excluded on measurement, not assumption: they hold 0 NIF entries (Main02 is 14 799 `.ffxanim` + terrain). The MeshesPatch tail (was 325 truncated, mis-attributed to closed #746/#747) was fixed by #2105 (and its `SF_WEAK_REF_GAP` gate by #2201); the later 6-file MeshesPatch and 13-file ShatteredSpace-Main01 residuals no longer reproduce, and #3524 closed 2026-09-08. `BSWeakReferenceNode` still captures an undecoded remainder into `starfield_tail` — the 0 is recovery, not decode. |
+| Game              | Archive       | NIF parse rate (clean / recoverable) | Verified content |
+|-------------------|---------------|--------------------------------------|------------------|
+| Oblivion          | BSA v103      | **100%** (9 612 / 9 612) · recover 100% — includes the eight vanilla DLC archives (2026-09-07, #3925) | Interior (Anvil Heinrich Oaken Halls). Exterior Tamriel `(0,0)` r1 passes the image-health and environment-value gates ([`exterior-readiness-plan.md`](docs/engine/exterior-readiness-plan.md)). |
+| Fallout 3         | BSA v104      | 100% (17 172 across 6 archives, base + 5 DLC; 2026-08-28) | Interior (Megaton, 929 REFRs). Exterior wired. |
+| Fallout New Vegas | BSA v104      | 100% (20 746 across all 11 mesh-bearing archives; 2026-08-28) | Interior (Prospector Saloon, a bench-of-record scene). Exterior 7×7; Lake Mead water traversal (W1). |
+| Skyrim SE         | BSA v105 LZ4  | 100% (**33 424** across 7 archives, incl. the present-only CC/AE set; 2026-08-29) | Interior (WhiterunBanneredMare, a bench-of-record scene, with equipped named NPCs). Exterior Tamriel with `.btr`/`.bto` LOD. MQ101 plays end-to-end. |
+| Fallout 4         | BA2 v1/v7/v8  | **100.00%** (**235 082 / 235 082**) · recover 100% — all 8 mesh-bearing archives, including 9 073 `.bto`/`.btr` LOD meshes (2026-08-29, #3466) | Interior (MedTekResearch01 and Dugout Inn, bench-of-record scenes). CSG precombines (M49). Commonwealth exterior streaming. |
+| Fallout 76        | BA2 v1        | **98.18%** (165 152 / **168 208**) · recover 100% — all 20 mesh-bearing archives (2026-08-29, #3466) | Parse only. `GeneratedMeshes02` is 0.00% clean and `GeneratedMeshes01` 95.03%; every other archive is 100.00% (see Known Issues). |
+| Starfield         | BA2 v2/v3 LZ4 | **100.00%** (**120 543 / 120 543**) · recover 100% — all 13 mesh-bearing archives (2026-09-24, #4440) | Walkable Cydonia interior. `BSWeakReferenceNode` still leaves an undecoded remainder in `starfield_tail`; the 100% is recovery, not decode. |
 
 ---
 
 ## Active Roadmap
 
 Priority: **shortest path to a playable cell**, not shortest path to a
-shinier frame. The renderer is mature (RT + RIS + SVGF + TAA + POM)
-and the content pipeline parses recoverably across every target
-(clean rates per the matrix above; #687/#688/#697/#698 closed — see git log);
-next bottlenecks are *consumers* — things that make what we
-parse actually do something on screen or at the speakers.
-
-### Playable vertical slice — active 2026-08-09
-
-The current execution plan is
-[`docs/engine/playable-vertical-slice.md`](docs/engine/playable-vertical-slice.md).
-Its mid-term gate is one console-free Skyrim route covering character control,
-E-key interaction and door traversal, a small authored objective, one complete
-combat/loot loop, inventory/equipment UI, and save → exit → reload continuity.
-Work is sequenced P0 input/interaction → P1 reliable traversal → P2 combat →
-P3 game UI/inventory → P4 authored objective/dialogue → P5 persistence/soak.
-Capability on that route takes precedence over additional renderer polish.
-
-**P0 closed 2026-08-10:**
-[`docs/smoke-tests/p0-door-interaction.sh`](docs/smoke-tests/p0-door-interaction.sh)
-passes the real Bannered Mare XTEL exit: native `[E] Open` prompt → one bound
-E-key edge → canonical `ActivateEvent` → deferred `WhiterunWorld (6,-2)`
-arrival. The smoke exposed and closed persistent-worldspace destination lookup
-(including negative-grid flooring); its `PhysicsSourceForm` line-of-sight
-ownership path passed unchanged. P1 action migration is underway: character
-and fly-camera movement/jump/sprint consumers now share the once-per-frame
-`ActionState` snapshot, with modal-focus release regressions pinned.
-
-**P2 fixture frozen 2026-08-10:**
-[`docs/engine/p2-combat-fixture.md`](docs/engine/p2-combat-fixture.md) pins
-`BleakFallsBarrow01` reference `000380B4`, a direct level-1 Draugr with one
-two-handed weapon family. The pre-implementation trace made the dependency
-order concrete: add Skyrim Health derivation first, then actor-root ownership
-for bone-body ray hits/ragdoll activation and deterministic weapon selection;
-only then connect Attack → `HitEvent` → damage/death/loot.
-
-**P2 combat core landed 2026-08-16:**
-[`docs/smoke-tests/p2-melee-core.sh`](docs/smoke-tests/p2-melee-core.sh)
-passes the frozen reference through the production path: Skyrim race Health +
-signed ACBS offset → actor-owned bone ray hit → bound Attack edge → canonical
-`HitEvent` → layered Health damage → one `Dead`/AI-disable transition → the
-existing 18-body ragdoll. Deterministic weapon selection is attached as
-equipment state (highest authored damage, FormID tie-break); the current
-player fixture is unarmed and therefore exercises the explicit 8-damage
-fallback. This is a core checkpoint, not P2 closure: authored attack/hit/death
-animation and sound, corpse interaction/loot transfer, and save → exit →
-reload continuity remain.
-
-**P2 combat tail, P3 HUD consumers and the P4 fixture, 2026-09-20:**
-the Draugr's authored attack, medium-stagger and backward-death takes now
-decode from `Skyrim - Animations.bsa` beside the walk-clip install and play once,
-and a new `systems::combat_anim` feeds them and the combat sounds from edges the
-combat flow already produced (`ec3a18d2f`, fixture
-[`docs/engine/p2-combat-anim-sound-fixture.md`](docs/engine/p2-combat-anim-sound-fixture.md)),
-superseding the animation-and-sound gap above; loot transfer has its production
-caller (#4464). P3's two remaining presentation consumers are live — the native
-HUD's vitals bars and active-objective text — and
-[`docs/smoke-tests/p3-hud.sh`](docs/smoke-tests/p3-hud.sh) verifies them on the
-live engine by pixel (`db39fe004`, `31357d150`); a living actor's gear meshes now
-hide and reveal from its equipment events (`24ccc8f74`). P4's fixture is frozen on
-MS01 `0x00018B4B` ([`docs/engine/p4-quest-fixture.md`](docs/engine/p4-quest-fixture.md)):
-38 stage bindings, 17 lowered today; NPC activation → topic selection, a native
-response surface and completion transitions are the ordered blockers. Still open
-per [`docs/engine/playable-vertical-slice.md`](docs/engine/playable-vertical-slice.md):
-the player body is a bare capsule (so player equip toggles find no meshes),
-consumption-specific live Vulkan and save/reload smokes, and P5's soak.
-
-**P2 combat-tail caveat (#4700): fixed after the 2026-09-23 checkpoint.**
-Commit `3978b5184` adds the combat marker to the Skyrim Draugr spawn path and
-ensures its death animation plays once, independently of ragdoll timing. The
-2026-09-23 production-route caveat above is closed; other P2 animation and
-sound gates remain tracked in the playable-slice section.
+shinier frame. The renderer is mature and the content pipeline parses
+recoverably across every target; the bottlenecks are *consumers* — systems
+that make parsed data do something on screen, at the speakers, or in play.
 
 **Two axes.** Milestones (`M…`) ship user-visible capability.
 Risk-reducers (`R…`) are structural fixes flagged in the 2026-04-22
-architectural review — not new features, but prevention work to stop
-known growth patterns from calcifying. Each R has a "why now" and
-typically gates a specific milestone.
+architectural review — not features, but prevention work that gates a
+specific milestone.
 
-### Priority review — 2026-05-03
+### Playable vertical slice
 
-A direction reset to keep work pointed at *capability* rather than
-recursive renderer polish. Sessions 25–28 closed 70+ commits chasing
-interior fidelity (Frostbite falloff, env_map_scale, depth-bias
-ladder, perturbNormal) — real wins, but bench-of-record is now 266
-commits stale because the visible-actor workload that would justify
-re-running it (M41) hasn't shipped. 16 distinct renderer audits in
-the last 30 days; 28 of 54 open issues are renderer-tagged; **0
-issues open at HIGH or CRITICAL severity**. The renderer has reached
-diminishing returns until new content classes (NPCs, audio, multi-
-cell exterior) exercise the existing surface differently.
+Active since 2026-08-09. The plan is
+[`docs/engine/playable-vertical-slice.md`](docs/engine/playable-vertical-slice.md).
+Its gate is one console-free Skyrim route covering character control, E-key
+interaction and door traversal, a small authored objective, one complete
+combat/loot loop, inventory/equipment UI, and save → exit → reload continuity.
+The plan doc holds the per-phase detail and the immediate queue; this is the
+summary.
 
-Three concrete adjustments:
+| Phase | State (2026-09-29) |
+|-------|--------------------|
+| P0 input and interaction | **Closed 2026-08-10** — [`p0-door-interaction.sh`](docs/smoke-tests/p0-door-interaction.sh) passes the Bannered Mare XTEL exit. |
+| P1 reliable traversal | Movement consumers share one `ActionState` snapshot. Water traversal (W1) closed 2026-09-09 on FNV; Skyrim's W1 leg is skipped because of a land-side KCC wedge. |
+| P2 combat | Core loop 2026-08-16 ([`p2-melee-core.sh`](docs/smoke-tests/p2-melee-core.sh)). Authored attack/stagger/death takes and combat sounds 2026-09-20. Loot transfer has its production caller (#4464), and the Draugr combat marker is fixed (#4700). |
+| P3 UI and inventory | Native HUD vitals and objective text ([`p3-hud.sh`](docs/smoke-tests/p3-hud.sh)). Player body and view toggle ([`p3-player-body.sh`](docs/smoke-tests/p3-player-body.sh)). Open: third-person walk/idle animation, gear import for newly acquired items, player FaceGen. |
+| P4 authored objective | Fixture frozen on MS01 `0x00018B4B`: 38 stage bindings, 17 lowered. Ordered blockers: NPC activation → topic selection, a native response surface, completion transitions. |
+| P5 persistence and soak | Open: consumption-specific live Vulkan and save/reload smokes, the 30-minute soak. |
 
-1. **Renderer-audit moratorium**: pause new full-renderer audits
-   until a visible regression is reported on real content *or* M41
-   produces a refreshed bench-of-record. The 49→51-issue backlog
-   from prior audits is the working set; close from it, don't grow
-   it. `/audit-renderer` runs only on user request, not as part of
-   session cadence. **The gate to re-open the audit cycle is M41
-   landing visible NPCs in a cell** — that's the workload that
-   would surface anything genuinely worth auditing.
-2. **Audio promoted to Tier 2** (was Tier 4). M44 depends on nothing
-   shipped or unshipped, takes 1–2 weeks, and is the single biggest
-   "feels like a game" gap. Footsteps + ambient + music + spatial
-   raycast occlusion lands in parallel with M41/M40 and converts
-   "we render Bethesda content" into "we run Bethesda content."
-3. **R5 (Papyrus quest prototype) ahead of M47.0** in Tier 3. The
-   ECS-native-scripting bet is the single biggest architectural
-   risk we haven't validated against real content. One transpiled
-   Skyrim quest with `Utility.Wait()` + state change + cross-script
-   callback tells us whether M47.0/M47.2 are 3 weeks or 3 months.
-   Currently M47.0 is sequenced first, which would commit hook
-   shape before the bet is de-risked.
+### Milestone tiers
 
-**The "better, not clone" trade-off.** When in doubt during this
-phase, prefer the axis where ByroRedux can credibly *improve* on
-Bethesda — proper async streaming, parallel ECS, structured save
-state, 3D positional audio with reverb zones, native UI — over
-chasing per-pixel reference parity with a 2008–2015 forward
-renderer's interior look.
+Tiers 1 (playable exterior), 2 (actors visible and animated) and 4 (save/load)
+are closed. Their milestones are listed under
+[Completed Milestones](#completed-milestones), and their full rows are in
+[`roadmap-history.md` §5](docs/archive/roadmap-history.md#5-tier-17-milestone-tables-with-full-rows).
+The rows below are the open ones: a shipped summary, the open scope, and the
+design doc.
 
-### Tier 1 — Playable exterior (blocks "you can walk around")
+#### Tier 3 — Scripting runtime
 
-| #      | Milestone                      | Scope                                                                                                                                                                                                                                                                                                                        | Depends on         |
-|--------|--------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|--------------------|
-| PERF-1 | CPU frame-time audit           | ~~(1) Fix bench~~ done `e6e8091`. ~~(2) Profile CPU hotpath~~ done `b7deb4c` — **we are GPU-bound**: fence_wait=4.28 ms (76%) of 5.64 ms wall frame. brd=0.87 ms, ssbo=0.03 ms, tlas=0.02 ms. CPU work is not the bottleneck. (3) RT glass ray cost in `triangle.frag` is the real target — refraction+reflection on Prospector's bottle-heavy interior drives the GPU stall. See Tier 5 renderer polish. | —                  |
-| ~~M33.1~~ | ~~Sky & atmosphere (follow-up)~~ | **Closed** `2bfb622`. Cloud layers 2/3 (ANAM/BNAM) sampled with parallax scroll. Weather fades over 8 s via `WeatherTransitionRes` + post-TOD-sample color blend. All 4 cloud layers active in exterior cells.                                                                                              | —                  |
-| ~~M34~~ | ~~Exterior lighting + day/night~~ | **Closed.** Per-frame sun arc from persistent game time in `weather_system`; arbitrary multi-day rollover, pause/resume/rate controls, save/load, and `time.*` live diagnostics are now canonical. TOD ambient + fog + directional come from WTHR NAM0/CLMT TNAM. `docs/smoke-tests/m34-day-night.sh` drives sunrise/noon/night through a real Skyrim exterior. Interior fill remains 0.6× + `radius=-1` (unshadowed) in `render/lights.rs`; `triangle.frag` gates RT shadow on `radius >= 0`. | —                  |
-| ~~M32.5~~ | ~~Per-game cell loader parity~~ | **Closed.** Skyrim SE WhiterunBanneredMare 1258 entities @ 237 FPS. FO4 MedTekResearch01 7434 entities @ 90 FPS. No code changes — session 14 infrastructure was complete. Oblivion exterior: TES4 worldspace + LAND wiring is implemented and game-agnostic (parse + load + render ✓); Tamriel `(0,0)` radius 1 last measured 6,043 entities / 2,355 draws (2026-08-12 EX-01/EX-05 re-run; supersedes the earlier 4,886-entity/150.6 FPS figure) — see [`docs/engine/exterior-readiness-plan.md`](docs/engine/exterior-readiness-plan.md) for the live figure. Remaining exterior readiness is tracked by #2377 rather than this closed loader milestone.                                                                     | —                  |
-| ~~R6a~~ | ~~Prospector re-bench~~       | **Closed.** 192.8 FPS / 5.19 ms at `e6e8091` with wall-clock bench. Scene is glass-heavy (RT refraction/reflection); representative tough-case FNV interior.                                                                                                                                                | —                  |
+| #     | Milestone | State | Depends on |
+|-------|-----------|-------|------------|
+| M47.2 | Full scripting runtime | **Shipped slices:** a Champollion-port `.pex` decompiler (99.996% of the corpus) lowered through the recognizer chain, with VMAD attach from `--scripts-bsa`; quest-advance and trigger volumes (Session 51); QUST stage fragments (Session 55); quest aliases and object-targeting effects (Session 59); the MQ101 SCEN/PACK scene runtime backed by `crates/hkx` (Session 62); the quest-area completion pass (2026-08-07); and an SKSE-family script-extender provider slice (~23.9k LOC, tested in-crate but never audited against real mods). **Open:** recognizer catalog breadth (OnEquip/OnHit emit sites), ESM-native 136-event dispatch, perk entry-point composition, general NPC playback from HKX, and the Story Manager / LCTN / created-object / reference-collection alias operations. Design: [`m47-2-design.md`](docs/engine/m47-2-design.md), [`sdk-v0.1-development-plan.md`](docs/engine/sdk-v0.1-development-plan.md). | R5, M30.2, M43 |
+| M47.3 | ObScript quest VM (Oblivion) | **Phase 1 shipped 2026-09-18:** an SCDA bytecode interpreter runs every running quest's `Begin GameMode` block on the vanilla 5 s cadence and lowers onto `QuestStageState`/`Globals`. Its opcode table was recovered by aligning source against bytecode over vanilla `Oblivion.esm` (2 349 of 2 393 scripts decode clean), and it was verified live (MS23 self-advances to stage 90). **Phase 2:** non-GameMode blocks (OnActivate/OnTrigger on object scripts), Message/MessageBox UI, per-quest `fquestdelaytime`, actor-state functions (GetDeadCount/GetItemCount/GetDistance), and the remaining ~60-command corpus. | M47.2, M42.10 |
 
-### Tier 2 — Actors visible & animated (blocks "cells are populated")
+#### Tier 5 — Renderer polish (quality, not capability)
 
-| #      | Milestone                      | Scope                                                                                                                                                                                                                                                                                                                        | Depends on         |
-|--------|--------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|--------------------|
-| ~~M29~~ | ~~Skinning chain verification~~ | **Closed.** End-to-end skinning chain (`SkinnedMesh` ECS → bone-palette → vertex shader) verified on FNV NiTriShape path via 7 integration tests in `byroredux/tests/skinning_e2e.rs` (4 FNV + 3 SSE). Bones populate, names round-trip, partition-local→global remap correct, palette responds to bone Transform mutations. CPU palette eval shipped; compute-shader dispatch deferred to M29.5 (gated on M41 producing measurable load). Defensive `MAX_TOTAL_BONES` overflow guard added (covered by `render/bone_palette_overflow_tests.rs`, `Once`-gated warn) so the silent truncation past 32 skinned meshes is no longer invisible. SSE BSTriShape per-vertex skin path filed as #638 (separate parser bug, not in M29 scope). | —                  |
-| ~~M29.5~~ | ~~Compute-shader palette dispatch~~ | **Closed (Session 40, 2026-05-20).** GPU bone-palette compute pass replaces host-side per-frame upload (`4ac5ee8f`); orphaned `bone_staging_buffers` + `upload_bones` path dropped (`427cdb69`). **M29.6 promoted persistent SSBO with per-entity slot pool** (`5be66790`) so allocation amortises across frames; three hotfix regressions closed in one bundle (`8ea8d61d`): slot-0 init on first dispatch (#1191), pending re-queue on `clear()` (#1192), bounds assert on stale slot pointer (#1193). Bench-of-record at `b5726a18` not invalidated — skinned BLAS refit remains gated by the LRU eviction policy that landed pre-Session-39. | M41, R1            |
-| ~~M41.0~~ | ~~FaceGen heads render~~      | **Closed (2026-05-05).** Phases 0–4 shipped in Session 24; #772 closed via FLT_MAX-pose gate; #794 closed via three-layer regression suite (parser diagnostic + 4 synthetic e2e + 1 real-data e2e in `crates/nif/tests/mtidle_motion_diagnostic.rs` and `byroredux/src/systems.rs::animation_system_e2e_tests`). Real FNV `mtidle.kf` → `animation_system` produces a 1.49 component-wise rotation delta on `Bip01 Spine` after 4 ticks — animation pipeline is healthy end-to-end. The remaining "rigid NPC" symptom is the **already-known Phase 1b.x body-skinning artifact** (`npc_spawn.rs:402-431`: long-spike vertex artifact, `0 unresolved` bones, palette composition bug); not in the animation chain. M41.0.5 (GPU per-vertex morph runtime) + M41.x (Havok `.hkx` stub) deferred to Tier 5. | M29, #458          |
-| M41    | NPC spawning (Phase 1 + Phase 2 closed) | **Phase 1 closed (2026-05-07).** FNV `GSDocMitchellHouse` renders Doc Mitchell as a coherent T-pose humanoid at the REFR position — skeleton + body + hands + head + FaceGen morphs all compose without artifact. The closure-bar workload defined 2026-05-03 ("at least one Skyrim/FO4/FNV cell renders NPCs visible at REFR positions, even in T-pose") is met. **#841 closes** — the long-spike body-skinning regression no longer reproduces on the canonical FNV repro; root cause appears resolved as a side-effect of #771 (palette ground truth pin) + subsequent animation fixes since `b386eb3`. The runtime `skin <id>` debug command (`InspectSkinnedMesh` extended with per-bone resolved `GlobalTransform` + computed palette + identity-dropout flagging) lands as the regression guard so any future resurgence localizes in one round-trip. **Phase 2 scaffold shipped (2026-05-07/08, #896 Phases A.0 → B.2):** `Inventory` + `EquipmentSlots` ECS components + `ItemInstancePool` resource land in `0a0d652`; `f1b3156` walks NPC inventory and spawns ARMO meshes (concurrent body+armor as deliberate spike); `21ae560` pre-scans for body-slot armor and skips `upperbody.nif` when present (kills z-fight + 2× bone-palette overhead); `121c705` / `24a7bd8` / `4ec9bb6` build the per-game `resolve_armor_mesh` helper (Skyrim+ ARMO → ARMA → worn-mesh chain) and wire it into both spawn paths. **Phase 2 close-out advanced (Session 32, 2026-05-08):** LVLI dispatch landed in `be4663b` via `byroredux_plugin::equip::expand_leveled_form_id` — both `OTFT.items` outfit walks (prebaked path) and `npc.inventory` CNTO entries (kf-era path) flatten leveled-list refs into base ARMO/WEAP form IDs gated on `actor_level`. Pre-fix vanilla Skyrim+ NPCs whose default outfits referenced LVLI silently spawned with no gear (the loop's `index.items.get(&form_id)` failed silently). Single-pick (highest-level eligible) is the Bethesda flag-bit-0-unset default; multi-pick lands all eligible. 8 new resolver tests cover passthrough / level gating / multi-pick / nested recursion / circular cap / unknown id. Plus `--bench-hold` CLI flag (`73adffb`) keeps the engine open after `--bench-frames` so `byro-dbg` can attach against the loaded scene; `Inventory` + `EquipmentSlots` registered with the debug-server (`9b957bb`) so `byro-dbg`'s `entities <Component>` lights them up; runnable smoke at `docs/smoke-tests/m41-equip.sh` (`9b957bb` + `085321d` + `3422884`) with hard / soft pass-fail assertions parsing the bench summary line + byro-dbg output. **First smoke run on FO4 MedTekResearch01 at 10 809 entities / 57.9 FPS** — the engine + LVLI dispatch produce real geometry; visual A/B remains. **Phase 2 closed (2026-05-11).** Smoke gate green on both targets after hoisting `build_npc_equip_state` above skeleton load in `spawn_prebaked_npc_entity`: SSE WhiterunBanneredMare shows 6 named NPCs with `Inventory` + `EquipmentSlots`, `tex.missing=0`, 3209 entities / 2052 draws / ~84 FPS (saadia, brenuin, mikael, sinmir, amaundmotierreend, hulda — equipped via OTFT.items + LVLI dispatch). FO4 MedTekResearch01 surfaces 23 NPCs with `Inventory` + `EquipmentSlots` (LvlFeralGhoul / LvlTurretBubble / LvlFeralGhoulAmbush / Loot_CorpseFeralGhoul01 leveled-creature templates; no humanoid named NPCs at cell-load on this dungeon — that's a cell-content property, not an equip-pipeline gap), 10 809 entities / 8162 draws / ~49 FPS. **The equip pipeline is now observable independent of mesh-load success** — even when the FO4 humanoid 3rd-person skeleton.nif is absent (vanilla ships only `_1stperson\skeleton.nif` + `.hkx` on the character path; the SSE-shaped `character assets\skeleton.nif` is not in any Fallout4 BA2, verified by BA2 scan of Meshes / MeshesExtra / Animations / Misc / Startup), the per-NPC `Inventory` + `EquipmentSlots` components still land on the placement root via the early-build hoist. Follow-ups left open: (1) FO4 humanoid skeleton resolution needs a Havok `.hkx` loader or `_1stperson` placeholder before armor *meshes* materialize on FO4 actors (M41.x Havok stub); (2) `spawn_prebaked_npc_entity` returns `Some(placement_root)` on every early-return path, inflating the cell-loader's "NPCs spawned" count to include mesh-less husks; (3) kf-era `spawn_npc_entity` could use the same equip-build hoist for symmetry (FNV/FO3 work today because their skeleton.nif resolves; not urgent). **Renderer-audit moratorium gate cleared** — bench-of-record refresh (R6a-stale-7 / #902), GPU skinning compute (M29.5), and skinned BLAS coverage are now the next steady-state moves. | M24, M29, M41.0    |
-| ~~M49~~ | ~~FO4 PreCombined Geometry (CSG reader)~~ | **Closed (Session 45, 2026-06-02, `b93ad7a9..2900de70`).** `BSPackedGeomObject` TLV format cracked from first principles — no external spec required. Pipeline in five commits: `crates/bsa` gains a `.csg` reader (`b93ad7a9`); NIF import decodes CSG geometry to Y-up meshes (`3d665217`); cell-loader spawns precombined entities from the CSG (`067adc34`); LOD selection fixed to one tier per object, not all three (`a30c088a`); texturing wired through the owning REFR's shape slot indices (`2900de70`). Closes #1351 / #1188 Stage A. Sub-items still open: `_precomb.nif` collision, `.uvd` occlusion volumes. | #1188 (Stage A) |
-| ~~M40~~ | ~~World streaming~~           | **Closed 2026-05-24** — re-audit of the streaming pipeline confirms Phase 3 was de-facto landed before this row was last refreshed. **Phase 1a/1b** shipped Session 23 (`cdfef07` / `80e2966` / `592e7bf` / `7dc354a`): the `streaming` module with `WorldStreamingState`, `compute_streaming_deltas` (pure-function diff + hysteresis), async cell-pre-parse worker, and shutdown drain. **Phase 2** shipped 2026-05-21 across 3 stages (`f6b9911a` / `1e92a471` / `a7cc9184`): Stage 1 plumbs `DoorTeleport` from REFR XTEL into `PlacedRef` + `cell_for_refr` reverse-lookup; Stage 3a wires the interior↔interior orchestrator (`script.activate <door_id>` tears the source down and loads the destination through `load_cell_with_masters`); Stage 3b extends to interior↔exterior — but Stage 3b's actual implementation **already spawns a fresh `WorldStreamingState` at `DEFAULT_TRANSITION_RADIUS = 3`** ([`byroredux/src/main.rs:1100-1113`](byroredux/src/main.rs)) and calls `stream_initial_radius` to populate the full 7×7 grid around the destination, then `step_streaming` maintains the loaded set as the player walks. **Phase 3 (multi-cell grid + BLAS evict/reload)** is implicitly satisfied: (a) `compute_streaming_deltas` runs on every cell-boundary crossing in [`main.rs:1008`](byroredux/src/main.rs), with `radius_load=3` → 7×7 grid + `radius_unload=4` hysteresis preventing boundary thrash; (b) `cell_loader::unload_cell` calls `accel.drop_blas(mh)` per freed mesh handle at [`cell_loader/unload.rs:185`](byroredux/src/cell_loader/unload.rs) **and** invokes `shrink_blas_scratch_to_fit` (#495) so the BLAS scratch doesn't pin VRAM after streaming-out a peak cell; (c) `AccelerationManager::evict_unused_blas` (LRU at [`acceleration/blas_static.rs:955`](crates/renderer/src/vulkan/acceleration/blas_static.rs)) runs pre-batch + mid-batch (90% threshold via `should_evict_mid_batch`); (d) `MAX_FRAMES_IN_FLIGHT` const_assert (#960) pins the immediate-destroy safety window; (e) #920 split `static_blas_bytes` from `total_blas_bytes` so skinned BLAS no longer thrash eviction. **Open follow-ups** (not blocking close): smoke test against a real multi-cell exterior workspace (FNV WastelandNV / Skyrim Whiterun plains / FO4 Sanctuary Hills) to bench cell-crossing latency; the existing per-cell parse stutter (~50-100 ms on FNV per Phase 1a doc) remains. **Current-state correction (2026-07-15):** the `main.rs:1100-1113` / `main.rs:1008` citations and `radius_load=3` above are the values as of this row's 2026-05-24 close and have since moved — the transition/streaming-tick logic now lives in `byroredux/src/app_step.rs` (`step_streaming`, `step_cell_transition`, per `#1858`/TD1-003), with `DEFAULT_TRANSITION_RADIUS = 5`. The live cell-swap trigger is the `door.teleport <entity_id>` console command, not `script.activate`. See [docs/engine/exterior-grid-streaming.md](docs/engine/exterior-grid-streaming.md) for the current, source-cited walkthrough. | M32, M35           |
-| **M44** | Audio (3D spatial)            | **Phases 1–6 shipped (2026-05-05).** Foundation: `byroredux-audio` crate on [`kira`](https://crates.io/crates/kira) `0.10` — `AudioWorld` + ECS components (`AudioListener` / `AudioEmitter` / `OneShotSound`); BSA WAV decode via `StaticSoundData::from_cursor`; the engine installs the shared `SoundCache` resource at boot, and combat one-shots use it to cache decoded paths and misses; `audio_system` spatial sub-track model with lazy listener creation, per-emitter `SpatialTrackHandle`, prune-on-Stopped. Phase 3.5: `play_oneshot` queue API + `FootstepEmitter` + `footstep_system` (XZ-plane stride accumulator, vertical motion excluded). `--sounds-bsa <path>` decodes canonical FNV dirt-walk WAV. **Phase 4**: `AudioEmitter.looping = true` applies kira's `StaticSoundData::loop_region(..)`; the prune sweep notices when a looping sound's source entity has lost its `AudioEmitter` (despawn-by-cell-unload, or explicit removal) and issues a tweened `stop()`. **Phase 5**: `load_streaming_sound_from_bytes` / `_from_file` for multi-minute music via kira's `StreamingSoundData`; `AudioWorld::play_music` (single-slot, non-spatial, crossfade) + `stop_music` + `is_music_active`. **Phase 6**: global reverb send. On manager init, the audio crate creates a kira `SendTrackBuilder.with_effect(ReverbBuilder)` at full wet; spatial sub-tracks opt in via `with_send(reverb.id(), reverb_send_db)`. `AudioWorld::set_reverb_send_db` toggles per cell type (`f32::NEG_INFINITY` = silent default, `-12 dB` = subtle interior, `0 dB` = full wet). Already-playing sounds keep their construction-time send level. **Tests** — **measured 2026-08-21** (#3088), re-measure with `cargo test -q -p byroredux-audio` + `cargo test -q -p byroredux --bin byroredux systems::audio` rather than trusting this line: `byroredux-audio` crate **29 default + 6 `#[ignore]`d** real-data integrations on cpal (BSA decode, full lifecycle, queue-driven lifecycle, looping survives natural duration + stops on AudioEmitter remove, streaming music play/stop on real OGG); `byroredux/src/systems/audio.rs` adds **12** more default tests (7 `footstep_tests` + 5 `reverb_tests`); `byroredux/src/asset_provider/audio.rs` adds **13** more default tests (REGN ambient-music dispatch, see below). **60 audio tests total** (54 default + 6 ignored) across the three files this row tracks, 0 failing — re-measure with `cargo test -q -p byroredux-audio`, `cargo test -q -p byroredux --bin byroredux systems::audio`, and `cargo test -q -p byroredux --bin byroredux asset_provider::audio` rather than trusting this line: this sentence has now drifted four times in nine days because it is prose. **WATAL water-audio consumer (Session 70, 2026-08-19→20)**: `water_audio_system` ([`byroredux/src/systems/audio.rs`](byroredux/src/systems/audio.rs)) drives `AudioWorld::set_underwater` from the active camera's `SubmersionState` and dispatches water-surface splash / ripple one-shots (`WaterAudioConfig` / `WaterAudioState`) off WATAL's `SplashEvent` / `RippleEvent` markers. Every spatial sub-track carries a low-pass built once by `apply_underwater_filter` and driven per frame by `update_underwater_filters`: 900 Hz fully wet while submerged, `Mix::DRY` bypass above water (#3179). `submersion_system` is a `Stage::Late` exclusive so it reads this frame's camera pose in player mode as well as fly-cam (#3180). Positions cross a single BU→metre seam, `bu_to_audio_space`, at the audio boundary — kira is metre-scaled and `Attenuation` is authored in metres (#3178). **REGN ambient dispatch mechanism shipped (2026-08-23, `ede48ffb`/`3ef05d1b`)**: FormID → archive path → streaming decode → `AudioWorld::play_music`, change-guarded (`byroredux/src/asset_provider/audio.rs::dispatch_region_ambient_music`). No supported game currently supplies a REGN field that resolves to a playable SOUN background track; playback awaits open #3816 (MUSC/MUST/MSET/RDMD decode). **Phases 3.5b + REGN incidental/loop sounds pending**: FOOT records → per-material lookup (drops dirt hardcode); REGN `incidental`/`sounds` ambient-loop selection (blocked on `chance_raw` fixed-point scale); raycast-occlusion attenuation. **Cell-load reverb-toggle wiring closed 2026-05-08 (#846)** — `reverb_zone_system` ([`byroredux/src/systems/audio.rs`](byroredux/src/systems/audio.rs), an ECS system since the Session 34/35 systems split) flips `set_reverb_send_db` to `-12 dB` on interior cells, `f32::NEG_INFINITY` (silent) on exterior; runs in the `Late` parallel batch while `audio_system` is `Late` exclusive; stage membership, not registration order, provides the ordering guarantee (`byroredux/src/boot/schedule/late.rs`) and pinned by the `reverb_tests` module above. | —                  |
-| ~~R6~~ | ~~Scratch-buffer instrumentation~~ | **Closed.** `ScratchTelemetry` resource refreshed per frame from `VulkanContext::fill_scratch_telemetry`, surfaced via the `ctx.scratch` console command. Reports per-Vec `len` / `capacity` / `bytes_used` / `wasted` for all 5 scratches (gpu_instances, batches, indirect_draws, terrain_tile, tlas_instances). On Prospector (1200 ent / 773 draws): 337 KB total, 320 B wasted — well right-sized; M40 cell transitions can now be diffed against this baseline. | —                  |
+| #     | Milestone | State | Depends on |
+|-------|-----------|-------|------------|
+| M35   | Terrain LOD | **Shipped:** Skyrim/FO4 `.bto` objects and `.btr` terrain on a per-game `Ultra.ini` band ladder (`d96110eb`), with `_n`/`_msn` normal maps. Oblivion/FO3/FNV `_far.nif` object LOD (#1726). A derived far plane (`9e96a9f9`). The live `terrain.seams` gate in `m-exteriors.sh` (#2371). **Open:** VWD culling is blocked because baked `.bto` quads carry no per-object ids (#3307). `.btr` diffuse/normal sampling mode (#4912). Skyrim `.btt` distant trees are never drawn (#4913). The reversed-Z flip needs hardware validation (#3308). LAND value-plausibility guards ([`exterior-readiness-plan.md`](docs/engine/exterior-readiness-plan.md) Tranche C item 5). | M32 |
+| M39   | Texture streaming | Mip-chain-aware loading: upload low mips immediately, stream high mips on demand. Memory budget with LRU eviction. | — |
+| M29.3 | Pre-skinned raster path | Make `triangle.vert` read pre-skinned vertices from the per-entity `SkinSlot` output instead of doing inline bone blending, and re-add the `VERTEX_BUFFER` usage dropped in #681. This saves ~50 ALU ops per skinned vertex, but makes raster depend on the compute pass. The recorded precondition is that the compute + BLAS-refit chain has proved stable on visible animated content. | `1ae235b`, #681 |
 
-### Tier 3 — Scripting runtime (unblocks 1 257 FO3 SCPT records)
+#### Tier 6 — Engine infrastructure
 
-**Reordered 2026-05-03**: R5 now comes first. Hooks-first sequencing
-risks committing M47.0's event-hook shape before validating the
-ECS-native-no-VM bet, then having to rework hooks if R5 falls back
-to "Papyrus stack-VM as an ECS system." De-risk first.
+| #     | Milestone | State | Depends on |
+|-------|-----------|-------|------------|
+| M24.2 | ESM Phase 2 — QUST stages + PERK entries | **QUST done:** [`parse_qust`](crates/plugin/src/esm/records/misc/quest.rs) covers startup/shutdown stages, conditional log entries, objectives, and version-aware targets with load-order remapping, and the scripting runtime consumes all of it. **PERK:** all three PRKE entry bodies decode. **Open:** per-`function_type` EPFD decoding and per-entry CTDA. DIAL conversation trees are M43 scope. | R2 |
 
-| #      | Milestone                      | Scope                                                                                                                                                                                                                                                                                                                                                                                                      | Depends on      |
-|--------|--------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|-----------------|
-| ~~R5~~ | ~~Papyrus quest prototype~~    | **Closed 2026-05-16 — verdict: go ECS-native.** Hand-translated `defaultRumbleOnActivate.psc` (50 LOC Papyrus, ships attached to hundreds of vanilla Skyrim references — pressure plates, ritual buttons, shrines) into `crates/scripting/src/papyrus_demo/` (135 LOC production + 200 LOC tests). All three R5 semantic gates (latent `Utility.Wait()`, multi-state dispatch, cross-subsystem call) translate cleanly to plain ECS components + dt-driven systems. No VM, no fibre, no suspendable script frames. **Load-bearing finding**: a Papyrus event handler with a latent wait splits into two systems — code-before-wait runs on the event, code-after-wait runs on whichever frame the dt counter hits zero. That's the entire pattern. M47.0 hook shape (marker components for `OnActivate` / `OnHit` / …) is unchanged; M47.2 proceeds as a per-script transpiler emitting the same components + systems shape this prototype hand-built. The Papyrus-stack-VM-as-ECS-system fallback is parked. Full evaluation at [`docs/r5-evaluation.md`](docs/r5-evaluation.md); reference fixtures at [`docs/r5/source/`](docs/r5/source/). | M30             |
-| ~~M47.0~~  | ~~Event hooks runtime~~     | **Closed 2026-05-23** across 6 phases (`6c51af55..03837739`). R5's "go ECS-native" hand-translations (`papyrus_demo`) now wire into engine init: Phase 1 calls `papyrus_demo::register` from `scripting::register` and adds the 8 dispatcher systems to the scheduler (exclusive in Update). Phase 2 introduces `ScriptRegistry: HashMap<String editor_id, ScriptSpawnFn>` with `defaultRumbleOnActivate` as the first registered spawner; the three property-bearing R5 demos defer to VMAD-decode in M47.2. Phase 3a adds `EsmIndex::base_record_script(base_form_id) → Option<u32>` walking ACTI / CONT / TERM / ITEM record maps. Phase 3b changes `spawn_placed_instances` to return `(EntityId, usize)` so the cell loader's per-REFR walk can call `attach_script_for_refr` after each spawn — three-stage lookup chain `base_record_script → index.scripts → ScriptRegistry → spawn_fn`. Phase 4 ships the `script.activate <entity_id>` console command (gameplay-driven use-key + raycast deferred to M28.5 input wiring as out-of-scope). Phase 5 adds `OnCellLoadEvent` (real engine emit at `attach_script_for_refr`), `OnTriggerEnterEvent` (deferred Rapier sensor wiring), `OnEquipEvent` (deferred M41 equip pipeline). Phase 6 lands 5 e2e tests in `papyrus_demo/tests.rs` walking the full Phase 1-5 chain on synthetic entities. Design doc at [`docs/engine/m47-0-design.md`](docs/engine/m47-0-design.md). Test count: 64 → 74 scripting tests + 3 plugin tests. The two structurally-registered-but-not-yet-emitted markers (OnTriggerEnter, OnEquip) are M47.0.x follow-ups that touch separate subsystems. | R5, #443        |
-| ~~M47.1~~ | ~~Condition eval~~          | **Closed 2026-05-23** across 2 commits (`ea9d0cfa`, `0a835e3e`). The universal predicate system shipped: Phase 1 added `byroredux_plugin::esm::records::condition` parsing CTDA sub-records (28-byte FO3/FNV + 32-byte Skyrim+) into `Condition { function_index, comparator, comparand, param_1, param_2, run_on, reference_form_id, extra_data_id, or_next }`. Phase 2+3 added `byroredux_scripting::condition` with the `ConditionFunction` enum + OR-precedence evaluator implementing Bethesda's load-bearing quirk: `A AND B OR C AND D` evaluates as `A AND (B OR C) AND D` (consecutive ORs form blocks that bind tighter than AND). 7 representative functions land at canonical indices: GetActorValue (9), GetDistance (36), GetStage (58) **WORKING**, GetStageDone (59) **WORKING**, GetFactionRank (60), GetIsID (71), HasPerk (99) — the 5 stubs trace-log their backing-ECS-component gaps for future expansion. Phase 4 migrated `quest_advance` (the R5 DA10MainDoorScript translation) from bespoke `require_done`/`forbid_done` Vec<u16> fields to a generic `ConditionList`, demonstrating the first consumer. Tests: 11 plugin-side CTDA parser tests + 9 scripting-side evaluator tests (including 2 load-bearing OR-precedence regression pairs). Workspace test count: 74 → 83 scripting + 3 plugin (condition) tests added. The ~300-function catalog grows additively — new functions just add an enum variant + dispatch arm. AI packages / dialogue triggers / terminal branches plug in by constructing their own `ConditionContext` and calling `evaluate(&list, world, &ctx)`. | M47.0           |
-| M47.2  | Full scripting runtime         | **`.pex` + quest-advance + trigger vertical slice shipped (Session 51, `65239fec..f1a00e89`).** A Champollion-port `.pex` decompiler (`crates/pex`) turns vanilla *compiled* Papyrus bytecode into the `byroredux_papyrus` AST (99.996% of the shipping corpus, 26 640/26 641, zero panics); `translate_pex` runs it through the M47.0-style recognizer chain — compiled bytecode drives ECS behavior with no VM. The cell loader resolves each scripted REFR's VMAD-named `.pex` from a `--scripts-bsa` archive at attach time (`base_record_script_instance` retains VMAD on ACTI/CONT/NPC). The generic quest-advance recognizer covers the `default*SetStage*` family (guarded / player-gated / unconditional) on both `OnActivate` and `OnTriggerEnter`; the latter is driven by a new `TriggerVolume` detection system spawned from `XPRM` box/sphere primitives. **QUST fragment keystone (Session 55, `8a70b81a`):** `parse_quest_fragments` decodes the QUST record's trailing stage→`Fragment_N` table (layout derived + cross-validated against all 856 fragment-bearing `Skyrim.esm` VMADs); `populate_quest_fragments_from_pex` decompiles + lowers each bound fragment body, wired into the cell loader after `load_references`. `QuestStageFragments` — built and unit-tested earlier but never fed live data — now drives real quest-stage advancement from vanilla `.pex` content (69.5% of the script corpus per the landing commit's own measurement). Design: [`docs/engine/m47-2-design.md`](docs/engine/m47-2-design.md); smoke: [`docs/smoke-tests/m47-triggers.sh`](docs/smoke-tests/m47-triggers.sh). **Quest alias system Phase 0 + object-targeting effects (Session 59, `f967aa0f..ece712ba`):** `parse_quest_fragments`'s sibling `QuestAlias`/`AliasFillType`/`AliasFlags`/`AliasInjectedData` types decode QUST's `ALST`/`ALLS` alias-fill blocks (cross-validated against real ESM files; found and fixed a spec error in `ALFI`), with a runtime alias-fill pass feeding dynamic content targeting. New `Effect::AddItem`/`Effect::MoveTo` object-targeting effects (plus an `ObjectRef` resolver) let quest fragments manipulate object inventories/positions, and VMAD's scripts-section now registers for property-targeted effect resolution — the fragment pipeline can reach beyond the acting reference for the first time. **MQ101 cinematic vertical slice (Session 62, `6df3bad8..7e068c7d`):** SCEN scene records get a full ECS runtime (`SceneRegistry`/`ScenePlayer`/`ActiveSceneAction`/`SceneActorBindings`) plus a quest-startup system that auto-starts scenes off `QuestStageState`, and PACK scene-package actions (`PackageRegistry`/`PackageTargetRegistry`/`ScenePackageCommand`) get their own lifecycle system gated on scene-phase completion conditions — together driving Skyrim's MQ101 cart-escape quest end-to-end. New fragment effects cover the quest's actual script content: two-state activator + `StartScene`/`StopScene`, player control-state effects, `EquipItem` + `TetherToHorse`, and the cinematic set (`PlayIdle`/`SetVehicle`/`SetMotionType`/`SetSittingRotation`/`ExitCart`) sequenced through a new `FragmentExecutionQueue` for latent waits. Backing it, `crates/hkx` shipped from scratch — a minimal safe reader for Skyrim's 64-bit Havok 2010 packfiles decoding `hkaSkeleton` + static/spline-compressed animation tracks, no behavior-graph execution — wired into the animation asset provider to install the MQ101 cart-idle catalog from real game data. Scoped as a vertical slice: the HKX reader drives this one curated catalog, not general NPC locomotion (see the Tier-5 "Actor motion" note above). The hardcoded `ScriptRegistry` demo boot-registration was retired in favor of the live recognizer path (#2191). **Quest-area completion pass (2026-08-07):** QUST lifecycle/metadata coverage now includes startup and shutdown stages, conditional per-log complete/fail/next-quest transitions, initial active/completed/failed flags, repeated-stage policy, objectives and both objective/record-level targets, plus Papyrus Start/Stop/Complete/Reset/SetActive/FailAllObjectives. Alias fill now covers loaded direct/unique/condition/XLRT/external/near/closest/force-into cases with reservation and quest-lifetime semantics; cell placements consistently expose canonical reference identities; factions/inventory are applied and all remaining authored alias metadata is available as runtime overlays. **Remaining scripting-wide (outside the quest-area pass)**: scale the recognizer catalog (OnEquip/OnHit families need their emit sites), ESM-native 136-event dispatch, perk entry-point composition, general (non-cinematic) NPC animation playback. (ObsScript compiled-quest execution shipped as M47.3, 2026-09-18 — directly from SCDA bytecode, not via SCTX re-parse; object-script blocks and the wider command set remain.) Quest alias operations that require absent owning subsystems—Story Manager event payloads, true LCTN/unloaded-world queries, created-object spawning, and reference collections—remain represented but deliberately do not fabricate runtime results. **Script-extender compatibility layer (#3953, undocumented until 2026-09-10):** a ~23.9k-LOC SKSE-family slice ships alongside this milestone and had appeared in neither this row nor `docs/feature-matrix.md` — six built-in provider families registered in the Papyrus provider catalog (Game, Input, UI, StorageUtil, JContainers, ModEvent) plus an ObScript runtime, across `crates/sdk/src/` (14 245 LOC), `crates/scripting/src/papyrus_provider/` (6 377) and `compatibility.rs` + `obscript*.rs` (3 294). It is a **vertical slice and unaudited**: tested in-crate, never exercised against real mod content by a dedicated audit pass. Design lives in [`docs/engine/sdk-v0.1-development-plan.md`](docs/engine/sdk-v0.1-development-plan.md) and [`sdk-v0.1-next-action-plan.md`](docs/engine/sdk-v0.1-next-action-plan.md). | R5, M30.2, M43  |
-| M47.3  | ObScript quest VM (Oblivion phase 1) | **Shipped 2026-09-18: compiled legacy quest scripts execute and drive live quest state.** A from-scratch SCDA bytecode interpreter (`crates/scripting/src/obscript_vm.rs`) runs each quest script's `Begin GameMode` block — statement framing (`[op][len][payload]`, `0x1c` explicit-caller escapes, implicit-caller statement calls where the line opcode *is* the command id), reverse-polnish expression token streams (ASCII operators/literals + space-prefixed escapes `' r/s/f/G/n/X'`), the `[u16 count]` typed-argument grammar, and if/elseif/else nesting with the `Return`-inside-an-arm early-exit idiom. **Every encoding and command id here is empirically derived from vanilla `Oblivion.esm`** (2 393 SCPTs, each aligned against its own SCTX source: 2 349 scripts / 12 620 calls decode clean; the residue is per-command string-argument signatures, treated as traced no-ops), continuing the repo's derive-and-cross-check convention — the vanilla opcode table was recovered by source↔bytecode alignment (SetStage 0x1039 at 489 votes, GetStage 0x103a at 1015, GetStageDone 0x103b, StartQuest/StopQuest, Message/MessageBox, GetSecondsPassed, GetQuestRunning, …). Runtime side (`obscript_quests.rs`): `install_quest_scripts` resolves each QUST `script_ref` to its parsed SCPT once per load order (255 on vanilla Oblivion), and `obscript_quest_tick_system` (exclusive Update) runs every *running* quest's GameMode block on the vanilla 5 s `fQuestProcessInterval` cadence, lowering the phase-1 command set onto the existing `QuestStageState`/`Globals` — the same stage events the Papyrus fragment path emits, so quest UI/log consumers are shared. Unknown commands are counted per quest (`ObScriptQuestTimers`) rather than faked; `quest.effects` (byro-dbg) dumps the bounded effect ring + tick counters. **Verified live on vanilla Oblivion (2026-09-18):** 120 start-game-enabled quests auto-ticked 12× each in a 60 s session and their own bytecode advanced them — MS23 (Order of the Virtuous Blood) self-advanced to stage 90 (done 45/60/90), MS12 30→90, plus MS11/MS29/MS37 stage moves and a MessageBox — before any manual `quest.start`. Real-data harness (`obscript_quests::real_data_tests`, `--ignored`, ~160 MB): all 255 quest scripts decode, ≥10 fire SetStage under a zeroed world, MS23 targeted. Phase-2 follow-ups: non-GameMode blocks (OnActivate/OnTrigger on object scripts), world-facing Message/MessageBox UI, `fquestdelaytime`-per-quest cadence, actor-state functions (GetDeadCount/GetItemCount/GetDistance) lowering onto ECS, and the remaining ~60-command corpus. | M47.2, M42.10      |
+#### Tier 7 — Deep gameplay systems
 
-### Tier 4 — Save/load (unblocks "it feels like a game")
+| #   | Milestone | State | Depends on |
+|-----|-----------|-------|------------|
+| M42 | AI packages | **Shipped:** PACK decode (PKDT/PSDT/PLDT/PTDT, #446). CTDA-gated package selection through the M47.1 evaluator, failing open on out-of-catalog functions (M42.2). Re-evaluation at game-minute boundaries and on Papyrus `EvaluatePackageRequest` (M42.9, #2652). Seven procedures — Sandbox seat with per-marker reservations, Wander, Travel, Follow, Escort, Guard, Patrol — run by default behind a `BYRO_NO_AI_LOCOMOTION=1` kill-switch, with authored per-game walk clips at stride-matched speed and KCC-backed steps (M42.10/M42.11, 2026-09-18). Plus ambient hostility (#4414), disengagement (#4816) and re-seating after a save load (#4815). **Open:** the 10 non-locomotion procedures (Find/Eat/Sleep/Accompany/UseItemAt/Ambush/FleeNotCombat/CastMagic/Dialogue/UseWeapon), each blocked on a missing subsystem. Also: `PTD2`, calendar-aware scheduling, sit-enter beyond FNV/FO3, legacy sleep/lean marker disambiguation, and FO4+ walk sources. NearReference target resolution was deprioritized (~12% of targets resolve). Trace: [`npc-spawn-ai-packages.md`](docs/engine/npc-spawn-ai-packages.md). | M28.5, M41 |
+| M43 | Quests & dialogue | **Shipped:** the quest core — version-aware stages, logs, objectives and targets; full lifecycle transitions; Papyrus quest effects; save-persistent progress; loaded-reference alias fill with conditions and reservations; faction/inventory injections. `quest.*` observability commands, with [`m43-quest-runtime.sh`](docs/smoke-tests/m43-quest-runtime.sh) driving the production path. **Open:** Story Manager event payloads and search, reference collections, true LCTN/unloaded-world resolution, created-object spawning, broader condition/event coverage, and the dialogue tree with its UI. These are subsystem boundaries, not missing QUST bytes. | M24.2, M41, M47.1 |
+| M46 | Full plugin loading | Discover, sort, merge, and resolve conflicts across the full load order. Builds on M46.0 (CLI wiring), the `plugin/resolver.rs` DAG, and the parallel per-plugin walk (#3813). | M24.2, M46.0 |
+| M48 | UI integration | **Shipped:** the Scaleform host bridge — Skyrim/SkyUI 74-method catalog, the FO4 `BGSCodeObj` 269-method catalog with a generated AVM2 adapter, and an archive-backed navigator (`--menu … --menu-archive …`). The MenuXml crate (FOLD evaluator, layout, CPU raster) drives the Oblivion HUD (M48.4) and FO3/FNV through a game-agnostic profile (M48.5). `--hud` runs the vanilla Skyrim (M48.6) and FO4 (M48.7) `hudmenu.swf` transparently over the world, with a smoke per route. **Open:** method behaviour and `_global.gfx` stubs, font fidelity, menu-stack policy, and Papyrus/ECS ↔ UI callbacks. Vanilla Skyrim/FO4 HUD meters stay empty: the game feeds them by GFx object-path invocation, which Ruffle cannot reach, so they need AVM1 injection or SkyUI-class menus. Design: [`ui.md`](docs/engine/ui.md). | R4, M48.4, M48.6 |
 
-| #     | Milestone   | Scope                                                                                                                                                                                                                                  | Depends on                                      |
-|-------|-------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|-------------------------------------------------|
-| ~~M44~~ | Audio (moved to Tier 2) | See Tier 2 row — promoted 2026-05-03.                                                                                                                                                                                                | —                                               |
-| M45   | Save/Load   | **Library landed 2026-06-21 (`bd2d0de2`, branch `feat/m45-save-load`).** New `crates/save`: full-ECS-World snapshot (not a delta log) via `SaveRegistry` (type-erased per-component/-resource save/load closures; binary populates the curated game-state set). Versioned binary container — `magic / major+minor / schema-fpr / CRC32 / len` header over a serde_json payload; `decode` rejects bad-magic / version-skew / schema-drift / truncation / CRC corruption before any parse. `save_world(&World)` / `restore_world(&mut World)` drivers; load **preserves entity ids exactly** (new `World::set_next_entity` + `insert_batch` at saved sparse ids → `Parent`/`Children`/`root_entity` refs valid with no remap). Crash-safe atomic write (`tmp → fsync → read-back verify → rename`) + round-robin `SaveRing`. Pre-save `validate_world` refuses poisoned saves (Parent⇄Children, equip indices, clip-handle resolution, dangling refs). StringPool round-trips via `dump`/`from_dump` (symbol-order) + `fixed_string_serde`; `FormIdComponent` persists the **stable `FormIdPair`** (resolved through `FormIdPool`), never the session-local handle. Core `save = ["inspect"]` feature; serde on Name/Parent/Children/FormIdPair/PluginId(hex-string for the u128)/ItemInstancePool; ScriptTimer gains a `save` feature. Binary: `save [slot]` (validate + snapshot + atomic write) + `save.info <slot>` (decode + verify + summarise) console commands. 16 save-crate + 2 World + 2 binary tests (incl. cross-crate ScriptTimer round-trip). **M45.1 live load-apply landed 2026-06-21 (`48e18c4f`, branch `feat/m45.1-live-load`)** via the change-form model: `load <slot>` reloads the saved cell through the existing loader (full GPU/physics/camera setup), then overlays saved game-state deltas keyed by stable `FormIdPair` (`build_form_id_remap` composes saved-entity→pair→live-entity; `apply_deltas` overlays a curated *mutable* column set — Transform/Inventory/EquipmentSlots/Light*/Animation*/ScriptTimer — onto matched live entities; structural columns Name/Parent/Children/form-id-key are not replayed). New `CurrentCellContext` resource (cell + plugins) set at every interior load makes a save self-describing; `restore_resources` replaces `ItemInstancePool` wholesale first so instance ids resolve. Wired as `load` console command + `PendingSaveLoadSlot` + `step_save_loads` between-frames drain. **M45.1 player-pose restore closed 2026-06-21** — new `PlayerPose` save-resource (position + yaw/pitch + character/flycam flag) refreshed each frame post-scheduler by `capture_player_pose`; on `load`, `apply_player_pose` re-places the persisted player body (Character — `camera_follow_system` re-pins the camera next frame, momentum cleared, kinematic Rapier body re-synced) or the camera (FlyCam) at the saved spot, with yaw/pitch restored onto `InputState` (the look-direction source of truth both camera systems rebuild from each frame). `save.info` now prints the pose; +3 binary tests (flycam round-trip, character body-tracking, snapshot survival). **2026-08-25 hardening:** exterior sessions restore their full saved radius before deltas (#3280); typed columns preflight before teardown (#3163); unexpected apply failures abort after dead-actor reconciliation; quickload falls back across corrupt slots; and `SaveLoadNotifications` surfaces results to the player. Save/Load is feature-complete within the native snapshot scope. | M40 (world streaming dictates what to serialize) |
+#### Tier 8 — Visual fidelity stretch (post-Tier-4 horizon)
 
-### Tier 5 — Renderer polish (quality, not capability)
-
-Each of these buys 10–30% visual quality but no new feature. Keep
-active for incremental wins; don't let them block Tier 1–4.
-
-| #       | Milestone             | Scope                                                                                                                                                                                                                                                                                                                                                                                         | Depends on |
-|---------|-----------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|------------|
-| ~~R1~~  | ~~MaterialTable refactor~~ | **Closed (2026-05-01)** across 6 phases (`aa48d64`..`22f294a`). `GpuMaterial` (272 B std430) + `MaterialTable` with byte-level dedup; per-frame `MaterialBuffer` SSBO at scene set 1 binding 13. Every per-material read in `triangle.frag` + `ui.vert` migrated to `materials[gpuInstance.material_id]`. `GpuInstance` collapsed **400 → 112 B (72% reduction)**, dropping ~30 fields (PBR / texture indices / alpha state / POM / UV transform / NiMaterialProperty diffuse-ambient / Skyrim+ shader-variant payloads / BSEffect falloff). Two intentional deferrals (filed as R1-followup): caustic compute path still reads `avg_albedo` off its own descriptor set (set 0); `DrawCommand` still carries the legacy per-material fields consumed by `to_gpu_material`. M38 is unblocked. | —          |
-| M35     | Terrain LOD (Skyrim+/FO4 prebaked LOD landed) | **Object `.bto` shipped** (Session 45, EXAL step 6) + **terrain `.btr` shipped** (2026-06-19, `cell_loader/terrain_lod_btr.rs`): prebaked per-quad distant meshes load for Skyrim+/FO4 as a source upgrade inside the existing streaming ring; heightmap synth stays the universal fallback. Level-4 `.btr` quads align 1:1 with the 4-cell synth blocks — `spawn_lod_block` picks `.btr` (textured per-quad) for fully-distant blocks (`hole_mask == 0`), synth for boundary/missing/older-game blocks (one block per coord → no z-fight). Live-verified Skyrim Tamriel: 544 `.btr` / 30 synth, 0 errors. Real-data finding: `.btr` is quad-local-normalized (not world-absolute like `.bto`) — placement scales the footprint by LOD level + offsets to the SW corner, heights absolute (`btr_local_to_world`, unit-tested). **LOD atlas texturing fixed** (2026-06-19): the object atlas + `.btr` diffuse live in `Textures7.bsa` and the meshes in `Meshes1.bsa`, which the numeric-sibling auto-loader skipped (bailed on any digit suffix) → distant LOD rendered untextured. Fixed by treating a `…0`-suffixed archive as Skyrim's zero-based series start (`asset_provider::numeric_sibling_paths`, unit-tested): passing just `Meshes0` + `Textures0` now auto-opens `Meshes1` + `Textures1..8`, texturing distant terrain + objects with no explicit archive list. **Oblivion/FO3/FNV `_far.nif` distant-object LOD shipped** (Session 52, #1726): `DistantLOD\*.lod` → `_far.nif` placement scheme + full-model-path fallback, real Oblivion distant-terrain LOD textures with the bogus synth-LOD suppressed (#1745), default full-detail radius extended to 12. **Distance-based multi-band selection (4/8/16/32) shipped for Skyrim/FO4** (2026-08-12, `d96110eb`): `LodBandLadder::for_game` (`cell_loader/lod_bands.rs`) reads each game's own `Ultra.ini` `fBlockLevel0/1/2Distance` refine thresholds; both `.btr` and `.bto` consume the same ladder. Oblivion/FO3/FNV correctly stay single-ring (no baked quadtree exists for those games) — that's the right per-game fallback, not a gap. **Far-plane sizing shipped the same day** (`9e96a9f9`): `DEFAULT_RENDER_DISTANCE` is derived and compile-time-asserted against the widest LOD ring's far-corner diagonal, and `Camera::depth_resolution_at` measures (not guesses) the depth-precision collapse at LOD-ring distances on the current conventional depth buffer. **Skyrim `.btr` `_n.dds` normal maps shipped** the same day; FO4's are `_msn` model-space and stay deliberately unbound pending a `Material` component on LOD entities (#2444). **Adjacent-cell crack detection shipped live** (2026-08-23): `terrain_seam::check_seam` (pure, unit-tested) is now wired into a live `terrain.seams` console command via `streaming_helpers::update_terrain_seam_stats`, sampled every streaming reconcile — no new `LandscapeData` retention cache needed (it turned out `ExteriorWorldContext.record_index` already keeps every resident cell's parsed LAND resident for the whole session). **#2371 closed (2026-08-26, `355e66a1`)**: `terrain.seams` is now wired into `m-exteriors.sh`'s capture-mode gate (mirroring `lod.coverage`); live cross-plugin validation found FO4's height/normal disagreement pattern was a benign per-cell authoring convention for normals (now informational, not fatal) but a genuine height crack at Commonwealth (3,0)/(4,0) — filed as [#3306](https://github.com/matiaszanolli/ByroRedux/issues/3306). All 9 of #2371's acceptance items are now done or spun off: the real finding (#3306), active VWD culling ([#3307](https://github.com/matiaszanolli/ByroRedux/issues/3307) — investigated and found blocked deeper than framed: baked `.bto` quads carry no per-object identifiers to cull at, a bigger problem than radius decoupling), and reversed-Z ([#3308](https://github.com/matiaszanolli/ByroRedux/issues/3308) — partially landed 2026-08-26: `Camera::for_content_scale` raises the near plane to 5.0 BU for BU-scale content, ~50× depth-resolution improvement at the 250,000 BU ring (745 BU/step, was ~37,253); the full reversed-Z convention flip remains open as its own multi-session effort — touches 8 Gamebryo-compare-op mappings, 6+ shaders, and the vendored FSR3 C++ shim, confirmed with the user as out of single-turn scope). LAND value-plausibility validation guards (`docs/engine/exterior-readiness-plan.md` Tranche C item 5's still-open half) remain open. Gameplay-relevant half is world streaming (M40); pure LOD is quality.                                                                                                                                                                                                                                        | M32        |
-| ~~M37~~ | ~~SVGF spatial filter~~ | **Closed (2026-06-18, #1662, `6b061120`).** À-trous wavelet spatial pass (Schied 2017 §4.3) consuming the per-frame moments buffer the temporal-only denoiser never read; adds a spatial variance estimate so converged-but-noisy GI regions also filter. Shipped in the RT denoiser overhaul; `DBG_DISABLE_ATROUS 0x4000` for A/B.                                                                                                                                                | —          |
-| ~~M37.3~~ | ~~ReSTIR-DI~~              | **Closed 2026-06-18** (`e77f0cfb` spatial landing, alongside the Session-49 denoiser arc). Full spatiotemporal reservoir reuse: Phase 1 (`9abbe510`) introduced reservoir data + initial sampling; Phase 2 (`6b061120` / #1662) added per-pixel ping-pong SSBO history and shaded-radiance EMA; Phase 3 fused spatial reuse samples a disk of fenced previous-frame neighbours around the reprojected pixel, re-evaluates their selected lights at the current surface, rejects >25° geometric-normal differences, and re-validates the final sample with a visibility ray. This is intentionally a single fragment pass, not a separate current-frame resample compute pass. `DBG_DISABLE_SPATIAL` and `DBG_DISABLE_TEMPORAL` independently isolate the two reuse dimensions; the renderer-evaluation harness captures full, temporal-only, spatial-only, and no-reuse cases. | M31.5, M37 |
-| ~~M38~~ | ~~Transparency & water~~ | **Water shipped (2026-05-11, `2ee1c68`).** ECS `WaterPlane` / `WaterVolume` / `SubmersionState` components, dedicated `WaterPipeline` (vertex displacement + Fresnel), RT reflection + refraction rays against TLAS, exterior cell loader detects water-plane refs and spawns geometry, camera submersion state writes through `submersion_system`. OIT / depth-peeled transparency for non-water alpha-blend remains future work (filed under M38.2 if/when a real workload demands it). | ~~R1~~     |
-| M39     | Texture streaming      | Mip-chain-aware loading: upload low mips immediately, stream high mips on demand. Memory budget with LRU eviction.                                                                                                                                                                                                                                                                              | —          |
-| M29.3   | Pre-skinned raster path | Phase 3 of the GPU pre-skinning arc (`SkinComputePipeline` + per-skinned-entity BLAS refit shipped in `1ae235b`, RT shadows / reflections / GI now see this-frame skinned pose). Migrate `triangle.vert:147-204` to read pre-skinned vertices from the per-skinned-entity `SkinSlot` output buffer rather than doing inline weighted-bone-matrix-sum. The same commit must re-add `VERTEX_BUFFER` to the output buffer's usage mask — dropped in `#681` (`MEM-2-6`) so deferred-Phase-3 doesn't bloat memory-type masks today. Single source of truth, drops ~50 ALU ops per skinned vertex, but adds a critical-path dependency on the compute pass: a failed slot would now break raster too. **Defer-rationale:** the rasterized skinning path is well-understood and tested on real content; the new compute path is not. Ship only after the M41 NPC-spawning rollout proves the compute + BLAS-refit chain stable on visible animated content. | `1ae235b`, M41 stable, `#681` re-add |
-| ~~M-NORMALS~~ | ~~Per-vertex tangents~~ | **Closed (2026-05-02)** — commits 91e9011 (decode `NiBinaryExtraData("Tangent space (binormal & tangent vectors)")` for Skyrim+/FO4) + 82a4563 (`synthesize_tangents` — Rust port of nifly's `CalcTangentSpace` per-triangle accumulator for FO3/FNV/Oblivion content that ships without authored tangents). Vertex stride 84 → 100 B (`tangent: [f32; 4]` at offset 84 / location 8 / RGBA32_SFLOAT); `triangle.vert/frag`, `ui.vert`, `skin_vertices.comp` updated in lockstep. `perturbNormal` re-enabled with `vertexTangent.xyz`-driven Path 1 (TBN from authored / synthesized tangent + `sign × cross(N, T)` bitangent reconstruction) and screen-space-derivative Path 2 fallback for content with neither authored nor synthesizable tangents. See [#783](https://github.com/matiaszanolli/ByroRedux/issues/783). | NIF parser |
-| ~~LIGHT-N2~~ | ~~Display-space fog blend~~ | **Closed (2026-05-02, commit 18bbeae)** — composite fog mix moved from HDR-linear pre-ACES to display space post-ACES, removing the residual interior yellow/sepia distance wash on far interior surfaces. ~10-line `composite.frag` change. See [#784](https://github.com/matiaszanolli/ByroRedux/issues/784). | ~~M-NORMALS~~ |
-| ~~EFFECT-LIT~~ | ~~Effect shader intensity control~~ | **Closed (2026-06-03, commit `ea044b68`).** `BSEffectShaderProperty.lighting_influence` (0–255 byte) packed into `GpuMaterial.material_flags` bits 16–23 via `pack_effect_shader_flags`. `triangle.frag` EFFECT_LIT branch: `liScale = float((materialFlags >> MAT_FLAG_EFFECT_LI_SHIFT) & 0xFF) / 255.0` gates the scene-lit contribution (lighting_influence = 0 → fully unlit effect; 255 → prior behavior). Magic auras and power-armor glows with low authored `lighting_influence` no longer over-lit in bright scenes. Constant `EFFECT_LI_SHIFT = 16` propagated via `shader_constants_data.rs` + `build.rs` auto-gen — no hand-sync hazard. Lockstep test + `shader_constants.glsl` updated. | R1 |
-
-### Tier 6 — Engine infrastructure (enablers)
-
-| #       | Milestone                           | Scope                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | Depends on     |
-|---------|-------------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|----------------|
-| ~~R7~~  | ~~Scheduler access declarations~~   | **Closed.** `Access` builder + `System::access()` opt-in declaration + `Scheduler::add_to_with_access` registration-side override + `access_report()` per-stage conflict analysis (`None` / `Conflict { pairs }` / `Unknown`). Snapshot stored as `SchedulerAccessReport` resource and surfaced via the `sys.accesses` console command. Current state on the engine binary: 12 systems registered, 3 declared (`fly_camera_system` / `spin_system` / `log_stats_system`), 9 undeclared, 0 known conflicts, 4 unknown pairs. M27 can now flip on with diagnosable contention; further system migrations driven by `sys.accesses` output. | —              |
-| ~~M27~~ | ~~Parallel system dispatch~~        | **Closed 2026-05-23** (`a9810d40`, `05fe2bac`). Phase 1+2: 12 parallel-stage systems now declare reads/writes via `add_to_with_access` with explicit `Access::new().reads::<T>().writes::<U>()` chains at the registration site. Phase 3: 4 runtime-mutually-exclusive systems re-staged as exclusive (audio + spin + character-mode dispatcher + the new `player_controller_system` that branches PlayerMode → fly_camera vs character_controller). `sys.accesses` console command now reports **0 unknown / 0 conflicts** (was 13 unknown + 4 conflicts before the migration). Parallel-scheduler feature flipped on. R7's `sys.accesses` infrastructure (closed two sessions ago) walked us through the diagnosis; M27 walked the actual migration. | R7             |
-| ~~M28.5~~ | ~~Character controller~~          | **Closed 2026-05-22** across 5 commits (`65adad60`, `610b6ae0`, `75474e71`, `a787c0d2`, `826d3cfb` + companion lifecycle `525c690c` / `52b99dda` / `d89bd5aa` + void-fall fix `cfc52e1c`). Rapier3D `KinematicCharacterController` with gravity + collide-and-slide + jump + autostep replaces fly-cam-only on-foot movement. Vanilla-Skyrim capsule size (1.8 m × 0.35 m radius) with dynamic-AABB rescale tracking animation pose; downward ray-cast spawn snaps the player to the first hit at cell-load anchor; #1230 void-fall slip-through closed via 1m cylindrical probe sweep before falling back to fly-cam. Walk/fly toggle on `T`, FlyCam fallback when cell load fails, door-teleporter spawn for un-doored test cells, `TriMesh::FIX_INTERNAL_EDGES` for collision-mesh quality. Companion: `ContactConfig + CharacterKinematic` unifies the three previously-duplicated collider spawn paths; Vulkan 1.3 `synchronization2` enabled; dangling `VARIABLE_DESCRIPTOR_COUNT` flag dropped. | M28, M32       |
-| **R2** Phase A+B | ~~ESM sub-record cursor + migration~~ | **Phase A + B closed 2026-05-24.** Phase A (cursor primitive `SubReader`, 437 LOC, strict + lenient reads + `f32_array` + `rgb_color`/`rgba_color`) had landed prior. Phase B (call-site migration) closed today: all 169 legacy `read_*_at` / matching `from_le_bytes` field-read sites across 15 ESM record files migrated to sequential `SubReader::new(&data)` decoders. Files touched (sites): `records/actor.rs` 32, `records/weather.rs` 28, `records/misc/water.rs` 18, `records/misc/world.rs` 14, `records/misc/effects.rs` 12, `records/script.rs` / `records/misc/equipment.rs` / `records/misc/ai.rs` / `records/misc/magic.rs` (35 combined), `records/{container, common, tree, global, climate, outfit, list_record, items}.rs` (long tail). Behavior preserved across the SCHR-flags Oblivion-vs-FO3+ dead-branch (intentionally kept the original truncation semantics). Dead `read_u32_at` / `read_u16_at` / `read_i16_at` / `read_f32_at` helpers dropped from `records/common.rs` (Phase 8). Validation: full workspace `cargo test --workspace` = **2493 passed / 0 failed / 107 ignored**; the two ignored Oblivion real-data parity tests (`clas_oblivion_knight_against_vanilla`, `race_oblivion_data_and_subs_against_vanilla`) re-run green against vanilla Oblivion.esm. **Phase C remaining** (not blocking M24.2): typed `read_sub::<T>` schema API with compile-time layouts — `Decode`/`Subrecord` trait + per-record-type struct shapes. The cursor + sequential-read shape that Phase B locks in is the foundation; Phase C is the further layer if M24.2's QUST / DIAL / INFO / PERK / MGEF / SPEL / ENCH / AVIF surface justifies it. **M24.2 unblocked.** | —              |
-| M24.2 Phase 1a+1b | ESM Phase 2 — QUST stages + PERK entries | **QUST current:** [`parse_qust`](crates/plugin/src/esm/records/misc/quest.rs) preserves Skyrim+ `INDX` startup/shutdown flags, every conditional `QSDT` log entry (Complete/Fail Quest, text, script marker, CTDA, `NAM0` successor), objective flags, and version-aware QSTA targets (FO3/FNV reference versus Skyrim+ alias, plus flags/FO4 keyword), with load-order remapping across every embedded FormID. The scripting runtime consumes authored definitions for startup, lifecycle, terminal stages, successor quests, bulk objectives, and live objective-target resolution. **PERK:** all three PRKE entry bodies are decoded; remaining work is per-`function_type` EPFD decoding and per-entry CTDA. DIAL full conversation-tree work remains separately. | R2             |
-| ~~M30.2~~ | ~~Papyrus Phase 2–4~~              | **Closed 2026-05-23** (`ab0eee96`). Filled the gap between M30 Phase 1 (lexer + Pratt expression parser) and full `.psc` parse: statement parser (`parser/stmt.rs`: Return, If/ElseIf/Else/EndIf, While/EndWhile, local VarDecl with speculative-type disambiguator, expr-stmt, assignment with compound operators), top-level item parser (`parser/script.rs`: ScriptName + Extends header, Property short + full forms with six PropertyFlags, Function typed/untyped + four FunctionFlags incl. Native bodyless form, Event, Auto State / State, Struct, CustomEvent, Group, Variable, Import), public `parse_script` driver with per-item error recovery, doc-comment skipping at item boundaries. Load-bearing finding: `Parser::peek()` silently skips Newlines, so Return-with-vs-without-value detection needs `peek_raw()` — fixed across stmt.rs. All four R5 source scripts (`defaultRumbleOnActivate`, `DA10MainDoorScript`, `MG07LabyrinthianDoorScript`, `DLC2TTR4aPlayerScript`) round-trip end-to-end with zero recovered errors; tests in `crates/papyrus/tests/r5_round_trip.rs` assert structural shape (item counts + names + key flags). Test deltas: 12 stmt + 10 script + 4 round-trip = +26 new tests, papyrus crate at 70 tests. FO4 extensions (`Const`, `Hidden`, `Mandatory`, `BetaOnly`, `DebugOnly`) land as flag tokens decorating existing items — no separate grammar. Semantic validation + doc-comment threading on non-doc-aware items deferred to M47.2. **Unblocks M47.2 (Papyrus transpiler).** | M30            |
-| ~~M46.0~~ | ~~Multi-plugin CLI~~              | **Closed** via #561. Repeatable `--master <path>` CLI arg + `load_cell_with_masters` (interior) / `build_exterior_world_context` + `load_one_exterior_cell` (exterior) entry points. Each plugin's TES4 master_files header drives a per-plugin `FormIdRemap` so cross-plugin REFRs land in the merged `EsmIndex` under their global FormIDs. Last-write-wins on key collisions (canonical Bethesda load-order semantics). `EsmIndex::merge_from` + `EsmCellIndex::merge_from` carry the merge across the 30+ record-type maps. The unresolved-REFR diagnostic now names the missing plugin instead of silently rendering empty. Usage: `cargo run -- --master Skyrim.esm --master Update.esm --esm Dawnguard.esm --cell Forelhost01` (Dawnguard.esm's real MAST list is `[Skyrim.esm, Update.esm]`; #2583). | #445 (done)    |
-| ~~R3~~  | ~~NIF per-block-type parse histogram~~ | **Closed.** `nif_stats --tsv` emits a per-header-type `parsed` vs `NiUnknown` histogram; `crates/nif/tests/per_block_baselines.rs` integration test (opt-in via `cargo test -- --ignored`) compares against checked-in TSV baselines for all 7 games and fails on any `unknown` growth or `parsed` shrinkage. `BYROREDUX_REGEN_BASELINES=1` regenerates after intentional changes. Oblivion baseline refreshed 2026-04-26 to track the post-session-18 truncation drift surfaced by the audit (#687/#688/#697, all now CLOSED); R3's job was to surface the drift, not fix it — the underlying issues were separately resolved. Today the gate runs as a manual `cargo test … -- --ignored` invocation — there is no GitHub Actions pipeline yet, so "fail CI on regression" is the test's *contract* rather than an enforced workflow. | —              |
-| **M-EXAL** | EXAL — Exterior Abstraction Layer | NIFAL-mirror for exterior content (terrain / sky / sun / weather / water / LOD / distant objects). Design doc at [`docs/engine/exal.md`](docs/engine/exal.md) (introduced Session 45, `00e38caa`). Mirrors the NIFAL principle: per-game exterior data translates to canonical `ExteriorEnvironment` structs at parse time; no per-game branches leak into the renderer. Key gap: **distant object LOD** — `.btr` terrain LOD mesh + `.bto` object LOD passthrough currently bypasses any canonical layer; the M35 row covers the render side but not the abstraction boundary. Priority order within EXAL: terrain LOD (M35 feeds this) → sky/weather (M33/M34 already done, EXAL captures their outputs; the sky cubemap bake and volumetric clouds now live under SKYAL, [`docs/engine/skyal.md`](docs/engine/skyal.md)) → water (M38, done) → **ground cover (2026-09-07: Phases 1/2/5/6/7 shipped)** → REGN region ambient (M44 pending). **Ground cover** is EXAL's one deliberate divergence from the source engines — placement authority moves into the engine. Since 2026-09-13 (`f8a900b3`), blades are the engine's own climate-selected sward; since 2026-09-24 (#4413) the authored-model tier (§12.12 Phase C) draws every `GRAS` record's own model through the main pass, placed on the game's grass grid by the same density field, and its per-frame cost is as unmeasured as the blades' (R6a-groundcover-1), per [`docs/engine/exal-groundcover.md`](docs/engine/exal-groundcover.md) §1/§7. Tracked under #3807 (parent, EX-14/15 item A): the §11.1 blocking bench is answered (#4052, settled *re-sample*), scatter/chunking/density (#4054), blades/wind (#4055), `GRAS` decode → palette (#3807), light response (#4057) and the interaction displacement field (#4058) have all landed — nine `groundcover_*` shaders plus five `include/groundcover_*.glsl` headers. **Open**: Phase 3 LOD chain (#4056); Phase 4 (RT proxy shell) is deliberately gated on a demonstrated need per §5 Stage 2, not merely unstarted. Its per-frame cost is **still unmeasured against the bench-of-record** even after the 2026-09-09 refresh, because every scene in that matrix is an interior — see Known Issue R6a-groundcover-1. **Not blocking Tier 1–4** — existing exterior cells render without it. Positions ByroRedux to accept third-party exterior mods cleanly when M50 ships. | NIFAL, M35, M40 |
-
-### Tier 7 — Deep gameplay systems (deferred until Tier 1–4 proves out)
-
-| #       | Milestone                    | Scope                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | Depends on                                      |
-|---------|------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|-------------------------------------------------|
-| M42     | AI packages                  | 30 composable procedures, package stack, Sandbox. Patrol paths from NAVM. Basic wander/follow/travel. **#446 closed** (`90e6b068`) — PACK dispatches with PKDT (flags/procedure type) + PSDT (schedule) + **PLDT (location, `7d5e91db`, 2026-07-14)** decoded, verified against real FalloutNV.esm. `SandboxBehavior`/`Seated` ECS components + `sandbox_seat_system` ship a v0 "sit in nearest free chair, once" behind `BYRO_SANDBOX_SIT`, now using each package's authored PLDT radius (`17d55414`) instead of a blanket guess. **Investigated and deprioritized (2026-07-14):** resolving `PackLocationTarget::NearReference` to a live entity's position for the search *center* — only ~12% of vanilla FNV NearReference packages resolve to anything spawnable (most target either an unloaded cell or the hardcoded XMarker family `cell_loader` never spawns); v0 keeps the actor's-own-position center approximation. **Sit-enter/loop animation gap closed (M42.1, `c5dcad97`, 2026-07-12)** — the seat procedure now parks `AnimationPlayer` on the FNV/FO3 sit-**enter** clip's final frame (grounded pose) instead of the pelvis/root-channel-free `dynamicidle_*` loop; see `systems::sandbox` module docs. This row previously listed that gap as still open — stale against the fix landing two days before this row's last touch. **Package CTDA gating landed (M42.2, 2026-07-15):** `parse_pack` now captures the flat CTDA list onto `PackRecord.conditions`, and package selection evaluates them through the M47.1 evaluator via a caller-injected predicate (`scripting` depends on `plugin`, so evaluation lives at the spawn site, not in the selector). Fail-open on unimplemented functions — a condition list referencing any of the ~281 out-of-catalog functions is treated as passing rather than silently rejecting a package the engine can't evaluate, so the common `GetIsID`/`GetActorValue`/`GetFactionRank`/`GetStage` gates work without regressing sandboxer count. **Dynamic ambient package reevaluation (M42.9, #2652, 2026-08-09):** actors now retain their ordered PKID candidates and selected PACK FormID in `AmbientPackageRuntime`; the full PACK catalog survives beyond spawn, and `ambient_ai_package_system` reselects at bounded game-minute boundaries or immediately on Papyrus `EvaluatePackageRequest`. Winner changes atomically remove all seven procedures' behavior/runtime/terminal components and claimant-owned seat reservations before installing the replacement, while same-winner checks preserve live state and unknown CTDA functions keep M42.2's fail-open policy. The ambient system observes requests before the SCEN package system drains them, so both runtimes replan from one marker. **Seat-polish (M42.2, 2026-07-15):** every sit marker on a furniture is now an independently reservable seat, keyed `(furniture, marker index)` — a multi-seat piece (bar counter / bench / multi-chair table authored as one FURN with several `BSFurnitureMarker` positions) seats one actor per marker instead of one for the whole piece (the reservation was previously keyed by furniture entity alone). **Wander procedure runtime + first NPC locomotion primitive (M42.3, 2026-07-15):** `PROCEDURE_WANDER = 5` now has a runtime, mirroring the Sandbox selector pair (`active_package_is_wander`/`active_wander_location`) and gated the same way (opt-in, `BYRO_WANDER=1`). `wander_system` (`byroredux/src/systems/wander.rs`) is the engine's first NPC locomotion of any kind — Sandbox never needed one since it teleports onto a seat — driving straight-line walk-to-point (no pathing/NAVM), ground-snapped each tick via the existing `PhysicsWorld::cast_ray_down` raycast (the same mechanism `scene.rs` uses for camera placement), with deterministic (non-`rand`-crate) target/pause-duration picking via a SplitMix64 hash seeded on `(form_id, pick_count)`, mirroring `npc_spawn.rs::idle_desync`'s determinism convention. v0 scope: no animation-clip swap (no verified walk `.kf` path exists in this codebase yet), no target-reference resolution (center = actor's own spawn position, same v0 call as Sandbox), and package re-evaluation is centralized in M42.9 rather than duplicated inside the procedure. `SandboxBehavior` and `WanderBehavior` are naturally mutually exclusive per actor (a single winning `PackRecord` per selection). **Travel procedure runtime (M42.4, 2026-07-16):** `PROCEDURE_TRAVEL = 6` now has a runtime too, reusing (not duplicating) `wander_system`'s straight-line locomotion via a shared `systems::locomotion::step_toward` helper extracted for this second consumer. Travel walks once to a destination and stops (terminal `Traveled` marker, mirroring `Seated`'s one-shot role) rather than repeating like Wander. It's also the first procedure to attempt resolving a PLDT target to a **real live entity's position**: when the location type is `NearReference`, `travel_system` calls the (newly `pub`) `resolve_entity_by_global_form_id` (`crates/scripting/src/condition.rs`, built for M47.1's `GetDistance`) on its own first tick — i.e. after the whole cell has finished loading, sidestepping the same-pass spawn-ordering concern the 2026-07-14 Sandbox investigation raised. It still won't resolve most targets (same ~12% ceiling that investigation found), so it falls back to the same hash-picked-point-within-radius approximation Wander uses (reusing `wander_system::pick_wander_target` directly) when resolution fails or the location type isn't `NearReference`. Sandbox/Wander/Travel remain naturally mutually exclusive (one winning `PackRecord` per actor). Opt-in via `BYRO_TRAVEL=1`, mirroring `BYRO_WANDER`/`BYRO_SANDBOX_SIT`. **Follow procedure runtime + first PTDT decode (M42.5, 2026-07-16):** `PROCEDURE_FOLLOW = 1` now has a runtime — the fourth procedure and third consumer of the shared `step_toward` locomotion primitive. It required decoding `PTDT` ("Target Data") for the first time in this codebase — 0% parsed before this milestone — verified against the same xEdit-derived reference (`tes5edit.github.io/fopdoc`) already cited for PLDT/PSDT, cross-checked against those two *already-implemented and tested* layouts before trusting it for a new sub-record. New `PackTarget`/`PackTargetKind` types mirror `PackLocation`/`PackLocationTarget`'s exact shape (only `SpecificReference`/`ObjectId` target types get named variants; the rest fold into `Other`, same precedent). Follow's defining difference from Travel: it re-resolves the target's *live* `GlobalTransform` every tick (via the now-`pub` `resolve_entity_by_global_form_id`) rather than freezing a destination once — an actual moving target is chased, not just walked toward where it once was; target-*entity* resolution itself still happens only once, lazily, on first tick (v0, no retry). No fallback wandering when the target can't be resolved — the actor simply stands still, avoiding a silent, undocumented behavior swap. `PTD2` (a second target) is not decoded — no procedure needs it yet. Opt-in via `BYRO_FOLLOW=1`. **Escort procedure runtime (M42.6, 2026-07-16):** `PROCEDURE_ESCORT = 2` now has a runtime — the fifth procedure and fourth consumer of `step_toward`, and the first that needed **no new sub-record decode work**: it combines `PTDT` (from Follow) + `PLDT` (from Travel) onto one `EscortBehavior`. `escort_system` runs a two-phase state machine — **collect** the live PTDT target (reusing Follow's live-tracking shape) until within 128 units, then **lead**: resolve the PLDT destination once (reusing Travel's `resolve_destination` verbatim, same `NearReference`-or-hash-pick fallback), freeze it, and walk there, tagging a terminal `Escorted` marker on arrival (mirrors `Traveled`). Deliberate departure from Follow: when there's nothing to collect (no target, resolution miss, or despawn), Escort skips straight to the lead phase rather than standing still forever — Escort's whole point is the destination, and most FO3/FNV packages carry a PLDT regardless of PTDT. Opt-in via `BYRO_ESCORT=1`, mirroring `BYRO_FOLLOW`/`BYRO_TRAVEL`/`BYRO_WANDER`. **Guard + Patrol procedure runtimes (M42.7/M42.8, 2026-07-16):** `PROCEDURE_GUARD = 14` and `PROCEDURE_PATROL = 13` now have runtimes — the sixth and seventh procedures, and the last two with a plausible v0 given only `PLDT` + existing locomotion (the remaining 10 need subsystems — item-use, combat, magic, dialogue — that don't exist in the engine yet; see the Known Issues row below for the honest breakdown). Guard resolves an anchor once (`NearReference`-type FormID first, else the actor's own spawn position — **not** Travel's random-pick fallback, which was tried and reverted: it hands the actor a point trivially within its own leash, so it never walks anywhere) and never reaches a terminal state, checking every tick whether the actor has drifted beyond `GuardBehavior::radius` and walking back if so; no system yet displaces a placed actor, so this is presently observable as a non-terminal Travel, with the leash check dormant-but-tested. Patrol runs no algorithm of its own: no patrol-route data is decoded anywhere in this codebase (Bethesda's real routes come from linked patrol-idle markers, outside `PACK`'s sub-records), so v0 Patrol is behaviorally identical to Wander — `wander_system`'s phase-transition state machine was extracted into a shared, component-agnostic `step_oscillating_wander` (`systems/wander.rs`) that both `wander_system` and the new `patrol_system` call, keeping distinct `PatrolBehavior`/`PatrolState` components (the latter reusing `WanderPhase` directly) without duplicating the logic. **Ambient locomotion live by default + authored walk cycles + KCC-backed movement (M42.10, 2026-09-18):** the seven opt-in env gates (`BYRO_SANDBOX_SIT`/`BYRO_WANDER`/`BYRO_TRAVEL`/`BYRO_FOLLOW`/`BYRO_ESCORT`/`BYRO_GUARD`/`BYRO_PATROL`) are gone — sandbox seat and the six procedures register unconditionally in the exclusive PostUpdate lane behind a single `BYRO_NO_AI_LOCOMOTION=1` kill-switch (pinned by `ambient_locomotion_default_on_tests` source-shape checks), so NPCs loaded from real cells now walk their authored packages without operator flags. Verified live on FNV `CampMcTermInt01` (2026-09-18): the two McCarran monorail Travel troopers displaced 316 and 203 world units over a 30 s window (byro-dbg `mesh.info` before/after diffs) while the player character walked ~33 units under `input.hold forward` in the same session — every actor grounded, zero panics. Three load-bearing pieces. **(1) Walk cycles:** per-game authored clips load once per cell into the new `WalkAnimation` component and `npc_walk_animation_system` (`systems/walk_anim.rs`, registered *after* the six movers so it classifies motion from the tick's final position) swaps `AnimationPlayer` between the captured playback state and the walk clip while the actor displaces. Clip paths are archive-verified, not guessed — FNV/FO3 `meshes\characters\_male\locomotion\male\mtforward.kf`, Oblivion `handtohandforward.kf` (vanilla Oblivion ships no `locomotion\` directory at all — its `mtidle.kf` path therefore never resolves and Oblivion NPCs were unanimated before this), creatures `<skeleton dir>forward.kf` (#2567 convention), and Skyrim `meshes\actors\character\animations\1hm_walkforward.hkx` decoded through the cart-IDLE HKX path with `NPC COM [COM ]` bound as accum root so per-cycle COM drift becomes discarded `RootMotionDelta` instead of a per-loop skeleton lurch (FO4+ ships no standalone walk HKX and keeps the pre-existing idle-posed walk). The detector is motion-based rather than wired into the six state machines, so it covers combat chase and any future mover too; a take/restore/yield/abandon protocol keeps it from fighting sandbox seating, death, and cinematic idles (`ActorCinematicState` actors are skipped wholesale; a foreign `AnimationPlayer` swap mid-walk is yielded to, not restored over). Take/release dwell windows (0.1 s / 0.4 s) are load-bearing: collision slides produce single near-zero ticks mid-walk, live-measured as 64 take/restore pairs in ~70 s before the dwell landed, 2 after. **(2) Physics-backed steps:** `locomotion::step_toward` now drives the XZ move through Rapier's KCC (`PhysicsWorld::move_character`) — collide-and-slide against fixed *and* dynamic clutter, autostep (32 BU) and ground snap (64 BU) shared with the player controller — with the new `CharacterMoveParams::filter_groups` masking `ACTOR_BONE_GROUP` so an actor's own ~18 keyframed bone bodies cannot wall it (the multi-body form of #2873's self-hit problem). The legacy `cast_ray_down` remains only as an airborne fallback clamped to a 256 BU drop, replacing the old snap-to-anything-within-4096 that teleported walkers off exterior ledges in one tick. Oscillating walkers (Wander/Patrol) re-pick a deterministic target after 2.5 s of continuous blocking (`WalkStuckTimer` runtime scratch, cleared on package handover — `WanderState`/`PatrolState` stay save-shaped); Travel/Follow/Escort/Guard keep their authored semantics and may press against an obstacle their straight-line fallback aims into. **(3) No per-NPC I/O:** the humanoid clip warms the path-keyed `AnimationClipRegistry` at `load_references`; the Skyrim decode stages into the `SkyrimWalkClip` resource beside the cart-IDLE installation. Repro: `cd "$FNV/Data" && cargo run --release -- --esm FalloutNV.esm --cell CampMcTermInt01 --bsa "Fallout - Meshes.bsa" --textures-bsa "Fallout - Textures.bsa" --textures-bsa "Fallout - Textures2.bsa" --bench-frames 100 --bench-hold`, then over byro-dbg: `mesh.info <walker_entity>` twice ~30 s apart for displacement, `input.hold forward 150` + `player.status` for the player. Follow-up (M42.11, same session): movement is no longer fixed-speed — each actor's `WalkSpeed` derives from its walk clip's accumulation-root travel (`AnimationClip::authored_horizontal_speed`, sanity-clamped to [30, 250] u/s with the engine default as fallback), so the step length matches the animated stride; and the FNV/FO3 gendered/child KF variants (`locomotion\\female\\mtforward.kf`, `locomotion\\child\\mtforward.kf` — all three verified in both games' meshes BSAs) load at cell warm-up and resolve per actor's ACBS gender + RACE child flag. Remaining extension point: FO4+ walk sources (no standalone walk HKX in vanilla archives). Opt-in via `BYRO_GUARD=1`/`BYRO_PATROL=1`. Still open: `PTD2` (two-target Escort variants), the remaining 10 procedure runtimes (Find/Eat/Sleep/Accompany/UseItemAt/Ambush/FleeNotCombat/CastMagic/Dialogue/UseWeapon — each blocked on an unbuilt subsystem, not just a missing dispatch), calendar/day/month-aware scheduling beyond the current hour-window selector, sit-enter coverage beyond FNV/FO3, and legacy (FO3/FNV/Oblivion) sleep/lean marker disambiguation + real facing — both need the marker's furniture-type resolved and are visually validated on-device (Phase C), not decodable from the `BSFurnitureMarker` alone (nif.xml confirms the legacy `Orientation` is a marker rotation / `furnituremarkerXX.nif` ref, not a sit/sleep/lean type). See [docs/engine/npc-spawn-ai-packages.md](docs/engine/npc-spawn-ai-packages.md) for the full trace.                                                                                                                                                                                                                                                         | M28.5, M41                                      |
-| M43     | Quests & dialogue            | **Quest core advanced 2026-08-07:** version-aware QUST stages/logs/objectives/targets and full lifecycle transitions feed the fragment runtime; Papyrus quest effects, save-persistent progress, loaded-reference alias fill, alias conditions/reservations, canonical reference identity, objective/quest target resolution, and faction/inventory injections are live. Authored alias data without a canonical subsystem remains available through runtime overlays. **M43.1 observability:** `quest.show`/`quest.aliases` expose lifecycle, stages, objectives, targets, bindings, injections, pending refresh, and bounded unbound reasons; `quest.start`/`quest.stop`/`quest.setstage` reuse the canonical fragment-effect path. `docs/smoke-tests/m43-quest-runtime.sh` drives the production ESM → runtime → TCP command path against installed Skyrim data. **Open M43 scope:** Story Manager event payload/search and reference collections, true LCTN/unloaded-world resolution, created-object spawning, broader condition/event coverage, and full dialogue-tree/UI integration. These are subsystem boundaries rather than missing QUST bytes or lifecycle plumbing. | M24.2, M41, M47.1                               |
-| M46     | Full plugin loading          | Discover, sort, merge, resolve conflicts across the full load order. Builds on M46.0 (CLI wiring) + the existing `plugin/resolver.rs` DAG.                                                                                                                                                                                                                                                                                                                                                            | M24.2, M46.0                                    |
-| ~~R4~~  | ~~SWF/GFx strategic decision~~ | **Closed 2026-07-25 — use pinned Ruffle as the Flash VM with ByroRedux-owned Scaleform host profiles, preserving SWF mod compatibility.** Archive-grounded split: Skyrim `HUDMenu.swf` is AVM1/AS2; Fallout 4 is AVM2/AS3; FO3/FNV's XML menus remain a separate legacy-UI track. `byroredux-ui` exposes `ScaleformProfile::{SkyrimAvm1,Fallout4Avm2}` and a bidirectional `ScaleformHostBridge`: Ruffle `ExternalInterfaceProvider` queues typed ActionScript → engine calls, records unknown methods/callback registrations, and `Player::call_internal_interface` drives engine → ActionScript callbacks. M48 corrected Skyrim's real `GameDelegate` contract (method name is the ExternalInterface method; numeric request ID is argument 0; replies re-enter `respond`) and pinned 74 SkyUI call-site methods / 12 callback requests. The Fallout 4 slice recovered the distinct `BGSCodeObj` lifecycle and injects an eager 269-method installed-corpus ABC function table that routes namespaced calls through the same typed bridge without exposing Ruffle's private AVM2 internals. Installed BA2 tests assert HUD/Pip-Boy readiness and acknowledged destruction, the child holotape lifecycle boundary, and representative bytecode inventory coverage. | M20                                             |
-| M48     | UI integration               | **Host/resource slices advanced 2026-07-26:** Skyrim/SkyUI 74-method catalog + 12 request contracts and re-entrant response routing; Fallout 4 `BGSCodeObj` lifecycle + 269 installed-corpus methods + generated AVM2 forwarding adapter and object-aware dispatch. The adapter patches the lifecycle class constructor immediately after `BGSCodeObj` initialization, avoiding Ruffle's stubbed `LoaderInfo.getLoaderInfoByDefinition`; destruction is acknowledged only for menus that declare the optional teardown hook. The archive-backed navigator resolves root menus and relative resources through BSA/BA2 providers, is live from `--menu ... --menu-archive ...`, and pumps Ruffle's local executor. Installed `HUDMenu.swf`, `PipboyMenu.swf`, and `programs\AtomicCommand.swf` checks cover readiness/destruction ownership and direct/helper-mediated host-call inventory. Remaining work: method behavior and `_global.gfx` stubs, font fidelity/menu-stack policy, and Papyrus/ECS ↔ UI callbacks. **M48.4 (2026-09-18) — Oblivion MenuXml HUD, first legacy-UI slice:** new `byroredux-menuxml` crate parses the vanilla `menus\\*.xml` tree (tolerant scanner for overlapping comments / `<onlynotif>` typo / prefab `<include>`), evaluates the per-frame FOLD trait language (copy/add/sub/mul/div/mod/min/max/and/or/comparisons/onlyif/ceil/floor/abs/not, switch-case `_name_`+number strings, `me()/parent()/sibling()/child()/screen()/strings()` selectors), lays out with locus chains + depth sort + `clipwindow` scissoring, and CPU-rasterizes to a 1280×720 RGBA overlay: images (own BC1/BC2/BC3 + masked-uncompressed DDS decoder, three `Menus/Menus80/Menus50` resolution sets), bitmap text (`.fnt` + `.tex` atlases, Oblivion.ini `[Fonts]` order), fills. Image blit implements the CS-Wiki zoom contract — default draws texels 1:1 **clipped to the tile rect** (the power-of-2-padded ribbon art depends on it; stretch-as-default rendered a constant ~63%-width health bar at every fraction), `zoom -1` stretches, crop applies post-zoom. Engine side (`--hud`): opens `Oblivion - Misc.bsa` + a texture BSA beside `--esm`, drives `hudmain_{health,magic,fatigue}_full.user0` + `hudmain_compass_window.user0` from pinned values or Skyrim-keyed `ActorValues` (live: the mine's actors feed the bars at spawn), change-signature skip + 33 ms cadence cap, and a triple-buffered in-place `write_rgba_inplace` upload (no per-frame image/view/descriptor churn — the first implementation's `update_rgba` reallocation pinned the machine). Console: `hud.on/off/values/heading/status`; `tex.dump <bsa> <tex> [out.png]` extracts + decodes any archive texture to PNG. Smoke `m48-4-oblivion-hud.sh` gates on a strict strong-red fill run (158−53 px after a 35% pin) with a full five-filter PNG decode. **M48.5 (2026-09-19) — game-agnostic MenuXml profile + FO3 HUD, second legacy-UI consumer:** `MenuProfile` (new `crates/menuxml/src/profile.rs`) owns the per-game corpus facts once — font table (Oblivion.ini `[Fonts]` 5 slots, Misc BSA, `fonts\<name>.tex`; FO3 `Fallout_default.ini` 8 slots / FNV 9, *texture* BSA `textures\fonts\`, `.tex`+`.dds` atlas candidates, `.fnt` binary layout verified identical: 14632 B, name@12) and strings source (`menus\strings.xml` vs none — FO3's `falloutdict.txt` is the hacking dictionary, not a strings table; `-sPrefixed` GMST refs are future work) — collapsing the old `FONT_PATHS` triplication. FO3's `hud_main_menu.xml` ships empty container rects (`HitPoints`/`ActionPoints`…) plus `<template>` prototypes the source engine cloned from C++; the crate gained the runtime menu API that mirrors: `MenuRenderer::instantiate_template` + `graft_fragment` (rootless prefabs like the ops-driven `menus\prefabs\meter.xml` wrap into a named child rect so `parent()` ops resolve; `Document::deep_clone`/`graft_subtree` register clones first-wins), and raster gained the FO3-era `<tile>` repeat mode (1:1 texel tiling across the rect; `cropx` becomes a wrapping scroll offset — the tick meters and the seamless compass strip both ride it). Engine side: `HudGameProfile` (authored style = Oblivion override vocabulary vs assembled style = graft meters + instantiate `template_compass_window`, drive `_Value`/`cropx`) with game discovery from the corpus itself (which Misc BSA sits beside `--esm`; FO3/FNV split by master name); `HudControl` bars became a per-game-count array (FO3 drives 2 — HP / AP, resolved per load from the AVIF table; #4675 corrected the original literals, which were fallout.rs test-fixture ids, not real AVIFs), `hud.values` takes that many fractions. Tests: synthetic profile/graft/tile unit tests; `tests/fo3_corpus.rs` (env-gated) pins the corpus facts and renders the FO3 HUD (grafted meters ink bottom-left/right, compass top-left, 30% pin shrinks). Smoke `m48-5-fo3-hud.sh`: near-white tick-column classifier over the HP band (226→68 cols after a 30% pin) + compass-band ink; m48-4 re-run green (158→53 px, unchanged). **M48.6 (2026-09-19) — Skyrim HUD via `--hud` (driven Scaleform slice):** `--hud` became the vanilla-HUD front door across engines — the Scaleform probe runs first (Skyrim: `Skyrim - Interface.bsa` beside `--esm`), the MenuXml profiles second, mutually exclusive per run. New `byroredux/src/scaleform_hud.rs` launches `interface\hudmenu.swf` through the Ruffle `UiManager` exactly like `--menu`, then makes it HUD-grade: stage cleared **transparent** (`SwfPlayer::set_stage_transparent` — Ruffle `WindowMode::Transparent`; the default opaque stage clear was painting the whole screen over the world), world input kept (`set_input_focus(false)`), `hud.off` now genuinely hides a Scaleform HUD (driver mirrors `HudControl.visible` into the player's three-state render). The movie's host protocol is served: `hud.debug` mirrors the bridge's registered callbacks / unknown / unanswered sets into a World resource (the `Rc` bridge itself cannot be one), response handlers answer SkyUI-class polls (`updateStats`, `RequestPlayerInfo`), and the push table targets registered callbacks (vanilla registers only the GameDelegate pair `call`/`respond`). Protocol pinned by `crates/ui/tests/hudmenu_protocol.rs`: vanilla hudmenu's full host-call surface is exactly `GetButtonFromUserEvent`/`PlaySound`/`RegisterHUDComponents`/`myLog` — **no stats poll**: vanilla feeds the meters by GFx object-path invocation, which Ruffle's ExternalInterface-only surface cannot reach, so bars stay engine-empty pending AVM1 injection or SkyUI-class menus (whose protocol the handlers already speak). `hud.status`/`hud.values` work across backends with a trailing `backend=menuxml|scaleform` field. Smoke `m48-6-skyrim-hud.sh`: boot line, backend status + 3-bar pins, `hud.debug` callbacks + driver-liveness, and a chrome on/off pixel **diff** (world-static between captures; 2242 changed px vs 0 control) immune to world brightness. m48-menu-load.sh repaired for #4466 (rustup-toolchain cargo + PATH prefix — broken since the MSRV bump) and re-run green. **M48.7 (2026-09-19) — Fallout 4 HUD, the AVM2 leg of the same route:** `scaleform_hud.rs` generalized behind a `ScaleformGame` dispatch — the `--hud` probe now matches `Fallout4 - Interface.ba2` (BA2) beside `--esm` as well as Skyrim's Interface BSA; FO4 drives 2 bars (health / ap — resolved per load through `PlayerVitals`; #4675 corrected the original `0x2C9`/`0x2D0` literals, fallout.rs fixture ids rather than FO4's real `Health 0x2D4` / `ActionPoints 0x2D5`), the `hud: loaded` line gained `profile=`/`state=` (making `state=Some(AdapterInjected)` — the injected BGSCodeObj forwarding adapter — greppable on the `--hud` route), the SkyUI poll handlers are Skyrim-profile-gated (FO4's catalog has no meter-shaped queries and none are fabricated), and the push table skips the adapter's `__byro*` lifecycle hooks. `hud.debug` labels its bars per game and its callback mirror doubles as the runtime AdapterInjected observable. Protocol pinned by `crates/ui/tests/fallout4_hudmenu_protocol.rs`: vanilla FO4 hudmenu = `AdapterInjected`, registers the adapter lifecycle hooks (`__byroBGSCodeObjReady` answers `Bool(true)`), acknowledges destruction exactly once on drop (it declares `onCodeObjDestruction`), and boots with `unknown_methods()` empty — it makes **zero** gameplay host calls while idle, so meters stay engine-empty exactly as on Skyrim (same GFx object-path limitation). Smoke `m48-7-fo4-hud.sh` on the MedTekResearch01 fixture: boot/status/debug gates + chrome on/off pixel diff (health bar 1954 / compass 900 / control 0 changed px). | R4, M48.4, M48.6                                  |
-
-### Tier 8 — Visual fidelity stretch (post-Tier-4 horizon)
-
-Take the existing rendered content (Prospector Saloon, MedTek
-Research, Whiterun's Bannered Mare, FO3 Megaton) and make it *as
-good as it can possibly look*. Beauty axis only — pure-performance
-work moves to Tier 11. Each entry leverages the existing RT
-investment rather than bolting on a parallel pipeline: volumetric
-shadows are RT, hair shadows are RT, SSS is optionally RT-traced,
-decals participate in GI. ByroRedux's "RT-first" posture means the
-visual ceiling here is genuinely above what any 2008–2015 Bethesda
-forward renderer can reach. Goal: a screenshot of any vanilla
-Bethesda interior that holds up against modern offline-rendered
-output. **M55's fog slice shipped in Session 62** (see M55 row below); the
-rest of Tier 8 has no active work — Tier 1–4 ships first.
-
-Sequencing within the tier is impact-first. M55 (volumetrics) and
-M59 (decals + material layering) are the highest "wow factor per
-dollar" — they transform the look of every existing cell with no
-M41 dependency. M56 / M57 (SSS / hair) are gated on M41 producing
-visible NPCs to render onto. M51 (PT reference) and M-LIGHT crown
-the pipeline; M54 unlocks once the scene-data volume justifies a
-trained model.
+Make existing content look as good as it can: beauty only, with
+pure-performance work in Tier 11. Each entry builds on the RT investment
+rather than adding a parallel pipeline — volumetric and hair shadows are RT,
+SSS can be RT-traced, and decals take part in GI. Sequencing is impact-first:
+M55 (volumetrics) and M59 (decals and material layering) change every
+existing cell. M56/M57 (SSS, hair) render onto the NPCs M41 now spawns. M51
+(PT reference) and M-LIGHT top off the pipeline, and M54 waits until there is
+enough scene data to train on. M55's fog slice and M58's bloom slice have
+shipped; the rest of the tier has no active work.
 
 | #        | Milestone                          | Scope                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          | Depends on              |
 |----------|------------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|-------------------------|
-| M55      | Volumetric lighting                | God rays / light shafts via single-scattering volumetric integration in a frustum-aligned 3D froxel texture, RT-shadowed (no shadow-map cascade hack — we already have RT visibility). Exponential height fog with per-cell density driven by REGN region records and weather state. The cinematic moment Bethesda interiors most lack — sunlight through Megaton's church windows, dust motes in Doc Mitchell's hallway, fog rolling off WastelandNV grass at dusk. Reference: Hillaire (Frostbite, SIGGRAPH 2015) Frostbite volumetrics. **Fog slice shipped 2026-07-26→08-01 (Session 62):** procedural froxel-grid fog with temporal reprojection, clustered local fog volumes, authored CELL/WTHR extinction/chromaticity/coverage. **Emissive media became a transported combustion solver (Session 69, 2026-08-17→18, `2325c1de`..`348f4cd0`):** fire and smoke are one soot material advected around solid geometry, with first-order fuel/oxidizer reaction chemistry, fuel-rich soot yield and hot-lean oxidation, self-shadowing, spectral scattering, transported overpressure and restored vorticity. Rates, yields and temperatures are canonical constants in `crates/core/src/combustion.rs`, mirrored into GLSL through the generated shader-constant path; `FogProfile` acts as a solver emitter preset with no game or authoring-provenance branch. Surface illumination is reduced from the transported field (`append_combustion_surface_lights`), replacing the deleted analytic-primitive `render/fire_lights.rs` — see Known Issues for the visual check this still owes. Spec: [docs/engine/procedural-volumetric-fog.md](docs/engine/procedural-volumetric-fog.md). REGN-driven per-cell height fog and single-scattering god-ray light shafts remain open, as does the follow-up boundary that doc enumerates (boundary-normal slip/pressure response, aerial-perspective LUT, majorant-grid path-traced media). | M34, M44 (REGN parsing) |
+| M55      | Volumetric lighting                | God rays / light shafts via single-scattering volumetric integration in a frustum-aligned 3D froxel texture, RT-shadowed (no shadow-map cascade hack — we already have RT visibility). Exponential height fog with per-cell density driven by REGN region records and weather state. The cinematic moment Bethesda interiors most lack — sunlight through Megaton's church windows, dust motes in Doc Mitchell's hallway, fog rolling off WastelandNV grass at dusk. Reference: Hillaire (Frostbite, SIGGRAPH 2015) Frostbite volumetrics. **Fog slice shipped 2026-07-26→08-01 (Session 62):** procedural froxel-grid fog with temporal reprojection, clustered local fog volumes, authored CELL/WTHR extinction/chromaticity/coverage. **Emissive media became a transported combustion solver (Session 69, 2026-08-17→18, `2325c1de`..`348f4cd0`):** fire and smoke are one soot material advected around solid geometry, with first-order fuel/oxidizer reaction chemistry, fuel-rich soot yield and hot-lean oxidation, self-shadowing, spectral scattering, transported overpressure and restored vorticity. Rates, yields and temperatures are canonical constants in `crates/core/src/combustion.rs`, mirrored into GLSL through the generated shader-constant path; `FogProfile` acts as a solver emitter preset with no game or authoring-provenance branch. Surface illumination is reduced from the transported field (`append_combustion_surface_lights`), replacing the deleted analytic-primitive `render/fire_lights.rs` — see Known Issues for the visual check this still owes. Spec: [docs/engine/procedural-volumetric-fog.md](docs/engine/procedural-volumetric-fog.md). Interior godrays and sky apertures landed as a vertical slice (`0572bfd5a`, [`interior-godrays-status.md`](docs/engine/interior-godrays-status.md)); REGN-driven per-cell height fog and exterior single-scattering light shafts remain open, as does the follow-up boundary that doc enumerates (boundary-normal slip/pressure response, aerial-perspective LUT, majorant-grid path-traced media). | M34, M44 (REGN parsing) |
 | M59      | Material & decal layering          | Decal projection (blood splatters, bullet holes, footprints in dust, water puddles, scorch marks), micro-detail normal maps (concrete, fabric, metal grain, leather pores), anisotropic specular (brushed metal, hair, satin, vinyl). **POM slice shipped 2026-07-29:** authored-tangent primary POM, adaptive layer budgets, and height-displaced material UVs at reflection / GI / refraction / water / material-aware shadow hits; BVH silhouettes remain undisplaced. RT decals participate in GI — Bethesda decals never have. Material slot extensions to `GpuMaterial` only; the R1 promise holds (no DrawCommand or shader-lockstep growth). | R1                      |
 | M61      | Wet-surface & storm-accumulation system | A "wet" state on actors/clothing/static geometry driven by water contact (rain volumes, submersion, splashes, footprints exiting a WATAL water plane) that darkens albedo and boosts specular/fresnel toward a thin-film reflective/refractive look, with a drying-over-time falloff. **Extension (2026-08-03):** procedural snow buildup during storms — an accumulation state (ground, roofs, static geometry) that grows while the active WTHR is snow-classified and settles/melts otherwise, sharing the same per-surface weather-contact state machine as wet (rain → wet, snow → accumulating coverage) rather than a parallel system. Triggered off WTHR's `classification` byte (Clear/Cloudy/Rain/Snow, DATA byte 11 — parsed since #538/#543 but with no downstream consumer today). **Extension (2026-08-03):** Fallout radstorms accumulate a third, darker grime/ash coating by the same mechanism. Open research question before scoping: `classification` is only a 4-value Clear/Cloudy/Rain/Snow bitmask (`WTHR_PLEASANT/CLOUDY/RAINY/SNOW`) with no dedicated radstorm bit, so the real per-record signal that distinguishes a radstorm WTHR from ordinary rain (EDID convention? an associated ash/particulate FormID? a script-side trigger outside WTHR entirely?) hasn't been identified yet — needs the same kind of source verification `resolve_water_material`'s EDID-substring `WaterKind` heuristic went through, not a guess. No scoping done yet — surfaced while wiring #2240 (WATR wave params); needs its own design doc before work starts, sized like M59's material-slot approach (`GpuMaterial` extension, no `DrawCommand`/shader-lockstep growth) rather than a new render pass. Depends on WATAL's water-plane contact geometry existing to detect "touched by water" in the first place. | M59, WATAL              |
 | M58      | Reference-quality post-process     | Kawase-blur bloom (5-pass dual filter, ~2 ms total), scatter-as-gather DOF for cinematic mode, per-object motion blur reusing existing motion vectors, color grading via 3D LUT (per-cell-type mood — interior warm, exterior cool, irradiated green), AgX or Tony McMapface tone mapping selectable alongside ACES, optional vignette / film grain. Single compute dispatch chain layered onto the existing composite pass; no extra render-pass churn. **Bloom slice shipped Session 33 (`33f48b5`):** separable box-filter downsample/upsample pyramid (`bloom_downsample.comp` / `bloom_upsample.comp`) applied to scene HDR after composite (`bloom_apply.comp`); the Kawase/Jimenez dual-filter upgrade and the DOF, motion-blur, LUT-grading and tone-map-selection scope all remain open. | —                       |
@@ -1028,7 +303,7 @@ trained model.
 | M51      | Path tracing reference mode        | Full PT (no rasterized fallback), ReSTIR-PT spatiotemporal reservoirs, SHARC radiance cache for diffuse, optional NRC neural radiance cache. Reference mode for screenshots / cinematics; demonstrates "RT-first" wasn't a positioning claim. References: Bitterli et al. (ReSTIR PT, 2022), Pharr et al. (SHARC, 2024). Reuses existing reservoir + denoiser plumbing from M31.5 / M37.                                                                                                                       | M37, M37.3              |
 | M54      | Neural denoiser                    | Small NN (~1–2 MB weights) replaces SVGF spatial filter for indirect lighting once enough scene data exists to train. Targets visual parity + 30% runtime. References: NRD-NN, Intel Open Image Denoise GPU. Implementable as a Vulkan compute pass; no proprietary SDK dependency. At PT scales (M51) it stops being a perf optimisation and becomes a quality multiplier.                                                                                                                                  | M37, M51                |
 
-### Tier 9 — Better-than-Bethesda capability stretch (post-Tier-4 horizon)
+#### Tier 9 — Better-than-Bethesda capability stretch (post-Tier-4 horizon)
 
 Plays to the ECS-native architecture and clean-room rebuild. Each
 entry is something Bethesda demonstrably cannot ship on top of the
@@ -1044,7 +319,7 @@ state model holds up.
 | M63   | OpenXR / VR                   | Full VR via openxrs. RT-first renderer is genuinely useful here — VR is the genre most starved of well-running RT content, and our forward-pass cost is already low. Stereo rendering through the existing pipeline; controller input through the existing input layer; M50 expanded for VR-aware authoring.                                                                                                                                                     | M27, M50                                |
 | M64   | Procedural exterior cells     | Generate exterior cells from heightmap + biome rules + noise. Effectively unlimited worldspace; complements rather than replaces vanilla Bethesda exteriors. Starfield's procedural-planet model is the obvious comparison; ours can do better because cells are first-class ECS state, not save-file blobs.                                                                                                                                                       | M40, M50                                |
 
-### Tier 10 — Ecosystem unlock (post-Tier-4 horizon)
+#### Tier 10 — Ecosystem unlock (post-Tier-4 horizon)
 
 Realizes the architectural promise of content-addressed Form IDs and
 clean-room data-only legacy compat. **No active work** until the
@@ -1058,25 +333,13 @@ engine ships something playable for the existing community to mod.
 | M81   | Visual scripting (BT-style)   | Behavior-tree node graph layered on M47.0 event hooks, for modders who don't write code. Same surface as Papyrus would expose, but with no language to learn. Complements rather than replaces M47.0 / M47.2.                                                                                                                                                                                                                                                       | M47.0, M50              |
 | M82   | Asset preprocessing pipeline  | One-shot bake: BSA / BA2 → ByroRedux native asset format with optimal layouts (texture-streaming-aware mip ordering, cluster-aware mesh layout for M53). Ships once at install / mod-publish; runtime loads are 10× faster. Replaces the current "open the BSA, decode on demand" hot path with a memory-mappable bundle.                                                                                                                                          | M39, M53                |
 
-### Tier 11 — Performance ceiling (post-Tier-4 horizon)
+#### Tier 11 — Performance ceiling (post-Tier-4 horizon)
 
-Pure-performance entries that don't add visual capability or new
-gameplay surface — they raise the per-frame ceiling once a
-real-content benchmark identifies one of them as the bottleneck.
-**No active work** until that benchmark exists. Today's bench is
-GPU-bound on RT cost on FNV / Skyrim interiors (`fence=6.12 ms / 75% wall`
-on Prospector, `fence=2.09 ms` on Whiterun, post-#1115 refactor 2026-05-17)
-but **CPU-bound on FO4 MedTek** (`brd_ms=6.96 ms ≈ fence=6.11 ms` at
-10 810 entities — fence and brd now nearly co-dominate; the gap closed
-slightly thanks to #1136 + #1115's orchestrator split) —
-`build_render_data` walks every entity per frame across 8 sibling
-sub-modules (post-#1115 TD9-001 split: `static_meshes` / `skinned`
-/ `particles` / `lights` / `sky` / `water` / `camera` + the
-orchestrator), scaling linearly with cell complexity. M52 (GPU-driven rendering) is the
-explicit ceiling raiser for that regime; not on the active path yet,
-but the data point now exists. Split out from Tier 8 (2026-05-08)
-once Tier 8 was reframed around visual fidelity — these are honest
-ceiling raisers, not beauty work, and conflating the two muddied both.
+Pure ceiling raisers: no new visuals or gameplay surface. They start only
+when a real-content bench names them as the bottleneck. The live
+bench-of-record shows the FO4 scenes fence-bound (see R6a-regress-22), and
+`build_render_data` still walks every entity per frame, scaling linearly with
+cell complexity. M52 is the lever for that regime.
 
 | #     | Milestone                          | Scope                                                                                                                                                                                                                                                                                                                                                                                                                                              | Depends on |
 |-------|------------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|------------|
@@ -1117,9 +380,10 @@ silently growing the cone:
   replication layer, never a server. Decentralized mod hosting
   (M72, Tier 10) is in scope — content-addressed, no central
   registry.
-- **Cloning Papyrus VM semantics.** R5 may make us run "Papyrus
-  bytecode as an ECS system" if the pure transpiler bet fails — but
-  even then we are not implementing OpcodeFetch / OpcodeDispatch /
+- **Cloning Papyrus VM semantics.** R5 (closed 2026-05-16) chose
+  ECS-native: compiled `.pex` is decompiled and lowered onto ECS
+  effects, and M47.3's SCDA interpreter lowers onto the same quest
+  state. We are not implementing OpcodeFetch / OpcodeDispatch /
   StackFrame / StackUnwind in their original shapes. Better, not
   same.
 
@@ -1143,73 +407,63 @@ rewrite pressure.
 | Coordinate system                            | Z-up→Y-up with CW angle negation                                | Documented in `docs/engine/coordinate-system.md`. Keep.                                                                                                                                                                |
 | Rendering                                    | RT-first, rasterized fallback                                   | Scoped to RTX 4070 Ti target. Correct for this hardware. Keep.                                                                                                                                                         |
 | Legacy compat                                | Parse data, don't emulate engine                                | Better results, clean room, no copyright issues. Keep.                                                                                                                                                                 |
-| Scripting                                    | ECS-native (no VM)                                              | Eliminates Papyrus queue latency, stack serialization, orphaned stacks. Philosophically correct, but see R5 — prototype one representative quest before committing the full M47.2 shape.                             |
+| Scripting                                    | ECS-native (no VM)                                              | Eliminates Papyrus queue latency, stack serialization, orphaned stacks. R5's one-quest prototype (closed 2026-05-16) confirmed the call; M47.2 builds on it.                             |
 
-### Risk-reducers (R1–R7, new 2026-04-22)
+### Risk-reducers (R1–R7, 2026-04-22)
 
-Not new features — structural fixes to keep known growth patterns
-from calcifying. Each is folded into the tier where it blocks, above.
-Index:
+Structural fixes to keep known growth patterns from calcifying. Only R2 is
+still open; the others are listed under Completed Milestones.
 
-- **R1** — MaterialTable refactor (collapse DrawCommand). **Closed 2026-05-01** across 6 phases — `GpuInstance` collapsed 400 → 112 B (72% reduction); per-frame `MaterialBuffer` SSBO with byte-level dedup. M38 unblocked.
-- **R2** — ESM typed subrecord decoder. **Phase A + B closed 2026-05-24** (cursor primitive + 169-site migration; legacy `read_*_at` helpers dropped). Phase C (typed `read_sub::<T>` schema layer) deferred — not blocking M24.2.
-- **R3** — NIF per-block-type parse histogram (closed via `nif_stats --tsv` + `per_block_baselines.rs` + checked-in 7-game baselines). Tier 6, prevention.
-- **R4** — SWF/GFx strategic decision. Tier 7, gates M48.
-- **R5** — Papyrus quest prototype. Tier 3, gates M47.2.
-- **R6** — Scratch-buffer instrumentation (closed via `ctx.scratch` + `ScratchTelemetry`). Tier 2 prevention, landed before M40. **R6a** — Prospector re-bench. Tier 1.
-- **R7** — Scheduler access declarations (closed via `Access` builder + `sys.accesses` console command). Tier 6, M27 unblocked on tooling; remaining work is migrating the 9 still-undeclared systems.
+- **R2** — ESM typed sub-record decoder. Phases A and B closed 2026-05-24
+  (cursor primitive and the 169-site migration). Phase C, the typed
+  `read_sub::<T>` schema layer, is adopted only in `records/misc/magic.rs` so
+  far. It does not block M24.2.
+- **R6a** — the bench-of-record discipline. It is a standing rule rather than
+  a milestone: a record more than 30 commits old is stale. The live record and
+  its open regression are under Status and Known Issues.
 
 ### Growth discipline
 
-The project's single biggest risk is **scope growth without
-compression** (64K → ~130K LOC over the last six sessions). Tier
-ordering gives top-level backpressure; apply it inside crates too. If
-a single file crosses 3 500 lines, a struct crosses 50 fields, or a
-context struct crosses 60 fields, treat it as a signal rather than a
-stat to report — investigate before adding.
+The project's single biggest risk is **scope growth without compression**.
+Tier ordering gives top-level backpressure; apply it inside crates too. If a
+single file crosses 3 500 lines, a struct crosses 50 fields, or a context
+struct crosses 60 fields, treat it as a signal to investigate before adding,
+not a stat to report.
 
-**Tripwire today** (re-measured 2026-06-03): the old `esm/cell.rs`
-tripwire is resolved — Session 35 split it into the
-`crates/plugin/src/esm/cell/` directory (`mod.rs` / `helpers.rs` /
-`support.rs` / `walkers.rs` / `wrld.rs` + per-topic `tests/`), so no
-single file in that walker exceeds threshold. The current largest
-source file is `crates/renderer/src/vulkan/context/draw.rs` at **3 486
-lines** (per-frame command recording) — **over the 3 500 line threshold
-and approaching it**; `vulkan/context/mod.rs` (3 064) and
-`byroredux/src/asset_provider.rs` (2 781) follow. `draw.rs` grew via
-ReSTIR-DI Phase 1 plumbing — **split investigation warranted before M37.3
-Phase 2 lands more plumbing there**. R2 (typed subrecord
-decoder, Phase A+B closed) shipped before M24.2 started, as planned.
+**Tripwire today** (measured 2026-09-29; the counts include inline test
+modules). Over the line: `byroredux/src/env_translate.rs` 4 594,
+`crates/renderer/src/vulkan/volumetrics.rs` 4 396,
+`byroredux/src/material_translate.rs` 4 141,
+`crates/renderer/src/vulkan/context/draw.rs` 4 107,
+`crates/scripting/src/translate/effects.rs` 3 899,
+`byroredux/src/inventory.rs` 3 786 and `crates/physics/src/world.rs` 3 785.
+Before splitting one, grep for `include_str!` source-shape tests that read
+it.
 
-### Pacing discipline (added 2026-05-03)
+### Pacing discipline
 
-Audit cadence is a load-bearing risk. The renderer alone has 16
-distinct audit reports filed in 30 days; each generates LOW/MEDIUM
-findings that absorb commit budget. Without backpressure, audits
-become the work product instead of the work.
+Audit cadence is load-bearing: without backpressure, audits become the work
+product instead of the work.
 
-- **Renderer audits**: paused. Re-open trigger is M41 visible NPCs
-  on real content (the workload that would change what an audit
-  surfaces). Until then, close from the existing 51-issue backlog;
-  do not run `/audit-renderer` on session cadence.
-- **Per-game audits** (`/audit-fnv`, `/audit-skyrim`, etc.):
-  on-demand only when working in that game's path, not periodic.
-- **Safety / ECS / NIF audits**: keep on session cadence —
-  these tend to surface real correctness issues, not visual nits.
-- **LOW-severity findings**: bundle into single PRs rather than
-  one-commit-per-finding. The Session 28 audit-bundle pattern (6
-  closes / 6 commits / 6 tests) was healthy; the alternative
-  (one audit → 30 small commits) is what calcifies.
-- **Stale-bench discipline**: any roadmap change that touches a
-  numbered claim must either refresh the claim or move it under a
-  `~~stale~~` block. No silent drift.
+- **Which audits run** is decided by the audit skills, not by session habit.
+  Runs are delta-scoped: `/audit-suite --changed` routes the diff through
+  `_audit-owners.md`, and each skill scopes to the dimensions whose paths
+  changed since its last report.
+- **LOW-severity findings** are bundled per audit into one commit per theme,
+  not one commit per finding.
+- **Stale-bench discipline**: any change that touches a numbered claim here
+  must refresh the claim, remove it, or move it to
+  [`roadmap-history.md`](docs/archive/roadmap-history.md). No silent drift.
 
 ---
 
 ## Completed Milestones
 
-One-liners grouped by area. Per-milestone scope is in `git log`;
-session-level context is in [HISTORY.md](HISTORY.md).
+One-liners grouped by area. Full rows for milestones closed before
+2026-09-29 are in
+[`roadmap-history.md` §5](docs/archive/roadmap-history.md#5-tier-17-milestone-tables-with-full-rows);
+per-milestone scope is in `git log`; session context is in
+[HISTORY.md](HISTORY.md).
 
 **Graphics foundation**
 M1 Vulkan init chain · M2 GPU geometry · M4 ECS-driven rendering ·
@@ -1219,47 +473,46 @@ M7 depth buffer · M8 texturing · M13 directional lighting.
 M3 ECS foundation (World, Component, Storage, Query, Scheduler,
 Resources, string interning) · M5 plugin system (stable Form IDs,
 DAG resolver) · M6 legacy bridge (per-game parser stubs) ·
-M17 coordinate system fix (CW rotation, SVD degenerate repair).
+M17 coordinate system fix (CW rotation, SVD degenerate repair) ·
+R7 scheduler access declarations (`Access` builder, `sys.accesses`) ·
+M27 parallel system dispatch (2026-05-23) ·
+M46.0 multi-plugin CLI (repeatable `--master`, #561).
 
 **NIF parser overhaul (N23 series)**
 N23.1 trait hierarchy · N23.2 shader completeness ·
 N23.3 Oblivion block types · N23.4 FO3/FNV validation ·
 N23.5 skinning · N23.6 Havok collision skip + compressed mesh ·
 N23.7 Fallout 4 · N23.8 particles · N23.9 FO76/Starfield ·
-N23.10 test infrastructure. **The block dispatcher now carries ~250
-match arms (parsed types + Havok skips); the live count is in
-`crates/nif/src/blocks/mod.rs` — not frozen here.**
+N23.10 test infrastructure · R3 per-block-type parse histogram
+(`nif_stats --tsv`, checked-in seven-game baselines). The block dispatcher's
+live arm count is in `crates/nif/src/blocks/mod.rs` — not frozen here.
 
 **Asset pipeline**
 M9 NIF parser · M10 NIF→ECS import · M11 BSA reader ·
 M14 DDS texture loading · M16 ESM parser & cell loading ·
 M18 Skyrim SE NIF · M19 full cell loading · M26 BA2 archive
 support (v1/v2/v3/v7/v8, zlib + LZ4) · NIFAL (NIF Abstraction Layer,
-2026-05-28) — canonical parse-time translation boundary, first slices
-material / particle / collision; surface audit complete 2026-06-02
-(NiRangeLODData last block, lod_group on ImportedNode) ·
-**M49** FO4 precombined geometry (CSG reader, 2026-06-02, closes #1351).
-Per-game
-clean-parse rates in the compat matrix above; recoverable rate at
-100% across all seven games except Oblivion's single hard-fail
-(#698, closed).
+2026-05-28) — the canonical parse-time translation boundary ·
+M49 FO4 precombined geometry (CSG reader, 2026-06-02, #1351).
 
 **ESM records (M24 Phase 1)**
 Items (WEAP/ARMO/AMMO/MISC/KEYM/ALCH/INGR/BOOK/NOTE), containers,
 leveled lists (LVLI/LVLN), NPC_, RACE, CLAS, FACT, GLOB, GMST.
-13 684 structured records on FNV.esm. SCPT pre-Papyrus bytecode
-records parsed (#443). CREA + LVLC dispatched (#442/#448). PACK /
-QUST / DIAL / MESG / PERK / SPEL / MGEF now fully parsed (#446/#447 closed; see M24.2/M43 rows above for decode detail).
+SCPT pre-Papyrus bytecode records parsed (#443). CREA + LVLC dispatched
+(#442/#448). PACK / QUST / DIAL / MESG / PERK / SPEL / MGEF fully parsed
+(#446/#447; decode detail under M24.2 / M43).
 
-**Animation**
+**Animation and actors**
 M21 animation playback (.kf, linear/Hermite/TBC, 8 controller types,
 blending stack) · KFM binary parser (Gamebryo 1.2.0.0 → 2.2.0.0) ·
-BSAnimNote / BSAnimNotes with IK hints · skeletal skinning
-end-to-end (#178) — `SkinnedMesh` ECS component, 4 096-slot bone
-palette SSBO, unified vertex shader.
+BSAnimNote / BSAnimNotes with IK hints · skeletal skinning end-to-end
+(#178) · M29 skinning chain verification · M29.5 GPU bone-palette compute
+(Session 40) · M41.0 FaceGen heads (2026-05-05) · M41 NPC spawning —
+T-pose humanoids at REFR positions (2026-05-07), outfits via OTFT + LVLI
+equip (2026-05-11).
 
 **RT renderer**
-M22 RT-first multi-light (SSBO lights, ray query shadows, RT
+M22 RT-first multi-light (SSBO lights, ray-query shadows, RT
 reflections, bounded material-aware path-traced GI, SVGF temporal,
 composite + ACES) ·
 M31 RT performance at scale (batched BLAS, TLAS culling,
@@ -1267,23 +520,34 @@ importance-sorted shadow budget, distance-based ray fallback, BLAS
 LRU eviction, deferred SSBO rebuild) ·
 M31.5 streaming RIS direct lighting ·
 M32 landscape terrain (LAND + LTEX/TXST splatting) ·
-M33 sky & atmosphere (sky gradient, sun disc with game-time arc, TOD
-interpolation across 10 color groups × 6 TOD slots, dual cloud layers
-DNAM + CNAM with parallax, horizon fog, procedural fallback; all WTHR
-parser bugs M33-01–M33-06 fixed with regression tests) ·
-M34 exterior lighting (full: per-frame sun arc, TOD ambient/fog/directional, interior fill split) ·
-M32.5 per-game cell loader parity (Skyrim SE WhiterunBanneredMare 237 FPS, FO4 MedTekResearch01 90 FPS — zero code changes) ·
-M33.1 cloud layers 2/3 ANAM/BNAM + weather fade transitions (8 s blend via WeatherTransitionRes) ·
-PERF-1 bench fix (wall-clock frame counting + FrameTimings sub-phases; GPU-bound finding: fence=4.28ms/76%) ·
-M36 BLAS compaction (20–50% memory reduction) ·
-M37.5 TAA (Halton jitter, motion-vector reprojection, YCoCg clamp,
-mesh-id disocclusion).
+M33 sky & atmosphere · M33.1 cloud layers 2/3 + weather fade transitions ·
+M34 exterior lighting (sun arc, TOD ambient/fog/directional, interior fill
+split) · M32.5 per-game cell loader parity (Skyrim SE, FO4) ·
+PERF-1 wall-clock bench and CPU hot-path profile (GPU-bound finding) ·
+M36 BLAS compaction · M37.5 TAA (Halton jitter, motion-vector reprojection,
+YCoCg clamp, mesh-id disocclusion) ·
+R1 MaterialTable refactor (`GpuInstance` 400 → 112 B, 2026-05-01) ·
+M-NORMALS per-vertex tangents and LIGHT-N2 display-space fog (2026-05-02) ·
+M38 water (2026-05-11) · EFFECT-LIT effect-shader intensity (2026-06-03) ·
+M37 SVGF spatial filter and M37.3 ReSTIR-DI (2026-06-18) ·
+R6 scratch-buffer telemetry (`ctx.scratch`).
 
-**Scripting, physics, UI**
+**World and streaming**
+M40 world streaming (async pre-parse, LRU BLAS eviction, interior↔exterior
+swap; 2026-05-24).
+
+**Scripting, physics, UI, audio, persistence**
 M12 ECS-native scripting foundation (events + timers) ·
-M28 Phase 1 physics (Rapier3D bridge) ·
+M28 Phase 1 physics (Rapier3D bridge) · M28.5 character controller
+(2026-05-22) ·
 M30 Phase 1 Papyrus parser (logos lexer + Pratt expression parser,
-full AST) · M20 Scaleform/SWF UI via Ruffle.
+full AST) · M30.2 Papyrus Phases 2–4 (2026-05-23) ·
+R5 Papyrus quest prototype — verdict "go ECS-native" (2026-05-16) ·
+M47.0 event hooks runtime and M47.1 condition evaluator (2026-05-23) ·
+M20 Scaleform/SWF UI via Ruffle · R4 SWF/GFx decision — pinned Ruffle with
+ByroRedux-owned host profiles (2026-07-25) ·
+M44 spatial audio (2026-05-06) ·
+M45 save/load and M45.1 live load-apply (2026-06-21).
 
 **Debug & diagnostics**
 M15 debug logging & diagnostics · debug CLI (`byro-dbg`) with
@@ -1294,405 +558,133 @@ live ECS inspection (`find`, `entities(Component)`, screenshot).
 
 ## Known Issues
 
-### Open — Tier 1 / 2 blockers
+Open items only. Each closed item is removed at the session close that closes
+it; the full list as it stood on 2026-09-29 (open and closed) is in
+[`roadmap-history.md` §7](docs/archive/roadmap-history.md#7-known-issues-full-open-and-closed).
 
-- [x] **Water pipeline declared a 16-byte push-constant range while its
-  shaders used 28 bytes (found 2026-09-18, M48.4 HUD session). — CLOSED
-  2026-09-20 by #4510** (stale bullet: the fix landed with the renderer
-  audit batch and predated this tick). Both stages now declare only the
-  4-byte `waterIndex` selector; the Rust `WaterPush` pads host-side to the
-  declared 16 B, and `push_constant_block_tests`
-  (`crates/renderer/src/vulkan/water.rs`) reflects the committed `.spv`
-  binaries against the range so a relapse fails `cargo test`. Original
-  entry: every startup logged two khronos validation errors from
-  `vkCreateGraphicsPipelines` for the water pipeline
-  (`Block with range [0, 28] which outside the VkPushConstantRange of
-  [0, 16]`); water rendered only because the driver tolerated the
-  out-of-range block, and GPU-assisted validation refused to run cleanly.
-- [ ] **BC2 world-texture mip-chain staging copy overruns the staging
-  buffer by 8 bytes on long streaming runs (observed 2026-09-18).**
-  `vkCmdCopyBufferToImage ... exceeds VkBuffer total size` fires
-  occasionally during `--bench-hold` sessions that stream many cells
-  (0 occurrences on short runs, ~20 on multi-minute ones). The correlation is with run
-  length / cells streamed, not with `--hud`; looks like a
-  `dds::mip_size` rounding gap for some BC2 chains vs the staging
-  allocation size. Needs a targeted repro + a `mip_size`-vs-allocation
-  assert in the DDS staging path.
+### Performance and measurement
 
+- [ ] **R6a-regress-22 — FO4 frame time doubled between `4c9a5b36` and
+  `99933f87b`** (filed 2026-09-28 with the `a37fcba3c` record). In a
+  same-session, isolated-settings control, Dugout TAA went 11.17 → 24.65 ms
+  and MedTek TAA 34.22 → 50.38 ms. Almost all of it is fence wait (Dugout
+  4.59 → 19.31 ms), so it is GPU-bound. Content is unchanged, but draw
+  batching merges far less (Dugout 326 → 659 batches). The one candidate
+  identified, unverified, is `186234944` (the early-fragment-test opaque
+  pipeline plus a 29.49 MB per-frame reservoir clear); `5eb07a4f3` and
+  `0572bfd5a` are also in range. **Next step: `git bisect` on Dugout TAA** —
+  about 10 steps over 733 commits, one 300-frame run each. Build in a
+  worktree, isolate `BYROREDUX_SETTINGS_PATH`, and compare `wall_ms` /
+  `fence_ms` only (`gpu_main` changed meaning in range). Any later
+  HEAD-vs-record comparison boots with auto-exposure on, which the record did
+  not, so pass `--no-auto-exposure` or state the difference.
+- [ ] **FO4 Dugout Inn TAA regressed ~10% inside `e6282349..4c9a5b36`**
+  (filed 2026-09-09): 10.09 → 11.12 ms at identical fingerprint and entity
+  count, while Cornell and Dugout FSR Quality improved in the same runs.
+  Raw rows are in `docs/audits/BENCH_control_e6282349_vs_4c9a5b36.tsv`, so a
+  bisect needs no new baseline.
+- [ ] **R6a-groundcover-1 — ground cover has never been costed.** The default
+  bench scenes are four interiors plus Cornell, so the ground-cover path never
+  runs. The fix: run `FSR_BENCH_SCENES="gridcross" scripts/fsr-bench-matrix.sh 3 300`
+  once, set `scene_entity_floor` from the observed count, and add `gridcross`
+  to the default set. Until then, accept no ground-cover perf claim in either
+  direction.
+- [ ] **Teardown SIGSEGV** (filed 2026-09-09): all 75 runs of the `4c9a5b36`
+  matrix segfaulted on exit after an "outstanding references" allocator log,
+  against 0 of 30 at `e6282349`. #4187 (`4777908b`) fixed the staging-pool
+  allocator path, and the demo scene now exits cleanly. The 75-run game-cell
+  matrix has not been re-checked for it — check exit status on the next
+  refresh.
+- [ ] **`gpu_main` can read longer than the wall frame** (e.g. 13.27 ms inside
+  an 11.12 ms frame), which makes per-pass attribution and the report's
+  negative "render recovery" cells untrustworthy. #4808 moved the bracket's
+  start to COMPUTE; whether that cures the over-read has not been measured.
+  Wall and fence columns are unaffected.
 
-- [ ] **CI compiles past FSR but remains red on runner prerequisites (updated
-  2026-08-25).** `98eea9b3` fixed the original Vulkan-header blocker by
-  installing `libvulkan-dev`; hosted `cargo check` now succeeds. The run then
-  exposes three independent environmental failures: six UI tests cannot create
-  a headless wgpu adapter, the shader-parity container invokes `python3`
-  without installing it, and the lavapipe/Xvfb run lacks
-  `libxkbcommon-x11.so`. The current ABBA job also fails six binary tests under
-  `BYRO_LOCK_ORDER_CHECK=1` (save reload, bounds, cinematic, two escort, and
-  water-interaction cases), so that leg is a real remaining code/test-order
-  signal rather than a runner prerequisite. Local ordinary full-workspace
-  tests, examples and clippy are green, but hosted CI still lacks a clean
-  all-jobs signal.
+**Decided, do not re-file:** PERF-REGRESSION-6c56e311 (#2161). The ~2.2×
+main-pass cost of glass-transmitting shadows plus the second diffuse GI bounce
+was accepted on 2026-07-27 as a quality decision. Do not re-file it as a
+performance finding. The measured knob table is in
+[`roadmap-history.md` §7](docs/archive/roadmap-history.md#7-known-issues-full-open-and-closed).
 
-- [ ] **FO76 `GeneratedMeshes` carries a 3 056-NIF truncation tail that no gate had ever opened (2026-08-29, surfaced by #3466).** Widening the corpus gates from 34.8% to 100% of FO76's shipped NIFs took the first-ever measurement of `SeventySix - GeneratedMeshes01/02.ba2`: **`02` parses 0.00% clean — all 2 049 of its NIFs truncate** — and `01` is 95.03% (1 007 of 20 245). Every other FO76 archive is 100.00%. All of it is **fully recoverable**, which is precisely why this was invisible: the recoverable-rate assertion is the one that gates, so the pre-#3466 gate stayed green over the 34.8% it could see, and the `unknown_ceiling_fallout_76` baseline reads `unknown_blocks 0` because `SeventySix - Meshes.ba2` genuinely has none. The content is distant-LOD, which points at the same `BSDistantObjectExtraData` dispatch gap as [#3461](https://github.com/matiaszanolli/ByroRedux/issues/3461) — check whether that fix clears this before investigating separately. The gate's floors are set at measured−0.5% so they pin today's state against regression; `GeneratedMeshes02`'s `0.0` floor is honest bookkeeping, not a threshold, and must be raised the moment the tail is fixed or nothing pins the fix. Baselines are deliberately **not** regenerated until #3461 lands, or FO76's 112 716 `NiUnknown` blocks bake into the accepted ceiling.
+### Correctness and content
 
-- [ ] **Fire lighting is now on by default and has never had the visual check that was supposed to gate it (2026-08-18, supersedes the `fire_lights` red-canary entry filed 2026-08-11).** The workspace suite is green again, but not by the remedy the old entry prescribed. `byroredux/src/render/fire_lights.rs` — `derive_fire_light`, `fire_lights_enabled`, the `BYRO_FIRE_LIGHTS` gate and the oversized-reach canary — was **deleted wholesale** in `2325c1de` when combustion moved into the transported field. Surface illumination from fire is now reduced out of that field by [`Volumetrics::append_combustion_surface_lights`](crates/renderer/src/vulkan/volumetrics.rs), called unconditionally from [`draw.rs`](crates/renderer/src/vulkan/context/draw.rs#L1832). It keeps the authored-LIGH suppression rule (derived lights additive only where vanilla placed nothing), so the design is sound — but note what happened procedurally: the old entry's stated blocker was *"flipping a renderer default on one canary needs a visual check, not a green test."* The default got flipped as a side effect of a refactor, the canary that would have flagged the reach was removed in the same commit, and **the visual check still has not happened**. Owed: an A/B on a vanilla torch interior (FNV Prospector, Skyrim BanneredMare) confirming derived reach lands near the ~512-unit vanilla LIGH radius and that fires without a companion LIGH are not now blowing out the room. Until then the green suite is evidence that nothing asserts on this, not evidence that it is right.
+- [ ] **BC2 world-texture mip-chain staging copy overruns by 8 bytes on long
+  streaming runs** (2026-09-18): `vkCmdCopyBufferToImage … exceeds VkBuffer
+  total size`, ~20 times in multi-minute `--bench-hold` sessions and 0 in
+  short ones. Suspected cause: a `dds::mip_size` rounding gap. Needs a
+  targeted repro plus an allocation assert.
+- [ ] **FO76 `GeneratedMeshes` truncation tail** (2026-08-29): `02` is 0.00%
+  clean (all 2 049 NIFs truncate) and `01` 95.03%, all recoverable. The
+  suspected `BSDistantObjectExtraData` dispatch gap (#3461) has since closed;
+  the sweep has not been re-run. When it is, raise the `0.0` floor and
+  regenerate baselines.
+- [ ] **Fire lighting is on by default and never had its visual check.**
+  `2325c1de` replaced `render/fire_lights.rs` (and its reach canary) with
+  `append_combustion_surface_lights` from the transported field, which flipped
+  the default as a side effect. Owed: an A/B on a vanilla torch interior (FNV
+  Prospector, Skyrim BanneredMare). Derived reach should land near the
+  ~512-unit vanilla LIGH radius, and fires without a companion LIGH should not
+  blow out the room.
+- [ ] **CHARAL runtime-dead surface.** The formulas are right: 62 constants
+  were verified with zero mismatch in
+  [`AUDIT_CHARACTER_2026-08-15.md`](docs/audits/AUDIT_CHARACTER_2026-08-15.md).
+  FO3, FNV, Skyrim and FO4 reach actors. Still open:
+  - The Oblivion ruleset is unwired (see Status).
+  - `regen` no-ops until an Oblivion-shaped `PoolRegenConfig` exists.
+  - `affliction_tick_system` is never registered.
+  - FO76's capture is locked with no builder; Starfield waits on pending data.
+- [ ] **MQ101 residue.** The quest plays end-to-end (live-verified
+  2026-09-13), but the race menu auto-accepts because no interactive UI
+  exists. `Fragment_11`'s `AddRaceSpells()` needed a RACE `SPLO` decoder,
+  which `cd4fc019a` (#4415) added; whether that fragment now lowers is
+  unverified.
+- [ ] **FO3/FNV SCPT records are parsed but not executed.** The SCDA
+  interpreter (M47.3) runs Oblivion quest scripts only.
+- [ ] **`NiStencilProperty` is parsed but never applied.** Pipelines are built
+  with `stencil_test_enable(false)` on a stencil-less `D32_SFLOAT` depth
+  format. The fix needs per-material stencil pipeline variants plus a
+  stencil-bearing format, so it waits for a consumer (recorded under #4213).
+- [ ] **One Starfield NIF (`meshes\marker_radius.nif`) asks for a 318 MB
+  single allocation**, above `MAX_SINGLE_ALLOC_BYTES` (256 MB). Raising the
+  cap weakens the defence against hostile `u32` sizes. One file in the
+  corpus.
+- [ ] **Starfield CDB Phase 2** —
+  [#3398](https://github.com/matiaszanolli/ByroRedux/issues/3398). The
+  `.mat` arm of `merge_external_material` is presence-only
+  (`MergeOutcome::PresenceOnly`), so every Starfield surface shades from
+  NIF-derived, keyword-classified PBR values. Phase 2 must feed CDB-authored
+  values through that same boundary, never as a render-time fallback.
 
-- [ ] **CHARAL runtime-dead surface — the gap is wiring, not formulas (found 2026-08-15, Session 67; wiring claims updated 2026-09-23, #4461).** [`AUDIT_CHARACTER_2026-08-15.md`](docs/audits/AUDIT_CHARACTER_2026-08-15.md) verified **62 constants against the capture documents with zero numeric mismatch** in any derived-stat formula — the numbers are right. The original bullet's wiring claims have since narrowed: **FO3, FNV, Skyrim and FO4 all reach an actor now** (FO3's `fallout3_ruleset` shadowing closed by `#2941`'s profile centralization; Skyrim wired by `#3848` after five weeks of false "unwired" doctrine), and `regen` is registered in `boot/schedule/update.rs` (the old `boot.rs`/`main.rs` paths went away under #3170's boot split — #4109 swept the stale references). What remains true and open: Oblivion's ruleset is fully built but deliberately blocked on the pre-AVIF actor-value resolver (`#3768`); `regen` no-ops until an Oblivion-shaped `PoolRegenConfig` is inserted (its accumulator half was armed under `#2950`); `affliction_tick_system` is never registered and has no shipped table; FO76 is the only game whose capture is fully LOCKED with no builder; Starfield is correctly blocked on PENDING data. Tracked as `#2932`–`#2962`; 12 closed at session end.
+### Infrastructure and tooling
 
-- [x] No sky, sun, clouds, or atmosphere — **closed (M33 + M33.1)**. Sky gradient, sun disc with game-time arc, TOD interpolation, 4-layer clouds (DNAM/CNAM/ANAM/BNAM with parallax scroll), fog, weather fade transitions (8 s blend), procedural fallback all working.
-- [x] Bench measured GPU submit time only — **fixed** in `e6e8091`. Wall-clock bench now counts rendered frames; ticks_per_frame confirms ~1 on this compositor. 192.8 FPS / 5.19 ms at Prospector.
-- [x] ~~No skinned mesh rendering — every NPC / creature is stuck in bind pose (M29)~~ — **closed**. Skinning chain verified end-to-end on FNV NiTriShape via 7 integration tests; CPU palette eval ships today, compute path deferred to M29.5. SSE BSTriShape per-vertex skin extraction is gap #638 (separate parser bug, fires only for SSE actors).
-- [x] ~~RT shadows / reflections / GI see bind-pose only on skinned meshes~~ — **closed (M29 Phase 1.5+2)** in `1ae235b`. New `SkinComputePipeline` pre-skins vertices each frame; per-skinned-entity BLAS (keyed on `EntityId`, separate from the per-mesh `blas_entries` table) refits via `VK_BUILD_ACCELERATION_STRUCTURE_MODE_UPDATE_KHR` against the compute output. TLAS build relocated to after the skin chain so RT picks up this-frame's pose with zero lag. Phase 3 (raster reads pre-skinned vertices, dropping inline skinning math from `triangle.vert`) deferred to **M29.3** — gated on M41 NPC rollout proving the compute + BLAS-refit chain stable on visible content.
-- [ ] NPCs + creatures don't spawn as visible entities — **Phase 0–4 of M41.0 shipped Session 24**: kf-era spawn (skeleton + body + head + FGGS+FGGA face morphs) and Skyrim+ pre-baked FaceGen dispatch land, AnimationPlayer attach env-var-gated (#772). Visible-content QA + #772 unblock + #774/#775 (FO3 audit residue) close out M41.0; M41 (NPC behavior beyond spawn) remains open.
-- [x] ~~No world streaming — entire cell re-imported from scratch on every load (M40)~~ — **closed 2026-05-24 via M40 row audit**. `WorldStreamingState` + async cell-pre-parse worker + LRU BLAS eviction + interior↔exterior cell-swap all live; verified by code inspection of [`byroredux/src/streaming.rs`](byroredux/src/streaming.rs), [`byroredux/src/main.rs`](byroredux/src/main.rs), [`byroredux/src/cell_loader/unload.rs`](byroredux/src/cell_loader/unload.rs), and [`crates/renderer/src/vulkan/acceleration/blas_static.rs`](crates/renderer/src/vulkan/acceleration/blas_static.rs). The previous "single-cell-at-a-time" framing on the M40 row was stale wording from before Stage 3b landed.
-- [x] ~~BSA v103 (Oblivion) decompression not working~~ — **stale premise, closed via #699**. v103 archive opens AND extracts cleanly: 147 629 / 147 629 vanilla files across all 17 Oblivion BSAs (2026-04-17 + 2026-04-25 sweeps); `nif_stats` round-trips 8032 NIFs through the v103 path. Oblivion WRLD/CELL/LAND loading and rendering are also live; cross-game exterior readiness is tracked by #2377.
-- [x] Skyrim + FO4 cells not wired through `cell_loader` — **closed M32.5**, both render end-to-end
-- [x] ~~TES-family player rig never grounds at cell-load spawn (RT-1 / #2013)~~ — **fully fixed.** `e2f75456` (2026-07-18) added `PhysicsWorld::cast_capsule_down` (a capsule-shaped ground probe alongside the existing ray-cast — a bare ray can slip past sloped/narrow geometry the KCC's own capsule would still clip) and widened the door-spawn XZ nudge to probe downward for the real local floor before trusting door height; Skyrim SE (`WhiterunDragonsreach`) grounded immediately at frame 0. Oblivion (`ICMarketDistrictTheGildedCarafe`) initially still read `is_grounded == false` post-spawn (inverted resting-contact normal, dot-up ≈ −0.99) despite no longer falling through the floor — tracked as [#2193](https://github.com/matiaszanolli/ByroRedux/issues/2193) (HIGH, filed 2026-07-25 by the Oblivion compat audit). Root-cause hunting through the NiTriStrips de-stripper, the Z-up→Y-up coordinate map, and a unit-system mismatch hypothesis each falsified in turn; the actual fix landed in a different place. **Closed 2026-08-04** (`195fbb28`, "ground interior spawns on walkable surfaces") — character spawn height now includes capsule radius + KCC offset and door probes reject non-walkable wall/frame contacts; live-verified on `ICMarketDistrictTheGildedCarafe` grounded from frame 0 through a 120-frame run.
-
-  **The Skyrim-wide follow-up is fixed (2026-07-30; [#2202](https://github.com/matiaszanolli/ByroRedux/issues/2202), [#2203](https://github.com/matiaszanolli/ByroRedux/issues/2203), [#2204](https://github.com/matiaszanolli/ByroRedux/issues/2204), [#2208](https://github.com/matiaszanolli/ByroRedux/issues/2208)).** `bhkCompressedMeshShape` indices are direct vertex indices; the importer had divided them by three a second time, collapsing most Skyrim floor triangles. The repair also preserves the triangle-list tail after strip runs, safely clamps corrupt strip tables, rejects vertex-only/degenerate authored meshes so the synthesized fallback can run, and converts box half-extents as unsigned axis magnitudes instead of applying the signed position transform. Real-data release controls now ground at frame 0 and remain stable in both `BleakFallsBarrow01` (the #2202 reproducer; floor hit at y=498.0, 2468 fixed colliders) and `WhiterunDragonsreach` (floor hit at y=-373.1, 984 fixed colliders). The Oblivion inverted-normal residue was tracked separately as #2193 and is now **closed** (2026-08-04, `195fbb28`) — live-verified on `ICMarketDistrictTheGildedCarafe` grounded from frame 0 through a 120-frame run, the retest this paragraph was waiting on.
-
-### Open — Tier 3 / 4 gaps
-
-- [ ] **MQ101 ("Unbound") end-to-end playability: verified live via `cargo run --release -- --game skyrim_se --new-game --bench-hold` + `byro-dbg` (2026-09-13).** The quest genuinely runs at runtime, not just in the `mq101_conformance` data-ingress probe: `quest.show`/`scene.show` over a live session showed `MQ101` advancing stages (0→10→12→15) and `MQ101Scene1` playing through its 29 authored phases in real wall-clock time, driven by the existing scene/package/fragment runtime (Sessions 51–62). Two real gaps found by tracing the QUST stage→`Fragment_N` table (`quest.fragments`) against the live run: 1) the execution-block chargen gate (`Game.SetInChargen`/`Game.ShowRaceMenu`/`Game.RequestSave`/`RequestAutoSave`, stages 0/10/65/75/80/255/260/318) declined its fragments wholesale before this session — **fixed here**: new `Effect::SetInChargen`/`ShowRaceMenu`/`RequestSave` primitives lower the exact vanilla shapes (`CinematicPresentationState` tracks the state; `ShowRaceMenu` auto-accepts the player's current appearance since no interactive slider-based race-menu UI exists yet — that UI is its own future milestone, not attempted here); fragment coverage 45.9%→48.4%. `Fragment_11`'s `AddRaceSpells()` call is a `MQ101QuestScript`-authored helper (not a `Game` global) and still declines — it needs a RACE `SPLO` spell-list decoder that does not exist (`crates/plugin/src/esm/records/index.rs` flags this explicitly). 2) **NPC combat/aggression AI system — also fixed here.** `Faction.SetEnemy`/`Actor.StartCombat` (stages 270/272/365, Alduin's dragon attack and the keep-escape fights) had no runtime to lower into: `byroredux/src/combat.rs` was player-initiated melee only (camera-ray hit resolution), with no faction-relation table and no NPC-driven attacker. Added as a deliberately minimal vertical slice, not a full combat-AI redesign: `Effect::SetEnemy`/`StartCombat` (`crates/scripting/src/combat.rs` — `FactionRelations`, tracked but not yet consumed for *ambient* hostility since MQ101's own script always pairs `SetEnemy` with an explicit `StartCombat`; `AiCombatState`, a per-actor "fight this target" marker) plus a new `npc_combat_ai_system` (`byroredux/src/systems/combat_ai.rs`) that chases in a straight line (no NAVM routing, matching `wander.rs`'s own documented v0 scope) and strikes on cooldown once in range — reusing the exact same `HitEvent`→`combat_damage_system` damage/death pipeline the player's own melee already goes through, not a second damage path. Fragment coverage 48.4%→50.0% (`Fragment_112`/`Fragment_113` now fully lower). Not modeled: ranged/magic attacks, faction-wide aggro propagation, or fleeing/alerting on target loss. (Superseded 2026-09-18, M42.10: the chase *does* animate now — the motion-based `npc_walk_animation_system` covers combat chasers too, and their steps run through the same KCC-backed locomotion as the package procedures — but combat still strikes without attack animations.) Net: MQ101's cart-ride/arrival sequence, the execution-block scene, and the dragon-attack/keep-escape combat trigger are now all genuinely playable end-to-end; remaining known gaps are `AddRaceSpells` (needs a RACE `SPLO` spell-list decoder) and a real interactive race-menu UI (still auto-accept).
-
-- [ ] 1 257 FO3 SCPT records parsed; no runtime executes them (M47.0)
-- [x] ~~No audio subsystem of any kind (M44)~~ — **closed 2026-05-06**. `byroredux-audio` crate scaffolded on kira `0.10` (Phase 1), BSA → symphonia decode (Phase 2; `SoundCache` is installed as an engine resource and used by combat one-shots), spatial sub-tracks + per-emitter `SpatialTrackHandle` (Phase 3), `play_oneshot` queue + `FootstepEmitter` + XZ-plane stride `footstep_system` (Phase 3.5), looping ambient via `loop_region` + tweened stop on `AudioEmitter` despawn (Phase 4), streaming music via `StreamingSoundData` + `play_music` / `stop_music` (Phase 5), global reverb send + per-cell `set_reverb_send_db` (Phase 6). Pending: FOOT records → per-material lookup (drops dirt hardcode), REGN `incidental`/`sounds` ambient-loop selection, raycast-occlusion attenuation. (REGN ambient dispatch mechanism — previously listed here as pending — shipped 2026-08-23, `ede48ffb`/`3ef05d1b`: `dispatch_region_ambient_music` in `byroredux/src/asset_provider/audio.rs`; no supported games REGN data currently resolves to a playable SOUN background track pending #3816 MUSC/MUST/MSET/RDMD decode; see M44 row in active milestones.) (Per-cell-load reverb-toggle wiring closed 2026-05-08, #846: `reverb_zone_system` runs in the `Late` parallel batch while `audio_system` is `Late` exclusive; stage membership, not registration order, provides the ordering guarantee (`byroredux/src/boot/schedule/late.rs`).) See M44 row in active milestones.
-- [x] ~~No save/load — playtest iterations require cold cell re-load (M45)~~ — **M45 + M45.1 landed 2026-06-21** (`bd2d0de2` library + `48e18c4f` live load, branches `feat/m45-save-load` / `feat/m45.1-live-load`). `crates/save`: full-snapshot save (validate + atomic-write + ring), `save.info` verify, and live `load <slot>` (reload saved cell + overlay FormId-keyed game-state deltas). Save round-trip + delta-reroute headlessly tested. **Player/camera-pose restore also closed 2026-06-21** (M45.1, same landing) — this row previously said pose restore was an open refinement; that was stale against the M45 row above, which already documents `PlayerPose`/`capture_player_pose`/`apply_player_pose` as shipped and tested. Full cosave/original-engine compatibility remains out of scope per design. See [docs/engine/save-load-roundtrip.md](docs/engine/save-load-roundtrip.md) for the full trace.
-- [ ] `PACK` (AI packages): Sandbox (type 12), Wander (type 5, M42.3), Travel (type 6, M42.4), Follow (type 1, M42.5, 2026-07-16), Escort (type 2, M42.6, 2026-07-16), Guard (type 14, M42.7, 2026-07-16), and Patrol (type 13, M42.8, 2026-07-16, aliases Wander's algorithm) have runtimes now — 10 of ~17 procedures remain parse-only: Find/Eat/Sleep/Accompany/UseItemAt/Ambush/FleeNotCombat/CastMagic/Dialogue/UseWeapon, each blocked on a subsystem (item/furniture-use beyond Sandbox's seat-snap, package-driven combat beyond the script-initiated MQ101 `npc_combat_ai_system`, magic, dialogue) that doesn't exist in the engine yet, not just a missing procedure dispatch. Selection is schedule + priority + CTDA conditions (M42.2, 2026-07-15 — evaluated through the M47.1 evaluator, fail-open on out-of-catalog functions), run at spawn and re-evaluated once per in-game minute by `ambient_ai_package_system` (M42.9 / #2652). Since M42.10 (2026-09-18) the procedures run by default (walk animation included, KCC-backed steps; `BYRO_NO_AI_LOCOMOTION=1` opts out) — the residual gap is the 10 non-locomotion procedures and the fixed-speed movement model, not gating. #446 (parse-level stubs) closed — see M42 row above and [docs/engine/npc-spawn-ai-packages.md](docs/engine/npc-spawn-ai-packages.md) for current detail.
-
-### Open — Risk-reducers (2026-04-22)
-
-- [x] ~~**R1** DrawCommand has ~40 fields + 10 shader-variant payloads — collapse to `material_id` indirection (blocks M38)~~ — **closed 2026-05-01** across 6 phases (`aa48d64`..`22f294a`). `GpuInstance` collapsed 400 → 112 B (72% reduction); per-frame `MaterialBuffer` SSBO with byte-level dedup. M38 unblocked. Two follow-ups: caustic compute set 0 path + `DrawCommand` per-material field cleanup.
-- [ ] **R2** ESM sub-record decoder is ad-hoc across 3 000+-line walkers — typed `read_sub::<T>` API (blocks M24.2)
-- [x] **R3** NIF `NiUnknown` soft-fail masks per-block regressions — **closed**. `nif_stats --tsv` emits per-type `parsed` vs `unknown`; `crates/nif/tests/per_block_baselines.rs` (opt-in) compares against checked-in 7-game baselines and fails on any unknown growth or parsed shrinkage. Oblivion baseline refreshed 2026-04-26 against the audit-flagged truncation drift; `#687`/`#688`/`#697` (all CLOSED) were the underlying parser drift sources — R3 surfaced them, separate fixes resolved them.
-- [x] ~~**R4** SWF/GFx strategic decision~~ — **closed 2026-07-25:** pinned Ruffle VM + Skyrim AVM1 / Fallout 4 AVM2 Scaleform host profiles; bidirectional bridge, Skyrim's 74-method/12-request `GameDelegate` catalog, Fallout 4's 269-method installed-corpus `BGSCodeObj` catalog + injected ABC adapter, BSA/BA2-backed menu/import loading, and installed HUD/Pip-Boy/holotape lifecycle and inventory checks shipped in `byroredux-ui`
-- [ ] **R5** Papyrus full-runtime prototype on one real quest before M47.2 scope commitment
-- [x] **R6** `VulkanContext` scratch buffers have no capacity telemetry — **closed**. `ctx.scratch` console command + `ScratchTelemetry` resource cover all 5 persistent scratches; per-frame refresh via `VulkanContext::fill_scratch_telemetry`. Prospector baseline: 337 KB total, 320 B wasted.
-- [x] **R6a** Prospector re-bench — **closed**. 192.8 FPS / 5.19 ms at `e6e8091`, wall-clock bench.
-- [x] **R6a-stale** Bench-of-record refreshed at `6a6950a` (2026-04-24). Prospector 172.6 FPS / 5.79 ms (was 192.8 / 5.19 — slight regression in compositor-jitter range; fence_ms unchanged at 4.34, GPU still the bottleneck). Skyrim Whiterun 253.3 FPS / 3.95 ms at 1932 entities (was 237 FPS at 1258 entities — entity count up 53% while FPS improved, indicating more REFRs land now without perf cost). FO4 MedTek 92.5 FPS / 10.82 ms (was 90, 7434 entities unchanged).
-- [x] **R6a-stale-7** Bench-of-record refresh — **closed 2026-05-11 at HEAD `220e8e1`** (post M41 Phase 2 close-out). Prospector 133.5 FPS / 7.49 ms @ 2562 entities (was 172.6 / 5.79 @ 1200 entities at `6a6950a` — +114% entities, +29% wall_ms; sub-linear scaling consistent with RT cost amortising across the BLAS hierarchy). Skyrim Whiterun 217.3 FPS / 4.60 ms @ 3209 entities (was 253.3 @ 1932 — +66% entities, -14% FPS, sub-linear). FO4 MedTek 68.5 FPS / 14.61 ms @ 10 809 entities (was 92.5 @ 7434 — +45% entities, -26% FPS). Frame still GPU-bound on Prospector (fence=5.81 ms / 78% wall). Two M41-EQUIP changes drove most of the entity inflation: the Phase 2 scaffold spawning NPC inventory roots (`#896` A.0 → B.2) and the REFR Euler→Y-up composition fix (`Rx · Ry · Rz`, was `Rz · Ry · Rx`) which now lands every REFR through the corrected order. **Session 33 Markarth grid diagnostic stays as a separate snapshot, not a bench-of-record candidate** — it's a new workload class (Tier 8 indirect lighting + 1500+ mesh exterior grid) which the three steady-state interior benches don't measure.
-- [x] **R6a-stale-8** Bench-of-record refresh — **closed 2026-05-16 at HEAD `c8519082`** (191 commits past `220e8e1`). Prospector 108.8 FPS / 9.19 ms @ 2563 entities, fence=7.04 ms / 77% wall (was 133.5 / 7.49 / fence=5.81 — **-18.5% FPS, +1.23 ms fence on effectively flat entity count**, regression diagnosed and fixed in the same session — see R6a-prospector-regress below). Skyrim Whiterun 205.9 FPS / 4.86 ms @ 3210 entities, 1650 draws (was 217.3 / 4.60 @ 3209 / 2052 draws — -5.2% FPS at the buggy state; post-fix back to 218.4 / 4.58, the apparent regression was pipeline-cache warmup noise). FO4 MedTek 66.2 FPS / 15.10 ms @ 10 810 entities, 7363 draws, brd_ms=8.23 (was 68.5 / 14.61 @ 10 809 / 8162 draws — -3.4% FPS at the buggy state; post-fix 67.1 / 14.91 / brd=8.07, **frame still CPU-bound on `build_render_data`** — that one is genuine and persists across the fix, see Tier 11 narrative). 191-commit window dominated by audit-bundle fixes (Renderer-D / NIF-D / tech-debt) but includes real shader work: TAA YCoCg variance gamma 1.25 → 1.5 (#1108), SVGF `frames_since_creation` per-FIF array (#964), SVGF NEAREST sampler binding 1 (#1085), BSGeometry UDEC3 tangents (#1086), WATR reflection_color propagation to shader (#1069), volumetric scattering=0 for interiors (#1084), volumetric froxel clear-to-(0,1) (#1082), gbuffer/caustic `initialize_layouts` (#1100), TLAS `built_primitive_count` (#1083), bloom doc correction (#1081), memory_barrier helper unification (#1061). Bench-of-record now post-fix HEAD; staleness tracker for the next cycle filed as R6a-stale-9 below.
-- [x] **R6a-stale-9** Threshold tripped 2026-05-17 at Session 38 close (HEAD `c265032e`, 34 commits past `1775a7e6` — both threshold limbs exceeded: >30 commits *and* real shader / sync / perf changes landed). Notable post-bench commits since `1775a7e6`: 6 TOP_OF_PIPE → NONE Vulkan-barrier migrations (#1121 / #1122 / `a49eb945`), skin-path scratch cluster reorder + instance-buffer dirty-gate (#1133 / #1134 / `4f55b2f1`), queue MutexGuard held across `vkQueueSubmit` (CONC-D2-NEW-01 / `1608e6a2`), `MAX_BONES_PER_MESH` 128 → 144 to cover FO76 vanilla ceiling (#1135 / `835793c7`), FO4 BGSM/BGEM material-path normalisation drops MedTek `tex.missing` 12 → 6 (`91b03e6b`), `AccelerationManager::destroy` direct skinned-BLAS drain (#1138 / `ec9ef7c1`). FO4 work is mostly MedTek-only, but the queue MutexGuard + scratch cluster + 144-bone alloc and the 6 TOP_OF_PIPE → NONE migrations all hit Prospector's hot path. Re-run deferred to Session 39 ahead of the next workload change (R6a-stale-10 is the next tracker).
-- [x] **R6a-stale-10** Bench-of-record refresh — **closed 2026-05-17 at HEAD `b5726a18`** (post #1115 8-step build_render_data refactor). Triggered by the threshold-exceeded condition at Session 38 close (R6a-stale-9) and by the #1115 hot-path refactor itself (per `feedback_speculative_vulkan_fixes.md` gating rule). Prospector 122.7 FPS / 8.15 ms @ 2563 entities, fence=6.12 ms / 75% wall (vs 124.6 / 8.03 / fence=6.17 at `1775a7e6` — **-1.5% FPS, within noise, frame still GPU-bound on RT cost**). Skyrim Whiterun 211.8 FPS / 4.72 ms @ 3210 entities, 1635 draws (vs 218.4 / 4.58 / 1641 draws — -3.0% FPS, within 5% gate, draws within 6 of baseline). FO4 MedTek 68.5 FPS / 14.60 ms @ 10 810 entities, 7371 draws, brd=6.96 ms (vs 67.1 / 14.91 / 7359 draws / brd=8.07 — **+2.1% FPS, slight improvement**, confirms #1136 FX-mesh spawn-time tagging held its win after the refactor). All three benches within the documented `<5%` gate; #1115 refactor passes bench validation. Whiterun is the closest-to-threshold (-3.0%); future investigation could narrow the variance if the gap grows, but for now within compositor-jitter range.
-- [x] **R6a-stale-11** Bench-of-record refresh — **closed 2026-05-21 at HEAD `d0b52bd5`** (60 commits past `b5726a18`, post #1194 GPU timer follow-up fix). Triggered by the threshold-exceeded condition at Session 40 close (57 commits + M29.5/6 + spawn-site plumbing + reset_fences reorder + shader-include flag routing). **Refresh surfaced two issues**: (a) the original #1194 implementation hung Whiterun on frame 2 because `get_query_pool_results` with `WAIT` flag blocks indefinitely on unwritten TIMESTAMP queries (Prospector worked because all three brackets fired every frame; Whiterun's BannerredMare cell has six named NPCs that all land in first-sight on frame 1 with no refit, so the BLAS_REFIT bracket never wrote that frame, hanging frame 2's read) — fix at `d0b52bd5` switches to per-bracket reads gated on the matching active_bits bit. (b) The prior Skyrim repro command listed only `Textures0/1/2.bsa` but SE ships through Textures8 — the visual A/B showed magenta-checker on furniture / rugs that the headless bench summary couldn't catch. **Post-fix numbers**: Prospector 120.7 FPS / 8.28 ms / fence=6.37 (-1.6% vs 122.7 / 8.15 / 6.12 baseline, within 5% gate); Skyrim Whiterun 211.0 FPS / 4.74 ms / fence=2.12 / 1648 draws (-0.4% vs 211.8 baseline, within noise); FO4 MedTek 67.9 FPS / 14.72 ms / brd=7.10 / 7364 draws (-0.9% FPS / +0.14 ms brd vs 68.5 / 14.60 / brd=6.96 baseline, frame still CPU-bound on `build_render_data` per Tier 11 narrative). The ~+0.25 ms Prospector fence cost is the per-frame TIMESTAMP-query overhead introduced by #1194's instrumentation — acceptable price for the measurement infrastructure unblocking #1195/#1196/#1197. **First confirmed GPU-pass numbers**: Prospector skin_dispatch=0.029 ms / blas_refit=0.675 ms / taa=0.053 ms; Whiterun blas_refit=0.000 (NPCs in first-sight, no refit pose) / taa=0.053; MedTek same (FO4 humanoid skeleton.nif still unresolved). The 0.7 ms blas_refit cost on Prospector is the measurable baseline for #1196 PERF-DIM7-02 conditional-refit work.
-- [x] **R6a-stale-12** Bench-of-record refresh — **closed 2026-05-24 at HEAD `a9bbe8d1`** (113 commits past `d0b52bd5`). Triggered by the threshold-exceeded condition at Session 41 close + the #1195/#1196/#1197 skin-chain dirty-gate work shipping this session. **Headline: all three benches far exceed the 5% gate in the WIN direction — biggest perf bump in months.** Prospector **161.4 FPS / 6.19 ms / fence=2.62** @ 2564 entities / 812 draws (was 120.7 / 8.28 / fence=6.37 — **+33.7% FPS / −25.2% wall_ms / −58.9% fence_ms**). Skyrim Whiterun **287.8 FPS / 3.47 ms / fence=0.71** @ 3211 entities / 1593 draws (was 211.0 / 4.74 / fence=2.12 — **+36.4% FPS / −26.8% wall_ms / −66.5% fence_ms**). FO4 MedTek **102.1 FPS / 9.79 ms / brd=7.81 / fence=0.44** @ 10 913 entities / 7363 draws (was 67.9 / 14.72 / brd=7.10 — **+50.4% FPS / −33.5% wall_ms**, +0.71 ms brd overhead overwhelmed by GPU win). **Per-pass GPU timer confirms the headline cause**: Prospector skin_dispatch 0.029 → **0.000** ms and blas_refit 0.675 → **0.001** ms (NPCs idle this frame; the #1195+#1196 paired bone-pose dirty gate skips both); TAA holds at 0.050 ms (within noise). Whiterun and MedTek skin numbers stay at 0.000 (NPCs first-sight or unresolved skeleton respectively) but still benefit massively from #1259 blend-pipeline pre-pop fast path + #1260 off-frustum flag-assembly skip on the rasterization side. Other contributing landings since `d0b52bd5`: M27 declared-access scheduler re-stage, #1147 PBR/SSS/model-space-normals gating, #1160 DST-side BOTTOM_OF_PIPE → NONE migration, #1159 SVGF nearest-tap bit-31 mask, #1198 MAX_PENDING_BIND_INVERSE_UPLOADS_PER_FRAME 16 → 227, #890 greyscale-to-palette LUT consumer, today's `8b5d77c1` sun-sprite mip 0 force. **Bench-of-record advances to `a9bbe8d1`** — Prospector 161.4 FPS becomes the new R6a baseline.
-- [x] **R6a-stale-13** Bench-of-record refresh — **closed 2026-05-28 at HEAD `4e2ebe8c`** (125 commits past `a9bbe8d1`). Numbers + repro in the Bench-of-record section above. **The Session-42-close prediction was half-right and undershot.** Whiterun held *and improved* (287.8 → **329.8 FPS, +14.6%** at flat 3211 entities — the steady-state hot path did not regress). But the #1294 collider-gate prediction ("may shift MedTek slightly") badly understated the effect and missed FNV entirely: **both FNV Prospector and FO4 MedTek grew their entity counts ~40%** (Prospector 2564 → **3507, +37%**; MedTek 10 913 → **15546, +42%**) because FNV/FO4 architecture lacks authored `bhk` collision and now spawns more synthesized static-trimesh colliders (each adding RT BLAS). Prospector FPS fell 161.4 → **71.4 (−56%)** with `fence` 2.62 → **11.65 ms** (super-linear — the synthesized-collider BLAS dominates RT cost on this glass-heavy cell); MedTek fell 102.1 → **90.7 (−11%)** but its `brd_ms` *improved* 7.81 → **2.63** (CPU win held; GPU now pays for the bigger scene). Skyrim, with real `bhk` collision, neither grew nor regressed — the control. **Method gotcha caught: bare `--bsa` names resolve against CWD, not the `--esm` dir — benches must run from each game's `Data/` directory or the scene loads near-empty (Prospector 36 ent / 3 meshes / spurious 1792 FPS). Repro table + CWD note updated.** Bench-of-record advances to `4e2ebe8c`.
-- [x] **R6a-stale-13-collider-cost** (follow-up filed by the refresh above): **Closed 2026-06-03.** Root cause confirmed: synthesized static-trimesh colliders (from the F3 fallback gate, commit `15016ee0` / #1294) received `MeshHandle` unconditionally, flowing through `collect_static_mesh_draws` with `in_tlas=true` by default. Each synthesized collider entity added a full RT BLAS entry — invisible physics proxies paying the same RT cost as visible geometry. Fix: added `IsCollisionOnly` marker component to `byroredux/src/components.rs`; tagged in `cell_loader/spawn.rs` after `synthesize_static_trimesh`; `static_meshes.rs` forces `in_tlas = false` for tagged entities (matches the existing `IsLodTerrain` exclusion pattern). Entity count on FNV/FO4 cells is unchanged — synthesized colliders still spawn for physics — but they no longer enter the BLAS, eliminating the super-linear `fence_ms` growth. Bench re-run required to confirm FPS recovery (see R6a-stale-14).
-- [x] **R6a-stale-14** (filed 2026-06-01): **Closed 2026-06-03 at HEAD `1c26bc25`.** Three-scene bench run (300 frames each, from each game's `Data/` dir). Results: Prospector 76.2 FPS / fence=11.12 ms / 3516 ent (+6.7% FPS, fence −4.6% vs R6a-stale-13); Whiterun 362.8 FPS / fence=0.98 ms (+10.0% FPS, steady-state hot path confirms no regression); MedTek 65.2 FPS / fence=9.03 ms / 21414 ent (FPS −28%, entity +38%, draw +75% — all from M49 CSG precombined geometry landed Session 45, not a regression). `IsCollisionOnly` fix confirmed to reduce TLAS instances on FNV cells; full recovery of Prospector fence to pre-collider 2.62 ms pending further investigation (entity count unchanged, BLAS still built per mesh-handle). Open follow-up: see new R6a-stale-14-collider-partial below.
-- [x] **R6a-stale-14-collider-partial** (filed 2026-06-03): **Closed** (this session). Root cause analysis: the bhk-authored collision path already creates **separate, `MeshHandle`-free ghost entities** (lines 479-487 of `cell_loader/spawn.rs`), so bhk colliders never enter BLAS/TLAS. The synthesized trimesh path (F3 fallback — FO4/Starfield architecture) incorrectly piggybacked `CollisionShape + RigidBodyData + IsCollisionOnly` onto the render entity instead of following the bhk pattern. This gave those entities a BLAS entry and then excluded them from TLAS — wasting GPU memory on unused BLAS builds while also removing visible architecture from RT shadows/GI. Fix: synthesize path now spawns the same ghost-entity shape as the bhk path (`world.spawn()` → `Transform + GlobalTransform + CollisionShape + RigidBodyData`, no `MeshHandle`). Render entity is untouched — enters BLAS+TLAS normally. `entities` command extended with `physics-only (no MeshHandle)` count and `IsCollisionOnly (expect 0)` count so the next bench run can confirm. **R6a-stale-15 required** to measure the fence recovery and verify `IsCollisionOnly=0` in Prospector/MedTek. Note: the 2564→3516 entity count growth origin (the larger gap vs. the pre-collider baseline) remains unconfirmed — strong candidate is M41 Phase 2 NPC mesh additions (hair, eyebrow, eye meshes per actor: `740036f7`, `323e3a9c`, committed just after the 2564-entity baseline `a9bbe8d1`). That growth is legitimate scene content; the synthesized-collider BLAS waste is now resolved.
-- [x] **R6a-stale-15** (filed 2026-06-03): **Closed 2026-07-18 at HEAD `8a668eff`** (#2084). Fresh 300-frame × 3-run bench across all three scenes — see the Bench-of-record table above for full numbers/interpretation. (a) Fence recovery confirmed: Prospector fence 11.12→5.06 ms (−54.5%), FPS 76.2→145.1 (+90.4%); MedTek fence 9.03→7.08 ms (−21.6%), FPS 65.2→74.4 (+14.1%) despite entity count growing 47% (ghost-entity, non-draw). Residual gap to the pre-collider Prospector target (161.4 FPS / 2.62 ms) narrowed from ~4× to ~2× fence, not yet closed. (b) `IsCollisionOnly=0` live verification via `entities` command **not re-checked this pass** — #2084's ask was the bench refresh + doc sync, not a fresh correctness sweep of the #1531/#1726 fix; still believed correct (untouched since closing R6a-stale-14-collider-partial) but worth a `byro-dbg entities` spot-check next time either scene is loaded interactively. Whiterun (control) showed an unexplained mild regression (362.8→335.0 FPS) at flat entity count, attributed to shared-desktop GPU contention during this run rather than a code regression — flagged for a re-check on an idle machine, not a new tracked issue.
-- [x] **R6a-stale-16** — **CLOSED 2026-07-24** by the FSR phase-7 bench matrix at HEAD `e153b50c` (see the refresh table above). The re-run did what a stale-bench tracker exists to do: it surfaced **PERF-REGRESSION-6c56e311**, a ~2.2× frame-time regression that had been live and unmeasured since 2026-07-19. Original entry follows. Threshold tripped 2026-07-20 at Session 58 close (HEAD `86035f51`, 38 commits past `8a668eff` — both threshold limbs exceeded: >30 commits *and* real shader/hot-path changes landed). Notable post-bench commits since `8a668eff`: `Vertex` struct color `vec3`→`vec4` layout change (26 floats / 104 B, `cd2b5fe4`) plus the matching `skin_vertices.comp` / `triangle.vert`/`.frag` updates, ReSTIR `Reservoir` repack + TAA surface-validated history (octahedral normals, bounded accumulation, `e5d02f83`), glass alpha-blending + `GLASS_RAY_BUDGET` increase (`a09d2b76`), volumetric in-scattering + water RT precision pass (`6c56e311`), decal `IsDecalMesh` alpha blending (`388b9969`). All three benches (Prospector/Whiterun/MedTek) touch the fragment shader and/or vertex layout this cycle. Re-run deferred — next tracker. **Update (2026-07-23, Session 60 close):** now 74 commits past `8a668eff`. Session 60 added the FSR SDK/extent/temporal-contract plumbing, an output-resolution presentation pass, and a directional-light/shadow-contract refactor (`8961fbdd`) that touches the exterior direct-light path. FSR itself is off by default, but the shadow-contract change warrants the re-run being done before the next perf-sensitive decision.
-- [x] **R6a-stale-17** — **CLOSED 2026-07-26 at HEAD `3a02b02d`**, same day it was filed. Full 75-run matrix + a same-machine control rebuild of `e153b50c`; numbers and interpretation in the Bench-of-record section above. **Outcome: HEAD is flat** — the 28 intervening commits are within ±4.4% on every scene/config pair, most within ±1.5%. The refresh's value was entirely in what the control ruled out: the raw HEAD numbers looked like a broad regression (Cornell −10.9%, Prospector −4.7%, Prospector Quality −8.0%) *and* one implausible win (MedTek TAA +52%), and neither was code. Rebuilding `e153b50c` and benching it under the same load reproduced the same shortfalls (Cornell −11.9%, Prospector −5.8% against the phase-7 figures at the phase-7 commit), pinning them on this desktop's 3–43% background GPU load; and it re-measured MedTek TAA at 22.3 FPS against the 15.2 the phase-7 table published, so the "+52% win" was a bad recorded baseline rather than an improvement. Original entry follows. Filed at 28 commits — *under* the 30-commit limb, but the change-content limb was met: particle indirect grouping restored (#2165), skinned-vertex output narrowed 104 B → 12 B per vertex (#2170), per-frame scratch amortised (#2172/#2174), and the `camera_cut` false-positive fix (#2159). **The stated expectation that #2159 would raise the FSR column did not hold** (+0.7% Prospector Quality, −0.6% Cornell) — see the prediction note in the bench section; a `--bench-camera` motion path, not a static bench, is what would measure that fix.
-- [x] **R6a-stale-18** — **CLOSED 2026-08-04 at HEAD `28155b79`** (filed 2026-08-01 at Session 62 close, HEAD `7e068c7d`, 59 commits past the `3a02b02d` record — over the 30-commit gate). Session 62 landed a large renderer feature push touching the fragment shader's fog/lighting paths directly: procedural volumetric fog with temporal reprojection (`5d362541`), clustered local fog volumes composited into the same froxel grid (`733dff8f`), a fog-chromaticity extension to the bounded path-traced GI ray (`f8efde63`), POM (`9ade7506`), structural light-visibility/shadow-mask flags (`0888c5f9`/`28c43975`/`3b922734`), material texture handling + cubemap support (`80682517`/`bca0f127`), water reflection ray fixes (`ae3fa9c7`/`5d8bb982`), and a new fire-refraction material kind (`24e5cb6a`). This tracker's own prediction held: the refresh caught exactly the failure mode PERF-REGRESSION-6c56e311 demonstrated — a real cost hiding until measured. Full 75-run matrix + a same-machine control rebuild of `3a02b02d`; numbers and interpretation in the Bench-of-record section above. **Outcome: two real regressions, one large unexplained win, one confound.** MedTek and Dugout (both FO4, flat entity count) are genuinely ~33-34% slower; Prospector (FNV, flat entity count) is genuinely ~2x faster; Whiterun's apparent −33% is confounded by its entity count growing +51% since the last refresh, for reasons not yet understood. None of this was attributable to machine noise — the control run reproduced the `3a02b02d` record closely. **Filed as `#2367`** for bisection; not root-caused in this refresh.
-- [x] **R6a-stale-19 — RESOLVED 2026-08-14** (#2835): re-run at HEAD `34074b93`, 75 runs, zero failures, archived at `docs/audits/BENCH_stepped-camera_34074b93.tsv`. Clearing it required fixing the harness first: `fsr_bench_report.py` crashed on its own committed archives, and `BenchCameraPath::Orbit` derived its radius from the camera's distance to the **world origin**, so Prospector and Dugout had been benchmarking an empty view (`gpu_main_render` 0.010 / 0.048 ms against 1214 / 1805 draws). Original entry retained below for the deferral history. (filed 2026-08-07 at Session 63 close, HEAD `03be068d`, 37 commits past the `28155b79` record — over the 30-commit gate). **Not re-run at Session 63 close.** Session 63's post-refresh commits were a renderer audit-doc/tech-debt tail, exterior-streaming resumability work, save/load registry registrations, a new `crates/mod-runtime` feature, and (the bulk of the tail) NIF-parser/NIFAL dedup + doc fixes — none touched a fragment-shader, GBuffer, TLAS/BLAS, or per-frame draw-recording path, so deferral was judged low-risk. **Updated 2026-08-09 at Session 64 close (folding the two sessions' ranges per this entry's own instruction, HEAD `2e5912f5`, 79 commits past `28155b79`).** Session 64's judgment does NOT carry the same low-risk read: it landed a 13-dimension audit bug-bash that directly touched renderer hot paths — fragment/compute shader edits (`triangle.frag`, `composite.frag`, `water.frag`, `caustic_splat.comp`, `skin_vertices.comp`, `volumetrics_inject.comp`), BLAS/TLAS acceleration-structure code (`blas_skinned.rs`, `blas_static.rs`, `predicates.rs`, `tlas.rs`), and the per-frame draw-recording path itself (`draw.rs`, `geometry_pass.rs`, `post_passes.rs`, `skinned_blas_refit.rs`). Still not re-run this close (a 75-run matrix wasn't in scope for a documentation ritual), but the deferral is now flagged **higher-urgency** — re-run at the very next opportunity, renderer-touching or not, rather than folding a third session's range into this same tracker. **Updated 2026-08-11 at Session 65 close (third fold, HEAD `65217327`, 116 commits past `28155b79`).** The "don't fold a third session" instruction above was not honoured, and the read is worse again: Session 65 changed the shading math itself — Fresnel unified on a self-contained Schlick helper across the main and shadow-transport paths (`54af3703`, `f1fa9c38`), the unshadowed punctual ambient fill removed (`11a3cafe`), caustic accumulation widened to RGB in a three-layer array (`610cb170`), an adaptive ray budget split out (`5798e467`), and volumetric emission added (`edbed7a3`). Every FPS/ms figure in this document now predates five separate hot-path changes. **Treat the bench-of-record as unreliable rather than merely stale: no new perf claim should be published until `scripts/fsr-bench-matrix.sh 3 300` is re-run.** Session 65 did land the tooling to do it honestly — `scripts/rt-decomposition-matrix.sh`, `scripts/bench-variability-envelope.sh` and `scripts/check-bench-determinism.sh` establish the noise floor and per-ray-query-feature decomposition, so the re-run can attribute deltas instead of guessing. **Updated 2026-08-13 at Session 66 close (fourth fold, HEAD `53a398f1`, 186 commits past `28155b79`).** The re-run did not happen again. Session 66 was a bug-bash rather than a feature push, but it still edited shading code — `triangle.frag`, `cluster_cull.comp` (near-plane precision), `volumetrics_inject.comp`, `pbr.glsl`, plus the glass mesh-ID write mask and the ReSTIR shadow-term fade — so the verdict does not soften. The tooling to do the re-run honestly has now been sitting unused for two sessions; the blocker is scheduling a 75-run matrix, not capability.
-- [x] **RESOLVED 2026-08-29 — the close-time citation audit's 38% false-positive rate ([#3538](https://github.com/matiaszanolli/ByroRedux/issues/3538), filed 2026-08-28 at Session 75 close).** The filing correctly narrowed it to "the `--window` loop, not the matcher". The mechanism is the pipe between them: `commit_cites_issue` ends in `rg --quiet`, which exits on its first match, so the `printf` still feeding that pipe takes SIGPIPE and dies 141 — and `set -o pipefail` promotes that to the pipeline's status, i.e. "no citation". The failure is size-dependent (a body under the 64 KiB pipe buffer completes before `rg` exits), which is exactly why the two-line self-test fixtures never reached it, and why the false positives cluster on issues whose citation appears early in a newest-first log. Both call sites now feed the matcher with a here-string, which stages through a temp file and has no writer to signal; the self-test gained a case with the citation first in a 200 KB body, verified failing against the old `printf | ...` shape. Validated against the filing's own hand-derived number: it computed 100 genuine for `4d3f9761..HEAD`, and the fixed tool reports 101 over that window now that the head has moved 34 commits. The "32% uncited" figure quoted in #3218's commit message came from the broken path and overstates the gap; the genuine figure for the Session 75→76 window is **32 of 127**.
-- [x] **R6a-stale-20 — CLOSED 2026-09-03 at HEAD `2da754e7`.** The official 75-run stepped-camera matrix completed with zero rejected runs and is archived at `docs/audits/BENCH_stepped-camera_2da754e7.tsv`. Two earlier attempts did their job by failing the state-hash gate: focus-stealing benchmark windows accepted incidental gameplay input and activated doors into exterior streaming. `2da754e7` quarantines keyboard/mouse input for finite named benchmarks, then releases it after the summary for `--bench-hold`. Original filed/folded history follows. **Filed 2026-08-17 at Session 68 close (HEAD `23068af0`, 49 commits past the `34074b93` record, over the 30-commit gate).** The bench-of-record cleared R6a-stale-19 only three days ago and is already out of gate, and Session 68 did touch hot paths: ray-origin reconstruction moved to camera-relative stepping before rebuilding the absolute origin (`e6d96c4f`, the fix for the 256-ULP jump at one million units), `GpuCamera` grew 336 → 352 B so all six `CameraUBO` re-declarers recompiled (`8e7582ed`), ReSTIR-DI temporal reuse gained a depth check (`3d3e3a7b`), the volumetric inject/integrate shaders gained three fog profiles and depth-aware bilateral reconstruction on a retuned froxel grid (`5be840d2`, `0ff7b537`), texture upload/draw batching changed (`687e0a67`), and the workspace's hot collections swapped to `FxHashMap`/`FxHashSet` (`5d47f073`). That last one is the reason this should not be folded into a later tracker the way stale-19 was folded four times: a hasher swap moves CPU-side frame cost broadly and quietly, and nothing in this session measured it. **Do not publish a new FPS/ms claim before `scripts/fsr-bench-matrix.sh 3 300` is re-run.** The decomposition/noise-floor tooling from Session 65 (`scripts/rt-decomposition-matrix.sh`, `scripts/bench-variability-envelope.sh`, `scripts/check-bench-determinism.sh`) plus this session's `scripts/rt-lod-sweep.sh` are all available to attribute the deltas rather than guess at them; the blocker remains scheduling a 75-run matrix, not capability. **Updated 2026-08-18 at Session 69 close (HEAD `348f4cd0`, 84 commits past `34074b93` — nearly triple the gate).** This is the entry's first fold, and it is the worst single-session case the tracker has recorded: Session 69 rewrote `volumetrics_inject.comp` from 1009 to 2625 lines (SPIR-V 64 776 → 156 004 B, **2.4×**) building the transported combustion solver, added a second unconditional per-frame consumer of the volumetrics pass (`append_combustion_surface_lights`, called from `draw.rs` with no gate), and grew `GpuFogVolume` handling and two RGBA16F transport histories plus an R32F provenance sidecar. Unlike the shader edits that drove stale-19's four folds, this is not a tweak to an existing pass — it is a substantially larger pass, running every frame, whose cost has never been measured. **Do not publish a new FPS/ms claim, and do not accept a fog/volumetrics perf intuition, before `scripts/fsr-bench-matrix.sh 3 300` is re-run.** The `gpu_volumetrics` GPU-timer bracket already exists and read 0.25 ms pre-solver — that single number is the cheapest possible first measurement and does not require the full 75-run matrix. **Updated 2026-08-19 (doc-drift verification pass, #3063; HEAD `150ee25a`, 176 commits past `34074b93` — nearly 6× the 30-commit gate, and 92 more commits past this tracker's own 2026-08-18 fold).** The re-run still has not happened, and the 92-commit tail since `348f4cd0` again touched the render hot path: a temporal/GPU-resource-contract hardening pass across `taa.comp`, `svgf_temporal.comp`, `svgf_atrous.comp`, `acceleration/{mod,predicates}.rs`, `device.rs` and `scene_buffer/ray_budget.rs` (`506fcfe4`), a water/glass caustic-contract fix touching `caustic_splat.comp`, `water.frag`, `caustic.rs`, `water.rs` and `draw.rs` itself (`1dc4f6e6`), a local-fog-cluster change to `volumetrics_inject.comp` and `vulkan/volumetrics.rs` (`bfe588d9`), and a terrain/water tangent-orientation fix to `vertex.rs` (`c8268031`). **Harness confirmed byte-stable**: neither `scripts/fsr-bench-matrix.sh` nor `scripts/fsr_bench_report.py` has a single commit against it since `34074b93`, so the eventual re-run is still a valid apples-to-apples comparison — the blocker remains scheduling the 75-run matrix, not capability or harness drift. #3005/#3006 (the draw-batch-merge and entity-growth regressions this sweep measured) are unaffected by this fold: both were measured against the separate `/audit-runtime` `.claude/audit-baselines/runtime/*.tsv` telemetry baselines, not the FSR bench-of-record matrix, so they need no re-evaluation here — though a future `fsr-bench-matrix.sh` re-run should still confirm neither moved the topline FPS/ms numbers. **Updated 2026-08-20 at session close (HEAD `1a428278`, 369 commits past `34074b93` — over 12× the 30-commit gate, 193 more commits past this tracker's own 2026-08-19 fold).** The re-run still has not happened. This is the largest single fold yet by commit count, dominated by a sustained rewrite of the water fragment/vertex shading path across nearly every per-game water variant: the vertex water ABI itself changed (`c4b675d4`), third-material-layer velocity/normal blending was added (`ae5f2a05`, `bb5c6bf6`), authored underwater response shading landed (`ace219fb`), degenerate mesh tangent/foam-flow frames were stabilized (`9974ccee`, `73486134`), and the tail HEAD itself adds depth-dependent alpha controls (`1a428278`) — 43 shader/hot-path file touches in this window alone (`crates/renderer/shaders/*`, `crates/renderer/src/vulkan/*.rs`), the large majority in `water.frag`/`water.vert`/`vulkan/water.rs`/`vulkan/caustic.rs`. Three CPU-only exterior-streaming changes also landed in this window (`235c787c`, `2a84ab97`, `78f190a3` — LOD-ring/VWD/precombine ownership audits) but touch no shader or per-frame draw-recording path and do not affect this tracker's verdict. **Harness still confirmed byte-stable**: no commit against `scripts/fsr-bench-matrix.sh` or `scripts/fsr_bench_report.py` since `34074b93`, so the eventual re-run remains a valid apples-to-apples comparison. Do not publish a new FPS/ms claim before the 75-run matrix is re-run; the blocker remains scheduling, not capability or harness drift. **Updated 2026-08-23 at Session 71 close (HEAD `bfdc3d3f`, 466 commits past `34074b93` — over 15× the 30-commit gate, 97 more commits past this tracker's own 2026-08-20 fold).** The re-run still has not happened, and this fold introduces a new dimension to the blocker: **this environment has no GPU device**, so even a decision to re-run right now could not be executed from here — the blocker is capability as well as scheduling for the first time this tracker has recorded. The session touched 66 shader/hot-path files (`crates/renderer/shaders/*`, `crates/renderer/src/vulkan/*.rs`, 9357 insertions), dominated by the WATAL convergence pass (water-material translation unification `fa515b9c`, buoyancy/ripple/caustic-history fixes, growable water params as an SSBO `c329a91c`) and the #3231 GPU morph-target pipeline (`GpuInstance` 128→160 B `5f4dea46`, the `skin_vertices.comp` blend dispatch `eac9b0e0`, the real per-entity `MorphSlot` GPU resource wired end-to-end `d0322785`) plus #2221's animated-sink draw-path wiring (`GpuMaterial` 348→364 B, `7fbc5baf`). Every one of those is exactly the class of change this tracker exists to catch — new per-frame GPU work with no measured cost. **Harness still confirmed byte-stable**: no commit against `scripts/fsr-bench-matrix.sh` or `scripts/fsr_bench_report.py` since `34074b93`. Do not publish a new FPS/ms claim, and do not accept a morph-target or water perf intuition, before the 75-run matrix is re-run on a machine with a GPU. **Updated 2026-08-25 at Session 73 close (HEAD `cdd9aa41`, 510 commits past `34074b93` — 17× the 30-commit gate, 44 more commits past this tracker's own 2026-08-23 fold; note the intervening Session 72 close, 36 of those 44 commits, did not fold this tracker despite its own fragment-shader-adjacent fixes — NIF light direction, morph index alignment, BGSM specular role correction — treat that gap as tracked here, not as evidence the bench survived it unmeasured-but-safe).** The re-run still has not happened. Session 73 (the remaining 6 commits) grew `triangle.frag`'s per-pixel lighting response directly: BGEM v21+ glass optics (Fresnel color, refraction/blur scale, dirt-overlay sampling) and a full soft/rim/back Bethesda lighting term (`lighting.glsl`, `pbr.glsl`) both landed in the main fragment shader's hot path, `GpuMaterial` grew 364→432 B (92 hashed fields, up from 83), and `bindings.glsl`/`shader_constants.glsl` grew with it — every one of these is per-pixel, per-material cost with no measurement. **Harness still confirmed byte-stable.** Do not publish a new FPS/ms claim before the 75-run matrix is re-run on a machine with a GPU. **Updated 2026-08-26 at session close (HEAD `2bcaf1cc`, 557 commits past `34074b93` — over 18× the 30-commit gate, 47 more commits past this tracker's own 2026-08-25 fold).** The re-run still has not happened. Unlike the last several folds, this window is mostly quiet on the hot path: no `crates/renderer/shaders/*` file changed at all. The one real addition is `GpuBuffer::create_empty_device_local_buffer` (`crates/renderer/src/vulkan/buffer.rs`, #3298 — makes the global geometry SSBO rebuild resumable across frames instead of one atomic upload); it touches a buffer-management helper, not a per-frame draw or shader-binding path, so it's noted rather than treated as a new measured-cost source. The remainder of the window (a 27-issue doc-rot batch plus ~19 prior audit-bundle fixes: scheduler access declarations, physics lock-order guards, stale-comment repairs) touched no shader, GBuffer, TLAS/BLAS, or per-frame draw-recording code. **Harness still confirmed byte-stable**: no commit against `scripts/fsr-bench-matrix.sh` or `scripts/fsr_bench_report.py` since `34074b93`. Do not publish a new FPS/ms claim before the 75-run matrix is re-run on a machine with a GPU. **Updated 2026-08-28 at Session 75 close (HEAD `d5a8c36c`, 626 commits past `34074b93` — nearly 21× the 30-commit gate, 69 more commits past this tracker's own 2026-08-26 fold).** The re-run still has not happened, and this fold reverses the previous one's verdict: where the 08-26 window changed no shader at all, this one touched 32 files under `crates/renderer/shaders/` and `crates/renderer/src/vulkan/` — `triangle.frag`, `triangle.vert`, `include/lighting.glsl`, `include/bindings.glsl`, `cluster_cull.comp` and `caustic_splat.comp` among them — and `GpuCamera` grew 352 → 368 B under #3323 (live exterior sky through interior window portals), forcing every `CameraUBO` re-declarer to recompile. The single most measurable addition is **#3458**: the NIFAL soft-lighting fix now binds a real slot-2 lighting mask on the Skyrim tint family, so 4 054 vanilla material instances — every FaceGen head and every skin-tinted body — take a **new per-fragment texture sample** where they previously short-circuited on the shader's `vec3(1.0)` default. That is precisely the class this tracker exists to catch: new per-pixel work, on the most common surface in the game, with no measurement. Two shader edits in the same window are explicitly *not* cost sources and should not be conflated with it — #3459 (glass pivots routed through `shader_constants.glsl` macros) and #3453 (a comment block moved) both recompile `triangle.frag.spv` **byte-identical** to the prior artifact, which is how they were verified. **Harness still confirmed byte-stable**: no commit against `scripts/fsr-bench-matrix.sh` or `scripts/fsr_bench_report.py` since `34074b93`. Do not publish a new FPS/ms claim, and do not accept a soft-lighting or FaceGen perf intuition, before the 75-run matrix is re-run on a machine with a GPU. **Updated 2026-09-01 at Session 77 close (HEAD `f9dd52b4`, 914 commits past `34074b93` — over 30× the 30-commit gate, 288 more commits past this tracker's own 2026-08-28 fold; note Session 76 close (`81a74add`) did not fold this tracker despite touching `skin_compute.rs`/`upscaling.rs` in its own range — treat that gap as tracked here, per the same convention as the Session 72 gap above).** The re-run still has not happened, and this environment still has no GPU device, so the blocker remains both scheduling and capability. Unlike several of the larger folds above, this 288-commit window is **correctness-fix-dominated on the hot path, not feature-adding**: #3469 (Session 76) removes a per-draw `vkGetBufferDeviceAddress` driver call from the skinned-instance loop by caching the address at slot creation — a CPU-side win, not a new cost; #2830 (Session 76) changes an over-limit FSR render-extent from clamped to rejected, no per-frame cost change; #3530 (this session) masks a channel-selector bit out of `parallaxMapIndex` before both the "is POM active" test and the bindless texture index in `triangle.frag` and `ray_hit.glsl` — same sample count, corrected indexing; #3575 (this session) fixes the point/spot light-disk radius to read the CPU's canonical `params.y` instead of re-deriving from the 2×-inflated cull radius — same ray count, corrected radius. **One exception with a real (small) new per-pixel cost**: #3574 adds a subsurface-scattering gate term (`sssGate`, one `max`/`mul` and a translucency-flag branch) to `triangle.frag`'s per-light loop so `MAT_FLAG_TRANSLUCENCY` materials with no SOFT/BACK_LIGHTING sibling flag stop early-outing to zero contribution — correct behavior, previously-dead code path now live, but unmeasured. **Harness byte-stability: NOT confirmed — this paragraph asserted it and was wrong (corrected 2026-09-08, #4024).** Three commits had already landed against the harness pair by the time this fold was written: `ff177576` (2026-08-28, `fsr-bench-matrix.sh` +94/−2 — the #3347 bench sanity gates), `0e91fc5e` (2026-08-28, **both files** +130/−13 — adds the `gpu_inactive` TSV column and changes `fsr_bench_report.py`'s `render_sum` so brackets flagged inactive are *excluded* rather than summed as `0.000`), and `1293dfc0` (2026-08-29, `fsr-bench-matrix.sh` +29 — the `gridcross` exterior scene, outside the default `SCENES`). This very paragraph names `0e91fc5e`'s own #2830 two sentences earlier; the same commit did both. Run `scripts/check-bench-harness-provenance.sh` at fold time rather than carrying this sentence forward — deriving it is the whole point. Do not publish a new FPS/ms claim before the 75-run matrix is re-run on a machine with a GPU. **Updated 2026-09-03 at Session 79 close (HEAD `4d78dce6`, 1059 commits past `34074b93` — over 35× the 30-commit gate, 147 more commits past this tracker's own 2026-09-01 fold; Session 78 close (`cd316a56`) did not fold this tracker with its own paragraph, only a one-line summary reference — its own 36-commit range was judged genuinely hot-path-quiet).** The re-run still has not happened, and this environment still has no GPU device. Session 79's 101-commit range is not quiet: it touched `triangle.frag`/`triangle.vert`, `water.frag`/`water.vert`, `composite.frag`, `volumetrics_inject.comp`, `caustic_splat.comp`, `cluster_cull.comp`, and the shared `bindings.glsl`/`shader_constants.glsl`/`blue_noise.glsl` includes, plus per-frame draw-recording and resource-management code (`context/draw.rs`, `context/post_passes.rs`, `context/build_and_upload_instances.rs`, `scene_buffer/gpu_types.rs`, `morph_compute.rs`, `texture_registry.rs`). Named changes in this range: a weather-driven precipitation/surface-state build-out extending `volumetrics_inject.comp`/`composite.frag` with new rain/snow/wind params, water shading consolidation folding three separate RT-reach budgets into one `shader_constants_data.rs` source of truth (#3745), the texture registry moving `has_alpha`/`avg_rgb` off per-handle `HashMap`s onto dense `TextureEntry` fields (#3682), morph-target weight staging changed from a fresh per-frame `Vec` allocation to in-place (#3687), and a volumetrics skip-clear latch unification (#3685). **Harness byte-stability: NOT confirmed — this paragraph repeated the 08-28-onward error a second time (corrected 2026-09-08, #4024).** The same three commits listed in the 2026-09-01 fold above (`ff177576`, `0e91fc5e`, `1293dfc0`) all precede this HEAD, and the two archived records prove it independently: `BENCH_stepped-camera_34074b93.tsv` stamps `harness=4de5e78e` with 23 columns, `BENCH_stepped-camera_2da754e7.tsv` stamps `harness=1293dfc0` with 24 — different column sets, different acceptance gates, different `render_sum`. They are **not** directly comparable. Run `scripts/check-bench-harness-provenance.sh` at fold time. Do not publish a new FPS/ms claim before the 75-run matrix is re-run on a machine with a GPU.
-- [x] **R6a-stale-21 — CLOSED 2026-09-09 at HEAD `4c9a5b36`.** The 75-run
-  stepped-camera matrix ran with zero rejections and every state-hash gate
-  passing, archived at `docs/audits/BENCH_stepped-camera_4c9a5b36.tsv`, with a
-  30-run same-machine control at `e6282349` archived beside it. The harness
-  provenance question this tracker was also waiting on is settled rather than
-  asserted: `scripts/check-bench-harness-provenance.sh` reports one commit
-  against the harness pair since the `2da754e7` record — `cf0832f9` — and its
-  diff is provenance-only (echo the TSV header, stamp the reporter). The one
-  commit that did change arithmetic, `0e91fc5e`'s `render_sum`, predates that
-  record, so both sides of this comparison compute identically. **What this
-  refresh does NOT close is the ground-cover question in the original entry**
-  — see the R6a-groundcover-1 entry below. Original entry follows.
-  **Filed 2026-09-07 at Session 81 close (HEAD `043dbbb9`, 119 commits past the `2da754e7` record, ~4× the 30-commit gate).** The stepped-camera bench-of-record cleared R6a-stale-20 on 2026-09-03 and is already out of gate. Session 81's 118-commit range is emphatically not hot-path-quiet: 127 file-touches under `crates/renderer/src` and 78 under `crates/renderer/shaders`, the largest single bucket in the session. Named additions with real new per-frame GPU cost: **EXAL ground cover Phases 1, 2, 6 and 7** (#4054, #4055, #4057, #4058) introduced nine new shaders — `groundcover_scatter.comp`, `groundcover_blade.vert`/`.frag`, `groundcover_interaction.comp`, `groundcover_debug.frag` and the `groundcover_bench*` trio — plus five `include/groundcover_*.glsl` headers, a per-frame scatter dispatch, a blade raster pass and an interaction displacement field. That is an entire new per-frame rendering stratum whose cost has never been measured against the bench-of-record. Also in range: the #3976 skinned-BLAS gate (`043dbbb9`, a *skip* — reduces work on the failure path only), and the audit-driven renderer fix sweep. **The §11.1 ground-cover bench (#4052) is not a substitute**: it measured one narrow question (terrain-attribute re-sample vs store, 0.0018 ns/vertex-sample) on its own harness, not the five-scene FSR matrix. **Harness byte-stability is NO LONGER confirmed** — unlike every prior fold in this family, `scripts/fsr-bench-matrix.sh` and `scripts/fsr_bench_report.py` have taken three commits since `34074b93` (`ff177576`, `0e91fc5e`, `1293dfc0`), and `0e91fc5e` changed `fsr_bench_report.py`'s `render_sum` arithmetic; the archived TSVs' own stamps disagree (`harness=4de5e78e`/23 cols vs `harness=1293dfc0`/24 cols). See #4024 (REN-2026-09-06-D23-02), which files exactly this, and run `scripts/check-bench-harness-provenance.sh` for the current verdict — it reports the *live* `2da754e7` record as still byte-stable, so the divergence bounds old-vs-new comparisons against `34074b93`, not a re-run against the record in force. A re-run is therefore no longer a guaranteed apples-to-apples comparison against the `2da754e7` record until that divergence is reconciled. Do not publish a new FPS/ms claim, and do not accept a ground-cover perf intuition, before the 75-run matrix is re-run on a machine with a GPU **and** the harness provenance question is settled.
-- [ ] **R6a-regress-22 — FO4 frame time doubled between `4c9a5b36` and `99933f87b`** (filed 2026-09-28 with the `a37fcba3c` bench-of-record). Dugout TAA 11.17 → 24.65 ms and MedTek TAA 34.22 → 50.38 ms in a same-session, same-harness, isolated-settings control (see the LIVE bench-of-record section). The added time is almost entirely fence wait (Dugout 4.59 → 19.31 ms), i.e. GPU-bound. Content is unchanged (entities, lights, TLAS instances flat), but draw batching merged far less (Dugout 326 → 659 batches, 12 → 43 GPU calls at 1935 → 2367 raster draws). One candidate in range, unverified: `186234944` put opaque default-lit geometry on a separate early-fragment-test pipeline (a batch-splitting change) and added a 29.49 MB per-frame reservoir clear. Others R6a-stale-22 lists (the TLAS membership BUILD `5eb07a4f3`, interior sky apertures `0572bfd5a`) are also in range. **Next step: `git bisect` on Dugout TAA** — the 11 vs 24.6 ms gap against a ±0.3 ms run spread makes one 300-frame run per step decisive (~10 steps over 733 commits). Build in a worktree (`/mnt/data/src/byroredux-bisect`), keep `BYROREDUX_SETTINGS_PATH` isolated, and compare `wall_ms` / `fence_ms` only (`gpu_main` changed meaning in range).
-- [x] **R6a-stale-22 — CLOSED 2026-09-28 at HEAD `a37fcba3c`.** The 75-run stepped-camera matrix ran with zero rejections, archived at `docs/audits/BENCH_stepped-camera_a37fcba3c.tsv`, and — as the 2026-09-27 update below required — both the outgoing record `4c9a5b36` and HEAD were re-run on HEAD's harness, comparing wall and fence first. The comparison found a real regression, tracked as R6a-regress-22 above. Original entry follows. **Filed 2026-09-12 at Session 83 close (HEAD `d28722fb`, 88 commits past the `4c9a5b36` record — nearly 3× the 30-commit gate).** Session 83's 87-commit range is dominated by the 2026-09-11/12 audit-fix tail (178 issues, mostly CHARAL/ESM/NIF/renderer doc-rot) and the `GpuImage` consolidation refactor (14 commits, 48 files under `crates/renderer/src/vulkan/*` touched, collapsing per-pass image/view/layout code onto one shared type across bloom, composite, GBuffer, SSAO, SVGF, TAA, exposure and both caustic passes) — refactor-shaped per its own commit messages, not a per-frame cost change, but unmeasured either way. Actual shader-source touches are narrow: `triangle.frag`/`water.frag` (#3927, the BGSM greyscale-palette fix — a `mix()` blend replaced by a direct palette-row `texture()` read, same sample count, corrected indexing, not new cost) and `include/ray_hit.glsl` (#3902 — genuinely new per-ray-hit cost: `rayHitAlbedo` now composites up to six texture-sampling roles — four decal layers, tintMap, innerLayer, dark, detail — on secondary rays (RT reflections, GI, water refraction), where it previously applied only a constant diffuse tint; new texture-sampling work on every RT-reached surface with those roles set, unmeasured). **Harness byte-stability confirmed**: `scripts/check-bench-harness-provenance.sh` reports `4c9a5b36` unchanged — no commit against `fsr-bench-matrix.sh`/`fsr_bench_report.py` landed in this range, so a re-run remains a valid apples-to-apples comparison against the live record. Do not publish a new FPS/ms claim, and do not assume #3902's added RT-secondary-ray sampling is free, before the 75-run matrix is re-run. **Updated 2026-09-13 at Session 84 close (HEAD `673b2145`, 136 commits past `4c9a5b36`, over 4× the 30-commit gate; 48 more than this tracker's filing).** The re-run still hasn't happened. Unlike Session 83's refactor-shaped range, this one adds real per-frame GPU work: (1) **Sky cubemap bake** (`b54b86b7`/`6db9eac2`): a new `sky_cube.comp` evaluated over six faces every frame before the geometry pass, now sampled by `raytrace.glsl`'s reflection miss and `lighting.glsl`'s path escape. (2) **Volumetric cloud march** (`c379898f`, `564d0d2f`, `9ac8a929`, `5d5d6ddd`, `fc4600b3`): `include/clouds.glsl` marched per texel in the bake *and per pixel in `composite.frag`*. The adaptive march is bounded at 512 iterations, with a six-sample self-shadow march per full sample. The commit messages record single-camera GPU-bracket readings and note that per-pixel cost scales with render resolution; none of those is a bench-of-record figure. (3) A bloom soft-knee bright-pass at pyramid seed (`62a09fd9`). (4) **Ground cover**: a downward TLAS ray query per accepted scatter candidate (`c775745b`), four blades per point (`fcdf7083`), and a 4× candidate budget (`673b2145`). (5) Frame-scope sync changes (#4177, #4179, #4181). The bake has its own bracket (`gpu_sky_cube`, `74df367f`), appended last on the `bench:` line so positional extractors still match. **It is unverified whether the bake and the cloud march run on the default four interiors plus Cornell.** If they skip frames with no sky, they join ground cover behind R6a-groundcover-1's `gridcross` fix, and a default-scene re-run would not measure them. **Harness confirmed unchanged**: `scripts/check-bench-harness-provenance.sh` reports `4c9a5b36` untouched. Do not publish a new FPS/ms claim, or accept a cloud-march or ground-cover perf intuition, before the matrix is re-run, including the exterior scene. **Updated 2026-09-15 at Session 85 close (HEAD `071dfa30`, 189 commits past `4c9a5b36`).** The re-run still hasn't happened, and more per-frame GPU work was added: (1) `sky_prefilter.comp` (256 GGX samples per texel over mips 1–7) and a nine-coefficient SH irradiance pass (`dc595f9c`). Both are recorded inside the sky-cube bake's own call, so they share the bake's still-unverified interior cadence. A single Skyrim capture read ~0.16 ms for bake + filter, which is an observation, not a bench figure. (2) Tier-3 ground-cover detail sampling in `triangle.frag` on every terrain fragment, plus blade LOD tiers 1–2 (`fd0cd577`, #4056). (3) Blades now receive directional sun light and shadow, which had been zero (#4291). (4) Load-path bounds that affect cell-load hitches rather than steady-state frames: per-mesh BLAS admission (#4196) and 128 MiB texture-staging sub-batches (#4197). The harness scripts are unchanged in this range. **Updated 2026-09-18 at Session 87 close (HEAD `5f3c7ec2`, 297 commits past `4c9a5b36`; covers Sessions 86 and 87 together — neither session folded this tracker at its own close, a gap noted here per the established convention for skipped folds).** The re-run still hasn't happened. This combined 106-commit window is not hot-path-quiet: 27 shader source files changed (`triangle.frag`, `water.frag`, `composite.frag`, `groundcover_blade.frag`/`.vert`, `bloom_downsample.comp`, `svgf_temporal.comp`, `taa.comp`, `volumetrics_inject.comp`/`_integrate.comp`, and the shared `bindings.glsl`/`blue_noise.glsl`/`clouds.glsl`/`ray_hit.glsl`/`sky.glsl`/`shader_constants.glsl` includes among them), plus Session 86's `VulkanContext` decomposition touching the bulk of `crates/renderer/src/vulkan/context/*` (restructuring, not per-frame cost by its own commit messages). Named changes with a plausible new per-pixel/per-frame cost: `detail_neutral`'s encoded-space combine adds a producer-declared neutral to the detail-role blend and grows `GpuMaterial` 428 → 432 B (#4422, forces every `GpuMaterial`-consuming shader to recompile); ground-cover blade shading gained jitter and a debug albedo output (`6431838b`) on top of Session 86's tier-3 terrain detail sampling already tracked in the 2026-09-15 fold above. TAA's resolve source moved from the raw pre-composite HDR attachment to the same post-composite tap FSR consumes (#3572, `ba4c0efcf`) — a relocation of existing work onto a different image, not obviously new cost, but unmeasured either way since it changes what TAA actually filters. The tint-role alpha gate (#4423) and FO4 smooth-spec role split (#4424) are correctness fixes to existing sample counts, not new samples. **Harness confirmed byte-stable**: no commit against `scripts/fsr-bench-matrix.sh` or `scripts/fsr_bench_report.py` in this range. Do not publish a new FPS/ms claim, and do not assume the detail-combine or ground-cover-jitter additions are free, before the 75-run matrix is re-run on a machine with a GPU. **Updated 2026-09-21 at Session 89 close (HEAD `f97775ca`, 449 commits past `4c9a5b36`; covers Sessions 88 and 89 — Session 88's five commits were the HUD overlay, whose triple-buffered in-place upload is the only hot-path item there).** The re-run still hasn't happened. Fifteen shader sources changed since the last fold (`caustic_splat.comp`, `exposure_meter.comp` *new*, `groundcover_blade.vert`, `presentation.frag`, `ssao.comp`, `taa.comp`, `triangle.frag`, `volumetrics_inject.comp`, `water.frag`/`.vert`, and the `bindings`/`depth_convention`/`ray_hit`/`raytrace`/`shader_constants` includes); the `GpuMaterial` (432 B), `GpuInstance` (160 B) and `GpuCamera` (368 B) size pins are unchanged. Named changes with a plausible new per-frame cost: (1) **volumetric fire quality wave** — single-pass BFECC error correction adds a forward/backward trace pair to every transported-field advection step (`10798823`), the froxel injector now evaluates a phase lobe per local light and a multiple-scatter compensation term (`1e1bca8f`, `33d253b7`), and soot scatters spectrally; each is on the transported-combustion path that Session 69 already flagged as an unmeasured per-frame consumer, and the new `--combustion-lab` golden frame gates its *look*, not its cost. (2) **Auto-exposure meter** — a new `exposure_meter.comp` dispatch (`c5663fe3`); opt-in via `--auto-exposure`, so it is off in every default-config bench. (3) **AgX tonemap** — a second per-pixel operator in `presentation.frag`, selected by `--tonemap agx` (default `aces`); a relocation of the presentation tail's work, not extra samples. (4) **SSAO kernel operating point** changed to make contact occlusion visible (`09d9bc6f`) — same dispatch, different weighting; unmeasured. (5) Water caustic deposits are now gated on camera/landing-pixel visibility (#4545, `0418ac76`) — expected to *reduce* splat work; unmeasured. (6) HUD overlays hold three swapchain-extent textures (~24.9 MB at 1080p, ledgered in `docs/engine/memory-budget.md` under #4526). Load-path only, not steady-state: DDS staging-pool capacity and untrusted-input validation (#4511/#4512/#4515). Correctness fixes to existing work with no new samples: TAA raw-view jitter gate (#4513), water push-constant block size (#4510), tint/detail arithmetic pins (#4520). **Harness confirmed byte-stable**: `scripts/check-bench-harness-provenance.sh` reports `4c9a5b36` unchanged and no commit touched `scripts/fsr-bench-matrix.sh` or `scripts/fsr_bench_report.py` in this range, so a re-run remains a valid apples-to-apples comparison. Do not publish a new FPS/ms claim, and do not assume the BFECC / local-light-phase additions are free, before the 75-run matrix is re-run on a machine with a GPU. **Updated 2026-09-23 at Session 90 close (HEAD `5570c221`, 579 commits past `4c9a5b36`).** A full 75-run matrix *was* captured this time, at `cb44d99f6` on 2026-09-22 (`docs/audits/BENCH_stepped-camera_cb44d99f6.tsv`, harness `1293dfc0`; `scripts/check-bench-harness-provenance.sh` confirms it byte-stable against the record). It landed inside `b9e961eeb` without a ROADMAP fold. Against the record, 19 of 25 scene/config medians are slower. Cornell is slower on every config: TAA 108.7 → 85.5 FPS, FSR Quality 150.1 → 120.2, with TAA `gpu_main` 7.75 → 10.48 ms. MedTek TAA fell 26.6 → 21.6 FPS, and Dugout FSR Performance fell 160.8 → 111.7. Prospector TAA and native-AA are 7–9% *faster*, and Whiterun FSR Performance is flat. Draw, light and TLAS counts are identical in every scene, and entity counts moved by at most 23. **But every scene's `state_hash` differs from the record, Cornell included** (`cornell.rs` changed in four commits between the two, among them #4442 and #4423). Content drift cannot be excluded, even on the content-light control scene. The 2026-09-23 performance audit read only this file's volumetrics column (flat) and did not examine the whole-frame delta. **No same-machine control was run.** R6a-stale-17 showed an uncontrolled matrix reporting regressions that were not there, so this matrix is neither accepted as the record nor filed as a regression. Next step: a same-machine control of `4c9a5b36` against HEAD, Cornell first. Hot-path changes in this session's range:
-  - `b9e961eeb` touches `ray_hit.glsl`, `triangle.frag`/`.vert` and `normal_transform.glsl`, and adds a static BLAS working set and exact-content geometry sharing (expected to *reduce* BLAS/VRAM work; unmeasured).
-  - Volumetrics: froxel jitter formed in fixed point with a ray-derived `view_dir` (#4776); the lapsed combustion residual dropped rather than frozen (#4775); the XY divisor fitted to `maxImageDimension3D` (#4781); the stale TLAS withheld from compute ray queries after a failed build (#4779).
-  - Caustics: visibility-ray masking (#4589) and linearized-depth occlusion (#4588).
-  - Opt-in only: exposure-meter averaging and interval fixes (#4597, #4590) and AgX's log-space clamp (#4578).
-  - Frame scope: a host flush before `end_command_buffer` (#4602), and the end-of-frame scratch shrink moved out of `draw_frame` under a budget (#4767).
-
-  `GpuMaterial` is still pinned at 432 B. Do not publish a new FPS/ms claim from `cb44d99f6`, and do not call it a regression, until the control has run.
-
-  **Updated 2026-09-27 at Session 91 close (HEAD `bad6ef2e`, 708 commits past `4c9a5b36`).** The same-machine control still hasn't run, and the comparison has become harder:
-  - **The harness is no longer byte-stable.** `scripts/check-bench-harness-provenance.sh` now reports both `4c9a5b36` and `cb44d99f6` as DIVERGED. Two commits (#4800's `8d2a9ebad` and `88c23887b`) touched the harness pair. Both only *append* TSV columns: `raster_cmds`, and sky-cube/TLAS/cluster-cull/ground-cover-model/volumetric-phase timers plus volumetric state. Existing columns keep their positions, but the gate cannot prove that.
-  - **`gpu_main` changed meaning.** #4808 starts the main-render timer at COMPUTE instead of TOP. HEAD's `gpu_main` is therefore not comparable to the record's. `wall_fps`, `wall_ms` and `fence_ms` still are.
-  - **The `bench:` GPU fields are last-completed-frame snapshots, not capture averages.** This was found during the 09-26 early-depth work and applies to the record's GPU columns too. The 09-26 reports use per-capture means of the `gpu_geometry phases` readbacks instead.
-  - The next refresh should therefore re-run *both* `4c9a5b36` and HEAD on HEAD's harness, and compare wall/fence first.
-
-  Hot-path changes in this range. Several are expected to be large, and all are measured only in diagnostic captures under `docs/audits/*_2026-09-26.*`, not in the matrix:
-  - TLAS equal-BLAS leaves are sorted stably, and a membership change forces a BUILD (`5eb07a4f3`).
-  - Opaque default-lit geometry takes an early-fragment-test pipeline, and ReSTIR light identity is remapped across re-sorts. This adds a 29.49 MB per-frame reservoir clear at 1280×720 (`186234944`).
-  - Interior sky apertures and godrays add work to `composite.frag` and `volumetrics_inject.comp` (`0572bfd5a`).
-  - The ground-cover Phase C authored-model tier adds a new compute pass and indirect draws, on exteriors only (#4413).
-  - Composite aperture culling and volumetric visibility and transport gates are expected to *reduce* work (`e2f99ad55`, #4785–#4788).
-  - Cooperative CSG precombine spawning affects cell load, not steady-state frames (`078f650ec`).
-
-  `GpuMaterial` is still 432 B; `GpuLight` is now 80 B. Do not publish a new FPS/ms claim until both sides have run on the current harness.
-- [x] **REND-#1447** HIGH (filed 2026-06-02, `AUDIT_RENDERER_2026-06-02`): **Closed 2026-06-02** (`e6df0f5b`) — SPIR-V recompiled after DoF CameraUBO extension.
-- [x] **REND-#1448** LOW (filed 2026-06-02, `AUDIT_RENDERER_2026-06-02`): **Closed 2026-06-02** (`f8e5daad`) — screenshot extent captured at record time, survives same-frame resize.
-- [x] **BUILD-SFMATERIAL** (2026-06-03): **Closed 2026-06-03.** `ee727346` removed `pub use chunk::ChunkType` and broke `crate::StringTable` / `crate::ChunkType` in internal modules + integration test. Fixed: `ChunkType` re-exported from `lib.rs`; internal `reader.rs` and `error.rs` use module-local paths.
-- [x] **BUILD-SCRIPTING** (2026-06-03): **Closed 2026-06-03.** `0785661d` referenced `World::try_get`, `FactionMembership`, `BaseFormId`, `PerkList` (none exist), wrong `esm::index::EsmIndex` path, and attempted `u32 → FormId` coercions. All non-working implementations reverted to their original trace-log stubs; the only surviving change is the `world` parameter on `resolve()` (inert but ready for future use).
-- [x] **BUILD-RENDERER-TEST** (2026-06-03): **Closed 2026-06-03.** `9abbe510` (ReSTIR-DI Phase 1) added `RESERVOIR_FORMAT` / `GBuffer::reservoir_view()` / extra args to `create_render_pass` + `create_main_framebuffers` without updating `gbuffer.rs` or `helpers.rs`. Fixed: `RESERVOIR_FORMAT = R32G32B32A32_UINT` added to `gbuffer.rs`; `reservoir: Attachment` added to `GBuffer` (alloc / view / destroy / recreate / initialize_layouts); `create_render_pass` now takes `reservoir_format` (attachment slot 6, depth moves to 7); `create_main_framebuffers` now takes `reservoir_views`; `resize.rs` updated to match. Also fixed a companion type mismatch in `nif/import/walk/mod.rs` from `b4c453c7` (`zup_point_to_yup` takes `&NiPoint3` not `&[f32;3]` — inlined as `zup_to_yup_pos`).
-- [ ] **BUILD-SFMATERIAL-NIFTEST** (2026-06-03): `byroredux-nif` lib tests previously also broke due to `b4c453c7` (`zup_point_to_yup` type mismatch) — **closed** by the same fix above.
-- [~] **REND-#1451** MEDIUM (filed 2026-06-03, Lonesome Road Ulysses Temple + prior cells): Bright near-zone ring around player. **Root cause (confirmed against OpenMW reference 2026-06-04):** the shader used the anti-pop-in cull window as the *entire* attenuation — `atten = pow(clamp(1 − (d/R)², 0, 1), shape)` with `R = authored × LIGHT_RANGE_EXTENSION` — so at the authored radius (`d = R/2` under the 2.0 extension) it read **75%** instead of the intended ~10–30%, a bright disc fading to zero only at `2× authored radius`. The Bethesda/Gamebryo lineage (OpenMW `lcalcIllumination`, `reference/openmw/files/shaders/lib/light/lighting_util.glsl`) is **two multiplied terms**: a physical falloff `1/(c+l·d+q·d²)` (already ~30% at the authored radius — Morrowind's stock `linear = 3/r`) × a soft cull window that fades full→zero from `radius` to `2×radius` purely to kill pop-in. ByroRedux had dropped the physical term. NB the original entry's `2.5` was stale — `83d6a155` already moved it to `2.0` + fixed the compounding AMBIENT_FILL additive→max() (REND-#1452). **Fix landed (2026-06-04, code-side):** `triangle.frag::pointSpotAtten` now implements the two-term model — physical near-zone falloff keyed to the authored radius × soft `smoothstep` cull window to `R` — used by BOTH the pass-1 reservoir loop and `shadowableLightRadiance` (WRS bit-identical, #1369). `LIGHT_RANGE_EXTENSION` stays `2.0` as the cull boundary (OpenMW zeroes at exactly `2×r`). `DBG_LEGACY_LIGHT_ATTEN = 0x1000` restores the old window-only formula for A/B. **Remaining (needs user GPU + FNV data):** the controlled bench — run `--bench-hold`, attach `byro-dbg`, and sweep the live knee with `light.atten knee <0.05..1.0>` (and `light.atten legacy on|off`) on Ulysses Temple / Prospector to pick the final `kneeFrac` (default `0.5` ⇒ ~50% at authored radius for shape 1; expect ~0.3–0.4 to hit the 30% target), then bake it as the shader default. FO4 dense interiors may want a different value than FNV. Filed as #1451.
-- [x] **REND-#1449** LOW / latent (filed 2026-06-02, `AUDIT_RENDERER_2026-06-02`): **Closed 2026-06-04.** `evict_unused_blas` immediate-destroy assumes no in-flight TLAS during multi-batch cell load — was gated behind a future refactor. Tracked as #1449.
-- [x] **REND-#1450** LOW / low-confidence (filed 2026-06-02, `AUDIT_RENDERER_2026-06-02`): **Closed 2026-06-04.** Submersion state has no hysteresis band — design observation, not a confirmed regression. Tracked as #1450.
-- [x] **R6a-prospector-regress** — **closed 2026-05-16** in the same session it was filed. -18.5% FPS / +1.23 ms fence on Prospector between `220e8e1` (2026-05-11) and `c8519082` (2026-05-16). First bad commit: `6059e2ab` "Pick off 4 TLAS / acceleration LOWs from bundle #926" (git bisect, 8 steps). Behavioral change: REN-D8-NEW-08 flipped skinned BLAS BUILD+UPDATE flags from `PREFER_FAST_BUILD` to `PREFER_FAST_TRACE`. Commit's reasoning (BLAS refits ~600× between BUILDs → trace cost dominates ~6 orders of magnitude) was theoretically sound and measurement confirmed it: telemetry over 500 frames on Prospector showed 0 BUILDs : 34 refits per frame in steady state across 34 active skinned NPCs (1:289 ratio across the bench window), exactly matching the "refits dominate" model. But the empirical outcome went the other way — at the same workload the FAST_TRACE BVH cost more per frame than FAST_BUILD did, by ~+0.77 ms fence. The likely mechanism (un-confirmed without a deeper driver/RenderDoc dive): for small skinned-mesh BVHs (~5K-15K triangles per FNV body), the FAST_TRACE construction picks a wider, deeper tree that's actually worse for either refit cost or ray traversal cost on NVIDIA RTX 4070 Ti at our ray fan-out — the BUILD-time micro-optimisation cost > traversal-time win. **Fix landed**: split the shared `UPDATABLE_AS_FLAGS` constant into `UPDATABLE_AS_FLAGS` (TLAS, stays `FAST_TRACE`) + `SKINNED_BLAS_FLAGS` (skinned BLAS, reverts to `FAST_BUILD`), updated the three skinned-BLAS call sites in `blas_skinned.rs`. Recovers +15.8 FPS (108.8 → 124.6) on Prospector. Whiterun returns to 218.4 (within noise of 217.3 baseline — confirms Whiterun's apparent regression was pipeline-cache warmup, not skinned-BLAS). MedTek 67.1 (was 66.2, baseline 68.5 — its FO4 humanoid skeleton.nif doesn't resolve so the skinned path was never on the hot path there). 242 renderer tests still pass.
-- [x] **R7** Scheduler access declarations — **closed**. `Access` builder + `System::access()` opt-in + `Scheduler::add_to_with_access` for closures + `sys.accesses` console command surface a per-stage Conflict / Unknown report. 3 of 12 systems declared so far (fly_camera, spin, log_stats); 4 Unknown pairs remaining. M27 flip is diagnosable now; eliminating the Unknown rows is incremental migration work.
-
-### Closed — Renderer regressions (2026-05-01 / 02 live debug arc)
-
-- [x] **M-NORMALS** ([#783](https://github.com/matiaszanolli/ByroRedux/issues/783)) — **closed 2026-05-02** (commits 91e9011 + 82a4563). Per-vertex tangent decode (`NiBinaryExtraData("Tangent space (binormal & tangent vectors)")`) + `synthesize_tangents` fallback (Rust port of nifly's `CalcTangentSpace` per-triangle accumulator, runs on FO3/FNV/Oblivion content that ships without authored tangents). Vertex stride 84 → 100 B; `triangle.vert/frag`, `ui.vert`, `skin_vertices.comp` updated in lockstep. `perturbNormal` re-enabled with authored-tangent Path 1 + screen-space-derivative Path 2 fallback. See Tier 5 row.
-- [x] **LIGHT-N2** ([#784](https://github.com/matiaszanolli/ByroRedux/issues/784)) — **closed 2026-05-02** (commit 18bbeae). Composite fog mix moved from HDR-linear pre-ACES to display space post-ACES; ~10-line `composite.frag` change.
-- [x] **Chrome posterized walls** — **closed 2026-05-02** (commit b2354a4). `tex.missing` revealed 39 unique missing textures × 263 entities for FNV `GSDocMitchellHouse` — checker placeholder × valid normal map = "chrome" speckle. Root cause: FNV ships base textures across `Fallout - Textures.bsa` AND `Fallout - Textures2.bsa`; only the former was loaded. Fixed by `open_with_numeric_siblings` (auto-loads `<stem>2.bsa` … `<stem>9.bsa` siblings on disk when the explicit path has no digit before `.bsa` / `.ba2`). `tex.missing` now reports 1 entry (`<no path, no material>` placeholder geometry, legitimate). See Session 27 in [HISTORY.md](HISTORY.md). Permanent diagnostic bit `DBG_BYPASS_NORMAL_MAP = 0x10` retained alongside `DBG_VIZ_NORMALS` / `DBG_VIZ_TANGENT`.
-- [x] **Coplanar z-fighting on rugs / decals / desktop clutter** — **closed 2026-05-03** (commits 0f13ff5 / ee3cb13 / 088696e / c515028). New `RenderLayer` ECS component (Architecture / Clutter / Actor / Decal) attached at cell-load time from each REFR's `RecordType`; renderer applies a per-layer `vkCmdSetDepthBias` ladder via `RenderLayer::depth_bias()`. Per-mesh `is_decal` / `alpha_test` escalate to Decal at spawn (alpha-tested rugs, NIF-flagged blood splats); small-STAT meshes (bounding-sphere radius < 50 units ≈ 71 cm) escalate to Clutter so paper piles / folders / clipboards win their desk z-fights. Live verification via the new `BYROREDUX_RENDER_DEBUG=0x40` (`DBG_VIZ_RENDER_LAYER`) tint-by-layer viz. Replaces the ad-hoc `is_decal || alpha_test_func != 0` heuristic — single source of truth, game-invariant Oblivion → Starfield.
-- [x] **Cluster-light cull-radius shoulder visible on floors** — **closed 2026-05-03** (commit 78632a6). Replaced `window = 1 - (d/r)²` with the Frostbite smooth-distance attenuation curve `(1 - (d/r)⁴)²` in both point and spot arms of `triangle.frag`. Reference: Lagarde & de Rousiers, "Moving Frostbite to Physically Based Rendering" §3.1.2. Preserves ~65% more energy in the mid-zone and approaches zero with C¹ continuity at the cull radius — no more visible circular boundary on the floor. Cull range stays at `radius * 4.0`; per-light fill stays at 0.02. SPIR-V recompiled.
-- [x] **"Chrome cushion" reflective look on dielectric props near lamps** — **closed 2026-05-03** (commit 8038ae7). `Material::classify_pbr` was piping `env_map_scale` straight into `PbrMaterial.metalness`. `env_map_scale` is the legacy BSShaderPPLighting cube-map intensity authoring knob; vinyl cushions, glass, polished wood, plastic armor all author it > 0 *without being conductors*. Routed every dielectric-with-sheen into the metal-reflection branch (`triangle.frag:metalness > 0.3`), which then picked up cell ambient + nearby emissive sconces — the chromy look on FNV medical gurneys. Fix: `env_map_scale > 0.3` now drops roughness only; metalness stays 0. Real conductors caught by texture-path keyword arms above. Power armor (`metal` + `env_map_scale ≈ 2.5`) keeps `metalness=0.9` from the keyword branch.
-
-### Open — Performance
-
-- [ ] **R6a-groundcover-1 — the ground-cover stratum is still unmeasured, and
-  the 2026-09-09 refresh could not measure it (filed 2026-09-09 at Session 82
-  close).** R6a-stale-21 bundled two things: a stale bench-of-record, and the
-  fact that EXAL ground cover's nine new shaders, per-frame scatter dispatch,
-  blade raster pass and interaction displacement field had never been costed.
-  The re-run closed the first and **cannot** close the second: the default
-  `SCENES` list is `cornell prospector whiterun medtek dugout` — four interiors
-  plus a synthetic control — so the ground-cover path never engages in any of
-  the 75 runs. The prerequisite is #3467's `gridcross` scene, the matrix's only
-  exterior, which is deliberately excluded from the default set because its
-  entity floor is an uncalibrated `0` placeholder. **The unblock is cheap and
-  known**: run `FSR_BENCH_SCENES="gridcross" scripts/fsr-bench-matrix.sh 3 300`
-  once, take the observed entity count, round it down generously into
-  `scene_entity_floor`, then add `gridcross` to the default list — after which
-  ground cover has a permanent regression gate instead of an intuition. Until
-  then, do not accept a ground-cover perf claim in either direction.
-  **Session 84 made the unmeasured ground-cover work larger** (TLAS cover
-  trace per candidate, four blades per point, 4× candidate budget; see
-  R6a-stale-22's 2026-09-13 update). The fix is unchanged.
-
-- [ ] **The engine SIGSEGVs at process teardown — new in `e6282349..4c9a5b36`
-  (filed 2026-09-09 at Session 82 close).** Every one of the 75 bench runs at
-  HEAD segfaulted on exit (`Segmentation fault (core dumped)`), each preceded
-  by `GPU allocator has N outstanding references — leaking allocator + device +
-  surface + instance …`. The same-machine control at `e6282349`, same harness
-  and same scenes, segfaulted on **0 of 30**. That makes it a regression inside
-  this session's 70-commit range, not a standing property of the leak path.
-  It is not cosmetic by the project's own definition: `#927`'s regression test
-  in `crates/renderer/src/vulkan/buffer.rs` states in its own doc comment that
-  *"the real regression check is the absence of the 'outstanding references'
-  error log on engine shutdown"* — that log is now present at 100% incidence.
-  The `#665` / LIFE-L1 path it trips is a deliberate safeguard (leak the device
-  rather than let a late natural-Drop `vkFreeMemory` run against a destroyed
-  `VkDevice`), and its stated expectation is that "the OS reaps the leaked
-  Vulkan handles at process exit" — a clean exit, not SIGSEGV. **Measurements
-  are unaffected**: the `bench:`, `rt-integrity` and `tlas-policy` lines all
-  print before teardown, which is why 75/75 runs still cleared the #3347 gates.
-  Bisect candidates in range, by shape rather than evidence: #3993 (ledgers the
-  composite HDR pair, depth attachments and cluster light-index buffers),
-  #4001 (`drop_skinned_blas` routed through `DEFAULT_COUNTDOWN`), #4006
-  (deferred composite rebind), and the reversed-Z landing `c8ac5328`. A debug
-  build asserts on this path, so `cargo run` (debug) on Cornell is the cheapest
-  first reproduction.
-  **Partial lead (2026-09-13, #4187 / `4777908b`):** `StagingPool` held a
-  non-releasable allocator `Arc` through
-  `SceneBuffers::terrain_tile_staging_pool`. That alone guaranteed the
-  `outstanding references` log on every shutdown, and after the fix a headless
-  release run of the demo scene tears down cleanly. It does **not** explain
-  the regression as filed: the pool landed in `41ec1c40`, which is already in
-  the history of the `e6282349` control that segfaulted 0 of 30 times. Run a
-  bench scene through to exit before closing this.
-
-- [ ] **FO4 Dugout Inn frame time regressed ~10% inside
-  `e6282349..4c9a5b36` (filed 2026-09-09 at Session 82 close).** Same-machine
-  control, same harness, same reporter, identical scene fingerprint and entity
-  count (11592): TAA native goes **99.1 FPS / 10.09 ms at `e6282349`** →
-  **90.0 FPS / 11.12 ms at `4c9a5b36`** (−9.2% FPS, +1.03 ms). This is not the
-  environment and not a global slowdown: Cornell moved the *other* way in the
-  same pair of runs (103.6 → 108.7 FPS, +4.9%), and Dugout's own FSR Quality
-  config improved slightly (101.0 → 104.7). So the cost lands on the native /
-  full-resolution main pass at this scene specifically. Raw rows for both sides
-  are archived (`BENCH_stepped-camera_4c9a5b36.tsv`,
-  `BENCH_control_e6282349_vs_4c9a5b36.tsv`), so a bisect over the 70 commits
-  can be scored without re-establishing a baseline. Do not attribute it to the
-  `gpu_main` bracket reading below until that instrumentation issue is settled
-  — the wall-clock delta stands on its own, independent of the bracket.
-
-- [ ] **`gpu_main` over-reports beyond the wall frame time, on both records
-  (filed 2026-09-09 at Session 82 close; pre-existing, NOT a Session 82
-  regression).** The bracket periodically reports more time than the entire
-  frame took, which is impossible as a serial cost: the outgoing record has
-  Prospector TAA at `gpu_main=17.851 ms` inside a `wall_ms=17.17` frame, and
-  the new one has Dugout TAA at `gpu_main=13.271 ms` inside `wall_ms=11.12`.
-  It is not the same scene in both, so it is a property of the instrumentation
-  rather than of any one cell. Two consequences worth naming: per-pass
-  attribution from this bench is not trustworthy at the ~ms level, and it is
-  the direct source of the nonsensical **negative "render recovery"** figures
-  the report prints for Whiterun (−25% at Quality, −64% at Balanced) and Dugout
-  (−57% control / −34% HEAD at Quality) — a full-resolution TAA pass cannot
-  cost less than a reduced-resolution FSR one, so those cells are reading a
-  broken bracket, not a real inversion. The wall-clock FPS/ms columns are
-  measured independently by frame counting and are unaffected; only the
-  GPU-timer decomposition is in question. Fixing it is a prerequisite for
-  attributing the Dugout regression above to a specific pass.
-
-
-- [x] **PERF-REGRESSION-6c56e311** HIGH ([#2161](https://github.com/matiaszanolli/ByroRedux/issues/2161)) — **DECIDED 2026-07-27: accept the
-  cost, keep both features.** The knob table below was the whole point of
-  filing this; the picked point is the first row (`current HEAD`, 62.7 FPS on
-  Prospector). `traceShadowTransmittance` (glass tints light rather than
-  casting black shadows) and the second diffuse GI bounce (colour bleeding)
-  both stay as shipped. This is a quality decision, not an unfixed bug — do
-  **not** re-file it as a performance finding, and do not "optimise" either
-  feature back toward the pre-`6c56e311` semantics without a new decision.
-  The measured alternatives stay recorded below in case that decision is
-  revisited (the cheapest, `MAX_DIFFUSE_BOUNCES 2 → 1`, is worth +37%). Worth
-  re-measuring the magnitude after the PERF-D9-NEW-01 `camera_cut`
-  false-positive is fixed, since the 68.5 FPS figure may include frames shaded
-  under a forced temporal reset. Original entry follows.
-
-  Found 2026-07-24 by the FSR phase-7
-  bench matrix; filed as a GitHub issue 2026-07-25 so the decision was
-  tracked outside ROADMAP prose — it is a decision-tracking issue, not a
-  code-fix one, per the closing note below: a **~2.2× frame-time regression on real content** landed in
-  `6c56e311` "Refactor volumetric lighting and water shaders" (2026-07-19,
-  session 58) and went unmeasured for ~80 commits because the bench-of-record
-  was never re-run — which is precisely the risk R6a-stale-16 was tracking.
-
-  **Evidence.** `git bisect` between `8a668eff` (good) and `33d6a18e` (bad) on
-  Prospector, 200-frame runs, identifies `6c56e311` as the first bad commit:
-  parent `e414249f` = **142.0 FPS**, `6c56e311` = **64.7 FPS**. Independently,
-  a fresh build of `8a668eff` on the same machine reproduces 149.6 FPS against
-  HEAD's 68.5, so this is not environmental drift.
-
-  **Where the time goes.** `gpu_main_render` = 12.6 ms of a 14.59 ms frame on
-  Prospector — the cost is in the main geometry pass, not in the volumetrics
-  pass the commit is named for (`gpu_volumetrics` reads 0.25 ms). The commit
-  also raised `GLASS_RAY_BUDGET` and substantially rewrote
-  `include/raytrace.glsl`, `include/lighting.glsl`, and `triangle.frag`;
-  Prospector is a glass-heavy RT scene, which fits.
-
-  Not caused by, and not fixed by, the FSR work — FSR reduces the symptom by
-  shading fewer pixels, which is exactly why the default flip should not be
-  read as making this less urgent.
-
-  **Root cause narrowed to the fragment shader (2026-07-24).** Swapping *only*
-  `triangle.frag.spv` from `e414249f` into a `6c56e311` worktree — no other
-  file — restores 65.1 → **149.9 FPS**. The whole regression is compiled
-  main-pass shader code. `6c56e311` added two features there, and per-knob
-  measurement on Prospector attributes the cost as:
-
-  | configuration | FPS | note |
-  |---|---:|---|
-  | current HEAD | 62.7 | both features on |
-  | binary shadow ray (pre-`6c56e311` semantics) | 107.9 | isolates the shadow rewrite |
-  | GI diffuse bounces 2→1 | 86.2 | isolates the GI path depth |
-  | GI path segments 6→2, bounces 2 | 70.4 | segment count is the minor term |
-  | pre-regression (`e414249f`) | 142.0 | both features absent |
-
-  1. **`traceShadowTransmittance`** (glass-transmitting, alpha-aware shadows)
-     replaced a single `TerminateOnFirstHitEXT` any-hit query with two
-     closest-hit walks that read `GpuInstance` + `GpuMaterial` per hit. Worth
-     ~45 FPS. The cost is *inherent to the feature*: deciding whether a hit
-     blocks requires sampling its coverage, which an any-hit query cannot do.
-  2. **The GI ray became a bounded path tracer** (`MAX_PATH_SEGMENTS = 6`,
-     `MAX_DIFFUSE_BOUNCES = 2`) where it was one `TerminateOnFirstHit`
-     traversal. Worth ~24 FPS, nearly all of it in the *second* diffuse
-     bounce, which fires a shadow ray per light at the bounce hit — so it
-     compounds with (1).
-
-  **Recovering it is a quality trade-off, not a bug fix**, which is why
-  nothing is landed here: both are deliberate visual features (glass tints
-  light instead of casting black shadows; second-bounce colour bleeding).
-  The options above are measured and available to pick from.
-
-  **One structural avenue was explored and rejected.** Adding a
-  `SHADOW_MASK_SOLID` TLAS bucket (opaque, no alpha coverage, no emission) so
-  the common case can use a memory-free any-hit probe again measured +6%
-  (62.7 → 66.5) — but it also shifted 0.336% of Prospector pixels by more than
-  24/255, against a same-build noise floor of 0.000% at that threshold. The
-  probe was argued to be behaviour-identical and is not. Not shipped: +6%
-  does not justify an unexplained visual delta, and per the project's own rule
-  a renderer change whose failure mode is invisible to `cargo test` needs
-  RenderDoc or a revert, not speculation.
-
-  **Follow-up (2026-07-24): the suspected emissive-source discrepancy is
-  ruled out on the normal material-table path.** `DrawCommand::to_gpu_material`
-  copies `emissive_mult` and all three emissive channels verbatim; the
-  per-frame table interns that exact value under `DrawCommand::material_hash`;
-  and `material_hash_matches_gpu_material_field_hash` pins the two complete
-  field walks in lockstep. The solid pre-pass still has a concrete semantic
-  mismatch: the existing opaque walk fails open after
-  `MAX_OPAQUE_LAYERS = 8` continued effect/alpha/emitter-shell hits, while an
-  independent any-hit query can see and block on solid geometry behind the
-  ninth such hit. That is enough to invalidate the behaviour-identity claim
-  without inventing a CPU/GPU material divergence. Do not retry the independent
-  pre-pass as a no-quality-cost change; preserving hit order and the layer
-  budget requires the split closest-hit walks that already measured slower.
-
-  **Shader provenance follow-up (2026-07-24).** The committed GLSL at
-  `6c56e311` does not compile (`hitInst.alphaThreshold` and
-  `hitMat.materialFlags` address fields owned by the opposite structs).
-  Correcting only those two accesses still does not reproduce that commit's
-  `triangle.frag.spv`, proving the shipped module came from additional dirty
-  shader source. Current HEAD now self-compiles byte-for-byte across all 21
-  first-party shaders under `glslangValidator` 16.2.0; this sweep also found
-  and rebuilt stale `ui.vert.spv` and `water.vert.spv` modules left behind by
-  the `_padAlbedo` → `surfaceId` field rename (same offset and unused by both
-  shaders, so behavior-neutral). `scripts/check-shader-artifacts.sh` and its CI
-  job now reject either an unbuildable source tree or source/binary drift.
-
-### Open — Misc
-
-- [ ] **Offline texture-set upscale finalization.** The first working slice is
-  in `tools/texture-upscale`: ordered loose/BSA/BA2 sources, conservative
-  `_n`/`_g`/`_s`/`_m`/`_p` discovery, editable TOML manifests, an external
-  ESRGAN-family reference pass, joint-bilateral companion-map upsampling,
-  normal renormalization, alpha preservation, overwrite protection, and JSON
-  provenance. Live FNV discovery finds 3,127 sets; a synthetic 2×2 → 8×8
-  end-to-end pass exercises the external-process adapter. Remaining:
-  per-game/per-role DDS compression and mip generation, BC5/BC7 decode, and
-  material-slot-aware discovery. PNG intermediates are intentional until
-  those policies exist.
-- [ ] `parry3d` panics on nested compound collision shapes (catch_unwind guard in place)
-- [ ] **`NiStencilProperty` is parsed but never applied (known gap, not in progress).** The importer captures all seven stencil fields into `MaterialInfo.stencil_state`, but `crates/renderer/src/vulkan/pipeline.rs` builds every pipeline with `stencil_test_enable(false)`, and `find_depth_format` prefers `D32_SFLOAT`, which has no stencil bits. Content that relies on stencil masking (portal masks, mirror clipping, some decal techniques) renders as if it had no stencil property. Closing it needs per-material stencil pipeline variants *and* a stencil-bearing depth format, so it waits for a consumer that needs it. Recorded under #4213 (the original #337 closed without the wiring).
-- [ ] **Starfield CDB Phase 2 — per-field `.mat` material extraction, single highest-value remaining Starfield fidelity item.** [#3398](https://github.com/matiaszanolli/ByroRedux/issues/3398).
-  (Tracker repointed 2026-08-27 under [#3395](https://github.com/matiaszanolli/ByroRedux/issues/3395): this row used to cite #2359, which is **closed-completed** — its deliverable was the deferral note plus the invariant test below, not the feature — so the chain read as shipped work.)
-  `crates/sfmaterial` parses the Component Database end-to-end (97 classes /
-  1.44M instances) and `register_starfield_cdb` confirms presence via
-  `ComponentDatabaseFile::probe_header`, but nothing walks the tree for
-  per-field data — `merge_external_material`'s `.mat` arm (#1289, shipped)
-  is a two-statement stub: flips `is_pbr = true`, forwards no texture role,
-  metalness/roughness, alpha/blend, or two-sided/decal state, and correctly
-  self-reports `MergeOutcome::PresenceOnly` (#2709) rather than claiming
-  `Merged`. Every Starfield surface therefore renders on NIF-derived,
-  keyword-classified PBR values under the Disney BSDF lobe — compounds
-  with #2353 (~189,801 / 190,549 surfaces reach the lobe untextured,
-  matte, fully-dielectric white). Phase 2 must land as CDB-authored values
-  flowing into `ImportedMaterial` through this same `merge_external_material`
-  boundary (never a render-time fallback — see `/audit-nifal`); the
-  `.mat` arm returning `Merged` once a real CDB lookup supplies data is the
-  observable signal Phase 2 shipped.
-- [x] ~~**Exterior surface shading emits Inf/NaN → white-out**~~ — **historical Session 60 symptom, not reproducible at current HEAD (2026-08-04).** FO3 `MegatonWorld (-1,-7)` radius 1 rendered 3,201 entities / 1,093 draws with finite lighting/sky telemetry, zero missing textures, and a healthy deterministic PNG (mean 0.2725, standard deviation 0.0547); no speculative shader edit was made. The old capture remains evidence of a possible regression class, while the executable image-health and planned pre-tonemap non-finite gates are tracked by [#2368](https://github.com/matiaszanolli/ByroRedux/issues/2368).
-- [x] ~~`--esm` accepts only one plugin~~ — **closed via #561 / M46.0** (repeatable `--master <path>` CLI arg + multi-plugin merge through `EsmIndex::merge_from`).
-- [x] ~~`BSBoneLODExtraData` has no parser — surfaced by R3 baselines: 0/34 on FO4, 0/52 on Skyrim SE, 0/56 on FO76 (no instances on the other four games). Single-fix candidate matching the Session 18 R3-driven pattern.~~ — **closed via #614** (commit `782b7238`, 2026-04-25). Parser landed in `crates/nif/src/blocks/extra_data.rs` (`"BSBoneLODExtraData"` arm). The 0/N counts were zero *instances* in vanilla content, not parse failures — restored Skyrim Meshes0 to 100% clean (D5-01 / #1356).
-- [x] ~~`BSClothExtraData` 0/298 on Starfield~~ — **closed via #722**. Parser was reading the NiExtraData `Name` field that nif.xml line 3222 marks `excludeT="BSExtraData"`; consumed 4 bytes of cloth payload as a string-table index, then read garbage as length and tripped EOF. Fix unblocks 1 523 cloth blocks across FO4 (309) / FO76 (365) / SF Meshes01 (298) + SF FaceMeshes (551). Cloth-simulation animation consumer still future work; parser side now correct. Baseline TSVs need a fresh sweep (`BYROREDUX_REGEN_BASELINES=1`) to lock the per-block delta.
-- [ ] One Starfield NIF (`meshes\marker_radius.nif`) requests a 318 MB single-buffer allocation at parse time, exceeding `byroredux_nif::stream::MAX_SINGLE_ALLOC_BYTES = 256 MB`. Per-allocation cap is a different trade-off from the BA2 chunk cap bumped in Session 18 — bumping this one weakens defence against attacker-controlled `u32` sizes inside individual NIF blocks. Tracked separately; one file out of 320 483 in the Starfield mesh archive.
-- [ ] **FO4 Commonwealth LAND height crack, cells (3,0)/(4,0)** — [#3306](https://github.com/matiaszanolli/ByroRedux/issues/3306) (2026-08-26). The newly-wired live `terrain.seams` gate (#2371) found a genuine 3-vertex, 8-16 world-unit height disagreement at this shared cell edge — not floating-point noise, a real VHGT-chain mismatch. Not yet determined whether it's present in vanilla `Fallout4.esm` or introduced by an installed mod/plugin on the dev machine that ran the check.
-- [x] ~~**`#688`**~~ — **CLOSED.** Originally 149 Oblivion files truncated at root NiNode "failed to fill whole buffer" (pre-Gamebryo NetImmerse-vintage HUD brackets, menu assets, one creature head); after the #1506–#1509 family fixes the live count is **6** (the pre-Gamebryo v3.3–v4.2 markers, #1611) after #1543/#1544 also closed the 2 OBL-D1-NEW-01 files (live `nif_stats` over `Oblivion - Meshes.bsa`, 2026-06-15). Investigation (`.claude/issues/688/INVESTIGATION.md`) refuted the audit's "v=20.0.0.5 subset" framing — all 149 are `v=10.x.x.x / bsver=5` NetImmerse content with an undocumented 4-byte leading zero before `NiObjectNET.name`. Parser-side recovery (block_size gate) already handles them as truncated-not-failed; interior cells render fine. **Caution for future audit runs**: do NOT re-derive the "v=20.0.0.5 subset" framing — it has been empirically refuted.
+- [ ] **Hosted CI lacks a clean all-jobs signal** (last reviewed 2026-08-25).
+  Headless wgpu adapters for six UI tests, `python3` missing in the
+  shader-parity container, and `libxkbcommon-x11.so` missing in the
+  lavapipe/Xvfb run. The lock-order lane was greened in Session 92
+  (#4982–#4985). The `vulkan-validation` lane stays open until a run reaches
+  a device (#4987).
+- [ ] **Offline texture-set upscale finalization.** `tools/texture-upscale`
+  works end-to-end: set discovery, TOML manifests, an external ESRGAN-family
+  pass, companion-map upsampling and provenance. Remaining: per-game/per-role
+  DDS compression and mip generation, BC5/BC7 decode, and material-slot-aware
+  discovery.
 
 ---
 
 ## Project Stats
 
-Ground-truth as of 2026-09-27 (session close, HEAD `bad6ef2e`). Every
+Ground-truth as of 2026-09-29 (session close, HEAD `546e7fbc`). Every
 figure in this table was measured at that HEAD, not carried forward.
 
 | Metric                                  | Value                        |
 |-----------------------------------------|------------------------------|
-| Rust source lines (`src/` dirs)         | ~653 089                      |
-| Rust total lines (all `.rs`, excl. `target/`) | ~700 990                 |
-| Source files (`.rs`, excl. `target/`)   | 1191 total · 1102 outside `tests/` dirs (+18 / +18 since the 2026-09-23 close) |
+| Rust source lines (`src/` dirs)         | ~662 356                      |
+| Rust total lines (all `.rs`, excl. `target/`) | ~710 808                 |
+| Source files (`.rs`, excl. `target/`)   | 1198 total · 1108 outside `tests/` dirs (+7 / +6 since the 2026-09-27 close) |
 | Workspace members                       | 34 (count the `[workspace] members` block only — an unscoped `grep -c '^\s*"' Cargo.toml` returns 39, picking up quoted lines elsewhere in the file; 29 crates (incl. `menuxml`, added in Session 88) + `byroredux` binary + 4 tools: `byro-detect`, `byro-launcher`, `byro-dbg`, `texture-upscale`; `tools/nifskope` exists on disk but is not a workspace member) |
-| Tests                                   | **8785 passing, 0 failing** (`cargo test --workspace --no-fail-fast`, 2026-09-27; 240 ignored). Clean full-workspace run, including doc-tests, after the closeout added `byroredux-plugin` to `byroredux-hkx`'s dev-dependencies (at `bad6ef2e` the test build did not compile). Always pass `--no-fail-fast` for the ground-truth count — without it, `cargo test --workspace` stops after the first binary with a failure and silently omits every crate queued behind it (Session 77 saw this first-hand: 1836 vs the true 6905) — and beware shell pipes: `cargo test … | tail` reports the *pipe's* exit code, which masked a toolchain-version failure here before the 2026-09-18 session caught it. |
-| Open issue directories                  | 4841 (`.claude/issues/`)     |
+| Tests                                   | **8907 passing, 0 failing** (`cargo test --workspace --no-fail-fast`, 2026-09-29; 249 ignored). Clean full-workspace run, including doc-tests, after the closeout fix `546e7fbc` (at `4286e55b` one test failed, because `a070baaad` flipped the CLI's auto-exposure default and left `RendererConfig::default()` behind). Always pass `--no-fail-fast` for the ground-truth count — without it, `cargo test --workspace` stops after the first binary with a failure and silently omits every crate queued behind it (Session 77 saw this first-hand: 1836 vs the true 6905) — and beware shell pipes: `cargo test … | tail` reports the *pipe's* exit code, which masked a toolchain-version failure here before the 2026-09-18 session caught it. |
+| Open issue directories                  | 4904 (`.claude/issues/`)     |
 | NIFs in per-game integration sweeps     | **604 787** across seven games (2026-08-29, #3369 + #3466 took this from 184 886 by widening the gates to every mesh-bearing archive each game ships; Oblivion re-measured 2026-09-07 under #3925 to include its eight DLC archives). Oblivion 9 612 · FO3 17 172 · FNV 20 746 · Skyrim SE 33 424 · FO4 235 082 · FO76 168 208 · Starfield 120 543. |
 | Per-game NIF clean-parse rate           | See the [compatibility matrix](#compatibility-matrix) — it is the single home for per-game parse rates, sweep dates and residual truncation tails. Summary only: 100% clean on Oblivion / FO3 / FNV / Skyrim SE / FO4 / Starfield (Starfield re-measured 2026-09-24, #4440); **FO76 98.18%** — the 2026-08-29 corpus widening (#3466) exposed a 3 056-NIF truncation tail in its two `GeneratedMeshes` archives that no gate had ever opened. Recoverable 100% on all seven. |
 | Supported archive formats               | BSA v103/v104/v105, BA2 v1/v2/v3/v7/v8 |
@@ -1707,22 +699,16 @@ figure in this table was measured at that HEAD, not carried forward.
 > the archives silently fail to open; the scene loads near-empty (Prospector
 > falls to 36 entities / 3 meshes and reports a spurious ~1792 FPS).
 >
-> **Which numbers are live.** The first three rows carry the R6a-stale-15
-> figures (`8a668eff`, 2026-07-18) and **do not reproduce at HEAD** —
-> PERF-REGRESSION-6c56e311 landed the following day. The live bench-of-record
-> is the stepped-camera matrix at HEAD `4c9a5b36` (2026-09-09). The three
-> scene rows are retained because they are the commands themselves, and because
-> they are the TAA baseline the regression is measured against.
+> **Retired rows.** The single-scene R6a-stale-15 rows (Prospector, Whiterun,
+> MedTek at `8a668eff`) and the sweetroll single-mesh figure left this table on
+> 2026-09-29; they are in
+> [`roadmap-history.md` §8](docs/archive/roadmap-history.md#8-retired-repro-table-rows).
 
 | Claim                                                                     | Command                                                                                                                                                                                        |
 |---------------------------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| Prospector Saloon 3626 entities @ **145.1 FPS / 6.90 ms / fence=5.06 ms / brd=0.33 ms** (R6a-stale-15, `8a668eff`, 2026-07-18, 3-run avg; FPS +90.4% / fence −54.5% vs R6a-stale-14 — most of the gap closed as a side effect of intervening perf work, not a change in this bench cycle; residual gap to pre-collider 161.4 FPS / 2.62 ms narrowed from ~4× to ~2× fence). **#2560 / FNV-D8-01 (2026-08-08):** captured under native TAA, before `5c7acfe2` (2026-07-24) made FSR 3.1 Quality the engine default — running the bare command below at HEAD measures ~254 FPS (FSR), not ~145 FPS; forcing `--upscaler taa` reproduces this figure within noise. See the `TAA (native)` / `FSR Quality` bench-of-record row above (stepped-camera refresh, `2da754e7`) for current, upscaler-labeled figures. | (CWD = `.../Fallout New Vegas/Data`) `cargo run --release -- --esm FalloutNV.esm --cell GSProspectorSaloonInterior --bsa "Fallout - Meshes.bsa" --textures-bsa "Fallout - Textures.bsa" --textures-bsa "Fallout - Textures2.bsa" --bench-frames 300` |
-| Skyrim SE WhiterunBanneredMare 3237 entities @ **335.0 FPS / 3.00 ms / ~1298 draws / fence=1.21 ms** (R6a-stale-15, `8a668eff`, 2026-07-18, 3-run avg; −7.7% FPS vs 362.8 R6a-stale-14 at flat entity count — no code path changed here between the two bench dates; attributed to shared-desktop GPU contention during this run, re-check on an idle machine). Must list all 9 texture archives explicitly — numeric-sibling auto-load gates on a non-digit suffix and `Textures0.bsa` ends in a digit. | (CWD = `.../Skyrim Special Edition/Data`) `cargo run --release -- --esm Skyrim.esm --cell WhiterunBanneredMare --bsa "Skyrim - Meshes0.bsa" --bsa "Skyrim - Meshes1.bsa" --textures-bsa "Skyrim - Textures0.bsa" --textures-bsa "Skyrim - Textures1.bsa" --textures-bsa "Skyrim - Textures2.bsa" --textures-bsa "Skyrim - Textures3.bsa" --textures-bsa "Skyrim - Textures4.bsa" --textures-bsa "Skyrim - Textures5.bsa" --textures-bsa "Skyrim - Textures6.bsa" --textures-bsa "Skyrim - Textures7.bsa" --textures-bsa "Skyrim - Textures8.bsa" --bench-frames 300` |
-| FO4 MedTekResearch01 31495 entities @ **74.4 FPS / 13.49 ms / 14535 draws / brd_ms=3.63 / fence=7.08** (R6a-stale-15, `8a668eff`, 2026-07-18, 3-run avg; entity +47% vs R6a-stale-14 with draws exactly flat — consistent with the ghost-entity rerouting fix (R6a-stale-14-collider-partial) adding non-draw physics-only entities; FPS +14.1% / fence −21.6% despite the larger entity count) | (CWD = `.../Fallout 4/Data`) `cargo run --release -- --esm Fallout4.esm --cell MedTekResearch01 --bsa "Fallout4 - Meshes.ba2" --bsa "Fallout4 - MeshesExtra.ba2" --textures-bsa "Fallout4 - Textures1.ba2" --textures-bsa "Fallout4 - Textures2.ba2" --textures-bsa "Fallout4 - Textures3.ba2" --textures-bsa "Fallout4 - Textures4.ba2" --textures-bsa "Fallout4 - Textures5.ba2" --textures-bsa "Fallout4 - Textures6.ba2" --textures-bsa "Fallout4 - Textures7.ba2" --textures-bsa "Fallout4 - Textures8.ba2" --textures-bsa "Fallout4 - Textures9.ba2" --textures-bsa "Fallout4 - TexturesPatch.ba2" --materials-ba2 "Fallout4 - Materials.ba2" --bench-frames 300` |
-| **Bench-of-record (LIVE)** — full FSR matrix, all five scenes × TAA-native vs four FSR presets (stepped-camera refresh, HEAD `4c9a5b36`, 2026-09-09, 75 runs = 5×5×3 of 300 frames, median with range, 1280×720 output). Source of every FPS/ms figure in the live bench table above, including the FO4 Dugout Inn and Cornell rows. Per-scene CWD still applies. Scene subset via `FSR_BENCH_SCENES`, output dir via `FSR_BENCH_OUT`. **Refreshed 2026-09-09 at HEAD `4c9a5b36`; all 75 state-gated runs accepted and R6a-stale-21 resolved.** Note the default scene set is four interiors plus Cornell — it does not exercise ground cover (R6a-groundcover-1). The uncontrolled `cb44d99f6` matrix quoted under R6a-stale-22 (2026-09-22, `docs/audits/BENCH_stepped-camera_cb44d99f6.tsv`) came from this same command and is **not** the record. | `scripts/fsr-bench-matrix.sh 3 300` |
-| **Same-machine control** (the method that makes a refresh interpretable — see the standing methodology note in the bench section; used to prove PERF-REGRESSION-6c56e311 was code, and to prove R6a-stale-17's apparent regressions were not). Rebuild the prior record's commit in a worktree and bench it in the same session under the same load; the harness must be byte-identical at both commits (`diff` both scripts before trusting the comparison). | `git worktree add <dir> <prior-commit> && cd <dir> && cargo build --release && FSR_BENCH_SCENES="cornell prospector medtek" FSR_BENCH_OUT=<dir>/out <dir>/scripts/fsr-bench-matrix.sh 3 300` |
+| **Bench-of-record (LIVE)** — full FSR matrix, all five scenes × TAA-native vs four FSR presets (stepped-camera refresh, HEAD `a37fcba3c`, 2026-09-28, 75 runs = 5×5×3 of 300 frames, median with range, 1280×720 output). Source of every FPS/ms figure in the live bench table above, including the FO4 Dugout Inn and Cornell rows. Per-scene CWD still applies. Scene subset via `FSR_BENCH_SCENES`, output dir via `FSR_BENCH_OUT`. **Refreshed 2026-09-28 at HEAD `a37fcba3c` (harness `88c23887b`); all 75 state-gated runs accepted and R6a-stale-22 resolved. Its same-machine control is the source of R6a-regress-22.** Note the default scene set is four interiors plus Cornell — it does not exercise ground cover (R6a-groundcover-1). The uncontrolled `cb44d99f6` matrix quoted under R6a-stale-22 (2026-09-22, `docs/audits/BENCH_stepped-camera_cb44d99f6.tsv`) came from this same command and is **not** the record. | `scripts/fsr-bench-matrix.sh 3 300` |
+| **Same-machine control** (the method that makes a refresh interpretable — see **Standing methodology** under How to run a bench; used to prove PERF-REGRESSION-6c56e311 was code, and to prove R6a-stale-17's apparent regressions were not). Rebuild the prior record's commit in a worktree and bench it in the same session under the same load; the harness must be byte-identical at both commits (`diff` both scripts before trusting the comparison). | `git worktree add <dir> <prior-commit> && cd <dir> && cargo build --release && FSR_BENCH_SCENES="cornell prospector medtek" FSR_BENCH_OUT=<dir>/out <dir>/scripts/fsr-bench-matrix.sh 3 300` |
 | **Upscaler SSIM quality matrix** — the SSIM / outlier-percentage figures quoted for every preset (Cornell Quality 0.9554 SSIM / 1.68% outliers, Performance 0.9199 / 5.39%; FO4 Dugout higher SSIM, worse outliers). Scores each preset against the native TAA render over five deterministic `--bench-camera` paths. Append `game` to score real game content instead of the redistributable Cornell scene. | `cargo test --release -p byroredux --test upscaler_quality -- --ignored --nocapture` |
-| Skyrim sweetroll single-mesh ~3000-5000 FPS (2026-04-22, RTX 4070 Ti @ 1280×720)        | `cargo run --release -- --bsa "Skyrim Special Edition/Data/Skyrim - Meshes0.bsa" --mesh meshes\\clutter\\ingredients\\sweetroll01.nif --textures-bsa "Skyrim Special Edition/Data/Skyrim - Textures3.bsa"` |
 | Megaton interior parse-side 929 REFRs (2026-04-19)                        | `cargo test -p byroredux-plugin --release --test parse_real_esm parse_real_fo3_megaton_cell_baseline -- --ignored`                                                                             |
 | Per-game full mesh sweep (clean rates above; recoverable 100% gate)       | `cargo test -p byroredux-nif --release --test parse_real_nifs -- --ignored parse_rate`                                                                                                          |
 | Full ESM record counts (FNV 77 825 = 73 054 structured + 4 771 NAVMs post-#1272; FO3 44 657 = 37 459 structured + 7 198 NAVMs post-#1272; both re-verified 2026-05-26 against vanilla masters) | `cargo test -p byroredux-plugin --release --test parse_real_esm -- --ignored`                                                                                                                   |
