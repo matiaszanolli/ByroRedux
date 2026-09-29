@@ -1363,6 +1363,26 @@ mod dds_upload_guard_tests {
             .expect("image allocation error context");
         let allocation_failure = &upload[allocation.saturating_sub(260)..allocation + 80];
         assert!(allocation_failure.contains("device.destroy_image(image, None)"));
+
+        // #4880 (REN-D5-2026-09-26-02b) — the other half of the batched-flush
+        // hazard: once a copy from the staging buffer is recorded, a
+        // mid-record early-return would drop the StagingGuard (destroying the
+        // buffer) while `flush_upload_batch` still submits the command
+        // buffer — a copy from freed memory (VUID-vkQueueSubmit-
+        // pCommandBuffers-00070 class). Pin that the recording tail after the
+        // first `cmd_pipeline_barrier` contains no fallible `?` at all, so
+        // nothing can fail between record and Ok. (`{:?}` in the completion
+        // log's format string is the one tolerated spelling.)
+        let tail = &upload[record_barrier..];
+        let tail_without_format_specs = tail.replace("{:?}", "");
+        assert!(
+            !tail_without_format_specs.contains('?'),
+            "record_dds_upload grew a fallible operation after the first \
+             recorded command — a failure there would submit the batched \
+             command buffer with a copy from a dropped staging buffer \
+             (#4880). Move the failure point back before the view/barrier \
+             setup, alongside the #2178/#4854 unwinds.",
+        );
     }
 
     /// #4512 — the staging release capacity must be the requested
