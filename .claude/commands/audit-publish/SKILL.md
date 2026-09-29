@@ -21,9 +21,9 @@ report; they never call `gh issue create`.
 ### 1. Load + parse the report
 
 Read `$ARGUMENTS` (e.g. `docs/audits/AUDIT_RENDERER_2026-04-04.md`). Each finding block
-follows _audit-common's Base Per-Finding Format: `### <ID>: <Title>` then `Severity`,
-`Dimension`, `Location`, `Status`, `Description`, `Evidence`, `Impact`, `Related`,
-`Suggested Fix`. Extract those fields per finding; ID + Severity + Location + Status
+follows _audit-common's Base Per-Finding Format: `### <ID>: <Title>` then **Severity**,
+**Dimension**, **Location**, **Status**, **Description**, **Evidence**, **Impact**, **Related**,
+**Suggested Fix**. Extract those fields per finding; ID + Severity + Location + Status
 are required, the rest carry into the issue body.
 
 ### 2. Path-validation gate (run first, before judging any finding)
@@ -73,9 +73,11 @@ gh issue list --repo matiaszanolli/ByroRedux --limit 400 --json number,title,sta
   > /tmp/audit/issues.json
 ```
 
-Match each CONFIRMED finding's keywords against existing **open** issue titles/bodies.
-On a match, skip and record `Existing #NNN` in the summary. If a *closed* issue matches
-and the bug is back, file it but title/note it as a regression of `#NNN`.
+Match each CONFIRMED finding's keywords against existing **open** issue titles.
+On a match, skip and record `Existing #NNN` in the summary. The list above is open-only
+(`gh issue list` defaults to `--state open`), so check closed issues per finding with
+`gh issue list --repo matiaszanolli/ByroRedux --state closed --search "<keywords>" --json number,title`;
+if a *closed* issue matches and the bug is back, file it but title/note it as a regression of `#NNN`.
 
 ### 6. Reconcile labels against the live repo (do this once, before any create)
 
@@ -110,7 +112,7 @@ label. Map the finding's subsystem directly:
 | GLSL / SPIR-V sources, shader contract | `shaders` (+ `renderer`) |
 | Water — WATAL translation, buoyancy, waterline | `water` |
 | Terrain / LOD / sky / weather / ground cover / worldspace (EXAL, SKYAL) | `terrain-exterior` (+ `renderer` / `shaders` for the GPU half) |
-| Inventory / containers / loot / consumables / combat / AI packages / locomotion | `gameplay` + the narrower tag (`inventory` / `combat` / `ai` / `quests`) |
+| Inventory / containers / loot / consumables / combat / AI packages / locomotion | `gameplay` + the narrower tag (`inventory` / `combat` / `ai` / `quests` / `dialogue`) |
 | BGSM / CDB / HKX / FaceGen / MenuXml / game-detect readers | `import-pipeline` *(no own label — flag the gap)* |
 | SDK, debug server / protocol / `byro-dbg`, launcher, settings-io | `tech-debt` *(no own label — flag the gap)* |
 | Physics — Havok→Rapier, colliders, ragdoll (PHYSAL) | `physics` |
@@ -166,7 +168,7 @@ domain/type; a per-finding `Dimension`/domain always overrides it:
 | `AUDIT_SAFETY_*` | `safety` | `bug` | + the landing subsystem |
 | `AUDIT_RUNTIME_*` | (per finding) | `bug` | `performance` on fps/draw-call drift |
 | `AUDIT_EXTERIOR_*` | `terrain-exterior` | `bug` | `water` / `shaders` / `renderer` per finding |
-| `AUDIT_GAMEPLAY_*` | `gameplay` | `bug` | `inventory` / `combat` / `ai` / `quests` per finding |
+| `AUDIT_GAMEPLAY_*` | `gameplay` | `bug` | `inventory` / `combat` / `ai` / `quests` / `dialogue` per finding |
 | `AUDIT_PARSERS_*` | `import-pipeline` | `bug` | `game:*` where title-specific |
 | `AUDIT_TOOLING_*` | `tech-debt` | `bug` | — |
 | `AUDIT_FNV_*` / `AUDIT_FO3_*` / `AUDIT_FO4_*` / `AUDIT_SKYRIM_*` / `AUDIT_OBLIVION_*` / `AUDIT_STARFIELD_*` | (per finding) | `bug` | the matching `game:*` on **every** finding + `legacy-compat` |

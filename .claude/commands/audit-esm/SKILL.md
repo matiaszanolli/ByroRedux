@@ -5,7 +5,7 @@ argument-hint: "--focus <dimensions> --game <name> --depth shallow|deep"
 
 # ESM / Plugin Parser Audit
 
-Audit `crates/plugin/` (~62k LOC in `src/`) as a parser: GRUP walker, sub-record byte
+Audit `crates/plugin/` (~64k LOC in `src/`) as a parser: GRUP walker, sub-record byte
 accounting, per-record schema dispatch, FormID load-order remap, CELL/WRLD walkers, and
 the `EsmIndex` → ECS handoff. Per-game audits (`/audit-fnv`, `/audit-skyrim`, …) each
 sample one game's slice; this skill owns the parser itself.
@@ -69,9 +69,10 @@ stays here, Dim 4); CHARAL formulas (`/audit-character`).
    — the real-data tests parse whole masters (Starfield ≈ 4 GB parsed) and have
    OOM-killed sessions past 20 GB; use Dim 8's single-file probes instead.
 
-**Suggested emphasis** (yield across the 9 prior reports): Localized Strings, ESM→ECS
-Handoff, CELL/WRLD, FormID remap. Header/GRUP is mostly guarded; byte accounting has low
-report yield but no width guard — spot-check decoders changed since the last report.
+**Suggested emphasis**: the 2026-08 → 09-11 reports yielded mostly Localized Strings,
+ESM→ECS Handoff, CELL/WRLD and FormID remap; the 2026-09-21 report's MEDIUMs were Byte
+Accounting (Oblivion `LVLO`/`LVLD`, FO4 `TERM`, `LTEX.GNAM`) and Header/GRUP (inflation
+ceiling, skip-arm clamp), all found by Dim 8's real-data census — run it, don't skip it.
 
 ## Phase 2: Dimensions
 
@@ -99,16 +100,20 @@ to it), `reader::tests::bounded_group_content_end_clamps_to_parent_end`, and the
   and zero every weapon. Any new per-game schema split widens this blast radius — check.
 - Missing/short HEDR falls back to `GameKind::Fallout3NV` (`Default`): confirm each call
   site is deliberate and no branch treats "defaulted" as "detected FO3".
-- **Universal GRUP bound** (#3503/#3721/#4076): every self-recursive walker takes
+- **Universal GRUP bound** (#3503/#3721/#4076/#4644): every self-recursive walker takes
   `bounded_group_content_end(header, depth, parent_end, name)` and threads `depth + 1`
-  into its `_inner`. The raw `group_content_end` may appear only in the non-recursive
-  top-level loop (`records/parse.rs`) and `cell/wrld.rs::parse_wrld_group` (which must
-  `.min(end)` itself). Regression = a new recursive walker on the raw accessor, a dropped
-  `depth` argument, or a call site that loses the `parent_end` clamp (the depth guard does
-  not test the clamp per site).
+  into its `_inner`; **skip arms** too seek to the parent-clamped end via `seek_to` (the
+  depth-cap arm inside `bounded_group_content_end` included). The raw `group_content_end`
+  may appear only in the non-recursive top-level loop (`records/parse.rs`, the only
+  `skip_group` caller), `cell/wrld.rs::parse_wrld_group` and `grup_walker.rs::walk_info_records`'
+  nested-group skip (both `.min(end)` themselves). Regression = a new recursive walker on
+  the raw accessor, a dropped `depth`, or a recurse/skip site that loses the `parent_end`
+  clamp (guards `overrunning_child_grup_in_a_skip_arm_seeks_to_parent_end`,
+  `bounded_group_content_end_depth_cap_skip_is_parent_clamped` pin fixtures, not every site).
 - `FLAG_COMPRESSED`: `data_size >= 4` checked before the subtraction; declared size is
-  bounded by `record_inflation_ceiling` (`min(64 MiB, max(64 KiB, compressed×512))`, from a
-  census of 133k vanilla records — worst real ratio 102:1) and the decoder is held to
+  bounded by `record_inflation_ceiling` (`min(64 MiB, max(64 KiB, compressed×2048))`, from a
+  seven-master census — worst real ratio 785.9:1, a Starfield `SFTR`, #4640; 512:1 rejected
+  82 vanilla records and dropped the whole plugin) and the decoder is held to
   `take(declared + 1)`; mirrors `byroredux_bsa::safety::inflate_bounded` (#3410).
   Regression = either bound removed or the two implementations diverging.
 **Output**: `/tmp/audit/esm/dim_1.md`
@@ -139,9 +144,10 @@ record still "parses" with wrong numbers.
   `wind_direction_converts_shipped_degrees_on_the_fo3nv_dnam_arm` (this field moved twice).
 - Strings: terminator consumed exactly once; a missing terminator cannot read past the
   sub-record.
-- FO76 split leveled entries: `LVLO` (4 B ref) + float `LVLV`/`LVIV` companions are
-  decoded only under `GameKind::Fallout76` (`parse_leveled_list_for_game`); a truncated
-  legacy `LVLO` must never become a valid reference.
+- Leveled lists (`parse_leveled_list_for_game`): FO76 split `LVLO` (4 B ref) + float
+  `LVLV`/`LVIV`/`LVCV` companions only under `GameKind::Fallout76`; the legacy row accepts
+  ≥8 bytes (Oblivion omits Count → default 1) and `LVLD` bit `0x80` becomes `LVLF 0x01`, not
+  chance-none 128 (#4638). A sub-8-byte legacy `LVLO` must never become a valid reference.
 **Output**: `/tmp/audit/esm/dim_2.md`
 
 ### Dimension 3: FormID Remap, Load Order & ESL Space
@@ -162,8 +168,12 @@ site like a sub-record field); (3) a `HashMap<u32, _>` in `EsmIndex` keyed by, o
 against, a raw plugin-local id.
 **Checklist**:
 - `GlobalSlot::Regular` keeps 24 bits; `GlobalSlot::Light` (`0xFE` space) packs a 12-bit
-  sub-index and keeps only the low **12** object-id bits (`0x0FFF` masks on both sides).
-  ESH `0xFD` slots are not modelled — a real gap since the legacy bridge was deleted (#4384).
+  sub-index and keeps only the low **12** object-id bits (`0x0FFF` masks on both sides);
+  `GlobalSlot::Medium` (`0xFD`, Starfield) packs an 8-bit sub-index + 16-bit object id.
+  The TES4 master bits are per game (#4639, `read_file_header`): Starfield small `0x100` /
+  medium `0x400`, Skyrim SE + FO4 light `0x200`, every other game none — a `0x200` test on
+  Starfield (*Update*) or a pre-ESL game is the regression. `allocate_global_slot`
+  (`load_order.rs`) must keep the three spaces disjoint.
 - `FormIdRemap::remap` arms: raw `0` → `0` (null sentinel, must not become a live ESL id);
   self-reference (`mod_index == master_slots.len()`); in-range master; standalone with no
   masters (pass through, `debug` — the vanilla Oblivion `0x01` artifact, #1308; must NOT be
@@ -173,7 +183,13 @@ against, a raw plugin-local id.
   shifted slot table.
 - Multi-plugin is live (`--master` repeatable → `parse_esm_with_load_order`); `parse_esm`
   passes `None`. Verify every embedded FormID in a newly-touched parser goes through
-  `remap_fid`.
+  `remap_fid`. The guard walk sees only `pub`/`pub(crate)`/`pub(super) fn parse_*` in
+  `records/` (files named `tests.rs` and `#[cfg(test)]` modules excised) — `decode_*` /
+  `from_subs*` helpers and `cell/` are outside it.
+- Parallel walk (#3813, `parse_record_indexes_in_load_order_with_archive`): walks run on
+  the rayon pool, but slot allocation, remap construction, `.STRINGS` loads and the
+  `merge_from` fold stay on the calling thread in load order — fold order, never completion
+  order. Guard: `load_order_parallel_tests::parallel_walk_matches_the_inline_walk_on_a_localized_master_chain`.
 **Output**: `/tmp/audit/esm/dim_3.md`
 
 ### Dimension 4: Record Schema Dispatch & Coverage
@@ -211,18 +227,21 @@ map is a `categories()` row or a reasoned exclusion); `cell::plugin_loading_doc_
 - `EsmIndex::merge_from`: last-write-wins matches Bethesda override semantics; `game` is
   only adopted when `other.total() > 0` (a failed-parse `EsmIndex::default()` must not
   relabel the load order as FO3/FNV, #3403); `character_rules` is first-non-`NONE` wins.
+  Top-level maps merge through `categories()`; `EsmCellIndex::merge_from` destructures
+  exhaustively (#4904 — a `..` there is the regression that dropped `landscape_grasses`).
 - `actor_value_derive.rs` is the CHARAL feed — formulas belong to `/audit-character`.
 - Settled decodes — verify they hold, do not re-derive: `INAM` is one FormID array (#3356);
   `CREA CNAM` is not a class (#3383); `FACT` rank ladder (#3338); `ARMO` contributes every
   race-matching `ARMA` (#3357), `MOD3` is the female mesh (#3414); a `REFR` tombstone
-  removes the placement wherever it lives (#3362); FO76 `HEDR` is patch-dependent — 279.0 on the 2026-09-20 patch, never pin it (#3405, #4643).
+  removes the placement wherever it lives (#3362); FO76 `HEDR` is patch-dependent — 279.0 on the 2026-09-20 patch, never pin it (#3405, #4643);
+  DIAL quest ownership reads `QSTI` **or** `QNAM` (Skyrim authors `QNAM`; `parse_dial`).
 - `equip.rs::main_body_bit` FO76/Starfield arms are a **provisional inference**
   (`PROVISIONAL (#4074)`, pinned by `fo76_and_starfield_arms_are_marked_provisional`) —
   known and marked; report only if the marker is removed without an xEdit citation.
 **Output**: `/tmp/audit/esm/dim_4.md`
 
 ### Dimension 5: CELL / WRLD Walkers & Placement Data
-Paths: `crates/plugin/src/esm/cell/**/*.rs`, `esm/records/misc/world.rs`
+Paths: `crates/plugin/src/esm/cell/**/*.rs`, `esm/records/misc/world.rs`, `esm/records/spatial_units.rs`
 First step: `git log --since=<last report> --format='%h %cs %s' -- crates/plugin/src/esm/cell crates/plugin/src/esm/records/misc/world.rs`
 **Checklist**:
 - Cell child groups: type 6 is the `Cell Children` *container*; 8 = Persistent, 9 =
@@ -232,6 +251,14 @@ First step: `git log --since=<last report> --format='%h %cs %s' -- crates/plugin
   consumer reads it yet — verify it stays populated per-scope, not that a consumer exists.
 - All three walkers depth-bounded (see Dim 1): `parse_cell_group`, `parse_wrld_children`,
   `parse_refr_group`.
+- Placement header flags (#4813/#4814): `PlacedRef.initially_disabled` = `0x800` on every
+  placement type; `starts_dead` = `0x200` on `ACHR` gated on `EsmVariant::Tes5Plus` — that
+  variant includes FO3/FNV, though only xEdit's TES5 list was checked; confirm the bit
+  there before trusting it.
+- Starfield metric → 70/m lift (`records/spatial_units.rs::normalize`, called once at the
+  end of each plugin's walk in `parse.rs`): positions, light radii, fog/fade distances,
+  water heights, LAND heights, NAVM vertices. Check new Starfield distance fields join it,
+  dimensionless fields (XSCL, Euler) stay out, and no path normalizes an index twice.
 - Lighting-template inheritance is per-field; "absent" and "authored zero" stay distinct.
 - **XCLL** is size- and game-validated: `xcll_canonical_sizes(game)`; the ≥92-byte
   ambient-cube arm fires only for Skyrim/FO4/FO76 (Starfield has its own ≥108 arm) — a non-canonical 92+ XCLL on
@@ -252,7 +279,8 @@ First step: `git log --since=<last report> --format='%h %cs %s' -- crates/plugin
   a child inherits only the flagged categories.
 - `parse_land_record`: quadrant/layer counts and splat rows are fixed-stride. An `ATXT`
   with no following `VTXT` must flush with `alpha: None` (`pending_atxt`, #4078;
-  measured 14× on `Oblivion.esm`). `LTEX.GNAM` (grass) is decoded in `parse_ltex_group`.
+  measured 14× on `Oblivion.esm`). `LTEX.GNAM` is an **array** of grasses, kept in
+  authored order into `landscape_grasses` by `parse_ltex_group` (#4642; last-wins was the bug).
 - Starfield `TXST`: an unmodelled slot warns once (#4438), not per record.
 - Navmesh: classic `NVTR`/`NVEX` and packed `NVNM` (`decode_nvnm`, `NVNM_MAX_DIVISOR`)
   yield the same `NavmRecord` through shared row decoders; the cursor refuses to pass the
@@ -271,6 +299,10 @@ First step: `cargo test -p byroredux-plugin strings_table`
   instead of yielding shifted strings.
 - Missing string files degrade to "no string" without panic or per-form warn spam; a
   localized plugin that resolves **zero** tables logs a diagnostic (#4073, `load_order.rs`).
+- Tables and the localized flag are thread-locals: since the parallel walk (#3813) the
+  caller only loads tables (`load_string_tables`) and each walk installs its own
+  `StringsTableGuard` on the walking thread. A guard installed on the caller yields
+  `<lstring 0x…>` placeholders under the pool.
 - The language token is not the file-name segment: Skyrim spells it out
   (`dawnguard_english.strings`), FO4/FO76/Starfield use a short tag
   (`Fallout4_en.STRINGS`). `language_candidates` expands both; check it exists before
@@ -296,7 +328,7 @@ First step: `grep -rn 'resolve_entity_by_global_form_id\|find_by_form_id' byrore
   *equipment_system*. `equip_template_tests.rs` covers template equip resolution.
 - Redux-native tier: audit for **rot** (compiles against the current `Record` shape; docs
   consistent with `docs/engine/plugin-loading.md`) and dead-but-documented API. "Unused" is
-  not a bug on its own; a missing ESH `0xFD` arm in `GlobalSlot` is a real gap.
+  not a bug on its own.
 **Output**: `/tmp/audit/esm/dim_7.md`
 
 ### Dimension 8: Real-Data Validation

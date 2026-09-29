@@ -30,7 +30,8 @@ changes gameplay silently — no crash, no validation error, no failing test unl
   construction site) + `npc_spawn/{resumable,ai_package}.rs`, `crates/plugin/src/esm/records/
   actor_value_derive.rs`, `crates/plugin/src/esm/records/actor/mod.rs` (`effective_actor_level`),
   `crates/plugin/src/equip.rs` (`resolve_inherited_*`), `byroredux/src/cell_loader/references/`,
-  `byroredux/src/inventory.rs` (`attach_to_player` stamps the player's `ActorValues`/`ActorVitals`),
+  `byroredux/src/inventory.rs` (`attach_to_player` stamps the player's `ActorValues`/`ActorVitals`/`CharacterLevel`/
+  `Background` and reads `CharacterRulesProfile::vital_pools`), `byroredux/src/combat.rs` (`melee_damage_charal_bonus`),
   `byroredux/src/commands/{actor_value,condition}.rs`.
 - Handoff: gameplay writers of `ActorValues` (consumables, restoration, combat — `byroredux/src/
   {inventory,combat}.rs`, `systems/restoration.rs`) belong to `/audit-gameplay`; CHARAL owns only whether
@@ -44,8 +45,8 @@ ruleset.md` — **the authority for every constant**; a coefficient no capture s
 
 **Known-open — do NOT re-file** (confirm still true):
 - FNV/FO3 **tag-skill per-level** formula undocumented, deferred; CLAS SPECIAL lives in `ATTR`, not `DATA`.
-- FO3↔FNV divergent *player* Health/AP (#2937): every affected row ships `.player_only()`, disclosed in
-  place and pinned; formula decision deferred pending master-name disambiguation.
+- FO3/FNV AP (and Crit/Melee/Unarmed) NPC scope is unsourced: those rows ship `.player_only()` as the
+  documented conservative choice (#2937, closed as documented), disclosed in place and pinned.
 - VATS runtime (AP pool/regen, time-pause, limb health, hit roll) absent; only AP *formulas* exist.
 - Regen: `PoolRegenConfig` has **zero production insertion sites** (`pool_regen_tick_system` is
   registered and early-returns on every game); `affliction_tick_system` has no scheduler registration; no
@@ -53,11 +54,9 @@ ruleset.md` — **the authority for every constant**; a coefficient no capture s
   event (Dim 5 doc sweep).
 - Oblivion `RulesetBuilder::None` is deliberate (no AVIF pre-FO3 → no resolver); pinned by
   `oblivion_still_has_no_runtime_ruleset_and_that_is_deliberate`. FO76/Starfield: captures, no builders.
-- Open from the 2026-09-19 report — cite, do not re-file: #4452 (`melee_damage_charal_bonus` skips the
-  `DerivedScope` check), #4453 (FO76/Starfield `Stored` rows unsourced), #4454 (Skyrim NPC pool: 2 of 3
-  capture terms), #4455/#4459-#4463 (doc rot), #4456 (`AfflictionTable` tie-break), #4457 (TPLT hoist),
-  #4137 (six `template_flags` bits with no consumer), #4232 (`effective_actor_level` returns 0 verbatim).
-  Verify with `gh issue view` before citing.
+- Open (verified 2026-09-29) — cite, do not re-file: #4137 (six `template_flags` bits with no consumer),
+  #4232 (`effective_actor_level` returns 0 verbatim), #4415 (magic runtime partial). The 2026-09-19 report's
+  #4452-#4457/#4459-#4463 are all closed — regression checks now. Verify with `gh issue view` before citing.
 
 ## Parameters
 
@@ -103,8 +102,9 @@ First step: `grep -rn 'GameKind\|\.game ==\|game_kind' crates/core/src/character
   `ROSTER_CASES` + `assert_rosters_resolve` (`crates/plugin/tests/parse_real_esm.rs`, `#[ignore]`d
   real-master corpus gate) — a new roster/derived output without a `ROSTER_CASES` entry is untested by
   construction.
-- **Profile rows must be sourced**: a row for an unwired family may not claim a wire format
-  (`NpcStatModel::Stored`, #4453) without a capture line; the "blocked, not forgotten" comment pattern
+- **Profile rows must be sourced**: a row for an unwired family may not claim a wire format without a
+  capture line (FO76/Starfield were reset to `NpcStatModel::None`, #4453); the same holds for `vital_pools`
+  (per-profile roster since #4679 — a consumer-side `GameKind` pool list is the regression); the "blocked, not forgotten" comment pattern
   (Oblivion arm) is the template. Pins: `fallout_profiles_keep_roster_health_and_ruleset_in_lockstep`,
   `skyrim_profile_builds_a_ruleset_and_actually_calls_gmst`.
 **Output**: `/tmp/audit/character/dim_1.md`
@@ -121,7 +121,8 @@ First step: `cargo test -p byroredux-core character::derived character::fallout 
 - **Scope contract**: `DerivedScope` (player-only vs actor-general) is what contains the #2937
   deferral. A row with no scope annotation in its capture is *unsourced* (#4450: documented + pinned);
   every consumer that evaluates for an arbitrary entity must check scope (`crates/scripting/src/
-  condition.rs` does; `melee_damage_charal_bonus` does not — #4452).
+  condition.rs` and, since #4452, `melee_damage_charal_bonus` do). `PlayerOnly` rows are evaluated for the
+  player at stamping (#4674) — verify no NPC path reaches them.
 - **Chaining**: SPECIAL + skills must be in `ActorValues` before dependents evaluate (order is the
   mechanism, no dependency graph); an unpopulated input reads a *documented* default, not accidental 0.
 - `eval` stays allocation-free, no game branch; `DerivedStatFormula` `Copy` + 36 B
@@ -160,16 +161,21 @@ First step: `cargo test -p byroredux --bin byroredux resolve_inherited_call_site
 - **One derivation, one implementation** (the class that keeps recurring): `effective_actor_level` lives
   once in `actor/mod.rs` and is `.max(0)` on the non-multiplier branch — a second copy or a `.max(1)` (also
   in `examples/`) is the regression (#3171/#4095); `pc_level_mult_actors_resolve_to_calc_min_not_the_raw_
-  multiplier` calls it through the plugin crate. TPLT template inheritance: each population read goes
-  through a `resolve_inherited_*` helper (`crates/plugin/src/equip.rs`), currently ~10 independent
-  chain-walk sites (#4457, open); the guard enumerates the call sites — a new site or a raw `npc.<field>`
-  read is the recurrence (fix-by-addition made it worse in #4086). Verify the enumerated count moved only
-  deliberately, and that new reads honor `template_flags` rather than overwriting inherited values (six bits still have no consumer: #4137).
+  multiplier` calls it through the plugin crate. TPLT template inheritance: since #4457 the population boundary resolves
+  every category once through `ResolvedNpc::resolve` (`crates/plugin/src/equip.rs`) and consumers read the
+  resolved type; the guard pins production `resolve_inherited_*` calls per file (one left, pre-spawn race
+  in `cell_loader/references/mod.rs`) — a new direct call or a raw `npc.<field>` read is the recurrence
+  (fix-by-addition made it worse in #4086). Verify the enumerated count moved only deliberately, and that new reads honor `template_flags` rather than overwriting inherited values (six bits still have no consumer: #4137).
 - **Writers vs stamps (silent no-op class)**: for every writer that gates on a component
   (`consume_item`/`restoration_system`/drowning gate on player `ActorValues`+`ActorVitals`), find a
   *production* insert of that component on the entity class the writer targets; unit tests hand-insert and
-  hide the gap (#4458: fixed by `attach_to_player`). Player `CharacterLevel`/`Background` remain
-  deliberately absent — re-check each new consumer against that.
+  hide the gap (#4458: fixed by `attach_to_player`). The player now carries `CharacterLevel`/`Background`
+  from the resolved Player record (#4678); `CharacterLevel` is still unsaved, so the first XP writer trips
+  `validate_progression_state` (`/audit-save`).
+- **Magic modifiers (#4415)**: `byroredux_scripting::magic::apply_constant_modifiers` adds constant-spell
+  amounts to an `ActorValues` *permanent modifier* at spawn and on `AddSpell`/`RemoveSpell`. Check it never
+  writes base, that add/remove are symmetric, and whether a derived output whose input it modifies
+  (e.g. an END ability → Health) is re-evaluated or silently stale.
 - `build_character_ruleset` returns `None` for Oblivion/FO76/Starfield; every caller must treat `None` as
   "no CHARAL for this game", never "use the default ruleset" (Fallout formulas on a TES actor).
 - `resolve` = `index.actor_value_form_id(editor_id)`: an unresolved EditorID skips its formula

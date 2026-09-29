@@ -17,7 +17,7 @@ progress** — frame as CRITICAL/HIGH per `_audit-severity.md` (data loss is CRI
 
 ## Scope
 
-**Crate** `crates/save/src/` (~2k LOC — read all): `lib.rs` (design intent docstring, `SaveError`),
+**Crate** `crates/save/src/` (~2.9k LOC — read all): `lib.rs` (design intent docstring, `SaveError`),
 `snapshot.rs` (`Snapshot`, container header, `FORMAT_MAJOR` doc = the bump ledger, `encode`/`decode`),
 `registry.rs` (`SaveRegistry`; `register_component` / `register_replacing_component` / `register_resource`
 / `register_form_id_component`; `ValidateFn`; `schema_fingerprint`), `driver.rs` (`save_world`,
@@ -37,8 +37,8 @@ order: `capture_player_pose` → `step_player_save_actions` → `step_save_loads
 restore layered around the save/reload — the extension *API* is `/audit-tooling`),
 `byroredux/src/cell_loader/reference_state.rs` (`PersistentReferenceStates`, `without_parked_state`),
 `cell_loader/{transition,spawn}.rs`, `crates/core/src/{atomic_file.rs,string/mod.rs,ecs/world.rs}`,
-`crates/physics/src/sync.rs`. Companion doc: `docs/engine/save-load-roundtrip.md` (does not yet name the
-extension preflight/restore steps — #4145).
+`crates/physics/src/sync.rs`. Companion doc: `docs/engine/save-load-roundtrip.md` (numbers the extension preflight/restore
+steps as 1b/3b).
 
 **Ownership split**: this skill owns schema, atomicity, validation, and load-apply *mechanics*. What loot /
 inventory / consumable state *should* persist (gameplay semantics) → `/audit-gameplay`; reconcile-after-
@@ -55,7 +55,7 @@ finds >0 items, and it fails when the invariant is broken.
 |---|---|
 | `registry_completeness_tests::every_component_or_resource_impl_is_saved_or_explicitly_allowlisted` | every `Component`/`Resource` impl in any `crates/*/src` (roots **discovered**, not listed) + `byroredux/src` is registered XOR in `NOT_SAVED_BY_DESIGN` with a reason; `PlayerNotifications`, `PickedUp` etc. are classified there |
 | `serde_default_guard_tests::serde_default_on_saved_struct_requires_format_major_bump` | any `#[serde(default)]` on a save-participating type (skip-only fields exempt) |
-| `serde_default_guard_tests::saved_type_shape_changes_require_format_major_bump` | hash of every `#[derive(..Serialize..)]` struct/enum body in the discovered save-source files vs `BASELINE_SHAPE_FINGERPRINT`/`BASELINE_MAJOR` |
+| `serde_default_guard_tests::saved_type_shape_changes_require_format_major_bump` | hash of every `#[derive(..Serialize..)]` struct/enum body in `save_type_sources()` — discovered files that carry a `cfg_attr(feature = "save"` derive or define a registered type, plus four explicit nested-payload files — vs `BASELINE_SHAPE_FINGERPRINT`/`BASELINE_MAJOR` |
 | `serde_default_guard_tests::set_in_chargen_renames_still_decode_v23_keys` | `serde(alias)` rename path stays decodable |
 | `round_trip_tests::delta_columns_carry_only_session_stable_fields` | no `FixedString`/`EntityId`/session handle in a `MUTABLE_DELTA_COLUMNS` type |
 | `round_trip_tests::delta_columns_removed_at_runtime_have_a_load_reconciler` | every delta column with a production removal site has a declared reconciler or "NoReconcilerNeeded" reason |
@@ -120,13 +120,21 @@ First step: `git log -p -S'register_' --since=<last report> -- byroredux/src/sav
   the cell reload?) and whether a new persisted fact (disable, pickup, lock) chose the marker-plus-
   reconciler or FormID-keyed-ledger model (`ReferenceEnableState`, `ReferenceLockState`,
   `PersistentReferenceStates` — resources keyed by FormID survive cell unload; a component would not).
+  The overlay emits no `EquipmentEventBatch`: presentation derived from an overlaid column on the
+  process-lifetime player (the P3 player body's gear meshes / `NpcAppearanceHidden`, driven by
+  `equipment_appearance_system`) needs its own post-load re-derivation — check one exists.
+- **P3/P4 runtime state (2026-09-29)**: player body (`PlayerBodyRoot`, `PlayerBodyRootEntity`, `HiddenFirstPerson`,
+  `PlayerCameraView`), mid-life gear import (`NpcSkeletonBones`, `ActorBodyClass`, `PendingGearImport`,
+  `PendingInventoryActions`) and NPC dialogue (`NpcDialogueTopic`, `DialogueSurfaceState`) are all
+  `NOT_SAVED_BY_DESIGN`; `ObjectiveHudCache` is an `App` field, not a Resource. Verify each reason (body subtree
+  entities have no `FormIdComponent`: captured by `save_world`, never remapped — the basis of `RigidBodyData`'s
+  "NoReconcilerNeeded" row).
 - **Determinism** (the `Snapshot` doc claims reproducible CRCs at equal state): `Snapshot` maps are
   `BTreeMap` and component rows are sorted by entity id (`registry.rs`), but saved **resources** serialize
   as-is — at 2026-09-19 `Globals(HashMap<u32, f32>)`, `QuestStageState`, `ReferenceEnableState` (`HashSet`),
   `ReferenceLockState` and `PersistentReferenceStates::pair_rows` all emit hash-iteration order, so two saves
-  of equal state can differ in bytes/CRC. Re-verify; if still true it is a MEDIUM doc/contract mismatch
-  (not data loss) unless something diffs or hashes saves — narrow the doc claim to component columns or
-  sort at the resource boundary. Do not claim determinism at the row level without checking this.
+  of equal state can differ in bytes/CRC — known-open #4748 (re-verified 2026-09-29; cite, don't re-file). A MEDIUM
+  doc/contract mismatch (not data loss) unless something diffs or hashes saves. Do not claim determinism at the row level without checking this.
 - **`next_entity`** is saved verbatim and replayed via `set_next_entity` before inserts; `insert_batch`'s
   `entity < next_entity` is a `debug_assert` only (release inserts at an unspawned id silently — MEDIUM);
   `StringPool::dump`/`from_dump` preserves symbol order (a reordered dump = every `Name` wrong = CRITICAL).
@@ -135,7 +143,7 @@ First step: `git log -p -S'register_' --since=<last report> -- byroredux/src/sav
 ### Dimension 2: Format & Schema Discipline (registry fidelity + `FORMAT_MAJOR`)
 Paths: `crates/save/src/{snapshot,registry}.rs`, `save_io/serde_default_guard_tests.rs`, `crates/save/Cargo.toml`, `crates/core/Cargo.toml`
 First step: `cargo test -p byroredux --bin byroredux serde_default_guard` ; `git log --since=<last report> --format='%h %cs %s' -- crates/save/src/snapshot.rs`
-- **Bump rule** (read the `FORMAT_MAJOR` doc comment in `snapshot.rs`, 25 as of 2026-09-19 — do not
+- **Bump rule** (read the `FORMAT_MAJOR` doc comment in `snapshot.rs`, 30 as of 2026-09-29 — do not
   hardcode the number elsewhere): intra-type shape changes need a bump because `schema_fingerprint` hashes
   only column keys (+ replacing policy). A new required field, retyped field, or new `Option` in a saved
   type bumps; `#[serde(default)]` is forbidden as a compatibility mechanism (guard) — even where the default
@@ -147,13 +155,15 @@ First step: `cargo test -p byroredux --bin byroredux serde_default_guard` ; `git
   with no bump. An audit proposing to relax the blanket rule for a "safe" default reopens #1714.
 - **Baseline refresh triage** (the guard cannot judge this): every `BASELINE_SHAPE_FINGERPRINT` change must
   carry a justification comment stating whether a registered column's shape changed. Known false-positive
-  classes: (a) the guard hashes *every* serialized-derive type in the discovered files, including types on
-  `NOT_SAVED_BY_DESIGN` (e.g. `AnimatedTextureFlip`, `WaterMaterial`) — those move the hash with no snapshot
-  impact; (b) a **tuple struct** sweeps the following `impl` block into its span (`VisibilityMask`) — method
+  classes: (a) the guard hashes *every* serialized-derive type in a scanned file, including `NOT_SAVED_BY_DESIGN`
+  types sharing it (e.g. `AnimatedTextureFlip`; inspect-only files such as `WaterMaterial`'s left the scan in
+  573170e1c) — those move the hash with no snapshot impact; (b) a **tuple struct** sweeps the following `impl` block into its span (`VisibilityMask`) — method
   edits move the hash; (c) the hash includes the file-relative path, so moving a save-participating type
   between files moves it. Verify baseline and `FORMAT_MAJOR` were updated in the same commit, and that a
   refresh-without-bump was not hiding a real field change to a registered type.
-- **Guard blind spots**: manual `impl Serialize` (no derive) types; a new `Option<T>` field is hashed but
+- **Guard blind spots**: manual `impl Serialize` (no derive) types; a nested payload type of a plain-`derive`
+  registered type (the `byroredux/src` pattern) defined in another file is outside `save_type_sources()` unless
+  added to its explicit list; a new `Option<T>` field is hashed but
   looks like a routine baseline bump — confirm it got the bump; `serde(alias)` must never coexist with a
   dropped value semantic change.
 - **Second payload — extension state** (`Snapshot.resources["ByroExtensionState"]`, written by
@@ -209,8 +219,8 @@ First step: `grep -n 'fn validate_\|validate_[a-z_]*(world' crates/save/src/vali
   `EntityId` fields of columns excluded from the overlay — grep the function for the live column list),
   animation (`AnimationPlayer`, `AnimationStack` root + layer clips, `Seated.animation_restore`),
   inventory instances vs `ItemInstancePool`, progression (`CharacterLevel.xp != 0` aborts because
-  `CharacterLevel` is unsaved; the player has no `CharacterLevel` — if a leveling runtime lands, register
-  it), and `Material` finiteness; the binary adds FormId resolvability and cinematic `EntityId` refs. Do
+  `CharacterLevel` is unsaved; the player now carries one from its `NPC_` record (#4678), so the first XP
+  writer makes every save refuse until `CharacterLevel` is registered), and `Material` finiteness; the binary adds FormId resolvability and cinematic `EntityId` refs. Do
   not restate the list elsewhere — enumerate **inter-entity reference fields in any newly registered type
   not covered** (MEDIUM defense-in-depth gap) and any check that flags a legitimately sparse-but-spawned id
   (dangling = `>= next_entity`, not "no components").
@@ -226,14 +236,15 @@ Paths: `byroredux/src/save_io.rs` (`execute_pending_save_loads`, `reload_*_sessi
 First step: read `execute_pending_save_loads` top to bottom against the sequence below; `git log --since=<last report> --format='%h %cs %s' -- byroredux/src/save_io.rs`
 - **Strict apply sequence**: drain slot → `validate_snapshot_types` (abort, session kept) →
   `preflight_extension_state` (abort) → `restore_resources_subset(PRE_RELOAD_RESOURCES)` (only resources
-  read by spawn-time code during the reload: `ReferenceEnableState`, `ReferenceLockState`; **never**
+  read by spawn-time code during the reload: `ReferenceEnableState`, `ReferenceLockState`, `ReferenceScriptState`; **never**
   `ItemInstancePool` — teardown's `release_victim_item_instances` needs the live pool, #4135) →
   `without_parked_state` wraps the reload (outgoing session's `PersistentReferenceStates` and
   `StreamStateSnapshots` are set aside and restored on failure) → teardown + reload (`validate_cell_loadable`
   preflight first, so a missing ESM/cell keeps the live session) → `restore_extension_state` → wholesale
   `restore_resources` **again** (idempotent; re-asserts `CurrentCellContext`/`PlayerPose`; the second call is
   not redundant) → `drop_entity_bound_continuations` on `PapyrusProviderContinuationQueue` (session-local
-  `EntityRef` handles must not resume, #4139) → `build_form_id_remap` → `apply_deltas(MUTABLE_DELTA_COLUMNS)`
+  `EntityRef` handles must not resume, #4139) → `reseat_ambient_packages_after_restore` (re-pick packages
+  against the restored clock *before* the overlay, #4815) → `build_form_id_remap` → `apply_deltas(MUTABLE_DELTA_COLUMNS)`
   → dead/equipped-weapon reconcilers → diagnostic `validate_world` → `apply_player_pose` LAST (after the
   overlay of `CharacterController`, whose motion fields pose-restore then zeroes; a new field on either
   side needs an explicit decision). Any failure after the reload returns immediately, never falling through

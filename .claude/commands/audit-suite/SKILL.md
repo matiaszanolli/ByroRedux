@@ -61,12 +61,12 @@ Each is just `--area` over these paths (neighbors apply):
 | `rt-deep` | `crates/renderer/src/vulkan/acceleration/` `crates/renderer/src/vulkan/{svgf,gbuffer,composite}.rs` |
 | `material-deep` | `crates/renderer/src/vulkan/material.rs` `crates/renderer/src/vulkan/scene_buffer/` `byroredux/src/material_translate.rs` |
 | `texture-roles-deep` | `crates/nif/src/import/material/` `byroredux/src/asset_provider/material/` `crates/bgsm/` `crates/sfmaterial/` |
-| `upscaler-deep` | `crates/fsr3-sys/` `crates/renderer/src/vulkan/{frame_upscaler,upscaling,presentation,exposure}.rs` (run with `BYRO_VALIDATION=1`) |
+| `upscaler-deep` | `crates/fsr3-sys/` `crates/renderer/src/vulkan/{frame_upscaler,upscaling,presentation,exposure,exposure_meter}.rs` `crates/renderer/src/tonemap.rs` (run with `BYRO_VALIDATION=1`) |
 | `water-deep` | `crates/renderer/src/vulkan/water.rs` `crates/physics/` `byroredux/src/cell_loader/water.rs` `byroredux/src/systems/water.rs` |
 | `volumetrics-deep` / `bloom-deep` / `skin-deep` | `crates/renderer/src/vulkan/volumetrics.rs` / `bloom.rs` / `skin_compute.rs` + `acceleration/blas_skinned.rs` |
 | `nif-deep` / `nifal-deep` | `crates/nif/` / `byroredux/src/material_translate.rs` `crates/nif/src/import/` |
 | `esm-deep` / `character-deep` / `physics-deep` | `crates/plugin/` / `crates/core/src/character/` / `crates/physics/` `byroredux/src/ragdoll.rs` |
-| `ui-deep` / `audio-deep` / `save-deep` | `crates/ui/` `crates/menuxml/` `byroredux/src/hud.rs` / `crates/audio/` / `crates/save/` `byroredux/src/save_io/` |
+| `ui-deep` / `audio-deep` / `save-deep` | `crates/ui/` `crates/menuxml/` `byroredux/src/{hud,scaleform_hud,ui_input,objectives}.rs` / `crates/audio/` / `crates/save/` `byroredux/src/save_io/` |
 | `scripting-deep` / `speedtree-deep` | `crates/{scripting,pex,papyrus}/` / `crates/spt/` |
 | `streaming-deep` | `byroredux/src/streaming.rs` `byroredux/src/npc_spawn/` `byroredux/src/cell_loader/` |
 | `exterior-deep` / `gameplay-deep` / `parsers-deep` / `tooling-deep` | the new owners' `Paths:` lines |

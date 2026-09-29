@@ -5,7 +5,7 @@ argument-hint: "--focus <dimensions> --depth shallow|deep"
 
 # SpeedTree Subsystem Audit
 
-Audit `crates/spt` (~2k LOC in `src/`; `.spt` is pre-Skyrim only — Skyrim+ trees are NIFs rooted
+Audit `crates/spt` (~2.8k LOC in `src/`; `.spt` is pre-Skyrim only — Skyrim+ trees are NIFs rooted
 at `BSTreeNode`, `/audit-nif`). It does two things: (1) walks the `.spt` parameter stream as
 tag-length-value data, and (2) emits a **placeholder billboard** `ImportedScene` so TREE cells
 render *something* instead of failing or going treeless.
@@ -16,10 +16,13 @@ render *something* instead of failing or going treeless.
   8,793 B). Past `parser::TAG_MAX` (13,999) the stream continues as more parameter TLV in the
   14000–22000 tag bands; the earlier `0x4E25`/`0x4E21` "geometry-tail markers" were arithmetic
   slips (0 of 159 files). Layout notes: `crates/spt/docs/format-notes.md`.
-- **Known-open, dated 2026-09-19 (#4122)**: the walker desyncs 1–3 bytes before `tail_offset` on
-  46% of the 159-file corpus (86 need no shift, 36 one, 33 two, 4 three) — invisible today
-  because nothing consumes bytes past `tail_offset`; fixing it is the precondition for raising
-  `TAG_MAX`. Report only new evidence, and any consumer that starts reading past `tail_offset`.
+- **The walker stops on the true TLV boundary in 159/159 corpus files** (#4122, fixed 2026-09-24;
+  was 86/159): three dictionary entries were mis-sized — `10002` stride 1→32, `10003` stride
+  8→32 (`u32` count + count × 8 f32), `13013` 7→4 B. Guard: opt-in
+  `walker_stops_on_true_tlv_boundary` (every non-EOF stop word in the 14000–23000 tail band *and*
+  `parser::best_resync_shift` == 0; the same fn drives `spt_tail --culprit`). The precondition
+  for raising `TAG_MAX` / dictionarying the 14000–22000 bands is now met but not acted on; any
+  consumer reading past `tail_offset` is still new territory.
 - SNAM/CNAM are parsed but deliberately not consumed: `SpeedTreeWind` uses the neutral `(1, 0)`
   pair because TREE.CNAM's layout is unpinned (#3190).
 
@@ -51,7 +54,7 @@ Read `.claude/commands/_audit-common.md` and `.claude/commands/_audit-severity.m
 
 **Acceptance**: ≥ 95% unknown-tag-clean per game in `crates/spt/tests/parse_real_spt.rs`
 (`parse_rate_{fnv,fo3,oblivion}_spt`; `#[ignore]`, env `BYROREDUX_{FNV,FO3,OBL}_DATA`; 133 vanilla
-files, Oblivion 113); un-decoded trees render a billboard, never an `Err` out of the cell loader.
+files, Oblivion 113) plus `walker_stops_on_true_tlv_boundary` (159 incl. Shivering Isles); un-decoded trees render a billboard, never an `Err` out of the cell loader.
 
 ## Parameters (from $ARGUMENTS)
 
@@ -88,7 +91,7 @@ fixed size, so one wrong size desyncs everything after it.
 **Guards**: `parser.rs` unit tests (`tag_13005_*` family incl. `tag_13005_at_eof_does_not_panic`,
 `empty_candidate_is_not_a_plausible_curve_string`), `tests/parse_synthetic_spt.rs`
 (`generator_output_matches_pinned_bytes`, `parser_decodes_every_dispatch_arm_against_pinned_fixture`),
-`tests/parse_real_spt.rs` (opt-in).
+`tests/parse_real_spt.rs` (opt-in; incl. the #4122 boundary gate).
 **Checklist**:
 - Each `SptTagKind` advances exactly its size: `U8`=1, `U32`=4, `Vec3`=12, `FixedBytes(n)`=n,
   `String`=4+len, `ArrayBytes{stride}`=4+count×stride, `Bare`=0. Cross-check `read_payload`
@@ -104,7 +107,10 @@ fixed size, so one wrong size desyncs everything after it.
   mid-payload underflow, string cap, array cap, unrecognized context-sensitive kind); all discard
   the whole `SptScene`. In-range-but-unknown tags are non-fatal — the contract the placeholder
   relies on. A new fatal path is HIGH (it kills the cell-loader fallback).
-- Little-endian, unconditional (every `.spt` is `__IdvSpt_02_`); flag any host-endian read. The #4122 desync above.
+- Little-endian, unconditional (every `.spt` is `__IdvSpt_02_`); flag any host-endian read.
+- A walk stop whose word is outside the tail band, or a non-zero resync shift, is a mis-sized
+  dictionary entry — pair the shift with the last decoded tag (`spt_tail --culprit`). The shift
+  only sees mis-sizing mod 4 (that is how `10003` hid); the stop-word check catches the rest.
 **Output**: `/tmp/audit/speedtree/dim_1.md`
 
 ### Dimension 2: Placeholder Fallback Correctness
@@ -168,7 +174,10 @@ First step: `cargo test -p byroredux parse_and_import_spt` and, with data, `carg
   `CachedNifImport.speedtree_wind`, attached in `mesh_instance.rs` and both loose-route sites in
   `nif_loader.rs`). `apply_speedtree_wind` in `billboard.rs` bends the canopy from the shared
   `WindField`: gust is clamped to a finite non-negative value before use (#3194), response/stiffness
-  clamped, keyed off the `SpeedTreeWind` marker rather than one billboard enum. The billboard
+  clamped, keyed off the `SpeedTreeWind` marker rather than one billboard enum.
+  `WindField.direction` is engine-xz "blows toward" (#4729): the bend axis tips the crown
+  **downwind** (same sense as the grass beneath it) and the gust wave travels with the wind —
+  pinned in `speedtree_billboard_bends_with_shared_weather_wind` / `reversing_wind_reverses_mean_lean`. The billboard
   system's scheduler access declares `reads::<SpeedTreeWind>()` (`boot/schedule/late.rs`).
   `SpeedTreeWind` is rebuilt on import, not saved (`save_io/registry_completeness_tests.rs`).
   Do not project TREE.CNAM into it (unpinned, #3190).
@@ -203,9 +212,11 @@ Lower risk, but a wrong size is the Dim 1 desync trigger — spot-check.
 `unknown_for_out_of_dictionary_tags`, …).
 - `dispatch_tag` maps ~120 tags conservatively: anything absent → `Unknown` → the walker stops.
   Dictionary size is not a gap. Sample fixed sizes against the `format-notes.md` tables (8003/8005/
-  8009 = 52 B, 13008 = 11 B, 13013 = 7 B, ArrayBytes 10002 stride 1 / 10003 stride 8); a size
-  contradicting the observed histogram is MEDIUM. 12002 (16 B) / 12003 (20 B) are size-only with
-  no recorded corpus evidence — flag only if a real sample contradicts them.
+  8009 = 52 B, 13008 = 11 B, 13013 = 4 B, ArrayBytes 10002 / 10003 stride 32 — the #4122
+  byte-verified sizes); a size contradicting the observed histogram is MEDIUM. 12002 (16 B) /
+  12003 (20 B) were unobserved before #4122 and now decode cleanly in the corpus tail
+  (`format-notes.md` 2026-09-24; the `tag.rs` comment still says "size only") — flag only if a
+  real sample contradicts them.
 - Confounder tags (`4096`, `5376` — string-length values inside the tag band) must stay `Unknown`.
 - A tag at ≥ 1% corpus frequency still `Unknown` needs a `format-notes.md` rationale (LOW).
 **Output**: `/tmp/audit/speedtree/dim_5.md`
@@ -217,7 +228,8 @@ The placeholder flows through the single NIFAL boundary; single-boundary / no-fa
 findings belong to `/audit-nifal`, not here.
 - Both routes (`scene/nif_loader.rs`, `spawn/mesh_instance.rs`) reach `translate_material`; no
   parallel "spt material" path.
-- Import-side non-PBR defaults hold: `is_pbr: false`, `from_bgsm: false`, explicit foliage
+- Import-side non-PBR defaults hold: `is_pbr` / `from_bgsm` / `external_material_resolved` all
+  `false` (via `Default` — the last is the glass-promotion provenance, #4283), explicit foliage
   overrides `metalness_override: Some(0.0)` / `roughness_override: Some(0.85)` (a `None`
   re-opens the keyword-classifier substring collision — Boxwood→wood, Elderberry→glass);
   `emissive_source: EmissiveSource::None`; two-sided alpha-test cutout (`alpha_test`, threshold

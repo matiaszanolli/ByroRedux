@@ -58,7 +58,7 @@ Code quality, maintainability, hardening opportunities.
 | Composite reassembly wrong order (tone map before add) | MEDIUM |
 | Wrong/divergent `Material` out of NIFAL `translate_material` | HIGH |
 | Translatable block silently dropped by NIFAL (collision shape / particle emitter params) | MEDIUM |
-| `#[repr(C)]` GPU struct size/layout drifts from shader struct (`GpuInstance` / `GpuCamera` / `GpuMaterial`) | HIGH |
+| `#[repr(C)]` GPU struct size/layout drifts from shader struct (`GpuInstance` / `GpuCamera` / `GpuLight` / `GpuMaterial`) | HIGH |
 | Save: non-atomic write, or a partial/torn file that still loads | CRITICAL |
 | Save: serialized-shape change without a `FORMAT_MAJOR` bump / baseline refresh; or a load that silently drops gameplay state (inventory, loot, actor values) | HIGH |
 | Untrusted-input reader (archive / material / packfile / menu XML): out-of-bounds read from an unchecked on-disk offset | CRITICAL |
@@ -81,8 +81,8 @@ Is it a Vulkan spec violation?
   → YES: At least HIGH
 Does it corrupt acceleration structures or SSBO indexing?
   → YES: CRITICAL (wrong geometry in AS or wrong SSBO lookup = GPU crash or garbage rendering)
-Does a `#[repr(C)]` GPU struct (GpuInstance/GpuCamera/GpuMaterial) drift from its shader-side layout?
-  → YES: At least HIGH (the size/offset pins in scene_buffer + material.rs are the lockstep guard; silent per-instance/per-material corruption otherwise)
+Does a `#[repr(C)]` GPU struct (GpuInstance/GpuCamera/GpuLight/GpuMaterial) drift from its shader-side layout?
+  → YES: At least HIGH (the size/offset pins in `scene_buffer/` + `material_tests.rs` are the lockstep guard; silent per-instance/per-material corruption otherwise)
 Does it emit a wrong/divergent Material from NIFAL translate_material?
   → YES: At least HIGH (one boundary, all-game blast radius, no per-draw fallback)
 Does it lose or corrupt saved state, or read past an untrusted on-disk length?

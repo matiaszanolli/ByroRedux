@@ -522,9 +522,15 @@ if [[ "${SKIP_SYMBOL_CHECK:-0}" != "1" ]]; then
         local -a files=("$@")
         local suspect_count=0
         local sym
+        # GitHub issue label names, read from _audit-common.md's Issue Labels
+        # section — backticked there by design, never repo symbols.
+        local labels
+        labels=$(sed -n '/^## Issue Labels/,/^## /p' .claude/commands/_audit-common.md \
+            | grep -oE '`[a-z:-]+`' | tr -d '`')
         while read -r sym; do
             # Benign classes, in order of frequency:
-            [[ "$sym" =~ ^[0-9a-f]{7,8}$ ]] && continue          # git short hashes
+            [[ "$sym" =~ ^[0-9a-f]{7,12}$ ]] && continue         # git short hashes (9-char since the repo grew)
+            grep -qxF "$sym" <<<"$labels" && continue            # GitHub label names
             [[ "$sym" == feedback_* ]] && continue               # ~/.claude memory slugs
             [[ "$sym" == nif_v10x_* ]] && continue               # memory slugs
             [[ "$sym" == bench_* || "$sym" == light_count_* ]] && continue   # baseline TSV columns

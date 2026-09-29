@@ -25,16 +25,17 @@ analogue of NIFAL's no-fabrication rule).
 
 ## Scope
 
-`crates/scripting/src/` (~42k LOC): `translate/` (`mod`, `source`, `archetype`, `compose`, `effects`, `tables`,
+`crates/scripting/src/` (~44k LOC): `translate/` (`mod`, `source`, `archetype`, `compose`, `effects`, `tables`,
 `recognizers/{quest_stage_gate,rumble,two_state_activator}`); `fragment.rs` + `fragment/{effects,populate,
 state,systems}.rs`; `quest_stages.rs`, `globals.rs`, `vm_state.rs`, `events.rs`, `cleanup.rs`, `timer.rs`,
 `recurring_update.rs`, `condition.rs`, `trigger.rs`, `player_control.rs`, `equipment.rs`, `registry.rs`;
 `scene.rs` + `scene/{playback,quest_alias}.rs`, `package.rs`, `dialogue.rs`, `cinematic.rs`, `combat.rs`
-(`FactionRelations`, `AiCombatState`); `obscript{,_runtime,_vm,_quests}.rs`; `papyrus_provider/`,
+(`FactionRelations`, `AiCombatState`), `magic.rs` (`SpellCatalog`/`SpellList`, #4415), `load_order.rs`
+(`LoadOrderIdentity`, slot↔`PluginId` bridge); `obscript{,_runtime,_vm,_quests}.rs`; `papyrus_provider/`,
 `compatibility.rs`; `papyrus_demo/` (reference scripts/test fixtures; `ScriptRegistry` is the pre-Skyrim
 `SCRI`→`SCPT` extension point — boot no longer seeds it). Engine side: `byroredux/src/cell_loader/references/
 {attach,synth_child}.rs`, `cell_loader/{spawn,exterior,unload}.rs`, `asset_provider/script.rs`,
-`systems/cinematic.rs`, `commands/quest.rs`, `boot/schedule/`, plus `crates/plugin/src/esm/records/{index,
+`systems/{cinematic,npc_dialogue}.rs`, `commands/quest.rs`, `boot/schedule/`, plus `crates/plugin/src/esm/records/{index,
 script_instance}.rs` (VMAD retention; decode is `/audit-esm`).
 
 Ground truth: `docs/engine/scripting.md`, `m47-0-design.md`, `m47-2-design.md` (recognizer + "no opcode
@@ -44,14 +45,15 @@ Object / Story Manager fills, true `LCTN`, reference collections, unloaded-world
 packages/spells/keywords overlays — real gaps, don't re-file as discoveries), crate docstrings
 (`translate/mod.rs`, `fragment.rs`, `cleanup.rs` marker house rules).
 
-**Known-open — cite, don't re-file** (verify with `gh issue view`): #4334 (`onlyOnce` actor-base triggers
-re-arm after reload — no persistent Papyrus script state), #3817 (`HorseTetherState`/`ActorCinematicState`
-never terminate, so cinematic-retained entities never re-adopt cell lifetime), #4190, #4116, #4115, #4113.
+**Known-open — cite, don't re-file** (verified 2026-09-29 with `gh issue view`): #3817 (`HorseTetherState`/
+`ActorCinematicState` never terminate, so cinematic-retained entities never re-adopt cell lifetime). #4113/#4115
+are open but live in `crates/papyrus`/`crates/pex` (`/audit-papyrus`). Closed since 2026-09-19: #4334 (once-only
+persistence, `ReferenceScriptState`), #4190, #4116.
 Not gaps: the M47.1 condition resolvers and fragment lowerer are implemented and live-verified; `MoveTo`
 default-materialized shapes lower (#3487); the QUST VMAD property table is wired.
 
 **Instruments**: `crates/scripting/examples/{fragment_coverage,mq101_conformance,extender_preflight,
-quest_fragment_populate}.rs` (need game data; `fragment_coverage` counts fragments through
+quest_fragment_populate,dump_stage_fragment_effects}.rs` (need game data; `fragment_coverage` counts fragments through
 `Effect::is_placeholder` primitives separately), `docs/smoke-tests/m47-triggers.sh` (spawn+attach gate on
 Skyrim data via `--scripts-bsa`), `tests/pex_recognize_e2e.rs` (`#[ignore]`d, needs Skyrim SE data).
 
@@ -101,12 +103,14 @@ they cannot see:
   neutral" was recorded as hostility). A primitive that lowers an argument and drops it, or accepts a
   non-literal for a default-only parameter, is a finding; the pattern is "accept only the literal-default form,
   decline the rest" (`MoveTo`: ≤ `MOVE_TO_MAX_ARGS`=6 with offsets `0.0`, rotation flags at defaults;
-  `AddItem`: literal `abSilent`).
+  `AddItem`: literal `abSilent`). Post-2026-09-19 primitives to hold to this: `StopCombat`, `AddSpell` (accepts
+  and drops a literal `abVerbose`), `RemoveSpell` (#4414/#4415).
 - **Receiver/hole binding never defaults to form-id 0**: `QuestRef::{OwningQuest, SelfRef, Property}` must
   fully resolve (`OwningQuest` needs `ctx.owning_quest`; `SelfRef` on a REFR declines); `ObjectRef` has no
   bare-receiver case (`receiver_object` rejects `self`; object locals resolve through
   `scope.object_locals`, alias-bound via `SceneActorBindings`); a receiver the runtime would *drive* must
-  not be the player (`StartCombat`, #4323). `Disable`/`Enable` classify the receiver through the same
+  not be the player (`StartCombat`, #4323). `PlayerRef` (0x14) resolves inside the shared
+  `resolve_entity_by_global_form_id` (#4694) — a local 0x14 special-case elsewhere is drift. `Disable`/`Enable` classify the receiver through the same
   alias-aware `receiver_object` as their siblings (an alias-bound marker must not decline alone).
 - **Placeholders are coverage with a hole**: `Effect::is_placeholder` (`ShowRaceMenu`, `RequestSave`,
   `SetHudCartMode` — state nothing reads) must be reported separately by coverage harnesses (#4328/#4372);
@@ -166,8 +170,13 @@ apply_effect_itself, the_nested_lock_residual_list_names_every_type_apply_effect
 - **Lock & enable ledgers** (`ReferenceLockState`, `ReferenceEnableState`, FormID-keyed, saved): a scripted
   `SetLocked`/`SetLockLevel` records the component's **full outcome** (level + key), never a partial delta that
   outranks the authored XLOC (#4329); alias-bound receivers come back to a FormID via `entity_global_form_id`;
-  non-resident references still record where the ledger can hold them (#4330; `Enable`/`Disable` do). A
-  "simplification" that keys either ledger by entity is the regression.
+  non-resident references still record where the ledger can hold them (#4330; `Enable`/`Disable` do). Third
+  sibling `ReferenceScriptState` (#4334, save v26): fire-once triggers park their script there and the
+  recognizer's spawn closure consults it so a reload does not re-arm. A "simplification" that keys any of the
+  three ledgers by entity is the regression.
+- `Effect::AddSpell`/`RemoveSpell` apply through `magic::{add_spell,remove_spell}` (`SpellList` + permanent
+  `ActorValues` modifier, add/undo symmetric — `add_and_remove_spell_apply_and_undo_permanent_modifiers`); both
+  types are nested under the quest lock, so they belong in `apply_effect`'s lock inventory.
 - `Effect::SetGlobalValue` writes `Globals` (saved, `resolve_property_form_id` — a GLOB is never alias-bound).
   `QuestAliasReadinessGate`: advances only when `is_running`, `stage < only_below_stage`, and
   `!get_stage_done(target)` (idempotent); one gate per quest (upsert).
@@ -185,8 +194,9 @@ Guards: `cleanup.rs::every_drained_marker_is_a_documented_pattern_a_marker`, `cl
   marker type against the drain lists, and check each Pattern-B owner's first statements. **Multi-producer
   markers must merge, not overwrite** (`SparseSetStorage` = one slot per entity): `QuestStageAdvancedBatch`
   (`push_quest_stage_advances`), `HitEvent` (two producers; same-frame overwrite fixed in #4324 — re-verify
-  after any new producer), `ActivateEvent` (consumer order pinned by the flush test; #4116 open: the pinned
-  list omits `mg07_on_activate_dispatch`).
+  after any new producer), `ActivateEvent` (Update-stage consumer order pinned by the flush test, which now
+  lists `container_loot_system` and `mg07_on_activate_dispatch` (#4712/#4116); the Late-stage
+  `npc_dialogue` selection system is a further consumer — it must stay before `event_cleanup_system`).
 - **Two-phase lock discipline**: `timer_tick_system`, `trigger_detection_system`,
   `recurring_update_tick_system` collect under one `query_mut`, `drop()`, then acquire the marker-insert
   `query_mut`; two component-mut locks at once forces the TypeId-sorted contract (deadlock vector).
@@ -211,7 +221,8 @@ Guards: `cleanup.rs::every_drained_marker_is_a_documented_pattern_a_marker`, `cl
 - `quest_advance_system` unifies `ActivateEvent` + `OnTriggerEnterEvent` on `QuestAdvanceOnActivate` with a
   three-way `ActivatorGate` (`Any`/`PlayerOnly`/`BaseForm`), evaluated per `(entity, triggerer)` pair;
   nothing may deliver both signals to one entity in one frame. `disable_reference_after_advance` (from
-  `disableWhenDone`) records into `ReferenceEnableState`; `onlyOnce` is an in-session removal only (#4334).
+  `disableWhenDone`) records into `ReferenceEnableState`; both fire-once variants park in `ReferenceScriptState`
+  (`fire_once_advances_park_the_reference_script_state`, #4334).
 - `recurring_update_tick_system`: no fire on the registering frame/zero dt; once per interval; overshoot fires
   once; `UnregisterForUpdate` in a handler terminates cleanly. `QuestAliasReadinessGate` timing: after
   `quest_alias_refresh_system`, before `scene_playback_system`.
@@ -259,14 +270,24 @@ Untrusted-Input: Yes — `.pex` bytes come from possibly-modded archives.
 **Output**: `/tmp/audit/scripting/dim_4.md`
 
 ### Dimension 5: Scene / Package / Dialogue / Cinematic Playback
-Paths: `crates/scripting/src/{scene.rs,scene/**,package.rs,dialogue.rs,cinematic.rs}`, `byroredux/src/systems/cinematic.rs`, `byroredux/src/cell_loader/unload.rs`, `byroredux/src/asset_provider/animation.rs`
+Paths: `crates/scripting/src/{scene.rs,scene/**,package.rs,dialogue.rs,cinematic.rs}`, `byroredux/src/systems/{cinematic,npc_dialogue}.rs`, `byroredux/src/cell_loader/unload.rs`, `byroredux/src/asset_provider/animation.rs`
 First step: `cargo test -p byroredux-scripting -- scene:: package:: dialogue:: cinematic::`; `cargo test -p byroredux --bin byroredux -- cinematic strip_ active_tether`
 The M47.2 MQ101 cart sequence is the first scripted sequence that drives *animation*, not just ECS state.
 - **Scene alias substrate**: `SceneActorBindings` `(quest, alias) → EntityId` is what `resolve_object`,
   `RunOn::QuestAlias`, and `SceneShowCommand` all resolve through (one entry point — a debug view must not use
   a different path); an unfilled alias returns `None`, never fabricates an entity;
   `apply_alias_injections`/`QuestAliasInjectionState` (permanent inventory-grant ledger, saved) must not
-  double-grant after load.
+  double-grant after load. **Refresh pre-filters must be exact supersets**: `refresh_scene_actor_bindings`
+  visits per-fill `CandidateIndex` buckets and skips/filters condition-only fills via `subject_requirement`
+  (`ConditionFunction::reads_run_on_entity` must stay exhaustive; `run_on_identity` is shared with the
+  evaluator) — a bucket or requirement that excludes a candidate the full fill test or `evaluate` would admit silently
+  unbinds an alias (`subject_requirement_never_excludes_a_passing_subject`,
+  `condition_only_identity_fill_binds_what_the_full_scan_would`).
+- **NPC dialogue selection** (`systems/npc_dialogue.rs`, Late exclusive): consumes the player's `ActivateEvent`
+  on a living NPC that `running_quests_binding_entity` names, walks owned DIALs (`DialRecord::quest_refs` —
+  QSTI and, for Skyrim, QNAM) in ascending FormID order, picks via `select_first_info` (actor subject, player
+  target — the SCEN path's discipline), stamps `NpcDialogueTopic`; UI re-selection goes through
+  `select_topic_by_form_id` and must re-check live ownership. The egui response page itself is `/audit-tooling`.
 - **Marker patterns** for this domain (Pattern B, drained at consumer head): `Scene{Start,Stop}Request`,
   `SceneActionCompletionBatch`, `DialoguePresentationEventBatch`, `DialogueLineCompletionBatch`,
   `ScenePackage*Batch`, `EvaluatePackageRequest`, `MotionTypeChangeRequest` (tail-drains exactly what it
@@ -288,7 +309,8 @@ The M47.2 MQ101 cart sequence is the first scripted sequence that drives *animat
   reachable `BaseForm` trigger; the gate in `trigger.rs` decides whether it may fire. They must share one
   eligibility predicate (#4333) and agree on cross-quest phase waits and centerless triggers. Lock order:
   the `SceneRegistry` read guard is held across the scan and must not invert the canonical scene→quest order
-  (drop before quest resources).
+  (drop before quest resources). Cinematic systems take `Transform` before `ActorCinematicState`/
+  `HorseTetherState` (#4546, `docs/engine/ecs.md` canonical chain; `BYRO_LOCK_ORDER_CHECK=1` is the gate).
 - **Cinematic retention** (`cinematic_retained_entities` computed once per unload batch;
   `strip_retained_cell_root(world, victims, retained)` per cell, scoped to `retained ∩ victims`): walk is
   transitive over `Children` (`active_tether_retains_horse_cart_rider_and_hierarchy`); stripping never
@@ -308,16 +330,17 @@ SCTX frontend (`ScriptSource::Obscript` placeholder).
   tokens, `[u16 count]` typed arguments, `If/ElseIf/Else` nesting with `Return`-inside-arm early exit,
   1-based SLSD local / SCRO reference resolution. Every `read_u16`/`checked_add`/span end must be bounds-checked
   and malformed input must yield `BlockOutcome::Malformed`, never panic (`truncated_bytecode_reports_malformed`;
-  `installed_legacy_masters_have_structurally_valid_scda` is the real-data check, `#[ignore]`d). **Check
-  recursion depth**: `exec_if_chain` ↔ `run_arm_body` recurse per nested `If` with no depth cap observed at
-  2026-09-19 (contrast `obscript_runtime.rs`'s `MAX_LEGACY_OBSCRIPT_NESTING = 32`); with `SCDA` up to 64 KB a
-  hostile nest is a stack-overflow abort — re-verify and report if still uncapped. The operand stack in
+  `installed_legacy_masters_have_structurally_valid_scda` is the real-data check, `#[ignore]`d). Recursion is
+  capped by `MAX_OBSCRIPT_VM_NESTING` = 32 on both `exec_if_chain` ↔ `run_arm_body` and nested `X` argument
+  decode (`decode_args_at_depth`); guards `excessive_nested_if_chains_are_malformed`,
+  `excessive_nested_x_arguments_are_rejected` — a new recursive path that skips the depth parameter is the
+  regression. The operand stack in
   `eval_expr`/`apply_operator` must not grow unbounded from a lying token count.
 - **Command IDs are empirical** (aligned SCTX↔compiled stream on vanilla `Oblivion.esm`; 2 349/2 393 scripts
   decode): `SetStage` 0x1039, `GetStage` 0x103a, `GetStageDone` 0x103b, `StartQuest`/`StopQuest` 0x1036/0x1037,
   `GetQuestRunning` 0x1038, `Message`/`MessageBox`, `GetSecondsPassed`, `GetButtonPressed` (−1). Anything else
   is a **traced no-op returning 0, counted per quest in `ObScriptQuestTimers.unknown_commands`, never faked**
-  (the module doc's link to a nonexistent `ObScriptDiagnostics` is LOW doc rot) — a new command that
+  — a new command that
   returns a guessed value is a finding (*feedback_no_guessing*); dialect tables (xNVSE vs xOBSE opcode
   numbering, `ObscriptDialect`) stay separate because the same number names unrelated commands.
 - **`obscript_quest_tick_system`** (exclusive `Stage::Update`, vanilla `fQuestProcessInterval` 5 s cadence):

@@ -77,9 +77,10 @@ Tech-debt findings default to **LOW** (see `_audit-severity.md`). Promote only o
      echo "test files >2000 total LOC (lower priority, separate bucket): $(find crates byroredux tools -name '*.rs' -not -path 'tools/nifskope/*' -exec wc -l {} + | awk '$1>2000 && $2!="total"' | wc -l)"
    } > /tmp/audit/tech-debt/baseline.txt
    ```
-   Measured 2026-09-19 (diff direction only, re-run, never quote): markers 22 (16 are `XXXX` false positives),
-   `allow(dead_code)` 28, `unimplemented!/todo!()` **0** (a fresh hit is notable), `#[ignore]` 217 (tools-inclusive;
-   earlier reports scoped to `crates`+`byroredux` read lower), production >2000 LOC: 3, test-heavy >2000: 52. A
+   Measured 2026-09-29 (diff direction only, re-run, never quote): markers 21 (15 are `XXXX` false positives),
+   `allow(dead_code)` 27, `unimplemented!/todo!()` **0** (a fresh hit is notable), `#[ignore]` 250 (217 on
+   2026-09-19; tools-inclusive — earlier reports scoped to `crates`+`byroredux` read lower), production >2000
+   LOC: **7** (3 on 2026-09-19 — the primary bucket more than doubled in ten days), test-heavy >2000: 61. A
    raw whole-repo grep for `#[ignore]` also matches markdown prose — keep `--include='*.rs'`.
 
 ## Phase 2: Dimension Agents
@@ -243,6 +244,9 @@ grep -RInE 'allow\(dead_code\)' crates byroredux tools --exclude-dir=nifskope
 grep -RInE '#\[deprecated\]|// *removed:|_unused|fn .*_unused' crates byroredux
 cargo machete 2>/dev/null || echo "cargo machete not installed — scan Cargo.toml deps vs use stmts"
 ```
+- **Unused-dependency gate**: CI job `Unused dependencies` runs `cargo machete` (#3890) — a red run is a finding. Its
+  blind spots are macro-only and re-export-only use (the job comment says so); the hand scan earns its keep there and on
+  deps used only under a non-default feature.
 - **Clippy gate** (CI job `Test + Check + Clippy` runs `cargo clippy --workspace -- -D warnings`; the toolchain is stable, so
   a new rustc/clippy raises lints on untouched code — rustc 1.96 did, commit 800802516). A red gate is a finding: list each
   failing lint and file. Run `--all-targets --keep-going` too (the plain form aborts at the first failing crate);

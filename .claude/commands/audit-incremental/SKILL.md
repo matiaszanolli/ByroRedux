@@ -39,18 +39,18 @@ Output is `path  RISK  owners` from `.claude/commands/_audit-owners.md` (first m
 
 - [ ] **New bug** — logic error, off-by-one, wrong byte width, missing version/era gate (B-splines reach FNV/FO3, not just Skyrim+).
 - [ ] **Contract break** — public signature changed without every call site (`git grep` the symbol workspace-wide).
-- [ ] **Silent divergence** — a value built at two sites and only one edited (the classic NIFAL leak: the two `Material` load paths, `byroredux/src/cell_loader/spawn.rs` and `byroredux/src/scene/nif_loader.rs`; defer to `/audit-nifal`).
+- [ ] **Silent divergence** — a value built at two sites and only one edited (the classic NIFAL leak: the `translate_material` call sites — `byroredux/src/cell_loader/spawn/mesh_instance.rs`, `byroredux/src/scene/nif_loader.rs`, and the LOD paths `byroredux/src/cell_loader/{object_lod,placement_lod}.rs`; defer to `/audit-nifal`).
 - [ ] **Unsafe delta** — new `unsafe`, or a SAFETY comment that no longer matches the body (MEDIUM floor for unsafe-without-comment).
 - [ ] **Lock / query delta** — changed `RwLock` scope or new multi-component query: TypeId-sorted acquisition (deadlock → HIGH). A new system acquisition must be declared at its registration under `byroredux/src/boot/schedule/` (guard: `byroredux/src/boot/schedule/mod.rs` `system_access_declaration_tests`).
 - [ ] **Vulkan delta** — new pipeline/barrier/sync, AS build/refit, descriptor write: missing barrier or wrong AS geometry → severity special rules.
-- [ ] **GPU-struct lockstep** — a touched `#[repr(C)]` struct (`GpuInstance`/`GpuCamera`/`GpuMaterial`/`GpuLight`) **and** its mirror in every shader reading it; size/offset drift → HIGH. Guards live in `crates/renderer/src/vulkan/scene_buffer/`.
+- [ ] **GPU-struct lockstep** — a touched `#[repr(C)]` struct (`GpuInstance`/`GpuCamera`/`GpuMaterial`/`GpuLight`) **and** its mirror in every shader reading it; size/offset drift → HIGH. Guards live in `crates/renderer/src/vulkan/scene_buffer/` (`gpu_instance_layout_tests.rs`, `shader_contract_tests.rs`) and `crates/renderer/src/vulkan/material_tests.rs` (`GpuMaterial`).
 - [ ] **Save shape** — a touched `Serialize` type: does `byroredux/src/save_io/serde_default_guard_tests.rs` need a baseline refresh or a `FORMAT_MAJOR` bump (`/audit-save`)?
 - [ ] **Missing test** — changed path with no test update; list under "Missing Tests" even if the code is right.
 - [ ] **Rust** — Vulkan destroy order still reverse of build; new `unwrap()`/`expect()` on a recoverable path; borrow-scope changes; a new impl consistent with its family (Component storage decl, `Send + Sync`).
 
 Multi-file translation chains — a diff to one tier is incomplete without the others:
 - **Particle emitter**: typed blocks (`crates/nif/src/blocks/particle.rs`) → extraction (`crates/nif/src/import/walk/emitter.rs`) → system (`byroredux/src/systems/particle.rs`).
-- **Collision shape**: a new `Bhk*Shape` parser (`crates/nif/src/blocks/collision/`) must also be mapped in `crates/nif/src/import/collision/mod.rs`, or it is silently dropped (MEDIUM; HIGH if visible content vanishes). PHYSAL consumes ragdoll constraints, so it can ripple into `byroredux/src/ragdoll.rs` + `crates/physics/`.
+- **Collision shape**: a new `Bhk*Shape` parser (`crates/nif/src/blocks/collision/`) must also get a `resolve_shape` arm in `crates/nif/src/import/collision/shape.rs`, or it is silently dropped (MEDIUM; HIGH if visible content vanishes). PHYSAL consumes ragdoll constraints, so it can ripple into `byroredux/src/ragdoll.rs` + `crates/physics/`.
 
 ## Step 4 — Dedup and report
 

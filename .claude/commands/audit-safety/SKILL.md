@@ -20,19 +20,24 @@ a dimension whose Paths have no commits since the last `AUDIT_SAFETY_*` report.
 
 Census recipe: `grep -rwo unsafe <crate>/src | wc -l` for tokens, `grep -rnE 'unsafe[[:space:]]*\{' <crate>/src`
 for blocks — **read the hits**: substring counts also match identifiers (`byroredux` reports 3 tokens and
-only 1 real block). Measured 2026-09-19:
+only 1 real block). Measured 2026-09-29:
 
-- `crates/renderer/src`: **879** word tokens (884 by the substring recipe) — 678 `unsafe {` blocks, 133
-  `unsafe fn`, 33 `unsafe impl`, ~766 `SAFETY` mentions. The last recorded figure was ~827–830 and the
-  earlier "flat, not growing" note is wrong: new pipelines (`groundcover.rs`, `groundcover_bench.rs`, sky
-  bake) outpaced the `GpuImage` consolidation (`vulkan/image.rs`, 9 tokens). Compare against the previous
-  report, not this text.
-- Tail: `crates/fsr3-sys` 9 blocks (Dim 1), `crates/nif` 1 POD-read site + 4 `unsafe impl AnyBitPattern`
-  (Dim 2), `crates/core` 4 in `ecs/query.rs` (`/audit-ecs` Dim 3) + 1 in `string/mod.rs`
-  (`from_utf8_unchecked` after an ASCII-only fold), `crates/pex` 1 transmute (Dim 2),
-  `byroredux/src/cell_loader/unload.rs` 1, `tools/byro-launcher/src/preflight.rs` 1 block + 1 `unsafe fn`
-  (Vulkan loader probe), `crates/plugin` test-only env-var edits, `crates/cxx-bridge` one `unsafe extern "C++"`.
-- No `unsafe` at all: `crates/{bsa,save,scripting,sdk,ui,facegen,sfmaterial,mod-runtime,hkx,bgsm,menuxml,physics,audio}`.
+- `crates/renderer/src`: **946** word tokens (951 by the substring recipe; 879 on 2026-09-19) — 733 `unsafe {`
+  blocks (678), 95 declared `unsafe fn` (the loose `grep 'unsafe fn'` reads ~139: prose and source-scan
+  strings), 34 `unsafe impl`, ~829 `SAFETY` mentions. Still growing: new since 2026-09-19 are
+  `vulkan/groundcover_models.rs` (16 blocks), `vulkan/exposure_meter.rs` (8), `texture_registry/dynamic_rgba.rs`
+  (1 + the `unsafe fn record_pending_rgba_uploads`), and `vulkan/gpu_timers.rs` grew 43 → 62 (now the densest
+  file). Compare against the previous report, not this text.
+- Tail: `crates/fsr3-sys` 10 blocks (one is the test-only `byro_fsr3_abi_layout` probe; Dim 1), `crates/nif` 1
+  POD-read site + 4 `unsafe impl AnyBitPattern` (Dim 2), `crates/core` 4 in `ecs/query.rs` (`/audit-ecs` Dim 3)
+  + 1 in `string/mod.rs` (`from_utf8_unchecked` after an ASCII-only fold) + 1 test-only, `crates/pex` 1
+  transmute (Dim 2), `byroredux` 3 — `cell_loader/unload.rs` 1 and two in `app_events.rs` (the NVML GPU-name
+  probe, `get_physical_device_properties` + `CStr::from_ptr`, 0925f7926, **no SAFETY comment** at
+  2026-09-29), `tools/byro-launcher/src/preflight.rs` 1 block + 1 `unsafe fn` (Vulkan loader probe),
+  `crates/plugin` test-only env-var edits, `crates/cxx-bridge` one `unsafe extern "C++"`.
+- No `unsafe` at all (the remaining hits are prose): `crates/{audio,bgsm,boot-request,bsa,debug-protocol,
+  debug-server,debug-ui,facegen,game-detect,hkx,menuxml,mod-runtime,papyrus,physics,platform,save,scripting,
+  sdk,settings-io,sfmaterial,spt,ui}` and `tools/{byro-dbg,byro-detect,texture-upscale}`.
   **Only `crates/sdk` carries `#![forbid(unsafe_code)]`** — for every other unsafe-free crate the absence is
   unenforced, so re-run the census on each and report any newcomer.
 
@@ -51,8 +56,10 @@ First step: `grep -nE 'unsafe|# Safety|extern "C' crates/fsr3-sys/src/lib.rs`
   `pub unsafe fn` needs a `# Safety` section; the renderer call site (`frame_upscaler.rs`) must honour
   it, and `destroy_allocations` ordering is `/audit-concurrency` Dim 6.
 - **Ruffle / wgpu (`crates/ui`)** is safe Rust end to end. Memory-safety questions: the captured pixel
-  slice's lifetime vs. the engine upload (`update_rgba` / `write_rgba_inplace` — a borrow outliving the
-  backend frame is a UAF), and wgpu device/allocator teardown vs. `VulkanContext`. Stride/format/resize
+  slice vs. the engine upload — `update_rgba` / `write_rgba_inplace` now copy into an owned per-handle buffer
+  at queue time (`texture_registry/dynamic_rgba.rs`), so the borrow ends at the call; what remains is that
+  module's per-FIF staging arena and consume-only-on-submit (`recorded_slot`) — and wgpu device/allocator
+  teardown vs. `VulkanContext`. Stride/format/resize
   contract is `/audit-ui`.
 - **`tools/byro-launcher/src/preflight.rs`** loads the Vulkan loader and creates an instance
   (`ash::Entry::load`, `enumerate_physical_devices`, `destroy_instance`): check the instance is destroyed on
@@ -77,16 +84,21 @@ First step: `grep -rnE 'transmute|from_raw_parts|set_len|from_utf8_unchecked|uns
   `[f32; 3]` (std430); drift is per-instance corruption (`_audit-severity` repr(C) HIGH row) — pins in Dim 6.
 - **NIF bulk POD reads** (`NifStream::read_pod_vec`, `header::read_pod_vec_from_cursor`, single unsafe site
   `read_pod_vec_from` in `stream.rs`): `T: AnyBitPattern` is a sealed `unsafe trait` (impls: primitives, arrays,
-  `NiPoint3`-style structs, `BoneWeight`/`Meshlet`/`CullData` in `blocks/bs_geometry.rs`); callers compute
-  `count × size` with `checked_mul`; `set_len` happens only after `read_exact` succeeds; a big-endian
-  compile-error gate protects the LE layout. A new `unsafe impl AnyBitPattern` needs a padding-free,
+  `NiPoint3`-style structs, `BoneWeight`/`Meshlet`/`CullData` in `blocks/bs_geometry.rs`). Since #4594/#4796 the
+  site takes the concrete `Cursor<&[u8]>`, never a generic `Read` (whose impls may read the buffer): it
+  re-checks `count × size == byte_count`, slices the source with checked bounds, `copy_nonoverlapping`s into
+  fresh capacity, then `set_len`; a big-endian compile-error gate protects the LE layout. A regression is any
+  path that hands spare `Vec` capacity to a `Read` impl again. A new `unsafe impl AnyBitPattern` needs a padding-free,
   every-bit-pattern-valid proof.
 - **pex opcode decode** (`OpCode::from_u8`): a real `transmute::<u8, OpCode>`, sound only while `OpCode` is
-  `#[repr(u8)]` with contiguous discriminants `0..MAX_OPCODE` AND `byte >= MAX_OPCODE` is rejected first. A gap
-  in the table or a dropped bound is UB.
+  `#[repr(u8)]` with contiguous discriminants `0..MAX_OPCODE` AND `byte >= MAX_OPCODE` is rejected first. The
+  last-discriminant half is a compile-time `const _: () = assert!(…)` (#4475); contiguity and the runtime bound
+  are not — a gap in the table or a dropped bound is UB.
 - **LZ4 `safe-decode` pin** (`Cargo.toml`, `byroredux-bsa` the sole dependent, #3392): with the feature on,
   `lz4_flex::decompress` is bounds-checked; **off**, a short hint is a heap overflow no `catch_unwind` can
-  catch. Verify the pin survives dependency bumps; `default-features = false` or an unpinned range is HIGH.
+  catch. The workspace entry is `default-features = false` *with an explicit feature list* that names
+  `safe-decode` — that shape is the pin, not a finding. Verify it survives dependency bumps; `safe-decode`
+  dropped from the list, or a dependent declaring `lz4_flex` outside `workspace = true`, is HIGH.
   The archive size ceilings themselves are `/audit-parsers`.
 - Stack-overflow risk: no unbounded recursion in block-walk / scene-graph traversal (ESM GRUP walkers bounded
   per `/audit-esm`; NIF shape resolution #1385; ECS hierarchy via `HierarchyTraversalGuard`).
@@ -113,9 +125,11 @@ First step: `cargo test -p byroredux rapier_release && grep -rn 'DeferredDestroy
   a poisoned lock means another thread panicked, and a second panic in teardown is not recovery), while
   `buffer.rs`, `allocator.rs` and `texture.rs` still `.expect("… poisoned")`. Flag an `.expect` reachable from
   `Drop`/teardown (double panic) or a silent recovery with no rationale comment (#2398); a create-path panic is
-  a deliberate choice, not automatically a finding.
+  a deliberate choice, not automatically a finding. Known-open 2026-09-29: the Drop/teardown reach is #4599.
 - **egui**: texture free is deferred one frame (`pending_free`) on `draw_frame`'s fence wait — freeing on the
-  arriving frame is UAF; `EguiPass` teardown ordering is `/audit-concurrency` Dim 6.
+  arriving frame is UAF. Partial deltas are promoted to full uploads from a CPU mirror (#4986), so replacing an
+  existing id retires an image too; both retirements rest on the all-slots fence wait (#4988, a rider in
+  `frames_in_flight_contract_names_every_dependent_resource`). `EguiPass` teardown ordering is `/audit-concurrency` Dim 6.
 - **GPU allocation inventory** (BLAS/TLAS + scratch, G-buffer, SVGF/TAA history, caustic accumulators, skin
   slots, MaterialBuffer, volumetric/bloom pyramids, ground-cover and sky-bake buffers): each tracked and freed;
   budgets are `docs/engine/memory-budget.md` — do not re-derive.
@@ -130,10 +144,10 @@ First step: `grep -rn undocumented_unsafe_blocks crates` (expect the one `deny` 
 - **Guard (renderer)**: `crates/renderer/src/lib.rs` carries `#![deny(clippy::undocumented_unsafe_blocks)]` (#1904), so a
   comment-less `unsafe {}` in the renderer fails `cargo clippy` in the CI job `Test + Check + Clippy`
   (`cargo clippy --workspace -- -D warnings`); it is inert under `cargo build` / `cargo test`. Confirm the `deny` is
-  present and unescaped. The lint sees `unsafe {}` blocks only: `unsafe fn` bodies and the 33 renderer `unsafe impl`s
+  present and unescaped. The lint sees `unsafe {}` blocks only: `unsafe fn` bodies and the 34 renderer `unsafe impl`s
   need a justification found by reading. Crates outside the renderer have no such lint — sweep comment-less blocks
-  there by hand (all commented at the last count: `fsr3-sys`, `nif`, `core`, `pex`, `byroredux`, `byro-launcher`); a
-  comment-less block is MEDIUM.
+  there by hand (at 2026-09-29 all commented in `fsr3-sys`, `nif`, `core`, `pex`, `byro-launcher`; `byroredux`
+  has the two bare `app_events.rs` blocks above); a comment-less block is MEDIUM.
 - The audit's value is therefore the *truth* of each invariant, not its presence: for each new or changed block, does the
   stated precondition (device live, handles from this device, not in flight, pointer valid for the call) hold at THIS call
   site? A commented block whose invariant is FALSE is the higher-severity finding.
@@ -143,7 +157,7 @@ First step: `grep -rn undocumented_unsafe_blocks crates` (expect the one `deny` 
 
 ### 5. Vulkan Spec Compliance (HIGH — flag what `cargo test` can't see)
 Paths: `crates/renderer/src/vulkan/`
-First step: CI job `vulkan-validation` (lavapipe, `.github/workflows/ci.yml`) fails on any `[Vulkan]` ERROR line; locally `BYRO_VALIDATION=1`. #4596 — the lane reached Vulkan only after its fixes (libxkbcommon-x11-0 + BYRO_ALLOW_CPU_VULKAN_DEVICE admitting lavapipe); a lane-red-from-boot means it is inert again, and findings cannot claim lane coverage
+First step: CI job `vulkan-validation` (lavapipe, `.github/workflows/ci.yml`) fails on any `[Vulkan]` ERROR line; locally `BYRO_VALIDATION=1`. Known-open 2026-09-29 (#4987, regression of #4596): #4596's fixes still never reached a device — a hard-coded `lvp_icd.x86_64.json` left the loader with no ICD. The lane now globs the manifest and goes red on "Vulkan init failed" (pinned by `vulkan_validation_job_resolves_lavapipe_and_fails_on_init_failure`); findings may claim lane coverage only once a run's log shows a device-selection line, not from the job conclusion
 
 Render-pass / barrier / pipeline-state claims invisible to `cargo test` are "needs validation-layer or RenderDoc
 verification" (`/audit-concurrency` guardrail); report emitted validation errors verbatim.
@@ -206,6 +220,7 @@ First step: `cargo test -p byroredux-renderer shader_constants && cargo test -p 
   producer must run `resolve_pbr()` or build already-finite values. Collision translate
   (`crates/nif/src/import/collision/mod.rs`) half-extents/radii and emitter rate/lifespan/size
   (`extract_emitter_params` → `apply_emitter_params`) must be finite and bounded at the extract boundary.
+  Known-open 2026-09-29: #4782 (volumetric raw V-buffer temporal history has no non-finite guard).
 - **Bone palette overflow**: `SkinSlotPool` warns once (`overflow_warned`, count in `overflow_attempt_count`) and
   excess entities fall back to bind pose rather than over-indexing; tests in
   `byroredux/src/render/bone_palette_overflow_tests.rs`.

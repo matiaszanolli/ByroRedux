@@ -20,10 +20,12 @@ Rules: rows are **path prefixes**; the FIRST matching row routes a changed file,
 | `crates/renderer/src/vulkan/frame_upscaler.rs` | renderer Dim 11, safety Dim 1 | HIGH |
 | `crates/renderer/src/vulkan/upscaling.rs` | renderer Dim 11, safety Dim 1 | HIGH |
 | `crates/renderer/src/vulkan/presentation.rs` | renderer Dim 11 | HIGH |
-| `crates/renderer/src/vulkan/exposure.rs` | renderer Dim 11 | HIGH |
+| `crates/renderer/src/vulkan/exposure` | renderer Dim 11 | HIGH |
 | `crates/renderer/src/vulkan/egui_pass.rs` | renderer, concurrency | MEDIUM |
 | `crates/renderer/src/vulkan/` | renderer, safety, concurrency, performance | HIGH |
+| `crates/renderer/src/texture_registry/dynamic_rgba.rs` | renderer, ui Dim 5, concurrency Dim 1 | HIGH |
 | `crates/renderer/src/texture_registry` | renderer, performance | MEDIUM |
+| `crates/renderer/src/source_scan.rs` | renderer, tech-debt | LOW |
 | `crates/renderer/` | renderer, performance | HIGH |
 | `crates/fsr3-sys/` | renderer Dim 11, safety Dim 1 | HIGH |
 | `crates/core/src/character/` | character | HIGH |
@@ -31,7 +33,7 @@ Rules: rows are **path prefixes**; the FIRST matching row routes a changed file,
 | `crates/core/src/stealth.rs` | character | MEDIUM |
 | `crates/core/src/animation/` | ecs Dim 9, nif, nifal | MEDIUM |
 | `crates/core/src/ecs/components/groundcover` | exterior | MEDIUM |
-| `crates/core/src/ecs/components/water.rs` | exterior, physics | MEDIUM |
+| `crates/core/src/ecs/components/water` | exterior, physics | MEDIUM |
 | `crates/core/src/ecs/components/restoration.rs` | gameplay | MEDIUM |
 | `crates/core/src/ecs/components/inventory.rs` | gameplay | MEDIUM |
 | `crates/core/src/ecs/components/lock.rs` | gameplay | MEDIUM |
@@ -41,8 +43,10 @@ Rules: rows are **path prefixes**; the FIRST matching row routes a changed file,
 | `crates/core/` | ecs, concurrency | HIGH |
 | `crates/nif/src/import/material/` | nifal, nif | HIGH |
 | `crates/nif/src/import/collision/` | physics, nif | HIGH |
+| `crates/nif/src/import/units.rs` | nifal, nif | HIGH |
 | `crates/nif/` | nif; per-game | HIGH |
 | `crates/plugin/` | esm; per-game | HIGH |
+| `crates/bsa/src/read_at.rs` | parsers, concurrency Dim 7 | MEDIUM |
 | `crates/bsa/` | parsers; per-game | HIGH |
 | `crates/bgsm/` | parsers, nifal; fo4 | MEDIUM |
 | `crates/sfmaterial/` | parsers; starfield | MEDIUM |
@@ -52,6 +56,8 @@ Rules: rows are **path prefixes**; the FIRST matching row routes a changed file,
 | `crates/menuxml/` | ui, parsers | MEDIUM |
 | `crates/spt/` | speedtree | MEDIUM |
 | `crates/physics/` | physics, safety | HIGH |
+| `crates/scripting/src/magic.rs` | scripting, gameplay, character | MEDIUM |
+| `crates/scripting/src/load_order.rs` | scripting, save | MEDIUM |
 | `crates/scripting/` | scripting | MEDIUM |
 | `crates/pex/` | papyrus | MEDIUM |
 | `crates/papyrus/` | papyrus | MEDIUM |
@@ -76,44 +82,57 @@ Rules: rows are **path prefixes**; the FIRST matching row routes a changed file,
 | `byroredux/src/cell_loader/lod` | exterior, performance | MEDIUM |
 | `byroredux/src/cell_loader/object_lod.rs` | exterior, performance | MEDIUM |
 | `byroredux/src/cell_loader/placement_lod.rs` | exterior, performance | MEDIUM |
-| `byroredux/src/cell_loader/reference_state.rs` | gameplay, save | MEDIUM |
+| `byroredux/src/cell_loader/reference_state.rs` | gameplay, save, concurrency Dim 5 | MEDIUM |
 | `byroredux/src/cell_loader/stream_snapshot.rs` | save, performance | MEDIUM |
+| `byroredux/src/cell_loader/interior_spawn.rs` | gameplay; per-game | MEDIUM |
+| `byroredux/src/cell_loader/load_order.rs` | esm, concurrency Dim 7; per-game | HIGH |
+| `byroredux/src/cell_loader/precombined` | fo4; performance | HIGH |
+| `byroredux/src/cell_loader/spawn/precombined.rs` | fo4, performance | MEDIUM |
 | `byroredux/src/cell_loader` | per-game; performance | MEDIUM |
 | `byroredux/src/material_translate.rs` | nifal | HIGH |
 | `byroredux/src/ragdoll` | physics | HIGH |
+| `byroredux/src/npc_spawn/seam_blend` | nifal, gameplay; oblivion, fo3, fnv | MEDIUM |
 | `byroredux/src/npc_spawn` | gameplay, performance Dim 7, concurrency Dim 7 | MEDIUM |
 | `byroredux/src/systems/water.rs` | exterior, physics | MEDIUM |
 | `byroredux/src/systems/weather.rs` | exterior | MEDIUM |
 | `byroredux/src/systems/character.rs` | physics Dim 4+5; gameplay | MEDIUM |
 | `byroredux/src/systems/audio.rs` | audio | MEDIUM |
-| `byroredux/src/systems/{sandbox,wander,travel,follow,escort,guard,patrol,walk_anim,combat_ai,locomotion,navmesh_path,restoration}.rs` | gameplay | MEDIUM |
+| `byroredux/src/systems/{sandbox,wander,travel,follow,escort,guard,patrol,walk_anim,combat_ai,faction_hostility,locomotion,navmesh_path,restoration}.rs` | gameplay | MEDIUM |
+| `byroredux/src/systems/combat_anim.rs` | gameplay, ecs Dim 9, audio | MEDIUM |
+| `byroredux/src/systems/npc_dialogue.rs` | scripting Dim 5, gameplay Dim 2 | MEDIUM |
 | `byroredux/src/systems/cinematic.rs` | scripting | MEDIUM |
 | `byroredux/src/systems/` | ecs, performance | MEDIUM |
-| `byroredux/src/render/` | renderer, performance | MEDIUM |
+| `byroredux/src/render/` | renderer, performance, concurrency Dim 7 | MEDIUM |
 | `byroredux/src/boot/` | concurrency Dim 4, ecs Dim 5, tooling | HIGH |
 | `byroredux/src/scheduler_access_tests.rs` | concurrency, ecs | HIGH |
 | `byroredux/src/save_io` | save | MEDIUM |
-| `byroredux/src/combat.rs` | gameplay | MEDIUM |
+| `byroredux/src/combat.rs` | gameplay, character | MEDIUM |
 | `byroredux/src/inventory.rs` | gameplay | MEDIUM |
 | `byroredux/src/interaction.rs` | gameplay, ui | MEDIUM |
 | `byroredux/src/settings_io.rs` | tooling, gameplay | LOW |
 | `byroredux/src/loading_screen.rs` | gameplay, esm | LOW |
 | `byroredux/src/notifications.rs` | gameplay | LOW |
-| `byroredux/src/hud.rs` | ui, gameplay | MEDIUM |
+| `byroredux/src/hud.rs` | ui, gameplay; oblivion, fo3, fnv | MEDIUM |
+| `byroredux/src/objectives.rs` | gameplay Dim 6, ui, scripting | MEDIUM |
+| `byroredux/src/player_body.rs` | gameplay Dim 1, ecs Dim 9, save, physics Dim 4, concurrency Dim 4 | MEDIUM |
 | `byroredux/src/scaleform_hud.rs` | ui | MEDIUM |
 | `byroredux/src/ui_input.rs` | ui | MEDIUM |
-| `byroredux/src/streaming` | performance Dim 7, concurrency Dim 7, exterior | MEDIUM |
+| `byroredux/src/streaming` | performance Dim 7, concurrency Dim 7, exterior; fo4 | MEDIUM |
 | `byroredux/src/extensions/` | safety Dim 8, tooling | MEDIUM |
 | `byroredux/src/studio_host.rs` | tooling | MEDIUM |
 | `byroredux/src/commands` | ecs, tooling | MEDIUM |
 | `byroredux/src/asset_provider/animation.rs` | scripting Dim 5, parsers | MEDIUM |
 | `byroredux/src/asset_provider/audio.rs` | audio | MEDIUM |
 | `byroredux/src/asset_provider/script.rs` | scripting, papyrus | MEDIUM |
+| `byroredux/src/asset_provider/texture_prefetch.rs` | performance Dim 7, concurrency Dim 7 | MEDIUM |
 | `byroredux/src/asset_provider/` | parsers; per-game | MEDIUM |
+| `byroredux/src/scene/character_spawn.rs` | gameplay, physics Dim 4; per-game | MEDIUM |
 | `byroredux/src/scene` | per-game | MEDIUM |
 | `byroredux/src/cornell.rs` | renderer Dim 12 | LOW |
 | `byroredux/src/bench` | performance, runtime | LOW |
 | `byroredux/src/debug_load.rs` | tooling | LOW |
+| `byroredux/src/list_cells.rs` | tooling, esm | LOW |
+| `byroredux/src/ownership_sample` | performance Dim 8 | LOW |
 | `byroredux/src/sf_smoke.rs` | starfield | LOW |
 | `byroredux/src/game_profiles.rs` | tooling; per-game | MEDIUM |
 | `byroredux/src/cli_args.rs` | tooling | MEDIUM |
@@ -124,17 +143,21 @@ Rules: rows are **path prefixes**; the FIRST matching row routes a changed file,
 | `byroredux/src/app_events.rs` | ui, ecs | MEDIUM |
 | `byroredux/src/app_frame.rs` | renderer, performance, concurrency | HIGH |
 | `byroredux/src/app_step.rs` | save, performance, exterior | MEDIUM |
-| `byroredux/src/components.rs` | ecs | MEDIUM |
+| `byroredux/src/components` | ecs | MEDIUM |
 | `byroredux/src/helpers.rs` | ecs | LOW |
 | `byroredux/src/main.rs` | ecs, tooling | MEDIUM |
 | `byroredux/src/` | ecs | MEDIUM |
 | `byroredux/tests/` | regression, runtime | LOW |
+| `byroredux/examples/` | tooling | LOW |
 | `scripts/` | runtime, performance | LOW |
 | `docs/smoke-tests/` | runtime | LOW |
 | `docs/` | tech-debt (doc rot) | LOW |
 | `.claude/commands/` | tech-debt (audit infrastructure) | LOW |
 | `.zcode/` | tech-debt (audit infrastructure mirror) | LOW |
 | `.claude/issues/` | regression | LOW |
+| `.claude/audit-baselines/` | runtime | LOW |
+| `.agents/` | tech-debt (audit infrastructure mirror) | LOW |
+| `.github/` | tech-debt, runtime (CI lanes) | LOW |
 | `Cargo.` | tech-debt, safety (dependency drift) | LOW |
 | `byroredux/Cargo.toml` | tech-debt | LOW |
 | `README.md` | tech-debt (doc rot) | LOW |

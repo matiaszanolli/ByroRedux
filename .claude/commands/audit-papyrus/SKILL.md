@@ -59,8 +59,9 @@ Paths: `crates/pex/src/{reader,opcode,model,lib,call_sites}.rs`
 First step: `cargo test -p byroredux-pex`  (then re-read any guard named below that did not run)
 - **`take(n)` is the single bounds gate** (`checked_add` + `<= len` → `UnexpectedEof`). No read path may
   index `self.data[..]` or `try_into().unwrap()` a short slice. Guard: `every_prefix_of_every_wire_valid_
-  sample_is_rejected` (exhaustive-prefix; replaces hand re-verification) — confirm it covers all three
-  dialects (`parses_a_handbuilt_{fo4,skyrim_be,starfield_pex_with_guards}`).
+  sample_is_rejected` (exhaustive-prefix over five builders: Skyrim LE/BE, extender-dependent BE, Starfield
+  guards, and #4474's `build_sample_full_coverage` — FO4 debug-info skips, getter/setter bodies, non-empty
+  `struct_infos`, `Value::Float`). A new reader branch no sample reaches is the gap to look for.
 - **Allocation is bounded by something other than a wire count**: var-arg count `n` (up to `i32::MAX`) must
   not feed `Vec::with_capacity` (grow by `push`; `hostile_vararg_count_errors_instead_of_ooming`); other
   `with_capacity(count)` sites are `u16`-capped; `u32` flags/sizes are never capacities. **String copies are
@@ -69,7 +70,8 @@ First step: `cargo test -p byroredux-pex`  (then re-read any guard named below t
   owned copy of a table string (a new model field, a new scan) must be charged; guards
   `string_copies_past_the_budget_are_refused`, `call_site_copies_are_bounded_by_the_string_budget`.
 - **`OpCode::from_u8` `transmute`** (`unsafe`, memory-safety-critical): `MAX_OPCODE == 51` equals last
-  discriminant + 1, enum `#[repr(u8)]` with contiguous `0..=50`, guard is `>=`. Pins:
+  discriminant + 1, enum `#[repr(u8)]` with contiguous `0..=50`, guard is `>=`; a compile-time
+  `const _: () = assert!(OpCode::TryLockGuards as u8 == MAX_OPCODE - 1)` backs it (#4475). Pins:
   `discriminants_match_on_disk_order`, `from_u8_round_trips_and_rejects_oob`,
   `metadata_matches_champollion{,_full_table}` (verify they cover every discriminant, not spot values).
 - **`arg_count` table** drives operand consumption: a wrong row desyncs the whole stream silently. Spot-check
@@ -91,7 +93,8 @@ First step: `cargo test -p byroredux-pex -- decompile::cfg decompile::lift`
   anchor); non-integer offset → `BadJumpOffset`, OOB → `JumpOutOfRange`, non-{ident,bool,int} condition →
   `BadJumpCondition`. `CodeBlock::split(at)` is never called with `at == 0` (underflow).
 - **`jmpf`/`jmpt` polarity**: `jmpf` jumps when FALSE (true-edge = fall-through); a flip inverts every `If`
-  (`forward_jmpf_builds_an_if_diamond`, `backward_jmpt_builds_a_loop_edge`).
+  (`forward_jmpf_builds_an_if_diamond`, `forward_jmpf_with_unconditional_backedge_builds_a_loop`, and
+  `backward_jmpt_builds_a_loop_edge` — a true `JmpT` pin since #4476; it was a misnamed `JmpF` test before).
 - **`rebuild_expression`**: a temp-producing node folds into the *single immediately-next live* consumer
   (`count_constant_id`: 0 → advance, 1 → inline, >1 → `ExpressionRebuildFailed`); folding into a non-adjacent
   consumer reorders side effects. It runs over a linked live-index chain, not restart-at-0/`Vec::remove`
@@ -120,7 +123,9 @@ First step: `cargo test -p byroredux-pex -- decompile::`; with game data: `cargo
   have collapsed) **fails closed** (`ControlFlowFailed`, #1732; `conditional_predecessor_fails_closed`) —
   a fix that resumes past the block drops statements. The module doc's "advanced past" wording is stale
   (#4115 open).
-- **`boolean.rs`** two deliberate Champollion departures — adjudicate benign-or-bug, evidence = corpus rate +
+- **Three bookkept Champollion departures** — `boolean.rs`'s two, plus `lower.rs`'s `is` → object-typed `Cast`
+  (#4477, `an_is_opcode_lowers_to_an_object_typed_cast`; recognizer-irrelevant only while no consumer keys on it).
+  For the **`boolean.rs`** two — adjudicate benign-or-bug, evidence = corpus rate +
   fidelity gate, not speculation: (1) no debug-line guard (a same-named temp on a fall-through edge could be
   falsely collapsed into a fabricated `&&`/`||`); (2) termination guard (only re-process on a real merge —
   infinite loop hangs the decompiler). `&&` true edge falls through, `||` false edge; operand must recompute
@@ -134,8 +139,8 @@ First step: `cargo test -p byroredux-pex -- decompile::`; with game data: `cargo
   (should be unreachable), `is` → `Cast`, `StructCreate` → `New` size 0, `lower_binary_op` default arm →
   `Eq` (a real unknown op silently becomes `==`).
 - **Script assembly**: synthetic `::` variables dropped; **script scope = the empty-named state's functions**;
-  every named state → a `State` item, `is_auto` when it matches `auto_state_name` case-insensitively
-  (`is_auto_state`) — keying scope on the auto match inverted 983 vanilla scripts (#4319;
+  every named state → a `State` item; exactly one (the first case-insensitive `is_auto_state` match against
+  `auto_state_name`) is `is_auto` (#4473, `case_colliding_state_names_mark_exactly_one_auto`) — keying scope on the auto match inverted 983 vanilla scripts (#4319;
   `named_auto_state_stays_an_auto_state_and_the_empty_state_is_script_scope`). Event iff (`on`-prefixed AND
   `is_event_name`) OR `::remote_`-prefixed; `EVENT_NAMES` is a sorted lowercase union binary-searched
   (`list_is_sorted_for_binary_search`); a missing engine event demotes a handler to a function.
@@ -160,14 +165,21 @@ First step: `cargo test -p byroredux-papyrus -- depth chain the_two_parser_depth
 - **Newline is a terminator in the Pratt loop**: the loop uses `peek_raw()`, not the newline-skipping
   `peek()` (#4321 — a line opening with `(` was glued to the previous statement, a silent wrong AST). Explicit
   `\` continuations are joined by `lexer::preprocess`; an operator ending a line still continues. Verify
-  every other `peek()` on a statement boundary (`stmt.rs`, `script.rs` item recovery use `peek_raw`).
+  every other `peek()` on a statement boundary: #4472 (six sites, via `check_raw`) and #4763 (seven more —
+  `Extends`, variable/function/group flags, property and local initializers) moved construct-continuation
+  decisions to the raw stream, each pinned by an `*_on_the_next_line_*` test in `script.rs` plus
+  `single_line_forms_of_the_4763_sites_still_parse`. Remaining `peek()`/`check()` sites should sit behind an
+  explicit `skip_newlines()` or a bracket-bounded list; `expect()` still skips newlines (`Auto` ⏎ `State S`
+  glues — known residual class, noted in #4763).
 - **Precedence/associativity**: `BinaryOp::precedence` Or=1, And=2, comparisons=3, Add/Sub/StrCat=4,
   Mul/Div/Mod=5, unary=6, cast=7/postfix=8 (`PREC_*` in `expr.rs`); left-assoc hinges on `op_prec <= min_bp →
   break`. (Bethesda's inverted CTDA OR/AND precedence is a *condition-evaluation* concern in
   `/audit-scripting` Dim 3 — `.psc` operators are standard.)
 - **`preprocess`**: `\`+`\n`/`\r\n`/lone `\r` elided (2/3/2 bytes) with exact `OffsetMap` counts (a wrong count
   drifts every later span); a trailing `\` at EOF is emitted, not swallowed. Keywords are
-  `ignore(ascii_case)` and win over the `Ident` regex.
+  `ignore(ascii_case)` and win over the `Ident` regex. Lone CR is a line terminator and CRLF one `Newline`
+  (`bare_cr_is_a_newline_and_crlf_is_one_newline`, #4479 — a CR-only file once lexed to zero newlines);
+  `0x` and exponent shapes route through `MalformedNumber` to a `LexError`, not an adjacent token pair.
 - **Recovery**: `parse_script` returns `Ok((Script, Vec<ParseError>))` for partial success and `Err` only for
   fatal; `skip_to_next_line` always consumes ≥1 token (no infinite loop); callers needing strict-fail check
   `result.1.is_empty()`. No `unwrap()` on `str::parse` of a malformed-but-lexable literal.
@@ -179,7 +191,7 @@ Combine `/tmp/audit/papyrus/dim_*.md` into `docs/audits/AUDIT_PAPYRUS_<TODAY>.md
 (findings by severity; **untrusted-input robustness verdict** — can a hostile `.pex`/`.psc` panic, OOB, OOM,
 or stack-overflow the cell loader / console — must be NO; **decompile-rate verdict** — re-measured, and what
 it does and does not prove) · **Decompiler Soundness Matrix** (reader / cfg / lift+copy-prop / boolean /
-control-flow / lower / `.psc` parser × bounds-safe, terminates, total, fidelity-tested; the two Champollion
+control-flow / lower / `.psc` parser × bounds-safe, terminates, total, fidelity-tested; the three Champollion
 departures adjudicated) · **Findings** (severity order, deduplicated). Cross-audit: recognizer/runtime →
 `/audit-scripting`; `.pex` bytes reaching the extender preflight → `/audit-scripting` Dim 7.
 

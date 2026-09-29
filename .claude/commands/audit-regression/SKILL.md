@@ -20,7 +20,7 @@ Read `_audit-common.md` (dedup, methodology, per-finding format) and `_audit-sev
 
 ## Step 1 — Discover fixes worth re-checking (churn-weighted)
 
-A fix can only regress if the code around it changed. With 4,400+ closed issues, "the last 50 closed" re-checks fixes nobody has touched and never reaches old fixes in hot files. Select by churn instead:
+A fix can only regress if the code around it changed. With thousands of closed issues, "the last 50 closed" re-checks fixes nobody has touched and never reaches old fixes in hot files. Select by churn instead:
 
 ```bash
 mkdir -p /tmp/audit

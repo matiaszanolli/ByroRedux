@@ -71,12 +71,13 @@ First step: `grep -rn 'type Storage = PackedStorage' crates byroredux --include=
 - **PackedStorage**: `binary_search` keeps the sorted-by-entity invariant on insert/remove;
   `insert_bulk` is append + one sort and the result stays sorted AND deduplicated (#467);
   `World::insert_batch` still fires the per-item `entity < next_entity` `debug_assert`.
-- **Change tracking** (`Component::TRACK_CHANGES`, default `false`): ON for SEVEN
+- **Change tracking** (`Component::TRACK_CHANGES`, default `false`): ON for NINE
   components — `Transform`, `GlobalTransform`, `Parent`, `Children`, plus `LocalBound`
-  (since `ad012f9d6`) and `Material` and `ParticleEmitter` (both since `1d56758ba` /
-  #3836). The last three use sparse storage, so they get only a
-  `structural_generation` bump and no dirty set — #3836's `SceneEffectSoftCache`
-  and the incremental world-bound propagation consume them.
+  (since ad012f9d6), `Material` and `ParticleEmitter` (both since 1d56758ba /
+  #3836), and `CollisionShape` + `RapierHandles` (`crates/physics`, since 88c23887b). The sparse
+  ones get only a `structural_generation` bump and no dirty set — #3836's `SceneEffectSoftCache`,
+  the incremental world-bound propagation, and `physics_sync_system`'s unregistered-shape absence
+  cache (`sync.rs`) consume them.
   `PackedStorage` keeps a dirty set (may hold duplicates —
   consumers tolerate that); `SparseSetStorage::structural_generation` bumps on insert/remove.
   `drain_dirty_into` preserves capacity (#1371); `take_dirty` hands it away. The `GlobalTransform`
@@ -160,8 +161,10 @@ stage's parallel batch), not a stage. Registered per stage in `register_{early,u
   `every_parallel_system_declares_everything_it_acquires` scans each parallel system's body (same-file
   callees to depth 3, plus the explicit cross-file hops in `PARALLEL_SYSTEMS`) and fails if an acquired
   type is missing from its `Access`; `the_parallel_system_table_covers_every_parallel_registration`
-  fails when an `add_to_with_access` lands outside the table; two exclusive fns are covered too
-  (`papyrus_provider_system`, `legacy_obscript_load_order_system`).
+  fails when an `add_to_with_access` lands outside the table; three exclusive fns are covered too
+  (`npc_combat_ai_system`, `papyrus_provider_system`, `legacy_obscript_load_order_system`), and
+  `cross_file_hops_and_get_forms_reach_their_acquisitions` pins that the table's cross-file hops and the
+  `get` forms actually surface types (#4994).
   Sibling gates in `scheduler_access_tests.rs`: `scheduler_access_invariants_hold_on_the_real_schedule`
   (non-vacuous floors: ≥9 parallel systems, ≥7 analysed pairs, then 0 undeclared / 0 conflicts / 0
   unknown), `contract_bearing_exclusives_declare_their_access`, `p2_gameplay_exclusives_declare_non_empty_access`,
@@ -170,10 +173,11 @@ stage's parallel batch), not a stage. Registered per stage in `register_{early,u
   log line. Confirm the guards are live: `rg -n '#\[ignore' byroredux/src/scheduler_access_tests.rs byroredux/src/boot/schedule/mod.rs` returns nothing, and `PARALLEL_SYSTEMS.len()` equals the
   `add_to_with_access(` count.
   **What the guard cannot see** (audit these by hand for every parallel system and any exclusive being
-  promoted to parallel): it matches only turbofish `query::<T>` / `query_mut` / `resource` /
-  `resource_mut` (+ `try_`) — NOT `world.get::<T>` / `get_mut` / `has::<T>`, `query_2_mut::<A, B>`,
-  `resource_2_mut`, or types inferred without a turbofish; it does not follow hops into a different file
-  unless listed in the table; closures and macro bodies are opaque.
+  promoted to parallel): it matches only single-type turbofish `query` / `query_mut` / `resource` /
+  `resource_mut` (+ `try_`), `.get` / `.get_mut` / `.has` (#4994) and the generic
+  `remove_component` / `insert_component` helpers (#4821) — NOT `query_2_mut::<A, B>`, `resource_2_mut`,
+  or types inferred without a turbofish (`world.get(e)` into a typed binding); it does not follow hops into
+  a different file unless listed in the table; closures and macro bodies are opaque.
   (#4573 closed the mode/substring/comment blind spots: read-vs-write IS compared, names match
   whole declared types, and `//` lines in the registration block no longer satisfy the scan. The
   forms gap above remains.) A same-session precedent: an
@@ -203,6 +207,8 @@ First step: `cargo test -p byroredux-core ecs::systems`
   propagation, then bound propagation (drains the `GlobalTransform` dirty set), and no `Stage::Late`
   system may write `GlobalTransform` on a `LocalBound`-bearing entity (its `WorldBound` lags a frame;
   billboards are the one accepted exception). A new Late `GlobalTransform` writer must make that call.
+  Same rule for `Transform` writers feeding propagation: `player_body_facing_system` moved Late → Update
+  (#4995, `player_body_facing_runs_in_update_before_propagation`).
 - **Animation scratch** (`byroredux/src/systems/animation.rs`): the `NameIndex.map` refill is in place
   (`clear` + reserve + reinsert; a fresh map costs a ~3 ms stream-in spike, #824); `SubtreeCache` clears
   only when the `Name` count changes (#278); `events` / `seen_labels` scratch is hoisted and
@@ -227,8 +233,9 @@ First step: `cargo test -p byroredux rapier_release` then read `git log --since=
   (`crates/debug-server/src/registration.rs`, #4063); teardown completeness
   (`clear_ambient_behavior`, `npc_spawn/ai_package.rs`) and behavior semantics are `/audit-gameplay`.
 - **Transient markers**: `ActivateEvent` / `HitEvent` / `TimerExpired` are removed by
-  `event_cleanup_system` (Late exclusive, registered after every consumer; a second cleanup site would
-  double-free). `timer_tick_system` never accumulates negative time.
+  `event_cleanup_system` (Late exclusive, registered after every consumer — pinned by
+  `transient_cleanup_is_the_last_late_exclusive`; a second cleanup site would double-free). Late readers
+  now include `equipment_appearance_system` and `npc_dialogue_selection_system`. `timer_tick_system` never accumulates negative time.
 - **`AnimationClipRegistry`** (`animation/registry.rs`): interns by ASCII-lowercased path (#790) so
   streaming does not grow it; `release()` clears a slot but never returns it — no free list, by design
   (#2689), because a released handle may still sit on an `AnimationPlayer` / `AnimationLayer`. Every
@@ -236,6 +243,11 @@ First step: `cargo test -p byroredux rapier_release` then read `git log --since=
   free list without addressing that aliasing hazard.
 - **No animation controller layer**: `AnimationStack` is the whole sequencing surface; audit its
   lifecycle (no dangling clip refs after unload) rather than looking for a controller above it.
+- **Retained `EntityId` fields** (never recycled, so a stale id is a failed lookup, not aliasing): new
+  per-actor carriers `NpcSkeletonBones` (bone-name → entity map, retained on living actors and mirrored onto
+  the process-lifetime player capsule for mid-life gear import), `AmbientEngagement.target`,
+  `PlayerBodyRootEntity`. Check every consumer tolerates a despawned target, and that a cell unload which
+  despawns a skeleton also drops or invalidates the map holding it.
 - **Emitters**: `apply_emitter_params` (`byroredux/src/systems/particle.rs`) fills `ParticleEmitter`
   from `ImportedEmitterParams`; size is `initial_radius × base_scale.unwrap_or(1.0)` and colour is not
   clobbered (`apply_emitter_params_size_defaults_base_scale_to_one`,

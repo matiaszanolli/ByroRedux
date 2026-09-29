@@ -86,11 +86,11 @@ First step: `git log --since=<last-report-date> --format='%h %s' -- crates/rende
   #1790; scratch-serialize before the static batch's first build, #4177; the refit publish lives in
   `context/skinned_blas_refit.rs`), TLAS (`tlas.rs`; BLAS writes published to the TLAS build at frame
   scope, #4179). Missing/wrong-stage = HIGH; CRITICAL if the AS was built at a wrong/stale address.
-- **AS build INPUT access flag (#507945d8).** Inputs to a build (instance copy → TLAS in `tlas.rs`;
+- **AS build INPUT access flag (commit 507945d8).** Inputs to a build (instance copy → TLAS in `tlas.rs`;
   skinned-vertex compute write → BLAS build in `skinned_blas_refit.rs`) use `SHADER_READ` at the
   `ACCELERATION_STRUCTURE_BUILD` stage, not `ACCELERATION_STRUCTURE_READ_KHR`. Confirm via a `BYRO_VALIDATION` run.
 - **Deferred destruction vs in-flight reads.** BLAS entries route through `pending_destroy_blas`
-  (#a476b256), BLAS scratch through `pending_destroy_scratch` (#1782); the tick runs AFTER the fence
+  (commit a476b256), BLAS scratch through `pending_destroy_scratch` (#1782); the tick runs AFTER the fence
   wait (`sync_and_acquire_frame.rs`, alongside the mesh and texture ticks) and shutdown drains. Any new
   immediate `destroy_acceleration_structure` at an eviction site = CRITICAL UAF. The skinned-batch scratch
   grow is deliberately immediate (both-slots wait) — not a missed deferral (#3643).
@@ -98,11 +98,15 @@ First step: `git log --since=<last-report-date> --format='%h %s' -- crates/rende
   (`device_wait_idle`) before destroying swapchain-dependent resources. The TLAS-resize `device_wait_idle`
   (`tlas.rs`, #1390) is belt-and-suspenders behind the both-slots wait.
 - **Blocking one-time submits.** BLAS initial builds and staging copies fence-wait; flag one inside the
-  per-frame path. The known per-frame case is the overlay upload (HUD via `write_rgba_inplace`, Ruffle UI via
-  `update_rgba`): each is its own submission + fence wait on the graphics-queue lock. In-place
-  overwrite carries a hazard contract — no in-flight frame may still sample the handle. The HUD's
-  `texture_handles: [u32; 3]` rotation (`byroredux/src/hud.rs`) satisfies it only while the count exceeds
-  `MAX_FRAMES_IN_FLIGHT`; no test ties the two — verify by reading.
+  per-frame path. The overlay uploads (HUD via `write_rgba_inplace`, Ruffle UI via `update_rgba`) are no
+  longer one: both queue into `texture_registry/dynamic_rgba.rs`, which `record_pending_rgba_uploads`
+  (called from `context/begin_frame_recording.rs`) records into the frame's own command buffer through a
+  per-FIF staging arena, with barriers ordering prior sampling before the copy; an update is consumed only
+  when that frame's submit succeeds (`note_frame_submitted` → `submitted(slot)`). Guards:
+  `rgba_updates_use_the_frame_command_buffer_and_keep_descriptors`,
+  `only_the_submitted_recording_consumes_its_pixels`. The HUD's `texture_handles: [u32; 3]` rotation is now a
+  driver choice, not hazard protection. Check the extent-change path (new image, old one deferred) and that
+  the staging slot is not rewritten while its frame is in flight.
 **Output**: `/tmp/audit/concurrency/dim_1.md`
 
 ### Dimension 2: Compute → AS → Fragment Chains
@@ -130,12 +134,21 @@ First step: `git log --since=<last-report-date> --format='%h %s' -- crates/rende
   #4293), scatter → publish incl. counter readback (#4181), and the interaction field's trailing barrier;
   `sky_cube.rs::record_bake` runs mid-frame (`context/build_and_upload_instances.rs`) — check its
   publish barrier before the first consumer. Evidence is a `BYRO_VALIDATION` capture, not reading.
+- **Ground-cover model tier** (`groundcover_models.rs`, #4413): its compute writes `GpuInstance`s into the
+  *tail of the main instance buffer* after `build_and_upload_instances` and before the geometry pass, which
+  draws them with indexed-indirect — COMPUTE_WRITE must reach both `VERTEX_SHADER` (instance read) and
+  `DRAW_INDIRECT` (args), and the host upload of the frame's own instances must not race the tail.
+- **Exposure meter** (`exposure_meter.rs`): post-bloom composite → `exposure_meter.comp` → this frame's
+  `ExposureResource` slot, sampled unconditionally by `presentation.frag` and the FSR dispatch — the slot
+  write must be published before both consumers, in fixed mode too.
 - **MaterialBuffer SSBO.** upload is `HOST_WRITE → VERTEX/FRAGMENT_READ`, before draw recording; flag only if it moves into a mid-frame compute path.
+- Known-open 2026-09-29: #4989 (narrowed palette dispatches write one SSBO back to back with no barrier) and
+  #4780 (the #3685 skip-clear latch also skips the temporal reset, leaving `history_valid` true).
 **Output**: `/tmp/audit/concurrency/dim_2.md`
 
 ### Dimension 3: ECS Lock Ordering & Deadlock (system level)
 Paths: `crates/core/src/ecs/{world,lock_tracker}.rs`, `byroredux/src/systems/`, `byroredux/src/extensions/`, `.github/workflows/ci.yml`
-First step: `BYRO_LOCK_ORDER_CHECK=1 cargo test --workspace` (what CI's `lock-order-check` job runs; a nonzero failure count is a hard regression)
+First step: `BYRO_LOCK_ORDER_CHECK=1 cargo test -p byroredux` — the binary's graph is where every recent cycle lived (#4982–#4984; core alone stays green) — then CI's `lock-order-check` form, `cargo test --workspace --no-fail-fast --exclude byroredux-ui`. A nonzero failure count is a hard regression
 Machinery — TypeId-sorted pairs, tracker-scope arming, `lock_tracker` internals (check-before-insert,
 `GRAPH` poison recovery, recursive-read warning) and poison resolution — is `/audit-ecs` Dim 1; do not
 re-audit it here. This dimension owns how *systems* use it.
@@ -148,10 +161,17 @@ re-audit it here. This dimension owns how *systems* use it.
   `/audit-ecs` Dim 5's guard; its blind spots are Dim 4 below.
 - **Dynamic supplement, reachability-bounded.** `BYRO_LOCK_ORDER_CHECK=1` (debug-only, opt-in graph)
   covers what declarations cannot: exclusive/cross-stage paths and hand-ordered N-lock holds. CI runs it
-  twice — `lock-order-check` (`cargo test --workspace`, single-threaded hand-built worlds) and
+  twice — `lock-order-check` (hand-built worlds; since #4993 it takes cargo's own status via PIPESTATUS, so any
+  test failure reddens it, pinned by `lock_order_job_propagates_cargo_status_through_tee`) and
   `vulkan-validation` (the only job where rayon dispatches the real parallel batch against a real world;
-  pinned by `vulkan_validation_job_enables_the_lock_order_detector` and
-  `vulkan_validation_job_fails_on_a_panic` in `byroredux/src/scheduler_access_tests.rs`). A green run proves only what it exercised.
+  pinned by `vulkan_validation_job_enables_the_lock_order_detector`, `vulkan_validation_job_fails_on_a_panic`
+  and `vulkan_validation_job_resolves_lavapipe_and_fails_on_init_failure` in
+  `byroredux/src/scheduler_access_tests.rs`). Known-open 2026-09-29 (#4987): that lane has not yet been seen to
+  reach a device — read the run log for a device-selection line before counting live-batch coverage. A green
+  run proves only what it exercised.
+- **The graph cannot tell `&mut World` from `&World`.** A function holding several read guards at once under
+  `&mut World` cannot deadlock but still records edges and reddens the lane (#4982, the unload capture
+  passes). The fix is the same snapshot-then-acquire shape, not an exemption.
 - **Canonical order.** `docs/engine/ecs.md` § Lock-ordering policy is the arbiter for hand-ordered
   holds (`StringPool` is a sink: acquired last, nothing beneath it). New multi-lock code follows it.
 - **Guard lifetime in system bodies.** No `query_mut` / `resource_mut` guard held across a call that
@@ -174,10 +194,13 @@ The access model and the mechanical declaration guard (`system_access_declaratio
 **Checklist**:
 - **Confirm the proof is live**: the two tests above are not `#[ignore]`d, the report's non-vacuity floors
   (≥9 parallel systems, ≥7 pairs) still hold, and `PARALLEL_SYSTEMS.len()` equals the `add_to_with_access(` count.
-- **Blind spots of the guard** (audit by hand): acquisitions via `world.get` / `get_mut` / `has`,
-  `query_2_mut`, `resource_2_mut` or inferred types (the scan reads only turbofish `query` / `query_mut` /
-  `resource` / `resource_mut`); cross-file helper hops not listed in the table; closures and macros;
-  exclusive systems (only two are scanned — `papyrus_provider_system`, `legacy_obscript_load_order_system`).
+- **Blind spots of the guard** (audit by hand): the scan reads turbofish `query` / `query_mut` / `resource` /
+  `resource_mut` (+ `try_`), `world.get` / `get_mut` / `has` and generic `remove_component` /
+  `insert_component` (#4994, #4821) — not `query_2_mut`, `resource_2_mut` or inferred types; it follows calls
+  within a listed file but cross-file hops only where `PARALLEL_SYSTEMS` lists them (#4994,
+  `cross_file_hops_and_get_forms_reach_their_acquisitions`); closures and macros; exclusive systems (three are
+  scanned — `npc_combat_ai_system`, `papyrus_provider_system`, `legacy_obscript_load_order_system`; others only
+  by the non-empty-access tests).
   An under-declared parallel system makes `known_conflict_count() == 0` unsound (the same-session
   `fly_camera_system` `GlobalTransform` write is the precedent, commit ac1d44f5c).
 - **Cross-stage sequencing is invisible to the analyzer** (`analyze_pair` reasons within one stage). A
@@ -186,7 +209,8 @@ The access model and the mechanical declaration guard (`system_access_declaratio
   weather is an Early exclusive registered after the parallel player controller, so the controller reads
   the previous frame's wind by design, #3111/#4186), `billboard_runs_after_camera_follow_in_late`,
   `footstep_runs_after_camera_follow_in_late`, `submersion_runs_after_camera_follow_and_before_water_audio`
-  (#3652/#3180/#4185 — each was a real one-frame-stale bug). For any NEW single-writer / multi-reader resource,
+  (#3652/#3180/#4185 — each was a real one-frame-stale bug), `player_body_facing_runs_in_update_before_propagation`
+  (#4995). For any NEW single-writer / multi-reader resource,
   check writer-stage ≤ reader-stage and that a test like these pins it; fix by moving the *consumer* to
   a Late exclusive after the writer, not by moving the writer.
 - **Exclusives** run serially after the parallel batch and are never paired; undeclared ones are by design (a
@@ -202,14 +226,18 @@ First step: `cargo test -p byroredux-physics sync` and `BYRO_LOCK_ORDER_CHECK=1 
   vice versa. `physics_sync_system` phases (numbered in its own comments): 1 collect newcomers +
   register, 2 push kinematic, 2.5 water buoyancy (`crate::water::apply_buoyancy`), 3 Rapier step, 4 pull
   dynamic. Phase 1 `collect_newcomers` collects to a `Vec` under read guards and **drops them** before
-  `register_newcomers` takes the `PhysicsWorld` + `RapierHandles` write guards.
+  `register_newcomers` converts shapes across the rayon pool (touching no `World`) and only then takes the
+  `PhysicsWorld` + `RapierHandles` write guards — pinned by `register_newcomers_parallel_section_holds_no_world_guard` (#4997).
 - **Fix shape for every closed cycle: snapshot, then acquire** — never "hold both and be careful". A
   cycle here is almost never two systems disagreeing on an order; it is one site holding a guard *across a
   call* that acquires the pair the other way. `docs/engine/ecs.md` records the canonical direction; guards to
   confirm are live: `pull_dynamic_does_not_close_transform_global_transform_lock_cycle`
   (`crates/physics/src/sync.rs`, `Transform -> GlobalTransform`) and
   `get_actor_value_does_not_hold_actor_values_across_ruleset` (`crates/scripting/src/condition.rs`,
-  `CharacterRuleset -> ActorValues`). The count of closed cycles is open and growing — the CI
+  `CharacterRuleset -> ActorValues`), `unload_captures_do_not_invert_production_lock_orders` and
+  `picked_up_restore_walks_meshes_before_taking_the_marker` (`byroredux/src/cell_loader/reference_state.rs`,
+  #4982/#4983), `view_restamp_does_not_close_the_render_skip_lock_cycle` (`byroredux/src/player_body.rs`,
+  #4991). The count of closed cycles is open and growing — the CI
   lock-order job (Dim 3) is what finds the next one; a second site acquiring `StringPool` mid-graph is the same class.
 - **Helper order.** `set_linear_velocity` / `set_kinematic_translation` read `RapierHandles` via
   `world.query::<RapierHandles>()…copied()` (guard drops with the expression), *then* take
@@ -238,14 +266,16 @@ First step: `grep -n 'load-bearing' -B4 -A12 crates/renderer/src/vulkan/context/
 - **Swapchain recreate.** G-buffer, SVGF, TAA, caustic, water-caustic, volumetrics, bloom, composite and
   egui framebuffers are rebuilt; per-FIF history/accumulator images freed for every in-flight slot (`resize.rs`).
 - **AS cleanup on shutdown.** All `BlasEntry` buffers, `TlasState` buffers and scratch released; per-entity skin outputs kept until the entity is destroyed.
-- **Other GPU cleanup.** `scene_buffer`, `MaterialBuffer`, texture registry, `EguiPass::destroy()`
-  (`Option<EguiPass>` taken in `Drop`), and `GpuImage` (`vulkan/image.rs`), which routes most passes' image
+- **Other GPU cleanup.** `scene_buffer`, `MaterialBuffer`, texture registry (incl. the `dynamic_rgba` staging
+  arena), `EguiPass::destroy()` (`Option<EguiPass>` taken in `Drop`; its texture retirements are a
+  frames-in-flight rider, #4988), a partially-built object's error arm (`GpuPerFrameTimers::new`, #4998),
+  and `GpuImage` (`vulkan/image.rs`), which routes most passes' image
   create/bind/destroy through one lock rule: a poisoned allocator lock is recovered, not unwrapped (#4089).
 - **Per-frame leaks.** Any descriptor / command-buffer / staging allocation created per frame but not freed or reset is HIGH.
 **Output**: `/tmp/audit/concurrency/dim_6.md`
 
 ### Dimension 7: Worker Threads & Thread-Safety Bounds
-Paths: `byroredux/src/streaming.rs`, `crates/debug-server/src/{listener,system}.rs`, `crates/renderer/src/vulkan/allocator.rs`, `crates/ui/src/player.rs`, `crates/audio/src/lib.rs`
+Paths: `byroredux/src/streaming.rs`, `byroredux/src/asset_provider/texture_prefetch.rs`, `byroredux/src/cell_loader/load_order.rs`, `byroredux/src/render/mod.rs`, `crates/bsa/src/read_at.rs`, `crates/debug-server/src/{listener,system}.rs`, `crates/renderer/src/vulkan/allocator.rs`, `crates/ui/src/player.rs`, `crates/audio/src/lib.rs`
 First step: `grep -rnE 'thread::(spawn|Builder)|rayon::|mpsc::' --include='*.rs' crates byroredux tools | grep -v test` (a new worker thread outside this list is a coverage gap)
 **Checklist**:
 - **Streaming worker shutdown.** `WorldStreamingState::shutdown` takes the `worker` handle first, then
@@ -254,7 +284,12 @@ First step: `grep -rnE 'thread::(spawn|Builder)|rayon::|mpsc::' --include='*.rs'
   shutdown short-circuits it. The worker runs each cell under `catch_unwind`
   (`pre_parse_cell_panic_safe`).
 - **Worker ↔ main flow.** Parsed payloads move to the main thread over a channel; no shared `&mut World`.
-  The worker uses `Arc<TextureProvider>` (BSA/BA2 `File` reads serialised by a `Mutex`). External-material
+  The worker parses on its own rayon pool (`build_stream_parse_pool`, sized so it does not starve the
+  scheduler's global pool) and uses `Arc<TextureProvider>`; BSA/BA2/CSG extraction is lock-free positional
+  reads (`crates/bsa/src/read_at.rs`, `ReadAt`, commit 1b8b21f3f — concurrent on Unix, kernel-serialised on
+  Windows, #4999). A shared-cursor seek+read reintroduced anywhere returns interleaved wrong bytes (threaded tests per archive, #5000).
+  Streamed NIFs' textures are prefetched on the stream pool (`prefetch_textures`, `PrefetchStore`): a panicking
+  read must still complete its slot, and a withdrawn key must not be waited on. External-material
   resolution (`merge_external_material`, which takes `&mut ImportedMaterial` + `&mut MaterialProvider` +
   `&mut StringPool`) is main-thread-only — moving it needs a real synchronisation story. The NIF import
   cache is read-only on the worker with write-back deferred to main.
@@ -268,6 +303,11 @@ First step: `grep -rnE 'thread::(spawn|Builder)|rayon::|mpsc::' --include='*.rs'
 - **`Send + Sync` bounds.** Component/Resource storage is reached only through World guards; no raw
   pointer crosses threads; the Ruffle/wgpu device (`crates/ui`) is `Send` but not `Sync` and stays on one
   thread; kira runs its own audio thread behind `AudioWorld` — no ECS guard is held across a kira call.
+- **Other rayon fan-outs.** `build_render_data` (`byroredux/src/render/mod.rs`) runs nested `rayon::join`
+  branches that take ECS guards on pool threads — every branch must be read-only, or a write in one branch vs.
+  a read in another is a cross-thread ABBA no CI lane drives. The plugin load-order walk
+  (`cell_loader/load_order.rs`, `rayon::in_place_scope`, #3813) walks plugins in parallel; the `merge_from`
+  fold must follow load order, never completion order.
 - Out of scope: parse-time `Material` translation is single-threaded (`/audit-nifal`).
 **Output**: `/tmp/audit/concurrency/dim_7.md`
 

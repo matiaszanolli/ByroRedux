@@ -51,7 +51,9 @@ constraint CInfo decode is a NIF seam).
    nightly per title in `.github/workflows/real-data-gates.yml` (`BYROREDUX_REQUIRE_GAME_DATA=1`,
    so an absent corpus is a failed job). Locally: one title at a time,
    `BYROREDUX_<GAME>_DATA=<Data dir> cargo test -p byroredux-nif --test per_block_baselines <game> -- --ignored --nocapture`.
-   Check the latest nightly result before trusting a green default `cargo test` for parse rates.
+   Known-open (2026-09-29): the workflow only became parseable with #4619, and no
+   `byroredux-game-data` self-hosted runner is registered (repo runner count 0), so **no nightly
+   result exists** — a green default `cargo test` says nothing about parse rates; run the gate locally.
 
 ## Phase 2: Dimensions
 
@@ -90,6 +92,9 @@ its list is invisible to it); `blocks/controller/sequence_pre_10_1_0_106_tests.r
 - `NiDynamicEffect` carries two affected-nodes groups (`until="4.0.0.2"` and
   `since="10.1.0.0"`); both must be read (`NiLight`/`NiTextureEffect`, no anchor on files
   that old).
+- Starfield `BSGeometryMeshData`'s meshlet/cull trailer is `MeshTrailer::OptionalAtEnd` only for a
+  standalone `.mesh` body (`parse_from_bytes`); an inline (flag 0x200) body reads it `Required`
+  (#4269) — `remaining() == 0` says nothing inside a NIF stream.
 - Starfield `BSFaceGenNiNode` has its own type with an opaque `starfield_tail` (aliasing it
   to plain `NiNode::parse` under-reads 2 B on every instance); `BSWeakReferenceNode` declines
   an unfittable payload into `starfield_tail` rather than overrunning.
@@ -161,7 +166,7 @@ First step: `cargo run -p byroredux-nif --release --example nif_stats -- <archiv
 **Output**: `/tmp/audit/nif/dim_3.md`
 
 ### Dimension 4: Geometry Extraction & Import Handoff
-Paths: `crates/nif/src/import/{mod,types,transform,coord,precombine}.rs`, `import/mesh/`, `import/walk/`, `import/material/{walker,dedicated_shader}.rs`
+Paths: `crates/nif/src/import/{mod,types,transform,coord,precombine,units}.rs`, `import/mesh/`, `import/walk/`, `import/material/{walker,dedicated_shader}.rs`
 First step: `git log --since=<last report> --format='%h %s' -- crates/nif/src/import/mesh crates/nif/src/import/walk`
 This is the *parse → ECS* handoff; per-game material classification is `/audit-nifal`.
 **Guards**: `import/mesh/sse_skin_index_space_tests.rs` (`#[ignore]`, needs Skyrim SE data),
@@ -195,8 +200,17 @@ This is the *parse → ECS* handoff; per-game material classification is `/audit
   `next_controller_ref`) the fallback resolves by `base.target_ref` to the ctlr targeting the
   system whose `controller_ref` equals the chain head — per-instance exact, never a
   whole-scene first-match, and gated on a non-NULL chain head (#4467; opt-in gate
-  `real_archive_torch_meshes_surface_particle_emitters`). Regression = a hardcoded preset
-  replacing an authored birth rate, or the fallback claiming another system's ctlr.
+  `real_archive_torch_meshes_surface_particle_emitters`). The legacy tier follows the ctlr's own
+  `NiPSysEmitterCtlr.data_ref` (until 10.1.0.103, #4560); an unlinked data block is attributed
+  to nobody. Both walkers skip APP_CULLED / editor-marker particle systems
+  (`particle_system_is_culled`, #4561) unless a `NiVisController` — found on the chain *or* by
+  `target_ref` — un-hides them. Regression = a hardcoded preset replacing an authored birth
+  rate, or the fallback claiming another system's ctlr.
+- **Starfield units** (`import/units.rs`): `bsver >= FO76_STARFIELD_BOUNDARY` content is authored
+  in meters and scaled once to 70 units/m (`length_scale`) across meshes, hierarchy, emitters,
+  force fields and animation; `BSGeometry` vertices also divide out `HAVOK_SCALE` (69.969).
+  Rotations, weights and authored scales stay dimensionless; pre-Starfield imports are
+  bit-identical (`import/tests/units.rs`). A second scale site downstream is the regression.
 - FO4 precombined geometry (`import/precombine.rs`, M49) reuses `decode_bs_vertex_stream`
   with `full_precision = false` (PSG positions are half even when the descriptor sets
   full-precision); container read is `byroredux_bsa::CsgArchive` (`/audit-parsers`); spec
@@ -220,13 +234,16 @@ parses then silently drops collision; *nif_shape_dispatch_resolve_parity*);
 - **`bhk*` field-for-field**: rigid-body flag width (`uses_old_rigid_body_layout`,
   `RIGID_BODY_FLAGS16 = 76`, `RIGID_BODY_EXTRA_FLOATS = 9`); MOPP offset / strips scale gated
   (`has_mopp_offset`, `has_havok_strips_scale`); FO3+ `hkSubPartData` is *decoded* (filter +
-  material), never `skip(12)`. The PHYSAL per-game seam is only the constraint CInfo decode.
+  material), never `skip(12)`. `bhkRigidBody` takes the CInfo2014 layout at `bsver >= FALLOUT4`,
+  a deliberate widening of nif.xml's `== 130` (which sends FO76/Starfield to CInfo2010); no
+  vanilla content decides it (0 `bhkRigidBody` on FO4/FO76/Starfield) — a `bsver > 130` body in
+  the wild is the evidence to re-check (#4627). The PHYSAL per-game seam is only the constraint CInfo decode.
 - **Constraint CInfo**: typed decoders exist for hinge (into `LimitedHingeCInfo`), limited
   hinge, prismatic, ragdoll, ball-and-socket, stiff-spring and the ball-socket chain
   (`BhkConstraintData`; `BhkBreakableConstraint` and malleable wrappers decode the inner
   CInfo). `bhkGenericConstraint` has no dispatch arm (nif.xml gives only its name), so it
   lands as `NiUnknown` with an exact `block_size` skip. There is no drift-suppression list
-  any more (#4626 removed `is_havok_constraint_stub` / `stubbed_drift_histogram`); any
+  any more (#4626 removed *is_havok_constraint_stub* / *stubbed_drift_histogram*); any
   constraint drift lands in the real `drift_histogram` — suppression is the mechanism that
   hid `bhkHingeConstraint`'s +128, so do not reintroduce it. By-design
   residuals are pinned by `corpus::is_known_constraint_motor_tail_drift` (1/18/19/26;
@@ -237,8 +254,10 @@ parses then silently drops collision; *nif_shape_dispatch_resolve_parity*);
   (83–129) / `parse_fo4` (130–154) / `parse_fo76_plus` (≥155); each reads only its own field
   set; per-`shader_type` trailing count (0–7) matches nif.xml. Starfield captures
   `starfield_tail` to `block_size`. The material-reference stub gate is `!name.is_empty()`
-  for `bsver >= STARFIELD` (hash-path refs carry no `.bgem` suffix) but the suffix-aware
-  `is_material_reference` for FO76 (152..171); `BSEffectShaderProperty` and
+  for `bsver >= STARFIELD` (stubs are `.mat` names; the only suffix-less ones are the bare
+  `Materials\` directory, not content hashes — #4439) but the suffix-aware
+  `is_material_reference` for FO76 (155..171 — the stopcond is `bsver >= FO76`; a "152..171"
+  in the `effect.rs` comment is wrong); `BSEffectShaderProperty` and
   `BSLightingShaderProperty::parse_fo76_plus` must stay in lockstep (`parse_bs_effect_starfield_suffixless_name_stubs`).
 - Starfield shader-type translation is keyed at the **parser** boundary
   (`parse_with_size` routes every `bsver >= 155` through `parse_fo76_plus`), not the
@@ -266,7 +285,9 @@ First step: `cargo test -p byroredux-nif --features dhat-heap --test heap_alloca
 **Guards**: the dhat-gated `heap_allocation_bounds.rs` (single node, FO4 packed vertices,
 SSE geometry+particle, skin blocks), `heap_allocation_bounds_geometry.rs`,
 `heap_allocation_bounds_import.rs`; `stream.rs` unit tests
-(`allocate_vec_sized_*`, `allocate_vec_min_bytes_uses_the_supplied_minimum_not_size_of`).
+(`allocate_vec_sized_*`, `allocate_vec_min_bytes_uses_the_supplied_minimum_not_size_of`);
+`blocks/tri_shape_tangent_presize_tests.rs` + the SSE-recon sibling (tangent `Vec` pre-sized
+exactly for a `VF_TANGENTS | VF_NORMALS` descriptor and not otherwise, both packed decoders, #4617).
 **Checklist**:
 - `allocate_vec` / `allocate_vec_sized` / `allocate_vec_min_bytes` are `#[must_use]`; a call
   that only bound-checks and drops the Vec is a no-op. Bulk arrays go through `read_pod_vec<T>`
@@ -283,8 +304,11 @@ SSE geometry+particle, skin blocks), `heap_allocation_bounds_geometry.rs`,
 - Per-block loop counters use the `entry().get_mut() / insert` split, not
   `or_insert(name.to_string())`; block names are interned `Arc<str>`; `ragdoll.rs` uses
   `allocate_vec` (not the old `check_alloc`).
-- `pre_parse_cell` is two-phase — serial header extract → rayon-parallel body parse — with a
-  serial fast path for small models; collapsing either path is the regression.
+- `pre_parse_cell`: each stream-pool task extracts (archive read + inflate) and parses its own
+  input, admitted first against `STREAM_PARSE_INPUT_BYTES` (64 MiB) by the archive-declared size
+  (`mesh_declared_size`) so nothing is allocated before admission; cells with < 8 fresh inputs
+  keep a serial fast path. A coordinator-side extract-all barrier returning is the regression
+  (the function's own doc comment still describes serial extraction — stale).
 - `NifStream` caps any single file-driven allocation (256 MB); confirm new readers route
   through the capped helpers, not raw `vec![0; n]`.
 **Output**: `/tmp/audit/nif/dim_6.md`
