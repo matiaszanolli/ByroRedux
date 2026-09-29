@@ -2451,6 +2451,58 @@ mod tick_documentation_tests {
     /// #3266 regression guard: both diagnostic paths stage runtime FormIds
     /// while storage guards are live, release every guard, and only then
     /// acquire FormIdPool to resolve the owned handles.
+    /// #4997 — `register_newcomers` converts shapes across the rayon pool
+    /// (ad1d53a11). That section is deadlock-free only while the closure
+    /// touches no `World` and the calling thread holds no guard while it
+    /// waits in `collect`: a pool thread blocking on a lock the caller holds
+    /// is invisible to the lock-order detector (it records per-thread
+    /// orders, not cross-thread waits), and rayon may run other jobs on the
+    /// waiting thread. Pin the shape: `ContactConfig` copied out before the
+    /// parallel map, no `world` inside it, `PhysicsWorld` taken after it.
+    #[test]
+    fn register_newcomers_parallel_section_holds_no_world_guard() {
+        let src = include_str!("sync.rs");
+        let production = &src[..src
+            .find("\n#[cfg(test)]\nmod ")
+            .expect("sync.rs has test modules")];
+        let start = production
+            .find("fn register_newcomers(")
+            .expect("register_newcomers exists");
+        let body = &production[start..];
+        let body = &body[..body.find("\n}\n").expect("register_newcomers closes")];
+
+        let cfg = body
+            .find("try_resource::<ContactConfig>()")
+            .expect("ContactConfig is snapshotted once per batch");
+        let par = body
+            .find(".into_par_iter()")
+            .expect("shape conversion runs on the rayon pool");
+        let collect = par
+            + body[par..]
+                .find(".collect();")
+                .expect("the parallel map is collected");
+        let physics = body
+            .find("world.resource_mut::<PhysicsWorld>()")
+            .expect("registration takes the PhysicsWorld write");
+        assert!(
+            cfg < par && body[cfg..par].contains(".map(|r| *r)"),
+            "ContactConfig must be copied out (guard released) before the parallel map (#4997)"
+        );
+        let section = &body[par..collect];
+        for forbidden in ["world", "resource", "query", ".get::<", "lock()"] {
+            assert!(
+                !section.contains(forbidden),
+                "register_newcomers' rayon closure mentions `{forbidden}` — pool threads \
+                 must not acquire ECS locks the caller may hold (#4997)"
+            );
+        }
+        assert!(
+            collect < physics,
+            "the PhysicsWorld write must be taken after the parallel conversion is \
+             collected, never held across it (#4997)"
+        );
+    }
+
     #[test]
     fn physics_diagnostics_resolve_forms_after_storage_guards_drop() {
         let src = include_str!("sync.rs");

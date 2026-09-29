@@ -219,7 +219,12 @@ jobs:
         run: |
           set +e
           cargo test --workspace --no-fail-fast --exclude byroredux-ui 2>&1 | tee /tmp/lockorder_test.log
-          status=$?
+          # #4993 — `$?` after a pipe is tee's status (always 0: no `shell:`
+          # key, so this runs under `bash -e {0}` without pipefail). Take
+          # cargo's own status so a non-cycle failure — including a test
+          # build that does not compile, which runs zero tests under the
+          # detector — still turns the lane red.
+          status=${PIPESTATUS[0]}
           set -e
           if grep -q "lock-order cycle" /tmp/lockorder_test.log; then
             echo "::error::BYRO_LOCK_ORDER_CHECK aborted on a real lock-order cycle — see the panic in the log above (#4603)"
@@ -342,7 +347,22 @@ jobs:
       - name: Run 5-frame bench under VK_LAYER_KHRONOS_validation
         run: |
           # Route validation layer to lavapipe (CPU Vulkan — no GPU needed).
-          export VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+          # #4987 — resolve the manifest by glob: noble's mesa ships
+          # `lvp_icd.x86_64.json`, but noble-updates (what `apt-get update`
+          # installs) ships `lvp_icd.json`. A hard-coded name that does not
+          # exist leaves the loader with no ICD, and vkCreateInstance
+          # returns ERROR_INCOMPATIBLE_DRIVER ("Unable to find a Vulkan
+          # driver") — the lane never reached a device after #4596.
+          LVP_ICD=$(ls /usr/share/vulkan/icd.d/lvp_icd*.json 2>/dev/null | head -n1)
+          if [ -z "$LVP_ICD" ]; then
+            echo "::error::no lavapipe ICD manifest under /usr/share/vulkan/icd.d (#4987)"
+            ls -la /usr/share/vulkan/icd.d/ || true
+            exit 1
+          fi
+          echo "lavapipe ICD: $LVP_ICD"
+          echo "LVP_ICD=$LVP_ICD" >> "$GITHUB_ENV"
+          export VK_ICD_FILENAMES="$LVP_ICD"
+          export VK_DRIVER_FILES="$LVP_ICD"
           export VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation
           # #4596 — lavapipe enumerates as a CPU device; admit it so this
           # lane actually reaches Vulkan (the hardware rejection is a
@@ -387,9 +407,21 @@ jobs:
             exit 1
           fi
 
+          # #4987 — a lane that never creates a VkInstance / picks a device
+          # proves nothing about validation or the live lock-order graph, so
+          # an init failure is a red lane, not a tolerated bail.
+          if echo "$OUTPUT" | grep -qF 'Vulkan init failed'; then
+            echo ""
+            echo "::error::Vulkan init failed — the lane never reached a device, so neither the validation layer nor the parallel-batch lock-order detector ran (#4987)."
+            exit 1
+          fi
+
       - name: Assert renderer-static scene-state determinism
         env:
-          VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+          # #4987 — LVP_ICD is the glob-resolved manifest exported to
+          # $GITHUB_ENV by the bench step above.
+          VK_ICD_FILENAMES: ${{ env.LVP_ICD }}
+          VK_DRIVER_FILES: ${{ env.LVP_ICD }}
           BYROREDUX_BENCH_RUNNER: xvfb-run --auto-servernum
           BYRO_ALLOW_CPU_VULKAN_DEVICE: 1
         run: scripts/check-bench-determinism.sh target/debug/byroredux 5

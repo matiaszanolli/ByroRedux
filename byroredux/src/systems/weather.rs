@@ -1208,9 +1208,12 @@ pub(crate) fn weather_system(world: &World, dt: f32) {
 
     // #4416 — publish the exterior's base image space for the IMAD
     // composition. Interiors own theirs (the cell's `XCIM`, set at load),
-    // so the same `!is_interior` gate as the lighting writes above. The
-    // cross-fade target is re-read in the canonical `WeatherDataRes ->
-    // WeatherTransitionRes` order while `wd` is still live.
+    // so the same `!is_interior` gate as the lighting writes above. No
+    // weather guard is live here (`wd` was dropped above): `tr` is scoped to
+    // the cross-fade arm and drops before the `ImageSpaceBase` write, so the
+    // three acquisitions never overlap (#4990). Do not re-take
+    // `WeatherDataRes` under `tr` — that records the reverse of the
+    // documented `WeatherDataRes -> WeatherTransitionRes` order (#3263).
     if world
         .try_resource::<CellLightingRes>()
         .is_none_or(|cell| !cell.is_interior)

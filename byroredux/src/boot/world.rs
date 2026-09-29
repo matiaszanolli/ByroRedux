@@ -262,6 +262,11 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     // (`None`) until the storage exists. Pre-register, mirroring
     // `WaterContact`'s `query_mut::insert` note above.
     world.register::<crate::inventory::PickedUp>();
+    // #4991 — the third render-skip sink. Registered at boot for the same
+    // reason as `PickedUp`, and so every world the render passes read has
+    // the storage: an unregistered storage makes their `query` return None,
+    // which records no lock-order edge into the marker at all.
+    world.register::<crate::player_body::HiddenFirstPerson>();
     // #3299 — actor state carried across ordinary stream-tile eviction.
     world.insert_resource(crate::cell_loader::stream_snapshot::StreamStateSnapshots::default());
     world.insert_resource(crate::cell_loader::reference_state::PersistentReferenceStates::default());

@@ -609,6 +609,17 @@ impl ApplicationHandler for App {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        // #4992 — every frame below assumes a booted world. When `resumed`
+        // bails (Vulkan init failure, window / raw-handle failure, a bad
+        // `--window-size`) it only *requests* the exit; winit still delivers
+        // this callback, and running the scheduler against a world whose
+        // scene setup never ran panics on the first scene resource a system
+        // requires (`PapyrusPlayerEntity` in `rumble_on_activate_system`),
+        // burying the real error under an unrelated ECS panic. The same holds
+        // for the one tick after the close path has dropped the renderer.
+        if self.renderer.is_none() {
+            return;
+        }
         if self.loading_screen.take_restore_capture() {
             self.capture_world_input();
         }
@@ -1870,6 +1881,34 @@ mod atw_bracket_nesting_tests {
              starts, atw_scheduler before atw_post starts, and render_one_frame must \
              run inside atw_post. Update the CpuFrameTimings and cpu_breakdown docs \
              to match (#4208)."
+        );
+    }
+
+    /// #4992 — a failed `resumed` (Vulkan init, window, raw handles, bad
+    /// `--window-size`) only requests the exit; winit still calls
+    /// `about_to_wait`. The no-renderer early return must precede the
+    /// scheduler run, or the unbooted world panics on its first missing scene
+    /// resource and masks the real init error (it was what failed the
+    /// vulkan-validation CI lane, #4987).
+    #[test]
+    fn about_to_wait_skips_the_scheduler_without_a_renderer() {
+        let production = include_str!("app_events.rs")
+            .split_once("\n#[cfg(test)]\nmod ")
+            .expect("app_events.rs has test modules")
+            .0;
+        let body = &production[production
+            .find("fn about_to_wait(")
+            .expect("App must still implement about_to_wait")..];
+        let body = &body[..body.find("\n    }\n").expect("about_to_wait's closing brace")];
+        let gate = body
+            .find("if self.renderer.is_none() {\n            return;\n        }")
+            .expect("about_to_wait lost its no-renderer early return (#4992)");
+        let scheduler = body
+            .find("self.scheduler.run(&self.world, dt)")
+            .expect("about_to_wait no longer runs the scheduler");
+        assert!(
+            gate < scheduler,
+            "the no-renderer early return must come before the scheduler run (#4992)"
         );
     }
 }

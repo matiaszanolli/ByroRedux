@@ -483,6 +483,10 @@ mod system_access_declaration_tests {
     const AUDIO_SRC: &str = include_str!("../../systems/audio.rs");
     const DEBUG_SRC: &str = include_str!("../../systems/debug.rs");
     const METRICS_SRC: &str = include_str!("../../systems/metrics.rs");
+    // #4994 — cross-file hops the within-file follower cannot reach.
+    const WATER_SRC: &str = include_str!("../../../../crates/physics/src/water.rs");
+    const COMBAT_SRC: &str = include_str!("../../combat.rs");
+    const ANIM_CONVERT_SRC: &str = include_str!("../../anim_convert.rs");
 
     /// The nine `add_to_with_access` registrations, each mapped to the
     /// function bodies that make up its acquisition surface.
@@ -505,12 +509,21 @@ mod system_access_declaration_tests {
                 (CHARACTER_SRC, "player_controller_system"),
                 (CAMERA_SRC, "fly_camera_system"),
                 (INTERACTION_SRC, "refresh_action_state"),
+                // #4994 — cross-file hops out of character.rs.
+                (COMBAT_SRC, "queue_dead_actor_reconciliation"),
+                (PHYSICS_SYNC_SRC, "set_kinematic_translation"),
+                (PHYSICS_SYNC_SRC, "set_linear_velocity"),
+                (WATER_SRC, "weather_wave_adjustment"),
             ],
         ),
         ("timer_tick_system", &[(TIMER_SRC, "timer_tick_system")]),
         (
             "make_animation_system",
-            &[(ANIMATION_SRC, "animation_system_inner")],
+            &[
+                (ANIMATION_SRC, "animation_system_inner"),
+                // #4994 — the subtree name map walks `Children`.
+                (ANIM_CONVERT_SRC, "build_subtree_name_map"),
+            ],
         ),
         (
             "make_transform_propagation_system",
@@ -518,7 +531,12 @@ mod system_access_declaration_tests {
         ),
         (
             "physics_sync_system",
-            &[(PHYSICS_SYNC_SRC, "physics_sync_system")],
+            &[
+                (PHYSICS_SYNC_SRC, "physics_sync_system"),
+                // #4994 — Phase 2.5 buoyancy lives in water.rs; the eleven
+                // water / wind / ragdoll types it takes were invisible here.
+                (WATER_SRC, "apply_buoyancy"),
+            ],
         ),
         (
             "camera_follow_system",
@@ -627,12 +645,19 @@ mod system_access_declaration_tests {
         let open = format!("{}{}", "::", "<");
         for (index, _) in body.match_indices(open.as_str()) {
             let before = &body[..index];
+            // #4994 — `world.get::<T>` / `world.has::<T>` take the storage
+            // read lock too, and `get_mut::<T>` a write; the scan used to
+            // see only the query/resource forms.
             let is_write = before.ends_with("query_mut")
                 || before.ends_with("resource_mut")
-                || before.ends_with("try_resource_mut");
+                || before.ends_with("try_resource_mut")
+                || before.ends_with(".get_mut");
             let is_acquire = ["query", "query_mut", "resource", "resource_mut"]
                 .iter()
-                .any(|form| before.ends_with(form) || before.ends_with(&format!("try_{form}")));
+                .any(|form| before.ends_with(form) || before.ends_with(&format!("try_{form}")))
+                || [".get", ".get_mut", ".has"]
+                    .iter()
+                    .any(|form| before.ends_with(form));
             if !is_acquire {
                 continue;
             }
@@ -793,6 +818,52 @@ mod system_access_declaration_tests {
              comparison basis for promoting the system to a parallel lane, \
              and an under-declaration makes that promotion look safe when it \
              is not (#3951/#3473/#4064/#4573)"
+        );
+    }
+
+    /// #4994 — the cross-file hops and the `get`/`has` forms are only worth
+    /// something if the scan actually reaches through them. Pin one type per
+    /// hop that no listed same-file body acquires, so dropping a hop (or the
+    /// `get` recognition) fails here instead of silently narrowing the guard.
+    #[test]
+    fn cross_file_hops_and_get_forms_reach_their_acquisitions() {
+        let surface = |system: &str| -> Vec<String> {
+            let (_, sources) = PARALLEL_SYSTEMS
+                .iter()
+                .find(|(name, _)| *name == system)
+                .unwrap_or_else(|| panic!("{system} left PARALLEL_SYSTEMS"));
+            let mut types = Vec::new();
+            for (src, entry) in sources.iter() {
+                for ty in acquired(src, entry) {
+                    if !types.contains(&ty) {
+                        types.push(ty);
+                    }
+                }
+            }
+            types
+        };
+        let physics = surface("physics_sync_system");
+        assert!(
+            physics.iter().any(|t| t == "WaterContact=write"),
+            "physics_sync_system's buoyancy hop (water.rs apply_buoyancy) is no longer \
+             scanned: {physics:?}"
+        );
+        let player = surface("player_controller_system");
+        for needle in ["PhysicsWorld=write", "PendingDeathReconciliations=write", "WindField=read"] {
+            assert!(
+                player.iter().any(|t| t == needle),
+                "player_controller_system's scan lost `{needle}` — a cross-file hop \
+                 (physics set_* helpers / combat.rs / water.rs) was dropped: {player:?}"
+            );
+        }
+        assert!(
+            player.iter().any(|t| t == "ActorVitals=read" || t == "ActorVitals=write"),
+            "the scan no longer sees `world.get::<T>` acquisitions: {player:?}"
+        );
+        let animation = surface("make_animation_system");
+        assert!(
+            animation.iter().any(|t| t.starts_with("Children=")),
+            "make_animation_system's anim_convert.rs hop is no longer scanned: {animation:?}"
         );
     }
 

@@ -187,7 +187,21 @@ pub(super) fn register_update_systems(scheduler: &mut Scheduler) {
             .reads::<byroredux_core::ecs::components::FactionRanks>()
             // #4706 — the placed stack size pickup_loot grants.
             .reads::<crate::inventory::PlacedItemCount>()
-            .writes::<byroredux_core::ecs::components::Inventory>(),
+            .writes::<byroredux_core::ecs::components::Inventory>()
+            // #4996 — pickup_loot's helpers. `mesh_entities_under` walks the
+            // subtree; `mark_picked_up` resolves the ref's FormId and records
+            // it; `remove_collision_bodies` (#4818) matches the ref's Havok
+            // bodies by source form and removes them from Rapier. Exclusive,
+            // so no race today — but the row must be complete for the
+            // analyzer if this ever joins a parallel batch.
+            .reads::<byroredux_core::ecs::Children>()
+            .reads::<byroredux_core::ecs::MeshHandle>()
+            .reads::<byroredux_core::ecs::components::FormIdComponent>()
+            .reads_resource::<byroredux_core::form_id::FormIdPool>()
+            .writes_resource::<crate::cell_loader::reference_state::PersistentReferenceStates>()
+            .reads::<byroredux_core::ecs::components::PhysicsSourceForm>()
+            .reads::<byroredux_physics::RapierHandles>()
+            .writes_resource::<byroredux_physics::PhysicsWorld>(),
     );
     // Combat follows the same producer-before-consumer event contract as
     // activation: physical Attack emits HitEvent, then health/death resolves
@@ -531,4 +545,26 @@ pub(super) fn register_update_systems(scheduler: &mut Scheduler) {
     // with animation_system / spin_system) but BEFORE
     // PostUpdate's transform propagation reads the result.
     scheduler.add_exclusive(Stage::Update, animate_lights_system);
+    // P3 player body — third-person facing. Writes the body root's Transform
+    // rotation from `InputState.yaw`, the same look accumulator
+    // `camera_follow_system` reads. #4995 — registered in **Update**, not
+    // Late: its only input is written between frames (winit input, final
+    // before the scheduler runs), so nothing forces it after Physics, and
+    // its only consumer is PostUpdate transform propagation. In Late it
+    // was composed a frame after the camera used the same yaw, so the body
+    // visibly trailed the view on fast turns. Exclusive: the body-root
+    // Transform write would pair WriteWrite with the animation batch in the
+    // analyzer, and sequencing after that batch keeps the facing
+    // authoritative over any animated root rotation. Pinned by
+    // `player_body_facing_runs_in_update_before_propagation`.
+    scheduler.add_exclusive_with_access(
+        Stage::Update,
+        crate::player_body::player_body_facing_system,
+        Access::new()
+            .reads_resource::<crate::systems::PlayerMode>()
+            .reads_resource::<crate::player_body::PlayerBodyRootEntity>()
+            .reads_resource::<crate::components::InputState>()
+            .reads::<crate::player_body::PlayerBodyRoot>()
+            .writes::<Transform>(),
+    );
 }

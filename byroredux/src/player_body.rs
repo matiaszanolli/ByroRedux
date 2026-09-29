@@ -283,8 +283,10 @@ pub(crate) fn attach_assembled_root(
     // Boot attaches in first person (the camera is inside the body), so the
     // freshly assembled meshes start hidden. `set_player_view` owns every
     // later restamp. Direct inserts rather than a `query_mut` pass: the
-    // marker's storage does not exist yet this early in boot, and
-    // `query_mut` reports None for a missing storage instead of creating it.
+    // engine registers the marker's storage at boot (#4991), but this
+    // `&mut World` attach is also driven by worlds that did not (tests,
+    // tooling), and `query_mut` reports None for a missing storage instead of
+    // creating it.
     for entity in mesh_entities_under(world, root) {
         world.insert(entity, HiddenFirstPerson);
     }
@@ -386,12 +388,12 @@ pub(crate) fn toggle_third_person(world: &World) {
     set_player_view(world, next);
 }
 
-/// Late-stage body facing: the body root's yaw follows the look accumulator
-/// the camera reads, so third person shows the body oriented with the view.
-/// Runs beside `camera_follow_system` in the Late batch — the write lands on
-/// the body root's Transform, which PostUpdate propagation composes under
-/// the (identity-rotation) capsule the next frame, the same staleness every
-/// Late pose consumer already tolerates.
+/// Body facing: the body root's yaw follows the look accumulator the camera
+/// reads, so third person shows the body oriented with the view. An Update
+/// exclusive (#4995): `InputState.yaw` is final before the scheduler runs,
+/// so writing here lets PostUpdate propagation compose the body root under
+/// the (identity-rotation) capsule in the same frame the Late
+/// `camera_follow_system` uses that yaw — no one-frame trail on fast turns.
 pub(crate) fn player_body_facing_system(world: &World, _dt: f32) {
     let mode = world
         .try_resource::<PlayerMode>()
@@ -630,6 +632,48 @@ mod tests {
 
         set_player_view(&world, PlayerCameraView::FirstPerson);
         assert_eq!(hidden_count(), 1, "first person hides it again");
+    }
+
+    /// #4991 — replay both halves of the render-skip lock cycle so the
+    /// `BYRO_LOCK_ORDER_CHECK` lane can see `HiddenFirstPerson`. Propagation
+    /// records `Children -> GlobalTransform`; the render skip sites hold
+    /// `GlobalTransform` while reading the marker. If `set_player_view` ever
+    /// takes the marker write before its `mesh_entities_under` walk, it
+    /// records `HiddenFirstPerson -> Children` and closes
+    /// `HiddenFirstPerson -> Children -> GlobalTransform -> HiddenFirstPerson`
+    /// (the #4983 shape), which the detector panics on.
+    #[test]
+    fn view_restamp_does_not_close_the_render_skip_lock_cycle() {
+        let mut world = World::new();
+        world.register::<HiddenFirstPerson>();
+        world.register::<GlobalTransform>();
+        let player = world.spawn();
+        world.insert(player, Transform::new(Vec3::ZERO, Quat::IDENTITY, 1.0));
+        world.insert(player, GlobalTransform::IDENTITY);
+        let root = spawn_root(&mut world, 0.0);
+        let body = spawn_fake_body(&mut world, root, root);
+        world.insert(body.mesh, GlobalTransform::IDENTITY);
+        world.insert_resource(PlayerCameraView::default());
+        attach_assembled_root(&mut world, player, body.root, 100.0);
+
+        // Hierarchy half: Children -> GlobalTransform.
+        byroredux_core::ecs::make_transform_propagation_system()(&world, 0.0);
+        // Render half: the marker read under the GlobalTransform read, the
+        // shape of `build_skinned_palettes` / `collect_static_mesh_draws`.
+        {
+            let gt = world.query::<GlobalTransform>();
+            let hidden = world.query::<HiddenFirstPerson>();
+            assert!(gt.is_some(), "propagated body has GlobalTransform storage");
+            assert!(
+                hidden.expect("marker storage registered").get(body.mesh).is_some(),
+                "first person hides the body mesh the render passes skip"
+            );
+        }
+        // Producer, both directions.
+        set_player_view(&world, PlayerCameraView::ThirdPerson);
+        assert!(world.get::<HiddenFirstPerson>(body.mesh).is_none());
+        set_player_view(&world, PlayerCameraView::FirstPerson);
+        assert!(world.get::<HiddenFirstPerson>(body.mesh).is_some());
     }
 
     #[test]

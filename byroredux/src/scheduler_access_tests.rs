@@ -402,6 +402,91 @@ fn vulkan_validation_job_fails_on_a_panic() {
     );
 }
 
+/// #4995 — `player_body_facing_system` writes the body root's Transform
+/// from `InputState.yaw`, which is final before the scheduler runs. Its only
+/// consumer is PostUpdate transform propagation, so it must be an Update
+/// exclusive (after the animation batch, before propagation). Registered in
+/// Late it was composed a frame after `camera_follow_system` used the same
+/// yaw, and the third-person body trailed the camera on fast turns.
+#[test]
+fn player_body_facing_runs_in_update_before_propagation() {
+    use byroredux_core::ecs::Stage;
+
+    let report = crate::boot::build_scheduler().access_report();
+    let find = |stage: Stage, needle: &str| {
+        report
+            .stages
+            .iter()
+            .find(|s| s.stage == stage)
+            .and_then(|s| s.systems.iter().find(|row| row.name.contains(needle)))
+            .map(|row| row.is_exclusive)
+    };
+    assert_eq!(
+        find(Stage::Update, "player_body_facing_system"),
+        Some(true),
+        "player_body_facing_system must be an Update exclusive so PostUpdate \
+         propagation composes the body yaw in the same frame the camera uses it (#4995)",
+    );
+    assert_eq!(
+        find(Stage::Late, "player_body_facing_system"),
+        None,
+        "player_body_facing_system is registered in Late again — the body trails \
+         the camera by one frame (#4995)",
+    );
+    let stages: Vec<Stage> = report.stages.iter().map(|s| s.stage).collect();
+    let pos = |s: Stage| stages.iter().position(|x| *x == s).expect("stage present");
+    assert!(
+        pos(Stage::Update) < pos(Stage::PostUpdate),
+        "Update must still run before PostUpdate propagation (#4995)",
+    );
+}
+
+/// #4987 — the lane must resolve the lavapipe ICD manifest instead of
+/// hard-coding a filename. noble's mesa ships `lvp_icd.x86_64.json`, but
+/// noble-updates ships `lvp_icd.json`; the hard-coded name left the loader
+/// with no ICD, so every run died at `vkCreateInstance`
+/// (`ERROR_INCOMPATIBLE_DRIVER`) and never exercised validation or the
+/// parallel-batch lock-order graph. An init failure must also fail the lane
+/// rather than pass as a tolerated bail.
+#[test]
+fn vulkan_validation_job_resolves_lavapipe_and_fails_on_init_failure() {
+    let job = vulkan_validation_job();
+    assert!(
+        job.contains("/usr/share/vulkan/icd.d/lvp_icd*.json"),
+        "the vulkan-validation job no longer resolves the lavapipe ICD by glob (#4987)",
+    );
+    assert!(
+        !job.contains("lvp_icd.x86_64.json\n") && !job.contains("VK_ICD_FILENAMES=/usr/share"),
+        "the vulkan-validation job hard-codes an ICD manifest path again (#4987)",
+    );
+    assert!(
+        job.contains("grep -qF 'Vulkan init failed'"),
+        "the vulkan-validation job no longer fails when the engine never reaches a \
+         device (#4987)",
+    );
+}
+
+/// #4993 — the `lock-order-check` step pipes `cargo test` through `tee`.
+/// With no `shell:` key the step runs under `bash -e {0}` (no pipefail), so
+/// `$?` is tee's status and the lane went green on every failure that was not
+/// a named cycle — including a test build that ran zero tests.
+#[test]
+fn lock_order_job_propagates_cargo_status_through_tee() {
+    let start = CI_YML
+        .find("\n  lock-order-check:")
+        .expect("the lock-order-check job disappeared from .github/workflows/ci.yml");
+    let rest = &CI_YML[start + 1..];
+    let job = &rest[..rest.find("\n  # ").unwrap_or(rest.len())];
+    assert!(
+        job.contains("| tee /tmp/lockorder_test.log"),
+        "the lock-order-check step no longer tees its log; update this pin",
+    );
+    assert!(
+        job.contains("status=${PIPESTATUS[0]}") && !job.contains("status=$?"),
+        "the lock-order-check step takes tee's exit status instead of cargo's (#4993)",
+    );
+}
+
 /// #2676 / CONC-D3-NEW-02 — `camera_follow_system`'s first statement
 /// reads the `PlayerMode` resource as an early-out gate, but its
 /// `Access` declaration omitted it. `Stage::Late` is the engine's
