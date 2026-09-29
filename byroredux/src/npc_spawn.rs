@@ -91,7 +91,15 @@ fn stamp_faction_ranks(world: &mut World, placement_root: EntityId, resolved: &R
 /// whether it starts combat. No-op when the game's `AIDT` is not decoded
 /// (Oblivion's 0–100 scale, Starfield) — such an actor never starts combat
 /// on its own.
-fn stamp_combat_disposition(
+///
+/// #4817 — called at job finalize, not when the placement root is created.
+/// A resumable job yields across frames, and a root that already carried the
+/// disposition was a perceiver for `faction_hostility_system` before its body
+/// existed and before the caller restored its parked `Dead`: an evicted
+/// corpse could start combat, move and strike while its cell re-streamed.
+/// Finalize and the caller's restore run in one synchronous step, so no
+/// system tick sees the disposition without the rest of the actor.
+fn arm_combat_disposition(
     world: &mut World,
     placement_root: EntityId,
     resolved: &ResolvedNpc<'_>,
@@ -124,7 +132,12 @@ pub(crate) fn faction_ranks_of(resolved: &ResolvedNpc<'_>) -> Option<FactionRank
 /// (own + race `SPLO`, leveled lists resolved at its level) and apply its
 /// constant spells' permanent value changes to the `ActorValues`
 /// [`stamp_actor_values`] just inserted — through the same canonical spell
-/// translation a scripted `AddSpell` uses. No-op for an actor with no spells.
+/// translation a scripted `AddSpell` uses.
+///
+/// #4822 — inserted even when empty. `magic::add_spell` needs a `SpellList`
+/// to add to, so an actor whose own and racial `SPLO` are empty (mostly
+/// creatures) silently dropped every quest `AddSpell`, and nothing was saved.
+/// The player gets one unconditionally for the same reason.
 fn stamp_spell_list(
     world: &mut World,
     placement_root: EntityId,
@@ -133,6 +146,7 @@ fn stamp_spell_list(
 ) {
     let spells = byroredux_plugin::equip::resolve_actor_spells(resolved, index);
     if spells.is_empty() {
+        world.insert(placement_root, byroredux_scripting::SpellList(spells));
         return;
     }
     if let Some(values) =

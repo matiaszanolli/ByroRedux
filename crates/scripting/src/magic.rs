@@ -148,10 +148,13 @@ impl Component for SpellList {
 
 /// Put `spell` on `actor` (Papyrus `Actor.AddSpell`) and, if it is a
 /// constant spell, apply its value changes. `false` — and no change — when
-/// the actor already carries it or has no `SpellList`.
+/// the actor already carries it or has no `SpellList`. The second is a
+/// dropped effect, not Papyrus' own no-op, so it is logged (#4822).
 pub fn add_spell(world: &World, actor: EntityId, spell: u32) -> bool {
+    let mut has_list = false;
     let added = world.query_mut::<SpellList>().is_some_and(|mut lists| {
         lists.get_mut(actor).is_some_and(|list| {
+            has_list = true;
             let fresh = !list.0.contains(&spell);
             if fresh {
                 list.0.push(spell);
@@ -159,6 +162,9 @@ pub fn add_spell(world: &World, actor: EntityId, spell: u32) -> bool {
             fresh
         })
     });
+    if !has_list {
+        log::warn!("AddSpell({spell:08X}) on entity {actor} dropped — the actor has no SpellList");
+    }
     if added {
         apply_constant_modifiers(world, actor, spell, 1.0);
     }
@@ -166,15 +172,23 @@ pub fn add_spell(world: &World, actor: EntityId, spell: u32) -> bool {
 }
 
 /// Take `spell` off `actor` (Papyrus `Actor.RemoveSpell`), undoing its value
-/// changes. `false` when the actor did not carry it.
+/// changes. `false` when the actor did not carry it, logged like
+/// [`add_spell`] when it has no `SpellList` at all (#4822).
 pub fn remove_spell(world: &World, actor: EntityId, spell: u32) -> bool {
+    let mut has_list = false;
     let removed = world.query_mut::<SpellList>().is_some_and(|mut lists| {
         lists.get_mut(actor).is_some_and(|list| {
+            has_list = true;
             let before = list.0.len();
             list.0.retain(|&s| s != spell);
             list.0.len() != before
         })
     });
+    if !has_list {
+        log::warn!(
+            "RemoveSpell({spell:08X}) on entity {actor} dropped — the actor has no SpellList"
+        );
+    }
     if removed {
         apply_constant_modifiers(world, actor, spell, -1.0);
     }

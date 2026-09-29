@@ -1314,12 +1314,9 @@ fn advance_runtime_unit(
                 world.insert(state.placement_root, crate::components::WalkSpeed(walk_speed));
             }
             if !state.player_body {
-                apply_ai_package_behavior(
-                    world,
-                    state.placement_root,
-                    &byroredux_plugin::equip::ResolvedNpc::resolve(npc, index),
-                    index,
-                );
+                let resolved = byroredux_plugin::equip::ResolvedNpc::resolve(npc, index);
+                apply_ai_package_behavior(world, state.placement_root, &resolved, index);
+                arm_combat_disposition(world, state.placement_root, &resolved);
             }
             // Eviction state restores in stamp_quest_reference after the caller
             // assigns the placed ACHR identity. npc.form_id is only the shared
@@ -2096,12 +2093,9 @@ fn finalize_prebaked(
         }
     }
     if !state.player_body {
-        apply_ai_package_behavior(
-            world,
-            state.placement_root,
-            &byroredux_plugin::equip::ResolvedNpc::resolve(npc, index),
-            index,
-        );
+        let resolved = byroredux_plugin::equip::ResolvedNpc::resolve(npc, index);
+        apply_ai_package_behavior(world, state.placement_root, &resolved, index);
+        arm_combat_disposition(world, state.placement_root, &resolved);
     }
     // The caller restores eviction state after stamping the placed
     // ACHR identity, shared with the runtime-mesh spawn path above.
@@ -2172,7 +2166,10 @@ fn spawn_placement_root<'a>(
         return (placement_root, resolved);
     }
     stamp_faction_ranks(world, placement_root, &resolved);
-    stamp_combat_disposition(world, placement_root, &resolved);
+    // #4817 — `CombatDisposition` is NOT stamped here: this root is live for
+    // every frame the job yields, before its body loads and before the
+    // caller restores a parked `Dead`. It lands in `arm_combat_disposition`
+    // at finalize instead.
     stamp_actor_values(world, placement_root, &resolved, index);
     stamp_spell_list(world, placement_root, &resolved, index);
     stamp_creature_attack(world, placement_root, &resolved);
@@ -2742,6 +2739,84 @@ mod tests {
             );
             assert!(world.has::<crate::components::AnimationTarget>(state.placement_root));
         }
+    }
+
+    /// #4817 — a resumable job's placement root is live for every frame the
+    /// job yields. It must not carry `CombatDisposition` (the hostility
+    /// perceiver gate) until finalize, which runs in the same synchronous
+    /// step as the caller's parked-`Dead` restore.
+    #[test]
+    fn combat_disposition_is_armed_at_finalize_not_at_prepare() {
+        use byroredux_plugin::esm::records::{ActorAiData, Aggression, Confidence};
+        let npc = NpcRecord {
+            form_id: 0x383F7,
+            ai_data: Some(ActorAiData {
+                aggression: Aggression::VeryAggressive,
+                confidence: Confidence::Average,
+                attack_radius: None,
+            }),
+            ..Default::default()
+        };
+        let index = EsmIndex::default();
+        let mut world = World::new();
+        let mut state = prepare_prebaked_state(
+            &mut world,
+            &npc,
+            GameKind::Skyrim,
+            "Skyrim.esm",
+            Vec3::ZERO,
+            Quat::IDENTITY,
+            1.0,
+            &index,
+            false,
+        );
+        assert!(
+            world
+                .get::<crate::systems::CombatDisposition>(state.placement_root)
+                .is_none(),
+            "a mid-job root must not be a hostility perceiver"
+        );
+        state.skel_root = Some(world.spawn());
+        assert!(matches!(
+            finalize_prebaked(&mut state, &mut world, &npc, &index),
+            UnitOutcome::Complete(Some(_))
+        ));
+        assert!(world
+            .get::<crate::systems::CombatDisposition>(state.placement_root)
+            .is_some());
+    }
+
+    /// #4822 — an actor with no own or racial `SPLO` still gets a
+    /// `SpellList`, so a quest's `AddSpell` has somewhere to land.
+    #[test]
+    fn spell_less_actor_gets_an_empty_spell_list_that_add_spell_can_use() {
+        let npc = NpcRecord {
+            form_id: 0x383F7,
+            ..Default::default()
+        };
+        let index = EsmIndex::default();
+        let mut world = World::new();
+        let root = prepare_prebaked_state(
+            &mut world,
+            &npc,
+            GameKind::Skyrim,
+            "Skyrim.esm",
+            Vec3::ZERO,
+            Quat::IDENTITY,
+            1.0,
+            &index,
+            false,
+        )
+        .placement_root;
+        assert_eq!(
+            world.get::<byroredux_scripting::SpellList>(root).map(|l| l.0.clone()),
+            Some(Vec::new())
+        );
+        assert!(byroredux_scripting::add_spell(&world, root, 0xABCD));
+        assert_eq!(
+            world.get::<byroredux_scripting::SpellList>(root).unwrap().0,
+            vec![0xABCD]
+        );
     }
 
     #[test]

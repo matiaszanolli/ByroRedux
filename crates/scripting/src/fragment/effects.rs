@@ -709,10 +709,20 @@ pub(crate) fn apply_effect(
         Effect::AddSpell { actor, spell } | Effect::RemoveSpell { actor, spell } => {
             let actor = resolve_actor(vmad, world, context, actor, &deferred.scene_actor_bindings)?;
             let spell = resolve_property_form_id(vmad, spell.property_name())?;
-            if matches!(effect, Effect::AddSpell { .. }) {
-                crate::magic::add_spell(world, actor, spell);
+            let adding = matches!(effect, Effect::AddSpell { .. });
+            let changed = if adding {
+                crate::magic::add_spell(world, actor, spell)
             } else {
-                crate::magic::remove_spell(world, actor, spell);
+                crate::magic::remove_spell(world, actor, spell)
+            };
+            // #4822 — never drop the result silently. `magic` itself warns
+            // when the actor has no `SpellList` (a lost effect); what is left
+            // here is Papyrus' own idempotent no-op.
+            if !changed {
+                let verb = if adding { "AddSpell" } else { "RemoveSpell" };
+                log::debug!(
+                    "quest {context:?}: {verb}({spell:08X}) on entity {actor} changed nothing"
+                );
             }
             None
         }

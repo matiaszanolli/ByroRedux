@@ -242,7 +242,12 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 /// so it can override a placement's authored "Initially Disabled" flag
 /// across cell loads. A shape change to an existing resource column; the
 /// field carries no `serde(default)` (#4465), so pre-v29 saves are rejected.
-pub const FORMAT_MAJOR: u16 = 29;
+///
+/// v29 -> v30 (#4819): `ReferenceState` (inside `PersistentReferenceStates`)
+/// gained the required `spells` field, so a parked actor's `SpellList`
+/// survives eviction beside the `ActorValues` its constant spells modify.
+/// No `serde(default)`; pre-v30 saves are rejected.
+pub const FORMAT_MAJOR: u16 = 30;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

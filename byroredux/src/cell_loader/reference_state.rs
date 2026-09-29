@@ -29,6 +29,14 @@ struct ReferenceState {
     equipment: Option<EquipmentSlots>,
     weapon: Option<EquippedWeapon>,
     actor_values: Option<ActorValues>,
+    /// #4819 — the actor's `SpellList`, parked beside `actor_values` because
+    /// the two only make sense together: a constant spell's value change
+    /// lives in `actor_values`, its membership here. Parking only the values
+    /// re-stamped the authored list on return, so a scripted ability's bonus
+    /// outlived its membership (`RemoveSpell` then returned false and the
+    /// bonus was permanent) and a second `AddSpell` applied it twice.
+    /// Required, like `picked_up` (#4465): pre-v30 saves are rejected.
+    spells: Option<Vec<u32>>,
     dead: bool,
     /// P3 pickup tombstone: the player picked this placement's item up, so a
     /// respawned copy must come back hidden and uninteractive, not restocked.
@@ -134,6 +142,7 @@ pub(crate) fn capture(world: &mut World, victims: &[EntityId]) {
                         equipment: None,
                         weapon: None,
                         actor_values: None,
+                        spells: None,
                         dead: false,
                         picked_up: false,
                     },
@@ -210,6 +219,11 @@ pub(crate) fn capture(world: &mut World, victims: &[EntityId]) {
             state.actor_values = values_q.get(*entity).cloned();
         }
     }
+    if let Some(spells_q) = world.query::<byroredux_scripting::SpellList>() {
+        for (entity, _, state) in &mut rows {
+            state.spells = spells_q.get(*entity).map(|list| list.0.clone());
+        }
+    }
     world
         .resource_mut::<PersistentReferenceStates>()
         .rows
@@ -258,6 +272,11 @@ pub(crate) fn restore(world: &mut World, entity: EntityId) -> bool {
     }
     if let Some(values) = state.actor_values {
         world.insert(entity, values);
+    }
+    // #4819 — after the spawn's `stamp_spell_list`, and together with the
+    // values above, so membership and the value changes it implies agree.
+    if let Some(spells) = state.spells {
+        world.insert(entity, byroredux_scripting::SpellList(spells));
     }
     if state.dead {
         world.insert(entity, Dead);
@@ -368,6 +387,7 @@ pub(crate) fn mark_picked_up(world: &World, entity: EntityId) {
                     equipment: None,
                     weapon: None,
                     actor_values: None,
+                    spells: None,
                     dead: false,
                     picked_up: true,
                 },
@@ -526,6 +546,28 @@ mod tests {
 
         assert!(restore(&mut world, root));
         assert!(world.get::<crate::inventory::PickedUp>(mesh).is_some());
+    }
+
+    /// #4819 — a scripted `AddSpell` survives the actor's cell eviction with
+    /// its membership, not only its value change: the respawn re-stamps the
+    /// authored list, and restore must put the parked list back over it so
+    /// a later `RemoveSpell` finds the spell and undoes the bonus.
+    #[test]
+    fn spell_list_is_parked_and_restored_with_actor_values() {
+        use byroredux_scripting::SpellList;
+        let mut world = world();
+        let actor = reference(&mut world, "Skyrim.esm", 0x500);
+        world.insert(actor, Inventory::new());
+        world.insert(actor, ActorValues::from_pairs([(0x2D4, 15.0)]));
+        world.insert(actor, SpellList(vec![0x10, 0xAB]));
+        evict(&mut world, &[actor]);
+
+        let actor = reference(&mut world, "Skyrim.esm", 0x500);
+        world.insert(actor, Inventory::new());
+        world.insert(actor, ActorValues::from_pairs([(0x2D4, 10.0)]));
+        world.insert(actor, SpellList(vec![0x10]));
+        assert!(restore(&mut world, actor));
+        assert_eq!(world.get::<SpellList>(actor).unwrap().0, vec![0x10, 0xAB]);
     }
 
     /// #4814 — an authored "Starts Dead" actor is `Dead` at spawn completion

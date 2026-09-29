@@ -1449,6 +1449,11 @@ fn npc_spawn_stamped_components_are_saved_or_intentionally_rederived() {
         "Background",
         "Perks",
         "AmbientPackageRuntime",
+        // #4823 — the two #4414/#4415 stamps this list missed.
+        // `CombatDisposition` is armed at finalize (#4817), `SpellList` by
+        // `stamp_spell_list`, now even when empty (#4822).
+        "CombatDisposition",
+        "SpellList",
     ];
     // Re-derived from static ESM `NPC_` data. Most entries are write-once;
     // AmbientPackageRuntime is the deliberate exception: its first
@@ -1477,6 +1482,10 @@ fn npc_spawn_stamped_components_are_saved_or_intentionally_rederived() {
         // M42.9 — rebuilt from NPC_.PKID plus the restored clock/CTDA
         // state on the first ambient-package tick after a cell reload.
         "AmbientPackageRuntime",
+        // #4414 — AIDT, immutable authored data re-read through the Use AI
+        // Data terminal on every spawn. (`SpellList` is NOT here: AddSpell/
+        // RemoveSpell mutate it, so it is registered — #4415.)
+        "CombatDisposition",
     ];
 
     let registered: std::collections::HashSet<&str> =
