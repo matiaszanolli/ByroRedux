@@ -682,6 +682,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("NpcSkeletonBones", "P3 mid-life gear import: the spawn job's bone-name → entity map, retained on the actor so an equip of a never-worn item can import its mesh against the living skeleton — spawn-derived, re-derived identically every load, same posture as AnimationTarget (never serialize process-local entity IDs)"),
         ("ActorBodyClass", "P3 mid-life gear import: the gender + race the spawn path resolved gear meshes with, retained so a mid-life equip resolves the same meshes — spawn-derived, same posture as AnimationTarget"),
         ("PendingGearImport", "P3 mid-life gear import: one equipped item's worn-mesh import handoff from the equip-appearance system to the GearImportLoader — runtime scratch drained within frames, same posture as NavPath"),
+        ("NpcDialogueTopic", "P4 blocker 1: the activation-driven dialogue topic selection stamped on an NPC — re-derives from the authored DIAL/INFO records + running quests on the next activation, same posture as InteractionTrace"),
         ("PendingInventoryActions", "P3: the inv.equip command's handoff queue, drained through apply_action each frame — runtime plumbing, same posture as InjectedKeyPulse"),
         ("QuestScriptTable", "built once per load order from ESM QUST script_ref resolution (M47.3) — same posture as PackageRegistry, process-lifetime statics"),
         ("ObScriptEffectLog", "bounded diagnostic ring of recent script side effects (M47.3), runtime observability only"),

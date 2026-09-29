@@ -286,6 +286,8 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     world.register::<crate::npc_spawn::NpcSkeletonBones>();
     world.register::<crate::npc_spawn::ActorBodyClass>();
     world.register::<crate::npc_spawn::PendingGearImport>();
+    // P4 blocker 1 — the activation-driven dialogue topic selection.
+    world.register::<crate::systems::npc_dialogue::NpcDialogueTopic>();
     world.register::<crate::npc_spawn::loot_appearance::NpcLootAppearance>();
     world.register::<crate::npc_spawn::loot_appearance::NpcAppearanceHidden>();
     world.register::<crate::ragdoll::RagdollActive>();

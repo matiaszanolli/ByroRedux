@@ -59,8 +59,9 @@ pub use condition::{
 };
 pub use dialogue::{
     estimate_dialogue_duration, install_dialogue_records, scene_dialogue_system,
-    ActiveDialogueLine, DialogueLine, DialogueLineCompletionBatch, DialoguePlayback,
-    DialoguePresentationEvent, DialoguePresentationEventBatch, DialogueRegistry,
+    select_first_info, ActiveDialogueLine, DialogueLine, DialogueLineCompletionBatch,
+    DialoguePlayback, DialoguePresentationEvent, DialoguePresentationEventBatch,
+    DialogueRegistry,
 };
 pub use equipment::{
     emit_equipment_changes, emit_item_transfers, install_equip_item_catalog, EquipItemCatalog,
@@ -132,11 +133,12 @@ pub use registry::{ScriptRegistry, ScriptSpawnFn};
 pub use scene::{
     install_scene_quest_aliases, install_scene_records, mark_scene_actor_bindings_dirty,
     quest_alias_diagnostics, quest_alias_refresh_system, refresh_scene_actor_bindings,
-    scene_playback_system, ActiveSceneAction, QuestAliasDiagnostic, QuestAliasInjectedOverlays,
-    QuestAliasInjectionState, QuestAliasResolutionState, QuestAliasRuntimeOverlays,
-    RemoteSceneActorStub, SceneActionCompletionBatch, SceneActorBindings, SceneAliasCandidate,
-    SceneEvent, SceneEventBatch, SceneFragmentInvocation, SceneFragmentInvocationBatch,
-    ScenePlaybackState, ScenePlayer, SceneRegistry, SceneStartRequest, SceneStopRequest,
+    running_quests_binding_entity, scene_playback_system, ActiveSceneAction, QuestAliasDiagnostic,
+    QuestAliasInjectedOverlays, QuestAliasInjectionState, QuestAliasResolutionState,
+    QuestAliasRuntimeOverlays, RemoteSceneActorStub, SceneActionCompletionBatch,
+    SceneActorBindings, SceneAliasCandidate, SceneEvent, SceneEventBatch,
+    SceneFragmentInvocation, SceneFragmentInvocationBatch, ScenePlaybackState, ScenePlayer,
+    SceneQuestAliasRegistry, SceneRegistry, SceneStartRequest, SceneStopRequest,
 };
 pub use timer::{timer_tick_system, ScriptTimer};
 pub use translate::{

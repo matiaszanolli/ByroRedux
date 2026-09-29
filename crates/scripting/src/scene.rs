@@ -101,8 +101,6 @@ mod quest_alias;
 
 pub use playback::*;
 pub use quest_alias::*;
-// Crate-private; `register` seeds it, `install_scene_quest_aliases` fills it.
-use quest_alias::SceneQuestAliasRegistry;
 
 /// Register scene components/resources without replacing an already-populated
 /// registry. Called by the scripting subsystem's top-level `register` hook.

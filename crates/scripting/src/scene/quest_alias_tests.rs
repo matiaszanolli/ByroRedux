@@ -1206,3 +1206,64 @@ fn alias_gated_by_a_block_no_candidate_can_pass_stays_unbound() {
     assert_eq!(bindings.resolve(QuestFormId(QUEST), 1), None);
     assert_eq!(bindings.resolve(QuestFormId(QUEST), 3), Some(actor));
 }
+
+#[test]
+fn running_quests_binding_entity_reports_only_running_bound_quests() {
+    let mut world = World::new();
+    crate::register(&mut world);
+    world.insert_resource(QuestStageState::default());
+    world
+        .resource_mut::<QuestStageState>()
+        .start_quest(QuestFormId(QUEST), None);
+
+    let bound = world.spawn();
+    let other = world.spawn();
+    let candidate = |reference: u32| SceneAliasCandidate {
+        reference_form_id: reference,
+        base_form_id: 0xB00 + reference,
+        linked_refs: Vec::new(),
+        location_ref_types: Vec::new(),
+    };
+    world.insert(bound, candidate(0xA1));
+    world.insert(other, candidate(0xA2));
+    install_scene_quest_aliases(
+        &mut world,
+        [
+            QustRecord {
+                form_id: QUEST,
+                aliases: vec![QuestAlias {
+                    alias_id: 1,
+                    fill_type: Some(AliasFillType::ForcedReference(0xA1)),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+            QustRecord {
+                form_id: QUEST + 1,
+                // Installed but never started: its binding must not count.
+                aliases: vec![QuestAlias {
+                    alias_id: 1,
+                    fill_type: Some(AliasFillType::ForcedReference(0xA1)),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+        ],
+    );
+    refresh_scene_actor_bindings(&world);
+
+    assert_eq!(
+        running_quests_binding_entity(&world, bound),
+        vec![QuestFormId(QUEST)],
+        "the running quest bound to the actor is reported, the stopped one is not"
+    );
+    assert!(
+        running_quests_binding_entity(&world, other).is_empty(),
+        "an actor no alias binds owns nothing"
+    );
+    let untracked = world.spawn();
+    assert!(
+        running_quests_binding_entity(&world, untracked).is_empty(),
+        "an untracked entity owns nothing"
+    );
+}

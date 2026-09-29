@@ -708,6 +708,11 @@ pub(crate) enum InteractionKind {
     /// #4697 — a loose world item ([`crate::inventory::is_pickup_target`]);
     /// activation routes through `container_loot_system` to `pickup_loot`.
     Pickup,
+    /// P4 blocker 1 — a living quest-alias-bound actor: activation routes
+    /// through the dialogue topic-selection system. Only alias-bound NPCs
+    /// are candidates (a patron owned by no running quest has no authored
+    /// dialogue route yet).
+    Npc,
 }
 
 impl InteractionKind {
@@ -717,6 +722,7 @@ impl InteractionKind {
             Self::Door => "Open",
             Self::Container | Self::Corpse => "Take all",
             Self::Pickup => "Take",
+            Self::Npc => "Talk",
         }
     }
 }
@@ -1246,6 +1252,43 @@ fn populate_candidates(world: &World, candidates: &mut FxHashMap<EntityId, Inter
                 .iter()
                 .map(|(entity, _)| (entity, InteractionKind::Door)),
         );
+    }
+    // P4 blocker 1 — living quest-alias-bound actors. The alias machinery's
+    // own identity stamps (`SceneAliasCandidate`) prefilter the set; only
+    // actors an actual running-quest alias binds survive, so an unbound
+    // patron never shows a dead "Talk" prompt. `or_insert` keeps the loot
+    // arm's Corpse/Container wins for dead carriers above.
+    {
+        let player = world
+            .try_resource::<crate::systems::PlayerEntity>()
+            .and_then(|player| player.0);
+        let talkable: Vec<EntityId> = world
+            .query::<byroredux_scripting::SceneAliasCandidate>()
+            .map(|identities| {
+                identities
+                    .iter()
+                    .filter(|(entity, _)| Some(*entity) != player)
+                    .filter(|(entity, _)| {
+                        world
+                            .get::<byroredux_core::ecs::components::Dead>(*entity)
+                            .is_none()
+                    })
+                    .filter(|(entity, _)| {
+                        world
+                            .get::<byroredux_core::ecs::components::ActorValues>(*entity)
+                            .is_some()
+                    })
+                    .filter(|(entity, _)| {
+                        !byroredux_scripting::running_quests_binding_entity(world, *entity)
+                            .is_empty()
+                    })
+                    .map(|(entity, _)| entity)
+                    .collect()
+            })
+            .unwrap_or_default();
+        for entity in talkable {
+            candidates.entry(entity).or_insert(InteractionKind::Npc);
+        }
     }
     if let Some(query) = world.query::<byroredux_scripting::papyrus_demo::RumbleOnActivate>() {
         for (entity, script) in query.iter() {

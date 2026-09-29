@@ -47,6 +47,13 @@ impl DialogueRegistry {
         self.topics.get(&form_id).map(Arc::as_ref)
     }
 
+    /// Insert (or refresh) one authored topic. The single insertion
+    /// primitive: [`install_dialogue_records`] loops it under `&mut World`,
+    /// and `&World` exclusive systems reach it through `resource_mut`.
+    pub fn insert_topic(&mut self, record: DialRecord) {
+        self.topics.insert(record.form_id, Arc::new(record));
+    }
+
     pub fn len(&self) -> usize {
         self.topics.len()
     }
@@ -156,7 +163,7 @@ pub fn install_dialogue_records(
     let count = records.len();
     let mut registry = world.resource_mut::<DialogueRegistry>();
     for record in records {
-        registry.topics.insert(record.form_id, Arc::new(record));
+        registry.insert_topic(record);
     }
     count
 }
@@ -199,6 +206,19 @@ fn select_info<'a>(
     topic.infos.iter().find(|info| {
         actor_matches(info, world, actor) && evaluate(&info.conditions, world, &context)
     })
+}
+
+/// Public activation-route wrapper around the SCEN-path [`select_info`]:
+/// the first INFO on `topic` whose speaker matches `actor` (ANAM, or the
+/// GetIsID-derived speaker) and whose CTDA list passes with the actor as
+/// subject and the player as target — the authored greeting/topic pick.
+pub fn select_first_info<'a>(
+    topic: &'a DialRecord,
+    world: &World,
+    actor: Option<EntityId>,
+    player: Option<EntityId>,
+) -> Option<&'a InfoRecord> {
+    select_info(topic, world, actor, player)
 }
 
 fn finish_line(

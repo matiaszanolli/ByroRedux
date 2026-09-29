@@ -131,7 +131,11 @@ impl Component for SceneAliasCandidate {
 }
 
 #[derive(Debug, Clone, Default)]
-pub(super) struct SceneQuestAliasRegistry {
+/// Installed parsed QUST alias definitions keyed by quest. Read-mostly at
+/// runtime — `install_scene_quest_aliases` fills it, and the alias refresh
+/// rebuilds the live binding table beside it. Public so scheduler access
+/// rows can name it; mutate only through the installer.
+pub struct SceneQuestAliasRegistry {
     aliases: HashMap<QuestFormId, Vec<QuestAlias>>,
 }
 
@@ -899,4 +903,39 @@ pub fn refresh_scene_actor_bindings(world: &World) -> usize {
 /// Scheduler-shaped quest alias refresh independent of SCEN playback.
 pub fn quest_alias_refresh_system(world: &World, _dt: f32) {
     refresh_scene_actor_bindings(world);
+}
+
+/// Quests whose live alias bindings name `entity` and that are currently
+/// running, ascending by quest FormID. P4's activation-driven topic
+/// selection walks this list to find the DIALs an activated NPC owns
+/// (`DialRecord::quest_refs` is the authored NPC→topic edge the engine has
+/// been missing); there is no authored direct NPC→DIAL map.
+///
+/// A quest with no installed alias definition or no `QuestStageState`
+/// resource cannot bind anything, so it never appears.
+pub fn running_quests_binding_entity(world: &World, entity: EntityId) -> Vec<QuestFormId> {
+    let Some(registry) = world.try_resource::<SceneQuestAliasRegistry>() else {
+        return Vec::new();
+    };
+    let Some(bindings) = world.try_resource::<SceneActorBindings>() else {
+        return Vec::new();
+    };
+    let running = world.try_resource::<QuestStageState>();
+    let mut quests: Vec<(u32, QuestFormId)> = registry
+        .aliases
+        .keys()
+        .copied()
+        .filter(|quest| running.as_ref().is_none_or(|stages| stages.is_running(*quest)))
+        .filter(|quest| {
+            registry
+                .aliases
+                .get(quest)
+                .into_iter()
+                .flatten()
+                .any(|alias| bindings.resolve(*quest, alias.alias_id) == Some(entity))
+        })
+        .map(|quest| (quest.0, quest))
+        .collect();
+    quests.sort_unstable_by_key(|(raw, _)| *raw);
+    quests.into_iter().map(|(_, quest)| quest).collect()
 }

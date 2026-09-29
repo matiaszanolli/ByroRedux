@@ -417,6 +417,28 @@ pub(super) fn register_late_systems(scheduler: &mut Scheduler) {
             .reads::<byroredux_core::ecs::Children>()
             .reads::<byroredux_core::ecs::MeshHandle>(),
     );
+    // P4 blocker 1 — NPC activation → topic selection. Runs beside the other
+    // Late activation/event readers, before the end-of-Late cleanup drains
+    // the ActivateEvent marker. The condition evaluator inside reads the
+    // subject's identity and the running-quest tables; the two-pass system
+    // installs the selected record into the dialogue registry and stamps
+    // the topic on the NPC.
+    scheduler.add_exclusive_with_access(
+        Stage::Late,
+        crate::systems::npc_dialogue::make_npc_dialogue_selection_system(),
+        Access::new()
+            .reads::<byroredux_scripting::ActivateEvent>()
+            .reads::<byroredux_scripting::SceneAliasCandidate>()
+            .reads::<byroredux_core::ecs::components::Dead>()
+            .reads::<byroredux_core::ecs::components::FormIdComponent>()
+            .writes::<crate::systems::npc_dialogue::NpcDialogueTopic>()
+            .reads_resource::<crate::systems::PlayerEntity>()
+            .reads_resource::<crate::cell_loader::LoadedCellIndex>()
+            .reads_resource::<byroredux_scripting::SceneQuestAliasRegistry>()
+            .reads_resource::<byroredux_scripting::SceneActorBindings>()
+            .reads_resource::<byroredux_scripting::quest_stages::QuestStageState>()
+            .writes_resource::<byroredux_scripting::DialogueRegistry>(),
+    );
     scheduler.add_exclusive_with_access(
         Stage::Late,
         crate::extensions::extension_equipment_dispatch_system,

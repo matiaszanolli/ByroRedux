@@ -47,6 +47,23 @@ asserts the objective line is absent before stage 15.
    resolve that NPC's DIAL topics for running quests (MS01's are Eltrys-owned)
    and pick the first INFO whose CTDA list passes — the evaluator exists; the
    wiring and the "NPC owns topic" lookup do not.
+   **Wired 2026-09-29:** the "NPC owns topic" edge is `DialRecord::quest_refs`
+   plus the live alias bindings — `running_quests_binding_entity` (scripting)
+   returns the running quests an entity is alias-bound to, and
+   `systems::npc_dialogue` consumes the player's `ActivateEvent` on such an
+   NPC, picks the first INFO through the SCEN path's own `select_first_info`
+   (subject = actor, target = player), and stamps `NpcDialogueTopic` on the
+   NPC (`dialogue.status` reads it). NPCs became interaction candidates
+   (`InteractionKind::Npc`, "Talk" prompt) only when a running quest's alias
+   actually binds them. Four bin tests drive the whole chain through the real
+   alias fill + evaluator; one scripting test pins the ownership lookup.
+   **Live-route gap found while verifying:** the fixture route needs Eltrys
+   present and alias-bound in `MarkarthShrineofTalos`, but the cell spawns no
+   Eltrys entity at all (156 REFRs load; no Eltrys actor/bones; alias 1's
+   unique-actor fill reports `no-eligible-loaded-candidate`, as does every
+   unique-actor alias in any loaded cell — only marker + Player aliases bind
+   at rest). Diagnosing spawn-side synthesis/enable-state for quest actors is
+   the next content-side gap, upstream of this wiring.
 2. **Response presentation.** A native dialogue surface (pause-menu-grade,
    like the inventory page) showing the INFO response text + topic list;
    no Scaleform dependency, per the P3 "native UI is the reference path" rule.

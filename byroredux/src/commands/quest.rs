@@ -808,6 +808,49 @@ impl ConsoleCommand for QuestSetStageCommand {
     }
 }
 
+/// `dialogue.status` — P4 observability for the activation-driven topic
+/// selection: every NPC currently carrying an `NpcDialogueTopic`. Read-only.
+pub(crate) struct DialogueStatusCommand;
+
+impl ConsoleCommand for DialogueStatusCommand {
+    fn name(&self) -> &str {
+        "dialogue.status"
+    }
+
+    fn description(&self) -> &str {
+        "Show the activation-selected dialogue topics carried by NPCs"
+    }
+
+    fn execute(&self, world: &World, _args: &str) -> CommandOutput {
+        let Some(topics) = world.query::<crate::systems::npc_dialogue::NpcDialogueTopic>() else {
+            return CommandOutput::line("dialogue: no topic selections (system idle)");
+        };
+        let mut lines: Vec<String> = Vec::new();
+        let mut count = 0;
+        for (npc, topic) in topics.iter() {
+            count += 1;
+            lines.push(format!(
+                "npc {npc}: topic {:#08X} '{}' info {:#08X} quest {} lines={}",
+                topic.topic_form_id,
+                topic.topic_editor_id,
+                topic.info_form_id,
+                topic
+                    .owning_quest
+                    .map(|quest| format!("{quest:#08X}"))
+                    .unwrap_or_else(|| "none".to_string()),
+                topic.speaker_text.replace('\n', " / "),
+            ));
+        }
+        if count == 0 {
+            return CommandOutput::line(
+                "dialogue: no NPC carries a selected topic — activate an \
+                 alias-bound NPC of a running quest",
+            );
+        }
+        CommandOutput::lines(lines)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
