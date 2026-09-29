@@ -98,7 +98,8 @@ impl Parser {
     fn parse_script_header(&mut self) -> Result<ScriptHeader, ParseError> {
         self.expect(&Token::KwScriptName, "ScriptName")?;
         let name = self.expect_ident("script name")?;
-        let parent = if matches!(self.peek(), Some(Token::KwExtends)) {
+        // #4763 — raw: `Extends Bar` on the next line is not this header's.
+        let parent = if matches!(self.peek_raw(), Some(Token::KwExtends)) {
             self.advance().unwrap();
             Some(self.expect_ident("parent script name")?)
         } else {
@@ -256,7 +257,8 @@ impl Parser {
         let mut is_conditional = false;
         let mut is_const = false;
         loop {
-            match self.peek() {
+            // #4763 — raw: a flag on the next line is not this variable's.
+            match self.peek_raw() {
                 Some(Token::KwConditional) => {
                     self.advance().unwrap();
                     is_conditional = true;
@@ -363,7 +365,9 @@ impl Parser {
     fn parse_function_flags(&mut self) -> FunctionFlags {
         let mut flags = FunctionFlags::empty();
         loop {
-            match self.peek() {
+            // #4763 — raw: a flag on the next line is the body's, not the
+            // signature's.
+            match self.peek_raw() {
                 Some(Token::KwGlobal) => {
                     self.advance().unwrap();
                     flags |= FunctionFlags::GLOBAL;
@@ -393,7 +397,8 @@ impl Parser {
         let doc_comment = self.skip_newlines_collect_doc();
         self.expect(&Token::KwProperty, "Property")?;
         let name = self.expect_ident("property name")?;
-        let initial_value = if matches!(self.peek(), Some(Token::Eq)) {
+        // #4763 — raw: `P` ⏎ `= 5` must not glue into an initializer.
+        let initial_value = if matches!(self.peek_raw(), Some(Token::Eq)) {
             self.advance().unwrap();
             Some(self.parse_expr()?)
         } else {
@@ -698,7 +703,8 @@ impl Parser {
         let name = self.expect_ident("group name")?;
         let mut flags = GroupFlags::empty();
         loop {
-            match self.peek() {
+            // #4763 — raw: a flag on the next line is not this group's.
+            match self.peek_raw() {
                 Some(Token::KwCollapsedOnRef) => {
                     self.advance().unwrap();
                     flags |= GroupFlags::COLLAPSED_ON_REF;
@@ -1488,5 +1494,177 @@ EndProperty
                 );
             }
         }
+    }
+
+    // ── #4763 — the seven newline-gluing sites #4472 left behind ──
+    // Same contract as the #4472 block above: each fixture has a line that is
+    // INVALID as a continuation, so a recovered error is required AND the
+    // glued shape must be absent.
+
+    /// Parse, returning the recovered script and how many errors surfaced.
+    fn parse_counting_errors(src: &str) -> (Script, usize) {
+        let (preprocessed, _map) = preprocess(src);
+        let (tokens, _errs) = lex(&preprocessed);
+        let mut parser = Parser::new(tokens);
+        let script = parser
+            .parse_script()
+            .expect("parse_script must not fail fatally");
+        let errors = parser.errors().len();
+        (script, errors)
+    }
+
+    fn function_bodies(script: &Script) -> impl Iterator<Item = &Spanned<Stmt>> {
+        script.body.iter().flat_map(|item| match &item.node {
+            ScriptItem::Function(f) => f.body.iter(),
+            _ => [].iter(),
+        })
+    }
+
+    #[test]
+    fn extends_on_the_next_line_does_not_set_the_parent() {
+        let (script, errors) =
+            parse_counting_errors("ScriptName Foo\nExtends Bar\nFunction F()\nEndFunction\n");
+        assert!(
+            script.parent.is_none(),
+            "next-line `Extends` glued into the header (#4763)"
+        );
+        assert!(errors > 0, "the stray `Extends` line must surface an error");
+    }
+
+    #[test]
+    fn a_const_on_the_next_line_does_not_flag_the_variable() {
+        let (script, errors) =
+            parse_counting_errors("ScriptName T\nInt Foo\nConst\nFunction F()\nEndFunction\n");
+        for item in &script.body {
+            if let ScriptItem::Variable(v) = &item.node {
+                assert!(
+                    !v.is_const,
+                    "next-line `Const` glued into `Int Foo` (#4763)"
+                );
+            }
+        }
+        assert!(errors > 0, "the stray `Const` line must surface an error");
+    }
+
+    #[test]
+    fn a_global_on_the_next_line_does_not_flag_the_function() {
+        let (script, errors) =
+            parse_counting_errors("ScriptName T\nFunction F()\nGlobal\nEndFunction\n");
+        for item in &script.body {
+            if let ScriptItem::Function(f) = &item.node {
+                assert!(
+                    !f.flags.contains(FunctionFlags::GLOBAL),
+                    "next-line `Global` glued into the signature (#4763)"
+                );
+            }
+        }
+        assert!(errors > 0, "the stray `Global` line must surface an error");
+    }
+
+    #[test]
+    fn an_initializer_on_the_next_line_does_not_init_the_property() {
+        let (script, errors) = parse_counting_errors(
+            "ScriptName T\nInt Property P\n= 5 Auto\nFunction F()\nEndFunction\n",
+        );
+        for item in &script.body {
+            if let ScriptItem::Property(p) = &item.node {
+                assert!(
+                    p.initial_value.is_none(),
+                    "next-line `= 5` glued into P (#4763)"
+                );
+                assert!(
+                    !p.flags.contains(PropertyFlags::AUTO),
+                    "next-line `Auto` glued into P"
+                );
+            }
+        }
+        assert!(
+            errors > 0,
+            "the stray `= 5 Auto` line must surface an error"
+        );
+    }
+
+    #[test]
+    fn a_collapsed_flag_on_the_next_line_does_not_flag_the_group() {
+        let (script, errors) = parse_counting_errors(
+            "ScriptName T\nGroup G\nCollapsedOnRef\nInt Property P Auto\nEndGroup\n",
+        );
+        for item in &script.body {
+            if let ScriptItem::Group(g) = &item.node {
+                assert!(
+                    g.flags.is_empty(),
+                    "next-line `CollapsedOnRef` glued into G (#4763)"
+                );
+            }
+        }
+        assert!(
+            errors > 0,
+            "the stray `CollapsedOnRef` line must surface an error"
+        );
+    }
+
+    #[test]
+    fn an_initializer_on_the_next_line_does_not_init_an_object_typed_local() {
+        let (script, errors) =
+            parse_counting_errors("ScriptName T\nFunction F()\nActor x\n= None\nEndFunction\n");
+        for stmt in function_bodies(&script) {
+            if let Stmt::VarDecl(v) = &stmt.node {
+                assert!(
+                    v.initial_value.is_none(),
+                    "next-line `= None` glued into x (#4763)"
+                );
+            }
+        }
+        assert!(errors > 0, "the stray `= None` line must surface an error");
+    }
+
+    /// `parse_variable_body` backs both of these call sites.
+    #[test]
+    fn an_initializer_on_the_next_line_does_not_init_a_keyword_local_or_struct_member() {
+        let (script, errors) =
+            parse_counting_errors("ScriptName T\nFunction F()\nInt x\n= 5\nEndFunction\n");
+        for stmt in function_bodies(&script) {
+            if let Stmt::VarDecl(v) = &stmt.node {
+                assert!(
+                    v.initial_value.is_none(),
+                    "next-line `= 5` glued into x (#4763)"
+                );
+            }
+        }
+        assert!(
+            errors > 0,
+            "the stray local `= 5` line must surface an error"
+        );
+
+        let (script, errors) =
+            parse_counting_errors("ScriptName T\nStruct S\nInt a\n= 5\nEndStruct\n");
+        for item in &script.body {
+            if let ScriptItem::Struct(s) = &item.node {
+                for member in &s.members {
+                    assert!(
+                        member.initial_value.is_none(),
+                        "next-line `= 5` glued into a"
+                    );
+                }
+            }
+        }
+        assert!(
+            errors > 0,
+            "the stray struct `= 5` line must surface an error"
+        );
+    }
+
+    /// Guard the other direction: the single-line forms still parse clean.
+    #[test]
+    fn single_line_forms_of_the_4763_sites_still_parse() {
+        let src = "ScriptName Foo Extends Bar\n\
+                   Int V = 1 Const\n\
+                   Int Property P = 5 Auto\n\
+                   Group G CollapsedOnRef\nInt Property Q Auto\nEndGroup\n\
+                   Struct S\nInt a = 5\nEndStruct\n\
+                   Function F() Global\nActor x = None\nInt y = 2\nEndFunction\n";
+        let (script, errors) = parse_counting_errors(src);
+        assert_eq!(errors, 0, "{script:#?}");
+        assert!(script.parent.is_some());
     }
 }

@@ -208,7 +208,8 @@ impl Parser {
             if matches!(self.peek_raw(), Some(Token::Ident(_))) {
                 // Commit to VarDecl path.
                 let name = self.expect_ident("variable name")?;
-                let initial_value = if matches!(self.peek(), Some(Token::Eq)) {
+                // #4763 — raw: `Actor x` ⏎ `= None` must not glue.
+                let initial_value = if matches!(self.peek_raw(), Some(Token::Eq)) {
                     self.advance().unwrap();
                     Some(self.parse_expr()?)
                 } else {
@@ -242,7 +243,9 @@ impl Parser {
     pub(super) fn parse_variable_body(&mut self) -> Result<Variable, ParseError> {
         let ty = self.parse_type()?;
         let name = self.expect_ident("variable name")?;
-        let initial_value = if matches!(self.peek(), Some(Token::Eq)) {
+        // #4763 — raw: `Int x` ⏎ `= 5` must not glue. Backs both the local
+        // keyword-typed declaration and the `Struct` member paths.
+        let initial_value = if matches!(self.peek_raw(), Some(Token::Eq)) {
             self.advance().unwrap();
             Some(self.parse_expr()?)
         } else {
