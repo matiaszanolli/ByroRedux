@@ -1258,34 +1258,38 @@ fn populate_candidates(world: &World, candidates: &mut FxHashMap<EntityId, Inter
     // actors an actual running-quest alias binds survive, so an unbound
     // patron never shows a dead "Talk" prompt. `or_insert` keeps the loot
     // arm's Corpse/Container wins for dead carriers above.
+    //
+    // #5025 — the bound-entity set comes from one bulk pass whose guards
+    // are each held alone (`running_quest_bound_entities`), and the
+    // candidate ids are collected under the `SceneAliasCandidate` guard
+    // alone with the `Dead`/`ActorValues` filters run after it drops — the
+    // old shape nested those acquisitions inside the live query guard,
+    // which the lock-order tracker recorded as `SceneAliasCandidate →
+    // Dead` and closed an ABBA cycle with the walk_anim read pass.
     {
         let player = world
             .try_resource::<crate::systems::PlayerEntity>()
             .and_then(|player| player.0);
-        let talkable: Vec<EntityId> = world
+        let bound = byroredux_scripting::running_quest_bound_entities(world);
+        let candidate_entities: Vec<EntityId> = world
             .query::<byroredux_scripting::SceneAliasCandidate>()
-            .map(|identities| {
-                identities
-                    .iter()
-                    .filter(|(entity, _)| Some(*entity) != player)
-                    .filter(|(entity, _)| {
-                        world
-                            .get::<byroredux_core::ecs::components::Dead>(*entity)
-                            .is_none()
-                    })
-                    .filter(|(entity, _)| {
-                        world
-                            .get::<byroredux_core::ecs::components::ActorValues>(*entity)
-                            .is_some()
-                    })
-                    .filter(|(entity, _)| {
-                        !byroredux_scripting::running_quests_binding_entity(world, *entity)
-                            .is_empty()
-                    })
-                    .map(|(entity, _)| entity)
-                    .collect()
-            })
+            .map(|identities| identities.iter().map(|(entity, _)| entity).collect())
             .unwrap_or_default();
+        let talkable: Vec<EntityId> = candidate_entities
+            .into_iter()
+            .filter(|entity| Some(*entity) != player)
+            .filter(|entity| {
+                world
+                    .get::<byroredux_core::ecs::components::Dead>(*entity)
+                    .is_none()
+            })
+            .filter(|entity| {
+                world
+                    .get::<byroredux_core::ecs::components::ActorValues>(*entity)
+                    .is_some()
+            })
+            .filter(|entity| bound.contains(entity))
+            .collect();
         for entity in talkable {
             candidates.entry(entity).or_insert(InteractionKind::Npc);
         }

@@ -913,29 +913,94 @@ pub fn quest_alias_refresh_system(world: &World, _dt: f32) {
 ///
 /// A quest with no installed alias definition or no `QuestStageState`
 /// resource cannot bind anything, so it never appears.
+///
+/// #5025 — each resource guard is taken and released alone. The previous
+/// nest held `SceneQuestAliasRegistry` + `SceneActorBindings` +
+/// `QuestStageState` together, which the lock-order tracker records as
+/// `Registry → Bindings` and closes an ABBA cycle with test-hygiene
+/// `Bindings → Registry` acquisitions.
 pub fn running_quests_binding_entity(world: &World, entity: EntityId) -> Vec<QuestFormId> {
-    let Some(registry) = world.try_resource::<SceneQuestAliasRegistry>() else {
-        return Vec::new();
+    // Registry guard alone: copy the installed alias ids out, release.
+    let defs = installed_alias_ids_by_quest(world);
+    // Bindings guard alone: keep quests with at least one alias resolving
+    // to `entity` (resolve is a hash lookup on the live binding table).
+    let bound: Vec<QuestFormId> = match world.try_resource::<SceneActorBindings>() {
+        Some(bindings) => defs
+            .into_iter()
+            .filter(|(quest, aliases)| {
+                aliases
+                    .iter()
+                    .any(|alias_id| bindings.resolve(*quest, *alias_id) == Some(entity))
+            })
+            .map(|(quest, _)| quest)
+            .collect(),
+        None => Vec::new(),
     };
-    let Some(bindings) = world.try_resource::<SceneActorBindings>() else {
-        return Vec::new();
+    // Stages guard alone: drop quests that are not running. No
+    // `QuestStageState` resource keeps the pre-#5025 semantics where the
+    // running filter passes everything through.
+    let mut quests: Vec<QuestFormId> = match world.try_resource::<QuestStageState>() {
+        Some(stages) => bound
+            .into_iter()
+            .filter(|quest| stages.is_running(*quest))
+            .collect(),
+        None => bound,
     };
-    let running = world.try_resource::<QuestStageState>();
-    let mut quests: Vec<(u32, QuestFormId)> = registry
-        .aliases
-        .keys()
-        .copied()
-        .filter(|quest| running.as_ref().is_none_or(|stages| stages.is_running(*quest)))
-        .filter(|quest| {
-            registry
-                .aliases
-                .get(quest)
-                .into_iter()
-                .flatten()
-                .any(|alias| bindings.resolve(*quest, alias.alias_id) == Some(entity))
-        })
-        .map(|quest| (quest.0, quest))
-        .collect();
-    quests.sort_unstable_by_key(|(raw, _)| *raw);
-    quests.into_iter().map(|(_, quest)| quest).collect()
+    quests.sort_unstable_by_key(|quest| quest.0);
+    quests
+}
+
+/// Alias definitions copied out under the `SceneQuestAliasRegistry` guard
+/// alone — quest FormID → its installed alias ids. Shared by both query
+/// helpers so neither holds the registry across any other acquisition.
+fn installed_alias_ids_by_quest(world: &World) -> HashMap<QuestFormId, Vec<i32>> {
+    match world.try_resource::<SceneQuestAliasRegistry>() {
+        Some(registry) => registry
+            .aliases
+            .iter()
+            .map(|(quest, aliases)| {
+                (
+                    *quest,
+                    aliases.iter().map(|alias| alias.alias_id).collect(),
+                )
+            })
+            .collect(),
+        None => HashMap::new(),
+    }
+}
+
+/// Every entity bound by at least one running quest's alias — the inverse
+/// bulk form of [`running_quests_binding_entity`]. `populate_candidates`
+/// scans all `SceneAliasCandidate` placements every frame; one pass over
+/// the binding table replaces the per-candidate registry walk (the perf
+/// concern is ECS-2026-09-29-D6-01, tracked under #3475, and the same
+/// per-candidate walk also nested the #5025 lock-order cycle).
+///
+/// Guards are each taken and released alone, mirroring
+/// [`running_quests_binding_entity`]. No `QuestStageState` resource keeps
+/// the per-entity helper's "nothing filters" semantics.
+pub fn running_quest_bound_entities(world: &World) -> HashSet<EntityId> {
+    let defs = installed_alias_ids_by_quest(world);
+    let running: HashSet<QuestFormId> = match world.try_resource::<QuestStageState>() {
+        Some(stages) => defs
+            .keys()
+            .copied()
+            .filter(|quest| stages.is_running(*quest))
+            .collect(),
+        None => defs.keys().copied().collect(),
+    };
+    match world.try_resource::<SceneActorBindings>() {
+        Some(bindings) => bindings
+            .actors
+            .iter()
+            .filter(|((quest, alias_id), _)| {
+                running.contains(quest)
+                    && defs
+                        .get(quest)
+                        .is_some_and(|aliases| aliases.contains(alias_id))
+            })
+            .map(|(_, entity)| *entity)
+            .collect(),
+        None => HashSet::new(),
+    }
 }
