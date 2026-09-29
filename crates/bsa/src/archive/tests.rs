@@ -925,6 +925,50 @@ fn synthetic_v105_lz4_compressed_round_trips_with_embed_name() {
     let _ = std::fs::remove_file(&path);
 }
 
+/// #5000 — concurrent extracts from one BSA handle must each get their own
+/// bytes. `1b8b21f3f` replaced the `Mutex<File>` with positional reads, and
+/// the stream pool, texture prefetch and main-thread resolves all extract
+/// from one `BsaArchive`. An embed-name extract does two positioned reads
+/// (the 1-byte name length, then the body) and `declared_size` a third at a
+/// different offset, so a shared-cursor regression — `(&file).seek` +
+/// `read_exact` compiles without `&mut` or a lock — hands threads each
+/// other's bytes and fails the LZ4 decode or the equality below.
+#[test]
+fn synthetic_v105_concurrent_extracts_read_their_own_bytes() {
+    let payload: Vec<u8> = (0..48_000u32).map(|i| (i * 13 % 251) as u8).collect();
+    let bytes = build_v105_archive(
+        "meshes\\synthetic",
+        "concurrent.nif",
+        &payload,
+        true, // compress
+        true, // embed_name
+    );
+    let path = write_temp_v105("concurrent", &bytes);
+    let archive = BsaArchive::open(&path).expect("v105 archive must open");
+    let _ = std::fs::remove_file(&path);
+
+    std::thread::scope(|scope| {
+        for t in 0..8u32 {
+            let (archive, payload) = (&archive, &payload);
+            scope.spawn(move || {
+                for round in 0..150u32 {
+                    if (t + round) % 3 == 0 {
+                        let size = archive
+                            .declared_size("meshes\\synthetic\\concurrent.nif")
+                            .expect("declared_size");
+                        assert_eq!(size, payload.len(), "thread {t} round {round}");
+                    } else {
+                        let got = archive
+                            .extract("meshes\\synthetic\\concurrent.nif")
+                            .expect("extract");
+                        assert_eq!(&got, payload, "thread {t} round {round}");
+                    }
+                }
+            });
+        }
+    });
+}
+
 /// #1558 / SK-D5-01 — the v105 reader MUST decode with the LZ4 *frame*
 /// codec, not the *block* codec (which Starfield's BA2 uses). The existing
 /// round-trip test already gates a frame→block regression in one direction;

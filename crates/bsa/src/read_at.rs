@@ -4,7 +4,16 @@
 //! under it, because both calls move the handle's shared cursor. Positional
 //! reads (`pread` on Unix, `ReadFile` with an `OVERLAPPED` offset on Windows)
 //! take the offset as an argument, so concurrent extracts from one archive
-//! need no lock and never wait on each other.
+//! need no user-space lock and stay correct on a shared handle.
+//!
+//! #4999 — "no lock" is not "no waiting" on every platform. On Unix `pread`
+//! reads from one descriptor run concurrently. On Windows, `File::open`
+//! returns a synchronous handle (no `FILE_FLAG_OVERLAPPED`), and the I/O
+//! manager serialises every request on a synchronous file object, so reads
+//! of one archive still queue behind each other in the kernel. Inflate runs
+//! outside the read, so decompression stays parallel on both. Opening with
+//! `FILE_FLAG_OVERLAPPED` (`OpenOptionsExt::custom_flags`) would be the
+//! route to parallel reads on Windows if that ever matters.
 
 use std::fs::File;
 use std::io;

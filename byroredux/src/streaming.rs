@@ -668,7 +668,9 @@ pub struct WorldStreamingState {
     /// Long-lived texture archive provider (BSA / BA2 readers). Behind
     /// `Arc` so the worker thread can extract NIF bytes off-thread —
     /// `BsaArchive` / `Ba2Archive` read through positional reads with no
-    /// shared cursor, so concurrent extracts are safe and never block.
+    /// shared cursor, so concurrent extracts are safe without a lock (on
+    /// Windows the kernel still serialises reads on one handle; see
+    /// `crates/bsa/src/read_at.rs`, #4999).
     pub tex_provider: Arc<TextureProvider>,
     /// The dedicated stream pool (#3089): the worker's parallel NIF parse
     /// and the main thread's texture prefetch
@@ -1865,7 +1867,8 @@ fn pre_parse_cell(
     // The coordinator only admits inputs against the decoded-input budget;
     // each pool task extracts (archive read + inflate) and parses its own
     // input. BSA and BA2 both extract through positional reads with no
-    // per-archive lock (#3659), so reads and inflates run in parallel, and
+    // per-archive lock (#3659), so inflates run in parallel (and reads too on
+    // Unix — Windows serialises reads on one handle, #4999), and
     // parse starts as soon as a NIF is available instead of behind an
     // extract-all barrier that retained the whole cell's decoded input.
     // Archive lookup precedence is the provider's (`extract_mesh` /

@@ -463,7 +463,9 @@ FO4, its precombine `_oc.nif`s — see below) and hands each to a dedicated
 Rayon pool task that extracts and then parses/imports it. Archive selection,
 canonical-key deduplication, missing-file results and per-NIF panic recovery
 use the same paths as synchronous extraction. The archive readers take no lock
-(positional reads), so tasks read and inflate in parallel. The scope joins
+(positional reads), so tasks inflate in parallel, and on Unix read in parallel
+too; on Windows the synchronous file handle serialises the read syscalls
+themselves (#4999, `crates/bsa/src/read_at.rs`). The scope joins
 before publishing the cell payload; world mutation stays on the main thread.
 Cells with fewer than eight fresh NIFs remain serial.
 

@@ -580,4 +580,46 @@ mod tests {
         assert_eq!(csg.read_psg(0, 4).unwrap(), &chunks[0][0..4]);
         std::fs::remove_file(&p).ok();
     }
+
+    /// #5000 — `1b8b21f3f` dropped the `Mutex<File>` for positional reads,
+    /// and precombine decode tasks now read one CSG concurrently. Pin that
+    /// concurrent reads — across chunk boundaries, with a cache capped at one
+    /// chunk so every read re-reads and re-inflates from disk — each get their
+    /// own bytes. A shared-cursor regression (`(&file).seek` + `read_exact`
+    /// compiles without `&mut`) would hand threads each other's chunk data.
+    #[test]
+    fn concurrent_reads_get_their_own_chunk_bytes() {
+        const CHUNKS: usize = 6;
+        let chunks: Vec<Vec<u8>> = (0..CHUNKS)
+            .map(|k| {
+                (0..CSG_CHUNK_SIZE)
+                    .map(|i| ((i * 7 + k * 31) % 251) as u8)
+                    .collect()
+            })
+            .collect();
+        let psg: Vec<u8> = chunks.concat();
+        let p = write_temp(&build_csg(&chunks), "concurrent");
+        let csg = CsgArchive::open_with_cache(&p, 1).unwrap();
+        std::fs::remove_file(&p).ok();
+
+        std::thread::scope(|scope| {
+            for t in 0..8usize {
+                let (csg, psg) = (&csg, &psg);
+                scope.spawn(move || {
+                    for round in 0..120usize {
+                        let chunk = (t * 5 + round) % CHUNKS;
+                        // Straddle into the next chunk when there is one.
+                        let start = chunk * CSG_CHUNK_SIZE + CSG_CHUNK_SIZE - 64;
+                        let len = if chunk + 1 < CHUNKS { 192 } else { 64 };
+                        let got = csg.read_psg(start as u64, len).expect("read_psg");
+                        assert_eq!(
+                            got,
+                            &psg[start..start + len],
+                            "thread {t} round {round} chunk {chunk}"
+                        );
+                    }
+                });
+            }
+        });
+    }
 }
