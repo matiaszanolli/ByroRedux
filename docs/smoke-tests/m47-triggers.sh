@@ -166,6 +166,9 @@ dbg_log="$LOG_DIR/dbg.log"
 
 # Engine to background. log::info (incl. the `M47.2 scripts:` summary)
 # lands on stderr; the `bench:` summary lands on stdout.
+# Release binaries gate the debug server behind this opt-in (63c0aee3b);
+# without it the held engine binds no port and byro-dbg can never attach.
+export BYRO_DEBUG_SERVER=1
 cargo run --release --quiet -- \
     --esm "$SKYRIM_DATA/Skyrim.esm" \
     --cell "$CELL" \

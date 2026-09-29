@@ -51,6 +51,10 @@ engine_stdout="$LOG_DIR/engine.stdout"
 engine_stderr="$LOG_DIR/engine.stderr"
 debug_log="$LOG_DIR/debug.log"
 
+# Release binaries gate the debug server behind this opt-in (63c0aee3b);
+# without it the held engine binds no port and byro-dbg can never attach.
+export BYRO_DEBUG_SERVER=1
+
 cargo run --release --quiet -- \
     --esm "$SKYRIM_DATA/Skyrim.esm" \
     --cell "$CELL" \

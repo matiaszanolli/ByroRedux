@@ -58,6 +58,10 @@ run_cell () {
     echo "  smoke[$label]: launching engine in background"
     echo "═══════════════════════════════════════════════════════════════"
 
+    # Release binaries gate the debug server behind this opt-in
+    # (63c0aee3b); without it the held engine binds no port and byro-dbg
+    # can never attach.
+    export BYRO_DEBUG_SERVER=1
     cargo run --release --quiet -- \
         "$@" \
         --bench-frames "$BENCH_FRAMES" \

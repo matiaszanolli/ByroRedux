@@ -144,6 +144,10 @@ run_bench() {
     # Run engine from game's Data/ directory (CWD rule enforced).
     (
         cd "$game_data"
+        # Release binaries gate the debug server behind this opt-in
+        # (63c0aee3b); without it the held engine binds no port and
+        # byro-dbg can never attach.
+        export BYRO_DEBUG_SERVER=1
         cargo run --release --quiet -- \
             "${engine_args[@]}" \
             --bench-frames "$BENCH_FRAMES" \
