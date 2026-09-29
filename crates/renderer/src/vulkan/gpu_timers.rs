@@ -633,11 +633,25 @@ impl GpuPerFrameTimers {
                 .query_count(QUERIES_PER_FRAME);
             // SAFETY: `info` is correctly populated; `device` is valid and
             // outlives this pool (destroyed in `Self::destroy` before device).
-            *slot = unsafe {
-                device
-                    .create_query_pool(&info, None)
-                    .with_context(|| format!("create TIMESTAMP query pool slot {i}"))?
-            };
+            match unsafe { device.create_query_pool(&info, None) } {
+                Ok(pool) => *slot = pool,
+                Err(error) => {
+                    // #4998 — no `Self` exists yet, so `destroy` can never
+                    // reach the slots already created; and the caller turns
+                    // this `Err` into a non-fatal `None`, so they would live
+                    // until `vkDestroyDevice`. Release them here, the same
+                    // policy the fragment-invocation branch below applies.
+                    for pool in pools {
+                        if pool != vk::QueryPool::null() {
+                            // SAFETY: partial-init pools; no command buffer
+                            // has referenced them.
+                            unsafe { device.destroy_query_pool(pool, None) };
+                        }
+                    }
+                    return Err(error)
+                        .with_context(|| format!("create TIMESTAMP query pool slot {i}"));
+                }
+            }
             // Spec mandates reset before first use. cmd_reset is
             // gated to draw_frame; host-side
             // `device.reset_query_pool` (VK_KHR_host_query_reset)
@@ -2187,5 +2201,38 @@ mod tests {
                  once; per-site copies rot on the next bump"
             );
         }
+    }
+
+    /// #4998 — a failed TIMESTAMP pool creation on slot ≥ 1 used to `?` out
+    /// with slot 0's pool held only in a local array: no `Self` existed for
+    /// `destroy` to reach, and the caller maps the `Err` to a non-fatal
+    /// `None`, so it lived until `vkDestroyDevice`. The error arm must
+    /// destroy every already-created pool before returning, matching the
+    /// fragment-invocation branch.
+    #[test]
+    fn timestamp_pool_partial_failure_releases_created_pools() {
+        let src = crate::source_scan::production_text(include_str!("gpu_timers.rs"));
+        let start = src
+            .find(".query_type(vk::QueryType::TIMESTAMP)")
+            .expect("GpuPerFrameTimers::new creates TIMESTAMP pools");
+        let loop_end = start
+            + src[start..]
+                .find("let fragment_invocation_pools")
+                .expect("the fragment-invocation branch follows the TIMESTAMP loop");
+        let body = &src[start..loop_end];
+        let destroy = body
+            .find("device.destroy_query_pool(pool, None)")
+            .expect("the TIMESTAMP error arm destroys the partial pools (#4998)");
+        let bail = body
+            .find("create TIMESTAMP query pool slot")
+            .expect("the TIMESTAMP error arm still names the failing slot");
+        assert!(
+            destroy < bail,
+            "the partial TIMESTAMP pools must be destroyed before the error returns (#4998)"
+        );
+        assert!(
+            !body.contains(")?"),
+            "a bare `?` in the TIMESTAMP loop leaks the pools created so far (#4998)"
+        );
     }
 }

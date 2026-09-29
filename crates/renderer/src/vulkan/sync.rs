@@ -96,6 +96,13 @@ pub const MAX_FRAMES_IN_FLIGHT: usize = 2;
 //  13. `SkinSlot::destroy` / `SkinComputePipeline::destroy_slot` /
 //      `MorphSlot::destroy` immediately free resources for pending unload
 //      victims, so their prior-frame users must have retired first.
+//  14. `egui_pass.rs`'s texture retirement (#4988) — `dispatch` hands the
+//      previous frame's `pending_free` to `free_textures`, and every
+//      `set_textures` full upload for an existing id (all of them since
+//      #4986 promotes partial deltas through `image_mirrors`) destroys the
+//      old image and frees its descriptor set immediately. Frame N-1's
+//      overlay draw may still sample either; the one-frame defer is only a
+//      frame, and the all-slots wait is what retires N-1.
 //
 // #4601 — the wait's own argument is now pinned: the all-slots spelling
 // `wait_for_fences(&self.frame_sync.in_flight, true, u64::MAX)` is
@@ -695,6 +702,14 @@ mod tests {
             (
                 "groundcover_models",
                 crate::source_scan::production_text(include_str!("groundcover_models.rs")),
+            ),
+            (
+                "pending_free",
+                crate::source_scan::production_text(include_str!("egui_pass.rs")),
+            ),
+            (
+                "image_mirrors",
+                crate::source_scan::production_text(include_str!("egui_pass.rs")),
             ),
         ] {
             assert!(

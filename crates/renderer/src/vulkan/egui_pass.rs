@@ -15,7 +15,10 @@
 //! * `set_textures` uploads any new / updated textures. The egui-ash-
 //!   renderer crate spins up its own one-shot command buffer + waits
 //!   on the supplied queue, so the uploads finish synchronously before
-//!   `cmd_draw` references them.
+//!   `cmd_draw` references them. Partial (`pos: Some`) deltas are first
+//!   promoted to full uploads against a CPU mirror (#4986): the crate's
+//!   partial path transitions the whole image from `UNDEFINED`, which
+//!   lets the driver discard every texel outside the patched rect.
 //! * `cmd_draw` records vertex / index + draw-indexed calls into the
 //!   main frame's command buffer (caller-supplied).
 //! * The freshly-arrived `TexturesDelta.free` is stashed for next
@@ -26,7 +29,8 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::{anyhow, Result};
 use ash::vk;
-use egui::{Context as EguiContext, FullOutput, TextureId};
+use egui::{epaint::ImageDelta, Context as EguiContext, FullOutput, ImageData, TextureId};
+use rustc_hash::FxHashMap;
 use egui_ash_renderer::{Options, Renderer};
 use gpu_allocator::vulkan::Allocator;
 
@@ -86,6 +90,71 @@ pub struct EguiPass {
     /// of `draw_frame` between frame submissions gives the deferred
     /// free its safety guarantee.
     pending_free: Vec<TextureId>,
+    /// #4986 — CPU copy of every egui-managed image, keyed by id. egui's
+    /// font atlas grows through partial deltas; `promote_partial_deltas`
+    /// patches the mirror and re-uploads the whole image, so the crate never
+    /// takes its partial path (whole-image `UNDEFINED -> TRANSFER_DST`,
+    /// no source scope — the texels outside the patch are undefined after
+    /// it). Entries leave with the texture's deferred free.
+    image_mirrors: FxHashMap<TextureId, Arc<egui::ColorImage>>,
+}
+
+/// #4986 — rewrite egui's texture deltas so every upload is a full one.
+///
+/// egui-ash-renderer 0.11's partial path (`delta.pos == Some`) records a
+/// whole-image `UNDEFINED -> TRANSFER_DST_OPTIMAL` transition with no source
+/// scope and then copies only the patch. `UNDEFINED` as the old layout lets
+/// the implementation discard the image's contents, so every glyph already in
+/// the font atlas outside the patched rect is undefined afterwards. A full
+/// delta instead creates a fresh image (for which `UNDEFINED` is correct) and
+/// retires the old one the same way `free_textures` does — covered by the
+/// all-slots fence wait (rider 14 in `sync.rs`).
+///
+/// Full deltas refresh the mirror and pass through; partial deltas are
+/// applied to the mirror and replaced by a full delta of it. Several deltas
+/// for one id in a frame collapse into a single upload. A partial delta for
+/// an id with no mirror (or one that does not fit it) passes through
+/// unchanged, so the crate reports its own `BadTexture` rather than this
+/// silently dropping an update.
+fn promote_partial_deltas(
+    mirrors: &mut FxHashMap<TextureId, Arc<egui::ColorImage>>,
+    set: &[(TextureId, ImageDelta)],
+) -> Vec<(TextureId, ImageDelta)> {
+    let mut out: Vec<(TextureId, ImageDelta)> = Vec::with_capacity(set.len());
+    let mut slot_of: FxHashMap<TextureId, usize> = FxHashMap::default();
+    for (id, delta) in set {
+        let ImageData::Color(patch) = &delta.image;
+        let promoted = match delta.pos {
+            None => {
+                mirrors.insert(*id, Arc::clone(patch));
+                Some(delta.clone())
+            }
+            Some([x, y]) => mirrors.get_mut(id).and_then(|mirror| {
+                let [width, height] = mirror.size;
+                let [w, h] = patch.size;
+                if x + w > width || y + h > height {
+                    return None;
+                }
+                let image = Arc::make_mut(mirror);
+                for row in 0..h {
+                    let dst = (y + row) * width + x;
+                    image.pixels[dst..dst + w].copy_from_slice(&patch.pixels[row * w..(row + 1) * w]);
+                }
+                Some(ImageDelta::full(ImageData::Color(Arc::clone(mirror)), delta.options))
+            }),
+        };
+        match promoted {
+            Some(full) => match slot_of.get(id) {
+                Some(&at) => out[at] = (*id, full),
+                None => {
+                    slot_of.insert(*id, out.len());
+                    out.push((*id, full));
+                }
+            },
+            None => out.push((*id, delta.clone())),
+        }
+    }
+    out
 }
 
 impl EguiPass {
@@ -160,6 +229,7 @@ impl EguiPass {
             framebuffers,
             extent: swapchain_extent,
             pending_free: Vec::new(),
+            image_mirrors: FxHashMap::default(),
         })
     }
 
@@ -232,6 +302,9 @@ impl EguiPass {
         // referenced any more.
         if !self.pending_free.is_empty() {
             let drained = std::mem::take(&mut self.pending_free);
+            for id in &drained {
+                self.image_mirrors.remove(id);
+            }
             self.renderer
                 .free_textures(&drained)
                 .map_err(|e| anyhow!("egui free_textures: {e:?}"))?;
@@ -248,9 +321,12 @@ impl EguiPass {
         // wait — but no wider. The tessellate + cmd_draw steps below only
         // record into `cmd`, so they run with the queue released.
         if !output.textures_delta.set.is_empty() {
+            // #4986 — never hand the crate a partial delta (see
+            // `image_mirrors`). Built before the queue lock: pure CPU work.
+            let set = promote_partial_deltas(&mut self.image_mirrors, &output.textures_delta.set);
             let q = queue.lock().unwrap_or_else(|e| e.into_inner());
             self.renderer
-                .set_textures(*q, upload_command_pool, &output.textures_delta.set)
+                .set_textures(*q, upload_command_pool, &set)
                 .map_err(|e| anyhow!("egui set_textures: {e:?}"))?;
         }
 
@@ -546,6 +622,92 @@ mod dependency_chain_tests {
                     .contains(".dst_stage_mask(vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT)"),
             "the overlay chains COLOR_ATTACHMENT_OUTPUT -> COLOR_ATTACHMENT_OUTPUT; \
              changing either side means updating presentation.rs's outgoing dep too"
+        );
+    }
+}
+
+/// #4986 — the partial-delta promotion is pure CPU and is what keeps the
+/// crate's `UNDEFINED`-discarding partial path unreachable.
+#[cfg(test)]
+mod partial_delta_promotion_tests {
+    use super::promote_partial_deltas;
+    use egui::epaint::ImageDelta;
+    use egui::{Color32, ColorImage, ImageData, TextureId, TextureOptions};
+    use rustc_hash::FxHashMap;
+    use std::sync::Arc;
+
+    fn image(w: usize, h: usize, fill: Color32) -> Arc<ColorImage> {
+        Arc::new(ColorImage::new([w, h], vec![fill; w * h]))
+    }
+
+    fn pixels(delta: &ImageDelta) -> &[Color32] {
+        let ImageData::Color(image) = &delta.image;
+        &image.pixels
+    }
+
+    #[test]
+    fn partial_update_becomes_a_full_upload_that_keeps_existing_texels() {
+        let id = TextureId::Managed(0);
+        let mut mirrors = FxHashMap::default();
+        let base = ImageDelta::full(image(4, 3, Color32::RED), TextureOptions::LINEAR);
+        let first = promote_partial_deltas(&mut mirrors, &[(id, base)]);
+        assert_eq!(first.len(), 1);
+        assert!(first[0].1.pos.is_none());
+
+        let patch = ImageDelta::partial([1, 1], image(2, 1, Color32::BLUE), TextureOptions::LINEAR);
+        let out = promote_partial_deltas(&mut mirrors, &[(id, patch)]);
+        assert_eq!(out.len(), 1);
+        assert!(out[0].1.pos.is_none(), "the crate must never see a partial delta (#4986)");
+        let px = pixels(&out[0].1);
+        assert_eq!(px.len(), 12, "the whole image is re-uploaded");
+        assert_eq!(px[4 + 1], Color32::BLUE);
+        assert_eq!(px[4 + 2], Color32::BLUE);
+        assert_eq!(
+            px.iter().filter(|c| **c == Color32::RED).count(),
+            10,
+            "texels outside the patch survive — the ones the crate's UNDEFINED \
+             transition could discard"
+        );
+    }
+
+    #[test]
+    fn several_patches_to_one_texture_collapse_into_one_upload() {
+        let id = TextureId::Managed(7);
+        let mut mirrors = FxHashMap::default();
+        mirrors.insert(id, image(2, 2, Color32::BLACK));
+        let out = promote_partial_deltas(
+            &mut mirrors,
+            &[
+                (id, ImageDelta::partial([0, 0], image(1, 1, Color32::WHITE), TextureOptions::LINEAR)),
+                (id, ImageDelta::partial([1, 1], image(1, 1, Color32::GREEN), TextureOptions::LINEAR)),
+            ],
+        );
+        assert_eq!(out.len(), 1, "one full upload per texture per frame");
+        assert_eq!(
+            pixels(&out[0].1),
+            &[Color32::WHITE, Color32::BLACK, Color32::BLACK, Color32::GREEN]
+        );
+    }
+
+    #[test]
+    fn partial_without_a_mirror_or_out_of_bounds_passes_through() {
+        let known = TextureId::Managed(1);
+        let unknown = TextureId::Managed(2);
+        let mut mirrors = FxHashMap::default();
+        mirrors.insert(known, image(2, 2, Color32::BLACK));
+        let out = promote_partial_deltas(
+            &mut mirrors,
+            &[
+                (unknown, ImageDelta::partial([0, 0], image(1, 1, Color32::RED), TextureOptions::LINEAR)),
+                (known, ImageDelta::partial([1, 1], image(2, 2, Color32::RED), TextureOptions::LINEAR)),
+            ],
+        );
+        assert_eq!(out.len(), 2);
+        assert!(out.iter().all(|(_, delta)| delta.pos.is_some()));
+        assert_eq!(
+            pixels(&ImageDelta::full(ImageData::Color(Arc::clone(&mirrors[&known])), TextureOptions::LINEAR)),
+            &[Color32::BLACK; 4],
+            "a rejected patch must not half-apply to the mirror"
         );
     }
 }
