@@ -6,9 +6,13 @@
 //! Each helper maps (game, gender) → a vanilla archive path string for
 //! the per-game content layout.
 
+use std::collections::HashMap;
+use std::sync::Arc;
+
 use byroredux_core::animation::AnimationClipRegistry;
 use byroredux_core::animation::AnimationPlayer;
 use byroredux_core::ecs::components::{
+
     EquipmentSlots, EquippedWeapon, FactionRanks, GlobalTransform, Inventory, InventoryIndex,
     ItemStack, MotionType, Name, Parent, RigidBodyData, Transform,
 };
@@ -1099,6 +1103,48 @@ pub(crate) struct NpcEquipmentPart {
 }
 
 impl byroredux_core::ecs::Component for NpcEquipmentPart {
+    type Storage = byroredux_core::ecs::SparseSetStorage<Self>;
+}
+
+/// P3 mid-life gear import — the spawn job's skeleton bone-name → entity
+/// map, retained on the actor so a mid-life equipment import can bind a
+/// newly imported armor NIF's skinned meshes to the living actor's bones.
+/// The corpse-restoration path retains the same map in
+/// `NpcLootAppearance::skeleton`, which living actors never grow. Spawn-
+/// derived, re-derived identically every load — never serialized (same
+/// posture as [`crate::components::AnimationTarget`]).
+#[derive(Default)]
+pub(crate) struct NpcSkeletonBones(pub(crate) HashMap<Arc<str>, EntityId>);
+
+impl byroredux_core::ecs::Component for NpcSkeletonBones {
+    type Storage = byroredux_core::ecs::SparseSetStorage<Self>;
+}
+
+/// P3 mid-life gear import — the gender + race the spawn path resolved for
+/// this actor's body/gear mesh selection, retained so an equip of a
+/// never-worn item resolves the same gendered/raced armor meshes the spawn
+/// path would have. Spawn-derived, never serialized.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ActorBodyClass {
+    pub(crate) gender: Gender,
+    pub(crate) race_form_id: u32,
+}
+
+impl byroredux_core::ecs::Component for ActorBodyClass {
+    type Storage = byroredux_core::ecs::SparseSetStorage<Self>;
+}
+
+/// P3 mid-life gear import — one equipped item awaiting its worn-mesh NIF
+/// import. `loot_appearance::equipment_appearance_system` queues it when an
+/// equip names a form id with no spawn-time root; `GearImportLoader` drains
+/// it at one NIF per frame. Runtime handoff scratch, never serialized.
+#[derive(Debug, Clone)]
+pub(crate) struct PendingGearImport {
+    pub(crate) form_id: u32,
+    pub(crate) paths: Vec<String>,
+}
+
+impl byroredux_core::ecs::Component for PendingGearImport {
     type Storage = byroredux_core::ecs::SparseSetStorage<Self>;
 }
 

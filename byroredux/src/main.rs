@@ -698,6 +698,7 @@ struct App {
     interior_transition: Option<cell_loader::InteriorCellApply>,
     loading_screen: loading_screen::LoadingScreen,
     loot_appearance_loader: npc_spawn::loot_appearance::LootAppearanceLoader,
+    gear_import_loader: npc_spawn::loot_appearance::GearImportLoader,
     /// Debug server lifecycle owner (#855 / C6-NEW-02). Holding the
     /// handle keeps the TCP listener thread alive; the natural App::Drop
     /// fires the handle's Drop, which sets the shutdown flag and joins
@@ -1150,6 +1151,7 @@ impl App {
             interior_transition: None,
             loading_screen: loading_screen::LoadingScreen::default(),
             loot_appearance_loader: Default::default(),
+            gear_import_loader: Default::default(),
             #[cfg(feature = "debug-server")]
             debug_server,
             debug_ui: None,

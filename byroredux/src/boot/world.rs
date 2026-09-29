@@ -281,6 +281,11 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     world.register::<byroredux_physics::Ragdoll>();
     world.register::<crate::ragdoll::RagdollTemplate>();
     world.register::<crate::npc_spawn::NpcEquipmentPart>();
+    // P3 mid-life gear import — retained spawn bone map + body class, and
+    // the equip→import handoff slot the GearImportLoader drains.
+    world.register::<crate::npc_spawn::NpcSkeletonBones>();
+    world.register::<crate::npc_spawn::ActorBodyClass>();
+    world.register::<crate::npc_spawn::PendingGearImport>();
     world.register::<crate::npc_spawn::loot_appearance::NpcLootAppearance>();
     world.register::<crate::npc_spawn::loot_appearance::NpcAppearanceHidden>();
     world.register::<crate::ragdoll::RagdollActive>();
@@ -304,6 +309,9 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     // lives).
     world.insert_resource(crate::components::SeatReservations::default());
     world.insert_resource(crate::components::SandboxSitClip::default());
+    // P3 — the inv.equip command's handoff queue, drained through the
+    // native menu's canonical apply_action each frame.
+    world.insert_resource(crate::inventory::PendingInventoryActions::default());
 
     // M42.10 — pre-register the walk-playback storages + the per-cell
     // Skyrim walk-clip resource (populated at cell load where the archive

@@ -362,6 +362,23 @@ fn attach_player_locomotion_animation(
             consumed_idle_serial: 0,
         },
     );
+    // The capsule is the wearer every equip event names (the attach
+    // retargets NpcEquipmentPart ownership to it) and the entity the
+    // animation/gear systems watch — so it also carries the job's body
+    // class and bone map. The body root keeps its own stamps; both point
+    // at one skeleton.
+    if let Some(class) = world
+        .get::<crate::npc_spawn::ActorBodyClass>(root)
+        .map(|class| *class)
+    {
+        world.insert(player, class);
+    }
+    if let Some(bones) = world
+        .get::<crate::npc_spawn::NpcSkeletonBones>(root)
+        .map(|bones| bones.0.clone())
+    {
+        world.insert(player, crate::npc_spawn::NpcSkeletonBones(bones));
+    }
 
     // Idle: the KF games' shared standing idle, desynced off the player
     // record like every NPC's (Skyrim+ resolves None here — its ambient

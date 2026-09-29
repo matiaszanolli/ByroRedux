@@ -236,7 +236,7 @@ summary.
 | P0 input and interaction | **Closed 2026-08-10** — [`p0-door-interaction.sh`](docs/smoke-tests/p0-door-interaction.sh) passes the Bannered Mare XTEL exit. |
 | P1 reliable traversal | Movement consumers share one `ActionState` snapshot. Water traversal (W1) closed 2026-09-09 on FNV; Skyrim's W1 leg is skipped because of a land-side KCC wedge. |
 | P2 combat | Core loop 2026-08-16 ([`p2-melee-core.sh`](docs/smoke-tests/p2-melee-core.sh)). Authored attack/stagger/death takes and combat sounds 2026-09-20. Loot transfer has its production caller (#4464), and the Draugr combat marker is fixed (#4700). |
-| P3 UI and inventory | Native HUD vitals and objective text ([`p3-hud.sh`](docs/smoke-tests/p3-hud.sh)). Player body, view toggle and third-person walk/idle animation ([`p3-player-body.sh`](docs/smoke-tests/p3-player-body.sh)). Open: gear import for newly acquired items, player FaceGen. |
+| P3 UI and inventory | Native HUD vitals and objective text ([`p3-hud.sh`](docs/smoke-tests/p3-hud.sh)). Player body, view toggle, third-person walk/idle animation and mid-life gear import ([`p3-player-body.sh`](docs/smoke-tests/p3-player-body.sh)). Open: player FaceGen (vanilla ships no facegeom for the player record — the graceful miss is the correct behavior). |
 | P4 authored objective | Fixture frozen on MS01 `0x00018B4B`: 38 stage bindings, 17 lowered. Ordered blockers: NPC activation → topic selection, a native response surface, completion transitions. |
 | P5 persistence and soak | Open: consumption-specific live Vulkan and save/reload smokes, the 30-minute soak. |
 

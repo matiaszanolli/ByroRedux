@@ -981,6 +981,10 @@ impl ApplicationHandler for App {
         // No-op when the slot is `None` — the common per-frame case.
         self.step_cell_transition();
 
+        // Debug-queued inventory actions (inv.equip) go through the native
+        // menu's canonical apply_action on the main thread.
+        crate::inventory::drain_pending_inventory_actions(&mut self.world);
+
         // Persistent-cell apply owns a cross-frame entity-range cursor;
         // don't let it claim appearance entities belonging to another cell.
         if self.interior_transition.is_none()
@@ -989,6 +993,7 @@ impl ApplicationHandler for App {
         {
             if let Some(ctx) = self.renderer.as_mut() {
                 self.loot_appearance_loader.step(&mut self.world, ctx);
+                self.gear_import_loader.step(&mut self.world, ctx);
             }
         }
 

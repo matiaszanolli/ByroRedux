@@ -535,6 +535,15 @@ fn prepare_runtime_state(
     }
 
     let gender = Gender::from_acbs_flags(npc.acbs_flags);
+    // P3 mid-life gear import — the body class the gear-mesh resolution
+    // below uses, retained so a mid-life equip resolves the same meshes.
+    world.insert(
+        placement_root,
+        crate::npc_spawn::ActorBodyClass {
+            gender,
+            race_form_id: resolved.r#traits.race_form_id,
+        },
+    );
     // #4092 (D5-01) — the "Use Traits" terminal off the spawn boundary's
     // one resolution (#4457), the same source `stamp_character_components`'s
     // `Background` uses.
@@ -1219,6 +1228,14 @@ fn advance_runtime_unit(
                         consumed_idle_serial: 0,
                     },
                 );
+                // P3 mid-life gear import — retain the assembled bone map so
+                // an equip of a never-worn item can import its mesh against
+                // the living actor's skeleton (the corpse path retains its
+                // own copy at death).
+                world.insert(
+                    state.placement_root,
+                    crate::npc_spawn::NpcSkeletonBones(state.skel_map.clone()),
+                );
                 // P2 combat tail — Draugr-race actors play the Draugr
                 // combat clip family (attack/hit/death takes) through
                 // `systems::combat_anim`; presence of this component is
@@ -1797,6 +1814,15 @@ fn prepare_prebaked_state(
     // one resolution (#4457).
     let traits = resolved.r#traits;
     let gender = Gender::from_acbs_flags(traits.acbs_flags);
+    // P3 mid-life gear import — the body class the gear-mesh resolution
+    // below uses, retained so a mid-life equip resolves the same meshes.
+    world.insert(
+        placement_root,
+        crate::npc_spawn::ActorBodyClass {
+            gender,
+            race_form_id: traits.race_form_id,
+        },
+    );
     let skeleton_path = npc_skeleton_path(game, traits, index);
     let equip = build_npc_equip_state(&resolved, index, game, gender);
     let facegen_hidden_mask = equip.facegen_hidden_mask;
@@ -2051,6 +2077,13 @@ fn finalize_prebaked(
                 skeleton_root,
                 consumed_idle_serial: 0,
             },
+        );
+        // P3 mid-life gear import — retain the assembled bone map so an
+        // equip of a never-worn item can import its mesh against the living
+        // actor's skeleton (the corpse path retains its own copy at death).
+        world.insert(
+            state.placement_root,
+            crate::npc_spawn::NpcSkeletonBones(state.skel_map.clone()),
         );
         // #4700 — the Draugr family marker, beside `AnimationTarget` as on
         // the runtime path. Without it every take and impact/death sound

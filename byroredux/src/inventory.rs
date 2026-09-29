@@ -169,6 +169,80 @@ pub(crate) struct PlayerCharacterTemplate {
 
 impl Resource for PlayerCharacterTemplate {}
 
+/// One-frame-plus handoff queue for inventory actions arriving off the
+/// main-thread mutation scope (the `inv.equip` debug command). Drained
+/// through [`apply_action`] — the exact door the native menu's buttons use —
+/// beside the other per-frame player actions. Runtime plumbing, never
+/// serialized.
+#[derive(Debug, Default)]
+pub(crate) struct PendingInventoryActions(pub(crate) Vec<byroredux_debug_ui::InventoryAction>);
+
+impl Resource for PendingInventoryActions {}
+
+/// Debug/console door to the same append invariants `transfer_loot` keeps:
+/// a same-base merge or a whole-stack append, both of which leave every
+/// equipment index above the insertion point stable. `&World` — the command
+/// surface's interior-mutability convention. `None` when there is no player
+/// or no `Inventory` to append into.
+pub(crate) fn add_item(
+    world: &World,
+    form_id: u32,
+    count: u32,
+) -> Option<InventoryIndex> {
+    let player = world.try_resource::<PlayerEntity>().and_then(|p| p.0)?;
+    let mut inventories = world.query_mut::<Inventory>()?;
+    let inventory = inventories.get_mut(player)?;
+    Some(add_stack(inventory, form_id, count))
+}
+
+/// Queue one [`InventoryAction::ToggleEquip`] for the row whose base form is
+/// `form_id`, to be drained through [`apply_action`] on the main thread.
+/// Returns a user-facing error when the player has no such row.
+pub(crate) fn queue_equip_by_form_id(world: &World, form_id: u32) -> Result<String, String> {
+    let player = world
+        .try_resource::<PlayerEntity>()
+        .and_then(|p| p.0)
+        .ok_or_else(|| "no player".to_string())?;
+    let index = world
+        .get::<Inventory>(player)
+        .and_then(|inventory| {
+            inventory
+                .items
+                .iter()
+                .position(|stack| stack.base_form_id == form_id)
+        })
+        .ok_or_else(|| format!("no inventory row with form {form_id:08X}"))?;
+    let Some(mut pending) = world.try_resource_mut::<PendingInventoryActions>() else {
+        return Err("inventory action queue unavailable".to_string());
+    };
+    pending
+        .0
+        .push(byroredux_debug_ui::InventoryAction::ToggleEquip {
+            index: index as u32,
+        });
+    Ok(format!(
+        "queued equip toggle for row {index} (form {form_id:08X})"
+    ))
+}
+
+/// Drain the queued inventory actions through the canonical menu door.
+/// Called on the main thread beside the other player-action steps.
+pub(crate) fn drain_pending_inventory_actions(world: &mut World) {
+    let Some(mut pending) = world.try_resource_mut::<PendingInventoryActions>() else {
+        return;
+    };
+    if pending.0.is_empty() {
+        return;
+    }
+    let actions = std::mem::take(&mut pending.0);
+    drop(pending);
+    for action in actions {
+        if apply_action(world, action) == MutationResult::Unavailable {
+            log::warn!("queued inventory action was unavailable for the current player/item");
+        }
+    }
+}
+
 /// The native HUD vitals bars' canonical keys — (display label, AVIF FormID)
 /// pairs resolved once per plugin load from the same AVIF table `ActorValues`
 /// is keyed by. Presentation state only: never serialized, rebuilt from
@@ -3781,6 +3855,55 @@ mod tests {
             world.resource::<PhysicsWorld>().body_count(),
             0,
             "the taken item's body stays gone"
+        );
+    }
+
+    #[test]
+    fn add_item_merges_same_base_and_appends_new_rows() {
+        let (world, player) = fixture();
+        let first = add_item(&world, 0xABCD, 2).expect("player inventory present");
+        let merged = add_item(&world, 0xABCD, 1).expect("player inventory present");
+        assert_eq!(
+            first, merged,
+            "a same-base add must merge, not grow a second row"
+        );
+        let appended = add_item(&world, 0xDBBA, 1).expect("player inventory present");
+        assert_ne!(appended, first, "a new base lands in its own row");
+        let inventory = world.get::<Inventory>(player).unwrap();
+        assert_eq!(inventory.items.len(), 5);
+        let merged_row = &inventory.items[first.0 as usize];
+        assert_eq!((merged_row.base_form_id, merged_row.count), (0xABCD, 3));
+    }
+
+    #[test]
+    fn queued_equip_drains_through_the_canonical_action() {
+        let (mut world, player) = fixture();
+        world.insert_resource(PendingInventoryActions::default());
+
+        // The fixture's row 0 is the Iron Armor (equip target biped 1<<12).
+        let message =
+            queue_equip_by_form_id(&world, 0x1234).expect("the row exists");
+        assert!(message.contains("row 0"), "{message}");
+        assert_eq!(
+            queue_equip_by_form_id(&world, 0xDEAD).is_err(),
+            true,
+            "a form with no row must be refused at the queue, not silently dropped"
+        );
+        assert_eq!(world.resource::<PendingInventoryActions>().0.len(), 1);
+
+        drain_pending_inventory_actions(&mut world);
+        assert!(
+            world.resource::<PendingInventoryActions>().0.is_empty(),
+            "the drain empties the queue"
+        );
+        let slots = world.get::<EquipmentSlots>(player).unwrap();
+        assert_eq!(slots.occupants[12].map(|index| index.0), Some(0));
+        let batch = world
+            .get::<byroredux_scripting::EquipmentEventBatch>(player)
+            .expect("toggle_equip emitted the canonical batch");
+        assert!(
+            batch.0.iter().any(|change| change.item_form_id == 0x1234 && change.equipped),
+            "the canonical batch is what the mid-life gear detection reads"
         );
     }
 }

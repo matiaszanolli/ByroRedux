@@ -4,6 +4,7 @@
 //! until normal cell teardown, which owns their GPU/skin-slot lifetimes.
 
 use super::*;
+use byroredux_core::ecs::components::collision::CollisionShape;
 use byroredux_core::ecs::components::Dead;
 use byroredux_core::ecs::{CellRoot, Children, Component, MeshHandle, SparseSetStorage};
 use std::collections::{HashMap, HashSet};
@@ -221,50 +222,145 @@ pub(crate) fn equipment_appearance_system(world: &World, _dt: f32) {
     if changes.is_empty() {
         return;
     }
-    let Some(parts) = world.query::<NpcEquipmentPart>() else {
-        return;
-    };
-    let gear_roots: Vec<(EntityId, EntityId, u32)> = parts
-        .iter()
-        .filter(|(_, part)| !part.intrinsic_skin)
-        .map(|(root, part)| (part.actor, root, part.form_id))
-        .collect();
-    drop(parts);
-    if gear_roots.is_empty() {
-        return;
-    }
-    // Expand to (root, hide) actions and pre-walk the meshes so no storage
-    // guard spans another query.
-    let mut actions: Vec<(EntityId, bool)> = Vec::new();
-    for (wearer, batch) in &changes {
-        if world.get::<Dead>(*wearer).is_some() {
-            continue;
+    // A world with no part carriers at all (nothing spawned wearing gear)
+    // still reaches the mid-life queue below.
+    let gear_roots: Vec<(EntityId, EntityId, u32)> = world
+        .query::<NpcEquipmentPart>()
+        .map(|parts| {
+            parts
+                .iter()
+                .filter(|(_, part)| !part.intrinsic_skin)
+                .map(|(root, part)| (part.actor, root, part.form_id))
+                .collect()
+        })
+        .unwrap_or_default();
+    // An empty root table skips only the hide/reveal half — a wearer with
+    // no spawn-time gear at all equipping their first item is exactly the
+    // mid-life import case.
+    if !gear_roots.is_empty() {
+        // Expand to (root, hide) actions and pre-walk the meshes so no
+        // storage guard spans another query.
+        let mut actions: Vec<(EntityId, bool)> = Vec::new();
+        for (wearer, batch) in &changes {
+            if world.get::<Dead>(*wearer).is_some() {
+                continue;
+            }
+            for change in batch {
+                for &(owner, root, form_id) in &gear_roots {
+                    if owner == *wearer && form_id == change.item_form_id {
+                        actions.push((root, !change.equipped));
+                    }
+                }
+            }
         }
-        for change in batch {
-            for &(owner, root, form_id) in &gear_roots {
-                if owner == *wearer && form_id == change.item_form_id {
-                    actions.push((root, !change.equipped));
+        if !actions.is_empty() {
+            let walks: Vec<(Vec<EntityId>, bool)> = actions
+                .iter()
+                .map(|&(root, hide)| (mesh_entities_under(world, root), hide))
+                .collect();
+            let Some(mut hidden) = world.query_mut::<NpcAppearanceHidden>() else {
+                return;
+            };
+            for (entities, hide) in walks {
+                for entity in entities {
+                    if hide {
+                        hidden.insert(entity, NpcAppearanceHidden);
+                    } else {
+                        hidden.remove(entity);
+                    }
                 }
             }
         }
     }
-    if actions.is_empty() {
+    queue_midlife_imports(world, &changes, &gear_roots);
+}
+
+/// P3 mid-life gear import — queue the worn-mesh NIF import for an equip of
+/// an item the wearer never spawned wearing (no `NpcEquipmentPart` root
+/// matches the form id). Resolution mirrors the spawn path exactly: the
+/// retained [`ActorBodyClass`] (gender + race) against
+/// `resolve_armor_meshes`, so a Skyrim ARMO picks the same race-matching
+/// ARMAs and a legacy ARMO picks the same gendered `MODL`/`MOD3`. Dead
+/// wearers stay skipped (death reconciliation owns corpse appearance), and
+/// a wearer already pending one import is not re-queued.
+fn queue_midlife_imports(
+    world: &World,
+    changes: &[(EntityId, Vec<byroredux_scripting::EquipmentChange>)],
+    gear_roots: &[(EntityId, EntityId, u32)],
+) {
+    let mut requests: Vec<(EntityId, u32)> = Vec::new();
+    for (wearer, batch) in changes {
+        if world.get::<Dead>(*wearer).is_some() {
+            continue;
+        }
+        for change in batch {
+            if !change.equipped {
+                continue;
+            }
+            let has_root = gear_roots.iter().any(|&(owner, _, form_id)| {
+                owner == *wearer && form_id == change.item_form_id
+            });
+            if has_root {
+                continue;
+            }
+            if !requests.iter().any(|(w, _)| w == wearer) {
+                requests.push((*wearer, change.item_form_id));
+            }
+        }
+    }
+    if requests.is_empty() {
         return;
     }
-    let walks: Vec<(Vec<EntityId>, bool)> = actions
-        .iter()
-        .map(|&(root, hide)| (mesh_entities_under(world, root), hide))
-        .collect();
-    let Some(mut hidden) = world.query_mut::<NpcAppearanceHidden>() else {
+    let Some(index_resource) = world.try_resource::<crate::cell_loader::LoadedCellIndex>()
+    else {
         return;
     };
-    for (entities, hide) in walks {
-        for entity in entities {
-            if hide {
-                hidden.insert(entity, NpcAppearanceHidden);
-            } else {
-                hidden.remove(entity);
-            }
+    let index = index_resource.0.clone();
+    drop(index_resource);
+    let mut inserts: Vec<(EntityId, PendingGearImport)> = Vec::new();
+    for (wearer, form_id) in requests {
+        if world.get::<PendingGearImport>(wearer).is_some() {
+            continue;
+        }
+        let Some(class) = world.get::<ActorBodyClass>(wearer).map(|c| *c) else {
+            continue;
+        };
+        let Some(item) = index.items.get(&form_id) else {
+            continue;
+        };
+        let paths: Vec<String> =
+            byroredux_plugin::equip::resolve_armor_meshes(
+                item,
+                class.gender,
+                class.race_form_id,
+                &index,
+                index.game,
+            )
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+        if paths.is_empty() {
+            log::debug!(
+                "mid-life gear: no worn mesh resolved for {form_id:08X} — nothing to import"
+            );
+            continue;
+        }
+        inserts.push((wearer, PendingGearImport { form_id, paths }));
+    }
+    if inserts.is_empty() {
+        return;
+    }
+    // Interior-mutability insert (the caller is a `&World` Late system), and
+    // only after every read guard above has dropped.
+    if let Some(mut pending) = world.query_mut::<PendingGearImport>() {
+        for (wearer, import) in inserts {
+            log::info!(
+                "mid-life gear: queueing import of {:08X} ({} mesh{}) on {wearer}",
+                import.form_id,
+                import.paths.len(),
+                if import.paths.len() == 1 { "" } else { "es" },
+            );
+            pending.insert(wearer, import);
         }
     }
 }
@@ -406,6 +502,197 @@ impl LootAppearanceLoader {
             "npc.loot-appearance: body import failed {}; retaining outfit actor={actor}",
             part.path
         );
+    }
+}
+
+/// Look up the wearer's inventory row for a form id, so a mid-life import's
+/// `NpcEquipmentPart` points at the same row the equip events name.
+fn inventory_index_for(
+    world: &World,
+    wearer: EntityId,
+    form_id: u32,
+) -> Option<byroredux_core::ecs::components::InventoryIndex> {
+    world.get::<Inventory>(wearer).and_then(|inventory| {
+        inventory
+            .items
+            .iter()
+            .position(|stack| stack.base_form_id == form_id)
+            .map(|index| {
+                byroredux_core::ecs::components::InventoryIndex(index as u32)
+            })
+    })
+}
+
+/// The player's body root when `wearer` is the player, `None` for any other
+/// wearer. Mid-life player gear parents under the body root — not the
+/// capsule — so it turns with the body's facing yaw and `set_player_view`'s
+/// `HiddenFirstPerson` restamp (which walks the body root's subtree) covers
+/// it exactly like spawn-time gear.
+fn player_gear_parent(world: &World, wearer: EntityId) -> Option<EntityId> {
+    let player = world
+        .try_resource::<crate::systems::PlayerEntity>()
+        .and_then(|player| player.0)?;
+    (player == wearer).then_some(())?;
+    world
+        .try_resource::<crate::player_body::PlayerBodyRootEntity>()
+        .and_then(|attached| attached.0)
+}
+
+/// P3 mid-life gear import — drains [`PendingGearImport`] at one NIF per
+/// frame, mirroring [`LootAppearanceLoader`]'s provider cache and DDS-flush
+/// posture. The difference is the reveal: these meshes are worn *now*, so a
+/// successful import attaches immediately (no staged-hidden wait) — the only
+/// hiding is the player's view gate, via the same `HiddenFirstPerson` marker
+/// `set_player_view` restamps. Cell-owned wearers (NPCs) stamp the import
+/// into their cell's release range; the player has no `CellRoot` — their
+/// gear outlives cells exactly like the body it hangs from.
+#[derive(Default)]
+pub(crate) struct GearImportLoader {
+    providers: Option<(Vec<String>, TextureProvider, MaterialProvider)>,
+}
+
+impl GearImportLoader {
+    pub(crate) fn step(&mut self, world: &mut World, ctx: &mut VulkanContext) {
+        let Some((wearer, import)) = world.query::<PendingGearImport>().and_then(|query| {
+            query
+                .iter()
+                .next()
+                .map(|(wearer, import)| (wearer, import.clone()))
+        }) else {
+            return;
+        };
+        if world.get::<Dead>(wearer).is_some() {
+            // Died mid-import: death reconciliation owns the appearance now.
+            world.remove::<PendingGearImport>(wearer);
+            return;
+        }
+        let Some(bones) = world
+            .get::<NpcSkeletonBones>(wearer)
+            .map(|bones| bones.0.clone())
+        else {
+            world.remove::<PendingGearImport>(wearer);
+            log::warn!("mid-life gear: no retained skeleton map on {wearer}; skipping import");
+            return;
+        };
+        let Some(path) = import.paths.first().cloned() else {
+            world.remove::<PendingGearImport>(wearer);
+            return;
+        };
+        let args = crate::cli_args::effective_args();
+        if self
+            .providers
+            .as_ref()
+            .is_none_or(|(key, _, _)| *key != args)
+        {
+            self.providers = Some((
+                args.clone(),
+                crate::asset_provider::build_texture_provider(&args),
+                crate::asset_provider::build_material_provider(&args),
+            ));
+        }
+        let (_, textures, materials) = self.providers.as_mut().unwrap();
+        let Some(bytes) = textures.extract_mesh(&path) else {
+            world.remove::<PendingGearImport>(wearer);
+            log::warn!("mid-life gear: missing {path}; item {wearer} wears no mesh for it");
+            return;
+        };
+        let first = world.next_entity_id();
+        let (meshes, root, _) = load_nif_bytes_with_skeleton(
+            world,
+            ctx,
+            &bytes,
+            &path,
+            textures,
+            Some(materials),
+            Some(&bones),
+            None,
+            None,
+        );
+        let last = world.next_entity_id();
+        let Some(root) = root.filter(|_| meshes > 0) else {
+            // A failed import may leave partial entities — hide the whole
+            // range so nothing draws unparented (same posture as the corpse
+            // loader); cell teardown releases them.
+            if let Some(cell) = world.get::<CellRoot>(wearer).map(|cell| cell.0) {
+                crate::cell_loader::stamp_cell_root_range(world, cell, first, last);
+            }
+            for entity in first..last {
+                if world.get::<MeshHandle>(entity).is_some() {
+                    world.insert(entity, NpcAppearanceHidden);
+                }
+            }
+            world.remove::<PendingGearImport>(wearer);
+            log::warn!("mid-life gear: import failed {path}; item stays meshless");
+            return;
+        };
+
+        // Visual-only for the player: strip any bhk-derived collision the
+        // import created, exactly like the body attach does.
+        let parent_target = player_gear_parent(world, wearer);
+        if parent_target.is_some() {
+            for entity in first..last {
+                world.remove::<CollisionShape>(entity);
+                world.remove::<RigidBodyData>(entity);
+            }
+        }
+        super::resumable::parent_part(world, parent_target.unwrap_or(wearer), root);
+        if let Some(cell) = world.get::<CellRoot>(wearer).map(|cell| cell.0) {
+            crate::cell_loader::stamp_cell_root_range(world, cell, first, last);
+        }
+        world.insert(
+            root,
+            NpcEquipmentPart {
+                actor: wearer,
+                inventory_index: inventory_index_for(world, wearer, import.form_id),
+                form_id: import.form_id,
+                intrinsic_skin: false,
+                hidden_biped_mask: 0,
+            },
+        );
+
+        // The player's view gate: in first person the new meshes start
+        // hidden under the same marker `set_player_view` owns, so the next
+        // toggle reveals them with the rest of the body. NPCs (and the
+        // third-person player) wear the import immediately.
+        let first_person = parent_target.is_some()
+            && world
+                .try_resource::<crate::player_body::PlayerCameraView>()
+                .map(|view| *view == crate::player_body::PlayerCameraView::FirstPerson)
+                .unwrap_or(true);
+        if first_person {
+            for entity in first..last {
+                if world.get::<MeshHandle>(entity).is_some() {
+                    world.insert(entity, crate::player_body::HiddenFirstPerson);
+                }
+            }
+        }
+
+        let mut remaining = import.paths;
+        remaining.remove(0);
+        if remaining.is_empty() {
+            world.remove::<PendingGearImport>(wearer);
+        } else {
+            if let Some(pending) = world.get_mut::<PendingGearImport>(wearer) {
+                pending.paths = remaining;
+            }
+            return;
+        }
+        // NIF imports queue DDS data; flush the batch once the last path is
+        // in, so the new mesh has its textures the frame it first draws.
+        if ctx.texture_registry.pending_dds_upload_count() != 0 {
+            if let Some(allocator) = ctx.allocator.as_ref() {
+                if let Err(error) = ctx.texture_registry.flush_pending_uploads(
+                    &ctx.device,
+                    allocator,
+                    &ctx.graphics_queue,
+                    ctx.transfer_pool,
+                    &ctx.transfer_fence,
+                ) {
+                    log::warn!("mid-life gear: texture upload failed: {error:#}");
+                }
+            }
+        }
+        log::info!("mid-life gear: imported {path} for {wearer} (form {:08X})", import.form_id);
     }
 }
 
@@ -617,5 +904,166 @@ mod tests {
         );
         equipment_appearance_system(&mut world, 0.0);
         assert!(world.get::<NpcAppearanceHidden>(gear_a).is_none());
+    }
+
+    // ── P3 mid-life gear import ──
+
+    /// An FNV-shaped ARMO: the worn mesh lives on `common.model_path`
+    /// (the legacy branch of `resolve_armor_meshes`, no ARMA dispatch).
+    fn legacy_armor(form_id: u32, model_path: &str) -> byroredux_plugin::esm::records::ItemRecord {
+        use byroredux_plugin::esm::records::common::CommonItemFields;
+        use byroredux_plugin::esm::records::{ItemKind, ItemRecord};
+        ItemRecord {
+            form_id,
+            common: CommonItemFields {
+                model_path: model_path.to_string(),
+                ..Default::default()
+            },
+            kind: ItemKind::Armor {
+                female_model_path: String::new(),
+                biped_flags: 0x4,
+                dt: 0.0,
+                dr: 0,
+                health: 0,
+                slot_mask: 0x4,
+                armor_rating_x100: 0,
+                armor_type: None,
+                armatures: Vec::new(),
+            },
+        }
+    }
+
+    fn install_index(world: &mut World, form_id: u32, model_path: &str) {
+        let mut index = byroredux_plugin::esm::records::EsmIndex::default();
+        index.game = byroredux_plugin::esm::reader::GameKind::Fallout3NV;
+        index
+            .items
+            .insert(form_id, legacy_armor(form_id, model_path));
+        world.insert_resource(crate::cell_loader::LoadedCellIndex(Arc::new(index)));
+    }
+
+    #[test]
+    fn equipped_item_without_a_root_queues_a_midlife_import() {
+        use super::super::{ActorBodyClass, PendingGearImport};
+        use byroredux_plugin::equip::Gender;
+
+        let mut world = World::new();
+        world.register::<EquipmentEventBatch>();
+        world.register::<PendingGearImport>();
+        world.register::<super::super::ActorBodyClass>();
+        let wearer = world.spawn();
+        world.insert(
+            wearer,
+            ActorBodyClass {
+                gender: Gender::Male,
+                race_form_id: 0xD7,
+            },
+        );
+        world.insert(
+            wearer,
+            EquipmentEventBatch(vec![EquipmentChange {
+                item_form_id: 0xABC,
+                equipped: true,
+            }]),
+        );
+        install_index(&mut world, 0xABC, r"meshes\armor\cuirass.nif");
+
+        equipment_appearance_system(&world, 1.0 / 60.0);
+
+        let pending = world
+            .get::<PendingGearImport>(wearer)
+            .expect("an equip with no spawn-time root must queue its import");
+        assert_eq!(pending.form_id, 0xABC);
+        assert_eq!(pending.paths, vec![r"meshes\armor\cuirass.nif"]);
+    }
+
+    #[test]
+    fn unequip_rooted_and_dead_wearers_never_queue() {
+        use super::super::{ActorBodyClass, PendingGearImport};
+        use byroredux_plugin::equip::Gender;
+
+        let mut world = World::new();
+        world.register::<EquipmentEventBatch>();
+        world.register::<PendingGearImport>();
+        world.register::<super::super::ActorBodyClass>();
+        let wearer = world.spawn();
+        world.insert(
+            wearer,
+            ActorBodyClass {
+                gender: Gender::Male,
+                race_form_id: 0xD7,
+            },
+        );
+        install_index(&mut world, 0xABC, r"meshes\armor\cuirass.nif");
+        // A spawned root for the same form: the reveal path owns this equip.
+        let root = world.spawn();
+        world.insert(
+            root,
+            NpcEquipmentPart {
+                actor: wearer,
+                inventory_index: None,
+                form_id: 0xABC,
+                intrinsic_skin: false,
+                hidden_biped_mask: 0,
+            },
+        );
+        world.insert(
+            wearer,
+            EquipmentEventBatch(vec![EquipmentChange {
+                item_form_id: 0xABC,
+                equipped: true,
+            }]),
+        );
+        equipment_appearance_system(&world, 1.0 / 60.0);
+        assert!(world.get::<PendingGearImport>(wearer).is_none());
+
+        // A dead wearer queues nothing (death reconciliation owns appearance).
+        let mut world = World::new();
+        world.register::<EquipmentEventBatch>();
+        world.register::<PendingGearImport>();
+        world.register::<super::super::ActorBodyClass>();
+        world.register::<Dead>();
+        let corpse = world.spawn();
+        world.insert(corpse, Dead);
+        world.insert(
+            corpse,
+            ActorBodyClass {
+                gender: Gender::Male,
+                race_form_id: 0xD7,
+            },
+        );
+        install_index(&mut world, 0xABC, r"meshes\armor\cuirass.nif");
+        world.insert(
+            corpse,
+            EquipmentEventBatch(vec![EquipmentChange {
+                item_form_id: 0xABC,
+                equipped: true,
+            }]),
+        );
+        equipment_appearance_system(&world, 1.0 / 60.0);
+        assert!(world.get::<PendingGearImport>(corpse).is_none());
+    }
+
+    #[test]
+    fn inventory_index_lookup_maps_the_form_to_its_row() {
+        use super::inventory_index_for;
+
+        let mut world = World::new();
+        let wearer = world.spawn();
+        world.insert(
+            wearer,
+            Inventory {
+                items: vec![
+                    ItemStack::new(0x111, 1),
+                    ItemStack::new(0xABC, 1),
+                ],
+            },
+        );
+        assert_eq!(
+            inventory_index_for(&world, wearer, 0xABC)
+                .map(|index| index.0),
+            Some(1)
+        );
+        assert_eq!(inventory_index_for(&world, wearer, 0x999), None);
     }
 }

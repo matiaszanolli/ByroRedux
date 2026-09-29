@@ -125,6 +125,8 @@ pub(crate) fn build_command_registry() -> CommandRegistry {
     registry.register(PlayerStatusCommand);
     registry.register(PlayerViewCommand);
     registry.register(PlayerBodyCommand);
+    registry.register(InvAddCommand);
+    registry.register(InvEquipCommand);
     registry.register(InventoryStatusCommand);
     registry.register(HardcoreCommand);
     registry.register(SettingsStatusCommand);

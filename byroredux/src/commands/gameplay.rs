@@ -36,6 +36,75 @@ impl ConsoleCommand for HardcoreCommand {
     }
 }
 
+/// `inv.add <form_id> [count]` — append a stack to the player's inventory
+/// through the same append invariants the loot-transfer path keeps (whole
+/// stack or same-base merge; equipment indices stay stable). A debug
+/// frontend for P3 mid-life gear-import driving, never a separate
+/// implementation.
+pub(crate) struct InvAddCommand;
+
+impl ConsoleCommand for InvAddCommand {
+    fn name(&self) -> &str {
+        "inv.add"
+    }
+
+    fn description(&self) -> &str {
+        "Add items to the player inventory (usage: inv.add <form_id> [count=1])"
+    }
+
+    fn execute(&self, world: &World, args: &str) -> CommandOutput {
+        let mut parts = args.split_whitespace();
+        let Some(form_id) = parts
+            .next()
+            .and_then(|raw| u32::from_str_radix(raw.trim_start_matches("0x"), 16).ok())
+        else {
+            return CommandOutput::error("usage: inv.add <form_id_hex> [count=1]");
+        };
+        let count: u32 = parts
+            .next()
+            .and_then(|raw| raw.parse().ok())
+            .unwrap_or(1);
+        if count == 0 {
+            return CommandOutput::error("count must be >= 1");
+        }
+        match crate::inventory::add_item(world, form_id, count) {
+            Some(index) => CommandOutput::line(format!(
+                "inv.add: {count} x {form_id:08X} → row {index}",
+                index = index.0
+            )),
+            None => CommandOutput::error("inv.add: no player inventory to append into"),
+        }
+    }
+}
+
+/// `inv.equip <form_id>` — toggle the equipment state of the player's row
+/// carrying `form_id`. Queues the native menu's own
+/// [`byroredux_debug_ui::InventoryAction::ToggleEquip`], drained through
+/// `apply_action` on the main thread — one canonical mutation path, a
+/// delayed frontend.
+pub(crate) struct InvEquipCommand;
+
+impl ConsoleCommand for InvEquipCommand {
+    fn name(&self) -> &str {
+        "inv.equip"
+    }
+
+    fn description(&self) -> &str {
+        "Toggle the equipment state of a player inventory row (usage: inv.equip <form_id_hex>)"
+    }
+
+    fn execute(&self, world: &World, args: &str) -> CommandOutput {
+        let Some(form_id) = u32::from_str_radix(args.trim().trim_start_matches("0x"), 16).ok()
+        else {
+            return CommandOutput::error("usage: inv.equip <form_id_hex>");
+        };
+        match crate::inventory::queue_equip_by_form_id(world, form_id) {
+            Ok(message) => CommandOutput::line(message),
+            Err(error) => CommandOutput::error(format!("inv.equip: {error}")),
+        }
+    }
+}
+
 /// `inventory.status` — expose the live player loadout used by combat.
 pub(crate) struct InventoryStatusCommand;
 

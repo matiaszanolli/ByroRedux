@@ -1322,6 +1322,38 @@ fails without the walk half. Still open for P3: mid-life gear import for
 newly acquired items and player FaceGen (a graceful data miss — vanilla
 ships no facegeom for the player record).
 
+**Mid-life gear import (2026-09-29):** the last substantive P3 gap is
+closed — equipping a never-worn item now imports and attaches its worn
+mesh at runtime, the corpse-restoration machinery applied to living
+actors. The chain: `equipment_appearance_system` sees an `EquipmentChange`
+whose form id matches no `NpcEquipmentPart` root, resolves the worn mesh
+through the spawn path's own resolver (`resolve_armor_meshes` against the
+retained body class — same gendered/raced ARMA dispatch a spawn would
+have), and queues a `PendingGearImport`; `GearImportLoader` (stepped
+beside the corpse loader, same provider cache and one-NIF-per-frame
+posture) imports it against the actor's retained bone map, parents it
+(the player's gear under the body root, so it turns with the facing yaw
+and `set_player_view`'s restamp covers it), stamps the same
+`NpcEquipmentPart` ownership the spawn path uses — so every later
+unequip/reveal rides the existing paths — and the player's view gate
+decides first-person hiding. Two new spawn-retained components make it
+work: `NpcSkeletonBones` (the job's bone map, which only corpses retained
+before) and `ActorBodyClass` (gender + race), both mirrored onto the
+player capsule, the wearer every equip event names. Two canonical debug
+doors drive it (`inv.add <form_id> [count]`, `inv.equip <form_id>` — the
+latter queues the native menu's own `ToggleEquip` through `apply_action`,
+never a separate mutation path). Verified live on Skyrim SE: add + equip
+`00013921` queued the import, imported its gendered ARMA mesh against the
+living skeleton, drew it on the body in third person, and the
+unequip → re-equip cycle hid and revealed it through the standard
+appearance paths. Deliberately open halves: biped-coverage composition
+(the imported piece doesn't yet displace a mid-life skin beneath it —
+the spawn path's displacement logic stays death-restoration's), weapon
+models in hand, and NPC wearers are untested live (the path is
+actor-generic; only the player route was driven). Remaining P3 scope:
+player FaceGen (a graceful data miss — vanilla ships no facegeom for the
+player record).
+
 ### P4 — Authored objective and dialogue loop
 
 Goal: a small piece of shipping content can be followed and completed.
