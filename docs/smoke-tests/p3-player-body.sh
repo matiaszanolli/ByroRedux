@@ -6,8 +6,9 @@
 # shows and hides them in a live Vulkan run.
 #
 #   body:      player.body reports an assembled root with meshes, a skeleton
-#              target, and NpcEquipmentPart ownership retargeted to the
-#              player entity (what equipment_appearance_system matches)
+#              target, NpcEquipmentPart ownership retargeted to the
+#              player entity (what equipment_appearance_system matches),
+#              and the capsule's walk-clip wiring (anim=walk)
 #   view:      player.view third reveals the meshes (hidden_first_person=0)
 #              and player.view first hides them again; a third-person
 #              screenshot is retained as visual evidence
@@ -90,9 +91,13 @@ echo "smoke[p3-player-body]: $FIXTURE_LABEL -- player body attach + view toggle"
 
 # P1 spawn pose: Character mode at the Bannered Mare threshold (the p3-hud
 # gate's pose). --player forces the capsule; the body attach hangs off it.
+# BYRO_DEBUG_SERVER=1 is the release binary's explicit debug-server opt-in
+# (63c0aee3b): without it the held engine binds no port and byro-dbg can
+# never attach. RUST_LOG must keep byroredux at info — the attach-log wait
+# below greps a log::info! line, which a bare "error" filter would hide.
 cd "$SMOKE_DATA"
-env BYRO_DEBUG_PORT="$PORT" \
-    RUST_LOG="error" \
+env BYRO_DEBUG_PORT="$PORT" BYRO_DEBUG_SERVER=1 \
+    RUST_LOG="error,byroredux=info" \
     xvfb-run -a "$ENGINE_BIN" \
     "${SMOKE_ENGINE_ARGS[@]}" \
     --cell WhiterunBanneredMare \
@@ -124,6 +129,11 @@ grep -Eq "parts=\[.+[0-9A-F]{8}" <<<"$body" \
     || fail "player.body reports no NpcEquipmentPart ownership stamps (got: $body)"
 grep -Fq "hidden_first_person=$mesh_count" <<<"$body" \
     || fail "the body must start hidden in first person (got: $body)"
+# Third-person locomotion: the capsule must carry the walk clip (idle too on
+# KF games — Skyrim's standing shape is walk-only), or the body moves rigid.
+grep -Fq "anim=walk(" <<<"$body" \
+    || fail "player.body reports no walk clip on the capsule — third-person \
+locomotion would be rigid (got: $body)"
 
 status="$(debug_command "player.status")"
 player_id="$(grep -o 'player=[0-9]*' <<<"$status" | head -1 | cut -d= -f2)"

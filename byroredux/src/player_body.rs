@@ -24,13 +24,17 @@
 //! the body is hidden while [`PlayerCameraView::FirstPerson`] (the default)
 //! and revealed in third person (V key / `player.view`). Body yaw follows
 //! the same look accumulator the camera uses, so third person shows the
-//! body's back. Two halves stay open and are tracked in the slice doc: no
-//! third-person walk/idle animation yet (the body moves rigid with the
-//! capsule), and no new-gear import for mid-life equips (spawn-time gear
-//! only, same as the NPC re-equip reconcile's scope).
+//! body's back. Locomotion animation (`attach_player_locomotion_animation`)
+//! wires the same motion-based walk/idle playback every placed NPC takes,
+//! driven off the capsule. Two halves stay open and are tracked in the
+//! slice doc: no new-gear import for mid-life equips (spawn-time gear only,
+//! same as the NPC re-equip reconcile's scope), and player FaceGen (vanilla
+//! ships no facegeom for the player record — the graceful miss leaves the
+//! race-default head).
 
 use std::collections::HashSet;
 
+use byroredux_core::animation::{AnimationClipRegistry, AnimationPlayer};
 use byroredux_core::ecs::components::collision::{CollisionShape, RigidBodyData};
 use byroredux_core::ecs::resource::Resource;
 use byroredux_core::ecs::storage::EntityId;
@@ -38,8 +42,11 @@ use byroredux_core::ecs::{
     Children, Component, GlobalTransform, Parent, SparseSetStorage, Transform, World,
 };
 use byroredux_core::math::{Quat, Vec3};
+use byroredux_plugin::equip::Gender;
+use byroredux_plugin::esm::reader::GameKind;
 use byroredux_renderer::VulkanContext;
 
+use crate::asset_provider::TextureProvider;
 use crate::cell_loader::{FrameTimeBudget, LoadedCellIndex, LoadedPluginSet};
 use crate::components::InputState;
 use crate::helpers::add_child;
@@ -188,8 +195,9 @@ pub(crate) fn attach_player_body(
         ctx,
         &tex_provider,
         Some(&mut mat_provider),
-        // No idle pool: the player body spawns unanimated (see the finalize
-        // skip in resumable.rs).
+        // No idle pool: the job attaches no idle for the player body —
+        // `attach_player_locomotion_animation` below resolves it (see the
+        // finalize skip in resumable.rs).
         &[],
         &index,
         &mut budget,
@@ -206,6 +214,15 @@ pub(crate) fn attach_player_body(
     };
 
     attach_assembled_root(world, player, root, feet_offset);
+    attach_player_locomotion_animation(
+        world,
+        player,
+        root,
+        game,
+        &npc,
+        race.map(|race| race.race_flags),
+        &tex_provider,
+    );
     let meshes = mesh_entities_under(world, root);
     let mesh_count = meshes.len();
     let part_count = world
@@ -292,11 +309,117 @@ pub(crate) fn attach_assembled_root(
     }
 }
 
+/// P3 — third-person walk/idle animation for the assembled body.
+///
+/// The body finalizes with [`crate::components::AnimationTarget`] (its
+/// skeleton binding) but deliberately no playback — the job's
+/// `player_body` variant strips walk/idle clips. This attaches the same
+/// motion-based playback every placed NPC takes, wired to the *capsule*:
+/// `npc_walk_animation_system` watches a `WalkAnimation` carrier's own
+/// `Transform` for per-tick XZ displacement, and the only entity whose
+/// transform the character controller moves is the capsule — the body
+/// root hangs under it at a fixed feet offset, so its local transform
+/// never changes. The capsule therefore gets a second
+/// [`crate::components::AnimationTarget`] (pointing at the body's
+/// skeleton, so a walk take can bind its player), the optional idle
+/// [`AnimationPlayer`], and the [`crate::components::WalkAnimation`].
+///
+/// Per-game shape matches NPCs exactly: KF games (Oblivion/FO3/FNV) get
+/// the shared `mtidle.kf` idle player plus the gendered humanoid walk
+/// clip; Skyrim+ has no ambient HKX idle, so it gets the walk clip only
+/// and freezes into the standing shape when the capsule stops. Clip
+/// resolution reuses the NPC spawn path's loaders (`load_idle_clip`, the
+/// registry-warmed `humanoid_walk_kf_path`, `SkyrimWalkClip`) — both
+/// install at cell load, which precedes this attach at boot, so neither
+/// pays archive I/O here.
+///
+/// Deliberately no [`crate::components::WalkSpeed`]: that component feeds
+/// the AI locomotion procedures' stride matching, and the capsule
+/// controller owns player movement. Playback is view-independent: first
+/// person hides the body's meshes (`HiddenFirstPerson` also skips their
+/// palette builds), so a view toggle mid-stride reveals a body already in
+/// stride rather than animating from bind pose on the toggle frame.
+fn attach_player_locomotion_animation(
+    world: &mut World,
+    player: EntityId,
+    root: EntityId,
+    game: GameKind,
+    npc: &byroredux_plugin::esm::records::actor::NpcRecord,
+    race_flags: Option<u32>,
+    tex_provider: &TextureProvider,
+) {
+    let Some(skeleton) = world
+        .get::<crate::components::AnimationTarget>(root)
+        .map(|target| target.skeleton_root)
+    else {
+        log::debug!("Player body: assembled root has no skeleton — staying unanimated");
+        return;
+    };
+    world.insert(
+        player,
+        crate::components::AnimationTarget {
+            skeleton_root: skeleton,
+            consumed_idle_serial: 0,
+        },
+    );
+
+    // Idle: the KF games' shared standing idle, desynced off the player
+    // record like every NPC's (Skyrim+ resolves None here — its ambient
+    // actors also spawn with no player at all, and the walk system's stop
+    // path removes the player it inserted, restoring the standing shape).
+    if let Some(handle) = crate::npc_spawn::load_idle_clip(world, tex_provider, game) {
+        let duration = world
+            .resource::<AnimationClipRegistry>()
+            .get(handle)
+            .map(|clip| clip.duration)
+            .unwrap_or(0.0);
+        let (start_time, speed) = crate::npc_spawn::idle_desync(npc.form_id, duration);
+        let mut idle = AnimationPlayer::new(handle).with_root(skeleton);
+        idle.local_time = start_time;
+        idle.prev_time = start_time;
+        idle.speed = speed;
+        world.insert(player, idle);
+    }
+
+    // Walk: the same resolution ladder the NPC finalize uses — KF games
+    // the per-body-class clip (gender from ACBS, the FNV-only child race
+    // flag, exactly as `prepare_runtime_state` derives them), Skyrim+ the
+    // decoded HKX walk.
+    let gender = Gender::from_acbs_flags(npc.acbs_flags);
+    let is_child = matches!(game, GameKind::Fallout3NV)
+        && race_flags.is_some_and(|flags| flags & 0x04 != 0);
+    let walk_handle = if game.has_kf_animations() {
+        crate::npc_spawn::humanoid_walk_kf_path(game, gender, is_child)
+            .and_then(|path| world.resource::<AnimationClipRegistry>().get_by_path(path))
+    } else {
+        world
+            .try_resource::<crate::components::SkyrimWalkClip>()
+            .and_then(|clip| clip.0)
+    };
+    let Some(walk_handle) = walk_handle else {
+        log::debug!("Player body: no walk clip resolved — body moves rigid");
+        return;
+    };
+    let last_pos = world
+        .get::<Transform>(player)
+        .map(|transform| transform.translation)
+        .unwrap_or_default();
+    world.insert(
+        player,
+        crate::components::WalkAnimation {
+            walk_handle,
+            walking: false,
+            last_pos,
+            captured: None,
+            transition_secs: 0.0,
+        },
+    );
+}
+
 /// Every entity strictly under `root`, cycle-safe. Unlike
 /// `mesh_entities_under` this walks all entities (part roots are not mesh
 /// entities themselves).
-fn descendant_entities(world: &World, root: EntityId) -> Vec<EntityId> {
-    let mut pending = vec![root];
+fn descendant_entities(world: &World, root: EntityId) -> Vec<EntityId> {    let mut pending = vec![root];
     let mut seen = HashSet::new();
     let mut descendants = Vec::new();
     while let Some(entity) = pending.pop() {
@@ -463,16 +586,36 @@ pub(crate) fn status_line(world: &World) -> String {
         .get::<crate::components::AnimationTarget>(root)
         .map(|target| format!("skeleton={}", target.skeleton_root))
         .unwrap_or_else(|| "skeleton=none".to_string());
+    // The locomotion-playback half lives on the player capsule (the watched
+    // entity), not on the body root — report both handles so a smoke can
+    // gate the third-person walk/idle wiring, not just the attach.
+    let anim = player
+        .map(|player| {
+            let walk = world
+                .get::<crate::components::WalkAnimation>(player)
+                .map(|walk| walk.walk_handle);
+            let idle = world
+                .get::<AnimationPlayer>(player)
+                .map(|idle| idle.clip_handle);
+            match (walk, idle) {
+                (Some(walk), Some(idle)) => format!("anim=walk({walk})+idle({idle})"),
+                (Some(walk), None) => format!("anim=walk({walk})"),
+                (None, Some(idle)) => format!("anim=idle({idle})"),
+                (None, None) => "anim=none".to_string(),
+            }
+        })
+        .unwrap_or_else(|| "anim=none".to_string());
     let view = world
         .try_resource::<PlayerCameraView>()
         .map(|view| format!("{:?}", *view))
         .unwrap_or_else(|| "unset".to_string());
     format!(
-        "player.body: root={root} meshes={} hidden_first_person={} view={} {} parts=[{}]",
+        "player.body: root={root} meshes={} hidden_first_person={} view={} {} {} parts=[{}]",
         meshes.len(),
         hidden,
         view,
         skeleton,
+        anim,
         parts.join(", "),
     )
 }
@@ -748,5 +891,213 @@ mod tests {
             world.get::<Transform>(root).unwrap().rotation,
             Quat::IDENTITY
         );
+    }
+
+    // ── attach_player_locomotion_animation ──
+
+    /// The Skyrim player record shape: male (ACBS gender bit clear),
+    /// `NPC_ 0x7` — the record `attach_to_player` resolves for the body.
+    fn player_npc() -> byroredux_plugin::esm::records::actor::NpcRecord {
+        byroredux_plugin::esm::records::actor::NpcRecord {
+            form_id: 0x7,
+            acbs_flags: 0,
+            ..Default::default()
+        }
+    }
+
+    fn stub_clip(
+        name: &str,
+    ) -> byroredux_core::animation::AnimationClip {
+        byroredux_core::animation::AnimationClip {
+            name: name.into(),
+            duration: 1.0,
+            cycle_type: byroredux_core::animation::CycleType::Loop,
+            frequency: 1.0,
+            phase: 0.0,
+            weight: 1.0,
+            accum_root_name: None,
+            channels: rustc_hash::FxHashMap::default(),
+            float_channels: Vec::new(),
+            color_channels: Vec::new(),
+            bool_channels: Vec::new(),
+            texture_flip_channels: Vec::new(),
+            text_keys: Vec::new(),
+        }
+    }
+
+    fn register_animation_storages(world: &mut World) {
+        world.register::<crate::components::AnimationTarget>();
+        world.register::<crate::components::WalkAnimation>();
+        world.register::<AnimationPlayer>();
+        world.register::<Transform>();
+    }
+
+    /// A body root carrying the finalize shape: `AnimationTarget` at the
+    /// assembled skeleton. The capsule gets a Transform whose translation
+    /// the walk detector must baseline.
+    fn spawn_animated_body(world: &mut World) -> (EntityId, EntityId, EntityId) {
+        let player = world.spawn();
+        world.insert(
+            player,
+            Transform::new(Vec3::new(11.0, 116.0, -7.0), Quat::IDENTITY, 1.0),
+        );
+        let skeleton = world.spawn();
+        let root = world.spawn();
+        world.insert(
+            root,
+            crate::components::AnimationTarget {
+                skeleton_root: skeleton,
+                consumed_idle_serial: 0,
+            },
+        );
+        (player, skeleton, root)
+    }
+
+    #[test]
+    fn skyrim_capsule_gains_target_and_walk_from_the_clip_resource() {
+        let mut world = World::new();
+        register_animation_storages(&mut world);
+        world.insert_resource(crate::components::SkyrimWalkClip(Some(9)));
+        let (player, skeleton, root) = spawn_animated_body(&mut world);
+        let provider = crate::asset_provider::build_texture_provider(&["byroredux".into()]);
+
+        attach_player_locomotion_animation(
+            &mut world,
+            player,
+            root,
+            GameKind::Skyrim,
+            &player_npc(),
+            None,
+            &provider,
+        );
+
+        assert_eq!(
+            world
+                .get::<crate::components::AnimationTarget>(player)
+                .map(|target| target.skeleton_root),
+            Some(skeleton),
+            "the walk take binds its player via AnimationTarget on the watched \
+             entity, so the capsule needs its own target at the body's skeleton"
+        );
+        {
+            let walk = world
+                .get::<crate::components::WalkAnimation>(player)
+                .expect("the Skyrim walk clip resource resolves at cell load, before this attach");
+            assert_eq!(walk.walk_handle, 9);
+            assert!(!walk.walking);
+            assert_eq!(
+                walk.last_pos,
+                Vec3::new(11.0, 116.0, -7.0),
+                "the detector baselines the capsule's current translation"
+            );
+        }
+        assert!(
+            world.get::<AnimationPlayer>(player).is_none(),
+            "Skyrim+ has no ambient HKX idle: the standing shape means no player \
+             until the walk system inserts one"
+        );
+        assert!(
+            world.get::<crate::components::WalkSpeed>(player).is_none(),
+            "WalkSpeed feeds the AI locomotion procedures' stride; the capsule \
+             controller owns player movement and must not grow one"
+        );
+        // The smoke gate reads the wiring off `player.body` — the anim field
+        // must reflect the capsule's playback components, not just the attach.
+        world.insert_resource(crate::systems::PlayerEntity(Some(player)));
+        world.insert_resource(PlayerBodyRootEntity(Some(root)));
+        let line = status_line(&world);
+        assert!(
+            line.contains("anim=walk(9)"),
+            "status_line must report the capsule's walk clip for the smoke gate: {line}"
+        );
+    }
+
+    #[test]
+    fn kf_capsule_resolves_gendered_walk_and_shared_idle_from_the_registry() {
+        let male_path = r"meshes\characters\_male\locomotion\male\mtforward.kf";
+        let female_path = r"meshes\characters\_male\locomotion\female\mtforward.kf";
+        let idle_path = r"meshes\characters\_male\locomotion\mtidle.kf";
+        let mut world = World::new();
+        register_animation_storages(&mut world);
+        let mut registry = AnimationClipRegistry::new();
+        let male_handle = registry.get_or_insert_by_path(male_path.to_string(), || stub_clip("m"));
+        let female_handle =
+            registry.get_or_insert_by_path(female_path.to_string(), || stub_clip("f"));
+        let idle_handle = registry.get_or_insert_by_path(idle_path.to_string(), || stub_clip("i"));
+        world.insert_resource(registry);
+        let (player, skeleton, root) = spawn_animated_body(&mut world);
+        // The registry fast path short-circuits before any archive access,
+        // so the empty provider never matters.
+        let provider = crate::asset_provider::build_texture_provider(&["byroredux".into()]);
+
+        attach_player_locomotion_animation(
+            &mut world,
+            player,
+            root,
+            GameKind::Fallout3NV,
+            &player_npc(),
+            None,
+            &provider,
+        );
+
+        assert_eq!(
+            world
+                .get::<crate::components::WalkAnimation>(player)
+                .map(|walk| walk.walk_handle),
+            Some(male_handle),
+            "the male capsule takes the male locomotion variant, not the female one"
+        );
+        assert_ne!(male_handle, female_handle);
+        let idle = world
+            .get::<AnimationPlayer>(player)
+            .expect("KF games get the shared standing idle");
+        assert_eq!(idle.clip_handle, idle_handle);
+        assert_eq!(idle.root_entity, Some(skeleton));
+        assert!(
+            idle.playing && (0.92..=1.08).contains(&idle.speed),
+            "the idle plays desynced like every NPC's, not frozen at load"
+        );
+    }
+
+    #[test]
+    fn no_skeleton_or_no_clip_leaves_the_capsule_unanimated() {
+        // Body root without AnimationTarget — the assembly failed to give a
+        // skeleton — must not insert anything on the capsule.
+        let mut world = World::new();
+        register_animation_storages(&mut world);
+        world.insert_resource(crate::components::SkyrimWalkClip(Some(9)));
+        let player = world.spawn();
+        world.insert(player, Transform::new(Vec3::ZERO, Quat::IDENTITY, 1.0));
+        let bare_root = world.spawn();
+        let provider = crate::asset_provider::build_texture_provider(&["byroredux".into()]);
+        attach_player_locomotion_animation(
+            &mut world,
+            player,
+            bare_root,
+            GameKind::Skyrim,
+            &player_npc(),
+            None,
+            &provider,
+        );
+        assert!(world.get::<crate::components::AnimationTarget>(player).is_none());
+        assert!(world.get::<crate::components::WalkAnimation>(player).is_none());
+
+        // Skeleton present but the walk resource empty (decode failed or no
+        // animations archive) — the target lands, the walk does not.
+        let mut world = World::new();
+        register_animation_storages(&mut world);
+        world.insert_resource(crate::components::SkyrimWalkClip(None));
+        let (player, _skeleton, root) = spawn_animated_body(&mut world);
+        attach_player_locomotion_animation(
+            &mut world,
+            player,
+            root,
+            GameKind::Skyrim,
+            &player_npc(),
+            None,
+            &provider,
+        );
+        assert!(world.get::<crate::components::AnimationTarget>(player).is_some());
+        assert!(world.get::<crate::components::WalkAnimation>(player).is_none());
     }
 }

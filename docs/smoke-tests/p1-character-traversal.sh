@@ -252,7 +252,7 @@ echo "  smoke[p1-character-traversal]: $FIXTURE_LABEL -- $P1_HEADLINE"
 echo "================================================================"
 
 cd "$ROOT_DIR"
-env BYRO_DEBUG_PORT="$PORT" \
+env BYRO_DEBUG_PORT="$PORT" BYRO_DEBUG_SERVER=1 \
     RUST_LOG="error,byroredux::interaction=info,byroredux::cell_loader::transition=info,byroredux::app_step=info,byroredux::loading_screen=info" \
     "$ENGINE_BIN" \
     "${SMOKE_ENGINE_ARGS[@]}" \

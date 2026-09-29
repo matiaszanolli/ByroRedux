@@ -56,7 +56,7 @@ press_log="$LOG_DIR/press.debug.log"
 arrival_log="$LOG_DIR/arrival.debug.log"
 
 cd "$ROOT_DIR"
-BYRO_DEBUG_PORT="$PORT" \
+BYRO_DEBUG_PORT="$PORT" BYRO_DEBUG_SERVER=1 \
 RUST_LOG="warn,byroredux::interaction=info,byroredux::cell_loader::transition=info,byroredux::app_step=info" \
 cargo run --release --quiet -- \
     "${SMOKE_ENGINE_ARGS[@]}" \

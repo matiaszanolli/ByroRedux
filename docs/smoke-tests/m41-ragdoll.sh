@@ -54,7 +54,7 @@ echo "  smoke[ragdoll]: launching FNV $CELL in background"
 echo "═══════════════════════════════════════════════════════════════"
 
 # RUST_LOG=info so the loader's `Attached RagdollTemplate …` line lands.
-RUST_LOG="${RUST_LOG:-byroredux=info}" cargo run --release --quiet -- \
+BYRO_DEBUG_SERVER=1 RUST_LOG="${RUST_LOG:-byroredux=info}" cargo run --release --quiet -- \
     --esm "$FNV_DATA/FalloutNV.esm" \
     --cell "$CELL" \
     --bsa "$FNV_DATA/Fallout - Meshes.bsa" \

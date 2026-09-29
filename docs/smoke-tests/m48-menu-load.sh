@@ -64,6 +64,7 @@ FO4_DATA="${BYROREDUX_FO4_DATA:-/mnt/data/SteamLibrary/steamapps/common/Fallout 
 # told to use. Exporting makes the reported value the one the children get.
 PORT="${BYRO_DEBUG_PORT:-9876}"
 export BYRO_DEBUG_PORT="$PORT"
+export BYRO_DEBUG_SERVER=1  # release debug-server opt-in (63c0aee3b)
 BENCH_FRAMES="${BYROREDUX_SMOKE_FRAMES:-30}"
 
 LOG_DIR="$(mktemp -d)"

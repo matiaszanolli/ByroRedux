@@ -1238,9 +1238,10 @@ fn advance_runtime_unit(
                 // (rather than at prepare) because this is where the
                 // `TextureProvider` is in hand.
                 let idle_handle = if state.player_body {
-                    // The player body spawns unanimated: the attach passes no
-                    // idle pool, and first-person keeps the body hidden until
-                    // a third-person animation pass lands.
+                    // The job attaches no idle pool for the player body —
+                    // `player_body::attach_player_locomotion_animation`
+                    // resolves the idle itself (and first-person keeps the
+                    // body's meshes hidden either way).
                     None
                 } else if let Some(path) = state.idle_kf_path.as_deref() {
                     let handle = load_kf_clip_by_path(world, tex_provider, path);
@@ -1280,10 +1281,11 @@ fn advance_runtime_unit(
             // stride (accum-root travel per loop) becomes the actor's
             // `WalkSpeed`, so the step length matches the animation.
             let walk_handle = if state.player_body {
-                // No `WalkAnimation`/`WalkSpeed` on the player body: the
-                // capsule controller drives movement, and `npc_walk_animation_system`
-                // would otherwise replay the humanoid walk take on a first-person
-                // body nobody can see.
+                // No `WalkAnimation`/`WalkSpeed` from the job: the capsule
+                // controller drives movement, and the walk system watches
+                // the entity it is attached to — which must be the capsule,
+                // not this body root. `player_body::` attaches both beside
+                // the assembled root after the job completes.
                 None
             } else if let Some(path) = state.walk_kf_path.as_deref() {
                 load_kf_clip_by_path(world, tex_provider, path)
@@ -2063,8 +2065,9 @@ fn finalize_prebaked(
         // M42.10/M42.11 — prebaked-path actors (Skyrim+) resolve
         // the same decoded HKX walk clip the runtime path uses,
         // with the same authored-stride speed derivation. The player
-        // body takes neither: its capsule drives movement and the body
-        // is hidden in first person (see the runtime Finalize twin).
+        // body takes neither from the job — `player_body::` attaches
+        // its walk/idle playback beside the assembled root (see the
+        // runtime Finalize twin).
         if !state.player_body {
             if let Some(handle) = world
                 .try_resource::<crate::components::SkyrimWalkClip>()

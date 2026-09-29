@@ -156,7 +156,7 @@ launch_held_engine() {
     local stderr_log="$1"
     shift
     current_stderr="$stderr_log"
-    env BYRO_DEBUG_PORT="$PORT" RUST_LOG="${BYROREDUX_SMOKE_LOG:-error},byroredux::save_io=info" \
+    env BYRO_DEBUG_PORT="$PORT" BYRO_DEBUG_SERVER=1 RUST_LOG="${BYROREDUX_SMOKE_LOG:-error},byroredux::save_io=info" \
         BYROREDUX_SAVE_DIR="$save_dir" \
         "$ENGINE_BIN" \
         "${SMOKE_ENGINE_ARGS[@]}" \

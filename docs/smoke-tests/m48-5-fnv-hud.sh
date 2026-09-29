@@ -48,6 +48,7 @@ done
 [ -x "$BIN_DIR/byroredux" ] || { echo "FAIL: $BIN_DIR/byroredux not built"; exit 1; }
 
 export BYRO_DEBUG_PORT=$PORT
+export BYRO_DEBUG_SERVER=1  # release debug-server opt-in (63c0aee3b)
 cd "$DATA"
 xvfb-run -a "$BIN_DIR/byroredux" \
     --master "FalloutNV.esm" --esm "HonestHearts.esm" --cell GSDocMitchellHouse \

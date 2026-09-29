@@ -48,7 +48,7 @@ wait_log() {
 launch() {
     local phase="$1"
     shift
-    env BYRO_DEBUG_PORT="$PORT" BYROREDUX_SAVE_DIR="$LOG_DIR/saves" \
+    env BYRO_DEBUG_PORT="$PORT" BYRO_DEBUG_SERVER=1 BYROREDUX_SAVE_DIR="$LOG_DIR/saves" \
         RUST_LOG=warn,byroredux::save_io=info,byroredux::loading_screen=info \
         target/release/byroredux "${SMOKE_ENGINE_ARGS[@]}" \
         --cell "$P1_CELL" --player --radius 1 \

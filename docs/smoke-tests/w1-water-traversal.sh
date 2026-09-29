@@ -253,7 +253,7 @@ echo "  smoke[w1-water-traversal]: $FIXTURE_LABEL -- $W1_HEADLINE"
 echo "================================================================"
 
 cd "$ROOT_DIR"
-env BYRO_DEBUG_PORT="$PORT" \
+env BYRO_DEBUG_PORT="$PORT" BYRO_DEBUG_SERVER=1 \
     RUST_LOG="error,byroredux::systems::water=info,byroredux::app_step=info,byroredux::streaming=info" \
     "$ENGINE_BIN" \
     "${SMOKE_ENGINE_ARGS[@]}" \

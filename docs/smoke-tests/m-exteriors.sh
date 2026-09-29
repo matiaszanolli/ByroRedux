@@ -290,7 +290,7 @@ run_profile () {
     echo "exterior-smoke[$label]: launching $worldspace $grid (artifacts: $profile_dir)"
     (
         cd "$data_dir"
-        env BYRO_DEBUG_PORT="$PORT" \
+        env BYRO_DEBUG_PORT="$PORT" BYRO_DEBUG_SERVER=1 \
             RUST_LOG="${BYROREDUX_EXTERIOR_RUST_LOG:-info}" \
             "$ENGINE_BIN" "$@" "${bench_args[@]}"
     ) > "$stdout_log" 2> "$stderr_log" &

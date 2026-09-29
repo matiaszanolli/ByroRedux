@@ -1289,11 +1289,38 @@ yet) plus body yaw following the look accumulator orient it. Gate:
 Mare Character mode asserts the attach log, meshes + skeleton + part
 ownership via the new `player.body` command, no self-targeting in
 `interaction.status`, the first→third→first view toggle, and retains a
-third-person capture. Still open: third-person walk/idle animation (the
-body moves rigid with the capsule), mid-life gear import for newly acquired
-items (shared with the NPC re-equip scope note above), and player FaceGen
-(vanilla ships no facegeom for the player record — the graceful miss leaves
-the race-default head).
+third-person capture. Still open at that checkpoint: third-person walk/idle
+animation (the body moves rigid with the capsule), mid-life gear import for
+newly acquired items (shared with the NPC re-equip scope note above), and
+player FaceGen (vanilla ships no facegeom for the player record — the
+graceful miss leaves the race-default head).
+
+**Third-person walk/idle animation (2026-09-29):** the rigid-body half is
+closed — `player_body::attach_player_locomotion_animation` (the tail of
+`attach_player_body`) gives the capsule the same motion-based playback every
+placed NPC takes. The placement is the load-bearing decision:
+`npc_walk_animation_system` watches a `WalkAnimation` carrier's own
+`Transform` for per-tick XZ displacement, and the only entity the character
+controller moves is the capsule (the body root hangs under it at a fixed
+feet offset, so its local transform never changes) — so the capsule carries
+a second `AnimationTarget` (at the body's assembled skeleton, letting a walk
+take bind its player), the optional idle `AnimationPlayer`, and the
+`WalkAnimation`; the spawn job's `player_body` finalize skips are untouched.
+Per-game shape matches NPCs exactly: KF games (Oblivion/FO3/FNV) resolve the
+shared `mtidle.kf` idle (desynced off the player record) plus the gendered
+`mtforward.kf` walk through the NPC path's registry-warmed loaders (the FNV
+child race flag included), while Skyrim+ resolves `SkyrimWalkClip` —
+installed at cell load, which precedes the attach at boot — and freezes into
+the standing shape when stationary, exactly like its ambient NPCs.
+Deliberately no `WalkSpeed` (it feeds the AI locomotion procedures' stride;
+the capsule controller owns player movement), and playback is
+view-independent: first person hides the meshes (`HiddenFirstPerson`
+already skips their palette builds), so a mid-stride view toggle reveals a
+body already in stride. `player.body` now reports `anim=walk(…)` (+`idle(…)`
+on KF games, `anim=none` when neither resolved), and `p3-player-body.sh`
+fails without the walk half. Still open for P3: mid-life gear import for
+newly acquired items and player FaceGen (a graceful data miss — vanilla
+ships no facegeom for the player record).
 
 ### P4 — Authored objective and dialogue loop
 

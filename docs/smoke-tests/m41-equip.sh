@@ -46,6 +46,9 @@ FO4_DATA="${BYROREDUX_FO4_DATA:-/mnt/data/SteamLibrary/steamapps/common/Fallout 
 # Debug server port — matches the CLI default. Override if the engine
 # is launched with a custom `BYRO_DEBUG_PORT`.
 PORT="${BYRO_DEBUG_PORT:-9876}"
+# Release binaries gate the debug server behind this opt-in (63c0aee3b);
+# the engine launch below inherits the environment.
+export BYRO_DEBUG_SERVER=1
 
 # Bench window. 30 frames is enough for cell-load to settle + a few
 # steady-state frames; the post-bench hold lets `byro-dbg` connect.

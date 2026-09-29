@@ -104,7 +104,10 @@ echo "smoke[p3-hud]: $FIXTURE_LABEL -- native vitals + objective HUD"
 # Launch from the game data dir (like the m48 HUD smokes) so the engine's
 # exit-time default save lands beside the game files instead of in the repo.
 cd "$SMOKE_DATA"
-env BYRO_DEBUG_PORT="$PORT" \
+# BYRO_DEBUG_SERVER=1: the release binary's explicit debug-server opt-in
+# (63c0aee3b) — without it the held engine binds no port and byro-dbg
+# can never attach.
+env BYRO_DEBUG_PORT="$PORT" BYRO_DEBUG_SERVER=1 \
     RUST_LOG="error" \
     xvfb-run -a "$ENGINE_BIN" \
     "${SMOKE_ENGINE_ARGS[@]}" \
