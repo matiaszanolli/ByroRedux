@@ -339,12 +339,11 @@ pub(crate) fn run() -> Result<()> {
     // Euler→Y-up conversion. See `cell_loader::euler_zup_to_quat_yup_refr`
     // doc for what each mode means. Used to triage the "large statics
     // misplaced + 90° rotated" symptom by screenshotting each candidate
-    // on a known-good cell. Defaults to 0 (current shipping behavior).
-    if let Some(idx) = args.iter().position(|a| a == "--rotation-mode") {
-        if let Some(mode) = args.get(idx + 1).and_then(|v| v.parse::<u8>().ok()) {
-            crate::cell_loader::set_refr_rotation_mode_diag(mode.min(3));
-            log::info!("--rotation-mode {} active", mode.min(3));
-        }
+    // on a known-good cell. Defaults to 1 (current shipping behavior); an
+    // out-of-range value falls back to 1 in the library (#4126).
+    if let Some(mode) = cli::rotation_mode_arg(&args) {
+        crate::cell_loader::set_refr_rotation_mode_diag(mode);
+        log::info!("--rotation-mode {} active", mode);
     }
 
     // Set up logging. --debug forces debug level.

@@ -180,10 +180,12 @@ through a runtime A/B dispatcher in
 [`byroredux/src/cell_loader/euler.rs`](../../byroredux/src/cell_loader/euler.rs)
 (`euler_zup_to_quat_yup_refr`) so an operator can re-triage candidate
 conventions without rewiring the engine. `--rotation-mode N` (default `1`,
-wired in `byroredux/src/boot/mod.rs`); any value outside `0..=3` is passed
-through unclamped to `euler_zup_to_quat_yup_mode`'s own `_ =>` arm, which
-falls back to the safe shipping formula (mode 1) rather than silently
-producing garbage placement (`#4126`):
+parsed by `rotation_mode_arg` in `byroredux/src/boot/cli.rs`); any value
+outside `0..=3` is passed through unclamped to `euler_zup_to_quat_yup_mode`'s
+own `_ =>` arm, which falls back to the safe shipping formula (mode 1) rather
+than silently producing garbage placement. Until `#4126` the CLI pre-clamped
+with `.min(3)`, turning an out-of-range value into diagnostic mode 3; the
+pass-through is pinned by `an_out_of_range_mode_reaches_the_library_fallback`:
 
 | Mode | Convention | Z-up product | Status |
 |------|------------|--------------|--------|

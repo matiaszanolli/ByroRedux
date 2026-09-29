@@ -443,6 +443,18 @@ pub(super) fn expand_game_profile_args(mut args: Vec<String>) -> Vec<String> {
     args
 }
 
+/// `--rotation-mode N` — the REFR Euler→Y-up diagnostic switch (see
+/// `cell_loader::euler_zup_to_quat_yup_refr` for what each mode means).
+///
+/// Returned **unclamped** (#4126): an out-of-range value must reach
+/// `euler_zup_to_quat_yup_mode`'s own `_ =>` arm, which falls back to the
+/// shipping formula (mode 1). A `.min(3)` here used to turn e.g. `4` into
+/// mode 3 — one of the explicitly-wrong CCW diagnostic conventions.
+pub(super) fn rotation_mode_arg(args: &[String]) -> Option<u8> {
+    let idx = args.iter().position(|a| a == "--rotation-mode")?;
+    args.get(idx + 1)?.parse::<u8>().ok()
+}
+
 /// Remove every `<flag> <value>` pair from the args list. Used
 /// by `--game` expansion to strip the new flags before downstream
 /// parsers see them.
@@ -534,6 +546,56 @@ mod optional_archive_tier_tests {
                 "--sounds-bsa".to_owned(),
                 expected,
             ]
+        );
+    }
+}
+
+#[cfg(test)]
+mod rotation_mode_arg_tests {
+    use super::rotation_mode_arg;
+    use byroredux_core::math::coord::{euler_zup_to_quat_yup_mode, REFR_ROTATION_MODE_SHIP};
+
+    fn argv(values: &[&str]) -> Vec<String> {
+        values.iter().map(|v| v.to_string()).collect()
+    }
+
+    /// #4126 — an out-of-range mode is passed through, and the value that
+    /// reaches the library resolves to the shipping formula rather than to
+    /// mode 3.
+    #[test]
+    fn an_out_of_range_mode_reaches_the_library_fallback() {
+        let (rx, ry, rz) = (0.3, -1.1, 2.2);
+        let ship = euler_zup_to_quat_yup_mode(REFR_ROTATION_MODE_SHIP, rx, ry, rz);
+        let mode_3 = euler_zup_to_quat_yup_mode(3, rx, ry, rz);
+        for raw in ["4", "9", "255"] {
+            let mode = rotation_mode_arg(&argv(&["byroredux", "--rotation-mode", raw])).unwrap();
+            assert_eq!(mode.to_string(), raw, "must not be clamped");
+            let q = euler_zup_to_quat_yup_mode(mode, rx, ry, rz);
+            assert!(
+                q.abs_diff_eq(ship, 1e-6),
+                "mode {raw} must fall back to ship"
+            );
+            assert!(
+                !q.abs_diff_eq(mode_3, 1e-3),
+                "mode {raw} must not become mode 3"
+            );
+        }
+    }
+
+    #[test]
+    fn in_range_absent_and_unparsable_modes() {
+        assert_eq!(
+            rotation_mode_arg(&argv(&["byroredux", "--rotation-mode", "2"])),
+            Some(2)
+        );
+        assert_eq!(rotation_mode_arg(&argv(&["byroredux"])), None);
+        assert_eq!(
+            rotation_mode_arg(&argv(&["byroredux", "--rotation-mode"])),
+            None
+        );
+        assert_eq!(
+            rotation_mode_arg(&argv(&["byroredux", "--rotation-mode", "x"])),
+            None
         );
     }
 }
