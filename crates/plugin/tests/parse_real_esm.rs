@@ -4378,3 +4378,110 @@ fn installed_masters_ai_data_decodes() {
         );
     }
 }
+
+/// P4 fixture route probe — Eltrys's authored placement in
+/// `MarkarthShrineofTalos` (MS01 0x00018B4B's alias-1 unique actor, NPC_
+/// `0x00013394`). The activation→topic wiring (byroredux `npc_dialogue`)
+/// went green while the live route stalled on "no Eltrys entity in the
+/// cell"; this pins the authored side so the spawn diagnosis starts from
+/// data, not guesses. Ignored like the rest of the real-data file; run with
+/// `cargo test -p byroredux-plugin --release --test parse_real_esm
+///  -- --ignored ms01_eltrys_authored_placement --nocapture`.
+#[test]
+#[ignore = "needs Skyrim SE game data on disk"]
+fn ms01_eltrys_authored_placement() {
+    let Some(data) = data_dir(test_paths::SKYRIM_SE_ENV, test_paths::SKYRIM_SE_DEFAULT) else {
+        eprintln!("skipping: Skyrim SE data unavailable");
+        return;
+    };
+    let bytes = std::fs::read(data.join("Skyrim.esm")).expect("read Skyrim.esm");
+    let index = parse_esm(&bytes).expect("parse Skyrim.esm");
+    // Search every container the engine can load actors from: named
+    // interiors, worldspace persistent cells, and streamed exteriors.
+    let mut found = 0;
+    for (cell_id, cell) in &index.cells.cells {
+        for placed in &cell.references {
+            if placed.base_form_id == 0x00013394 {
+                found += 1;
+                println!(
+                    "Eltrys in interior '{cell_id}': ref {:08X} group_type {} \
+                     initially_disabled={} starts_dead={}",
+                    placed.form_id,
+                    placed.group_type,
+                    placed.initially_disabled,
+                    placed.starts_dead,
+                );
+            }
+        }
+    }
+    for (worldspace, cells) in &index.cells.worldspace_persistent_cells {
+        for placed in &cells.references {
+            if placed.base_form_id == 0x00013394 {
+                found += 1;
+                println!(
+                    "Eltrys in persistent '{worldspace}': ref {:08X} group_type {} \
+                     initially_disabled={} starts_dead={}",
+                    placed.form_id,
+                    placed.group_type,
+                    placed.initially_disabled,
+                    placed.starts_dead,
+                );
+            }
+        }
+    }
+    for (worldspace, cells) in &index.cells.exterior_cells {
+        for (grid, cell) in cells {
+            for placed in &cell.references {
+                if placed.base_form_id == 0x00013394 {
+                    found += 1;
+                    println!(
+                        "Eltrys in exterior '{worldspace}' {grid:?}: ref {:08X} \
+                         group_type {} initially_disabled={} starts_dead={}",
+                        placed.form_id,
+                        placed.group_type,
+                        placed.initially_disabled,
+                        placed.starts_dead,
+                    );
+                }
+            }
+        }
+    }
+    assert!(found > 0, "Eltrys's NPC_ 0x00013394 must be placed somewhere");
+
+    // P4 route companion: MS01's DIAL topics carry the QSTI ownership the
+    // activation→topic selection walks.
+    let owned: Vec<&byroredux_plugin::esm::records::DialRecord> = index
+        .dialogues
+        .values()
+        .filter(|dial| dial.quest_refs.contains(&0x0018B4B))
+        .collect();
+    println!("MS01-owned DIAL topics: {}", owned.len());
+    for dial in owned.iter().take(6) {
+        println!(
+            "  {:08X} '{}' type={} infos={}",
+            dial.form_id,
+            dial.editor_id,
+            dial.dial_type,
+            dial.infos.len(),
+        );
+    }
+    // Skyrim's quest→topic shape: probe by EDID — do MS01 topics parse at
+    // all, and with what quest_refs?
+    let by_edid: Vec<&byroredux_plugin::esm::records::DialRecord> = index
+        .dialogues
+        .values()
+        .filter(|dial| dial.editor_id.starts_with("MS01"))
+        .collect();
+    println!("DIALs with MS01* EDID: {}", by_edid.len());
+    for dial in by_edid.iter().take(8) {
+        println!(
+            "  {:08X} '{}' type={} quest_refs={:?} infos={}",
+            dial.form_id,
+            dial.editor_id,
+            dial.dial_type,
+            dial.quest_refs,
+            dial.infos.len(),
+        );
+    }
+    assert!(!owned.is_empty(), "MS01 must own at least one DIAL topic");
+}

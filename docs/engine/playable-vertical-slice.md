@@ -1376,6 +1376,29 @@ already exists; the fixture names its first blockers in order: NPC
 activation → topic selection (the M47.1 evaluator covers the CTDA shape),
 a native response surface, and completion transitions in the objective HUD.
 
+**P4 progress 2026-09-29 (two of three blockers):**
+[`p4-quest-fixture.md`](p4-quest-fixture.md) carries the per-blocker detail;
+the short form — **blocker 1 (activation → topic selection)**: the
+"NPC owns topic" edge is `DialRecord::quest_refs` + the live alias bindings
+(`running_quests_binding_entity`); a Late exclusive consumes the player's
+`ActivateEvent` on an alias-bound NPC and stamps `NpcDialogueTopic`
+(`dialogue.status` reads it); NPCs are interaction candidates ("Talk" prompt)
+only while a running quest's alias binds them. **Blocker 1 surfaced the
+fixture's first parser trip:** Skyrim authors the quest→topic link as DIAL
+**QNAM**, which `parse_dial` didn't read — 117 MS01 topics had empty
+`quest_refs`. QNAM now feeds `quest_refs` beside QSTI. Eltrys's authored
+cell is `MarkarthWarrens` (probe-pinned), where the live selection runs.
+**Blocker 2 (response surface)**: `GameMenuPage::Dialogue` in the native
+menu, opened once per fresh selection, showing the response text + the
+owned-topic list; topic clicks lower through the same selection
+(`select_topic_by_form_id`); input focus without sim pause (vanilla
+dialogue is in-world — and a running world keeps the debug server
+answerable for route smokes). Verified live: Eltrys activation selects an
+MS01 topic, the surface presents his authored line ("What? By the gods,
+Betrid....") with the authored prompt list, and the engine screenshot
+captures it. Remaining blocker 3: objective-completion transitions in the
+HUD, then the route smoke consolidating the whole loop.
+
 ### P5 — Persistence and session hardening
 
 Goal: the complete slice survives ordinary play behavior.

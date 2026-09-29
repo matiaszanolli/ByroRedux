@@ -688,7 +688,7 @@ impl ApplicationHandler for App {
         let simulation_paused = self
             .debug_ui
             .as_ref()
-            .is_some_and(byroredux_debug_ui::DebugUiState::game_menu_visible);
+            .is_some_and(byroredux_debug_ui::DebugUiState::simulation_paused);
 
         // Update time resources.
         world_resource_set::<DeltaTime>(&self.world, |r| r.0 = dt);

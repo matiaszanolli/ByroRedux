@@ -153,6 +153,24 @@ impl App {
                 ui.set_visible(visible);
             }
         }
+        // P4 blocker 2 — open the native dialogue surface once per applied
+        // selection. The Late selection system bumps the serial; the app
+        // layer owns the open (focus transfer + modal state), watermarking
+        // against `opened_serial` so the surface re-opens on every fresh
+        // activation or topic click, not every frame.
+        let fresh_selection = self
+            .world
+            .try_resource::<crate::systems::npc_dialogue::DialogueSurfaceState>()
+            .is_some_and(|surface| surface.serial != surface.opened_serial);
+        if fresh_selection {
+            if let Some(mut surface) = self
+                .world
+                .try_resource_mut::<crate::systems::npc_dialogue::DialogueSurfaceState>()
+            {
+                surface.opened_serial = surface.serial;
+            }
+            self.open_dialogue_menu();
+        }
         let mut snapshot = if self
             .debug_ui
             .as_ref()
@@ -162,10 +180,15 @@ impl App {
                 .debug_ui
                 .as_ref()
                 .is_some_and(byroredux_debug_ui::DebugUiState::inventory_menu_visible);
+            let include_dialogue = self
+                .debug_ui
+                .as_ref()
+                .is_some_and(byroredux_debug_ui::DebugUiState::dialogue_menu_visible);
             build_debug_ui_snapshot(
                 &self.world,
                 self.debug_ui_refresh_entities,
                 include_inventory,
+                include_dialogue,
             )
         } else {
             byroredux_debug_ui::PanelSnapshot {

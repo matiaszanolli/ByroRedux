@@ -61,6 +61,9 @@ pub struct PanelSnapshot {
     /// Player inventory, populated only while the native inventory page is
     /// visible. `None` means the current scene has no character player.
     pub inventory: Option<InventorySnapshot>,
+    /// The activation-selected dialogue topic + owned-topic list, populated
+    /// only while the native dialogue page is visible.
+    pub dialogue: Option<DialogueTopicSnapshot>,
     /// `(entity_id, name)` pairs. `None` until the operator opens
     /// the Entities panel — populating this on every frame would
     /// be unnecessary work for an overlay that's hidden most of
@@ -123,6 +126,37 @@ pub struct InventoryItemView {
 pub enum InventoryAction {
     ToggleEquip { index: u32 },
     Consume { index: u32, form_id: u32 },
+}
+
+/// One selectable row of the dialogue surface's topic list — the DIALs the
+/// NPC owns through a running quest, captured at selection time.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DialogueTopicEntryView {
+    pub topic_form_id: u32,
+    pub name: String,
+}
+
+/// P4 blocker 2 — the activation-selected dialogue topic plus the NPC's
+/// whole owned-topic list, populated only while the native dialogue page is
+/// visible. Plain data: `debug-ui` cannot depend on the binary's component
+/// types (same boundary as `InventorySnapshot`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct DialogueTopicSnapshot {
+    /// The speaking NPC's entity id — echoed back in every topic click.
+    pub npc: u32,
+    pub topic_form_id: u32,
+    pub topic_name: String,
+    pub info_form_id: u32,
+    pub response_text: String,
+    pub topics: Vec<DialogueTopicEntryView>,
+}
+
+/// The dialogue surface's mutations, applied to canonical world state after
+/// egui drops its read-only frame snapshot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DialogueUiAction {
+    /// Re-run the topic selection for one owned topic on the same NPC.
+    SelectTopic { npc: u32, topic_form_id: u32 },
 }
 
 /// Draw the small gameplay HUD layer shared with the debug renderer.
@@ -353,6 +387,9 @@ pub struct PanelOutputs {
     /// Mutations applied to canonical player inventory state after egui drops
     /// its read-only frame snapshot.
     pub inventory_actions: Vec<InventoryAction>,
+    /// Dialogue-surface mutations (topic clicks) applied through the same
+    /// selection the activation path uses.
+    pub dialogue_actions: Vec<DialogueUiAction>,
     /// Renderer-independent Studio mutations for the host to apply.
     pub studio_commands: Vec<StudioCommand>,
     /// True when the operator asked to refresh the entity list.
@@ -374,6 +411,7 @@ pub enum GameMenuPage {
     Pause,
     Settings,
     Inventory,
+    Dialogue,
 }
 
 /// Persistent navigation state for the player-facing native menu.
@@ -412,6 +450,7 @@ pub fn draw_game_menu(
         GameMenuPage::Pause => "Paused",
         GameMenuPage::Settings => "Settings",
         GameMenuPage::Inventory => "Inventory",
+        GameMenuPage::Dialogue => "Conversation",
     };
     Window::new(title)
         .id(Id::new("game_menu_window"))
@@ -424,6 +463,7 @@ pub fn draw_game_menu(
             GameMenuPage::Pause => egui::vec2(360.0, 390.0),
             GameMenuPage::Settings => egui::vec2(760.0, 620.0),
             GameMenuPage::Inventory => egui::vec2(900.0, 620.0),
+            GameMenuPage::Dialogue => egui::vec2(760.0, 560.0),
         })
         .frame(
             Frame::window(&ctx.style())
@@ -438,7 +478,81 @@ pub fn draw_game_menu(
             GameMenuPage::Inventory => {
                 draw_inventory_page(ui, snapshot.inventory.as_ref(), state, outputs)
             }
+            GameMenuPage::Dialogue => {
+                draw_dialogue_page(ui, snapshot.dialogue.as_ref(), state, outputs)
+            }
         });
+}
+
+/// P4 blocker 2 — the native dialogue response surface: the selected INFO's
+/// response text above the NPC's owned-topic list. Selecting a topic emits
+/// [`DialogueUiAction::SelectTopic`]; the binary lowers it through the same
+/// selection the activation path uses, and the next frame's snapshot
+/// carries the new response. Closing is the pause menu's own resume path —
+/// the same Escape / Resume handling every other page shares.
+fn draw_dialogue_page(
+    ui: &mut egui::Ui,
+    dialogue: Option<&DialogueTopicSnapshot>,
+    state: &mut GameMenuState,
+    outputs: &mut PanelOutputs,
+) {
+    ui.add_space(4.0);
+    if let Some(dialogue) = dialogue {
+        ui.heading(dialogue.topic_name.clone());
+        ui.add_space(10.0);
+        // The response: a fixed-height, scrolling read-only panel so long
+        // authored text never resizes the window.
+        egui::ScrollArea::vertical()
+            .id_salt("native_dialogue_response")
+            .max_height(180.0)
+            .show(ui, |ui| {
+                ui.set_min_width(ui.available_width());
+                ui.label(
+                    egui::RichText::new(dialogue.response_text.clone())
+                        .size(16.0)
+                        .color(Color32::from_rgb(225, 222, 210)),
+                );
+            });
+        ui.add_space(12.0);
+        ui.separator();
+        ui.label("Topics");
+        egui::ScrollArea::vertical()
+            .id_salt("native_dialogue_topics")
+            .max_height(180.0)
+            .show(ui, |ui| {
+                ui.set_min_width(ui.available_width());
+                for topic in &dialogue.topics {
+                    let selected = topic.topic_form_id == dialogue.topic_form_id;
+                    let label = ui.selectable_label(selected, topic.name.clone());
+                    if label.clicked() && !selected {
+                        outputs.dialogue_actions.push(DialogueUiAction::SelectTopic {
+                            npc: dialogue.npc,
+                            topic_form_id: topic.topic_form_id,
+                        });
+                    }
+                }
+            });
+        ui.add_space(12.0);
+        if ui
+            .add_sized([220.0, 40.0], egui::Button::new("Close (Esc)"))
+            .clicked()
+        {
+            outputs.resume_game = true;
+            state.visible = false;
+        }
+    } else {
+        // Opened without a selection to show (a stale open across a cell
+        // transition): say so instead of rendering an empty shell.
+        ui.label("The conversation has moved on.");
+        ui.add_space(12.0);
+        if ui
+            .add_sized([220.0, 40.0], egui::Button::new("Close (Esc)"))
+            .clicked()
+        {
+            outputs.resume_game = true;
+            state.visible = false;
+        }
+    }
 }
 
 fn draw_pause_page(ui: &mut egui::Ui, state: &mut GameMenuState, outputs: &mut PanelOutputs) {
@@ -1922,6 +2036,163 @@ mod tests {
                 index: 7,
                 form_id: 0x3EADD
             }]
+        );
+    }
+
+    #[test]
+    fn dialogue_page_shows_the_response_and_emits_topic_clicks() {
+        let ctx = Context::default();
+        let snapshot = PanelSnapshot {
+            dialogue: Some(DialogueTopicSnapshot {
+                npc: 7,
+                topic_form_id: 0x2010,
+                topic_name: "MS01EltrysTopic".into(),
+                info_form_id: 0x2011,
+                response_text: "You took the note, then.".into(),
+                topics: vec![
+                    DialogueTopicEntryView {
+                        topic_form_id: 0x2010,
+                        name: "Eltrys".into(),
+                    },
+                    DialogueTopicEntryView {
+                        topic_form_id: 0x2012,
+                        name: "Rumors".into(),
+                    },
+                ],
+            }),
+            ..Default::default()
+        };
+        let mut state = GameMenuState {
+            visible: true,
+            page: GameMenuPage::Dialogue,
+            ..Default::default()
+        };
+        let mut outputs = PanelOutputs::default();
+        ctx.begin_pass(egui::RawInput::default());
+        draw_game_menu(&ctx, &snapshot, &mut state, &mut outputs);
+        // egui sizes a newly opened window before painting its contents;
+        // the response text asserts on the painted second pass.
+        let _ = ctx.end_pass();
+        ctx.begin_pass(egui::RawInput::default());
+        draw_game_menu(&ctx, &snapshot, &mut state, &mut outputs);
+        let frame = ctx.end_pass();
+        assert!(
+            frame.shapes.iter().any(|shape| {
+                matches!(
+                    shape.shape,
+                    egui::Shape::Text(ref text) if text.galley.text().contains("You took the note")
+                )
+            }),
+            "the selected INFO response text must present"
+        );
+
+        // The selected topic must not emit a click for its own row.
+        let pos = frame
+            .shapes
+            .iter()
+            .find_map(|shape| {
+                if let egui::Shape::Text(text) = &shape.shape {
+                    if text.galley.text() == "Rumors" {
+                        return Some(text.pos + text.galley.size() * 0.5);
+                    }
+                }
+                None
+            })
+            .expect("the owned-topic list must render every entry");
+        ctx.begin_pass(egui::RawInput {
+            events: vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                },
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+            ..Default::default()
+        });
+        draw_game_menu(&ctx, &snapshot, &mut state, &mut outputs);
+        let _ = ctx.end_pass();
+        assert_eq!(
+            outputs.dialogue_actions,
+            vec![DialogueUiAction::SelectTopic {
+                npc: 7,
+                topic_form_id: 0x2012
+            }]
+        );
+    }
+
+    #[test]
+    fn dialogue_page_close_returns_through_the_shared_resume_path() {
+        let ctx = Context::default();
+        let snapshot = PanelSnapshot {
+            dialogue: Some(DialogueTopicSnapshot {
+                npc: 7,
+                topic_form_id: 0x2010,
+                topic_name: "MS01EltrysTopic".into(),
+                info_form_id: 0x2011,
+                response_text: "Watch yourself.".into(),
+                topics: Vec::new(),
+            }),
+            ..Default::default()
+        };
+        let mut state = GameMenuState {
+            visible: true,
+            page: GameMenuPage::Dialogue,
+            ..Default::default()
+        };
+        let mut outputs = PanelOutputs::default();
+        ctx.begin_pass(egui::RawInput::default());
+        draw_game_menu(&ctx, &snapshot, &mut state, &mut outputs);
+        let _ = ctx.end_pass();
+        ctx.begin_pass(egui::RawInput::default());
+        draw_game_menu(&ctx, &snapshot, &mut state, &mut outputs);
+        let frame = ctx.end_pass();
+        let pos = frame
+            .shapes
+            .iter()
+            .find_map(|shape| {
+                if let egui::Shape::Text(text) = &shape.shape {
+                    if text.galley.text().starts_with("Close") {
+                        return Some(text.pos + text.galley.size() * 0.5);
+                    }
+                }
+                None
+            })
+            .expect("the Close button must be visible");
+        ctx.begin_pass(egui::RawInput {
+            events: vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                },
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+            ..Default::default()
+        });
+        draw_game_menu(&ctx, &snapshot, &mut state, &mut outputs);
+        let _ = ctx.end_pass();
+        assert!(
+            outputs.resume_game,
+            "Close rides the pause menu's shared resume path"
+        );
+        assert!(
+            outputs.dialogue_actions.is_empty(),
+            "closing must not emit a topic click"
         );
     }
 

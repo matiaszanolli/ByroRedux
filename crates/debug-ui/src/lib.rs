@@ -40,9 +40,9 @@ use winit::event_loop::ActiveEventLoop;
 use winit::window::Window;
 
 pub use panels::{
-    GameMenuPage, GameMenuState, InteractionPrompt, InventoryAction, InventoryItemView,
-    InventorySnapshot, ObjectiveView, PanelOutputs, PanelSnapshot, PanelTab, QueuedLoad,
-    VitalBarView,
+    DialogueTopicEntryView, DialogueTopicSnapshot, DialogueUiAction, GameMenuPage, GameMenuState,
+    InteractionPrompt, InventoryAction, InventoryItemView, InventorySnapshot, ObjectiveView,
+    PanelOutputs, PanelSnapshot, PanelTab, QueuedLoad, VitalBarView,
 };
 
 /// Setting IDs and the built-in registrations, re-exported from `core`.
@@ -266,6 +266,18 @@ impl DebugUiState {
         self.game_menu.visible && self.game_menu.page == GameMenuPage::Inventory
     }
 
+    /// Open the native menu directly on the dialogue response surface
+    /// (P4 blocker 2). The activation-driven selection opens it; Escape or
+    /// the page's Close button dismisses it like any other page.
+    pub fn open_dialogue_menu(&mut self) {
+        self.game_menu.visible = true;
+        self.game_menu.page = GameMenuPage::Dialogue;
+    }
+
+    pub fn dialogue_menu_visible(&self) -> bool {
+        self.game_menu.visible && self.game_menu.page == GameMenuPage::Dialogue
+    }
+
     pub fn close_game_menu(&mut self) {
         self.game_menu.visible = false;
         self.game_menu.page = GameMenuPage::Pause;
@@ -276,6 +288,16 @@ impl DebugUiState {
     /// regardless of whether an individual egui widget consumed it.
     pub fn captures_gameplay_input(&self) -> bool {
         self.game_menu.visible || self.visible
+    }
+
+    /// Whether the simulation clock and scheduler stop while a surface is
+    /// open. The pause/settings/inventory pages stop the world; the
+    /// dialogue response surface deliberately does not — vanilla dialogue
+    /// is in-world and timed, and a running world keeps the debug-server
+    /// drain alive so a route smoke can assert on the presented response
+    /// while the surface is up.
+    pub fn simulation_paused(&self) -> bool {
+        self.game_menu.visible && self.game_menu.page != GameMenuPage::Dialogue
     }
 
     /// Run one egui frame against a pre-built [`PanelSnapshot`].

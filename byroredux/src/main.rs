@@ -1295,6 +1295,16 @@ impl App {
         }
     }
 
+    /// P4 blocker 2 — the dialogue response surface rides the same modal
+    /// machinery as the pause/inventory pages: gameplay input released while
+    /// it is open, focus recaptured by `resume_from_game_menu` on close.
+    fn open_dialogue_menu(&mut self) {
+        if let Some(ui) = self.debug_ui.as_mut() {
+            ui.open_dialogue_menu();
+            self.release_world_input_for_ui();
+        }
+    }
+
     fn resume_from_game_menu(&mut self) {
         if let Some(ui) = self.debug_ui.as_mut() {
             ui.close_game_menu();
@@ -1332,6 +1342,7 @@ fn build_debug_ui_snapshot(
     world: &World,
     refresh_entities: bool,
     include_inventory: bool,
+    include_dialogue: bool,
 ) -> byroredux_debug_ui::PanelSnapshot {
     let metrics = world
         .try_resource::<byroredux_core::ecs::MetricsSnapshot>()
@@ -1398,6 +1409,9 @@ fn build_debug_ui_snapshot(
         settings,
         inventory: include_inventory
             .then(|| inventory::snapshot(world))
+            .flatten(),
+        dialogue: include_dialogue
+            .then(|| crate::systems::npc_dialogue::dialogue_snapshot(world))
             .flatten(),
         entities,
         studio: studio_host::snapshot(world),
@@ -1491,6 +1505,22 @@ fn apply_debug_ui_outputs(
     for action in outputs.inventory_actions {
         if inventory::apply_action(world, action) == inventory::MutationResult::Unavailable {
             log::warn!("native inventory action was unavailable for the current player/item");
+        }
+    }
+    for action in outputs.dialogue_actions {
+        match action {
+            byroredux_debug_ui::DialogueUiAction::SelectTopic {
+                npc,
+                topic_form_id,
+            } => {
+                if let Err(error) = crate::systems::npc_dialogue::select_topic_by_form_id(
+                    world,
+                    byroredux_core::ecs::EntityId::from(npc),
+                    topic_form_id,
+                ) {
+                    log::warn!("native dialogue action was unavailable: {error}");
+                }
+            }
         }
     }
     if outputs.refresh_entities {

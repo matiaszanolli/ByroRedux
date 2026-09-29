@@ -180,7 +180,15 @@ pub fn parse_dial(
     out.full_name = common.full_name;
     for sub in subs {
         match &sub.sub_type {
-            b"QSTI" if sub.data.len() >= 4 => {
+            // QSTI (Oblivion/FO3+/FO4 DIAL "Quest") and QNAM (Skyrim DIAL
+            // "Quest") are the same authored edge per game family —
+            // verified against raw `Skyrim.esm` bytes 2026-09-29: MS01's
+            // topics (`MS01EltrysNotAtShrineNoteTopic` et al.) carry
+            // `QNAM = 0x00018B4B` and no QSTI, which left every Skyrim
+            // DIAL with an empty `quest_refs` and starved the
+            // activation→topic selection of its ownership edge
+            // (`docs/engine/p4-quest-fixture.md` blocker 1).
+            b"QSTI" | b"QNAM" if sub.data.len() >= 4 => {
                 if let Ok(q) = SubReader::new(&sub.data).u32() {
                     let remapped = remap.as_ref().map_or(q, |r| r.remap(q));
                     out.quest_refs.push(remapped);

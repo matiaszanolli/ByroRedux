@@ -32,6 +32,16 @@ use byroredux_scripting::{
 use crate::cell_loader::LoadedCellIndex;
 use crate::systems::PlayerEntity;
 
+/// One selectable entry in the NPC's owned-topic list — the DIALs of the
+/// running quests that bind the NPC, captured at selection time so the
+/// response surface reads one component instead of walking the index
+/// per frame.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct DialogueTopicEntry {
+    pub(crate) topic_form_id: u32,
+    pub(crate) name: String,
+}
+
 /// The activation-driven topic selection on an NPC — one per activation,
 /// overwritten by the next. Runtime interaction state, never serialized
 /// (it re-derives from the authored records + running quests on the next
@@ -45,10 +55,110 @@ pub(crate) struct NpcDialogueTopic {
     pub(crate) speaker_text: String,
     pub(crate) response_number: u8,
     pub(crate) emotion_type: u8,
+    /// The NPC's whole owned-topic list, the selected one included — the
+    /// response surface's list column.
+    pub(crate) topics: Vec<DialogueTopicEntry>,
 }
 
 impl Component for NpcDialogueTopic {
     type Storage = SparseSetStorage<Self>;
+}
+
+/// The response surface's open-once-per-selection cue. Every applied
+/// selection (activation- or UI-driven) bumps `serial` and names the NPC;
+/// the app layer opens the native dialogue page when it sees a serial it
+/// has not opened yet. `opened_serial` is the app side's watermark, not
+/// gameplay state — the whole resource is runtime plumbing, never
+/// serialized.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct DialogueSurfaceState {
+    pub(crate) serial: u64,
+    pub(crate) npc: Option<EntityId>,
+    pub(crate) opened_serial: u64,
+}
+
+impl byroredux_core::ecs::Resource for DialogueSurfaceState {}
+
+/// The DIALs an NPC owns through `owned_quests` (the running quests whose
+/// alias bindings name it), ascending by form id — the authored NPC→topic
+/// edge, gathered once per selection.
+fn owned_topic_records<'a>(
+    index: &'a byroredux_plugin::esm::records::EsmIndex,
+    owned_quests: &[byroredux_scripting::QuestFormId],
+) -> Vec<&'a DialRecord> {
+    let mut topics: Vec<&DialRecord> = index
+        .dialogues
+        .values()
+        .filter(|record| {
+            owned_quests
+                .iter()
+                .any(|quest| record.quest_refs.contains(&quest.0))
+        })
+        .collect();
+    topics.sort_unstable_by_key(|record| record.form_id);
+    topics
+}
+
+fn topic_entries(records: &[&DialRecord]) -> Vec<DialogueTopicEntry> {
+    records
+        .iter()
+        .map(|record| DialogueTopicEntry {
+            topic_form_id: record.form_id,
+            name: if record.full_name.is_empty() {
+                record.editor_id.clone()
+            } else {
+                record.full_name.clone()
+            },
+        })
+        .collect()
+}
+
+/// The surface's per-topic selection: the first INFO the SCEN path's
+/// discipline passes, packaged with the whole owned-topic list.
+fn select_on_topic(
+    record: &DialRecord,
+    world: &World,
+    npc: EntityId,
+    player: EntityId,
+    entries: Vec<DialogueTopicEntry>,
+) -> Option<(NpcDialogueTopic, DialRecord)> {
+    let info = select_first_info(record, world, Some(npc), Some(player))?;
+    Some((
+        NpcDialogueTopic {
+            topic_form_id: record.form_id,
+            topic_editor_id: record.editor_id.clone(),
+            info_form_id: info.form_id,
+            owning_quest: record.quest_refs.first().copied(),
+            speaker_text: info.response_text.clone(),
+            response_number: info.response_number,
+            emotion_type: info.emotion_type,
+            topics: entries,
+        },
+        record.clone(),
+    ))
+}
+
+/// Apply one selection: registry install (the presentation side's record
+/// source), the component stamp, and the surface-serial bump. Shared by
+/// the activation path and the UI's re-selection door.
+fn apply_selection(world: &World, npc: EntityId, topic: NpcDialogueTopic, record: DialRecord) {
+    if let Some(mut registry) = world.try_resource_mut::<DialogueRegistry>() {
+        registry.insert_topic(record);
+    }
+    if let Some(mut topics) = world.query_mut::<NpcDialogueTopic>() {
+        topics.insert(npc, topic.clone());
+    }
+    if let Some(mut surface) = world.try_resource_mut::<DialogueSurfaceState>() {
+        surface.serial += 1;
+        surface.npc = Some(npc);
+    }
+    log::info!(
+        "npc dialogue: selected topic {:#08X} ('{}') info {:#08X} for NPC {npc} (quest {:?})",
+        topic.topic_form_id,
+        topic.topic_editor_id,
+        topic.info_form_id,
+        topic.owning_quest,
+    );
 }
 
 /// One activation's computed selection, applied after all reads drop (the
@@ -105,46 +215,22 @@ fn npc_dialogue_selection_system_inner(world: &World, scratch: &mut NpcDialogueS
         if owned_quests.is_empty() {
             continue;
         }
-        // Deterministic order: running quests ascending, then DIAL form id —
-        // the same record the fixture route must stably select every run.
+        // Deterministic order: the owned DIALs ascending by form id — the
+        // same record the fixture route must stably select every run.
+        let records = owned_topic_records(&index, &owned_quests);
+        let entries = topic_entries(&records);
         let mut selection: Option<(DialRecord, NpcDialogueTopic)> = None;
-        'quests: for quest in &owned_quests {
-            let mut topics: Vec<&DialRecord> = index
-                .dialogues
-                .values()
-                .filter(|record| record.quest_refs.contains(&quest.0))
-                .collect();
-            topics.sort_unstable_by_key(|record| record.form_id);
-            for record in topics {
-                let Some(info) = select_first_info(record, world, Some(npc), Some(player)) else {
-                    continue;
-                };
-                selection = Some((
-                    record.clone(),
-                    NpcDialogueTopic {
-                        topic_form_id: record.form_id,
-                        topic_editor_id: record.editor_id.clone(),
-                        info_form_id: info.form_id,
-                        owning_quest: Some(quest.0),
-                        speaker_text: info.response_text.clone(),
-                        response_number: info.response_number,
-                        emotion_type: info.emotion_type,
-                    },
-                ));
-                break 'quests;
+        for record in &records {
+            if let Some((topic, record)) =
+                select_on_topic(record, world, npc, player, entries.clone())
+            {
+                selection = Some((record, topic));
+                break;
             }
         }
         let Some((record, topic)) = selection else {
             continue;
         };
-        log::info!(
-            "npc dialogue: activation selected topic {:#08X} ('{}') info {:#08X} \
-             for NPC {npc} (quest {:?})",
-            topic.topic_form_id,
-            topic.topic_editor_id,
-            topic.info_form_id,
-            topic.owning_quest,
-        );
         scratch.selections.push(TopicSelection {
             npc,
             topic,
@@ -156,16 +242,99 @@ fn npc_dialogue_selection_system_inner(world: &World, scratch: &mut NpcDialogueS
     }
 
     // ── Pass 2: apply. ──
-    if let Some(mut registry) = world.try_resource_mut::<DialogueRegistry>() {
-        for selection in &scratch.selections {
-            registry.insert_topic(selection.record.clone());
-        }
+    for selection in &scratch.selections {
+        apply_selection(world, selection.npc, selection.topic.clone(), selection.record.clone());
     }
-    if let Some(mut topics) = world.query_mut::<NpcDialogueTopic>() {
-        for selection in &scratch.selections {
-            topics.insert(selection.npc, selection.topic.clone());
-        }
+}
+
+/// The response surface's topic click, lowered through the same selection
+/// the activation path uses — never a separate mutation path. The requested
+/// topic must still be among the NPC's owned topics (authored ownership is
+/// re-checked against the live bindings); the INFO gate is the evaluator.
+/// Returns a user-facing message either way.
+pub(crate) fn select_topic_by_form_id(
+    world: &mut World,
+    npc: EntityId,
+    topic_form_id: u32,
+) -> Result<String, String> {
+    if npc == world
+        .try_resource::<PlayerEntity>()
+        .and_then(|player| player.0)
+        .unwrap_or_default()
+    {
+        return Err("the player is not a dialogue target".to_string());
     }
+    if world.get::<Dead>(npc).is_some() {
+        return Err("that actor is dead".to_string());
+    }
+    let Some(index) = world.try_resource::<LoadedCellIndex>() else {
+        return Err("no loaded plugin index".to_string());
+    };
+    let index = index.0.clone();
+    let Some(record) = index.dialogues.get(&topic_form_id).cloned() else {
+        return Err(format!("no topic {topic_form_id:08X} in the loaded plugins"));
+    };
+    let owned_quests = running_quests_binding_entity(world, npc);
+    let records = owned_topic_records(&index, &owned_quests);
+    if !records.iter().any(|owned| owned.form_id == topic_form_id) {
+        return Err(format!(
+            "NPC {npc} owns no topic {topic_form_id:08X} through a running quest"
+        ));
+    }
+    let entries = topic_entries(&records);
+    let player = world
+        .try_resource::<PlayerEntity>()
+        .and_then(|player| player.0)
+        .ok_or_else(|| "no player".to_string())?;
+    let Some((topic, record)) = select_on_topic(&record, world, npc, player, entries) else {
+        return Err(format!(
+            "no INFO on topic {topic_form_id:08X} passes its conditions right now"
+        ));
+    };
+    let message = format!(
+        "dialogue: topic {:#08X} ('{}') → info {:#08X}",
+        topic.topic_form_id, topic.topic_editor_id, topic.info_form_id,
+    );
+    apply_selection(world, npc, topic, record);
+    Ok(message)
+}
+
+/// The response surface's snapshot — the plain-data twin the debug-ui
+/// crate renders (it cannot see this crate's component types). `None`
+/// when no NPC carries a selection.
+pub(crate) fn dialogue_snapshot(
+    world: &World,
+) -> Option<byroredux_debug_ui::DialogueTopicSnapshot> {
+    let (npc, topic) = world
+        .query::<NpcDialogueTopic>()
+        .and_then(|topics| topics.iter().next().map(|(npc, topic)| (npc, topic.clone())))?;
+    // Many quest DIALs ship no EDID; the selected entry's authored FULL (the
+    // player-facing prompt) is the surface's header then.
+    let topic_name = if topic.topic_editor_id.is_empty() {
+        topic
+            .topics
+            .iter()
+            .find(|entry| entry.topic_form_id == topic.topic_form_id)
+            .map(|entry| entry.name.clone())
+            .unwrap_or_default()
+    } else {
+        topic.topic_editor_id.clone()
+    };
+    Some(byroredux_debug_ui::DialogueTopicSnapshot {
+        npc,
+        topic_form_id: topic.topic_form_id,
+        topic_name,
+        info_form_id: topic.info_form_id,
+        response_text: topic.speaker_text.clone(),
+        topics: topic
+            .topics
+            .iter()
+            .map(|entry| byroredux_debug_ui::DialogueTopicEntryView {
+                topic_form_id: entry.topic_form_id,
+                name: entry.name.clone(),
+            })
+            .collect(),
+    })
 }
 
 /// Selection-system factory — a persistent [`NpcDialogueScratch`], mirroring
@@ -207,6 +376,8 @@ mod tests {
     const TOPIC: u32 = 0x20_0010;
     const INFO_ELTRYS: u32 = 0x20_0011;
     const INFO_GENERIC: u32 = 0x20_0012;
+    const TOPIC_RUMORS: u32 = 0x20_0020;
+    const INFO_RUMORS: u32 = 0x20_0021;
 
     fn info(form_id: u32, speaker: u32, text: &str) -> InfoRecord {
         InfoRecord {
@@ -233,9 +404,24 @@ mod tests {
         }
     }
 
+    fn fixture_second_topic() -> DialRecord {
+        DialRecord {
+            form_id: TOPIC_RUMORS,
+            editor_id: "MS01Rumors".to_string(),
+            full_name: "Rumors".to_string(),
+            quest_refs: vec![QUEST],
+            dial_type: 0,
+            infos: vec![info(INFO_RUMORS, 0, "Keep your head down.")],
+            ..Default::default()
+        }
+    }
+
     fn install_index(world: &mut World) {
         let mut index = byroredux_plugin::esm::records::EsmIndex::default();
         index.dialogues.insert(TOPIC, fixture_topic());
+        index
+            .dialogues
+            .insert(TOPIC_RUMORS, fixture_second_topic());
         world.insert_resource(crate::cell_loader::LoadedCellIndex(Arc::new(index)));
     }
 
@@ -294,6 +480,7 @@ mod tests {
         world.register::<SceneAliasCandidate>();
         world.register::<Dead>();
         world.insert_resource(DialogueRegistry::default());
+        world.insert_resource(DialogueSurfaceState::default());
         let player = spawn_player(&mut world);
         let eltrys = spawn_actor(&mut world, SPEAKER_REF, SPEAKER_BASE);
         install_index(&mut world);
@@ -310,9 +497,48 @@ mod tests {
         assert_eq!(topic.owning_quest, Some(QUEST));
         assert_eq!(topic.speaker_text, "You took the note, then.");
         assert_eq!(topic.response_number, 0);
+        // Blocker 2: the response surface's list column rides the selection —
+        // every owned DIAL, ascending, the selected one included.
+        assert_eq!(
+            topic
+                .topics
+                .iter()
+                .map(|entry| entry.topic_form_id)
+                .collect::<Vec<_>>(),
+            vec![TOPIC, TOPIC_RUMORS]
+        );
+        assert_eq!(topic.topics[0].name, "Eltrys");
+        assert_eq!(topic.topics[1].name, "Rumors");
+        {
+            let surface = world.resource::<DialogueSurfaceState>();
+            assert_eq!(surface.serial, 1, "one applied selection bumps the serial once");
+            assert_eq!(surface.npc, Some(eltrys));
+        }
         // The registry holds the selected record for the presentation side.
-        let registry = world.resource::<DialogueRegistry>();
-        assert_eq!(registry.topic(TOPIC).expect("installed").form_id, TOPIC);
+        {
+            let registry = world.resource::<DialogueRegistry>();
+            assert_eq!(registry.topic(TOPIC).expect("installed").form_id, TOPIC);
+        }
+
+        // Blocker 2 — the surface's topic click lowers through the same
+        // selection: another owned topic re-selects and bumps the serial.
+        let message = select_topic_by_form_id(&mut world, eltrys, TOPIC_RUMORS)
+            .expect("the second owned topic re-selects");
+        assert!(message.contains(&format!("topic {TOPIC_RUMORS:#08X}")), "{message}");
+        let topic = selected(&world, eltrys).expect("selection refreshed");
+        assert_eq!(topic.topic_form_id, TOPIC_RUMORS);
+        assert_eq!(topic.info_form_id, INFO_RUMORS);
+        assert_eq!(topic.speaker_text, "Keep your head down.");
+        {
+            let surface = world.resource::<DialogueSurfaceState>();
+            assert_eq!(surface.serial, 2, "the UI-driven selection bumps too");
+        }
+
+        // A topic the NPC does not own is refused at the ownership gate.
+        assert!(
+            select_topic_by_form_id(&mut world, eltrys, 0xDEAD_BEEF).is_err(),
+            "unowned topic must not re-select"
+        );
     }
 
     #[test]

@@ -57,16 +57,37 @@ asserts the objective line is absent before stage 15.
    (`InteractionKind::Npc`, "Talk" prompt) only when a running quest's alias
    actually binds them. Four bin tests drive the whole chain through the real
    alias fill + evaluator; one scripting test pins the ownership lookup.
-   **Live-route gap found while verifying:** the fixture route needs Eltrys
-   present and alias-bound in `MarkarthShrineofTalos`, but the cell spawns no
-   Eltrys entity at all (156 REFRs load; no Eltrys actor/bones; alias 1's
-   unique-actor fill reports `no-eligible-loaded-candidate`, as does every
-   unique-actor alias in any loaded cell — only marker + Player aliases bind
-   at rest). Diagnosing spawn-side synthesis/enable-state for quest actors is
-   the next content-side gap, upstream of this wiring.
+   **Live route opened 2026-09-29 (same day):** the "no Eltrys entity" gap
+   was a wrong-cell assumption, not a spawn defect — the authored data puts
+   Eltrys in `MarkarthWarrens` (ref `0x000198FD`, persistent children,
+   enabled; pinned by the `ms01_eltrys_authored_placement` probe). There the
+   unique-actor fill binds him (`quest.aliases` reports alias 1 → entity),
+   and the live route runs: start MS01 → activate → topic selected →
+   response presents. The real content-side gap the probe surfaced was the
+   parser's: Skyrim authors the quest→topic link as DIAL **QNAM**, which
+   `parse_dial` did not read — every Skyrim DIAL had an empty `quest_refs`
+   (117 MS01 topics were unowned). QNAM now feeds `quest_refs` beside QSTI.
 2. **Response presentation.** A native dialogue surface (pause-menu-grade,
    like the inventory page) showing the INFO response text + topic list;
    no Scaleform dependency, per the P3 "native UI is the reference path" rule.
+   **Landed 2026-09-29:** `GameMenuPage::Dialogue` in the native menu — the
+   activation-driven selection opens it (serial-watermarked
+   `DialogueSurfaceState`, so it opens once per fresh selection), the page
+   shows the selected INFO's response text above the NPC's owned-topic list
+   (captured into `NpcDialogueTopic.topics` at selection time), and a topic
+   click emits `DialogueUiAction::SelectTopic`, lowered through
+   `select_topic_by_form_id` — the same selection the activation path uses.
+   The surface takes input focus but deliberately does not stop the
+   simulation (vanilla dialogue is in-world and timed; this also keeps the
+   debug-server drain alive, so a route smoke can assert on the presented
+   response while the surface is up). Verified live in `MarkarthWarrens`:
+   start MS01 → activate Eltrys (entity 930) → the surface opens with his
+   authored line ("What? By the gods, Betrid....") resolved from the
+   localized strings, the topic list showing the authored player prompts
+   ("Is this your note? What does this mean?", "(Walk away)"), and the
+   engine screenshot captures the presented surface. Two headless egui
+   tests pin the response render + topic click and the shared-resume
+   Close; the bin re-selection test pins the click's engine half.
 3. **Objective-completion feedback.** The HUD objective line exists;
    completed→next-objective transitions (stage 36/46/66's pairs) need the
    same live consumer to prove visually.
