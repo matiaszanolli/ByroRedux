@@ -74,7 +74,22 @@ impl Manifest {
         }
 
         let mut names = BTreeSet::new();
-        let mut references = BTreeSet::new();
+        // #4761 — keyed by the OUTPUT each source is written to, not by the
+        // source string: `output_png_path` replaces the extension, so
+        // `wood.dds` and `wood.tga` collide on `wood.png`. One map across
+        // every set also catches a path shared between two sets, which the
+        // old per-set check let through to a mid-batch overwrite.
+        let mut outputs: BTreeMap<PathBuf, String> = BTreeMap::new();
+        let mut claim = |path: &str, owner: String| -> Result<()> {
+            let output = output_png_path(Path::new(""), path)?;
+            if let Some(previous) = outputs.insert(output.clone(), owner.clone()) {
+                bail!(
+                    "{previous} and {owner} both write {}; rename or drop one of them",
+                    output.display()
+                );
+            }
+            Ok(())
+        };
         for set in &self.sets {
             if set.name.trim().is_empty() {
                 bail!("texture-set name must not be empty");
@@ -82,24 +97,18 @@ impl Manifest {
             if !names.insert(set.name.as_str()) {
                 bail!("duplicate texture-set name {:?}", set.name);
             }
-            validate_asset_path(&set.reference)?;
-            if !references.insert(normalize_asset_path(&set.reference)) {
-                bail!("duplicate texture-set reference {:?}", set.reference);
-            }
-            let mut map_paths = BTreeSet::new();
+            claim(
+                &set.reference,
+                format!("the reference {:?} of set {:?}", set.reference, set.name),
+            )?;
             for map in &set.maps {
-                validate_asset_path(&map.path)?;
-                let map_path = normalize_asset_path(&map.path);
-                if map_path == normalize_asset_path(&set.reference) {
-                    bail!(
-                        "map path {:?} duplicates the reference in set {:?}",
-                        map.path,
-                        set.name
-                    );
-                }
-                if !map_paths.insert(map_path) {
-                    bail!("duplicate map path {:?} in set {:?}", map.path, set.name);
-                }
+                claim(
+                    &map.path,
+                    format!(
+                        "the {:?} map {:?} of set {:?}",
+                        map.role, map.path, set.name
+                    ),
+                )?;
             }
         }
         Ok(())
@@ -376,6 +385,56 @@ mod tests {
             output_png_path(Path::new("/tmp/out"), "textures\\wood.dds").unwrap(),
             Path::new("/tmp/out/textures/wood.png")
         );
+    }
+
+    fn set(name: &str, reference: &str, maps: &[&str]) -> TextureSet {
+        TextureSet {
+            name: name.to_string(),
+            reference: reference.to_string(),
+            maps: maps
+                .iter()
+                .map(|path| TextureMap {
+                    role: MapRole::Normal,
+                    path: path.to_string(),
+                })
+                .collect(),
+        }
+    }
+
+    /// #4761 — sources that differ only by extension (or only by case /
+    /// separator) share one `.png` output and must be rejected up front,
+    /// within a set and across sets.
+    #[test]
+    fn manifest_rejects_sources_that_share_an_output_png() {
+        let collisions = [
+            vec![set("a", "textures/wood.dds", &["textures/wood.tga"])],
+            vec![set(
+                "a",
+                "textures/wood.dds",
+                &["textures/n.dds", "Textures\\N.tga"],
+            )],
+            vec![
+                set("a", "textures/wood.dds", &[]),
+                set("b", "textures/metal.dds", &["textures/WOOD.png"]),
+            ],
+            vec![
+                set("a", "textures/a.dds", &["textures/shared_n.dds"]),
+                set("b", "textures/b.dds", &["textures/shared_n.dds"]),
+            ],
+        ];
+        for sets in collisions {
+            let mut manifest = Manifest::discovered(2, Vec::new());
+            manifest.sets = sets;
+            let error = manifest.validate().unwrap_err().to_string();
+            assert!(error.contains("both write"), "{error}");
+        }
+
+        let mut manifest = Manifest::discovered(2, Vec::new());
+        manifest.sets = vec![
+            set("a", "textures/wood.dds", &["textures/wood_n.dds"]),
+            set("b", "textures/metal.dds", &["textures/metal_n.dds"]),
+        ];
+        manifest.validate().unwrap();
     }
 
     #[test]

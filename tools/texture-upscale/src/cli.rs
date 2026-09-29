@@ -1,5 +1,5 @@
 use crate::{load_manifest, run_manifest, save_manifest, Manifest, RunOptions, SourceStack};
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -88,12 +88,32 @@ where
             )
             .with_context(|| format!("run texture manifest {}", manifest.display()))?;
             if dry_run {
-                println!("planned {} texture sets", manifest_data.sets.len());
+                println!(
+                    "planned {} texture sets",
+                    manifest_data.sets.len() - report.failed.len()
+                );
             } else {
                 println!(
                     "upscaled {} texture sets into {}",
                     report.sets.len(),
                     output.display()
+                );
+            }
+            // #4762 — the batch runs to the end, but a partial result is
+            // still a failed run: list each skipped set and exit non-zero.
+            if !report.failed.is_empty() {
+                for failure in &report.failed {
+                    eprintln!("  failed set {:?}: {}", failure.name, failure.error);
+                }
+                bail!(
+                    "{} of {} texture sets failed{}",
+                    report.failed.len(),
+                    manifest_data.sets.len(),
+                    if dry_run {
+                        ""
+                    } else {
+                        "; see texture-upscale-report.json"
+                    }
                 );
             }
         }

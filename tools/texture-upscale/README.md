@@ -52,7 +52,9 @@ args = ["-i", "{input}", "-o", "{output}", "-s", "{scale}"]
 
 Any ESRGAN-family wrapper works if it accepts input/output file arguments.
 Edit `program` and `args`; `{input}`, `{output}`, and `{scale}` are expanded as
-individual process arguments without invoking a shell.
+individual process arguments without invoking a shell. `[upscaler]` is trusted
+input: the manifest names a program the tool will execute, so only run
+manifests you wrote or reviewed.
 
 Inspect the plan:
 
@@ -73,9 +75,16 @@ their combined requirement when they are the same filesystem) and aborts
 without changing files if space is insufficient. `--dry-run` performs the same
 validation and space check but is write-free and never invokes the model.
 
-Existing output is protected unless `--overwrite` is supplied.
+Existing output is protected unless `--overwrite` is supplied. Manifest
+validation also rejects two sources that would write the same `.png` (for
+example `wood.dds` and `wood.tga`), before any work begins.
+
+A set whose sources cannot be loaded or decoded (such as a BC7 DDS), or whose
+upscale fails, is skipped and recorded; the remaining sets still run.
 `texture-upscale-report.json` records every source, role, original size, and
-generated size.
+generated size, plus a `failed` list naming each skipped set and why. Any
+failed set makes the command exit non-zero. An upscaler program that cannot be
+launched at all still stops the run, since it would fail every set.
 
 ## Current format boundary
 

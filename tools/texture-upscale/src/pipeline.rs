@@ -1,9 +1,10 @@
 use crate::guided::{guided_upscale, merge_reference_alpha};
 use crate::space::{ensure_output_and_scratch_space, human_bytes};
-use crate::{output_png_path, Manifest, MapRole, SourceStack};
-use anyhow::{bail, Context, Result};
+use crate::{output_png_path, Manifest, MapRole, SourceStack, TextureSet};
+use anyhow::{anyhow, bail, Context, Result};
 use image::RgbaImage;
 use serde::Serialize;
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::process::Command;
 
@@ -17,6 +18,16 @@ pub struct RunOptions<'a> {
 pub struct RunReport {
     pub scale: u32,
     pub sets: Vec<SetReport>,
+    /// #4762 — sets that could not be processed. One bad texture (e.g. a
+    /// BC7 source) is recorded here and the batch continues, instead of
+    /// discarding every other set's work.
+    pub failed: Vec<SetFailure>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SetFailure {
+    pub name: String,
+    pub error: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -35,11 +46,27 @@ pub struct OutputReport {
     pub output_dimensions: [u32; 2],
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Debug, Default)]
 struct RunEstimate {
     output_bytes: u64,
     scratch_peak_bytes: u64,
     texture_count: usize,
+    /// Sets whose sources failed to load or decode, by manifest index.
+    /// They are left out of the estimate and never reach the upscaler.
+    unreadable: BTreeMap<usize, anyhow::Error>,
+}
+
+/// Why [`process_set`] stopped. Only a failure that would repeat for every
+/// set (the upscaler program cannot be launched at all) ends the batch.
+enum SetError {
+    Fatal(anyhow::Error),
+    Set(anyhow::Error),
+}
+
+impl From<anyhow::Error> for SetError {
+    fn from(error: anyhow::Error) -> Self {
+        SetError::Set(error)
+    }
 }
 
 pub fn run_manifest(
@@ -76,127 +103,37 @@ pub fn run_manifest(
         );
     }
 
+    let mut unreadable = estimate.unreadable;
     let mut report = RunReport {
         scale: manifest.scale,
         sets: Vec::with_capacity(manifest.sets.len()),
+        failed: Vec::new(),
     };
 
     if options.dry_run {
         print_dry_run_commands(manifest, &scratch_root);
+        for (set_index, error) in unreadable {
+            report
+                .failed
+                .push(set_failure(&manifest.sets[set_index].name, &error));
+        }
         return Ok(report);
     }
 
     for (set_index, set) in manifest.sets.iter().enumerate() {
-        let reference_bytes = sources
-            .extract(&set.reference)
-            .with_context(|| format!("load reference for set {:?}", set.name))?;
-        let reference_low = decode_texture(&reference_bytes, &set.reference)?;
-        let set_scratch = tempfile::Builder::new()
-            .prefix(&format!("byro-texture-upscale-{set_index:05}-"))
-            .tempdir_in(&scratch_root)
-            .with_context(|| {
-                format!(
-                    "create texture-upscale scratch in {}",
-                    scratch_root.display()
-                )
-            })?;
-        let set_scratch = set_scratch.path();
-        let upscaler_input = set_scratch.join("reference-input.png");
-        let upscaler_output = set_scratch.join("reference-upscaled.png");
-        reference_low
-            .save(&upscaler_input)
-            .with_context(|| format!("write {}", upscaler_input.display()))?;
-
-        let args =
-            manifest
-                .upscaler
-                .expanded_args(&upscaler_input, &upscaler_output, manifest.scale);
-        let status = Command::new(&manifest.upscaler.program)
-            .args(&args)
-            .status()
-            .with_context(|| {
-                format!(
-                    "launch upscaler {:?}; install it or edit [upscaler] in the manifest",
-                    manifest.upscaler.program
-                )
-            })?;
-        if !status.success() {
-            bail!(
-                "upscaler {:?} failed for set {:?} with status {}",
-                manifest.upscaler.program,
-                set.name,
-                status
-            );
+        if let Some(error) = unreadable.remove(&set_index) {
+            eprintln!("skipping set {:?}: {error:#}", set.name);
+            report.failed.push(set_failure(&set.name, &error));
+            continue;
         }
-        if !upscaler_output.is_file() {
-            bail!(
-                "upscaler succeeded but did not create {}",
-                upscaler_output.display()
-            );
+        match process_set(sources, manifest, &options, &scratch_root, set_index) {
+            Ok(set_report) => report.sets.push(set_report),
+            Err(SetError::Set(error)) => {
+                eprintln!("set {:?} failed: {error:#}", set.name);
+                report.failed.push(set_failure(&set.name, &error));
+            }
+            Err(SetError::Fatal(error)) => return Err(error),
         }
-
-        let reference_high = image::open(&upscaler_output)
-            .with_context(|| format!("decode upscaled reference {}", upscaler_output.display()))?
-            .to_rgba8();
-        let expected_reference_dimensions = scaled_dimensions(
-            reference_low.width(),
-            reference_low.height(),
-            manifest.scale,
-        )?;
-        if reference_high.dimensions() != expected_reference_dimensions {
-            bail!(
-                "upscaler output for {:?} is {:?}, expected {:?}",
-                set.name,
-                reference_high.dimensions(),
-                expected_reference_dimensions
-            );
-        }
-
-        let reference_merged = merge_reference_alpha(
-            &reference_low,
-            &reference_high,
-            manifest.scale,
-            manifest.guide_sigma as f32,
-        );
-        let reference_output = output_png_path(options.output_root, &set.reference)?;
-        save_output(&reference_merged, &reference_output, options.overwrite)?;
-
-        let mut set_report = SetReport {
-            name: set.name.clone(),
-            reference: OutputReport {
-                role: "reference".to_string(),
-                source: set.reference.clone(),
-                output: reference_output.display().to_string(),
-                source_dimensions: [reference_low.width(), reference_low.height()],
-                output_dimensions: [reference_merged.width(), reference_merged.height()],
-            },
-            maps: Vec::with_capacity(set.maps.len()),
-        };
-
-        for map in &set.maps {
-            let map_bytes = sources
-                .extract(&map.path)
-                .with_context(|| format!("load {:?} map {}", map.role, map.path))?;
-            let map_low = decode_texture(&map_bytes, &map.path)?;
-            let map_high = guided_upscale(
-                &reference_low,
-                &reference_high,
-                &map_low,
-                manifest.scale,
-                map.role,
-                manifest.guide_sigma as f32,
-            );
-            let map_output = output_png_path(options.output_root, &map.path)?;
-            save_output(&map_high, &map_output, options.overwrite)?;
-            set_report.maps.push(OutputReport {
-                role: role_name(map.role).to_string(),
-                source: map.path.clone(),
-                output: map_output.display().to_string(),
-                source_dimensions: [map_low.width(), map_low.height()],
-                output_dimensions: [map_high.width(), map_high.height()],
-            });
-        }
-        report.sets.push(set_report);
     }
 
     if !options.dry_run {
@@ -209,6 +146,137 @@ pub fn run_manifest(
             .with_context(|| format!("write report {}", report_path.display()))?;
     }
     Ok(report)
+}
+
+fn set_failure(name: &str, error: &anyhow::Error) -> SetFailure {
+    SetFailure {
+        name: name.to_string(),
+        error: format!("{error:#}"),
+    }
+}
+
+/// Upscale one texture set: the reference through the external model, then
+/// every map guided by it.
+fn process_set(
+    sources: &SourceStack,
+    manifest: &Manifest,
+    options: &RunOptions<'_>,
+    scratch_root: &Path,
+    set_index: usize,
+) -> Result<SetReport, SetError> {
+    let set = &manifest.sets[set_index];
+    let reference_bytes = sources
+        .extract(&set.reference)
+        .with_context(|| format!("load reference for set {:?}", set.name))?;
+    let reference_low = decode_texture(&reference_bytes, &set.reference)?;
+    let set_scratch = tempfile::Builder::new()
+        .prefix(&format!("byro-texture-upscale-{set_index:05}-"))
+        .tempdir_in(scratch_root)
+        .with_context(|| {
+            format!(
+                "create texture-upscale scratch in {}",
+                scratch_root.display()
+            )
+        })?;
+    let set_scratch = set_scratch.path();
+    let upscaler_input = set_scratch.join("reference-input.png");
+    let upscaler_output = set_scratch.join("reference-upscaled.png");
+    reference_low
+        .save(&upscaler_input)
+        .with_context(|| format!("write {}", upscaler_input.display()))?;
+
+    let args = manifest
+        .upscaler
+        .expanded_args(&upscaler_input, &upscaler_output, manifest.scale);
+    let status = Command::new(&manifest.upscaler.program)
+        .args(&args)
+        .status()
+        .map_err(|error| {
+            SetError::Fatal(anyhow!(error).context(format!(
+                "launch upscaler {:?}; install it or edit [upscaler] in the manifest",
+                manifest.upscaler.program
+            )))
+        })?;
+    if !status.success() {
+        return Err(anyhow!(
+            "upscaler {:?} failed for set {:?} with status {}",
+            manifest.upscaler.program,
+            set.name,
+            status
+        )
+        .into());
+    }
+    if !upscaler_output.is_file() {
+        return Err(anyhow!(
+            "upscaler succeeded but did not create {}",
+            upscaler_output.display()
+        )
+        .into());
+    }
+
+    let reference_high = image::open(&upscaler_output)
+        .with_context(|| format!("decode upscaled reference {}", upscaler_output.display()))?
+        .to_rgba8();
+    let expected_reference_dimensions = scaled_dimensions(
+        reference_low.width(),
+        reference_low.height(),
+        manifest.scale,
+    )?;
+    if reference_high.dimensions() != expected_reference_dimensions {
+        return Err(anyhow!(
+            "upscaler output for {:?} is {:?}, expected {:?}",
+            set.name,
+            reference_high.dimensions(),
+            expected_reference_dimensions
+        )
+        .into());
+    }
+
+    let reference_merged = merge_reference_alpha(
+        &reference_low,
+        &reference_high,
+        manifest.scale,
+        manifest.guide_sigma as f32,
+    );
+    let reference_output = output_png_path(options.output_root, &set.reference)?;
+    save_output(&reference_merged, &reference_output, options.overwrite)?;
+
+    let mut set_report = SetReport {
+        name: set.name.clone(),
+        reference: OutputReport {
+            role: "reference".to_string(),
+            source: set.reference.clone(),
+            output: reference_output.display().to_string(),
+            source_dimensions: [reference_low.width(), reference_low.height()],
+            output_dimensions: [reference_merged.width(), reference_merged.height()],
+        },
+        maps: Vec::with_capacity(set.maps.len()),
+    };
+
+    for map in &set.maps {
+        let map_bytes = sources
+            .extract(&map.path)
+            .with_context(|| format!("load {:?} map {}", map.role, map.path))?;
+        let map_low = decode_texture(&map_bytes, &map.path)?;
+        let map_high = guided_upscale(
+            &reference_low,
+            &reference_high,
+            &map_low,
+            manifest.scale,
+            map.role,
+            manifest.guide_sigma as f32,
+        );
+        let map_output = output_png_path(options.output_root, &map.path)?;
+        save_output(&map_high, &map_output, options.overwrite)?;
+        set_report.maps.push(OutputReport {
+            role: role_name(map.role).to_string(),
+            source: map.path.clone(),
+            output: map_output.display().to_string(),
+            source_dimensions: [map_low.width(), map_low.height()],
+            output_dimensions: [map_high.width(), map_high.height()],
+        });
+    }
+    Ok(set_report)
 }
 
 fn preflight_outputs(manifest: &Manifest, options: &RunOptions<'_>) -> Result<()> {
@@ -240,41 +308,60 @@ fn estimate_run_space(sources: &SourceStack, manifest: &Manifest) -> Result<RunE
         ..RunEstimate::default()
     };
 
-    for set in &manifest.sets {
-        let reference_bytes = sources
-            .extract(&set.reference)
-            .with_context(|| format!("preflight reference for set {:?}", set.name))?;
-        let reference = decode_texture(&reference_bytes, &set.reference)?;
-        let reference_low_bytes = encoded_rgba_upper_bound(reference.width(), reference.height())?;
-        let (high_width, high_height) =
-            scaled_dimensions(reference.width(), reference.height(), manifest.scale)?;
-        let reference_high_bytes = encoded_rgba_upper_bound(high_width, high_height)?;
+    for (set_index, set) in manifest.sets.iter().enumerate() {
+        match estimate_set(sources, manifest.scale, set) {
+            Ok(set_estimate) => {
+                estimate.output_bytes = checked_add(
+                    estimate.output_bytes,
+                    set_estimate.output_bytes,
+                    "output estimate",
+                )?;
+                estimate.scratch_peak_bytes = estimate
+                    .scratch_peak_bytes
+                    .max(set_estimate.scratch_peak_bytes);
+                estimate.texture_count += set_estimate.texture_count;
+            }
+            Err(error) => {
+                estimate.unreadable.insert(set_index, error);
+            }
+        }
+    }
+    Ok(estimate)
+}
+
+/// One set's share of [`estimate_run_space`]. An `Err` means the set's
+/// sources cannot be loaded or decoded; the run skips just that set.
+fn estimate_set(sources: &SourceStack, scale: u32, set: &TextureSet) -> Result<RunEstimate> {
+    let mut estimate = RunEstimate::default();
+    let reference_bytes = sources
+        .extract(&set.reference)
+        .with_context(|| format!("preflight reference for set {:?}", set.name))?;
+    let reference = decode_texture(&reference_bytes, &set.reference)?;
+    let reference_low_bytes = encoded_rgba_upper_bound(reference.width(), reference.height())?;
+    let (high_width, high_height) =
+        scaled_dimensions(reference.width(), reference.height(), scale)?;
+    let reference_high_bytes = encoded_rgba_upper_bound(high_width, high_height)?;
+    estimate.output_bytes = reference_high_bytes;
+    estimate.scratch_peak_bytes = checked_add(
+        reference_low_bytes,
+        reference_high_bytes,
+        "scratch estimate",
+    )?;
+    estimate.texture_count = 1;
+
+    for map in &set.maps {
+        let map_bytes = sources
+            .extract(&map.path)
+            .with_context(|| format!("preflight {:?} map {}", map.role, map.path))?;
+        let map_image = decode_texture(&map_bytes, &map.path)?;
+        let (map_width, map_height) =
+            scaled_dimensions(map_image.width(), map_image.height(), scale)?;
         estimate.output_bytes = checked_add(
             estimate.output_bytes,
-            reference_high_bytes,
+            encoded_rgba_upper_bound(map_width, map_height)?,
             "output estimate",
         )?;
-        estimate.scratch_peak_bytes = estimate.scratch_peak_bytes.max(checked_add(
-            reference_low_bytes,
-            reference_high_bytes,
-            "scratch estimate",
-        )?);
         estimate.texture_count += 1;
-
-        for map in &set.maps {
-            let map_bytes = sources
-                .extract(&map.path)
-                .with_context(|| format!("preflight {:?} map {}", map.role, map.path))?;
-            let map_image = decode_texture(&map_bytes, &map.path)?;
-            let (map_width, map_height) =
-                scaled_dimensions(map_image.width(), map_image.height(), manifest.scale)?;
-            estimate.output_bytes = checked_add(
-                estimate.output_bytes,
-                encoded_rgba_upper_bound(map_width, map_height)?,
-                "output estimate",
-            )?;
-            estimate.texture_count += 1;
-        }
     }
     Ok(estimate)
 }
@@ -408,5 +495,115 @@ mod tests {
 
         assert!(report.sets.is_empty());
         assert!(!output.exists());
+    }
+
+    /// `discovered` only forms a set around companion maps; these tests need
+    /// a bare reference.
+    fn reference_only_set(reference: &str) -> TextureSet {
+        TextureSet {
+            name: reference.split('.').next().unwrap().to_string(),
+            reference: reference.to_string(),
+            maps: Vec::new(),
+        }
+    }
+
+    /// A stand-in for the learned upscaler: `cp <prepared 2x png> {output}`.
+    #[cfg(unix)]
+    fn stub_upscaler(dir: &Path, manifest: &mut Manifest) {
+        use std::os::unix::fs::PermissionsExt;
+        let upscaled = dir.join("upscaled-2x.png");
+        RgbaImage::from_pixel(2, 2, image::Rgba([9, 9, 9, 255]))
+            .save(&upscaled)
+            .unwrap();
+        let script = dir.join("stub-upscaler.sh");
+        std::fs::write(&script, "#!/bin/sh\ncp \"$3\" \"$2\"\n").unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        manifest.upscaler.program = script.display().to_string();
+        manifest.upscaler.args = vec![
+            "{input}".to_string(),
+            "{output}".to_string(),
+            upscaled.display().to_string(),
+        ];
+    }
+
+    /// #4762 — one undecodable set (a BC7-style source the built-in decoder
+    /// rejects) is recorded as a per-set failure; the sets before AND after
+    /// it still complete and appear in the report.
+    #[cfg(unix)]
+    #[test]
+    fn one_bad_set_does_not_abort_the_batch() {
+        let fixture = tempfile::tempdir().unwrap();
+        let source_root = fixture.path().join("source");
+        std::fs::create_dir(&source_root).unwrap();
+        for name in ["first.png", "last.png"] {
+            RgbaImage::from_pixel(1, 1, image::Rgba([1, 2, 3, 255]))
+                .save(source_root.join(name))
+                .unwrap();
+        }
+        std::fs::write(source_root.join("broken.dds"), b"DDS not really").unwrap();
+
+        let sources = SourceStack::open(&[source_root]).unwrap();
+        let mut manifest = Manifest::discovered(2, Vec::new());
+        manifest.sets = ["first.png", "broken.dds", "last.png"]
+            .into_iter()
+            .map(reference_only_set)
+            .collect();
+        stub_upscaler(fixture.path(), &mut manifest);
+        let output = fixture.path().join("output");
+
+        let report = run_manifest(
+            &sources,
+            &manifest,
+            RunOptions {
+                output_root: &output,
+                dry_run: false,
+                overwrite: false,
+            },
+        )
+        .unwrap();
+
+        let done: Vec<_> = report.sets.iter().map(|set| set.name.as_str()).collect();
+        assert_eq!(done, ["first", "last"]);
+        assert_eq!(report.failed.len(), 1);
+        assert_eq!(report.failed[0].name, "broken");
+        assert!(
+            report.failed[0].error.contains("broken.dds"),
+            "{:?}",
+            report.failed
+        );
+        assert!(output.join("first.png").is_file());
+        assert!(output.join("last.png").is_file());
+        let json = std::fs::read_to_string(output.join("texture-upscale-report.json")).unwrap();
+        assert!(json.contains("\"failed\"") && json.contains("broken"));
+    }
+
+    /// A missing upscaler program would fail every set identically, so it
+    /// still ends the batch rather than being recorded N times.
+    #[test]
+    fn an_unlaunchable_upscaler_still_aborts_the_batch() {
+        let fixture = tempfile::tempdir().unwrap();
+        let source_root = fixture.path().join("source");
+        std::fs::create_dir(&source_root).unwrap();
+        RgbaImage::from_pixel(1, 1, image::Rgba([1, 2, 3, 255]))
+            .save(source_root.join("tiny.png"))
+            .unwrap();
+        let sources = SourceStack::open(&[source_root]).unwrap();
+        let mut manifest = Manifest::discovered(2, Vec::new());
+        manifest.sets = vec![reference_only_set("tiny.png")];
+        manifest.upscaler.program = "byro-no-such-upscaler-program".to_string();
+        let error = run_manifest(
+            &sources,
+            &manifest,
+            RunOptions {
+                output_root: &fixture.path().join("output"),
+                dry_run: false,
+                overwrite: false,
+            },
+        )
+        .unwrap_err();
+        assert!(
+            format!("{error:#}").contains("launch upscaler"),
+            "{error:#}"
+        );
     }
 }
