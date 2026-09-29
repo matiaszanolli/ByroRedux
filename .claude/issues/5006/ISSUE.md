@@ -1,0 +1,41 @@
+# PAR-D1-2026-09-29-01: HKX #4655's frame bound can be bypassed with one block whose `max_frames_per_block` is about `num_frames`, so the 17 KB → 16M-sample clip still decodes (regression of #4655)
+
+**Labels**: medium,bug,import-pipeline,animation,safety,game:skyrim
+
+**Source report**: `docs/audits/AUDIT_PARSERS_2026-09-29.md`
+
+**Regression of #4655** — the fix for closed #4655 is incomplete; this is filed as a new issue rather than reopening.
+
+- **Severity**: MEDIUM
+- **Dimension**: Size Discipline
+- **Location**: `crates/hkx/src/animation.rs:337-367` (dimension gate), `crates/hkx/src/animation.rs:450-459` (sample expansion)
+- **Status**: Regression of #4655 (incomplete fix, `a323138df`)
+- **Trigger Input**: an `hkaSplineCompressedAnimation` with `num_blocks = 1` and `max_frames_per_block = num_frames + 1` (4,096 at most), where `transform_count × num_frames` sits just under 16,000,000 and all masks are 0 (every track static).
+- **Description**:
+  - The #4655 gate is `num_frames <= num_blocks * (max_frames_per_block - 1) + 1`, with `max_frames_per_block <= 4096` and `num_blocks <= 4096`.
+  - Nothing ties a block's frame count to the bytes that block carries. With all-static masks, a block costs only `transform_count * 4` mask bytes, whatever its frame count.
+  - The regression test `decode_spline_animation_rejects_frames_beyond_the_declared_blocks` uses `max_frames_per_block = 16`, so only the easy case is pinned.
+  - The fix commit states that the 17 KB / 610 MiB clip is closed. It is not.
+- **Evidence** (probe `hkx-frames`; the builder mirrors `packfile::fixtures::PackfileBuilder`'s 64-bit layout):
+  ```
+  tracks=4096 frames=3906 blocks=1 mfpb=3907: file 16873 B -> Ok, 4096 tracks x 3906 frames = 15998976 samples in 1.20 s
+  tracks=99 frames=161616 blocks=40 mfpb=4096: file 16641 B -> Ok, 99 tracks x 161616 frames = 15999984 samples in 1.07 s
+  tracks=8 frames=3906 blocks=2 mfpb=16: file 561 B -> Err(InvalidData("unsupported spline clip dimensions"))
+  VmHWM: 659668 kB
+  ```
+- **Impact**: the same as the original PAR-D1-2026-09-21-02.
+  - The decode itself peaks at about 610 MiB.
+  - The 99-track form binds fully to the vanilla 99-bone skeleton. `convert_hkx_clip` then keeps about 2 GB of keys per clip for the session.
+  - It runs on the main thread (`byroredux/src/asset_provider/animation.rs`) and affects Skyrim only.
+  - The trigger is one mod-overridden `.hkx`, since the last-listed archive wins.
+- **Related**: #4655, #3011, PAR-D1-2026-09-21-02
+- **Suggested Fix**:
+  - Cap `max_frames_per_block` at a measured vanilla ceiling, measured with a quick census of Skyrim SE `Animations.bsa`. The Havok default is 256.
+  - Or bound total output samples by the spline-data bytes actually present.
+  - Add the `blocks=1, mfpb=3907` probe as the regression case.
+
+**Validated at HEAD 9fcfdc3fc**: `decode_spline_animation` gate in `crates/hkx/src/animation.rs` still admits `max_frames_per_block` up to 4096 with the only frames-vs-blocks tie being `num_frames <= num_blocks*(max_frames_per_block-1)+1`; nothing bounds a block's frame count by the bytes it carries (all-static masks cost `transform_count*4` bytes).
+
+## Completeness Checks
+- [ ] **SIBLING**: Same pattern checked in related files (other shader types, other block parsers)
+- [ ] **TESTS**: A regression test pins this specific fix

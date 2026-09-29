@@ -1,0 +1,23 @@
+# CHAR-2026-09-29-D1-02: Starfield's `vital_pools` row names AVIF editor id `O2`; `Starfield.esm`'s oxygen AVIF is `Oxygen` (0x2D5) and no capture line sources the row
+
+**Labels**: low,bug,character,game:starfield
+
+**Source report**: `docs/audits/AUDIT_CHARACTER_2026-09-29.md`
+
+- **Severity**: LOW
+- **Dimension**: Ruleset Seam
+- **Game**: Starfield
+- **Source**: the read-only AVIF EDID scan of `Starfield.esm` (1,107 AVIFs) gives `Health` = 0x2D4, `Oxygen` = 0x2D5, and no `O2`. `charal-starfield-ruleset.md` has no pool or oxygen line at all.
+- **Location**: `crates/core/src/character/profile.rs` (`CharacterRulesProfile::STARFIELD`, `vital_pools: &[("HP", "Health"), ("O2", "O2")]`)
+- **Status**: NEW. `e6ab4afe2` (#4679) moved the value verbatim from the old consumer match; #4679 was about where the roster lives, not whether its values are right.
+- **Description**: The #4453 rule says a profile row for an unwired family may not claim data without a capture line, and this skill extends it to `vital_pools`. The FO76 row satisfies it: `Health`/`ActionPoints` resolve to 0x2D4/0x2D5 in `SeventySix.esm`, and F76:54 sources AP. The Starfield row is both unsourced and wrong: `actor_value_form_id("O2")` resolves nothing, so the bar would silently drop out.
+- **Evidence**: The scan hits `('Oxygen', '0x2d5')`, `('OxygenUseMult', …)`, `('Player_Sprint_O2_DrainRate', …)`; there is no `O2` EDID.
+- **Impact**: Latent. Starfield has `NpcStatModel::None`, so there is no player `ActorValues` and no bars. The wrong key surfaces the day a Starfield seed lands.
+- **Related**: #4453, #4679
+- **Suggested Fix**: Replace the second entry with `("O2", "Oxygen")`, citing the AVIF scan in `charal-starfield-ruleset.md`. Or leave the Starfield roster empty until the capture sources it, with the "blocked, not forgotten" comment.
+
+**Validated at HEAD 9fcfdc3fc**: `CharacterRulesProfile::STARFIELD` in `crates/core/src/character/profile.rs` still carries `vital_pools: &[("HP", "Health"), ("O2", "O2")]`.
+
+## Completeness Checks
+- [ ] **SIBLING**: Same pattern checked in related files (other shader types, other block parsers)
+- [ ] **TESTS**: A regression test pins this specific fix

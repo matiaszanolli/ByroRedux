@@ -1,0 +1,31 @@
+# #5053 — PERF-D3-2026-09-29-01: TextureRegistry::has_any_view_of_path builds up to 16 keyed-path Strings per probe, called per fresh texture by the prefetch planner on the main thread
+
+**Labels**: low, bug, performance, renderer
+
+**Source**: `docs/audits/AUDIT_PERFORMANCE_2026-09-29.md` — finding `PERF-D3-2026-09-29-01`
+
+**Severity**: LOW
+
+**Dimension**: GPU Memory Pressure (texture residency) / Streaming
+
+**Location**: `crates/renderer/src/texture_registry/lookup.rs:67-91`; key builders `texture_registry/mod.rs:1220-1241`; caller `byroredux/src/streaming_helpers.rs:720-725` (`prefetch_import_textures` → `TextureProvider::texture_resident`)
+
+**Status in report**: NEW (`a3632909a`)
+
+## Description
+
+the probe tries 4 clamp modes × {2D, cube} × {sRGB, linear}. Each combination re-runs `normalize_path` (an allocation), formats the clamp digit (another allocation), pushes suffixes, and does a SipHash `path_map` lookup. `any()` stops only on a hit, and the planner exists to find textures that are **not** resident. So the common case runs all 16 combinations, about 48 small allocations per fresh texture, on the main thread inside the budgeted apply slices the prefetch was built to relieve.
+
+## Impact
+
+main-thread allocator traffic proportional to unique textures × fresh models per crossing. Small per call, unmeasured. No quantitative guard exists for this site.
+
+## Suggested Fix
+
+normalize once and rewrite only the suffix in a reused buffer, or keep a secondary `FxHashSet` of normalized resident base paths, maintained beside `path_map`.
+
+Validated at HEAD 9fcfdc3fc: `has_any_view_of_path` (`crates/renderer/src/texture_registry/lookup.rs`) still iterates 4 clamp modes × {D2, Cube} × {Srgb, Linear}, each building a `String` via `texture_keyed_path_with_color_space` against a std `HashMap<String, _>` `path_map`; caller `prefetch_import_textures` → `TextureProvider::texture_resident` (`byroredux/src/streaming_helpers.rs`).
+
+## Completeness Checks
+- [ ] **SIBLING**: Same pattern checked in related files (other `texture_keyed_path*` probe loops in `texture_registry/`)
+- [ ] **TESTS**: A regression test pins this specific fix

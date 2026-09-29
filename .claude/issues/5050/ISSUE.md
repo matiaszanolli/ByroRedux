@@ -1,0 +1,39 @@
+# #5050 — PERF-D7-2026-09-29-01: The #4796 dhat pin fails in roughly half of default-parallel runs, which is how CI runs it
+
+**Labels**: medium, bug, performance, nif-parser, test-gap
+
+**Source**: `docs/audits/AUDIT_PERFORMANCE_2026-09-29.md` — finding `PERF-D7-2026-09-29-01`
+
+**Severity**: MEDIUM
+
+**Dimension**: NIF Parse
+
+**Location**: `crates/nif/tests/heap_allocation_bounds.rs:77-97` (the assertion at `:93`); `.github/workflows/ci.yml:295-299`
+
+**Status in report**: NEW. The test came with `e2f99ad55`, just before the baseline. No issue matches "dhat" or "heap_allocation_bounds flaky" in open or closed issues.
+
+## Description
+
+`bulk_array_allocates_exactly_one_output_buffer` asserts `after.total_blocks - before.total_blocks == 1` around `read_u32_array`. `DHAT_LOCK` serializes the tests' own profilers, but dhat counts every allocation in the process. The libtest harness keeps allocating on other threads (test-thread spawn, output capture, result bookkeeping) while this profiler is live. The six sibling tests assert loose upper bounds and absorb that noise; this test asserts exact equality.
+
+## Evidence
+
+`cargo test -p byroredux-nif --features dhat-heap --test heap_allocation_bounds` failed in 5 of at least 9 parallel runs this session. The captured failure reports `left: 3, right: 1`. With `-- --test-threads=1` it passed 6/6, and it passes when run alone. The `_geometry` and `_import` binaries each passed 6/6.
+
+## Impact
+
+the CI lane guarding NIF parse-allocation hygiene (#832 / #833 / #831 / #408 / #4796) goes red on unrelated commits. That teaches maintainers to re-run or ignore it, which would hide a real return of the scratch copy. It also makes "propose a dhat bound" unreliable for this binary.
+
+## Related
+
+#4796 (closed; its fix is intact, only the pin is flaky), #1763, #4617.
+
+## Suggested Fix
+
+run the dhat binaries single-threaded (`-- --test-threads=1` in `ci.yml` and in the file's doc command), or make `heap_allocation_bounds` a `harness = false` sequential main. Keep the exact-count assertion; it is the only one that can see a scratch copy.
+
+Validated at HEAD 9fcfdc3fc: `bulk_array_allocates_exactly_one_output_buffer` (`crates/nif/tests/heap_allocation_bounds.rs`) still asserts `total_blocks` delta `== 1` under a process-global dhat profiler; `.github/workflows/ci.yml` runs `cargo test -p byroredux-nif --features dhat-heap --test heap_allocation_bounds` with no `--test-threads=1`. Flake rate is from the report (tests not re-run per publish rules).
+
+## Completeness Checks
+- [ ] **SIBLING**: Same pattern checked in related files (`heap_allocation_bounds_geometry` / `_import` binaries; any other exact-count dhat assertion)
+- [ ] **TESTS**: the CI command passes repeatedly (e.g. 10×) with the fix
