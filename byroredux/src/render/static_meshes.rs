@@ -299,6 +299,7 @@ fn is_architecture_glass(material_kind: u32, render_layer: RenderLayer) -> bool 
 ///
 /// Returns the per-frame [`StaticMeshSummary`] — facts the walk already had in
 /// hand, so callers need not rescan `draw_commands` for them.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn collect_static_mesh_draws(
     world: &World,
     frustum: &FrustumPlanes,

@@ -217,6 +217,9 @@ pub(crate) struct SeamStats {
     pub toned_vertices: usize,
 }
 
+/// Mean colour of a texture around a UV (`None` when it cannot be sampled).
+pub(crate) type TextureSampler<'a> = dyn FnMut(&str, [f32; 2]) -> Option<[f32; 3]> + 'a;
+
 /// Blend `mesh`'s cuts into the actor's neighbouring skin. `own_source` is
 /// the part's lower-cased NIF path (its own file is never a neighbour);
 /// `own_texture` its resolved diffuse, `None` to blend normals only.
@@ -226,7 +229,7 @@ pub(crate) fn blend_part_seams(
     own_source: &str,
     own_texture: Option<&str>,
     context: &SeamContext,
-    sample: &mut dyn FnMut(&str, [f32; 2]) -> Option<[f32; 3]>,
+    sample: &mut TextureSampler<'_>,
 ) -> SeamStats {
     let mut stats = SeamStats::default();
     let Some((positions, matrices)) = bind_space(mesh, &context.bone_binds) else {

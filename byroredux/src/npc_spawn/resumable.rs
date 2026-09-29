@@ -253,7 +253,7 @@ impl NpcSpawnJob {
     /// Same phase machine, stripped of everything that would duplicate the
     /// player entity's already-stamped state or add physics presence beside
     /// the Character-mode capsule.
-    pub(crate) fn as_player_body(mut self) -> Self {
+    pub(crate) fn into_player_body(mut self) -> Self {
         self.player_body = true;
         self
     }

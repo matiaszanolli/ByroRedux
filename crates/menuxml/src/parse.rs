@@ -746,6 +746,7 @@ struct TileSeed {
 
 /// Parse one tile element. The open tag has already been consumed by the
 /// caller (`name`/`attrs`/`self_closing` come from it).
+#[allow(clippy::too_many_arguments)]
 fn parse_tile_element(
     name: &str,
     attrs: &str,

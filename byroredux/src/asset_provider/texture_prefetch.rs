@@ -58,6 +58,8 @@ pub(crate) struct PrefetchStore {
 }
 
 /// What [`PrefetchStore::take`] found for a key.
+// `Staged::NotStaged` reads as the negation it is; a rename would only obscure it.
+#[allow(clippy::enum_variant_names)]
 pub(crate) enum Staged {
     Bytes(Vec<u8>),
     Missing,

@@ -308,6 +308,9 @@ struct SceneContent {
     authored_spawn: Option<cell_loader::SpawnPose>,
 }
 
+/// An optional `--camera-pos` / `--camera-forward` style `(x, y, z)`.
+type CameraVec = Option<(f32, f32, f32)>;
+
 /// Turn an interior's authored `coc` pose into the initial camera pose.
 ///
 /// The pose is floor level (feet), so the eye goes where the character
@@ -318,9 +321,9 @@ struct SceneContent {
 fn authored_spawn_camera(
     world: &World,
     authored_spawn: Option<cell_loader::SpawnPose>,
-    camera_pos_override: Option<(f32, f32, f32)>,
-    camera_forward_override: Option<(f32, f32, f32)>,
-) -> (Option<(f32, f32, f32)>, Option<(f32, f32, f32)>) {
+    camera_pos_override: CameraVec,
+    camera_forward_override: CameraVec,
+) -> (CameraVec, CameraVec) {
     let Some(pose) = authored_spawn else {
         return (camera_pos_override, camera_forward_override);
     };

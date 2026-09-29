@@ -254,22 +254,12 @@ fn keep_nearest_chunks(candidates: &mut Vec<ChunkCandidate>, cap: usize) -> u32 
 /// #4607 — the per-frame collection intermediates, caller-owned and
 /// cleared on entry so their allocations persist across exterior frames
 /// (the same pattern the output Vecs already follow).
+#[derive(Default)]
 pub(crate) struct GroundCoverCollectScratch {
     pub(crate) resident_cells: Vec<(EntityCell, [f32; 2])>,
     pub(crate) candidates: Vec<ChunkCandidate>,
     pub(crate) emitted: FxHashMap<usize, u32>,
     pub(crate) disturber_found: Vec<(f32, GpuGroundCoverDisturber)>,
-}
-
-impl Default for GroundCoverCollectScratch {
-    fn default() -> Self {
-        Self {
-            resident_cells: Vec::new(),
-            candidates: Vec::new(),
-            emitted: FxHashMap::default(),
-            disturber_found: Vec::new(),
-        }
-    }
 }
 
 /// Collect this frame's ground-cover scatter input.
@@ -372,7 +362,7 @@ pub(crate) fn collect_groundcover_frame(
     // draw radius silently drop coverage at one edge instead of queuing it.
     // #4798 — `residents` is the residency's persistent buffer (taken, not
     // fresh), handed back at the end of this function.
-    let residents = residency.reconcile(&candidates, delta_seconds);
+    let residents = residency.reconcile(candidates, delta_seconds);
     let mut truncated = 0;
 
     // A cell contributes nothing if none of its chunks survive, so the cell

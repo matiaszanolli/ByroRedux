@@ -169,6 +169,9 @@ struct CsgRouting {
     open: std::collections::HashMap<u32, Option<Arc<CsgArchive>>>,
 }
 
+// A transient return value of `advance`, never stored side by side with
+// others; boxing `Pending` would only add an allocation per budget yield.
+#[allow(clippy::large_enum_variant)]
 pub(super) enum PrecombinedSpawnProgress {
     Pending(PrecombinedSpawnJob),
     Complete { spawned: usize, misses: usize },

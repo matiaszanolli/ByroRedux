@@ -172,7 +172,7 @@ pub(crate) fn attach_player_body(
         log::info!("Player body: game takes neither spawn recipe — staying a bare capsule");
         return;
     }
-    .as_player_body();
+    .into_player_body();
 
     // The interior boot path drops its providers after the cell load; the
     // corpse-appearance loader opens its own the same way. One archive

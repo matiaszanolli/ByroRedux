@@ -586,6 +586,9 @@ pub(crate) struct StreamingCellApplyJob {
     pub(crate) phase: StreamingCellApplyPhase,
 }
 
+// One instance at most (the single `active_apply` slot), so the size gap
+// between phases costs nothing worth a per-transition box.
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum StreamingCellApplyPhase {
     /// Finish pool/material-dependent import work one NIF at a time.
     FinishImports(std::collections::hash_map::IntoIter<String, Option<PartialNifImport>>),

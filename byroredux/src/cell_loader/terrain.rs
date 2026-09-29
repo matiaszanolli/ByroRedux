@@ -90,6 +90,7 @@ type PerQuadrantAlpha = [Option<Vec<f32>>; 4];
 /// `ltex_form_id`; take the minimum `layer` field as the sort key so seam
 /// vertices across quadrants resolve to the same cell-global layer. Caps
 /// at 8 per UESP's LAND format spec; excess is dropped with a warning.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn build_cell_splat_layers(
     ctx: &mut VulkanContext,
     tex_provider: &TextureProvider,
@@ -278,6 +279,7 @@ pub(super) fn base_transition_layers_for_bases(
     transitions.into_iter().collect()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn resolve_cell_splat_layer(
     ctx: &mut VulkanContext,
     tex_provider: &TextureProvider,

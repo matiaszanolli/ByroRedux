@@ -462,8 +462,9 @@ impl Texture {
         {
             Ok(allocation) => allocation,
             Err(error) => {
-                // Allocation failed before the image was bound or referenced
-                // by a command buffer, so the unbound image can be destroyed.
+                // SAFETY: allocation failed before the image was bound or
+                // referenced by a command buffer, so the unbound image can be
+                // destroyed.
                 unsafe { device.destroy_image(image, None) };
                 return Err(error).context("Failed to allocate DDS texture image memory");
             }
@@ -522,6 +523,9 @@ impl Texture {
         } {
             Ok(view) => view,
             Err(error) => {
+                // SAFETY: view creation failed, so nothing references the
+                // image and no command buffer has recorded it yet; it is
+                // destroyed before its memory is freed below.
                 unsafe { device.destroy_image(image, None) };
                 allocator
                     .lock()

@@ -713,13 +713,13 @@ impl VulkanContext {
         // pickup), or skinned poses (`pose_dirty` — a walking NPC's torch
         // shadow). SVGF reuses this signal (#4046), so a set change also
         // drops its parked-camera long history.
-        let caustic_scene_static = !rigid_instance_moved
-            && !(rigid_history_live
+        let caustic_scene_static = !(rigid_instance_moved
+            || (rigid_history_live
                 && rigid_instance_set_changed(
                     rigid_instance_first_sight,
                     self.history.previous_rigid_models.len(),
                     current_rigid_models.len(),
-                ))
+                )))
             && pose_dirty.is_empty()
             && caustic_scene_key == self.prev_caustic_scene_key;
         self.prev_caustic_scene_key = caustic_scene_key;
@@ -1644,7 +1644,7 @@ mod svgf_scene_static_signal_tests {
             "a rigid draw with no previous model must be recorded as first sight (#4943)"
         );
         let fold = src
-            .split_once("let caustic_scene_static = !rigid_instance_moved")
+            .split_once("let caustic_scene_static = !(rigid_instance_moved")
             .expect("the scene-static fold must still start from rigid_instance_moved")
             .1
             .split_once(';')

@@ -91,6 +91,7 @@ fn classify_glass_into_material(
     );
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn classify_glass_into_material_with_provenance(
     material: &mut Material,
     mesh_name: Option<&str>,

@@ -390,10 +390,16 @@ struct FogClusterRef {
     portal: bool,
 }
 
+// Two asserts, not one `&&`: each bound must hold on its own, and clippy's
+// `redundant_comparisons` rejects the conjunction for whichever constant
+// currently happens to be the smaller.
 const _: () = assert!(
-    FOG_VOLUME_CLUSTER_COUNT <= u16::MAX as usize + 1
-        && MAX_GPU_FOG_VOLUMES <= u16::MAX as usize + 1,
-    "FogClusterRef stores cluster and volume indices as u16"
+    FOG_VOLUME_CLUSTER_COUNT <= u16::MAX as usize + 1,
+    "FogClusterRef stores cluster indices as u16"
+);
+const _: () = assert!(
+    MAX_GPU_FOG_VOLUMES <= u16::MAX as usize + 1,
+    "FogClusterRef stores volume indices as u16"
 );
 
 /// What one `build_fog_volume_clusters` call produced.
@@ -1510,6 +1516,7 @@ impl VolumetricsPipeline {
     /// valid and live, `cmd` is in the recording state, the device is not
     /// lost, and the froxel images and bound buffers are not in use by
     /// another in-flight command buffer.
+    #[allow(clippy::too_many_arguments)]
     pub unsafe fn dispatch(
         &mut self,
         device: &ash::Device,

@@ -351,8 +351,7 @@ pub fn decode_spline_animation(bytes: &[u8]) -> Result<HkxAnimation> {
         || sample_count > MAX_TRANSFORM_SAMPLES
         || num_blocks == 0
         || num_blocks > 4096
-        || max_frames_per_block < 2
-        || max_frames_per_block > 4096
+        || !(2..=4096).contains(&max_frames_per_block)
         // #4655 (PAR-D1-2026-09-21-02) — frames must fit in the blocks the
         // file ACTUALLY carries: each block's frames cost real bytes on
         // disk, so `num_frames <= num_blocks * (max_frames_per_block - 1)

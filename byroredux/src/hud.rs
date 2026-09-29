@@ -758,9 +758,7 @@ impl MenuXmlHud {
         camera_forward: [f32; 3],
         control: &HudControl,
     ) -> Option<u32> {
-        if self.render(world, camera_forward, control).is_none() {
-            return None;
-        }
+        self.render(world, camera_forward, control)?;
         // Split borrow: fill the persistent buffer while only `renderer`
         // is borrowed, then hand upload_frame the filled buffer — the
         // method takes &mut self for the rotation, so the pixel source

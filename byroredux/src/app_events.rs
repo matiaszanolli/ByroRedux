@@ -536,7 +536,7 @@ impl ApplicationHandler for App {
                                 // `player.view` console command calls the same
                                 // toggle for smoke gates and byro-dbg sessions.
                                 drop(input);
-                                crate::player_body::toggle_third_person(&mut self.world);
+                                crate::player_body::toggle_third_person(&self.world);
                             } else {
                                 input.keys_held.insert(code);
                             }

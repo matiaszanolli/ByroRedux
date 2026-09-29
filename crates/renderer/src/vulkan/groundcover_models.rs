@@ -496,7 +496,8 @@ impl GroundCoverModelTier {
             .records
             .len()
             .min(GROUNDCOVER_MODEL_MAX_RECORDS as usize);
-        if record_count == 0 || !(input.grid_spacing > 0.0) {
+        // NaN-rejecting: a NaN spacing fails `> 0.0` and must bail too.
+        if record_count == 0 || input.grid_spacing.is_nan() || input.grid_spacing <= 0.0 {
             return false;
         }
         let mut records = input.records[..record_count].to_vec();
