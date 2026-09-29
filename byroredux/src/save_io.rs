@@ -1789,6 +1789,11 @@ pub fn execute_pending_save_loads(
             );
         }
     }
+    // #4815 — the reload picked every NPC's ambient package against the
+    // outgoing session's clock; re-seat against the restored one BEFORE the
+    // overlay below, so the saved procedure state lands on the saved winner
+    // and the first Update tick does not clear it as a package change.
+    crate::npc_spawn::ai_package::reseat_ambient_packages_after_restore(world);
     let remap = byroredux_save::build_form_id_remap(world, &registry, &snapshot);
     match byroredux_save::apply_deltas(world, &registry, &snapshot, &remap, MUTABLE_DELTA_COLUMNS) {
         Ok(applied) => {

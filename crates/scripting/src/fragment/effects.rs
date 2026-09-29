@@ -703,7 +703,10 @@ pub(crate) fn apply_effect(
         | Effect::ExitCart { .. } => {
             apply_vehicle_cinematic_effect(effect, context, vmad, world, deferred)
         }
-        Effect::SetEnemy { .. } | Effect::StartCombat { .. } | Effect::EvaluatePackage { .. } => {
+        Effect::SetEnemy { .. }
+        | Effect::StartCombat { .. }
+        | Effect::StopCombat { .. }
+        | Effect::EvaluatePackage { .. } => {
             apply_ai_combat_effect(effect, context, vmad, world, deferred)
         }
         Effect::AddSpell { actor, spell } | Effect::RemoveSpell { actor, spell } => {
@@ -1497,8 +1500,8 @@ fn apply_vehicle_cinematic_effect(
     }
 }
 
-/// `SetEnemy` / `StartCombat` / `EvaluatePackage` — faction relations,
-/// `AiCombatState` and package re-evaluation.
+/// `SetEnemy` / `StartCombat` / `StopCombat` / `EvaluatePackage` — faction
+/// relations, `AiCombatState` and package re-evaluation.
 ///
 /// #4340 — split out of [`apply_effect`], whose arms are now one-line
 /// delegates. The bodies moved verbatim; every lock they take stays
@@ -1540,6 +1543,13 @@ fn apply_ai_combat_effect(
                         attack_cooldown_remaining: 0.0,
                     },
                 );
+            }
+            None
+        }
+        Effect::StopCombat { actor } => {
+            let actor = resolve_actor(vmad, world, context, actor, &deferred.scene_actor_bindings)?;
+            if let Some(mut states) = world.query_mut::<crate::AiCombatState>() {
+                states.remove(actor);
             }
             None
         }
@@ -1719,6 +1729,7 @@ fn apply_quest_scoped_effect(
         | Effect::RequestSave { .. }
         | Effect::SetEnemy { .. }
         | Effect::StartCombat { .. }
+        | Effect::StopCombat { .. }
         | Effect::AddSpell { .. }
         | Effect::RemoveSpell { .. }
         | Effect::PlayIdle { .. }

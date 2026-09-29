@@ -255,7 +255,10 @@ pub(super) fn register_update_systems(scheduler: &mut Scheduler) {
             .reads::<byroredux_core::ecs::components::FactionRanks>()
             .reads::<byroredux_physics::RapierHandles>()
             .reads::<byroredux_scripting::AiCombatState>()
-            .writes::<byroredux_scripting::AiCombatState>(),
+            .writes::<byroredux_scripting::AiCombatState>()
+            // #4816 — the ambient-combat marker it stamps, ages and drops.
+            .reads::<crate::systems::AmbientEngagement>()
+            .writes::<crate::systems::AmbientEngagement>(),
     );
     // MQ101's dragon-attack/keep-escape combat gate (stages 270+, ROADMAP.md
     // "MQ101 end-to-end playability"): `Effect::StartCombat` arms
@@ -286,10 +289,31 @@ pub(super) fn register_update_systems(scheduler: &mut Scheduler) {
             // through `clear_ambient_behavior`: the runtime winner reset,
             // the seat released and its animation park undone, plus every
             // ambient Behavior/State pair that function removes.
+            .reads::<crate::components::AmbientPackageRuntime>()
             .writes::<crate::components::AmbientPackageRuntime>()
+            .reads::<byroredux_core::ecs::components::Seated>()
             .writes::<byroredux_core::ecs::components::Seated>()
             .writes_resource::<crate::components::SeatReservations>()
             .writes::<byroredux_core::animation::AnimationPlayer>()
+            // #4821 — the pairs themselves, removed through the generic
+            // `remove_component::<T>`, were claimed above but never declared.
+            .writes::<byroredux_core::ecs::components::SandboxBehavior>()
+            .writes::<byroredux_core::ecs::components::WanderBehavior>()
+            .writes::<byroredux_core::ecs::components::WanderState>()
+            .writes::<byroredux_core::ecs::components::TravelBehavior>()
+            .writes::<byroredux_core::ecs::components::TravelState>()
+            .writes::<byroredux_core::ecs::components::Traveled>()
+            .writes::<byroredux_core::ecs::components::FollowBehavior>()
+            .writes::<byroredux_core::ecs::components::FollowState>()
+            .writes::<byroredux_core::ecs::components::EscortBehavior>()
+            .writes::<byroredux_core::ecs::components::EscortState>()
+            .writes::<byroredux_core::ecs::components::Escorted>()
+            .writes::<byroredux_core::ecs::components::GuardBehavior>()
+            .writes::<byroredux_core::ecs::components::GuardState>()
+            .writes::<byroredux_core::ecs::components::PatrolBehavior>()
+            .writes::<byroredux_core::ecs::components::PatrolState>()
+            .writes::<crate::components::WalkStuckTimer>()
+            .writes::<crate::components::NavPath>()
             .writes::<byroredux_scripting::HitEvent>(),
     );
     scheduler.add_exclusive_with_access(

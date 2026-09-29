@@ -270,6 +270,11 @@ pub enum Effect {
     /// `<actor>.StartCombat(<target>)`. See [`crate::AiCombatState`] for
     /// the runtime chase-and-strike behavior this arms.
     StartCombat { actor: ActorRef, target: ActorRef },
+    /// #4816 — `<actor>.StopCombat()`: end the combat [`Self::StartCombat`]
+    /// (or ambient faction hostility) armed on this actor. The ambient
+    /// hostility system may start a fresh one if the actor still sees
+    /// someone it attacks, as the original does.
+    StopCombat { actor: ActorRef },
     /// #4415 — `<actor>.AddSpell(<spell>[, abVerbose])`: put the spell on the
     /// actor's `SpellList`, applying a constant spell's value changes. The
     /// verbose flag only chooses whether a HUD message shows.
@@ -718,6 +723,7 @@ const EFFECT_PRIMITIVES: &[EffectPrimitive] = &[
     prim_request_auto_save,
     prim_set_enemy,
     prim_start_combat,
+    prim_stop_combat,
     prim_add_spell,
     prim_remove_spell,
     prim_play_idle,
@@ -1355,6 +1361,22 @@ fn prim_start_combat(e: &Expr, scope: &Scope) -> Option<Effect> {
         actor,
         target: receiver_actor(&args[0].value.node, scope)?,
     })
+}
+
+/// #4816 — Skyrim's `actor.psc` declares `StopCombat()` with no parameters.
+/// A player receiver declines for the reason [`prim_start_combat`] gives:
+/// the combat runtime this clears is the NPC one, and the player carries
+/// none.
+fn prim_stop_combat(e: &Expr, scope: &Scope) -> Option<Effect> {
+    let (object, args) = method_call(e, "StopCombat")?;
+    if !args.is_empty() {
+        return None;
+    }
+    let actor = receiver_actor(object, scope)?;
+    if actor == ActorRef::Player {
+        return None;
+    }
+    Some(Effect::StopCombat { actor })
 }
 
 /// #4415 — Skyrim's `actor.psc` declares `AddSpell(Spell akSpell, Bool
@@ -3037,6 +3059,35 @@ mod tests {
         ] {
             let expr = call(declined);
             assert_eq!(classify_effect(&expr, &scope), None, "{expr:?}");
+        }
+    }
+
+    /// #4816 — `StopCombat()` on an NPC lowers; with an argument, or on the
+    /// player, it declines.
+    #[test]
+    fn lowers_stop_combat_on_an_npc_only() {
+        let body = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_40()\n\
+             Alias_TrophyRoomPrisoner01.GetActorRef().StopCombat()\n\
+             EndFunction\n",
+        );
+        assert_eq!(
+            lower_fragment(&body),
+            Some(vec![Effect::StopCombat {
+                actor: ActorRef::Object(ObjectRef::Property(
+                    "Alias_TrophyRoomPrisoner01".into()
+                )),
+            }])
+        );
+        for call in [
+            "Game.GetPlayer().StopCombat()",
+            "Alias_TrophyRoomPrisoner01.GetActorRef().StopCombat(Game.GetPlayer())",
+        ] {
+            let body = first_fn_body(&format!(
+                "ScriptName QF extends Quest\nFunction Fragment_41()\n{call}\nEndFunction\n"
+            ));
+            assert_eq!(lower_fragment(&body), None, "{call}");
         }
     }
 

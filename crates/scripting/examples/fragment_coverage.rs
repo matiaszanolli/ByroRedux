@@ -156,6 +156,7 @@ fn effect_kind(e: &Effect) -> &'static str {
         Effect::RequestSave { .. } => "RequestSave",
         Effect::SetEnemy { .. } => "SetEnemy",
         Effect::StartCombat { .. } => "StartCombat",
+        Effect::StopCombat { .. } => "StopCombat",
         Effect::AddSpell { .. } => "AddSpell",
         Effect::RemoveSpell { .. } => "RemoveSpell",
         Effect::PlayIdle { .. } => "PlayIdle",

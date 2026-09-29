@@ -486,6 +486,8 @@ mod system_access_declaration_tests {
     // #4994 — cross-file hops the within-file follower cannot reach.
     const WATER_SRC: &str = include_str!("../../../../crates/physics/src/water.rs");
     const COMBAT_SRC: &str = include_str!("../../combat.rs");
+    const COMBAT_AI_SRC: &str = include_str!("../../systems/combat_ai.rs");
+    const AI_PACKAGE_SRC: &str = include_str!("../../npc_spawn/ai_package.rs");
     const ANIM_CONVERT_SRC: &str = include_str!("../../anim_convert.rs");
 
     /// The nine `add_to_with_access` registrations, each mapped to the
@@ -648,16 +650,24 @@ mod system_access_declaration_tests {
             // #4994 — `world.get::<T>` / `world.has::<T>` take the storage
             // read lock too, and `get_mut::<T>` a write; the scan used to
             // see only the query/resource forms.
+            // #4821 — the ambient/death teardown helpers take the storage
+            // through a generic `query_mut::<T>` the scan cannot resolve
+            // (`T` is the helper's own parameter), so their turbofish call
+            // sites are the acquisition.
+            let generic_write =
+                before.ends_with("remove_component") || before.ends_with("insert_component");
             let is_write = before.ends_with("query_mut")
                 || before.ends_with("resource_mut")
                 || before.ends_with("try_resource_mut")
-                || before.ends_with(".get_mut");
+                || before.ends_with(".get_mut")
+                || generic_write;
             let is_acquire = ["query", "query_mut", "resource", "resource_mut"]
                 .iter()
                 .any(|form| before.ends_with(form) || before.ends_with(&format!("try_{form}")))
                 || [".get", ".get_mut", ".has"]
                     .iter()
-                    .any(|form| before.ends_with(form));
+                    .any(|form| before.ends_with(form))
+                || generic_write;
             if !is_acquire {
                 continue;
             }
@@ -891,6 +901,21 @@ mod system_access_declaration_tests {
              added to the table with the function bodies that make up its \
              acquisition surface (#4064)",
             PARALLEL_SYSTEMS.len()
+        );
+    }
+
+    /// #4821 — `npc_combat_ai_system` suspends each attacker's ambient
+    /// package through `clear_ambient_behavior`, which removes every ambient
+    /// Behavior/State pair through the generic `remove_component::<T>`. Its
+    /// declaration claimed to cover them and declared none.
+    #[test]
+    fn npc_combat_ai_system_declares_everything_it_acquires() {
+        assert_declares_everything_it_acquires(
+            &[
+                (COMBAT_AI_SRC, "npc_combat_ai_system_inner"),
+                (AI_PACKAGE_SRC, "suspend_ambient_behavior_for_combat"),
+            ],
+            "make_npc_combat_ai_system",
         );
     }
 

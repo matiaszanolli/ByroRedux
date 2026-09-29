@@ -973,6 +973,34 @@ fn combat_gate_effects_set_faction_hostility_and_arm_ai_combat_state() {
         relations.reaction(player_faction, stormcloaks),
         Some(CombatReaction::Neutral)
     );
+    drop(relations);
+    drop(combat_state);
+
+    // #4816 — `StopCombat` ends it again, on the same resolved actor.
+    let stop = [Effect::StopCombat {
+        actor: crate::translate::effects::ActorRef::Object(ObjectRef::Property(
+            "Alias_TrophyRoomPrisoner01".into(),
+        )),
+    }];
+    let mut deferred = DeferredFragmentEffects::new(&world);
+    {
+        let (mut stages, mut objectives) =
+            world.resource_2_mut::<QuestStageState, QuestObjectiveState>();
+        apply_effects(
+            &stop,
+            Q,
+            Some(&vmad),
+            &world,
+            &mut stages,
+            &mut objectives,
+            &mut deferred,
+        );
+    }
+    deferred.apply(&world);
+    assert!(
+        world.get::<crate::AiCombatState>(attacker).is_none(),
+        "StopCombat must clear the actor's AiCombatState"
+    );
 }
 
 /// Regression for #2539: lifecycle metadata must come from a snapshot captured

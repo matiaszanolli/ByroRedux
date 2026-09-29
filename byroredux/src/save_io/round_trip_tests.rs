@@ -1456,9 +1456,10 @@ fn npc_spawn_stamped_components_are_saved_or_intentionally_rederived() {
         "SpellList",
     ];
     // Re-derived from static ESM `NPC_` data. Most entries are write-once;
-    // AmbientPackageRuntime is the deliberate exception: its first
-    // post-load tick recomputes the winner from PKID plus restored
-    // clock/CTDA state, so persisting its cached winner is unnecessary.
+    // AmbientPackageRuntime is the deliberate exception: a save load
+    // re-seats the winner from PKID plus restored clock/CTDA state before
+    // the saved procedure state is overlaid (#4815), so persisting its
+    // cached winner is unnecessary.
     //
     // #2947 — CharacterLevel holds only *while no leveling runtime exists*:
     // `npc_spawn.rs` always stamps `CharacterLevel { xp: 0, .. }`, so there
@@ -1480,7 +1481,9 @@ fn npc_spawn_stamped_components_are_saved_or_intentionally_rederived() {
         "CharacterLevel",
         "Background",
         // M42.9 — rebuilt from NPC_.PKID plus the restored clock/CTDA
-        // state on the first ambient-package tick after a cell reload.
+        // state: on a save load by `reseat_ambient_packages_after_restore`
+        // before the procedure-state overlay (#4815), otherwise on the first
+        // ambient-package tick after a cell reload.
         "AmbientPackageRuntime",
         // #4414 — AIDT, immutable authored data re-read through the Use AI
         // Data terminal on every spawn. (`SpellList` is NOT here: AddSpell/

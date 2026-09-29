@@ -45,6 +45,14 @@
 //!   and the nearest visible target is chosen.
 //! - **A faction rank below zero is not membership.** Bethesda content uses
 //!   rank -1 to take an actor out of a faction.
+//! - **Ambient combat ends when contact is lost** (#4816). Each evaluation
+//!   re-checks every combat this system started against the same range and
+//!   sight test that started it; after [`DISENGAGE_GRACE_SECS`] without
+//!   contact the combat is dropped and the actor's package resumes. Neither
+//!   `Skyrim.esm` nor `FalloutNV.esm` authors a lose-target time (FNV's
+//!   `iCombatTargetLostRemoveSearchCount` counts searches, and the search
+//!   behaviour itself is not modelled). A script's `StartCombat` is never
+//!   dropped this way; `StopCombat` ends it.
 
 use byroredux_core::ecs::components::{Dead, FactionRanks, GlobalTransform};
 use byroredux_core::ecs::resource::Resource;
@@ -61,6 +69,29 @@ use byroredux_sdk::relationships::{CombatReaction, FactionRelationshipCatalog};
 /// perception decision, and re-deciding it every frame for every NPC buys
 /// nothing a player could see.
 pub(crate) const EVALUATION_PERIOD_SECS: f32 = 0.5;
+
+/// Engine policy (#4816, see the module doc): seconds a combat this system
+/// started may go without its target in range and in sight before it is
+/// dropped. Long enough that a pillar or a doorway does not end a fight,
+/// short enough that a pursuer gives up long before it crosses a cell.
+pub(crate) const DISENGAGE_GRACE_SECS: f32 = 10.0;
+
+/// #4816 — marks an `AiCombatState` this system started, with the target it
+/// started against and how long that target has been out of contact.
+///
+/// A combat whose current target differs (a script re-targeted it) or whose
+/// `AiCombatState` is gone (target died, `StopCombat`, death) is no longer
+/// ambient, and the marker is dropped. Not saved: `AiCombatState` is not
+/// either, and ambient combat is re-derived after a load.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct AmbientEngagement {
+    pub(crate) target: EntityId,
+    pub(crate) out_of_contact_secs: f32,
+}
+
+impl Component for AmbientEngagement {
+    type Storage = SparseSetStorage<Self>;
+}
 
 /// An NPC's `AIDT` combat disposition, stamped at spawn from the resolved
 /// "Use AI Data" terminal. Only actors that carry it perceive and start
@@ -215,6 +246,7 @@ fn faction_hostility_system_inner(world: &World, dt: f32, scratch: &mut Hostilit
     if scratch.elapsed < EVALUATION_PERIOD_SECS {
         return;
     }
+    let period = scratch.elapsed;
     scratch.elapsed = 0.0;
 
     let Some(config) = world.try_resource::<DetectionConfig>().map(|c| *c) else {
@@ -311,15 +343,26 @@ fn faction_hostility_system_inner(world: &World, dt: f32, scratch: &mut Hostilit
         .try_resource::<crate::cell_loader::load_order::GlobalFormIdResolver>()
         .map(|resolver| resolver.faction_relationships())
         .unwrap_or_default();
-    let fighting: Vec<EntityId> = world
-        .query::<AiCombatState>()
-        .map(|q| q.iter().map(|(entity, _)| entity).collect())
-        .unwrap_or_default();
     let player_body = player.and_then(|player| {
         world
             .query::<byroredux_physics::RapierHandles>()
             .and_then(|handles| handles.get(player).map(|h| h.body))
     });
+    // No physics world (tests, physics-less scenes) means nothing occludes.
+    // The physics guard is taken per cast and never overlaps a storage guard
+    // (#3580).
+    let in_sight = |from: Vec3, to: Vec3| {
+        !world
+            .try_resource::<byroredux_physics::PhysicsWorld>()
+            .is_some_and(|physics| physics.line_of_sight_blocked(from, to, player_body))
+    };
+
+    disengage_lost_contact(world, actors, range, period, &in_sight);
+
+    let fighting: Vec<EntityId> = world
+        .query::<AiCombatState>()
+        .map(|q| q.iter().map(|(entity, _)| entity).collect())
+        .unwrap_or_default();
 
     for (perceiver_index, perceiver) in actors.iter().enumerate() {
         let Some(disposition) = perceiver.disposition else {
@@ -351,21 +394,10 @@ fn faction_hostility_system_inner(world: &World, dt: f32, scratch: &mut Hostilit
             continue;
         }
         candidates.sort_by(|a, b| a.0.total_cmp(&b.0));
-        // Nearest target in sight. The physics guard is taken per cast and
-        // never overlaps a storage guard (#3580). No physics world (tests,
-        // physics-less scenes) means nothing occludes.
+        // Nearest target in sight.
         let target = candidates.iter().find_map(|&(_, target_index)| {
             let target = &actors[target_index];
-            let blocked = world
-                .try_resource::<byroredux_physics::PhysicsWorld>()
-                .is_some_and(|physics| {
-                    physics.line_of_sight_blocked(
-                        perceiver.sight_point,
-                        target.sight_point,
-                        player_body,
-                    )
-                });
-            (!blocked).then_some(target.entity)
+            in_sight(perceiver.sight_point, target.sight_point).then_some(target.entity)
         });
         if let Some(target) = target {
             starts.push((perceiver.entity, target));
@@ -376,15 +408,112 @@ fn faction_hostility_system_inner(world: &World, dt: f32, scratch: &mut Hostilit
         return;
     }
     if let Some(mut states) = world.query_mut::<AiCombatState>() {
+        starts.retain(|&(attacker, target)| {
+            if states.get(attacker).is_some() {
+                return false;
+            }
+            states.insert(
+                attacker,
+                AiCombatState {
+                    target,
+                    attack_cooldown_remaining: 0.0,
+                },
+            );
+            true
+        });
+    }
+    // #4816 — remember which combats this system started, in its own scope
+    // (no two storage guards overlap).
+    if let Some(mut engagements) = world.query_mut::<AmbientEngagement>() {
         for &(attacker, target) in starts.iter() {
-            if states.get(attacker).is_none() {
-                states.insert(
-                    attacker,
-                    AiCombatState {
-                        target,
-                        attack_cooldown_remaining: 0.0,
-                    },
-                );
+            engagements.insert(
+                attacker,
+                AmbientEngagement {
+                    target,
+                    out_of_contact_secs: 0.0,
+                },
+            );
+        }
+    }
+}
+
+/// #4816 — end ambient combats whose target has been out of range or out of
+/// sight for [`DISENGAGE_GRACE_SECS`]. `period` is the time since the last
+/// evaluation. Contact is the same test that starts combat: both actors
+/// alive with a transform (so present in `actors`), within `range`, and in
+/// sight. Only combats carrying a current [`AmbientEngagement`] are touched.
+fn disengage_lost_contact(
+    world: &World,
+    actors: &[ActorSnapshot],
+    range: f32,
+    period: f32,
+    in_sight: &dyn Fn(Vec3, Vec3) -> bool,
+) {
+    let engagements: Vec<(EntityId, AmbientEngagement)> = world
+        .query::<AmbientEngagement>()
+        .map(|q| q.iter().map(|(entity, e)| (entity, *e)).collect())
+        .unwrap_or_default();
+    if engagements.is_empty() {
+        return;
+    }
+    let current_targets: Vec<Option<EntityId>> = world
+        .query::<AiCombatState>()
+        .map(|q| {
+            engagements
+                .iter()
+                .map(|(entity, _)| q.get(*entity).map(|state| state.target))
+                .collect()
+        })
+        .unwrap_or_else(|| vec![None; engagements.len()]);
+    let sight_point = |entity: EntityId| {
+        actors
+            .iter()
+            .find(|actor| actor.entity == entity)
+            .map(|actor| actor.sight_point)
+    };
+
+    // `None` drops the marker; `Some(secs)` keeps it with the new timer.
+    let mut updates: Vec<(EntityId, Option<f32>)> = Vec::with_capacity(engagements.len());
+    let mut disengage: Vec<EntityId> = Vec::new();
+    for ((entity, engagement), current) in engagements.into_iter().zip(current_targets) {
+        if current != Some(engagement.target) {
+            updates.push((entity, None));
+            continue;
+        }
+        let contact = match (sight_point(entity), sight_point(engagement.target)) {
+            (Some(from), Some(to)) => from.distance(to) <= range && in_sight(from, to),
+            _ => false,
+        };
+        let lost = if contact {
+            0.0
+        } else {
+            engagement.out_of_contact_secs + period
+        };
+        if lost >= DISENGAGE_GRACE_SECS {
+            disengage.push(entity);
+            updates.push((entity, None));
+        } else {
+            updates.push((entity, Some(lost)));
+        }
+    }
+    if !disengage.is_empty() {
+        if let Some(mut states) = world.query_mut::<AiCombatState>() {
+            for entity in &disengage {
+                states.remove(*entity);
+            }
+        }
+    }
+    if let Some(mut markers) = world.query_mut::<AmbientEngagement>() {
+        for (entity, lost) in updates {
+            match lost {
+                Some(secs) => {
+                    if let Some(marker) = markers.get_mut(entity) {
+                        marker.out_of_contact_secs = secs;
+                    }
+                }
+                None => {
+                    markers.remove(entity);
+                }
             }
         }
     }
@@ -524,6 +653,7 @@ mod tests {
     fn fixture() -> World {
         let mut world = World::new();
         world.register::<AiCombatState>();
+        world.register::<AmbientEngagement>();
         world.register::<CombatDisposition>();
         world.insert_resource(identity());
         world.insert_resource(FactionRelations::default());
@@ -577,6 +707,113 @@ mod tests {
 
     fn run_once(world: &World) {
         make_faction_hostility_system()(world, EVALUATION_PERIOD_SECS);
+    }
+
+    fn move_to(world: &World, entity: EntityId, at: Vec3) {
+        world
+            .query_mut::<GlobalTransform>()
+            .unwrap()
+            .get_mut(entity)
+            .unwrap()
+            .translation = at;
+    }
+
+    /// #4816 — an ambient combat whose target leaves range ends after
+    /// `DISENGAGE_GRACE_SECS` without contact, not before; a contact regained
+    /// inside the grace window resets the clock.
+    #[test]
+    fn ambient_combat_disengages_after_the_grace_period_out_of_contact() {
+        let mut world = fixture();
+        let hunter = spawn_actor(
+            &mut world,
+            Vec3::ZERO,
+            BANDITS,
+            Some(disposition(Aggression::Frenzied)),
+        );
+        let prey = spawn_actor(
+            &mut world,
+            Vec3::X * 50.0,
+            GUARDS,
+            Some(disposition(Aggression::Unaggressive)),
+        );
+        let mut system = make_faction_hostility_system();
+        system(&world, EVALUATION_PERIOD_SECS);
+        assert_eq!(world.get::<AiCombatState>(hunter).map(|s| s.target), Some(prey));
+        assert_eq!(
+            world.get::<AmbientEngagement>(hunter).map(|e| e.target),
+            Some(prey)
+        );
+
+        let far = Vec3::X * 1.0e6;
+        let evaluations = (DISENGAGE_GRACE_SECS / EVALUATION_PERIOD_SECS) as usize;
+        // Out of range for most of the window, then back: the clock resets.
+        move_to(&world, prey, far);
+        for _ in 0..evaluations - 1 {
+            system(&world, EVALUATION_PERIOD_SECS);
+        }
+        assert!(world.get::<AiCombatState>(hunter).is_some(), "inside the grace window");
+        move_to(&world, prey, Vec3::X * 50.0);
+        system(&world, EVALUATION_PERIOD_SECS);
+        assert_eq!(
+            world.get::<AmbientEngagement>(hunter).map(|e| e.out_of_contact_secs),
+            Some(0.0),
+            "regained contact resets the clock"
+        );
+
+        move_to(&world, prey, far);
+        for _ in 0..evaluations - 1 {
+            system(&world, EVALUATION_PERIOD_SECS);
+        }
+        assert!(world.get::<AiCombatState>(hunter).is_some());
+        system(&world, EVALUATION_PERIOD_SECS);
+        assert!(
+            world.get::<AiCombatState>(hunter).is_none(),
+            "a full grace period out of contact ends ambient combat"
+        );
+        assert!(world.get::<AmbientEngagement>(hunter).is_none());
+    }
+
+    /// #4816 — only combats this system started disengage. A scripted
+    /// `StartCombat` (no marker), or one a script re-targeted, is left alone
+    /// however long its target stays away.
+    #[test]
+    fn scripted_combat_never_disengages_on_lost_contact() {
+        let mut world = fixture();
+        let calm = Some(disposition(Aggression::Unaggressive));
+        let scripted = spawn_actor(&mut world, Vec3::ZERO, BANDITS, calm);
+        let target = spawn_actor(&mut world, Vec3::X * 1.0e6, GUARDS, calm);
+        let retargeted = spawn_actor(&mut world, Vec3::Z * 10.0, BANDITS, calm);
+        world.insert(
+            scripted,
+            AiCombatState {
+                target,
+                attack_cooldown_remaining: 0.0,
+            },
+        );
+        world.insert(
+            retargeted,
+            AiCombatState {
+                target,
+                attack_cooldown_remaining: 0.0,
+            },
+        );
+        // A stale marker from an ambient combat against someone else.
+        world.insert(
+            retargeted,
+            AmbientEngagement {
+                target: scripted,
+                out_of_contact_secs: DISENGAGE_GRACE_SECS,
+            },
+        );
+        let mut system = make_faction_hostility_system();
+        system(&world, DISENGAGE_GRACE_SECS * 2.0);
+        for actor in [scripted, retargeted] {
+            assert_eq!(world.get::<AiCombatState>(actor).map(|s| s.target), Some(target));
+        }
+        assert!(
+            world.get::<AmbientEngagement>(retargeted).is_none(),
+            "the stale marker is dropped, not acted on"
+        );
     }
 
     /// #4826 — a corpse neither perceives nor is perceived. Every dead actor

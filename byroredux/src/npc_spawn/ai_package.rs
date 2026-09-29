@@ -610,6 +610,22 @@ pub(super) fn apply_ai_package_behavior(
     }
 }
 
+/// #4815 — re-seat every ambient package against the *restored* clock and
+/// quest state, before a save load overlays the saved procedure columns.
+///
+/// The reload spawns NPCs while the outgoing session's `GameTimeRes` and
+/// quest state are still live, so `apply_ai_package_behavior` picks each
+/// winner against the wrong clock. Left alone, the first Update tick
+/// re-selects against the restored clock, sees a different winner, and
+/// `clear_ambient_behavior` deletes the `WanderState`/`TravelState`/
+/// `Traveled`/`GuardState`/`PatrolState`/`Escorted` the delta overlay just
+/// restored. Running the selection here instead installs the saved winner's
+/// behavior first, so the overlay lands on it and the first tick finds no
+/// change. It also stamps the evaluation minute, so that tick is gated out.
+pub(crate) fn reseat_ambient_packages_after_restore(world: &World) {
+    ambient_ai_package_system(world, 0.0);
+}
+
 /// M42.9 / #2652 — reevaluate ambient NPC package stacks.
 ///
 /// Scheduled immediately before `scene_package_system`: this system observes
@@ -977,6 +993,58 @@ mod tests {
                 .active_package_form_id,
             Some(0x200)
         );
+    }
+
+    /// #4815 — the audit probe `audit_probe_saved_travel_progress_depends_
+    /// on_live_clock`, kept as the regression. A save load spawns at the
+    /// live hour, restores the saved hour, then overlays the saved procedure
+    /// state. With the re-seat between the restore and the overlay, the
+    /// saved `Traveled` survives the first tick; without it (the control
+    /// arm) the first tick sees a package change and clears it.
+    #[test]
+    fn save_load_reseat_keeps_overlaid_procedure_state_across_clocks() {
+        let packages = || {
+            vec![
+                pack(
+                    0x100,
+                    PROCEDURE_SANDBOX,
+                    Some(PackSchedule {
+                        start_hour: Some(8),
+                        duration_hours: 12,
+                    }),
+                ),
+                pack(
+                    0x200,
+                    PROCEDURE_TRAVEL,
+                    Some(PackSchedule {
+                        start_hour: Some(20),
+                        duration_hours: 2,
+                    }),
+                ),
+            ]
+        };
+        for reseat in [true, false] {
+            // Spawned against the live session's 10:00 clock.
+            let (world, actor) = setup_actor(10.0, packages());
+            assert!(world.has::<SandboxBehavior>(actor));
+            // restore_resources installs the saved 21:00 clock.
+            world.resource_mut::<GameTimeRes>().set_hour(21.0);
+            if reseat {
+                reseat_ambient_packages_after_restore(&world);
+            }
+            // apply_deltas overlays the saved procedure state.
+            world.query_mut::<Traveled>().unwrap().insert(actor, Traveled);
+            // First Update tick.
+            ambient_ai_package_system(&world, 0.0);
+            assert_eq!(
+                world.has::<Traveled>(actor),
+                reseat,
+                "reseat={reseat}: the saved Traveled must survive only with the re-seat"
+            );
+            if reseat {
+                assert!(world.has::<TravelBehavior>(actor));
+            }
+        }
     }
 
     #[test]

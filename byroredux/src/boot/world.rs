@@ -361,6 +361,9 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     world.register::<byroredux_core::ecs::components::PatrolBehavior>();
     world.register::<byroredux_core::ecs::components::PatrolState>();
     world.register::<crate::components::AmbientPackageRuntime>();
+    // #4816 — `faction_hostility_system` inserts it through a `query_mut`
+    // guard, which cannot create a storage.
+    world.register::<crate::systems::AmbientEngagement>();
 
     // #3319 — EX-16 item 3 Phase 3/4: the single-tile NAVM path cache. Every
     // pathed procedure reads it via `query::<NavPath>()` and writes it via

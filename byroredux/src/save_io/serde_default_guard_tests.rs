@@ -657,10 +657,14 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // #4819 — refreshed WITH a major bump (v29 -> v30): `ReferenceState`
     // (inside `PersistentReferenceStates`) gained the required `spells`
     // field, with no `serde(default)`.
+    // #4816 — refreshed WITHOUT a major bump: `Effect::StopCombat` joined
+    // `Effect`, the #4140-corrected `Effect::SetEnemy`/`StartCombat` case
+    // above — externally tagged by variant name, so a new variant still
+    // decodes every earlier tail.
     // The source scope is limited to saved derives and registered save roots;
     // inspect-only files no longer affect this hash (#4755 debug visibility
     // does not change the on-disk schema).
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xb821_c8ac_295c_9b16;
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x6ce9_b855_d1d5_bcc5;
     // ---- earlier refresh history (kept for the false-positive record) ----
     // 2026-09-21 (W2.10 flip) — refreshed WITHOUT a major bump, the same
     // `VisibilityMask` tuple-struct sweep class as the two entries below:
