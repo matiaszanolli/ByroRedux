@@ -1,0 +1,7 @@
+# actionlint config. Custom labels of the self-hosted runners:
+# `byroredux-game-data` carries the game installs (real-data-gates.yml,
+# rt-correctness.yml); `byroredux-rt` carries an RT-capable GPU.
+self-hosted-runner:
+  labels:
+    - byroredux-game-data
+    - byroredux-rt

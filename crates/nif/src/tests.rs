@@ -118,7 +118,6 @@ fn nif_scene_struct_carries_truncated_field() {
         recovered_by_guess: 0,
         link_errors: 0,
         drift_histogram: std::collections::BTreeMap::new(),
-        stubbed_drift_histogram: std::collections::BTreeMap::new(),
         opaque_tail_histogram: std::collections::BTreeMap::new(),
         havok_scale: 7.0,
         bsver: 0,

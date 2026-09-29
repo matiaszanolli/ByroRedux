@@ -2,7 +2,8 @@
 //! decoded `bhk*Constraint` motor-tail drift assertion
 //! (`byroredux_nif::corpus::is_known_constraint_motor_tail_drift`).
 //!
-//! `is_havok_constraint_stub` (`crates/nif/src/lib.rs`) used to suppress
+//! `is_havok_constraint_stub` (formerly in `crates/nif/src/lib.rs`, removed
+//! by #4626 once no reachable type was left on it) used to suppress
 //! stream-drift telemetry for nine constraint type names, including four
 //! (`bhkRagdollConstraint`, `bhkLimitedHingeConstraint`,
 //! `bhkHingeConstraint`, `bhkMalleableConstraint`) that had since grown
@@ -28,8 +29,7 @@ mod common;
 use byroredux_nif::corpus::is_known_constraint_motor_tail_drift;
 use common::{open_all_mesh_archives, Game};
 
-/// The `bhk*Constraint` types with typed CInfo decoders (see
-/// `is_havok_constraint_stub`'s #3713 note in `lib.rs`).
+/// The `bhk*Constraint` types with typed CInfo decoders (#3713, #4212).
 ///
 /// #4212 added the last three. They differ from the five above in having
 /// no motor field at all, so their expected residual is 0 rather than a

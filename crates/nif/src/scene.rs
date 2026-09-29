@@ -91,11 +91,6 @@ pub struct NifScene {
     /// produce an empty histogram — the runtime-size-cache drift
     /// detector at `parse_nif` handles them separately (#395).
     ///
-    /// Havok constraint stub block types (`bhkHingeConstraint` & al, see
-    /// `is_havok_constraint_stub` in `lib.rs`) are intentionally
-    /// excluded — they under-consume by design (#117) and would
-    /// otherwise drown the histogram on every actor spawn.
-    ///
     /// Drives the `nif_stats --drift-histogram` aggregation across full
     /// archive walks: a clean parse rate can paper over byte-level
     /// parser drift, so the histogram surfaces "this block type's
@@ -103,30 +98,12 @@ pub struct NifScene {
     /// otherwise only show up as a much-later downstream block reading
     /// garbage. See #939.
     pub drift_histogram: BTreeMap<String, BTreeMap<i64, u32>>,
-    /// Parallel histogram for blocks intentionally skipped from
-    /// [`Self::drift_histogram`] because their parser is a known
-    /// stub — Havok constraint CInfos (`bhkHingeConstraint`,
-    /// `bhkRagdollConstraint`, et al; see `is_havok_constraint_stub`
-    /// in `lib.rs`).
-    ///
-    /// These under-consume by design (#117) and would otherwise
-    /// flood the real histogram with ~45 systematic drift entries
-    /// per actor spawn, drowning real-parser drift signals. They
-    /// land here instead so audit telemetry (`nif_stats
-    /// --drift-histogram`) can still spot a stub regression
-    /// (constraint type drifts from its expected stub size) without
-    /// the noise polluting the per-parser-correctness signal.
-    ///
-    /// Empty for files that don't touch any Havok constraints (most
-    /// non-actor / non-skeleton meshes). See NIF-D3-NEW-06 (audit
-    /// 2026-05-12).
-    pub stubbed_drift_histogram: BTreeMap<String, BTreeMap<i64, u32>>,
     /// Per-block-type histogram of OPAQUE TRAILING BYTES captured rather than
     /// parsed: `opaque_tail_histogram[type][len]` = how many blocks of `type`
     /// captured a tail of exactly `len` bytes (#2625).
     ///
-    /// This is the third histogram because the tail capture is a blind spot in
-    /// the other two, not a variant of them. A block that reads
+    /// This is the second histogram because the tail capture is a blind spot in
+    /// [`Self::drift_histogram`], not a variant of it. A block that reads
     /// `block_size - consumed` into a `starfield_tail` makes consumed equal
     /// block_size by construction, so its drift is always exactly zero and
     /// `drift_histogram` records nothing — no matter how much of the block the
@@ -187,7 +164,6 @@ impl Default for NifScene {
             recovered_by_guess: 0,
             link_errors: 0,
             drift_histogram: BTreeMap::new(),
-            stubbed_drift_histogram: BTreeMap::new(),
             opaque_tail_histogram: BTreeMap::new(),
             // Default to the TES4/FO3/FNV scale — tests + test fixtures
             // that build `NifScene::default()` (no header) get the
@@ -435,7 +411,6 @@ mod validate_refs_tests {
             recovered_by_guess: 0,
             link_errors: 0,
             drift_histogram: BTreeMap::new(),
-            stubbed_drift_histogram: BTreeMap::new(),
             opaque_tail_histogram: BTreeMap::new(),
             havok_scale: 7.0,
             bsver: 0,
@@ -459,7 +434,6 @@ mod validate_refs_tests {
             recovered_by_guess: 0,
             link_errors: 0,
             drift_histogram: BTreeMap::new(),
-            stubbed_drift_histogram: BTreeMap::new(),
             opaque_tail_histogram: BTreeMap::new(),
             havok_scale: 7.0,
             bsver: 0,
@@ -480,7 +454,6 @@ mod validate_refs_tests {
             recovered_by_guess: 0,
             link_errors: 0,
             drift_histogram: BTreeMap::new(),
-            stubbed_drift_histogram: BTreeMap::new(),
             opaque_tail_histogram: BTreeMap::new(),
             havok_scale: 7.0,
             bsver: 0,
@@ -509,7 +482,6 @@ mod validate_refs_tests {
             recovered_by_guess: 0,
             link_errors: 0,
             drift_histogram: BTreeMap::new(),
-            stubbed_drift_histogram: BTreeMap::new(),
             opaque_tail_histogram: BTreeMap::new(),
             havok_scale: 7.0,
             bsver: 0,
@@ -536,7 +508,6 @@ mod validate_refs_tests {
             recovered_by_guess: 0,
             link_errors: 0,
             drift_histogram: BTreeMap::new(),
-            stubbed_drift_histogram: BTreeMap::new(),
             opaque_tail_histogram: BTreeMap::new(),
             havok_scale: 7.0,
             bsver: 0,
@@ -559,7 +530,6 @@ mod validate_refs_tests {
             recovered_by_guess: 0,
             link_errors: 0,
             drift_histogram: BTreeMap::new(),
-            stubbed_drift_histogram: BTreeMap::new(),
             opaque_tail_histogram: BTreeMap::new(),
             havok_scale: 7.0,
             bsver: 0,

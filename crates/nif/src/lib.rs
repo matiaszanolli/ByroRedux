@@ -160,43 +160,6 @@ fn is_animation_block(type_name: &str) -> bool {
     )
 }
 
-/// Return true for the Havok constraint block types whose parsers are
-/// still NAME-ONLY stubs — they consume only the 16-byte
-/// `bhkConstraintCInfo` base and delegate the rest of the payload to the
-/// outer block_sizes reconciliation path (#117).
-///
-/// The stubs are correct — every skeleton NIF contains 10–50 constraint
-/// blocks and all of them under-consume by design. Without this list
-/// the reconciliation path would fire a `warn!` for each, drowning
-/// real parser-drift signals in an actor-spawn log (#462).
-///
-/// #3713 — `bhkRagdollConstraint` / `bhkLimitedHingeConstraint` /
-/// `bhkHingeConstraint` (#3330) / `bhkMalleableConstraint` /
-/// `bhkPrismaticConstraint` (#3792) now have *typed* CInfo decoders
-/// (`blocks::collision::constraints.rs`) and were REMOVED from this list:
-/// keeping a decoded type here routed its residual into
-/// `stubbed_drift_histogram` instead of the real `drift_histogram`,
-/// which is exactly what hid the historic `bhkHingeConstraint` +128
-/// under-read (a whole missing parser, not the intended motor tail) from
-/// every drift-based audit until #3330 found it by hand. The five decoded
-/// types under-read by design too — the trailing `bhkConstraintMotorCInfo`
-/// is left for `block_size` recovery — but now that under-read is a
-/// small, known, per-type set of values
-/// ([`corpus::is_known_constraint_motor_tail_drift`]), assertable instead
-/// of suppressed. Over-reads in the typed decoders are additionally pinned
-/// by exact-consumption assertions in `bhk_constraint_tests.rs`
-/// (`stream.position() == 16 + prefix`).
-fn is_havok_constraint_stub(type_name: &str) -> bool {
-    // #4212 — `bhkBallAndSocketConstraint`, `bhkStiffSpringConstraint` and
-    // `bhkBallSocketConstraintChain` left this list when they gained typed
-    // CInfo decoders. Each consumes its whole body, so suppressing their
-    // drift would now hide real parser drift rather than a by-design tail.
-    // `bhkGenericConstraint` stays: nif.xml carries no field spec for it
-    // (only the name), so there is nothing to decode against and its
-    // under-read is genuinely by design.
-    matches!(type_name, "bhkGenericConstraint")
-}
-
 /// Whether this file's blocks carry their type name inline (as a sized
 /// string per block) rather than through the header's global block-type
 /// table. #4257 — keyed directly off the same version threshold
@@ -235,7 +198,6 @@ struct DispatchedBlocks {
     recovered_blocks: usize,
     recovered_by_guess: usize,
     drift_histogram: std::collections::HashMap<String, std::collections::HashMap<i64, u32>>,
-    stubbed_drift_histogram: std::collections::HashMap<String, std::collections::HashMap<i64, u32>>,
     /// #2625 — opaque trailing bytes captured per block type. Keyed by length,
     /// not signed drift: these blocks have zero drift by construction.
     opaque_tail_histogram: std::collections::HashMap<String, std::collections::HashMap<usize, u32>>,
@@ -338,23 +300,8 @@ fn dispatch_blocks(
         String,
         std::collections::HashMap<i64, u32>,
     > = std::collections::HashMap::new();
-    // Parallel histogram for blocks intentionally skipped from
-    // `drift_histogram` because the parser is a known stub (Havok
-    // constraint CInfos — see `is_havok_constraint_stub`). The real
-    // histogram excludes these so a future audit running
-    // `nif_stats --drift-histogram` doesn't see ~45 systematic
-    // under-reads per skeleton load and falsely conclude
-    // constraints parse cleanly. Surfacing them separately means
-    // the same audit can still spot a new stub regression
-    // (constraint type drifts from its expected stub size) without
-    // polluting the real-parser signal. See NIF-D3-NEW-06 (audit
-    // 2026-05-12).
-    let mut stubbed_drift_histogram: std::collections::HashMap<
-        String,
-        std::collections::HashMap<i64, u32>,
-    > = std::collections::HashMap::new();
-    // #2625 — third histogram, because the tail capture is a blind spot in the
-    // other two rather than a variant of them: a block that reads
+    // #2625 — second histogram, because the tail capture is a blind spot in the
+    // other one rather than a variant of it: a block that reads
     // `block_size - consumed` into a tail has zero drift by construction.
     let mut opaque_tail_histogram: std::collections::HashMap<
         String,
@@ -509,52 +456,27 @@ fn dispatch_blocks(
                 if let Some(size) = block_size {
                     let consumed = stream.position() - start_pos;
                     if consumed != size as u64 {
-                        // Havok constraint stubs (per #117) intentionally
-                        // read only the 16-byte `bhkConstraintCInfo` base
-                        // and let the block_sizes table reconcile the
-                        // payload. These under-consumes are by design and
-                        // fire on every skeleton NIF load (~45 warnings
-                        // per actor — see #462). Downgrade the known-stub
-                        // case to `trace!` so real parser drift stays
-                        // visible. The finished constraint parsers will
-                        // remove this exception entirely.
-                        if is_havok_constraint_stub(type_name) {
-                            log::trace!(
-                                "Block {} '{}': stub consumed {}/{} bytes (block_size reconciled).",
-                                i,
-                                type_name,
-                                consumed,
-                                size,
-                            );
-                            // Record into the parallel `stubbed_drift_
-                            // histogram` so audit telemetry can see the
-                            // stub under-reads without contaminating the
-                            // real drift signal. See NIF-D3-NEW-06.
-                            let drift = size as i64 - consumed as i64;
-                            bump_hist(&mut stubbed_drift_histogram, type_name, drift);
-                        } else {
-                            // #565: downgraded from `warn!` — the
-                            // per-NIF summary at the end of this
-                            // function rolls these into a single
-                            // `warn!` line. Per-block detail stays
-                            // visible at `debug!` for parser-author
-                            // debugging. #939: log the signed drift
-                            // explicitly so per-block grep'ing
-                            // (`drift=+1`) picks out the canonical
-                            // 1-byte-short `NiTexturingProperty`
-                            // pattern without arithmetic.
-                            let drift = size as i64 - consumed as i64;
-                            log::debug!(
-                                "Block {} '{}': declared={} consumed={} drift={:+} — adjusting position.",
-                                i,
-                                type_name,
-                                size,
-                                consumed,
-                                drift,
-                            );
-                            bump_counter(&mut drifted_by_type, type_name);
-                            bump_hist(&mut drift_histogram, type_name, drift);
-                        }
+                        // #565: downgraded from `warn!` — the
+                        // per-NIF summary at the end of this
+                        // function rolls these into a single
+                        // `warn!` line. Per-block detail stays
+                        // visible at `debug!` for parser-author
+                        // debugging. #939: log the signed drift
+                        // explicitly so per-block grep'ing
+                        // (`drift=+1`) picks out the canonical
+                        // 1-byte-short `NiTexturingProperty`
+                        // pattern without arithmetic.
+                        let drift = size as i64 - consumed as i64;
+                        log::debug!(
+                            "Block {} '{}': declared={} consumed={} drift={:+} — adjusting position.",
+                            i,
+                            type_name,
+                            size,
+                            consumed,
+                            drift,
+                        );
+                        bump_counter(&mut drifted_by_type, type_name);
+                        bump_hist(&mut drift_histogram, type_name, drift);
                         // #4159 — `set_position` doesn't bounds-check, unlike
                         // `skip()`. Rewind to the (already-visited, in-bounds)
                         // block start and use the bounds-checked `skip` to
@@ -890,7 +812,6 @@ fn dispatch_blocks(
         recovered_blocks,
         recovered_by_guess,
         drift_histogram,
-        stubbed_drift_histogram,
         opaque_tail_histogram,
     })
 }
@@ -910,7 +831,6 @@ fn finalize_scene(
         recovered_blocks,
         recovered_by_guess,
         drift_histogram,
-        stubbed_drift_histogram,
         opaque_tail_histogram,
     } = dispatched;
 
@@ -951,17 +871,6 @@ fn finalize_scene(
         .into_iter()
         .map(|(type_name, inner)| (type_name, inner.into_iter().collect()))
         .collect();
-    // Same hashmap → btreemap conversion for the stubbed signal —
-    // see `scene_drift_histogram` above. Visible alongside the
-    // real histogram so `nif_stats --drift-histogram` can opt in.
-    let scene_stubbed_drift_histogram: std::collections::BTreeMap<
-        String,
-        std::collections::BTreeMap<i64, u32>,
-    > = stubbed_drift_histogram
-        .into_iter()
-        .map(|(type_name, inner)| (type_name, inner.into_iter().collect()))
-        .collect();
-
     let scene_opaque_tail_histogram: std::collections::BTreeMap<
         String,
         std::collections::BTreeMap<usize, u32>,
@@ -979,7 +888,6 @@ fn finalize_scene(
         recovered_by_guess,
         link_errors: 0,
         drift_histogram: scene_drift_histogram,
-        stubbed_drift_histogram: scene_stubbed_drift_histogram,
         opaque_tail_histogram: scene_opaque_tail_histogram,
         havok_scale: havok_scale_for(header),
         bsver: header.user_version_2,

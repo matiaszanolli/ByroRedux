@@ -64,6 +64,8 @@ impl BhkRigidBody {
 
         let bsver = stream.bsver();
 
+        // #4627: a deliberate `>=` band, wider than nif.xml's `#BS_FO4#`
+        // (== 130) — see `parse_fo4_cinfo2014` for why and what is verified.
         if bsver >= crate::version::bsver::FALLOUT4 {
             return Self::parse_fo4_cinfo2014(stream);
         }
@@ -321,12 +323,24 @@ impl BhkRigidBody {
     /// chain yielded garbage mass/friction/motion_type feeding straight
     /// into the PHYSAL solver's Static/Dynamic/Keyframed classification.
     ///
-    /// Layout derived purely from nif.xml per this project's no-guessing
-    /// policy — not corpus-verified byte-for-byte the way the Havok
-    /// packfile decoder in this same directory is, since CInfo2014's
-    /// wire shape isn't independently cross-checkable the way a
-    /// self-describing container's internal offsets are. A fixture built
-    /// from this exact field layout is pinned below.
+    /// The *field order* is nif.xml's; the *version gate* is not (#4627).
+    /// nif.xml selects `CInfo2014` only at `#BS_FO4#` (`bsver == 130`) and
+    /// sends every other `bsver >= Skyrim` — Fallout 76 (155) and
+    /// Starfield (172+) included — to `CInfo2010`
+    /// (`#BS_GTE_SKY# #AND# (!#BS_FO4#)`). This decoder instead takes the
+    /// whole `bsver >= FALLOUT4` band, on the premise that FO76 and
+    /// Starfield carry FO4's Havok 2014 runtime rather than reverting to
+    /// Skyrim's.
+    ///
+    /// Neither reading is verified above 130: vanilla FO4, FO76 and
+    /// Starfield ship **no** `bhkRigidBody` blocks at all (their physics is
+    /// `bhkPhysicsSystem` / `BhkSystemBinary`), so the only real coverage is
+    /// the third-party `bsver == 130` content — six blocks, all decoding
+    /// nif.xml's defaults with zero drift, where nifly's 39-byte FO4 tail
+    /// would drift 13 bytes. If a `bsver > 130` `bhkRigidBody` ever turns
+    /// up, check its `block_size` drift before trusting either layout, and
+    /// split this gate into per-version arms if it diverges. A fixture
+    /// built from this exact field layout is pinned below.
     fn parse_fo4_cinfo2014(stream: &mut NifStream) -> io::Result<Self> {
         // bhkWorldObject: shape ref + havok filter + world object CInfo (20 B)
         let shape_ref = stream.read_block_ref()?;

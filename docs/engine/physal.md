@@ -154,8 +154,10 @@ through **three wrappers** (bare, `bhkMalleableConstraint`-wrapped, and
 > its whole body and its stream drift is 0. That is why #4212 also removed them
 > from `is_havok_constraint_stub`: with nothing left unread, suppressing their
 > drift telemetry would hide real parser drift rather than a by-design tail. The
-> one type still in that list is `bhkGenericConstraint`, for which nif.xml carries
-> a name and no field spec at all.
+> one type left in that list, `bhkGenericConstraint` (nif.xml carries a name and
+> no field spec), has no dispatch arm and always lands as `NiUnknown` with an exact
+> `block_size` skip, so #4626 deleted the list and its `stubbed_drift_histogram`
+> altogether.
 >
 > `bhkMalleableConstraint` with an inner type outside this table still reads its
 > base, skips its fixed payload, and stays `BhkConstraintData::Other`.

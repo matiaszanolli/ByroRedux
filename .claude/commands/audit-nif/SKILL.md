@@ -224,9 +224,11 @@ parses then silently drops collision; *nif_shape_dispatch_resolve_parity*);
 - **Constraint CInfo**: typed decoders exist for hinge (into `LimitedHingeCInfo`), limited
   hinge, prismatic, ragdoll, ball-and-socket, stiff-spring and the ball-socket chain
   (`BhkConstraintData`; `BhkBreakableConstraint` and malleable wrappers decode the inner
-  CInfo). Only `bhkGenericConstraint` remains a name-only stub
-  (`is_havok_constraint_stub` in `lib.rs` — its drift is suppressed; anything else on that
-  list hides real drift, the mechanism that hid `bhkHingeConstraint`'s +128). By-design
+  CInfo). `bhkGenericConstraint` has no dispatch arm (nif.xml gives only its name), so it
+  lands as `NiUnknown` with an exact `block_size` skip. There is no drift-suppression list
+  any more (#4626 removed `is_havok_constraint_stub` / `stubbed_drift_histogram`); any
+  constraint drift lands in the real `drift_histogram` — suppression is the mechanism that
+  hid `bhkHingeConstraint`'s +128, so do not reintroduce it. By-design
   residuals are pinned by `corpus::is_known_constraint_motor_tail_drift` (1/18/19/26;
   malleable +4; the three no-motor types exactly 0). *Decoded is not imported*: the ragdoll
   importer (`import/collision/ragdoll.rs`) still declines ball-and-socket / spring / chain

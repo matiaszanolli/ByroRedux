@@ -33,6 +33,7 @@ on:
           - oblivion
           - fo3
           - fnv
+          - skyrim_le
           - skyrim_se
           - fo4
           - fo76
@@ -40,47 +41,67 @@ on:
           - parsers
 
 jobs:
+  # #4619 — GitHub evaluates `jobs.<id>.if` before it expands the matrix, so a
+  # job-level `if:` that reads `matrix.game` makes the whole file unparseable
+  # (every push produced a 0-job failed run and nothing was ever scheduled).
+  # The per-title selection is therefore done here, on a hosted runner, and
+  # handed to `corpus` as a JSON matrix.
+  select:
+    name: select corpus titles
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.pick.outputs.matrix }}
+    steps:
+      - id: pick
+        env:
+          EVENT: ${{ github.event_name }}
+          GAME: ${{ inputs.game }}
+          SKYRIMLE_DATA: ${{ vars.BYROREDUX_SKYRIMLE_DATA }}
+        run: |
+          set -euo pipefail
+          # `env_var` / `data_dir` follow `crates/nif/tests/common/mod.rs`
+          # (`Game::env_var` / `Game::default_path`); `filter` is the
+          # space-separated set of libtest substrings (OR'd) covering that
+          # title's `parse_rate_*`, `per_block_baseline_*` and
+          # `unknown_ceiling_*` tests — including the `*_all_meshes` gates,
+          # whose names use the short `fo4` / `fo76` spelling.
+          rows='[
+            {"game":"oblivion","env_var":"BYROREDUX_OBLIVION_DATA","data_dir":"Oblivion/Data","filter":"oblivion"},
+            {"game":"fo3","env_var":"BYROREDUX_FO3_DATA","data_dir":"Fallout 3 goty/Data","filter":"fallout_3"},
+            {"game":"fnv","env_var":"BYROREDUX_FNV_DATA","data_dir":"Fallout New Vegas/Data","filter":"fallout_nv"},
+            {"game":"skyrim_le","env_var":"BYROREDUX_SKYRIMLE_DATA","data_dir":"","filter":"skyrim_le"},
+            {"game":"skyrim_se","env_var":"BYROREDUX_SKYRIMSE_DATA","data_dir":"Skyrim Special Edition/Data","filter":"skyrim_se"},
+            {"game":"fo4","env_var":"BYROREDUX_FO4_DATA","data_dir":"Fallout 4/Data","filter":"fallout_4 fo4_all_meshes"},
+            {"game":"fo76","env_var":"BYROREDUX_FO76_DATA","data_dir":"Fallout76/Data","filter":"fallout_76 fo76_all_meshes"},
+            {"game":"starfield","env_var":"BYROREDUX_STARFIELD_DATA","data_dir":"Starfield/Data","filter":"starfield"}
+          ]'
+          if [ "${EVENT}" = "schedule" ] || [ "${GAME}" = "all" ]; then
+            want=all
+          else
+            want="${GAME}"
+          fi
+          # The 2011 Skyrim release is not a Steam-root install (it lives in a
+          # Wine prefix on the reference machine), so its path comes from its
+          # own variable. Named, not silent, when that variable is unset.
+          if [ -z "${SKYRIMLE_DATA}" ]; then
+            echo "::warning::BYROREDUX_SKYRIMLE_DATA is unset; skipping the skyrim_le corpus gates"
+            rows=$(jq -c 'map(select(.game != "skyrim_le"))' <<<"${rows}")
+          fi
+          matrix=$(jq -c --arg want "${want}" \
+            'map(select($want == "all" or .game == $want))' <<<"${rows}")
+          echo "matrix=${matrix}" >> "${GITHUB_OUTPUT}"
+          echo "selected: ${matrix}"
+
   corpus:
     name: ${{ matrix.game }} corpus gates
-    if: github.event_name == 'schedule' || inputs.game == 'all' || inputs.game == matrix.game
+    needs: select
+    if: needs.select.outputs.matrix != '[]'
     runs-on: [self-hosted, linux, x64, byroredux-game-data]
     timeout-minutes: 180
     strategy:
       fail-fast: false
       matrix:
-        # `env_var` / `data_dir` follow `crates/nif/tests/common/mod.rs`
-        # (`Game::env_var` / `Game::default_path`); `filter` is the libtest
-        # substring shared by that title's `parse_rate_*`,
-        # `per_block_baseline_*` and `unknown_ceiling_*` tests.
-        include:
-          - game: oblivion
-            env_var: BYROREDUX_OBLIVION_DATA
-            data_dir: Oblivion/Data
-            filter: oblivion
-          - game: fo3
-            env_var: BYROREDUX_FO3_DATA
-            data_dir: Fallout 3 goty/Data
-            filter: fallout_3
-          - game: fnv
-            env_var: BYROREDUX_FNV_DATA
-            data_dir: Fallout New Vegas/Data
-            filter: fallout_nv
-          - game: skyrim_se
-            env_var: BYROREDUX_SKYRIMSE_DATA
-            data_dir: Skyrim Special Edition/Data
-            filter: skyrim_se
-          - game: fo4
-            env_var: BYROREDUX_FO4_DATA
-            data_dir: Fallout 4/Data
-            filter: fallout_4
-          - game: fo76
-            env_var: BYROREDUX_FO76_DATA
-            data_dir: Fallout76/Data
-            filter: fallout_76
-          - game: starfield
-            env_var: BYROREDUX_STARFIELD_DATA
-            data_dir: Starfield/Data
-            filter: starfield
+        include: ${{ fromJSON(needs.select.outputs.matrix) }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -89,7 +110,7 @@ jobs:
         env:
           GAME: ${{ matrix.game }}
           ENV_VAR: ${{ matrix.env_var }}
-          DATA_DIR: ${{ vars.BYROREDUX_GAMES_ROOT }}/${{ matrix.data_dir }}
+          DATA_DIR: ${{ matrix.game == 'skyrim_le' && vars.BYROREDUX_SKYRIMLE_DATA || format('{0}/{1}', vars.BYROREDUX_GAMES_ROOT, matrix.data_dir) }}
           FILTER: ${{ matrix.filter }}
           # #3850 — an absent corpus panics the resolver instead of skipping.
           BYROREDUX_REQUIRE_GAME_DATA: "1"
@@ -101,11 +122,13 @@ jobs:
           echo "${ENV_VAR}=${DATA_DIR}"
           mkdir -p target/real-data-gates
           log="target/real-data-gates/${GAME}.log"
+          # FILTER is a space-separated list; libtest ORs positional filters.
+          read -r -a filters <<<"${FILTER}"
           cargo test --release -p byroredux-nif \
             --test parse_real_nifs \
             --test per_block_baselines \
             --test block_coverage_baselines \
-            -- --ignored --test-threads=1 --nocapture "${FILTER}" 2>&1 | tee "${log}"
+            -- --ignored --test-threads=1 --nocapture "${filters[@]}" 2>&1 | tee "${log}"
           # libtest treats a filter that matches nothing as a green no-op —
           # refuse that the same way #3850 refuses a data-less green.
           ran=$(grep -c '^test .* \.\.\. ok$' "${log}" || true)

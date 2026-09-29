@@ -50,10 +50,9 @@ pub fn per_block_tsv_header(total: usize, clean_truncated: Option<(usize, usize)
 }
 
 /// Known-good stream-drift values for the five `bhk*Constraint` types
-/// with typed CInfo decoders (see `is_havok_constraint_stub`'s #3713
-/// note in `lib.rs` — `bhkRagdollConstraint`, `bhkLimitedHingeConstraint`,
-/// `bhkHingeConstraint`, `bhkMalleableConstraint`,
-/// `bhkPrismaticConstraint`) — the by-design "motor left for `block_size`
+/// with typed CInfo decoders (#3713 — `bhkRagdollConstraint`,
+/// `bhkLimitedHingeConstraint`, `bhkHingeConstraint`,
+/// `bhkMalleableConstraint`, `bhkPrismaticConstraint`) — the by-design "motor left for `block_size`
 /// recovery" tail, characterised byte-for-byte against nif.xml's
 /// `bhkConstraintMotorCInfo` (1-byte `hkMotorType` discriminator +
 /// conditional payload):
@@ -199,8 +198,8 @@ mod tests {
     /// The negative half is the one that matters: a motor-tail value must
     /// be *rejected* for these three. A 1-byte under-read on a constraint
     /// with no motor-type byte to read is real drift, and accepting it
-    /// would hand back exactly the blindness `is_havok_constraint_stub`
-    /// used to give these types before they were decoded.
+    /// would hand back exactly the blindness the (since-removed, #4626)
+    /// `is_havok_constraint_stub` suppression list used to give these types before they were decoded.
     #[test]
     fn motorless_constraint_types_accept_only_a_zero_residual() {
         for ty in [
