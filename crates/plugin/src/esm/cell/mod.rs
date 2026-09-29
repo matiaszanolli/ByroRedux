@@ -559,6 +559,19 @@ pub struct PlacedRef {
     /// item placement authored as a stack of `n` (vanilla: 2–50, e.g. FO3's
     /// stacks of 12 rounds). `None` when absent — a single item.
     pub item_count: Option<u32>,
+    /// Record-header "Initially Disabled" flag (0x800, #4813): the placement
+    /// loads disabled until a script `Enable()`s it. Census of refs carrying
+    /// it with no `XESP` (so the state is unambiguous): 149 non-actor refs on
+    /// FNV, 440 on Skyrim, 168 on Oblivion, plus hundreds of hostile actors.
+    /// The cell loader treats it as the reference's authored default, which
+    /// a scripted `Enable()`/`Disable()` in `ReferenceEnableState` overrides.
+    pub initially_disabled: bool,
+    /// `ACHR` "Starts Dead" flag (0x200, #4814): an authored corpse. Set only
+    /// for `ACHR` on the 24-byte-header family; Skyrim (1 123 refs) and FO4
+    /// (1 178) use it for every placed corpse, FO3/FNV ship none. Oblivion
+    /// is excluded because xEdit's citation for the bit is the TES5 ACHR
+    /// list and no Oblivion source was checked.
+    pub starts_dead: bool,
 }
 
 /// Lock state decoded from a REFR's `XLOC` sub-record.

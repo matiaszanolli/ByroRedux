@@ -97,6 +97,19 @@ fn record_inflation_ceiling(compressed_len: usize) -> usize {
 /// of a magic number.
 pub const FLAG_VISIBLE_WHEN_DISTANT: u32 = 0x00010000;
 
+/// Placed-reference flag: "Initially Disabled" (#4813). The reference loads
+/// disabled until a script `Enable()`s it — quest-gated items, doors and
+/// actors. xEdit flag bit 11 (`wbDefinitionsTES5.pas:3112`), the same bit on
+/// every game this engine reads. Decoded onto `PlacedRef::initially_disabled`.
+pub(crate) const FLAG_INITIALLY_DISABLED: u32 = 0x0000_0800;
+
+/// `ACHR` flag: "Starts Dead" (#4814). xEdit's TES5 ACHR flag list gives
+/// `9, 'Starts Dead'` (`wbDefinitionsTES5.pas:3110`); Skyrim and FO4 set it on
+/// every placed corpse. Only meaningful on `ACHR` — the same bit is a
+/// different flag on other record types — and decoded only for the 24-byte
+/// header family; see `PlacedRef::starts_dead`.
+pub(crate) const FLAG_STARTS_DEAD: u32 = 0x0000_0200;
+
 /// Maximum number of nested GRUP bodies any recursive ESM walker may enter.
 /// Vanilla files stay below five levels; 64 leaves generous headroom while
 /// preventing adversarial plugins from exhausting the native stack (#3237).

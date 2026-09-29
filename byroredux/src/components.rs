@@ -88,6 +88,23 @@ impl Component for DoorTeleport {
     type Storage = SparseSetStorage<Self>;
 }
 
+/// Marker on a placement root spawned *disabled* — a scripted `Disable()`
+/// or the authored "Initially Disabled" flag (#3278 / #4813) — so it carries
+/// its identity and payloads (`DoorTeleport`, `Locked`, `Inventory`) but no
+/// mesh or collider.
+///
+/// #4820 — interaction reads this, not only the live `ReferenceEnableState`
+/// ledger. A runtime `Enable()` clears the ledger entry, but there is no live
+/// re-spawn, so the root stays invisible and non-solid until its cell next
+/// loads; without the marker it became an invisible Open/Take prompt and a
+/// door that still teleported. Stamped at spawn, never saved: the reload
+/// re-derives it from the same inputs.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct PlacementContentWithheld;
+impl Component for PlacementContentWithheld {
+    type Storage = SparseSetStorage<Self>;
+}
+
 /// Marker component for "FX" decorative meshes (`effects/fx*`, `fxsoftglow`,
 /// `fxpartglow`, `fxparttiny`, `fxlightrays`) that the renderer drops on
 /// the floor. Lifted from a per-draw, per-frame substring scan over the

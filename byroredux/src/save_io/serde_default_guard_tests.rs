@@ -618,7 +618,7 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // types are all on `registry_completeness_tests.rs`'s
     // `NOT_SAVED_BY_DESIGN` allowlist (rebuilt from XCWT/WATR/GRAS at cell or
     // worldspace entry), so no snapshot has ever contained either shape.
-    const BASELINE_MAJOR: u16 = 28;
+    const BASELINE_MAJOR: u16 = 29;
     // #4465 — refreshed WITH a major bump (v24 -> v25). `ReferenceState`
     // gained the required `picked_up` tombstone field (the durable half of
     // the P3 `PickedUp` marker, carried through the registered
@@ -650,10 +650,14 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // (a `Vec<FactionReactionOverride>` of directed `FormRef` pairs and a
     // raw reaction, `crates/scripting/src/combat.rs`) joined the saved
     // registry as a new resource column.
+    // #4813 — refreshed WITH a major bump (v28 -> v29):
+    // `ReferenceEnableState` gained the required `enabled` set (a scripted
+    // `Enable()` is recorded so it can override a placement's authored
+    // "Initially Disabled" flag), with no `serde(default)`.
     // The source scope is limited to saved derives and registered save roots;
     // inspect-only files no longer affect this hash (#4755 debug visibility
     // does not change the on-disk schema).
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x0b0b_5903_0412_4229;
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xd626_7c4e_65e4_d624;
     // ---- earlier refresh history (kept for the false-positive record) ----
     // 2026-09-21 (W2.10 flip) — refreshed WITHOUT a major bump, the same
     // `VisibilityMask` tuple-struct sweep class as the two entries below:

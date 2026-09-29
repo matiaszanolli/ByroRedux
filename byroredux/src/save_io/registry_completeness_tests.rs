@@ -614,6 +614,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("CurrentCellRoot", "tracks the interior placement-root entity, set fresh by load_cell_with_masters and cleared by execute_pending before each cell load"),
         ("DebugLoadArchiveSet", "debug cell.load console-command bookkeeping (#2078), outside the normal single-launch CLI path"),
         ("DoorTeleport", "XTEL destination data, rederived identically from the plugin's parsed REFR every cell load"),
+        ("PlacementContentWithheld", "marker on a placement root spawned disabled (#4820), re-stamped every cell load from the same inputs that withheld the content — the saved ReferenceEnableState ledger and the REFR's authored Initially Disabled flag"),
         ("FootstepConfig", "engine-wide footstep sound configuration loaded once at startup from a vanilla BSA"),
         ("WaterAudioConfig", "engine-wide water sound configuration loaded from the archive at startup; audio assets are re-resolved, not gameplay save state"),
         ("WaterAudioState", "per-frame ripple-audio cooldown derived from transient SplashEvent/RippleEvent markers"),

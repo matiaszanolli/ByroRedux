@@ -1289,3 +1289,69 @@ fn unmeasured_placed_types_still_fall_through_to_skip() {
 // Cell-side last-write-wins semantics on every map, with the
 // exterior_cells nested map merging per-worldspace so a DLC
 // adding a new worldspace doesn't stomp the base game's table.
+
+/// Re-stamp a built 24-byte-header record's type and header flags.
+fn with_header(mut record: Vec<u8>, record_type: &[u8; 4], flags: u32) -> Vec<u8> {
+    record[0..4].copy_from_slice(record_type);
+    record[8..12].copy_from_slice(&flags.to_le_bytes());
+    record
+}
+
+/// #4813 — the record-header "Initially Disabled" bit (0x800) reaches the
+/// placement on every placed-reference record type; a clear header does not
+/// fabricate it.
+#[test]
+fn initially_disabled_header_flag_is_decoded() {
+    for record_type in [b"REFR", b"ACHR"] {
+        let refr = parse_one_refr(&with_header(
+            build_refr_with_subs(0x1234, &[]),
+            record_type,
+            0x800,
+        ));
+        assert!(refr.initially_disabled, "{:?}", record_type);
+        assert!(!refr.starts_dead, "0x800 is not Starts Dead");
+    }
+    let live = parse_one_refr(&build_refr_with_subs(0x1234, &[]));
+    assert!(!live.initially_disabled);
+}
+
+/// #4814 — "Starts Dead" (0x200) is an `ACHR` flag: decoded there, and
+/// never read off a `REFR` (where the bit means something else) or off the
+/// 20-byte Oblivion family the TES5 citation does not cover.
+#[test]
+fn starts_dead_is_decoded_only_for_tes5_family_achr() {
+    let corpse = parse_one_refr(&with_header(
+        build_refr_with_subs(0x1234, &[]),
+        b"ACHR",
+        0x200,
+    ));
+    assert!(corpse.starts_dead);
+    assert!(!corpse.initially_disabled);
+
+    let not_actor = parse_one_refr(&with_header(
+        build_refr_with_subs(0x1234, &[]),
+        b"REFR",
+        0x200,
+    ));
+    assert!(!not_actor.starts_dead, "0x200 on a REFR is not Starts Dead");
+
+    // Oblivion: 20-byte header — drop the 4 trailing header bytes.
+    let mut oblivion = with_header(build_refr_with_subs(0x1234, &[]), b"ACHR", 0x200);
+    oblivion.drain(20..24);
+    let mut reader = EsmReader::with_variant(&oblivion, crate::esm::reader::EsmVariant::Oblivion);
+    let (mut refs, mut land, mut navmeshes, mut pathgrids, mut deleted) =
+        (Vec::new(), None, Vec::new(), Vec::new(), Vec::new());
+    parse_refr_group(
+        &mut reader,
+        oblivion.len(),
+        &mut refs,
+        &mut land,
+        &mut navmeshes,
+        &mut pathgrids,
+        &mut deleted,
+        9,
+    )
+    .unwrap();
+    assert_eq!(refs.len(), 1);
+    assert!(!refs[0].starts_dead, "Oblivion ACHR 0x200 is not decoded");
+}

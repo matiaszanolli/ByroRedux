@@ -296,6 +296,22 @@ pub(crate) fn restore(world: &mut World, entity: EntityId) -> bool {
     true
 }
 
+/// #4814 — an `ACHR` authored "Starts Dead" is a corpse from its first frame:
+/// `Dead` (so hostility, combat and package selection skip it, and it is a
+/// loot source), with the death teardown — AI removal, ragdoll — queued for
+/// the Late-stage sink every other death goes through. Queued rather than
+/// run here because the ragdoll seeds from bone `GlobalTransform`s, which a
+/// freshly spawned skeleton does not have in world space until the next
+/// PostUpdate propagation. No-op when [`restore`] already made it dead.
+/// Called by the actor-job completion after [`restore`], never mid-job.
+pub(crate) fn apply_starts_dead(world: &mut World, entity: EntityId) {
+    if world.get::<Dead>(entity).is_some() {
+        return;
+    }
+    world.insert(entity, Dead);
+    crate::combat::queue_dead_actor_reconciliation(world, entity);
+}
+
 /// #4695 — re-run the per-placement restore for every reference currently
 /// resident, consuming any parked row that applies. The save-load path
 /// needs this: its cell reload runs inside [`without_parked_state`], whose
@@ -510,6 +526,43 @@ mod tests {
 
         assert!(restore(&mut world, root));
         assert!(world.get::<crate::inventory::PickedUp>(mesh).is_some());
+    }
+
+    /// #4814 — an authored "Starts Dead" actor is `Dead` at spawn completion
+    /// (a loot source, invisible to hostility and package selection) and its
+    /// teardown is queued for the Late-stage sink; a corpse `restore` already
+    /// made dead is not queued a second time.
+    #[test]
+    fn starts_dead_actor_is_a_queued_corpse_at_completion() {
+        let mut world = world();
+        world.insert_resource(crate::combat::PendingDeathReconciliations::default());
+        let corpse = reference(&mut world, "Skyrim.esm", 0x300);
+        world.insert(
+            corpse,
+            Inventory {
+                items: vec![ItemStack::new(0xAAAA, 1)],
+            },
+        );
+        apply_starts_dead(&mut world, corpse);
+        assert!(world.get::<Dead>(corpse).is_some());
+        assert!(crate::inventory::is_loot_source(&world, corpse));
+        assert_eq!(
+            world
+                .resource::<crate::combat::PendingDeathReconciliations>()
+                .queued(),
+            &[corpse]
+        );
+
+        let restored = reference(&mut world, "Skyrim.esm", 0x301);
+        world.insert(restored, Dead);
+        apply_starts_dead(&mut world, restored);
+        assert_eq!(
+            world
+                .resource::<crate::combat::PendingDeathReconciliations>()
+                .queued(),
+            &[corpse],
+            "a corpse restore already reconciled is left alone"
+        );
     }
 
     #[test]

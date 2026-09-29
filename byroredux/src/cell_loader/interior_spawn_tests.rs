@@ -36,6 +36,8 @@ fn placed(form_id: u32, base_form_id: u32, position: [f32; 3], rotation: [f32; 3
         lock: None,
         water_velocity: None,
         item_count: None,
+        initially_disabled: false,
+        starts_dead: false,
     }
 }
 

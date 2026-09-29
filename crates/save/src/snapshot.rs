@@ -236,7 +236,13 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 /// directed, `FormRef`-keyed faction reactions `Faction.SetEnemy` sets, now
 /// read by ambient faction hostility. A new resource column; pre-v28
 /// snapshots are rejected by the version check, like v27's `SpellList`.
-pub const FORMAT_MAJOR: u16 = 28;
+///
+/// v28 -> v29 (#4813): `ReferenceEnableState` gained the required `enabled`
+/// set — a scripted `Enable()` is now recorded, not just a cleared disable,
+/// so it can override a placement's authored "Initially Disabled" flag
+/// across cell loads. A shape change to an existing resource column; the
+/// field carries no `serde(default)` (#4465), so pre-v29 saves are rejected.
+pub const FORMAT_MAJOR: u16 = 29;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

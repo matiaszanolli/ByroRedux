@@ -3949,3 +3949,24 @@ fn apply_effects_dispatches_thousands_of_sequential_conditionals() {
         );
     }
 }
+
+/// #4813 — the ledger is three-state. An untouched reference defers to its
+/// authored "Initially Disabled" flag; a scripted `Enable()` overrides that
+/// flag (and must, across the next cell load), and a scripted `Disable()`
+/// overrides a live one.
+#[test]
+fn reference_enable_state_scripted_calls_override_the_authored_default() {
+    let mut state = ReferenceEnableState::default();
+    assert_eq!(state.override_for(0x10), None);
+    assert!(!state.is_enabled_with_default(0x10, true));
+    assert!(state.is_enabled_with_default(0x10, false));
+
+    state.set_enabled(0x10, true);
+    assert_eq!(state.override_for(0x10), Some(true));
+    assert!(state.is_enabled_with_default(0x10, true), "Enable() beats 0x800");
+
+    state.set_enabled(0x10, false);
+    assert_eq!(state.override_for(0x10), Some(false));
+    assert!(!state.is_enabled_with_default(0x10, false));
+    assert!(!state.is_enabled(0x10));
+}

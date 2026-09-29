@@ -621,7 +621,16 @@ pub(super) fn load_references_budgeted(
         // bypassed it, so a disabled NPC, trigger or light came back in full
         // on the next load. A disabled REFR keeps its identity and scripts —
         // as a disabled mesh placement keeps its root — but spawns no content.
-        let placement_disabled = super::spawn::reference_is_disabled(world, placed_ref.form_id);
+        //
+        // #4813 — the authored "Initially Disabled" flag is the default a
+        // scripted `Enable()` overrides. Only for a REFR with no enable
+        // parent: an `XESP` child's state follows its parent, which the
+        // heuristic above already decides.
+        let placement_disabled = super::spawn::reference_is_disabled(
+            world,
+            placed_ref.form_id,
+            placed_ref.initially_disabled && placed_ref.enable_parent.is_none(),
+        );
         let synth_count = synth_refs.len();
         let mut synth_idx = job.next_synth;
         while synth_idx < synth_count {
@@ -735,6 +744,14 @@ pub(super) fn load_references_budgeted(
                             // fields Skyrim quest-alias resolution consumes.
                             if synth_idx == 0 {
                                 stamp_quest_reference(world, root, placed_ref, load_order);
+                                // #4814 — an authored corpse ("Starts Dead"):
+                                // dead from its first frame, through the same
+                                // death teardown a parked `dead` row takes in
+                                // `reference_state::restore` above, so its
+                                // AI never runs and it is a loot source.
+                                if placed_ref.starts_dead {
+                                    super::reference_state::apply_starts_dead(world, root);
+                                }
                                 if let Some(mut identities) =
                                     world.query_mut::<byroredux_scripting::SceneAliasCandidate>()
                                 {

@@ -804,6 +804,7 @@ pub(super) fn spawn_synth_child(
         // SCOL/PKIN-expansion child carries it.
         is_primary_synth.then_some(placed_ref.lock).flatten(),
         mat_provider,
+        placement_disabled,
     );
     accum.entity_count += count;
     // Skyrim's placed river/stream sections are activators whose `WNAM`

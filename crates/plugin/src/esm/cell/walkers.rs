@@ -78,6 +78,7 @@ const XCLL_SIZES_STARFIELD: &[usize] = &[28, 108];
 /// copies made the bit look like it was tested in one place when it was
 /// tested in two, which is how the base-record half went unnoticed.
 use crate::esm::reader::FLAG_DELETED as RECORD_FLAG_DELETED;
+use crate::esm::reader::{FLAG_INITIALLY_DISABLED, FLAG_STARTS_DEAD};
 
 /// Warn (at WARN level) when an XCLL sub-record size doesn't match the
 /// canonical size set for its plugin's game era. Doesn't change parse
@@ -1186,6 +1187,12 @@ fn parse_refr_group_inner(
                     lock,
                     water_velocity,
                     item_count,
+                    initially_disabled: header.flags & FLAG_INITIALLY_DISABLED != 0,
+                    // #4814 — `ACHR`-only, and only on the 24-byte family
+                    // xEdit's TES5 definition covers (see the field doc).
+                    starts_dead: &header.record_type == b"ACHR"
+                        && reader.variant() == crate::esm::reader::EsmVariant::Tes5Plus
+                        && header.flags & FLAG_STARTS_DEAD != 0,
                 });
             }
         } else if &header.record_type == b"LAND" {

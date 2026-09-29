@@ -93,7 +93,7 @@ fn a_world_without_the_scripting_resource_gates_nothing() {
     let (world, disabled, live) = world_with_two_refs();
     assert!(!placement_is_disabled(&world, Some(disabled)));
     assert!(!placement_is_disabled(&world, Some(live)));
-    assert!(!reference_is_disabled(&world, DISABLED_REF));
+    assert!(!reference_is_disabled(&world, DISABLED_REF, false));
 }
 
 /// #4327 — the per-REFR predicate answers from the REFR's own form id, with
@@ -105,14 +105,14 @@ fn the_per_reference_predicate_agrees_with_the_placement_predicate() {
     state.set_enabled(DISABLED_REF, false);
     world.insert_resource(state);
 
-    assert!(reference_is_disabled(&world, DISABLED_REF));
-    assert!(!reference_is_disabled(&world, LIVE_REF));
+    assert!(reference_is_disabled(&world, DISABLED_REF, false));
+    assert!(!reference_is_disabled(&world, LIVE_REF, false));
     assert_eq!(
-        reference_is_disabled(&world, DISABLED_REF),
+        reference_is_disabled(&world, DISABLED_REF, false),
         placement_is_disabled(&world, Some(disabled))
     );
     assert_eq!(
-        reference_is_disabled(&world, LIVE_REF),
+        reference_is_disabled(&world, LIVE_REF, false),
         placement_is_disabled(&world, Some(live))
     );
 }
@@ -154,4 +154,61 @@ fn every_path_that_bypasses_spawn_placed_instances_consults_the_gate() {
         2,
         "both the LIGH-only and the fxlight branch must gate their LightSource (#4327)"
     );
+}
+
+/// #4813 — the authored "Initially Disabled" flag is the spawn default: it
+/// disables an untouched reference (with or without a ledger installed), a
+/// scripted `Enable()` overrides it, and a scripted `Disable()` still wins on
+/// a reference the plugin authors live.
+#[test]
+fn initially_disabled_is_the_default_a_scripted_enable_overrides() {
+    let (mut world, _, _) = world_with_two_refs();
+    assert!(
+        reference_is_disabled(&world, LIVE_REF, true),
+        "the authored flag stands with no ledger installed"
+    );
+
+    world.insert_resource(byroredux_scripting::ReferenceEnableState::default());
+    assert!(reference_is_disabled(&world, LIVE_REF, true));
+    assert!(!reference_is_disabled(&world, LIVE_REF, false));
+
+    world
+        .resource_mut::<byroredux_scripting::ReferenceEnableState>()
+        .set_enabled(LIVE_REF, true);
+    assert!(
+        !reference_is_disabled(&world, LIVE_REF, true),
+        "a scripted Enable() overrides Initially Disabled"
+    );
+
+    world
+        .resource_mut::<byroredux_scripting::ReferenceEnableState>()
+        .set_enabled(DISABLED_REF, false);
+    assert!(reference_is_disabled(&world, DISABLED_REF, false));
+}
+
+/// #4813 / #3278 — `spawn_placed_instances` takes the caller's per-REFR
+/// answer rather than re-deriving it from `placement_form_id_pair`, which
+/// only the primary SCOL/PKIN child carries. Pin that the call site hands it
+/// the per-REFR flag and the function no longer looks it up itself.
+#[test]
+fn spawn_placed_instances_takes_the_per_reference_disabled_answer() {
+    const SPAWN_RS: &str = include_str!("spawn.rs");
+    const SYNTH_RS: &str = include_str!("references/synth_child.rs");
+    let body = SPAWN_RS
+        .split("pub(super) fn spawn_placed_instances(")
+        .nth(1)
+        .expect("spawn_placed_instances");
+    let body = &body[..body.find("\n}\n").expect("function end")];
+    assert!(body.contains("if placement_disabled {"));
+    assert!(
+        !body.contains("placement_is_disabled("),
+        "the primary-child-only form id lookup must not gate content"
+    );
+    assert!(body.contains("PlacementContentWithheld"), "#4820 marker");
+    let call = SYNTH_RS
+        .split("spawn_placed_instances(")
+        .nth(1)
+        .expect("synth_child call");
+    let call = &call[..call.find(");").expect("call end")];
+    assert!(call.trim_end().ends_with("placement_disabled,"));
 }

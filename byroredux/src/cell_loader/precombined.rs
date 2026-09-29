@@ -465,6 +465,7 @@ impl PrecombinedSpawnJob {
                     None,
                     None,
                     mat_provider.as_deref_mut(),
+                    false,
                 );
                 budget.complete_unit();
                 (count, spawn_timings, spawn_started.elapsed())

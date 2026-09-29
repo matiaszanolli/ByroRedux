@@ -1288,6 +1288,17 @@ fn populate_candidates(world: &World, candidates: &mut FxHashMap<EntityId, Inter
             }
         }
     }
+    // #4820 — a root spawned disabled (scripted `Disable()` or authored
+    // "Initially Disabled", #4813) has no mesh or collider, and nothing
+    // re-spawns them on a live `Enable()`. It stays out until its cell
+    // reloads, whatever the ledger says now.
+    let withheld: Vec<EntityId> = world
+        .query::<crate::components::PlacementContentWithheld>()
+        .map(|query| query.iter().map(|(entity, _)| entity).collect())
+        .unwrap_or_default();
+    if !withheld.is_empty() {
+        candidates.retain(|entity, _| !withheld.contains(entity));
+    }
     // #4698 — a `Disable()`d placement keeps its root (#3278: FormID,
     // `DoorTeleport`, `Locked`, container `Inventory`) but spawns nothing
     // visible or solid, so it must not be a candidate either. Read live,
@@ -2236,6 +2247,36 @@ mod tests {
         let candidates = collect_candidates(&world);
         assert_eq!(candidates.get(&door), Some(&InteractionKind::Door));
         assert!(!candidates.contains_key(&chest));
+    }
+
+    /// #4820 — a door spawned disabled (scripted `Disable()` or authored
+    /// "Initially Disabled", #4813) has no mesh or collider, and a live
+    /// `Enable()` re-spawns neither. It must stay out of interaction until
+    /// its cell reloads, not become an invisible door that still teleports.
+    #[test]
+    fn a_root_spawned_disabled_stays_uninteractive_after_a_live_enable() {
+        let mut world = input_fixture();
+        world.insert_resource(FormIdPool::new());
+        world.insert_resource(byroredux_scripting::ReferenceEnableState::default());
+        let door = spawn_placed_reference(&mut world, Vec3::new(0.0, 0.0, -80.0), 0xD00, 0x5678);
+        world.insert(
+            door,
+            DoorTeleport {
+                destination_form_id: 0x1234,
+                position_zup: [0.0; 3],
+                rotation_zup: [0.0; 3],
+            },
+        );
+        world.insert(door, crate::components::PlacementContentWithheld);
+        assert!(!collect_candidates(&world).contains_key(&door));
+
+        world
+            .resource_mut::<byroredux_scripting::ReferenceEnableState>()
+            .set_enabled(0xD00, true);
+        assert!(
+            !collect_candidates(&world).contains_key(&door),
+            "Enable() on a content-less root must not make it interactive"
+        );
     }
 
     /// #4701 — a `Dead` player's E press selects (the prompt is harmless)

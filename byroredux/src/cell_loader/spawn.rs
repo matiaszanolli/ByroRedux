@@ -467,11 +467,13 @@ pub(crate) fn placement_is_disabled(
     else {
         return false;
     };
-    reference_is_disabled(world, local)
+    world
+        .try_resource::<byroredux_scripting::ReferenceEnableState>()
+        .is_some_and(|state| !state.is_enabled(local))
 }
 
-/// Has a Papyrus `Disable()` been recorded against the reference whose own
-/// form id is `reference_form_id` (a `PlacedRef::form_id`)?
+/// Is the reference whose own form id is `reference_form_id` (a
+/// `PlacedRef::form_id`) disabled at spawn?
 ///
 /// #4327 — the per-REFR form of [`placement_is_disabled`], for spawn paths
 /// that hold the placed reference rather than an interned placement id. The
@@ -479,11 +481,21 @@ pub(crate) fn placement_is_disabled(
 /// never reach `spawn_placed_instances`, so they bypassed that gate and a
 /// `Disable()`d NPC, trigger or light respawned in full on the next load.
 /// `load_references_budgeted` now asks this once per REFR, ahead of every
-/// branch.
-pub(crate) fn reference_is_disabled(world: &World, reference_form_id: u32) -> bool {
-    world
-        .try_resource::<byroredux_scripting::ReferenceEnableState>()
-        .is_some_and(|state| !state.is_enabled(reference_form_id))
+/// branch, and hands the answer to `spawn_placed_instances`.
+///
+/// #4813 — `initially_disabled` is the placement's authored "Initially
+/// Disabled" flag. A scripted `Enable()`/`Disable()` recorded in
+/// `ReferenceEnableState` overrides it; with no ledger at all the authored
+/// flag still stands.
+pub(crate) fn reference_is_disabled(
+    world: &World,
+    reference_form_id: u32,
+    initially_disabled: bool,
+) -> bool {
+    match world.try_resource::<byroredux_scripting::ReferenceEnableState>() {
+        Some(state) => !state.is_enabled_with_default(reference_form_id, initially_disabled),
+        None => initially_disabled,
+    }
 }
 
 /// The scripted lock override for this placement, if a fragment has
@@ -625,6 +637,13 @@ pub(super) fn spawn_placed_instances(
     // shape's BGSM/BGEM chain. `None` on the precombined path (no REFR
     // overlay, so the per-shape swap is always a no-op there too).
     mat_provider: Option<&mut MaterialProvider>,
+    // #3278 / #4813 — the caller's per-REFR `reference_is_disabled` answer
+    // (scripted `Disable()` or the authored "Initially Disabled" flag).
+    // Passed in rather than re-derived here: only the primary synth child
+    // carries `placement_form_id_pair`, so a lookup keyed on it let every
+    // other SCOL/PKIN child of a disabled REFR spawn its content. `false`
+    // on the precombined path (bake artifacts have no placement identity).
+    placement_disabled: bool,
 ) -> (byroredux_core::ecs::EntityId, usize, PlacementSpawnTimings) {
     let total_started = Instant::now();
     let imported = &cached.meshes;
@@ -681,12 +700,16 @@ pub(super) fn spawn_placed_instances(
     // has to go through `unload_cell`'s GPU-handle release path or it leaks
     // mesh/texture refcounts — a separate piece of work, not a widening of
     // this one.
-    if placement_is_disabled(world, placement_fid) {
+    if placement_disabled {
         log::debug!(
-            "REFR {:?} is disabled (ReferenceEnableState) — placement root spawned \
-             without renderable or collidable content (#3278)",
+            "REFR {:?} is disabled (ReferenceEnableState / Initially Disabled) — \
+             placement root spawned without renderable or collidable content (#3278)",
             placement_form_id_pair,
         );
+        // #4820 — mark the root so interaction never offers it, even after
+        // a live `Enable()` clears the ledger: there is no live re-spawn, so
+        // until the cell reloads it stays invisible and non-solid.
+        world.insert(placement_root, crate::components::PlacementContentWithheld);
         return (placement_root, 0, PlacementSpawnTimings::default());
     }
 

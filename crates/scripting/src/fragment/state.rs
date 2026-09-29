@@ -11,10 +11,19 @@ use super::*;
 /// Papyrus fragments. Form IDs keep the state valid while the reference's
 /// cell is unloaded; cell streaming can consult this resource when spawning
 /// enable-parent chains.
+///
+/// #4813 — three states per reference, not two: scripted-disabled,
+/// scripted-enabled, or untouched. "Untouched" defers to the placement's
+/// authored "Initially Disabled" flag, which lives on the plugin record, not
+/// here; a scripted `Enable()` of such a reference must survive the next
+/// cell load, so an explicit enable is recorded rather than merely clearing
+/// a disable. Both sets are required fields — a pre-v29 save is rejected by
+/// the `FORMAT_MAJOR` gate, never default-filled (#4465).
 #[derive(Debug, Clone, Default)]
 #[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub struct ReferenceEnableState {
     disabled: HashSet<u32>,
+    enabled: HashSet<u32>,
 }
 
 impl Resource for ReferenceEnableState {}
@@ -120,14 +129,38 @@ impl ReferenceLockState {
 }
 
 impl ReferenceEnableState {
+    /// Whether no script has disabled this reference. Ignores the authored
+    /// "Initially Disabled" default — spawn paths use
+    /// [`Self::is_enabled_with_default`].
     pub fn is_enabled(&self, form_id: u32) -> bool {
-        !self.disabled.contains(&form_id)
+        self.override_for(form_id).unwrap_or(true)
+    }
+
+    /// The scripted enable state, or `None` when no script has touched this
+    /// reference and its authored state stands (#4813).
+    pub fn override_for(&self, form_id: u32) -> Option<bool> {
+        if self.disabled.contains(&form_id) {
+            Some(false)
+        } else if self.enabled.contains(&form_id) {
+            Some(true)
+        } else {
+            None
+        }
+    }
+
+    /// Effective enable state of a placement whose record carries
+    /// `initially_disabled`: a scripted `Enable()`/`Disable()` wins, else
+    /// the authored flag (#4813).
+    pub fn is_enabled_with_default(&self, form_id: u32, initially_disabled: bool) -> bool {
+        self.override_for(form_id).unwrap_or(!initially_disabled)
     }
 
     pub fn set_enabled(&mut self, form_id: u32, enabled: bool) {
         if enabled {
             self.disabled.remove(&form_id);
+            self.enabled.insert(form_id);
         } else {
+            self.enabled.remove(&form_id);
             self.disabled.insert(form_id);
         }
     }

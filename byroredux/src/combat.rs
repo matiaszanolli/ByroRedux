@@ -598,6 +598,16 @@ pub(crate) fn reconcile_dead_actor(world: &World, actor: EntityId) -> String {
     };
     remove_component::<AnimationPlayer>(world, skeleton_root);
     remove_component::<byroredux_core::animation::AnimationStack>(world, skeleton_root);
+    // #4814 — reconciliation can reach one corpse twice (an authored
+    // "Starts Dead" actor queued at spawn, then swept again by a save
+    // load's `reconcile_dead_actor_runtime_state`). `activate_ragdoll`
+    // builds a fresh multibody every call, so the second pass must not.
+    if world
+        .get::<crate::ragdoll::RagdollActive>(skeleton_root)
+        .is_some()
+    {
+        return "; ragdoll already active".to_owned();
+    }
     match crate::ragdoll::activate_ragdoll(world, skeleton_root) {
         Ok(body_count) => format!("; ragdoll activated ({body_count} bodies)"),
         Err(error) => format!("; ragdoll unavailable: {error}"),
