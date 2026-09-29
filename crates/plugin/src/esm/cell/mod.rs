@@ -568,9 +568,15 @@ pub struct PlacedRef {
     pub initially_disabled: bool,
     /// `ACHR` "Starts Dead" flag (0x200, #4814): an authored corpse. Set only
     /// for `ACHR` on the 24-byte-header family; Skyrim (1 123 refs) and FO4
-    /// (1 178) use it for every placed corpse, FO3/FNV ship none. Oblivion
-    /// is excluded because xEdit's citation for the bit is the TES5 ACHR
-    /// list and no Oblivion source was checked.
+    /// (1 178) use it for every placed corpse.
+    ///
+    /// This placement-level bit is NOT the corpse marker everywhere. Each
+    /// remaining game marks corpses differently and is handled at its own
+    /// layer: Oblivion stamps the BASE actor's `NPC_`/`CREA` header
+    /// (`0x80000`, decoded onto `NpcRecord::starts_dead` — #5013), and
+    /// FO3/FNV carry an authored ragdoll pose (`XRGD`) with no header bit
+    /// at all (#5005, decode pending a sourced rule). Zero here is there-
+    /// fore "no placement-level marker", not "not a corpse".
     pub starts_dead: bool,
 }
 

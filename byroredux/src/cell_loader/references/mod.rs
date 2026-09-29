@@ -749,7 +749,11 @@ pub(super) fn load_references_budgeted(
                                 // death teardown a parked `dead` row takes in
                                 // `reference_state::restore` above, so its
                                 // AI never runs and it is a loot source.
-                                if placed_ref.starts_dead {
+                                // #5013 — Oblivion marks the corpse on the
+                                // BASE actor (NPC_/CREA header bit 0x80000),
+                                // not the placement, so the resolved record
+                                // ORs its flag in here.
+                                if placed_ref.starts_dead || npc.starts_dead {
                                     super::reference_state::apply_starts_dead(world, root);
                                 }
                                 if let Some(mut identities) =

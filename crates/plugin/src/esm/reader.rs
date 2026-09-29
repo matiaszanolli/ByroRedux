@@ -110,6 +110,15 @@ pub(crate) const FLAG_INITIALLY_DISABLED: u32 = 0x0000_0800;
 /// header family; see `PlacedRef::starts_dead`.
 pub(crate) const FLAG_STARTS_DEAD: u32 = 0x0000_0200;
 
+/// TES4 base-actor flag: "Starts Dead" (#5013). xEdit's TES4 flag lists give
+/// `19, 'Starts Dead'` on both `CREA` (`wbDefinitionsTES4.pas:1942`) and
+/// `NPC_` (`:2783`) — i.e. record-header bit `0x80000`. The Construction Set
+/// encodes the same fact from the tool side: a base actor authored with 0
+/// Health spawns dead. This is an Oblivion-only semantic — the same bit means
+/// something else on other games' base actors — so decode is gated on
+/// `GameKind::Oblivion`; see `NpcRecord::starts_dead`.
+pub(crate) const FLAG_TES4_STARTS_DEAD: u32 = 0x0008_0000;
+
 /// Maximum number of nested GRUP bodies any recursive ESM walker may enter.
 /// Vanilla files stay below five levels; 64 leaves generous headroom while
 /// preventing adversarial plugins from exhausting the native stack (#3237).

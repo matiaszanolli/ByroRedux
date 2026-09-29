@@ -21,6 +21,26 @@ pub(super) fn extract_records_with_modl(
     statics: &mut HashMap<u32, StaticObject>,
     f: &mut dyn FnMut(u32, &[SubRecord]),
 ) -> Result<()> {
+    extract_records_with_modl_and_flags(
+        reader,
+        end,
+        expected_type,
+        statics,
+        &mut |form_id, _, subs| f(form_id, subs),
+    )
+}
+
+/// As [`extract_records_with_modl`], retaining record-header presentation
+/// flags — the `MODL`-carrying twin of [`extract_records_with_flags`]
+/// (#5013: Oblivion's base-actor "Starts Dead" lives on the `NPC_`/`CREA`
+/// record header, which the flag-less closure cannot see).
+pub(super) fn extract_records_with_modl_and_flags(
+    reader: &mut EsmReader,
+    end: usize,
+    expected_type: &[u8; 4],
+    statics: &mut HashMap<u32, StaticObject>,
+    f: &mut dyn FnMut(u32, u32, &[SubRecord]),
+) -> Result<()> {
     extract_records_with_modl_inner(reader, end, expected_type, statics, f, 0)
 }
 
@@ -29,7 +49,7 @@ fn extract_records_with_modl_inner(
     end: usize,
     expected_type: &[u8; 4],
     statics: &mut HashMap<u32, StaticObject>,
-    f: &mut dyn FnMut(u32, &[SubRecord]),
+    f: &mut dyn FnMut(u32, u32, &[SubRecord]),
     depth: u32,
 ) -> Result<()> {
     let remap = reader.get_form_id_remap();
@@ -58,7 +78,7 @@ fn extract_records_with_modl_inner(
                 statics.insert(header.form_id, stat);
             }
             // Records-side: typed parser.
-            f(header.form_id, &subs);
+            f(header.form_id, header.flags, &subs);
         } else {
             reader.skip_record(&header);
         }
@@ -639,5 +659,44 @@ mod tests {
             let (mut exterior, mut persistent) = (HashMap::new(), None);
             parse_wrld_children(r, end, &mut exterior, &mut persistent, false)
         });
+    }
+}
+
+#[cfg(test)]
+mod modl_flags_tests {
+    use super::*;
+
+    /// #5013 — `extract_records_with_modl_and_flags` must surface the
+    /// record-header presentation flags alongside the subs; the
+    /// Oblivion base-actor "Starts Dead" bit (0x80000) lives only on
+    /// the header, which the flag-less variant cannot deliver.
+    #[test]
+    fn modl_walker_flags_variant_passes_record_header_flags() {
+        // Header layout matches `tes5_record` above:
+        // type(4) + size(4) + flags(4) + form_id(4) + 8 unknown. A
+        // zero size means no sub-records to read.
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"NPC_");
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // size: no subs
+        bytes.extend_from_slice(&0x0008_0000u32.to_le_bytes()); // flags
+        bytes.extend_from_slice(&0x0000_1234u32.to_le_bytes()); // form id
+        bytes.extend_from_slice(&[0; 8]);
+
+        let mut reader = EsmReader::new(&bytes);
+        let mut statics = HashMap::new();
+        let mut seen_flags: Vec<u32> = Vec::new();
+        extract_records_with_modl_and_flags(
+            &mut reader,
+            bytes.len(),
+            b"NPC_",
+            &mut statics,
+            &mut |_, flags, _| seen_flags.push(flags),
+        )
+        .expect("well-formed single NPC_ record must parse");
+        assert_eq!(
+            seen_flags,
+            vec![0x0008_0000],
+            "header flags must reach the closure"
+        );
     }
 }

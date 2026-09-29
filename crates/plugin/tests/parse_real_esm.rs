@@ -4485,3 +4485,56 @@ fn ms01_eltrys_authored_placement() {
     }
     assert!(!owned.is_empty(), "MS01 must own at least one DIAL topic");
 }
+
+/// #5013 — Oblivion marks corpses on the BASE actor: `NPC_`/`CREA` header
+/// flag `0x80000` "Starts Dead" (xEdit `wbDefinitionsTES4.pas` —
+/// `CREA:1942`, `NPC_:2783`), not on the placement. Census measured
+/// 2026-09-29 by the audit byte scan of the vanilla master: 135 flagged
+/// bases (87 `NPC_` + 48 `CREA`) and 787 placements of a flagged base
+/// (156 ACHR + 631 ACRE). Pinned exactly so a decode regression or a
+/// parser-side ref loss shows up as a count drift.
+#[test]
+#[ignore = "needs Oblivion game data on disk"]
+fn oblivion_starts_dead_bases_and_their_placements_match_the_audit_census() {
+    let Some(data) = data_dir(
+        test_paths::OBLIVION_ENV,
+        test_paths::OBLIVION_DEFAULT,
+    ) else {
+        eprintln!("[Oblivion starts-dead] skipping: game data unavailable");
+        return;
+    };
+    let bytes = std::fs::read(data.join("Oblivion.esm")).expect("read Oblivion.esm");
+    let index = parse_esm(&bytes).expect("parse Oblivion.esm");
+
+    let flagged_npcs = index.npcs.values().filter(|npc| npc.starts_dead).count();
+    let flagged_creatures = index
+        .creatures
+        .values()
+        .filter(|npc| npc.starts_dead)
+        .count();
+    assert_eq!(flagged_npcs, 87, "flagged NPC_ bases");
+    assert_eq!(flagged_creatures, 48, "flagged CREA bases");
+
+    // Placements resolving to a flagged base, across every cell store:
+    // interiors, all exterior tiles, and worldspace-persistent cells.
+    let corpse_refs: usize = index
+        .cells
+        .cells
+        .values()
+        .chain(
+            index
+                .cells
+                .exterior_cells
+                .values()
+                .flat_map(|tiles| tiles.values()),
+        )
+        .chain(index.cells.worldspace_persistent_cells.values())
+        .flat_map(|cell| cell.references.iter())
+        .filter(|placed| {
+            index
+                .actor(placed.base_form_id)
+                .is_some_and(|base| base.starts_dead)
+        })
+        .count();
+    assert_eq!(corpse_refs, 787, "placements of a flagged base");
+}

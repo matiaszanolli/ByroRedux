@@ -6,6 +6,16 @@
 
 use super::*;
 
+/// #5013 — Oblivion marks corpses on the BASE actor record: header bit
+/// `0x80000` ("Starts Dead", xEdit `wbDefinitionsTES4.pas` — `CREA:1942`,
+/// `NPC_:2783`; the CS authors it as 0 Health). The same header bit means
+/// something else on other games' base actors, so the decode is
+/// Oblivion-gated. Placements of such a base derive their spawn-dead state
+/// from `NpcRecord::starts_dead` at spawn time.
+pub(super) fn base_actor_starts_dead(game: GameKind, flags: u32) -> bool {
+    game == GameKind::Oblivion && flags & crate::esm::reader::FLAG_TES4_STARTS_DEAD != 0
+}
+
 /// Handles one of the actor-domain labels; the caller has already
 /// verified `label` is one of this domain's.
 pub(super) fn dispatch_actor_group(
@@ -27,10 +37,13 @@ pub(super) fn dispatch_actor_group(
         // by remapped global FormIDs via `read_record_header`) hit.
         b"NPC_" => {
             let npc_remap = reader.get_form_id_remap();
-            extract_records_with_modl(reader, end, b"NPC_", statics, &mut |fid, subs| {
+            extract_records_with_modl_and_flags(reader, end, b"NPC_", statics, &mut |fid, flags, subs| {
+                let mut record = parse_npc(fid, subs, game, &npc_remap);
+                // #5013 — see `base_actor_starts_dead`.
+                record.starts_dead = base_actor_starts_dead(game, flags);
                 index
                     .npcs
-                    .insert(fid, parse_npc(fid, subs, game, &npc_remap));
+                    .insert(fid, record);
             })?
         }
         // Creatures share EDID / FULL / MODL / RNAM / CNAM / SNAM /
@@ -41,7 +54,7 @@ pub(super) fn dispatch_actor_group(
         // See #442 / audit FO3-3-02.
         b"CREA" => {
             let crea_remap = reader.get_form_id_remap();
-            extract_records_with_modl(reader, end, b"CREA", statics, &mut |fid, subs| {
+            extract_records_with_modl_and_flags(reader, end, b"CREA", statics, &mut |fid, flags, subs| {
                 let mut record = parse_npc(fid, subs, game, &crea_remap);
                 // #2567 — the spawn path has to tell the two apart: a
                 // creature's MODL is its skeleton and its meshes come from
@@ -49,6 +62,9 @@ pub(super) fn dispatch_actor_group(
                 // paths and its head from RACE. Set at the one site that
                 // knows which group it read.
                 record.is_creature = true;
+                // #5013 — same Oblivion "Starts Dead" base flag as `NPC_`
+                // above (xEdit TES4 CREA flag 19).
+                record.starts_dead = base_actor_starts_dead(game, flags);
                 // #3383 — `CNAM` is a CLAS FormID on NPC_ but names an
                 // unrelated record type on CREA (measured against vanilla:
                 // it resolves to a CLAS record 0/1578 times on FNV and
@@ -93,4 +109,34 @@ pub(super) fn dispatch_actor_group(
         _ => unreachable!("dispatch_actor_group: unexpected label {label:?}"),
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod starts_dead_tests {
+    use super::*;
+
+    /// #5013 — the gate must be both bit- and game-exact: Oblivion's
+    /// `0x80000` "Starts Dead" must not leak onto other games' base
+    /// actors, where that header bit means something else.
+    #[test]
+    fn oblivion_only_base_starts_dead_bit() {
+        assert!(base_actor_starts_dead(GameKind::Oblivion, 0x0008_0000));
+        assert!(base_actor_starts_dead(GameKind::Oblivion, 0x0008_0400));
+        assert!(
+            !base_actor_starts_dead(GameKind::Oblivion, 0x0000_0400),
+            "flagged-off base must not start dead"
+        );
+        for game in [
+            GameKind::Fallout3NV,
+            GameKind::Skyrim,
+            GameKind::Fallout4,
+            GameKind::Fallout76,
+            GameKind::Starfield,
+        ] {
+            assert!(
+                !base_actor_starts_dead(game, 0x0008_0000),
+                "the TES4-only bit must not decode on {game:?}"
+            );
+        }
+    }
 }

@@ -123,7 +123,7 @@ pub use index::EsmIndex;
 
 use grup_walker::{
     extract_dial_with_info, extract_quest_dialogue_scene_tree, extract_records,
-    extract_records_with_modl,
+    extract_records_with_modl, extract_records_with_modl_and_flags,
 };
 
 // ── #2060 split — `parse_esm_with_load_order`'s per-domain dispatch

@@ -364,6 +364,13 @@ pub struct NpcRecord {
     pub form_id: u32,
     pub editor_id: String,
     pub full_name: String,
+    /// TES4 "Starts Dead" base flag (`0x80000`, #5013). True only when this
+    /// record came from an Oblivion `NPC_`/`CREA` group whose record header
+    /// carries the bit (xEdit `wbDefinitionsTES4.pas` — `CREA:1942`,
+    /// `NPC_:2783`); every other game leaves it `false` because the same
+    /// header bit means something else on their base actors. Placements of
+    /// such a base spawn dead through the cell loader's `apply_starts_dead`.
+    pub starts_dead: bool,
     /// Model path (typically from MODL — head/body mesh, optional).
     ///
     /// **On `CREA` this is the creature's SKELETON**, not a body mesh —
@@ -1004,6 +1011,9 @@ pub fn parse_npc(
         form_id,
         editor_id: common.editor_id,
         full_name: common.full_name,
+        // Set by the dispatch layer from the record header's game-gated
+        // Starts-Dead bit — `parse_npc` sees no header (#5013).
+        starts_dead: false,
         model_path: common.model_path,
         body_part_models: Vec::new(),
         is_creature: false,
