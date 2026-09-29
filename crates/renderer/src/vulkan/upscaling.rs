@@ -173,7 +173,7 @@ pub enum VolumetricsConfigError {
 }
 
 /// Renderer options parsed once by the application and passed into Vulkan.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RendererConfig {
     pub upscaler: UpscalerMode,
     pub volumetrics: VolumetricsConfig,
@@ -182,7 +182,8 @@ pub struct RendererConfig {
     /// command can flip it live afterwards.
     pub tonemap: crate::tonemap::TonemapOp,
     /// Stage 1 — start in auto-exposure mode (Frostbite EV100 metering of
-    /// the post-bloom scene). Fixed exposure otherwise.
+    /// the post-bloom scene). Fixed exposure otherwise. On by default since
+    /// 2026-09-28 (`a070baaad`); `--no-auto-exposure` opts out.
     pub auto_exposure: bool,
     /// Explicit diagnostic override for the static-BLAS residency budget.
     /// `None` derives the shipping budget from VRAM. The application only
@@ -200,6 +201,23 @@ pub struct RendererConfig {
     /// Fixed adaptive-ray quality tier for controlled RT measurements.
     /// `None` leaves the shipping GPU-time controller authoritative.
     pub rt_test_ray_quality_tier: Option<u32>,
+}
+
+impl Default for RendererConfig {
+    /// Must agree with `parse_renderer_config` on a bare command line —
+    /// pinned by `cli_args::tests::renderer_config_defaults_to_fsr_quality`.
+    fn default() -> Self {
+        Self {
+            upscaler: UpscalerMode::default(),
+            volumetrics: VolumetricsConfig::default(),
+            tonemap: crate::tonemap::TonemapOp::default(),
+            auto_exposure: true,
+            rt_test_blas_budget_bytes: None,
+            rt_test_lod_scale_bits: None,
+            rt_test_lod_telemetry: false,
+            rt_test_ray_quality_tier: None,
+        }
+    }
 }
 
 /// Scene-render and presentation extents for one swapchain generation.
