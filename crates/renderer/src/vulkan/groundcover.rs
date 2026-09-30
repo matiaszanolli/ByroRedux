@@ -315,6 +315,12 @@ pub const VERTS_PER_BLADE_NEAR: u32 =
 pub const VERTS_PER_BLADE_MID: u32 = GROUNDCOVER_BLADE_SEGMENTS_MID * GROUNDCOVER_VERTS_PER_SEGMENT;
 /// Near ribbons, reduced mid ribbons, and far clump cards.
 const GROUNDCOVER_INDIRECT_STREAMS: u64 = 3;
+/// Bytes per blade-tier indirect command: `groundcover_scatter.comp`'s
+/// `GcDrawIndirect` is a `VkDrawIndirectCommand`. Sizes the indirect buffer
+/// and strides every `cmd_draw_indirect`; the GLSL struct's std430 size is
+/// pinned to it (#4956).
+pub(crate) const GC_DRAW_INDIRECT_STRIDE: u64 =
+    std::mem::size_of::<vk::DrawIndirectCommand>() as u64;
 
 /// The multiplier the frame serial is scaled by before the tier index is added
 /// into `BladePush::gust_and_timing[3]`, i.e. `1 << tier_bits`.
@@ -709,8 +715,10 @@ impl GroundCoverBufferBytes {
             blades: GROUNDCOVER_MAX_CHUNKS as u64
                 * GROUNDCOVER_MAX_BLADES_PER_CHUNK as u64
                 * std::mem::size_of::<GpuGroundCoverBlade>() as u64,
-            // `sizeof(VkDrawIndirectCommand)` per chunk per stream.
-            indirect: GROUNDCOVER_MAX_CHUNKS as u64 * 16 * GROUNDCOVER_INDIRECT_STREAMS,
+            // One `VkDrawIndirectCommand` per chunk per stream.
+            indirect: GROUNDCOVER_MAX_CHUNKS as u64
+                * GC_DRAW_INDIRECT_STRIDE
+                * GROUNDCOVER_INDIRECT_STREAMS,
         }
     }
 }
@@ -1817,9 +1825,9 @@ impl GroundCoverPipeline {
                 device.cmd_draw_indirect(
                     cmd,
                     indirect.buffer,
-                    tier * GROUNDCOVER_MAX_CHUNKS as u64 * 16,
+                    tier * GROUNDCOVER_MAX_CHUNKS as u64 * GC_DRAW_INDIRECT_STRIDE,
                     self.frame_chunk_count,
-                    16,
+                    GC_DRAW_INDIRECT_STRIDE as u32,
                 );
             }
         }
@@ -2158,9 +2166,6 @@ mod tests {
         );
     }
 
-    /// `cmd_draw_indirect` is issued with a hard-coded stride of 16, which is
-    /// `sizeof(VkDrawIndirectCommand)`. A mismatch would read every command
-    /// but the first from the wrong offset.
     #[test]
     fn push_block_fits_the_guaranteed_minimum() {
         // Vulkan guarantees only 128 bytes of push constants. This device
@@ -2347,9 +2352,17 @@ mod tests {
         );
     }
 
+    /// `cmd_draw_indirect` is issued with a stride of `GC_DRAW_INDIRECT_STRIDE`,
+    /// which is `sizeof(VkDrawIndirectCommand)`. A mismatch would read every
+    /// command but the first from the wrong offset. The GLSL `GcDrawIndirect`
+    /// leg is `name_diverging_glsl_rust_mirrors_stay_in_lockstep` (#4956).
     #[test]
     fn indirect_stride_matches_the_command() {
-        assert_eq!(std::mem::size_of::<vk::DrawIndirectCommand>(), 16);
+        assert_eq!(
+            GC_DRAW_INDIRECT_STRIDE,
+            std::mem::size_of::<vk::DrawIndirectCommand>() as u64
+        );
+        assert_eq!(GC_DRAW_INDIRECT_STRIDE, 16);
     }
 
     /// The counter buffer packs three different things. An off-by-one here
@@ -2421,7 +2434,7 @@ mod tests {
         assert!(blade.contains("halfWidth * float(GROUNDCOVER_BLADES_PER_POINT)"));
         assert!(blade.contains("width * GROUNDCOVER_MAX_WIDTH_MULTIPLIER"));
         assert!(blade.contains("bool cardTier = GC_LOD_TIER == 2u;"));
-        assert!(module.contains("tier * GROUNDCOVER_MAX_CHUNKS as u64 * 16"));
+        assert!(module.contains("tier * GROUNDCOVER_MAX_CHUNKS as u64 * GC_DRAW_INDIRECT_STRIDE"));
     }
 
     /// #4056 — the tier field must be wide enough for every dispatched stream,

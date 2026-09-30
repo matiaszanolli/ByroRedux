@@ -1562,6 +1562,7 @@ fn name_diverging_glsl_rust_mirrors_stay_in_lockstep() {
     let groundcover_scene = include_str!("../../../shaders/include/groundcover_scene.glsl");
     let groundcover_rs = include_str!("../groundcover.rs");
     let groundcover_models_comp = include_str!("../../../shaders/groundcover_models.comp");
+    let groundcover_scatter_comp = include_str!("../../../shaders/groundcover_scatter.comp");
     let groundcover_models_rs = include_str!("../groundcover_models.rs");
     let groundcover_bench_rs = include_str!("../groundcover_bench.rs");
     let groundcover_bench_glsl = include_str!("../../../shaders/include/groundcover_bench.glsl");
@@ -1776,6 +1777,20 @@ fn name_diverging_glsl_rust_mirrors_stay_in_lockstep() {
          model tier's indirect-draw buffer and its draw calls are both sized from it \
          (#4849)"
     );
+    // #4956 — `GcDrawIndirect` is the blade tier's `GcDrawIndexed`: the scatter
+    // writes it, and the host sizes the indirect buffer and strides
+    // `cmd_draw_indirect` by `GC_DRAW_INDIRECT_STRIDE`
+    // (`size_of::<vk::DrawIndirectCommand>()`). A lane added to the GLSL struct
+    // would desynchronise every chunk after the first.
+    assert_eq!(
+        std430_struct_size(&parse_glsl_struct_fields_typed(
+            groundcover_scatter_comp,
+            "struct GcDrawIndirect"
+        )) as u64,
+        crate::vulkan::groundcover::GC_DRAW_INDIRECT_STRIDE,
+        "GcDrawIndirect's std430 stride left `VkDrawIndirectCommand`'s size — the blade \
+         tiers' indirect buffer and `cmd_draw_indirect` stride are both sized from it (#4956)"
+    );
 }
 
 /// How each GLSL struct relates to the Rust tree. See
@@ -1892,7 +1907,13 @@ fn every_shader_struct_is_classified() {
             "GroundCoverBlade",
             Guarded("name_diverging_glsl_rust_mirrors_stay_in_lockstep"),
         ),
-        ("GcDrawIndirect", ShaderLocal),
+        // The counterpart is `VkDrawIndirectCommand` via
+        // `GC_DRAW_INDIRECT_STRIDE`; the guard pins the GLSL std430 size to it
+        // (#4956 — was `ShaderLocal`, which the #4849 rule above forbids).
+        (
+            "GcDrawIndirect",
+            Guarded("name_diverging_glsl_rust_mirrors_stay_in_lockstep"),
+        ),
         (
             "GcModelRecord",
             Guarded("name_diverging_glsl_rust_mirrors_stay_in_lockstep"),
@@ -3387,6 +3408,110 @@ fn camera_ubo_glsl_copies_stay_in_lockstep() {
          struct size but corrupts the value read through the mismatched type (the #2688 \
          GpuMaterial precedent for this exact class of defect).",
     );
+
+    // #4957 — `groundcover_blade.vert` binds the same camera UBO under another
+    // block name, `GcCameraUBO`, declaring only `GpuCamera`'s first lanes
+    // (through `jitter`) with `gc`-prefixed names. Its only pin was a
+    // reflected block SIZE, blind to a swap among the three same-typed `mat4`
+    // lanes (projecting blades with the previous frame's matrix) or the `vec4`
+    // lanes. Compare it as a PREFIX mirror: names (with `gc` dropped), order
+    // and type against the Rust struct's first `len` fields.
+    let blade_src = include_str!("../../../shaders/groundcover_blade.vert");
+    let gc_typed: Vec<(String, String)> =
+        parse_glsl_struct_fields_typed(blade_src, "uniform GcCameraUBO {")
+            .into_iter()
+            .map(|(ty, name)| {
+                let bare = name.strip_prefix("gc").unwrap_or_else(|| {
+                    panic!("GcCameraUBO member `{name}` lost its `gc` prefix convention")
+                });
+                let mut chars = bare.chars();
+                let first = chars.next().expect("non-empty member name");
+                (ty, first.to_lowercase().chain(chars).collect())
+            })
+            .collect();
+    assert!(
+        gc_typed.last().is_some_and(|(_, n)| n == "jitter"),
+        "GcCameraUBO must mirror GpuCamera up to and including `jitter` (the blades' TAA/FSR \
+         jitter lane), got {gc_typed:?}"
+    );
+    assert!(gc_typed.len() <= rust_typed.len());
+    assert_glsl_matches_rust(
+        "GcCameraUBO (prefix of GpuCamera)",
+        &gc_typed,
+        &rust_typed[..gc_typed.len()],
+        KNOWN_NAME_ALIASES,
+        "groundcover_blade.vert's `GcCameraUBO` reads the scene camera UBO at set 1 binding 1 \
+         and must declare GpuCamera's leading fields in the Rust struct's order with the same \
+         types (#4957). A swap among viewProj / prevViewProj / invViewProj keeps the block size \
+         and silently projects the blades with the wrong matrix.",
+    );
+
+    // #4957 — discovery: every camera-UBO-shaped block must be one of the
+    // mirrors checked above. The name-anchored leg only sees `uniform
+    // CameraUBO {`; this one also catches a renamed block (`…CameraUBO`) or
+    // any block bound where the main pass binds the camera (set 1 binding 1).
+    let mut expected: Vec<(String, String)> = SOURCES
+        .iter()
+        .map(|(n, _)| ((*n).to_string(), "CameraUBO".to_string()))
+        .collect();
+    expected.push(("groundcover_blade.vert".to_string(), "GcCameraUBO".to_string()));
+    expected.sort();
+    assert_eq!(
+        camera_shaped_uniform_blocks(),
+        expected,
+        "a shader declares a camera-UBO-shaped uniform block (a `…CameraUBO` name or \
+         `layout(set = 1, binding = 1) uniform`) that camera_ubo_glsl_copies_stay_in_lockstep \
+         does not check — add it as a full or prefix mirror (#4957)"
+    );
+}
+
+/// #4957 — `(shader path relative to shaders/, block name)` for every uniform
+/// block named `…CameraUBO` or declared at `layout(set = 1, binding = 1)`,
+/// sorted.
+fn camera_shaped_uniform_blocks() -> Vec<(String, String)> {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("shaders");
+    let mut found = Vec::new();
+    let mut stack = vec![root.clone()];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).expect("shader dir") {
+            let path = entry.expect("shader dir entry").path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if !matches!(
+                path.extension().and_then(|e| e.to_str()),
+                Some("vert" | "frag" | "comp" | "glsl")
+            ) {
+                continue;
+            }
+            let Ok(src) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            for raw in src.lines() {
+                let code = raw.find("//").map_or(raw, |i| &raw[..i]).trim();
+                let at_camera_binding = code
+                    .split_whitespace()
+                    .collect::<String>()
+                    .starts_with("layout(set=1,binding=1)uniform");
+                let after = strip_leading_layout_qualifier(code);
+                let Some(rest) = after.strip_prefix("uniform ") else {
+                    continue;
+                };
+                let name = rest.split(|c: char| c.is_whitespace() || c == '{').next().unwrap_or("");
+                if name.ends_with("CameraUBO") || at_camera_binding {
+                    let rel = path
+                        .strip_prefix(&root)
+                        .expect("under shaders/")
+                        .to_string_lossy()
+                        .replace('\\', "/");
+                    found.push((rel, name.to_string()));
+                }
+            }
+        }
+    }
+    found.sort();
+    found
 }
 
 /// The bounded GI path must remain material-aware. The pre-fix implementation
