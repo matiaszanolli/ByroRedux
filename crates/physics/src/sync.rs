@@ -2448,9 +2448,6 @@ mod tick_documentation_tests {
         assert_eq!(super::profile_fallers(), super::profile_fallers());
     }
 
-    /// #3266 regression guard: both diagnostic paths stage runtime FormIds
-    /// while storage guards are live, release every guard, and only then
-    /// acquire FormIdPool to resolve the owned handles.
     /// #4997 — `register_newcomers` converts shapes across the rayon pool
     /// (ad1d53a11). That section is deadlock-free only while the closure
     /// touches no `World` and the calling thread holds no guard while it
@@ -2503,6 +2500,9 @@ mod tick_documentation_tests {
         );
     }
 
+    /// #3266 regression guard: both diagnostic paths stage runtime FormIds
+    /// while storage guards are live, release every guard, and only then
+    /// acquire FormIdPool to resolve the owned handles.
     #[test]
     fn physics_diagnostics_resolve_forms_after_storage_guards_drop() {
         let src = include_str!("sync.rs");

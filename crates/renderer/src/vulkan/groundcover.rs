@@ -2104,10 +2104,6 @@ mod tests {
         );
     }
 
-    /// #4338 — slot indices are blade-arena ownership, not a compact draw
-    /// list.  A vacant ring slot must remain an explicit 32-byte record and
-    /// produce a no-op indirect command; otherwise the next resident shifts
-    /// into its slab even though the host-side ring says it did not move.
     /// #4729 — the blade lean must follow WindField's declared "blows
     /// toward" sense (`+windDir` in engine XZ), the same direction the §8
     /// gust advection rolls its waves. The old `-windDir.y` mirrored the
@@ -2136,6 +2132,10 @@ mod tests {
         );
     }
 
+    /// #4338 — slot indices are blade-arena ownership, not a compact draw
+    /// list.  A vacant ring slot must remain an explicit 32-byte record and
+    /// produce a no-op indirect command; otherwise the next resident shifts
+    /// into its slab even though the host-side ring says it did not move.
     #[test]
     fn inactive_residency_slots_remain_explicit_and_are_skipped_by_scatter() {
         let inactive = GpuGroundCoverChunk::default();
