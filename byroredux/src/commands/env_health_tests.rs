@@ -161,24 +161,30 @@ fn f32_normalisation_drift_is_within_tolerance() {
     assert!(check_lighting_sky(Some(&lighting), Some(&sky)).is_empty());
 }
 
-/// "Confirmed exterior lighting": the cell loader and the sky path populate
-/// these two flags independently, so a mismatch means one is stale.
+/// #4915 — the production interior state: interior lighting under the
+/// worldspace sky that survives into every interior (#1199), or under the
+/// canonical outdoor default an interior-only boot installs (#4902). Both
+/// carry `is_exterior: true`; this used to FAIL every interior entered after
+/// an exterior, against a fixture sky (`is_exterior: false`) that no
+/// producer ever creates.
 #[test]
-fn interior_lighting_under_an_exterior_sky_is_caught() {
+fn interior_lighting_under_the_surviving_exterior_sky_is_clean() {
     let (mut lighting, sky) = healthy_exterior();
     lighting.is_interior = true;
+    assert!(sky.is_exterior);
+    assert!(check_lighting_sky(Some(&lighting), Some(&sky)).is_empty());
+}
+
+/// The inconsistent pair that remains: exterior lighting under a sky that
+/// does not describe an exterior means one of the two is stale.
+#[test]
+fn exterior_lighting_under_a_non_exterior_sky_is_caught() {
+    let (lighting, mut sky) = healthy_exterior();
+    sky.is_exterior = false;
     assert_eq!(
         fields(&check_lighting_sky(Some(&lighting), Some(&sky))),
         ["is_interior/is_exterior"]
     );
-}
-
-#[test]
-fn a_consistent_interior_pair_is_clean() {
-    let (mut lighting, mut sky) = healthy_exterior();
-    lighting.is_interior = true;
-    sky.is_exterior = false;
-    assert!(check_lighting_sky(Some(&lighting), Some(&sky)).is_empty());
 }
 
 /// An inverted ramp is a shipped authoring pattern the fog fitter absorbs

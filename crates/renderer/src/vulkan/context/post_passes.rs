@@ -50,15 +50,23 @@ struct VolumetricsPassInputs<'a> {
 /// Select the sun seen by the scattering volume. Interior geometry still
 /// decides visibility in the inject shader; this only supplies outdoor
 /// radiance without changing the interior's surface or composite lighting.
+///
+/// #4909 — both arms carry `sun_illuminance`, the one canonical sun: the
+/// exterior's own lane, or the portal palette's (the interior's
+/// `portal_sun_radiance` is that palette's `sun_illuminance`, assembled in
+/// `render/sky.rs`). It already folds in the HNAM sunlight dimmer, the
+/// daylight fraction and the cloud transmittance, so the haze and godrays dim
+/// with the terrain key under overcast. The exterior arm used to be
+/// `sun_color × sun_intensity` — the sun-disc colour at its raw 0–4 scale —
+/// which stayed at clear-sky strength under full overcast (~12× the key).
 fn volumetric_sun(sky: &SkyParams, fog_far: f32) -> ([f32; 3], [f32; 4]) {
     if sky.is_exterior {
-        let intensity = sky.sun_intensity.max(0.0);
         (
             sky.sun_direction,
             [
-                sky.sun_color[0] * intensity,
-                sky.sun_color[1] * intensity,
-                sky.sun_color[2] * intensity,
+                sky.sun_illuminance[0],
+                sky.sun_illuminance[1],
+                sky.sun_illuminance[2],
                 fog_far,
             ],
         )
@@ -1716,13 +1724,16 @@ mod tests {
             ([0.6, 0.8, 0.0], [2.0, 1.0, 0.5, 4096.0])
         );
 
+        // #4909 — the exterior arm is the canonical `sun_illuminance`, never
+        // the sun-disc colour × intensity (which would read 50 here).
         let exterior = SkyParams {
             is_exterior: true,
+            sun_illuminance: [3.0, 2.0, 1.0],
             ..interior
         };
         assert_eq!(
             volumetric_sun(&exterior, 4096.0),
-            ([0.0, -1.0, 0.0], [50.0, 50.0, 50.0, 4096.0])
+            ([0.0, -1.0, 0.0], [3.0, 2.0, 1.0, 4096.0])
         );
     }
 

@@ -345,8 +345,14 @@ pub(crate) fn check_environment(
         check_water_plane(&mut out, &format!("water[{index}]"), mat);
     }
 
+    // #4915 — `SkyParamsRes` is worldspace-scoped and survives into every
+    // interior (#1199); every producer sets `is_exterior: true`, and an
+    // interior-only boot installs the same canonical outdoor sky (#4902). So
+    // interior lighting under an exterior sky is the normal interior state.
+    // The one inconsistent pair is exterior lighting under a sky that does
+    // not describe an exterior.
     if let (Some(lit), Some(sky)) = (lighting, sky) {
-        if lit.is_interior == sky.is_exterior {
+        if !lit.is_interior && !sky.is_exterior {
             out.push(finding(
                 "is_interior/is_exterior",
                 format!(

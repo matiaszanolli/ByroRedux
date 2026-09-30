@@ -238,6 +238,9 @@ pub(crate) fn apply_interior_cell_lighting(
     };
     world.insert_resource(res);
     world.insert_resource(crate::components::InteriorSkyExposureRes(show_sky));
+    // #4902 — the outdoor sky an interior shows through windows, Show Sky and
+    // apertures is a canonical resource, not a render-loop fallback.
+    crate::scene::install_interior_outdoor_defaults(world);
     // #4416 — the interior's own base grade for the IMAD composition; the
     // weather system leaves it alone while `is_interior` holds.
     world.insert_resource(byroredux_scripting::ImageSpaceBase(image_space));

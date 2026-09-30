@@ -620,6 +620,15 @@ impl Resource for CellLightingRes {}
 pub(crate) struct InteriorSkyExposureRes(pub(crate) bool);
 impl Resource for InteriorSkyExposureRes {}
 
+/// #4902 — the outdoor environment (`SkyParamsRes`, `WeatherDataRes`, …) was
+/// installed as the canonical procedural default by an interior-only boot,
+/// not resolved from a worldspace. `weather_system` advances it like any
+/// weather; the first real worldspace replaces it outright instead of
+/// cross-fading from a sky the player never saw outdoors. Removed on that
+/// replacement.
+pub(crate) struct ProvisionalOutdoorEnvironment;
+impl Resource for ProvisionalOutdoorEnvironment {}
+
 /// Resolved ambient-audio directive for the currently resident cell's
 /// highest-priority `REGN` `Sound` entry (EX-16 item 1, #2372). CPU-only —
 /// carries FormIDs, not decoded audio; `asset_provider::audio`'s

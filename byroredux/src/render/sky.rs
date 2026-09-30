@@ -10,8 +10,8 @@ use byroredux_renderer::vulkan::context::SkyDalcCube;
 use byroredux_renderer::{SkyParams, SkyWeatherParams};
 
 use crate::components::{
-    CellLightingRes, CloudSimState, DalcCubeYup, GameTimeRes, InteriorSkyExposureRes, SkyParamsRes,
-    WeatherDataRes, WeatherSurfaceState,
+    CellLightingRes, CloudSimState, DalcCubeYup, InteriorSkyExposureRes, SkyParamsRes,
+    WeatherSurfaceState,
 };
 
 fn renderer_dalc_cube(cube: DalcCubeYup) -> SkyDalcCube {
@@ -43,60 +43,23 @@ fn interior_dalc_cube(world: &World) -> Option<SkyDalcCube> {
 /// Assemble per-frame `SkyParams` from world resources.
 ///
 /// Sourced from:
-///   * `SkyParamsRes` — rebuilt per exterior load (zenith / horizon /
-///     sun / cloud-layer tunables, optional DALC cube).
+///   * `SkyParamsRes` — the worldspace-scoped outdoor sky (zenith / horizon /
+///     sun / cloud-layer tunables, optional DALC cube). It survives the
+///     transition into an interior (#1199), and a direct `--cell` interior
+///     boot installs the canonical procedural default through
+///     `install_interior_outdoor_defaults` (#4902), so every interior has
+///     one; `weather_system` advances it either way.
 ///   * `CellLightingRes` — supplies an interior XCLL ambient cube when
 ///     present.
 ///   * `CloudSimState` — survives cell transitions (per-layer scroll
 ///     offsets accumulated by `weather_system`).
 ///
-/// When `SkyParamsRes` is absent on an interior-only boot, the room's
-/// ordinary lighting fields retain `SkyParams::default()` and a separate
-/// outdoor portal palette comes from the procedural fallback. When `CloudSimState` is absent but
-/// `SkyParamsRes` is present (first exterior frame), cloud scrolls
-/// default to zero.
-/// The live exterior TOD/weather zenith colour, readable from inside an
-/// interior cell (#3323).
-///
-/// `SkyParamsRes` is worldspace-scoped with World lifetime (#1199), so it
-/// survives the transition into an interior and the weather sim keeps
-/// updating it. An interior-only boot (`--cell ...`) uses the same procedural
-/// outdoor fallback as a plugin-less exterior, advanced by the live clock.
-///
-/// This is the exterior colour lane used by the window-portal shader. The
-/// separate outdoor sun lane below is consumed only by volumetrics after a
-/// geometry visibility test. Composite uses the outdoor palette only at
-/// Show Sky depth misses or bounded, modeled openings.
-/// Outdoor sun for rays that prove they cross an interior aperture. A direct
-/// `--cell` boot has no SkyParamsRes, so derive the same procedural solar arc
-/// used by the exterior fallback from the live game clock and climate hours.
-fn portal_sun(world: &World) -> ([f32; 3], [f32; 3]) {
-    if let Some(sky) = world.try_resource::<SkyParamsRes>() {
-        let intensity = if sky.sun_direction[1] > 0.0 {
-            sky.sun_intensity.max(0.0)
-        } else {
-            0.0
-        };
-        return (
-            sky.sun_direction,
-            sky.sun_color.map(|channel| channel * intensity),
-        );
-    }
-    let hour = world
-        .try_resource::<GameTimeRes>()
-        .map_or_else(|| GameTimeRes::default().hour, |time| time.hour);
-    let tod_hours = world
-        .try_resource::<WeatherDataRes>()
-        .map_or(crate::systems::weather::DEFAULT_TOD_HOURS, |weather| {
-            weather.tod_hours
-        });
-    let (direction, intensity) = crate::systems::weather::compute_sun_arc(hour, tod_hours);
-    (
-        direction,
-        crate::env_translate::FB_SUN_COLOR.map(|channel| channel * intensity),
-    )
-}
-
+/// An interior keeps its own lighting fields at `SkyParams::default()` and
+/// carries the outdoor sky only as the portal palette: the window-portal
+/// escape colour (#3323), the Show Sky / aperture background, and the portal
+/// sun the volumetrics use after a geometry ray proves an opening. None of it
+/// is derived here — #4902 removed the render-loop fallback that re-built the
+/// procedural sky and sun arc every frame on an interior-only boot.
 pub(super) fn build_sky_params(world: &World) -> SkyParams {
     let interior_cube = interior_dalc_cube(world);
 
@@ -119,43 +82,43 @@ pub(super) fn build_sky_params(world: &World) -> SkyParams {
     });
     let is_interior = cell_directional.is_some_and(|(interior, _, _)| interior);
     if is_interior {
-        let (portal_sun_direction, portal_sun_radiance) = portal_sun(world);
-        let mut outdoor = if let Some(sky_res) = world.try_resource::<SkyParamsRes>() {
-            outdoor_sky_params(world, &sky_res, None)
-        } else {
-            // Direct `--cell` boot has no surviving worldspace sky. Bake the
-            // same procedural outdoor fallback used by an exterior boot,
-            // with its sun driven by the live clock rather than a frozen noon.
-            let hour = world
-                .try_resource::<GameTimeRes>()
-                .map_or_else(|| GameTimeRes::default().hour, |time| time.hour);
-            let tod_hours = world
-                .try_resource::<WeatherDataRes>()
-                .map_or(crate::systems::weather::DEFAULT_TOD_HOURS, |weather| {
-                    weather.tod_hours
-                });
-            let (direction, intensity) = crate::systems::weather::compute_sun_arc(hour, tod_hours);
-            let mut fallback = crate::env_translate::procedural_fallback_sky(direction);
-            fallback.sun_intensity = intensity;
-            outdoor_sky_params(world, &fallback, None)
+        let interior_show_sky = world
+            .try_resource::<InteriorSkyExposureRes>()
+            .is_some_and(|exposure| exposure.0);
+        // #4902 — no render-time fallback: without the canonical outdoor
+        // environment (only a non-cell harness gets here) there is no portal
+        // sky at all rather than one re-derived in the render loop.
+        let Some(sky_res) = world.try_resource::<SkyParamsRes>() else {
+            return SkyParams {
+                dalc_cube: interior_cube,
+                interior_show_sky,
+                ..SkyParams::default()
+            };
         };
+        let mut outdoor = outdoor_sky_params(world, &sky_res, None);
+        drop(sky_res);
         outdoor.is_exterior = true;
+        // #4909 — the portal sun is the outdoor palette's own
+        // `sun_illuminance`: the exterior's sunlight colour, HNAM dimmer,
+        // daylight fraction and cloud transmittance, the same value that
+        // lights the exterior terrain. It used to be `sun_color ×
+        // sun_intensity` — the sun-disc colour at its raw 0–4 scale, blind to
+        // overcast and dimming. Dark while the sun is below the horizon.
+        let portal_sun_radiance = if outdoor.sun_direction[1] > 0.0 {
+            outdoor.sun_illuminance
+        } else {
+            [0.0; 3]
+        };
         return SkyParams {
             dalc_cube: interior_cube,
-            portal_sun_direction,
+            portal_sun_direction: outdoor.sun_direction,
             portal_sun_radiance,
-            interior_show_sky: world
-                .try_resource::<InteriorSkyExposureRes>()
-                .is_some_and(|exposure| exposure.0),
+            interior_show_sky,
             // #3323 — the exterior colour lane for `triangle.frag`'s
             // window-portal escape. Pinning it to `SkyParams::default()` made
             // every FNV interior window transmit clear-noon blue at 03:00,
             // which is the exact symptom #925 claimed to have fixed on the
             // exact cells it named (Vault 21/34/22, the Novac motel rooms).
-            //
-            // `SkyParamsRes` is worldspace-scoped and survives the transition
-            // into an interior. On a direct `--cell` boot the same exterior
-            // procedural fallback is baked for the portal instead.
             exterior_zenith_color: outdoor.zenith_color,
             portal_outdoor_sky: Some(outdoor.into()),
             ..SkyParams::default()
@@ -284,7 +247,19 @@ fn outdoor_sky_params(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::components::WeatherSkyState;
+    use crate::components::{GameTimeRes, WeatherSkyState};
+
+    /// A direct `--cell` interior boot as the cell loader leaves it: the
+    /// room's lighting plus the canonical outdoor defaults (#4902), advanced
+    /// once by `weather_system` exactly as the frame loop does.
+    fn interior_boot_world(hour: f32) -> World {
+        let mut world = World::new();
+        world.insert_resource(GameTimeRes::frozen_at(hour));
+        world.insert_resource(interior_lighting(None));
+        crate::scene::install_interior_outdoor_defaults(&mut world);
+        crate::systems::weather::weather_system(&world, 0.0);
+        world
+    }
 
     fn interior_lighting(directional_ambient: Option<[[f32; 3]; 6]>) -> CellLightingRes {
         CellLightingRes {
@@ -400,7 +375,13 @@ mod tests {
         assert_eq!(params.sun_direction, default.sun_direction);
         assert_eq!(params.sun_intensity, default.sun_intensity);
         assert_eq!(params.portal_sun_direction, [0.5, 0.8, 0.3]);
-        assert_eq!(params.portal_sun_radiance, [4.0, 3.8, 3.4]);
+        // #4909 — the portal sun is the outdoor palette's own illuminance,
+        // not the disc colour × raw intensity ([4.0, 3.8, 3.4] here).
+        assert_eq!(
+            params.portal_sun_radiance,
+            params.portal_outdoor_sky.as_ref().unwrap().sun_illuminance
+        );
+        assert!(params.portal_sun_radiance[0] < 1.0);
         assert_eq!(params.cloud_tile_scale, default.cloud_tile_scale);
         assert_eq!(params.cloud_texture_index, default.cloud_texture_index);
         assert!(params.dalc_cube.is_none());
@@ -470,12 +451,12 @@ mod tests {
     }
 
     /// Direct `--cell` boot still has a procedural outdoor sky for the
-    /// window-escape cube, even though no exterior has been loaded.
+    /// window-escape cube, even though no exterior has been loaded — from the
+    /// canonical `SkyParamsRes` the cell loader installs (#4902), not from a
+    /// render-loop re-derivation.
     #[test]
     fn interior_only_session_bakes_procedural_outdoor_sky() {
-        let mut world = World::new();
-        world.insert_resource(interior_lighting(None));
-
+        let world = interior_boot_world(12.0);
         let params = build_sky_params(&world);
         assert_eq!(
             params.exterior_zenith_color,
@@ -485,13 +466,22 @@ mod tests {
         assert!(params.portal_outdoor_sky.unwrap().is_exterior);
     }
 
+    /// #4902 — with no outdoor environment resource there is no portal sky:
+    /// the renderer no longer invents one. (The cell loader always installs
+    /// it for an interior; only a non-cell harness can reach this.)
     #[test]
-    fn interior_only_boot_uses_live_clock_for_portal_sun() {
+    fn interior_without_an_outdoor_environment_gets_no_portal_sky() {
         let mut world = World::new();
         world.insert_resource(interior_lighting(None));
         world.insert_resource(GameTimeRes::frozen_at(12.0));
+        let params = build_sky_params(&world);
+        assert!(params.portal_outdoor_sky.is_none());
+        assert_eq!(params.portal_sun_radiance, [0.0; 3]);
+    }
 
-        let noon = build_sky_params(&world);
+    #[test]
+    fn interior_only_boot_uses_live_clock_for_portal_sun() {
+        let noon = build_sky_params(&interior_boot_world(12.0));
         assert!(noon.portal_sun_direction[1] > 0.0);
         assert!(
             noon.portal_sun_radiance
@@ -507,18 +497,39 @@ mod tests {
             "the procedural exterior's sun must light its clouds through an \
              interior aperture too (#4839)"
         );
+        // #4909 — the portal sun IS the outdoor palette's illuminance.
+        assert_eq!(noon.portal_sun_radiance, noon_outside.sun_illuminance);
         assert_eq!(noon.sun_direction, SkyParams::default().sun_direction);
         assert!(!noon.is_exterior);
 
-        world
-            .try_resource_mut::<GameTimeRes>()
-            .unwrap()
-            .set_hour(0.0);
-        let midnight = build_sky_params(&world);
+        let midnight = build_sky_params(&interior_boot_world(0.0));
         assert_eq!(midnight.portal_sun_radiance, [0.0; 3]);
         let midnight_outside = midnight.portal_outdoor_sky.unwrap();
         assert_eq!(midnight_outside.sun_intensity, 0.0);
         assert_eq!(midnight_outside.sun_illuminance, [0.0; 3]);
+    }
+
+    /// #4909 — the portal sun follows the outdoor weather: full overcast
+    /// dims it the way it dims the exterior terrain key, where it used to be
+    /// `sun_color × sun_intensity` at clear-sky strength.
+    #[test]
+    fn overcast_dims_the_portal_sun() {
+        let world = interior_boot_world(12.0);
+        let clear = build_sky_params(&world).portal_sun_radiance;
+        world
+            .try_resource_mut::<SkyParamsRes>()
+            .unwrap()
+            .weather
+            .cloud_coverage = 1.0;
+        let overcast = build_sky_params(&world).portal_sun_radiance;
+        for c in 0..3 {
+            assert!(
+                overcast[c] > 0.0 && overcast[c] < clear[c] * 0.2,
+                "channel {c}: overcast {} vs clear {}",
+                overcast[c],
+                clear[c]
+            );
+        }
     }
 
     #[test]

@@ -207,6 +207,8 @@ pub(crate) use world_setup::{
 // via `use super::*;` so they need to be in scope at the parent
 // module level. Gating the imports on `#[cfg(test)]` keeps the
 // production build from carrying redundant `use` lines.
+/// #4902 — installed by the interior cell loader when no worldspace sky exists.
+pub(crate) use world_setup::install_interior_outdoor_defaults;
 #[cfg(test)]
 #[allow(unused_imports)]
 pub(crate) use world_setup::{

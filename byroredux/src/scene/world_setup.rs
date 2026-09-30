@@ -375,7 +375,9 @@ fn apply_environment(
         // First-time bootstrap: insert directly. A subsequent worldspace
         // change (door-walking interior↔exterior, M40 Phase 2) will
         // trigger the 8-second crossfade via WeatherTransitionRes.
-        if world.try_resource::<WeatherDataRes>().is_some() {
+        // #4902 — the provisional default an interior-only boot installed is
+        // not a weather the player saw: replace it directly as well.
+        if take_weather_crossfade_eligibility(world) {
             world.insert_resource(WeatherTransitionRes {
                 target: new_weather,
                 elapsed_secs: 0.0,
@@ -399,6 +401,8 @@ fn apply_environment(
         // synthetic test cell).
         let sun_dir = compute_sun_arc(bootstrap_hour, DEFAULT_TOD_HOURS).0;
         insert_procedural_fallback_resources(world, sun_dir);
+        // A resolved (if climateless) worldspace now owns the environment.
+        world.remove_resource::<crate::components::ProvisionalOutdoorEnvironment>();
         // #1770 — the procedural fallback installs a texture-less sky, so it
         // must release the prior worldspace's sky handles too. Without this, a
         // transition into a climateless worldspace (corrupt/partial ESM, mod
@@ -799,6 +803,50 @@ pub(crate) fn insert_procedural_fallback_resources(world: &mut World, sun_dir: [
     world.insert_resource(crate::env_translate::procedural_fallback_cell_lighting(
         sun_dir,
     ));
+    insert_procedural_outdoor_environment(world, sun_dir);
+}
+
+/// #4902 — an interior reached with no worldspace sky yet (a direct `--cell`
+/// boot) gets the same canonical procedural outdoor environment a climateless
+/// exterior installs, once, so `weather_system` advances it and every consumer
+/// (window portals, Show Sky, apertures, the portal sun) reads one canonical
+/// resource instead of re-deriving the fallback in the render loop. The
+/// interior's own `CellLightingRes` is untouched. A no-op whenever a
+/// worldspace sky already survives from an earlier exterior (#1199).
+///
+/// Marked [`ProvisionalOutdoorEnvironment`] so the first real worldspace
+/// weather replaces it directly rather than cross-fading from it.
+pub(crate) fn install_interior_outdoor_defaults(world: &mut World) {
+    if world.try_resource::<SkyParamsRes>().is_some() {
+        return;
+    }
+    use crate::systems::weather::{compute_sun_arc, DEFAULT_TOD_HOURS};
+    let (sun_dir, sun_intensity) = compute_sun_arc(bootstrap_game_hour(world), DEFAULT_TOD_HOURS);
+    insert_procedural_outdoor_environment(world, sun_dir);
+    // The live arc's intensity, so the first frame (before `weather_system`
+    // runs) already matches what it will write.
+    world.resource_mut::<SkyParamsRes>().sun_intensity = sun_intensity;
+    world.insert_resource(crate::components::ProvisionalOutdoorEnvironment);
+}
+
+/// Whether a newly resolved worldspace weather should cross-fade from the
+/// current `WeatherDataRes` (true) or replace it directly (false), consuming
+/// the [`ProvisionalOutdoorEnvironment`] marker either way. A cross-fade needs
+/// a weather the player actually saw: none at all is a first bootstrap, and
+/// the provisional interior-boot default (#4902) is a stand-in, not a sky
+/// that was ever outdoors.
+///
+/// [`ProvisionalOutdoorEnvironment`]: crate::components::ProvisionalOutdoorEnvironment
+pub(crate) fn take_weather_crossfade_eligibility(world: &mut World) -> bool {
+    let provisional = world
+        .remove_resource::<crate::components::ProvisionalOutdoorEnvironment>()
+        .is_some();
+    world.try_resource::<WeatherDataRes>().is_some() && !provisional
+}
+
+/// The outdoor half of the procedural fallback: sky, weather table and the
+/// simulation state that survives transitions, plus the game clock.
+fn insert_procedural_outdoor_environment(world: &mut World, sun_dir: [f32; 3]) {
     world.insert_resource(crate::env_translate::procedural_fallback_sky(sun_dir));
     // #803 — same survives-transitions pattern as the WTHR path: seed
     // CloudSimState only on the first exterior load.
@@ -1148,6 +1196,68 @@ pub(crate) fn begin_exterior_streaming(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #4902 — a direct interior boot installs the canonical outdoor
+    /// environment once (sky, weather table, provisional marker) and leaves
+    /// the room's own lighting alone; a surviving worldspace sky is never
+    /// replaced.
+    #[test]
+    fn interior_boot_installs_the_canonical_outdoor_environment_once() {
+        use crate::components::ProvisionalOutdoorEnvironment;
+
+        let mut world = World::new();
+        let mut room = crate::env_translate::procedural_fallback_cell_lighting([0.0, 1.0, 0.0]);
+        room.is_interior = true;
+        room.ambient = [0.01, 0.02, 0.03];
+        world.insert_resource(room);
+        world.insert_resource(GameTimeRes::frozen_at(12.0));
+
+        install_interior_outdoor_defaults(&mut world);
+        let sky = world.resource::<SkyParamsRes>();
+        assert!(sky.is_exterior);
+        let (noon_dir, noon_intensity) =
+            crate::systems::weather::compute_sun_arc(12.0, crate::systems::weather::DEFAULT_TOD_HOURS);
+        assert_eq!(sky.sun_direction, noon_dir);
+        assert_eq!(sky.sun_intensity, noon_intensity);
+        drop(sky);
+        assert!(world.try_resource::<WeatherDataRes>().is_some());
+        assert!(world.try_resource::<ProvisionalOutdoorEnvironment>().is_some());
+        let lit = world.resource::<crate::components::CellLightingRes>();
+        assert!(lit.is_interior, "the room keeps its own lighting");
+        assert_eq!(lit.ambient, [0.01, 0.02, 0.03]);
+        drop(lit);
+
+        // An exterior sky survives into later interiors (#1199): no-op.
+        world.remove_resource::<ProvisionalOutdoorEnvironment>();
+        world.resource_mut::<SkyParamsRes>().zenith_color = [0.9, 0.1, 0.1];
+        install_interior_outdoor_defaults(&mut world);
+        assert_eq!(world.resource::<SkyParamsRes>().zenith_color, [0.9, 0.1, 0.1]);
+        assert!(world.try_resource::<ProvisionalOutdoorEnvironment>().is_none());
+    }
+
+    /// #4902 — the first real worldspace after an interior-only boot replaces
+    /// the provisional default directly; only a weather the player saw
+    /// cross-fades.
+    #[test]
+    fn only_a_seen_weather_cross_fades() {
+        use crate::components::ProvisionalOutdoorEnvironment;
+
+        let mut world = World::new();
+        assert!(!take_weather_crossfade_eligibility(&mut world), "first bootstrap");
+
+        world.insert_resource(crate::env_translate::procedural_fallback_weather());
+        world.insert_resource(ProvisionalOutdoorEnvironment);
+        assert!(
+            !take_weather_crossfade_eligibility(&mut world),
+            "the interior-boot default must be replaced, not faded from"
+        );
+        assert!(world.try_resource::<ProvisionalOutdoorEnvironment>().is_none());
+
+        assert!(
+            take_weather_crossfade_eligibility(&mut world),
+            "a real weather already shown cross-fades as before"
+        );
+    }
 
     #[test]
     fn interactive_bootstrap_waits_only_for_foreground_cell() {
