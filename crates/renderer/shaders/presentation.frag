@@ -58,6 +58,13 @@ vec3 aces(vec3 x) {
     const float c = 2.43;
     const float d = 0.59;
     const float e = 0.14;
+    // #4840 — the Narkowicz fit is not sign-safe: its numerator has a
+    // second root at x = -0.012, so negative input maps to a POSITIVE
+    // output (reaching 1.0 near x = -0.3) that the output clamp cannot
+    // catch. The grade's contrast pivot (contrast > 1 on most FO3/FNV
+    // IMGS) and saturation > 1 both produce negative channels, which
+    // rendered black as grey. Floor at zero, as `agx()` already does.
+    x = max(x, vec3(0.0));
     return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
 }
 

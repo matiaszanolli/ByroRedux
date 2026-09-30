@@ -52,14 +52,20 @@ impl TonemapOp {
 }
 
 /// Mirror of `aces()` in `presentation.frag` — Narkowicz 2015,
-/// "Filmic Tonemapping Operators”.
+/// "Filmic Tonemapping Operators”. Input is floored at zero (#4840): the
+/// fit's numerator has a second root at x = -0.012, so without the floor a
+/// negative channel from the grade's contrast pivot tonemaps to a positive
+/// value and black renders grey.
 pub fn aces(x: [f32; 3]) -> [f32; 3] {
     const A: f32 = 2.51;
     const B: f32 = 0.03;
     const C: f32 = 2.43;
     const D: f32 = 0.59;
     const E: f32 = 0.14;
-    let channel = |x: f32| ((x * (A * x + B)) / (x * (C * x + D) + E)).clamp(0.0, 1.0);
+    let channel = |x: f32| {
+        let x = x.max(0.0);
+        ((x * (A * x + B)) / (x * (C * x + D) + E)).clamp(0.0, 1.0)
+    };
     [channel(x[0]), channel(x[1]), channel(x[2])]
 }
 
@@ -259,6 +265,32 @@ mod tests {
         }
     }
 
+    /// #4840 — the grade's contrast pivot around 0.18 drives black to
+    /// `0.18 * (1 - contrast)` (negative for contrast > 1, which 58 of 67
+    /// FNV IMGS author). Both operators must map every negative input to
+    /// black and stay monotone across the sign change; before the floor,
+    /// ACES mapped -0.1 to ~0.4 display-linear.
+    #[test]
+    fn negative_input_maps_to_black_and_stays_monotone() {
+        for op in [TonemapOp::Aces, TonemapOp::Agx] {
+            for x in [-1.0e-4, -0.012, -0.05, -0.1, -0.3, -1.0, -100.0] {
+                let out = tonemap(op, [x; 3]);
+                assert!(
+                    out.iter().all(|c| *c < 1.0e-4),
+                    "{op:?} must map negative input {x} to black, got {out:?}"
+                );
+            }
+            let mut prev = tonemap(op, [-0.5; 3])[0];
+            for i in -50..=50 {
+                let out = tonemap(op, [i as f32 * 0.002; 3])[0];
+                assert!(out >= prev, "{op:?} non-monotone at {}", i as f32 * 0.002);
+                prev = out;
+            }
+        }
+        // A single negative minor channel (saturation > 1) must not light up.
+        assert_eq!(aces([0.5, -0.2, 0.1])[1], 0.0);
+    }
+
     /// #4578 — the old linear [0,1] clamp flattened every AgX input >= 1.0
     /// to one value (0.590 display-linear); the log-space clamp must keep
     /// increasing through the highlights. Grey-ramp figures from the audit
@@ -336,6 +368,19 @@ mod tests {
             .expect("AgX function terminator")
             .0;
         assert!(agx.contains("log2(max(val, 1.0e-10))"));
+        // #4840 — the GLSL ACES must carry the same zero floor as the
+        // mirror, ahead of the rational fit.
+        let aces = frag
+            .split_once("vec3 aces(vec3 x)")
+            .expect("GLSL ACES function")
+            .1
+            .split_once("// AgX")
+            .expect("ACES function terminator")
+            .0;
+        let floor = aces
+            .find("x = max(x, vec3(0.0));")
+            .expect("ACES must floor negative input (#4840)");
+        assert!(floor < aces.find("return clamp(").expect("ACES return"));
         let ev_clamp = agx
             .find("clamp(log2(max(val, 1.0e-10)), min_ev, max_ev)")
             .expect("AgX must clamp in log space");
