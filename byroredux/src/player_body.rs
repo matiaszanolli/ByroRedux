@@ -26,11 +26,13 @@
 //! the same look accumulator the camera uses, so third person shows the
 //! body's back. Locomotion animation (`attach_player_locomotion_animation`)
 //! wires the same motion-based walk/idle playback every placed NPC takes,
-//! driven off the capsule. Two halves stay open and are tracked in the
-//! slice doc: no new-gear import for mid-life equips (spawn-time gear only,
-//! same as the NPC re-equip reconcile's scope), and player FaceGen (vanilla
-//! ships no facegeom for the player record — the graceful miss leaves the
-//! race-default head).
+//! driven off the capsule. Gear the player equips mid-life takes the same
+//! path as an NPC's: `equipment_appearance_system` queues a
+//! `PendingGearImport` for an equip with no spawn-time root, and
+//! `GearImportLoader` imports and attaches the worn mesh (hidden in first
+//! person via `HiddenFirstPerson`). One half stays open and is tracked in the
+//! slice doc: player FaceGen (vanilla ships no facegeom for the player
+//! record — the graceful miss leaves the race-default head).
 
 use std::collections::HashSet;
 

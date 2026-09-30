@@ -198,14 +198,16 @@ fn set_hidden(world: &mut World, root: EntityId, hidden: bool) {
 /// onto the meshes to hide — and re-equipping the same item reveals exactly
 /// what the earlier unequip hid. This is the mesh half of "wire equip/
 /// unequip through the mesh attachment pipeline" for every actor whose
-/// meshes exist; two halves remain deliberately out of scope:
+/// meshes exist.
 ///
-/// - **Newly acquired gear** (an item the actor did not spawn wearing) has
-///   no root to reveal — spawning it is the corpse-restoration machinery's
-///   import path, applied to mid-life equips later.
-/// - **Covered skin re-exposure** (removing a chest piece should unmask the
-///   torso skin) needs biped-coverage composition; the full-strip corpse
-///   path owns that today.
+/// **Newly acquired gear** (an item the actor did not spawn wearing) has no
+/// root to reveal, so the system ends by handing it to
+/// [`queue_midlife_imports`], which queues a [`PendingGearImport`] that
+/// [`GearImportLoader`] drains into an imported, attached worn mesh.
+///
+/// One half remains deliberately out of scope: **covered skin re-exposure**
+/// (removing a chest piece should unmask the torso skin) needs
+/// biped-coverage composition; the full-strip corpse path owns that today.
 ///
 /// Dead actors are skipped: death reconciliation owns their appearance
 /// lifecycle (it hides originals permanently and stages a restored body), so
