@@ -1073,12 +1073,22 @@ fn spawn_placement_root(
 /// an ordinary content light sharing a name with another (however
 /// unlikely) is never affected.
 ///
+/// #5123 (RT-2) — the match is case-INSENSITIVE: the vanilla exporter
+/// spells the block `__MAX_Default_Light` (Oblivion
+/// `meshes\characters\imperial\earshuman.nif` carries two of them, the
+/// classic ± key/fill pair). The audit dump had shown the name
+/// lowercased because every `Name` component interns through the
+/// case-folding `StringPool`, which masked the real spelling and left
+/// this allowlist matching nothing on the NPC / actor-part path. The
+/// pool itself is case-insensitive, so the ECS side of the comparison
+/// always was; the allowlist now agrees.
+///
 /// No other exporter-artifact light names are confirmed in this
 /// codebase's corpus today (SIBLING check, #3557) — extend this
 /// allowlist when one turns up rather than widening the match to a
 /// heuristic.
 pub(crate) fn is_known_exporter_artifact_light_name(name: &str) -> bool {
-    name == "__max_default_light"
+    name.eq_ignore_ascii_case("__max_default_light")
 }
 
 /// Spawn a `LightSource` entity per authored NIF light with a

@@ -392,9 +392,86 @@ fn known_exporter_artifact_light_name_matches_only_the_documented_name() {
     assert!(is_known_exporter_artifact_light_name("__max_default_light"));
     assert!(!is_known_exporter_artifact_light_name("Torch01Light"));
     assert!(!is_known_exporter_artifact_light_name(""));
-    // Case-sensitive on purpose — the allowlist is evidence-bound to the
-    // exact confirmed string, not a heuristic.
-    assert!(!is_known_exporter_artifact_light_name("__MAX_DEFAULT_LIGHT"));
+    // #5123 — case-INSENSITIVE by evidence: the vanilla exporter spells
+    // the block `__MAX_Default_Light` (Oblivion earshuman.nif's ± pair);
+    // the lowercased `__max_default_light` from the audit dump was the
+    // StringPool's case-folding, not the NIF string. The old
+    // case-sensitive pin matched nothing on the actor-part path and let
+    // every earshuman load respawn the pair.
+    assert!(is_known_exporter_artifact_light_name("__MAX_Default_Light"));
+    assert!(is_known_exporter_artifact_light_name("__MAX_DEFAULT_LIGHT"));
+}
+
+/// #5123 (RT-2026-09-29-02) — the headline regression: Oblivion's
+/// `earshuman.nif` carries TWO `NiDirectionalLight` nodes named
+/// `__MAX_Default_Light` (the classic Max key/fill ± pair), and the
+/// player body / NPC head assembly loads it more than once per process.
+/// Each load re-spawned both artifact lights because the #3557 allowlist
+/// compared case-sensitively against the lowercased dump name. Simulated
+/// as two consecutive `spawn_nif_lights` calls — skeleton+head first,
+/// the player body's own ear part second — using the EXACT vanilla
+/// spelling. After the fix only the first NIF's first artifact node
+/// spawns; the second node in the same call is skipped by the freshly
+/// inserted `Name`, and every later load by it too.
+#[test]
+fn spawn_nif_lights_deduplicates_vanilla_cased_max_artifact_across_loads() {
+    let mut world = World::new();
+    world.insert_resource(byroredux_core::string::StringPool::new());
+    let ear_pair = || {
+        vec![
+            ImportedLight {
+                translation: [0.0, 0.0, 0.0],
+                direction: [0.8947, 0.3716, 0.2478],
+                color: [1.0, 1.0, 1.0],
+                radius: 0.0,
+                kind: LightKind::Directional,
+                outer_angle: 0.0,
+                affected_node_names: Vec::new(),
+                name: Some(std::sync::Arc::from("__MAX_Default_Light")),
+            },
+            ImportedLight {
+                translation: [0.0, 0.0, 0.0],
+                direction: [-0.8947, -0.3716, -0.2478],
+                color: [1.0, 1.0, 1.0],
+                radius: 0.0,
+                kind: LightKind::Directional,
+                outer_angle: 0.0,
+                affected_node_names: Vec::new(),
+                name: Some(std::sync::Arc::from("__MAX_Default_Light")),
+            },
+        ]
+    };
+
+    // First actor-part load (e.g. an NPC's head assembly): the ± pair's
+    // first node spawns, its sibling is deduplicated by name.
+    spawn_nif_lights(
+        &mut world,
+        &ear_pair(),
+        Vec3::ZERO,
+        Quat::IDENTITY,
+        1.0,
+        None,
+    );
+    // Second load (the player body's own earshuman.nif): both nodes must
+    // deduplicate against the surviving first emitter.
+    spawn_nif_lights(
+        &mut world,
+        &ear_pair(),
+        Vec3::ZERO,
+        Quat::IDENTITY,
+        1.0,
+        None,
+    );
+
+    let count = world
+        .query::<LightSource>()
+        .map(|q| q.iter().count())
+        .unwrap_or(0);
+    assert_eq!(
+        count, 1,
+        "two earshuman loads must yield ONE artifact emitter total — \
+         pre-#5123 the case-sensitive allowlist spawned all four"
+    );
 }
 
 // ── M46.0 / #561 multi-plugin helpers ─────────────────────────────

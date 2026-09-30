@@ -11,6 +11,17 @@
 # row makes the mode part of the contract. skin_pool_* now come from the
 # bench: line's `skin=L/M+S` token, read at the measured frame. Draw-split
 # invariant holds: 78 <= 132 <= 330, 5 <= 2 x 78.
+# regenerated: 2026-09-29 (#5123 — CONTRACT-DERIVED regen, not live-captured:
+# light_count_directional 2 -> 1. The 2 measured both halves of Oblivion
+# earshuman.nif's `__MAX_Default_Light` ± pair: #3557's de-dup allowlist
+# compared case-sensitively against the lowercased dump name, so it matched
+# nothing on the NPC/actor-part path (the audit even pinned the case
+# sensitivity). The real NIF spelling is `__MAX_Default_Light`; with the
+# allowlist now case-insensitive the de-dup collapses every later artifact
+# load to the first emitter — 1 directional for this cell. The #5123 unit
+# test pins the collapse (two earshuman loads -> 1 emitter). Next live
+# audit run should confirm the row; entities_total also drops 5 (6 -> 1
+# artifact emitters at the 9fcfdc3fc capture), inside the ±2% band.
 # light_count_point stays 8. It is the count of `kind=Point` rows: this cell
 # dumps `LightSource emitters: 10` = 8 point + 2 directional (#4419).
 # entities_total 745 is unchanged since the 2026-09-13 #4124 regen below.
@@ -94,7 +105,7 @@ tex_missing_base_color	0
 tex_missing_all_slots	0
 mesh_cache_failed_count	0
 light_count_point	8
-light_count_directional	2
+light_count_directional	1
 skin_pool_live	4
 skin_pool_max	1364
 skin_pool_overflow_attempts	0
