@@ -568,7 +568,10 @@ struct Reservoir {
                        // keeps the struct at 32 B.
 };
 
-layout(std430, set = 1, binding = 16) buffer ReservoirCurrBuffer {
+// writeonly (#5062): triangle.frag only ever stores this frame's reservoirs;
+// reads come through ReservoirPrevBuffer next frame. Keeps sync validation
+// from classifying binding 16 as a fragment SHADER_STORAGE_READ interface.
+layout(std430, set = 1, binding = 16) writeonly buffer ReservoirCurrBuffer {
     Reservoir reservoirsCurr[];
 };
 layout(std430, set = 1, binding = 17) readonly buffer ReservoirPrevBuffer {

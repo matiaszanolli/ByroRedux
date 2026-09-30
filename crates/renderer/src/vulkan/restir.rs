@@ -142,7 +142,7 @@ impl ReservoirBuffers {
         ];
         let after = [buffer_barrier(self.curr_buffer(frame))
             .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
-            .dst_access_mask(vk::AccessFlags::SHADER_WRITE)];
+            .dst_access_mask(vk::AccessFlags::SHADER_WRITE | vk::AccessFlags::SHADER_READ)];
         // SAFETY: called after beginning this slot's fenced command buffer,
         // outside a render pass. Both buffers remain live through submission;
         // the barriers order prior reads/writes, the clear, and new writes.
