@@ -1797,6 +1797,29 @@ mod tests {
             "fsr3-upscaler-integration-plan.md must name the live exposure \
              consumer in its phase-3 status line (#4026)",
         );
+
+        // #4878 — §1.4's exposure row outlived the Stage-1 meter by still
+        // saying auto exposure was off. Pin the ground truth (auto is the
+        // default, fixed mode is the opt-out) and reject the stale sentence;
+        // needle composed at runtime for the same reason as above.
+        let meter = include_str!("vulkan/exposure_meter.rs");
+        assert!(
+            meter.contains("x = mode (0 fixed, 1 auto)"),
+            "exposure_meter.rs no longer has a fixed/auto mode switch; the FSR \
+             plan's §1.4 exposure row needs re-checking (#4878)",
+        );
+        let stale_auto = format!("Auto exposure is {} enabled", "not");
+        assert!(
+            !plan.contains(&stale_auto),
+            "fsr3-upscaler-integration-plan.md §1.4 again says auto exposure is \
+             off; the Stage-1 exposure meter ships and is on by default (#4878)",
+        );
+        assert!(
+            plan.contains("exposure meter") && plan.contains("AgX"),
+            "fsr3-upscaler-integration-plan.md §1.4 must name the exposure meter \
+             that writes the FSR exposure texel and the AgX display transform \
+             that consumes it (#4878)",
+        );
     }
 
     /// #2045 (TD7-101) — `triangle.frag` must NOT redeclare
