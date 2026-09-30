@@ -1153,6 +1153,11 @@ fn collider_belongs_to_target(world: &World, collider_entity: EntityId, target: 
     target_form.is_some() && target_form == collider_form
 }
 
+/// The player's gameplay ray: along the active camera's forward, starting at
+/// the eye. In third person the camera sits `player_camera_boom` behind the
+/// eye on that same line (#5124), so the origin is advanced by the boom: the
+/// ray still passes through the screen centre, but reach is measured from the
+/// eye and a wall behind the player can no longer occlude everything in front.
 pub(crate) fn camera_ray(world: &World) -> Option<(Vec3, Vec3)> {
     let camera = world.try_resource::<ActiveCamera>()?.0;
     let pose = world
@@ -1164,7 +1169,11 @@ pub(crate) fn camera_ray(world: &World) -> Option<(Vec3, Vec3)> {
                 .map(|transform| (transform.translation, transform.rotation))
         })?;
     let direction = (pose.1 * Vec3::NEG_Z).normalize_or_zero();
-    (direction.length_squared() > 0.0).then_some((pose.0, direction))
+    if direction.length_squared() == 0.0 {
+        return None;
+    }
+    let origin = pose.0 + direction * crate::systems::player_camera_boom(world);
+    Some((origin, direction))
 }
 
 /// #3059 (PERF-D1-02) — reuses [`InteractionCandidateScratch`] when

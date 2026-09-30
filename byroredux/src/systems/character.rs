@@ -641,6 +641,36 @@ pub(crate) fn character_controller_system(world: &World, dt: f32) {
 /// default FOV without orbiting inside nearby geometry at arm's length.
 const THIRD_PERSON_BOOM_BU: f32 = 180.0;
 
+/// How far the active camera sits behind the player's eye, along the look
+/// direction: [`THIRD_PERSON_BOOM_BU`] in third-person Character mode,
+/// `0.0` otherwise (first person, fly cam, no player).
+///
+/// #5124 — the single source for the boom. [`camera_follow_system`] places
+/// the camera with it, and `interaction::camera_ray` adds it back so every
+/// gameplay ray (activation + occlusion, the melee swing, the studio host,
+/// the `view` commands) starts at the eye instead of 180 BU behind the head
+/// — where melee reach ended at the player's own head and activation kept
+/// 12 BU of 192. A future boom-collision probe that shortens the camera
+/// must change this function, not the camera placement alone.
+pub(crate) fn player_camera_boom(world: &World) -> f32 {
+    let character = world
+        .try_resource::<PlayerMode>()
+        .map(|mode| *mode)
+        .unwrap_or_default()
+        == PlayerMode::Character;
+    if !character {
+        return 0.0;
+    }
+    match world
+        .try_resource::<crate::player_body::PlayerCameraView>()
+        .map(|view| *view)
+        .unwrap_or_default()
+    {
+        crate::player_body::PlayerCameraView::FirstPerson => 0.0,
+        crate::player_body::PlayerCameraView::ThirdPerson => THIRD_PERSON_BOOM_BU,
+    }
+}
+
 /// Pin the active camera to the player body's eye-height position
 /// each frame.
 ///
@@ -728,17 +758,9 @@ pub(crate) fn camera_follow_system(world: &World, dt: f32) {
     // P3 player body — third person pulls the camera back along the look
     // direction (`forward = rotation * -Z`, the `camera_look_rotation`
     // convention). No boom collision yet: the camera can clip walls at
-    // steep pitch; tracked in the slice doc's follow-ups.
-    let cam_pos = match world
-        .try_resource::<crate::player_body::PlayerCameraView>()
-        .map(|view| *view)
-        .unwrap_or_default()
-    {
-        crate::player_body::PlayerCameraView::FirstPerson => head_pos,
-        crate::player_body::PlayerCameraView::ThirdPerson => {
-            head_pos - (cam_rot * -Vec3::Z) * THIRD_PERSON_BOOM_BU
-        }
-    };
+    // steep pitch; tracked in the slice doc's follow-ups. The boom comes
+    // from `player_camera_boom`, which gameplay rays undo (#5124).
+    let cam_pos = head_pos - (cam_rot * -Vec3::Z) * player_camera_boom(world);
 
     // Write both Transform and GlobalTransform. The camera is a root
     // entity (no Parent), so for it the two are identical — and
@@ -1715,6 +1737,65 @@ mod tests {
         }
 
         camera_follow_system(&world, 1.0 / 60.0);
+    }
+
+    /// #5124 — in third person the camera sits `THIRD_PERSON_BOOM_BU` behind
+    /// the eye, and every gameplay ray (activation, occlusion, melee swing)
+    /// took its origin from the camera: melee reach ended at the player's own
+    /// head and activation kept 12 BU of 192. Drive the real camera system,
+    /// then assert the gameplay ray starts at the eye on the camera's line —
+    /// and that first person and fly cam are unchanged.
+    #[test]
+    fn third_person_gameplay_ray_starts_at_the_eye_not_the_camera() {
+        let mut world = World::new();
+        let player = world.spawn();
+        let camera = world.spawn();
+        let body = Vec3::new(100.0, 20.0, -40.0);
+        let controller = byroredux_physics::CharacterController::HUMAN;
+        world.insert_resource(PlayerMode::Character);
+        world.insert_resource(PlayerEntity(Some(player)));
+        world.insert_resource(ActiveCamera(camera));
+        world.insert_resource(InputState::default());
+        world.insert_resource(crate::player_body::PlayerCameraView::ThirdPerson);
+        world.insert(player, Transform::new(body, Quat::IDENTITY, 1.0));
+        world.insert(player, GlobalTransform::new(body, Quat::IDENTITY, 1.0));
+        world.insert(player, controller);
+        let eye = body + Vec3::Y * controller.eye_height;
+        // Start the camera at eye height so the step-up Y ease is a no-op.
+        world.insert(camera, Transform::new(eye, Quat::IDENTITY, 1.0));
+        world.insert(camera, GlobalTransform::new(eye, Quat::IDENTITY, 1.0));
+
+        camera_follow_system(&world, 1.0 / 60.0);
+        let camera_pos = world.get::<Transform>(camera).unwrap().translation;
+        assert!(
+            (camera_pos - eye).length() > THIRD_PERSON_BOOM_BU - 1e-3,
+            "the third-person camera must sit behind the eye (fixture sanity)"
+        );
+
+        let (origin, direction) = crate::interaction::camera_ray(&world).unwrap();
+        assert!(
+            (origin - eye).length() < 1e-3,
+            "third-person gameplay rays must start at the eye {eye:?}, not \
+             the camera — got {origin:?}"
+        );
+        assert!(
+            ((eye - camera_pos).normalize() - direction).length() < 1e-4,
+            "the ray must stay on the camera's line through the screen centre"
+        );
+
+        // First person: camera and eye coincide, origin unchanged.
+        world.insert_resource(crate::player_body::PlayerCameraView::FirstPerson);
+        camera_follow_system(&world, 1.0 / 60.0);
+        let (origin, _) = crate::interaction::camera_ray(&world).unwrap();
+        assert!((origin - eye).length() < 1e-3);
+
+        // Fly cam: no player boom applies to a free camera, whatever view
+        // the body was last left in.
+        world.insert_resource(crate::player_body::PlayerCameraView::ThirdPerson);
+        world.insert_resource(PlayerMode::FlyCam);
+        let free_pos = world.get::<Transform>(camera).unwrap().translation;
+        let (origin, _) = crate::interaction::camera_ray(&world).unwrap();
+        assert_eq!(origin, free_pos);
     }
 
     /// #3265 regression guard: weather inputs are frame-global, so their
