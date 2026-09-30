@@ -275,10 +275,17 @@ pub(crate) fn character_controller_system(world: &World, dt: f32) {
     // state instead of continuing terrestrial gravity through a lake or river.
     // The snapshot is completed before borrowing PhysicsWorld below, keeping
     // ECS query guards out of the physics lock interval.
+    //
+    // #5129 — the placed current marker is resolved on its own, before and
+    // independently of the plane columns, the same way the dynamic path
+    // resolves `current_flow` apart from `surface`: a swim state needs a
+    // plane, a current does not.
+    let marker_flow = placed_current_flow_at(world, current_pos);
     let water_contact = player_water_state(
         world,
         current_pos,
         controller.half_height + controller.radius,
+        marker_flow,
     );
     // Match the OpenMW swimlevel convention: merely wetting the capsule's
     // feet does not switch the controller from walking to swimming. The
@@ -331,20 +338,7 @@ pub(crate) fn character_controller_system(world: &World, dt: f32) {
             0.0,
         ),
     };
-    if let Some(PlayerWaterState {
-        fraction,
-        flow: Some(flow),
-        ..
-    }) = swim
-    {
-        // Currents push a swimmer, but are deliberately bounded below the
-        // authored flow speed so a river cannot turn the controller into an
-        // uncontrollable projectile. Waterfalls keep their vertical flow in
-        // the buoyancy path and contribute no horizontal drift.
-        let current = Vec3::new(flow.direction[0], 0.0, flow.direction[2])
-            * (flow.speed * 0.35 * fraction.clamp(0.0, 1.0) * dt);
-        horizontal_translation += current;
-    }
+    horizontal_translation += player_current_drift(swim.as_ref(), marker_flow, dt);
 
     // Integrate gravity into a fresh local vertical_velocity. Then
     // apply the jump impulse if requested + allowed (grounded +
@@ -1085,6 +1079,67 @@ pub(crate) fn horizontal_motion(yaw: f32, move_dir: Vec3, speed: f32, dt: f32) -
     (forward * dir.z + right * dir.x) * speed * dt
 }
 
+/// The horizontal current drift on the player for one frame.
+///
+/// Currents push the player, but are deliberately bounded below the authored
+/// flow speed so a river cannot turn the controller into an uncontrollable
+/// projectile. Waterfalls keep their vertical flow in the buoyancy path and
+/// contribute no horizontal drift.
+///
+/// - Swimming: the column's composed flow (plane + marker, #4691), scaled by
+///   the submerged fraction.
+/// - Not swimming: the placed `WaterCurrentVolume` marker alone, at full
+///   strength. #5129 — this is the dynamic path's marker arm, which applies
+///   the marker drag at `frac = 1.0` to any body whose centre is inside the
+///   box, whether or not a `WaterPlane` column covers it. Pre-fix the marker
+///   was read only inside a submerged plane column, so in a current box that
+///   outruns its plane's footprint or surface-mesh strip a barrel drifted and
+///   the player beside it did not.
+pub(crate) fn player_current_drift(
+    swim: Option<&PlayerWaterState>,
+    marker_flow: Option<WaterFlow>,
+    dt: f32,
+) -> Vec3 {
+    let (flow, fraction) = match swim {
+        Some(state) => match state.flow {
+            Some(flow) => (flow, state.fraction),
+            None => return Vec3::ZERO,
+        },
+        None => match marker_flow {
+            Some(flow) => (flow, 1.0),
+            None => return Vec3::ZERO,
+        },
+    };
+    Vec3::new(flow.direction[0], 0.0, flow.direction[2])
+        * (flow.speed * 0.35 * fraction.clamp(0.0, 1.0) * dt)
+}
+
+/// The flow of the placed `WaterCurrentVolume` marker (XWCU + XPRM
+/// rapids/currents) containing `pos`, if any.
+///
+/// #3974 — pre-#3974 the player sampler queried `WaterPlane`/`WaterVolume`/
+/// `WaterFlow` only, so a swimmer in authored rapids felt nothing while a
+/// dropped barrel next to them drifted downstream. #5129 — resolved apart
+/// from the plane loop, as the dynamic path resolves `current_flow`.
+/// #4791 — the storage exists only once an XWCU reference has spawned a
+/// marker, so an absent storage means "no placed currents", never "no water".
+fn placed_current_flow_at(world: &World, pos: Vec3) -> Option<WaterFlow> {
+    let current_q = world.query::<WaterCurrentVolume>()?;
+    let flow = current_q
+        .iter()
+        .find(|(_, current)| {
+            let v = &current.volume;
+            pos.x >= v.min[0]
+                && pos.x <= v.max[0]
+                && pos.y >= v.min[1]
+                && pos.y <= v.max[1]
+                && pos.z >= v.min[2]
+                && pos.z <= v.max[2]
+        })
+        .map(|(_, current)| current.flow);
+    flow
+}
+
 /// The nearest water column intersecting the player capsule, as sampled from
 /// the canonical [`WaterPlane`] / [`WaterVolume`] pair.
 ///
@@ -1092,8 +1147,10 @@ pub(crate) fn horizontal_motion(yaw: f32, move_dir: Vec3, speed: f32, dt: f32) -
 /// pass cannot see (the player is `KinematicPositionBased`, and
 /// `apply_buoyancy_with_scratch` selects `MotionType::Dynamic` plus ragdoll
 /// bones only) — including the placed-`WaterCurrentVolume` arm (#3974): a
-/// marker's flow applies when the plane has none, the same precedence the
-/// dynamic path resolves. The result is published as a real [`WaterContact`] by
+/// marker containing the capsule centre composes with the plane's own flow
+/// (#4691), the same composition the dynamic path resolves. A marker with no
+/// plane column under it produces no state here and reaches the player
+/// through [`player_current_drift`] instead (#5129). The result is published as a real [`WaterContact`] by
 /// [`sync_player_water_contact`], so the kinematic player reaches the same
 /// `water.contacts` diagnostic and the same downstream consumers as every
 /// other wet body.
@@ -1112,7 +1169,13 @@ pub(crate) struct PlayerWaterState {
 }
 
 /// Return the nearest water column intersecting a capsule centred at `pos`.
-fn player_water_state(world: &World, pos: Vec3, half_span: f32) -> Option<PlayerWaterState> {
+/// `marker_flow` is [`placed_current_flow_at`]'s answer for the same `pos`.
+fn player_water_state(
+    world: &World,
+    pos: Vec3,
+    half_span: f32,
+    marker_flow: Option<WaterFlow>,
+) -> Option<PlayerWaterState> {
     // Frame-global inputs are sampled once before any water storage guard is
     // acquired. Besides avoiding one resource re-lock per plane, this keeps
     // the player path aligned with apply_buoyancy_with_scratch's
@@ -1127,10 +1190,6 @@ fn player_water_state(world: &World, pos: Vec3, half_span: f32) -> Option<Player
     };
     let flow_q = world.query::<WaterFlow>();
     let surface_q = world.query::<WaterSurfaceMesh>();
-    // #4791 — optional like `flow_q`: the storage exists only once an XWCU
-    // reference has spawned a marker, so an absent storage means "no
-    // placed currents", never "no water".
-    let current_q = world.query::<WaterCurrentVolume>();
     let bottom = pos.y - half_span;
     let top = pos.y + half_span;
     let mut best: Option<(PlayerWaterState, f32)> = None;
@@ -1162,12 +1221,6 @@ fn player_water_state(world: &World, pos: Vec3, half_span: f32) -> Option<Player
             continue;
         }
         let distance = (surface_y - pos.y).abs();
-        // #3974 — a placed `WaterCurrentVolume` marker (XWCU + XPRM
-        // rapids/currents) containing the capsule centre supplies drift.
-        // Pre-fix this sampler queried `WaterPlane`/`WaterVolume`/
-        // `WaterFlow` only, so a swimmer in authored rapids felt nothing
-        // while a dropped barrel next to them drifted downstream.
-        //
         // #4691 (PHYS-D5-2026-09-21-01) — COMPOSITION parity with the
         // dynamic path: there a co-located plane and marker BOTH apply
         // (plane drag × submerged fraction, then marker drag — "so a
@@ -1177,19 +1230,6 @@ fn player_water_state(world: &World, pos: Vec3, half_span: f32) -> Option<Player
         // barrel beside them felt both. Both sources now contribute as
         // velocity vectors; a single-source case stays verbatim.
         let plane_flow = flow_q.as_ref().and_then(|q| q.get(entity).copied());
-        let marker_flow = current_q.as_ref().and_then(|cq| {
-            cq.iter()
-                .find(|(_, current)| {
-                    let v = &current.volume;
-                    pos.x >= v.min[0]
-                        && pos.x <= v.max[0]
-                        && pos.y >= v.min[1]
-                        && pos.y <= v.max[1]
-                        && pos.z >= v.min[2]
-                        && pos.z <= v.max[2]
-                })
-                .map(|(_, current)| current.flow)
-        });
         let flow = match (plane_flow, marker_flow) {
             (Some(a), Some(b)) => {
                 let x = a.direction[0] * a.speed + b.direction[0] * b.speed;
@@ -1711,6 +1751,107 @@ mod tests {
     }
     use byroredux_core::ecs::components::water::WaterMaterial;
 
+    /// The controller's sampling sequence: marker first, then the columns.
+    fn sample_player_water(world: &World, pos: Vec3, half_span: f32) -> Option<PlayerWaterState> {
+        player_water_state(world, pos, half_span, placed_current_flow_at(world, pos))
+    }
+
+    /// #5129 — a placed current box that extends past its plane's XZ
+    /// footprint still pushes the player there, as the dynamic path's
+    /// marker arm pushes a barrel there (`frac = 1.0`, no plane needed).
+    /// Pre-fix the marker was read only inside a submerged plane column.
+    #[test]
+    fn a_marker_outside_every_plane_still_drifts_the_player() {
+        use byroredux_core::ecs::components::water::WaterCurrentVolume;
+
+        let mut world = World::new();
+        world.register::<WaterPlane>();
+        world.register::<WaterVolume>();
+        world.register::<WaterCurrentVolume>();
+
+        let lake = world.spawn();
+        world.insert(
+            lake,
+            WaterPlane {
+                kind: WaterKind::Calm,
+                material: WaterMaterial::default(),
+                damage_per_second: 0.0,
+            },
+        );
+        world.insert(
+            lake,
+            WaterVolume {
+                min: [-10.0, -5.0, -10.0],
+                max: [10.0, 0.0, 10.0],
+            },
+        );
+        // The rapids box runs from inside the lake to x = 40, well past the
+        // plane's x = 10 edge.
+        let marker = world.spawn();
+        world.insert(
+            marker,
+            WaterCurrentVolume {
+                volume: WaterVolume {
+                    min: [5.0, -5.0, -2.0],
+                    max: [40.0, 0.0, 2.0],
+                },
+                flow: WaterFlow {
+                    direction: [1.0, 0.0, 0.0],
+                    speed: 3.0,
+                },
+            },
+        );
+
+        let pos = Vec3::new(30.0, -2.5, 0.0); // in the marker, outside the plane
+        assert!(
+            sample_player_water(&world, pos, 40.0).is_none(),
+            "no plane column covers x = 30 — no swim state"
+        );
+        let marker_flow = placed_current_flow_at(&world, pos);
+        assert_eq!(marker_flow.map(|f| f.speed), Some(3.0));
+        let dt = 1.0 / 60.0;
+        let drift = player_current_drift(None, marker_flow, dt);
+        assert!(
+            (drift.x - 3.0 * 0.35 * dt).abs() < 1e-6 && drift.y == 0.0 && drift.z == 0.0,
+            "the marker must push the player at full strength, got {drift:?}"
+        );
+
+        // Outside the marker: nothing.
+        let dry = Vec3::new(60.0, -2.5, 0.0);
+        assert!(placed_current_flow_at(&world, dry).is_none());
+        assert_eq!(
+            player_current_drift(None, placed_current_flow_at(&world, dry), dt),
+            Vec3::ZERO
+        );
+    }
+
+    /// #5129 — while swimming the column's composed flow wins (scaled by
+    /// the submerged fraction); the raw marker argument is not added a
+    /// second time on top of the #4691 composition.
+    #[test]
+    fn swimming_drift_uses_the_composed_column_flow_only() {
+        let dt = 1.0 / 60.0;
+        let state = PlayerWaterState {
+            surface_y: 0.0,
+            fraction: 0.5,
+            flow: Some(WaterFlow {
+                direction: [0.0, 0.0, 1.0],
+                speed: 2.0,
+            }),
+            damage_per_second: 0.0,
+            surface_entity: 0,
+        };
+        let marker = Some(WaterFlow {
+            direction: [1.0, 0.0, 0.0],
+            speed: 9.0,
+        });
+        let drift = player_current_drift(Some(&state), marker, dt);
+        assert!(drift.x == 0.0 && (drift.z - 2.0 * 0.35 * 0.5 * dt).abs() < 1e-6);
+
+        let calm = PlayerWaterState { flow: None, ..state };
+        assert_eq!(player_current_drift(Some(&calm), marker, dt), Vec3::ZERO);
+    }
+
     /// #4791 — the `WaterCurrentVolume` storage exists only after an XWCU
     /// reference spawns a marker, so most water cells never create it. The
     /// #4691 rewrite put that query's `?` in a block, where it returned
@@ -1740,7 +1881,7 @@ mod tests {
             },
         );
 
-        let state = player_water_state(&world, Vec3::new(0.0, -2.5, 0.0), 40.0)
+        let state = sample_player_water(&world, Vec3::new(0.0, -2.5, 0.0), 40.0)
             .expect("a submerged capsule must get a water state with no current markers loaded");
         assert!(state.flow.is_none());
     }
@@ -1793,7 +1934,7 @@ mod tests {
         );
 
         let pos = Vec3::new(0.0, -2.5, 0.0); // capsule centre inside both
-        let state = player_water_state(&world, pos, 40.0).expect("submerged");
+        let state = sample_player_water(&world, pos, 40.0).expect("submerged");
         let flow = state
             .flow
             .expect("the marker's current must reach the player");
@@ -1801,7 +1942,7 @@ mod tests {
 
         // Outside the marker's box the calm plane stays calm.
         let outside =
-            player_water_state(&world, Vec3::new(8.0, -2.5, 0.0), 40.0).expect("submerged");
+            sample_player_water(&world, Vec3::new(8.0, -2.5, 0.0), 40.0).expect("submerged");
         assert!(outside.flow.is_none());
 
         // #4691 — plane flow + marker flow compose additively: plane
@@ -1815,7 +1956,7 @@ mod tests {
                 speed: 1.0,
             },
         );
-        let state = player_water_state(&world, pos, 40.0).expect("submerged");
+        let state = sample_player_water(&world, pos, 40.0).expect("submerged");
         let flow = state.flow.expect("both sources must reach the player");
         let expected = (3.0f32 * 3.0 + 1.0).sqrt();
         assert!(
@@ -1831,7 +1972,7 @@ mod tests {
         );
 
         // Outside the marker the plane flows alone — verbatim, not summed.
-        let outside = player_water_state(&world, Vec3::new(8.0, -2.5, 0.0), 40.0)
+        let outside = sample_player_water(&world, Vec3::new(8.0, -2.5, 0.0), 40.0)
             .expect("submerged");
         let outside_flow = outside.flow.expect("the plane's own flow");
         assert_eq!(
