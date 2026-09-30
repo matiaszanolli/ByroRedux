@@ -304,6 +304,10 @@ fn exec_load_interior(
         bsas,
         textures_bsas,
     } = source;
+    // #5056 sibling — a debug load replaces the session just like a save
+    // load: drop cinematic/tether rows so the teardown despawns a live
+    // convoy instead of retaining it as ghosts.
+    cell_loader::purge_cinematic_retention_state(world);
     if streaming.is_some() {
         drain_streaming_state(world, ctx, streaming);
     }
@@ -394,6 +398,8 @@ fn exec_load_exterior(
         );
     }
 
+    // #5056 sibling — same pre-teardown purge as the interior debug load.
+    cell_loader::purge_cinematic_retention_state(world);
     // Tear down anything currently loaded — interior cell, exterior
     // streaming state — same teardown sequence the cell-transition
     // orchestrator runs.

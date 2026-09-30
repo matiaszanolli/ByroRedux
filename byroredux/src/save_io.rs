@@ -1351,6 +1351,15 @@ fn reload_interior_session(
         return None;
     }
 
+    // #5056 — the preflight passed, so this session is genuinely being
+    // replaced: drop the live cinematic/tether rows BEFORE the teardown
+    // so the convoy (cart, horse, riders) despawns with the cell instead
+    // of being retained as ghosts that duplicate the reload's fresh
+    // REFR/ACHR spawns and keep the player glued to a dead vehicle. Must
+    // stay after the preflight: an aborted load keeps the live session,
+    // cinematic state included.
+    crate::cell_loader::purge_cinematic_retention_state(world);
+
     // Tear down whatever's loaded, then reload the saved cell fresh.
     if streaming.is_some() {
         crate::streaming_helpers::drain_streaming_state(world, ctx, streaming);
@@ -1501,6 +1510,10 @@ fn reload_exterior_session(
     // Item C2's identity-skip is scoped to the genuine still-in-session,
     // still-live worldspace crossing (`step_cell_transition`'s Exterior
     // arm) where there is no save file whose recorded state must win.
+
+    // #5056 — same pre-teardown purge as the interior reload above, after
+    // this path's own preflight (`build_exterior_world_context`) passed.
+    crate::cell_loader::purge_cinematic_retention_state(world);
 
     // Tear down whatever's loaded, then rebuild the saved worldspace fresh.
     if streaming.is_some() {

@@ -48,6 +48,65 @@ fn cinematic_retained_entities(world: &World) -> HashSet<EntityId> {
     retained
 }
 
+/// Drop every live `ActorCinematicState` / `HorseTetherState` row, emptying
+/// [`cinematic_retained_entities`] for the teardown that follows.
+///
+/// #5056 — session-replacement loads (save load, debug load) tear down and
+/// re-spawn the whole world. Both components carry session-local `EntityId`s
+/// (`vehicle` / `horse`) that the fresh population cannot honour — entity ids
+/// are never reused, and the reloaded cell spawns fresh ids for the same
+/// REFR/ACHR records — and neither is a `MUTABLE_DELTA_COLUMNS` save-delta
+/// column, so no load path ever re-derives or clears them. Left in place
+/// across a load they do triple damage:
+///
+/// 1. the retention above keeps the cart, horse, every rider and their
+///    subtrees out of the teardown (stripping `CellRoot` instead), so the
+///    convoy survives the load as a ghost;
+/// 2. the reload spawns fresh copies of the same REFR/ACHR records, and
+///    ghost + fresh share a `FormIdPair` — `build_form_id_remap`'s
+///    `HashMap` collect keeps one arbitrarily, so saved deltas can land on
+///    the ghost;
+/// 3. `vehicle_attachment_system` re-pins the player (Transform + kinematic
+///    body) to the ghost vehicle every frame, defeating `apply_player_pose`.
+///
+/// Callers must run this only where the session is genuinely being replaced
+/// (after the load preflights have passed, before the first teardown call):
+/// an aborted load must keep the live session intact, and ordinary cell
+/// transitions (door walks, radius streaming) must NOT purge — retention
+/// there is the by-design cross-boundary mechanism (#3254, #3817).
+pub(crate) fn purge_cinematic_retention_state(world: &mut World) {
+    let detached = remove_all::<byroredux_scripting::ActorCinematicState>(world)
+        + remove_all::<byroredux_scripting::HorseTetherState>(world);
+    if detached > 0 {
+        log::info!(
+            "session replace: detached {detached} cinematic/tether state row(s) so the \
+             teardown despawns the convoy instead of retaining it (#5056)"
+        );
+    }
+}
+
+/// Remove every instance of one component. Read-then-write: the query guard
+/// is dropped before the mutable query is taken (lock-order hygiene — never
+/// nest a `T` read inside a `T` write scope).
+fn remove_all<T: byroredux_core::ecs::Component>(world: &mut World) -> usize {
+    let Some(holders) = world
+        .query::<T>()
+        .map(|q| q.iter().map(|(entity, _)| entity).collect::<Vec<_>>())
+    else {
+        return 0;
+    };
+    if holders.is_empty() {
+        return 0;
+    }
+    let Some(mut q) = world.query_mut::<T>() else {
+        return 0;
+    };
+    holders
+        .iter()
+        .filter(|&&entity| q.remove(entity).is_some())
+        .count()
+}
+
 /// Strip `CellRoot` from the subset of `victims` that are currently
 /// cinematic-retained — NOT the world's whole retained set.
 ///
@@ -837,6 +896,98 @@ mod cinematic_retention_tests {
         let roots = world.query::<CellRoot>().expect("CellRoot registered");
         assert!(roots.get(entity).is_some());
     }
+
+    /// #5056 — the pre-teardown purge: a live convoy (tethered cart +
+    /// horse + subtree + rider glued to the vehicle) must lose BOTH
+    /// components, so `cinematic_retained_entities` returns empty and the
+    /// session-replacement teardown despawns the convoy with everything
+    /// else instead of retaining it as ghosts that the reload duplicates.
+    #[test]
+    fn purge_drops_every_retention_row_so_teardown_retains_nothing() {
+        let mut world = World::new();
+        world.register::<Children>();
+        world.register::<HorseTetherState>();
+        world.register::<ActorCinematicState>();
+        let horse = world.spawn();
+        let bone = world.spawn();
+        let cart = world.spawn();
+        let rider = world.spawn();
+        let player = world.spawn();
+        let unrelated = world.spawn();
+        world.insert(
+            unrelated,
+            byroredux_core::ecs::Transform::from_translation(byroredux_core::math::Vec3::ONE),
+        );
+        world.insert(horse, Children(vec![bone]));
+        world.insert(
+            cart,
+            HorseTetherState {
+                horse,
+                horse_local_translation: Vec3::ZERO,
+                horse_local_rotation: Quat::IDENTITY,
+                route_target_form_id: None,
+            },
+        );
+        world.insert(
+            rider,
+            ActorCinematicState {
+                vehicle: Some(cart),
+                ..Default::default()
+            },
+        );
+        // The process-lifetime player mid-ride: vehicle = Some(cart). The
+        // issue's point 1 — this row is neither overlaid nor cleared by
+        // any load path, so it must not survive the purge's call site.
+        world.insert(
+            player,
+            ActorCinematicState {
+                vehicle: Some(cart),
+                ..Default::default()
+            },
+        );
+
+        purge_cinematic_retention_state(&mut world);
+
+        let retained = cinematic_retained_entities(&world);
+        assert!(
+            retained.is_empty(),
+            "after the purge nothing may be cinematic-retained — the teardown \
+             must despawn cart/horse/rider subtrees with the rest of the cell \
+             (#5056), got {retained:?}"
+        );
+        assert!(
+            world.query::<HorseTetherState>().is_none()
+                || world
+                    .query::<HorseTetherState>()
+                    .unwrap()
+                    .iter()
+                    .count()
+                    == 0,
+            "HorseTetherState must be gone"
+        );
+        assert!(
+            world.query::<ActorCinematicState>().is_none()
+                || world
+                    .query::<ActorCinematicState>()
+                    .unwrap()
+                    .iter()
+                    .count()
+                    == 0,
+            "ActorCinematicState must be gone — including the player's, so no \
+             `vehicle` survives the load to pin them to a ghost cart"
+        );
+        // Unrelated live entities are untouched by construction (the purge
+        // removes exactly the two component types).
+        assert!(world.query::<Children>().unwrap().get(horse).is_some());
+        assert!(
+            world
+                .query::<byroredux_core::ecs::Transform>()
+                .unwrap()
+                .get(unrelated)
+                .is_some(),
+            "an entity with no cinematic involvement must be untouched"
+        );
+    }
 }
 
 /// #3690 — pins that the whole-world cinematic-retention scan and its
@@ -910,6 +1061,122 @@ mod retention_hoisting_tests {
             body.matches("cinematic_retained_entities(").count(),
             1,
             "unload_cells must call the whole-world scan exactly once per batch"
+        );
+    }
+}
+
+/// #5056 — pins WHERE the pre-teardown purge is wired. The purge must run
+/// on every session-replacement path (save-load interior/exterior reload,
+/// both debug loads) strictly BEFORE the first teardown call, and must NOT
+/// run on ordinary cell transitions — retention there is the by-design
+/// cross-boundary mechanism. These call sites live in GPU-bound paths with
+/// no test fixture, so — matching this crate's convention
+/// (`retention_hoisting_tests` above) — the contract is a static source
+/// scan. Unlike `retention_hoisting_tests`, no truncation at the first
+/// `#[cfg(test)]`: `save_io.rs` carries a test module above the reload
+/// fns, and none of these needles appear in that module's tests (they are
+/// all in this module, in `unload.rs`).
+#[cfg(test)]
+mod purge_wiring_tests {
+    fn source_of(path: &str) -> String {
+        std::fs::read_to_string(format!(
+            "{}/src/{}",
+            env!("CARGO_MANIFEST_DIR"),
+            path
+        ))
+        .expect("wired source file must exist")
+    }
+
+    /// The purge call must sit before the path's first teardown call —
+    /// after the preflight (an aborted load keeps the session, cinematic
+    /// state included) but before `drain_streaming_state` /
+    /// `unload_current_interior` compute their retention sets.
+    fn assert_purge_precedes_teardown(src: &str, label: &str) {
+        let purge = src
+            .find("purge_cinematic_retention_state(world)")
+            .unwrap_or_else(|| {
+                panic!("{label}: purge_cinematic_retention_state call missing — \
+                        a session replacement that skips the purge retains a \
+                        live convoy as ghosts and re-pins the player to one (#5056)")
+            });
+        let drain = src.find("drain_streaming_state(world");
+        let unload = src.find("unload_current_interior(world");
+        let first_teardown = drain
+            .into_iter()
+            .chain(unload.into_iter())
+            .min()
+            .expect("the path must have a teardown call to precede");
+        assert!(
+            purge < first_teardown,
+            "{label}: the purge must run BEFORE the first teardown call — \
+             after it, the retention set is already computed and the convoy \
+             is retained (#5056)"
+        );
+    }
+
+    /// Slice `src` from `start_marker` to `end_marker` (both exclusive of
+    /// the match), keeping the window to the named function so a purge
+    /// wired into some *other* function can't satisfy this scan.
+    fn fn_window<'a>(src: &'a str, start_marker: &str, end_marker: &str, label: &str) -> &'a str {
+        let start = src
+            .find(start_marker)
+            .unwrap_or_else(|| panic!("{label} must still exist"));
+        let end = src[start..]
+            .find(end_marker)
+            .map(|rel| start + rel)
+            .unwrap_or(src.len());
+        &src[start..end]
+    }
+
+    #[test]
+    fn save_load_interior_reload_purges_before_teardown() {
+        let src = source_of("save_io.rs");
+        let body = fn_window(
+            &src,
+            "fn reload_interior_session(",
+            "\nfn reload_exterior_session(",
+            "reload_interior_session",
+        );
+        assert_purge_precedes_teardown(body, "reload_interior_session");
+    }
+
+    #[test]
+    fn save_load_exterior_reload_purges_before_teardown() {
+        let src = source_of("save_io.rs");
+        let body = fn_window(
+            &src,
+            "fn reload_exterior_session(",
+            "\npub fn execute_pending_save_loads(",
+            "reload_exterior_session",
+        );
+        assert_purge_precedes_teardown(body, "reload_exterior_session");
+    }
+
+    #[test]
+    fn debug_loads_purge_before_teardown() {
+        let src = source_of("debug_load.rs");
+        for (label, end_marker) in [
+            ("exec_load_interior", "\nfn exec_load_exterior("),
+            ("exec_load_exterior", "\nfn exec_debug_command"),
+        ] {
+            let body = fn_window(&src, &format!("fn {label}("), end_marker, label);
+            assert_purge_precedes_teardown(body, label);
+        }
+    }
+
+    /// The negative half: `app_step.rs` (door walks, radius streaming —
+    /// every ordinary cell transition) must not purge anywhere — a convoy
+    /// crossing cells mid-cinematic is retained by design, and #3817's
+    /// termination question stays open. Scanned whole-file: a purge wired
+    /// into a transition is a regression no matter which function hosts it.
+    #[test]
+    fn ordinary_cell_transitions_do_not_purge() {
+        let src = source_of("app_step.rs");
+        assert!(
+            !src.contains("purge_cinematic_retention_state"),
+            "ordinary cell transitions must not purge cinematic state — \
+             cross-boundary retention is by design (#3254); only session \
+             replacements (save/debug load) may purge (#5056)"
         );
     }
 }
