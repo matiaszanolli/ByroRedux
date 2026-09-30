@@ -540,7 +540,7 @@ impl VulkanContext {
         // #4518 wrote a longer note here about a pending field removal;
         // #4581 retired it: the blend divert itself was removed with the
         // mask_divert_cause rework (`f97775ca8`, #4576 — only Refractive
-        //Glass / EffectShader / FireRefraction causes remain) and the
+        // Glass / EffectShader / FireRefraction causes remain) and the
         // `actor_diverted_alpha_blend` census field is gone from both the
         // renderer census and core `ShadowMaskCensus`. Nothing is pending.
         census.actor_diverted_effect_shader = snapshot.actor_diverted_effect_shader;

@@ -1037,17 +1037,23 @@ fn every_actor_instance_is_either_bucketed_or_diverted_exactly_once() {
         MATERIAL_KIND_NO_LIGHTING,
     ] {
         for alpha_blend in [false, true] {
-            for scale in [0.0f32, 1.0] {
-                let bucketed = shadow_mask_for_instance(
-                    kind, RenderLayer::Actor, alpha_blend, 7, scale)
-                    == VISIBILITY_LAYER_DYNAMIC_ACTOR as u8;
-                let diverted = mask_divert_cause(
-                    kind, RenderLayer::Actor, alpha_blend, 7, scale)
-                .is_some();
-                assert!(
-                    bucketed ^ diverted,
-                    "exactly one of bucketed/diverted must hold                      (kind={kind} alpha_blend={alpha_blend} scale={scale}):                      bucketed={bucketed} diverted={diverted}"
-                );
+            // #4844 — 0 = Gamebryo DstBlendMode::ONE (additive, the #4576
+            // divert), 7 = INV_SRC_ALPHA (ordinary alpha-over).
+            for dst_blend in [0u8, 7] {
+                for scale in [0.0f32, 1.0] {
+                    let bucketed = shadow_mask_for_instance(
+                        kind, RenderLayer::Actor, alpha_blend, dst_blend, scale)
+                        == VISIBILITY_LAYER_DYNAMIC_ACTOR as u8;
+                    let diverted = mask_divert_cause(
+                        kind, RenderLayer::Actor, alpha_blend, dst_blend, scale)
+                    .is_some();
+                    assert!(
+                        bucketed ^ diverted,
+                        "exactly one of bucketed/diverted must hold (kind={kind} \
+                         alpha_blend={alpha_blend} dst_blend={dst_blend} scale={scale}): \
+                         bucketed={bucketed} diverted={diverted}"
+                    );
+                }
             }
         }
     }

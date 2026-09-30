@@ -1092,16 +1092,6 @@ pub(super) enum MaskDivertCause {
     FireRefraction,
 }
 
-/// The cause, if any, that overrode the render layer for this instance.
-///
-/// Deliberately re-derives [`shadow_mask_for_instance`]'s routing rather
-/// than having that function return a pair: the mask is on the
-/// per-instance hot path of every TLAS build and this is diagnostic-only.
-/// The two are equivalent foldings of one precedence chain — glass →
-/// effect family → actor preservation → layer decides — which
-/// `divert_cause_matches_the_mask_it_explains` pins over the full render
-/// layer × material kind × alpha × refraction-scale space, so the
-/// duplication cannot drift into a lie.
 /// Gamebryo `DstBlendMode::ONE` — additive destination. The engine's own
 /// sort slot treats `dst_blend == 0` as the additive branch
 /// (`byroredux/src/render/mod.rs`, `blend_pipeline_slot`); 0 is ONE in
@@ -1141,6 +1131,16 @@ fn is_legacy_fx_card(material_kind: u32, alpha_blend: bool, dst_blend: u8) -> bo
             || dst_blend == GAMEBRYO_DST_BLEND_ONE)
 }
 
+/// The cause, if any, that overrode the render layer for this instance.
+///
+/// Deliberately re-derives [`shadow_mask_for_instance`]'s routing rather
+/// than having that function return a pair: the mask is on the
+/// per-instance hot path of every TLAS build and this is diagnostic-only.
+/// The two are equivalent foldings of one precedence chain — glass →
+/// effect family → actor preservation → layer decides — which
+/// `divert_cause_matches_the_mask_it_explains` pins over the full render
+/// layer × material kind × alpha × refraction-scale space, so the
+/// duplication cannot drift into a lie.
 pub(super) fn mask_divert_cause(
     material_kind: u32,
     render_layer: byroredux_core::ecs::components::RenderLayer,
