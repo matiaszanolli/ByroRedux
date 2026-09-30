@@ -46,8 +46,10 @@
 // omits the VERTEX_BUFFER usage it would need anyway (#681/MEM-2-6), so
 // the only consumer is the skinned-BLAS build/refit — which reads this
 // as R32G32B32_SFLOAT and touched 12 of every 104 bytes. RT hit shading
-// samples the bind-pose global vertex SSBO, not this buffer, so the
-// skinned normal/tangent had no reader either.
+// samples the bind-pose global vertex SSBO, not this buffer: since
+// b9e961eeb it skins the hit's normal/tangent itself from the bone palette
+// (`getHitVertexTransform` / `getRayHitTangentFrame`, include/ray_hit.glsl),
+// so skinned normal/tangent lanes here would still have no reader.
 //
 // Reviving Phase 3 means restoring the full layout AND adding the
 // VERTEX_BUFFER usage bit — one commit, not a silent dependency here.
@@ -216,8 +218,9 @@ void main() {
     // The skinned normal (`mat3(xform) * normal`) and skinned tangent
     // (#783 / M-NORMALS) used to be computed and written here. Both are
     // gone with the lanes that held them: nothing read them. RT hit
-    // shading samples the bind-pose global vertex SSBO, and the AS build
-    // — this buffer's only consumer — takes position alone. Dropping the
+    // shading skins its own normal/tangent from the bind-pose global vertex
+    // SSBO and the bone palette (see the header), and the AS build — this
+    // buffer's only consumer — takes position alone. Dropping the
     // reads also removes 6 input floats per vertex from the load side.
     //
     // Restoring them means restoring the output layout too; see the

@@ -98,8 +98,13 @@ is not named here.
                            that covers BOTH slots, which is what makes the
                            write safe (`sync.rs`'s #870 block lists it as item
                            5 on that wait's dependency list). Its visibility to
-                           the shaders comes from step 5b's bulk barrier, not
-                           from a barrier of its own.
+                           the step-3 consumer (`skin_vertices.comp`'s
+                           `MorphWeightRef`) comes from the submit-time
+                           host-write rule (Vulkan 1.3 §7.9: host writes made
+                           before `queue_submit` are visible to the submitted
+                           work), not from a barrier. Step 5b's bulk HOST
+                           barrier is recorded AFTER step 3, so it cannot be
+                           what orders this write for that dispatch.
 1  collect_image_health  ─  CPU readback (#2740 / REN-D4-04): harvest this
    [host, no cmds]          frame-in-flight slot's image-health counters
                            from its PRIOR use (MAX_FRAMES_IN_FLIGHT == 2
