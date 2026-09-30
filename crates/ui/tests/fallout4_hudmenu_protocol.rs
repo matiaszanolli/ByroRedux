@@ -14,7 +14,7 @@
 use std::sync::Arc;
 
 use byroredux_bsa::Ba2Archive;
-use byroredux_ui::{ScaleformHostBridge, ScaleformHostObjectState, ScaleformProfile, ScaleformValue, SwfPlayer};
+use byroredux_ui::{ScaleformHostObjectState, ScaleformProfile, ScaleformValue, SwfPlayer};
 
 fn data_dir() -> Option<std::path::PathBuf> {
     if let Some(dir) = std::env::var("BYROREDUX_FO4_DATA").ok() {
@@ -33,7 +33,6 @@ fn fallout4_hudmenu_lifecycle_and_calls_are_pinned() {
     let archive =
         Arc::new(Ba2Archive::open(dir.join("Fallout4 - Interface.ba2")).expect("open Interface BA2"));
 
-    let bridge = ScaleformHostBridge::new(ScaleformProfile::Fallout4Avm2);
     let mut player = SwfPlayer::from_resource_provider(
         archive,
         "interface\\hudmenu.swf",

@@ -362,7 +362,6 @@ mod tests {
     use byroredux_scripting::quest_stages::QuestStageState;
     use byroredux_scripting::{
         install_scene_quest_aliases, refresh_scene_actor_bindings, QuestFormId,
-        SceneActorBindings,
     };
     use std::sync::Arc;
 
