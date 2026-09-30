@@ -128,6 +128,22 @@ impl SteamInstall {
     }
 }
 
+/// Whether a manifest's `installdir` is the single bare directory name Steam
+/// writes, so `steamapps/common/<it>` stays inside `common`.
+///
+/// #5016 — checked by string, not `Path`, so the rule is the same on every
+/// host: `Path::is_absolute` is false on Windows for rooted-prefixless
+/// `\x` and prefixed-rootless `C:x`, yet `join` with either escapes the
+/// base, and on Linux `..\..\x` is one `Normal` component. A Windows
+/// directory name cannot contain `\`, `/` or `:`, so rejecting all three
+/// loses no real install.
+fn is_bare_install_dir(install_dir: &str) -> bool {
+    !install_dir.is_empty()
+        && install_dir != "."
+        && install_dir != ".."
+        && !install_dir.contains(['/', '\\', ':'])
+}
+
 /// Titles the engine has a profile for, installed in this library.
 ///
 /// A manifest that names an app we do not support, cannot be read, or whose
@@ -160,18 +176,11 @@ pub fn installs_in_library(library: &Path) -> Vec<SteamInstall> {
         // Trust the manifest's `installdir` over the catalog's: it is what
         // Steam actually did on this machine.
         let install_dir = state.get_str("installdir").unwrap_or(app.install_dir);
-        // #4673 — containment. `Path::join` with an ABSOLUTE right-hand
-        // side replaces the base entirely, so a tampered manifest's
-        // `installdir` would be reported as a detected install anywhere
-        // on disk; `..` components escape more quietly. Steam writes a
-        // bare directory name, so anything absolute or climbing is
-        // rejected outright.
-        let authored = std::path::Path::new(install_dir);
-        if authored.is_absolute()
-            || authored
-                .components()
-                .any(|c| matches!(c, std::path::Component::ParentDir))
-        {
+        // #4673 — containment. `Path::join` with an absolute or rooted
+        // right-hand side discards the base, so a tampered manifest's
+        // `installdir` would be reported as a detected install anywhere on
+        // disk; `..` components escape more quietly.
+        if !is_bare_install_dir(install_dir) {
             log::warn!(
                 "game-detect: {} manifest authors suspicious installdir {:?} — skipped",
                 app.profile,
@@ -308,6 +317,21 @@ mod tests {
         fs::create_dir_all(root.join("steamapps")).unwrap();
         fs::write(root.join("steamapps/libraryfolders.vdf"), "\"unterminated").unwrap();
         assert_eq!(library_paths(&root), vec![root]);
+    }
+
+    /// #5016 — asserts on the check itself, not on the joined directory
+    /// being absent, so Windows-shaped escapes are pinned on every host.
+    #[test]
+    fn only_a_bare_directory_name_is_a_valid_installdir() {
+        for ok in ["FalloutNV", "Fallout New Vegas", "Skyrim Special Edition", "a.b"] {
+            assert!(is_bare_install_dir(ok), "{ok:?} must be accepted");
+        }
+        for bad in [
+            "", ".", "..", "\\Somewhere", "D:Somewhere", "C:\\x", "/etc", "..\\..\\evil",
+            "../evil", "a/b", "a\\b", "\\\\server\\share",
+        ] {
+            assert!(!is_bare_install_dir(bad), "{bad:?} must be rejected");
+        }
     }
 
     /// #4673 (PAR-D6-2026-09-21-04) — `steamapps/common/`.join(installdir)
