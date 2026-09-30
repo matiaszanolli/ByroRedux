@@ -461,6 +461,11 @@ impl VulkanContext {
             // dispatch ran every frame regardless and the shader paid full
             // ray-query cost against unwritten / stale TLAS state.
             let ran = if !self.caustic_failed {
+                // Deliberately the raw handle, not `ray_query_tlas` (#4779):
+                // on a failed-build frame the stale AS is bound but never
+                // traced — `rt_flag` was cleared via
+                // `patch_camera_rt_flag(.., 0.0)` and `caustic_splat.comp`
+                // early-outs on `sceneFlags.x < 0.5` (#4843).
                 let tlas_handle = self
                     .accel_manager
                     .as_ref()

@@ -1753,7 +1753,7 @@ impl VulkanContext {
             frame_counter: 0,
             last_live_memory_sample: std::time::Instant::now(),
             rt_flag_last_frame: false,
-            tlas_build_succeeded_last_frame: false,
+            tlas_built_this_frame: false,
             volumetric_time_seconds: 0.0,
             render_debug_flags: parse_render_debug_flags_env(),
             render_debug_mode: parse_render_debug_mode_env(),

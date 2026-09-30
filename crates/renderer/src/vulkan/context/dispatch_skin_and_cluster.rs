@@ -319,7 +319,7 @@ impl VulkanContext {
         // Picks up just-refit per-skinned-entity BLAS via the
         // `bone_offset != 0` override in `build_tlas`. Static draws
         // continue using the per-mesh `blas_entries` table.
-        self.tlas_build_succeeded_last_frame = false;
+        self.tlas_built_this_frame = false;
         // SAFETY: `cmd` is recording; `accel` and `alloc` are live. `build_tlas`
         // records into `cmd`; the following barrier sequences ray-query reads.
         unsafe {
@@ -413,7 +413,7 @@ impl VulkanContext {
 
                     if !tlas_build_failed {
                         if let Some(tlas_handle) = accel.tlas_handle(frame) {
-                            self.tlas_build_succeeded_last_frame = true;
+                            self.tlas_built_this_frame = true;
                             // Capture whether this is the first time the
                             // TLAS lands for this FIF slot — `write_tlas`
                             // flips `tlas_written[frame] = true`, but
@@ -575,7 +575,7 @@ impl VulkanContext {
         self.accel_manager
             .as_ref()
             .and_then(|accel| accel.tlas_handle(frame))
-            .filter(|_| self.tlas_build_succeeded_last_frame)
+            .filter(|_| self.tlas_built_this_frame)
     }
 
     /// EXAL ground-cover §11.1 terrain-attribute sampling bench (#4052).
@@ -898,13 +898,40 @@ mod stale_tlas_compute_gate_tests {
             .find("mod stale_tlas_compute_gate_tests")
             .expect("this test module must still exist under its own name")];
 
+        // #4843 — the gate is only as good as the flag's lifecycle: cleared
+        // BEFORE this frame's `build_tlas`, set ONLY inside its success arm.
+        // Dropping the reset would let a failed build inherit the previous
+        // frame's `true` and hand out the stale AS again.
+        let flag = ["self.", "tlas_built_this_frame"].concat();
+        let reset = this
+            .find(&format!("{flag} = false;"))
+            .expect("the TLAS-built flag must be reset every frame (#4843)");
+        let build = this
+            .find(".build_tlas(")
+            .expect("the TLAS build call must still exist under this spelling");
+        assert!(reset < build, "the flag reset must precede build_tlas (#4843)");
+        let set_needle = format!("{flag} = true;");
+        let set = this
+            .find(&set_needle)
+            .expect("the TLAS-built flag must be set on the success arm");
+        assert_eq!(this.matches(&set_needle).count(), 1, "exactly one set site");
+        assert!(build < set, "the flag may only be set after build_tlas");
+        let success_arm = this[..set]
+            .rfind("if !tlas_build_failed {")
+            .expect("the set must sit inside the `!tlas_build_failed` arm (#4843)");
+        assert!(build < success_arm, "the success arm must follow this frame's build");
+        assert!(
+            !this[success_arm..set].contains("} else"),
+            "the set must not be in an else branch of the success check"
+        );
+
         let helper_at = this
             .find("pub(super) fn ray_query_tlas(")
             .expect("the build-gated TLAS accessor must exist (#4779)");
         let helper = &this[helper_at..];
         let helper = &helper[..helper.find("\n    }\n").expect("helper body end")];
         assert!(
-            helper.contains(".filter(|_| self.tlas_build_succeeded_last_frame)"),
+            helper.contains(".filter(|_| self.tlas_built_this_frame)"),
             "ray_query_tlas must withhold the handle when this frame's build failed"
         );
 

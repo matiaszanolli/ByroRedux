@@ -557,8 +557,12 @@ pub struct VulkanContext {
     /// Exact publication state of `GpuCamera.flags[0]` for the last frame
     /// recorded by `draw_frame` (including first-slot post-build patching).
     rt_flag_last_frame: bool,
-    /// The last TLAS build returned success and exposed a live handle.
-    tlas_build_succeeded_last_frame: bool,
+    /// THIS frame's TLAS build returned success and exposed a live handle.
+    /// Cleared before `build_tlas` and set only on its success arm in
+    /// `dispatch_skin_and_cluster`; `ray_query_tlas` withholds the (still
+    /// alive, possibly stale) previous AS while it is false (#4779, pinned
+    /// by `stale_tlas_compute_gate_tests`).
+    tlas_built_this_frame: bool,
     /// Wall-clock-like animation time for stateless volumetric domain warp.
     /// Advanced only after a successful queue submit so failed/aborted frames
     /// cannot move density without producing the corresponding V-buffer.

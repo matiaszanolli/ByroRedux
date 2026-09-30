@@ -483,7 +483,7 @@ impl VulkanContext {
         stats.sampled = self.frame_counter > 0;
         stats.rt_supported = self.device_caps.ray_query_supported;
         stats.rt_flag = self.rt_flag_last_frame;
-        stats.tlas_build_succeeded = self.tlas_build_succeeded_last_frame;
+        stats.tlas_build_succeeded = self.tlas_built_this_frame;
         stats.tlas_eligible = tlas.eligible;
         stats.tlas_emitted = tlas.emitted;
         stats.missing_skinned_blas = tlas.missing_skinned_blas;

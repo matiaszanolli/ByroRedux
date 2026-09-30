@@ -1212,7 +1212,7 @@ impl VulkanContext {
             let entity_ids = self
                 .accel_manager
                 .as_ref()
-                .filter(|_| self.tlas_build_succeeded_last_frame)
+                .filter(|_| self.tlas_built_this_frame)
                 .map(|accel| accel.tlas_entity_ids_scratch.as_slice());
             self.selected_ray_probe_entity_maps[frame]
                 .capture(*armed_selected_ray_probe_generation, entity_ids);
