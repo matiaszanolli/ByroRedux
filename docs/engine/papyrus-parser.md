@@ -240,8 +240,16 @@ chain-link charge #4320.)
 - **`peek()` skips newlines, `peek_raw()` does not.** Empty-`Return` detection must use
   `peek_raw()` — otherwise a `Return` on its own line is treated as having a value (the
   next statement / `EndEvent` on a later line). Fixed across `parser/stmt.rs`. Since
-  #4321 the Pratt loop is newline-terminating via `peek_raw()`; #4472 tracks the
-  remaining newline-skipping decision sites outside that loop.
+  #4321 the Pratt loop is newline-terminating via `peek_raw()`; #4472 / #4763 moved
+  every construct-*continuation* decision (qualified names, array suffixes, `=`
+  initializers, header flags, `Extends`) onto `peek_raw()` / `check_raw()`.
+- **`expect()` / `expect_ident()` also skip newlines.** They are for tokens that may
+  legitimately start a new line (`EndFunction`, a block's closing keyword). A keyword's
+  *mandatory operand* — a declaration's name, the `Extends` target, the `(` after a
+  function name, the `State` after `Auto`, an `If` / `ElseIf` / `While` condition —
+  must share the keyword's line, so those sites use `expect_raw()` /
+  `expect_ident_raw()` / `expect_same_line()` (#5021). Otherwise `Function` ⏎ `F()`
+  parses with zero errors, where the reference compiler rejects it.
 - **Array type vs index expression.** `parse_type` only treats `Base[]` (empty brackets)
   as an array; `Base[expr]` rewinds and the brackets are re-parsed as a postfix index.
 - **Some keywords are valid identifiers** in name positions (`Auto`, `Hidden`,

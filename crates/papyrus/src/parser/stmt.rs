@@ -130,6 +130,8 @@ impl Parser {
     /// (Else NEWLINE block)? EndIf NEWLINE`.
     fn parse_if_stmt(&mut self, start_span: Span) -> Result<Spanned<Stmt>, ParseError> {
         self.advance().unwrap(); // `If`
+        // #5021 — the condition must share the `If` line.
+        self.expect_same_line("If condition")?;
         let condition = self.parse_expr()?;
         self.expect_eol()?;
         let body = self.parse_block(&[Token::KwEndIf, Token::KwElseIf, Token::KwElse])?;
@@ -137,6 +139,7 @@ impl Parser {
         let mut elseif_clauses = Vec::new();
         while matches!(self.peek(), Some(Token::KwElseIf)) {
             self.advance().unwrap();
+            self.expect_same_line("ElseIf condition")?;
             let cond = self.parse_expr()?;
             self.expect_eol()?;
             let body = self.parse_block(&[Token::KwEndIf, Token::KwElseIf, Token::KwElse])?;
@@ -167,6 +170,7 @@ impl Parser {
     /// Parse `While expr NEWLINE block EndWhile NEWLINE`.
     fn parse_while_stmt(&mut self, start_span: Span) -> Result<Spanned<Stmt>, ParseError> {
         self.advance().unwrap(); // `While`
+        self.expect_same_line("While condition")?;
         let condition = self.parse_expr()?;
         self.expect_eol()?;
         let body = self.parse_block(&[Token::KwEndWhile])?;
@@ -242,7 +246,8 @@ impl Parser {
     /// the trailing newline — caller's responsibility.
     pub(super) fn parse_variable_body(&mut self) -> Result<Variable, ParseError> {
         let ty = self.parse_type()?;
-        let name = self.expect_ident("variable name")?;
+        // #5021 — raw: `Int` ⏎ `x = 5` is not a declaration of x.
+        let name = self.expect_ident_raw("variable name")?;
         // #4763 — raw: `Int x` ⏎ `= 5` must not glue. Backs both the local
         // keyword-typed declaration and the `Struct` member paths.
         let initial_value = if matches!(self.peek_raw(), Some(Token::Eq)) {

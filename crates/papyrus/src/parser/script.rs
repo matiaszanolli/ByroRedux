@@ -97,11 +97,11 @@ impl Parser {
     /// header line. Caller has already skipped leading newlines.
     fn parse_script_header(&mut self) -> Result<ScriptHeader, ParseError> {
         self.expect(&Token::KwScriptName, "ScriptName")?;
-        let name = self.expect_ident("script name")?;
+        let name = self.expect_ident_raw("script name")?;
         // #4763 — raw: `Extends Bar` on the next line is not this header's.
         let parent = if matches!(self.peek_raw(), Some(Token::KwExtends)) {
             self.advance().unwrap();
-            Some(self.expect_ident("parent script name")?)
+            Some(self.expect_ident_raw("parent script name")?)
         } else {
             None
         };
@@ -164,7 +164,7 @@ impl Parser {
             }
             Token::KwCustomEvent => {
                 self.advance().unwrap();
-                let name = self.expect_ident("custom event name")?;
+                let name = self.expect_ident_raw("custom event name")?;
                 let span = name.span;
                 self.expect_eol()?;
                 Ok(Spanned::new(ScriptItem::CustomEvent(name.node), span))
@@ -191,7 +191,7 @@ impl Parser {
     /// `Import <qualified_ident> NEWLINE`.
     fn parse_import(&mut self, start_span: Span) -> Result<Spanned<ScriptItem>, ParseError> {
         self.advance().unwrap(); // `Import`
-        let name = self.expect_ident("import target")?;
+        let name = self.expect_ident_raw("import target")?;
         let span = start_span.merge(name.span);
         self.expect_eol()?;
         Ok(Spanned::new(ScriptItem::Import(name.node), span))
@@ -285,7 +285,7 @@ impl Parser {
     ) -> Result<Function, ParseError> {
         let doc_comment = self.skip_newlines_collect_doc();
         self.expect(&Token::KwFunction, "Function")?;
-        let name = self.expect_ident("function name")?;
+        let name = self.expect_ident_raw("function name")?;
         let params = self.parse_param_list()?;
         let flags = self.parse_function_flags();
         self.expect_eol()?;
@@ -317,7 +317,7 @@ impl Parser {
     fn parse_event(&mut self) -> Result<Event, ParseError> {
         let doc_comment = self.skip_newlines_collect_doc();
         self.expect(&Token::KwEvent, "Event")?;
-        let name = self.expect_ident("event name")?;
+        let name = self.expect_ident_raw("event name")?;
         let params = self.parse_param_list()?;
         let flags = self.parse_function_flags();
         self.expect_eol()?;
@@ -335,7 +335,7 @@ impl Parser {
 
     /// `( [Type IDENT ("=" expr)? ("," ...)?] )`
     fn parse_param_list(&mut self) -> Result<Vec<Param>, ParseError> {
-        self.expect(&Token::LParen, "(")?;
+        self.expect_raw(&Token::LParen, "(")?;
         let mut params = Vec::new();
         if matches!(self.peek(), Some(Token::RParen)) {
             self.advance().unwrap();
@@ -396,7 +396,7 @@ impl Parser {
     fn parse_property(&mut self, ty: Spanned<Type>) -> Result<Property, ParseError> {
         let doc_comment = self.skip_newlines_collect_doc();
         self.expect(&Token::KwProperty, "Property")?;
-        let name = self.expect_ident("property name")?;
+        let name = self.expect_ident_raw("property name")?;
         // #4763 — raw: `P` ⏎ `= 5` must not glue into an initializer.
         let initial_value = if matches!(self.peek_raw(), Some(Token::Eq)) {
             self.advance().unwrap();
@@ -579,8 +579,13 @@ impl Parser {
         } else {
             false
         };
-        self.expect(&Token::KwState, "State")?;
-        let name = self.expect_ident("state name")?;
+        // #5021 — `Auto` ⏎ `State S` is not an auto state.
+        if is_auto {
+            self.expect_raw(&Token::KwState, "State")?;
+        } else {
+            self.expect(&Token::KwState, "State")?;
+        }
+        let name = self.expect_ident_raw("state name")?;
         self.expect_eol()?;
         let mut body = Vec::new();
         loop {
@@ -658,7 +663,7 @@ impl Parser {
     /// what `Variable` carries).
     fn parse_struct(&mut self) -> Result<Struct, ParseError> {
         self.expect(&Token::KwStruct, "Struct")?;
-        let name = self.expect_ident("struct name")?;
+        let name = self.expect_ident_raw("struct name")?;
         self.expect_eol()?;
         let mut members = Vec::new();
         loop {
@@ -700,7 +705,7 @@ impl Parser {
     /// `Group IDENT [group_flag]* NEWLINE property* EndGroup NEWLINE`.
     fn parse_group(&mut self) -> Result<Group, ParseError> {
         self.expect(&Token::KwGroup, "Group")?;
-        let name = self.expect_ident("group name")?;
+        let name = self.expect_ident_raw("group name")?;
         let mut flags = GroupFlags::empty();
         loop {
             // #4763 — raw: a flag on the next line is not this group's.
@@ -1666,5 +1671,82 @@ EndProperty
         let (script, errors) = parse_counting_errors(src);
         assert_eq!(errors, 0, "{script:#?}");
         assert!(script.parent.is_some());
+    }
+
+    // ── #5021 — a keyword's mandatory operand must share its line ──
+    // `expect` / `expect_ident` skip newlines, so each keyword below used to
+    // pull its operand up from the next line with zero errors.
+
+    /// Every probe from the #5021 report: each must now surface an error.
+    #[test]
+    fn a_mandatory_operand_on_the_next_line_is_an_error() {
+        let fn_body = |line: &str| format!("ScriptName T\nFunction F()\n{line}\nEndFunction\n");
+        let probes = [
+            "ScriptName\nFoo\n".to_string(),
+            "ScriptName Foo Extends\nBar\n".to_string(),
+            "ScriptName T\nImport\nDebug\n".to_string(),
+            "ScriptName T\nFunction\nF()\nEndFunction\n".to_string(),
+            "ScriptName T\nFunction F\n()\nEndFunction\n".to_string(),
+            "ScriptName T\nEvent\nOnInit()\nEndEvent\n".to_string(),
+            "ScriptName T\nInt Property\nP Auto\n".to_string(),
+            "ScriptName T\nAuto\nState S\nEndState\n".to_string(),
+            "ScriptName T\nState\nS\nEndState\n".to_string(),
+            "ScriptName T\nStruct\nS\nEndStruct\n".to_string(),
+            "ScriptName T\nGroup\nG\nEndGroup\n".to_string(),
+            "ScriptName T\nCustomEvent\nE\n".to_string(),
+            fn_body("Int\nx = 5"),
+            fn_body("If\ntrue\nEndIf"),
+            fn_body("If false\nElseIf\ntrue\nEndIf"),
+            fn_body("While\nfalse\nEndWhile"),
+        ];
+        for src in &probes {
+            let (preprocessed, _map) = preprocess(src);
+            let (tokens, _errs) = lex(&preprocessed);
+            let mut parser = Parser::new(tokens);
+            let fatal = parser.parse_script().is_err();
+            assert!(
+                fatal || !parser.errors().is_empty(),
+                "next-line operand glued with zero errors (#5021): {src:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn auto_on_its_own_line_does_not_make_an_auto_state() {
+        let (script, errors) =
+            parse_counting_errors("ScriptName T\nAuto\nState S\nEndState\n");
+        for item in &script.body {
+            if let ScriptItem::State(st) = &item.node {
+                assert!(!st.is_auto, "`Auto` ⏎ `State S` glued (#5021)");
+            }
+        }
+        assert!(errors > 0);
+    }
+
+    #[test]
+    fn extends_with_its_target_on_the_next_line_sets_no_parent() {
+        let (preprocessed, _map) = preprocess("ScriptName Foo Extends\nBar\n");
+        let (tokens, _errs) = lex(&preprocessed);
+        let mut parser = Parser::new(tokens);
+        if let Ok(script) = parser.parse_script() {
+            assert!(script.parent.is_none(), "`Extends` ⏎ `Bar` glued (#5021)");
+        }
+    }
+
+    /// Guard the other direction: the single-line forms still parse clean.
+    #[test]
+    fn single_line_forms_of_the_5021_sites_still_parse() {
+        let src = "ScriptName Foo Extends Bar\n\
+                   Import Debug\n\
+                   CustomEvent E\n\
+                   Int Property P Auto\n\
+                   Group G\nInt Property Q Auto\nEndGroup\n\
+                   Struct S\nInt a\nEndStruct\n\
+                   Event OnInit()\nEndEvent\n\
+                   Function F()\nInt x = 5\nIf x\nElseIf true\nEndIf\nWhile false\nEndWhile\nEndFunction\n\
+                   Auto State S\nEndState\n";
+        let (script, errors) = parse_counting_errors(src);
+        assert_eq!(errors, 0, "{script:#?}");
+        assert!(script.body.iter().any(|i| matches!(&i.node, ScriptItem::State(s) if s.is_auto)));
     }
 }

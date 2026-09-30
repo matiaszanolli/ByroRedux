@@ -198,6 +198,37 @@ impl Parser {
         }
     }
 
+    /// Fail if the next raw token is a line break. #5021 — a keyword's
+    /// mandatory operand (a declaration's name, the `Extends` target, an
+    /// `If`/`While` condition) must share the keyword's line: Papyrus
+    /// treats EOL as significant, so `Function` ⏎ `F()` is rejected by the
+    /// reference compiler rather than glued. EOF is left to the caller's
+    /// own `unexpected_eof`.
+    pub fn expect_same_line(&self, label: &str) -> Result<(), ParseError> {
+        match self.tokens.get(self.pos) {
+            Some(t) if t.token == Token::Newline => Err(ParseError::unexpected_token(
+                label,
+                Some(Token::Newline),
+                t.span,
+            )),
+            _ => Ok(()),
+        }
+    }
+
+    /// [`expect`](Self::expect) for a token that must share the line with
+    /// the one before it (#5021).
+    pub fn expect_raw(&mut self, expected: &Token, label: &str) -> Result<Span, ParseError> {
+        self.expect_same_line(label)?;
+        self.expect(expected, label)
+    }
+
+    /// [`expect_ident`](Self::expect_ident) for a name that must share the
+    /// line with its keyword (#5021).
+    pub fn expect_ident_raw(&mut self, context: &str) -> Result<Spanned<Identifier>, ParseError> {
+        self.expect_same_line(&format!("identifier ({context})"))?;
+        self.expect_ident(context)
+    }
+
     /// Consume the current token if it matches, returning true. Does not skip newlines.
     pub fn eat(&mut self, expected: &Token) -> bool {
         self.skip_newlines();
