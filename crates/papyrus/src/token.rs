@@ -8,7 +8,9 @@ fn skip_line_comment(lex: &mut logos::Lexer<Token>) -> logos::Skip {
     if remainder.starts_with('/') {
         return logos::Skip;
     }
-    let len = remainder.find('\n').unwrap_or(remainder.len());
+    // #5019 — stop at either line terminator and leave it for the `Newline`
+    // rule (#4479). Ending only at `\n` swallowed a CR-only file to EOF.
+    let len = remainder.find(['\r', '\n']).unwrap_or(remainder.len());
     lex.bump(len);
     logos::Skip
 }

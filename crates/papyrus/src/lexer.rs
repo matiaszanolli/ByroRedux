@@ -206,6 +206,27 @@ mod malformed_number_tests {
             2
         );
     }
+
+    /// #5019 — a `;` line comment ends at a bare CR too. Ending it only at
+    /// `\n` bumped a CR-only file to EOF, silently dropping every item
+    /// after the first comment. CRLF keeps one Newline per line ending.
+    #[test]
+    fn line_comment_ends_at_a_bare_cr() {
+        let cr_only = token_kinds("a ; note\rb\rc");
+        assert!(
+            matches!(cr_only.as_slice(), [Token::Ident(_), Token::Newline, Token::Ident(_), Token::Newline, Token::Ident(_)]),
+            "tokens after a CR-terminated comment must survive: {cr_only:?}"
+        );
+
+        let crlf = token_kinds("a ; note\r\nb");
+        assert_eq!(crlf.iter().filter(|t| matches!(t, Token::Newline)).count(), 1);
+        assert_eq!(crlf.iter().filter(|t| matches!(t, Token::Ident(_))).count(), 2);
+
+        let src = "ScriptName Foo\r; header comment\rFunction F()\rEndFunction\rFunction G()\rEndFunction\r";
+        let (script, errors) = crate::parse_script(src).expect("CR-only script parses");
+        assert!(errors.is_empty(), "{errors:?}");
+        assert_eq!(script.body.len(), 2, "both functions survive the comment");
+    }
 }
 
 #[cfg(test)]
