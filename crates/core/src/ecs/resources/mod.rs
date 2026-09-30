@@ -1395,7 +1395,8 @@ pub struct TerrainSeamStats {
 
 impl TerrainSeamStats {
     /// Stable three-state verdict, same shape as
-    /// [`LodCoverageStats::verdict`]/`RtIntegrityStats::verdict`. Height-only
+    /// [`LodCoverageStats::verdict`] (no `UNSUPPORTED` state, unlike the
+    /// four-state [`RtIntegrityStats::verdict`]). Height-only
     /// — see [`Self::pairs_dirty`]'s doc for why `normal_mismatch_pairs`
     /// doesn't factor in.
     pub fn verdict(&self) -> &'static str {
