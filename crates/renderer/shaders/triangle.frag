@@ -4066,7 +4066,7 @@ void main() {
     if (giTransportEligible && rtLOD < RT_LOD_GI) {
             // GI noise seed. Hold it for 4 frames while the camera MOVES to
             // suppress flicker (SVGF history is short under motion). When the
-            // camera is PARKED (dofParams.w = camera_static), advance the seed
+            // camera is PARKED (dofParams.w >= 1: history mode 1 or 2), advance the seed
             // every frame instead: SVGF's 1/N progressive accumulation absorbs
             // the per-frame change, and the now-decorrelated hemisphere
             // directions converge the dark indirect-lit floor ~4× faster. The

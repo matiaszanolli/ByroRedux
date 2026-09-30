@@ -317,7 +317,7 @@ layout(set = 1, binding = 1) uniform CameraUBO {
     // `vec3(0.6, 0.75, 1.0)` and every window looked clear-noon.
     vec4 skyTint;     // xyz = TOD/weather zenith colour, w = sun_angular_radius (rad; SkyParams::sun_angular_radius, #1023)
     vec4 sunDirection;
-    vec4 dofParams;      // x = aperture half-radius (0.0 = pinhole), y = focus_dist, z = atten knee frac, w = camera_static (1.0 = parked).
+    vec4 dofParams;      // x = aperture half-radius (0.0 = pinhole), y = focus_dist, z = atten knee frac, w = history mode (0 moving, 1 parked, 2 parked + scene-static; restir_history_mode).
     vec4 renderOrigin;   // #markarth-precision / #1496 — camera-relative render origin (cell-grid snapped). main() adds .xyz to the render-origin-relative `fragWorldPosRel` varying to reconstruct the absolute world position for lighting / RT / fog.
     uvec4 renderDebug;   // x = structured RENDER_DEBUG_* mode; y = optional bitcast RT LOD scale, z = LOD telemetry enable, w = packed weather surface (low 16 wetness, high 16 snow). Legacy feature-ablation flags remain in jitter.z.
     // #3323 — the EXTERIOR TOD/weather zenith colour, carried even on

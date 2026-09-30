@@ -512,13 +512,16 @@ pub struct GpuCamera {
     /// distance (world units), z = `light_atten_knee` — the #1451
     /// point/spot attenuation knee fraction, live-tunable via the
     /// `light.atten` console command and read by
-    /// `include/lighting.glsl`'s `kneeFrac` — w = `camera_static` (1.0 =
-    /// parked camera), read by `triangle.frag` to decorrelate the GI
-    /// seed on static frames. Both `z` and `w` are live, NOT reserved —
+    /// `include/lighting.glsl`'s `kneeFrac` — w = history mode (#4942):
+    /// `0.0` moving, `1.0` parked, `2.0` parked + scene-static, from
+    /// `restir_history_mode`. `triangle.frag` reads it as `> 0.5` (advance
+    /// the GI seed every frame) and `> 1.5` (the long ReSTIR direct-light
+    /// EMA); a reader keyed on `== 1.0` would miss the scene-static parked
+    /// state. Both `z` and `w` are live, NOT reserved —
     /// see #2750 / REN-D3-2026-08-12-02 (this doc previously said
     /// `zw = reserved (0)`, which invited a future author to repurpose a
     /// lane two consumers already depend on). Written in
-    /// `vulkan/context/draw.rs`; all five GLSL `CameraUBO` mirrors
+    /// `vulkan/context/assemble_camera_and_lights.rs`; all five GLSL `CameraUBO` mirrors
     /// (`include/bindings.glsl`, `triangle.vert`, `water.vert`,
     /// `cluster_cull.comp`, `caustic_splat.comp`) must carry this same
     /// comment.

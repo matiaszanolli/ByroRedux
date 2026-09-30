@@ -6774,3 +6774,28 @@ fn direct_shadow_rays_orient_their_origin_toward_the_light() {
         "offsetRayOriginForDirection must flip the normal to the ray's exit side"
     );
 }
+
+/// #5022 — since #4942 `dofParams.w` carries a 0/1/2 history mode, not a
+/// binary `camera_static` flag. Layout tests cannot see a semantic change to
+/// an existing lane, so pin the lane text in every `CameraUBO` mirror: a
+/// reader keyed on `== 1.0` would silently miss the scene-static parked state.
+#[test]
+fn every_camera_ubo_mirror_describes_dof_w_as_the_history_mode() {
+    let mirrors = [
+        ("include/bindings.glsl", include_str!("../../../shaders/include/bindings.glsl")),
+        ("triangle.vert", include_str!("../../../shaders/triangle.vert")),
+        ("water.vert", include_str!("../../../shaders/water.vert")),
+        ("cluster_cull.comp", include_str!("../../../shaders/cluster_cull.comp")),
+        ("caustic_splat.comp", include_str!("../../../shaders/caustic_splat.comp")),
+    ];
+    for (name, src) in mirrors {
+        let line = src
+            .lines()
+            .find(|l| l.contains("vec4 dofParams;"))
+            .unwrap_or_else(|| panic!("{name}: no `vec4 dofParams;` member"));
+        assert!(
+            line.contains("w = history mode (0 moving, 1 parked, 2 parked + scene-static"),
+            "{name}: dofParams.w comment must describe the #4942 history mode: {line}"
+        );
+    }
+}
