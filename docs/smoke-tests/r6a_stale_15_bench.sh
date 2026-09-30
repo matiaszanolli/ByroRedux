@@ -39,6 +39,13 @@ BENCH_FRAMES="${BYROREDUX_BENCH_FRAMES:-300}"
 # Debug server port.
 PORT="${BYRO_DEBUG_PORT:-9876}"
 
+# Repo root and prebuilt binaries — #5142: the engine must be launched by
+# path, not `cargo run`. `cargo run` from the game's Data/ directory (the
+# CWD rule below) finds no Cargo.toml and dies instantly.
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+ENGINE_BIN="${REPO}/target/release/byroredux"
+[[ -x "$ENGINE_BIN" ]] || { echo "r6a: $ENGINE_BIN not built — cargo build --release -p byroredux" >&2; exit 2; }
+
 # Temp logs.
 LOG_DIR="$(mktemp -d)"
 trap 'rm -rf "$LOG_DIR"' EXIT
@@ -108,7 +115,10 @@ query_collision_only_count() {
 find IsCollisionOnly
 EOF
 )
-    result=$(timeout 5 byro-dbg -p "$PORT" <<< "$dbg_cmd" 2>/dev/null | grep "IsCollisionOnly" | grep -oP '\d+' | head -1 || echo "UNKNOWN")
+    # byro-dbg takes its port from the environment — it ignores every
+    # CLI argument except --tui (#5142), so the old `-p "$PORT"` silently
+    # attached to the default port.
+    result=$(BYRO_DEBUG_PORT="$PORT" timeout 5 byro-dbg <<< "$dbg_cmd" 2>/dev/null | grep "IsCollisionOnly" | grep -oP '\d+' | head -1 || echo "UNKNOWN")
     echo "$result"
 }
 
@@ -141,14 +151,17 @@ run_bench() {
     echo "Frames: $BENCH_FRAMES"
     echo ""
 
-    # Run engine from game's Data/ directory (CWD rule enforced).
+    # Run engine from game's Data/ directory (CWD rule enforced). `exec`
+    # makes the subshell BE the engine, so the kill below reaches the
+    # engine directly instead of orphaning it behind a dead wrapper.
     (
         cd "$game_data"
         # Release binaries gate the debug server behind this opt-in
         # (63c0aee3b); without it the held engine binds no port and
         # byro-dbg can never attach.
         export BYRO_DEBUG_SERVER=1
-        cargo run --release --quiet -- \
+        export BYRO_DEBUG_PORT="$PORT"
+        exec "$ENGINE_BIN" \
             "${engine_args[@]}" \
             --bench-frames "$BENCH_FRAMES" \
             --bench-hold \

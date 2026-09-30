@@ -72,18 +72,29 @@ sleep 3
 # capture: the HUD render is change-driven and rate-limited to 33 ms
 # (HUD_REFRESH_INTERVAL), so a pin+capture pair piped back-to-back can
 # race the throttle and photograph the PREVIOUS state.
+# 63c0aee3b/#5142: the debug server's `screenshot` accepts only a bare
+# filename and writes under the engine cwd's screenshots/ dir (the game
+# $DATA dir) — capture by bare name, then move the file into $OUT_DIR.
 pin_and_shoot() {
     "$BIN_DIR/byro-dbg" <<CMDS
 $1
 CMDS
     sleep 1
+    local shot="$DATA/screenshots/$2" attempt
+    rm -f "$shot"
     "$BIN_DIR/byro-dbg" <<CMDS
 screenshot $2
 CMDS
+    for attempt in 1 2 3 4 5; do
+        [[ -s "$shot" ]] && break
+        sleep 2
+    done
+    [[ -s "$shot" ]] || { echo "FAIL: screenshot $2 never landed in $DATA/screenshots/"; exit 1; }
+    mv "$shot" "$OUT_DIR/$2"
 }
-pin_and_shoot "hud.values 1.0 1.0 1.0" "$OUT_DIR/full.png"
+pin_and_shoot "hud.values 1.0 1.0 1.0" "full.png"
 pin_and_shoot "hud.values 0.35 0.7 1.0
-hud.heading 90" "$OUT_DIR/pinned.png"
+hud.heading 90" "pinned.png"
 # Sessions retry once: the fixture cell keeps streaming past bench-hold
 # and a session landing on a busy frame can outrun the server's 5 s drain
 # timeout (same failure mode m48-5 hardened first).

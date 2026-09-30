@@ -207,7 +207,11 @@ need a Vulkan device *and* on-disk game data, documented in
 `--bench-frames N --bench-hold` so it stays open after the bench, then
 attach `byro-dbg` (port 9876) and drive console commands (`tex.missing`,
 `tex.loaded`, `entities <Component>`, `skin <id>`, `script.activate
-<id>`) against the loaded scene. Current scripts:
+<id>`) against the loaded scene. Release builds gate the debug server
+behind an explicit `BYRO_DEBUG_SERVER=1` on the engine's environment
+(63c0aee3b) — without it the held engine binds no port and the attach
+can never succeed; the `screenshot` console command likewise takes a
+bare filename and writes under the engine cwd's `screenshots/` (#5142). Current scripts:
 [`m41-equip.sh`](../smoke-tests/m41-equip.sh) (Skyrim+ / FO4 NPC outfit
 equip end-to-end) and [`m-trees.sh`](../smoke-tests/m-trees.sh)
 (SpeedTree placeholder billboards).

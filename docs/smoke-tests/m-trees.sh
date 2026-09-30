@@ -26,7 +26,7 @@
 #   4. SIGTERM the engine and collect its bench summary.
 #
 # Usage:
-#   docs/smoke-tests/m-trees.sh [fnv|fo3|all]
+#   docs/smoke-tests/m-trees.sh [fnv|fo3|obl|all]
 #
 # Exit: 0 on success, non-zero on any cell whose entity count or
 # Billboard count falls outside the expected band.
@@ -37,6 +37,7 @@ GAME="${1:-all}"
 
 FNV_DATA="${BYROREDUX_FNV_DATA:-/mnt/data/SteamLibrary/steamapps/common/Fallout New Vegas/Data}"
 FO3_DATA="${BYROREDUX_FO3_DATA:-/mnt/data/SteamLibrary/steamapps/common/Fallout 3 goty/Data}"
+OBL_DATA="${BYROREDUX_OBLIVION_DATA:-/mnt/data/SteamLibrary/steamapps/common/Oblivion/Data}"
 
 PORT="${BYRO_DEBUG_PORT:-9876}"
 BENCH_FRAMES="${BYROREDUX_SMOKE_FRAMES:-30}"
@@ -118,6 +119,16 @@ EOF
     : "${entities:=0}"
     : "${draws:=0}"
 
+    # #5142 — a missing `entities` answer is an attach failure, not an
+    # empty world: the old `|| echo 0` parse read a dead byro-dbg session
+    # as "0 billboards" and pointed the HARD FAIL at the (healthy) .spt
+    # extension switch.
+    if ! grep -qE '^\([0-9]+ entities\)' "$dbg_log"; then
+        echo "smoke[$label]: HARD FAIL — byro-dbg never answered 'entities Billboard' \
+(no '(N entities)' row in $dbg_log — the attach itself failed; see the session log above)"
+        eval "$kill_engine"
+        return 1
+    fi
     local billboards
     billboards=$(grep -oE '^\([0-9]+ entities\)' "$dbg_log" | sed -n '1p' | grep -oE '[0-9]+' || echo 0)
     : "${billboards:=0}"
@@ -199,15 +210,43 @@ fo3_run () {
         --textures-bsa "$FO3_DATA/Fallout - Textures.bsa"
 }
 
+obl_run () {
+    if [[ ! -f "$OBL_DATA/Oblivion.esm" ]]; then
+        echo "smoke[obl]: SKIP — Oblivion.esm not at $OBL_DATA"
+        return 0
+    fi
+    # Cyrodiil exterior — grid 0,0 with radius 3 sits in the western
+    # Great Forest belt. Oblivion holds 113 of the era's 133 vanilla
+    # `.spt` files (AUDIT_SPEEDTREE_2026-09-29), so this is the densest
+    # SpeedTree corpus of the three titles — the arm the harness lacked
+    # while it gated only FNV/FO3 (#5142).
+    #
+    # Thresholds (measured live 2026-09-30: entities=25063,
+    # Billboards=1416, tex.missing=1 at grid 0,0 radius 3):
+    # - entities floor 1000: any populated Cyrodiil exterior grid clears
+    #   it on statics alone; sub-1000 means cell-load collapsed.
+    # - Billboard floor 100: the Great Forest belt places TREE REFRs in
+    #   every cell; pre-Phase-1.5 this was zero.
+    # - tex.missing ceiling 50: leaf icons ride in the Compressed
+    #   textures BSA; above 50 indicates BSA coverage drift.
+    run_cell obl 1000 100 50 \
+        --esm "$OBL_DATA/Oblivion.esm" \
+        --grid 0,0 --radius 3 \
+        --bsa "$OBL_DATA/Oblivion - Meshes.bsa" \
+        --textures-bsa "$OBL_DATA/Oblivion - Textures - Compressed.bsa"
+}
+
 total_rc=0
 case "$GAME" in
     fnv)    fnv_run    || total_rc=$? ;;
     fo3)    fo3_run    || total_rc=$? ;;
+    obl)    obl_run    || total_rc=$? ;;
     all)
         fnv_run    || total_rc=$?
         fo3_run    || total_rc=$(( total_rc | $? ))
+        obl_run    || total_rc=$(( total_rc | $? ))
         ;;
-    *)      echo "Usage: $0 [fnv|fo3|all]"; exit 2 ;;
+    *)      echo "Usage: $0 [fnv|fo3|obl|all]"; exit 2 ;;
 esac
 
 if (( total_rc != 0 )); then

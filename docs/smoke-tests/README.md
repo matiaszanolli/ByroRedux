@@ -166,6 +166,10 @@ All smoke tests follow the same workflow:
 1. Spawn the engine in the background under `--bench-frames N --bench-hold`
    so the bench summary lands and the embedded TCP debug server (port
    9876 by default) stays reachable after the bench window closes.
+   Release builds bind the server only behind the explicit
+   `BYRO_DEBUG_SERVER=1` opt-in (63c0aee3b) — every release harness here
+   sets it on the launch, a rule pinned statically by
+   [`scripts/check-byro-dbg-harness-contracts.sh`](../../scripts/check-byro-dbg-harness-contracts.sh).
 2. Wait for the `bench-hold:` notice in the engine's stderr (signals
    the engine is held open, attach window).
 3. Pipe a command sequence into `byro-dbg` (it reads stdin
@@ -174,6 +178,11 @@ All smoke tests follow the same workflow:
    echo -e 'entities\nfind Inventory\ntex.missing\nquit' \
      | cargo run --release -p byro-dbg
    ```
+   The `screenshot` command takes a **bare filename** and writes under
+   the engine cwd's `screenshots/` dir — capture a bare name and `mv`
+   the file out, as `p3-hud.sh`'s `capture_screenshot` does; a path
+   argument is rejected ("screenshot path must be a filename inside
+   screenshots/", 63c0aee3b / #5142).
 4. Assert on the captured output and SIGTERM the engine.
 
 > **Why `kill -TERM "$engine_pid"` is enough here, and is not enough in

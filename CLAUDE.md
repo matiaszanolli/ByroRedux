@@ -340,7 +340,12 @@ Operational gotchas worth knowing up front:
 - `<stem>N.bsa` siblings auto-load (`Textures.bsa` drags in `Textures2.bsa`) — see `asset_provider/archive.rs`.
 - `--bench-hold` keeps the engine alive so `byro-dbg` can attach (port 9876) and run
   console commands (`tex.missing`, `tex.loaded`, …); without it the bench exits and the
-  debug server is unreachable.
+  debug server is unreachable. Release builds additionally need `BYRO_DEBUG_SERVER=1`
+  on the engine's environment (63c0aee3b) or the server never binds — a release
+  `--bench-hold` launch without it logs `Debug server disabled` and byro-dbg cannot
+  attach. The debug server's `screenshot` command takes a bare filename only and
+  writes it under the engine cwd's `screenshots/` — capture a bare name and `mv` the
+  file out (#5142).
 - "Chrome / posterized" surfaces usually mean **missing textures** (checker placeholder ×
   normal map), not a lighting bug — run `tex.missing` first.
 

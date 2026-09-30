@@ -247,7 +247,9 @@ cargo run --release -- --game skyrim_se --studio \
 # stands on the floor beside the last and the room refits and relights around
 # all of them. Scriptable over byro-dbg: studio.games / studio.find <game>
 # [filter] / studio.add <game> <path> / studio.list / studio.remove <id> /
-# studio.clear.
+# studio.clear. Release builds need BYRO_DEBUG_SERVER=1 on the engine's
+# environment for byro-dbg to attach (63c0aee3b), and the debug `screenshot`
+# command writes bare filenames under the engine cwd's screenshots/ dir.
 cargo run --release -- --studio --bench-hold
 
 # Cornell-box RT reference harness (no game data needed). `--cornell` is the

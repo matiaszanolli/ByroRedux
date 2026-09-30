@@ -109,12 +109,25 @@ echo "PASS: hud.debug"
 # (the driver mirrors HudControl.visible into the player; the UI quad
 # stops) and capture again. World pixels cancel — the fixture cell is
 # static between captures.
-dbg_session "screenshot $OUT_DIR/hud_on.png" \
-    || { echo "FAIL: screenshot session timed out twice"; exit 1; }
+# 63c0aee3b/#5142: the debug server's `screenshot` accepts only a bare
+# filename and writes under the engine cwd's screenshots/ dir (the game
+# $DATA dir) — capture by bare name, then move the file into $OUT_DIR.
+shoot() {
+    local name="$1" shot="$DATA/screenshots/$1" attempt
+    rm -f "$shot"
+    dbg_session "screenshot $name" \
+        || { echo "FAIL: screenshot session timed out twice"; exit 1; }
+    for attempt in 1 2 3 4 5; do
+        [[ -s "$shot" ]] && break
+        sleep 2
+    done
+    [[ -s "$shot" ]] || { echo "FAIL: $name never landed in $DATA/screenshots/"; exit 1; }
+    mv "$shot" "$OUT_DIR/$name"
+}
+shoot hud_on.png
 dbg_session "hud.off" || { echo "FAIL: hud.off session timed out twice"; exit 1; }
 sleep 1
-dbg_session "screenshot $OUT_DIR/hud_off.png" \
-    || { echo "FAIL: second screenshot session timed out twice"; exit 1; }
+shoot hud_off.png
 
 sleep 2
 # `kill $ENGINE` can hit the xvfb-run wrapper rather than the engine —

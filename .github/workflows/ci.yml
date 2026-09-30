@@ -86,6 +86,13 @@ jobs:
       - uses: actions/checkout@v4
       - name: Invoke every playable smoke gate without game data
         run: scripts/check-playable-smoke-contracts.sh
+      # #5142 — static contracts for every byro-dbg harness: the debug
+      # `screenshot` command takes a bare filename only, and a release
+      # harness must set BYRO_DEBUG_SERVER=1. Both rules landed in
+      # 63c0aee3b and silently broke 13 harnesses that predated them;
+      # this scan makes the next one a CI failure instead.
+      - name: byro-dbg harness contracts (opt-in + bare-filename screenshots)
+        run: scripts/check-byro-dbg-harness-contracts.sh
 
   # ──────────────────────────────────────────────────────────────────────────
   # Offline shader source/artifact parity

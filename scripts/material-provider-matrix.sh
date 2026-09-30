@@ -149,7 +149,11 @@ for game in "${games[@]}"; do
         port=$((21000 + ($$ % 10000)))
 
         echo "material-provider-matrix: ${game} run ${run}/${runs}" >&2
+        # BYRO_DEBUG_SERVER=1: the release engine's explicit debug-server
+        # opt-in (63c0aee3b) — without it the engine binds no port and every
+        # byro-dbg session below times out (#5142).
         env -u WAYLAND_DISPLAY -u XDG_SESSION_TYPE \
+            BYRO_DEBUG_SERVER=1 \
             BYRO_DEBUG_PORT="${port}" \
             RUST_LOG="${BYROREDUX_MATERIAL_MATRIX_LOG:-warn,byroredux::app_events=info}" \
             timeout "${timeout_seconds}" "${engine}" \
@@ -204,6 +208,14 @@ for game in "${games[@]}"; do
             exit 1
         fi
 
+        # 63c0aee3b/#5142: the debug server's `screenshot` accepts only a
+        # bare filename and writes under the engine cwd's screenshots/ dir
+        # (= this script's cwd). Clear the three mode names so a stale file
+        # from a crashed earlier run cannot be collected, capture bare, and
+        # move the files into the run dir right after the session.
+        shot_dir="${PWD}/screenshots"
+        mkdir -p "${shot_dir}"
+        rm -f "${shot_dir}"/{material_lobe,material_role,direct_only}.png
         {
             for entity in "${material_ids[@]}"; do
                 printf 'mat.dump %s\n' "${entity}"
@@ -219,10 +231,15 @@ for game in "${games[@]}"; do
                 for _ in $(seq 1 "${settle_frames}"); do
                     printf 'stats\n'
                 done
-                printf 'screenshot %s\n' "${run_out}/${mode}.png"
+                printf 'screenshot %s\n' "${mode}.png"
             done
             printf 'quit\n'
         } | env BYRO_DEBUG_PORT="${port}" "${debugger}" > "${debug_log}" 2>&1
+        for mode in material_lobe material_role direct_only; do
+            if [[ -s "${shot_dir}/${mode}.png" ]]; then
+                mv -f "${shot_dir}/${mode}.png" "${run_out}/${mode}.png"
+            fi
+        done
 
         if ! rg -q 'base_color.*sRGB.*2D' "${debug_log}" \
             || ! rg -q 'normal.*linear.*2D' "${debug_log}"; then

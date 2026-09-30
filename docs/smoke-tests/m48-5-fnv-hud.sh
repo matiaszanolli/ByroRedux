@@ -98,14 +98,25 @@ CMDS
     done
     return 1
 }
+# 63c0aee3b/#5142: the debug server's `screenshot` accepts only a bare
+# filename and writes under the engine cwd's screenshots/ dir (the game
+# $DATA dir) — capture by bare name, then move the file into $OUT_DIR.
 pin_and_shoot() {
     dbg_session "$1" || { echo "FAIL: byro-dbg session timed out twice"; exit 1; }
     sleep 1
+    local shot="$DATA/screenshots/$2" attempt
+    rm -f "$shot"
     dbg_session "screenshot $2" || { echo "FAIL: screenshot session timed out twice"; exit 1; }
+    for attempt in 1 2 3 4 5; do
+        [[ -s "$shot" ]] && break
+        sleep 2
+    done
+    [[ -s "$shot" ]] || { echo "FAIL: screenshot $2 never landed in $DATA/screenshots/"; exit 1; }
+    mv "$shot" "$OUT_DIR/$2"
 }
-pin_and_shoot "hud.values 1.0 1.0" "$OUT_DIR/full.png"
+pin_and_shoot "hud.values 1.0 1.0" "full.png"
 pin_and_shoot "hud.values 0.3 0.9
-hud.heading 90" "$OUT_DIR/pinned.png"
+hud.heading 90" "pinned.png"
 "$BIN_DIR/byro-dbg" <<CMDS | tee "$OUT_DIR/dbg.out"
 hud.status
 CMDS

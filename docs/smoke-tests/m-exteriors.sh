@@ -315,6 +315,31 @@ run_profile () {
         sleep 0.5
     done
 
+    # 63c0aee3b/#5142: the debug server's `screenshot` command accepts
+    # only a bare filename and writes under the engine cwd's screenshots/
+    # dir (the game Data dir — the engine runs there by the CWD rule
+    # above). Clear this mode's names first so a stale file from a
+    # crashed earlier run cannot be collected as fresh; the session
+    # heredocs below capture bare names and the collect loop after each
+    # moves them into the profile dir the pixel gates read.
+    local shot_name shot_dir="$data_dir/screenshots"
+    mkdir -p "$shot_dir"
+    case "$MODE" in
+        cycle)
+            for shot_name in sunrise sunrise-composite-term noon \
+                noon-composite-term night night-composite-term \
+                noon-2-composite-term; do
+                rm -f "$shot_dir/$shot_name.png"
+            done
+            ;;
+        water)
+            for shot_name in water-surface water-term water-normal \
+                water-refl water-underwater; do
+                rm -f "$shot_dir/$shot_name.png"
+            done
+            ;;
+    esac
+
     if [[ "$MODE" == cycle ]]; then
         # Per-phase composite_term captures (#4491): the pre-bloom,
         # pre-tonemap, linear view (SKYAL §4) so the pixel invariant below
@@ -327,27 +352,27 @@ time.show
 env.health
 water.dump
 r.health
-screenshot $profile_dir/sunrise.png
+screenshot sunrise.png
 render.debug composite_term
-screenshot $profile_dir/sunrise-composite-term.png
+screenshot sunrise-composite-term.png
 render.debug final
 time.set 12:00
 time.show
 env.health
 water.dump
 r.health
-screenshot $profile_dir/noon.png
+screenshot noon.png
 render.debug composite_term
-screenshot $profile_dir/noon-composite-term.png
+screenshot noon-composite-term.png
 render.debug final
 time.set 23:00
 time.show
 env.health
 water.dump
 r.health
-screenshot $profile_dir/night.png
+screenshot night.png
 render.debug composite_term
-screenshot $profile_dir/night-composite-term.png
+screenshot night-composite-term.png
 render.debug final
 r.health
 stats
@@ -365,10 +390,15 @@ world.owners report
 time.set 12:00
 time.show
 render.debug composite_term
-screenshot $profile_dir/noon-2-composite-term.png
+screenshot noon-2-composite-term.png
 render.debug final
 .quit
 EOF
+    for shot_name in sunrise sunrise-composite-term noon noon-composite-term \
+        night night-composite-term noon-2-composite-term; do
+        [[ -s "$shot_dir/$shot_name.png" ]] &&
+            mv -f "$shot_dir/$shot_name.png" "$profile_dir/$shot_name.png"
+    done
     elif [[ "$MODE" == water ]]; then
         env BYRO_DEBUG_PORT="$PORT" "$DEBUG_BIN" > "$debug_log" 2>&1 <<EOF || true
 time.pause
@@ -377,19 +407,19 @@ cam.pos $water_surface_pos
 input.look $water_look
 water.dump
 r.health
-screenshot $profile_dir/water-surface.png
+screenshot water-surface.png
 render.debug water_term
-screenshot $profile_dir/water-term.png
+screenshot water-term.png
 render.debug water_normal
-screenshot $profile_dir/water-normal.png
+screenshot water-normal.png
 render.debug water_refl
-screenshot $profile_dir/water-refl.png
+screenshot water-refl.png
 render.debug final
 cam.pos $water_submerged_pos
 input.look $water_under_look
 water.dump
 r.health
-screenshot $profile_dir/water-underwater.png
+screenshot water-underwater.png
 stats
 light.dump
 env.health
@@ -405,6 +435,11 @@ world.owners
 world.owners report
 .quit
 EOF
+    for shot_name in water-surface water-term water-normal water-refl \
+        water-underwater; do
+        [[ -s "$shot_dir/$shot_name.png" ]] &&
+            mv -f "$shot_dir/$shot_name.png" "$profile_dir/$shot_name.png"
+    done
     else
         env BYRO_DEBUG_PORT="$PORT" "$DEBUG_BIN" > "$debug_log" 2>&1 <<'EOF' || true
 stats

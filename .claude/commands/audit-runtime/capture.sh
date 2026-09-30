@@ -408,6 +408,7 @@ log "launching ${label}"
 settings_file="${OUT}/${label}.settings.toml"
 rm -f -- "${settings_file}"
 BYROREDUX_SETTINGS_PATH="${settings_file}" \
+BYRO_DEBUG_SERVER=1 BYRO_DEBUG_PORT="${DEBUG_PORT}" \
 xvfb-run -a --server-args="-screen 0 1280x720x24" \
     "${ENGINE_BIN}" --game "${GAME}" ${CELL:+--cell "${CELL}"} \
     --bench-frames "${FRAMES}" --bench-mode "${BENCH_MODE}" --bench-hold \
@@ -438,6 +439,15 @@ trap teardown EXIT
 
 up_at=""
 for i in $(seq 1 90); do
+    # #5142 — an engine that logs `bench-hold-unavailable` / a disabled
+    # debug server will never bind the port; fail at once with the reason
+    # instead of dying at the 90 s deadline with no hint. This harness
+    # sets BYRO_DEBUG_SERVER=1 above, so hitting this means the opt-in
+    # was lost or the condition changed again.
+    if grep --quiet -E 'bench-hold-unavailable|Debug server disabled' "${engine_log}" 2>/dev/null; then
+        reason="$(grep -E 'bench-hold-unavailable|Debug server disabled' "${engine_log}" | head -1)"
+        die "engine never bound the debug port — its log says: ${reason} (see ${engine_log})"
+    fi
     if echo "ping" | timeout 2 "${DBG_BIN}" 2>/dev/null | grep --quiet -i pong; then
         up_at="${i}"
         break
