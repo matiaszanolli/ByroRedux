@@ -711,14 +711,17 @@ fn installed_masters_water_fields_are_finite_and_ordered() {
                 .values()
                 .find(|water| water.editor_id == "WaterMudBrown")
                 .expect("Starfield WaterMudBrown WATR");
+            // #5151 — the per-metre wire values arrive per engine unit.
             for (actual, expected) in water_clear
                 .params
                 .absorption_coefficients
                 .into_iter()
-                .zip([0.16558, 0.09624, 0.07627])
+                .zip([0.16558f32, 0.09624, 0.07627])
             {
-                assert!((actual - expected).abs() < 1.0e-5);
+                assert!((actual - expected / 70.0).abs() < 1.0e-7);
             }
+            assert_eq!(water_clear.params.noise_falloff, 100.0 * 70.0);
+            assert_eq!(water_clear.params.underwater_fog_far, 75.0 * 70.0);
             for (actual, expected) in water_clear
                 .params
                 .concentration

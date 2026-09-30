@@ -126,6 +126,37 @@ pub(super) fn normalize(index: &mut EsmIndex) {
         weather.fog_night_near *= UNITS;
         weather.fog_night_far *= UNITS;
     }
+    // #5151 — Starfield WATR DNAM distances are metric (vanilla `WaterClear`:
+    // depth 8, underwater fog -150 / 75, noise falloff 100) and its
+    // absorption triplet is per-metre extinction (0.16558 / 0.09624 /
+    // 0.07627 — liquid water's red > green > blue). Lengths ×UNITS, inverse
+    // lengths ÷UNITS. Only fields the record actually authored are touched:
+    // a short or absent DNAM leaves the decoder's engine-unit defaults,
+    // which must not be lifted. The noise UV tile sizes (120/124/128) stay
+    // unlifted until a capture settles their unit.
+    for water in index.waters.values_mut() {
+        let authored = |offset: usize| water.raw_dnam.len() >= offset + 4;
+        let (depth, absorption, near, far, falloff) =
+            (authored(0), authored(12), authored(40), authored(44), authored(132));
+        let p = &mut water.params;
+        if depth {
+            p.depth_amount *= UNITS;
+        }
+        if absorption {
+            for coefficient in &mut p.absorption_coefficients {
+                *coefficient /= UNITS;
+            }
+        }
+        if near {
+            p.underwater_fog_near *= UNITS;
+        }
+        if far {
+            p.underwater_fog_far *= UNITS;
+        }
+        if falloff {
+            p.noise_falloff *= UNITS;
+        }
+    }
     // NAVM was drained from cells into this one map before normalization.
     // Opaque packed payloads remain wire data; only decoded geometry is lifted.
     for nav in index.navmeshes.values_mut() {

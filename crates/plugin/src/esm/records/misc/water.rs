@@ -1360,7 +1360,10 @@ fn decode_dnam_starfield(data: &[u8]) -> WaterParams {
     }
     // Starfield stores one falloff per authored noise layer. The compact
     // renderer uses the first layer's value as the shared distance fade;
-    // vanilla records use the same 300-unit default across the three.
+    // all 15 vanilla Starfield records author 100 (metres) on all three.
+    // Starfield distances here are metric wire values; `spatial_units`
+    // lifts them to engine units after the walk (#5151). FO76 shares this
+    // decoder but authors engine units, so it is never lifted.
     if let Some(value) = read_f32_at(data, 132) {
         p.noise_falloff = value.max(0.0);
     }

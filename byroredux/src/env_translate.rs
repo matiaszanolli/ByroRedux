@@ -870,8 +870,11 @@ fn resolve_water_noise_and_rain(rec: &esm::records::misc::WatrRecord, mat: &mut 
         .iter_mut()
         .zip(rec.params.absorption_coefficients)
     {
+        // Per-BU extinction. Starfield's per-metre values arrive ÷70 from
+        // the parse boundary (#5151: clear water's blue lane is ~0.0011/BU),
+        // so the floor only guards against denormal noise, never clips data.
         if src.is_finite() && src > 0.0 {
-            *dst = src.clamp(0.01, 100_000.0);
+            *dst = src.clamp(1.0e-6, 100_000.0);
         }
     }
     // #4285 — Starfield's authored pigment concentrations (RGB lanes)
@@ -3278,6 +3281,22 @@ mod tests {
         waters.insert(rec.form_id, rec);
         let (mat, _, _, _, _) = resolve_water_material(&waters, Some(0x000A_0008));
         assert_eq!(mat.absorption_coefficients, [0.16558, 0.09624, 0.07627]);
+        // #5151 — the per-BU values the parse boundary produces for the same
+        // vanilla record must pass the translate floor unclipped.
+        let per_bu = [0.16558 / 70.0, 0.09624 / 70.0, 0.07627 / 70.0];
+        let rec = calm_watr(
+            0x000A_0009,
+            "StarfieldOceanPerBu",
+            WaterParams {
+                absorption_coefficients: per_bu,
+                ..WaterParams::default()
+            },
+        );
+        let mut per_bu_waters = HashMap::new();
+        per_bu_waters.insert(rec.form_id, rec);
+        let (per_bu_mat, _, _, _, _) =
+            resolve_water_material(&per_bu_waters, Some(0x000A_0009));
+        assert_eq!(per_bu_mat.absorption_coefficients, per_bu);
         // #4285 — pigment concentrations are normalized to canonical 0..1
         // fractions at this boundary (RGB lanes ÷ the Starfield authoring
         // upper bound; the natively-0..1 `oceanness` lane passes through

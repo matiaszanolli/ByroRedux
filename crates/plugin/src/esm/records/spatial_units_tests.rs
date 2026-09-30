@@ -172,3 +172,70 @@ fn legacy_index_wthr_keeps_authored_units() {
         assert_eq!(w.fog_night_far, 3000.0);
     }
 }
+/// A WATR carrying Starfield.esm `WaterClear` (0x18)'s metric DNAM: depth
+/// 8 m, per-metre absorption 0.16558 / 0.096239 / 0.076271, underwater fog
+/// -150 / 75 m, noise UV tiles 72.1141 / 39 / 13, noise falloff 100 m.
+/// FO76 shares the decoder but authors engine units (#5151).
+fn water_plugin(hedr_version: f32) -> Vec<u8> {
+    let mut hedr = hedr_version.to_le_bytes().to_vec();
+    hedr.extend_from_slice(&[0; 8]);
+    let mut data = build_record(b"TES4", 0, &[(b"HEDR", hedr)]);
+    let mut dnam = vec![0u8; 160];
+    for (offset, value) in [
+        (0, 8.0f32),
+        (4, 0.16558),
+        (8, 0.096239),
+        (12, 0.076271),
+        (40, -150.0),
+        (44, 75.0),
+        (120, 72.1141),
+        (124, 39.0),
+        (128, 13.0),
+        (132, 100.0),
+    ] {
+        dnam[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+    }
+    data.extend(wrap_group(
+        b"WATR",
+        &build_record(
+            b"WATR",
+            0x18,
+            &[(b"EDID", b"WaterClear\0".to_vec()), (b"DNAM", dnam)],
+        ),
+    ));
+    data
+}
+
+/// #5151 — Starfield WATR DNAM lengths are lifted ×70 and its per-metre
+/// absorption ÷70 in `spatial_units::normalize`. Pre-fix red transmission
+/// through 1 m of clear water was exp(-70·0.16558) ≈ 9e-6, normals went
+/// flat 1.4 m from the camera and underwater fog saturated at ~1 m.
+#[test]
+fn starfield_public_index_lifts_watr_dnam_distances() {
+    let index = parse_esm(&water_plugin(0.96)).unwrap();
+    assert_eq!(index.game, GameKind::Starfield);
+    let p = &index.waters[&0x18].params;
+    assert_eq!(p.depth_amount, 8.0 * 70.0);
+    for (actual, metric) in p
+        .absorption_coefficients
+        .into_iter()
+        .zip([0.16558f32, 0.096239, 0.076271])
+    {
+        assert!((actual - metric / 70.0).abs() < 1.0e-9);
+    }
+    assert_eq!(p.underwater_fog_near, 0.0);
+    assert_eq!(p.underwater_fog_far, 75.0 * 70.0);
+    assert_eq!(p.noise_falloff, 100.0 * 70.0);
+}
+
+/// Companion: FO76 (same DNAM decoder, engine-unit data) is never lifted.
+#[test]
+fn fo76_index_watr_keeps_authored_units() {
+    let index = parse_esm(&water_plugin(279.0)).unwrap();
+    assert_eq!(index.game, GameKind::Fallout76);
+    let p = &index.waters[&0x18].params;
+    assert_eq!(p.depth_amount, 8.0);
+    assert_eq!(p.absorption_coefficients, [0.16558, 0.096239, 0.076271]);
+    assert_eq!(p.underwater_fog_far, 75.0);
+    assert_eq!(p.noise_falloff, 100.0);
+}
