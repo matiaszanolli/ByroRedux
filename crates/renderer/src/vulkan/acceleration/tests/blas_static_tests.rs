@@ -351,7 +351,7 @@ mod pending_destroy_static_bytes_stays_balanced_tests {
             .find("if !admit_next_static_blas(")
             .expect("the admission gate call must still exist");
         let alloc = BLAS_STATIC_RS
-            .find("let mut result_buffer = GpuBuffer::create_device_local_uninit(")
+            .find("let mut result_buffer = match GpuBuffer::create_device_local_uninit(")
             .expect("the Phase-1 result-buffer allocation must still exist");
         assert!(
             gate < alloc,
@@ -560,5 +560,51 @@ mod memory_budget_eviction_census_tests {
              call that passes the real residency peak (#2927 / #3997), and the \
              per-mesh admission pass joined them in #4196"
         );
+    }
+}
+
+/// #4883 — `build_blas_batched`'s pre-submit exits must unwind `prepared`.
+/// The Phase 1 result-buffer, Phase 2 scratch and Phase 3 query-pool
+/// failures used bare `?`, dropping every prepared original: the raw
+/// acceleration-structure handles (no `Drop`) leaked and each `GpuBuffer`
+/// tripped the #656 Drop net. Needs an allocator OOM on a live device to
+/// exercise, so this pins the shape.
+mod batched_build_unwind_tests {
+    const BLAS_STATIC_RS: &str = include_str!("../blas_static.rs");
+
+    fn build_body() -> &'static str {
+        let at = BLAS_STATIC_RS
+            .find("pub fn build_blas_batched(")
+            .expect("build_blas_batched");
+        // Phases 1-4 end where the compaction closure takes over; the
+        // closure has its own #316 / #2926 rollback.
+        let end = BLAS_STATIC_RS[at..]
+            .find("let mut compact_accels")
+            .expect("compaction phase marker");
+        &BLAS_STATIC_RS[at..at + end]
+    }
+
+    #[test]
+    fn pre_submit_exits_unwind_the_prepared_originals() {
+        let body = build_body();
+        for call in ["::create_device_local_uninit(", ".create_query_pool("] {
+            let mut sites = 0;
+            for (at, _) in body.match_indices(call) {
+                sites += 1;
+                let tail = &body[at..];
+                let stmt = &tail[..tail.find(";\n").expect("statement end")];
+                assert!(
+                    ![")?\n", ")?;", ")?)"].iter().any(|bare| stmt.contains(bare)),
+                    "a bare `?` on `{call}` drops `prepared` without destroying \
+                     its acceleration structures (#4883)"
+                );
+            }
+            assert!(sites > 0, "`{call}` not found — the scan broke");
+        }
+        // Every pre-submit exit plus the submit-failure arm goes through the
+        // one helper: result buffer, AS create (#1097), scratch, query pool,
+        // build submit.
+        assert_eq!(body.matches("unsafe fn unwind_prepared(").count(), 1);
+        assert_eq!(body.matches("unwind_prepared(").count(), 1 + 5);
     }
 }

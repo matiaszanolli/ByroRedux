@@ -351,6 +351,35 @@ impl AccelerationManager {
             index_count: u32,
         }
 
+        /// Destroy every prepared original (and the compaction query pool,
+        /// once it exists) on an error exit before any build was submitted.
+        /// #4883 — the Phase 1 result-buffer, Phase 2 scratch and Phase 3
+        /// query-pool `?` exits used to drop `prepared` as plain memory:
+        /// each `GpuBuffer` hit the #656 Drop net (a debug-build panic) and
+        /// each raw `vk::AccelerationStructureKHR`, which has no `Drop`,
+        /// leaked on every retried batch.
+        ///
+        /// SAFETY: callers pass only handles no command buffer references —
+        /// nothing in `prepared` has been recorded yet, and the pool is
+        /// destroyed only after a submission that failed or never happened.
+        unsafe fn unwind_prepared(
+            accel_loader: &ash::khr::acceleration_structure::Device,
+            device: &ash::Device,
+            allocator: &SharedAllocator,
+            prepared: Vec<PreparedBlas>,
+            query_pool: Option<vk::QueryPool>,
+        ) {
+            for mut p in prepared {
+                // SAFETY: see the function contract — owned, unreferenced.
+                unsafe { accel_loader.destroy_acceleration_structure(p.accel, None) };
+                p.buffer.destroy(device, allocator);
+            }
+            if let Some(pool) = query_pool {
+                // SAFETY: see the function contract.
+                unsafe { device.destroy_query_pool(pool, None) };
+            }
+        }
+
         let mut prepared: Vec<PreparedBlas> = Vec::with_capacity(meshes.len());
         let mut max_scratch_size: vk::DeviceSize = 0;
 
@@ -592,13 +621,22 @@ impl AccelerationManager {
             max_scratch_size = max_scratch_size.max(sizes.build_scratch_size);
             pending_bytes = pending_bytes.saturating_add(sizes.acceleration_structure_size);
 
-            let mut result_buffer = GpuBuffer::create_device_local_uninit(
+            let mut result_buffer = match GpuBuffer::create_device_local_uninit(
                 device,
                 allocator,
                 sizes.acceleration_structure_size,
                 vk::BufferUsageFlags::ACCELERATION_STRUCTURE_STORAGE_KHR
                     | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
-            )?;
+            ) {
+                Ok(buffer) => buffer,
+                Err(e) => {
+                    // SAFETY: nothing in `prepared` has been recorded (#4883).
+                    unsafe {
+                        unwind_prepared(&self.accel_loader, device, allocator, prepared, None)
+                    };
+                    return Err(e).context(format!("BLAS result buffer for mesh {mesh_handle}"));
+                }
+            };
 
             let accel_info = vk::AccelerationStructureCreateInfoKHR::default()
                 .buffer(result_buffer.buffer)
@@ -623,15 +661,11 @@ impl AccelerationManager {
                         // already in `prepared[0..i-1]` leaked their
                         // GpuBuffer + VkAccelerationStructureKHR handles.
                         result_buffer.destroy(device, allocator);
-                        for mut p in prepared {
-                            // SAFETY: each entry's accel + buffer are owned
-                            // by `prepared` (just moved in by push); no
-                            // command buffer references them yet (the build
-                            // hasn't been recorded).
-                            self.accel_loader
-                                .destroy_acceleration_structure(p.accel, None);
-                            p.buffer.destroy(device, allocator);
-                        }
+                        // SAFETY: each entry's accel + buffer are owned by
+                        // `prepared` (just moved in by push); no command
+                        // buffer references them yet (the build hasn't been
+                        // recorded).
+                        unwind_prepared(&self.accel_loader, device, allocator, prepared, None);
                         anyhow::bail!("Failed to create BLAS for mesh {mesh_handle}: {e}");
                     }
                 }
@@ -681,12 +715,21 @@ impl AccelerationManager {
             if let Some(old) = self.blas_scratch_buffer.take() {
                 self.pending_destroy_scratch.push(old, DEFAULT_COUNTDOWN);
             }
-            self.blas_scratch_buffer = Some(GpuBuffer::create_device_local_uninit(
+            match GpuBuffer::create_device_local_uninit(
                 device,
                 allocator,
                 scratch_size,
                 vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
-            )?);
+            ) {
+                Ok(scratch) => self.blas_scratch_buffer = Some(scratch),
+                Err(e) => {
+                    // SAFETY: nothing in `prepared` has been recorded (#4883).
+                    unsafe {
+                        unwind_prepared(&self.accel_loader, device, allocator, prepared, None)
+                    };
+                    return Err(e).context("BLAS batch scratch buffer");
+                }
+            }
         }
 
         // Round the raw device address up to `scratch_align` so the
@@ -711,10 +754,13 @@ impl AccelerationManager {
             .query_count(n);
         // SAFETY: `query_pool_info` is fully initialized and device is
         // live; the returned pool is owned and destroyed below.
-        let query_pool = unsafe {
-            device
-                .create_query_pool(&query_pool_info, None)
-                .context("Failed to create compaction query pool")?
+        let query_pool = match unsafe { device.create_query_pool(&query_pool_info, None) } {
+            Ok(pool) => pool,
+            Err(e) => {
+                // SAFETY: nothing in `prepared` has been recorded (#4883).
+                unsafe { unwind_prepared(&self.accel_loader, device, allocator, prepared, None) };
+                return Err(e).context("Failed to create compaction query pool");
+            }
         };
         // Reset the query pool before use (required by Vulkan spec).
         // SAFETY: `query_pool` was just created with `n` queries; the
@@ -830,22 +876,18 @@ impl AccelerationManager {
         });
 
         if let Err(e) = build_result {
-            for mut p in prepared {
-                // SAFETY: the build submission failed, so no in-flight command
-                // buffer references `p.accel`; each accel + buffer is owned by
-                // `prepared`; device is live.
-                unsafe {
-                    self.accel_loader
-                        .destroy_acceleration_structure(p.accel, None);
-                }
-                p.buffer.destroy(device, allocator);
-            }
-            // SAFETY: `query_pool` is the live pool created above; device is
-            // live; no in-flight command buffer references it after the failed
-            // submit.
+            // SAFETY: the build submission failed, so no in-flight command
+            // buffer references `prepared` or `query_pool`; both are owned
+            // here; device is live.
             unsafe {
-                device.destroy_query_pool(query_pool, None);
-            }
+                unwind_prepared(
+                    &self.accel_loader,
+                    device,
+                    allocator,
+                    prepared,
+                    Some(query_pool),
+                )
+            };
             return Err(e);
         }
 
