@@ -6,7 +6,10 @@
 //! each — 28 start/end brackets, bumped from 32/16 by #4052's
 //! ground-cover-bench bracket (#4210), again from 34/17 by the SKYAL
 //! sky-cubemap bake, again from 36/18 by the production ground-cover
-//! scatter (#4315), and again from 38/19 by the exposure meter (#4618):
+//! scatter (#4315), again from 38/19 by the exposure meter (#4618), again
+//! from 40/20 to 46/23 by the ground-cover model tier and the split
+//! volumetrics inject / integrate brackets (`88c23887b`), and again from
+//! 46/23 by the five main-pass geometry phases (`0925f7926`):
 //!
 //! | Slot | Bracket                                |
 //! |------|----------------------------------------|
@@ -50,22 +53,22 @@
 //! | 37   | ground-cover interaction + scatter — end             |
 //! | 38   | exposure meter (luminance reduce + exposure texel) — start |
 //! | 39   | exposure meter (luminance reduce + exposure texel) — end   |
-//! | 40 | groundcover models — start |
-//! | 41 | groundcover models — end |
-//! | 42 | volumetrics inject — start |
-//! | 43 | volumetrics inject — end |
-//! | 44 | volumetrics integrate — start |
-//! | 45 | volumetrics integrate — end |
-//! | 46 | main_opaque raster — start |
-//! | 47 | main_opaque raster — end |
-//! | 48 | main_blended raster — start |
-//! | 49 | main_blended raster — end |
-//! | 50 | main_water raster — start |
-//! | 51 | main_water raster — end |
-//! | 52 | groundcover_model_draw raster — start |
-//! | 53 | groundcover_model_draw raster — end |
-//! | 54 | groundcover_blade_draw raster — start |
-//! | 55 | groundcover_blade_draw raster — end |
+//! | 40   | ground-cover model tier (place + layout + emit) — start |
+//! | 41   | ground-cover model tier (place + layout + emit) — end   |
+//! | 42   | volumetrics inject — start                           |
+//! | 43   | volumetrics inject — end                             |
+//! | 44   | volumetrics integrate — start                        |
+//! | 45   | volumetrics integrate — end                          |
+//! | 46   | main pass, opaque phase (profile only) — start       |
+//! | 47   | main pass, opaque phase (profile only) — end         |
+//! | 48   | main pass, blended phase (profile only) — start      |
+//! | 49   | main pass, blended phase (profile only) — end        |
+//! | 50   | main pass, water phase (profile only) — start        |
+//! | 51   | main pass, water phase (profile only) — end          |
+//! | 52   | main pass, ground-cover model draw (profile only) — start |
+//! | 53   | main pass, ground-cover model draw (profile only) — end   |
+//! | 54   | main pass, ground-cover blade draw (profile only) — start |
+//! | 55   | main pass, ground-cover blade draw (profile only) — end   |
 //!
 //! The original four brackets (skin dispatch / skin palette / BLAS refit / TAA) shipped
 //! with the #1194 perf-bisect work. The four added in debug-UI
@@ -237,10 +240,14 @@ pub struct GpuTimerSnapshot {
     /// (`svgf_atrous.comp` ×3) for the breakdown this single timer cannot
     /// give you.
     pub svgf_ms: f32,
-    /// Composite pass — fullscreen fragment shader combining HDR +
-    /// SVGF indirect + albedo + bloom + caustic + volumetrics into
-    /// the scene image as linear HDR (tone mapping happens later, in the
-    /// presentation pass, #4202). Phase-7 bracket.
+    /// Composite pass — fullscreen fragment shader combining direct HDR,
+    /// SVGF indirect × albedo, both caustic accumulators (glass splat and
+    /// water) and the froxel volumetrics into the scene image as linear HDR.
+    /// It also marches the sky and cloud body on clear-depth pixels and
+    /// applies the interior sky-aperture mask. Bloom is NOT an input: the
+    /// binding is declared but unused since #2796, and `bloom_apply.comp`
+    /// adds bloom to this pass's output afterwards. Tone mapping happens
+    /// later, in the presentation pass (#4202, #4811). Phase-7 bracket.
     pub composite_ms: f32,
     /// SSAO compute — 16 samples per pixel, full-screen. Phase-7.
     pub ssao_ms: f32,
@@ -300,16 +307,35 @@ pub struct GpuTimerSnapshot {
     /// mode. Inactive on a raw-debug-view frame and after the meter latches a
     /// failure, the two cases `record_exposure_meter_pass` skips on.
     pub exposure_meter_ms: f32,
+    /// EXAL ground-cover model tier (`groundcover_models.comp`, #4413): the
+    /// place, layout and emit dispatches with their barriers. Starts at
+    /// `COMPUTE_SHADER` (see the struct doc). Inactive on any frame
+    /// `GroundCoverModels::record` skips: no model shapes, no resident
+    /// chunks, no instance-tail capacity or no TLAS.
     pub groundcover_models_ms: f32,
+    /// `volumetrics_inject.comp` alone (`88c23887b` split the combined
+    /// `volumetrics_ms` bracket's first half out). Same gates as
+    /// `volumetrics_ms`.
     pub volumetrics_inject_ms: f32,
+    /// `volumetrics_integrate.comp` alone — the second half of
+    /// `volumetrics_ms`.
     pub volumetrics_integrate_ms: f32,
-    // BOTTOM_OF_PIPE phase-completion intervals inside main_render.
-    // GPU overlap can move work across boundaries; these are not isolated
-    // shader timings and exclude main-pass setup/clear/store overhead.
+    // Main-pass phase fields (`0925f7926`): BOTTOM_OF_PIPE phase-completion
+    // intervals inside `main_render_ms`, one per `GeometryTimerPhase`. GPU
+    // overlap can move work across boundaries; these are not isolated shader
+    // timings and exclude main-pass setup/clear/store overhead. PROFILE-ONLY:
+    // unlike every field above, they never reach `SkinCoverageStats`, the
+    // `bench:` line or the debug UI — only the `BYRO_PROFILE` log line
+    // (`gpu_geometry phases:`, in `read_and_reset`) prints them.
+    /// Opaque (and alpha-tested) geometry phase.
     pub main_opaque_ms: f32,
+    /// Alpha-blended geometry phase.
     pub main_blended_ms: f32,
+    /// Water surfaces.
     pub main_water_ms: f32,
+    /// Ground-cover model-tier indexed-indirect draws.
     pub groundcover_model_draw_ms: f32,
+    /// Ground-cover blade-tier indirect draws.
     pub groundcover_blade_draw_ms: f32,
 
     // ── Per-bracket "ran this frame" flags (#2278 / PERF-D9-01) ───────
@@ -2175,11 +2201,12 @@ mod tests {
     /// and pool counts — the exact rot #4210's own history predicted for
     /// the next bump. The module header
     /// is the one place that states the live numbers (`QUERIES_PER_FRAME`
-    /// (40) … 20 start/end brackets, plus the bump history "32/16 → 34/17
-    /// → 36/18 → 38/19"); every other comment stays count-free so the next
+    /// and the start/end bracket count, plus the bump history from 32/16
+    /// onward); every other comment stays count-free so the next
     /// bracket addition has one number to move. The stale spellings are
     /// assembled from fragments below so this test's own source can't match
-    /// them. Each bump adds the spellings it retires (#4618 added 38/19's).
+    /// them. Each bump adds the spellings it retires (#4618 added 38/19's;
+    /// #4981 added 40/20's and 46/23's).
     #[test]
     fn prose_outside_the_module_header_carries_no_bracket_counts() {
         let src = include_str!("gpu_timers.rs");
@@ -2192,6 +2219,12 @@ mod tests {
             format!("currently {}", 19),
             format!("{}-query", 38),
             format!("full {}", 38),
+            format!("currently {}", 20),
+            format!("{}-query", 40),
+            format!("full {}", 40),
+            format!("currently {}", 23),
+            format!("{}-query", 46),
+            format!("full {}", 46),
         ];
         for pattern in &rotted {
             assert!(

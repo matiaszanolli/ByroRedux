@@ -277,7 +277,9 @@ the allocator fires after the logical device has already been destroyed.
    slot (cross-slot wait — the shared scratch / SSBO invariant).
 2. Read back any pending screenshot from the prior frame.
 3. Acquire the next swapchain image (handle `ERROR_OUT_OF_DATE_KHR` → swap).
-   Bracketed by a GPU timer so a FIFO-present block is attributable.
+   `vkAcquireNextImageKHR` is host-side, so there is no GPU timer here: the
+   wait is timed on the CPU (`CpuFrameTimings.acquire_ms`), which is what makes
+   a FIFO-present block attributable (#4981).
 4. Reset the fence and command buffer; run the deferred-destroy tick
    (after the wait, so freed handles are guaranteed GPU-idle — #418).
 5. Walk the ECS via `build_render_data` to collect visible mesh handles,
