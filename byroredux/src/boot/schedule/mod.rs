@@ -295,6 +295,57 @@ mod ambient_locomotion_default_on_tests {
         }
     }
 
+    /// #4709 — the kill switch is documented as the AI-motion debugging aid,
+    /// so the block it gates must hold exactly the eight motion systems.
+    /// The pin above only checked that the env var is read, which is how
+    /// combat feedback ended up inside the block unnoticed: isolating
+    /// motion silently muted P2 combat takes and sounds.
+    #[test]
+    fn locomotion_kill_switch_gates_exactly_the_motion_systems() {
+        let setup = BOOT_SRC
+            .split("mod ambient_locomotion_default_on_tests")
+            .next()
+            .expect("split always yields a first segment");
+        let open = "if locomotion_enabled {\n";
+        let start = setup
+            .find(open)
+            .expect("the BYRO_NO_AI_LOCOMOTION block is gone from boot/schedule/");
+        let body = &setup[start + open.len()..];
+        let end = body
+            .find("\n    }\n")
+            .expect("the locomotion block closes at function-body indentation");
+        let (block, after) = (&body[..end], &body[end..]);
+
+        let marker = format!("crate::systems::{}", "make_");
+        let mut gated: Vec<&str> = block
+            .match_indices(marker.as_str())
+            .map(|(at, _)| {
+                let name = &block[at + marker.len()..];
+                &name[..name.find('(').expect("a system constructor call")]
+            })
+            .collect();
+        gated.sort_unstable();
+        assert_eq!(
+            gated,
+            [
+                "escort_system",
+                "follow_system",
+                "guard_system",
+                "npc_walk_animation_system",
+                "patrol_system",
+                "sandbox_seat_system",
+                "travel_system",
+                "wander_system",
+            ],
+            "BYRO_NO_AI_LOCOMOTION must gate exactly the AI-motion systems"
+        );
+        assert!(
+            after.contains(&format!("crate::systems::{}()", "make_combat_feedback_system")),
+            "combat feedback must register after (outside) the locomotion \
+             block — still after walk_anim, but not behind the motion kill switch"
+        );
+    }
+
     #[test]
     fn walk_animation_registers_after_all_six_movers() {
         let setup = BOOT_SRC
