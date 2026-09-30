@@ -134,6 +134,29 @@ mod tests {
         }
     }
 
+    /// #4908 — stars, moon and aurora follow "an outdoor palette is drawn",
+    /// not the room's weather flag. An interior composite packs
+    /// `depth_params.x = 0` (no rain, no height fog) and `sky_lower.w` = 1
+    /// (Show Sky) or 2 (bounded aperture) — pinned by `build_composite_params`'
+    /// `interior_portal_sky_preserves_room_weather_gate` — so a gate on
+    /// `depth_params.x` alone painted those skies without any night detail.
+    #[test]
+    fn night_sky_details_follow_the_outdoor_palette_not_the_weather_flag() {
+        let body = SKY_GLSL
+            .split_once("vec3 weather_sky_details(")
+            .expect("sky.glsl still defines weather_sky_details")
+            .1;
+        let gate = body
+            .split_once("float night")
+            .expect("weather_sky_details still computes its night factor")
+            .0;
+        assert!(
+            gate.contains("if (dome.depth_params.x <= 0.5 && dome.sky_lower.w <= 0.5) {"),
+            "weather_sky_details must return early only when neither the exterior \
+             flag nor an interior outdoor-sky mode is set (#4908)",
+        );
+    }
+
     /// Every shader reading `weather_wind` must match the host packing,
     /// `[dir.x, speed, dir.z, 0]`. The field's own comments once said
     /// "dir x/z, normalized speed", which reads as `.xy` / `.z`; the cloud
@@ -145,7 +168,7 @@ mod tests {
         let draw = include_str!("context/draw.rs");
         let packing = draw
             .split_once("weather_wind: [")
-            .expect("build_composite_params still packs weather_wind")
+            .expect("pack_sky_dome still packs weather_wind (#4925)")
             .1
             // The closing bracket on its own line — a bare `"],"` would stop
             // inside `wind_direction[0],`.
@@ -160,9 +183,9 @@ mod tests {
         assert_eq!(
             lanes,
             [
-                "sky_params.weather.wind_direction[0],",
-                "sky_params.weather.wind_speed,",
-                "sky_params.weather.wind_direction[1],",
+                "sky.weather.wind_direction[0],",
+                "sky.weather.wind_speed,",
+                "sky.weather.wind_direction[1],",
                 "0.0,",
             ],
             "the host weather_wind packing changed — every shader swizzle below is \

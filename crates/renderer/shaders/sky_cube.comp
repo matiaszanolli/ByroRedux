@@ -33,10 +33,13 @@ layout(local_size_x = WORKGROUP_X, local_size_y = WORKGROUP_Y, local_size_z = 1)
 // Destination: the six cube faces as array layers.
 layout(set = 0, binding = 0, rgba16f) uniform writeonly image2DArray skyFaces;
 
-// This pass's own copy of the sky parameters. Uploaded by the host from
-// the same source `CompositeParams`' sky fields come from, so the
-// background and the bake cannot disagree about what sky they are
-// drawing.
+// This pass's own copy of the sky parameters, packed on the host by the
+// same `pack_sky_dome` that fills `CompositeParams`' sky fields (#4925).
+// On an exterior the bake copies the composite's dome verbatim, so the
+// background and the bake cannot disagree. In an interior the composite
+// keeps the room's weather gate off while the bake packs the outdoor
+// portal palette with it on, so window reflections see the real outdoor
+// sky; the two differ only in `sky_lower.w` and `depth_params.x`.
 layout(set = 0, binding = 1) uniform SkyCubeParams {
     SkyDome dome;
 } params;

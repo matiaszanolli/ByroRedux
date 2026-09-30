@@ -82,7 +82,13 @@ float weather_star_field(vec3 dir) {
 }
 
 vec3 weather_sky_details(SkyDome dome, vec3 sky, vec3 dir, float elevation, float cloud_occlusion) {
-    if (dome.depth_params.x <= 0.5) {
+    // #4908 — gate on "an outdoor palette is drawn", not on the room's
+    // weather flag: an interior composite keeps `depth_params.x = 0` so rain
+    // and height fog stay off, but paints the outdoor sky through Show Sky
+    // (`sky_lower.w == 1`) and bounded apertures (`== 2`). Gating on
+    // `depth_params.x` alone left those skies starless and moonless while the
+    // same room's window-portal cube (packed `depth_params.x = 1`) had both.
+    if (dome.depth_params.x <= 0.5 && dome.sky_lower.w <= 0.5) {
         return sky;
     }
     // sun_dir.y is positive while the sun is above the horizon and is the

@@ -878,6 +878,21 @@ pub(super) fn build_composite_params(
             aperture_count += 1;
         }
     }
+    let dome = pack_sky_dome(
+        sky_params,
+        if interior_show_sky {
+            1.0
+        } else if interior_portal_sky {
+            2.0
+        } else {
+            0.0
+        },
+        is_exterior,
+        froxel_slice_count,
+        render_debug_flags,
+        render_debug_mode,
+        frame_counter,
+    );
     super::super::composite::CompositeParams {
         fog_color: [
             fog_color[0],
@@ -893,17 +908,7 @@ pub(super) fn build_composite_params(
         // explicit compatibility path. Runtime composition evaluates
         // only the engine-native physical medium.
         fog_params: [fog_near, fog_far, fog_clip, fog_power],
-        depth_params: [
-            if is_exterior { 1.0 } else { 0.0 },
-            // Categorical debug views must bypass fog, caustics, bloom and
-            // dither in the composite pass. Bitcast the same flag word the
-            // camera UBO supplies to triangle.frag; no numeric conversion.
-            f32::from_bits(render_debug_flags),
-            // Structured mode duplicated from `GpuCamera.render_debug.x`;
-            // composite has its own UBO and does not declare CameraUBO.
-            f32::from_bits(render_debug_mode),
-            (frame_counter & 0x00ff_ffff) as f32,
-        ],
+        depth_params: dome.depth_params,
         volume_params: [
             volume_far_distance,
             super::super::volumetrics::LINEAR_DEPTH,
@@ -922,114 +927,24 @@ pub(super) fn build_composite_params(
                 0.0
             },
         ],
-        sky_zenith: [
-            sky_params.zenith_color[0],
-            sky_params.zenith_color[1],
-            sky_params.zenith_color[2],
-            sky_params.sun_size,
-        ],
-        sky_horizon: [
-            sky_params.horizon_color[0],
-            sky_params.horizon_color[1],
-            sky_params.horizon_color[2],
-            froxel_slice_count,
-        ],
-        // #541 — WTHR `SKY_LOWER` group. Pre-fix the
-        // shader faked this as `sky_horizon * 0.3`,
-        // dropping the authored colour entirely.
-        sky_lower: [
-            sky_params.lower_color[0],
-            sky_params.lower_color[1],
-            sky_params.lower_color[2],
-            if interior_show_sky {
-                1.0
-            } else if interior_portal_sky {
-                2.0
-            } else {
-                0.0
-            },
-        ],
-        sun_dir: [
-            sky_params.sun_direction[0],
-            sky_params.sun_direction[1],
-            sky_params.sun_direction[2],
-            sky_params.sun_intensity,
-        ],
-        sun_color: [
-            sky_params.sun_color[0],
-            sky_params.sun_color[1],
-            sky_params.sun_color[2],
-            // #478 — pack the CLMT FNAM sun sprite handle
-            // into the previously-unused w slot via
-            // `from_bits`. The shader reinterprets with
-            // `floatBitsToUint`; `0` keeps the procedural
-            // disc (pre-fix behaviour).
-            f32::from_bits(sky_params.sun_texture_index),
-        ],
-        cloud_params: [
-            sky_params.cloud_scroll[0],
-            sky_params.cloud_scroll[1],
-            sky_params.cloud_tile_scale,
-            f32::from_bits(sky_params.cloud_texture_index),
-        ],
-        cloud_params_1: [
-            sky_params.cloud_scroll_1[0],
-            sky_params.cloud_scroll_1[1],
-            sky_params.cloud_tile_scale_1,
-            f32::from_bits(sky_params.cloud_texture_index_1),
-        ],
-        cloud_params_2: [
-            sky_params.cloud_scroll_2[0],
-            sky_params.cloud_scroll_2[1],
-            sky_params.cloud_tile_scale_2,
-            f32::from_bits(sky_params.cloud_texture_index_2),
-        ],
-        cloud_params_3: [
-            sky_params.cloud_scroll_3[0],
-            sky_params.cloud_scroll_3[1],
-            sky_params.cloud_tile_scale_3,
-            f32::from_bits(sky_params.cloud_texture_index_3),
-        ],
-        weather_params: [
-            sky_params.weather.precipitation[0],
-            sky_params.weather.precipitation[1],
-            sky_params.weather.thunder_frequency,
-            sky_params.weather_time_seconds,
-        ],
-        weather_wind: [
-            sky_params.weather.wind_direction[0],
-            sky_params.weather.wind_speed,
-            sky_params.weather.wind_direction[1],
-            0.0,
-        ],
-        weather_lightning: [
-            sky_params.weather.lightning_color[0],
-            sky_params.weather.lightning_color[1],
-            sky_params.weather.lightning_color[2],
-            sky_params.weather.moon_glare,
-        ],
-        weather_sky: [
-            sky_params.weather.stars_color[0],
-            sky_params.weather.stars_color[1],
-            sky_params.weather.stars_color[2],
-            sky_params.weather.sun_glare,
-        ],
-        weather_aurora: [
-            sky_params.weather.aurora_intensity,
-            if sky_params.weather.aurora_follows_sun {
-                1.0
-            } else {
-                0.0
-            },
-            // Broad procedural-cloud occupancy. Reuses the first reserved
-            // lane rather than growing CompositeParams for a scalar.
-            sky_params.weather.cloud_coverage,
-            0.0,
-        ],
-        cloud_tint_0: sky_params.weather.cloud_tints[0],
-        cloud_tint_1: sky_params.weather.cloud_tints[1],
-        cloud_tint_2: sky_params.weather.cloud_tints[2],
-        cloud_tint_3: sky_params.weather.cloud_tints[3],
+        sky_zenith: dome.sky_zenith,
+        sky_horizon: dome.sky_horizon,
+        sky_lower: dome.sky_lower,
+        sun_dir: dome.sun_dir,
+        sun_color: dome.sun_color,
+        cloud_params: dome.cloud_params,
+        cloud_params_1: dome.cloud_params_1,
+        cloud_params_2: dome.cloud_params_2,
+        cloud_params_3: dome.cloud_params_3,
+        weather_params: dome.weather_params,
+        weather_wind: dome.weather_wind,
+        weather_lightning: dome.weather_lightning,
+        weather_sky: dome.weather_sky,
+        weather_aurora: dome.weather_aurora,
+        cloud_tint_0: dome.cloud_tint_0,
+        cloud_tint_1: dome.cloud_tint_1,
+        cloud_tint_2: dome.cloud_tint_2,
+        cloud_tint_3: dome.cloud_tint_3,
         // #428 — composite-pass fog needs the camera origin to
         // compute per-pixel world-space distance from a depth
         // sample.
@@ -1057,14 +972,149 @@ pub(super) fn build_composite_params(
         underwater,
         caustic_flags: [if water_caustic_active { 1.0 } else { 0.0 }, 0.0, 0.0, 0.0],
         // SKYAL — the directional light surfaces receive; lights the clouds.
-        sun_illuminance: [
-            sky_params.sun_illuminance[0],
-            sky_params.sun_illuminance[1],
-            sky_params.sun_illuminance[2],
-            0.0,
-        ],
+        sun_illuminance: dome.sun_illuminance,
         sky_aperture_count: [aperture_count as u32, 0, 0, 0],
         sky_apertures,
+    }
+}
+
+/// #4925 — the one packer for the `SkyDome` field set (`sky.glsl`), shared by
+/// the composite UBO and the sky-cube bake's interior arm. `88c23887b`
+/// hand-copied these ~20 lanes into `build_sky_cube_params`, matched field for
+/// field only by care. The two callers differ in exactly two lanes, passed in:
+/// `sky_mode` (`sky_lower.w`: 0 off, 1 Show Sky, 2 bounded aperture) and
+/// `weather_gate` (`depth_params.x`: rain / height fog / weather enabled).
+#[allow(clippy::too_many_arguments)]
+fn pack_sky_dome(
+    sky: &SkyParams,
+    sky_mode: f32,
+    weather_gate: bool,
+    froxel_slice_count: f32,
+    render_debug_flags: u32,
+    render_debug_mode: u32,
+    frame_counter: u32,
+) -> super::super::sky_cube::SkyCubeParams {
+    super::super::sky_cube::SkyCubeParams {
+        sky_zenith: [
+            sky.zenith_color[0],
+            sky.zenith_color[1],
+            sky.zenith_color[2],
+            sky.sun_size,
+        ],
+        sky_horizon: [
+            sky.horizon_color[0],
+            sky.horizon_color[1],
+            sky.horizon_color[2],
+            froxel_slice_count,
+        ],
+        // #541 — WTHR `SKY_LOWER` group. Pre-fix the
+        // shader faked this as `sky_horizon * 0.3`,
+        // dropping the authored colour entirely.
+        sky_lower: [
+            sky.lower_color[0],
+            sky.lower_color[1],
+            sky.lower_color[2],
+            sky_mode,
+        ],
+        sun_dir: [
+            sky.sun_direction[0],
+            sky.sun_direction[1],
+            sky.sun_direction[2],
+            sky.sun_intensity,
+        ],
+        sun_color: [
+            sky.sun_color[0],
+            sky.sun_color[1],
+            sky.sun_color[2],
+            // #478 — pack the CLMT FNAM sun sprite handle
+            // into the previously-unused w slot via
+            // `from_bits`. The shader reinterprets with
+            // `floatBitsToUint`; `0` keeps the procedural
+            // disc (pre-fix behaviour).
+            f32::from_bits(sky.sun_texture_index),
+        ],
+        cloud_params: [
+            sky.cloud_scroll[0],
+            sky.cloud_scroll[1],
+            sky.cloud_tile_scale,
+            f32::from_bits(sky.cloud_texture_index),
+        ],
+        cloud_params_1: [
+            sky.cloud_scroll_1[0],
+            sky.cloud_scroll_1[1],
+            sky.cloud_tile_scale_1,
+            f32::from_bits(sky.cloud_texture_index_1),
+        ],
+        cloud_params_2: [
+            sky.cloud_scroll_2[0],
+            sky.cloud_scroll_2[1],
+            sky.cloud_tile_scale_2,
+            f32::from_bits(sky.cloud_texture_index_2),
+        ],
+        cloud_params_3: [
+            sky.cloud_scroll_3[0],
+            sky.cloud_scroll_3[1],
+            sky.cloud_tile_scale_3,
+            f32::from_bits(sky.cloud_texture_index_3),
+        ],
+        weather_params: [
+            sky.weather.precipitation[0],
+            sky.weather.precipitation[1],
+            sky.weather.thunder_frequency,
+            sky.weather_time_seconds,
+        ],
+        weather_wind: [
+            sky.weather.wind_direction[0],
+            sky.weather.wind_speed,
+            sky.weather.wind_direction[1],
+            0.0,
+        ],
+        weather_lightning: [
+            sky.weather.lightning_color[0],
+            sky.weather.lightning_color[1],
+            sky.weather.lightning_color[2],
+            sky.weather.moon_glare,
+        ],
+        weather_sky: [
+            sky.weather.stars_color[0],
+            sky.weather.stars_color[1],
+            sky.weather.stars_color[2],
+            sky.weather.sun_glare,
+        ],
+        weather_aurora: [
+            sky.weather.aurora_intensity,
+            if sky.weather.aurora_follows_sun {
+                1.0
+            } else {
+                0.0
+            },
+            // Broad procedural-cloud occupancy. Reuses the first reserved
+            // lane rather than growing CompositeParams for a scalar.
+            sky.weather.cloud_coverage,
+            0.0,
+        ],
+        cloud_tint_0: sky.weather.cloud_tints[0],
+        cloud_tint_1: sky.weather.cloud_tints[1],
+        cloud_tint_2: sky.weather.cloud_tints[2],
+        cloud_tint_3: sky.weather.cloud_tints[3],
+        depth_params: [
+            if weather_gate { 1.0 } else { 0.0 },
+            // Categorical debug views must bypass fog, caustics, bloom and
+            // dither in the composite pass. Bitcast the same flag word the
+            // camera UBO supplies to triangle.frag; no numeric conversion.
+            f32::from_bits(render_debug_flags),
+            // Structured mode duplicated from `GpuCamera.render_debug.x`;
+            // composite has its own UBO and does not declare CameraUBO.
+            f32::from_bits(render_debug_mode),
+            (frame_counter & 0x00ff_ffff) as f32,
+        ],
+        // SKYAL — the directional light surfaces receive; lights the clouds.
+        sun_illuminance: [
+            sky.sun_illuminance[0],
+            sky.sun_illuminance[1],
+            sky.sun_illuminance[2],
+            0.0,
+        ],
     }
 }
 
@@ -1079,113 +1129,22 @@ pub(super) fn build_sky_cube_params(
         // Build only the sky-cube subset. Routing this through
         // `build_composite_params` also zeroed and filled its 256-entry
         // aperture array, even though the cube bake consumes only sky data.
-        let weather = &outdoor.weather;
-        super::super::sky_cube::SkyCubeParams {
-            sky_zenith: [
-                outdoor.zenith_color[0],
-                outdoor.zenith_color[1],
-                outdoor.zenith_color[2],
-                outdoor.sun_size,
-            ],
-            sky_horizon: [
-                outdoor.horizon_color[0],
-                outdoor.horizon_color[1],
-                outdoor.horizon_color[2],
-                inputs.froxel_slice_count,
-            ],
-            sky_lower: [
-                outdoor.lower_color[0],
-                outdoor.lower_color[1],
-                outdoor.lower_color[2],
-                if !outdoor.is_exterior && outdoor.interior_show_sky {
-                    1.0
-                } else {
-                    0.0
-                },
-            ],
-            sun_dir: [
-                outdoor.sun_direction[0],
-                outdoor.sun_direction[1],
-                outdoor.sun_direction[2],
-                outdoor.sun_intensity,
-            ],
-            sun_color: [
-                outdoor.sun_color[0],
-                outdoor.sun_color[1],
-                outdoor.sun_color[2],
-                f32::from_bits(outdoor.sun_texture_index),
-            ],
-            cloud_params: [
-                outdoor.cloud_scroll[0],
-                outdoor.cloud_scroll[1],
-                outdoor.cloud_tile_scale,
-                f32::from_bits(outdoor.cloud_texture_index),
-            ],
-            cloud_params_1: [
-                outdoor.cloud_scroll_1[0],
-                outdoor.cloud_scroll_1[1],
-                outdoor.cloud_tile_scale_1,
-                f32::from_bits(outdoor.cloud_texture_index_1),
-            ],
-            cloud_params_2: [
-                outdoor.cloud_scroll_2[0],
-                outdoor.cloud_scroll_2[1],
-                outdoor.cloud_tile_scale_2,
-                f32::from_bits(outdoor.cloud_texture_index_2),
-            ],
-            cloud_params_3: [
-                outdoor.cloud_scroll_3[0],
-                outdoor.cloud_scroll_3[1],
-                outdoor.cloud_tile_scale_3,
-                f32::from_bits(outdoor.cloud_texture_index_3),
-            ],
-            cloud_tint_0: weather.cloud_tints[0],
-            cloud_tint_1: weather.cloud_tints[1],
-            cloud_tint_2: weather.cloud_tints[2],
-            cloud_tint_3: weather.cloud_tints[3],
-            weather_params: [
-                weather.precipitation[0],
-                weather.precipitation[1],
-                weather.thunder_frequency,
-                outdoor.weather_time_seconds,
-            ],
-            weather_wind: [
-                weather.wind_direction[0],
-                weather.wind_speed,
-                weather.wind_direction[1],
-                0.0,
-            ],
-            weather_lightning: [
-                weather.lightning_color[0],
-                weather.lightning_color[1],
-                weather.lightning_color[2],
-                weather.moon_glare,
-            ],
-            weather_sky: [
-                weather.stars_color[0],
-                weather.stars_color[1],
-                weather.stars_color[2],
-                weather.sun_glare,
-            ],
-            weather_aurora: [
-                weather.aurora_intensity,
-                if weather.aurora_follows_sun { 1.0 } else { 0.0 },
-                weather.cloud_coverage,
-                0.0,
-            ],
-            depth_params: [
-                if outdoor.is_exterior { 1.0 } else { 0.0 },
-                f32::from_bits(inputs.render_debug_flags),
-                f32::from_bits(inputs.render_debug_mode),
-                (inputs.frame_counter & 0x00ff_ffff) as f32,
-            ],
-            sun_illuminance: [
-                outdoor.sun_illuminance[0],
-                outdoor.sun_illuminance[1],
-                outdoor.sun_illuminance[2],
-                0.0,
-            ],
-        }
+        // #4925 — through the same `pack_sky_dome` the composite uses, so the
+        // two can differ only in the two arguments that are meant to differ.
+        let outdoor = outdoor.as_sky_params();
+        pack_sky_dome(
+            &outdoor,
+            if !outdoor.is_exterior && outdoor.interior_show_sky {
+                1.0
+            } else {
+                0.0
+            },
+            outdoor.is_exterior,
+            inputs.froxel_slice_count,
+            inputs.render_debug_flags,
+            inputs.render_debug_mode,
+            inputs.frame_counter,
+        )
     } else {
         super::super::sky_cube::SkyCubeParams::from_composite(composite)
     }
@@ -1326,6 +1285,140 @@ mod composite_params_tests {
         assert_eq!(show_sky.sky_lower[3], 1.0);
         assert_eq!(show_sky.sky_zenith[..3], [0.7, 0.2, 0.1]);
         assert_eq!(show_sky.height_fog_params[3], 0.0);
+    }
+
+    /// #4925 — the interior sky-cube bake packs the outdoor palette through
+    /// the same `pack_sky_dome` the composite uses: for a room whose portal
+    /// sky is `outdoor`, the bake's UBO equals what an exterior composite
+    /// packs for `outdoor` itself, lane for lane (`sky_lower.w` masked — the
+    /// one lane allowed to differ). Distinct values in every lane, so a
+    /// transposition in either path fails at a named lane.
+    #[test]
+    fn interior_sky_cube_packs_the_outdoor_palette_like_an_exterior_composite() {
+        use crate::vulkan::context::types::SkyWeatherParams;
+        use crate::vulkan::sky_cube::SkyCubeParams;
+
+        fn lanes(p: &SkyCubeParams) -> [(&'static str, [f32; 4]); 20] {
+            [
+                ("sky_zenith", p.sky_zenith),
+                ("sky_horizon", p.sky_horizon),
+                ("sky_lower", p.sky_lower),
+                ("sun_dir", p.sun_dir),
+                ("sun_color", p.sun_color),
+                ("cloud_params", p.cloud_params),
+                ("cloud_params_1", p.cloud_params_1),
+                ("cloud_params_2", p.cloud_params_2),
+                ("cloud_params_3", p.cloud_params_3),
+                ("cloud_tint_0", p.cloud_tint_0),
+                ("cloud_tint_1", p.cloud_tint_1),
+                ("cloud_tint_2", p.cloud_tint_2),
+                ("cloud_tint_3", p.cloud_tint_3),
+                ("weather_params", p.weather_params),
+                ("weather_wind", p.weather_wind),
+                ("weather_lightning", p.weather_lightning),
+                ("weather_sky", p.weather_sky),
+                ("weather_aurora", p.weather_aurora),
+                ("depth_params", p.depth_params),
+                ("sun_illuminance", p.sun_illuminance),
+            ]
+        }
+
+        let make_outdoor = || SkyParams {
+            zenith_color: [0.11, 0.12, 0.13],
+            horizon_color: [0.21, 0.22, 0.23],
+            lower_color: [0.31, 0.32, 0.33],
+            sun_direction: [0.41, 0.42, 0.43],
+            sun_color: [0.51, 0.52, 0.53],
+            sun_size: 0.61,
+            sun_intensity: 0.62,
+            sun_illuminance: [0.71, 0.72, 0.73],
+            is_exterior: true,
+            cloud_scroll: [1.1, 1.2],
+            cloud_tile_scale: 1.3,
+            cloud_texture_index: 14,
+            sun_texture_index: 15,
+            cloud_scroll_1: [2.1, 2.2],
+            cloud_tile_scale_1: 2.3,
+            cloud_texture_index_1: 24,
+            cloud_scroll_2: [3.1, 3.2],
+            cloud_tile_scale_2: 3.3,
+            cloud_texture_index_2: 34,
+            cloud_scroll_3: [4.1, 4.2],
+            cloud_tile_scale_3: 4.3,
+            cloud_texture_index_3: 44,
+            weather_time_seconds: 5.5,
+            weather: SkyWeatherParams {
+                cloud_coverage: 0.66,
+                cloud_tints: [
+                    [6.1, 6.2, 6.3, 6.4],
+                    [7.1, 7.2, 7.3, 7.4],
+                    [8.1, 8.2, 8.3, 8.4],
+                    [9.1, 9.2, 9.3, 9.4],
+                ],
+                precipitation: [0.81, 0.82],
+                thunder_frequency: 0.83,
+                lightning_color: [0.84, 0.85, 0.86],
+                stars_color: [0.87, 0.88, 0.89],
+                sun_glare: 0.91,
+                moon_glare: 0.92,
+                aurora_intensity: 0.93,
+                aurora_follows_sun: true,
+                wind_direction: [0.94, 0.95],
+                wind_speed: 0.96,
+                ..SkyParams::default().weather
+            },
+            ..SkyParams::default()
+        };
+        let outdoor = make_outdoor();
+        let room = SkyParams {
+            is_exterior: false,
+            portal_outdoor_sky: Some(make_outdoor().into()),
+            ..SkyParams::default()
+        };
+        let base = CompositeParamsInputs {
+            fog_color: [0.0; 3],
+            fog_near: 0.0,
+            fog_far: 100.0,
+            fog_extinction_per_meter: 0.0,
+            fog_single_scatter_albedo: 0.0,
+            fog_scale_height_meters: 30.0,
+            fog_clip: 0.0,
+            fog_power: 0.0,
+            fog_height_reference: 0.0,
+            sky_params: &room,
+            render_debug_flags: 0x1234,
+            render_debug_mode: 0x56,
+            frame_counter: 789,
+            volume_far_distance: 100.0,
+            froxel_slice_count: 64.0,
+            camera_pos: [0.0; 3],
+            render_origin: byroredux_core::math::Vec3::ZERO,
+            inv_vp_arr: [[0.0; 4]; 4],
+            sky_aperture_volumes: &[],
+            underwater: [0.0; 4],
+            water_caustic_active: false,
+        };
+        let room_composite = build_composite_params(base);
+        let cube = build_sky_cube_params(base, &room_composite);
+        let reference = SkyCubeParams::from_composite(&build_composite_params(
+            CompositeParamsInputs {
+                sky_params: &outdoor,
+                ..base
+            },
+        ));
+        for ((name, got), (_, want)) in lanes(&cube).into_iter().zip(lanes(&reference)) {
+            let (got, want) = if name == "sky_lower" {
+                (&got[..3], &want[..3])
+            } else {
+                (&got[..], &want[..])
+            };
+            assert_eq!(
+                got.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+                want.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+                "interior sky-cube lane `{name}` diverged from the exterior composite's \
+                 packing of the same palette (#4925)"
+            );
+        }
     }
 
     /// Regression for #2255 (TD1-NEW-02): pin `build_composite_params`'
