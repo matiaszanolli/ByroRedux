@@ -569,6 +569,9 @@ pub(crate) fn load_nif_bytes_with_skeleton(
         Quat::IDENTITY,
         1.0,
         None,
+        // No LIGH record → no falloff sentinel to resolve; `Emitter`'s own
+        // default (#4938).
+        1.0,
     );
 
     // #261 — mesh-embedded controller chains (water UV scroll, torch

@@ -1769,11 +1769,14 @@ mod tests {
     /// path), which resolved k=1.0 where pre-Skyrim layouts mean k=2.0.
     /// Driving any site live needs a `VulkanContext`, so the wiring is
     /// pinned at source level — the same shape as
-    /// `morph_spawn_uses_mesh_handle_shared_delta_cache` above. The fourth
-    /// `from_legacy_world_units` site (NIF-authored lights in
-    /// `spawn_nif_lights`) is a non-ESM producer with no sentinel to
-    /// resolve; `Emitter`'s own `1.0` net is its documented contract, so it
-    /// is deliberately out of scope here.
+    /// `morph_spawn_uses_mesh_handle_shared_delta_cache` above.
+    ///
+    /// LC-D2-01 (#4938) — the fourth site (NIF-authored lights in
+    /// `spawn_nif_lights`) is ESM-backed on the cell path too: it already
+    /// takes its radius from the same REFR's `LightData`, so it consumes the
+    /// same lane. Only the loose-NIF caller (`scene/nif_loader.rs`,
+    /// `light_data = None`) is genuinely non-ESM, and passes `Emitter`'s
+    /// `1.0` default explicitly.
     #[test]
     fn every_ligh_spawn_site_consumes_the_canonical_falloff_lane() {
         let here = include_str!("mesh_instance.rs");
@@ -1802,12 +1805,26 @@ mod tests {
         );
 
         // The lane is threaded through `spawn_placed_instances` — one
-        // parameter in the signature, one forward into `PlacementCtx`.
+        // parameter in the signature, one forward into `PlacementCtx`, and
+        // one into `spawn_nif_lights` (#4938).
         assert!(
             spawn.contains("light_falloff_exponent: f32,")
-                && spawn.matches("light_falloff_exponent,").count() == 1,
+                && spawn.matches("light_falloff_exponent,").count() == 2,
             "spawn_placed_instances must thread the falloff lane from its \
-             caller into PlacementCtx (#4514)"
+             caller into PlacementCtx and spawn_nif_lights (#4514, #4938)"
+        );
+        // Site 4 — `spawn_nif_lights` consumes its `falloff_exponent`
+        // parameter, never a literal: pre-#4938 it passed `0.0`, which
+        // `Emitter` netted to 1.0 while the ESM fallback got 2.0 for the
+        // same pre-Skyrim LIGH record.
+        let nif_lights_fn = &spawn[spawn
+            .find("pub(crate) fn spawn_nif_lights(")
+            .expect("spawn.rs must define spawn_nif_lights")..];
+        assert!(
+            nif_lights_fn.contains("    falloff_exponent: f32,\n")
+                && nif_lights_fn.contains("                falloff_exponent,\n"),
+            "spawn_nif_lights must take and consume the canonicalized \
+             falloff lane (#4938)"
         );
         assert!(
             !spawn.contains("ld.falloff_exponent"),
@@ -1839,7 +1856,7 @@ mod tests {
                 .matches("LightSource::from_legacy_world_units(")
                 .count(),
             1,
-            "spawn.rs must keep exactly the non-ESM NIF-light site (#4514)"
+            "spawn.rs must keep exactly the NIF-light site (#4514, #4938)"
         );
         assert_eq!(
             production

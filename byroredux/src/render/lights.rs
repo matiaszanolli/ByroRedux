@@ -54,12 +54,14 @@ use super::{SUN_INTENSITY_PEAK, compute_directional_upload};
 /// cull window now provides smoothly instead of a hard cutoff.
 pub const LIGHT_RANGE_EXTENSION: f32 = byroredux_core::lighting::LEGACY_LIGHT_CULL_RANGE_MULTIPLIER;
 
-/// LIGH `falloff_exponent` default applied when the source field is
-/// `0.0` (the engine sentinel for "unset" — pre-Skyrim LIGH records
-/// without the field, or NIF-direct lights). `1.0` reproduces the
-/// near-linear shape Skyrim authors as default. Same translator
-/// principle: defaults applied CPU-side so the shader never sees a
-/// sentinel value.
+/// LIGH `falloff_exponent` default for a light with no LIGH record behind
+/// it (loose-NIF lights, console-spawned lights) and Skyrim+'s resolution
+/// of the `0.0` "unset" sentinel. `1.0` reproduces the near-linear shape
+/// Skyrim authors as default. Pre-Skyrim LIGH records resolve the sentinel
+/// to `2.0` instead, at every ESM-backed spawn site — including a cell
+/// lamp NIF's own `NiLight`s (#4938) — through
+/// `systems::canonical_light_falloff_exponent`. Same translator principle:
+/// defaults applied CPU-side so the shader never sees a sentinel value.
 pub const FALLOFF_EXPONENT_DEFAULT: f32 = 1.0;
 
 /// Encode one canonical emitter for the renderer light buffer.

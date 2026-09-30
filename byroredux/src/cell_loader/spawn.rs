@@ -599,6 +599,7 @@ pub(super) fn spawn_placed_instances(
     // caller through `canonical_light_falloff_exponent` (which needs `game`)
     // the same way the flags lanes above are. Inert `1.0` when `light_data`
     // is `None` — the `Emitter` default this lane replaces at the spawn site.
+    // Consumed by both the ESM-light fallback and `spawn_nif_lights` (#4938).
     light_falloff_exponent: f32,
     refr_overlay: Option<&RefrTextureOverlay>,
     clip_handle: Option<u32>,
@@ -724,7 +725,15 @@ pub(super) fn spawn_placed_instances(
     // ESM authority agreed it should be lit.
     let spawned_nif_lights = count_spawnable_nif_lights(nif_lights);
 
-    spawn_nif_lights(world, nif_lights, ref_pos, ref_rot, ref_scale, light_data);
+    spawn_nif_lights(
+        world,
+        nif_lights,
+        ref_pos,
+        ref_rot,
+        ref_scale,
+        light_data,
+        light_falloff_exponent,
+    );
 
     spawn_particle_emitters(
         world,
@@ -1099,6 +1108,14 @@ pub(crate) fn is_known_exporter_artifact_light_name(name: &str) -> bool {
 /// no `esm::cell::LightData` — pass `None`) can spawn lights through the
 /// exact same construction + sanitization the cell loader uses, instead
 /// of re-deriving it a third time.
+///
+/// `falloff_exponent` is the same canonicalized LIGH lane
+/// `spawn_placed_instances` receives (#4938): on the cell path the lamp
+/// NIF's lights take their radius from the REFR's `LightData`, so they must
+/// take its falloff too — otherwise one LIGH base renders k=2.0 through the
+/// ESM fallback and k=1.0 here, depending only on whether its NIF carries a
+/// spawnable `NiLight`. Pass `1.0` (the `Emitter` default) when
+/// `light_data` is `None` — the loose-NIF path is genuinely non-ESM.
 pub(crate) fn spawn_nif_lights(
     world: &mut World,
     nif_lights: &[byroredux_nif::import::ImportedLight],
@@ -1106,6 +1123,7 @@ pub(crate) fn spawn_nif_lights(
     ref_rot: Quat,
     ref_scale: f32,
     light_data: Option<&esm::cell::LightData>,
+    falloff_exponent: f32,
 ) {
     use byroredux_core::ecs::Name;
     // Spawn per-mesh NiLight blocks as LightSource entities. Parented
@@ -1174,7 +1192,7 @@ pub(crate) fn spawn_nif_lights(
                 // `light` console command prints them); visibility comes from
                 // `VisibilityMask::for_legacy_local_light()` regardless.
                 0,
-                0.0,
+                falloff_exponent,
                 light.kind,
                 world_direction,
                 light.outer_angle,

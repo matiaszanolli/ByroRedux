@@ -53,7 +53,7 @@ fn spawn_nif_lights_attaches_light_source_for_spawnable_light() {
 
     // No REFR / ESM context (the loose-loader case): identity ref
     // transform, no LightData to prefer a radius from.
-    spawn_nif_lights(&mut world, &lights, Vec3::ZERO, Quat::IDENTITY, 1.0, None);
+    spawn_nif_lights(&mut world, &lights, Vec3::ZERO, Quat::IDENTITY, 1.0, None, 1.0);
 
     let q = world.query::<LightSource>().expect("LightSource query");
     let spawned: Vec<_> = q.iter().collect();
@@ -100,7 +100,7 @@ fn spawn_nif_lights_rotates_direction_by_reference_rotation() {
     }];
     let quarter_turn = Quat::from_rotation_y(std::f32::consts::FRAC_PI_2);
 
-    spawn_nif_lights(&mut world, &lights, Vec3::ZERO, quarter_turn, 1.0, None);
+    spawn_nif_lights(&mut world, &lights, Vec3::ZERO, quarter_turn, 1.0, None, 1.0);
 
     let q = world.query::<LightSource>().expect("LightSource query");
     let (_, spawned) = q.iter().next().expect("spawned directional light");
@@ -121,7 +121,7 @@ fn spawn_nif_lights_skips_zero_color_placeholder() {
     let mut world = World::new();
     let lights = vec![light_with_color([0.0, 0.0, 0.0])];
 
-    spawn_nif_lights(&mut world, &lights, Vec3::ZERO, Quat::IDENTITY, 1.0, None);
+    spawn_nif_lights(&mut world, &lights, Vec3::ZERO, Quat::IDENTITY, 1.0, None, 1.0);
 
     // `query::<T>()` returns `None` when no entity has EVER had `T` — the
     // expected outcome here, since nothing should spawn at all.
@@ -319,6 +319,7 @@ fn spawn_nif_lights_deduplicates_known_exporter_artifact_by_name() {
         Quat::IDENTITY,
         1.0,
         None,
+        1.0,
     );
     // Second contributing NIF/REFR — identical artifact light.
     spawn_nif_lights(
@@ -328,6 +329,7 @@ fn spawn_nif_lights_deduplicates_known_exporter_artifact_by_name() {
         Quat::IDENTITY,
         1.0,
         None,
+        1.0,
     );
 
     let count = world
@@ -366,6 +368,7 @@ fn spawn_nif_lights_does_not_deduplicate_ordinary_named_lights() {
         Quat::IDENTITY,
         1.0,
         None,
+        1.0,
     );
     spawn_nif_lights(
         &mut world,
@@ -374,6 +377,7 @@ fn spawn_nif_lights_does_not_deduplicate_ordinary_named_lights() {
         Quat::IDENTITY,
         1.0,
         None,
+        1.0,
     );
 
     let count = world
@@ -451,6 +455,7 @@ fn spawn_nif_lights_deduplicates_vanilla_cased_max_artifact_across_loads() {
         Quat::IDENTITY,
         1.0,
         None,
+        1.0,
     );
     // Second load (the player body's own earshuman.nif): both nodes must
     // deduplicate against the surviving first emitter.
@@ -461,6 +466,7 @@ fn spawn_nif_lights_deduplicates_vanilla_cased_max_artifact_across_loads() {
         Quat::IDENTITY,
         1.0,
         None,
+        1.0,
     );
 
     let count = world
@@ -632,4 +638,69 @@ fn plugin_for_form_id_distinguishes_multiple_esls_by_sub_index() {
         super::load_order::plugin_for_form_id(GlobalSlot::Light(0x001).compose(0x123), &load_order),
         Some("second.esl")
     );
+}
+
+/// #4938 (LC-D2-01) — on the cell path a lamp NIF's authored lights take
+/// their radius from the REFR's LIGH record, so they must take its falloff
+/// too. An FO3/FNV `LightData` carrying the pre-Skyrim `0.0` "field absent"
+/// sentinel resolves (through the same canonicalizer the caller in
+/// `synth_child.rs` feeds `spawn_placed_instances` with) to k = 2.0 — the
+/// value the ESM-light fallback already gets for the same record. Pre-fix
+/// `spawn_nif_lights` passed a literal `0.0`, which `Emitter`'s net turned
+/// into 1.0, so one LIGH base rendered two falloff shapes depending only on
+/// whether its NIF carried a spawnable `NiLight`. The loose-NIF path
+/// (`light_data == None`) stays on the `Emitter` default 1.0.
+#[test]
+fn spawn_nif_lights_consumes_the_canonical_ligh_falloff_lane() {
+    use byroredux_plugin::esm::reader::GameKind;
+
+    let ligh = byroredux_plugin::esm::cell::LightData {
+        radius: 300.0,
+        color: [1.0, 0.9, 0.7],
+        flags: 0,
+        period_secs: 0.0,
+        intensity_amplitude: 0.0,
+        movement_amplitude: 0.0,
+        // Pre-Skyrim 32-byte DATA — no falloff field authored.
+        falloff_exponent: 0.0,
+        fov_degrees: 0.0,
+        xpwr_form_id: None,
+        starfield_light_type: 0,
+    };
+    let lamp = || vec![light_with_color([1.0, 0.9, 0.7])];
+    let spawned_falloff = |world: &World| {
+        let q = world.query::<LightSource>().expect("LightSource query");
+        let falloffs: Vec<f32> = q.iter().map(|(_, l)| l.emitter.falloff_exponent).collect();
+        assert_eq!(falloffs.len(), 1, "exactly one lamp light must spawn");
+        falloffs[0]
+    };
+
+    for (game, expected) in [
+        (GameKind::Fallout3NV, 2.0),
+        (GameKind::Oblivion, 2.0),
+        (GameKind::Skyrim, 1.0),
+    ] {
+        let mut world = World::new();
+        let falloff = crate::systems::canonical_light_falloff_exponent(game, ligh.falloff_exponent);
+        spawn_nif_lights(
+            &mut world,
+            &lamp(),
+            Vec3::ZERO,
+            Quat::IDENTITY,
+            1.0,
+            Some(&ligh),
+            falloff,
+        );
+        assert_eq!(
+            spawned_falloff(&world),
+            expected,
+            "{game:?}: a NIF-authored lamp light must take the REFR's \
+             canonicalized LIGH falloff, not Emitter's 1.0 net (#4938)"
+        );
+    }
+
+    // Loose-NIF path: no LIGH record, genuinely non-ESM → Emitter default.
+    let mut world = World::new();
+    spawn_nif_lights(&mut world, &lamp(), Vec3::ZERO, Quat::IDENTITY, 1.0, None, 1.0);
+    assert_eq!(spawned_falloff(&world), 1.0);
 }
