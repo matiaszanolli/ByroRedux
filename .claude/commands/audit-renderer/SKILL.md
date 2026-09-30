@@ -20,7 +20,7 @@ Audit the Vulkan renderer's GPU *shading and sync correctness*: ray tracing, SSB
 - Anchor findings on symbols (`fn`/`struct`/`const`/test names), never `file:NN`; confirm by `grep`; drop unconfirmable claims. Backticked `.ext` paths must resolve now (`_audit-validate.sh`).
 - Recast resolved issues as regression guards ("verify X still holds").
 - **No speculative Vulkan changes**: never propose render-pass/pipeline/barrier edits whose failure is invisible to `cargo test`; frame as **needs RenderDoc** (or a `BYRO_VALIDATION=1` sync-validation run) and stop at the observation.
-- Never hard-code FPS/ms; cite ROADMAP.md's live Bench-of-record and the open regressions it names (R6a-regress-22).
+- Never hard-code FPS/ms; cite ROADMAP.md's live Bench-of-record and the open regressions it names (R6a-regress-22, re-stated by #5128 as a camera move plus a small residual).
 - **Guard-first**: for each `Guard:` line, run the named `cargo test -p byroredux-renderer --lib <filter>` (bin-crate guards: `-p byroredux --bin byroredux`; core: `--features inspect`), confirm the tests exist, are not `#[ignore]`d and not vacuous, then spend the budget on what the guard cannot see. Source-shape tests prove a string is present, not that the GPU behaves; a scan must read `source_scan::production_text` (a whole-file `include_str!` scan is satisfied by the test's own literals).
 
 ## Parameters

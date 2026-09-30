@@ -70,6 +70,8 @@ TEXT_COLUMNS = (
     "state_hash",
     "gpu_inactive",
     "raster_cmds",
+    "camera_pos",
+    "camera_forward",
 )
 
 MISSING = "-"
@@ -345,6 +347,20 @@ def main(path):
             f"\n=== {scene} — {mode}/{camera}, {entities} entities, "
             f"{runs} runs, median (min–max)"
         )
+        # #5128 — the measured-frame camera pose. Not a fingerprint column
+        # (archived TSVs predate it), but two matrices whose poses differ
+        # measured different views: compare their frame times only after
+        # attributing the pose change.
+        poses = {
+            (row.get("camera_pos", MISSING), row.get("camera_forward", MISSING))
+            for row in all_rows
+        }
+        if len(poses) == 1:
+            pos, fwd = next(iter(poses))
+            if pos != MISSING:
+                print(f"  camera pose: pos={pos} forward={fwd}")
+        else:
+            print(f"  camera pose: {len(poses)} DIFFERENT poses across runs — {sorted(poses)}")
         print(
             f"{'config':<17}{'fps':>8}{'frame ms':>14}{'render ms':>11}"
             f"{'upscale':>9}{'present':>9}{'render rec.':>16}{'net rec.':>16}"
@@ -459,12 +475,21 @@ def self_test():
             f"none\t{quality_raster}\n"
         )
 
+    def current_27(taa_pos, quality_pos):
+        rows = current_25(threshold - 1, threshold - 1).rstrip("\n").split("\n")
+        rows[1] += "\tcamera_pos\tcamera_forward"
+        rows[2] += f"\t{taa_pos}\t0.0,0.0,-1.0"
+        rows[3] += f"\t{quality_pos}\t0.0,0.0,-1.0"
+        return "\n".join(rows) + "\n"
+
     # Sort-branch line each case must print. Every schema without a recorded
     # `raster_cmds` must SAY so — silence would read as "serial".
     sort_branch_expect = {
         "current 25-column raster_cmds above the gate": "-> parallel par_sort_unstable_by_key",
         "current 25-column raster_cmds below the gate": "-> serial sort_unstable_by_key",
         "current 25-column raster_cmds straddling the gate": "STRADDLES the gate",
+        "current 27-column camera pose": "-> serial sort_unstable_by_key",
+        "current 27-column camera pose differing": "-> serial sort_unstable_by_key",
     }
 
     cases = {
@@ -515,6 +540,11 @@ def self_test():
             threshold - 1, threshold
         ),
         "current 25-column raster_cmds unrecorded": current_25(MISSING, MISSING),
+        # #5128 — the measured-frame camera pose. One pose prints; two poses
+        # across a scene's runs are called out, since those runs measured
+        # different views.
+        "current 27-column camera pose": current_27("1.0,2.0,3.0", "1.0,2.0,3.0"),
+        "current 27-column camera pose differing": current_27("1.0,2.0,3.0", "9.0,2.0,3.0"),
     }
 
     failures = []
@@ -578,6 +608,17 @@ def self_test():
                 "which side of the parallel-sort gate a capture took must be "
                 "readable from the report (#4800)"
             )
+        pose_expect = {
+            "current 27-column camera pose": "camera pose: pos=1.0,2.0,3.0 forward=0.0,0.0,-1.0",
+            "current 27-column camera pose differing": "2 DIFFERENT poses",
+        }.get(label)
+        if pose_expect and pose_expect not in output:
+            failures.append(
+                f"{label}: camera-pose line missing {pose_expect!r} — a moved "
+                "bench camera must be visible in the report (#5128)"
+            )
+        if not pose_expect and "camera pose:" in output:
+            failures.append(f"{label}: printed a camera pose it has no column for")
         if "# report=" not in output:
             failures.append(
                 f"{label}: no reporter stamp — render_sum arithmetic changed in "

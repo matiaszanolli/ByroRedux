@@ -28,7 +28,9 @@ only.
 `554ef5c44`); `--all-targets` is not gated and still fails in test and example
 targets. Hosted CI does not yet give a clean all-jobs signal (see
 [Known Issues](#known-issues)). The bench-of-record below is live at
-`a37fcba3c` and carries one open regression, **R6a-regress-22**.
+`a37fcba3c`. Its one open regression, **R6a-regress-22**, turned out to be
+the bench camera moving with `b9e961eeb`'s interior spawn ladder, not
+renderer code (#5128, 2026-09-30); a small residual stays open.
 
 **What works today.**
 - **Content loading.** Interior cells load and render from unmodified game
@@ -90,8 +92,6 @@ targets. Hosted CI does not yet give a clean all-jobs signal (see
 **Active focus.**
 - The [playable vertical slice](#playable-vertical-slice) — capability on
   that route outranks renderer polish.
-- Bisect **R6a-regress-22** (FO4 frame time doubled inside
-  `4c9a5b36..99933f87b`).
 - RT lighting and material recovery: R0–R3 are complete. The rest is tracked
   in [`rt-lighting-material-recovery.md`](docs/engine/rt-lighting-material-recovery.md).
 - WATAL: W0 and W1 are closed. The next step is choosing the first W2/W3
@@ -109,7 +109,12 @@ The bench-of-record table below deliberately keeps the bare-name + `cd` form for
 **Standing methodology.** Every refresh includes a same-machine control:
 rebuild the outgoing record's commit in a worktree and bench it in the same
 session, on the same harness. That control is what proved
-PERF-REGRESSION-6c56e311 was code, and what localised R6a-regress-22. Also
+PERF-REGRESSION-6c56e311 was code. It also produced R6a-regress-22, which a
+pinned-pose control later showed was the bench camera's origin moving, not
+code (#5128): a control compares like with like only when both builds start
+from the same pose, so pin it with `--camera-pos` / `--camera-forward` across
+any spawn-placement change. `fsr-bench-matrix.sh` now records each run's
+`camera_pos` / `camera_forward`, and the report prints them per scene. Also
 isolate `BYROREDUX_SETTINGS_PATH` so persisted menu settings cannot leak into
 runs (#4947). A genuinely idle-machine run has never been done. FSR Quality
 is the engine default; the `TAA (native)` column stays the historical
@@ -182,8 +187,11 @@ Three conclusions, all measured:
 - **Not this session's commits**: `99933f87b` and HEAD agree within run-to-run
   spread, so `efc059f3a` / `a37fcba3c` (including the #4940 ReSTIR
   normalisation and the #4942 ratio accumulator) cost nothing measurable.
-- **The regression is in the 733 commits `4c9a5b36..99933f87b`.** Tracked as
-  **R6a-regress-22** below, with a bisect on Dugout TAA as the next step.
+- ~~**The regression is in the 733 commits `4c9a5b36..99933f87b`.**~~
+  Superseded 2026-09-30 (#5128): the entity/light/TLAS match ruled out
+  content but not the camera. `b9e961eeb` (inside the range) moved the
+  stepped camera's origin, the spawn pose, into the room. With both builds
+  pinned to one pose the doubling disappears; see **R6a-regress-22** below.
 
 
 ### Compatibility matrix
@@ -337,7 +345,8 @@ engine ships something playable for the existing community to mod.
 
 Pure ceiling raisers: no new visuals or gameplay surface. They start only
 when a real-content bench names them as the bottleneck. The live
-bench-of-record shows the FO4 scenes fence-bound (see R6a-regress-22), and
+bench-of-record shows the FO4 scenes fence-bound from their post-`b9e961eeb`
+spawn views (see R6a-regress-22), and
 `build_render_data` still walks every entity per frame, scaling linearly with
 cell complexity. M52 is the lever for that regime.
 
@@ -564,20 +573,30 @@ it; the full list as it stood on 2026-09-29 (open and closed) is in
 
 ### Performance and measurement
 
-- [ ] **R6a-regress-22 — FO4 frame time doubled between `4c9a5b36` and
-  `99933f87b`** (filed 2026-09-28 with the `a37fcba3c` record). In a
-  same-session, isolated-settings control, Dugout TAA went 11.17 → 24.65 ms
-  and MedTek TAA 34.22 → 50.38 ms. Almost all of it is fence wait (Dugout
-  4.59 → 19.31 ms), so it is GPU-bound. Content is unchanged, but draw
-  batching merges far less (Dugout 326 → 659 batches). The one candidate
-  identified, unverified, is `186234944` (the early-fragment-test opaque
-  pipeline plus a 29.49 MB per-frame reservoir clear); `5eb07a4f3` and
-  `0572bfd5a` are also in range. **Next step: `git bisect` on Dugout TAA** —
-  about 10 steps over 733 commits, one 300-frame run each. Build in a
-  worktree, isolate `BYROREDUX_SETTINGS_PATH`, and compare `wall_ms` /
-  `fence_ms` only (`gpu_main` changed meaning in range). Any later
-  HEAD-vs-record comparison boots with auto-exposure on, which the record did
-  not, so pass `--no-auto-exposure` or state the difference.
+- [ ] **R6a-regress-22 — residual after the camera move** (filed 2026-09-28,
+  re-stated 2026-09-30 by #5128). The original reading ("FO4 frame time
+  doubled between `4c9a5b36` and `99933f87b`, content unchanged") was a
+  bench-camera move: `b9e961eeb` put the spawn, and with it the stepped
+  camera's origin, inside the room. Pinned-pose control on Dugout TAA
+  (orbit, 300 frames, 3 runs, isolated settings;
+  `docs/audits/BENCH_R6a-regress-22_pose_control_4c9a5b36_vs_99933f87b.tsv`):
+
+  | Camera origin | `4c9a5b36` | `99933f87b` |
+  |---|---:|---:|
+  | Each build's own spawn (the R6a comparison) | 10.20 ms (fence 2.65) | 25.56 ms (fence 19.82) |
+  | Old spawn, pinned (identical final pose on both) | 10.24 ms (fence 2.71), 330 b | 10.92 ms (fence 5.33), 168 b |
+  | New spawn, pinned | 27.14 ms (fence 18.96), 1396 b | 25.57 ms (fence 19.83), 659 b |
+
+  So the old build is as slow as the new one from the new view, and batching
+  merges MORE at `99933f87b`, not less. What survives is a small, view-
+  dependent delta: +0.7 ms / fence +2.6 ms from the old pose (the clean read,
+  same path end to end), −1.6 ms from the new origin (the orbit ends ~190 BU
+  apart there on the two builds, so that read is not strictly like for like).
+  Candidates for the old-pose fence growth: `186234944` (early-fragment-test
+  opaque pipeline + 29.49 MB per-frame reservoir clear), `5eb07a4f3`,
+  `0572bfd5a`. MedTek TAA (34.22 → 50.38 ms) was not re-measured; presumed
+  the same mechanism until pinned. Any HEAD-vs-record comparison still needs
+  `--no-auto-exposure` (the record ran without it).
 - [ ] **FO4 Dugout Inn TAA regressed ~10% inside `e6282349..4c9a5b36`**
   (filed 2026-09-09): 10.09 → 11.12 ms at identical fingerprint and entity
   count, while Cornell and Dugout FSR Quality improved in the same runs.
