@@ -3215,7 +3215,14 @@ void main() {
         // #4942 — the exact unshadowed direct radiance of every light streamed
         // into the reservoir, this frame. The accumulator below filters only
         // the shadow RATIO and rescales by this, so intensity animation
-        // (flicker, pulse, toggles) reaches the pixel undelayed.
+        // (flicker, pulse, toggles) reaches the pixel undelayed WHEN every
+        // streamed light shares one visibility. #5020 — the ratio is one
+        // Σrad·V / Σrad for the whole cluster, not Heitz's per-light ratio:
+        // where a visible light animates beside an occluded one, the true
+        // ratio moves with their relative intensity and the EMA lags it
+        // (~48 % of a 12 Hz flicker's amplitude when parked), and a light
+        // switched off beside an occluded one fades over the EMA window.
+        // Per-light history would not fit the 32-byte reservoir.
         vec3  restirUnshadowedSum = vec3(0.0);
         ClusterEntry cluster = clusters[clusterIdx];
         for (uint ci = 0; ci < cluster.count; ci++) {
@@ -3445,7 +3452,10 @@ void main() {
             // faded over ~40 frames. The ratio is still a whole-reservoir
             // quantity, not a per-light visibility, so it converges across
             // selection flips (the earlier per-light-visibility accumulator
-            // reset on every flip — the "moiré at the front").
+            // reset on every flip — the "moiré at the front"). The cost is
+            // the mixed-visibility lag documented at `restirUnshadowedSum`
+            // (#5020): flicker passes through exactly only when the
+            // cluster's lights share one visibility.
             vec3 prevAccum = vec3(0.0);
             float histPrev = 0.0;
             bool reprojValid = false;

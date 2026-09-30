@@ -433,6 +433,69 @@ mod tests {
         );
     }
 
+    /// #5020 — the #4942 ratio is ONE Σrad·V / Σrad for the whole
+    /// cluster, not Heitz's per-light ratio, so it passes animation through
+    /// exactly only when every streamed light shares one visibility. This
+    /// pins the documented limit with two lights: A visible and flickering,
+    /// B equally bright and fully occluded. The shader comment at
+    /// `restirUnshadowedSum` states the same numbers; a per-light history
+    /// would change both.
+    #[test]
+    fn mixed_visibility_clusters_keep_a_documented_ratio_lag() {
+        let src = include_str!("../../shaders/triangle.frag");
+        assert!(
+            src.contains("#5020 — the ratio is one")
+                && src.contains("~48 % of a 12 Hz flicker's amplitude"),
+            "the shader must state the mixed-visibility limit, not claim flicker is always undelayed"
+        );
+
+        // Mirror of the finalize, on the estimator's expectation
+        // (E[rad·W·V] = Σ rad_i·V_i): 12 Hz at 60 fps, parked (α = 0.025).
+        let alpha = 0.025f32;
+        let shade = |lights: &[(f32, f32)], ratio: &mut f32| {
+            let unshadowed: f32 = lights.iter().map(|(rad, _)| rad).sum();
+            let frame: f32 = lights.iter().map(|(rad, vis)| rad * vis).sum();
+            *ratio += (frame / unshadowed - *ratio) * alpha;
+            (unshadowed * *ratio, frame)
+        };
+        let flicker = |frame: u32| 1.0 + 0.5 * (frame as f32 * std::f32::consts::TAU / 5.0).sin();
+        let swing = |(lo, hi): (f32, f32)| hi - lo;
+        let widen = |(lo, hi): (f32, f32), v: f32| (lo.min(v), hi.max(v));
+
+        // Shared visibility: both lights half shadowed — passes through exactly.
+        let mut ratio = 0.5;
+        for frame in 0..600 {
+            let (out, truth) = shade(&[(flicker(frame), 0.5), (1.0, 0.5)], &mut ratio);
+            assert!((out - truth).abs() < 1e-4, "shared visibility must not lag");
+        }
+
+        // Mixed visibility: A visible, B occluded — the ratio lags.
+        let mut ratio = 0.5;
+        let (mut out_range, mut truth_range) = ((f32::MAX, f32::MIN), (f32::MAX, f32::MIN));
+        for frame in 0..600 {
+            let (out, truth) = shade(&[(flicker(frame), 1.0), (1.0, 0.0)], &mut ratio);
+            if frame > 300 {
+                out_range = widen(out_range, out);
+                truth_range = widen(truth_range, truth);
+            }
+        }
+        let passed = swing(out_range) / swing(truth_range);
+        assert!(
+            (0.40..0.56).contains(&passed),
+            "mixed-visibility flicker passes ~48 % of its amplitude, got {passed}"
+        );
+
+        // A switched off beside occluded B: truth is 0, the ratio fades.
+        let mut ratio = 0.5;
+        let mut lit = Vec::new();
+        for _ in 0..20 {
+            let (out, truth) = shade(&[(0.0, 1.0), (1.0, 0.0)], &mut ratio);
+            assert_eq!(truth, 0.0);
+            lit.push(out);
+        }
+        assert!(lit[19] > 0.25, "the off light still leaves a lit ratio after 20 frames");
+    }
+
     #[test]
     fn spatial_reuse_requires_same_surface_depth_and_normal() {
         let src = include_str!("../../shaders/triangle.frag");
