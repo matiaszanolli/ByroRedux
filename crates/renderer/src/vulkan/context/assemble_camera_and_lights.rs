@@ -147,12 +147,11 @@ impl VulkanContext {
         // frame fallback to `rt_flag = 0.0` is corrected in-place after
         // `write_tlas` flips the bit, so frame 0 still gets RT-enabled
         // shading at GPU-submit time. See #1227 / REN-D8-NEW-21.
-        let rt_flag =
-            if self.device_caps.ray_query_supported && self.scene_buffers.tlas_written[frame] {
-                1.0
-            } else {
-                0.0
-            };
+        let rt_flag = if self.scene_buffers.tlas_written[frame] {
+            1.0
+        } else {
+            0.0
+        };
 
         // TAA sub-pixel jitter via Halton(2,3) sequence. Each frame shifts
         // the projection by a different sub-pixel offset in NDC so that

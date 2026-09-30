@@ -112,7 +112,13 @@ impl VulkanContext {
             },
         )?;
 
-        // 7. Logical device + queues (enables RT extensions when available)
+        // 7. Logical device + queues. RT is mandatory (#3759):
+        // `is_device_suitable` rejected every device without it, which is
+        // why nothing below branches on `ray_query_supported` (#4894).
+        debug_assert!(
+            device_caps.ray_query_supported,
+            "is_device_suitable must reject RT-less devices (#3759)"
+        );
         let (device, raw_graphics_queue, raw_present_queue) = device::create_logical_device(
             &vk_instance,
             physical_device,
@@ -128,12 +134,15 @@ impl VulkanContext {
             Arc::new(Mutex::new(raw_present_queue))
         };
 
-        // 7. GPU allocator (buffer_device_address required for RT acceleration structures)
+        // 7. GPU allocator. `bufferDeviceAddress` is always enabled by
+        // `create_logical_device` (RT acceleration structures + the
+        // `PhysicalStorageBufferAddresses` shaders need it), so the allocator
+        // may always hand out device-address-capable memory.
         let gpu_allocator = allocator::create_allocator(
             &vk_instance,
             &device,
             physical_device,
-            device_caps.ray_query_supported,
+            true,
         )?;
 
         Ok(CoreDevice {
@@ -402,12 +411,8 @@ impl VulkanContext {
         )?;
         texture_registry.set_neutral_fallback(&device, neutral_texture)?;
 
-        // 12. Scene buffers (light SSBO + camera UBO + optional TLAS, descriptor set 1)
-        let scene_buffers = scene_buffer::SceneBuffers::new(
-            &device,
-            &gpu_allocator,
-            device_caps.ray_query_supported,
-        )?;
+        // 12. Scene buffers (light SSBO + camera UBO + TLAS, descriptor set 1)
+        let scene_buffers = scene_buffer::SceneBuffers::new(&device, &gpu_allocator)?;
         // M29.5 cleanup — the pre-#921 startup seed of slot-0 identity
         // into the palette buffer (`bone_device_buffers`) is no longer
         // needed. The per-frame `skin_palette.comp` dispatch writes
@@ -426,9 +431,9 @@ impl VulkanContext {
             .seed_persistent_bind_inverses_identity(&device, &graphics_queue, transfer_pool)
             .context("seed bind_inverses_persistent slot 0 identity (M29.6 / #1191)")?;
 
-        // 12b. Acceleration manager (RT only) — build empty TLAS so descriptors are valid
+        // 12b. Acceleration manager — build empty TLAS so descriptors are valid
         let mut scene_buffers = scene_buffers;
-        let accel_manager = if device_caps.ray_query_supported {
+        let accel_manager = {
             let mut accel = AccelerationManager::new(
                 &vk_instance,
                 &device,
@@ -464,8 +469,6 @@ impl VulkanContext {
                 }
             }
             Some(accel)
-        } else {
-            None
         };
 
         // 12b. Pipeline cache (load from disk if available).
@@ -593,57 +596,46 @@ impl VulkanContext {
             }
         };
 
-        // 12d. Skin compute pipeline (M29 Phase 2). RT-required: when
-        // ray queries aren't supported there's no BLAS refit path to
-        // feed, so the pipeline is dead weight. Created with the max
+        // 12d. Skin compute pipeline (M29 Phase 2) — feeds the skinned
+        // BLAS refit path. Created with the max
         // slot ceiling matching `MAX_TOTAL_BONES / MAX_BONES_PER_MESH
         // = 32` skinned meshes — same ceiling the bone-palette upload
         // path enforces in `build_render_data`. Buffer bindings are
         // deferred to per-dispatch (cell-transition robustness).
-        let mut skin_compute = if device_caps.ray_query_supported {
-            // See module-level `SKIN_MAX_SLOTS` const for the rationale.
-            match super::super::skin_compute::SkinComputePipeline::new(
-                &device,
-                pipeline_cache,
-                SKIN_MAX_SLOTS,
-            ) {
-                Ok(sc) => Some(sc),
-                Err(e) => {
-                    log::warn!(
-                        "Skin compute pipeline creation failed: {e} — \
-                         skinned RT shadows disabled (raster inline-skinning unaffected)"
-                    );
-                    None
-                }
+        // See module-level `SKIN_MAX_SLOTS` const for the rationale.
+        let mut skin_compute = match super::super::skin_compute::SkinComputePipeline::new(
+            &device,
+            pipeline_cache,
+            SKIN_MAX_SLOTS,
+        ) {
+            Ok(sc) => Some(sc),
+            Err(e) => {
+                log::warn!(
+                    "Skin compute pipeline creation failed: {e} — \
+                     skinned RT shadows disabled (raster inline-skinning unaffected)"
+                );
+                None
             }
-        } else {
-            None
         };
 
-        // 12d.5. M29.5 — GPU bone-palette compute pipeline. Same RT
-        // gate as `skin_compute` — the engine is RT-required per
-        // VRAM-baseline policy, so this branch is the production path
-        // on every supported config. Construction failure logs but
+        // 12d.5. M29.5 — GPU bone-palette compute pipeline. Construction
+        // failure logs but
         // doesn't abort; downstream `skin_palette.is_some()` checks
         // skip the dispatch (no CPU-multiply fallback exists — the
         // legacy `upload_bones` + staging-copy path is removed since
         // M29.5 cleanup, and the engine has no supported no-RT mode).
-        let skin_palette = if device_caps.ray_query_supported {
-            match super::super::skin_compute::SkinPaletteComputePipeline::new(
-                &device,
-                pipeline_cache,
-            ) {
-                Ok(sp) => Some(sp),
-                Err(e) => {
-                    log::warn!(
-                        "Skin palette compute pipeline creation failed: {e} — \
-                         GPU bone-palette dispatch disabled (M29.5)"
-                    );
-                    None
-                }
+        let skin_palette = match super::super::skin_compute::SkinPaletteComputePipeline::new(
+            &device,
+            pipeline_cache,
+        ) {
+            Ok(sp) => Some(sp),
+            Err(e) => {
+                log::warn!(
+                    "Skin palette compute pipeline creation failed: {e} — \
+                     GPU bone-palette dispatch disabled (M29.5)"
+                );
+                None
             }
-        } else {
-            None
         };
         // #1783 / CONC-D2-01 — couple the two pipelines. See
         // `couple_skin_compute_to_palette`'s doc for the full rationale.
@@ -699,42 +691,26 @@ impl VulkanContext {
         // with the bound triangle-pipeline descriptor sets at draw
         // time; the water pipeline layout adds a 112-byte push
         // constant range for per-plane material params.
-        // #1561 — gate water pipeline creation on RT support, mirroring
-        // `accel_manager` / `skin_compute` / `skin_palette` above. `water.frag`
-        // uses set=1 binding=2 (TLAS) unconditionally — unlike `triangle.frag`
-        // it has no `sceneFlags.x` runtime guard — and on a non-RT device
-        // binding 2 is omitted from the bound layout while the SPIR-V still
-        // carries the `RayQueryKHR` capability with the `rayQuery` feature
-        // disabled. Creating it there risks a pipeline-creation failure or
-        // (driver-dependent) an undefined ray query against an absent binding.
-        // RT-capable hardware (the only configuration this engine targets —
-        // RT is mandatory) is unaffected: the pipeline is created exactly as
-        // before. The matching draw-side skip lives in `draw.rs`.
-        // EXAL ground cover (#4054 / #4055). Gated on ray_query for the same
-        // reason water is: `groundcover_blade.frag` traces the shadow ray
-        // unconditionally, so a device without it would bind a layout whose
-        // TLAS is absent.
-        let groundcover = if device_caps.ray_query_supported {
-            match super::super::groundcover::GroundCoverPipeline::new(
-                &device,
-                &gpu_allocator,
-                render_pass,
-                pipeline_cache,
-                texture_registry.descriptor_set_layout,
-                scene_buffers.descriptor_set_layout,
-            ) {
-                Ok(gc) => Some(gc),
-                Err(e) => {
-                    log::warn!("Ground-cover pipeline creation failed: {e} — no ground cover");
-                    None
-                }
+        // `water.frag` uses set=1 binding=2 (TLAS) unconditionally — unlike
+        // `triangle.frag` it has no `sceneFlags.x` runtime guard — and so does
+        // `groundcover_blade.frag` (EXAL ground cover, #4054 / #4055). #1561
+        // gated both pipelines on `ray_query_supported`; #4894 removed the
+        // gates once #3759 made RT a device-selection requirement. The
+        // draw-side skip for a frame whose TLAS is not yet written lives in
+        // `geometry_pass.rs`.
+        let groundcover = match super::super::groundcover::GroundCoverPipeline::new(
+            &device,
+            &gpu_allocator,
+            render_pass,
+            pipeline_cache,
+            texture_registry.descriptor_set_layout,
+            scene_buffers.descriptor_set_layout,
+        ) {
+            Ok(gc) => Some(gc),
+            Err(e) => {
+                log::warn!("Ground-cover pipeline creation failed: {e} — no ground cover");
+                None
             }
-        } else {
-            log::info!(
-                "Ground cover skipped: device lacks ray_query support \
-                 (groundcover_blade.frag traces the same shadow ray water.frag does)"
-            );
-            None
         };
 
         // #4413 — the authored-model tier reads the scatter's chunk records,
@@ -773,29 +749,19 @@ impl VulkanContext {
             None
         };
 
-        let mut water = if device_caps.ray_query_supported {
-            match WaterPipeline::new(
-                &device,
-                &gpu_allocator,
-                render_pass,
-                pipeline_cache,
-                texture_registry.descriptor_set_layout,
-                scene_buffers.descriptor_set_layout,
-            ) {
-                Ok(w) => Some(w),
-                Err(e) => {
-                    log::warn!(
-                        "Water pipeline creation failed: {e} — water surfaces will not render"
-                    );
-                    None
-                }
+        let mut water = match WaterPipeline::new(
+            &device,
+            &gpu_allocator,
+            render_pass,
+            pipeline_cache,
+            texture_registry.descriptor_set_layout,
+            scene_buffers.descriptor_set_layout,
+        ) {
+            Ok(w) => Some(w),
+            Err(e) => {
+                log::warn!("Water pipeline creation failed: {e} — water surfaces will not render");
+                None
             }
-        } else {
-            log::info!(
-                "Water pipeline skipped: device lacks ray_query support (water.frag traces \
-                 RT rays unconditionally). See #1561."
-            );
-            None
         };
 
         // 15b. Water-caustic accumulator (#1255 / Phase C of #1210).

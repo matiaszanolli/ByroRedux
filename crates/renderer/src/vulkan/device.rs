@@ -19,6 +19,14 @@ pub struct QueueFamilyIndices {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct DeviceCapabilities {
     /// True if VK_KHR_acceleration_structure + VK_KHR_ray_query are available.
+    ///
+    /// Always `true` on a device this renderer runs on: the committed shader
+    /// set makes RT mandatory (#3759), so `is_device_suitable` rejects any
+    /// device without it and `create_logical_device` enables the RT
+    /// extensions and features unconditionally. Kept — like
+    /// `synchronization2_supported` — for diagnostics and the
+    /// `rt_supported` telemetry lane, not as a gate: no renderer code path
+    /// branches on it (#4894).
     pub ray_query_supported: bool,
     /// True if the physical device exposes `samplerAnisotropy` in
     /// `VkPhysicalDeviceFeatures`. Required to enable anisotropic
@@ -80,7 +88,7 @@ pub struct DeviceCapabilities {
     /// `debug_assert!(scratch_address % align == 0)` at every
     /// `cmd_build_acceleration_structures` call site catches a future
     /// driver that returns a smaller alignment than the AS spec needs.
-    /// Zero when `ray_query_supported` is false. See #659 / #260 R-05.
+    /// `1` when the driver reports zero. See #659 / #260 R-05.
     pub min_accel_struct_scratch_offset_alignment: u32,
     /// `VkPhysicalDeviceLimits::timestampPeriod` — nanoseconds per
     /// `vkCmdWriteTimestamp` tick on this device. Multiply the masked,
@@ -151,25 +159,81 @@ pub struct DeviceCapabilities {
     /// 2018; the gate exists so device creation doesn't fail when a
     /// SoC / software rasteriser doesn't advertise it.
     pub memory_budget_supported: bool,
-    /// `textureCompressionBC` from `VkPhysicalDeviceFeatures`. Required
-    /// to create images with BC1/BC2/BC3/BC4/BC5/BC6H/BC7 compressed
-    /// formats. Without this feature enabled the driver rejects every
-    /// BC-compressed `vkCreateImage` call — all DDS textures (which
-    /// Bethesda BSA archives store exclusively as BC-family formats)
-    /// fall back to the checker placeholder. Universally available on
-    /// desktop GPUs (x86/x64 hardware since DX10-era); the gate exists
-    /// for completeness and catches hypothetical SoC / software
-    /// rasteriser configurations.
-    pub texture_compression_bc: bool,
 }
 
-/// The committed geometry, water, UI, and caustic shader modules mirror
-/// `GpuInstance::skinned_vertex_address` as a `uint64_t`. That declaration
-/// emits the SPIR-V `Int64` capability even in stages that never dereference
-/// the address, so `shaderInt64` is a renderer requirement rather than an
-/// optional acceleration-path feature.
-fn supports_committed_shader_int64(features: &vk::PhysicalDeviceFeatures) -> bool {
-    features.shader_int64 == vk::TRUE
+/// Physical-device feature bits the renderer cannot run without, as reported
+/// by one `vkGetPhysicalDeviceFeatures2` chain.
+struct RequiredFeatureProbe<'a> {
+    core: &'a vk::PhysicalDeviceFeatures,
+    vulkan12: &'a vk::PhysicalDeviceVulkan12Features<'a>,
+    vulkan13: &'a vk::PhysicalDeviceVulkan13Features<'a>,
+    acceleration_structure: &'a vk::PhysicalDeviceAccelerationStructureFeaturesKHR<'a>,
+    ray_query: &'a vk::PhysicalDeviceRayQueryFeaturesKHR<'a>,
+}
+
+/// Every feature bit `create_logical_device` enables unconditionally, by its
+/// Vulkan name, that this device does NOT support. Empty means the device can
+/// be created. #4895 — the suitability check used to probe only extension
+/// presence plus `shaderInt64` / `synchronization2`, so a device missing any
+/// other force-enabled bit failed at `vkCreateDevice` instead of being
+/// skipped for the next candidate. This list and the `(true)` enables in
+/// `create_logical_device` must stay in lockstep
+/// (`required_features_match_the_unconditional_enables` pins it).
+///
+/// - `shaderInt64`: the committed geometry, water, UI and caustic modules
+///   mirror `GpuInstance::skinned_vertex_address` as a `uint64_t`, which
+///   emits the SPIR-V `Int64` capability even in stages that never
+///   dereference it (VUID-VkShaderModuleCreateInfo-pCode-08740).
+/// - `independentBlend`: the alpha-blend and UI pipelines use per-attachment
+///   blend states.
+/// - `fragmentStoresAndAtomics`: `atomicAdd` on the ray-budget SSBO in the
+///   fragment shader (VUID-RuntimeSpirv-NonWritable-06340).
+/// - `textureCompressionBC`: every shipped Bethesda texture is BC1/3/5/7;
+///   without it every DDS `vkCreateImage` fails.
+/// - the descriptor-indexing bits: the bindless texture arrays.
+/// - `bufferDeviceAddress`: RT acceleration structures and `triangle.vert`'s
+///   `PhysicalStorageBufferAddresses` capability.
+/// - `synchronization2`: `PipelineStageFlags::NONE` in sync1 barriers
+///   (VUID-vkCmdPipelineBarrier-srcStageMask-4957, #1437).
+/// - `accelerationStructure` / `rayQuery`: the committed `RayQueryKHR`
+///   modules (#3759).
+fn missing_required_features(probe: &RequiredFeatureProbe) -> Vec<&'static str> {
+    let on = |bit: vk::Bool32| bit == vk::TRUE;
+    [
+        ("shaderInt64", on(probe.core.shader_int64)),
+        ("independentBlend", on(probe.core.independent_blend)),
+        (
+            "fragmentStoresAndAtomics",
+            on(probe.core.fragment_stores_and_atomics),
+        ),
+        ("textureCompressionBC", on(probe.core.texture_compression_bc)),
+        (
+            "runtimeDescriptorArray",
+            on(probe.vulkan12.runtime_descriptor_array),
+        ),
+        (
+            "descriptorBindingPartiallyBound",
+            on(probe.vulkan12.descriptor_binding_partially_bound),
+        ),
+        (
+            "descriptorBindingSampledImageUpdateAfterBind",
+            on(probe.vulkan12.descriptor_binding_sampled_image_update_after_bind),
+        ),
+        (
+            "shaderSampledImageArrayNonUniformIndexing",
+            on(probe.vulkan12.shader_sampled_image_array_non_uniform_indexing),
+        ),
+        ("bufferDeviceAddress", on(probe.vulkan12.buffer_device_address)),
+        ("synchronization2", on(probe.vulkan13.synchronization2)),
+        (
+            "accelerationStructure",
+            on(probe.acceleration_structure.acceleration_structure),
+        ),
+        ("rayQuery", on(probe.ray_query.ray_query)),
+    ]
+    .into_iter()
+    .filter_map(|(name, supported)| (!supported).then_some(name))
+    .collect()
 }
 
 impl DeviceCapabilities {
@@ -289,7 +353,9 @@ pub fn device_local_heap_bytes_for_memory_type_bits(
 /// Required device extensions (always needed).
 const REQUIRED_EXTENSIONS: &[&CStr] = &[ash::khr::swapchain::NAME];
 
-/// Optional RT extensions (enabled when available).
+/// RT extensions. Mandatory since #3759: the committed shader set declares
+/// `RayQueryKHR`, so `is_device_suitable` rejects a device lacking any of
+/// these and `create_logical_device` always enables them.
 const RT_EXTENSIONS: &[&CStr] = &[
     ash::khr::acceleration_structure::NAME,
     ash::khr::ray_query::NAME,
@@ -442,7 +508,9 @@ pub fn pick_physical_device(
     let Some(selected) = selected else {
         anyhow::bail!(
             "No suitable GPU found (need graphics + present queues, swapchain support, \
-             shaderInt64, Vulkan 1.3 synchronization2, and VK_KHR_ray_query + \
+             the feature bits logged per rejected device above (shaderInt64, BC \
+             textures, descriptor indexing, bufferDeviceAddress, synchronization2, \
+             …), and VK_KHR_ray_query + \
              VK_KHR_acceleration_structure + VK_KHR_deferred_host_operations — the \
              committed shader set declares RayQueryKHR and \
              PhysicalStorageBufferAddresses, so RT is mandatory, not optional. \
@@ -512,11 +580,10 @@ fn is_device_suitable(
     // main pass was illegal on such a device. Rejecting here is what makes
     // `init.rs`'s "RT is mandatory" comment true.
     //
-    // Deliberately scoped to device selection: no pipeline is restructured.
-    // The now-unreachable `ray_query_supported == false` branches
-    // (`accel_manager`, `skin_compute`, `skin_palette`, `water`, the
-    // rt-disabled descriptor-layout permutation, the `buffer_device_address`
-    // gating) are left in place for a follow-up rather than removed here.
+    // #4894 removed the downstream `ray_query_supported == false` branches
+    // (`accel_manager`, `skin_compute`, `skin_palette`, `groundcover`,
+    // `water`, the rt-disabled descriptor-layout permutation, the
+    // `buffer_device_address` gating) this rejection had made unreachable.
     if !ray_query_supported {
         return Ok(None);
     }
@@ -527,18 +594,12 @@ fn is_device_suitable(
     // allocations, not the driver's full residency view.
     let memory_budget_supported = has_extension(ash::ext::memory_budget::NAME);
 
-    // Query core features + limits. The committed shader set declares the
-    // SPIR-V Int64 capability through the shared GpuInstance layout, so a
-    // device without shaderInt64 cannot legally create the renderer's shader
-    // modules (VUID-VkShaderModuleCreateInfo-pCode-08740).
+    // Query core features + limits.
     let features = unsafe {
         // SAFETY: `instance` is live and `device` was enumerated from it; the
         // query writes only into the returned features struct.
         instance.get_physical_device_features(device)
     };
-    if !supports_committed_shader_int64(&features) {
-        return Ok(None);
-    }
     let properties = unsafe {
         // SAFETY: `instance` is live and `device` was enumerated from it; the
         // query writes only into the returned properties struct.
@@ -555,34 +616,45 @@ fn is_device_suitable(
     let multi_draw_indirect_supported = features.multi_draw_indirect == vk::TRUE;
     let draw_indirect_first_instance_supported = features.draw_indirect_first_instance == vk::TRUE;
     let fill_mode_non_solid_supported = features.fill_mode_non_solid == vk::TRUE;
-    let texture_compression_bc = features.texture_compression_bc == vk::TRUE;
 
-    // Probe Vulkan 1.3 core feature `synchronization2`. Required: the
-    // renderer uses `PipelineStageFlags::NONE` in sync1 barriers
-    // across bloom, SSAO, caustic, texture upload, and volumetrics.
-    // Without this feature those barriers violate VUID-vkCmdPipeline
-    // Barrier-srcStageMask-4957. Available on all RTX-class GPUs
-    // (Vulkan 1.3 core); devices that return FALSE are rejected. #1437.
-    //
-    // Also probe `VkPhysicalDeviceVulkan12Features.hostQueryReset` in the
-    // same round-trip — needed (decoupled from RT) by the GPU timer path
-    // (#1478 / REN-D23-NEW-01).
+    // One `vkGetPhysicalDeviceFeatures2` round-trip for every feature bit
+    // `create_logical_device` force-enables (#4895) — see
+    // `missing_required_features` — plus the optional
+    // `VkPhysicalDeviceVulkan12Features.hostQueryReset`, needed (decoupled
+    // from RT) by the GPU timer path (#1478 / REN-D23-NEW-01). The two KHR
+    // feature structs are legal to chain: the RT extensions defining them
+    // were confirmed present above.
     let mut vulkan12_features = vk::PhysicalDeviceVulkan12Features::default();
     let mut vulkan13_features = vk::PhysicalDeviceVulkan13Features::default();
+    let mut accel_features = vk::PhysicalDeviceAccelerationStructureFeaturesKHR::default();
+    let mut ray_query_features = vk::PhysicalDeviceRayQueryFeaturesKHR::default();
     let mut features2 = vk::PhysicalDeviceFeatures2::default()
         .push_next(&mut vulkan12_features)
-        .push_next(&mut vulkan13_features);
+        .push_next(&mut vulkan13_features)
+        .push_next(&mut accel_features)
+        .push_next(&mut ray_query_features);
     unsafe {
         // SAFETY: `instance` is live and `device` was enumerated from it;
-        // `features2` and the `vulkan12_features` / `vulkan13_features` structs
-        // it chains via pNext are stack-local and outlive this call, which
-        // writes only into them.
+        // `features2` and the four feature structs it chains via pNext are
+        // stack-local and outlive this call, which writes only into them.
         instance.get_physical_device_features2(device, &mut features2);
     }
-    let synchronization2_supported = vulkan13_features.synchronization2 == vk::TRUE;
-    if !synchronization2_supported {
+    let missing = missing_required_features(&RequiredFeatureProbe {
+        core: &features,
+        vulkan12: &vulkan12_features,
+        vulkan13: &vulkan13_features,
+        acceleration_structure: &accel_features,
+        ray_query: &ray_query_features,
+    });
+    if !missing.is_empty() {
+        // SAFETY: device_name is a fixed-size [c_char; 256] array
+        // null-terminated by the Vulkan driver. The pointer remains valid
+        // while `properties` is in scope.
+        let name = unsafe { CStr::from_ptr(properties.device_name.as_ptr()) };
+        log::warn!("Rejecting GPU {name:?}: missing required Vulkan features {missing:?}");
         return Ok(None);
     }
+    let synchronization2_supported = vulkan13_features.synchronization2 == vk::TRUE;
     let host_query_reset_supported = vulkan12_features.host_query_reset == vk::TRUE;
     // Both limbs matter: the SDK keys its FP16 permutation off the extension
     // being advertised, and the feature bit is what makes enabling it legal.
@@ -633,16 +705,13 @@ fn is_device_suitable(
         };
     let max_bindless_sampled_images = reported_limit.min(BINDLESS_CEILING);
 
-    // AS scratch alignment. Default to 1 (trivial — every address is a
-    // multiple of 1) when ray_query is unsupported so the
-    // `debug_assert!` at each `scratch_data` site is a no-op on
-    // RT-disabled GPUs. When RT IS supported but the driver still
-    // reports zero (spec violation, but cheap to handle), we also
-    // fall back to 1 — the assert can't catch what the driver lied
-    // about, and crashing on init is worse than letting the build
-    // run.
-    let min_accel_struct_scratch_offset_alignment = if ray_query_supported
-        && accel_props.min_acceleration_structure_scratch_offset_alignment > 0
+    // AS scratch alignment. When the driver reports zero (spec violation,
+    // but cheap to handle), fall back to 1 (trivial — every address is a
+    // multiple of 1): the assert can't catch what the driver lied about,
+    // and crashing on init is worse than letting the build run.
+    let min_accel_struct_scratch_offset_alignment = if accel_props
+        .min_acceleration_structure_scratch_offset_alignment
+        > 0
     {
         accel_props.min_acceleration_structure_scratch_offset_alignment
     } else {
@@ -719,7 +788,6 @@ fn is_device_suitable(
                         == vk::TRUE,
                     shader_float16_supported,
                     memory_budget_supported,
-                    texture_compression_bc,
                 },
             )))
         }
@@ -728,7 +796,8 @@ fn is_device_suitable(
 }
 
 /// Creates a logical device with graphics and present queues.
-/// Enables RT extensions and features when `caps.ray_query_supported` is true.
+/// Enables the mandatory RT extensions and features unconditionally —
+/// `is_device_suitable` has already rejected any device lacking them.
 pub fn create_logical_device(
     instance: &ash::Instance,
     physical_device: vk::PhysicalDevice,
@@ -759,10 +828,11 @@ pub fn create_logical_device(
     // rejects any pipeline where pAttachments[i] != pAttachments[0].
     let mut device_features = vk::PhysicalDeviceFeatures::default()
         .sampler_anisotropy(caps.sampler_anisotropy_supported)
-        .texture_compression_bc(caps.texture_compression_bc)
-        // Required by every committed shader stage that mirrors the shared
-        // GpuInstance uint64_t device-address field. Device suitability has
-        // already rejected hardware that does not expose this core feature.
+        // Every unconditional `(true)` below is a hard requirement that
+        // `missing_required_features` has already verified on this device
+        // (#4895) — BC because every shipped Bethesda texture is BC-family,
+        // shaderInt64 for the shared GpuInstance uint64_t device address.
+        .texture_compression_bc(true)
         .shader_int64(true)
         .independent_blend(true)
         // #309 — `vkCmdDrawIndexedIndirect` with drawCount > 1
@@ -793,16 +863,13 @@ pub fn create_logical_device(
     device_features =
         device_features.pipeline_statistics_query(caps.fragment_invocation_query_enabled());
 
-    // Build extension list: required + optional RT/FidelityFX facilities.
-    let mut extensions: Vec<*const i8> = REQUIRED_EXTENSIONS.iter().map(|e| e.as_ptr()).collect();
-    if caps.ray_query_supported {
-        for ext in RT_EXTENSIONS {
-            extensions.push(ext.as_ptr());
-        }
-        log::info!(
-            "Enabling RT extensions: acceleration_structure, ray_query, deferred_host_operations"
-        );
-    }
+    // Build extension list: required + RT (mandatory, #3759) + optional
+    // FidelityFX facilities.
+    let mut extensions: Vec<*const i8> = REQUIRED_EXTENSIONS
+        .iter()
+        .chain(RT_EXTENSIONS)
+        .map(|e| e.as_ptr())
+        .collect();
     if caps.memory_budget_supported {
         extensions.push(ash::ext::memory_budget::NAME.as_ptr());
         log::info!("Enabling VK_EXT_memory_budget for live VRAM usage queries");
@@ -859,17 +926,16 @@ pub fn create_logical_device(
     //   These are Vulkan 1.2 core (no extension needed), universally available
     //   on desktop GPUs that support Vulkan 1.2+.
     //
-    // #2383(2) — enabled unconditionally, one of the "now-unreachable
-    // `ray_query_supported == false` branches" the suitability rejection above
-    // says it left for a follow-up. Once `is_device_suitable` returns `None`
-    // for an RT-less device, `caps.ray_query_supported` is `true` at every
-    // call that reaches here, so the gate selected `true` and merely read as
-    // though an RT-less device were supported. It was reported from outside
-    // the project as a bug for exactly that reason, against a fork that had
-    // removed the RT requirement — where the same line really does disable a
-    // Vulkan 1.2 core feature the main pass needs. Same treatment as
-    // `shader_int64(true)` above, and for the same reason: suitability owns
-    // the decision, so this reads as the unconditional requirement it is.
+    // #2383(2) — enabled unconditionally. It used to be gated on
+    // `caps.ray_query_supported`, which is `true` at every call that reaches
+    // here (the suitability rejection above), so the gate selected `true` and
+    // merely read as though an RT-less device were supported. It was reported
+    // from outside the project as a bug for exactly that reason, against a
+    // fork that had removed the RT requirement — where the same line really
+    // does disable a Vulkan 1.2 core feature the main pass needs. Same
+    // treatment as `shader_int64(true)` above, and for the same reason:
+    // suitability owns the decision (`missing_required_features`, #4895), so
+    // this reads as the unconditional requirement it is.
     let mut vulkan12_features = vk::PhysicalDeviceVulkan12Features::default()
         .buffer_device_address(true)
         .shader_sampled_image_array_non_uniform_indexing(true)
@@ -914,11 +980,10 @@ pub fn create_logical_device(
         log::debug!("shaderFloat16 unavailable — FSR will use its FP32 shader permutations");
     }
 
-    let mut accel_features = vk::PhysicalDeviceAccelerationStructureFeaturesKHR::default()
-        .acceleration_structure(caps.ray_query_supported);
+    let mut accel_features =
+        vk::PhysicalDeviceAccelerationStructureFeaturesKHR::default().acceleration_structure(true);
 
-    let mut ray_query_features =
-        vk::PhysicalDeviceRayQueryFeaturesKHR::default().ray_query(caps.ray_query_supported);
+    let mut ray_query_features = vk::PhysicalDeviceRayQueryFeaturesKHR::default().ray_query(true);
 
     // Vulkan 1.3 core feature chain. `synchronization2` is required
     // (#1437) — `is_device_suitable` already rejected any GPU without
@@ -937,21 +1002,19 @@ pub fn create_logical_device(
     let mut coherent_memory_features = vk::PhysicalDeviceCoherentMemoryFeaturesAMD::default()
         .device_coherent_memory(supported_coherent_memory.device_coherent_memory == vk::TRUE);
 
-    // Always push Vulkan 1.2 + 1.3 features. Extension-specific feature
-    // structures are only pushed when their extension is available.
+    // Always push Vulkan 1.2 + 1.3 + the mandatory RT features. The
+    // AMD coherent-memory structure is only pushed when its extension is
+    // available.
     let mut create_info = vk::DeviceCreateInfo::default()
         .queue_create_infos(&queue_create_infos)
         .enabled_features(&device_features)
         .enabled_extension_names(&extensions)
         .push_next(&mut vulkan12_features)
-        .push_next(&mut vulkan13_features);
+        .push_next(&mut vulkan13_features)
+        .push_next(&mut accel_features)
+        .push_next(&mut ray_query_features);
     if coherent_memory_extension {
         create_info = create_info.push_next(&mut coherent_memory_features);
-    }
-    if caps.ray_query_supported {
-        create_info = create_info
-            .push_next(&mut accel_features)
-            .push_next(&mut ray_query_features);
     }
 
     let device = unsafe {
@@ -1022,8 +1085,8 @@ pub fn create_logical_device(
 #[cfg(test)]
 mod caps_tests {
     use super::{
-        DeviceCapabilities, device_preference_key, is_hardware_render_device,
-        supports_committed_shader_int64,
+        DeviceCapabilities, RequiredFeatureProbe, device_preference_key,
+        is_hardware_render_device, missing_required_features,
     };
     use ash::vk;
 
@@ -1061,17 +1124,134 @@ mod caps_tests {
         ));
     }
 
-    /// The checked-in shader modules declare `OpCapability Int64` because
-    /// their shared GpuInstance mirror contains a 64-bit device address.
-    /// Accepting a device without the feature and then creating those modules
-    /// violates VUID-VkShaderModuleCreateInfo-pCode-08740.
-    #[test]
-    fn committed_shader_contract_requires_shader_int64() {
-        let unsupported = vk::PhysicalDeviceFeatures::default();
-        assert!(!supports_committed_shader_int64(&unsupported));
+    /// Names every bit a fully-empty device lacks — i.e. the whole required
+    /// set, in `missing_required_features`' order.
+    fn all_required_feature_names() -> Vec<&'static str> {
+        missing_required_features(&RequiredFeatureProbe {
+            core: &vk::PhysicalDeviceFeatures::default(),
+            vulkan12: &vk::PhysicalDeviceVulkan12Features::default(),
+            vulkan13: &vk::PhysicalDeviceVulkan13Features::default(),
+            acceleration_structure: &vk::PhysicalDeviceAccelerationStructureFeaturesKHR::default(),
+            ray_query: &vk::PhysicalDeviceRayQueryFeaturesKHR::default(),
+        })
+    }
 
-        let supported = vk::PhysicalDeviceFeatures::default().shader_int64(true);
-        assert!(supports_committed_shader_int64(&supported));
+    /// #4895 — a device exposing every required bit passes; dropping any
+    /// single one names exactly that bit. The checked-in shader modules
+    /// declare `OpCapability Int64` (the shared GpuInstance mirror's 64-bit
+    /// device address), so `shaderInt64` is among them
+    /// (VUID-VkShaderModuleCreateInfo-pCode-08740), and BC is a requirement,
+    /// not an optional capability: every shipped Bethesda texture is BC.
+    #[test]
+    fn required_features_reject_each_missing_bit() {
+        let core = vk::PhysicalDeviceFeatures::default()
+            .shader_int64(true)
+            .independent_blend(true)
+            .fragment_stores_and_atomics(true)
+            .texture_compression_bc(true);
+        let vulkan12 = vk::PhysicalDeviceVulkan12Features::default()
+            .runtime_descriptor_array(true)
+            .descriptor_binding_partially_bound(true)
+            .descriptor_binding_sampled_image_update_after_bind(true)
+            .shader_sampled_image_array_non_uniform_indexing(true)
+            .buffer_device_address(true);
+        let vulkan13 = vk::PhysicalDeviceVulkan13Features::default().synchronization2(true);
+        let accel =
+            vk::PhysicalDeviceAccelerationStructureFeaturesKHR::default().acceleration_structure(true);
+        let ray_query = vk::PhysicalDeviceRayQueryFeaturesKHR::default().ray_query(true);
+        let full = RequiredFeatureProbe {
+            core: &core,
+            vulkan12: &vulkan12,
+            vulkan13: &vulkan13,
+            acceleration_structure: &accel,
+            ray_query: &ray_query,
+        };
+        assert!(missing_required_features(&full).is_empty());
+
+        let no_int64 = core.shader_int64(false);
+        assert_eq!(
+            missing_required_features(&RequiredFeatureProbe {
+                core: &no_int64,
+                ..full
+            }),
+            ["shaderInt64"]
+        );
+        let no_bc = core.texture_compression_bc(false);
+        assert_eq!(
+            missing_required_features(&RequiredFeatureProbe {
+                core: &no_bc,
+                ..full
+            }),
+            ["textureCompressionBC"]
+        );
+        let no_bda = vulkan12.buffer_device_address(false);
+        assert_eq!(
+            missing_required_features(&RequiredFeatureProbe {
+                vulkan12: &no_bda,
+                ..full
+            }),
+            ["bufferDeviceAddress"]
+        );
+        let no_sync2 = vulkan13.synchronization2(false);
+        assert_eq!(
+            missing_required_features(&RequiredFeatureProbe {
+                vulkan13: &no_sync2,
+                ..full
+            }),
+            ["synchronization2"]
+        );
+        let no_ray_query = ray_query.ray_query(false);
+        assert_eq!(
+            missing_required_features(&RequiredFeatureProbe {
+                ray_query: &no_ray_query,
+                ..full
+            }),
+            ["rayQuery"]
+        );
+        assert_eq!(all_required_feature_names().len(), 12);
+    }
+
+    /// #4895 — every feature `create_logical_device` enables with a literal
+    /// `(true)` must be probed by `missing_required_features`, and nothing
+    /// probed may go un-enabled. Otherwise a device lacking the bit is
+    /// accepted and fails at `vkCreateDevice` instead of being skipped for
+    /// the next candidate — the asymmetry this issue fixed. Pinned by source
+    /// inspection: the enables live in builder chains a unit test cannot
+    /// observe without a device.
+    #[test]
+    fn required_features_match_the_unconditional_enables() {
+        let production = crate::source_scan::production_text(include_str!("device.rs"));
+        // Code lines only: the prose around the enables quotes some of them.
+        let body: String = production[production
+            .find("pub fn create_logical_device(")
+            .expect("device.rs must define create_logical_device")..]
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        // `.snake_case_feature(true)` → `snakecasefeature`, compared
+        // case-insensitively against the Vulkan camelCase names.
+        let needle = format!("({})", "true");
+        let mut enabled: Vec<String> = body
+            .match_indices(needle.as_str())
+            .map(|(at, _)| {
+                let head = &body[..at];
+                let dot = head.rfind('.').expect("builder call has a leading dot");
+                head[dot + 1..].replace('_', "")
+            })
+            .collect();
+        enabled.sort();
+        enabled.dedup();
+        let mut required: Vec<String> = all_required_feature_names()
+            .into_iter()
+            .map(str::to_ascii_lowercase)
+            .collect();
+        required.sort();
+        assert_eq!(
+            enabled, required,
+            "create_logical_device's unconditional `(true)` enables and \
+             missing_required_features must name the same feature set (#4895)"
+        );
     }
 
     /// #3759 — the committed SPIR-V is what makes RT mandatory, so pin the

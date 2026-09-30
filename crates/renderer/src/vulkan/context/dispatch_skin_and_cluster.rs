@@ -432,10 +432,9 @@ impl VulkanContext {
                             // (one per FIF slot) render with RT shading
                             // off and TAA dissolves the flash across
                             // ~5 frames on every cell-load. Only fires
-                            // on RT-capable hardware AND only on the
-                            // slot's first valid-TLAS frame — steady
-                            // state pays nothing.
-                            if first_tlas_this_slot && self.device_caps.ray_query_supported {
+                            // on the slot's first valid-TLAS frame —
+                            // steady state pays nothing.
+                            if first_tlas_this_slot {
                                 self.rt_flag_last_frame = match self
                                     .scene_buffers
                                     .patch_camera_rt_flag(&self.device, frame, 1.0)

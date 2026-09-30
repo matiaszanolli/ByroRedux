@@ -607,16 +607,14 @@ impl VulkanContext {
             // route through the main per-batch helper.
             // #1561 — water.frag traces RT rays (TLAS at set=1 binding=2)
             // with no `sceneFlags.x` runtime guard, so the water draw must not
-            // run when RT isn't live: on a non-RT device binding 2 is absent
-            // from the bound layout (`self.water` is also `None` there), and
-            // even on RT hardware a frame whose TLAS wasn't written would trace
-            // a stale/unwritten structure. Gate on the same
-            // `ray_query_supported && tlas_written[frame]` signal that drives
-            // `rt_flag`/`sceneFlags.x` everywhere else (the shader-side
-            // `sceneFlags.x < 0.5` early-out — mirroring caustic_splat.comp —
-            // remains a follow-up needing RenderDoc/non-RT verification).
-            let rt_live =
-                self.device_caps.ray_query_supported && self.scene_buffers.tlas_written[frame];
+            // run when RT isn't live: a frame whose TLAS wasn't written would
+            // trace a stale/unwritten structure. Gate on the same
+            // `tlas_written[frame]` signal that drives `rt_flag`/`sceneFlags.x`
+            // everywhere else (the shader-side `sceneFlags.x < 0.5` early-out —
+            // mirroring caustic_splat.comp — remains a follow-up needing
+            // RenderDoc verification). The device half of the old gate
+            // (`ray_query_supported`) is constant `true` since #3759 (#4894).
+            let rt_live = self.scene_buffers.tlas_written[frame];
             if !water_commands.is_empty() && rt_live {
                 // #1026 / F-WAT-05 — pin the no-resort contract right
                 // before consuming `wc.instance_index`. The app's

@@ -253,13 +253,10 @@ pub struct SceneBuffers {
 /// without spinning up a real device. Production `SceneBuffers::new`
 /// routes through the same function so test and runtime can't drift.
 ///
-/// `rt_enabled = false` drops binding 2 (TLAS); the shader still
-/// declares it because `rayQuery` calls are guarded by a uniform flag
-/// at runtime, so the validator must list `[2]` in
-/// `optional_shader_bindings` for the no-RT case. See #427 / #950.
-pub(crate) fn build_scene_descriptor_bindings(
-    rt_enabled: bool,
-) -> Vec<vk::DescriptorSetLayoutBinding<'static>> {
+/// Binding 2 (TLAS) is always present: RT is a device-selection requirement
+/// (#3759), so the former rt-disabled permutation that omitted it was
+/// unreachable and was removed (#4894).
+pub(crate) fn build_scene_descriptor_bindings() -> Vec<vk::DescriptorSetLayoutBinding<'static>> {
     let mut bindings = vec![
         vk::DescriptorSetLayoutBinding::default()
             .binding(0)
@@ -273,15 +270,13 @@ pub(crate) fn build_scene_descriptor_bindings(
             .descriptor_count(1)
             .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT),
     ];
-    if rt_enabled {
-        bindings.push(
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(2)
-                .descriptor_type(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
-        );
-    }
+    bindings.push(
+        vk::DescriptorSetLayoutBinding::default()
+            .binding(2)
+            .descriptor_type(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)
+            .descriptor_count(1)
+            .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+    );
     // Binding 3: bone palette for raster skinning and secondary-hit frames.
     bindings.push(
         vk::DescriptorSetLayoutBinding::default()
@@ -748,7 +743,6 @@ fn allocate_scene_render_buffers(
 /// device, satisfying the invariant.
 fn create_scene_descriptors(
     device: &ash::Device,
-    rt_enabled: bool,
     bufs: &SceneRenderBuffers,
 ) -> Result<(
     vk::DescriptorSetLayout,
@@ -756,7 +750,7 @@ fn create_scene_descriptors(
     Vec<vk::DescriptorSet>,
 )> {
     // ── Descriptor set layout ─────────────────────────────────────────────
-    let bindings = build_scene_descriptor_bindings(rt_enabled);
+    let bindings = build_scene_descriptor_bindings();
     // Mark bindings 5+6 (cluster data) as PARTIALLY_BOUND so they are
     // valid even when unwritten (cluster cull pipeline may fail to create).
     let binding_flags: Vec<vk::DescriptorBindingFlags> = bindings
@@ -775,10 +769,7 @@ fn create_scene_descriptors(
     // (#427). water.vert/water.frag are pinned here too (#1561 STARTUP-
     // VALIDATION): they reuse this set=1 layout (CameraUBO binding 1,
     // InstanceBuffer binding 4, TLAS binding 2) so any drift between the
-    // water shaders and the hand-written layout is caught at startup. Binding
-    // 2 (TLAS) is in `optional_bindings` on non-RT devices, so water.frag's
-    // static binding-2 declaration validates whether or not RT is present.
-    let optional_bindings: &[u32] = if rt_enabled { &[] } else { &[2] };
+    // water shaders and the hand-written layout is caught at startup.
     super::super::reflect::validate_set_layout(
         1,
         &bindings,
@@ -801,7 +792,7 @@ fn create_scene_descriptors(
             },
         ],
         "scene (set=1)",
-        optional_bindings,
+        &[],
     )
     .expect("scene descriptor layout drifted against triangle/water shaders (see #427, #1561)");
     let layout_info = vk::DescriptorSetLayoutCreateInfo::default()
@@ -817,8 +808,8 @@ fn create_scene_descriptors(
     };
 
     // ── Descriptor pool + set allocation ─────────────────────────────────
-    // Pool sizes derived from `bindings` so conditional TLAS slot flows
-    // through automatically (#1030 / REN-D10-NEW-09).
+    // Pool sizes derived from `bindings` so the pool can never drift from
+    // the layout (#1030 / REN-D10-NEW-09).
     let descriptor_pool =
         match DescriptorPoolBuilder::from_layout_bindings(&bindings, MAX_FRAMES_IN_FLIGHT as u32)
             .max_sets(MAX_FRAMES_IN_FLIGHT as u32)
@@ -952,14 +943,10 @@ impl SceneBuffers {
     /// [`create_scene_descriptors`] (layout + pool + writes), then seeds the
     /// bone-palette identity slot and the DALC UBO default before returning the
     /// fully-initialised [`SceneBuffers`]. See #1052 / TD9-009.
-    pub fn new(
-        device: &ash::Device,
-        allocator: &SharedAllocator,
-        rt_enabled: bool,
-    ) -> Result<Self> {
+    pub fn new(device: &ash::Device, allocator: &SharedAllocator) -> Result<Self> {
         let mut bufs = allocate_scene_render_buffers(device, allocator)?;
         let (descriptor_set_layout, descriptor_pool, descriptor_sets) =
-            create_scene_descriptors(device, rt_enabled, &bufs)?;
+            create_scene_descriptors(device, &bufs)?;
 
         // ── Seed initial buffer data ──────────────────────────────────────
         // Post-M29.5 the bone palette buffer no longer needs a startup

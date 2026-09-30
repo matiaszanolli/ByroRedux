@@ -19,65 +19,39 @@ fn triangle_shaders() -> [super::super::reflect::ReflectedShader<'static>; 2] {
     ]
 }
 
-/// RT-enabled path: every binding 0..=13 (with TLAS at 2) must be
+/// Every binding 0..=13 (with TLAS at 2) must be
 /// declared in `triangle.vert` ∪ `triangle.frag` with the matching
 /// descriptor type. No `optional_shader_bindings` — every declared
 /// binding must be consumed by the layout.
 #[test]
-fn rt_enabled_layout_matches_triangle_shaders() {
-    let bindings = build_scene_descriptor_bindings(true);
+fn scene_layout_matches_triangle_shaders() {
+    let bindings = build_scene_descriptor_bindings();
     super::super::reflect::validate_set_layout(
         1,
         &bindings,
         &triangle_shaders(),
-        "scene (set=1, rt=on)",
+        "scene (set=1)",
         &[],
     )
-    .expect("scene descriptor layout (rt=on) must match triangle shaders");
+    .expect("scene descriptor layout must match triangle shaders");
 }
 
 #[test]
 fn bone_palette_is_visible_to_primary_and_secondary_hit_shading() {
-    for rt_enabled in [false, true] {
-        let bindings = build_scene_descriptor_bindings(rt_enabled);
-        let palette = bindings
-            .iter()
-            .find(|binding| binding.binding == 3)
-            .unwrap();
-        assert_eq!(
-            palette.descriptor_type,
-            ash::vk::DescriptorType::STORAGE_BUFFER
-        );
-        assert!(
-            palette
-                .stage_flags
-                .contains(ash::vk::ShaderStageFlags::VERTEX | ash::vk::ShaderStageFlags::FRAGMENT)
-        );
-    }
-}
-
-/// RT-disabled path: TLAS binding (2) is intentionally absent from
-/// the layout but still declared in the shader, gated at runtime by
-/// the per-fragment `rayQuery` uniform flag. The validator must list
-/// it in `optional_shader_bindings` so the shader-declared-but-
-/// layout-absent case doesn't fire a false positive.
-#[test]
-fn rt_disabled_layout_matches_triangle_shaders_with_optional_tlas() {
-    let bindings = build_scene_descriptor_bindings(false);
-    // TLAS (binding 2) is shader-declared but absent from the
-    // RT-disabled layout — and must not be in the bindings vec.
-    assert!(
-        !bindings.iter().any(|b| b.binding == 2),
-        "rt_enabled=false must omit binding 2 (TLAS)",
+    let bindings = build_scene_descriptor_bindings();
+    let palette = bindings
+        .iter()
+        .find(|binding| binding.binding == 3)
+        .unwrap();
+    assert_eq!(
+        palette.descriptor_type,
+        ash::vk::DescriptorType::STORAGE_BUFFER
     );
-    super::super::reflect::validate_set_layout(
-        1,
-        &bindings,
-        &triangle_shaders(),
-        "scene (set=1, rt=off)",
-        &[2],
-    )
-    .expect("scene descriptor layout (rt=off) must match triangle shaders");
+    assert!(
+        palette
+            .stage_flags
+            .contains(ash::vk::ShaderStageFlags::VERTEX | ash::vk::ShaderStageFlags::FRAGMENT)
+    );
 }
 
 /// All four shaders that consume the set=1 layout at draw time:
@@ -102,40 +76,21 @@ fn scene_shaders_with_water() -> [super::super::reflect::ReflectedShader<'static
     ]
 }
 
-/// #1561 — pin the water shaders against the RT-enabled set=1 layout in the
+/// #1561 — pin the water shaders against the set=1 layout in the
 /// same union `create_scene_descriptors` validates, so a water-shader binding
 /// drift (e.g. water.frag declaring TLAS as the wrong descriptor type) is
 /// caught device-free.
 #[test]
-fn rt_enabled_layout_matches_water_shaders() {
-    let bindings = build_scene_descriptor_bindings(true);
+fn scene_layout_matches_water_shaders() {
+    let bindings = build_scene_descriptor_bindings();
     super::super::reflect::validate_set_layout(
         1,
         &bindings,
         &scene_shaders_with_water(),
-        "scene (set=1, rt=on, water)",
+        "scene (set=1, water)",
         &[],
     )
-    .expect("scene descriptor layout (rt=on) must match triangle + water shaders");
-}
-
-/// RT-disabled path: water.frag still statically declares TLAS (binding 2)
-/// even though water is never created on a non-RT device. The validator must
-/// treat binding 2 as optional, mirroring the triangle.frag case — pins the
-/// `optional_shader_bindings=[2]` contract for the water-inclusive set.
-#[test]
-fn rt_disabled_layout_matches_water_shaders_with_optional_tlas() {
-    let bindings = build_scene_descriptor_bindings(false);
-    super::super::reflect::validate_set_layout(
-        1,
-        &bindings,
-        &scene_shaders_with_water(),
-        "scene (set=1, rt=off, water)",
-        &[2],
-    )
-    .expect(
-        "scene descriptor layout (rt=off) must match triangle + water shaders with optional TLAS",
-    );
+    .expect("scene descriptor layout must match triangle + water shaders");
 }
 
 /// Synthetic drift: dropping binding 4 (instance SSBO) from the
@@ -145,7 +100,7 @@ fn rt_disabled_layout_matches_water_shaders_with_optional_tlas() {
 /// error rather than silently passing.
 #[test]
 fn dropping_instance_binding_fails_with_diagnostic() {
-    let mut bindings = build_scene_descriptor_bindings(true);
+    let mut bindings = build_scene_descriptor_bindings();
     let before = bindings.len();
     bindings.retain(|b| b.binding != 4);
     assert_eq!(
@@ -160,7 +115,7 @@ fn dropping_instance_binding_fails_with_diagnostic() {
         1,
         &bindings,
         &triangle_shaders(),
-        "scene (set=1, rt=on, drift)",
+        "scene (set=1, drift)",
         &[],
     )
     .expect_err("dropping binding 4 must trip a layout drift error");
@@ -190,7 +145,7 @@ fn shader_pipeline_doc_lists_every_scene_set_binding() {
             Some((binding, ty))
         })
         .collect();
-    let declared: Vec<(u32, String)> = build_scene_descriptor_bindings(true)
+    let declared: Vec<(u32, String)> = build_scene_descriptor_bindings()
         .iter()
         .map(|b| {
             let ty = format!("{:?}", b.descriptor_type);
