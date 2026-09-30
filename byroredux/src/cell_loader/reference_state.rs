@@ -362,6 +362,125 @@ pub(crate) fn restore_resident(world: &mut World) -> usize {
     applied
 }
 
+/// #5054 — park the saved state of references the load did not respawn.
+///
+/// An exterior save holds resident cells out to the streaming hysteresis
+/// ring (`radius_load + 1`), but the reload streams only `radius_load`, so
+/// the ring's `FormIdPair`s never resolve and `apply_deltas` skips their
+/// rows. Those placements were resident at save time, so the saved store
+/// has no row for them either. Build the row eviction would have written
+/// ([`capture`]'s shape and keep rule) from the snapshot's own columns, so
+/// the reference comes back with its saved state when it streams in.
+/// Merges into an existing row (a pickup tombstone). Item instances move
+/// out of the restored pool into the row inline, freeing their slots, the
+/// same ownership hand-off as an eviction. Call after the saved resources
+/// (pool and store) are installed. Returns the number of rows parked.
+pub(crate) fn park_unresolved_snapshot_rows(
+    world: &mut World,
+    snapshot: &byroredux_save::Snapshot,
+    unresolved: &[(u32, FormIdPair)],
+) -> usize {
+    if unresolved.is_empty() || world.try_resource::<PersistentReferenceStates>().is_none() {
+        return 0;
+    }
+    fn column<T: serde::de::DeserializeOwned>(
+        snapshot: &byroredux_save::Snapshot,
+        name: &str,
+    ) -> HashMap<u32, T> {
+        let Some(value) = snapshot.components.get(name) else {
+            return HashMap::new();
+        };
+        match serde_json::from_value::<Vec<(u32, T)>>(value.clone()) {
+            Ok(rows) => rows.into_iter().collect(),
+            Err(e) => {
+                log::warn!("save load: column '{name}' failed to decode for parking: {e}");
+                HashMap::new()
+            }
+        }
+    }
+    let mut inventories = column::<Inventory>(snapshot, "Inventory");
+    let mut equipment = column::<EquipmentSlots>(snapshot, "EquipmentSlots");
+    let mut weapons = column::<EquippedWeapon>(snapshot, "EquippedWeapon");
+    let mut values = column::<ActorValues>(snapshot, "ActorValues");
+    let mut spells = column::<byroredux_scripting::SpellList>(snapshot, "SpellList");
+    let dead = column::<Dead>(snapshot, "Dead");
+
+    // One resource guard at a time (#4982): read the store's keys, drop it,
+    // then take the pool.
+    let already_parked: std::collections::HashSet<FormIdPair> = world
+        .resource::<PersistentReferenceStates>()
+        .rows
+        .keys()
+        .copied()
+        .collect();
+    let mut parked = Vec::new();
+    {
+        let mut pool = world.try_resource_mut::<ItemInstancePool>();
+        for &(old, pair) in unresolved {
+            let is_dead = dead.contains_key(&old);
+            let items = inventories.remove(&old);
+            if items.is_none() && !is_dead && !already_parked.contains(&pair) {
+                continue;
+            }
+            let inventory = match items {
+                Some(inventory) => {
+                    let stored = inventory
+                        .items
+                        .into_iter()
+                        .map(|stack| {
+                            let instance = match stack.instance {
+                                Some(id) => Some(pool.as_mut()?.release(id)?),
+                                None => None,
+                            };
+                            Some(StoredStack {
+                                base_form_id: stack.base_form_id,
+                                count: stack.count,
+                                instance,
+                            })
+                        })
+                        .collect::<Option<Vec<_>>>();
+                    if stored.is_none() {
+                        log::error!(
+                            "save load: dangling item instance on unresolved {pair:?}; \
+                             cannot park inventory"
+                        );
+                        continue;
+                    }
+                    stored
+                }
+                None => None,
+            };
+            parked.push((
+                pair,
+                ReferenceState {
+                    inventory,
+                    equipment: equipment.remove(&old),
+                    weapon: weapons.remove(&old),
+                    actor_values: values.remove(&old),
+                    spells: spells.remove(&old).map(|list| list.0),
+                    dead: is_dead,
+                    picked_up: false,
+                },
+            ));
+        }
+    }
+    let count = parked.len();
+    let mut store = world.resource_mut::<PersistentReferenceStates>();
+    for (pair, state) in parked {
+        match store.rows.get_mut(&pair) {
+            Some(existing) => {
+                let picked_up = existing.picked_up;
+                *existing = state;
+                existing.picked_up = picked_up;
+            }
+            None => {
+                store.rows.insert(pair, state);
+            }
+        }
+    }
+    count
+}
+
 /// Park a pickup tombstone for a placement whose item the player just took
 /// (P3). Writes `picked_up` onto an existing row when the reference already
 /// parked state (looted-then-evicted container edge), else inserts a minimal
@@ -743,6 +862,75 @@ mod tests {
         assert!(restore(&mut dst, first));
         assert_eq!(dst.get::<Inventory>(second).unwrap().items[0].count, 7);
         assert!(dst.get::<Inventory>(first).unwrap().is_empty());
+    }
+
+    /// #5054 — a reference resident at save time (the exterior hysteresis
+    /// ring) that the load does not respawn must not lose its saved state:
+    /// its snapshot rows are parked the way an eviction would park them,
+    /// item instances move inline out of the restored pool, and the next
+    /// respawn restores them.
+    #[test]
+    fn unresolved_snapshot_rows_are_parked_for_the_next_respawn() {
+        let mut src = world();
+        src.insert_resource(byroredux_core::string::StringPool::new());
+        let near = reference(&mut src, "Band.esm", 0x100);
+        let band_corpse = reference(&mut src, "Band.esm", 0x200);
+        let band_idle = reference(&mut src, "Band.esm", 0x300);
+        src.insert(near, Inventory::new());
+        let unique = src
+            .resource_mut::<ItemInstancePool>()
+            .allocate(ItemInstance::default());
+        src.insert(
+            band_corpse,
+            Inventory {
+                items: vec![
+                    ItemStack::new(0xAAAA, 3),
+                    ItemStack {
+                        base_form_id: 0xBBBB,
+                        count: 1,
+                        instance: Some(unique),
+                    },
+                ],
+            },
+        );
+        src.insert(band_corpse, Dead);
+        src.insert(band_corpse, ActorValues::from_pairs([(0x2D4, 0.0)]));
+        src.insert(band_idle, ActorValues::from_pairs([(0x2D4, 50.0)]));
+        let registry = crate::save_io::build_save_registry();
+        let snapshot = byroredux_save::save_world(&src, &registry).unwrap();
+        let bytes = byroredux_save::encode(&snapshot, registry.schema_fingerprint()).unwrap();
+        let decoded = byroredux_save::decode(&bytes, registry.schema_fingerprint()).unwrap();
+
+        // The reload streams only the inner radius: `near` respawns, the
+        // band references do not.
+        let mut dst = world();
+        byroredux_save::restore_resources(&mut dst, &registry, &decoded).unwrap();
+        reference(&mut dst, "Band.esm", 0x100);
+        let remap = byroredux_save::build_form_id_remap(&dst, &registry, &decoded);
+        let unresolved = byroredux_save::unresolved_form_id_pairs(&registry, &decoded, &remap);
+        assert_eq!(unresolved.len(), 2);
+        assert_eq!(
+            park_unresolved_snapshot_rows(&mut dst, &decoded, &unresolved),
+            1,
+            "only the corpse carries state eviction would park"
+        );
+        assert_eq!(
+            dst.resource::<ItemInstancePool>().live_count(),
+            0,
+            "the parked row owns the instance payload inline"
+        );
+
+        let corpse = reference(&mut dst, "Band.esm", 0x200);
+        assert!(restore(&mut dst, corpse));
+        assert!(dst.get::<Dead>(corpse).is_some());
+        let items = dst.get::<Inventory>(corpse).unwrap().items.clone();
+        assert_eq!(items.len(), 2);
+        assert_eq!((items[0].base_form_id, items[0].count), (0xAAAA, 3));
+        assert_eq!(items[1].base_form_id, 0xBBBB);
+        assert!(dst
+            .resource::<ItemInstancePool>()
+            .get(items[1].instance.expect("the unique stack keeps an instance"))
+            .is_some());
     }
 
     /// #4695 — the save-reload window. A pickup tombstone parked while the

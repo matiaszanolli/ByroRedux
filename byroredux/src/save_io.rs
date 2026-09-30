@@ -1818,6 +1818,22 @@ pub fn execute_pending_save_loads(
     // and the first Update tick does not clear it as a package change.
     crate::npc_spawn::ai_package::reseat_ambient_packages_after_restore(world);
     let remap = byroredux_save::build_form_id_remap(world, &registry, &snapshot);
+    // #5054 — an exterior save holds resident cells out to the hysteresis
+    // ring (`radius_load + 1`) while the reload streams only `radius_load`,
+    // so the ring's rows cannot overlay. Park them as eviction would have,
+    // so those placements return with their saved state when streamed in.
+    let unresolved = byroredux_save::unresolved_form_id_pairs(&registry, &snapshot, &remap);
+    let parked_rows = crate::cell_loader::reference_state::park_unresolved_snapshot_rows(
+        world,
+        &snapshot,
+        &unresolved,
+    );
+    if parked_rows > 0 {
+        log::info!(
+            "save load: parked {parked_rows} saved row(s) of non-resident references \
+             for their next respawn"
+        );
+    }
     match byroredux_save::apply_deltas(world, &registry, &snapshot, &remap, MUTABLE_DELTA_COLUMNS) {
         Ok(applied) => {
             let dead = crate::combat::reconcile_dead_actor_runtime_state(world);

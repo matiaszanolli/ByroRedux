@@ -43,7 +43,7 @@ pub mod validate;
 
 pub use driver::{
     apply_deltas, build_form_id_remap, restore_resources, restore_resources_subset,
-    restore_world, save_world, validate_snapshot_types,
+    restore_world, save_world, unresolved_form_id_pairs, validate_snapshot_types,
 };
 pub use registry::SaveRegistry;
 pub use snapshot::{decode, encode, Snapshot, FORMAT_MAGIC, FORMAT_MAJOR, FORMAT_MINOR};

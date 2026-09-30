@@ -264,19 +264,10 @@ pub fn build_form_id_remap(
     registry: &SaveRegistry,
     snapshot: &Snapshot,
 ) -> HashMap<u32, u32> {
-    let Some(column) = registry.form_id_column() else {
+    let saved = saved_form_id_rows(registry, snapshot);
+    if saved.is_empty() {
         return HashMap::new();
-    };
-    let Some(value) = snapshot.components.get(column) else {
-        return HashMap::new();
-    };
-    let saved: Vec<(u32, FormIdPair)> = match serde_json::from_value(value.clone()) {
-        Ok(v) => v,
-        Err(e) => {
-            log::warn!("load: form-id column '{column}' failed to decode for remap: {e}");
-            return HashMap::new();
-        }
-    };
+    }
 
     // pair → live entity id, from the freshly reloaded world.
     let pair_to_live: HashMap<FormIdPair, u32> = match (
@@ -314,8 +305,9 @@ pub fn build_form_id_remap(
     if !unresolved.is_empty() {
         log::warn!(
             "load: {} saved FormIdPair(s) did not resolve in the reloaded cell — \
-             their saved deltas will not apply (record removed from a plugin, or \
-             cell content changed between save and load):",
+             their saved deltas will not overlay (reference not resident after the \
+             reload, record removed from a plugin, or cell content changed between \
+             save and load):",
             unresolved.len()
         );
         for (old, pair) in unresolved.iter().take(20) {
@@ -327,6 +319,37 @@ pub fn build_form_id_remap(
     }
 
     remap
+}
+
+/// Decode the snapshot's form-id column as `(saved entity, FormIdPair)`
+/// rows. Empty when the registry has no form-id column, the snapshot lacks
+/// it, or it fails to decode (logged).
+fn saved_form_id_rows(registry: &SaveRegistry, snapshot: &Snapshot) -> Vec<(u32, FormIdPair)> {
+    let Some(column) = registry.form_id_column() else {
+        return Vec::new();
+    };
+    let Some(value) = snapshot.components.get(column) else {
+        return Vec::new();
+    };
+    serde_json::from_value(value.clone()).unwrap_or_else(|e| {
+        log::warn!("load: form-id column '{column}' failed to decode for remap: {e}");
+        Vec::new()
+    })
+}
+
+/// The saved `(entity, FormIdPair)` rows that [`build_form_id_remap`] could
+/// not match to a live entity. [`apply_deltas`] skips their rows, so a
+/// caller that owns an out-of-world store for non-resident references
+/// (#5054) can park their state there instead of dropping it.
+pub fn unresolved_form_id_pairs(
+    registry: &SaveRegistry,
+    snapshot: &Snapshot,
+    remap: &HashMap<u32, u32>,
+) -> Vec<(u32, FormIdPair)> {
+    saved_form_id_rows(registry, snapshot)
+        .into_iter()
+        .filter(|(old, _)| !remap.contains_key(old))
+        .collect()
 }
 
 /// Apply saved component deltas onto a freshly reloaded world, remapping
