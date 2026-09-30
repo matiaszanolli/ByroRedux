@@ -364,10 +364,16 @@ pub struct GpuLight {
 }
 
 impl GpuLight {
-    /// Stable frame-wide influence proxy used to rank the fixed-prefix GI
-    /// light scan. Kept on the canonical GPU light type so authored lights
-    /// and renderer-derived transported-field lights cannot grow different
-    /// copies of the ordering rule.
+    /// Stable frame-wide influence proxy that orders the point-light suffix
+    /// of the uploaded light array (directional lights stay pinned in front).
+    /// It no longer gates what GI sees — #4017 replaced the fixed-prefix GI
+    /// scan with `pathHitRadiance`'s per-hit top-K — but it still decides
+    /// which lights survive `upload_lights`' `MAX_LIGHTS` clamp (the
+    /// lowest-scoring tail drops, deterministically) and it is the key for
+    /// the re-sort after combustion field-derived lights are appended. Kept on
+    /// the canonical GPU light type so authored lights and renderer-derived
+    /// transported-field lights cannot grow different copies of the ordering
+    /// rule.
     pub fn gi_priority_score(&self) -> f32 {
         (self.color_type[0] + self.color_type[1] + self.color_type[2]) * self.position_radius[3]
     }
@@ -600,11 +606,14 @@ pub struct GpuCamera {
     /// the live exterior sky without widening the interior bypass — which
     /// is what #2226 removed and must not come back.
     ///
-    /// Populated on interiors from the surviving `SkyParamsRes` (its
-    /// lifetime matches the World, not the cell — see #1199 and
-    /// `cell_loader::unload`'s worldspace-scoped note), and falls back to
-    /// `SkyParams::default().zenith_color` when no exterior has loaded
-    /// this session, which is the pre-#3323 behaviour.
+    /// Populated on interiors from the canonical outdoor `SkyParamsRes`,
+    /// which every cell boot now carries, including a direct `--cell`
+    /// interior boot (`0572bfd5a`, #4902: there is no "no exterior loaded
+    /// yet" state and no render-time fallback). Only a non-cell harness with
+    /// no `SkyParamsRes` still uploads `SkyParams::default()`'s colour. Since
+    /// the SKYAL bake, the portal escape samples the outdoor sky cube along
+    /// the view ray (#4950) and reads this `.rgb` only as the fallback when
+    /// the cube is not live (`.w`).
     pub exterior_sky_tint: [f32; 4],
 }
 

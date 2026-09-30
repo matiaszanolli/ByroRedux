@@ -125,9 +125,11 @@ impl VulkanContext {
                 log::warn!("combustion surface-light readback failed: {error}");
             }
         }
-        // The app already sorts authored local lights for the fixed-prefix GI
-        // scan. Re-sort after adding field-derived lights using the canonical
-        // score carried by GpuLight itself; directional lights remain pinned.
+        // The app already sorts authored local lights by `gi_priority_score`
+        // so `upload_lights`' MAX_LIGHTS clamp drops the lowest-scoring tail
+        // (#4017 retired the fixed-prefix GI scan that ordering first served).
+        // Re-sort after adding field-derived lights using the canonical score
+        // carried by GpuLight itself; directional lights remain pinned.
         let directional_count = frame_lights
             .iter()
             .take_while(|light| light.color_type[3] > 1.5)
