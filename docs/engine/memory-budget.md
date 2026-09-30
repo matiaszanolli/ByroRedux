@@ -990,6 +990,28 @@ Formula: `width × height × 4 B` per texture × 3 textures.
 | 2560×1440 | ~14.7 MB | **~44.2 MB** |
 | 3840×2160 | ~33.2 MB | **~99.5 MB** |
 
+### egui debug overlay (`EguiPass`) — #4986
+
+[`crates/renderer/src/vulkan/egui_pass.rs`](../../crates/renderer/src/vulkan/egui_pass.rs)
+— egui-ash-renderer owns one GPU image per egui-managed texture, mainly the
+font atlas, which egui grows as glyph coverage grows. Since #4986 the pass
+also keeps a host-RAM `Color32` mirror of every such image
+(`EguiPass::image_mirrors`), because egui-ash-renderer 0.11's partial-delta
+path discards the texels outside the patch. `promote_partial_deltas` applies
+each partial delta to the mirror and uploads the whole image instead, so
+**every atlas growth or glyph addition is a full re-upload**: a fresh GPU
+image, with the old one retired through `pending_free` one frame later
+(covered by the all-slots fence wait).
+
+| Allocation | Owner | Size |
+|---|---|---|
+| Atlas / egui texture `VkImage` | egui-ash-renderer | `width × height × 4 B` per texture |
+| Retired image awaiting `pending_free` | egui-ash-renderer | one more image of the pre-update size, for one frame after each upload |
+| `image_mirrors` entry (`Arc<ColorImage>`, `Color32`) | host RAM, not VRAM | `width × height × 4 B` — equal to the GPU image, lives as long as it |
+
+Typically a few MiB each for the atlas. Entries leave with the texture's
+deferred free.
+
 ## Sky and Ground Cover (fixed-size)
 
 Resolution-independent resources the SKYAL sky and EXAL ground-cover
