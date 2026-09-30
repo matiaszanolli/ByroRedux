@@ -10,6 +10,7 @@
 use super::*;
 
 use super::cdb::apply_cdb_pbr_fallback;
+use byroredux_sfmaterial::CdbMaterial;
 use byroredux_nif::import::{ImportedMaterial, ImportedTextureSource, MaterialTextureSet};
 
 /// What [`merge_external_material`] actually did, for the caller and for
@@ -183,6 +184,103 @@ fn fill(
     }
 }
 
+/// #3398 Phase 2 — translate one resolved CDB material into the
+/// canonical `ImportedMaterial` payload. Pure role translation at the
+/// NIFAL boundary: no game branch, no render-time fallback.
+///
+/// **Texture slots** (measured census, 2026-09-30): 0=color, 1=normal,
+/// 7=emissive and 6=height land in their canonical
+/// `MaterialTextureSet` roles through the same NIF-first [`fill`]
+/// precedence the BGSM/BGEM arms use. Slots 2/3/4/5/8 (opacity,
+/// roughness, metalness, AO, transmissive) are deliberately NOT
+/// forwarded: `MaterialTextureSet` has no such fields, and the five
+/// Starfield kinds stay in nifal.md's parked table under the #4429 XOR
+/// guard until the struct + GPU slots grow them.
+///
+/// **Scalars**: `MaterialParamFloat` values stay untranslated — which
+/// param index is roughness versus metalness is not yet verified, and a
+/// guess would poison `roughness_override`/`metalness_override` for
+/// every Starfield surface. Alpha/glass/translucency settings carry
+/// field names, not positions, so they DO land.
+fn apply_cdb_material(
+    material: &mut ImportedMaterial,
+    cdb_mat: &CdbMaterial,
+    pool: &mut byroredux_core::string::StringPool,
+    touched: &mut bool,
+    texture_exists: &dyn Fn(&str) -> bool,
+) {
+    // #1352-equivalent for the CDB: an authored Starfield material is a
+    // resolved external PBR description — Disney lobe + the
+    // format-agnostic glass provenance (#4283). `from_bgsm` stays clear
+    // (FO4 spec-glossiness convention only).
+    material.is_pbr = true;
+    material.external_material_resolved = true;
+
+    for (slot, path) in &cdb_mat.textures {
+        match *slot {
+            byroredux_sfmaterial::SLOT_COLOR => fill(
+                &mut material.textures.base_color,
+                path,
+                touched,
+                pool,
+                texture_exists,
+            ),
+            byroredux_sfmaterial::SLOT_NORMAL => fill(
+                &mut material.textures.normal,
+                path,
+                touched,
+                pool,
+                texture_exists,
+            ),
+            byroredux_sfmaterial::SLOT_EMISSIVE => fill(
+                &mut material.textures.emissive,
+                path,
+                touched,
+                pool,
+                texture_exists,
+            ),
+            byroredux_sfmaterial::SLOT_HEIGHT => fill(
+                &mut material.textures.height,
+                path,
+                touched,
+                pool,
+                texture_exists,
+            ),
+            // Parked slots (opacity/roughness/metal/ao/transmissive):
+            // present in the CDB, no canonical destination yet. See the
+            // nifal.md parked table + the #4429 XOR guard.
+            _ => {}
+        }
+    }
+
+    // Starfield's flat-colour materials: an enabled TextureReplacement
+    // authors a solid diffuse INSTEAD of any texture (36,866 corpus
+    // instances; the alpha channel is carried but not consumed yet).
+    if let Some([r, g, b, _a]) = cdb_mat.flat_color {
+        material.diffuse_color = [r, g, b];
+        *touched = true;
+    }
+
+    if let Some(threshold) = cdb_mat.alpha_test_threshold {
+        if threshold > 0.0 {
+            material.alpha_test = true;
+            material.alpha_threshold = threshold;
+            *touched = true;
+        }
+    }
+    if cdb_mat.is_glass == Some(true) {
+        material.thin_glass = true;
+        *touched = true;
+    }
+    if cdb_mat.use_sss == Some(true) {
+        material.has_translucency = true;
+        if let Some(scale) = cdb_mat.transmissive_scale {
+            material.translucency_transmissive_scale = scale;
+        }
+        *touched = true;
+    }
+}
+
 /// Merge a BGSM, BGEM, or Starfield `.mat` sidecar into the
 /// source-normalized NIF material payload.
 ///
@@ -321,6 +419,18 @@ pub(crate) fn merge_external_material(
     // one routing flag and forwards no authored field. Phase 2 should return
     // `Merged` once a CDB lookup actually supplies data.
     if starfield_cdb_gate && path.ends_with(".mat") {
+        // #3398 Phase 2 — resolve through the CDB material index first;
+        // the Phase-1 PBR-routing flip is now the lookup-MISS fallback.
+        if let Some(cdb_mat) = provider.lookup_cdb_material(&path) {
+            apply_cdb_material(material, &cdb_mat, pool, &mut touched, texture_exists);
+            let outcome = if touched {
+                MergeOutcome::Merged
+            } else {
+                MergeOutcome::PresenceOnly
+            };
+            trace_merge_outcome(&path, outcome);
+            return outcome;
+        }
         let outcome = apply_cdb_pbr_fallback(material, &path);
         trace_merge_outcome(&path, outcome);
         return outcome;
@@ -418,6 +528,16 @@ pub(crate) fn merge_external_material(
         // for a Starfield session would be the same as the two arms above,
         // so wire it now rather than leave a hole for that change to fall in.
         if cdb_pbr_fallback {
+            if let Some(cdb_mat) = provider.lookup_cdb_material(&path) {
+                apply_cdb_material(material, &cdb_mat, pool, &mut touched, texture_exists);
+                let outcome = if touched {
+                    MergeOutcome::Merged
+                } else {
+                    MergeOutcome::PresenceOnly
+                };
+                trace_merge_outcome(&path, outcome);
+                return outcome;
+            }
             let outcome = apply_cdb_pbr_fallback(material, &path);
             trace_merge_outcome(&path, outcome);
             return outcome;
@@ -519,6 +639,14 @@ fn merge_bgsm_arm(
         // warning's whole premise ("keeps its NIF-native keyword-
         // classified material") is false once the flip runs.
         if cdb_pbr_fallback {
+            if let Some(cdb_mat) = provider.lookup_cdb_material(path) {
+                apply_cdb_material(material, &cdb_mat, pool, touched, texture_exists);
+                return Some(if *touched {
+                    MergeOutcome::Merged
+                } else {
+                    MergeOutcome::PresenceOnly
+                });
+            }
             return Some(apply_cdb_pbr_fallback(material, path));
         }
         // #2601 — `resolve_bgsm` already logged WHY the resolve failed
@@ -1162,6 +1290,14 @@ fn merge_bgem_arm(
     let Some(bgem) = provider.resolve_bgem(path) else {
         // #3230 — sibling of the BGSM arm's fallback above.
         if cdb_pbr_fallback {
+            if let Some(cdb_mat) = provider.lookup_cdb_material(path) {
+                apply_cdb_material(material, &cdb_mat, pool, touched, texture_exists);
+                return Some(if *touched {
+                    MergeOutcome::Merged
+                } else {
+                    MergeOutcome::PresenceOnly
+                });
+            }
             return Some(apply_cdb_pbr_fallback(material, path));
         }
         // #2601 — sibling of the BGSM arm's diagnostic above. Same

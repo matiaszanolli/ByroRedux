@@ -96,6 +96,12 @@ pub struct CdbMaterial {
     pub use_sss: Option<bool>,
     /// `TranslucencySettings.TransmissiveScale`.
     pub transmissive_scale: Option<f32>,
+    /// `TextureReplacement.Color` (rgba) from the first walked texture
+    /// set carrying an enabled replacement — Starfield's flat-color
+    /// materials author a solid colour INSTEAD of any texture (measured:
+    /// 36,866 corpus instances, `Color` + `Enabled` shapes only, never a
+    /// path; 2026-09-30 census).
+    pub flat_color: Option<[f32; 4]>,
 }
 
 /// Compact per-CDB material index. Build once per CDB payload, share
@@ -110,8 +116,11 @@ pub struct MaterialIndex {
     rows: Vec<Row>,
     /// Object → ID-shaped child references.
     child_refs: std::collections::HashMap<u32, Vec<(RefKind, u32, u8)>>,
-    /// Object → `MRTextureFile` slots (slot, path).
+    /// Object → `MRTextureFile`/`TextureFile` slots (slot, path).
     textures: std::collections::HashMap<u32, Vec<(u8, String)>>,
+    /// Object → `TextureReplacement` (rgba, enabled) — first enabled
+    /// entry wins at lookup.
+    flat_colors: std::collections::HashMap<u32, ([f32; 4], Option<bool>)>,
     /// Object → `MaterialParamFloat` (Index, Value).
     param_floats: std::collections::HashMap<u32, Vec<(u8, f32)>>,
     alpha: std::collections::HashMap<u32, (Option<f32>, Option<bool>)>,
@@ -281,6 +290,15 @@ impl MaterialIndex {
                 }
             }
         }
+        if out.flat_color.is_none() {
+            if let Some((color, enabled)) = self.flat_colors.get(&tex_set) {
+                // `Enabled` absent (4,481 corpus instances) cannot gate —
+                // treat as enabled; only an explicit false skips.
+                if *enabled != Some(false) {
+                    out.flat_color = Some(*color);
+                }
+            }
+        }
     }
 
     /// Scalars and settings carried directly on one object (params,
@@ -327,7 +345,7 @@ impl MaterialIndex {
             return;
         };
         match class_name {
-            "BSMaterial::MRTextureFile" => {
+            "BSMaterial::MRTextureFile" | "BSMaterial::TextureFile" => {
                 let Some(Value::String(path)) = o.fields.get("FileName") else {
                     return;
                 };
@@ -335,6 +353,16 @@ impl MaterialIndex {
                     .entry(row.object)
                     .or_default()
                     .push((row.index, path.clone()));
+            }
+            "BSMaterial::TextureReplacement" => {
+                let color = xmcolor4(o, "Color");
+                let enabled = match o.fields.get("Enabled") {
+                    Some(Value::Bool(v)) => Some(*v),
+                    _ => None,
+                };
+                if let Some(color) = color {
+                    self.flat_colors.entry(row.object).or_insert((color, enabled));
+                }
             }
             "BSMaterial::LayerID"
             | "BSMaterial::MaterialID"
@@ -415,6 +443,23 @@ impl MaterialIndex {
             _ => {}
         }
     }
+}
+
+/// An `XMFLOAT4` value reached through one named wrapper field —
+/// `Value` for a `BSMaterial::Color` component, `Color` inside a
+/// `TextureReplacement` (`.Color.Value.x…`).
+fn xmcolor4(o: &crate::value::ObjectInstance, wrapper: &str) -> Option<[f32; 4]> {
+    let Value::Object(color) = o.fields.get(wrapper)? else {
+        return None;
+    };
+    let Value::Object(inner) = color.fields.get("Value")? else {
+        return None;
+    };
+    let g = |n: &str| match inner.fields.get(n) {
+        Some(Value::Float(v)) => Some(*v),
+        _ => None,
+    };
+    Some([g("x")?, g("y")?, g("z")?, g("w")?])
 }
 
 /// `Some(dbid)` when the object carries an `ID` field of the
@@ -557,8 +602,12 @@ fn stream_list(state: &mut State<'_>, mut f: impl FnMut(&Value)) -> Result<()> {
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
+
+/// #3398 — synthetic CDB fixture shared with the downstream merge-arm
+/// tests in `byroredux`. `#[doc(hidden)]`: an implementation detail of
+/// the test suite, not API.
+#[doc(hidden)]
+pub mod test_support {
     use super::*;
 
     // ── synthetic CDB builder ────────────────────────────────────────
@@ -571,54 +620,54 @@ mod tests {
     /// STRT payload: a flat NUL-separated blob with offset 0 = "" (the
     /// leading NUL), names following.
     fn strt(strings: &[&str]) -> Vec<u8> {
-        // Leading NUL = the empty string at offset 0; strings[0] IS that
-        // empty string, so it adds nothing and is skipped.
-        let mut blob = vec![0u8];
-        for s in &strings[1..] {
-            blob.extend_from_slice(s.as_bytes());
-            blob.push(0);
-        }
-        blob
+    // Leading NUL = the empty string at offset 0; strings[0] IS that
+    // empty string, so it adds nothing and is skipped.
+    let mut blob = vec![0u8];
+    for s in &strings[1..] {
+        blob.extend_from_slice(s.as_bytes());
+        blob.push(0);
+    }
+    blob
     }
 
     /// STRT offset of `name` under the blob layout above: 1 + the sum of
     /// (len+1) for every preceding name (names[0] is the empty string at
     /// offset 0, so real names start at 1).
     fn strt_offsets<'a>(strings: &[&'a str]) -> std::collections::HashMap<&'a str, i32> {
-        let mut map: std::collections::HashMap<&str, i32> = std::collections::HashMap::new();
-        let mut off = 1i32;
-        for (i, s) in strings.iter().enumerate() {
-            if i == 0 {
-                continue; // the empty string lives at 0
-            }
-            map.insert(*s, off);
-            off += s.len() as i32 + 1;
+    let mut map: std::collections::HashMap<&str, i32> = std::collections::HashMap::new();
+    let mut off = 1i32;
+    for (i, s) in strings.iter().enumerate() {
+        if i == 0 {
+            continue; // the empty string lives at 0
         }
-        map
+        map.insert(*s, off);
+        off += s.len() as i32 + 1;
+    }
+    map
     }
 
     /// Field declaration: (name offset, type ref, offset, size).
     type FieldDecl = (i32, i32, u16, u16);
 
     fn clas(name_off: i32, type_id: u32, flags: u16, fields: &[FieldDecl]) -> Vec<u8> {
-        let mut p = Vec::new();
-        p.extend_from_slice(&name_off.to_le_bytes());
-        p.extend_from_slice(&type_id.to_le_bytes());
-        p.extend_from_slice(&flags.to_le_bytes());
-        p.extend_from_slice(&(fields.len() as u16).to_le_bytes());
-        for (n, t, o, s) in fields {
-            p.extend_from_slice(&n.to_le_bytes());
-            p.extend_from_slice(&t.to_le_bytes());
-            p.extend_from_slice(&o.to_le_bytes());
-            p.extend_from_slice(&s.to_le_bytes());
-        }
-        p
+    let mut p = Vec::new();
+    p.extend_from_slice(&name_off.to_le_bytes());
+    p.extend_from_slice(&type_id.to_le_bytes());
+    p.extend_from_slice(&flags.to_le_bytes());
+    p.extend_from_slice(&(fields.len() as u16).to_le_bytes());
+    for (n, t, o, s) in fields {
+        p.extend_from_slice(&n.to_le_bytes());
+        p.extend_from_slice(&t.to_le_bytes());
+        p.extend_from_slice(&o.to_le_bytes());
+        p.extend_from_slice(&s.to_le_bytes());
+    }
+    p
     }
 
     fn push_chunk(bytes: &mut Vec<u8>, kind_fourcc: &[u8; 4], payload: &[u8]) {
-        bytes.extend_from_slice(kind_fourcc);
-        bytes.extend_from_slice(&(payload.len() as u32).to_le_bytes());
-        bytes.extend_from_slice(payload);
+    bytes.extend_from_slice(kind_fourcc);
+    bytes.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+    bytes.extend_from_slice(payload);
     }
 
     /// A string builtin type ref (`0xFFFFFF02`).
@@ -629,6 +678,8 @@ mod tests {
     const T_U32: i32 = 0xFFFF_FF0Du32 as i32;
     /// A u16 builtin type ref (`ComponentInfo::Type` / `::Index`).
     const T_U16: i32 = 0xFFFF_FF0Bu32 as i32;
+    /// A Float builtin type ref (`XMFLOAT4` channels).
+    const T_FLOAT: i32 = 0xFFFF_FF11u32 as i32;
     /// A List builtin type ref.
     const T_LIST: i32 = 0xFFFF_FF03u32 as i32;
     /// A Map builtin type ref.
@@ -643,228 +694,280 @@ mod tests {
     /// The graph mirrors the measured shape:
     ///   material 10 ──LayerID(0)──> layer 11 ──MaterialID──> 12
     ///   12 ──TextureSetID──> 13; 13 carries MRTextureFile slots 0/1/3.
-    fn synthetic_material_cdb() -> Vec<u8> {
-        let names = [
-            "", // STRT index 0: empty string
-            "BSComponentDB2::ID",
-            "BSResource::ID",
-            "BSComponentDB2::DBFileIndex::ComponentInfo",
-            "BSComponentDB2::DBFileIndex::ObjectInfo",
-            "BSComponentDB2::DBFileIndex",
-            "Value",
-            "Dir",
-            "File",
-            "Ext",
-            "ObjectID",
-            "Type",
-            "Index",
-            "DBID",
-            "HasData",
-            "Parent",
-            "ParentPersistentID",
-            "PersistentID",
-            "Objects",
-            "Components",
-            "Edges",
-            "ComponentTypes",
-            "Optimized",
-            "BSComponentDB::CTName",
-            "m_Name",
-            "BSMaterial::LayerID",
-            "ID",
-            "BSMaterial::MaterialID",
-            "BSMaterial::TextureSetID",
-            "BSMaterial::MRTextureFile",
-            "FileName",
-        ];
-        // STRT offsets (index into the STRT chunk's own table; name i sits
-        // at table slot i). parse_class resolves `strings.get(name_offset)`
-        // where offset 0 is the empty string.
-        let n = strt_offsets(&names);
-        let g = |s: &str| n[s];
+    pub fn synthetic_material_cdb() -> Vec<u8> {
+    let names = [
+        "", // STRT index 0: empty string
+        "BSComponentDB2::ID",
+        "BSResource::ID",
+        "BSComponentDB2::DBFileIndex::ComponentInfo",
+        "BSComponentDB2::DBFileIndex::ObjectInfo",
+        "BSComponentDB2::DBFileIndex",
+        "Value",
+        "Dir",
+        "File",
+        "Ext",
+        "ObjectID",
+        "Type",
+        "Index",
+        "DBID",
+        "HasData",
+        "Parent",
+        "ParentPersistentID",
+        "PersistentID",
+        "Objects",
+        "Components",
+        "Edges",
+        "ComponentTypes",
+        "Optimized",
+        "BSComponentDB::CTName",
+        "m_Name",
+        "BSMaterial::LayerID",
+        "ID",
+        "BSMaterial::MaterialID",
+        "BSMaterial::TextureSetID",
+        "BSMaterial::MRTextureFile",
+        "FileName",
+        "XMFLOAT4",
+        "x",
+        "y",
+        "z",
+        "w",
+        "BSMaterial::Color",
+        "Color",
+        "Enabled",
+        "BSMaterial::TextureReplacement",
+    ];
+    // STRT offsets (index into the STRT chunk's own table; name i sits
+    // at table slot i). parse_class resolves `strings.get(name_offset)`
+    // where offset 0 is the empty string.
+    let n = strt_offsets(&names);
+    let g = |s: &str| n[s];
 
-        let is_struct = crate::ClassFlags::IS_STRUCT;
-        // Type refs for classes use the target's name_offset (the
-        // canonical type-map key).
-        let t_id_class = g("BSComponentDB2::ID");
-        let t_rid_class = g("BSResource::ID");
-        let t_cinfo = g("BSComponentDB2::DBFileIndex::ComponentInfo");
-        let t_oinfo = g("BSComponentDB2::DBFileIndex::ObjectInfo");
-        let classes: Vec<Vec<u8>> = vec![
-            clas(g("BSComponentDB2::ID"), 1, is_struct, &[(g("Value"), T_U32, 0, 4)]),
-            clas(
-                g("BSResource::ID"),
-                2,
-                is_struct,
-                &[(g("Dir"), T_U32, 0, 4), (g("File"), T_U32, 4, 4), (g("Ext"), T_U32, 8, 4)],
-            ),
-            clas(
-                g("BSComponentDB2::DBFileIndex::ComponentInfo"),
-                3,
-                is_struct,
-                &[
-                    (g("ObjectID"), t_id_class, 0, 4),
-                    (g("Type"), T_U16, 4, 2),
-                    (g("Index"), T_U16, 6, 2),
-                ],
-            ),
-            clas(
-                g("BSComponentDB2::DBFileIndex::ObjectInfo"),
-                4,
-                is_struct,
-                &[
-                    (g("DBID"), t_id_class, 0, 4),
-                    (g("HasData"), T_BOOL, 4, 1),
-                    (g("Parent"), t_id_class, 5, 4),
-                    (g("ParentPersistentID"), t_rid_class, 9, 12),
-                    (g("PersistentID"), t_rid_class, 21, 12),
-                ],
-            ),
-            clas(
-                g("BSComponentDB2::DBFileIndex"),
-                5,
-                is_struct,
-                &[
-                    (g("Objects"), T_LIST, 0, 8),
-                    (g("Components"), T_LIST, 8, 8),
-                    (g("Edges"), T_LIST, 16, 8),
-                    (g("ComponentTypes"), T_MAP, 24, 8),
-                    (g("Optimized"), T_BOOL, 32, 1),
-                ],
-            ),
-            clas(g("BSComponentDB::CTName"), 6, is_struct, &[(g("m_Name"), T_STRING, 0, 4)]),
-            clas(g("BSMaterial::LayerID"), 7, is_struct, &[(g("ID"), t_id_class, 0, 4)]),
-            clas(g("BSMaterial::MaterialID"), 8, is_struct, &[(g("ID"), t_id_class, 0, 4)]),
-            clas(g("BSMaterial::TextureSetID"), 9, is_struct, &[(g("ID"), t_id_class, 0, 4)]),
-            clas(g("BSMaterial::MRTextureFile"), 10, is_struct, &[(g("FileName"), T_STRING, 0, 4)]),
-        ];
+    let is_struct = crate::ClassFlags::IS_STRUCT;
+    // Type refs for classes use the target's name_offset (the
+    // canonical type-map key).
+    let t_id_class = g("BSComponentDB2::ID");
+    let t_rid_class = g("BSResource::ID");
+    let t_cinfo = g("BSComponentDB2::DBFileIndex::ComponentInfo");
+    let t_oinfo = g("BSComponentDB2::DBFileIndex::ObjectInfo");
+    let t_color = g("BSMaterial::Color");
+    let t_texrep = g("BSMaterial::TextureReplacement");
+    let classes: Vec<Vec<u8>> = vec![
+        clas(g("BSComponentDB2::ID"), 1, is_struct, &[(g("Value"), T_U32, 0, 4)]),
+        clas(
+            g("BSResource::ID"),
+            2,
+            is_struct,
+            &[(g("Dir"), T_U32, 0, 4), (g("File"), T_U32, 4, 4), (g("Ext"), T_U32, 8, 4)],
+        ),
+        clas(
+            g("BSComponentDB2::DBFileIndex::ComponentInfo"),
+            3,
+            is_struct,
+            &[
+                (g("ObjectID"), t_id_class, 0, 4),
+                (g("Type"), T_U16, 4, 2),
+                (g("Index"), T_U16, 6, 2),
+            ],
+        ),
+        clas(
+            g("BSComponentDB2::DBFileIndex::ObjectInfo"),
+            4,
+            is_struct,
+            &[
+                (g("DBID"), t_id_class, 0, 4),
+                (g("HasData"), T_BOOL, 4, 1),
+                (g("Parent"), t_id_class, 5, 4),
+                (g("ParentPersistentID"), t_rid_class, 9, 12),
+                (g("PersistentID"), t_rid_class, 21, 12),
+            ],
+        ),
+        clas(
+            g("BSComponentDB2::DBFileIndex"),
+            5,
+            is_struct,
+            &[
+                (g("Objects"), T_LIST, 0, 8),
+                (g("Components"), T_LIST, 8, 8),
+                (g("Edges"), T_LIST, 16, 8),
+                (g("ComponentTypes"), T_MAP, 24, 8),
+                (g("Optimized"), T_BOOL, 32, 1),
+            ],
+        ),
+        clas(g("BSComponentDB::CTName"), 6, is_struct, &[(g("m_Name"), T_STRING, 0, 4)]),
+        clas(g("BSMaterial::LayerID"), 7, is_struct, &[(g("ID"), t_id_class, 0, 4)]),
+        clas(g("BSMaterial::MaterialID"), 8, is_struct, &[(g("ID"), t_id_class, 0, 4)]),
+        clas(g("BSMaterial::TextureSetID"), 9, is_struct, &[(g("ID"), t_id_class, 0, 4)]),
+        clas(g("BSMaterial::MRTextureFile"), 10, is_struct, &[(g("FileName"), T_STRING, 0, 4)]),
+        // 10: XMFLOAT4 { x, y, z, w }
+        clas(
+            g("XMFLOAT4"),
+            11,
+            is_struct,
+            &[
+                (g("x"), T_FLOAT, 0, 4),
+                (g("y"), T_FLOAT, 4, 4),
+                (g("z"), T_FLOAT, 8, 4),
+                (g("w"), T_FLOAT, 12, 4),
+            ],
+        ),
+        // 11: BSMaterial::Color { Value: XMFLOAT4 }
+        clas(g("BSMaterial::Color"), 12, is_struct, &[(g("Value"), g("XMFLOAT4"), 0, 16)]),
+        // 12: TextureReplacement { Color, Enabled }
+        clas(
+            g("BSMaterial::TextureReplacement"),
+            13,
+            is_struct,
+            &[(g("Color"), t_color, 0, 16), (g("Enabled"), T_BOOL, 16, 1)],
+        ),
+    ];
 
-        let strt_payload = strt(&names);
+    let strt_payload = strt(&names);
 
-        // ── DBFileIndex instance payload + side chunks ──
-        // Inline fields by read_order: Optimized (Bool) at offset 32.
-        let mut dbfile_objt = Vec::new();
-        dbfile_objt.extend_from_slice(&g("BSComponentDB2::DBFileIndex").to_le_bytes());
-        dbfile_objt.push(0u8); // Optimized = false
+    // ── DBFileIndex instance payload + side chunks ──
+    // Inline fields by read_order: Optimized (Bool) at offset 32.
+    let mut dbfile_objt = Vec::new();
+    dbfile_objt.extend_from_slice(&g("BSComponentDB2::DBFileIndex").to_le_bytes());
+    dbfile_objt.push(0u8); // Optimized = false
 
-        // Objects LIST: one row — DBID 10, PersistentID (stem, dir, ext).
-        let (stem_crc, dir_crc) = material_key("materials\\test\\widget.mat");
-        let mut objects = Vec::new();
-        objects.extend_from_slice(&t_oinfo.to_le_bytes());
-        objects.extend_from_slice(&1i32.to_le_bytes()); // count
-        {
-            let dbid = 10u32;
-            objects.extend_from_slice(&dbid.to_le_bytes()); // DBID.Value
-            objects.push(0); // HasData
-            objects.extend_from_slice(&0u32.to_le_bytes()); // Parent.Value
-            objects.extend_from_slice(&0u32.to_le_bytes()); // PPID Dir
-            objects.extend_from_slice(&0u32.to_le_bytes()); // PPID File
-            objects.extend_from_slice(&0u32.to_le_bytes()); // PPID Ext
-            // PersistentID in read_order byte layout: Dir←stem crc,
-            // File←"mat" packed ASCII, Ext←dir crc (the labels-are-rotated
-            // shape measured on the real CDB).
-            objects.extend_from_slice(&stem_crc.to_le_bytes());
-            objects.extend_from_slice(&0x0074_616Du32.to_le_bytes());
-            objects.extend_from_slice(&dir_crc.to_le_bytes());
-        }
+    // Objects LIST: one row — DBID 10, PersistentID (stem, dir, ext).
+    let (stem_crc, dir_crc) = material_key("materials\\test\\widget.mat");
+    let mut objects = Vec::new();
+    objects.extend_from_slice(&t_oinfo.to_le_bytes());
+    objects.extend_from_slice(&1i32.to_le_bytes()); // count
+    {
+        let dbid = 10u32;
+        objects.extend_from_slice(&dbid.to_le_bytes()); // DBID.Value
+        objects.push(0); // HasData
+        objects.extend_from_slice(&0u32.to_le_bytes()); // Parent.Value
+        objects.extend_from_slice(&0u32.to_le_bytes()); // PPID Dir
+        objects.extend_from_slice(&0u32.to_le_bytes()); // PPID File
+        objects.extend_from_slice(&0u32.to_le_bytes()); // PPID Ext
+        // PersistentID in read_order byte layout: Dir←stem crc,
+        // File←"mat" packed ASCII, Ext←dir crc (the labels-are-rotated
+        // shape measured on the real CDB).
+        objects.extend_from_slice(&stem_crc.to_le_bytes());
+        objects.extend_from_slice(&0x0074_616Du32.to_le_bytes());
+        objects.extend_from_slice(&dir_crc.to_le_bytes());
+    }
 
-        // Components LIST: rows for stream instances 2.., in order:
-        //   obj 10: LayerID(0)          → instance 2
-        //   obj 11: MaterialID(0)       → instance 3
-        //   obj 12: TextureSetID(0)     → instance 4
-        //   obj 13: MRTextureFile(0)    → instance 5
-        //   obj 13: MRTextureFile(1)    → instance 6
-        //   obj 13: MRTextureFile(3)    → instance 7
-        //   obj 10: CTName(0)           → instance 8 (noise)
-        let component_rows: &[(u32, u32, u32)] = &[
-            (10, 7, 0),
-            (11, 8, 0),
-            (12, 9, 0),
-            (13, 10, 0),
-            (13, 10, 1),
-            (13, 10, 3),
-            (10, 6, 0),
-        ];
-        let mut components = Vec::new();
-        components.extend_from_slice(&t_cinfo.to_le_bytes());
-        components.extend_from_slice(&(component_rows.len() as i32).to_le_bytes());
-        for (obj, ty, index) in component_rows {
-            components.extend_from_slice(&obj.to_le_bytes());
-            components.extend_from_slice(&(*ty as u16).to_le_bytes());
-            components.extend_from_slice(&(*index as u16).to_le_bytes());
-        }
+    // Components LIST: rows for stream instances 2.., in order:
+    //   obj 10: LayerID(0)            → instance 2
+    //   obj 11: MaterialID(0)         → instance 3
+    //   obj 12: TextureSetID(0)       → instance 4
+    //   obj 13: MRTextureFile(0)      → instance 5
+    //   obj 13: MRTextureFile(1)      → instance 6
+    //   obj 13: MRTextureFile(3)      → instance 7
+    //   obj 13: TextureReplacement(0) → instance 8 (flat colour)
+    //   obj 10: CTName(0)             → instance 9 (noise)
+    let component_rows: &[(u32, u32, u32)] = &[
+        (10, 7, 0),
+        (11, 8, 0),
+        (12, 9, 0),
+        (13, 10, 0),
+        (13, 10, 1),
+        (13, 10, 3),
+        (13, 13, 0),
+        (10, 6, 0),
+    ];
+    let mut components = Vec::new();
+    components.extend_from_slice(&t_cinfo.to_le_bytes());
+    components.extend_from_slice(&(component_rows.len() as i32).to_le_bytes());
+    for (obj, ty, index) in component_rows {
+        components.extend_from_slice(&obj.to_le_bytes());
+        components.extend_from_slice(&(*ty as u16).to_le_bytes());
+        components.extend_from_slice(&(*index as u16).to_le_bytes());
+    }
 
-        // Edges LIST: empty.
-        let mut edges = Vec::new();
-        edges.extend_from_slice(&t_id_class.to_le_bytes());
-        edges.extend_from_slice(&0i32.to_le_bytes());
+    // Edges LIST: empty.
+    let mut edges = Vec::new();
+    edges.extend_from_slice(&t_id_class.to_le_bytes());
+    edges.extend_from_slice(&0i32.to_le_bytes());
 
-        // ComponentTypes MAPC: empty (the index never reads it; the
-        // reader consumes it generically).
-        let mut component_types = Vec::new();
-        component_types.extend_from_slice(&T_U32.to_le_bytes());
-        component_types.extend_from_slice(&T_U32.to_le_bytes());
-        component_types.extend_from_slice(&0i32.to_le_bytes());
+    // ComponentTypes MAPC: empty (the index never reads it; the
+    // reader consumes it generically).
+    let mut component_types = Vec::new();
+    component_types.extend_from_slice(&T_U32.to_le_bytes());
+    component_types.extend_from_slice(&T_U32.to_le_bytes());
+    component_types.extend_from_slice(&0i32.to_le_bytes());
 
-        // ── component stream payloads ──
-        let ctname_objt = {
-            let mut p = Vec::new();
-            p.extend_from_slice(&g("BSComponentDB::CTName").to_le_bytes());
-            let name = b"widget_material1";
-            p.extend_from_slice(&(name.len() as u16).to_le_bytes());
-            p.extend_from_slice(name);
-            p
-        };
-        let layer_objt = id_objt(g("BSMaterial::LayerID"), 11);
-        let material_objt = id_objt(g("BSMaterial::MaterialID"), 12);
-        let texset_objt = id_objt(g("BSMaterial::TextureSetID"), 13);
-        let tex0 = texture_objt(g("BSMaterial::MRTextureFile"), "Data\\Textures\\widget_color.DDS");
-        let tex1 = texture_objt(g("BSMaterial::MRTextureFile"), "Data\\Textures\\widget_normal.DDS");
-        let tex3 = texture_objt(g("BSMaterial::MRTextureFile"), "Data\\Textures\\widget_rough.DDS");
+    // ── component stream payloads ──
+    let ctname_objt = {
+        let mut p = Vec::new();
+        p.extend_from_slice(&g("BSComponentDB::CTName").to_le_bytes());
+        let name = b"widget_material1";
+        p.extend_from_slice(&(name.len() as u16).to_le_bytes());
+        p.extend_from_slice(name);
+        p
+    };
+    let layer_objt = id_objt(g("BSMaterial::LayerID"), 11);
+    let material_objt = id_objt(g("BSMaterial::MaterialID"), 12);
+    let texset_objt = id_objt(g("BSMaterial::TextureSetID"), 13);
+    let tex0 = texture_objt(g("BSMaterial::MRTextureFile"), "Data\\Textures\\widget_color.DDS");
+    let tex1 = texture_objt(g("BSMaterial::MRTextureFile"), "Data\\Textures\\widget_normal.DDS");
+    let tex3 = texture_objt(g("BSMaterial::MRTextureFile"), "Data\\Textures\\widget_rough.DDS");
+    // TextureReplacement: Color.Value = (0.25, 0.5, 0.75, 1.0), Enabled.
+    // Inline class fields carry no per-field type tag — the class layout
+    // (Color → BSMaterial::Color → Value → XMFLOAT4) drives the read, so
+    // the payload after the instance type ref is just 16 float bytes +
+    // the Enabled bool.
+    let mut texrep = Vec::new();
+    texrep.extend_from_slice(&t_texrep.to_le_bytes());
+    for f in [0.25f32, 0.5, 0.75, 1.0] {
+        texrep.extend_from_slice(&f.to_le_bytes());
+    }
+    texrep.push(1u8); // Enabled
 
-        // ── assemble ──
-        let mut bytes = Vec::new();
-        bytes.extend_from_slice(&0x4854_4542u32.to_le_bytes()); // BETH
-        bytes.extend_from_slice(&8u32.to_le_bytes()); // header size
-        bytes.extend_from_slice(&4u32.to_le_bytes()); // file version
-        // chunk count incl. BETH: STRT + TYPE + one CLAS per class + OBJT
-        // + 3 LIST + MAPC + 7 stream objects
-        let chunk_count = 1 + 1 + 1 + classes.len() + 1 + 3 + 1 + 7;
-        bytes.extend_from_slice(&(chunk_count as u32).to_le_bytes());
-        push_chunk(&mut bytes, b"STRT", &strt_payload);
-        push_chunk(&mut bytes, b"TYPE", &(classes.len() as u32).to_le_bytes());
-        for c in &classes {
-            push_chunk(&mut bytes, b"CLAS", c);
-        }
-        push_chunk(&mut bytes, b"OBJT", &dbfile_objt);
-        push_chunk(&mut bytes, b"LIST", &objects);
-        push_chunk(&mut bytes, b"LIST", &components);
-        push_chunk(&mut bytes, b"LIST", &edges);
-        push_chunk(&mut bytes, b"MAPC", &component_types);
-        push_chunk(&mut bytes, b"OBJT", &layer_objt);
-        push_chunk(&mut bytes, b"OBJT", &material_objt);
-        push_chunk(&mut bytes, b"OBJT", &texset_objt);
-        push_chunk(&mut bytes, b"OBJT", &tex0);
-        push_chunk(&mut bytes, b"OBJT", &tex1);
-        push_chunk(&mut bytes, b"OBJT", &tex3);
-        push_chunk(&mut bytes, b"OBJT", &ctname_objt);
-        bytes
+    // ── assemble ──
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&0x4854_4542u32.to_le_bytes()); // BETH
+    bytes.extend_from_slice(&8u32.to_le_bytes()); // header size
+    bytes.extend_from_slice(&4u32.to_le_bytes()); // file version
+    // chunk count incl. BETH: STRT + TYPE + one CLAS per class + OBJT
+    // + 3 LIST + MAPC + 8 stream objects
+    let chunk_count = 1 + 1 + 1 + classes.len() + 1 + 3 + 1 + 8;
+    bytes.extend_from_slice(&(chunk_count as u32).to_le_bytes());
+    push_chunk(&mut bytes, b"STRT", &strt_payload);
+    push_chunk(&mut bytes, b"TYPE", &(classes.len() as u32).to_le_bytes());
+    for c in &classes {
+        push_chunk(&mut bytes, b"CLAS", c);
+    }
+    push_chunk(&mut bytes, b"OBJT", &dbfile_objt);
+    push_chunk(&mut bytes, b"LIST", &objects);
+    push_chunk(&mut bytes, b"LIST", &components);
+    push_chunk(&mut bytes, b"LIST", &edges);
+    push_chunk(&mut bytes, b"MAPC", &component_types);
+    push_chunk(&mut bytes, b"OBJT", &layer_objt);
+    push_chunk(&mut bytes, b"OBJT", &material_objt);
+    push_chunk(&mut bytes, b"OBJT", &texset_objt);
+    push_chunk(&mut bytes, b"OBJT", &tex0);
+    push_chunk(&mut bytes, b"OBJT", &tex1);
+    push_chunk(&mut bytes, b"OBJT", &tex3);
+    push_chunk(&mut bytes, b"OBJT", &texrep);
+    push_chunk(&mut bytes, b"OBJT", &ctname_objt);
+    bytes
     }
 
     fn id_objt(type_ref: i32, value: u32) -> Vec<u8> {
-        let mut p = Vec::new();
-        p.extend_from_slice(&type_ref.to_le_bytes());
-        p.extend_from_slice(&value.to_le_bytes());
-        p
+    let mut p = Vec::new();
+    p.extend_from_slice(&type_ref.to_le_bytes());
+    p.extend_from_slice(&value.to_le_bytes());
+    p
     }
 
     fn texture_objt(type_ref: i32, path: &str) -> Vec<u8> {
-        let mut p = Vec::new();
-        p.extend_from_slice(&type_ref.to_le_bytes());
-        p.extend_from_slice(&(path.len() as u16).to_le_bytes());
-        p.extend_from_slice(path.as_bytes());
-        p
+    let mut p = Vec::new();
+    p.extend_from_slice(&type_ref.to_le_bytes());
+    p.extend_from_slice(&(path.len() as u16).to_le_bytes());
+    p.extend_from_slice(path.as_bytes());
+    p
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::test_support::synthetic_material_cdb;
+    use super::*;
 
     #[test]
     fn index_builds_and_resolves_the_full_join_chain() {
@@ -884,6 +987,11 @@ mod tests {
         assert_eq!(slot(SLOT_COLOR).as_deref(), Some("Data\\Textures\\widget_color.DDS"));
         assert_eq!(slot(SLOT_NORMAL).as_deref(), Some("Data\\Textures\\widget_normal.DDS"));
         assert_eq!(slot(SLOT_ROUGHNESS).as_deref(), Some("Data\\Textures\\widget_rough.DDS"));
+        assert_eq!(
+            mat.flat_color,
+            Some([0.25, 0.5, 0.75, 1.0]),
+            "the enabled TextureReplacement lands as the flat colour"
+        );
     }
 
     #[test]

@@ -119,6 +119,7 @@ fn collect_leaves(value: &Value, prefix: &str, out: &mut Vec<(String, Leaf)>) {
 /// `BSMaterial::*` classes whose leaf fields the Phase-2 index needs.
 const NEEDED_CLASSES: &[&str] = &[
     "BSMaterial::MRTextureFile",
+    "BSMaterial::TextureReplacement",
     "BSMaterial::TextureFile",
     "BSMaterial::MaterialParamFloat",
     "BSMaterial::ParamBool",
@@ -401,7 +402,7 @@ fn main() {
         .collect();
     top.sort_by_key(|&(c, _)| std::cmp::Reverse(c));
     println!("\n== top stream classes ==");
-    for (c, n) in top.iter().take(12) {
+    for (c, n) in top.iter().take(60) {
         println!("   {c:>9}  {n}");
     }
     // Secondary hypothesis: stream[j] (index instances included) ↔
@@ -535,6 +536,25 @@ fn main() {
                 "   param {index}: {n} values, min {min:.3}, max {max:.3}, mean {:.3}",
                 sum / *n as f64
             );
+        }
+    }
+
+    // ── census 4: TextureReplacement distinct field-name sets ──
+    {
+        let tid = class_ids.get("BSMaterial::TextureReplacement").copied();
+        let mut shapes: BTreeMap<String, u64> = BTreeMap::new();
+        if let Some(tid) = tid {
+            if let Some(recs) = captured.get(&tid) {
+                for (_pos, leaves) in recs {
+                    let names: Vec<String> =
+                        leaves.iter().map(|(n, _)| n.clone()).collect();
+                    *shapes.entry(names.join(",")).or_insert(0) += 1;
+                }
+            }
+        }
+        println!("\n== TextureReplacement field shapes ==");
+        for (shape, n) in &shapes {
+            println!("   {n:>6} × {shape}");
         }
     }
 

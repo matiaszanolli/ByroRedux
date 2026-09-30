@@ -21,8 +21,23 @@ use super::imported_mesh_with_material_path;
 /// these tests instead of passing them.
 fn register_probed(provider: &mut MaterialProvider, bytes: &[u8]) {
     if crate::asset_provider::material::probe_starfield_cdb(bytes, "test").is_some() {
-        provider.register_starfield_cdb_probe();
+        provider.register_starfield_cdb_probe("test-archive".into(), "materials\\materialsbeta.cdb".into());
     }
+}
+
+/// #3398 Phase 2 — register a synthetic CDB whose material index is
+/// ALREADY BUILT and cached, so `merge_external_material` exercises the
+/// production `lookup_cdb_material` path without an on-disk archive.
+/// The fixture CDB is `crates/sfmaterial`'s structurally faithful
+/// miniature (key join + alignment + layer walk); its one material,
+/// `materials\test\widget.mat`, carries color/normal/rough slots.
+fn register_indexed(provider: &mut MaterialProvider) {
+    let bytes = byroredux_sfmaterial::test_support::synthetic_material_cdb();
+    let index = byroredux_sfmaterial::MaterialIndex::build(&bytes)
+        .expect("synthetic CDB must index");
+    const KEY: &str = "test-archive|materials\\materialsbeta.cdb";
+    sf_cdb_index_cache_insert_for_test(KEY, std::sync::Arc::new(index));
+    register_probed(provider, &bytes);
 }
 
 /// Synthetic minimal CDB: BETH magic + header + STRT (empty) + TYPE
@@ -165,26 +180,14 @@ fn merge_sets_is_pbr_on_mat_path_when_cdb_loaded() {
     );
 }
 
-/// Regression / checklist-invariant pin for #2359 (SF-D9-2026-08-03-03).
-///
-/// The `.mat` arm is a documented Phase 1 stub — `probe_starfield_cdb`
-/// only probes the header (`ComponentDatabaseFile::probe_header`), the
-/// ~1.44M-instance class/object tree is never walked, and there is
-/// currently NO code path from CDB contents to `ImportedMaterial`. This
-/// test pins that today's `.mat` merge forwards ZERO authored texture
-/// data — not one `MaterialTextureSet` role changes — so the checklist
-/// invariant ("`.mat` paths land in named `MaterialTextureSet` roles,
-/// never a CDB slot index") is enforced from before Phase 2 extraction
-/// code exists, per the issue's own suggested fix.
-///
-/// This test is EXPECTED to need updating once Phase 2 lands: a real
-/// CDB lookup should start populating specific `MaterialTextureSet`
-/// roles (through this exact `merge_external_material` boundary, per
-/// the issue's CANONICAL-BOUNDARY completeness check — never a
-/// render-time fallback) and returning `MergeOutcome::Merged`. Until
-/// then, both must stay exactly as asserted here.
+/// Post-#3398 shape of the #2359 invariant: a `.mat` path whose key is
+/// NOT in any built CDB index (here: the zero-class minimal fixture)
+/// keeps the Phase-1 behavior — `PresenceOnly`, no authored field. The
+/// merge must not claim `Merged` off presence alone; only a real CDB
+/// lookup that supplied data does (see
+/// `mat_path_merges_cdb_authored_textures_when_indexed`).
 #[test]
-fn mat_path_forwards_no_texture_roles_until_cdb_phase_2_lands() {
+fn mat_path_lookup_miss_keeps_presence_only_and_no_textures() {
     let mut pool = byroredux_core::string::StringPool::new();
     let mut provider = MaterialProvider::new();
     register_probed(&mut provider, &minimal_cdb_bytes());
@@ -197,15 +200,92 @@ fn mat_path_forwards_no_texture_roles_until_cdb_phase_2_lands() {
     assert_eq!(
         outcome,
         MergeOutcome::PresenceOnly,
-        "#2359: the .mat arm resolves the sidecar but must not claim Merged \
-         until it actually forwards CDB-authored data"
+        "a lookup miss resolves the CDB but must not claim Merged"
     );
     assert_eq!(
         mesh.material.textures,
         byroredux_nif::import::MaterialTextureSet::default(),
-        "#2359: every MaterialTextureSet role must stay at its default — \
-         Phase 1 forwards zero authored texture data from the CDB"
+        "a lookup miss forwards zero authored texture data"
     );
+}
+
+/// #3398 Phase 2 — the inverted contract: with a built material index
+/// behind the provider, the `.mat` arm returns `MergeOutcome::Merged`
+/// and forwards authored CDB texture data through the canonical
+/// `MaterialTextureSet` roles. The four canonical-fit slots land
+/// (color/normal/emissive/height as the fixture provides them); the
+/// five parked kinds (opacity/rough/metal/ao/transmissive) stay parked —
+/// `rough` is in the fixture's CDB and must NOT appear, which is the
+/// #4429 XOR guard enforced from the consumer side.
+#[test]
+fn mat_path_merges_cdb_authored_textures_when_indexed() {
+    let mut pool = byroredux_core::string::StringPool::new();
+    let mut provider = MaterialProvider::new();
+    register_indexed(&mut provider);
+    assert!(provider.has_starfield_cdb());
+
+    let mut mesh =
+        imported_mesh_with_material_path(&mut pool, "materials/test/widget.mat");
+    let outcome = merge_external_material(&mut mesh.material, &mut provider, &mut pool, &|_| false);
+
+    assert_eq!(
+        outcome,
+        MergeOutcome::Merged,
+        "a resolved CDB material with authored texture data must count as Merged"
+    );
+    assert!(mesh.material.is_pbr, "Disney/PBR lobe routing");
+    assert!(!mesh.material.from_bgsm, "FO4 convention flag stays clear");
+
+    let base = pool
+        .resolve(mesh.material.textures.base_color.expect("color slot"))
+        .expect("interned");
+    assert!(
+        base.to_ascii_lowercase().ends_with("widget_color.dds"),
+        "base_color carries the CDB slot-0 path, got {base:?}"
+    );
+    let normal = pool
+        .resolve(mesh.material.textures.normal.expect("normal slot"))
+        .expect("interned");
+    assert!(
+        normal.to_ascii_lowercase().ends_with("widget_normal.dds"),
+        "normal carries the CDB slot-1 path, got {normal:?}"
+    );
+    // The parked kinds: slot 3 (roughness) IS present in the fixture's
+    // CDB payload but has no canonical destination yet — nifal.md's
+    // parked table owns it (#4429).
+    assert!(
+        mesh.material.textures.smooth_spec.is_none(),
+        "roughness stays parked — no silent sign flip into the gloss slot"
+    );
+    // The fixture's texture set also carries an enabled
+    // TextureReplacement — the flat-colour authoring route.
+    assert_eq!(
+        mesh.material.diffuse_color,
+        [0.25, 0.5, 0.75],
+        "an enabled TextureReplacement lands as the diffuse colour"
+    );
+}
+
+/// #3398 Phase 2 — a `.bgsm`-named Starfield reference that misses the
+/// sidecar resolver but HITS the CDB (17 of 57 in the sampled corpus,
+/// because the CDB key ignores the reference's own suffix) takes the
+/// full CDB merge, not just the PBR flip.
+#[test]
+fn bgsm_named_starfield_path_merges_from_cdb_on_sidecar_miss() {
+    let mut pool = byroredux_core::string::StringPool::new();
+    let mut provider = MaterialProvider::new();
+    register_indexed(&mut provider);
+
+    let mut mesh =
+        imported_mesh_with_material_path(&mut pool, "materials/test/widget.bgsm");
+    let outcome = merge_external_material(&mut mesh.material, &mut provider, &mut pool, &|_| false);
+
+    assert_eq!(outcome, MergeOutcome::Merged);
+    assert!(
+        mesh.material.textures.base_color.is_some(),
+        "the CDB lookup behind the sidecar miss forwarded authored data"
+    );
+    assert!(!mesh.material.from_bgsm, "no BGSM resolved — convention flag clear");
 }
 
 /// #4429 (SF-2026-09-16-D3-01) — the guard that survives Phase 2.

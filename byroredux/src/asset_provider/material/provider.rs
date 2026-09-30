@@ -8,6 +8,7 @@
 use super::*;
 
 use byroredux_bgsm::template::ResolvedMaterial;
+use byroredux_sfmaterial::CdbMaterial;
 use byroredux_bgsm::{BgemFile, TemplateCache, TemplateResolver};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
@@ -171,6 +172,12 @@ pub(crate) struct MaterialProvider {
     /// per-game material path (CANONICAL-BOUNDARY). Archive order is
     /// preserved in `self.archives`, so re-discovery reproduces load order.
     pub(crate) sf_cdb_count: usize,
+    /// #3398 Phase 2 — `(archive source, in-archive path)` for every
+    /// discovered CDB, in load order (base first, then DLC/Creations).
+    /// The material index is built lazily on the first `.mat` lookup
+    /// (`lookup_cdb_material`), not at discovery — a session that loads
+    /// no Starfield content never pays the ~2 s / ~470 MB build.
+    pub(crate) sf_cdb_sources: Vec<(String, String)>,
     /// #1585 / F6 — per-`MaterialProvider`-instance cache of the
     /// `<Plugin> - Geometry.csg` companion blob, keyed by the cell's master
     /// plugin path. The CSG owns a warm zlib `ChunkCache`, so re-opening it
@@ -237,6 +244,7 @@ impl MaterialProvider {
             failed_paths: HashSet::new(),
             failed_paths_order: VecDeque::new(),
             sf_cdb_count: 0,
+            sf_cdb_sources: Vec::new(),
             csg_cache: HashMap::new(),
         }
     }
@@ -293,8 +301,15 @@ impl MaterialProvider {
         self.sf_cdb_count > 0
     }
 
-    pub(crate) fn register_starfield_cdb_probe(&mut self) {
+    pub(crate) fn register_starfield_cdb_probe(&mut self, source: String, inner: String) {
         self.sf_cdb_count += 1;
+        self.sf_cdb_sources.push((source, inner));
+    }
+
+    /// #3398 Phase 2 — resolve a material path against the discovered
+    /// CDBs (last-registered wins). See [`lookup_cdb_material`].
+    pub(crate) fn lookup_cdb_material(&self, path: &str) -> Option<CdbMaterial> {
+        super::cdb::lookup_cdb_material(&self.sf_cdb_sources, path)
     }
 
     pub(crate) fn extract_from_archives(&self, path: &str) -> Option<Vec<u8>> {

@@ -73,6 +73,7 @@ mod value;
 pub use chunk::ChunkType;
 pub use error::{Error, Result};
 pub use index::{
+    test_support,
     material_key, CdbMaterial, MaterialIndex, RefKind, SLOT_AMBIENT_OCCLUSION, SLOT_COLOR,
     SLOT_EMISSIVE, SLOT_HEIGHT, SLOT_METALNESS, SLOT_NORMAL, SLOT_OPACITY, SLOT_ROUGHNESS,
     SLOT_TRANSMISSIVE,

@@ -10,9 +10,9 @@
 use super::*;
 
 use byroredux_nif::import::ImportedMaterial;
-use byroredux_sfmaterial::{CdbHeaderInfo, ComponentDatabaseFile};
+use byroredux_sfmaterial::{CdbHeaderInfo, CdbMaterial, ComponentDatabaseFile, MaterialIndex};
 use std::collections::HashMap;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 /// True for a Starfield component-database path — the base
 /// `materials\materialsbeta.cdb` or any DLC/Creation-namespaced
@@ -67,6 +67,94 @@ pub(crate) fn sf_cdb_cache_insert(key: String, valid: bool) {
     cache.insert(key, valid);
 }
 
+/// #3398 Phase 2 — process-lifetime cache of BUILT material indexes,
+/// keyed by the same `"<archive source>|<in-archive path>"` as
+/// [`sf_cdb_cache`] so it survives the `build_material_provider`
+/// rebuilds on every cell transition / save-load / debug-load (the
+/// #2705 rationale). `None` memoises a failed build, so a corrupt CDB
+/// is re-attempted at most once per process rather than once per mesh.
+///
+/// Memory: one index measures ~470 MB on the vanilla base CDB (2.0 s
+/// build, 2026-09-30) versus 9.19 GB for the full generic parse. DLC
+/// CDBs are near-copies of the base, so a Creation-heavy session that
+/// touches only base-game materials builds exactly one.
+pub(crate) fn sf_cdb_index_cache(
+) -> &'static Mutex<HashMap<String, Option<Arc<MaterialIndex>>>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, Option<Arc<MaterialIndex>>>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Test-only direct injection of a prebuilt index under a cache key —
+/// the merge-arm tests exercise the production lookup path without an
+/// on-disk archive.
+#[cfg(test)]
+pub(crate) fn sf_cdb_index_cache_insert_for_test(key: &str, index: Arc<MaterialIndex>) {
+    sf_cdb_index_cache()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(key.to_owned(), Some(index));
+}
+
+/// Build (or fetch) the index for one CDB, memoising failures. The
+/// source archive is re-opened and the payload re-extracted here —
+/// discovery deliberately retains nothing but the header verdict
+/// (#4386), and the lazy build is paid once per CDB per process.
+fn cdb_material_index(source: &str, inner: &str) -> Option<Arc<MaterialIndex>> {
+    let key = format!("{source}|{inner}");
+    if let Some(cached) = sf_cdb_index_cache()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&key)
+    {
+        return cached.clone();
+    }
+    let built = (|| {
+        let archive = Archive::open(source).ok()?;
+        let bytes = archive.extract(inner).ok()?;
+        match MaterialIndex::build(&bytes) {
+            Ok(index) => {
+                log::info!(
+                    "Starfield CDB '{inner}' in '{source}': material index built                      ({} keyed objects)",
+                    index.material_count()
+                );
+                Some(Arc::new(index))
+            }
+            Err(e) => {
+                log::warn!(
+                    "Starfield CDB '{inner}' in '{source}': material index build                      failed ({e}) — .mat lookups fall back to PBR routing only"
+                );
+                None
+            }
+        }
+    })();
+    let mut cache = sf_cdb_index_cache().lock().unwrap_or_else(|e| e.into_inner());
+    if !cache.contains_key(&key) && cache.len() >= SF_CDB_CACHE_MAX_ENTRIES {
+        if let Some(evicted) = cache.keys().next().cloned() {
+            cache.remove(&evicted);
+        }
+    }
+    cache.insert(key, built.clone());
+    built
+}
+
+/// #3398 Phase 2 — resolve a material path against every discovered
+/// CDB, last-registered wins (matching the archive-precedence
+/// convention in this module: the DLC/Creation CDB overlays the base).
+/// `None` = not in any CDB.
+pub(crate) fn lookup_cdb_material(
+    sources: &[(String, String)],
+    path: &str,
+) -> Option<CdbMaterial> {
+    for (source, inner) in sources.iter().rev() {
+        if let Some(index) = cdb_material_index(source, inner) {
+            if let Some(mat) = index.lookup(path) {
+                return Some(mat);
+            }
+        }
+    }
+    None
+}
+
 /// Scan one archive for Starfield component databases and load each into
 /// `provider` in archive order. #1571 / SF-D3-03 — the base game ships
 /// `materials\materialsbeta.cdb` in `Starfield - Materials.ba2`, but each
@@ -117,7 +205,7 @@ pub(crate) fn discover_starfield_cdbs(
             },
         };
         if valid {
-            provider.register_starfield_cdb_probe();
+            provider.register_starfield_cdb_probe(source.to_owned(), path.clone());
         }
     }
 }

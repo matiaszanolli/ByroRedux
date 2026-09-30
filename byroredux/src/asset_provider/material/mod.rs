@@ -30,7 +30,7 @@ pub(crate) use cdb::{cdb_scan_candidates, discover_starfield_cdbs, unresolved_ma
 #[cfg(test)]
 pub(super) use cdb::{
     is_materialsbeta_cdb_path, probe_starfield_cdb, sf_cdb_cache, sf_cdb_cache_insert,
-    SF_CDB_CACHE_MAX_ENTRIES,
+    sf_cdb_index_cache_insert_for_test, SF_CDB_CACHE_MAX_ENTRIES,
 };
 pub(crate) use merge::{merge_external_material, MergeOutcome};
 // The CDB memo was `pub(super)` before the split — visible to
