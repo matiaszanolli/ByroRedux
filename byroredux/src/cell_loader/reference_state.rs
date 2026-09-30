@@ -37,6 +37,11 @@ struct ReferenceState {
     /// bonus was permanent) and a second `AddSpell` applied it twice.
     /// Required, like `picked_up` (#4465): pre-v30 saves are rejected.
     spells: Option<Vec<u32>>,
+    /// #5017 — the actor's `ActorControlState` (restrained / unconscious),
+    /// so a scripted wake-up survives eviction. Without it, the spawn-time
+    /// "Starts Unconscious" flag would knock a woken robot out again on every
+    /// reload. Required: pre-v32 saves are rejected.
+    control: Option<byroredux_scripting::ActorControlState>,
     dead: bool,
     /// P3 pickup tombstone: the player picked this placement's item up, so a
     /// respawned copy must come back hidden and uninteractive, not restocked.
@@ -143,6 +148,7 @@ pub(crate) fn capture(world: &mut World, victims: &[EntityId]) {
                         weapon: None,
                         actor_values: None,
                         spells: None,
+                        control: None,
                         dead: false,
                         picked_up: false,
                     },
@@ -224,6 +230,11 @@ pub(crate) fn capture(world: &mut World, victims: &[EntityId]) {
             state.spells = spells_q.get(*entity).map(|list| list.0.clone());
         }
     }
+    if let Some(control_q) = world.query::<byroredux_scripting::ActorControlState>() {
+        for (entity, _, state) in &mut rows {
+            state.control = control_q.get(*entity).copied();
+        }
+    }
     world
         .resource_mut::<PersistentReferenceStates>()
         .rows
@@ -278,6 +289,11 @@ pub(crate) fn restore(world: &mut World, entity: EntityId) -> bool {
     if let Some(spells) = state.spells {
         world.insert(entity, byroredux_scripting::SpellList(spells));
     }
+    // #5017 — before the actor job's `apply_starts_unconscious`, which
+    // defers to whatever state this brings back.
+    if let Some(control) = state.control {
+        world.insert(entity, control);
+    }
     if state.dead {
         world.insert(entity, Dead);
         crate::combat::reconcile_dead_actor(world, entity);
@@ -329,6 +345,23 @@ pub(crate) fn apply_starts_dead(world: &mut World, entity: EntityId) {
     }
     world.insert(entity, Dead);
     crate::combat::queue_dead_actor_reconciliation(world, entity);
+}
+
+/// #5017 — FO4+'s ACHR "Starts Unconscious" (bit 13): the actor spawns
+/// unconscious, as if `SetUnconscious(true)` ran before its first frame. The
+/// vanilla population is powered-down robots and turrets that a terminal,
+/// pod or quest script wakes. A no-op when [`restore`] brought back a parked
+/// `ActorControlState`: that is the actor's live state since it was last
+/// resident, a scripted wake-up included. Called by the actor-job completion
+/// after [`restore`].
+pub(crate) fn apply_starts_unconscious(world: &mut World, entity: EntityId) {
+    if world
+        .get::<byroredux_scripting::ActorControlState>(entity)
+        .is_some()
+    {
+        return;
+    }
+    byroredux_scripting::update_actor_control(world, entity, |state| state.set_unconscious(true));
 }
 
 /// #4695 — re-run the per-placement restore for every reference currently
@@ -403,6 +436,8 @@ pub(crate) fn park_unresolved_snapshot_rows(
     let mut weapons = column::<EquippedWeapon>(snapshot, "EquippedWeapon");
     let mut values = column::<ActorValues>(snapshot, "ActorValues");
     let mut spells = column::<byroredux_scripting::SpellList>(snapshot, "SpellList");
+    let mut controls =
+        column::<byroredux_scripting::ActorControlState>(snapshot, "ActorControlState");
     let dead = column::<Dead>(snapshot, "Dead");
 
     // One resource guard at a time (#4982): read the store's keys, drop it,
@@ -419,7 +454,10 @@ pub(crate) fn park_unresolved_snapshot_rows(
         for &(old, pair) in unresolved {
             let is_dead = dead.contains_key(&old);
             let items = inventories.remove(&old);
-            if items.is_none() && !is_dead && !already_parked.contains(&pair) {
+            // #5017 — a control state alone is worth parking: it is how a
+            // scripted wake-up outlives the spawn-time "Starts Unconscious".
+            let has_control = controls.contains_key(&old);
+            if items.is_none() && !is_dead && !has_control && !already_parked.contains(&pair) {
                 continue;
             }
             let inventory = match items {
@@ -458,6 +496,7 @@ pub(crate) fn park_unresolved_snapshot_rows(
                     weapon: weapons.remove(&old),
                     actor_values: values.remove(&old),
                     spells: spells.remove(&old).map(|list| list.0),
+                    control: controls.remove(&old),
                     dead: is_dead,
                     picked_up: false,
                 },
@@ -507,6 +546,7 @@ pub(crate) fn mark_picked_up(world: &World, entity: EntityId) {
                     weapon: None,
                     actor_values: None,
                     spells: None,
+                    control: None,
                     dead: false,
                     picked_up: true,
                 },
@@ -687,6 +727,35 @@ mod tests {
         world.insert(actor, SpellList(vec![0x10]));
         assert!(restore(&mut world, actor));
         assert_eq!(world.get::<SpellList>(actor).unwrap().0, vec![0x10, 0xAB]);
+    }
+
+    /// #5017 — a "Starts Unconscious" robot spawns unconscious; a script
+    /// wakes it; the wake-up survives eviction, because the parked control
+    /// state is restored before the spawn-time flag gets a say.
+    #[test]
+    fn a_woken_starts_unconscious_actor_stays_awake_across_eviction() {
+        use byroredux_scripting::{is_unconscious, update_actor_control};
+        let mut world = world();
+        world.register::<byroredux_scripting::ActorControlState>();
+        let robot = reference(&mut world, "Fallout4.esm", 0x600);
+        world.insert(robot, Inventory::new());
+        apply_starts_unconscious(&mut world, robot);
+        assert!(is_unconscious(&world, robot), "dormant at spawn");
+
+        update_actor_control(&world, robot, |state| state.set_unconscious(false));
+        evict(&mut world, &[robot]);
+
+        // Respawn: restore first, then the actor job's spawn-time flag.
+        let robot = reference(&mut world, "Fallout4.esm", 0x600);
+        world.insert(robot, Inventory::new());
+        assert!(restore(&mut world, robot));
+        apply_starts_unconscious(&mut world, robot);
+        assert!(!is_unconscious(&world, robot), "the scripted wake-up holds");
+
+        // A robot never parked (first visit) still spawns dormant.
+        let fresh = reference(&mut world, "Fallout4.esm", 0x601);
+        apply_starts_unconscious(&mut world, fresh);
+        assert!(is_unconscious(&world, fresh));
     }
 
     /// #4814 — an authored "Starts Dead" actor is `Dead` at spawn completion

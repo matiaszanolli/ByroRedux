@@ -706,6 +706,7 @@ pub(crate) fn apply_effect(
         Effect::SetEnemy { .. }
         | Effect::StartCombat { .. }
         | Effect::StopCombat { .. }
+        | Effect::SetUnconscious { .. }
         | Effect::EvaluatePackage { .. } => {
             apply_ai_combat_effect(effect, context, vmad, world, deferred)
         }
@@ -1244,19 +1245,11 @@ fn apply_player_control_effect(
                 log::debug!("fragment SetRestrained skipped: player entity is unavailable");
                 return None;
             };
-            let Some(mut states) = world.query_mut::<crate::ActorControlState>() else {
+            // #5017 — through the setter, so restraining clears unconscious.
+            if !crate::update_actor_control(world, player, |state| {
+                state.set_restrained(*restrained)
+            }) {
                 log::debug!("fragment SetRestrained skipped: actor-control storage is unavailable");
-                return None;
-            };
-            if let Some(state) = states.get_mut(player) {
-                state.restrained = *restrained;
-            } else {
-                states.insert(
-                    player,
-                    crate::ActorControlState {
-                        restrained: *restrained,
-                    },
-                );
             }
             None
         }
@@ -1553,6 +1546,26 @@ fn apply_ai_combat_effect(
             }
             None
         }
+        Effect::SetUnconscious { actor, unconscious } => {
+            let actor = resolve_actor(vmad, world, context, actor, &deferred.scene_actor_bindings)?;
+            if !crate::update_actor_control(world, actor, |state| {
+                state.set_unconscious(*unconscious)
+            }) {
+                log::debug!(
+                    "fragment SetUnconscious skipped: actor-control storage is unavailable"
+                );
+                return None;
+            }
+            // An unconscious actor cannot fight (#5017). Its ambient package
+            // is suspended by the engine's AI pass; waking leaves both to
+            // re-derive (faction hostility, package selection).
+            if *unconscious {
+                if let Some(mut states) = world.query_mut::<crate::AiCombatState>() {
+                    states.remove(actor);
+                }
+            }
+            None
+        }
         Effect::EvaluatePackage { actor } => {
             let actor =
                 resolve_object(vmad, world, context, actor, &deferred.scene_actor_bindings)?;
@@ -1730,6 +1743,7 @@ fn apply_quest_scoped_effect(
         | Effect::SetEnemy { .. }
         | Effect::StartCombat { .. }
         | Effect::StopCombat { .. }
+        | Effect::SetUnconscious { .. }
         | Effect::AddSpell { .. }
         | Effect::RemoveSpell { .. }
         | Effect::PlayIdle { .. }

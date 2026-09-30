@@ -363,12 +363,20 @@ fn faction_hostility_system_inner(world: &World, dt: f32, scratch: &mut Hostilit
         .query::<AiCombatState>()
         .map(|q| q.iter().map(|(entity, _)| entity).collect())
         .unwrap_or_default();
+    // #5017 — an unconscious actor detects but cannot react, so it never
+    // starts combat. It stays a valid target, and once awake this pass arms
+    // it like any other perceiver.
+    let mut unconscious = Vec::new();
+    byroredux_scripting::collect_unconscious(world, &mut unconscious);
 
     for (perceiver_index, perceiver) in actors.iter().enumerate() {
         let Some(disposition) = perceiver.disposition else {
             continue;
         };
-        if disposition.confidence == Confidence::Cowardly || fighting.contains(&perceiver.entity) {
+        if disposition.confidence == Confidence::Cowardly
+            || fighting.contains(&perceiver.entity)
+            || unconscious.contains(&perceiver.entity)
+        {
             continue;
         }
         candidates.clear();
@@ -707,6 +715,43 @@ mod tests {
 
     fn run_once(world: &World) {
         make_faction_hostility_system()(world, EVALUATION_PERIOD_SECS);
+    }
+
+    /// #5017 — a dormant "Starts Unconscious" sentry detects but cannot
+    /// react: it arms no combat while unconscious, though an awake hostile
+    /// still attacks it. Once woken, it attacks like any other perceiver.
+    #[test]
+    fn an_unconscious_perceiver_starts_no_combat_until_woken() {
+        let mut world = fixture();
+        world.register::<byroredux_scripting::ActorControlState>();
+        let very = disposition(Aggression::VeryAggressive);
+        let turret = spawn_actor(&mut world, Vec3::ZERO, BANDITS, Some(very));
+        let player = spawn_actor(&mut world, Vec3::new(0.0, 0.0, 800.0), PLAYER_FACTION, None);
+        world.insert_resource(crate::systems::PlayerEntity(Some(player)));
+        let guard = spawn_actor(&mut world, Vec3::new(60.0, 0.0, 0.0), GUARDS, Some(very));
+        byroredux_scripting::update_actor_control(&world, turret, |state| {
+            state.set_unconscious(true)
+        });
+
+        run_once(&world);
+        assert!(
+            world.get::<AiCombatState>(turret).is_none(),
+            "unconscious: no reaction"
+        );
+        assert_eq!(
+            world.get::<AiCombatState>(guard).map(|s| s.target),
+            Some(turret),
+            "still a target"
+        );
+
+        byroredux_scripting::update_actor_control(&world, turret, |state| {
+            state.set_unconscious(false)
+        });
+        run_once(&world);
+        assert!(
+            world.get::<AiCombatState>(turret).is_some(),
+            "awake: it fights"
+        );
     }
 
     fn move_to(world: &World, entity: EntityId, at: Vec3) {

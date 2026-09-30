@@ -119,8 +119,10 @@ pub(super) fn register_update_systems(scheduler: &mut Scheduler) {
             .reads::<byroredux_physics::Ragdoll>()
             .reads_resource::<crate::inventory::InventoryCatalog>()
             .reads::<byroredux_scripting::SceneAliasCandidate>()
-            // #5043 — the Talk arm skips actors in combat.
+            // #5043 / #5017 — the Talk arm skips actors in combat or
+            // unconscious.
             .reads::<byroredux_scripting::AiCombatState>()
+            .reads::<byroredux_scripting::ActorControlState>()
             .reads::<byroredux_core::ecs::components::Inventory>()
             .reads_resource::<ActionState>()
             .reads_resource::<ActiveCamera>()
@@ -258,6 +260,8 @@ pub(super) fn register_update_systems(scheduler: &mut Scheduler) {
             .reads::<byroredux_physics::RapierHandles>()
             .reads::<byroredux_scripting::AiCombatState>()
             .writes::<byroredux_scripting::AiCombatState>()
+            // #5017 — unconscious perceivers start no combat.
+            .reads::<byroredux_scripting::ActorControlState>()
             // #4816 — the ambient-combat marker it stamps, ages and drops.
             .reads::<crate::systems::AmbientEngagement>()
             .writes::<crate::systems::AmbientEngagement>(),
@@ -285,6 +289,8 @@ pub(super) fn register_update_systems(scheduler: &mut Scheduler) {
             .reads::<byroredux_core::character::CharacterLevel>()
             .reads::<byroredux_scripting::AiCombatState>()
             .writes::<byroredux_scripting::AiCombatState>()
+            // #5017 — an unconscious attacker's combat ends.
+            .reads::<byroredux_scripting::ActorControlState>()
             // #4574 — the chase arm reads the authored stride (M42.11).
             .reads::<crate::components::WalkSpeed>()
             // #4703 — each live attacker's ambient package is suspended

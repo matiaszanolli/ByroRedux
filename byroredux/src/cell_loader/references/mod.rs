@@ -756,6 +756,10 @@ pub(super) fn load_references_budgeted(
                                 if placed_ref.starts_dead || npc.starts_dead {
                                     super::reference_state::apply_starts_dead(world, root);
                                 }
+                                // #5017 — FO4+ dormant robots and turrets.
+                                if placed_ref.starts_unconscious {
+                                    super::reference_state::apply_starts_unconscious(world, root);
+                                }
                                 if let Some(mut identities) =
                                     world.query_mut::<byroredux_scripting::SceneAliasCandidate>()
                                 {

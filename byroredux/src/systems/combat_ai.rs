@@ -61,6 +61,8 @@ struct CombatAiScratch {
     pending: Vec<PendingStrike>,
     /// #4703 — live attackers whose ambient package combat pre-empts.
     suspended: Vec<EntityId>,
+    /// #5017 — unconscious actors, collected before any other guard.
+    unconscious: Vec<EntityId>,
 }
 
 /// Mirrors `wander_system_inner`'s read/write split: gather a decision per
@@ -80,10 +82,12 @@ fn npc_combat_ai_system_inner(world: &World, dt: f32, scratch: &mut CombatAiScra
         steps,
         pending,
         suspended,
+        unconscious,
     } = scratch;
     decisions.clear();
     steps.clear();
     pending.clear();
+    byroredux_scripting::collect_unconscious(world, unconscious);
     suspended.clear();
     {
         let Some(combat_q) = world.query::<AiCombatState>() else {
@@ -93,7 +97,9 @@ fn npc_combat_ai_system_inner(world: &World, dt: f32, scratch: &mut CombatAiScra
             return;
         };
         for (entity, state) in combat_q.iter() {
-            if world.get::<Dead>(entity).is_some() {
+            // #5017 — an unconscious attacker cannot fight either: its combat
+            // ends the same way, and faction hostility re-arms it on waking.
+            if unconscious.contains(&entity) || world.get::<Dead>(entity).is_some() {
                 // The attacker itself died (e.g. to the player's own
                 // counter-swing) — drop its combat state rather than
                 // leaving a dead actor's AiCombatState to be iterated
@@ -383,6 +389,37 @@ mod tests {
         assert_eq!(scratch.decisions.len(), 1, "cleared, not appended to");
         let second_x = world.get::<Transform>(attacker).unwrap().translation.x;
         assert!(second_x > first_x, "the chase keeps advancing");
+    }
+
+    /// #5017 — an unconscious attacker neither moves nor strikes, and its
+    /// combat ends; its body stays exactly where it lay.
+    #[test]
+    fn an_unconscious_attacker_drops_combat_in_place() {
+        let mut world = fixture();
+        let attacker = world.spawn();
+        let target = world.spawn();
+        let lying = Vec3::new(5.0, 0.0, 7.0);
+        world.insert(attacker, Transform::from_translation(lying));
+        world.insert(
+            target,
+            Transform::from_translation(Vec3::new(40.0, 0.0, 7.0)),
+        );
+        world.insert(
+            attacker,
+            AiCombatState {
+                target,
+                attack_cooldown_remaining: 0.0,
+            },
+        );
+        byroredux_scripting::update_actor_control(&world, attacker, |state| {
+            state.set_unconscious(true)
+        });
+
+        npc_combat_ai_system(&world, 1.0);
+
+        assert!(world.get::<AiCombatState>(attacker).is_none());
+        assert_eq!(world.get::<Transform>(attacker).unwrap().translation, lying);
+        assert!(world.get::<HitEvent>(target).is_none(), "no strike");
     }
 
     #[test]

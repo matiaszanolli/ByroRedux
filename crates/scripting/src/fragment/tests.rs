@@ -1001,6 +1001,54 @@ fn combat_gate_effects_set_faction_hostility_and_arm_ai_combat_state() {
         world.get::<crate::AiCombatState>(attacker).is_none(),
         "StopCombat must clear the actor's AiCombatState"
     );
+
+    // #5017 — `SetUnconscious` knocks the same actor out mid-combat: the
+    // state is set, restrained is cleared, and its combat ends. `false`
+    // wakes it and leaves combat to re-derive.
+    crate::update_actor_control(&world, attacker, |state| state.set_restrained(true));
+    let actor = || {
+        crate::translate::effects::ActorRef::Object(ObjectRef::Property(
+            "Alias_TrophyRoomPrisoner01".into(),
+        ))
+    };
+    let run = |effects: &[Effect]| {
+        let mut deferred = DeferredFragmentEffects::new(&world);
+        {
+            let (mut stages, mut objectives) =
+                world.resource_2_mut::<QuestStageState, QuestObjectiveState>();
+            apply_effects(
+                effects,
+                Q,
+                Some(&vmad),
+                &world,
+                &mut stages,
+                &mut objectives,
+                &mut deferred,
+            );
+        }
+        deferred.apply(&world);
+    };
+    run(&[
+        Effect::StartCombat {
+            actor: actor(),
+            target: crate::translate::effects::ActorRef::Player,
+        },
+        Effect::SetUnconscious {
+            actor: actor(),
+            unconscious: true,
+        },
+    ]);
+    let state = *world.get::<crate::ActorControlState>(attacker).unwrap();
+    assert!(state.unconscious && !state.restrained);
+    assert!(
+        world.get::<crate::AiCombatState>(attacker).is_none(),
+        "an unconscious actor cannot fight"
+    );
+    run(&[Effect::SetUnconscious {
+        actor: actor(),
+        unconscious: false,
+    }]);
+    assert!(!crate::is_unconscious(&world, attacker));
 }
 
 /// Regression for #2539: lifecycle metadata must come from a snapshot captured

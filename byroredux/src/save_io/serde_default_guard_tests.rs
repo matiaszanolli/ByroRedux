@@ -618,7 +618,7 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // types are all on `registry_completeness_tests.rs`'s
     // `NOT_SAVED_BY_DESIGN` allowlist (rebuilt from XCWT/WATR/GRAS at cell or
     // worldspace entry), so no snapshot has ever contained either shape.
-    const BASELINE_MAJOR: u16 = 31;
+    const BASELINE_MAJOR: u16 = 32;
     // #4465 — refreshed WITH a major bump (v24 -> v25). `ReferenceState`
     // gained the required `picked_up` tombstone field (the durable half of
     // the P3 `PickedUp` marker, carried through the registered
@@ -667,7 +667,10 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // #5042 — refreshed WITH a major bump (v30 -> v31): `ActorValue` gained
     // the required `base_authored` flag (a modifier-only entry's placeholder
     // base vs an authored one), with no `serde(default)`.
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x9141_c5ed_6fcb_3484;
+    // #5017 — refreshed WITH a major bump (v31 -> v32): `ActorControlState`
+    // gained the required `unconscious` flag and the parked `ReferenceState`
+    // the required `control` field, neither with `serde(default)`.
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x2bfc_1532_e430_4dec;
     // ---- earlier refresh history (kept for the false-positive record) ----
     // 2026-09-21 (W2.10 flip) — refreshed WITHOUT a major bump, the same
     // `VisibilityMask` tuple-struct sweep class as the two entries below:

@@ -120,7 +120,10 @@ pub use papyrus_provider::{
     PapyrusProviderRoute, PapyrusProviderRuntime, PapyrusProviderStatement,
     TypedPapyrusProviderCall,
 };
-pub use player_control::{ActorControlState, PlayerControlSelection, PlayerControlState};
+pub use player_control::{
+    collect_unconscious, is_unconscious, update_actor_control, ActorControlState, PlayerControlSelection,
+    PlayerControlState,
+};
 pub use quest_stages::{
     install_engine_start_quest, install_quest_alias_readiness_gate, install_start_game_quests,
     quest_alias_readiness_stage_system, quest_startup_system, quest_terminal_stage_system,

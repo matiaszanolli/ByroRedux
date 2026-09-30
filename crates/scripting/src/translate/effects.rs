@@ -275,6 +275,11 @@ pub enum Effect {
     /// hostility system may start a fresh one if the actor still sees
     /// someone it attacks, as the original does.
     StopCombat { actor: ActorRef },
+    /// #5017 — `<actor>.SetUnconscious([abUnconscious = true])`. See
+    /// [`crate::ActorControlState::unconscious`] for what the state
+    /// suppresses. Wakes FO4's dormant "Starts Unconscious" robots and
+    /// turrets.
+    SetUnconscious { actor: ActorRef, unconscious: bool },
     /// #4415 — `<actor>.AddSpell(<spell>[, abVerbose])`: put the spell on the
     /// actor's `SpellList`, applying a constant spell's value changes. The
     /// verbose flag only chooses whether a HUD message shows.
@@ -724,6 +729,7 @@ const EFFECT_PRIMITIVES: &[EffectPrimitive] = &[
     prim_set_enemy,
     prim_start_combat,
     prim_stop_combat,
+    prim_set_unconscious,
     prim_add_spell,
     prim_remove_spell,
     prim_play_idle,
@@ -1377,6 +1383,25 @@ fn prim_stop_combat(e: &Expr, scope: &Scope) -> Option<Effect> {
         return None;
     }
     Some(Effect::StopCombat { actor })
+}
+
+/// #5017 — `actor.psc` declares `SetUnconscious(bool abUnconscious = true)`.
+/// A player receiver declines: an unconscious player would need the
+/// controls, camera and HUD handling the Creation Kit does not describe, and
+/// the vanilla calls this issue targets wake NPCs.
+fn prim_set_unconscious(e: &Expr, scope: &Scope) -> Option<Effect> {
+    let (object, args) = method_call(e, "SetUnconscious")?;
+    if args.len() > 1 {
+        return None;
+    }
+    let actor = receiver_actor(object, scope)?;
+    if actor == ActorRef::Player {
+        return None;
+    }
+    Some(Effect::SetUnconscious {
+        actor,
+        unconscious: bool_arg(args, 0)?.unwrap_or(true),
+    })
 }
 
 /// #4415 — Skyrim's `actor.psc` declares `AddSpell(Spell akSpell, Bool
@@ -3088,6 +3113,39 @@ mod tests {
                 "ScriptName QF extends Quest\nFunction Fragment_41()\n{call}\nEndFunction\n"
             ));
             assert_eq!(lower_fragment(&body), None, "{call}");
+        }
+    }
+
+    /// #5017 — `SetUnconscious` on an NPC lowers with its default (`true`)
+    /// and an explicit `false` (the wake-up call); the player, or a second
+    /// argument, declines.
+    #[test]
+    fn lowers_set_unconscious_on_an_npc_only() {
+        let lowered = |call: &str| {
+            lower_fragment(&first_fn_body(&format!(
+                "ScriptName QF extends Quest\nFunction Fragment_1()\n{call}\nEndFunction\n"
+            )))
+        };
+        let robot = || ActorRef::Object(ObjectRef::Property("Alias_Protectron".into()));
+        assert_eq!(
+            lowered("Alias_Protectron.GetActorRef().SetUnconscious()"),
+            Some(vec![Effect::SetUnconscious {
+                actor: robot(),
+                unconscious: true,
+            }])
+        );
+        assert_eq!(
+            lowered("Alias_Protectron.GetActorRef().SetUnconscious(false)"),
+            Some(vec![Effect::SetUnconscious {
+                actor: robot(),
+                unconscious: false,
+            }])
+        );
+        for call in [
+            "Game.GetPlayer().SetUnconscious(true)",
+            "Alias_Protectron.GetActorRef().SetUnconscious(false, true)",
+        ] {
+            assert_eq!(lowered(call), None, "{call}");
         }
     }
 

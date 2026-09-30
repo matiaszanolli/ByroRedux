@@ -1857,7 +1857,7 @@ mod tests {
             .ai_driven = false;
         world.insert(
             player,
-            byroredux_scripting::ActorControlState { restrained: true },
+            byroredux_scripting::ActorControlState { restrained: true, ..Default::default() },
         );
         assert!(!player_accepts_movement_input(&world, player));
     }

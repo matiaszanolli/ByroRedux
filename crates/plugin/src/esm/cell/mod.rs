@@ -582,10 +582,11 @@ pub struct PlacedRef {
     /// `ACHR` "Starts Unconscious" flag (0x2000, #5017), FO4 / FO76 /
     /// Starfield only (see `FLAG_STARTS_UNCONSCIOUS`). Vanilla sets it on
     /// dormant robots and turrets that a terminal, pod or quest script
-    /// wakes. Decode only: the engine has no unconscious state yet, and what
-    /// "unconscious" suppresses at runtime is not sourced. `Actor.psc` says
-    /// only "Sets this actor as unconscious or not", so nothing consumes the
-    /// field yet.
+    /// wakes. The actor job spawns such an actor unconscious
+    /// (`ActorControlState::unconscious`, `apply_starts_unconscious`), with
+    /// the runtime meaning from the Creation Kit's `SetUnconscious - Actor`
+    /// page. That page is Skyrim's; FO4 documents only the one-liner, and the
+    /// user approved the cross-game reading.
     pub starts_unconscious: bool,
     /// Authored Havok pose from the placement's `XRGD` (#5015), in file
     /// order; empty when the sub-record is absent. xEdit defines it on

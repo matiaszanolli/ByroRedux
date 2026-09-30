@@ -508,6 +508,9 @@ pub(crate) fn clear_ambient_behavior(world: &World, actor: EntityId) {
 /// [`ambient_ai_package_system`] — which skips actors in combat —
 /// re-selects and reinstalls it on the first tick after combat ends. A
 /// no-op once suspended, so the per-frame cost is two lookups.
+///
+/// #5017 — also the unconscious suspension: `ambient_ai_package_system`
+/// calls it for every unconscious actor.
 pub(crate) fn suspend_ambient_behavior_for_combat(world: &World, actor: EntityId) {
     let active = world
         .get::<AmbientPackageRuntime>(actor)
@@ -633,6 +636,16 @@ pub(crate) fn reseat_ambient_packages_after_restore(world: &World) {
 /// SCEN runtime to consume the same request afterward. Schedule-only checks are
 /// bounded to one evaluation per in-game minute per actor.
 pub(crate) fn ambient_ai_package_system(world: &World, _dt: f32) {
+    // #5017 — an unconscious actor cannot move or pick packages. Tear down an
+    // installed procedure (a no-op once suspended; the list is nearly always
+    // empty) before the minute gate, so a knock-out takes effect this frame.
+    // Waking leaves the reset evaluation clock, so selection resumes on the
+    // next tick.
+    let mut unconscious = Vec::new();
+    byroredux_scripting::collect_unconscious(world, &mut unconscious);
+    for &actor in &unconscious {
+        suspend_ambient_behavior_for_combat(world, actor);
+    }
     let game_hour = world
         .try_resource::<GameTimeRes>()
         .map(|time| time.hour)
@@ -687,6 +700,7 @@ pub(crate) fn ambient_ai_package_system(world: &World, _dt: f32) {
     if let Some(combat) = world.query::<AiCombatState>() {
         due.retain(|&actor| combat.get(actor).is_none());
     }
+    due.retain(|actor| !unconscious.contains(actor));
     if due.is_empty() {
         return;
     }
@@ -1444,6 +1458,30 @@ mod tests {
                 .active_package_form_id,
             Some(0x100)
         );
+    }
+
+    /// #5017 — an unconscious actor "cannot move or think": its installed
+    /// Wander procedure is torn down on the next tick, no package is
+    /// re-selected while it stays unconscious, and waking restores it.
+    #[test]
+    fn unconsciousness_suspends_the_ambient_package_until_woken() {
+        let (mut world, actor) = setup_actor(10.0, vec![pack(0x100, PROCEDURE_WANDER, None)]);
+        world.register::<byroredux_scripting::ActorControlState>();
+        assert!(world.has::<WanderBehavior>(actor));
+        byroredux_scripting::update_actor_control(&world, actor, |state| {
+            state.set_unconscious(true)
+        });
+
+        ambient_ai_package_system(&world, 0.0);
+        assert!(!world.has::<WanderBehavior>(actor), "knocked out this tick");
+        ambient_ai_package_system(&world, 0.0);
+        assert!(!world.has::<WanderBehavior>(actor), "no re-selection");
+
+        byroredux_scripting::update_actor_control(&world, actor, |state| {
+            state.set_unconscious(false)
+        });
+        ambient_ai_package_system(&world, 0.0);
+        assert!(world.has::<WanderBehavior>(actor), "restored on waking");
     }
 
     /// #4703 — a seated Sandbox actor put into combat stands up: `Seated`

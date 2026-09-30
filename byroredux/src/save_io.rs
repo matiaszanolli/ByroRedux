@@ -132,8 +132,8 @@ const MUTABLE_DELTA_COLUMNS: &[&str] = &[
     "GuardState",
     "PatrolState",
     "Escorted",
-    // #2292 / SAVE-D1-09 — `ActorControlState { restrained: bool }`. Single
-    // bool, no session-local identity. Replacing registration (#5052): a
+    // #2292 / SAVE-D1-09 — `ActorControlState { restrained, unconscious }`
+    // (#5017 added the second bool). No session-local identity. Replacing registration (#5052): a
     // saved absence clears a live restraint on the process-lifetime player.
     "ActorControlState",
     // #3165 — the player entity outlives cell reload, so its mutable breath

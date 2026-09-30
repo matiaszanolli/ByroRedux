@@ -301,8 +301,8 @@ struct TopicSelection {
 }
 
 /// #5043 — whether `npc` is in no state to hold a conversation: dead (corpse
-/// loot owns it), or fighting (`AiCombatState`, against the player or
-/// anyone else). The interaction Talk arm applies the same two filters, so
+/// loot owns it), fighting (`AiCombatState`, against the player or anyone
+/// else), or unconscious (#5017). The interaction Talk arm applies the same two filters, so
 /// the prompt and the selection agree.
 pub(crate) fn npc_refuses_dialogue(world: &World, npc: EntityId) -> Option<&'static str> {
     if world.get::<Dead>(npc).is_some() {
@@ -310,6 +310,10 @@ pub(crate) fn npc_refuses_dialogue(world: &World, npc: EntityId) -> Option<&'sta
     }
     if world.get::<AiCombatState>(npc).is_some() {
         return Some("that actor is in combat");
+    }
+    // #5017 — "actors also cannot be talked to … in this state" (CK).
+    if byroredux_scripting::is_unconscious(world, npc) {
+        return Some("that actor is unconscious");
     }
     None
 }
@@ -882,6 +886,29 @@ mod tests {
                 .info_form_id,
             INFO_ELTRYS
         );
+    }
+
+    /// #5017 — an unconscious NPC "cannot be talked to" (CK): both entry
+    /// points refuse, and waking restores the conversation.
+    #[test]
+    fn an_unconscious_npc_refuses_dialogue() {
+        let (mut world, player, npcs) = bound_world(&[(SPEAKER_REF, SPEAKER_BASE)]);
+        world.register::<byroredux_scripting::ActorControlState>();
+        let eltrys = npcs[0];
+        byroredux_scripting::update_actor_control(&world, eltrys, |state| {
+            state.set_unconscious(true)
+        });
+        world.insert(eltrys, ActivateEvent { activator: player });
+        npc_dialogue_selection_system(&world);
+        assert!(selected(&world, eltrys).is_none());
+        let err = select_topic_by_form_id(&mut world, eltrys, TOPIC).unwrap_err();
+        assert!(err.contains("unconscious"), "{err}");
+
+        byroredux_scripting::update_actor_control(&world, eltrys, |state| {
+            state.set_unconscious(false)
+        });
+        npc_dialogue_selection_system(&world);
+        assert!(selected(&world, eltrys).is_some(), "awake: talks");
     }
 
     /// #5037 fixture: MS01's real shape in miniature. A blocking branch

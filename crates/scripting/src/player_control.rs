@@ -7,7 +7,7 @@
 
 use byroredux_core::ecs::resource::Resource;
 use byroredux_core::ecs::sparse_set::SparseSetStorage;
-use byroredux_core::ecs::storage::Component;
+use byroredux_core::ecs::storage::{Component, EntityId};
 use byroredux_core::ecs::world::World;
 
 /// Control domains selected by `EnablePlayerControls` /
@@ -109,15 +109,86 @@ impl PlayerControlState {
     }
 }
 
-/// Per-actor state written by `Actor.SetRestrained`.
+/// Per-actor state written by `Actor.SetRestrained` and
+/// `Actor.SetUnconscious`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub struct ActorControlState {
     pub restrained: bool,
+    /// #5017 — `Actor.SetUnconscious`, and FO4+'s ACHR "Starts Unconscious".
+    /// Per the Creation Kit (`SetUnconscious - Actor`), an unconscious actor
+    /// cannot move or "think" (pick packages, yell alarms), cannot be talked
+    /// to or pickpocketed, and does not react to what it detects. It does not
+    /// turn hostile when attacked, but does once conscious again. Mutually
+    /// exclusive with [`Self::restrained`]: see [`Self::set_unconscious`].
+    pub unconscious: bool,
+}
+
+impl ActorControlState {
+    /// Flag or clear restrained. Flagging it clears unconscious: the
+    /// Creation Kit states the two cannot hold at once.
+    pub fn set_restrained(&mut self, restrained: bool) {
+        self.restrained = restrained;
+        if restrained {
+            self.unconscious = false;
+        }
+    }
+
+    /// Flag or clear unconscious. Flagging it clears restrained.
+    pub fn set_unconscious(&mut self, unconscious: bool) {
+        self.unconscious = unconscious;
+        if unconscious {
+            self.restrained = false;
+        }
+    }
 }
 
 impl Component for ActorControlState {
     type Storage = SparseSetStorage<Self>;
+}
+
+/// Whether `entity` is unconscious (#5017). No `ActorControlState` means
+/// conscious.
+pub fn is_unconscious(world: &World, entity: EntityId) -> bool {
+    world
+        .get::<ActorControlState>(entity)
+        .is_some_and(|state| state.unconscious)
+}
+
+/// Refill `out` with every unconscious entity, under one `ActorControlState`
+/// guard that is dropped before returning (#5017). Per-frame systems collect
+/// this first, so they never take the guard while holding their own queries.
+pub fn collect_unconscious(world: &World, out: &mut Vec<EntityId>) {
+    out.clear();
+    if let Some(states) = world.query::<ActorControlState>() {
+        out.extend(
+            states
+                .iter()
+                .filter(|(_, state)| state.unconscious)
+                .map(|(entity, _)| entity),
+        );
+    }
+}
+
+/// Apply `f` to `entity`'s `ActorControlState`, inserting a default one
+/// first. `false` when the storage is not registered.
+pub fn update_actor_control(
+    world: &World,
+    entity: EntityId,
+    f: impl FnOnce(&mut ActorControlState),
+) -> bool {
+    let Some(mut states) = world.query_mut::<ActorControlState>() else {
+        return false;
+    };
+    match states.get_mut(entity) {
+        Some(state) => f(state),
+        None => {
+            let mut state = ActorControlState::default();
+            f(&mut state);
+            states.insert(entity, state);
+        }
+    }
+    true
 }
 
 pub fn register(world: &mut World) {
@@ -130,6 +201,20 @@ pub fn register(world: &mut World) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #5017 — the Creation Kit: "flagging the actor as unconscious unflags
+    /// it as restrained, and vice versa". Clearing one leaves the other.
+    #[test]
+    fn unconscious_and_restrained_are_mutually_exclusive() {
+        let mut state = ActorControlState::default();
+        state.set_restrained(true);
+        state.set_unconscious(true);
+        assert!(state.unconscious && !state.restrained);
+        state.set_restrained(true);
+        assert!(state.restrained && !state.unconscious);
+        state.set_unconscious(false);
+        assert!(state.restrained, "clearing unconscious leaves restrained");
+    }
 
     #[test]
     fn selective_disable_leaves_unselected_domains_untouched() {

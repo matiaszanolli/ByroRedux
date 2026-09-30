@@ -597,7 +597,7 @@ fn player_and_actor_control_state_survive_save_load_round_trip() {
     });
 
     let npc = src.spawn();
-    src.insert(npc, ActorControlState { restrained: true });
+    src.insert(npc, ActorControlState { restrained: true, ..Default::default() });
 
     let snapshot = save_world(&src, &reg).unwrap();
     let bytes = encode(&snapshot, reg.schema_fingerprint()).unwrap();
@@ -1600,7 +1600,7 @@ fn dead_and_restraint_cleared_on_live_player_by_saved_absence() {
     let new_corpse = placement(&mut live, 0x200);
     let new_player = placement(&mut live, 0x14);
     live.insert(new_player, Dead);
-    live.insert(new_player, ActorControlState { restrained: true });
+    live.insert(new_player, ActorControlState { restrained: true, ..Default::default() });
 
     let remap = byroredux_save::build_form_id_remap(&live, &registry, &decoded);
     byroredux_save::apply_deltas(&mut live, &registry, &decoded, &remap, MUTABLE_DELTA_COLUMNS)

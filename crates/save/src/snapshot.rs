@@ -254,7 +254,12 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 /// replaces with the derived formula; an authored base is data. Pre-v31
 /// saves cannot tell the two apart, and defaulting either way would
 /// re-create the bug for one of the two populations, so they are rejected.
-pub const FORMAT_MAJOR: u16 = 31;
+///
+/// v31 -> v32 (#5017): `ActorControlState` gained the required `unconscious`
+/// flag, and the parked `ReferenceState` gained the required `control`
+/// field that carries it across eviction. No `serde(default)`; pre-v32 saves
+/// are rejected.
+pub const FORMAT_MAJOR: u16 = 32;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 
