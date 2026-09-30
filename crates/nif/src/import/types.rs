@@ -1528,7 +1528,7 @@ impl ImportedMesh {
         }
 
         let mut kept_indices = Vec::with_capacity(self.indices.len());
-        for (triangle, hidden) in self.indices.chunks_exact(3).zip(&hidden_triangles) {
+        for (triangle, hidden) in self.indices.as_chunks::<3>().0.iter().zip(&hidden_triangles) {
             if !hidden {
                 kept_indices.extend_from_slice(triangle);
             }

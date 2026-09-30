@@ -170,6 +170,7 @@ fn effect_kind(e: &Effect) -> &'static str {
         Effect::Wait { .. } => "Wait",
         Effect::WaitForActors3DLoaded { .. } => "WaitForActors3DLoaded",
         Effect::ProviderCall(_) => "ProviderCall",
+        Effect::SetUnconscious { .. } => "SetUnconscious",
     }
 }
 

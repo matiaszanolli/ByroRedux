@@ -176,7 +176,21 @@ jobs:
       # clippy whenever the job got that far.
       - name: cargo clippy
         if: success() || failure()
-        run: cargo clippy --workspace -- -D warnings
+        # #5121 — `--keep-going` so one red crate (e.g. a new clippy lint
+        # after a toolchain bump) no longer stops cargo from checking the
+        # crates behind it in the build graph.
+        run: cargo clippy --workspace --keep-going -- -D warnings
+      # #5121 / #4595 — the renderer's 733 `unsafe` blocks are guarded by its
+      # crate-level `#![deny(clippy::undocumented_unsafe_blocks)]`, but that
+      # gate only exists while clippy actually reaches the crate: rustc 1.98
+      # lint errors in `byroredux-sdk`/`byroredux-nif` stopped scheduling
+      # before `byroredux-renderer`, silently disarming the guard for days.
+      # This dedicated step re-lints the renderer on its own dependency
+      # closure (core only), so an upstream crate's clippy failure can no
+      # longer shadow it.
+      - name: cargo clippy (renderer unsafe-block gate)
+        if: success() || failure()
+        run: cargo clippy -p byroredux-renderer --no-deps -- -D clippy::undocumented_unsafe_blocks
 
   # ──────────────────────────────────────────────────────────────────────────
   # Global ABBA lock-order detector (TS-02 / #313 / #1410)

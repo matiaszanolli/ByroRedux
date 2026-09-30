@@ -684,7 +684,9 @@ impl NiLegacyParticlesData {
         let rotations: Vec<[f32; 4]> = if has_rotations {
             stream
                 .read_f32_array(num_vertices as usize * 4)?
-                .chunks_exact(4)
+                .as_chunks::<4>()
+                .0
+                .iter()
                 .map(|c| [c[1], c[2], c[3], c[0]])
                 .collect()
         } else {

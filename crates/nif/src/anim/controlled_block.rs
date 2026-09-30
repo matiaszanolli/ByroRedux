@@ -87,18 +87,12 @@ pub fn format_anim_note_label(note: &BsAnimNote) -> String {
 /// through the bottleneck without faking a runtime blend at import
 /// time. See #334 (AR-08).
 pub fn resolve_blend_interpolator_target(scene: &NifScene, interp_idx: usize) -> Option<usize> {
-    let base: &NiBlendInterpolator =
-        if let Some(b) = scene.get_as::<NiBlendTransformInterpolator>(interp_idx) {
-            &b.base
-        } else if let Some(b) = scene.get_as::<NiBlendFloatInterpolator>(interp_idx) {
-            &b.base
-        } else if let Some(b) = scene.get_as::<NiBlendPoint3Interpolator>(interp_idx) {
-            &b.base
-        } else if let Some(b) = scene.get_as::<NiBlendBoolInterpolator>(interp_idx) {
-            &b.base
-        } else {
-            return None;
-        };
+    let base: &NiBlendInterpolator = scene
+        .get_as::<NiBlendTransformInterpolator>(interp_idx)
+        .map(|b| &b.base)
+        .or_else(|| scene.get_as::<NiBlendFloatInterpolator>(interp_idx).map(|b| &b.base))
+        .or_else(|| scene.get_as::<NiBlendPoint3Interpolator>(interp_idx).map(|b| &b.base))
+        .or_else(|| scene.get_as::<NiBlendBoolInterpolator>(interp_idx).map(|b| &b.base))?;
 
     // Manager-controlled blends carry an empty `items` array — the
     // NiControllerManager drives the sub-interpolators externally via

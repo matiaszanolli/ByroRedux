@@ -1228,9 +1228,9 @@ impl BsDistantObjectInstancedNode {
             let num_transforms = stream.read_u32_le()?;
             let transforms: Vec<[f32; 16]> = stream
                 .read_f32_array(num_transforms as usize * 16)?
-                .chunks_exact(16)
-                .map(|c| c.try_into().unwrap())
-                .collect();
+                .as_chunks::<16>()
+                .0
+                .to_vec();
 
             instances.push(BsDistantObjectInstance {
                 resource_file_hash,

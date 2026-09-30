@@ -72,7 +72,9 @@ fn triangle_body_parts(scene: &NifScene, skin_idx: usize, final_indices: &[u32])
     }
 
     let mapped: Vec<u16> = final_indices
-        .chunks_exact(3)
+        .as_chunks::<3>()
+        .0
+        .iter()
         .map(|triangle| {
             by_triangle
                 .get(&canonical_triangle([triangle[0], triangle[1], triangle[2]]))

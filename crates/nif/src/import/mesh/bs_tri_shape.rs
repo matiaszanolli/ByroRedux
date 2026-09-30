@@ -190,7 +190,9 @@ pub fn extract_bs_tri_shape(
     let build_triangles_for_synth = || -> Vec<[u16; 3]> {
         if shape.triangles.is_empty() {
             indices
-                .chunks_exact(3)
+                .as_chunks::<3>()
+                .0
+                .iter()
                 .filter_map(|c| {
                     if c[0] <= u16::MAX as u32 && c[1] <= u16::MAX as u32 && c[2] <= u16::MAX as u32
                     {

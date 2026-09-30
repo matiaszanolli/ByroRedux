@@ -444,7 +444,7 @@ pub fn legacy_skse_mod_event_name(event: &EventId) -> Option<String> {
     }
     let bytes = encoded.as_bytes();
     let mut decoded = Vec::with_capacity(bytes.len() / 2);
-    for pair in bytes.chunks_exact(2) {
+    for pair in bytes.as_chunks::<2>().0 {
         decoded.push((hex_nibble(pair[0])? << 4) | hex_nibble(pair[1])?);
     }
     String::from_utf8(decoded).ok()

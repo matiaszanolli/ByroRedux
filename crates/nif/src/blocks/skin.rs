@@ -499,7 +499,7 @@ impl BsSkinBoneData {
         let mut bones = stream.allocate_vec_sized::<BsSkinBoneTrans>(num_bones)?;
         // Each bone is a fixed 17-float layout (4 bsphere + 9 rotation + 3 translation + 1 scale).
         let flat = stream.read_f32_array(num_bones as usize * 17)?;
-        for chunk in flat.chunks_exact(17) {
+        for chunk in flat.as_chunks::<17>().0 {
             let bounding_sphere = [chunk[0], chunk[1], chunk[2], chunk[3]];
             let rotation = [
                 [chunk[4], chunk[5], chunk[6]],

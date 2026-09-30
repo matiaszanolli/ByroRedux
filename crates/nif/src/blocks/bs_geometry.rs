@@ -439,7 +439,9 @@ impl BSGeometryMeshData {
         let n_vertices = stream.read_u32_le()?;
         let vertices: Vec<[f32; 3]> = stream
             .read_u16_array(n_vertices as usize * 3)?
-            .chunks_exact(3)
+            .as_chunks::<3>()
+            .0
+            .iter()
             .map(|c| {
                 [
                     unpack_norm_i16(c[0] as i16, scale, Self::HAVOK_SCALE),
@@ -452,14 +454,18 @@ impl BSGeometryMeshData {
         let n_uv1 = stream.read_u32_le()?;
         let uvs0: Vec<[f32; 2]> = stream
             .read_u16_array(n_uv1 as usize * 2)?
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|c| [half_to_f32(c[0]), half_to_f32(c[1])])
             .collect();
 
         let n_uv2 = stream.read_u32_le()?;
         let uvs1: Vec<[f32; 2]> = stream
             .read_u16_array(n_uv2 as usize * 2)?
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|c| [half_to_f32(c[0]), half_to_f32(c[1])])
             .collect();
 

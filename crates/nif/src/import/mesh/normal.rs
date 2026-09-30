@@ -124,7 +124,9 @@ pub fn derive_normals_from_u32_indices(
     indices: &[u32],
 ) -> Vec<[f32; 3]> {
     let triangles: Vec<[u16; 3]> = indices
-        .chunks_exact(3)
+        .as_chunks::<3>()
+        .0
+        .iter()
         .filter_map(|c| {
             Some([
                 u16::try_from(c[0]).ok()?,
