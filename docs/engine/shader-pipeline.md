@@ -557,7 +557,7 @@ Selected fields (full layout in
 | 16–27 | `emissive_rgb` | Self-illumination colour (3 × f32) |
 | 28–43 | `specular` | Strength + tint RGB |
 | 44 | `alpha_threshold` | Alpha test cutoff |
-| 48–79 | texture indices | normal, dark, glow, detail, gloss, parallax, env, env_mask (8 × u32; the diffuse index lives on `GpuInstance`, #3909) |
+| 48–79 | texture indices | normal, dark, glow, detail, gloss, parallax, env, env_mask (8 × u32; the diffuse index lives on `GpuInstance`, #3909). `gloss` and `parallax` carry a bit-31 channel selector — see below |
 | 80 | `alpha_test_func` | 0=ALWAYS … 7=NEVER |
 | 84 | `material_kind` | Classification — see below |
 | 88 | `material_alpha` | Authored material alpha (`NiAlphaProperty`-independent) |
@@ -575,7 +575,7 @@ Selected fields (full layout in
 | 284 | `sheen` | Disney sheen strength |
 | 288 | `sheen_tint` | 0 = white sheen, 1 = albedo-tinted sheen |
 | 292 | `anisotropic` | Anisotropic GGX strength [0, 1] |
-| 296 | `tint_map_index` | Supplemental role — bindless index (0 = none) |
+| 296 | `tint_map_index` | Supplemental role — bindless index (0 = none) plus a bit-31 channel selector — see below |
 | 300 | `inner_layer_map_index` | Supplemental role |
 | 304 | `specular_map_index` | Supplemental role |
 | 308 | `lighting_map_index` | Supplemental role — imported/uploaded but deliberately **unsampled** pending coordinate semantics |
@@ -589,6 +589,18 @@ Selected fields (full layout in
 | 392–416 | authored lighting response | lighting-effect pair, subsurface rolloff, rim/back powers, Fresnel power, greyscale-to-palette scale |
 | 420–424 | lighting texture roles | soft/rim lighting mask and back-lighting map indices |
 | 428 | `detail_neutral` | #4422 producer-declared detail-combine neutral → total **432** |
+
+Three index fields are **not** plain bindless indices: bit 31 is a channel
+selector set per draw in `byroredux::render::static_meshes`, and every reader
+must mask it off (`index & ~BIT`) before using the rest as a texture index.
+All three constants are `0x8000_0000` and live in
+[`shader_constants_data.rs`](../../crates/renderer/src/shader_constants_data.rs):
+
+| Field | Bit | Meaning when set |
+|---|---|---|
+| `gloss_map_index` | `NORMAL_ALPHA_SPEC_BIT` | Gloss/smoothness mask is the normal map's alpha — sample `.a`, not `.r` (#1500) |
+| `parallax_map_index` | `PARALLAX_ALPHA_HEIGHT_BIT` | Height lives in the alpha channel (Oblivion binds the normal map into the height slot, #3530) |
+| `tint_map_index` | `TINT_ALPHA_WEIGHT_BIT` | The tint texture carries a real alpha weight; alpha-less tint maps stay inert (#4423) |
 
 The twelve entries at 296–340 are the original source-agnostic supplemental
 texture roles introduced with `MaterialTextureSet<T>`. Three of them

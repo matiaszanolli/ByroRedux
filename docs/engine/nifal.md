@@ -750,7 +750,27 @@ The material slice was executed this session as the template. Mechanics:
   out of that component and early-return without it, so calling them there would
   be a no-op rather than a correctness gap (#3465; the text used to say
   "both spawn sites", which stopped identifying the set once the third caller
-  landed). All three are idempotent and read only canonical components, so this
+  landed).
+
+  The texture-only boundary (`translate_texture_only_material*`, used by the
+  exterior terrain / water spawners) has one Phase-2 caller of its own:
+  `cell_loader/terrain_lod_btr.rs` calls `resolve_msn_z_source` (#4632). Its
+  `.btr` NIFs author the model-space-normals bit, and their normal maps are
+  DXT5 with an authored, signed blue axis, so `MAT_FLAG_MSN_HAS_AUTHORED_Z` has
+  to be resolved from the bound DDS; reconstructing |z| in the shader would
+  lose the sign over half the terrain's folds. The three terrain spawners
+  (`terrain.rs`, `terrain_lod.rs`, `terrain_lod_btr.rs`) deliberately do
+  **not** call the other two resolvers, and that is inert by construction,
+  not an omission (#4264). `resolve_normal_alpha_spec_roughness`'s overwrite
+  arm cannot fire on this boundary's output: `Material::default()` seeds
+  `specular_strength = 1.0` (the arm needs `> 1.2`) and `env_map_scale` is
+  0.0, and an alpha-bearing terrain normal is consumed per-pixel by the shader
+  as the specular mask anyway. `resolve_unresolved_gloss_neutral_roughness`
+  only acts on authored BGSM PBR scalars, which texture-only surfaces never
+  have. If either resolver's gates are widened, re-audit these spawners
+  before the new reach can touch terrain.
+
+  All three are idempotent and read only canonical components, so this
   is a staging constraint rather than a mutable-state leak — and it is why the
   render path carries no material heuristic of its own (#1480's "resolve once
   at spawn" contract).

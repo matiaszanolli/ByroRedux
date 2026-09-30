@@ -48,12 +48,17 @@
 //! #3465 — this used to say "both spawn sites", which stopped identifying the
 //! set when a third production caller landed. `cell_loader/placement_lod.rs`
 //! is that third one and is exempt: it attaches no `MaterialTextureHandles`,
-//! and both resolvers read their inputs out of that component and early-return
-//! without it, so calling them there would be a no-op rather than a
-//! correctness gap. If placement LOD ever gains texture handles, it gains the
+//! and all three resolvers read their inputs out of that component and
+//! early-return without it, so calling them there would be a no-op rather than
+//! a correctness gap. If placement LOD ever gains texture handles, it gains the
 //! resolvers with them.
 //!
-//! Both are idempotent and read only canonical components, so re-running them
+//! The texture-only boundary ([`translate_texture_only_material`]) has one
+//! Phase-2 caller too: `cell_loader/terrain_lod_btr.rs` calls
+//! [`resolve_msn_z_source`] (#4632). Why the terrain spawners skip the other
+//! two is on [`translate_texture_only_material`] and in `nifal.md`.
+//!
+//! All three are idempotent and read only canonical components, so re-running them
 //! cannot change a value — this is a staging constraint, not a mutable-state
 //! leak, and it is why the render path carries no heuristic of its own.
 //!
@@ -989,9 +994,11 @@ pub(crate) fn attach_blend_and_facing_markers(
 /// re-audited before it can touch terrain.
 ///
 /// #4304 — for completeness: the one *drawn* surface family that
-/// legitimately bypasses this whole boundary is EXAL ground cover (no
-/// `Material` at all; shaded from `GroundCoverPalette`). That exemption is
-/// recorded in `nifal.md` §3.
+/// legitimately bypasses this whole boundary is EXAL ground-cover **blades**
+/// (no `Material` at all; shaded from `GroundCoverPalette`). That exemption is
+/// recorded in `nifal.md` §3. The Phase C authored-model tier is not part of
+/// it: its instanced models resolve a NIFAL `Material` exactly as a placed
+/// reference does (`exal-groundcover.md`, Phase C).
 pub(crate) fn translate_texture_only_material(texture_path: Option<String>) -> Material {
     translate_texture_only_material_with_authored_msn(texture_path, false)
 }
