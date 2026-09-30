@@ -1557,6 +1557,69 @@ fn character_controller_breath_state_survives_live_delta_overlay() {
     assert_eq!(restored.drowning_damage_accumulator, 0.625);
 }
 
+/// Regression: #5027 / #5052 — the player entity outlives the load's cell
+/// reload, so a `Dead` marker or a lazily inserted `ActorControlState`
+/// from the pre-load session must be cleared when the loaded save carries
+/// no row for the player. Both columns are replacing registrations, so an
+/// encoded snapshot keeps them as `[]` and the overlay treats the missing
+/// row as authoritative. A saved `Dead` row on a matched NPC still applies.
+#[test]
+fn dead_and_restraint_cleared_on_live_player_by_saved_absence() {
+    use byroredux_core::ecs::components::{Dead, FormIdComponent};
+    use byroredux_core::form_id::{FormIdPair, LocalFormId, PluginId};
+    use byroredux_scripting::ActorControlState;
+
+    fn placement(world: &mut World, local: u32) -> byroredux_core::ecs::EntityId {
+        let entity = world.spawn();
+        let fid = world.resource_mut::<FormIdPool>().intern(FormIdPair {
+            plugin: PluginId::from_filename("Player.esm"),
+            local: LocalFormId(local),
+        });
+        world.insert(entity, FormIdComponent(fid));
+        entity
+    }
+
+    let registry = build_save_registry();
+    let mut saved = World::new();
+    saved.insert_resource(StringPool::new());
+    saved.insert_resource(FormIdPool::new());
+    let _player = placement(&mut saved, 0x14);
+    let corpse = placement(&mut saved, 0x200);
+    saved.insert(corpse, Dead);
+    let snapshot = save_world(&saved, &registry).unwrap();
+    let bytes = encode(&snapshot, registry.schema_fingerprint()).unwrap();
+    let decoded = decode(&bytes, registry.schema_fingerprint()).unwrap();
+    assert!(
+        decoded.components.contains_key("ActorControlState"),
+        "a replacing column must survive encode as [] to express absence"
+    );
+
+    let mut live = World::new();
+    live.insert_resource(FormIdPool::new());
+    live.spawn(); // No saved entity may match by numeric EntityId.
+    let new_corpse = placement(&mut live, 0x200);
+    let new_player = placement(&mut live, 0x14);
+    live.insert(new_player, Dead);
+    live.insert(new_player, ActorControlState { restrained: true });
+
+    let remap = byroredux_save::build_form_id_remap(&live, &registry, &decoded);
+    byroredux_save::apply_deltas(&mut live, &registry, &decoded, &remap, MUTABLE_DELTA_COLUMNS)
+        .unwrap();
+
+    assert!(
+        live.get::<Dead>(new_player).is_none(),
+        "a save where the player was alive must clear the live Dead marker"
+    );
+    assert!(
+        live.get::<ActorControlState>(new_player).is_none(),
+        "a save with no restraint row must clear the live restraint"
+    );
+    assert!(
+        live.get::<Dead>(new_corpse).is_some(),
+        "a saved Dead row on a matched NPC must still apply"
+    );
+}
+
 /// Exercise the shipped serializer and live overlay, not just cloning the
 /// post-loot components. Entity IDs and interned FormIds deliberately differ
 /// between the saved and respawned worlds.

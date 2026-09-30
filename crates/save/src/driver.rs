@@ -348,9 +348,10 @@ pub fn build_form_id_remap(
 /// the component from matched entities lacking a row in a present saved column.
 /// Runtime removals that are consequences of a
 /// persisted fact must therefore be rebuilt by the binary after this call.
-/// Death uses that model: `Dead` is overlaid here, then the shared combat
-/// reconciler removes respawned AI/animation state and reactivates ragdoll
-/// (#3022). Future disable/delete persistence needs the same explicit
+/// Death uses that model: `Dead` is overlaid here (a replacing column, so a
+/// saved absence also clears it from the reload-surviving player, #5027),
+/// then the shared combat reconciler removes respawned AI/animation state
+/// and reactivates ragdoll (#3022). Future disable/delete persistence needs the same explicit
 /// marker-plus-reconciler contract rather than teaching this generic driver
 /// domain semantics. See #1847 / SAVE-04.
 pub fn apply_deltas(

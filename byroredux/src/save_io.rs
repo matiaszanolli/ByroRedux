@@ -106,6 +106,8 @@ const MUTABLE_DELTA_COLUMNS: &[&str] = &[
     "SpellList",
     // Combat state is session-stable: the weapon points into the saved
     // Inventory by u32 index and Dead is a zero-field lifecycle marker.
+    // Dead's replacing registration clears a saved absence on the live
+    // player (#5027).
     "EquippedWeapon",
     "Dead",
     // #2014 / SAVE-D1-NEW-01 — delta-safe subset of the seven M42
@@ -131,7 +133,8 @@ const MUTABLE_DELTA_COLUMNS: &[&str] = &[
     "PatrolState",
     "Escorted",
     // #2292 / SAVE-D1-09 — `ActorControlState { restrained: bool }`. Single
-    // bool, no session-local identity.
+    // bool, no session-local identity. Replacing registration (#5052): a
+    // saved absence clears a live restraint on the process-lifetime player.
     "ActorControlState",
     // #3165 — the player entity outlives cell reload, so its mutable breath
     // and fractional drowning state must be overlaid explicitly. The pose
@@ -415,7 +418,11 @@ pub fn build_save_registry() -> SaveRegistry {
         // save-omitted case that allowlist tracks).
         .register_component::<ActorVitals>("ActorVitals")
         .register_component::<EquippedWeapon>("EquippedWeapon")
-        .register_component::<Dead>("Dead")
+        // #5027 — replacing: the process-lifetime player outlives the cell
+        // reload, so an additive overlay left a pre-load death standing on a
+        // save where the player was alive. Saved absence on a FormID-matched
+        // actor is authoritative; resident NPCs respawn alive regardless.
+        .register_replacing_component::<Dead>("Dead")
         // #2014 / SAVE-D1-NEW-01 — the seven M42 AI-procedure runtime-state
         // components. Continuously-updated state (WanderState/PatrolState/
         // GuardState) is cosmetically self-correcting if lost (the owning
@@ -448,8 +455,11 @@ pub fn build_save_registry() -> SaveRegistry {
         .register_component::<HorseTetherState>("HorseTetherState")
         // #2292 / SAVE-D1-09 — `Actor.SetRestrained` per-actor lock. Plain
         // bool, delta-safe. Pre-fix a save taken while an NPC was restrained
-        // silently freed it on reload.
-        .register_component::<ActorControlState>("ActorControlState")
+        // silently freed it on reload. #5052 — replacing: the first
+        // `SetRestrained` inserts it lazily on the process-lifetime player,
+        // so loading a save with no row must clear a live restraint rather
+        // than leave the player unable to move.
+        .register_replacing_component::<ActorControlState>("ActorControlState")
         .register_component::<byroredux_physics::CharacterController>("CharacterController")
         // #2379 / SAVE-D1-14 — `motion_type` (+ mass/friction/restitution/
         // damping) is mutated at runtime by Papyrus `.SetMotionType()`
