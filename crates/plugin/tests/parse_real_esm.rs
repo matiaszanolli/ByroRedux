@@ -4541,3 +4541,87 @@ fn oblivion_starts_dead_bases_and_their_placements_match_the_audit_census() {
         .count();
     assert_eq!(corpse_refs, 787, "placements of a flagged base");
 }
+
+/// Every placement in a parsed master: interiors, all exterior tiles, and
+/// worldspace-persistent cells.
+fn all_placements(
+    index: &byroredux_plugin::esm::records::EsmIndex,
+) -> impl Iterator<Item = &byroredux_plugin::esm::cell::PlacedRef> {
+    index
+        .cells
+        .cells
+        .values()
+        .chain(
+            index
+                .cells
+                .exterior_cells
+                .values()
+                .flat_map(|tiles| tiles.values()),
+        )
+        .chain(index.cells.worldspace_persistent_cells.values())
+        .flat_map(|cell| cell.references.iter())
+}
+
+/// #5015 / #5017 — FO4 placement decodes, pinned to a byte census of the
+/// vanilla master (2026-09-29, deleted records excluded). 79 ACHRs carry
+/// "Starts Unconscious" (0x2000). `XRGD` is on 8,919 placements (75,292
+/// entries): 1,090 actor placements (20,491 entries), every one a Starts
+/// Dead corpse, and 7,829 clutter REFRs.
+#[test]
+#[ignore = "needs Fallout 4 game data on disk"]
+fn fo4_starts_unconscious_and_xrgd_poses_match_the_census() {
+    let Some(data) = data_dir(test_paths::FO4_ENV, test_paths::FO4_DEFAULT) else {
+        eprintln!("[FO4 unconscious/XRGD] skipping: game data unavailable");
+        return;
+    };
+    let bytes = std::fs::read(data.join("Fallout4.esm")).expect("read Fallout4.esm");
+    let index = parse_esm(&bytes).expect("parse Fallout4.esm");
+
+    let unconscious = all_placements(&index).filter(|p| p.starts_unconscious).count();
+    assert_eq!(unconscious, 79, "ACHRs flagged Starts Unconscious");
+    assert_xrgd_census(&index, (1_090, 20_491), (8_919, 75_292));
+}
+
+/// #5015 / #5017 — Skyrim: `XRGD` on 8,517 placements (41,251 entries),
+/// 1,097 of them actor corpses (22,707 entries), and no "Starts
+/// Unconscious" decode at all, because TES5 leaves ACHR bit 13 undefined
+/// (census: 0 ACHRs set it).
+#[test]
+#[ignore = "needs Skyrim SE game data on disk"]
+fn skyrim_xrgd_poses_match_the_census_and_nothing_is_unconscious() {
+    let Some(data) = data_dir(test_paths::SKYRIM_SE_ENV, test_paths::SKYRIM_SE_DEFAULT) else {
+        eprintln!("[Skyrim XRGD] skipping: game data unavailable");
+        return;
+    };
+    let bytes = std::fs::read(data.join("Skyrim.esm")).expect("read Skyrim.esm");
+    let index = parse_esm(&bytes).expect("parse Skyrim.esm");
+
+    assert_eq!(all_placements(&index).filter(|p| p.starts_unconscious).count(), 0);
+    assert_xrgd_census(&index, (1_097, 22_707), (8_517, 41_251));
+}
+
+/// `(placements, entries)` of posed actor placements and of all posed
+/// placements; every posed actor must be a Starts Dead corpse.
+fn assert_xrgd_census(
+    index: &byroredux_plugin::esm::records::EsmIndex,
+    actors: (usize, usize),
+    all: (usize, usize),
+) {
+    let census = |posed: &[&byroredux_plugin::esm::cell::PlacedRef]| {
+        (posed.len(), posed.iter().map(|p| p.ragdoll_pose.len()).sum::<usize>())
+    };
+    let posed: Vec<_> = all_placements(index)
+        .filter(|p| !p.ragdoll_pose.is_empty())
+        .collect();
+    let posed_actors: Vec<_> = posed
+        .iter()
+        .copied()
+        .filter(|p| index.actor(p.base_form_id).is_some())
+        .collect();
+    assert_eq!(census(&posed_actors), actors, "posed actor placements, entries");
+    assert_eq!(census(&posed), all, "all posed placements, entries");
+    assert!(
+        posed_actors.iter().all(|p| p.starts_dead),
+        "an actor's XRGD is its corpse pose"
+    );
+}

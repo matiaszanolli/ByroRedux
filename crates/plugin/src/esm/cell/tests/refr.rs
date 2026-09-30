@@ -66,6 +66,11 @@ fn build_refr_with_subs(base_form_id: u32, extras: &[(&[u8; 4], &[u8])]) -> Vec<
 }
 
 fn parse_one_refr(record: &[u8]) -> PlacedRef {
+    parse_one_refr_for_game(record, crate::esm::reader::GameKind::Skyrim)
+}
+
+/// [`parse_one_refr`] for placement fields whose decode is per-game (#5017).
+fn parse_one_refr_for_game(record: &[u8], game: crate::esm::reader::GameKind) -> PlacedRef {
     let mut reader = EsmReader::new(record);
     let end = record.len();
     let mut refs = Vec::new();
@@ -82,6 +87,7 @@ fn parse_one_refr(record: &[u8]) -> PlacedRef {
         &mut pathgrids,
         &mut deleted,
         6, // group_type: arbitrary — these tests don't exercise group membership
+        game,
     )
     .unwrap();
     assert_eq!(refs.len(), 1, "exactly one REFR expected");
@@ -106,6 +112,7 @@ fn parse_one_refr_with_remap(record: &[u8], remap: crate::esm::reader::FormIdRem
         &mut pathgrids,
         &mut deleted,
         6, // group_type: arbitrary — these tests don't exercise group membership
+        crate::esm::reader::GameKind::Skyrim,
     )
     .unwrap();
     assert_eq!(refs.len(), 1, "exactly one REFR expected");
@@ -424,6 +431,7 @@ fn deleted_refr_tombstone_is_skipped() {
         &mut pathgrids,
         &mut deleted,
         6, // group_type: arbitrary — these tests don't exercise group membership
+        crate::esm::reader::GameKind::Skyrim,
     )
     .unwrap();
     assert!(refs.is_empty(), "a Deleted-flagged REFR must place nothing");
@@ -502,6 +510,7 @@ fn parse_one_refr_for_ownership(record: &[u8]) -> PlacedRef {
         &mut pathgrids,
         &mut deleted,
         6, // group_type: arbitrary — these tests don't exercise group membership
+        crate::esm::reader::GameKind::Skyrim,
     )
     .unwrap();
     assert_eq!(refs.len(), 1, "one REFR per record");
@@ -554,6 +563,7 @@ fn parse_refr_extracts_position_and_scale() {
         &mut pathgrids,
         &mut deleted,
         6, // group_type: arbitrary — these tests don't exercise group membership
+        crate::esm::reader::GameKind::Skyrim,
     )
     .unwrap();
 
@@ -593,6 +603,7 @@ fn parse_refr_extracts_non_inverted_xesp_renders_by_default() {
         &mut pathgrids,
         &mut deleted,
         6, // group_type: arbitrary — these tests don't exercise group membership
+        crate::esm::reader::GameKind::Skyrim,
     )
     .unwrap();
 
@@ -630,6 +641,7 @@ fn parse_refr_extracts_inverted_xesp_hidden_by_default() {
         &mut pathgrids,
         &mut deleted,
         6, // group_type: arbitrary — these tests don't exercise group membership
+        crate::esm::reader::GameKind::Skyrim,
     )
     .unwrap();
 
@@ -688,6 +700,7 @@ fn parse_refr_without_xesp_has_no_enable_parent() {
         &mut pathgrids,
         &mut deleted,
         6, // group_type: arbitrary — these tests don't exercise group membership
+        crate::esm::reader::GameKind::Skyrim,
     )
     .unwrap();
 
@@ -1007,6 +1020,7 @@ fn parse_refr_group_recognises_oblivion_acre_placement() {
         &mut pathgrids,
         &mut deleted,
         6, // group_type: arbitrary — these tests don't exercise group membership
+        crate::esm::reader::GameKind::Skyrim,
     )
     .unwrap();
 
@@ -1041,6 +1055,7 @@ fn parse_refr_xesp_with_null_parent_is_not_default_disabled() {
         &mut pathgrids,
         &mut deleted,
         6, // group_type: arbitrary — these tests don't exercise group membership
+        crate::esm::reader::GameKind::Skyrim,
     )
     .unwrap();
 
@@ -1146,6 +1161,7 @@ fn parse_refr_group_collects_navm_records() {
         &mut pathgrids,
         &mut deleted,
         6, // group_type: arbitrary — these tests don't exercise group membership
+        crate::esm::reader::GameKind::Skyrim,
     )
     .unwrap();
 
@@ -1211,6 +1227,7 @@ fn parse_placements(record: &[u8]) -> Vec<PlacedRef> {
         &mut pathgrids,
         &mut deleted,
         6, // group_type: arbitrary — these tests don't exercise group membership
+        crate::esm::reader::GameKind::Skyrim,
     )
     .unwrap();
     refs
@@ -1261,6 +1278,7 @@ fn deleted_placed_records_are_tombstoned_not_spawned() {
         &mut pathgrids,
         &mut deleted,
         6, // group_type: arbitrary — these tests don't exercise group membership
+        crate::esm::reader::GameKind::Skyrim,
     )
     .unwrap();
 
@@ -1350,8 +1368,75 @@ fn starts_dead_is_decoded_only_for_tes5_family_achr() {
         &mut pathgrids,
         &mut deleted,
         9,
+        crate::esm::reader::GameKind::Oblivion,
     )
     .unwrap();
     assert_eq!(refs.len(), 1);
     assert!(!refs[0].starts_dead, "Oblivion ACHR 0x200 is not decoded");
+}
+
+/// #5017 — "Starts Unconscious" (0x2000) is bit 13 of the FO4 / FO76 /
+/// Starfield ACHR flag list only: decoded on those games' ACHRs, never on a
+/// REFR, and never on Skyrim, whose TES5 list leaves the bit undefined.
+#[test]
+fn starts_unconscious_is_decoded_only_for_fo4_plus_achr() {
+    use crate::esm::reader::GameKind;
+    let achr = with_header(build_refr_with_subs(0x1234, &[]), b"ACHR", 0x2000);
+    for game in [GameKind::Fallout4, GameKind::Fallout76, GameKind::Starfield] {
+        let dormant = parse_one_refr_for_game(&achr, game);
+        assert!(dormant.starts_unconscious, "{game:?}");
+        assert!(!dormant.starts_dead && !dormant.initially_disabled);
+    }
+    assert!(
+        !parse_one_refr_for_game(&achr, GameKind::Skyrim).starts_unconscious,
+        "TES5 does not define ACHR bit 13"
+    );
+    let refr = with_header(build_refr_with_subs(0x1234, &[]), b"REFR", 0x2000);
+    assert!(
+        !parse_one_refr_for_game(&refr, GameKind::Fallout4).starts_unconscious,
+        "0x2000 on a REFR is not Starts Unconscious"
+    );
+    let awake = with_header(build_refr_with_subs(0x1234, &[]), b"ACHR", 0x200);
+    assert!(!parse_one_refr_for_game(&awake, GameKind::Fallout4).starts_unconscious);
+}
+
+/// Encode one 28-byte `wbRagdoll` entry: id, 3 unused, pos, rot.
+fn xrgd_entry(bone_id: u8, position: [f32; 3], rotation: [f32; 3]) -> Vec<u8> {
+    let mut entry = vec![bone_id, 0xAA, 0xBB, 0xCC];
+    for v in position.iter().chain(rotation.iter()) {
+        entry.extend_from_slice(&v.to_le_bytes());
+    }
+    entry
+}
+
+/// #5015 — `XRGD` decodes into whole 28-byte entries in file order, with
+/// the 3 unused bytes skipped. A duplicate id is kept, because vanilla poses
+/// repeat ids (an actor pose's entry 0 is a root placement). A trailing
+/// partial entry is dropped, and a missing sub-record leaves the pose empty.
+#[test]
+fn xrgd_decodes_the_authored_ragdoll_pose() {
+    let mut xrgd = xrgd_entry(2, [0.0, 0.0, 0.0], [-1.276, 0.507, -1.424]);
+    xrgd.extend(xrgd_entry(8, [0.4, -0.1, 6.9], [-3.11, 0.549, 2.94]));
+    xrgd.extend(xrgd_entry(2, [1.5, 0.0, 6.2], [1.438, -0.166, 1.646]));
+    let corpse = parse_one_refr(&with_header(
+        build_refr_with_subs(0x1234, &[(b"XRGD", &xrgd)]),
+        b"ACHR",
+        0x200,
+    ));
+    assert_eq!(
+        corpse.ragdoll_pose,
+        vec![
+            RagdollPoseBone { bone_id: 2, position: [0.0, 0.0, 0.0], rotation: [-1.276, 0.507, -1.424] },
+            RagdollPoseBone { bone_id: 8, position: [0.4, -0.1, 6.9], rotation: [-3.11, 0.549, 2.94] },
+            RagdollPoseBone { bone_id: 2, position: [1.5, 0.0, 6.2], rotation: [1.438, -0.166, 1.646] },
+        ]
+    );
+
+    let mut truncated = xrgd_entry(1, [5.6, 0.0, 0.0], [0.1, 0.2, 0.3]);
+    truncated.extend_from_slice(&[7u8; 27]);
+    let partial = parse_one_refr(&build_refr_with_subs(0x1234, &[(b"XRGD", &truncated)]));
+    assert_eq!(partial.ragdoll_pose.len(), 1, "a trailing partial entry is dropped");
+
+    let live = parse_one_refr(&build_refr_with_subs(0x1234, &[]));
+    assert!(live.ragdoll_pose.is_empty());
 }

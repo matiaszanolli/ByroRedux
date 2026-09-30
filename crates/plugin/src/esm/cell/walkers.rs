@@ -78,7 +78,7 @@ const XCLL_SIZES_STARFIELD: &[usize] = &[28, 108];
 /// copies made the bit look like it was tested in one place when it was
 /// tested in two, which is how the base-record half went unnoticed.
 use crate::esm::reader::FLAG_DELETED as RECORD_FLAG_DELETED;
-use crate::esm::reader::{FLAG_INITIALLY_DISABLED, FLAG_STARTS_DEAD};
+use crate::esm::reader::{FLAG_INITIALLY_DISABLED, FLAG_STARTS_DEAD, FLAG_STARTS_UNCONSCIOUS};
 
 /// Warn (at WARN level) when an XCLL sub-record size doesn't match the
 /// canonical size set for its plugin's game era. Doesn't change parse
@@ -186,6 +186,7 @@ fn parse_cell_group_inner(
                             &mut pathgrids,
                             &mut deleted,
                             sub_group.group_type as u8,
+                            game,
                         )?;
                         if let Some(cell) = cells.get_mut(key) {
                             cell.references.extend(refs);
@@ -733,9 +734,10 @@ pub(crate) fn parse_refr_group(
     pathgrids: &mut Vec<crate::esm::records::PathGridRecord>,
     deleted: &mut Vec<u32>,
     group_type: u8,
+    game: GameKind,
 ) -> Result<()> {
     parse_refr_group_inner(
-        reader, end, refs, landscape, navmeshes, pathgrids, deleted, group_type, 0,
+        reader, end, refs, landscape, navmeshes, pathgrids, deleted, group_type, game, 0,
     )
 }
 
@@ -769,6 +771,9 @@ fn parse_refr_group_inner(
     // shipped master, discarding exactly the distinction #3728 was filed
     // to record. Re-deriving is what makes the field mean anything.
     group_type: u8,
+    // #5017 — HEDR-derived game, for placement flags whose meaning is
+    // per-game (the ACHR header bit list differs between TES5 and FO4+).
+    game: GameKind,
     depth: u32,
 ) -> Result<()> {
     while reader.position() < end && reader.remaining() > 0 {
@@ -804,6 +809,7 @@ fn parse_refr_group_inner(
                 pathgrids,
                 deleted,
                 nested_group_type,
+                game,
                 depth + 1,
             )?;
             continue;
@@ -899,6 +905,8 @@ fn parse_refr_group_inner(
             let mut water_velocity: Option<[f32; 3]> = None;
             // #4706 — REFR stack size (`XCNT`).
             let mut item_count: Option<u32> = None;
+            // #5015 — authored ragdoll pose (`XRGD`).
+            let mut ragdoll_pose = Vec::new();
             // SCR-D7-01 / #1737 — the REFR's own `VMAD` (Skyrim+
             // objectReference override scripts), decoded so the cell loader
             // can attach them additively with the base record's scripts.
@@ -1043,14 +1051,13 @@ fn parse_refr_group_inner(
                     // On FONV, XATO is the Activation-Prompt subrecord
                     // (grouped with SCRV/SCVR/SLSD script-vars), a string,
                     // not a FormID. FO3 REFRs never carry XATO. Because
-                    // this arm is not game-gated (parse_refr_group has no
-                    // GameKind), an FNV REFR's XATO has its first 4 bytes
-                    // read as a spurious FormID → near-certain
+                    // this arm is not game-gated, an FNV REFR's XATO has its
+                    // first 4 bytes read as a spurious FormID → near-certain
                     // `texture_sets` miss → inert empty overlay (no visual
                     // effect, one wasted alloc). A behavioural game-gate to
-                    // FO4+ is deferred: it needs GameKind threaded through
-                    // parse_refr_group and the FO4 overlay fixtures
-                    // re-validated. Same caveat applies to XTNM/XTXR below.
+                    // FO4+ is deferred: `game` now reaches this walker
+                    // (#5017), but the FO4 overlay fixtures still need
+                    // re-validating. Same caveat applies to XTNM/XTXR below.
                     b"XATO" => {
                         alt_texture_ref = r.u32().ok().map(|fid| reader.remap_form_id(fid));
                     }
@@ -1147,6 +1154,11 @@ fn parse_refr_group_inner(
                             .and_then(|count| u32::try_from(count).ok())
                             .filter(|count| *count > 0);
                     }
+                    // #5015 — XRGD, the authored ragdoll pose (xEdit
+                    // `wbRagdoll`, same layout on every game). Decode only.
+                    b"XRGD" => {
+                        ragdoll_pose = super::helpers::decode_ragdoll_pose(&sub.data);
+                    }
                     _ => {}
                 }
             }
@@ -1193,6 +1205,16 @@ fn parse_refr_group_inner(
                     starts_dead: &header.record_type == b"ACHR"
                         && reader.variant() == crate::esm::reader::EsmVariant::Tes5Plus
                         && header.flags & FLAG_STARTS_DEAD != 0,
+                    // #5017 — bit 13 is "Starts Unconscious" only in the
+                    // FO4 / FO76 / Starfield ACHR flag lists; TES5 leaves it
+                    // undefined.
+                    starts_unconscious: &header.record_type == b"ACHR"
+                        && matches!(
+                            game,
+                            GameKind::Fallout4 | GameKind::Fallout76 | GameKind::Starfield
+                        )
+                        && header.flags & FLAG_STARTS_UNCONSCIOUS != 0,
+                    ragdoll_pose,
                 });
             }
         } else if &header.record_type == b"LAND" {

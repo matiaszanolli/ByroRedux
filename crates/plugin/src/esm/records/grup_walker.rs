@@ -620,6 +620,7 @@ mod tests {
                 &mut pathgrids,
                 &mut deleted,
                 8, // arbitrary — this test only checks depth-guard byte accounting
+                crate::esm::reader::GameKind::Skyrim,
             )
         });
         check("parse_modl_group", &any, &mut |r, end| {
@@ -657,7 +658,14 @@ mod tests {
         });
         check("parse_wrld_children", &wrld, &mut |r, end| {
             let (mut exterior, mut persistent) = (HashMap::new(), None);
-            parse_wrld_children(r, end, &mut exterior, &mut persistent, false)
+            parse_wrld_children(
+                r,
+                end,
+                &mut exterior,
+                &mut persistent,
+                false,
+                crate::esm::reader::GameKind::Skyrim,
+            )
         });
     }
 }

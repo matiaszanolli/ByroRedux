@@ -110,6 +110,15 @@ pub(crate) const FLAG_INITIALLY_DISABLED: u32 = 0x0000_0800;
 /// header family; see `PlacedRef::starts_dead`.
 pub(crate) const FLAG_STARTS_DEAD: u32 = 0x0000_0200;
 
+/// `ACHR` flag: "Starts Unconscious" (#5017). xEdit gives `13, 'Starts
+/// Unconscious'` in the FO4 ACHR flag list (`wbDefinitionsFO4.pas`, beside
+/// 9 Starts Dead / 11 Initially Disabled / 29 Don't Havok Settle), and FO76
+/// and Starfield carry the same bit; TES5's list does not define it. Vanilla
+/// sets it on dormant machines (79 ACHRs in `Fallout4.esm`, 193 in
+/// `Starfield.esm`, 0 in `Skyrim.esm`). Decoded onto
+/// `PlacedRef::starts_unconscious` for `GameKind::Fallout4`+ only.
+pub(crate) const FLAG_STARTS_UNCONSCIOUS: u32 = 0x0000_2000;
+
 /// TES4 base-actor flag: "Starts Dead" (#5013). xEdit's TES4 flag lists give
 /// `19, 'Starts Dead'` on both `CREA` (`wbDefinitionsTES4.pas:1942`) and
 /// `NPC_` (`:2783`) — i.e. record-header bit `0x80000`. The Construction Set

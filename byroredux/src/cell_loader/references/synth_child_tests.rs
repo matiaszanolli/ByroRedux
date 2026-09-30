@@ -37,6 +37,8 @@ fn actor_placement_fixture() -> esm::cell::PlacedRef {
         item_count: None,
         initially_disabled: false,
         starts_dead: false,
+        starts_unconscious: false,
+        ragdoll_pose: Vec::new(),
     }
 }
 
@@ -403,6 +405,8 @@ fn is_primary_synth_gates_every_identity_stamp_call_site() {
         item_count: None,
         initially_disabled: false,
         starts_dead: false,
+        starts_unconscious: false,
+        ragdoll_pose: Vec::new(),
     };
     let load_order =
         crate::cell_loader::load_order::LoadOrder::all_regular(vec!["Test.esm".to_string()]);
@@ -555,6 +559,8 @@ fn logical_quest_reference_spawns_identity_and_attaches_scripts() {
         item_count: None,
         initially_disabled: false,
         starts_dead: false,
+        starts_unconscious: false,
+        ragdoll_pose: Vec::new(),
     };
     let load_order =
         crate::cell_loader::load_order::LoadOrder::all_regular(vec!["Test.esm".to_string()]);

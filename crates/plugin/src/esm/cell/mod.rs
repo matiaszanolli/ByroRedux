@@ -574,10 +574,56 @@ pub struct PlacedRef {
     /// remaining game marks corpses differently and is handled at its own
     /// layer: Oblivion stamps the BASE actor's `NPC_`/`CREA` header
     /// (`0x80000`, decoded onto `NpcRecord::starts_dead` — #5013), and
-    /// FO3/FNV carry an authored ragdoll pose (`XRGD`) with no header bit
-    /// at all (#5005, decode pending a sourced rule). Zero here is there-
+    /// FO3/FNV carry an authored ragdoll pose (`XRGD`, decoded onto
+    /// [`Self::ragdoll_pose`]) with no header bit at all (#5005 — reading
+    /// the pose as the marker is pending a sourced rule). Zero here is there-
     /// fore "no placement-level marker", not "not a corpse".
     pub starts_dead: bool,
+    /// `ACHR` "Starts Unconscious" flag (0x2000, #5017), FO4 / FO76 /
+    /// Starfield only (see `FLAG_STARTS_UNCONSCIOUS`). Vanilla sets it on
+    /// dormant robots and turrets that a terminal, pod or quest script
+    /// wakes. Decode only: the engine has no unconscious state yet, and what
+    /// "unconscious" suppresses at runtime is not sourced. `Actor.psc` says
+    /// only "Sets this actor as unconscious or not", so nothing consumes the
+    /// field yet.
+    pub starts_unconscious: bool,
+    /// Authored Havok pose from the placement's `XRGD` (#5015), in file
+    /// order; empty when the sub-record is absent. xEdit defines it on
+    /// ACHR/ACRE and on REFR, and vanilla uses both. On actors it is the
+    /// corpse pose: every posed ACHR is a Starts Dead ACHR, 1,097 in
+    /// `Skyrim.esm` and 1,090 in `Fallout4.esm`; FO3/FNV corpses are covered
+    /// by #5005. On REFRs it is the settled pose of multi-body clutter such
+    /// as books, misc items and moveable statics: 7,420 REFRs in Skyrim and
+    /// 7,829 in FO4. Decode only: posing a corpse skeleton from it is still
+    /// open, because the entry→ragdoll-body mapping and the rotation
+    /// convention are not sourced (see [`RagdollPoseBone`]).
+    pub ragdoll_pose: Vec<RagdollPoseBone>,
+}
+
+/// One 28-byte entry of a placement's `XRGD` ragdoll pose (#5015).
+///
+/// Wire layout from xEdit's shared `wbRagdoll` (`wbDefinitionsCommon.pas`),
+/// the same on every game that carries it: `Bone Id` (u8) + 3 unused bytes +
+/// `wbVec3PosRot` (position `f32×3`, then rotation `f32×3` in radians, like
+/// `DATA`).
+///
+/// Only the layout is sourced. A byte census of the vanilla masters
+/// (2026-09-29) shows that the fields are **not** what xEdit's labels
+/// suggest, and a consumer must not assume they are:
+/// - `bone_id` is not a unique key. A clutter REFR's entries often all carry
+///   id 0; a Skyrim book has two, one per half. In an actor pose, entry 0 is a
+///   root placement at position
+///   `(0, 0, 0)`. The remaining entries of a standard humanoid pose carry
+///   ids 0..=16 once each, and entry 0 repeats one of them.
+/// - Positions are parent-relative bone offsets (thigh→calf ≈ 31, calf→foot
+///   ≈ 28), not world or ref-relative coordinates. The bone axis is +X on
+///   FO3/FNV and +Z on Skyrim.
+/// - The Euler order and the id→skeleton-body mapping are undocumented.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RagdollPoseBone {
+    pub bone_id: u8,
+    pub position: [f32; 3],
+    pub rotation: [f32; 3],
 }
 
 /// Lock state decoded from a REFR's `XLOC` sub-record.

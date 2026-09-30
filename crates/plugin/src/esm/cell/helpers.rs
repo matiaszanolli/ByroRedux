@@ -97,6 +97,31 @@ pub(super) fn xwcu_linear_velocity(data: &[u8]) -> Option<[f32; 3]> {
         .then_some(velocity)
 }
 
+/// Decode a placement's `XRGD` ragdoll pose (#5015): whole 28-byte
+/// `wbRagdoll` entries, in file order. A trailing partial entry is dropped
+/// (vanilla lengths are all multiples of 28); see [`super::RagdollPoseBone`]
+/// for what the fields do and do not mean.
+pub(super) fn decode_ragdoll_pose(data: &[u8]) -> Vec<super::RagdollPoseBone> {
+    const ENTRY: usize = 28;
+    if !data.len().is_multiple_of(ENTRY) {
+        log::debug!(
+            "XRGD length {} is not a multiple of {ENTRY}; trailing bytes ignored",
+            data.len()
+        );
+    }
+    data.chunks_exact(ENTRY)
+        .map(|entry| {
+            let float =
+                |offset: usize| f32::from_le_bytes(entry[offset..offset + 4].try_into().unwrap());
+            super::RagdollPoseBone {
+                bone_id: entry[0],
+                position: [float(4), float(8), float(12)],
+                rotation: [float(16), float(20), float(24)],
+            }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::gated_water_height;

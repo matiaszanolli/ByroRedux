@@ -237,6 +237,7 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
                 &mut worldspace_persistent_cells,
                 &mut worldspaces,
                 &mut worldspace_climates,
+                game,
             )?,
             b"LTEX" => {
                 parse_ltex_group(

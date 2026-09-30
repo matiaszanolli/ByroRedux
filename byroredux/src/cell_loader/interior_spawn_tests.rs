@@ -38,6 +38,8 @@ fn placed(form_id: u32, base_form_id: u32, position: [f32; 3], rotation: [f32; 3
         item_count: None,
         initially_disabled: false,
         starts_dead: false,
+        starts_unconscious: false,
+        ragdoll_pose: Vec::new(),
     }
 }
 

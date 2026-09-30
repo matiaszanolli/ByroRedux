@@ -81,6 +81,7 @@ fn parse_synthetic_wrld_with_remap(
         &mut persistent,
         &mut worldspaces,
         &mut climates,
+        crate::esm::reader::GameKind::Skyrim,
     )
     .expect("parse_wrld_group");
     (worldspaces, climates, exterior, persistent)
@@ -923,6 +924,7 @@ fn world_children_group_cannot_overrun_its_top_level_parent() {
         &mut persistent,
         &mut worldspaces,
         &mut climates,
+        crate::esm::reader::GameKind::Skyrim,
     )
     .expect("parse_wrld_group");
 
@@ -989,6 +991,7 @@ fn overrunning_child_grup_in_a_skip_arm_seeks_to_parent_end() {
         &mut persistent,
         &mut worldspaces,
         &mut climates,
+        crate::esm::reader::GameKind::Skyrim,
     )
     .expect("parse_wrld_group");
 

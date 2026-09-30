@@ -4,6 +4,7 @@
 
 use super::helpers::{read_form_id, read_form_id_array, read_zstring};
 use super::walkers::parse_refr_group;
+use crate::esm::reader::GameKind;
 use super::*;
 use crate::esm::records::common::read_lstring_or_zstring;
 
@@ -19,6 +20,7 @@ pub(crate) fn parse_wrld_group(
     all_persistent_cells: &mut HashMap<String, CellData>,
     worldspaces: &mut HashMap<String, WorldspaceRecord>,
     worldspace_climates: &mut HashMap<String, u32>,
+    game: GameKind,
 ) -> Result<()> {
     let mut current_wrld_name: Option<String> = None;
 
@@ -49,7 +51,7 @@ pub(crate) fn parse_wrld_group(
                         // WRLD's structurally persistent CELL. It can still
                         // author XCLC=(0,0), so topology—not XCLC absence—
                         // distinguishes it from the streamed tile at (0,0).
-                        parse_wrld_children(reader, sub_end, cells, &mut persistent_cell, true)?;
+                        parse_wrld_children(reader, sub_end, cells, &mut persistent_cell, true, game)?;
                         if let Some(cell) = persistent_cell {
                             all_persistent_cells.insert(key, cell);
                         }
@@ -249,6 +251,7 @@ pub(crate) fn parse_wrld_children(
     exterior_cells: &mut HashMap<(i32, i32), CellData>,
     persistent_cell: &mut Option<CellData>,
     force_persistent: bool,
+    game: GameKind,
 ) -> Result<()> {
     parse_wrld_children_inner(
         reader,
@@ -256,6 +259,7 @@ pub(crate) fn parse_wrld_children(
         exterior_cells,
         persistent_cell,
         force_persistent,
+        game,
         0,
     )
 }
@@ -266,6 +270,7 @@ fn parse_wrld_children_inner(
     exterior_cells: &mut HashMap<(i32, i32), CellData>,
     persistent_cell: &mut Option<CellData>,
     force_persistent: bool,
+    game: GameKind,
     depth: u32,
 ) -> Result<()> {
     // `Some(Some(grid))` is a normal streamed tile, while `Some(None)` is
@@ -291,6 +296,7 @@ fn parse_wrld_children_inner(
                         exterior_cells,
                         persistent_cell,
                         false,
+                        game,
                         depth + 1,
                     )?;
                 }
@@ -339,6 +345,7 @@ fn parse_wrld_children_inner(
                             &mut pathgrids,
                             &mut deleted,
                             sub_group.group_type as u8,
+                            game,
                         )?;
                         let cell = match cell_target {
                             Some(grid) => exterior_cells.get_mut(&grid),
