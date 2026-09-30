@@ -15,7 +15,7 @@ The **runtime arm** of the audit suite: the per-game `audit-*` skills inspect co
 |------|-----|-------|
 | Telemetry diff (this skill) | `.claude/commands/audit-runtime/capture.sh --game <key> --cell <EDID> --out /tmp/audit/runtime` | release build (`cargo build --release -p byroredux -p byro-dbg`), Vulkan device, `xvfb-run`, game data |
 | Harness self-test | `capture.sh --self-test` | nothing (parsers, ±2 % tolerance, PID resolution, survivor sweep) |
-| Baseline schema tests | `cargo test -p byroredux bench::` (`every_baseline_carries_the_full_gating_metric_set`, `every_baseline_records_the_harness_bench_mode`, `draw_split_rows_are_internally_ordered`) | nothing |
+| Baseline schema tests | `cargo test -p byroredux bench::` (`every_baseline_carries_the_full_gating_metric_set`, `every_baseline_records_the_harness_bench_mode`, `every_baseline_records_the_bench_camera_pose`, `draw_split_rows_are_internally_ordered`) | nothing |
 | Golden frames (game-data-free, not per-game): `cube_demo_golden_frame`, `combustion_lab_golden_frame` | `cargo test --release -p byroredux --test golden_frames -- --ignored`; regen `BYROREDUX_REGEN_GOLDEN=1` | Vulkan device. Default-lane guard `committed_baseline_matches_the_current_invocation` fails when a case's capture args/frames change without a recapture |
 | Playable slice `p0-door-interaction`, `p1-character-traversal`, `p2-melee-core`, `p3-hud`, `p3-player-body`, `p5-save-restart`, `w1-water-traversal` (`docs/smoke-tests/<gate>.sh [game]`) | game-parameterised, default `skyrim_se` (the two P3 gates are Skyrim-only today); fixtures `docs/smoke-tests/fixtures/{skyrim_se,fnv,fo3,fo4,oblivion}.env` | Vulkan + game data. Exit **77 = SKIP** (data absent), **2 = config error** (unknown game / gate the fixture does not declare, e.g. FIXTURE_GATES fo3: p0,p5,p2; fo4: p0,p2; oblivion: p0; w1 only where a `W1_*` route is declared, FNV today), never a pass |
 | Smoke contracts | `scripts/check-playable-smoke-contracts.sh` (CI job `playable-smoke-contracts`) | nothing: runs each gate with data neutralised and pins SKIP/config-error semantics |
@@ -33,7 +33,7 @@ To bless a build, run the playable-slice gates you have data for and report pass
 
 ## Baselines and cells
 
-The table carries **no metric values** (they went stale within weeks): read each TSV's `# regenerated:` headers. The whole set was re-captured in one `renderer-static` run on 2026-09-16 (#4417) — before the #4947 settings isolation and the late-September renderer/streaming waves; R6a-regress-22's batch-merge change lies in `4c9a5b36..99933f87b`, which straddles that capture, so attribute any draw-split movement before calling it a regression.
+The table carries **no metric values** (they went stale within weeks): read each TSV's `# regenerated:` headers. The whole set was re-captured in one `renderer-static` run on 2026-09-30 (#5125, engine `60cd7028c`), after `b9e961eeb`'s interior spawn ladder moved the authored camera in all five cells; that regen added the `bench_camera_pos` / `bench_camera_forward` rows. It carries the still-unattributed entity/light moves of #5131–#5133 (named in each TSV header). A pose-row mismatch means the draw rows compare two different views: attribute the pose change before reading any draw-split movement.
 
 | Game | Cell | Baseline | Why this cell |
 |------|------|----------|---------------|
@@ -65,6 +65,7 @@ Keys must match the committed TSV rows (`byroredux/src/bench.rs` `REQUIRED_METRI
 | Metric | Source | Direction |
 |--------|--------|-----------|
 | `bench_mode` | `bench:` `mode=` | exact, checked first |
+| `bench_camera_pos` / `bench_camera_forward` | `bench:` `camera_pos=` / `camera_forward=` (capture.sh copies them into the telem as `capture: bench_camera_pos=` / `_forward=`) | exact within 0.5 BU / 0.01 per component, checked second (#5125): a moved pose moves the frustum and the whole draw split, so on mismatch do NOT diff the draw rows — report the stale baseline and attribute the pose change (spawn placement, `--cell` resolution) first |
 | `entities_total` | `bench:` `entities=` | within ±2 % (either direction) |
 | `tex_missing_base_color` | `tex.missing`: count of `[slot=base_color]` lines | ≤ baseline (strict) |
 | `tex_missing_all_slots` | `tex.missing` summary count | informational: report Δ, never a finding |
@@ -86,7 +87,7 @@ Keys must match the committed TSV rows (`byroredux/src/bench.rs` `REQUIRED_METRI
 
 Compare current vs baseline. **Absent baseline** → copy with a `# regenerated: YYYY-MM-DD` header, report "BASELINE CREATED". **`--regen`** → overwrite, "BASELINE UPDATED" (never a finding). **Regressed** (against its direction) → one finding per metric:
 - HIGH: `tex_missing_base_color` or `mesh_cache_failed_count` grew; `skin_pool_overflow_attempts` off 0 (an entity renders in bind pose for lack of a slot; `SkinSlotPool` cap #1284).
-- MEDIUM: any other count moved against direction; a stale/incoherent baseline (mode mismatch, draw-split invariant broken).
+- MEDIUM: any other count moved against direction; a stale/incoherent baseline (mode mismatch, camera-pose mismatch, draw-split invariant broken).
 - LOW: drift within ±5 % on a tolerance metric.
 A `≤`-direction metric that **improved** passes but must be reported ("improved: tighten via `--regen`"): a loose `≤ baseline` gate silently lets the old value return (#4420 tightened mesh-cache rows for this reason).
 

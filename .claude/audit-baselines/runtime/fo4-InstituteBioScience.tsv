@@ -1,3 +1,25 @@
+# regenerated: 2026-09-30 (#5125 — every row re-captured in ONE renderer-static run, engine 60cd7028c)
+# Camera move, not a renderer change. `b9e961eeb` replaced the interior spawn
+# door/bbox heuristic with a ladder (COCMarkerHeading, then the partner door's
+# XTEL), and renderer-static holds the camera at the player's eyes on that
+# pose, so the frustum and the whole draw split moved. Bisected by the
+# 2026-09-29 runtime audit (RT-3): the draw rows are bit-identical to the
+# previous baseline at `cb44d99f6` and move at `b9e961eeb` with entity and
+# light counts identical. The new `bench_camera_pos` / `bench_camera_forward`
+# rows make the pose part of the contract, so the next pose change fails as a
+# pose change instead of reading as a batching regression.
+# Pose reviewed from a HEAD screenshot before this regen: a white corridor facing a doorway
+# (in-room, eye height). raster 3618 puts this gate on the PARALLEL draw-sort
+# branch (DRAW_SORT_PARALLEL_THRESHOLD 3000) for the first time. The frame is
+# visibly grainy (many-light sampling noise on white walls at frame 240); not
+# a pose problem, noted for the renderer.
+#   spawn: Interior spawn for 'InstituteBioScience': COCMarkerHeading at (426.9, 244.2, -162.7)
+#   draws 3969/196b/13c raster 256 -> 3971/723b/110c raster 3618
+# Carried with this regen, NOT attributed here: entities_total 18969 -> 16885
+# (-11.0 %) is #5131 (RT-5, open); light_count_point 685 -> 680 is #5132
+# (RT-6, open: 5 emitters Point -> Spot). skin_pool_live 264 -> 132 and the
+# fps rows are advisory (p50 79.5 -> 24.1 is the view: 3618 raster commands
+# against 256; see #5128 for the frame-time reading).
 # regenerated: 2026-09-16 (#4417 — every row re-captured in ONE renderer-static run)
 # Mode change, not a code change. capture.sh now pins `--bench-mode
 # renderer-static` (authored camera, dt=0). Every row below this header's
@@ -124,18 +146,20 @@
 # 0 directional / 685 point. Added light_count_point, corrected
 # light_count_directional.
 bench_mode	renderer-static
-entities_total	18969
+bench_camera_pos	426.895,364.248,-162.693
+bench_camera_forward	0.781582,0.000000,-0.623802
+entities_total	16885
 tex_missing_base_color	1
 tex_missing_all_slots	2
 mesh_cache_failed_count	0
-light_count_point	685
+light_count_point	680
 light_count_directional	0
-skin_pool_live	264
+skin_pool_live	132
 skin_pool_max	1364
 skin_pool_overflow_attempts	0
-bench_fps_p50	79.5
-bench_fps_avg	79.5
-bench_draws_cmds	3969
-bench_draws_raster_cmds	256
-bench_draws_batches	196
-bench_draws_gpu_calls	13
+bench_fps_p50	24.1
+bench_fps_avg	24.1
+bench_draws_cmds	3971
+bench_draws_raster_cmds	3618
+bench_draws_batches	723
+bench_draws_gpu_calls	110

@@ -96,6 +96,20 @@ bench_mode_from_log() {
         cut -d= -f2 || true
 }
 
+# #5125 — the bench camera pose (`camera_pos=x,y,z camera_forward=x,y,z`) out
+# of the `bench:` line, recorded in every baseline. A moved pose moves the
+# frustum and with it the whole draw split (`b9e961eeb`'s interior spawn ladder
+# moved all five baselines' draw rows with no renderer change), so a pose
+# change must fail as a pose change, not masquerade as a batching regression.
+bench_camera_pos_from_log() {
+    grep -E '^bench:' | grep --only-matching --max-count=1 -E ' camera_pos=[-0-9.,]+' |
+        cut -d= -f2 || true
+}
+bench_camera_forward_from_log() {
+    grep -E '^bench:' | grep --only-matching --max-count=1 -E ' camera_forward=[-0-9.,]+' |
+        cut -d= -f2 || true
+}
+
 # Seconds to wait for each readiness gate. The measured cold first-frame
 # hitch is 10–12 s (FO3/FNV, #3559) and the pre-hitch cell load adds more,
 # so this is sized for the slow tail rather than the median.
@@ -242,6 +256,14 @@ if [[ "${1:-}" == "--self-test" ]]; then
         "$(bench_mode_from_log <<<'bench: mode=system-live gate=none dt=wall-clock')" system-live
     expect "bench mode parse (absent)" "$(bench_mode_from_log <<<'bench-hold: mode=x')" ""
     expect "pinned bench mode" "${BENCH_MODE}" renderer-static
+
+    # #5125 — pose parse from a real `bench:` line fragment (fnv,
+    # 2026-09-30). `camera=static` earlier on the line must not match.
+    pose_line='bench: mode=renderer-static gate=renderer dt=fixed-0 camera=static frames=240 camera_pos=2400.775,13712.000,-1199.975 camera_forward=0.000000,0.000000,-1.000000 sim_time_s=0.000000 entities=6985'
+    expect "bench camera pos parse" "$(bench_camera_pos_from_log <<<"${pose_line}")" "2400.775,13712.000,-1199.975"
+    expect "bench camera forward parse" \
+        "$(bench_camera_forward_from_log <<<"${pose_line}")" "0.000000,0.000000,-1.000000"
+    expect "bench camera pos parse (absent)" "$(bench_camera_pos_from_log <<<'bench: mode=x')" ""
 
     # #4123 readiness gates. The field failure: `pong` at 1 s, then every
     # query timed out against a render thread still blocked on cell load.
@@ -449,6 +471,16 @@ printf "stats\ntex.missing\nmesh.cache failed\nlight.dump\nquit\n" |
 frame_max="$(bench_frame_max_from_log <"${engine_log}")"
 log "bench frame_max_ms=${frame_max:-unreported}"
 printf 'capture: bench_frame_max_ms=%s\n' "${frame_max:-unreported}" >>"${telem}"
+# #5125 — the pose the draw split was measured from; a baseline row, diffed
+# before any draw row.
+camera_pos="$(bench_camera_pos_from_log <"${engine_log}")"
+camera_forward="$(bench_camera_forward_from_log <"${engine_log}")"
+[[ -n "${camera_pos}" && -n "${camera_forward}" ]] ||
+    die "no camera_pos= / camera_forward= on the bench: line in ${engine_log} — the draw \
+split cannot be attributed to a pose (#5125)"
+log "bench camera pos=${camera_pos} forward=${camera_forward}"
+printf 'capture: bench_camera_pos=%s\ncapture: bench_camera_forward=%s\n' \
+    "${camera_pos}" "${camera_forward}" >>"${telem}"
 
 # --- 4. cross-check the attribution ------------------------------------------
 

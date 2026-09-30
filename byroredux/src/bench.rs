@@ -707,6 +707,59 @@ mod runtime_baseline_schema_tests {
         }
     }
 
+    /// #5125 — every baseline records the bench camera pose its draw split
+    /// was measured from, and the harness writes it. `b9e961eeb`'s interior
+    /// spawn ladder moved the renderer-static camera in all five cells: the
+    /// draw rows moved 3-130x with entity and light counts identical, and a
+    /// FO4 frame-time "regression" (R6a-regress-22) was read off the same
+    /// camera move. With the pose in the TSV a moved camera fails as a
+    /// moved camera.
+    #[test]
+    fn every_baseline_records_the_bench_camera_pose() {
+        let harness =
+            std::fs::read_to_string(baseline_dir().join("../../commands/audit-runtime/capture.sh"))
+                .expect("read capture.sh");
+        for row in ["bench_camera_pos=", "bench_camera_forward="] {
+            assert!(
+                harness.contains(row),
+                "capture.sh must write `capture: {row}…` into the telemetry"
+            );
+        }
+        for entry in std::fs::read_dir(baseline_dir()).expect("baseline dir") {
+            let path = entry.expect("dir entry").path();
+            if path.extension().is_none_or(|e| e != "tsv") {
+                continue;
+            }
+            let (_, rows) = parse(&path);
+            for key in ["bench_camera_pos", "bench_camera_forward"] {
+                let value = rows.get(key).unwrap_or_else(|| {
+                    panic!("{}: missing {key} — the draw split has no pose", path.display())
+                });
+                let parts: Vec<f32> = value
+                    .split(',')
+                    .map(|c| {
+                        c.parse::<f32>().unwrap_or_else(|_| {
+                            panic!("{}: {key} = {value:?} is not x,y,z", path.display())
+                        })
+                    })
+                    .collect();
+                assert!(
+                    parts.len() == 3 && parts.iter().all(|c| c.is_finite()),
+                    "{}: {key} = {value:?} must be three finite components",
+                    path.display(),
+                );
+                if key == "bench_camera_forward" {
+                    let len = parts.iter().map(|c| c * c).sum::<f32>().sqrt();
+                    assert!(
+                        (len - 1.0).abs() < 0.01,
+                        "{}: bench_camera_forward {value:?} is not a unit vector",
+                        path.display(),
+                    );
+                }
+            }
+        }
+    }
+
     /// A draw split must be internally coherent: the three-way
     /// `cmds >= batches >= gpu_calls` ordering is what the split MEANS
     /// (commands merge into batches, batches issue as GPU calls), so a

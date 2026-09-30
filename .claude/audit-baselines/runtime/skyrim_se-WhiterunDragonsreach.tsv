@@ -1,3 +1,20 @@
+# regenerated: 2026-09-30 (#5125 — every row re-captured in ONE renderer-static run, engine 60cd7028c)
+# Camera move, not a renderer change. `b9e961eeb` replaced the interior spawn
+# door/bbox heuristic with a ladder (COCMarkerHeading, then the partner door's
+# XTEL), and renderer-static holds the camera at the player's eyes on that
+# pose, so the frustum and the whole draw split moved. Bisected by the
+# 2026-09-29 runtime audit (RT-3): the draw rows are bit-identical to the
+# previous baseline at `cb44d99f6` and move at `b9e961eeb` with entity and
+# light counts identical. The new `bench_camera_pos` / `bench_camera_forward`
+# rows make the pose part of the contract, so the next pose change fails as a
+# pose change instead of reading as a batching regression.
+# Pose reviewed from a HEAD screenshot before this regen: the entrance of the great hall, facing
+# up the stairs toward the throne (in-room, eye height). The old pose read
+# raster 14.
+#   spawn: Interior spawn for 'WhiterunDragonsreach': COCMarkerHeading at (-448.0, -320.0, 128.0)
+#   draws 2458/13b/3c raster 14 -> 2494/643b/35c raster 1786
+# Carried with this regen: entities_total 9461 -> 9499 (+0.4 %, inside the
+# band). skin_pool_live 133 -> 122 and the fps rows are advisory.
 # regenerated: 2026-09-16 (#4417 — every row re-captured in ONE renderer-static run; #4418 entities_total bisected)
 # Mode change, not a code change. capture.sh now pins `--bench-mode
 # renderer-static` (authored camera, dt=0). Every row below this header's
@@ -117,18 +134,20 @@
 # entities_total=8126 or skin_pool_live=83 as "current" is wrong; the
 # 2026-08-30 sweep measured entities_total=9363 / skin_pool_live=133 here.
 bench_mode	renderer-static
-entities_total	9461
+bench_camera_pos	-448.000,-200.000,128.000
+bench_camera_forward	-0.016797,0.000000,-0.999859
+entities_total	9499
 tex_missing_base_color	0
 tex_missing_all_slots	2
 mesh_cache_failed_count	0
 light_count_point	28
 light_count_directional	0
-skin_pool_live	133
+skin_pool_live	122
 skin_pool_max	1364
 skin_pool_overflow_attempts	0
-bench_fps_p50	110.9
-bench_fps_avg	110.9
-bench_draws_cmds	2458
-bench_draws_raster_cmds	14
-bench_draws_batches	13
-bench_draws_gpu_calls	3
+bench_fps_p50	163.6
+bench_fps_avg	163.6
+bench_draws_cmds	2494
+bench_draws_raster_cmds	1786
+bench_draws_batches	643
+bench_draws_gpu_calls	35

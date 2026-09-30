@@ -24,6 +24,8 @@ reviewer needs to see "this metric moved because of THIS change."
 ```
 # regenerated: 2026-09-16 (#4417 — renderer-static capture)
 bench_mode	renderer-static
+bench_camera_pos	2400.775,13712.000,-1199.975
+bench_camera_forward	0.000000,0.000000,-1.000000
 entities_total	5885
 tex_missing_base_color	0
 tex_missing_all_slots	0
@@ -49,6 +51,16 @@ The key set above mirrors the committed TSVs exactly.
   the frustum and the whole draw split. A baseline from another mode can't be
   compared at all. `every_baseline_records_the_harness_bench_mode`
   (`byroredux/src/bench.rs`) enforces the match.
+- **`bench_camera_pos` / `bench_camera_forward`** (#5125) are the pose the
+  draw split was measured from, as `x,y,z`, read from the `bench:` line's
+  `camera_pos=` / `camera_forward=` tokens. In `renderer-static` the
+  camera is the authored spawn pose, so a spawn-placement change moves it:
+  `b9e961eeb`'s interior spawn ladder moved every draw row 3-130x (and one
+  FO4 cell across the parallel draw-sort threshold) with entity and light
+  counts identical. A pose mismatch makes the draw rows incomparable; it is
+  reported as a stale baseline, never as a batching regression.
+  `every_baseline_records_the_bench_camera_pose` (`byroredux/src/bench.rs`)
+  enforces the rows.
 - **`skin_pool_*`** are read from the `bench:` line's trailing `skin=L/M+S`
   token (#4417), not from the once-per-second `engine::stats` line. That line
   never fires inside a frozen-`dt` bench window.

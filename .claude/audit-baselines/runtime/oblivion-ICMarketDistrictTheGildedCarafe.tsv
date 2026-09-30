@@ -1,3 +1,23 @@
+# regenerated: 2026-09-30 (#5125 — every row re-captured in ONE renderer-static run, engine 60cd7028c)
+# Camera move, not a renderer change. `b9e961eeb` replaced the interior spawn
+# door/bbox heuristic with a ladder (COCMarkerHeading, then the partner door's
+# XTEL), and renderer-static holds the camera at the player's eyes on that
+# pose, so the frustum and the whole draw split moved. Bisected by the
+# 2026-09-29 runtime audit (RT-3): the draw rows are bit-identical to the
+# previous baseline at `cb44d99f6` and move at `b9e961eeb` with entity and
+# light counts identical. The new `bench_camera_pos` / `bench_camera_forward`
+# rows make the pose part of the contract, so the next pose change fails as a
+# pose change instead of reading as a batching regression.
+# Pose reviewed from a HEAD screenshot before this regen: the partner-XTEL arrival faces a
+# tapestry on a wall at close range, so raster is 20 and this cell still
+# barely exercises raster batching (the old pose faced a wall too, subject
+# distance 3.9 BU). The heading goes through the same Z-up conversion as the
+# COCMarkerHeading poses, which face into their rooms on the other four games.
+#   spawn: Interior spawn for 'ICMarketDistrictTheGildedCarafe': door arrival (partner XTEL) at (266.9, 262.8, -204.5)
+#   draws 330/78b/5c raster 132 -> 335/18b/2c raster 20
+# Carried with this regen, NOT attributed here: entities_total 745 -> 929
+# (+24.7 %) is #5131 (RT-5, open). light_count_directional stays 1 (RT-2,
+# #5123, fixed). skin_pool_live 4 -> 9 and the fps rows are advisory.
 # regenerated: 2026-09-16 (#4417 — every row re-captured in ONE renderer-static run)
 # Mode change, not a code change. capture.sh now pins `--bench-mode
 # renderer-static` (authored camera, dt=0). Every row below this header's
@@ -100,18 +120,20 @@
 # skin_pool_live: advisory, not a hard gate — see skin_pool_max /
 # skin_pool_overflow_attempts instead (#3553 / RT-7).
 bench_mode	renderer-static
-entities_total	745
+bench_camera_pos	266.899,382.821,-204.473
+bench_camera_forward	-0.058378,0.000000,0.998294
+entities_total	929
 tex_missing_base_color	0
 tex_missing_all_slots	0
 mesh_cache_failed_count	0
 light_count_point	8
 light_count_directional	1
-skin_pool_live	4
+skin_pool_live	9
 skin_pool_max	1364
 skin_pool_overflow_attempts	0
-bench_fps_p50	109.0
-bench_fps_avg	109.0
-bench_draws_cmds	330
-bench_draws_raster_cmds	132
-bench_draws_batches	78
-bench_draws_gpu_calls	5
+bench_fps_p50	172.9
+bench_fps_avg	172.9
+bench_draws_cmds	335
+bench_draws_raster_cmds	20
+bench_draws_batches	18
+bench_draws_gpu_calls	2
