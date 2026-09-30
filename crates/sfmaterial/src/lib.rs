@@ -64,6 +64,7 @@
 
 mod chunk;
 mod error;
+mod index;
 mod reader;
 mod string_table;
 mod types;
@@ -71,8 +72,14 @@ mod value;
 
 pub use chunk::ChunkType;
 pub use error::{Error, Result};
+pub use index::{
+    material_key, CdbMaterial, MaterialIndex, RefKind, SLOT_AMBIENT_OCCLUSION, SLOT_COLOR,
+    SLOT_EMISSIVE, SLOT_HEIGHT, SLOT_METALNESS, SLOT_NORMAL, SLOT_OPACITY, SLOT_ROUGHNESS,
+    SLOT_TRANSMISSIVE,
+};
 pub use reader::{CdbHeaderInfo, CdbVisitInfo, ComponentDatabaseFile, ParseLimits};
-pub use value::Value;
+pub use types::{BuiltinType, Class, ClassFlags, Field, TypeReference};
+pub use value::{ObjectInstance, Ref, Value};
 
 #[cfg(test)]
 mod module_doc_tests {

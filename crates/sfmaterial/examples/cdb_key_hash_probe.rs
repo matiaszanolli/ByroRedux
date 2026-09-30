@@ -103,6 +103,7 @@ fn main() {
     // Candidate normalisations: the CDB is keyed on `.mat`, NIFs name
     // `.bgsm`/`.bgem`/`.mat`, so try swapping the extension for "mat" and
     // splitting dir/stem on both separators.
+    #[allow(clippy::type_complexity)]
     let variants: Vec<(&str, fn(&str) -> (String, String))> = vec![
         ("dir+stem, backslash, no data prefix", |p| {
             split(p, '\\', false)
@@ -114,6 +115,7 @@ fn main() {
             split(p, '\\', true)
         }),
     ];
+    #[allow(clippy::type_complexity)]
     let hashes: Vec<(&str, fn(&[u8]) -> u32)> = vec![
         ("crc32 std (init FFFFFFFF, xor FFFFFFFF)", |d| {
             crc32(d, 0xFFFF_FFFF, 0xFFFF_FFFF)

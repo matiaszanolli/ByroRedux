@@ -124,4 +124,13 @@ pub struct Class {
     pub type_id: u32,
     pub flags: ClassFlags,
     pub fields: Vec<Field>,
+    /// Indices into [`Self::fields`], sorted by ascending wire `offset`.
+    /// Field *declaration* order and wire-offset order disagree on real
+    /// classes (`XMCOLOR` declares `r,g,b,a` at offsets `2,1,0,3` — a
+    /// straight R↔B transposition), and inline field bytes are laid out
+    /// by offset, so any sequential reader MUST walk this order or it
+    /// binds values to the wrong field names (#3398). Diff chunks index
+    /// fields by declaration slot, so `fields` itself stays in
+    /// declaration order.
+    pub read_order: Vec<u32>,
 }

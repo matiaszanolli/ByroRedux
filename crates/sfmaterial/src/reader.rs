@@ -183,7 +183,7 @@ pub struct CdbVisitInfo {
     pub value_count: usize,
 }
 
-fn parse_schema(bytes: &[u8], limits: ParseLimits) -> Result<State<'_>> {
+pub(crate) fn parse_schema(bytes: &[u8], limits: ParseLimits) -> Result<State<'_>> {
     let mut p = Parser::new(bytes);
     p.parse_header()?;
     let chunks = p.index_chunks()?;
@@ -229,7 +229,7 @@ fn parse_schema(bytes: &[u8], limits: ParseLimits) -> Result<State<'_>> {
     Ok(state)
 }
 
-fn consume_top_level_value(state: &mut State<'_>) -> Result<Value> {
+pub(crate) fn consume_top_level_value(state: &mut State<'_>) -> Result<Value> {
     let kind = state.peek_kind()?;
     match kind {
         ChunkType::Objt | ChunkType::User | ChunkType::Diff | ChunkType::Usrd => {
@@ -248,7 +248,7 @@ fn consume_top_level_value(state: &mut State<'_>) -> Result<Value> {
 /// dynamic values. Kept separate from the materialising reader so its memory
 /// bound is evident at the call site and future selective visitors can build
 /// only the objects they need.
-fn skip_top_level_value(state: &mut State<'_>) -> Result<()> {
+pub(crate) fn skip_top_level_value(state: &mut State<'_>) -> Result<()> {
     match state.peek_kind()? {
         ChunkType::Objt | ChunkType::User | ChunkType::Diff | ChunkType::Usrd => skip_object(state),
         ChunkType::Mapc => skip_map(state, false),
@@ -258,6 +258,41 @@ fn skip_top_level_value(state: &mut State<'_>) -> Result<()> {
             got: kind,
         }),
     }
+}
+
+/// #3398 Phase 2 — true while the instance stream still has chunks to
+/// consume. `State`'s fields are module-private, so the index builder in
+/// `index.rs` drives its own loop through this.
+pub(crate) fn state_has_more_chunks(state: &State<'_>) -> bool {
+    !state.chunks.is_empty()
+}
+
+/// #3398 Phase 2 — class name of the NEXT top-level instance chunk,
+/// read without consuming anything. `Ok(None)` when the front of the
+/// queue is a `LIST`/`MAPC` (either a stray or a side chunk owned by a
+/// preceding object's collection fields — the caller's walk decides).
+pub(crate) fn peek_top_level_class_name(state: &State<'_>) -> Result<Option<String>> {
+    use crate::reader::read_u32_le;
+    let Some(chunk) = state.chunks.front() else {
+        return Ok(None);
+    };
+    if !matches!(
+        chunk.kind,
+        ChunkType::Objt | ChunkType::User | ChunkType::Diff | ChunkType::Usrd
+    ) {
+        return Ok(None);
+    }
+    let mut off = chunk.start;
+    if matches!(chunk.kind, ChunkType::User | ChunkType::Usrd) {
+        off += 4;
+    }
+    let raw = read_u32_le(state.bytes, off)? as i32;
+    let type_ref = TypeReference::new(raw);
+    if type_ref.is_builtin() {
+        return Ok(None);
+    }
+    let class = state.class_for(type_ref)?;
+    Ok(Some(class.name.clone()))
 }
 
 // ── parser internals ─────────────────────────────────────────────────
@@ -390,7 +425,7 @@ impl<'a> Parser<'a> {
     }
 }
 
-struct State<'a> {
+pub(crate) struct State<'a> {
     bytes: &'a [u8],
     chunks: VecDeque<Chunk>,
     classes: Vec<Class>,
@@ -417,7 +452,7 @@ fn nested<'a, T>(
 }
 
 impl<'a> State<'a> {
-    fn peek_kind(&self) -> Result<ChunkType> {
+    pub(crate) fn peek_kind(&self) -> Result<ChunkType> {
         self.chunks
             .front()
             .map(|c| c.kind)
@@ -426,7 +461,7 @@ impl<'a> State<'a> {
             })
     }
 
-    fn consume_chunk(&mut self, wanted: ChunkType) -> Result<&'a [u8]> {
+    pub(crate) fn consume_chunk(&mut self, wanted: ChunkType) -> Result<&'a [u8]> {
         let chunk = self
             .chunks
             .pop_front()
@@ -440,7 +475,7 @@ impl<'a> State<'a> {
         Ok(&self.bytes[chunk.start..chunk.start + chunk.size])
     }
 
-    fn class_for(&self, type_ref: TypeReference) -> Result<&Class> {
+    pub(crate) fn class_for(&self, type_ref: TypeReference) -> Result<&Class> {
         if type_ref.is_builtin() {
             return Err(Error::UnknownTypeRef { id: type_ref.id });
         }
@@ -454,7 +489,7 @@ impl<'a> State<'a> {
             .ok_or(Error::UnknownTypeRef { id: type_ref.id })
     }
 
-    fn is_chunk_type(&self, type_ref: TypeReference) -> bool {
+    pub(crate) fn is_chunk_type(&self, type_ref: TypeReference) -> bool {
         if type_ref.is_builtin() {
             BuiltinType::from_u32(type_ref.id as u32)
                 .map(|b| b.is_chunk())
@@ -519,29 +554,15 @@ fn parse_class(state: &mut State, class_index: usize) -> Result<Class> {
         return Err(Error::ClassTrailingBytes { leftover });
     }
 
-    // #4275 (SF-D3-2026-09-11-04) — `read_user_class` decodes fields
-    // strictly by this declaration order and never consults `Field::offset`
-    // / `Field::size`. Non-fatal: `XMCOLOR`'s existing divergence (#3398)
-    // is a known, tracked, already-shipping case — this only makes a
-    // SECOND one visible instead of silently reproducing the same bug
-    // class undetected. `eprintln!`, not `log::warn!`: this crate is
-    // deliberately dependency-minimal (only `thiserror`; see Cargo.toml),
-    // matching the diagnostic-output convention its own top-of-crate doc
-    // example already uses.
-    if !fields_are_offset_ordered(&fields) {
-        eprintln!(
-            "[sfmaterial] WARN: CDB class {name:?} declares fields out of \
-             wire-offset order — read_user_class decodes strictly by \
-             declaration order and never consults Field::offset/Field::size, \
-             so a field whose declared position disagrees with its offset \
-             decodes into the wrong struct slot (known tracked case: \
-             XMCOLOR, #3398). Fields (name, offset, size): {:?}",
-            fields
-                .iter()
-                .map(|f| (f.name.as_str(), f.offset, f.size))
-                .collect::<Vec<_>>(),
-        );
-    }
+    // #4275 (SF-D3-2026-09-11-04) → fixed by #3398 — inline field bytes
+    // are laid out by `Field::offset`, and declaration order disagrees
+    // with offset order on real classes (`XMCOLOR` declares `r,g,b,a` at
+    // offsets `2,1,0,3`). `read_order` below is the offset-sorted
+    // iteration every sequential reader must use; `read_user_class_body`
+    // walks it, so a divergence between the two orders can no longer
+    // bind a value to the wrong field name. Diff chunks index fields by
+    // declaration slot, so `fields` stays in declaration order.
+    let read_order = offset_read_order(&fields);
 
     Ok(Class {
         name_offset,
@@ -549,21 +570,17 @@ fn parse_class(state: &mut State, class_index: usize) -> Result<Class> {
         type_id,
         flags: ClassFlags(flags_raw),
         fields,
+        read_order,
     })
 }
 
-/// #4275 (SF-D3-2026-09-11-04) — true when `fields`, taken in their CDB
-/// declaration order, have strictly increasing `offset` values (i.e.
-/// declaration order agrees with wire-offset order). `read_user_class`
-/// decodes strictly by declaration order and never consults
-/// `Field::offset`/`Field::size`, so `false` means at least one field
-/// will decode into the wrong struct slot. The one known, tracked
-/// exception across the full vanilla corpus is `XMCOLOR` (`r,g,b,a`
-/// declared at offsets `2,1,0,3` — a straight R<->B transposition; see
-/// #3398, which owns the actual fix). Zero or one field is vacuously
-/// ordered.
-fn fields_are_offset_ordered(fields: &[Field]) -> bool {
-    fields.windows(2).all(|w| w[0].offset < w[1].offset)
+/// #3398 — indices into `fields` sorted by ascending wire `offset`. This
+/// is the iteration order for any reader that consumes a class's inline
+/// bytes sequentially (see [`Class::read_order`]).
+fn offset_read_order(fields: &[Field]) -> Vec<u32> {
+    let mut order: Vec<u32> = (0..fields.len() as u32).collect();
+    order.sort_by_key(|&i| fields[i as usize].offset);
+    order
 }
 
 fn consume_object(state: &mut State) -> Result<Value> {
@@ -651,7 +668,7 @@ fn consume_list(state: &mut State, is_diff: bool) -> Result<Value> {
     Ok(Value::List(items))
 }
 
-fn consume_map(state: &mut State, is_diff: bool) -> Result<Value> {
+pub(crate) fn consume_map(state: &mut State, is_diff: bool) -> Result<Value> {
     let payload = state.consume_chunk(ChunkType::Mapc)?;
     let mut cur = Cursor::new(payload);
     let key_ref = TypeReference::new(cur.read_i32()?);
@@ -753,7 +770,7 @@ fn checked_container_count(
         .map(|count| count.min(payload_len))
 }
 
-fn skip_value(
+pub(crate) fn skip_value(
     state: &mut State,
     type_ref: TypeReference,
     cur: &mut Cursor<'_>,
@@ -887,7 +904,7 @@ fn skip_primitive_ref_body(state: &mut State, cur: &mut Cursor<'_>, is_diff: boo
     }
 }
 
-fn read_value(
+pub(crate) fn read_value(
     state: &mut State,
     type_ref: TypeReference,
     cur: &mut Cursor<'_>,
@@ -980,19 +997,28 @@ fn read_user_class_body(
     cur: &mut Cursor<'_>,
     is_diff: bool,
 ) -> Result<Value> {
-    let (class_name, class_type_id, field_layout) = {
+    let (class_name, class_type_id, field_layout, read_order) = {
         let class = state.class_for(type_ref)?;
         // Clone the field list once so the iterator below doesn't
         // hold a `&Class` while we mutate `state` reading nested
         // objects.
-        (class.name.clone(), class.type_id, class.fields.clone())
+        (
+            class.name.clone(),
+            class.type_id,
+            class.fields.clone(),
+            class.read_order.clone(),
+        )
     };
 
     let mut fields: BTreeMap<String, Value> = BTreeMap::new();
     let mut chunk_fields: Vec<Field> = Vec::new();
 
     if !is_diff {
-        for field in &field_layout {
+        // #3398 — inline bytes are laid out by `Field::offset`, which is
+        // NOT always declaration order (XMCOLOR). Walk the offset-sorted
+        // `read_order`, never `field_layout` directly.
+        for idx in &read_order {
+            let field = &field_layout[*idx as usize];
             if state.is_chunk_type(field.type_ref) {
                 chunk_fields.push(field.clone());
             } else {
@@ -1122,7 +1148,7 @@ fn read_primitive_ref_body(
     }))
 }
 
-fn read_primitive_string(cur: &mut Cursor<'_>) -> Result<String> {
+pub(crate) fn read_primitive_string(cur: &mut Cursor<'_>) -> Result<String> {
     let len = cur.read_u16()? as usize;
     let bytes = cur.read_bytes(len)?;
     // Gibbed reads inline CDB strings with `trimNull=true`. Truncate at the
@@ -1135,17 +1161,17 @@ fn read_primitive_string(cur: &mut Cursor<'_>) -> Result<String> {
 
 // ── tiny byte-slice cursor (avoids `std::io::Cursor`'s Result-only API) ──
 
-struct Cursor<'a> {
+pub(crate) struct Cursor<'a> {
     bytes: &'a [u8],
     pos: usize,
 }
 
 impl<'a> Cursor<'a> {
-    fn new(bytes: &'a [u8]) -> Self {
+    pub(crate) fn new(bytes: &'a [u8]) -> Self {
         Self { bytes, pos: 0 }
     }
 
-    fn read_bytes(&mut self, n: usize) -> Result<&'a [u8]> {
+    pub(crate) fn read_bytes(&mut self, n: usize) -> Result<&'a [u8]> {
         if self.pos + n > self.bytes.len() {
             return Err(Error::UnexpectedEof {
                 offset: self.pos as u64,
@@ -1158,34 +1184,34 @@ impl<'a> Cursor<'a> {
         Ok(out)
     }
 
-    fn read_u8(&mut self) -> Result<u8> {
+    pub(crate) fn read_u8(&mut self) -> Result<u8> {
         let b = self.read_bytes(1)?;
         Ok(b[0])
     }
-    fn read_i8(&mut self) -> Result<i8> {
+    pub(crate) fn read_i8(&mut self) -> Result<i8> {
         self.read_u8().map(|v| v as i8)
     }
-    fn read_u16(&mut self) -> Result<u16> {
+    pub(crate) fn read_u16(&mut self) -> Result<u16> {
         let b = self.read_bytes(2)?;
         Ok(u16::from_le_bytes([b[0], b[1]]))
     }
-    fn read_i16(&mut self) -> Result<i16> {
+    pub(crate) fn read_i16(&mut self) -> Result<i16> {
         self.read_u16().map(|v| v as i16)
     }
-    fn read_u32(&mut self) -> Result<u32> {
+    pub(crate) fn read_u32(&mut self) -> Result<u32> {
         let b = self.read_bytes(4)?;
         Ok(u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
     }
-    fn read_i32(&mut self) -> Result<i32> {
+    pub(crate) fn read_i32(&mut self) -> Result<i32> {
         self.read_u32().map(|v| v as i32)
     }
-    fn read_u64(&mut self) -> Result<u64> {
+    pub(crate) fn read_u64(&mut self) -> Result<u64> {
         let b = self.read_bytes(8)?;
         Ok(u64::from_le_bytes([
             b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
         ]))
     }
-    fn read_i64(&mut self) -> Result<i64> {
+    pub(crate) fn read_i64(&mut self) -> Result<i64> {
         self.read_u64().map(|v| v as i64)
     }
 }
@@ -1279,6 +1305,7 @@ mod tests {
             type_id: 1,
             flags: ClassFlags(0),
             fields: Vec::new(),
+            read_order: Vec::new(),
         };
         insert_class_name_offset(&mut class_by_name_offset, &classes, &first, 0)
             .expect("first insert of a fresh name_offset must succeed");
@@ -1290,6 +1317,7 @@ mod tests {
             type_id: 2,
             flags: ClassFlags(0),
             fields: Vec::new(),
+            read_order: Vec::new(),
         };
         insert_class_name_offset(&mut class_by_name_offset, &classes, &distinct, 1)
             .expect("a distinct name_offset must not collide with the first");
@@ -1301,6 +1329,7 @@ mod tests {
             type_id: 3,
             flags: ClassFlags(0),
             fields: Vec::new(),
+            read_order: Vec::new(),
         };
         let err = insert_class_name_offset(&mut class_by_name_offset, &classes, &duplicate, 2)
             .expect_err("re-declaring an already-claimed name_offset must fail");
@@ -1340,42 +1369,43 @@ mod tests {
         }
     }
 
-    /// #4275 (SF-D3-2026-09-11-04) — the common-case shape (96 of 97
-    /// vanilla classes): fields declared in strictly increasing offset
-    /// order must report ordered.
+    /// #4275 (SF-D3-2026-09-11-04) → #3398 fix — the common-case shape
+    /// (96 of 97 vanilla classes): declaration order already ascends by
+    /// offset, so `read_order` is the identity permutation.
     #[test]
-    fn fields_are_offset_ordered_true_for_common_shape() {
+    fn read_order_identity_for_common_shape() {
         let fields = vec![
             field("r", 0, 1),
             field("g", 1, 1),
             field("b", 2, 1),
             field("a", 3, 1),
         ];
-        assert!(fields_are_offset_ordered(&fields));
+        let order = offset_read_order(&fields);
+        assert_eq!(order, vec![0, 1, 2, 3]);
     }
 
-    /// #4275 — `XMCOLOR`'s actual measured wire shape (#3398): `r,g,b,a`
+    /// #3398 — `XMCOLOR`'s actual measured wire shape: `r,g,b,a`
     /// declared, but offsets `2,1,0,3` (a straight R<->B transposition).
-    /// This is the exact divergence class the guard exists to catch — it
-    /// must report NOT ordered here, and would for any future second
-    /// occurrence too.
+    /// `read_order` must reorder to wire-offset order (b, g, r, a), which
+    /// is what makes the sequential reader bind the right bytes to the
+    /// right channels.
     #[test]
-    fn fields_are_offset_ordered_false_for_xmcolor_shape() {
+    fn read_order_reorders_xmcolor_shape() {
         let fields = vec![
             field("r", 2, 1),
             field("g", 1, 1),
             field("b", 0, 1),
             field("a", 3, 1),
         ];
-        assert!(!fields_are_offset_ordered(&fields));
+        let order = offset_read_order(&fields);
+        assert_eq!(order, vec![2, 1, 0, 3]);
     }
 
-    /// #4275 — zero or one field is vacuously ordered (no adjacent pair
-    /// to violate the invariant).
+    /// Zero or one field: the (trivially sorted) permutation of nothing.
     #[test]
-    fn fields_are_offset_ordered_trivial_cases() {
-        assert!(fields_are_offset_ordered(&[]));
-        assert!(fields_are_offset_ordered(&[field("only", 5, 1)]));
+    fn read_order_trivial_cases() {
+        assert!(offset_read_order(&[]).is_empty());
+        assert_eq!(offset_read_order(&[field("only", 5, 1)]), vec![0]);
     }
 
     /// SF-D3-AUDIT-01 / #2100 — `probe_header` must validate the header +
