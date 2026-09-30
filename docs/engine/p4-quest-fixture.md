@@ -36,7 +36,7 @@ asserts the objective line is absent before stage 15.
 - `QuestObjectiveState` + `QuestStageState` + `QuestDefinitionRegistry`
   drive the native objective HUD (P3) — verified in a live Vulkan run.
 - DIAL/INFO records are parsed (`crates/plugin/src/esm/records/misc/dialogue.rs`:
-  `DialRecord` with quest ownership + type; `InfoRecord` with responses,
+  `DialRecord` with quest ownership, per-game category and `DLBR` branch; `InfoRecord` with responses,
   conditions, emotion) — the dialogue data is already in the index.
 - The M47.1 condition evaluator (`GetStage`, `GetStageDone`, …) is the same
   one MS01's `StageDoneGuard` fragments and INFO CTDA branches need.
@@ -67,6 +67,18 @@ asserts the objective line is absent before stage 15.
    parser's: Skyrim authors the quest→topic link as DIAL **QNAM**, which
    `parse_dial` did not read — every Skyrim DIAL had an empty `quest_refs`
    (117 MS01 topics were unowned). QNAM now feeds `quest_refs` beside QSTI.
+   **Topic filtering and branch order (2026-09-30, #5037 / #5045):** owning a
+   quest no longer means owning all 117 of its topics. The DIAL category is
+   decoded per game (Skyrim+ `DATA` byte 1, not the flags byte 0), so MS01's
+   5 Scene and 4 Miscellaneous topics drop out. A topic is listed only when an
+   INFO passes for *this* NPC, which drops the other 13 speakers' prompts.
+   `DLBR` branches (Skyrim's top-level group, FO4's under `QUST`) now order
+   the conversation per the Creation Kit's model. A qualifying Blocking
+   entry, such as `MS01EltrysBlockingShrineBranch01`, opens it, and its INFO's
+   `TCLT` links become the list. Otherwise the Top-Level starting topics form
+   the list. Mid-branch children such as `0x18A30` are reached only through
+   links. The Hello greeting is still unmodeled: without a blocking entry,
+   the first Top-Level topic stands in as the opening line.
 2. **Response presentation.** A native dialogue surface (pause-menu-grade,
    like the inventory page) showing the INFO response text + topic list;
    no Scaleform dependency, per the P3 "native UI is the reference path" rule.

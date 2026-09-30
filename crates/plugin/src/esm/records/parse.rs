@@ -52,7 +52,7 @@ pub const DISPATCH_HANDLED_FOURCCS: &[[u8; 4]] = &[
     *b"ARMA", *b"ARMO", *b"ASPC", *b"AVIF", *b"BNDS", *b"BOOK", *b"BPTD", *b"BSGN", *b"CAMS",
     *b"CCRD", *b"CDCK", *b"CELL", *b"CHAL", *b"CHIP", *b"CLAS", *b"CLMT", *b"CLOT", *b"CMNY",
     *b"COBJ", *b"CONT", *b"CPTH", *b"CREA", *b"CSNO", *b"CSTY", *b"DEBR", *b"DEHY", *b"DIAL",
-    *b"DOBJ", *b"DOOR", *b"ECZN", *b"EFSH", *b"ENCH", *b"EXPL", *b"EYES", *b"FACT", *b"FLOR",
+    *b"DLBR", *b"DOBJ", *b"DOOR", *b"ECZN", *b"EFSH", *b"ENCH", *b"EXPL", *b"EYES", *b"FACT", *b"FLOR",
     *b"FLST", *b"FURN", *b"GLOB", *b"GMST", *b"GRAS", *b"HAIR", *b"HDPT", *b"HUNG", *b"IDLE",
     *b"IDLM", *b"IMAD", *b"IMGS", *b"IMOD", *b"INGR", *b"IPCT", *b"IPDS", *b"KEYM", *b"LGTM",
     *b"LIGH", *b"LSCR", *b"LSCT", *b"LTEX", *b"LVLC", *b"LVLI", *b"LVLN", *b"LVSP", *b"MESG",
@@ -401,7 +401,7 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
             }
             b"WTHR" | b"CLMT" | b"SCPT" | b"WATR" | b"NAVI" | b"NAVM" | b"REGN" | b"ECZN"
             | b"LGTM" | b"IMGS" | b"HDPT" | b"EYES" | b"HAIR" | b"PACK" | b"QUST" | b"DIAL"
-            | b"SCEN" | b"MESG" | b"PERK" => {
+            | b"DLBR" | b"SCEN" | b"MESG" | b"PERK" => {
                 dispatch_misc_gameplay_a::dispatch_misc_gameplay_a_group(
                     &label,
                     &mut reader,

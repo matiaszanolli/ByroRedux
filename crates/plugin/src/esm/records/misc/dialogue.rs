@@ -2,7 +2,7 @@
 
 use super::super::common::{read_lstring_or_zstring, read_zstring, remap_fid, CommonNamedFields};
 use super::super::condition::{push_ctda, ComparisonOp, ConditionList, ConditionValue, RunOn};
-use crate::esm::reader::{FormIdRemap, SubRecord};
+use crate::esm::reader::{FormIdRemap, GameKind, SubRecord};
 use crate::esm::sub_reader::SubReader;
 
 /// `DIAL` dialogue topic record. Parent of INFO dialogue lines (which
@@ -19,13 +19,13 @@ pub struct DialRecord {
     /// Quest form IDs that own this dialogue topic (one per QSTI
     /// sub-record). FO3/FNV topics often list multiple owners.
     pub quest_refs: Vec<u32>,
-    /// `DATA` dialogue-type byte 0 — Topic / Conversation / Combat /
-    /// Persuasion / Detection / Service / Miscellaneous (Oblivion enum).
-    /// Oblivion's DATA is a single byte; FO3+ widen it (type byte +
-    /// flags) but byte 0 is the type in every game, so the byte-0 read is
-    /// cross-game safe. 0 (Topic) when DATA is absent. Captured raw;
-    /// per-game enum mapping is downstream consumer work.
-    pub dial_type: u8,
+    /// The topic's `DATA` category, translated per game into one canonical
+    /// enum. See [`DialogueCategory`] for the per-game layouts (#5045).
+    pub category: DialogueCategory,
+    /// Skyrim+ `BNAM` — the [`DlbrRecord`] dialogue branch this topic belongs
+    /// to (global space). `None` on Oblivion / FO3 / FNV, which author no
+    /// branches.
+    pub branch: Option<u32>,
     /// INFO topic responses parsed from the DIAL's `Topic Children`
     /// sub-GRUP (group_type == 7). Pre-#631 the children were silently
     /// skipped because `extract_records` filters on a single record
@@ -33,6 +33,163 @@ pub struct DialRecord {
     /// `extract_dial_with_info` walker. Each entry is one branch of the
     /// dialogue (a single NPC response + its conditions / triggers).
     pub infos: Vec<InfoRecord>,
+}
+
+/// A `DIAL` topic's category, translated from each game's `DATA` layout
+/// (xEdit `wbDefinitions*.pas`, DIAL `DATA`):
+///
+/// | Games | `DATA` | Category byte | Values |
+/// |---|---|---|---|
+/// | Oblivion | `Type u8` | byte 0 | 0 Topic, 1 Conversation, 2 Combat, 3 Persuasion, 4 Detection, 5 Service, 6 Miscellaneous |
+/// | FO3 / FNV | `Type u8, Flags u8` (flags optional) | byte 0 | as Oblivion, plus 7 Radio |
+/// | Skyrim | `Do All Before Repeating u8, Category u8, Subtype u16` | byte 1 | 0 Player, 1 Favor, 2 Scene, 3 Combat, 4 Favors, 5 Detection, 6 Service, 7 Miscellaneous |
+/// | FO4 / Starfield | `Topic Flags u8, Category u8, Subtype u16` | byte 1 | 0 Player, 1 Command, 2 Scene, 3 Combat, 4 Favor, 5 Detection, 6 Service, 7 Miscellaneous |
+/// | FO76 | as FO4 | byte 1 | 0 Player, 1 Command, 2 Scene, 3 Combat, 4 Detection, 5 Miscellaneous, 6–7 unknown |
+///
+/// Pre-#5045 byte 0 was read on every game, which on Skyrim / FO4 / FO76 /
+/// Starfield is a flags byte (0 on 15,018 of 15,037 Skyrim DIALs), so every
+/// Scene and Miscellaneous topic read as a player topic.
+///
+/// Only the categories shared by name and meaning get a variant. The
+/// Skyrim+ index-1 and index-4 labels differ per game (Favor / Command,
+/// Favors / Favor) with no source equating them, so they stay [`Self::Other`]
+/// with their raw byte, as does anything out of range.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DialogueCategory {
+    /// A player-selectable topic: classic `Topic` (0), Skyrim+ `Player` (0).
+    /// The default when `DATA` is absent or short.
+    #[default]
+    Topic,
+    Conversation,
+    Combat,
+    Persuasion,
+    Detection,
+    Service,
+    Miscellaneous,
+    /// FO3 / FNV `Radio`.
+    Radio,
+    /// Skyrim+ `Scene`.
+    Scene,
+    /// A category this engine assigns no meaning to, as its raw byte.
+    Other(u8),
+}
+
+impl DialogueCategory {
+    /// Translate a `DATA` payload for `game`. A payload too short for the
+    /// game's category byte reads as [`Self::Topic`], the absent default.
+    pub fn from_data(game: GameKind, data: &[u8]) -> Self {
+        match game {
+            GameKind::Oblivion | GameKind::Fallout3NV => {
+                let Some(&raw) = data.first() else {
+                    return Self::Topic;
+                };
+                match raw {
+                    0 => Self::Topic,
+                    1 => Self::Conversation,
+                    2 => Self::Combat,
+                    3 => Self::Persuasion,
+                    4 => Self::Detection,
+                    5 => Self::Service,
+                    6 => Self::Miscellaneous,
+                    7 if game == GameKind::Fallout3NV => Self::Radio,
+                    other => Self::Other(other),
+                }
+            }
+            GameKind::Skyrim | GameKind::Fallout4 | GameKind::Starfield => {
+                let Some(&raw) = data.get(1) else {
+                    return Self::Topic;
+                };
+                match raw {
+                    0 => Self::Topic,
+                    2 => Self::Scene,
+                    3 => Self::Combat,
+                    5 => Self::Detection,
+                    6 => Self::Service,
+                    7 => Self::Miscellaneous,
+                    other => Self::Other(other),
+                }
+            }
+            GameKind::Fallout76 => {
+                let Some(&raw) = data.get(1) else {
+                    return Self::Topic;
+                };
+                match raw {
+                    0 => Self::Topic,
+                    2 => Self::Scene,
+                    3 => Self::Combat,
+                    4 => Self::Detection,
+                    5 => Self::Miscellaneous,
+                    other => Self::Other(other),
+                }
+            }
+        }
+    }
+}
+
+/// Skyrim+ `DLBR` dialogue branch (xEdit `wbDefinitionsTES5/FO4/FO76/SF1`
+/// `DLBR`: `EDID`, `QNAM` Quest, `TNAM` Category u32, `DNAM` Flags u32,
+/// `SNAM` Starting Topic). A branch groups topics (`DIAL.BNAM`); only its
+/// starting topic is reachable from outside, and the rest are reached
+/// through `INFO` `TCLT` links.
+///
+/// Skyrim ships these as a top-level `DLBR` group (3,061 in `Skyrim.esm`);
+/// FO4 nests them under `QUST` (132 in `Fallout4.esm`).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct DlbrRecord {
+    pub form_id: u32,
+    pub editor_id: String,
+    /// Owning quest (`QNAM`, global space).
+    pub quest: u32,
+    /// `DNAM` flag word; see [`Self::top_level`] / [`Self::blocking`].
+    pub flags: u32,
+    /// The branch's entry topic (`SNAM`, global space).
+    pub starting_topic: u32,
+}
+
+impl DlbrRecord {
+    /// `DNAM` bit 0 — `Top-Level`.
+    pub const FLAG_TOP_LEVEL: u32 = 0x1;
+    /// `DNAM` bit 1 — `Blocking`.
+    pub const FLAG_BLOCKING: u32 = 0x2;
+    /// `DNAM` bit 2 — `Exclusive` (decoded, not consumed).
+    pub const FLAG_EXCLUSIVE: u32 = 0x4;
+
+    /// The starting topic is offered in the actor's initial topic list when
+    /// valid (Creation Kit, "Bethesda Tutorial Advanced Dialogue").
+    pub fn top_level(&self) -> bool {
+        self.flags & Self::FLAG_TOP_LEVEL != 0
+    }
+
+    /// When the starting topic qualifies, it is the only thing the actor
+    /// talks about: it becomes their Hello, and the topic list is replaced by
+    /// whatever links from it (same source).
+    pub fn blocking(&self) -> bool {
+        self.flags & Self::FLAG_BLOCKING != 0
+    }
+}
+
+/// Parse a `DLBR` record. FormID fields go through the load-order remap.
+pub fn parse_dlbr(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>) -> DlbrRecord {
+    let mut out = DlbrRecord {
+        form_id,
+        ..Default::default()
+    };
+    out.editor_id = CommonNamedFields::from_subs_with_remap(subs, remap).editor_id;
+    for sub in subs {
+        match &sub.sub_type {
+            b"QNAM" if sub.data.len() >= 4 => {
+                out.quest = remap_fid(SubReader::new(&sub.data).u32_or_default(), remap);
+            }
+            b"DNAM" if sub.data.len() >= 4 => {
+                out.flags = SubReader::new(&sub.data).u32_or_default();
+            }
+            b"SNAM" if sub.data.len() >= 4 => {
+                out.starting_topic = remap_fid(SubReader::new(&sub.data).u32_or_default(), remap);
+            }
+            _ => {}
+        }
+    }
+    out
 }
 
 /// Resolved conversation tree structure — groups INFOs into PNAM chains
@@ -166,6 +323,7 @@ pub fn parse_dial(
     form_id: u32,
     subs: &[SubRecord],
     remap: &Option<crate::esm::reader::FormIdRemap>,
+    game: GameKind,
 ) -> DialRecord {
     let mut out = DialRecord {
         form_id,
@@ -194,9 +352,13 @@ pub fn parse_dial(
                     out.quest_refs.push(remapped);
                 }
             }
-            // DATA byte 0 = dialogue type, cross-game safe (Oblivion: 1 byte;
-            // FO3+: wider, byte 0 still the type). #1307 / OBL-D3-...-03.
-            b"DATA" if !sub.data.is_empty() => out.dial_type = sub.data[0],
+            // #5045 — the category byte and its enum are per game.
+            b"DATA" => out.category = DialogueCategory::from_data(game, &sub.data),
+            // Skyrim+ dialogue branch; Oblivion–FNV author no BNAM on DIAL.
+            b"BNAM" if sub.data.len() >= 4 => {
+                let branch = remap_fid(SubReader::new(&sub.data).u32_or_default(), remap);
+                out.branch = (branch != 0).then_some(branch);
+            }
             _ => {}
         }
     }
@@ -622,31 +784,95 @@ mod tests {
             sub(b"QSTI", &0x0100_0002u32.to_le_bytes()),
             sub(b"QSTI", &0x0100_0003u32.to_le_bytes()),
         ];
-        let d = parse_dial(0xC3C3, &subs, &None);
+        let d = parse_dial(0xC3C3, &subs, &None, GameKind::Fallout3NV);
         assert_eq!(d.quest_refs.len(), 3);
         assert_eq!(d.quest_refs[1], 0x0100_0002);
-        // DATA absent → dial_type defaults to 0 (Topic).
-        assert_eq!(d.dial_type, 0);
+        // DATA absent → the Topic default, and no branch.
+        assert_eq!(d.category, DialogueCategory::Topic);
+        assert_eq!(d.branch, None);
     }
 
-    /// #1307 / OBL-D3-...-03 — DIAL DATA byte 0 is the dialogue type.
-    /// Captured for all games (Oblivion single-byte DATA here; FO3+ widen
-    /// it but byte 0 is still the type). Pre-fix this byte was dropped for
-    /// all 3817 Oblivion DIAL records.
+    /// #1307 — Oblivion / FO3 / FNV author the category in DATA byte 0.
     #[test]
-    fn parse_dial_captures_dialogue_type_byte() {
-        // Oblivion DATA: a single type byte. 3 = Persuasion in the TES4 enum.
-        let subs = vec![sub(b"EDID", b"PersuasionTopic\0"), sub(b"DATA", &[3u8])];
-        let d = parse_dial(0xDEAD, &subs, &None);
-        assert_eq!(d.dial_type, 3);
-
-        // FO3+ widen DATA (type byte + flags); byte 0 still the type.
-        let subs_fo3 = vec![sub(b"DATA", &[5u8, 0x01, 0x00, 0x00])];
-        assert_eq!(parse_dial(0xBEEF, &subs_fo3, &None).dial_type, 5);
-
+    fn classic_games_read_the_type_byte() {
+        let d = parse_dial(0xDEAD, &[sub(b"DATA", &[3u8])], &None, GameKind::Oblivion);
+        assert_eq!(d.category, DialogueCategory::Persuasion);
+        // FO3/FNV: type + flags; 7 is Radio there, out of range on Oblivion.
+        let fnv = parse_dial(
+            0xBEEF,
+            &[sub(b"DATA", &[7u8, 0x02])],
+            &None,
+            GameKind::Fallout3NV,
+        );
+        assert_eq!(fnv.category, DialogueCategory::Radio);
+        let obl = parse_dial(0xBEEF, &[sub(b"DATA", &[7u8])], &None, GameKind::Oblivion);
+        assert_eq!(obl.category, DialogueCategory::Other(7));
         // Empty DATA must not panic and leaves the default.
-        let subs_empty = vec![sub(b"DATA", &[])];
-        assert_eq!(parse_dial(0xF00D, &subs_empty, &None).dial_type, 0);
+        let empty = parse_dial(0xF00D, &[sub(b"DATA", &[])], &None, GameKind::Oblivion);
+        assert_eq!(empty.category, DialogueCategory::Topic);
+    }
+
+    /// #5045 — Skyrim+ author the category in DATA byte 1; byte 0 is a
+    /// flags byte (Skyrim `Do All Before Repeating`, FO4+ `Topic Flags`).
+    /// The pre-fix byte-0 read made every Skyrim Scene topic a player topic.
+    #[test]
+    fn skyrim_plus_read_the_category_byte_not_the_flags_byte() {
+        let scene = [0x01u8, 2, 0, 0]; // flags 1, category Scene
+        for game in [GameKind::Skyrim, GameKind::Fallout4, GameKind::Starfield] {
+            let d = parse_dial(0x1, &[sub(b"DATA", &scene)], &None, game);
+            assert_eq!(d.category, DialogueCategory::Scene, "{game:?}");
+            let misc = parse_dial(0x1, &[sub(b"DATA", &[0, 7, 0, 0])], &None, game);
+            assert_eq!(misc.category, DialogueCategory::Miscellaneous, "{game:?}");
+            let player = parse_dial(0x1, &[sub(b"DATA", &[0x01, 0, 0, 0])], &None, game);
+            assert_eq!(player.category, DialogueCategory::Topic, "{game:?}");
+        }
+        // FO76 renumbers after Combat: 4 Detection, 5 Miscellaneous.
+        let fo76 = parse_dial(
+            0x1,
+            &[sub(b"DATA", &[0, 5, 0, 0])],
+            &None,
+            GameKind::Fallout76,
+        );
+        assert_eq!(fo76.category, DialogueCategory::Miscellaneous);
+        let fo4 = parse_dial(
+            0x1,
+            &[sub(b"DATA", &[0, 5, 0, 0])],
+            &None,
+            GameKind::Fallout4,
+        );
+        assert_eq!(fo4.category, DialogueCategory::Detection);
+        // Index 1 / 4 labels differ per game — kept raw.
+        let favor = parse_dial(0x1, &[sub(b"DATA", &[0, 1, 0, 0])], &None, GameKind::Skyrim);
+        assert_eq!(favor.category, DialogueCategory::Other(1));
+    }
+
+    #[test]
+    fn parse_dial_reads_the_branch() {
+        let d = parse_dial(
+            0x0008_06B8,
+            &[sub(b"BNAM", &0x0001_8A96u32.to_le_bytes())],
+            &None,
+            GameKind::Skyrim,
+        );
+        assert_eq!(d.branch, Some(0x0001_8A96));
+    }
+
+    /// Skyrim's `MS01EltrysBlockingShrineBranch01` (raw `Skyrim.esm` bytes).
+    #[test]
+    fn parse_dlbr_decodes_quest_flags_and_starting_topic() {
+        let subs = vec![
+            sub(b"EDID", b"MS01EltrysBlockingShrineBranch01\0"),
+            sub(b"QNAM", &0x0001_8B4Bu32.to_le_bytes()),
+            sub(b"TNAM", &0u32.to_le_bytes()),
+            sub(b"DNAM", &2u32.to_le_bytes()),
+            sub(b"SNAM", &0x0008_06B8u32.to_le_bytes()),
+        ];
+        let b = parse_dlbr(0x0001_8A96, &subs, &None);
+        assert_eq!(b.editor_id, "MS01EltrysBlockingShrineBranch01");
+        assert_eq!(b.quest, 0x0001_8B4B);
+        assert_eq!(b.starting_topic, 0x0008_06B8);
+        assert!(b.blocking());
+        assert!(!b.top_level());
     }
 
     #[test]

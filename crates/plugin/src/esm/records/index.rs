@@ -11,8 +11,8 @@ use super::super::cell::EsmCellIndex;
 use super::super::reader::GameKind;
 use super::{
     ActiRecord, ArmaRecord, AvifRecord, BptdRecord, ClassRecord, ClimateRecord, CobjRecord,
-    ContainerRecord, CstyRecord, DialRecord, EcznRecord, EfshRecord, EnchRecord, ExplRecord,
-    EyesRecord, FactionRecord, FlstRecord, GameSetting, GlobalRecord, GrasRecord, HairRecord,
+    ContainerRecord, CstyRecord, DialRecord, DlbrRecord, EcznRecord, EfshRecord, EnchRecord,
+    ExplRecord, EyesRecord, FactionRecord, FlstRecord, GameSetting, GlobalRecord, GrasRecord, HairRecord,
     HdptRecord,
     IdleRecord, ImadRecord, ImgsRecord, ImodRecord, IpctRecord, IpdsRecord, ItemRecord,
     LeveledList, LgtmRecord, LoadScreenRecord, MesgRecord, MgefRecord, MinimalEsmRecord,
@@ -205,6 +205,10 @@ pub struct EsmIndex {
     /// `extract_dial_with_info` walker (group_type == 7 Topic
     /// Children sub-GRUPs). See #631.
     pub dialogues: HashMap<u32, DialRecord>,
+    /// Skyrim+ `DLBR` dialogue branches, keyed by form id — the
+    /// Top-Level / Blocking structure `DialRecord::branch` points into
+    /// (#5037). Empty on Oblivion / FO3 / FNV.
+    pub dialogue_branches: HashMap<u32, DlbrRecord>,
     /// `MESG` quest messages / tutorial popups.
     pub messages: HashMap<u32, MesgRecord>,
     /// `PERK` perks + traits — condition-gated entry-point producers.
@@ -595,6 +599,7 @@ impl EsmIndex {
             map_category!("quests", quests),
             map_category!("scenes", scenes),
             map_category!("dialogues", dialogues),
+            map_category!("dialogue_branches", dialogue_branches),
             map_category!("messages", messages),
             map_category!("perks", perks),
             map_category!("spells", spells),

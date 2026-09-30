@@ -133,7 +133,7 @@ pub struct StarfieldLighting {
     /// Interior type (byte 104). Raw enum — per xEdit SF1:
     /// 0=Interior, 1=Ship Cell, 2=Space Cell, 3=PackIn,
     /// 4=Instanceable Interior. Captured raw; downstream mapping is
-    /// consumer work (mirrors `dial_type` / `response_type`). The 3
+    /// consumer work (mirrors `response_type`). The 3
     /// trailing bytes (105-107) are uninitialized CK pad — discarded.
     pub interior_type: u8,
 }

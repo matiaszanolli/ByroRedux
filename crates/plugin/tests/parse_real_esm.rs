@@ -124,6 +124,35 @@ fn dlccoast_header_classifies_as_fallout4() {
     );
 }
 
+/// #5045 / #5037 — FO4 nests its DLBR branches under QUST (132 in
+/// `Fallout4.esm`, raw census 2026-09-30) and authors the DIAL category in
+/// DATA byte 1: 31,330 of its 35,443 DIALs are Scene topics (2026-09-29
+/// census). The pre-fix byte-0 read saw a flags byte there.
+#[test]
+#[ignore = "needs FO4 game data on disk"]
+fn fo4_dialogue_branches_and_categories() {
+    use byroredux_plugin::esm::records::DialogueCategory;
+    let Some(data) = data_dir(test_paths::FO4_ENV, test_paths::FO4_DEFAULT) else {
+        eprintln!("[FO4/DLBR] skipping: game data unavailable");
+        return;
+    };
+    let bytes = std::fs::read(data.join("Fallout4.esm")).expect("read Fallout4.esm");
+    let index = parse_esm(&bytes).expect("parse Fallout4.esm");
+    assert_eq!(index.dialogue_branches.len(), 132);
+    assert_eq!(index.dialogues.len(), 35_443);
+    let scenes = index
+        .dialogues
+        .values()
+        .filter(|d| d.category == DialogueCategory::Scene)
+        .count();
+    assert_eq!(scenes, 31_330);
+    // Every branch's starting topic is a parsed DIAL that points back at it.
+    for branch in index.dialogue_branches.values() {
+        let start = &index.dialogues[&branch.starting_topic];
+        assert_eq!(start.branch, Some(branch.form_id), "{}", branch.editor_id);
+    }
+}
+
 /// #2905 — FNAM is a display/coercion hint; FLTV is always an IEEE f32.
 #[test]
 #[ignore = "needs FNV game data on disk"]
@@ -4461,10 +4490,10 @@ fn ms01_eltrys_authored_placement() {
     println!("MS01-owned DIAL topics: {}", owned.len());
     for dial in owned.iter().take(6) {
         println!(
-            "  {:08X} '{}' type={} infos={}",
+            "  {:08X} '{}' category={:?} infos={}",
             dial.form_id,
             dial.editor_id,
-            dial.dial_type,
+            dial.category,
             dial.infos.len(),
         );
     }
@@ -4478,15 +4507,36 @@ fn ms01_eltrys_authored_placement() {
     println!("DIALs with MS01* EDID: {}", by_edid.len());
     for dial in by_edid.iter().take(8) {
         println!(
-            "  {:08X} '{}' type={} quest_refs={:?} infos={}",
+            "  {:08X} '{}' category={:?} quest_refs={:?} infos={}",
             dial.form_id,
             dial.editor_id,
-            dial.dial_type,
+            dial.category,
             dial.quest_refs,
             dial.infos.len(),
         );
     }
     assert!(!owned.is_empty(), "MS01 must own at least one DIAL topic");
+
+    // #5045 / #5037 — MS01's 117 DIALs by DATA byte-1 category (raw census,
+    // 2026-09-29): 108 Player topics, 5 Scene, 4 Miscellaneous. The pre-fix
+    // byte-0 read (a flags byte, 0 on all 117) reported 117 topics.
+    use byroredux_plugin::esm::records::DialogueCategory;
+    let count = |category| owned.iter().filter(|d| d.category == category).count();
+    assert_eq!(owned.len(), 117);
+    assert_eq!(count(DialogueCategory::Topic), 108);
+    assert_eq!(count(DialogueCategory::Scene), 5);
+    assert_eq!(count(DialogueCategory::Miscellaneous), 4);
+
+    // #5037 — Skyrim's top-level DLBR group: 3,061 branches. The blocking
+    // shrine branch starts at its entry topic; its mid-branch child points
+    // back at the same branch through BNAM.
+    assert_eq!(index.dialogue_branches.len(), 3_061);
+    let shrine = &index.dialogue_branches[&0x0001_8A96];
+    assert_eq!(shrine.editor_id, "MS01EltrysBlockingShrineBranch01");
+    assert!(shrine.blocking() && !shrine.top_level());
+    assert_eq!(shrine.starting_topic, 0x0008_06B8);
+    assert_eq!(index.dialogues[&0x0008_06B8].branch, Some(0x0001_8A96));
+    assert_eq!(index.dialogues[&0x0001_8A30].branch, Some(0x0001_8A96));
 }
 
 /// #5013 — Oblivion marks corpses on the BASE actor: `NPC_`/`CREA` header

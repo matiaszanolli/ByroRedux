@@ -157,7 +157,19 @@ pub(super) fn dispatch_misc_gameplay_a_group(
             &mut index.quests,
             &mut index.dialogues,
             &mut index.scenes,
+            &mut index.dialogue_branches,
+            game,
         )?,
+        // #5037 — Skyrim's top-level `DLBR` group (FO4 nests its branches
+        // under `QUST`, routed above).
+        b"DLBR" => {
+            let dlbr_remap = reader.get_form_id_remap();
+            extract_records(reader, end, b"DLBR", &mut |fid, subs| {
+                index
+                    .dialogue_branches
+                    .insert(fid, parse_dlbr(fid, subs, &dlbr_remap));
+            })?;
+        }
         b"SCEN" => {
             // Scene package/topic/quest references and CTDA parameters are
             // plugin-local. Normalize them at ingestion so the runtime scene
@@ -175,7 +187,7 @@ pub(super) fn dispatch_misc_gameplay_a_group(
         // filters on a single `expected_type` and silently drops
         // every INFO. The dedicated walker below threads both
         // record types through. See #631 / #447.
-        b"DIAL" => extract_dial_with_info(reader, end, &mut index.dialogues)?,
+        b"DIAL" => extract_dial_with_info(reader, end, &mut index.dialogues, game)?,
         b"MESG" => {
             // #4071 — QNAM ties the message to a QUST; cross-record.
             let mesg_remap = reader.get_form_id_remap();

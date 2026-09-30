@@ -1846,8 +1846,10 @@ fn categories_table_row_count_pinned() {
     //   had a constant but no dispatch arm at all, so 306 vanilla Oblivion
     //   leveled-spell lists produced nothing and had no category row to
     //   regress against).
+    // Bumped 100 → 101 in #5037 (dialogue_branches — Skyrim+ DLBR, the
+    //   Top-Level / Blocking structure DIAL.BNAM points into).
     // Bump in lockstep with the struct + `categories()` edits.
-    assert_eq!(EsmIndex::categories().len(), 100);
+    assert_eq!(EsmIndex::categories().len(), 101);
 }
 
 /// Regression test for #989 — `.STRINGS` companion file resolves lstring

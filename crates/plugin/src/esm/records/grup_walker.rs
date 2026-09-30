@@ -8,9 +8,9 @@
 //! internal walkers outside the crate.
 
 use super::super::cell::{build_static_object_from_subs, StaticObject};
-use super::super::reader::{EsmReader, SubRecord};
-use super::misc::{parse_dial, parse_info, parse_qust, parse_scen};
-use super::{DialRecord, QustRecord, ScenRecord};
+use super::super::reader::{EsmReader, GameKind, SubRecord};
+use super::misc::{parse_dial, parse_dlbr, parse_info, parse_qust, parse_scen};
+use super::{DialRecord, DlbrRecord, QustRecord, ScenRecord};
 use anyhow::Result;
 use std::collections::HashMap;
 
@@ -170,14 +170,16 @@ pub(super) fn extract_dial_with_info(
     reader: &mut EsmReader,
     end: usize,
     dialogues: &mut HashMap<u32, DialRecord>,
+    game: GameKind,
 ) -> Result<()> {
-    extract_dial_with_info_inner(reader, end, dialogues, 0)
+    extract_dial_with_info_inner(reader, end, dialogues, game, 0)
 }
 
 fn extract_dial_with_info_inner(
     reader: &mut EsmReader,
     end: usize,
     dialogues: &mut HashMap<u32, DialRecord>,
+    game: GameKind,
     depth: u32,
 ) -> Result<()> {
     /// Topic Children group_type from the ESM format (TES4 / FO3 /
@@ -230,14 +232,14 @@ fn extract_dial_with_info_inner(
             // shouldn't happen in vanilla content): recurse with the
             // same handler so a stray DIAL or another Topic Children
             // tier still gets walked. Bytes accounting stays sound.
-            extract_dial_with_info_inner(reader, sub_end, dialogues, depth + 1)?;
+            extract_dial_with_info_inner(reader, sub_end, dialogues, game, depth + 1)?;
             continue;
         }
 
         let header = reader.read_record_header()?;
         if &header.record_type == b"DIAL" {
             let subs = reader.read_sub_records(&header)?;
-            let dial = parse_dial(header.form_id, &subs, &remap);
+            let dial = parse_dial(header.form_id, &subs, &remap, game);
             dialogues.insert(header.form_id, dial);
             last_dial_form_id = Some(header.form_id);
         } else {
@@ -313,18 +315,18 @@ fn walk_info_records(
 /// `INFO` attaches correctly no matter how many group levels separate
 /// it from its parent `DIAL`.
 ///
-/// `DLBR` (Dialog Branch — also present in the audit's evidence table)
-/// is deliberately NOT parsed here: no byte layout for it exists
-/// anywhere in this tree or the project's reference sources, and
-/// guessing one would violate the project's no-guessing policy. It
-/// falls through to the same `skip_record` every other unhandled type
-/// at this tier already gets — a stated gap, not a silent one.
+/// `DLBR` (Dialog Branch) is parsed here too (#5037): FO4 nests all of its
+/// branches under `QUST` (132 in `Fallout4.esm`), while Skyrim ships a
+/// top-level `DLBR` group. The layout is xEdit's `DLBR` definition, shared
+/// by TES5 / FO4 / FO76 / SF1 — see [`DlbrRecord`].
 pub(super) fn extract_quest_dialogue_scene_tree(
     reader: &mut EsmReader,
     end: usize,
     quests: &mut HashMap<u32, QustRecord>,
     dialogues: &mut HashMap<u32, DialRecord>,
     scenes: &mut HashMap<u32, ScenRecord>,
+    branches: &mut HashMap<u32, DlbrRecord>,
+    game: GameKind,
 ) -> Result<()> {
     let remap = reader.get_form_id_remap();
     let mut last_dial_form_id: Option<u32> = None;
@@ -334,6 +336,8 @@ pub(super) fn extract_quest_dialogue_scene_tree(
         quests,
         dialogues,
         scenes,
+        branches,
+        game,
         &remap,
         &mut last_dial_form_id,
         0,
@@ -347,6 +351,8 @@ fn extract_quest_dialogue_scene_tree_inner(
     quests: &mut HashMap<u32, QustRecord>,
     dialogues: &mut HashMap<u32, DialRecord>,
     scenes: &mut HashMap<u32, ScenRecord>,
+    branches: &mut HashMap<u32, DlbrRecord>,
+    game: GameKind,
     remap: &Option<crate::esm::reader::FormIdRemap>,
     last_dial_form_id: &mut Option<u32>,
     depth: u32,
@@ -368,6 +374,8 @@ fn extract_quest_dialogue_scene_tree_inner(
                 quests,
                 dialogues,
                 scenes,
+                branches,
+                game,
                 remap,
                 last_dial_form_id,
                 depth + 1,
@@ -382,7 +390,10 @@ fn extract_quest_dialogue_scene_tree_inner(
             }
             b"DIAL" => {
                 let subs = reader.read_sub_records(&header)?;
-                dialogues.insert(header.form_id, parse_dial(header.form_id, &subs, remap));
+                dialogues.insert(
+                    header.form_id,
+                    parse_dial(header.form_id, &subs, remap, game),
+                );
                 *last_dial_form_id = Some(header.form_id);
             }
             b"INFO" => {
@@ -399,6 +410,10 @@ fn extract_quest_dialogue_scene_tree_inner(
             b"SCEN" => {
                 let subs = reader.read_sub_records(&header)?;
                 scenes.insert(header.form_id, parse_scen(header.form_id, &subs, remap));
+            }
+            b"DLBR" => {
+                let subs = reader.read_sub_records(&header)?;
+                branches.insert(header.form_id, parse_dlbr(header.form_id, &subs, remap));
             }
             _ => reader.skip_record(&header),
         }
@@ -495,8 +510,13 @@ mod tests {
             },
         );
 
-        extract_dial_with_info(&mut reader, topic_children.len(), &mut dialogues)
-            .expect("well-formed Topic Children group must parse");
+        extract_dial_with_info(
+            &mut reader,
+            topic_children.len(),
+            &mut dialogues,
+            GameKind::Skyrim,
+        )
+        .expect("well-formed Topic Children group must parse");
 
         let dial = dialogues
             .get(&dial_global)
@@ -601,12 +621,20 @@ mod tests {
         });
         check("extract_dial_with_info", &any, &mut |r, end| {
             let mut dialogues = HashMap::new();
-            extract_dial_with_info(r, end, &mut dialogues)
+            extract_dial_with_info(r, end, &mut dialogues, GameKind::Skyrim)
         });
         check("extract_quest_dialogue_scene_tree", &any, &mut |r, end| {
             let (mut quests, mut dialogues, mut scenes) =
                 (HashMap::new(), HashMap::new(), HashMap::new());
-            extract_quest_dialogue_scene_tree(r, end, &mut quests, &mut dialogues, &mut scenes)
+            extract_quest_dialogue_scene_tree(
+                r,
+                end,
+                &mut quests,
+                &mut dialogues,
+                &mut scenes,
+                &mut HashMap::new(),
+                GameKind::Skyrim,
+            )
         });
         check("parse_refr_group", &any, &mut |r, end| {
             let (mut refs, mut land, mut navmeshes, mut pathgrids, mut deleted) =
