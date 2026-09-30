@@ -2,7 +2,7 @@
 //! must be delayed until any in-flight command buffer that references
 //! them has retired (typically MAX_FRAMES_IN_FLIGHT frames).
 //!
-//! Three production users today, all on the countdown variant:
+//! Four production users today, all on the countdown variant:
 //!   * [`crate::mesh::MeshRegistry::deferred_destroy`] — pairs of
 //!     vertex / index `GpuBuffer`s queued by `drop_mesh` (#372 /
 //!     #879).
@@ -14,6 +14,9 @@
 //!     lockstep with it (#1782 — a prior fix moved this queue onto
 //!     this same countdown path after a use-after-free surfaced from
 //!     freeing scratch buffers immediately instead of deferring them).
+//!   * [`crate::vulkan::scene_buffer::SceneBuffers::retired_instance_buffers`]
+//!     — the instance / previous-model SSBO pair a slot outgrew, retired
+//!     by `ensure_instance_capacity` (#4199).
 //!
 //! The first two predate this primitive and reimplemented the same
 //! `Vec<(T, u32)>` + per-frame `retain_mut` decrement loop +

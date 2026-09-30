@@ -54,10 +54,11 @@ pub struct Texture {
     /// allocator is no longer needed (`Drop` short-circuits the
     /// self-clean), so dropping the Arc here is safe.
     allocator: Option<SharedAllocator>,
-    /// Extent the image was created with. `overwrite_rgba_pixels`
-    /// checks streaming uploads against it so a mismatched extent fails
-    /// as a returned error instead of addressing a different-sized image
-    /// (#4515 — previously nothing retained the creation extent).
+    /// Extent the image was created with. [`Self::can_update_rgba`] checks
+    /// streaming uploads against it so a mismatched extent is refused (or,
+    /// through `update_rgba`, recreates the image) instead of addressing a
+    /// different-sized image (#4515 — previously nothing retained the
+    /// creation extent).
     creation_extent: vk::Extent3D,
     /// Only single-mip, single-layer sRGB RGBA images accept raw replacements.
     rgba_updateable: bool,
@@ -117,146 +118,6 @@ impl Texture {
         let texture = Self::from_dds_with_mip_chain(ctx, &meta, pixels, sampler, staging_pool)?;
         log::debug!("Texture uploaded: {}x{} RGBA", width, height);
         Ok(texture)
-    }
-
-    /// Overwrite the full mip-0 contents of an existing RGBA texture in
-    /// place — the streaming companion to [`Self::from_rgba`].
-    ///
-    /// Same pixel contract (`width * height * 4` RGBA bytes), and
-    /// `width`/`height` must equal the extent the texture was created
-    /// with — both are checked with overflow-free u64 math against the
-    /// creation extent stored on `Texture`, failing as a returned error
-    /// (#4515; previously the only check was caller-supplied w/h vs
-    /// pixels, so a mismatched upload would have addressed a smaller
-    /// image). The image, view, and bindless descriptor stay untouched:
-    /// no allocation, no rebind, one small staging copy.
-    /// This low-level path submits and waits immediately. Frame-driven callers
-    /// use `TextureRegistry::write_rgba_inplace` or `update_rgba`, which queue
-    /// the copy in the normal frame submission and retain staging per slot.
-    ///
-    /// # Hazard contract
-    ///
-    /// The copy runs in its own submission with UNDEFINED→TRANSFER_DST
-    /// (discard) barriers, which orders against *this* submission only.
-    /// The caller must guarantee no in-flight frame still samples this
-    /// texture — the HUD's triple-buffer rotation overwrites only the
-    /// buffer last sampled three frames ago (see `byroredux/src/hud.rs`).
-    pub fn overwrite_rgba_pixels(
-        &self,
-        ctx: GpuUploadCtx,
-        width: u32,
-        height: u32,
-        pixels: &[u8],
-        mut staging_pool: Option<&mut StagingPool>,
-    ) -> Result<()> {
-        validate_rgba_upload(self.creation_extent, width, height, pixels.len())?;
-        let GpuUploadCtx {
-            device,
-            allocator,
-            queue,
-            command_pool,
-        } = ctx;
-        let image_size = pixels.len() as vk::DeviceSize;
-
-        let (staging_buffer, staging_alloc) = if let Some(pool) = staging_pool.as_deref_mut() {
-            pool.acquire(image_size)?
-        } else {
-            super::buffer::create_staging_buffer(
-                device,
-                allocator,
-                image_size,
-                "rgba_overwrite_staging",
-            )?
-        };
-        let mut staging = StagingGuard::new(
-            staging_buffer,
-            staging_alloc,
-            device.clone(),
-            allocator.clone(),
-        );
-        staging.mapped_slice_mut()?[..pixels.len()].copy_from_slice(pixels);
-        // #4608 — remember whether this came from the pool so the tail can
-        // RETURN it there instead of letting `StagingGuard::drop` destroy
-        // the buffer and free the allocation. Pre-fix every pooled
-        // overwrite (the HUD's per-refresh swapchain-sized upload) paid a
-        // fresh host-visible create + allocate + destroy + free once any
-        // large-enough pooled buffer had been used up.
-        let pooled = staging_pool.is_some();
-
-        let region = vk::BufferImageCopy {
-            buffer_offset: 0,
-            buffer_row_length: 0,
-            buffer_image_height: 0,
-            image_subresource: vk::ImageSubresourceLayers {
-                aspect_mask: vk::ImageAspectFlags::COLOR,
-                mip_level: 0,
-                base_array_layer: 0,
-                layer_count: 1,
-            },
-            image_offset: vk::Offset3D { x: 0, y: 0, z: 0 },
-            image_extent: vk::Extent3D {
-                width,
-                height,
-                depth: 1,
-            },
-        };
-
-        let image = self.image;
-        let mut staging_holder: Option<StagingGuard> = None;
-        with_one_time_commands(device, queue, command_pool, |cmd| unsafe {
-            // SAFETY: `cmd` is the currently-recording one-shot command
-            // buffer handed to this closure; `image` is `self.image`, which
-            // outlives this submission (the copy target this barrier
-            // orders — undefined → transfer-dst — is created and owned by
-            // `self` before upload and destroyed after the fence in the
-            // same upload path).
-            let barrier_to_dst =
-                image_barrier_undef_to_transfer_dst_layers(image, 1, 1);
-            device.cmd_pipeline_barrier(
-                cmd,
-                vk::PipelineStageFlags::NONE,
-                vk::PipelineStageFlags::TRANSFER,
-                vk::DependencyFlags::empty(),
-                &[],
-                &[],
-                &[barrier_to_dst],
-            );
-            device.cmd_copy_buffer_to_image(
-                cmd,
-                staging.buffer,
-                image,
-                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                &[region],
-            );
-            let barrier_to_read =
-                image_barrier_transfer_dst_to_shader_read_layers(image, 1, 1);
-            device.cmd_pipeline_barrier(
-                cmd,
-                vk::PipelineStageFlags::TRANSFER,
-                vk::PipelineStageFlags::FRAGMENT_SHADER,
-                vk::DependencyFlags::empty(),
-                &[],
-                &[],
-                &[barrier_to_read],
-            );
-            staging_holder = Some(staging);
-            Ok(())
-        })?;
-        // `with_one_time_commands` fence-waits its own submission, so the
-        // GPU is done reading the staging buffer HERE — the moment it can
-        // #4608: actually go back to the pool. `StagingGuard::drop`
-        // DESTROYS; `release_to` is what returns it. Capacity is the
-        // requested `image_size`, not the allocation footprint — #4593's
-        // rule (the pool sizes buckets by useful capacity; a footprint
-        // sized entry re-files the #4512 overrun the guard was built on).
-        if pooled {
-            if let Some(staging) = staging_holder {
-                if let Some(pool) = staging_pool {
-                    staging.release_to(pool, image_size);
-                }
-            }
-        }
-        Ok(())
     }
 
     /// Create a texture from a DDS pixel-data payload with its full
@@ -815,8 +676,7 @@ fn build_dds_copy_regions(meta: &super::dds::DdsMetadata) -> (Vec<vk::BufferImag
     (regions, buffer_offset)
 }
 
-/// Validate a streaming RGBA upload for [`Texture::overwrite_rgba_pixels`]
-/// (#4515): the pixel payload must be exactly `width * height * 4` bytes
+/// Validate an RGBA upload (#4515): the pixel payload must be exactly `width * height * 4` bytes
 /// (u64 math — the old `width * height * 4` product wraps u32), and the
 /// caller's extent must match the extent the image was created with. The
 /// check exists so a second consumer can rely on the documented contract;
@@ -1552,9 +1412,12 @@ mod dds_upload_guard_tests {
         );
     }
 
-    /// #4515 — `Texture` must store its creation extent and
-    /// `overwrite_rgba_pixels` must validate uploads against it (the doc
-    /// previously claimed an assertion that did not exist).
+    /// #4515 — `Texture` must store its creation extent and the in-place
+    /// RGBA gate must compare uploads against it (the doc previously claimed
+    /// an assertion that did not exist). #4892 deleted the one-shot
+    /// `overwrite_rgba_pixels` this used to pin; `can_update_rgba` is the
+    /// gate every queued replacement (`write_rgba_inplace`, `update_rgba`,
+    /// and the record-time recheck) now goes through.
     #[test]
     fn rgba_overwrite_validates_against_creation_extent() {
         let src = crate::source_scan::production_text(include_str!("texture.rs"));
@@ -1563,15 +1426,16 @@ mod dds_upload_guard_tests {
             "Texture must store its creation extent (#4515)",
         );
         let fn_pos = src
-            .find("fn overwrite_rgba_pixels")
-            .expect("overwrite_rgba_pixels must exist");
+            .find("fn can_update_rgba")
+            .expect("can_update_rgba must exist");
         let body = &src[fn_pos..fn_pos + src[fn_pos..]
-            .find("pub fn from_dds_with_mip_chain")
-            .expect("from_dds_with_mip_chain follows overwrite_rgba_pixels")];
+            .find("\n    }\n")
+            .expect("can_update_rgba closes at impl indentation")];
         assert!(
-            body.contains("validate_rgba_upload(self.creation_extent"),
-            "overwrite_rgba_pixels must check the upload against the \
-             texture's stored creation extent (#4515)",
+            body.contains("self.creation_extent.width == width")
+                && body.contains("self.creation_extent.height == height"),
+            "can_update_rgba must check the upload against the texture's \
+             stored creation extent (#4515)",
         );
     }
 }

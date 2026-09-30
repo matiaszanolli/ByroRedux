@@ -451,9 +451,9 @@ impl SwfPlayer {
         // An unconditional `self.dirty = true` here made `render`'s early exit
         // dead code, so a *static* menu re-rendered, re-read back and
         // re-uploaded a full-viewport RGBA image every frame — at 1920×1080
-        // that is an 8.3 MB readback plus a fresh `VkImage` and a blocking
-        // one-time submit, ahead of `draw_frame`, for a picture that did not
-        // move. Ruffle raises this flag whenever a frame ran or the mouse
+        // that was an 8.3 MB readback plus a fresh `VkImage` and a blocking
+        // one-time submit (an in-place queued copy since `e2f99ad55`), ahead
+        // of `draw_frame`, for a picture that did not move. Ruffle raises this flag whenever a frame ran or the mouse
         // state changed, and clears it in `Player::render`.
         //
         // #4717 — `needs_render` is raised after *every* frame that runs, so
@@ -520,11 +520,14 @@ impl SwfPlayer {
     /// the texture you already have", not "nothing was drawn".
     ///
     /// #2719 — the caller's response to `Some` is a full-viewport
-    /// `update_rgba`, which builds a **new** `VkImage` and blocks on a
-    /// one-time submit's fence ahead of `draw_frame`. Ruffle re-rendering is
-    /// not the same thing as the picture changing (a timeline frame can
-    /// advance with nothing visibly moving), so the returned-pixels decision
-    /// is made on content, not on the render having happened.
+    /// `update_rgba`: an 8.3 MB (1080p) pixel copy queued into the next
+    /// frame's command buffer, on top of this call's own readback. (Before
+    /// `e2f99ad55` it also built a **new** `VkImage` and blocked on a
+    /// one-time submit's fence; it now updates the image in place unless the
+    /// extent changed.) Ruffle re-rendering is not the same thing as the
+    /// picture changing (a timeline frame can advance with nothing visibly
+    /// moving), so the returned-pixels decision is made on content, not on
+    /// the render having happened.
     pub fn render(&mut self) -> Option<&[u8]> {
         if !self.dirty {
             return None;

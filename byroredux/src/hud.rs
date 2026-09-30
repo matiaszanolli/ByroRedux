@@ -18,8 +18,8 @@
 //! exclusive per run (scene.rs launches the Scaleform probe first; a
 //! won Scaleform route suppresses this module's MenuXml launch).
 //!
-//! Shared machinery — archive resolution, triple-buffered overlay
-//! textures, change-signature + cadence throttling — is game-agnostic.
+//! Shared machinery — archive resolution, the persistent overlay
+//! texture, change-signature + cadence throttling — is game-agnostic.
 //!
 //! Console control (`hud.on` / `hud.off` / `hud.values` / `hud.heading`)
 //! flows through the [`HudControl`] World resource — commands can only
@@ -293,7 +293,7 @@ pub(crate) struct MenuXmlHud {
     renderer: MenuRenderer,
     /// #4608 — persistent staging for the render→upload handoff. The raster
     /// framebuffer borrows `self.renderer` immutably while `upload_frame`
-    /// needs `&mut self` for the rotation, so the pixels cross through this
+    /// needs `&mut self`, so the pixels cross through this
     /// owned buffer — retained across refreshes instead of a fresh
     /// swapchain-sized Vec per changed tick.
     upload_buffer: Vec<u8>,
@@ -302,12 +302,14 @@ pub(crate) struct MenuXmlHud {
     /// Compass strip texels per degree of heading (0 = strip unknown —
     /// the compass stays at cropx 0 rather than guessing).
     px_per_degree: f32,
-    /// Overlay textures cycled per upload. Fixed handles avoid image and
-    /// descriptor churn. The registry now records in-place copies into the
-    /// frame command buffer and owns synchronization (#3429); this rotation
-    /// remains the HUD driver's choice, rather than its hazard protection.
-    texture_handles: [u32; 3],
-    current: usize,
+    /// The one overlay texture every upload overwrites in place. A fixed
+    /// handle avoids image and descriptor churn. The registry records the
+    /// copy into the frame command buffer, and its barriers order prior
+    /// frames' sampling before it (#3429), so no rotation is needed.
+    /// #4892 — this was a three-texture rotation left over from the
+    /// retired one-shot-submit contract: two extra swapchain-extent images
+    /// (16.6 MB at 1080p, 66 MB at 4K) plus a retained CPU pixel copy each.
+    texture_handle: u32,
     width: u32,
     height: u32,
     /// Signature of the last rendered frame's driving inputs. The HUD is
@@ -559,9 +561,7 @@ pub(crate) fn launch_hud(
 
             // Same transparent initial upload the `--menu` route uses, so
             // the composite quad exists before the first rasterized frame.
-            // (The registration closure below rebuilds its own upload ctx —
-            // the outer one went unused after the triple-buffer rework.)
-            let register = |ctx: &mut byroredux_renderer::vulkan::context::VulkanContext| {
+            let registered = {
                 let allocator = ctx.allocator.as_ref().unwrap();
                 let upload_ctx = byroredux_renderer::vulkan::GpuUploadCtx {
                     device: &ctx.device,
@@ -572,10 +572,10 @@ pub(crate) fn launch_hud(
                 ctx.texture_registry
                     .register_rgba(upload_ctx, w, h, &vec![0u8; (w * h * 4) as usize])
             };
-            match (register(ctx), register(ctx), register(ctx)) {
-                (Ok(h0), Ok(h1), Ok(h2)) => {
+            match registered {
+                Ok(texture_handle) => {
                     log::info!(
-                        "hud: loaded {} misc='{}' textures='{}' textures={h0}/{h1}/{h2} \
+                        "hud: loaded {} misc='{}' textures='{}' texture={texture_handle} \
                          ({w}x{h}, {} NIF tiles skipped) profile='{}'",
                         profile.menu_path,
                         misc_path,
@@ -599,15 +599,14 @@ pub(crate) fn launch_hud(
                         assets,
                         profile,
                         px_per_degree,
-                        texture_handles: [h0, h1, h2],
-                        current: 0,
+                        texture_handle,
                         width: w,
                         height: h,
                         last_signature: 0,
                         last_upload: std::time::Instant::now(),
                     })
                 }
-                _ => {
+                Err(_) => {
                     log::error!("hud: UI texture registration failed");
                     None
                 }
@@ -662,7 +661,7 @@ impl MenuXmlHud {
         self.last_signature = hash;
         self.last_upload = std::time::Instant::now();
         log::debug!(
-            "hud: render bars={} heading={heading:.1} visible={} -> buffer {}",
+            "hud: render bars={} heading={heading:.1} visible={}",
             fractions
                 .iter()
                 .take(self.profile.bar_count())
@@ -670,7 +669,6 @@ impl MenuXmlHud {
                 .collect::<Vec<_>>()
                 .join("/"),
             u8::from(control.visible),
-            (self.current + 1) % self.texture_handles.len()
         );
 
         match self.profile.style {
@@ -710,20 +708,20 @@ impl MenuXmlHud {
 
     /// The handle the frame being recorded should composite.
     pub fn current_texture(&self) -> u32 {
-        self.texture_handles[self.current]
+        self.texture_handle
     }
 
-    /// Upload `pixels` into the next buffer of the rotation and advance.
-    /// Returns the handle to composite this frame.
+    /// Queue `pixels` as the overlay texture's replacement. Returns the
+    /// handle to composite this frame.
     ///
-    /// The overwritten buffer was last sampled three frames ago, so no
-    /// in-flight frame still reads it (see the field docs).
+    /// The registry records the copy into this frame's command buffer ahead
+    /// of every consumer, behind a barrier that waits for earlier frames'
+    /// sampling (see the field docs), so overwriting in place is safe.
     pub fn upload_frame(
         &mut self,
         ctx: &mut byroredux_renderer::vulkan::context::VulkanContext,
         pixels: &[u8],
     ) -> u32 {
-        let target = (self.current + 1) % self.texture_handles.len();
         let allocator = ctx.allocator.as_ref().unwrap();
         let upload_ctx = byroredux_renderer::vulkan::GpuUploadCtx {
             device: &ctx.device,
@@ -734,22 +732,21 @@ impl MenuXmlHud {
         let (w, h) = self.frame_size();
         if let Err(error) = ctx.texture_registry.write_rgba_inplace(
             upload_ctx,
-            self.texture_handles[target],
+            self.texture_handle,
             w,
             h,
             pixels,
         ) {
             log::error!("hud: texture upload failed: {error:#}");
         }
-        self.current = target;
-        self.texture_handles[self.current]
+        self.texture_handle
     }
 
     /// #4608 — render + upload in one `&mut self` call so the caller never
     /// copies the frame out to release a borrow: on change, the raster
     /// crosses through the persistent [`Self::upload_buffer`] (one copy
-    /// into retained memory, not a fresh allocation), then the rotation
-    /// advances. `None` = unchanged (or rate-limited) — keep compositing
+    /// into retained memory, not a fresh allocation), then it is queued for
+    /// upload. `None` = unchanged (or rate-limited) — keep compositing
     /// the current texture.
     pub fn render_and_upload(
         &mut self,
@@ -761,8 +758,8 @@ impl MenuXmlHud {
         self.render(world, camera_forward, control)?;
         // Split borrow: fill the persistent buffer while only `renderer`
         // is borrowed, then hand upload_frame the filled buffer — the
-        // method takes &mut self for the rotation, so the pixel source
-        // must be self-owned by then.
+        // method takes &mut self, so the pixel source must be self-owned by
+        // then.
         {
             let pixels = self.renderer.frame_pixels();
             let upload = &mut self.upload_buffer;

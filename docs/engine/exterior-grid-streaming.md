@@ -112,8 +112,13 @@ multi-part actors otherwise yield and resume without being marked `loaded`.
 Every yielded entity range is already stamped under an early `CellRoot`, so
 removing the matching pending generation on a boundary crossing immediately
 cancels it through the normal `unload_cell` path. Queued texture uploads are
-flushed per yielded reference slice instead of accumulating into one final
-cell-sized fence wait.
+not flushed on every yield: a yield flushes only once the queue holds at least
+`YIELDED_TEXTURE_UPLOAD_BATCH_MIN` (64) uploads or `MAX_UPLOAD_BATCH_BYTES`
+(128 MiB) of staged bytes (`should_flush_pending_cell_textures`), so small
+slices amortize one submit and fence wait. The completed reference phase
+force-flushes whatever remains. Uploads therefore can stay queued across
+yields — and across a cancellation, whose released handles the flush then
+skips (#4879).
 
 CSG geometry-only precombines yield between consecutive groups of at most
 eight submeshes and approximately 4 MiB of vertex/index input. One oversized

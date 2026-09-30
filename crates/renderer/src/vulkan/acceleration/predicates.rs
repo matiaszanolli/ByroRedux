@@ -872,7 +872,7 @@ pub(super) fn align_scratch_address(raw: vk::DeviceAddress, align: u32) -> vk::D
 /// `upscaler_sdk_bytes` is the FSR SDK's own `VkDeviceMemory`, allocated by the
 /// vendored FFX Vulkan backend *outside* `gpu-allocator`. It is the one
 /// allocation in the renderer that nothing else can see, which is why it has to
-/// be passed in rather than derived: [`FrameUpscaler::resident_bytes`] already
+/// be passed in rather than derived: [`FrameUpscaler::sdk_memory_bytes`] already
 /// caches it from the one `memory_usage()` query per swapchain generation.
 /// Zero is the honest reading when there is no SDK context.
 /// Every render-extent pass's own per-pixel cost, summed (#3992).

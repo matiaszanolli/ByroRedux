@@ -246,8 +246,10 @@ DDS_HEADER (124 bytes)
 │   ├── flags = DDPF_FOURCC
 │   ├── fourCC = "DX10"   (always — we use the extended path)
 │   └── (5 reserved u32 = 0)
-├── caps1 = TEXTURE | MIPMAP | COMPLEX
-├── caps2 = CUBEMAP_ALLFACES if cubemap
+├── caps1 = TEXTURE
+│          ( | MIPMAP | COMPLEX if num_mips > 1 )
+│          ( | COMPLEX          if cubemap )
+├── caps2 = CUBEMAP | CUBEMAP_ALLFACES if cubemap
 └── (3 more reserved u32 = 0)
 DX10 extension (20 bytes)
 ├── DXGI format
@@ -271,7 +273,11 @@ gets a sized buffer.
 
 The reconstructed bytes are valid for downstream readers like our DDS
 parser in [`crates/renderer/src/vulkan/dds.rs`](../../crates/renderer/src/vulkan/dds.rs)
-or third-party tools like `dds-tools`.
+or third-party tools like `dds-tools`. Our parser is not lenient about the
+DX10 extension: it requires `arraySize` 1 (or 1 or 6 with the
+`TEXTURECUBE` misc flag), a `TEXTURE2D` resource dimension, and every
+dimension at most `MAX_TEXTURE_DIMENSION` (8192) — a reconstructed header for
+a larger archived texture is well-formed but still rejected there.
 
 ## Unified `MeshArchive` enum
 

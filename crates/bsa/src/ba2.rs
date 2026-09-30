@@ -1181,8 +1181,8 @@ fn build_dds_header(
     // for cubemaps; non-cubemaps use 1. Pre-#593 this was hardcoded to
     // `1`, which DXGI loaders (`CreateTexture2D` with
     // `D3D10_RESOURCE_MISC_TEXTURECUBE`) reject as "arraySize must be
-    // a multiple of 6". The in-engine renderer's `dds.rs` is lenient
-    // (reads miscFlag, ignores arraySize) so this is observable only
+    // a multiple of 6". The in-engine renderer's `dds.rs` accepts 1 or 6
+    // for a cubemap (and requires 1 otherwise), so this is observable only
     // in DirectXTex / texconv / third-party DDS viewers — but the
     // synthesized headers are now spec-compliant either way.
     let array_size: u32 = if is_cubemap { 6 } else { 1 };
@@ -1719,9 +1719,9 @@ mod tests {
     /// arrays). Pre-fix the field was hardcoded to `1` regardless of
     /// `is_cubemap` — DXGI loaders reject "arraySize must be a
     /// multiple of 6" on cubemap miscFlag inputs. The in-engine
-    /// renderer's `dds.rs` is lenient so this only burns external
-    /// tooling (DirectXTex, texconv) but the spec contract is now
-    /// correct either way.
+    /// renderer's `dds.rs` accepts 1 or 6 for a cubemap, so this only
+    /// burns external tooling (DirectXTex, texconv) but the spec contract
+    /// is now correct either way.
     ///
     /// `arraySize` lives at offset 140 in the synthesized header
     /// (84 byte DDS_HEADER + 4 byte FourCC + 16 + 4 + 4 = 144 ... err

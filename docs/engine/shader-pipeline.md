@@ -493,6 +493,16 @@ unsized SSBO declaration in both shader stages.
 
 One entry per draw call (up to `MAX_INSTANCES` = 262 144).
 
+The buffer is not allocated at that ceiling. Each frame slot's instance SSBO
+and its binding-18 previous-model partner start at `INITIAL_INSTANCE_CAPACITY`
+(65 536) entries and grow per slot, by doubling toward `MAX_INSTANCES`
+(`grown_instance_capacity`), when a frame needs more (#4199).
+`SceneBuffers::ensure_instance_capacity` performs the grow after that slot's
+fence wait and rewrites **Set 1 bindings 4 and 18** of that slot's scene set in
+place; the caustic pipeline's own set, which names the same instance buffer at
+**binding 5**, is rebound by `CausticPipeline::rebind_instance_buffer` in the same
+frame. The replaced pair is retired through the deferred-destroy countdown.
+
 | Offset | Size | Field | Contents |
 |---|---|---|---|
 | 0 | 64 | `model` | `mat4` — model-to-world |
@@ -656,7 +666,8 @@ ReSTIR invalid-selection sentinel and is never occupied by a real light.
 |---|---|---|
 | `MAX_LIGHTS` | 1023 | Per-frame point/spot/directional lights; packed index 1023 remains invalid |
 | `MAX_LIGHTS_PER_CLUSTER` | 512 | Candidate indices retained by each 16×9×24 cluster; overflow/high-water/drop telemetry is fence-lagged |
-| `MAX_INSTANCES` | 262 144 | One indirect draw command per instance worst-case |
+| `MAX_INSTANCES` | 262 144 | One indirect draw command per instance worst-case; the instance-SSBO ceiling |
+| `INITIAL_INSTANCE_CAPACITY` | 65 536 | Starting size of each slot's instance + previous-model SSBO pair; grows by doubling toward `MAX_INSTANCES` (#4199) |
 | `MAX_MATERIALS` | 16 384 | 432 B each; deduplicated per frame |
 | `MAX_TOTAL_BONES` | 196 608 | `floor(196 608 / 144)` = 1 365 palette slots, minus reserved slot 0 → **1 364 allocatable** skinned meshes (M29.6). Not an exact product: 1 365 × 144 = 196 560 leaves a 48-bone unused tail |
 | `MAX_PENDING_BIND_INVERSE_UPLOADS_PER_FRAME` | 1 366 | First-sight bind-inverse upload cap |

@@ -531,7 +531,10 @@ struct OverlayResources {
 }
 
 pub struct VulkanContext {
-    // Ordered for drop safety — later fields are destroyed first.
+    // Vulkan objects are destroyed explicitly by `Drop` (`teardown.rs`),
+    // not by this field order. Rust's implicit field drop runs only after
+    // that, and in declaration order — earlier fields first — so field order
+    // matters only for types whose own `Drop` still has work left by then.
     pub current_frame: usize,
     /// Immutable runtime renderer selection parsed by the application.
     pub renderer_config: RendererConfig,
@@ -892,8 +895,8 @@ pub struct VulkanContext {
     /// out of `skin_slots` and into `destroy_slot` in a single step,
     /// so any race between `unload_cell` and `Drop` resolves cleanly
     /// (a victim queued but not drained still has its slot in
-    /// `skin_slots`, which `Drop` tears down via the bulk loop at
-    /// `mod.rs:1965`).
+    /// `skin_slots`, which `Drop` tears down via the bulk `skin_slots`
+    /// drain in `teardown.rs::destroy_allocator_owned_resources`).
     pub pending_skin_unload_victims: Vec<byroredux_core::ecs::storage::EntityId>,
     /// #3231 — the `morph_slots` sibling of `pending_skin_unload_victims`.
     /// Same reasoning, same drain site (folded into the same eviction

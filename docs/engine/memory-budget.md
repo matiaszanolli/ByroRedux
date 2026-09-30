@@ -737,9 +737,10 @@ before selecting any re-admission hysteresis.
 
 | Item | Value |
 |---|---|
-| Bindless array ceiling | `min(device.maxPerStageDescriptorUpdateAfterBindSampledImages, 65 535)` |
+| Bindless slot capacity (`max_textures`) | `min(device.maxPerStageDescriptorUpdateAfterBindSampledImages, 65 535) / 2` = **32,767** on a device reporting ≥ 65,535. `device.rs` computes the per-stage ceiling; `context/init.rs` halves it per binding so the 2D and cube arrays together stay inside the per-stage limit. Handles share one index space across both arrays, so this is the real slot budget the #2030 exhaustion below runs against |
 | Descriptor pool | `max_textures × 2 × MAX_FRAMES_IN_FLIGHT` combined image sampler descriptors — each per-frame set carries **two** `max_textures`-sized bindings |
 | Staging pool cap | 128 MB (retained after upload flush, #239) |
+| Upload sub-batch bound | `MAX_UPLOAD_BATCH_BYTES` = the 128 MiB staging retention budget: `flush_pending_uploads` submits at most this many staged bytes per fence wait (one larger texture goes alone, #4197) |
 | Deferred-destroy countdown | `MAX_FRAMES_IN_FLIGHT` = 2 frames |
 
 There is no explicit texture-count eviction policy. When the bindless
@@ -752,8 +753,11 @@ strictly grow-only: every registration takes a fresh `textures.len()`
 index, and `drop_texture` deliberately never reuses a dropped slot's
 index — handle stability is load-bearing (#372: reuse would produce
 silent material corruption on any dangling `GpuInstance.texture_index`
-reference). GPU image memory itself *is* correctly reclaimed via the
-deferred-destroy ring; what leaks is the finite slot-index space. So
+reference). GPU image memory itself *is* reclaimed via the
+deferred-destroy ring — including for a queued upload whose last
+reference was released before its flush, which `flush_upload_batch` now
+skips instead of installing into a dead slot (#4879); what leaks is the
+finite slot-index space. So
 re-entering a previously-unloaded cell re-registers its textures as
 **new** slots instead of hitting the dedup cache, and a long session
 that revisits cells repeatedly can exhaust the ceiling even on vanilla
@@ -905,14 +909,15 @@ reading them from an in-flight frame.
 | Item | Value |
 |---|---|
 | Countdown depth | `DEFAULT_COUNTDOWN` = `MAX_FRAMES_IN_FLIGHT` = 2 frames |
-| Implementation | `DeferredDestroyQueue<T>` stores `Vec<(T, u32)>` countdown entries; the texture registry separately uses `VecDeque<(frame_id, T)>` |
+| Implementation | `DeferredDestroyQueue<T>` stores `Vec<(T, u32)>` countdown entries; the texture registry separately uses a per-entry `VecDeque<(frame_id, T)>` |
+| Users of `DeferredDestroyQueue<T>` | `MeshRegistry::deferred_destroy` (vertex / index buffer pairs from `drop_mesh`), `AccelerationManager::pending_destroy_blas` (`drop_blas`), `AccelerationManager::pending_destroy_scratch` (retired shared BLAS-build scratch, #1782), `SceneBuffers::retired_instance_buffers` (replaced instance / previous-model SSBO pairs, #4199) |
 | Tick site | `draw_frame()` step 4 — after the in-flight fence wait, before recording |
 
 Queued resources are destroyed after their countdown reaches zero, on the
-`DEFAULT_COUNTDOWN + 1`th tick. The fence wait in step 1 of `draw_frame`
-guarantees that slot's GPU work is complete before the tick runs (#418).
-`SceneBuffers` also retires replaced instance-buffer pairs through a separate
-countdown queue.
+`DEFAULT_COUNTDOWN + 1`th tick (pinned by
+`default_countdown_survives_max_frames_in_flight_ticks`). The fence wait in
+step 1 of `draw_frame` guarantees that slot's GPU work is complete before the
+tick runs (#418).
 
 ## Morph-target GPU resources — #3661
 
@@ -952,43 +957,73 @@ is retained after the last menu's player is dropped"; in practice the
 | `TextureTarget` `MAP_READ` readback buffer (`padded_bytes_per_row × height`) | Ruffle wgpu device | ~8.3 MB |
 | `SwfPlayer::pixel_buffer` | host RAM, not VRAM | ~8.3 MB |
 | Engine-side UI `VkImage` + view | `TextureRegistry` | ~8.3 MB |
-| Deferred-destroy copies of that image (up to `MAX_FRAMES_IN_FLIGHT`) | deferred-destroy ring | ~8.3–16.6 MB |
+| Queued pixel copy (`DynamicRgbaUploads::updates` entry for the handle) | host RAM, retained after submission | ~8.3 MB |
+| Per-frame-slot staging for the copy | shared registry arenas — see [Dynamic RGBA staging arenas](#dynamic-rgba-staging-arenas-dynamicrgbauploads-e2f99ad55) | — |
 
-≈25–42 MB per live menu, **plus one whole extra logical device**. The first
-four rows are per `SwfPlayer`; the device is shared across all of them.
+≈25 MB of device memory per live menu (the two Ruffle rows and the engine
+image) and ≈17 MB of host RAM, **plus one whole extra logical device**. The
+rows are per `SwfPlayer`; the device is shared across all of them.
 
-The deferred-destroy copies are not a leak — the ring drains — but they are
-resident because `TextureRegistry::update_rgba` recreates the image rather
-than updating it in place, so an animating Scaleform HUD cycles a fresh
-full-viewport `VkImage` every frame (#3429). This describes the Scaleform
-driver (`scaleform_hud.rs` — one `register_rgba` handle at launch, then a
-fresh `from_rgba` allocation per `UiFrame::Fresh` upload). The MenuXml HUD
-driver below is the deliberate counter-example: fixed handles, in-place
-overwrite, zero allocations after launch.
+Since `e2f99ad55`, `TextureRegistry::update_rgba` updates a matching image in
+place: whenever `can_update_rgba(w, h)` holds (same extent, single-mip
+`R8G8B8A8_SRGB`) it only queues the pixels (`dynamic_rgba.queue`), and the
+copy is recorded into the next frame's command buffer. So an animating
+Scaleform HUD (`scaleform_hud.rs` — one `register_rgba` handle at launch,
+then `update_rgba` per `UiFrame::Fresh` frame) allocates nothing per frame.
+Only an extent or format change — a window resize — recreates the image,
+parking the old one on the texture registry's deferred-destroy queue for
+`MAX_FRAMES_IN_FLIGHT` frames (one more ~8.3 MB image, transiently).
 
-### MenuXml HUD overlay textures (3 × swapchain extent, `dc306a6a0`)
+### MenuXml HUD overlay texture (1 × swapchain extent, #4892)
 
 [`byroredux/src/hud.rs`](../../byroredux/src/hud.rs) — the MenuXml driver
-(Oblivion / FO3 / FNV `--hud`) registers **three** full-viewport RGBA8
-overlay textures once at launch (`R8G8B8A8_SRGB`, 4 B/px, via
-`register_rgba` at the swapchain extent) and never allocates again: each
-rasterized HUD frame goes into the rotation through the in-place
-`overwrite_rgba_pixels` copy.
+(Oblivion / FO3 / FNV `--hud`) registers **one** full-viewport RGBA8
+overlay texture at launch (`R8G8B8A8_SRGB`, 4 B/px, via `register_rgba` at
+the swapchain extent) and never allocates again: each rasterized HUD frame
+is queued into it through `write_rgba_inplace`.
 
-Three buffers, not two: with `MAX_FRAMES_IN_FLIGHT` = 2 an upload can land
-while both in-flight frames may still sample the current and previous
-buffers, so uploads always target the buffer last sampled *three* frames
-ago — `MAX_FRAMES_IN_FLIGHT + 1` — which is the hazard contract
-`overwrite_rgba_pixels` requires. Fixed handles also mean zero bindless
-descriptor writes after launch.
+The copy runs in the frame's own command buffer, behind a barrier that waits
+for every earlier submission's readers, so overwriting the one image in place
+is safe — callers need no rotation or fence protocol. `dc306a6a0` shipped a
+three-texture rotation (`MAX_FRAMES_IN_FLIGHT + 1`) because the upload was
+then a one-shot submit ordered against nothing else; #4892 collapsed it to
+one once the queued-copy model (`e2f99ad55`) made the rotation pure residency
+(two extra swapchain-extent images plus their retained CPU pixel copies). The
+fixed handle also means zero bindless descriptor writes after launch.
 
-Formula: `width × height × 4 B` per texture × 3 textures.
+Formula: `width × height × 4 B`, plus the same again in host RAM for the
+queued pixel copy.
 
-| Resolution | Per texture | Total (3 textures) |
+| Resolution | Texture |
+|---|---|
+| 1920×1080 | **~8.3 MB** |
+| 2560×1440 | **~14.7 MB** |
+| 3840×2160 | **~33.2 MB** |
+
+### Dynamic RGBA staging arenas (`DynamicRgbaUploads`, `e2f99ad55`)
+
+[`crates/renderer/src/texture_registry/dynamic_rgba.rs`](../../crates/renderer/src/texture_registry/dynamic_rgba.rs)
+— every in-place RGBA replacement (`update_rgba` on a matching image,
+`write_rgba_inplace`) is staged through
+`DynamicRgbaUploads::staging: [Option<GpuBuffer>; MAX_FRAMES_IN_FLIGHT]`:
+one host-visible (`CpuToGpu`) `TRANSFER_SRC` arena per frame slot, sized to
+the sum of the dirty updates recorded into that slot's frame. It is
+**grow-only** — replaced only when a frame needs more — and lives until
+registry teardown. The consumers are the two HUD drivers (mutually exclusive
+per run), `--menu` Scaleform menus, and the ground-cover atlas.
+
+Formula: per slot, `Σ width × height × 4 B` over the updates dirty in one
+frame; × `MAX_FRAMES_IN_FLIGHT` (2) once both slots have seen a frame that
+large. One full-viewport overlay:
+
+| Resolution | Per slot | Resident (2 slots) |
 |---|---|---|
-| 1920×1080 | ~8.3 MB | **~24.9 MB** |
-| 2560×1440 | ~14.7 MB | **~44.2 MB** |
-| 3840×2160 | ~33.2 MB | **~99.5 MB** |
+| 1920×1080 | 8,294,400 B | **~16.6 MB** |
+| 3840×2160 | 33,177,600 B | **~66.4 MB** |
+
+Two overlays dirty in the same frame double it. The arenas are not a
+`*_scratch` field, so the #4610 scratch-telemetry guard does not see them;
+this row is their only ledger.
 
 ### egui debug overlay (`EguiPass`) — #4986
 
@@ -1032,7 +1067,7 @@ About 19.8 MB together, flat across resolutions.
 ### Not yet ledgered
 
 A grep of this page for the owning subsystem name is the cheapest way to
-find a gap in it. Two are known and unquantified:
+find a gap in it. These are known and not yet folded into the rough budget:
 
 - **Per-mesh scene vertex / index buffers.** `upload_scene_mesh` and
   `upload_scene_meshes_batched` give every scene mesh its own device-local
@@ -1048,6 +1083,16 @@ find a gap in it. Two are known and unquantified:
   its queue in sub-batches of at most `MAX_UPLOAD_BATCH_BYTES` (= the 128 MiB
   retention budget) of DDS bytes, or one larger texture alone, so one submit
   never stages more than that.
+- **GPU pre-skinning output buffers.** Each live `SkinSlot` owns a
+  device-local `output_buffer` of `vertex_count × SKIN_OUTPUT_STRIDE_BYTES`
+  (12 B: three floats per vertex) — the BLAS refit's vertex input — for up to
+  `SKIN_MAX_SLOTS` (1,364) slots, allocated lazily per `create_slot`. The
+  total follows the resident skinned vertex count, so it is scene-dependent.
+- **Water parameter SSBOs.** `WaterPipeline::param_buffers` holds one
+  host-visible buffer per frame slot, starting at
+  `INITIAL_WATER_DRAW_CAPACITY` (8) × 368 B `GpuWaterParams` = 2,944 B and
+  growing to the next power of two of the frame's water draw count. Small in
+  practice (kilobytes), but unbounded by any constant.
 
 It is listed rather than estimated on purpose: a fabricated number on
 this page is worse than an acknowledged hole, because the page is cited as
@@ -1075,13 +1120,14 @@ authoritative rather than re-derived.
 | Vertex / index pools (one global geometry SSBO generation) | ~208 MB | ~480 MB cap (`VERTEX_POOL_HARD_CAP` 4 M × 104 B + `INDEX_POOL_HARD_CAP` 16 M × 4 B, see [Mesh Registry](#mesh-registry)) |
 | Global geometry SSBO rebuild (#3298 / #3443) | — (idle) | +1× projected — the replacement generation, allocated while the old one still serves draws, so up to ~480 MB at the pool caps (~960 MB with the old one). Admitted only while device-local usage stays at or under 80% of the live `VK_EXT_memory_budget` budget, and under 256 MiB without a reading; see [the rebuild section](#global-geometry-ssbo-rebuild-3298--3463). Plus up to 128 MiB retained mesh-side staging (one 64 MiB vertex-chunk entry + one 64 MiB index-chunk entry, #3298's chunked path) |
 | Sky bake + cloud noise + ground cover (fixed size, see [Sky and Ground Cover](#sky-and-ground-cover-fixed-size)) | ~79 MB | ~79 MB |
-| Scaleform UI (Ruffle wgpu device + target + readback + engine image) | ~25 MB (one menu) | ~42 MB + a second logical device |
-| MenuXml HUD overlay textures (3 × swapchain extent, RGBA8, see [Scaleform UI](#scaleform-ui-ruffle--wgpu--3431)) | ~25 MB (1080p) | ~100 MB (4K) |
+| Scaleform UI (Ruffle wgpu device + target + readback + engine image) | ~25 MB (one menu) | ~33 MB during a resize (one deferred-destroy copy of the engine image) + a second logical device |
+| MenuXml HUD overlay texture (1 × swapchain extent, RGBA8, see [its section](#menuxml-hud-overlay-texture-1--swapchain-extent-4892)) | ~8.3 MB (1080p) | ~33 MB (4K) |
+| Dynamic RGBA staging arenas (2 slots × one dirty full-viewport overlay, see [its section](#dynamic-rgba-staging-arenas-dynamicrgbauploads-e2f99ad55)) | ~16.6 MB (1080p) | ~66 MB (4K) |
 | Textures (BC compressed) | ~400 MB | ~2 GB |
 | BLAS structures | ~300 MB | ~1 GB (heavy scene) |
 | TLAS + scratch | ~50 MB | ~256 MB |
 | Pipeline cache blob | < 10 MB | — |
-| **Estimated total** | **~1.95 GB** | **~4.28 GB at native 4K** — every resolution-scaled row at 4K, the fixed-size rows and the scene-SSBO peak, plus the content rows (vertex / index pools, textures, BLAS, TLAS) at their *typical* figures: a typical FNV interior rendered at 4K, not every cap at once. Neither total counts the geometry-rebuild transient or the Scaleform rows. So the pools row's cap correction (~1.66 GB → ~480 MB, #4961) moved neither total. Includes the fixed volumetric medium/aperture index budget (~6.5 MB). #4300 corrected the scene-SSBO row to its section's own sum (~155 / ~243 MB, from a flat ~223 MB) and added the ~20 MB fixed-size sky / ground-cover row. #3993 added the previously-unledgered composite/depth (~83 MB / ~332 MB) and cluster light-index (~14 MB) rows, and the 4K native peak crosses the < 4 GB target as a result. It was only ever inside that target here by omission; FSR Quality, the shipped default, brings it back well under — see the per-preset table in the Volumetrics section. The MenuXml HUD overlay row (~25 / ~100 MB, REN-D5-2026-09-20-04) was added 2026-09-20 and moved both totals by its own amount. #4413 corrected the fixed-size sky / ground-cover row from ~20 MB to its section's own sum (~79 MB): the blade arena had grown to 64 MiB in `7996edf61` without it, and the authored-model tier adds 8.3 MiB. While a worldspace has authored cover the scene-SSBO row also grows by the tier's 14 MiB instance tail |
+| **Estimated total** | **~1.95 GB** | **~4.28 GB at native 4K** — every resolution-scaled row at 4K, the fixed-size rows and the scene-SSBO peak, plus the content rows (vertex / index pools, textures, BLAS, TLAS) at their *typical* figures: a typical FNV interior rendered at 4K, not every cap at once. Neither total counts the geometry-rebuild transient or the Scaleform rows. So the pools row's cap correction (~1.66 GB → ~480 MB, #4961) moved neither total. Includes the fixed volumetric medium/aperture index budget (~6.5 MB). #4300 corrected the scene-SSBO row to its section's own sum (~155 / ~243 MB, from a flat ~223 MB) and added the ~20 MB fixed-size sky / ground-cover row. #3993 added the previously-unledgered composite/depth (~83 MB / ~332 MB) and cluster light-index (~14 MB) rows, and the 4K native peak crosses the < 4 GB target as a result. It was only ever inside that target here by omission; FSR Quality, the shipped default, brings it back well under — see the per-preset table in the Volumetrics section. The MenuXml HUD overlay row (~25 / ~100 MB, REN-D5-2026-09-20-04) was added 2026-09-20 and moved both totals by its own amount. #4892 then collapsed that overlay to one texture (−16.6 / −66.4 MB) and ledgered the dynamic-RGBA staging arenas (+16.6 / +66.4 MB), so neither total moved. #4413 corrected the fixed-size sky / ground-cover row from ~20 MB to its section's own sum (~79 MB): the blade arena had grown to 64 MiB in `7996edf61` without it, and the authored-model tier adds 8.3 MiB. While a worldspace has authored cover the scene-SSBO row also grows by the tier's 14 MiB instance tail |
 
 The 6 GB RT-minimum and 4 GB whole-renderer target remain design targets.
 Static BLAS residency is separately enforced at 1 GiB, so a Vulkan driver
