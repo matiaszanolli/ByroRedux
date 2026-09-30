@@ -6,9 +6,10 @@ sky visible through actual windows and holes, and legacy painted rays replaced
 by participating media. A controlled vertical slice and selected shipped
 assets work. There is no evidence yet for every opening or every title.
 
-The changes described here are **uncommitted**. Start with `git status --short`
-before editing. `byroredux/src/app_events.rs` already had a separate user edit;
-do not discard it while working on godrays.
+The changes described here shipped in `0572bfd5a` ("Implement interior godrays
+and sky apertures"); later commits have refined them (for example #4902 / #4909
+/ #4915's single canonical outdoor sky and sun for interiors), so check `git log`
+on the files named below before trusting a detail here.
 
 ## What is implemented
 

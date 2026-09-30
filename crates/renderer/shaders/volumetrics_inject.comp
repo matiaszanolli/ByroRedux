@@ -20,11 +20,15 @@
 // test used by every modern RT volumetric path — but per froxel this
 // is NOT a single ray. Worst case: 1 opaque sun ray, +1 glass-masked
 // sun ray for interiors, +4 architectural-rim probes for an unmarked
-// opening above ray tier 0, then up to MAX_FROXEL_LIGHTS local lights x up to 2
-// rays each (opaque mask, then glass mask) = up to 14 ray-query
-// traversals per froxel. At the default froxel_xy_divisor=8 160x90x64
-// grid (1280x720 render extent) that is a worst-case ~12.9M ray
-// queries/frame from this pass alone. See
+// opening above ray tier 0, then up to the tier's volumetric light cap
+// (MAX_FROXEL_LIGHTS = 8 at tier 3, 6 at the open-loop tier 2) local lights
+// x up to 2 rays each (opaque mask, then glass mask) = up to 22 ray-query
+// traversals per froxel (18 at tier 2). Froxels in a combustion transport
+// region add up to 9 more solid-boundary queries (`combustionPathBlocked`:
+// 6 neighbour-dynamics probes, 1 BFECC correction, 2 transport). At the
+// default froxel_xy_divisor=8 160x90x64 grid (1280x720 render extent) the
+// 22-query worst case is ~20.3M ray queries/frame from this pass alone
+// (~45.6M at a 1920x1080 render extent), before combustion. See
 // REN-D16-2026-08-07-02 / #2509.
 #version 460
 #extension GL_EXT_ray_query : require

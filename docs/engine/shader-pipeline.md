@@ -784,6 +784,35 @@ combustion-optical group started at 14/16) — this table is ordered by
 binding number, not by source line, so cross-reference by number rather
 than by position when checking against the shader.
 
+Four inject inputs carry more than their binding type suggests:
+
+- **Two sun lanes, one slot.** `VolumetricsParams.sun_dir` / `sun_color`
+  carry the exterior sun (`SkyParams::sun_direction` / `sun_illuminance`)
+  in an exterior, and the **portal sun lane**
+  (`SkyParams::portal_sun_direction` / `portal_sun_radiance`) in an interior,
+  so interior surface and composite lighting stay cell-authored while the
+  medium still sees the outdoor sun (`post_passes.rs::volumetric_sun`).
+- **`render_origin.w` is the sky-access bit.** 1.0 for an exterior or a
+  Show Sky interior, 0.0 for a sealed interior
+  (`post_passes.rs::volumetric_open_sky_flag`). It selects the sun
+  shadow-ray strategy: open sky keeps the single opaque-mask query (no hit =
+  lit), while a sealed interior needs a bounded architectural-glass hit or a
+  clear ray through an authored aperture. It is not the FSR bit that
+  `GpuCamera.render_origin.w` carries (#1928).
+- **Per-cluster fog index budget.** Bindings 8/9 index a camera-centred
+  `FOG_VOLUME_CLUSTER_DIM`³ (16³) grid. Each cluster has
+  `MAX_FOG_VOLUMES_PER_CLUSTER` (64) density references plus
+  `MAX_FOG_PORTALS_PER_CLUSTER` (128) authored-shaft aperture candidates, so a
+  192-entry stride. Portals are kept separate so moving shafts cannot evict
+  smoke or fog, and on overflow each list keeps the nearest entries (the CPU
+  input is distance-sorted).
+- **The aperture UBO lives in composite, not here.** `CompositeParams`
+  (composite set 0, binding 3) ends in `sky_aperture_count` plus up to
+  `MAX_COMPOSITE_SKY_APERTURES` (256) `CompositeSkyAperture` entries (48 B
+  each), which `composite.frag::skyThroughAuthoredWindow` tests to show
+  outdoor sky through authored openings. Only the prefix below the count is
+  written each frame; the 12 KB tail stays allocated but unflushed.
+
 `volumetrics_integrate.comp` (3 bindings — a separate, much smaller
 descriptor set on the same `set = 0` index; do not conflate with the table
 above):

@@ -1047,12 +1047,14 @@ fn fog_cluster_write_range(current: (usize, usize), previous: (usize, usize)) ->
 ///
 /// Per-froxel ray budget: despite `volumetrics_inject.comp`'s header
 /// describing shadow visibility as the standard single "trace toward
-/// light, miss = lit" test, the shader actually casts up to 14 ray-query
+/// light, miss = lit" test, the shader actually casts up to 22 ray-query
 /// traversals per froxel in the worst case (1 opaque + 1 glass-masked sun
-/// ray + 4 architectural-rim probes, plus up to `MAX_FROXEL_LIGHTS` local
-/// lights x up to 2 rays each) — ~12.9M ray queries/frame at the default
-/// `froxel_xy_divisor = 8` 160x90x64
-/// grid for a 1280x720 render extent. See
+/// ray + 4 architectural-rim probes, plus up to `MAX_FROXEL_LIGHTS` = 8
+/// local lights x up to 2 rays each at ray tier 3; 18 at the open-loop
+/// tier 2, whose light cap is 6) — ~20.3M ray queries/frame at the default
+/// `froxel_xy_divisor = 8` 160x90x64 grid for a 1280x720 render extent,
+/// ~45.6M at 1920x1080. Froxels in a combustion transport region add up to
+/// 9 solid-boundary queries on top. See the shader header and
 /// REN-D16-2026-08-07-02 / #2509.
 pub const VOLUMETRIC_OUTPUT_CONSUMED: bool = true;
 
