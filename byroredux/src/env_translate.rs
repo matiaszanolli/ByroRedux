@@ -881,13 +881,18 @@ fn resolve_water_noise_and_rain(rec: &esm::records::misc::WatrRecord, mat: &mut 
     // are normalized to the canonical 0..1 pigment fraction HERE, at the
     // WATAL translate boundary, not in `water.frag`: per-game unit
     // conventions belong at the parser→canonical boundary. The fourth
-    // `oceanness` lane is authored natively in 0..1, so the division is
-    // a no-op for it in practice; the zero sentinel is preserved
-    // (0 / reference = 0).
-    for (dst, src) in mat.concentration.iter_mut().zip(rec.params.concentration) {
+    // `oceanness` lane is authored natively in 0..1 (vanilla 0 / 0.514 /
+    // 0.699 / 1.0, #3227) and must NOT take the pigment division (#4837):
+    // it passes through with only the canonical clamp. The zero sentinel
+    // is preserved on every lane (0 / reference = 0).
+    let [pigments @ .., oceanness] = rec.params.concentration;
+    for (dst, src) in mat.concentration.iter_mut().zip(pigments) {
         if src.is_finite() && src > 0.0 {
             *dst = (src / STARFIELD_WATER_CONCENTRATION_REFERENCE).clamp(0.0, 1.0);
         }
+    }
+    if oceanness.is_finite() && oceanness > 0.0 {
+        mat.concentration[3] = oceanness.clamp(0.0, 1.0);
     }
 }
 
@@ -3300,21 +3305,37 @@ mod tests {
         assert_eq!(per_bu_mat.absorption_coefficients, per_bu);
         // #4285 — pigment concentrations are normalized to canonical 0..1
         // fractions at this boundary (RGB lanes ÷ the Starfield authoring
-        // upper bound; the natively-0..1 `oceanness` lane passes through
-        // the same division unchanged up to float rounding). The shader no
-        // longer carries a per-game unit constant.
+        // upper bound). The natively-0..1 `oceanness` lane is NOT divided
+        // (#4837 — dividing it weakened both shader consumers ~20×). The
+        // shader no longer carries a per-game unit constant.
         assert_eq!(
             mat.concentration,
-            [
-                8.840 / 20.0,
-                6.594 / 20.0,
-                4.710 / 20.0,
-                0.514 / 20.0
-            ]
+            [8.840 / 20.0, 6.594 / 20.0, 4.710 / 20.0, 0.514]
         );
         assert_eq!(mat.noise_falloff, 300.0);
         assert_eq!(mat.normal_falloff, [0.9, 0.7, 0.8]);
         assert_eq!(mat.displacement, [0.05, 0.985, 10.0]);
+    }
+
+    /// #4837 — `oceanness` is authored natively in 0..1 and must not take
+    /// the RGB pigment division; an out-of-range authored value (one
+    /// Starfield test record carries 1.63) takes only the canonical clamp.
+    #[test]
+    fn starfield_oceanness_lane_passes_through_without_the_pigment_division() {
+        for (authored, expected) in [(1.0, 1.0), (0.699, 0.699), (1.63, 1.0), (0.0, 0.0)] {
+            let rec = calm_watr(
+                0x000A_000A,
+                "StarfieldOceanness",
+                WaterParams {
+                    concentration: [20.0, 0.0, 0.0, authored],
+                    ..WaterParams::default()
+                },
+            );
+            let mut waters = HashMap::new();
+            waters.insert(rec.form_id, rec);
+            let (mat, _, _, _, _) = resolve_water_material(&waters, Some(0x000A_000A));
+            assert_eq!(mat.concentration, [1.0, 0.0, 0.0, expected], "oceanness {authored}");
+        }
     }
 
     #[test]
