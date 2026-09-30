@@ -823,9 +823,8 @@ impl VulkanContext {
         let mut tile_scratch: Vec<GpuTerrainTile> =
             std::mem::take(&mut self.scratch.terrain_tile_scratch);
         if self.fill_terrain_tile_scratch_if_dirty(&mut tile_scratch) {
-            let allocator = self.allocator.as_ref().expect("allocator missing");
             self.scene_buffers
-                .upload_terrain_tiles(&self.device, allocator, cmd, frame, &tile_scratch)
+                .upload_terrain_tiles(&self.device, cmd, frame, &tile_scratch)
                 .unwrap_or_else(|e| log::warn!("Failed to upload terrain tiles: {e}"));
         }
         self.scratch.terrain_tile_scratch = tile_scratch;

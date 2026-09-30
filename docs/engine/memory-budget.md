@@ -1078,7 +1078,11 @@ find a gap in it. These are known and not yet folded into the rough budget:
   (distant terrain and object LOD, #1370) carry none.
 - **`StagingPool` retained capacity** beyond the geometry rebuild's 64 MiB
   above. The pool's budget is a *retention* bound (128 MiB default), not an
-  in-flight bound, and texture uploads share it. Texture uploads' in-flight
+  in-flight bound, and texture uploads share it. It bounds real bytes because
+  each retained entry is labelled with its `VkBuffer` create size, carried by
+  the `StagingGuard` (#4881); before that, a reused buffer was relabelled at
+  the smaller request it served, labels only decayed, and the eviction trim
+  never saw the true total. Texture uploads' in-flight
   staging is bounded separately since #4197: `flush_pending_uploads` drains
   its queue in sub-batches of at most `MAX_UPLOAD_BATCH_BYTES` (= the 128 MiB
   retention budget) of DDS bytes, or one larger texture alone, so one submit

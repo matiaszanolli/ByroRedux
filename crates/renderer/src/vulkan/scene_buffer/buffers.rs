@@ -199,14 +199,12 @@ pub struct SceneBuffers {
     /// Pool-backed staging guards retained per frame-in-flight until that
     /// slot's fence retires. This avoids both transient allocations and
     /// reusing a staging allocation while an older frame still reads it.
-    /// The guards return their buffers to the pool on the next use.
-    ///
-    /// Each guard is paired with the byte size it was *acquired* at: a
-    /// later upload's size can be larger (the tile prefix grows while
-    /// exterior streaming allocates slots), and releasing the old buffer
-    /// labelled with the new size lets the pool's best-fit hand it straight
-    /// back for a copy that overruns it (#4790).
-    pub(super) terrain_tile_staging_buffers: Vec<Option<(StagingGuard, vk::DeviceSize)>>,
+    /// The guards return their buffers to the pool on the next use, each
+    /// labelled with its own `VkBuffer` create size, which the guard
+    /// carries (#4881). Labelling by a later upload's size let best-fit hand
+    /// an undersized buffer back (#4790); by the acquire request, labels
+    /// decayed and the pool's budget stopped bounding real bytes (#4881).
+    pub(super) terrain_tile_staging_buffers: Vec<Option<StagingGuard>>,
     pub(super) terrain_tile_staging_pool: StagingPool,
     /// Single HOST_VISIBLE buffer holding `MAX_FRAMES_IN_FLIGHT` ray-budget
     /// counter slots, one per frame-in-flight, each [`RAY_BUDGET_STRIDE`]

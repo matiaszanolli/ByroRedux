@@ -164,6 +164,10 @@ pub struct StagingPool {
 struct StagingEntry {
     buffer: vk::Buffer,
     allocation: vulkan::Allocation,
+    /// The `VkBuffer`'s create size — never a later request's size and
+    /// never the allocation footprint (#4881). Carried through the
+    /// [`StagingGuard`] that held the buffer, so the label is fixed for the
+    /// buffer's whole life and `total_capacity` sums real bytes.
     capacity: vk::DeviceSize,
 }
 
@@ -192,8 +196,9 @@ impl StagingPool {
         }
     }
 
-    /// Total capacity currently held in the free list (sum of all
-    /// retained entries).
+    /// Total capacity currently held in the free list: the sum of the
+    /// retained entries' `VkBuffer` create sizes (#4881 — real bytes, not
+    /// the sizes of the requests the buffers last served).
     pub fn total_capacity(&self) -> vk::DeviceSize {
         self.free_list.iter().map(|e| e.capacity).sum()
     }
@@ -213,76 +218,56 @@ impl StagingPool {
         self.free_list.is_empty()
     }
 
-    /// Acquire a mapped staging buffer with at least `size` bytes.
+    /// Acquire a mapped staging buffer with at least `size` bytes, wrapped
+    /// in a [`StagingGuard`] labelled with the buffer's create size.
     /// Returns a reused buffer from the pool or creates a new one.
-    pub fn acquire(&mut self, size: vk::DeviceSize) -> Result<(vk::Buffer, vulkan::Allocation)> {
+    ///
+    /// #4881 — the guard, not the caller, carries the capacity back to
+    /// [`StagingGuard::release_to`]. Releasing at the caller's request size
+    /// relabelled a reused 64 MiB buffer as a 3 MiB one, so labels only
+    /// ever decayed, `total_capacity` under-counted, and the budget trim
+    /// never fired. #4882 — the fresh path goes through
+    /// [`create_staging_buffer`], which unwinds its own create → allocate →
+    /// bind window instead of leaking the `VkBuffer` on an allocator error.
+    pub(crate) fn acquire(&mut self, size: vk::DeviceSize) -> Result<StagingGuard> {
+        let Some(allocator) = self.allocator.clone() else {
+            anyhow::bail!("StagingPool::acquire called after destroy()");
+        };
+
         // Find the smallest free buffer that fits.
         if let Some(idx) = self.free_list.iter().position(|e| e.capacity >= size) {
             let entry = self.free_list.remove(idx);
-            return Ok((entry.buffer, entry.allocation));
+            return Ok(StagingGuard::new(
+                entry.buffer,
+                entry.allocation,
+                entry.capacity,
+                self.device.clone(),
+                allocator,
+            ));
         }
 
-        // No suitable buffer — create a new one.
-        let buffer_info = vk::BufferCreateInfo::default()
-            .size(size)
-            .usage(vk::BufferUsageFlags::TRANSFER_SRC)
-            .sharing_mode(vk::SharingMode::EXCLUSIVE);
-
-        // SAFETY: `self.device` is this pool's live logical device, which
-        // outlives the call; `buffer_info` is a fully-populated, valid
-        // VkBufferCreateInfo built just above.
-        let buffer = unsafe {
-            self.device
-                .create_buffer(&buffer_info, None)
-                .context("Failed to create staging buffer")?
-        };
-
-        // SAFETY: `buffer` was just created by this device above and not yet
-        // destroyed; the device outlives the call.
-        let reqs = unsafe { self.device.get_buffer_memory_requirements(buffer) };
-
-        let Some(allocator) = self.allocator.as_ref() else {
-            // SAFETY: `buffer` was created by this device above and has no
-            // memory bound; destroying it here is its only release path.
-            unsafe { self.device.destroy_buffer(buffer, None) };
-            anyhow::bail!("StagingPool::acquire called after destroy()");
-        };
-        let allocation = allocator
-            .lock()
-            .expect("allocator lock poisoned")
-            .allocate(&vulkan::AllocationCreateDesc {
-                name: "staging_pool",
-                requirements: reqs,
-                location: MemoryLocation::CpuToGpu,
-                linear: true,
-                allocation_scheme: vulkan::AllocationScheme::GpuAllocatorManaged,
-            })
-            .context("Failed to allocate staging memory")?;
-        // MEM-2-5 / #680 sibling — every staging buffer surfaced by this
-        // pool is written through `mapped_slice_mut`. See
-        // `debug_assert_cpu_to_gpu_mapped` for the rationale.
-        debug_assert_cpu_to_gpu_mapped(&allocation, "StagingPool::acquire");
-
-        // SAFETY: `buffer` and `allocation` were both created here from this
-        // device; the memory/offset come from the allocation that satisfied
-        // `buffer`'s own memory requirements, and the buffer is not yet bound.
-        unsafe {
-            self.device
-                .bind_buffer_memory(buffer, allocation.memory(), allocation.offset())
-                .context("Failed to bind staging buffer")?;
-        }
-
-        Ok((buffer, allocation))
+        // No suitable buffer — create a new one at exactly `size`.
+        let (buffer, allocation) =
+            create_staging_buffer(&self.device, &allocator, size, "staging_pool")?;
+        Ok(StagingGuard::new(
+            buffer,
+            allocation,
+            size,
+            self.device.clone(),
+            allocator,
+        ))
     }
 
-    /// Return a staging buffer to the pool for reuse.
+    /// Return a staging buffer to the pool for reuse. `capacity` must be the
+    /// buffer's create size; [`StagingGuard::release_to`] is the only
+    /// caller and supplies it from the guard (#4881).
     ///
     /// After insertion, if the total retained capacity exceeds the
     /// configured budget, the pool evicts its largest entries until it
     /// fits — see [`trim_to`](Self::trim_to). This keeps bulk loads
     /// (cells, archives) from retaining hundreds of megabytes of host
     /// memory forever.
-    pub fn release(
+    fn release(
         &mut self,
         buffer: vk::Buffer,
         allocation: vulkan::Allocation,
@@ -405,41 +390,42 @@ impl Drop for StagingPool {
     }
 }
 
-/// Create a fresh host-visible staging buffer and bind memory to it.
+/// Create a buffer, allocate memory for it at `location`, and bind the two.
 ///
 /// Every fallible step unwinds internally, so a failure leaks nothing:
 /// an `allocate` failure destroys the just-created `VkBuffer`, and a
 /// `bind_buffer_memory` failure destroys the buffer *and* frees the
-/// allocation. Callers own both on success and must hand them to a
-/// [`StagingGuard`] (which is what makes every *subsequent* `?` safe).
+/// allocation. Callers own both on success and must hand them to an owner
+/// (a [`StagingGuard`] or a [`GpuBuffer`]) before the next fallible step.
 ///
 /// Extracted for REN-LOW L-5 / #2164: this create → allocate → bind
-/// prologue was open-coded at three sites, and the window between
+/// prologue was open-coded at three staging sites, and the window between
 /// `create_buffer` and the guard was unprotected at all of them. Doing
 /// the unwinding once, here, is what closes it — a guard alone can't,
-/// since it cannot exist until after the allocation succeeds.
-pub(crate) fn create_staging_buffer(
+/// since it cannot exist until after the allocation succeeds. #4882 —
+/// widened from staging-only to every `GpuBuffer` constructor: the host-
+/// visible, readback and device-local ones had kept their own open-coded
+/// prologue with bare `?` on allocate and bind, leaking a `VkBuffer` (and
+/// on a bind failure an allocation) per attempt — once per frame under the
+/// geometry-rebuild and instance-SSBO retry loops.
+fn create_bound_buffer(
     device: &ash::Device,
     allocator: &SharedAllocator,
-    size: vk::DeviceSize,
+    info: &vk::BufferCreateInfo<'_>,
+    location: MemoryLocation,
     name: &'static str,
 ) -> Result<(vk::Buffer, vulkan::Allocation)> {
-    let info = vk::BufferCreateInfo::default()
-        .size(size)
-        .usage(vk::BufferUsageFlags::TRANSFER_SRC)
-        .sharing_mode(vk::SharingMode::EXCLUSIVE);
-
     let buffer = unsafe {
         // SAFETY: `device` is the caller's live logical device, valid for the
         // call; `info` is a fully-populated valid VkBufferCreateInfo whose
         // borrows outlive it; the None allocation callback is always valid.
         device
-            .create_buffer(&info, None)
-            .with_context(|| format!("Failed to create {name} staging buffer"))?
+            .create_buffer(info, None)
+            .with_context(|| format!("Failed to create {name} buffer"))?
     };
 
     // From here on, every early return must destroy `buffer` by hand —
-    // there is no guard to own it until the allocation lands.
+    // there is no owner for it until the allocation lands and binds.
     let destroy = || unsafe {
         // SAFETY: `buffer` was created by `device` immediately above, has
         // never been bound or referenced by a command buffer, and is
@@ -457,7 +443,7 @@ pub(crate) fn create_staging_buffer(
         &vulkan::AllocationCreateDesc {
             name,
             requirements: reqs,
-            location: MemoryLocation::CpuToGpu,
+            location,
             linear: true,
             allocation_scheme: vulkan::AllocationScheme::GpuAllocatorManaged,
         },
@@ -465,10 +451,9 @@ pub(crate) fn create_staging_buffer(
         Ok(a) => a,
         Err(e) => {
             destroy();
-            return Err(e).with_context(|| format!("Failed to allocate {name} staging memory"));
+            return Err(e).with_context(|| format!("Failed to allocate {name} memory"));
         }
     };
-    debug_assert_cpu_to_gpu_mapped(&allocation, name);
 
     let bind = unsafe {
         // SAFETY: `device` is live; `buffer` was created by it above and is
@@ -484,9 +469,27 @@ pub(crate) fn create_staging_buffer(
             .expect("allocator lock poisoned")
             .free(allocation)
             .ok();
-        return Err(e).with_context(|| format!("Failed to bind {name} staging buffer"));
+        return Err(e).with_context(|| format!("Failed to bind {name} buffer"));
     }
 
+    Ok((buffer, allocation))
+}
+
+/// Create a fresh host-visible staging buffer and bind memory to it,
+/// unwinding internally on failure (see [`create_bound_buffer`]).
+pub(crate) fn create_staging_buffer(
+    device: &ash::Device,
+    allocator: &SharedAllocator,
+    size: vk::DeviceSize,
+    name: &'static str,
+) -> Result<(vk::Buffer, vulkan::Allocation)> {
+    let info = vk::BufferCreateInfo::default()
+        .size(size)
+        .usage(vk::BufferUsageFlags::TRANSFER_SRC)
+        .sharing_mode(vk::SharingMode::EXCLUSIVE);
+    let (buffer, allocation) =
+        create_bound_buffer(device, allocator, &info, MemoryLocation::CpuToGpu, name)?;
+    debug_assert_cpu_to_gpu_mapped(&allocation, name);
     Ok((buffer, allocation))
 }
 
@@ -495,23 +498,47 @@ pub(crate) fn create_staging_buffer(
 pub(crate) struct StagingGuard {
     pub buffer: vk::Buffer,
     pub allocation: Option<vulkan::Allocation>,
+    /// The `VkBuffer`'s create size — the only label a pool may file it
+    /// under (#4881; see [`release_to`](Self::release_to)).
+    capacity: vk::DeviceSize,
     device: ash::Device,
     allocator: SharedAllocator,
 }
 
 impl StagingGuard {
-    pub fn new(
+    fn new(
         buffer: vk::Buffer,
         allocation: vulkan::Allocation,
+        capacity: vk::DeviceSize,
         device: ash::Device,
         allocator: SharedAllocator,
     ) -> Self {
         Self {
             buffer,
             allocation: Some(allocation),
+            capacity,
             device,
             allocator,
         }
+    }
+
+    /// A fresh, unpooled staging buffer of exactly `size` bytes — the
+    /// no-pool twin of [`StagingPool::acquire`]. Creation unwinds inside
+    /// [`create_staging_buffer`] (#2164); the guard covers everything after.
+    pub fn create(
+        device: &ash::Device,
+        allocator: &SharedAllocator,
+        size: vk::DeviceSize,
+        name: &'static str,
+    ) -> Result<Self> {
+        let (buffer, allocation) = create_staging_buffer(device, allocator, size, name)?;
+        Ok(Self::new(
+            buffer,
+            allocation,
+            size,
+            device.clone(),
+            allocator.clone(),
+        ))
     }
 
     /// Consume the guard, destroying staging resources.
@@ -613,23 +640,27 @@ impl StagingGuard {
     /// disarms the guard (clears `allocation`) before handing the
     /// resources off, so the subsequent `Drop` is a no-op.
     ///
-    /// `capacity` must be the buffer's *requested* size — the `size` that
-    /// was passed to [`StagingPool::acquire`] — never the allocation
-    /// footprint. gpu-allocator rounds allocations up above the VkBuffer
-    /// create size (alignment / heap classes), and `acquire`'s best-fit
-    /// trusts `entry.capacity` as the buffer's usable size, so an entry
-    /// recorded at the allocation size can hand out a buffer smaller than a
-    /// later caller's request (#4512: `vkCmdCopyBufferToImage` regions
-    /// exceeding the VkBuffer total size by exactly the rounding slack).
-    pub fn release_to(mut self, pool: &mut StagingPool, capacity: vk::DeviceSize) {
+    /// The pool entry is labelled with the guard's `capacity`, the
+    /// `VkBuffer` create size, which satisfies both constraints this label
+    /// has carried:
+    /// - never the allocation footprint (#4512): gpu-allocator rounds the
+    ///   allocation up above the create size, and `acquire`'s best-fit
+    ///   trusts the label as the buffer's usable size, so a footprint label
+    ///   handed out buffers smaller than a later request;
+    /// - never the size of the request the buffer last served (#4881 /
+    ///   #1921): best-fit only reuses an entry for a request ≤ its label, so
+    ///   relabelling at the request made labels decay monotonically while
+    ///   the real buffers stayed large, and retained memory escaped
+    ///   [`DEFAULT_STAGING_BUDGET_BYTES`].
+    pub fn release_to(mut self, pool: &mut StagingPool) {
         if let Some(alloc) = self.allocation.take() {
             debug_assert!(
-                capacity <= alloc.size(),
-                "released capacity {} exceeds the allocation footprint {}",
-                capacity,
+                self.capacity <= alloc.size(),
+                "staging capacity {} exceeds the allocation footprint {}",
+                self.capacity,
                 alloc.size()
             );
-            pool.release(self.buffer, alloc, capacity);
+            pool.release(self.buffer, alloc, self.capacity);
         }
         // `self` drops here; `allocation` is `None` so `Drop` is a no-op.
     }
@@ -822,17 +853,11 @@ impl GpuBuffer {
             queue,
             command_pool,
         } = ctx;
-        let (staging_buffer, staging_alloc) = if let Some(pool) = staging_pool.as_deref_mut() {
+        let mut staging = if let Some(pool) = staging_pool.as_deref_mut() {
             pool.acquire(staging_size)?
         } else {
-            create_staging_buffer(device, allocator, staging_size, "batched_buffer_staging")?
+            StagingGuard::create(device, allocator, staging_size, "batched_buffer_staging")?
         };
-        let mut staging = StagingGuard::new(
-            staging_buffer,
-            staging_alloc,
-            device.clone(),
-            allocator.clone(),
-        );
         {
             let mapped = staging.mapped_slice_mut()?;
             for (upload, &offset) in uploads.iter().zip(&offsets) {
@@ -909,7 +934,7 @@ impl GpuBuffer {
                     buffer.destroy(device, allocator);
                 }
                 if let Some(pool) = staging_pool {
-                    staging.release_to(pool, staging_size);
+                    staging.release_to(pool);
                 } else {
                     staging.destroy();
                 }
@@ -918,12 +943,8 @@ impl GpuBuffer {
         }
 
         if let Some(pool) = staging_pool {
-            // Release the *requested* size, never the allocation footprint —
-            // gpu-allocator rounds allocations up above the VkBuffer create
-            // size, and a pool entry recorded at the inflated size lets
-            // `acquire`'s best-fit hand out a buffer smaller than a later
-            // upload's budget (#4512's +8 B staging overrun class).
-            staging.release_to(pool, staging_size);
+            // The guard carries the buffer's create size (#4512 / #4881).
+            staging.release_to(pool);
         } else {
             staging.destroy();
         }
@@ -992,6 +1013,37 @@ impl GpuBuffer {
         )
     }
 
+    /// Create an exclusive buffer of `size` bytes bound to fresh memory at
+    /// `location`, through the unwinding [`create_bound_buffer`] prologue
+    /// (#4882). The shared body of every non-staging constructor.
+    fn create_bound(
+        device: &ash::Device,
+        allocator: &SharedAllocator,
+        size: vk::DeviceSize,
+        usage: vk::BufferUsageFlags,
+        location: MemoryLocation,
+        name: &'static str,
+    ) -> Result<Self> {
+        let info = vk::BufferCreateInfo::default()
+            .size(size)
+            .usage(usage)
+            .sharing_mode(vk::SharingMode::EXCLUSIVE);
+        let (buffer, allocation) = create_bound_buffer(device, allocator, &info, location, name)?;
+        // Inert for DEVICE_LOCAL-only memory: it is never mapped, so no
+        // flush path consults it.
+        let is_coherent = allocation
+            .memory_properties()
+            .contains(vk::MemoryPropertyFlags::HOST_COHERENT);
+        Ok(Self {
+            buffer,
+            size,
+            allocation: Some(allocation),
+            is_coherent,
+            device: device.clone(),
+            allocator: Some(allocator.clone()),
+        })
+    }
+
     /// Create a host-visible buffer for per-frame CPU writes (no staging needed).
     /// Used for SSBO/UBO data that changes every frame.
     ///
@@ -1014,62 +1066,23 @@ impl GpuBuffer {
         size: vk::DeviceSize,
         usage: vk::BufferUsageFlags,
     ) -> Result<Self> {
-        let buffer_info = vk::BufferCreateInfo::default()
-            .size(size)
-            .usage(usage)
-            .sharing_mode(vk::SharingMode::EXCLUSIVE);
-
-        // SAFETY: `device` is the caller's live logical device, valid for the
-        // call; `buffer_info` is a fully-populated valid VkBufferCreateInfo.
-        let buffer = unsafe {
-            device
-                .create_buffer(&buffer_info, None)
-                .context("Failed to create host-visible buffer")?
-        };
-
-        // SAFETY: `buffer` was just created by this device above and is live;
-        // the device outlives the call.
-        let requirements = unsafe { device.get_buffer_memory_requirements(buffer) };
-
-        let allocation = allocator
-            .lock()
-            .expect("allocator lock poisoned")
-            .allocate(&vulkan::AllocationCreateDesc {
-                name: "host_visible_buffer",
-                requirements,
-                location: MemoryLocation::CpuToGpu,
-                linear: true,
-                allocation_scheme: vulkan::AllocationScheme::GpuAllocatorManaged,
-            })
-            .context("Failed to allocate host-visible memory")?;
+        let this = Self::create_bound(
+            device,
+            allocator,
+            size,
+            usage,
+            MemoryLocation::CpuToGpu,
+            "host_visible_buffer",
+        )?;
         // MEM-2-5 / #680 — every per-frame buffer (lights, camera, bones,
         // instances, indirect, ray-budget, TLAS instance staging) reaches
         // `mapped_slice_mut` on its hot path. Catch a regression in the
         // allocator's mapping policy at construction, not on the first
         // write.
-        debug_assert_cpu_to_gpu_mapped(&allocation, "create_host_visible");
-
-        // SAFETY: `buffer` and `allocation` were both created here from this
-        // device; the memory/offset come from the allocation that satisfied
-        // `buffer`'s memory requirements, and the buffer is not yet bound.
-        unsafe {
-            device
-                .bind_buffer_memory(buffer, allocation.memory(), allocation.offset())
-                .context("Failed to bind host-visible buffer")?;
+        if let Some(allocation) = this.allocation.as_ref() {
+            debug_assert_cpu_to_gpu_mapped(allocation, "create_host_visible");
         }
-
-        let is_coherent = allocation
-            .memory_properties()
-            .contains(vk::MemoryPropertyFlags::HOST_COHERENT);
-
-        Ok(Self {
-            buffer,
-            size,
-            allocation: Some(allocation),
-            is_coherent,
-            device: device.clone(),
-            allocator: Some(allocator.clone()),
-        })
+        Ok(this)
     }
 
     /// Create a host-visible buffer for device→host **readback**.
@@ -1101,60 +1114,21 @@ impl GpuBuffer {
         size: vk::DeviceSize,
         usage: vk::BufferUsageFlags,
     ) -> Result<Self> {
-        let buffer_info = vk::BufferCreateInfo::default()
-            .size(size)
-            .usage(usage)
-            .sharing_mode(vk::SharingMode::EXCLUSIVE);
-
-        // SAFETY: `device` is the caller's live logical device, valid for the
-        // call; `buffer_info` is a fully-populated valid VkBufferCreateInfo.
-        let buffer = unsafe {
-            device
-                .create_buffer(&buffer_info, None)
-                .context("Failed to create host-readback buffer")?
-        };
-
-        // SAFETY: `buffer` was just created by this device above and is live;
-        // the device outlives the call.
-        let requirements = unsafe { device.get_buffer_memory_requirements(buffer) };
-
-        let allocation = allocator
-            .lock()
-            .expect("allocator lock poisoned")
-            .allocate(&vulkan::AllocationCreateDesc {
-                name: "host_readback_buffer",
-                requirements,
-                location: MemoryLocation::GpuToCpu,
-                linear: true,
-                allocation_scheme: vulkan::AllocationScheme::GpuAllocatorManaged,
-            })
-            .context("Failed to allocate host-readback memory")?;
+        let this = Self::create_bound(
+            device,
+            allocator,
+            size,
+            usage,
+            MemoryLocation::GpuToCpu,
+            "host_readback_buffer",
+        )?;
         // Same mapping-policy tripwire as the upload path: every reader
         // reaches `mapped_slice_mut` on its hot path, so catch a regression
         // at construction rather than on the first drain.
-        debug_assert_cpu_to_gpu_mapped(&allocation, "create_host_readback");
-
-        // SAFETY: `buffer` and `allocation` were both created here from this
-        // device; the memory/offset come from the allocation that satisfied
-        // `buffer`'s memory requirements, and the buffer is not yet bound.
-        unsafe {
-            device
-                .bind_buffer_memory(buffer, allocation.memory(), allocation.offset())
-                .context("Failed to bind host-readback buffer")?;
+        if let Some(allocation) = this.allocation.as_ref() {
+            debug_assert_cpu_to_gpu_mapped(allocation, "create_host_readback");
         }
-
-        let is_coherent = allocation
-            .memory_properties()
-            .contains(vk::MemoryPropertyFlags::HOST_COHERENT);
-
-        Ok(Self {
-            buffer,
-            size,
-            allocation: Some(allocation),
-            is_coherent,
-            device: device.clone(),
-            allocator: Some(allocator.clone()),
-        })
+        Ok(this)
     }
 
     /// Create a DEVICE_LOCAL buffer without initial data.
@@ -1168,54 +1142,14 @@ impl GpuBuffer {
         size: vk::DeviceSize,
         usage: vk::BufferUsageFlags,
     ) -> Result<Self> {
-        let buffer_info = vk::BufferCreateInfo::default()
-            .size(size)
-            .usage(usage)
-            .sharing_mode(vk::SharingMode::EXCLUSIVE);
-
-        // SAFETY: `device` is the caller's live logical device, valid for the
-        // call; `buffer_info` is a fully-populated valid VkBufferCreateInfo.
-        let buffer = unsafe {
-            device
-                .create_buffer(&buffer_info, None)
-                .context("Failed to create device-local buffer")?
-        };
-
-        // SAFETY: `buffer` was just created by this device above and is live;
-        // the device outlives the call.
-        let requirements = unsafe { device.get_buffer_memory_requirements(buffer) };
-
-        let allocation = allocator
-            .lock()
-            .expect("allocator lock poisoned")
-            .allocate(&vulkan::AllocationCreateDesc {
-                name: "device_local_buffer",
-                requirements,
-                location: MemoryLocation::GpuOnly,
-                linear: true,
-                allocation_scheme: vulkan::AllocationScheme::GpuAllocatorManaged,
-            })
-            .context("Failed to allocate device-local memory")?;
-
-        // SAFETY: `buffer` and `allocation` were both created here from this
-        // device; the memory/offset come from the allocation that satisfied
-        // `buffer`'s memory requirements, and the buffer is not yet bound.
-        unsafe {
-            device
-                .bind_buffer_memory(buffer, allocation.memory(), allocation.offset())
-                .context("Failed to bind device-local buffer")?;
-        }
-
-        Ok(Self {
-            buffer,
+        Self::create_bound(
+            device,
+            allocator,
             size,
-            allocation: Some(allocation),
-            // DEVICE_LOCAL without HOST_VISIBLE is never mapped; flush paths
-            // don't run on it. Value is inert.
-            is_coherent: false,
-            device: device.clone(),
-            allocator: Some(allocator.clone()),
-        })
+            usage,
+            MemoryLocation::GpuOnly,
+            "device_local_buffer",
+        )
     }
 
     /// Get the mapped memory slice for direct writes (no intermediate Vec).
@@ -1538,22 +1472,16 @@ impl GpuBuffer {
         // #2164 / L-5 — the fresh path unwinds its own create/allocate/bind
         // window inside `create_staging_buffer`; the guard below covers
         // everything after.
-        let (staging_buffer, staging_alloc) = if let Some(pool) = staging_pool.as_deref_mut() {
+        //
+        // The RAII guard ensures cleanup on early return. It exists BEFORE
+        // the host write (#2164 / L-5): the `mapped_slice_mut` failure path
+        // used to run while both the buffer and the allocation were still
+        // owned by bare locals.
+        let mut staging = if let Some(pool) = staging_pool.as_deref_mut() {
             pool.acquire(size)?
         } else {
-            create_staging_buffer(device, allocator, size, "buffer_staging")?
+            StagingGuard::create(device, allocator, size, "buffer_staging")?
         };
-
-        // Wrap staging resources in RAII guard — ensures cleanup on early
-        // return. Constructed BEFORE the host write (#2164 / L-5): the
-        // `mapped_slice_mut` failure path used to run while both the buffer
-        // and the allocation were still owned by bare locals.
-        let mut staging = StagingGuard::new(
-            staging_buffer,
-            staging_alloc,
-            device.clone(),
-            allocator.clone(),
-        );
 
         // SAFETY: `T: NoUninit` guarantees every byte of `T` is initialised
         // (no implicit padding), so the byte view below contains no
@@ -1567,44 +1495,17 @@ impl GpuBuffer {
 
         staging.mapped_slice_mut()?[..bytes.len()].copy_from_slice(bytes);
 
-        // 2. Create the device-local buffer (GPU_ONLY).
-        let buffer_info = vk::BufferCreateInfo::default()
-            .size(size)
-            .usage(usage | vk::BufferUsageFlags::TRANSFER_DST)
-            .sharing_mode(vk::SharingMode::EXCLUSIVE);
-
-        // SAFETY: `device` is the caller's live logical device, valid for the
-        // call; `buffer_info` is a fully-populated valid VkBufferCreateInfo.
-        let buffer = unsafe {
-            device
-                .create_buffer(&buffer_info, None)
-                .context("Failed to create device-local buffer")?
-        };
-
-        // SAFETY: `buffer` was just created by this device above and is live;
-        // the device outlives the call.
-        let requirements = unsafe { device.get_buffer_memory_requirements(buffer) };
-
-        let allocation = allocator
-            .lock()
-            .expect("allocator lock poisoned")
-            .allocate(&vulkan::AllocationCreateDesc {
-                name: "gpu_buffer",
-                requirements,
-                location: MemoryLocation::GpuOnly,
-                linear: true,
-                allocation_scheme: vulkan::AllocationScheme::GpuAllocatorManaged,
-            })
-            .context("Failed to allocate device-local memory")?;
-
-        // SAFETY: `buffer` and `allocation` were both created here from this
-        // device; the memory/offset come from the allocation that satisfied
-        // `buffer`'s memory requirements, and the buffer is not yet bound.
-        unsafe {
-            device
-                .bind_buffer_memory(buffer, allocation.memory(), allocation.offset())
-                .context("Failed to bind device-local buffer")?;
-        }
+        // 2. Create the device-local buffer (GPU_ONLY). From here on it is
+        //    owned by a `GpuBuffer`, whose error arms below destroy or
+        //    deliberately retain it (#4882).
+        let mut dst = Self::create_bound(
+            device,
+            allocator,
+            size,
+            usage | vk::BufferUsageFlags::TRANSFER_DST,
+            MemoryLocation::GpuOnly,
+            "gpu_buffer",
+        )?;
 
         // 3. Copy staging → device-local via one-time command buffer.
         let copy_region = vk::BufferCopy {
@@ -1612,17 +1513,37 @@ impl GpuBuffer {
             dst_offset: 0,
             size,
         };
-        with_one_time_commands(device, queue, command_pool, |cmd| {
+        let copy_result = with_one_time_commands(device, queue, command_pool, |cmd| {
             // SAFETY: `cmd` is in the recording state for the duration of the
-            // `with_one_time_commands` closure; `staging.buffer` and `buffer` are
+            // `with_one_time_commands` closure; `staging.buffer` and `dst` are
             // both live, distinct, and have matching TRANSFER_SRC/DST usage; the
             // copy region (offset 0, `size` bytes) was sized to both allocations
             // and no other access to either buffer races this command.
             unsafe {
-                device.cmd_copy_buffer(cmd, staging.buffer, buffer, &[copy_region]);
+                device.cmd_copy_buffer(cmd, staging.buffer, dst.buffer, &[copy_region]);
             }
             Ok(())
-        })?;
+        });
+        if let Err(error) = copy_result {
+            // #4882 — the same split as `create_device_local_buffers_batched`:
+            // a copy that may still be executing keeps both buffers alive
+            // (leaked, never destroyed under the GPU); one that never reached
+            // the queue releases both. The bare `?` used to drop the
+            // destination's `VkBuffer` + allocation on every failure and
+            // destroy staging under a possibly in-flight copy.
+            if super::texture::OneTimeCommandError::may_be_in_flight(&error) {
+                std::mem::forget(staging);
+                std::mem::forget(dst);
+            } else {
+                dst.destroy(device, allocator);
+                if let Some(pool) = staging_pool {
+                    staging.release_to(pool);
+                } else {
+                    staging.destroy();
+                }
+            }
+            return Err(error).context("submit device-local upload");
+        }
 
         // 4. Release staging resources. When a pool was provided, hand
         //    the buffer back for reuse; otherwise destroy outright.
@@ -1631,25 +1552,13 @@ impl GpuBuffer {
         //    each "pooled" acquire was followed by a destroy. See the
         //    #239 investigation for the full premise verification.
         if let Some(pool) = staging_pool {
-            // #4593 — the requested `size`, never the allocation footprint
-            // (the driver-rounded slack sits ABOVE the VkBuffer's create
-            // size; a footprint entry lets a later best-fit acquire hand
-            // out a buffer smaller than the request — the #4512 overrun
-            // class, unfixed sibling on the mesh path).
-            staging.release_to(pool, size);
+            // The guard carries the buffer's create size (#4512 / #4881).
+            staging.release_to(pool);
         } else {
             staging.destroy();
         }
 
-        Ok(Self {
-            buffer,
-            size,
-            allocation: Some(allocation),
-            // DEVICE_LOCAL staging target — never mapped by the owner.
-            is_coherent: false,
-            device: device.clone(),
-            allocator: Some(allocator.clone()),
-        })
+        Ok(dst)
     }
 
     /// Create an empty (uninitialized) device-local buffer of `size` bytes —
@@ -1665,76 +1574,17 @@ impl GpuBuffer {
         size: vk::DeviceSize,
         usage: vk::BufferUsageFlags,
     ) -> Result<Self> {
-        let buffer_info = vk::BufferCreateInfo::default()
-            .size(size)
-            .usage(usage | vk::BufferUsageFlags::TRANSFER_DST)
-            .sharing_mode(vk::SharingMode::EXCLUSIVE);
-
-        // SAFETY: `device` is the caller's live logical device, valid for the
-        // call; `buffer_info` is a fully-populated valid VkBufferCreateInfo.
-        let buffer = unsafe {
-            device
-                .create_buffer(&buffer_info, None)
-                .context("Failed to create empty device-local buffer")?
-        };
-
-        // SAFETY: `buffer` was just created by this device above and is live;
-        // the device outlives the call.
-        let requirements = unsafe { device.get_buffer_memory_requirements(buffer) };
-
-        let allocation = match allocator.lock().expect("allocator lock poisoned").allocate(
-            &vulkan::AllocationCreateDesc {
-                name: "gpu_buffer_resumable",
-                requirements,
-                location: MemoryLocation::GpuOnly,
-                linear: true,
-                allocation_scheme: vulkan::AllocationScheme::GpuAllocatorManaged,
-            },
-        ) {
-            Ok(allocation) => allocation,
-            Err(e) => {
-                // The buffer handle was created above but never bound — free
-                // it before propagating, or an allocation-failure caller
-                // (the resumable rebuild's OOM fallback, #3298) leaks a
-                // Vulkan object on every retry.
-                unsafe {
-                    // SAFETY: `buffer` was created by this device above,
-                    // never bound to memory, and not yet destroyed.
-                    device.destroy_buffer(buffer, None);
-                }
-                return Err(e).context("Failed to allocate empty device-local memory");
-            }
-        };
-
-        let bind_result = {
-            // SAFETY: `buffer` and `allocation` were both created here from
-            // this device; the memory/offset come from the allocation that
-            // satisfied `buffer`'s memory requirements, and the buffer is
-            // not yet bound.
-            unsafe { device.bind_buffer_memory(buffer, allocation.memory(), allocation.offset()) }
-        };
-        if let Err(e) = bind_result {
-            // SAFETY: same as above — created, unbound (bind just failed),
-            // not yet destroyed.
-            unsafe {
-                device.destroy_buffer(buffer, None);
-            }
-            allocator
-                .lock()
-                .expect("allocator lock poisoned")
-                .free(allocation)
-                .ok();
-            return Err(e).context("Failed to bind empty device-local buffer");
-        }
-
-        Ok(Self {
-            buffer,
+        // The allocate/bind unwind lives in `create_bound_buffer`: an
+        // allocation-failure caller (the resumable rebuild's OOM fallback,
+        // #3298) must not leak a Vulkan object on every retry.
+        Self::create_bound(
+            device,
+            allocator,
             size,
-            allocation: Some(allocation),
-            is_coherent: false,
-            device: device.clone(),
-            allocator: Some(allocator.clone()),
-        })
+            usage | vk::BufferUsageFlags::TRANSFER_DST,
+            MemoryLocation::GpuOnly,
+            "gpu_buffer_resumable",
+        )
     }
 
     /// Copy one byte range of `bytes` into `self` at `dst_offset`, through a
@@ -1756,19 +1606,13 @@ impl GpuBuffer {
     ) -> Result<()> {
         let GpuUploadCtx {
             device,
-            allocator,
+            allocator: _,
             queue,
             command_pool,
         } = ctx;
         let size = bytes.len() as vk::DeviceSize;
 
-        let (staging_buffer, staging_alloc) = staging_pool.acquire(size)?;
-        let mut staging = StagingGuard::new(
-            staging_buffer,
-            staging_alloc,
-            device.clone(),
-            allocator.clone(),
-        );
+        let mut staging = staging_pool.acquire(size)?;
         staging.mapped_slice_mut()?[..bytes.len()].copy_from_slice(bytes);
 
         let copy_region = vk::BufferCopy {
@@ -1776,7 +1620,7 @@ impl GpuBuffer {
             dst_offset,
             size,
         };
-        with_one_time_commands(device, queue, command_pool, |cmd| {
+        let copy_result = with_one_time_commands(device, queue, command_pool, |cmd| {
             // SAFETY: `cmd` is in the recording state for the duration of the
             // `with_one_time_commands` closure; `staging.buffer` and
             // `self.buffer` are both live, distinct, and have matching
@@ -1788,11 +1632,20 @@ impl GpuBuffer {
                 device.cmd_copy_buffer(cmd, staging.buffer, self.buffer, &[copy_region]);
             }
             Ok(())
-        })?;
+        });
+        if let Err(error) = copy_result {
+            // #4882 sibling — never destroy staging under a copy that may
+            // still be executing; a copy that never reached the queue hands
+            // the buffer back to the pool.
+            if super::texture::OneTimeCommandError::may_be_in_flight(&error) {
+                std::mem::forget(staging);
+            } else {
+                staging.release_to(staging_pool);
+            }
+            return Err(error).context("submit staged range copy");
+        }
 
-        // #4593 — requested size, not the footprint (#4512's rule; see
-        // the pooled arm above).
-        staging.release_to(staging_pool, size);
+        staging.release_to(staging_pool);
 
         Ok(())
     }
@@ -2375,93 +2228,152 @@ mod destroyed_handle_nulling_tests {
 }
 
 #[cfg(test)]
-mod staging_release_capacity_tests {
-    //! #4512 sibling — pooled staging must be released at the *requested*
-    //! size, never `allocation.size()`. The allocator rounds the footprint
-    //! up above the VkBuffer create size, and `StagingPool::acquire`'s
-    //! best-fit trusts the recorded capacity, so an inflated entry hands
-    //! out a buffer smaller than a later upload's budget (observed live as
-    //! `vkCmdCopyBufferToImage` regions exceeding the buffer total by
-    //! exactly the round-16 slack). Needs a live device to exercise, so
-    //! this pins the shape at the source level.
+mod bound_buffer_unwind_tests {
+    //! #4882 — every buffer this file creates goes through the one
+    //! unwinding create → allocate → bind prologue. The four `GpuBuffer`
+    //! constructors that open-coded it with bare `?` leaked a `VkBuffer` on
+    //! an allocator error (and an allocation on a bind error), repeated per
+    //! frame by the geometry-rebuild and instance-SSBO retry loops. The
+    //! failure needs an allocator OOM or a bind failure on a live device, so
+    //! this pins the shape.
 
-    #[test]
-    fn pooled_staging_releases_the_requested_size_not_the_allocation_footprint() {
-        let src = include_str!("buffer.rs");
-        let production = src
-            .split_once("\n#[cfg(test)]")
-            .expect("source lost its test modules")
-            .0;
-
-        assert!(
-            production.contains("staging.release_to(pool, staging_size)"),
-            "the batched device-local upload must release its staging buffer \
-             at the requested `staging_size` — the size `acquire` was called \
-             with — so pool entries never claim more capacity than their \
-             VkBuffer actually has"
-        );
-        assert!(
-            !production.contains(".map(|allocation| allocation.size())"),
-            "releasing pooled staging at `allocation.size()` re-opens #4512: \
-             the allocator rounds the footprint up above the buffer create \
-             size, and acquire's best-fit then serves a buffer smaller than \
-             a later upload's budget"
-        );
-        // #4593 — the `.map(|a| a.size())` short spelling dodged the scan
-        // above (it forbade only the long form). Both buffer.rs sites are
-        // gone; forbid the short one too so neither returns.
-        assert!(
-            !production.contains(".map(|a| a.size())"),
-            "the short `.map(|a| a.size())` footprint release is the same \
-             #4512 defect under a different spelling (#4593)"
-        );
-        // And the two reformed sites must release at the requested size.
-        assert!(
-            production.contains("staging.release_to(pool, size);"),
-            "create_device_local_buffer's pooled arm must release at the \
-             requested `size` (#4593)"
-        );
-        assert!(
-            production.contains("staging.release_to(staging_pool, size);"),
-            "copy_bytes_range must release at the requested `size` (#4593)"
-        );
+    fn production() -> &'static str {
+        crate::source_scan::production_text(include_str!("buffer.rs"))
     }
 
-    /// #4593 — the terrain ring's previous-slot release lives in another
-    /// file, outside the scan above.
+    fn body_of<'a>(src: &'a str, signature: &str) -> &'a str {
+        let at = src.find(signature).unwrap_or_else(|| panic!("`{signature}` not found"));
+        let body = &src[at..];
+        &body[..body.find("\n}\n").or(body.find("\n    }\n")).expect("body end")]
+    }
+
     #[test]
-    fn terrain_ring_releases_staging_at_the_requested_size() {
-        let src = include_str!("scene_buffer/upload.rs");
-        // upload.rs has an early `#[cfg(test)]` import block (line ~31);
-        // cut at the first named test module instead.
-        let production = match src.split_once("\n#[cfg(test)]\nmod bone_world_promotion_tests") {
-            Some((prod, _)) => prod,
-            None => src,
-        };
-        assert!(
-            !production.contains(".map(|allocation| allocation.size())"),
-            "the terrain ring must not release pooled staging at the \
-             allocation footprint (#4593 / #4512)"
+    fn one_prologue_owns_every_buffer_creation_and_its_unwind() {
+        let production = production();
+        let create = [".create_", "buffer("].concat();
+        assert_eq!(
+            production.matches(&create).count(),
+            1,
+            "a second create_buffer call in buffer.rs re-opens the #4882 leak: \
+             route it through `create_bound_buffer`"
         );
+        let helper = body_of(production, "fn create_bound_buffer(");
+        assert!(helper.contains(&create), "the one create_buffer lives in the helper");
+        let allocate_err = helper.find("Err(e) => {").expect("allocate error arm");
+        assert!(helper[allocate_err..].trim_start_matches("Err(e) => {").trim_start().starts_with("destroy();"));
+        let bind_err = helper.find("if let Err(e) = bind {").expect("bind error arm");
+        let bind_arm = &helper[bind_err..];
+        assert!(bind_arm.contains("destroy();") && bind_arm.contains(".free(allocation)"));
+
+        for constructor in [
+            "pub fn create_host_visible(",
+            "pub fn create_host_readback(",
+            "pub fn create_device_local_uninit(",
+            "pub fn create_empty_device_local_buffer(",
+            "pub fn create_device_local_buffer<T: NoUninit>(",
+        ] {
+            let at = production.find(constructor).expect(constructor);
+            let next = production[at + 1..].find("\n    pub fn ").map_or(production.len(), |i| at + 1 + i);
+            assert!(
+                production[at..next].contains("Self::create_bound("),
+                "{constructor} must build through `create_bound` (#4882)"
+            );
+        }
+    }
+
+    /// The copy-submit arm of `create_device_local_buffer`: a copy that never
+    /// reached the queue must free the destination, one that may be in
+    /// flight must retain both buffers rather than destroy them under it.
+    #[test]
+    fn device_local_upload_unwinds_its_copy_submit_failure() {
+        let production = production();
+        let at = production
+            .find("pub fn create_device_local_buffer<T: NoUninit>(")
+            .expect("create_device_local_buffer");
+        let next = production[at + 1..].find("\n    pub fn ").map_or(production.len(), |i| at + 1 + i);
+        let body = &production[at..next];
+        assert!(!body.contains("})?;"), "the copy submit must not be a bare `?`");
+        let arm = &body[body.find("if let Err(error) = copy_result {").expect("copy failure arm")..];
+        assert!(arm.contains("may_be_in_flight(&error)"));
+        assert!(arm.contains("std::mem::forget(dst);"));
+        assert!(arm.contains("dst.destroy(device, allocator);"));
+    }
+}
+
+#[cfg(test)]
+mod staging_release_capacity_tests {
+    //! #4881 (regression of #1921; #4512 constraint) — a pooled staging
+    //! buffer must be filed under its `VkBuffer` create size, carried by the
+    //! `StagingGuard` from the moment `acquire` hands it out. Two wrong
+    //! labels have shipped: the allocation footprint (#4512 — too large, so
+    //! best-fit served a buffer smaller than the request) and the request
+    //! size (#4881 — too small after a reuse, so labels decayed, the budget
+    //! trim never fired, and retained BAR memory was unbounded). Needs a live
+    //! device to exercise, so this pins the shape that makes a caller-chosen
+    //! label impossible.
+
+    fn production() -> &'static str {
+        crate::source_scan::production_text(include_str!("buffer.rs"))
+    }
+
+    fn body_of<'a>(src: &'a str, signature: &str) -> &'a str {
+        let at = src.find(signature).unwrap_or_else(|| panic!("`{signature}` not found"));
+        let body = &src[at..];
+        &body[..body.find("\n    }\n").expect("function body end")]
+    }
+
+    #[test]
+    fn release_label_is_the_guard_carried_create_size() {
+        let production = production();
+        // No caller supplies a label: `release_to` takes none, and the raw
+        // `release` / `StagingGuard::new` (which do take one) are private.
+        assert!(production.contains("pub fn release_to(mut self, pool: &mut StagingPool) {"));
+        assert!(production.contains("\n    fn release(\n"));
+        assert!(!production.contains("pub fn release("));
+        assert!(!production.contains("pub fn new(\n        buffer: vk::Buffer,"));
+        let release_to = body_of(production, "pub fn release_to(");
+        assert!(release_to.contains("pool.release(self.buffer, alloc, self.capacity);"));
+        assert!(!release_to.contains("alloc.size());\n            pool.release"));
+
+        // `acquire` labels a reused buffer with the entry's own label and a
+        // fresh one with exactly the size it was created at.
+        let acquire = body_of(production, "pub(crate) fn acquire(&mut self, size: vk::DeviceSize)");
+        assert!(acquire.contains("entry.capacity,"), "reuse must keep the entry's label");
+        let fresh = &acquire[acquire.find("create_staging_buffer(").expect("fresh path")..];
         assert!(
-            production.contains(
-                "previous.release_to(&mut self.terrain_tile_staging_pool, previous_size);"
-            ),
-            "the terrain ring's previous-slot release must carry the size \
-             that guard was acquired at (#4593 / #4790)"
+            fresh.contains("size,\n            self.device.clone(),"),
+            "a fresh buffer's label is its create size"
         );
-        // #4790 — the current call's `byte_size` describes the buffer about
-        // to be acquired, not the one being returned; labelling the old
-        // buffer with it lets best-fit hand an undersized buffer back.
-        assert!(
-            !production
-                .contains("previous.release_to(&mut self.terrain_tile_staging_pool, byte_size)"),
-            "the terrain ring must not release the previous slot's guard at \
-             the current upload's size (#4790)"
-        );
-        assert!(
-            production.contains("Some((staging, byte_size))"),
-            "the terrain ring must record each guard's acquired size (#4790)"
-        );
+        // Neither label may ever be the allocation footprint (#4512).
+        assert!(!production.contains(".map(|allocation| allocation.size())"));
+        assert!(!production.contains(".map(|a| a.size())"));
+    }
+
+    /// The consumers in other files cannot pass a label any more; pin that
+    /// none reintroduced one alongside the guard (#4790's terrain ring,
+    /// #4512's DDS path): every `release_to` call takes the pool alone.
+    #[test]
+    fn consumers_release_without_a_label() {
+        let call = ["release_to", "("].concat();
+        for (name, src) in [
+            ("buffer.rs", production()),
+            ("scene_buffer/upload.rs", include_str!("scene_buffer/upload.rs")),
+            ("texture.rs", include_str!("texture.rs")),
+            ("texture_registry/upload.rs", include_str!("../texture_registry/upload.rs")),
+        ] {
+            let mut calls = 0;
+            for (at, _) in src.match_indices(&call) {
+                let args = &src[at + call.len()..];
+                let args = &args[..args.find(')').expect("call close")];
+                if args.starts_with("mut self") {
+                    continue; // the definition
+                }
+                calls += 1;
+                assert!(!args.contains(','), "{name}: `release_to({args})` passes a label");
+            }
+            assert!(calls > 0, "{name}: no release_to call found — the scan broke");
+        }
+        assert!(!include_str!("scene_buffer/buffers.rs")
+            .contains("Option<(StagingGuard, vk::DeviceSize)>"));
     }
 }

@@ -62,7 +62,7 @@ mod tests {
     const UNWRAPPED_SELF_INCLUDES: &[(&str, usize)] = &[
         ("texture_registry/mod.rs", 1),
         ("vulkan/bloom.rs", 3),
-        ("vulkan/buffer.rs", 4),
+        ("vulkan/buffer.rs", 3),
         ("vulkan/caustic.rs", 4),
         ("vulkan/context/assemble_camera_and_lights.rs", 1),
         ("vulkan/context/build_and_upload_instances.rs", 6),
@@ -92,7 +92,7 @@ mod tests {
         ("vulkan/svgf.rs", 4),
         ("vulkan/sync.rs", 1),
         ("vulkan/taa.rs", 1),
-        ("vulkan/texture.rs", 3),
+        ("vulkan/texture.rs", 2),
         ("vulkan/water.rs", 2),
     ];
 

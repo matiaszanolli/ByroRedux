@@ -459,7 +459,6 @@ impl TextureRegistry {
             handle: TextureHandle,
             texture: crate::vulkan::texture::Texture,
             staging: crate::vulkan::buffer::StagingGuard,
-            staging_capacity: vk::DeviceSize,
         }
         let mut staged: Vec<StagedUpload> = Vec::with_capacity(count);
 
@@ -537,7 +536,7 @@ impl TextureRegistry {
                     }
                     let pixel_data = crate::vulkan::dds::upload_pixels(&meta, &upload.dds_bytes);
                     let sampler = self.samplers[upload.clamp_mode as usize];
-                    let (texture, staging, staging_capacity) =
+                    let (texture, staging) =
                         match crate::vulkan::texture::Texture::record_dds_upload(
                             device,
                             allocator,
@@ -561,7 +560,6 @@ impl TextureRegistry {
                         handle: upload.handle,
                         texture,
                         staging,
-                        staging_capacity,
                     });
                 }
                 Ok(())
@@ -606,7 +604,6 @@ impl TextureRegistry {
                 handle,
                 texture,
                 staging,
-                staging_capacity,
             } = s;
 
             // Write descriptor for the real image view + sampler.
@@ -636,7 +633,7 @@ impl TextureRegistry {
             // Release staging back to the pool (or destroy if no
             // pool). The fence-wait above guarantees the GPU is done.
             if let Some(pool) = self.staging_pool.as_mut() {
-                staging.release_to(pool, staging_capacity);
+                staging.release_to(pool);
             } else {
                 staging.destroy();
             }

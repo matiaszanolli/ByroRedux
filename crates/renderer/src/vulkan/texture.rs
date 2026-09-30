@@ -158,10 +158,9 @@ impl Texture {
         // submit + fence-wait. See #881.
         let mut texture_holder: Option<Self> = None;
         let mut staging_holder: Option<StagingGuard> = None;
-        let mut staging_capacity_holder: vk::DeviceSize = 0;
 
         with_one_time_commands(device, queue, command_pool, |cmd| {
-            let (texture, staging, staging_capacity) = Self::record_dds_upload(
+            let (texture, staging) = Self::record_dds_upload(
                 device,
                 allocator,
                 cmd,
@@ -172,7 +171,6 @@ impl Texture {
             )?;
             texture_holder = Some(texture);
             staging_holder = Some(staging);
-            staging_capacity_holder = staging_capacity;
             Ok(())
         })?;
 
@@ -182,11 +180,9 @@ impl Texture {
         // Release staging — back to pool (reuse) or destroy. Safe to
         // do here because the fence wait inside `with_one_time_commands`
         // has already returned, so the GPU is done reading the staging
-        // buffer. The release capacity is the requested `image_size` —
-        // see the note in `record_dds_upload` for why it must not be the
-        // allocation's footprint (#4512 / #1921 tradeoff).
+        // buffer. The guard carries the buffer's create size (#4881).
         if let Some(pool) = staging_pool {
-            staging.release_to(pool, staging_capacity_holder);
+            staging.release_to(pool);
         } else {
             staging.destroy();
         }
@@ -198,9 +194,8 @@ impl Texture {
     /// allocates a staging buffer, copies CPU pixel data into staging,
     /// and RECORDS the layout-transition + copy pair into the provided
     /// command buffer. Returns the partially-built `Texture`
-    /// (image + view + sampler), the `StagingGuard` the caller MUST
-    /// retain until after the submit + fence-wait completes, and the
-    /// staging buffer's effective size (for `StagingGuard::release_to`).
+    /// (image + view + sampler) and the `StagingGuard` the caller MUST
+    /// retain until after the submit + fence-wait completes.
     ///
     /// Stage B (submit + wait) and Stage C (release staging) are the
     /// caller's responsibility. Use this entry point when batching
@@ -222,7 +217,7 @@ impl Texture {
         pixel_data: &[u8],
         sampler: vk::Sampler,
         staging_pool: Option<&mut StagingPool>,
-    ) -> Result<(Self, StagingGuard, vk::DeviceSize)> {
+    ) -> Result<(Self, StagingGuard)> {
         use super::dds;
 
         let total_size = dds::total_data_size(meta);
@@ -245,29 +240,15 @@ impl Texture {
 
         // 1. Staging buffer — from pool (reuse) or fresh. See #239.
         // #2164 / L-5 — the fresh path unwinds its own create/allocate/bind
-        // window inside `create_staging_buffer`; the guard below covers
-        // everything after.
-        let (staging_buffer, staging_alloc) = if let Some(pool) = staging_pool {
+        // window inside `create_staging_buffer`; the RAII guard covers
+        // everything after, and exists BEFORE the host write (the
+        // `mapped_slice_mut` failure path used to run while both the buffer
+        // and the allocation were still owned by bare locals).
+        let mut staging = if let Some(pool) = staging_pool {
             pool.acquire(image_size)?
         } else {
-            super::buffer::create_staging_buffer(
-                device,
-                allocator,
-                image_size,
-                "dds_texture_staging",
-            )?
+            StagingGuard::create(device, allocator, image_size, "dds_texture_staging")?
         };
-
-        // Wrap staging in RAII guard — ensures cleanup on early return.
-        // Constructed BEFORE the host write (#2164 / L-5): the
-        // `mapped_slice_mut` failure path used to run while both the buffer
-        // and the allocation were still owned by bare locals.
-        let mut staging = StagingGuard::new(
-            staging_buffer,
-            staging_alloc,
-            device.clone(),
-            allocator.clone(),
-        );
 
         staging.mapped_slice_mut()?[..total_size as usize]
             .copy_from_slice(&pixel_data[..total_size as usize]);
@@ -477,22 +458,6 @@ impl Texture {
             view_kind,
         );
 
-        // Release capacity handed to `StagingGuard::release_to`: the size
-        // this upload requested, never `allocation.size()`. The allocation
-        // footprint is rounded up to the driver's memory-requirement
-        // granularity and can exceed the VkBuffer's create size (observed
-        // +8/16 B); recording it as the pool entry's capacity let
-        // `StagingPool::acquire` hand an upload a buffer smaller than the
-        // regions about to be copied out of it — the exactly-+8 B
-        // `vkCmdCopyBufferToImage` overruns on Skyrim deep-mip chains
-        // (#4512). Requested-size release keeps every entry's capacity ≤
-        // its buffer's true size. Cost: #1921's ledger concern returns — a
-        // larger buffer reused for a smaller upload is re-recorded under
-        // the smaller size, a pool-hit-rate regression, not a correctness
-        // one. The complete fix (tracking the VkBuffer create size per
-        // entry) belongs in `StagingPool` itself.
-        let staging_capacity = image_size;
-
         Ok((
             Self {
                 image,
@@ -511,7 +476,6 @@ impl Texture {
                     && meta.mip_count == 1 && meta.array_layers == 1 && !meta.is_cubemap,
             },
             staging,
-            staging_capacity,
         ))
     }
 
@@ -1387,29 +1351,17 @@ mod dds_upload_guard_tests {
         );
     }
 
-    /// #4512 — the staging release capacity must be the requested
-    /// `image_size`, never `allocation.size()`: the allocation footprint
-    /// is rounded up to the driver's memory-requirement granularity and
-    /// can exceed the VkBuffer create size, which let `StagingPool::
-    /// acquire` hand an upload a buffer smaller than the regions about to
-    /// be copied out of it (the +8 B Skyrim overruns).
+    /// #4512 / #4881 — the staging release label comes from the guard
+    /// (the VkBuffer create size), not from a size this function computes:
+    /// the allocation footprint over-labels (+8 B `vkCmdCopyBufferToImage`
+    /// overruns, #4512) and the request size under-labels a reused buffer
+    /// (unbounded retained memory, #4881).
     #[test]
-    fn staging_release_capacity_is_requested_size_not_allocation_size() {
-        let src = include_str!("texture.rs");
-        let pos = src
-            .find("let staging_capacity = ")
-            .expect("staging release capacity computation in record_dds_upload");
-        let window = &src[pos..pos + 300];
-        assert!(
-            !window.contains("allocation.size()"),
-            "record_dds_upload regressed to releasing staging at the \
-             allocation footprint (pool acquire can then return a buffer \
-             smaller than the upload): {window}",
-        );
-        assert!(
-            window.contains("image_size"),
-            "staging release capacity must be the requested image_size: {window}",
-        );
+    fn dds_upload_does_not_compute_its_own_staging_release_label() {
+        let production = crate::source_scan::production_text(include_str!("texture.rs"));
+        assert!(!production.contains("staging_capacity"));
+        assert!(!production.contains("allocation.size()"));
+        assert!(production.contains("staging.release_to(pool);"));
     }
 
     /// #4515 — `Texture` must store its creation extent and the in-place
