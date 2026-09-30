@@ -1917,3 +1917,71 @@ mod atw_bracket_nesting_tests {
         );
     }
 }
+
+/// #4896 (REN-D5-2026-09-26-18) — `VulkanContext::Drop` calls
+/// `Arc::try_unwrap` on the GPU allocator, so the ECS clone
+/// (`AllocatorResource`) must leave the `World` before the renderer is
+/// taken. Both teardown paths do this today — `App::shutdown` (close button,
+/// pause-menu Quit) and `Drop for App` (panic unwind, every other exit) —
+/// but only an "INVARIANT" comment guarded it. Swapping the two lines in
+/// either body re-arms the #665 leak-guard branch (device, surface and
+/// instance leaked; a `debug_assert!` panic in debug builds) with no compile
+/// error, so pin the order in both production bodies.
+#[cfg(test)]
+mod allocator_teardown_order_tests {
+    /// Byte range of the body opening at `header`, up to the first line that
+    /// closes a block at `indent`.
+    fn body<'a>(src: &'a str, header: &str, indent: &str) -> &'a str {
+        let start = src
+            .find(header)
+            .unwrap_or_else(|| panic!("`{header}` no longer exists"));
+        let rest = &src[start..];
+        let close = format!("\n{indent}}}\n");
+        &rest[..rest
+            .find(&close)
+            .unwrap_or_else(|| panic!("`{header}` has no closing brace at `{indent}`"))]
+    }
+
+    fn assert_allocator_released_before_renderer(body: &str, site: &str) {
+        // Composed at runtime so the needles never appear verbatim in this
+        // module's own source.
+        let removal = format!(
+            "remove_resource::<{}::{}>()",
+            "byroredux_renderer::vulkan::allocator", "AllocatorResource"
+        );
+        let take = format!("self.{}.take();", "renderer");
+        let removal_at = body
+            .find(&removal)
+            .unwrap_or_else(|| panic!("{site} no longer removes the ECS allocator clone (#1477)"));
+        let take_at = body
+            .find(&take)
+            .unwrap_or_else(|| panic!("{site} no longer takes the renderer"));
+        assert!(
+            removal_at < take_at,
+            "{site} must remove AllocatorResource BEFORE dropping VulkanContext — \
+             the reverse order leaves an extra Arc strong count when \
+             VulkanContext::Drop calls Arc::try_unwrap (#1406, #1477, #4896)"
+        );
+    }
+
+    #[test]
+    fn shutdown_releases_allocator_resource_before_renderer() {
+        let production = include_str!("app_events.rs")
+            .split_once("\n#[cfg(test)]\nmod ")
+            .expect("app_events.rs has test modules")
+            .0;
+        let shutdown = body(
+            production,
+            "pub(crate) fn shutdown(&mut self, event_loop: &ActiveEventLoop)",
+            "    ",
+        );
+        assert_allocator_released_before_renderer(shutdown, "App::shutdown");
+    }
+
+    #[test]
+    fn drop_for_app_releases_allocator_resource_before_renderer() {
+        let main = include_str!("main.rs");
+        let drop_impl = body(main, &format!("impl {} for App {{", "Drop"), "");
+        assert_allocator_released_before_renderer(drop_impl, "Drop for App");
+    }
+}
