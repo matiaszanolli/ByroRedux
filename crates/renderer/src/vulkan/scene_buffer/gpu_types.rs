@@ -87,12 +87,13 @@ pub type GpuPreviousModel = [[f32; 4]; 4];
 /// **Shader Struct Sync**: the matching `struct GpuInstance` declaration
 /// in `include/bindings.glsl` (pulled into `triangle.frag` via `#include`
 /// since #1583/#1590 — `triangle.frag` itself no longer declares its own
-/// copy) plus four standalone hand-mirrored copies — `triangle.vert`,
-/// `ui.vert`, `caustic_splat.comp`, and `water.vert` (#1498) — MUST be
-/// updated in lockstep (5 declaration sites total). When you add,
-/// remove, or reorder a field here, update all five GLSL copies to
+/// copy) plus five standalone hand-mirrored copies — `triangle.vert`,
+/// `ui.vert`, `caustic_splat.comp`, `water.vert` (#1498), and
+/// `groundcover_models.comp` (`aabd99a05`) — MUST be updated in lockstep
+/// (6 declaration sites total). When you add, remove, or reorder a field
+/// here, update all six GLSL copies to
 /// match: `gpu_instance_glsl_copies_stay_in_lockstep` (#2748 /
-/// REN-D3-2026-08-12-01, in `gpu_instance_layout_tests.rs`) parses
+/// REN-D3-2026-08-12-01, in `shader_contract_tests.rs`) parses
 /// every mirror's field list at compile time and asserts they're
 /// byte-for-byte identical to each other AND in the same order as this
 /// struct's field declarations. `every_shader_struct_gpu_instance_names_expected_fields`

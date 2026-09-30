@@ -914,7 +914,7 @@ impl super::buffers::SceneBuffers {
         // #3990 — see `upload_instances`. `GpuMaterial`'s prose argument was
         // correct where `GpuInstance`'s was not, but it had the same failure
         // mode available to it, and these two are the workspace's most
-        // churn-prone GPU structs (five GLSL mirrors and one respectively).
+        // churn-prone GPU structs (six GLSL mirrors and one respectively).
         // Both now carry the type-level form.
         //
         // The hash is still stamped only after the write returns `Ok`: a
