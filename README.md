@@ -448,6 +448,13 @@ BYROREDUX_STARFIELD_DATA  .../Starfield/Data
   written directly against nifxml's block definitions, version gates, and
   field conditions. Without that community reverse-engineering effort,
   supporting seven Gamebryo/Creation-era games would not be tractable.
+- [**nifly**](https://github.com/ousnius/nifly) — ousnius's C++ NIF library.
+  Its documented `NiSkinData` interpretation — the skin→bone vs bone→skin
+  transform distinction in `Skin.hpp`, and the role of the global skin
+  transform — pinned ByroRedux's bone-palette contract in
+  [`skinned_mesh.rs`](crates/core/src/ecs/components/skinned_mesh.rs), whose
+  tests assert the nifly-documented semantics against non-identity globals.
+  GPL-3; used as reference documentation only — no code is copied.
 - [**xEdit / TES5Edit**](https://github.com/TES5Edit/TES5Edit) — ElminsterAU
   and the xEdit team's record-definition database (`wbDefinitions*.pas`) is
   ByroRedux's authoritative reference for the binary layout of ESM/ESP
@@ -457,6 +464,28 @@ BYROREDUX_STARFIELD_DATA  .../Starfield/Data
   from the `dev-4.1.6` branch; no code is copied — only the documented format
   knowledge. Without two decades of that reverse-engineering effort, parsing
   Bethesda's plugin formats correctly would not be tractable.
+- [**Material-Editor**](https://github.com/ousnius/Material-Editor) —
+  ousnius's Fallout 4 BGSM/BGEM material editor. Its C# serializers
+  (`BGSM.cs`, `BGEM.cs`, `BaseMaterialFile.cs`) are the authoritative
+  version-gated field-order reference for ByroRedux's material parser
+  ([`crates/bgsm`](crates/bgsm)) — header version gates, field order, and
+  the alpha-blend-mode conversion. MIT.
+- [**Gibbed.Starfield**](https://github.com/gibbed/Gibbed.Starfield) —
+  Rick Gibbed's Starfield toolchain. ByroRedux's Starfield record FormType
+  FourCCs and the `materialsbeta.cdb` walker — string table, type map, and
+  object-instance field decoding in
+  [`crates/sfmaterial`](crates/sfmaterial) — follow its reference
+  implementation, quirks included (e.g. `StringTable.Get` reading *at* the
+  offset). zlib License; reference only — no code is copied.
+- [**Champollion**](https://github.com/Orvid/Champollion) — Nikita Lita's
+  Papyrus `.pex` decompiler. ByroRedux's PEX bytecode reader
+  ([`crates/pex`](crates/pex)) is a structural port of Champollion's reader
+  and data model — the opcode table transcribed in Champollion's exact
+  order and metadata-checked by test; its decompiler output idioms (the
+  `== 1 as Bool` cast, the bare `Return` fragment terminator) guided the
+  fragment-lowering rules in `crates/scripting`, and the R5 fidelity tests
+  validate against Champollion-decompiled reference fixtures. LGPL-3,
+  Copyright (c) 2022 Nikita Lita.
 - [**The Fallout Wiki (Nukapedia)**](https://fallout.fandom.com) — the
   community's encyclopedia of Fallout game mechanics. ByroRedux's character
   and combat layers are built against its documented per-game values: the
@@ -480,6 +509,18 @@ BYROREDUX_STARFIELD_DATA  .../Starfield/Data
   eight-attribute system with skill-governed level-up modifiers (+1…+5).
   Read via the MediaWiki `api.php`; content is CC BY-SA — only documented
   facts and numeric values inform the engine, no article text is reproduced.
+- [**UESP's tool-wiki mirrors**](https://uesp.net) — UESP preserves the
+  wikis for Bethesda's official modding tools: the
+  [Oblivion Construction Set wiki](https://cs.uesp.net), the
+  [GECK wiki](https://geck.uesp.net) (FO3/FNV), the
+  [Skyrim Creation Kit wiki](https://ck.uesp.net), and the
+  [Fallout 4 Creation Kit wiki](https://falloutck.uesp.net), alongside the
+  [main UESP wiki](https://en.uesp.net) itself. ByroRedux's Papyrus API
+  reference, Creation Engine UI analysis, quest/VMAD designs, and character
+  rulesets are built on their pages (cited throughout
+  [docs/](docs/)); development works from full offline wikitext dumps of
+  all five. Only documented facts and numeric values inform the engine —
+  no article text is reproduced.
 - [**Ruffle**](https://ruffle.rs) — the open-source Flash Player emulator.
   ByroRedux's UI layer embeds Ruffle to render the Scaleform/SWF menus
   Bethesda shipped with every Creation Engine title.
