@@ -37,7 +37,7 @@
 //! | 67    | GetInCell              | `CellRoot` + `CellFormId`   |
 //! | 68    | GetIsClass             | `Background.class_form_id`  |
 //! | 69    | GetIsRace              | `Background.race_form_id`   |
-//! | 72    | GetIsID                | `FormIdComponent`           |
+//! | 72    | GetIsID                | `SceneAliasCandidate` base  |
 //! | 73    | GetFactionRank         | `FactionRanks`              |
 //! | 80    | GetLevel               | `CharacterLevel`            |
 //! | 182   | GetEquipped            | `Inventory` + `EquipmentSlots` |
@@ -135,10 +135,11 @@ pub enum ConditionFunction {
     /// `Background.race_form_id` matches `param_1` (a `RACE` FormID), else
     /// 0.0 (also 0.0 without `Background`). FO3 / FNV / Skyrim index **69**.
     GetIsRace,
-    /// `GetIsID(base_form_id) → f32`. Returns 1.0 when the Run-On's
-    /// `FormIdComponent` matches `param_1`, 0.0 otherwise. Common
-    /// gate for "is this specific REFR?" checks. FO3 / FNV / Skyrim
-    /// index **72**.
+    /// `GetIsID(base_form_id) → f32`. Returns 1.0 when the Run-On's base
+    /// object (`SceneAliasCandidate::base_form_id`) matches `param_1`, 0.0
+    /// otherwise — "is this actor an instance of that NPC_?", the common
+    /// INFO speaker gate. Not a placed-reference test (#5041). FO3 / FNV /
+    /// Skyrim index **72**.
     GetIsID,
     /// `HasPerk(perk_form_id) → f32`. Reads the Run-On actor's ranked `Perks`
     /// component: 1.0 when `param_1` has a positive rank, 0.0 otherwise
@@ -318,22 +319,17 @@ impl ConditionFunction {
             // same contract as `GetFactionRank`.
             Self::GetIsClass => world.get::<Background>(entity).map(|b| b.class_form_id),
             Self::GetIsRace => world.get::<Background>(entity).map(|b| b.race_form_id),
-            Self::GetIsID => {
-                // The CTDA form-id remap (#1666, applied at parse time in the
-                // plugin crate) has already promoted `param_1` into global
-                // load-order space — the same space the entity's
-                // `FormIdComponent` resolves to via `FormIdPool` — so this is
-                // a direct, false-positive-free compare across multi-plugin
-                // loads (no lower-24-bits shortcut).
-                use byroredux_core::ecs::components::FormIdComponent;
-                use byroredux_core::form_id::FormIdPool;
-                let fid_comp = world.get::<FormIdComponent>(entity)?;
-                let pool = world.try_resource::<FormIdPool>()?;
-                // `local` carries the full global FormID — the cell loader
-                // stores the remapped placement/base id as the LocalFormId
-                // (references.rs), so `pair.local.0` is directly comparable.
-                pool.resolve(fid_comp.0).map(|pair| pair.local.0)
-            }
+            // #5041 — `GetIsID ObjectID` names the Run-On's *base object*
+            // (19,344 of 19,345 `Oblivion.esm` params resolve to an `NPC_`),
+            // not its placed REFR/ACHR, which is what `FormIdComponent`
+            // carries. The cell loader stamps both ids on
+            // `SceneAliasCandidate` (the player: base `0x7`); the base id is
+            // already in the global load-order space the CTDA remap (#1666)
+            // put `param_1` in, so this is a direct compare.
+            Self::GetIsID => world
+                .get::<crate::scene::SceneAliasCandidate>(entity)
+                .map(|candidate| candidate.base_form_id)
+                .filter(|&base| base != 0),
             _ => None,
         }
     }
@@ -1244,36 +1240,48 @@ mod tests {
 
     // ── GetIsID (#1666) ─────────────────────────────────────────────────
 
+    /// #5041 — the param is the Run-On's base `NPC_`, not the placed ACHR:
+    /// an actor whose base is `param_1` passes even though its own
+    /// (reference) FormID differs, and naming the reference id fails.
     #[test]
-    fn get_is_id_matches_entity_global_form_id() {
+    fn get_is_id_matches_run_on_base_object_not_placed_reference() {
         use byroredux_core::ecs::components::FormIdComponent;
         use byroredux_core::form_id::{FormIdPair, FormIdPool, LocalFormId, PluginId};
 
+        const ACHR: u32 = 0x0001_4D8A;
+        const NPC: u32 = 0x0000_A1B2;
         let mut world = World::new();
         let mut pool = FormIdPool::new();
-        // The cell loader stores the full global FormID as the LocalFormId,
-        // so `param_1` (also global, post-remap) compares directly.
-        let pair = FormIdPair {
+        let fid = pool.intern(FormIdPair {
             plugin: PluginId::from_filename("FalloutNV.esm"),
-            local: LocalFormId(0x0001_4D8A),
-        };
-        let fid = pool.intern(pair);
+            local: LocalFormId(ACHR),
+        });
         world.insert_resource(pool);
         let actor = world.spawn();
         world.insert(actor, FormIdComponent(fid));
+        world.insert(
+            actor,
+            crate::scene::SceneAliasCandidate {
+                reference_form_id: ACHR,
+                base_form_id: NPC,
+                ..Default::default()
+            },
+        );
 
-        // GetIsID(0x00014D8A) == 1 — matches the entity's id.
-        let list = vec![cond(72, ComparisonOp::Eq, 1.0, false).with_param_1(0x0001_4D8A)];
+        let list = vec![cond(72, ComparisonOp::Eq, 1.0, false).with_param_1(NPC)];
         assert!(evaluate(&list, &world, &ctx(actor)));
-
-        // A different id → 0.
+        let list = vec![cond(72, ComparisonOp::Eq, 0.0, false).with_param_1(ACHR)];
+        assert!(
+            evaluate(&list, &world, &ctx(actor)),
+            "GetIsID must not match the placed reference's own FormID"
+        );
         let list = vec![cond(72, ComparisonOp::Eq, 0.0, false).with_param_1(0x0001_9999)];
         assert!(evaluate(&list, &world, &ctx(actor)));
     }
 
     #[test]
-    fn get_is_id_zero_without_form_id_component() {
-        // No FormIdComponent (and no FormIdPool) → GetIsID returns 0.0.
+    fn get_is_id_zero_without_identity() {
+        // No SceneAliasCandidate → GetIsID returns 0.0.
         let world = World::new();
         let actor: EntityId = 7;
         let list = vec![cond(72, ComparisonOp::Eq, 0.0, false).with_param_1(0x0001_4D8A)];
