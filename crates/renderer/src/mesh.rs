@@ -306,6 +306,16 @@ impl GpuMesh {
     }
 }
 
+/// Global-geometry pool lengths and dirty flag captured before an append, so
+/// a failed scene-mesh upload can take its geometry back out
+/// ([`MeshRegistry::rollback_global_geometry`], #4891).
+#[derive(Debug, Clone, Copy)]
+struct GlobalGeometryMark {
+    vertices: usize,
+    indices: usize,
+    dirty: bool,
+}
+
 /// Registry mapping mesh handle IDs to GPU-side geometry.
 ///
 /// Handles are stable — dropping a mesh leaves a `None` in its slot
@@ -764,6 +774,26 @@ impl MeshRegistry {
         Ok((v_offset, i_offset))
     }
 
+    /// Snapshot the global-geometry pool before an append, for
+    /// [`Self::rollback_global_geometry`].
+    fn global_geometry_mark(&self) -> GlobalGeometryMark {
+        GlobalGeometryMark {
+            vertices: self.pending_vertices.len(),
+            indices: self.pending_indices.len(),
+            dirty: self.geometry_dirty,
+        }
+    }
+
+    /// Undo every `accumulate_global_geometry` append made since `mark`.
+    /// An upload that fails after feeding the pool must call this, or the
+    /// appended geometry stays resident in the RT geometry SSBO with no mesh
+    /// slot — and so no `drop_mesh` — to ever reclaim it (#4891).
+    fn rollback_global_geometry(&mut self, mark: GlobalGeometryMark) {
+        self.pending_vertices.truncate(mark.vertices);
+        self.pending_indices.truncate(mark.indices);
+        self.geometry_dirty = mark.dirty;
+    }
+
     /// Whether fresh scene meshes may still be decoded and uploaded.
     /// Cached meshes remain usable after admission closes, and a later
     /// cell-unload compaction can reopen the gate.
@@ -791,11 +821,19 @@ impl MeshRegistry {
         // sanitized indices to both the global pool and the per-mesh / BLAS
         // upload so neither consumes an out-of-range index.
         let indices = Self::sanitize_scene_indices(vertices.len(), indices);
+        let mark = self.global_geometry_mark();
         let (v_offset, i_offset) = self.accumulate_global_geometry(vertices, &indices)?;
 
         // Upload to per-mesh buffers (also the BLAS build input when
-        // `rt_enabled`).
-        let id = self.upload(ctx, vertices, &indices, rt_enabled, staging_pool)?;
+        // `rt_enabled`). #4891 — on failure, take the geometry just fed to
+        // the global pool back out, exactly as the batched path does.
+        let id = match self.upload(ctx, vertices, &indices, rt_enabled, staging_pool) {
+            Ok(id) => id,
+            Err(error) => {
+                self.rollback_global_geometry(mark);
+                return Err(error);
+            }
+        };
 
         // Store offsets.
         let mesh = self.meshes[id as usize]
@@ -827,8 +865,8 @@ impl MeshRegistry {
         indices: &[u32],
     ) -> Result<u32> {
         let indices = Self::sanitize_scene_indices(vertices.len(), indices);
-        let (v_offset, i_offset) = self.accumulate_global_geometry(vertices, &indices)?;
-
+        // #4891 — check the slot cap before feeding the global pool, so an
+        // overflow cannot leave slotless geometry behind in it.
         if self.meshes.len() >= MAX_MESH_SLOTS as usize {
             bail!(
                 "MeshRegistry slot overflow: {} slots used (cap {}). \
@@ -837,6 +875,7 @@ impl MeshRegistry {
                 MAX_MESH_SLOTS,
             );
         }
+        let (v_offset, i_offset) = self.accumulate_global_geometry(vertices, &indices)?;
         let id = self.meshes.len() as u32;
         self.meshes.push(Some(GpuMesh {
             vertex_buffer: None,
@@ -936,17 +975,13 @@ impl MeshRegistry {
             .iter()
             .map(|upload| Self::sanitize_scene_indices(upload.vertices.len(), upload.indices))
             .collect::<Vec<_>>();
-        let old_vertex_len = self.pending_vertices.len();
-        let old_index_len = self.pending_indices.len();
-        let old_dirty = self.geometry_dirty;
+        let mark = self.global_geometry_mark();
         let mut global_offsets = Vec::with_capacity(uploads.len());
         for (upload, indices) in uploads.iter().zip(&sanitized) {
             match self.accumulate_global_geometry(upload.vertices, indices) {
                 Ok(offsets) => global_offsets.push(offsets),
                 Err(error) => {
-                    self.pending_vertices.truncate(old_vertex_len);
-                    self.pending_indices.truncate(old_index_len);
-                    self.geometry_dirty = old_dirty;
+                    self.rollback_global_geometry(mark);
                     return Err(error).context("accumulate batched scene geometry");
                 }
             }
@@ -982,9 +1017,7 @@ impl MeshRegistry {
         ) {
             Ok(buffers) => buffers,
             Err(error) => {
-                self.pending_vertices.truncate(old_vertex_len);
-                self.pending_indices.truncate(old_index_len);
-                self.geometry_dirty = old_dirty;
+                self.rollback_global_geometry(mark);
                 return Err(error).context("upload batched scene geometry");
             }
         };
@@ -2026,6 +2059,78 @@ mod refcount_tests {
         assert!(
             mesh.index_buffer.is_none() && mesh.vertex_buffer.is_none(),
             "global-only meshes intentionally carry no per-mesh buffers",
+        );
+    }
+
+    /// #4891 — a failed scene-mesh upload must take back the geometry it fed
+    /// the global pool. `rollback_global_geometry` restores both pool lengths
+    /// and the dirty flag to the mark taken before the append; the batched
+    /// path and `upload_scene_mesh` both route their failure arms through it.
+    #[test]
+    fn rollback_global_geometry_restores_the_pre_append_pool() {
+        let mut reg = MeshRegistry::new();
+        let tri = [
+            Vertex::new([0.0; 3], [1.0; 3], [0.0, 1.0, 0.0], [0.0, 0.0]),
+            Vertex::new([1.0, 0.0, 0.0], [1.0; 3], [0.0, 1.0, 0.0], [1.0, 0.0]),
+            Vertex::new([0.0, 1.0, 0.0], [1.0; 3], [0.0, 1.0, 0.0], [0.0, 1.0]),
+        ];
+        reg.upload_scene_mesh_global_only(&tri, &[0, 1, 2])
+            .expect("global-only upload needs no device");
+        let mark = reg.global_geometry_mark();
+        reg.geometry_dirty = false;
+
+        reg.accumulate_global_geometry(&tri, &[0, 1, 2])
+            .expect("second append fits the pool");
+        reg.geometry_dirty = true;
+        assert_eq!(reg.pending_vertices.len(), 6);
+
+        reg.rollback_global_geometry(mark);
+        assert_eq!(reg.pending_vertices.len(), 3);
+        assert_eq!(reg.pending_indices.len(), 3);
+        assert_eq!(reg.geometry_dirty, mark.dirty);
+    }
+
+    /// #4891 — `upload_scene_mesh` (and `register_scene_mesh_keyed`, which
+    /// delegates to it) feeds the global pool before the per-mesh `upload`,
+    /// so the upload's failure arm must roll the pool back, and
+    /// `upload_scene_mesh_global_only` must check its slot cap before
+    /// feeding the pool at all. The per-mesh upload needs a `GpuUploadCtx`,
+    /// so these orderings are pinned at source level.
+    #[test]
+    fn single_mesh_paths_never_leave_slotless_geometry_in_the_global_pool() {
+        let source = crate::source_scan::production_text(include_str!("mesh.rs"));
+        let body_of = |header: &str| {
+            let at = source
+                .find(header)
+                .unwrap_or_else(|| panic!("`{header}` must still exist"));
+            let body = &source[at..];
+            &body[..body
+                .find("\n    }\n")
+                .unwrap_or_else(|| panic!("`{header}` must close at impl indentation"))]
+        };
+        let accumulate = format!("self.{}(", "accumulate_global_geometry");
+
+        let scene = body_of("pub fn upload_scene_mesh(");
+        let mark = scene
+            .find(&format!("self.{}()", "global_geometry_mark"))
+            .expect("upload_scene_mesh must mark the pool before feeding it");
+        let fed = scene.find(&accumulate).expect("upload_scene_mesh feeds the pool");
+        let upload = scene.find("self.upload(").expect("upload_scene_mesh uploads");
+        let rollback = scene
+            .find(&format!("self.{}(mark)", "rollback_global_geometry"))
+            .expect("upload_scene_mesh must roll the pool back when upload fails");
+        assert!(mark < fed && fed < upload && upload < rollback);
+
+        let global_only = body_of("pub fn upload_scene_mesh_global_only(");
+        let cap = global_only
+            .find("MAX_MESH_SLOTS as usize")
+            .expect("global-only upload checks the slot cap");
+        let fed = global_only
+            .find(&accumulate)
+            .expect("global-only upload feeds the pool");
+        assert!(
+            cap < fed,
+            "the slot-cap bail must precede the global-pool append (#4891)"
         );
     }
 

@@ -845,6 +845,64 @@ pub(crate) fn validate_rgba_upload(
     Ok(())
 }
 
+/// Why a one-time submission failed, split by whether the GPU may still be
+/// executing the recorded commands — which decides whether the resources
+/// those commands reference may be freed (#4891).
+///
+/// [`with_one_time_commands`] and [`with_one_time_commands_reuse_fence`]
+/// return it boxed in their `anyhow::Error`, so callers that treat every
+/// failure alike are unaffected. Callers that own the resources the closure
+/// recorded against (staging arenas, destination buffers or images) ask
+/// [`Self::may_be_in_flight`] instead: destroy when it is `false`, leak when
+/// it is `true`.
+#[derive(Debug)]
+pub(crate) enum OneTimeCommandError {
+    /// Failed before `vkQueueSubmit` was called — allocation, begin,
+    /// recording, end, or fence setup. The GPU never saw the command buffer,
+    /// so everything it references may be destroyed immediately.
+    NotSubmitted(anyhow::Error),
+    /// `vkQueueSubmit` or the fence wait failed. After a device loss the
+    /// commands may be pending, so a host-side destroy could race an
+    /// in-flight transfer: the caller must keep what they reference alive.
+    MaybeInFlight(anyhow::Error),
+}
+
+impl OneTimeCommandError {
+    fn not_submitted(error: impl Into<anyhow::Error>, context: &'static str) -> Self {
+        Self::NotSubmitted(error.into().context(context))
+    }
+
+    fn maybe_in_flight(error: impl Into<anyhow::Error>, context: &'static str) -> Self {
+        Self::MaybeInFlight(error.into().context(context))
+    }
+
+    /// Whether a failed one-time submission may still be executing on the
+    /// GPU. Anything that is not a [`OneTimeCommandError`] — an error the
+    /// caller added before the helper ran, say — answers `true`: when the
+    /// submission state is unknown, the resources must be kept.
+    pub(crate) fn may_be_in_flight(error: &anyhow::Error) -> bool {
+        !matches!(error.downcast_ref::<Self>(), Some(Self::NotSubmitted(_)))
+    }
+
+    fn inner(&self) -> &anyhow::Error {
+        match self {
+            Self::NotSubmitted(error) | Self::MaybeInFlight(error) => error,
+        }
+    }
+}
+
+impl std::fmt::Display for OneTimeCommandError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(self.inner(), f)
+    }
+}
+
+impl std::error::Error for OneTimeCommandError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.inner().source()
+    }
+}
+
 /// Run a closure in a one-time-submit command buffer: allocate, record,
 /// submit, wait, free.
 ///
@@ -866,7 +924,7 @@ pub(crate) fn with_one_time_commands<F>(
 where
     F: FnOnce(vk::CommandBuffer) -> Result<()>,
 {
-    with_one_time_commands_inner(device, queue, pool, None, f)
+    with_one_time_commands_inner(device, queue, pool, None, f).map_err(anyhow::Error::from)
 }
 
 /// Variant of [`with_one_time_commands`] that reuses a persistent fence
@@ -885,7 +943,7 @@ pub(crate) fn with_one_time_commands_reuse_fence<F>(
 where
     F: FnOnce(vk::CommandBuffer) -> Result<()>,
 {
-    with_one_time_commands_inner(device, queue, pool, Some(fence), f)
+    with_one_time_commands_inner(device, queue, pool, Some(fence), f).map_err(anyhow::Error::from)
 }
 
 fn with_one_time_commands_inner<F>(
@@ -894,7 +952,7 @@ fn with_one_time_commands_inner<F>(
     pool: vk::CommandPool,
     reusable_fence: Option<&std::sync::Mutex<vk::Fence>>,
     f: F,
-) -> Result<()>
+) -> std::result::Result<(), OneTimeCommandError>
 where
     F: FnOnce(vk::CommandBuffer) -> Result<()>,
 {
@@ -910,7 +968,9 @@ where
         // always present).
         device
             .allocate_command_buffers(&alloc_info)
-            .context("Failed to allocate one-time command buffer")?[0]
+            .map_err(|e| {
+                OneTimeCommandError::not_submitted(e, "Failed to allocate one-time command buffer")
+            })?[0]
     };
 
     let begin_info =
@@ -926,7 +986,10 @@ where
         // required: this is the first of the two `?` sites #1861 left leaking.
         if let Err(e) = device.begin_command_buffer(cmd, &begin_info) {
             device.free_command_buffers(pool, &[cmd]);
-            return Err(e).context("begin one-time command buffer");
+            return Err(OneTimeCommandError::not_submitted(
+                e,
+                "begin one-time command buffer",
+            ));
         }
     }
 
@@ -945,7 +1008,10 @@ where
             let _ = device.end_command_buffer(cmd);
             device.free_command_buffers(pool, &[cmd]);
         }
-        return Err(e).context("one-time command recording failed; submission aborted");
+        return Err(OneTimeCommandError::not_submitted(
+            e,
+            "one-time command recording failed; submission aborted",
+        ));
     }
 
     unsafe {
@@ -960,7 +1026,10 @@ where
         // left leaking.
         if let Err(e) = device.end_command_buffer(cmd) {
             device.free_command_buffers(pool, &[cmd]);
-            return Err(e).context("end one-time command buffer");
+            return Err(OneTimeCommandError::not_submitted(
+                e,
+                "end one-time command buffer",
+            ));
         }
     }
 
@@ -993,7 +1062,10 @@ where
             Some(guard) => {
                 if let Err(e) = device.reset_fences(&[**guard]) {
                     device.free_command_buffers(pool, &[cmd]);
-                    return Err(e).context("reset reusable one-time fence");
+                    return Err(OneTimeCommandError::not_submitted(
+                        e,
+                        "reset reusable one-time fence",
+                    ));
                 }
                 (**guard, false)
             }
@@ -1001,7 +1073,10 @@ where
                 Ok(f) => (f, true),
                 Err(e) => {
                     device.free_command_buffers(pool, &[cmd]);
-                    return Err(e).context("create one-time fence");
+                    return Err(OneTimeCommandError::not_submitted(
+                        e,
+                        "create one-time fence",
+                    ));
                 }
             },
         };
@@ -1028,7 +1103,10 @@ where
             }
             drop(fence_guard);
             device.free_command_buffers(pool, &[cmd]);
-            return Err(e).context("submit one-time commands");
+            return Err(OneTimeCommandError::maybe_in_flight(
+                e,
+                "submit one-time commands",
+            ));
         }
         if let Err(e) = device.wait_for_fences(&[fence], true, u64::MAX) {
             if owned {
@@ -1036,7 +1114,10 @@ where
             }
             drop(fence_guard);
             device.free_command_buffers(pool, &[cmd]);
-            return Err(e).context("wait for one-time commands");
+            return Err(OneTimeCommandError::maybe_in_flight(
+                e,
+                "wait for one-time commands",
+            ));
         }
         if owned {
             device.destroy_fence(fence, None);
@@ -1063,6 +1144,67 @@ pub fn generate_checkerboard(width: u32, height: u32, cell_size: u32) -> Vec<u8>
         }
     }
     pixels
+}
+
+/// #4891 — the upload orchestrators decide destroy-vs-leak from
+/// `OneTimeCommandError::may_be_in_flight`, so its classification is the
+/// whole failure-path policy.
+#[cfg(test)]
+mod one_time_failure_class_tests {
+    use super::OneTimeCommandError;
+    use anyhow::Context;
+
+    #[test]
+    fn only_a_pre_submit_failure_is_safe_to_destroy() {
+        let not_submitted = anyhow::Error::from(OneTimeCommandError::not_submitted(
+            ash::vk::Result::ERROR_OUT_OF_DEVICE_MEMORY,
+            "begin one-time command buffer",
+        ));
+        assert!(!OneTimeCommandError::may_be_in_flight(&not_submitted));
+
+        let in_flight = anyhow::Error::from(OneTimeCommandError::maybe_in_flight(
+            ash::vk::Result::ERROR_DEVICE_LOST,
+            "wait for one-time commands",
+        ));
+        assert!(OneTimeCommandError::may_be_in_flight(&in_flight));
+
+        // Context a caller layers on top must not hide the class.
+        let wrapped = Err::<(), _>(not_submitted)
+            .context("submit batched device-local uploads")
+            .unwrap_err();
+        assert!(!OneTimeCommandError::may_be_in_flight(&wrapped));
+
+        // Unknown provenance is treated as possibly in flight: keep the
+        // resources rather than risk freeing memory the GPU still reads.
+        assert!(OneTimeCommandError::may_be_in_flight(&anyhow::anyhow!(
+            "not a one-time submission error"
+        )));
+    }
+
+    /// Both orchestrators that own recorded-against resources consult the
+    /// classifier instead of applying one policy to every failure — the
+    /// asymmetry #4891 reported (one always forgot, the other always
+    /// destroyed).
+    #[test]
+    fn both_upload_orchestrators_branch_on_the_failure_class() {
+        let needle = format!("OneTimeCommandError::{}(", "may_be_in_flight");
+        for (name, source) in [
+            (
+                "vulkan/buffer.rs",
+                crate::source_scan::production_text(include_str!("buffer.rs")),
+            ),
+            // No test module to cut — the whole file is production text.
+            (
+                "texture_registry/upload.rs",
+                include_str!("../texture_registry/upload.rs"),
+            ),
+        ] {
+            assert!(
+                source.contains(&needle),
+                "{name} must decide destroy-vs-leak from the submission state (#4891)"
+            );
+        }
+    }
 }
 
 #[cfg(test)]

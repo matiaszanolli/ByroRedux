@@ -890,13 +890,30 @@ impl GpuBuffer {
             },
         );
         if let Err(error) = record_result {
-            // A submit/wait failure does not tell us whether the command is
-            // still executing. Conservatively leak both sides instead of
-            // risking a host-side destroy racing an in-flight transfer. This
-            // is a fatal-style GPU failure path; retaining the allocations is
-            // safer than attempting recovery with ambiguous queue ownership.
-            std::mem::forget(staging);
-            std::mem::forget(buffers);
+            if super::texture::OneTimeCommandError::may_be_in_flight(&error) {
+                // A submit/wait failure does not tell us whether the command
+                // is still executing. Conservatively leak both sides instead
+                // of risking a host-side destroy racing an in-flight
+                // transfer. This is a fatal-style GPU failure path; retaining
+                // the allocations is safer than attempting recovery with
+                // ambiguous queue ownership.
+                std::mem::forget(staging);
+                std::mem::forget(buffers);
+            } else {
+                // #4891 — failed before `vkQueueSubmit` (allocate / begin /
+                // end / fence setup): the GPU never saw the copies, so
+                // reclaim everything. Forgetting here stranded each
+                // buffer's allocator `Arc` clone and defeated
+                // `Arc::try_unwrap` at shutdown for no safety gain.
+                for mut buffer in buffers {
+                    buffer.destroy(device, allocator);
+                }
+                if let Some(pool) = staging_pool {
+                    staging.release_to(pool, staging_size);
+                } else {
+                    staging.destroy();
+                }
+            }
             return Err(error).context("submit batched device-local uploads");
         }
 

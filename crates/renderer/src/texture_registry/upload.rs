@@ -364,11 +364,14 @@ impl TextureRegistry {
     /// handle already reserved for it (via `queue_or_hit`) stays
     /// `texture: None` forever, cache-HIT-redirected to a dead handle
     /// until every reference to it drops (see #1922 for the fix-vs-
-    /// document tradeoff). The partial command buffer is freed
-    /// without submit. On submit/fence error the staging buffers leak
-    /// into the pool (the GPU may still be reading them) — a
-    /// future-proof alternative would defer-destroy them, but
-    /// cell-load failure is already a fatal-style error path.
+    /// document tradeoff). A failure before `vkQueueSubmit` frees the
+    /// partial command buffer without submitting and destroys the failed
+    /// sub-batch's staged images and staging buffers at once. On a submit or
+    /// fence-wait error the GPU may still be reading them, so they are
+    /// leaked instead — never returned to the pool, never destroyed (#4891;
+    /// the same policy as `GpuBuffer::create_device_local_buffers_batched`).
+    /// A future-proof alternative would defer-destroy them, but that error
+    /// class is device loss, already a fatal-style path.
     ///
     /// Empty queue → no-op (returns `Ok(0)` without allocating a
     /// command buffer or touching the queue mutex).
@@ -570,21 +573,27 @@ impl TextureRegistry {
         // work has retired, so each StagingGuard can be released +
         // each Texture installed into its slot's descriptor.
         if let Err(e) = record_result {
-            // Recording failure path: nothing was submitted. Best-
-            // effort destroy of any partially-staged textures so
-            // their VkImage / staging buffer don't leak. The pending
-            // queue is gone (we `take`d it) — but `path_map` was
-            // already populated by `queue_or_hit` at enqueue time, so
-            // a later request for the same path cache-HITs the dead
+            // The pending queue is gone (we `take`d it) — but `path_map`
+            // was already populated by `queue_or_hit` at enqueue time, so a
+            // later request for the same path cache-HITs the dead
             // `texture: None` handle instead of re-queuing (#1922).
             log::warn!(
-                "flush_pending_uploads recording failed ({} uploads dropped): {}",
+                "flush_pending_uploads submission failed ({} uploads dropped): {}",
                 staged.len(),
                 e,
             );
-            for mut s in staged {
-                s.texture.destroy(device, allocator);
-                s.staging.destroy();
+            if crate::vulkan::texture::OneTimeCommandError::may_be_in_flight(&e) {
+                // #4891 — submit or fence wait failed: the copies may still
+                // be executing, so a host-side destroy could race them. Leak
+                // both sides, as the batched buffer path does.
+                std::mem::forget(staged);
+            } else {
+                // Nothing was submitted: destroy the partially-staged
+                // textures so their VkImage / staging buffer don't leak.
+                for mut s in staged {
+                    s.texture.destroy(device, allocator);
+                    s.staging.destroy();
+                }
             }
             return Err(e);
         }
