@@ -31,7 +31,7 @@
 //!     V: u32, T: u32, Q: u32,
 //!     LV: u32, LS: u32, X: u32,
 //!     ext: u32, Md: u32, Ms: u32, K: u32,
-//!     // 24 further bytes, then the body (vertices, faces,
+//!     // 16 further bytes (8 + 10 × 4 + 16 = 64), then the body (vertices, faces,
 //!     // modifier blocks, …) — deferred to a future milestone
 //! }
 //! ```

@@ -13,12 +13,12 @@
 //! ```text
 //! struct Header {                  // 64 bytes total
 //!     magic: [u8; 8],              // "FREGT003"
-//!     R: u32,                      // image rows    (width;  256 vanilla)
-//!     C: u32,                      // image columns (height; 256 vanilla)
+//!     R: u32,                      // image rows    (height; 256 vanilla)
+//!     C: u32,                      // image columns (width;  256 vanilla)
 //!     S: u32,                      // shape/morph count (50 vanilla)
 //!     A: u32,                      // SDK word A (zero on vanilla; opaque)
 //!     texture_basis_version: u32,  // 81 (0x51) on vanilla headhuman.egt
-//!     padding: [u8; 32],           // zero
+//!     padding: [u8; 36],           // zero (8 + 5 × 4 + 36 = 64)
 //! }
 //! struct Mode {                    // one FGTS slider's delta
 //!     scale: f32,
@@ -77,9 +77,9 @@ pub struct EgtMorph {
 /// on vanilla FNV / FO3).
 #[derive(Debug, Clone)]
 pub struct EgtFile {
-    /// SDK header word R — image width.
+    /// SDK header word C — image columns, i.e. the width.
     pub width: u32,
-    /// SDK header word C — image height.
+    /// SDK header word R — image rows, i.e. the height.
     pub height: u32,
     /// SDK header word S — mode (morph) count.
     pub num_morphs: u32,
@@ -107,8 +107,9 @@ impl EgtFile {
             });
         }
 
-        let width = read_u32_le(bytes, 8)?; // R
-        let height = read_u32_le(bytes, 12)?; // C
+        // R (rows) precedes C (columns): a row count is the height (#5014).
+        let height = read_u32_le(bytes, 8)?; // R
+        let width = read_u32_le(bytes, 12)?; // C
         let num_morphs = read_u32_le(bytes, 16)?; // S
         let unknown_a = read_u32_le(bytes, 20)?; // A
         let texture_basis_version = read_u32_le(bytes, 24)?;
@@ -188,8 +189,8 @@ mod tests {
     fn synth_egt(width: u32, height: u32, num_morphs: u32) -> Vec<u8> {
         let mut out = Vec::new();
         out.extend_from_slice(b"FREGT003");
-        out.extend_from_slice(&width.to_le_bytes());
-        out.extend_from_slice(&height.to_le_bytes());
+        out.extend_from_slice(&height.to_le_bytes()); // R (rows)
+        out.extend_from_slice(&width.to_le_bytes()); // C (columns)
         out.extend_from_slice(&num_morphs.to_le_bytes());
         out.extend_from_slice(&0u32.to_le_bytes()); // A
         out.extend_from_slice(&81u32.to_le_bytes()); // texture basis version (vanilla)
@@ -253,6 +254,24 @@ mod tests {
         assert_eq!(egt.num_morphs, 50);
         assert_eq!(egt.unknown_a, 0);
         assert_eq!(egt.texture_basis_version, 81);
+    }
+
+    /// #5014 — R is the row count (height) and C the column count (width).
+    /// Vanilla images are square, so only a non-square header tells the two
+    /// apart; reading R as the width would transpose a mod EGT.
+    #[test]
+    fn non_square_header_maps_rows_to_height_and_columns_to_width() {
+        let bytes = synth_egt(4, 2, 1);
+        assert_eq!(u32::from_le_bytes(bytes[8..12].try_into().unwrap()), 2, "R");
+        assert_eq!(
+            u32::from_le_bytes(bytes[12..16].try_into().unwrap()),
+            4,
+            "C"
+        );
+        let egt = EgtFile::parse(&bytes).expect("parse");
+        assert_eq!(egt.width, 4);
+        assert_eq!(egt.height, 2);
+        assert_eq!(egt.fgts_morphs[0].pixels.len(), 8);
     }
 
     #[test]

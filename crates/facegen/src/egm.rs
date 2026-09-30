@@ -62,8 +62,8 @@ const MAX_MORPHS: u32 = 1024;
 /// widened to f32 (always finite — #4653).
 #[derive(Debug, Clone)]
 pub struct EgmMorph {
-    /// Per-morph scale (multiplies the f16 delta before adding to
-    /// the base vertex).
+    /// Per-morph scale (multiplies the widened int16 delta before adding
+    /// to the base vertex — #4653).
     pub scale: f32,
     /// Per-vertex displacement, decoded to f32. `deltas.len() ==
     /// EgmFile::num_vertices`. Each entry is `[dx, dy, dz]` in the
