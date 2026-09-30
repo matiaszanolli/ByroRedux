@@ -415,6 +415,12 @@ pub struct DebugStats {
     /// slot is dead weight — the actionable signal for finally
     /// implementing a generational-handle scheme.
     pub anim_clip_stub_count: u32,
+    /// Ground-cover authored-model tier (#4920), read back one pipelined
+    /// frame late: instances its placed plants asked for, and how many fit
+    /// the tail budget. `demanded > emitted` means placement was truncated —
+    /// every record keeps the same share of whole plants.
+    pub groundcover_model_demanded: u32,
+    pub groundcover_model_emitted: u32,
 }
 
 impl Resource for DebugStats {}
@@ -441,6 +447,8 @@ impl Default for DebugStats {
             skin_pool_overflow_attempts: 0,
             anim_clip_count: 0,
             anim_clip_stub_count: 0,
+            groundcover_model_demanded: 0,
+            groundcover_model_emitted: 0,
         }
     }
 }

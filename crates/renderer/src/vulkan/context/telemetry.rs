@@ -299,6 +299,24 @@ impl VulkanContext {
                 elem_size_bytes: size_of::<super::super::water::GpuWaterParams>(),
             });
         }
+        // #4922 — the ground-cover model tier's per-frame record / shape lists.
+        let [records, shapes] = self
+            .groundcover_models
+            .as_ref()
+            .map(|tier| tier.scratch_telemetry())
+            .unwrap_or([(0, 0, 0); 2]);
+        rows.push(ScratchRow {
+            name: "groundcover_model_records_scratch",
+            len: records.0,
+            capacity: records.1,
+            elem_size_bytes: records.2,
+        });
+        rows.push(ScratchRow {
+            name: "groundcover_model_shapes_scratch",
+            len: shapes.0,
+            capacity: shapes.1,
+            elem_size_bytes: shapes.2,
+        });
     }
 
     /// Snapshot the skinned-BLAS coverage counters from the last

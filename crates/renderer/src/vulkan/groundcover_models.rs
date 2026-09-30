@@ -109,8 +109,9 @@ unsafe impl NoUninit for GpuGroundCoverModelShape {}
 pub struct GpuGroundCoverModelPoint {
     /// xyz = absolute Y-up world position of the root.
     pub position: [f32; 4],
-    /// x = record | (candidate << 8), y = rank among the chunk's points of
-    /// that record, z = packSnorm2x16(terrain normal .xz), w = candidate hash.
+    /// x = record | (candidate << `GROUNDCOVER_MODEL_RECORD_BITS`), y = rank
+    /// among the chunk's points of that record, z = packSnorm2x16(terrain
+    /// normal .xz), w = candidate hash.
     pub meta: [u32; 4],
 }
 
@@ -148,21 +149,16 @@ fn push_bytes(push: &ModelPush) -> &[u8] {
     }
 }
 
-/// One template shape as the host resolved it this frame: the record it
-/// belongs to and its fully built `DrawCommand` (material interned, mesh and
-/// texture resolved, `model_matrix` = the shape's model-root-local transform).
-pub struct GroundCoverModelShapeInput<'a> {
-    pub record: u32,
-    pub draw: &'a super::context::DrawCommand,
-}
-
 /// Everything the tier needs from the host for one frame.
 pub struct GroundCoverModelFrame<'a> {
     pub records: &'a [GpuGroundCoverModelRecord],
     /// Record index per selection-table entry, in proportion to climate weight.
     pub record_table: &'a [u32],
-    /// Sorted by record.
-    pub shapes: &'a [GroundCoverModelShapeInput<'a>],
+    /// One entry per template shape, sorted by record: the record it belongs
+    /// to and its fully built `DrawCommand` (material interned, mesh and
+    /// texture resolved, `model_matrix` = the shape's model-root-local
+    /// transform). The host's own template list, passed as is (#4922).
+    pub shapes: &'a [(u32, super::context::DrawCommand)],
     pub grid_spacing: f32,
 }
 
@@ -208,6 +204,13 @@ pub struct GroundCoverModelTier {
     frame_recorded: bool,
     pending_stats: [bool; MAX_FRAMES_IN_FLIGHT],
     stats: GroundCoverModelStats,
+    /// #4920 — latched while placement is over the tail budget, so the
+    /// truncation is logged once per episode rather than every frame.
+    overflow_logged: bool,
+    /// #4922 — `prepare`'s per-frame record and shape lists, kept across
+    /// frames rather than rebuilt from fresh allocations.
+    records_scratch: Vec<GpuGroundCoverModelRecord>,
+    shapes_scratch: Vec<GpuGroundCoverModelShape>,
 }
 
 /// Bytes every buffer the tier allocates, for `memory-budget.md`.
@@ -315,6 +318,9 @@ impl GroundCoverModelTier {
             frame_recorded: false,
             pending_stats: [false; MAX_FRAMES_IN_FLIGHT],
             stats: GroundCoverModelStats::default(),
+            overflow_logged: false,
+            records_scratch: Vec::new(),
+            shapes_scratch: Vec::new(),
         };
         if let Err(error) = this.create(device, allocator, pipeline_cache) {
             // SAFETY: nothing created so far has reached a queue.
@@ -500,20 +506,23 @@ impl GroundCoverModelTier {
         if record_count == 0 || input.grid_spacing.is_nan() || input.grid_spacing <= 0.0 {
             return false;
         }
-        let mut records = input.records[..record_count].to_vec();
+        let mut records = std::mem::take(&mut self.records_scratch);
+        records.clear();
+        records.extend_from_slice(&input.records[..record_count]);
         for record in &mut records {
             record.shape_first = 0;
             record.shape_count = 0;
         }
-        let mut shapes = Vec::with_capacity(input.shapes.len());
-        for shape in input.shapes {
+        let mut shapes = std::mem::take(&mut self.shapes_scratch);
+        shapes.clear();
+        for (shape_record, draw) in input.shapes {
             if shapes.len() == GROUNDCOVER_MODEL_MAX_SHAPES as usize {
                 break;
             }
-            let Some(record) = records.get_mut(shape.record as usize) else {
+            let Some(record) = records.get_mut(*shape_record as usize) else {
                 continue;
             };
-            let Some(mesh) = mesh_registry.get(shape.draw.mesh_handle) else {
+            let Some(mesh) = mesh_registry.get(draw.mesh_handle) else {
                 continue;
             };
             // Shapes arrive sorted by record, so a record's shapes are
@@ -524,7 +533,6 @@ impl GroundCoverModelTier {
                 continue;
             }
             record.shape_count += 1;
-            let draw = shape.draw;
             let m = draw.model_matrix;
             let column_len_sq = |c: usize| m[c] * m[c] + m[c + 1] * m[c + 1] + m[c + 2] * m[c + 2];
             let non_uniform = (column_len_sq(0) - column_len_sq(4)).abs() > 0.001
@@ -547,7 +555,7 @@ impl GroundCoverModelTier {
                     [m[8], m[9], m[10], m[11]],
                     [m[12], m[13], m[14], m[15]],
                 ],
-                record: shape.record,
+                record: *shape_record,
                 material_id: draw.material_id,
                 texture_index: draw.texture_handle,
                 vertex_offset: mesh.global_vertex_offset,
@@ -572,26 +580,29 @@ impl GroundCoverModelTier {
                 render_layer: draw.render_layer,
             });
         }
-        if shapes.is_empty() {
+        let ready = !shapes.is_empty() && {
+            let mut table = [0u32; GROUNDCOVER_SPECIES_TABLE_SIZE as usize];
+            let len = input.record_table.len().min(table.len());
+            table[..len].copy_from_slice(&input.record_table[..len]);
+            let uploads = self.record_buffers[frame]
+                .write_mapped(device, &records)
+                .and_then(|()| self.table_buffers[frame].write_mapped(device, &table))
+                .and_then(|()| self.shape_buffers[frame].write_mapped(device, &shapes));
+            if let Err(error) = &uploads {
+                log::warn!("ground-cover model tier: upload failed: {error}");
+            }
+            uploads.is_ok()
+        };
+        if ready {
+            self.frame_record_count = records.len() as u32;
+            self.frame_shape_count = shapes.len() as u32;
+            self.frame_grid_spacing = input.grid_spacing;
+        } else {
             self.frame_draws.clear();
-            return false;
         }
-        let mut table = [0u32; GROUNDCOVER_SPECIES_TABLE_SIZE as usize];
-        let len = input.record_table.len().min(table.len());
-        table[..len].copy_from_slice(&input.record_table[..len]);
-        let uploads = self.record_buffers[frame]
-            .write_mapped(device, &records)
-            .and_then(|()| self.table_buffers[frame].write_mapped(device, &table))
-            .and_then(|()| self.shape_buffers[frame].write_mapped(device, &shapes));
-        if let Err(error) = uploads {
-            log::warn!("ground-cover model tier: upload failed: {error}");
-            self.frame_draws.clear();
-            return false;
-        }
-        self.frame_record_count = records.len() as u32;
-        self.frame_shape_count = shapes.len() as u32;
-        self.frame_grid_spacing = input.grid_spacing;
-        true
+        self.records_scratch = records;
+        self.shapes_scratch = shapes;
+        ready
     }
 
     fn harvest(&mut self, device: &ash::Device, frame: usize) {
@@ -617,6 +628,19 @@ impl GroundCoverModelTier {
             demanded: word(0),
             emitted: word(1),
         };
+        // #4920 — a truncated placement is visible without `--bench-*`.
+        let truncated = self.stats.demanded > self.stats.emitted;
+        if truncated && !self.overflow_logged {
+            log::warn!(
+                "ground-cover model tier: placed plants need {} instances but the tail \
+                 budget is {} — every record keeps the same share of whole plants \
+                 ({} emitted; logged once per episode)",
+                self.stats.demanded,
+                groundcover_model_tail_budget(),
+                self.stats.emitted,
+            );
+        }
+        self.overflow_logged = truncated;
     }
 
     /// Forget the previous frame's recording. Called at the top of every
@@ -639,6 +663,23 @@ impl GroundCoverModelTier {
 
     pub fn stats(&self) -> GroundCoverModelStats {
         self.stats
+    }
+
+    /// `(len, capacity, element bytes)` of the records and shapes scratch
+    /// (#4922), for the `ctx.scratch` telemetry rows (#4610).
+    pub fn scratch_telemetry(&self) -> [(usize, usize, usize); 2] {
+        [
+            (
+                self.records_scratch.len(),
+                self.records_scratch.capacity(),
+                std::mem::size_of::<GpuGroundCoverModelRecord>(),
+            ),
+            (
+                self.shapes_scratch.len(),
+                self.shapes_scratch.capacity(),
+                std::mem::size_of::<GpuGroundCoverModelShape>(),
+            ),
+        ]
     }
 
     /// Record the three phases. Must be outside a render pass, after the
@@ -690,21 +731,17 @@ impl GroundCoverModelTier {
         let accel_structs = [tlas];
         let mut accel_write = vk::WriteDescriptorSetAccelerationStructureKHR::default()
             .acceleration_structures(&accel_structs);
-        let mut writes: Vec<vk::WriteDescriptorSet> = buffers
-            .iter()
-            .map(|(binding, info)| {
-                vk::WriteDescriptorSet::default()
-                    .dst_set(set)
-                    .dst_binding(*binding)
-                    .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                    .buffer_info(info)
-            })
-            .collect();
-        writes.push(crate::vulkan::descriptors::write_acceleration_structure(
-            set,
-            3,
-            &mut accel_write,
-        ));
+        let tlas_write =
+            crate::vulkan::descriptors::write_acceleration_structure(set, 3, &mut accel_write);
+        // #4922 — a fixed array: this runs every frame the tier draws.
+        let writes: [vk::WriteDescriptorSet; 12] = std::array::from_fn(|i| match buffers.get(i) {
+            Some((binding, info)) => vk::WriteDescriptorSet::default()
+                .dst_set(set)
+                .dst_binding(*binding)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .buffer_info(info),
+            None => tlas_write,
+        });
         // SAFETY: every info outlives the call, and only slot `frame`'s set is
         // written — the caller has waited that slot's fence, so nothing in
         // flight reads it. Rewritten every frame because the main instance
@@ -946,10 +983,175 @@ mod tests {
             .0;
         assert!(emit.contains("shape.flags & ~GROUNDCOVER_MODEL_SHAPE_FLAG_NON_UNIFORM"));
         assert!(emit.contains("INSTANCE_FLAG_NON_UNIFORM_SCALE"));
+        // #4923 — the flags must be built FROM the masked shape flags, not
+        // assigned from the scale bit alone (a third assert here used to be
+        // `!a || b` with `b` already asserted above: always true).
         assert!(
-            !emit.contains("inst.flags = (!uniformScale")
-                || emit.contains("shape.flags & ~GROUNDCOVER_MODEL_SHAPE_FLAG_NON_UNIFORM"),
-            "the emitted flags must not collapse to the non-uniform bit"
+            emit.contains("inst.flags = (shape.flags & ~GROUNDCOVER_MODEL_SHAPE_FLAG_NON_UNIFORM)"),
+            "the emitted flags must start from the host-packed shape flags"
+        );
+    }
+
+    /// #4923 — `gcWaterAdmits` switches on generated constants, and those
+    /// constants are the translated rule's own `gpu_code`s: a reordered
+    /// `CoverWaterRule` or a hand-edited literal now fails here instead of
+    /// silently swapping "above" for "below".
+    #[test]
+    fn water_rule_codes_match_the_translated_rule() {
+        use crate::shader_constants::{
+            GROUNDCOVER_WATER_RULE_ABOVE_AT_LEAST, GROUNDCOVER_WATER_RULE_ABOVE_AT_MOST,
+            GROUNDCOVER_WATER_RULE_BELOW_AT_LEAST, GROUNDCOVER_WATER_RULE_BELOW_AT_MOST,
+            GROUNDCOVER_WATER_RULE_EITHER_AT_LEAST, GROUNDCOVER_WATER_RULE_EITHER_AT_MOST,
+        };
+        use byroredux_core::ecs::components::groundcover::CoverWaterRule;
+        let pairs = [
+            (CoverWaterRule::AboveAtLeast, GROUNDCOVER_WATER_RULE_ABOVE_AT_LEAST, "ABOVE_AT_LEAST"),
+            (CoverWaterRule::AboveAtMost, GROUNDCOVER_WATER_RULE_ABOVE_AT_MOST, "ABOVE_AT_MOST"),
+            (CoverWaterRule::BelowAtLeast, GROUNDCOVER_WATER_RULE_BELOW_AT_LEAST, "BELOW_AT_LEAST"),
+            (CoverWaterRule::BelowAtMost, GROUNDCOVER_WATER_RULE_BELOW_AT_MOST, "BELOW_AT_MOST"),
+            (CoverWaterRule::EitherAtLeast, GROUNDCOVER_WATER_RULE_EITHER_AT_LEAST, "EITHER_AT_LEAST"),
+            (CoverWaterRule::EitherAtMost, GROUNDCOVER_WATER_RULE_EITHER_AT_MOST, "EITHER_AT_MOST"),
+        ];
+        let shader = include_str!("../../shaders/groundcover_models.comp");
+        let admits = shader
+            .split_once("bool gcWaterAdmits(")
+            .expect("gcWaterAdmits")
+            .1
+            .split_once("\n}\n")
+            .expect("gcWaterAdmits closes")
+            .0;
+        for (rule, code, name) in pairs {
+            assert_eq!(rule.gpu_code(), code, "{rule:?}");
+            assert!(
+                admits.contains(&format!("case GROUNDCOVER_WATER_RULE_{name}:")),
+                "gcWaterAdmits must switch on GROUNDCOVER_WATER_RULE_{name}"
+            );
+        }
+        assert!(
+            !(0..6).any(|code| admits.contains(&format!("case {code}u:"))),
+            "gcWaterAdmits must not switch on bare literals"
+        );
+    }
+
+    /// Mirror of PLACE's per-chunk lattice span (#4919): the first world
+    /// lattice index along one axis and how many lattice points the chunk's
+    /// half-open footprint `[base, base + CHUNK)` holds.
+    fn lattice_span(base: f32, spacing: f32) -> (i32, u32) {
+        let per_side_max = (crate::shader_constants::GROUNDCOVER_CHUNK_UNITS / spacing).ceil();
+        let first = (base / spacing - 0.5).ceil() as i32;
+        let end = ((base + crate::shader_constants::GROUNDCOVER_CHUNK_UNITS) / spacing - 0.5)
+            .ceil() as i32;
+        (first, ((end - first).max(0) as u32).min(per_side_max as u32))
+    }
+
+    /// #4919 — candidates sit on one world-space lattice, so a row of
+    /// chunks tiles it with no gap, duplicate or crowded column at a border.
+    /// The per-chunk `ceil(512 / 80) = 7` grid put 49 candidates where 40.96
+    /// belong and spaced the border columns 80, 64, 48, 80.
+    #[test]
+    fn model_candidates_tile_one_world_lattice_across_chunk_borders() {
+        let chunk = crate::shader_constants::GROUNDCOVER_CHUNK_UNITS;
+        for spacing in [20.0_f32, 48.0, 64.0, 80.0, 100.0, 128.0] {
+            let mut positions = Vec::new();
+            let mut total = 0u32;
+            for c in -8..8 {
+                let base = c as f32 * chunk;
+                let (first, count) = lattice_span(base, spacing);
+                total += count;
+                for i in 0..count as i32 {
+                    let at = (f64::from(first + i) + 0.5) * f64::from(spacing);
+                    assert!(
+                        at >= f64::from(base) && at < f64::from(base + chunk),
+                        "spacing {spacing}: point {at} left chunk [{base}, {})",
+                        base + chunk
+                    );
+                    positions.push(at);
+                }
+            }
+            for pair in positions.windows(2) {
+                let gap = pair[1] - pair[0];
+                assert!(
+                    (gap - f64::from(spacing)).abs() < 1e-3,
+                    "spacing {spacing}: gap {gap} between {} and {} — the lattice broke \
+                     at a chunk border",
+                    pair[0],
+                    pair[1]
+                );
+            }
+            let expected = 16.0 * chunk / spacing;
+            assert!(
+                (f64::from(total) - f64::from(expected)).abs() <= 1.0,
+                "spacing {spacing}: {total} candidates across 16 chunks, want {expected}"
+            );
+        }
+        let shader = include_str!("../../shaders/groundcover_models.comp");
+        for pinned in [
+            "ivec2 latticeFirst = ivec2(ceil(chunkUV / spacing - 0.5));",
+            "ivec2 latticeEnd = ivec2(ceil((chunkUV + GROUNDCOVER_CHUNK_UNITS) / spacing - 0.5));",
+            "vec2 lattice = (vec2(latticeFirst + ivec2(gx, gz)) + 0.5) * spacing;",
+        ] {
+            assert!(
+                shader.contains(pinned),
+                "PLACE must keep the world-anchored lattice this test mirrors: {pinned}"
+            );
+        }
+    }
+
+    /// Mirror of LAYOUT's grants (#4920): instances per shape for per-record
+    /// plant totals, shapes in layout order naming their record.
+    fn layout_grants(record_totals: &[u32], shape_records: &[u32], capacity: u32) -> Vec<u32> {
+        let demand: u32 = shape_records
+            .iter()
+            .map(|&r| record_totals[r as usize])
+            .sum();
+        let granted: Vec<u32> = if demand > capacity {
+            record_totals
+                .iter()
+                .map(|&t| (u64::from(t) * u64::from(capacity) / u64::from(demand)) as u32)
+                .collect()
+        } else {
+            record_totals.to_vec()
+        };
+        let mut cursor = 0u32;
+        shape_records
+            .iter()
+            .map(|&r| {
+                let count = granted[r as usize].min(capacity - cursor);
+                cursor += count;
+                count
+            })
+            .collect()
+    }
+
+    /// #4920 — over the tail budget every record keeps the same share of
+    /// whole plants. The old per-shape clamp in FormID order gave the last
+    /// record nothing, and could keep a plant's first shape without its
+    /// second.
+    #[test]
+    fn over_budget_layout_grants_every_record_whole_plants() {
+        let capacity = 1000;
+        // Record 2 is the late (DLC / mod) record, with a two-shape model.
+        let totals = [600, 300, 400];
+        let shape_records = [0, 1, 2, 2];
+        let counts = layout_grants(&totals, &shape_records, capacity);
+        assert!(counts.iter().sum::<u32>() <= capacity);
+        assert!(counts.iter().all(|&c| c > 0), "a record was starved: {counts:?}");
+        assert_eq!(counts[2], counts[3], "a plant's shapes must survive together");
+        // Proportional: every record keeps the same fraction, within a plant.
+        let demand: u32 = shape_records.iter().map(|&r| totals[r as usize]).sum();
+        for (shape, &r) in shape_records.iter().enumerate() {
+            let exact = f64::from(totals[r as usize]) * f64::from(capacity) / f64::from(demand);
+            assert!((f64::from(counts[shape]) - exact).abs() < 1.0);
+        }
+        // Under the budget nothing changes.
+        assert_eq!(layout_grants(&[3, 4], &[0, 1, 1], 100), vec![3, 4, 4]);
+
+        let shader = include_str!("../../shaders/groundcover_models.comp");
+        assert!(
+            shader.contains(
+                "uint64_t(sRecordTotal[r]) * uint64_t(pc.tailCapacity) / uint64_t(demand)"
+            ),
+            "LAYOUT must keep the proportional whole-plant grant this test mirrors"
         );
     }
 

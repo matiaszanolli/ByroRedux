@@ -365,10 +365,11 @@ pub fn resolve_authored_cover(
         .into_iter()
         .filter_map(|form_id| authored_cover_record(&grasses[&form_id]))
         .collect();
-    (!records.is_empty()).then_some(AuthoredCover {
+    (!records.is_empty()).then(|| AuthoredCover {
         records,
         grid_spacing,
         climate,
+        generation: AuthoredCover::next_generation(),
     })
 }
 

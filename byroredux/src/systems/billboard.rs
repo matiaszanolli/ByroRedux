@@ -398,6 +398,46 @@ mod tests {
         );
     }
 
+    /// #4923 — pin the #4729 gust-travel sense by behaviour, not by the
+    /// formula's text: a crest must travel DOWNWIND. The bend a tree shows at
+    /// time `t` must reappear, later, at a tree further along the wind — and
+    /// not at a tree upwind. With the phase sign inverted the crest would
+    /// travel upwind, against the grass waves beneath it.
+    #[test]
+    fn speedtree_gust_crest_travels_downwind() {
+        let wind = WindField {
+            direction: [0.6, 0.8],
+            speed: 220.0,
+            gust_amplitude: 0.0,
+            gust_frequency: 0.0,
+        };
+        let tree = SpeedTreeWind::new(1.0, 0.0);
+        let dir = Vec3::new(0.6, 0.0, 0.8);
+        let bend_at = |position: Vec3, t: f32| {
+            apply_speedtree_wind(Quat::IDENTITY, position, wind, tree, t).angle_between(Quat::IDENTITY)
+        };
+        let strength = (220.0 / byroredux_core::ecs::components::groundcover::MAX_WIND_SPEED)
+            .clamp(0.0, 1.0);
+        let crest_speed = (0.35 + strength * 0.85) / 0.017; // units per second
+        let origin = Vec3::new(40.0, 0.0, -25.0);
+        let t0 = 1.3;
+        let distance = 150.0;
+        let lag = distance / crest_speed;
+
+        let here = bend_at(origin, t0);
+        let downwind_later = bend_at(origin + dir * distance, t0 + lag);
+        assert!(
+            (here - downwind_later).abs() < 1.0e-4,
+            "the crest at {origin:?} must arrive {distance} units downwind {lag} s later: \
+             {here} vs {downwind_later}"
+        );
+        let upwind_later = bend_at(origin - dir * distance, t0 + lag);
+        assert!(
+            (here - upwind_later).abs() > 1.0e-3,
+            "the same crest must not arrive upwind — that is the pre-#4729 sense"
+        );
+    }
+
     #[test]
     fn active_weather_direction_change_rebends_stationary_speedtree() {
         let mut world = World::new();

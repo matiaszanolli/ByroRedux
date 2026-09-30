@@ -481,10 +481,13 @@ struct App {
     /// built draw), for the ground-cover model tier. Retained like
     /// `draw_commands`.
     cover_template_draws: Vec<(u32, DrawCommand)>,
-    /// #4413 — per-frame scratch for the model tier's records and table.
+    /// #4413 — the model tier's records and table. #4922 — derived once per
+    /// installed `AuthoredCover`, not per frame; `groundcover_model_records_key`
+    /// says which one they were derived from.
     groundcover_model_records:
         Vec<byroredux_renderer::vulkan::groundcover_models::GpuGroundCoverModelRecord>,
     groundcover_model_table: Vec<u32>,
+    groundcover_model_records_key: Option<crate::render::groundcover::GroundCoverModelRecordsKey>,
     /// #4180 — the cooperative work deadline `step_streaming` computed this
     /// iteration, handed on to `step_static_blas_restore` so both between-
     /// frames stages share one allowance instead of each starting a fresh
@@ -1087,6 +1090,7 @@ impl App {
             cover_template_draws: Vec::new(),
             groundcover_model_records: Vec::new(),
             groundcover_model_table: Vec::new(),
+            groundcover_model_records_key: None,
             frame_work_deadline: None,
             water_commands: Vec::new(),
             gpu_lights: Vec::new(),

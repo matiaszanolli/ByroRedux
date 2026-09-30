@@ -438,8 +438,9 @@ pub const GROUNDCOVER_MODEL_MAX_RECORDS: u32 = 128;
 /// Shapes across every record's model.
 pub const GROUNDCOVER_MODEL_MAX_SHAPES: u32 = 256;
 /// Instance slots the tier appends after the main instance list each frame.
-/// An engine budget, not a game value: past it the layout phase truncates
-/// the last shapes deterministically rather than overflowing.
+/// An engine budget, not a game value: past it the layout phase grants every
+/// record the same share of its placed plants, whole plants only (#4920), so
+/// no record loses all of its instances and no plant loses one of its shapes.
 pub const GROUNDCOVER_MODEL_MAX_INSTANCES: u32 = 32768;
 /// The model shader's three phases, selected by push constant (see
 /// `groundcover_models.comp`'s header).
@@ -451,6 +452,27 @@ pub const GROUNDCOVER_MODEL_RECORD_FLAG_UNIFORM_SCALING: u32 = 1;
 pub const GROUNDCOVER_MODEL_RECORD_FLAG_FIT_TO_SLOPE: u32 = 2;
 /// Shape flag bit: the shape's own local transform scales non-uniformly.
 pub const GROUNDCOVER_MODEL_SHAPE_FLAG_NON_UNIFORM: u32 = 1;
+/// Low bits of `GcModelPoint.meta.x` that hold the record index; the candidate
+/// index sits above them (`record | (candidate << RECORD_BITS)`).
+pub const GROUNDCOVER_MODEL_RECORD_BITS: u32 = 8;
+// #4923 — the packing only round-trips while both halves fit their bits.
+const _: () = assert!(
+    GROUNDCOVER_MODEL_MAX_RECORDS <= 1 << GROUNDCOVER_MODEL_RECORD_BITS,
+    "every record index must fit GcModelPoint.meta.x's record bits"
+);
+const _: () = assert!(
+    (GROUNDCOVER_MODEL_POINTS_PER_CHUNK as u64) << GROUNDCOVER_MODEL_RECORD_BITS <= 1 << 32,
+    "every candidate index must fit above the record bits of meta.x"
+);
+/// `CoverWaterRule::gpu_code` values `gcWaterAdmits` switches on (#4923). The
+/// binary's `CoverWaterRule` is the authority; the renderer test
+/// `water_rule_codes_match_the_translated_rule` holds these to it.
+pub const GROUNDCOVER_WATER_RULE_ABOVE_AT_LEAST: u32 = 0;
+pub const GROUNDCOVER_WATER_RULE_ABOVE_AT_MOST: u32 = 1;
+pub const GROUNDCOVER_WATER_RULE_BELOW_AT_LEAST: u32 = 2;
+pub const GROUNDCOVER_WATER_RULE_BELOW_AT_MOST: u32 = 3;
+pub const GROUNDCOVER_WATER_RULE_EITHER_AT_LEAST: u32 = 4;
+pub const GROUNDCOVER_WATER_RULE_EITHER_AT_MOST: u32 = 5;
 /// Salt separating the model candidate stream from the blade stream: both
 /// derive from a chunk's seed, and must not place plants at blade roots.
 pub const GROUNDCOVER_MODEL_SEED_SALT: u32 = 0x6D0D_E15A;

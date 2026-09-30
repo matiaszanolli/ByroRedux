@@ -2301,10 +2301,14 @@ mod tests {
     /// #4297 / Step 3 — every stochastic ground-cover seed is derived in the
     /// integer domain. A vendor-dependent float-trig hash makes a dithered LOD
     /// transition shear on AMD; a frame/time-derived seed instead becomes
-    /// full-screen temporal noise. Keep the three live seed paths pinned here
-    /// until their GLSL can share one common include.
+    /// full-screen temporal noise. Keep the four live seed paths pinned here
+    /// until their GLSL can share one common include. #4923 added the
+    /// authored-model tier's `gcModelHash`, and its placement's other half:
+    /// ranks and slab slots come from a serial per-batch pass, never atomics,
+    /// so the same plants survive every frame.
     #[test]
     fn groundcover_seed_hashes_are_integer_and_frame_invariant() {
+        let models = include_str!("../../shaders/groundcover_models.comp");
         let scatter = include_str!("../../shaders/groundcover_scatter.comp");
         let density = include_str!("../../shaders/include/groundcover_density.glsl");
         let blade = include_str!("../../shaders/groundcover_blade.vert");
@@ -2330,10 +2334,18 @@ mod tests {
             .expect("gcSeedStream must remain bounded before the wind model")
             .0;
 
+        let model_hash = models
+            .split_once("uint gcModelHash(uint seed, uint index)")
+            .expect("the model tier must retain its per-candidate integer finalizer")
+            .1
+            .split_once("float gcUnit(")
+            .expect("gcModelHash must remain bounded before gcUnit")
+            .0;
         for (name, source) in [
             ("scatter candidate", scatter_hash),
             ("density noise", density_hash),
             ("blade attribute", blade_seed),
+            ("model candidate", model_hash),
         ] {
             assert!(
                 !source.contains("sin(")
@@ -2349,6 +2361,29 @@ mod tests {
                 && scatter_hash.contains("h *= 0x7FEB352Du;")
                 && scatter_hash.contains("h *= 0x846CA68Bu;"),
             "scatter seeds must be a pure function of chunk seed and candidate index"
+        );
+        assert!(
+            model_hash.contains("uint h = seed ^ (index * 0x9E3779B9u);")
+                && model_hash.contains("h *= 0x7FEB352Du;")
+                && model_hash.contains("h *= 0x846CA68Bu;"),
+            "model seeds must be the same pure function of chunk seed and candidate index"
+        );
+        let place = models
+            .split_once("void place(")
+            .expect("the model tier's placement phase")
+            .1
+            .split_once("void layoutShapes(")
+            .expect("place must end before layoutShapes")
+            .0;
+        assert!(
+            !place.contains("atomic"),
+            "model placement must assign ranks and slots serially, never by atomics — \
+             an atomic append makes the surviving plant set scheduling-dependent"
+        );
+        assert!(
+            place.contains("uint seed = chunk.seed ^ GROUNDCOVER_MODEL_SEED_SALT;")
+                && place.contains("uint h = gcModelHash(seed, candidate);"),
+            "model candidates must hash from the salted chunk seed and candidate index"
         );
     }
 

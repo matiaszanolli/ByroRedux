@@ -769,6 +769,11 @@ impl ApplicationHandler for App {
             if let Some(ref ctx) = self.renderer {
                 stats.mesh_count = ctx.mesh_registry.len() as u32;
                 stats.texture_count = ctx.texture_registry.len() as u32;
+                // #4920 — the model tier's truncation, visible without
+                // `--bench-*`.
+                let models = ctx.groundcover_model_stats().unwrap_or_default();
+                stats.groundcover_model_demanded = models.demanded;
+                stats.groundcover_model_emitted = models.emitted;
             }
             // #1284 — mirror SkinSlotPool telemetry into DebugStats so
             // `log_stats_system` (ECS, no App access) can surface it.

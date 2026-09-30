@@ -444,6 +444,7 @@ impl App {
                 &mut self.cover_template_draws,
                 &mut self.groundcover_model_records,
                 &mut self.groundcover_model_table,
+                &mut self.groundcover_model_records_key,
                 self.groundcover_off,
             );
 
@@ -805,38 +806,34 @@ fn prepare_groundcover_models(
     template_draws: &mut [(u32, byroredux_renderer::vulkan::context::DrawCommand)],
     records: &mut Vec<byroredux_renderer::vulkan::groundcover_models::GpuGroundCoverModelRecord>,
     table: &mut Vec<u32>,
+    records_key: &mut Option<crate::render::groundcover::GroundCoverModelRecordsKey>,
     off: bool,
 ) {
-    use byroredux_renderer::vulkan::groundcover_models::{
-        GroundCoverModelFrame, GroundCoverModelShapeInput,
-    };
+    use byroredux_renderer::vulkan::groundcover_models::GroundCoverModelFrame;
     if ctx.groundcover_models.is_none() {
         return;
     }
     let spacing = if off {
         records.clear();
         table.clear();
+        *records_key = None;
         None
     } else {
-        crate::render::groundcover::collect_groundcover_model_records(world, records, table)
+        // #4922 — re-derived only when the installed cover changes.
+        crate::render::groundcover::collect_groundcover_model_records(
+            world,
+            records,
+            table,
+            records_key,
+        )
     };
-    // Shapes grouped by record, each record's shapes in spawn order.
+    // Shapes grouped by record, each record's shapes in spawn order. Passed
+    // to the tier as is — no per-frame adapter Vec (#4922).
     template_draws.sort_unstable_by_key(|(record, draw)| (*record, draw.entity_id));
-    let shapes: Vec<GroundCoverModelShapeInput<'_>> = if spacing.is_some() {
-        template_draws
-            .iter()
-            .map(|(record, draw)| GroundCoverModelShapeInput {
-                record: *record,
-                draw,
-            })
-            .collect()
-    } else {
-        Vec::new()
-    };
     ctx.prepare_groundcover_models(&GroundCoverModelFrame {
         records,
         record_table: table,
-        shapes: &shapes,
+        shapes: if spacing.is_some() { template_draws } else { &[] },
         grid_spacing: spacing.unwrap_or(0.0),
     });
 }

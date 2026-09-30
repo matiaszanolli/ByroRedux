@@ -1617,7 +1617,11 @@ Phases:
   and `drain_streaming_state` reclaims.
 - **Placement** (`groundcover_models.comp`, three phases). Candidates sit on
   the game's grass grid, one per `iMinGrassSize` square, jittered by
-  `position_range` and reflected back inside the chunk. Each candidate picks
+  `position_range` and reflected back inside the chunk. The grid is one
+  world-space lattice, points at `(i + ½) × spacing`, and each chunk takes
+  the points inside its footprint (#4919): 512 is not a multiple of FO3/FNV's
+  80, and a grid restarted per chunk put 7 × 7 candidates where 6.4 × 6.4
+  belong, a denser band along every chunk border. Each candidate picks
   a record from a climate-weighted table and is accepted with probability
   `density × affinity × slope × shelter × clump × distance_fade`. The
   moisture factor is replaced by the record's own water rule, which is what
@@ -1631,6 +1635,23 @@ Phases:
   shape, before the first blended batch. Cards alpha-test and rocks shade
   as rock through the shared material path. The tier is receive-only, like
   the blades: it has no TLAS entry.
+- **Over budget** (#4920). When the placed plants need more instances than
+  the tail holds, every record keeps the same fraction of its plants —
+  `floor(plants × capacity / demand)` — and a plant's shapes are kept or
+  dropped together. Placement is logged once per episode and reported as
+  `DebugStats::groundcover_model_{demanded,emitted}`. A worldspace with more
+  than `GROUNDCOVER_MODEL_MAX_RECORDS` (128) placeable records draws the
+  first 128 in FormID order and logs the rest.
+- **Rigid, by decision** (#4921). Placed models do not sway: nothing in the
+  tier reads the `WindField` or the §12.4 interaction field, and each
+  instance's previous-frame transform is its current one, so the motion
+  vectors are consistent with a static plant. Authored clumps therefore stand
+  still beside swaying blades and SpeedTree crowns. That is accepted for now:
+  the tier's content is mostly rocks, decals, and cards whose authored mesh
+  has no bend weights to drive. If sway is wanted, the way to do it is the
+  §8 bend applied per instance in EMIT, with the previous frame's wind
+  written into `gcPreviousModels` so the motion vectors stay honest
+  (the #4729 lean-sense contract applies unchanged).
 
 **Sourced values and interpretations (§12.12 register).**
 

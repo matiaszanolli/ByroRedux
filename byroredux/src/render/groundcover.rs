@@ -800,10 +800,25 @@ pub(crate) fn groundcover_species_table_signature(world: &World) -> u64 {
     signature
 }
 
+/// #4922 — what [`collect_groundcover_model_records`]' outputs were last
+/// derived from: the cover's generation and the blade palette's tallest blade
+/// (the reach records without an authored height inherit).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct GroundCoverModelRecordsKey {
+    generation: u64,
+    blade_reach_bits: u32,
+}
+
 /// #4413 — the authored-model tier's records and record-selection table for
 /// this frame, from the worldspace's [`AuthoredCover`]. Returns the candidate
 /// grid spacing, or `None` (and empty outputs) when the worldspace has no
 /// authored cover.
+///
+/// #4922 — `records` and `table` persist across frames and are re-derived
+/// only when `key` no longer matches the installed cover: they change with
+/// the worldspace, not the frame, and re-deriving allocated five Vecs a
+/// frame. A cover past `GROUNDCOVER_MODEL_MAX_RECORDS` logs its dropped
+/// records once per derivation (#4920) instead of truncating silently.
 ///
 /// Each record's cover-test reach is its tallest scaled instance: its authored
 /// height scaled by its full height variation, or — for the records that
@@ -815,15 +830,19 @@ pub(crate) fn collect_groundcover_model_records(
     world: &World,
     records: &mut Vec<byroredux_renderer::vulkan::groundcover_models::GpuGroundCoverModelRecord>,
     table: &mut Vec<u32>,
+    key: &mut Option<GroundCoverModelRecordsKey>,
 ) -> Option<f32> {
     use byroredux_core::ecs::components::groundcover::AuthoredCover;
     use byroredux_renderer::shader_constants::{
         GROUNDCOVER_MODEL_RECORD_FLAG_FIT_TO_SLOPE, GROUNDCOVER_MODEL_RECORD_FLAG_UNIFORM_SCALING,
     };
     use byroredux_renderer::vulkan::groundcover_models::GpuGroundCoverModelRecord;
-    records.clear();
-    table.clear();
-    let cover = world.try_resource::<AuthoredCover>()?;
+    let Some(cover) = world.try_resource::<AuthoredCover>() else {
+        records.clear();
+        table.clear();
+        *key = None;
+        return None;
+    };
     let blade_reach = world
         .try_resource::<GroundCoverPalette>()
         .map(|palette| {
@@ -834,10 +853,25 @@ pub(crate) fn collect_groundcover_model_records(
                 .fold(0.0_f32, f32::max)
         })
         .unwrap_or(0.0);
-    let count = cover
-        .records
-        .len()
-        .min(byroredux_renderer::shader_constants::GROUNDCOVER_MODEL_MAX_RECORDS as usize);
+    let current = GroundCoverModelRecordsKey {
+        generation: cover.generation,
+        blade_reach_bits: blade_reach.to_bits(),
+    };
+    if *key == Some(current) {
+        return Some(cover.grid_spacing);
+    }
+    records.clear();
+    table.clear();
+    let max = byroredux_renderer::shader_constants::GROUNDCOVER_MODEL_MAX_RECORDS as usize;
+    let count = cover.records.len().min(max);
+    if cover.records.len() > max {
+        log::warn!(
+            "ground-cover model tier: the worldspace authors {} placeable GRAS records; \
+             only the first {max} (FormID order) can draw — {} dropped",
+            cover.records.len(),
+            cover.records.len() - max,
+        );
+    }
     let used = &cover.records[..count];
     records.extend(used.iter().map(|record| {
         let mut flags = 0;
@@ -869,6 +903,7 @@ pub(crate) fn collect_groundcover_model_records(
         .map(|record| record.climate_weight.weight_for(cover.climate))
         .collect();
     table.extend_from_slice(&species_selection_table(&weights));
+    *key = Some(current);
     Some(cover.grid_spacing)
 }
 
@@ -989,6 +1024,71 @@ mod tests {
         assert_eq!(s, vec![128, 128]);
     }
 
+    /// #4922 — the model tier's records and table depend on the installed
+    /// cover, not the frame. A matching key must leave both untouched (no
+    /// re-derivation, no allocation); a new cover generation re-derives; an
+    /// uninstalled cover clears everything.
+    #[test]
+    fn model_records_rederive_only_when_the_cover_changes() {
+        use byroredux_core::ecs::components::groundcover::{
+            AuthoredCover, AuthoredCoverRecord, Climate, ClimateWeights, CoverWaterRule,
+        };
+        let cover = |density: f32| AuthoredCover {
+            records: vec![AuthoredCoverRecord {
+                form_id: 0x1234,
+                editor_id: "GrassTest".into(),
+                model_path: r"landscape\grass\test.nif".into(),
+                climate_weight: ClimateWeights::default(),
+                density,
+                water_rule: CoverWaterRule::AboveAtLeast,
+                water_distance: 0.0,
+                height_range: 0.2,
+                position_range: 16.0,
+                uniform_scaling: false,
+                fit_to_slope: true,
+                nominal_height: None,
+            }],
+            grid_spacing: 80.0,
+            climate: Climate::Temperate,
+            generation: AuthoredCover::next_generation(),
+        };
+        let mut world = World::new();
+        world.insert_resource(cover(0.5));
+        let (mut records, mut table, mut key) = (Vec::new(), Vec::new(), None);
+
+        assert_eq!(
+            collect_groundcover_model_records(&world, &mut records, &mut table, &mut key),
+            Some(80.0)
+        );
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].density, 0.5);
+        assert!(key.is_some());
+
+        // Same cover: nothing re-derived. A sentinel written into the outputs
+        // survives, which it could not if the lists were rebuilt.
+        records[0].density = -1.0;
+        let capacity = table.capacity();
+        assert_eq!(
+            collect_groundcover_model_records(&world, &mut records, &mut table, &mut key),
+            Some(80.0)
+        );
+        assert_eq!(records[0].density, -1.0, "a matching key must not re-derive");
+        assert_eq!(table.capacity(), capacity);
+
+        // A newly installed cover is a new generation: re-derived.
+        world.insert_resource(cover(0.75));
+        collect_groundcover_model_records(&world, &mut records, &mut table, &mut key);
+        assert_eq!(records[0].density, 0.75);
+
+        // No cover: cleared, and the key forgotten.
+        world.remove_resource::<AuthoredCover>();
+        assert_eq!(
+            collect_groundcover_model_records(&world, &mut records, &mut table, &mut key),
+            None
+        );
+        assert!(records.is_empty() && table.is_empty() && key.is_none());
+    }
+
     /// The table is sized to the scatter's 8 hash bits; anything else leaves
     /// entries unreachable or indexes past the end.
     #[test]
@@ -1019,9 +1119,6 @@ mod tests {
         }
     }
 
-    /// The cull radius has to bound the chunk, not its centre: a chunk whose
-    /// centre is just past the draw distance still has a near corner inside
-    /// it, and culling on the centre eats a visible wedge out of the far edge.
     /// #4338 — the chunk cap must hold every chunk the distance cull can keep
     /// at the shipped chunk size and draw distance. A kept chunk's centre lies
     /// within `GROUNDCOVER_DRAW_DISTANCE + CHUNK_BOUND_RADIUS` horizontally, so
@@ -1148,6 +1245,9 @@ mod tests {
         assert!(ring.slots.len() <= GROUNDCOVER_MAX_CHUNKS as usize);
     }
 
+    /// The cull radius has to bound the chunk, not its centre: a chunk whose
+    /// centre is just past the draw distance still has a near corner inside
+    /// it, and culling on the centre eats a visible wedge out of the far edge.
     #[test]
     fn chunk_bound_radius_covers_the_footprint() {
         let half_diagonal = (2.0f32).sqrt() * GROUNDCOVER_CHUNK_UNITS * 0.5;

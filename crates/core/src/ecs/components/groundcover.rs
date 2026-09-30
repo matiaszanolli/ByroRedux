@@ -419,6 +419,19 @@ pub struct AuthoredCover {
     pub grid_spacing: f32,
     /// The worldspace climate the records are weighted for.
     pub climate: Climate,
+    /// Process-unique identity of this translation, from
+    /// [`AuthoredCover::next_generation`]. Consumers that derive per-frame
+    /// data from the records key their cache on it instead of re-deriving
+    /// every frame (#4922): a new worldspace's cover is a new generation.
+    pub generation: u64,
+}
+
+impl AuthoredCover {
+    /// A generation no earlier `AuthoredCover` in this process carried.
+    pub fn next_generation() -> u64 {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    }
 }
 
 impl Resource for AuthoredCover {}
