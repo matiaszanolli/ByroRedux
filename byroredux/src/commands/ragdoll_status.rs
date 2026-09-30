@@ -86,14 +86,16 @@ fn status(world: &World, args: &str) -> Result<String, &'static str> {
     // LIVE multibody/joint counts: a recovery detaches the ragdoll's
     // articulation, so joints below `joints` (and any nonzero recovery
     // count) is the tell that stability here was bought by the recovery.
-    let (recoveries_total, recoveries_last_frame, parked) = physics.recovery_counts();
+    // #5127 — `recoveries_total` counts events; the per-frame figure
+    // counts restored bodies.
+    let (recoveries_total, bodies_restored_last_frame, parked) = physics.recovery_counts();
     let live_joints = rag
         .joints
         .iter()
         .filter(|jh| physics.multibody_joints.get(**jh).is_some())
         .count();
     Ok(format!(
-        "ragdoll.status: actor={actor} skeleton={skeleton} bodies={} live={live} complete={complete} finite={finite} max_distance={max_distance:.3} max_speed={max_speed:.3} joints={} live_joints={live_joints} recoveries_total={recoveries_total} recoveries_last_frame={recoveries_last_frame} parked_pre_broken={parked}",
+        "ragdoll.status: actor={actor} skeleton={skeleton} bodies={} live={live} complete={complete} finite={finite} max_distance={max_distance:.3} max_speed={max_speed:.3} joints={} live_joints={live_joints} recoveries_total={recoveries_total} bodies_restored_last_frame={bodies_restored_last_frame} parked_pre_broken={parked}",
         rag.bodies.len(),
         rag.joints.len(),
     ))

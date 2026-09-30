@@ -196,7 +196,9 @@ impl ConsoleCommand for PhysStatsCommand {
         let pending = pw.pending_wake();
         // #4683 — solver-explosion recovery is invisible in post-recovery
         // state; the counter is the only signal a gate or operator can read.
-        let (recoveries_total, recoveries_last_frame, parked) = pw.recovery_counts();
+        // #5127 — `total` counts recovery events, the per-frame figure
+        // counts restored bodies; the labels carry the unit.
+        let (recoveries_total, bodies_restored_last_frame, parked) = pw.recovery_counts();
         drop(pw);
 
         let mut lines = vec![
@@ -206,7 +208,7 @@ impl ConsoleCommand for PhysStatsCommand {
                  pending_wake={pending}"
             ),
             format!(
-                "  recoveries: total={recoveries_total} last_frame={recoveries_last_frame} \
+                "  recoveries: total={recoveries_total} bodies_restored_last_frame={bodies_restored_last_frame} \
                  parked_pre_broken={parked}"
             ),
         ];

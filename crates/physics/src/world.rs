@@ -247,9 +247,16 @@ pub struct PhysicsWorld {
     /// stability gate — the FO3 P2 pass certified a corpse whose
     /// articulation the recovery itself had detached. Surfaced via
     /// [`Self::recovery_counts`], `phys.stats` and `ragdoll.status`.
+    /// Counts EVENTS — one per recovering substep, however many bodies
+    /// that substep restored.
     recoveries_total: u64,
-    /// Recoveries during the most recent `step` call (reset at entry).
-    recoveries_last_frame: u32,
+    /// BODIES restored during the most recent `step` call (reset at
+    /// entry). #5127 — a body count, not an event count: `step` breaks
+    /// after a recovery, so the per-frame event count is only ever 0 or 1
+    /// and an 18-bone corpse restore reads `total=1 bodies=18`. The name
+    /// used to be `recoveries_last_frame`, which made `total >= last_frame`
+    /// look like an invariant it never was.
+    bodies_restored_last_frame: u32,
     /// Lifetime count of pre-broken bodies parked by
     /// [`Self::recover_pre_broken_bodies`] (#4687a) — the same
     /// non-finite-state class, one step earlier in its lifetime.
@@ -367,7 +374,7 @@ impl PhysicsWorld {
             dynamic_bodies: Vec::new(),
             registered_shape_generations: None,
             recoveries_total: 0,
-            recoveries_last_frame: 0,
+            bodies_restored_last_frame: 0,
             bodies_parked_total: 0,
         }
     }
@@ -642,14 +649,16 @@ impl PhysicsWorld {
     }
 
     /// #4683 (PHYS-D3-2026-09-21-01) — solver-explosion recovery counts:
-    /// `(lifetime total, recoveries in the most recent `step` call,
-    /// pre-broken bodies parked at step entry)`. The recovery's only
+    /// `(lifetime recovery EVENTS, BODIES restored in the most recent
+    /// `step` call, lifetime pre-broken bodies parked at step entry)`.
+    /// #5127 — the first two are different units: an event restores one
+    /// or more bodies, so `.1` may exceed `.0`. The recovery's only
     /// pre-#4683 signal was one `log::error!`; every ragdoll stability
     /// gate read post-recovery state and could not see it happen.
     pub fn recovery_counts(&self) -> (u64, u32, u64) {
         (
             self.recoveries_total,
-            self.recoveries_last_frame,
+            self.bodies_restored_last_frame,
             self.bodies_parked_total,
         )
     }
@@ -673,9 +682,15 @@ impl PhysicsWorld {
     /// indexes the restored bodies' colliders at their EXPLODED or NaN
     /// pose: one frame of ray/shape queries against geometry that was
     /// already rolled back. Propagate the restored poses into the
-    /// colliders and refresh exactly those leaves. Exposed as a method so
-    /// the same-frame-visibility contract is testable without forcing a
-    /// real solver explosion.
+    /// colliders and refresh exactly those leaves.
+    ///
+    /// #5126 — `refit_and_rebalance` MUST be `true`. In rapier 0.22 the
+    /// `false` form only marks the leaves dirty (`pre_update_or_insert`);
+    /// leaf AABBs are refit only under `true`, which `PhysicsPipeline::step`
+    /// passes on its final substep — so the tree we inherit holds the
+    /// EXPLODED AABB, and a dirty-but-unrefit leaf left the restored body
+    /// invisible to every ray/KCC/LOS query until the next frame's step.
+    /// The refit + rebalance runs only on recovery frames.
     fn refresh_query_geometry_after_restore(&mut self, invalid_handles: &[RigidBodyHandle]) {
         self.bodies
             .propagate_modified_body_positions_to_colliders(&mut self.colliders);
@@ -686,7 +701,7 @@ impl PhysicsWorld {
             }
         }
         self.query_pipeline
-            .update_incremental(&self.colliders, &touched_colliders, &[], false);
+            .update_incremental(&self.colliders, &touched_colliders, &[], true);
     }
 
     /// #4687(a) (PHYS-D2-2026-09-21-02) — put dynamics that are ALREADY
@@ -834,7 +849,7 @@ impl PhysicsWorld {
         // keyframed clutter — testing it would defeat the fast path entirely.
         // Real kinematic *motion* is captured by `pending_wake` instead
         // (`push_kinematic` / `set_kinematic_translation` call `wake()`).
-        self.recoveries_last_frame = 0;
+        self.bodies_restored_last_frame = 0;
         self.recover_pre_broken_bodies();
         if self.islands.active_dynamic_bodies().is_empty() && !self.pending_wake {
             if self.colliders_dirty {
@@ -923,7 +938,8 @@ impl PhysicsWorld {
                      affected bodies were put to sleep at their prior pose"
                 );
                 self.recoveries_total = self.recoveries_total.saturating_add(1);
-                self.recoveries_last_frame = self.recoveries_last_frame.saturating_add(restored as u32);
+                self.bodies_restored_last_frame =
+                    self.bodies_restored_last_frame.saturating_add(restored as u32);
                 self.refresh_query_geometry_after_restore(&invalid_handles);
                 // Do not spend further catch-up substeps on the same
                 // freshly-invalidated contact island this frame.
@@ -2435,8 +2451,8 @@ mod tests {
 
     /// #4683 — the recovery counter increments through a REAL substep
     /// explosion (a 1e9 BU/s solve jumps the body past the displacement
-    /// bound in one tick), `last_frame` resets on the next step, and the
-    /// total persists.
+    /// bound in one tick), the per-frame body count resets on the next
+    /// step, and the total persists.
     #[test]
     fn recovery_counter_counts_a_real_substep_explosion() {
         let mut w = PhysicsWorld::new();
@@ -2466,12 +2482,52 @@ mod tests {
         assert_eq!(w.recovery_counts(), (1, 0, 0));
     }
 
+    /// #5127 — the two recovery counters have different units: the total
+    /// counts recovery EVENTS, the per-frame figure counts BODIES. Two
+    /// bodies exploding in the same substep are one event that restores
+    /// two bodies.
+    #[test]
+    fn multi_body_recovery_counts_one_event_and_every_restored_body() {
+        let mut w = PhysicsWorld::new();
+        for z in [0.0, 50.0] {
+            let h = w
+                .bodies
+                .insert(RigidBodyBuilder::dynamic().translation(vector![0.0, 10.0, z]).build());
+            w.dynamic_bodies.push(h);
+            w.bodies
+                .get_mut(h)
+                .unwrap()
+                .set_linvel(vector![1.0e9, 0.0, 0.0], true);
+        }
+        w.wake();
+
+        assert!(w.step(PHYSICS_DT) >= 1);
+        assert_eq!(
+            w.recovery_counts(),
+            (1, 2, 0),
+            "one recovery event, two bodies restored"
+        );
+    }
+
     /// #4687(b) — after a restore, the query pipeline must reflect the
     /// RESTORED pose within the same frame, not the exploded pose the step
     /// itself had just indexed.
+    ///
+    /// #5126 — driven through a REAL recovery in `step`: rapier's final
+    /// substep refits the tree to the exploded AABB, which is exactly the
+    /// state the refresh has to undo. The pre-#5126 guard staged the
+    /// "explosion" with a non-refitting `update_incremental(…, false)`, so
+    /// its tree never held the exploded AABB and it stayed green with the
+    /// production refresh deleted.
     #[test]
     fn restored_pose_is_visible_to_ray_queries_same_frame() {
         let mut w = PhysicsWorld::new();
+        // Floor whose top face is y = 0, under the ball.
+        w.colliders.insert(
+            ColliderBuilder::cuboid(500.0, 1.0, 500.0)
+                .translation(vector![100.0, -1.0, 0.0])
+                .build(),
+        );
         let h = w
             .bodies
             .insert(RigidBodyBuilder::dynamic().translation(vector![100.0, 50.0, 0.0]).build());
@@ -2480,41 +2536,22 @@ mod tests {
             h,
             &mut w.bodies,
         );
+        w.dynamic_bodies.push(h);
         w.update_query_pipeline();
 
-        // Explode (what the corrupt solve did), and let the step's
-        // incremental query-pipeline advance index the exploded pose.
+        // A 3e5 BU/s solve moves the body ~5000 BU in one substep — past
+        // the displacement bound, so the recovery restores it to y = 50.
         w.bodies
             .get_mut(h)
             .unwrap()
-            .set_translation(vector![100.0, 5000.0, 0.0], true);
-        w.bodies
-            .propagate_modified_body_positions_to_colliders(&mut w.colliders);
-        let exploded_colliders: Vec<_> = w
-            .bodies
-            .get(h)
-            .unwrap()
-            .colliders()
-            .iter()
-            .copied()
-            .collect();
-        w.query_pipeline.update_incremental(
-            &w.colliders,
-            &exploded_colliders,
-            &[],
-            false,
+            .set_linvel(vector![3.0e5, 0.0, 0.0], true);
+        w.wake();
+        assert!(w.step(PHYSICS_DT) >= 1);
+        assert_eq!(w.recovery_counts().0, 1, "the explosion must be recovered");
+        assert!(
+            (w.bodies.get(h).unwrap().translation() - vector![100.0, 50.0, 0.0]).norm() < 1e-3,
+            "the body must be back at its snapshot pose"
         );
-
-        // Restore to the snapshot pose (what restore_invalid_dynamic_bodies
-        // did), then run the post-restore sync under test.
-        w.bodies
-            .get_mut(h)
-            .unwrap()
-            .set_position(
-                rapier3d::math::Isometry::translation(100.0, 50.0, 0.0),
-                false,
-            );
-        w.refresh_query_geometry_after_restore(&[h]);
 
         let hit = w
             .cast_ray(
@@ -2523,13 +2560,13 @@ mod tests {
                 100.0,
                 None,
             )
-            .expect("the restored ball must be hit");
+            .expect("the ray must hit the restored ball or the floor");
         let hit_y = 60.0 - hit.distance;
         assert!(
             (hit_y - 52.0).abs() < 0.5,
-            "the ray must meet the ball at its RESTORED crown (~52), got \
-             {hit_y} — the pre-#4687 stale tree answered with the exploded \
-             pose (~5002)"
+            "the ray must meet the ball at its RESTORED crown (~52) in the \
+             same frame, got {hit_y} — y ≈ 0 is the floor under a ball whose \
+             leaf still holds the exploded AABB (#5126)"
         );
     }
 
