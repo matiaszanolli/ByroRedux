@@ -1520,6 +1520,187 @@ mod tests {
         }
     }
 
+    /// #4958 — the post-pass helpers above were the only recorders the doc
+    /// was checked against, so the top-of-frame RGBA copies and reservoir
+    /// clear (`begin_frame_recording.rs`) landed undocumented for four audits
+    /// running. Every `record_*` / `begin_frame` call made from `draw_frame`
+    /// and its phase files must be named in `shader-pipeline.md`'s submission
+    /// order. `begin_frame` is checked receiver-qualified
+    /// (`reservoir_buffers.begin_frame`), since the bare name is a prefix of
+    /// `begin_frame_recording`.
+    #[test]
+    fn every_frame_recorder_is_documented() {
+        let docs = include_str!("../../../../../docs/engine/shader-pipeline.md");
+        // Several phase files interleave test modules with production code
+        // (`draw.rs` has 22), so `production_text`'s cut at the first one
+        // would drop real calls; strip every test module instead.
+        let phase_files = [
+            ("draw.rs", strip_test_modules(include_str!("draw.rs"))),
+            (
+                "begin_frame_recording.rs",
+                strip_test_modules(include_str!("begin_frame_recording.rs")),
+            ),
+            (
+                "sync_and_acquire_frame.rs",
+                strip_test_modules(include_str!("sync_and_acquire_frame.rs")),
+            ),
+            (
+                "dispatch_skin_and_cluster.rs",
+                strip_test_modules(include_str!("dispatch_skin_and_cluster.rs")),
+            ),
+            (
+                "build_and_upload_instances.rs",
+                strip_test_modules(include_str!("build_and_upload_instances.rs")),
+            ),
+            (
+                "assemble_camera_and_lights.rs",
+                strip_test_modules(include_str!("assemble_camera_and_lights.rs")),
+            ),
+            (
+                "geometry_pass.rs",
+                strip_test_modules(include_str!("geometry_pass.rs")),
+            ),
+            (
+                "skinned_blas_refit.rs",
+                strip_test_modules(include_str!("skinned_blas_refit.rs")),
+            ),
+            (
+                "post_passes.rs",
+                strip_test_modules(include_str!("post_passes.rs")),
+            ),
+        ];
+        let mut calls: Vec<(String, &str)> = Vec::new();
+        for (file, src) in &phase_files {
+            let src = src.as_str();
+            for (pos, _) in src.match_indices('.') {
+                let rest = &src[pos + 1..];
+                let name: String = rest
+                    .chars()
+                    .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                    .collect();
+                if !rest[name.len()..].starts_with('(') {
+                    continue;
+                }
+                let receiver: String = src[..pos]
+                    .chars()
+                    .rev()
+                    .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .rev()
+                    .collect();
+                let needle = if name == "begin_frame" {
+                    format!("{receiver}.begin_frame")
+                } else if name.starts_with("record_") {
+                    name
+                } else {
+                    continue;
+                };
+                if !calls.iter().any(|(n, _)| *n == needle) {
+                    calls.push((needle, *file));
+                }
+            }
+        }
+        for required in [
+            "record_pending_rgba_uploads",
+            "reservoir_buffers.begin_frame",
+            "record_geometry_pass",
+            "record_post_passes",
+        ] {
+            assert!(
+                calls.iter().any(|(n, _)| n == required),
+                "the scan no longer finds `{required}` — the phase-file list or the \
+                 call parser drifted, so this guard is checking less than it claims"
+            );
+        }
+        for (needle, file) in calls {
+            assert!(
+                docs.contains(&needle),
+                "`{needle}` is recorded from {file} but shader-pipeline.md's per-frame \
+                 submission order never names it — add its row with the barriers it \
+                 records (#4958)"
+            );
+        }
+    }
+
+    /// `src` with every `#[cfg(test)] mod … { … }` block removed. The module's
+    /// extent is found by brace depth from its opening brace, skipping string,
+    /// raw-string and char literals and `//` comments so a brace inside one
+    /// cannot end the module early. Panics if a test module survives.
+    fn strip_test_modules(src: &str) -> String {
+        const MARK: &str = "#[cfg(test)]\nmod ";
+        let mut out = String::new();
+        let mut rest = src;
+        while let Some(at) = rest.find(MARK) {
+            out.push_str(&rest[..at]);
+            let body = &rest[at..];
+            let close = module_end(body).expect("test module closes");
+            rest = &body[close..];
+        }
+        out.push_str(rest);
+        assert!(!out.contains(MARK), "a test module survived the strip");
+        out
+    }
+
+    /// Byte offset just past the brace that closes the first `{…}` in `src`.
+    fn module_end(src: &str) -> Option<usize> {
+        let b = src.as_bytes();
+        let (mut i, mut depth) = (0usize, 0usize);
+        while i < b.len() {
+            match b[i] {
+                b'/' if b.get(i + 1) == Some(&b'/') => {
+                    while i < b.len() && b[i] != b'\n' {
+                        i += 1;
+                    }
+                }
+                b'r' if matches!(b.get(i + 1), Some(b'#' | b'"'))
+                    && (i == 0 || !(b[i - 1].is_ascii_alphanumeric() || b[i - 1] == b'_')) =>
+                {
+                    let hashes = b[i + 1..].iter().take_while(|&&c| c == b'#').count();
+                    if b.get(i + 1 + hashes) != Some(&b'"') {
+                        i += 1;
+                        continue;
+                    }
+                    let mut terminator = vec![b'"'];
+                    terminator.extend(std::iter::repeat_n(b'#', hashes));
+                    let from = i + 2 + hashes;
+                    let len = b[from..]
+                        .windows(terminator.len())
+                        .position(|w| w == terminator.as_slice())?;
+                    i = from + len + terminator.len();
+                    continue;
+                }
+                b'"' => {
+                    i += 1;
+                    while i < b.len() && b[i] != b'"' {
+                        i += if b[i] == b'\\' { 2 } else { 1 };
+                    }
+                }
+                // A char literal (`'{'`, `'\\''`); a lifetime (`'a`) has no
+                // closing quote two or three bytes on and is left alone.
+                b'\'' => {
+                    if b.get(i + 1) == Some(&b'\\') {
+                        if let Some(end) = b[i + 2..].iter().position(|&c| c == b'\'') {
+                            i += 2 + end;
+                        }
+                    } else if b.get(i + 2) == Some(&b'\'') {
+                        i += 2;
+                    }
+                }
+                b'{' => depth += 1,
+                b'}' => {
+                    depth = depth.checked_sub(1)?;
+                    if depth == 0 {
+                        return Some(i + 1);
+                    }
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+        None
+    }
+
     #[test]
     fn volumetric_sun_uses_portal_lane_only_inside() {
         let interior = SkyParams {

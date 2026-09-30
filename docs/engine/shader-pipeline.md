@@ -84,8 +84,12 @@ graphics+compute queue. Pass ordering is `draw_frame` in
 but since the #3282 split most phases — and, of the barriers below, 4b and 5b —
 are recorded in its sibling files (`sync_and_acquire_frame.rs`,
 `dispatch_skin_and_cluster.rs`, `build_and_upload_instances.rs`,
-`geometry_pass.rs`, `post_passes.rs`). Each row names the function that records
-it where that is not `draw_frame` itself.
+`geometry_pass.rs`, `post_passes.rs`, `begin_frame_recording.rs`). Each row names
+the function that records it where that is not `draw_frame` itself; steps 6-6b
+are `record_geometry_pass` and steps 8-20 are `record_post_passes`. #4958 — the
+guard `every_frame_recorder_is_documented` (`context/post_passes.rs`) fails when a
+`record_*` / `begin_frame` call made from `draw_frame` or one of those phase files
+is not named here.
 
 ```
 1a flush_pending_morph  ─  host write of the morph-weight buffer through its
@@ -104,7 +108,44 @@ it where that is not `draw_frame` itself.
                            any command below is recorded. The counters are
                            WRITTEN continuously by step 20 (presentation.frag's
                            isnan/isinf check) during that prior frame — there
-                           is no separate GPU "write" step of its own.
+                           is no separate GPU "write" step of its own. The
+                           same post-fence window runs
+                           `texture_registry.begin_frame` (host: ages
+                           deferred destroys and flushes this slot's pending
+                           bindless descriptor writes, #92/#134).
+1b dynamic-RGBA copies  ─  `TextureRegistry::record_pending_rgba_uploads`, the
+   [TRANSFER]               first commands in the buffer (`begin_frame_
+                           recording`, #3429 — HUD, Scaleform and ground-cover
+                           atlas updates that used to be one-shot submits).
+                           Per dirty texture: ALL_COMMANDS → TRANSFER,
+                           MEMORY_READ|MEMORY_WRITE → TRANSFER_WRITE,
+                           SHADER_READ_ONLY → TRANSFER_DST (waits for every
+                           earlier submission's reader of that image);
+                           `cmd_copy_buffer_to_image` from the slot's staging;
+                           then TRANSFER → ALL_COMMANDS, TRANSFER_WRITE →
+                           SHADER_READ, back to SHADER_READ_ONLY. Every copy
+                           ends in its starting layout, so an abandoned
+                           recording leaves the submitted layout valid.
+1c reservoir history    ─  `reservoir_buffers.begin_frame`
+                           (`ReservoirBuffers::begin_frame`), right after 1b.
+   clear [TRANSFER]         FRAGMENT|TRANSFER → TRANSFER|FRAGMENT buffer
+                           barriers: current slot SHADER_READ|SHADER_WRITE|
+                           TRANSFER_WRITE → TRANSFER_WRITE, previous slot
+                           SHADER_WRITE|TRANSFER_WRITE → SHADER_READ (publishes
+                           last frame's reservoirs as binding-17 history);
+                           `cmd_fill_buffer(0)` of the current slot (a pixel
+                           with no eligible fragment must not keep an older
+                           light index); then TRANSFER → FRAGMENT,
+                           TRANSFER_WRITE → SHADER_WRITE|SHADER_READ.
+1d skin input copies    ─  `record_bone_world_copy` (the dirty bone-world
+   [TRANSFER]               slots' staging → device `cmd_copy_buffer`) and,
+                           when first-sight uploads are pending,
+                           `record_pending_bind_inverse_copies` (per-slot
+                           regions into the persistent bind-inverse SSBO).
+                           Each ends in TRANSFER → COMPUTE_SHADER,
+                           TRANSFER_WRITE → SHADER_READ for step 2. Recorded
+                           in `dispatch_skin_and_cluster.rs` inside the
+                           skin-palette timer bracket.
 2  skin_palette.comp    ─┐ compute
 3  skin_vertices.comp   ─┘ skinned BLAS input ready
 4  AccelerationManager   ─  BLAS rebuild / refit + TLAS build
@@ -125,8 +166,9 @@ it where that is not `draw_frame` itself.
                            triangle.frag fragment shader AND
                            volumetrics_inject (same per-frame buffers,
                            #977eb95a)
-5c groundcover_         ─  EXAL ground cover (#4054/#4308), recorded in
-   interaction.comp        `dispatch_skin_and_cluster.rs` right after the
+5c groundcover_         ─  EXAL ground cover (#4054/#4308,
+   interaction.comp        `GroundCoverPipeline::record_scatter`), recorded in
+                           `dispatch_skin_and_cluster.rs` right after the
    groundcover_scatter.comp cluster cull — in submission order this runs
                             BEFORE the 5a sky bake (the letter is for
                             cross-reference stability, not order; this
@@ -147,6 +189,13 @@ it where that is not `draw_frame` itself.
                             telemetry reads (#4181 / CONC-D2-01). The global
                             device→host flush edge in step 22b publishes this
                             copy before any host readback.
+5e ground-cover bench   ─  `record_groundcover_bench`: §11.1 terrain-attribute
+                           sampling bench (#4052), right after 5c. A no-op unless
+                           `--bench-groundcover-sampling` created the bench;
+                           then its own compute (or self-contained raster
+                           pass into a throwaway target) that reads this
+                           frame's uploaded buffers and writes nothing any
+                           other pass reads.
 5a sky_cube.comp        ─  SKYAL sky bake (`SkyCubePipeline::record_bake`, in
    sky_prefilter.comp       `build_and_upload_instances`, only when the
    sky_irradiance.comp      pipeline exists): bakes this slot's cubemap from
@@ -181,9 +230,25 @@ it where that is not `draw_frame` itself.
                            (`record_groundcover_models`) after the instance
                            list upload and before step 6. It appends model
                            instances to the same SSBO, so the main render pass
-                           sees both blade and model tiers.
-6  [Main render pass]   ─  raster (BEGIN → END):
-     triangle.vert / .frag  geometry + RT ray-queries
+                           sees both blade and model tiers, and writes the
+                           same tail of this slot's previous-model buffer
+                           (binding 11, `gcPreviousModels`) so the tier has
+                           motion vectors. Entry barrier DRAW_INDIRECT|
+                           COMPUTE|TRANSFER → COMPUTE (the slab, counters and
+                           draws are shared across frames in flight); PLACE
+                           and LAYOUT each end COMPUTE → COMPUTE; EMIT ends
+                           COMPUTE / SHADER_WRITE → DRAW_INDIRECT|VERTEX|
+                           FRAGMENT|TRANSFER / INDIRECT_COMMAND_READ|
+                           SHADER_READ|TRANSFER_READ.
+6  [Main render pass]   ─  raster (BEGIN → END, `record_geometry_pass`):
+     triangle.vert / .frag  geometry + RT ray-queries. Certified opaque
+                            batches (`DrawCommand::allows_early_fragment_
+                            tests`: no blend, no alpha test, material kind
+                            0, depth test+write, LESS/LEQUAL, no decal or
+                            wireframe) bind `pipeline_early`, the same
+                            vertex stage with `triangle_early.frag.spv`
+                            (`layout(early_fragment_tests)`); everything
+                            else binds `pipeline`
      water.vert / .frag     water + caustic imageAtomicAdd
      groundcover_blade.vert /
      .frag (+ debug)        blade ribbons consume step 5c's indirect
@@ -234,7 +299,11 @@ it where that is not `draw_frame` itself.
 13 volumetrics_inject   ─┐ froxel grid (output consumed by composite,
                            VOLUMETRIC_OUTPUT_CONSUMED = true); reads
                            cluster_cull's cluster grid + light-index list
-                           from step 5 (`record_volumetrics_pass`)
+                           from step 5 (`record_volumetrics_pass`). When the
+                           RT or cluster inputs are missing, the first
+                           skipped frame instead clears the slot to the
+                           neutral composite value (`record_neutral_frame`,
+                           latched by `skip_clear_decision`)
 14 volumetrics_integrate ─┘
 15 ssao.comp             ─  SSAO texture (`record_ssao_pass`)
 16 [Composite render pass]─ raster:
@@ -314,8 +383,12 @@ resolution after the upscale so tone-mapping sees full-resolution detail.
 
 Eight colour attachments + depth, all double-buffered (one set per
 `MAX_FRAMES_IN_FLIGHT` = 2). Written by the main render pass
-(`triangle.frag` + `water.frag`), read by SVGF, TAA, SSAO, composite, and
-(the two FSR mask attachments) `frame_upscaler`'s FSR 3.1 SDK dispatch.
+(`triangle.frag` / `triangle_early.frag`, `water.frag`, and
+`groundcover_blade.frag`, which writes attachments 0, 2, 5, 6 and 7 and masks
+off 1, 3 and 4 — `draw_write_masks_match_each_fragment_shaders_outputs`), read
+by SVGF, TAA, SSAO, composite, and (the two FSR mask attachments)
+`frame_upscaler`'s FSR 3.1 SDK dispatch. TAA also reads the reactive mask
+(attachment 6), and both frames' normals (#4944, #5023).
 
 | Attachment | `VkFormat` | Contents | Layout during pass |
 |---|---|---|---|
@@ -325,7 +398,7 @@ Eight colour attachments + depth, all double-buffered (one set per
 | Mesh ID | `R32_UINT` | Bits 0–30: **opaque** = stable `GpuInstance.surface_id`; **alpha-blended** = sorted instance index + 1. Bit 31: `ALPHA_BLEND_NO_HISTORY` (skip SVGF accumulation) | `COLOR_ATTACHMENT_OPTIMAL` |
 | Raw indirect | `B10G11R11_UFLOAT_PACK32` | Albedo-demodulated indirect light (SVGF input) | `COLOR_ATTACHMENT_OPTIMAL` |
 | Albedo | `B10G11R11_UFLOAT_PACK32` | Surface colour (diffuse × vertex colour) | `COLOR_ATTACHMENT_OPTIMAL` |
-| Reactive | `R8_UNORM` | FSR 3.1 reactive mask (transparent coverage) | `COLOR_ATTACHMENT_OPTIMAL` |
+| Reactive | `R8_UNORM` | Reactive mask (transparent coverage). FSR 3.1's reactive input, and read by `taa.comp` (binding 9, #4944) whenever the TAA resolve runs: 1.0 bypasses history, lower values raise the blend α | `COLOR_ATTACHMENT_OPTIMAL` |
 | Transparency | `R8_UNORM` | FSR 3.1 transparency & composition mask | `COLOR_ATTACHMENT_OPTIMAL` |
 | Depth | `D32_SFLOAT` | Standard depth (0.0 = near, 1.0 = far), `LESS_OR_EQUAL`, clear = 1.0 | `DEPTH_STENCIL_ATTACHMENT_OPTIMAL` |
 

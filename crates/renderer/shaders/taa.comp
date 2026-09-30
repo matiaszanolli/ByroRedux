@@ -9,7 +9,9 @@
 //
 // Runs after composite and bloom, before upscale (#3572). Consumes the
 // composited post-bloom scene image (itself assembled from the jittered
-// main render pass) + motion vectors + mesh IDs, produces an anti-aliased
+// main render pass) + motion vectors + mesh IDs (current and previous) +
+// normals (current and previous) + the reactive mask (G-buffer attachment 6,
+// the FSR reactive input, #4944), produces an anti-aliased
 // HDR image plus an updated history that the NEXT frame reads as its
 // prior; the upscale pass then blits/reconstructs from it into the image
 // presentation samples.

@@ -70,7 +70,9 @@ mod tests {
         ("vulkan/context/draw.rs", 2),
         ("vulkan/context/geometry_pass.rs", 1),
         ("vulkan/context/mod.rs", 1),
-        ("vulkan/context/post_passes.rs", 6),
+        // +1 (#4958): `every_frame_recorder_is_documented` strips every test
+        // module itself (`strip_test_modules`), so its self-read is cut.
+        ("vulkan/context/post_passes.rs", 7),
         ("vulkan/context/resize.rs", 1),
         ("vulkan/context/resources.rs", 5),
         ("vulkan/context/skinned_blas_refit.rs", 2),
