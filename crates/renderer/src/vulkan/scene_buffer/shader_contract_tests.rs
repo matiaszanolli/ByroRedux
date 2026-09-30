@@ -1317,14 +1317,16 @@ fn composite_screen_to_world_dir_subtracts_camera_pos() {
 ///
 /// Pre-fix, a future RT shader author following the existing
 /// `vertexData[base + N]` pattern could silently read u32 /
-/// packed-u8 bit patterns as floats. This test grep-checks the
-/// shared secondary-hit include plus its triangle fragment consumer
-/// for any forbidden offset — `+ 12` through `+ 15` (bone
-/// indices) or `+ 20` / `+ 21` (splat weights) — that ISN'T
-/// wrapped in `floatBitsToUint(…)` or `unpackUnorm4x8(…)`.
+/// packed-u8 bit patterns as floats. This test resolves every index
+/// of a raw-float vertex array to its lane and fails on a bone-index
+/// (12..=15) or splat-weight (20 / 21) read that ISN'T the direct
+/// argument of `floatBitsToUint(…)` / `floatBitsToInt(…)`.
 ///
-/// `skin_vertices.comp` reads bone indices but does so through
-/// `floatBitsToUint`; the check excludes that pattern.
+/// #4845 — the lane is resolved, not matched: the shaders spell these
+/// offsets `+ 12u` or `VERTEX_BONE_INDICES_OFFSET_FLOATS + 1u`, and the
+/// old literal `+ 12]` needle matched neither, so the guard was vacuous.
+/// `the_vertex_lane_scanner_recognises_the_shapes_it_exists_to_catch`
+/// is its positive control.
 ///
 /// #4018 (REN-2026-09-06-D2-03) — the source list is DISCOVERED, not
 /// hardcoded. It used to be a literal array, and by the time this was filed
@@ -1421,56 +1423,169 @@ fn rt_hit_shaders_have_no_unsafe_vertex_data_reads() {
         );
     }
 
-    // Strip safe-recovery wrappers so a forbidden raw read
-    // surfaces as a literal `vertexData[... + 11..14|19|20]`.
-    // We don't run a full GLSL parser; instead, line-by-line
-    // we reject any line that contains the forbidden offset
-    // pattern AND no `floatBitsToUint` / `unpackUnorm4x8` /
-    // `floatBitsToInt` recovery call. Whitespace tolerant.
+    // #4845 — resolve every index to its vertex lane instead of matching a
+    // literal `+ 12]`: the shaders spell these lanes `+ 12u]` or through the
+    // `VERTEX_*_OFFSET_FLOATS` constants, neither of which the old needle
+    // could match. The recovery wrapper is checked on the text immediately
+    // before the read, so a call split across lines is recognised too.
+    let names: Vec<&str> = array_names.iter().map(String::as_str).collect();
     for (source_name, src) in sources {
-        for (lineno, line) in src.lines().enumerate() {
-            // Skip the SSBO-declaration block — it documents the
-            // unsafe offsets but doesn't read them.
-            if line.contains("WARNING")
-                || line.contains("│")
-                || line.contains("//")
-                    && (line.contains("floatBitsToUint") || line.contains("unpackUnorm4x8"))
-            {
+        if let Some((lineno, lane, read)) = unsafe_vertex_lane_reads(src, &names).first() {
+            panic!(
+                "{source_name}:{lineno}: unsafe raw-float read of vertex lane {lane} \
+                 ({}) — not an IEEE-754 float. Wrap it in `floatBitsToUint(...)` \
+                 (and `unpackUnorm4x8(...)` for splat lanes) to recover the bit \
+                 pattern. See #575 / SH-1.\nRead: {read}",
+                if (12..=15).contains(lane) {
+                    "u32 bone index"
+                } else {
+                    "packed 4× u8 unorm splat weight"
+                },
+            );
+        }
+    }
+}
+
+/// The per-vertex float lanes that do NOT hold an IEEE-754 float (#575):
+/// bone indices (u32) and the two packed-u8 splat-weight words.
+fn is_bit_pattern_vertex_lane(lane: u32) -> bool {
+    use crate::shader_constants::{
+        VERTEX_BONE_INDICES_OFFSET_FLOATS, VERTEX_SPLAT0_OFFSET_FLOATS,
+        VERTEX_SPLAT1_OFFSET_FLOATS,
+    };
+    (VERTEX_BONE_INDICES_OFFSET_FLOATS..VERTEX_BONE_INDICES_OFFSET_FLOATS + 4).contains(&lane)
+        || lane == VERTEX_SPLAT0_OFFSET_FLOATS
+        || lane == VERTEX_SPLAT1_OFFSET_FLOATS
+}
+
+/// The constant lane offset of a vertex-array index expression: the sum of
+/// its top-level `+` terms that are integer literals (with or without the
+/// `u` suffix) or `VERTEX_*_OFFSET_FLOATS` constants. Runtime terms (`base`,
+/// `b00`, …) are the vertex start and contribute nothing. `None` when no
+/// term is constant, or when a constant term hides inside another operator
+/// the scanner does not model.
+fn vertex_index_lane(index: &str) -> Option<u32> {
+    use crate::shader_constants::{
+        VERTEX_BONE_INDICES_OFFSET_FLOATS, VERTEX_BONE_WEIGHTS_OFFSET_FLOATS,
+        VERTEX_COLOR_OFFSET_FLOATS, VERTEX_NORMAL_OFFSET_FLOATS, VERTEX_SPLAT0_OFFSET_FLOATS,
+        VERTEX_SPLAT1_OFFSET_FLOATS, VERTEX_TANGENT_OFFSET_FLOATS, VERTEX_UV_OFFSET_FLOATS,
+    };
+    let mut lane = None;
+    for term in index.split('+').map(str::trim) {
+        let value = match term {
+            "VERTEX_COLOR_OFFSET_FLOATS" => Some(VERTEX_COLOR_OFFSET_FLOATS),
+            "VERTEX_NORMAL_OFFSET_FLOATS" => Some(VERTEX_NORMAL_OFFSET_FLOATS),
+            "VERTEX_UV_OFFSET_FLOATS" => Some(VERTEX_UV_OFFSET_FLOATS),
+            "VERTEX_BONE_INDICES_OFFSET_FLOATS" => Some(VERTEX_BONE_INDICES_OFFSET_FLOATS),
+            "VERTEX_BONE_WEIGHTS_OFFSET_FLOATS" => Some(VERTEX_BONE_WEIGHTS_OFFSET_FLOATS),
+            "VERTEX_SPLAT0_OFFSET_FLOATS" => Some(VERTEX_SPLAT0_OFFSET_FLOATS),
+            "VERTEX_SPLAT1_OFFSET_FLOATS" => Some(VERTEX_SPLAT1_OFFSET_FLOATS),
+            "VERTEX_TANGENT_OFFSET_FLOATS" => Some(VERTEX_TANGENT_OFFSET_FLOATS),
+            _ => term.trim_end_matches(['u', 'U']).parse::<u32>().ok(),
+        };
+        if let Some(value) = value {
+            lane = Some(lane.unwrap_or(0) + value);
+        }
+    }
+    lane
+}
+
+/// Every read of a raw-float vertex array (`names`) whose index resolves to a
+/// bit-pattern lane and that is not the direct argument of a
+/// `floatBitsToUint(` / `floatBitsToInt(` recovery call. Returns
+/// `(1-based line, lane, read text)`. Comments are blanked first (keeping
+/// line breaks), and the wrapper test looks back across whitespace and
+/// newlines, so a multi-line wrapper is honoured.
+fn unsafe_vertex_lane_reads(src: &str, names: &[&str]) -> Vec<(usize, u32, String)> {
+    let code: String = src
+        .lines()
+        .map(|line| line.find("//").map_or(line, |i| &line[..i]))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let is_ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    let mut found = Vec::new();
+    for name in names {
+        let needle = format!("{name}[");
+        let mut from = 0;
+        while let Some(rel) = code[from..].find(&needle) {
+            let at = from + rel;
+            from = at + needle.len();
+            if code[..at].chars().next_back().is_some_and(is_ident) {
+                continue; // a longer identifier that merely ends in `name`
+            }
+            let open = at + needle.len();
+            let mut depth = 1usize;
+            let Some(close) = code[open..].char_indices().find_map(|(i, c)| {
+                match c {
+                    '[' => depth += 1,
+                    ']' => depth -= 1,
+                    _ => {}
+                }
+                (depth == 0).then_some(open + i)
+            }) else {
+                continue;
+            };
+            let Some(lane) = vertex_index_lane(&code[open..close]) else {
+                continue;
+            };
+            if !is_bit_pattern_vertex_lane(lane) {
                 continue;
             }
-            // Look for `vertexData[ ... + N ]` where N is 12-15 or
-            // 20-21. Tolerate whitespace and the `(vOff + iN)` outer
-            // expression that the existing `getHitUV` site uses.
-            for forbidden in [12, 13, 14, 15, 20, 21] {
-                let needle_simple = format!("+ {}]", forbidden);
-                let needle_alt = format!("+{}]", forbidden);
-                if line.contains(&needle_simple) || line.contains(&needle_alt) {
-                    // Allow the read when it's wrapped in a
-                    // recovery call.
-                    if line.contains("floatBitsToUint")
-                        || line.contains("unpackUnorm4x8")
-                        || line.contains("floatBitsToInt")
-                    {
-                        continue;
-                    }
-                    panic!(
-                        "{source_name}:{}: unsafe `vertexData[... + {}]` read \
-                             (offset {} is {} — not an IEEE-754 float). Use \
-                             `floatBitsToUint(...)` or `unpackUnorm4x8(...)` to \
-                             recover the bit pattern. See #575 / SH-1.\nLine: {}",
-                        lineno + 1,
-                        forbidden,
-                        forbidden,
-                        if (12..=15).contains(&forbidden) {
-                            "u32 (bone index)"
-                        } else {
-                            "packed 4× u8 unorm (splat weight)"
-                        },
-                        line.trim()
-                    );
-                }
+            let before = code[..at].trim_end();
+            if before.ends_with("floatBitsToUint(") || before.ends_with("floatBitsToInt(") {
+                continue;
             }
+            let line = code[..at].matches('\n').count() + 1;
+            found.push((line, lane, code[at..=close].to_owned()));
         }
+    }
+    found.sort();
+    found
+}
+
+/// #4845 — the completeness half of the scan above: the spellings the shaders
+/// actually use (`u`-suffixed literals, the `VERTEX_*_OFFSET_FLOATS`
+/// constants, a recovery call split across lines) must be recognised. The
+/// old literal `+ 12]` needle matched none of them.
+#[test]
+fn the_vertex_lane_scanner_recognises_the_shapes_it_exists_to_catch() {
+    let names = ["vertexData", "inputVertexData"];
+    for caught in [
+        "float raw = vertexData[base + 12u];",
+        "float raw = vertexData[base + 12];",
+        "float raw = vertexData[base+15U];",
+        "float s = vertexData[b00 + VERTEX_SPLAT0_OFFSET_FLOATS];",
+        "float s = vertexData[b00 + VERTEX_SPLAT1_OFFSET_FLOATS];",
+        "float i = vertexData[base + VERTEX_BONE_INDICES_OFFSET_FLOATS + 3u];",
+        // Weights end at 19; one past is the first splat word.
+        "float s = vertexData[base + VERTEX_BONE_WEIGHTS_OFFSET_FLOATS + 4u];",
+        "float i = inputVertexData[src_base + 13u];",
+        // A recovery call elsewhere on the line does not wrap THIS read.
+        "uint a = floatBitsToUint(vertexData[base]) + uint(vertexData[base + 14u]);",
+    ] {
+        assert_eq!(
+            unsafe_vertex_lane_reads(caught, &names).len(),
+            1,
+            "scanner missed an unsafe vertex-lane read: {caught}"
+        );
+    }
+
+    for ignored in [
+        "float w = vertexData[base + VERTEX_BONE_WEIGHTS_OFFSET_FLOATS + 3u];",
+        "float n = vertexData[b00 + VERTEX_NORMAL_OFFSET_FLOATS + 2u];",
+        "vec2 uv = vec2(vertexData[base + 10u], vertexData[base + 11u]);",
+        "uint i = floatBitsToUint(vertexData[base + VERTEX_BONE_INDICES_OFFSET_FLOATS]);",
+        "vec4 s = unpackUnorm4x8(floatBitsToUint(vertexData[b00 + 20u]));",
+        "uint i = floatBitsToUint(\n        vertexData[base + 12u]);",
+        "//   `uvec4 idx = uvec4(floatBitsToUint(vertexData[base + 12]), …);`",
+        "// float raw = vertexData[base + 12u];",
+        // A different array whose name merely ends in `vertexData`.
+        "float t = mirrorvertexData[base + 12u];",
+    ] {
+        assert!(
+            unsafe_vertex_lane_reads(ignored, &names).is_empty(),
+            "scanner false-positived on: {ignored}"
+        );
     }
 }
 
