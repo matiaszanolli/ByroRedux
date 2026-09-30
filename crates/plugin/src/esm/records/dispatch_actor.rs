@@ -39,8 +39,10 @@ pub(super) fn dispatch_actor_group(
             let npc_remap = reader.get_form_id_remap();
             extract_records_with_modl_and_flags(reader, end, b"NPC_", statics, &mut |fid, flags, subs| {
                 let mut record = parse_npc(fid, subs, game, &npc_remap);
-                // #5013 — see `base_actor_starts_dead`.
-                record.starts_dead = base_actor_starts_dead(game, flags);
+                // #5013 — see `base_actor_starts_dead`. OR, not assign:
+                // #5005 already stamped the FO3/FNV health-≤-0 corpse rule
+                // inside `parse_npc` (the marker is on the base's DATA).
+                record.starts_dead |= base_actor_starts_dead(game, flags);
                 index
                     .npcs
                     .insert(fid, record);
@@ -63,8 +65,10 @@ pub(super) fn dispatch_actor_group(
                 // knows which group it read.
                 record.is_creature = true;
                 // #5013 — same Oblivion "Starts Dead" base flag as `NPC_`
-                // above (xEdit TES4 CREA flag 19).
-                record.starts_dead = base_actor_starts_dead(game, flags);
+                // above (xEdit TES4 CREA flag 19). OR, not assign — the
+                // FO3/FNV health-≤0 corpse rule stamps inside `parse_npc`
+                // (#5005), and this assignment used to clobber it.
+                record.starts_dead |= base_actor_starts_dead(game, flags);
                 // #3383 — `CNAM` is a CLAS FormID on NPC_ but names an
                 // unrelated record type on CREA (measured against vanilla:
                 // it resolves to a CLAS record 0/1578 times on FNV and

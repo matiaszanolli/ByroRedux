@@ -574,10 +574,16 @@ pub struct PlacedRef {
     /// remaining game marks corpses differently and is handled at its own
     /// layer: Oblivion stamps the BASE actor's `NPC_`/`CREA` header
     /// (`0x80000`, decoded onto `NpcRecord::starts_dead` — #5013), and
-    /// FO3/FNV carry an authored ragdoll pose (`XRGD`, decoded onto
-    /// [`Self::ragdoll_pose`]) with no header bit at all (#5005 — reading
-    /// the pose as the marker is pending a sourced rule). Zero here is there-
-    /// fore "no placement-level marker", not "not a corpse".
+    /// FO3/FNV corpses carry no placement marker at all — their marker is
+    /// the BASE's `DATA` health ≤ 0 (decoded onto
+    /// `NpcRecord::starts_dead` — #5005; xNVSE `GameObjects.h:99`
+    /// "IsDead = HasNoHealth (baseForm health <= 0 …)" plus the CS wiki
+    /// "Creating Dead Actors" rule it descends from), while the placement's
+    /// `XRGD` is the authored ragdoll POSE (decoded onto
+    /// [`Self::ragdoll_pose`]), not a death signal — vanilla places live
+    /// posed actors over `XRGD` (Fisto, `VHDKimballRangerAmbushed01`).
+    /// Zero here is therefore "no placement-level marker", not "not a
+    /// corpse".
     pub starts_dead: bool,
     /// `ACHR` "Starts Unconscious" flag (0x2000, #5017), FO4 / FO76 /
     /// Starfield only (see `FLAG_STARTS_UNCONSCIOUS`). Vanilla sets it on

@@ -370,6 +370,21 @@ pub struct NpcRecord {
     /// `NPC_:2783`); every other game leaves it `false` because the same
     /// header bit means something else on their base actors. Placements of
     /// such a base spawn dead through the cell loader's `apply_starts_dead`.
+    ///
+    /// FO3 / FNV set it from the BASE's `DATA` health instead (#5005): a
+    /// base with health ≤ 0 is a corpse wherever it is placed — xNVSE's
+    /// reverse-engineered `TESObjectREFR::Unk_8B` ("IsDead = HasNoHealth
+    /// (baseForm health <= 0 …)", `nvse/nvse/GameObjects.h:99`) and the
+    /// Oblivion-generation authoring rule it descends from ("A dead actor
+    /// is simply, an actor who is defined in the CS by having 0 health",
+    /// CS wiki "Creating Dead Actors"). The xNVSE comment's second
+    /// disjunct ("or Flags bit23 set") is deliberately NOT applied: on
+    /// vanilla data that bit marks healthy live NPCs (`NVMerchantMaleB`,
+    /// `VES09Merchant03`) and, on creatures, `kFlags_CreatureImmobile`
+    /// (turrets, ZAX eyes) — killable actors either way. `XRGD` on the
+    /// placement is pose-only data (7 FNV / 6 FO3 vanilla refs carry it
+    /// over live bases — Fisto, `VHDKimballRangerAmbushed01`), never the
+    /// death marker.
     pub starts_dead: bool,
     /// Model path (typically from MODL — head/body mesh, optional).
     ///
@@ -397,6 +412,11 @@ pub struct NpcRecord {
     /// `None` for `NPC_` (whose `DATA` is a different, 11-byte struct) and
     /// for every other game. See [`CreatureStats`].
     pub creature_stats: Option<CreatureStats>,
+    /// FO3 / FNV `NPC_` `DATA` Base Health (`i32 @ 0`, #5005). `None` for
+    /// `CREA` (see [`Self::creature_stats`]) and every other game. Health
+    /// ≤ 0 stamps [`Self::starts_dead`] — the sourced FO3/FNV corpse rule;
+    /// a positive value stays here for the actor-value seeding path.
+    pub data_base_health: Option<i32>,
     /// Race form ID (RNAM).
     pub race_form_id: u32,
     /// Class form ID (CNAM).
@@ -1018,6 +1038,7 @@ pub fn parse_npc(
         body_part_models: Vec::new(),
         is_creature: false,
         creature_stats: None,
+        data_base_health: None,
         race_form_id: 0,
         class_form_id: 0,
         voice_form_id: 0,
@@ -1196,6 +1217,26 @@ fn parse_npc_core(
                 damage,
                 attributes,
             });
+            // #5005 — same sourced rule as the NPC_ arm below: a creature
+            // base with health ≤ 0 is a corpse wherever it is placed.
+            if health <= 0 {
+                record.starts_dead = true;
+            }
+        }
+        // #5005 — FO3 / FNV `NPC_` `DATA`: i32 Base Health + the 7 SPECIAL
+        // attributes (11 bytes), optionally padded by a legacy unused tail
+        // (25 bytes). The Base Health is the FO3/FNV corpse marker — see
+        // [`NpcRecord::starts_dead`] for the sources, and the field doc on
+        // [`NpcRecord::data_base_health`] for why only the health term of
+        // the xNVSE comment is applied.
+        b"DATA"
+            if matches!(game, GameKind::Fallout3NV) && matches!(sub.data.len(), 11 | 25) =>
+        {
+            let health = SubReader::new(&sub.data).i32_or_default();
+            record.data_base_health = Some(health);
+            if health <= 0 {
+                record.starts_dead = true;
+            }
         }
         // SNAM (FNV NPC_): faction form ID (u32) + rank (i8) + pad x3
         b"SNAM" if sub.data.len() >= 8 => {

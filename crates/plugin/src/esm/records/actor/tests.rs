@@ -2072,3 +2072,67 @@ fn the_deepest_authored_stat_still_wins_over_shallower_ones() {
         "the terminal authors Health, so it wins: {derived:?}",
     );
 }
+
+/// #5005 — FO3/FNV corpses key on the BASE actor's `DATA` health (≤ 0):
+/// xNVSE's reverse-engineered `TESObjectREFR::Unk_8B` — "IsDead =
+/// HasNoHealth (baseForm health <= 0 …)" (`nvse/nvse/GameObjects.h:99`)
+/// — and the CS-generation authoring rule it descends from ("A dead
+/// actor is simply, an actor who is defined in the CS by having 0
+/// health", CS wiki "Creating Dead Actors"). Never via `XRGD` (the
+/// placement's ragdoll pose — vanilla poses LIVE actors too), and never
+/// via ACBS bit 23 (vanilla marks healthy live NPCs with it:
+/// `NVMerchantMaleB`, `VES09Merchant03`).
+#[test]
+fn fallout3nv_starts_dead_keys_on_base_data_health() {
+    // NPC_ DATA (11 B): i32 Base Health + 7 SPECIAL bytes.
+    let mut dead = Vec::new();
+    dead.extend_from_slice(&0i32.to_le_bytes());
+    dead.extend_from_slice(&[5u8; 7]);
+    let npc = parse_npc(0x1, &[sub(b"DATA", &dead)], GameKind::Fallout3NV, &None);
+    assert!(npc.starts_dead, "a 0-health NPC_ base is a corpse");
+    assert_eq!(npc.data_base_health, Some(0));
+
+    let mut alive = Vec::new();
+    alive.extend_from_slice(&200i32.to_le_bytes());
+    alive.extend_from_slice(&[5u8; 7]);
+    let npc = parse_npc(0x2, &[sub(b"DATA", &alive)], GameKind::Fallout3NV, &None);
+    assert!(!npc.starts_dead, "a healthy NPC_ base spawns alive");
+    assert_eq!(npc.data_base_health, Some(200));
+
+    // The 25-byte legacy-tail variant decodes the same health.
+    let mut legacy = alive.clone();
+    legacy.extend_from_slice(&[0u8; 14]);
+    let npc = parse_npc(0x3, &[sub(b"DATA", &legacy)], GameKind::Fallout3NV, &None);
+    assert!(!npc.starts_dead, "the legacy DATA tail must not flip the rule");
+    assert_eq!(npc.data_base_health, Some(200));
+
+    // CREA DATA (17 B): i16 health @ 4 (CreatureStats).
+    let mut crea = vec![0u8; 4]; // creature type + 3 skills
+    crea.extend_from_slice(&0i16.to_le_bytes()); // health
+    crea.extend_from_slice(&0u16.to_le_bytes()); // unused
+    crea.extend_from_slice(&10i16.to_le_bytes()); // damage
+    crea.extend_from_slice(&[5u8; 7]);
+    assert_eq!(crea.len(), 17, "fixture must be the exact CREA DATA size");
+    let crea = parse_npc(0x4, &[sub(b"DATA", &crea)], GameKind::Fallout3NV, &None);
+    assert!(crea.starts_dead, "a 0-health CREA base is a corpse");
+    assert_eq!(crea.creature_stats.unwrap().health, 0);
+
+    // ACBS bit 23 alone must NOT mark the base dead: vanilla's
+    // `NVMerchantMaleB` / `VES09Merchant03` carry it and trade alive.
+    let mut acbs = [0u8; 24];
+    acbs[0..4].copy_from_slice(&(1u32 << 23).to_le_bytes());
+    let npc = parse_npc(
+        0x5,
+        &[sub(b"DATA", &alive), sub(b"ACBS", &acbs)],
+        GameKind::Fallout3NV,
+        &None,
+    );
+    assert!(
+        !npc.starts_dead,
+        "bit 23 on a healthy base stays alive (vanilla merchants)"
+    );
+
+    // The health rule is FO3/FNV-scoped: other games' DATA never takes it.
+    let other = parse_npc(0x6, &[sub(b"DATA", &dead)], GameKind::Skyrim, &None);
+    assert!(!other.starts_dead, "the health rule must not leak to other games");
+}

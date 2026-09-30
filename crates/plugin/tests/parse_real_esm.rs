@@ -4675,3 +4675,89 @@ fn assert_xrgd_census(
         "an actor's XRGD is its corpse pose"
     );
 }
+
+/// #5005 — FO3/FNV corpses key on the BASE actor's `DATA` health (≤ 0),
+/// never on the placement's `XRGD` (pose-only: vanilla poses live actors
+/// over `XRGD` — FNV's `VFSFisto`, `VHDKimballRangerAmbushed01`; FO3's
+/// `MS06SuperMutantGunDEAD` leveled-list spawners) and never on ACBS bit
+/// 23 (healthy live NPCs carry it: `NVMerchantMaleB`, `VES09Merchant03`).
+/// Sourced: xNVSE's reverse-engineered `TESObjectREFR::Unk_8B` — "IsDead
+/// = HasNoHealth (baseForm health <= 0 …)" (`nvse/nvse/GameObjects.h:99`)
+/// — descending from the CS wiki's "Creating Dead Actors" ("A dead actor
+/// is simply, an actor who is defined in the CS by having 0 health").
+///
+/// Census (2026-09-30, this fix's `corpse_marker_census` example):
+/// FNV — 401 placements of a health-≤0 base (387 `XRGD` refs, only 380 of
+/// them dead: the `XRGD` marker would both spawn 7 live actors as corpses
+/// and leave 21 authored corpses alive). FO3 — 498 placements of a
+/// health-≤0 base. Pinned exactly so a decode regression or marker-scope
+/// drift shows up as a count change.
+#[test]
+#[ignore = "needs FNV game data on disk"]
+fn fnv_corpses_key_on_base_health_not_xrgd() {
+    let Some(data) = data_dir(test_paths::FNV_ENV, test_paths::FNV_DEFAULT) else {
+        eprintln!("[FNV corpses] skipping: game data unavailable");
+        return;
+    };
+    let bytes = std::fs::read(data.join("FalloutNV.esm")).expect("read FalloutNV.esm");
+    let index = parse_esm(&bytes).expect("parse FalloutNV.esm");
+
+    let corpse_refs = all_placements(&index)
+        .filter(|p| index.actor(p.base_form_id).is_some_and(|b| b.starts_dead))
+        .count();
+    assert_eq!(corpse_refs, 401, "placements of a health-<=0 base");
+
+    // The two refuted markers must not flag live vanilla bases.
+    for merchant in ["NVMerchantMaleB", "VES09Merchant03"] {
+        let base = index
+            .npcs
+            .values()
+            .find(|n| n.editor_id == merchant)
+            .unwrap_or_else(|| panic!("{merchant} must exist in the master"));
+        assert!(
+            !base.starts_dead,
+            "{merchant} carries ACBS bit 23 and trades alive — bit 23 is not a death marker"
+        );
+    }
+    let fisto = index
+        .creatures
+        .values()
+        .find(|c| c.editor_id == "VFSFisto")
+        .expect("VFSFisto must exist in the master");
+    assert!(
+        !fisto.starts_dead,
+        "Fisto is posed over XRGD in-game and alive — XRGD is not a death marker"
+    );
+}
+
+/// The FO3 twin of [`fnv_corpses_key_on_base_health_not_xrgd`]: 498
+/// placements of a health-≤0 base. FO3's live-posed counterexamples are
+/// the `MS06SuperMutantGunDEAD` family — dead-named but healthy by
+/// design, per the CS wiki's leveled-list corpse workflow (positive
+/// health + a die-at-spawn ability), so they stay outside the decode.
+#[test]
+#[ignore = "needs FO3 game data on disk"]
+fn fo3_corpses_key_on_base_health_not_xrgd() {
+    let Some(data) = data_dir(test_paths::FO3_ENV, test_paths::FO3_DEFAULT) else {
+        eprintln!("[FO3 corpses] skipping: game data unavailable");
+        return;
+    };
+    let bytes = std::fs::read(data.join("Fallout3.esm")).expect("read Fallout3.esm");
+    let index = parse_esm(&bytes).expect("parse Fallout3.esm");
+
+    let corpse_refs = all_placements(&index)
+        .filter(|p| index.actor(p.base_form_id).is_some_and(|b| b.starts_dead))
+        .count();
+    assert_eq!(corpse_refs, 498, "placements of a health-<=0 base");
+
+    // FO3 super mutants are CREA records, not NPC_.
+    let spawner = index
+        .creatures
+        .values()
+        .find(|c| c.editor_id == "MS06SuperMutantGunDEAD")
+        .expect("MS06SuperMutantGunDEAD must exist in the master");
+    assert!(
+        !spawner.starts_dead,
+        "dead-named but healthy (leveled-list die-at-spawn workflow) — not a decode target"
+    );
+}
