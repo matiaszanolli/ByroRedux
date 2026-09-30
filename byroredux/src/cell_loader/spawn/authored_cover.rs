@@ -22,12 +22,12 @@ use crate::asset_provider::{MaterialProvider, TextureProvider};
 use crate::cell_loader::load::{register_cell_root, stamp_cell_root_range};
 use crate::cell_loader::nif_import_registry::canonical_model_path_key;
 use crate::cell_loader::references::parse_and_import_nif_pub;
-use crate::components::AuthoredCoverTemplate;
+use crate::components::{AlphaBlend, AuthoredCoverTemplate};
 use byroredux_core::ecs::components::groundcover::AuthoredCover;
 use byroredux_core::ecs::components::{
     Children, GlobalTransform, MeshHandle, RenderLayer, Transform,
 };
-use byroredux_core::ecs::{EntityId, World};
+use byroredux_core::ecs::{EntityId, Material, World};
 use byroredux_core::math::{Quat, Vec3};
 use byroredux_renderer::VulkanContext;
 
@@ -168,9 +168,70 @@ fn spawn_template(
     let mut tagged = 0;
     for child in children {
         if world.get::<MeshHandle>(child).is_some() {
-            world.insert(child, AuthoredCoverTemplate { record });
+            let excluded = blend_only_cover_shape(
+                world.get::<AlphaBlend>(child).is_some(),
+                world.get::<Material>(child).as_deref(),
+            );
+            if excluded {
+                log::warn!(
+                    target: "engine::groundcover",
+                    "authored ground cover: GRAS model '{model_path}' has an alpha-blend-only \
+                     shape (entity {child}); the model tier draws opaque and cannot blend, so \
+                     the shape is skipped rather than drawn as a solid card (#4924)"
+                );
+            }
+            world.insert(child, AuthoredCoverTemplate { record, excluded });
             tagged += 1;
         }
     }
     tagged
+}
+
+/// #4924 — whether a template shape blends without an alpha test. The tier
+/// draws with the opaque pipeline and never sets `DIFFUSE_ALPHA`, and
+/// `triangle.frag` pins texture alpha to 1.0 when the material's alpha
+/// threshold is 0, so such a shape would render as an opaque quad. The
+/// threshold rule mirrors the static-mesh collector's: a threshold counts only
+/// with `alpha_test` on. No threshold is fabricated for these shapes; they are
+/// skipped (no survey has found one yet — see the issue).
+pub(crate) fn blend_only_cover_shape(alpha_blend: bool, material: Option<&Material>) -> bool {
+    let alpha_tested = material.is_some_and(|m| m.alpha_test && m.alpha_threshold > 0.0);
+    alpha_blend && !alpha_tested
+}
+
+#[cfg(test)]
+mod tests {
+    use super::blend_only_cover_shape;
+    use byroredux_core::ecs::Material;
+
+    /// #4924 — the model tier draws opaque, so only a shape that blends with
+    /// no effective alpha test is excluded. The threshold counts only with
+    /// `alpha_test` on, the same rule the static-mesh collector packs.
+    #[test]
+    fn only_blend_without_an_effective_alpha_test_is_excluded() {
+        let tested = Material {
+            alpha_test: true,
+            alpha_threshold: 0.5,
+            ..Material::default()
+        };
+        let untested = Material {
+            alpha_test: false,
+            alpha_threshold: 0.5,
+            ..Material::default()
+        };
+        let zero_threshold = Material {
+            alpha_test: true,
+            alpha_threshold: 0.0,
+            ..Material::default()
+        };
+        // Opaque and alpha-tested cards draw through the tier as before.
+        assert!(!blend_only_cover_shape(false, Some(&untested)));
+        assert!(!blend_only_cover_shape(false, None));
+        assert!(!blend_only_cover_shape(true, Some(&tested)));
+        // Blend with no alpha test, a test with a zero threshold, or no
+        // material at all would all render as an opaque card.
+        assert!(blend_only_cover_shape(true, Some(&untested)));
+        assert!(blend_only_cover_shape(true, Some(&zero_threshold)));
+        assert!(blend_only_cover_shape(true, None));
+    }
 }

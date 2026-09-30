@@ -500,10 +500,13 @@ pub(super) fn collect_static_mesh_draws(
             let world_bound = wb_q.as_ref().and_then(|q| q.get(entity));
             // A template sits at the world origin and is never culled: its
             // draw only carries the shape's material and local transform.
-            let cover_template = cover_template_q
-                .as_ref()
-                .and_then(|q| q.get(entity))
-                .map(|template| template.record);
+            let cover_template_tag = cover_template_q.as_ref().and_then(|q| q.get(entity));
+            // #4924 — a template the spawn path excluded (alpha-blend-only)
+            // is handed to nobody: never drawn directly, never to the tier.
+            if cover_template_tag.is_some_and(|template| template.excluded) {
+                continue;
+            }
+            let cover_template = cover_template_tag.map(|template| template.record);
             let in_raster = visibility::raster_visible(
                 world_bound,
                 cover_template.is_some(),

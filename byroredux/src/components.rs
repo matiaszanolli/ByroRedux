@@ -2035,9 +2035,16 @@ impl Component for WalkSpeed {
 /// Never drawn itself; the static-mesh collector hands its built draw to the
 /// ground-cover model tier, which instances it across the terrain.
 /// `record` indexes the worldspace's `AuthoredCover::records`.
+///
+/// `excluded` (#4924) is the spawn-time verdict that the shape cannot be
+/// drawn by the tier: it draws with the opaque pipeline, so a shape whose
+/// material blends without an alpha test would render as a solid card. An
+/// excluded template stays under the template root (so it is reclaimed with
+/// it) but the collector hands it to nothing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct AuthoredCoverTemplate {
     pub(crate) record: u32,
+    pub(crate) excluded: bool,
 }
 
 impl Component for AuthoredCoverTemplate {
