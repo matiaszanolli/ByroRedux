@@ -45,7 +45,7 @@ pub use cinematic::{
     ImageSpaceModifierApplication, MotionTypeChangeRequest,
 };
 pub use cleanup::event_cleanup_system;
-pub use combat::{AiCombatState, FactionReactionOverride, FactionRelations};
+pub use combat::{AiCombatState, AmbientEngagement, FactionReactionOverride, FactionRelations};
 pub use compatibility::{
     analyze_obscript_bytecode_compatibility, analyze_pex_compatibility,
     analyze_source_compatibility, classify_method_call, classify_static_call,

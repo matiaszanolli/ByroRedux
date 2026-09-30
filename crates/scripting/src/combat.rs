@@ -47,6 +47,29 @@ impl Component for AiCombatState {
     type Storage = SparseSetStorage<Self>;
 }
 
+/// #4816 — marks an [`AiCombatState`] that the engine's ambient
+/// `faction_hostility_system` started, with the target it started against
+/// and how long that target has been out of contact. Only a combat carrying
+/// a current marker is ever dropped for lost contact.
+///
+/// A combat whose current target differs (a script re-targeted it) or whose
+/// `AiCombatState` is gone (target died, `StopCombat`, death) is no longer
+/// ambient, and the marker is dropped. #5046 — `Effect::StartCombat` removes
+/// it too, so a script that re-issues combat against the *same* target the
+/// ambient pass already chose takes ownership of the fight instead of
+/// leaving it on the ambient grace timer. It lives in this crate rather than
+/// beside its producer for exactly that reason. Not saved: `AiCombatState`
+/// is not either, and ambient combat is re-derived after a load.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AmbientEngagement {
+    pub target: EntityId,
+    pub out_of_contact_secs: f32,
+}
+
+impl Component for AmbientEngagement {
+    type Storage = SparseSetStorage<Self>;
+}
+
 /// Directed faction-to-faction combat reactions scripts have set with
 /// `Faction.SetEnemy`, layered over the load order's authored `XNAM`
 /// relations (the SDK `FactionRelationshipCatalog`).

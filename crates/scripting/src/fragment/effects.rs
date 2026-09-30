@@ -622,7 +622,9 @@ pub(crate) fn copied_transform(world: &World, entity: EntityId) -> Option<Transf
 ///     `SceneStopRequest`, `Locked` (write ×2, the `SetLocked` /
 ///     `SetLockLevel` pair — #3159), `AiCombatState` (write,
 ///     `Effect::StartCombat` — MQ101's dragon-attack/keep-escape combat
-///     gate)
+///     gate), `AmbientEngagement` (write, `Effect::StartCombat` taking
+///     ownership of an ambient fight — #5046; taken after the
+///     `AiCombatState` guard drops)
 ///   - **via [`resolve_actor`]** — `PapyrusPlayerEntity` (read)
 ///   - **via [`entity_global_form_id`]** — `FormIdPool` (read)
 ///   - **via [`update_actor_cinematic_state`]** — `ActorCinematicState`
@@ -1536,6 +1538,14 @@ fn apply_ai_combat_effect(
                         attack_cooldown_remaining: 0.0,
                     },
                 );
+            }
+            // #5046 — a scripted combat is never dropped for lost contact
+            // (#4816). The ambient pass keys "this fight is mine" on its
+            // marker's target matching the current one, so re-issuing combat
+            // against the target it already chose must clear the marker, or
+            // the fight stays on the ambient grace timer and auto-drops.
+            if let Some(mut markers) = world.query_mut::<crate::AmbientEngagement>() {
+                markers.remove(actor);
             }
             None
         }

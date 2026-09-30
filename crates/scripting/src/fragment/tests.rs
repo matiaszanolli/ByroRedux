@@ -886,6 +886,16 @@ fn combat_gate_effects_set_faction_hostility_and_arm_ai_combat_state() {
     world
         .resource_mut::<crate::SceneActorBindings>()
         .bind(Q, i32::from(ATTACKER_ALIAS), attacker);
+    // #5046 — the ambient faction pass already armed this actor against the
+    // same target the fragment names (a hostile-faction ambush actor).
+    let player_before = world.resource::<PapyrusPlayerEntity>().0;
+    world.insert(
+        attacker,
+        crate::AmbientEngagement {
+            target: player_before,
+            out_of_contact_secs: 4.0,
+        },
+    );
     let vmad = ScriptInstanceData {
         scripts: vec![ScriptInstance {
             name: "MQ101QuestScript".into(),
@@ -959,6 +969,14 @@ fn combat_gate_effects_set_faction_hostility_and_arm_ai_combat_state() {
         .expect("StartCombat must arm AiCombatState on the resolved actor");
     assert_eq!(combat_state.target, player);
     assert_eq!(combat_state.attack_cooldown_remaining, 0.0);
+    // #5046 — StartCombat takes ownership: with the ambient marker left in
+    // place, `disengage_lost_contact` would read this same-target fight as
+    // ambient and drop it after DISENGAGE_GRACE_SECS out of contact.
+    assert!(
+        world.get::<crate::AmbientEngagement>(attacker).is_none(),
+        "StartCombat must clear the ambient marker so the scripted fight is \
+         never dropped for lost contact"
+    );
 
     // SetEnemy is deferred: not visible until the guard scope drops.
     assert!(world.resource::<crate::FactionRelations>().is_empty());

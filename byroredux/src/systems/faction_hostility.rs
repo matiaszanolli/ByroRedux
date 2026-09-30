@@ -76,22 +76,10 @@ pub(crate) const EVALUATION_PERIOD_SECS: f32 = 0.5;
 /// short enough that a pursuer gives up long before it crosses a cell.
 pub(crate) const DISENGAGE_GRACE_SECS: f32 = 10.0;
 
-/// #4816 — marks an `AiCombatState` this system started, with the target it
-/// started against and how long that target has been out of contact.
-///
-/// A combat whose current target differs (a script re-targeted it) or whose
-/// `AiCombatState` is gone (target died, `StopCombat`, death) is no longer
-/// ambient, and the marker is dropped. Not saved: `AiCombatState` is not
-/// either, and ambient combat is re-derived after a load.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) struct AmbientEngagement {
-    pub(crate) target: EntityId,
-    pub(crate) out_of_contact_secs: f32,
-}
-
-impl Component for AmbientEngagement {
-    type Storage = SparseSetStorage<Self>;
-}
+/// #4816 — the marker on an `AiCombatState` this system started. Defined in
+/// the scripting crate (#5046) so `Effect::StartCombat` can clear it: a
+/// scripted fight must never inherit the ambient lost-contact timer.
+pub(crate) use byroredux_scripting::AmbientEngagement;
 
 /// An NPC's `AIDT` combat disposition, stamped at spawn from the resolved
 /// "Use AI Data" terminal. Only actors that carry it perceive and start
