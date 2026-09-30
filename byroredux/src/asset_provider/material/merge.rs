@@ -644,8 +644,11 @@ fn merge_bgsm_arm(
     // * the conductor diffuse tint — a consequence of that metalness, so it
     //   must not fire on a metalness that was never derived.
     //
-    // Roughness and the tint are left to whatever the NIF side classified.
-    // Metalness is not (#4941): FO4's spec-gloss model expresses a conductor
+    // Roughness and the tint are left to whatever the NIF side classified —
+    // the same treatment walker.rs gives a disabled `NiSpecularProperty`
+    // (#696), which zeroes specular and leaves roughness to the classifier.
+    // That includes the #3639 near-mirror fallback below, which is gated on
+    // the enabled bit for exactly this reason (#5012). Metalness is not (#4941): FO4's spec-gloss model expresses a conductor
     // only through its specular block, so a disabled block authors a
     // dielectric. Deferring to the NIF side was assumed to land there too —
     // but `classify_pbr_keyword`'s metal arms (`metal`/`steel`/`iron`…,
@@ -1129,7 +1132,14 @@ fn merge_bgsm_arm(
     // owns "authored, but resolved to handle 0", using the shader's own
     // predicate. Both apply `NEAR_MIRROR_NEUTRAL_ROUGHNESS`, and the
     // spawn pass is a no-op on materials this arm already neutralised.
-    if leaf.smoothness >= 1.0 && material.textures.smooth_spec.is_none() {
+    //
+    // #5012 — only on the enabled arm. The premise ("smoothness 1.0 lowered
+    // roughness to the floor above") holds only there; a disabled specular
+    // block derives no roughness, so its left-in-place smoothness 1.0 must
+    // not reach one through this back door either. Ungated, 247 FO4 and 619
+    // FO76 spec-off files took 0.5 while the other spec-off files kept the
+    // NIF-side value — one authoring intent, two outcomes.
+    if leaf.specular_enabled && leaf.smoothness >= 1.0 && material.textures.smooth_spec.is_none() {
         material.roughness_override = Some(NEAR_MIRROR_NEUTRAL_ROUGHNESS);
     }
 

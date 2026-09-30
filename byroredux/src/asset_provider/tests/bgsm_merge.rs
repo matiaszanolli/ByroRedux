@@ -1024,6 +1024,9 @@ fn bgsm_merge_falls_back_to_neutral_roughness_when_smoothness_is_one_with_no_glo
         path,
         ResolvedMaterial {
             file: BgsmFile {
+                // The fallback covers the enabled arm only (#5012); the
+                // `Default` false would route this through spec-off.
+                specular_enabled: true,
                 smoothness: 1.0,
                 specular_color: [1.0, 1.0, 1.0],
                 specular_mult: 1.0,
@@ -1400,13 +1403,17 @@ fn bgem_merge_fills_envmap_when_env_mapping_enabled() {
 
 /// #4654 (PAR-D5-2026-09-21-02) — `specular_enabled = false` zeroes the
 /// forwarded specular colour and strength, keeps smoothness from
-/// deriving glossiness, and leaves the roughness override unset (matte
-/// default) instead of `1 - smoothness` — mirroring the NIF-side
-/// disabled-NiSpecularProperty handling (#696). The audit measured 467
-/// FO4 + 653 FO76 BGSMs authored off, mostly paintings/signage whose
-/// specular fields sit at full-strength defaults.
+/// deriving glossiness, and leaves roughness to the NIF side instead of
+/// `1 - smoothness` — mirroring the NIF-side disabled-NiSpecularProperty
+/// handling (#696). The audit measured 467 FO4 + 653 FO76 BGSMs authored
+/// off, mostly paintings/signage whose specular fields sit at full-strength
+/// defaults.
+///
+/// #5012 — pinned with a NIF-side sentinel and smoothness 1.0 with no gloss
+/// map, the exact shape (247 FO4 / 619 FO76 files) that the ungated #3639
+/// near-mirror fallback used to rewrite to 0.5.
 #[test]
-fn bgsm_specular_disabled_zeroes_specular_and_keeps_matte_roughness() {
+fn bgsm_specular_disabled_zeroes_specular_and_keeps_nif_roughness() {
     let mut pool = byroredux_core::string::StringPool::new();
     let path = "materials/tests/specular_disabled.bgsm";
     let mut provider = MaterialProvider::new();
@@ -1424,6 +1431,9 @@ fn bgsm_specular_disabled_zeroes_specular_and_keeps_matte_roughness() {
         },
     );
     let mut mesh = imported_mesh_with_material_path(&mut pool, path);
+    const NIF_ROUGHNESS: f32 = 0.73;
+    mesh.material.roughness_override = Some(NIF_ROUGHNESS);
+    assert!(mesh.material.textures.smooth_spec.is_none());
     let glossiness_before = mesh.material.glossiness;
 
     assert!(merge_external_material(&mut mesh.material, &mut provider, &mut pool, &|_| false).merged());
@@ -1445,20 +1455,14 @@ fn bgsm_specular_disabled_zeroes_specular_and_keeps_matte_roughness() {
         "glossiness must keep whatever the NIF side authored — the disabled \
          specular block contributes nothing"
     );
-    // The matte default: the #3905 neutral roughness (0.5 — the same
-    // "no data" convention `classify_pbr_keyword` uses), NOT the
-    // near-mirror `1 - smoothness` = 0.04 the disabled specular block's
-    // left-in-place smoothness 1.0 used to fabricate.
-    assert_ne!(
-        mesh.material.roughness_override,
-        Some(0.04),
-        "1 - smoothness must not fabricate a near-mirror roughness when \
-         the artist disabled specular (#4654)"
-    );
+    // Neither the near-mirror `1 - smoothness` = 0.04 the disabled block's
+    // left-in-place smoothness 1.0 used to fabricate (#4654), nor the #3639
+    // neutral 0.5 that the ungated fallback substituted for it (#5012).
     assert_eq!(
         mesh.material.roughness_override,
-        Some(crate::asset_provider::material::NEAR_MIRROR_NEUTRAL_ROUGHNESS),
-        "roughness stays at the matte neutral default (#4654)"
+        Some(NIF_ROUGHNESS),
+        "a disabled specular block derives no roughness: the NIF-side value \
+         must survive the merge, including the #3639 fallback (#4654, #5012)"
     );
 }
 

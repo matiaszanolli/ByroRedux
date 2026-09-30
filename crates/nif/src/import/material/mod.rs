@@ -1422,10 +1422,12 @@ impl MaterialInfo {
     /// the parser with explicit `metalness_override` /
     /// `roughness_override` populated. The BGSM merge layer
     /// downstream (`asset_provider::merge_external_material`)
-    /// overwrites both unconditionally for BGSM-resolved materials,
-    /// so legacy Oblivion / FO3 / FNV / pre-Skyrim meshes keep the
-    /// values this method writes; BGSM-using FO4 / Skyrim meshes get
-    /// the authored spec-glossiness translation instead.
+    /// overwrites both for BGSM-resolved materials whose specular block
+    /// is enabled, so legacy Oblivion / FO3 / FNV / pre-Skyrim meshes keep
+    /// the values this method writes; BGSM-using FO4 / Skyrim meshes get
+    /// the authored spec-glossiness translation instead. A spec-disabled
+    /// BGSM overwrites only metalness (0.0, #4941) and keeps this method's
+    /// roughness (#4654, #5012).
     ///
     /// Single source of truth — delegates to the free fn
     /// `byroredux_core::ecs::components::material::classify_pbr_keyword`,
