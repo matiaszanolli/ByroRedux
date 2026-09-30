@@ -1278,10 +1278,10 @@ fn populate_candidates(world: &World, candidates: &mut FxHashMap<EntityId, Inter
         let talkable: Vec<EntityId> = candidate_entities
             .into_iter()
             .filter(|entity| Some(*entity) != player)
+            // #5043 — the dead and the fighting offer no "Talk"; the
+            // dialogue selection refuses the same two states.
             .filter(|entity| {
-                world
-                    .get::<byroredux_core::ecs::components::Dead>(*entity)
-                    .is_none()
+                crate::systems::npc_dialogue::npc_refuses_dialogue(world, *entity).is_none()
             })
             .filter(|entity| {
                 world

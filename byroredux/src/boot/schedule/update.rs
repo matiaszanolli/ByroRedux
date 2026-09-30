@@ -119,6 +119,8 @@ pub(super) fn register_update_systems(scheduler: &mut Scheduler) {
             .reads::<byroredux_physics::Ragdoll>()
             .reads_resource::<crate::inventory::InventoryCatalog>()
             .reads::<byroredux_scripting::SceneAliasCandidate>()
+            // #5043 — the Talk arm skips actors in combat.
+            .reads::<byroredux_scripting::AiCombatState>()
             .reads::<byroredux_core::ecs::components::Inventory>()
             .reads_resource::<ActionState>()
             .reads_resource::<ActiveCamera>()

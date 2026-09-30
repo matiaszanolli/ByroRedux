@@ -25,8 +25,8 @@ use byroredux_core::ecs::components::Dead;
 use byroredux_core::ecs::{Component, EntityId, SparseSetStorage, World};
 use byroredux_plugin::esm::records::DialRecord;
 use byroredux_scripting::{
-    running_quests_binding_entity, select_first_info, ActivateEvent, DialogueRegistry,
-    SceneAliasCandidate,
+    running_quests_binding_entity, select_first_info, ActivateEvent, AiCombatState,
+    DialogueRegistry, SceneAliasCandidate,
 };
 
 use crate::cell_loader::LoadedCellIndex;
@@ -42,8 +42,9 @@ pub(crate) struct DialogueTopicEntry {
     pub(crate) name: String,
 }
 
-/// The activation-driven topic selection on an NPC — one per activation,
-/// overwritten by the next. Runtime interaction state, never serialized
+/// The activation-driven topic selection on an NPC. At most one entity
+/// carries it: [`apply_selection`] strips it from every other NPC before
+/// stamping the newly selected one (#5038). Runtime interaction state, never serialized
 /// (it re-derives from the authored records + running quests on the next
 /// activation; the same posture as `InteractionTrace`).
 #[derive(Debug, Clone, PartialEq)]
@@ -146,6 +147,18 @@ fn apply_selection(world: &World, npc: EntityId, topic: NpcDialogueTopic, record
         registry.insert_topic(record);
     }
     if let Some(mut topics) = world.query_mut::<NpcDialogueTopic>() {
+        // #5038 — one live selection. A previous conversation partner's stamp
+        // would otherwise outlive the conversation until despawn, and any
+        // reader that does not key on `DialogueSurfaceState::npc` would see
+        // two selections.
+        let stale: Vec<EntityId> = topics
+            .iter()
+            .map(|(entity, _)| entity)
+            .filter(|entity| *entity != npc)
+            .collect();
+        for entity in stale {
+            topics.remove(entity);
+        }
         topics.insert(npc, topic.clone());
     }
     if let Some(mut surface) = world.try_resource_mut::<DialogueSurfaceState>() {
@@ -169,6 +182,20 @@ struct TopicSelection {
     record: DialRecord,
 }
 
+/// #5043 — whether `npc` is in no state to hold a conversation: dead (corpse
+/// loot owns it), or fighting (`AiCombatState`, against the player or
+/// anyone else). The interaction Talk arm applies the same two filters, so
+/// the prompt and the selection agree.
+pub(crate) fn npc_refuses_dialogue(world: &World, npc: EntityId) -> Option<&'static str> {
+    if world.get::<Dead>(npc).is_some() {
+        return Some("that actor is dead");
+    }
+    if world.get::<AiCombatState>(npc).is_some() {
+        return Some("that actor is in combat");
+    }
+    None
+}
+
 /// Reusable per-frame scratch (mirrors `WalkAnimScratch`'s shape).
 #[derive(Default)]
 struct NpcDialogueScratch {
@@ -178,6 +205,12 @@ struct NpcDialogueScratch {
 fn npc_dialogue_selection_system_inner(world: &World, scratch: &mut NpcDialogueScratch) {
     // ── Pass 1: read-only gather + decide. ──
     scratch.selections.clear();
+    // #5043 / #4701 — a dead player drives no dialogue, the same gate the
+    // combat, interaction and inventory entry points apply. A scripted
+    // player activation reaches this system without the interaction gate.
+    if !crate::systems::player_can_act(world) {
+        return;
+    }
     let Some(player) = world
         .try_resource::<PlayerEntity>()
         .and_then(|player| player.0)
@@ -202,8 +235,8 @@ fn npc_dialogue_selection_system_inner(world: &World, scratch: &mut NpcDialogueS
     }
     for (npc, activator) in events {
         // The player activates; the player is never its own dialogue target;
-        // the dead are corpse-loot territory, not conversation partners.
-        if activator != player || npc == player || world.get::<Dead>(npc).is_some() {
+        // the dead and the fighting are not conversation partners (#5043).
+        if activator != player || npc == player || npc_refuses_dialogue(world, npc).is_some() {
             continue;
         }
         // The actor identity the alias fill stamped — also what INFO speaker
@@ -264,8 +297,13 @@ pub(crate) fn select_topic_by_form_id(
     {
         return Err("the player is not a dialogue target".to_string());
     }
-    if world.get::<Dead>(npc).is_some() {
-        return Err("that actor is dead".to_string());
+    // #5043 — a topic click on an already-open surface is a dialogue entry
+    // point too.
+    if !crate::systems::player_can_act(world) {
+        return Err("the player cannot act".to_string());
+    }
+    if let Some(reason) = npc_refuses_dialogue(world, npc) {
+        return Err(reason.to_string());
     }
     let Some(index) = world.try_resource::<LoadedCellIndex>() else {
         return Err("no loaded plugin index".to_string());
@@ -301,13 +339,16 @@ pub(crate) fn select_topic_by_form_id(
 
 /// The response surface's snapshot — the plain-data twin the debug-ui
 /// crate renders (it cannot see this crate's component types). `None`
-/// when no NPC carries a selection.
+/// when no NPC is selected or the selected NPC no longer carries a topic.
+///
+/// #5038 — keyed on [`DialogueSurfaceState::npc`], the NPC the last applied
+/// selection named, never on whichever `NpcDialogueTopic` the sparse set
+/// happens to yield first.
 pub(crate) fn dialogue_snapshot(
     world: &World,
 ) -> Option<byroredux_debug_ui::DialogueTopicSnapshot> {
-    let (npc, topic) = world
-        .query::<NpcDialogueTopic>()
-        .and_then(|topics| topics.iter().next().map(|(npc, topic)| (npc, topic.clone())))?;
+    let npc = world.try_resource::<DialogueSurfaceState>()?.npc?;
+    let topic = world.get::<NpcDialogueTopic>(npc)?.clone();
     // Many quest DIALs ship no EDID; the selected entry's authored FULL (the
     // player-facing prompt) is the surface's header then.
     let topic_name = if topic.topic_editor_id.is_empty() {
@@ -619,5 +660,116 @@ mod tests {
         world.insert(eltrys, ActivateEvent { activator: bystander });
         npc_dialogue_selection_system(&world);
         assert!(selected(&world, eltrys).is_none(), "non-player activator");
+    }
+
+    /// Registers everything the selection reads, installs the index, and
+    /// binds `refs` to aliases 1..=n of the running fixture quest.
+    fn bound_world(refs: &[(u32, u32)]) -> (World, EntityId, Vec<EntityId>) {
+        let mut world = World::new();
+        world.register::<ActivateEvent>();
+        world.register::<NpcDialogueTopic>();
+        world.register::<SceneAliasCandidate>();
+        world.register::<Dead>();
+        world.register::<AiCombatState>();
+        world.insert_resource(DialogueRegistry::default());
+        world.insert_resource(DialogueSurfaceState::default());
+        let player = spawn_player(&mut world);
+        let npcs = refs
+            .iter()
+            .map(|&(reference, base)| spawn_actor(&mut world, reference, base))
+            .collect();
+        install_index(&mut world);
+        install_scene_quest_aliases(
+            &mut world,
+            [QustRecord {
+                form_id: QUEST,
+                aliases: refs
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &(reference, _))| QuestAlias {
+                        alias_id: i as i32 + 1,
+                        fill_type: Some(AliasFillType::ForcedReference(reference)),
+                        ..Default::default()
+                    })
+                    .collect(),
+                ..Default::default()
+            }],
+        );
+        start_quest(&mut world);
+        refresh_scene_actor_bindings(&world);
+        (world, player, npcs)
+    }
+
+    /// #5038 — talk to A, then B: the surface presents B, and A no longer
+    /// carries a selection. Sparse-set order used to hand the snapshot A's
+    /// topic and route the next click to A.
+    #[test]
+    fn a_second_conversation_presents_the_second_npc() {
+        let (mut world, player, npcs) =
+            bound_world(&[(SPEAKER_REF, SPEAKER_BASE), (OTHER_REF, 0x20_0002)]);
+        let (eltrys, patron) = (npcs[0], npcs[1]);
+
+        world.insert(eltrys, ActivateEvent { activator: player });
+        npc_dialogue_selection_system(&world);
+        world.remove::<ActivateEvent>(eltrys);
+        assert_eq!(dialogue_snapshot(&world).expect("A selected").npc, eltrys);
+
+        world.insert(patron, ActivateEvent { activator: player });
+        npc_dialogue_selection_system(&world);
+
+        let snapshot = dialogue_snapshot(&world).expect("B selected");
+        assert_eq!(snapshot.npc, patron, "the surface must present B");
+        assert_eq!(snapshot.info_form_id, INFO_GENERIC);
+        assert_eq!(snapshot.response_text, "Watch yourself in this city.");
+        assert!(
+            selected(&world, eltrys).is_none(),
+            "A's selection must not outlive the conversation"
+        );
+        assert_eq!(world.resource::<DialogueSurfaceState>().serial, 2);
+    }
+
+    /// #5043 / #4701 — a dead player drives neither entry point.
+    #[test]
+    fn a_dead_player_drives_no_dialogue() {
+        let (mut world, player, npcs) = bound_world(&[(SPEAKER_REF, SPEAKER_BASE)]);
+        let eltrys = npcs[0];
+        world.insert(player, Dead);
+
+        world.insert(eltrys, ActivateEvent { activator: player });
+        npc_dialogue_selection_system(&world);
+        assert!(selected(&world, eltrys).is_none(), "scripted activation");
+        assert!(
+            select_topic_by_form_id(&mut world, eltrys, TOPIC).is_err(),
+            "topic click on an open surface"
+        );
+        assert_eq!(world.resource::<DialogueSurfaceState>().serial, 0);
+    }
+
+    /// #5043 — an NPC in combat refuses both entry points.
+    #[test]
+    fn a_combatant_npc_refuses_dialogue() {
+        let (mut world, player, npcs) = bound_world(&[(SPEAKER_REF, SPEAKER_BASE)]);
+        let eltrys = npcs[0];
+        world.insert(
+            eltrys,
+            AiCombatState {
+                target: player,
+                attack_cooldown_remaining: 0.0,
+            },
+        );
+
+        world.insert(eltrys, ActivateEvent { activator: player });
+        npc_dialogue_selection_system(&world);
+        assert!(selected(&world, eltrys).is_none(), "activation mid-fight");
+        let err = select_topic_by_form_id(&mut world, eltrys, TOPIC).unwrap_err();
+        assert!(err.contains("combat"), "{err}");
+
+        // Out of combat, the same NPC talks again.
+        world.remove::<AiCombatState>(eltrys);
+        npc_dialogue_selection_system(&world);
+        assert_eq!(
+            selected(&world, eltrys).expect("talks after combat").info_form_id,
+            INFO_ELTRYS
+        );
     }
 }

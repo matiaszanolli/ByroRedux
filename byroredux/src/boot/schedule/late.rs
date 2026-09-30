@@ -430,6 +430,8 @@ pub(super) fn register_late_systems(scheduler: &mut Scheduler) {
             .reads::<byroredux_scripting::ActivateEvent>()
             .reads::<byroredux_scripting::SceneAliasCandidate>()
             .reads::<byroredux_core::ecs::components::Dead>()
+            // #5043 — combatant NPCs refuse dialogue.
+            .reads::<byroredux_scripting::AiCombatState>()
             .reads::<byroredux_core::ecs::components::FormIdComponent>()
             .writes::<crate::systems::npc_dialogue::NpcDialogueTopic>()
             .reads_resource::<crate::systems::PlayerEntity>()
