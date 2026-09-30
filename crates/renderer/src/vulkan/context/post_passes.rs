@@ -457,8 +457,13 @@ impl VulkanContext {
                     .accel_manager
                     .as_ref()
                     .and_then(|accel| accel.tlas_handle(frame));
-                match tlas_handle {
-                    Some(tlas) => {
+                // #5064 — a TLAS alone is not enough: bindings 9/10 stay
+                // unwritten until the mesh registry has global geometry, and
+                // the shader dereferences them on any committed hit. Skip
+                // (with the clear-for-skip below) until both are live.
+                let geometry_ready = caustic.geometry_bound(frame);
+                match (tlas_handle, geometry_ready) {
+                    (Some(tlas), true) => {
                         caustic.write_tlas(&self.device, frame, tlas);
                         if let Some(ref mut timers) = self.gpu_timers {
                             timers.cmd_caustic_splat_start(&self.device, cmd, frame);
@@ -479,7 +484,7 @@ impl VulkanContext {
                             }
                         }
                     }
-                    None => false,
+                    _ => false,
                 }
             } else {
                 false

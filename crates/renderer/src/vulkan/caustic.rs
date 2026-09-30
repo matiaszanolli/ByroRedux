@@ -55,6 +55,7 @@ use crate::shader_constants::CAUSTIC_FIXED_SCALE;
 use crate::shader_constants::{WORKGROUP_X, WORKGROUP_Y};
 use anyhow::{Context, Result};
 use ash::vk;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 const CAUSTIC_SPLAT_COMP_SPV: &[u8] = include_bytes!("../../shaders/caustic_splat.comp.spv");
 
@@ -257,6 +258,16 @@ pub struct CausticPipeline {
     /// residual half-rate shimmer for the first ~2 s of a parked camera
     /// (the exact artifact the EMA exists to remove).
     parked_frames: [u32; MAX_FRAMES_IN_FLIGHT],
+
+    /// #5064 — per-FIF latch: bindings 9/10 are only written by
+    /// `write_geometry_buffers`, and only when the mesh registry has global
+    /// geometry. Until it fires for this slot the descriptors were never
+    /// updated, and dispatching a shader that dereferences them is
+    /// `VUID-vkCmdDispatch-None-08114` undefined behaviour. The host skips
+    /// the splat (with the usual clear-for-skip) while the latch is down.
+    /// Global geometry buffers only transition `Some → None` at teardown, so
+    /// the latch never needs to reset.
+    geometry_bound: [AtomicBool; MAX_FRAMES_IN_FLIGHT],
 }
 
 impl CausticPipeline {
@@ -340,6 +351,7 @@ impl CausticPipeline {
             strength: 1.0,
             max_lights: 8,
             parked_frames: [0; MAX_FRAMES_IN_FLIGHT],
+            geometry_bound: std::array::from_fn(|_| AtomicBool::new(false)),
         };
 
         // SAFETY (inside macro): `partial` is local to this fn and not
@@ -737,6 +749,16 @@ impl CausticPipeline {
             // arrays remain live for the duration of update_descriptor_sets.
             device.update_descriptor_sets(&writes, &[])
         }
+        // #5064 — the first write for this slot opens the dispatch gate.
+        self.geometry_bound[frame_index].store(true, Ordering::Relaxed);
+    }
+
+    /// Whether bindings 9/10 have been written for `frame`'s descriptor set
+    /// (see [`CausticPipeline::write_geometry_buffers`]). The splat dispatch
+    /// must be skipped while this is false — the shader dereferences both
+    /// bindings unconditionally once a ray hits.
+    pub fn geometry_bound(&self, frame: usize) -> bool {
+        self.geometry_bound[frame].load(Ordering::Relaxed)
     }
 
     /// Caustic accumulator view used by the composite pass as
@@ -1430,6 +1452,22 @@ mod tests {
         assert!(
             draw.contains("caustic.write_geometry_buffers"),
             "streaming buffer reallocations must refresh caustic geometry descriptors"
+        );
+    }
+
+    /// #5064 — bindings 9/10 are only written when global geometry exists, so
+    /// the dispatch must be gated on the per-FIF `geometry_bound` latch. In
+    /// the bare demo scene (meshes via `MeshRegistry::upload`, TLAS built, no
+    /// global SSBO) the unguarded dispatch read never-updated descriptors —
+    /// `VUID-vkCmdDispatch-None-08114` on the validation lane.
+    #[test]
+    fn caustic_dispatch_is_gated_on_geometry_bindings_written() {
+        let host = crate::source_scan::production_text(include_str!("context/post_passes.rs"));
+        assert!(
+            host.contains("caustic.geometry_bound(frame)"),
+            "record_caustic_splat_pass must skip the dispatch until \
+             write_geometry_buffers has run for this FIF slot (#5064) — \
+             unwritten bindings 9/10 make any committed-hit read UB"
         );
     }
 
