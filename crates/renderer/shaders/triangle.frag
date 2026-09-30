@@ -4615,7 +4615,11 @@ void main() {
     // which would throw away all history and reintroduce the aliasing the
     // upscaler exists to remove. `finalAlpha` is the same coverage the HDR
     // blend uses, so vertex-colour alpha and animated whole-object fades
-    // participate without a second code path.
+    // participate without a second code path. The 0.9 cap is the policy for
+    // coverage blending only: the screen-composition proxy above and
+    // `water.frag` write a full 1.0 to both masks, because their colour
+    // tracks a sampled background their motion vectors do not describe
+    // (fsr3-upscaler-integration-plan.md §1.4, #4864).
     //
     // Transparency & composition marks shading whose evolution depth and
     // motion cannot describe at all. Refractive glass is the clear case:
