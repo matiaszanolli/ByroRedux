@@ -100,3 +100,75 @@ fn legacy_index_placements_keep_authored_units() {
         assert_eq!(refr.scale, 2.0);
     }
 }
+
+/// A WTHR shaped like Starfield.esm's `DefaultWeather` (local FormID
+/// 0x15E): FNAM authors 10 / 3000 / 10 / 3000 — metric fog distances,
+/// magnitude-matched to the metric LGTM corpus (`DefaultLightingTemplate`
+/// 750 / 12000 m). Shared by the Starfield-lift and legacy-passthrough
+/// tests below (#5134). `hedr_version` 1.71 (Skyrim SE) pads FNAM to the
+/// 32-byte schema that `parse_wthr_skyrim` requires; the other versions
+/// take the 16-byte Gamebryo/FO3-era form.
+fn weather_plugin(hedr_version: f32) -> Vec<u8> {
+    let mut hedr = hedr_version.to_le_bytes().to_vec();
+    hedr.extend_from_slice(&[0; 8]);
+    let mut data = build_record(b"TES4", 0, &[(b"HEDR", hedr)]);
+    let mut fnam: Vec<u8> = [10.0f32, 3000.0, 10.0, 3000.0]
+        .into_iter()
+        .flat_map(f32::to_le_bytes)
+        .collect();
+    if hedr_version == 1.71 {
+        // Skyrim's 32-B FNAM tail: power + max for day/night (defaults).
+        fnam.extend_from_slice(&1.0f32.to_le_bytes());
+        fnam.extend_from_slice(&1.0f32.to_le_bytes());
+        fnam.extend_from_slice(&1.0f32.to_le_bytes());
+        fnam.extend_from_slice(&1.0f32.to_le_bytes());
+    }
+    data.extend(wrap_group(
+        b"WTHR",
+        &build_record(
+            b"WTHR",
+            0x15E,
+            &[
+                (b"EDID", b"DefaultWeather\0".to_vec()),
+                (b"FNAM", fnam),
+            ],
+        ),
+    ));
+    data
+}
+
+/// #5134 — Starfield WTHR fog distances must be lifted by
+/// `BETHESDA_UNITS_PER_METER` in `spatial_units::normalize`, exactly like
+/// the XCLL / LGTM fog above. Pre-fix, `translate_weather` read the raw
+/// metres as engine units and `fit_legacy_fog_extinction` divided by 70,
+/// fitting a 10 / 3000 m ramp as 0.14 / 42.9 m — every Starfield exterior
+/// with a resolved climate fogged out at ~43 m.
+#[test]
+fn starfield_public_index_lifts_wthr_fog_distances() {
+    let index = parse_esm(&weather_plugin(0.96)).unwrap();
+    assert_eq!(index.game, GameKind::Starfield);
+    let w = &index.weathers[&0x15E];
+    assert_eq!(w.editor_id, "DefaultWeather");
+    assert_eq!(w.fog_day_near, 700.0);
+    assert_eq!(w.fog_day_far, 210_000.0);
+    assert_eq!(w.fog_night_near, 700.0);
+    assert_eq!(w.fog_night_far, 210_000.0);
+}
+
+/// Companion: every non-Starfield game keeps the authored FNAM values —
+/// the unit lift keys on `GameKind::Starfield` exactly like the rest of
+/// `normalize` (#4837 sibling rule).
+#[test]
+fn legacy_index_wthr_keeps_authored_units() {
+    for hedr in [0.94, 1.34, 1.71, 1.0, 279.0] {
+        let index = parse_esm(&weather_plugin(hedr)).unwrap();
+        let w = &index.weathers[&0x15E];
+        assert_eq!(
+            w.fog_day_far, 3000.0,
+            "hedr {hedr}: non-Starfield WTHR fog must stay in authored units"
+        );
+        assert_eq!(w.fog_day_near, 10.0);
+        assert_eq!(w.fog_night_near, 10.0);
+        assert_eq!(w.fog_night_far, 3000.0);
+    }
+}

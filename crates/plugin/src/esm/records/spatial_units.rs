@@ -110,6 +110,22 @@ pub(super) fn normalize(index: &mut EsmIndex) {
         optional(&mut light.light_fade_begin);
         optional(&mut light.light_fade_end);
     }
+    // #5134 — WTHR fog distances are metric on Starfield, same as the
+    // XCLL/LGTM fog lifted above: Starfield.esm's `DefaultWeather` FNAM
+    // reads 10 / 3000 (metres, matching the metric LGTM corpus), and
+    // `translate_weather` feeds these fields to the fog-medium fitter
+    // which divides by `BETHESDA_UNITS_PER_METER`. Unlifted, every
+    // Starfield exterior with a resolved climate fitted a ~70× too-dense
+    // medium (3000 m read as 42.9 m). Keep `translate_weather` unchanged
+    // — units are settled before the boundary. The FO4-form height-fog
+    // tail stays FO4/FO76-gated in `parse_wthr` (#5001); once Starfield
+    // decodes it, the height fields need the same lift here.
+    for weather in index.weathers.values_mut() {
+        weather.fog_day_near *= UNITS;
+        weather.fog_day_far *= UNITS;
+        weather.fog_night_near *= UNITS;
+        weather.fog_night_far *= UNITS;
+    }
     // NAVM was drained from cells into this one map before normalization.
     // Opaque packed payloads remain wire data; only decoded geometry is lifted.
     for nav in index.navmeshes.values_mut() {
