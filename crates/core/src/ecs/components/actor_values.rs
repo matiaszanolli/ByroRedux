@@ -32,7 +32,8 @@ use crate::ecs::sparse_set::SparseSetStorage;
 use crate::ecs::storage::Component;
 use std::collections::HashMap;
 
-/// The four composition layers of a single actor value.
+/// The four composition layers of a single actor value, plus whether the
+/// base layer was ever authored.
 ///
 /// `current()` folds them per the actor-value model. All four default to
 /// `0.0`, so a freshly-inserted entry reads `0.0` until a base is set.
@@ -48,6 +49,13 @@ pub struct ActorValue {
     /// Separately-restored negative offset (limb / health damage). Stored as a
     /// positive magnitude and subtracted by [`ActorValue::current`].
     pub damage: f32,
+    /// `true` once [`ActorValues::set_base`] wrote `base`. A modifier or
+    /// damage write to an actor value the actor does not carry creates the
+    /// entry with `base_authored == false`: its `base` of `0.0` is a
+    /// placeholder, not data. A stat the per-game ruleset derives must then
+    /// take its base from the formula, not from that placeholder — see
+    /// `CharacterRuleset::actor_value` (#5042).
+    pub base_authored: bool,
 }
 
 impl ActorValue {
@@ -122,9 +130,12 @@ impl ActorValues {
         self.values.get(&avif_form_id)
     }
 
-    /// Set the base layer, leaving any permanent/temporary/damage untouched.
+    /// Set the base layer, leaving any permanent/temporary/damage untouched,
+    /// and mark it authored.
     pub fn set_base(&mut self, avif_form_id: u32, base: f32) {
-        self.values.entry(avif_form_id).or_default().base = base;
+        let entry = self.values.entry(avif_form_id).or_default();
+        entry.base = base;
+        entry.base_authored = true;
     }
 
     /// Add to the permanent-modifier layer (perk / enchant / gear). Negative
@@ -187,6 +198,21 @@ mod tests {
         av.mod_temporary(AV_HEALTH, 10.0); // +10 potion
         av.apply_damage(AV_HEALTH, 35.0); // -35 damage
         assert_eq!(av.current(AV_HEALTH), 95.0, "100 + 20 + 10 − 35");
+    }
+
+    /// #5042 — only `set_base` authors the base; a modifier or damage write
+    /// to an uncarried value creates a placeholder-base entry.
+    #[test]
+    fn only_set_base_authors_the_base() {
+        let mut av = ActorValues::new();
+        av.mod_permanent(AV_SNEAK, 5.0);
+        av.apply_damage(AV_HEALTH, 3.0);
+        assert!(!av.get(AV_SNEAK).unwrap().base_authored);
+        assert!(!av.get(AV_HEALTH).unwrap().base_authored);
+        av.set_base(AV_HEALTH, 100.0);
+        let health = av.get(AV_HEALTH).unwrap();
+        assert!(health.base_authored);
+        assert_eq!(health.current(), 97.0, "damage survives the base write");
     }
 
     #[test]

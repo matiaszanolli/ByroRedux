@@ -103,7 +103,10 @@ The `floor` costs ≤1 HP only when END and L are both even; otherwise exact.
    now evaluates this player-only Health row for it at stamping — the carried
    NPC-baked 150 is dropped and replaced by the formula answer (85,
    pinned by the real-master leg `real_master_player_seed_evaluates_the_player_only_rows`
-   in `inventory.rs`).
+   in `inventory.rs`). The capture's "rescales **dynamically** with any
+   Endurance / level change" holds since #5039: `player_derived_stats_system`
+   re-evaluates the stamped value whenever END or level moves, keeping the
+   player's damage (see [charal.md §6](charal.md)).
    Remaining block: [[actor_value_population]]'s derived-attribute deferral
    still gates the NPC side.
 

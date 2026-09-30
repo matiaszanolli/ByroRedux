@@ -337,9 +337,15 @@ pub(crate) fn vitals_snapshot(
 /// values means every consumer — `GetActorValue`'s carried fast path,
 /// `vitals_snapshot`, combat damage, drowning — reads them without
 /// needing player identity.
+///
+/// #5039 — the stamp is a cache of the formula, not a one-shot:
+/// `attach_to_player` re-runs [`CharacterRuleset::refresh_player_only_bases`]
+/// after the record's constant spells land, and
+/// [`player_derived_stats_system`] re-runs it whenever an input (END, AGI,
+/// level, …) moves afterwards.
+///
+/// [`CharacterRuleset::refresh_player_only_bases`]: byroredux_core::character::CharacterRuleset::refresh_player_only_bases
 fn build_player_character_template(index: &EsmIndex) -> PlayerCharacterTemplate {
-    use byroredux_core::character::{DerivedOutput, DerivedScope};
-
     let Some(player) = index.npcs.get(&player_npc_form_id(index.game)) else {
         return PlayerCharacterTemplate::default();
     };
@@ -384,22 +390,10 @@ fn build_player_character_template(index: &EsmIndex) -> PlayerCharacterTemplate 
                 .collect();
             let mut values = byroredux_core::ecs::components::ActorValues::from_pairs(seed);
             let level = level.max(0) as u16;
-            for &key in &player_only {
-                // Same #2933 contract `GetActorValue` enforces: only
-                // Absolute rows are actor-value readings; a Multiplier
-                // row's eval is a ratio no consumer may read as a value.
-                let Some(formula) = ruleset.derived_formula(key) else {
-                    continue;
-                };
-                if formula.scope != DerivedScope::PlayerOnly
-                    || formula.kind != DerivedOutput::Absolute
-                {
-                    continue;
-                }
-                if let Some(value) = ruleset.derived_value(key, &values, level) {
-                    values.set_base(key, value);
-                }
-            }
+            // Only Absolute rows are stamped (the #2933 contract): a
+            // Multiplier row's eval is a ratio no consumer may read as a
+            // value.
+            ruleset.refresh_player_only_bases(&mut values, level);
             let health = index.health_actor_value_key().filter(|health| {
                 values.get(*health).is_some()
             });
@@ -728,6 +722,14 @@ pub(crate) fn attach_to_player(world: &mut World, player: byroredux_core::ecs::E
     if let Some(mut values) = character.values {
         // #4415 — the Player record's constant spells (racial abilities).
         byroredux_scripting::magic::apply_modifiers(&mut values, &character.spell_modifiers, 1.0);
+        // #5039 — the template evaluated the player-only pools before these
+        // modifiers existed; an END/AGI ability must reach Health/AP now.
+        if let (Some(ruleset), Some(level)) = (
+            world.try_resource::<byroredux_core::character::CharacterRuleset>(),
+            character.level,
+        ) {
+            ruleset.refresh_player_only_bases(&mut values, level);
+        }
         world.insert(player, values);
     }
     world.insert(player, byroredux_scripting::SpellList(character.spells));

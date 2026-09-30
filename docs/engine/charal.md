@@ -379,7 +379,8 @@ the struct above; **the canonical runtime never changes**:
 **Decision** (resolving the prior open question): derived stats (Health, AP, Carry
 Weight, Melee Damage, Magicka, Stamina, …) are **computed on demand** from base AVs
 via the ruleset's `DerivedStatFormula`, **not** materialised into `ActorValues` at
-spawn. Rationale:
+spawn. The player's `PlayerOnly` pools are the one documented exception; see
+below. Rationale:
 
 - It is what Bethesda does (derived AVs are read-only, flagged `Derived` in the AV
   system — see [[actor_value_system]]).
@@ -392,6 +393,25 @@ A `derived_value(av, &ruleset, &avs, level)` helper evaluates the formula when a
 reader asks for a derived AV by FormID; the formula table is the single source.
 Each formula needs a **citable source** per game (no guessing) — supplied by the
 user-provided tables or cited research (§9).
+
+**Composition with modifiers (#5042).** `CharacterRuleset::actor_value` is the one
+composed reading, shared by `GetActorValue` and the melee-damage bonus. A carried
+value whose base was **authored** (`ActorValues::set_base`, tracked by
+`ActorValue::base_authored`) wins. Otherwise, an actor-general `Absolute` row
+supplies the base, and the entry's permanent/temporary/damage layers compose on
+top of it. A constant spell, `modav` or the SDK modifying a derived stat the
+actor does not carry therefore reads `formula + modifier`, not the bare modifier.
+
+**Deliberate exception — the player's `PlayerOnly` pools (#4674, #5039).** FO3/FNV/FO4
+player Health and AP *are* materialised into the base layer, because combat,
+drowning, restoration, death and the HUD read `ActorValues::current` directly
+with no ruleset in hand. The stamp stays a cache of the formula, not a frozen
+value: `CharacterRuleset::refresh_player_only_bases` re-evaluates it at stamping,
+again after `attach_to_player` applies the record's constant spells, and every
+frame in `player_derived_stats_system`. So any END/AGI/level writer (abilities,
+`setav`/`modav`, the SDK, a future level-up) reaches Health/AP without a hook of
+its own. Damage and modifier layers on the pool survive a refresh. Routing every
+`current()` reader through the ruleset would remove the exception.
 
 ---
 

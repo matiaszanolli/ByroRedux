@@ -7,7 +7,7 @@
 //! `docs/engine/charal.md`).
 
 use super::attribute::AttributeSet;
-use super::derived::{DerivedScope, DerivedStatFormula};
+use super::derived::{DerivedOutput, DerivedScope, DerivedStatFormula};
 use super::leveling::LevelingModel;
 use super::skill::SkillSet;
 use crate::ecs::components::ActorValues;
@@ -137,6 +137,83 @@ impl CharacterRuleset {
         found.then_some(sum)
     }
 
+    /// #5042 — the one composed actor-value reading for an arbitrary actor:
+    /// what `GetActorValue` and the melee-damage bonus both report.
+    ///
+    /// * A carried value whose base was authored (`ActorValues::set_base`:
+    ///   the NPC derivation, the player stamper, a save, `SetBase`) wins, as
+    ///   `current()`.
+    /// * Otherwise, when this game derives the stat for any actor
+    ///   (`ActorGeneral` + `Absolute`, the #2933 contract), the formula output
+    ///   is the base: `derived_value + permanent + temporary − damage` of
+    ///   whatever modifier-only entry a constant spell, `modav` or the SDK
+    ///   left. Such an entry's `0.0` base is a placeholder, so treating it as
+    ///   carried returned the bare modifier (FNV Finesse CritChance `5`, not
+    ///   `Luck + 5`).
+    /// * Anything else — an authored AV this game does not derive, a
+    ///   `PlayerOnly` row on a non-player, a `Multiplier` row — composes the
+    ///   entry as carried: `current()`, `0.0` when absent.
+    pub fn actor_value(&self, avif: u32, avs: &ActorValues, level: u16) -> f32 {
+        let carried = avs.get(avif);
+        if carried.is_some_and(|value| value.base_authored) {
+            return avs.current(avif);
+        }
+        let derives_for_any_actor = self.derived_formula(avif).is_some_and(|formula| {
+            formula.scope == DerivedScope::ActorGeneral && formula.kind == DerivedOutput::Absolute
+        });
+        if !derives_for_any_actor {
+            return avs.current(avif);
+        }
+        let base = self.derived_value(avif, avs, level).unwrap_or(0.0);
+        let layers = carried.map_or(0.0, |value| {
+            value.permanent_mod + value.temporary_mod - value.damage
+        });
+        base + layers
+    }
+
+    /// #5039 — re-evaluate every `PlayerOnly` + `Absolute` stat (FO3/FNV/FO4
+    /// Health + AP, …) against the player's *current* inputs and write the
+    /// results as the authored base. Returns whether any base changed.
+    ///
+    /// The player's derived pools are stamped into the base layer, because
+    /// combat, drowning, restoration, the HUD and death all read
+    /// `ActorValues::current` directly with no ruleset in hand. The stamp is
+    /// only correct while it is re-run whenever an input changes. Formula
+    /// inputs read `current()` (except rows marked `*_from_base`), so an
+    /// Endurance ability, `modav Endurance`, the SDK or a level change
+    /// reaches Health on the next refresh. Modifier and damage layers on the
+    /// output are left alone, per the actor-value composition model.
+    ///
+    /// Allocation-free — it runs every frame for the player. Stats are
+    /// refreshed in table order, so a row that read another `PlayerOnly`
+    /// output would see that output already refreshed; no shipped row does.
+    pub fn refresh_player_only_bases(&self, avs: &mut ActorValues, level: u16) -> bool {
+        let mut changed = false;
+        for (index, (key, formula)) in self.derived.iter().enumerate() {
+            // Scope and kind come from a stat's first row, as in
+            // `derived_formula`; its value is the sum of all its rows.
+            if self.derived[..index].iter().any(|(earlier, _)| earlier == key) {
+                continue;
+            }
+            if formula.scope != DerivedScope::PlayerOnly || formula.kind != DerivedOutput::Absolute
+            {
+                continue;
+            }
+            let Some(value) = self.derived_value(*key, avs, level) else {
+                continue;
+            };
+            if avs
+                .get(*key)
+                .is_some_and(|carried| carried.base_authored && carried.base == value)
+            {
+                continue;
+            }
+            avs.set_base(*key, value);
+            changed = true;
+        }
+        changed
+    }
+
     /// #2934 — DOCTRINE GAP (recorded, not fixed here). CHARAL's spec gives
     /// this struct a `skill_calc: SkillDerivation { base, attr_mult, luck_mult }`
     /// field so the FNV/FO3 auto-calc *rule* (`skill = 2 + 2·governing +
@@ -218,6 +295,87 @@ mod tests {
         let avs = ActorValues::new();
         assert_eq!(rs.derived_value(0xDEAD, &avs, 1), None);
         assert!(rs.derived_formula(0xDEAD).is_none());
+    }
+
+    /// #5042 — FO4 `AbStrongStats` shape: a constant +140 Carry Weight on an
+    /// actor whose derivation carries no Carry Weight key. The modifier-only
+    /// entry must compose onto the formula, not replace it.
+    #[test]
+    fn modifier_only_entry_composes_onto_the_formula() {
+        let rs = fo4_ruleset();
+        let mut avs = ActorValues::from_pairs([(STR, 7.0)]);
+        avs.mod_permanent(STR, 10.0); // the same ability's STR +10
+        avs.mod_permanent(AV_CARRY, 140.0);
+        avs.mod_temporary(AV_CARRY, 10.0);
+        // 200 + 10·(7 + 10) = 370, + 140 permanent + 10 temporary.
+        assert_eq!(rs.actor_value(AV_CARRY, &avs, 1), 520.0);
+        // Damage is subtracted from the composed value, not from the formula
+        // alone.
+        avs.apply_damage(AV_CARRY, 20.0);
+        assert_eq!(rs.actor_value(AV_CARRY, &avs, 1), 500.0);
+    }
+
+    /// #5042 — an authored base still wins over the formula (FO4 companions
+    /// that carry Carry Weight via PRPS), with its modifiers.
+    #[test]
+    fn authored_base_wins_over_the_formula() {
+        let rs = fo4_ruleset();
+        let mut avs = ActorValues::from_pairs([(STR, 7.0), (AV_CARRY, 300.0)]);
+        avs.mod_permanent(AV_CARRY, 10.0);
+        assert_eq!(rs.actor_value(AV_CARRY, &avs, 1), 310.0);
+    }
+
+    /// #5042 — rows outside the actor-general Absolute contract compose the
+    /// entry as carried: an underived AV, a `PlayerOnly` row, a `Multiplier`.
+    #[test]
+    fn non_actor_general_rows_compose_as_carried() {
+        let rs = CharacterRuleset::new(LevelingModel::FO4)
+            .with_derived(AV_HEALTH, DerivedStatFormula::affine(av(END), 10.0, 0.0).player_only())
+            .with_derived(AV_AP, DerivedStatFormula::affine(av(AGI), 0.1, 1.0).as_multiplier());
+        let mut avs = ActorValues::from_pairs([(END, 5.0), (AGI, 5.0)]);
+        avs.mod_permanent(AV_HEALTH, 4.0);
+        avs.mod_permanent(AV_AP, 2.0);
+        avs.mod_permanent(0xDEAD, 3.0);
+        assert_eq!(rs.actor_value(AV_HEALTH, &avs, 1), 4.0);
+        assert_eq!(rs.actor_value(AV_AP, &avs, 1), 2.0);
+        assert_eq!(rs.actor_value(0xDEAD, &avs, 1), 3.0);
+        assert_eq!(rs.actor_value(0xBEEF, &avs, 1), 0.0, "absent stays 0");
+    }
+
+    /// #5039 — the player's `PlayerOnly` bases follow their inputs: an
+    /// Endurance modifier or a level change moves Health on the next refresh,
+    /// and damage on the output survives it.
+    #[test]
+    fn player_only_refresh_follows_endurance_and_level() {
+        let rs = CharacterRuleset::new(LevelingModel::FO4).with_derived(
+            AV_HEALTH,
+            DerivedStatFormula::bilinear(av(END), 4.5, DerivedInput::LEVEL, 2.5, 0.5, 77.5)
+                .floored()
+                .player_only(),
+        );
+        let mut avs = ActorValues::from_pairs([(END, 5.0)]);
+        assert!(rs.refresh_player_only_bases(&mut avs, 1));
+        assert_eq!(avs.current(AV_HEALTH), 105.0);
+        assert!(!rs.refresh_player_only_bases(&mut avs, 1), "idempotent");
+
+        avs.apply_damage(AV_HEALTH, 30.0);
+        avs.mod_permanent(END, 2.0); // modav Endurance 2
+        assert!(rs.refresh_player_only_bases(&mut avs, 1));
+        // floor(77.5 + 4.5·7 + 2.5 + 0.5·7) = 115, − 30 damage.
+        assert_eq!(avs.current(AV_HEALTH), 85.0);
+
+        assert!(rs.refresh_player_only_bases(&mut avs, 2));
+        // floor(77.5 + 31.5 + 5 + 7) = 121, − 30.
+        assert_eq!(avs.current(AV_HEALTH), 91.0);
+    }
+
+    /// #5039 — actor-general rows are never stamped by the player refresh.
+    #[test]
+    fn player_only_refresh_leaves_actor_general_rows_derived() {
+        let rs = fo4_ruleset();
+        let mut avs = ActorValues::from_pairs([(STR, 7.0), (END, 5.0), (AGI, 6.0)]);
+        assert!(!rs.refresh_player_only_bases(&mut avs, 1));
+        assert!(avs.get(AV_CARRY).is_none());
     }
 
     #[test]

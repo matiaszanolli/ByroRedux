@@ -472,6 +472,18 @@ pub(super) fn register_update_systems(scheduler: &mut Scheduler) {
     // exclusives, so this declaration surfaces no conflict row — its job
     // is to put the disputed types on the `sys.accesses` report instead
     // of leaving a blank row where the dispute actually is.
+    // #5039 — refresh the player's stamped PlayerOnly pools from their
+    // current inputs before regen reads them. Exclusive, like its neighbour:
+    // it takes the `CharacterRuleset` → `ActorValues` pair.
+    scheduler.add_exclusive_with_access(
+        Stage::Update,
+        crate::systems::player_derived_stats_system,
+        Access::new()
+            .reads_resource::<crate::systems::PlayerEntity>()
+            .reads::<byroredux_core::character::CharacterLevel>()
+            .reads_resource::<byroredux_core::character::CharacterRuleset>()
+            .writes::<byroredux_core::ecs::components::ActorValues>(),
+    );
     scheduler.add_exclusive_with_access(
         Stage::Update,
         byroredux_core::character::pool_regen_tick_system,

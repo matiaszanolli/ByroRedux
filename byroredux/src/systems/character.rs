@@ -104,6 +104,41 @@ pub(crate) fn player_can_act(world: &World) -> bool {
         .is_none_or(|player| world.get::<Dead>(player).is_none())
 }
 
+/// #5039 — keep the player's stamped `PlayerOnly` pools (Health, AP, …)
+/// equal to their formulas as the inputs move. #4674 stamps them into the
+/// base layer so every `ActorValues::current` reader sees them. Without a
+/// refresh, an Endurance/Agility ability (`magic::add_spell`), `setav`/`modav`,
+/// the SDK's `ActorValueOperation` or a level change left them frozen at the
+/// spawn value. Writer-agnostic by design: the next attribute writer (level-up,
+/// XP) needs no hook of its own.
+///
+/// No `CharacterLevel` → nothing to evaluate against, so no refresh rather
+/// than an invented level. Lock order is `CharacterRuleset` → `ActorValues`,
+/// the canonical direction (#3441).
+pub(crate) fn player_derived_stats_system(world: &World, _dt: f32) {
+    let Some(player) = world
+        .try_resource::<PlayerEntity>()
+        .and_then(|player| player.0)
+    else {
+        return;
+    };
+    let Some(level) = world
+        .get::<byroredux_core::character::CharacterLevel>(player)
+        .map(|level| level.level)
+    else {
+        return;
+    };
+    let Some(ruleset) = world.try_resource::<byroredux_core::character::CharacterRuleset>() else {
+        return;
+    };
+    let Some(mut values) = world.query_mut::<ActorValues>() else {
+        return;
+    };
+    if let Some(values) = values.get_mut(player) {
+        ruleset.refresh_player_only_bases(values, level);
+    }
+}
+
 fn player_accepts_movement_input(world: &World, player: EntityId) -> bool {
     let controls_allow_movement = world
         .try_resource::<byroredux_scripting::PlayerControlState>()

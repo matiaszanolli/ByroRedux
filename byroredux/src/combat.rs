@@ -482,9 +482,11 @@ fn melee_damage_charal_bonus(world: &World, aggressor: EntityId) -> f32 {
     {
         return 0.0;
     }
-    ruleset
-        .derived_value(melee_damage_avif, &avs, level)
-        .unwrap_or(0.0)
+    // #5042 — the composer `GetActorValue` shares: the formula plus the
+    // modifier layers a constant ability left (FNV `MotorRunnerBuff` +10),
+    // or an authored carried value. The bare `derived_value` dropped the
+    // ability, so the two CHARAL consumers disagreed on the same actor.
+    ruleset.actor_value(melee_damage_avif, &avs, level)
 }
 
 /// Weapon-scaled melee reach. `EquippedWeapon::reach` is a multiplier on
@@ -710,6 +712,16 @@ mod tests {
             0.0,
             "a Multiplier row's raw ratio is not a damage addend"
         );
+
+        // #5042 — FNV `MotorRunnerBuff` shape: a constant MeleeDamage +10 on
+        // an actor whose derivation carries no MeleeDamage adds to the
+        // formula instead of being dropped.
+        let (mut world, actor) = world_with(affine());
+        world
+            .get_mut::<ActorValues>(actor)
+            .unwrap()
+            .mod_permanent(MELEE, 10.0);
+        assert_eq!(melee_damage_charal_bonus(&world, actor), 15.0);
     }
 
     fn damage_fixture(

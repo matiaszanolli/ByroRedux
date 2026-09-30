@@ -121,6 +121,46 @@ mod tests {
         assert_eq!(q.get(e).unwrap().current(0x05), 10.0);
     }
 
+    /// #5039 — `modav Endurance` on the player moves FO4 Health once the
+    /// refresh system runs; the spawn stamp is not frozen.
+    #[test]
+    fn modav_endurance_rescales_the_players_fo4_health() {
+        use byroredux_core::character::{
+            CharacterLevel, CharacterRuleset, DerivedInput, DerivedStatFormula, LevelingModel,
+        };
+        const END: u32 = 0x07;
+        const HEALTH: u32 = 0x2D4;
+        let ruleset = CharacterRuleset::new(LevelingModel::FO4).with_derived(
+            HEALTH,
+            // FO4 player Health, as `fallout4_ruleset` registers it.
+            DerivedStatFormula::bilinear(
+                DerivedInput::actor_value(END),
+                4.5,
+                DerivedInput::LEVEL,
+                2.5,
+                0.5,
+                77.5,
+            )
+            .floored()
+            .player_only(),
+        );
+        let mut world = World::new();
+        let player = world.spawn();
+        world.insert_resource(crate::systems::PlayerEntity(Some(player)));
+        let mut values = ActorValues::from_pairs([(END, 5.0)]);
+        ruleset.refresh_player_only_bases(&mut values, 1); // the #4674 stamp
+        world.insert(player, values);
+        world.insert(player, CharacterLevel { level: 1, xp: 0 });
+        world.insert_resource(ruleset);
+        let health = |world: &World| world.get::<ActorValues>(player).unwrap().current(HEALTH);
+        assert_eq!(health(&world), 105.0);
+
+        run(&world, &format!("{player} 0x07 2"), false);
+        crate::systems::player_derived_stats_system(&world, 0.0);
+        // floor(77.5 + 4.5·7 + 2.5 + 0.5·7) = 115.
+        assert_eq!(health(&world), 115.0);
+    }
+
     #[test]
     fn errors_on_missing_component_and_bad_args() {
         let mut world = World::new();

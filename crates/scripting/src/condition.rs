@@ -560,9 +560,7 @@ pub fn evaluate_function(
             // (function 14 is in the CTDA form-id-param list, #1666), the same
             // space `ActorValues` is keyed in — a direct lookup, no FormIdPool
             // hop (the key IS the AV's id, not the actor's identity). #1663.
-            use byroredux_core::character::{
-                CharacterLevel, CharacterRuleset, DerivedOutput, DerivedScope,
-            };
+            use byroredux_core::character::{CharacterLevel, CharacterRuleset};
             use byroredux_core::ecs::components::ActorValues;
             // #3441 — the `ActorValues` storage guard must NOT stay live
             // across the `CharacterRuleset` resource acquire below.
@@ -573,15 +571,22 @@ pub fn evaluate_function(
             // in the `BYRO_LOCK_ORDER_CHECK` graph — `lock_tracker` keys
             // storages and resources into one `TypeId` map. Snapshot what the
             // ruleset branch needs and drop the guard first; the clone only
-            // happens on the rare fall-through (the carried-value fast path
-            // above returns while the guard is still the cheap borrow).
+            // happens on the fall-through (the authored-value fast path
+            // returns while the guard is still the cheap borrow).
             let avs = {
                 let Some(avs) = world.get::<ActorValues>(entity) else {
                     return 0.0; // no `ActorValues` → absent-AV default
                 };
-                // A carried value wins — populated SPECIAL/skills, baked FO4
-                // Health/AP, perk/effect modifiers.
-                if avs.get(condition.param_1).is_some() {
+                // An authored carried value wins — populated SPECIAL/skills,
+                // baked NPC Health/AP, the player's stamped pools (#4674,
+                // kept current by #5039's refresh). #5042 — a modifier-only
+                // entry (a constant spell, `modav` or the SDK on a stat the
+                // actor does not carry) is NOT authored: its `0.0` base is a
+                // placeholder, so it falls through to the ruleset composer.
+                if avs
+                    .get(condition.param_1)
+                    .is_some_and(|value| value.base_authored)
+                {
                     return avs.current(condition.param_1);
                 }
                 avs.clone()
@@ -589,44 +594,16 @@ pub fn evaluate_function(
             // `CharacterLevel` too: read it before the ruleset so the surviving
             // direction stays `CharacterRuleset` → (nothing).
             let level = world.get::<CharacterLevel>(entity).map_or(0, |l| l.level);
-            // Absent → if this game *derives* the stat actor-generally (Carry
-            // Weight / Melee Damage / Crit Chance / Unarmed Damage from
-            // SPECIAL/skills), compute it from the per-game `CharacterRuleset`.
-            // Player-only stats (Health/AP) are evaluated once at player
-            // stamping (#4674) and therefore arrive here as CARRIED values,
-            // taken by the fast path above; for any other actor they stay at
-            // the absent default — NPCs bake them, and the derived player
-            // answer must not leak onto an NPC that happens to lack the key.
-            if let Some(rs) = world.try_resource::<CharacterRuleset>() {
-                // Scope from the first row; value is the sum of all rows for
-                // this stat (multi-row stats like TES Fatigue — see
-                // `CharacterRuleset::derived_value`).
-                if let Some(formula) = rs.derived_formula(condition.param_1) {
-                    // #2933 — BOTH contract fields must be honoured, not just
-                    // `scope`. A `DerivedOutput::Multiplier` row's `eval`
-                    // returns a *ratio* for a combat/XP consumer to multiply
-                    // by; `GetActorValue` is neither, and Bethesda's own
-                    // `GetActorValue` yields an actor-value reading. FO4's
-                    // Melee Damage is `×(1 + 0.1·STR)` and actor-general, so
-                    // it passed the scope check and leaked a bare 1.0..=2.0
-                    // where a condition expected a damage value — small enough
-                    // to satisfy `> 0` gates and fail realistic thresholds,
-                    // with nothing crashing. Oblivion's two armour-rating rows
-                    // are the same shape and would behave identically once
-                    // wired. Multiplier stats fall through to the absent-AV
-                    // default, exactly as player-only stats already do; a
-                    // dedicated accessor is the place to expose them to the
-                    // consumers actually meant to read them.
-                    if formula.scope == DerivedScope::ActorGeneral
-                        && formula.kind == DerivedOutput::Absolute
-                    {
-                        return rs
-                            .derived_value(condition.param_1, &avs, level)
-                            .unwrap_or(0.0);
-                    }
-                }
+            // The one composer `melee_damage_charal_bonus` shares (#5042):
+            // formula + modifier layers for an actor-general Absolute row;
+            // the carried composition for everything else — including
+            // `PlayerOnly` rows on an NPC (the derived player answer must
+            // not leak onto an NPC that lacks the key) and `Multiplier` rows,
+            // whose `eval` is a ratio, not an actor-value reading (#2933).
+            match world.try_resource::<CharacterRuleset>() {
+                Some(rs) => rs.actor_value(condition.param_1, &avs, level),
+                None => avs.current(condition.param_1),
             }
-            0.0
         }
         ConditionFunction::GetDistance => {
             // GetDistance(target_form_id) → ‖subject − target‖ in world units.
@@ -1655,6 +1632,44 @@ mod tests {
             evaluate(&list, &world, &ctx(actor)),
             "Health stays 0 (player-only)"
         );
+    }
+
+    /// #5042 — FNV `PerkFinesse` shape: a constant CritChance +5 on an NPC
+    /// whose derivation carries no CritChance. The modifier-only entry used
+    /// to take the carried fast path and read the bare `5`; the reading is
+    /// the formula (`1·Luck`) plus the modifier.
+    #[test]
+    fn get_actor_value_composes_a_modifier_only_entry_onto_the_formula() {
+        use byroredux_core::character::falloutnv_ruleset;
+        use byroredux_core::ecs::components::ActorValues;
+
+        const LUCK: u32 = 0x0B;
+        const CRIT: u32 = 0x2D5;
+        let resolve = |id: &str| match id {
+            "Luck" => Some(LUCK),
+            "CritChance" => Some(CRIT),
+            _ => None,
+        };
+        let mut world = World::new();
+        world.insert_resource(falloutnv_ruleset(resolve));
+        let actor = world.spawn();
+        let mut values = ActorValues::from_pairs([(LUCK, 4.0)]);
+        values.mod_permanent(CRIT, 5.0); // `stamp_spell_list` / `modav`
+        world.insert(actor, values);
+
+        let list = vec![cond(14, ComparisonOp::Eq, 9.0, false).with_param_1(CRIT)];
+        assert!(
+            evaluate(&list, &world, &ctx(actor)),
+            "Luck 4 + Finesse 5, not the bare modifier"
+        );
+
+        // An authored CritChance still wins over the formula.
+        world
+            .get_mut::<ActorValues>(actor)
+            .unwrap()
+            .set_base(CRIT, 1.0);
+        let list = vec![cond(14, ComparisonOp::Eq, 6.0, false).with_param_1(CRIT)];
+        assert!(evaluate(&list, &world, &ctx(actor)), "authored 1 + 5");
     }
 
     /// #3441 — `pool_regen_tick_system` and `melee_damage_charal_bonus` both

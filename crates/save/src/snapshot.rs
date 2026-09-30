@@ -247,7 +247,14 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 /// gained the required `spells` field, so a parked actor's `SpellList`
 /// survives eviction beside the `ActorValues` its constant spells modify.
 /// No `serde(default)`; pre-v30 saves are rejected.
-pub const FORMAT_MAJOR: u16 = 30;
+///
+/// v30 -> v31 (#5042): every `ActorValue` (inside `ActorValues`, and so
+/// inside `ReferenceState`) gained the required `base_authored` flag. A
+/// modifier-only entry's `0.0` base is a placeholder that the ruleset
+/// replaces with the derived formula; an authored base is data. Pre-v31
+/// saves cannot tell the two apart, and defaulting either way would
+/// re-create the bug for one of the two populations, so they are rejected.
+pub const FORMAT_MAJOR: u16 = 31;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 
