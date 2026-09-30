@@ -54,8 +54,10 @@ pub(crate) use byroredux_core::math::coord::LAND_TEXTURE_TILES_PER_CELL;
 /// [`spawn_terrain_mesh`]. See #470.
 #[derive(Default)]
 pub(super) struct CellSplatLayers {
-    /// 0–8 entries sorted by ascending `layer_sort_key`, then by
-    /// `ltex_form_id` for deterministic tiebreak.
+    /// 0–8 entries in vertex splat-lane order: first the base-transition
+    /// layers (each non-canonical quadrant BTXT, in `BTreeMap` LTEX order),
+    /// then the ATXT/VTXT layers sorted by ascending `layer_sort_key` with
+    /// `ltex_form_id` as the deterministic tiebreak.
     layers: Vec<CellSplatLayer>,
 }
 
@@ -89,7 +91,9 @@ type PerQuadrantAlpha = [Option<Vec<f32>>; 4];
 /// Collect cell-global splat layers from the 4 quadrants. Dedup by
 /// `ltex_form_id`; take the minimum `layer` field as the sort key so seam
 /// vertices across quadrants resolve to the same cell-global layer. Caps
-/// at 8 per UESP's LAND format spec; excess is dropped with a warning.
+/// at 8 — the renderer's budget (`Vertex` packs splat weights as 2×RGBA8),
+/// not a LAND format limit; excess ATXT layers are dropped with a warning,
+/// by painted coverage.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn build_cell_splat_layers(
     ctx: &mut VulkanContext,
@@ -158,11 +162,11 @@ pub(super) fn build_cell_splat_layers(
     // hard, camera-visible checkerboard seam.
     let base_transitions = build_base_transition_layers(land, canonical_base_ltex);
 
-    // Bethesda's authoring tool caps at 8 per UESP, but Skyrim
-    // routinely ships cells with 9-12 layers and modded content
-    // (TTW, Project Nevada, DLC merges) goes higher. The 8-cap is
-    // a real shader-side limit — `vertex.rs::Vertex` packs splat
-    // weights as 2× RGBA8 = 8 channels per vertex.
+    // The 8-cap is ours, not the format's: `vertex.rs::Vertex` packs
+    // splat weights as 2× RGBA8 = 8 channels per vertex. LAND itself
+    // does not stop at 8 — Skyrim routinely ships cells with 9-12
+    // layers and modded content (TTW, Project Nevada, DLC merges)
+    // goes higher.
     //
     // Pre-fix this dropped the highest `layer` field values, but
     // `layer` is just authoring order — not visual importance. A
