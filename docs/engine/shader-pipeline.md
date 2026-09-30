@@ -52,8 +52,8 @@ renderer architecture (BLAS/TLAS, sync, swapchain, teardown ordering) see
 | `svgf_temporal.comp` | Temporal denoiser — motion-vector reprojection + color/moments accumulation for indirect lighting |
 | `svgf_atrous.comp` | Spatial denoiser — edge-stopping à-trous wavelet filter, `ATROUS_ITERATIONS` = 3 ping-pong passes after the temporal dispatch; final slot feeds composite (Dugout ablation capped the footprint at 14 render pixels) |
 | `taa.comp` | TAA resolve — Halton(2,3) jitter, YCoCg variance-clamp, history reproject |
-| `bloom_downsample.comp` | Gaussian + downsample pyramid (bright content) |
-| `bloom_upsample.comp` | Upsample + blur stages of bloom pyramid |
+| `bloom_downsample.comp` | Half-resolution downsample pyramid (4 bilinear taps = a non-overlapping 2×2 box, #4311) |
+| `bloom_upsample.comp` | Up-pyramid — 4-tap bilinear box upsample summed with the same-resolution down mip |
 | `exposure_meter.comp` | Stage-1 auto-exposure meter — EV100 average of the post-bloom scene, per-FIF-slot exponential adaptation, writes the 1×1 exposure texel FSR and presentation sample (`exposure_meter.rs`; fixed mode writes the authored constant) |
 | `caustic_splat.comp` | Per-refractive-surface scatter of refracted-light contributions into caustic accumulator |
 | `volumetrics_inject.comp` | Inject the froxel medium: sun and clustered local lights (HG-phase scattered radiance), authored fog volumes, and combustion transport |

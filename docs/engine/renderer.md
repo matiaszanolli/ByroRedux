@@ -48,8 +48,8 @@ Source: `crates/renderer/src/vulkan/`
   below.
 - **TAA** (M37.5): `taa.comp` with Halton(2,3) projection jitter (period 16
   per #1093), motion-vector reprojection, Catmull-Rom 9-tap history resample,
-  3×3 YCoCg neighborhood variance clamp (γ = 1.25), mesh-id disocclusion,
-  luma-weighted α = 0.1 blend
+  3×3 YCoCg neighborhood variance clip (mean ± 1.5σ, #1108), mesh-id and
+  octahedral-normal history rejection, luma-weighted α = 0.1 blend
 - **Clustered lighting** (`cluster_cull.comp`) — 16×9×24 froxel grid
   (`CLUSTER_TILES_X/Y` × `CLUSTER_SLICES_Z`), up to 512 lights per cluster,
   frustum assignment for direct shading candidates plus fence-lagged overflow,
@@ -515,8 +515,10 @@ sample's mesh ID (disocclusion; the nearest-tap fallback masks bit 31 the
 same way the bilinear loop does — #1159), and blends into ping-pong history
 images with an α schedule that tightens after a few stable frames. History
 age is tracked as a weighted average (Schied 2017 §4.2). Moments data
-(first + second raw moments) is written for the future spatial (A-trous)
-pass.
+(first + second raw moments) is written for the spatial à-trous pass
+(`svgf_atrous.comp`, `ATROUS_ITERATIONS` ping-pong passes after the temporal
+dispatch), which reads them for its variance-guided edge stopping and whose
+final slot feeds composite.
 
 ## TAA (M37.5)
 
@@ -533,9 +535,11 @@ Per-frame flow:
    power of two above the natural LCM-6 period). The motion-vector attachment
    is computed from **un-jittered** positions so reprojection stays correct.
 2. `taa.comp` samples current HDR color, reprojects history through the
-   motion vector via a Catmull-Rom 9-tap resample, clamps it against the
-   current-frame 3×3 YCoCg neighborhood min/max (γ = 1.25), rejects it
-   outright when mesh IDs disagree, and blends with α = 0.1 weighted by luma
+   motion vector via a Catmull-Rom 9-tap resample, clips it against the
+   current-frame 3×3 YCoCg neighbourhood window mean ± γ·σ (γ = 1.5, #1108;
+   collapsed to 0 on a sky-to-surface disocclusion, #2760), rejects it
+   outright when mesh IDs disagree or the reprojected octahedral normal
+   disagrees with the current one (`dot < 0.85`), and blends with α = 0.1 weighted by luma
    to damp bright-pixel ghosting. The FSR reactive mask (G-buffer attachment
    6) raises that α to the mask value and bypasses history where it is 1.0
    (#4944): water keeps the bed's mesh ID, normal and motion underneath it,

@@ -15,7 +15,7 @@
 // ROADMAP.md M58 row.
 //
 // DC-gain note (#1275): unlike the downsample shader, where the 4 taps
-// sum to 1.0 (provably a 4x4 box filter), the additive `upsampled +
+// sum to 1.0 (a unit-gain 2×2 box, #4311), the additive `upsampled +
 // same` sum here carries DC gain >= 1.0 BY DESIGN — `upsampled` is
 // unit-gain (4 taps x 0.25), `same` is unit-gain (1 tap), and they're
 // summed without renormalisation. Across the 4-step up-chain a

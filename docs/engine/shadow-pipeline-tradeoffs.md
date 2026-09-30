@@ -48,28 +48,38 @@ biting. Acceptance: luminance integral delta <5% justifies the clamp;
 
 ---
 
-## 2. TAA variance clamp `γ = 1.25`
+## 2. TAA variance clamp `γ = 1.5`
 
-**Where:** [`crates/renderer/shaders/taa.comp:186`](../../crates/renderer/shaders/taa.comp#L186)
+**Where:** [`crates/renderer/shaders/taa.comp`](../../crates/renderer/shaders/taa.comp)
+(`float gamma = disocclusionFromSky ? 0.0 : 1.5;`)
 
-**What:** The neighborhood variance clamp on YCoCg history sampling
-uses `γ = 1.25` to widen the valid-history bounding box. Canonical TAA
-uses `γ ≈ 1.0` (strict bounds) for ghosting prevention; `γ = 1.25`
-deliberately admits more variance.
+**What:** The Karis-style variance clip on YCoCg history sampling uses a
+`mean ± γ·σ` window over the current frame's 3×3 neighbourhood, with
+`γ = 1.5`. Canonical TAA uses `γ ≈ 1.0` (strict bounds) for ghosting
+prevention; `γ = 1.5` deliberately admits more variance. It was widened
+from 1.25 by #1108 (REN-D20-001): the 1.25 value was calibrated for a
+physical-radius sun (≈0.0047 rad), and the current `sunAngularRadius =
+0.020 rad` gives penumbra edges enough per-frame variance that 1.25
+rejected valid history under camera motion and flickered. Two terms keep
+the wider window from turning into ghosting: the window collapses to
+`γ = 0` on a sky-to-surface disocclusion (#2760), and history is rejected
+outright where the reprojected octahedral G-buffer normal disagrees with the
+current one (`dot < 0.85`), alongside the mesh-id disocclusion test.
 
-**Justifying condition (today):** The inline comment notes "penumbra
-edges higher per-frame variance" — the direct shadow path produces
-stochastic shadow rays per reservoir *without* a dedicated denoiser, so
-frame-to-frame variance in soft-shadow penumbras exceeds what a strict
-clamp accepts as valid history. The wider clamp lets the TAA
-accumulator act as a de facto temporal-reuse layer for direct lighting.
-This is parameter tuning compensating for an absent architectural piece.
+**Justifying condition (today):** Soft-shadow penumbras carry
+stochastic per-frame visibility noise, so a strict clamp rejects valid
+history there. The wider clamp lets the TAA accumulator absorb part of
+that variance as a de facto temporal-reuse layer for direct lighting.
+This is parameter tuning compensating for direct-lighting noise that
+reaches TAA.
 
-**Invalidated by:** ReSTIR-DI temporal reservoir reuse. Once direct
-lighting has its own temporal accumulation path, the per-frame variance
-reaching TAA drops, and `γ` should be re-tuned (likely closer to 1.0).
+**Invalidated by:** ReSTIR-DI temporal reservoir reuse, which has since
+landed (§3). With direct lighting carrying its own temporal
+accumulation, the per-frame variance reaching TAA should have dropped, so
+`γ` is due a re-tune (likely closer to 1.0). That re-tune has not been
+done.
 
-**Verification owed:** A/B `γ = 1.25` vs `γ = 1.0` with the camera
+**Verification owed:** A/B `γ = 1.5` vs `γ = 1.0` with the camera
 panning over a candle-lit interior. If `γ = 1.0` produces visible
 penumbra erosion, the current value is doing real work; if both look
 identical, the wider clamp is admitting ghosting unnecessarily.
@@ -147,9 +157,9 @@ The four items above each name a specific constant or location. The
 1. `RESERVOIR_W_CLAMP` remains at `64.0` **and** the justifying comment
    remains attached. If the constant changes without an accompanying
    A/B benchmark commit, flag it.
-2. TAA `γ = 1.25` remains tied to the absence of a direct-lighting
-   denoiser. If a ReSTIR-DI temporal pass lands, this value should be
-   re-tuned and the corresponding milestone closed.
+2. TAA `γ = 1.5` is a pre-ReSTIR-temporal tuning. ReSTIR-DI temporal
+   reuse has landed, so the §2 A/B against `γ = 1.0` is owed; if the
+   value changes without that A/B, flag it.
 3. `DBG_DISABLE_SPATIAL` and `DBG_DISABLE_TEMPORAL` continue to isolate the
    two reuse dimensions without selecting the compile-time-gated legacy WRS
    path. Changes to neighbor count/radius, history caps, or visibility-ray

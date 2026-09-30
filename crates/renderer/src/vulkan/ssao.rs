@@ -1,8 +1,11 @@
 //! Screen-space ambient occlusion (SSAO) compute pipeline.
 //!
 //! Runs after the main render pass (but before composite) to produce an R8
-//! occlusion texture from the depth buffer. The fragment shader reads this
-//! texture the same frame to darken corners, crevices, and contact shadows.
+//! occlusion texture from the depth buffer. `triangle.frag` reads it to darken
+//! corners, crevices, and contact shadows — but not the same frame: its main
+//! pass records *before* this dispatch, so with `MAX_FRAMES_IN_FLIGHT == 2` it
+//! samples the per-FIF slot this pass wrote two frames earlier (#2798; see
+//! `record_ssao_pass`).
 
 use super::allocator::SharedAllocator;
 use super::buffer::GpuBuffer;

@@ -881,9 +881,11 @@ impl CausticPipeline {
         );
 
         // ── Decay (parked) or clear (moving), then splat ──────────────
-        // The caustic is composited AFTER TAA, so its own per-frame
-        // TAA-jitter flicker is never resolved by the engine's temporal
-        // passes. With a parked camera we therefore replace the per-frame
+        // The caustic is summed in by composite, which runs BEFORE TAA, but
+        // TAA's history blend does not remove the per-frame flicker of its
+        // TAA-jittered landing point: a parked Cornell floor caustic measured
+        // a temporal frame-diff of 37.8 with single-pixel deposits
+        // (afaa2fe49). With a parked camera we therefore replace the per-frame
         // clear with an exponential moving average: run the splat pipeline
         // in *decay* mode first (accum *= DECAY), then splat only
         // (1 - DECAY) of this frame's energy on top. The focused caustic

@@ -440,10 +440,11 @@ struct PostChain {
     /// froxel V-buffer, temporal density history, TLAS/BLAS visibility, and
     /// pre-integrated composite output. `None` only when initialization fails.
     volumetrics: Option<VolumetricsPipeline>,
-    /// Bloom pyramid pipeline (M58, Tier 8). Reads the scene HDR
-    /// after TAA, produces a multi-scale blurred bright-content
-    /// texture that composite adds back to `combined` before the
-    /// ACES tone-map. `None` when the down/up image-pyramid
+    /// Bloom pyramid pipeline (M58, Tier 8). Runs after composite and
+    /// before TAA (#2796): reads composite's linear HDR output, builds a
+    /// multi-scale blurred bright-content pyramid, and `bloom_apply.comp`
+    /// adds it back onto that output in place; tone mapping happens later,
+    /// in the presentation pass (#4202). `None` when the down/up image-pyramid
     /// allocation fails; engine initialization fails in that case
     /// because composite requires the bloom output view for binding 7
     /// (see construction guard at `VulkanContext::new`). Unlike other

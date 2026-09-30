@@ -2116,7 +2116,7 @@ mod absorption_ramp_tests {
             "water.frag.spv must encode EarlyFragmentTests (regenerate it with glslangValidator)"
         );
 
-        // #2789 — both post-TAA caustic writers use one normalized spatial
+        // #2789 — both caustic writers use one normalized spatial
         // footprint; water must not regress to a single-pixel atomic.
         assert!(
             src.contains("#include \"include/caustic_kernel.glsl\"")

@@ -41,8 +41,10 @@ struct SkyAperture {
 };
 layout(set = 0, binding = 3) uniform CompositeParams {
     vec4 fog_color;      // xyz = beyond-grid aerial tint, w = enabled
-    // x = near, y = far, z = XCLL cubic-fog clip distance (0 = no
-    // curve), w = XCLL cubic-fog falloff exponent (0 = no curve).
+    // x = authored fog near, y = authored fog far (the cell / weather fog
+    // distances, NOT the projection planes — #4831), z = XCLL cubic-fog clip
+    // distance (0 = no curve), w = XCLL cubic-fog falloff exponent (0 = no
+    // curve).
     // Runtime no longer evaluates this non-physical curve. It remains in the
     // contract until XCLL/WTHR values are fitted offline into sigma_t tables.
     vec4 fog_params;
@@ -717,8 +719,9 @@ void main() {
         // vol.rgb = ∫inscatter accumulated 0..slice (HDR-linear)
         // vol.a   = cumulative transmittance through 0..slice
         //
-        // `params.depth_params.z` mirrors that host-side const, so
-        // it's always 1.0 here; `vol.a` genuinely carries cumulative
+        // The volumetric output is consumed unconditionally (#1926 retired
+        // the `depth_params.z` consumed-flag; that lane now carries the
+        // structured debug mode), so `vol.a` genuinely carries cumulative
         // transmittance and `vol.rgb` in-scattered radiance. Frostbite
         // §5.3 standard form: attenuate FIRST (energy lost to
         // absorption between camera and fragment), then ADD inscatter

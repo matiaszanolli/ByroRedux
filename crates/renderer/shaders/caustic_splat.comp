@@ -696,8 +696,10 @@ void main() {
         // AND — because the footprint (±2 px) is much wider than the
         // per-frame TAA-jitter shift of the landing point — adjacent
         // frames' deposits overlap ~85 %, so the pool is temporally stable
-        // too. The caustic is composited after TAA, so this footprint is
-        // its only smoothing. σ=1; normalised over the 5×5 support so the
+        // too. The caustic is summed in by composite, which runs BEFORE TAA,
+        // but TAA's history blend does not stabilise it on its own (see the
+        // decay/EMA note in `caustic.rs`), and this footprint is its only
+        // spatial smoothing. σ=1; normalised over the 5×5 support so the
         // truncated tail doesn't dim the pool.
         for (int ky = -2; ky <= 2; ++ky) {
             for (int kx = -2; kx <= 2; ++kx) {
