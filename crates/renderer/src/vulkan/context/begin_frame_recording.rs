@@ -87,8 +87,13 @@ impl VulkanContext {
             )
         };
         if let Err(e) = upload_result {
-            // SAFETY: this acquired frame has not been submitted. Replacing
-            // its acquire semaphore follows the same recovery as begin failure.
+            // #4889 — staging-side failures (arena growth, mapped writes,
+            // released/resized targets) are degraded INSIDE
+            // record_pending_rgba_uploads to a skipped overlay upload, so an
+            // Err reaching here can only be the fence-idle sequencing
+            // violation — a frame-loop bug, kept fatal. SAFETY: this
+            // acquired frame has not been submitted. Replacing its acquire
+            // semaphore follows the same recovery as begin failure.
             let _ = unsafe {
                 self.frame_sync.recreate_image_available_for_frame(&self.device, frame)
             };

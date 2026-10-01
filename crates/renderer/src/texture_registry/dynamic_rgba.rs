@@ -19,6 +19,10 @@ pub(super) struct PendingRgba {
 pub(super) struct DynamicRgbaUploads {
     pub(super) updates: HashMap<TextureHandle, PendingRgba>,
     staging: [Option<GpuBuffer>; MAX_FRAMES_IN_FLIGHT],
+    /// #4889 — a staging-side failure (arena growth under BAR pressure, a
+    /// mapped-write/flush error) degrades to a skipped overlay frame, not a
+    /// dead session; this flag keeps the warn to once per failure episode.
+    staging_skip_logged: bool,
 }
 
 impl DynamicRgbaUploads {
@@ -58,6 +62,9 @@ impl DynamicRgbaUploads {
                 update.recorded_slot = None;
             }
         }
+        // A completed frame means staging works again on this device —
+        // re-arm the once-per-episode warn (#4889).
+        self.staging_skip_logged = false;
     }
 
     pub(super) fn destroy(&mut self, device: &ash::Device, allocator: &SharedAllocator) {
@@ -72,8 +79,34 @@ impl DynamicRgbaUploads {
     }
 }
 
+/// #4889 — record a degraded frame: warn once per failure episode and leave
+/// the dirty updates queued so the next frame retries them. Takes the flag
+/// directly because `record_pending_rgba_uploads` holds disjoint `&mut`
+/// borrows of `staging` and `updates` through the loop — a whole-struct
+/// method call on `dynamic_rgba` would conflict with both.
+fn note_staging_skip(flag: &mut bool, context: &str, error: &anyhow::Error) {
+    if !*flag {
+        *flag = true;
+        log::warn!(
+            "dynamic RGBA staging failed ({context}: {error:#}) — skipping this frame's \
+             overlay texture upload; the dirty pixels stay queued and retry next frame \
+             (a cosmetic overlay must not kill the session, #4889)"
+        );
+    }
+}
+
 impl TextureRegistry {
     /// Record pending RGBA replacements before any consumer in this frame.
+    ///
+    /// #4889 — error contract: only the fence-idle `ensure!` below still
+    /// returns `Err` (it indicates a sequencing bug in the frame loop and
+    /// must stay fatal). Every staging-side failure — arena growth under
+    /// BAR pressure, a mapped write/flush error, a released or resized
+    /// target — degrades to a skipped overlay upload: the pixels stay
+    /// queued (or are dropped when they can never succeed), a warning is
+    /// logged once per episode, and the frame records without them. The
+    /// HUD/Scaleform drivers were written for that contract; making these
+    /// fatal (`e2f99ad55`) let a cosmetic overlay kill the session.
     ///
     /// # Safety
     /// `cmd` must be recording outside a render pass, on the same graphics
@@ -110,12 +143,29 @@ impl TextureRegistry {
             .as_ref()
             .is_none_or(|buffer| buffer.size < bytes as u64)
         {
-            let replacement = GpuBuffer::create_host_visible(
+            // #4889 — before e2f99ad55 this failure was a logged, skipped
+            // HUD frame; the staging rewrite made it fatal to draw_frame
+            // (the app exits on any draw error), so a transient host-
+            // visible / BAR allocation failure killed the whole session
+            // over a cosmetic overlay. Degrade to the old contract: skip
+            // this frame's upload (everything stays dirty and retries),
+            // keep the existing arena, and keep recording the frame.
+            let replacement = match GpuBuffer::create_host_visible(
                 device,
                 allocator,
                 bytes as u64,
                 vk::BufferUsageFlags::TRANSFER_SRC,
-            )?;
+            ) {
+                Ok(replacement) => replacement,
+                Err(e) => {
+                    note_staging_skip(
+                        &mut self.dynamic_rgba.staging_skip_logged,
+                        "staging arena growth",
+                        &e,
+                    );
+                    return Ok(());
+                }
+            };
             // The fence for THIS arena was waited on before recording. No
             // pending transfer can still read the buffer being replaced.
             if let Some(mut old) = slot.replace(replacement) {
@@ -130,18 +180,45 @@ impl TextureRegistry {
             .iter_mut()
             .filter(|(_, u)| u.dirty)
         {
-            let texture = self
+            // #4889 — a released texture or a changed extent can never
+            // succeed on a later frame: drop just these pixels (they are a
+            // cosmetic overlay's) and keep recording, instead of failing
+            // the whole frame.
+            let Some(texture) = self
                 .textures
                 .get(handle as usize)
                 .and_then(|entry| entry.texture.as_ref())
-                .context("queued RGBA texture was released")?;
-            anyhow::ensure!(
-                texture.can_update_rgba(update.width, update.height),
-                "queued RGBA extent/format changed before recording"
-            );
+            else {
+                log::warn!(
+                    "dynamic RGBA update for released texture {handle} dropped — \
+                     the overlay keeps its last uploaded frame (#4889)"
+                );
+                update.dirty = false;
+                update.pixels.clear();
+                continue;
+            };
+            if !texture.can_update_rgba(update.width, update.height) {
+                log::warn!(
+                    "dynamic RGBA update for {handle} dropped: extent/format changed \
+                     before recording (#4889)"
+                );
+                update.dirty = false;
+                update.pixels.clear();
+                continue;
+            }
             // write_mapped_at flushes non-coherent allocations. Queue-submit
             // host-write ordering publishes these bytes before the transfer.
-            staging.write_mapped_at(device, offset, &update.pixels)?;
+            // #4889 — a mapped-write/flush failure is degraded like the
+            // arena growth above: skip this frame's remaining uploads (they
+            // stay dirty and retry), never fail the recording.
+            if let Err(e) = staging.write_mapped_at(device, offset, &update.pixels) {
+                note_staging_skip(
+                    &mut self.dynamic_rgba.staging_skip_logged,
+                    "staging mapped write",
+                    &e,
+                );
+                return Ok(());
+            }
             let range = crate::vulkan::descriptors::color_subresource_single_mip();
             let to_copy = vk::ImageMemoryBarrier::default()
                 .old_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
@@ -221,7 +298,7 @@ mod tests {
     #[test]
     fn rgba_updates_use_the_frame_command_buffer_and_keep_descriptors() {
         let production = crate::source_scan::production_text(include_str!("dynamic_rgba.rs"));
-        assert!(production.contains("staging.write_mapped_at(device, offset, &update.pixels)?"));
+        assert!(production.contains("staging.write_mapped_at(device, offset, &update.pixels)"));
         assert!(production.contains("device.cmd_copy_buffer_to_image("));
         assert!(!production.contains("queue_submit("));
         assert!(!production.contains("wait_for_fences("));
@@ -251,6 +328,48 @@ mod tests {
         let release = include_str!("release.rs");
         assert!(release.contains("self.dynamic_rgba.updates.remove(&handle);"));
         assert!(registry.contains("self.dynamic_rgba.destroy(device, allocator);"));
+    }
+
+    /// #4889 — a staging-side failure must skip the overlay frame, never
+    /// fail `draw_frame` (the app exits on any draw error). Pre-#4889 the
+    /// arena-growth and mapped-write `?`s made a transient BAR-pressure
+    /// failure fatal to the whole session; now only the fence-idle
+    /// sequencing check and the size-overflow fold still propagate, and
+    /// both failure arms return Ok with the pixels left queued.
+    #[test]
+    fn staging_failures_skip_the_overlay_frame_instead_of_failing_it() {
+        let production = crate::source_scan::production_text(include_str!("dynamic_rgba.rs"));
+        let record = production
+            .split("pub(crate) unsafe fn record_pending_rgba_uploads(")
+            .nth(1)
+            .expect("record_pending_rgba_uploads must stay in this file")
+            .split("\n    }")
+            .next()
+            .expect("function body terminates");
+        assert_eq!(
+            record.matches("note_staging_skip(").count(),
+            2,
+            "both staging failure arms must route through the once-per-episode warn"
+        );
+        assert!(record.contains("\"staging arena growth\""));
+        assert!(record.contains("\"staging mapped write\""));
+        assert_eq!(
+            record.matches("return Ok(());").count(),
+            3,
+            "bytes == 0 plus the two degraded arms — each returns Ok"
+        );
+        // The only propagating errors left in the recording are the
+        // fence-idle sequencing ensure (fatal by design) and the
+        // size-overflow fold.
+        assert!(record.contains("RGBA staging slot is not fence-idle"));
+        assert_eq!(
+            record.matches(")?").count(),
+            1,
+            "only the size-overflow fold may still propagate `?` (#4889)"
+        );
+        // Released / resized targets drop just their own pixels.
+        assert!(record.contains("the overlay keeps its last uploaded frame (#4889)"));
+        assert!(record.contains("extent/format changed"));
     }
 
     #[test]
