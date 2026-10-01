@@ -30,3 +30,22 @@ A regression in ObScript quest-script decoding lands green on any run without th
 - [ ] **SIBLING**: Other `--ignored` real-data tests in `byroredux-scripting` checked for the same silent-skip shape
 - [ ] **TESTS**: The strict lane runs the named test and fails when the data is missing
 
+
+---
+
+## Solution
+
+**Fixed**: the M47.3 test resolves via `test_paths::oblivion_esm()` and
+panics under BYROREDUX_REQUIRE_GAME_DATA when the master is absent (same
+shape as the per-crate require_game_data helpers) instead of `return`ing
+green. real-data-gates.yml `parsers` job gains a dedicated step running the
+named test (~160 MB) with the refuse-a-green-no-op check. SIBLING: the only
+other #[ignore]d test in byroredux-scripting is this one — no other
+silent-skip shapes. Commit: `Fix #5088` (1377d3463).
+
+## Verification
+
+- Happy path: `--ignored` run passes on the installed master (2.49s)
+- Strict path: BYROREDUX_OBLIVION_DATA=/tmp/empty-obl + REQUIRE=1 → FAILED
+  with the new panic
+- Workflow YAML validated

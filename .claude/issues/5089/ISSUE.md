@@ -21,3 +21,24 @@
 
 ## Completeness Checks
 - [ ] **SIBLING**: Same pattern checked in related files
+
+---
+
+## Solution
+
+**Fixed**: groundcover.rs (3081 total / 2033 prod) split as
+file-root + `groundcover/` subdirectory — construct.rs (871: buffers,
+set-layout contracts, descriptors, pipelines) and frame.rs (981: prepare,
+harvest, descriptor rebind, scatter/interaction/draw recording); struct,
+GPU record types, constants and their tests stay in groundcover.rs (1259).
+Descendant modules reach the struct's private fields, so no visibility
+churn. The source-scan tests moved with their guarded code as
+production_text self-scans of their new files; UNWRAPPED_SELF_INCLUDES
+baseline for groundcover.rs dropped to zero. SIBLING:
+groundcover_models/stats/bench all under 2000 (1229/97/1749).
+Commit: `Fix #5089` (0f9982177).
+
+## Verification
+
+- cargo test -p byroredux-renderer: 1322/1322 green
+- clippy (1.96): zero diagnostics in any groundcover file

@@ -34,3 +34,25 @@ Add a single `EsmIndex` accessor that routes an effect id through `magic_effects
 - [ ] **SIBLING**: Every `magic_effects.get(...effect_form_id)` site (SPEL, ENCH, ALCH, INGR) routed through the accessor
 - [ ] **TESTS**: A regression test pins this specific fix
 
+
+---
+
+## Solution
+
+**Fixed**: `EsmIndex::resolve_magic_effect` added (index.rs) — routes an
+effect id through `magic_effects_by_code` on Oblivion, FormID map elsewhere;
+the two representations cannot collide (a 4-char ASCII code's top byte keeps
+the u32 past every load-order slot). All four lookup sites routed (magic.rs:92
++ consumables.rs ×3); stale "not yet read by any consumer" field docs
+corrected. Tests: `resolve_magic_effect_routes_oblivion_efid_codes` (full ESM
+walk, EFID `b"FOAT"`), `resolve_magic_effect_uses_formids_off_oblivion`,
+`oblivion_ability_translates_through_the_effect_code_side_index`
+(scripting). Real-data census: 142/149 distinct Oblivion SPEL codes resolve;
+7 misses (BA01-06, RSWD) reference MGEFs without 4-char EDIDs — skipped by
+design. Commit: `Fix #5084` (ce73f658b).
+
+## Verification
+
+- cargo test -p byroredux-plugin / -p byroredux-scripting: all green
+- New tests pass by name; EFID codes pass through remap_fid unchanged
+  (top byte ≥ 0x20 is always out of master range → pass-through).

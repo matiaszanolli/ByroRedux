@@ -22,3 +22,18 @@
 
 ## Completeness Checks
 - [ ] **SIBLING**: Same pattern checked in related files
+
+---
+
+## Solution
+
+**Fixed**: cornell.rs (3096 lines) split into cornell/{oracle, glass_dragon,
+combustion_lab, godray_lab, builders}.rs with the classic box, SDK studio
+room and the family re-exports in the root — 1243/838/476/254/249/82. The
+re-export table keeps every crate::cornell:: path scene.rs and
+studio_host.rs use unchanged; no include_str! scanner reads cornell.rs.
+Commit: `Fix #5090` (8f38df6df).
+
+## Verification
+
+- bin crate: 2576/2576 green; clippy clean on the cornell family

@@ -26,3 +26,20 @@ State 604 (`Oblivion.esm`), and state that CLOT enters inventory as `ItemKind::A
 ## Completeness Checks
 - [ ] **SIBLING**: Other Oblivion-only `EsmIndex` field docs (BSGN, APPA, SGST, SLGM) checked for the same stale counts
 
+
+---
+
+## Solution
+
+**Fixed**: clothing doc states 604 (raw census re-run this session: CLOT 604)
+and that CLOT enters inventory as `ItemKind::Armor` (armour fields zeroed)
+via `parse_clot` (verified at items.rs:819). SIBLING check found one more
+stale count: sigil_stones "~30" → 150 (census + AUDIT_ESM_2026-08-13 both
+say 150); BSGN ~13 correct; APPA/SLGM state no count. Commit: `Fix #5086`
+(e7e8829b9).
+
+## Verification
+
+- Census re-measured this session with a corrected Oblivion walker
+  (20-byte headers, label at group offset 8): BSGN 13, CLOT 604, APPA 23,
+  SGST 150, SLGM 29.

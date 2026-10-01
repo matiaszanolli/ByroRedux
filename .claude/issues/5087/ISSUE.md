@@ -28,3 +28,25 @@
 ## Completeness Checks
 - [ ] **SIBLING**: Same pattern checked in related files
 - [ ] **TESTS**: A regression test pins this specific fix
+
+---
+
+## Solution
+
+**Fixed**: lines 29–2065 (pure helpers, interleaved test mods, FrameInputs)
+plus the post-impl free fns (rebase_model_matrix,
+origin_corrected_prev_view_proj) and their test mods moved to
+context/frame_params.rs (1342 prod); draw.rs keeps the impl + orchestration
+(815 prod). New file-level budget test beside the function budget:
+draw.rs ≤ 900, frame_params.rs ≤ 1500 production lines (strip-every-test-mod
+counter, reviewed into UNWRAPPED_SELF_INCLUDES at +1). Every scanner whose
+needle moved repointed: context/mod.rs FrameInputs.pose_dirty pin,
+material-kind-11 + layer-discriminant contract scans, sky_dome
+weather_wind packing, shader_discriminants fog shapes; helpers.rs and
+bloom.rs negative scans now cover both halves. Commit: `Fix #5087` (c57e5cc4a).
+
+## Verification
+
+- cargo test -p byroredux-renderer: 1323/1323 green
+- bin crate: 2576/2576 green (FrameInputs re-export preserved —
+  context::FrameInputs path unchanged for app_frame.rs)

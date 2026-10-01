@@ -45,3 +45,21 @@
 ## Completeness Checks
 - [ ] **SIBLING**: Same pattern checked in related files
 - [ ] **TESTS**: A regression test pins this specific fix
+
+---
+
+## Solution
+
+**Fixed**: check-issue-traceability.sh now prefers ripgrep and falls back to
+grep -E (all patterns plain ERE both accept); `BYRO_TRACEABILITY_BACKEND`
+forces a backend; the self-test re-invokes the fixture battery once per
+backend so the CI grep path is pinned even where rg exists. Invalid backend
+values fail with a clear message (exit 2). Catch-up run executed:
+`--push ee6d3fb39 HEAD` with the grep backend annotates the window as
+designed. No workflow change needed (the job goes green via the fallback).
+Commit: `Fix #5085` (6f98280be).
+
+## Verification
+
+- self-test passes on both backends locally; banana backend → clear error
+- push-mode window annotation verified end-to-end with BACKEND=grep

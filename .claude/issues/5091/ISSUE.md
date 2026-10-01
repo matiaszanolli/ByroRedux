@@ -18,3 +18,19 @@
 
 ## Completeness Checks
 - [ ] **SIBLING**: Same pattern checked in related files
+
+---
+
+## Solution
+
+**Fixed**: resumable.rs (3080 lines) split into resumable/{runtime,
+prebaked}.rs + mod.rs — runtime.rs 1442 (RuntimeNpcState, head/hair/morph
+assembly, creature shortcut, advance_runtime_unit), prebaked.rs 402
+(prepare/advance/finalize), mod.rs 1263 (NpcSpawnJob driver, shared
+placement/parenting helpers, tests). The resolve_inherited_* call-site pin
+in npc_spawn/tests.rs enumerates all three files at the same zero baseline.
+Commit: `Fix #5091` (37db35cca).
+
+## Verification
+
+- bin crate: 2576/2576 green; clippy clean on the family
