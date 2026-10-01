@@ -126,6 +126,43 @@ Both consumers—`cell_loader/spawn/mesh_instance.rs::spawn_mesh_instance` and
 hazard, unlike ESM WATR/XNAM content. See `docs/engine/watal.md` for the shared
 rendering/physics contract.
 
+### Participating media (beam / fog cards) — **declared boundary, cell path only (2026-10-01)**
+
+A drawn submesh can translate into a canonical **medium** instead of a raster
+surface, at spawn/import — never at render time. Two converter families in
+`byroredux/src/fog.rs` do this, both chained from
+`CachedNifImport::beam_volumes` (`cell_loader/nif_import_registry.rs`) and
+`prepare_fog_mesh_instance` (`cell_loader/spawn/mesh_instance.rs`):
+
+- six asset-signature beam converters (`fnv_nellis_hangar_beam_volumes_from_mesh`,
+  `window_beam_volume_from_mesh`, `oblivion_dungeon_beam_volume_from_mesh`,
+  `authored_cone_beam_volume_from_mesh`, `fnv_superwide_beam_volume_from_mesh`,
+  `vault_window_beam_volume_from_mesh`, #4809 lineage), each matching a file
+  name plus exact vertex/index counts — on a match the drawn submesh is
+  **replaced** before upload (no `Material`, no raster entity, no BLAS; one or
+  more canonical `FogVolume`s are emitted instead), 0572bfd5a;
+- the older fog-token converter `fog_volume_from_mesh` (733dff8f1), for
+  `dst_blend == 7` fog/smoke quads.
+
+**Path scope, deliberate:** both families run on the **cell path only**.
+`scene/nif_loader.rs` (the loose-NIF viewer) calls none of them, so
+`cargo run -- effects/ambient/windowlightbeam.nif` draws the painted card
+while the same NIF placed in a cell becomes a medium. That divergence is
+deliberate: the viewer is a NIF inspector that shows what the file authors,
+and the cell path is the game-fidelity translation. Contrast
+`fog::medium_from_particle`, the sibling mesh-replacement, which runs on
+BOTH paths (`scene/nif_loader.rs` and `cell_loader/spawn.rs`) — particle
+presets carry the medium parameters, so both consumers translate them.
+
+**Media parameters** (extinction 0.12 m⁻¹, single-scatter albedo peak 0.9,
+`edge_softness` 0.35–0.65, an 80-BU beam half-width floor, extrusion of
+span × 0.3 or width × 0.75) are **engine tuning constants named in
+`fog.rs`**, not Bethesda-sourced: a painted card has no extinction or albedo
+to translate, so the constants parameterize the godray look rather than
+decode authored data. See `docs/engine/interior-godrays-status.md` for the
+rendering side.
+
+
 ### Geometry / transform — **converged (reference template)**
 
 Z-up → Y-up conversion (`crates/nif/src/import/coord.rs`), tangent extraction +
@@ -729,14 +766,20 @@ The material slice was executed this session as the template. Mechanics:
      attached — the second phase, below.
 
 - **Drawn-surface exemptions, recorded** (#4304). "Every drawn surface's
-  canonical material is produced at one boundary" has exactly three
-  deliberate exemptions — Cornell's synthetic fixtures, `crates/save`'s
-  reconstructed materials, and **EXAL ground cover**: blades shade from
-  `GroundCoverPalette` (`groundcover_translate.rs`) with no `Material`,
-  no `GpuMaterial` row and no `MaterialTable` intern. That is the correct
-  shape (no `Imported*` tier, no renderer per-game branch — the palette IS
-  the canonical translation of the species table), recorded here so the
-  next audit does not re-derive it. See `exal-groundcover.md`.
+  canonical material is produced at one boundary" has exactly four
+  deliberate exemptions:
+  - Cornell's synthetic fixtures;
+  - `crates/save`'s reconstructed materials;
+  - **EXAL ground cover**: blades shade from `GroundCoverPalette`
+    (`groundcover_translate.rs`) with no `Material`, no `GpuMaterial` row and
+    no `MaterialTable` intern. That is the correct shape (no `Imported*`
+    tier, no renderer per-game branch — the palette IS the canonical
+    translation of the species table), recorded here so the next audit does
+    not re-derive it. See `exal-groundcover.md`.
+  - **mesh → participating medium** (§2 "Participating media"): beam/fog
+    cards that spawn as `FogVolume`s with no `Material` at all — a
+    translation to a different canonical category, recorded there with its
+    path scope and media tuning constants (#5102).
 
 - **Two-phase boundary** (#2330). `translate_material` runs *before* texture
   handles exist, so any field whose value depends on which textures actually
