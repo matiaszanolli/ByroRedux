@@ -1443,6 +1443,8 @@ mod fog_curve_propagation_tests;
 #[cfg(test)]
 mod frustum_tests;
 #[cfg(test)]
+mod groundcover_hasher_tests;
+#[cfg(test)]
 mod parallax_alpha_gate_tests;
 #[cfg(test)]
 mod tint_alpha_gate_tests;

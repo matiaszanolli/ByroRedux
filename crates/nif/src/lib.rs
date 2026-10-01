@@ -1102,3 +1102,5 @@ fn drift_warning(type_name: &str, consumed: u32, prior: &[u32]) -> Option<String
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod version_literal_tests;
