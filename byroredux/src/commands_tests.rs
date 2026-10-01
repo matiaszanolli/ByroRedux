@@ -815,14 +815,14 @@ fn mat_dump_reports_texture_path_provenance_and_binding_contract() {
         | byroredux_renderer::vulkan::material::material_flag::MODEL_SPACE_NORMALS;
     world.insert(entity, material);
 
-    let mut paths = MaterialTextureSet {
+    let paths = MaterialTextureSet {
         base_color: Some(r"textures\architecture\wall_d.dds".to_string()),
         normal: Some(r"textures\architecture\wall_n.dds".to_string()),
         environment: Some(r"textures\cubemaps\interior.dds".to_string()),
         glass_dirt_overlay: Some(r"textures\effects\glass_dirt.dds".to_string()),
         ..Default::default()
     };
-    let mut sources = MaterialTextureSet {
+    let sources = MaterialTextureSet {
         base_color: MaterialTextureSource::NifTextureSet,
         normal: MaterialTextureSource::DerivedNormal,
         environment: MaterialTextureSource::TxstOverride,
@@ -837,7 +837,7 @@ fn mat_dump_reports_texture_path_provenance_and_binding_contract() {
             clamp_mode: 2,
         },
     );
-    let mut handles = MaterialTextureSet {
+    let handles = MaterialTextureSet {
         base_color: 17,
         normal: 18,
         environment: 19,

@@ -1166,7 +1166,7 @@ fn build_text_key_extra_data_nif_overruns_eof(overrun_by: u32) -> Vec<u8> {
 #[test]
 fn skip_animation_oversized_block_size_falls_through_instead_of_failing_whole_parse() {
     let data = build_text_key_extra_data_nif_overruns_eof(50);
-    let mut options = ParseOptions {
+    let options = ParseOptions {
         skip_animation: true,
         ..Default::default()
     };

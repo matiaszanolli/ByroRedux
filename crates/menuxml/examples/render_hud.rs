@@ -133,7 +133,7 @@ fn main() {
                 ("hudmain_compass_window".to_string(), "user0".to_string()),
             ]
             .into_iter()
-            .map(|(k, v)| if k.ends_with("compass_window") { ((k, v), byroredux_menuxml::Scalar::Num(heading)) } else if k.ends_with("health_full") { ((k, v), byroredux_menuxml::Scalar::Num(0.35)) } else if k.ends_with("magic_full") { ((k, v), byroredux_menuxml::Scalar::Num(0.7)) } else if k.ends_with("fatigue_full") { ((k, v), byroredux_menuxml::Scalar::Num(1.0)) } else { ((k, v), byroredux_menuxml::Scalar::Num(1.0)) })
+            .map(|(k, v)| if k.ends_with("compass_window") { ((k, v), byroredux_menuxml::Scalar::Num(heading)) } else if k.ends_with("health_full") { ((k, v), byroredux_menuxml::Scalar::Num(0.35)) } else if k.ends_with("magic_full") { ((k, v), byroredux_menuxml::Scalar::Num(0.7)) } else { ((k, v), byroredux_menuxml::Scalar::Num(1.0)) })
             .collect();
             let empty = std::collections::HashMap::new();
             let mut eval = EvalState::new(&doc, byroredux_menuxml::ScreenTraits::new(1280.0, 720.0), &empty, &overrides);

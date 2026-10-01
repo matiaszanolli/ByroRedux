@@ -361,6 +361,7 @@ mod stuck_tests {
     /// fails on a one-sided retune (#2885 moved these values once and the
     /// copies would have silently aged, the #2193
     /// blocked-but-never-grounded shape).
+    #[allow(clippy::assertions_on_constants)] // intentional cross-crate const pin — a retuned ContactConfig::DEFAULT that violates it must fail here (#2885)
     #[test]
     fn npc_locomotion_constants_match_their_sources() {
         use super::{

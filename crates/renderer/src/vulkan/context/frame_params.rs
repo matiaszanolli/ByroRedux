@@ -1213,10 +1213,12 @@ mod composite_params_tests {
             portal_outdoor_sky: Some(outdoor.into()),
             ..SkyParams::default()
         };
-        let mut window = GpuFogVolume::default();
-        window.center_shape = [100.0, 200.0, 300.0, 2.0];
-        window.half_extents_extinction = [10.0, 20.0, 5.0, 0.0];
-        window.inverse_rotation = [0.0, 0.0, 0.0, 1.0];
+        let mut window = GpuFogVolume {
+            center_shape: [100.0, 200.0, 300.0, 2.0],
+            half_extents_extinction: [10.0, 20.0, 5.0, 0.0],
+            inverse_rotation: [0.0, 0.0, 0.0, 1.0],
+            ..Default::default()
+        };
         window.profile_params[0] = FOG_VOLUME_PROFILE_LIGHT_SHAFT;
         window.profile_params[3] = 1.0;
         let mut cone = window;

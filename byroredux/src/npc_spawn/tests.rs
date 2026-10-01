@@ -2254,7 +2254,7 @@ fn skyrim_parsed_npc_perk_reaches_the_hasperk_condition() {
     );
 
     let has = |perk: u32| {
-        let mut condition = byroredux_plugin::esm::records::condition::Condition {
+        let condition = byroredux_plugin::esm::records::condition::Condition {
             function_index: 448, // HasPerk (Skyrim); 449 on FO3/FNV
             param_1: perk,
             ..Default::default()

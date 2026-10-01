@@ -222,7 +222,7 @@ fn bspline_rotation_sample_was_already_safe_against_nan_control_points() {
         // never NaN even before the guard existed.
         assert!(normalized_rotation_sample(raw).is_none());
         let len_sq: f32 = raw.iter().map(|v| v * v).sum();
-        assert!(len_sq.is_nan() && !(len_sq > f32::EPSILON));
+        assert!(len_sq.is_nan() && len_sq <= f32::EPSILON);
     }
 }
 

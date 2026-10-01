@@ -1476,7 +1476,8 @@ mod tests {
                 );
                 continue;
             }
-            let mut lookups: Vec<Box<dyn Fn(&str) -> bool>> = Vec::new();
+            type LtexPathFilter = Box<dyn Fn(&str) -> bool>;
+            let mut lookups: Vec<LtexPathFilter> = Vec::new();
             for path in &paths {
                 if path
                     .extension()

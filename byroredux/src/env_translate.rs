@@ -2084,7 +2084,7 @@ mod tests {
         );
         assert_eq!(resolve(None, &not_flagged), [ImageSpace::default(); 4]);
 
-        let mut weather = WeatherRecord {
+        let weather = WeatherRecord {
             image_spaces: [Some(0xA1), None, Some(0xA1), Some(0xFFFF)],
             ..Default::default()
         };
@@ -2123,7 +2123,7 @@ mod tests {
                 ..Default::default()
             },
         )]);
-        let mut weather = WeatherRecord {
+        let weather = WeatherRecord {
             image_spaces: [Some(0xA1), Some(0xA1), Some(0xA1), None],
             ..Default::default()
         };
@@ -3766,7 +3766,7 @@ mod tests {
 
     #[test]
     fn calm_water_uses_authored_normal_layer_wind_without_touching_flow() {
-        let mut params = WaterParams {
+        let params = WaterParams {
             noise_wind_directions: [std::f32::consts::FRAC_PI_2, 0.0, 0.0],
             noise_wind_speeds: [0.03, 0.02, 0.0],
             ..Default::default()

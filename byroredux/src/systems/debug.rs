@@ -377,7 +377,7 @@ mod tests {
     /// thirteen the egui Metrics overlay printed that this line omitted.
     #[test]
     fn cpu_breakdown_prints_between_frames() {
-        let mut t = CpuFrameTimings {
+        let t = CpuFrameTimings {
             between_frames_ms: 42.0,
             ..Default::default()
         };

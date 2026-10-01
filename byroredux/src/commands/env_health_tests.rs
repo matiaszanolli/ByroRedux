@@ -334,7 +334,7 @@ fn negative_water_color_is_caught() {
 /// plane — two planes each break a different scalar.
 #[test]
 fn non_finite_water_scalars_are_caught_per_plane() {
-    let mut a = WaterMaterial {
+    let a = WaterMaterial {
         ior: f32::NAN,
         ..Default::default()
     };

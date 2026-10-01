@@ -31,7 +31,9 @@ fn main() -> anyhow::Result<()> {
     let bytes = std::fs::read(&esm_path)?;
     let mut reader = EsmReader::new(&bytes);
     let end = bytes.len();
-    let mut quests: HashMap<u32, (String, String, Vec<(u16, String)>)> = HashMap::new();
+    /// One quest's identity plus its (stage, text) objective pairs.
+    type QuestObjectives = (String, String, Vec<(u16, String)>);
+    let mut quests: HashMap<u32, QuestObjectives> = HashMap::new();
 
     walk(&mut reader, end, b"QUST", &mut |form_id, subs| {
         let mut edid = String::new();

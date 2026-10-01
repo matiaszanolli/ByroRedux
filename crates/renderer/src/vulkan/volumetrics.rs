@@ -2395,6 +2395,7 @@ mod unit_tests {
     /// is dead code that can never fire. And the threshold itself must
     /// sit above the vanilla torch scale it references (~512 BU), so a
     /// normal derived flame cannot trip it.
+    #[allow(clippy::assertions_on_constants)] // the canary threshold relationships are compile-time-true const pins
     #[test]
     fn reach_canary_threshold_sits_between_vanilla_torch_scale_and_max_derived_reach() {
         let max_derived_cull_radius_bu = COMBUSTION_LIGHT_MAX_RANGE_METERS
@@ -2529,6 +2530,7 @@ mod unit_tests {
     /// `volumetrics_integrate.comp` by 5be840d2b; pin both halves so the doc
     /// site cannot silently rot again — if composite stops consuming, or the
     /// blur ever returns, the doc needs re-deriving alongside the shader.
+    #[allow(clippy::assertions_on_constants)] // the gate-is-live assertion is a const pin on the shipped configuration
     #[test]
     fn volumetric_output_gate_doc_matches_the_actual_consumer() {
         assert!(
@@ -3181,6 +3183,7 @@ mod unit_tests {
     /// exterior or dusty interior), and the shader carried the ≤ 3 % soot
     /// residual forward undecayed forever. Expiry now has its own signal,
     /// distinct from a paused frame's hold, and the shader drops the field.
+    #[allow(clippy::assertions_on_constants)] // the transport dt sentinels are pinned relationships, not runtime checks
     #[test]
     fn lapsed_transport_drops_its_residual_while_a_pause_holds_it() {
         assert!(TRANSPORT_EXPIRED_DT < 0.0);
@@ -4053,6 +4056,7 @@ mod unit_tests {
         assert_eq!(fog_cluster_write_range((100, 120), (300, 350)), (100, 350));
     }
 
+    #[allow(clippy::assertions_on_constants)] // the transport dt sentinels are pinned relationships, not runtime checks
     #[test]
     fn transport_empty_slots_require_submitted_clears_and_rearm_for_new_sources() {
         let mut fields = TransportFieldState::default();
@@ -4076,6 +4080,7 @@ mod unit_tests {
         assert!(TRANSPORT_KNOWN_EMPTY_DT < TRANSPORT_EXPIRED_DT);
     }
 
+    #[allow(clippy::assertions_on_constants)] // the transport dt sentinels are pinned relationships, not runtime checks
     #[test]
     fn known_empty_transport_skips_history_stores_and_source_sampling() {
         let shader = include_str!("../../shaders/volumetrics_inject.comp");

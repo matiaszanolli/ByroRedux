@@ -1273,8 +1273,10 @@ fn blas_budget_derives_from_the_compatible_allocation_heap() {
     // Multi-heap AMD-style layout: main VRAM plus a small host-visible BAR.
     let main = 8 * 1024 * 1024 * 1024u64;
     let bar = 256 * 1024 * 1024u64;
-    let mut props = vk::PhysicalDeviceMemoryProperties::default();
-    props.memory_heap_count = 2;
+    let mut props = vk::PhysicalDeviceMemoryProperties {
+        memory_heap_count: 2,
+        ..Default::default()
+    };
     props.memory_heaps[0] = vk::MemoryHeap {
         size: main,
         flags: vk::MemoryHeapFlags::DEVICE_LOCAL,

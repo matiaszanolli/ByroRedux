@@ -1625,7 +1625,7 @@ mod tests {
 
     #[test]
     fn mesh_water_preserves_real_normal_handle_and_optical_scalars() {
-        let mut material = Material {
+        let material = Material {
             water_shader_flags: 0xC4,
             env_map_scale: 0.42,
             alpha: 0.73,
@@ -1641,7 +1641,7 @@ mod tests {
     fn skyrim_mesh_water_does_not_treat_generic_material_defaults_as_authored_optics() {
         // `Water1024.nif`'s exact shape: a Skyrim BSWaterShaderProperty with
         // nif.xml's 0xC4 flags and no scalar-bearing companion property.
-        let mut material = Material {
+        let material = Material {
             water_shader_flags: 0xC4,
             env_map_scale: 0.0,
             ..Default::default()
@@ -1665,7 +1665,7 @@ mod tests {
 
     #[test]
     fn mesh_water_applies_authored_uv_scale_to_world_tiling() {
-        let mut material = Material {
+        let material = Material {
             uv_scale: [2.0, 0.5],
             uv_offset: [0.125, -0.25],
             ..Default::default()
@@ -1678,9 +1678,11 @@ mod tests {
 
     #[test]
     fn mesh_water_honors_authored_optical_flag_gates() {
-        let mut material = Material::default();
         // Real nif.xml default: DEPTH | REFLECTIONS | REFRACTIONS (0xC4).
-        material.water_shader_flags = 0xC4;
+        let mut material = Material {
+            water_shader_flags: 0xC4,
+            ..Default::default()
+        };
         let water = water_material_from_mesh(&material, 9, 0);
         assert_eq!(water.shader_flags, 0xC4);
         assert!(water.effect_controls[0] >= 0.0);
@@ -1698,10 +1700,12 @@ mod tests {
 
     #[test]
     fn mesh_water_honors_authored_reflection_and_refraction_flags() {
-        let mut material = Material::default();
         // Reflection only: keep reflection and explicitly suppress the
         // refraction ray through the compact negative sentinel.
-        material.water_shader_flags = 1 << 6;
+        let mut material = Material {
+            water_shader_flags: 1 << 6,
+            ..Default::default()
+        };
         let water = water_material_from_mesh(&material, 9, 0);
         assert!(water.effect_controls[2] > 0.0);
         assert!(water.effect_controls[0] < 0.0);

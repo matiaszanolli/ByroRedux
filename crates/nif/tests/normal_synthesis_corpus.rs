@@ -107,7 +107,9 @@ fn derived_normals_agree_with_authored_ones() {
 #[test]
 #[ignore = "needs game data on disk"]
 fn lod_and_facegen_geometry_no_longer_imports_flat() {
-    let cases: [(Game, &dyn Fn(&str) -> bool, &str); 3] = [
+    /// One corpus case: game, its LOD-path filter, the evidence label.
+    type LodCase<'a> = (Game, &'a dyn Fn(&str) -> bool, &'a str);
+    let cases: [LodCase; 3] = [
         (
             Game::Oblivion,
             &|p: &str| p.contains("landscape\\lod\\") && p.ends_with(".nif"),

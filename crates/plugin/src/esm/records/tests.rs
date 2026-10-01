@@ -1450,7 +1450,7 @@ fn crea_group_dispatches_to_creatures_map() {
 #[test]
 fn merge_from_keeps_the_profile_when_a_later_plugin_fails_to_parse() {
     let mut merged = EsmIndex::default();
-    let mut good = EsmIndex {
+    let good = EsmIndex {
         character_rules: CharacterRulesProfile::FALLOUT_NEW_VEGAS,
         game: GameKind::Fallout3NV,
         ..Default::default()
@@ -1482,13 +1482,13 @@ fn merge_from_keeps_the_profile_when_a_later_plugin_fails_to_parse() {
 #[test]
 fn merge_from_keeps_the_first_profile_when_a_later_plugin_disagrees() {
     let mut merged = EsmIndex::default();
-    let mut base = EsmIndex {
+    let base = EsmIndex {
         character_rules: CharacterRulesProfile::FALLOUT_NEW_VEGAS,
         ..Default::default()
     };
     merged.merge_from(base);
 
-    let mut odd = EsmIndex {
+    let odd = EsmIndex {
         character_rules: CharacterRulesProfile::FALLOUT3,
         ..Default::default()
     };

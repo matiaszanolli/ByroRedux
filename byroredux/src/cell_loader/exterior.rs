@@ -768,8 +768,8 @@ mod persistent_root_survives_crossing_tests {
             },
         );
 
-        let mut index = byroredux_plugin::esm::records::EsmIndex {
-            cells: cells,
+        let index = byroredux_plugin::esm::records::EsmIndex {
+            cells,
             ..Default::default()
         };
         ExteriorWorldContext {

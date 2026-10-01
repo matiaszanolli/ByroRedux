@@ -4181,7 +4181,9 @@ fn installed_masters_actor_value_indices_resolve_by_layout() {
         (46, "AVInventoryWeight"),
         (72, "AVIgnoreCrippledLimbs"),
     ];
-    let cases: [(&str, &str, &str, Vec<(u32, &str)>); 3] = [
+    /// One corpus case: data dir, default dir, master name, expected AVs.
+    type AvCase = (&'static str, &'static str, &'static str, Vec<(u32, &'static str)>);
+    let cases: [AvCase; 3] = [
         (
             test_paths::FO3_ENV,
             test_paths::FO3_DEFAULT,

@@ -1654,9 +1654,11 @@ mod composite_params_layout_tests {
     fn aperture_projection_rejects_offscreen_and_behind_camera_planes() {
         use byroredux_core::math::{Mat4, Vec3};
         let projection = Mat4::perspective_rh(1.0, 1.5, 0.1, 1000.0);
-        let mut volume = super::super::volumetrics::GpuFogVolume::default();
-        volume.inverse_rotation = [0.0, 0.0, 0.0, 1.0];
-        volume.half_extents_extinction = [1.0, 2.0, 0.5, 0.0];
+        let mut volume = super::super::volumetrics::GpuFogVolume {
+            inverse_rotation: [0.0, 0.0, 0.0, 1.0],
+            half_extents_extinction: [1.0, 2.0, 0.5, 0.0],
+            ..Default::default()
+        };
         for center in [[100.0, 0.0, -10.0, 2.0], [0.0, 0.0, 10.0, 2.0]] {
             volume.center_shape = center;
             assert!(prepare_sky_aperture(&volume, Vec3::ZERO, Vec3::ZERO, projection).is_none());
@@ -1688,10 +1690,12 @@ mod composite_params_layout_tests {
                 for x in [-30.0, 0.0, 12.0] {
                     for z in [-30.0, -0.01, 30.0] {
                         let center = camera + Vec3::new(x, 0.0, z);
-                        let mut volume = super::super::volumetrics::GpuFogVolume::default();
-                        volume.center_shape = [center.x, center.y, center.z, 2.0];
-                        volume.half_extents_extinction = [8.0, 5.0, 1.0, 0.0];
-                        volume.inverse_rotation = rotation.conjugate().to_array();
+                        let volume = super::super::volumetrics::GpuFogVolume {
+                            center_shape: [center.x, center.y, center.z, 2.0],
+                            half_extents_extinction: [8.0, 5.0, 1.0, 0.0],
+                            inverse_rotation: rotation.conjugate().to_array(),
+                            ..Default::default()
+                        };
                         let aperture = prepare_sky_aperture(&volume, camera, render_origin, vp);
                         let local_origin = rotation.conjugate() * (camera - center);
                         for py in 0..37 {
