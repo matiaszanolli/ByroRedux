@@ -645,39 +645,25 @@ fn read_dx10_records(reader: &mut BufReader<File>, count: usize) -> io::Result<V
         let chunk_hdr_len = u16::from_le_bytes(base[14..16].try_into().unwrap());
         // #1079 / FO4-D2-009 — every vanilla FO4 DX10 record sets
         // chunk_hdr_len = 24 (matches the 24-byte chunk struct decoded in
-        // the per-chunk loop below).
-        // A different value would indicate a future format extension or a
-        // corrupt archive; bail rather than silently misparse the rest of
-        // the record. Debug-only so release builds keep the prior tolerant
-        // behaviour (clamp at extraction time).
-        debug_assert_eq!(
-            chunk_hdr_len, 24,
-            "BA2 DX10 record has chunk_hdr_len={} (expected 24) — \
-             unknown variant or corrupt archive",
-            chunk_hdr_len,
-        );
-        // #1825 / FO4-D3-01 — the debug_assert above compiles out in
-        // release builds, but the chunk-read loop below unconditionally
-        // reads a fixed 24-byte chunk regardless of the parsed
-        // `chunk_hdr_len` value — so a `chunk_hdr_len != 24` archive would
-        // misparse every following chunk with no telemetry. Surface it as
-        // `warn!` (tolerant clamp-to-24 read behavior is unchanged), same
-        // pattern as the `num_mips == 0` warn below and the non-monotonic
-        // `start_mip` warn further down.
-        // Not unit-tested directly: `read_dx10_records` takes a concrete
-        // `BufReader<File>` (no existing test harness constructs one), and
-        // asserting the `warn!` fires would need a captured global logger —
-        // the same trade-off the sibling `num_mips == 0` warn below
-        // documents (see `build_dds_header_clamps_num_mips_zero_to_one_and_clears_mip_flags`).
+        // the per-chunk loop below). A different value would indicate a
+        // future format extension or a corrupt archive, and the reader
+        // cannot parse any other chunk stride — the loop below reads a
+        // fixed 24-byte chunk regardless of the parsed value, so
+        // continuing would misparse every following chunk.
+        // #5008 / PAR-D2-2026-09-29-01 — this used to be a
+        // `debug_assert` + release `warn!` (#1825), which made a debug
+        // build panic at boot on file-controlled bytes; the reader
+        // contract is "malformed bytes give Err, never a panic", so the
+        // malformed stride is now a hard `InvalidData` in every build.
         if chunk_hdr_len != 24 {
-            log::warn!(
-                "BA2 DX10 record at chunk 0x{:016x} declares chunk_hdr_len={} \
-                 (expected 24) — unknown variant or corrupt archive; reading \
-                 chunks as 24 bytes anyway, which will misparse if the true \
-                 layout differs",
-                reader.stream_position().unwrap_or(0),
-                chunk_hdr_len,
-            );
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "BA2 DX10 record {i}/{count} declares chunk_hdr_len={chunk_hdr_len} \
+                     (expected 24) — unknown variant or corrupt archive; the reader \
+                     cannot parse any other chunk stride"
+                ),
+            ));
         }
         let height = u16::from_le_bytes(base[16..18].try_into().unwrap());
         let width = u16::from_le_bytes(base[18..20].try_into().unwrap());
@@ -762,19 +748,15 @@ fn read_dx10_records(reader: &mut BufReader<File>, count: usize) -> io::Result<V
         // would silently produce a DDS whose header and pixel data
         // disagreed — downstream loaders read garbage.
         //
-        // Surface the anomaly: `debug_assert!` catches it in dev (CI +
-        // local), `log::warn!` flags it in release so an operator can
-        // spot the bad archive in the logs. Don't auto-sort — that
-        // would mask the malformed archive. Same pattern as the
-        // `num_mips == 0` warn and the `chunk_hdr_len != 24` debug_assert
-        // above.
+        // Surface the anomaly as `warn!` so an operator can spot the bad
+        // archive in the logs. Don't auto-sort — that would mask the
+        // malformed archive. Unlike the `chunk_hdr_len` stride above,
+        // the record itself still parses correctly, so this stays
+        // tolerant. #5008 / PAR-D2-2026-09-29-01 removed the
+        // `debug_assert!` that used to accompany it: the field is
+        // file-controlled, and a debug build must not panic at boot
+        // where release only warns (reader contract: Err, never panic).
         let monotonic = chunks.windows(2).all(|w| w[0].start_mip <= w[1].start_mip);
-        debug_assert!(
-            monotonic,
-            "BA2 DX10 chunks non-monotonic on start_mip: {:?} — \
-             synthesized DDS header would misdescribe payload",
-            chunks.iter().map(|c| c.start_mip).collect::<Vec<_>>(),
-        );
         if !monotonic {
             log::warn!(
                 "BA2 DX10 record at chunk 0x{:016x}: chunk start_mip \
@@ -2505,5 +2487,97 @@ mod tests {
         assert_eq!(err.kind(), io::ErrorKind::InvalidData);
         let msg = format!("{err}");
         assert!(msg.contains("file_count"), "got: {msg}");
+    }
+
+    /// Build a one-record DX10 v1 BA2 with `num_chunks` chunks whose
+    /// 24-byte headers all declare BAADF00D padding and empty payloads.
+    /// `chunk_hdr_len` lands in the base record; `start_mips` drives the
+    /// per-chunk start_mip sequence (shorter slices pad with 0).
+    fn build_dx10_ba2(chunk_hdr_len: u16, start_mips: &[u16]) -> Vec<u8> {
+        let num_chunks = start_mips.len().max(1);
+        let name_table_offset = 24u64 + 24 + num_chunks as u64 * 24;
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"BTDX");
+        bytes.extend_from_slice(&1u32.to_le_bytes());
+        bytes.extend_from_slice(b"DX10");
+        bytes.extend_from_slice(&1u32.to_le_bytes()); // file_count
+        bytes.extend_from_slice(&name_table_offset.to_le_bytes());
+        let mut base = [0u8; 24];
+        base[0..4].copy_from_slice(&0x1234_5678u32.to_le_bytes()); // name_hash
+        base[4..8].copy_from_slice(b"dds\0");
+        base[8..12].copy_from_slice(&0x9ABC_DEF0u32.to_le_bytes()); // dir_hash
+        base[13] = num_chunks as u8;
+        base[14..16].copy_from_slice(&chunk_hdr_len.to_le_bytes());
+        base[16..18].copy_from_slice(&4u16.to_le_bytes()); // height
+        base[18..20].copy_from_slice(&4u16.to_le_bytes()); // width
+        base[20] = 1; // num_mips
+        base[21] = 98; // dxgi format (BC1_UNORM)
+        bytes.extend_from_slice(&base);
+        for i in 0..num_chunks {
+            let mut chunk = [0u8; 24];
+            chunk[8..12].copy_from_slice(&0u32.to_le_bytes()); // packed_size
+            chunk[12..16].copy_from_slice(&0u32.to_le_bytes()); // unpacked_size
+            chunk[16..18]
+                .copy_from_slice(&start_mips.get(i).copied().unwrap_or(0).to_le_bytes());
+            chunk[18..20].copy_from_slice(&1u16.to_le_bytes()); // end_mip
+            chunk[20..24].copy_from_slice(&0xBAADF00Du32.to_le_bytes());
+            bytes.extend_from_slice(&chunk);
+        }
+        let name = "textures\\probe.dds";
+        bytes.extend_from_slice(&(name.len() as u16).to_le_bytes());
+        bytes.extend_from_slice(name.as_bytes());
+        bytes
+    }
+
+    fn write_temp_ba2(bytes: &[u8], tag: &str) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "byroredux_dx10_{tag}_{}_{}.ba2",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .subsec_nanos(),
+        ));
+        std::fs::write(&path, bytes).expect("write temp BA2");
+        path
+    }
+
+    /// #5008 / PAR-D2-2026-09-29-01 — `chunk_hdr_len != 24` is a
+    /// file-controlled field; the old `debug_assert_eq!` panicked in debug
+    /// builds at boot while release only warned. The reader cannot parse
+    /// any other chunk stride, so it must be a hard `InvalidData` in every
+    /// build — never a panic.
+    #[test]
+    fn dx10_open_rejects_a_non_24_chunk_hdr_len_as_invalid_data() {
+        let path = write_temp_ba2(&build_dx10_ba2(32, &[0]), "hdrlen");
+        let result = Ba2Archive::open(&path);
+        let _ = std::fs::remove_file(&path);
+        let err = match result {
+            Ok(_) => panic!("chunk_hdr_len=32 must not be accepted"),
+            Err(e) => e,
+        };
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("chunk_hdr_len=32"),
+            "error must name the field and value, got: {msg}"
+        );
+        // The control record with the canonical stride still opens.
+        let path = write_temp_ba2(&build_dx10_ba2(24, &[0]), "hdrlen_ok");
+        let ok = Ba2Archive::open(&path);
+        let _ = std::fs::remove_file(&path);
+        assert!(ok.is_ok(), "chunk_hdr_len=24 control must open: {:?}", ok.err());
+    }
+
+    /// #5008 / PAR-D2-2026-09-29-01 — a non-monotonic `start_mip` sequence
+    /// is file-controlled and used to trip a `debug_assert!` at boot. The
+    /// record itself still parses, so open must succeed and only warn.
+    #[test]
+    fn dx10_open_tolerates_non_monotonic_start_mip_without_panicking() {
+        let path = write_temp_ba2(&build_dx10_ba2(24, &[1, 0]), "startmip");
+        let result = Ba2Archive::open(&path);
+        let _ = std::fs::remove_file(&path);
+        let archive = result.expect("non-monotonic start_mip must open, not fail");
+        assert_eq!(archive.file_count(), 1);
     }
 }
