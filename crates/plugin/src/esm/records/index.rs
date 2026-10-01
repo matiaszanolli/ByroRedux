@@ -448,7 +448,9 @@ pub struct EsmIndex {
     pub birthsigns: HashMap<u32, MinimalEsmRecord>,
     /// `CLOT` clothing — Oblivion-only. Same biped-slot shape as ARMO
     /// but no armour rating; folded into ARMO from FO3 onward.
-    /// ~150 vanilla records (robes, hoods, shirts, pants, shoes).
+    /// 604 vanilla records (robes, hoods, shirts, pants, shoes).
+    /// Enters inventory as `ItemKind::Armor` (armour fields zeroed)
+    /// via `parse_clot`.
     pub clothing: HashMap<u32, MinimalEsmRecord>,
     /// `APPA` alchemical apparatus — Oblivion-only. The four crafting
     /// tools (mortar & pestle, alembic, calcinator, retort) that gate
@@ -456,7 +458,7 @@ pub struct EsmIndex {
     pub apparatuses: HashMap<u32, MinimalEsmRecord>,
     /// `SGST` sigil stone — Oblivion-only. Daedric-quality enchantment
     /// sources from Oblivion Gates; carries embedded EFID/EFIT effect
-    /// list. Vanilla Oblivion ships ~30 SGSTs across the quality tiers.
+    /// list. Vanilla Oblivion ships 150 SGSTs across the quality tiers.
     pub sigil_stones: HashMap<u32, MinimalEsmRecord>,
     /// `SLGM` soul gem — Oblivion / Skyrim soul-magic carrier.
     /// Referenced by `ENCH` for the enchantment charge model.
