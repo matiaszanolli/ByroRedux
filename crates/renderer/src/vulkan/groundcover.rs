@@ -102,10 +102,14 @@ pub struct GpuGroundCoverCell {
     /// base (#4056). `u32::MAX` when the cell has no splat terrain; a valid
     /// slot can be 0, so "absent" cannot be 0.
     pub terrain_tile_slot: u32,
-    /// Padding to the 64 B record. Two scalars rather than `[f32; 2]` so the
-    /// declaration matches the GLSL `pad1, pad2` field for field, which is what
-    /// lets `name_diverging_glsl_rust_mirrors_stay_in_lockstep` guard it (#4849).
-    pub pad1: f32,
+    /// The BTXT base LTEX's own `cover_affinity` (#4903) — starts the
+    /// density field's ordered mix in `byroGcAffinity`. Previously this slot
+    /// was `pad1`.
+    pub base_affinity: f32,
+    /// Padding to the 64 B record. Kept as a named scalar (not folded into
+    /// an array) so the declaration matches the GLSL field for field, which
+    /// is what lets `name_diverging_glsl_rust_mirrors_stay_in_lockstep`
+    /// guard it (#4849).
     pub pad2: f32,
 }
 // SAFETY: `#[repr(C)]` over `f32`/`u32` only, explicitly padded to 64 bytes

@@ -52,6 +52,18 @@ pub struct GpuTerrainTile {
     /// Tier-3 terrain detail layer while the atlas has not been published.
     /// The remaining lanes keep this tail a std430 vec4.
     pub groundcover_detail_atlas: [u32; 4],
+    /// The BTXT base LTEX's own `cover_affinity` (#4903) — the terrain-side
+    /// density evaluations (`byroGcDensityGround` in `triangle.frag`) start
+    /// their ordered mix from it, exactly like the scatter's cell record.
+    pub base_cover_affinity: f32,
+    /// Explicit tail padding to the std430 array stride: the GLSL struct's
+    /// alignment is 16 (its vec4 rows), so its array stride rounds 164 up to
+    /// 176. Three named scalars rather than `[f32; 3]` so the declaration
+    /// matches the GLSL field for field — what
+    /// `gpu_terrain_tile_glsl_and_rust_fields_stay_in_lockstep` guards.
+    pub pad_to_stride_0: f32,
+    pub pad_to_stride_1: f32,
+    pub pad_to_stride_2: f32,
 }
 
 impl GpuTerrainTile {

@@ -225,7 +225,8 @@ void main() {
         if (s.valid) {
             float laplacian = gcLaplacian(cell, worldXZ, s.height);
             GroundCoverFactors factors = byroGcDensityFactors(
-                s, worldXZ, cell.affinity0, cell.affinity1, cell.waterY, laplacian);
+                s, worldXZ, cell.affinity0, cell.affinity1, cell.baseAffinity,
+                cell.waterY, laplacian);
             float dGround = byroGcCombine(factors);
             float factorValues[5] = float[5](
                 factors.affinity, factors.slope, factors.moisture, factors.shelter, factors.clump);

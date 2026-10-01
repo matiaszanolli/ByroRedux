@@ -458,6 +458,14 @@ pub(crate) struct TerrainCoverInputs {
     /// zero — a zero would make an unused layer a hard vegetation hole, which
     /// is the boundary artifact the design exists to remove.
     pub(crate) layer_affinity: [f32; 8],
+    /// The BTXT base LTEX's own `cover_affinity` (#4903) — the ground the
+    /// terrain shows wherever no splat layer paints. The density field
+    /// composes `base_affinity` first and mixes each lane over it in the
+    /// diffuse loop's order, so an unpainted vertex reads its authored
+    /// affinity (snow stays barren, grassland stays vegetated) instead of a
+    /// fabricated default, and a partially painted one shows the base under
+    /// the paint.
+    pub(crate) base_affinity: f32,
     /// Y-up water-plane height, or
     /// [`byroredux_core::ecs::components::groundcover::NO_WATER_HEIGHT`].
     ///

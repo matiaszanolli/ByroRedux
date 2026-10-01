@@ -38,7 +38,9 @@ struct GroundCoverCell {
     /// base (#4056). `0xFFFFFFFF` when the cell has no splat terrain; a
     /// valid slot can be 0, so "absent" cannot be 0.
     uint terrainTileSlot;
-    float pad1;
+    /// The BTXT base LTEX's own `cover_affinity` (#4903) — starts the
+    /// density field's ordered mix in `byroGcAffinity`. Previously `pad1`.
+    float baseAffinity;
     float pad2;
 };
 

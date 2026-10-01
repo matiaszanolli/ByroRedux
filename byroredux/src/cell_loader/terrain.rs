@@ -1077,6 +1077,16 @@ pub(super) fn spawn_terrain_mesh(
     for (affinity, layer) in layer_affinity.iter_mut().zip(splat_layers.layers.iter()) {
         *affinity = layer.cover_affinity;
     }
+    // #4903 — the BTXT base is a real LTEX with its own affinity. It starts
+    // the density field's ordered mix, so an unpainted vertex reads its
+    // authored value (the audit measured 43.8% of Skyrim terrain vertices
+    // unpainted on the base) and the same texture keeps one affinity whether
+    // or not it happens to be the canonical quadrant base.
+    let base_affinity = crate::groundcover_translate::layer_affinity(cover_affinity_key(
+        base_ltex,
+        landscape_texture_names,
+        base_texture_path,
+    ));
     let authored_grass = authored_grass_for_splat_layers(&splat_layers.layers, landscape_grasses);
     let cover_water_y =
         water_y.unwrap_or(byroredux_core::ecs::components::groundcover::NO_WATER_HEIGHT);
@@ -1122,6 +1132,12 @@ pub(super) fn spawn_terrain_mesh(
             water_y: cover_water_y,
             canopy_height,
             groundcover_detail_atlas: [0; 4],
+            // #4903 — the terrain-side density evaluations start their
+            // ordered mix from the base's own affinity.
+            base_cover_affinity: base_affinity,
+            pad_to_stride_0: 0.0,
+            pad_to_stride_1: 0.0,
+            pad_to_stride_2: 0.0,
         })
     } else {
         None
@@ -1201,6 +1217,7 @@ pub(super) fn spawn_terrain_mesh(
         entity,
         crate::components::TerrainCoverInputs {
             layer_affinity,
+            base_affinity,
             water_y: cover_water_y,
             authored_grass,
             // #4056 — the slot §12.3's ground-colour coupling reads the

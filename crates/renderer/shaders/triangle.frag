@@ -428,7 +428,8 @@ void main() {
             inst.vertexOffset, terrainTile.cellOriginXZ, fragWorldPos.xz, fragWorldPos.y);
         groundcoverDetailDensity = byroGcDensityGround(
             gcDetailSample, fragWorldPos.xz, terrainTile.coverAffinity0,
-            terrainTile.coverAffinity1, terrainTile.waterY, gcDetailLap);
+            terrainTile.coverAffinity1, terrainTile.baseCoverAffinity,
+            terrainTile.waterY, gcDetailLap);
         uint speciesCount = terrainTile.groundcoverDetailAtlas.y;
         uint species = min(
             uint(byroGcHash1(floor(fragWorldPos.xz / GROUNDCOVER_CHUNK_UNITS))
@@ -2868,6 +2869,7 @@ void main() {
                 fragWorldPos.xz,
                 terrainTile.coverAffinity0,
                 terrainTile.coverAffinity1,
+                terrainTile.baseCoverAffinity,
                 terrainTile.waterY,
                 gcLap);
         }

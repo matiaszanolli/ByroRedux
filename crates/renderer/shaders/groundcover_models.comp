@@ -313,7 +313,8 @@ void place(uint chunkIdx, uint lane) {
                 float laplacian = byroGcLaplacian(
                     cell.vertexOffset, cell.originXZ, worldXZ, s.height);
                 GroundCoverFactors f = byroGcDensityFactors(
-                    s, worldXZ, cell.affinity0, cell.affinity1, cell.waterY, laplacian);
+                    s, worldXZ, cell.affinity0, cell.affinity1, cell.baseAffinity,
+                cell.waterY, laplacian);
                 float field = clamp(f.affinity * f.slope * f.shelter * f.clump, 0.0, 1.0);
                 vec3 world = vec3(worldXZ.x, s.height, worldXZ.y);
                 float fade = byroGcDistanceFade(distance(world, pc.cameraPos.xyz));

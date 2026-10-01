@@ -316,6 +316,7 @@ pub(crate) fn collect_groundcover_frame(
                 vertex_offset: gpu_mesh.global_vertex_offset,
                 water_y: cover.water_y,
                 layer_affinity: cover.layer_affinity,
+                base_affinity: cover.base_affinity,
                 terrain_tile_slot: cover.terrain_tile_slot,
             },
             origin.origin_xz,
@@ -410,11 +411,13 @@ pub(crate) fn collect_groundcover_frame(
                         cell.layer_affinity[7],
                     ],
                     water_y: cell.water_y,
+                    // #4903 — the BTXT base's own affinity: starts the
+                    // density field's ordered mix in `byroGcAffinity`.
+                    base_affinity: cell.base_affinity,
                     // §12.3's ground-colour coupling reads the cell's layer
                     // diffuse indices from the terrain-tile SSBO through
                     // this slot (#4056). u32::MAX = no splat terrain.
                     terrain_tile_slot: cell.terrain_tile_slot,
-                    pad1: 0.0,
                     pad2: 0.0,
                 });
                 let index = (cells.len() - 1) as u32;
@@ -540,6 +543,9 @@ pub(crate) struct EntityCell {
     vertex_offset: u32,
     water_y: f32,
     layer_affinity: [f32; 8],
+    /// The BTXT base's own affinity — starts the density field's ordered
+    /// mix (#4903).
+    base_affinity: f32,
     /// §12.3's terrain-tile slot for the layer diffuse indices (#4056),
     /// `u32::MAX` when the cell has no splat terrain.
     terrain_tile_slot: u32,

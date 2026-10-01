@@ -479,9 +479,10 @@ struct GpuTerrainTile {
     // parallel array plus a new descriptor binding to keep in step with it.
     //
     // std430: both vec4 rows are on their 16-byte boundaries (96, 112), the
-    // Tier-3 atlas uvec4 lands on its own at 144, and the struct's stride is
-    // 160. `gpu_terrain_tile_field_offsets_match_shader_contract` and
-    // `gpu_terrain_tile_is_160_bytes` pin the Rust half against exactly
+    // Tier-3 atlas uvec4 lands on its own at 144, the #4903 base affinity
+    // follows at 160, and the struct's 16-alignment rounds the stride up to
+    // 176. `gpu_terrain_tile_field_offsets_match_shader_contract` and
+    // `gpu_terrain_tile_is_176_bytes` pin the Rust half against exactly
     // those numbers.
     /// `cover_affinity` for LAND splat layers 0-3 and 4-7.
     vec4 coverAffinity0;
@@ -498,6 +499,14 @@ struct GpuTerrainTile {
     // count. Zero x keeps Tier 3 disabled until the host has published the
     // palette-generated texture. z/w are std430 padding.
     uvec4 groundcoverDetailAtlas;
+    /// The BTXT base LTEX's own `cover_affinity` (#4903) — the terrain-side
+    /// density evaluations start their ordered mix from it. The named tail
+    /// pads below round the record out to the 176-byte std430 array stride
+    /// (the struct's 16-alignment from its vec4 rows).
+    float baseCoverAffinity;
+    float padToStride0;
+    float padToStride1;
+    float padToStride2;
 };
 // Binding 11: adaptive RT quality + glass-work telemetry. The CPU zeroes the
 // first word before each render pass; Phase-3 IOR glass fragments atomically

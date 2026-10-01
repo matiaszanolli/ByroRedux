@@ -103,30 +103,39 @@ float byroGcFbm(vec2 p) {
 
 // ── The five intrinsic factors ──────────────────────────────────────────
 
-/// `affinity(splat)` — the 8 splat weights dotted with the per-layer canonical
-/// `cover_affinity`.
+/// `affinity(splat)` — the canonical `cover_affinity` composed in the terrain
+/// diffuse loop's order: the BTXT base first, each splat layer mixed over it by
+/// its own weight.
 ///
-/// §3's key reframing: a layer does not *enable* ground cover, it *weights* it.
-/// A dirt layer at 0.15 and a grass layer at 0.9 blend into a continuous
-/// gradient wherever the painter feathered them, so the vegetation boundary
-/// stops coinciding with the texture boundary — which is cause #1 of the
-/// vanilla patch look.
+/// §3's key reframing stands: a layer does not *enable* ground cover, it
+/// *weights* it, and the continuous gradient wherever the painter feathered
+/// them is what removes the vanilla patch look.
 ///
-/// Normalised by total splat weight rather than taken raw: LAND weights do not
-/// sum to 1 (each layer's alpha is independent), so an unnormalised dot would
-/// make a doubly-painted vertex denser than a singly-painted one for reasons
-/// that have nothing to do with what is growing there.
-float byroGcAffinity(vec4 splat0, vec4 splat1, vec4 affinity0, vec4 affinity1) {
-    float weighted = dot(splat0, affinity0) + dot(splat1, affinity1);
-    float total = dot(splat0, vec4(1.0)) + dot(splat1, vec4(1.0));
-    // Unpainted ground (every layer zero) is the cell's base texture, which
-    // has no LTEX record and therefore no affinity. Falling to 0 would make
-    // every unpainted vertex a hard hole; the base layer is ordinary ground,
-    // so it takes the same low-but-nonzero default an unrecognised name gets.
-    if (total < 1.0e-4) {
-        return GROUNDCOVER_DEFAULT_AFFINITY;
-    }
-    return clamp(weighted / total, 0.0, 1.0);
+/// #4903 — two fabrications removed. (1) The base is a real LTEX with its own
+/// affinity (the audit measured 43.8% of Skyrim terrain vertices sitting
+/// unpainted on it), so an unpainted vertex now reads `baseAffinity` instead
+/// of a hardcoded 0.15 — `LSnow01`'s authored 0.02 was getting 7.5x too much
+/// grass. (2) LAND weights are independent alphas exactly like the diffuse
+/// loop's `mix(prev, layer, w)` — normalising by painted weight read 30% dirt
+/// over tundra as *pure* dirt while the terrain shows 70% tundra. The chain
+/// matches what is under the blades to what the terrain actually shows.
+float byroGcAffinity(
+    vec4 splat0,
+    vec4 splat1,
+    vec4 affinity0,
+    vec4 affinity1,
+    float baseAffinity
+) {
+    float a = baseAffinity;
+    a = mix(a, affinity0.x, splat0.x);
+    a = mix(a, affinity0.y, splat0.y);
+    a = mix(a, affinity0.z, splat0.z);
+    a = mix(a, affinity0.w, splat0.w);
+    a = mix(a, affinity1.x, splat1.x);
+    a = mix(a, affinity1.y, splat1.y);
+    a = mix(a, affinity1.z, splat1.z);
+    a = mix(a, affinity1.w, splat1.w);
+    return clamp(a, 0.0, 1.0);
 }
 
 /// `slope_gate(normal)` — smoothstep on the terrain normal's Y component.
@@ -252,11 +261,12 @@ GroundCoverFactors byroGcDensityFactors(
     vec2 worldXZ,
     vec4 affinity0,
     vec4 affinity1,
+    float baseAffinity,
     float waterY,
     float laplacian
 ) {
     GroundCoverFactors f;
-    f.affinity = byroGcAffinity(s.splat0, s.splat1, affinity0, affinity1);
+    f.affinity = byroGcAffinity(s.splat0, s.splat1, affinity0, affinity1, baseAffinity);
     f.slope = byroGcSlopeGate(s.normal);
     f.moisture = byroGcMoisture(s.height, waterY);
     f.shelter = byroGcShelter(laplacian);
@@ -279,6 +289,7 @@ float byroGcDensityGround(
     vec2 worldXZ,
     vec4 affinity0,
     vec4 affinity1,
+    float baseAffinity,
     float waterY,
     float laplacian
 ) {
@@ -286,7 +297,8 @@ float byroGcDensityGround(
         return 0.0;
     }
     return byroGcCombine(
-        byroGcDensityFactors(s, worldXZ, affinity0, affinity1, waterY, laplacian));
+        byroGcDensityFactors(
+            s, worldXZ, affinity0, affinity1, baseAffinity, waterY, laplacian));
 }
 
 /// `distance_fade(view)` — §6's stochastic thinning, and the ONLY term that

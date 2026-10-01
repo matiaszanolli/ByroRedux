@@ -4759,11 +4759,12 @@ fn gpu_terrain_tile_glsl_and_rust_fields_stay_in_lockstep() {
 
     assert_eq!(
         rust_fields.len(),
-        9,
+        13,
         "GpuTerrainTile gained or lost a Rust field ({rust_fields:?}) — update the \
-         GLSL mirror in include/bindings.glsl, the 160 B size pin, and the offset \
+         GLSL mirror in include/bindings.glsl, the 176 B size pin, and the offset \
          pin above together (#2463). It was 3 fields / 96 B until #4057 added \
-         §12.5's terrain receiver."
+         §12.5's terrain receiver, and 9 / 160 B until #4903 added the base \
+         affinity lane."
     );
     assert_eq!(
         glsl_fields, rust_fields,
@@ -7039,4 +7040,60 @@ fn every_camera_ubo_mirror_describes_dof_w_as_the_history_mode() {
             "{name}: dofParams.w comment must describe the #4942 history mode: {line}"
         );
     }
+}
+
+/// #4903 — the density field's affinity factor composes the BTXT base first
+/// and mixes each splat lane over it in the terrain diffuse loop's order
+/// (`a = base; a = mix(a, aff[i], w[i])`), exactly like `triangle.frag`'s
+/// splat blend. The pre-#4903 form normalised by painted weight and
+/// substituted a fabricated 0.15 for the unpainted base, so 30% dirt over
+/// tundra read as *pure* dirt (0.15) while the terrain showed 70% tundra,
+/// and `LSnow01` bases grew 7.5x their authored grass.
+#[test]
+fn groundcover_affinity_composes_the_base_in_diffuse_loop_order() {
+    let density = include_str!("../../../shaders/include/groundcover_density.glsl");
+    let body = density
+        .split("float byroGcAffinity(")
+        .nth(1)
+        .expect("byroGcAffinity must stay in groundcover_density.glsl")
+        .split("\n}")
+        .next()
+        .expect("function body terminates");
+    // The composition: base first, then one ordered mix per lane in lane
+    // order — eight of them.
+    assert!(
+        body.contains("float a = baseAffinity;"),
+        "byroGcAffinity must start from the base lane's authored affinity (#4903)"
+    );
+    assert_eq!(
+        body.matches("a = mix(a,").count(),
+        8,
+        "byroGcAffinity must mix all eight splat lanes over the base, in lane \
+         order (#4903)"
+    );
+    // Both fabrications stay dead: no renormalisation by painted weight, no
+    // default-affinity substitution for the unpainted base.
+    assert!(
+        !body.contains("/ total"),
+        "byroGcAffinity must not renormalise by painted weight — the terrain's \
+         own blend is an ordered mix over independent alphas (#4903)"
+    );
+    assert!(
+        !body.contains("GROUNDCOVER_DEFAULT_AFFINITY"),
+        "the unpainted base has a real LTEX and a real affinity; the fabricated \
+         default substitution is gone (#4903)"
+    );
+
+    // The host-side half of the pin: the audit's counterexample. 30% dirt
+    // (affinity 0.15) over a tundra base (affinity 0.9) must read 0.675 —
+    // the ordered-mix value the terrain shows — not the renormalised 0.15.
+    let compose = |base: f32, lanes: &[(f32, f32)]| {
+        let mut a = base;
+        for (w, aff) in lanes {
+            a = a + (aff - a) * w; // mix(a, aff, w)
+        }
+        a.clamp(0.0, 1.0)
+    };
+    assert!((compose(0.9, &[(0.3, 0.15)]) - 0.675).abs() < 1e-6);
+    assert_eq!(compose(0.02, &[]), 0.02, "an unpainted vertex reads the base");
 }
