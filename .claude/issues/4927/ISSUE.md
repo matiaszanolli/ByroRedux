@@ -1,8 +1,7 @@
-# EXT-D4-2026-09-27-05: skyal.md does not document the interior outdoor-sky lane
+# 4927: EXT-D4-2026-09-27-05: skyal.md does not document the interior outdoor-sky lane
 
-**Issue**: #4927
-**Filed**: 2026-09-27 (audit-publish, AUDIT_EXTERIOR_2026-09-27.md)
-**Labels**: low,terrain-exterior,documentation,doc-rot
+labels: documentation, low, terrain-exterior, doc-rot
+state: OPEN
 
 **Severity**: LOW (doc)
 **Dimension**: Sky, weather, sun
@@ -23,3 +22,4 @@ Add a SKYAL section with a consumer/gate table.
 ## Completeness Checks
 - [ ] **SIBLING**: Same pattern checked in related files (other spawners / translate arms / games)
 - [ ] **TESTS**: Doc text matches the code it describes (re-grep the cited symbols)
+

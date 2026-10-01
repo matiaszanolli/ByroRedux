@@ -498,6 +498,72 @@ implemented by this evidence collection.
 
 ---
 
+### The interior outdoor-sky lane (#4927, 2026-10-01)
+
+Interiors carry **two skies**: the room's own XCLL lighting for surfaces,
+and the worldspace-scoped outdoor palette (`SkyParamsRes` survives the cell
+transition, #1199; an interior-only boot installs the canonical procedural
+default, #4902) as the *portal palette* — what windows, apertures and
+volumetrics see. `byroredux/src/render/sky.rs`'s `build_sky_params`
+assembles the lane every frame; nothing is re-derived in the render loop
+(#4902 removed that fallback).
+
+The #2226/#3323 "interior sky is isolated" rule is **superseded in
+practice** by this split: interior *surface* lighting stays isolated (XCLL
+ambient/directional — `weather_system` never writes an interior's
+`CellLightingRes`), while the outdoor palette is deliberately carried into
+interiors for the portal, the aperture background and the portal sun. The
+lane's pieces:
+
+* **Interior ambient cube** — `interior_dalc_cube` reads the cell's XCLL
+  `directional_ambient` (plus specular colour/fresnel power) into
+  `SkyParams.dalc_cube` each frame. This is a per-frame read of authored
+  data, not a bake; the weather-sampled `current_dalc_cube` on
+  `SkyParamsRes` belongs to the exterior side of the lane.
+* **`sky_lower.w` modes** — the composite packs the interior outdoor-sky
+  mode into `sky_lower.w`: `0` = no outdoor sky, `1` = Show Sky
+  (`InteriorSkyExposureRes`, from XCLL/Show Sky), `2` = bounded aperture.
+  Night-sky details (stars, moon, aurora) gate on
+  `depth_params.x <= 0.5 && sky_lower.w <= 0.5` so an interior that shows
+  the sky keeps its night details even though the room's weather gate is
+  off (#4908).
+* **`jitter.w` = `is_exterior`** — the camera UBO's jitter vec4 carries the
+  exterior flag in `w` (1.0 exterior, 0.0 interior / no exterior load). It
+  gates `triangle.frag`'s half-sky reflection/refraction miss blend, the
+  exterior-glass branch, and the ambient fallback: the
+  `SkyParams::default()` clear-noon zenith must not bleed into interior
+  glass (#1125 / REN-D9-NEW-01).
+* **Portal-cloud lighting (#4839)** — the interior's portal palette calls
+  `outdoor_sky_params` with `cell_directional = None`, so clouds seen
+  through a window are lit by the exterior's own sunlight colour
+  (`WeatherSkyState::sunlight_color`, HNAM-dimmed, cloud-transmittance
+  scaled) instead of the room's XCLL key — matching the same weather
+  outdoors.
+* **`portal_sun` (#4909)** — direction is the outdoor `sun_direction`;
+  radiance is the outdoor `sun_illuminance` (the same value that lights the
+  exterior terrain — sunlight colour × dimmer × daylight fraction × cloud
+  transmittance), black below the horizon. Volumetrics consume it only
+  after a geometry ray proves an opening.
+* **`exterior_zenith_color` (#3323)** — the window-portal escape colour for
+  `triangle.frag`'s clear-depth portal pixels; pinning it to the default
+  made every FNV interior window transmit clear-noon blue at 03:00.
+
+| Piece | Consumer | Gate |
+|---|---|---|
+| `interior_dalc_cube` (XCLL cube) | scene UBO `dalc_cube` | `interior_xcll_cube_reaches_sky_params_without_exterior_resource` (`render/sky.rs`) |
+| portal palette assembly | `portal_outdoor_sky`, `exterior_zenith_color` | `interior_only_session_bakes_procedural_outdoor_sky`, `interior_without_an_outdoor_environment_gets_no_portal_sky`, `stale_exterior_sky_params_res_does_not_leak_into_interior` |
+| `sky_lower.w` 1/2 modes | `weather_sky_details` (include/sky.glsl) | `night_sky_details_follow_the_outdoor_palette_not_the_weather_flag` (`sky_dome.rs`), `interior_portal_sky_preserves_room_weather_gate` (`context/draw.rs`) |
+| `jitter.w` is_exterior | `triangle.frag` glass/ambient branches | jitter-pin batch in `shader_constants.rs` (#1125) |
+| portal-cloud lighting | cloud shell's `sun_illuminance` | `interior_portal_sky_clouds_are_lit_by_the_exterior_sunlight` |
+| `portal_sun` direction/radiance | volumetrics light shafts | `interior_only_boot_uses_live_clock_for_portal_sun`, `overcast_dims_the_portal_sun`, `interior_portal_sun_stays_dark_below_horizon` |
+| Show Sky exposure | aperture background | `show_sky_interior_allows_open_sky_visibility_without_exterior_lighting` |
+
+EXT-D4-01 (a stale `SkyParamsRes` misreading as a lighting regression)
+follows from this gap: the lane above is the contract that turn of events
+violates.
+
+---
+
 ## 4. Harness
 
 The measurements above are reproducible, and any change to this layer
