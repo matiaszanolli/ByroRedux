@@ -1,8 +1,7 @@
-# EXT-D4-2026-09-27-04: The WTHR cross-fade does not blend the sun arc — the sun snaps on completion when the climates' TNAM differ
+# 4926: EXT-D4-2026-09-27-04: The WTHR cross-fade does not blend the sun arc — the sun snaps on completion when the climates' TNAM differ
 
-**Issue**: #4926
-**Filed**: 2026-09-27 (audit-publish, AUDIT_EXTERIOR_2026-09-27.md)
-**Labels**: low,terrain-exterior,bug
+labels: bug, low, terrain-exterior
+state: OPEN
 
 **Severity**: LOW
 **Dimension**: Sky, weather, sun
@@ -24,3 +23,4 @@ Blend both arcs by `transition_t`.
 - [ ] **CANONICAL-BOUNDARY**: Per-game logic stays at the EXAL/WATAL translate boundary (`env_translate.rs`, `groundcover_translate.rs`, the `cell_loader` spawn sites) — never pushed into shaders/renderer, never re-derived at render time. See `/audit-exterior`.
 - [ ] **LOCK_ORDER**: `WeatherDataRes` / `WeatherTransitionRes` / `SkyParamsRes` / `CellLightingRes` acquisition order preserved (#3263, #1410)
 - [ ] **TESTS**: A regression test pins this specific fix
+

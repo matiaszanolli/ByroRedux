@@ -889,6 +889,7 @@ pub(crate) fn weather_system(world: &World, dt: f32) {
         weather,
         cloud_layer_velocities,
         cloud_layer_velocities_authored,
+        tod_hours,
     ) = if transition_t > 0.0 {
         let tr = world
             .try_resource::<WeatherTransitionRes>()
@@ -959,7 +960,6 @@ pub(crate) fn weather_system(world: &World, dt: f32) {
             )),
             (None, None) => None,
         };
-
         (
             lerp3(zenith, target_zenith, transition_t),
             lerp3(horizon, target_horizon, transition_t),
@@ -988,6 +988,20 @@ pub(crate) fn weather_system(world: &World, dt: f32) {
             } else {
                 target.cloud_layer_velocities_authored
             },
+            // #4926 — the sun arc follows the fade too: blend the two CLMT
+            // TNAM breakpoint vectors so `compute_sun_arc` (called below on
+            // this blend) eases the sun from the source's arc onto the
+            // target's instead of steering by the source for the whole 8 s
+            // and snapping on completion — the #1018 fog class, sun edition.
+            // A convex combination of two sorted breakpoint vectors stays
+            // sorted, and the arc math keeps its single normalization
+            // authority.
+            [
+                lerp1(wd.tod_hours[0], target.tod_hours[0], transition_t),
+                lerp1(wd.tod_hours[1], target.tod_hours[1], transition_t),
+                lerp1(wd.tod_hours[2], target.tod_hours[2], transition_t),
+                lerp1(wd.tod_hours[3], target.tod_hours[3], transition_t),
+            ],
         )
     } else {
         (
@@ -1005,18 +1019,20 @@ pub(crate) fn weather_system(world: &World, dt: f32) {
             weather_source,
             cloud_velocities_source,
             cloud_velocities_authored_source,
+            wd.tod_hours,
         )
     };
 
-    // Sun direction + intensity — derived from this WTHR's
-    // `tod_hours` via `compute_sun_arc`, so the sun stays in lockstep
-    // with the climate-driven palette. Pre-#1012 these were hardcoded
+    // Sun direction + intensity — derived from the effective `tod_hours`
+    // via `compute_sun_arc` (the cross-fade-blended breakpoints during a
+    // WTHR transition, #4926), so the sun stays in lockstep with the
+    // climate-driven palette. Pre-#1012 these were hardcoded
     // to a 6h/18h arc + 7h/17h intensity window that disagreed with
     // non-default CLMTs — FO3 Capital Wasteland (sunrise 5.333 h) had
     // ~40 min where the palette was sunrise-tinted but the sun
     // direction was the below-horizon sentinel `[0, -1, 0]` (sky
     // painted dawn while N·L = 0).
-    let (sun_dir, sun_intensity) = compute_sun_arc(hour, wd.tod_hours);
+    let (sun_dir, sun_intensity) = compute_sun_arc(hour, tod_hours);
 
     // Surface state is updated only while an exterior is active. Weather
     // continues sampling indoors so window portals retain the live sky, but
@@ -2938,6 +2954,133 @@ mod hnam_dimmer_tests {
             world.try_resource::<GroundCoverDimmer>().unwrap().0,
             0.25,
             "grass_dimmer must reach GroundCoverDimmer through the same pass"
+        );
+    }
+}
+
+/// #4926 — the sun arc through a WTHR cross-fade between climates with
+/// different TNAM breakpoints. Pre-fix the arc ran on the source's
+/// `tod_hours` for the whole fade and snapped to the target's on completion
+/// (the #1018 fog class, sun edition).
+#[cfg(test)]
+mod sun_arc_crossfade_tests {
+    use super::*;
+
+    fn weather_with_tod(tod_hours: [f32; 4]) -> WeatherDataRes {
+        WeatherDataRes {
+            sky_colors: [[[0.0_f32; 3]; 6]; 10],
+            fog: [100.0, 60000.0, 200.0, 30000.0],
+            fog_media: [
+                crate::fog::FogMedium::from_legacy_ramp(100.0, 60000.0, None),
+                crate::fog::FogMedium::from_legacy_ramp(200.0, 30000.0, None),
+            ],
+            tod_hours,
+            skyrim_dalc_per_tod: None,
+            wind_speed: 0,
+            precipitation: 0.0,
+            cloud_layer_velocities: [[0.0; 2]; 4],
+            cloud_layer_velocities_authored: [false; 4],
+            cloud_layer_colors: [[[1.0; 3]; 4]; 4],
+            cloud_layer_alphas: [[1.0; 4]; 4],
+            weather: crate::components::WeatherSkyState::default(),
+            grass_dimmer: 1.0,
+            sunlight_dimmer: 1.0,
+            image_space: Default::default(),
+        }
+    }
+
+    fn world_at_noon(source: WeatherDataRes, target: Option<WeatherDataRes>, elapsed: f32) -> World {
+        let mut world = World::new();
+        world.insert_resource(GameTimeRes::frozen_at(12.0));
+        world.insert_resource(source);
+        if let Some(target) = target {
+            world.insert_resource(WeatherTransitionRes {
+                target,
+                elapsed_secs: elapsed,
+                duration_secs: 8.0,
+                done: false,
+            });
+        }
+        world.insert_resource(CellLightingRes {
+            ambient: [0.1; 3],
+            directional_color: [0.0; 3],
+            directional_dir: [0.0, 1.0, 0.0],
+            is_interior: false,
+            fog_color: [0.0; 3],
+            fog_near: 100.0,
+            fog_far: 60000.0,
+            fog_medium: crate::fog::FogMedium::from_legacy_ramp(100.0, 60000.0, None),
+            directional_fade: None,
+            fog_clip: None,
+            fog_power: None,
+            fog_far_color: None,
+            fog_max: None,
+            light_fade_begin: None,
+            light_fade_end: None,
+            directional_ambient: None,
+            specular_color: None,
+            specular_alpha: None,
+            fresnel_power: None,
+            inheritance_flags: None,
+        });
+        world.insert_resource(crate::env_translate::procedural_fallback_sky(
+            [0.0, 1.0, 0.0],
+        ));
+        world
+    }
+
+    /// Mid-fade, the arc is the blend of the two breakpoint vectors — not
+    /// the source's arc held flat (which then snaps at completion).
+    #[test]
+    fn sun_arc_eases_between_the_two_climates_arcs() {
+        let source = weather_with_tod([6.0, 10.0, 18.0, 22.0]);
+        let target = weather_with_tod([7.5, 11.5, 16.5, 20.5]);
+        // 4 s into an 8 s fade: t = 0.5, blended tod_hours = [6.75, …, 21.25].
+        let world = world_at_noon(source, Some(target), 4.0);
+        weather_system(&world, 0.0);
+
+        let sky = world.try_resource::<SkyParamsRes>().unwrap();
+        let expected = compute_sun_arc(12.0, [6.75, 10.75, 17.25, 21.25]);
+        assert_eq!(
+            sky.sun_direction, expected.0,
+            "mid-fade the sun must ride the blended CLMT breakpoints, not \
+             the source's (#4926)"
+        );
+        assert_eq!(sky.sun_intensity, expected.1);
+        assert_ne!(
+            sky.sun_direction,
+            compute_sun_arc(12.0, [6.0, 10.0, 18.0, 22.0]).0,
+            "sanity: the two arcs differ, so a flat source arc is observable"
+        );
+    }
+
+    /// At completion the blend is exactly the target's breakpoints, so the
+    /// promotion frame does not move the sun.
+    #[test]
+    fn sun_arc_lands_on_the_target_arc_at_completion() {
+        let source = weather_with_tod([6.0, 10.0, 18.0, 22.0]);
+        let target = weather_with_tod([7.5, 11.5, 16.5, 20.5]);
+        let world = world_at_noon(source, Some(target), 8.0);
+        weather_system(&world, 0.016);
+
+        let sky = world.try_resource::<SkyParamsRes>().unwrap();
+        let expected = compute_sun_arc(12.0, [7.5, 11.5, 16.5, 20.5]);
+        assert_eq!(
+            sky.sun_direction, expected.0,
+            "the completion frame must land exactly on the target's arc"
+        );
+    }
+
+    /// No transition in flight: the source's own breakpoints, unchanged
+    /// behaviour.
+    #[test]
+    fn sun_arc_without_a_transition_uses_the_live_breakpoints() {
+        let world = world_at_noon(weather_with_tod([6.0, 10.0, 18.0, 22.0]), None, 0.0);
+        weather_system(&world, 0.016);
+        let sky = world.try_resource::<SkyParamsRes>().unwrap();
+        assert_eq!(
+            sky.sun_direction,
+            compute_sun_arc(12.0, [6.0, 10.0, 18.0, 22.0]).0
         );
     }
 }
