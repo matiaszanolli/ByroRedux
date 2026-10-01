@@ -22,6 +22,16 @@
 //!   Same quad grid and level naming as their terrain siblings, so they ride
 //!   the same legacy band ladder ([`LodBandLadder::for_object_game`]).
 //!
+//! **#4913 — Skyrim's tree tier is a third family this ring does not
+//! consume.** Vanilla `.bto` macro-meshes carry no trees: the tree LOD is
+//! 386 `.btt` quad billboards (`meshes\terrain\<world>\trees\`, level 4
+//! only) + 9 `.lst` species lists (`Meshes1.bsa`) + the `treelod` atlases
+//! (Textures5/6/7 on the SE install), all counted by
+//! `probe_lod_corpus`. FO4/FO76 bake their trees into the `.bto`, so
+//! distant Skyrim forests render empty while the terrain behind them keeps
+//! drawing; the `.btt`+`.lst` instanced-billboard consumer is open work on
+//! this ring's quad residency.
+//!
 //! **This module was documented as Skyrim/FO4-only until #3321**, on the
 //! strength of #2086's conclusion that "FO3/FNV ship neither LOD scheme for
 //! distant objects" — reached without opening a `blocks\` NIF. Re-probing

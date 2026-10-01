@@ -342,6 +342,15 @@ Per-game impls (the runtime source per the Q3 finding):
     `Textures\Terrain\<World>\Objects\<World>.Objects.dds` atlas, **selected by
     filename** (level + quad X/Y). **STAT `MNAM` is generation-time only and is
     NOT read at runtime** — so this provider needs no MNAM parse.
+  - **Trees (#4913, registered but unconsumed):** on Skyrim the tree tier is
+    a fourth family the object scheme does not bake — `Meshes\Terrain\<World>\
+    Trees\<World>.<level>.<x>.<y>.btt` quad billboards (386 in
+    `Meshes1.bsa`, level-4 only), the 9 `.lst` tree species lists that key
+    them, and the `Textures\Terrain\<World>\Trees\<World>Treelod.dds` atlases
+    (Textures5/6/7 on the SE install). Vanilla `.bto` files carry no trees,
+    so distant Skyrim forests render empty; a `.btt`+`.lst` instanced-billboard
+    consumer on the object ring's quad residency is the open work item
+    (#4913). FO4/FO76 bake their trees into the `.bto` and need none of this.
   - **VWD culling rule**: the base record's *Visible-When-Distant* / "Has Distant
     LOD" flag is the one runtime signal the real engine reads — to **cull the full
     model** once its quad's `.bto` is active (otherwise the full mesh and the LOD

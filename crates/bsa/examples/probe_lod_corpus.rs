@@ -111,6 +111,8 @@ fn main() {
         let mut creation = 0usize;
         let mut generated = 0usize;
         let mut lodsettings = 0usize;
+        let mut treelod_atlas = 0usize;
+        let mut tree_lists = 0usize;
         let mut matched = 0usize;
         let mut creation_terrain: std::collections::BTreeMap<
             String,
@@ -148,6 +150,22 @@ fn main() {
             // #4933 — the per-worldspace `lodsettings\<ws>.lod` descriptors.
             if l.starts_with("lodsettings\\") && l.ends_with(".lod") {
                 lodsettings += 1;
+                is_lod = true;
+            }
+            // #4913 — the tree-LOD family's two non-quad members: the
+            // per-worldspace billboard atlases
+            // (`textures\terrain\<ws>\trees\<ws>treelod.dds`) and the `.lst`
+            // tree species lists (Skyrim ships 386 `.btt` + 9 `.lst` + the
+            // atlases in `Meshes1.bsa`).
+            if l.starts_with("textures\\terrain\\")
+                && l.contains("\\trees\\")
+                && l.contains("treelod")
+            {
+                treelod_atlas += 1;
+                is_lod = true;
+            }
+            if l.starts_with("meshes\\terrain\\") && l.ends_with(".lst") {
+                tree_lists += 1;
                 is_lod = true;
             }
             // #4468 — the Fallout-legacy DLC archives bake a second,
@@ -197,7 +215,7 @@ fn main() {
             *bucket.entry(world).or_default().entry(level).or_default() += 1;
         }
         println!(
-            "{path}\n  landscape\\lod entries={lod}  _far.nif={far_nif}  distantlod={distantlod}  .high.={high_variant}  meshes\\terrain .btr/.bto/.btt={creation}  meshes\\lod\\generated={generated}  lodsettings={lodsettings}"
+            "{path}\n  landscape\\lod entries={lod}  _far.nif={far_nif}  distantlod={distantlod}  .high.={high_variant}  meshes\\terrain .btr/.bto/.btt={creation}  meshes\\lod\\generated={generated}  lodsettings={lodsettings}  treelod atlases={treelod_atlas}  .lst={tree_lists}"
         );
         for (label, map) in [
             ("terrain", &terrain),

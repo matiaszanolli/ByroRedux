@@ -1,8 +1,7 @@
-# EXT-D6-2026-09-27-03: Skyrim distant trees are never drawn — 386 `.btt` tree-LOD files and the `treelod` atlases go unconsumed
+# 4913: EXT-D6-2026-09-27-03: Skyrim distant trees are never drawn — 386 `.btt` tree-LOD files and the `treelod` atlases go unconsumed
 
-**Issue**: #4913
-**Filed**: 2026-09-27 (audit-publish, AUDIT_EXTERIOR_2026-09-27.md)
-**Labels**: medium,terrain-exterior,bug,game:skyrim
+labels: bug, medium, game:skyrim, terrain-exterior
+state: OPEN
 
 **Severity**: MEDIUM (coverage hole)
 **Dimension**: Distant LOD and trees
@@ -37,3 +36,4 @@ Skyrim forests stop at the full-detail radius, while the mountains behind them k
 - [ ] **SIBLING**: Same pattern checked in related files (other spawners / translate arms / games)
 - [ ] **CANONICAL-BOUNDARY**: Per-game logic stays at the EXAL/WATAL translate boundary (`env_translate.rs`, `groundcover_translate.rs`, the `cell_loader` spawn sites) — never pushed into shaders/renderer, never re-derived at render time. See `/audit-exterior`.
 - [ ] **TESTS**: A regression test pins this specific fix
+

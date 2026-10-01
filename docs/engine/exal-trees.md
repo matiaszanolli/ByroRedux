@@ -81,10 +81,18 @@ doesn't replace it:
   answers to "how does new near-field geometry avoid becoming a BLAS-cost or
   RT-budget problem" — §5 picks between them rather than inventing a third.
 - **The distant LOD ring** (`exal.md` §5, `.bto`/`.btr`) already owns
-  everything past the near-field ring boundary. Nothing here changes that
-  system or its ring-separation invariant (§5.2's "full REFRs only inside
-  `radius_unload`" rule) — full tree geometry is just what now occupies the
-  full-REFR side of that boundary instead of a billboard occupying it.
+  everything *except trees* past the near-field ring boundary. #4913: on
+  Skyrim the `.bto` macro-meshes carry **no trees** — the tree tier is a
+  separate, currently **unconsumed** family (386 `.btt` billboards +
+  9 `.lst` species lists in `Meshes1.bsa`, the `treelod` atlases in the
+  texture archives; counted by `probe_lod_corpus`), so vanilla Skyrim
+  forests stop at the full-detail radius while the mountains behind them
+  keep drawing. FO4/FO76 bake their trees into the `.bto`, so the gap is
+  Skyrim-only. Nothing here changes that system's ring-separation invariant
+  (§5.2's "full REFRs only inside `radius_unload`" rule) — full tree
+  geometry is just what now occupies the full-REFR side of that boundary
+  instead of a billboard occupying it, and the `.btt` billboard consumer
+  remains open work on the distant side.
 
 ### The binding constraint
 
@@ -312,7 +320,7 @@ proxy ring. This document only needs to define the *near* half:
 | Near (this document, §3-§6) | Full branch/frond/trunk geometry + leaf-card canopy | New |
 | Mid (this document, deferred) | Leaf cards only, branches dropped — a cheaper stand-in before the imposter kicks in | New, **not** designed here — flag as a Phase 3 sub-step once §3 lands, the same way ground cover's own tier-3 layer was sequenced before its other LOD tiers |
 | Far | Today's billboard (`crates/spt/src/import/mod.rs`'s existing placeholder path) | Existing, unchanged — becomes the mid-distance tier instead of the only tier |
-| Distant | `.bto`/`.btr` prebaked proxy | Existing, unchanged (`exal.md` §5) |
+| Distant | `.btr` terrain + `.bto` object proxies (`exal.md` §5) | Existing, unchanged — but #4913: on Skyrim this tier has **no trees** (the `.bto` macro-meshes bake none); the authored `.btt` billboard family is registered but unconsumed, so distant Skyrim forests render empty until that consumer exists. FO4/FO76 trees ride the `.bto` and are unaffected. |
 
 The mid tier is explicitly deferred rather than designed in this pass — it's
 a real question (does dropping branches first look better than dropping leaf
