@@ -698,18 +698,36 @@ impl VulkanContext {
         // gates once #3759 made RT a device-selection requirement. The
         // draw-side skip for a frame whose TLAS is not yet written lives in
         // `geometry_pass.rs`.
-        let groundcover = match super::super::groundcover::GroundCoverPipeline::new(
-            &device,
-            &gpu_allocator,
-            render_pass,
-            pipeline_cache,
-            texture_registry.descriptor_set_layout,
-            scene_buffers.descriptor_set_layout,
-        ) {
-            Ok(gc) => Some(gc),
-            Err(e) => {
-                log::warn!("Ground-cover pipeline creation failed: {e} — no ground cover");
-                None
+        //
+        // #4888 — the blade draw is a third indirect consumer: its frame
+        // record issues one `cmd_draw_indirect` per LOD stream with
+        // `draw_count = frame_chunk_count` (up to GROUNDCOVER_MAX_CHUNKS),
+        // which requires `multiDrawIndirect`
+        // (VUID-vkCmdDrawIndirect-drawCount-02718). `firstInstance` is
+        // always 0 there, but the gate reads the combined predicate like
+        // every other indirect consumer (#4827): without it the pipeline
+        // is simply not created, mirroring the model tier below.
+        let groundcover = if !device_caps.indirect_draws_supported() {
+            log::warn!(
+                "Ground-cover blade pipeline disabled: the device lacks multiDrawIndirect \
+                 and/or drawIndirectFirstInstance (the blade draw multi-draws up to \
+                 GROUNDCOVER_MAX_CHUNKS chunks per LOD stream) — no ground cover"
+            );
+            None
+        } else {
+            match super::super::groundcover::GroundCoverPipeline::new(
+                &device,
+                &gpu_allocator,
+                render_pass,
+                pipeline_cache,
+                texture_registry.descriptor_set_layout,
+                scene_buffers.descriptor_set_layout,
+            ) {
+                Ok(gc) => Some(gc),
+                Err(e) => {
+                    log::warn!("Ground-cover pipeline creation failed: {e} — no ground cover");
+                    None
+                }
             }
         };
 
@@ -722,7 +740,9 @@ impl VulkanContext {
         // (non-zero whenever the frame has any main instance), so it needs
         // `drawIndirectFirstInstance` and has no direct-draw fallback: on a
         // device without both indirect features the tier is simply not
-        // created, exactly like a failed creation below.
+        // created, exactly like a failed creation below. (The blade gate
+        // above already implies this one today; it stays as its own gate
+        // so the tier's firstInstance requirement is argued on its own.)
         let groundcover_models = if groundcover.is_some() && !device_caps.indirect_draws_supported()
         {
             log::warn!(

@@ -1488,5 +1488,21 @@ mod caps_tests {
             "the ground-cover model tier must not be created without \
              `indirect_draws_supported()` (#4827)"
         );
+
+        // #4888 — the blade pipeline is a third indirect consumer: its frame
+        // record issues one `cmd_draw_indirect` per LOD stream with
+        // `draw_count = frame_chunk_count` (up to GROUNDCOVER_MAX_CHUNKS),
+        // so it needs `multiDrawIndirect`
+        // (VUID-vkCmdDrawIndirect-drawCount-02718). The pre-#4888 pin
+        // scanned only geometry_pass.rs, build_and_upload_instances.rs and
+        // the tier site — the blade slipped through ungated.
+        let blade = format!("{}::new(", "GroundCoverPipeline");
+        let blade_pos =
+            init.find(&blade).expect("init.rs must create the blade pipeline");
+        assert!(
+            init[..blade_pos].contains(&format!("!device_caps.{}()", "indirect_draws_supported")),
+            "the ground-cover blade pipeline must not be created without \
+             `indirect_draws_supported()` — its multi-draw needs multiDrawIndirect (#4888)"
+        );
     }
 }
