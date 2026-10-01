@@ -402,6 +402,31 @@ fn vulkan_validation_job_fails_on_a_panic() {
     );
 }
 
+/// #4987 — the lane must also assert the POSITIVE half: a run that never
+/// selected a Vulkan device proves nothing however cleanly it exits, and
+/// the pre-#4987 lane spent its whole life green without ever creating a
+/// VkInstance (`ERROR_INCOMPATIBLE_DRIVER` on every sampled main run).
+/// The gate is the `Selected GPU:` info line from
+/// `crates/renderer/src/vulkan/device.rs`, so the job must also lift the
+/// renderer crate above the lane's `RUST_LOG=error` floor or the grep
+/// targets output the filter can never contain.
+#[test]
+fn vulkan_validation_job_requires_a_selected_device() {
+    let job = vulkan_validation_job();
+    assert!(
+        job.contains("grep -qF 'Selected GPU:'"),
+        "the vulkan-validation job no longer requires a device-selection \
+         line — a lane that boots no Vulkan device would go green again \
+         (#4987)",
+    );
+    assert!(
+        job.contains("RUST_LOG=error,byroredux_renderer=info"),
+        "the vulkan-validation job must surface renderer info logs, or the \
+         'Selected GPU:' gate greps for a line the error-only filter \
+         swallows (#4987)",
+    );
+}
+
 /// #4995 — `player_body_facing_system` writes the body root's Transform
 /// from `InputState.yaw`, which is final before the scheduler runs. Its only
 /// consumer is PostUpdate transform propagation, so it must be an Update

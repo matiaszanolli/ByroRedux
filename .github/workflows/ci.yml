@@ -389,9 +389,12 @@ jobs:
           # lane actually reaches Vulkan (the hardware rejection is a
           # production-budget policy, not a correctness one).
           export BYRO_ALLOW_CPU_VULKAN_DEVICE=1
-          # Only capture error-level messages; every [Vulkan] line at this
-          # level is a real validation error from the debug messenger callback.
-          export RUST_LOG=error
+          # Error-level globally: every [Vulkan] line at this level is a real
+          # validation error from the debug messenger callback. The renderer
+          # crate rides at info so the positive #4987 device-selection gate
+          # below can see the "Selected GPU:" line (device.rs logs it at
+          # info, which an error-only filter would swallow).
+          export RUST_LOG=error,byroredux_renderer=info
 
           # xvfb-run provides the display winit needs.
           # --bench-frames exits after N rendered frames (no --bench-hold).
@@ -434,6 +437,17 @@ jobs:
           if echo "$OUTPUT" | grep -qF 'Vulkan init failed'; then
             echo ""
             echo "::error::Vulkan init failed — the lane never reached a device, so neither the validation layer nor the parallel-batch lock-order detector ran (#4987)."
+            exit 1
+          fi
+
+          # #4987 — the POSITIVE half of the gate: a clean exit proves
+          # nothing either if the bench never selected a device (e.g. a
+          # silent early bail). Device selection logs "Selected GPU:" at
+          # info level (crates/renderer/src/vulkan/device.rs), which is why
+          # RUST_LOG above lifts the renderer crate above the error floor.
+          if ! echo "$OUTPUT" | grep -qF 'Selected GPU:'; then
+            echo ""
+            echo "::error::No 'Selected GPU:' line in the bench output — the run never selected a Vulkan device, so neither the validation layer nor the parallel-batch lock-order detector ran against a real world (#4987)."
             exit 1
           fi
 
