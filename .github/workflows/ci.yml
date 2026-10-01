@@ -117,6 +117,7 @@ jobs:
             ca-certificates \
             git \
             glslang-tools \
+            python3 \
             ripgrep
       - uses: actions/checkout@v4
       - name: Recompile and compare every first-party shader
