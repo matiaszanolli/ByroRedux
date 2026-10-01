@@ -80,8 +80,20 @@ pose_apart() { # <fileA> <fileB> <min squared distance>
 }
 wait_grounded() {
     local output="$1" deadline=$((SECONDS + TIMEOUT))
+    local sample=0 second=0
     while true; do
-        debug_command player.status "$output" || return 1
+        # Once a second, retain a numbered sample of the body state — the
+        # trajectory (pose/grounded/velocity) is what distinguishes "stuck at
+        # the restored pose with grounded=false" from "falling" when this
+        # wait fails. The caller's named file always holds the latest poll.
+        second=$((second + 1))
+        if (( second % 4 == 1 )); then
+            sample=$((sample + 1))
+            debug_command player.status "$output.$sample" || return 2
+            cp "$output.$sample" "$output"
+        else
+            debug_command player.status "$output" || return 2
+        fi
         if grep -Fq 'grounded=true' "$output" &&
            grep -Fq 'input_hold_frames_remaining=0' "$output"; then
             return 0
@@ -197,8 +209,16 @@ while (( SECONDS < deadline_s )); do
         sleep 0.5
     done
     stderr_mark=$(stat -c %s "$LOG_DIR/session.stderr")
-    if ! wait_grounded "$LOG_DIR/c$cycle.restored.status"; then
-        fail "cycle $cycle: player status unresponsive after quickload (lost control)"
+    rc=0
+    wait_grounded "$LOG_DIR/c$cycle.restored.status" || rc=$?
+    if (( rc != 0 )); then
+        debug_command phys.stats "$LOG_DIR/c$cycle.failed.phys.stats" 2>/dev/null || true
+        debug_command phys.census "$LOG_DIR/c$cycle.failed.phys.census" 2>/dev/null || true
+        if (( rc == 2 )); then
+            fail "cycle $cycle: player status unresponsive after quickload (lost control)"
+        else
+            fail "cycle $cycle: body never re-grounded after quickload (see c$cycle.restored.status.* samples + phys census)"
+        fi
     fi
     # The restored pose must match the pose at F5 time (this cycle's
     # walk-back endpoint) — the standoff reference itself moves with the
