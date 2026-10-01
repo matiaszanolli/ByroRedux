@@ -162,6 +162,57 @@ fn quest_display_name(definitions: &QuestDefinitionRegistry, quest: byroredux_sc
         .unwrap_or_else(|| format!("Quest 0x{:08X}", quest.0))
 }
 
+/// #5153 — drain the objective-state transitions the fragment mutators
+/// recorded and compose the player-facing journal announcements: the
+/// vanilla "objective added / objective completed" moment, rendered through
+/// the shared player-message banner. Ordered as the effects fired (a
+/// stage's complete-then-display pair announces the completion first, then
+/// the new objective), which is the journal's own reading order.
+///
+/// Presentation-only: the state flip already happened in the canonical
+/// mutator, and a definition-less objective still announces with its index
+/// rather than being swallowed.
+pub(crate) fn drain_transition_notifications(world: &World) -> Vec<String> {
+    let events = world
+        .try_resource_mut::<byroredux_scripting::quest_stages::QuestObjectiveState>()
+        .map(|mut state| state.take_events())
+        .unwrap_or_default();
+    if events.is_empty() {
+        return Vec::new();
+    }
+    // The definitions guard is optional: a notification must compose even
+    // when the registry is absent (the objective state outlived it across a
+    // reload boundary) — the objective then announces by index.
+    let definitions = world.try_resource::<QuestDefinitionRegistry>();
+    events
+        .into_iter()
+        .map(|event| {
+            let subject = {
+                let text = definitions
+                    .as_ref()
+                    .and_then(|definitions| definitions.objective(event.quest, event.objective))
+                    .map(|record| flatten_text(record.text.trim()))
+                    .unwrap_or_else(|| format!("objective {}", event.objective));
+                format!(
+                    "{}: {text}",
+                    quest_display_name(definitions.as_ref().expect("guard above"), event.quest)
+                )
+            };
+            match event.kind {
+                byroredux_scripting::quest_stages::QuestObjectiveEventKind::Displayed => {
+                    format!("New objective — {subject}")
+                }
+                byroredux_scripting::quest_stages::QuestObjectiveEventKind::Completed => {
+                    format!("Objective completed — {subject}")
+                }
+                byroredux_scripting::quest_stages::QuestObjectiveEventKind::Failed => {
+                    format!("Objective failed — {subject}")
+                }
+            }
+        })
+        .collect()
+}
+
 fn flatten_text(text: &str) -> String {
     let flattened = text.replace(['\r', '\n'], " ");
     let mut chars = flattened.chars();
@@ -296,6 +347,51 @@ mod tests {
         assert!(
             cache.lend(&world).is_none(),
             "fresh (empty) quest state must not serve the previous lines"
+        );
+    }
+
+    /// #5153 — objective transitions compose the vanilla journal
+    /// announcements through the real definition registry, in effect
+    /// order, and the queue drains once.
+    #[test]
+    fn transition_events_compose_journal_announcements() {
+        let mut world = quest_world();
+        let quest = QuestFormId(0x1000);
+        install_authored_quests(&mut world, &[authored_quest(0x1000, "A Testable Errand")]);
+        world
+            .resource_mut::<QuestObjectiveState>()
+            .set_displayed(quest, 10, true);
+        world
+            .resource_mut::<QuestObjectiveState>()
+            .set_completed(quest, 10, true);
+        world
+            .resource_mut::<QuestObjectiveState>()
+            .set_displayed(quest, 20, true);
+
+        let messages = drain_transition_notifications(&world);
+        assert_eq!(
+            messages,
+            vec![
+                "New objective — A Testable Errand: Do the thing in A Testable Errand".to_owned(),
+                "Objective completed — A Testable Errand: Do the thing in A Testable Errand"
+                    .to_owned(),
+                "New objective — A Testable Errand: Finish A Testable Errand".to_owned(),
+            ],
+            "complete-then-display pairs read as the journal announces them"
+        );
+        assert!(
+            drain_transition_notifications(&world).is_empty(),
+            "the transition queue drains once"
+        );
+
+        // A definition-less objective still announces, by index — never
+        // swallowed by a registry gap.
+        world
+            .resource_mut::<QuestObjectiveState>()
+            .set_displayed(quest, 90, true);
+        assert_eq!(
+            drain_transition_notifications(&world),
+            vec!["New objective — A Testable Errand: objective 90".to_owned()],
         );
     }
 

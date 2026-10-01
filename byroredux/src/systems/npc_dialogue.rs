@@ -43,9 +43,10 @@
 use byroredux_core::ecs::components::Dead;
 use byroredux_core::ecs::{Component, EntityId, SparseSetStorage, World};
 use byroredux_plugin::esm::records::{DialRecord, DialogueCategory, EsmIndex, InfoRecord};
+use byroredux_plugin::esm::records::script_instance::ScriptInstanceData;
 use byroredux_scripting::{
     running_quests_binding_entity, select_first_info, ActivateEvent, AiCombatState,
-    DialogueRegistry, SceneAliasCandidate,
+    DialogueInfoFragments, DialogueRegistry, Effect, QuestFormId, SceneAliasCandidate,
 };
 
 use crate::cell_loader::LoadedCellIndex;
@@ -258,9 +259,27 @@ fn open_conversation(
 }
 
 /// Apply one selection: registry install (the presentation side's record
-/// source), the component stamp, and the surface-serial bump. Shared by
-/// the activation path and the UI's re-selection door.
+/// source), the component stamp, the surface-serial bump, and — #5152 — the
+/// spoken line's fragments: the outgoing line's OnEnd (the line stops being
+/// spoken when another replaces it), then the selected line's OnBegin.
+/// Shared by the activation path and the UI's re-selection door.
 fn apply_selection(world: &World, npc: EntityId, topic: NpcDialogueTopic, record: DialRecord) {
+    // The outgoing line ends before the new one begins (vanilla's OnEnd
+    // ordering). One live selection (#5038) means every existing stamp IS
+    // the outgoing line.
+    let outgoing: Vec<NpcDialogueTopic> = world
+        .query::<NpcDialogueTopic>()
+        .map(|topics| {
+            topics
+                .iter()
+                .map(|(_, topic)| topic.clone())
+                .filter(|existing| existing.info_form_id != topic.info_form_id)
+                .collect()
+        })
+        .unwrap_or_default();
+    for existing in &outgoing {
+        speak_info_end_fragment(world, existing);
+    }
     if let Some(mut registry) = world.try_resource_mut::<DialogueRegistry>() {
         registry.insert_topic(record);
     }
@@ -290,6 +309,98 @@ fn apply_selection(world: &World, npc: EntityId, topic: NpcDialogueTopic, record
         topic.info_form_id,
         topic.owning_quest,
     );
+    speak_info_begin_fragment(world, &topic);
+}
+
+/// #5152 — run the selected INFO's OnBegin fragment (the TIF_ topic-info
+/// script the CK attaches to the line). This is the dialogue loop's stage
+/// engine: the fixture's Eltrys entry line lowers to
+/// `GetOwningQuest().SetStage(..)`, which journals the transition for
+/// `quest_fragment_dispatch_system` (Update stage — next frame) to run the
+/// stage fragment that displays the next objective.
+///
+/// Same execution unit as the scene dispatcher: `apply_fragment_guard_free`
+/// snapshots + flushes the deferred effects, and any direct stage advances
+/// ride the shared player sink (`push_quest_stage_advances`) so the cascade
+/// and the journal stay interleaved with every other producer. A no-op when
+/// the populate walk never filled the table (no `--scripts-bsa`, pre-Papyrus
+/// game) or the line has no OnBegin binding — most INFO dialogue is inert
+/// flavor, and 3 773 of vanilla's 5 257 bound INFOs are OnEnd-only.
+fn speak_info_begin_fragment(world: &World, topic: &NpcDialogueTopic) {
+    let Some((effects, context, vmad)) = spoken_fragment_effects(world, topic.info_form_id, true)
+    else {
+        return;
+    };
+    dispatch_spoken_fragment(world, &effects, context, vmad.as_ref());
+}
+
+/// The outgoing line's OnEnd fragment — "the line is done". Fires when
+/// another selection replaces it ([`apply_selection`]) and when the
+/// conversation surface closes ([`end_open_conversation`]).
+fn speak_info_end_fragment(world: &World, topic: &NpcDialogueTopic) {
+    let Some((effects, context, vmad)) = spoken_fragment_effects(world, topic.info_form_id, false)
+    else {
+        return;
+    };
+    dispatch_spoken_fragment(world, &effects, context, vmad.as_ref());
+}
+
+/// One resource read for the fragment binding + context + property table.
+/// `begin = true` picks the OnBegin binding, `false` the OnEnd one; `None`
+/// when the table has no entry or the line carries no such binding.
+fn spoken_fragment_effects(
+    world: &World,
+    info_form_id: u32,
+    begin: bool,
+) -> Option<(Vec<Effect>, QuestFormId, Option<ScriptInstanceData>)> {
+    world
+        .try_resource::<DialogueInfoFragments>()?
+        .spoken_effects(info_form_id, begin)
+}
+
+fn dispatch_spoken_fragment(
+    world: &World,
+    effects: &[Effect],
+    context: QuestFormId,
+    vmad: Option<&ScriptInstanceData>,
+) {
+    let advances = byroredux_scripting::apply_spoken_info_fragment(world, effects, context, vmad);
+    if advances.is_empty() {
+        return;
+    }
+    // #3580 — copy the entity out and drop the guard before the batch
+    // storage acquisition (the scene dispatcher's lock-order note).
+    let Some(player) = world
+        .try_resource::<byroredux_scripting::papyrus_demo::PapyrusPlayerEntity>()
+        .map(|player| player.0)
+    else {
+        return;
+    };
+    byroredux_scripting::quest_stages::push_quest_stage_advances(world, player, advances);
+}
+
+/// The conversation surface closed: the open line's OnEnd fragment runs
+/// (the line stops being spoken), then the selection stamp and the surface
+/// cue clear. Called from the shared resume path when the dialogue page is
+/// the one closing — the same point the pause menu's Continue and the
+/// dialogue page's Close button both reach.
+pub(crate) fn end_open_conversation(world: &World) {
+    let npc = match world.try_resource::<DialogueSurfaceState>() {
+        Some(surface) => match surface.npc {
+            Some(npc) => npc,
+            None => return,
+        },
+        None => return,
+    };
+    if let Some(outgoing) = world.get::<NpcDialogueTopic>(npc).map(|topic| topic.clone()) {
+        speak_info_end_fragment(world, &outgoing);
+    }
+    if let Some(mut topics) = world.query_mut::<NpcDialogueTopic>() {
+        topics.remove(npc);
+    }
+    if let Some(mut surface) = world.try_resource_mut::<DialogueSurfaceState>() {
+        surface.npc = None;
+    }
 }
 
 /// One activation's computed selection, applied after all reads drop (the
@@ -885,6 +996,105 @@ mod tests {
                 .expect("talks after combat")
                 .info_form_id,
             INFO_ELTRYS
+        );
+    }
+
+    /// #5152 — the spoken line's INFO fragment dispatches at selection:
+    /// the OnBegin binding runs when the line is selected, and the OnEnd
+    /// binding runs when the conversation closes. The stage advance rides
+    /// the canonical journal/sink the quest-fragment dispatcher owns.
+    #[test]
+    fn the_spoken_lines_fragments_advance_the_stage() {
+        use byroredux_scripting::quest_stages::{QuestObjectiveState, QuestStageState};
+        use byroredux_scripting::translate::compose::QuestRef;
+        use byroredux_scripting::{DialogueInfoFragments, Effect};
+
+        const HELPER_QUEST: u32 = 0x30_0001;
+        let (mut world, player, npcs) = bound_world(&[(SPEAKER_REF, SPEAKER_BASE)]);
+        let eltrys = npcs[0];
+        world.register::<byroredux_scripting::quest_stages::QuestStageAdvancedBatch>();
+        // bound_world already installed the running fixture quest's state —
+        // start the helper quest on THAT resource (a fresh default would
+        // drop the MS01 running state and the alias ownership with it).
+        world.insert_resource(QuestObjectiveState::default());
+        world
+            .resource_mut::<QuestStageState>()
+            .start_quest(QuestFormId(HELPER_QUEST), None);
+        world.insert_resource(
+            byroredux_scripting::papyrus_demo::PapyrusPlayerEntity(player),
+        );
+        // The INFO the fixture topic's speaker-locked branch selects
+        // (INFO_ELTRYS) carries an OnBegin `SetStage 13` on the helper
+        // quest; the second topic's INFO carries an OnEnd `SetStage 82`.
+        let mut fragments = DialogueInfoFragments::default();
+        fragments.insert(
+            INFO_ELTRYS,
+            QuestFormId(HELPER_QUEST),
+            None,
+            Some(vec![Effect::SetStage {
+                quest: QuestRef::SelfRef,
+                stage: 13,
+            }]),
+            None,
+        );
+        fragments.insert(
+            INFO_RUMORS,
+            QuestFormId(HELPER_QUEST),
+            None,
+            None,
+            Some(vec![Effect::SetStage {
+                quest: QuestRef::SelfRef,
+                stage: 82,
+            }]),
+        );
+        world.insert_resource(fragments);
+
+        // Activation speaks the line: its OnBegin fragment sets stage 13,
+        // journaled onto the shared player sink for the dispatcher.
+        world.insert(eltrys, ActivateEvent { activator: player });
+        npc_dialogue_selection_system(&world);
+        let advances = world
+            .query::<byroredux_scripting::quest_stages::QuestStageAdvancedBatch>()
+            .map(|query| {
+                query
+                    .iter()
+                    .flat_map(|(_, batch)| batch.0.iter().cloned().collect::<Vec<_>>())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        // The retained journal also carries the fixture/helper quest-start
+        // events the bound_world setup produced; the fragment's own advance
+        // is the (helper, 13) transition.
+        let begin_advance = advances
+            .iter()
+            .find(|advance| advance.quest.0 == HELPER_QUEST && advance.new_stage == 13)
+            .expect("the OnBegin SetStage advanced the helper quest to 13");
+        assert_eq!(begin_advance.previous_stage, 0);
+
+        // Closing the conversation runs the open line's... nothing (no
+        // end binding on INFO_ELTRYS), but selects the rumors topic whose
+        // END binding carries stage 82 — the close path fires it.
+        select_topic_by_form_id(&mut world, eltrys, TOPIC_RUMORS)
+            .expect("the second owned topic re-selects");
+        end_open_conversation(&world);
+        let advances = world
+            .query::<byroredux_scripting::quest_stages::QuestStageAdvancedBatch>()
+            .map(|query| {
+                query
+                    .iter()
+                    .flat_map(|(_, batch)| batch.0.iter().cloned().collect::<Vec<_>>())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        assert!(
+            advances
+                .iter()
+                .any(|advance| advance.quest.0 == HELPER_QUEST && advance.new_stage == 82),
+            "the OnEnd SetStage advanced the helper quest to 82 on close"
+        );
+        assert!(
+            world.query::<NpcDialogueTopic>().unwrap().iter().next().is_none(),
+            "the close clears the selection stamp"
         );
     }
 

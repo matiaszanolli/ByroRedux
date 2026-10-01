@@ -1310,6 +1310,16 @@ impl App {
     }
 
     fn resume_from_game_menu(&mut self) {
+        // #5152 — the dialogue page closing (its Close button or Escape)
+        // ends the open line: the OnEnd fragment runs and the selection
+        // clears, before the shared close/teardown.
+        if self
+            .debug_ui
+            .as_ref()
+            .is_some_and(byroredux_debug_ui::DebugUiState::dialogue_menu_visible)
+        {
+            crate::systems::npc_dialogue::end_open_conversation(&self.world);
+        }
         if let Some(ui) = self.debug_ui.as_mut() {
             ui.close_game_menu();
         }

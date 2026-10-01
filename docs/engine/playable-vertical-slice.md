@@ -1399,6 +1399,22 @@ Betrid....") with the authored prompt list, and the engine screenshot
 captures it. Remaining blocker 3: objective-completion transitions in the
 HUD, then the route smoke consolidating the whole loop.
 
+**P4 closed 2026-09-30 (#5152/#5153):** blocker 3 landed on both faces —
+the spoken line's `TIF_` INFO fragment now decodes and dispatches (OnBegin
+at selection, OnEnd on change/close, through the canonical fragment
+executor), and objective transitions announce themselves through the
+journal banner. The consolidated route
+([`p4-quest-route.sh`](../smoke-tests/p4-quest-route.sh)) gates the loop
+live in Eltrys's authored cell: populate telemetry, activation → topic
+selection → presented response, and the objective chain's real
+displayed/completed transitions (15/35/36's pair). One deliberate gap,
+documented on the fixture: the force-greet-entered blocking branch is
+unmodeled, so player activation selects the authored top-level topic; the
+dialogue-fragment stage advance is bin-test-gated until force-greet lands.
+The route also surfaced and fixed a live defect: a bare relative `--esm`
+launch silently lost string-table discovery (empty `Path::parent`), leaving
+every localized string a placeholder.
+
 ### P5 — Persistence and session hardening
 
 Goal: the complete slice survives ordinary play behavior.

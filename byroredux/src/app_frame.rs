@@ -247,7 +247,15 @@ impl App {
                 .give_back(snapshot.objectives.take());
         }
 
-        let player_messages = crate::notifications::drain(&self.world);
+        // #5153 — objective journal transitions (a stage fragment's
+        // SetObjectiveDisplayed/Completed) announce themselves the same way
+        // save/pickup/unlock feedback does, ahead of the frame's own queued
+        // messages so a completion + new-objective pair reads in order.
+        let objective_messages = crate::objectives::drain_transition_notifications(&self.world);
+        let mut player_messages = crate::notifications::drain(&self.world);
+        if !objective_messages.is_empty() {
+            player_messages.splice(..0, objective_messages);
+        }
         if let Some(ui) = self.debug_ui.as_mut() {
             if !player_messages.is_empty() {
                 ui.push_player_message(player_messages.join("\n"));

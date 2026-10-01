@@ -402,6 +402,10 @@ pub struct QuestObjectiveState {
     /// Stamped by every objective mutator.
     #[cfg_attr(feature = "save", serde(skip, default))]
     revision: QuestRevision,
+    /// Presentation-side transition cues (false→true flag flips), drained
+    /// by the HUD notification producer. Runtime plumbing, never saved.
+    #[cfg_attr(feature = "save", serde(skip, default))]
+    events: VecDeque<QuestObjectiveEvent>,
 }
 
 impl Resource for QuestObjectiveState {}
@@ -421,6 +425,27 @@ pub struct ObjectiveStatus {
     pub failed: bool,
 }
 
+/// One objective *transition*, emitted by the [`QuestObjectiveState`]
+/// mutators when a fragment flips a status flag false→true (or displayed
+/// off→on). The HUD notification layer drains these to announce journal
+/// changes — vanilla's "objective added / completed" feedback (#5153).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QuestObjectiveEvent {
+    pub quest: QuestFormId,
+    pub objective: i32,
+    pub kind: QuestObjectiveEventKind,
+}
+
+/// Which flag flipped. Displayed and Completed are the two the vanilla
+/// journal announces; Failed exists so a failure is never silently
+/// invisible.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QuestObjectiveEventKind {
+    Displayed,
+    Completed,
+    Failed,
+}
+
 impl QuestObjectiveState {
     fn entry(&mut self, quest: QuestFormId, objective: i32) -> &mut ObjectiveStatus {
         self.revision.bump();
@@ -431,18 +456,60 @@ impl QuestObjectiveState {
             .or_default()
     }
 
+    /// Record a transition event. Bounded the same way as the notification
+    /// queue's own cap — a pathological fragment spamming objective flips
+    /// must not grow the deque without bound.
+    fn push_event(&mut self, event: QuestObjectiveEvent) {
+        const MAX_PENDING: usize = 16;
+        if self.events.len() == MAX_PENDING {
+            self.events.pop_front();
+        }
+        self.events.push_back(event);
+    }
+
+    /// Drain the transition queue (HUD notification producers). Events not
+    /// drained are dropped on the next wholesale resource replace — they
+    /// are presentation cues, never state.
+    pub fn take_events(&mut self) -> Vec<QuestObjectiveEvent> {
+        self.events.drain(..).collect()
+    }
+
     /// Papyrus `Quest.SetObjectiveDisplayed(idx, displayed)`.
     pub fn set_displayed(&mut self, quest: QuestFormId, objective: i32, displayed: bool) {
+        let was = self.entry(quest, objective).displayed;
+        if displayed && !was {
+            self.push_event(QuestObjectiveEvent {
+                quest,
+                objective,
+                kind: QuestObjectiveEventKind::Displayed,
+            });
+        }
         self.entry(quest, objective).displayed = displayed;
     }
 
     /// Papyrus `Quest.SetObjectiveCompleted(idx, completed)`.
     pub fn set_completed(&mut self, quest: QuestFormId, objective: i32, completed: bool) {
+        let was = self.entry(quest, objective).completed;
+        if completed && !was {
+            self.push_event(QuestObjectiveEvent {
+                quest,
+                objective,
+                kind: QuestObjectiveEventKind::Completed,
+            });
+        }
         self.entry(quest, objective).completed = completed;
     }
 
     /// Papyrus `Quest.SetObjectiveFailed(idx, failed)`.
     pub fn set_failed(&mut self, quest: QuestFormId, objective: i32, failed: bool) {
+        let was = self.entry(quest, objective).failed;
+        if failed && !was {
+            self.push_event(QuestObjectiveEvent {
+                quest,
+                objective,
+                kind: QuestObjectiveEventKind::Failed,
+            });
+        }
         self.entry(quest, objective).failed = failed;
     }
 
@@ -1983,4 +2050,77 @@ mod tests {
              appear in it (#2659 Arc clone-on-write correctness)"
         );
     }
+}
+
+/// #5153 — the objective mutators emit one transition event per false→true
+/// flag flip and nothing else: repeat flips, un-flips, and un-marking are
+/// inert (they change no journal-visible state). The queue drains once.
+#[test]
+fn objective_mutators_emit_transitions_only() {
+    let mut state = QuestObjectiveState::default();
+    let quest = QuestFormId(0x1000);
+
+    state.set_displayed(quest, 10, true);
+    state.set_completed(quest, 10, true);
+    state.set_displayed(quest, 20, true);
+    state.set_failed(quest, 20, true);
+    let events = state.take_events();
+    assert_eq!(
+        events,
+        vec![
+            QuestObjectiveEvent {
+                quest,
+                objective: 10,
+                kind: QuestObjectiveEventKind::Displayed,
+            },
+            QuestObjectiveEvent {
+                quest,
+                objective: 10,
+                kind: QuestObjectiveEventKind::Completed,
+            },
+            QuestObjectiveEvent {
+                quest,
+                objective: 20,
+                kind: QuestObjectiveEventKind::Displayed,
+            },
+            QuestObjectiveEvent {
+                quest,
+                objective: 20,
+                kind: QuestObjectiveEventKind::Failed,
+            },
+        ],
+        "each flip announces exactly once, in effect order"
+    );
+    assert!(state.take_events().is_empty(), "the queue drains once");
+
+    // Repeat sets, un-sets, and already-false flips announce nothing;
+    // the one real transition (false -> true completed) announces once.
+    state.set_displayed(quest, 30, true);
+    state.set_displayed(quest, 30, true);
+    state.set_completed(quest, 30, true);
+    state.set_displayed(quest, 30, false);
+    state.set_completed(quest, 30, false);
+    state.set_failed(quest, 30, false);
+    assert_eq!(
+        state.take_events(),
+        vec![
+            QuestObjectiveEvent {
+                quest,
+                objective: 30,
+                kind: QuestObjectiveEventKind::Displayed,
+            },
+            QuestObjectiveEvent {
+                quest,
+                objective: 30,
+                kind: QuestObjectiveEventKind::Completed,
+            },
+        ],
+        "the two false->true flips announce once each; repeats and un-sets are inert"
+    );
+
+    // The HUD-visible displayed flag flip still bumps the revision the
+    // objective-line cache keys on.
+    let before = state.revision();
+    state.set_displayed(quest, 40, true);
+    assert_ne!(state.revision(), before, "a transition is a state change");
 }

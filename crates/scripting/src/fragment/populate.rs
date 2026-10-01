@@ -523,3 +523,104 @@ fn populate_scene_fragments_from_script_internal(
     }
     inserted
 }
+
+/// Provider-aware INFO lowering attributed to one legacy script package.
+pub fn populate_owned_info_fragments_from_pex_with_providers(
+    frags: &mut DialogueInfoFragments,
+    info_form_id: u32,
+    context: QuestFormId,
+    vmad: Option<&ScriptInstanceData>,
+    pex_bytes: &[u8],
+    bindings: &[(bool, &str)],
+    providers: OwnedFragmentProviders<'_>,
+) -> usize {
+    // Same whole-sequence panic net as the quest variant: the dialogue
+    // selection dispatches straight from this table, so a half-installed
+    // entry must never exist.
+    crate::translate::catching_panics("populate_info_fragments", || {
+        let pex = match byroredux_pex::parse(pex_bytes) {
+            Ok(p) => p,
+            Err(e) => {
+                log::debug!(
+                    "populate_info_fragments: .pex parse failed (info {info_form_id:08X}): {e}"
+                );
+                return 0;
+            }
+        };
+        let script = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            byroredux_pex::decompile::decompile_script(&pex)
+        })) {
+            Ok(Ok(s)) => s,
+            Ok(Err(e)) => {
+                log::debug!(
+                    "populate_info_fragments: decompile failed (info {info_form_id:08X}): {e}"
+                );
+                return 0;
+            }
+            Err(_) => {
+                log::debug!("populate_info_fragments: decompile panicked (info {info_form_id:08X})");
+                return 0;
+            }
+        };
+        populate_info_fragments_from_script_internal(
+            frags,
+            info_form_id,
+            context,
+            vmad,
+            &script,
+            bindings,
+            Some(FragmentProviderScope {
+                catalog: providers.catalog,
+                principal: Some(providers.principal),
+            }),
+        )
+    })
+    .unwrap_or(0)
+}
+
+fn populate_info_fragments_from_script_internal(
+    frags: &mut DialogueInfoFragments,
+    info_form_id: u32,
+    context: QuestFormId,
+    vmad: Option<&ScriptInstanceData>,
+    script: &Script,
+    bindings: &[(bool, &str)],
+    providers: Option<FragmentProviderScope<'_>>,
+) -> usize {
+    let quest_properties = quest_property_names(script);
+    let mut begin: Option<Vec<Effect>> = None;
+    let mut end: Option<Vec<Effect>> = None;
+    for (on_begin, fragment_name) in bindings {
+        let Some(body) = function_body(script, fragment_name) else {
+            log::debug!(
+                "populate_info_fragments: fn '{fragment_name}' absent in info {info_form_id:08X} .pex"
+            );
+            continue;
+        };
+        let Some(mut effects) =
+            crate::translate::effects::lower_fragment_with_quest_properties_and_providers(
+                body,
+                &quest_properties,
+                providers.map(|scope| scope.catalog),
+            )
+        else {
+            continue;
+        };
+        if let Some(principal) = providers.and_then(|scope| scope.principal) {
+            crate::translate::effects::attribute_provider_calls(&mut effects, principal);
+        }
+        if effects.is_empty() {
+            continue;
+        }
+        if *on_begin {
+            begin = Some(effects);
+        } else {
+            end = Some(effects);
+        }
+    }
+    if begin.is_none() && end.is_none() {
+        return 0;
+    }
+    frags.insert(info_form_id, context, vmad.cloned(), begin, end);
+    1
+}

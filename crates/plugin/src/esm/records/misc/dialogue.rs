@@ -2,6 +2,9 @@
 
 use super::super::common::{read_lstring_or_zstring, read_zstring, remap_fid, CommonNamedFields};
 use super::super::condition::{push_ctda, ComparisonOp, ConditionList, ConditionValue, RunOn};
+use super::super::script_instance::{
+    parse_info_fragments, InfoScriptFragment, ScriptInstanceData,
+};
 use crate::esm::reader::{FormIdRemap, GameKind, SubRecord};
 use crate::esm::sub_reader::SubReader;
 
@@ -288,6 +291,20 @@ pub struct InfoRecord {
     /// #3614 — see [`push_ctda`]'s doc for why `CTDT` decodes through the
     /// same path).
     pub conditions: ConditionList,
+    /// Skyrim+ `VMAD` scripts section — the compiled `TIF_` topic-info
+    /// script's own attached-script + property bindings (e.g. a
+    /// `MiscObject Property akItem` a fragment hands to a chest). `None`
+    /// on pre-Papyrus games, on INFOs without a VMAD, or when the VMAD
+    /// carries no scripts section. This is the property table a
+    /// fragment's `Property`-targeted effect resolves through at
+    /// dispatch time (#5152, the INFO twin of `QustRecord::script_instance`).
+    pub script_instance: Option<ScriptInstanceData>,
+    /// The `VMAD` fragment section's OnBegin/OnEnd bindings
+    /// ([`parse_info_fragments`], per xEdit `wbVMADFragmentedINFO`).
+    /// Empty on pre-Papyrus games and FO4+ (whose section shape is a
+    /// separate derivation). Vanilla Skyrim: 5 257 of 31 465 INFOs carry
+    /// bindings — see the decoder's doc for the census.
+    pub script_fragments: Vec<InfoScriptFragment>,
 }
 
 /// One `TRDT`+`NAM1`+`NAM2` response segment (#3616). xEdit's TES4
@@ -488,6 +505,15 @@ pub fn parse_info(
             // #3614 — `CTDT` is the legacy fixed-layout encoding of the
             // same condition; see `push_ctda`'s doc.
             b"CTDA" | b"CTDT" | b"CIS1" | b"CIS2" => push_ctda(sub, remap, &mut out.conditions),
+            // #5152 — Skyrim+ `VMAD`: the TIF_ topic-info script's property
+            // table plus the OnBegin/OnEnd fragment bindings. The INFO twin
+            // of the QUST arm; FO4+ fragment sections are a separate
+            // derivation and decode to an empty binding list (the scripts
+            // section itself still decodes — same shape across the family).
+            b"VMAD" if !sub.data.is_empty() => {
+                out.script_instance = Some(ScriptInstanceData::parse_with_remap(&sub.data, remap));
+                out.script_fragments = parse_info_fragments(&sub.data);
+            }
             _ => {}
         }
     }
@@ -930,6 +956,93 @@ mod tests {
         let info = parse_info(0x5678, &subs, &None);
         assert_eq!(info.conditions.len(), 1);
         assert_eq!(info.conditions[0].function_index, 36);
+    }
+
+    /// #5152 — the INFO `VMAD` fragment section decodes per xEdit's
+    /// `wbVMADFragmentedINFO`. The fixture bytes are a real vanilla
+    /// `Skyrim.esm` sample (INFO `0x0D66E5`, topic `0x0228A4`, probed
+    /// 2026-09-30): scripts section naming `TIF__000D66E5` with no
+    /// properties, then a version-2 section whose flags byte `0x01`
+    /// binds one OnBegin fragment, `Fragment_1`, on the same script.
+    #[test]
+    fn parse_info_vmad_fragments_decode() {
+        let mut vmad: Vec<u8> = vec![
+            // Scripts section: version 5, object format 2, 1 script,
+            // status 0, "TIF__000D66E5", 0 properties (flags u32 + u16).
+            0x05, 0x00, 0x02, 0x00, 0x01, 0x00,
+        ];
+        vmad.extend(0x0du16.to_le_bytes());
+        vmad.extend(b"TIF__000D66E5");
+        // status u8 (version >= 4) + property count u16 = 0.
+        vmad.extend([0x00, 0x00, 0x00]);
+        // Fragment section: version 2, flags 0x01 (OnBegin), FileName,
+        // one entry {unknown 1, ScriptName, FragmentName "Fragment_1"}.
+        vmad.extend([0x02, 0x01]);
+        vmad.extend(0x0du16.to_le_bytes());
+        vmad.extend(b"TIF__000D66E5");
+        vmad.push(0x01);
+        vmad.extend(0x0du16.to_le_bytes());
+        vmad.extend(b"TIF__000D66E5");
+        vmad.extend(0x0au16.to_le_bytes());
+        vmad.extend(b"Fragment_1");
+
+        let info = parse_info(0x0D66E5, &[sub(b"VMAD", &vmad)], &None);
+        let script = info.script_instance.expect("scripts section decodes");
+        assert_eq!(script.scripts.len(), 1);
+        assert_eq!(script.scripts[0].name, "TIF__000D66E5");
+        assert_eq!(info.script_fragments.len(), 1);
+        let fragment = &info.script_fragments[0];
+        assert!(fragment.on_begin, "flags 0x01 is OnBegin");
+        assert_eq!(fragment.script_name, "TIF__000D66E5");
+        assert_eq!(fragment.fragment_name, "Fragment_1");
+
+        // Flags 0x02 = OnEnd only; 0x03 = both, OnBegin first (xEdit:
+        // "Do NOT sort, ordered OnBegin, OnEnd").
+        // The FileName is the FIRST string after the flags byte.
+        // the flags byte.
+        let mut on_end = [
+            0x05u8, 0x00, 0x02, 0x00, 0x00, 0x00, // scripts: 0 scripts
+            0x02, 0x02, // fragment version 2, flags OnEnd
+        ]
+        .to_vec();
+        on_end.extend(0x0du16.to_le_bytes());
+        on_end.extend(b"TIF__000D66E5"); // FileName
+        on_end.push(0x01); // unknown
+        on_end.extend(0x0du16.to_le_bytes());
+        on_end.extend(b"TIF__000D66E5"); // ScriptName
+        on_end.extend(0x0au16.to_le_bytes());
+        on_end.extend(b"Fragment_0"); // FragmentName
+        let info = parse_info(0x1, &[sub(b"VMAD", &on_end)], &None);
+        assert_eq!(info.script_fragments.len(), 1);
+        assert!(!info.script_fragments[0].on_begin, "flags 0x02 is OnEnd");
+
+        let mut both = [
+            0x05u8, 0x00, 0x02, 0x00, 0x00, 0x00, 0x02, 0x03,
+        ]
+        .to_vec();
+        both.extend(0x0du16.to_le_bytes());
+        both.extend(b"TIF__000D66E5"); // FileName
+        for name in ["Fragment_7", "Fragment_9"] {
+            both.push(0x01);
+            both.extend(0x0du16.to_le_bytes());
+            both.extend(b"TIF__000D66E5");
+            both.extend((name.len() as u16).to_le_bytes());
+            both.extend(name.as_bytes());
+        }
+        let info = parse_info(0x2, &[sub(b"VMAD", &both)], &None);
+        assert_eq!(info.script_fragments.len(), 2, "both flags = two entries");
+        assert!(info.script_fragments[0].on_begin, "OnBegin first");
+        assert!(!info.script_fragments[1].on_begin, "OnEnd second");
+        assert_eq!(info.script_fragments[0].fragment_name, "Fragment_7");
+        assert_eq!(info.script_fragments[1].fragment_name, "Fragment_9");
+
+        // A pre-Papyrus game ships no VMAD at all; an empty one decodes to
+        // nothing rather than panicking.
+        let info = parse_info(0x3, &[], &None);
+        assert!(info.script_instance.is_none());
+        assert!(info.script_fragments.is_empty());
+        let info = parse_info(0x4, &[sub(b"VMAD", &[])], &None);
+        assert!(info.script_fragments.is_empty());
     }
 
     /// #3614 — `CTDT` is the legacy fixed-layout encoding of the same

@@ -137,6 +137,10 @@ pub fn register(world: &mut World) {
     world.register::<EquipmentSlots>();
     world.insert_resource(QuestStageFragments::default());
     world.insert_resource(SceneFragments::default());
+    // #5152 — the TIF_ topic-info fragment table, populated at cell load
+    // beside its quest/scene siblings and dispatched from the dialogue
+    // selection path.
+    world.insert_resource(DialogueInfoFragments::default());
     world.insert_resource(FragmentExecutionQueue::default());
     world.insert_resource(PendingFragmentActivations::default());
     world.insert_resource(ReferenceEnableState::default());
@@ -217,6 +221,21 @@ pub fn scene_fragment_dispatch_system(world: &World, _dt: f32) {
 /// Unrecognized operations still decline the whole fragment at lowering. The
 /// table is empty (and this a no-op) on loads without `--scripts-bsa` or on
 /// pre-Papyrus games.
+/// Execute one spoken `INFO` line's fragment from the dialogue path — the
+/// INFO twin of the scene dispatcher's per-fragment unit: guard-free apply
+/// plus journal polling, with the caller handing the returned advances to
+/// the shared player sink. Exposed for `byroredux`'s npc_dialogue system;
+/// production fragment execution itself stays inside this crate.
+pub fn apply_spoken_info_fragment(
+    world: &World,
+    effects: &[Effect],
+    context: QuestFormId,
+    vmad: Option<&ScriptInstanceData>,
+) -> Vec<QuestStageAdvanced> {
+    let direct = apply_fragment_guard_free(world, effects, context, vmad);
+    poll_fragment_generated_advances(world, direct)
+}
+
 pub fn quest_fragment_dispatch_system(world: &World) {
     // Snapshot compatibility ingress before taking resource locks. The
     // sequenced journal below is authoritative; batches remain accepted for

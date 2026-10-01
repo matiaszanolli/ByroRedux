@@ -72,17 +72,18 @@ pub use events::{
     OnTriggerEnterEvent, RippleEvent, SplashEvent, TimerExpired,
 };
 pub use fragment::{
-    apply_effects, fragment_activation_flush_system, fragment_continuation_system,
+    apply_effects, apply_spoken_info_fragment, fragment_activation_flush_system,
+    fragment_continuation_system, populate_owned_info_fragments_from_pex_with_providers,
     populate_owned_quest_fragments_from_pex_detailed_with_providers,
     populate_owned_quest_fragments_from_script_with_providers,
     populate_owned_scene_fragments_from_pex_detailed_with_providers,
     populate_owned_scene_fragments_from_script_with_providers, populate_quest_fragments_from_pex,
     populate_quest_fragments_from_pex_detailed, populate_scene_fragments_from_pex,
     populate_scene_fragments_from_pex_detailed, quest_fragment_dispatch_system,
-    scene_fragment_dispatch_system, DeferredFragmentEffects, FragmentExecutionQueue,
-    FragmentPexTranslation, LockOverride, OwnedFragmentProviders, PendingFragmentActivations,
-    QuestStageFragments, ReferenceEnableState, ReferenceLockState, ReferenceScriptState,
-    SceneFragments,
+    scene_fragment_dispatch_system, DeferredFragmentEffects, DialogueInfoFragments,
+    FragmentExecutionQueue, FragmentPexTranslation, LockOverride, OwnedFragmentProviders,
+    PendingFragmentActivations, QuestStageFragments, ReferenceEnableState,
+    ReferenceLockState, ReferenceScriptState, SceneFragments,
 };
 pub use globals::Globals;
 pub use load_order::LoadOrderIdentity;
@@ -149,6 +150,7 @@ pub use translate::{
     translate_pex, translate_pex_detailed, translate_pex_detailed_with_providers, translate_script,
     CanonicalEvent, PexTranslation, RecognizeCtx, Recognized, ScriptSource,
 };
+pub use translate::effects::Effect;
 pub use trigger::{
     base_form_advance_is_eligible, scene_phase_awaited_stage, trigger_detection_system,
     TriggerShape, TriggerVolume,

@@ -49,7 +49,10 @@ verifies the FO3 HUD on the same game-agnostic driver (tick-column gate), and
 [`docs/smoke-tests/m48-6-skyrim-hud.sh`](docs/smoke-tests/m48-6-skyrim-hud.sh)
 verifies the Skyrim Scaleform HUD (chrome on/off diff + bridge gates), and
 [`docs/smoke-tests/m48-7-fo4-hud.sh`](docs/smoke-tests/m48-7-fo4-hud.sh)
-verifies the Fallout 4 one on the same driver (AdapterInjected + chrome diff).
+verifies the Fallout 4 one on the same driver (AdapterInjected + chrome diff), and
+[`docs/smoke-tests/p4-quest-route.sh`](docs/smoke-tests/p4-quest-route.sh)
+verifies the P4 authored-objective loop end-to-end (MS01 in MarkarthWarrens:
+activation → dialogue selection → presented response → objective-chain transitions).
 
 ### Shader Compilation
 ```bash

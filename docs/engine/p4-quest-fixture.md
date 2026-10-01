@@ -103,15 +103,50 @@ asserts the objective line is absent before stage 15.
 3. **Objective-completion feedback.** The HUD objective line exists;
    completed→next-objective transitions (stage 36/46/66's pairs) need the
    same live consumer to prove visually.
+   **Landed 2026-09-30 (#5152/#5153):** two consumer-facing gaps closed
+   together. (a) *Dialogue fragments* — `parse_info` now decodes the INFO
+   `VMAD` (xEdit `wbVMADFragmentedINFO`: 5 257 of 31 465 vanilla Skyrim
+   INFOs bind OnBegin/OnEnd `TIF_` fragments), the M47.2 session walk
+   lowers them into a `DialogueInfoFragments` table (2 714 from
+   `Skyrim - Misc.bsa`), and the dialogue selection dispatches the spoken
+   line's OnBegin binding (and OnEnd on selection-change / conversation
+   close) through the same guard-free executor the quest/scene dispatchers
+   use — a spoken line can advance its quest. (b) *Journal feedback* — the
+   objective-state mutators emit bounded transition events, and the app
+   frame composes them into the vanilla-style center-top announcements
+   ("Objective completed — The Forsworn Conspiracy: Find evidence about
+   Margret" / "New objective — …") through the real definition texts.
+   Live-proven in the captured frame: the stage-36 conditional pair
+   completes objective 20 and displays 22 with both announcements on
+   screen alongside Eltrys's presented line.
+
+**Known dialogue gap (deliberate, fixture-driven):** MS01's stage-20
+blocking branch (`MS01EltrysBlockingShrineBranch01`, whose INFO fragments
+set stages 13/82) is entered by Eltrys's FORCE-GREET, which stays
+unmodeled — the player-activation path correctly selects the authored
+top-level topic instead (`MS01EltrysNotAtShrineAttackTopicTopic` at
+stages 10–20, whose own line carries no fragment). The blocking entry's
+CTDA gates, decoded 2026-09-30 (`fn67` GetQuestRunning 0x16DF7, GetStage
+MS01 ≥ 20, GetStage MS01 ≥ 12, GetIsID Eltrys base 0x13394), are pinned
+here so the force-greet work starts from data. The dialogue-fragment
+dispatch mechanism itself is bin-test-gated
+(`the_spoken_lines_fragments_advance_the_stage` drives a synthetic TIF
+world through the same selection path).
 
 ## Gates
 
-1. One console-free route is the end goal; until dialogue presentation
-   lands, `quest.setstage` remains the objective-advance frontend (the same
-   posture P2 held before E-key combat).
-2. The route smoke asserts: MS01 stage 15 displays objective 10 in the HUD
-   (already `p3-hud.sh`), then extends per capability — activation selects
-   an MS01 topic, response presents, stage advances from the dialogue's
-   fragment, and the objective line updates.
+1. One console-free route is the end goal; until the force-greet blocking
+   branch lands, `quest.setstage` remains the objective-advance setup
+   frontend (the same posture P2 held before E-key combat).
+2. The route smoke is [`p4-quest-route.sh`](../smoke-tests/p4-quest-route.sh)
+   (2026-09-30): loads MarkarthWarrens under TAA with the scripts +
+   interface archives, gates the TIF populate telemetry, resolves Eltrys by
+   expression, drives the activation → selection → presented response, and
+   asserts the objective chain's live transitions (15 → display 10, 35 →
+   display 35, 36 → complete 20 + display 22) plus the string-table
+   resolution of the presented text. The dialogue-fragment stage advance
+   is bin-test-gated until force-greet lands. It also caught, live, the
+   empty-parent strings-discovery miss (a bare relative `--esm` launch
+   silently lost all localization).
 3. Add recognizers/condition functions only when this fixture trips on a
    missing one — the plan's no-speculative-breadth rule.

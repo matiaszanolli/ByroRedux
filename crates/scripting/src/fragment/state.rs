@@ -350,6 +350,105 @@ impl SceneFragments {
     }
 }
 
+/// Lowered Papyrus fragments attached to authored `INFO` responses — the
+/// `TIF_` topic-info scripts (#5152). Keyed by the INFO's FormID; the value
+/// carries the owning quest (the topic's first `quest_ref`, the same
+/// precedence the dialogue selection uses) and the INFO's own VMAD property
+/// table so the shared effect executor resolves `Property`-targeted effects
+/// exactly as the quest/scene dispatchers do.
+///
+/// The OnBegin binding runs when the response is selected (spoken) — the
+/// activation- and topic-click paths both route through that selection. The
+/// OnEnd binding is stored but not yet dispatched: "the line is finished"
+/// has no runtime event while the response surface models selection only.
+/// Vanilla's 3 773 OnEnd-only INFOs stay inert (logged at dispatch-lookup
+/// time by the populate walk's absent-begin diagnostic), never guessed.
+#[derive(Debug, Clone, Default)]
+pub struct DialogueInfoFragments {
+    map: Arc<HashMap<u32, InfoFragmentEffects>>,
+    /// Session latch for the populate walk — same rationale as
+    /// [`QuestStageFragments::populated`]: a legitimately-empty table (no
+    /// `--scripts-bsa`, pre-Papyrus game) must not re-walk every cell load.
+    populated: bool,
+}
+
+impl Resource for DialogueInfoFragments {}
+
+#[derive(Debug, Clone)]
+pub(crate) struct InfoFragmentEffects {
+    pub(crate) context: QuestFormId,
+    pub(crate) vmad: Option<ScriptInstanceData>,
+    pub(crate) begin: Option<Vec<Effect>>,
+    pub(crate) end: Option<Vec<Effect>>,
+}
+
+impl DialogueInfoFragments {
+    /// Register one INFO's lowered fragment effects. `None` sides stay
+    /// absent — an OnBegin-only INFO (the common quest-driving shape)
+    /// inserts with `end: None`.
+    pub fn insert(
+        &mut self,
+        info_form_id: u32,
+        context: QuestFormId,
+        vmad: Option<ScriptInstanceData>,
+        begin: Option<Vec<Effect>>,
+        end: Option<Vec<Effect>>,
+    ) {
+        Arc::make_mut(&mut self.map).insert(
+            info_form_id,
+            InfoFragmentEffects {
+                context,
+                vmad,
+                begin,
+                end,
+            },
+        );
+    }
+
+    pub(crate) fn get(&self, info_form_id: u32) -> Option<&InfoFragmentEffects> {
+        self.map.get(&info_form_id)
+    }
+
+    /// The OnBegin (`begin = true`) or OnEnd binding of one INFO, packaged
+    /// for dispatch: the lowered effects, the owning quest (the effect
+    /// context), and the INFO's own VMAD property table. `None` when the
+    /// table has no entry for the line or the line carries no such
+    /// binding. The bin's dialogue system dispatches through this —
+    /// `InfoFragmentEffects` stays crate-private.
+    pub fn spoken_effects(
+        &self,
+        info_form_id: u32,
+        begin: bool,
+    ) -> Option<(Vec<Effect>, QuestFormId, Option<ScriptInstanceData>)> {
+        let entry = self.get(info_form_id)?;
+        let effects = if begin {
+            entry.begin.as_ref()?
+        } else {
+            entry.end.as_ref()?
+        };
+        Some((effects.clone(), entry.context, entry.vmad.clone()))
+    }
+
+    /// Number of registered INFO fragment entries.
+    pub fn len(&self) -> usize {
+        self.map.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.map.is_empty()
+    }
+
+    /// Whether the INFO fragment walk has already run this session.
+    pub fn is_populated(&self) -> bool {
+        self.populated
+    }
+
+    /// Latch the walk as done, whatever it found. Idempotent.
+    pub fn mark_populated(&mut self) {
+        self.populated = true;
+    }
+}
+
 /// One suspended latent fragment tail. The VMAD snapshot is retained so a
 /// continuation resolves properties exactly as the original dispatch did,
 /// even if the installed fragment table changes before the wait expires.

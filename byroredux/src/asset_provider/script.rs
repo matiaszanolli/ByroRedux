@@ -328,6 +328,105 @@ fn populate_scene_fragments(
     total
 }
 
+/// Populate lowered `INFO` response fragments (the `TIF_` topic-info
+/// scripts) from each dialogue's `VMAD` fragment bindings — the #5152
+/// sibling of [`populate_quest_fragments`] and `populate_scene_fragments`,
+/// dispatched when the dialogue selection speaks a line. The OnBegin
+/// binding drives stage-advance-on-speak; the OnEnd binding rides along
+/// for the selection-change and conversation-close paths.
+///
+/// Session-gated like the quest walk: vanilla Skyrim carries 5 257
+/// INFO-bound fragments (one `TIF_` script per INFO, so one archive
+/// extract each), and a legitimately-empty table (no `--scripts-bsa`,
+/// pre-Papyrus game) must not re-walk every cell load.
+fn populate_info_fragments(
+    world: &mut byroredux_core::ecs::world::World,
+    index: &byroredux_plugin::esm::records::EsmIndex,
+) {
+    if world
+        .resource::<byroredux_scripting::DialogueInfoFragments>()
+        .is_populated()
+    {
+        return;
+    }
+    world
+        .resource_mut::<byroredux_scripting::DialogueInfoFragments>()
+        .mark_populated();
+
+    let have_archive = world
+        .try_resource::<ScriptProvider>()
+        .is_some_and(|provider| !provider.is_empty());
+    if !have_archive {
+        return;
+    }
+    // #3939 — the servable catalog, for the same boundary-decline reason
+    // the quest and scene walks document.
+    let providers = world
+        .resource::<byroredux_scripting::PapyrusProviderRuntime>()
+        .servable_catalog();
+
+    let mut infos_with_bindings = 0usize;
+    let mut total = 0usize;
+    for dialogue in index.dialogues.values() {
+        // The owning-quest precedence the dialogue selection itself uses.
+        let Some(&context) = dialogue.quest_refs.first() else {
+            continue;
+        };
+        for info in &dialogue.infos {
+            if info.script_fragments.is_empty() {
+                continue;
+            }
+            infos_with_bindings += 1;
+            let vmad = info.script_instance.clone();
+            // Every INFO fragment binding names the same TIF_ script, but
+            // group defensively like the quest walk.
+            let mut by_script: std::collections::HashMap<&str, Vec<(bool, &str)>> =
+                std::collections::HashMap::new();
+            for fragment in &info.script_fragments {
+                by_script
+                    .entry(fragment.script_name.as_str())
+                    .or_default()
+                    .push((fragment.on_begin, fragment.fragment_name.as_str()));
+            }
+            for (script_name, bindings) in by_script {
+                let resolved = {
+                    let provider = world.resource::<ScriptProvider>();
+                    provider.resolve_pex(script_name)
+                };
+                let Some(resolved) = resolved else {
+                    log::trace!(
+                        "info-fragment: .pex '{script_name}' not in archive (info {:#08X})",
+                        info.form_id
+                    );
+                    continue;
+                };
+                let inserted = {
+                    let mut fragments =
+                        world.resource_mut::<byroredux_scripting::DialogueInfoFragments>();
+                    byroredux_scripting::populate_owned_info_fragments_from_pex_with_providers(
+                        &mut fragments,
+                        info.form_id,
+                        byroredux_scripting::QuestFormId(context),
+                        vmad.as_ref(),
+                        &resolved.bytes,
+                        &bindings,
+                        byroredux_scripting::OwnedFragmentProviders::new(
+                            &providers,
+                            &resolved.principal,
+                        ),
+                    )
+                };
+                total += inserted;
+            }
+        }
+    }
+    if total > 0 {
+        log::info!(
+            "M47.2: populated {total} INFO response fragments from {infos_with_bindings} bound infos"
+        );
+    }
+}
+
 /// Install every parsed Skyrim+ `SCEN` definition and its referenced
 /// `DIAL`/`INFO` topics into the ECS runtime.
 ///
@@ -440,6 +539,7 @@ pub(crate) fn populate_scene_runtime(
     // funnel through this function, so this is the one place that cannot
     // drift from the three siblings below.
     populate_quest_fragments(world, index);
+    populate_info_fragments(world, index);
     crate::inventory::install_catalog(world, index);
     // #4415 — canonical spells for runtime `AddSpell` / `RemoveSpell`.
     world.insert_resource(byroredux_scripting::SpellCatalog::from_index(index));

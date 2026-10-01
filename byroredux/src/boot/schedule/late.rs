@@ -440,7 +440,18 @@ pub(super) fn register_late_systems(scheduler: &mut Scheduler) {
             .reads_resource::<byroredux_scripting::SceneQuestAliasRegistry>()
             .reads_resource::<byroredux_scripting::SceneActorBindings>()
             .reads_resource::<byroredux_scripting::quest_stages::QuestStageState>()
-            .writes_resource::<byroredux_scripting::DialogueRegistry>(),
+            .writes_resource::<byroredux_scripting::DialogueRegistry>()
+            // #5152 — the spoken line's INFO fragment dispatches here: the
+            // fragment table feeds the effects, and the executor's guard-free
+            // unit journals stage transitions and defers latent tails.
+            .reads_resource::<byroredux_scripting::DialogueInfoFragments>()
+            .reads_resource::<byroredux_scripting::FragmentExecutionQueue>()
+            .reads_resource::<byroredux_scripting::PendingFragmentActivations>()
+            .reads_resource::<byroredux_scripting::papyrus_demo::PapyrusPlayerEntity>()
+            .writes_resource::<byroredux_scripting::quest_stages::QuestStageState>()
+            .writes_resource::<byroredux_scripting::quest_stages::QuestObjectiveState>()
+            .writes::<byroredux_scripting::quest_stages::QuestStageAdvancedBatch>()
+            .writes_resource::<crate::systems::npc_dialogue::DialogueSurfaceState>(),
     );
     scheduler.add_exclusive_with_access(
         Stage::Late,

@@ -437,6 +437,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         // ── newly-covered scripting/audio/plugin roots (#3166) ─────
         ("QuestAliasReadinessGateRegistry", "static engine-supplied quest-alias gate definitions rebuilt from installed quest content"),
         ("SceneFragments", "static lowered SCEN VMAD fragment definitions rebuilt from plugin data on scene installation"),
+        ("DialogueInfoFragments", "static lowered INFO (TIF_) VMAD fragment definitions rebuilt from plugin data by the session populate walk (#5152)"),
         ("AudioWorld", "owns live kira manager/handles and is reconstructed as process audio infrastructure"),
         ("AudioListener", "derived marker attached to the active camera during scene setup"),
         ("AudioEmitter", "decoded asset/handle payload rebuilt from authored sound data when its source spawns"),

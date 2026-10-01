@@ -2759,6 +2759,11 @@ fn reads_u32(body: &str) -> bool {
 /// field is a FormID. That is the half of the check the old allowlist
 /// could never do.
 const EXEMPT_NO_U32_READS: &[(&str, &str)] = &[
+    // #5152 — the INFO VMAD fragment section: flags bytes and
+    // length-prefixed strings only; the scripts section (which carries the
+    // FormIDs) is consumed by `ScriptInstanceData::parse_with_consumed`
+    // before this decoder starts, remap included.
+    ("script_instance.rs", "parse_info_fragments"),
     ("misc/equipment.rs", "parse_bptd"),
     ("condition.rs", "parse_condition_list"),
     ("misc/effects.rs", "parse_efsh"),

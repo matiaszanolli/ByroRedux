@@ -503,6 +503,77 @@ pub fn parse_scene_fragments(vmad: &[u8]) -> Vec<SceneScriptFragment> {
     out
 }
 
+/// One compiled Papyrus fragment bound to an `INFO` response, per xEdit's
+/// `wbVMADFragmentedINFO` (TES5): the topic-info script carries a Begin
+/// fragment (runs as the line starts) and/or an End fragment (runs when the
+/// line is done), and the VMAD fragment section binds each to its compiled
+/// function.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct InfoScriptFragment {
+    /// `true` for the OnBegin binding (flags bit 0), `false` for OnEnd
+    /// (bit 1) — the two the section models.
+    pub on_begin: bool,
+    /// The compiled `TIF_` topic-info script (e.g. `TIF__000D66E5` for a
+    /// topic with no editor ID, `TIF_<editorid>_<formid>` otherwise).
+    pub script_name: String,
+    /// The compiled function name (`Fragment_N`).
+    pub fragment_name: String,
+}
+
+/// Decode the trailing Skyrim `INFO` fragment section of a complete VMAD.
+///
+/// The scripts prefix is skipped with [`ScriptInstanceData::parse_with_consumed`].
+/// The remaining version-2 section stores an OnBegin/OnEnd flags byte and the
+/// u16-length FileName, then one entry per set flag **ordered OnBegin, OnEnd**
+/// (xEdit: "Do NOT sort, ordered OnBegin, OnEnd"), each `{u8 unknown,
+/// ScriptName, FragmentName}`. Layout per xEdit `wbVMADFragmentedINFO`
+/// (`wbDefinitionsTES5.pas`), cross-checked against vanilla `Skyrim.esm`:
+/// 5 257 of 31 465 INFOs carry a VMAD (1 234 OnBegin-only, 3 773 OnEnd-only,
+/// 250 both), and every sampled MS01 entry decodes to a `TIF_` script name
+/// plus a `Fragment_N` function with the section consuming its bytes exactly.
+///
+/// Graceful + conservative: short input or a non-version-2 section (FO4's
+/// differing shape — its own derivation under the no-guessing policy) yields
+/// whatever decoded before the fault, or an empty vector when the header
+/// cannot be trusted. Same recover-don't-crash contract as the quest/scene
+/// sibling decoders.
+pub fn parse_info_fragments(vmad: &[u8]) -> Vec<InfoScriptFragment> {
+    // #2989 — same contract as `parse_quest_fragments`: no clean finish, no
+    // fragment section.
+    let (_, Some(consumed)) = ScriptInstanceData::parse_with_consumed(vmad) else {
+        return Vec::new();
+    };
+    let Some(section) = vmad.get(consumed..) else {
+        return Vec::new();
+    };
+    let mut c = Cursor::new(section);
+    if c.u8() != Some(2) {
+        return Vec::new();
+    }
+    let Some(flags) = c.u8() else {
+        return Vec::new();
+    };
+    let Some(_file_name) = c.wstring() else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    // One entry per set flag, OnBegin (bit 0) first — the array's own order
+    // is authoritative per the definition, so read exactly that many entries.
+    let entries = usize::from(flags & 0b1 != 0) + usize::from(flags & 0b10 != 0);
+    for index in 0..entries {
+        let Some(_unknown) = c.u8() else { break };
+        let (Some(script_name), Some(fragment_name)) = (c.wstring(), c.wstring()) else {
+            break;
+        };
+        out.push(InfoScriptFragment {
+            on_begin: index == 0 && flags & 0b1 != 0,
+            script_name,
+            fragment_name,
+        });
+    }
+    out
+}
+
 /// Minimal bounds-checked little-endian cursor over a VMAD payload.
 struct Cursor<'a> {
     data: &'a [u8],
