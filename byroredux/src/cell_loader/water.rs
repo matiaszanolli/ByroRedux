@@ -685,6 +685,7 @@ fn watr_damage_per_second(
 ///   recomposed from it, so ripples, foam and the physics current agree.
 ///   The old "in vanilla the two are equal" claim was false: 2 of Skyrim's
 ///   128 XWCU REFRs run up to ~79° off their WATR.
+#[allow(clippy::too_many_arguments)] // One input per distinct authored source (plane, flow, WATR record, material, bounds); see #4911.
 fn merge_placed_water(
     mesh: &WaterPlane,
     mesh_flow: Option<WaterFlow>,
@@ -743,6 +744,7 @@ fn merge_placed_water(
 /// NIF water with no colour, current, or noise of their own.
 ///
 /// Returns the number of water entities updated.
+#[allow(clippy::too_many_arguments)] // World + GPU context + per-game tables and the placement's own identity — all independent.
 pub(super) fn apply_placed_water_type(
     world: &mut World,
     ctx: &mut VulkanContext,

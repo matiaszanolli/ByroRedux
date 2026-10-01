@@ -293,7 +293,7 @@ pub(super) fn base_transition_layers_for_bases(
     transitions.into_iter().collect()
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)] // One context per resolution input (textures, provider, cell tables, caches); grouping them would only move the count.
 fn resolve_cell_splat_layer(
     ctx: &mut VulkanContext,
     tex_provider: &TextureProvider,

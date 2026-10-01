@@ -1611,8 +1611,8 @@ mod gpu_material_size_claims {
             if !lines.get(item).is_some_and(|line| line.contains("GpuMaterial")) {
                 continue;
             }
-            for line_no in block..i {
-                let line = lines[line_no];
+            for (line_no, line) in lines[block..i].iter().enumerate() {
+                let line_no = block + line_no;
                 if HISTORIC_MARKERS.iter().any(|m| line.contains(m))
                     || line.contains('→')
                     || line.contains("->")

@@ -2254,9 +2254,11 @@ fn skyrim_parsed_npc_perk_reaches_the_hasperk_condition() {
     );
 
     let has = |perk: u32| {
-        let mut condition = byroredux_plugin::esm::records::condition::Condition::default();
-        condition.function_index = 448; // HasPerk (Skyrim); 449 on FO3/FNV
-        condition.param_1 = perk;
+        let mut condition = byroredux_plugin::esm::records::condition::Condition {
+            function_index: 448, // HasPerk (Skyrim); 449 on FO3/FNV
+            param_1: perk,
+            ..Default::default()
+        };
         evaluate_function(ConditionFunction::HasPerk, &condition, actor, &world)
     };
     assert_eq!(has(PERK), 1.0, "link 3: HasPerk must see the owned perk");
@@ -2418,7 +2420,7 @@ fn creature_race_npcs_keep_their_skin_mesh_on_real_skyrim_data() {
             .npcs
             .get(&form_id)
             .unwrap_or_else(|| panic!("{name} ({form_id:08X}) must be present in Skyrim.esm"));
-        let state = build_npc_equip_state(&ResolvedNpc::resolve(&npc, &index), &index, GameKind::Skyrim, Gender::Male);
+        let state = build_npc_equip_state(&ResolvedNpc::resolve(npc, &index), &index, GameKind::Skyrim, Gender::Male);
         assert!(
             !state.armor_to_spawn.is_empty(),
             "{name} ({form_id:08X}) resolved no mesh at all — its race skin \
@@ -2444,7 +2446,7 @@ fn creature_race_npcs_keep_their_skin_mesh_on_real_skyrim_data() {
             continue;
         };
         zero_mask_race_npcs += 1;
-        let state = build_npc_equip_state(&ResolvedNpc::resolve(&npc, &index), &index, GameKind::Skyrim, Gender::Male);
+        let state = build_npc_equip_state(&ResolvedNpc::resolve(npc, &index), &index, GameKind::Skyrim, Gender::Male);
         if state
             .armor_to_spawn
             .iter()
@@ -2496,7 +2498,7 @@ fn helmeted_npcs_get_a_facegen_hide_mask_on_real_skyrim_data() {
     let mut closed_helm = 0usize;
     let mut open_helm = 0usize;
     for npc in index.npcs.values() {
-        let mask = build_npc_equip_state(&ResolvedNpc::resolve(&npc, &index), &index, GameKind::Skyrim, Gender::Male)
+        let mask = build_npc_equip_state(&ResolvedNpc::resolve(npc, &index), &index, GameKind::Skyrim, Gender::Male)
         .facegen_hidden_mask;
         if mask & HEAD_FAMILY == 0 {
             continue;

@@ -171,7 +171,7 @@ fn state_primary_blend_branches_keep_refractive_glass_contiguous() {
             }
             c
         };
-        let mut draws = vec![make(1, true), make(2, false), make(3, true)];
+        let mut draws = [make(1, true), make(2, false), make(3, true)];
         draws.sort_unstable_by_key(draw_sort_key);
         let glass: Vec<bool> = draws
             .iter()

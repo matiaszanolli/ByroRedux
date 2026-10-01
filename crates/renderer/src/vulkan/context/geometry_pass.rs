@@ -781,47 +781,6 @@ impl VulkanContext {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    /// #2766 — `indirect_call_count` is documented as the GPU-draw count
-    /// (and divides `batch_count` to give the surfaced grouping ratio), so
-    /// it must be incremented from what `dispatch_direct` actually recorded,
-    /// not from the branch that called it. Both of the closure's early-outs
-    /// — no mesh in the registry, and a mesh with no per-mesh buffers (the
-    /// #1370 global-only distant-LOD case) — are reachable on the
-    /// `global_bound == false` path, where an unconditional bump turned the
-    /// metric into an upper bound.
-    ///
-    /// Source-scan pin: the closure lives inside an `unsafe` command-buffer
-    /// recording function that needs a live device and a populated mesh
-    /// registry, so the counting rule cannot be exercised in a unit test.
-    #[test]
-    fn draw_call_stats_count_only_recorded_direct_draws() {
-        const SRC: &str = include_str!("geometry_pass.rs");
-        let production = SRC.split("#[cfg(test)]").next().unwrap_or(SRC);
-
-        assert!(
-            production
-                .contains("let dispatch_direct = |this: &Self, last_bound: &mut u32| -> bool"),
-            "dispatch_direct must report whether it recorded a draw (#2766)"
-        );
-        assert!(
-            production.contains("if dispatch_direct(self, &mut last_bound_mesh_handle) {"),
-            "the direct-fallback arm must count only on a recorded draw (#2766)"
-        );
-        assert!(
-            production.contains("u32::from(back) + u32::from(front)"),
-            "the two-sided split must count each of its two dispatches by \
-             what it recorded, not by assuming both drew (#2766)"
-        );
-        assert!(
-            !production.contains("indirect_call_count += 2"),
-            "an unconditional +=2 assumes both halves of the two-sided \
-             split recorded; they can both early-out (#2766)"
-        );
-    }
-}
-
 impl VulkanContext {
     /// #4413 — draw the ground-cover model tier's shapes: one indexed
     /// indirect draw per shape through the opaque main pipeline, with each
@@ -923,5 +882,46 @@ impl VulkanContext {
                 GeometryTimerPhase::GroundcoverModelDraw,
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// #2766 — `indirect_call_count` is documented as the GPU-draw count
+    /// (and divides `batch_count` to give the surfaced grouping ratio), so
+    /// it must be incremented from what `dispatch_direct` actually recorded,
+    /// not from the branch that called it. Both of the closure's early-outs
+    /// — no mesh in the registry, and a mesh with no per-mesh buffers (the
+    /// #1370 global-only distant-LOD case) — are reachable on the
+    /// `global_bound == false` path, where an unconditional bump turned the
+    /// metric into an upper bound.
+    ///
+    /// Source-scan pin: the closure lives inside an `unsafe` command-buffer
+    /// recording function that needs a live device and a populated mesh
+    /// registry, so the counting rule cannot be exercised in a unit test.
+    #[test]
+    fn draw_call_stats_count_only_recorded_direct_draws() {
+        const SRC: &str = include_str!("geometry_pass.rs");
+        let production = SRC.split("#[cfg(test)]").next().unwrap_or(SRC);
+
+        assert!(
+            production
+                .contains("let dispatch_direct = |this: &Self, last_bound: &mut u32| -> bool"),
+            "dispatch_direct must report whether it recorded a draw (#2766)"
+        );
+        assert!(
+            production.contains("if dispatch_direct(self, &mut last_bound_mesh_handle) {"),
+            "the direct-fallback arm must count only on a recorded draw (#2766)"
+        );
+        assert!(
+            production.contains("u32::from(back) + u32::from(front)"),
+            "the two-sided split must count each of its two dispatches by \
+             what it recorded, not by assuming both drew (#2766)"
+        );
+        assert!(
+            !production.contains("indirect_call_count += 2"),
+            "an unconditional +=2 assumes both halves of the two-sided \
+             split recorded; they can both early-out (#2766)"
+        );
     }
 }

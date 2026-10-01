@@ -330,11 +330,10 @@ fn walker_stops_on_true_tlv_boundary() {
             if shift == 0 {
                 totals.shift_zero += 1;
             }
-            if !on_boundary || shift != 0 {
-                if totals.violations.len() < 12 {
+            if (!on_boundary || shift != 0)
+                && totals.violations.len() < 12 {
                     totals.violations.push((path.clone(), word.unwrap_or(0), shift));
                 }
-            }
         }
         eprintln!(
             "[{label}] {} files | {} on boundary | {} shift-0 | {} eof",

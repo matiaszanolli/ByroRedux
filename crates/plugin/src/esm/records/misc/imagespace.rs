@@ -185,7 +185,7 @@ mod tests {
         let record = parse_imad(
             0x0010_1DAC,
             &[
-                sub(b"EDID", b"PlayerAlduinIMOD\0".to_vec()),
+                sub(b"EDID", b"PlayerAlduinIMOD\0"),
                 sub(b"DNAM", dnam),
                 sub(b"BNAM", scalar.clone()),
                 sub(&[0x11, b'I', b'A', b'D'], scalar),

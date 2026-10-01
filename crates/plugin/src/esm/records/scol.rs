@@ -242,7 +242,7 @@ mod tests {
     use crate::esm::records::test_support::{edid, modl, sub};
 
     fn onam(form_id: u32) -> SubRecord {
-        sub(b"ONAM", form_id.to_le_bytes().to_vec())
+        sub(b"ONAM", form_id.to_le_bytes())
     }
 
     fn data(placements: &[ScolPlacement]) -> SubRecord {
@@ -398,7 +398,7 @@ mod tests {
         let lstring_index: u32 = 0x0001_2345;
         let subs = vec![
             edid("LocalisedScol"),
-            sub(b"FULL", lstring_index.to_le_bytes().to_vec()),
+            sub(b"FULL", lstring_index.to_le_bytes()),
         ];
         let rec = parse_scol(0xDEAD_BEEF, &subs, &None);
         set_localized_plugin(false);
@@ -478,14 +478,14 @@ mod remap_tests {
     fn scol_child_forms_are_remapped_into_global_space() {
         let remap = third_plugin_remap();
         let subs = vec![
-            sub(b"EDID", b"DLCScol\0".to_vec()),
+            sub(b"EDID", b"DLCScol\0"),
             // Self-authored child (mod-index 0x01) → slot 0x02.
-            sub(b"ONAM", 0x0100_1234u32.to_le_bytes().to_vec()),
+            sub(b"ONAM", 0x0100_1234u32.to_le_bytes()),
             sub(b"DATA", vec![0u8; ScolPlacement::WIRE_SIZE]),
             // Master-owned child (mod-index 0x00) → slot 0x00, unchanged.
-            sub(b"ONAM", 0x0000_5678u32.to_le_bytes().to_vec()),
+            sub(b"ONAM", 0x0000_5678u32.to_le_bytes()),
             sub(b"DATA", vec![0u8; ScolPlacement::WIRE_SIZE]),
-            sub(b"FLTR", 0x0100_9ABCu32.to_le_bytes().to_vec()),
+            sub(b"FLTR", 0x0100_9ABCu32.to_le_bytes()),
         ];
 
         let scol = parse_scol(0x0200_0001, &subs, &remap);
@@ -503,7 +503,7 @@ mod remap_tests {
     #[test]
     fn scol_null_child_form_is_not_remapped() {
         let subs = vec![
-            sub(b"ONAM", 0u32.to_le_bytes().to_vec()),
+            sub(b"ONAM", 0u32.to_le_bytes()),
             sub(b"DATA", vec![0u8; ScolPlacement::WIRE_SIZE]),
         ];
         let scol = parse_scol(0x0200_0002, &subs, &third_plugin_remap());
@@ -515,7 +515,7 @@ mod remap_tests {
     #[test]
     fn scol_without_a_remap_is_unchanged() {
         let subs = vec![
-            sub(b"ONAM", 0x0100_1234u32.to_le_bytes().to_vec()),
+            sub(b"ONAM", 0x0100_1234u32.to_le_bytes()),
             sub(b"DATA", vec![0u8; ScolPlacement::WIRE_SIZE]),
         ];
         let scol = parse_scol(0x0100_0003, &subs, &None);

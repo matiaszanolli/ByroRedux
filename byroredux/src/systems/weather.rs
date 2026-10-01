@@ -1469,9 +1469,9 @@ mod cloud_scroll_vectors_tests {
         );
         // The other three layers are genuinely unauthored — they DO fall
         // back, and must not be all-zero (sanity: the fallback fired).
-        for layer in 1..4 {
+        for (layer, scroll) in result.iter().enumerate().skip(1) {
             assert_ne!(
-                result[layer],
+                *scroll,
                 [0.0, 0.0],
                 "layer {layer} has no authored data — it must take the wind fallback, not stay at zero"
             );

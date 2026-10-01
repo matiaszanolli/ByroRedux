@@ -527,10 +527,10 @@ fn assert_l2_shadow_transport(l2: &RgbImage) {
     // These normalized points are owned by the fixed oracle camera/manifest:
     // the first lies inside the blocker-cast horizontal shadow arm and the
     // second is the receiver's unobstructed upper-right control.
-    let probes = normalized_probes(&l2, &[(0.484_375, 0.638_889), (0.669_531, 0.198_611)]);
-    assert_greyscale_near(&l2, probes[0].0, probes[0].1, 0, 2, "L2 blocked visibility");
+    let probes = normalized_probes(l2, &[(0.484_375, 0.638_889), (0.669_531, 0.198_611)]);
+    assert_greyscale_near(l2, probes[0].0, probes[0].1, 0, 2, "L2 blocked visibility");
     assert_greyscale_near(
-        &l2,
+        l2,
         probes[1].0,
         probes[1].1,
         255,

@@ -1034,7 +1034,7 @@ mod tests {
             sub(b"EDID", b"IntenseTraining\0"),
             sub(b"FULL", b"Intense Training\0"),
             sub(b"DESC", b"Increase any one S.P.E.C.I.A.L. by 1.\0"),
-            sub(b"DATA", &[0x01]), // playable
+            sub(b"DATA", [0x01]), // playable
         ];
         let p = parse_perk(0xE5E5, &subs, &None);
         assert_eq!(p.editor_id, "IntenseTraining");
@@ -1048,7 +1048,7 @@ mod tests {
         // num_ranks + playable + hidden).
         let subs = vec![
             sub(b"EDID", b"Bloody Mess\0"),
-            sub(b"DATA", &[0x00, 6, 1, 0x01, 0x00]),
+            sub(b"DATA", [0x00, 6, 1, 0x01, 0x00]),
         ];
         let p = parse_perk(0xBADAu32, &subs, &None);
         assert!(!p.is_trait);
@@ -1066,10 +1066,10 @@ mod tests {
         data.extend_from_slice(&[20u8, 0, 0, 0]); // stage + 3 bytes pad
         let subs = vec![
             sub(b"EDID", b"PerkQuestEntry\0"),
-            sub(b"DATA", &[0x00, 0, 0, 0x01, 0x00]),
-            sub(b"PRKE", &[0u8, 1, 10]), // type=Quest, rank, priority
+            sub(b"DATA", [0x00, 0, 0, 0x01, 0x00]),
+            sub(b"PRKE", [0u8, 1, 10]), // type=Quest, rank, priority
             sub(b"DATA", &data),
-            sub(b"PRKF", &[]),
+            sub(b"PRKF", []),
         ];
         let p = parse_perk(0xAAAAu32, &subs, &None);
         assert_eq!(p.entries.len(), 1);
@@ -1093,9 +1093,9 @@ mod tests {
         // Ability entry: type=1, single u32 spell ref.
         let subs = vec![
             sub(b"EDID", b"PowerAttack\0"),
-            sub(b"PRKE", &[1u8, 0, 5]),
-            sub(b"DATA", &0x000A_BC01u32.to_le_bytes()),
-            sub(b"PRKF", &[]),
+            sub(b"PRKE", [1u8, 0, 5]),
+            sub(b"DATA", 0x000A_BC01u32.to_le_bytes()),
+            sub(b"PRKF", []),
         ];
         let p = parse_perk(0xBBBBu32, &subs, &None);
         assert_eq!(p.entries.len(), 1);
@@ -1118,9 +1118,9 @@ mod tests {
         quest_data.extend_from_slice(&0x0100_7777u32.to_le_bytes()); // self-ref
         quest_data.extend_from_slice(&[20u8, 0, 0, 0]);
         let quest_subs = vec![
-            sub(b"PRKE", &[0u8, 1, 10]),
+            sub(b"PRKE", [0u8, 1, 10]),
             sub(b"DATA", &quest_data),
-            sub(b"PRKF", &[]),
+            sub(b"PRKF", []),
         ];
         let quest = parse_perk(0xAAAA, &quest_subs, &remap);
         match &quest.entries[0].body {
@@ -1131,9 +1131,9 @@ mod tests {
         }
 
         let ability_subs = vec![
-            sub(b"PRKE", &[1u8, 0, 5]),
-            sub(b"DATA", &0x0100_8888u32.to_le_bytes()), // self-ref
-            sub(b"PRKF", &[]),
+            sub(b"PRKE", [1u8, 0, 5]),
+            sub(b"DATA", 0x0100_8888u32.to_le_bytes()), // self-ref
+            sub(b"PRKF", []),
         ];
         let ability = parse_perk(0xBBBB, &ability_subs, &remap);
         match &ability.entries[0].body {
@@ -1153,11 +1153,11 @@ mod tests {
         let epfd = 1.5f32.to_le_bytes();
         let subs = vec![
             sub(b"EDID", b"ModAttackDamage\0"),
-            sub(b"PRKE", &[2u8, 0, 99]),
-            sub(b"DATA", &[0x07, 0x01, 0x00, 0x00]), // entry_point=7 (Mod Attack Dmg), function=1 (Add)
-            sub(b"EPFT", &[0x02]),                   // function overwrite to 2 (Multiply = Float)
-            sub(b"EPFD", &epfd),
-            sub(b"PRKF", &[]),
+            sub(b"PRKE", [2u8, 0, 99]),
+            sub(b"DATA", [0x07, 0x01, 0x00, 0x00]), // entry_point=7 (Mod Attack Dmg), function=1 (Add)
+            sub(b"EPFT", [0x02]),                   // function overwrite to 2 (Multiply = Float)
+            sub(b"EPFD", epfd),
+            sub(b"PRKF", []),
         ];
         let p = parse_perk(0xCCCCu32, &subs, &None);
         assert_eq!(p.entries.len(), 1);
@@ -1180,15 +1180,15 @@ mod tests {
     fn parse_perk_multi_entry_authoring_order_preserved() {
         // Three entries — one of each type — emitted in PRKE order.
         let subs = vec![
-            sub(b"PRKE", &[0u8, 1, 1]),
-            sub(b"DATA", &[1u8, 0, 0, 0, 5, 0, 0, 0]), // Quest: quest=1, stage=5
-            sub(b"PRKF", &[]),
-            sub(b"PRKE", &[1u8, 1, 2]),
-            sub(b"DATA", &0x0000_BEEFu32.to_le_bytes()),
-            sub(b"PRKF", &[]),
-            sub(b"PRKE", &[2u8, 1, 3]),
-            sub(b"DATA", &[0x10, 0x00, 0, 0]),
-            sub(b"PRKF", &[]),
+            sub(b"PRKE", [0u8, 1, 1]),
+            sub(b"DATA", [1u8, 0, 0, 0, 5, 0, 0, 0]), // Quest: quest=1, stage=5
+            sub(b"PRKF", []),
+            sub(b"PRKE", [1u8, 1, 2]),
+            sub(b"DATA", 0x0000_BEEFu32.to_le_bytes()),
+            sub(b"PRKF", []),
+            sub(b"PRKE", [2u8, 1, 3]),
+            sub(b"DATA", [0x10, 0x00, 0, 0]),
+            sub(b"PRKF", []),
         ];
         let p = parse_perk(0xDDDDu32, &subs, &None);
         assert_eq!(p.entries.len(), 3);
@@ -1208,8 +1208,8 @@ mod tests {
         // PRKE with no closing PRKF — entry never lands. Defensive
         // against content corruption.
         let subs = vec![
-            sub(b"PRKE", &[1u8, 1, 1]),
-            sub(b"DATA", &0x0000_BEEFu32.to_le_bytes()),
+            sub(b"PRKE", [1u8, 1, 1]),
+            sub(b"DATA", 0x0000_BEEFu32.to_le_bytes()),
             // No PRKF, no PRKE-after either.
         ];
         let p = parse_perk(0xEEEEu32, &subs, &None);
@@ -1223,7 +1223,7 @@ mod tests {
     #[test]
     fn parse_spel_decodes_spit_per_game() {
         let words = |w: [u32; 4]| w.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<u8>>();
-        let fo3 = vec![sub(b"SPIT", &words([4, 42, 0, 0xCDCD_CD04]))];
+        let fo3 = vec![sub(b"SPIT", words([4, 42, 0, 0xCDCD_CD04]))];
         let s = parse_spel(0xF6F6, &fo3, GameKind::Fallout3NV, &None);
         assert_eq!(
             (s.spell_type, s.cost, s.spell_flags),
@@ -1240,7 +1240,7 @@ mod tests {
             (SpellType::Spell, 60, 0x20000)
         );
 
-        let oblivion = vec![sub(b"SPIT", &words([0xCDCD_CD02, 5, 0, 0x81]))];
+        let oblivion = vec![sub(b"SPIT", words([0xCDCD_CD02, 5, 0, 0x81]))];
         let s = parse_spel(0xF6F8, &oblivion, GameKind::Oblivion, &None);
         assert_eq!((s.spell_type, s.spell_flags), (SpellType::Power, 0x81));
     }
@@ -1253,7 +1253,7 @@ mod tests {
         for value in [25u32, 0, 30, 0, 16] {
             efit.extend_from_slice(&value.to_le_bytes());
         }
-        let subs = vec![sub(b"EFID", &0xAAAAu32.to_le_bytes()), sub(b"EFIT", &efit)];
+        let subs = vec![sub(b"EFID", 0xAAAAu32.to_le_bytes()), sub(b"EFIT", &efit)];
         let s = parse_spel(0x1, &subs, GameKind::Fallout3NV, &None);
         assert_eq!(s.effects[0].magnitude, 25.0);
         assert_eq!(s.effects[0].duration, 30);
@@ -1309,7 +1309,7 @@ mod tests {
         // Author-malformed ENIT (< 16 bytes) must not panic and must
         // leave scalars at their defaults so the surrounding records
         // still load.
-        let subs = vec![sub(b"EDID", b"BrokenEnchant\0"), sub(b"ENIT", &[0u8; 8])];
+        let subs = vec![sub(b"EDID", b"BrokenEnchant\0"), sub(b"ENIT", [0u8; 8])];
         let e = parse_ench(0xDEAD_BEEF, &subs, GameKind::Skyrim, &None);
         assert_eq!(e.editor_id, "BrokenEnchant");
         assert_eq!(e.enchantment_type, 0);
@@ -1326,7 +1326,7 @@ mod tests {
             sub(b"EDID", b"RadiationPoisoning\0"),
             sub(b"FULL", b"Radiation Poisoning\0"),
             sub(b"DESC", b"Contaminated by radiation.\0"),
-            sub(b"DATA", &0x0000_0009u32.to_le_bytes()),
+            sub(b"DATA", 0x0000_0009u32.to_le_bytes()),
         ];
         let e = parse_mgef(0xA7A7, &subs, &None);
         assert_eq!(e.effect_flags, 0, "short DATA rejected, defaults apply");
@@ -1351,11 +1351,11 @@ mod tests {
         data.push(0u8); // stage
         let subs = vec![
             sub(b"EDID", b"TestPerk\0"),
-            sub(b"DATA", &[0x00, 0, 1, 0, 0]),
-            sub(b"PRKE", &[0u8, 1, 50]), // type=Quest
+            sub(b"DATA", [0x00, 0, 1, 0, 0]),
+            sub(b"PRKE", [0u8, 1, 50]), // type=Quest
             sub(b"DATA", &data),         // quest_form_id=0x1234, stage=0
             sub(b"CTDA", &ctda),
-            sub(b"PRKF", &[]),
+            sub(b"PRKF", []),
         ];
         let p = parse_perk(0xFFFF, &subs, &None);
         assert_eq!(p.entries.len(), 1);
@@ -1367,10 +1367,10 @@ mod tests {
     fn parse_perk_epfd_float() {
         let epfd = 2.5f32.to_le_bytes();
         let subs = vec![
-            sub(b"PRKE", &[2u8, 0, 1]),
-            sub(b"DATA", &[42u8, 2, 0, 0]), // entry_point=42, function=2 (Float)
-            sub(b"EPFD", &epfd),
-            sub(b"PRKF", &[]),
+            sub(b"PRKE", [2u8, 0, 1]),
+            sub(b"DATA", [42u8, 2, 0, 0]), // entry_point=42, function=2 (Float)
+            sub(b"EPFD", epfd),
+            sub(b"PRKF", []),
         ];
         let p = parse_perk(0x1111, &subs, &None);
         assert_eq!(p.entries.len(), 1);
@@ -1388,10 +1388,10 @@ mod tests {
         epfd.extend_from_slice(&1.0f32.to_le_bytes());
         epfd.extend_from_slice(&5.0f32.to_le_bytes());
         let subs = vec![
-            sub(b"PRKE", &[2u8, 0, 1]),
-            sub(b"DATA", &[43u8, 3, 0, 0]), // entry_point=43, function=3 (Range)
+            sub(b"PRKE", [2u8, 0, 1]),
+            sub(b"DATA", [43u8, 3, 0, 0]), // entry_point=43, function=3 (Range)
             sub(b"EPFD", &epfd),
-            sub(b"PRKF", &[]),
+            sub(b"PRKF", []),
         ];
         let p = parse_perk(0x2222, &subs, &None);
         assert_eq!(p.entries.len(), 1);
@@ -1410,10 +1410,10 @@ mod tests {
     fn parse_perk_epfd_form_id() {
         let epfd = 0xBEEF_1234u32.to_le_bytes();
         let subs = vec![
-            sub(b"PRKE", &[2u8, 0, 1]),
-            sub(b"DATA", &[44u8, 4, 0, 0]), // entry_point=44, function=4 (FormId)
-            sub(b"EPFD", &epfd),
-            sub(b"PRKF", &[]),
+            sub(b"PRKE", [2u8, 0, 1]),
+            sub(b"DATA", [44u8, 4, 0, 0]), // entry_point=44, function=4 (FormId)
+            sub(b"EPFD", epfd),
+            sub(b"PRKF", []),
         ];
         let p = parse_perk(0x3333, &subs, &None);
         assert_eq!(p.entries.len(), 1);
@@ -1434,10 +1434,10 @@ mod tests {
         // mod_index 1 == this plugin's own slot (self-reference).
         let epfd = 0x0100_0ABCu32.to_le_bytes();
         let subs = vec![
-            sub(b"PRKE", &[2u8, 0, 1]),
-            sub(b"DATA", &[44u8, 4, 0, 0]), // entry_point=44, function=4 (FormId)
-            sub(b"EPFD", &epfd),
-            sub(b"PRKF", &[]),
+            sub(b"PRKE", [2u8, 0, 1]),
+            sub(b"DATA", [44u8, 4, 0, 0]), // entry_point=44, function=4 (FormId)
+            sub(b"EPFD", epfd),
+            sub(b"PRKF", []),
         ];
         let remap = FormIdRemap::regular(2, vec![0]);
         let p = parse_perk(0x0200_0001, &subs, &Some(remap));
@@ -1459,10 +1459,10 @@ mod tests {
     fn parse_perk_epfd_lstring() {
         let epfd = 0x0042u32.to_le_bytes();
         let subs = vec![
-            sub(b"PRKE", &[2u8, 0, 1]),
-            sub(b"DATA", &[45u8, 5, 0, 0]), // entry_point=45, function=5 (LString)
-            sub(b"EPFD", &epfd),
-            sub(b"PRKF", &[]),
+            sub(b"PRKE", [2u8, 0, 1]),
+            sub(b"DATA", [45u8, 5, 0, 0]), // entry_point=45, function=5 (LString)
+            sub(b"EPFD", epfd),
+            sub(b"PRKF", []),
         ];
         let p = parse_perk(0x4444, &subs, &None);
         assert_eq!(p.entries.len(), 1);
@@ -1613,9 +1613,9 @@ mod tests {
             sub(b"EDID", b"TestSpell\0"),
             sub(b"FULL", b"Test Spell\0"),
             sub(b"SPIT", &spit),
-            sub(b"EFID", &0xAAAAu32.to_le_bytes()),
+            sub(b"EFID", 0xAAAAu32.to_le_bytes()),
             sub(b"EFIT", &efit1),
-            sub(b"EFID", &0xBBBBu32.to_le_bytes()),
+            sub(b"EFID", 0xBBBBu32.to_le_bytes()),
             sub(b"EFIT", &efit2),
         ];
         let s = parse_spel(0x6666, &subs, GameKind::Skyrim, &None);
@@ -1640,7 +1640,7 @@ mod tests {
         efit.extend_from_slice(&0u32.to_le_bytes()); // dur
 
         let subs = vec![
-            sub(b"EFID", &0x0100_7777u32.to_le_bytes()), // self-ref
+            sub(b"EFID", 0x0100_7777u32.to_le_bytes()), // self-ref
             sub(b"EFIT", &efit),
         ];
         let s = parse_spel(0x6667, &subs, GameKind::Skyrim, &remap);
@@ -1669,7 +1669,7 @@ mod tests {
             sub(b"EDID", b"TestEnch\0"),
             sub(b"FULL", b"Test\0"),
             sub(b"ENIT", &enit),
-            sub(b"EFID", &0x1234u32.to_le_bytes()),
+            sub(b"EFID", 0x1234u32.to_le_bytes()),
             sub(b"EFIT", &efit),
         ];
         let e = parse_ench(0x7777, &subs, GameKind::Skyrim, &None);
@@ -1721,7 +1721,7 @@ mod tests {
         let subs = vec![
             sub(b"EDID", b"DoubleEfitSpell\0"),
             sub(b"SPIT", &spit),
-            sub(b"EFID", &0xCAFEu32.to_le_bytes()),
+            sub(b"EFID", 0xCAFEu32.to_le_bytes()),
             sub(b"EFIT", &efit),
             sub(b"EFIT", &efit), // no intervening EFID — must be dropped
         ];
@@ -1735,7 +1735,7 @@ mod tests {
         let subs = vec![
             sub(b"EDID", b"DoubleEfitEnch\0"),
             sub(b"ENIT", &enit),
-            sub(b"EFID", &0xBEEFu32.to_le_bytes()),
+            sub(b"EFID", 0xBEEFu32.to_le_bytes()),
             sub(b"EFIT", &efit),
             sub(b"EFIT", &efit),
         ];

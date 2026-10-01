@@ -61,12 +61,12 @@ fn npc_extracts_race_class_factions_inventory() {
     let subs = vec![
         sub(b"EDID", b"NpcTest\0"),
         sub(b"FULL", b"Test NPC\0"),
-        sub(b"RNAM", &0xCCCCu32.to_le_bytes()),
-        sub(b"CNAM", &0xDDDDu32.to_le_bytes()),
+        sub(b"RNAM", 0xCCCCu32.to_le_bytes()),
+        sub(b"CNAM", 0xDDDDu32.to_le_bytes()),
         sub(b"ACBS", &acbs),
         sub(b"SNAM", &snam),
         sub(b"CNTO", &cnto),
-        sub(b"PKID", &0xEEEEu32.to_le_bytes()),
+        sub(b"PKID", 0xEEEEu32.to_le_bytes()),
     ];
     let n = parse_npc(0x500, &subs, GameKind::Fallout3NV, &None);
     assert_eq!(n.editor_id, "NpcTest");
@@ -155,7 +155,7 @@ fn fallout4_20byte_acbs_parses_gender_level_and_template_flags() {
         0x00, 0x00, // bleedout override
         0x00, 0x00, // unknown
     ];
-    let subs = vec![sub(b"EDID", b"Desdemona\0"), sub(b"ACBS", &acbs)];
+    let subs = vec![sub(b"EDID", b"Desdemona\0"), sub(b"ACBS", acbs)];
 
     let n = parse_npc(0x0004_5AD1, &subs, GameKind::Fallout4, &None);
 
@@ -206,7 +206,7 @@ fn skyrim_24byte_acbs_parses_tes5_resource_offsets() {
 fn npc_extracts_scri_attached_script() {
     let subs = vec![
         sub(b"EDID", b"ThreeDog\0"),
-        sub(b"SCRI", &0xDEAD_BEEFu32.to_le_bytes()),
+        sub(b"SCRI", 0xDEAD_BEEFu32.to_le_bytes()),
     ];
     let n = parse_npc(0x000A_0001, &subs, GameKind::Fallout3NV, &None);
     assert_eq!(n.script_form_id, 0xDEAD_BEEF);
@@ -221,7 +221,7 @@ fn npc_extracts_scri_attached_script() {
 fn crea_extracts_scri_attached_script() {
     let subs = vec![
         sub(b"EDID", b"SuperMutantBrute\0"),
-        sub(b"SCRI", &0xCAFE_0001u32.to_le_bytes()),
+        sub(b"SCRI", 0xCAFE_0001u32.to_le_bytes()),
     ];
     let n = parse_npc(0x000B_0002, &subs, GameKind::Fallout3NV, &None);
     assert_eq!(n.script_form_id, 0xCAFE_0001);
@@ -232,7 +232,7 @@ fn crea_extracts_scri_attached_script() {
 /// the arm is gated on `>= 4`, so a 0-length SCRI no-ops.
 #[test]
 fn npc_short_scri_is_ignored() {
-    let subs = vec![sub(b"EDID", b"NoScript\0"), sub(b"SCRI", &[])];
+    let subs = vec![sub(b"EDID", b"NoScript\0"), sub(b"SCRI", [])];
     let n = parse_npc(0x000A_0003, &subs, GameKind::Fallout3NV, &None);
     assert_eq!(n.script_form_id, 0);
 }
@@ -262,7 +262,7 @@ fn npc_acbs_disposition_base_reads_signed_i16() {
         0x700,
         &[
             sub(b"EDID", b"Raider\0"),
-            sub(b"ACBS", &acbs_with_disposition(-40)),
+            sub(b"ACBS", acbs_with_disposition(-40)),
         ],
         GameKind::Fallout3NV,
         &None,
@@ -276,7 +276,7 @@ fn npc_acbs_disposition_base_reads_signed_i16() {
         0x701,
         &[
             sub(b"EDID", b"Friendly\0"),
-            sub(b"ACBS", &acbs_with_disposition(200)),
+            sub(b"ACBS", acbs_with_disposition(200)),
         ],
         GameKind::Fallout3NV,
         &None,
@@ -318,7 +318,7 @@ fn fact_extracts_relations_and_ranks() {
     let subs = vec![
         sub(b"EDID", b"NCR\0"),
         sub(b"FULL", b"NCR\0"),
-        sub(b"DATA", &0x01u32.to_le_bytes()),
+        sub(b"DATA", 0x01u32.to_le_bytes()),
         sub(b"XNAM", &xnam),
         sub(b"MNAM", b"Recruit\0"),
         sub(b"MNAM", b"Trooper\0"),
@@ -350,11 +350,11 @@ fn fact_extracts_relations_and_ranks() {
 fn fact_rank_ladder_keys_off_rnam_not_mnam_arrival_order() {
     let subs = vec![
         sub(b"EDID", b"OmertaFaction\0"),
-        sub(b"RNAM", &0u32.to_le_bytes()),
-        sub(b"RNAM", &1u32.to_le_bytes()),
+        sub(b"RNAM", 0u32.to_le_bytes()),
+        sub(b"RNAM", 1u32.to_le_bytes()),
         sub(b"MNAM", b"Thug\0"),
         sub(b"FNAM", b"Thugette\0"),
-        sub(b"RNAM", &2u32.to_le_bytes()),
+        sub(b"RNAM", 2u32.to_le_bytes()),
         sub(b"MNAM", b"Boss\0"),
         sub(b"FNAM", b"Madam\0"),
     ];
@@ -378,12 +378,12 @@ fn fact_rank_ladder_keys_off_rnam_not_mnam_arrival_order() {
 /// `MNAM` against 53 `FNAM`, so this is the common case).
 #[test]
 fn fact_rank_handles_titleless_and_male_only_rungs() {
-    let subs = vec![sub(b"RNAM", &0u32.to_le_bytes())];
+    let subs = vec![sub(b"RNAM", 0u32.to_le_bytes())];
     let f = parse_fact(0x8d395, &subs, &None);
     assert_eq!(f.ranks.len(), 1);
     assert_eq!(f.ranks[0].title(true), None);
 
-    let subs = vec![sub(b"RNAM", &4u32.to_le_bytes()), sub(b"MNAM", b"Ranger\0")];
+    let subs = vec![sub(b"RNAM", 4u32.to_le_bytes()), sub(b"MNAM", b"Ranger\0")];
     let f = parse_fact(0x1, &subs, &None);
     // Non-dense ladders are why `index` is stored rather than implied by
     // position: this rank is 4, at ladder position 0.
@@ -411,7 +411,7 @@ fn fact_xnam_combat_reaction_reads_full_u32() {
 
     let subs = vec![
         sub(b"EDID", b"AllyFaction\0"),
-        sub(b"DATA", &0x00u32.to_le_bytes()),
+        sub(b"DATA", 0x00u32.to_le_bytes()),
         sub(b"XNAM", &xnam),
     ];
     let f = parse_fact(0x77, &subs, &None);
@@ -440,7 +440,7 @@ fn fact_xnam_combat_reaction_survives_values_above_u8() {
 
     let subs = vec![
         sub(b"EDID", b"WideReactionFaction\0"),
-        sub(b"DATA", &0x00u32.to_le_bytes()),
+        sub(b"DATA", 0x00u32.to_le_bytes()),
         sub(b"XNAM", &xnam),
     ];
     let f = parse_fact(0x78, &subs, &None);
@@ -469,7 +469,7 @@ fn fact_data_reads_only_low_byte() {
         0x01u8, // real flags — bit 0 = hidden
         0xFFu8, 0xFFu8, 0xEFu8, // tail / padding bytes; must NOT become flags
     ];
-    let subs = vec![sub(b"EDID", b"SpookyFaction\0"), sub(b"DATA", &data)];
+    let subs = vec![sub(b"EDID", b"SpookyFaction\0"), sub(b"DATA", data)];
     let f = parse_fact(0x88, &subs, &None);
     assert_eq!(
         f.flags, 0x01,
@@ -481,7 +481,7 @@ fn fact_data_reads_only_low_byte() {
 /// must leave flags at the default (0).
 #[test]
 fn fact_data_empty_leaves_flags_default() {
-    let subs = vec![sub(b"EDID", b"PlaceholderFaction\0"), sub(b"DATA", &[])];
+    let subs = vec![sub(b"EDID", b"PlaceholderFaction\0"), sub(b"DATA", [])];
     let f = parse_fact(0x89, &subs, &None);
     assert_eq!(
         f.flags, 0,
@@ -510,10 +510,10 @@ fn npc_pairs_fmri_with_fmrs_in_order() {
     let s1 = [-1.0, -2.0, -3.0, -4.0, -5.0, -6.0, -7.0, -8.0, -9.0];
     let subs = vec![
         sub(b"EDID", b"NamedNpc\0"),
-        sub(b"FMRI", &0xDEADu32.to_le_bytes()),
-        sub(b"FMRS", &fmrs_bytes(s0)),
-        sub(b"FMRI", &0xBEEFu32.to_le_bytes()),
-        sub(b"FMRS", &fmrs_bytes(s1)),
+        sub(b"FMRI", 0xDEADu32.to_le_bytes()),
+        sub(b"FMRS", fmrs_bytes(s0)),
+        sub(b"FMRI", 0xBEEFu32.to_le_bytes()),
+        sub(b"FMRS", fmrs_bytes(s1)),
     ];
     let n = parse_npc(0x600, &subs, GameKind::Fallout4, &None);
     let face = n
@@ -562,11 +562,11 @@ fn npc_captures_qnam_hclf_bclf_pnam() {
     let subs = vec![
         sub(b"EDID", b"FullFace\0"),
         sub(b"QNAM", &qnam),
-        sub(b"HCLF", &0x1111u32.to_le_bytes()),
-        sub(b"BCLF", &0x2222u32.to_le_bytes()),
-        sub(b"PNAM", &0xAAAAu32.to_le_bytes()),
-        sub(b"PNAM", &0xBBBBu32.to_le_bytes()),
-        sub(b"PNAM", &0xCCCCu32.to_le_bytes()),
+        sub(b"HCLF", 0x1111u32.to_le_bytes()),
+        sub(b"BCLF", 0x2222u32.to_le_bytes()),
+        sub(b"PNAM", 0xAAAAu32.to_le_bytes()),
+        sub(b"PNAM", 0xBBBBu32.to_le_bytes()),
+        sub(b"PNAM", 0xCCCCu32.to_le_bytes()),
     ];
     let n = parse_npc(0x602, &subs, GameKind::Fallout4, &None);
     let face = n.face_morphs.as_ref().unwrap();
@@ -628,8 +628,8 @@ fn npc_fo4_decodes_prps_pairs_and_dnam_baked_stats() {
 fn npc_fnv_ignores_fo4_av_property_arms() {
     let subs = vec![
         sub(b"EDID", b"FnvNpc\0"),
-        sub(b"DNAM", &[0xFF; 8]),
-        sub(b"PRKR", &[0xFF; 5]),
+        sub(b"DNAM", [0xFF; 8]),
+        sub(b"PRKR", [0xFF; 5]),
     ];
     let n = parse_npc(0x611, &subs, GameKind::Fallout3NV, &None);
     assert!(n.actor_value_props.is_empty());
@@ -656,7 +656,7 @@ fn npc_skyrim_decodes_eight_byte_prkr_perks() {
     prkr_b.extend_from_slice(&[1, 0, 0, 0]);
     let subs = vec![
         sub(b"EDID", b"SkyrimNpc\0"),
-        sub(b"PRKZ", &2u32.to_le_bytes()),
+        sub(b"PRKZ", 2u32.to_le_bytes()),
         sub(b"PRKR", &prkr_a),
         sub(b"PRKR", &prkr_b),
     ];
@@ -679,7 +679,7 @@ fn npc_skyrim_decodes_eight_byte_prkr_perks() {
 #[test]
 fn npc_perk_gate_stays_closed_for_pre_skyrim_games() {
     for game in [GameKind::Oblivion, GameKind::Fallout3NV] {
-        let subs = vec![sub(b"EDID", b"LegacyNpc\0"), sub(b"PRKR", &[0xFF; 8])];
+        let subs = vec![sub(b"EDID", b"LegacyNpc\0"), sub(b"PRKR", [0xFF; 8])];
         let n = parse_npc(0x613, &subs, game, &None);
         assert!(n.perks.is_empty(), "PRKR must stay gated off for {game:?}");
     }
@@ -694,11 +694,11 @@ fn npc_mismatched_fmri_fmrs_truncates_to_shorter() {
     // 3 FMRI but only 2 FMRS — should yield 2 paired entries.
     let subs = vec![
         sub(b"EDID", b"Malformed\0"),
-        sub(b"FMRI", &0xA1u32.to_le_bytes()),
-        sub(b"FMRI", &0xA2u32.to_le_bytes()),
-        sub(b"FMRI", &0xA3u32.to_le_bytes()),
-        sub(b"FMRS", &fmrs_bytes(s)),
-        sub(b"FMRS", &fmrs_bytes(s)),
+        sub(b"FMRI", 0xA1u32.to_le_bytes()),
+        sub(b"FMRI", 0xA2u32.to_le_bytes()),
+        sub(b"FMRI", 0xA3u32.to_le_bytes()),
+        sub(b"FMRS", fmrs_bytes(s)),
+        sub(b"FMRS", fmrs_bytes(s)),
     ];
     let n = parse_npc(0x604, &subs, GameKind::Fallout4, &None);
     let face = n.face_morphs.as_ref().unwrap();
@@ -717,7 +717,7 @@ fn npc_fnv_pnam_lands_in_runtime_facegen_eyebrow() {
     let subs = vec![
         sub(b"EDID", b"FnvNpc\0"),
         // FNV-style PNAM: a single 4-byte eyebrow HDPT FormID.
-        sub(b"PNAM", &0xDEADu32.to_le_bytes()),
+        sub(b"PNAM", 0xDEADu32.to_le_bytes()),
     ];
     let n = parse_npc(0x606, &subs, GameKind::Fallout3NV, &None);
     assert!(
@@ -793,10 +793,10 @@ fn npc_fnv_short_fggs_pads_with_zero() {
 fn npc_fnv_hclr_hnam_lnam_enam_populate_runtime_facegen() {
     let subs = vec![
         sub(b"EDID", b"FullRecipe\0"),
-        sub(b"HCLR", &[0x33, 0x55, 0x77, 0xFF]), // 4-byte; alpha dropped
-        sub(b"HNAM", &0xCAFEu32.to_le_bytes()),
-        sub(b"LNAM", &0xBEEFu32.to_le_bytes()),
-        sub(b"ENAM", &0xF00Du32.to_le_bytes()),
+        sub(b"HCLR", [0x33, 0x55, 0x77, 0xFF]), // 4-byte; alpha dropped
+        sub(b"HNAM", 0xCAFEu32.to_le_bytes()),
+        sub(b"LNAM", 0xBEEFu32.to_le_bytes()),
+        sub(b"ENAM", 0xF00Du32.to_le_bytes()),
     ];
     let n = parse_npc(0x609, &subs, GameKind::Fallout3NV, &None);
     let recipe = n.runtime_facegen.as_ref().unwrap();
@@ -824,7 +824,7 @@ fn npc_runtime_facegen_and_face_morphs_are_mutually_exclusive() {
     }
     let subs_fnv = vec![
         sub(b"EDID", b"FnvStray\0"),
-        sub(b"FMRI", &0xDEADu32.to_le_bytes()),
+        sub(b"FMRI", 0xDEADu32.to_le_bytes()),
         sub(b"FMRS", &fmrs),
     ];
     let n = parse_npc(0x60B, &subs_fnv, GameKind::Fallout3NV, &None);
@@ -840,8 +840,8 @@ fn npc_runtime_facegen_and_face_morphs_are_mutually_exclusive() {
 fn npc_undersized_fmrs_is_dropped() {
     let subs = vec![
         sub(b"EDID", b"BadBytes\0"),
-        sub(b"FMRI", &0xF00Du32.to_le_bytes()),
-        sub(b"FMRS", &[0u8; 16]), // < 36 bytes
+        sub(b"FMRI", 0xF00Du32.to_le_bytes()),
+        sub(b"FMRS", [0u8; 16]), // < 36 bytes
     ];
     let n = parse_npc(0x605, &subs, GameKind::Fallout4, &None);
     // FMRI captured but FMRS dropped → mismatched (1 vs 0) →
@@ -871,9 +871,9 @@ fn npc_embedded_form_ids_remap_to_global_space() {
 
     let subs = vec![
         sub(b"EDID", b"OverridePluginNpc\0"),
-        sub(b"RNAM", &master_ref.to_le_bytes()),
-        sub(b"CNAM", &master_ref.to_le_bytes()),
-        sub(b"PKID", &self_ref.to_le_bytes()),
+        sub(b"RNAM", master_ref.to_le_bytes()),
+        sub(b"CNAM", master_ref.to_le_bytes()),
+        sub(b"PKID", self_ref.to_le_bytes()),
     ];
     let n = parse_npc(0x000A_0001, &subs, GameKind::Fallout3NV, &Some(remap));
 
@@ -910,9 +910,9 @@ fn npc_facegen_recipe_form_ids_remap_to_global_space() {
 
     let subs = vec![
         sub(b"EDID", b"OverridePluginFaceGenNpc\0"),
-        sub(b"HNAM", &master_ref.to_le_bytes()),
-        sub(b"ENAM", &master_ref.to_le_bytes()),
-        sub(b"PNAM", &self_ref.to_le_bytes()),
+        sub(b"HNAM", master_ref.to_le_bytes()),
+        sub(b"ENAM", master_ref.to_le_bytes()),
+        sub(b"PNAM", self_ref.to_le_bytes()),
     ];
     let n = parse_npc(0x000A_0002, &subs, GameKind::Fallout3NV, &Some(remap));
     let recipe = n
@@ -949,11 +949,11 @@ fn npc_fo4_face_morph_form_ids_remap_to_global_space() {
 
     let subs = vec![
         sub(b"EDID", b"OverridePluginFo4FaceNpc\0"),
-        sub(b"FMRI", &master_ref.to_le_bytes()),
-        sub(b"FMRS", &[0u8; 36]),
-        sub(b"HCLF", &master_ref.to_le_bytes()),
-        sub(b"BCLF", &self_ref.to_le_bytes()),
-        sub(b"PNAM", &master_ref.to_le_bytes()),
+        sub(b"FMRI", master_ref.to_le_bytes()),
+        sub(b"FMRS", [0u8; 36]),
+        sub(b"HCLF", master_ref.to_le_bytes()),
+        sub(b"BCLF", self_ref.to_le_bytes()),
+        sub(b"PNAM", master_ref.to_le_bytes()),
     ];
     let n = parse_npc(0x000A_0003, &subs, GameKind::Fallout4, &Some(remap));
     let face = n
@@ -1051,11 +1051,11 @@ fn race_oblivion_subrecords_captured() {
     let subs = vec![
         sub(b"EDID", b"Breton\0"),
         sub(b"DATA", &data),
-        sub(b"ATTR", &attr),
+        sub(b"ATTR", attr),
         sub(b"DNAM", &dnam),
         sub(b"VNAM", &vnam),
-        sub(b"PNAM", &pnam),
-        sub(b"UNAM", &unam),
+        sub(b"PNAM", pnam),
+        sub(b"UNAM", unam),
         sub(b"XNAM", &xnam_breton),
     ];
     let r = parse_race(0x10002, &subs, GameKind::Oblivion, &None);
@@ -1086,7 +1086,7 @@ fn race_oblivion_subrecords_skipped_on_non_oblivion_games() {
     let subs = vec![
         sub(b"EDID", b"FnvHuman\0"),
         sub(b"DATA", &data),
-        sub(b"ATTR", &attr),
+        sub(b"ATTR", attr),
         sub(b"DNAM", &dnam),
     ];
     let r = parse_race(0x10003, &subs, GameKind::Fallout3NV, &None);
@@ -1129,7 +1129,7 @@ fn race_multiple_xnam_pairs_collected() {
 fn race_skyrim_wnam_captured() {
     let subs = vec![
         sub(b"EDID", b"NordRace\0"),
-        sub(b"WNAM", &0x0001_3746u32.to_le_bytes()),
+        sub(b"WNAM", 0x0001_3746u32.to_le_bytes()),
     ];
     let r = parse_race(0x10005, &subs, GameKind::Skyrim, &None);
     assert_eq!(r.default_skin, Some(0x0001_3746));
@@ -1143,7 +1143,7 @@ fn race_wnam_skipped_on_non_prebaked_games() {
     for game in [GameKind::Oblivion, GameKind::Fallout3NV] {
         let subs = vec![
             sub(b"EDID", b"SomeRace\0"),
-            sub(b"WNAM", &0x0001_3746u32.to_le_bytes()),
+            sub(b"WNAM", 0x0001_3746u32.to_le_bytes()),
         ];
         let r = parse_race(0x10006, &subs, game, &None);
         assert!(
@@ -1229,7 +1229,7 @@ fn clas_fnv_tag_skills_and_attr_special() {
     let subs = vec![
         sub(b"EDID", b"NCRTrooper\0"),
         sub(b"DATA", &data),
-        sub(b"ATTR", &attr),
+        sub(b"ATTR", attr),
     ];
     let c = parse_clas(0x600, &subs, GameKind::Fallout3NV);
     assert_eq!(c.tag_skills, vec![0xC0DE_0001, 0xC0DE_0002, 0xC0DE_0003]);
@@ -1250,7 +1250,7 @@ fn clas_fo3_split_attr_subrecords_accumulate() {
     data.extend_from_slice(&[0u8; 24]); // remaining DATA
     let mut subs = vec![sub(b"EDID", b"FO3Class\0"), sub(b"DATA", &data)];
     for v in [5u8, 6, 7, 4, 8, 6, 5] {
-        subs.push(sub(b"ATTR", &[v]));
+        subs.push(sub(b"ATTR", [v]));
     }
     let c = parse_clas(0x601, &subs, GameKind::Fallout3NV);
     assert_eq!(c.base_attributes, [5, 6, 7, 4, 8, 6, 5]);
@@ -1524,7 +1524,7 @@ fn acbs_calc_min_decodes_on_every_layout() {
 fn fact_wmi1_binds_the_faction_to_its_reputation_record() {
     let subs = vec![
         sub(b"EDID", b"GoodspringsFaction\0"),
-        sub(b"WMI1", &0x000F_43DEu32.to_le_bytes()),
+        sub(b"WMI1", 0x000F_43DEu32.to_le_bytes()),
     ];
     let f = parse_fact(0x0010_4C6E, &subs, &None);
     assert_eq!(
@@ -1539,7 +1539,7 @@ fn fact_wmi1_binds_the_faction_to_its_reputation_record() {
     let self_ref = (1u32 << 24) | 0x0000_43DE;
     let subs = vec![
         sub(b"EDID", b"OverridePluginFaction\0"),
-        sub(b"WMI1", &self_ref.to_le_bytes()),
+        sub(b"WMI1", self_ref.to_le_bytes()),
     ];
     let f = parse_fact(0x000A_0002, &subs, &Some(remap));
     assert_eq!(
@@ -1559,7 +1559,7 @@ fn fact_without_wmi1_has_no_reputation_binding() {
 
     let subs = vec![
         sub(b"EDID", b"NullWmi1Faction\0"),
-        sub(b"WMI1", &0u32.to_le_bytes()),
+        sub(b"WMI1", 0u32.to_le_bytes()),
     ];
     assert_eq!(
         parse_fact(0x44, &subs, &None).reputation,
@@ -1583,20 +1583,20 @@ fn race_head_parts_stop_at_the_body_section_marker() {
         sub(b"EDID", b"CaucasianOldAged\0"),
         sub(b"NAM0", b""),
         sub(b"MNAM", b""),
-        sub(b"INDX", &0u32.to_le_bytes()),
+        sub(b"INDX", 0u32.to_le_bytes()),
         sub(b"MODL", b"Characters\\Head\\HeadOld.NIF\0"),
-        sub(b"INDX", &6u32.to_le_bytes()),
+        sub(b"INDX", 6u32.to_le_bytes()),
         sub(b"MODL", b"Characters\\Head\\EyeLeftHuman.NIF\0"),
         sub(b"FNAM", b""),
-        sub(b"INDX", &0u32.to_le_bytes()),
+        sub(b"INDX", 0u32.to_le_bytes()),
         sub(b"MODL", b"Characters\\Head\\HeadOldFemale.NIF\0"),
         sub(b"NAM1", b""),
         sub(b"MNAM", b""),
-        sub(b"INDX", &0u32.to_le_bytes()),
+        sub(b"INDX", 0u32.to_le_bytes()),
         sub(b"MODL", b"characters\\_Male\\UpperBody.nif\0"),
-        sub(b"INDX", &2u32.to_le_bytes()),
+        sub(b"INDX", 2u32.to_le_bytes()),
         sub(b"MODL", b"characters\\_Male\\RightHand.nif\0"),
-        sub(b"INDX", &3u32.to_le_bytes()),
+        sub(b"INDX", 3u32.to_le_bytes()),
         sub(b"MODL", b"Characters\\_Male\\UpperBodyHumanMale.egt\0"),
     ];
     let race = parse_race(0x000987DF, &subs, GameKind::Fallout3NV, &None);
@@ -1633,20 +1633,20 @@ fn race_head_part_textures_follow_their_part_per_gender() {
         sub(b"EDID", b"Caucasian\0"),
         sub(b"NAM0", b""),
         sub(b"MNAM", b""),
-        sub(b"INDX", &0u32.to_le_bytes()),
+        sub(b"INDX", 0u32.to_le_bytes()),
         sub(b"MODL", b"Characters\\Head\\HeadHuman.NIF\0"),
         sub(b"ICON", b"Characters\\Male\\HeadHuman.dds\0"),
-        sub(b"INDX", &1u32.to_le_bytes()),
+        sub(b"INDX", 1u32.to_le_bytes()),
         sub(b"ICON", b"Characters\\Head\\EarsHuman.dds\0"),
-        sub(b"INDX", &6u32.to_le_bytes()),
+        sub(b"INDX", 6u32.to_le_bytes()),
         sub(b"MODL", b"Characters\\Head\\EyeLeftHuman.NIF\0"),
         sub(b"FNAM", b""),
-        sub(b"INDX", &0u32.to_le_bytes()),
+        sub(b"INDX", 0u32.to_le_bytes()),
         sub(b"MODL", b"Characters\\Head\\HeadHuman.NIF\0"),
         sub(b"ICON", b"Characters\\Female\\HeadHuman.dds\0"),
         sub(b"NAM1", b""),
         sub(b"MNAM", b""),
-        sub(b"INDX", &0u32.to_le_bytes()),
+        sub(b"INDX", 0u32.to_le_bytes()),
         sub(b"ICON", b"Characters\\Male\\UpperBodyMale.dds\0"),
     ];
     let race = parse_race(0x00000019, &subs, GameKind::Fallout3NV, &None);
@@ -1669,13 +1669,13 @@ fn race_oblivion_head_section_stays_untagged() {
     let subs = vec![
         sub(b"EDID", b"Imperial\0"),
         sub(b"NAM0", b""),
-        sub(b"INDX", &0u32.to_le_bytes()),
+        sub(b"INDX", 0u32.to_le_bytes()),
         sub(b"MODL", b"Characters\\Imperial\\HeadHuman.nif\0"),
-        sub(b"INDX", &7u32.to_le_bytes()),
+        sub(b"INDX", 7u32.to_le_bytes()),
         sub(b"MODL", b"Characters\\Imperial\\EyeLeftHuman.nif\0"),
         sub(b"NAM1", b""),
         sub(b"MNAM", b""),
-        sub(b"INDX", &0u32.to_le_bytes()),
+        sub(b"INDX", 0u32.to_le_bytes()),
         sub(b"ICON", b"Characters\\Imperial\\UpperBody.dds\0"),
     ];
     let race = parse_race(0x00000907, &subs, GameKind::Oblivion, &None);
@@ -1828,7 +1828,7 @@ fn crea_data_decodes_the_sourced_seventeen_byte_layout() {
     ];
     let subs = vec![
         sub(b"EDID", b"VCrTier3GiantRadscorpionMedPers\0"),
-        sub(b"DATA", &data),
+        sub(b"DATA", data),
     ];
     let crea = parse_npc(0x0016_7EA7, &subs, GameKind::Fallout3NV, &None);
 
@@ -1888,7 +1888,7 @@ fn crea_data_arm_is_gated_to_the_fallout3_fnv_era() {
         GameKind::Fallout4,
         GameKind::Starfield,
     ] {
-        let record = parse_npc(0x0000_0003, &[sub(b"DATA", &data)], game, &None);
+        let record = parse_npc(0x0000_0003, &[sub(b"DATA", data)], game, &None);
         assert_eq!(
             record.creature_stats, None,
             "{game:?} must not decode a CREA stat block",
@@ -2123,7 +2123,7 @@ fn fallout3nv_starts_dead_keys_on_base_data_health() {
     acbs[0..4].copy_from_slice(&(1u32 << 23).to_le_bytes());
     let npc = parse_npc(
         0x5,
-        &[sub(b"DATA", &alive), sub(b"ACBS", &acbs)],
+        &[sub(b"DATA", &alive), sub(b"ACBS", acbs)],
         GameKind::Fallout3NV,
         &None,
     );

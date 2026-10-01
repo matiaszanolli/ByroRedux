@@ -74,9 +74,9 @@ fn decode_dds_rgb(bytes: &[u8]) -> Result<(u32, u32, Vec<[f32; 3]>), String> {
         data_start = 148;
         match dxgi {
             // BC1 family (71=TYPELESS, 72=UNORM, 73=UNORM_SRGB)
-            71 | 72 | 73 => fourcc = b"DXT1".to_vec(),
+            71..=73 => fourcc = b"DXT1".to_vec(),
             // BC3 family (77..79)
-            77 | 78 | 79 => fourcc = b"DXT5".to_vec(),
+            77..=79 => fourcc = b"DXT5".to_vec(),
             // B8G8R8A8_UNORM (87) / _SRGB (91): uncompressed, BGRA order
             87 | 91 => uncompressed_bgra = true,
             // BC2 (74..76) unhandled (not in the _msn corpus);

@@ -191,7 +191,8 @@ mod tests {
         // recycled into DBG_VIZ_AO, so DBG_RESERVED_20 is the one slot left.
         let free = (!union).count_ones();
         if free == 0 {
-            for slot in ["DBG_RESERVED_20"] {
+            {
+                let slot = "DBG_RESERVED_20";
                 assert!(
                     singles.iter().any(|(n, _)| *n == slot),
                     "{slot} was removed from DBG_BITS while the DBG_* u32 has 0 free \

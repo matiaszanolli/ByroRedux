@@ -378,8 +378,8 @@ mod tests {
         dnam[2..4].copy_from_slice(&30_i16.to_le_bytes()); // DR
         let subs = vec![
             sub(b"EDID", b"MetalArmor\0"),
-            sub(b"BMDT", &bmdt),
-            sub(b"DNAM", &dnam),
+            sub(b"BMDT", bmdt),
+            sub(b"DNAM", dnam),
         ];
         let a = parse_arma(0x0006_2103, &subs, GameKind::Fallout3NV, &None);
         assert_eq!(a.editor_id, "MetalArmor");
@@ -412,8 +412,8 @@ mod tests {
         // BNAM (workbench filter form).
         let subs = vec![
             sub(b"EDID", b"RecipeStimpak\0"),
-            sub(b"CNAM", &0x0014_4F10_u32.to_le_bytes()),
-            sub(b"BNAM", &0x000A_6001_u32.to_le_bytes()),
+            sub(b"CNAM", 0x0014_4F10_u32.to_le_bytes()),
+            sub(b"BNAM", 0x000A_6001_u32.to_le_bytes()),
         ];
         let c = parse_cobj(0x0014_F800, &subs, &None);
         assert_eq!(c.editor_id, "RecipeStimpak");
@@ -463,8 +463,8 @@ mod tests {
             sub(b"MODL", b"Clutter\\SoulGems\\Grand.NIF\0"),
             sub(b"ICON", b"Clutter\\SoulGems\\Grand.dds\0"),
             sub(b"DATA", &data),
-            sub(b"SOUL", &[5]), // current = Grand
-            sub(b"SLCP", &[5]), // capacity = Grand
+            sub(b"SOUL", [5]), // current = Grand
+            sub(b"SLCP", [5]), // capacity = Grand
         ];
         let g = parse_slgm(0x0002_3F1B, &subs);
         assert_eq!(g.form_id, 0x0002_3F1B);
@@ -490,7 +490,7 @@ mod tests {
         let subs = vec![
             sub(b"EDID", b"SoulGemPettyEmpty\0"),
             sub(b"DATA", &data),
-            sub(b"SLCP", &[1]), // petty capacity, no SOUL = empty gem
+            sub(b"SLCP", [1]), // petty capacity, no SOUL = empty gem
         ];
         let g = parse_slgm(0x0002_3F00, &subs);
         assert_eq!(g.value, 25);
@@ -504,9 +504,9 @@ mod tests {
         // default. Empty SOUL / SLCP also tolerated.
         let subs = vec![
             sub(b"EDID", b"SoulGemMalformed\0"),
-            sub(b"DATA", &[1u8; 5]),
-            sub(b"SOUL", &[]),
-            sub(b"SLCP", &[3]),
+            sub(b"DATA", [1u8; 5]),
+            sub(b"SOUL", []),
+            sub(b"SLCP", [3]),
         ];
         let g = parse_slgm(0x0002_3F02, &subs);
         assert_eq!(g.value, 0, "short DATA must not bleed bytes into value");

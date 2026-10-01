@@ -811,7 +811,7 @@ mod tests {
     fn set_stmt(var_tag: u8, idx: u16, expr: &[u8], pad: usize) -> Vec<u8> {
         let mut payload = vec![var_tag];
         payload.extend_from_slice(&idx.to_le_bytes());
-        payload.extend(std::iter::repeat(0u8).take(pad)); // 'r' secondary u16
+        payload.extend(std::iter::repeat_n(0u8, pad)); // 'r' secondary u16
         payload.extend_from_slice(&(expr.len() as u16).to_le_bytes());
         payload.extend_from_slice(expr);
         let mut stmt = (0x15u16).to_le_bytes().to_vec();
@@ -861,13 +861,6 @@ mod tests {
     /// Local escape bytes: `' s<n>'`.
     fn s(n: u16) -> Vec<u8> {
         let mut v = vec![b' ', b's'];
-        v.extend_from_slice(&n.to_le_bytes());
-        v
-    }
-
-    /// Ref escape bytes: `' r<n>'`.
-    fn r(n: u16) -> Vec<u8> {
-        let mut v = vec![b' ', b'r'];
         v.extend_from_slice(&n.to_le_bytes());
         v
     }

@@ -2123,7 +2123,7 @@ mod tests {
             (stopped, "bound only by a stopped quest"),
         ] {
             assert!(
-                candidates.get(&refused).is_none(),
+                !candidates.contains_key(&refused),
             "a {reason} bound actor must not be talkable"
             );
         }

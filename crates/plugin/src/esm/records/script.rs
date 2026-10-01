@@ -234,12 +234,12 @@ mod tests {
         schr.extend_from_slice(&1u16.to_le_bytes()); // script_type = Quest
         schr.extend_from_slice(&0x0002u16.to_le_bytes()); // flags (u16)
         let subs = vec![
-            sub(b"EDID", b"MegatonDoorScript\0".to_vec()),
+            sub(b"EDID", b"MegatonDoorScript\0"),
             sub(b"SCHR", schr),
             sub(b"SCDA", vec![0xDEu8, 0xAD, 0xBE, 0xEF, 0x12, 0x34]),
             sub(
                 b"SCTX",
-                b"scn MegatonDoorScript\n\nBegin OnActivate\nEnd\0".to_vec(),
+                b"scn MegatonDoorScript\n\nBegin OnActivate\nEnd\0",
             ),
             // Local var 0 (type = 2, long).
             {
@@ -252,7 +252,7 @@ mod tests {
                              // 9-byte prefix, so leave the tail short.
                 sub(b"SLSD", d)
             },
-            sub(b"SCVR", b"iDoorOpen\0".to_vec()),
+            sub(b"SCVR", b"iDoorOpen\0"),
             // Local var 1 (type = 1, short).
             {
                 let mut d = Vec::new();
@@ -261,11 +261,11 @@ mod tests {
                 d.push(1u8);
                 sub(b"SLSD", d)
             },
-            sub(b"SCVR", b"sDoorState\0".to_vec()),
+            sub(b"SCVR", b"sDoorState\0"),
             // Cross-record refs.
-            sub(b"SCRO", 0xCAFEBABEu32.to_le_bytes().to_vec()),
-            sub(b"SCRV", 0x1000_0001u32.to_le_bytes().to_vec()),
-            sub(b"SCRO", 0x1000_0002u32.to_le_bytes().to_vec()),
+            sub(b"SCRO", 0xCAFEBABEu32.to_le_bytes()),
+            sub(b"SCRV", 0x1000_0001u32.to_le_bytes()),
+            sub(b"SCRO", 0x1000_0002u32.to_le_bytes()),
         ];
 
         let rec = parse_scpt(0xBEEF_1234, &subs, &None);
@@ -308,9 +308,9 @@ mod tests {
         let subs = vec![
             // mod_index 1 == this plugin's own MASTERS position: a
             // self-referencing object ref.
-            sub(b"SCRO", 0x0100_0ABCu32.to_le_bytes().to_vec()),
+            sub(b"SCRO", 0x0100_0ABCu32.to_le_bytes()),
             // A variable index, in the shape real FNV data ships.
-            sub(b"SCRV", 0x0000_0018u32.to_le_bytes().to_vec()),
+            sub(b"SCRV", 0x0000_0018u32.to_le_bytes()),
         ];
         let rec = parse_scpt(0x0200_0001, &subs, &Some(remap));
         assert_eq!(
@@ -336,7 +336,7 @@ mod tests {
         schr.extend_from_slice(&0u32.to_le_bytes()); // var_count = 0
         schr.extend_from_slice(&0u16.to_le_bytes()); // script_type = Object
         schr.extend_from_slice(&0u16.to_le_bytes()); // flags (u16) = 0
-        let subs = vec![sub(b"EDID", b"TinyScript\0".to_vec()), sub(b"SCHR", schr)];
+        let subs = vec![sub(b"EDID", b"TinyScript\0"), sub(b"SCHR", schr)];
         let rec = parse_scpt(0x0CAFEu32, &subs, &None);
         assert_eq!(rec.editor_id, "TinyScript");
         assert_eq!(rec.script_type, ScriptType::Object);

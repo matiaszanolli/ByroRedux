@@ -340,10 +340,10 @@ mod tests {
     #[test]
     fn parses_marker_delimited_phase_actor_and_dialogue_action() {
         let subs = vec![
-            sub(b"EDID", b"MQ101Scene1\0".to_vec()),
+            sub(b"EDID", b"MQ101Scene1\0"),
             sub(b"FNAM", SCENE_BEGIN_ON_QUEST_START.to_le_bytes()),
             sub(b"HNAM", vec![]),
-            sub(b"NAM0", b"Load the carts\0".to_vec()),
+            sub(b"NAM0", b"Load the carts\0"),
             sub(b"CTDA", ctda(58)),
             sub(b"NEXT", vec![]),
             sub(b"CTDA", ctda(59)),
@@ -354,7 +354,7 @@ mod tests {
             sub(b"LNAM", 1u32.to_le_bytes()),
             sub(b"DNAM", 26u32.to_le_bytes()),
             sub(b"ANAM", 0u16.to_le_bytes()),
-            sub(b"NAM0", b"Ralof speaks\0".to_vec()),
+            sub(b"NAM0", b"Ralof speaks\0"),
             sub(b"ALID", 12i32.to_le_bytes()),
             sub(b"INAM", 7u32.to_le_bytes()),
             sub(b"FNAM", (1u32 << 15).to_le_bytes()),

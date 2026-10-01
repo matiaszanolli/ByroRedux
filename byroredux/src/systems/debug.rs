@@ -377,8 +377,10 @@ mod tests {
     /// thirteen the egui Metrics overlay printed that this line omitted.
     #[test]
     fn cpu_breakdown_prints_between_frames() {
-        let mut t = CpuFrameTimings::default();
-        t.between_frames_ms = 42.0;
+        let mut t = CpuFrameTimings {
+            between_frames_ms: 42.0,
+            ..Default::default()
+        };
         let line = cpu_breakdown(&t);
         assert!(
             line.contains("between_frames=42"),

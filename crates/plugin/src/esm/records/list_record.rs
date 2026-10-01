@@ -83,7 +83,7 @@ mod tests {
     use crate::esm::records::test_support::{edid, sub};
 
     fn lnam(form_id: u32) -> SubRecord {
-        sub(b"LNAM", form_id.to_le_bytes().to_vec())
+        sub(b"LNAM", form_id.to_le_bytes())
     }
 
     /// Baseline: a multi-entry FLST round-trips with EDID + every

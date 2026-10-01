@@ -294,7 +294,7 @@ fn parse_vanilla_headhuman_egm() {
 #[test]
 #[ignore = "needs Oblivion game data on disk"]
 fn parse_vanilla_headhuman_egm_oblivion() {
-    let data = if let Some(v) = std::env::var("BYROREDUX_OBLIVION_DATA").ok() {
+    let data = if let Ok(v) = std::env::var("BYROREDUX_OBLIVION_DATA") {
         PathBuf::from(v)
     } else {
         PathBuf::from("/mnt/data/SteamLibrary/steamapps/common/Oblivion/Data")
@@ -316,7 +316,7 @@ fn parse_vanilla_headhuman_egm_oblivion() {
         })
         .unwrap_or_else(|| panic!("headhuman.egm not in Oblivion - Meshes.bsa"));
     let bytes = archive
-        .extract(&entry)
+        .extract(entry)
         .unwrap_or_else(|e| panic!("extract headhuman.egm: {e:?}"));
     let egm = EgmFile::parse(&bytes).unwrap_or_else(|e| panic!("parse: {e:?}"));
     assert!(egm.num_vertices > 0, "Oblivion headhuman.egm vertex count");

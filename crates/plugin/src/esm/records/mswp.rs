@@ -166,14 +166,14 @@ mod tests {
     #[test]
     fn parse_minimal_record_with_single_pair() {
         let subs = vec![
-            sub(b"EDID", &z("StationWagon_Postwar_Cheap04_Swap")),
+            sub(b"EDID", z("StationWagon_Postwar_Cheap04_Swap")),
             sub(
                 b"BNAM",
-                &z("Vehicles\\Automotive\\StationWagon01a_Rust.BGSM"),
+                z("Vehicles\\Automotive\\StationWagon01a_Rust.BGSM"),
             ),
             sub(
                 b"SNAM",
-                &z("Vehicles\\Automotive\\StationWagon_Postwar_Cheap04.bgsm"),
+                z("Vehicles\\Automotive\\StationWagon_Postwar_Cheap04.bgsm"),
             ),
         ];
         let rec = parse_mswp(0x0024_9A4E, &subs);
@@ -196,15 +196,15 @@ mod tests {
     #[test]
     fn parse_record_with_fnam_filter_and_multiple_pairs() {
         let subs = vec![
-            sub(b"EDID", &z("VaultDamageTheme18")),
-            sub(b"FNAM", &z("Interiors\\Vault")),
-            sub(b"BNAM", &z("interiors\\Vault\\VltUtilColumns01.BGSM")),
+            sub(b"EDID", z("VaultDamageTheme18")),
+            sub(b"FNAM", z("Interiors\\Vault")),
+            sub(b"BNAM", z("interiors\\Vault\\VltUtilColumns01.BGSM")),
             sub(
                 b"SNAM",
-                &z("interiors\\Vault\\VltUtilColumns01_Damage.BGSM"),
+                z("interiors\\Vault\\VltUtilColumns01_Damage.BGSM"),
             ),
-            sub(b"BNAM", &z("interiors\\Vault\\VltAtrium01.BGSM")),
-            sub(b"SNAM", &z("interiors\\Vault\\VltAtrium01_Damage.BGSM")),
+            sub(b"BNAM", z("interiors\\Vault\\VltAtrium01.BGSM")),
+            sub(b"SNAM", z("interiors\\Vault\\VltAtrium01_Damage.BGSM")),
         ];
         let rec = parse_mswp(0x0024_70A8, &subs);
         assert_eq!(rec.path_filter.as_deref(), Some("Interiors\\Vault"));
@@ -230,20 +230,20 @@ mod tests {
     fn parse_cnam_attaches_to_preceding_pair() {
         let intensity_bytes = 0.617_f32.to_le_bytes();
         let subs = vec![
-            sub(b"EDID", &z("MachineKitBlueLight02")),
-            sub(b"FNAM", &z("SetDressing")),
-            sub(b"BNAM", &z("setdressing\\machinekit\\machinekit01.bgsm")),
-            sub(b"SNAM", &z("setdressing\\machinekit\\machinekit01.bgsm")),
-            sub(b"CNAM", &intensity_bytes),
+            sub(b"EDID", z("MachineKitBlueLight02")),
+            sub(b"FNAM", z("SetDressing")),
+            sub(b"BNAM", z("setdressing\\machinekit\\machinekit01.bgsm")),
+            sub(b"SNAM", z("setdressing\\machinekit\\machinekit01.bgsm")),
+            sub(b"CNAM", intensity_bytes),
             sub(
                 b"BNAM",
-                &z("setdressing\\machinekit\\machinekitquad02.bgsm"),
+                z("setdressing\\machinekit\\machinekitquad02.bgsm"),
             ),
             sub(
                 b"SNAM",
-                &z("setdressing\\machinekit\\machinekitquad02.bgsm"),
+                z("setdressing\\machinekit\\machinekitquad02.bgsm"),
             ),
-            sub(b"CNAM", &intensity_bytes),
+            sub(b"CNAM", intensity_bytes),
         ];
         let rec = parse_mswp(0x0023_CD5F, &subs);
         assert_eq!(rec.swaps.len(), 2);
@@ -261,10 +261,10 @@ mod tests {
     fn stray_cnam_before_bnam_is_dropped() {
         let intensity_bytes = 1.0_f32.to_le_bytes();
         let subs = vec![
-            sub(b"EDID", &z("Stray")),
-            sub(b"CNAM", &intensity_bytes),
-            sub(b"BNAM", &z("a.bgsm")),
-            sub(b"SNAM", &z("b.bgsm")),
+            sub(b"EDID", z("Stray")),
+            sub(b"CNAM", intensity_bytes),
+            sub(b"BNAM", z("a.bgsm")),
+            sub(b"SNAM", z("b.bgsm")),
         ];
         let rec = parse_mswp(0xDEADBEEF, &subs);
         assert_eq!(rec.swaps.len(), 1);
@@ -276,10 +276,10 @@ mod tests {
     #[test]
     fn stray_snam_before_bnam_is_dropped() {
         let subs = vec![
-            sub(b"EDID", &z("Stray")),
-            sub(b"SNAM", &z("orphan.bgsm")),
-            sub(b"BNAM", &z("a.bgsm")),
-            sub(b"SNAM", &z("b.bgsm")),
+            sub(b"EDID", z("Stray")),
+            sub(b"SNAM", z("orphan.bgsm")),
+            sub(b"BNAM", z("a.bgsm")),
+            sub(b"SNAM", z("b.bgsm")),
         ];
         let rec = parse_mswp(0xC0FFEE00, &subs);
         assert_eq!(rec.swaps.len(), 1);
@@ -293,10 +293,10 @@ mod tests {
     #[test]
     fn empty_fnam_is_treated_as_no_filter() {
         let subs = vec![
-            sub(b"EDID", &z("NoFilter")),
-            sub(b"FNAM", &z("")),
-            sub(b"BNAM", &z("a.bgsm")),
-            sub(b"SNAM", &z("b.bgsm")),
+            sub(b"EDID", z("NoFilter")),
+            sub(b"FNAM", z("")),
+            sub(b"BNAM", z("a.bgsm")),
+            sub(b"SNAM", z("b.bgsm")),
         ];
         let rec = parse_mswp(0xAB12, &subs);
         assert!(rec.path_filter.is_none());
@@ -306,7 +306,7 @@ mod tests {
     /// but mods could) round-trip cleanly with an empty `swaps` list.
     #[test]
     fn record_with_no_swaps_is_well_formed() {
-        let subs = vec![sub(b"EDID", &z("Empty"))];
+        let subs = vec![sub(b"EDID", z("Empty"))];
         let rec = parse_mswp(0xCAFE_F00D, &subs);
         assert!(rec.swaps.is_empty());
         assert_eq!(rec.editor_id, "Empty");

@@ -3488,7 +3488,7 @@ mod tests {
 
         assert_eq!(player.editor_id, "Player");
         assert!(
-            index.npcs.get(&0x0000_0014).is_none(),
+            !index.npcs.contains_key(&0x0000_0014),
             "00000014 is the placed player reference, not an NPC_ base",
         );
         assert!(
@@ -3886,9 +3886,8 @@ mod tests {
         let message =
             queue_equip_by_form_id(&world, 0x1234).expect("the row exists");
         assert!(message.contains("row 0"), "{message}");
-        assert_eq!(
+        assert!(
             queue_equip_by_form_id(&world, 0xDEAD).is_err(),
-            true,
             "a form with no row must be refused at the queue, not silently dropped"
         );
         assert_eq!(world.resource::<PendingInventoryActions>().0.len(), 1);

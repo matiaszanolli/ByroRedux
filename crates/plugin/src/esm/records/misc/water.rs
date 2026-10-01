@@ -1584,7 +1584,7 @@ mod tests {
         let subs = vec![
             sub(b"EDID", b"WaterFreshDefault\0"),
             sub(b"FULL", b"Fresh Water\0"),
-            sub(b"ANAM", &[192]),
+            sub(b"ANAM", [192]),
             sub(b"NNAM", b"textures\\water\\fresh.dds\0"),
         ];
         let w = parse_watr(0x1234, &subs, GameKind::Skyrim, &None);
@@ -1598,26 +1598,26 @@ mod tests {
 
     #[test]
     fn parse_watr_preserves_authored_zero_opacity() {
-        let w = parse_watr(0x1235, &[sub(b"ANAM", &[0])], GameKind::Skyrim, &None);
+        let w = parse_watr(0x1235, &[sub(b"ANAM", [0])], GameKind::Skyrim, &None);
         assert_eq!(w.opacity, 0.0);
         assert!(w.opacity_authored);
     }
 
     #[test]
     fn parse_watr_captures_legacy_and_modern_fnam_flags() {
-        let reflective = parse_watr(1, &[sub(b"FNAM", &[0x02])], GameKind::Fallout3NV, &None);
+        let reflective = parse_watr(1, &[sub(b"FNAM", [0x02])], GameKind::Fallout3NV, &None);
         assert_eq!(reflective.legacy_flags, Some(0x02));
         assert_eq!(reflective.water_flags, Some(0x02));
 
-        let skyrim = parse_watr(2, &[sub(b"FNAM", &[0x02])], GameKind::Skyrim, &None);
+        let skyrim = parse_watr(2, &[sub(b"FNAM", [0x02])], GameKind::Skyrim, &None);
         assert_eq!(skyrim.legacy_flags, None);
         assert_eq!(skyrim.water_flags, Some(0x02));
         assert_eq!(skyrim.blend_normals, Some(false));
 
-        let skyrim_blended = parse_watr(2, &[sub(b"FNAM", &[0x12])], GameKind::Skyrim, &None);
+        let skyrim_blended = parse_watr(2, &[sub(b"FNAM", [0x12])], GameKind::Skyrim, &None);
         assert_eq!(skyrim_blended.blend_normals, Some(true));
 
-        let oblivion = parse_watr(3, &[sub(b"FNAM", &[0x01])], GameKind::Oblivion, &None);
+        let oblivion = parse_watr(3, &[sub(b"FNAM", [0x01])], GameKind::Oblivion, &None);
         assert_eq!(oblivion.water_flags, Some(0x01));
         assert_eq!(oblivion.legacy_flags, Some(0x01));
         assert_eq!(oblivion.blend_normals, None);
@@ -1633,7 +1633,7 @@ mod tests {
                 sub(b"TNAM", b"Water\\OblivionLava06.dds\0"),
                 sub(b"MNAM", b"lava\0"),
                 sub(b"SNAM", b"AMBWaterLavaLP\0"),
-                sub(b"FNAM", &[0x01]),
+                sub(b"FNAM", [0x01]),
                 sub(b"DATA", &data),
             ],
             GameKind::Oblivion,
@@ -1650,7 +1650,7 @@ mod tests {
     fn oblivion_two_byte_data_is_damage_only() {
         let watr = parse_watr(
             0x0001_0002,
-            &[sub(b"DATA", &65535u16.to_le_bytes())],
+            &[sub(b"DATA", 65535u16.to_le_bytes())],
             GameKind::Oblivion,
             &None,
         );
@@ -1673,7 +1673,7 @@ mod tests {
         let skyrim = parse_watr(
             2,
             &[
-                sub(b"TNAM", &0x000D_6C11u32.to_le_bytes()),
+                sub(b"TNAM", 0x000D_6C11u32.to_le_bytes()),
                 sub(b"NNAM", b"Data\\Textures\\Water\\DefaultWater.dds\0"),
             ],
             GameKind::Skyrim,
@@ -1700,9 +1700,9 @@ mod tests {
         let w = parse_watr(
             3,
             &[
-                sub(b"FNAM", &[0x01]),
+                sub(b"FNAM", [0x01]),
                 sub(b"DATA", &visual),
-                sub(b"DATA", &42u16.to_le_bytes()),
+                sub(b"DATA", 42u16.to_le_bytes()),
             ],
             GameKind::Fallout3NV,
             &None,
@@ -1717,7 +1717,7 @@ mod tests {
     fn parse_watr_preserves_skyrim_damage_data_with_modern_flags() {
         let w = parse_watr(
             4,
-            &[sub(b"FNAM", &[0x01]), sub(b"DATA", &42u16.to_le_bytes())],
+            &[sub(b"FNAM", [0x01]), sub(b"DATA", 42u16.to_le_bytes())],
             GameKind::Skyrim,
             &None,
         );
@@ -2228,7 +2228,7 @@ mod tests {
         velocity.extend_from_slice(&0.0f32.to_le_bytes());
         let w = parse_watr(
             0xCAFE,
-            &[sub(b"DNAM", &[0; 228]), sub(b"NAM0", &velocity)],
+            &[sub(b"DNAM", [0; 228]), sub(b"NAM0", &velocity)],
             GameKind::Skyrim,
             &None,
         );
@@ -2250,7 +2250,7 @@ mod tests {
         velocity.extend_from_slice(&0.0f32.to_le_bytes());
         let w = parse_watr(
             0xCAFE,
-            &[sub(b"DNAM", &[0; 228]), sub(b"NAM0", &velocity)],
+            &[sub(b"DNAM", [0; 228]), sub(b"NAM0", &velocity)],
             GameKind::Skyrim,
             &None,
         );
@@ -2401,7 +2401,7 @@ mod tests {
     fn parse_watr_captures_xnam_effect_form() {
         let w = parse_watr(
             0x1234,
-            &[sub(b"XNAM", &0x0004_5656u32.to_le_bytes())],
+            &[sub(b"XNAM", 0x0004_5656u32.to_le_bytes())],
             GameKind::Fallout3NV,
             &None,
         );
@@ -2418,7 +2418,7 @@ mod tests {
         let master_spel: u32 = 0x0004_5656;
         let w = parse_watr(
             0x000A_0001,
-            &[sub(b"XNAM", &master_spel.to_le_bytes())],
+            &[sub(b"XNAM", master_spel.to_le_bytes())],
             GameKind::Fallout3NV,
             &Some(remap),
         );
@@ -2640,7 +2640,7 @@ mod tests {
             let mut dnam = vec![0u8; 196];
             dnam[4..8].copy_from_slice(&90.0f32.to_le_bytes()); // shipped wind_direction
             dnam[20..24].copy_from_slice(&reflectivity.to_le_bytes());
-            vec![sub(b"DNAM", &dnam), sub(b"FNAM", &[0x02])]
+            vec![sub(b"DNAM", &dnam), sub(b"FNAM", [0x02])]
         };
         let reflective = parse_watr(0x0010_09CA, &build(0.6), GameKind::Fallout3NV, &None);
         let matte = parse_watr(0x0017_B612, &build(0.0), GameKind::Fallout3NV, &None);

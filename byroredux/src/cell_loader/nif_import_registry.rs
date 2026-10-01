@@ -144,7 +144,7 @@ mod spt_cache_key_tests {
     #[test]
     fn distinct_tree_records_sharing_one_spt_get_distinct_keys() {
         let a = spt_cache_key("\\ShrubVineMapleSU.spt", 0x0002_32db);
-        let b = spt_cache_key("\\ShrubVineMapleSU.spt", 0x0001_7fc);
+        let b = spt_cache_key("\\ShrubVineMapleSU.spt", 0x17fc);
         assert_ne!(a, b);
     }
 

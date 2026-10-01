@@ -515,7 +515,7 @@ mod tests {
         // baked, some not, so the descent actually subdivides.
         let probe = |level: i32, qx: i32, qy: i32| (level + qx.abs() + qy.abs()) % 3 != 0;
 
-        let direct = select_lod_quads(&sel, |_, _, _| false, |l, x, y| probe(l, x, y));
+        let direct = select_lod_quads(&sel, |_, _, _| false, &probe);
 
         let mut cache: HashMap<(i32, i32, i32), bool> = HashMap::new();
         let mut calls: HashMap<(i32, i32, i32), usize> = HashMap::new();

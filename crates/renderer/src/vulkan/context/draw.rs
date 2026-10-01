@@ -1243,7 +1243,6 @@ mod bind_inverse_upload_failed_reset_tests {
 
 /// Regression for D6-04 / #1811. `next_clean_skin_frames` /
 /// `should_skip_skin_gpu_refresh` gate the bone_world upload + device
-
 #[cfg(test)]
 mod draw_frame_size_budget_tests {
     #[test]

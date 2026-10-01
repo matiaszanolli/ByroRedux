@@ -361,6 +361,7 @@ fn window_ssim(
     )
 }
 
+#[allow(clippy::too_many_arguments)] // SSIM window parameters (rect + two planes + tuning) are naturally independent arguments in a metric helper.
 fn window_ssim_over(
     reference: &[f64],
     candidate: &[f64],

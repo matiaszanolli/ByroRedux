@@ -1163,7 +1163,7 @@ mod tests {
         };
         let before = unrouted_texture_slot_bindings(context.layout, 7);
         record_unrouted_texture_slot(context, 7);
-        assert!(unrouted_texture_slot_bindings(context.layout, 7) >= before + 1);
+        assert!(unrouted_texture_slot_bindings(context.layout, 7) > before);
         assert_eq!(unrouted_texture_slot_bindings(context.layout, 8), 0);
     }
 

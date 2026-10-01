@@ -528,8 +528,10 @@ mod tests {
     /// records use shipped-data `AV` prefixes and record identities rather
     /// than the canonical/display spellings consumed by CHARAL.
     fn fnv_index_with_class(class_form_id: u32, base: [u8; 7]) -> EsmIndex {
-        let mut index = EsmIndex::default();
-        index.character_rules = CharacterRulesProfile::FALLOUT_NEW_VEGAS;
+        let mut index = EsmIndex {
+            character_rules: CharacterRulesProfile::FALLOUT_NEW_VEGAS,
+            ..Default::default()
+        };
         let roster: Vec<&str> = AttributeSet::FALLOUT
             .members()
             .iter()
@@ -769,8 +771,10 @@ mod tests {
     /// [`skyrim_race_follows_use_traits_while_offsets_follow_use_stats`].
     #[test]
     fn skyrim_pools_follow_use_stats_template() {
-        let mut index = EsmIndex::default();
-        index.character_rules = CharacterRulesProfile::SKYRIM;
+        let mut index = EsmIndex {
+            character_rules: CharacterRulesProfile::SKYRIM,
+            ..Default::default()
+        };
         index.actor_values.insert(0x3E8, avif(0x3E8, "AVHealth"));
         index.actor_values.insert(0x3E9, avif(0x3E9, "AVMagicka"));
         index.actor_values.insert(0x3EA, avif(0x3EA, "AVStamina"));
@@ -851,8 +855,10 @@ mod tests {
     /// outright rather than merely getting a wrong number.
     #[test]
     fn skyrim_race_follows_use_traits_while_offsets_follow_use_stats() {
-        let mut index = EsmIndex::default();
-        index.character_rules = CharacterRulesProfile::SKYRIM;
+        let mut index = EsmIndex {
+            character_rules: CharacterRulesProfile::SKYRIM,
+            ..Default::default()
+        };
         index.actor_values.insert(0x3E8, avif(0x3E8, "AVHealth"));
         index.actor_values.insert(0x3E9, avif(0x3E9, "AVMagicka"));
         index.actor_values.insert(0x3EA, avif(0x3EA, "AVStamina"));
@@ -934,8 +940,10 @@ mod tests {
     /// follows the chain — the fix must not simply pin race to the shell.
     #[test]
     fn skyrim_race_follows_the_template_when_use_traits_is_set() {
-        let mut index = EsmIndex::default();
-        index.character_rules = CharacterRulesProfile::SKYRIM;
+        let mut index = EsmIndex {
+            character_rules: CharacterRulesProfile::SKYRIM,
+            ..Default::default()
+        };
         index.actor_values.insert(0x3E8, avif(0x3E8, "AVHealth"));
         index.races.insert(
             0x1000,
@@ -987,8 +995,10 @@ mod tests {
     /// with no vitals and could not be damaged or killed at all.
     #[test]
     fn fo4_absent_baked_stats_fall_back_to_the_shell() {
-        let mut index = EsmIndex::default();
-        index.character_rules = CharacterRulesProfile::FALLOUT4;
+        let mut index = EsmIndex {
+            character_rules: CharacterRulesProfile::FALLOUT4,
+            ..Default::default()
+        };
         index.actor_values.insert(0x3E8, avif(0x3E8, "Health"));
         index
             .actor_values
@@ -1036,8 +1046,10 @@ mod tests {
     /// still wins. `1` is a live authored value, not the sentinel.
     #[test]
     fn fo4_authored_template_baked_stats_still_win_over_the_shell() {
-        let mut index = EsmIndex::default();
-        index.character_rules = CharacterRulesProfile::FALLOUT4;
+        let mut index = EsmIndex {
+            character_rules: CharacterRulesProfile::FALLOUT4,
+            ..Default::default()
+        };
         index.actor_values.insert(0x3E8, avif(0x3E8, "Health"));
         index
             .actor_values
@@ -1078,8 +1090,10 @@ mod tests {
     /// `DNAM`, so this is the common case, not an edge one.
     #[test]
     fn fo4_stored_values_follow_use_stats_template() {
-        let mut index = EsmIndex::default();
-        index.character_rules = CharacterRulesProfile::FALLOUT4;
+        let mut index = EsmIndex {
+            character_rules: CharacterRulesProfile::FALLOUT4,
+            ..Default::default()
+        };
         index.actor_values.insert(0x3E8, avif(0x3E8, "Health"));
         index
             .actor_values
@@ -1120,8 +1134,10 @@ mod tests {
     /// resolve-or-fall-back, and hoisting it must not change that.
     #[test]
     fn fo4_stored_values_keep_the_shell_when_use_stats_is_clear() {
-        let mut index = EsmIndex::default();
-        index.character_rules = CharacterRulesProfile::FALLOUT4;
+        let mut index = EsmIndex {
+            character_rules: CharacterRulesProfile::FALLOUT4,
+            ..Default::default()
+        };
         index.actor_values.insert(0x3EA, avif(0x3EA, "Strength"));
 
         let template = NpcRecord {
@@ -1149,8 +1165,10 @@ mod tests {
 
     #[test]
     fn skyrim_pools_are_race_starts_plus_signed_npc_offsets() {
-        let mut index = EsmIndex::default();
-        index.character_rules = CharacterRulesProfile::SKYRIM;
+        let mut index = EsmIndex {
+            character_rules: CharacterRulesProfile::SKYRIM,
+            ..Default::default()
+        };
         index.actor_values.insert(0x3E8, avif(0x3E8, "AVHealth"));
         index.actor_values.insert(0x3E9, avif(0x3E9, "AVMagicka"));
         index.actor_values.insert(0x3EA, avif(0x3EA, "AVStamina"));
@@ -1191,8 +1209,10 @@ mod tests {
         };
         assert!(derive_npc_actor_values(&npc, &no_race).is_empty());
 
-        let mut invalid_race = EsmIndex::default();
-        invalid_race.character_rules = CharacterRulesProfile::SKYRIM;
+        let mut invalid_race = EsmIndex {
+            character_rules: CharacterRulesProfile::SKYRIM,
+            ..Default::default()
+        };
         invalid_race
             .actor_values
             .insert(0x3E8, avif(0x3E8, "AVHealth"));
@@ -1218,8 +1238,10 @@ mod tests {
     fn skyrim_pools_resolve_independently_when_one_is_missing() {
         // (a) Race carries no `starting_magicka` — Health/Stamina must still
         // resolve; only Magicka is absent from the output.
-        let mut index = EsmIndex::default();
-        index.character_rules = CharacterRulesProfile::SKYRIM;
+        let mut index = EsmIndex {
+            character_rules: CharacterRulesProfile::SKYRIM,
+            ..Default::default()
+        };
         index.actor_values.insert(0x3E8, avif(0x3E8, "AVHealth"));
         index.actor_values.insert(0x3E9, avif(0x3E9, "AVMagicka"));
         index.actor_values.insert(0x3EA, avif(0x3EA, "AVStamina"));
@@ -1245,8 +1267,10 @@ mod tests {
 
         // (b) Race carries all three starts, but the load order is missing
         // the Magicka AVIF — Health/Stamina must still resolve.
-        let mut no_magicka_avif = EsmIndex::default();
-        no_magicka_avif.character_rules = CharacterRulesProfile::SKYRIM;
+        let mut no_magicka_avif = EsmIndex {
+            character_rules: CharacterRulesProfile::SKYRIM,
+            ..Default::default()
+        };
         no_magicka_avif
             .actor_values
             .insert(0x3E8, avif(0x3E8, "AVHealth"));
@@ -1299,8 +1323,10 @@ mod tests {
     fn fo4_stored_returns_prps_verbatim_plus_baked_derived() {
         // FO4 stores AVs: PRPS pairs pass through unchanged; the baked
         // DNAM Health/AP resolve via their AVIF EditorIDs.
-        let mut index = EsmIndex::default();
-        index.character_rules = CharacterRulesProfile::FALLOUT4;
+        let mut index = EsmIndex {
+            character_rules: CharacterRulesProfile::FALLOUT4,
+            ..Default::default()
+        };
         index.actor_values.insert(0x900, avif(0x900, "Health"));
         index
             .actor_values
@@ -1335,8 +1361,10 @@ mod tests {
     /// by dropping the colliding PRPS pair rather than by ordering.
     #[test]
     fn baked_dnam_beats_a_colliding_prps_pair_regardless_of_order() {
-        let mut index = EsmIndex::default();
-        index.character_rules = CharacterRulesProfile::FALLOUT4;
+        let mut index = EsmIndex {
+            character_rules: CharacterRulesProfile::FALLOUT4,
+            ..Default::default()
+        };
         index
             .actor_values
             .insert(0x900, avif(0x900, "Health"));

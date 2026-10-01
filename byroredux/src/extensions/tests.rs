@@ -2109,20 +2109,20 @@ fn jcontainers_aliases_cover_typed_nested_values_negative_indices_and_isolation(
         host.invoke_owned_papyrus_provider(
             Some(&first),
             &route("jvalue-is-array"),
-            &[array.clone()],
+            std::slice::from_ref(&array),
         )
         .unwrap(),
         ScriptValue::Boolean(true)
     );
     for operation in ["jvalue-shallow-copy", "jvalue-deep-copy"] {
         let copy = host
-            .invoke_owned_papyrus_provider(Some(&first), &route(operation), &[map.clone()])
+            .invoke_owned_papyrus_provider(Some(&first), &route(operation), std::slice::from_ref(&map))
             .unwrap();
         assert_eq!(
             host.invoke_owned_papyrus_provider(
                 Some(&first),
                 &route("jvalue-is-map"),
-                &[copy.clone()],
+                std::slice::from_ref(&copy),
             )
             .unwrap(),
             ScriptValue::Boolean(true)
@@ -2152,7 +2152,7 @@ fn jcontainers_aliases_cover_typed_nested_values_negative_indices_and_isolation(
         host.invoke_owned_papyrus_provider(
             Some(&first),
             &route("jvalue-release"),
-            &[array.clone()],
+            std::slice::from_ref(&array),
         )
         .unwrap(),
         ScriptValue::Integer(0)
@@ -2161,7 +2161,7 @@ fn jcontainers_aliases_cover_typed_nested_values_negative_indices_and_isolation(
         host.invoke_owned_papyrus_provider(
             Some(&first),
             &route("jvalue-is-exists"),
-            &[array.clone()],
+            std::slice::from_ref(&array),
         )
         .unwrap(),
         ScriptValue::Boolean(true)
@@ -2232,7 +2232,7 @@ fn mod_event_aliases_build_typed_principal_owned_events() {
         .unwrap();
     }
     assert_eq!(
-        host.invoke_owned_papyrus_provider(Some(&first), &route("send"), &[handle.clone()])
+        host.invoke_owned_papyrus_provider(Some(&first), &route("send"), std::slice::from_ref(&handle))
             .unwrap(),
         ScriptValue::Boolean(true)
     );
@@ -2256,7 +2256,7 @@ fn mod_event_aliases_build_typed_principal_owned_events() {
         ]
     );
     assert_eq!(
-        host.invoke_owned_papyrus_provider(Some(&first), &route("send"), &[handle.clone()])
+        host.invoke_owned_papyrus_provider(Some(&first), &route("send"), std::slice::from_ref(&handle))
             .unwrap(),
         ScriptValue::Boolean(false)
     );
@@ -2390,8 +2390,10 @@ fn unfinished_mod_event_builder_survives_extension_save_round_trip() {
 
 #[test]
 fn pre_container_extension_state_remains_loadable() {
-    let mut version_two = ExtensionStateSnapshot::default();
-    version_two.format_version = MIN_EXTENSION_STATE_FORMAT_VERSION;
+    let mut version_two = ExtensionStateSnapshot {
+        format_version: MIN_EXTENSION_STATE_FORMAT_VERSION,
+        ..Default::default()
+    };
     version_two.legacy_containers.clear();
     let mut host =
         ExtensionHost::new(SandboxConfig::default(), ComponentStoreLimits::default()).unwrap();

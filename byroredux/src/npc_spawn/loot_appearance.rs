@@ -711,7 +711,7 @@ mod tests {
         let new = world.spawn();
         for entity in [skeleton, old, new] {
             super::super::resumable::parent_part(&mut world, actor, entity);
-            world.insert(entity, MeshHandle(entity as u32));
+            world.insert(entity, MeshHandle(entity));
         }
         world.insert(actor, Dead);
         world.insert(actor, CellRoot(actor));
@@ -817,7 +817,7 @@ mod tests {
             (gear_b, 0xBBB, false),
             (skin, 0xAAA, true),
         ] {
-            world.insert(root, MeshHandle(root as u32));
+            world.insert(root, MeshHandle(root));
             world.insert(
                 root,
                 NpcEquipmentPart {
@@ -842,7 +842,7 @@ mod tests {
                 equipped: false,
             }]),
         );
-        equipment_appearance_system(&mut world, 0.0);
+        equipment_appearance_system(&world, 0.0);
         assert!(
             world.get::<NpcAppearanceHidden>(gear_a).is_some(),
             "the unequipped item's meshes must hide"
@@ -864,7 +864,7 @@ mod tests {
                 equipped: false,
             }]),
         );
-        equipment_appearance_system(&mut world, 0.0);
+        equipment_appearance_system(&world, 0.0);
         world.insert(
             actor,
             EquipmentEventBatch(vec![EquipmentChange {
@@ -872,7 +872,7 @@ mod tests {
                 equipped: true,
             }]),
         );
-        equipment_appearance_system(&mut world, 0.0);
+        equipment_appearance_system(&world, 0.0);
         assert!(
             world.get::<NpcAppearanceHidden>(gear_a).is_none(),
             "re-equipping the same item reveals its spawn-time meshes"
@@ -890,7 +890,7 @@ mod tests {
                 equipped: false,
             }]),
         );
-        equipment_appearance_system(&mut world, 0.0);
+        equipment_appearance_system(&world, 0.0);
         assert!(
             world.get::<NpcAppearanceHidden>(gear_a).is_none(),
             "death reconciliation owns dead actors' appearance"
@@ -904,7 +904,7 @@ mod tests {
                 equipped: false,
             }]),
         );
-        equipment_appearance_system(&mut world, 0.0);
+        equipment_appearance_system(&world, 0.0);
         assert!(world.get::<NpcAppearanceHidden>(gear_a).is_none());
     }
 
@@ -936,8 +936,10 @@ mod tests {
     }
 
     fn install_index(world: &mut World, form_id: u32, model_path: &str) {
-        let mut index = byroredux_plugin::esm::records::EsmIndex::default();
-        index.game = byroredux_plugin::esm::reader::GameKind::Fallout3NV;
+        let mut index = byroredux_plugin::esm::records::EsmIndex {
+            game: byroredux_plugin::esm::reader::GameKind::Fallout3NV,
+            ..Default::default()
+        };
         index
             .items
             .insert(form_id, legacy_armor(form_id, model_path));

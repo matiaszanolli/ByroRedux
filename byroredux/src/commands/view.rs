@@ -229,41 +229,6 @@ impl ConsoleCommand for CombatStatusCommand {
     }
 }
 
-#[cfg(test)]
-mod combat_status_tests {
-    use super::*;
-
-    #[test]
-    fn rounded_zero_is_not_reported_as_cooldown_ready() {
-        let mut world = World::new();
-        world.register::<crate::combat::MeleeState>();
-        let player = world.spawn();
-        world.insert_resource(crate::systems::PlayerEntity(Some(player)));
-        world.insert(
-            player,
-            crate::combat::MeleeState {
-                cooldown_remaining: 0.0004,
-                ..Default::default()
-            },
-        );
-        let output = CombatStatusCommand.execute(&world, "").lines.join("\n");
-        assert!(output.contains("cooldown=0.000"));
-        assert!(output.contains("cooldown_ready=false"));
-        world.insert(player, crate::combat::MeleeState::default());
-        let output = CombatStatusCommand.execute(&world, "").lines.join("\n");
-        assert!(output.contains("cooldown_ready=true"));
-    }
-
-    #[test]
-    fn missing_player_melee_state_is_not_ready() {
-        let output = CombatStatusCommand
-            .execute(&World::new(), "")
-            .lines
-            .join("\n");
-        assert!(output.contains("cooldown_ready=false"));
-    }
-}
-
 /// `combat.approach <entity|.>` — deterministic smoke-test positioning.
 ///
 /// This command only moves the real character capsule and aims the normal
@@ -1357,5 +1322,40 @@ impl ConsoleCommand for CamTpCommand {
                 },
             ),
         ])
+    }
+}
+
+#[cfg(test)]
+mod combat_status_tests {
+    use super::*;
+
+    #[test]
+    fn rounded_zero_is_not_reported_as_cooldown_ready() {
+        let mut world = World::new();
+        world.register::<crate::combat::MeleeState>();
+        let player = world.spawn();
+        world.insert_resource(crate::systems::PlayerEntity(Some(player)));
+        world.insert(
+            player,
+            crate::combat::MeleeState {
+                cooldown_remaining: 0.0004,
+                ..Default::default()
+            },
+        );
+        let output = CombatStatusCommand.execute(&world, "").lines.join("\n");
+        assert!(output.contains("cooldown=0.000"));
+        assert!(output.contains("cooldown_ready=false"));
+        world.insert(player, crate::combat::MeleeState::default());
+        let output = CombatStatusCommand.execute(&world, "").lines.join("\n");
+        assert!(output.contains("cooldown_ready=true"));
+    }
+
+    #[test]
+    fn missing_player_melee_state_is_not_ready() {
+        let output = CombatStatusCommand
+            .execute(&World::new(), "")
+            .lines
+            .join("\n");
+        assert!(output.contains("cooldown_ready=false"));
     }
 }

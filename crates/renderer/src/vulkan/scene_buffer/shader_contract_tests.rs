@@ -6296,7 +6296,7 @@ fn caustic_occlusion_gate_holds_its_tolerance_at_every_distance() {
         let old_hit = retired_fog_plane_depth(z_hit, fog_near, fog_far);
         let old_pixel = retired_fog_plane_depth(z_pixel, fog_near, fog_far);
         assert!(
-            !(old_pixel < old_hit * (1.0 - eps)),
+            old_hit * (1.0 - eps) <= old_pixel,
             "fixture sanity: fog ({fog_near}, {fog_far}) at {d_hit} BU must have hidden a \
              15 % occluder from the retired decode"
         );
@@ -6771,7 +6771,7 @@ fn interleaved_gradient_noise_keeps_its_resolution_over_a_session() {
         };
         let (px, py) = (x + frame * 5.588238, y + frame * 5.588238);
         let inner = (px * 0.06711056 + py * 0.00583715).fract();
-        (52.9829189f32 * inner).fract()
+        (52.982_918_f32 * inner).fract()
     }
     fn distinct_and_vertical_equal(frame_count: f32, wrap: bool) -> (usize, f32) {
         let mut values = Vec::new();

@@ -195,9 +195,9 @@ fn ni_auto_normal_particles_data_at_v4_0_0_2_skips_all_structurally_unreachable_
 /// `has_shader` tests above for why). This is the ONLY version at which
 /// `rotations` can ever decode a non-empty array through this parser —
 /// zero prior test coverage exercised the `has_rotations = true` path at
-/// all, let alone after #2525's conversion from a 4-`read_f32_le()`-
-/// calls-per-particle loop to a bulk `read_f32_array` + `chunks_exact(4)`
-/// + swizzle. Two distinguishable particles prove both the stream
+/// all, let alone after #2525's conversion from a 4-`read_f32_le()`
+/// calls-per-particle loop to a bulk `read_f32_array` + `chunks_exact(4)` +
+/// swizzle. Two distinguishable particles prove both the stream
 /// position AND the on-disk `w,x,y,z` → `[x,y,z,w]` reorder survived the
 /// conversion.
 #[test]

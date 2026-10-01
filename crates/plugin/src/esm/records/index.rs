@@ -1189,8 +1189,10 @@ mod tests {
             "fixture precondition: GameKind::default() must still be Fallout3NV"
         );
 
-        let mut merged = EsmIndex::default();
-        merged.game = GameKind::Skyrim;
+        let mut merged = EsmIndex {
+            game: GameKind::Skyrim,
+            ..Default::default()
+        };
 
         merged.merge_from(failed_parse);
         assert_eq!(
@@ -1206,11 +1208,15 @@ mod tests {
     /// still merges normally.
     #[test]
     fn merge_from_still_applies_game_when_other_has_content() {
-        let mut merged = EsmIndex::default();
-        merged.game = GameKind::Fallout3NV;
+        let mut merged = EsmIndex {
+            game: GameKind::Fallout3NV,
+            ..Default::default()
+        };
 
-        let mut dlc = EsmIndex::default();
-        dlc.game = GameKind::Skyrim;
+        let mut dlc = EsmIndex {
+            game: GameKind::Skyrim,
+            ..Default::default()
+        };
         dlc.scenes.insert(0x0000_0002, ScenRecord::default());
         assert!(
             dlc.total() > 0,
@@ -1300,8 +1306,10 @@ mod tests {
 
         // Base plugin: a CVPA-classified Junk MISC, promoted to Mod by an
         // OMOD referencing it via LNAM.
-        let mut base = EsmIndex::default();
-        base.game = GameKind::Fallout4;
+        let mut base = EsmIndex {
+            game: GameKind::Fallout4,
+            ..Default::default()
+        };
         base.items.insert(
             JUNK_ITEM,
             ItemRecord {
@@ -1324,8 +1332,10 @@ mod tests {
 
         // Override plugin: same OMOD form ID, no LNAM (loose item 0) — the
         // override clears the reference without re-shipping the MISC record.
-        let mut over_ride = EsmIndex::default();
-        over_ride.game = GameKind::Fallout4;
+        let mut over_ride = EsmIndex {
+            game: GameKind::Fallout4,
+            ..Default::default()
+        };
         over_ride.object_mod_loose_items.insert(OMOD, 0);
 
         merged.merge_from(over_ride);

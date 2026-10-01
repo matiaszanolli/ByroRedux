@@ -2145,7 +2145,7 @@ mod tests {
 
         // The XTEL destination: floor level, as authored.
         let destination = Vec3::new(0.0, FLOOR_Y, 0.0);
-        assert!(ground_character_body_at(&mut world, destination));
+        assert!(ground_character_body_at(&world, destination));
 
         let body_y = world
             .query::<Transform>()
@@ -2205,7 +2205,7 @@ mod tests {
         world.insert_resource(PlayerEntity(Some(player)));
 
         let destination = Vec3::new(12.0, 500.0, -34.0);
-        assert!(ground_character_body_at(&mut world, destination));
+        assert!(ground_character_body_at(&world, destination));
 
         let body = world
             .query::<Transform>()

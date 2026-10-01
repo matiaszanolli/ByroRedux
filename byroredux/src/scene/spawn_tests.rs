@@ -25,7 +25,7 @@ fn spawn_collision_world() -> byroredux_core::ecs::World {
         world.insert(entity, CollisionShape::Cuboid { half_extents });
         world.insert(entity, RigidBodyData::STATIC);
     }
-    byroredux_physics::register_newcomers_and_refresh_queries(&mut world);
+    byroredux_physics::register_newcomers_and_refresh_queries(&world);
     world
 }
 
@@ -147,7 +147,7 @@ fn explicit_column_uses_local_floor_instead_of_roof() {
         },
     );
     world.insert(roof, RigidBodyData::STATIC);
-    byroredux_physics::register_newcomers_and_refresh_queries(&mut world);
+    byroredux_physics::register_newcomers_and_refresh_queries(&world);
     let cc = byroredux_physics::CharacterController::HUMAN;
     let plan = super::plan_character_spawn(&world, Vec3::new(150.0, 120.0, 100.0), cc, None, true);
     assert!(plan.ground_probe.is_walkable());

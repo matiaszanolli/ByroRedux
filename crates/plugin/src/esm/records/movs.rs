@@ -153,8 +153,8 @@ mod tests {
         let subs = vec![
             edid("MovableGenerator01"),
             modl(r"Furniture\Generator\GeneratorMov01.nif"),
-            sub(b"LNAM", 0x0001_2345u32.to_le_bytes().to_vec()),
-            sub(b"ZNAM", 0x0001_2346u32.to_le_bytes().to_vec()),
+            sub(b"LNAM", 0x0001_2345u32.to_le_bytes()),
+            sub(b"ZNAM", 0x0001_2346u32.to_le_bytes()),
         ];
         let rec = parse_movs(0x0010_BEEF, &subs, &None);
         assert_eq!(rec.form_id, 0x0010_BEEF);
@@ -224,9 +224,9 @@ mod tests {
             modl(r"Clutter\Noisy01.nif"),
             sub(b"MODT", vec![0u8; 64]),
             sub(b"MODS", vec![0u8; 8]),
-            sub(b"LNAM", 0xDEAD_BEEFu32.to_le_bytes().to_vec()),
-            sub(b"KSIZ", 1u32.to_le_bytes().to_vec()),
-            sub(b"KWDA", 0xCAFE_BABEu32.to_le_bytes().to_vec()),
+            sub(b"LNAM", 0xDEAD_BEEFu32.to_le_bytes()),
+            sub(b"KSIZ", 1u32.to_le_bytes()),
+            sub(b"KWDA", 0xCAFE_BABEu32.to_le_bytes()),
         ];
         let rec = parse_movs(0x0044_0003, &subs, &None);
         assert_eq!(rec.editor_id, "NoisyMovable");

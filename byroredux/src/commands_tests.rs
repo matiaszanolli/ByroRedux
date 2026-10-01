@@ -815,16 +815,20 @@ fn mat_dump_reports_texture_path_provenance_and_binding_contract() {
         | byroredux_renderer::vulkan::material::material_flag::MODEL_SPACE_NORMALS;
     world.insert(entity, material);
 
-    let mut paths = MaterialTextureSet::default();
-    paths.base_color = Some(r"textures\architecture\wall_d.dds".to_string());
-    paths.normal = Some(r"textures\architecture\wall_n.dds".to_string());
-    paths.environment = Some(r"textures\cubemaps\interior.dds".to_string());
-    paths.glass_dirt_overlay = Some(r"textures\effects\glass_dirt.dds".to_string());
-    let mut sources = MaterialTextureSet::default();
-    sources.base_color = MaterialTextureSource::NifTextureSet;
-    sources.normal = MaterialTextureSource::DerivedNormal;
-    sources.environment = MaterialTextureSource::TxstOverride;
-    sources.glass_dirt_overlay = MaterialTextureSource::Bgem;
+    let mut paths = MaterialTextureSet {
+        base_color: Some(r"textures\architecture\wall_d.dds".to_string()),
+        normal: Some(r"textures\architecture\wall_n.dds".to_string()),
+        environment: Some(r"textures\cubemaps\interior.dds".to_string()),
+        glass_dirt_overlay: Some(r"textures\effects\glass_dirt.dds".to_string()),
+        ..Default::default()
+    };
+    let mut sources = MaterialTextureSet {
+        base_color: MaterialTextureSource::NifTextureSet,
+        normal: MaterialTextureSource::DerivedNormal,
+        environment: MaterialTextureSource::TxstOverride,
+        glass_dirt_overlay: MaterialTextureSource::Bgem,
+        ..Default::default()
+    };
     world.insert(
         entity,
         MaterialTextureDebugInfo {
@@ -833,11 +837,13 @@ fn mat_dump_reports_texture_path_provenance_and_binding_contract() {
             clamp_mode: 2,
         },
     );
-    let mut handles = MaterialTextureSet::default();
-    handles.base_color = 17;
-    handles.normal = 18;
-    handles.environment = 19;
-    handles.glass_dirt_overlay = 20;
+    let mut handles = MaterialTextureSet {
+        base_color: 17,
+        normal: 18,
+        environment: 19,
+        glass_dirt_overlay: 20,
+        ..Default::default()
+    };
     world.insert(
         entity,
         MaterialTextureHandles {

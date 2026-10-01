@@ -317,8 +317,8 @@ mod tests {
             sub(b"FULL", b"Big Chest\0"),
             sub(b"MODL", b"meshes\\furn\\chest.nif\0"),
             sub(b"DATA", &data),
-            sub(b"CNTO", &cnto_bytes(0x100, 5)),
-            sub(b"CNTO", &cnto_bytes(0x200, -1)),
+            sub(b"CNTO", cnto_bytes(0x100, 5)),
+            sub(b"CNTO", cnto_bytes(0x200, -1)),
         ];
         let r = parse_cont(0xABCD, &subs, &None);
         assert_eq!(r.editor_id, "TestChest");
@@ -393,11 +393,11 @@ mod tests {
     fn lvli_extracts_entries_and_chance() {
         let subs = vec![
             sub(b"EDID", b"LL_Test\0"),
-            sub(b"LVLD", &[25u8]),
-            sub(b"LVLF", &[0x01u8]),
-            sub(b"LVLO", &lvlo_bytes(1, 0x100, 1)),
-            sub(b"LVLO", &lvlo_bytes(10, 0x200, 3)),
-            sub(b"LVLO", &lvlo_bytes(20, 0x300, 1)),
+            sub(b"LVLD", [25u8]),
+            sub(b"LVLF", [0x01u8]),
+            sub(b"LVLO", lvlo_bytes(1, 0x100, 1)),
+            sub(b"LVLO", lvlo_bytes(10, 0x200, 3)),
+            sub(b"LVLO", lvlo_bytes(20, 0x300, 1)),
         ];
         let r = parse_leveled_list(0x9999, &subs, &None);
         assert_eq!(r.chance_none, 25);
@@ -462,7 +462,7 @@ mod tests {
     fn lvld_high_bit_is_flag_not_chance_none() {
         let subs = vec![
             sub(b"EDID", b"ArenaLeveledGoldGrandRecur\0"),
-            sub(b"LVLD", &[128u8]), // 0x80, no LVLF authored
+            sub(b"LVLD", [128u8]), // 0x80, no LVLF authored
         ];
         let r = parse_leveled_list(0xABCD, &subs, &None);
         assert_eq!(r.chance_none, 0, "bit 7 must be masked off the chance");
@@ -479,13 +479,13 @@ mod tests {
     #[test]
     fn lvld_flag_synthesis_survives_lvlf_ordering_both_ways() {
         // LVLF first, LVLD second.
-        let subs = vec![sub(b"LVLF", &[0x02u8]), sub(b"LVLD", &[0x80 | 10u8])];
+        let subs = vec![sub(b"LVLF", [0x02u8]), sub(b"LVLD", [0x80 | 10u8])];
         let r = parse_leveled_list(1, &subs, &None);
         assert_eq!(r.chance_none, 10);
         assert_eq!(r.flags, 0x03, "synthesized bit ORs onto authored LVLF");
 
         // LVLD first, LVLF second — the pre-fix assignment shape.
-        let subs = vec![sub(b"LVLD", &[0x80u8]), sub(b"LVLF", &[0x02u8])];
+        let subs = vec![sub(b"LVLD", [0x80u8]), sub(b"LVLF", [0x02u8])];
         let r = parse_leveled_list(2, &subs, &None);
         assert_eq!(
             r.flags, 0x03,
@@ -496,14 +496,14 @@ mod tests {
     #[test]
     fn fo76_split_entries_decode_scoped_values_and_remap() {
         let subs = vec![
-            sub(b"LVCV", &25.0f32.to_le_bytes()),
-            sub(b"LVIV", &99.0f32.to_le_bytes()), // orphan
-            sub(b"LVLO", &0x0100_1234u32.to_le_bytes()),
-            sub(b"LVLV", &5.5f32.to_le_bytes()),
-            sub(b"LVIV", &3.0f32.to_le_bytes()),
-            sub(b"LVLO", &0x100u32.to_le_bytes()),
-            sub(b"LVLO", &[0, 0, 0]), // malformed next entry
-            sub(b"LVIV", &99.0f32.to_le_bytes()),
+            sub(b"LVCV", 25.0f32.to_le_bytes()),
+            sub(b"LVIV", 99.0f32.to_le_bytes()), // orphan
+            sub(b"LVLO", 0x0100_1234u32.to_le_bytes()),
+            sub(b"LVLV", 5.5f32.to_le_bytes()),
+            sub(b"LVIV", 3.0f32.to_le_bytes()),
+            sub(b"LVLO", 0x100u32.to_le_bytes()),
+            sub(b"LVLO", [0, 0, 0]), // malformed next entry
+            sub(b"LVIV", 99.0f32.to_le_bytes()),
         ];
         let remap = Some(FormIdRemap::regular(2, vec![0]));
         let list = parse_leveled_list_for_game(1, &subs, &remap, GameKind::Fallout76);
@@ -528,13 +528,13 @@ mod tests {
     #[test]
     fn fo76_split_entry_values_are_finite_bounded_and_legacy_entries_survive() {
         let subs = vec![
-            sub(b"LVLO", &lvlo_bytes(10, 0x100, 2)),
-            sub(b"LVLO", &0x200u32.to_le_bytes()),
-            sub(b"LVIV", &f32::NAN.to_le_bytes()),
-            sub(b"LVLV", &f32::INFINITY.to_le_bytes()),
-            sub(b"LVLO", &0x300u32.to_le_bytes()),
-            sub(b"LVIV", &(-10.0f32).to_le_bytes()),
-            sub(b"LVLV", &1e20f32.to_le_bytes()),
+            sub(b"LVLO", lvlo_bytes(10, 0x100, 2)),
+            sub(b"LVLO", 0x200u32.to_le_bytes()),
+            sub(b"LVIV", f32::NAN.to_le_bytes()),
+            sub(b"LVLV", f32::INFINITY.to_le_bytes()),
+            sub(b"LVLO", 0x300u32.to_le_bytes()),
+            sub(b"LVIV", (-10.0f32).to_le_bytes()),
+            sub(b"LVLV", 1e20f32.to_le_bytes()),
         ];
         let list = parse_leveled_list_for_game(1, &subs, &None, GameKind::Fallout76);
         assert_eq!(list.entries.len(), 3);
@@ -565,10 +565,10 @@ mod tests {
 
         let subs = vec![
             sub(b"EDID", b"OverridePluginChest\0"),
-            sub(b"SCRI", &master_ref.to_le_bytes()),
-            sub(b"CNTO", &cnto_bytes(self_ref, 1)),
-            sub(b"SNAM", &master_ref.to_le_bytes()),
-            sub(b"QNAM", &self_ref.to_le_bytes()),
+            sub(b"SCRI", master_ref.to_le_bytes()),
+            sub(b"CNTO", cnto_bytes(self_ref, 1)),
+            sub(b"SNAM", master_ref.to_le_bytes()),
+            sub(b"QNAM", self_ref.to_le_bytes()),
         ];
         let r = parse_cont(0x000A_0001, &subs, &Some(remap));
 
@@ -600,8 +600,8 @@ mod tests {
 
         let subs = vec![
             sub(b"EDID", b"OverridePluginLvli\0"),
-            sub(b"LVLO", &lvlo_bytes(1, master_ref, 1)),
-            sub(b"LVLO", &lvlo_bytes(2, self_ref, 1)),
+            sub(b"LVLO", lvlo_bytes(1, master_ref, 1)),
+            sub(b"LVLO", lvlo_bytes(2, self_ref, 1)),
         ];
         let r = parse_leveled_list(0x000A_0002, &subs, &Some(remap));
 

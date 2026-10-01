@@ -17,7 +17,7 @@ use byroredux_bsa::Ba2Archive;
 use byroredux_ui::{ScaleformHostObjectState, ScaleformProfile, ScaleformValue, SwfPlayer};
 
 fn data_dir() -> Option<std::path::PathBuf> {
-    if let Some(dir) = std::env::var("BYROREDUX_FO4_DATA").ok() {
+    if let Ok(dir) = std::env::var("BYROREDUX_FO4_DATA") {
         return Some(std::path::PathBuf::from(dir));
     }
     let default = std::path::PathBuf::from("/mnt/data/SteamLibrary/steamapps/common/Fallout 4/Data");

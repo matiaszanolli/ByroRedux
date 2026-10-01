@@ -213,7 +213,7 @@ mod tests {
             sub(b"EDID", b"HumanHead01\0"),
             sub(b"FULL", b"Human Head\0"),
             sub(b"MODL", b"meshes\\characters\\head.nif\0"),
-            sub(b"DATA", &[0x01]),
+            sub(b"DATA", [0x01]),
         ];
         let h = parse_hdpt(0x1111, &subs);
         assert_eq!(h.editor_id, "HumanHead01");
@@ -244,7 +244,7 @@ mod tests {
             sub(b"EDID", b"EyeBlue\0"),
             sub(b"FULL", b"Blue Eyes\0"),
             sub(b"ICON", b"textures\\characters\\eyes\\blue.dds\0"),
-            sub(b"DATA", &[0x02]),
+            sub(b"DATA", [0x02]),
         ];
         let e = parse_eyes(0x2222, &subs);
         assert_eq!(e.icon_path, "textures\\characters\\eyes\\blue.dds");
@@ -258,7 +258,7 @@ mod tests {
             sub(b"FULL", b"Brown Hair\0"),
             sub(b"MODL", b"meshes\\characters\\hair\\brown.nif\0"),
             sub(b"ICON", b"textures\\characters\\hair\\brown.dds\0"),
-            sub(b"DATA", &[0x00]),
+            sub(b"DATA", [0x00]),
         ];
         let h = parse_hair(0x3333, &subs);
         assert_eq!(h.model_path, "meshes\\characters\\hair\\brown.nif");
@@ -271,7 +271,7 @@ mod tests {
         // `csyAggressive` shape: CSTD with a flag byte at offset 0.
         let mut cstd = [0u8; 124];
         cstd[0..4].copy_from_slice(&0x0000_0042_u32.to_le_bytes());
-        let subs = vec![sub(b"EDID", b"csyAggressive\0"), sub(b"CSTD", &cstd)];
+        let subs = vec![sub(b"EDID", b"csyAggressive\0"), sub(b"CSTD", cstd)];
         let c = parse_csty(0x0008_3122, &subs);
         assert_eq!(c.editor_id, "csyAggressive");
         assert_eq!(c.csty_flags, 0x42);

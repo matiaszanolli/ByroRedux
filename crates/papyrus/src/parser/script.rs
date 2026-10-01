@@ -852,7 +852,6 @@ mod tests {
     /// never glue it into the previous construct with zero errors. The
     /// assertions pin the non-glued shape (and, for the header-flag case,
     /// that the flag stays on its own construct).
-
     /// #4472 — like `parse`, but tolerant of recovered errors: the
     /// newline-gluing fixtures deliberately contain invalid lines, and the
     /// fix's contract is "no glue, errors recovered per-statement", not

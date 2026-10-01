@@ -104,7 +104,7 @@ fn main() -> anyhow::Result<()> {
             if base.health.is_some_and(|h| h <= 0) {
                 t.health_nonpositive_bases += 1;
             }
-            if base.acbs_flags & ACBS_BIT23 != 0 && !base.health.is_some_and(|h| h <= 0) {
+            if base.acbs_flags & ACBS_BIT23 != 0 && base.health.is_none_or(|h| h > 0) {
                 t.bit23_only.push(if base.is_creature {
                     format!("{} [CREA]", base.editor_id)
                 } else {

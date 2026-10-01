@@ -305,9 +305,9 @@ fn reference_floor_trips_on_a_dropped_joint() {
 /// Count connected components in the ragdoll's body/joint graph — a
 /// fragmenting parser bug (dropped constraint edges) shows up here as
 /// > 1 component, each of which becomes an independent free-falling
-/// multibody at runtime (the shared failure mode #3330/#1539/#1850/#3792
-/// all address different causes of). Pure graph reachability via
-/// union-find; no physics-crate dependency.
+/// > multibody at runtime (the shared failure mode #3330/#1539/#1850/#3792
+/// > all address different causes of). Pure graph reachability via
+/// > union-find; no physics-crate dependency.
 fn connected_components(ragdoll: &ImportedRagdoll) -> usize {
     let n = ragdoll.bodies.len();
     let mut parent: Vec<usize> = (0..n).collect();

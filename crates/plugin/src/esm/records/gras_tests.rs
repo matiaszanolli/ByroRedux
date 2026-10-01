@@ -56,7 +56,7 @@ fn parse_gras_decodes_every_data_field_in_order() {
         &[
             zstring(b"EDID", "BWCattail01"),
             zstring(b"MODL", r"Plants\BWCattail01.NIF"),
-            sub(b"MODB", 127.964_78f32.to_le_bytes().to_vec()),
+            sub(b"MODB", 127.964_78f32.to_le_bytes()),
             cattail_data(),
         ],
     );
@@ -117,7 +117,7 @@ fn nominal_height_prefers_the_obnd_z_extent() {
 fn nominal_height_falls_back_to_the_oblivion_bound_radius() {
     let rec = parse_gras(
         0x0009_84C8,
-        &[sub(b"MODB", 127.964_78f32.to_le_bytes().to_vec())],
+        &[sub(b"MODB", 127.964_78f32.to_le_bytes())],
     );
     assert!(rec.bounds.is_none());
     assert_eq!(rec.nominal_height(), Some(127.964_78));
@@ -141,7 +141,7 @@ fn nominal_height_falls_through_a_degenerate_obnd_to_the_radius() {
         1,
         &[
             obnd([-4, -4, 10], [4, 4, 10]),
-            sub(b"MODB", 30.0f32.to_le_bytes().to_vec()),
+            sub(b"MODB", 30.0f32.to_le_bytes()),
         ],
     );
     assert_eq!(rec.nominal_height(), Some(30.0));

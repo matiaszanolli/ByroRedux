@@ -1338,7 +1338,7 @@ mod dispatch_tests {
         // Layer=15 (byte 0) would be non-collidable; Layer=1 (byte 0)
         // with Group=0xBEEF (bytes 2-3) and Flags=0xAB (byte 1) must
         // still read as collidable — only byte 0 matters.
-        let filter = 0x_BEEF_AB_01_u32;
+        let filter = u32::from_be_bytes([0x01, 0xAB, 0xBE, 0xEF]); // Layer | Flags | Group
         assert_eq!(filter & 0xFF, 1, "sanity: constructed Layer byte is 1");
         let mut scene = empty_scene();
         scene.blocks.push(classic_collision(BlockRef(1u32))); // [0]

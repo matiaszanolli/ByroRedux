@@ -66,8 +66,10 @@ fn world_with_tint_material(tint_has_alpha: bool) -> World {
     world.insert(mesh_e, MeshHandle(1));
     world.insert(mesh_e, TextureHandle(1));
     world.insert(mesh_e, Material::default());
-    let mut textures = byroredux_nif::import::MaterialTextureSet::<u32>::default();
-    textures.tint = 9;
+    let mut textures = byroredux_nif::import::MaterialTextureSet::<u32> {
+        tint: 9,
+        ..Default::default()
+    };
     world.insert(
         mesh_e,
         MaterialTextureHandles {

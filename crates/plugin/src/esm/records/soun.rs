@@ -194,7 +194,7 @@ mod tests {
             edid("AMBWind"),
             zstring_sub(b"FNAM", "amb\\wind_loop.wav"),
             sub(b"SNDX", vec![0u8; 16]),
-            sub(b"CNAM", 0x0001_0000u32.to_le_bytes().to_vec()),
+            sub(b"CNAM", 0x0001_0000u32.to_le_bytes()),
         ];
         let s = parse_soun(0x0005_0000, &subs);
         assert_eq!(s.sound_path, "amb\\wind_loop.wav");

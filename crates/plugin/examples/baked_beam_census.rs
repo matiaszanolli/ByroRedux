@@ -172,7 +172,7 @@ fn main() -> anyhow::Result<()> {
             count.show_sky,
         );
     }
-    busy_cells.sort_unstable_by(|a, b| b.0.cmp(&a.0));
+    busy_cells.sort_unstable_by_key(|&(count, _)| std::cmp::Reverse(count));
     println!("busiest beam cells:");
     for (count, neighbors, interior, show_sky, editor_id, fog) in busy_cells.into_iter().take(10) {
         println!(

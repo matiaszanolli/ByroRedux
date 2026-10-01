@@ -152,7 +152,7 @@ mod tests {
     use crate::esm::records::test_support::{edid, sub};
 
     fn cnam(form_id: u32) -> SubRecord {
-        sub(b"CNAM", form_id.to_le_bytes().to_vec())
+        sub(b"CNAM", form_id.to_le_bytes())
     }
 
     /// Baseline: a vanilla-shape PKIN (EDID + single CNAM + VNAM +
@@ -163,8 +163,8 @@ mod tests {
         let subs = vec![
             edid("PackIn_WorkbenchLoot"),
             cnam(0x0010_1234), // content form: a CONT or LVLI
-            sub(b"VNAM", 0x0002_5678u32.to_le_bytes().to_vec()),
-            sub(b"FNAM", 0x0000_0002u32.to_le_bytes().to_vec()),
+            sub(b"VNAM", 0x0002_5678u32.to_le_bytes()),
+            sub(b"FNAM", 0x0000_0002u32.to_le_bytes()),
         ];
         let rec = parse_pkin(0x0055_0001, &subs, &None);
         assert_eq!(rec.form_id, 0x0055_0001);
@@ -199,7 +199,7 @@ mod tests {
     /// through to the default single-entry path.
     #[test]
     fn parse_pkin_without_cnam_yields_empty_contents() {
-        let subs = vec![edid("PackIn_EmptyDecl"), sub(b"FULL", b"Shell\0".to_vec())];
+        let subs = vec![edid("PackIn_EmptyDecl"), sub(b"FULL", b"Shell\0")];
         let rec = parse_pkin(0x0055_0003, &subs, &None);
         assert_eq!(rec.editor_id, "PackIn_EmptyDecl");
         assert_eq!(rec.full_name, "Shell");

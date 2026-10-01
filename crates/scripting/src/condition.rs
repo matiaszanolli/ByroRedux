@@ -2013,7 +2013,7 @@ mod tests {
                     let list: Vec<Condition> = (0..len)
                         .map(|slot| {
                             let pick = picks / shapes.len().pow(slot) % shapes.len();
-                            let mut condition = shapes[pick].clone();
+                            let mut condition = shapes[pick];
                             condition.or_next = ors >> slot & 1 == 1;
                             condition
                         })
@@ -2074,27 +2074,27 @@ mod tests {
 
         // An unknown function is 0.0 for everyone: `== 1` fails them all.
         assert_eq!(
-            judge(vec![shapes[6].clone()]),
+            judge(vec![shapes[6]]),
             SubjectRequirement::Unsatisfiable
         );
         // `== 0` passes them all, leaving the identity block to narrow by.
         assert_eq!(
-            judge(vec![shapes[7].clone(), shapes[0].clone()]),
+            judge(vec![shapes[7], shapes[0]]),
             SubjectRequirement::IdentityBlocks(vec![vec![race(0x10)]])
         );
         // An OR block of identity tests admits either identity.
         assert_eq!(
-            judge(vec![or(shapes[0].clone()), shapes[1].clone()]),
+            judge(vec![or(shapes[0]), shapes[1]]),
             SubjectRequirement::IdentityBlocks(vec![vec![race(0x10), race(0x11)]])
         );
         // A test that passes on 0.0, or a non-identity member, leaves its
         // block unconstrained.
         assert_eq!(
-            judge(vec![shapes[2].clone()]),
+            judge(vec![shapes[2]]),
             SubjectRequirement::IdentityBlocks(vec![])
         );
         assert_eq!(
-            judge(vec![or(shapes[0].clone()), shapes[5].clone()]),
+            judge(vec![or(shapes[0]), shapes[5]]),
             SubjectRequirement::IdentityBlocks(vec![])
         );
     }

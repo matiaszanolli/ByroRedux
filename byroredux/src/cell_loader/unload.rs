@@ -1103,7 +1103,7 @@ mod purge_wiring_tests {
         let unload = src.find("unload_current_interior(world");
         let first_teardown = drain
             .into_iter()
-            .chain(unload.into_iter())
+            .chain(unload)
             .min()
             .expect("the path must have a teardown call to precede");
         assert!(
@@ -1214,7 +1214,7 @@ mod victim_drain_tests {
 
         assert_eq!(victims, vec![a, b], "victims must be a set, not a bag");
         assert!(
-            world.resource::<CellRootIndex>().map.get(&root).is_none(),
+            !world.resource::<CellRootIndex>().map.contains_key(&root),
             "the drain must take the entry, not copy it",
         );
     }

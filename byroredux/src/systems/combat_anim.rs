@@ -533,7 +533,7 @@ mod tests {
     fn combat_anim_state(world: &World, actor: EntityId) -> DraugrCombatAnim {
         world
             .query::<DraugrCombatAnim>()
-            .and_then(|q| q.get(actor).map(|state| *state))
+            .and_then(|q| q.get(actor).copied())
             .expect("fixture actor carries the combat-anim marker")
     }
 

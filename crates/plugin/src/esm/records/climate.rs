@@ -205,9 +205,9 @@ mod tests {
         wlst_data.extend_from_slice(&0u32.to_le_bytes()); // global form ID (unused)
 
         let subs = vec![
-            sub(b"EDID", b"TestClimate\0".to_vec()),
+            sub(b"EDID", b"TestClimate\0"),
             sub(b"WLST", wlst_data),
-            sub(b"FNAM", b"sky\\sun_01.dds\0".to_vec()),
+            sub(b"FNAM", b"sky\\sun_01.dds\0"),
             sub(b"TNAM", vec![6, 8, 18, 20, 0, 0]),
         ];
 

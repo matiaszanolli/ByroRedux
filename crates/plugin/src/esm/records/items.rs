@@ -1398,7 +1398,7 @@ mod tests {
 
     #[test]
     fn light_optional_economics_and_short_headers_are_safe() {
-        let mut data = vec![0; 32];
+        let mut data = [0; 32];
         data[12] = 2;
         data[24..28].copy_from_slice(&25u32.to_le_bytes());
         for length in 0..32 {
@@ -1435,7 +1435,7 @@ mod tests {
             let data = [250u32.to_le_bytes(), 0.5f32.to_le_bytes()].concat();
             let item = parse_scrl(
                 1,
-                &[sub(b"DATA", &data[..length]), sub(b"EFID", &[1, 2, 3])],
+                &[sub(b"DATA", &data[..length]), sub(b"EFID", [1, 2, 3])],
                 &None,
             );
             assert_eq!((item.common.value, item.common.weight), (0, 0.0));
@@ -1463,8 +1463,8 @@ mod tests {
             sub(b"EDID", b"WeapTest\0"),
             sub(b"FULL", b"Test Pistol\0"),
             sub(b"MODL", b"meshes\\weapons\\pistol.nif\0"),
-            sub(b"DATA", &build_data_weap(250, 1.5, 12, 8)),
-            sub(b"AMMO", &0xDEADBEEFu32.to_le_bytes()),
+            sub(b"DATA", build_data_weap(250, 1.5, 12, 8)),
+            sub(b"AMMO", 0xDEADBEEFu32.to_le_bytes()),
         ];
         let item = parse_weap(0x100, &subs, GameKind::Fallout3NV, &None);
         assert_eq!(item.form_id, 0x100);
@@ -1551,7 +1551,7 @@ mod tests {
 
         let subs = vec![
             sub(b"EDID", b"WeapKnifeCombatCass\0"),
-            sub(b"DATA", &build_data_weap(100, 1.0, 9, 0)),
+            sub(b"DATA", build_data_weap(100, 1.0, 9, 0)),
             sub(b"VATS", &vats),
         ];
         let item = parse_weap(0x1000, &subs, GameKind::Fallout3NV, &None);
@@ -1627,7 +1627,7 @@ mod tests {
 
         let subs = vec![
             sub(b"EDID", b"VarminRifle\0"),
-            sub(b"DATA", &build_data_weap(100, 5.5, 18, 5)),
+            sub(b"DATA", build_data_weap(100, 5.5, 18, 5)),
             sub(b"DNAM", &dnam),
         ];
         let item = parse_weap(0x14DCE, &subs, GameKind::Fallout3NV, &None);
@@ -1723,7 +1723,7 @@ mod tests {
 
     #[test]
     fn omod_lnam_resolves_the_loose_mod_inventory_item() {
-        let subs = vec![sub(b"LNAM", &0x0100_1234u32.to_le_bytes())];
+        let subs = vec![sub(b"LNAM", 0x0100_1234u32.to_le_bytes())];
         let remap = Some(FormIdRemap::regular(2, vec![0]));
 
         assert_eq!(parse_omod_loose_item(&subs, &remap), 0x0200_1234);
@@ -1796,7 +1796,7 @@ mod tests {
         let fnam = 3u16.to_le_bytes();
         let item = parse_armo(
             0x0000_1234,
-            &[sub(b"DATA", &data), sub(b"FNAM", &fnam)],
+            &[sub(b"DATA", &data), sub(b"FNAM", fnam)],
             GameKind::Fallout4,
             &None,
         );
@@ -1887,7 +1887,7 @@ mod tests {
             0x04, 0x00, 0x00, 0x00, 0xEC, 0xDD, 0x10, 0x00, 0xDA, 0x02, 0x00, 0x00, 0x00, 0x00,
             0x80, 0x3F,
         ];
-        let item = parse_book(0x0000_1234, &[sub(b"DATA", &data)], GameKind::Skyrim, &None);
+        let item = parse_book(0x0000_1234, &[sub(b"DATA", data)], GameKind::Skyrim, &None);
         assert_eq!(
             item.common.value, 730,
             "value must read from offset 8, not 2"
@@ -1929,7 +1929,7 @@ mod tests {
             .collect::<Vec<u8>>()
             .try_into()
             .unwrap();
-        let item = parse_book(0x0000_1234, &[sub(b"DATA", &data)], GameKind::Skyrim, &None);
+        let item = parse_book(0x0000_1234, &[sub(b"DATA", data)], GameKind::Skyrim, &None);
         match item.kind {
             ItemKind::Book { teaches_skill, .. } => {
                 assert_eq!(teaches_skill, 0xFFFF_FFFF);
@@ -2067,7 +2067,7 @@ mod tests {
             0x0e, 0x00, // damage = 14
         ];
         assert_eq!(data.len(), 30);
-        let subs = vec![sub(b"EDID", b"SE13TrophySword1\0"), sub(b"DATA", &data)];
+        let subs = vec![sub(b"EDID", b"SE13TrophySword1\0"), sub(b"DATA", data)];
         let item = parse_weap(0x000966A9, &subs, GameKind::Oblivion, &None);
         assert_eq!(item.common.value, 500, "value at offset 16, not 0");
         assert!(
@@ -2114,7 +2114,7 @@ mod tests {
             0x00, 0x00, 0x0c, 0x42, // weight = 35.0
             0x0e, 0x00, // damage
         ];
-        let subs = vec![sub(b"DATA", &oblivion_data)];
+        let subs = vec![sub(b"DATA", oblivion_data)];
         let oblivion = parse_weap(0x1, &subs, GameKind::Oblivion, &None);
         let fnv = parse_weap(0x1, &subs, GameKind::Fallout3NV, &None);
         assert_eq!(oblivion.common.value, 500);
@@ -2142,8 +2142,8 @@ mod tests {
         assert_eq!(bmdt.len(), 4);
         let subs = vec![
             sub(b"EDID", b"SE32CirionsHelmet4\0"),
-            sub(b"BMDT", &bmdt),
-            sub(b"DATA", &data),
+            sub(b"BMDT", bmdt),
+            sub(b"DATA", data),
         ];
         let item = parse_armo(0x000972BB, &subs, GameKind::Oblivion, &None);
         assert_eq!(
@@ -2180,7 +2180,7 @@ mod tests {
         let data = [
             0x00, 0x00, 0xc8, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
         ];
-        let subs = vec![sub(b"BMDT", &bmdt), sub(b"DATA", &data)];
+        let subs = vec![sub(b"BMDT", bmdt), sub(b"DATA", data)];
         let item = parse_armo(0x1, &subs, GameKind::Oblivion, &None);
         match item.kind {
             ItemKind::Armor { biped_flags, .. } => assert_eq!(biped_flags, 0x4),
@@ -2193,7 +2193,7 @@ mod tests {
         let arma_form_id = 0x0012_3456u32;
         let subs = vec![
             sub(b"EDID", b"StarfieldArmor\0"),
-            sub(b"MODL", &arma_form_id.to_le_bytes()),
+            sub(b"MODL", arma_form_id.to_le_bytes()),
         ];
         let item = parse_armo(0x0000_0042, &subs, GameKind::Starfield, &None);
         match item.kind {
@@ -2223,7 +2223,7 @@ mod tests {
         assert_eq!(data.len(), 18);
         let subs = vec![
             sub(b"EDID", b"SE30MadnessMagicArrowA\0"),
-            sub(b"DATA", &data),
+            sub(b"DATA", data),
         ];
         let item = parse_ammo(0x0009277E, &subs, GameKind::Oblivion, &None);
         assert_eq!(item.common.value, 2);
@@ -2380,7 +2380,7 @@ mod tests {
     #[test]
     fn weap_etyp_skill_form_is_remapped() {
         let remap = Some(FormIdRemap::regular(2, vec![0]));
-        let subs = vec![sub(b"ETYP", &0x0100_4444u32.to_le_bytes())];
+        let subs = vec![sub(b"ETYP", 0x0100_4444u32.to_le_bytes())];
         let item = parse_weap(0x3000, &subs, GameKind::Skyrim, &remap);
         match item.kind {
             ItemKind::Weapon { skill_form, .. } => {

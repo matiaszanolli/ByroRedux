@@ -1705,13 +1705,16 @@ mod texture_source_provenance_tests {
     #[test]
     fn roles_the_nif_already_filled_keep_their_own_provenance() {
         let path = interned("textures/from_nif.dds");
-        let mut before =
-            MaterialTextureSet::<Option<byroredux_core::string::FixedString>>::default();
-        before.base_color = Some(path);
+        let mut before = MaterialTextureSet::<Option<byroredux_core::string::FixedString>> {
+            base_color: Some(path),
+            ..Default::default()
+        };
         before.decals[2] = Some(path);
 
-        let mut material = ImportedMaterial::default();
-        material.textures = before.map_ref(|slot| slot.or(Some(path)));
+        let mut material = ImportedMaterial {
+            textures: before.map_ref(|slot| slot.or(Some(path))),
+            ..Default::default()
+        };
 
         record_external_texture_sources(&mut material, &before, ImportedTextureSource::Bgem);
 

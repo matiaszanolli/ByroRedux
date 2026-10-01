@@ -1097,7 +1097,7 @@ mod ligh_dat2_tests {
         // Cydonia LIGH skeleton from the audit dump (000027BB), trimmed to
         // the fields that matter: EDID + the top-level DAT2. No MODL/DATA.
         let subs = vec![
-            sub(b"EDID", b"TestSconce\0".to_vec()),
+            sub(b"EDID", b"TestSconce\0"),
             sub(b"DAT2", dat2_bytes(512.0, [200, 150, 100], 0x0010)),
         ];
 

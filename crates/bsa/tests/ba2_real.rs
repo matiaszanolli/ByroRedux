@@ -29,7 +29,6 @@ use std::path::PathBuf;
 /// canonical Steam install path on the dev machine. Mirrors the
 /// `crates/nif/tests/common/mod.rs::game_data_dir` pattern so all
 /// real-data tests gate the same way.
-
 /// #3850 — the strict lane for real-data tests.
 ///
 /// `BYROREDUX_REQUIRE_GAME_DATA=1` turns an absent corpus into a hard

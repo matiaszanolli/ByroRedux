@@ -934,9 +934,7 @@ pub(crate) fn collect_groundcover_model_records(
             // #4906 — climate weight zeroed for records that cannot place:
             // their table share would place nothing while thinning every
             // record that does.
-            can_place
-                .then(|| record.climate_weight.weight_for(cover.climate))
-                .unwrap_or(0.0)
+            if can_place { record.climate_weight.weight_for(cover.climate) } else { 0.0 }
         })
         .collect();
     let selection = species_selection_table(&weights);
@@ -1074,7 +1072,7 @@ mod tests {
     #[test]
     fn species_table_keeps_every_positive_weight() {
         let mut weights = vec![1000.0];
-        weights.extend(std::iter::repeat(0.001).take(20));
+        weights.extend(std::iter::repeat_n(0.001, 20));
         let s = shares(&species_selection_table(&weights), weights.len());
         assert!(s.iter().all(|&n| n >= 1), "{s:?}");
         assert_eq!(s.iter().sum::<usize>(), 256);

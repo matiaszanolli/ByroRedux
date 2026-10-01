@@ -22,7 +22,7 @@ use byroredux_ui::ScaleformProfile;
 
 fn data_dir() -> Option<std::path::PathBuf> {
     for var in [byroredux_plugin::esm::test_paths::SKYRIM_SE_ENV] {
-        if let Some(dir) = std::env::var(var).ok() {
+        if let Ok(dir) = std::env::var(var) {
             return Some(std::path::PathBuf::from(dir));
         }
     }

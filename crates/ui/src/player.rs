@@ -821,14 +821,14 @@ mod shared_descriptor_tests {
     fn a_successful_init_runs_once_and_is_shared_by_later_callers() {
         static SLOT: OnceLock<Arc<u32>> = OnceLock::new();
         let calls = AtomicUsize::new(0);
-        let mut make = || {
+        let make = || {
             calls.fetch_add(1, Ordering::Relaxed);
             Ok(Arc::new(7u32))
         };
 
-        let first = get_or_try_init(&SLOT, &mut make).expect("first init succeeds");
-        let second = get_or_try_init(&SLOT, &mut make).expect("second call is cached");
-        let third = get_or_try_init(&SLOT, &mut make).expect("and stays cached");
+        let first = get_or_try_init(&SLOT, make).expect("first init succeeds");
+        let second = get_or_try_init(&SLOT, make).expect("second call is cached");
+        let third = get_or_try_init(&SLOT, make).expect("and stays cached");
 
         assert_eq!(calls.load(Ordering::Relaxed), 1, "device built once");
         assert!(Arc::ptr_eq(&first, &second));
@@ -843,18 +843,18 @@ mod shared_descriptor_tests {
     fn a_failed_init_is_not_cached_and_the_next_call_retries() {
         static SLOT: OnceLock<Arc<u32>> = OnceLock::new();
         let attempts = AtomicUsize::new(0);
-        let mut make = || match attempts.fetch_add(1, Ordering::Relaxed) {
+        let make = || match attempts.fetch_add(1, Ordering::Relaxed) {
             0 => Err(anyhow!("no adapter this time")),
             _ => Ok(Arc::new(42u32)),
         };
 
         assert!(
-            get_or_try_init(&SLOT, &mut make).is_err(),
+            get_or_try_init(&SLOT, make).is_err(),
             "first attempt fails"
         );
         assert!(SLOT.get().is_none(), "a failure must leave the slot empty");
 
-        let recovered = get_or_try_init(&SLOT, &mut make).expect("retry succeeds");
+        let recovered = get_or_try_init(&SLOT, make).expect("retry succeeds");
         assert_eq!(*recovered, 42);
         assert_eq!(attempts.load(Ordering::Relaxed), 2, "the retry really ran");
     }

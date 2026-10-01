@@ -636,7 +636,7 @@ mod tests {
         set_localized_plugin(true);
         let subs = vec![
             sub(b"EDID", b"WeapIronSword\0"),
-            sub(b"FULL", &[0x45u8, 0x23, 0x01, 0x00]),
+            sub(b"FULL", [0x45u8, 0x23, 0x01, 0x00]),
         ];
         let c = CommonItemFields::from_subs_with_remap(&subs, &None);
         assert_eq!(c.editor_id, "WeapIronSword");

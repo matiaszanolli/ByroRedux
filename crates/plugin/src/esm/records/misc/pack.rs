@@ -925,18 +925,18 @@ mod tests {
         let location = pldt(0, 0x000B_62F9, 128);
         let float = 2048.0f32.to_le_bytes();
         let subs = vec![
-            sub(b"QNAM", &0x0003_372Bu32.to_le_bytes()),
+            sub(b"QNAM", 0x0003_372Bu32.to_le_bytes()),
             sub(b"PKCU", &pkcu),
             sub(b"ANAM", b"Location\0"),
             sub(b"PLDT", &location),
             sub(b"ANAM", b"Bool\0"),
-            sub(b"CNAM", &[1]),
+            sub(b"CNAM", [1]),
             sub(b"ANAM", b"Float\0"),
-            sub(b"CNAM", &float),
-            sub(b"UNAM", &[0]),
-            sub(b"UNAM", &[2]),
-            sub(b"UNAM", &[4]),
-            sub(b"XNAM", &[5]),
+            sub(b"CNAM", float),
+            sub(b"UNAM", [0]),
+            sub(b"UNAM", [2]),
+            sub(b"UNAM", [4]),
+            sub(b"XNAM", [5]),
         ];
         let p = parse_pack(0xA1, &subs, &None, GameKind::Skyrim);
         assert_eq!(p.package_template_form_id, Some(0x0001_6FAA));
@@ -962,18 +962,18 @@ mod tests {
     #[test]
     fn parse_pack_reads_skyrim_procedure_leaves_and_completion_flag() {
         let subs = vec![
-            sub(b"XNAM", &[5]),
+            sub(b"XNAM", [5]),
             sub(b"ANAM", b"Sequence\0"),
-            sub(b"CITC", &0u32.to_le_bytes()),
-            sub(b"PRCB", &[1, 0, 0, 0, 0, 0, 0, 0]),
+            sub(b"CITC", 0u32.to_le_bytes()),
+            sub(b"PRCB", [1, 0, 0, 0, 0, 0, 0, 0]),
             sub(b"ANAM", b"Procedure\0"),
-            sub(b"CITC", &0u32.to_le_bytes()),
+            sub(b"CITC", 0u32.to_le_bytes()),
             sub(b"PNAM", b"Travel\0"),
-            sub(b"FNAM", &1u32.to_le_bytes()),
-            sub(b"PKC2", &[0]),
-            sub(b"PKC2", &[2]),
-            sub(b"PKC2", &[4]),
-            sub(b"UNAM", &[0]),
+            sub(b"FNAM", 1u32.to_le_bytes()),
+            sub(b"PKC2", [0]),
+            sub(b"PKC2", [2]),
+            sub(b"PKC2", [4]),
+            sub(b"UNAM", [0]),
             sub(b"BNAM", b"Place to Travel\0"),
         ];
         let p = parse_pack(0xA1, &subs, &None, GameKind::Skyrim);
@@ -996,11 +996,11 @@ mod tests {
         let subs = vec![
             sub(b"CTDA", &package_condition),
             sub(b"PKCU", &pkcu),
-            sub(b"XNAM", &[1]),
+            sub(b"XNAM", [1]),
             sub(b"ANAM", b"Procedure\0"),
             sub(b"CTDA", &procedure_condition),
             sub(b"PNAM", b"Travel\0"),
-            sub(b"FNAM", &1u32.to_le_bytes()),
+            sub(b"FNAM", 1u32.to_le_bytes()),
         ];
 
         let p = parse_pack(0xA1, &subs, &None, GameKind::Skyrim);
@@ -1019,11 +1019,11 @@ mod tests {
         target.extend_from_slice(&7u32.to_le_bytes());
         target.extend_from_slice(&256i32.to_le_bytes());
         let subs = vec![
-            sub(b"PKCU", &12u8.to_le_bytes()),
+            sub(b"PKCU", 12u8.to_le_bytes()),
             sub(b"ANAM", b"TargetSelector\0"),
             sub(b"PTDA", &target),
-            sub(b"UNAM", &[9]),
-            sub(b"XNAM", &[1]),
+            sub(b"UNAM", [9]),
+            sub(b"XNAM", [1]),
         ];
         let p = parse_pack(0xA1, &subs, &None, GameKind::Skyrim);
         assert_eq!(
@@ -1128,13 +1128,13 @@ mod tests {
         // AtBar `8x12`: time byte = 8, duration i32 = 12 → 08:00 for 12 h.
         let psdt = [0xff, 0xff, 0x00, 0x08, 0x0c, 0, 0, 0];
         assert_eq!(
-            parse_pack(0x1, &[sub(b"PSDT", &psdt)], &None, GameKind::default()).schedule,
+            parse_pack(0x1, &[sub(b"PSDT", psdt)], &None, GameKind::default()).schedule,
             sched(Some(8), 12)
         );
         // Any-time sandbox: time byte = -1 (0xFF) → start_hour None.
         let any = [0xff, 0xff, 0x00, 0xff, 0, 0, 0, 0];
         assert_eq!(
-            parse_pack(0x2, &[sub(b"PSDT", &any)], &None, GameKind::default()).schedule,
+            parse_pack(0x2, &[sub(b"PSDT", any)], &None, GameKind::default()).schedule,
             sched(None, 0)
         );
     }
@@ -1152,7 +1152,7 @@ mod tests {
         // schedule (08:00 for 12h) under the 12-byte Skyrim+ layout.
         let psdt = [0xff, 0xff, 0x00, 0x08, 0x1e, 0, 0, 0, 0x0c, 0, 0, 0];
         assert_eq!(
-            parse_pack(0x1, &[sub(b"PSDT", &psdt)], &None, GameKind::Skyrim).schedule,
+            parse_pack(0x1, &[sub(b"PSDT", psdt)], &None, GameKind::Skyrim).schedule,
             sched(Some(8), 12),
             "Skyrim+ PSDT must read duration from offset 8, not offset 4 \
              (which holds `minute` + padding under the 12-byte layout)"
@@ -1163,7 +1163,7 @@ mod tests {
         // proving the two branches genuinely diverge on this input
         // rather than coincidentally agreeing.
         assert_eq!(
-            parse_pack(0x2, &[sub(b"PSDT", &psdt)], &None, GameKind::Fallout3NV).schedule,
+            parse_pack(0x2, &[sub(b"PSDT", psdt)], &None, GameKind::Fallout3NV).schedule,
             sched(Some(8), 30),
         );
     }
@@ -1272,7 +1272,7 @@ mod tests {
     fn parse_pack_reads_pke2_escort_distance() {
         let p = parse_pack(
             0x0e_327d,
-            &[sub(b"PKE2", &600u32.to_le_bytes())],
+            &[sub(b"PKE2", 600u32.to_le_bytes())],
             &None,
             GameKind::default(),
         );
@@ -1287,14 +1287,14 @@ mod tests {
         // collect phase unsatisfiable.
         let p = parse_pack(
             0x2,
-            &[sub(b"PKE2", &0u32.to_le_bytes())],
+            &[sub(b"PKE2", 0u32.to_le_bytes())],
             &None,
             GameKind::default(),
         );
         assert_eq!(p.escort_distance, None);
 
         // A short payload is ignored rather than half-read.
-        let p = parse_pack(0x3, &[sub(b"PKE2", &[1u8, 2])], &None, GameKind::default());
+        let p = parse_pack(0x3, &[sub(b"PKE2", [1u8, 2])], &None, GameKind::default());
         assert_eq!(p.escort_distance, None);
     }
 

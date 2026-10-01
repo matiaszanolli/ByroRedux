@@ -2093,7 +2093,7 @@ mod tests {
         let catalog = ScaleformHostCatalog::for_profile(ScaleformProfile::Fallout4Avm2);
 
         let adapter_tag_count = |bytes: &[u8]| -> usize {
-            let decompressed = swf::decompress_swf(&*bytes).expect("decompress patched movie");
+            let decompressed = swf::decompress_swf(bytes).expect("decompress patched movie");
             let movie = swf::parse_swf(&decompressed).expect("parse patched movie");
             movie
                 .tags

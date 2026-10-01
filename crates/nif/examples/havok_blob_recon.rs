@@ -233,7 +233,7 @@ fn census(archive: &Ba2Archive) {
             }
 
             if let Some(last) = pf.sections.last() {
-                if last.absolute_end() as usize == blob.len() {
+                if last.absolute_end() == blob.len() {
                     closed_exactly += 1;
                 }
             }

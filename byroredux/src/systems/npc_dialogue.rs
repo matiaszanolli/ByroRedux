@@ -1100,7 +1100,7 @@ mod tests {
             .map(|query| {
                 query
                     .iter()
-                    .flat_map(|(_, batch)| batch.0.iter().cloned().collect::<Vec<_>>())
+                    .flat_map(|(_, batch)| batch.0.to_vec())
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
@@ -1124,7 +1124,7 @@ mod tests {
             .map(|query| {
                 query
                     .iter()
-                    .flat_map(|(_, batch)| batch.0.iter().cloned().collect::<Vec<_>>())
+                    .flat_map(|(_, batch)| batch.0.to_vec())
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();

@@ -146,7 +146,7 @@ fn main() -> anyhow::Result<()> {
         .iter()
         .map(|&form_id| (form_id, ambient_refs[&form_id]))
         .collect();
-    ambient_only_by_refs.sort_by(|a, b| b.1.cmp(&a.1));
+    ambient_only_by_refs.sort_by_key(|&(_, refs)| std::cmp::Reverse(refs));
     println!();
     println!("top 15 ambient-only packages by NPC reference count:");
     for (form_id, refs) in ambient_only_by_refs.iter().take(15) {

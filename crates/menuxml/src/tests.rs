@@ -924,6 +924,7 @@ fn text_line_advances_and_tints() {
         BlitStyle { tint: [255.0, 0.0, 0.0], alpha: 255.0, clip: None },
     );
     // First glyph: x 0..4 red; pen then at 6 → second glyph x 6..10.
+    #[allow(clippy::erasing_op)] // glyph 0's origin × the pixel stride, parallel to the 5/6 sites below
     let o = 0 * 4;
     assert_eq!(&fb.pixels[o..o + 4], &[255, 0, 0, 255]);
     let o = 5 * 4;
@@ -1120,7 +1121,7 @@ fn graft_fragment_drives_meter_ops_from_overrides() {
     assert_eq!(doc.tiles[wrapper].parent, Some(hp));
     // Loose fragment traits landed on the wrapper.
     assert_eq!(doc.tiles[wrapper].traits.get("width"), Some(&RawTrait::Num(600.0)));
-    assert!(doc.tiles[wrapper].traits.get("locus").is_some());
+    assert!(doc.tiles[wrapper].traits.contains_key("locus"));
     let meter_img = doc.name_index["meterimage"];
     assert_eq!(doc.tiles[meter_img].parent, Some(wrapper));
 

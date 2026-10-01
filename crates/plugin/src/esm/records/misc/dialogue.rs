@@ -806,9 +806,9 @@ mod tests {
         let subs = vec![
             sub(b"EDID", b"GREETING\0"),
             sub(b"FULL", b"Greeting\0"),
-            sub(b"QSTI", &0x0100_0001u32.to_le_bytes()),
-            sub(b"QSTI", &0x0100_0002u32.to_le_bytes()),
-            sub(b"QSTI", &0x0100_0003u32.to_le_bytes()),
+            sub(b"QSTI", 0x0100_0001u32.to_le_bytes()),
+            sub(b"QSTI", 0x0100_0002u32.to_le_bytes()),
+            sub(b"QSTI", 0x0100_0003u32.to_le_bytes()),
         ];
         let d = parse_dial(0xC3C3, &subs, &None, GameKind::Fallout3NV);
         assert_eq!(d.quest_refs.len(), 3);
@@ -821,20 +821,20 @@ mod tests {
     /// #1307 — Oblivion / FO3 / FNV author the category in DATA byte 0.
     #[test]
     fn classic_games_read_the_type_byte() {
-        let d = parse_dial(0xDEAD, &[sub(b"DATA", &[3u8])], &None, GameKind::Oblivion);
+        let d = parse_dial(0xDEAD, &[sub(b"DATA", [3u8])], &None, GameKind::Oblivion);
         assert_eq!(d.category, DialogueCategory::Persuasion);
         // FO3/FNV: type + flags; 7 is Radio there, out of range on Oblivion.
         let fnv = parse_dial(
             0xBEEF,
-            &[sub(b"DATA", &[7u8, 0x02])],
+            &[sub(b"DATA", [7u8, 0x02])],
             &None,
             GameKind::Fallout3NV,
         );
         assert_eq!(fnv.category, DialogueCategory::Radio);
-        let obl = parse_dial(0xBEEF, &[sub(b"DATA", &[7u8])], &None, GameKind::Oblivion);
+        let obl = parse_dial(0xBEEF, &[sub(b"DATA", [7u8])], &None, GameKind::Oblivion);
         assert_eq!(obl.category, DialogueCategory::Other(7));
         // Empty DATA must not panic and leaves the default.
-        let empty = parse_dial(0xF00D, &[sub(b"DATA", &[])], &None, GameKind::Oblivion);
+        let empty = parse_dial(0xF00D, &[sub(b"DATA", [])], &None, GameKind::Oblivion);
         assert_eq!(empty.category, DialogueCategory::Topic);
     }
 
@@ -845,30 +845,30 @@ mod tests {
     fn skyrim_plus_read_the_category_byte_not_the_flags_byte() {
         let scene = [0x01u8, 2, 0, 0]; // flags 1, category Scene
         for game in [GameKind::Skyrim, GameKind::Fallout4, GameKind::Starfield] {
-            let d = parse_dial(0x1, &[sub(b"DATA", &scene)], &None, game);
+            let d = parse_dial(0x1, &[sub(b"DATA", scene)], &None, game);
             assert_eq!(d.category, DialogueCategory::Scene, "{game:?}");
-            let misc = parse_dial(0x1, &[sub(b"DATA", &[0, 7, 0, 0])], &None, game);
+            let misc = parse_dial(0x1, &[sub(b"DATA", [0, 7, 0, 0])], &None, game);
             assert_eq!(misc.category, DialogueCategory::Miscellaneous, "{game:?}");
-            let player = parse_dial(0x1, &[sub(b"DATA", &[0x01, 0, 0, 0])], &None, game);
+            let player = parse_dial(0x1, &[sub(b"DATA", [0x01, 0, 0, 0])], &None, game);
             assert_eq!(player.category, DialogueCategory::Topic, "{game:?}");
         }
         // FO76 renumbers after Combat: 4 Detection, 5 Miscellaneous.
         let fo76 = parse_dial(
             0x1,
-            &[sub(b"DATA", &[0, 5, 0, 0])],
+            &[sub(b"DATA", [0, 5, 0, 0])],
             &None,
             GameKind::Fallout76,
         );
         assert_eq!(fo76.category, DialogueCategory::Miscellaneous);
         let fo4 = parse_dial(
             0x1,
-            &[sub(b"DATA", &[0, 5, 0, 0])],
+            &[sub(b"DATA", [0, 5, 0, 0])],
             &None,
             GameKind::Fallout4,
         );
         assert_eq!(fo4.category, DialogueCategory::Detection);
         // Index 1 / 4 labels differ per game — kept raw.
-        let favor = parse_dial(0x1, &[sub(b"DATA", &[0, 1, 0, 0])], &None, GameKind::Skyrim);
+        let favor = parse_dial(0x1, &[sub(b"DATA", [0, 1, 0, 0])], &None, GameKind::Skyrim);
         assert_eq!(favor.category, DialogueCategory::Other(1));
     }
 
@@ -876,7 +876,7 @@ mod tests {
     fn parse_dial_reads_the_branch() {
         let d = parse_dial(
             0x0008_06B8,
-            &[sub(b"BNAM", &0x0001_8A96u32.to_le_bytes())],
+            &[sub(b"BNAM", 0x0001_8A96u32.to_le_bytes())],
             &None,
             GameKind::Skyrim,
         );
@@ -888,10 +888,10 @@ mod tests {
     fn parse_dlbr_decodes_quest_flags_and_starting_topic() {
         let subs = vec![
             sub(b"EDID", b"MS01EltrysBlockingShrineBranch01\0"),
-            sub(b"QNAM", &0x0001_8B4Bu32.to_le_bytes()),
-            sub(b"TNAM", &0u32.to_le_bytes()),
-            sub(b"DNAM", &2u32.to_le_bytes()),
-            sub(b"SNAM", &0x0008_06B8u32.to_le_bytes()),
+            sub(b"QNAM", 0x0001_8B4Bu32.to_le_bytes()),
+            sub(b"TNAM", 0u32.to_le_bytes()),
+            sub(b"DNAM", 2u32.to_le_bytes()),
+            sub(b"SNAM", 0x0008_06B8u32.to_le_bytes()),
         ];
         let b = parse_dlbr(0x0001_8A96, &subs, &None);
         assert_eq!(b.editor_id, "MS01EltrysBlockingShrineBranch01");
@@ -907,7 +907,7 @@ mod tests {
             sub(b"EDID", b"FastTravelMessage\0"),
             sub(b"FULL", b"Fast Travel\0"),
             sub(b"DESC", b"You cannot fast travel right now.\0"),
-            sub(b"QNAM", &0x0002_1234u32.to_le_bytes()),
+            sub(b"QNAM", 0x0002_1234u32.to_le_bytes()),
         ];
         let m = parse_mesg(0xD4D4, &subs, &None);
         assert_eq!(m.description, "You cannot fast travel right now.");
@@ -922,7 +922,7 @@ mod tests {
         let remap = Some(FormIdRemap::regular(2, vec![0]));
         let subs = vec![
             sub(b"EDID", b"FastTravelMessage\0"),
-            sub(b"QNAM", &0x0100_9999u32.to_le_bytes()), // self-ref
+            sub(b"QNAM", 0x0100_9999u32.to_le_bytes()), // self-ref
         ];
         let m = parse_mesg(0x0200_0001, &subs, &remap);
         assert_eq!(
@@ -935,7 +935,7 @@ mod tests {
     #[test]
     fn parse_info_picks_anam_actor() {
         let anam = 0xDEAD_BEEFu32.to_le_bytes();
-        let subs = vec![sub(b"NAM1", b"hello\0"), sub(b"ANAM", &anam)];
+        let subs = vec![sub(b"NAM1", b"hello\0"), sub(b"ANAM", anam)];
         let info = parse_info(0x1234, &subs, &None);
         assert_eq!(info.actor_form_id, 0xDEAD_BEEF);
     }
@@ -1041,7 +1041,7 @@ mod tests {
         let info = parse_info(0x3, &[], &None);
         assert!(info.script_instance.is_none());
         assert!(info.script_fragments.is_empty());
-        let info = parse_info(0x4, &[sub(b"VMAD", &[])], &None);
+        let info = parse_info(0x4, &[sub(b"VMAD", [])], &None);
         assert!(info.script_fragments.is_empty());
     }
 
@@ -1058,7 +1058,7 @@ mod tests {
             0x60, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0x3f, 0x3a, 0x00, 0x00, 0x00, 0x15, 0x78,
             0x02, 0x00, 0x00, 0x00, 0x00, 0x00,
         ];
-        let subs = vec![sub(b"NAM1", b"hi\0"), sub(b"CTDT", &ctdt)];
+        let subs = vec![sub(b"NAM1", b"hi\0"), sub(b"CTDT", ctdt)];
         let info = parse_info(0x5678, &subs, &None);
         assert_eq!(
             info.conditions.len(),
@@ -1079,9 +1079,9 @@ mod tests {
     #[test]
     fn parse_info_tclf_and_name_are_not_dropped() {
         let subs = vec![
-            sub(b"TCLF", &0x0001_1111u32.to_le_bytes()),
-            sub(b"TCLF", &0x0001_2222u32.to_le_bytes()),
-            sub(b"NAME", &0x0001_3333u32.to_le_bytes()),
+            sub(b"TCLF", 0x0001_1111u32.to_le_bytes()),
+            sub(b"TCLF", 0x0001_2222u32.to_le_bytes()),
+            sub(b"NAME", 0x0001_3333u32.to_le_bytes()),
         ];
         let info = parse_info(0x9999, &subs, &None);
         assert_eq!(info.linked_from_topics, vec![0x0001_1111, 0x0001_2222]);
@@ -1095,8 +1095,8 @@ mod tests {
         use crate::esm::reader::FormIdRemap;
         let remap = FormIdRemap::regular(1, vec![0]);
         let subs = vec![
-            sub(b"TCLF", &0x01_040000u32.to_le_bytes()),
-            sub(b"NAME", &0x01_050000u32.to_le_bytes()),
+            sub(b"TCLF", 0x01_040000u32.to_le_bytes()),
+            sub(b"NAME", 0x01_050000u32.to_le_bytes()),
         ];
         let info = parse_info(0x5678, &subs, &Some(remap));
         assert_eq!(info.linked_from_topics, vec![0x01_040000]);
@@ -1119,13 +1119,13 @@ mod tests {
             d
         }
         let subs = vec![
-            sub(b"TRDT", &trdt(5, 0)), // Happy
+            sub(b"TRDT", trdt(5, 0)), // Happy
             sub(b"NAM1", b"First line.\0"),
             sub(b"NAM2", b"cheerfully\0"),
-            sub(b"TRDT", &trdt(1, 1)), // Anger
+            sub(b"TRDT", trdt(1, 1)), // Anger
             sub(b"NAM1", b"Second line.\0"),
             sub(b"NAM2", b"then annoyed\0"),
-            sub(b"TRDT", &trdt(4, 2)), // Sad
+            sub(b"TRDT", trdt(4, 2)), // Sad
             sub(b"NAM1", b"Third line.\0"),
             // No NAM2 on the last segment — must not leak the prior one.
         ];
@@ -1162,10 +1162,10 @@ mod tests {
     #[test]
     fn parse_info_trda_opens_a_new_segment_like_trdt() {
         let subs = vec![
-            sub(b"TRDA", &[0u8; 20]), // FO4 shape — zero payload
+            sub(b"TRDA", [0u8; 20]), // FO4 shape — zero payload
             sub(b"NAM1", b"First line.\0"),
             sub(b"NAM2", b"cheerfully\0"),
-            sub(b"TRDA", &[0u8; 12]), // Starfield shape — different width
+            sub(b"TRDA", [0u8; 12]), // Starfield shape — different width
             sub(b"NAM1", b"Second line.\0"),
         ];
         let info = parse_info(0x1234, &subs, &None);
@@ -1212,7 +1212,7 @@ mod tests {
             sub(b"NAM1", b"One.\0"),
             // A second, zeroed FO4 segment: defaults must not leak from
             // the first.
-            sub(b"TRDA", &[0u8; 20]),
+            sub(b"TRDA", [0u8; 20]),
         ];
         let info = parse_info(0x99, &subs, &Some(remap));
         assert_eq!(info.responses.len(), 2);
@@ -1258,7 +1258,7 @@ mod tests {
     #[test]
     fn unknown_width_trda_still_splits_without_decoding() {
         let subs = vec![
-            sub(b"TRDA", &[0xEEu8; 7]),
+            sub(b"TRDA", [0xEEu8; 7]),
             sub(b"NAM1", b"Split me.\0"),
         ];
         let info = parse_info(0x55, &subs, &None);
@@ -1275,9 +1275,9 @@ mod tests {
         // This plugin at index 1, master at index 0 (all regular, no ESL).
         let remap = FormIdRemap::regular(1, vec![0]);
         let subs = vec![
-            sub(b"PNAM", &0x00_050000u32.to_le_bytes()), // plugin 0 (master), form 0x050000
-            sub(b"TCLT", &0x01_030000u32.to_le_bytes()), // plugin 1 (this), form 0x030000
-            sub(b"ANAM", &0x00_020000u32.to_le_bytes()), // plugin 0 (master), form 0x020000
+            sub(b"PNAM", 0x00_050000u32.to_le_bytes()), // plugin 0 (master), form 0x050000
+            sub(b"TCLT", 0x01_030000u32.to_le_bytes()), // plugin 1 (this), form 0x030000
+            sub(b"ANAM", 0x00_020000u32.to_le_bytes()), // plugin 0 (master), form 0x020000
         ];
         // With remap: plugin 0 stays 0 (master), plugin 1 stays 1 (this)
         let info = parse_info(0x5678, &subs, &Some(remap));

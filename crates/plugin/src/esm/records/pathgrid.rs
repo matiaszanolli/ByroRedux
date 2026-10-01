@@ -194,7 +194,7 @@ mod tests {
         let record = parse_pgrd(
             0x0001_0000,
             &[
-                sub(b"DATA", 3u16.to_le_bytes().to_vec()),
+                sub(b"DATA", 3u16.to_le_bytes()),
                 sub(b"PGRP", pgrp),
                 sub(b"PGRR", pgrr),
             ],
@@ -222,7 +222,7 @@ mod tests {
             &[
                 sub(b"PGRR", pgrr),
                 sub(b"PGRP", pgrp),
-                sub(b"DATA", 2u16.to_le_bytes().to_vec()),
+                sub(b"DATA", 2u16.to_le_bytes()),
             ],
         );
         assert_eq!(record.edges, vec![vec![Some(1), Some(1)], vec![]]);
@@ -287,7 +287,7 @@ mod tests {
         let record = parse_pgrd(
             1,
             &[
-                sub(b"DATA", 1u16.to_le_bytes().to_vec()),
+                sub(b"DATA", 1u16.to_le_bytes()),
                 sub(b"PGRP", point(1.0, 1.0, 1.0, 0)),
             ],
         );

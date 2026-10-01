@@ -1165,8 +1165,8 @@ mod tests {
         let subs = vec![
             sub(b"EDID", b"MQ01\0"),
             sub(b"FULL", b"Main Quest\0"),
-            sub(b"SCRI", &0x0010_BEEFu32.to_le_bytes()),
-            sub(b"DATA", &[0x05, 20]), // flags + priority
+            sub(b"SCRI", 0x0010_BEEFu32.to_le_bytes()),
+            sub(b"DATA", [0x05, 20]), // flags + priority
         ];
         let q = parse_qust(0xB2B2, &subs, &None);
         assert_eq!(q.editor_id, "MQ01");
@@ -1181,18 +1181,18 @@ mod tests {
         let subs = vec![
             sub(b"EDID", b"MQ101\0"),
             // flags=Run Once|Start Game Enabled, priority=80.
-            sub(b"DNAM", &[0x01, 0x01, 80, 0, 0, 0, 0, 0, 1, 0, 0, 0]),
+            sub(b"DNAM", [0x01, 0x01, 80, 0, 0, 0, 0, 0, 1, 0, 0, 0]),
             // Skyrim INDX: u16 stage, u8 flags, u8 unknown. Stage zero is
             // the startup stage even though its following QSDT is clear.
-            sub(b"INDX", &[0x00, 0x00, 0x02, 0x00]),
-            sub(b"QSDT", &[0x00]),
+            sub(b"INDX", [0x00, 0x00, 0x02, 0x00]),
+            sub(b"QSDT", [0x00]),
             // QSDT bit 0 means Complete Quest on Skyrim, not Start Up Stage;
             // it must not make the terminal stage the startup stage.
-            sub(b"INDX", &[0x84, 0x03, 0x00, 0x00]),
-            sub(b"QSDT", &[0x01]),
+            sub(b"INDX", [0x84, 0x03, 0x00, 0x00]),
+            sub(b"QSDT", [0x01]),
             // Stage 1000 is the authored shutdown stage.
-            sub(b"INDX", &[0xE8, 0x03, 0x04, 0x00]),
-            sub(b"QSDT", &[0x00]),
+            sub(b"INDX", [0xE8, 0x03, 0x04, 0x00]),
+            sub(b"QSDT", [0x00]),
         ];
 
         let quest = parse_qust(0x0003_372B, &subs, &None);
@@ -1254,21 +1254,21 @@ mod tests {
         let subs = vec![
             sub(b"EDID", b"DLC02\0"),
             sub(b"FULL", b"Honest Hearts\0"),
-            sub(b"DATA", &[0x05, 30]), // quest_flags + priority
+            sub(b"DATA", [0x05, 30]), // quest_flags + priority
             // Stage 10 — Complete Quest log entry + log text + script.
-            sub(b"INDX", &10u16.to_le_bytes()),
-            sub(b"QSDT", &[0x01]),
+            sub(b"INDX", 10u16.to_le_bytes()),
+            sub(b"QSDT", [0x01]),
             sub(b"CNAM", &start_log),
-            sub(b"SCHR", &[0u8; 20]), // dummy SCHR — flags has_script
+            sub(b"SCHR", [0u8; 20]), // dummy SCHR — flags has_script
             // Stage 20 — log text only, no script, no start-up flag.
-            sub(b"INDX", &20u16.to_le_bytes()),
-            sub(b"QSDT", &[0x00]),
+            sub(b"INDX", 20u16.to_le_bytes()),
+            sub(b"QSDT", [0x00]),
             sub(b"CNAM", &mid_log),
             // Objective 1 — text via CNAM (FO3/FNV path) + two targets.
-            sub(b"QOBJ", &70_000i32.to_le_bytes()),
+            sub(b"QOBJ", 70_000i32.to_le_bytes()),
             sub(b"CNAM", &obj_text),
-            sub(b"QSTA", &0x0010_F001u32.to_le_bytes()),
-            sub(b"QSTA", &0x0010_F002u32.to_le_bytes()),
+            sub(b"QSTA", 0x0010_F001u32.to_le_bytes()),
+            sub(b"QSTA", 0x0010_F002u32.to_le_bytes()),
         ];
         let q = parse_qust(0xDADAu32, &subs, &None);
 
@@ -1308,10 +1308,10 @@ mod tests {
         // as the block's open marker (QOBJ) precedes the text.
         let subs = vec![
             sub(b"EDID", b"MQ302\0"),
-            sub(b"DNAM", &[0, 0, 50]),
-            sub(b"QOBJ", &10u16.to_le_bytes()),
+            sub(b"DNAM", [0, 0, 50]),
+            sub(b"QOBJ", 10u16.to_le_bytes()),
             sub(b"NNAM", b"Find the Elder Scroll.\0"),
-            sub(b"QSTA", &[7i32.to_le_bytes(), 1u32.to_le_bytes()].concat()),
+            sub(b"QSTA", [7i32.to_le_bytes(), 1u32.to_le_bytes()].concat()),
         ];
         let q = parse_qust(0xEAEAu32, &subs, &None);
         assert_eq!(q.objectives.len(), 1);
@@ -1330,7 +1330,7 @@ mod tests {
     fn parse_qust_no_blocks_keeps_stages_empty() {
         // Identity-only quest with no INDX / QOBJ — stages and
         // objectives both empty, no panic.
-        let subs = vec![sub(b"EDID", b"Tutorial\0"), sub(b"DATA", &[0, 0])];
+        let subs = vec![sub(b"EDID", b"Tutorial\0"), sub(b"DATA", [0, 0])];
         let q = parse_qust(0xF00Fu32, &subs, &None);
         assert!(q.stages.is_empty());
         assert!(q.objectives.is_empty());
@@ -1342,9 +1342,9 @@ mod tests {
         // QSTA with form_id 0 is the "no target" sentinel — the
         // objective opens but the empty target shouldn't push.
         let subs = vec![
-            sub(b"QOBJ", &5i32.to_le_bytes()),
-            sub(b"QSTA", &0u32.to_le_bytes()),
-            sub(b"QSTA", &0x0010_F001u32.to_le_bytes()),
+            sub(b"QOBJ", 5i32.to_le_bytes()),
+            sub(b"QSTA", 0u32.to_le_bytes()),
+            sub(b"QSTA", 0x0010_F001u32.to_le_bytes()),
         ];
         let q = parse_qust(0xF11Fu32, &subs, &None);
         assert_eq!(q.objectives.len(), 1);
@@ -1368,8 +1368,8 @@ mod tests {
 
         let subs = vec![
             sub(b"EDID", b"TestQuest\0"),
-            sub(b"INDX", &0u16.to_le_bytes()),
-            sub(b"QSDT", &[0x01]),
+            sub(b"INDX", 0u16.to_le_bytes()),
+            sub(b"QSDT", [0x01]),
             sub(b"CTDA", &ctda),
         ];
         let q = parse_qust(0xABCD, &subs, &None);
@@ -1382,14 +1382,14 @@ mod tests {
     #[test]
     fn parse_qust_preserves_each_stage_log_entry() {
         let subs = vec![
-            sub(b"INDX", &[40, 0, QUEST_STAGE_FLAG_SHUT_DOWN, 0]),
-            sub(b"QSDT", &[QUEST_LOG_FLAG_COMPLETE_QUEST]),
+            sub(b"INDX", [40, 0, QUEST_STAGE_FLAG_SHUT_DOWN, 0]),
+            sub(b"QSDT", [QUEST_LOG_FLAG_COMPLETE_QUEST]),
             sub(b"CNAM", b"Succeeded.\0"),
-            sub(b"CTDA", &minimal_ctda(10)),
-            sub(b"NAM0", &0x0000_1234u32.to_le_bytes()),
-            sub(b"QSDT", &[QUEST_LOG_FLAG_FAIL_QUEST]),
+            sub(b"CTDA", minimal_ctda(10)),
+            sub(b"NAM0", 0x0000_1234u32.to_le_bytes()),
+            sub(b"QSDT", [QUEST_LOG_FLAG_FAIL_QUEST]),
             sub(b"CNAM", b"Failed.\0"),
-            sub(b"CTDA", &minimal_ctda(11)),
+            sub(b"CTDA", minimal_ctda(11)),
         ];
 
         let q = parse_qust(0xABCE, &subs, &None);
@@ -1410,18 +1410,18 @@ mod tests {
     fn parse_qust_remaps_all_form_id_payloads() {
         let remap = Some(crate::esm::reader::FormIdRemap::regular(5, vec![2]));
         let subs = vec![
-            sub(b"SCRI", &0x0000_0001u32.to_le_bytes()),
-            sub(b"QOBJ", &1i32.to_le_bytes()),
+            sub(b"SCRI", 0x0000_0001u32.to_le_bytes()),
+            sub(b"QOBJ", 1i32.to_le_bytes()),
             sub(
                 b"QSTA",
-                &[0x0000_0002u32.to_le_bytes(), 0u32.to_le_bytes()].concat(),
+                [0x0000_0002u32.to_le_bytes(), 0u32.to_le_bytes()].concat(),
             ),
-            sub(b"ALST", &0i32.to_le_bytes()),
-            sub(b"ALFR", &0x0000_0003u32.to_le_bytes()),
-            sub(b"ALFC", &0x0000_0004u32.to_le_bytes()),
+            sub(b"ALST", 0i32.to_le_bytes()),
+            sub(b"ALFR", 0x0000_0003u32.to_le_bytes()),
+            sub(b"ALFC", 0x0000_0004u32.to_le_bytes()),
             sub(
                 b"CNTO",
-                &[0x0000_0005u32.to_le_bytes(), 2u32.to_le_bytes()].concat(),
+                [0x0000_0005u32.to_le_bytes(), 2u32.to_le_bytes()].concat(),
             ),
         ];
 
@@ -1460,11 +1460,11 @@ mod tests {
         // ALID + ALFR + FNAM + ALED, no companions.
         let subs = vec![
             sub(b"EDID", b"TestQuest\0"),
-            sub(b"ALST", &7i32.to_le_bytes()),
+            sub(b"ALST", 7i32.to_le_bytes()),
             sub(b"ALID", b"QuestGiver\0"),
-            sub(b"ALFR", &0x0001_2345u32.to_le_bytes()),
-            sub(b"FNAM", &ALIAS_FLAG_ESSENTIAL.to_le_bytes()),
-            sub(b"ALED", &[]),
+            sub(b"ALFR", 0x0001_2345u32.to_le_bytes()),
+            sub(b"FNAM", ALIAS_FLAG_ESSENTIAL.to_le_bytes()),
+            sub(b"ALED", []),
         ];
         let q = parse_qust(0xFEED, &subs, &None);
         assert_eq!(q.aliases.len(), 1);
@@ -1483,9 +1483,9 @@ mod tests {
     #[test]
     fn parse_qust_alias_unique_actor() {
         let subs = vec![
-            sub(b"ALST", &0i32.to_le_bytes()),
+            sub(b"ALST", 0i32.to_le_bytes()),
             sub(b"ALID", b"Bandit\0"),
-            sub(b"ALUA", &0x000A_0001u32.to_le_bytes()),
+            sub(b"ALUA", 0x000A_0001u32.to_le_bytes()),
         ];
         let q = parse_qust(0x1, &subs, &None);
         assert_eq!(
@@ -1499,13 +1499,13 @@ mod tests {
         // ALCO opens the fill type; ALCA/ALCL are companion fields that
         // arrive after it and must attach to the SAME fill_type variant.
         let subs = vec![
-            sub(b"ALST", &1i32.to_le_bytes()),
-            sub(b"ALCO", &0x000B_0002u32.to_le_bytes()),
+            sub(b"ALST", 1i32.to_le_bytes()),
+            sub(b"ALCO", 0x000B_0002u32.to_le_bytes()),
             sub(
                 b"ALCA",
-                &[11i16.to_le_bytes(), 0x8000u16.to_le_bytes()].concat(),
+                [11i16.to_le_bytes(), 0x8000u16.to_le_bytes()].concat(),
             ),
-            sub(b"ALCL", &22i32.to_le_bytes()),
+            sub(b"ALCL", 22i32.to_le_bytes()),
         ];
         let q = parse_qust(0x2, &subs, &None);
         assert_eq!(
@@ -1522,9 +1522,9 @@ mod tests {
     #[test]
     fn parse_qust_alias_external_reference_with_companion() {
         let subs = vec![
-            sub(b"ALST", &2i32.to_le_bytes()),
-            sub(b"ALEQ", &0x000C_0003u32.to_le_bytes()),
-            sub(b"ALEA", &4i32.to_le_bytes()),
+            sub(b"ALST", 2i32.to_le_bytes()),
+            sub(b"ALEQ", 0x000C_0003u32.to_le_bytes()),
+            sub(b"ALEA", 4i32.to_le_bytes()),
         ];
         let q = parse_qust(0x3, &subs, &None);
         assert_eq!(
@@ -1539,9 +1539,9 @@ mod tests {
     #[test]
     fn parse_qust_alias_from_event_with_companion() {
         let subs = vec![
-            sub(b"ALST", &3i32.to_le_bytes()),
+            sub(b"ALST", 3i32.to_le_bytes()),
             sub(b"ALFE", b"Scri"),
-            sub(b"ALFD", &99i32.to_le_bytes()),
+            sub(b"ALFD", 99i32.to_le_bytes()),
         ];
         let q = parse_qust(0x4, &subs, &None);
         assert_eq!(
@@ -1556,9 +1556,9 @@ mod tests {
     #[test]
     fn parse_qust_alias_forced_location_is_alls_only() {
         let subs = vec![
-            sub(b"ALLS", &5i32.to_le_bytes()),
+            sub(b"ALLS", 5i32.to_le_bytes()),
             sub(b"ALID", b"Location\0"),
-            sub(b"ALFL", &0x000D_0004u32.to_le_bytes()),
+            sub(b"ALFL", 0x000D_0004u32.to_le_bytes()),
         ];
         let q = parse_qust(0x5, &subs, &None);
         assert!(q.aliases[0].is_location);
@@ -1571,10 +1571,10 @@ mod tests {
     #[test]
     fn parse_qust_alias_location_alias_reference_with_companion() {
         let subs = vec![
-            sub(b"ALST", &6i32.to_le_bytes()),
-            sub(b"ALRT", &0x000E_0005u32.to_le_bytes()),
-            sub(b"ALFA", &(-1i32).to_le_bytes()),
-            sub(b"KNAM", &0x000E_0006u32.to_le_bytes()),
+            sub(b"ALST", 6i32.to_le_bytes()),
+            sub(b"ALRT", 0x000E_0005u32.to_le_bytes()),
+            sub(b"ALFA", (-1i32).to_le_bytes()),
+            sub(b"KNAM", 0x000E_0006u32.to_le_bytes()),
         ];
         let q = parse_qust(0x6, &subs, &None);
         assert_eq!(
@@ -1593,13 +1593,13 @@ mod tests {
         // still decodes; `fill_type` stays `None`, exactly the "Find
         // Matching Reference/Location" shape the source describes.
         let subs = vec![
-            sub(b"ALST", &8i32.to_le_bytes()),
+            sub(b"ALST", 8i32.to_le_bytes()),
             sub(b"ALID", b"AnyBandit\0"),
-            sub(b"CTDA", &minimal_ctda(60)),
-            sub(b"CTDA", &minimal_ctda(61)),
+            sub(b"CTDA", minimal_ctda(60)),
+            sub(b"CTDA", minimal_ctda(61)),
             sub(
                 b"FNAM",
-                &(ALIAS_FLAG_IN_LOADED_AREA | ALIAS_FLAG_CLOSEST).to_le_bytes(),
+                (ALIAS_FLAG_IN_LOADED_AREA | ALIAS_FLAG_CLOSEST).to_le_bytes(),
             ),
         ];
         let q = parse_qust(0x7, &subs, &None);
@@ -1617,9 +1617,9 @@ mod tests {
         // The source notes CTDA can accompany another fill type too
         // (not just Find Matching) — both must land.
         let subs = vec![
-            sub(b"ALST", &9i32.to_le_bytes()),
-            sub(b"ALFR", &0x0001_0000u32.to_le_bytes()),
-            sub(b"CTDA", &minimal_ctda(71)),
+            sub(b"ALST", 9i32.to_le_bytes()),
+            sub(b"ALFR", 0x0001_0000u32.to_le_bytes()),
+            sub(b"CTDA", minimal_ctda(71)),
         ];
         let q = parse_qust(0x8, &subs, &None);
         let alias = &q.aliases[0];
@@ -1643,19 +1643,19 @@ mod tests {
         // requires cross-referencing alias 1's `force_into_alias`
         // (deferred to the M47.3 runtime, not this parser).
         let subs = vec![
-            sub(b"ALST", &1i32.to_le_bytes()),
+            sub(b"ALST", 1i32.to_le_bytes()),
             sub(b"ALID", b"Nurelion\0"),
-            sub(b"FNAM", &0u32.to_le_bytes()),
-            sub(b"ALFI", &8i32.to_le_bytes()),
-            sub(b"ALFR", &0x0001_B115u32.to_le_bytes()),
-            sub(b"ALED", &[]),
-            sub(b"ALST", &8i32.to_le_bytes()),
+            sub(b"FNAM", 0u32.to_le_bytes()),
+            sub(b"ALFI", 8i32.to_le_bytes()),
+            sub(b"ALFR", 0x0001_B115u32.to_le_bytes()),
+            sub(b"ALED", []),
+            sub(b"ALST", 8i32.to_le_bytes()),
             sub(b"ALID", b"NurelionEssential\0"),
             sub(
                 b"FNAM",
-                &(ALIAS_FLAG_ESSENTIAL | ALIAS_FLAG_OPTIONAL).to_le_bytes(),
+                (ALIAS_FLAG_ESSENTIAL | ALIAS_FLAG_OPTIONAL).to_le_bytes(),
             ),
-            sub(b"ALED", &[]),
+            sub(b"ALED", []),
         ];
         let q = parse_qust(0x2C258, &subs, &None);
         assert_eq!(q.aliases.len(), 2);
@@ -1680,9 +1680,9 @@ mod tests {
     fn parse_qust_alias_force_into_alias_alongside_a_fill_type() {
         // ALFI can also accompany a real fill type — both must land.
         let subs = vec![
-            sub(b"ALST", &9i32.to_le_bytes()),
-            sub(b"ALFR", &0x0001_0000u32.to_le_bytes()),
-            sub(b"ALFI", &2i32.to_le_bytes()),
+            sub(b"ALST", 9i32.to_le_bytes()),
+            sub(b"ALFR", 0x0001_0000u32.to_le_bytes()),
+            sub(b"ALFI", 2i32.to_le_bytes()),
         ];
         let q = parse_qust(0x1, &subs, &None);
         let alias = &q.aliases[0];
@@ -1696,31 +1696,31 @@ mod tests {
     #[test]
     fn parse_qust_alias_injected_data() {
         let subs = vec![
-            sub(b"ALST", &10i32.to_le_bytes()),
-            sub(b"ALFR", &0x0002_0000u32.to_le_bytes()),
-            sub(b"ALDN", &0x0000_AAAAu32.to_le_bytes()),
-            sub(b"VTCK", &0x0000_BBBBu32.to_le_bytes()),
-            sub(b"ALFV", &0x0000_BBBCu32.to_le_bytes()),
-            sub(b"ALDI", &0x0000_BBBDu32.to_le_bytes()),
-            sub(b"SPOR", &0x0000_CCC9u32.to_le_bytes()),
-            sub(b"OCOR", &0x0000_CCCAu32.to_le_bytes()),
-            sub(b"GWOR", &0x0000_CCCBu32.to_le_bytes()),
-            sub(b"ECOR", &0x0000_CCCCu32.to_le_bytes()),
+            sub(b"ALST", 10i32.to_le_bytes()),
+            sub(b"ALFR", 0x0002_0000u32.to_le_bytes()),
+            sub(b"ALDN", 0x0000_AAAAu32.to_le_bytes()),
+            sub(b"VTCK", 0x0000_BBBBu32.to_le_bytes()),
+            sub(b"ALFV", 0x0000_BBBCu32.to_le_bytes()),
+            sub(b"ALDI", 0x0000_BBBDu32.to_le_bytes()),
+            sub(b"SPOR", 0x0000_CCC9u32.to_le_bytes()),
+            sub(b"OCOR", 0x0000_CCCAu32.to_le_bytes()),
+            sub(b"GWOR", 0x0000_CCCBu32.to_le_bytes()),
+            sub(b"ECOR", 0x0000_CCCCu32.to_le_bytes()),
             sub(
                 b"ALLA",
-                &[0x0000_DDDDu32.to_le_bytes(), 12i32.to_le_bytes()].concat(),
+                [0x0000_DDDDu32.to_le_bytes(), 12i32.to_le_bytes()].concat(),
             ),
-            sub(b"ALFC", &0x0000_1111u32.to_le_bytes()),
-            sub(b"ALFC", &0x0000_2222u32.to_le_bytes()),
-            sub(b"ALPC", &0x0000_3333u32.to_le_bytes()),
-            sub(b"ALSP", &0x0000_4444u32.to_le_bytes()),
+            sub(b"ALFC", 0x0000_1111u32.to_le_bytes()),
+            sub(b"ALFC", 0x0000_2222u32.to_le_bytes()),
+            sub(b"ALPC", 0x0000_3333u32.to_le_bytes()),
+            sub(b"ALSP", 0x0000_4444u32.to_le_bytes()),
             sub(
                 b"KWDA",
-                &[0x0000_5555u32.to_le_bytes(), 0x0000_6666u32.to_le_bytes()].concat(),
+                [0x0000_5555u32.to_le_bytes(), 0x0000_6666u32.to_le_bytes()].concat(),
             ),
             sub(
                 b"CNTO",
-                &[0x0000_7777u32.to_le_bytes(), 3u32.to_le_bytes()].concat(),
+                [0x0000_7777u32.to_le_bytes(), 3u32.to_le_bytes()].concat(),
             ),
         ];
         let q = parse_qust(0x9, &subs, &None);
@@ -1753,16 +1753,16 @@ mod tests {
         // flush-on-next-opener rule must not bleed one alias's fields
         // into the next.
         let subs = vec![
-            sub(b"ALST", &0i32.to_le_bytes()),
+            sub(b"ALST", 0i32.to_le_bytes()),
             sub(b"ALID", b"First\0"),
-            sub(b"ALFR", &0x0000_1000u32.to_le_bytes()),
-            sub(b"ALST", &1i32.to_le_bytes()),
+            sub(b"ALFR", 0x0000_1000u32.to_le_bytes()),
+            sub(b"ALST", 1i32.to_le_bytes()),
             sub(b"ALID", b"Second\0"),
-            sub(b"ALUA", &0x0000_2000u32.to_le_bytes()),
-            sub(b"ALED", &[]),
-            sub(b"ALLS", &2i32.to_le_bytes()),
+            sub(b"ALUA", 0x0000_2000u32.to_le_bytes()),
+            sub(b"ALED", []),
+            sub(b"ALLS", 2i32.to_le_bytes()),
             sub(b"ALID", b"Third\0"),
-            sub(b"ALFL", &0x0000_3000u32.to_le_bytes()),
+            sub(b"ALFL", 0x0000_3000u32.to_le_bytes()),
         ];
         let q = parse_qust(0xA, &subs, &None);
         assert_eq!(q.aliases.len(), 3);
@@ -1791,8 +1791,8 @@ mod tests {
         // beforehand must not fabricate a fill type — the alias just
         // stays `fill_type: None`.
         let subs = vec![
-            sub(b"ALST", &0i32.to_le_bytes()),
-            sub(b"ALCA", &5i32.to_le_bytes()),
+            sub(b"ALST", 0i32.to_le_bytes()),
+            sub(b"ALCA", 5i32.to_le_bytes()),
         ];
         let q = parse_qust(0xB, &subs, &None);
         assert_eq!(q.aliases[0].fill_type, None);
@@ -1801,13 +1801,13 @@ mod tests {
     #[test]
     fn parse_qust_decodes_near_and_collection_alias_metadata() {
         let subs = vec![
-            sub(b"ALST", &1i32.to_le_bytes()),
-            sub(b"ALNA", &7i32.to_le_bytes()),
-            sub(b"ALNT", &2u32.to_le_bytes()),
-            sub(b"ALCC", &8i32.to_le_bytes()),
-            sub(b"ALED", &[]),
-            sub(b"ALCS", &2i32.to_le_bytes()),
-            sub(b"ALMI", &[4]),
+            sub(b"ALST", 1i32.to_le_bytes()),
+            sub(b"ALNA", 7i32.to_le_bytes()),
+            sub(b"ALNT", 2u32.to_le_bytes()),
+            sub(b"ALCC", 8i32.to_le_bytes()),
+            sub(b"ALED", []),
+            sub(b"ALCS", 2i32.to_le_bytes()),
+            sub(b"ALMI", [4]),
             sub(b"NNAM", b"Collection quest description\0"),
         ];
         let q = parse_qust(0xC, &subs, &None);
@@ -1830,7 +1830,7 @@ mod tests {
         let subs = vec![
             sub(
                 b"DNAM",
-                &[
+                [
                     QUEST_FLAG_START_GAME_ENABLED as u8,
                     0,
                     50,
@@ -1846,22 +1846,22 @@ mod tests {
                 ],
             ),
             sub(b"ENAM", b"Kill"),
-            sub(b"LNAM", &0x0000_1000u32.to_le_bytes()),
-            sub(b"XNAM", &0x0000_2000u32.to_le_bytes()),
-            sub(b"QTGL", &0x0000_3000u32.to_le_bytes()),
+            sub(b"LNAM", 0x0000_1000u32.to_le_bytes()),
+            sub(b"XNAM", 0x0000_2000u32.to_le_bytes()),
+            sub(b"QTGL", 0x0000_3000u32.to_le_bytes()),
             sub(b"FLTR", b"Main Quest\0"),
-            sub(b"CTDA", &minimal_ctda(10)),
-            sub(b"NEXT", &[]),
-            sub(b"CTDA", &minimal_ctda(11)),
-            sub(b"ANAM", &9u32.to_le_bytes()),
+            sub(b"CTDA", minimal_ctda(10)),
+            sub(b"NEXT", []),
+            sub(b"CTDA", minimal_ctda(11)),
+            sub(b"ANAM", 9u32.to_le_bytes()),
             sub(b"NNAM", b"Quest description\0"),
-            sub(b"GNAM", &0x0000_4000u32.to_le_bytes()),
+            sub(b"GNAM", 0x0000_4000u32.to_le_bytes()),
             sub(b"SNAM", b"Interface/Quest.swf\0"),
             sub(
                 b"QSTA",
-                &[0x0000_5000u32.to_le_bytes(), 1u32.to_le_bytes()].concat(),
+                [0x0000_5000u32.to_le_bytes(), 1u32.to_le_bytes()].concat(),
             ),
-            sub(b"CTDA", &minimal_ctda(12)),
+            sub(b"CTDA", minimal_ctda(12)),
         ];
         let q = parse_qust(0xD, &subs, &None);
         assert_eq!(q.event, Some(*b"Kill"));

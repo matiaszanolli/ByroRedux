@@ -219,7 +219,7 @@ fn serde_attr_declares_unsafe_default(line: &str) -> bool {
         .collect();
     // `skip` fields do not exist in the on-disk shape. Serde requires a
     // construction default for them, but that cannot mask schema drift.
-    keys.iter().any(|key| *key == "default") && !keys.iter().any(|key| *key == "skip")
+    keys.contains(&"default") && !keys.contains(&"skip")
 }
 
 fn normalized_serialized_shapes() -> Vec<String> {

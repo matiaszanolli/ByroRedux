@@ -1123,16 +1123,16 @@ mod tests {
         data_bytes[11] = WTHR_PLEASANT;
 
         let subs = vec![
-            sub(b"EDID", b"TestWeather\0".to_vec()),
+            sub(b"EDID", b"TestWeather\0"),
             sub(b"NAM0", nam0_data),
             sub(b"HNAM", hnam_data),
             sub(b"DATA", data_bytes),
             // Cloud layers in schema-emission order (DNAM/CNAM/ANAM/BNAM).
             // See #534 / audit M33-02 for the FourCC-to-layer mapping.
-            sub(b"DNAM", b"sky\\clouds_00_base.dds\0".to_vec()),
-            sub(b"CNAM", b"sky\\clouds_01.dds\0".to_vec()),
-            sub(b"ANAM", b"sky\\clouds_02.dds\0".to_vec()),
-            sub(b"BNAM", b"sky\\clouds_03_top.dds\0".to_vec()),
+            sub(b"DNAM", b"sky\\clouds_00_base.dds\0"),
+            sub(b"CNAM", b"sky\\clouds_01.dds\0"),
+            sub(b"ANAM", b"sky\\clouds_02.dds\0"),
+            sub(b"BNAM", b"sky\\clouds_03_top.dds\0"),
         ];
 
         let w = parse_wthr(0x1234, &subs, GameKind::Fallout3NV, &None);
@@ -1178,9 +1178,9 @@ mod tests {
     #[test]
     fn parse_wthr_00tx_fourccs_are_inert() {
         let subs = vec![
-            sub(b"EDID", b"StaleFourCCs\0".to_vec()),
-            sub(b"00TX", b"sky\\stale.dds\0".to_vec()),
-            sub(b"10TX", b"sky\\stale.dds\0".to_vec()),
+            sub(b"EDID", b"StaleFourCCs\0"),
+            sub(b"00TX", b"sky\\stale.dds\0"),
+            sub(b"10TX", b"sky\\stale.dds\0"),
         ];
         let w = parse_wthr(0xFADE, &subs, GameKind::Fallout3NV, &None);
         assert!(w.cloud_textures.iter().all(|c| c.is_none()));
@@ -1213,7 +1213,7 @@ mod tests {
         assert_ne!(old_byte_13_noise, WTHR_RAINY);
 
         let subs = vec![
-            sub(b"EDID", b"RainyOffsetCheck\0".to_vec()),
+            sub(b"EDID", b"RainyOffsetCheck\0"),
             sub(b"DATA", data_bytes),
         ];
         let w = parse_wthr(0x600, &subs, GameKind::Fallout3NV, &None);
@@ -1239,7 +1239,7 @@ mod tests {
         // Trailing 8 B are ignored by the parser — fill with sentinels.
         fnam_data[16..24].copy_from_slice(&[0xFE; 8]);
         let subs = vec![
-            sub(b"EDID", b"FNVFogCheck\0".to_vec()),
+            sub(b"EDID", b"FNVFogCheck\0"),
             sub(b"FNAM", fnam_data),
         ];
         let w = parse_wthr(0xF09, &subs, GameKind::Fallout3NV, &None);
@@ -1259,7 +1259,7 @@ mod tests {
         fnam_data[8..12].copy_from_slice(&(-600.0_f32).to_le_bytes());
         fnam_data[12..16].copy_from_slice(&6_000.0_f32.to_le_bytes());
         let subs = vec![
-            sub(b"EDID", b"OBLFogCheck\0".to_vec()),
+            sub(b"EDID", b"OBLFogCheck\0"),
             sub(b"FNAM", fnam_data),
         ];
         let w = parse_wthr(0x0B1, &subs, GameKind::Fallout3NV, &None);
@@ -1407,7 +1407,7 @@ mod tests {
         hnam_data[8..12].copy_from_slice(&2.0_f32.to_le_bytes());
         hnam_data[12..16].copy_from_slice(&1.0_f32.to_le_bytes());
         let subs = vec![
-            sub(b"EDID", b"OBLMixed\0".to_vec()),
+            sub(b"EDID", b"OBLMixed\0"),
             sub(b"FNAM", fnam_data),
             sub(b"HNAM", hnam_data),
         ];
@@ -1456,7 +1456,7 @@ mod tests {
         }
         assert_eq!(hnam.len(), 56);
 
-        let subs = vec![sub(b"EDID", b"SEClearTrans\0".to_vec()), sub(b"HNAM", hnam)];
+        let subs = vec![sub(b"EDID", b"SEClearTrans\0"), sub(b"HNAM", hnam)];
         let w = parse_wthr(0x0100_0001, &subs, GameKind::Fallout3NV, &None);
         let hdr = w
             .oblivion_hdr
@@ -1493,7 +1493,7 @@ mod tests {
     fn parse_wthr_non_oblivion_leaves_oblivion_hdr_none() {
         let mut fnam_data = vec![0u8; 16];
         fnam_data[4..8].copy_from_slice(&32_000.0_f32.to_le_bytes());
-        let subs = vec![sub(b"EDID", b"FNVDay\0".to_vec()), sub(b"FNAM", fnam_data)];
+        let subs = vec![sub(b"EDID", b"FNVDay\0"), sub(b"FNAM", fnam_data)];
         let w = parse_wthr(0x0200_0001, &subs, GameKind::Fallout3NV, &None);
         assert!(w.oblivion_hdr.is_none());
     }
@@ -1506,8 +1506,8 @@ mod tests {
     #[test]
     fn parse_wthr_dnam_is_texture_path_not_speeds() {
         let subs = vec![
-            sub(b"EDID", b"DnamPathCheck\0".to_vec()),
-            sub(b"DNAM", b"sky\\a.dds\0".to_vec()),
+            sub(b"EDID", b"DnamPathCheck\0"),
+            sub(b"DNAM", b"sky\\a.dds\0"),
         ];
         let w = parse_wthr(0x5ECD, &subs, GameKind::Fallout3NV, &None);
         assert_eq!(w.cloud_textures[0].as_deref(), Some("sky\\a.dds"));
@@ -1535,7 +1535,7 @@ mod tests {
         }
 
         let subs = vec![
-            sub(b"EDID", b"OblivionClear\0".to_vec()),
+            sub(b"EDID", b"OblivionClear\0"),
             sub(b"NAM0", nam0_data),
         ];
 
@@ -1574,7 +1574,7 @@ mod tests {
     #[test]
     fn parse_wthr_nam0_below_160_drops() {
         let subs = vec![
-            sub(b"EDID", b"Truncated\0".to_vec()),
+            sub(b"EDID", b"Truncated\0"),
             sub(b"NAM0", vec![0xFF; 80]),
         ];
         let w = parse_wthr(0xBADD, &subs, GameKind::Fallout3NV, &None);
@@ -1627,7 +1627,7 @@ mod tests {
             nam0[off + 2] = 0xBB;
             nam0[off + 3] = 0xFF;
         }
-        let subs = vec![sub(b"EDID", b"SlotPin\0".to_vec()), sub(b"NAM0", nam0)];
+        let subs = vec![sub(b"EDID", b"SlotPin\0"), sub(b"NAM0", nam0)];
         let w = parse_wthr(0x729, &subs, GameKind::Fallout3NV, &None);
 
         let day = TOD_DAY;
@@ -1672,7 +1672,7 @@ mod tests {
         data_data[11] = WTHR_RAINY;
 
         let subs = vec![
-            sub(b"EDID", b"SkyrimWeather\0".to_vec()),
+            sub(b"EDID", b"SkyrimWeather\0"),
             sub(b"NAM0", nam0_data),
             sub(b"FNAM", fnam_data),
             sub(b"DATA", data_data),
@@ -1710,7 +1710,7 @@ mod tests {
         fnam_data[4..8].copy_from_slice(&5_555.0_f32.to_le_bytes());
 
         let subs = vec![
-            sub(b"EDID", b"FnvWeather\0".to_vec()),
+            sub(b"EDID", b"FnvWeather\0"),
             sub(b"NAM0", nam0_data),
             sub(b"FNAM", fnam_data),
         ];
@@ -1769,7 +1769,7 @@ mod tests {
         // branch (which would over-read NAM0 by 32 B and corrupt FNAM).
         // Sanity check: an empty Skyrim record must produce default
         // sky_colors but a non-default `editor_id` if EDID is present.
-        let subs = vec![sub(b"EDID", b"SkyrimClear\0".to_vec())];
+        let subs = vec![sub(b"EDID", b"SkyrimClear\0")];
         let w = parse_wthr(0xDEAD, &subs, GameKind::Skyrim, &None);
         assert_eq!(w.editor_id, "SkyrimClear");
         assert!(w.skyrim_ambient_cube.is_none());
@@ -1790,7 +1790,7 @@ mod tests {
         }
         let nam0 = build_skyrim_nam0(&groups);
 
-        let subs = vec![sub(b"EDID", b"SkyrimCloudy\0".to_vec()), sub(b"NAM0", nam0)];
+        let subs = vec![sub(b"EDID", b"SkyrimCloudy\0"), sub(b"NAM0", nam0)];
         let w = parse_wthr(0x1234, &subs, GameKind::Skyrim, &None);
 
         // Group 0 (SKY_UPPER), all 4 TOD slots.
@@ -1822,7 +1822,7 @@ mod tests {
         ] {
             fnam.extend_from_slice(&v.to_le_bytes());
         }
-        let subs = vec![sub(b"EDID", b"SkyrimStorm\0".to_vec()), sub(b"FNAM", fnam)];
+        let subs = vec![sub(b"EDID", b"SkyrimStorm\0"), sub(b"FNAM", fnam)];
         let w = parse_wthr(0xCAFE, &subs, GameKind::Skyrim, &None);
         assert!((w.fog_day_near - 1_200.0).abs() < 0.001);
         assert!((w.fog_day_far - 80_000.0).abs() < 0.001);
@@ -1840,7 +1840,7 @@ mod tests {
         let mut data = vec![0u8; 19];
         data[0] = 0x19; // wind = 25
         data[11] = WTHR_CLOUDY; // classification = cloudy
-        let subs = vec![sub(b"EDID", b"SkyrimRainy\0".to_vec()), sub(b"DATA", data)];
+        let subs = vec![sub(b"EDID", b"SkyrimRainy\0"), sub(b"DATA", data)];
         let w = parse_wthr(0xFACE, &subs, GameKind::Skyrim, &None);
         assert_eq!(w.wind_speed, 25);
         assert_eq!(w.classification, WTHR_CLOUDY);
@@ -1912,11 +1912,11 @@ mod tests {
                 sub(b"QNAM", qnam),
                 sub(b"JNAM", jnam),
                 sub(b"DATA", data),
-                sub(b"00TX", b"sky\\cloud0.dds\0".to_vec()),
-                sub(b"A0TX", b"sky\\cloud10.dds\0".to_vec()),
-                sub(b"V0TX", b"sky\\cloud31.dds\0".to_vec()),
-                sub(b"MNAM", 0x1234_5678u32.to_le_bytes().to_vec()),
-                sub(b"NNAM", 0x8765_4321u32.to_le_bytes().to_vec()),
+                sub(b"00TX", b"sky\\cloud0.dds\0"),
+                sub(b"A0TX", b"sky\\cloud10.dds\0"),
+                sub(b"V0TX", b"sky\\cloud31.dds\0"),
+                sub(b"MNAM", 0x1234_5678u32.to_le_bytes()),
+                sub(b"NNAM", 0x8765_4321u32.to_le_bytes()),
             ],
             GameKind::Skyrim,
             &None,
@@ -1961,8 +1961,8 @@ mod tests {
         let w = parse_wthr(
             0xD1D,
             &[
-                sub(b"MNAM", precip_self_ref.to_le_bytes().to_vec()),
-                sub(b"NNAM", visual_master_ref.to_le_bytes().to_vec()),
+                sub(b"MNAM", precip_self_ref.to_le_bytes()),
+                sub(b"NNAM", visual_master_ref.to_le_bytes()),
             ],
             GameKind::Skyrim,
             &Some(remap),
@@ -2036,7 +2036,7 @@ mod tests {
         }
 
         let subs = vec![
-            sub(b"EDID", b"SkyrimSnow\0".to_vec()),
+            sub(b"EDID", b"SkyrimSnow\0"),
             sub(b"DALC", make_dalc(0x10)), // sunrise
             sub(b"DALC", make_dalc(0x20)), // day
             sub(b"DALC", make_dalc(0x30)), // sunset
@@ -2072,7 +2072,7 @@ mod tests {
             buf
         }
         let subs = vec![
-            sub(b"EDID", b"TruncatedDalcMod\0".to_vec()),
+            sub(b"EDID", b"TruncatedDalcMod\0"),
             sub(b"DALC", make_dalc(0xAA)),
             sub(b"DALC", make_dalc(0xBB)),
         ];
@@ -2095,7 +2095,7 @@ mod tests {
             buf[28..32].copy_from_slice(&1.0f32.to_le_bytes());
             buf
         }
-        let mut subs = vec![sub(b"EDID", b"OverflowDalc\0".to_vec())];
+        let mut subs = vec![sub(b"EDID", b"OverflowDalc\0")];
         for marker in 0..8u8 {
             subs.push(sub(b"DALC", make_dalc(0x10 + marker)));
         }
@@ -2127,7 +2127,7 @@ mod tests {
         dalc[28..32].copy_from_slice(&1.0f32.to_le_bytes());
 
         let subs = vec![
-            sub(b"EDID", b"SkyrimFullRoundTrip\0".to_vec()),
+            sub(b"EDID", b"SkyrimFullRoundTrip\0"),
             sub(b"NAM0", build_skyrim_nam0(&groups)),
             sub(b"FNAM", fnam),
             sub(b"DATA", data),

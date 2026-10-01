@@ -145,7 +145,7 @@ mod tests {
         let subs = vec![
             sub(b"EDID", b"GameDay\0"),
             sub(b"FNAM", b"l"),
-            sub(b"FLTV", &7.0f32.to_le_bytes()),
+            sub(b"FLTV", 7.0f32.to_le_bytes()),
         ];
         let g = parse_glob(0x10, &subs);
         assert_eq!(g.editor_id, "GameDay");
@@ -161,7 +161,7 @@ mod tests {
             &[
                 sub(b"EDID", b"KarmaGood\0"),
                 sub(b"FNAM", b"l"),
-                sub(b"FLTV", &[0x00, 0x00, 0x7a, 0x43]),
+                sub(b"FLTV", [0x00, 0x00, 0x7a, 0x43]),
             ],
         );
         assert_eq!(karma_good.value, SettingValue::Int(250));
@@ -172,7 +172,7 @@ mod tests {
             &[
                 sub(b"EDID", b"SEKnightSpawnTime\0"),
                 sub(b"FNAM", b"s"),
-                sub(b"FLTV", &[0x00, 0x00, 0x80, 0x40]),
+                sub(b"FLTV", [0x00, 0x00, 0x80, 0x40]),
             ],
         );
         assert_eq!(spawn_time.value, SettingValue::Short(4));
@@ -182,7 +182,7 @@ mod tests {
     fn glob_fnam_order_does_not_change_fltv_decode() {
         let g = parse_glob(
             0x12,
-            &[sub(b"FLTV", &250.0f32.to_le_bytes()), sub(b"FNAM", b"l")],
+            &[sub(b"FLTV", 250.0f32.to_le_bytes()), sub(b"FNAM", b"l")],
         );
         assert_eq!(g.value, SettingValue::Int(250));
     }
@@ -192,7 +192,7 @@ mod tests {
         let subs = vec![
             sub(b"EDID", b"GameYear\0"),
             sub(b"FNAM", b"f"),
-            sub(b"FLTV", &2281.5f32.to_le_bytes()),
+            sub(b"FLTV", 2281.5f32.to_le_bytes()),
         ];
         let g = parse_glob(0x11, &subs);
         match g.value {
@@ -205,7 +205,7 @@ mod tests {
     fn gmst_int_via_prefix() {
         let subs = vec![
             sub(b"EDID", b"iMaxLevel\0"),
-            sub(b"DATA", &50i32.to_le_bytes()),
+            sub(b"DATA", 50i32.to_le_bytes()),
         ];
         let g = parse_gmst(0x20, &subs);
         assert_eq!(g.value, SettingValue::Int(50));
@@ -215,7 +215,7 @@ mod tests {
     fn gmst_float_via_prefix() {
         let subs = vec![
             sub(b"EDID", b"fJumpHeightMin\0"),
-            sub(b"DATA", &76.0f32.to_le_bytes()),
+            sub(b"DATA", 76.0f32.to_le_bytes()),
         ];
         let g = parse_gmst(0x21, &subs);
         match g.value {

@@ -1839,7 +1839,7 @@ mod tests {
     fn parse_navi_extracts_version() {
         let subs = vec![
             sub(b"EDID", b"NavMaster\0"),
-            sub(b"NVER", &11u32.to_le_bytes()),
+            sub(b"NVER", 11u32.to_le_bytes()),
         ];
         let n = parse_navi(0x5678, &subs);
         assert_eq!(n.editor_id, "NavMaster");
@@ -1848,7 +1848,7 @@ mod tests {
 
     #[test]
     fn parse_navm_extracts_version() {
-        let subs = vec![sub(b"NVER", &11u32.to_le_bytes())];
+        let subs = vec![sub(b"NVER", 11u32.to_le_bytes())];
         let n = parse_navm(0xAABB, &subs, &None);
         assert_eq!(n.form_id, 0xAABB);
         assert_eq!(n.version, 11);
@@ -1858,8 +1858,8 @@ mod tests {
     fn parse_regn_picks_weather_and_color() {
         let subs = vec![
             sub(b"EDID", b"WastelandRegion\0"),
-            sub(b"WNAM", &0x0001_B000u32.to_le_bytes()),
-            sub(b"RCLR", &[128, 96, 64, 0]),
+            sub(b"WNAM", 0x0001_B000u32.to_le_bytes()),
+            sub(b"RCLR", [128, 96, 64, 0]),
         ];
         let r = parse_regn(0xBEEF, &subs, &None);
         assert_eq!(r.editor_id, "WastelandRegion");
@@ -1979,7 +1979,7 @@ mod tests {
             f[first + 2] = 1.4; // contrast
             f[first + 3] = 0.95; // brightness
             f[first + 4..first + 8].copy_from_slice(&[0.2, 0.4, 0.6, 0.35]);
-            let subs = vec![sub(b"EDID", b"FNVInterior\0"), sub(b"DNAM", &floats_le(&f))];
+            let subs = vec![sub(b"EDID", b"FNVInterior\0"), sub(b"DNAM", floats_le(&f))];
             let space = parse_imgs(0x10, &subs, GameKind::Fallout3NV)
                 .image_space
                 .unwrap_or_else(|| panic!("{size}-byte DNAM"));
@@ -1990,7 +1990,7 @@ mod tests {
             );
             assert_eq!(space.tint_color, [0.2, 0.4, 0.6, 0.35], "{size}");
         }
-        let odd = vec![sub(b"DNAM", &[0u8; 56])];
+        let odd = vec![sub(b"DNAM", [0u8; 56])];
         assert!(parse_imgs(0x11, &odd, GameKind::Fallout3NV)
             .image_space
             .is_none());
@@ -2005,9 +2005,9 @@ mod tests {
         use crate::esm::reader::GameKind;
         let subs = vec![
             sub(b"EDID", b"WhiterunInterior\0"),
-            sub(b"CNAM", &floats_le(&[0.9, 1.1, 1.3])),
-            sub(b"TNAM", &floats_le(&[0.25, 1.0, 0.5, 0.0])),
-            sub(b"DNAM", &floats_le(&[7.0, 7.0, 7.0, 7.0])),
+            sub(b"CNAM", floats_le(&[0.9, 1.1, 1.3])),
+            sub(b"TNAM", floats_le(&[0.25, 1.0, 0.5, 0.0])),
+            sub(b"DNAM", floats_le(&[7.0, 7.0, 7.0, 7.0])),
         ];
         let space = parse_imgs(0x20, &subs, GameKind::Skyrim)
             .image_space
@@ -2020,7 +2020,7 @@ mod tests {
 
         let mut legacy = vec![3.0f32; 7];
         legacy.extend([0.8, 1.2, 1.4, 0.1, 0.3, 0.6, 0.9]);
-        let subs = vec![sub(b"ENAM", &floats_le(&legacy))];
+        let subs = vec![sub(b"ENAM", floats_le(&legacy))];
         let space = parse_imgs(0x21, &subs, GameKind::Fallout4)
             .image_space
             .unwrap();
@@ -2039,7 +2039,7 @@ mod tests {
         let imgs = parse_imgs(0x000A_5678, &subs, GameKind::Skyrim);
         assert_eq!(imgs.editor_id, "LegacyImagespace");
         assert!(imgs.image_space.is_none());
-        let dnam = vec![sub(b"DNAM", &[0u8; 152])];
+        let dnam = vec![sub(b"DNAM", [0u8; 152])];
         assert!(parse_imgs(0x1, &dnam, GameKind::Oblivion)
             .image_space
             .is_none());
@@ -2048,7 +2048,7 @@ mod tests {
     #[test]
     fn parse_lgtm_short_data_returns_defaults() {
         // DATA under 20 bytes → all field captures short-circuit.
-        let subs = vec![sub(b"EDID", b"ShortLgtm\0"), sub(b"DATA", &[1, 2, 3, 4])];
+        let subs = vec![sub(b"EDID", b"ShortLgtm\0"), sub(b"DATA", [1, 2, 3, 4])];
         let l = parse_lgtm(0xBEEF, &subs, GameKind::Skyrim);
         assert_eq!(l.editor_id, "ShortLgtm");
         assert_eq!(l.ambient, [0.0; 3]);
@@ -2131,8 +2131,8 @@ mod tests {
             sub(b"EDID", b"NukaColaMachine01\0"),
             sub(b"FULL", b"Nuka-Cola Machine\0"),
             sub(b"MODL", b"activators\\nukacolamachine01.nif\0"),
-            sub(b"SCRI", &0x0010_ABCDu32.to_le_bytes()),
-            sub(b"SNAM", &0x0009_0000u32.to_le_bytes()),
+            sub(b"SCRI", 0x0010_ABCDu32.to_le_bytes()),
+            sub(b"SNAM", 0x0009_0000u32.to_le_bytes()),
         ];
         let a = parse_acti(0x0002_9E7A, &subs, &None);
         assert_eq!(a.editor_id, "NukaColaMachine01");
@@ -2157,10 +2157,10 @@ mod tests {
         let subs = vec![
             sub(b"EDID", b"TundraStreamStraight01WaterA\0"),
             sub(b"MODL", b"Water\\TundraStreamStraight01WaterA.nif\0"),
-            sub(b"PNAM", &[0xcc, 0x4c, 0x33, 0x00]),
-            sub(b"SNAM", &0x0003_D0A7u32.to_le_bytes()),
-            sub(b"WNAM", &0x0001_5429u32.to_le_bytes()),
-            sub(b"FNAM", &[0x01, 0x00]),
+            sub(b"PNAM", [0xcc, 0x4c, 0x33, 0x00]),
+            sub(b"SNAM", 0x0003_D0A7u32.to_le_bytes()),
+            sub(b"WNAM", 0x0001_5429u32.to_le_bytes()),
+            sub(b"FNAM", [0x01, 0x00]),
         ];
         let a = parse_acti(0x0001_608E, &subs, &None);
         assert_eq!(a.water_type_form, 0x0001_5429);
@@ -2188,7 +2188,7 @@ mod tests {
         let self_ref_global: u32 = (2u32 << 24) | 0x0000_1234;
         let subs = vec![
             sub(b"EDID", b"DlcTerminal01\0"),
-            sub(b"SCRI", &self_ref_local.to_le_bytes()),
+            sub(b"SCRI", self_ref_local.to_le_bytes()),
         ];
         let a = parse_acti(0x0002_9E7A, &subs, &Some(remap));
         assert_eq!(
@@ -2255,18 +2255,18 @@ mod tests {
             sub(b"MODL", b"clutter\\junk\\terminal01.nif\0"),
             sub(b"DESC", b"Welcome, Courier.\0"),
             // 4-byte packed field, not footer text — top corpus value.
-            sub(b"DNAM", &[0x00, 0x02, 0x00, 0x00]),
+            sub(b"DNAM", [0x00, 0x02, 0x00, 0x00]),
             sub(b"ITXT", b"Dismiss all companions.\0"),
             sub(b"RNAM", b"Accessing confirmation menu...\0"),
-            sub(b"ANAM", &[0x02]),
+            sub(b"ANAM", [0x02]),
             sub(b"ITXT", b"No.\0"),
             // 246 of FNV's 895 RNAM are exactly this: four zero bytes.
-            sub(b"RNAM", &[0, 0, 0, 0]),
-            sub(b"ANAM", &[0x00]),
+            sub(b"RNAM", [0, 0, 0, 0]),
+            sub(b"ANAM", [0x00]),
             sub(b"ITXT", b"Yes.\0"),
             sub(b"RNAM", b"Notification sent...\0"),
-            sub(b"ANAM", &[0x00]),
-            sub(b"SCRI", &0x0004_2CD2u32.to_le_bytes()),
+            sub(b"ANAM", [0x00]),
+            sub(b"SCRI", 0x0004_2CD2u32.to_le_bytes()),
         ];
         let t = parse_term(0x0004_2424, &subs, &None);
         assert_eq!(t.editor_id, "P04CompanionFireTerminal");
@@ -2335,18 +2335,18 @@ mod tests {
 
         let subs = vec![
             sub(b"EDID", b"VRWorkshopShared_VRTerminalMusicSubMenu\0"),
-            sub(b"FULL", &0x0001u32.to_le_bytes()),
+            sub(b"FULL", 0x0001u32.to_le_bytes()),
             // 0x40000001 — a float, identical on all 778 FO4 terminals.
-            sub(b"MNAM", &[0x01, 0x00, 0x00, 0x40]),
-            sub(b"BSIZ", &1u32.to_le_bytes()),
-            sub(b"BTXT", &0x0002u32.to_le_bytes()),
-            sub(b"ISIZ", &2u32.to_le_bytes()),
-            sub(b"ITXT", &0x0003u32.to_le_bytes()),
-            sub(b"ANAM", &[0x08]),
-            sub(b"ITID", &1u16.to_le_bytes()),
-            sub(b"ITXT", &0x0004u32.to_le_bytes()),
-            sub(b"ANAM", &[0x08]),
-            sub(b"ITID", &2u16.to_le_bytes()),
+            sub(b"MNAM", [0x01, 0x00, 0x00, 0x40]),
+            sub(b"BSIZ", 1u32.to_le_bytes()),
+            sub(b"BTXT", 0x0002u32.to_le_bytes()),
+            sub(b"ISIZ", 2u32.to_le_bytes()),
+            sub(b"ITXT", 0x0003u32.to_le_bytes()),
+            sub(b"ANAM", [0x08]),
+            sub(b"ITID", 1u16.to_le_bytes()),
+            sub(b"ITXT", 0x0004u32.to_le_bytes()),
+            sub(b"ANAM", [0x08]),
+            sub(b"ITID", 2u16.to_le_bytes()),
         ];
         let t = parse_term(0x0002_5001, &subs, &None);
         assert_eq!(t.full_name, "Jukebox");
@@ -2393,19 +2393,19 @@ mod tests {
             sub(b"EDID", b"DungeonTerminalWithLogs\0"),
             sub(b"NAM0", b"ROBCO TERMLINK\0"),
             sub(b"WNAM", b"Welcome to RobCo Industries\0"),
-            sub(b"BSIZ", &2u32.to_le_bytes()),
+            sub(b"BSIZ", 2u32.to_le_bytes()),
             sub(b"BTXT", b"Log entry 1: unconditionally shown.\0"),
             sub(b"BTXT", b"Log entry 2: locked until the safe is opened.\0"),
             // The second body's condition — must land on body 2, not the
             // menu item that follows it.
-            sub(b"CTDA", &ctda(72, 0x0002_0ABC)),
-            sub(b"ISIZ", &1u32.to_le_bytes()),
+            sub(b"CTDA", ctda(72, 0x0002_0ABC)),
+            sub(b"ISIZ", 1u32.to_le_bytes()),
             sub(b"ITXT", b"Ignore\0"),
-            sub(b"ANAM", &[0x08]),
-            sub(b"ITID", &1u16.to_le_bytes()),
+            sub(b"ANAM", [0x08]),
+            sub(b"ITID", 1u16.to_le_bytes()),
             sub(b"UNAM", b"Open the safe.\0"),
             // The item's own condition — must land on the item.
-            sub(b"CTDA", &ctda(72, 0x0002_0DEF)),
+            sub(b"CTDA", ctda(72, 0x0002_0DEF)),
         ];
         let t = parse_term(0x0002_6001, &subs, &None);
         assert_eq!(t.header_text, "ROBCO TERMLINK");
@@ -2453,9 +2453,9 @@ mod tests {
     fn anam_dnam_and_mnam_never_contribute_terminal_text() {
         let subs = vec![
             sub(b"EDID", b"GoodspringsSchoolTerminal\0"),
-            sub(b"MNAM", &[0x01, 0x00, 0x00, 0x40]),
-            sub(b"DNAM", &[0x00, 0x02, 0x04, 0x00]),
-            sub(b"ANAM", &[0x08]),
+            sub(b"MNAM", [0x01, 0x00, 0x00, 0x40]),
+            sub(b"DNAM", [0x00, 0x02, 0x04, 0x00]),
+            sub(b"ANAM", [0x08]),
         ];
         let t = parse_term(0x0008_1111, &subs, &None);
         assert!(
@@ -2632,9 +2632,9 @@ mod regn_tests {
             1,
             &[
                 rdat(7, 0, 50),
-                sub(b"RDSB", &0x99u32.to_le_bytes()),
+                sub(b"RDSB", 0x99u32.to_le_bytes()),
                 sub(b"RDSD", &sounds),
-                sub(b"RDSI", &0x77u32.to_le_bytes()),
+                sub(b"RDSI", 0x77u32.to_le_bytes()),
             ],
             &None,
         );
@@ -2659,7 +2659,7 @@ mod regn_tests {
     fn skyrim_music_signature_merges_the_same_way() {
         let r = parse_regn(
             1,
-            &[rdat(7, 0, 50), sub(b"RDMO", &0x4242u32.to_le_bytes())],
+            &[rdat(7, 0, 50), sub(b"RDMO", 0x4242u32.to_le_bytes())],
             &None,
         );
         assert!(matches!(
@@ -2681,9 +2681,9 @@ mod regn_tests {
         let r = parse_regn(
             1,
             &[
-                sub(b"RPLI", &128u32.to_le_bytes()),
+                sub(b"RPLI", 128u32.to_le_bytes()),
                 sub(b"RPLD", &points),
-                sub(b"RPLI", &64u32.to_le_bytes()),
+                sub(b"RPLI", 64u32.to_le_bytes()),
                 sub(b"RPLD", &points[..16]),
             ],
             &None,
@@ -2761,7 +2761,7 @@ mod regn_tests {
     fn an_rdat_with_no_payload_stays_empty_rather_than_absent() {
         // Skyrim authors 69 empty RDOT sections; they must still appear so a
         // consumer sees the declared-but-empty distinction.
-        let r = parse_regn(1, &[rdat(2, 0, 50), sub(b"RDOT", &[])], &None);
+        let r = parse_regn(1, &[rdat(2, 0, 50), sub(b"RDOT", [])], &None);
         assert_eq!(r.entries.len(), 1);
         assert_eq!(r.entries[0].kind, RegionDataKind::Objects);
         assert!(matches!(
@@ -2826,7 +2826,7 @@ mod regn_tests {
         // map names before this branch existed.
         let r = parse_regn(
             1,
-            &[rdat(4, 0, 50), sub(b"RDMP", &0x0001_1086u32.to_le_bytes())],
+            &[rdat(4, 0, 50), sub(b"RDMP", 0x0001_1086u32.to_le_bytes())],
             &None,
         );
         assert_eq!(
@@ -2848,8 +2848,8 @@ mod regn_tests {
             7,
             &[
                 sub(b"EDID", b"MojaveRegion\0"),
-                sub(b"WNAM", &0x1234u32.to_le_bytes()),
-                sub(b"RCLR", &[10, 20, 30, 255]),
+                sub(b"WNAM", 0x1234u32.to_le_bytes()),
+                sub(b"RCLR", [10, 20, 30, 255]),
             ],
             &None,
         );
@@ -2911,7 +2911,7 @@ mod navm_tests {
     fn door_triangles_decode_from_the_typed_form() {
         // form=0x00003A73, triangle=26, trailing u16=0.
         let row = [0x73u8, 0x3a, 0x00, 0x00, 0x1a, 0x00, 0x00, 0x00];
-        let r = parse_navm(1, &[sub(b"NVDP", &row)], &None);
+        let r = parse_navm(1, &[sub(b"NVDP", row)], &None);
         assert_eq!(r.door_triangles.len(), 1);
         let d = &r.door_triangles[0];
         assert_eq!(d.door_form_id, 0x0000_3A73);
@@ -2925,7 +2925,7 @@ mod navm_tests {
     #[test]
     fn cover_triangles_decode_as_bare_indices() {
         let data = [7u8, 0, 0, 1, 255, 255];
-        let r = parse_navm(1, &[sub(b"NVCA", &data)], &None);
+        let r = parse_navm(1, &[sub(b"NVCA", data)], &None);
         assert_eq!(r.cover_triangles, vec![7, 256, 65535]);
     }
 
@@ -2988,7 +2988,7 @@ mod navm_tests {
     fn external_connections_expose_the_neighbouring_mesh() {
         // The bytes of a real FNV NVEX row.
         let row = [2u8, 0, 0, 0, 252, 70, 22, 0, 252, 0];
-        let r = parse_navm(1, &[sub(b"NVEX", &row)], &None);
+        let r = parse_navm(1, &[sub(b"NVEX", row)], &None);
         assert_eq!(r.external_connections.len(), 1);
         let c = r.external_connections[0];
         assert_eq!(c.unknown, 2);
@@ -3027,13 +3027,13 @@ mod navm_tests {
         // plugin or a decode regression — worth being able to assert.
         let ok = parse_navm(
             1,
-            &[verts(3), sub(b"NVTR", &tri([0, 1, 2], [0, 0, 0], 0))],
+            &[verts(3), sub(b"NVTR", tri([0, 1, 2], [0, 0, 0], 0))],
             &None,
         );
         assert!(ok.indices_are_in_range());
         let bad = parse_navm(
             1,
-            &[verts(3), sub(b"NVTR", &tri([0, 1, 99], [0, 0, 0], 0))],
+            &[verts(3), sub(b"NVTR", tri([0, 1, 99], [0, 0, 0], 0))],
             &None,
         );
         assert!(!bad.indices_are_in_range());
@@ -3188,7 +3188,7 @@ mod navm_tests {
 
     #[test]
     fn a_truncated_header_retains_the_blob_and_reports_nothing() {
-        let r = parse_navm(1, &[sub(b"NVNM", &[1, 2, 3, 4])], &None);
+        let r = parse_navm(1, &[sub(b"NVNM", [1, 2, 3, 4])], &None);
         assert_eq!(r.packed_geometry.as_deref(), Some(&[1u8, 2, 3, 4][..]));
         assert!(!r.has_decoded_geometry());
         assert!(r.vertices.is_empty());
@@ -3199,7 +3199,7 @@ mod navm_tests {
     fn a_gamebryo_mesh_reports_decoded_geometry() {
         let r = parse_navm(
             1,
-            &[verts(3), sub(b"NVTR", &tri([0, 1, 2], [0, 0, 0], 0))],
+            &[verts(3), sub(b"NVTR", tri([0, 1, 2], [0, 0, 0], 0))],
             &None,
         );
         assert!(r.has_decoded_geometry());
@@ -3210,7 +3210,7 @@ mod navm_tests {
     fn oblivion_style_absence_is_not_an_error() {
         // Oblivion authors zero NAVM records; the model must tolerate a mesh
         // that carries nothing rather than assuming geometry exists.
-        let r = parse_navm(1, &[sub(b"NVER", &12u32.to_le_bytes())], &None);
+        let r = parse_navm(1, &[sub(b"NVER", 12u32.to_le_bytes())], &None);
         assert_eq!(r.version, 12);
         assert!(!r.has_decoded_geometry());
         assert!(r.linked_meshes().is_empty());
@@ -3250,7 +3250,7 @@ mod navm_tests {
             &[
                 verts(3),
                 sub(b"DATA", &data),
-                sub(b"NVTR", &tri([0, 1, 2], [0, 0, 0], 0)),
+                sub(b"NVTR", tri([0, 1, 2], [0, 0, 0], 0)),
             ],
             &None,
         );

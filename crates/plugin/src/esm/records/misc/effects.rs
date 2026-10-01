@@ -398,7 +398,7 @@ mod tests {
             sub(b"FULL", b"Small Guns\0"),
             sub(b"DESC", b"Affects accuracy with pistols and rifles.\0"),
             sub(b"ANAM", b"SG\0"),
-            sub(b"CNAM", &1u32.to_le_bytes()), // Combat
+            sub(b"CNAM", 1u32.to_le_bytes()), // Combat
             sub(b"AVSK", &avsk),
         ];
         let a = parse_avif(0x0000_002B, &subs, &None);
@@ -436,7 +436,7 @@ mod tests {
         let subs = vec![
             sub(b"EDID", b"5mmRoundProjectile\0"),
             sub(b"FULL", b"5mm Round\0"),
-            sub(b"DATA", &data),
+            sub(b"DATA", data),
         ];
         let p = parse_proj(0x0007_4824, &subs);
         assert_eq!(p.editor_id, "5mmRoundProjectile");
@@ -485,7 +485,7 @@ mod tests {
                 b"DESC",
                 b"Increased damage at the cost of reduced DT effectiveness.\0",
             ),
-            sub(b"DATA", &data),
+            sub(b"DATA", data),
         ];
         let m = parse_imod(0x0014_5824, &subs);
         assert_eq!(m.editor_id, "Mod5mmRoundHollowPoint");
@@ -502,7 +502,7 @@ mod tests {
         let subs = vec![
             sub(b"EDID", b"NCR\0"),
             sub(b"FULL", b"New California Republic\0"),
-            sub(b"DATA", &data),
+            sub(b"DATA", data),
         ];
         let r = parse_repu(0x0011_E662, &subs);
         assert_eq!(r.editor_id, "NCR");
@@ -519,7 +519,7 @@ mod tests {
         let subs = vec![
             sub(b"EDID", b"FragGrenade\0"),
             sub(b"FULL", b"Frag Grenade\0"),
-            sub(b"DATA", &data),
+            sub(b"DATA", data),
         ];
         let e = parse_expl(0x0006_6EF8, &subs);
         assert_eq!(e.editor_id, "FragGrenade");
@@ -545,7 +545,7 @@ mod tests {
         // (material_kind, ipct_form_id) entries. Stub captures the
         // pair count for sanity-check.
         let data = [0u8; 96];
-        let subs = vec![sub(b"EDID", b"GenericImpactDataSet\0"), sub(b"DATA", &data)];
+        let subs = vec![sub(b"EDID", b"GenericImpactDataSet\0"), sub(b"DATA", data)];
         let i = parse_ipds(0x0006_E1F8, &subs);
         assert_eq!(i.editor_id, "GenericImpactDataSet");
         assert_eq!(i.material_pair_count, 12);
@@ -568,8 +568,8 @@ mod tests {
             sub(b"EDID", b"SmallGuns\0"),
             sub(b"FULL", b"Small Guns\0"),
             sub(b"ANAM", b"SG\0"),
-            sub(b"PNAM", &0x0101u32.to_le_bytes()),
-            sub(b"PNAM", &0x0202u32.to_le_bytes()),
+            sub(b"PNAM", 0x0101u32.to_le_bytes()),
+            sub(b"PNAM", 0x0202u32.to_le_bytes()),
         ];
         let a = parse_avif(0xDEADBEEF, &subs, &None);
         assert_eq!(a.perks, vec![0x0101, 0x0202]);

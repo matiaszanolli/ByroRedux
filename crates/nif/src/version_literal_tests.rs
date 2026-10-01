@@ -63,11 +63,11 @@ fn strip_comments_and_strings(src: &str) -> String {
     fn raw_hash_count(chars: &[(usize, char)], i: usize) -> Option<usize> {
         let mut j = i + 1;
         let mut hashes = 0;
-        while chars.get(j).map_or(false, |&(_, c)| c == '#') {
+        while chars.get(j).is_some_and(|&(_, c)| c == '#') {
             hashes += 1;
             j += 1;
         }
-        (chars.get(j).map_or(false, |&(_, c)| c == '"')).then_some(hashes)
+        (chars.get(j).is_some_and(|&(_, c)| c == '"')).then_some(hashes)
     }
     let prev_is_ident = |chars: &[(usize, char)], i: usize| {
         i > 0
@@ -79,13 +79,13 @@ fn strip_comments_and_strings(src: &str) -> String {
         match state {
             State::Code => {
                 if c == '/'
-                    && chars.get(i + 1).map_or(false, |&(_, n)| n == '/')
+                    && chars.get(i + 1).is_some_and(|&(_, n)| n == '/')
                 {
                     state = State::Line;
                     out.push_str("  ");
                     i += 2;
                 } else if c == '/'
-                    && chars.get(i + 1).map_or(false, |&(_, n)| n == '*')
+                    && chars.get(i + 1).is_some_and(|&(_, n)| n == '*')
                 {
                     state = State::Block(1);
                     out.push_str("  ");
@@ -112,7 +112,7 @@ fn strip_comments_and_strings(src: &str) -> String {
                     out.push(' ');
                     i += 1;
                 } else if c == 'b'
-                    && chars.get(i + 1).map_or(false, |&(_, n)| n == 'r')
+                    && chars.get(i + 1).is_some_and(|&(_, n)| n == 'r')
                     && raw_hash_count(&chars, i + 1).is_some()
                 {
                     // `br#"…"#` byte raw string — skip the prefix, let the
@@ -136,12 +136,12 @@ fn strip_comments_and_strings(src: &str) -> String {
             }
             State::Block(depth) => {
                 if c == '/'
-                    && chars.get(i + 1).map_or(false, |&(_, n)| n == '*')
+                    && chars.get(i + 1).is_some_and(|&(_, n)| n == '*')
                 {
                     state = State::Block(depth + 1);
                     i += 1;
                 } else if c == '*'
-                    && chars.get(i + 1).map_or(false, |&(_, n)| n == '/')
+                    && chars.get(i + 1).is_some_and(|&(_, n)| n == '/')
                 {
                     state = if depth == 1 {
                         State::Code
@@ -188,7 +188,7 @@ fn strip_comments_and_strings(src: &str) -> String {
                 if c == '"' {
                     let closes = chars
                         .get(i + 1..i + 1 + hashes)
-                        .map_or(false, |tail| tail.iter().all(|&(_, ch)| ch == '#'));
+                        .is_some_and(|tail| tail.iter().all(|&(_, ch)| ch == '#'));
                     if closes {
                         state = State::Code;
                         out.push(' ');

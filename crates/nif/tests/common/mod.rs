@@ -324,7 +324,6 @@ impl MeshArchive {
 
 /// Resolve the data directory for a game, falling back to the default Steam
 /// path. Returns `None` and prints a skip notice if neither resolves.
-
 /// #3850 — the strict lane for real-data tests.
 ///
 /// `BYROREDUX_REQUIRE_GAME_DATA=1` turns an absent corpus into a hard

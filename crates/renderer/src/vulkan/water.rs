@@ -1238,8 +1238,6 @@ mod tests {
             .and_then(|(_, rest)| rest.split_once("VISIBILITY_MASK_ALL_OPAQUE"))
             .expect("the #4545 occlusion ray must initialize with a named mask");
         // The mask argument sits in the same call as the first-hit flags.
-        let call = format!("rayQueryInitializeEXT(");
-        let _ = call;
         assert!(
             src.contains("gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT,\n                        VISIBILITY_MASK_ALL_OPAQUE,"),
             "the occlusion ray must combine terminate-on-first-hit with \

@@ -2321,8 +2321,10 @@ mod role_enumeration_tests {
     /// The values yielded must be the matching field, not a fixed slot.
     #[test]
     fn roles_yields_the_matching_field() {
-        let mut set = MaterialTextureSet::<u32>::default();
-        set.normal = 7;
+        let mut set = MaterialTextureSet::<u32> {
+            normal: 7,
+            ..Default::default()
+        };
         set.decals[2] = 9;
         let by_name = |want: &str| -> u32 {
             *set.roles()

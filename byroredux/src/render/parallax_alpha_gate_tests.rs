@@ -100,8 +100,10 @@ fn world_with_alpha_height_material(normal_has_alpha: bool) -> World {
             ..Material::default()
         },
     );
-    let mut textures = byroredux_nif::import::MaterialTextureSet::<u32>::default();
-    textures.normal = 7;
+    let mut textures = byroredux_nif::import::MaterialTextureSet::<u32> {
+        normal: 7,
+        ..Default::default()
+    };
     // The `APPLY_HILIGHT2` route binds the normal map into the height slot.
     textures.height = 7;
     world.insert(

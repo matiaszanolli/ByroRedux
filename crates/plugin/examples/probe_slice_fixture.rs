@@ -100,8 +100,8 @@ fn main() -> anyhow::Result<()> {
         // camera must look back from to face a threshold door.
         let mut centroid = [0.0f64; 3];
         for placed in &cell.references {
-            for axis in 0..3 {
-                centroid[axis] += placed.position[axis] as f64;
+            for (axis, c) in centroid.iter_mut().enumerate() {
+                *c += placed.position[axis] as f64;
             }
         }
         let count = cell.references.len().max(1) as f64;

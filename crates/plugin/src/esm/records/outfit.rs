@@ -92,7 +92,7 @@ mod tests {
     use crate::esm::records::test_support::{edid, sub};
 
     fn inam(form_id: u32) -> SubRecord {
-        sub(b"INAM", form_id.to_le_bytes().to_vec())
+        sub(b"INAM", form_id.to_le_bytes())
     }
 
     /// One `INAM` sub-record holding N FormIDs — the shape the games

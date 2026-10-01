@@ -91,7 +91,7 @@ fn classify_glass_into_material(
     );
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)] // Same signal set as classify_glass_into_material, plus the provenance tuple it returns.
 pub(crate) fn classify_glass_into_material_with_provenance(
     material: &mut Material,
     mesh_name: Option<&str>,

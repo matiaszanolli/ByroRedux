@@ -3473,8 +3473,8 @@ mod unit_tests {
         };
         // Early frames agree with the float formula it replaces.
         for frame in [1u32, 2, 17, 1000] {
-            for lane in 0..3 {
-                let old = (frame as f32 * R3[lane] as f32).fract();
+            for (lane, r3) in R3.iter().enumerate() {
+                let old = (frame as f32 * *r3 as f32).fract();
                 assert!((rotation(frame, lane) - old).abs() < 1.0e-4);
             }
         }

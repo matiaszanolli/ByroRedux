@@ -42,7 +42,7 @@
 use byroredux_bgsm::{parse, MaterialFile};
 use byroredux_bsa::Ba2Archive;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Minimum per-variant success rate before the test fails.
 /// Intentionally tight (1.0) so a single regressed file surfaces as
@@ -199,7 +199,7 @@ fn require_archive(path: &std::path::Path) {
     eprintln!("skipping: {path:?} not found");
 }
 
-fn open_archive_at(data: &PathBuf, name: &str) -> Option<Ba2Archive> {
+fn open_archive_at(data: &Path, name: &str) -> Option<Ba2Archive> {
     let archive_path = data.join(name);
     if !archive_path.is_file() {
         require_archive(&archive_path);

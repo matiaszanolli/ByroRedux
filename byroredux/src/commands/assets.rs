@@ -1231,14 +1231,20 @@ mod tex_missing_tests {
         // Base color resolved (handle 5); normal fell back (handle 0).
         world.insert(e, TextureHandle(5));
         world.insert(e, Material::default());
-        let mut set = MaterialTextureSet::<u32>::default();
-        set.base_color = 5;
+        let mut set = MaterialTextureSet::<u32> {
+            base_color: 5,
+            ..Default::default()
+        };
         world.insert(e, handles(set));
-        let mut paths = MaterialTextureSet::<Option<String>>::default();
-        paths.normal = Some("textures/wall_n.dds".to_string());
-        let mut sources = MaterialTextureSet::<MaterialTextureSource>::default();
-        sources.base_color = MaterialTextureSource::NifTextureSet;
-        sources.normal = MaterialTextureSource::NifTextureSet;
+        let mut paths = MaterialTextureSet::<Option<String>> {
+            normal: Some("textures/wall_n.dds".to_string()),
+            ..Default::default()
+        };
+        let mut sources = MaterialTextureSet::<MaterialTextureSource> {
+            base_color: MaterialTextureSource::NifTextureSet,
+            normal: MaterialTextureSource::NifTextureSet,
+            ..Default::default()
+        };
         world.insert(
             e,
             MaterialTextureDebugInfo {
@@ -1264,12 +1270,16 @@ mod tex_missing_tests {
         let e = world.spawn();
         world.insert(e, TextureHandle(5));
         world.insert(e, Material::default());
-        let mut set = MaterialTextureSet::<u32>::default();
-        set.base_color = 5;
+        let mut set = MaterialTextureSet::<u32> {
+            base_color: 5,
+            ..Default::default()
+        };
         world.insert(e, handles(set));
         // Every non-base role is handle 0 AND Absent — nothing fell back.
-        let mut sources = MaterialTextureSet::<MaterialTextureSource>::default();
-        sources.base_color = MaterialTextureSource::NifTextureSet;
+        let mut sources = MaterialTextureSet::<MaterialTextureSource> {
+            base_color: MaterialTextureSource::NifTextureSet,
+            ..Default::default()
+        };
         world.insert(
             e,
             MaterialTextureDebugInfo {

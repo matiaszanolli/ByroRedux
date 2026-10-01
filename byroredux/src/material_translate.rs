@@ -1625,10 +1625,12 @@ mod tests {
 
     #[test]
     fn mesh_water_preserves_real_normal_handle_and_optical_scalars() {
-        let mut material = Material::default();
-        material.water_shader_flags = 0xC4;
-        material.env_map_scale = 0.42;
-        material.alpha = 0.73;
+        let mut material = Material {
+            water_shader_flags: 0xC4,
+            env_map_scale: 0.42,
+            alpha: 0.73,
+            ..Default::default()
+        };
         let water = water_material_from_mesh(&material, 17, 0);
         assert_eq!(water.normal_map_index, 17);
         assert!((water.reflectivity - 0.42).abs() < f32::EPSILON);
@@ -1637,11 +1639,13 @@ mod tests {
 
     #[test]
     fn skyrim_mesh_water_does_not_treat_generic_material_defaults_as_authored_optics() {
-        let mut material = Material::default();
         // `Water1024.nif`'s exact shape: a Skyrim BSWaterShaderProperty with
         // nif.xml's 0xC4 flags and no scalar-bearing companion property.
-        material.water_shader_flags = 0xC4;
-        material.env_map_scale = 0.0;
+        let mut material = Material {
+            water_shader_flags: 0xC4,
+            env_map_scale: 0.0,
+            ..Default::default()
+        };
 
         let water = water_material_from_mesh(&material, 0, 0);
         let defaults = WaterMaterial::default();
@@ -1661,9 +1665,11 @@ mod tests {
 
     #[test]
     fn mesh_water_applies_authored_uv_scale_to_world_tiling() {
-        let mut material = Material::default();
-        material.uv_scale = [2.0, 0.5];
-        material.uv_offset = [0.125, -0.25];
+        let mut material = Material {
+            uv_scale: [2.0, 0.5],
+            uv_offset: [0.125, -0.25],
+            ..Default::default()
+        };
         let water = water_material_from_mesh(&material, 0, 0);
         assert!((water.uv_scale_a - 2.0 / 256.0).abs() < f32::EPSILON);
         assert!((water.uv_scale_b - 0.5 / 700.0).abs() < f32::EPSILON);

@@ -1,6 +1,6 @@
-# #5134: EXT-D1-2026-09-29-01: Starfield WTHR fog distances reach `translate_weather` in metres — every Starfield exterior with a resolved climate fogs out at ~43 m
+# #5134 [CLOSED] EXT-D1-2026-09-29-01: Starfield WTHR fog distances reach `translate_weather` in metres — every Starfield exterior with a resolved climate fogs out at ~43 m
 
-**Labels**: high, bug, terrain-exterior, esm-plugin, game:starfield
+labels: ['bug', 'high', 'game:starfield', 'terrain-exterior', 'esm-plugin']
 
 **Source report**: `docs/audits/AUDIT_EXTERIOR_2026-09-29.md`
 **Severity**: HIGH (a wrong canonical value out of an EXAL `translate_*`)
