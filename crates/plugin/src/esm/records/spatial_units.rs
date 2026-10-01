@@ -117,14 +117,27 @@ pub(super) fn normalize(index: &mut EsmIndex) {
     // which divides by `BETHESDA_UNITS_PER_METER`. Unlifted, every
     // Starfield exterior with a resolved climate fitted a ~70× too-dense
     // medium (3000 m read as 42.9 m). Keep `translate_weather` unchanged
-    // — units are settled before the boundary. The FO4-form height-fog
-    // tail stays FO4/FO76-gated in `parse_wthr` (#5001); once Starfield
-    // decodes it, the height fields need the same lift here.
+    // — units are settled before the boundary.
+    // #5001 — Starfield now decodes the FO4-form height-fog tail, so the
+    // eight height mid/range fields (day/night × near/far × mid/range)
+    // get the same ×70 lift. The two high-density scales are
+    // dimensionless and stay untouched, per the same rule that keeps
+    // `light_fade`-style ratios out of the lift.
     for weather in index.weathers.values_mut() {
         weather.fog_day_near *= UNITS;
         weather.fog_day_far *= UNITS;
         weather.fog_night_near *= UNITS;
         weather.fog_night_far *= UNITS;
+        if let Some(height) = &mut weather.fog_height {
+            height.day_near_height_mid *= UNITS;
+            height.day_near_height_range *= UNITS;
+            height.night_near_height_mid *= UNITS;
+            height.night_near_height_range *= UNITS;
+            height.day_far_height_mid *= UNITS;
+            height.day_far_height_range *= UNITS;
+            height.night_far_height_mid *= UNITS;
+            height.night_far_height_range *= UNITS;
+        }
     }
     // #5151 — Starfield WATR DNAM distances are metric (vanilla `WaterClear`:
     // depth 8, underwater fog -150 / 75, noise falloff 100) and its

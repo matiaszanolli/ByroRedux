@@ -123,6 +123,17 @@ fn weather_plugin(hedr_version: f32) -> Vec<u8> {
         fnam.extend_from_slice(&1.0f32.to_le_bytes());
         fnam.extend_from_slice(&1.0f32.to_le_bytes());
     }
+    if hedr_version == 0.96 {
+        // #5001 — Starfield's 72-byte FNAM tail: DefaultWeather's on-disk
+        // powers 0.4, max 0.9, near height 10/120, density 0.05, far
+        // height 10/220 day and 10/900 night.
+        for value in [
+            0.4f32, 0.4, 0.9, 0.9, 10.0, 120.0, 10.0, 120.0, 0.05, 0.05, 10.0, 220.0, 10.0,
+            900.0,
+        ] {
+            fnam.extend_from_slice(&value.to_le_bytes());
+        }
+    }
     data.extend(wrap_group(
         b"WTHR",
         &build_record(
@@ -153,6 +164,26 @@ fn starfield_public_index_lifts_wthr_fog_distances() {
     assert_eq!(w.fog_day_far, 210_000.0);
     assert_eq!(w.fog_night_near, 700.0);
     assert_eq!(w.fog_night_far, 210_000.0);
+    // #5001 — the FO4-form tail now decodes on Starfield too, and the
+    // eight height mid/range fields lift with the distances while the
+    // dimensionless power/max/density values stay as authored.
+    assert_eq!(w.fog_day_power, 0.4);
+    assert_eq!(w.fog_night_power, 0.4);
+    assert_eq!(w.fog_day_max, 0.9);
+    assert_eq!(w.fog_night_max, 0.9);
+    let height = w
+        .fog_height
+        .expect("Starfield 72-byte FNAM must decode its height tail (#5001)");
+    assert_eq!(height.day_near_height_mid, 700.0);
+    assert_eq!(height.day_near_height_range, 8_400.0);
+    assert_eq!(height.night_near_height_mid, 700.0);
+    assert_eq!(height.night_near_height_range, 8_400.0);
+    assert_eq!(height.day_high_density_scale, 0.05);
+    assert_eq!(height.night_high_density_scale, 0.05);
+    assert_eq!(height.day_far_height_mid, 700.0);
+    assert_eq!(height.day_far_height_range, 15_400.0);
+    assert_eq!(height.night_far_height_mid, 700.0);
+    assert_eq!(height.night_far_height_range, 63_000.0);
 }
 
 /// Companion: every non-Starfield game keeps the authored FNAM values —

@@ -490,11 +490,21 @@ pub fn parse_wthr(
             // `[day_near, day_far, night_near, night_far]`. Game-dependent
             // total size: 16 B in Oblivion, 24 B in FNV/FO3 (trailing 8 B
             // have not been cross-checked against a UESP-authoritative
-            // schema so they are ignored here), and 72 B in FO4.
+            // schema so they are ignored here), and 72 B in FO4 and
+            // Starfield.
             //
             // FO4's exact xEdit-defined tail is day/night power + max,
             // followed by ten height-fog values introduced across form
-            // versions 119 and 120. Preserve all of it when present.
+            // versions 119 and 120. #5001 (SF-2026-09-29-D4-02):
+            // xEdit SF1 (`wbDefinitionsSF1.pas:18870`) gives Starfield the
+            // SAME `wbWeatherFogDistance` struct, and every vanilla
+            // `Starfield.esm` WTHR ships a 72-byte FNAM matching that
+            // shape (`DefaultWeather`: powers 0.4, max 0.9, height
+            // 10/120/…/900) — so Starfield joins the FO4/FO76 gates
+            // instead of keeping `power`/`max` at 1.0 defaults and
+            // `fog_height` at None. FO3/FNV's 24-byte tail (day/night
+            // power per xEdit `> gmTES4R`) remains undecoded pending the
+            // FNV/FO3 owners' verification — see #5001's sibling note.
             //
             // Pre-fix the FNAM arm had an empty body with a comment
             // ("fallback when HNAM is absent"). But FNV and FO3 do not
@@ -507,16 +517,20 @@ pub fn parse_wthr(
                 record.fog_day_far = r.f32().unwrap_or(10000.0);
                 record.fog_night_near = r.f32().unwrap_or(0.0);
                 record.fog_night_far = r.f32().unwrap_or(10000.0);
-                if matches!(game, GameKind::Fallout4 | GameKind::Fallout76)
-                    && sub.data.len() >= SKYRIM_FNAM_SIZE
+                if matches!(
+                    game,
+                    GameKind::Fallout4 | GameKind::Fallout76 | GameKind::Starfield
+                ) && sub.data.len() >= SKYRIM_FNAM_SIZE
                 {
                     record.fog_day_power = r.f32().unwrap_or(1.0);
                     record.fog_night_power = r.f32().unwrap_or(1.0);
                     record.fog_day_max = r.f32().unwrap_or(1.0);
                     record.fog_night_max = r.f32().unwrap_or(1.0);
                 }
-                if matches!(game, GameKind::Fallout4 | GameKind::Fallout76)
-                    && sub.data.len() >= FO4_FNAM_SIZE
+                if matches!(
+                    game,
+                    GameKind::Fallout4 | GameKind::Fallout76 | GameKind::Starfield
+                ) && sub.data.len() >= FO4_FNAM_SIZE
                 {
                     record.fog_height = Some(WeatherHeightFog {
                         day_near_height_mid: r.f32().unwrap_or(0.0),
@@ -1322,23 +1336,53 @@ mod tests {
         assert_eq!(height.night_far_height_range, 16_000.0);
     }
 
+    /// #5001 (SF-2026-09-29-D4-02) — Starfield's 72-byte FNAM uses the
+    /// same `wbWeatherFogDistance` struct as FO4 (xEdit SF1
+    /// `wbDefinitionsSF1.pas:18870`), verified against every vanilla
+    /// `Starfield.esm` WTHR. This is `DefaultWeather` (0x15E)'s exact
+    /// on-disk tail: powers 0.4, max 0.9, near height 10/120, density
+    /// 0.05, far height 10/220 day and 10/900 night. Pre-fix these
+    /// stayed at the 1.0 defaults, so `FogMedium::from_legacy_ramp`
+    /// replaced the authored 0.9 opacity ceiling and
+    /// `with_authored_height_range` the 120 m near-height band with
+    /// defaults (and SpaceWeather's authored `max = 0` became 1.0).
     #[test]
-    fn starfield_long_fnam_does_not_assume_the_fo4_tail_schema() {
-        let mut fnam = vec![0xA5; FO4_FNAM_SIZE];
-        fnam[0..4].copy_from_slice(&100.0_f32.to_le_bytes());
-        fnam[4..8].copy_from_slice(&10_000.0_f32.to_le_bytes());
-        fnam[8..12].copy_from_slice(&200.0_f32.to_le_bytes());
-        fnam[12..16].copy_from_slice(&8_000.0_f32.to_le_bytes());
+    fn starfield_72_byte_fnam_decodes_the_shared_height_fog_tail() {
+        let values = [
+            10.0f32, 3_000.0, 10.0, 3_000.0, // distances
+            0.4, 0.4, // day/night power
+            0.9, 0.9, // day/night max
+            10.0, 120.0, // day near height mid/range
+            10.0, 120.0, // night near height mid/range
+            0.05, 0.05, // day/night high density scale
+            10.0, 220.0, // day far height mid/range
+            10.0, 900.0, // night far height mid/range
+        ];
+        let mut fnam = Vec::with_capacity(FO4_FNAM_SIZE);
+        for value in values {
+            fnam.extend_from_slice(&value.to_le_bytes());
+        }
 
-        let w = parse_wthr(0x5F, &[sub(b"FNAM", fnam)], GameKind::Starfield, &None);
-        assert_eq!(w.fog_day_near, 100.0);
-        assert_eq!(w.fog_day_far, 10_000.0);
-        assert_eq!(w.fog_day_power, 1.0);
-        assert_eq!(w.fog_day_max, 1.0);
-        assert!(
-            w.fog_height.is_none(),
-            "unverified Starfield bytes must not be decoded as FO4 height fog"
-        );
+        let w = parse_wthr(0x15E, &[sub(b"FNAM", fnam)], GameKind::Starfield, &None);
+        assert_eq!(w.fog_day_near, 10.0);
+        assert_eq!(w.fog_day_far, 3_000.0);
+        assert_eq!(w.fog_day_power, 0.4);
+        assert_eq!(w.fog_night_power, 0.4);
+        assert_eq!(w.fog_day_max, 0.9);
+        assert_eq!(w.fog_night_max, 0.9);
+        let height = w
+            .fog_height
+            .expect("72-byte Starfield FNAM must decode its height extension");
+        assert_eq!(height.day_near_height_mid, 10.0);
+        assert_eq!(height.day_near_height_range, 120.0);
+        assert_eq!(height.night_near_height_mid, 10.0);
+        assert_eq!(height.night_near_height_range, 120.0);
+        assert_eq!(height.day_high_density_scale, 0.05);
+        assert_eq!(height.night_high_density_scale, 0.05);
+        assert_eq!(height.day_far_height_mid, 10.0);
+        assert_eq!(height.day_far_height_range, 220.0);
+        assert_eq!(height.night_far_height_mid, 10.0);
+        assert_eq!(height.night_far_height_range, 900.0);
     }
 
     /// Real 56-byte Oblivion HNAM must NOT be interpreted as fog.
