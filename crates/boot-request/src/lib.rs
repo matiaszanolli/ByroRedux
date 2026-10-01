@@ -304,45 +304,47 @@ impl BootRequest {
                 })?;
             }
         }
-        let temp_path = atomic_temp_path(path);
-        match byroredux_core::atomic_file::atomic_write(path, &temp_path, text.as_bytes()) {
-            Ok(()) => Ok(()),
-            Err(rename_error) if path.exists() => {
-                // Windows does not replace an existing destination with rename.
-                fs::write(
-                    path,
-                    fs::read(&temp_path).map_err(|source| BootRequestError::Write {
-                        path: path.to_path_buf(),
-                        source,
-                    })?,
-                )
-                .map_err(|source| BootRequestError::Write {
-                    path: path.to_path_buf(),
-                    source,
-                })?;
-                let _ = fs::remove_file(&temp_path);
-                let _ = rename_error;
-                Ok(())
-            }
-            Err(source) => Err(BootRequestError::Write {
+        let temp_path = byroredux_core::atomic_file::atomic_temp_path(path);
+        // #5143 — no non-atomic fallback. The previous "Windows rename"
+        // branch ran on *any* `atomic_write` error on every OS, copying the
+        // temp's possibly-partial bytes (disk full, EIO on sync) over the
+        // good file — exactly what the atomic write exists to prevent — and
+        // reported a completed write as failed when the parent-directory
+        // fsync failed after a successful rename. Rust's `std::fs::rename`
+        // already replaces an existing destination on Windows, so the
+        // branch guarded nothing real.
+        byroredux_core::atomic_file::atomic_write(path, &temp_path, text.as_bytes()).map_err(
+            |source| BootRequestError::Write {
                 path: path.to_path_buf(),
                 source,
-            }),
-        }
+            },
+        )
     }
-}
-
-fn atomic_temp_path(path: &Path) -> std::path::PathBuf {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
-    let id = NEXT_TEMP.fetch_add(1, Ordering::Relaxed);
-    let name = path.file_name().unwrap_or_default().to_string_lossy();
-    path.with_file_name(format!(".{name}.{}.{}.tmp", std::process::id(), id))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #5143 — the "Windows rename" fallback ran on any `atomic_write`
+    /// error and could copy the temp's possibly-partial bytes over the good
+    /// file (disk full, EIO). Its removal is pinned statically because the
+    /// failure it mishandled is OS-level and cannot be fault-injected
+    /// portably.
+    #[test]
+    fn save_has_no_nonatomic_clobber_fallback() {
+        let source = include_str!("lib.rs");
+        assert!(
+            source.contains("atomic_file::atomic_write"),
+            "the save must go through the shared durable writer"
+        );
+        // Assembled at run time so this test's own source does not satisfy it.
+        let fallback_binding = ["rename", "_error"].concat();
+        assert!(
+            !source.contains(&fallback_binding),
+            "the clobber fallback must not come back"
+        );
+    }
 
     fn sample() -> BootRequest {
         BootRequest {

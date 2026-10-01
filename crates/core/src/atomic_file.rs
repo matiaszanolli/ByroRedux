@@ -8,7 +8,21 @@
 
 use std::fs;
 use std::io::{Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+/// Unique sibling staging path for [`atomic_write`]:
+/// `.{name}.{pid}.{counter}.tmp` beside the destination. The dot keeps the
+/// temp out of casual directory listings, the pid separates concurrent
+/// processes, and the in-process counter separates concurrent writers within
+/// one process. #5143 — one shared helper instead of the three drifting
+/// copies the boot-request, overrides and settings writers each carried.
+pub fn atomic_temp_path(path: &Path) -> PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
+    let id = NEXT_TEMP.fetch_add(1, Ordering::Relaxed);
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    path.with_file_name(format!(".{name}.{}.{}.tmp", std::process::id(), id))
+}
 
 /// Write `bytes` to `final_path` crash-safely, staging through `tmp_path`.
 ///
@@ -67,4 +81,53 @@ pub fn atomic_write(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// #5143 — the shared staging-path helper must give every concurrent
+    /// writer its own hidden temp beside the destination.
+    #[test]
+    fn atomic_temp_paths_are_unique_hidden_siblings() {
+        let destination = Path::new("/home/u/.byroredux/settings.toml");
+        let first = atomic_temp_path(destination);
+        let second = atomic_temp_path(destination);
+        assert_ne!(
+            first, second,
+            "two writers in one process must not share a temp path"
+        );
+        for temp in [&first, &second] {
+            let name = temp.file_name().unwrap().to_string_lossy().to_string();
+            assert!(
+                name.starts_with(".settings.toml."),
+                "the temp hides as a sibling of the destination: {name}"
+            );
+            assert!(name.ends_with(".tmp"), "{name}");
+            assert!(
+                name.contains(std::process::id().to_string().as_str()),
+                "the pid separates concurrent processes: {name}"
+            );
+        }
+    }
+
+    #[test]
+    fn atomic_write_round_trips_and_renames_the_temp_away() {
+        let dir = std::env::temp_dir().join(format!(
+            "byroredux-atomic-file-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let final_path = dir.join("out.toml");
+        let temp = atomic_temp_path(&final_path);
+        atomic_write(&final_path, &temp, b"hello").unwrap();
+        assert_eq!(fs::read(&final_path).unwrap(), b"hello");
+        assert!(!temp.exists(), "a successful write renames the temp away");
+        fs::remove_dir_all(&dir).unwrap();
+    }
 }

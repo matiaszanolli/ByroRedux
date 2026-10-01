@@ -1,6 +1,7 @@
-# #5143: TOOL-D4-2026-09-29-01: the shared "Windows rename" fallback runs on any `atomic_write` error on every OS and overwrites the good file with the temp's possibly-partial bytes
+# null: TOOL-D4-2026-09-29-01: the shared "Windows rename" fallback runs on any `atomic_write` error on every OS and overwrites the good file with the temp's possibly-partial bytes
 
-**Labels**: medium, bug, tech-debt
+labels: bug, medium, tech-debt
+state: OPEN
 
 **Source report**: `docs/audits/AUDIT_TOOLING_2026-09-29.md`
 **Severity**: MEDIUM
@@ -47,3 +48,4 @@ Validated at HEAD 9fcfdc3fc: the `if path.exists()` → `fs::write(path, fs::rea
 ## Completeness Checks
 - [ ] **SIBLING**: Same pattern checked in related files (all three callers + save ring)
 - [ ] **TESTS**: A regression test pins this specific fix (inject a write failure and assert the destination is untouched)
+

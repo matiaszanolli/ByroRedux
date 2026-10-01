@@ -1,6 +1,7 @@
-# #5144: TOOL-D4-2026-09-29-02: `settings-io` silently discards the stored map when the existing file fails to parse, so the next save erases input bindings
+# null: TOOL-D4-2026-09-29-02: `settings-io` silently discards the stored map when the existing file fails to parse, so the next save erases input bindings
 
-**Labels**: medium, bug, tech-debt
+labels: bug, medium, tech-debt
+state: OPEN
 
 **Source report**: `docs/audits/AUDIT_TOOLING_2026-09-29.md`
 **Severity**: MEDIUM
@@ -38,3 +39,4 @@ Validated at HEAD 9fcfdc3fc: `save_to_path` still maps a parse failure to `unwra
 ## Completeness Checks
 - [ ] **SIBLING**: Same pattern checked in related files (overrides.rs `merge_into_file` / boot-request merge semantics)
 - [ ] **TESTS**: A regression test pins this specific fix
+

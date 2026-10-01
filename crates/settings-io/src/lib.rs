@@ -160,6 +160,12 @@ fn load_from_path(registry: &mut SettingsRegistry, path: &Path) -> std::io::Resu
 /// The same rule protects the engine from itself: a subsystem that has not
 /// registered yet at save time no longer costs the user its values.
 ///
+/// #5144 — preservation only holds when the existing file parses. When it
+/// does not, the save is **refused** (after copying the file aside as
+/// `<name>.bad`); a version newer than this build's, or a read error other
+/// than NotFound, is refused the same way. Nothing here may erase stored
+/// keys it cannot read.
+///
 /// Pinned ids ([`SettingsPersistence::pin_stored`]) keep whatever the file
 /// already holds for them, and stay absent if it holds nothing.
 fn save_to_path(
@@ -168,10 +174,53 @@ fn save_to_path(
     pinned: &BTreeSet<String>,
 ) -> std::io::Result<()> {
     let mut settings: BTreeMap<String, toml::Value> = match fs::read_to_string(path) {
-        Ok(existing) => toml::from_str::<StoredSettings>(&existing)
-            .map(|stored| stored.settings)
-            .unwrap_or_default(),
-        Err(_) => BTreeMap::new(),
+        // First run: nothing to preserve.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => BTreeMap::new(),
+        // #5144 — an unreadable file (permissions, or the path is not a
+        // file) is not an invitation to erase it and write only the saving
+        // registry's keys.
+        Err(error) => return Err(error),
+        Ok(existing) => match toml::from_str::<StoredSettings>(&existing) {
+            // #5144 — a file this build cannot parse (hand-edit typo, torn
+            // write, or a future shape) is copied aside and the save is
+            // refused. The old shape substituted an empty map, so one save
+            // from the launcher erased every stored key rebinding — and an
+            // extension writing a setting did the same with no user action.
+            Err(parse_error) => {
+                let aside = bad_file_path(path);
+                match fs::copy(path, &aside) {
+                    Ok(_) => log::warn!(
+                        "settings: {} could not be parsed ({parse_error}); kept it, copied it to {} for inspection, and refused to overwrite",
+                        path.display(),
+                        aside.display()
+                    ),
+                    Err(copy_error) => log::warn!(
+                        "settings: {} could not be parsed ({parse_error}) and could not be copied aside ({copy_error}); refused to overwrite",
+                        path.display()
+                    ),
+                }
+                return Err(std::io::Error::other(format!(
+                    "existing settings file could not be parsed: {parse_error}"
+                )));
+            }
+            Ok(stored) => {
+                // #5144 — never re-stamp a newer file down to this build's
+                // version: that silently downgrades a future format.
+                if stored.version > SETTINGS_VERSION {
+                    log::warn!(
+                        "settings: {} uses version {}, newer than the supported {}; refusing to overwrite",
+                        path.display(),
+                        stored.version,
+                        SETTINGS_VERSION
+                    );
+                    return Err(std::io::Error::other(format!(
+                        "settings file version {} is newer than supported {}",
+                        stored.version, SETTINGS_VERSION
+                    )));
+                }
+                stored.settings
+            }
+        },
     };
     for entry in registry.entries() {
         if pinned.contains(&entry.id) {
@@ -191,7 +240,7 @@ fn save_to_path(
     {
         fs::create_dir_all(parent)?;
     }
-    let temp_path = temporary_path(path);
+    let temp_path = byroredux_core::atomic_file::atomic_temp_path(path);
     // #3472 — was `fs::write` + `fs::rename` with none of the durability
     // steps: no fsync on the temp file, no read-back, no parent-directory
     // sync. A crash in the window between the rename hitting the directory
@@ -203,19 +252,23 @@ fn save_to_path(
     // durability contracts when one of them already implements the correct
     // dance. Shared with `crates/save/src/disk.rs`'s `write_slot` rather than
     // re-implemented, so the two cannot drift.
-    if let Err(rename_error) =
-        byroredux_core::atomic_file::atomic_write(path, &temp_path, source.as_bytes())
-    {
-        // Windows does not replace an existing destination with rename. Keep
-        // the file usable there even though the fallback is not atomic.
-        if path.exists() {
-            fs::write(path, fs::read(&temp_path)?)?;
-            let _ = fs::remove_file(&temp_path);
-        } else {
-            return Err(rename_error);
-        }
-    }
+    //
+    // #5143 — no non-atomic fallback on failure; see `BootRequest::save`
+    // for why the old "Windows rename" branch guarded nothing real and
+    // could copy the temp's partial bytes over the good file.
+    byroredux_core::atomic_file::atomic_write(path, &temp_path, source.as_bytes())?;
     Ok(())
+}
+
+/// Where an unparseable settings file is copied aside before the save is
+/// refused (#5144): `<name>.bad` beside it, so nothing is lost and the
+/// reason is one `diff` away.
+fn bad_file_path(path: &Path) -> PathBuf {
+    let mut file_name = path
+        .file_name()
+        .map_or_else(|| OsString::from("settings.toml"), OsString::from);
+    file_name.push(".bad");
+    path.with_file_name(file_name)
 }
 
 fn encode_value(value: &SettingValue) -> toml::Value {
@@ -269,14 +322,6 @@ fn discover_settings_path() -> PathBuf {
             .join("settings.toml");
     }
     PathBuf::from("byroredux-settings.toml")
-}
-
-fn temporary_path(path: &Path) -> PathBuf {
-    let mut file_name = path
-        .file_name()
-        .map_or_else(|| OsString::from("settings.toml"), OsString::from);
-    file_name.push(".tmp");
-    path.with_file_name(file_name)
 }
 
 #[cfg(test)]
@@ -546,6 +591,92 @@ version = 1
         assert_eq!(
             restored.get("controls.sensitivity").unwrap().value,
             SettingValue::Number(1.0)
+        );
+    }
+
+    /// #5144 — the preservation contract only held while the existing file
+    /// parsed; a parse failure used to substitute an empty map, so one save
+    /// erased every stored key rebinding. The save is now refused after the
+    /// file is copied aside, and the malformed bytes stay put.
+    #[test]
+    fn save_refuses_when_the_existing_file_does_not_parse() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.toml");
+        fs::write(&path, "not = = toml {{{").unwrap();
+
+        let error = save_to_path(&registry(), &path, &BTreeSet::new()).unwrap_err();
+        assert!(
+            error.to_string().contains("could not be parsed"),
+            "{error}"
+        );
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "not = = toml {{{",
+            "no one may rewrite the malformed file"
+        );
+        assert_eq!(
+            fs::read_to_string(dir.path().join("settings.toml.bad")).unwrap(),
+            "not = = toml {{{",
+            "the malformed file is preserved beside the live one for inspection"
+        );
+        // The public entry point logs and carries on; the file still wins.
+        save(&registry(), &SettingsPersistence::at(path.clone()));
+        assert_eq!(fs::read_to_string(&path).unwrap(), "not = = toml {{{");
+    }
+
+    /// #5144 — a parseable file from a newer build is not silently
+    /// re-stamped down to this build's version.
+    #[test]
+    fn save_refuses_to_downgrade_a_newer_version_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.toml");
+        fs::write(&path, "version = 99\n[settings]\n").unwrap();
+
+        let error = save_to_path(&registry(), &path, &BTreeSet::new()).unwrap_err();
+        assert!(error.to_string().contains("newer"), "{error}");
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "version = 99\n[settings]\n",
+            "a newer-version file must not be re-stamped"
+        );
+        assert!(
+            !dir.path().join("settings.toml.bad").exists(),
+            "a parseable file is not 'bad'"
+        );
+    }
+
+    /// #5144 — a read error other than NotFound (permissions, or the path
+    /// is not a file) must refuse, not write a fresh file over it.
+    #[test]
+    fn save_refuses_when_the_existing_path_is_not_a_readable_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.toml");
+        fs::create_dir(&path).unwrap();
+
+        assert!(save_to_path(&registry(), &path, &BTreeSet::new()).is_err());
+        assert!(
+            path.is_dir(),
+            "nothing may replace an unreadable path"
+        );
+    }
+
+    /// #5143 — the "Windows rename" fallback ran on any `atomic_write`
+    /// error and could copy the temp's possibly-partial bytes over the good
+    /// file. Its removal is pinned statically because the failure it
+    /// mishandled (disk full, EIO on sync) is OS-level and cannot be
+    /// fault-injected portably. The needle is assembled at run time so this
+    /// test's own source does not satisfy it.
+    #[test]
+    fn save_has_no_nonatomic_clobber_fallback() {
+        let source = include_str!("lib.rs");
+        assert!(
+            source.contains("atomic_file::atomic_write"),
+            "the save must go through the shared durable writer"
+        );
+        let fallback_binding = ["rename", "_error"].concat();
+        assert!(
+            !source.contains(&fallback_binding),
+            "the clobber fallback must not come back"
         );
     }
 }
