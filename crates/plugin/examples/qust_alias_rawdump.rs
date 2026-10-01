@@ -1,7 +1,12 @@
-//! One-off diagnostic: dump every raw sub-record of a single `QUST`
-//! record by FormID, so an unexpected/unimplemented sub-type inside an
-//! alias block can be spotted directly (companion to `qust_alias_survey`,
-//! which only sees what the parser already decodes).
+//! QUST alias-block raw-dump cross-validator: dump every raw sub-record
+//! of a single `QUST` record by FormID, so an unexpected/unimplemented
+//! sub-type inside an alias block can be spotted directly (companion to
+//! `qust_alias_survey`, which only sees what the parser already decodes).
+//!
+//! This is the standing "does the wiki table match reality" tool cited by
+//! `docs/engine/m47-3-quest-alias-design.md` — reuse it whenever the
+//! alias sub-record table is extended, before trusting the synthetic
+//! fixtures alone.
 //!
 //! Usage:
 //!   cargo run -p byroredux-plugin --example qust_alias_rawdump -- <ESM> <hex form_id>

@@ -1,7 +1,6 @@
-//! Dimension-8 parse-cost probe (throwaway audit scratch).
-//!
-//! Times the production `parse_esm` entry point on a real master and
-//! prints the resulting `EsmIndex` category totals.
+//! Dimension-8 parse-cost probe: times the production `parse_esm`
+//! entry point on a real master and prints the resulting `EsmIndex`
+//! category totals.
 //!
 //! Usage: cargo run --release -p byroredux-plugin --example esm_dim8_bench -- <file.esm>
 

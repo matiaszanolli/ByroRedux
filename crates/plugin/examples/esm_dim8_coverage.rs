@@ -1,6 +1,7 @@
-//! Dimension-8 real-data coverage probe (throwaway audit scratch).
+//! Dimension-8 real-data coverage probe: walks an ESM/ESP end-to-end
+//! and emits a TSV census used to verify parse coverage claims against
+//! real masters:
 //!
-//! Walks an ESM/ESP end-to-end and emits a TSV census:
 //!   FILE <path> <hedr> <variant> <gamekind> <hdr_record_count> <bytes>
 //!   TOP  <label> <count>              -- top-level (group_type 0) GRUP labels
 //!   REC  <rectype> <count>            -- every record header seen, any depth

@@ -1,6 +1,6 @@
 //! List the file-extension distribution inside a BA2 archive.
-//! Diagnostic counterpart to `probe_extensions.rs` (which only reads
-//! BSA v103/v104/v105). Useful for any survey question that asks
+//! The BSA-side counterpart of this survey (v103/v104/v105) was a
+//! one-shot probe and is gone. Useful for any survey question that asks
 //! "what file types ship in this archive" — originally written for
 //! the Starfield `Materials.ba2` probe in #762 / SF-D6-03 (which
 //! confirmed that the runtime materials archive ships exactly one

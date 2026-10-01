@@ -10,7 +10,9 @@
 //! #3150/#3746 swept 98 accumulated `_tmp_*` probes tree-wide
 //! (2026-09-02); this is what keeps that count at zero going forward.
 
-/// Recursively collect every `examples/_tmp_*` path under `dir`.
+/// Recursively collect every `examples/tmp_*` / `examples/_tmp_*` path
+/// under `dir` (#5114 — the bare `tmp_` spelling used to slip past the
+/// `_tmp_`-only match).
 fn collect_tmp_examples(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         // A workspace with no `examples/` directory at all (most crates)
@@ -26,8 +28,65 @@ fn collect_tmp_examples(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>
         let is_tmp_probe = path
             .file_name()
             .and_then(|n| n.to_str())
-            .is_some_and(|name| name.starts_with("_tmp_") && name.ends_with(".rs"));
+            .is_some_and(|name| {
+                (name.starts_with("_tmp_") || name.starts_with("tmp_")) && name.ends_with(".rs")
+            });
         if is_tmp_probe {
+            out.push(path);
+        }
+    }
+}
+
+/// #5114 — collect every example file whose leading `//!` module doc
+/// self-describes it as disposable. Three `tmp_fo4_d4_*` probes were
+/// routed to issue reports three times (09-14, 09-16, 09-21) while no
+/// tech-debt sweep picked them up, because the filename guard only
+/// matched `_tmp_`; eleven committed examples said some variant of
+/// "Throwaway" / "One-off" / "TEMP … not for commit" in plain text and
+/// stayed. A self-description is the machine-readable half of the rule
+/// the `.gitignore` entry and `collect_tmp_examples` enforce by name.
+fn collect_self_described_disposable_examples(
+    dir: &std::path::Path,
+    out: &mut Vec<std::path::PathBuf>,
+) {
+    // Matched as the *start* of a doc line (`//! Throwaway …`), per the
+    // audit's regex — prose that merely mentions the words mid-sentence
+    // ("hundreds of one-off values", spt_tail.rs) is describing data, not
+    // the file, and must not trip the guard.
+    const LINE_START_MARKERS: &[&str] = &["throwaway", "one-off", "temp scratch"];
+    // Stronger than anything the audit named — the file itself says it
+    // never belonged in the tree — so it matches anywhere in the doc.
+    const ANYWHERE_MARKERS: &[&str] = &["not for commit"];
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries {
+        let path = entry.expect("workspace hygiene guard: unreadable dir entry").path();
+        if path.is_dir() {
+            collect_self_described_disposable_examples(&path, out);
+            continue;
+        }
+        if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+            continue;
+        }
+        let Ok(contents) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        // The leading `//!` block only: a keeper that cites a deleted
+        // throwaway in a later comment (provenance notes, historic
+        // framing) is not self-describing.
+        let flagged = contents
+            .lines()
+            .take_while(|line| line.starts_with("//!"))
+            .any(|line| {
+                let text = line
+                    .trim_start_matches("//!")
+                    .trim_start()
+                    .to_lowercase();
+                LINE_START_MARKERS.iter().any(|m| text.starts_with(m))
+                    || ANYWHERE_MARKERS.iter().any(|m| text.contains(m))
+            });
+        if flagged {
             out.push(path);
         }
     }
@@ -163,8 +222,7 @@ fn every_ignore_attribute_carries_a_reason() {
 /// Enumerated the same way `discover_scan_roots` in
 /// `save_io/registry_completeness_tests.rs` discovers `src/` roots — from
 /// the manifest directory outward, not a hand-maintained list.
-#[test]
-fn no_tmp_scratch_examples_are_committed() {
+fn hygiene_scan_roots() -> Vec<std::path::PathBuf> {
     let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let workspace_crates = manifest.join("../crates");
 
@@ -182,18 +240,50 @@ fn no_tmp_scratch_examples_are_committed() {
             roots.push(path.join("examples"));
         }
     }
+    roots
+}
 
+#[test]
+fn no_tmp_scratch_examples_are_committed() {
     let mut found = Vec::new();
-    for root in &roots {
-        collect_tmp_examples(root, &mut found);
+    for root in hygiene_scan_roots() {
+        collect_tmp_examples(&root, &mut found);
     }
 
     assert!(
         found.is_empty(),
-        "found {} committed `_tmp_*` scratch example(s), which #3150/#3746 \
-         swept to zero — either delete them or, if genuinely worth keeping, \
-         drop the `_tmp_` prefix and give them a real documented purpose \
-         (see watr_wind_census.rs / esm_dim8_bench.rs / sf_smoke.rs):\n{}",
+        "found {} committed `tmp_*`/`_tmp_*` scratch example(s), which \
+         #3150/#3746 swept to zero — either delete them or, if genuinely \
+         worth keeping, drop the `_tmp_` prefix and give them a real \
+         documented purpose (see watr_wind_census.rs / esm_dim8_bench.rs / \
+         sf_smoke.rs):\n{}",
+        found.len(),
+        found
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect::<Vec<_>>()
+            .join("\n"),
+    );
+}
+
+/// #5114 — the module-doc half of the probe guard. `dump_bgsm.rs`,
+/// `roof_probe.rs` and friends predate the `_tmp_` filename rule and
+/// announced their own disposability in their first doc lines; the
+/// filename guard could never see them.
+#[test]
+fn no_committed_example_self_describes_as_disposable() {
+    let mut found = Vec::new();
+    for root in hygiene_scan_roots() {
+        collect_self_described_disposable_examples(&root, &mut found);
+    }
+
+    assert!(
+        found.is_empty(),
+        "found {} committed example(s) whose module doc self-describes as \
+         throwaway / one-off / TEMP scratch / \"not for commit\" — either \
+         delete them or give them a real documented purpose like \
+         watr_wind_census.rs (a probe that states what it measures and \
+         why it stays), and drop the self-description (#5114):\n{}",
         found.len(),
         found
             .iter()
