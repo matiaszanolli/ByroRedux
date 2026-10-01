@@ -1,6 +1,7 @@
-# #5145: TOOL-D5-2026-09-29-01: `esm_opens` reads the entire ESM to check a 24-byte header, so the launcher's startup and Rescan read about 3.2 GB on the UI thread
+# null: TOOL-D5-2026-09-29-01: `esm_opens` reads the entire ESM to check a 24-byte header, so the launcher's startup and Rescan read about 3.2 GB on the UI thread
 
-**Labels**: medium, bug, tech-debt, performance
+labels: bug, medium, performance, tech-debt
+state: OPEN
 
 **Source report**: `docs/audits/AUDIT_TOOLING_2026-09-29.md`
 **Severity**: MEDIUM
@@ -29,3 +30,4 @@ Validated at HEAD 9fcfdc3fc: `esm_opens` in `validate.rs` still calls `std::fs::
 
 ## Completeness Checks
 - [ ] **TESTS**: A regression test pins this specific fix (e.g. a truncated-after-header fixture still validates; a huge file is not fully read)
+

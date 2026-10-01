@@ -114,9 +114,22 @@ fn archive_opens(path: &Path) -> Result<(), String> {
     result
 }
 
+/// Upper bound on the prefix `esm_opens` reads to validate a main plugin
+/// (#5145). The TES4 walk is bounded by the record's declared payload size;
+/// vanilla headers (HEDR + MASTs + ONAM) stay in the low hundreds of KB, so
+/// 1 MiB leaves headroom while capping the read far below whole plugins —
+/// Starfield.esm alone is 1.46 GB, and the old full-file slurp cost the
+/// launcher ~3.2 GB of reads before its first frame.
+const TES4_PROBE_LIMIT: u64 = 1024 * 1024;
+
 fn esm_opens(path: &Path) -> Result<(), String> {
-    let bytes = std::fs::read(path).map_err(|error| error.to_string())?;
-    EsmReader::new(&bytes)
+    use std::io::Read;
+    let file = std::fs::File::open(path).map_err(|error| error.to_string())?;
+    let mut prefix = Vec::new();
+    file.take(TES4_PROBE_LIMIT)
+        .read_to_end(&mut prefix)
+        .map_err(|error| error.to_string())?;
+    EsmReader::new(&prefix)
         .read_file_header()
         .map(|_| ())
         .map_err(|error| error.to_string())
@@ -323,6 +336,37 @@ mod tests {
         assert_eq!(main_plugin.severity, Severity::Fail);
         assert!(main_plugin.detail.contains("could not be opened"));
         assert!(!report.is_launchable());
+    }
+
+    /// #5145 — `esm_opens` reads a bounded TES4 prefix, never the whole
+    /// plugin. A file that ends right after the header record still
+    /// validates (mid-file truncation was never detectable here), and a
+    /// TES4 declaring more payload than the probe ever reads fails closed
+    /// instead of trusting the declared size.
+    #[test]
+    fn esm_opens_accepts_a_header_only_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("Test.esm");
+        write_empty_esm(&path);
+        assert_eq!(esm_opens(&path).map(|_| ()), Ok(()));
+    }
+
+    #[test]
+    fn esm_opens_fails_closed_when_tes4_declares_more_than_the_probe_reads() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("Test.esm");
+        // Same 24-byte Tes5Plus header shape as `write_empty_esm`, but
+        // declaring a 2 MiB payload that is not on disk — beyond
+        // TES4_PROBE_LIMIT, so no bounded read could ever satisfy it.
+        let mut bytes = Vec::from(&b"TES4"[..]);
+        bytes.extend_from_slice(&(2u32 * 1024 * 1024).to_le_bytes()); // payload size
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // flags
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // form id
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // version control
+        bytes.extend_from_slice(&0u16.to_le_bytes()); // record version
+        bytes.extend_from_slice(&0u16.to_le_bytes()); // unknown
+        fs::write(&path, bytes).unwrap();
+        assert!(esm_opens(&path).is_err());
     }
 
     /// The sibling rule, in the direction that matters: present siblings are
