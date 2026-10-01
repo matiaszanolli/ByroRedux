@@ -450,7 +450,16 @@ impl ArchiveStringSource {
     }
 
     fn discover(plugin_path: &Path) -> Vec<Archive> {
-        let directory = plugin_path.parent().unwrap_or(Path::new("."));
+        // A bare `--esm Skyrim.esm` (the smoke/CLI convention: cwd is the
+        // game Data dir) has parent `Some("")`, not `None` — `read_dir("")`
+        // fails and discovery silently finds nothing, so every lstring in
+        // the session reads as a `<lstring 0x…>` placeholder. Treat an
+        // empty parent as the cwd, exactly like `load_with_archive`'s own
+        // loose-file lookup one layer down.
+        let directory = plugin_path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or(Path::new("."));
         let plugin_stem = plugin_path
             .file_stem()
             .unwrap_or_default()
@@ -1567,5 +1576,31 @@ fn allocate_global_slot_partitions_medium_light_and_regular() {
     assert!(
         allocate_global_slot(false, true, &mut r, &mut l, &mut m).is_err(),
         "medium allocation must refuse when 0xFD is already a regular slot"
+    );
+}
+
+/// A bare relative `--esm Skyrim.esm` launch (cwd = the game Data dir, the
+/// smoke/CLI convention) must still discover the plugin's companion string
+/// archives: `Path::parent()` of `"Skyrim.esm"` is `Some("")`, and
+/// `read_dir("")` fails silently, which used to leave every lstring in the
+/// session as a `<lstring 0x…>` placeholder. The smoke that caught this
+/// live is `p4-quest-route.sh` (MarkarthWarrens, 2026-09-30): the objective
+/// banner rendered with placeholder text until this fix.
+#[test]
+fn string_archive_discovery_treats_a_bare_plugin_name_as_the_cwd() {
+    // The Data dir of an installed Skyrim SE carries `Skyrim - Interface.bsa`
+    // beside the plugin; absent an install, the contract this test pins is
+    // discoverability of the CWD itself, so probe with the repo's own dir
+    // and a plugin name with no parent.
+    let cwd_plugin = Path::new("Cargo.toml");
+    let directory = cwd_plugin
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let read = std::fs::read_dir(directory)
+        .expect("an empty parent must resolve to the cwd, not to an unreadable ''");
+    assert!(
+        read.count() > 0,
+        "read_dir on the empty-parent fallback must list the cwd"
     );
 }
