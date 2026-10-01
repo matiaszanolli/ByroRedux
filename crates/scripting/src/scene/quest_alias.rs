@@ -14,6 +14,7 @@ use byroredux_core::ecs::resource::Resource;
 use byroredux_core::ecs::sparse_set::SparseSetStorage;
 use byroredux_core::ecs::storage::{Component, EntityId};
 use byroredux_core::ecs::world::World;
+use rustc_hash::{FxHashMap, FxHashSet};
 use byroredux_plugin::esm::records::{
     AliasFillType, QuestAlias, QustRecord, ALIAS_FLAG_ALLOW_DEAD, ALIAS_FLAG_ALLOW_RESERVED,
     ALIAS_FLAG_ALLOW_REUSE, ALIAS_FLAG_CLOSEST, ALIAS_FLAG_RESERVES,
@@ -953,7 +954,10 @@ pub fn running_quests_binding_entity(world: &World, entity: EntityId) -> Vec<Que
 /// Alias definitions copied out under the `SceneQuestAliasRegistry` guard
 /// alone — quest FormID → its installed alias ids. Shared by both query
 /// helpers so neither holds the registry across any other acquisition.
-fn installed_alias_ids_by_quest(world: &World) -> HashMap<QuestFormId, Vec<i32>> {
+/// FxHashed (#5109): the bulk helper rebuilds this every frame on FO4-scale
+/// load orders (1,336 alias-bearing quests), where SipHash dominated the
+/// pass.
+fn installed_alias_ids_by_quest(world: &World) -> FxHashMap<QuestFormId, Vec<i32>> {
     match world.try_resource::<SceneQuestAliasRegistry>() {
         Some(registry) => registry
             .aliases
@@ -965,7 +969,7 @@ fn installed_alias_ids_by_quest(world: &World) -> HashMap<QuestFormId, Vec<i32>>
                 )
             })
             .collect(),
-        None => HashMap::new(),
+        None => FxHashMap::default(),
     }
 }
 
@@ -979,9 +983,9 @@ fn installed_alias_ids_by_quest(world: &World) -> HashMap<QuestFormId, Vec<i32>>
 /// Guards are each taken and released alone, mirroring
 /// [`running_quests_binding_entity`]. No `QuestStageState` resource keeps
 /// the per-entity helper's "nothing filters" semantics.
-pub fn running_quest_bound_entities(world: &World) -> HashSet<EntityId> {
+pub fn running_quest_bound_entities(world: &World) -> FxHashSet<EntityId> {
     let defs = installed_alias_ids_by_quest(world);
-    let running: HashSet<QuestFormId> = match world.try_resource::<QuestStageState>() {
+    let running: FxHashSet<QuestFormId> = match world.try_resource::<QuestStageState>() {
         Some(stages) => defs
             .keys()
             .copied()
@@ -1001,6 +1005,6 @@ pub fn running_quest_bound_entities(world: &World) -> HashSet<EntityId> {
             })
             .map(|(_, entity)| *entity)
             .collect(),
-        None => HashSet::new(),
+        None => FxHashSet::default(),
     }
 }

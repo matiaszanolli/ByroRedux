@@ -16,7 +16,7 @@ use byroredux_core::settings::{
     SettingChange, SettingChoice, SettingEntry, SettingValue, SettingsError, SettingsRegistry,
 };
 use byroredux_sdk::compatibility::PapyrusInputBinding;
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use winit::event::MouseButton;
 use winit::keyboard::KeyCode;
 
@@ -1191,7 +1191,9 @@ pub(crate) fn camera_ray(world: &World) -> Option<(Vec3, Vec3)> {
 /// component read guards (`DoorTeleport`, `RumbleOnActivate`,
 /// `QuestAdvanceOnActivate`, `TwoStateActivator`,
 /// `MG07LabyrinthianDoor`, and since #4697/#4698 `SceneAliasCandidate`
-/// and `FormIdComponent`) — doing that while
+/// and `FormIdComponent`; since #5109 also the Talk arm's `Dead`,
+/// `AiCombatState`, `ActorControlState` and `ActorValues`, each as one
+/// bulk set build) — doing that while
 /// `InteractionCandidateScratch`'s write guard was still open recorded
 /// one scratch→component edge per guard per frame in the global
 /// lock-order graph. Same capacity-reuse contract as before: whatever the caller
@@ -1280,6 +1282,16 @@ fn populate_candidates(world: &World, candidates: &mut FxHashMap<EntityId, Inter
             .try_resource::<crate::systems::PlayerEntity>()
             .and_then(|player| player.0);
         let bound = byroredux_scripting::running_quest_bound_entities(world);
+        // #5109 — the refusal, actor and binding filters are bulk set
+        // builds whose storage guards are each held alone, replacing the
+        // per-candidate `World::get` chains that re-locked the same four
+        // storages for every placement root in every loaded cell, every
+        // frame.
+        let refusals = crate::systems::npc_dialogue::collect_dialogue_refusals(world);
+        let actors: FxHashSet<EntityId> = world
+            .query::<byroredux_core::ecs::components::ActorValues>()
+            .map(|query| query.iter().map(|(entity, _)| entity).collect())
+            .unwrap_or_default();
         let candidate_entities: Vec<EntityId> = world
             .query::<byroredux_scripting::SceneAliasCandidate>()
             .map(|identities| identities.iter().map(|(entity, _)| entity).collect())
@@ -1287,16 +1299,10 @@ fn populate_candidates(world: &World, candidates: &mut FxHashMap<EntityId, Inter
         let talkable: Vec<EntityId> = candidate_entities
             .into_iter()
             .filter(|entity| Some(*entity) != player)
-            // #5043 — the dead and the fighting offer no "Talk"; the
-            // dialogue selection refuses the same two states.
-            .filter(|entity| {
-                crate::systems::npc_dialogue::npc_refuses_dialogue(world, *entity).is_none()
-            })
-            .filter(|entity| {
-                world
-                    .get::<byroredux_core::ecs::components::ActorValues>(*entity)
-                    .is_some()
-            })
+            // #5043 — the dead, the fighting and the unconscious offer no
+            // "Talk"; the dialogue selection refuses the same states.
+            .filter(|entity| !refusals.refuses(*entity))
+            .filter(|entity| actors.contains(entity))
             .filter(|entity| bound.contains(entity))
             .collect();
         for entity in talkable {
@@ -1347,8 +1353,9 @@ fn populate_candidates(world: &World, candidates: &mut FxHashMap<EntityId, Inter
     // #4820 — a root spawned disabled (scripted `Disable()` or authored
     // "Initially Disabled", #4813) has no mesh or collider, and nothing
     // re-spawns them on a live `Enable()`. It stays out until its cell
-    // reloads, whatever the ledger says now.
-    let withheld: Vec<EntityId> = world
+    // reloads, whatever the ledger says now. #5109 — hash-set membership,
+    // not the O(n·m) `Vec::contains` this retain used to run per candidate.
+    let withheld: FxHashSet<EntityId> = world
         .query::<crate::components::PlacementContentWithheld>()
         .map(|query| query.iter().map(|(entity, _)| entity).collect())
         .unwrap_or_default();
@@ -2012,6 +2019,119 @@ mod tests {
             assert!(select_interaction_target(&world).is_none());
             assert!(!unlock_with_carried_key(&world, door));
             assert!(world.has::<Locked>(door));
+        }
+    }
+
+    #[test]
+    fn talk_arm_bulk_filters_admit_only_living_bound_actors() {
+        // #5109 — the Talk arm's refusal / actor / binding filters run as
+        // bulk set builds (one storage guard each) instead of per-root
+        // `World::get` chains. This pins their combined semantics at
+        // scale: of many alias-candidate roots, exactly the living,
+        // non-refusing actors bound by a running quest offer "Talk".
+        use byroredux_core::ecs::components::{ActorValues, Dead};
+        use byroredux_plugin::esm::records::{AliasFillType, QuestAlias, QustRecord};
+        use byroredux_scripting::quest_stages::QuestStageState;
+        use byroredux_scripting::{ActorControlState, AiCombatState, QuestFormId};
+
+        const QUEST: u32 = 0x10;
+        let mut world = input_fixture();
+        byroredux_scripting::register(&mut world);
+        let player = world.spawn();
+        world.insert_resource(crate::systems::PlayerEntity(Some(player)));
+        world.insert_resource(QuestStageState::default());
+        // Quests QUEST..QUEST+3 run; QUEST+4 stays installed but stopped.
+        for quest in 0..4 {
+            world
+                .resource_mut::<QuestStageState>()
+                .start_quest(QuestFormId(QUEST + quest), None);
+        }
+
+        let stamp = |reference: u32| byroredux_scripting::SceneAliasCandidate {
+            reference_form_id: reference,
+            base_form_id: 0xB00 + reference,
+            ..Default::default()
+        };
+        let actor_values = || ActorValues::from_pairs([(0x2D4, 10.0)]);
+        // Living actor a running quest binds — the one "Talk" candidate.
+        let bound = world.spawn();
+        world.insert(bound, stamp(0xA1));
+        world.insert(bound, actor_values());
+        // Bound living actors that each refuse dialogue for one reason.
+        let dead = world.spawn();
+        world.insert(dead, stamp(0xA2));
+        world.insert(dead, actor_values());
+        world.insert(dead, Dead);
+        let fighting = world.spawn();
+        world.insert(fighting, stamp(0xA3));
+        world.insert(fighting, actor_values());
+        world.insert(
+            fighting,
+            AiCombatState {
+                target: player,
+                attack_cooldown_remaining: 0.0,
+            },
+        );
+        let unconscious = world.spawn();
+        world.insert(unconscious, stamp(0xA4));
+        world.insert(unconscious, actor_values());
+        world.insert(
+            unconscious,
+            ActorControlState {
+                unconscious: true,
+                restrained: false,
+            },
+        );
+        // Living actor whose quest is installed but never started.
+        let stopped = world.spawn();
+        world.insert(stopped, stamp(0xA5));
+        world.insert(stopped, actor_values());
+        // Inert placement roots: stamped, not actors.
+        let inert: Vec<_> = (0..64)
+            .map(|n| {
+                let entity = world.spawn();
+                world.insert(entity, stamp(0xB0 + n));
+                entity
+            })
+            .collect();
+
+        byroredux_scripting::install_scene_quest_aliases(
+            &mut world,
+            (0..=4).map(|n| QustRecord {
+                form_id: QUEST + n,
+                aliases: vec![QuestAlias {
+                    alias_id: 1,
+                    fill_type: Some(AliasFillType::ForcedReference(0xA1 + n)),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }),
+        );
+        byroredux_scripting::refresh_scene_actor_bindings(&world);
+
+        let mut candidates = FxHashMap::default();
+        populate_candidates(&world, &mut candidates);
+        assert_eq!(
+            candidates.get(&bound),
+            Some(&InteractionKind::Npc),
+            "the living running-quest-bound actor is talkable"
+        );
+        for (refused, reason) in [
+            (dead, "dead"),
+            (fighting, "fighting"),
+            (unconscious, "unconscious"),
+            (stopped, "bound only by a stopped quest"),
+        ] {
+            assert!(
+                candidates.get(&refused).is_none(),
+            "a {reason} bound actor must not be talkable"
+            );
+        }
+        for entity in inert {
+            assert!(
+                !candidates.contains_key(&entity),
+                "a stamped non-actor root must not be talkable"
+            );
         }
     }
 

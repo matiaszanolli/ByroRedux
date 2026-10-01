@@ -48,6 +48,7 @@ use byroredux_scripting::{
     running_quests_binding_entity, select_first_info, ActivateEvent, AiCombatState,
     DialogueInfoFragments, DialogueRegistry, Effect, QuestFormId, SceneAliasCandidate,
 };
+use rustc_hash::FxHashSet;
 
 use crate::cell_loader::LoadedCellIndex;
 use crate::systems::PlayerEntity;
@@ -413,8 +414,9 @@ struct TopicSelection {
 
 /// #5043 — whether `npc` is in no state to hold a conversation: dead (corpse
 /// loot owns it), fighting (`AiCombatState`, against the player or anyone
-/// else), or unconscious (#5017). The interaction Talk arm applies the same two filters, so
-/// the prompt and the selection agree.
+/// else), or unconscious (#5017). The interaction Talk arm applies the same
+/// three filters (in bulk, via [`collect_dialogue_refusals`]), so the prompt
+/// and the selection agree.
 pub(crate) fn npc_refuses_dialogue(world: &World, npc: EntityId) -> Option<&'static str> {
     if world.get::<Dead>(npc).is_some() {
         return Some("that actor is dead");
@@ -427,6 +429,46 @@ pub(crate) fn npc_refuses_dialogue(world: &World, npc: EntityId) -> Option<&'sta
         return Some("that actor is unconscious");
     }
     None
+}
+
+/// The bulk form of [`npc_refuses_dialogue`] for the per-frame candidate
+/// scan (#5109): the three refusal states gathered as sets under one
+/// storage guard each, so the HUD prompt path never re-locks four storages
+/// per placement root per frame. The scalar form stays the authority for
+/// the one-NPC activation path (it names the refusing state) — the two
+/// must always check the same three conditions.
+pub(crate) struct DialogueRefusals {
+    dead: FxHashSet<EntityId>,
+    fighting: FxHashSet<EntityId>,
+    unconscious: FxHashSet<EntityId>,
+}
+
+impl DialogueRefusals {
+    pub(crate) fn refuses(&self, npc: EntityId) -> bool {
+        self.dead.contains(&npc)
+            || self.fighting.contains(&npc)
+            || self.unconscious.contains(&npc)
+    }
+}
+
+pub(crate) fn collect_dialogue_refusals(world: &World) -> DialogueRefusals {
+    let dead = world
+        .query::<Dead>()
+        .map(|query| query.iter().map(|(entity, _)| entity).collect())
+        .unwrap_or_default();
+    let fighting = world
+        .query::<AiCombatState>()
+        .map(|query| query.iter().map(|(entity, _)| entity).collect())
+        .unwrap_or_default();
+    // #5017's own bulk gather — one `ActorControlState` guard, reused
+    // rather than re-implemented here.
+    let mut unconscious = Vec::new();
+    byroredux_scripting::collect_unconscious(world, &mut unconscious);
+    DialogueRefusals {
+        dead,
+        fighting,
+        unconscious: unconscious.into_iter().collect(),
+    }
 }
 
 /// Reusable per-frame scratch (mirrors `WalkAnimScratch`'s shape).

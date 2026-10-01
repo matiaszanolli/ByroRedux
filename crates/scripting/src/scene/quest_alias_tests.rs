@@ -1267,3 +1267,71 @@ fn running_quests_binding_entity_reports_only_running_bound_quests() {
         "an untracked entity owns nothing"
     );
 }
+
+#[test]
+fn running_quest_bound_entities_is_the_bulk_inverse_of_the_scalar_helper() {
+    // #5109 — the per-frame Talk arm consumes the bulk form; this pins
+    // that it agrees with the scalar helper the activation path keeps.
+    let mut world = World::new();
+    crate::register(&mut world);
+    world.insert_resource(QuestStageState::default());
+    world
+        .resource_mut::<QuestStageState>()
+        .start_quest(QuestFormId(QUEST), None);
+
+    let bound = world.spawn();
+    let other = world.spawn();
+    let candidate = |reference: u32| SceneAliasCandidate {
+        reference_form_id: reference,
+        base_form_id: 0xB00 + reference,
+        linked_refs: Vec::new(),
+        location_ref_types: Vec::new(),
+    };
+    world.insert(bound, candidate(0xA1));
+    world.insert(other, candidate(0xA2));
+    install_scene_quest_aliases(
+        &mut world,
+        [
+            QustRecord {
+                form_id: QUEST,
+                aliases: vec![QuestAlias {
+                    alias_id: 1,
+                    fill_type: Some(AliasFillType::ForcedReference(0xA1)),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+            QustRecord {
+                form_id: QUEST + 1,
+                // Installed but never started: its binding must not count.
+                aliases: vec![QuestAlias {
+                    alias_id: 1,
+                    fill_type: Some(AliasFillType::ForcedReference(0xA1)),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+        ],
+    );
+    refresh_scene_actor_bindings(&world);
+
+    let bulk = running_quest_bound_entities(&world);
+    assert!(
+        bulk.contains(&bound),
+        "the actor a running quest binds is in the bulk set"
+    );
+    assert!(
+        !bulk.contains(&other),
+        "an actor no alias binds is not in the bulk set"
+    );
+    let untracked = world.spawn();
+    assert!(
+        !bulk.contains(&untracked),
+        "an untracked entity is not in the bulk set"
+    );
+    assert_eq!(
+        bulk.iter().copied().collect::<Vec<_>>(),
+        vec![bound],
+        "only the actor the running quest binds is in the bulk set"
+    );
+}

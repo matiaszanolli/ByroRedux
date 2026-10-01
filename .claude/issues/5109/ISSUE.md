@@ -1,6 +1,7 @@
-# ECS-2026-09-29-D6-01: the P4 Talk arm of populate_candidates scans every placement root and every installed quest, every frame
+# null: ECS-2026-09-29-D6-01: the P4 Talk arm of populate_candidates scans every placement root and every installed quest, every frame
 
-Labels: medium, ecs, performance, dialogue, bug
+labels: bug, ecs, medium, performance, dialogue
+state: OPEN
 
 **Source reports**: `docs/audits/AUDIT_ECS_2026-09-29.md` (ECS-2026-09-29-D6-01) + `docs/audits/AUDIT_PERFORMANCE_2026-09-29.md` (PERF-D1-2026-09-29-01). The two reports describe the same defect, so it is filed once here.
 **Severity**: MEDIUM
@@ -43,3 +44,4 @@ Validated at HEAD 9fcfdc3fc: the talkable block in `populate_candidates` still c
 - [ ] **SIBLING**: The other `populate_candidates` arms and `activation_is_blocked` / `interaction_bound` were checked for per-entity `World::get` inside a held query
 - [ ] **LOCK_ORDER**: If a RwLock scope changes, TypeId-sorted acquisition is preserved (and #5025's cycles aren't reintroduced)
 - [ ] **TESTS**: A regression test pins this specific fix (e.g. the talkable set is computed without a per-root `World::get`, or a scaling bench)
+
