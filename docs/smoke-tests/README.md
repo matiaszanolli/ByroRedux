@@ -33,7 +33,8 @@ matrix below on a runner carrying both `byroredux-rt` and
 ## Playable-slice gates are game-parameterised (#3039)
 
 `p0-door-interaction.sh`, `p1-character-traversal.sh`, `p2-melee-core.sh`,
-`p5-save-restart.sh` and
+`p5-save-restart.sh`, `p5-f5-f9-quicksave.sh`, `p5-door-transition.sh`,
+`p5-soak.sh` and
 `w1-water-traversal.sh` take the title as their first argument (or
 `BYROREDUX_SMOKE_GAME`), defaulting to `skyrim_se`:
 
@@ -47,6 +48,10 @@ docs/smoke-tests/p2-melee-core.sh fo3            # Fallout 3: Moriarty's Saloon 
 docs/smoke-tests/p0-door-interaction.sh fo4      # Fallout 4: Med-Tek Research exit
 docs/smoke-tests/p2-melee-core.sh fo4            # Fallout 4: Med-Tek feral-ghoul corpse save/restart
 docs/smoke-tests/p3-player-body.sh               # Skyrim SE: player body attach + view toggle
+docs/smoke-tests/p5-f5-f9-quicksave.sh fnv       # F5/F9 bound-input quicksave/quickload + graceful quit + validation
+docs/smoke-tests/p5-quest-persistence.sh         # Skyrim SE: MS01 objective state vs F9 + process restart
+docs/smoke-tests/p5-door-transition.sh fnv       # save/reload both sides of the P0 door route
+docs/smoke-tests/p5-soak.sh fnv                  # 30-min repeated transitions/saves soak (BYROREDUX_SOAK_MINUTES)
 ```
 
 Every game-specific value — data dir, archives, cell, camera pose, destination
@@ -58,7 +63,8 @@ misconfigured runner can't look like "data absent".
 New fixtures may explicitly list `FIXTURE_GATES` while their other routes are
 still unmeasured. Calling an undeclared gate then fails with exit `2`, before
 checking data; it is neither a pass nor a missing-data skip. Fallout 3 currently
-declares `p0-door-interaction`, `p5-save-restart`, and `p2-melee-core`; Fallout 4
+declares `p0-door-interaction`, `p5-save-restart`, `p5-f5-f9-quicksave`, and
+`p2-melee-core`; Fallout 4
 declares the measured `p0-door-interaction` and `p2-melee-core` routes. The FO3
 combat gate now passes its combat, save, fresh-process reload, and 20-sample
 restored-ragdoll checks.
@@ -82,6 +88,34 @@ restore and a destination frame. Logs/saves are retained under the printed
 prove F5/F9 OS-event delivery, inventory/quest persistence, clean Vulkan debug
 validation, graceful shutdown, or the 30-minute soak; process termination
 here deliberately uses SIGTERM after the save command reports completion.
+
+The four **P5 hardening gates** close exactly those gaps. All drive the engine
+through bound input (`input.press quicksave`/`quickload` deliver the same F5/F9
+binding edges the window-event path resolves, joining the canonical deferred
+`PlayerSaveAction` queue; `engine.quit` requests the shared orderly shutdown):
+
+- `p5-f5-f9-quicksave.sh` (default port 19877) — two F5 ring slots validated
+  through `save.info`, F9 in-process pose restore to the *quicksaved* pose
+  (not the pre-save spawn, not the post-save moved pose), `engine.quit` clean
+  exit 0 with the shutdown teardown logged, and the whole session under
+  `BYRO_VALIDATION=1` with zero Khronos validation errors. PASS on FNV, FO3,
+  and Skyrim SE (2026-10-01).
+- `p5-quest-persistence.sh` (port 19875, Skyrim SE MS01 fixture) — the
+  objective chain driven to stage 15 and quicksaved, advanced through the
+  stage-36 conditional pair, then F9 must **revert** quest state to the
+  quicksaved point (stage 15, objective 22 un-displayed), the restored chain
+  must advance live again, and the re-advanced state must survive a graceful
+  quit + `--load` restart. PASS 2026-10-01.
+- `p5-door-transition.sh` (port 19874) — F5 inside, one E edge through the
+  authored door to the exterior, F9 cross-cell restore back to the interior
+  standoff, the restored door opens again, and the exterior quicksave
+  survives a graceful-quit restart (`--load`, grid + pose). PASS on FNV
+  2026-10-01.
+- `p5-soak.sh` (port 19873, `BYROREDUX_SOAK_MINUTES`, default 30) — repeated
+  per-cycle control walks, F5, door transition out, F9 session replacement
+  back in; fails on panic, stuck transition, lost player control, or RSS
+  growing past 1.5× the 3-cycle warmup baseline. The curve lands in
+  `soak.csv` under the artifacts directory.
 
 A fixture may also decline a gate. For fixtures without an explicit gate
 restriction, `w1-water-traversal.sh` SKIPs (77) any title whose fixture declares
