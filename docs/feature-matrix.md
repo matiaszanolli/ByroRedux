@@ -204,7 +204,7 @@ layouts); see the gaps table below.
 | Story Manager event payload / search | ✗ |
 | Reference collections; true LCTN / unloaded-world alias queries | ✗ |
 | Created-object spawning from aliases | ✗ |
-| Dialogue tree + dialogue UI integration | ✗ M43 remainder |
+| Dialogue tree + dialogue UI integration | ~ single-level topic selection + native response surface (P4, ab31cfefe/766e1746e — live in MarkarthWarrens); full tree + dialogue UI open |
 
 Smoke test: [`docs/smoke-tests/m43-quest-runtime.sh`](smoke-tests/m43-quest-runtime.sh)
 drives the production ESM → runtime → TCP command path against installed
@@ -243,7 +243,7 @@ Implementation: `byroredux/src/combat.rs` (melee vertical slice), `byroredux/src
 | Fallout 4 Scaleform host objects | ◐ `BGSCodeObj` lifecycle + 138-method installed-corpus catalog + injected ABC dispatch + BA2-backed `ImportAssets` shipped; HUD/Pip-Boy readiness and destruction plus Atomic Command inventory asserted, method behavior pending M48 |
 | Scaleform menu input routing + modal focus | ✓ M48 (`3ea5e275`) — winit → `UiInputEvent` translation (`crates/ui/src/input.rs`, `byroredux/src/ui_input.rs`), cursor position + modifier state, focus transfer and modal capture ahead of world controls, window→movie coordinate scaling |
 | `byroredux-debug-ui` egui overlay (F-key toggle) | ✓ |
-| Native game menu (Pause / Settings / Inventory) | ✓ Shipped 2026-08-15/16 — `byroredux-debug-ui`'s egui `GameMenuPage::{Pause,Settings,Inventory}` (`crates/debug-ui/src/panels.rs`); native `InventorySnapshot`/`InventoryAction` bridge over the canonical `Inventory`/`EquipmentSlots` components (`byroredux/src/inventory.rs`); validated TOML-persisted settings with stale-entry recovery (`byroredux/src/settings_io.rs`). Runs alongside Scaleform, not a replacement. Save/load toasts are live; container/corpse transfer, visible player-mesh attachment, general HUD bars, and quest-objective presentation remain open. |
+| Native game menu (Pause / Settings / Inventory) | ✓ Shipped 2026-08-15/16 — `byroredux-debug-ui`'s egui `GameMenuPage::{Pause,Settings,Inventory}` (`crates/debug-ui/src/panels.rs`); native `InventorySnapshot`/`InventoryAction` bridge over the canonical `Inventory`/`EquipmentSlots` components (`byroredux/src/inventory.rs`); validated TOML-persisted settings with stale-entry recovery (`byroredux/src/settings_io.rs`). Runs alongside Scaleform, not a replacement. Save/load toasts are live. Container/corpse transfer shipped (`container_loot_system` — activation take-all + corpse looting, #4712), and the visible player mesh shipped (a070baaad body + view toggle, db8351587 walk/idle, 0182fc5e8 gear import; `p3-player-body.sh`); general HUD bars and quest-objective presentation remain open. |
 
 ---
 
