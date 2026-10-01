@@ -40,3 +40,7 @@ pub use csg::{bscrc32, csg_name_hash, CsgArchive, CSG_CHUNK_SIZE};
 pub use naming::numeric_sibling_paths;
 pub use safety::{MAX_CHUNK_BYTES, MAX_ENTRY_COUNT};
 pub use uvd::{parse_uvd_header, UvdHeader, UVD_MAGIC};
+/// Same quantity as `byroredux_core::math::coord::EXTERIOR_CELL_UNITS`, which
+/// this crate cannot depend on; the bin crate const-asserts the two equal
+/// (`cell_loader/precombined.rs`, COORD-04/#4939).
+pub use uvd::EXTERIOR_CELL_UNITS as UVD_CELL_UNITS;

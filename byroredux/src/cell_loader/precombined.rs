@@ -94,6 +94,12 @@ use super::spawn::spawn_placed_instances;
 use super::FrameTimeBudget;
 use crate::asset_provider::{MaterialProvider, TextureProvider};
 
+/// COORD-04 / #4939 — `byroredux-bsa` re-declares the exterior cell size
+/// (it cannot depend on core's coord SoT), so pin the two equal here, where
+/// previs-grid recovery will consume `UvdHeader::exterior_cell_grid`.
+const _: () =
+    assert!(byroredux_bsa::UVD_CELL_UNITS == byroredux_core::math::coord::EXTERIOR_CELL_UNITS);
+
 /// Resolve the effective absorbed-REFR set for a cell load's per-REFR pass.
 ///
 /// When the precombine actually spawned geometry (`pc_spawned > 0`), the

@@ -1153,7 +1153,7 @@ mod tests {
     /// without a failure on both sides.
     #[test]
     fn far_plane_clears_the_widest_lod_ring_corner() {
-        const CELL_UNITS: f32 = 4096.0;
+        use crate::math::coord::EXTERIOR_CELL_UNITS as CELL_UNITS;
         for (label, cells) in [("synthesized ring", 48.0), ("baked ladder", 61.0)] {
             let corner = cells * CELL_UNITS * 2f32.sqrt();
             assert!(

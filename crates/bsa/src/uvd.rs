@@ -191,7 +191,10 @@ pub struct UvdHeader {
 }
 
 /// Side of one Fallout 4 exterior cell, in game units. An exterior `.uvd`'s
-/// bounds are a whole number of these on X and Y.
+/// bounds are a whole number of these on X and Y. Same quantity as core's
+/// `math::coord::EXTERIOR_CELL_UNITS` SoT (#1112); equality is const-asserted
+/// from the bin crate as `UVD_CELL_UNITS` (COORD-04/#4939) since this crate
+/// does not depend on core.
 pub const EXTERIOR_CELL_UNITS: f32 = 4096.0;
 
 /// Cells per side of the block an exterior `.uvd`'s bounds span — the owning
