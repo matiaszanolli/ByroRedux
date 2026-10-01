@@ -21,7 +21,7 @@ fn shader_discriminants_and_bone_lanes_use_generated_constants() {
     let ray_hit = include_str!("../../../shaders/include/ray_hit.glsl");
     let skin = include_str!("../../../shaders/skin_vertices.comp");
     let inject = include_str!("../../../shaders/volumetrics_inject.comp");
-    let draw = include_str!("../context/draw.rs");
+    let draw = include_str!("../context/frame_params.rs");
     for constant in [
         "VERTEX_BONE_INDICES_OFFSET_FLOATS",
         "VERTEX_BONE_WEIGHTS_OFFSET_FLOATS",
@@ -2828,8 +2828,8 @@ fn material_kind_multi_layer_parallax_has_no_raw_literal_call_sites() {
             "material_kind == crate::vulkan::scene_buffer::MATERIAL_KIND_MULTI_LAYER_PARALLAX",
         ),
         (
-            "context/draw.rs",
-            include_str!("../context/draw.rs"),
+            "context/frame_params.rs",
+            include_str!("../context/frame_params.rs"),
             "cmd.material_kind == MATERIAL_KIND_MULTI_LAYER_PARALLAX",
         ),
     ];
@@ -6803,6 +6803,7 @@ fn layer_and_fog_shape_discriminants_are_never_hand_typed() {
         ("volumetrics_inject.comp", include_str!("../../../shaders/volumetrics_inject.comp")),
         ("volumetrics.rs", include_str!("../volumetrics.rs")),
         ("context/draw.rs", include_str!("../context/draw.rs")),
+        ("context/frame_params.rs", include_str!("../context/frame_params.rs")),
     ];
     for (name, src) in sources {
         let code = code_lines(src);

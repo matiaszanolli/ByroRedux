@@ -1060,17 +1060,23 @@ mod prose_pointer_tests {
              at it is now stale; update them to the new home (#4005)"
         );
 
-        // `draw.rs` keeps an RP-1 mention, but it is the indirect-draw
-        // ceiling policy in `should_use_indirect_draws` — a different
-        // overflow on a different buffer. Sending a reader there for the
-        // instance-overflow error is precisely the bug this fixed, so pin
-        // that the instance message is NOT there.
-        assert!(
-            !include_str!("draw.rs").contains(RP1_MESSAGE),
-            "draw.rs now carries the RP-1 instance-overflow message too — if \
-             it moved back, the pointers corrected by #4005 need moving back \
-             with it"
-        );
+        // `draw.rs` keeps an RP-1 mention via the indirect-draw ceiling
+        // policy in `should_use_indirect_draws` (in `frame_params.rs` since
+        // #5087) — a different overflow on a different buffer. Sending a
+        // reader there for the instance-overflow error is precisely the bug
+        // this fixed, so pin that the instance message is NOT in either
+        // half of the former draw.rs.
+        for (label, src) in [
+            ("draw.rs", include_str!("draw.rs")),
+            ("frame_params.rs", include_str!("frame_params.rs")),
+        ] {
+            assert!(
+                !src.contains(RP1_MESSAGE),
+                "{label} now carries the RP-1 instance-overflow message too — if \
+                 it moved back, the pointers corrected by #4005 need moving back \
+                 with it"
+            );
+        }
 
         for (label, src) in [
             ("context/helpers.rs", crate::source_scan::production_text(include_str!("helpers.rs"))),

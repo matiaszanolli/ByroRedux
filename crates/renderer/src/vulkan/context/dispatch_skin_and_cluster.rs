@@ -9,7 +9,7 @@
 //! order are unchanged from the pre-split `draw_frame`.
 
 use super::super::descriptors::memory_barrier;
-use super::draw::{next_clean_skin_frames, should_skip_skin_gpu_refresh};
+use super::frame_params::{next_clean_skin_frames, should_skip_skin_gpu_refresh};
 use super::{DrawCommand, FrameTimings, VulkanContext};
 use ash::vk;
 use byroredux_core::ecs::storage::EntityId;

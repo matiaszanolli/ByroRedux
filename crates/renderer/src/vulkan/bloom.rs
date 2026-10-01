@@ -1320,6 +1320,10 @@ mod construction_invariant_upload_tests {
                 include_str!("context/build_and_upload_instances.rs"),
             ),
             ("draw.rs (its former home)", include_str!("context/draw.rs")),
+            (
+                "frame_params.rs (draw.rs's split-off parameter half)",
+                include_str!("context/frame_params.rs"),
+            ),
         ] {
             assert!(
                 !src.contains("bloom.upload_params"),

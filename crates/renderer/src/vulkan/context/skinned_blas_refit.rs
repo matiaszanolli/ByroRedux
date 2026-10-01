@@ -261,7 +261,7 @@ impl VulkanContext {
                             .morph_slots
                             .get(&dc.entity_id)
                             .filter(|slot| {
-                                super::draw::morph_slot_backs_mesh(
+                                super::frame_params::morph_slot_backs_mesh(
                                     slot.vertex_count(),
                                     slot.target_count(),
                                     mesh.vertex_count,
@@ -275,7 +275,7 @@ impl VulkanContext {
                                 )
                             });
                         let (morph_delta_address, morph_weight_address, morph_target_count) =
-                            super::draw::morph_gpu_fields_for_draw(morph_slot_fields);
+                            super::frame_params::morph_gpu_fields_for_draw(morph_slot_fields);
                         let push = super::super::skin_compute::SkinPushConstants {
                             morph_delta_address,
                             morph_weight_address,

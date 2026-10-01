@@ -894,7 +894,7 @@ pub(super) fn collect_static_mesh_draws(
                 // branch already shows the scene through the cup.
                 //
                 // PERF-D2-02 / #2691 — this override is also what makes
-                // `needs_two_sided_blend_split` (`vulkan::context::draw`)
+                // `needs_two_sided_blend_split` (`vulkan::context::frame_params`)
                 // structurally dead for engine-classified glass: it clears
                 // `two_sided` before the `DrawCommand` exists, so that
                 // predicate's `b.two_sided && order_dependent_glass` limb can

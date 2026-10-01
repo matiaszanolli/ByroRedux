@@ -282,7 +282,7 @@ struct ScratchBuffers {
     previous_models_scratch: Vec<scene_buffer::GpuPreviousModel>,
     /// Per-frame scratch buffer for draw batch metadata. Same lifecycle
     /// as `gpu_instances_scratch`. See issue #243.
-    batches_scratch: Vec<draw::DrawBatch>,
+    batches_scratch: Vec<frame_params::DrawBatch>,
     /// Per-frame `draw_idx → ssbo_idx` map filled by `build_instance_map`.
     /// Taken in `begin_frame_recording`, restored in `draw_frame` once the
     /// TLAS and SSBO builders have read it. #4193 / #243.
@@ -1514,7 +1514,8 @@ mod egui_pending_output_tests {
 
 // Method implementations split across submodules:
 mod draw;
-pub use draw::{is_refractive_glass, FrameInputs};
+mod frame_params;
+pub use frame_params::{is_refractive_glass, FrameInputs};
 mod assemble_camera_and_lights;
 mod begin_frame_recording;
 mod build_and_upload_instances;
@@ -1929,7 +1930,7 @@ mod rigid_history_hasher_tests {
     fn pose_dirty_crosses_the_crate_boundary_without_siphash() {
         for (src, what) in [
             (
-                include_str!("draw.rs"),
+                include_str!("frame_params.rs"),
                 "FrameInputs.pose_dirty — the field that pins the type across \
                  the core/renderer boundary",
             ),

@@ -7,7 +7,7 @@
 use super::super::gpu_timers::GeometryTimerPhase;
 use super::super::pipeline::{PipelineKey, default_depth_compare_op, depth_compare_op};
 use super::super::water::{WaterDrawCommand, water_instance_slot};
-use super::draw::{DrawBatch, group_state, needs_two_sided_blend_split, should_use_indirect_draws};
+use super::frame_params::{DrawBatch, group_state, needs_two_sided_blend_split, should_use_indirect_draws};
 use super::{DrawCommand, VulkanContext};
 use ash::vk;
 

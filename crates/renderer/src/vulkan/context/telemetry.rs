@@ -10,7 +10,7 @@
 //! function.
 
 use super::super::scene_buffer;
-use super::draw;
+use super::frame_params;
 use super::{VulkanContext, SKIN_MAX_SLOTS};
 use ash::vk;
 use std::time::{Duration, Instant};
@@ -117,7 +117,7 @@ impl VulkanContext {
             name: "batches_scratch",
             len: self.scratch.batches_scratch.len(),
             capacity: self.scratch.batches_scratch.capacity(),
-            elem_size_bytes: size_of::<draw::DrawBatch>(),
+            elem_size_bytes: size_of::<frame_params::DrawBatch>(),
         });
         // #4610 — the `draw_idx -> ssbo_idx` map (#4193). Sized to the frame's
         // draw count like `batches_scratch`, so it grows with the same scenes.

@@ -17,7 +17,7 @@ use super::super::scene_buffer::{
     INSTANCE_FLAG_TERRAIN_SPLAT, INSTANCE_RENDER_LAYER_MASK, INSTANCE_RENDER_LAYER_SHIFT,
     INSTANCE_TERRAIN_TILE_MASK, INSTANCE_TERRAIN_TILE_SHIFT,
 };
-use super::draw::{
+use super::frame_params::{
     CompositeParamsInputs, DrawBatch, build_composite_params, build_sky_cube_params,
     is_caustic_source, is_refractive_glass, morph_gpu_fields_for_draw, morph_slot_backs_mesh,
     rebase_model_matrix, rigid_instance_set_changed, skin_slot_backs_mesh,

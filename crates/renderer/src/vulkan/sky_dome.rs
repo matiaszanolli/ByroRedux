@@ -165,7 +165,8 @@ mod tests {
     /// cloud representations drifted in different directions.
     #[test]
     fn wind_consumers_match_the_host_packing() {
-        let draw = include_str!("context/draw.rs");
+        // #5087 — `pack_sky_dome` moved to `context/frame_params.rs`.
+        let draw = include_str!("context/frame_params.rs");
         let packing = draw
             .split_once("weather_wind: [")
             .expect("pack_sky_dome still packs weather_wind (#4925)")

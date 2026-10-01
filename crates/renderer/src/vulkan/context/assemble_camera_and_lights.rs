@@ -7,7 +7,7 @@
 
 use super::super::frame_upscaler::FsrFrameParameters;
 use super::super::scene_buffer;
-use super::draw::{
+use super::frame_params::{
     build_fsr_frame_parameters, camera_frame_deltas, dof_effective_view_proj, fsr_gated_dof,
     is_camera_cut, origin_corrected_prev_view_proj, taa_jitter, CameraFrameDeltas,
 };

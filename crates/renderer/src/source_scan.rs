@@ -67,7 +67,11 @@ mod tests {
         ("vulkan/context/assemble_camera_and_lights.rs", 1),
         ("vulkan/context/build_and_upload_instances.rs", 6),
         ("vulkan/context/dispatch_skin_and_cluster.rs", 4),
-        ("vulkan/context/draw.rs", 2),
+        // +1 (#5087): the file-level LOC budget strips every test module
+        // itself (`production_lines` in draw_frame_size_budget_tests), so
+        // production_text's first-cut does not apply to this interleaved
+        // file.
+        ("vulkan/context/draw.rs", 3),
         ("vulkan/context/geometry_pass.rs", 1),
         ("vulkan/context/mod.rs", 1),
         // +1 (#4958): `every_frame_recorder_is_documented` strips every test
