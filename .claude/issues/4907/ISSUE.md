@@ -1,8 +1,8 @@
-# EXT-D3-2026-09-27-02: §12.3 ground-colour coupling blends toward the renormalized average of the ATXT overlays only — the BTXT base the terrain shows is ignored
+# Issue #4907
 
-**Issue**: #4907
-**Filed**: 2026-09-27 (audit-publish, AUDIT_EXTERIOR_2026-09-27.md)
-**Labels**: medium,terrain-exterior,bug,shaders
+**Title:** EXT-D3-2026-09-27-02: §12.3 ground-colour coupling blends toward the renormalized average of the ATXT overlays only — the BTXT base the terrain shows is ignored
+**State:** OPEN
+**Labels:** bug, medium, terrain-exterior, shaders
 
 **Severity**: MEDIUM (visual)
 **Dimension**: Ground-cover pipeline
@@ -40,3 +40,4 @@ Blade roots take the colour of faint overlays, with hard seams along overlay edg
 - [ ] **CANONICAL-BOUNDARY**: Per-game logic stays at the EXAL/WATAL translate boundary (`env_translate.rs`, `groundcover_translate.rs`, the `cell_loader` spawn sites) — never pushed into shaders/renderer, never re-derived at render time. See `/audit-exterior`.
 - [ ] **SPIR-V**: Edited shaders recompiled and `scripts/check-shader-artifacts.sh` is clean
 - [ ] **TESTS**: A regression test pins this specific fix
+

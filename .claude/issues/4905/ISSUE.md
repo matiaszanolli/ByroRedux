@@ -1,8 +1,8 @@
-# EXT-D2-2026-09-27-04: The BTXT feather covers only the quadrant edges inside a cell; the same base disagreement across a cell edge stays a hard cut
+# Issue #4905
 
-**Issue**: #4905
-**Filed**: 2026-09-27 (audit-publish, AUDIT_EXTERIOR_2026-09-27.md)
-**Labels**: medium,terrain-exterior,bug
+**Title:** EXT-D2-2026-09-27-04: The BTXT feather covers only the quadrant edges inside a cell; the same base disagreement across a cell edge stays a hard cut
+**State:** OPEN
+**Labels:** bug, medium, terrain-exterior
 
 **Severity**: MEDIUM (visual)
 **Dimension**: Terrain, splatting
@@ -38,3 +38,4 @@ Choose one:
 - [ ] **SIBLING**: Same pattern checked in related files (other spawners / translate arms / games)
 - [ ] **CANONICAL-BOUNDARY**: Per-game logic stays at the EXAL/WATAL translate boundary (`env_translate.rs`, `groundcover_translate.rs`, the `cell_loader` spawn sites) — never pushed into shaders/renderer, never re-derived at render time. See `/audit-exterior`.
 - [ ] **TESTS**: A regression test pins this specific fix
+

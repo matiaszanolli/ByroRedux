@@ -1,8 +1,10 @@
-# REN-D5-2026-09-26-11: A failed dynamic-RGBA staging step is now fatal to `draw_frame`; before `e2f99ad55` the same failure was a logged, skipped HUD frame
+# Issue #4889
 
-**GitHub Issue**: https://github.com/matiaszanolli/ByroRedux/issues/4889
+**Title:** REN-D5-2026-09-26-11: A failed dynamic-RGBA staging step is now fatal to `draw_frame`; before `e2f99ad55` the same failure was a logged, skipped HUD frame
+**State:** OPEN
+**Labels:** bug, renderer, medium, memory, ui
 
-**Labels**: medium,renderer,memory,ui,bug
+_Filed from `docs/audits/AUDIT_RENDERER_2026-09-26.md` (Dimension 5 renderer audit, audited `main` @ `078f650ec`; delta baseline `AUDIT_RENDERER_2026-09-21.md`). Finding ID: **REN-D5-2026-09-26-11**._
 
 - **Severity**: MEDIUM (a transient allocation failure in a non-essential overlay path terminates the process)
 - **Dimension**: Memory/Lifecycle
@@ -19,3 +21,4 @@
 ## Completeness Checks
 - [ ] **SIBLING**: Same pattern checked in related files (sibling constructors / upload paths / docs)
 - [ ] **TESTS**: A regression test pins this specific fix
+

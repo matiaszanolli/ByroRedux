@@ -1,8 +1,10 @@
-# REN-D5-2026-09-26-12: `recreate_swapchain_core` has two `?` windows between creating the new swapchain and retiring the old one
+# Issue #4890
 
-**GitHub Issue**: https://github.com/matiaszanolli/ByroRedux/issues/4890
+**Title:** REN-D5-2026-09-26-12: `recreate_swapchain_core` has two `?` windows between creating the new swapchain and retiring the old one
+**State:** OPEN
+**Labels:** bug, renderer, low, vulkan
 
-**Labels**: low,renderer,vulkan,bug
+_Filed from `docs/audits/AUDIT_RENDERER_2026-09-26.md` (Dimension 5 renderer audit, audited `main` @ `078f650ec`; delta baseline `AUDIT_RENDERER_2026-09-21.md`). Finding ID: **REN-D5-2026-09-26-12**._
 
 - **Severity**: LOW (every caller treats a resize failure as fatal and exits; the leak is on an exit path only)
 - **Dimension**: Memory/Lifecycle (resize error paths)
@@ -14,3 +16,4 @@
 ## Completeness Checks
 - [ ] **DROP**: If Vulkan objects change, the Drop impl and teardown ordering are still correct
 - [ ] **TESTS**: A regression test pins this specific fix
+

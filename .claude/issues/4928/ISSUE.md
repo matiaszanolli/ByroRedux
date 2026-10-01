@@ -1,8 +1,8 @@
-# EXT-D4-2026-09-27-06: A duplicated 4-slot TOD fold (`cloud_tod_slot` vs `fold_to_four_tod_slots`) and a stale lock-order comment
+# Issue #4928
 
-**Issue**: #4928
-**Filed**: 2026-09-27 (audit-publish, AUDIT_EXTERIOR_2026-09-27.md)
-**Labels**: low,terrain-exterior,bug,tech-debt
+**Title:** EXT-D4-2026-09-27-06: A duplicated 4-slot TOD fold (`cloud_tod_slot` vs `fold_to_four_tod_slots`) and a stale lock-order comment
+**State:** OPEN
+**Labels:** bug, low, tech-debt, terrain-exterior
 
 **Severity**: LOW
 **Dimension**: Sky, weather, sun
@@ -21,3 +21,4 @@ Call `fold_to_four_tod_slots` from the cloud path, and fix the comment.
 - [ ] **CANONICAL-BOUNDARY**: Per-game logic stays at the EXAL/WATAL translate boundary (`env_translate.rs`, `groundcover_translate.rs`, the `cell_loader` spawn sites) — never pushed into shaders/renderer, never re-derived at render time. See `/audit-exterior`.
 - [ ] **LOCK_ORDER**: `WeatherDataRes` / `WeatherTransitionRes` / `SkyParamsRes` / `CellLightingRes` acquisition order preserved (#3263, #1410)
 - [ ] **TESTS**: A regression test pins this specific fix
+

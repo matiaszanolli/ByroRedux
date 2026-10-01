@@ -1,8 +1,8 @@
-# EXT-D2-2026-09-27-02: The canonical base LTEX is never translated into the cover inputs — the density field fabricates 0.15 for unpainted base and ignores the base under partial paint
+# Issue #4903
 
-**Issue**: #4903
-**Filed**: 2026-09-27 (audit-publish, AUDIT_EXTERIOR_2026-09-27.md)
-**Labels**: medium,terrain-exterior,bug,shaders
+**Title:** EXT-D2-2026-09-27-02: The canonical base LTEX is never translated into the cover inputs — the density field fabricates 0.15 for unpainted base and ignores the base under partial paint
+**State:** OPEN
+**Labels:** bug, medium, terrain-exterior, shaders
 
 **Severity**: MEDIUM (visual)
 **Dimension**: Terrain, splatting
@@ -43,3 +43,4 @@ EXT-D3-02, EXT-D2-01, EXT-D2-03, #4054
 - [ ] **CANONICAL-BOUNDARY**: Per-game logic stays at the EXAL/WATAL translate boundary (`env_translate.rs`, `groundcover_translate.rs`, the `cell_loader` spawn sites) — never pushed into shaders/renderer, never re-derived at render time. See `/audit-exterior`.
 - [ ] **SPIR-V**: Edited shaders recompiled and `scripts/check-shader-artifacts.sh` is clean
 - [ ] **TESTS**: A regression test pins this specific fix
+

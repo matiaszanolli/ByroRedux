@@ -1,7 +1,8 @@
-# 4913: EXT-D6-2026-09-27-03: Skyrim distant trees are never drawn — 386 `.btt` tree-LOD files and the `treelod` atlases go unconsumed
+# Issue #4913
 
-labels: bug, medium, game:skyrim, terrain-exterior
-state: OPEN
+**Title:** EXT-D6-2026-09-27-03: Skyrim distant trees are never drawn — 386 `.btt` tree-LOD files and the `treelod` atlases go unconsumed
+**State:** OPEN
+**Labels:** bug, medium, game:skyrim, terrain-exterior
 
 **Severity**: MEDIUM (coverage hole)
 **Dimension**: Distant LOD and trees

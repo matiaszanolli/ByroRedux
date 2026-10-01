@@ -1,8 +1,8 @@
-# EXT-D3-2026-09-27-01: Phase C ignores the authored LTEX→GRAS association — every load-order GRAS is placed everywhere by climate keyword, and its density is diluted by the record count
+# Issue #4906
 
-**Issue**: #4906
-**Filed**: 2026-09-27 (audit-publish, AUDIT_EXTERIOR_2026-09-27.md)
-**Labels**: medium,terrain-exterior,bug,shaders
+**Title:** EXT-D3-2026-09-27-01: Phase C ignores the authored LTEX→GRAS association — every load-order GRAS is placed everywhere by climate keyword, and its density is diluted by the record count
+**State:** OPEN
+**Labels:** bug, medium, terrain-exterior, shaders
 
 **Severity**: MEDIUM (visual)
 **Dimension**: Ground-cover pipeline
@@ -44,3 +44,4 @@ The widened carrier has no consumer. Main-context re-check: `authored_grass` is 
 - [ ] **CANONICAL-BOUNDARY**: Per-game logic stays at the EXAL/WATAL translate boundary (`env_translate.rs`, `groundcover_translate.rs`, the `cell_loader` spawn sites) — never pushed into shaders/renderer, never re-derived at render time. See `/audit-exterior`.
 - [ ] **SPIR-V**: Edited shaders recompiled and `scripts/check-shader-artifacts.sh` is clean
 - [ ] **TESTS**: A regression test pins this specific fix
+

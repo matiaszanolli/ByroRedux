@@ -1,8 +1,8 @@
-# EXT-D1-2026-09-27-01: A WTHR cross-fade never promotes `image_space` — the exterior grade snaps back to the source weather once the transition completes
+# Issue #4901
 
-**Issue**: #4901
-**Filed**: 2026-09-27 (audit-publish, AUDIT_EXTERIOR_2026-09-27.md)
-**Labels**: medium,terrain-exterior,bug
+**Title:** EXT-D1-2026-09-27-01: A WTHR cross-fade never promotes `image_space` — the exterior grade snaps back to the source weather once the transition completes
+**State:** OPEN
+**Labels:** bug, medium, terrain-exterior
 
 **Severity**: MEDIUM (visual; affects the whole session after any weather transition)
 **Dimension**: EXAL boundary discipline × Sky, weather, sun
@@ -39,3 +39,4 @@ The grade fades to the target over 8 s, then reverts to the old weather's grade 
 - [ ] **CANONICAL-BOUNDARY**: Per-game logic stays at the EXAL/WATAL translate boundary (`env_translate.rs`, `groundcover_translate.rs`, the `cell_loader` spawn sites) — never pushed into shaders/renderer, never re-derived at render time. See `/audit-exterior`.
 - [ ] **LOCK_ORDER**: `WeatherDataRes` / `WeatherTransitionRes` / `SkyParamsRes` / `CellLightingRes` acquisition order preserved (#3263, #1410)
 - [ ] **TESTS**: A regression test pins this specific fix
+

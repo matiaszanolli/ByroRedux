@@ -1,8 +1,10 @@
-# REN-D5-2026-09-26-10: The ground-cover blade draw issues a multi-draw indirect on a device that may lack `multiDrawIndirect`; #4827's "every indirect consumer is gated" pin does not cover it
+# Issue #4888
 
-**GitHub Issue**: https://github.com/matiaszanolli/ByroRedux/issues/4888
+**Title:** REN-D5-2026-09-26-10: The ground-cover blade draw issues a multi-draw indirect on a device that may lack `multiDrawIndirect`; #4827's "every indirect consumer is gated" pin does not cover it
+**State:** OPEN
+**Labels:** bug, renderer, medium, vulkan, terrain-exterior
 
-**Labels**: medium,renderer,vulkan,terrain-exterior,bug
+_Filed from `docs/audits/AUDIT_RENDERER_2026-09-26.md` (Dimension 5 renderer audit, audited `main` @ `078f650ec`; delta baseline `AUDIT_RENDERER_2026-09-21.md`). Finding ID: **REN-D5-2026-09-26-10**._
 
 - **Severity**: MEDIUM (a Vulkan spec violation where reachable, downgraded from HIGH only because no RT-capable device in the supported class lacks `multiDrawIndirect`)
 - **Dimension**: Memory/Lifecycle (device-feature degradation)
@@ -18,3 +20,4 @@
 ## Completeness Checks
 - [ ] **SIBLING**: Same pattern checked in related files (sibling constructors / upload paths / docs)
 - [ ] **TESTS**: A regression test pins this specific fix
+
