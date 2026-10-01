@@ -1308,10 +1308,12 @@ pub(crate) fn promote_weather_transition_target(world: &World) {
     // this body dropped a field four times (#1101 wind_speed, #1102 DALC,
     // #4481 both HNAM dimmers, #3985 the authored-velocity flags). The
     // `&` pattern copies each field out while `tr` is alive; the write
-    // below stays after the #3263 lock-order drop. `image_space` is
-    // deliberately not promoted verbatim: the completion frame
-    // lerp-samples the target's image space through `sample_image_space`
-    // instead of a raw copy.
+    // below stays after the #3263 lock-order drop. `image_space` IS
+    // promoted (#4901): the completion frame lerp-samples the target's
+    // image space, but once `done` latches `transition_t` is 0.0 and the
+    // publish path samples the live `wd.image_space` — un-promoted, the
+    // exterior grade snapped back to the source weather's for the rest of
+    // the session (the fifth recurrence of the #4481 class).
     let &WeatherDataRes {
         sky_colors: new_sky,
         fog: new_fog,
@@ -1327,7 +1329,7 @@ pub(crate) fn promote_weather_transition_target(world: &World) {
         weather: tr_target_weather,
         sunlight_dimmer: tr_target_sunlight_dimmer,
         grass_dimmer: tr_target_grass_dimmer,
-        image_space: _,
+        image_space: tr_target_image_space,
     } = &tr.target;
     // Lock-order boundary (#3263): weather_system holds WeatherDataRes while
     // reading WeatherTransitionRes. Do not move the WeatherDataRes write
@@ -1365,6 +1367,9 @@ pub(crate) fn promote_weather_transition_target(world: &World) {
         // reload.
         wd.sunlight_dimmer = tr_target_sunlight_dimmer;
         wd.grass_dimmer = tr_target_grass_dimmer;
+        // #4901 — with the rest of the palette: the grade the publish path
+        // samples on every post-`done` frame is the target weather's.
+        wd.image_space = tr_target_image_space;
     }
 }
 
@@ -2244,6 +2249,76 @@ mod interior_gate_tests {
                 "is_interior = {is_interior}"
             );
         }
+    }
+
+    /// #4901 — the transition's completion promotion never copied
+    /// `image_space`, so on the frame after `done` latched the exterior
+    /// grade snapped back to the source weather's for the rest of the
+    /// session. Post-completion frames must publish the target's grade.
+    #[test]
+    fn image_space_is_promoted_when_the_transition_completes() {
+        use byroredux_plugin::esm::records::weather::TOD_DAY;
+        use byroredux_scripting::{ImageSpace, ImageSpaceBase};
+        let source_grade = ImageSpace {
+            saturation: 0.7,
+            ..ImageSpace::default()
+        };
+        let target_grade = ImageSpace {
+            saturation: 0.2,
+            ..ImageSpace::default()
+        };
+
+        let mut world = build_world(false);
+        {
+            let mut wd = world.resource_mut::<WeatherDataRes>();
+            wd.image_space[TOD_DAY] = source_grade;
+        }
+        // `WeatherDataRes` is neither Clone nor Default; the target is the
+        // same neutral snapshot `build_world` inserts, with its own grade.
+        let mut sky_colors = [[[0.0_f32; 3]; 6]; 10];
+        sky_colors[byroredux_plugin::esm::records::weather::SKY_AMBIENT]
+            .fill([0.5, 0.5, 0.5]);
+        let mut target = WeatherDataRes {
+            sky_colors,
+            fog: [100.0, 60000.0, 200.0, 30000.0],
+            fog_media: [
+                crate::fog::FogMedium::from_legacy_ramp(100.0, 60000.0, None),
+                crate::fog::FogMedium::from_legacy_ramp(200.0, 30000.0, None),
+            ],
+            tod_hours: [6.0, 10.0, 18.0, 22.0],
+            skyrim_dalc_per_tod: None,
+            wind_speed: 0,
+            precipitation: 0.0,
+            cloud_layer_velocities: [[0.0; 2]; 4],
+            cloud_layer_velocities_authored: [false; 4],
+            cloud_layer_colors: [[[1.0; 3]; 4]; 4],
+            cloud_layer_alphas: [[1.0; 4]; 4],
+            weather: crate::components::WeatherSkyState::default(),
+            grass_dimmer: 1.0,
+            sunlight_dimmer: 1.0,
+            image_space: Default::default(),
+        };
+        target.image_space[TOD_DAY] = target_grade;
+        // A tenth of a second from completion.
+        world.insert_resource(WeatherTransitionRes {
+            target,
+            elapsed_secs: 7.9,
+            duration_secs: 8.0,
+            done: false,
+        });
+        world.insert_resource(ImageSpaceBase(ImageSpace::default()));
+        // Completion frame: t reaches 1.0 and the promotion runs; the
+        // published grade is the lerp-to-1.0 of the target.
+        weather_system(&world, 0.1);
+        // Post-completion frame: `done` latched, transition_t is 0.0 — the
+        // grade must come from the promoted `wd.image_space`, not revert.
+        weather_system(&world, 0.016);
+        let published = world.resource::<ImageSpaceBase>().0;
+        assert_eq!(
+            published, target_grade,
+            "the exterior grade must stay on the target weather after the \
+             transition completes (#4901)"
+        );
     }
 
     /// Interior gate — `cell_lit.fog_color` (and the rest of the gated
