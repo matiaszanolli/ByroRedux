@@ -155,12 +155,23 @@ impl VulkanContext {
         // so the old struct is in a valid state through the
         // create_swapchain call (and the assignment immediately
         // replaces it anyway).
-        let old_image_views: Vec<vk::ImageView> =
+        let mut old_image_views: Vec<vk::ImageView> =
             std::mem::take(&mut self.swapchain.state.image_views);
 
         let old_swapchain = self.swapchain.state.swapchain;
 
-        self.swapchain.state = swapchain::create_swapchain(
+        // #4890 — retire the old swapchain IMMEDIATELY after the new one
+        // exists. Pre-#4890 the old-view destroy loop and the old-swapchain
+        // destroy sat after the extent and FSR computations, leaving two
+        // `?` windows in which a failure leaked the retired handles: the
+        // mem::taken views via a plain drop, and the retired swapchain
+        // forever (Drop only knows `self.swapchain.state.swapchain`, which
+        // by then records the NEW one — a VUID-vkDestroySurfaceKHR-
+        // surface-01266 violation at exit). A create_swapchain failure is
+        // handled in the Err arm below: the taken views are destroyed
+        // before the error propagates and Drop still finds the OLD
+        // swapchain recorded in `self.swapchain.state`.
+        let new_state = match swapchain::create_swapchain(
             swapchain::SwapchainSurfaceCtx {
                 instance: &self.instance,
                 device: &self.device,
@@ -171,7 +182,60 @@ impl VulkanContext {
             self.queue_indices,
             window_size,
             old_swapchain, // atomic handoff — avoids flicker during resize
-        )?;
+        ) {
+            Ok(state) => state,
+            Err(e) => {
+                // #4890 (A) — destroy the taken views on the way out; a
+                // plain drop would leak them, since the mem::take above
+                // removed them from `self.swapchain.state.image_views`.
+                for view in old_image_views.drain(..) {
+                    unsafe {
+                        // SAFETY: `device_wait_idle` at entry guarantees no
+                        // in-flight work references these views, and they
+                        // were created by this device and never handed out.
+                        self.device.destroy_image_view(view, None);
+                    }
+                }
+                return Err(e);
+            }
+        };
+        self.swapchain.state = new_state;
+
+        // #654 / LIFE-M1 — destroy the old swapchain's image views NOW,
+        // after the new swapchain has been created (so the handoff above
+        // saw the old swapchain in a consistent state with its child views
+        // still alive) but before we destroy the old swapchain itself.
+        // Vulkan spec allows destroying child views either before or after
+        // the parent swapchain; this ordering satisfies the strictest
+        // validation-layer interpretation (VUID-VkSwapchainCreateInfoKHR-
+        // oldSwapchain-01933 + the "swapchain image not in expected state"
+        // check). Moved directly beside the create by #4890 so no later
+        // `?` can run in between.
+        unsafe {
+            // SAFETY: the device is idle (device_wait_idle at entry) and the new
+            // swapchain is already created, so these retired image views — created
+            // by `self.device` from the old swapchain's images and not yet
+            // destroyed — have no in-flight references and can be destroyed.
+            for &view in &old_image_views {
+                self.device.destroy_image_view(view, None);
+            }
+        }
+
+        // Destroy the retired old swapchain now that the new one is active.
+        if old_swapchain != vk::SwapchainKHR::null() {
+            unsafe {
+                // SAFETY: the device is idle (device_wait_idle at entry), its child
+                // image views were destroyed just above, and the new swapchain is
+                // already active, so the retired `old_swapchain` (non-null per the
+                // guard) has no remaining references and can be destroyed by the
+                // loader that created it.
+                self.swapchain
+                    .state
+                    .swapchain_loader
+                    .destroy_swapchain(old_swapchain, None);
+            }
+        }
+
         let max_image_dimension_2d = unsafe {
             // SAFETY: `self.physical_device` was selected from `self.instance`
             // and both remain live for the context lifetime.
@@ -232,40 +296,6 @@ impl VulkanContext {
                 self.device
                     .destroy_render_pass(self.swapchain.render_pass, None);
                 self.swapchain.render_pass = vk::RenderPass::null();
-            }
-        }
-
-        // #654 / LIFE-M1 — destroy the old swapchain's image views NOW,
-        // after the new swapchain has been created (so the handoff at
-        // line ~78 saw the old swapchain in a consistent state with
-        // its child views still alive) but before we destroy the old
-        // swapchain itself. Vulkan spec allows destroying child views
-        // either before or after the parent swapchain; this ordering
-        // satisfies the strictest validation-layer interpretation
-        // (VUID-VkSwapchainCreateInfoKHR-oldSwapchain-01933 + the
-        // "swapchain image not in expected state" check).
-        unsafe {
-            // SAFETY: the device is idle (device_wait_idle at entry) and the new
-            // swapchain is already created, so these retired image views — created
-            // by `self.device` from the old swapchain's images and not yet
-            // destroyed — have no in-flight references and can be destroyed.
-            for &view in &old_image_views {
-                self.device.destroy_image_view(view, None);
-            }
-        }
-
-        // Destroy the retired old swapchain now that the new one is active.
-        if old_swapchain != vk::SwapchainKHR::null() {
-            unsafe {
-                // SAFETY: the device is idle (device_wait_idle at entry), its child
-                // image views were destroyed just above, and the new swapchain is
-                // already active, so the retired `old_swapchain` (non-null per the
-                // guard) has no remaining references and can be destroyed by the
-                // loader that created it.
-                self.swapchain
-                    .state
-                    .swapchain_loader
-                    .destroy_swapchain(old_swapchain, None);
             }
         }
 
@@ -1622,6 +1652,31 @@ mod tests {
             destroy_views_pos < destroy_swapchain_pos,
             "old image views must be destroyed BEFORE the old \
              swapchain (children-before-parent). #654."
+        );
+        // #4890 — the retirement (views + old swapchain) must complete
+        // BEFORE the first failing step after the create: the extent and
+        // FSR computations both return `?`, and pre-#4890 they ran while
+        // the retired handles were still only in locals — a failure there
+        // leaked the views (plain drop) and the retired swapchain (Drop
+        // only knows `self.swapchain.state.swapchain`, by then the new
+        // one).
+        let extents_pos = src
+            .find("FrameExtentSet::for_output(")
+            .expect("must compute frame extents after the swapchain create");
+        assert!(
+            destroy_swapchain_pos < extents_pos,
+            "the retired views and old swapchain must be destroyed BEFORE \
+             the frame-extent / FSR `?`s (#4890)"
+        );
+        // #4890 (A) — a create_swapchain failure must destroy the taken
+        // views on its way out (drain), not drop them.
+        let drain_pos = src
+            .find("old_image_views.drain(..)")
+            .expect("the create Err arm must drain-destroy the taken views (#4890)");
+        assert!(
+            drain_pos > create_pos && drain_pos < destroy_views_pos,
+            "the Err-arm view cleanup sits between the create call and the \
+             main destroy loop (#4890)"
         );
     }
 
