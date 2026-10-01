@@ -640,7 +640,7 @@ mod tests {
         DRAGON_FLOOR_LIFT, DRAGON_GLASS_ROUGHNESS, DRAGON_PRESENTATION_YAW,
         force_glass_dragon_material, place_glass_dragon,
     };
-    use super::oracle::{CornellOracleManifest, CornellOracleRung, cornell_oracle_manifest};
+    use super::oracle::{CornellOracleRung, cornell_oracle_manifest};
     use super::*;
     use crate::scene::cornell_sun_mode;
 
