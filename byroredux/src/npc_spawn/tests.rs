@@ -2611,7 +2611,9 @@ fn bannered_mare_outfits_keep_every_inam_entry_on_real_skyrim_data() {
 #[test]
 fn resolve_inherited_call_sites_are_enumerated_and_pinned() {
     const NPC_SPAWN_RS: &str = include_str!("../npc_spawn.rs");
-    const RESUMABLE_RS: &str = include_str!("resumable.rs");
+    const RESUMABLE_RS: &str = include_str!("resumable/mod.rs");
+    const RESUMABLE_RUNTIME_RS: &str = include_str!("resumable/runtime.rs");
+    const RESUMABLE_PREBAKED_RS: &str = include_str!("resumable/prebaked.rs");
     const AI_PACKAGE_RS: &str = include_str!("ai_package.rs");
     const REFERENCES_MOD_RS: &str = include_str!("../cell_loader/references/mod.rs");
     const ACTOR_VALUE_DERIVE_RS: &str =
@@ -2649,8 +2651,16 @@ fn resolve_inherited_call_sites_are_enumerated_and_pinned() {
     let counts = [
         ("npc_spawn.rs", count_calls(NPC_SPAWN_RS, &call_names)),
         (
-            "npc_spawn/resumable.rs",
+            "npc_spawn/resumable/mod.rs",
             count_calls(RESUMABLE_RS, &call_names),
+        ),
+        (
+            "npc_spawn/resumable/runtime.rs",
+            count_calls(RESUMABLE_RUNTIME_RS, &call_names),
+        ),
+        (
+            "npc_spawn/resumable/prebaked.rs",
+            count_calls(RESUMABLE_PREBAKED_RS, &call_names),
         ),
         (
             "npc_spawn/ai_package.rs",
@@ -2678,9 +2688,11 @@ fn resolve_inherited_call_sites_are_enumerated_and_pinned() {
     // does not exist yet:
     // cell_loader/references/mod.rs: load_references_budgeted resolves
     //   traits for race BEFORE the async spawn job starts = 1.
-    let expected: [(&str, usize); 6] = [
+    let expected: [(&str, usize); 8] = [
         ("npc_spawn.rs", 0),
-        ("npc_spawn/resumable.rs", 0),
+        ("npc_spawn/resumable/mod.rs", 0),
+        ("npc_spawn/resumable/runtime.rs", 0),
+        ("npc_spawn/resumable/prebaked.rs", 0),
         ("npc_spawn/ai_package.rs", 0),
         ("cell_loader/references/mod.rs", 1),
         ("esm/records/actor_value_derive.rs", 0),
