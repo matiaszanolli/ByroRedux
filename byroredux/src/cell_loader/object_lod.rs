@@ -753,6 +753,44 @@ pub(crate) fn object_lod_archive_path(
     }
 }
 
+/// #4913 — Skyrim's distant-**tree** family: registered naming, consumer
+/// open.
+///
+/// Vanilla `.bto` macro-meshes bake no trees; the tree tier is its own
+/// family on the same quad residency — 386 level-4 `.btt` quad files under
+/// `meshes\terrain\<ws>\trees\` (Tamriel 329, dlc2solstheimworld 24, …),
+/// 9 `.lst` species lists, and the `<ws>treelod.dds` atlases
+/// (`probe_lod_corpus` counts all three). FO4/FO76 bake their trees into
+/// the `.bto` and do not ship the family.
+///
+/// Recon (2026-10-01, `tamriel.4.4.-12.btt`, 3 548 B, `Meshes1.bsa`): the
+/// file is **not** a renamed NIF — no `NetImmerse` header, no embedded
+/// texture strings. Header is three u32s (`15, 9, 21` — version, counts?),
+/// then fixed-size records of f32s whose first field reads as a ~21 000-unit
+/// world coordinate. A consumer must parse this bespoke billboard-instance
+/// format and instance camera-facing quads from the atlas; the `.lst` lists
+/// are generation-time species data and not needed to consume the baked
+/// `.btt`.
+#[cfg_attr(not(test), allow(dead_code))] // #4913: the consumer is open work
+pub(crate) fn tree_lod_supported(game: GameKind) -> bool {
+    matches!(game, GameKind::Skyrim)
+}
+
+/// Archive path of one quad's baked tree-LOD billboards (#4913). Level 4 is
+/// the only level the vanilla corpus ships.
+#[cfg_attr(not(test), allow(dead_code))] // #4913: the consumer is open work
+pub(crate) fn tree_lod_archive_path(worldspace_key: &str, qx: i32, qy: i32) -> String {
+    let w = worldspace_key.to_ascii_lowercase();
+    format!("meshes\\terrain\\{w}\\trees\\{w}.4.{qx}.{qy}.btt")
+}
+
+/// The per-worldspace tree-LOD atlas the `.btt` billboards sample (#4913).
+#[cfg_attr(not(test), allow(dead_code))] // #4913: the consumer is open work
+pub(crate) fn tree_lod_atlas_path(worldspace_key: &str) -> String {
+    let w = worldspace_key.to_ascii_lowercase();
+    format!("textures\\terrain\\{w}\\trees\\{w}treelod.dds")
+}
+
 /// The texture a `.bto` / legacy-block sub-mesh should sample from its own
 /// `BSShaderTextureSet` slot 0, normalized into the archive's canonical
 /// `textures\…` form. `None` means the sub-mesh named nothing and the caller
@@ -1200,6 +1238,30 @@ mod tests {
             object_lod_scheme(GameKind::Starfield),
             None,
             "Starfield re-verified: zero .bto/.btr in LODMeshes.ba2 (#4488)"
+        );
+        // #4913 — the tree family is Skyrim-only (FO4/FO76 bake trees into
+        // the .bto; Oblivion/FO3/FNV/Starfield ship no .btt family).
+        for game in [
+            GameKind::Oblivion,
+            GameKind::Fallout3NV,
+            GameKind::Fallout4,
+            GameKind::Fallout76,
+            GameKind::Starfield,
+        ] {
+            assert!(
+                !tree_lod_supported(game),
+                "{game:?} must not claim the Skyrim .btt tree family (#4913)"
+            );
+        }
+        assert!(tree_lod_supported(GameKind::Skyrim));
+        assert_eq!(
+            tree_lod_archive_path("Tamriel", 4, -12),
+            "meshes\\terrain\\tamriel\\trees\\tamriel.4.4.-12.btt",
+            "level-first stem, same as the .bto family, under trees\\"
+        );
+        assert_eq!(
+            tree_lod_atlas_path("Tamriel"),
+            "textures\\terrain\\tamriel\\trees\\tamrieltreelod.dds"
         );
         // A game with a scheme must also have a ladder, or its quads are
         // selected by nothing and the arm is silently dead — the exact shape
