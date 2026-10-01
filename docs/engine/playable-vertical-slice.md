@@ -1602,10 +1602,15 @@ later, so a quicksave deferred alongside the quit still executes).
   cross-cell restore back to the interior standoff (≤1 unit) → the restored
   world is playable (the same door opens again) → the exterior quicksave
   survives a graceful-quit restart (`--load`, exterior grid + pose ≤2 units).
-- **Combat/looting/equipment** — already gated by `p2-melee-core.sh` across
+- **Combat/looting/equipment** — gated by `p2-melee-core.sh` across
   FNV/FO3/Skyrim SE/FO4 (kill, loot, inventory/equipment, death marker, and
   restored-ragdoll samples across a fresh-process reload); no new coverage
-  required.
+  required. Re-run during the P5 closure, its FNV preflight now fails on a
+  **pre-existing** regression independent of the P5 work (reproduced
+  identically at the session's start HEAD `456a4fc7f`): the player spawns
+  at a door instead of the fixture standoff and the frozen GSTrudy
+  reference never spawns — **#5156**. The 2026-09-17 green runs remain the
+  combat-persistence evidence of record until it is fixed.
 - **30-minute soak** — [`p5-soak.sh`](../smoke-tests/p5-soak.sh): repeated
   per-cycle control walks (≥10 BU each way), F5, one door transition out,
   F9 session replacement back; fails on panic, stuck transition, lost
