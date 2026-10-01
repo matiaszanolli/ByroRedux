@@ -550,7 +550,7 @@ pub(crate) fn worldspace_name_chain(
 /// the wave layer `0.02283 / 0.5 ≈ 0.04565` UV/s, and a `River` plane
 /// reproduces the default appearance exactly while `Rapids` / `Waterfall`
 /// scale up in proportion to the current the physics sink is simulating.
-const WATER_SCROLL_UV_PER_BU_PER_S: f32 = 0.045_651;
+pub(crate) const WATER_SCROLL_UV_PER_BU_PER_S: f32 = 0.045_651;
 
 /// Fraction of the downstream rate at which scroll vector 1 crosses the
 /// current — the canonical perpendicular shear the `WaterMaterial.scroll_*`
@@ -562,7 +562,7 @@ const WATER_SCROLL_UV_PER_BU_PER_S: f32 = 0.045_651;
 /// at the boundary ([`watr_angle_to_engine_xz`]) the authored layers run
 /// downstream and compose verbatim, so the compensating attenuation — and
 /// the old `WATER_CROSS_STREAM_SCROLL` confinement — are gone.
-const WATER_PERPENDICULAR_SHEAR_SCROLL: f32 = 0.5;
+pub(crate) const WATER_PERPENDICULAR_SHEAR_SCROLL: f32 = 0.5;
 
 /// #4727 — WATR's authored noise-wind angles (the per-layer DNAM offsets,
 /// and the `wind_direction` alias Skyrim promotes from DNAM) are wind-FROM
@@ -976,32 +976,16 @@ fn classify_water_kind_and_flow(
                 })
             });
         if let Some(canonical) = canonical {
-            let scroll = canonical.speed * WATER_SCROLL_UV_PER_BU_PER_S;
-            // #4727 — the per-layer angles are converted to the engine XZ
-            // frame at the boundary (resolve_water_layer_motion), so the
-            // authored layers run downstream and compose with the flow term
-            // verbatim. The #4544 cross-stream confinement is gone: it
-            // compensated exactly the frame error the conversion fixes and
-            // discarded ~70% of the authored speed profile while what
-            // survived still pointed mostly sideways.
-            let flow_x = canonical.direction[0];
-            let flow_z = canonical.direction[2];
-            let authored_a = resolve_water_layer_motion(rec, 0);
-            let authored_b = resolve_water_layer_motion(rec, 1);
-            let authored_c = resolve_water_layer_motion(rec, 2);
-            mat.scroll_a = [
-                flow_x * scroll + authored_a[0],
-                flow_z * scroll + authored_a[1],
-            ];
-            mat.scroll_b = [
-                -flow_z * scroll * WATER_PERPENDICULAR_SHEAR_SCROLL + authored_b[0],
-                flow_x * scroll * WATER_PERPENDICULAR_SHEAR_SCROLL + authored_b[1],
-            ];
-            mat.scroll_c = if authored_c != [0.0, 0.0] {
-                authored_c
-            } else {
-                mat.scroll_a
-            };
+            // #4911 — the composition lives in one helper so the WATR
+            // translation and `merge_placed_water` (a REFR XWCU current
+            // replacing the WATR flow) cannot let the pattern term and the
+            // physics current diverge.
+            compose_flow_scrolls(
+                mat,
+                rec,
+                [canonical.direction[0], canonical.direction[2]],
+                canonical.speed,
+            );
             flow = Some(canonical);
         } else {
             apply_authored_layer_scrolls(rec, mat);
@@ -1010,6 +994,50 @@ fn classify_water_kind_and_flow(
         apply_authored_layer_scrolls(rec, mat);
     }
     (kind, flow)
+}
+
+/// #4911 — compose the flow scroll term onto the authored layer motion:
+/// layer A rides the flow axis, layer B the perpendicular shear, layer C
+/// keeps its authored motion or mirrors A. Shared by the WATR translation
+/// above and `merge_placed_water`, which recomposes the term when a REFR
+/// `XWCU` current replaces the WATR flow — across Skyrim's 128 XWCU REFRs
+/// two run up to ~79° off their WATR, and the old shape let ripples run
+/// across the current that carried floating bodies.
+///
+/// `direction_xz` is a unit vector in engine XZ; `speed` is world units per
+/// second.
+pub(crate) fn compose_flow_scrolls(
+    mat: &mut WaterMaterial,
+    rec: &esm::records::misc::WatrRecord,
+    direction_xz: [f32; 2],
+    speed: f32,
+) {
+    let scroll = speed * WATER_SCROLL_UV_PER_BU_PER_S;
+    // #4727 — the per-layer angles are converted to the engine XZ
+    // frame at the boundary (resolve_water_layer_motion), so the
+    // authored layers run downstream and compose with the flow term
+    // verbatim. The #4544 cross-stream confinement is gone: it
+    // compensated exactly the frame error the conversion fixes and
+    // discarded ~70% of the authored speed profile while what
+    // survived still pointed mostly sideways.
+    let flow_x = direction_xz[0];
+    let flow_z = direction_xz[1];
+    let authored_a = resolve_water_layer_motion(rec, 0);
+    let authored_b = resolve_water_layer_motion(rec, 1);
+    let authored_c = resolve_water_layer_motion(rec, 2);
+    mat.scroll_a = [
+        flow_x * scroll + authored_a[0],
+        flow_z * scroll + authored_a[1],
+    ];
+    mat.scroll_b = [
+        -flow_z * scroll * WATER_PERPENDICULAR_SHEAR_SCROLL + authored_b[0],
+        flow_x * scroll * WATER_PERPENDICULAR_SHEAR_SCROLL + authored_b[1],
+    ];
+    mat.scroll_c = if authored_c != [0.0, 0.0] {
+        authored_c
+    } else {
+        mat.scroll_a
+    };
 }
 
 /// The no-current scroll arm: authored noise layers scroll the surface

@@ -680,10 +680,14 @@ fn watr_damage_per_second(
 /// - A vertical sheet the NIF path classified as `Waterfall` keeps that kind
 ///   and its downward flow; every other piece takes the WATR's kind.
 /// - The REFR's own `XWCU` velocity (entry 0, Gamebyro Z-up) wins over the
-///   WATR current; in vanilla the two are equal.
+///   WATR current — and #4911: when it wins, the pattern scroll term is
+///   recomposed from it, so ripples, foam and the physics current agree.
+///   The old "in vanilla the two are equal" claim was false: 2 of Skyrim's
+///   128 XWCU REFRs run up to ~79° off their WATR.
 fn merge_placed_water(
     mesh: &WaterPlane,
     mesh_flow: Option<WaterFlow>,
+    watr_record: &esm::records::misc::WatrRecord,
     watr_material: WaterMaterial,
     watr_kind: WaterKind,
     watr_flow: Option<WaterFlow>,
@@ -706,6 +710,21 @@ fn merge_placed_water(
         let speed = x.hypot(y);
         (speed.is_finite() && speed > 1.0e-5).then(|| WaterFlow::new([x, 0.0, -y], speed))
     });
+    // #4911 — an XWCU winner recomposes the flow scrolls from itself. For
+    // the agreeing majority (within 3.8° of their WATR) the result is the
+    // composition the WATR arm already produced; for the divergent few the
+    // pattern stops running across the current. The flowing-kind gate
+    // mirrors the WATR arm — a calm WATR never carries a flow term.
+    if let Some(reference) = reference_flow {
+        if watr_kind.has_directional_flow() {
+            crate::env_translate::compose_flow_scrolls(
+                &mut material,
+                watr_record,
+                [reference.direction[0], reference.direction[2]],
+                reference.speed,
+            );
+        }
+    }
     let plane = WaterPlane {
         kind: watr_kind,
         material,
@@ -772,10 +791,12 @@ pub(super) fn apply_placed_water_type(
     let (watr_material, watr_kind, watr_flow, normal_path, noise_paths) =
         crate::env_translate::resolve_water_material(waters, Some(water_form));
     let damage_per_second = watr_damage_per_second(waters, Some(water_form));
+    let watr_record = &waters[&water_form];
     for (entity, mesh, mesh_flow) in &targets {
         let (mut plane, flow) = merge_placed_water(
             mesh,
             *mesh_flow,
+            watr_record,
             watr_material,
             watr_kind,
             watr_flow,
@@ -1196,6 +1217,7 @@ mod tests {
         let (plane, flow) = merge_placed_water(
             &mesh_plane(WaterKind::Calm, 0x00C4),
             None,
+            &esm::records::misc::WatrRecord::default(),
             watr(WaterKind::River.canonical_foam_strength()),
             WaterKind::River,
             Some(watr_flow),
@@ -1216,6 +1238,7 @@ mod tests {
         let (plane, _) = merge_placed_water(
             &mesh_plane(WaterKind::Calm, 0x0084),
             None,
+            &esm::records::misc::WatrRecord::default(),
             watr(0.2),
             WaterKind::River,
             None,
@@ -1231,6 +1254,7 @@ mod tests {
         let (_, flow) = merge_placed_water(
             &mesh_plane(WaterKind::Calm, 0x00C4),
             None,
+            &esm::records::misc::WatrRecord::default(),
             watr(0.2),
             WaterKind::River,
             Some(WaterFlow::new([1.0, 0.0, 0.0], 1.0)),
@@ -1248,6 +1272,7 @@ mod tests {
         let (plane, flow) = merge_placed_water(
             &mesh_plane(WaterKind::Waterfall, 0x00C4),
             Some(down),
+            &esm::records::misc::WatrRecord::default(),
             watr(0.2),
             WaterKind::River,
             Some(WaterFlow::new([1.0, 0.0, 0.0], 2.0)),
@@ -1258,6 +1283,76 @@ mod tests {
         let flow = flow.expect("waterfall flow");
         assert_eq!(flow.direction, down.direction);
         assert_eq!(flow.speed, down.speed);
+    }
+
+    /// #4911 — an XWCU current that wins over the WATR flow must also win
+    /// the pattern scroll term: ripples, foam and the physics current agree
+    /// instead of the normal-map flow running up to ~79° across the current
+    /// that carries floating bodies (2 of Skyrim's 128 XWCU REFRs).
+    #[test]
+    fn xwcu_current_recomposes_the_pattern_scroll() {
+        // WATR current aimed +X; XWCU entry 0 = (3, 4) Gamebryo → the
+        // canonical [0.6, 0, -0.8] at 5 BU/s, off the WATR axis.
+        let (plane, flow) = merge_placed_water(
+            &mesh_plane(WaterKind::Calm, 0x00C4),
+            None,
+            &esm::records::misc::WatrRecord::default(),
+            WaterMaterial {
+                scroll_a: [7.0, 11.0], // the WATR-flow-composed term, stale now
+                scroll_b: [13.0, 17.0],
+                scroll_c: [19.0, 23.0],
+                ..watr(0.2)
+            },
+            WaterKind::River,
+            Some(WaterFlow::new([1.0, 0.0, 0.0], 4.0)),
+            0.0,
+            Some([3.0, 4.0, 0.0]),
+        );
+        let flow = flow.expect("reference current");
+        assert_eq!(flow.direction, [0.6, 0.0, -0.8]);
+
+        let uv = 5.0 * crate::env_translate::WATER_SCROLL_UV_PER_BU_PER_S;
+        let shear = crate::env_translate::WATER_PERPENDICULAR_SHEAR_SCROLL;
+        assert_eq!(
+            plane.material.scroll_a,
+            [0.6 * uv, -0.8 * uv],
+            "layer A rides the XWCU axis, not the WATR's"
+        );
+        assert_eq!(
+            plane.material.scroll_b,
+            [0.8 * uv * shear, 0.6 * uv * shear],
+            "layer B rides the perpendicular shear of the XWCU axis"
+        );
+        // No authored layer C on the default record: it mirrors the
+        // recomposed A.
+        assert_eq!(plane.material.scroll_c, plane.material.scroll_a);
+    }
+
+    /// #4911 — the flowing-kind gate mirrors the WATR arm: a calm WATR
+    /// never carries a flow term, so an XWCU winner must not synthesize one
+    /// onto its authored scrolls.
+    #[test]
+    fn calm_watr_keeps_its_scrolls_under_an_xwcu_winner() {
+        let (plane, flow) = merge_placed_water(
+            &mesh_plane(WaterKind::Calm, 0x00C4),
+            None,
+            &esm::records::misc::WatrRecord::default(),
+            WaterMaterial {
+                scroll_a: [7.0, 11.0],
+                scroll_b: [13.0, 17.0],
+                scroll_c: [19.0, 23.0],
+                ..watr(0.2)
+            },
+            WaterKind::Calm,
+            None,
+            0.0,
+            Some([3.0, 4.0, 0.0]),
+        );
+        let flow = flow.expect("the physics current still wins");
+        assert_eq!(flow.direction, [0.6, 0.0, -0.8]);
+        assert_eq!(plane.material.scroll_a, [7.0, 11.0]);
+        assert_eq!(plane.material.scroll_b, [13.0, 17.0]);
+        assert_eq!(plane.material.scroll_c, [19.0, 23.0]);
     }
 
     // `resolve_water_material` (+ its WATR reflection-tint / default-tint

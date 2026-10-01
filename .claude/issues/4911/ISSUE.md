@@ -1,8 +1,7 @@
-# EXT-D5-2026-09-27-03: A REFR XWCU current replaces the `WaterFlow` but not the scroll composed from the WATR flow — pattern and physics current diverge
+# 4911: EXT-D5-2026-09-27-03: A REFR XWCU current replaces the `WaterFlow` but not the scroll composed from the WATR flow — pattern and physics current diverge
 
-**Issue**: #4911
-**Filed**: 2026-09-27 (audit-publish, AUDIT_EXTERIOR_2026-09-27.md)
-**Labels**: medium,terrain-exterior,bug,water,physics
+labels: bug, medium, water, terrain-exterior, physics
+state: OPEN
 
 **Severity**: MEDIUM (visual)
 **Dimension**: Water translation (WATAL)
@@ -36,3 +35,4 @@ On those placements, ripples run up to about 79° across the current carrying fl
 - [ ] **SIBLING**: Same pattern checked in related files (other spawners / translate arms / games)
 - [ ] **CANONICAL-BOUNDARY**: Per-game logic stays at the EXAL/WATAL translate boundary (`env_translate.rs`, `groundcover_translate.rs`, the `cell_loader` spawn sites) — never pushed into shaders/renderer, never re-derived at render time. See `/audit-exterior`.
 - [ ] **TESTS**: A regression test pins this specific fix
+
