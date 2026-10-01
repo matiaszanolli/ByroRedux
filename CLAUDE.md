@@ -3,6 +3,8 @@
 Clean rebuild of the Gamebryo/Creation engine lineage in Rust + C++ with Vulkan.
 Long-term goal: load and render content from Gamebryo/Creation-era games.
 
+> `AGENTS.md` is a symlink to this file — edit here, never there (#5107).
+
 ## Quick Reference
 
 ```bash
@@ -24,6 +26,22 @@ with `inspect` on exactly once. The gap was only ever in the *documented develop
 command*: a contributor iterating on `AnimationPlayer`/`AnimationStack` locally got
 a green run that omitted precisely the tests covering the field they were editing.
 
+### Binary-crate toolchain (rustc ≥ 1.94 required, #4466)
+
+`cranelift` 0.134 (wasmtime, via `mod-runtime`) sets an MSRV of 1.94; the
+default distro rustc here is 1.93.1, so the `byroredux` bin crate — and any
+workspace-wide cargo call — fails resolution on the default toolchain and
+gets **no compile/test feedback**. `cargo +1.96.0` does NOT work (distro
+cargo shadows the rustup shims); invoke the toolchain's cargo directly:
+
+```bash
+TC=$(rustup which --toolchain 1.96.0 cargo)   # 1.96.0 is installed here
+PATH="$(dirname "$TC"):$PATH" "$TC" test -p byroredux --bin byroredux
+```
+
+Verify any `byroredux/src/` change that way before pushing (details in
+`docs/contributing.md` §Tests).
+
 ### Debug CLI
 ```bash
 cargo run -p byro-dbg                       # Connect to running engine (port 9876)
@@ -38,10 +56,18 @@ Manual end-to-end checks that need a Vulkan device + on-disk game data
 [`docs/smoke-tests/m41-equip.sh`](docs/smoke-tests/m41-equip.sh)
 verifies Skyrim+ / FO4 NPC outfit equip end-to-end,
 [`docs/smoke-tests/m48-menu-load.sh`](docs/smoke-tests/m48-menu-load.sh)
-verifies the archive-backed `--menu` route on FO4 (AVM2) and Skyrim (AVM1), and
+verifies the archive-backed `--menu` route on FO4 (AVM2) and Skyrim (AVM1),
 [`docs/smoke-tests/w1-water-traversal.sh`](docs/smoke-tests/w1-water-traversal.sh)
 walks the real character capsule shore → swim → dive → surface → shore →
-cell boundary on FNV Lake Mead (WATAL W1).
+cell boundary on FNV Lake Mead (WATAL W1), the HUD family
+[`m48-4-oblivion-hud.sh`](docs/smoke-tests/m48-4-oblivion-hud.sh) /
+[`m48-5-fo3-hud.sh`](docs/smoke-tests/m48-5-fo3-hud.sh) /
+[`m48-6-skyrim-hud.sh`](docs/smoke-tests/m48-6-skyrim-hud.sh) /
+[`m48-7-fo4-hud.sh`](docs/smoke-tests/m48-7-fo4-hud.sh) covers the MenuXml
+(Oblivion/FO3) and Scaleform (Skyrim/FO4) drivers per game, and
+[`docs/smoke-tests/p4-quest-route.sh`](docs/smoke-tests/p4-quest-route.sh)
+verifies the P4 authored-objective loop end-to-end (MS01 in MarkarthWarrens:
+activation → dialogue selection → presented response → objective-chain transitions).
 
 ### Shader Compilation
 ```bash
@@ -82,13 +108,15 @@ byroredux/              Binary — game loop, scene setup, systems
   src/commands/             Console commands (help, stats, entities, systems), split by topic
     mod.rs                   Command dispatch table
     scene.rs                 Scene / lighting / material / script-state commands
-    assets.rs                Texture / mesh / skin diagnostic commands
+    assets.rs                Texture / mesh / skin diagnostics + tex.dump (archive → PNG)
     actor_value.rs           setav/modav — live-edit an actor's ActorValues
     condition.rs             cond — evaluate a CTDA condition function live
     world_info.rs            Engine / world / memory introspection commands
     view.rs                  Camera + selection/picking commands
     shared.rs                Cross-command formatting helpers + shared import prelude
   src/helpers.rs            add_child, world_resource_set utilities
+  src/hud.rs                MenuXml HUD driver — per-game profiles Oblivion/FO3/FNV (--hud, triple-buffered uploads)
+  src/scaleform_hud.rs      Scaleform HUD driver — Skyrim + Fallout 4 hudmenu.swf via --hud (transparent stage, hud.debug)
   src/cell_loader.rs        ESM cell loading (interior + exterior)
 crates/
   core/                      ECS, math (glam), types, string interning, form IDs
@@ -143,7 +171,8 @@ crates/
       descriptors.rs         write_ao_texture / geometry_buffers / cluster_buffers / tlas + destroy
     src/vulkan/gbuffer.rs    GBuffer — normal, motion vector, mesh ID, raw indirect, albedo attachments
     src/vulkan/svgf.rs       SvgfPipeline — temporal accumulation denoiser for indirect lighting
-    src/vulkan/composite.rs  CompositePipeline — direct + denoised indirect reassembly, linear HDR out (#4202: ACES lives downstream in presentation)
+    src/vulkan/composite.rs  CompositePipeline — direct + denoised indirect + caustics + volumetrics reassembly, linear HDR out (#4202: tone map lives downstream in presentation)
+    src/vulkan/presentation.rs Presentation pass — output-res tonemap(graded × exposureTex), ACES|AgX switch, underwater extinction, swapchain write
     src/vulkan/ssao.rs       SSAO compute pipeline (noise texture, kernel, screen-space AO)
     src/vulkan/descriptors.rs Descriptor set/pool management
     src/vulkan/compute.rs    Compute pipeline utilities
@@ -156,8 +185,8 @@ crates/
       triangle.vert/frag     Main geometry pass — PBR + RT ray queries (shadows, reflections, GI)
       svgf_temporal.comp     SVGF temporal accumulation with motion vector reprojection
       taa.comp               TAA resolve (Halton jitter + YCoCg variance clamp, M37.5)
-      composite.vert/frag    Fullscreen quad — direct + denoised indirect reassembly, linear HDR out
-      presentation.frag      Exposure + ACES tone map after the FSR upscale boundary (bloom runs on composite's linear HDR, before this)
+      composite.vert/frag    Fullscreen quad — direct + denoised indirect + caustics + volumetrics, linear HDR out (bloom + tone map live downstream)
+      presentation.frag      Output-resolution presentation — exposure × tonemap (ACES|AgX) + underwater extinction → swapchain
       ssao.comp              Screen-space ambient occlusion compute
       cluster_cull.comp      Clustered lighting frustum assignment
       skin_vertices.comp     GPU pre-skinning (M29)
@@ -165,6 +194,8 @@ crates/
       caustic_splat.comp     Caustic splat compute (water under-side lighting)
       volumetrics_inject.comp / _integrate.comp  Volumetric froxel grid (M55)
       bloom_downsample.comp / _upsample.comp     Bloom pyramid (M58)
+      bloom_apply.comp       Adds the bloom pyramid's top mip back into composite's HDR output, in place (after composite)
+      exposure_meter.comp    Stage-1 auto-exposure meter — EV100 average + per-FIF adaptation, 1×1 exposure texel
       ui.vert/frag           UI overlay (Scaleform/SWF)
   bsa/                       BSA + BA2 archive readers (Bethesda Softworks Archive)
     src/archive/             BsaArchive: BSA v103/v104/v105 (Oblivion → Skyrim SE)
@@ -234,6 +265,16 @@ crates/
     src/events.rs            Transient marker components: ActivateEvent, HitEvent, TimerExpired
     src/timer.rs             ScriptTimer component + timer_tick_system
     src/cleanup.rs           event_cleanup_system (end-of-frame marker removal)
+  menuxml/                   Oblivion/FO3/FNV MenuXml UI (M48.4/M48.5 legacy-UI track)
+    src/parse.rs             Tolerant XML scanner (vanilla quirks, <include> prefabs)
+    src/eval.rs              Per-frame trait FOLD language + selectors + overrides
+    src/layout.rs            Locus chains, depth sort, clipwindow scissor
+    src/raster.rs            CPU source-over rasterizer (zoom: natural+clip default, -1 stretch)
+    src/tex.rs               Own DDS decoder (BC1/2/3 + masked uncompressed) + .tex atlases
+    src/font.rs              .fnt bitmap fonts
+    src/menu.rs              MenuRenderer — sets, fonts, overrides, frames; runtime menu API (instantiate_template / graft_fragment)
+    src/profile.rs           Per-game corpus profiles (font table, font archive, strings source)
+    examples/render_hud.rs   Reference-frame + trait-probe visualizer
   papyrus/                   Papyrus language parser (.psc source → AST)
     src/token.rs             Token enum (logos derive, case-insensitive keywords)
     src/lexer.rs             Lexer wrapper (line continuation, comments, doc comments)
