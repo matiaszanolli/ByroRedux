@@ -140,26 +140,31 @@ The live schedule built in `App::new` is:
 | `Early` | `player_controller_system` | declared | Dispatches to `fly_camera_system` **or** `character_controller_system` by `PlayerMode`; access is the union of both inner systems (M28.5 + M27 Phase 3) |
 | `Early` | `weather_system` | exclusive + declared | Weather/TOD/sky/cloud sim; serialized after the player-controller batch so `WindField` has one stable writer/reader order |
 | `Early` | `timer_tick_system` | declared | Advances `ScriptTimer`, fires `TimerExpired` |
-| `Update` | interaction + combat producers | exclusive | Emits canonical activation/hit/death state before scripting consumers |
+| `Update` | `restoration_system` | exclusive + declared | Applies `TimedRestorations` to `ActorValues`; first Update exclusive |
+| `Update` | activation producers (`interaction_system`, `fragment_activation_flush_system`, `container_loot_system`) | exclusive | Emits canonical activation/loot state before scripting consumers; the flush delivers fragment-queued `Activate` targets the following frame (#2654) |
+| `Update` | combat chain (`combat_input_system` → `make_faction_hostility_system` → `make_npc_combat_ai_system` → `combat_damage_system`) | exclusive | Player attack input, then ambient faction hostility (#4414), then NPC combat-AI chase/strike, then HitEvent health/death resolution — the producer-before-consumer HitEvent contract |
 | `Update` | quest/scene/fragment/package/dialogue systems + papyrus-demo dispatchers | exclusive | Ordered QUST/SCEN runtime: startup, aliases, playback, fragments, terminal stages, latent continuations, packages, dialogue, and demo compatibility |
 | `Update` | cinematic/Havok/scripted-motion/vehicle systems | exclusive | Applies fragment-driven presentation, animation, motion-type, horse/cart, and rider state before propagation/physics |
-| `Update` | `pool_regen_tick_system` | exclusive + declared | Fixed-step character-pool regeneration when the per-game ruleset enables it |
+| `Update` | `player_derived_stats_system` + `pool_regen_tick_system` | exclusive + declared | Refreshes the player's stamped PlayerOnly pools (#5039), then fixed-step character-pool regeneration when the per-game ruleset enables it |
 | `Update` | `animation_system` | declared | Advances `AnimationPlayer`/`AnimationStack`, writes `Transform` + all animated-channel storages |
-| `Update` | `spin_system` | exclusive | Demo cube spin |
-| `Update` | `animate_lights_system` | exclusive | Procedural candle/chandelier flicker (Phase 17) |
+| `Update` | `spin_system` + `animate_lights_system` | exclusive | Demo cube spin; procedural candle/chandelier flicker (Phase 17) |
+| `Update` | `player_body_facing_system` | exclusive + declared | Third-person body facing from the shared yaw accumulator (#4995); Update placement so PostUpdate propagation resolves it same-frame |
 | `PostUpdate` | `make_transform_propagation_system()` | declared | Parent→child `GlobalTransform` (BFS) |
-| `PostUpdate` | `footstep_system` | exclusive | Reads propagated `GlobalTransform` (#848) |
-| `PostUpdate` | `particle_system` | exclusive | Needs final emitter world origin (#401) |
-| `PostUpdate` | opt-in sandbox/wander/travel/follow/escort/guard/patrol systems | exclusive | Environment-gated NPC locomotion experiments, after propagation |
-| `PostUpdate` | `billboard_system` | exclusive + declared | Overwrites computed world rotation (#225) |
-| `PostUpdate` | `make_world_bound_propagation_system()` | exclusive | Runs last so it sees billboard rotations (#217) |
+| `PostUpdate` | `particle_system` | exclusive + declared | Needs final emitter world origin (#401); consumes `ParticleEmitter::rate` one frame after Late's submersion write (#3653) |
+| `PostUpdate` | sandbox/wander/travel/follow/escort/guard/patrol + `make_npc_walk_animation_system()` | exclusive | **Default-on since M42.10** — `BYRO_NO_AI_LOCOMOTION=1` is the single kill-switch; walk playback registers **last** because it classifies motion from this frame's final position |
+| `PostUpdate` | `make_combat_feedback_system()` | exclusive | Attack/hit/death clip takes + combat sounds; deliberately outside the kill-switch (#4709), after walk playback when registered |
+| `PostUpdate` | `make_world_bound_propagation_system()` | exclusive + declared | Runs last so it sees final PostUpdate world transforms (#217); billboard rotations moved to Late (#3652) |
 | `Physics` | `physics_sync_system` | declared | Rapier step → `Transform` writeback |
 | `Late` | `camera_follow_system` | declared | M28.5 — runs after physics settle |
+| `Late` | `billboard_system` | exclusive + declared | Overwrites computed world rotation (#225); moved from PostUpdate (#3652) to read this frame's camera pose |
+| `Late` | `footstep_system` | exclusive + declared | Reads the propagated camera `GlobalTransform` (#848); moved from PostUpdate (#3652) for the same pose-staleness reason |
 | `Late` | ragdoll + submersion + water damage/reconciliation/interaction/audio | exclusive | Applies final physics pose and bridges water contacts into gameplay/presentation events |
 | `Late` | `reverb_zone_system` | declared | Cell-acoustics → audio reverb send (M44 Phase 6) |
 | `Late` | `audio_system` | exclusive | Listener pose / emitter update (M44) |
-| `Late` | `log_stats_system` | declared | Periodic stats log |
-| `Late` | `metrics_sample_system` | declared | ~2 Hz CPU/RAM/VRAM/GPU snapshot for the debug UI |
+| `Late` | `log_stats_system` + `metrics_sample_system` | declared | Periodic stats log; ~2 Hz CPU/RAM/VRAM/GPU snapshot for the debug UI |
+| `Late` | `extension_*` sync + ObScript/Papyrus provider + activation/cell-load dispatch | exclusive | Settings/catalog/input/player-entity sync, translated load-order ObScript, manifest Papyrus provider, custom-event/activation/cell-load delivery |
+| `Late` | `equipment_appearance_system` + `make_npc_dialogue_selection_system()` | exclusive | P3 re-equip reconcile and P4 NPC activation → topic selection + INFO-fragment dispatch (#5152), before end-of-Late cleanup drains the markers |
+| `Late` | remaining `extension_*` dispatchers (equipment/input/session/hit/update + setting-write apply) | exclusive | The rest of the `ExtensionHostSlot` dispatch family |
 | `Late` | `event_cleanup_system` | exclusive | Drops transient marker components |
 
 The debug server (feature-gated) may register additional systems via
