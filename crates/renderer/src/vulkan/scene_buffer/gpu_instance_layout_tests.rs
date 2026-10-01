@@ -444,10 +444,11 @@ fn gpu_terrain_tile_field_offsets_match_shader_contract() {
     assert_eq!(offset_of!(GpuTerrainTile, water_y), 136);
     assert_eq!(offset_of!(GpuTerrainTile, canopy_height), 140);
     assert_eq!(offset_of!(GpuTerrainTile, groundcover_detail_atlas), 144);
-    // #4903 — the base affinity follows the atlas uvec4; the named tail pad
-    // then rounds the record out to the std430 stride.
+    // #4903 — the base affinity follows the atlas uvec4; #4907 — the BTXT
+    // base diffuse handle rides at 164, and the named tail pads round the
+    // record out to the std430 stride.
     assert_eq!(offset_of!(GpuTerrainTile, base_cover_affinity), 160);
-    assert_eq!(offset_of!(GpuTerrainTile, pad_to_stride_0), 164);
+    assert_eq!(offset_of!(GpuTerrainTile, base_diffuse_index), 164);
     assert_eq!(offset_of!(GpuTerrainTile, pad_to_stride_1), 168);
     assert_eq!(offset_of!(GpuTerrainTile, pad_to_stride_2), 172);
 }

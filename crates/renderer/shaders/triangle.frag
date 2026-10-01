@@ -393,21 +393,16 @@ void main() {
     // `mix(prev, layer, weight)`. Matches the UESP-documented ATXT
     // blend semantics. Static meshes skip the branch entirely.
     if (terrainSplatActive) {
-        for (uint i = 0u; i < 8u; ++i) {
-            float w = terrainSplat[i / 4u][i & 3u];
-            if (w <= 0.0) continue;
-            uint layerIdx = terrainTile.layerDiffuseIndex[i];
-            if (layerIdx == 0u) continue; // layer slot unused
-            // #4016 — explicit gradients: this fetch sits under the
-            // per-fragment `continue` above.
-            vec4 layerColor = textureGrad(
-                textures[nonuniformEXT(layerIdx)], sampleUV,
-                splatUVdx, splatUVdy);
-            texColor.rgb = mix(texColor.rgb, layerColor.rgb, w);
-            // Keep texColor.a from the base — terrain is opaque,
-            // the alpha-test / alpha-blend machinery below must see
-            // the base's alpha, not a splat layer's.
-        }
+        // #4907 — the loop is the shared `byroTerrainSplatAlbedo`
+        // (bindings.glsl): base RGB first, each layer mixed over it by its
+        // own weight, in lane order. The blade's ground-colour coupling
+        // calls the same helper, so the colour under a blade is the colour
+        // the terrain shows. texColor.a stays the base's — terrain is
+        // opaque, the alpha-test / alpha-blend machinery below must see the
+        // base's alpha, not a splat layer's.
+        texColor.rgb = byroTerrainSplatAlbedo(
+            texColor.rgb, sampleUV, splatUVdx, splatUVdy,
+            terrainSplat[0], terrainSplat[1], terrainTile);
     }
 
     // ── EXAL ground cover §6 Tier 3 (#4056) ────────────────────────────

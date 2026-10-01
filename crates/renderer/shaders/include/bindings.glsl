@@ -504,10 +504,42 @@ struct GpuTerrainTile {
     /// pads below round the record out to the 176-byte std430 array stride
     /// (the struct's 16-alignment from its vec4 rows).
     float baseCoverAffinity;
-    float padToStride0;
+    /// Bindless diffuse handle of the BTXT base texture (#4907). Zero when
+    /// the base failed to resolve.
+    uint baseDiffuseIndex;
     float padToStride1;
     float padToStride2;
 };
+
+/// The terrain's splat colour composition (#4907): start from the BTXT base
+/// RGB and mix each splat layer over it by its own weight, in layer order,
+/// skipping zero-weight and unused lanes — the exact loop `triangle.frag`'s
+/// terrain branch has always run. Shared by that branch and
+/// `groundcover_blade.frag`'s ground-colour coupling so the colour under a
+/// blade is the colour the terrain shows, by construction rather than by
+/// two copies staying in step.
+vec3 byroTerrainSplatAlbedo(
+    vec3 baseRGB,
+    vec2 uv,
+    vec2 dx,
+    vec2 dy,
+    vec4 splat0,
+    vec4 splat1,
+    GpuTerrainTile tile
+) {
+    vec3 albedo = baseRGB;
+    for (uint i = 0u; i < 8u; ++i) {
+        float w = i < 4u ? splat0[i] : splat1[i - 4u];
+        if (w <= 0.0) continue;
+        uint layerIdx = tile.layerDiffuseIndex[i];
+        if (layerIdx == 0u) continue; // layer slot unused
+        vec3 layer = textureGrad(
+            textures[nonuniformEXT(layerIdx)], uv, dx, dy).rgb;
+        albedo = mix(albedo, layer, w);
+    }
+    return albedo;
+}
+
 // Binding 11: adaptive RT quality + glass-work telemetry. The CPU zeroes the
 // first word before each render pass; Phase-3 IOR glass fragments atomically
 // add their estimated query cost. `qualityTier` selects bounded loop limits

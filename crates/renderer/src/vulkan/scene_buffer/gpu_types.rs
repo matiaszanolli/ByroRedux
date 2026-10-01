@@ -56,12 +56,17 @@ pub struct GpuTerrainTile {
     /// density evaluations (`byroGcDensityGround` in `triangle.frag`) start
     /// their ordered mix from it, exactly like the scatter's cell record.
     pub base_cover_affinity: f32,
+    /// Bindless diffuse handle of the BTXT base texture (#4907) — the
+    /// colour under every splat layer, which `triangle.frag` blends and the
+    /// blade's ground-colour coupling must blend identically. Zero when the
+    /// base failed to resolve (the coupling then keeps the painted-layer
+    /// average).
+    pub base_diffuse_index: u32,
     /// Explicit tail padding to the std430 array stride: the GLSL struct's
-    /// alignment is 16 (its vec4 rows), so its array stride rounds 164 up to
-    /// 176. Three named scalars rather than `[f32; 3]` so the declaration
-    /// matches the GLSL field for field — what
+    /// alignment is 16 (its vec4 rows), so its array stride rounds 168 up to
+    /// 176. Named scalars rather than `[f32; 2]` so the declaration matches
+    /// the GLSL field for field — what
     /// `gpu_terrain_tile_glsl_and_rust_fields_stay_in_lockstep` guards.
-    pub pad_to_stride_0: f32,
     pub pad_to_stride_1: f32,
     pub pad_to_stride_2: f32,
 }

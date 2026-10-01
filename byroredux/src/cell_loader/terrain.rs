@@ -1133,9 +1133,13 @@ pub(super) fn spawn_terrain_mesh(
             canopy_height,
             groundcover_detail_atlas: [0; 4],
             // #4903 — the terrain-side density evaluations start their
-            // ordered mix from the base's own affinity.
+            // ordered mix from the base's own affinity. #4907 — the resolved
+            // BTXT diffuse handle rides beside it so the blade's
+            // ground-colour coupling blends the same base the terrain
+            // shows (0 = unresolved, the coupling then keeps the
+            // painted-layer average).
             base_cover_affinity: base_affinity,
-            pad_to_stride_0: 0.0,
+            base_diffuse_index: tex_handle,
             pad_to_stride_1: 0.0,
             pad_to_stride_2: 0.0,
         })

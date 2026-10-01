@@ -5633,11 +5633,28 @@ fn every_terrain_splat_sampler_uses_explicit_gradients() {
             );
         }
     }
+    // #4907 — the diffuse loop moved into the shared
+    // `byroTerrainSplatAlbedo` helper (bindings.glsl), so two textual loops
+    // remain here (specular, normal); the helper's own fetch must keep the
+    // explicit-gradient discipline for the third.
     assert_eq!(
-        checked, 3,
-        "expected the three LAND TX01 splat loops (diffuse, specular, normal); \
+        checked, 2,
+        "expected the two remaining LAND TX01 splat loops (specular, normal); \
          found {checked} — the scan broke, or a loop was added/removed without \
          updating this pin"
+    );
+    let bindings = include_str!("../../../shaders/include/bindings.glsl");
+    let helper = bindings
+        .split("vec3 byroTerrainSplatAlbedo(")
+        .nth(1)
+        .expect("the shared splat chain lives in bindings.glsl")
+        .split("\n}")
+        .next()
+        .expect("helper body terminates");
+    assert!(
+        helper.contains("textureGrad(") && !helper.contains("= texture("),
+        "the shared chain's layer fetch sits under per-fragment `continue`s \
+         (#4016) — it must use explicit gradients"
     );
 }
 
@@ -7096,4 +7113,74 @@ fn groundcover_affinity_composes_the_base_in_diffuse_loop_order() {
     };
     assert!((compose(0.9, &[(0.3, 0.15)]) - 0.675).abs() < 1e-6);
     assert_eq!(compose(0.02, &[]), 0.02, "an unpainted vertex reads the base");
+}
+
+/// #4907 — the blade's ground-colour coupling must compose the same colour
+/// the terrain shows: the BTXT base under the shared ordered-mix helper
+/// (`byroTerrainSplatAlbedo`), not a renormalised average of the ATXT
+/// overlays. The pre-#4907 form read a 0.05 overlay as 100% of the ground
+/// colour wherever the base carried the visible 95%, with a discontinuity
+/// where paint thinned to nothing.
+#[test]
+fn blade_ground_colour_uses_the_shared_terrain_splat_chain() {
+    let bindings = include_str!("../../../shaders/include/bindings.glsl");
+    let helper = bindings
+        .split("vec3 byroTerrainSplatAlbedo(")
+        .nth(1)
+        .expect("byroTerrainSplatAlbedo must stay in bindings.glsl")
+        .split("\n}")
+        .next()
+        .expect("helper body terminates");
+    assert!(
+        helper.contains("vec3 albedo = baseRGB;"),
+        "the chain starts from the BTXT base colour"
+    );
+    assert!(
+        helper.contains("for (uint i = 0u; i < 8u; ++i)")
+            && helper.matches("albedo = mix(albedo,").count() == 1,
+        "the helper walks all eight lanes in order, mixing each over the          running base — a loop over 8 with one ordered mix, not a weighted          sum"
+    );
+    assert!(
+        !helper.contains("weightSum"),
+        "the shared chain never renormalises by painted weight (#4907)"
+    );
+
+    let triangle = include_str!("../../../shaders/triangle.frag");
+    // `terrainSplatActive` gates two blocks (the tile fetch and the colour
+    // blend); the colour blend is the one that must shade through the
+    // shared helper.
+    let blends_through_helper = triangle
+        .split("if (terrainSplatActive) {")
+        .skip(1)
+        .any(|branch| branch.contains("byroTerrainSplatAlbedo("));
+    assert!(
+        blends_through_helper,
+        "the terrain branch must shade through the same helper — two copies \
+         of the mix chain are how the blade drifted from the terrain (#4907)"
+    );
+
+    let blade = include_str!("../../../shaders/groundcover_blade.frag");
+    let coupling = blade
+        .split("if (vCard == 0u && vTerrainTileSlot != GROUNDCOVER_NO_TERRAIN_TILE) {")
+        .nth(1)
+        .expect("blade.frag keeps its ground-colour coupling block")
+        // Up to the closing of the outer if: enough span for both arms.
+        .split("\n    }")
+        .next()
+        .expect("coupling block terminates");
+    let base_arm = coupling
+        .split("} else {")
+        .next()
+        .expect("the base-resolved arm comes first");
+    assert!(
+        base_arm.contains("groundTile.baseDiffuseIndex != 0u")
+            && base_arm.contains("byroTerrainSplatAlbedo("),
+        "the base-resolved arm must blend base + overlays through the shared \
+         helper (#4907)"
+    );
+    assert!(
+        !base_arm.contains("/ weightSum"),
+        "no renormalised average on the base-resolved path — the terrain's \
+         own blend is an ordered mix over the base (#4907)"
+    );
 }

@@ -150,23 +150,43 @@ void main() {
     vec2 terrainUvDy = dFdy(vTerrainUv);
     if (vCard == 0u && vTerrainTileSlot != GROUNDCOVER_NO_TERRAIN_TILE) {
         GpuTerrainTile groundTile = terrainTiles[nonuniformEXT(vTerrainTileSlot)];
-        vec3 groundAlbedo = vec3(0.0);
-        float weightSum = 0.0;
-        for (uint i = 0u; i < 8u; ++i) {
-            float w = i < 4u
-                ? vTerrainSplat0[i]
-                : vTerrainSplat1[i - 4u];
-            if (w <= 0.0) continue;
-            uint layerIdx = groundTile.layerDiffuseIndex[i];
-            if (layerIdx == 0u) continue; // layer slot unused
-            groundAlbedo += w * textureGrad(
-                textures[nonuniformEXT(layerIdx)],
+        // #4907 — the ground colour is the TERRAIN's composition, not a
+        // renormalised average of the overlays: the BTXT base under an
+        // ordered `mix(base, layer, w)` per lane, via the same
+        // `byroTerrainSplatAlbedo` helper `triangle.frag` shades with. The
+        // old `sum(w*layer)/sum(w)` read a 0.05 overlay as 100% of the
+        // ground colour wherever the base carried the visible 95%, with a
+        // discontinuity where the paint thinned to nothing.
+        if (groundTile.baseDiffuseIndex != 0u) {
+            vec3 baseRGB = textureGrad(
+                textures[nonuniformEXT(groundTile.baseDiffuseIndex)],
                 vTerrainUv, terrainUvDx, terrainUvDy).rgb;
-            weightSum += w;
-        }
-        if (weightSum > 0.0) {
+            vec3 groundAlbedo = byroTerrainSplatAlbedo(
+                baseRGB, vTerrainUv, terrainUvDx, terrainUvDy,
+                vTerrainSplat0, vTerrainSplat1, groundTile);
             float coupling = clamp(sp.tipColour.a, 0.0, 1.0) * (1.0 - vBladeT);
-            albedo = mix(albedo, groundAlbedo / weightSum, coupling);
+            albedo = mix(albedo, groundAlbedo, coupling);
+        } else {
+            // Base unresolved (BTXT missing and no default land): the
+            // painted-layer average is the best remaining estimate.
+            vec3 groundAlbedo = vec3(0.0);
+            float weightSum = 0.0;
+            for (uint i = 0u; i < 8u; ++i) {
+                float w = i < 4u
+                    ? vTerrainSplat0[i]
+                    : vTerrainSplat1[i - 4u];
+                if (w <= 0.0) continue;
+                uint layerIdx = groundTile.layerDiffuseIndex[i];
+                if (layerIdx == 0u) continue; // layer slot unused
+                groundAlbedo += w * textureGrad(
+                    textures[nonuniformEXT(layerIdx)],
+                    vTerrainUv, terrainUvDx, terrainUvDy).rgb;
+                weightSum += w;
+            }
+            if (weightSum > 0.0) {
+                float coupling = clamp(sp.tipColour.a, 0.0, 1.0) * (1.0 - vBladeT);
+                albedo = mix(albedo, groundAlbedo / weightSum, coupling);
+            }
         }
     }
 
