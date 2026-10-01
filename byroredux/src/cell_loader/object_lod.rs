@@ -1284,6 +1284,60 @@ mod lod_clamp_resolve_tests {
         assert!(src.contains("material.texture_clamp_mode,"));
         assert!(!src.contains("resolve_texture(ctx"));
     }
+
+    /// #4912 — the texture-only terrain-LOD families reached #4553's sweep
+    /// only as the MSN-bit carrier: every imported land shape authors
+    /// `0 = CLAMP_S_CLAMP_T`, but the resolves ran at the WRAP default, so
+    /// filtering bled the opposite edge in at quad borders — seam lines in
+    /// colour and normals. Both files must resolve diffuse and (where
+    /// present) normal with the authored clamp, and the `Material` must
+    /// carry the same mode.
+    #[test]
+    fn btr_terrain_lod_resolve_uses_the_authored_clamp() {
+        // Whole-file scan: `terrain_lod_btr.rs` interleaves #[cfg(test)]
+        // helpers before the spawn path, so `production()`'s first-cut would
+        // truncate it; its test half contains none of these needles.
+        let src = include_str!("terrain_lod_btr.rs");
+        assert!(
+            src.contains("resolve_texture_with_clamp(ctx, tex_provider"),
+            "the .btr diffuse resolves with the authored clamp"
+        );
+        assert!(
+            src.contains("resolve_linear_texture_with_clamp("),
+            "the .btr normal resolves linear AND clamped"
+        );
+        assert_eq!(
+            src.matches("resolve_texture(ctx").count(),
+            0,
+            "no .btr resolve may run at the WRAP default"
+        );
+        assert!(src.contains("authored_model_space_normals,\n            // #4912"));
+    }
+
+    #[test]
+    fn legacy_terrain_lod_clamps_only_the_authored_quad() {
+        // Whole-file scan, same reason as the `.btr` pin above.
+        let src = include_str!("terrain_lod.rs");
+        assert!(
+            src.contains("resolve_texture_with_clamp(ctx, tex_provider"),
+            "the authored legacy quad clamps"
+        );
+        assert!(
+            src.contains("resolve_linear_texture_with_clamp("),
+            "the authored legacy normal clamps"
+        );
+        // The BTXT base-LTEX fallback is tiled like full-detail terrain and
+        // legitimately stays at the WRAP default — exactly one such resolve.
+        assert_eq!(
+            src.matches("resolve_texture(ctx, tex_provider").count(),
+            1,
+            "only the tiled base-LTEX fallback may resolve at WRAP"
+        );
+        assert!(
+            src.contains("if translated_lod.is_some() { 0 } else { 3 }"),
+            "the Material's clamp follows the arm that resolved"
+        );
+    }
 }
 
 /// #4936 — every LOD-family mesh upload in `cell_loader/*lod*.rs` must tag

@@ -95,7 +95,9 @@ use byroredux_core::math::Vec3;
 use byroredux_nif::import::MaterialTextureSet;
 use byroredux_renderer::{Vertex, VulkanContext};
 
-use crate::asset_provider::{resolve_linear_texture, resolve_texture, TextureProvider};
+use crate::asset_provider::{
+    resolve_linear_texture_with_clamp, resolve_texture_with_clamp, TextureProvider,
+};
 use crate::components::{IsLodTerrain, MaterialTextureHandles};
 use crate::streaming::LodBlock;
 
@@ -332,14 +334,18 @@ pub(crate) fn spawn_btr_block(
     // Per-quad diffuse. A missing texture falls back to the game's built-in
     // default land texture (still reads as ground), never the magenta checker.
     let diffuse = btr_diffuse_path(worldspace_key, level, qx, qy);
-    let tex_handle = resolve_texture(ctx, tex_provider, Some(diffuse.as_str()));
+    // #4912 — every imported land shape authors `texture_clamp_mode = 0`
+    // (CLAMP_S_CLAMP_T): each quad's DDS maps exactly its own footprint, so
+    // the WRAP default bleeds the opposite edge in at quad borders, 2^mip
+    // texels wide — seam lines in both colour and normals.
+    let tex_handle = resolve_texture_with_clamp(ctx, tex_provider, Some(diffuse.as_str()), 0);
     // The path the canonical `Material` classifies against (#3336) — whichever
     // of the two actually resolved, mirroring `terrain_lod.rs`.
     let mut base_texture_path = Some(diffuse.clone());
     let tex_handle = match super::terrain::DefaultLandTexture::for_game(game) {
         Some(default_land) if tex_handle == ctx.texture_registry.fallback() => {
             base_texture_path = Some(default_land.diffuse.to_string());
-            resolve_texture(ctx, tex_provider, Some(default_land.diffuse))
+            resolve_texture_with_clamp(ctx, tex_provider, Some(default_land.diffuse), 0)
         }
         _ => tex_handle,
     };
@@ -357,7 +363,11 @@ pub(crate) fn spawn_btr_block(
     // remaps with `* 2 - 1`.
     let mut normal_handle = 0;
     for candidate in btr_normal_path_candidates(worldspace_key, level, qx, qy, game) {
-        let resolved = resolve_linear_texture(ctx, tex_provider, Some(candidate.as_str()));
+        // #4912 — linear upload AND the authored clamp (see the diffuse
+        // note above): the `_n`/`_msn` maps author CLAMP_S_CLAMP_T like the
+        // diffuse they pair with.
+        let resolved =
+            resolve_linear_texture_with_clamp(ctx, tex_provider, Some(candidate.as_str()), 0);
         if resolved != ctx.texture_registry.fallback() {
             normal_handle = resolved;
             break;
@@ -456,6 +466,9 @@ pub(crate) fn spawn_btr_block(
         crate::material_translate::translate_texture_only_material_with_authored_msn(
             base_texture_path,
             authored_model_space_normals,
+            // #4912 — the sampler fact the two resolves above already used;
+            // the Material cannot disagree with the handle.
+            0,
         ),
     );
     world.insert(entity, RenderLayer::Architecture);

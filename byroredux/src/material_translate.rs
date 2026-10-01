@@ -1000,7 +1000,18 @@ pub(crate) fn attach_blend_and_facing_markers(
 /// it: its instanced models resolve a NIFAL `Material` exactly as a placed
 /// reference does (`exal-groundcover.md`, Phase C).
 pub(crate) fn translate_texture_only_material(texture_path: Option<String>) -> Material {
-    translate_texture_only_material_with_authored_msn(texture_path, false)
+    translate_texture_only_material_with_clamp(texture_path, 3)
+}
+
+/// #4912 — the clamp-carrying wrapper for texture-only populations whose
+/// sampled art authors an address mode: the terrain-LOD families' baked
+/// quads author `0 = CLAMP_S_CLAMP_T`, and the `Material` must agree with
+/// the handle's sampler or the seam fix only moves.
+pub(crate) fn translate_texture_only_material_with_clamp(
+    texture_path: Option<String>,
+    texture_clamp_mode: u8,
+) -> Material {
+    translate_texture_only_material_with_authored_msn_and_clamp(texture_path, false, texture_clamp_mode)
 }
 
 /// #4632 — the texture-only variant for populations whose *source data*
@@ -1017,6 +1028,19 @@ pub(crate) fn translate_texture_only_material(texture_path: Option<String>) -> M
 pub(crate) fn translate_texture_only_material_with_authored_msn(
     texture_path: Option<String>,
     model_space_normals: bool,
+    texture_clamp_mode: u8,
+) -> Material {
+    translate_texture_only_material_with_authored_msn_and_clamp(
+        texture_path,
+        model_space_normals,
+        texture_clamp_mode,
+    )
+}
+
+fn translate_texture_only_material_with_authored_msn_and_clamp(
+    texture_path: Option<String>,
+    model_space_normals: bool,
+    texture_clamp_mode: u8,
 ) -> Material {
     let msn_flag = if model_space_normals {
         byroredux_renderer::vulkan::material::material_flag::MODEL_SPACE_NORMALS
@@ -1024,6 +1048,10 @@ pub(crate) fn translate_texture_only_material_with_authored_msn(
         0
     };
     let mut material = translate_texture_only_material_inner(texture_path);
+    // #4912 — the clamp rides with the MSN bit: both are authored sampler
+    // facts about the texture-only population, carried at the boundary so
+    // the Material cannot disagree with the resolved handle.
+    material.texture_clamp_mode = texture_clamp_mode;
     material.effect_shader_flags |= msn_flag;
     material
 }
@@ -2369,16 +2397,23 @@ mod tests {
         let terrain = translate_texture_only_material_with_authored_msn(
             Some("textures\\terrain\\tamriel\\tamriel.4.88.8.dds".to_string()),
             true,
+            // #4912 — every imported land shape authors CLAMP_S_CLAMP_T.
+            0,
         );
         assert_eq!(
             terrain.effect_shader_flags & MODEL_SPACE_NORMALS,
             MODEL_SPACE_NORMALS,
             "an authored model-space `.btr` must lower with the MSN bit set"
         );
+        assert_eq!(
+            terrain.texture_clamp_mode, 0,
+            "#4912 — the authored clamp rides with the MSN bit"
+        );
 
         let unflagged = translate_texture_only_material_with_authored_msn(
             Some("textures\\terrain\\tamriel\\tamriel.4.88.8.dds".to_string()),
             false,
+            0,
         );
         assert_eq!(
             unflagged.effect_shader_flags & MODEL_SPACE_NORMALS,
@@ -2458,6 +2493,7 @@ mod tests {
         // texture-only variant, so the needle list carries it too.
         let boundary_fns = [
             "translate_texture_only_material(",
+            "translate_texture_only_material_with_clamp(",
             "translate_texture_only_material_with_authored_msn(",
             "translate_material(",
             // `.bto` sub-meshes delegate to this wrapper, which translates
@@ -2600,19 +2636,17 @@ mod tests {
     /// spawner roots).
     #[test]
     fn stripper_keeps_production_after_out_of_line_test_module_declarations() {
-        let src = "\
-fn first_spawner() {
-    insert(MeshHandle);
-}
-
-#[cfg(test)]
-mod first_spawner_tests;
-
-fn later_spawner() {
-    insert(MeshHandle);
-}
-";
-        let production = strip_inline_test_modules(src);
+        // Needles assembled at run time: this file's own completeness
+        // harnesses scan the raw source for `#[cfg(test)]\nmod` text, and a
+        // literal sample here would feed the scan synthetic module bodies
+        // (the same self-match rule the static pins follow).
+        let attr = concat!("\n#[cfg(", "test)]\nmod ");
+        let src = format!(
+            "\nfn first_spawner() {{\n    insert(MeshHandle);\n}}\n\
+             {attr}first_spawner_tests;\n\
+             \nfn later_spawner() {{\n    insert(MeshHandle);\n}}\n"
+        );
+        let production = strip_inline_test_modules(&src);
         assert!(
             production.contains("fn first_spawner()"),
             "production before the declaration is untouched"
@@ -2624,17 +2658,12 @@ fn later_spawner() {
         );
 
         // The inline form still strips as a block.
-        let inline = "\
-fn a() {}
-
-#[cfg(test)]
-mod a_tests {
-    fn helper() {}
-}
-
-fn b() {}
-";
-        let stripped = strip_inline_test_modules(inline);
+        let inline = format!(
+            "\nfn a() {{}}\n\
+             {attr}a_tests {{\n    fn helper() {{}}\n}}\n\
+             \nfn b() {{}}\n"
+        );
+        let stripped = strip_inline_test_modules(&inline);
         assert!(!stripped.contains("mod a_tests"));
         assert!(!stripped.contains("helper"));
         assert!(stripped.contains("fn b() {}"));

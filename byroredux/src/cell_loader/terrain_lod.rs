@@ -36,7 +36,10 @@ use byroredux_plugin::esm::cell::CellData;
 use byroredux_plugin::esm::reader::GameKind;
 use byroredux_renderer::{Vertex, VulkanContext};
 
-use crate::asset_provider::{resolve_linear_texture, resolve_texture, TextureProvider};
+use crate::asset_provider::{
+    resolve_linear_texture_with_clamp, resolve_texture, resolve_texture_with_clamp,
+    TextureProvider,
+};
 use crate::components::{IsLodTerrain, MaterialTextureHandles};
 use crate::env_translate::translate_terrain_lod_textures;
 use crate::streaming::LodBlock;
@@ -750,16 +753,24 @@ fn spawn_lod_block(
     } else {
         None
     };
+    // #4912 — the authored legacy quad (Oblivion's FormID-keyed / FO3-FNV's
+    // EditorID-keyed DDS) maps exactly its own block footprint, so it
+    // samples with the authored `0 = CLAMP_S_CLAMP_T` — the WRAP default
+    // bled each block's opposite edge in at its borders. The BTXT base-LTEX
+    // fallback below is *tiled* like full-detail terrain and stays WRAP.
     let lod_quad_tex = translated_lod
         .as_ref()
-        .map(|lod| resolve_texture(ctx, tex_provider, Some(lod.diffuse_path.as_str())))
+        .map(|lod| resolve_texture_with_clamp(ctx, tex_provider, Some(lod.diffuse_path.as_str()), 0))
         .unwrap_or(0);
     let translated_lod = translated_lod
         .filter(|_| lod_quad_tex != 0 && lod_quad_tex != ctx.texture_registry.fallback());
     let resolved_normal = translated_lod
         .as_ref()
-        // Normal maps are vector data: linear upload, like the material slot.
-        .map(|lod| resolve_linear_texture(ctx, tex_provider, Some(lod.normal_path.as_str())))
+        // Normal maps are vector data: linear upload, like the material
+        // slot — and the authored quad's clamp (#4912).
+        .map(|lod| {
+            resolve_linear_texture_with_clamp(ctx, tex_provider, Some(lod.normal_path.as_str()), 0)
+        })
         .unwrap_or(0);
     let normal_texture_handle =
         if resolved_normal != 0 && resolved_normal != ctx.texture_registry.fallback() {
@@ -898,7 +909,13 @@ fn spawn_lod_block(
     // outside.
     world.insert(
         entity,
-        crate::material_translate::translate_texture_only_material(base_texture_path),
+        // #4912 — the Material's clamp matches whichever arm resolved: the
+        // authored legacy quad's CLAMP_S_CLAMP_T, or the tiled base LTEX's
+        // WRAP (the plain wrapper's default).
+        crate::material_translate::translate_texture_only_material_with_clamp(
+            base_texture_path,
+            if translated_lod.is_some() { 0 } else { 3 },
+        ),
     );
     // Architecture layer (zero depth bias) — same canonical baseline the
     // full-detail terrain uses.

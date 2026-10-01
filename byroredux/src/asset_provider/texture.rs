@@ -614,11 +614,25 @@ pub(crate) fn resolve_linear_texture(
     tex_provider: &TextureProvider,
     tex_path: Option<&str>,
 ) -> u32 {
+    resolve_linear_texture_with_clamp(ctx, tex_provider, tex_path, 3)
+}
+
+/// #4912 — `resolve_texture_with_clamp`'s data-texture twin: vector texels
+/// uploaded linear AND sampled with the authored clamp. The texture-only
+/// LOD families (`.btr` distant terrain's per-quad `_n` maps) author
+/// `0 = CLAMP_S_CLAMP_T`; resolving them at the WRAP default bleeds the
+/// opposite edge in at quad borders, 2^mip texels wide, in the normals.
+pub(crate) fn resolve_linear_texture_with_clamp(
+    ctx: &mut VulkanContext,
+    tex_provider: &TextureProvider,
+    tex_path: Option<&str>,
+    clamp_mode: u8,
+) -> u32 {
     resolve_texture_with_clamp_and_color_space(
         ctx,
         tex_provider,
         tex_path,
-        3,
+        clamp_mode,
         TextureColorSpace::Linear,
     )
 }

@@ -1,8 +1,7 @@
-# EXT-D6-2026-09-27-02: `.btr` distant terrain samples its diffuse and normal with WRAP; the NIFs author CLAMP_S_CLAMP_T (#4553 did not reach the texture-only LOD families)
+# 4912: EXT-D6-2026-09-27-02: `.btr` distant terrain samples its diffuse and normal with WRAP; the NIFs author CLAMP_S_CLAMP_T (#4553 did not reach the texture-only LOD families)
 
-**Issue**: #4912
-**Filed**: 2026-09-27 (audit-publish, AUDIT_EXTERIOR_2026-09-27.md)
-**Labels**: medium,terrain-exterior,bug,game:skyrim,game:fo4
+labels: bug, medium, game:fo4, game:skyrim, terrain-exterior
+state: OPEN
 
 **Severity**: MEDIUM (visual)
 **Dimension**: Distant LOD and trees
@@ -32,3 +31,4 @@ Filtering bleeds the opposite edge in at quad borders, 2^mip texels wide. That g
 - [ ] **SIBLING**: Same pattern checked in related files (other spawners / translate arms / games)
 - [ ] **CANONICAL-BOUNDARY**: Per-game logic stays at the EXAL/WATAL translate boundary (`env_translate.rs`, `groundcover_translate.rs`, the `cell_loader` spawn sites) — never pushed into shaders/renderer, never re-derived at render time. See `/audit-exterior`.
 - [ ] **TESTS**: A regression test pins this specific fix
+
