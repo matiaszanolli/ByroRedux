@@ -319,15 +319,35 @@ fn starfield_single_channel_kinds_are_parked_by_name_or_canonical() {
         .expect("unterminated struct")
         .0;
     const NIFAL_SRC: &str = include_str!("../../../../docs/engine/nifal.md");
+    // #5003 — scan only nifal.md's ANCHORED parked list, not the whole
+    // file: four of the five suffixes also appear in the TXST slot map and
+    // the `smooth_spec` sign-flip rationale in the same paragraph, so a
+    // whole-file `contains` stayed green when a kind was dropped from the
+    // list itself.
+    let span = NIFAL_SRC
+        .split_once("<!-- parked-starfield-kinds")
+        .expect("nifal.md must open the parked-starfield-kinds anchor")
+        .1
+        .split_once("/parked-starfield-kinds -->")
+        .expect("nifal.md must close the parked-starfield-kinds anchor")
+        .0;
+    // The span must carry no backticked tokens beyond the parked kinds
+    // themselves — stray tokens in it would re-loosen the anchor.
+    for token in span.split('`').skip(1).step_by(2) {
+        assert!(
+            KINDS.iter().any(|&(_, suffix)| suffix == token),
+            "unexpected backticked token `{token}` inside the parked-starfield-kinds span"
+        );
+    }
 
     for (kind, suffix) in KINDS {
         let in_struct = struct_body.contains(&format!("pub {kind}: T,"));
-        let parked = NIFAL_SRC.contains(&format!("`{suffix}`"));
+        let parked = span.contains(&format!("`{suffix}`"));
         assert!(
             in_struct ^ parked,
             "Starfield kind `{suffix}` is {} — when CDB Phase 2 lands a role it \
              must arrive as a named `MaterialTextureSet` field AND move out of \
-             nifal.md's parked table in the same change (#4429); the near-miss \
+             nifal.md's parked list in the same change (#4429); the near-miss \
              misroutes (`_rough` → gloss-consuming `smooth_spec`) are forbidden",
             match (in_struct, parked) {
                 (true, true) => "both a struct role and still parked in nifal.md",
@@ -335,6 +355,16 @@ fn starfield_single_channel_kinds_are_parked_by_name_or_canonical() {
             }
         );
     }
+
+    // Prove the anchor is what carries the pin: drop one kind from the
+    // span alone (no struct field to catch it) and the XOR must go false —
+    // pre-#5003 the unanchored scan stayed green through exactly this
+    // edit because the TXST slot map still mentioned the suffix.
+    let mutilated = span.replace("`_rough`", "");
+    assert!(
+        !(false ^ mutilated.contains("`_rough`")),
+        "a kind removed from the anchored span must trip the guard"
+    );
 }
 
 /// CDB-presence gate: a `.mat` path against a non-Starfield archive

@@ -622,8 +622,11 @@ cell unload uses it directly rather than maintaining a separate role list.
 
 **Starfield single-channel PBR kinds — parked by name (SF-2026-09-16-D3-01,
 #4429, recorded 2026-09-22).** Starfield authors separate single-channel maps
-with five first-class suffix kinds — `_rough`, `_metal`, `_ao`, `_opacity`,
-`_transmissive` — and its own TXST records carry them in dedicated slots
+with five first-class suffix kinds — <!-- parked-starfield-kinds: the anchored
+span the #4429 XOR guard in asset_provider/tests/starfield_mat.rs scans; a
+kind lands by gaining a MaterialTextureSet role AND leaving this list in the
+same change. Keep this comment free of backticks (#5003) -->`_rough`, `_metal`, `_ao`, `_opacity`,
+`_transmissive`<!-- /parked-starfield-kinds --> — and its own TXST records carry them in dedicated slots
 (TX09 → `_rough`, TX08 → `_metal`, TX17 → `_ao`, TX19 → `_opacity`; measured
 over `Starfield.esm`'s 23 TXST records). A 45,756-file texture-archive census
 put 17,998 files (39%) on these five kinds. **`MaterialTextureSet`'s 22 roles
