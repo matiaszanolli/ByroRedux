@@ -277,3 +277,22 @@ labels: bug nif-parser low performance nif test-gap
 - [ ] **SIBLING**: Same pattern checked in related files
 - [ ] **TESTS**: A regression test pins this specific fix
 
+
+# Batch results — 2026-10-01
+
+9/10 fixed + closed (LOCAL commits 8353604de..fd26378da, unpushed); #5117 left OPEN as the tracker it asked to be.
+
+| Issue | Commit | Result |
+|---|---|---|
+| #5110 | d44d12038 | game-loop.md live-schedule table rebuilt from boot/schedule registrations (locomotion default-on + kill-switch, footstep/billboard → Late #3652, all missing rows added) |
+| #5111 | 305041f6b | session-close budgets → measured ceilings (README ≤600 / ROADMAP ≤800) + wc -l check in Step 6; Co-Authored-By dropped from the commit template |
+| #5112 | 8353604de | triangle_early.frag.spv backticked in 2 skills + shader-pipeline.md sibling |
+| #5113 | 67969adc2 | TERRAIN_SPLAT_LAYERS/_LANES_PER_WORD through shader_constants_data.rs → GLSL → GpuTerrainTile arrays → loops → packer, pinned to the Vertex weight words; 2 spv regenerated |
+| #5114 | c7ee4aaa9 | 10 probes deleted + audit_fnv_d4_lvli_probe (SIBLING find); qust_alias_rawdump kept w/ doc role; guard widened to tmp_ + module-doc self-descriptions (line-anchored, spt_tail exempt) |
+| #5115 | 3f0852e08 + fd26378da | clippy --all-targets 824 → 0 sites workspace-wide; doc-splices, reasoned allows, dead code, 52 field_reassign conversions; follow-up repaired 2 rewrites the gate caught (NaN partial_cmp, 0xBEEFAB01) |
+| #5116 | b173ac29d | python3 in the CI shader container's apt list |
+| #5117 | — | OPEN (tracker): consolidation comment posted w/ acceptance criteria (riders, #282 barrier, pin flip in-commit, BYRO_VALIDATION both upscalers, bench) |
+| #5118 | e04fa1ef6 | smoke-contracts neutralisation derived from fixtures' FIXTURE_DATA_ENV + self-check; suite green <1s, no engine launch |
+| #5119 | 72769b95a | groundcover_hasher_tests.rs (Fx pin + detector self-test) + nif version_literal_tests (#1042 sweep on every run) |
+
+Gates: full workspace test EXIT=0 (105 suites, -j2/test-threads=2), clippy --workspace --all-targets -D warnings = 0 errors, shader parity 36/36, smoke-contracts PASS. Note: a concurrent session had already closed 8 of the 9 before my close calls — fix comments were posted separately via gh issue comment.
