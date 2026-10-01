@@ -51,6 +51,22 @@ pub struct HkxAnimation {
 /// process (#3011).
 const MAX_TRANSFORM_SAMPLES: usize = 16_000_000;
 
+/// #5006 (PAR-D1-2026-09-29-01) — ceiling on a clip's declared
+/// `max_frames_per_block`. 256 is the Havok compressor's default and the
+/// measured vanilla maximum (SE Animations.bsa census,
+/// `skyrim_se_spline_dimensions_census_stays_under_the_gate_ceilings`).
+/// #4655's `num_frames <= num_blocks * (max_frames_per_block - 1) + 1`
+/// tie is sound only if a block's frame count is itself plausible: with
+/// all-static masks a block costs `transform_count * 4` mask bytes
+/// WHATEVER its frame count, so a hand-built clip with
+/// `max_frames_per_block ≈ num_frames` (one block, everything static)
+/// slipped under every #4655 check and still expanded a 17 KB file into
+/// 16 M samples / 610 MiB. Capping the compressor parameter at its
+/// vanilla ceiling closes that: `num_blocks <= 4096` then bounds
+/// `num_frames` at ~1.04 M, and each block must still carry its full
+/// mask table, so decoded output stays proportional to file bytes.
+const MAX_FRAMES_PER_BLOCK: usize = 256;
+
 /// An `hkArray` field: the data pointer, then the `u32` element count.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ArrayField {
@@ -351,7 +367,7 @@ pub fn decode_spline_animation(bytes: &[u8]) -> Result<HkxAnimation> {
         || sample_count > MAX_TRANSFORM_SAMPLES
         || num_blocks == 0
         || num_blocks > 4096
-        || !(2..=4096).contains(&max_frames_per_block)
+        || !(2..=MAX_FRAMES_PER_BLOCK as u32).contains(&max_frames_per_block)
         // #4655 (PAR-D1-2026-09-21-02) — frames must fit in the blocks the
         // file ACTUALLY carries: each block's frames cost real bytes on
         // disk, so `num_frames <= num_blocks * (max_frames_per_block - 1)
@@ -359,6 +375,10 @@ pub fn decode_spline_animation(bytes: &[u8]) -> Result<HkxAnimation> {
         // MAX_TRANSFORM_SAMPLES cap stays as the final backstop; alone it
         // admitted a 17 KB file claiming 4096 tracks x 3906 frames
         // (610 MiB decoded, ~2 GB retained as keys).
+        // #5006 (PAR-D1-2026-09-29-01) — that tie is bypassable with ONE
+        // block whose `max_frames_per_block ≈ num_frames` (all-static
+        // masks cost `transform_count * 4` bytes per block regardless of
+        // frames); the MAX_FRAMES_PER_BLOCK cap above closes it.
         || num_frames as u64 > num_blocks as u64 * (max_frames_per_block as u64 - 1) + 1
         || mask_size != transform_count * 4 + float_count
     {
@@ -1203,6 +1223,87 @@ mod tests {
         Some(byroredux_bsa::BsaArchive::open(archive_path).unwrap())
     }
 
+    /// #5006 (PAR-D1-2026-09-29-01) — vanilla census of the spline
+    /// compressor's `max_frames_per_block` across every `.hkx` in the SE
+    /// Animations archive. This is what measured the ceiling the
+    /// dimension gate now enforces (256, the Havok compressor default —
+    /// vanilla never exceeds it), and it doubles as the guard: a future
+    /// re-export or toolchain change that exceeds the gate's ceiling
+    /// fails here first, on real data, instead of as silent rejects in
+    /// the decoder.
+    /// `cargo test -p byroredux-hkx -- --ignored --nocapture`
+    #[test]
+    #[ignore = "needs Skyrim SE game data on disk"]
+    fn skyrim_se_spline_dimensions_census_stays_under_the_gate_ceilings() {
+        let Some(archive) = animations_archive(
+            byroredux_plugin::esm::test_paths::SKYRIM_SE_ENV,
+            byroredux_plugin::esm::test_paths::SKYRIM_SE_DEFAULT,
+        ) else {
+            return;
+        };
+        let mut max_mfpb = 0u32;
+        let mut max_frames = 0u32;
+        let mut max_blocks = 0u32;
+        let mut max_samples: u64 = 0;
+        let mut clips = 0usize;
+        let mut skipped = 0usize;
+        let mut worst = String::new();
+        for path in archive.list_files() {
+            if !path.ends_with(".hkx") {
+                continue;
+            }
+            let bytes = match archive.extract(path) {
+                Ok(b) => b,
+                Err(_) => {
+                    skipped += 1;
+                    continue;
+                }
+            };
+            let pack = match Packfile::parse(&bytes) {
+                Ok(p) => p,
+                Err(_) => {
+                    skipped += 1;
+                    continue;
+                }
+            };
+            let object = match pack.object("hkaSplineCompressedAnimation") {
+                Ok(o) => o,
+                Err(_) => {
+                    skipped += 1;
+                    continue;
+                }
+            };
+            let layout = Layout::new(pack.pointer_size());
+            let mfpb = pack
+                .u32(object + layout.max_frames_per_block, "census mfpb")
+                .unwrap();
+            let frames = pack.u32(object + layout.num_frames, "census frames").unwrap();
+            let blocks = pack.u32(object + layout.num_blocks, "census blocks").unwrap();
+            let tracks = pack
+                .u32(object + layout.transform_tracks, "census tracks")
+                .unwrap();
+            clips += 1;
+            max_mfpb = max_mfpb.max(mfpb);
+            max_frames = max_frames.max(frames);
+            max_blocks = max_blocks.max(blocks);
+            let samples = tracks as u64 * frames as u64;
+            if samples > max_samples {
+                max_samples = samples;
+                worst = format!("{path}: {tracks} tracks x {frames} frames");
+            }
+        }
+        eprintln!(
+            "census: {clips} clips, {skipped} non-clip/undecodable files; \
+             max mfpb={max_mfpb}, max frames={max_frames}, max blocks={max_blocks}, \
+             max samples={max_samples} ({worst})"
+        );
+        assert!(
+            max_mfpb <= MAX_FRAMES_PER_BLOCK as u32,
+            "vanilla max_frames_per_block {max_mfpb} exceeds the gate ceiling \
+             {MAX_FRAMES_PER_BLOCK} — re-measure and raise the ceiling"
+        );
+    }
+
     /// The layout walk must reproduce, for 8-byte pointers, exactly the
     /// offsets this decoder hard-coded while it read Skyrim SE only — those
     /// were validated against the shipped SE assets, so they pin the field
@@ -1477,6 +1578,71 @@ mod tests {
         // frames cannot carry 3906 frames.
         let err = decode_spline_animation(&bytes)
             .expect_err("frames beyond the declared block capacity must be rejected");
+        assert_eq!(
+            err,
+            HkxError::InvalidData("unsupported spline clip dimensions")
+        );
+    }
+
+    /// #5006 (PAR-D1-2026-09-29-01) — #4655's frames-vs-blocks tie is
+    /// bypassable with ONE block whose `max_frames_per_block` ≈
+    /// `num_frames`: all-static masks cost `transform_count * 4` bytes
+    /// per block whatever the frame count, so a 17 KB file claiming 4096
+    /// tracks x 3906 frames (15,998,976 samples, 610 MiB decoded) passed
+    /// every #4655 check. The vanilla-measured 256 ceiling on the
+    /// compressor parameter rejects it before any allocation.
+    #[test]
+    fn decode_spline_animation_rejects_a_block_claiming_its_whole_clip() {
+        use crate::packfile::fixtures::PackfileBuilder;
+
+        let mut data = vec![0u8; 0x60];
+        data[0x10..0x14].copy_from_slice(&5u32.to_le_bytes()); // spline-compressed
+        data[0x14..0x18].copy_from_slice(&1.0f32.to_le_bytes()); // duration
+        data[0x18..0x1c].copy_from_slice(&4096u32.to_le_bytes()); // transform_count (max)
+        data[0x38..0x3c].copy_from_slice(&3906u32.to_le_bytes()); // num_frames
+        data[0x3c..0x40].copy_from_slice(&1u32.to_le_bytes()); // num_blocks
+        data[0x40..0x44].copy_from_slice(&3907u32.to_le_bytes()); // mfpb = num_frames + 1
+        data[0x50..0x54].copy_from_slice(&(1.0f32 / 30.0).to_le_bytes()); // frame_duration
+
+        let mut builder = PackfileBuilder {
+            data,
+            ..Default::default()
+        };
+        let class = builder.class("hkaSplineCompressedAnimation");
+        builder.virtual_fixups.push((0, 0, class));
+        let bytes = builder.build();
+
+        // 1 block x 3906 declared frames satisfies #4655's
+        // `num_frames <= num_blocks * (mfpb - 1) + 1` exactly, and the
+        // sample product sits just under MAX_TRANSFORM_SAMPLES — only the
+        // MAX_FRAMES_PER_BLOCK ceiling can reject it.
+        let err = decode_spline_animation(&bytes).expect_err(
+            "max_frames_per_block beyond the vanilla ceiling must be rejected (#5006)",
+        );
+        assert_eq!(
+            err,
+            HkxError::InvalidData("unsupported spline clip dimensions")
+        );
+
+        // The 99-track skeleton-binding form (blocks=40, mfpb=4096,
+        // frames=161,616 → 15,999,984 samples from a 16 KB file) dies on
+        // the same ceiling.
+        let mut data = vec![0u8; 0x60];
+        data[0x10..0x14].copy_from_slice(&5u32.to_le_bytes());
+        data[0x14..0x18].copy_from_slice(&1.0f32.to_le_bytes());
+        data[0x18..0x1c].copy_from_slice(&99u32.to_le_bytes());
+        data[0x38..0x3c].copy_from_slice(&161_616u32.to_le_bytes());
+        data[0x3c..0x40].copy_from_slice(&40u32.to_le_bytes());
+        data[0x40..0x44].copy_from_slice(&4096u32.to_le_bytes());
+        data[0x50..0x54].copy_from_slice(&(1.0f32 / 30.0).to_le_bytes());
+        let mut builder = PackfileBuilder {
+            data,
+            ..Default::default()
+        };
+        let class = builder.class("hkaSplineCompressedAnimation");
+        builder.virtual_fixups.push((0, 0, class));
+        let err = decode_spline_animation(&builder.build())
+            .expect_err("the 99-track mfpb=4096 form must be rejected on the same ceiling");
         assert_eq!(
             err,
             HkxError::InvalidData("unsupported spline clip dimensions")
