@@ -21,6 +21,45 @@ mapfile -t GAMES < <(cd "$ROOT_DIR/docs/smoke-tests/fixtures" && ls ./*.env | se
     || fail "expected at least the skyrim_se and fnv fixtures, found ${#GAMES[@]}"
 echo "playable-smoke-contracts: fixtures = ${GAMES[*]}"
 
+# #5118 — neutralise every fixture's data source, not a hand-kept list. The
+# old list named four of the five variables and missed BYROREDUX_OBLIVION_DATA:
+# on a machine with Oblivion at the default path, the p0[oblivion]
+# missing-data probe launched the real engine (exit 0), failed the SKIP=77
+# contract, and `set -e` aborted every contract after it. Each fixture
+# declares the variable its gate resolves (FIXTURE_DATA_ENV, consumed by
+# docs/smoke-tests/lib/fixture.sh) — derive the neutralisation list from
+# those declarations so a new fixture cannot reintroduce the gap.
+declare -a DATA_NEUTRALISE=()
+declare -A NEUTRALISED_VARS=()
+for fixture in "$ROOT_DIR"/docs/smoke-tests/fixtures/*.env; do
+    fixture_env="$(grep -E '^FIXTURE_DATA_ENV=' "$fixture" | head -1 | cut -d= -f2)"
+    [[ -n "$fixture_env" ]] \
+        || fail "$(basename "$fixture") declares no FIXTURE_DATA_ENV — the contract loop cannot neutralise its data source"
+    [[ "$fixture_env" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] \
+        || fail "$(basename "$fixture") declares a malformed FIXTURE_DATA_ENV '$fixture_env'"
+    NEUTRALISED_VARS["$fixture_env"]=1
+    DATA_NEUTRALISE+=("$fixture_env=$MISSING_DATA")
+done
+
+# #5118 — self-check for the list above: every data variable referenced
+# anywhere in the smoke harness (fixture-declared or hardcoded in a gate
+# script) must be one this loop neutralises. A new variable the fixtures
+# name, or a gate script reading one directly, otherwise reruns the exact
+# defect this script had with the Oblivion fixture: real data, real engine,
+# red contract. (BYROREDUX_REQUIRE_GAME_DATA is a Rust-test gate, not a path.)
+mapfile -t REFERENCED_DATA_VARS < <(
+    grep -rhoE 'BYROREDUX_[A-Z0-9_]+_DATA' \
+        "$ROOT_DIR/docs/smoke-tests" "$ROOT_DIR/scripts/check-playable-smoke-contracts.sh" \
+        | grep -v '^BYROREDUX_REQUIRE_GAME_DATA$' | sort -u
+)
+(( ${#REFERENCED_DATA_VARS[@]} >= 1 )) \
+    || fail "the smoke harness references no *_DATA variable — did the data-resolution mechanism change?"
+for var in "${REFERENCED_DATA_VARS[@]}"; do
+    [[ -n "${NEUTRALISED_VARS[$var]:-}" ]] \
+        || fail "$var is referenced by the smoke harness but not neutralised by this contract loop — declare it in its fixture's FIXTURE_DATA_ENV"
+done
+echo "playable-smoke-contracts: PASS -- data neutralisation covers every harness data variable (${REFERENCED_DATA_VARS[*]})"
+
 for name in p0-door-interaction p1-character-traversal p2-melee-core p5-save-restart w1-water-traversal; do
     smoke="$ROOT_DIR/docs/smoke-tests/$name.sh"
     for game in "${GAMES[@]}"; do
@@ -34,10 +73,7 @@ for name in p0-door-interaction p1-character-traversal p2-melee-core p5-save-res
             done
         fi
         set +e
-        output="$(BYROREDUX_SKYRIMSE_DATA="$MISSING_DATA" \
-            BYROREDUX_FNV_DATA="$MISSING_DATA" \
-            BYROREDUX_FO3_DATA="$MISSING_DATA" \
-            BYROREDUX_FO4_DATA="$MISSING_DATA" "$smoke" "$game" 2>&1)"
+        output="$(env "${DATA_NEUTRALISE[@]}" "$smoke" "$game" 2>&1)"
         status=$?
         set -e
         if (( supported == 0 )); then
@@ -59,7 +95,7 @@ done
 for name in m48-menu-load; do
     smoke="$ROOT_DIR/docs/smoke-tests/$name.sh"
     set +e
-    output="$(BYROREDUX_SKYRIMSE_DATA="$MISSING_DATA" BYROREDUX_FO4_DATA="$MISSING_DATA" "$smoke" 2>&1)"
+    output="$(env "${DATA_NEUTRALISE[@]}" "$smoke" 2>&1)"
     status=$?
     set -e
     [[ $status -eq 77 ]] \
