@@ -5,10 +5,47 @@
 
 set -euo pipefail
 
+# ── Regex backend (#5085) ─────────────────────────────────────────────────
+# The GitHub `ubuntu-latest` runner ships no ripgrep, so every `rg` call
+# below was `command not found` and this gate has been red on every push
+# since #3504 enabled it (run 36609043348) — printed as bare shell noise
+# rather than a diagnosis. Prefer ripgrep where installed (dev machines);
+# otherwise fall back to the grep -E equivalents every runner does ship.
+# Every pattern here is plain ERE that both backends accept unchanged,
+# and the self-test forces BOTH paths so the fallback cannot silently
+# diverge on a machine that has rg. `BYRO_TRACEABILITY_BACKEND` overrides
+# the auto-detection (values: rg, grep).
+backend="${BYRO_TRACEABILITY_BACKEND:-auto}"
+if [[ "${backend}" == "auto" ]]; then
+    if command -v rg >/dev/null 2>&1; then backend="rg"; else backend="grep"; fi
+fi
+case "${backend}" in
+    rg)
+        if ! command -v rg >/dev/null 2>&1; then
+            echo "check-issue-traceability: BYRO_TRACEABILITY_BACKEND=rg but no rg on PATH" >&2
+            exit 2
+        fi
+        MATCH_QUIET=(rg --quiet)
+        MATCH_QUIET_I=(rg --quiet --ignore-case)
+        EXTRACT_ONLY=(rg --only-matching)
+        EXTRACT_ONLY_I=(rg --only-matching --ignore-case)
+        ;;
+    grep)
+        MATCH_QUIET=(grep -Eq)
+        MATCH_QUIET_I=(grep -Eqi)
+        EXTRACT_ONLY=(grep -Eo)
+        EXTRACT_ONLY_I=(grep -Eoi)
+        ;;
+    *)
+        echo "check-issue-traceability: BYRO_TRACEABILITY_BACKEND must be 'rg' or 'grep' (got '${backend}')" >&2
+        exit 2
+        ;;
+esac
+
 closing_issue_numbers() {
-    rg --only-matching --ignore-case \
+    "${EXTRACT_ONLY_I[@]}" \
         '(fix|fixes|fixed|close|closes|closed|resolve|resolves|resolved)[[:space:]]+#[0-9]+' |
-        rg --only-matching '[0-9]+' |
+        "${EXTRACT_ONLY[@]}" '[0-9]+' |
         sort -nu
 }
 
@@ -22,7 +59,7 @@ closing_issue_numbers() {
 # self-test fixture is not.
 commit_cites_issue() {
     local issue="$1"
-    rg --quiet --ignore-case \
+    "${MATCH_QUIET_I[@]}" \
         "(^|[^[:alnum:]_])(fix|fixes|fixed|close|closes|closed|resolve|resolves|resolved)[[:space:]]+#${issue}([^0-9]|$)"
 }
 
@@ -32,7 +69,7 @@ commit_cites_issue() {
 # issue anywhere is not findable by any means. Same here-string contract as
 # `commit_cites_issue` above.
 commit_mentions_issue() {
-    rg --quiet '(^|[^[:alnum:]_])#[0-9]+([^0-9]|$)'
+    "${MATCH_QUIET[@]}" '(^|[^[:alnum:]_])#[0-9]+([^0-9]|$)'
 }
 
 # The base of a pushed range. `github.event.before` is 40 zeros when the
@@ -54,7 +91,7 @@ push_base() {
 # Does this commit touch Rust source? `--name-only --format=` prints just the
 # paths; a merge commit prints nothing, which is the right answer for it.
 commit_touches_rust() {
-    git show --name-only --format= "$1" | rg --quiet '\.rs$'
+    git show --name-only --format= "$1" | "${MATCH_QUIET[@]}" '\.rs$'
 }
 
 # Every issue closed on or after <since-date>, one number per line. Needs
@@ -81,6 +118,20 @@ uncited_among() {
 }
 
 if [[ "${1:-}" == "--self-test" ]]; then
+    # #5085 — run the fixture battery once per backend by re-invoking
+    # this script with the backend forced. Auto-detection picks rg on a
+    # dev machine, so without this the grep path the CI runner actually
+    # takes would never execute anywhere a developer is watching.
+    backends="grep"
+    command -v rg >/dev/null 2>&1 && backends="rg ${backends}"
+    for b in ${backends}; do
+        BYRO_TRACEABILITY_BACKEND="${b}" bash "$0" --self-test-backend "${b}"
+    done
+    echo "check-issue-traceability: self-test passed (backends: ${backends})"
+    exit 0
+fi
+
+if [[ "${1:-}" == "--self-test-backend" ]]; then
     sample_body=$'Fixes #12\nResolved #34\nmentions #56'
     mapfile -t sample_issues < <(printf '%s\n' "${sample_body}" | closing_issue_numbers)
     [[ "${sample_issues[*]}" == "12 34" ]]
@@ -162,7 +213,7 @@ if [[ "${1:-}" == "--self-test" ]]; then
     )
     rm -rf "${scratch}"
 
-    echo "check-issue-traceability: self-test passed"
+    echo "check-issue-traceability: self-test passed (${2:-backend})"
     exit 0
 fi
 
@@ -357,8 +408,8 @@ if [[ "${1:-}" == "--orphan" ]]; then
     mapfile -t referenced < <(
         git diff --unified=0 "${base}..${head}" -- '*.rs' |
             grep -E '^\+[^+]' |
-            rg --only-matching '#[0-9]+' |
-            rg --only-matching '[0-9]+' |
+            "${EXTRACT_ONLY[@]}" '#[0-9]+' |
+            "${EXTRACT_ONLY[@]}" '[0-9]+' |
             sort -nu
     )
     if [[ "${#referenced[@]}" -eq 0 ]]; then
