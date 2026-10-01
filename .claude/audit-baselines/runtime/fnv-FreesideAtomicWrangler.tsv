@@ -12,10 +12,14 @@
 # gaming tables (in-room, eye height).
 #   spawn: Interior spawn for 'FreesideAtomicWrangler': COCMarkerHeading at (2400.8, 13592.0, -1200.0)
 #   draws 2204/167b/36c raster 283 -> 2069/500b/120c raster 1284
-# Carried with this regen, NOT attributed here: entities_total 7414 -> 6985
-# (-5.8 %, outside the +-2 % band) is #5131 (RT-5, open; the audit infers
-# `5570c221c` / `a070baaad` / `f87490826`). skin_pool_live 217 -> 106 and the
-# fps rows are advisory.
+# Carried with this regen and attributed per #5131's bisect (issue closed by
+# that attribution): entities_total 7414 -> 6985 (-5.8 %, outside the +-2 %
+# band) = `5570c221c` -92 (dismemberment caps, with -92 draws and -92
+# skin_pool_live) + ~+195 in the `a070baaad` window (player body) -
+# `f87490826` -532 (Initially Disabled refs withheld). skin_pool_live
+# 217 -> 106 and the fps rows are advisory. Confirmed in-band at `4bf2ec3a4`
+# (2026-10-01): fresh renderer-static capture reads entities_total 6985
+# (delta 0), same camera pose, 30 point lights, tex/mesh rows exact.
 # regenerated: 2026-09-16 (#4417 — every row re-captured in ONE renderer-static run)
 # Mode change, not a code change. capture.sh now pins `--bench-mode
 # renderer-static` (authored camera, dt=0). Every row below this header's

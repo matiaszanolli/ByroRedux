@@ -12,9 +12,12 @@
 # workbench and stairs (in-room, eye height).
 #   spawn: Interior spawn for 'MegatonPlayerHouse': COCMarkerHeading at (2693.5, 7419.4, -1904.2)
 #   draws 1579/114b/12c raster 123 -> 1514/511b/65c raster 1285
-# Carried with this regen, NOT attributed here: entities_total 3543 -> 3626
-# (+2.34 %, just outside the +-2 % band) is #5133 (RT-7, open). skin_pool_live
-# 7 -> 3 and the fps rows are advisory.
+# Carried with this regen and attributed per #5133 (issue closed by that
+# attribution; not separately bisected): entities_total 3543 -> 3626
+# (+2.34 %, just outside the +-2 % band) shows the same COCMarkerHeading
+# spawn / player-body / Initially-Disabled signature as the other games -
+# most likely `a070baaad` (+) net of `f87490826` / `5570c221c` (-).
+# skin_pool_live 7 -> 3 and the fps rows are advisory.
 # regenerated: 2026-09-16 (#4417 — every row re-captured in ONE renderer-static run; #4420 mesh-cache tightening)
 # Mode change, not a code change. capture.sh now pins `--bench-mode
 # renderer-static` (authored camera, dt=0). Every row below this header's

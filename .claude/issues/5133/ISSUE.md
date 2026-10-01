@@ -1,6 +1,7 @@
-# #5133: RT-2026-09-29-07: runtime `entities_total` +2.34 % on fo3 MegatonPlayerHouse (3543 → 3626)
+# null: RT-2026-09-29-07: runtime `entities_total` +2.34 % on fo3 MegatonPlayerHouse (3543 → 3626)
 
-**Labels**: low, bug, tech-debt, game:fo3
+labels: bug, low, tech-debt, game:fo3
+state: OPEN
 
 **Source report**: `docs/audits/AUDIT_RUNTIME_2026-09-29.md` (report ID `RT-7`)
 **Severity**: LOW (tolerance metric drifted within ±5 %)
@@ -25,4 +26,5 @@ RT-3, RT-5.
 Include it in RT-3's regeneration. Bisect only if it does not settle there.
 
 Validated at HEAD 9fcfdc3fc: the FO3 TSV `entities_total 3543` row is unchanged since the last re-baseline.
+
 

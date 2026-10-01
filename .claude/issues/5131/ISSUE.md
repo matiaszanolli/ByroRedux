@@ -1,6 +1,7 @@
-# #5131: RT-2026-09-29-05: runtime `entities_total` outside ±2 % on fnv (−5.8 %), oblivion (+25.4 %), fo4 (−11.0 %) — three intentional content changes landed without a TSV refresh
+# null: RT-2026-09-29-05: runtime `entities_total` outside ±2 % on fnv (−5.8 %), oblivion (+25.4 %), fo4 (−11.0 %) — three intentional content changes landed without a TSV refresh
 
-**Labels**: medium, bug, tech-debt
+labels: bug, medium, tech-debt
+state: OPEN
 
 **Source report**: `docs/audits/AUDIT_RUNTIME_2026-09-29.md` (report ID `RT-5`)
 **Severity**: MEDIUM
@@ -32,4 +33,5 @@ RT-3, RT-6, RT-7, #4813, #4814, #4820, FNV-2026-09-29-D6-01 (#5067).
 Fold into RT-3's single regeneration and name all three commits in the `# regenerated:` header.
 
 Validated at HEAD 9fcfdc3fc: the three TSV `entities_total` rows are unchanged since `49ea8ab96` / `fa4453ed0`.
+
 
