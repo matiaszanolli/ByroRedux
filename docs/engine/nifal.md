@@ -747,9 +747,10 @@ The material slice was executed this session as the template. Mechanics:
 
   All three Phase-2 resolvers run at **every `translate_material` caller that
   attaches `MaterialTextureHandles`**, immediately after that attachment
-  (`scene/nif_loader.rs`, `cell_loader/spawn/mesh_instance.rs`). The third
-  production caller, `cell_loader/placement_lod.rs`, is exempt because it
-  attaches no `MaterialTextureHandles` — all three resolvers read their inputs
+  (`scene/nif_loader.rs`, `cell_loader/spawn/mesh_instance.rs`). The other two
+  production callers, `cell_loader/placement_lod.rs` and
+  `cell_loader/object_lod.rs` (a caller since #4245), are exempt because they
+  attach no `MaterialTextureHandles` — all three resolvers read their inputs
   out of that component and early-return without it, so calling them there would
   be a no-op rather than a correctness gap (#3465; the text used to say
   "both spawn sites", which stopped identifying the set once the third caller
@@ -796,8 +797,16 @@ The material slice was executed this session as the template. Mechanics:
      present and `Material::resolve_pbr()` only clamps — its classifier arm (the `NaN`
      sentinel path) is a backstop for future non-pre-classified sources. The result is
      the same either way: explicit scalars, no render-time fallback. (#1346 / D7-01)
-  4. classifies glass once, alpha-aware (`helpers::classify_glass_into_material`),
-     after the PBR resolve so the forced glass roughness wins.
+  4. classifies glass once, alpha-aware
+     (`helpers::classify_glass_into_material_with_provenance`), after the PBR
+     resolve so the forced glass roughness wins. The classifier consumes two
+     distinct provenance signals: `external_material_resolved` gates keyword
+     promotion of effect carriers (#4283 — an external material description was
+     resolved, whatever its format), while `from_bgsm` separately gates
+     overriding an authored lit dispatch `2..=20` (#4855 — the FO4
+     spec-glossiness convention). The bare `classify_glass_into_material` name
+     is a `#[cfg(test)]` shim (`helpers.rs`) that pins `from_bgsm = false`;
+     production calls only the `_with_provenance` form.
 - **De-duplication**: the two ~110-line `Material` construction sites
   (`cell_loader/spawn/mesh_instance.rs`, `scene/nif_loader.rs`) now both call
   the common lowering boundary. A field added in one place can no longer silently
@@ -808,7 +817,7 @@ The material slice was executed this session as the template. Mechanics:
 ### Layering note
 
 `translate_material` lives in the top `byroredux` crate (not `core` / `nif`)
-because it folds in `classify_glass_into_material` (needs
+because it folds in `classify_glass_into_material_with_provenance` (needs
 `byroredux_renderer::MATERIAL_KIND_GLASS`) and consumes the spawn sites' resolved
 common texture set (BGSM `material_path` → real textures, `StringPool`-resolved).
 This is the expected shape: a category whose translation needs renderer constants

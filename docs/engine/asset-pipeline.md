@@ -384,7 +384,7 @@ data; the per-game quirks resolve here exactly once.
   content lands with explicit `(metalness, roughness)` scalars (NaN
   sentinel → keyword classifier), just like BGSM content;
 - classify glass once, alpha-aware, via
-  [`helpers::classify_glass_into_material`](../../byroredux/src/helpers.rs),
+  [`helpers::classify_glass_into_material_with_provenance`](../../byroredux/src/helpers.rs),
   after the PBR resolve so the forced glass roughness wins.
 
 Before this boundary existed the `Material` literal was hand-built at

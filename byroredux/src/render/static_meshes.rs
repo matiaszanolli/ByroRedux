@@ -801,13 +801,13 @@ pub(super) fn collect_static_mesh_draws(
                 //     are forwarded verbatim by the importer (#344).
                 //   - Engine-synthesized kinds live at >= 100
                 //     (MATERIAL_KIND_GLASS = 100, MATERIAL_KIND_EFFECT_SHADER
-                //     = 101, …) and are set by `helpers::classify_glass_into_material`
+                //     = 101, …) and are set by `helpers::classify_glass_into_material_with_provenance`
                 //     and the importer's BSEffectShader / NoLighting arms.
                 //
                 // #1280 sub-step 3c — the render-side glass-heuristic
                 // chain that used to live here is gone. Audit pre-deletion
                 // confirmed it was provably dead code: spawn-time
-                // `classify_glass_into_material` is a strict superset of
+                // `classify_glass_into_material_with_provenance` is a strict superset of
                 // the render-side gate (same `is_glass_keyword_path`
                 // predicate, additional mesh-name + BGEM-glass triggers,
                 // forces roughness to 0.10 so any future render-side

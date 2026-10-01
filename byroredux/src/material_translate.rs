@@ -586,7 +586,7 @@ pub(crate) fn translate_texture_clamp_mode(source: &ImportedMaterial) -> u8 {
 ///     render-time fallback. `feedback_format_translation.md` Stage 1.
 ///     (Structure: classify-at-import + clamp-at-translate. See #1346.)
 ///   - glass classified once, alpha-aware
-///     ([`crate::helpers::classify_glass_into_material`]), after the PBR
+///     ([`crate::helpers::classify_glass_into_material_with_provenance`]), after the PBR
 ///     resolve so the forced glass roughness wins.
 pub(crate) fn translate_material(
     source: &ImportedMaterial,
@@ -3306,7 +3306,7 @@ mod canonical_completeness_harness {
     /// field is a wrong-value assertion failure, not a false-pass against
     /// an already-zero default. Deliberately NOT glass/decal/effect-carrier
     /// (`material_kind = 0`, `metalness_override = Some(0.42)` which is
-    /// `>= 0.3`) so `classify_glass_into_material` is a no-op and every
+    /// `>= 0.3`) so `classify_glass_into_material_with_provenance` is a no-op and every
     /// field below survives `translate_material` untouched — this harness
     /// tests the copy boundary, not the glass/PBR classifiers (those have
     /// their own dedicated tests elsewhere in this file and in
@@ -3319,7 +3319,7 @@ mod canonical_completeness_harness {
             // `cell_loader/spawn/mesh_instance.rs`), so a copy silently
             // changed to `false` deletes every mesh-authored water plane in
             // every game. It is a plain copy at *this* boundary (nothing in
-            // `translate_material` or `classify_glass_into_material` branches
+            // `translate_material` or `classify_glass_into_material_with_provenance` branches
             // on it), which is why setting it here does not disturb the
             // no-op-classifier property the rest of the fixture depends on.
             water_shader_flags: 0x5A,
@@ -3614,7 +3614,7 @@ mod canonical_completeness_harness {
     /// carries the authored distortion strength, not an index of refraction.
     ///
     /// `material_kind = 103` is `>= 100` and not `MATERIAL_KIND_GLASS`, so
-    /// `classify_glass_into_material` returns early and the value survives —
+    /// `classify_glass_into_material_with_provenance` returns early and the value survives —
     /// which is the behaviour under test, not an accident of the fixture.
     #[test]
     fn translate_material_copies_the_fire_refraction_distortion_into_ior() {

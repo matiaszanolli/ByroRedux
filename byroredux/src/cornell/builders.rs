@@ -73,7 +73,7 @@ pub(super) fn pbr_bsdf_lobes(
 /// `MATERIAL_KIND_GLASS` probe — forces the glass-smooth roughness so the
 /// IOR refraction path engages (the gate keys on
 /// `materialKind == MATERIAL_KIND_GLASS && roughness < 0.35`, not `alpha`),
-/// matching the spawn-time `classify_glass_into_material` contract.
+/// matching the spawn-time `classify_glass_into_material_with_provenance` contract.
 /// `alpha: 0.25` below sets `finalAlpha` for these probes to ~0.25 (not
 /// 1.0). It is unconsumed by the *composite/TAA passes* specifically
 /// (`taa.comp`/`composite.frag` don't read it), and latent-fragile if a

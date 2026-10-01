@@ -680,7 +680,7 @@ fn merge_bgsm_arm(
     material.from_bgsm = true;
     // #4283 — both meanings this flag used to overload: the FO4
     // spec-glossiness convention, and "an external material resolved"
-    // (the glass-promotion provenance `classify_glass_into_material`
+    // (the glass-promotion provenance `classify_glass_into_material_with_provenance`
     // reads).
     material.external_material_resolved = true;
     *touched = true;
@@ -1505,7 +1505,7 @@ fn merge_bgem_arm(
         material.dst_blend_mode = bgsm_blend_to_gamebryo(bgem.base.alpha_blend_mode.dst_blend);
     }
     // #1280 sub-step 3b — forward BGEM glass semantics so the
-    // spawn-time classifier in `helpers::classify_glass_into_material`
+    // spawn-time classifier in `helpers::classify_glass_into_material_with_provenance`
     // can fire the glass path even when neither the texture path nor
     // the mesh name carries a glass keyword. v21+ files expose the
     // direct `glass_enabled` field; older FO4 files use the equivalent

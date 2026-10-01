@@ -152,7 +152,7 @@ The env=1.0 → 0.8 matte clamp was load-bearing for non-glass content.
 
 **Reverted to `> 0.3`** (matte 0.8 default restored). Crucially this does NOT
 re-break glass: glass smoothness is owned by step 3's spawn classifier
-(`classify_glass_into_material` forces `Material.roughness = 0.10`), which is
+(`classify_glass_into_material_with_provenance` forces `Material.roughness = 0.10`), which is
 independent of this arm. So glass stays glassy *and* ordinary surfaces stay
 matte. Lesson: the glossiness *gradient* is not a usable roughness signal for
 non-glass FNV surfaces (it over-shines); only the glass path needs low
@@ -165,7 +165,7 @@ roughness, and it gets it explicitly. Pinned by
 2. **Canonical PBR at parse** *(env-arm experiment reverted)* — `Material::resolve_pbr` (was drafted under a working name, renamed before landing) collapses the `Option`s at material-insert time. The env-arm `> 1.0` experiment was REVERTED (chrome regression, above): the matte 0.8 default for neutral-env surfaces is correct because the glossiness gradient over-shines non-glass content. Glass smoothness is owned by step 3, not this arm. Pinned by `classify_pbr_neutral_envmap_default_clamps_matte_not_chrome`. Metalness for legacy content stays keyword-only (no authored source — documented above).
 3. **Parse-time glass** *(alpha-aware classification at material-insert; legacy
    path DONE)* — glass is now decided **once, alpha-aware, at spawn**
-   (`helpers::classify_glass_into_material`, called from both `cell_loader::spawn`
+   (`helpers::classify_glass_into_material_with_provenance`, called from both `cell_loader::spawn`
    and `scene::nif_loader` right after `resolve_pbr`). Rule:
    `material_kind < 100 && has_alpha && !is_decal && metalness < 0.3 &&
    (glass_keyword(texture) || glass_keyword(name))` → set
