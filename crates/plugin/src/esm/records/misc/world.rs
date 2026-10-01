@@ -3,7 +3,8 @@
 
 use super::super::common::{read_lstring_or_zstring, read_zstring, remap_fid, CommonNamedFields};
 use super::super::condition::{push_ctda, ConditionList};
-use crate::esm::reader::{FormIdRemap, SubRecord};
+use crate::esm::cell::StarfieldLighting;
+use crate::esm::reader::{FormIdRemap, GameKind, SubRecord};
 use crate::esm::sub_reader::SubReader;
 use byroredux_core::imagespace::ImageSpace;
 use std::collections::HashMap;
@@ -1269,9 +1270,12 @@ pub struct LgtmRecord {
     pub specular_color: Option<[f32; 3]>,
     pub specular_alpha: Option<f32>,
     pub fresnel_power: Option<f32>,
+    /// Starfield-only height-fog model from the 108-byte DATA tail
+    /// (#5002) — same shape as the SF XCLL arm in `cell/walkers.rs`.
+    pub starfield: Option<StarfieldLighting>,
 }
 
-pub fn parse_lgtm(form_id: u32, subs: &[SubRecord]) -> LgtmRecord {
+pub fn parse_lgtm(form_id: u32, subs: &[SubRecord], game: GameKind) -> LgtmRecord {
     let mut out = LgtmRecord {
         form_id,
         ..Default::default()
@@ -1302,7 +1306,63 @@ pub fn parse_lgtm(form_id: u32, subs: &[SubRecord]) -> LgtmRecord {
                 // bundle at 40-71 is explicitly unused; the live ambient
                 // cube/specular/fresnel values are in DALC below. The final
                 // u32 (88-91) is likewise unused on LGTM.
-                if sub.data.len() >= 92 {
+                //
+                // #5002 (SF-2026-09-29-D4-03) — Starfield's 108-byte DATA
+                // is the SF XCLL shape (xEdit SF1 `wbDefinitionsSF1.pas`
+                // LGTM.DATA), NOT Skyrim's tail: byte 28 is Gravity Scale
+                // (not Directional Fade), 40-55 carry fog-far-colour /
+                // fog-max / light fades, and 56-107 are the volumetric
+                // height-fog model. Reading it with Skyrim's offsets pulled
+                // fog_max from High Density Scale and the fades from the
+                // dimensionless Fog Near/Far scales — which `normalize`
+                // then lifted ×70 as light fades. All 6 vanilla
+                // `Starfield.esm` LGTMs carry exactly 108 bytes.
+                if game == GameKind::Starfield && sub.data.len() >= 108 {
+                    out.directional_fade = None; // byte 28 is Gravity Scale on SF
+                    let mut tail = SubReader::new(&sub.data[28..]);
+                    let gravity_scale = tail.f32_or_default(); // 28
+                    let fog_clip = tail.f32_or_default(); // 32
+                    let fog_power = tail.f32_or_default(); // 36
+                    let fog_far_color = tail.rgb_color().ok(); // 40
+                    let fog_max = tail.f32().ok(); // 44
+                    let lf_begin = tail.f32().ok(); // 48
+                    let lf_end = tail.f32().ok(); // 52
+                    let unknown_color = tail.rgb_color().unwrap_or([0.0; 3]); // 56
+                    let near_height_mid = tail.f32_or_default(); // 60
+                    let near_height_range = tail.f32_or_default(); // 64
+                    let fog_color_high_near = tail.rgb_color().unwrap_or([0.0; 3]); // 68
+                    let fog_color_high_far = tail.rgb_color().unwrap_or([0.0; 3]); // 72
+                    let high_density_scale = tail.f32_or_default(); // 76
+                    let fog_near_scale = tail.f32_or_default(); // 80
+                    let fog_far_scale = tail.f32_or_default(); // 84
+                    let fog_high_near_scale = tail.f32_or_default(); // 88
+                    let fog_high_far_scale = tail.f32_or_default(); // 92
+                    let far_height_mid = tail.f32_or_default(); // 96
+                    let far_height_range = tail.f32_or_default(); // 100
+                    let interior_type = tail.u8_or_default(); // 104 (105-107 pad)
+                    out.fog_clip = Some(fog_clip);
+                    out.fog_power = Some(fog_power);
+                    out.fog_far_color = fog_far_color;
+                    out.fog_max = fog_max;
+                    out.light_fade_begin = lf_begin;
+                    out.light_fade_end = lf_end;
+                    out.starfield = Some(StarfieldLighting {
+                        gravity_scale,
+                        unknown_color,
+                        near_height_mid,
+                        near_height_range,
+                        fog_color_high_near,
+                        fog_color_high_far,
+                        high_density_scale,
+                        fog_near_scale,
+                        fog_far_scale,
+                        fog_high_near_scale,
+                        fog_high_far_scale,
+                        far_height_mid,
+                        far_height_range,
+                        interior_type,
+                    });
+                } else if sub.data.len() >= 92 {
                     r.skip_or_eof(32);
                     out.fog_far_color = r.rgb_color().ok();
                     out.fog_max = r.f32().ok();
@@ -1873,7 +1933,7 @@ mod tests {
             sub(b"DATA", &data),
             sub(b"DALC", &dalc),
         ];
-        let l = parse_lgtm(0xDEAD, &subs);
+        let l = parse_lgtm(0xDEAD, &subs, GameKind::Skyrim);
         assert_eq!(l.editor_id, "LgtmInteriorDim");
         assert!((l.ambient[0] - 80.0 / 255.0).abs() < 1e-6);
         assert!((l.directional[1] - 195.0 / 255.0).abs() < 1e-6);
@@ -1989,11 +2049,81 @@ mod tests {
     fn parse_lgtm_short_data_returns_defaults() {
         // DATA under 20 bytes → all field captures short-circuit.
         let subs = vec![sub(b"EDID", b"ShortLgtm\0"), sub(b"DATA", &[1, 2, 3, 4])];
-        let l = parse_lgtm(0xBEEF, &subs);
+        let l = parse_lgtm(0xBEEF, &subs, GameKind::Skyrim);
         assert_eq!(l.editor_id, "ShortLgtm");
         assert_eq!(l.ambient, [0.0; 3]);
         assert_eq!(l.fog_near, 0.0);
         assert!(l.directional_fade.is_none());
+    }
+
+    /// #5002 (SF-2026-09-29-D4-03) — Starfield's 108-byte LGTM DATA uses
+    /// the SF XCLL layout, not Skyrim's tail. Fixture carries
+    /// `ShipInteriorLT` (0x6658)'s distinguishing authored values
+    /// (Fog Max@44 = 0, fades@48/52 = 163 840) plus distinct bytes for
+    /// every height-fog field. Pre-fix, Skyrim offsets read fog_max from
+    /// High Density Scale's slot and the fades from the dimensionless
+    /// Fog Near/Far scales (later lifted ×70 by `normalize`), and the
+    /// height block was dropped entirely.
+    #[test]
+    fn starfield_lgtm_data_decodes_the_sf_xcll_layout() {
+        let mut data = Vec::with_capacity(108);
+        data.extend(vec![0u8; 12]); // ambient/directional/fog colours (12 B)
+        data.extend(&floats_le(&[64.0, 4096.0])); // fog near/far
+        data.extend(&0i32.to_le_bytes()); // directional azimuth slot (20)
+        data.extend(&0i32.to_le_bytes()); // directional elevation slot (24)
+        data.extend(&floats_le(&[1.5])); // 28: Gravity Scale (NOT dir fade)
+        data.extend(&floats_le(&[8192.0, 2.0])); // 32/36: fog clip / power
+        data.extend(&[90, 91, 92, 0]); // 40: fog far colour
+        data.extend(&floats_le(&[0.0])); // 44: Fog Max (ShipInteriorLT authors 0)
+        data.extend(&floats_le(&[163_840.0, 163_840.0])); // 48/52: light fades
+        data.extend(&[1, 2, 3, 0]); // 56: unknown colour
+        data.extend(&floats_le(&[120.0, 480.0])); // 60/64: near height mid/range
+        data.extend(&[10, 11, 12, 0]); // 68: high near colour
+        data.extend(&[13, 14, 15, 0]); // 72: high far colour
+        data.extend(&floats_le(&[0.9, 1.1, 1.3, 1.4, 1.5])); // 76-95: five scales
+        data.extend(&floats_le(&[640.0, 2560.0])); // 96/100: far height mid/range
+        data.extend(&[2u8, 0, 0, 0]); // 104: interior type (Ship Cell) + pad
+        assert_eq!(data.len(), 108);
+        let subs = vec![sub(b"EDID", b"ShipInteriorLT\0"), sub(b"DATA", data)];
+        let l = parse_lgtm(0x6658, &subs, GameKind::Starfield);
+        assert_eq!(l.editor_id, "ShipInteriorLT");
+        assert_eq!(l.fog_near, 64.0);
+        assert_eq!(l.fog_far, 4096.0);
+        assert_eq!(
+            l.directional_fade,
+            None,
+            "byte 28 is Gravity Scale on Starfield, not Directional Fade"
+        );
+        assert_eq!(l.fog_clip, Some(8192.0));
+        assert_eq!(l.fog_power, Some(2.0));
+        assert_eq!(
+            l.fog_far_color,
+            Some([90.0 / 255.0, 91.0 / 255.0, 92.0 / 255.0])
+        );
+        assert_eq!(
+            l.fog_max, Some(0.0),
+            "authored Fog Max must survive (was 1.0 default)"
+        );
+        assert_eq!(l.light_fade_begin, Some(163_840.0));
+        assert_eq!(l.light_fade_end, Some(163_840.0));
+        assert!(
+            l.directional_ambient.is_none(),
+            "SF LGTM carries no DALC ambient cube"
+        );
+        let sf = l
+            .starfield
+            .expect("108-byte SF DATA must decode its height-fog model");
+        assert_eq!(sf.gravity_scale, 1.5);
+        assert_eq!(sf.near_height_mid, 120.0);
+        assert_eq!(sf.near_height_range, 480.0);
+        assert_eq!(sf.high_density_scale, 0.9);
+        assert_eq!(sf.fog_near_scale, 1.1);
+        assert_eq!(sf.fog_far_scale, 1.3);
+        assert_eq!(sf.fog_high_near_scale, 1.4);
+        assert_eq!(sf.fog_high_far_scale, 1.5);
+        assert_eq!(sf.far_height_mid, 640.0);
+        assert_eq!(sf.far_height_range, 2560.0);
+        assert_eq!(sf.interior_type, 2);
     }
     #[test]
     fn parse_acti_extracts_scri_and_model() {

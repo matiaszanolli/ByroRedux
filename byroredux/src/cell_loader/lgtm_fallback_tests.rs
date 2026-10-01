@@ -41,6 +41,7 @@ fn template_with_amber_ambient(form_id: u32) -> LgtmRecord {
         specular_color: Some([0.8, 0.7, 0.6]),
         specular_alpha: Some(0.5),
         fresnel_power: Some(2.0),
+        starfield: None,
     }
 }
 

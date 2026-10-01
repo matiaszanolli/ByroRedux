@@ -107,7 +107,7 @@ pub(super) fn dispatch_misc_gameplay_a_group(
         // LGTM lighting templates — consumer lands alongside #379
         // (per-field inheritance fallback on cells without XCLL).
         b"LGTM" => extract_records(reader, end, b"LGTM", &mut |fid, subs| {
-            index.lighting_templates.insert(fid, parse_lgtm(fid, subs));
+            index.lighting_templates.insert(fid, parse_lgtm(fid, subs, game));
         })?,
         // #624 / #4416 — IMGS image spaces, decoded to the canonical
         // grade per game (`parse_imgs`). CELL.XCIM, WRLD.INAM and

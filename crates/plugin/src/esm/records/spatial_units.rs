@@ -109,6 +109,15 @@ pub(super) fn normalize(index: &mut EsmIndex) {
         optional(&mut light.fog_clip);
         optional(&mut light.light_fade_begin);
         optional(&mut light.light_fade_end);
+        // #5002 — the template's SF height-fog model lifts exactly like
+        // the XCLL one in `lighting()` above: the four height
+        // mid/ranges ×UNITS, the dimensionless scales untouched.
+        if let Some(sf) = &mut light.starfield {
+            sf.near_height_mid *= UNITS;
+            sf.near_height_range *= UNITS;
+            sf.far_height_mid *= UNITS;
+            sf.far_height_range *= UNITS;
+        }
     }
     // #5134 — WTHR fog distances are metric on Starfield, same as the
     // XCLL/LGTM fog lifted above: Starfield.esm's `DefaultWeather` FNAM

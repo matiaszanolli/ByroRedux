@@ -1186,9 +1186,10 @@ fn lighting_from_template(template: &esm::records::LgtmRecord) -> esm::cell::Cel
         specular_alpha: template.specular_alpha,
         fresnel_power: template.fresnel_power,
         inheritance_flags: None,
-        // SF volumetric height-fog fields ride on inline XCLL rather
-        // than Skyrim-style LGTM templates.
-        starfield: None,
+        // #5002 — Starfield LGTM DATA carries the same height-fog model
+        // as XCLL and is decoded at the parser boundary; forward it so a
+        // plugin CELL with LTMP and no XCLL keeps its authored heights.
+        starfield: template.starfield.clone(),
     }
 }
 
