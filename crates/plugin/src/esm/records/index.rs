@@ -223,9 +223,11 @@ pub struct EsmIndex {
     pub enchantments: HashMap<u32, EnchRecord>,
     /// `MGEF` magic effects — universal bridge for Actor Value mods.
     ///
-    /// Parsed on every load but, like `spells`, `enchantments`,
-    /// `leveled_spells` and `magic_effects_by_code`, not yet read by any
-    /// production system; the magic runtime is tracked by #4415.
+    /// Read by the scripting crate's magic runtime (#4415:
+    /// `SpellCatalog`) and the consumables restoration planners,
+    /// through [`resolve_magic_effect`](EsmIndex::resolve_magic_effect)
+    /// — the accessor that routes Oblivion's 4-char EFID codes through
+    /// the side index below.
     pub magic_effects: HashMap<u32, MgefRecord>,
     /// Oblivion-only secondary index: 4-char effect code → MGEF FormID.
     /// On Oblivion, SPEL/ENCH/ALCH/INGR cross-reference effects via
@@ -234,10 +236,12 @@ pub struct EsmIndex {
     /// A FormID-keyed lookup on Oblivion EFID values resolves to
     /// garbage; this secondary map lets a consumer
     /// `magic_effects_by_code[code]` → MGEF FormID → `magic_effects[fid]`.
-    /// Populated only when `game == GameKind::Oblivion` and the EDID
-    /// is exactly 4 ASCII bytes (the fixed-format Oblivion shape).
-    /// FO3/FNV/Skyrim+ leave this map empty and use the FormID-keyed
-    /// `magic_effects` map directly. See #969 / OBL-D3-NEW-05.
+    /// [`resolve_magic_effect`](EsmIndex::resolve_magic_effect) is that
+    /// consumer (#5084). Populated only when `game == GameKind::Oblivion`
+    /// and the EDID is exactly 4 ASCII bytes (the fixed-format Oblivion
+    /// shape). FO3/FNV/Skyrim+ leave this map empty and use the
+    /// FormID-keyed `magic_effects` map directly.
+    /// See #969 / OBL-D3-NEW-05.
     pub magic_effects_by_code: HashMap<[u8; 4], u32>,
     /// `AVIF` actor-value definitions — SPECIAL attributes, governed
     /// skills, resistances, resources. Cross-referenced by NPC
@@ -742,6 +746,33 @@ impl EsmIndex {
             .map(|avif| avif.form_id)
     }
 
+    /// #5084 — resolve a SPEL / ENCH / ALCH / INGR effect reference
+    /// (`MagicEffectItem::effect_form_id`) to its `MGEF` record.
+    ///
+    /// On Oblivion the `EFID` is not a FormID: its four raw bytes are the
+    /// 4-char effect code (`b"FOAT"` Fortify Attribute, `b"FIDG"` Feather),
+    /// which the effect-list parsers store as the little-endian u32 of
+    /// those bytes. A FormID-keyed lookup on such a value misses every
+    /// Oblivion effect — #969 predicted this for the magic runtime and
+    /// built the side index; the runtime then landed without using it.
+    /// This accessor routes Oblivion through
+    /// `magic_effects_by_code` (code → MGEF FormID → record); every other
+    /// game queries `magic_effects` by FormID directly.
+    ///
+    /// The two representations cannot collide: a 4-char ASCII code's top
+    /// byte (the 4th character) keeps the u32 above `0x2000_0000`, past
+    /// every load-order slot a real FormID can occupy.
+    pub fn resolve_magic_effect(&self, effect_id: u32) -> Option<&MgefRecord> {
+        use crate::esm::reader::GameKind;
+        if self.game == GameKind::Oblivion {
+            let code = u32::to_le_bytes(effect_id);
+            let form_id = *self.magic_effects_by_code.get(&code)?;
+            self.magic_effects.get(&form_id)
+        } else {
+            self.magic_effects.get(&effect_id)
+        }
+    }
+
     /// #4415 — resolve a magic effect's actor value to the AVIF FormID that
     /// keys `ActorValues`. FO4+ effects already name the AVIF; FO3/FNV and
     /// Skyrim name a game-local actor-value *index*, mapped here through
@@ -1181,7 +1212,10 @@ mod tests {
         let mut dlc = EsmIndex::default();
         dlc.game = GameKind::Skyrim;
         dlc.scenes.insert(0x0000_0002, ScenRecord::default());
-        assert!(dlc.total() > 0, "fixture precondition: dlc must be non-empty");
+        assert!(
+            dlc.total() > 0,
+            "fixture precondition: dlc must be non-empty"
+        );
 
         merged.merge_from(dlc);
         assert_eq!(

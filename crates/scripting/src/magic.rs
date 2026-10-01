@@ -89,7 +89,7 @@ pub fn canonical_spell(index: &EsmIndex, form_id: u32) -> CanonicalSpell {
     let mut constant_modifiers = Vec::new();
     if constant {
         for effect in &spell.effects {
-            let Some(mgef) = index.magic_effects.get(&effect.effect_form_id) else {
+            let Some(mgef) = index.resolve_magic_effect(effect.effect_form_id) else {
                 continue;
             };
             if mgef.effect_flags & MGEF_FLAG_RECOVER == 0 || !effect.magnitude.is_finite() {
@@ -343,6 +343,52 @@ mod tests {
                     amount: 5.0
                 },
             ]
+        );
+    }
+
+    /// #5084 — on Oblivion the SPEL `EFID` is the 4-char effect code,
+    /// not a FormID. Pre-fix `canonical_spell` looked the code up in the
+    /// FormID-keyed `magic_effects` map, every Oblivion ability silently
+    /// translated to no modifiers (#969 predicted this), and the same
+    /// miss empties the consumables restoration planners.
+    #[test]
+    fn oblivion_ability_translates_through_the_effect_code_side_index() {
+        let mut index = EsmIndex {
+            game: GameKind::Oblivion,
+            ..EsmIndex::default()
+        };
+        index.actor_values.insert(
+            HEALTH,
+            AvifRecord {
+                form_id: HEALTH,
+                ..Default::default()
+            },
+        );
+        index.magic_effects.insert(
+            0x10,
+            mgef(0x10, MGEF_FLAG_RECOVER, MagicArchetype::ValueModifier),
+        );
+        index.magic_effects_by_code.insert(*b"FOAT", 0x10);
+        index.spells.insert(
+            0x20,
+            spell(
+                0x20,
+                SpellType::Ability,
+                &[(u32::from_le_bytes(*b"FOAT"), 25.0)],
+            ),
+        );
+
+        let catalog = SpellCatalog::from_index(&index);
+        let ability = catalog.get(0x20).unwrap();
+        assert!(ability.constant);
+        assert_eq!(
+            ability.constant_modifiers,
+            vec![ConstantModifier {
+                actor_value: HEALTH,
+                amount: 25.0
+            }],
+            "an Oblivion EFID code must resolve through magic_effects_by_code (#5084), \
+             not silently no-op in the FormID-keyed map"
         );
     }
 

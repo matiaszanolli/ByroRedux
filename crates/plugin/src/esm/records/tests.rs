@@ -2137,6 +2137,100 @@ fn oblivion_mgef_with_non_4char_edid_skips_by_code_map() {
     );
 }
 
+/// #5084 — the magic runtime and consumables planners resolve effects
+/// through [`EsmIndex::resolve_magic_effect`], which routes Oblivion's
+/// 4-char `EFID` codes through `magic_effects_by_code`. The fixture is
+/// a real SPEL walk: an ability whose `EFID` bytes are `b"FOAT"`
+/// (Fortify Attribute) referencing the MGEF whose EDID is `FOAT`.
+///
+/// Pre-fix the runtime looked the code up in the FormID-keyed
+/// `magic_effects` map and silently hit nothing — #969 predicted this
+/// failure mode for exactly this runtime.
+#[test]
+fn resolve_magic_effect_routes_oblivion_efid_codes() {
+    let mut buf = build_oblivion_tes4();
+
+    let mgef_fortify = build_record_obl(
+        b"MGEF",
+        0x0000_0111,
+        &[
+            (b"EDID", b"FOAT\0".to_vec()),
+            (b"FULL", b"Fortify Attribute\0".to_vec()),
+            (b"DATA", 0x0000_0001u32.to_le_bytes().to_vec()),
+        ],
+    );
+    // Oblivion SPEL: SPIT word 0 = spell type (4 = Ability); EFID carries
+    // the 4-char code; EFIT is 24 bytes led by the same code, integer
+    // magnitude @4 (the accumulator reads area @8, duration @12).
+    let words = |w: [u32; 6]| w.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<u8>>();
+    let spell = build_record_obl(
+        b"SPEL",
+        0x0000_0020,
+        &[
+            (b"EDID", b"AbilityFortify\0".to_vec()),
+            (b"SPIT", words([4, 42, 0, 0, 0, 0])),
+            (b"EFID", b"FOAT".to_vec()),
+            (
+                b"EFIT",
+                words([u32::from_le_bytes(*b"FOAT"), 25, 0, 0, 0, 0]),
+            ),
+        ],
+    );
+    let mut group_content = Vec::new();
+    group_content.extend_from_slice(&wrap_group_obl(b"MGEF", &mgef_fortify));
+    group_content.extend_from_slice(&wrap_group_obl(b"SPEL", &spell));
+    buf.extend_from_slice(&group_content);
+
+    let index = parse_esm(&buf).expect("parse_esm");
+    assert_eq!(index.game, GameKind::Oblivion);
+
+    let ability = index.spells.get(&0x0000_0020).expect("SPEL parsed");
+    let effect = &ability.effects[0];
+    assert_eq!(effect.effect_form_id, u32::from_le_bytes(*b"FOAT"));
+    assert_eq!(effect.magnitude, 25.0);
+
+    // The accessor resolves the code to the MGEF record…
+    let mgef = index
+        .resolve_magic_effect(effect.effect_form_id)
+        .expect("Oblivion EFID code must resolve through magic_effects_by_code (#5084)");
+    assert_eq!(mgef.form_id, 0x0000_0111);
+    // …while the FormID-keyed lookup the runtime used pre-fix misses —
+    // the silent no-op this test exists to keep fixed.
+    assert!(
+        index.magic_effects.get(&effect.effect_form_id).is_none(),
+        "an Oblivion EFID code must not double as a FormID"
+    );
+}
+
+/// #5084 sibling — on non-Oblivion games the accessor is a plain
+/// FormID lookup: the same fixture shape classified as Fallout3NV
+/// resolves by FormID, and a code-shaped id finds nothing.
+#[test]
+fn resolve_magic_effect_uses_formids_off_oblivion() {
+    let subs: Vec<(&[u8; 4], Vec<u8>)> = vec![
+        (b"EDID", b"FortifyAttribute\0".to_vec()),
+        (b"DATA", 0x0000_0001u32.to_le_bytes().to_vec()),
+    ];
+    let mgef = build_record(b"MGEF", 0x0000_0111, &subs);
+    let mut buf = build_record(b"TES4", 0, &[]);
+    buf.extend_from_slice(&wrap_group(b"MGEF", &mgef));
+
+    let index = parse_esm(&buf).expect("parse_esm");
+    assert_eq!(index.game, GameKind::Fallout3NV);
+    assert!(
+        index
+            .resolve_magic_effect(0x0000_0111)
+            .is_some_and(|mgef| mgef.form_id == 0x0000_0111),
+        "non-Oblivion effects resolve by FormID"
+    );
+    assert!(
+        index
+            .resolve_magic_effect(u32::from_le_bytes(*b"FOAT"))
+            .is_none(),
+        "a code-shaped id must not resolve off Oblivion"
+    );
+}
+
 // ── #1277 Task 3: FO4-only record-type gate ─────────────────────────────
 //
 // SCOL / PKIN / MOVS / MSWP didn't exist before Fallout 4. Pre-gate they

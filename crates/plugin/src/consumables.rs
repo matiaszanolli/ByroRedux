@@ -112,8 +112,7 @@ pub fn restoration_plan(index: &EsmIndex, form_id: u32) -> Option<Vec<Conditiona
         };
         plan.push(effect.clone());
         if index
-            .magic_effects
-            .get(&entry.effect.effect_form_id)?
+            .resolve_magic_effect(entry.effect.effect_form_id)?
             .restores_body_parts
         {
             for name in BODY_CONDITION_VALUES {
@@ -139,7 +138,7 @@ fn restoration(
     {
         return None;
     }
-    let mgef = index.magic_effects.get(&effect.effect_form_id)?;
+    let mgef = index.resolve_magic_effect(effect.effect_form_id)?;
     let av = if effect.duration == 0 {
         mgef.instant_restoration_av?
     } else {
@@ -176,8 +175,7 @@ pub fn instant_restorations(index: &EsmIndex, form_id: u32) -> Option<Vec<(u32, 
         .iter()
         .map(|effect| {
             if index
-                .magic_effects
-                .get(&effect.effect_form_id)?
+                .resolve_magic_effect(effect.effect_form_id)?
                 .restores_body_parts
             {
                 return None;
