@@ -470,18 +470,6 @@ fn sample_wthr_colors(
     )
 }
 
-fn cloud_tod_slot(slot: usize) -> usize {
-    match slot {
-        byroredux_plugin::esm::records::weather::TOD_HIGH_NOON => {
-            byroredux_plugin::esm::records::weather::TOD_DAY
-        }
-        byroredux_plugin::esm::records::weather::TOD_MIDNIGHT => {
-            byroredux_plugin::esm::records::weather::TOD_NIGHT
-        }
-        slot => slot.min(3),
-    }
-}
-
 /// Sample cloud PNAM/JNAM tables and attach them to the static weather
 /// controls. The renderer receives only the current four-layer result, while
 /// WeatherDataRes retains all TOD samples for deterministic transitions.
@@ -492,8 +480,11 @@ fn sample_weather_sky(
     t: f32,
 ) -> WeatherSkyState {
     let mut sampled = weather.weather;
-    let a = cloud_tod_slot(slot_a);
-    let b = cloud_tod_slot(slot_b);
+    // #4928 — the cloud tables are 4-slot WTHR data like DALC/IMSP, so the
+    // same shared fold applies (this used to be a private near-copy,
+    // `cloud_tod_slot`, that drifted with a redundant `.min(3)` clamp).
+    let a = fold_to_four_tod_slots(slot_a);
+    let b = fold_to_four_tod_slots(slot_b);
     for layer in 0..4 {
         let ca = weather.cloud_layer_colors[layer][a];
         let cb = weather.cloud_layer_colors[layer][b];
@@ -566,6 +557,25 @@ fn lerp_weather_sky(a: WeatherSkyState, b: WeatherSkyState, t: f32) -> WeatherSk
 #[cfg(test)]
 mod procedural_cloud_transition_tests {
     use super::*;
+
+    /// #4928 — the cloud path now folds 6-slot sky TOD indices through the
+    /// one shared `fold_to_four_tod_slots` (previously a private
+    /// near-copy, `cloud_tod_slot`). Pin the full mapping so the fold
+    /// cannot drift from the 4-slot WTHR layout it serves.
+    #[test]
+    fn the_shared_tod_fold_covers_all_six_sky_slots() {
+        use byroredux_plugin::esm::records::weather::*;
+        assert_eq!(fold_to_four_tod_slots(TOD_SUNRISE), TOD_SUNRISE);
+        assert_eq!(fold_to_four_tod_slots(TOD_DAY), TOD_DAY);
+        assert_eq!(fold_to_four_tod_slots(TOD_SUNSET), TOD_SUNSET);
+        assert_eq!(fold_to_four_tod_slots(TOD_NIGHT), TOD_NIGHT);
+        assert_eq!(fold_to_four_tod_slots(TOD_HIGH_NOON), TOD_DAY);
+        assert_eq!(fold_to_four_tod_slots(TOD_MIDNIGHT), TOD_NIGHT);
+        assert!(
+            (0..=TOD_MIDNIGHT).all(|slot| fold_to_four_tod_slots(slot) <= TOD_NIGHT),
+            "every 6-slot index must land inside the 4-slot WTHR range"
+        );
+    }
 
     #[test]
     fn coverage_crossfades_with_the_rest_of_the_weather_state() {
