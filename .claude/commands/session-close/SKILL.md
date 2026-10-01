@@ -255,7 +255,20 @@ in HISTORY instead.
 
 ## Step 6 — Propose README edits
 
-README should stay < 120 lines. Only touch it if:
+Budget check (run first, report both numbers in the diff step):
+
+```bash
+wc -l README.md ROADMAP.md
+```
+
+Caps: **README ≤ 600 lines, ROADMAP ≤ 800** — measured ceilings
+(2026-10-01: 576 / 778). The older "<120 / ~500" budgets were never
+enforced and no longer describe either file. If this session's proposed
+edits would push a file past its cap, trim that same file before
+appending — compress the least load-bearing section or move narrative
+to HISTORY.md / a `docs/` page — and say so in the unified diff.
+
+Only touch README if:
 
 - A headline bench number used in the opening screenshot caption
   changed (re-run from R6a).
@@ -299,8 +312,6 @@ docs: session N closeout — <one-line theme>
 - HISTORY.md: session N narrative appended
 - ROADMAP.md: stats refreshed (tests +N, LOC +N), <milestones moved/closed>
 - README.md: <one-line description or "untouched">
-
-Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 ```
 
 ---
@@ -314,8 +325,9 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
   it has no reason to exist.
 - **Don't duplicate facts across files.** If ROADMAP and README both
   want to state the FPS, README cites "see ROADMAP Status".
-- **Don't grow ROADMAP past ~500 lines.** If you need more, something
-  should have moved to HISTORY or a `docs/` page.
+- **Don't grow ROADMAP past its 800-line cap** (README 600 — measured
+  ceilings, Step 6). If you need more, something should have moved to
+  HISTORY or a `docs/` page, or an existing section compressed.
 - **Don't add a bench claim without a repro command.** Every FPS / ms
   number in ROADMAP must have a row in the Repro commands table.
 - **If HEAD has uncommitted changes**, run the checks but make the
