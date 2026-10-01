@@ -398,13 +398,22 @@ mod real_data_tests {
     #[test]
     #[ignore = "needs Oblivion.esm on disk (~160 MB resident)"]
     fn vanilla_oblivion_quest_scripts_execute_and_setstage() {
-        let path = std::env::var_os("BYROREDUX_OBLIVION_DATA")
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|| {
-                std::path::PathBuf::from("/mnt/data/SteamLibrary/steamapps/common/Oblivion/Data")
-            })
-            .join("Oblivion.esm");
+        // #5088 — resolve through the shared helper (same env var and
+        // default as every other real-data test), and under the strict
+        // lane an absent master fails the test instead of returning a
+        // green no-op. Pre-fix this `return`ed silently even with
+        // `BYROREDUX_REQUIRE_GAME_DATA=1`, and no CI lane built this
+        // crate at all — the only guard over the 255 vanilla quest
+        // scripts could go green without touching a byte of data.
+        let path = byroredux_plugin::esm::test_paths::oblivion_esm();
         if !path.is_file() {
+            if std::env::var("BYROREDUX_REQUIRE_GAME_DATA").is_ok_and(|v| v != "0") {
+                panic!(
+                    "BYROREDUX_REQUIRE_GAME_DATA is set, but Oblivion.esm was not \
+                     found at {path:?} — BYROREDUX_OBLIVION_DATA is unset or its \
+                     directory lacks the master"
+                );
+            }
             return;
         }
         let esm = std::fs::read(&path).unwrap();

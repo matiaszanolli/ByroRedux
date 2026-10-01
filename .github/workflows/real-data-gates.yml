@@ -17,6 +17,11 @@ name: Real-data corpus gates
 # FaceGen, MenuXml). Their real-data suites are `#[ignore]`d too, so before this
 # job nothing scheduled them anywhere and a regression in e.g. `Ba2Archive::open`
 # stayed invisible until someone ran them by hand.
+#
+# #5088 — the same job also runs the scripting crate's ObScript quest-script
+# corpus gate (M47.3): it was the only real-data guard over the 255 vanilla
+# quest scripts, silently `return`ed green without Oblivion.esm even under
+# `BYROREDUX_REQUIRE_GAME_DATA=1`, and no lane ever built the crate.
 
 on:
   schedule:
@@ -205,6 +210,30 @@ jobs:
             fi
           done
           exit "${failed}"
+      # #5088 — the M47.3 ObScript quest-script corpus gate. Scoped to the
+      # named test (~160 MB resident): unlike the six parser crates above,
+      # the scripting crate's heavier real-data work lives in the `plugin`
+      # crate's `--ignored` suite, which stays out of this lane.
+      - name: Run the ObScript quest-script corpus gate (scripting crate)
+        env:
+          GAMES_ROOT: ${{ vars.BYROREDUX_GAMES_ROOT }}
+          # #3850 — an absent corpus fails instead of skipping.
+          BYROREDUX_REQUIRE_GAME_DATA: "1"
+        run: |
+          set -euo pipefail
+          export BYROREDUX_OBLIVION_DATA="${GAMES_ROOT}/Oblivion/Data"
+          mkdir -p target/real-data-gates
+          log="target/real-data-gates/parsers-scripting.log"
+          cargo test --release -p byroredux-scripting --lib \
+            vanilla_oblivion_quest_scripts_execute_and_setstage \
+            -- --ignored --test-threads=1 --nocapture 2>&1 | tee "${log}"
+          # Refuse a green no-op, as the loop above does.
+          ran=$(grep -oE 'test result: ok\. [0-9]+ passed' "${log}" | awk '{n += $4} END {print n + 0}')
+          if [ "${ran}" -eq 0 ]; then
+            echo "::error::the ObScript quest-script gate did not run for byroredux-scripting"
+            exit 1
+          fi
+          echo "${ran} ObScript quest-script gate(s) ran for byroredux-scripting"
       - name: Publish gate logs
         if: always()
         uses: actions/upload-artifact@v4
