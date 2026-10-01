@@ -27,7 +27,7 @@ changes gameplay silently — no crash, no validation error, no failing test unl
 - CHARAL-adjacent (not submodules): `crates/core/src/combat.rs` (Oblivion damage math),
   `crates/core/src/stealth.rs` (FO3/FNV sneak detection) — consumer-less or thin today; verify anyway.
 - **Population boundary**: `byroredux/src/npc_spawn.rs` (`build_character_ruleset`, the only ruleset
-  construction site) + `npc_spawn/{resumable,ai_package}.rs`, `crates/plugin/src/esm/records/
+  construction site) + `npc_spawn/resumable/`, `npc_spawn/ai_package.rs`, `crates/plugin/src/esm/records/
   actor_value_derive.rs`, `crates/plugin/src/esm/records/actor/mod.rs` (`effective_actor_level`),
   `crates/plugin/src/equip.rs` (`resolve_inherited_*`), `byroredux/src/cell_loader/references/`,
   `byroredux/src/inventory.rs` (`attach_to_player` stamps the player's `ActorValues`/`ActorVitals`/`CharacterLevel`/

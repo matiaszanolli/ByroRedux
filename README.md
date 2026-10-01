@@ -58,7 +58,8 @@ launcher. It does not redistribute Bethesda game data.
 
 The interactive default layout is `WASD` movement, `Space` jump/ascend,
 `Left Shift` sprint/boost, `E` activate, `Tab` inventory, and `Q` descend in
-the developer fly camera. Click the game view to capture mouse look. `Escape`
+the developer fly camera. `V` toggles first/third-person view, and `F5` / `F9`
+quicksave and quickload. Click the game view to capture mouse look. `Escape`
 opens the native pause menu; `F3` opens the developer overlay. Native menus
 release the cursor and prevent held world input from leaking through.
 
@@ -166,7 +167,10 @@ is tracked under [exterior epic #2377](https://github.com/matiaszanolli/ByroRedu
 A standalone launcher (`cargo run -p byro-launcher`) is available —
 Steam-install discovery, a Library/Play/Details/Settings UI, and a GPU
 pre-flight are landed; see [docs/engine/launcher.md](docs/engine/launcher.md)
-for status. See **[ROADMAP.md](ROADMAP.md)** for the
+for status. The playable vertical slice — one console-free Skyrim route
+from door traversal through dialogue, combat, loot and F5/F9 save/reload —
+closed on 2026-10-01 ([plan](docs/engine/playable-vertical-slice.md)).
+See **[ROADMAP.md](ROADMAP.md)** for the
 authoritative capability matrix, active milestones, and architecture
 decisions. Session narratives live in **[HISTORY.md](HISTORY.md)**.
 

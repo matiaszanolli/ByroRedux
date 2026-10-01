@@ -26,6 +26,23 @@ Commits hold that record.
 
 ---
 
+## Session 93 — "The Return of the King": the playable vertical slice closes on an 82-cycle F5 → door → F9 soak, and a 30-audit suite feeds a 209-issue fix wave  (2026-09-29 → 2026-10-01, `8b334c10..0f914283`, 159 commits)
+
+Session 92 left the playable vertical slice at P4 (no dialogue) and P5 (no persistence gates), with 163 issues open and six of them HIGH. This session ran both tracks together. On the slice, it built NPC dialogue end to end, closed P4 on 2026-09-30, then landed F5/F9 quicksave and quickload and the P5 hardening smokes. On the backlog, it ran the full comprehensive audit suite on 2026-09-29: 30 of 30 audits at `9fcfdc3fc`, with 0 CRITICAL, 14 HIGH, 46 MEDIUM and 100 LOW findings. It then fixed those findings together with the unfinished renderer (09-24/09-26) and exterior (09-27) audit queues. 209 issues closed in the window, and no HIGH issue is open at close.
+
+- **Playable vertical slice: P3 → P5 closed.** P3: the player body gained a third-person walk/idle animation (`db8351587`), and equipped items import their worn mesh mid-life (`0182fc5e8`). P4: NPC activation leads to topic selection (`ab31cfefe`). A native response surface backed by Skyrim DIAL QNAM quest ownership (`766e1746e`) presents the line. DIAL categories and DLBR branches decode (#5045, #5037). Dialogue gating keys on the selected NPC (#5038, #5043). The spoken line's `TIF_` INFO fragments dispatch, and objective transitions announce (#5152, #5153, `c59600138`). P5: F5/F9 go through the canonical save queue, and `engine.quit` was added (`bae84e54b`). The F5/F9, quest, door-transition and soak smokes landed in `ae8ead741`, with failure diagnostics in `8e91ded3b` and `2fb4c5f2f`. `43fb759a6` records the gates of record, including a soak PASS over 82 cycles. Two defects are left open as follow-ons, not blockers: #5155 (an intermittent restore defect in the soak) and #5156 (the p2-melee-core FNV preflight, which already failed before this session).
+- **Gameplay and death state.** FO3/FNV corpses now key on the base actor's DATA health (#5005). Oblivion's Starts Dead base flag 0x80000 is decoded (#5013). FO4 "Starts Unconscious" actors spawn dormant and `SetUnconscious` is modeled (#5017, on top of the XRGD pose decode `260afc33f`, which nothing consumes yet). Derived AVs compose with their modifiers, and the player's pools stay current (#5039, #5042). `GetIsID` compares the base object (#5041). A saved absence clears Dead and restraint (#5027, #5052). Hysteresis-band refs park their state (#5054). A scripted StartCombat takes over an ambient fight (#5046). Combat feedback no longer depends on the AI kill switch (#4709). Third-person gameplay rays start at the eye (#5124).
+- **Starfield.** CDB Phase 2 got a streaming `MaterialIndex`: 500 403 keyed objects from the 105 MB vanilla CDB in ~2 s at ~470 MB peak, against 9.19 GB for the generic parse. The same commit fixes the XMCOLOR R↔B transposition (`224a19372`). `18fce7e43` wires the index into `merge_external_material`, so `.mat` texture slots now merge. #3398 stays open until its definition of done is checked. WTHR fog, the FNAM tail, the 108-byte LGTM DATA and WATR DNAM now lift to engine units at the parse boundary (#5134, #5001, #5002, #5151).
+- **Renderer.** From the 09-24/09-26 audit queues: DDS upload purges and the recorded-command pin (#4879, #4880); `build_blas_batched` and buffer-constructor unwinds (#4881–#4883); the old swapchain retires right after the new one exists (#4890); one failure-path policy for upload orchestrators (#4891); RT and every force-enabled feature become device-selection requirements (#4894, #4895); and an ACES zero floor (#4840). Also a doc and guard sweep (#4870–#4878, #4956–#4958, #5023). From the 09-29 suite: the direct-light visibility ray's origin faces the light (#5018), the ReSTIR reservoir clear reaches fragment reads (#5062), the caustic splat is gated per FIF (#5064), and desaturation-to-lift compensation sits between the meter and the tonemapper (#5154).
+- **Exterior.** One canonical outdoor sky and sun for interiors (#4902, #4909, #4915). The ground-cover model tier's placement, budget and guards are fixed (#4919–#4923), and blades take their ground colour and affinity from the BTXT base through the shared splat chain (#4903, #4905, #4907). Skyrim's `.btt` tree-LOD family is registered (#4913). Weather now cross-fades the sun arc and owns the exterior image space (#4914, #4916, #4926, #4928). XWCU currents recompose the water scroll (#4911). NIF lamps consume the canonical LIGH falloff (#4938). #4906 (LTEX→GRAS association) is only partly done.
+- **Bench and runtime.** Runtime baselines record the bench camera pose (#5125). That showed R6a-regress-22 to be mostly a bench-camera move, not a renderer regression (#5128); a small view-dependent residual stays open. The carried `entities_total` moves are now attributed in the TSVs (#5131, #5133). The bench record itself was not refreshed this session.
+- **Tooling and hygiene.** The ungated `clippy --all-targets` bucket went from 824 sites to zero (#5115). The rustc 1.98 lints are fixed, and CI clippy uses `--keep-going` (#5121). Session-close budgets became measured ceilings (#5111). AGENTS.md is now a symlink to CLAUDE.md (#5107). Throwaway probes were swept (#5114). The CI shader job gained python3 (#5116), and the Vulkan lane must now prove it selected a device (#4987). Every byro-dbg harness follows the release debug-server opt-in (#5142, #4752). Durable writers no longer replace a good file with a bad one (#5143, #5144), and the launcher bounds its TES4 prefix read (#5145). Five oversized files were split (#5087–#5091), and the parser and Papyrus-lexer findings were fixed (#5006–#5008, #5016, #5019, #5021, #5084).
+- **Left open at close.** 157 issues are open: 0 HIGH, 49 MEDIUM, 99 LOW. The closeout found hosted CI red on two jobs at `2fb4c5f2f`, and neither is filed yet. First, CI's current-stable clippy fires `chunks_exact_to_as_chunks` and an `f32: From<f64>` fallback that local 1.96.0 does not. Second, the Vulkan lane now reaches lavapipe, but its bare `[Vulkan]` grep fails on INFO lines. The closeout also left close comments on five closed issues that had no citing commit (#4817, #4819, #4820, #4822, #4823) and fixed six audit-skill paths that the `npc_spawn/resumable/` split had broken. Of the seven orphan candidates, only #3398 might be closable.
+
+Net: tests +174 (8907 → 9081, 0 failing; 259 ignored); Rust LOC +15 076 src / +15 930 total (677 432 / 726 738); source files +6 total / +6 outside `tests/` (1198 → 1204 / 1108 → 1114); workspace members 34 (unchanged); open issue dirs +179 (4904 → 5083). Bench: not refreshed. The record at `a37fcba3c` is now 180 commits behind (R6a-stale-23).
+
+---
+
 ## Session 92 — "Rush": FO4 grid crossings drop from ten seconds to under one and a half, the refreshed bench record finds a real regression, and four new audits feed the fix wave  (2026-09-27 → 2026-09-29, `e32d3511..546e7fbc`, 45 commits)
 
 Session 91 closed with the bench record 708 commits stale, and an FO4 exterior grid crossing took about ten seconds to reach full detail. This session started on the streaming path. It landed fourteen measured commits, each with before/after figures on the FO4 Commonwealth 0,0 radius-1 grid-cross, and each took one serial or main-thread cost off the crossing. The session then refreshed the bench record with the same-machine control Session 91 asked for. The control found that FO4 frame time roughly doubled somewhere in `4c9a5b36..99933f87b`. Renderer and legacy-compat audits (09-27) and ECS and concurrency audits (09-28) filed #4938–#5000. The fix wave closed most of those, plus the unfinished exterior, gameplay, parser and NIF items from 09-21 to 09-27. 116 issues closed in the window.
@@ -196,7 +213,7 @@ Net: tests +207 (7959 → 8166, 0 failing after the same-session regression catc
 
 ---
 
-## Session 85 — "A River Runs Through It": Skyrim's water finds its riverbeds, ground cover reaches its terrain floor, and the 2026-09-14 audit wave closes  (2026-09-13 → 2026-09-15, `56a0ac45..071dfa30`, 52 commits)
+## Session 85 — "The River Wild": Skyrim's water finds its riverbeds, ground cover reaches its terrain floor, and the 2026-09-14 audit wave closes  (2026-09-13 → 2026-09-15, `56a0ac45..071dfa30`, 52 commits)
 
 Session 84 gave the exterior a sky, and that made the water beneath it the weakest surface on screen. Riverwood's riverbed rendered dry under a concentric moiré sheet. The water plane itself was fine; three independent bugs stacked on top of each other to produce the artefact. At the same time, the 2026-09-14 renderer, scripting and tech-debt audits (published in `08aa8eb5`/`85cb60c6`) turned Session 84's new sky, ground-cover and MQ101 code into a fresh fix tail. The session worked both, and finished the ground-cover credibility track's Step 7 cleanup.
 
@@ -213,7 +230,7 @@ Net: tests 7864 → 7959 (+95); Rust LOC outside `tests/` ~570 874 → ~580 128 
 
 ---
 
-## Session 84 — "Cloud Atlas": SKYAL gives the sky clouds, ground cover gets its looks, MQ101 gets a fight  (2026-09-12 → 2026-09-13, `e30e9640..673b2145`, 47 commits)
+## Session 84 — "Vanilla Sky": SKYAL gives the sky clouds, ground cover gets its looks, MQ101 gets a fight  (2026-09-12 → 2026-09-13, `e30e9640..673b2145`, 47 commits)
 
 Session 83 left the audit tail near zero and the renderer's image lifecycle unified, which cleared room for visual work the audits never reach. The exterior sky was the clearest gap. Every ray-traced reflection miss and GI escape returned one direction-blind colour, and bloom was multiplying the whole sky by a flat 1.71×. Ground cover had shipped its phases without a visual pass. This session built the sky out as its own abstraction layer, SKYAL. It gave the grass a look-and-feel pass. Every lighting constant was taken from a primary source or explicitly marked as unsourced. Alongside that, MQ101's two remaining runtime gaps (chargen and combat) got minimal vertical slices.
 
@@ -397,7 +414,7 @@ integrity bug fixed before the replacement numbers were published.
 
 ---
 
-## Session 79 — "Groundhog Day": the /goal fix-issue loop run to convergence — a ~130-issue correctness sweep and a fully-green lock-order CI gate  (2026-09-02 → 2026-09-03, `34951bf6..4d78dce6`, 101 commits)
+## Session 79 — "Source Code": the /goal fix-issue loop run to convergence — a ~130-issue correctness sweep and a fully-green lock-order CI gate  (2026-09-02 → 2026-09-03, `34951bf6..4d78dce6`, 101 commits)
 
 This session ran the standing `/goal` directive ("fix all github issues
 directly committing to main, one at a time") to its natural conclusion
@@ -492,7 +509,7 @@ see the R6a-stale-20 fold in ROADMAP.
 
 ---
 
-## Session 78 — "The Perfect Storm": weather/fog build-out, SDK dispatch continued, and a 40-issue correctness tail  (2026-09-01 → 2026-09-02, `14ab665d..cd316a56`, 36 commits)
+## Session 78 — "Twister": weather/fog build-out, SDK dispatch continued, and a 40-issue correctness tail  (2026-09-01 → 2026-09-02, `14ab665d..cd316a56`, 36 commits)
 
 Three Claude Code threads ran against the same shared working directory at
 once this session — a weather/volumetric-fog feature build-out, a

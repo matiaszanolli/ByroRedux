@@ -20,15 +20,16 @@ commit. Live state only: when something closes, it becomes a one-liner under
 
 ## Status
 
-**Last session close:** Session 92, 2026-09-29, HEAD `546e7fbc`. Workspace
+**Last session close:** Session 93, 2026-10-01, HEAD `0f9142832`. Workspace
 numbers (tests, LOC, files, issue dirs) live in [Project Stats](#project-stats)
 only.
 
-**Gates.** `cargo clippy --workspace -- -D warnings` is green (#4765,
-`554ef5c44`); `--all-targets` is not gated and still fails in test and example
-targets. Hosted CI does not yet give a clean all-jobs signal (see
-[Known Issues](#known-issues)). The bench-of-record below is live at
-`a37fcba3c`. Its one open regression, **R6a-regress-22**, turned out to be
+**Gates.** On local rustc 1.96.0, `cargo clippy --workspace --all-targets`
+is clean: #5115 took the ungated `--all-targets` bucket from 824 sites to
+zero, re-measured 0 at this close. CI gates only the non-`--all-targets` form,
+and hosted CI is red on two jobs (see [Known Issues](#known-issues)). The
+bench-of-record below was taken at `a37fcba3c`, 180 commits before this close
+(R6a-stale-23). Its one open regression, **R6a-regress-22**, turned out to be
 the bench camera moving with `b9e961eeb`'s interior spawn ladder, not
 renderer code (#5128, 2026-09-30); a small residual stays open.
 
@@ -69,6 +70,8 @@ renderer code (#5128, 2026-09-30); a small residual stays open.
   recognizer chain, with QUST fragments and aliases, and SCEN/PACK scenes
   (MQ101 plays end-to-end). An SCDA interpreter runs Oblivion quest scripts
   (M47.3). A first magic-runtime slice covers spell lists (#4415, open).
+  Dialogue: NPC activation selects a topic, a native response surface
+  presents the INFO, and its `TIF_` fragments dispatch (P4).
 - **Save/load.** Full-ECS snapshot with validation gates, atomic write and
   live load-apply (M45/M45.1).
 - **Audio.** kira spatial audio: footsteps, ambient, music, per-cell reverb,
@@ -83,9 +86,11 @@ renderer code (#5128, 2026-09-30); a small residual stays open.
   cross-tile NAVM pathfinding.
 - FO4/FO76/Starfield actors have no walk-clip source; their ragdolls wait on
   the `BhkSystemBinary` blob decoder.
-- Dialogue trees and a dialogue UI, Story Manager events, perk entry-point
-  composition (M43, M47.2).
-- Starfield materials are presence-only until CDB Phase 2 (#3398).
+- Full dialogue trees (the force-greet blocking branch is unmodeled), Story
+  Manager events, perk entry-point composition (M43, M47.2).
+- Starfield CDB materials: `.mat` texture slots merge from the streaming CDB
+  index (`224a19372`, `18fce7e43`); #3398 stays open until its definition of
+  done is checked.
 - Texture streaming (M39). Reversed-Z is implemented but ships `Conventional`
   until validated on hardware (#3308).
 - Oblivion's CHARAL ruleset is built but unwired: `Oblivion.esm` has no AVIF
@@ -93,13 +98,9 @@ renderer code (#5128, 2026-09-30); a small residual stays open.
   ([`charal.md`](docs/engine/charal.md)).
 
 **Active focus.**
-- The [playable vertical slice](#playable-vertical-slice) is **complete** —
-  P0–P5 all closed by live gates (P5 hardening landed 2026-10-01: F5/F9
-  quicksave/quickload through the canonical action queue, quest-state
-  revert/restore, cross-cell door save/reload, graceful quit, a
-  validation-clean leg, the 30-minute soak, and the release baseline).
-  Slice follow-ons (gamepad sources, #5155's intermittent restore defect,
-  a second game route) are roadmap work, no longer slice blockers.
+- The [playable vertical slice](#playable-vertical-slice) is **complete**
+  (P0–P5, closed 2026-10-01). Its follow-ons are listed there; none of them
+  blocks the slice.
 - RT lighting and material recovery: R0–R3 are complete. The rest is tracked
   in [`rt-lighting-material-recovery.md`](docs/engine/rt-lighting-material-recovery.md).
 - WATAL: W0 and W1 are closed. The next step is choosing the first W2/W3
@@ -239,22 +240,19 @@ specific milestone.
 
 ### Playable vertical slice
 
-Active since 2026-08-09. The plan is
-[`docs/engine/playable-vertical-slice.md`](docs/engine/playable-vertical-slice.md).
-Its gate is one console-free Skyrim route covering character control, E-key
-interaction and door traversal, a small authored objective, one complete
-combat/loot loop, inventory/equipment UI, and save → exit → reload continuity.
-The plan doc holds the per-phase detail and the immediate queue; this is the
-summary.
-
-| Phase | State (2026-09-29) |
-|-------|--------------------|
-| P0 input and interaction | **Closed 2026-08-10** — [`p0-door-interaction.sh`](docs/smoke-tests/p0-door-interaction.sh) passes the Bannered Mare XTEL exit. |
-| P1 reliable traversal | Movement consumers share one `ActionState` snapshot. Water traversal (W1) closed 2026-09-09 on FNV; Skyrim's W1 leg is skipped because of a land-side KCC wedge. |
-| P2 combat | Core loop 2026-08-16 ([`p2-melee-core.sh`](docs/smoke-tests/p2-melee-core.sh)). Authored attack/stagger/death takes and combat sounds 2026-09-20. Loot transfer has its production caller (#4464), and the Draugr combat marker is fixed (#4700). |
-| P3 UI and inventory | Native HUD vitals and objective text ([`p3-hud.sh`](docs/smoke-tests/p3-hud.sh)). Player body, view toggle, third-person walk/idle animation and mid-life gear import ([`p3-player-body.sh`](docs/smoke-tests/p3-player-body.sh)). Open: player FaceGen (vanilla ships no facegeom for the player record — the graceful miss is the correct behavior). |
-| P4 authored objective | **Closed 2026-09-30.** Fixture frozen on MS01 `0x00018B4B`: 38 stage bindings, 17 lowered. NPC activation → topic selection (DIAL QNAM quest ownership + alias-bindings lookup + Talk candidacy) and the native dialogue response surface present the selected INFO with the owned-topic list (2026-09-29, live-verified in `MarkarthWarrens`); the spoken line's `TIF_` INFO fragment decodes and dispatches (OnBegin at selection, OnEnd on change/close — #5152) and objective transitions announce through the journal banner (#5153); the consolidated [`p4-quest-route.sh`](docs/smoke-tests/p4-quest-route.sh) gates the loop live (2026-09-30). Documented gap: the force-greet-entered blocking branch is unmodeled — the dialogue-fragment stage advance is bin-test-gated until it lands. |
-| P5 persistence and soak | Open: consumption-specific live Vulkan and save/reload smokes, the 30-minute soak. |
+**Closed 2026-10-01.** All six phases (P0 input → P5 persistence and soak)
+were closed by live gates on one console-free Skyrim route. The phase-by-phase
+evidence is in
+[`docs/engine/playable-vertical-slice.md`](docs/engine/playable-vertical-slice.md),
+and the one-liner is under [Completed Milestones](#completed-milestones).
+Open follow-ons, none of them a slice blocker:
+- #5155: the soak intermittently restores `grounded=false` after its 10th
+  F5 → door → F9 cycle.
+- #5156: the `p2-melee-core.sh` FNV preflight fails (the fixture reference
+  never spawns). It predates P5 and reproduces at the pre-session HEAD.
+- P1: Skyrim's W1 water leg is skipped (land-side KCC wedge). P4: the
+  force-greet blocking branch is unmodeled. Gamepad sources and a second
+  game route are not started.
 
 ### Milestone tiers
 
@@ -566,6 +564,12 @@ ByroRedux-owned host profiles (2026-07-25) ·
 M44 spatial audio (2026-05-06) ·
 M45 save/load and M45.1 live load-apply (2026-06-21).
 
+**Playable vertical slice**
+P0 input and interaction (2026-08-10) · P1 traversal · P2 melee → loot
+loop · P3 HUD, inventory and player body · P4 authored objective with
+dialogue (MS01, 2026-09-30) · P5 F5/F9 persistence and 30-minute soak
+(2026-10-01).
+
 **Debug & diagnostics**
 M15 debug logging & diagnostics · debug CLI (`byro-dbg`) with
 TCP protocol and Papyrus-expression query language ·
@@ -581,6 +585,10 @@ it; the full list as it stood on 2026-09-29 (open and closed) is in
 
 ### Performance and measurement
 
+- [ ] **R6a-stale-23 — bench-of-record `a37fcba3c` is 180 commits stale**
+  (2026-10-01 close). Frame-path changes since: #5154, #5018, #5062, #5064,
+  #4902/#4909/#4915. Re-run `scripts/fsr-bench-matrix.sh 3 300` with a
+  same-machine control; no HEAD frame-time claim is current until then.
 - [ ] **R6a-regress-22 — residual after the camera move** (filed 2026-09-28,
   re-stated 2026-09-30 by #5128). The original reading ("FO4 frame time
   doubled between `4c9a5b36` and `99933f87b`, content unchanged") was a
@@ -676,21 +684,24 @@ performance finding. The measured knob table is in
   single allocation**, above `MAX_SINGLE_ALLOC_BYTES` (256 MB). Raising the
   cap weakens the defence against hostile `u32` sizes. One file in the
   corpus.
-- [ ] **Starfield CDB Phase 2** —
-  [#3398](https://github.com/matiaszanolli/ByroRedux/issues/3398). The
-  `.mat` arm of `merge_external_material` is presence-only
-  (`MergeOutcome::PresenceOnly`), so every Starfield surface shades from
-  NIF-derived, keyword-classified PBR values. Phase 2 must feed CDB-authored
-  values through that same boundary, never as a render-time fallback.
+- [ ] **Starfield CDB Phase 2: texture slots landed, closure unverified**
+  ([#3398](https://github.com/matiaszanolli/ByroRedux/issues/3398)). A
+  streaming `MaterialIndex` (`224a19372`) feeds the `.mat` arm of
+  `merge_external_material` (`18fce7e43`): a hit forwards texture slots and
+  flat-colour replacements as `Merged`, a miss keeps the Phase-1 PBR flip.
+  Owed before closing: the issue's definition of done and a live Cydonia render.
 
 ### Infrastructure and tooling
 
-- [ ] **Hosted CI lacks a clean all-jobs signal** (last reviewed 2026-08-25).
-  Headless wgpu adapters for six UI tests, `python3` missing in the
-  shader-parity container, and `libxkbcommon-x11.so` missing in the
-  lavapipe/Xvfb run. The lock-order lane was greened in Session 92
-  (#4982–#4985). The `vulkan-validation` lane stays open until a run reaches
-  a device (#4987).
+- [ ] **Hosted CI is red on two of ten jobs** (run on `2fb4c5f2f`,
+  2026-10-01; neither is filed yet). Shader parity now passes (#5116).
+  - *Test + Check + Clippy*: CI's `@stable` toolchain is newer than the local
+    1.96.0 and fires `clippy::chunks_exact_to_as_chunks` (menuxml, hkx,
+    plugin, renderer) plus an `f32: From<f64>` fallback in debug-ui.
+  - *Vulkan validation*: the lane reaches lavapipe now (#4987, `6d5d8fa5f`).
+    But the info-level renderer log that its device gate needs also trips the
+    bare `grep -F '[Vulkan]'` error gate, on loader INFO and performance-WARN
+    lines; the run has no ERROR-severity validation message.
 - [ ] **Offline texture-set upscale finalization.** `tools/texture-upscale`
   works end-to-end: set discovery, TOML manifests, an external ESRGAN-family
   pass, companion-map upsampling and provenance. Remaining: per-game/per-role
@@ -701,17 +712,17 @@ performance finding. The measured knob table is in
 
 ## Project Stats
 
-Ground-truth as of 2026-09-29 (session close, HEAD `546e7fbc`). Every
+Ground-truth as of 2026-10-01 (session close, HEAD `0f9142832`). Every
 figure in this table was measured at that HEAD, not carried forward.
 
 | Metric                                  | Value                        |
 |-----------------------------------------|------------------------------|
-| Rust source lines (`src/` dirs)         | ~662 356                      |
-| Rust total lines (all `.rs`, excl. `target/`) | ~710 808                 |
-| Source files (`.rs`, excl. `target/`)   | 1198 total · 1108 outside `tests/` dirs (+7 / +6 since the 2026-09-27 close) |
+| Rust source lines (`src/` dirs)         | ~677 432                      |
+| Rust total lines (all `.rs`, excl. `target/`) | ~726 738                 |
+| Source files (`.rs`, excl. `target/`)   | 1204 total · 1114 outside `tests/` dirs (+6 / +6 since the 2026-09-29 close) |
 | Workspace members                       | 34 (count the `[workspace] members` block only — an unscoped `grep -c '^\s*"' Cargo.toml` returns 39, picking up quoted lines elsewhere in the file; 29 crates (incl. `menuxml`, added in Session 88) + `byroredux` binary + 4 tools: `byro-detect`, `byro-launcher`, `byro-dbg`, `texture-upscale`; `tools/nifskope` exists on disk but is not a workspace member) |
-| Tests                                   | **8907 passing, 0 failing** (`cargo test --workspace --no-fail-fast`, 2026-09-29; 249 ignored). Clean full-workspace run, including doc-tests, after the closeout fix `546e7fbc` (at `4286e55b` one test failed, because `a070baaad` flipped the CLI's auto-exposure default and left `RendererConfig::default()` behind). Always pass `--no-fail-fast` for the ground-truth count — without it, `cargo test --workspace` stops after the first binary with a failure and silently omits every crate queued behind it (Session 77 saw this first-hand: 1836 vs the true 6905) — and beware shell pipes: `cargo test … | tail` reports the *pipe's* exit code, which masked a toolchain-version failure here before the 2026-09-18 session caught it. |
-| Open issue directories                  | 4904 (`.claude/issues/`)     |
+| Tests                                   | **9081 passing, 0 failing** (`cargo test --workspace --no-fail-fast` on rustc 1.96.0, 2026-10-01; 259 ignored). Clean full-workspace run, including doc-tests. Always pass `--no-fail-fast` for the ground-truth count — without it, `cargo test --workspace` stops after the first binary with a failure and silently omits every crate queued behind it (Session 77 saw this first-hand: 1836 vs the true 6905) — and beware shell pipes: `cargo test … | tail` reports the *pipe's* exit code, which masked a toolchain-version failure here before the 2026-09-18 session caught it. |
+| Open issue directories                  | 5083 (`.claude/issues/`)     |
 | NIFs in per-game integration sweeps     | **604 787** across seven games (2026-08-29, #3369 + #3466 took this from 184 886 by widening the gates to every mesh-bearing archive each game ships; Oblivion re-measured 2026-09-07 under #3925 to include its eight DLC archives). Oblivion 9 612 · FO3 17 172 · FNV 20 746 · Skyrim SE 33 424 · FO4 235 082 · FO76 168 208 · Starfield 120 543. |
 | Per-game NIF clean-parse rate           | See the [compatibility matrix](#compatibility-matrix) — it is the single home for per-game parse rates, sweep dates and residual truncation tails. Summary only: 100% clean on Oblivion / FO3 / FNV / Skyrim SE / FO4 / Starfield (Starfield re-measured 2026-09-24, #4440); **FO76 98.18%** — the 2026-08-29 corpus widening (#3466) exposed a 3 056-NIF truncation tail in its two `GeneratedMeshes` archives that no gate had ever opened. Recoverable 100% on all seven. |
 | Supported archive formats               | BSA v103/v104/v105, BA2 v1/v2/v3/v7/v8 |

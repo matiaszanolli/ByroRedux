@@ -1267,8 +1267,8 @@ the next structural step for this phase.
 the player is no longer a bare capsule. `player_body::attach_player_body`
 (called from `spawn_player_body`, Character mode only) resolves the same
 `NPC_ 0x7` record `attach_to_player` consumed, then drives a
-`NpcSpawnJob` **player-body variant** (`as_player_body()`,
-`npc_spawn/resumable.rs`) to completion with an unlimited budget: race
+`NpcSpawnJob` **player-body variant** (`into_player_body()`,
+`npc_spawn/resumable/mod.rs`) to completion with an unlimited budget: race
 skeleton, race-skin/outfit armor meshes, and the standard
 `NpcEquipmentPart` ownership stamps — the exact machinery every placed NPC
 takes. The assembled root parents under the player capsule with the feet

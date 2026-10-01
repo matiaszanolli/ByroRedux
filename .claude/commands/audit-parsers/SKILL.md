@@ -15,7 +15,7 @@ Archives and mod files are attacker-controllable. This skill audits *reader disc
 | `crates/bgsm/src/` | BGSM/BGEM v1–v22 + template chain | `byroredux/src/asset_provider/material/{provider,merge}.rs` |
 | `crates/sfmaterial/src/` | Starfield `materialsbeta.cdb` | `byroredux/src/asset_provider/material/cdb.rs` (header probe only) |
 | `crates/hkx/src/` | Havok 2010 packfile, 32-bit LE (Skyrim LE) + 64-bit LE (SE) | `byroredux/src/asset_provider/animation.rs` (sole caller) |
-| `crates/facegen/src/` | `.egm` / `.egt` / `.tri` | `byroredux/src/npc_spawn/resumable.rs` (EGM only) |
+| `crates/facegen/src/` | `.egm` / `.egt` / `.tri` | `byroredux/src/npc_spawn/resumable/runtime.rs` (EGM only) |
 | `crates/menuxml/src/parse.rs` | Oblivion/FO3/FNV menu XML (lenient scanner; the rest is `/audit-ui`) | `crates/menuxml/src/menu.rs` |
 | `crates/game-detect/src/{vdf,steam,catalog}.rs` | Steam `libraryfolders.vdf` / `appmanifest_*.acf` (policy: `/audit-tooling` Dim 5) | launcher, `byro-detect` |
 
@@ -53,7 +53,7 @@ Beyond the guards:
 - `&str` byte-range slicing of disk-derived names panics mid-char (#3391); use `as_bytes()`.
 
 ### Dimension 2: Truncation, EOF and error semantics
-Paths: Dimension 1's, plus `byroredux/src/asset_provider/{archive,animation,material/provider}.rs`, `byroredux/src/npc_spawn/resumable.rs` (consumer `Err` arms).
+Paths: Dimension 1's, plus `byroredux/src/asset_provider/{archive,animation,material/provider}.rs`, `byroredux/src/npc_spawn/resumable/` (consumer `Err` arms).
 First step: list non-test `unwrap()` / `expect(` / `[idx]` on file-derived indices in Paths; read each consumer's `Err` arm.
 - Short decode is a deliberate `Ok` + `log::warn!` (shipped padding deltas #622/#812); over-run is `Err(InvalidData)`. Guards: `short_decode_stays_ok_for_the_shipped_padding_deltas`, `decompress_chunk_zlib_short_stream_returns_actual_length`, `decompress_chunk_lz4_under_run_returns_actual_length_not_declared`. A short **non-final** DX10 chunk is an `Err` naming the entry (#4662, `extract_dx10_rejects_a_short_non_final_chunk_naming_the_entry`); only the final chunk stays lenient.
 - A checksum-only zlib failure retries as raw DEFLATE; a corrupt body must still error (`corrupt_adler32_trailer_recovers_via_raw_deflate`, `corrupt_deflate_body_still_errors`).
@@ -80,7 +80,7 @@ First step: `grep -rn '#\[ignore' crates/{bsa,bgsm,sfmaterial,hkx,facegen,menuxm
 - ROADMAP compat-matrix rates are NIF-level; any BGSM/BA2/CDB rate claim in `ROADMAP.md` or `docs/feature-matrix.md` needs a dated measurement + sweep command. CI has no game data, so each format branch needs an in-memory fixture (`build_v105_archive`, `PackfileBuilder`, `synth_egm`, `bgsm::tests::minimal_v2_bytes`).
 
 ### Dimension 5: Decode <-> consumer wiring
-Paths: `crates/bgsm/src/`, `byroredux/src/asset_provider/material/{merge,cdb}.rs`, `crates/facegen/src/lib.rs`, `byroredux/src/npc_spawn/resumable.rs`, `crates/hkx/src/animation.rs`, `byroredux/src/asset_provider/animation.rs`, `crates/bsa/src/uvd.rs`.
+Paths: `crates/bgsm/src/`, `byroredux/src/asset_provider/material/{merge,cdb}.rs`, `crates/facegen/src/lib.rs`, `byroredux/src/npc_spawn/resumable/runtime.rs`, `crates/hkx/src/animation.rs`, `byroredux/src/asset_provider/animation.rs`, `crates/bsa/src/uvd.rs`.
 First step: list `pub` fields of `BgsmFile` / `BgemFile` / `HkxAnimation` / `EgmFile`; grep each in its consumer.
 - BGSM/BGEM fields vs `merge_external_material` (`byroredux/src/asset_provider/tests/bgsm_merge.rs`): classify unconsumed fields renderer-relevant (finding) vs editor-only. The merge takes `&mut ImportedMaterial`; a widened signature is a NIFAL violation (`/audit-nifal`).
 - CDB is presence-only (`MergeOutcome::PresenceOnly`); per-field extraction is Phase 2, #3398 (OPEN, verified 2026-09-29; spike `docs/audits/SF_CDB_PHASE2_SPIKE_2026-08-29.md`). Do not file "CDB fields unused" as new.
