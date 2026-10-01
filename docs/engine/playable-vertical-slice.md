@@ -1,6 +1,8 @@
 # Playable Vertical Slice
 
-**Status:** active execution plan (started 2026-08-09)
+**Status:** complete — P0–P5 closed (started 2026-08-09; P5 hardening gates
+landed 2026-10-01). Follow-on work continues under the standard roadmap
+priorities; this document is the record of what each phase proved.
 
 This plan defines the shortest route from “loads and renders Bethesda content”
 to “can be played as a game.” It is intentionally narrower than full engine
@@ -1564,15 +1566,78 @@ This closes only the pose/process-restart baseline, **not P5**: the native
 F5/F9 event path, inventory/equipment/quest/world-state assertions, graceful
 quit, debug Vulkan validation, and the 30-minute soak still need live gates.
 
-- Extend change-form save coverage only for mutable state introduced by
-  P0–P4; keep caches, bindings, targeting, GPU handles, and transient events
-  explicitly re-derived.
-- Test save/reload before and after door transitions, combat, looting,
-  equipment changes, and objective completion.
-- Run the 30-minute soak with repeated transitions and saves; fail on panic,
-  stuck transition, unbounded memory growth, or lost player control.
-- Establish a release-build frame-time and memory baseline for the reference
-  route. Optimize only measured blockers to the playability gate.
+**P5 hardening closure (2026-10-01):** those gates now exist and pass. All
+player input enters through the canonical boundary — `input.press
+quicksave`/`quickload` resolve through `ActionBindings` to the same F5/F9
+edges the winit handler intercepts, joining the deferred `PlayerSaveAction`
+queue (#3113; the debug press is an alternate frontend, not a second
+implementation), and the new `engine.quit` console command requests the same
+orderly shutdown the window close button and pause-menu Quit use (one frame
+later, so a quicksave deferred alongside the quit still executes).
+
+- **Native F5/F9 + graceful quit + validation** —
+  [`p5-f5-f9-quicksave.sh`](../smoke-tests/p5-f5-f9-quicksave.sh): two F5
+  ring slots (0-based, `SAVE-D3-02` resume) validated through `save.info`,
+  F9 in-process pose restore to the *quicksaved* pose (the gate also asserts
+  it is neither the pre-save spawn nor the post-save moved pose),
+  `engine.quit` exit 0 with the shutdown teardown logged, and the whole
+  session under `BYRO_VALIDATION=1` with the Khronos layer reporting zero
+  errors. PASS on FNV, FO3, and Skyrim SE.
+- **Quest/objective state** —
+  [`p5-quest-persistence.sh`](../smoke-tests/p5-quest-persistence.sh) (MS01
+  in MarkarthWarrens): the objective chain quicksaved at stage 15, advanced
+  through the stage-36 conditional pair (35 displayed, 20 completed, 22
+  displayed), F9 **reverts** quest state to the quicksaved point
+  (`current-stage: 15`, objective 22 un-displayed — a merge instead of a
+  revert fails the gate), the restored chain advances live again, and the
+  re-advanced state survives a graceful-quit + `--load` restart.
+  `QuestStageState`/`QuestObjectiveState` were already saved resources
+  (#1862/SAVE-07); no save-coverage extension was needed — the existing
+  change-form set already covered every P0–P4-introduced mutable state the
+  gates exercise (caches, bindings, targeting, GPU handles, and transient
+  events remain re-derived, not saved).
+- **Door transitions** —
+  [`p5-door-transition.sh`](../smoke-tests/p5-door-transition.sh) (FNV):
+  F5 inside → one bound-input E edge through the authored door → F9
+  cross-cell restore back to the interior standoff (≤1 unit) → the restored
+  world is playable (the same door opens again) → the exterior quicksave
+  survives a graceful-quit restart (`--load`, exterior grid + pose ≤2 units).
+- **Combat/looting/equipment** — already gated by `p2-melee-core.sh` across
+  FNV/FO3/Skyrim SE/FO4 (kill, loot, inventory/equipment, death marker, and
+  restored-ragdoll samples across a fresh-process reload); no new coverage
+  required.
+- **30-minute soak** — [`p5-soak.sh`](../smoke-tests/p5-soak.sh): repeated
+  per-cycle control walks (≥10 BU each way), F5, one door transition out,
+  F9 session replacement back; fails on panic, stuck transition, lost
+  player control, or RSS growing past 1.5× the 3-cycle warmup baseline, and
+  records the full curve to `soak.csv`.
+  **Gate of record (2026-10-01): PASS — 30 min, 82 cycles, 82 quicksaves,
+  82 door transitions, peak RSS 3344 MiB** (warmup baseline 2588 MiB at
+  cycle 3; the 1.5× line was 3882 MiB), no panic, stuck transition, or
+  control loss — artifacts `/tmp/byro-p5-soak.X34dol`. The curve shows a
+  slow ~0.9 MiB/cycle creep (2.65 → 3.34 GiB over 82 cycles) that stays
+  under the gate's unbounded-growth line for 30 minutes but is worth
+  re-reading on a longer soak once #5155's restore defect is fixed.
+  The soak's shakeout filed **#5155**: an intermittent (~1-in-50 restore
+  cycles) quickload restore that pins the body at the exact quicksaved pose
+  with `grounded=false` and the fall velocity clamped — both ground-contact
+  authorities read no support (details and hypotheses on the issue; the
+  first occurrence predated the per-second body samples and physics census
+  the gate now captures on that failure). The pose-fidelity assert anchors
+  on the engine's own restore line because the pre-F5 poll is stale by
+  seconds on the sloped porch (observed cycle 20, 2026-10-01: poll skew of
+  ~3.7 units on a grounded, sliding body).
+- **Release baseline** — 300-frame release bench on the reference route
+  (FNV `GSProspectorSaloonInterior`, `--player`, FSR 3.1 Quality default,
+  2026-10-01): **wall_fps=124.6, wall_ms=8.03, frame_p50_ms=8.71,
+  frame_p95_ms=9.88**, `frame_max_ms=107.44` (first-frame pipeline compile),
+  `draw_ms=7.22` (fence 6.15, `gpu_main_render` 7.08), 2359 entities /
+  382 meshes / 803 draws / 25 lights, **peak RSS 1.62 GiB** for the whole
+  bench session (`/tmp/byro-p5-baseline.{out,err}` retained). No measured
+  blocker to the playability gate; nothing to optimize on this evidence.
+
+With these gates, every P5 requirement from the list above has live
+coverage on real data; the phase closes per the work rules.
 
 ## Work rules
 
@@ -1595,9 +1660,11 @@ quit, debug Vulkan validation, and the 30-minute soak still need live gates.
    first.~~ — closed 2026-09-09.
 3. Use the W0/W1 captures to choose the first W2/W3 defect by evidence
    (coverage/seam before local shading polish), then re-run the same fixture.
-4. Add P1 gamepad physical sources and resume P2 combat readiness after the
+4. ~~Add P1 gamepad physical sources and resume P2 combat readiness after the
    water gate, carrying the now-passing door-return boundary route through the
-   eventual 30-minute soak.
+   eventual 30-minute soak.~~ — the 30-minute soak itself is now a P5 gate
+   (`p5-soak.sh`, closed 2026-10-01); gamepad physical sources and the
+   remaining P2-combat polish continue as roadmap work, not slice blockers.
 5. W4's underwater audio / breath feedback now has its traversal prerequisite:
    the breath reserve and drowning damage are already live and observable on
    `player.status`, so the remaining work there is presentation.

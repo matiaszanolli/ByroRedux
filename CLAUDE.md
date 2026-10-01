@@ -67,7 +67,15 @@ cell boundary on FNV Lake Mead (WATAL W1), the HUD family
 (Oblivion/FO3) and Scaleform (Skyrim/FO4) drivers per game, and
 [`docs/smoke-tests/p4-quest-route.sh`](docs/smoke-tests/p4-quest-route.sh)
 verifies the P4 authored-objective loop end-to-end (MS01 in MarkarthWarrens:
-activation → dialogue selection → presented response → objective-chain transitions).
+activation → dialogue selection → presented response → objective-chain transitions),
+and the P5 hardening family
+[`p5-f5-f9-quicksave.sh`](docs/smoke-tests/p5-f5-f9-quicksave.sh) /
+[`p5-quest-persistence.sh`](docs/smoke-tests/p5-quest-persistence.sh) /
+[`p5-door-transition.sh`](docs/smoke-tests/p5-door-transition.sh) /
+[`p5-soak.sh`](docs/smoke-tests/p5-soak.sh) gates F5/F9 bound-input
+quicksave/quickload, quest-state revert/restore, cross-cell door saves,
+graceful quit (`engine.quit`), a `BYRO_VALIDATION=1` clean leg, and the
+30-minute transition/save soak.
 
 ### Shader Compilation
 ```bash

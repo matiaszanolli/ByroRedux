@@ -60,7 +60,10 @@ renderer code (#5128, 2026-09-30); a small residual stays open.
 - **Player.** Rapier kinematic character controller (M28.5), swimming and
   diving (WATAL W1), a visual body with a first/third-person toggle
   (`a070baaad`), and on the P2 fixture a melee → damage → death → loot loop.
-  Native HUD vitals and objective text.
+  Native HUD vitals and objective text. Native F5/F9 quicksave/quickload
+  through the deferred player-save queue, with quest state, cross-cell door
+  saves, graceful quit and a validation-clean 30-minute soak all gated
+  (P5, 2026-10-01; soak's intermittent restore defect tracked in #5155).
 - **Scripting.** ECS-native event hooks and condition evaluator
   (M47.0/M47.1). Compiled `.pex` is decompiled and lowered through a
   recognizer chain, with QUST fragments and aliases, and SCEN/PACK scenes
@@ -90,8 +93,13 @@ renderer code (#5128, 2026-09-30); a small residual stays open.
   ([`charal.md`](docs/engine/charal.md)).
 
 **Active focus.**
-- The [playable vertical slice](#playable-vertical-slice) — capability on
-  that route outranks renderer polish.
+- The [playable vertical slice](#playable-vertical-slice) is **complete** —
+  P0–P5 all closed by live gates (P5 hardening landed 2026-10-01: F5/F9
+  quicksave/quickload through the canonical action queue, quest-state
+  revert/restore, cross-cell door save/reload, graceful quit, a
+  validation-clean leg, the 30-minute soak, and the release baseline).
+  Slice follow-ons (gamepad sources, #5155's intermittent restore defect,
+  a second game route) are roadmap work, no longer slice blockers.
 - RT lighting and material recovery: R0–R3 are complete. The rest is tracked
   in [`rt-lighting-material-recovery.md`](docs/engine/rt-lighting-material-recovery.md).
 - WATAL: W0 and W1 are closed. The next step is choosing the first W2/W3
