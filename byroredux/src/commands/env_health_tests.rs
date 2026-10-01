@@ -447,3 +447,113 @@ fn json_value_is_all_f64(value: &serde_json::Value) -> bool {
         _ => false,
     }
 }
+
+/// #4916 — the `WeatherSkyState` / `ImageSpace` analogue of
+/// [`water_plane_walk_covers_every_float_field_of_water_material`]. Neither
+/// struct carries a serde derive to leaf-walk, so the walk is tied to the
+/// structs' declared fields by a source scan instead: every declared float
+/// field must be walked by one of the two rules, and every walked name must
+/// still be a real field — the same both-directions contract as #4731, so a
+/// struct addition reaches the `env: FAIL` gate instead of bypassing it, and
+/// a rename cannot leave a stale entry guarding nothing.
+#[test]
+fn weather_sky_walk_covers_every_float_field_of_the_structs() {
+    let declared = declared_field_names(
+        include_str!("../components.rs"),
+        "WeatherSkyState",
+    );
+    assert!(
+        declared.len() >= 14,
+        "fixture sanity: WeatherSkyState declares its fields; got {declared:?}"
+    );
+    let state = crate::components::WeatherSkyState::default();
+    let walked: Vec<String> = super::weather_sky_finite_fields(&state)
+        .into_iter()
+        .chain(super::weather_sky_radiance_fields(&state))
+        .map(|(name, _)| name.to_string())
+        .collect();
+    for field in &declared {
+        if field == "aurora_follows_sun" || field == "wind_direction_authored" {
+            // The two non-float fields — booleans have no non-finite space.
+            continue;
+        }
+        assert!(
+            walked
+                .iter()
+                .any(|name| name.split('[').next().unwrap_or(name) == field),
+            "WeatherSkyState float field `{field}` is not walked by the \
+             weather gate — a new field would reach the shaders ungated \
+             (#4916, the #4731 class)"
+        );
+    }
+    for name in &walked {
+        let stem = name.split('[').next().unwrap_or(name);
+        assert!(
+            declared.iter().any(|field| field == stem),
+            "the weather gate walks `{name}`, which is not a \
+             WeatherSkyState field any more — a stale entry after a rename \
+             (#4916)"
+        );
+    }
+
+    let im_declared = declared_field_names(
+        include_str!("../../../crates/core/src/imagespace.rs"),
+        "ImageSpace",
+    );
+    assert_eq!(
+        im_declared,
+        vec!["saturation", "brightness", "contrast", "tint_color"],
+        "fixture sanity: ImageSpace declares its four fields"
+    );
+    let im = byroredux_scripting::ImageSpace::default();
+    let im_walked: Vec<String> = super::image_space_fields(&im)
+        .into_iter()
+        .map(|(name, _)| name.to_string())
+        .collect();
+    for field in &im_declared {
+        assert!(im_walked.iter().any(|name| name == field), "{field}");
+    }
+    assert_eq!(im_walked.len(), im_declared.len());
+}
+
+/// Field names declared by `struct <name> { … }` in `src`, doc and line
+/// comments stripped. The trailing space in the needle keeps
+/// `ImageSpace` from matching `ImageSpaceModifier`-style prefixes.
+fn declared_field_names(src: &str, struct_name: &str) -> Vec<String> {
+    let needle = format!("struct {struct_name} ");
+    let start = src
+        .find(&needle)
+        .unwrap_or_else(|| panic!("`{needle}` not found"));
+    let body = &src[start..];
+    let body = &body[..body.find("\n}").expect("struct terminator")];
+    body.lines()
+        .filter_map(|line| {
+            let trimmed = line.trim();
+            if trimmed.starts_with("///") || trimmed.starts_with("//") {
+                return None;
+            }
+            let after_vis = trimmed
+                .strip_prefix("pub(crate) ")
+                .or_else(|| trimmed.strip_prefix("pub "))?;
+            after_vis.split(':').next().map(str::trim).map(str::to_owned)
+        })
+        .collect()
+}
+
+/// #4916 — the new weather-state rules fire: NaN sunlight colour (the
+/// interior portal sun input, #4839) and a poisoned image-space slot (the
+/// exterior grade base, #4416) are findings, not silent shader inputs.
+#[test]
+fn non_finite_weather_sky_and_image_space_are_caught() {
+    let mut wd = healthy_weather();
+    wd.weather.sunlight_color = [f32::NAN, 1.0, 0.5];
+    wd.image_space[2].tint_color = [0.5, 0.5, f32::NAN, 1.0];
+    let findings = check_environment(None, None, Some(&wd), &[]);
+    assert_eq!(
+        fields(&findings),
+        [
+            "weather.sunlight_color",
+            "weather.image_space[2].tint_color",
+        ]
+    );
+}

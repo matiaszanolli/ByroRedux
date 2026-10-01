@@ -243,6 +243,58 @@ fn check_water_plane(out: &mut Vec<EnvFinding>, prefix: &str, mat: &WaterMateria
     }
 }
 
+/// The finite-rule fields of [`crate::components::WeatherSkyState`], in the
+/// same extracted-list shape as the water rules (#4731) so the
+/// struct-completeness test in `env_health_tests.rs` can tie the walked
+/// names to the struct's declared fields (#4916).
+fn weather_sky_finite_fields(
+    state: &crate::components::WeatherSkyState,
+) -> Vec<(&'static str, &[f32])> {
+    vec![
+        ("cloud_coverage", std::slice::from_ref(&state.cloud_coverage)),
+        ("cloud_tints[0]", &state.cloud_tints[0][..]),
+        ("cloud_tints[1]", &state.cloud_tints[1][..]),
+        ("cloud_tints[2]", &state.cloud_tints[2][..]),
+        ("cloud_tints[3]", &state.cloud_tints[3][..]),
+        ("precipitation", &state.precipitation[..]),
+        (
+            "thunder_frequency",
+            std::slice::from_ref(&state.thunder_frequency),
+        ),
+        ("sun_glare", std::slice::from_ref(&state.sun_glare)),
+        ("moon_glare", std::slice::from_ref(&state.moon_glare)),
+        (
+            "aurora_intensity",
+            std::slice::from_ref(&state.aurora_intensity),
+        ),
+        ("wind_direction", &state.wind_direction[..]),
+        ("wind_speed", std::slice::from_ref(&state.wind_speed)),
+    ]
+}
+
+/// The radiance-rule fields of [`crate::components::WeatherSkyState`] (#4916)
+/// — the authored colours.
+fn weather_sky_radiance_fields(
+    state: &crate::components::WeatherSkyState,
+) -> Vec<(&'static str, &[f32])> {
+    vec![
+        ("lightning_color", &state.lightning_color[..]),
+        ("stars_color", &state.stars_color[..]),
+        ("sunlight_color", &state.sunlight_color[..]),
+    ]
+}
+
+/// The fields of one image-space slot (#4916) — the exterior grade base that
+/// `weather_system` samples and publishes as `ImageSpaceBase`.
+fn image_space_fields(im: &byroredux_scripting::ImageSpace) -> Vec<(&'static str, &[f32])> {
+    vec![
+        ("saturation", std::slice::from_ref(&im.saturation)),
+        ("brightness", std::slice::from_ref(&im.brightness)),
+        ("contrast", std::slice::from_ref(&im.contrast)),
+        ("tint_color", &im.tint_color[..]),
+    ]
+}
+
 /// Evaluate every environment rule. Pure — no `World`, no renderer — so the
 /// rules are unit-testable without a Vulkan device or game data.
 ///
@@ -335,6 +387,25 @@ pub(crate) fn check_environment(
         check_finite(&mut out, "weather.fog", &wd.fog);
         check_fog_medium(&mut out, "weather.fog_media[0]", &wd.fog_media[0]);
         check_fog_medium(&mut out, "weather.fog_media[1]", &wd.fog_media[1]);
+        // #4916 — the weather-state colours/scalars and the four
+        // image-space slots reach shaders unchanged (sunlight_color drives
+        // the interior portal sun, #4839; the slots are the exterior grade
+        // base, #4416), so the same input gate covers them.
+        for (field, values) in weather_sky_finite_fields(&wd.weather) {
+            check_finite(&mut out, &format!("weather.{field}"), values);
+        }
+        for (field, values) in weather_sky_radiance_fields(&wd.weather) {
+            check_radiance(&mut out, &format!("weather.{field}"), values);
+        }
+        for (slot, image_space) in wd.image_space.iter().enumerate() {
+            for (field, values) in image_space_fields(image_space) {
+                check_finite(
+                    &mut out,
+                    &format!("weather.image_space[{slot}].{field}"),
+                    values,
+                );
+            }
+        }
     }
 
     // #4483 — the canonical water tier. ~40 `f32` fields reach
