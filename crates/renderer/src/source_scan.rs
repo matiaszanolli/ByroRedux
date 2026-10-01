@@ -81,7 +81,6 @@ mod tests {
         ("vulkan/egui_pass.rs", 1),
         ("vulkan/frame_upscaler.rs", 4),
         ("vulkan/gpu_timers.rs", 2),
-        ("vulkan/groundcover.rs", 3),
         ("vulkan/image.rs", 1),
         ("vulkan/material_tests.rs", 1),
         ("vulkan/pipeline.rs", 1),
