@@ -1021,6 +1021,85 @@ mod tests {
     use byroredux_bsa::Ba2Archive;
     use std::path::PathBuf;
 
+    /// #5101 — `merge_precombine_materials` (the #1619 blend restore,
+    /// factored out of the spawn job by e593770f0) had no test on either of
+    /// its two routes. This pins the helper's contract directly against a
+    /// "Standard"-blend BGSM (function 1, src 6, dst 7) of the kind FO4
+    /// authors identically on lab glass AND opaque Institute metal: the
+    /// NIF-side blend triple survives the merge (opaque architecture stays
+    /// opaque), while the BGSM flags the merge exists to forward —
+    /// two_sided / alpha_test / alpha_test_ref — land. Without this, either
+    /// route could drift back to a bare `merge_external_material` loop (the
+    /// efd3c41b regression shape) and every test would still pass.
+    #[test]
+    fn merge_precombine_materials_restores_blend_but_keeps_bgsm_flags() {
+        use byroredux_bgsm::template::ResolvedMaterial;
+        use byroredux_bgsm::{AlphaBlendMode, BaseMaterial, BgsmFile};
+
+        let mut pool = StringPool::new();
+        let path = "materials/tests/institutemetal01a.bgsm";
+        let mut provider = MaterialProvider::new();
+        provider.insert_bgsm_for_test(
+            path,
+            ResolvedMaterial {
+                file: BgsmFile {
+                    base: BaseMaterial {
+                        two_sided: true,
+                        alpha_test: true,
+                        alpha_test_ref: 128,
+                        alpha_blend_mode: AlphaBlendMode {
+                            function: 1,
+                            src_blend: 6,
+                            dst_blend: 7,
+                        },
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                parent: None,
+            },
+        );
+        let mut mesh = ImportedMesh::from_geometry(
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        );
+        mesh.material.material_path = Some(pool.intern(path));
+        // The NIF shape is opaque architecture: no NiAlphaProperty.
+        let nif_blend = (
+            mesh.material.has_alpha,
+            mesh.material.src_blend_mode,
+            mesh.material.dst_blend_mode,
+        );
+        assert!(!nif_blend.0, "fixture premise: opaque NIF-side blend");
+
+        let mut meshes = vec![mesh];
+        merge_precombine_materials(&mut meshes, &mut provider, &mut pool, &|_| false);
+
+        let merged = &meshes[0].material;
+        assert_eq!(
+            (merged.has_alpha, merged.src_blend_mode, merged.dst_blend_mode),
+            nif_blend,
+            "the BGSM's 'Standard' blend triple must be restored to the NIF-side \
+             state — opaque precombine architecture stays opaque (#1619)"
+        );
+        assert!(
+            merged.two_sided,
+            "the BGSM's two_sided survives the restore (it is why the merge runs)"
+        );
+        assert!(
+            merged.alpha_test,
+            "the BGSM's alpha_test survives the restore"
+        );
+        assert!(
+            (merged.alpha_threshold - 128.0 / 255.0).abs() < 1e-6,
+            "the authored alpha_test_ref lands as the threshold"
+        );
+    }
+
     /// #1590 (b) — the baked `_oc.nif` path drops the form-id mod-index byte
     /// and namespaces DLC bakes under a `<plugin>.esm\` subdir. Verified
     /// against the real `Fallout4 - MeshesExtra.ba2` (root) and
@@ -1046,12 +1125,13 @@ mod tests {
         );
     }
 
-    /// #1590 (a) — the CSG + subdir follow the cell's owning plugin (form-id
-    /// The streaming worker pre-parses precombines under the key the drain
-    /// derives with `canonical_model_path_key`, while `PrecombinedSpawnJob`
-    /// looks the raw path up. The two only meet if the raw path is already
-    /// canonical, so a case or separator change here would silently send
-    /// every streamed precombine back through the main-thread parse.
+    /// The raw `_oc.nif` path this module emits is already a canonical
+    /// cache key: the streaming worker pre-parses precombines under the key
+    /// the drain derives with `canonical_model_path_key`, while
+    /// `PrecombinedSpawnJob` looks the raw path up. The two only meet if the
+    /// raw path is already canonical, so a case or separator change here
+    /// would silently send every streamed precombine back through the
+    /// main-thread parse.
     #[test]
     fn oc_nif_paths_are_already_canonical_cache_keys() {
         for sub in [None, Some("dlccoast.esm")] {
@@ -1063,6 +1143,7 @@ mod tests {
         }
     }
 
+    /// #1590 (a) — the CSG + subdir follow the cell's owning plugin (form-id
     /// mod-index byte → load order), not the last-loaded `--esm`.
     #[test]
     fn resolve_precombine_owner_follows_form_id_mod_index() {
