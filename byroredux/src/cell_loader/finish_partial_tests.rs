@@ -294,6 +294,90 @@ fn finish_partial_import_builds_precombine_geometry_entry() {
     assert_eq!(reg.clip_handle_for(key), None);
 }
 
+/// #5101 — provider-backed variant of the precombine drain route above.
+/// Every other `finish_partial_import` test passes `mat_provider = None`, so
+/// the `if let Some(provider)` branch that runs `merge_precombine_materials`
+/// never executed under test. With a provider holding a "Standard"-blend
+/// BGSM (function 1, src 6, dst 7 — authored identically on lab glass and
+/// opaque Institute metal), the cached entry must carry the BGSM's
+/// two_sided / alpha_test while the NIF-side blend triple stays opaque: the
+/// drain applies the same #1619 restore the main-thread
+/// `PrecombinedSpawnJob` does, and a one-sided drift would show only as a
+/// visual difference between the streamed and synchronous load paths.
+#[test]
+fn finish_partial_import_precombine_route_applies_the_material_merge() {
+    use byroredux_bgsm::template::ResolvedMaterial;
+    use byroredux_bgsm::{AlphaBlendMode, BaseMaterial, BgsmFile};
+    use crate::asset_provider::MaterialProvider;
+
+    let bgsm_path = "materials\\tests\\institutemetal01a.bgsm";
+    let mut provider = MaterialProvider::new();
+    provider.insert_bgsm_for_test(
+        bgsm_path,
+        ResolvedMaterial {
+            file: BgsmFile {
+                base: BaseMaterial {
+                    two_sided: true,
+                    alpha_test: true,
+                    alpha_test_ref: 96,
+                    alpha_blend_mode: AlphaBlendMode {
+                        function: 1,
+                        src_blend: 6,
+                        dst_blend: 7,
+                    },
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            parent: None,
+        },
+    );
+
+    let mut worker_pool = StringPool::new();
+    let mut mesh = byroredux_nif::import::ImportedMesh::from_geometry(
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    );
+    mesh.material.material_path = Some(worker_pool.intern(bgsm_path));
+    assert!(!mesh.material.has_alpha, "fixture premise: opaque NIF shape");
+    let partial = crate::streaming::PartialNifImport {
+        meshes: vec![mesh],
+        worker_pool,
+        precombine_geometry: Some(vec![0]),
+        ..dummy_partial()
+    };
+
+    let mut world = world_with_registries();
+    let key = "meshes\\precombined\\0000e400_3831aac9_oc.nif";
+    finish_partial_import(&mut world, Some(&mut provider), key, partial, &|_| false);
+
+    let reg = world.resource::<NifImportRegistry>();
+    let cached = reg
+        .get(key)
+        .expect("precombine inserted under its own path")
+        .as_ref()
+        .expect("positive entry");
+    let merged = &cached.meshes[0].material;
+    assert!(
+        merged.two_sided && merged.alpha_test,
+        "the drain route forwarded the BGSM flags — the merge ran (not just the \
+         None-provider shell of the route)"
+    );
+    assert!(
+        (merged.alpha_threshold - 96.0 / 255.0).abs() < 1e-6,
+        "the authored alpha_test_ref landed through the re-interned material path"
+    );
+    assert!(
+        !merged.has_alpha,
+        "the #1619 blend restore applies on the drain route too — opaque \
+         architecture stays opaque despite the BGSM's 'Standard' blend"
+    );
+}
+
 /// Pre-cached positive entry — `finish_partial_import` must early-out
 /// without touching `AnimationClipRegistry` or rebuilding the cached
 /// import. The arc identity check verifies the cache entry wasn't
