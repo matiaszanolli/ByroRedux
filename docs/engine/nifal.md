@@ -405,9 +405,14 @@ regress FNV oasis smoke back to ~7× oversized.
 `color_curve` override, the emitter budget and the modern (tiers 1–3) rate
 per-instance: each emitter in a multi-emitter NIF resolves its own controller
 chain instead of a whole-scene first-match handing one emitter's values to
-every emitter. Still whole-scene: the legacy `NiParticleSystemController`
-fallback and the #3329 sequence tier (a sequence's controlled block names an
-emitter controller, not an emitter instance).
+every emitter. Still whole-scene: only the emitter-budget scan when the
+system's own `data_ref` does not resolve. The legacy
+`NiPSysEmitterCtlrData` tier went per-instance with #4560 (it resolves
+through the ctlr's own `data_ref`; an unlinked block is attributed to
+nobody), and the #3329 sequence tier with #4620 (`find_own_emitter_ctlr_refs`
+in `crates/nif/src/import/walk/emitter.rs`: a controlled block with a
+non-null `controller_ref` must name this system's own ctlr; only a missing
+ref falls back to matching the system's name).
 
 **Still pending (follow-ups):** size-over-life *curve* (the grow/fade bell shape needs
 a richer canonical size model). Tooling: `crates/nif/examples/emitter_dump.rs`
