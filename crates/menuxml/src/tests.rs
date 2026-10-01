@@ -329,6 +329,102 @@ fn include_cycles_terminate() {
     assert_eq!(doc.tiles[x].traits.get("width"), Some(&RawTrait::Num(5.0)));
 }
 
+/// #5007 / PAR-D1-2026-09-29-02 — counts archive probes per call so the
+/// include tests can pin the fetch + inflate cost, which is the
+/// quadratic-work channel (a production probe is a full BSA extract).
+struct CountingSource {
+    files: HashMap<String, String>,
+    probes: std::cell::RefCell<Vec<String>>,
+}
+
+impl MenuFileSource for CountingSource {
+    fn menu_xml(&self, path: &str) -> Option<Vec<u8>> {
+        let key = path.to_lowercase();
+        self.probes.borrow_mut().push(key.clone());
+        self.files.get(&key).map(|s| s.as_bytes().to_vec())
+    }
+}
+
+/// #5007 — the cycle check must run BEFORE the fragment fetch. Pre-fix, a
+/// fragment of N self-includes cost N+1 fetches of itself (each a full
+/// extract + inflate in production); the audit measured 8.8 GB inflated
+/// for a 440 KB hostile fragment. Now the fetch happens once and every
+/// self-include is skipped without touching the source.
+#[test]
+fn self_including_fragment_costs_one_fetch() {
+    let body = format!("{}<width> 5 </width>", r#"<include src="g.xml"/>"#.repeat(1000));
+    let mut s = CountingSource {
+        files: [("menus\\prefabs\\g.xml".to_string(), body)].into_iter().collect(),
+        probes: Default::default(),
+    };
+    let host = r#"<menu name="A"><image name="x"><include src="g.xml"/></image></menu>"#;
+    let doc = parse_document(host, &mut s);
+    let fetches = s.probes.borrow().iter().filter(|p| *p == "menus\\prefabs\\g.xml").count();
+    assert_eq!(fetches, 1, "a self-including fragment must be fetched exactly once");
+    let x = doc.name_index["x"];
+    assert_eq!(doc.tiles[x].traits.get("width"), Some(&RawTrait::Num(5.0)));
+}
+
+/// #5007 — the budget check must also run BEFORE the fetch: after the
+/// splice budget is spent, further include elements must not probe the
+/// source at all.
+#[test]
+fn budget_exhausted_includes_never_fetch() {
+    let mut files: HashMap<String, String> = HashMap::new();
+    // One outer splice (b.xml) leaves 255; k0..k254 consume them, so
+    // k255 and marker must be skipped pre-fetch.
+    let mut body = String::new();
+    for i in 0..300 {
+        body.push_str(&format!(r#"<include src="k{i}.xml"/>"#));
+        files.insert(format!("menus\\prefabs\\k{i}.xml"), r#"<width> 1 </width>"#.into());
+    }
+    body.push_str(r#"<include src="marker.xml"/>"#);
+    files.insert("menus\\prefabs\\marker.xml".to_string(), r#"<width> 9 </width>"#.into());
+    files.insert("menus\\prefabs\\b.xml".to_string(), body);
+    let mut s = CountingSource { files, probes: Default::default() };
+    let host = r#"<menu name="A"><image name="x"><include src="b.xml"/></image></menu>"#;
+    let _doc = parse_document(host, &mut s);
+    let probes = s.probes.borrow();
+    assert_eq!(
+        probes.iter().filter(|p| **p == "menus\\prefabs\\k0.xml").count(),
+        1,
+        "in-budget includes still fetch"
+    );
+    assert!(
+        !probes.iter().any(|p| *p == "menus\\prefabs\\k255.xml"),
+        "post-budget include must not probe the source"
+    );
+    assert!(
+        !probes.iter().any(|p| *p == "menus\\prefabs\\marker.xml"),
+        "post-budget include must not probe the source"
+    );
+}
+
+/// #5007 — fetched fragment bytes are cached per document, so a repeated
+/// sequential (non-cyclic) include of the same fragment is one fetch plus
+/// map hits.
+#[test]
+fn repeated_sequential_includes_share_one_fetch() {
+    let host = format!(
+        r#"<menu name="A"><image name="x">{}</image></menu>"#,
+        r#"<include src="g.xml"/>"#.repeat(100)
+    );
+    let mut s = CountingSource {
+        files: [(
+            "menus\\prefabs\\g.xml".to_string(),
+            r#"<width> 5 </width>"#.to_string(),
+        )]
+        .into_iter()
+        .collect(),
+        probes: Default::default(),
+    };
+    let doc = parse_document(&host, &mut s);
+    let fetches = s.probes.borrow().iter().filter(|p| *p == "menus\\prefabs\\g.xml").count();
+    assert_eq!(fetches, 1, "repeated includes must hit the per-document cache");
+    let x = doc.name_index["x"];
+    assert_eq!(doc.tiles[x].traits.get("width"), Some(&RawTrait::Num(5.0)));
+}
+
 // ---------------------------------------------------------------------------
 // Evaluator — pins the wiki's fold semantics against vanilla constructs
 // ---------------------------------------------------------------------------
