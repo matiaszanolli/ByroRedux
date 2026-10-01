@@ -1506,7 +1506,8 @@ pub(crate) struct WeatherDataRes {
     pub(crate) sunlight_dimmer: f32,
     /// #4416 — the exterior's base image space per WTHR time-of-day slot
     /// (Sunrise, Day, Sunset, Night), resolved at the EXAL boundary by
-    /// [`crate::env_translate::exterior_image_spaces`]: the weather's own
+    /// [`crate::env_translate::translate_weather`] through
+    /// [`crate::env_translate::ImageSpaceSources`]: the weather's own
     /// `IMSP` on Skyrim/FO4, else the worldspace's inherited `INAM`
     /// (FO3/FNV) in all four slots, else the identity grade. Sampled and
     /// cross-faded with the sky colours by `weather_system`, which

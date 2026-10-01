@@ -1434,12 +1434,17 @@ pub(crate) fn climate_tod_hours(
     }
 }
 
-/// WTHR (+ climate for TOD breakpoints) → [`WeatherDataRes`], the full NAM0
-/// table the per-frame interpolator walks. `skyrim_dalc_per_tod` is `Some`
-/// only for Skyrim WTHR (converted Z-up → Y-up once here); `None` elsewhere.
+/// WTHR (+ climate for TOD breakpoints, + the IMGS/worldspace sources for
+/// the exterior's base image space, #4914) → [`WeatherDataRes`], the full
+/// NAM0 table the per-frame interpolator walks. `skyrim_dalc_per_tod` is
+/// `Some` only for Skyrim WTHR (converted Z-up → Y-up once here); `None`
+/// elsewhere. `image_space` is resolved here — IMSP, else the worldspace's
+/// inherited INAM, else the identity grade — so no caller ever has to patch
+/// an identity placeholder.
 pub(crate) fn translate_weather(
     wthr: &WeatherRecord,
     climate: Option<&ClimateRecord>,
+    imgs: &ImageSpaceSources<'_>,
 ) -> WeatherDataRes {
     use byroredux_plugin::esm::records::weather::{SKY_COLOR_GROUPS, SKY_TIME_SLOTS};
     let mut sky_colors = [[[0.0f32; 3]; SKY_TIME_SLOTS]; SKY_COLOR_GROUPS];
@@ -1532,47 +1537,73 @@ pub(crate) fn translate_weather(
         sunlight_dimmer: wthr
             .oblivion_hdr
             .map_or(1.0, |hdr| hdr.sunlight_dimmer.max(0.0)),
-        // Needs the IMGS index this translation does not see; the caller
-        // fills it through `exterior_image_spaces` (#4416).
-        image_space: Default::default(),
+        // #4914 — resolved at this boundary, not patched by the caller:
+        // the weather's IMSP, else the worldspace's inherited INAM, else
+        // the identity grade (#4416).
+        image_space: imgs.resolve(Some(wthr)),
     }
 }
 
-/// #4416 — an exterior's base image space per WTHR time-of-day slot
-/// (Sunrise, Day, Sunset, Night), the canonical grade `weather_system`
-/// samples. Precedence, per the record definitions (xEdit, #4416):
-///
-/// 1. The weather's own `IMSP` (Skyrim/FO4). A NULL slot is the identity.
-/// 2. Otherwise the worldspace's `INAM` (FO3/FNV), inherited up the `WNAM`
-///    chain through PNAM bit 5 ("Use Image Space Data") like the other
-///    inheritable worldspace fields, in all four slots.
-/// 3. Otherwise the identity grade.
-///
-/// An IMGS FormID with no decodable grade also reads as the identity.
-pub(crate) fn exterior_image_spaces(
-    weather: Option<&WeatherRecord>,
-    worldspaces: &HashMap<String, WorldspaceRecord>,
-    worldspace_key: &str,
-    image_spaces: &HashMap<u32, byroredux_plugin::esm::records::ImgsRecord>,
-) -> [byroredux_scripting::ImageSpace; 4] {
-    let decode = |form: Option<u32>| {
-        form.and_then(|form| image_spaces.get(&form))
-            .and_then(|imgs| imgs.image_space)
-            .unwrap_or_default()
-    };
-    if let Some(slots) = weather
-        .map(|w| w.image_spaces)
-        .filter(|slots| slots.iter().any(Option::is_some))
-    {
-        return slots.map(decode);
+/// #4416 — the worldspace and IMGS tables an exterior's base image space is
+/// resolved from, handed to [`translate_weather`] so the translation is the
+/// single authority for the whole `WeatherDataRes` (#4914: the caller-side
+/// patch left `image_space` identity-shaped at the boundary, and a second
+/// caller would have silently rendered ungraded exteriors).
+pub(crate) struct ImageSpaceSources<'a> {
+    pub worldspaces: &'a HashMap<String, WorldspaceRecord>,
+    pub worldspace_key: &'a str,
+    pub image_spaces: &'a HashMap<u32, byroredux_plugin::esm::records::ImgsRecord>,
+}
+
+impl ImageSpaceSources<'_> {
+    /// The no-index sources: every lookup misses, so resolution yields the
+    /// identity grade — the test paths' pre-#4914 behaviour. Production
+    /// callers always hand the real record-index tables.
+    #[cfg(test)]
+    pub(crate) fn empty() -> Self {
+        static EMPTY_WORLDSPACES: std::sync::LazyLock<HashMap<String, WorldspaceRecord>> =
+            std::sync::LazyLock::new(HashMap::new);
+        static EMPTY_IMAGE_SPACES: std::sync::LazyLock<
+            HashMap<u32, byroredux_plugin::esm::records::ImgsRecord>,
+        > = std::sync::LazyLock::new(HashMap::new);
+        Self {
+            worldspaces: &EMPTY_WORLDSPACES,
+            worldspace_key: "",
+            image_spaces: &EMPTY_IMAGE_SPACES,
+        }
     }
-    let worldspace = inherit_up_chain(
-        worldspaces,
-        worldspace_key,
-        pnam::INHERIT_IMAGE_SPACE,
-        |_, w| w.image_space_form,
-    );
-    [decode(worldspace); 4]
+
+    /// An exterior's base image space per WTHR time-of-day slot (Sunrise,
+    /// Day, Sunset, Night), the canonical grade `weather_system` samples.
+    /// Precedence, per the record definitions (xEdit, #4416):
+    ///
+    /// 1. The weather's own `IMSP` (Skyrim/FO4). A NULL slot is the identity.
+    /// 2. Otherwise the worldspace's `INAM` (FO3/FNV), inherited up the `WNAM`
+    ///    chain through PNAM bit 5 ("Use Image Space Data") like the other
+    ///    inheritable worldspace fields, in all four slots.
+    /// 3. Otherwise the identity grade.
+    ///
+    /// An IMGS FormID with no decodable grade also reads as the identity.
+    pub(crate) fn resolve(&self, weather: Option<&WeatherRecord>) -> [byroredux_scripting::ImageSpace; 4] {
+        let decode = |form: Option<u32>| {
+            form.and_then(|form| self.image_spaces.get(&form))
+                .and_then(|imgs| imgs.image_space)
+                .unwrap_or_default()
+        };
+        if let Some(slots) = weather
+            .map(|w| w.image_spaces)
+            .filter(|slots| slots.iter().any(Option::is_some))
+        {
+            return slots.map(decode);
+        }
+        let worldspace = inherit_up_chain(
+            self.worldspaces,
+            self.worldspace_key,
+            pnam::INHERIT_IMAGE_SPACE,
+            |_, w| w.image_space_form,
+        );
+        [decode(worldspace); 4]
+    }
 }
 
 // ── Procedural fallback (no resolved climate / weather) ──
@@ -1970,7 +2001,12 @@ mod tests {
             WorldspaceRecord::default(),
         );
         let resolve = |weather: Option<&WeatherRecord>, worldspaces| {
-            exterior_image_spaces(weather, worldspaces, "c", &image_spaces)
+            ImageSpaceSources {
+                worldspaces,
+                worldspace_key: "c",
+                image_spaces: &image_spaces,
+            }
+            .resolve(weather)
         };
 
         assert_eq!(
@@ -2000,6 +2036,51 @@ mod tests {
             ],
             "IMSP wins; NULL and unknown slots are the identity"
         );
+    }
+
+    /// #4914 — the boundary, not the caller, owns the image space: a
+    /// `WeatherDataRes` out of `translate_weather` already carries the
+    /// resolved grade. The old shape left it identity-shaped for the one
+    /// orchestration caller to patch, so any second caller silently
+    /// rendered ungraded exteriors.
+    #[test]
+    fn translate_weather_resolves_the_exterior_image_space_itself() {
+        use byroredux_plugin::esm::records::ImgsRecord;
+        use byroredux_scripting::ImageSpace;
+
+        let image_spaces = HashMap::from([(
+            0xA1,
+            ImgsRecord {
+                form_id: 0xA1,
+                image_space: Some(ImageSpace {
+                    saturation: 0.5,
+                    brightness: 1.25,
+                    contrast: 0.9,
+                    tint_color: [0.9, 0.8, 0.7, 0.3],
+                }),
+                ..Default::default()
+            },
+        )]);
+        let mut weather = WeatherRecord::default();
+        weather.image_spaces = [Some(0xA1), Some(0xA1), Some(0xA1), None];
+
+        let sources = ImageSpaceSources {
+            worldspaces: &HashMap::new(),
+            worldspace_key: "c",
+            image_spaces: &image_spaces,
+        };
+        let wd = translate_weather(&weather, None, &sources);
+        assert_eq!(wd.image_space[0].saturation, 0.5);
+        assert_eq!(wd.image_space[2].tint_color, [0.9, 0.8, 0.7, 0.3]);
+        assert_eq!(
+            wd.image_space[3],
+            ImageSpace::default(),
+            "a NULL slot stays the identity"
+        );
+
+        // The empty sources reproduce the pre-#4914 fallback: identity.
+        let fallback = translate_weather(&weather, None, &ImageSpaceSources::empty());
+        assert_eq!(fallback.image_space, [ImageSpace::default(); 4]);
     }
 
     fn parent_child(
@@ -4368,7 +4449,7 @@ mod tests {
             ..Default::default()
         });
 
-        let wd = translate_weather(&w, None);
+        let wd = translate_weather(&w, None, &ImageSpaceSources::empty());
         assert!(
             (wd.fog_media[0].scale_height_meters - 10_000.0 / UNITS_PER_METER).abs() < 1e-3,
             "day medium must adopt the authored day range, got {}",
@@ -4402,7 +4483,7 @@ mod tests {
             }),
             ..Default::default()
         };
-        let wd = translate_weather(&w, None);
+        let wd = translate_weather(&w, None, &ImageSpaceSources::empty());
         assert!(
             (wd.sunlight_dimmer - 0.5).abs() < 1e-6,
             "an authored HNAM dim must translate verbatim, got {}",
@@ -4412,7 +4493,7 @@ mod tests {
         // No HDR block — every non-Oblivion game, and Oblivion weathers
         // without HNAM — keeps the neutral multiplier.
         let plain = WeatherRecord::default();
-        assert_eq!(translate_weather(&plain, None).sunlight_dimmer, 1.0);
+        assert_eq!(translate_weather(&plain, None, &ImageSpaceSources::empty()).sunlight_dimmer, 1.0);
     }
 
     /// #3956 — the no-authored-data fallback. Every non-FO4/FO76 game, and the
@@ -4431,7 +4512,7 @@ mod tests {
             "fixture sanity: no authored profile"
         );
 
-        let wd = translate_weather(&w, None);
+        let wd = translate_weather(&w, None, &ImageSpaceSources::empty());
         for (slot, medium) in wd.fog_media.iter().enumerate() {
             assert_eq!(
                 medium.scale_height_meters,
@@ -4465,7 +4546,7 @@ mod tests {
                 ..Default::default()
             });
             assert_eq!(
-                translate_weather(&w, None).fog_media[0].scale_height_meters,
+                translate_weather(&w, None, &ImageSpaceSources::empty()).fog_media[0].scale_height_meters,
                 crate::fog::FogMedium::DEFAULT_SCALE_HEIGHT_METERS,
                 "authored range {bad} must be declined, not forwarded"
             );
@@ -4529,7 +4610,7 @@ mod tests {
             a: 255,
         };
 
-        let wd = translate_weather(&w, None);
+        let wd = translate_weather(&w, None, &ImageSpaceSources::empty());
         assert_eq!(wd.fog, [100.0, 200.0, 300.0, 400.0]);
         let mut expected_day = crate::fog::FogMedium::from_legacy_ramp(100.0, 200.0, Some(0.9));
         let mut expected_night = crate::fog::FogMedium::from_legacy_ramp(300.0, 400.0, Some(0.4));
@@ -4587,7 +4668,7 @@ mod tests {
                 classification,
                 ..WeatherRecord::default()
             };
-            let translated = translate_weather(&weather, None);
+            let translated = translate_weather(&weather, None, &ImageSpaceSources::empty());
             assert_eq!(translated.fog_media[0].coverage, expected);
             assert_eq!(translated.fog_media[1].coverage, expected);
             assert_eq!(translated.weather.cloud_coverage, expected);

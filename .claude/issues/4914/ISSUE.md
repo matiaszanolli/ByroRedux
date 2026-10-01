@@ -1,8 +1,7 @@
-# EXT-D1-2026-09-27-03: `translate_weather` emits an identity `image_space` that the orchestration caller patches; the IMGS boundary is undocumented
+# 4914: EXT-D1-2026-09-27-03: `translate_weather` emits an identity `image_space` that the orchestration caller patches; the IMGS boundary is undocumented
 
-**Issue**: #4914
-**Filed**: 2026-09-27 (audit-publish, AUDIT_EXTERIOR_2026-09-27.md)
-**Labels**: low,terrain-exterior,bug
+labels: bug, low, terrain-exterior
+state: OPEN
 
 **Severity**: LOW
 **Dimension**: EXAL boundary discipline
@@ -23,3 +22,4 @@ Pass the IMGS inputs into `translate_weather`, and list `exterior_image_spaces` 
 - [ ] **SIBLING**: Same pattern checked in related files (other spawners / translate arms / games)
 - [ ] **CANONICAL-BOUNDARY**: Per-game logic stays at the EXAL/WATAL translate boundary (`env_translate.rs`, `groundcover_translate.rs`, the `cell_loader` spawn sites) — never pushed into shaders/renderer, never re-derived at render time. See `/audit-exterior`.
 - [ ] **TESTS**: A regression test pins this specific fix
+

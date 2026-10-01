@@ -362,15 +362,18 @@ fn apply_environment(
             world.insert_resource(WeatherSurfaceState::default());
         }
         // Full NAM0 table + per-climate TOD breakpoints + Skyrim DALC cube
-        // (Z-up→Y-up once), all resolved at the EXAL boundary.
-        let mut new_weather = crate::env_translate::translate_weather(wthr, climate);
-        // #4416 — the exterior's base image space: this weather's IMSP, or
-        // the worldspace's inherited INAM.
-        new_weather.image_space = crate::env_translate::exterior_image_spaces(
-            Some(wthr),
-            &wctx.record_index.cells.worldspaces,
-            &wctx.worldspace_key,
-            &wctx.record_index.image_spaces,
+        // (Z-up→Y-up once) + the exterior's base image space (this weather's
+        // IMSP, else the worldspace's inherited INAM, #4914/#4416), all
+        // resolved at the EXAL boundary — the translation is the single
+        // authority for the whole WeatherDataRes.
+        let new_weather = crate::env_translate::translate_weather(
+            wthr,
+            climate,
+            &crate::env_translate::ImageSpaceSources {
+                worldspaces: &wctx.record_index.cells.worldspaces,
+                worldspace_key: &wctx.worldspace_key,
+                image_spaces: &wctx.record_index.image_spaces,
+            },
         );
         // First-time bootstrap: insert directly. A subsequent worldspace
         // change (door-walking interior↔exterior, M40 Phase 2) will

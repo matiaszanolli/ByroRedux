@@ -212,8 +212,17 @@ pub(crate) fn translate_exterior_cell_lighting(        // step 3 — WTHR day-sl
 pub(crate) fn translate_sky(                           // step 3 — WTHR + pre-resolved handles → SkyParamsRes
     wthr: &WeatherRecord, sun_dir: [f32; 3], textures: SkyTextures) -> SkyParamsRes;
 
-pub(crate) fn translate_weather(                       // step 3 — WTHR (+climate) → WeatherDataRes
-    wthr: &WeatherRecord, climate: Option<&ClimateRecord>) -> WeatherDataRes;
+pub(crate) fn translate_weather(                       // step 3 — WTHR (+climate, +IMGS sources) → WeatherDataRes
+    wthr: &WeatherRecord, climate: Option<&ClimateRecord>,
+    imgs: &ImageSpaceSources<'_>) -> WeatherDataRes;
+
+// #4416/#4914 — the IMGS/worldspace tables `translate_weather` resolves the
+// exterior's base image space from (the weather's IMSP, else the worldspace's
+// inherited INAM, else the identity grade). A method on the bundle, not a
+// caller-side patch: the translation stays the single authority for every
+// WeatherDataRes field.
+impl ImageSpaceSources<'_> { fn resolve(&self, weather: Option<&WeatherRecord>)
+    -> [byroredux_scripting::ImageSpace; 4]; }
 
 // Procedural fallback (no climate/weather) — explicit canonical constructors,
 // replacing the old inline hardcoded Mojave block in the render-setup path.
