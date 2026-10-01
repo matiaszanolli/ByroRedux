@@ -156,6 +156,40 @@ impl ConsoleCommand for SystemsCommand {
     }
 }
 
+/// `engine.quit` — request the shared orderly shutdown from any console
+/// frontend (byro-dbg, the native overlay).
+///
+/// Deliberately not named `quit`: byro-dbg's REPL intercepts bare
+/// `quit`/`exit`/`q` client-side to leave the CLI, so an engine command
+/// under those names would be unreachable from the very frontend smokes
+/// use. The command only flips [`GracefulExitRequested`]; the shutdown
+/// itself runs in the next `about_to_wait`, after this frame's deferred
+/// player save actions have executed. Same teardown as the window close
+/// button and the pause menu's Quit.
+pub(crate) struct EngineQuitCommand;
+impl ConsoleCommand for EngineQuitCommand {
+    fn name(&self) -> &str {
+        "engine.quit"
+    }
+    fn description(&self) -> &str {
+        "Request a graceful engine shutdown (streaming unload + renderer teardown)"
+    }
+    fn execute(&self, world: &World, _args: &str) -> CommandOutput {
+        match world.try_resource_mut::<crate::app_events::GracefulExitRequested>() {
+            Some(mut request) => {
+                request.0 = true;
+                CommandOutput::line(
+                    "engine.quit: graceful shutdown requested — the current frame completes, \
+                     then the engine exits",
+                )
+            }
+            None => CommandOutput::error(
+                "engine.quit: GracefulExitRequested resource not installed (headless boot?)",
+            ),
+        }
+    }
+}
+
 /// `sdk.compat` — aggregate extender-era calls found in compiled scripts
 /// actually observed by the current engine world.
 pub(crate) struct SdkCompatCommand;

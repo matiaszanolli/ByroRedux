@@ -519,6 +519,8 @@ fn key_label(key: KeyCode) -> &'static str {
         KeyCode::AltLeft => "Left Alt",
         KeyCode::Tab => "Tab",
         KeyCode::Enter => "Enter",
+        KeyCode::F5 => "F5",
+        KeyCode::F9 => "F9",
         _ => "Unknown",
     }
 }
@@ -583,6 +585,23 @@ pub(crate) fn queue_debug_action_press(world: &World, action_name: &str) -> Resu
             .ok_or_else(|| format!("{} is unbound", action.label()))?;
         (key, bindings.binding_label(action))
     };
+    // Quicksave/Quickload never enter `ActionState`: the window-event path
+    // resolves F5/F9 to a `PlayerSaveAction` and defers it past the
+    // scheduler (#3113), so the debug press joins that same canonical queue
+    // instead of pulsing a held bit no save consumer reads.
+    if let Some(save_action) = match action {
+        InputAction::Quicksave => Some(crate::save_io::PlayerSaveAction::Quicksave),
+        InputAction::Quickload => Some(crate::save_io::PlayerSaveAction::Quickload),
+        _ => None,
+    } {
+        crate::save_io::queue_player_save_action(world, save_action)
+            .map_err(|error| error.to_string())?;
+        log::debug!("input.pulse: queued {key:?} for {}", action.label());
+        return Ok(format!(
+            "input.press: queued action={} binding={label}; player save action deferred",
+            action.label()
+        ));
+    }
     let mut pulse = world
         .try_resource_mut::<InjectedKeyPulse>()
         .ok_or_else(|| "InjectedKeyPulse resource is not installed".to_string())?;
@@ -644,6 +663,8 @@ fn debug_action(name: &str) -> Option<InputAction> {
         "attack" | "r" => Some(InputAction::Attack),
         "block" | "c" => Some(InputAction::Block),
         "inventory" | "tab" => Some(InputAction::Inventory),
+        "quicksave" | "f5" => Some(InputAction::Quicksave),
+        "quickload" | "f9" => Some(InputAction::Quickload),
         _ => None,
     }
 }
@@ -1550,6 +1571,7 @@ mod tests {
         world.insert_resource(ActionState::default());
         world.insert_resource(InjectedKeyPulse::default());
         world.insert_resource(InjectedKeyHold::default());
+        world.insert_resource(crate::save_io::PendingPlayerSaveActions::default());
         world.insert_resource(InteractionState::default());
         world.insert_resource(InteractionTrace::default());
         world
@@ -1698,6 +1720,43 @@ mod tests {
         assert!(world
             .resource::<ActionState>()
             .was_pressed(InputAction::Attack));
+    }
+
+    #[test]
+    fn quicksave_press_joins_the_player_save_queue_through_the_f5_binding() {
+        let world = input_fixture();
+        let message = queue_debug_action_press(&world, "quicksave").unwrap();
+        assert_eq!(
+            message,
+            "input.press: queued action=Quicksave binding=F5; player save action deferred"
+        );
+        let pending = world.resource::<crate::save_io::PendingPlayerSaveActions>();
+        assert_eq!(pending.queued(), [crate::save_io::PlayerSaveAction::Quicksave]);
+
+        // The save path owns the action; no gameplay pulse may be consumed
+        // from it, or a second refresh would double-fire on the same press.
+        refresh_action_state(&world);
+        assert!(!world.resource::<ActionState>().is_held(InputAction::Quicksave));
+    }
+
+    #[test]
+    fn quickload_press_joins_the_player_save_queue_through_the_f9_binding() {
+        let world = input_fixture();
+        let message = queue_debug_action_press(&world, "quickload").unwrap();
+        assert_eq!(
+            message,
+            "input.press: queued action=Quickload binding=F9; player save action deferred"
+        );
+        let pending = world.resource::<crate::save_io::PendingPlayerSaveActions>();
+        assert_eq!(pending.queued(), [crate::save_io::PlayerSaveAction::Quickload]);
+    }
+
+    #[test]
+    fn save_action_press_reports_a_missing_save_queue_instead_of_silent_no_op() {
+        let mut world = World::new();
+        world.insert_resource(ActionBindings::default());
+        let error = queue_debug_action_press(&world, "quicksave").unwrap_err();
+        assert_eq!(error, "player save-action queue not installed");
     }
 
     #[test]

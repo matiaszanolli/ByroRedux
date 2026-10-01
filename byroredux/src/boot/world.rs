@@ -33,6 +33,11 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
         ..Default::default()
     });
     world.insert_resource(DebugStats::default());
+    // `engine.quit` flips this; `about_to_wait` performs the same orderly
+    // shutdown the window close button uses. Pre-registered (not inserted
+    // by the command) because console commands hold `&World` and can only
+    // mutate existing resources.
+    world.insert_resource(crate::app_events::GracefulExitRequested::default());
     // #3836 — caches the scene-wide EFFECT_SOFT answer so `build_render_data`
     // stops rescanning every Material and ParticleEmitter each frame. Absent
     // resource degrades to the old per-frame scan, so this is an optimisation,

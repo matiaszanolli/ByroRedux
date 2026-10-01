@@ -135,6 +135,7 @@ pub(crate) fn build_command_registry() -> CommandRegistry {
     registry.register(WaterContactsCommand);
     registry.register(DoorTeleportCommand);
     registry.register(SysAccessesCommand);
+    registry.register(EngineQuitCommand);
     registry.register(SkinListCommand);
     registry.register(SkinDumpCommand);
     registry.register(MemFragCommand);

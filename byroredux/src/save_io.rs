@@ -231,6 +231,15 @@ pub struct PendingPlayerSaveActions(Vec<PlayerSaveAction>);
 
 impl Resource for PendingPlayerSaveActions {}
 
+impl PendingPlayerSaveActions {
+    /// Read-only view of the still-deferred actions, so callers (and tests)
+    /// can observe the queue without joining the executor's take semantics.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn queued(&self) -> &[PlayerSaveAction] {
+        &self.0
+    }
+}
+
 /// Defer a player save/load request to the post-scheduler frame boundary.
 ///
 /// Returning an error when boot has not installed the queue makes this usable

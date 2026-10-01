@@ -305,7 +305,7 @@ commands were unreachable from `byro-dbg` because `tex.missing` parsed as
 
 The console commands are registered in `byroredux/src/commands/mod.rs`
 (`build_command_registry()`) plus the save/load implementations in
-`byroredux/src/save_io.rs`. Current registered commands (**97**) grouped by
+`byroredux/src/save_io.rs`. Current registered commands (**98**) grouped by
 purpose:
 
 ```
@@ -315,6 +315,9 @@ hardcore                    → show or change the active hardcore ruleset
 stats                       → FPS / frame time / entity / mesh / texture counts
 entities [<Component>]      → list entities (optionally filtered by component)
 systems                     → registered ECS systems in execution order
+engine.quit                 → request the graceful shutdown (same teardown as
+                             window close / pause-menu Quit); the frame that
+                             queued it completes first
 sys.accesses                → declared-access conflict report (R7) — pre-flight
                              for M27 parallel scheduler (now also covers
                              exclusive systems, #1236 / #1237)
@@ -743,6 +746,22 @@ refit — surfaces as:
 See `crates/core/src/ecs/resources/mod.rs` (`SkinCoverageStats`) for the canonical
 schema and `crates/renderer/src/vulkan/context/draw.rs` for the per-frame
 increments.
+
+### `engine.quit` — graceful shutdown request
+
+Flips `GracefulExitRequested`; the top of the next `about_to_wait` runs the
+same orderly shutdown the window close button and the pause menu's Quit use
+(extension host → streaming unload → renderer teardown → `event_loop.exit()`).
+The one-frame delay is deliberate: a quicksave deferred alongside the quit
+(`input.press quicksave` + `engine.quit` in one batch) still executes in the
+requesting frame's post-scheduler drain before teardown begins. Deliberately
+not named `quit` — byro-dbg's REPL intercepts bare `quit`/`exit`/`q`
+client-side, so those names would never reach this command.
+
+```
+byro> engine.quit
+engine.quit: graceful shutdown requested — the current frame completes, then the engine exits
+```
 
 ### `sys.accesses` — scheduler access conflicts (R7)
 

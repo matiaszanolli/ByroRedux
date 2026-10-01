@@ -82,6 +82,23 @@ fn record_about_to_wait_timings(
     cpu_t.atw_post_ms = atw_post_t0.elapsed().as_nanos() as f32 * NS_TO_MS;
 }
 
+/// A non-window frontend (the `engine.quit` console command) requesting the
+/// shared orderly shutdown.
+///
+/// The window close button and the pause menu's Quit action call
+/// [`App::shutdown`] directly from their own event arms. A console command
+/// cannot: it executes inside `DebugDrainSystem` on the scheduler, which has
+/// no `ActiveEventLoop`. It flips this pre-registered flag instead, and the
+/// top of the *next* `about_to_wait` performs the same shutdown. Polling one
+/// frame later is deliberate — the requesting frame still finishes, so player
+/// save actions deferred alongside the quit (`input.press quicksave` +
+/// `engine.quit` in one batch) execute in that frame's post-scheduler step
+/// before the teardown begins.
+#[derive(Debug, Default, Clone, Copy)]
+pub(crate) struct GracefulExitRequested(pub bool);
+
+impl byroredux_core::ecs::Resource for GracefulExitRequested {}
+
 impl App {
     /// Shared orderly shutdown for both the OS close button and the native
     /// pause menu's Quit action.
@@ -618,6 +635,17 @@ impl ApplicationHandler for App {
         // burying the real error under an unrelated ECS panic. The same holds
         // for the one tick after the close path has dropped the renderer.
         if self.renderer.is_none() {
+            return;
+        }
+        // `engine.quit` (or any future non-window frontend) asked for the
+        // orderly shutdown. Same arm as `CloseRequested` and the pause-menu
+        // Quit; see `GracefulExitRequested` for the one-frame-later polling.
+        if self
+            .world
+            .try_resource::<GracefulExitRequested>()
+            .is_some_and(|request| request.0)
+        {
+            self.shutdown(event_loop);
             return;
         }
         if self.loading_screen.take_restore_capture() {

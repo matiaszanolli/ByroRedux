@@ -22,6 +22,30 @@ fn hardcore_command_changes_the_canonical_flag_and_rejects_bad_input() {
 }
 
 #[test]
+fn engine_quit_flips_the_graceful_exit_flag() {
+    let mut world = World::new();
+    world.insert_resource(crate::app_events::GracefulExitRequested::default());
+    let output = EngineQuitCommand.execute(&world, "").lines.join("\n");
+    assert!(output.contains("graceful shutdown requested"), "{output}");
+    assert!(world
+        .resource::<crate::app_events::GracefulExitRequested>()
+        .0);
+
+    // The engine-side command must not collide with byro-dbg's client-side
+    // REPL exits (`quit`/`exit`/`q`), which never reach the dispatch table.
+    let registry = build_command_registry();
+    assert!(registry.list().iter().any(|(name, _)| *name == "engine.quit"));
+    assert!(registry.list().iter().all(|(name, _)| *name != "quit"));
+}
+
+#[test]
+fn engine_quit_reports_a_missing_resource_instead_of_panicking() {
+    let world = World::new();
+    let output = EngineQuitCommand.execute(&world, "").lines.join("\n");
+    assert!(output.contains("not installed"), "{output}");
+}
+
+#[test]
 fn sdk_compat_command_is_registered_and_reports_an_empty_world() {
     let mut world = World::new();
     world.insert_resource(byroredux_scripting::CompatibilityRegistry::default());
