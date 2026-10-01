@@ -2592,6 +2592,54 @@ mod tests {
         }
     }
 
+    /// #4917 — an out-of-line `#[cfg(test)] mod x;` declaration must not be
+    /// treated as a block start: the stripper has to keep the production
+    /// code after the `;`, or a real spawner placed below one silently
+    /// leaves [`every_exterior_spawner_inserts_a_boundary_material`]'s
+    /// coverage (the #4302/#4856 mode, live in 34 declarations across the
+    /// spawner roots).
+    #[test]
+    fn stripper_keeps_production_after_out_of_line_test_module_declarations() {
+        let src = "\
+fn first_spawner() {
+    insert(MeshHandle);
+}
+
+#[cfg(test)]
+mod first_spawner_tests;
+
+fn later_spawner() {
+    insert(MeshHandle);
+}
+";
+        let production = strip_inline_test_modules(src);
+        assert!(
+            production.contains("fn first_spawner()"),
+            "production before the declaration is untouched"
+        );
+        assert!(
+            production.contains("fn later_spawner()"),
+            "production after an out-of-line `mod x;` must survive the strip — \
+             the old shape swallowed it up to the next column-0 `}}`"
+        );
+
+        // The inline form still strips as a block.
+        let inline = "\
+fn a() {}
+
+#[cfg(test)]
+mod a_tests {
+    fn helper() {}
+}
+
+fn b() {}
+";
+        let stripped = strip_inline_test_modules(inline);
+        assert!(!stripped.contains("mod a_tests"));
+        assert!(!stripped.contains("helper"));
+        assert!(stripped.contains("fn b() {}"));
+    }
+
     /// Directory and sibling-file roots under `byroredux/src` that own
     /// mesh-spawning code, walked by
     /// [`every_exterior_spawner_inserts_a_boundary_material`].
@@ -2619,17 +2667,47 @@ mod tests {
     /// its test module and `terrain_lod.rs` a `#[cfg(test)]` helper before
     /// its own — and either mistake silently drops a real spawner from the
     /// scan.
+    ///
+    /// #4917 — only INLINE blocks (`mod foo { … }`) are stripped as blocks.
+    /// An out-of-line declaration (`#[cfg(test)] mod foo_tests;`) ends at
+    /// its own `;`; treating it as a block start swallowed every production
+    /// line up to the next column-0 `}` — exactly the silent-coverage-loss
+    /// mode of #4302/#4856, live in 34 declarations across the spawner
+    /// roots.
     /// `pub(super)`: also used by the `canonical_completeness_harness`
     /// module's pin guard (#4411).
     pub(super) fn strip_inline_test_modules(src: &str) -> String {
+        const ATTR: &str = "\n#[cfg(test)]\nmod ";
         let mut out = String::with_capacity(src.len());
         let mut rest = src;
-        while let Some(start) = rest.find("\n#[cfg(test)]\nmod ") {
-            out.push_str(&rest[..start]);
-            let after = &rest[start + 1..];
-            match after.find("\n}\n") {
-                Some(end) => rest = &after[end + 3..],
-                None => return out,
+        while let Some(start) = rest.find(ATTR) {
+            let header = &rest[start + ATTR.len()..];
+            // Decide the module form from the header terminator before
+            // stripping anything: `{` opens an inline block, `;` ends an
+            // out-of-line declaration.
+            let terminator = header.find(['{', ';']);
+            match terminator.map(|at| header.as_bytes()[at]) {
+                Some(b'{') => {
+                    out.push_str(&rest[..start]);
+                    let after = &rest[start + 1..];
+                    match after.find("\n}\n") {
+                        Some(end) => rest = &after[end + 3..],
+                        None => return out,
+                    }
+                }
+                Some(b';') => {
+                    // Keep the declaration (it is cfg(test) and spawns
+                    // nothing) and, critically, the production code after
+                    // it — the scan must continue past the `;`, not jump to
+                    // the next column-0 `}`.
+                    let through = start + ATTR.len() + terminator.unwrap() + 1;
+                    out.push_str(&rest[..through]);
+                    rest = &rest[through..];
+                }
+                _ => {
+                    out.push_str(rest);
+                    return out;
+                }
             }
         }
         out.push_str(rest);
