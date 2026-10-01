@@ -278,7 +278,8 @@ fn bgsm_named_starfield_path_merges_from_cdb_on_sidecar_miss() {
 
     let mut mesh =
         imported_mesh_with_material_path(&mut pool, "materials/test/widget.bgsm");
-    let outcome = merge_external_material(&mut mesh.material, &mut provider, &mut pool, &|_| false);
+    let outcome =
+        merge_external_material(&mut mesh.material, &mut provider, &mut pool, &|_| false);
 
     assert_eq!(outcome, MergeOutcome::Merged);
     assert!(

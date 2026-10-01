@@ -133,7 +133,18 @@ fn cdb_material_index(source: &str, inner: &str) -> Option<Arc<MaterialIndex>> {
             cache.remove(&evicted);
         }
     }
-    cache.insert(key, built.clone());
+    // The build ran outside the lock, so two threads can race the same CDB:
+    // the loser (a failed build) must not clobber the winner's Some. A
+    // memoized failure therefore fills only a VACANT slot; a success always
+    // wins — over a poison and over a stale entry alike. (Diagnosed through
+    // `bgsm_named_starfield_path_merges_from_cdb_on_sidecar_miss`, whose
+    // injected index lost to a parallel probe-only test's failed-build
+    // memoization ~1 run in 3.)
+    if built.is_some() {
+        cache.insert(key, built.clone());
+    } else {
+        cache.entry(key).or_insert(built.clone());
+    }
     built
 }
 
