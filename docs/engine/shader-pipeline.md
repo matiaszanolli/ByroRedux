@@ -388,7 +388,7 @@ resolution after the upscale so tone-mapping sees full-resolution detail.
 
 Eight colour attachments + depth, all double-buffered (one set per
 `MAX_FRAMES_IN_FLIGHT` = 2). Written by the main render pass
-(`triangle.frag` / `triangle_early.frag`, `water.frag`, and
+(`triangle.frag` / `triangle_early.frag.spv`, `water.frag`, and
 `groundcover_blade.frag`, which writes attachments 0, 2, 5, 6 and 7 and masks
 off 1, 3 and 4 — `draw_write_masks_match_each_fragment_shaders_outputs`), read
 by SVGF, TAA, SSAO, composite, and (the two FSR mask attachments)
