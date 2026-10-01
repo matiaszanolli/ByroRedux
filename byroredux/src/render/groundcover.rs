@@ -813,6 +813,11 @@ pub(crate) fn groundcover_species_table_signature(world: &World) -> u64 {
 pub(crate) struct GroundCoverModelRecordsKey {
     generation: u64,
     blade_reach_bits: u32,
+    /// #4906 — which records have loaded shapes this frame, folded. The
+    /// table weights by placeability, so shapes streaming in (or a record's
+    /// model failing to load) must re-derive the table, not just a new
+    /// cover generation.
+    placeable_fold: u64,
 }
 
 /// #4413 — the authored-model tier's records and record-selection table for
@@ -834,6 +839,7 @@ pub(crate) struct GroundCoverModelRecordsKey {
 /// [`AuthoredCover`]: byroredux_core::ecs::components::groundcover::AuthoredCover
 pub(crate) fn collect_groundcover_model_records(
     world: &World,
+    draws: &[(u32, byroredux_renderer::vulkan::context::DrawCommand)],
     records: &mut Vec<byroredux_renderer::vulkan::groundcover_models::GpuGroundCoverModelRecord>,
     table: &mut Vec<u32>,
     key: &mut Option<GroundCoverModelRecordsKey>,
@@ -859,9 +865,26 @@ pub(crate) fn collect_groundcover_model_records(
                 .fold(0.0_f32, f32::max)
         })
         .unwrap_or(0.0);
+    // #4906 — a record is placeable only when its model produced template
+    // draws this frame; unplaceable records (model failed to load, or not
+    // streamed in yet) must not keep a selection-table share, or they thin
+    // every record that does place.
+    let count_ahead = cover.records.len().min(
+        byroredux_renderer::shader_constants::GROUNDCOVER_MODEL_MAX_RECORDS as usize,
+    );
+    let mut placeable = vec![false; count_ahead];
+    for (record, _) in draws.iter() {
+        if let Some(slot) = placeable.get_mut(*record as usize) {
+            *slot = true;
+        }
+    }
+    let placeable_fold = placeable
+        .iter()
+        .fold(placeable.len() as u64, |h, &p| h.rotate_left(1) ^ p as u64);
     let current = GroundCoverModelRecordsKey {
         generation: cover.generation,
         blade_reach_bits: blade_reach.to_bits(),
+        placeable_fold,
     };
     if *key == Some(current) {
         return Some(cover.grid_spacing);
@@ -906,11 +929,48 @@ pub(crate) fn collect_groundcover_model_records(
     }));
     let weights: Vec<f32> = used
         .iter()
-        .map(|record| record.climate_weight.weight_for(cover.climate))
+        .zip(&placeable)
+        .map(|(record, &can_place)| {
+            // #4906 — climate weight zeroed for records that cannot place:
+            // their table share would place nothing while thinning every
+            // record that does.
+            can_place
+                .then(|| record.climate_weight.weight_for(cover.climate))
+                .unwrap_or(0.0)
+        })
         .collect();
-    table.extend_from_slice(&species_selection_table(&weights));
+    let selection = species_selection_table(&weights);
+    // #4906 — bake the selection share into the uploaded density. The
+    // scatter picks one record per lattice candidate from the table, then
+    // accepts at `density * field * fade`, so a record's effective coverage
+    // was `share * density` — every added record diluted all the others.
+    // `density / share` (capped at 1) restores each record's authored rate
+    // up to the candidate share its table presence allows.
+    let mut entries = vec![0usize; used.len()];
+    for &record in &selection {
+        entries[record as usize] += 1;
+    }
+    for (record, entries) in records.iter_mut().zip(&entries) {
+        record.density = density_normalized_by_share(record.density, *entries);
+    }
+    table.extend_from_slice(&selection);
     *key = Some(current);
     Some(cover.grid_spacing)
+}
+
+/// #4906 — the model scatter's accept test is `density * field * fade` AFTER
+/// a uniform pick from the selection table, so effective coverage is
+/// `share * density`. Dividing by the share (an record with `entries` of the
+/// table's slots has `share = entries / SIZE`) restores the authored rate up
+/// to the pick probability — the lattice cannot hand a record more
+/// candidates than its table entries, hence the cap at 1.
+pub(crate) fn density_normalized_by_share(density: f32, entries: usize) -> f32 {
+    const SIZE: usize =
+        byroredux_renderer::shader_constants::GROUNDCOVER_SPECIES_TABLE_SIZE as usize;
+    if entries == 0 || !density.is_finite() || density <= 0.0 {
+        return density;
+    }
+    (density / (entries as f32 / SIZE as f32)).min(1.0)
 }
 
 /// Quantise relative weights into the scatter's fixed-size selection table.
@@ -1063,7 +1123,7 @@ mod tests {
         let (mut records, mut table, mut key) = (Vec::new(), Vec::new(), None);
 
         assert_eq!(
-            collect_groundcover_model_records(&world, &mut records, &mut table, &mut key),
+            collect_groundcover_model_records(&world, &[], &mut records, &mut table, &mut key),
             Some(80.0)
         );
         assert_eq!(records.len(), 1);
@@ -1075,7 +1135,7 @@ mod tests {
         records[0].density = -1.0;
         let capacity = table.capacity();
         assert_eq!(
-            collect_groundcover_model_records(&world, &mut records, &mut table, &mut key),
+            collect_groundcover_model_records(&world, &[], &mut records, &mut table, &mut key),
             Some(80.0)
         );
         assert_eq!(records[0].density, -1.0, "a matching key must not re-derive");
@@ -1083,16 +1143,39 @@ mod tests {
 
         // A newly installed cover is a new generation: re-derived.
         world.insert_resource(cover(0.75));
-        collect_groundcover_model_records(&world, &mut records, &mut table, &mut key);
+        collect_groundcover_model_records(&world, &[], &mut records, &mut table, &mut key);
         assert_eq!(records[0].density, 0.75);
 
         // No cover: cleared, and the key forgotten.
         world.remove_resource::<AuthoredCover>();
         assert_eq!(
-            collect_groundcover_model_records(&world, &mut records, &mut table, &mut key),
+            collect_groundcover_model_records(&world, &[], &mut records, &mut table, &mut key),
             None
         );
         assert!(records.is_empty() && table.is_empty() && key.is_none());
+    }
+
+    /// #4906 — effective coverage under pick-then-accept is `share ×
+    /// density`; baking `density / share` (capped at 1) into the uploaded
+    /// record restores the authored rate up to the record's pick share.
+    #[test]
+    fn density_normalization_divides_by_the_selection_share() {
+        // Full table: share 1.0, density unchanged.
+        assert_eq!(density_normalized_by_share(0.3, 256), 0.3);
+        // Half the table: a 0.5-authored density saturates its share.
+        assert_eq!(density_normalized_by_share(0.5, 128), 1.0);
+        // A low density below its share survives division untouched.
+        assert!((density_normalized_by_share(0.1, 128) - 0.2).abs() < 1e-6);
+        // No entries (never picked) or degenerate density: pass through.
+        assert_eq!(density_normalized_by_share(0.3, 0), 0.3);
+        assert_eq!(density_normalized_by_share(0.0, 64), 0.0);
+        assert!(density_normalized_by_share(f32::NAN, 64).is_nan());
+        // The audit's dilution case: ten equal records at authored 0.3
+        // covered 0.01 each pre-fix (total 0.1); normalized, each saturates
+        // its 0.1 share (total 1.0) — the independent-grid expectation for
+        // ten 0.3-cover records is 1 - 0.7^10 = 0.97.
+        let per_record = density_normalized_by_share(0.3, 25);
+        assert_eq!(per_record, 1.0);
     }
 
     /// The table is sized to the scatter's 8 hash bits; anything else leaves

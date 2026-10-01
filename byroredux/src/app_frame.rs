@@ -827,9 +827,12 @@ fn prepare_groundcover_models(
         *records_key = None;
         None
     } else {
-        // #4922 — re-derived only when the installed cover changes.
+        // #4922 — re-derived only when the installed cover changes;
+        // #4906 — or when the placeable set changes (shapes streamed in or
+        // a model failed), because the selection table weights by it.
         crate::render::groundcover::collect_groundcover_model_records(
             world,
+            template_draws,
             records,
             table,
             records_key,
