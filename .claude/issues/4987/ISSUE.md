@@ -1,9 +1,8 @@
-# #4987: CONC-D3-2026-09-28-03 (regression of #4596): The `vulkan-validation` CI lane has never reached a Vulkan device since #4596 closed, so the only live-world run of the lock-order detector (and of the validation layer) is inert
+# Issue #4987
 
-- **Repo**: matiaszanolli/ByroRedux
-- **Labels**: medium,concurrency,test-gap,bug
-- **Filed from**: docs/audits/AUDIT_CONCURRENCY_2026-09-28.md
-- **Filed**: 2026-09-28
+**Title:** CONC-D3-2026-09-28-03 (regression of #4596): The `vulkan-validation` CI lane has never reached a Vulkan device since #4596 closed, so the only live-world run of the lock-order detector (and of the validation layer) is inert
+**State:** OPEN
+**Labels:** bug, medium, concurrency, test-gap
 
 - **Severity**: MEDIUM. This is the same defence-in-depth rating #4596 carried. It covers the HIGH-floor classes "ECS deadlock" and "Vulkan spec violation".
 - **Dimension**: ECS Lock Ordering. The lane is the dynamic supplement to the static scheduler proof.
@@ -46,3 +45,4 @@ Source: `docs/audits/AUDIT_CONCURRENCY_2026-09-28.md` (CONC-D3-2026-09-28-03) ·
 - [ ] **SIBLING**: Same pattern checked in related systems / CI steps
 - [ ] **LOCK_ORDER**: If a RwLock scope changes, TypeId-sorted acquisition and the `docs/engine/ecs.md` canonical order are preserved
 - [ ] **TESTS**: A regression test pins this specific fix
+

@@ -1,6 +1,8 @@
-# SF-2026-09-29-D4-02: Starfield WTHR FNAM power / max-opacity / height-fog tail is never decoded — parse_wthr gates it on FO4 | FO76 only
+# Issue #5001
 
-**Labels**: medium,bug,esm-plugin,terrain-exterior,game:starfield,legacy-compat
+**Title:** SF-2026-09-29-D4-02: Starfield WTHR FNAM power / max-opacity / height-fog tail is never decoded — parse_wthr gates it on FO4 | FO76 only
+**State:** OPEN
+**Labels:** bug, medium, legacy-compat, game:starfield, terrain-exterior, esm-plugin
 
 **Source**: `docs/audits/AUDIT_STARFIELD_2026-09-29.md`
 **Severity**: MEDIUM
@@ -33,3 +35,4 @@ Validated at HEAD 9fcfdc3fc: both `matches!(game, GameKind::Fallout4 | GameKind:
 - [ ] **SIBLING**: FO3/FNV FNAM bytes 16–23 (day/night power per xEdit) are also ignored — check with the FNV/FO3 owners
 - [ ] **CANONICAL-BOUNDARY**: unit lift stays in `spatial_units::normalize`, never in the renderer/shaders
 - [ ] **TESTS**: A regression test pins this specific fix (Starfield 72-byte FNAM fixture)
+

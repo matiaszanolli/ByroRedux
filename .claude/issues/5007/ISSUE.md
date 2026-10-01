@@ -1,6 +1,8 @@
-# PAR-D1-2026-09-29-02: MenuXml fetches an `<include>` before the cycle and budget checks, so fetch and inflate work grows quadratically with fragment size
+# Issue #5007
 
-**Labels**: medium,bug,import-pipeline,ui,safety
+**Title:** PAR-D1-2026-09-29-02: MenuXml fetches an `<include>` before the cycle and budget checks, so fetch and inflate work grows quadratically with fragment size
+**State:** OPEN
+**Labels:** bug, import-pipeline, medium, safety, ui
 
 **Source report**: `docs/audits/AUDIT_PARSERS_2026-09-29.md`
 
@@ -35,3 +37,4 @@
 ## Completeness Checks
 - [ ] **SIBLING**: Same pattern checked in related files (other shader types, other block parsers)
 - [ ] **TESTS**: A regression test pins this specific fix
+

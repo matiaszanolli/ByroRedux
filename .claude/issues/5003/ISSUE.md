@@ -1,6 +1,8 @@
-# SF-2026-09-29-D3-01: #4429's XOR guard counts any backticked mention anywhere in nifal.md as "parked"
+# Issue #5003
 
-**Labels**: low,bug,import-pipeline,test-gap,game:starfield,legacy-compat
+**Title:** SF-2026-09-29-D3-01: #4429's XOR guard counts any backticked mention anywhere in nifal.md as "parked"
+**State:** OPEN
+**Labels:** bug, import-pipeline, low, legacy-compat, game:starfield, test-gap
 
 **Source**: `docs/audits/AUDIT_STARFIELD_2026-09-29.md`
 **Severity**: LOW
@@ -27,3 +29,4 @@ Validated at HEAD 9fcfdc3fc: the test computes `parked = NIFAL_SRC.contains(...)
 ## Completeness Checks
 - [ ] **SIBLING**: other `include_str!` doc-scan guards that match on the whole file rather than an anchored span
 - [ ] **TESTS**: The tightened guard is shown to fail when a kind is removed from the anchored list
+

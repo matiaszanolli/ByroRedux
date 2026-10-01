@@ -1,4 +1,8 @@
-# #4939 — COORD-04: crates/bsa/src/uvd.rs declares a second EXTERIOR_CELL_UNITS, not pinned to the coord SoT
+# Issue #4939
+
+**Title:** COORD-04: crates/bsa/src/uvd.rs declares a second EXTERIOR_CELL_UNITS, not pinned to the coord SoT
+**State:** OPEN
+**Labels:** bug, import-pipeline, low, legacy-compat, tech-debt
 
 - **ID**: COORD-04
 - **Labels**: low,bug,tech-debt,legacy-compat,import-pipeline
@@ -34,3 +38,4 @@ Re-export the constant (`pub use uvd::EXTERIOR_CELL_UNITS as UVD_CELL_UNITS`) an
 ## Completeness Checks
 - [ ] **SIBLING**: No other crate re-declares a 4096 cell-size constant (`grep -rn '4096\.0' crates --include='*.rs'`)
 - [ ] **TESTS**: A compile-time or unit pin asserts the uvd constant equals `coord::EXTERIOR_CELL_UNITS`
+

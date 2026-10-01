@@ -1,6 +1,8 @@
-# PAR-D2-2026-09-29-01: BA2 DX10 open panics in debug builds on two file-controlled fields
+# Issue #5008
 
-**Labels**: medium,bug,import-pipeline,safety
+**Title:** PAR-D2-2026-09-29-01: BA2 DX10 open panics in debug builds on two file-controlled fields
+**State:** OPEN
+**Labels:** bug, import-pipeline, medium, safety
 
 **Source report**: `docs/audits/AUDIT_PARSERS_2026-09-29.md`
 
@@ -34,3 +36,4 @@
 ## Completeness Checks
 - [ ] **SIBLING**: Same pattern checked in related files (other shader types, other block parsers)
 - [ ] **TESTS**: A regression test pins this specific fix
+

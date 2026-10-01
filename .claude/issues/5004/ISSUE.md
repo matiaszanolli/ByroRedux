@@ -1,6 +1,8 @@
-# SF-2026-09-29-META-01: /audit-starfield Dim 5 first-step filter shader_tests::starfield matches zero tests and reports green
+# Issue #5004
 
-**Labels**: low,bug,tech-debt,game:starfield,legacy-compat
+**Title:** SF-2026-09-29-META-01: /audit-starfield Dim 5 first-step filter shader_tests::starfield matches zero tests and reports green
+**State:** OPEN
+**Labels:** bug, low, legacy-compat, tech-debt, game:starfield
 
 **Source**: `docs/audits/AUDIT_STARFIELD_2026-09-29.md`
 **Severity**: LOW
@@ -27,3 +29,4 @@ Validated at HEAD 9fcfdc3fc: SKILL.md Dim 5 first step reads `cargo test -p byro
 ## Completeness Checks
 - [ ] **SIBLING**: other audit skills that name `shader_tests::` or other `#[path]`-mounted module filters
 - [ ] **TESTS**: the corrected filter is confirmed to run >0 tests
+

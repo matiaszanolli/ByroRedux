@@ -1,6 +1,8 @@
-# SF-2026-09-29-D4-03: parse_lgtm reads Starfield's 108-byte LGTM DATA with Skyrim tail offsets; normalize then lifts two dimensionless scales by 70 (dormant)
+# Issue #5002
 
-**Labels**: low,bug,esm-plugin,game:starfield,legacy-compat
+**Title:** SF-2026-09-29-D4-03: parse_lgtm reads Starfield's 108-byte LGTM DATA with Skyrim tail offsets; normalize then lifts two dimensionless scales by 70 (dormant)
+**State:** OPEN
+**Labels:** bug, low, legacy-compat, game:starfield, esm-plugin
 
 **Source**: `docs/audits/AUDIT_STARFIELD_2026-09-29.md`
 **Severity**: LOW (dormant on vanilla)
@@ -27,3 +29,4 @@ Validated at HEAD 9fcfdc3fc: `parse_lgtm(form_id, subs)` takes no game and its `
 ## Completeness Checks
 - [ ] **SIBLING**: other records decoded with Skyrim offsets on Starfield (XCLL arm is the reference)
 - [ ] **TESTS**: A regression test pins this specific fix (108-byte Starfield LGTM fixture)
+

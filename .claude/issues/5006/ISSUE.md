@@ -1,6 +1,8 @@
-# PAR-D1-2026-09-29-01: HKX #4655's frame bound can be bypassed with one block whose `max_frames_per_block` is about `num_frames`, so the 17 KB → 16M-sample clip still decodes (regression of #4655)
+# Issue #5006
 
-**Labels**: medium,bug,import-pipeline,animation,safety,game:skyrim
+**Title:** PAR-D1-2026-09-29-01: HKX #4655's frame bound can be bypassed with one block whose `max_frames_per_block` is about `num_frames`, so the 17 KB → 16M-sample clip still decodes (regression of #4655)
+**State:** OPEN
+**Labels:** bug, animation, import-pipeline, medium, safety, game:skyrim
 
 **Source report**: `docs/audits/AUDIT_PARSERS_2026-09-29.md`
 
@@ -39,3 +41,4 @@
 ## Completeness Checks
 - [ ] **SIBLING**: Same pattern checked in related files (other shader types, other block parsers)
 - [ ] **TESTS**: A regression test pins this specific fix
+
