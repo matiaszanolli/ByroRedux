@@ -125,6 +125,19 @@ reference_docs=(
     docs/engine/*.md
     .claude/audit-baselines/*/README.md
 )
+# #5105 — the workspace trees are loaded into every agent session and
+# `_audit-common.md` names CLAUDE.md as the authoritative tree, yet neither
+# file was policed: two functions deleted months ago (`build_blas_for_mesh`
+# by 999478ef4, `debug_assert_scratch_aligned` by d6d0516f9) and one type
+# that never existed (`GameArchive` — the real type is `Archive`) survived
+# in both trees with this gate green. Advisory like the other two corpora;
+# the noise floor is the same shape (tree rows quote module paths and plain
+# labels that are not symbols). AGENTS.md may become a pointer to CLAUDE.md
+# (#5107) — a missing file just drops out of the grep.
+workspace_trees=(
+    CLAUDE.md
+    AGENTS.md
+)
 skill_files=("${command_files[@]}" "${reference_docs[@]}")
 shopt -u nullglob
 
@@ -592,8 +605,9 @@ if [[ "${SKIP_SYMBOL_CHECK:-0}" != "1" ]]; then
 
     symbol_advisory "audit skills" "${command_files[@]}"
     symbol_advisory "docs/engine reference docs" "${reference_docs[@]}"
+    symbol_advisory "workspace trees" "${workspace_trees[@]}"
     echo
-    echo "  Set SKIP_SYMBOL_CHECK=1 to silence both advisories."
+    echo "  Set SKIP_SYMBOL_CHECK=1 to silence these advisories."
 fi
 
 # ---------------------------------------------------------------------------

@@ -63,7 +63,7 @@ byroredux/              Binary — game loop, scene setup, systems
   src/scene.rs             Scene setup, NIF loading (load_nif_bytes, load_nif_from_args)
   src/asset_provider/      BSA/BA2-backed texture and mesh extraction
     mod.rs                   TextureProvider, resolve_texture, re-exports
-    archive.rs               GameArchive — wraps BSA (Oblivion-Skyrim SE) or BA2 (FO4-Starfield)
+    archive.rs               Archive — wraps BSA (Oblivion-Skyrim SE) or BA2 (FO4-Starfield)
     texture.rs                File-data lookup by searching BSA/BA2 archives
     material/                Material-path resolution incl. Starfield materialsbeta.cdb (provider, merge, cdb)
     script.rs                Compiled Papyrus (.pex) lookup by script name (M47.2 attach path)
@@ -122,10 +122,10 @@ crates/
       mod.rs                 VulkanContext struct, new(), Drop (reverse-order teardown)
       draw.rs                draw_frame() — per-frame command recording + submission
       resize.rs              recreate_swapchain() — window resize handler
-      resources.rs           build_blas_for_mesh, register_ui_quad, swapchain_extent, log_memory_usage
+      resources.rs           build_blas_batched, register_ui_quad, swapchain_extent, log_memory_usage
       helpers.rs             find_depth_format, create_render_pass, create_framebuffers, etc.
     src/vulkan/acceleration/ AccelerationManager, BlasEntry, TlasState
-      mod.rs                 Struct definition + new()/destroy()/debug_assert_scratch_aligned()
+      mod.rs                 Struct definition + new()/destroy(); scratch align rounds up at use (predicates::align_scratch_address)
       constants.rs           BLAS / TLAS slack margins, reserve floors, eviction thresholds
       types.rs               BlasEntry, TlasState data structs
       predicates.rs          Pure decision fns (`scratch_should_shrink`, `decide_use_update`, …)

@@ -113,7 +113,7 @@ pub fn apply_morphs(
     // total across many morphs can overflow even when every guarded
     // term along the way was individually finite. This single
     // O(vertices) pass is the actual safety net: it's the last stop
-    // before `out` reaches the vertex SSBO and `build_blas_for_mesh`,
+    // before `out` reaches the vertex SSBO and `build_blas_batched`,
     // and the Vulkan spec requires finite BLAS vertex data — feeding
     // it ±inf/NaN is driver-dependent undefined behaviour, not a
     // clean error.
