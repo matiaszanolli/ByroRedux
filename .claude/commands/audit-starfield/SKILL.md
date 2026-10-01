@@ -82,7 +82,7 @@ Status authority: `ROADMAP.md` compat row (100.00% over 120,543 NIFs as of 2026-
 ### Dimension 5: NIF Shader Blocks — BSVER 155+
 **Subagent**: `legacy-specialist`
 **Paths**: `crates/nif/src/blocks/shader/{mod,lighting,effect}.rs`, `crates/nif/src/blocks/shader_tests/starfield.rs`, `crates/nif/src/shader_flags.rs`
-**First step**: `cargo test -p byroredux-nif shader_tests::starfield`
+**First step**: `cargo test -p byroredux-nif --lib -- shader::tests::starfield` — the test module mounts via `#[path = "../shader_tests/mod.rs"] mod tests` inside `blocks::shader`, so a `shader_tests::starfield` filter matches zero tests (vacuous green, #5004)
 **Guards**: `starfield.rs` — `parse_bs_lighting_starfield_captures_trailing_tail`, the `..._tail_empty_without_size_or_drift` pair (LSP + effect), `every_tail_capturing_block_reports_it_and_parse_nif_records_it` (#2532). NIF mechanics are `/audit-nif`.
 **Checklist**:
 - CRC32 flag arrays for BSVER ≥ `FO4_CRC_FLAGS` (132) → `sf1_crcs`; SF2 for BSVER ≥ `FO76_SF2_CRCS` (152) → `sf2_crcs`; hashes are the same reflected CRC-32 as CSG/CDB, over the **uppercase** nif.xml flag name (`bs_shader_crc32`). The effect-shader `Own_Emit` additive promotion reads typed bit **or** the CRC `EMIT_ENABLED` flag via `modern_effect_shader_bit` (#4279, `own_emit_additive_promotion_reads_the_typed_bit_and_the_crc_flag`); no vanilla Starfield block sets it, so a typed-word-only read is invisible on vanilla.
