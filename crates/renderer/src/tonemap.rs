@@ -29,6 +29,7 @@
 /// emits them into the generated `shader_constants.glsl`, and the shader
 /// compares against `TONEMAP_OP_AGX` instead of a hand-typed literal.
 pub use crate::shader_constants::{TONEMAP_OP_ACES, TONEMAP_OP_AGX};
+use crate::shader_constants::{ADAPTATION_SAT_FALLOFF, EXPOSURE_METER_NEUTRAL, LUMA_REC709};
 
 /// Display-transform selection. `RendererConfig` carries this (an `Eq` enum,
 /// not a float — see that struct's docs for why), the console can flip it
@@ -149,6 +150,38 @@ pub fn tonemap(op: TonemapOp, x: [f32; 3]) -> [f32; 3] {
         TonemapOp::Aces => aces(x),
         TonemapOp::Agx => agx(x),
     }
+}
+
+/// #5154 — desaturation-to-lift compensation, the Rust mirror of the
+/// chroma compress `presentation.frag` applies between the exposure meter
+/// and the tonemapper.
+///
+/// When the meter adapts to a dark scene, the exposure lift pushes
+/// mid-tones into the tone curve's steep region, where per-channel deltas
+/// magnify into hue shifts (the dark-scene saturation blowout). Chroma is
+/// compressed by `2^(-ADAPTATION_SAT_FALLOFF * lift_stops)`, lift measured
+/// in stops above the meter's neutral output: one stop of adaptation costs
+/// a quarter stop of chroma, halving saturation at the meter's 16x clamp.
+/// Lift-only — a bright scene never gains saturation, and the transform is
+/// the identity at or below neutral metering.
+pub fn adaptation_chroma_compress(color: [f32; 3], exposure: f32) -> [f32; 3] {
+    let lift_stops = (exposure.max(1.0e-6) / EXPOSURE_METER_NEUTRAL)
+        .log2()
+        .max(0.0);
+    if lift_stops == 0.0 {
+        // Bit-exact identity at or below neutral metering — the lerp below
+        // would otherwise round-trip through luma and cost a ULP.
+        return color;
+    }
+    let chroma = (-ADAPTATION_SAT_FALLOFF * lift_stops).exp2();
+    let luma = color[0] * LUMA_REC709[0]
+        + color[1] * LUMA_REC709[1]
+        + color[2] * LUMA_REC709[2];
+    [
+        luma + (color[0] - luma) * chroma,
+        luma + (color[1] - luma) * chroma,
+        luma + (color[2] - luma) * chroma,
+    ]
 }
 
 #[cfg(test)]
@@ -434,6 +467,98 @@ mod tests {
         assert!(
             frag.contains("params.tonemapOp == TONEMAP_OP_AGX"),
             "presentation.frag must dispatch on the generated define (#4584)"
+        );
+    }
+
+    /// #5154 — the chroma compress must stay the identity at or below
+    /// neutral metering, so nominal and bright scenes are bit-identical to
+    /// the pre-fix presentation.
+    #[test]
+    fn chroma_compress_is_identity_at_or_below_neutral_metering() {
+        let saturated = [0.6f32, 0.2, 0.1];
+        for exposure in [
+            EXPOSURE_METER_NEUTRAL,
+            1.0,
+            crate::vulkan::exposure::MIN_AUTO_EXPOSURE,
+        ] {
+            assert_eq!(
+                adaptation_chroma_compress(saturated, exposure),
+                saturated,
+                "exposure {exposure} must not engage the compress"
+            );
+        }
+    }
+
+    /// #5154 — one stop of meter lift costs exactly a quarter stop of
+    /// chroma; at the meter's 16x clamp (~3.73 stops above neutral)
+    /// saturation roughly halves, and luma is invariant throughout.
+    #[test]
+    fn chroma_compress_trades_a_stop_of_lift_for_a_quarter_stop_of_chroma() {
+        let saturated = [0.6f32, 0.2, 0.1];
+        let luma = saturated[0] * LUMA_REC709[0]
+            + saturated[1] * LUMA_REC709[1]
+            + saturated[2] * LUMA_REC709[2];
+
+        // One stop of lift: chroma scales by exactly 2^-0.25.
+        let one_stop = adaptation_chroma_compress(saturated, EXPOSURE_METER_NEUTRAL * 2.0);
+        let expected = (-ADAPTATION_SAT_FALLOFF).exp2();
+        for channel in 0..3 {
+            assert!(
+                (one_stop[channel] - (luma + (saturated[channel] - luma) * expected)).abs()
+                    < 1.0e-6
+            );
+        }
+
+        // The meter's clamp: lift = log2(16 / 1.2) ≈ 3.73 stops, chroma
+        // ≈ 0.523 — halved, never zeroed.
+        let clamped = adaptation_chroma_compress(saturated, crate::vulkan::exposure::MAX_AUTO_EXPOSURE);
+        let chroma = (clamped[0] - luma) / (saturated[0] - luma);
+        assert!((0.45..=0.60).contains(&chroma), "chroma {chroma}");
+        let out_luma = clamped[0] * LUMA_REC709[0]
+            + clamped[1] * LUMA_REC709[1]
+            + clamped[2] * LUMA_REC709[2];
+        assert!(
+            (out_luma - luma).abs() < 1.0e-6,
+            "the compress must not move luminance"
+        );
+
+        // Grey is the fixed point: no chroma to compress.
+        let grey = adaptation_chroma_compress([0.18f32; 3], 16.0);
+        assert_eq!(grey, [0.18f32; 3]);
+    }
+
+    /// #5154 — the shader must consume the generated defines and apply the
+    /// compress between the meter and the tonemapper (and to the
+    /// underwater tone, which rides the same exposure and curve).
+    #[test]
+    fn presentation_pins_the_adaptation_chroma_compress() {
+        let frag = include_str!("../shaders/presentation.frag");
+        let header = include_str!("../shaders/include/shader_constants.glsl");
+        assert!(
+            header.contains("#define EXPOSURE_METER_NEUTRAL 1.2"),
+            "the generated header must carry the neutral metering constant"
+        );
+        assert!(
+            header.contains("#define ADAPTATION_SAT_FALLOFF 0.25"),
+            "the generated header must carry the falloff constant"
+        );
+        let main = frag.split_once("void main()").expect("main").1;
+        let exposure = main
+            .find("texelFetch(exposureTex, ivec2(0), 0).r")
+            .expect("the exposure sample");
+        let compress = main
+            .find("exp2(-ADAPTATION_SAT_FALLOFF * lift_stops)")
+            .expect("the chroma compress expression");
+        let tonemap_call = main
+            .find("tonemap(compressed * exposure)")
+            .expect("the compressed tonemap call");
+        assert!(
+            exposure < compress && compress < tonemap_call,
+            "the compress must sit between the meter and the tonemapper"
+        );
+        assert!(
+            main.contains("underwater_color * exposure"),
+            "the underwater tone takes the same compress"
         );
     }
 }

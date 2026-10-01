@@ -1763,8 +1763,11 @@ mod tests {
         // Stage 1 (RENDERING-PLAN.md): exposure is sampled from the per-frame
         // `exposureTex` (the same texel FSR normalized against) and applied
         // inside the display-transform dispatch, which selects ACES or AgX.
+        // #5154 — the tonemapper input is `compressed`, the graded colour
+        // after the meter-lift chroma compress; the exposure multiply and
+        // the display transform are unchanged.
         assert!(
-            presentation.contains("tonemap(graded * exposure)"),
+            presentation.contains("tonemap(compressed * exposure)"),
             "presentation.frag no longer applies the sampled exposure inside \
              the display transform; the FSR plan's phase-3 attribution needs \
              re-checking (#4026, Stage 1)",

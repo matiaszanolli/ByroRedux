@@ -43,8 +43,10 @@ pub const DEFAULT_EXPOSURE: f32 = 0.85;
 pub const LIGHT_METER_CALIBRATION_K: f32 = 12.5;
 /// Sensor sensitivity EV100 normalizes to (ISO 100).
 pub const SENSOR_SENSITIVITY_S: f32 = 100.0;
-/// Middle-grey exposure constant of the Frostbite formulation.
-pub const EXPOSURE_CONSTANT: f32 = 1.2;
+/// Middle-grey exposure constant of the Frostbite formulation. Resolves to
+/// the shared `EXPOSURE_METER_NEUTRAL` (#5154) so the metering shader, the
+/// presentation chroma compress and this module cannot disagree.
+pub const EXPOSURE_CONSTANT: f32 = crate::shader_constants::EXPOSURE_METER_NEUTRAL;
 /// Exposure clamps. Wide enough for LDR-authored Bethesda content through a
 /// few stops of HDR headroom; exists so a degenerate meter (e.g. a black
 /// frame) cannot zero or blow up reconstruction.

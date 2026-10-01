@@ -624,6 +624,21 @@ fn main() {
     // Authoritative consumer: tonemap.rs.
     writeln!(out, "#define TONEMAP_OP_ACES {TONEMAP_OP_ACES}u").unwrap();
     writeln!(out, "#define TONEMAP_OP_AGX {TONEMAP_OP_AGX}u").unwrap();
+    // #5154 — meter-lift chroma compress (presentation.frag + tonemap.rs
+    // mirror). Neutral is the meter's EV100 = 0 output; the falloff trades
+    // one stop of auto-exposure lift for a quarter stop of chroma.
+    writeln!(
+        out,
+        "#define EXPOSURE_METER_NEUTRAL {:?}",
+        EXPOSURE_METER_NEUTRAL
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "#define ADAPTATION_SAT_FALLOFF {:?}",
+        ADAPTATION_SAT_FALLOFF
+    )
+    .unwrap();
     for (name, value) in [
         ("FOG_VOLUME_SHAPE_SPHERE", FOG_VOLUME_SHAPE_SPHERE),
         ("FOG_VOLUME_SHAPE_ELLIPSOID", FOG_VOLUME_SHAPE_ELLIPSOID),

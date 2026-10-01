@@ -240,14 +240,37 @@ void main() {
         clamp(params.tintColor.a, 0.0, 1.0)
     );
     float exposure = texelFetch(exposureTex, ivec2(0), 0).r;
-    vec3 presented = tonemap(graded * exposure);
+    // #5154 — EV-dependent chroma compress between the meter and the
+    // tonemapper. When the eye adapts to low light, the exposure lift
+    // pushes mid-tones into the tone curve's steep region, where
+    // per-channel deltas magnify into visible hue shifts — the classic
+    // dark-scene saturation blowout (AgX's coercive tables counter it only
+    // partially, the Narkowicz ACES fit not at all). Compress chroma by
+    // 2^(-falloff * lift), lift measured in stops above the meter's
+    // neutral output (EV100 = 0 -> 1.2): one stop of adaptation costs a
+    // quarter stop of chroma, halving saturation at the 16x clamp. Desat
+    // before the multiply — chroma ratios are scale-invariant, so this is
+    // the same value the post-multiply chroma would carry. The Rust mirror
+    // and behaviour pins live in tonemap.rs.
+    float lift_stops = max(log2(max(exposure, 1.0e-6) / EXPOSURE_METER_NEUTRAL), 0.0);
+    float chroma = exp2(-ADAPTATION_SAT_FALLOFF * lift_stops);
+    float graded_luma = dot(graded, LUMA_REC709);
+    vec3 compressed = mix(vec3(graded_luma), graded, chroma);
+    vec3 presented = tonemap(compressed * exposure);
 
     if (params.underwater.w > 0.0) {
         // The app packs the authored WATR fog ramp into this channel as a
         // Beer–Lambert extinction value. Do not apply a second fixed-distance
         // curve here: that erased per-water fog_near/fog_far differences.
         float extinction = clamp(params.underwater.w, 0.0, 0.85);
-        vec3 underwaterTone = tonemap(params.underwater.xyz * exposure);
+        // The fog tint rides the same exposure and the same tone curve, so
+        // it takes the same chroma compress (#5154).
+        vec3 underwater_color = mix(
+            vec3(dot(params.underwater.xyz, LUMA_REC709)),
+            params.underwater.xyz,
+            chroma
+        );
+        vec3 underwaterTone = tonemap(underwater_color * exposure);
         presented = mix(presented, underwaterTone, extinction);
     }
 
