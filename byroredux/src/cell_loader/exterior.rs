@@ -1941,6 +1941,7 @@ impl ExteriorCellApplyJob {
                 water_center,
                 half,
                 cell.landscape.as_ref(),
+                wctx.record_index.game,
             )
             .is_none()
             {

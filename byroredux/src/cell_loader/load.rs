@@ -600,6 +600,7 @@ pub fn load_cell_with_masters(
             water_center,
             water_half_extent,
             None,
+            index.game,
         )
         .is_none()
         {
@@ -944,6 +945,7 @@ impl InteriorCellApplyJob {
                 water_center,
                 water_half_extent,
                 None,
+                index.game,
             )
             .is_none()
             {

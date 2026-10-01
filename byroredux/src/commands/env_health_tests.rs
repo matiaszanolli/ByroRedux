@@ -8,6 +8,7 @@ use super::*;
 use crate::components::DalcCubeYup;
 use crate::fog::FogMedium;
 use byroredux_core::ecs::components::water::WaterMaterial;
+use byroredux_plugin::esm::reader::GameKind;
 
 /// The shape a real exterior load produces: normalised sun, non-negative
 /// radiance everywhere, and the two exterior flags agreeing.
@@ -300,7 +301,7 @@ fn a_nan_watr_reports_fail_through_the_resolved_material() {
         ..WatrRecord::default()
     };
     let waters = std::collections::HashMap::from([(rec.form_id, rec)]);
-    let (mat, _, _, _, _) = crate::env_translate::resolve_water_material(&waters, Some(0));
+    let (mat, _, _, _, _) = crate::env_translate::resolve_water_material(&waters, Some(0), GameKind::Fallout3NV);
 
     let findings = check_environment(None, None, None, std::slice::from_ref(&mat));
     assert_eq!(

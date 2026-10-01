@@ -396,13 +396,14 @@ pub(super) fn spawn_water_plane(
     cell_origin_world_xz: (f32, f32),
     half_extent: f32,
     terrain: Option<&esm::cell::LandscapeData>,
+    game: esm::reader::GameKind,
 ) -> Option<usize> {
     // ── Resolve WATR → engine WaterMaterial (EXAL boundary) ──
     // The plane's current comes from its WATR (`NAM0`). CELL-level `XWCU`
     // is deliberately not a current source: its shipped entries carry no
     // velocity (see the plugin's `xwcu_linear_velocity`).
     let (mut material, kind, flow, normal_texture_path, noise_texture_paths) =
-        crate::env_translate::resolve_water_material(waters, xcwt_form);
+        crate::env_translate::resolve_water_material(waters, xcwt_form, game);
 
     let allocator = ctx.allocator.as_ref()?;
 
@@ -693,6 +694,7 @@ fn merge_placed_water(
     watr_flow: Option<WaterFlow>,
     damage_per_second: f32,
     refr_velocity: Option<[f32; 3]>,
+    game: esm::reader::GameKind,
 ) -> (WaterPlane, Option<WaterFlow>) {
     let mut material = watr_material;
     material.shader_flags = mesh.material.shader_flags;
@@ -720,6 +722,7 @@ fn merge_placed_water(
             crate::env_translate::compose_flow_scrolls(
                 &mut material,
                 watr_record,
+                game,
                 [reference.direction[0], reference.direction[2]],
                 reference.speed,
             );
@@ -748,6 +751,7 @@ pub(super) fn apply_placed_water_type(
     placement_root: EntityId,
     water_form: u32,
     refr_velocity: Option<[f32; 3]>,
+    game: esm::reader::GameKind,
 ) -> usize {
     if !waters.contains_key(&water_form) {
         log::debug!("placed water type {water_form:08X} is not a WATR record; mesh water kept");
@@ -789,7 +793,7 @@ pub(super) fn apply_placed_water_type(
     }
 
     let (watr_material, watr_kind, watr_flow, normal_path, noise_paths) =
-        crate::env_translate::resolve_water_material(waters, Some(water_form));
+        crate::env_translate::resolve_water_material(waters, Some(water_form), game);
     let damage_per_second = watr_damage_per_second(waters, Some(water_form));
     let watr_record = &waters[&water_form];
     for (entity, mesh, mesh_flow) in &targets {
@@ -802,6 +806,7 @@ pub(super) fn apply_placed_water_type(
             watr_flow,
             damage_per_second,
             refr_velocity,
+            game,
         );
         let (normal, noise) = resolve_water_textures(
             ctx,
@@ -936,7 +941,7 @@ pub(crate) fn spawn_lod_water_plane(
     game: esm::reader::GameKind,
 ) -> Option<LodWaterPlane> {
     let (material, kind, flow, normal_texture_path, noise_texture_paths) =
-        crate::env_translate::resolve_water_material(waters, lod_water_form);
+        crate::env_translate::resolve_water_material(waters, lod_water_form, game);
 
     let allocator = ctx.allocator.as_ref()?;
 
@@ -1223,6 +1228,7 @@ mod tests {
             Some(watr_flow),
             0.0,
             None,
+            esm::reader::GameKind::Skyrim,
         );
         assert_eq!(plane.kind, WaterKind::River);
         assert_eq!(plane.material.source_form, 0x000E_717C);
@@ -1244,6 +1250,7 @@ mod tests {
             None,
             0.0,
             None,
+            esm::reader::GameKind::Skyrim,
         );
         assert_eq!(plane.material.effect_controls[2], 0.0);
     }
@@ -1260,6 +1267,7 @@ mod tests {
             Some(WaterFlow::new([1.0, 0.0, 0.0], 1.0)),
             0.0,
             Some([3.0, 4.0, 0.0]),
+            esm::reader::GameKind::Skyrim,
         );
         let flow = flow.expect("reference current");
         assert_eq!(flow.direction, [0.6, 0.0, -0.8]);
@@ -1278,6 +1286,7 @@ mod tests {
             Some(WaterFlow::new([1.0, 0.0, 0.0], 2.0)),
             0.0,
             Some([3.0, 4.0, 0.0]),
+            esm::reader::GameKind::Skyrim,
         );
         assert_eq!(plane.kind, WaterKind::Waterfall);
         let flow = flow.expect("waterfall flow");
@@ -1307,6 +1316,7 @@ mod tests {
             Some(WaterFlow::new([1.0, 0.0, 0.0], 4.0)),
             0.0,
             Some([3.0, 4.0, 0.0]),
+            esm::reader::GameKind::Skyrim,
         );
         let flow = flow.expect("reference current");
         assert_eq!(flow.direction, [0.6, 0.0, -0.8]);
@@ -1347,6 +1357,7 @@ mod tests {
             None,
             0.0,
             Some([3.0, 4.0, 0.0]),
+            esm::reader::GameKind::Skyrim,
         );
         let flow = flow.expect("the physics current still wins");
         assert_eq!(flow.direction, [0.6, 0.0, -0.8]);

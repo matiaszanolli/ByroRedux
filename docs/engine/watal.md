@@ -448,25 +448,45 @@ paint flat 0.08 grey) and `m-exteriors.sh water` floors its capture mean —
 `reflection_intensity_contract_tests` in `vulkan/water.rs` pins the GLSL source
 shape.
 
-**Directional-scroll frame (#4544 superseded by #4727, 2026-09-24):** WATR's
-per-layer wind angles are wind-FROM compass bearings in the record's Z-up
-frame (0 = from game north; see the §2 per-game table), and the engine XZ plane
-reads them rotated +90° — the conversion lives at the
-translate boundary (`watr_angle_to_engine_xz` in `env_translate.rs`), so the
-authored layers run downstream and compose with the flow term verbatim. The
-#4544 paragraph this replaces treated the same measurement as authoring: it
-confined each layer to the flow axis (`WATER_CROSS_STREAM_SCROLL = 0.25`) and
-halved the perpendicular shear — masking the ~90° frame error by discarding
-~70% of the authored speed profile while what survived still pointed mostly
-sideways. With the frame corrected the confinement is gone and the shear
-returns to the documented 0.5× (`WATER_PERPENDICULAR_SHEAR_SCROLL`). Census:
-Skyrim's 51 non-zero layers sit −84.1° off their own NAM0 raw (R = 0.72,
-Rayleigh p ≈ 6e-12), +5.9° under the fix; FO4's 108 layers −87.7° → +2.3°.
-The physics current fallback for NAM0-less records reads the same field
-through the same conversion, and only when the parser marked it authored
+**Directional-scroll frame (#4544 superseded by #4727, 2026-09-24; scoped per
+game by #4910, 2026-10-01):** WATR's per-layer wind angles are wind-FROM
+compass bearings in the record's Z-up frame (0 = from game north; see the §2
+per-game table), and the engine XZ plane reads them rotated +90° — the
+conversion lives at the translate boundary (`watr_angle_to_engine_xz` in
+`env_translate.rs`), so the authored layers run downstream and compose with
+the flow term verbatim. The #4544 paragraph this replaces treated the same
+measurement as authoring: it confined each layer to the flow axis
+(`WATER_CROSS_STREAM_SCROLL = 0.25`) and halved the perpendicular shear —
+masking the ~90° frame error by discarding ~70% of the authored speed
+profile while what survived still pointed mostly sideways. With the frame
+corrected the confinement is gone and the shear returns to the documented
+0.5× (`WATER_PERPENDICULAR_SHEAR_SCROLL`). Census: Skyrim's 51 non-zero
+layers sit −84.1° off their own NAM0 raw (R = 0.72, Rayleigh p ≈ 6e-12),
++5.9° under the fix; FO4's 108 layers −87.7° → +2.3°. The physics current
+fallback for NAM0-less records reads the same field through the same
+conversion, and only when the parser marked it authored
 (`wind_direction_authored`, #4734 / #4931). Otherwise no physics flow is
 emitted and the surface scrolls from its converted authored layers alone.
-Pinned by
+
+**#4910 — the +90° conversion is scoped per game** (`watr_angle_to_engine_xz`
+takes the `GameKind`, threaded through `resolve_water_material` and every
+water spawn/merge site). The census supports only some layouts, and
+2026-09-24's unscoped conversion changed authored motion on the rest without
+evidence:
+
+| Game | Frame | Basis |
+|---|---|---|
+| Skyrim | converts (+90°) | census R = 0.74, mean +6.2° after conversion |
+| FO4 | converts (+90°) | census R = 0.65, mean +1.5° |
+| FO76 | converts (+90°), **tentative** | re-run census mean +12.5° but R = 0.36 — closer to converted than any mirror, yet weak |
+| Oblivion | **un-rotated** | layer 0 is the angle of the editor's (x, y) scroll *pair*, not a bearing — the +90° read turned (x, y) into (−y, x) on e.g. `DefaultWater` |
+| FO3 / FNV | **un-rotated, OPEN** | 71/78 FNV and 47/53 FO3 records carry non-zero layer speeds but none has a NAM0 to census against; the un-rotated read is the pre-2026-09-24 status quo, not a frame claim |
+| Starfield | **un-rotated, OPEN** | R = 0.21 supports neither frame |
+
+The FO3/FNV and Starfield frames stay open until a census basis exists
+(XWCU-agreeing river placements are the most promising source, the #4911
+helper makes the pattern side comparable). Pinned by
+`wind_angle_conversion_is_scoped_per_game`,
 `authored_layer_motion_runs_downstream_and_composes_verbatim`,
 `dead_default_wind_direction_yields_no_physics_flow_for_named_creeks`,
 `riverwater_flowne_layers_run_downstream_under_the_corrected_frame`, and the

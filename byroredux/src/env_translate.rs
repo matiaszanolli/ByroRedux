@@ -564,10 +564,10 @@ pub(crate) const WATER_SCROLL_UV_PER_BU_PER_S: f32 = 0.045_651;
 /// the old `WATER_CROSS_STREAM_SCROLL` confinement — are gone.
 pub(crate) const WATER_PERPENDICULAR_SHEAR_SCROLL: f32 = 0.5;
 
-/// #4727 — WATR's authored noise-wind angles (the per-layer DNAM offsets,
-/// and the `wind_direction` alias Skyrim promotes from DNAM) are wind-FROM
-/// compass bearings β in the record's Z-up frame: β = 0 blows from game
-/// north (the pattern travels south), 90° from east, clockwise seen from
+/// #4727 / #4910 — WATR's authored noise-wind angles (the per-layer DNAM
+/// offsets, and the `wind_direction` alias Skyrim promotes from DNAM) are
+/// wind-FROM compass bearings β in the record's Z-up frame: β = 0 blows from
+/// game north (the pattern travels south), 90° from east, clockwise seen from
 /// above. The engine XZ angle φ (from +X, toward +Z = game south, since
 /// Z-up (x, y, z) maps to Y-up (x, z, −y)) is the direction of travel,
 /// β + 180° as a bearing, which lands at φ = β + 90°. Census over the
@@ -580,11 +580,33 @@ pub(crate) const WATER_PERPENDICULAR_SHEAR_SCROLL: f32 = 0.5;
 /// editor IDs confirm per record (RiverWaterFlowNE layer 0: 82° raw,
 /// 8° corrected against its NE current).
 ///
-/// Per the no-guessing rule the conversion is pinned to the census by
+/// #4910 — the conversion is scoped per game, because the census supports
+/// only some layouts:
+///
+/// - **Skyrim / FO4** convert (the census above; R = 0.74 / 0.65).
+/// - **FO76** converts *tentatively*: the re-run census gives +12.5° mean
+///   offset but R = 0.36 — closer to converted than any mirror, yet weak.
+/// - **Oblivion** does not convert: its layer 0 is the angle of the
+///   editor's (x, y) scroll *pair*, not a bearing — the +90° read turned
+///   (x, y) into (−y, x) with no evidence for any Oblivion record
+///   (`DefaultWater` among them).
+/// - **FO3 / FNV / Starfield** do not convert either: 71/78 FNV and 47/53
+///   FO3 records carry non-zero layer speeds but none has a NAM0 to census
+///   against, and Starfield's R = 0.21 supports neither frame. Both frames
+///   are recorded OPEN in watal.md §2 — restoring the un-rotated read is
+///   the pre-2026-09-24 status quo, not a claim about the authored frame.
+///
+/// Per the no-guessing rule the Skyrim conversion is pinned to the census by
 /// `riverwater_flowne_layers_run_downstream_under_the_corrected_frame`
-/// (and its ignored real-data sibling) in this module's tests.
-fn watr_angle_to_engine_xz(beta_radians: f32) -> f32 {
-    beta_radians + core::f32::consts::FRAC_PI_2
+/// (and its ignored real-data sibling) in this module's tests; the per-game
+/// scope is pinned by `wind_angle_conversion_is_scoped_per_game`.
+fn watr_angle_to_engine_xz(game: GameKind, beta_radians: f32) -> f32 {
+    match game {
+        GameKind::Skyrim | GameKind::Fallout4 | GameKind::Fallout76 => {
+            beta_radians + core::f32::consts::FRAC_PI_2
+        }
+        GameKind::Oblivion | GameKind::Fallout3NV | GameKind::Starfield => beta_radians,
+    }
 }
 
 fn resolve_water_colors(
@@ -896,14 +918,19 @@ fn resolve_water_noise_and_rain(rec: &esm::records::misc::WatrRecord, mat: &mut 
     }
 }
 
-fn resolve_water_layer_motion(rec: &esm::records::misc::WatrRecord, layer: usize) -> [f32; 2] {
+fn resolve_water_layer_motion(
+    rec: &esm::records::misc::WatrRecord,
+    layer: usize,
+    game: GameKind,
+) -> [f32; 2] {
     let speed = rec.params.noise_wind_speeds[layer];
     let direction = rec.params.noise_wind_directions[layer];
     if speed.is_finite() && speed > 0.0 && direction.is_finite() {
         // #4727 — the authored angle is a Z-up wind-FROM bearing; the
         // Z-up→Y-up frame conversion happens HERE, at the parse→canonical
-        // boundary, never re-derived at render time.
-        let (sin_theta, cos_theta) = watr_angle_to_engine_xz(direction).sin_cos();
+        // boundary, never re-derived at render time. #4910 — scoped per
+        // game; see watr_angle_to_engine_xz for the census basis.
+        let (sin_theta, cos_theta) = watr_angle_to_engine_xz(game, direction).sin_cos();
         [cos_theta * speed, sin_theta * speed]
     } else {
         [0.0, 0.0]
@@ -913,6 +940,7 @@ fn resolve_water_layer_motion(rec: &esm::records::misc::WatrRecord, layer: usize
 fn classify_water_kind_and_flow(
     rec: &esm::records::misc::WatrRecord,
     mat: &mut WaterMaterial,
+    game: GameKind,
 ) -> (WaterKind, Option<WaterFlow>) {
     let named_kind = crate::material_translate::water_kind_from_cell_record_name(&rec.editor_id);
     let authored_flow_speed = rec
@@ -971,7 +999,7 @@ fn classify_water_kind_and_flow(
                     // angle, so an un-converted read aims the physics
                     // current ~90° off course.
                     let (sin_theta, cos_theta) =
-                        watr_angle_to_engine_xz(rec.params.wind_direction).sin_cos();
+                        watr_angle_to_engine_xz(game, rec.params.wind_direction).sin_cos();
                     WaterFlow::for_kind(kind, [cos_theta, 0.0, sin_theta])
                 })
             });
@@ -983,15 +1011,16 @@ fn classify_water_kind_and_flow(
             compose_flow_scrolls(
                 mat,
                 rec,
+                game,
                 [canonical.direction[0], canonical.direction[2]],
                 canonical.speed,
             );
             flow = Some(canonical);
         } else {
-            apply_authored_layer_scrolls(rec, mat);
+            apply_authored_layer_scrolls(rec, mat, game);
         }
     } else {
-        apply_authored_layer_scrolls(rec, mat);
+        apply_authored_layer_scrolls(rec, mat, game);
     }
     (kind, flow)
 }
@@ -1009,6 +1038,7 @@ fn classify_water_kind_and_flow(
 pub(crate) fn compose_flow_scrolls(
     mat: &mut WaterMaterial,
     rec: &esm::records::misc::WatrRecord,
+    game: GameKind,
     direction_xz: [f32; 2],
     speed: f32,
 ) {
@@ -1022,9 +1052,9 @@ pub(crate) fn compose_flow_scrolls(
     // survived still pointed mostly sideways.
     let flow_x = direction_xz[0];
     let flow_z = direction_xz[1];
-    let authored_a = resolve_water_layer_motion(rec, 0);
-    let authored_b = resolve_water_layer_motion(rec, 1);
-    let authored_c = resolve_water_layer_motion(rec, 2);
+    let authored_a = resolve_water_layer_motion(rec, 0, game);
+    let authored_b = resolve_water_layer_motion(rec, 1, game);
+    let authored_c = resolve_water_layer_motion(rec, 2, game);
     mat.scroll_a = [
         flow_x * scroll + authored_a[0],
         flow_z * scroll + authored_a[1],
@@ -1047,11 +1077,12 @@ pub(crate) fn compose_flow_scrolls(
 fn apply_authored_layer_scrolls(
     rec: &esm::records::misc::WatrRecord,
     mat: &mut WaterMaterial,
+    game: GameKind,
 ) {
     for (dst, authored) in [
-        (&mut mat.scroll_a, resolve_water_layer_motion(rec, 0)),
-        (&mut mat.scroll_b, resolve_water_layer_motion(rec, 1)),
-        (&mut mat.scroll_c, resolve_water_layer_motion(rec, 2)),
+        (&mut mat.scroll_a, resolve_water_layer_motion(rec, 0, game)),
+        (&mut mat.scroll_b, resolve_water_layer_motion(rec, 1, game)),
+        (&mut mat.scroll_c, resolve_water_layer_motion(rec, 2, game)),
     ] {
         if authored != [0.0, 0.0] {
             *dst = authored;
@@ -1089,6 +1120,7 @@ fn resolve_water_texture_paths(
 pub(crate) fn resolve_water_material(
     waters: &HashMap<u32, esm::records::misc::WatrRecord>,
     xcwt_form: Option<u32>,
+    game: GameKind,
 ) -> (
     WaterMaterial,
     WaterKind,
@@ -1108,7 +1140,7 @@ pub(crate) fn resolve_water_material(
             resolve_water_specular(rec, &mut mat);
             resolve_water_noise_and_rain(rec, &mut mat);
             mat.source_form = rec.form_id;
-            (kind, flow) = classify_water_kind_and_flow(rec, &mut mat);
+            (kind, flow) = classify_water_kind_and_flow(rec, &mut mat, game);
             (normal_path, noise_paths) = resolve_water_texture_paths(rec, kind);
         }
     }
@@ -2761,7 +2793,7 @@ mod tests {
         waters.insert(rec.form_id, rec);
 
         let (mat, _kind, _flow, _normal, _noise) =
-            resolve_water_material(&waters, Some(0x000A_BCDE));
+            resolve_water_material(&waters, Some(0x000A_BCDE), GameKind::Skyrim);
 
         assert_eq!(
             mat.reflection_tint, lava_tint,
@@ -2806,8 +2838,8 @@ mod tests {
             waters.insert(form_id, rec);
         }
 
-        let (reflective, _, _, _, _) = resolve_water_material(&waters, Some(0x0010_09CA));
-        let (matte, _, _, _, _) = resolve_water_material(&waters, Some(0x0017_B612));
+        let (reflective, _, _, _, _) = resolve_water_material(&waters, Some(0x0010_09CA), GameKind::Skyrim);
+        let (matte, _, _, _, _) = resolve_water_material(&waters, Some(0x0017_B612), GameKind::Skyrim);
         // Same flag byte on both — only the authored float separates them.
         assert_eq!(reflective.reflectivity, 0.6);
         assert_eq!(matte.reflectivity, 0.0);
@@ -2830,7 +2862,7 @@ mod tests {
         let mut waters = HashMap::new();
         waters.insert(rec.form_id, rec);
 
-        let (mat, _, _, _, _) = resolve_water_material(&waters, Some(0x000B_03A7));
+        let (mat, _, _, _, _) = resolve_water_material(&waters, Some(0x000B_03A7), GameKind::Skyrim);
         assert_eq!(mat.reflectivity, 0.1);
     }
 
@@ -2855,7 +2887,7 @@ mod tests {
         waters.insert(parent_id, parent);
         waters.insert(underwater_id, underwater);
 
-        let (mat, _, _, _, _) = resolve_water_material(&waters, Some(parent_id));
+        let (mat, _, _, _, _) = resolve_water_material(&waters, Some(parent_id), GameKind::Skyrim);
         assert_eq!(mat.underwater_color, [0.08, 0.16, 0.30]);
         assert_eq!(mat.underwater_fog_near, 12.0);
         assert_eq!(mat.underwater_fog_far, 340.0);
@@ -2899,7 +2931,7 @@ mod tests {
         waters.insert(day_id, day);
         waters.insert(night_id, night);
 
-        let (mat, _, _, _, _) = resolve_water_material(&waters, Some(parent_id));
+        let (mat, _, _, _, _) = resolve_water_material(&waters, Some(parent_id), GameKind::Skyrim);
         assert_eq!(mat.day_shallow_color, [0.20, 0.45, 0.55]);
         assert_eq!(mat.day_fog_far, 300.0);
         assert_eq!(mat.night_deep_color, [0.005, 0.01, 0.03]);
@@ -2911,7 +2943,7 @@ mod tests {
     /// grey that matches the pre-#1069 hard-coded shader value.
     #[test]
     fn default_water_material_has_neutral_reflection_tint() {
-        let (mat, _, _, _, _) = resolve_water_material(&HashMap::new(), None);
+        let (mat, _, _, _, _) = resolve_water_material(&HashMap::new(), None, GameKind::Skyrim);
         assert_eq!(
             mat.reflection_tint,
             [0.65, 0.70, 0.75],
@@ -2959,7 +2991,7 @@ mod tests {
         waters.insert(rec.form_id, rec);
 
         let (material, kind, flow, normal_path, noise_paths) =
-            resolve_water_material(&waters, Some(0x000A_0000));
+            resolve_water_material(&waters, Some(0x000A_0000), GameKind::Skyrim);
         assert_eq!(kind, WaterKind::Lava);
         assert_eq!(material.foam_strength, 0.0);
         assert!(flow.is_none());
@@ -2972,7 +3004,7 @@ mod tests {
         let rec = calm_watr(0x000A_0001, "OblivionLavaTest01", WaterParams::default());
         let mut waters = HashMap::new();
         waters.insert(rec.form_id, rec);
-        let (_, kind, _, _, _) = resolve_water_material(&waters, Some(0x000A_0001));
+        let (_, kind, _, _, _) = resolve_water_material(&waters, Some(0x000A_0001), GameKind::Skyrim);
         assert_eq!(kind, WaterKind::Calm);
     }
 
@@ -2995,7 +3027,7 @@ mod tests {
         waters.insert(rec.form_id, rec);
 
         let (mat, kind, _flow, _normal, _noise) =
-            resolve_water_material(&waters, Some(0x000A_0001));
+            resolve_water_material(&waters, Some(0x000A_0001), GameKind::Skyrim);
         assert_eq!(
             mat.wave_amplitude, 1.5,
             "wave_amplitude must round-trip from WATR"
@@ -3024,7 +3056,7 @@ mod tests {
         let mut waters = HashMap::new();
         waters.insert(rec.form_id, rec);
 
-        let (mat, _, _, _, _) = resolve_water_material(&waters, Some(0x000A_0004));
+        let (mat, _, _, _, _) = resolve_water_material(&waters, Some(0x000A_0004), GameKind::Skyrim);
         assert_eq!(
             mat.rain_response, 2.75,
             "rain_response must round-trip from WATR into WaterMaterial"
@@ -3055,7 +3087,8 @@ mod tests {
         let mut waters = HashMap::new();
         waters.insert(rec.form_id, rec.clone());
 
-        let (mat, kind, flow, _, _) = resolve_water_material(&waters, Some(rec.form_id));
+        let (mat, kind, flow, _, _) =
+            resolve_water_material(&waters, Some(rec.form_id), GameKind::Skyrim);
         assert!(matches!(kind, WaterKind::River), "the name alone classifies the kind");
         assert!(
             flow.is_none(),
@@ -3065,7 +3098,7 @@ mod tests {
         // engine frame (A and C here; layer B's zero speed leaves the
         // sentinel default in place).
         let layer = |speed: f32, bearing: f32| {
-            let (sin, cos) = watr_angle_to_engine_xz(bearing).sin_cos();
+            let (sin, cos) = watr_angle_to_engine_xz(GameKind::Skyrim, bearing).sin_cos();
             [cos * speed, sin * speed]
         };
         let close = |got: [f32; 2], want: [f32; 2]| {
@@ -3079,7 +3112,7 @@ mod tests {
         // synthesis) — the refusal is specifically about the missing heading.
         rec.linear_velocity = Some([1.0, 0.0]);
         waters.insert(rec.form_id, rec);
-        let (_, _, flow, _, _) = resolve_water_material(&waters, Some(0x000A_0005));
+        let (_, _, flow, _, _) = resolve_water_material(&waters, Some(0x000A_0005), GameKind::Skyrim);
         let flow = flow.expect("an authored NAM0 current must survive");
         assert!((flow.speed - 1.0).abs() < 1.0e-6);
     }
@@ -3101,7 +3134,7 @@ mod tests {
                 },
             );
             let waters = HashMap::from([(rec.form_id, rec)]);
-            let (_, kind, flow, _, _) = resolve_water_material(&waters, Some(0x000A_0006));
+            let (_, kind, flow, _, _) = resolve_water_material(&waters, Some(0x000A_0006), GameKind::Skyrim);
             assert!(matches!(kind, WaterKind::River));
             assert_eq!(
                 flow.is_some(),
@@ -3132,7 +3165,7 @@ mod tests {
         let mut waters = HashMap::new();
         waters.insert(rec.form_id, rec);
 
-        let (mat, kind, flow, _, _) = resolve_water_material(&waters, Some(0x000A_0002));
+        let (mat, kind, flow, _, _) = resolve_water_material(&waters, Some(0x000A_0002), GameKind::Skyrim);
         assert!(matches!(kind, WaterKind::River));
         let flow = flow.expect("flowing water must carry its canonical current");
         // wind_direction 0 is a raw Z-up wind-FROM bearing (from game
@@ -3168,6 +3201,44 @@ mod tests {
     /// downstream rate. Pre-#4544 the raw angles slid the dominant layer
     /// ~80% sideways; #4544 masked that by discarding ~70% of the authored
     /// speed profile; this is the frame fix that removes the cause.
+    /// #4910 — the +90° bearing conversion is scoped per game: census-backed
+    /// on Skyrim/FO4 (and tentatively FO76), while Oblivion's layer angles
+    /// are the editor's (x, y) scroll pair — unrotated — and FO3/FNV and
+    /// Starfield stay on the un-rotated status quo with both frames recorded
+    /// OPEN in watal.md §2 (no NAM0 exists there to census against).
+    #[test]
+    fn wind_angle_conversion_is_scoped_per_game() {
+        use byroredux_plugin::esm::reader::GameKind;
+
+        let mut rec = esm::records::misc::WatrRecord::default();
+        rec.params.noise_wind_speeds[0] = 1.0;
+        rec.params.noise_wind_directions[0] = 0.0;
+
+        // A due-north wind-FROM bearing (β = 0) travels south (+Z) once
+        // converted — the Skyrim/FO4/FO76 census frame.
+        for game in [GameKind::Skyrim, GameKind::Fallout4, GameKind::Fallout76] {
+            let motion = resolve_water_layer_motion(&rec, 0, game);
+            assert!(
+                (motion[0].abs() < 1.0e-6) && ((motion[1] - 1.0).abs() < 1.0e-6),
+                "{game:?}: the bearing converts (got {motion:?})"
+            );
+        }
+        // Un-rotated: the same angle reads as the +X unit pair — Oblivion's
+        // Cartesian scroll direction, and the pre-2026-09-24 read the
+        // undetermined frames keep.
+        for game in [
+            GameKind::Oblivion,
+            GameKind::Fallout3NV,
+            GameKind::Starfield,
+        ] {
+            assert_eq!(
+                resolve_water_layer_motion(&rec, 0, game),
+                [1.0, 0.0],
+                "{game:?}: the angle is not a converted bearing"
+            );
+        }
+    }
+
     #[test]
     fn riverwater_flowne_layers_run_downstream_under_the_corrected_frame() {
         let rec = calm_watr(
@@ -3186,7 +3257,7 @@ mod tests {
             ..rec
         };
         let waters = HashMap::from([(rec.form_id, rec)]);
-        let (mat, kind, flow, _, _) = resolve_water_material(&waters, Some(0x000A_0009));
+        let (mat, kind, flow, _, _) = resolve_water_material(&waters, Some(0x000A_0009), GameKind::Skyrim);
         assert!(matches!(kind, WaterKind::River));
         let flow = flow.expect("NE river must carry its NAM0 current");
         let f = flow.direction;
@@ -3198,7 +3269,7 @@ mod tests {
             if !(speed.is_finite() && speed > 0.0) {
                 continue;
             }
-            let angle = watr_angle_to_engine_xz(layer_dirs[layer]);
+            let angle = watr_angle_to_engine_xz(GameKind::Skyrim, layer_dirs[layer]);
             let delta = (angle - flow_bearing).abs();
             let delta = delta.min(std::f32::consts::TAU - delta);
             assert!(
@@ -3253,7 +3324,7 @@ mod tests {
             if !(speed.is_finite() && speed > 0.0) {
                 continue;
             }
-            let angle = watr_angle_to_engine_xz(rec.params.noise_wind_directions[layer]);
+            let angle = watr_angle_to_engine_xz(GameKind::Skyrim, rec.params.noise_wind_directions[layer]);
             let delta = (angle - flow_bearing).abs();
             let delta = delta.min(std::f32::consts::TAU - delta);
             assert!(
@@ -3294,7 +3365,7 @@ mod tests {
             &None,
         );
         let waters = HashMap::from([(rec.form_id, rec)]);
-        let (mat, kind, flow, _, _) = resolve_water_material(&waters, Some(0x001E_214D));
+        let (mat, kind, flow, _, _) = resolve_water_material(&waters, Some(0x001E_214D), GameKind::Skyrim);
         assert!(matches!(kind, WaterKind::River));
         let flow = flow.expect("a nonzero NAM0 is an authored current");
         assert!((flow.direction[0] - 1.0).abs() < 1e-6 && flow.direction[2].abs() < 1e-6);
@@ -3334,14 +3405,14 @@ mod tests {
         let waters = HashMap::from([(disabled.form_id, disabled), (enabled.form_id, enabled)]);
 
         let (disabled_mat, disabled_kind, disabled_flow, _, disabled_noise) =
-            resolve_water_material(&waters, Some(0x000A_0003));
+            resolve_water_material(&waters, Some(0x000A_0003), GameKind::Skyrim);
         assert!(matches!(disabled_kind, WaterKind::Calm));
         assert!(disabled_flow.is_none());
         assert!(disabled_noise[2].is_none());
         assert!(!disabled_mat.blend_normals);
 
         let (enabled_mat, enabled_kind, enabled_flow, _, enabled_noise) =
-            resolve_water_material(&waters, Some(0x000A_0004));
+            resolve_water_material(&waters, Some(0x000A_0004), GameKind::Skyrim);
         assert!(matches!(enabled_kind, WaterKind::River));
         assert!(enabled_flow.is_some());
         assert_eq!(
@@ -3369,7 +3440,7 @@ mod tests {
         let mut waters = HashMap::new();
         waters.insert(rec.form_id, rec);
 
-        let (mat, kind, flow, _, _) = resolve_water_material(&waters, Some(0x000A_0004));
+        let (mat, kind, flow, _, _) = resolve_water_material(&waters, Some(0x000A_0004), GameKind::Skyrim);
         let speed = flow
             .expect("flowing water must have a canonical current")
             .speed;
@@ -3394,7 +3465,7 @@ mod tests {
         );
         let mut waters = HashMap::new();
         waters.insert(rec.form_id, rec);
-        let (mat, _, _, _, _) = resolve_water_material(&waters, Some(0x000A_0008));
+        let (mat, _, _, _, _) = resolve_water_material(&waters, Some(0x000A_0008), GameKind::Skyrim);
         assert_eq!(mat.absorption_coefficients, [0.16558, 0.09624, 0.07627]);
         // #5151 — the per-BU values the parse boundary produces for the same
         // vanilla record must pass the translate floor unclipped.
@@ -3410,7 +3481,7 @@ mod tests {
         let mut per_bu_waters = HashMap::new();
         per_bu_waters.insert(rec.form_id, rec);
         let (per_bu_mat, _, _, _, _) =
-            resolve_water_material(&per_bu_waters, Some(0x000A_0009));
+            resolve_water_material(&per_bu_waters, Some(0x000A_0009), GameKind::Skyrim);
         assert_eq!(per_bu_mat.absorption_coefficients, per_bu);
         // #4285 — pigment concentrations are normalized to canonical 0..1
         // fractions at this boundary (RGB lanes ÷ the Starfield authoring
@@ -3442,7 +3513,7 @@ mod tests {
             );
             let mut waters = HashMap::new();
             waters.insert(rec.form_id, rec);
-            let (mat, _, _, _, _) = resolve_water_material(&waters, Some(0x000A_000A));
+            let (mat, _, _, _, _) = resolve_water_material(&waters, Some(0x000A_000A), GameKind::Skyrim);
             assert_eq!(mat.concentration, [1.0, 0.0, 0.0, expected], "oceanness {authored}");
         }
     }
@@ -3459,7 +3530,7 @@ mod tests {
         );
         let mut waters = HashMap::new();
         waters.insert(rec.form_id, rec);
-        let (mat, _, _, _, _) = resolve_water_material(&waters, Some(0x000A_0009));
+        let (mat, _, _, _, _) = resolve_water_material(&waters, Some(0x000A_0009), GameKind::Skyrim);
         assert!((mat.roughness - 0.5).abs() < 1e-6);
         assert!((mat.sun_specular_power - 6.0).abs() < 1e-6);
     }
@@ -3482,7 +3553,7 @@ mod tests {
         );
         let mut waters = HashMap::new();
         waters.insert(rec.form_id, rec);
-        let (mat, _, _, _, _) = resolve_water_material(&waters, Some(0x000A_000A));
+        let (mat, _, _, _, _) = resolve_water_material(&waters, Some(0x000A_000A), GameKind::Skyrim);
         assert!(mat.shallow_color[0] > mat.shallow_color[1]);
         assert!(mat.deep_color.iter().all(|channel| *channel < 0.8));
         assert_eq!(mat.deep_color, mat.underwater_color);
@@ -3503,7 +3574,7 @@ mod tests {
         let mut waters = HashMap::new();
         waters.insert(rec.form_id, rec);
 
-        let (mat, _, _, _, _) = resolve_water_material(&waters, Some(0x000A_0003));
+        let (mat, _, _, _, _) = resolve_water_material(&waters, Some(0x000A_0003), GameKind::Skyrim);
         assert!((mat.uv_scale_a - 1.0 / 320.0).abs() < 1e-6);
         assert!((mat.uv_scale_b - 1.0 / 760.0).abs() < 1e-6);
     }
@@ -3524,7 +3595,7 @@ mod tests {
         let mut waters = HashMap::new();
         waters.insert(rec.form_id, rec);
 
-        let (mat, _, _, _, _) = resolve_water_material(&waters, Some(0x000A_0004));
+        let (mat, _, _, _, _) = resolve_water_material(&waters, Some(0x000A_0004), GameKind::Skyrim);
         assert_eq!(mat.noise_amplitude_scales, [0.4, 0.3, 0.2]);
         assert_eq!(mat.depth_weights[1], 0.5);
     }
@@ -3536,7 +3607,7 @@ mod tests {
         rec.opacity_authored = true;
         let mut waters = HashMap::new();
         waters.insert(rec.form_id, rec);
-        let (mat, _, _, _, _) = resolve_water_material(&waters, Some(0x000A_0005));
+        let (mat, _, _, _, _) = resolve_water_material(&waters, Some(0x000A_0005), GameKind::Skyrim);
         assert!((mat.opacity - 0.62).abs() < 1e-6);
     }
 
@@ -3545,7 +3616,7 @@ mod tests {
         let rec = calm_watr(0x000A_0008, "DefaultWater", WaterParams::default());
         let mut waters = HashMap::new();
         waters.insert(rec.form_id, rec);
-        let (mat, _, _, _, _) = resolve_water_material(&waters, Some(0x000A_0008));
+        let (mat, _, _, _, _) = resolve_water_material(&waters, Some(0x000A_0008), GameKind::Skyrim);
         assert_eq!(mat.opacity, WaterMaterial::default().opacity);
     }
 
@@ -3556,7 +3627,7 @@ mod tests {
         rec.opacity_authored = true;
         let mut waters = HashMap::new();
         waters.insert(rec.form_id, rec);
-        let (mat, _, _, _, _) = resolve_water_material(&waters, Some(0x000A_0006));
+        let (mat, _, _, _, _) = resolve_water_material(&waters, Some(0x000A_0006), GameKind::Skyrim);
         assert_eq!(mat.opacity, 0.0);
     }
 
@@ -3567,7 +3638,7 @@ mod tests {
         rec.opacity_authored = true;
         let mut waters = HashMap::new();
         waters.insert(rec.form_id, rec);
-        let (mat, _, _, _, _) = resolve_water_material(&waters, Some(0x000A_0007));
+        let (mat, _, _, _, _) = resolve_water_material(&waters, Some(0x000A_0007), GameKind::Skyrim);
         assert!((mat.opacity - 0.01).abs() < 1.0e-6);
     }
 
@@ -3581,7 +3652,7 @@ mod tests {
         ];
         let mut waters = HashMap::new();
         waters.insert(rec.form_id, rec);
-        let (_, _, _, _, noise) = resolve_water_material(&waters, Some(0x000A_0002));
+        let (_, _, _, _, noise) = resolve_water_material(&waters, Some(0x000A_0002), GameKind::Skyrim);
         assert_eq!(noise[0].as_deref(), Some("textures/water/noise_a.dds"));
         assert!(noise[1].is_none());
         assert_eq!(noise[2].as_deref(), Some("textures/water/noise_c.dds"));
@@ -3594,7 +3665,7 @@ mod tests {
         rec.flow_noise_texture_path = "textures/water/flow.dds".into();
         let mut waters = HashMap::new();
         waters.insert(rec.form_id, rec);
-        let (_, kind, _, _, noise) = resolve_water_material(&waters, Some(0x000A_0006));
+        let (_, kind, _, _, noise) = resolve_water_material(&waters, Some(0x000A_0006), GameKind::Skyrim);
         assert!(matches!(kind, WaterKind::River));
         assert_eq!(noise[2].as_deref(), Some("textures/water/flow.dds"));
     }
@@ -3606,7 +3677,7 @@ mod tests {
         rec.flow_noise_texture_path = "textures/water/flow.dds".into();
         let mut waters = HashMap::new();
         waters.insert(rec.form_id, rec);
-        let (_, kind, _, _, noise) = resolve_water_material(&waters, Some(0x000A_0007));
+        let (_, kind, _, _, noise) = resolve_water_material(&waters, Some(0x000A_0007), GameKind::Skyrim);
         assert!(matches!(kind, WaterKind::River));
         assert_eq!(noise[2].as_deref(), Some("textures/water/flow.dds"));
     }
@@ -3621,7 +3692,7 @@ mod tests {
         rec.params.wind_direction = std::f32::consts::FRAC_PI_2;
         let mut waters = HashMap::new();
         waters.insert(rec.form_id, rec);
-        let (material, kind, flow, _, _) = resolve_water_material(&waters, Some(0x000A_0008));
+        let (material, kind, flow, _, _) = resolve_water_material(&waters, Some(0x000A_0008), GameKind::Skyrim);
         assert!(matches!(kind, WaterKind::River));
         let flow = flow.expect("NAM0 velocity must produce a canonical current");
         assert!(flow.direction[0] > 0.99);
@@ -3642,7 +3713,7 @@ mod tests {
         let mut waters = HashMap::new();
         waters.insert(rec.form_id, rec);
 
-        let (material, kind, flow, _, _) = resolve_water_material(&waters, Some(0x000A_000A));
+        let (material, kind, flow, _, _) = resolve_water_material(&waters, Some(0x000A_000A), GameKind::Skyrim);
         assert!(matches!(kind, WaterKind::Calm));
         assert!(flow.is_none());
         assert_eq!(
@@ -3669,7 +3740,7 @@ mod tests {
         let mut waters = HashMap::new();
         waters.insert(rec.form_id, rec);
 
-        let (material, kind, flow, _, _) = resolve_water_material(&waters, Some(0x000A_000B));
+        let (material, kind, flow, _, _) = resolve_water_material(&waters, Some(0x000A_000B), GameKind::Skyrim);
         assert!(matches!(kind, WaterKind::River));
         let flow = flow.expect("named river must retain its fallback current");
         assert!(flow.speed > 0.0);
@@ -3683,7 +3754,7 @@ mod tests {
         rec.params.wind_direction = std::f32::consts::FRAC_PI_2;
         let mut waters = HashMap::new();
         waters.insert(rec.form_id, rec);
-        let (mat, kind, flow, _, _) = resolve_water_material(&waters, Some(0x000A_0009));
+        let (mat, kind, flow, _, _) = resolve_water_material(&waters, Some(0x000A_0009), GameKind::Skyrim);
         assert!(matches!(kind, WaterKind::Rapids));
         assert_eq!(mat.foam_strength, 0.85);
         assert!((flow.expect("rapid NAM0 flow").speed - 12.0).abs() < 1.0e-6);
@@ -3697,7 +3768,7 @@ mod tests {
         let rec = calm_watr(0x000A_0003, "DefaultWater", params);
         let mut waters = HashMap::new();
         waters.insert(rec.form_id, rec);
-        let (mat, kind, flow, _, _) = resolve_water_material(&waters, Some(0x000A_0003));
+        let (mat, kind, flow, _, _) = resolve_water_material(&waters, Some(0x000A_0003), GameKind::Skyrim);
         assert!(matches!(kind, WaterKind::Calm));
         assert!(flow.is_none());
         // #4727 — raw bearing π/2 reads as engine −X under the corrected
@@ -3738,7 +3809,7 @@ mod tests {
             let mut waters = HashMap::new();
             waters.insert(rec.form_id, rec);
 
-            let (mat, kind, flow, _, _) = resolve_water_material(&waters, Some(0x000B_0001));
+            let (mat, kind, flow, _, _) = resolve_water_material(&waters, Some(0x000B_0001), GameKind::Skyrim);
             let flow = flow.expect("a river EDID must synthesize a flow");
             assert!(matches!(kind, WaterKind::River));
             assert_eq!(
@@ -3776,8 +3847,8 @@ mod tests {
             };
             waters.insert(form, calm_watr(form, edid, params));
         }
-        let (_, rapids_kind, rapids, _, _) = resolve_water_material(&waters, Some(0x000C_0001));
-        let (_, river_kind, river, _, _) = resolve_water_material(&waters, Some(0x000C_0002));
+        let (_, rapids_kind, rapids, _, _) = resolve_water_material(&waters, Some(0x000C_0001), GameKind::Skyrim);
+        let (_, river_kind, river, _, _) = resolve_water_material(&waters, Some(0x000C_0002), GameKind::Skyrim);
         assert!(matches!(rapids_kind, WaterKind::Rapids));
         assert!(matches!(river_kind, WaterKind::River));
 
@@ -3802,7 +3873,7 @@ mod tests {
         let mut waters = HashMap::new();
         waters.insert(rec.form_id, rec);
 
-        let (mat, kind, flow, _, _) = resolve_water_material(&waters, Some(0x000D_0001));
+        let (mat, kind, flow, _, _) = resolve_water_material(&waters, Some(0x000D_0001), GameKind::Skyrim);
         assert!(matches!(kind, WaterKind::Calm));
         assert!(flow.is_none());
         assert_eq!(mat.scroll_a, WaterMaterial::default().scroll_a);
@@ -3857,8 +3928,8 @@ mod tests {
         waters.insert(oblivion.form_id, oblivion);
         waters.insert(skyrim.form_id, skyrim);
 
-        let (ob, ob_kind, ob_flow, _, _) = resolve_water_material(&waters, Some(0x0001_0000));
-        let (sk, _, _, _, _) = resolve_water_material(&waters, Some(0x0002_0000));
+        let (ob, ob_kind, ob_flow, _, _) = resolve_water_material(&waters, Some(0x0001_0000), GameKind::Skyrim);
+        let (sk, _, _, _, _) = resolve_water_material(&waters, Some(0x0002_0000), GameKind::Skyrim);
         let def = WaterMaterial::default();
 
         // AUTHORED fields differ (proves the two records are distinct).
@@ -4068,8 +4139,10 @@ mod tests {
         }
 
         // (label, env var, default Data dir, master, parse-decided normal
-        // encoding, layout)
-        const GAMES: [(&str, &str, &str, &str, WaterNormalEncoding, Layout); 5] = [
+        // encoding, layout, engine GameKind — #4910: the wind-angle frame
+        // is scoped per game, so the real-data sweep must resolve each
+        // master under its own frame)
+        const GAMES: [(&str, &str, &str, &str, WaterNormalEncoding, Layout, GameKind); 5] = [
             (
                 "oblivion",
                 "BYROREDUX_OBLIVION_DATA",
@@ -4077,6 +4150,7 @@ mod tests {
                 "Oblivion.esm",
                 WaterNormalEncoding::TangentNormal,
                 Layout::Tes4Short,
+                GameKind::Oblivion,
             ),
             (
                 "fnv",
@@ -4085,6 +4159,7 @@ mod tests {
                 "FalloutNV.esm",
                 WaterNormalEncoding::OffsetNoise,
                 Layout::FalloutLong,
+                GameKind::Fallout3NV,
             ),
             (
                 "fo3",
@@ -4093,6 +4168,7 @@ mod tests {
                 "Fallout3.esm",
                 WaterNormalEncoding::OffsetNoise,
                 Layout::FalloutLong,
+                GameKind::Fallout3NV,
             ),
             (
                 "skyrimse",
@@ -4101,6 +4177,7 @@ mod tests {
                 "Skyrim.esm",
                 WaterNormalEncoding::TangentNormal,
                 Layout::Modern,
+                GameKind::Skyrim,
             ),
             (
                 "fo4",
@@ -4109,11 +4186,12 @@ mod tests {
                 "Fallout4.esm",
                 WaterNormalEncoding::TangentNormal,
                 Layout::Modern,
+                GameKind::Fallout4,
             ),
         ];
 
         let mut games_checked = 0usize;
-        for (label, env_var, default_dir, master, encoding, layout) in GAMES {
+        for (label, env_var, default_dir, master, encoding, layout, game) in GAMES {
             // An explicitly-set override is binding (#3850 convention); the
             // documented Steam layout is only the fallback.
             let dir = std::env::var_os(env_var)
@@ -4143,7 +4221,7 @@ mod tests {
                 continue;
             };
 
-            let (mat, kind, _, _, _) = resolve_water_material(&index.waters, Some(form));
+            let (mat, kind, _, _, _) = resolve_water_material(&index.waters, Some(form), game);
             let def = WaterMaterial::default();
 
             // Parse-decided per-game normal decoding.
@@ -4292,7 +4370,7 @@ mod tests {
     #[test]
     fn resolve_water_material_procedural_default_classification() {
         // Case 1: no XCWT at all.
-        let (_, _, _, normal_none, _) = resolve_water_material(&HashMap::new(), None);
+        let (_, _, _, normal_none, _) = resolve_water_material(&HashMap::new(), None, GameKind::Skyrim);
         assert!(
             normal_none.is_none(),
             "no XCWT must classify as procedural default"
@@ -4300,7 +4378,7 @@ mod tests {
 
         // Case 2: XCWT present but unresolvable form.
         let (_, _, _, normal_unresolved, _) =
-            resolve_water_material(&HashMap::new(), Some(0x00DE_AD00));
+            resolve_water_material(&HashMap::new(), Some(0x00DE_AD00), GameKind::Skyrim);
         assert!(
             normal_unresolved.is_none(),
             "unresolvable XCWT must classify as procedural default"
@@ -4310,7 +4388,7 @@ mod tests {
         let no_tex = calm_watr(0x000B_0001, "LavaPool01", WaterParams::default());
         let mut waters = HashMap::new();
         waters.insert(no_tex.form_id, no_tex);
-        let (_, _, _, normal_empty_tex, _) = resolve_water_material(&waters, Some(0x000B_0001));
+        let (_, _, _, normal_empty_tex, _) = resolve_water_material(&waters, Some(0x000B_0001), GameKind::Skyrim);
         assert!(
             normal_empty_tex.is_none(),
             "WATR with empty texture_path must classify as procedural default"
@@ -4321,7 +4399,7 @@ mod tests {
         with_tex.texture_path = "textures\\water\\defaultwater.dds".to_string();
         let mut waters2 = HashMap::new();
         waters2.insert(with_tex.form_id, with_tex);
-        let (_, _, _, normal_with_tex, _) = resolve_water_material(&waters2, Some(0x000B_0002));
+        let (_, _, _, normal_with_tex, _) = resolve_water_material(&waters2, Some(0x000B_0002), GameKind::Skyrim);
         assert_eq!(
             normal_with_tex,
             Some("textures\\water\\defaultwater.dds".to_string()),

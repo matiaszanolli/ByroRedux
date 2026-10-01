@@ -1,8 +1,7 @@
-# EXT-D5-2026-09-27-02: #4727's +90° "compass bearing" conversion applies to every game — the census supports only Skyrim/FO4, and Oblivion's layer 0 is a Cartesian vector
+# 4910: EXT-D5-2026-09-27-02: #4727's +90° "compass bearing" conversion applies to every game — the census supports only Skyrim/FO4, and Oblivion's layer 0 is a Cartesian vector
 
-**Issue**: #4910
-**Filed**: 2026-09-27 (audit-publish, AUDIT_EXTERIOR_2026-09-27.md)
-**Labels**: medium,terrain-exterior,bug,water,esm-plugin
+labels: bug, medium, water, terrain-exterior, esm-plugin
+state: OPEN
 
 **Severity**: MEDIUM. The correct frame for FO3/FNV/Starfield is undetermined rather than proven wrong. For Oblivion the rotation is unsupported by any evidence.
 **Dimension**: Water translation (WATAL)
@@ -43,3 +42,4 @@ Authored layer motion on Oblivion, FO3, FNV and Starfield changed direction on 2
 - [ ] **SIBLING**: Same pattern checked in related files (other spawners / translate arms / games)
 - [ ] **CANONICAL-BOUNDARY**: Per-game logic stays at the EXAL/WATAL translate boundary (`env_translate.rs`, `groundcover_translate.rs`, the `cell_loader` spawn sites) — never pushed into shaders/renderer, never re-derived at render time. See `/audit-exterior`.
 - [ ] **TESTS**: A regression test pins this specific fix
+

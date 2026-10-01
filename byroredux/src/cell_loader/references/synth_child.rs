@@ -827,6 +827,7 @@ pub(super) fn spawn_synth_child(
             is_primary_synth
                 .then_some(placed_ref.water_velocity)
                 .flatten(),
+            record_index.game,
         );
     }
     accum.packed_collision_fallbacks += spawn_stats.packed_collision_fallbacks;
