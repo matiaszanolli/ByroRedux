@@ -220,11 +220,26 @@ while (( SECONDS < deadline_s )); do
             fail "cycle $cycle: body never re-grounded after quickload (see c$cycle.restored.status.* samples + phys census)"
         fi
     fi
-    # The restored pose must match the pose at F5 time (this cycle's
-    # walk-back endpoint) — the standoff reference itself moves with the
-    # quicksave point, so the comparison is cycle-local.
-    pose_close "$LOG_DIR/c$cycle.restored.status" "$LOG_DIR/c$cycle.back.status" 1 \
-        || fail "cycle $cycle: restored pose drifted from the quicksaved pose (>1 unit)"
+    # Restore-fidelity reference: the engine's OWN restore line is the pose it
+    # saved at F5-drain time. A player.status poll taken before the F5 press
+    # can be seconds stale — on the sloped porch the grounded body slides a
+    # few units between the poll and the quicksave (observed cycle 20 of the
+    # 2026-10-01 gate run: poll (102.05,…,827.08) vs saved+restored
+    # (104.6,…,824.3)), which is harness skew, not a restore defect. Compare
+    # the sampled body against the logged restore pose (≤2 units, settling
+    # allowance) and only loosely against the pre-F5 poll (≤5 units, still
+    # catches a wrong-slot restore).
+    grep 'save load: restored player pose' "$LOG_DIR/session.stderr" | tail -1 \
+        | sed -nE 's/.*restored player pose at \(([-0-9.]+), ([-0-9.]+), ([-0-9.]+)\).*/\1 \2 \3/p' \
+        >"$LOG_DIR/c$cycle.restored.pose"
+    [[ -s "$LOG_DIR/c$cycle.restored.pose" ]] \
+        || fail "cycle $cycle: no restored-pose line for this cycle's quickload"
+    awk -v a="$(pose "$LOG_DIR/c$cycle.restored.status")" \
+        -v b="$(cat "$LOG_DIR/c$cycle.restored.pose")" \
+        'BEGIN { split(a,x); split(b,y); if(length(x)!=3 || length(y)!=3) exit 1; for(i=1;i<=3;i++) if((x[i]-y[i])^2>4) exit 1 }' \
+        || fail "cycle $cycle: restored body ≠ engine-logged restore pose (>2 units — #5155 class)"
+    pose_close "$LOG_DIR/c$cycle.restored.status" "$LOG_DIR/c$cycle.back.status" 25 \
+        || fail "cycle $cycle: restored pose is far from the F5-time pose (>5 units — wrong-slot restore?)"
 
     # 5 — memory sample.
     sample_rss="$(rss_kb)"
