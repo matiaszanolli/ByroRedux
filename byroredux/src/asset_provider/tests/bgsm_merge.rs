@@ -2744,6 +2744,117 @@ fn bgsm_winning_the_slot_still_authors_the_enable_bit_off() {
 // OR behaviour #4286 also touched survives unchanged in
 // `bgsm_without_palette_bit_does_not_disable_a_nif_enabled_remap`.
 
+/// #5106 — #4636's dead-path repair and the #4402 enable-bit rule used to
+/// disagree about who won the greyscale-LUT slot. The bit block ran BEFORE
+/// the fill, so when the NIF's LUT resolved in no archive and the BGSM's
+/// did, `fill` handed the slot to the BGSM while the bit rule had already
+/// taken the NIF-won OR branch: the material sampled the BGSM's texture
+/// under an enable the winning material authored OFF. The fill now runs
+/// first and assign-vs-OR keys on whether THIS BGSM's path took the slot.
+///
+/// The NIF's SLSF1 bit arrives pre-set (`into_imported_material`, #3897) —
+/// the retexture scenario: a mod swaps in a BGSM that authors the remap off
+/// while the stale NIF word still says on.
+#[test]
+fn dead_nif_lut_hands_the_bgsm_both_the_slot_and_the_enable_bit() {
+    let mut pool = byroredux_core::string::StringPool::new();
+    let path = "materials/tests/dead_nif_lut_live_bgsm_lut.bgsm";
+    let mut provider = MaterialProvider::new();
+    provider.insert_bgsm_for_test(
+        path,
+        ResolvedMaterial {
+            file: BgsmFile {
+                greyscale_texture: "textures\\bgsm_palette.dds".into(),
+                base: byroredux_bgsm::BaseMaterial {
+                    grayscale_to_palette_color: false,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            parent: None,
+        },
+    );
+    let mut mesh = imported_mesh_with_material_path(&mut pool, path);
+    // The NIF supplied slot 3 (#2997) with a path no archive carries, and
+    // its SLSF1 word already enabled the remap (#3897).
+    mesh.material.textures.greyscale_lut = Some(pool.intern("textures\\missing_nif_lut.dds"));
+    mesh.material.bgsm_greyscale_lut_enabled = true;
+    mesh.material.bgsm_greyscale_lut_color = true;
+
+    let probe = |p: &str| p.eq_ignore_ascii_case("textures\\bgsm_palette.dds");
+    assert!(merge_external_material(&mut mesh.material, &mut provider, &mut pool, &probe).merged());
+
+    assert_eq!(
+        pool.resolve(mesh.material.textures.greyscale_lut.expect("slot stays populated")),
+        Some("textures\\bgsm_palette.dds"),
+        "the dead NIF LUT yields to the resolvable BGSM path (#4636)"
+    );
+    assert!(
+        !mesh.material.bgsm_greyscale_lut_enabled,
+        "the BGSM's path took the slot, so it is authoritative for the enable \
+         bit too — authored OFF means off (#2108/#4402), not OR'd against the \
+         NIF's stale SLSF1 word (#5106)"
+    );
+    assert!(
+        !mesh.material.bgsm_greyscale_lut_color,
+        "the color-channel bit follows the same winner-takes-the-bit rule"
+    );
+}
+
+/// #5106 chain half — once a BGSM's path has taken the slot (here: by the
+/// dead-path repair), `nif_supplied_greyscale_lut` is cleared, so an
+/// ancestor BGSM that authors the bit ON no longer ORs itself back in
+/// against a NIF that no longer owns the slot. Child-first precedence says
+/// the winner is the leaf; the bit follows the texture's owner.
+#[test]
+fn a_bgsm_that_takes_the_lut_slot_shields_it_from_ancestor_or_bits() {
+    let mut pool = byroredux_core::string::StringPool::new();
+    let path = "materials/tests/dead_nif_lut_live_child.bgsm";
+    let mut provider = MaterialProvider::new();
+    provider.insert_bgsm_for_test(
+        path,
+        ResolvedMaterial {
+            file: BgsmFile {
+                greyscale_texture: "textures\\child_palette.dds".into(),
+                base: byroredux_bgsm::BaseMaterial {
+                    grayscale_to_palette_color: false,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            parent: Some(std::sync::Arc::new(ResolvedMaterial {
+                file: BgsmFile {
+                    greyscale_texture: "textures\\parent_palette.dds".into(),
+                    base: byroredux_bgsm::BaseMaterial {
+                        grayscale_to_palette_color: true,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                parent: None,
+            })),
+        },
+    );
+    let mut mesh = imported_mesh_with_material_path(&mut pool, path);
+    mesh.material.textures.greyscale_lut = Some(pool.intern("textures\\missing_nif_lut.dds"));
+    mesh.material.bgsm_greyscale_lut_enabled = false;
+
+    let probe = |p: &str| p.eq_ignore_ascii_case("textures\\child_palette.dds");
+    assert!(merge_external_material(&mut mesh.material, &mut provider, &mut pool, &probe).merged());
+
+    assert_eq!(
+        pool.resolve(mesh.material.textures.greyscale_lut.expect("slot stays populated")),
+        Some("textures\\child_palette.dds"),
+        "the dead NIF LUT yields to the leaf BGSM's resolvable path, not the \
+         parent's (child-first, and only the child's path resolves here)"
+    );
+    assert!(
+        !mesh.material.bgsm_greyscale_lut_enabled,
+        "the leaf owns the slot and authored the bit OFF; the parent's ON must \
+         not OR back in against it (#5106)"
+    );
+}
+
 // ── #3899 (FO4-2026-09-05-D2-02) — peek_magic cache tiers ──────────
 //
 // `peek_magic` used to go straight to `extract_from_archives`, i.e. a full

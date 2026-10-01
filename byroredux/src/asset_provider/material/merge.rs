@@ -828,8 +828,10 @@ fn merge_bgsm_arm(
     // about the material, not about which texture resource is sampled, and
     // dropping it silently is what left the remap off. Captured before the
     // walk so a closer BGSM winning the slot mid-walk is distinguishable
-    // from the NIF having won it outright.
-    let nif_supplied_greyscale_lut = material.textures.greyscale_lut.is_some();
+    // from the NIF having won it outright — and CLEARED (#5106) the moment
+    // a BGSM's path actually takes the slot, so ancestors of that BGSM key
+    // on the real owner, not on the NIF that no longer holds it.
+    let mut nif_supplied_greyscale_lut = material.textures.greyscale_lut.is_some();
     for step in resolved.walk() {
         let bgsm = &step.file;
         fill(
@@ -883,11 +885,12 @@ fn merge_bgsm_arm(
         // ancestor's own enable bit is irrelevant once a closer BGSM
         // already won the texture slot.
         //
-        // #3898 — the `is_none()` half above is precedence among BGSMs and
-        // stays exactly as #2108 wrote it. What it silently also did was
-        // drop the enable bit whenever the NIF's own slot 3 had already
-        // filled the role (#2997 made that the common case on FO4), so a
-        // BGSM asking for the remap was ignored. Split the two situations:
+        // #3898 — the "slot empty → assign" half below is precedence
+        // among BGSMs and stays exactly as #2108 wrote it. What it
+        // silently also did was drop the enable bit whenever the NIF's
+        // own slot 3 had already filled the role (#2997 made that the
+        // common case on FO4), so a BGSM asking for the remap was
+        // ignored. Split the two situations:
         //
         //   - this BGSM wins the slot  -> it is authoritative for both the
         //     texture and the enable bit (assignment, including OFF — #2108,
@@ -913,17 +916,23 @@ fn merge_bgsm_arm(
         // original contract, and what the bullet above has said all along —
         // is the sourced behaviour. Assignment restored; the OR stays in
         // the NIF-won branch where #3898 put it.
-        if !bgsm.greyscale_texture.is_empty() {
-            if material.textures.greyscale_lut.is_none() {
-                // #2643 — BGSM has no alpha-variant field, so the color bit
-                // is the only one this format can author.
-                material.bgsm_greyscale_lut_enabled = bgsm.base.grayscale_to_palette_color;
-                material.bgsm_greyscale_lut_color = bgsm.base.grayscale_to_palette_color;
-            } else if nif_supplied_greyscale_lut {
-                material.bgsm_greyscale_lut_enabled |= bgsm.base.grayscale_to_palette_color;
-                material.bgsm_greyscale_lut_color |= bgsm.base.grayscale_to_palette_color;
-            }
-        }
+        //
+        // #5106 — the fill runs FIRST and the winner is decided from what
+        // it did, because `fill` is also the slot's referee: #4636's
+        // dead-path repair hands the slot to this BGSM when the NIF's LUT
+        // resolves in no archive and this chain's does. Pre-fix the bit
+        // block ran before the fill, so exactly that case fell through the
+        // NIF-won OR branch and the material ended up sampling the BGSM's
+        // LUT under an enable bit the winning material authored OFF — the
+        // single-winner contract above, violated by ordering. A change to
+        // the slot (`lut_before_step` ≠ current) means this BGSM's path
+        // took it — filled it, or replaced a dead NIF/BGSM path — so the
+        // assign branch fires; no change means the incumbent path survived
+        // this step, so the NIF-won OR branch is the only other one that
+        // applies. `nif_supplied_greyscale_lut` is cleared on takeover so
+        // ancestor steps stop OR-ing against a NIF that no longer owns the
+        // slot (the same single-winner rule, applied across the chain).
+        let lut_before_step = material.textures.greyscale_lut;
         fill(
             &mut material.textures.greyscale_lut,
             &bgsm.greyscale_texture,
@@ -931,6 +940,18 @@ fn merge_bgsm_arm(
             pool,
             texture_exists,
         );
+        if !bgsm.greyscale_texture.is_empty() {
+            if material.textures.greyscale_lut != lut_before_step {
+                // #2643 — BGSM has no alpha-variant field, so the color bit
+                // is the only one this format can author.
+                material.bgsm_greyscale_lut_enabled = bgsm.base.grayscale_to_palette_color;
+                material.bgsm_greyscale_lut_color = bgsm.base.grayscale_to_palette_color;
+                nif_supplied_greyscale_lut = false;
+            } else if nif_supplied_greyscale_lut {
+                material.bgsm_greyscale_lut_enabled |= bgsm.base.grayscale_to_palette_color;
+                material.bgsm_greyscale_lut_color |= bgsm.base.grayscale_to_palette_color;
+            }
+        }
         // Legacy v <= 2 environment cube; newer BGSMs drop the slot.
         // #4428 (FO4-D2-2026-09-16-02) — gate the fill on the authored
         // `environment_mapping` bit, the same bit `forward_bgsm_env_map_scale`
