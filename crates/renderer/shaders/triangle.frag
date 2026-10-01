@@ -522,8 +522,8 @@ void main() {
     // default. Missing layer maps (index 0) intentionally keep the previous
     // contribution.
     if (terrainSplatActive) {
-        for (uint i = 0u; i < 8u; ++i) {
-            float w = terrainSplat[i / 4u][i & 3u];
+        for (uint i = 0u; i < TERRAIN_SPLAT_LAYERS; ++i) {
+            float w = terrainSplat[i / TERRAIN_SPLAT_LANES_PER_WORD][i % TERRAIN_SPLAT_LANES_PER_WORD];
             uint specIdx = terrainTile.layerSpecularIndex[i];
             if (w <= 0.0 || specIdx == 0u) continue;
             // #4016 — explicit gradients: see the diffuse loop above.
@@ -655,8 +655,8 @@ void main() {
     if (terrainSplatActive
         && (dbgFlags & DBG_BYPASS_NORMAL_MAP) == 0u)
     {
-        for (uint i = 0u; i < 8u; ++i) {
-            float w = terrainSplat[i / 4u][i & 3u];
+        for (uint i = 0u; i < TERRAIN_SPLAT_LAYERS; ++i) {
+            float w = terrainSplat[i / TERRAIN_SPLAT_LANES_PER_WORD][i % TERRAIN_SPLAT_LANES_PER_WORD];
             uint layerNormalIdx = terrainTile.layerNormalIndex[i];
             if (w <= 0.0 || layerNormalIdx == 0u) continue;
             // #4016 — the gradient form. `perturbNormal`'s normal-map fetch

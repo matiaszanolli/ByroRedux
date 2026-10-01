@@ -22,6 +22,7 @@ use byroredux_core::math::coord::{
 use byroredux_core::math::{Quat, Vec3};
 use byroredux_plugin::esm;
 use byroredux_plugin::esm::cell::TextureSet;
+use byroredux_renderer::shader_constants::{TERRAIN_SPLAT_LANES_PER_WORD, TERRAIN_SPLAT_LAYERS};
 use byroredux_renderer::vulkan::scene_buffer::GpuTerrainTile;
 use byroredux_renderer::vulkan::GpuUploadCtx;
 use byroredux_renderer::{Vertex, VulkanContext};
@@ -388,8 +389,8 @@ pub(super) fn cover_affinity_key<'a>(
 pub(super) fn authored_grass_for_splat_layers(
     layers: &[CellSplatLayer],
     landscape_grasses: &HashMap<u32, Vec<u32>>,
-) -> [Vec<u32>; 8] {
-    let mut out: [Vec<u32>; 8] = Default::default();
+) -> [Vec<u32>; TERRAIN_SPLAT_LAYERS as usize] {
+    let mut out: [Vec<u32>; TERRAIN_SPLAT_LAYERS as usize] = Default::default();
     for (slot, layer) in out.iter_mut().zip(layers.iter()) {
         if let Some(grasses) = layer
             .ltex_form_id
@@ -449,8 +450,9 @@ fn terrain_layer_normal_path(
 /// `build_cell_splat_layers` so the unit test drives THIS arithmetic
 /// rather than a test-side copy that could never fail when the production
 /// formula changed. Base-transition layers go first (at most one per
-/// quadrant slot, so ≤ 4 — the premise the packer's `splat1[i - 4]`
-/// indexing and `spawn_terrain_mesh`'s `debug_assert!` lean on); authored
+/// quadrant slot, so ≤ 4 — the premise the packer's
+/// `splat1[i - TERRAIN_SPLAT_LANES_PER_WORD]` indexing and
+/// `spawn_terrain_mesh`'s `debug_assert!` lean on); authored
 /// layers are coverage-truncated to the remaining shader channels.
 pub(super) fn cap_splat_layers_to_shader_budget(
     base_transition_count: usize,
@@ -472,13 +474,14 @@ pub(super) fn cap_splat_layers_to_shader_budget(
     }
 }
 
-/// The budget arithmetic itself: authored splat lanes left of the 8
-/// shader-side channels (`Vertex` packs splat weights as 2× RGBA8 = 8
-/// channels per vertex) after the base transitions take theirs. The
-/// `.min(8)` keeps a premise-breaking transition count from underflowing
-/// in release; the `debug_assert!` above is what fails in debug.
+/// The budget arithmetic itself: authored splat lanes left of the shader-side
+/// channel count (`Vertex` packs splat weights as 2× RGBA8 =
+/// `TERRAIN_SPLAT_LAYERS` lanes per vertex, #5113) after the base
+/// transitions take theirs. The `.min(TERRAIN_SPLAT_LAYERS)` keeps a
+/// premise-breaking transition count from underflowing in release; the
+/// `debug_assert!` above is what fails in debug.
 fn splat_shader_budget(base_transition_count: usize) -> usize {
-    8 - base_transition_count.min(8)
+    TERRAIN_SPLAT_LAYERS as usize - base_transition_count.min(TERRAIN_SPLAT_LAYERS as usize)
 }
 
 /// In-place coverage-aware selection of the top `max_layers` splat layers from
@@ -934,18 +937,19 @@ pub(super) fn spawn_terrain_mesh(
             // assert pins that contract at the packer so a future budget
             // edit fails here instead of indexing out of bounds.
             debug_assert!(
-                splat_layers.layers.len() <= 8,
-                "splat packer received {} layers; the 2×RGBA8 budget is 8",
+                splat_layers.layers.len() <= TERRAIN_SPLAT_LAYERS as usize,
+                "splat packer received {} layers; the 2×RGBA8 budget is \
+                 {TERRAIN_SPLAT_LAYERS}",
                 splat_layers.layers.len()
             );
-            let mut splat0 = [0u8; 4];
-            let mut splat1 = [0u8; 4];
+            let mut splat0 = [0u8; TERRAIN_SPLAT_LANES_PER_WORD as usize];
+            let mut splat1 = [0u8; TERRAIN_SPLAT_LANES_PER_WORD as usize];
             for (i, layer) in splat_layers.layers.iter().enumerate() {
                 let w = splat_weight_for_vertex(layer, row, col);
-                if i < 4 {
+                if i < TERRAIN_SPLAT_LANES_PER_WORD as usize {
                     splat0[i] = w;
                 } else {
-                    splat1[i - 4] = w;
+                    splat1[i - TERRAIN_SPLAT_LANES_PER_WORD as usize] = w;
                 }
             }
 

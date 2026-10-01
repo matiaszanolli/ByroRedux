@@ -6,17 +6,19 @@
 
 use crate::vulkan::buffer::NoUninit;
 
+use super::constants::TERRAIN_SPLAT_LAYERS;
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct GpuTerrainTile {
     /// Bindless diffuse indices for LAND overlay layers 0-7.
-    pub layer_diffuse_index: [u32; 8],
+    pub layer_diffuse_index: [u32; TERRAIN_SPLAT_LAYERS],
     /// Tangent-space normal maps paired with [`Self::layer_diffuse_index`].
     /// Zero means the layer contributes geometry normal only.
-    pub layer_normal_index: [u32; 8],
+    pub layer_normal_index: [u32; TERRAIN_SPLAT_LAYERS],
     /// Specular-colour maps paired with [`Self::layer_diffuse_index`].
     /// Zero means the layer keeps the material's scalar specular colour.
-    pub layer_specular_index: [u32; 8],
+    pub layer_specular_index: [u32; TERRAIN_SPLAT_LAYERS],
     // ── EXAL ground cover, §12.5's terrain receiver (#4057) ──────────────
     //
     // §12.5 has two receivers and one term: grass shadowing the *ground* is

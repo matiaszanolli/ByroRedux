@@ -5603,7 +5603,7 @@ fn every_terrain_splat_sampler_uses_explicit_gradients() {
     let lines: Vec<&str> = FRAG.lines().collect();
     let mut checked = 0usize;
     for (start, line) in lines.iter().enumerate() {
-        if !line.contains("for (uint i = 0u; i < 8u; ++i)") {
+        if !line.contains("for (uint i = 0u; i < TERRAIN_SPLAT_LAYERS; ++i)") {
             continue;
         }
         let body: Vec<&str> = lines[start..]
@@ -5613,7 +5613,9 @@ fn every_terrain_splat_sampler_uses_explicit_gradients() {
             .copied()
             .collect();
         let body_text = body.join("\n");
-        if !body_text.contains("terrainSplat[i / 4u][i & 3u]") {
+        if !body_text.contains(
+            "terrainSplat[i / TERRAIN_SPLAT_LANES_PER_WORD][i % TERRAIN_SPLAT_LANES_PER_WORD]",
+        ) {
             continue;
         }
         checked += 1;
@@ -7136,9 +7138,10 @@ fn blade_ground_colour_uses_the_shared_terrain_splat_chain() {
         "the chain starts from the BTXT base colour"
     );
     assert!(
-        helper.contains("for (uint i = 0u; i < 8u; ++i)")
+        helper.contains("for (uint i = 0u; i < TERRAIN_SPLAT_LAYERS; ++i)")
             && helper.matches("albedo = mix(albedo,").count() == 1,
-        "the helper walks all eight lanes in order, mixing each over the          running base — a loop over 8 with one ordered mix, not a weighted          sum"
+        "the helper walks all TERRAIN_SPLAT_LAYERS lanes in order, mixing each \
+         over the running base — one ordered mix per layer, not a weighted sum"
     );
     assert!(
         !helper.contains("weightSum"),

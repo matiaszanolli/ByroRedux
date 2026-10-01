@@ -466,9 +466,9 @@ layout(std430, set = 1, binding = 9) readonly buffer GlobalIndices {
 // unpacked with the generated `INSTANCE_TERRAIN_TILE_SHIFT`/`_MASK`
 // macros, never a literal — see #4027.
 struct GpuTerrainTile {
-    uint layerDiffuseIndex[8];
-    uint layerNormalIndex[8];
-    uint layerSpecularIndex[8];
+    uint layerDiffuseIndex[TERRAIN_SPLAT_LAYERS];
+    uint layerNormalIndex[TERRAIN_SPLAT_LAYERS];
+    uint layerSpecularIndex[TERRAIN_SPLAT_LAYERS];
     // ── EXAL ground cover, §12.5's terrain receiver (#4057) ──────────────
     //
     // Grass shadowing the ground is the half of §12.5 anyone actually
@@ -528,8 +528,10 @@ vec3 byroTerrainSplatAlbedo(
     GpuTerrainTile tile
 ) {
     vec3 albedo = baseRGB;
-    for (uint i = 0u; i < 8u; ++i) {
-        float w = i < 4u ? splat0[i] : splat1[i - 4u];
+    for (uint i = 0u; i < TERRAIN_SPLAT_LAYERS; ++i) {
+        float w = i < TERRAIN_SPLAT_LANES_PER_WORD
+            ? splat0[i]
+            : splat1[i - TERRAIN_SPLAT_LANES_PER_WORD];
         if (w <= 0.0) continue;
         uint layerIdx = tile.layerDiffuseIndex[i];
         if (layerIdx == 0u) continue; // layer slot unused

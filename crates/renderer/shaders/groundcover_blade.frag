@@ -171,10 +171,10 @@ void main() {
             // painted-layer average is the best remaining estimate.
             vec3 groundAlbedo = vec3(0.0);
             float weightSum = 0.0;
-            for (uint i = 0u; i < 8u; ++i) {
-                float w = i < 4u
+            for (uint i = 0u; i < TERRAIN_SPLAT_LAYERS; ++i) {
+                float w = i < TERRAIN_SPLAT_LANES_PER_WORD
                     ? vTerrainSplat0[i]
-                    : vTerrainSplat1[i - 4u];
+                    : vTerrainSplat1[i - TERRAIN_SPLAT_LANES_PER_WORD];
                 if (w <= 0.0) continue;
                 uint layerIdx = groundTile.layerDiffuseIndex[i];
                 if (layerIdx == 0u) continue; // layer slot unused

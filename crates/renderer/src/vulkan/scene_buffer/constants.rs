@@ -15,6 +15,14 @@ use ash::vk;
 /// `0x3ff` (1023) as its invalid sentinel, leaving valid indices 0..=1022.
 pub(super) const MAX_LIGHTS: usize = crate::shader_constants::MAX_LIGHTS;
 
+/// LAND splat channel count (#5113) — the combined lane count of `Vertex`'s
+/// two RGBA8 splat-weight words, sized identically into `GpuTerrainTile`'s
+/// per-layer index arrays on both sides of the SSBO and pinned to the
+/// `Vertex` fields via
+/// `terrain_splat_constants_match_the_vertex_weight_lanes`.
+pub(super) const TERRAIN_SPLAT_LAYERS: usize =
+    crate::shader_constants::TERRAIN_SPLAT_LAYERS as usize;
+
 /// Maximum bones we can upload per frame across all skinned meshes.
 /// 196608 × 64 B = 12 MB/frame × 3 frames-in-flight = 36 MB total.
 /// Slot 0 is a reserved identity fallback (used by rigid vertices

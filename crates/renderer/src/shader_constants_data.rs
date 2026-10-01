@@ -1273,6 +1273,19 @@ pub const INSTANCE_FLAG_DIFFUSE_ALPHA: u32 = 1 << 8;
 pub const INSTANCE_TERRAIN_TILE_SHIFT: u32 = 16;
 pub const INSTANCE_TERRAIN_TILE_MASK: u32 = 0xFFFF;
 
+// LAND splat geometry (#5113): `Vertex` carries splat weights as 2 × RGBA8
+// unorm (`splat_weights_0`/`_1`), so the shader-side channel count is 8 and
+// one lane word holds 4. Every consumer previously re-typed the bare `8`
+// (the `GpuTerrainTile` array length on both sides of the SSBO, the three
+// splat loops, the terrain packer's budget arithmetic) and the
+// `i < 4 ? splat0 : splat1[i - 4]` lane split — #4496 pinned the packer's
+// premise without naming the constant, and #4056 added a fourth shader
+// loop after it closed. Sized from the same `Vertex` fields the weights
+// upload from (`terrain_splat_constants_match_the_vertex_weight_lanes`),
+// so growing the vertex lanes forces the whole chain to move together.
+pub const TERRAIN_SPLAT_LAYERS: u32 = 8;
+pub const TERRAIN_SPLAT_LANES_PER_WORD: u32 = 4;
+
 // Per-material flag bits on `GpuMaterial.materialFlags`. Authoritative
 // Rust-side values live in `crates/renderer/src/vulkan/material.rs`
 // (`material_flag::*`); this shader-side mirror is pinned equal via

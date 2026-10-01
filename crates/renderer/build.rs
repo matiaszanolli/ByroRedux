@@ -1171,6 +1171,21 @@ fn main() {
         "#define INSTANCE_TERRAIN_TILE_MASK {INSTANCE_TERRAIN_TILE_MASK}u"
     )
     .unwrap();
+    writeln!(
+        out,
+        "// LAND splat geometry (#5113): channel count + lanes per vertex weight word."
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "#define TERRAIN_SPLAT_LAYERS {TERRAIN_SPLAT_LAYERS}u"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "#define TERRAIN_SPLAT_LANES_PER_WORD {TERRAIN_SPLAT_LANES_PER_WORD}u"
+    )
+    .unwrap();
     writeln!(out).unwrap();
 
     writeln!(

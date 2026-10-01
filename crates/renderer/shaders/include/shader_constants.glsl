@@ -330,6 +330,9 @@
 #define INSTANCE_FLAG_LOD_BLOCK 512u
 #define INSTANCE_TERRAIN_TILE_SHIFT 16u
 #define INSTANCE_TERRAIN_TILE_MASK 65535u
+// LAND splat geometry (#5113): channel count + lanes per vertex weight word.
+#define TERRAIN_SPLAT_LAYERS 8u
+#define TERRAIN_SPLAT_LANES_PER_WORD 4u
 
 // Per-material flag bits (`GpuMaterial.materialFlags`).
 // Authoritative values: vulkan/material.rs `material_flag::*`. #1190.

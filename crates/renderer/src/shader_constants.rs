@@ -807,6 +807,34 @@ mod tests {
         assert!(proxy.contains("outFsrTransparency = 1.0;"));
     }
 
+    /// #5113 (TD7-2026-09-29-01) — the splat channel count and lanes-per-word
+    /// are derived from the same `Vertex` fields the weights upload from, not
+    /// independent tunables: `TERRAIN_SPLAT_LAYERS` is the two RGBA8 weight
+    /// words' combined lane count and `TERRAIN_SPLAT_LANES_PER_WORD` is one
+    /// word's. A `Vertex` weight-packing change that stops matching fails
+    /// here instead of silently truncating (or over-reading) every splat
+    /// consumer — `GpuTerrainTile`'s arrays, the shader loops and the
+    /// terrain packer's budget all size from these two constants.
+    #[test]
+    fn terrain_splat_constants_match_the_vertex_weight_lanes() {
+        let vertex = crate::Vertex::new([0.0; 3], [0.0; 3], [0.0; 3], [0.0; 2]);
+        assert_eq!(
+            TERRAIN_SPLAT_LANES_PER_WORD as usize,
+            std::mem::size_of_val(&vertex.splat_weights_0),
+            "TERRAIN_SPLAT_LANES_PER_WORD must equal one Vertex splat weight word"
+        );
+        assert_eq!(
+            TERRAIN_SPLAT_LAYERS as usize,
+            2 * std::mem::size_of_val(&vertex.splat_weights_0),
+            "TERRAIN_SPLAT_LAYERS must equal both Vertex splat weight words"
+        );
+        assert_eq!(
+            TERRAIN_SPLAT_LAYERS as usize,
+            2 * TERRAIN_SPLAT_LANES_PER_WORD as usize,
+            "the two splat constants must agree with each other"
+        );
+    }
+
     #[test]
     fn vertex_stride_matches_vertex_struct() {
         assert_eq!(
@@ -1075,6 +1103,8 @@ mod tests {
             ("INSTANCE_FLAG_DIFFUSE_ALPHA", format!("#define INSTANCE_FLAG_DIFFUSE_ALPHA {INSTANCE_FLAG_DIFFUSE_ALPHA}u")),
             ("INSTANCE_TERRAIN_TILE_SHIFT", format!("#define INSTANCE_TERRAIN_TILE_SHIFT {INSTANCE_TERRAIN_TILE_SHIFT}u")),
             ("INSTANCE_TERRAIN_TILE_MASK", format!("#define INSTANCE_TERRAIN_TILE_MASK {INSTANCE_TERRAIN_TILE_MASK}u")),
+            ("TERRAIN_SPLAT_LAYERS", format!("#define TERRAIN_SPLAT_LAYERS {TERRAIN_SPLAT_LAYERS}u")),
+            ("TERRAIN_SPLAT_LANES_PER_WORD", format!("#define TERRAIN_SPLAT_LANES_PER_WORD {TERRAIN_SPLAT_LANES_PER_WORD}u")),
             ("MAT_FLAG_VERTEX_COLOR_EMISSIVE", format!("#define MAT_FLAG_VERTEX_COLOR_EMISSIVE {MAT_FLAG_VERTEX_COLOR_EMISSIVE}u")),
             ("MAT_FLAG_EFFECT_SOFT", format!("#define MAT_FLAG_EFFECT_SOFT {MAT_FLAG_EFFECT_SOFT}u")),
             ("MAT_FLAG_EFFECT_PALETTE_COLOR", format!("#define MAT_FLAG_EFFECT_PALETTE_COLOR {MAT_FLAG_EFFECT_PALETTE_COLOR}u")),
