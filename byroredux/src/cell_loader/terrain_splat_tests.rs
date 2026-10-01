@@ -174,6 +174,26 @@ fn btxt_transition_feathers_only_against_a_different_neighbor() {
     );
 }
 
+/// #4905 — the BTXT feather covers INTERNAL quadrant edges only; the same
+/// base disagreement across a cell boundary stays a hard line (vanilla
+/// parity). The outer edges of a quadrant grid — the cell's own borders —
+/// must never be feathered, whatever the in-cell arrangement is.
+#[test]
+fn btxt_transition_cell_edges_stay_hard_vanilla_parity() {
+    // Every quadrant disagrees with its in-cell neighbours: all internal
+    // edges feather. The cell's outer border (quadrant 0's top/left — the
+    // row 0 / col 0 edges facing the neighbouring cells) must stay solid:
+    // the neighbour's facing base is not an input this pass has.
+    let bases = [Some(0x10), Some(0x20), Some(0x30), Some(0x40)];
+    let sw = base_transition_alpha(0, &bases);
+    assert_eq!(sw[0], 1.0, "cell corner stays solid");
+    assert_eq!(sw[8], 1.0, "top edge (faces the cell above) stays solid");
+    assert_eq!(sw[8 * 17], 1.0, "left edge (faces the cell west) stays solid");
+    // …while the internal edges do feather.
+    assert_eq!(sw[16 * 17 + 8], 0.5, "internal north edge is feathered");
+    assert_eq!(sw[8 * 17 + 16], 0.5, "internal east edge is feathered");
+}
+
 #[test]
 fn btxt_transition_plan_keeps_only_noncanonical_quadrant_bases() {
     // Canonical SW/NW grass stays in the entity base material. SE's rock and

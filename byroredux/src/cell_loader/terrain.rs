@@ -157,9 +157,18 @@ pub(super) fn build_cell_splat_layers(
     // other base becomes a low-priority splat layer, painted only in its own
     // quadrant. This keeps the floor continuous when a cell crosses dirt,
     // grass, rock, or snow instead of flattening all four quadrants to the
-    // first texture we happened to find. The edge is feathered by one LAND
-    // vertex (128 BU) so the authored quadrant boundary does not become a
-    // hard, camera-visible checkerboard seam.
+    // first texture we happened to find. An INTERNAL quadrant boundary whose
+    // bases differ is feathered by one LAND vertex (128 BU) so it does not
+    // become a hard, camera-visible checkerboard seam.
+    //
+    // #4905 — the feather covers INTERNAL quadrant edges only. The same base
+    // disagreement across a CELL boundary stays a hard line, at vanilla
+    // parity: feathering it needs each neighbour's facing quadrant bases,
+    // which moves `base_transition_layers_for_bases`'s at-most-4-transition
+    // lane-budget premise (a cell can differ against up to four neighbours),
+    // and that budget change is deferred until a capture shows the seams
+    // matter against everything else the exterior ring is doing. The FNV
+    // census put cross-cell base disagreement at 32% of facing pairs.
     let base_transitions = build_base_transition_layers(land, canonical_base_ltex);
 
     // The 8-cap is ours, not the format's: `vertex.rs::Vertex` packs
