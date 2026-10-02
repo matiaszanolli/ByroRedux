@@ -25,6 +25,14 @@ use crate::systems::{PlayerEntity, PlayerMode};
 /// baseline (1.0 = same reach as a longsword/mace; source: CS wiki's
 /// `fCombatDistance * NPCScale * Reach` formula), not an absolute distance.
 pub(crate) const MELEE_REACH_BU: f32 = 180.0;
+/// #5160 — the swing's swept corridor radius (BU). A swing resolves through
+/// a ball cast along the camera ray, not a zero-width line: authored actor
+/// bone colliders are 16-18 BU boxes with real gaps, and a line aimed dead
+/// centre on an actor can pass between two bones (the GSSettlerCM repro
+/// where 1.6° of pitch decided hit vs miss). 12 BU ≈ an 18 cm blade sweep —
+/// wide enough to bridge adjacent bone gaps, narrow enough that a genuinely
+/// clear miss stays a miss.
+pub(crate) const MELEE_SWING_CORRIDOR_RADIUS_BU: f32 = 12.0;
 /// One attack edge per cooldown. Holding Attack never auto-repeats because
 /// ActionState contributes only the initial press edge. This is the
 /// unarmed / no-weapon baseline; `EquippedWeapon::speed` is an authored
@@ -234,7 +242,15 @@ pub(crate) fn combat_input_system(world: &World, dt: f32) {
     let reach = attack_reach_bu(world, aggressor);
     let hit = world
         .try_resource::<byroredux_physics::PhysicsWorld>()
-        .and_then(|physics| physics.cast_ray(origin, direction, reach, excluded_body));
+        .and_then(|physics| {
+            physics.cast_ray_corridor(
+                origin,
+                direction,
+                reach,
+                MELEE_SWING_CORRIDOR_RADIUS_BU,
+                excluded_body,
+            )
+        });
     let Some(hit_body) = hit.and_then(|hit| hit.body) else {
         record_miss(world, "melee swing missed");
         return;

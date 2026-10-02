@@ -308,8 +308,18 @@ pub(super) fn combat_approach_line_of_sight_reaches(
     // Scoped to the cast alone: the guard is taken and dropped inside this
     // expression, so it never overlaps a storage guard. A cell with no
     // physics resource still trivially passes, as before.
+    //
+    // #5160 — the check casts the SAME corridor the swing itself casts, not
+    // a zero-width line, so a candidate this check accepts is a candidate
+    // the swing can actually land.
     let hit = match world.try_resource::<byroredux_physics::PhysicsWorld>() {
-        Some(physics) => physics.cast_ray(camera_pos, direction, distance, excluded_body),
+        Some(physics) => physics.cast_ray_corridor(
+            camera_pos,
+            direction,
+            distance,
+            crate::combat::MELEE_SWING_CORRIDOR_RADIUS_BU,
+            excluded_body,
+        ),
         None => return true,
     };
     let Some(hit_body) = hit.and_then(|hit| hit.body) else {

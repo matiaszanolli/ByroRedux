@@ -1228,6 +1228,67 @@ impl PhysicsWorld {
             })
     }
 
+    /// #5160 — a swept melee corridor: the same query surface as
+    /// [`cast_ray`] (query pipeline, sensors excluded, optional own-body
+    /// exclusion), but the ray is widened to a ball of `corridor_radius`
+    /// because a swing sweeps a volume, not a line.
+    ///
+    /// Authored actor bone colliders are small boxes — measured 16-18 BU on
+    /// FNV humanoids — so a zero-width ray can thread the gaps between them
+    /// even with the aim centred on the actor: observed as a guaranteed
+    /// `melee swing missed` from a textbook approach pose (p2-melee-core on
+    /// `GSSettlercm`, 2026-10-01, where a 1.6° pitch difference decided
+    /// hit vs thread-the-gap). Damage is actor-level, so the corridor is
+    /// the honest target volume; per-bone fidelity is unaffected — the
+    /// corridor still resolves through the actor's own bone colliders.
+    pub fn cast_ray_corridor(
+        &self,
+        origin: byroredux_core::math::Vec3,
+        direction: byroredux_core::math::Vec3,
+        max_distance: f32,
+        corridor_radius: f32,
+        excluded_body: Option<rapier3d::prelude::RigidBodyHandle>,
+    ) -> Option<PhysicsRayHit> {
+        if max_distance <= 0.0 || !max_distance.is_finite() {
+            return None;
+        }
+        let direction = direction.normalize_or_zero();
+        if direction.length_squared() == 0.0 {
+            return None;
+        }
+        if corridor_radius <= 0.0 {
+            return self.cast_ray(origin, direction, max_distance, excluded_body);
+        }
+
+        use rapier3d::parry::query::ShapeCastOptions;
+        use rapier3d::prelude::*;
+        let shape = Ball::new(corridor_radius);
+        let pos = Isometry::translation(origin.x, origin.y, origin.z);
+        let mut filter = QueryFilter::default().exclude_sensors();
+        if let Some(body) = excluded_body {
+            filter = filter.exclude_rigid_body(body);
+        }
+        self.query_pipeline
+            .cast_shape(
+                &self.bodies,
+                &self.colliders,
+                &pos,
+                &Vector::new(direction.x, direction.y, direction.z),
+                &shape,
+                ShapeCastOptions {
+                    target_distance: 0.0,
+                    stop_at_penetration: false,
+                    max_time_of_impact: max_distance,
+                    compute_impact_geometry_on_penetration: false,
+                },
+                filter,
+            )
+            .map(|(collider, hit)| PhysicsRayHit {
+                body: self.colliders.get(collider).and_then(|hit| hit.parent()),
+                distance: hit.time_of_impact,
+            })
+    }
+
     /// #4414 — does solid world geometry block the straight line `from → to`?
     ///
     /// The sight test ambient faction hostility gates an attack on. Uses the
@@ -1693,6 +1754,64 @@ mod tests {
     fn empty_world_has_no_bodies() {
         let w = PhysicsWorld::new();
         assert_eq!(w.body_count(), 0);
+    }
+
+    /// #5160 — a melee swing must resolve through a corridor, not a line.
+    /// Authored actor bone colliders are small boxes with real gaps between
+    /// them; a zero-width ray aimed dead-centre on an actor can pass between
+    /// two bones (the p2-melee-core GSSettlerCM repro: hit vs miss decided
+    /// by 1.6° of pitch). The corridor cast must catch what the line threads.
+    #[test]
+    fn corridor_cast_hits_a_bone_the_zero_width_ray_threads() {
+        let mut w = PhysicsWorld::new();
+
+        // Two bone-sized kinematic boxes either side of +Z, mirroring the
+        // measured FNV humanoid bone extents (16-18 BU): centres at x=±16,
+        // each 16 BU wide, leaving a 16 BU gap the aim line travels through
+        // but a 12 BU-radius corridor (24 BU across) cannot.
+        for x in [-16.0f32, 16.0f32] {
+            let shape = single_shape(&CollisionShape::Cuboid {
+                half_extents: Vec3::new(8.0, 9.0, 8.0),
+            });
+            let body = RigidBodyBuilder::kinematic_position_based()
+                .position(iso_from_trs(Vec3::new(x, 50.0, 100.0), Quat::IDENTITY))
+                .build();
+            let handle = w.bodies.insert(body);
+            w.colliders.insert_with_parent(
+                ColliderBuilder::new(shape).build(),
+                handle,
+                &mut w.bodies,
+            );
+        }
+        w.update_query_pipeline();
+
+        let origin = Vec3::new(0.0, 50.0, 0.0);
+        let direction = Vec3::new(0.0, 0.0, 1.0);
+
+        // The zero-width ray travels the 16 BU gap between the boxes.
+        assert!(
+            w.cast_ray(origin, direction, 200.0, None).is_none(),
+            "test geometry: the plain ray must thread the gap or the fixture \
+             no longer reproduces the #5160 miss"
+        );
+
+        // A 12 BU corridor (the melee swing's blade sweep) reaches the boxes.
+        let hit = w
+            .cast_ray_corridor(origin, direction, 200.0, 12.0, None)
+            .expect("the corridor must catch a bone the line threads (#5160)");
+        // Box x-face at 8 from the centre-line, ball radius 12: contact when
+        // sqrt(8² + dz²) = 12 → dz = sqrt(80) ≈ 8.944 ahead of the z-face at
+        // 92, so time of impact ≈ 83.056. Assert the band, not the digit —
+        // parry's CCD rounding owns the last ulp.
+        assert!(
+            (83.0..=83.2).contains(&hit.distance),
+            "unexpected corridor contact distance {}",
+            hit.distance
+        );
+        assert!(
+            hit.body.is_some(),
+            "the corridor hit must resolve to its parent body for ownership"
+        );
     }
 
     #[test]
