@@ -3465,6 +3465,55 @@ mod unit_tests {
         );
     }
 
+    /// #4782 / SAFE-D7-2026-09-23-01 — the raw V-buffer temporal history is
+    /// the one history buffer without a non-finite guard (TAA #903 and SVGF
+    /// reject theirs): one NaN/Inf froxel made `historyWeight` NaN, the
+    /// blend re-stored it every frame, and the column's linear z taps
+    /// spread it a slice per frame. Pin both halves of the fix on the
+    /// shader text: the history rejection before the blend, and the
+    /// store-side clamp into the finite fp16 range (the target is RGBA16F)
+    /// that keeps the rejection's fallback value finite.
+    #[test]
+    fn v_buffer_history_rejects_non_finite_and_the_store_clamps_to_fp16() {
+        let shader = include_str!("../../shaders/volumetrics_inject.comp");
+        let blend_block = shader
+            .split("vec4 history = sampleHistoryColumn(previousUvw);")
+            .nth(1)
+            .expect("the raw V-buffer history sample must exist")
+            .split("imageStore(froxel, coord, current);")
+            .next()
+            .unwrap();
+        let guard = blend_block
+            .find("if (any(isnan(history)) || any(isinf(history))) {")
+            .expect("the history non-finite guard (#4782)");
+        let fallback = blend_block
+            .find("history = current;")
+            .expect("the guard's fallback is the current value");
+        let blend = blend_block
+            .find("current = mix(current, history, historyWeight);")
+            .expect("the temporal blend");
+        assert!(
+            guard < fallback && fallback < blend,
+            "the guard must replace the history with `current` BEFORE the \
+             blend — after it, the NaN is already in the output (#4782)"
+        );
+        let store = shader
+            .find("imageStore(froxel, coord, current);")
+            .expect("the final froxel store");
+        let clamp = shader
+            .find("if (any(isnan(current)) || any(isinf(current))) {")
+            .expect("the store-side non-finite scrub (#4782)");
+        let fp16_ceiling = shader
+            .find("clamp(current.rgb, vec3(0.0), vec3(6.0e4))")
+            .expect("the finite fp16 range clamp (#4782)");
+        assert!(
+            clamp < fp16_ceiling && fp16_ceiling < store,
+            "the store must clamp into the finite fp16 range — the RGBA16F \
+             target overflows above 65504 and Inf re-enters next frame \
+             through `current`, where the history guard cannot scrub it (#4782)"
+        );
+    }
+
     /// #4774 / REN-D8-2026-09-23-02 — the transported combustion field must
     /// be WRITTEN at the texel-centre distance, the distance of the
     /// normalized midpoint. Writing at the arithmetic mean of the two
