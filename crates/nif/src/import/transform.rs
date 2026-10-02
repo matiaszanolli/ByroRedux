@@ -10,12 +10,25 @@ use crate::types::{NiMatrix3, NiPoint3, NiTransform};
 /// `NiTransform` composition: rotation = parent.rot * child.rot,
 /// translation = parent.rot * (parent.scale * child.trans) + parent.trans,
 /// scale = parent.scale * child.scale.
+///
+/// #4633 — #4549's parse-time gate is inputs-only: every field here is
+/// finite on entry, yet the *products* can still overflow f32 (two
+/// finite-but-extreme scales like 1e20 × 1e20, or a near-`f32::MAX` parent
+/// scale times a child translation). ~5% of random single-field float
+/// corruptions are finite-but-overflowing — the more likely residual than
+/// the direct NaN/inf #4549 catches. The composed output is neutralized
+/// through the same #4549 policy (translation → 0, scale → 1, rate-limited
+/// warn) so the overflow cannot ride a `GlobalTransform` into a
+/// non-finite `VkTransformMatrixKHR` at the TLAS instance build. The
+/// rotation product needs no gate: `sanitize_rotation` orthonormalizes
+/// both inputs, bounding every cell of the product by 3.
 pub(super) fn compose_transforms(parent: &NiTransform, child: &NiTransform) -> NiTransform {
     let rot = mul_matrix3(&parent.rotation, &child.rotation);
     let scaled_child_trans = scale_point(child.translation, parent.scale);
     let rotated = mul_matrix3_point(&parent.rotation, scaled_child_trans);
-    let translation = add_points(parent.translation, rotated);
-    let scale = parent.scale * child.scale;
+    let mut translation = add_points(parent.translation, rotated);
+    let mut scale = parent.scale * child.scale;
+    crate::rotation::sanitize_transform_translation_and_scale(&mut translation, &mut scale);
 
     NiTransform {
         rotation: rot,

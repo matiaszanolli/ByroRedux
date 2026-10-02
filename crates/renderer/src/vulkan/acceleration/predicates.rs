@@ -131,17 +131,31 @@ const IDENTITY_VK_TRANSFORM: vk::TransformMatrixKHR = vk::TransformMatrixKHR {
 /// shadow at the visual location and a phantom occluder elsewhere. Emit
 /// identity so the absolute-world BLAS passes through unchanged.
 ///
+/// #4633 — returns `None` when the model matrix carries a non-finite
+/// cell. #4549 gates the NIF readers' inputs and `compose_transforms`
+/// gates its products, but a non-finite transform can still re-enter
+/// through other producers (a future import path, a runtime system); the
+/// driver-facing contract "never emit a non-finite `VkTransformMatrixKHR`"
+/// is enforced here at the convergence point, where the caller drops the
+/// instance with a rate-limited warning rather than feeding garbage to
+/// the acceleration-structure build.
+///
 /// Note: this is independent of `GpuInstance.model` in the scene SSBO,
 /// which stays the entity placement — `getHitTriNormal` (triangle.frag)
 /// needs it to rotate the bind-pose vertices it reads from the global
 /// vertex SSBO into world space for the RT hit-normal. That bind-pose
 /// normal approximation is a separate M29 concern, untouched here.
 #[inline]
-pub(super) fn tlas_instance_transform(draw_cmd: &DrawCommand) -> vk::TransformMatrixKHR {
+pub(super) fn tlas_instance_transform(draw_cmd: &DrawCommand) -> Option<vk::TransformMatrixKHR> {
     if draw_cmd.bone_offset != 0 {
-        IDENTITY_VK_TRANSFORM
+        Some(IDENTITY_VK_TRANSFORM)
     } else {
-        column_major_to_vk_transform(&draw_cmd.model_matrix)
+        let transform = column_major_to_vk_transform(&draw_cmd.model_matrix);
+        transform
+            .matrix
+            .iter()
+            .all(|cell| cell.is_finite())
+            .then_some(transform)
     }
 }
 

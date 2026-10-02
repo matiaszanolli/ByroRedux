@@ -354,3 +354,82 @@ fn zup_to_yup_90deg_ccw_rotation_around_x() {
     assert!(q[2].abs() < 1e-4, "qz={}", q[2]);
     assert!((q[3].abs() - cos45).abs() < 1e-4, "qw={}", q[3]);
 }
+
+/// #4633 — #4549's parse-time gate is inputs-only: both inputs here are
+/// finite (they pass #4549's `is_finite` gate bit-for-bit), yet the
+/// composed *products* overflow f32. ~5% of random single-field float
+/// corruptions are finite-but-overflowing — the more likely residual than
+/// the direct NaN/inf #4549 catches. The output must be neutralized
+/// through the same policy (translation → 0, scale → 1) rather than
+/// riding a GlobalTransform into a non-finite `VkTransformMatrixKHR`.
+#[test]
+fn compose_transforms_overflowing_products_are_neutralized() {
+    // 1e20 × 1e20 = +inf in f32 — both scales individually finite.
+    let parent = NiTransform {
+        rotation: NiMatrix3::default(),
+        translation: NiPoint3 {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        },
+        scale: 1e20,
+    };
+    let child = NiTransform {
+        rotation: NiMatrix3::default(),
+        translation: NiPoint3 {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        },
+        scale: 1e20,
+    };
+    let result = transform::compose_transforms(&parent, &child);
+    assert!(
+        result.scale.is_finite(),
+        "scale product 1e20 × 1e20 must be neutralized, got {}",
+        result.scale
+    );
+    assert_eq!(result.scale, 1.0, "neutralized scale resets to 1.0 (#4549 policy)");
+
+    // Near-f32::MAX parent scale times a child translation overflows the
+    // `parent.scale * child.trans` product, and two same-sign huge
+    // translations overflow the final add.
+    let parent = NiTransform {
+        rotation: NiMatrix3::default(),
+        translation: NiPoint3 {
+            x: f32::MAX,
+            y: 0.0,
+            z: 0.0,
+        },
+        scale: 1e30,
+    };
+    let child = translated(1e30, 0.0, 0.0);
+    let result = transform::compose_transforms(&parent, &child);
+    assert!(
+        result.translation.x.is_finite(),
+        "overflowing translation products must be neutralized, got {}",
+        result.translation.x
+    );
+    assert_eq!(result.translation.x, 0.0, "neutralized translation zeroes (#4549 policy)");
+    assert!(result.scale.is_finite());
+    assert!(
+        result.rotation.rows.iter().all(|r| r.iter().all(|c| c.is_finite())),
+        "rotation product stays finite (orthonormal inputs bound it by 3)"
+    );
+
+    // The clean path is untouched: ordinary values compose exactly as
+    // before (bit-for-bit on the non-overflowing fields).
+    let parent = translated(1.0, 2.0, 3.0);
+    let child = NiTransform {
+        rotation: NiMatrix3::default(),
+        translation: NiPoint3 {
+            x: 4.0,
+            y: 0.0,
+            z: 0.0,
+        },
+        scale: 2.0,
+    };
+    let result = transform::compose_transforms(&parent, &child);
+    assert!((result.translation.x - 5.0).abs() < 1e-6);
+    assert!((result.scale - 2.0).abs() < 1e-6);
+}

@@ -510,6 +510,11 @@ impl AccelerationManager {
         let mut missing_skinned_blas: usize = 0;
         let mut missing_rigid_blas: usize = 0;
         let mut missing_ssbo_instance: usize = 0;
+        // #4633 — draw commands whose model_matrix carries a non-finite
+        // cell. Their TLAS instance is dropped (see `tlas_instance_transform`)
+        // instead of feeding a non-finite `VkTransformMatrixKHR` to the
+        // acceleration-structure build.
+        let mut non_finite_transform: usize = 0;
         let mut eligible_instances: usize = 0;
         // #3305 — shadow-mask census, gathered in this same pass.
         let mut census = super::ShadowMaskSnapshot::default();
@@ -612,7 +617,20 @@ impl AccelerationManager {
             // double-transform the actor's RT presence. See
             // `tlas_instance_transform` (#1487 / REN2-02) and
             // `column_major_to_vk_transform` for the 3x4 row-major layout.
-            let transform = tlas_instance_transform(draw_cmd);
+            // #4633 — `None` = non-finite model matrix: drop the instance
+            // (no RT presence for that mesh this frame) rather than feed
+            // garbage to the AS build. Raster still draws it; this is the
+            // same degrade-and-warn shape as the missing-BLAS arms above.
+            let Some(transform) = tlas_instance_transform(draw_cmd) else {
+                non_finite_transform += 1;
+                if missing_samples.len() < MISSING_BLAS_SAMPLE_LIMIT {
+                    missing_samples.push(format!(
+                        "entity {:?} mesh_handle={} (non-finite model_matrix)",
+                        draw_cmd.entity_id, draw_cmd.mesh_handle
+                    ));
+                }
+                continue;
+            };
 
             // SAFETY: AccelerationStructureReferenceKHR is a union — device_handle field
             // is used because our BLAS is on-device (not host-built). The address was
@@ -767,7 +785,7 @@ impl AccelerationManager {
             missing_rigid_blas: missing_rigid_blas as u32,
             missing_ssbo_instance: missing_ssbo_instance as u32,
         };
-        if missing_blas_total > 0 && frame_index == 0 {
+        if (missing_blas_total > 0 || non_finite_transform > 0) && frame_index == 0 {
             // Log once per second (at 60fps, frame_index 0 fires 30×/s — good enough).
             static LAST_LOG: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
             let now = std::time::SystemTime::now()
@@ -793,11 +811,15 @@ impl AccelerationManager {
                 };
                 // #1228 — break the count down so operators can tell
                 // benign warmup (skinned-only) from a persistent eviction
-                // bug (rigid > 0 in steady state) at a glance.
+                // bug (rigid > 0 in steady state) at a glance. #4633 —
+                // non-finite-transform drops ride the same warn and sample
+                // budget: they indicate corrupt import data upstream
+                // (#4549/#4633's finite gates should keep them at zero).
                 log::warn!(
-                    "TLAS: {} instances from {} draw commands ({} lack BLAS — skinned={}, rigid={}, ssbo_evicted={} — no RT shadows for those meshes){}",
-                    instance_count, draw_commands.len(), missing_blas_total,
-                    missing_skinned_blas, missing_rigid_blas, missing_ssbo_instance, sample
+                    "TLAS: {} instances from {} draw commands ({} dropped — skinned_no_blas={}, rigid_no_blas={}, ssbo_evicted={}, non_finite_transform={} — no RT shadows for those meshes){}",
+                    instance_count, draw_commands.len(), missing_blas_total + non_finite_transform,
+                    missing_skinned_blas, missing_rigid_blas, missing_ssbo_instance,
+                    non_finite_transform, sample
                 );
             }
         }

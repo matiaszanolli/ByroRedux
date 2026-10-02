@@ -370,7 +370,8 @@ fn skinned_tlas_instance_uses_identity_transform() {
     let mut skinned = make_draw_command(true, false);
     skinned.bone_offset = 128; // any non-zero palette base
     skinned.model_matrix = placed_model;
-    let t = tlas_instance_transform(&skinned);
+    let t = tlas_instance_transform(&skinned)
+        .expect("finite skinned model_matrix must still emit identity");
     assert_eq!(
         t.matrix,
         [
@@ -388,10 +389,52 @@ fn skinned_tlas_instance_uses_identity_transform() {
     rigid.bone_offset = 0;
     rigid.model_matrix = placed_model;
     assert_eq!(
-        tlas_instance_transform(&rigid).matrix,
+        tlas_instance_transform(&rigid)
+            .expect("finite rigid model_matrix must emit its transform")
+            .matrix,
         column_major_to_vk_transform(&placed_model).matrix,
         "rigid TLAS instance must carry the entity's absolute model_matrix"
     );
+}
+
+/// #4633 — the convergence-point gate: `tlas_instance_transform` must
+/// never emit a non-finite `VkTransformMatrixKHR`. #4549 gates the NIF
+/// readers' inputs and `compose_transforms` gates its products, but a
+/// non-finite transform can re-enter through any other producer, and a
+/// single NaN/inf cell fed to the acceleration-structure build is the
+/// #4166/#4549 defect class. The contract is enforced as `None` — the
+/// caller drops the instance with a rate-limited warning instead.
+#[test]
+fn tlas_instance_transform_rejects_non_finite_model_matrix() {
+    // Skinned draws short-circuit to identity before touching
+    // model_matrix, so even a poisoned matrix stays Some(identity).
+    let mut skinned = make_draw_command(true, false);
+    skinned.bone_offset = 64;
+    skinned.model_matrix[7] = f32::NAN;
+    assert!(tlas_instance_transform(&skinned).is_some());
+
+    // Rigid draws validate every cell: NaN in one rotation cell …
+    let mut rigid = make_draw_command(true, false);
+    rigid.bone_offset = 0;
+    rigid.model_matrix[2] = f32::NAN;
+    assert!(
+        tlas_instance_transform(&rigid).is_none(),
+        "a NaN rotation cell must not reach VkTransformMatrixKHR"
+    );
+
+    // … and +inf in one translation cell (#4633's headline case: two
+    // finite-but-extreme scales composing to inf).
+    rigid.model_matrix[2] = 0.0;
+    rigid.model_matrix[14] = f32::INFINITY;
+    assert!(
+        tlas_instance_transform(&rigid).is_none(),
+        "an inf translation cell must not reach VkTransformMatrixKHR"
+    );
+
+    // A clean finite matrix still passes.
+    rigid.model_matrix[14] = 5.0;
+    let t = tlas_instance_transform(&rigid).expect("finite matrix must emit");
+    assert!(t.matrix.iter().all(|cell| cell.is_finite()));
 }
 
 /// Identity round-trip: the column-major identity matrix must
