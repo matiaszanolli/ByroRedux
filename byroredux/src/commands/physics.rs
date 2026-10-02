@@ -199,6 +199,10 @@ impl ConsoleCommand for PhysStatsCommand {
         // #5127 — `total` counts recovery events, the per-frame figure
         // counts restored bodies; the labels carry the unit.
         let (recoveries_total, bodies_restored_last_frame, parked) = pw.recovery_counts();
+        // #5161 — keyframe refusals are the keyframed-bone counterpart of the
+        // recovery counters above: insane animation-authored targets kept out
+        // of Rapier before they can panic the multi-SAP broad phase.
+        let keyframe_refused = pw.keyframe_targets_refused_total();
         drop(pw);
 
         let mut lines = vec![
@@ -211,6 +215,7 @@ impl ConsoleCommand for PhysStatsCommand {
                 "  recoveries: total={recoveries_total} bodies_restored_last_frame={bodies_restored_last_frame} \
                  parked_pre_broken={parked}"
             ),
+            format!("  keyframe refusals: total={keyframe_refused}"),
         ];
         // `awake_dynamic == 0 && !pending_wake` is exactly the static-scene
         // fast path's condition, so surfacing both together tells the

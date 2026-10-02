@@ -1240,6 +1240,19 @@ fn push_kinematic(world: &World) {
             let dt = (cur.translation.vector - target.translation.vector).norm();
             let dr = cur.rotation.angle_to(&target.rotation);
             if dt * dt > 1e-6 || dr > 1e-5 {
+                // #5161 — refuse an insane target before it reaches Rapier.
+                // A keyframed bone's ECS pose is animation-authored; when the
+                // animation goes insane-but-finite, the kinematic velocity
+                // Rapier derives from the target ((target − current)/dt)
+                // inflates the collider's predictive AABB past the multi-SAP
+                // grid boundary — a broad-phase panic, not a recoverable
+                // solve. The per-substep recovery cannot catch this: it
+                // snapshots Dynamic bodies only, and live actor bones are
+                // keyframed. Leaving the body at its last accepted pose is
+                // the same terminal state the other recovery paths produce.
+                if !pw.accept_keyframe_target(body_handle, &target) {
+                    continue;
+                }
                 // Mutable access alone adds this body to Rapier's modified
                 // list. Idle keyframes must remain read-only, including when
                 // another moving body makes the pipeline step this frame.

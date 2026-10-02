@@ -67,6 +67,17 @@ pub const KILL_PLANE_Y: f32 = -25_000.0;
 /// contact.
 const MAX_DYNAMIC_SUBSTEP_DISPLACEMENT: f32 = 2_048.0;
 
+/// #5161 — sanity bound for a keyframed body target pushed from an ECS
+/// GlobalTransform. Authored worldspace coordinates top out around ±3e5 BU,
+/// so a translation beyond 1e8 is corruption with certainty — while still
+/// ~2600× below rapier 0.22's multi-SAP grid boundary (≈2.68e11), which an
+/// insane kinematic target's derived velocity (`(target − current)/dt`) can
+/// trip through the collider's predictive AABB as a broad-phase panic. The
+/// substep recovery only snapshots `Dynamic` bodies, and live actor skeleton
+/// bones are keyframed (`keyframe_live_ragdoll_bones`) — so this boundary
+/// check in `accept_keyframe_target` is the only guard they have.
+const KEYFRAME_TARGET_SANE_BOUND_BU: f32 = 1.0e8;
+
 /// Collision-group bit reserved for a **live actor's keyframed ragdoll-bone**
 /// colliders (#2873).
 ///
@@ -261,6 +272,16 @@ pub struct PhysicsWorld {
     /// [`Self::recover_pre_broken_bodies`] (#4687a) — the same
     /// non-finite-state class, one step earlier in its lifetime.
     bodies_parked_total: u64,
+    /// Lifetime count of keyframe targets refused by
+    /// [`Self::accept_keyframe_target`] (#5161) — insane-but-finite bone
+    /// transforms that would otherwise panic the multi-SAP broad phase or
+    /// park a live actor's bones out of melee reach. Surfaced via
+    /// [`Self::keyframe_targets_refused_total`] into `phys.stats`.
+    keyframe_targets_refused_total: u64,
+    /// Bodies already logged for a refused keyframe target. The refusal
+    /// repeats every frame for as long as the animation keeps emitting the
+    /// broken pose, so the `log::error!` fires once per body, not per frame.
+    keyframe_refusals_logged: std::collections::HashSet<RigidBodyHandle>,
 }
 
 /// A dynamic body's state immediately before one Rapier substep.
@@ -297,12 +318,25 @@ fn restore_invalid_dynamic_bodies(
 ) -> (usize, Vec<RigidBodyHandle>) {
     let mut restored = 0;
     let mut detached_articulations: Vec<RigidBodyHandle> = Vec::new();
+    // #5161 — the recovery log alone cannot say WHAT went insane. Record the
+    // pre-restore state of the first few bodies per event (translation
+    // magnitude + velocity magnitude) so the next investigation reads the
+    // explosion's class straight off the log instead of re-instrumenting.
+    let mut evidence = Vec::new();
     for snapshot in snapshots {
         let Some(body) = bodies.get(snapshot.handle) else {
             continue;
         };
         if !body_needs_recovery(body, &snapshot) {
             continue;
+        }
+        if evidence.len() < 3 {
+            evidence.push(format!(
+                "{:?} at |t|={:.3e} |v|={:.3e}",
+                snapshot.handle,
+                body.translation().norm(),
+                body.linvel().norm(),
+            ));
         }
         // Rapier's get_mut marks a body modified even when the caller only
         // reads it. Keep healthy snapshots out of the next step's dirty list.
@@ -330,6 +364,13 @@ fn restore_invalid_dynamic_bodies(
         // keeps the restored bodies as sleeping dynamics instead of letting
         // the next contact solve re-enter the known-bad constraint graph.
         multibody_joints.remove_multibody_articulations(*handle, false);
+    }
+    if !evidence.is_empty() {
+        log::error!(
+            "physics: invalid-solve evidence (first of {}): {}",
+            restored,
+            evidence.join(", ")
+        );
     }
     (restored, detached_articulations)
 }
@@ -376,6 +417,8 @@ impl PhysicsWorld {
             recoveries_total: 0,
             bodies_restored_last_frame: 0,
             bodies_parked_total: 0,
+            keyframe_targets_refused_total: 0,
+            keyframe_refusals_logged: std::collections::HashSet::new(),
         }
     }
 
@@ -747,6 +790,50 @@ impl PhysicsWorld {
             );
             self.bodies_parked_total = self.bodies_parked_total.saturating_add(parked as u64);
         }
+    }
+
+    /// #5161 — gate one `push_kinematic` target. Returns `false` (and
+    /// records the refusal) when the target is non-finite or its
+    /// translation lies beyond [`KEYFRAME_TARGET_SANE_BOUND_BU`]: live
+    /// actor bones are keyframed, the per-substep recovery only covers
+    /// `Dynamic` bodies, and an insane kinematic target's derived velocity
+    /// (`(target − current)/dt`) trips rapier's multi-SAP grid boundary as
+    /// a broad-phase panic — the class that killed the live Skyrim P2
+    /// fight. The body is left at its last accepted pose; the
+    /// animation-side source of the broken transform stays visible (and
+    /// open) as the rendering-side corruption it already is.
+    pub fn accept_keyframe_target(
+        &mut self,
+        handle: RigidBodyHandle,
+        target: &Isometry<Real>,
+    ) -> bool {
+        let t = target.translation.vector;
+        let q = target.rotation.coords;
+        let sane = [t.x, t.y, t.z].into_iter().all(|v| {
+            v.is_finite() && v.abs() <= KEYFRAME_TARGET_SANE_BOUND_BU
+        }) && q.iter().all(|v| v.is_finite());
+        if sane {
+            return true;
+        }
+        self.keyframe_targets_refused_total =
+            self.keyframe_targets_refused_total.saturating_add(1);
+        if self.keyframe_refusals_logged.insert(handle) {
+            log::error!(
+                "physics: refused a keyframed target for body {handle:?} at \
+                 ({:.1}, {:.1}, {:.1}) — non-finite or beyond the sane world bound \
+                 ({} BU); the body keeps its last accepted pose (#5161)",
+                t.x,
+                t.y,
+                t.z,
+                KEYFRAME_TARGET_SANE_BOUND_BU as u64
+            );
+        }
+        false
+    }
+
+    /// Lifetime refused-keyframe-target count, for `phys.stats` (#5161).
+    pub fn keyframe_targets_refused_total(&self) -> u64 {
+        self.keyframe_targets_refused_total
     }
 
     /// Read a dynamic body's mass (BU³ × density). Buoyancy derives the
@@ -2534,6 +2621,50 @@ mod tests {
         );
         assert_eq!(bodies[handle].translation(), &Vector::zeros());
         assert!(bodies[handle].is_sleeping());
+    }
+
+    /// #5161 — the keyframed-bone counterpart of the recovery above. A
+    /// live actor bone's ECS pose is animation-authored; when the animation
+    /// emits an insane-but-finite transform, `push_kinematic` must refuse
+    /// the target instead of letting Rapier derive an insane kinematic
+    /// velocity from it (whose predictive AABB trips the multi-SAP grid
+    /// bound — a panic the Dynamic-only substep recovery cannot intercept).
+    #[test]
+    fn accept_keyframe_target_refuses_insane_but_finite_poses() {
+        let mut w = PhysicsWorld::new();
+        let handle = w.bodies.insert(RigidBodyBuilder::kinematic_position_based().build());
+
+        // A sane worldspace pose is accepted unchanged.
+        assert!(w.accept_keyframe_target(
+            handle,
+            &iso_from_trs(Vec3::new(-67_763.0, 8_386.0, -3_567.0), Quat::IDENTITY)
+        ));
+        assert_eq!(w.keyframe_targets_refused_total(), 0);
+
+        // The #5161 class exactly: finite, but far outside any authored
+        // worldspace. This is the value class the live Skyrim P2 fight fed
+        // `set_next_kinematic_position` before the broad-phase panic.
+        assert!(!w.accept_keyframe_target(
+            handle,
+            &iso_from_trs(
+                Vec3::new(268_435_460_000.0, 0.0, 0.0),
+                Quat::IDENTITY
+            )
+        ));
+        // Non-finite components in either part are refused too.
+        assert!(!w.accept_keyframe_target(
+            handle,
+            &iso_from_trs(Vec3::ZERO, Quat::from_xyzw(f32::NAN, 0.0, 0.0, 1.0))
+        ));
+        // Every refusal counts; the once-per-body log dedup does not.
+        assert_eq!(w.keyframe_targets_refused_total(), 2);
+
+        // Refusal leaves the caller free to skip the push; a later sane
+        // target for the same body is accepted (the animation recovered).
+        assert!(w.accept_keyframe_target(
+            handle,
+            &iso_from_trs(Vec3::new(0.0, 3_456.0, 884.0), Quat::IDENTITY)
+        ));
     }
 
     /// #4687(a) — a dynamic body that is already non-finite when a substep
