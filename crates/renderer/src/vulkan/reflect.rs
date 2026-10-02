@@ -317,6 +317,106 @@ pub fn uniform_block_size_by_name(spirv_bytes: &[u8], name: &str) -> Result<Opti
     Ok(Some((last_offset + last_size).div_ceil(16) * 16))
 }
 
+/// Member-name → std140 byte offset pairs for a named uniform block, in
+/// declaration order, read from the committed SPIR-V.
+///
+/// The sibling of [`uniform_block_size_by_name`] for the hazard a size-only
+/// pin cannot see (#4778 / REN-D3-2026-09-23-01): transposing two same-typed
+/// members keeps the block size identical while silently re-routing every
+/// lane after the swap. Offsets come from the same `OpMemberDecorate …
+/// Offset` decorations the size check trusts and names from `OpMemberName`,
+/// so a pin built on this checks the *shipped binary* — no GLSL text scan,
+/// compiler-version-stable.
+pub fn uniform_block_member_offsets_by_name(
+    spirv_bytes: &[u8],
+    name: &str,
+) -> Result<Option<Vec<(String, u32)>>> {
+    if !spirv_bytes.len().is_multiple_of(4) {
+        bail!(
+            "SPIR-V byte length {} is not a multiple of 4",
+            spirv_bytes.len()
+        );
+    }
+    let mut loader = Loader::new();
+    binary::parse_bytes(spirv_bytes, &mut loader)
+        .map_err(|e| anyhow!("SPIR-V parse failed: {e:?}"))?;
+    let module = loader.module();
+
+    // OpName carries the GLSL block-type name on its `OpTypeStruct` id.
+    let mut struct_id = None;
+    for inst in &module.debug_names {
+        if inst.class.opcode != Op::Name {
+            continue;
+        }
+        if inst.operands[1].unwrap_literal_string() == name {
+            struct_id = Some(inst.operands[0].unwrap_id_ref());
+            break;
+        }
+    }
+    let Some(struct_id) = struct_id else {
+        return Ok(None);
+    };
+
+    let mut types: HashMap<u32, Instruction> = HashMap::new();
+    for inst in &module.types_global_values {
+        if let Some(id) = inst.result_id {
+            types.insert(id, inst.clone());
+        }
+    }
+    let struct_inst = types
+        .get(&struct_id)
+        .ok_or_else(|| anyhow!("struct id={struct_id} ({name}) not in type table"))?;
+    if struct_inst.class.opcode != Op::TypeStruct {
+        bail!("id={struct_id} named {name} is not an OpTypeStruct");
+    }
+    let member_count = struct_inst.operands.len();
+    if member_count == 0 {
+        return Ok(Some(Vec::new()));
+    }
+
+    let mut member_names: HashMap<u32, &str> = HashMap::new();
+    for inst in &module.debug_names {
+        if inst.class.opcode != Op::MemberName {
+            continue;
+        }
+        if inst.operands[0].unwrap_id_ref() != struct_id {
+            continue;
+        }
+        member_names.insert(
+            inst.operands[1].unwrap_literal_bit32(),
+            inst.operands[2].unwrap_literal_string(),
+        );
+    }
+    let mut offsets: HashMap<u32, u32> = HashMap::new();
+    for inst in &module.annotations {
+        if inst.class.opcode != Op::MemberDecorate {
+            continue;
+        }
+        if inst.operands[0].unwrap_id_ref() != struct_id {
+            continue;
+        }
+        if inst.operands[2].unwrap_decoration() == Decoration::Offset {
+            offsets.insert(
+                inst.operands[1].unwrap_literal_bit32(),
+                inst.operands[3].unwrap_literal_bit32(),
+            );
+        }
+    }
+
+    let mut members = Vec::with_capacity(member_count);
+    for index in 0..member_count as u32 {
+        let member_name = member_names
+            .get(&index)
+            .copied()
+            .ok_or_else(|| anyhow!("{name}: member {index} has no OpMemberName"))?;
+        let offset = offsets.get(&index).copied().ok_or_else(|| {
+            anyhow!("{name}: member {index} ({member_name}) has no Offset decoration")
+        })?;
+        members.push((member_name.to_string(), offset));
+    }
+    Ok(Some(members))
+}
+
 /// Count `OpBranchConditional` instructions in a SPIR-V module.
 ///
 /// Read directly from the committed SPIR-V — no recompile, no
@@ -710,6 +810,74 @@ mod tests {
                 "{name}.spv {block} is {size} B but the host struct is {expected} B — \
                  the shader's committed .spv is stale; recompile it \
                  (glslangValidator -V {name} -o {name}.spv from crates/renderer/shaders). See #1493."
+            );
+        }
+    }
+
+    /// Regression: #4778 / REN-D3-2026-09-23-01. The size pin above is blind
+    /// to a lane transposition inside `VolumetricsParams`: 13 of its 15
+    /// members are same-typed vec4s whose `.w` slots are overloaded
+    /// (`render_origin.w` = open-sky bit, `fog_reference.w` = simulation dt,
+    /// `wind_gust.y` = the BYRO_BFECC switch), so swapping any two compiles
+    /// clean, keeps the size, and silently re-routes every lane after the
+    /// swap — the exact failure mode REN-D8-01 caught in this plumbing. Pin
+    /// every member's name and std140 offset in the committed `.spv` against
+    /// the Rust struct's declaration order and `offset_of!`. (`GpuFogVolume`
+    /// has the text-scan twin of this pin in volumetrics.rs; this one checks
+    /// the shipped binary instead. `IntegrationParams` is single-member, so
+    /// it has no transposition surface.)
+    #[test]
+    fn volumetrics_params_member_offsets_match_host_struct() {
+        use std::mem::offset_of;
+
+        use crate::vulkan::volumetrics::VolumetricsParams;
+        let members = uniform_block_member_offsets_by_name(
+            include_bytes!("../../shaders/volumetrics_inject.comp.spv"),
+            "VolumetricsParams",
+        )
+        .expect("reflect VolumetricsParams")
+        .expect("volumetrics_inject.comp.spv declares a VolumetricsParams block");
+
+        let host: [(&str, u32); 15] = [
+            ("inv_view_proj", offset_of!(VolumetricsParams, inv_view_proj) as u32),
+            ("prev_view_proj", offset_of!(VolumetricsParams, prev_view_proj) as u32),
+            ("camera_pos", offset_of!(VolumetricsParams, camera_pos) as u32),
+            ("prev_camera_pos", offset_of!(VolumetricsParams, prev_camera_pos) as u32),
+            ("sun_dir", offset_of!(VolumetricsParams, sun_dir) as u32),
+            ("sun_color", offset_of!(VolumetricsParams, sun_color) as u32),
+            ("volume_params", offset_of!(VolumetricsParams, volume_params) as u32),
+            ("render_origin", offset_of!(VolumetricsParams, render_origin) as u32),
+            ("medium_params", offset_of!(VolumetricsParams, medium_params) as u32),
+            ("fog_tint", offset_of!(VolumetricsParams, fog_tint) as u32),
+            ("temporal_params", offset_of!(VolumetricsParams, temporal_params) as u32),
+            (
+                "local_volume_grid",
+                offset_of!(VolumetricsParams, local_volume_grid) as u32,
+            ),
+            ("fog_reference", offset_of!(VolumetricsParams, fog_reference) as u32),
+            ("wind_params", offset_of!(VolumetricsParams, wind_params) as u32),
+            ("wind_gust", offset_of!(VolumetricsParams, wind_gust) as u32),
+        ];
+
+        assert_eq!(
+            members.len(),
+            host.len(),
+            "VolumetricsParams grew or lost a member — update both this pin \
+             and the GLSL block together"
+        );
+        for ((shader_name, shader_offset), (rust_name, rust_offset)) in
+            members.iter().zip(host)
+        {
+            assert_eq!(
+                shader_name, rust_name,
+                "member order diverged where the host writes {rust_name} at \
+                 {rust_offset} B — a transposition keeps the size pin green \
+                 while re-routing every lane after it (#4778)"
+            );
+            assert_eq!(
+                *shader_offset, rust_offset,
+                "{rust_name}: the shader reads this member at {shader_offset} B \
+                 but the host writes it at {rust_offset} B"
             );
         }
     }
