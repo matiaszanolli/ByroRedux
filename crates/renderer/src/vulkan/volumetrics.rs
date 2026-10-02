@@ -3465,6 +3465,93 @@ mod unit_tests {
         );
     }
 
+    /// #4774 / REN-D8-2026-09-23-02 — the transported combustion field must
+    /// be WRITTEN at the texel-centre distance, the distance of the
+    /// normalized midpoint. Writing at the arithmetic mean of the two
+    /// slab-endpoint distances put every carried value δ ≈ 0.0072 texels
+    /// (default grid) away from where the next frame's texture() tap reads
+    /// texel i back — sliceCoordinate(d) maps the texel centre to
+    /// sliceDistance((i + 0.5) / N), the geometric mean of the endpoints in
+    /// the exponential region. The constant offset acted as upwind advection
+    /// toward the camera on every carried value (frame-rate dependent, and
+    /// invisible to BFECC, whose probe and error terms carried the same
+    /// bias). Pin the convention numerically through the host twins of the
+    /// shared slice mapping, and on the GLSL write site.
+    #[test]
+    fn combustion_field_written_at_the_texel_centre() {
+        let far = DEFAULT_VOLUME_FAR;
+        let slices = 64.0_f32;
+        for z in [8, 20, 40, 63] {
+            let centre_u = (z as f32 + 0.5) / slices;
+            // The fixed convention: write at the texel centre, read back at
+            // the same place — the mapping is an exact inverse here.
+            let centre_distance =
+                hybrid_slice_distance(centre_u, far, LINEAR_DEPTH, LINEAR_SLICE_FRACTION);
+            let read_back = hybrid_slice_coordinate(
+                centre_distance,
+                far,
+                LINEAR_DEPTH,
+                LINEAR_SLICE_FRACTION,
+            ) * slices;
+            assert!(
+                (read_back - z as f32 - 0.5).abs() < 1.0e-4,
+                "texel {z}: the centre convention must read back at itself"
+            );
+            // The retired convention: the arithmetic mean of the endpoint
+            // distances lands ahead of the texel centre everywhere in the
+            // exponential region — the documented camera-ward drift.
+            let d_front = hybrid_slice_distance(
+                z as f32 / slices,
+                far,
+                LINEAR_DEPTH,
+                LINEAR_SLICE_FRACTION,
+            );
+            let d_back = hybrid_slice_distance(
+                (z + 1) as f32 / slices,
+                far,
+                LINEAR_DEPTH,
+                LINEAR_SLICE_FRACTION,
+            );
+            let mean_read_back = hybrid_slice_coordinate(
+                0.5 * (d_front + d_back),
+                far,
+                LINEAR_DEPTH,
+                LINEAR_SLICE_FRACTION,
+            ) * slices;
+            assert!(
+                mean_read_back > z as f32 + 0.5,
+                "texel {z}: the arithmetic mean must sit camera-ward of the \
+                 centre (the drift this test pins out) — if not, the mapping \
+                 changed and the GLSL convention below needs re-deriving"
+            );
+        }
+        // The linear region is convention-independent: both means coincide.
+        let d_front =
+            hybrid_slice_distance(4.0 / slices, far, LINEAR_DEPTH, LINEAR_SLICE_FRACTION);
+        let d_back =
+            hybrid_slice_distance(5.0 / slices, far, LINEAR_DEPTH, LINEAR_SLICE_FRACTION);
+        let mean = 0.5 * (d_front + d_back);
+        let centre = hybrid_slice_distance(
+            4.5 / slices,
+            far,
+            LINEAR_DEPTH,
+            LINEAR_SLICE_FRACTION,
+        );
+        assert!((mean - centre).abs() < 1.0e-3 * LINEAR_DEPTH);
+
+        // And the shader writes it that way.
+        let shader = include_str!("../../shaders/volumetrics_inject.comp");
+        assert!(
+            shader.contains("float fieldT = sliceDistance(0.5 * (sliceFront + sliceBack));"),
+            "the inject shader must derive fieldT from the normalized midpoint \
+             — the texel centre — not from the mean of the endpoint distances (#4774)"
+        );
+        assert!(
+            !shader.contains("0.5 * (fieldFrontT + fieldBackT)"),
+            "the retired arithmetic-mean convention is back (#4774)"
+        );
+    }
+
     /// #4346 — the slice mapping lives in one GLSL include with the host
     /// mirror's floors, and no consumer re-types it.
     #[test]

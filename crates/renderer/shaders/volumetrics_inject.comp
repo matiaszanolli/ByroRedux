@@ -2784,7 +2784,19 @@ void main() {
     float t = mix(sliceDistance(sliceFront), sliceDistance(sliceBack), jitter.z);
     float fieldFrontT = sliceDistance(sliceFront);
     float fieldBackT = sliceDistance(sliceBack);
-    float fieldT = 0.5 * (fieldFrontT + fieldBackT);
+    // #4774 — the field's stored position is the texel CENTRE, the distance
+    // of the normalized midpoint — NOT the mean of the two slab-endpoint
+    // distances. The next frame reads this field back through texture() at
+    // uvw.z = sliceCoordinate(d), which places texel i's centre at
+    // sliceDistance((i + 0.5) / N): the geometric mean of the endpoints in
+    // the exponential region, not the arithmetic one. Writing at the
+    // arithmetic mean left every carried value δ ≈ 0.0072 texels ahead of
+    // its own read-back position — a constant camera-ward advection of
+    // lingering smoke, frame-rate dependent, that BFECC could not cancel
+    // because the probe and error terms carried the same bias. The linear
+    // region is unaffected: there the two means coincide. Host twin:
+    // `combustion_field_written_at_the_texel_centre` (volumetrics.rs).
+    float fieldT = sliceDistance(0.5 * (sliceFront + sliceBack));
 
     vec3 world_pos = froxel_to_world(sampleUv, t);
     vec3 field_segment_start = froxel_to_world(fieldUv, fieldFrontT);
