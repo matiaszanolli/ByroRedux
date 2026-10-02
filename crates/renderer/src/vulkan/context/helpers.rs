@@ -1,6 +1,6 @@
 //! Stateless helper functions used by VulkanContext::new(), recreate_swapchain(), and Drop.
 
-use super::super::allocator::SharedAllocator;
+use super::super::allocator::{free_allocation_recovering, SharedAllocator};
 use anyhow::{Context, Result};
 use ash::vk;
 use gpu_allocator::vulkan as vk_alloc;
@@ -47,8 +47,8 @@ pub(super) fn destroy_staging_buffer(
     // still reference `buffer` at either call site.
     unsafe { device.destroy_buffer(buffer, None) };
     if let Some(alloc) = allocator {
-        let mut allocator = alloc.lock().unwrap();
-        let _ = allocator.free(allocation);
+        // #4599 — poison-recovered free, not a bare unwrap on the lock.
+        free_allocation_recovering(alloc, allocation, "destroy_staging_buffer");
     }
 }
 
@@ -586,11 +586,10 @@ pub(super) unsafe fn destroy_depth_resources(
     device.destroy_image(*image, None);
     *image = vk::Image::null();
     if let Some(alloc) = allocation.take() {
-        allocator
-            .lock()
-            .expect("allocator lock poisoned")
-            .free(alloc)
-            .expect("Failed to free depth allocation");
+        // #4599 — teardown path: poison-recovered + logged, not `expect`ed,
+        // so a poisoned allocator cannot abort here and skip the rest of
+        // `VulkanContext::drop`.
+        free_allocation_recovering(allocator, alloc, "destroy_depth_resources");
     }
 }
 

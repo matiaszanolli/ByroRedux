@@ -436,7 +436,16 @@ impl Drop for VulkanContext {
             // is still alive.
             if let Some(alloc_arc) = self.allocator.take() {
                 match std::sync::Arc::try_unwrap(alloc_arc) {
-                    Ok(mutex) => drop(mutex.into_inner().expect("allocator lock poisoned")),
+                    // #4599 — a poisoned allocator is recovered, not
+                    // `expect`ed: this is the last step before
+                    // `destroy_device`/`destroy_instance`, and a panic here
+                    // would skip both (plus the leak-the-handles fallback
+                    // below on the Err arm would never run). Poison only
+                    // means another thread panicked mid-allocation; the
+                    // Allocator's own cleanup remains sound to run.
+                    Ok(mutex) => {
+                        drop(super::super::allocator::into_inner_recovering(mutex))
+                    }
                     Err(arc) => {
                         // #665 / LIFE-L1 — the strong-count clones live
                         // inside `GpuBuffer` / `Texture` / `StagingPool`

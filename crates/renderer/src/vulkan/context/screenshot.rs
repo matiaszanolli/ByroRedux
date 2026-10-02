@@ -334,8 +334,12 @@ impl VulkanContext {
                     .bind_buffer_memory(buffer, allocation.memory(), allocation.offset())
             {
                 log::warn!("Screenshot staging bind failed: {e}");
-                let mut allocator = alloc.lock().unwrap();
-                let _ = allocator.free(allocation);
+                // #4599 — poison-recovered free, not a bare unwrap on the lock.
+                super::super::allocator::free_allocation_recovering(
+                    alloc,
+                    allocation,
+                    "screenshot bind unwind",
+                );
                 self.device.destroy_buffer(buffer, None);
                 return;
             }

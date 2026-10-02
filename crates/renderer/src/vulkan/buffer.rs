@@ -1,6 +1,6 @@
 //! GPU buffer abstraction backed by `gpu_allocator`.
 
-use super::allocator::SharedAllocator;
+use super::allocator::{free_allocation_recovering, SharedAllocator};
 use super::texture::{with_one_time_commands, with_one_time_commands_reuse_fence};
 use super::GpuUploadCtx;
 use anyhow::{bail, Context, Result};
@@ -325,11 +325,10 @@ impl StagingPool {
                 // command's fence has signalled).
                 self.device.destroy_buffer(entry.buffer, None);
             }
-            allocator
-                .lock()
-                .expect("allocator lock poisoned")
-                .free(entry.allocation)
-                .expect("Failed to free staging allocation");
+            // #4599 — poison-recovered + logged, not `expect`ed: this loop
+            // runs on every teardown (`destroy` → `trim_to(0)`), where a
+            // poisoned lock must not skip the remaining subsystem destroys.
+            free_allocation_recovering(allocator, entry.allocation, "StagingPool::trim_to");
         }
     }
 
@@ -464,11 +463,9 @@ fn create_bound_buffer(
     };
     if let Err(e) = bind {
         destroy();
-        allocator
-            .lock()
-            .expect("allocator lock poisoned")
-            .free(allocation)
-            .ok();
+        // #4599 — unwind arm: poison-recovered so a poisoned lock surfaces
+        // as the bind error being returned, not as a second panic.
+        free_allocation_recovering(allocator, allocation, name);
         return Err(e).with_context(|| format!("Failed to bind {name} buffer"));
     }
 
@@ -671,11 +668,10 @@ impl StagingGuard {
             self.device.destroy_buffer(self.buffer, None);
         }
         if let Some(alloc) = self.allocation.take() {
-            self.allocator
-                .lock()
-                .expect("allocator lock poisoned")
-                .free(alloc)
-                .expect("Failed to free staging allocation");
+            // #4599 — `cleanup` runs from `Drop`: a poisoned lock here was a
+            // double-panic → abort during unwind, and a `free` failure must
+            // not panic out of `Drop` either. Recover + log.
+            free_allocation_recovering(&self.allocator, alloc, "StagingGuard::cleanup");
         }
     }
 }
@@ -1436,11 +1432,9 @@ impl GpuBuffer {
             // least makes the misuse loud and its own destroy a documented
             // no-op.
             self.buffer = vk::Buffer::null();
-            allocator
-                .lock()
-                .expect("allocator lock poisoned")
-                .free(allocation)
-                .expect("Failed to free GPU allocation");
+            // #4599 — destroy path: poison-recovered + logged, so a poisoned
+            // allocator cannot abort here and skip the teardown that follows.
+            free_allocation_recovering(allocator, allocation, "GpuBuffer::destroy");
         }
         // #927 — release the stored allocator Arc clone now that the
         // GPU side is freed. Without this, the struct's Arc clone
@@ -1727,18 +1721,12 @@ impl Drop for GpuBuffer {
                 );
                 return;
             };
-            match allocator.lock() {
-                Ok(mut a) => {
-                    if let Err(e) = a.free(alloc) {
-                        log::error!("GpuBuffer::Drop failed to free allocation: {e}");
-                    }
-                }
-                Err(_) => {
-                    log::error!(
-                        "GpuBuffer::Drop saw a poisoned allocator mutex — slab leaks deliberately to avoid double-panic",
-                    );
-                }
-            }
+            // Drop must not panic. #4599 — a poisoned lock is recovered
+            // (`into_inner`) rather than leaked: poison only means another
+            // thread panicked mid-allocation, the allocator itself is still
+            // structurally valid, and this Drop arm is exactly where the old
+            // deliberate leak would strand the slab for the process lifetime.
+            free_allocation_recovering(allocator, alloc, "GpuBuffer::Drop");
         }
     }
 }
@@ -2263,7 +2251,13 @@ mod bound_buffer_unwind_tests {
         assert!(helper[allocate_err..].trim_start_matches("Err(e) => {").trim_start().starts_with("destroy();"));
         let bind_err = helper.find("if let Err(e) = bind {").expect("bind error arm");
         let bind_arm = &helper[bind_err..];
-        assert!(bind_arm.contains("destroy();") && bind_arm.contains(".free(allocation)"));
+        assert!(
+            bind_arm.contains("destroy();")
+                // #4599 — the free goes through the shared poison-recovery
+                // helper; a bare `.free(allocation)` here would mean the
+                // old `.expect`ing spelling crept back.
+                && bind_arm.contains("free_allocation_recovering(allocator, allocation, name)")
+        );
 
         for constructor in [
             "pub fn create_host_visible(",

@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use ash::vk;
 use byroredux_core::ecs::Resource;
 use gpu_allocator::vulkan;
-use std::sync::{Arc, Mutex, Once};
+use std::sync::{Arc, Mutex, MutexGuard, Once};
 
 /// Shared GPU memory allocator.
 ///
@@ -13,6 +13,53 @@ use std::sync::{Arc, Mutex, Once};
 /// references to it for buffer creation and destruction at different
 /// points in the renderer lifecycle.
 pub type SharedAllocator = Arc<Mutex<vulkan::Allocator>>;
+
+/// Lock a shared mutex, recovering from poisoning instead of panicking.
+///
+/// #4599 (policy from #4089): poison only means some thread panicked while
+/// holding the lock — the guarded data is still structurally valid, and on
+/// free/destroy/Drop paths the old expect-on-poison spelling turned someone
+/// else's panic into a second panic during unwind (→ abort) or skipped the
+/// rest of teardown. Every free-side allocator lock goes through here;
+/// allocation-side and read-only locks may still `expect`, because those
+/// paths are not reachable from a Drop during unwind.
+pub fn lock_recovering<T: ?Sized>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    match mutex.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
+
+/// Owned-`Mutex` twin of [`lock_recovering`] for teardown sites that hold
+/// the sole `Arc` clone and consume it (`Arc::try_unwrap` → `into_inner`).
+/// Same #4599 policy: recover the payload out of the poison error instead
+/// of `expect`ing, which at `VulkanContext::drop` would skip
+/// `destroy_device` / `destroy_instance` entirely.
+pub fn into_inner_recovering<T>(mutex: Mutex<T>) -> T {
+    match mutex.into_inner() {
+        Ok(inner) => inner,
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
+
+/// Free an allocation through the shared allocator, recovering from a
+/// poisoned lock ([`lock_recovering`]) and logging — never panicking on —
+/// a `free()` failure.
+///
+/// Every caller is on a free/destroy/Drop path where the allocation is
+/// already unreachable: by the time `free` fails here, unwinding would
+/// only lose more of the teardown sequence (`save_pipeline_cache`,
+/// `destroy_device`, `destroy_instance`), so the error is logged and the
+/// caller proceeds.
+pub fn free_allocation_recovering(
+    allocator: &SharedAllocator,
+    allocation: vulkan::Allocation,
+    name: &str,
+) {
+    if let Err(e) = lock_recovering(allocator).free(allocation) {
+        log::error!("failed to free allocation for {name}: {e}");
+    }
+}
 
 /// Device-local block size for the gpu-allocator. The library default
 /// is 256 MB, which over-reserves on 4–8 GB GPUs (a single startup
@@ -624,5 +671,100 @@ mod tests {
         let lines = fragmentation_report_lines(&[]);
         assert_eq!(lines.len(), 1);
         assert!(lines[0].contains("no blocks reported"));
+    }
+
+    /// #4599 — the poison recovery must actually recover. A genuinely
+    /// poisoned mutex yields its guard (and, for the owned twin, its
+    /// payload) instead of panicking — the property every free/destroy/Drop
+    /// path in the crate now relies on to avoid a double-panic → abort
+    /// during unwind and to keep teardown reaching `destroy_device` /
+    /// `destroy_instance`.
+    #[test]
+    fn lock_recovering_recovers_a_poisoned_mutex() {
+        let mutex = std::sync::Mutex::new(7u8);
+        // Poison it: hold a guard and panic while it is alive, so the guard
+        // drops during unwind. The hook is silenced only around the setup
+        // panic so test output stays readable.
+        let prev_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let poisoned = {
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _guard = mutex.lock().unwrap();
+                panic!("deliberate: poison the lock");
+            }));
+            std::panic::set_hook(prev_hook);
+            result
+        };
+        assert!(poisoned.is_err(), "setup: the poisoning panic must have run");
+        assert!(mutex.is_poisoned(), "setup: the mutex must be poisoned");
+
+        let mut guard = lock_recovering(&mutex);
+        assert_eq!(*guard, 7, "recovered guard must expose the inner data");
+        *guard = 9;
+        drop(guard);
+
+        assert_eq!(into_inner_recovering(mutex), 9);
+    }
+
+    /// #4599 — source pin: allocator-lock acquires on free/destroy/Drop
+    /// paths must go through the recovery helpers. The only direct
+    /// `expect`/`unwrap` acquires left in `src/vulkan/` are the allowlist
+    /// below (allocation-side or read-only report paths, which are not
+    /// reachable from a Drop during unwind). Any new direct acquire — or a
+    /// regression that reintroduces one on a freed path — changes a count
+    /// and fails this test, forcing the author to classify it.
+    #[test]
+    fn allocator_lock_direct_acquires_are_confined_to_allocation_and_reports() {
+        // (path under src/vulkan, expected `.expect("allocator lock poisoned")`,
+        //  expected `.lock().unwrap()`) — all remaining occurrences must be
+        // allocation-side or read-only:
+        // - allocator.rs ×2: log_fragmentation_report / log_memory_usage
+        // - buffer.rs ×1: create_bound_buffer's allocate
+        // - texture.rs ×1: the DDS image allocate
+        // - context/resources.rs ×1: fragmentation_report_lines
+        // - screenshot/depth_capture ×1 each: staging *allocate*
+        let allowlist: &[(&str, usize, usize)] = &[
+            ("allocator.rs", 2, 0),
+            ("buffer.rs", 1, 0),
+            ("texture.rs", 1, 0),
+            ("context/resources.rs", 1, 0),
+            ("context/screenshot.rs", 0, 1),
+            ("context/depth_capture.rs", 0, 1),
+        ];
+
+        let mut files = Vec::new();
+        crate::source_scan::rust_files(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/vulkan").as_path(),
+            &mut files,
+        );
+        assert!(!files.is_empty(), "scan found no sources — path wrong?");
+        for path in &files {
+            let src = std::fs::read_to_string(path).unwrap();
+            // `production_text` requires a test module to cut; screenshot.rs
+            // has none, so cut when present and take the whole text otherwise.
+            let production = src
+                .split_once("\n#[cfg(test)]\nmod ")
+                .map_or(src.as_str(), |(prod, _)| prod);
+            let rel = path
+                .strip_prefix(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/vulkan"))
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .to_string();
+            let (name_expect, name_unwrap) = allowlist
+                .iter()
+                .find(|(allowed, _, _)| *allowed == rel)
+                .map(|(_, e, u)| (*e, *u))
+                .unwrap_or((0, 0));
+            let expect_count = production.matches(".expect(\"allocator lock poisoned\")").count();
+            let unwrap_count = production.matches(".lock().unwrap()").count();
+            assert_eq!(
+                (expect_count, unwrap_count),
+                (name_expect, name_unwrap),
+                "{rel}: direct allocator-lock acquires drifted from the #4599 allowlist — \
+                 route free/destroy/Drop locks through free_allocation_recovering / \
+                 lock_recovering, or classify the new site here",
+            );
+        }
     }
 }

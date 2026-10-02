@@ -354,19 +354,13 @@ impl GpuImage {
 
     /// One place that takes the allocator lock to free, so no error arm can
     /// re-derive the lock scope differently (#1163).
+    ///
+    /// #4599 — the #4089 poison-recovery policy, extracted into
+    /// `allocator::free_allocation_recovering` and now shared by every
+    /// free/destroy/Drop site in the crate; this delegates so the two
+    /// spellings cannot drift.
     fn free_allocation(allocator: &SharedAllocator, allocation: vk_alloc::Allocation, name: &str) {
-        match allocator.lock() {
-            Ok(mut guard) => {
-                if let Err(e) = guard.free(allocation) {
-                    log::error!("GpuImage failed to free allocation for {name}: {e}");
-                }
-            }
-            Err(poisoned) => {
-                if let Err(e) = poisoned.into_inner().free(allocation) {
-                    log::error!("GpuImage failed to free allocation for {name}: {e}");
-                }
-            }
-        }
+        super::allocator::free_allocation_recovering(allocator, allocation, name);
     }
 }
 

@@ -1,6 +1,6 @@
 //! GPU texture: image upload via staging buffer, layout transitions, sampler.
 
-use super::allocator::SharedAllocator;
+use super::allocator::{free_allocation_recovering, SharedAllocator};
 use super::buffer::{StagingGuard, StagingPool};
 use super::descriptors::{
     color_subresource_mips_layers, image_barrier_transfer_dst_to_shader_read_layers,
@@ -325,11 +325,9 @@ impl Texture {
             // queried just above.
             device.bind_image_memory(image, image_alloc.memory(), image_alloc.offset())
         } {
-            allocator
-                .lock()
-                .expect("allocator lock poisoned")
-                .free(image_alloc)
-                .ok();
+            // #4599 — unwind arm: poison-recovered so a poisoned lock
+            // surfaces as the bind error being returned, not a second panic.
+            free_allocation_recovering(allocator, image_alloc, "dds bind unwind");
             unsafe {
                 // SAFETY: the bind failed and no view exists, so the image is
                 // unreferenced and its allocation has just been returned.
@@ -369,11 +367,8 @@ impl Texture {
                 // image and no command buffer has recorded it yet; it is
                 // destroyed before its memory is freed below.
                 unsafe { device.destroy_image(image, None) };
-                allocator
-                    .lock()
-                    .expect("allocator lock poisoned")
-                    .free(image_alloc)
-                    .ok();
+                // #4599 — unwind arm, same policy as the bind unwind above.
+                free_allocation_recovering(allocator, image_alloc, "dds view unwind");
                 return Err(error).context("Failed to create DDS texture image view");
             }
         };
@@ -503,11 +498,9 @@ impl Texture {
         self.image_view = vk::ImageView::null();
         self.image = vk::Image::null();
         if let Some(alloc) = self.allocation.take() {
-            allocator
-                .lock()
-                .expect("allocator lock poisoned")
-                .free(alloc)
-                .expect("Failed to free texture allocation");
+            // #4599 — destroy path: poison-recovered + logged, so a poisoned
+            // allocator cannot abort here and skip the teardown that follows.
+            free_allocation_recovering(allocator, alloc, "Texture::destroy");
         }
         // #927 — release the stored allocator Arc clone now that the
         // GPU side is freed. Without this, every Texture struct kept
@@ -575,22 +568,13 @@ impl Drop for Texture {
                 );
                 return;
             };
-            // Drop must not panic. Surface allocator failures as
-            // log::error! and leak quietly rather than blowing up the
-            // process from a destructor (e.g. on a poisoned mutex
-            // during a panic unwind).
-            match allocator.lock() {
-                Ok(mut a) => {
-                    if let Err(e) = a.free(alloc) {
-                        log::error!("Texture::Drop failed to free allocation: {e}");
-                    }
-                }
-                Err(_) => {
-                    log::error!(
-                        "Texture::Drop saw a poisoned allocator mutex — slab leaks deliberately to avoid double-panic",
-                    );
-                }
-            }
+            // Drop must not panic. #4599 — a poisoned lock is recovered
+            // (`into_inner`) rather than leaked: poison only means another
+            // thread panicked mid-allocation, and the allocator itself is
+            // still structurally valid, so the free is sound. Failure to
+            // free surfaces as log::error, not a second panic out of a
+            // destructor.
+            free_allocation_recovering(allocator, alloc, "Texture::Drop");
         }
     }
 }
@@ -1322,7 +1306,9 @@ mod dds_upload_guard_tests {
         assert!(create_view < record_barrier);
         let view_failure = &upload[create_view..record_barrier];
         assert!(view_failure.contains("device.destroy_image(image, None)"));
-        assert!(view_failure.contains(".free(image_alloc)"));
+        // #4599 — the free goes through the shared poison-recovery helper
+        // rather than a bare `.free(image_alloc)` under an `.expect`ing lock.
+        assert!(view_failure.contains("free_allocation_recovering(allocator, image_alloc"));
 
         let allocation = upload
             .find("Failed to allocate DDS texture image memory")
