@@ -413,6 +413,16 @@ pub fn parse_dds(data: &[u8]) -> Result<DdsMetadata> {
             caps2 & DDSCAPS2_CUBEMAP_ALL_FACES == DDSCAPS2_CUBEMAP_ALL_FACES,
             "DDS cubemap is missing one or more of its six faces (caps2={caps2:#010x})",
         );
+        // #4887 — Vulkan's valid-usage rules for a CUBE_COMPATIBLE image
+        // require equal width and height. The header is mod-authorable
+        // input (BSA archives, and BA2's `build_dds_header` passes its u16
+        // dimensions straight through), so a non-square "cubemap" must be
+        // rejected here rather than reach `vkCreateImage` as undefined
+        // behaviour. Ordinary 2D textures may stay rectangular.
+        ensure!(
+            width == height,
+            "DDS cubemap faces must be square — header declares {width}x{height} (#4887)",
+        );
     }
 
     // DDS_PIXELFORMAT at offset 76 within file (offset 72 within DDS_HEADER + 4 magic)
@@ -443,6 +453,13 @@ pub fn parse_dds(data: &[u8]) -> Result<DdsMetadata> {
                 ensure!(
                     array_size == 1 || array_size == 6,
                     "DDS cubemap arrays are not supported (arraySize={array_size})",
+                );
+                // Same square-faces contract as the legacy caps2 path above
+                // (#4887) — `record_dds_upload` creates the image with
+                // CUBE_COMPATIBLE and six array layers.
+                ensure!(
+                    width == height,
+                    "DDS cubemap faces must be square — header declares {width}x{height} (#4887)",
                 );
             } else {
                 ensure!(
@@ -1030,6 +1047,50 @@ pub(crate) mod tests {
         let meta = parse_dds(&data).unwrap();
         assert!(meta.is_cubemap);
         assert_eq!(meta.array_layers, 6);
+    }
+
+    /// #4887 — a cubemap's six faces are exposed through a CUBE_COMPATIBLE
+    /// Vulkan image, whose valid usage requires equal width and height. The
+    /// header is untrusted (mod-authored BSA/BA2 content), so a rectangular
+    /// "cubemap" must be rejected at parse — the caller falls back to the
+    /// checkerboard — instead of reaching `vkCreateImage`.
+    #[test]
+    fn non_square_cubemap_is_rejected_on_both_header_paths() {
+        // Legacy caps2 path (FourCC payload).
+        let mut legacy = make_dds_header(64, 32, 7, b"DXT1");
+        legacy[112..116]
+            .copy_from_slice(&(DDSCAPS2_CUBEMAP | DDSCAPS2_CUBEMAP_ALL_FACES).to_le_bytes());
+        let err = parse_dds(&legacy)
+            .expect_err("a 64x32 legacy cubemap must not parse")
+            .to_string();
+        assert!(
+            err.contains("must be square"),
+            "legacy path: unexpected error: {err}"
+        );
+        assert!(err.contains("#4887"), "legacy path: {err}");
+
+        // DX10 extended-header path.
+        let mut dx10 = make_dx10_header(128, 64, 8, DXGI_FORMAT_BC3_UNORM_SRGB);
+        dx10[136..140].copy_from_slice(&D3D10_RESOURCE_MISC_TEXTURECUBE.to_le_bytes());
+        let err = parse_dds(&dx10)
+            .expect_err("a 128x64 DX10 cubemap must not parse")
+            .to_string();
+        assert!(
+            err.contains("must be square"),
+            "DX10 path: unexpected error: {err}"
+        );
+    }
+
+    /// The other side of #4887's boundary: rectangular dimensions remain
+    /// valid for ordinary 2D textures — the square contract applies only to
+    /// cubemap-marked headers.
+    #[test]
+    fn rectangular_2d_texture_still_parses() {
+        let data = make_dds_header(64, 32, 1, b"DXT1");
+        let meta = parse_dds(&data).unwrap();
+        assert_eq!((meta.width, meta.height), (64, 32));
+        assert!(!meta.is_cubemap);
+        assert_eq!(meta.array_layers, 1);
     }
 
     /// #1653 — the implicit blend-discard gate hinges on a two-part
