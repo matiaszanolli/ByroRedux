@@ -619,6 +619,127 @@ mod tlas_scratch_shrink_tests {
     }
 }
 
+/// #4884 — the shared `blas_scratch_buffer` is retired before its
+/// replacement exists at three sites. Destroy/defer-first left
+/// `blas_scratch_buffer == None` on a failed reallocation while live
+/// skinned BLAS still needed it: `record_skinned_blas_refit` then errored
+/// per dirty entity per frame (`blas_scratch_buffer absent`), and
+/// `refit_count` — bumped only on success — never reached the
+/// forced-rebuild limit, freezing RT on animated actors under exactly the
+/// VRAM pressure that triggered the shrink. The shrink deliberately sizes
+/// to the union peak over static AND skinned BLAS, so the error path is
+/// reachable with skinned BLAS live; "degraded but correct" held only when
+/// no BLAS survived.
+///
+/// All three sites need fault injection on a live device to exercise the
+/// error path, so — matching `tlas_scratch_shrink_tests` above and the
+/// #2915 precedent — the allocate-before-retire ordering is pinned at the
+/// source level.
+#[cfg(test)]
+mod blas_scratch_realloc_order_tests {
+    const MEMORY_RS: &str = include_str!("../memory.rs");
+    const BLAS_STATIC_RS: &str = include_str!("../blas_static.rs");
+    const BLAS_SKINNED_RS: &str = include_str!("../blas_skinned.rs");
+
+    /// `memory::shrink_blas_scratch_to_fit`'s realloc arm (the `peak > 0`
+    /// path — the `peak == 0` drop-everything arm legitimately takes the
+    /// buffer with no BLAS surviving).
+    fn shrink_realloc_arm() -> &'static str {
+        let body = MEMORY_RS
+            .split("pub unsafe fn shrink_blas_scratch_to_fit")
+            .nth(1)
+            .expect("shrink_blas_scratch_to_fit must still exist");
+        let after_peak = body
+            .find("if !scratch_should_shrink(current, peak) {")
+            .expect("the hysteresis gate must still exist");
+        &body[after_peak..]
+    }
+
+    #[test]
+    fn shrink_allocates_the_replacement_before_retiring_the_old_scratch() {
+        let arm = shrink_realloc_arm();
+        let alloc = arm
+            .find("let new_buf = match GpuBuffer::create_device_local_uninit(")
+            .expect("the shrink must allocate its replacement into a local (#4884)");
+        let retire = arm
+            .find(
+                "if let Some(old) = self.blas_scratch_buffer.take() {\n            \
+                 self.pending_destroy_scratch.push(old, DEFAULT_COUNTDOWN);\n        }",
+            )
+            .expect("the shrink must still retire the old buffer via #1782 deferral");
+        let commit = arm
+            .find("self.blas_scratch_buffer = Some(new_buf);")
+            .expect("the shrink must commit the replacement");
+        assert!(
+            alloc < retire && retire < commit,
+            "the replacement must be allocated BEFORE the old buffer is retired \
+             and the member committed — retire-first leaves blas_scratch_buffer \
+             None on a failed realloc while live skinned BLAS still refit against \
+             it (#4884, the discipline #2915 applied to the TLAS sibling)"
+        );
+        assert!(
+            arm.contains("keeping the existing"),
+            "the realloc failure must log that it KEEPS the old buffer, not that \
+             the next build will re-allocate from Nothing (#4884)"
+        );
+    }
+
+    /// `blas_static::build_blas_batched` Phase 2 (the `need_new_scratch`
+    /// growth site on the M40 streaming hot path).
+    #[test]
+    fn static_batch_growth_allocates_before_retiring_the_old_scratch() {
+        let phase2 = BLAS_STATIC_RS
+            .split("if need_new_scratch {")
+            .nth(1)
+            .expect("build_blas_batched's Phase-2 growth block must exist")
+            .split("let raw_scratch = unsafe {")
+            .next()
+            .expect("Phase 2 must still be followed by the scratch address lookup");
+        let alloc = phase2
+            .find("let new_scratch = match GpuBuffer::create_device_local_uninit(")
+            .expect("Phase 2 must allocate its replacement into a local (#4884)");
+        let retire = phase2
+            .find(
+                "if let Some(old) = self.blas_scratch_buffer.take() {\n                \
+                 self.pending_destroy_scratch.push(old, DEFAULT_COUNTDOWN);\n            }",
+            )
+            .expect("Phase 2 must still retire the old buffer via #1782 deferral");
+        assert!(
+            alloc < retire,
+            "Phase 2 must allocate the replacement BEFORE retiring the old \
+             buffer — retire-first abandons skinned refits' scratch when the \
+             growth allocation fails (#4884)"
+        );
+    }
+
+    /// `blas_skinned::build_skinned_blas_batched_on_cmd` — same
+    /// allocate-first rule, but the retire stays an IMMEDIATE destroy
+    /// (valid per `draw_frame`'s both-slots fence wait, #3643/#282); only
+    /// the ordering changes.
+    #[test]
+    fn skinned_batch_growth_allocates_before_the_immediate_old_destroy() {
+        let phase2 = BLAS_SKINNED_RS
+            .split("if need_new_scratch {")
+            .nth(1)
+            .expect("build_skinned_blas_batched_on_cmd's growth block must exist")
+            .split("let raw_scratch = unsafe {")
+            .next()
+            .expect("the growth block must still be followed by the address lookup");
+        let alloc = phase2
+            .find("let new_scratch = match GpuBuffer::create_device_local_uninit(")
+            .expect("the skinned batch must allocate its replacement into a local (#4884)");
+        let destroy = phase2
+            .find("old.destroy(device, allocator);")
+            .expect("the immediate old-buffer destroy must remain (#3643)");
+        assert!(
+            alloc < destroy,
+            "the skinned batch must allocate the replacement BEFORE the \
+             immediate destroy — destroy-first strands later refits with \
+             blas_scratch_buffer absent on a failed grow (#4884)"
+        );
+    }
+}
+
 /// Regression: #4177 / CONC-D1-01 — the static batched build must
 /// self-emit a scratch-serialise barrier before its FIRST build, not only
 /// between its own builds via `i > 0`.

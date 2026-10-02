@@ -712,24 +712,37 @@ impl AccelerationManager {
             // refit/first-sight command buffer may still be executing
             // on the GPU and referencing `old`'s scratch device
             // address. Deferred-destroy, not immediate.
-            if let Some(old) = self.blas_scratch_buffer.take() {
-                self.pending_destroy_scratch.push(old, DEFAULT_COUNTDOWN);
-            }
-            match GpuBuffer::create_device_local_uninit(
+            //
+            // #4884 — allocate the replacement BEFORE retiring the old
+            // buffer. Retire-first left `blas_scratch_buffer == None` when
+            // the allocation failed, while `skinned_blas` (which persists
+            // independently of this static batch) still needed it: every
+            // subsequent `record_skinned_blas_refit` errored per dirty
+            // entity per frame and `refit_count` — bumped only on success —
+            // never reached the forced-rebuild limit, freezing RT on
+            // animated actors until some other path allocated scratch.
+            let new_scratch = match GpuBuffer::create_device_local_uninit(
                 device,
                 allocator,
                 scratch_size,
                 vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
             ) {
-                Ok(scratch) => self.blas_scratch_buffer = Some(scratch),
+                Ok(new_scratch) => new_scratch,
                 Err(e) => {
                     // SAFETY: nothing in `prepared` has been recorded (#4883).
+                    // The old scratch is untouched, so skinned refits keep
+                    // working; only this batch is abandoned.
                     unsafe {
                         unwind_prepared(&self.accel_loader, device, allocator, prepared, None)
                     };
                     return Err(e).context("BLAS batch scratch buffer");
                 }
+            };
+            // Past the last fallible step — retire the old buffer and commit.
+            if let Some(old) = self.blas_scratch_buffer.take() {
+                self.pending_destroy_scratch.push(old, DEFAULT_COUNTDOWN);
             }
+            self.blas_scratch_buffer = Some(new_scratch);
         }
 
         // Round the raw device address up to `scratch_align` so the

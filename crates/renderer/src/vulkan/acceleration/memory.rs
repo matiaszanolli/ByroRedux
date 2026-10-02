@@ -101,7 +101,8 @@ impl AccelerationManager {
 
         // Reallocate to the current peak size. A future build that
         // exceeds the new capacity will grow via `scratch_needs_growth`.
-        // #1782: deferred, not immediate — see this fn's doc.
+        // #1782: the retired buffer is deferred, not immediately destroyed —
+        // see this fn's doc.
         //
         // Carries the same `scratch_alignment_padding` headroom every
         // build path allocates (#1386): consumers round the buffer's
@@ -109,34 +110,51 @@ impl AccelerationManager {
         // the skinned refit has no growth check to correct a buffer
         // sized to the bare peak. Immaterial to the shrink decision
         // above — `align` is 128–256 bytes against a 16 MB slack.
+        //
+        // #4884 — allocate the replacement BEFORE retiring the old buffer,
+        // the same discipline `shrink_tlas_scratch_to_fit` got in #2915.
+        // This arm is reachable with skinned BLAS live (the peak is the
+        // union over both maps by construction), and destroy-first left
+        // `blas_scratch_buffer == None` on the error path — every later
+        // `refit_skinned_blas` then failed per dirty entity per frame
+        // with `blas_scratch_buffer absent`, freezing RT on animated
+        // actors at exactly the VRAM pressure that triggered the shrink,
+        // because `refit_count` only advances on success and never
+        // reaches the forced-rebuild limit.
         let target = peak.saturating_add(scratch_alignment_padding(self.scratch_align));
-        if let Some(old) = self.blas_scratch_buffer.take() {
-            self.pending_destroy_scratch.push(old, DEFAULT_COUNTDOWN);
-        }
-        match GpuBuffer::create_device_local_uninit(
+        let new_buf = match GpuBuffer::create_device_local_uninit(
             device,
             allocator,
             target,
             vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
         ) {
-            Ok(new_buf) => {
-                log::debug!(
-                    "BLAS scratch shrunk: {:.1} MB → {:.1} MB (peak survivor across {} static \
-                     + {} skinned BLAS)",
-                    current as f64 / (1024.0 * 1024.0),
-                    target as f64 / (1024.0 * 1024.0),
-                    self.live_static_blas_count(),
-                    self.skinned_blas.len(),
-                );
-                self.blas_scratch_buffer = Some(new_buf);
-            }
+            Ok(new_buf) => new_buf,
             Err(e) => {
-                // Allocation failed — leave `blas_scratch_buffer` as
-                // `None` and let the next build allocate fresh. This is
-                // a degraded but correct state.
-                log::warn!("BLAS scratch shrink realloc failed: {e}; next build will re-allocate");
+                // Nothing was retired — keep the oversized-but-live buffer.
+                // The next shrink attempt (or build-path growth) retries the
+                // reallocation; skinned refits keep working against the old
+                // scratch in the meantime.
+                log::warn!(
+                    "BLAS scratch shrink realloc failed: {e}; keeping the existing \
+                     {:.1} MB scratch",
+                    current as f64 / (1024.0 * 1024.0),
+                );
+                return;
             }
+        };
+        // Past the last fallible step — retire the old buffer and commit.
+        if let Some(old) = self.blas_scratch_buffer.take() {
+            self.pending_destroy_scratch.push(old, DEFAULT_COUNTDOWN);
         }
+        log::debug!(
+            "BLAS scratch shrunk: {:.1} MB → {:.1} MB (peak survivor across {} static \
+             + {} skinned BLAS)",
+            current as f64 / (1024.0 * 1024.0),
+            target as f64 / (1024.0 * 1024.0),
+            self.live_static_blas_count(),
+            self.skinned_blas.len(),
+        );
+        self.blas_scratch_buffer = Some(new_buf);
     }
 
     /// Drop the TLAS instance buffer pair on `slot_index` when its

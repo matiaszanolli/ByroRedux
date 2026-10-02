@@ -213,8 +213,8 @@ impl AccelerationManager {
             scratch_size,
         );
         if need_new_scratch {
-            // SAFETY / not a #1782 sibling: unlike the immediate-destroy
-            // bug fixed in `blas_static::build_blas_batched`
+            // SAFETY / not a #1782 sibling: unlike the deferred-destroy sites
+            // in `blas_static::build_blas_batched`
             // and `memory::shrink_blas_scratch_to_fit` (which run from
             // `step_streaming` in `about_to_wait`, while a just-
             // submitted frame may still be executing), this call site
@@ -222,10 +222,11 @@ impl AccelerationManager {
             // `draw_frame` AFTER that frame's own `wait_for_fences`. Any
             // command buffer that could reference the *old* scratch
             // buffer's device address (this same frame-in-flight slot's
-            // previous recording) has therefore already retired. Do NOT
-            // "fix" this site by copying the deferred-destroy pattern —
-            // it would just add a needless one-frame delay to a
-            // genuinely safe immediate free.
+            // previous recording) has therefore already retired. The
+            // immediate free below stays valid — do NOT "fix" this site
+            // by copying the deferred-destroy pattern — it would just add
+            // a needless one-frame delay to a genuinely safe immediate
+            // free.
             //
             // #3643 — the slot-local half of that argument is NOT what
             // makes this safe on its own: the OTHER frame-in-flight
@@ -239,23 +240,26 @@ impl AccelerationManager {
             // the slot-local sentence above kept reading correct. See
             // `sync.rs`'s #870 block: this site is item 1 on the list of
             // resources a `MAX_FRAMES_IN_FLIGHT` bump has to address.
-            if let Some(mut old) = self.blas_scratch_buffer.take() {
-                old.destroy(device, allocator);
-            }
-            match GpuBuffer::create_device_local_uninit(
+            //
+            // #4884 — but the ALLOCATION order still follows the
+            // allocate-then-swap discipline: on `Err` the old scratch
+            // must stay in place, or every later `record_skinned_blas_refit`
+            // fails per dirty entity per frame (`blas_scratch_buffer
+            // absent`) and `refit_count` — bumped only on success — never
+            // reaches the forced-rebuild limit.
+            let new_scratch = match GpuBuffer::create_device_local_uninit(
                 device,
                 allocator,
                 scratch_size,
                 vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
             ) {
-                Ok(b) => {
-                    self.blas_scratch_buffer = Some(b);
-                }
+                Ok(new_scratch) => new_scratch,
                 Err(e) => {
                     let err_msg = e.to_string();
                     for mut p in prepared {
                         // SAFETY: `p.accel` was created above and not yet registered;
-                        // destroying here on error path prevents a leak.
+                        // destroying here on error path prevents a leak. The old
+                        // scratch buffer is kept — nothing was retired.
                         unsafe {
                             self.accel_loader
                                 .destroy_acceleration_structure(p.accel, None);
@@ -268,7 +272,13 @@ impl AccelerationManager {
                     }
                     return results;
                 }
+            };
+            // Past the last fallible step — immediate destroy stays valid per
+            // the #3643 both-slots wait above.
+            if let Some(mut old) = self.blas_scratch_buffer.take() {
+                old.destroy(device, allocator);
             }
+            self.blas_scratch_buffer = Some(new_scratch);
         }
         // SAFETY: `blas_scratch_buffer` was just sized for this batch (or already
         // sufficient); `unwrap` is guaranteed by the phase-2 sizing logic above.
