@@ -767,6 +767,29 @@ impl VulkanContext {
             .as_ref()
             .map_or(0, |tier| tier.tail_request());
         self.grow_instance_ssbos(frame, gpu_instances.len() + model_tail);
+        // #4726 / UI-D5-2026-09-21-05 — the grow above is the slot's last
+        // capacity change this frame; clamp the batch list to what the slot
+        // actually holds before anything derives a draw call from it. The
+        // batches were formed purely from `gpu_instances` positions, so a
+        // failed grow otherwise leaves `dispatch_direct` and the indirect
+        // command buffer naming instance slots past the allocated SSBO — an
+        // out-of-bounds device read (`robust_buffer_access` is off), every
+        // frame for the rest of the scene. The UI overlay's own guard is the
+        // narrower sibling (#4722, still open).
+        let instance_capacity = self.scene_buffers.instance_capacity(frame) as u32;
+        let clamped_batches =
+            clamp_batches_to_instance_capacity(&mut batches, instance_capacity);
+        if clamped_batches > 0 {
+            static ONCE: std::sync::Once = std::sync::Once::new();
+            ONCE.call_once(|| {
+                log::error!(
+                    "RP-1/#4726: a failed instance-SSBO grow left {clamped_batches} draw \
+                     batches referencing instance slots past the slot's capacity \
+                     ({instance_capacity}); they are truncated or dropped to match the \
+                     clamped upload."
+                );
+            });
+        }
 
         // Upload all instance data (scene + UI) to the SSBO in one flush.
         if !gpu_instances.is_empty() {
@@ -1273,6 +1296,149 @@ impl VulkanContext {
             ui_instance_idx,
             caustic_history_valid,
         }
+    }
+}
+
+/// #4726 / UI-D5-2026-09-21-05 — clamp scene draw batches to what the slot's
+/// instance SSBO actually holds once the frame's grow has resolved.
+///
+/// `upload_instances` clamps its CPU→GPU copy to `instance_capacity[frame]`
+/// when a grow fails, but the batch list is built purely from positions in
+/// the CPU-side `gpu_instances` vector; without this pass, every consumer
+/// derived from it — the indirect command buffer and `dispatch_direct`'s
+/// `cmd_draw_indexed(.., first_instance, instance_count)` — names instance
+/// slots past the allocated buffer. Batches are formed in ascending
+/// `first_instance` order (the batcher extends or starts runs while walking
+/// the SSBO layout), so a batch straddling the capacity edge is truncated
+/// and every later one is dropped outright — the same prefix the upload
+/// keeps. Returns how many batches were truncated or dropped, for the
+/// once-per-process log at the call site.
+fn clamp_batches_to_instance_capacity(batches: &mut Vec<DrawBatch>, capacity: u32) -> usize {
+    let mut clamped = 0;
+    for batch in batches.iter_mut() {
+        if batch.first_instance.saturating_add(batch.instance_count) <= capacity {
+            continue;
+        }
+        clamped += 1;
+        batch.instance_count = capacity.saturating_sub(batch.first_instance);
+    }
+    if clamped > 0 {
+        batches.retain(|batch| batch.instance_count > 0);
+    }
+    clamped
+}
+
+#[cfg(test)]
+mod draw_batch_capacity_clamp_tests {
+    use super::super::super::pipeline::PipelineKey;
+    use super::super::frame_params::DrawBatch;
+    use super::clamp_batches_to_instance_capacity;
+    use byroredux_core::ecs::components::RenderLayer;
+
+    fn batch(first_instance: u32, instance_count: u32) -> DrawBatch {
+        DrawBatch {
+            mesh_handle: 0,
+            pipeline_key: PipelineKey::Opaque {
+                wireframe: false,
+                early_tests: false,
+            },
+            two_sided: false,
+            render_layer: RenderLayer::Architecture,
+            first_instance,
+            instance_count,
+            index_count: 3,
+            global_index_offset: 0,
+            global_vertex_offset: 0,
+            z_test: true,
+            z_write: true,
+            z_function: 0,
+            order_dependent_glass: false,
+        }
+    }
+
+    /// #4726 — the core invariant: after the clamp, no batch may reference
+    /// an instance slot at or past the capacity the SSBO upload kept. This
+    /// is the scene-draw generalisation of the #3601/#4833 clamps: a failed
+    /// grow leaves `upload_instances` silently dropping the tail while the
+    /// batch list still spans the full CPU-side range, and
+    /// `dispatch_direct`/`cmd_draw_indexed_indirect` read those slots
+    /// out-of-bounds (`robust_buffer_access` is off).
+    #[test]
+    fn no_batch_references_an_instance_past_the_real_capacity() {
+        // Simulate a failed grow: 200 instances built, slot holds 120.
+        let mut batches = vec![
+            batch(0, 100),   // fully inside — untouched
+            batch(100, 15),  // ends exactly at 115 — untouched
+            batch(115, 10),  // straddles 120 — truncated to 5
+            batch(120, 30),  // starts at the edge — dropped
+            batch(180, 20),  // far past — dropped
+        ];
+        let clamped = clamp_batches_to_instance_capacity(&mut batches, 120);
+        assert_eq!(clamped, 3, "three batches were truncated or dropped");
+        assert_eq!(
+            batches
+                .iter()
+                .map(|b| (b.first_instance, b.instance_count))
+                .collect::<Vec<_>>(),
+            vec![(0, 100), (100, 15), (115, 5)],
+            "the straddler keeps the prefix the upload keeps; everything \
+             from the edge on is dropped"
+        );
+        assert!(
+            batches
+                .iter()
+                .all(|b| b.first_instance + b.instance_count <= 120),
+            "the #4726 invariant itself"
+        );
+    }
+
+    /// A successful grow (capacity ≥ every batch end) must be a no-op —
+    /// this is the every-frame case, so it must not even churn the Vec.
+    #[test]
+    fn a_successful_grow_leaves_the_batches_untouched() {
+        let mut batches = vec![batch(0, 100), batch(100, 56)];
+        let clamped = clamp_batches_to_instance_capacity(&mut batches, 65_536);
+        assert_eq!(clamped, 0);
+        assert_eq!(batches.len(), 2);
+        assert_eq!(batches[1].instance_count, 56);
+    }
+
+    /// The empty-frame and zero-capacity edges: an empty batch list is a
+    /// no-op, and a degenerate zero capacity drops everything rather than
+    /// issuing any draw.
+    #[test]
+    fn zero_capacity_drops_every_batch() {
+        let mut batches = vec![batch(0, 1)];
+        assert_eq!(clamp_batches_to_instance_capacity(&mut batches, 0), 1);
+        assert!(batches.is_empty());
+
+        let mut empty: Vec<DrawBatch> = Vec::new();
+        assert_eq!(clamp_batches_to_instance_capacity(&mut empty, 1024), 0);
+        assert!(empty.is_empty());
+    }
+
+    /// The clamp must run after the grow and before the indirect upload /
+    /// batch consumers derive from the list — pin the wiring site, since
+    /// the function itself is only reachable through a live frame recording.
+    #[test]
+    fn the_clamp_runs_after_the_grow_and_before_the_indirect_upload() {
+        let src = crate::source_scan::production_text(include_str!(
+            "build_and_upload_instances.rs"
+        ));
+        let grow = src
+            .find("self.grow_instance_ssbos(frame, gpu_instances.len() + model_tail);")
+            .expect("the final grow call must exist");
+        let clamp = src
+            .find("clamp_batches_to_instance_capacity(&mut batches, instance_capacity)")
+            .expect("the batch clamp call must exist");
+        let indirect = src
+            .find("upload_indirect_draws(")
+            .expect("the indirect upload must exist");
+        assert!(
+            grow < clamp && clamp < indirect,
+            "the clamp must see the post-grow capacity and run before any \
+             consumer derives draw calls from the batch list (#4726)"
+        );
     }
 }
 
