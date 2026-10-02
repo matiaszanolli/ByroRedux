@@ -144,6 +144,14 @@ struct TextureEntry {
     ///
     /// Invariant: `texture.is_some() iff ref_count > 0`.
     ref_count: u32,
+    /// Which bindless binding this slot's descriptor lives in — binding 0
+    /// (`D2`) or binding 1 (`Cube`). Outlives the texture itself: a slot
+    /// with `texture: None` (reserved-unflushed #881, dead after a failed
+    /// flush #1922, or dropped #372) still needs the dimension-correct
+    /// fallback redirect when `recreate_descriptor_sets` rebuilds the sets,
+    /// or a live draw sampling it reads an unwritten PARTIALLY_BOUND
+    /// descriptor (#4885).
+    view_kind: TextureViewKind,
     /// The DDS format carries an alpha channel, captured at load. Gates the
     /// normal-alpha-as-spec path: Skyrim/Gamebryo author the gloss mask in
     /// the normal-map alpha, but BC5/BC4/BC1 normals have none (`.a`
@@ -164,6 +172,22 @@ struct TextureEntry {
     ///
     /// #3682 — same move as `has_alpha`, same reason.
     avg_rgb: Option<[f32; 3]>,
+}
+
+/// Outcome of [`TextureRegistry::slot_rewrite`] — what a freshly recreated
+/// bindless set must write for one slot. #4885.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum SlotRewrite {
+    /// The slot's own live texture.
+    Live {
+        binding: u32,
+        view: vk::ImageView,
+        sampler: vk::Sampler,
+    },
+    /// The slot holds no texture (reserved-unflushed #881, dead after a
+    /// failed flush #1922, dropped #372) — redirect to the dimension-matched
+    /// fallback slot `source`.
+    Fallback { binding: u32, source: TextureHandle },
 }
 
 /// Bindless texture registry.
@@ -588,6 +612,7 @@ impl TextureRegistry {
             texture: Some(fallback_texture),
             pending_destroy: VecDeque::new(),
             ref_count: u32::MAX,
+            view_kind: TextureViewKind::D2,
             has_alpha: false,
             avg_rgb: None,
         });
@@ -618,6 +643,7 @@ impl TextureRegistry {
             texture: Some(neutral_texture),
             pending_destroy: VecDeque::new(),
             ref_count: u32::MAX,
+            view_kind: TextureViewKind::D2,
             has_alpha: false,
             avg_rgb: None,
         });
@@ -660,6 +686,7 @@ impl TextureRegistry {
             texture: Some(texture),
             pending_destroy: VecDeque::new(),
             ref_count: 1,
+            view_kind: TextureViewKind::D2,
             // Dynamic RGBA textures (UI, procedural) are never diffuse-DDS
             // loads — no alpha-channel gloss signal, no GI-albedo tint.
             has_alpha: false,
@@ -967,6 +994,34 @@ impl TextureRegistry {
         self.textures.len() - self.live_slot_count()
     }
 
+    /// The descriptor write one freshly recreated bindless set needs for
+    /// `handle`. #4885 — the decision is split out as pure data so a
+    /// device-free test can pin that `texture: None` slots get a fallback
+    /// redirect instead of being skipped.
+    fn slot_rewrite(&self, handle: TextureHandle) -> Option<SlotRewrite> {
+        let entry = self.textures.get(handle as usize)?;
+        let binding = entry.view_kind.descriptor_binding();
+        match entry.texture.as_ref() {
+            Some(texture) => Some(SlotRewrite::Live {
+                binding,
+                view: texture.image_view,
+                sampler: texture.sampler,
+            }),
+            None => {
+                // Same dimension-matched fallback `drop_released_texture`
+                // redirects through at drop time. `None` only when a Cube
+                // slot predates the first successfully uploaded cubemap —
+                // there is no cube fallback to donate a view, matching the
+                // drop path's behaviour.
+                let source = match entry.view_kind {
+                    TextureViewKind::D2 => Some(self.fallback_handle),
+                    TextureViewKind::Cube => self.cube_fallback_handle,
+                }?;
+                Some(SlotRewrite::Fallback { binding, source })
+            }
+        }
+    }
+
     /// Recreate descriptor sets for a new swapchain.
     ///
     /// With bindless textures, the descriptor sets are independent of swapchain
@@ -1083,24 +1138,33 @@ impl TextureRegistry {
             queue.clear();
         }
 
-        // Re-write all texture bindings. Skip dropped slots — the new
-        // descriptor set starts fresh, and the loop in drop_texture
-        // will redirect them to the fallback on their next update.
-        // Collect into a Vec first so the `self.textures` immutable
-        // borrow doesn't alias `apply_descriptor_write`'s `&mut self`.
-        let rewrites: Vec<(TextureHandle, u32, vk::ImageView, vk::Sampler)> = self
+        // Re-write every texture binding. #4885 — the fresh sets start with
+        // EVERY element unwritten, and `texture: None` slots are still
+        // sampled by live draws: reserved-but-unflushed slots (a resize
+        // during a multi-frame streaming apply — `enqueue_dds_for_view`
+        // explicitly writes the fallback "so a draw before the flush samples
+        // the checkerboard") and dead handles from a failed flush (#1922),
+        // which remain cache-hit targets. `drop_released_texture`'s redirect
+        // is one-shot at drop time and the queued writes were just cleared,
+        // so the rewrite pass itself must re-point every `None` slot at the
+        // dimension-matched fallback. Collect into a Vec first so the
+        // `self.textures` immutable borrow doesn't alias
+        // `apply_descriptor_write`'s `&mut self`.
+        let rewrites: Vec<(TextureHandle, u32, vk::ImageView, vk::Sampler)> = (0..self
             .textures
-            .iter()
-            .enumerate()
-            .filter_map(|(i, entry)| {
-                entry.texture.as_ref().map(|t| {
-                    (
-                        i as TextureHandle,
-                        t.view_kind.descriptor_binding(),
-                        t.image_view,
-                        t.sampler,
-                    )
-                })
+            .len() as TextureHandle)
+            .filter_map(|handle| {
+                match self.slot_rewrite(handle)? {
+                    SlotRewrite::Live {
+                        binding,
+                        view,
+                        sampler,
+                    } => Some((handle, binding, view, sampler)),
+                    SlotRewrite::Fallback { binding, source } => {
+                        let fallback = self.textures[source as usize].texture.as_ref()?;
+                        Some((handle, binding, fallback.image_view, fallback.sampler))
+                    }
+                }
             })
             .collect();
         for (handle, binding, image_view, sampler) in rewrites {

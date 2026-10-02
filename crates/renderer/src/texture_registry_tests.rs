@@ -124,6 +124,7 @@ fn make_registry_for_overflow_test(max_textures: u32, occupied: usize) -> Textur
                 texture: None,
                 pending_destroy: VecDeque::new(),
                 ref_count: 0,
+                view_kind: TextureViewKind::D2,
                 has_alpha: false,
                 avg_rgb: None,
             })
@@ -276,6 +277,7 @@ fn make_registry_with_entry(path: &str, initial_ref_count: u32) -> TextureRegist
         texture: None,
         pending_destroy: VecDeque::new(),
         ref_count: u32::MAX,
+        view_kind: TextureViewKind::D2,
         has_alpha: false,
         avg_rgb: None,
     });
@@ -284,6 +286,7 @@ fn make_registry_with_entry(path: &str, initial_ref_count: u32) -> TextureRegist
         texture: None,
         pending_destroy: VecDeque::new(),
         ref_count: initial_ref_count,
+        view_kind: TextureViewKind::D2,
         has_alpha: false,
         avg_rgb: None,
     });
@@ -450,6 +453,7 @@ fn release_refs_batch_preserves_holder_counts_and_purges_only_freed_paths() {
         texture: None,
         pending_destroy: VecDeque::new(),
         ref_count: 2,
+        view_kind: TextureViewKind::D2,
         has_alpha: false,
         avg_rgb: None,
     });
@@ -458,6 +462,7 @@ fn release_refs_batch_preserves_holder_counts_and_purges_only_freed_paths() {
         texture: None,
         pending_destroy: VecDeque::new(),
         ref_count: 1,
+        view_kind: TextureViewKind::D2,
         has_alpha: false,
         avg_rgb: None,
     });
@@ -666,6 +671,119 @@ fn recreate_descriptor_sets_allocates_the_replacement_before_the_old_pool_dies()
     );
 }
 
+// ── #4885 — `texture: None` slots must be rewritten on resize ──
+
+/// A freshly recreated set starts with EVERY element unwritten, and a
+/// `texture: None` slot is still sampled by live draws (reserved-unflushed
+/// #881, dead-after-failed-flush #1922 which stays a cache-hit target,
+/// dropped #372). The rewrite planner must give those slots a
+/// dimension-matched fallback redirect — not skip them.
+#[test]
+fn none_d2_slot_is_planned_as_a_checkerboard_fallback_rewrite() {
+    let mut reg = make_registry_for_overflow_test(16, 0);
+    // Slot 0 = the fallback shape (ref-pinned like `set_fallback` does);
+    // slot 1 = a reserved-but-unflushed D2 slot.
+    reg.textures.push(TextureEntry {
+        texture: None,
+        pending_destroy: VecDeque::new(),
+        ref_count: u32::MAX,
+        view_kind: TextureViewKind::D2,
+        has_alpha: false,
+        avg_rgb: None,
+    });
+    reg.fallback_handle = 0;
+    reg.textures.push(TextureEntry {
+        texture: None,
+        pending_destroy: VecDeque::new(),
+        ref_count: 1,
+        view_kind: TextureViewKind::D2,
+        has_alpha: false,
+        avg_rgb: None,
+    });
+    assert_eq!(
+        reg.slot_rewrite(1),
+        Some(SlotRewrite::Fallback {
+            binding: 0,
+            source: 0,
+        }),
+        "a reserved/dropped D2 slot must redirect through binding 0 to the \
+         checkerboard fallback, exactly as drop_released_texture does (#4885)"
+    );
+}
+
+/// Cube slots redirect through binding 1 — but only once a cubemap has
+/// actually been uploaded and pinned as the cube fallback. Before that
+/// there is no cube view to donate, matching `drop_released_texture`'s
+/// `cube_fallback_handle` filter.
+#[test]
+fn none_cube_slot_redirects_through_binding_1_only_when_a_cube_fallback_exists() {
+    let mut reg = make_registry_for_overflow_test(16, 0);
+    reg.textures.push(TextureEntry {
+        texture: None,
+        pending_destroy: VecDeque::new(),
+        ref_count: 1,
+        view_kind: TextureViewKind::Cube,
+        has_alpha: false,
+        avg_rgb: None,
+    });
+    assert_eq!(
+        reg.slot_rewrite(0),
+        None,
+        "no cube fallback pinned yet — nothing to donate a cube view (#4885)"
+    );
+
+    // Pin slot 1 as the cube fallback (the flush does this on the first
+    // successful cubemap upload). Slot 0's plan must now redirect to it.
+    reg.textures.push(TextureEntry {
+        texture: None,
+        pending_destroy: VecDeque::new(),
+        ref_count: u32::MAX,
+        view_kind: TextureViewKind::Cube,
+        has_alpha: false,
+        avg_rgb: None,
+    });
+    reg.cube_fallback_handle = Some(1);
+    assert_eq!(
+        reg.slot_rewrite(0),
+        Some(SlotRewrite::Fallback {
+            binding: 1,
+            source: 1,
+        }),
+        "a cube slot must redirect through binding 1 to the pinned cube \
+         fallback (#4885)"
+    );
+}
+
+/// An out-of-range handle has no slot to rewrite — the planner is total
+/// over the registry like `handle_has_alpha` (#3682), never panicking.
+#[test]
+fn slot_rewrite_is_none_out_of_range() {
+    let reg = make_registry_for_overflow_test(16, 0);
+    assert_eq!(reg.slot_rewrite(0), None);
+}
+
+/// The enqueue side of the same contract: `queue_or_hit_for_view` must
+/// retain the requested view kind on the reserved entry, or the resize
+/// planner above cannot know which binding the slot redirects through.
+#[test]
+fn reserved_slots_retain_their_view_kind() {
+    let mut reg = make_registry_for_overflow_test(16, 0);
+    let outcome = reg
+        .queue_or_hit_for_view(
+            "textures/env.dds",
+            vec![0u8; 64],
+            3,
+            TextureViewKind::Cube,
+            TextureColorSpace::Srgb,
+        )
+        .unwrap();
+    assert_eq!(
+        reg.textures[outcome.handle() as usize].view_kind,
+        TextureViewKind::Cube,
+        "the reservation must remember it is a cube slot (#4885)"
+    );
+}
+
 /// #3682 — `handle_has_alpha` moved from a `HashMap<TextureHandle, bool>`
 /// probe to a direct `Vec` index on `TextureEntry`. Pin both halves of the
 /// contract the old map's `.get(&handle).copied().unwrap_or(false)`
@@ -680,6 +798,7 @@ fn handle_has_alpha_reads_the_seeded_flag_and_defaults_false_out_of_range() {
         texture: None,
         pending_destroy: VecDeque::new(),
         ref_count: 1,
+        view_kind: TextureViewKind::D2,
         has_alpha: true,
         avg_rgb: None,
     });
@@ -698,6 +817,7 @@ fn handle_avg_rgb_reads_the_seeded_value_and_is_none_out_of_range() {
         texture: None,
         pending_destroy: VecDeque::new(),
         ref_count: 1,
+        view_kind: TextureViewKind::D2,
         has_alpha: false,
         avg_rgb: Some([0.25, 0.5, 0.75]),
     });

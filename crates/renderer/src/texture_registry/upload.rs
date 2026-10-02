@@ -125,6 +125,7 @@ impl TextureRegistry {
             texture: Some(texture),
             pending_destroy: VecDeque::new(),
             ref_count: 1,
+            view_kind: TextureViewKind::D2,
             has_alpha: crate::vulkan::dds::format_has_alpha(meta.format),
             avg_rgb: None,
         });
@@ -311,6 +312,9 @@ impl TextureRegistry {
             texture: None,
             pending_destroy: VecDeque::new(),
             ref_count: 1,
+            // #4885 — retained so the resize rewrite knows which binding
+            // the reserved slot must be fallback-redirected through.
+            view_kind,
             // Populated by `flush_pending_uploads` once the DDS header is
             // parsed; `false`/`None` until then, matching the pre-#3682
             // HashMap's "absent handle reads false/None" contract.
