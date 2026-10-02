@@ -660,7 +660,12 @@ impl VulkanContext {
         // Append UI instance (if needed) BEFORE the bulk upload so it's
         // included in the single flush. Avoids the need for a separate raw
         // pointer write + flush that was missing on non-coherent memory (#189).
-        let ui_instance_idx =
+        // #4722 — this is only the *candidate*: it is captured before the
+        // #4199 grow below, so the MAX_INSTANCES ceiling it is checked
+        // against here is necessary but not sufficient. The final value is
+        // re-clamped against the slot's post-grow capacity after
+        // `grow_instance_ssbos` runs.
+        let ui_instance_idx_candidate =
             if let (Some(ui_tex), Some(_)) = (ui_texture_handle, self.overlay.ui_quad_handle) {
                 let idx = gpu_instances.len();
                 let instance = GpuInstance {
@@ -774,9 +779,21 @@ impl VulkanContext {
         // failed grow otherwise leaves `dispatch_direct` and the indirect
         // command buffer naming instance slots past the allocated SSBO — an
         // out-of-bounds device read (`robust_buffer_access` is off), every
-        // frame for the rest of the scene. The UI overlay's own guard is the
-        // narrower sibling (#4722, still open).
+        // frame for the rest of the scene. The UI overlay's own guard is
+        // the narrower sibling, handled just below (#4722).
         let instance_capacity = self.scene_buffers.instance_capacity(frame) as u32;
+        // #4722 / UI-D5-2026-09-21-01 — the overlay guard's second half.
+        // The candidate was captured before the grow against the
+        // MAX_INSTANCES ceiling only; a failed grow leaves the slot's
+        // capacity below the draw count while `upload_instances` clamps to
+        // the slot (`count = instances.len().min(capacity)`). An index
+        // between the slot capacity and MAX_INSTANCES would then submit a
+        // `firstInstance` into SSBO slots that were never uploaded — the
+        // exact #3601 OOB `ui.vert` read, re-opened by the #4199 grow
+        // path. Re-check against the capacity the upload actually clamped
+        // to; `None` takes record_overlay's existing "overlay unavailable"
+        // skip.
+        let ui_instance_idx = ui_instance_idx_candidate.filter(|idx| *idx < instance_capacity);
         let clamped_batches =
             clamp_batches_to_instance_capacity(&mut batches, instance_capacity);
         if clamped_batches > 0 {
@@ -1535,6 +1552,55 @@ mod ui_instance_idx_overflow_tests {
             !src.contains("let idx = gpu_instances.len() as u32;"),
             "the old unclamped capture (index taken as u32 before the MAX_INSTANCES check) \
              must not come back"
+        );
+    }
+
+    /// #4722 (UI-D5-2026-09-21-01) — #4199 moved `upload_instances`' clamp
+    /// from the MAX_INSTANCES ceiling down to the slot's grown capacity,
+    /// but this guard was still computed BEFORE the grow and against
+    /// MAX_INSTANCES only. When `gpu_instances.len()` lands between the
+    /// slot's current capacity and MAX_INSTANCES AND the grow allocation
+    /// fails, `upload_instances` drops the tail (the UI instance is pushed
+    /// last) while a stale `Some(idx)` still reaches `record_overlay` as
+    /// `firstInstance` — an OOB `ui.vert` SSBO read feeding a garbage
+    /// bindless texture index, the exact #3601 consequence. The final
+    /// value must be re-clamped AFTER `grow_instance_ssbos`, against the
+    /// same post-grow `instance_capacity` the batch clamp (#4726) uses.
+    #[test]
+    fn ui_instance_idx_is_reclamped_to_the_post_grow_slot_capacity() {
+        let full_src = include_str!("build_and_upload_instances.rs");
+        let module_start = full_src
+            .find("mod ui_instance_idx_overflow_tests")
+            .expect("this test module must still exist under its own name");
+        let src = &full_src[..module_start];
+
+        // The pre-grow capture must be a *candidate*, not the final value…
+        assert!(
+            src.contains("let ui_instance_idx_candidate ="),
+            "the pre-grow capture must be named as a candidate — the final \
+             ui_instance_idx cannot be computed before the grow runs"
+        );
+        assert!(
+            !src.contains("let ui_instance_idx =\n            if let (Some(ui_tex)"),
+            "the old pre-grow final capture must not come back"
+        );
+        // …and the final value must be the candidate filtered against the
+        // post-grow capacity, downstream of the grow and of the capacity
+        // read the #4726 batch clamp shares.
+        let filter = "let ui_instance_idx = ui_instance_idx_candidate.filter(|idx| *idx < instance_capacity);";
+        let filter_at = src
+            .find(filter)
+            .expect("the final ui_instance_idx must filter the candidate against the post-grow instance_capacity");
+        let capacity_at = src
+            .find("let instance_capacity = self.scene_buffers.instance_capacity(frame) as u32;")
+            .expect("the post-grow capacity read must still exist (#4726)");
+        let grow_at = src
+            .find("self.grow_instance_ssbos(frame,")
+            .expect("the #4199 grow call must still exist");
+        assert!(
+            grow_at < capacity_at && capacity_at < filter_at,
+            "ordering broke: the re-clamp must sit after the grow and after the \
+             capacity read (grow @ {grow_at}, capacity @ {capacity_at}, filter @ {filter_at})"
         );
     }
 }

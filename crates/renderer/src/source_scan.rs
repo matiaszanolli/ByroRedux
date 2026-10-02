@@ -65,7 +65,12 @@ mod tests {
         ("vulkan/buffer.rs", 3),
         ("vulkan/caustic.rs", 4),
         ("vulkan/context/assemble_camera_and_lights.rs", 1),
-        ("vulkan/context/build_and_upload_instances.rs", 6),
+        // +1 (#4722): `ui_instance_idx_is_reclamped_to_the_post_grow_slot_
+        // capacity` cuts at its own module start (`mod ui_instance_idx_
+        // overflow_tests`), same as the sibling #3601 pin in that module —
+        // the file's test modules are interleaved with production code, so
+        // production_text's first-cut does not apply.
+        ("vulkan/context/build_and_upload_instances.rs", 7),
         ("vulkan/context/dispatch_skin_and_cluster.rs", 4),
         // +1 (#5087): the file-level LOC budget strips every test module
         // itself (`production_lines` in draw_frame_size_budget_tests), so
