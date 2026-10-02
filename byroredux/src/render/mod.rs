@@ -22,6 +22,18 @@ static FRAME_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU6
 /// two rays serve unrelated purposes (foot-placement vs. fog altitude).
 const FOG_HEIGHT_REFERENCE_RAY_MAX_DISTANCE: f32 = 4096.0;
 
+/// #5158 — scale applied to an interior's authored XCLL ambient before it
+/// reaches the scene UBO. Pass-through strength lifts every unlit surface
+/// equally, which the auto-exposure meter then normalizes into a uniformly
+/// bright, bleached room (measured on the FNV Prospector Saloon: the frame
+/// metered ~5× brighter than the same pipeline's exterior operating point,
+/// with the fixed-sweep "correct look" sitting 2+ stops below auto). Halving
+/// the flat fill keeps the room's light balance on the key lights and the
+/// path-traced GI instead — unlit corners read dark, the way the authored
+/// space looks in-game. Exteriors (weather-driven ambient) and Skyrim
+/// interiors (DALC cube) do not pass through this scale.
+const INTERIOR_AMBIENT_SCALE: f32 = 0.5;
+
 /// Cached answer for [`scene_has_effect_soft_material`], keyed on the
 /// structural generations of the two storages it scans.
 ///
@@ -1294,12 +1306,27 @@ pub(crate) fn build_render_data(
         .is_some_and(|exposure| exposure.0);
     // Cell ambient color (or default).
     let cell_lit = world.try_resource::<CellLightingRes>();
-    // XCLL ambient passed through as-is. This is the only flat/cube cell-fill
-    // input; XCLL directional colour follows the ordinary shadowable-light
-    // path so it cannot bypass N.L, visibility, or AO.
+    // XCLL ambient passed through as-is — except on interiors, where the
+    // flat fill is scaled down (#5158): the authored 0-1 XCLL triple is a
+    // Gamebryo-compatibility fill, and at pass-through strength it lifts
+    // every unlit surface to the same level, which the auto-exposure meter
+    // then normalizes into the bleached-room look (measured on the FNV
+    // Prospector Saloon 2026-10-01: interior metered ~5× brighter than the
+    // same pipeline's exterior operating point). Halving the fill keeps the
+    // room's light balance on the key lights + path-traced GI instead, so
+    // unlit corners go dark the way the authored space reads in-game.
+    // Skyrim interiors bypass this term entirely (DALC cube, REND-#1452),
+    // and exteriors keep the pass-through: their ambient comes from the
+    // weather path with its own calibration.
     let ambient = cell_lit
         .as_ref()
-        .map(|l| l.ambient)
+        .map(|l| {
+            if l.is_interior {
+                l.ambient.map(|channel| channel * INTERIOR_AMBIENT_SCALE)
+            } else {
+                l.ambient
+            }
+        })
         .unwrap_or([0.08, 0.08, 0.08]);
     // Retain the authored fog color and legacy ramp for diagnostics and
     // compatibility UBOs. The active path consumes `fog_medium`; exterior

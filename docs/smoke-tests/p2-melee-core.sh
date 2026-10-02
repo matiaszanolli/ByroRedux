@@ -209,14 +209,20 @@ wait_for_pattern "combat.status" "attacks=0 hits=0 kills=0" "$status_log" "comba
 # must NOT change the frozen target's Health — the loop after it still starts
 # its expected_hits math from a clean P2_TARGET_HEALTH.
 #
-# The hold, approach, and swing are queued in one `byro-dbg` connection (a
-# frame budget just past what one such batch needs, not a second round-trip)
-# so the hold can't lapse between commands while a new debug process spins
-# up.
-debug_commands "input.hold block 40
-combat.approach $target
+# The approach runs in its OWN connection (#5160): it teleports the capsule
+# between frames, and the swing is a camera ray — a swing queued in the same
+# drain fires from the still-unfollowed pre-teleport camera pose and cannot
+# land. A real player turns and steps for many frames before swinging; one
+# debug round-trip is the automation equivalent. The hold and the swing stay
+# batched in one connection so the hold can't lapse between commands while a
+# new debug process spins up. The hold is 120 frames (~1 s at the engine's
+# uncapped refresh) so the status poll's own debug round-trip still catches
+# the blocking=true window before it lapses.
+debug_commands "combat.approach $target" "$command_log" \
+    || fail "could not place the character at the melee approach pose"
+debug_commands "input.hold block 120
 input.press attack" "$command_log" || fail "could not queue the blocked swing"
-grep -Fq "input.hold: queued Block through the C binding for 40 frames" "$command_log" \
+grep -Fq "input.hold: queued Block through the C binding for 120 frames" "$command_log" \
     || fail "Block hold did not enter through the normal Block binding"
 grep -Fq "input.press: queued action=Attack binding=R" "$command_log" \
     || fail "blocked swing did not enter through the normal Attack binding"
@@ -235,7 +241,7 @@ grep -Fq "damage=0.0" "$status_log" \
 grep -Fq "health_before=$P2_TARGET_HEALTH health_after=$P2_TARGET_HEALTH" "$status_log" \
     || fail "a blocked hit must not change the target's Health"
 wait_for_pattern "combat.status" "cooldown_ready=true" "$status_log" "blocked swing cooldown elapsed"
-# There is no console command to release a hold early — wait for the 40-frame
+# There is no console command to release a hold early — wait for the 120-frame
 # budget to lapse on its own so the real damage sequence below swings
 # unblocked. Without this, a still-active hold silently blocks swing 1 too
 # (exactly the failure mode this section exists to catch, just relocated).

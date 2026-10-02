@@ -47,11 +47,23 @@ pub const SENSOR_SENSITIVITY_S: f32 = 100.0;
 /// the shared `EXPOSURE_METER_NEUTRAL` (#5154) so the metering shader, the
 /// presentation chroma compress and this module cannot disagree.
 pub const EXPOSURE_CONSTANT: f32 = crate::shader_constants::EXPOSURE_METER_NEUTRAL;
-/// Exposure clamps. Wide enough for LDR-authored Bethesda content through a
-/// few stops of HDR headroom; exists so a degenerate meter (e.g. a black
-/// frame) cannot zero or blow up reconstruction.
-pub const MIN_AUTO_EXPOSURE: f32 = 1.0 / 256.0;
-pub const MAX_AUTO_EXPOSURE: f32 = 16.0;
+/// Auto-exposure envelope — the simulated eye-adaptation range, in stops
+/// around the calibrated operating point (an exterior meters L̄ ≈ 0.15 →
+/// exposure 1.0).
+///
+/// #5158: a meter allowed to run to 16× fully normalizes any dim scene to
+/// middle grey. Measured on the FNV Prospector Saloon: the room's geometric
+/// mean is ≈ 0.03, so the unclamped Frostbite target `0.15/L̄` is 5× the
+/// exterior operating point, and the fixed-sweep correct look for that room
+/// sits 2+ stops BELOW auto — dark interiors are authored to render dark.
+/// The cap bounds the meter's dark-scene lift to +1 stop; dimmer content
+/// darkens naturally (night exteriors, unlit corners) instead of bleaching
+/// flat — and stops amplifying the 1-SPP Monte-Carlo residual by the
+/// overexposure factor. The floor keeps 5 stops of HDR headroom for sun-lit
+/// scenes and still guards a degenerate meter (black frame) from blowing up
+/// reconstruction.
+pub const MIN_AUTO_EXPOSURE: f32 = 1.0 / 32.0;
+pub const MAX_AUTO_EXPOSURE: f32 = 2.0;
 
 /// EV100 for an average scene luminance — mirror of the metering shader's
 /// `log2(max(L, 1e-6) * 8.0)` (S/K = 100/12.5 = 8).
@@ -65,11 +77,16 @@ pub fn exposure_from_ev100(ev100: f32) -> f32 {
 }
 
 /// Target auto exposure for a metered average luminance with a compensation
-/// bias in photographic stops (positive = darker), clamped to the operating
-/// range. Pure decision mirror of the shader's single-thread epilogue.
+/// bias in photographic stops (positive = darker). Pure decision mirror of
+/// the shader's single-thread epilogue: the envelope clamps the METERED
+/// target, then the compensation biases around the cap. Compensation is an
+/// explicit operator choice (the `exposure ev` console knob, bounded ±6
+/// stops there) and is allowed to leave the envelope — clamping after it
+/// would make `ev` go dead in exactly the dim scenes the envelope clamps.
 pub fn auto_exposure(average_luminance: f32, compensation_stops: f32) -> f32 {
-    let target = exposure_from_ev100(ev100_from_average_luminance(average_luminance));
-    (target * (-compensation_stops).exp2()).clamp(MIN_AUTO_EXPOSURE, MAX_AUTO_EXPOSURE)
+    let metered = exposure_from_ev100(ev100_from_average_luminance(average_luminance))
+        .clamp(MIN_AUTO_EXPOSURE, MAX_AUTO_EXPOSURE);
+    metered * (-compensation_stops).exp2()
 }
 
 /// Per-frame exponential-adaptation blend factor for a time constant:
@@ -292,6 +309,28 @@ mod tests {
         // A black frame is the darkest possible scene: the 1e-6 guard keeps
         // it finite and the clamp pins it at the long-exposure end.
         assert_eq!(auto_exposure(0.0, 0.0), MAX_AUTO_EXPOSURE);
+    }
+
+    /// #5158 — the envelope caps how far the meter may LIFT a dim scene,
+    /// and the `ev` compensation biases around the cap (applied after the
+    /// meter clamp). Anchors: an exterior meters L̄ ≈ 0.15 → exposure 1.0
+    /// (the operating point, unclamped); the FNV Prospector Saloon meters
+    /// L̄ ≈ 0.03 → unclamped target 5× that, rendered as the bleached
+    /// interior whose fixed-sweep correct look sits 2+ stops below auto.
+    #[test]
+    fn envelope_caps_dark_scene_lift_and_compensation_biases_around_it() {
+        // Exterior operating point: unclamped.
+        assert!((auto_exposure(0.15, 0.0) - 1.0).abs() < 1.0e-4);
+        // The saloon's metered mean — and anything darker — pins at the cap.
+        assert_eq!(auto_exposure(0.03, 0.0), MAX_AUTO_EXPOSURE);
+        assert_eq!(auto_exposure(0.001, 0.0), MAX_AUTO_EXPOSURE);
+        // `ev -1` must still brighten a clamped scene (one stop = ×2 after
+        // the clamp) — the console knob may not go dead where it is needed.
+        assert!((auto_exposure(0.03, -1.0) - 2.0 * MAX_AUTO_EXPOSURE).abs() < 1.0e-5);
+        // Sun-lit scenes keep 5 stops of HDR headroom below the floor
+        // (L̄ = 3 → 0.05 is unclamped; only L̄ ≥ 4.8 pins at MIN).
+        assert!((auto_exposure(3.0, 0.0) - 0.05).abs() < 1.0e-4);
+        assert_eq!(auto_exposure(10.0, 0.0), MIN_AUTO_EXPOSURE);
     }
 
     /// #4590 — simulate the shader's actual update pattern: N per-FIF

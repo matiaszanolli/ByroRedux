@@ -13,8 +13,9 @@
 //   0 (fixed) — write params.fixed_exposure; the scene is not sampled.
 //   1 (auto)  — EV100 = log2(L_avg * S / K), S=100, K=12.5 (the reflected-
 //               light meter calibration constant), exposure = 1.2 * 2^-EV100
-//               (0.15 / L_avg), then compensation stops and clamp, then
-//               exponential adaptation toward the target using the previous
+//               (0.15 / L_avg), then the metering-envelope clamp and
+//               compensation stops, then exponential adaptation toward the
+//               target using the previous
 //               value of THIS frame-in-flight slot (per-FIF slot ownership,
 //               same discipline as every other per-frame pass). #4590: each
 //               slot is therefore its own adaptation chain stepping once
@@ -98,9 +99,13 @@ void main() {
         // EV100 = log2(L * S / K), S = 100, K = 12.5 -> log2(L * 8.0).
         float ev100 = log2(max(avg_luminance, 1.0e-6) * 8.0);
         float target = 1.2 * exp2(-ev100);
-        // Compensation in stops: positive darkens.
-        target *= exp2(-params.mode.z);
+        // The envelope clamps the METERED target (#5158 — an uncapped meter
+        // normalizes dim interiors to middle grey: the bleached-room look,
+        // and a several-fold amplification of the 1-SPP MC residual).
+        // Compensation in stops (positive = darker) then biases around the
+        // cap so the `exposure ev` knob stays live in clamped scenes.
         target = clamp(target, params.limits.x, params.limits.y);
+        target *= exp2(-params.mode.z);
         float previous = imageLoad(dstExposure, ivec2(0)).r;
         float adapted = mix(previous, target, clamp(params.mode.w, 0.0, 1.0));
         imageStore(dstExposure, ivec2(0), vec4(adapted, 0.0, 0.0, 1.0));

@@ -490,8 +490,9 @@ mod tests {
     }
 
     /// #5154 — one stop of meter lift costs exactly a quarter stop of
-    /// chroma; at the meter's 16x clamp (~3.73 stops above neutral)
-    /// saturation roughly halves, and luma is invariant throughout.
+    /// chroma; at the meter's 2× envelope cap (#5158, ~0.74 stops above
+    /// neutral) saturation is visibly compressed but never zeroed, and luma
+    /// is invariant throughout.
     #[test]
     fn chroma_compress_trades_a_stop_of_lift_for_a_quarter_stop_of_chroma() {
         let saturated = [0.6f32, 0.2, 0.1];
@@ -509,11 +510,14 @@ mod tests {
             );
         }
 
-        // The meter's clamp: lift = log2(16 / 1.2) ≈ 3.73 stops, chroma
-        // ≈ 0.523 — halved, never zeroed.
+        // The meter's envelope cap: lift = log2(2 / 1.2) ≈ 0.74 stops,
+        // chroma ≈ 0.88 — compressed, never zeroed. (Explicit `ev`
+        // compensation can still push exposure past the cap; e.g. 16× ⇒
+        // lift ≈ 3.73 stops ⇒ chroma ≈ 0.523 — the one-stop trade keeps
+        // holding out there.)
         let clamped = adaptation_chroma_compress(saturated, crate::vulkan::exposure::MAX_AUTO_EXPOSURE);
         let chroma = (clamped[0] - luma) / (saturated[0] - luma);
-        assert!((0.45..=0.60).contains(&chroma), "chroma {chroma}");
+        assert!((0.85..=0.92).contains(&chroma), "chroma {chroma}");
         let out_luma = clamped[0] * LUMA_REC709[0]
             + clamped[1] * LUMA_REC709[1]
             + clamped[2] * LUMA_REC709[2];

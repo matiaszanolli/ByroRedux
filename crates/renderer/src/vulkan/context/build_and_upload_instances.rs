@@ -1153,8 +1153,8 @@ impl VulkanContext {
                                 // wrote N frames ago, so each slot is its
                                 // own adaptation chain stepping once every N
                                 // frames. A one-frame alpha made the
-                                // effective time constant N·τ (0.4 s at the
-                                // 0.2 s default, N = 2).
+                                // effective time constant N·τ (1.0 s at the
+                                // 0.5 s default, N = 2).
                                 super::super::exposure::adaptation_alpha(
                                     frame_delta_seconds
                                         * crate::vulkan::sync::MAX_FRAMES_IN_FLIGHT as f32,

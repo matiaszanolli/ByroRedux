@@ -1753,7 +1753,11 @@ impl VulkanContext {
             exposure_auto: renderer_config.auto_exposure,
             exposure_fixed: super::super::exposure::DEFAULT_EXPOSURE,
             exposure_compensation_stops: 0.0,
-            exposure_adaptation_seconds: 0.2,
+            // 0.5 s eye-adaptation constant: fast enough to track a door
+            // transition without strobing, slow enough that per-frame meter
+            // jitter from the MC residual doesn't pump the exposure (#5158;
+            // live-tunable via `exposure speed <sec>`).
+            exposure_adaptation_seconds: 0.5,
             tonemap: renderer_config.tonemap,
             caustic_failed: false,
             caustic_cleared_on_skip: [false; MAX_FRAMES_IN_FLIGHT],

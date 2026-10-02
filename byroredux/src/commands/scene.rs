@@ -495,6 +495,11 @@ impl ConsoleCommand for ExposureCommand {
         lines.push(format!(
             "  speed   = {speed:.2} s  (adaptation time constant; 0 = snap)"
         ));
+        lines.push(format!(
+            "  envelope= [{:.4}, {:.4}]  (auto meter clamp; ev biases past it, fixed bypasses)",
+            byroredux_renderer::vulkan::exposure::MIN_AUTO_EXPOSURE,
+            byroredux_renderer::vulkan::exposure::MAX_AUTO_EXPOSURE,
+        ));
         lines.push(
             "  usage: exposure auto | exposure fixed 1.2 | exposure ev +0.5 | exposure speed 0.3"
                 .to_string(),
