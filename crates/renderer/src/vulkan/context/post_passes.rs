@@ -859,17 +859,15 @@ impl VulkanContext {
                                 Ok(()) => true,
                                 Err(e) => {
                                     log::warn!("Volumetrics dispatch failed: {e}");
-                                    // Pre-fix behavior never cleared on a
-                                    // failed dispatch either (composite
-                                    // falls back to stale prior-frame
-                                    // content on this exact frame) —
-                                    // unchanged here. Reporting this as
-                                    // "ran" resets the latch so the *next*
-                                    // genuine skip streak still clears its
-                                    // first frame, rather than trusting a
-                                    // latch left over from before this
-                                    // attempt.
-                                    true
+                                    // #4780 — the slot was never written by
+                                    // this failed dispatch, so it must be
+                                    // treated as skipped: an unlatched slot
+                                    // takes the neutral-frame clear, a
+                                    // latched one still gets the CPU-side
+                                    // temporal reset, and either way
+                                    // `history_valid` no longer vouches for
+                                    // content that was never submitted.
+                                    false
                                 }
                             }
                         } else {
@@ -885,6 +883,16 @@ impl VulkanContext {
                     self.volumetrics_cleared_on_skip[frame] = next_latch;
                     if should_clear {
                         vol.record_neutral_frame(&self.device, cmd, frame);
+                    } else if !ran {
+                        // #4780 — the latch suppresses the redundant GPU
+                        // clear on repeat skips of this slot, but the CPU-side
+                        // temporal reset must still run: the inject history
+                        // ping-pongs per FIF slot, so `history_valid` may only
+                        // survive while every intervening frame dispatched.
+                        // Without this, a skip landing on an already-latched
+                        // slot left the next dispatch reading that slot's
+                        // stale combustion/fog state.
+                        vol.record_skipped_frame(frame);
                     }
                 }
             }

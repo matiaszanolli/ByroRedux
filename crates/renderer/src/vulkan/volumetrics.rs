@@ -2118,6 +2118,7 @@ impl VolumetricsPipeline {
         cmd: vk::CommandBuffer,
         frame: usize,
     ) {
+        self.record_skipped_frame(frame);
         let subresource = super::descriptors::color_subresource_single_mip();
         let image = self.integrated_volumes[frame].image;
         // #3647 — the source scope must reach TRANSFER because a repeat
@@ -2141,6 +2142,21 @@ impl VolumetricsPipeline {
                 vk::PipelineStageFlags::COMPUTE_SHADER | vk::PipelineStageFlags::FRAGMENT_SHADER,
             );
         }
+    }
+
+    /// #4780 — the CPU-side temporal half of [`Self::record_neutral_frame`],
+    /// extracted so it can run on EVERY skipped frame, not just the first of
+    /// a streak. The #3685 latch correctly suppresses the redundant GPU
+    /// clear on repeat skips, but it must not also suppress this reset: the
+    /// injection history is ping-ponged per FIF slot, so it is valid only if
+    /// the immediately preceding frame dispatched. In the sequence
+    /// dispatch (slot x) → skip (slot y, already latched) → dispatch (slot x),
+    /// a surviving `history_valid = true` made the second dispatch read slot
+    /// y's combustion/fog state from whenever that slot last ran — stale
+    /// smoke resurrected through `transportCombustion`, ghosted atmospheric
+    /// fog at the 0.92 steady-state history weight. Resetting costs nothing
+    /// on the GPU, so #3685's performance win is untouched.
+    pub fn record_skipped_frame(&mut self, frame: usize) {
         self.history_valid = false;
         self.dispatched_this_frame = false;
         self.transport_fields = TransportFieldState::default();
@@ -3176,6 +3192,82 @@ mod unit_tests {
             10.0,
             f32::NEG_INFINITY
         ));
+    }
+
+    /// #4780 / CONC-D2-2026-09-23-01 — the #3685 skip latch must suppress
+    /// only the *GPU* clear on repeat skips, never the CPU-side temporal
+    /// reset. The injection history ping-pongs per FIF slot, so
+    /// `history_valid` may only survive while every intervening frame
+    /// dispatched; a skip landing on an already-latched slot otherwise let
+    /// the next dispatch read that slot's stale combustion/fog state.
+    /// `VolumetricsPipeline` needs a live device, so pin the split with
+    /// source scans (the `record_neutral_frame` delegation, the reset's
+    /// full lane list, and the caller's latched-skip branch).
+    #[test]
+    fn every_skipped_frame_drops_the_temporal_history_not_just_the_first() {
+        let host = crate::source_scan::production_text(include_str!("volumetrics.rs"));
+        let neutral = host
+            .split("pub unsafe fn record_neutral_frame(")
+            .nth(1)
+            .expect("record_neutral_frame must exist")
+            .split("pub fn record_skipped_frame(")
+            .next()
+            .unwrap();
+        assert!(
+            neutral.contains("self.record_skipped_frame(frame);"),
+            "the neutral frame (first skip of a streak) must run the same \
+             temporal reset as every other skip (#4780)"
+        );
+        let reset = host
+            .split("pub fn record_skipped_frame(")
+            .nth(1)
+            .expect("record_skipped_frame must exist");
+        for lane in [
+            "self.history_valid = false;",
+            "self.dispatched_this_frame = false;",
+            "self.transport_fields = TransportFieldState::default();",
+            "self.last_simulation_time_seconds = None;",
+            "self.pending_simulation_time_seconds = None;",
+            "self.combustion_active_until_seconds = f32::NEG_INFINITY;",
+            "self.combustion_light_grid_valid[frame] = false;",
+        ] {
+            assert!(
+                reset.contains(lane),
+                "record_skipped_frame dropped `{lane}` — a stale value there \
+                 is exactly the #4780 stale-history resurrection"
+            );
+        }
+
+        let caller = crate::source_scan::production_text(include_str!(
+            "context/post_passes.rs"
+        ));
+        let body = caller
+            .split("fn record_volumetrics_pass(")
+            .nth(1)
+            .expect("record_volumetrics_pass must exist")
+            .split("fn record_taa_pass(")
+            .next()
+            .unwrap();
+        assert!(
+            body.contains("} else if !ran {")
+                && body.contains("vol.record_skipped_frame(frame);"),
+            "a latched skip must still run the CPU-side temporal reset — the \
+             #3685 latch owns the GPU clear only (#4780)"
+        );
+        // A failed dispatch never wrote the slot either (#4780): the Err arm
+        // must report the frame as skipped, not as ran.
+        let err_arm = body
+            .split("log::warn!(\"Volumetrics dispatch failed: {e}\");")
+            .nth(1)
+            .expect("the volumetrics dispatch Err arm must exist")
+            .split('}')
+            .next()
+            .unwrap();
+        assert!(
+            err_arm.trim_end().ends_with("false"),
+            "the dispatch Err arm must return `false` so the skip path resets \
+             the temporal history (#4780)"
+        );
     }
 
     /// Regression: #4775 / REN-D8-2026-09-23-03. After the linger window the
