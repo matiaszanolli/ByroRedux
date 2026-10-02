@@ -1014,6 +1014,12 @@ impl ApplicationHandler for App {
         // No-op when the slot is `None` — the common per-frame case.
         self.step_cell_transition();
 
+        // Loading-cover retirement: despawn + GPU-release a model stage
+        // whose cover ended this frame (or earlier — the drain is
+        // idempotent). Must run after `step_cell_transition` so a
+        // dismissal decided inside it is collected the same frame.
+        self.step_loading_stage_retirement();
+
         // Debug-queued inventory actions (inv.equip) go through the native
         // menu's canonical apply_action on the main thread.
         crate::inventory::drain_pending_inventory_actions(&mut self.world);

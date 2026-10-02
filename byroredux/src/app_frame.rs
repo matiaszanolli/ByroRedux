@@ -294,7 +294,7 @@ impl App {
             let is_benching = self.bench_frames_target.is_some();
 
             let brd_t0 = Instant::now();
-            let frame = build_render_data(
+            let mut frame = build_render_data(
                 &self.world,
                 &mut self.draw_commands,
                 &mut self.cover_template_draws,
@@ -403,6 +403,19 @@ impl App {
                     .retain(|command| ctx.mesh_registry.is_geometry_resident(command.mesh_handle));
             }
 
+            // Creation-era loading cover (Skyrim/FO4 LSCR model): the
+            // stage owns the frame while the cover is up — only its
+            // meshes draw, under its own fixed camera, while the
+            // destination cell streams in invisibly behind it. The legacy
+            // image cover composites differently (a fullscreen UI quad)
+            // and never enters this branch.
+            if let Some(stage) = self.loading_screen.active_stage() {
+                stage.filter_frame_draws(&mut self.draw_commands, &mut self.water_commands);
+                self.gpu_lights.retain(|light| stage.keeps_light(light));
+                self.gpu_fog_volumes.clear();
+                stage.apply_to_frame(&mut frame);
+            }
+
             // #4180 — static-BLAS recovery no longer runs here. It was two
             // fence-waited one-time submits per batch inside the render driver;
             // it is now `App::step_static_blas_restore`, a between-frames step
@@ -423,38 +436,45 @@ impl App {
             // `GpuInstance.vertex_offset`, which only the live `MeshRegistry`
             // can resolve, and #4052 settled that it must be resolved every
             // frame (the registry compacts).
-            collect_and_prepare_groundcover(
-                &self.world,
-                ctx,
-                &frame,
-                GroundCoverScratch {
-                    residency: &mut self.groundcover_residency,
-                    collect: &mut self.groundcover_collect_scratch,
-                    cells: &mut self.groundcover_cells,
-                    chunks: &mut self.groundcover_chunks,
-                    species: &mut self.groundcover_species,
-                    species_table: &mut self.groundcover_species_table,
-                    species_table_signature: &mut self.groundcover_species_table_signature,
-                    disturbers: &mut self.groundcover_disturbers,
-                    detail_atlas: &mut self.groundcover_detail_atlas,
-                    truncation_logged: &mut self.groundcover_truncation_logged,
-                    debug_points: self.groundcover_debug_points,
-                    off: self.groundcover_off,
-                },
-            );
+            // While the loading stage owns the frame there is no world
+            // camera to collect against (the world's draws are filtered
+            // out), so ground-cover collection would stage against a
+            // camera nothing renders from. The bench feature and the
+            // cover are incompatible by construction.
+            if self.loading_screen.active_stage().is_none() {
+                collect_and_prepare_groundcover(
+                    &self.world,
+                    ctx,
+                    &frame,
+                    GroundCoverScratch {
+                        residency: &mut self.groundcover_residency,
+                        collect: &mut self.groundcover_collect_scratch,
+                        cells: &mut self.groundcover_cells,
+                        chunks: &mut self.groundcover_chunks,
+                        species: &mut self.groundcover_species,
+                        species_table: &mut self.groundcover_species_table,
+                        species_table_signature: &mut self.groundcover_species_table_signature,
+                        disturbers: &mut self.groundcover_disturbers,
+                        detail_atlas: &mut self.groundcover_detail_atlas,
+                        truncation_logged: &mut self.groundcover_truncation_logged,
+                        debug_points: self.groundcover_debug_points,
+                        off: self.groundcover_off,
+                    },
+                );
 
-            // #4413 — the authored-model tier, fed the template draws
-            // `build_render_data` just built (their materials are interned in
-            // this frame's table, which `draw_frame` has not uploaded yet).
-            prepare_groundcover_models(
-                &self.world,
-                ctx,
-                &mut self.cover_template_draws,
-                &mut self.groundcover_model_records,
-                &mut self.groundcover_model_table,
-                &mut self.groundcover_model_records_key,
-                self.groundcover_off,
-            );
+                // #4413 — the authored-model tier, fed the template draws
+                // `build_render_data` just built (their materials are interned in
+                // this frame's table, which `draw_frame` has not uploaded yet).
+                prepare_groundcover_models(
+                    &self.world,
+                    ctx,
+                    &mut self.cover_template_draws,
+                    &mut self.groundcover_model_records,
+                    &mut self.groundcover_model_table,
+                    &mut self.groundcover_model_records_key,
+                    self.groundcover_off,
+                );
+            }
 
             // Tick and render the UI overlay. The Oblivion MenuXml HUD
             // (M48.4) owns the overlay when live; otherwise this is the
@@ -497,7 +517,9 @@ impl App {
                 .world
                 .try_resource::<crate::components::CellLightingRes>()
                 .is_some_and(|l| l.is_interior);
-            let clear_color = if is_interior {
+            let clear_color = if is_interior || self.loading_screen.active_stage().is_some() {
+                // The stage cover renders its model on plain black, the
+                // same treatment an interior gets.
                 [0.0, 0.0, 0.0, 1.0]
             } else {
                 byroredux_core::types::Color::CORNFLOWER_BLUE.as_array()
@@ -546,6 +568,20 @@ impl App {
                 } else {
                     byroredux_renderer::TonemapOp::Aces
                 };
+            }
+            // The Creation-era loading cover pins its exposure instead of
+            // adapting: the cover frame is ~95% pure black behind one lit
+            // model, and the auto meter (geometric-mean EV100) reads that
+            // as near-darkness and rides its ceiling clamp, blowing the
+            // model out into a bloom blob. The original menus meter their
+            // load screens themselves; `STAGE_EXPOSURE_LINEAR` is this
+            // backend's pinned equivalent. This override sits AFTER the
+            // ExposureTuning push so the cover wins for exactly the cover
+            // frames; auto adaptation resumes (0.5 s τ) on the first
+            // destination frame.
+            if self.loading_screen.active_stage().is_some() {
+                ctx.exposure_auto = false;
+                ctx.exposure_fixed = crate::loading_screen::STAGE_EXPOSURE_LINEAR;
             }
             let frame_time_delta_ms = self
                 .world

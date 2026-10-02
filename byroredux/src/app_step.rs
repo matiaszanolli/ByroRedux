@@ -830,7 +830,7 @@ impl App {
             if !self.loading_screen.take_presented_save() {
                 return;
             }
-        } else if self.loading_screen.begin_save(&self.world, ctx) {
+        } else if self.loading_screen.begin_save(&mut self.world, ctx) {
             // Keep the snapshot in its last-writer-wins slot until the
             // cover really presents. No destructive load work this tick.
             self.release_world_input_for_ui();
@@ -857,6 +857,18 @@ impl App {
         for (action, output) in crate::save_io::execute_pending_player_save_actions(&self.world) {
             crate::surface_save_load_output(self.debug_ui.as_mut(), action.context(), output);
         }
+    }
+
+    /// Drain a retired Creation-era loading model stage: despawn its
+    /// subtree and release its meshes/BLASes/textures with the same
+    /// refcount discipline as cell teardown. See
+    /// [`crate::loading_screen::retire_stage`].
+    pub(crate) fn step_loading_stage_retirement(&mut self) {
+        let Some(stage) = self.loading_screen.take_retired_stage() else {
+            return;
+        };
+        let ctx = self.renderer.as_mut();
+        crate::loading_screen::retire_stage(&mut self.world, ctx, *stage);
     }
 
     /// Drain any queued [`cell_loader::PendingCellTransition`] and
@@ -987,7 +999,7 @@ impl App {
         };
 
         let pending = if !self.loading_screen.active() {
-            match self.loading_screen.begin(&self.world, ctx, pending) {
+            match self.loading_screen.begin(&mut self.world, ctx, pending) {
                 Ok(()) => {
                     self.release_world_input_for_ui();
                     return;

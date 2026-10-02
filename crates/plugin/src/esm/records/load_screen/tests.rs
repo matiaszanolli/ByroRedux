@@ -204,3 +204,65 @@ fn every_truncated_fixed_field_is_safe_and_visible() {
         }
     }
 }
+
+/// DATA layout verified against installed Fallout4.esm (e.g.
+/// LoadingBarberTransform 0x0022DBAC: 36-byte DATA, zoom tail present).
+fn trns_data_bytes() -> Vec<u8> {
+    let mut data = Vec::new();
+    for v in [12.0f32, 350.0, -31.9] {
+        data.extend_from_slice(&v.to_le_bytes());
+    }
+    for v in [6.102f32, 0.0, 6.102] {
+        data.extend_from_slice(&v.to_le_bytes());
+    }
+    for v in [1.0f32, -0.5, 1.0] {
+        data.extend_from_slice(&v.to_le_bytes());
+    }
+    data
+}
+
+#[test]
+fn trns_decodes_the_full_thirty_six_byte_data() {
+    let record = parse_trns(
+        0x0022DBAC,
+        0x8000,
+        &[sub(b"EDID", b"LoadingBarberTransform\0"), sub(b"DATA", trns_data_bytes())],
+    );
+    assert_eq!(record.editor_id, "LoadingBarberTransform");
+    assert!(record.around_origin, "header flag 0x8000 is Around Origin");
+    assert_eq!(record.translation, [12.0, 350.0, -31.9]);
+    assert_eq!(record.rotation_deg, [6.102, 0.0, 6.102]);
+    assert_eq!(record.scale, 1.0);
+    assert_eq!(record.zoom_bounds, Some([-0.5, 1.0]));
+    assert!(record.malformed_fields.is_empty());
+}
+
+#[test]
+fn trns_accepts_the_zoomless_twenty_eight_byte_form() {
+    let mut data = trns_data_bytes();
+    data.truncate(28);
+    let record = parse_trns(1, 0, &[sub(b"DATA", data)]);
+    assert_eq!(record.zoom_bounds, None);
+    assert_eq!(record.scale, 1.0);
+    assert!(record.malformed_fields.is_empty());
+}
+
+#[test]
+fn trns_flags_truncated_and_non_finite_data_instead_of_guessing_a_pose() {
+    for len in [0usize, 4, 27, 29, 35, 40] {
+        let record = parse_trns(1, 0, &[sub(b"DATA", vec![0u8; len])]);
+        assert_eq!(record.malformed_fields, [*b"DATA"], "len {len}");
+    }
+    let mut data = trns_data_bytes();
+    data[0..4].copy_from_slice(&f32::NAN.to_le_bytes());
+    let record = parse_trns(1, 0, &[sub(b"DATA", data)]);
+    assert_eq!(record.malformed_fields, [*b"DATA"]);
+    assert_eq!(record.scale, 1.0, "defaults stay untouched on rejection");
+}
+
+#[test]
+fn trns_without_data_is_malformed_not_an_identity_transform() {
+    let record = parse_trns(1, 0, &[sub(b"EDID", b"Broken\0")]);
+    assert_eq!(record.malformed_fields, [*b"DATA"]);
+    assert_eq!(record.editor_id, "Broken");
+}

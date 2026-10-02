@@ -15,7 +15,8 @@ use super::{
     ExplRecord, EyesRecord, FactionRecord, FlstRecord, GameSetting, GlobalRecord, GrasRecord, HairRecord,
     HdptRecord,
     IdleRecord, ImadRecord, ImgsRecord, ImodRecord, IpctRecord, IpdsRecord, ItemRecord,
-    LeveledList, LgtmRecord, LoadScreenRecord, MesgRecord, MgefRecord, MinimalEsmRecord,
+    LeveledList, LgtmRecord, LoadScreenRecord, LoadScreenTransform, MesgRecord, MgefRecord,
+    MinimalEsmRecord, ResolvedLoadScreenModel,
     NaviRecord, NavmRecord,
     NpcRecord, OtftRecord, PackRecord, PerkRecord, ProjRecord, QustRecord, RaceRecord, RegnRecord,
     RepuRecord, ScenRecord, ScriptRecord, SlgmRecord, SounRecord, SpelRecord, TermRecord,
@@ -402,6 +403,10 @@ pub struct EsmIndex {
     pub imagespace_modifiers: HashMap<u32, ImadRecord>,
     /// `LSCR` load screen.
     pub load_screens: HashMap<u32, LoadScreenRecord>,
+    /// `TRNS` load-screen stage transform — the record an LSCR's TNAM
+    /// points at (FO4+; Skyrim authors its pose inline via SNAM/RNAM/XNAM
+    /// instead). See [`super::load_screen::LoadScreenTransform`].
+    pub load_screen_transforms: HashMap<u32, LoadScreenTransform>,
     /// `LSCT` load screen type.
     pub load_screen_types: HashMap<u32, MinimalEsmRecord>,
     /// `PWAT` placeable water.
@@ -487,6 +492,48 @@ pub struct EsmIndex {
 }
 
 impl EsmIndex {
+    /// Resolve a Creation-era LSCR's NNAM model reference (Skyrim/FO4)
+    /// against this index: the target's cached NIF path via
+    /// `cells.statics` (STAT directly, SCOL through its baked `CM*.NIF`),
+    /// plus the TNAM → TRNS stage transform when authored.
+    ///
+    /// Returns `None` when the model cannot be shown faithfully — no NNAM,
+    /// an NNAM whose base record carries no model path, or a non-zero TNAM
+    /// whose TRNS is missing or malformed. A broken transform reference
+    /// makes the whole screen ineligible rather than silently posing the
+    /// model at a guess (same conservatism as the record-level
+    /// `malformed_fields` contract).
+    pub fn resolve_load_screen_model(
+        &self,
+        screen: &LoadScreenRecord,
+    ) -> Option<ResolvedLoadScreenModel> {
+        if screen.model == 0 {
+            return None;
+        }
+        let model_path = self
+            .cells
+            .statics
+            .get(&screen.model)?
+            .model_path
+            .clone();
+        if model_path.is_empty() {
+            return None;
+        }
+        let transform = if screen.transform == 0 {
+            None
+        } else {
+            let trns = self
+                .load_screen_transforms
+                .get(&screen.transform)
+                .filter(|trns| trns.malformed_fields.is_empty())?;
+            Some(trns.clone())
+        };
+        Some(ResolvedLoadScreenModel {
+            model_path,
+            transform,
+        })
+    }
+
     /// Reconcile Fallout inventory categories after a complete parse or
     /// load-order merge. OMOD groups can appear after MISC, and later plugins
     /// may override either side of the relationship, so this cannot safely be
@@ -668,6 +715,7 @@ impl EsmIndex {
             map_category!("trees", trees),
             map_category!("imagespace_modifiers", imagespace_modifiers),
             map_category!("load_screens", load_screens),
+            map_category!("load_screen_transforms", load_screen_transforms),
             map_category!("load_screen_types", load_screen_types),
             map_category!("placeable_waters", placeable_waters),
             map_category!("ragdolls", ragdolls),

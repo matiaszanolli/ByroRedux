@@ -75,7 +75,11 @@ and the P5 hardening family
 [`p5-soak.sh`](docs/smoke-tests/p5-soak.sh) gates F5/F9 bound-input
 quicksave/quickload, quest-state revert/restore, cross-cell door saves,
 graceful quit (`engine.quit`), a `BYRO_VALIDATION=1` clean leg, and the
-30-minute transition/save soak.
+30-minute transition/save soak, and
+[`p6-loading-model.sh`](docs/smoke-tests/p6-loading-model.sh) gates the
+Creation-era LSCR model loading cover on Skyrim (inline SNAM/RNAM/XNAM
+pose) and FO4 (TNAM→TRNS) — census, cover begin/present, a rendered-frame
+screenshot floor, and dismissal after the destination applies.
 
 ### Shader Compilation
 ```bash

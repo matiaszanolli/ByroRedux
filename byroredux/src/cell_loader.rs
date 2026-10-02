@@ -136,6 +136,7 @@ pub(crate) use nif_import_registry::{
 pub(crate) use refr::{build_refr_texture_overlay, expand_pkin_placements, expand_scol_placements};
 
 pub(crate) use euler::euler_zup_to_quat_yup_refr;
+pub(crate) use unload::collect_victim_gpu_handles;
 pub use euler::set_refr_rotation_mode_diag;
 
 pub(crate) use exterior::{
@@ -188,8 +189,6 @@ pub(crate) use spawn::{
     count_spawnable_nif_lights, is_known_exporter_artifact_light_name, is_spawnable_nif_light,
     light_radius_or_default, spawn_nif_lights,
 };
-#[cfg(test)]
-pub(crate) use unload::collect_victim_gpu_handles;
 #[cfg(test)]
 pub(crate) use unload::release_victim_item_instances;
 #[cfg(test)]

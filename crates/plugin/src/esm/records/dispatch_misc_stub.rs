@@ -140,6 +140,21 @@ pub(super) fn dispatch_misc_stub_group(
                 },
             )?;
         }
+        // FO4+ load-screen stage transforms — the records LSCR.TNAM points
+        // at. Skyrim has none (its LSCRs author the pose inline via
+        // SNAM/RNAM/XNAM), so the arm simply never fires there.
+        b"TRNS" => {
+            super::grup_walker::extract_records_with_flags(
+                reader,
+                end,
+                b"TRNS",
+                &mut |fid, flags, subs| {
+                    index
+                        .load_screen_transforms
+                        .insert(fid, parse_trns(fid, flags, subs));
+                },
+            )?;
+        }
         b"LSCT" => extract_records(reader, end, b"LSCT", &mut |fid, subs| {
             index
                 .load_screen_types

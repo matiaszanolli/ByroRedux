@@ -86,14 +86,64 @@ impl ConsoleCommand for StatsCommand {
     }
 }
 
+pub(crate) struct LoadScreenCensusCommand;
+impl ConsoleCommand for LoadScreenCensusCommand {
+    fn name(&self) -> &str {
+        "loadscreen.census"
+    }
+    fn description(&self) -> &str {
+        "LSCR cover-eligibility census + the deterministic cover pick"
+    }
+    fn execute(&self, world: &World, _args: &str) -> CommandOutput {
+        let Some(index) = world
+            .try_resource::<crate::cell_loader::LoadedCellIndex>()
+            .map(|loaded| std::sync::Arc::clone(&loaded.0))
+        else {
+            return CommandOutput::error("no ESM index loaded");
+        };
+        let census = byroredux_plugin::esm::records::load_screen_census(&index);
+        let mut lines = vec![format!(
+            "LSCR total={} eligible={} (rejected: conditions={}, locations={},              malformed={}, tip_unresolved={}, missing_artwork={}) trns={}",
+            census.total,
+            census.eligible,
+            census.rejected_conditions,
+            census.rejected_locations,
+            census.rejected_malformed,
+            census.rejected_tip_unresolved,
+            census.rejected_missing_artwork,
+            index.load_screen_transforms.len(),
+        )];
+        match byroredux_plugin::esm::records::first_backend_load_screen(&index) {
+            Some((screen, verdict)) => {
+                let art = match verdict {
+                    byroredux_plugin::esm::records::LoadScreenVerdict::Model(Some(m)) => {
+                        m.model_path
+                    }
+                    byroredux_plugin::esm::records::LoadScreenVerdict::Model(None) => {
+                        screen.icon.clone()
+                    }
+                    byroredux_plugin::esm::records::LoadScreenVerdict::Rejected(_) => {
+                        String::new()
+                    }
+                };
+                lines.push(format!(
+                    "cover pick: {:08X} {} art={art}",
+                    screen.form_id, screen.editor_id
+                ));
+            }
+            None => lines.push("cover pick: NONE (doors proceed uncovered)".to_string()),
+        }
+        CommandOutput::lines(lines)
+    }
+}
+
 pub(crate) struct EntitiesCommand;
 impl ConsoleCommand for EntitiesCommand {
     fn name(&self) -> &str {
         "entities"
     }
     fn description(&self) -> &str {
-        "Show entity count and component breakdown"
-    }
+        "Show entity count and component breakdown"    }
     fn execute(&self, world: &World, _args: &str) -> CommandOutput {
         let total = world.next_entity_id();
         let mesh_count = world.count::<MeshHandle>();

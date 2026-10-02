@@ -9,7 +9,9 @@ use byroredux_core::string::StringPool;
 use crate::interaction::{
     ActionState, InteractionCandidateScratch, InteractionState, InteractionTrace,
 };
-use crate::systems::{animate_lights_system, make_animation_system, spin_system};
+use crate::systems::{
+    animate_lights_system, loading_model_turntable_system, make_animation_system, spin_system,
+};
 
 /// `Stage::Update` registrations (#3739 split of `build_scheduler`).
 pub(super) fn register_update_systems(scheduler: &mut Scheduler) {
@@ -582,6 +584,11 @@ pub(super) fn register_update_systems(scheduler: &mut Scheduler) {
     // without changing observable behaviour. Cost: ~µs of lost
     // parallelism on the demo cube; negligible.
     scheduler.add_exclusive(Stage::Update, spin_system);
+    // Creation-era loading-screen turntable — same shape as spin_system:
+    // writes Transform on its own (marker-gated, at most one entity) set,
+    // sequenced after the Update batch to keep the analyzer's
+    // Transform WriteWrite row clean.
+    scheduler.add_exclusive(Stage::Update, loading_model_turntable_system);
     // Phase 17 — procedural light flicker. Writes
     // LightSource.intensity + Transform.translation on entities
     // with a LightFlicker companion. Exclusive in Update so it

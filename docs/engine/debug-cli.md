@@ -305,7 +305,7 @@ commands were unreachable from `byro-dbg` because `tex.missing` parsed as
 
 The console commands are registered in `byroredux/src/commands/mod.rs`
 (`build_command_registry()`) plus the save/load implementations in
-`byroredux/src/save_io.rs`. Current registered commands (**98**) grouped by
+`byroredux/src/save_io.rs`. Current registered commands (**99**) grouped by
 purpose:
 
 ```
@@ -321,6 +321,9 @@ engine.quit                 → request the graceful shutdown (same teardown as
 sys.accesses                → declared-access conflict report (R7) — pre-flight
                              for M27 parallel scheduler (now also covers
                              exclusive systems, #1236 / #1237)
+loadscreen.census           → LSCR cover-eligibility census over the loaded
+                             index + the deterministic cover pick (legacy
+                             image path or Creation-era model + transform)
 
 # Picked reference + spatial selection
 prid <entity_id>            → pick a reference for follow-up commands

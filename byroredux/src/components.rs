@@ -23,6 +23,20 @@ impl Component for Spinning {
     type Storage = SparseSetStorage<Self>;
 }
 
+/// Marker for the root of a Creation-era loading-screen model stage
+/// (Skyrim/FO4 LSCR NNAM art). Attached only by the loading-screen
+/// backend; the turntable system reads `no_rotation` (the LSCR header's
+/// "No Rotation" flag, 0x8000 — FO4+ only, always false on Skyrim, whose
+/// LSCR flags have no such bit) and everything else about the stage lives
+/// on the `LoadingScreen` owner, not the ECS.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct LoadingModelStage {
+    pub(crate) no_rotation: bool,
+}
+impl Component for LoadingModelStage {
+    type Storage = SparseSetStorage<Self>;
+}
+
 /// Component for entities that use alpha blending, carrying the Gamebryo
 /// blend factors extracted from NiAlphaProperty flags.
 ///

@@ -100,6 +100,7 @@ pub(crate) fn build_command_registry() -> CommandRegistry {
     registry.register(TimeAdvanceCommand);
     registry.register(StatsCommand);
     registry.register(EntitiesCommand);
+    registry.register(LoadScreenCensusCommand);
     registry.register(SystemsCommand);
     registry.register(SdkCompatCommand);
     registry.register(TexMissingCommand);

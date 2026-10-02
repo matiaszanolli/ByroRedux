@@ -1856,8 +1856,12 @@ fn categories_table_row_count_pinned() {
     //   regress against).
     // Bumped 100 → 101 in #5037 (dialogue_branches — Skyrim+ DLBR, the
     //   Top-Level / Blocking structure DIAL.BNAM points into).
+    // Bumped 101 → 102 (load_screen_transforms — FO4+ TRNS, the stage
+    //   transform an LSCR's TNAM points at; without a row a TRNS wipe
+    //   passed the parse-rate floor silently and every FO4 load screen
+    //   fell to the missing-artwork rejection).
     // Bump in lockstep with the struct + `categories()` edits.
-    assert_eq!(EsmIndex::categories().len(), 101);
+    assert_eq!(EsmIndex::categories().len(), 102);
 }
 
 /// Regression test for #989 — `.STRINGS` companion file resolves lstring
@@ -2867,6 +2871,10 @@ const EXEMPT_NO_U32_READS: &[(&str, &str)] = &[
     // before this decoder starts, remap included.
     ("script_instance.rs", "parse_info_fragments"),
     ("misc/equipment.rs", "parse_bptd"),
+    // TRNS carries no FormIDs at all — EDID + a pos/rot/scale/zoom float
+    // struct. The only cross-record reference in the pairing (LSCR.TNAM →
+    // TRNS) lives on the LSCR side, and parse_lscr remaps it.
+    ("load_screen.rs", "parse_trns"),
     ("condition.rs", "parse_condition_list"),
     ("misc/effects.rs", "parse_efsh"),
     // #4219 — the walker entry points moved to `parse.rs`; the exemption
