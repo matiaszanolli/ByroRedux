@@ -1605,12 +1605,23 @@ later, so a quicksave deferred alongside the quit still executes).
 - **Combat/looting/equipment** — gated by `p2-melee-core.sh` across
   FNV/FO3/Skyrim SE/FO4 (kill, loot, inventory/equipment, death marker, and
   restored-ragdoll samples across a fresh-process reload); no new coverage
-  required. Re-run during the P5 closure, its FNV preflight now fails on a
-  **pre-existing** regression independent of the P5 work (reproduced
-  identically at the session's start HEAD `456a4fc7f`): the player spawns
-  at a door instead of the fixture standoff and the frozen GSTrudy
-  reference never spawns — **#5156**. The 2026-09-17 green runs remain the
-  combat-persistence evidence of record until it is fixed.
+  required. The P5-closure re-run failure was resolved 2026-10-02
+  (**#5156** closed): the "spawn at a door" half was authored behavior
+  (`authored_spawn`'s COC/XTEL column — the preflight never depended on the
+  player pose) and the "GSTrudy never spawns" half was the #4813 Initially
+  Disabled decode correctly withholding a scene-gated ACHR; the fixtures
+  retargeted to live-at-start actors (FNV GSSettlerCM `0x104F08`, FO3 Nova
+  `0x003B3F` — plus a FormID-padding fix in the FO3 pin itself, since
+  mesh.info prints `0x{:06X}`). The re-run then exposed #5160 (zero-width
+  swing rays threading bone gaps, fixed with a swept 12 BU corridor) and
+  the live-fight articulation explosion that kills the engine through
+  rapier's multi-SAP (**#5161**, the same instability the 2026-09-17
+  restore panic above recorded). Gates of record (2026-10-02): **FNV and
+  FO3 PASS end-to-end** (kill → ragdoll → save → process exit → reload →
+  persistent kill + finite corpse); Skyrim SE is blocked on #5161
+  (fight-triggered — pure load + 75 s idle survives). Artifacts:
+  `/tmp/byro-p2-melee-core.GEyXf9` (FNV), `.zFUoas` (FO3), `.IxFvCw`
+  (the Skyrim #5161 failure).
 - **30-minute soak** — [`p5-soak.sh`](../smoke-tests/p5-soak.sh): repeated
   per-cycle control walks (≥10 BU each way), F5, one door transition out,
   F9 session replacement back; fails on panic, stuck transition, lost

@@ -248,8 +248,12 @@ and the one-liner is under [Completed Milestones](#completed-milestones).
 Open follow-ons, none of them a slice blocker:
 - #5155: the soak intermittently restores `grounded=false` after its 10th
   F5 → door → F9 cycle.
-- #5156: the `p2-melee-core.sh` FNV preflight fails (the fixture reference
-  never spawns). It predates P5 and reproduces at the pre-session HEAD.
+- #5161: the Skyrim `p2-melee-core.sh` run dies in a rapier multi-SAP panic
+  during the live fight — an articulation whose root was placed at ~2.7e13
+  whips every link to ~7.7e15 velocity, and the poisoned multi-SAP layer
+  structure panics on a later proxy insertion. Pre-existing since at least
+  the 2026-09-17 restore panic; pure-load idle survives, the fight triggers
+  it (#5156's FNV/FO3 gates are green again, closed 2026-10-02).
 - P1: Skyrim's W1 water leg is skipped (land-side KCC wedge). P4: the
   force-greet blocking branch is unmodeled. Gamepad sources and a second
   game route are not started.
