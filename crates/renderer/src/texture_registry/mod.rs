@@ -972,6 +972,16 @@ impl TextureRegistry {
     /// With bindless textures, the descriptor sets are independent of swapchain
     /// image count. This method recreates them to ensure a clean state and
     /// re-writes all texture bindings.
+    ///
+    /// #4886 — transactional: the replacement pool and sets are created (the
+    /// only fallible steps) BEFORE the old pool is destroyed. Destroy-first
+    /// left `self.descriptor_pool` naming a destroyed pool and
+    /// `self.bindless_sets` naming freed sets on an allocation failure, and
+    /// both re-entry paths destroyed the dead handle again: the #2156
+    /// rollback in `set_upscaler_mode` re-enters via `recreate_swapchain` →
+    /// here, and a fatal resize failure reaches `TextureRegistry::destroy` —
+    /// a third destroy. Now an `Err` return leaves the registry exactly as it
+    /// was: old pool and sets still live, re-entry safe, `destroy()` correct.
     pub fn recreate_descriptor_sets(
         &mut self,
         device: &ash::Device,
@@ -988,13 +998,56 @@ impl TextureRegistry {
             None
         };
 
+        // Recreate pool + sets (must match new() flags: UPDATE_AFTER_BIND).
+        // #4886 — allocate into locals first; `self.descriptor_pool` and
+        // `self.bindless_sets` keep naming the live old objects until every
+        // fallible step below has succeeded.
+        let pool_size = vk::DescriptorPoolSize {
+            ty: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+            descriptor_count: self.max_textures * 2 * MAX_FRAMES_IN_FLIGHT as u32,
+        };
+        let pool_info = vk::DescriptorPoolCreateInfo::default()
+            .flags(vk::DescriptorPoolCreateFlags::UPDATE_AFTER_BIND)
+            .pool_sizes(std::slice::from_ref(&pool_size))
+            .max_sets(MAX_FRAMES_IN_FLIGHT as u32);
+        // SAFETY: `device` is live; sizes mirror `new()`'s pool exactly.
+        let new_pool = unsafe {
+            device
+                .create_descriptor_pool(&pool_info, None)
+                .context("Failed to recreate bindless texture descriptor pool")?
+        };
+        let layouts = vec![self.descriptor_set_layout; MAX_FRAMES_IN_FLIGHT];
+        let alloc_info = vk::DescriptorSetAllocateInfo::default()
+            .descriptor_pool(new_pool)
+            .set_layouts(&layouts);
+        // SAFETY: `new_pool` was just created above with capacity for
+        // exactly `layouts.len()` sets of `descriptor_set_layout`.
+        let new_sets = match unsafe { device.allocate_descriptor_sets(&alloc_info) } {
+            Ok(sets) => sets,
+            Err(e) => {
+                // Destroy only the pool THIS call created. The old pool and
+                // sets are untouched, so the registry stays usable and the
+                // rollback / destroy re-entry paths stay safe (#4886).
+                // SAFETY: `new_pool` is the live pool created above; its
+                // failed allocation freed no sets.
+                unsafe {
+                    device.destroy_descriptor_pool(new_pool, None);
+                }
+                return Err(e)
+                    .context("Failed to reallocate bindless texture descriptor sets");
+            }
+        };
+
+        // Past the last fallible step — retire the old pool (destroying it
+        // implicitly frees the old sets) and commit the replacement.
         // SAFETY: caller contract (swapchain recreation only runs after
         // `device_wait_idle`) guarantees no command buffer is still
-        // referencing `self.descriptor_pool`'s sets. Destroying the pool
-        // implicitly frees all sets allocated from it.
+        // referencing the old pool's sets.
         unsafe {
             device.destroy_descriptor_pool(self.descriptor_pool, None);
         }
+        self.descriptor_pool = new_pool;
+        self.bindless_sets = new_sets;
 
         if let Some(new_samplers) = replacement_samplers {
             let old_samplers = self.samplers;
@@ -1012,42 +1065,15 @@ impl TextureRegistry {
             self.mip_lod_bias = mip_lod_bias;
 
             // SAFETY: swapchain recreation waits for device idle before this
-            // method and the old descriptor pool was destroyed above. No live
-            // descriptor or command buffer can still reference these handles.
+            // method and the old descriptor pool (whose sets held these
+            // sampler handles) was destroyed above. No live descriptor or
+            // command buffer can still reference these handles.
             unsafe {
                 for sampler in old_samplers {
                     device.destroy_sampler(sampler, None);
                 }
             }
         }
-
-        // Recreate pool + sets (must match new() flags: UPDATE_AFTER_BIND).
-        let pool_size = vk::DescriptorPoolSize {
-            ty: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-            descriptor_count: self.max_textures * 2 * MAX_FRAMES_IN_FLIGHT as u32,
-        };
-        let pool_info = vk::DescriptorPoolCreateInfo::default()
-            .flags(vk::DescriptorPoolCreateFlags::UPDATE_AFTER_BIND)
-            .pool_sizes(std::slice::from_ref(&pool_size))
-            .max_sets(MAX_FRAMES_IN_FLIGHT as u32);
-        // SAFETY: `device` is live; sizes mirror `new()`'s pool exactly.
-        self.descriptor_pool = unsafe {
-            device
-                .create_descriptor_pool(&pool_info, None)
-                .context("Failed to recreate bindless texture descriptor pool")?
-        };
-
-        let layouts = vec![self.descriptor_set_layout; MAX_FRAMES_IN_FLIGHT];
-        let alloc_info = vk::DescriptorSetAllocateInfo::default()
-            .descriptor_pool(self.descriptor_pool)
-            .set_layouts(&layouts);
-        // SAFETY: `self.descriptor_pool` was just created above with
-        // capacity for exactly `layouts.len()` sets of `descriptor_set_layout`.
-        self.bindless_sets = unsafe {
-            device
-                .allocate_descriptor_sets(&alloc_info)
-                .context("Failed to reallocate bindless texture descriptor sets")?
-        };
 
         // Fresh sets have no stale pending writes to replay — the
         // per-slot queue is invalid against the new `VkDescriptorSet`

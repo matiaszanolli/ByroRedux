@@ -606,6 +606,66 @@ fn update_rgba_refuses_released_slots_rather_than_reviving() {
     );
 }
 
+/// #4886 — `recreate_descriptor_sets` must be transactional: the
+/// replacement pool and sets are allocated BEFORE the old pool is
+/// destroyed. Destroy-first left `self.descriptor_pool` naming a destroyed
+/// pool on an allocation failure, which the #2156 `set_upscaler_mode`
+/// rollback (re-entering via `recreate_swapchain`) and a fatal resize
+/// failure's `TextureRegistry::destroy` would each destroy again. The
+/// failure path needs fault injection on a live device, so — matching the
+/// #2915 TLAS-scratch precedent — the ordering is pinned at the source
+/// level.
+#[test]
+fn recreate_descriptor_sets_allocates_the_replacement_before_the_old_pool_dies() {
+    let src = registry_production_text(include_str!("texture_registry/mod.rs"));
+    let body = src
+        .split("pub fn recreate_descriptor_sets(")
+        .nth(1)
+        .expect("recreate_descriptor_sets present")
+        .split("pub fn destroy(")
+        .next()
+        .expect("destroy must still follow recreate_descriptor_sets");
+
+    let create_pool = body
+        .find("create_descriptor_pool(")
+        .expect("the replacement pool must be created");
+    let alloc_sets = body
+        .find("allocate_descriptor_sets(")
+        .expect("the replacement sets must be allocated");
+    // The one destroy of the OLD pool: must reference the member (not the
+    // local `new_pool` the error arm destroys) and follow both creates.
+    let retire_old = body
+        .find("destroy_descriptor_pool(self.descriptor_pool")
+        .expect("the old pool must still be retired");
+    assert!(
+        create_pool < alloc_sets && alloc_sets < retire_old,
+        "the replacement pool + sets must exist before the old pool is destroyed — \
+         a failure after the destroy strands a dead handle the rollback and \
+         destroy() would destroy again (#4886)"
+    );
+    // The allocate error arm must clean up only what THIS call created —
+    // destroying the local `new_pool`, never the still-live member — and
+    // must sit between the allocate and the retire so no path destroys the
+    // old pool twice.
+    if let Some(err_arm_destroy) = body.find("destroy_descriptor_pool(new_pool") {
+        assert!(
+            alloc_sets < err_arm_destroy && err_arm_destroy < retire_old,
+            "the allocate error arm may destroy only the local replacement pool, \
+             before the old pool is ever touched (#4886)"
+        );
+    }
+    // And the member must be committed only after the retire, so no early
+    // return can leave it naming the destroyed old pool.
+    let commit = body
+        .find("self.descriptor_pool = new_pool;")
+        .expect("the member must be committed to the replacement");
+    assert!(
+        retire_old < commit,
+        "self.descriptor_pool must not name the replacement before the old \
+         pool is destroyed (#4886)"
+    );
+}
+
 /// #3682 — `handle_has_alpha` moved from a `HashMap<TextureHandle, bool>`
 /// probe to a direct `Vec` index on `TextureEntry`. Pin both halves of the
 /// contract the old map's `.get(&handle).copied().unwrap_or(false)`
