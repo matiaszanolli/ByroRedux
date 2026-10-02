@@ -308,7 +308,10 @@ is not named here.
                            RT or cluster inputs are missing, the first
                            skipped frame instead clears the slot to the
                            neutral composite value (`record_neutral_frame`,
-                           latched by `skip_clear_decision`)
+                           latched by `skip_clear_decision`); every skipped
+                           frame additionally drops the CPU-side temporal
+                           history (`record_skipped_frame`, no barriers —
+                           pure host state, #4780)
 14 volumetrics_integrate ─┘
 15 ssao.comp             ─  SSAO texture (`record_ssao_pass`)
 16 [Composite render pass]─ raster:
