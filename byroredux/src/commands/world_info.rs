@@ -103,7 +103,8 @@ impl ConsoleCommand for LoadScreenCensusCommand {
         };
         let census = byroredux_plugin::esm::records::load_screen_census(&index);
         let mut lines = vec![format!(
-            "LSCR total={} eligible={} (rejected: conditions={}, locations={},              malformed={}, tip_unresolved={}, missing_artwork={}) trns={}",
+            "LSCR total={} eligible={} (rejected: conditions={}, locations={}, \
+             malformed={}, tip_unresolved={}, missing_artwork={}) trns={}",
             census.total,
             census.eligible,
             census.rejected_conditions,
@@ -122,9 +123,7 @@ impl ConsoleCommand for LoadScreenCensusCommand {
                     byroredux_plugin::esm::records::LoadScreenVerdict::Model(None) => {
                         screen.icon.clone()
                     }
-                    byroredux_plugin::esm::records::LoadScreenVerdict::Rejected(_) => {
-                        String::new()
-                    }
+                    byroredux_plugin::esm::records::LoadScreenVerdict::Rejected(_) => String::new(),
                 };
                 lines.push(format!(
                     "cover pick: {:08X} {} art={art}",
@@ -143,7 +142,8 @@ impl ConsoleCommand for EntitiesCommand {
         "entities"
     }
     fn description(&self) -> &str {
-        "Show entity count and component breakdown"    }
+        "Show entity count and component breakdown"
+    }
     fn execute(&self, world: &World, _args: &str) -> CommandOutput {
         let total = world.next_entity_id();
         let mesh_count = world.count::<MeshHandle>();
@@ -1413,5 +1413,26 @@ mod cell_owners_tests {
             "{joined}"
         );
         assert!(joined.contains("AI: 0 package owner(s)"), "{joined}");
+    }
+}
+
+#[cfg(test)]
+mod load_screen_census_tests {
+    use super::*;
+
+    /// #5168 — the census line once carried a 14-space run where a
+    /// multi-line literal lost its `\` continuation. The fields must be
+    /// single-space separated.
+    #[test]
+    fn census_line_has_no_whitespace_run() {
+        let mut world = World::new();
+        world.insert_resource(crate::cell_loader::LoadedCellIndex(std::sync::Arc::new(
+            byroredux_plugin::esm::records::EsmIndex::default(),
+        )));
+        let out = LoadScreenCensusCommand.execute(&world, "");
+        let census = &out.lines[0];
+        assert!(census.starts_with("LSCR total=0 eligible=0"), "{census}");
+        assert!(census.contains("locations=0, malformed=0"), "{census}");
+        assert!(!census.contains("  "), "{census:?}");
     }
 }
