@@ -1,6 +1,7 @@
 //! P4 blocker 1 — NPC activation → topic selection (MS01 fixture).
 //!
-//! The authored NPC→topic edge is `DialRecord::quest_refs` (QSTI): an NPC
+//! The authored NPC→topic edge is `DialRecord::quest_refs` (QSTI on
+//! Oblivion/FO3/FNV, QNAM on Skyrim/FO4/FO76/Starfield): an NPC
 //! "owns" the dialogue topics of every *running* quest whose live alias
 //! bindings name it. This system consumes the player's `ActivateEvent` on
 //! such an NPC, walks that edge, and picks the first INFO the M47.1

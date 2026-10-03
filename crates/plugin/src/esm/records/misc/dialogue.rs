@@ -12,15 +12,19 @@ use crate::esm::sub_reader::SubReader;
 /// live in a nested GRUP tree — tracked as a follow-up; the current
 /// `extract_records` walker takes a single record type and can't
 /// simultaneously emit DIAL + INFO). This stub captures the topic's
-/// quest owners (QSTI refs, 4 bytes each) so NPC / quest systems can
-/// enumerate topics without re-parsing.
+/// quest owners (QSTI/QNAM refs, 4 bytes each) so NPC / quest systems
+/// can enumerate topics without re-parsing.
 #[derive(Debug, Clone, Default)]
 pub struct DialRecord {
     pub form_id: u32,
     pub editor_id: String,
     pub full_name: String,
     /// Quest form IDs that own this dialogue topic (one per QSTI
-    /// sub-record). FO3/FNV topics often list multiple owners.
+    /// (Oblivion/FO3/FNV) or QNAM (Skyrim/FO4/FO76/Starfield)
+    /// sub-record). Real-data census (#5048): QNAM is the *only*
+    /// ownership sub-record on Skyrim (15,037/15,037 DIALs) and FO4
+    /// (35,443/35,443); Oblivion authors QSTI on 2,987/3,817 and FNV on
+    /// 11,576/18,215. Fallout topics often list multiple owners.
     pub quest_refs: Vec<u32>,
     /// The topic's `DATA` category, translated per game into one canonical
     /// enum. See [`DialogueCategory`] for the per-game layouts (#5045).
@@ -355,14 +359,19 @@ pub fn parse_dial(
     out.full_name = common.full_name;
     for sub in subs {
         match &sub.sub_type {
-            // QSTI (Oblivion/FO3+/FO4 DIAL "Quest") and QNAM (Skyrim DIAL
-            // "Quest") are the same authored edge per game family —
-            // verified against raw `Skyrim.esm` bytes 2026-09-29: MS01's
-            // topics (`MS01EltrysNotAtShrineNoteTopic` et al.) carry
+            // QSTI (Oblivion/FO3/FNV DIAL "Quest") and QNAM (Skyrim/FO4/
+            // FO76/Starfield DIAL "Quest") are the same authored edge per
+            // game family — xEdit declares `wbFormIDCkNoReach(QNAM,
+            // 'Quest', [QUST])` on TES5/FO4/FO76/SF1, and the raw
+            // `Skyrim.esm` census (#5048) puts QNAM on 100% of DIALs with
+            // no QSTI on either Skyrim or FO4. Verified against raw
+            // `Skyrim.esm` bytes 2026-09-29: MS01's topics
+            // (`MS01EltrysNotAtShrineNoteTopic` et al.) carry
             // `QNAM = 0x00018B4B` and no QSTI, which left every Skyrim
             // DIAL with an empty `quest_refs` and starved the
             // activation→topic selection of its ownership edge
-            // (`docs/engine/p4-quest-fixture.md` blocker 1).
+            // (`docs/engine/p4-quest-fixture.md` blocker 1). FO4 DIAL
+            // ownership was fixed by this same QNAM arm as a side effect.
             b"QSTI" | b"QNAM" if sub.data.len() >= 4 => {
                 if let Ok(q) = SubReader::new(&sub.data).u32() {
                     let remapped = remap.as_ref().map_or(q, |r| r.remap(q));
