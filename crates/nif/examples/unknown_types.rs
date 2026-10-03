@@ -16,7 +16,7 @@ fn main() {
     let nif_files: Vec<String> = archive
         .list_files()
         .iter()
-        .filter(|p| p.to_ascii_lowercase().ends_with(".nif"))
+        .filter(|p| byroredux_nif::corpus::is_nif_entry(p))
         .map(|s| s.to_string())
         .collect();
     eprintln!("scanning {} nifs from {:?}", nif_files.len(), path);

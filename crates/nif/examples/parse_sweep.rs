@@ -6,7 +6,7 @@ fn main() {
     let archive = BsaArchive::open(&bsa).unwrap();
     let (mut ok, mut err) = (0usize, 0usize);
     for f in archive.list_files() {
-        if !f.to_ascii_lowercase().ends_with(".nif") {
+        if !byroredux_nif::corpus::is_nif_entry(f) {
             continue;
         }
         let Ok(bytes) = archive.extract(f) else {

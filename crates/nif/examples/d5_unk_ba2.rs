@@ -36,7 +36,7 @@ fn main() {
     let files = arc.list();
     let nifs: Vec<&String> = files
         .iter()
-        .filter(|p| p.to_ascii_lowercase().ends_with(".nif"))
+        .filter(|p| byroredux_nif::corpus::is_nif_entry(p))
         .collect();
     eprintln!("scanning {} nifs from {:?}", nifs.len(), path);
     let mut unk: BTreeMap<String, usize> = BTreeMap::new();

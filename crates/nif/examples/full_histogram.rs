@@ -21,7 +21,7 @@ fn process_bsa(hist: &mut BTreeMap<String, usize>, path: &Path) -> Result<(), St
     let nif_files: Vec<String> = archive
         .list_files()
         .iter()
-        .filter(|p| p.to_ascii_lowercase().ends_with(".nif"))
+        .filter(|p| byroredux_nif::corpus::is_nif_entry(p))
         .map(|s| s.to_string())
         .collect();
     eprintln!("BSA {} -> {} NIFs", path.display(), nif_files.len());
@@ -38,7 +38,7 @@ fn process_ba2(hist: &mut BTreeMap<String, usize>, path: &Path) -> Result<(), St
     let nif_files: Vec<String> = archive
         .list_files()
         .iter()
-        .filter(|p| p.to_ascii_lowercase().ends_with(".nif"))
+        .filter(|p| byroredux_nif::corpus::is_nif_entry(p))
         .map(|s| s.to_string())
         .collect();
     eprintln!("BA2 {} -> {} NIFs", path.display(), nif_files.len());
