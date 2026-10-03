@@ -763,6 +763,14 @@ impl<'a> KfmReader<'a> {
     /// the same on-disk layout despite different in-memory types.
     /// A length of `0` returns an empty string; a negative length is
     /// treated as a parse error.
+    ///
+    /// The length is bounded against the bytes remaining in the blob
+    /// (and [`crate::stream::MAX_SINGLE_ALLOC_BYTES`]) before the
+    /// `vec![0u8; len]`, matching the [`NifStream`] string readers —
+    /// a forged near-`i32::MAX` length must be rejected by the
+    /// remaining-bytes compare, not paid for in allocation first
+    /// (#4631; no production caller today, same reachability class as
+    /// the Havok packfile readers).
     fn read_cstring(&mut self) -> io::Result<String> {
         let len = self.read_i32_le()?;
         if len == 0 {
@@ -774,7 +782,29 @@ impl<'a> KfmReader<'a> {
                 format!("KFM string has negative length {len}"),
             ));
         }
-        let mut buf = vec![0u8; len as usize];
+        let len = len as usize;
+        if len > crate::stream::MAX_SINGLE_ALLOC_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "KFM string claims {len} bytes, exceeds hard cap \
+                     ({})",
+                    crate::stream::MAX_SINGLE_ALLOC_BYTES
+                ),
+            ));
+        }
+        let pos = self.cursor.position() as usize;
+        let remaining = self.cursor.get_ref().len().saturating_sub(pos);
+        if len > remaining {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                format!(
+                    "KFM string claims {len} bytes at position {pos}, \
+                     only {remaining} bytes remaining"
+                ),
+            ));
+        }
+        let mut buf = vec![0u8; len];
         self.cursor.read_exact(&mut buf)?;
         // Strip any trailing null byte — the reference serializer does
         // not write one, but some tools do.
@@ -926,6 +956,42 @@ mod tests {
         let bytes = b";Gamebryo KFM File Version 2.2.0.0a\n";
         let err = parse_kfm(bytes).expect_err("ASCII KFM must be rejected");
         assert!(err.to_string().contains("ASCII KFM"));
+    }
+
+    /// #4631 — `read_cstring` trusts an `i32` length prefix; without the
+    /// bounds a forged near-`i32::MAX` length asked the allocator for
+    /// ~2 GB off a few-byte file. The rejection must come from the
+    /// bounds (naming the claim), not from `read_exact` after the
+    /// allocation. There is no production caller for `.kfm` today, so
+    /// this pins the guards for whenever one lands.
+    #[test]
+    fn read_cstring_rejects_a_forged_length_before_allocating() {
+        let forge = |len: i32| {
+            let mut bytes = Vec::new();
+            bytes.extend_from_slice(b";Gamebryo KFM File Version 2.2.0.0b\n");
+            bytes.push(0x01); // little-endian marker
+            bytes.extend_from_slice(&len.to_le_bytes()); // forged model-path length
+            bytes
+        };
+
+        // Over the bytes actually remaining (0) but under the hard cap —
+        // the remaining-bytes bound must answer.
+        let err = parse_kfm(&forge(1000)).expect_err("forged string length must be rejected");
+        assert_eq!(err.kind(), std::io::ErrorKind::UnexpectedEof);
+        assert!(
+            err.to_string().contains("only 0 bytes remaining"),
+            "the error must name the remaining-bytes bound, got: {err}"
+        );
+
+        // Over [`crate::stream::MAX_SINGLE_ALLOC_BYTES`] outright — the
+        // hard-cap bound must answer even when a fabricated blob were
+        // large enough to satisfy the remaining-bytes compare.
+        let err = parse_kfm(&forge(i32::MAX)).expect_err("cap-sized claim must be rejected");
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+        assert!(
+            err.to_string().contains("exceeds hard cap"),
+            "the error must name the hard cap, got: {err}"
+        );
     }
 
     #[test]
