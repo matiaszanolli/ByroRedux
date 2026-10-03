@@ -9,11 +9,17 @@
 //! same pattern, separate slot.
 //!
 //! NIF loading falls through the existing `load_nif_bytes` entry: try
-//! a loose absolute path first, then walk every `--bsa` CLI arg the
-//! engine was launched with. The per-request `bsas` field on cell
-//! requests is honoured by synthesising a one-shot args list and
-//! reusing the same `build_texture_provider` / `build_material_provider`
+//! a loose file relative to the startup asset roots first, then walk every
+//! `--bsa` CLI arg the engine was launched with. The per-request `bsas`
+//! field on cell requests is honoured by synthesising a one-shot args list
+//! and reusing the same `build_texture_provider` / `build_material_provider`
 //! helpers boot-time uses.
+//!
+//! Every client-supplied file path — the NIF, and a cell load's ESM,
+//! masters and archives — is confined to the directories of the engine's
+//! startup `--esm` / `--master` / `--bsa` args ([`confine_to_roots`]): the
+//! debug server is unauthenticated, so it must not be able to aim the
+//! untrusted-input parsers at an arbitrary file (#4752, #5165).
 
 use byroredux_core::ecs::debug_load::{PendingDebugLoad, PendingDebugLoadSlot};
 use byroredux_core::ecs::{Resource, World};
@@ -56,18 +62,20 @@ pub fn execute_pending_debug_loads(
                 bsas,
                 textures_bsas,
             } => {
-                exec_load_interior(
-                    world,
-                    ctx,
-                    streaming,
-                    DebugLoadSource {
-                        esm: &esm,
-                        masters: &masters,
-                        bsas: &bsas,
-                        textures_bsas: &textures_bsas,
-                    },
-                    &cell,
-                );
+                let source = match ConfinedLoadSource::resolve(
+                    &esm,
+                    &masters,
+                    &bsas,
+                    &textures_bsas,
+                    &startup_asset_roots(),
+                ) {
+                    Ok(source) => source,
+                    Err(error) => {
+                        log::error!("debug load interior cell '{cell}' rejected: {error}");
+                        continue;
+                    }
+                };
+                exec_load_interior(world, ctx, streaming, source.borrow(), &cell);
             }
             PendingDebugLoad::ExteriorCell {
                 esm,
@@ -79,16 +87,24 @@ pub fn execute_pending_debug_loads(
                 bsas,
                 textures_bsas,
             } => {
+                let source = match ConfinedLoadSource::resolve(
+                    &esm,
+                    &masters,
+                    &bsas,
+                    &textures_bsas,
+                    &startup_asset_roots(),
+                ) {
+                    Ok(source) => source,
+                    Err(error) => {
+                        log::error!("debug load exterior ({grid_x},{grid_y}) rejected: {error}");
+                        continue;
+                    }
+                };
                 exec_load_exterior(
                     world,
                     ctx,
                     streaming,
-                    DebugLoadSource {
-                        esm: &esm,
-                        masters: &masters,
-                        bsas: &bsas,
-                        textures_bsas: &textures_bsas,
-                    },
+                    source.borrow(),
                     DebugExteriorTarget {
                         grid_x,
                         grid_y,
@@ -149,39 +165,12 @@ fn exec_load_nif(world: &mut World, ctx: &mut VulkanContext, path: &str, label: 
 /// Try `path` as a loose file first; on a miss, scan every `--bsa`
 /// CLI arg for a hit.
 fn resolve_nif_bytes(path: &str) -> Option<Vec<u8>> {
-    use std::path::{Component, Path};
-    let args: Vec<String> = crate::cli_args::effective_args();
-    let allowed_roots: Vec<_> = args
-        .windows(2)
-        .filter(|pair| {
-            matches!(
-                pair[0].as_str(),
-                "--esm"
-                    | "--bsa"
-                    | "--textures-bsa"
-                    | "--scripts-bsa"
-                    | "--sounds-bsa"
-                    | "--materials-bsa"
-            )
-        })
-        .filter_map(|pair| Path::new(&pair[1]).parent()?.canonicalize().ok())
-        .collect();
-    let requested = Path::new(path);
-    if requested.is_relative()
-        && requested
-            .components()
-            .all(|part| matches!(part, Component::Normal(_) | Component::CurDir))
+    if let Some(bytes) = confine_to_roots(path, &startup_asset_roots())
+        .and_then(|candidate| std::fs::read(candidate).ok())
     {
-        for root in &allowed_roots {
-            if let Ok(candidate) = root.join(requested).canonicalize() {
-                if candidate.starts_with(root) {
-                    if let Ok(bytes) = std::fs::read(candidate) {
-                        return Some(bytes);
-                    }
-                }
-            }
-        }
+        return Some(bytes);
     }
+    let args: Vec<String> = crate::cli_args::effective_args();
     for window in args.windows(2) {
         if window[0] != "--bsa" {
             continue;
@@ -210,6 +199,106 @@ fn resolve_nif_bytes(path: &str) -> Option<Vec<u8>> {
         }
     }
     None
+}
+
+/// The directories a debug load may read loose files from: the parent of
+/// every plugin / archive path the engine was started with. A debug client
+/// is unauthenticated (any local process on a debug build), so it names
+/// files *relative* to these roots and never chooses an arbitrary path.
+fn startup_asset_roots() -> Vec<std::path::PathBuf> {
+    let args: Vec<String> = crate::cli_args::effective_args();
+    args.windows(2)
+        .filter(|pair| {
+            matches!(
+                pair[0].as_str(),
+                "--esm"
+                    | "--master"
+                    | "--bsa"
+                    | "--textures-bsa"
+                    | "--scripts-bsa"
+                    | "--sounds-bsa"
+                    | "--materials-bsa"
+            )
+        })
+        .filter_map(|pair| std::path::Path::new(&pair[1]).parent()?.canonicalize().ok())
+        .collect()
+}
+
+/// Resolve a client-supplied path under `roots`: it must be relative, made
+/// only of normal components (no `..`, no root or prefix), and canonicalize
+/// to an existing file still inside the root it was joined to (so a symlink
+/// cannot step out). The first root that holds it wins. #4752 / #5165.
+fn confine_to_roots(requested: &str, roots: &[std::path::PathBuf]) -> Option<std::path::PathBuf> {
+    use std::path::{Component, Path};
+    let requested = Path::new(requested);
+    if !requested.is_relative()
+        || !requested
+            .components()
+            .all(|part| matches!(part, Component::Normal(_) | Component::CurDir))
+    {
+        return None;
+    }
+    roots.iter().find_map(|root| {
+        root.join(requested)
+            .canonicalize()
+            .ok()
+            .filter(|candidate| candidate.starts_with(root) && candidate.is_file())
+    })
+}
+
+/// A debug cell load's plugin + archive paths after [`confine_to_roots`].
+///
+/// #5165 — `LoadInteriorCell` / `LoadExteriorCell` used to hand the client's
+/// `esm`, `masters`, `bsas` and `textures_bsas` strings straight to the ESM
+/// and archive parsers, so any local process could point that untrusted-input
+/// code at any file the user can read. Only `LoadNif` was confined (#4752).
+/// Every path now goes through the same rule, and one rejected path rejects
+/// the whole load.
+#[derive(Debug, PartialEq)]
+struct ConfinedLoadSource {
+    esm: String,
+    masters: Vec<String>,
+    bsas: Vec<String>,
+    textures_bsas: Vec<String>,
+}
+
+impl ConfinedLoadSource {
+    fn resolve(
+        esm: &str,
+        masters: &[String],
+        bsas: &[String],
+        textures_bsas: &[String],
+        roots: &[std::path::PathBuf],
+    ) -> Result<Self, String> {
+        let confine = |requested: &str| {
+            confine_to_roots(requested, roots)
+                .and_then(|path| path.to_str().map(str::to_owned))
+                .ok_or_else(|| {
+                    format!(
+                        "'{requested}' is not a relative path to an existing file under the \
+                         engine's startup --esm/--master/--bsa directories"
+                    )
+                })
+        };
+        let confine_all = |paths: &[String]| -> Result<Vec<String>, String> {
+            paths.iter().map(|path| confine(path)).collect()
+        };
+        Ok(Self {
+            esm: confine(esm)?,
+            masters: confine_all(masters)?,
+            bsas: confine_all(bsas)?,
+            textures_bsas: confine_all(textures_bsas)?,
+        })
+    }
+
+    fn borrow(&self) -> DebugLoadSource<'_> {
+        DebugLoadSource {
+            esm: &self.esm,
+            masters: &self.masters,
+            bsas: &self.bsas,
+            textures_bsas: &self.textures_bsas,
+        }
+    }
 }
 
 /// Shared plugin + archive source for a debug cell load: the ESM, its master
@@ -553,5 +642,75 @@ mod tests {
             0,
             "a changed archive set must clear the registry"
         );
+    }
+
+    /// #5165 — a cell load's plugin and archive paths obey the same root
+    /// rule as `LoadNif`: relative, no `..`, under a startup root.
+    #[test]
+    fn cell_load_paths_are_confined_to_startup_roots() {
+        let data = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        for name in ["Game.esm", "Master.esm", "Meshes.bsa", "Textures.bsa"] {
+            std::fs::write(data.path().join(name), b"x").unwrap();
+        }
+        std::fs::write(outside.path().join("secret.esm"), b"x").unwrap();
+        let roots = vec![data.path().canonicalize().unwrap()];
+        let names = |list: &[&str]| list.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+
+        let source = ConfinedLoadSource::resolve(
+            "Game.esm",
+            &names(&["Master.esm"]),
+            &names(&["Meshes.bsa"]),
+            &names(&["./Textures.bsa"]),
+            &roots,
+        )
+        .expect("relative paths under a startup root load");
+        assert_eq!(
+            source.esm,
+            roots[0].join("Game.esm").to_str().unwrap(),
+            "the loader receives the canonical path"
+        );
+        assert_eq!(
+            source.textures_bsas[0],
+            roots[0].join("Textures.bsa").to_str().unwrap()
+        );
+
+        let absolute = outside.path().join("secret.esm");
+        let escapes = [
+            absolute.to_str().unwrap().to_string(),
+            "../secret.esm".to_string(),
+            "Missing.esm".to_string(),
+        ];
+        for esm in &escapes {
+            assert!(
+                ConfinedLoadSource::resolve(esm, &[], &[], &[], &roots).is_err(),
+                "{esm} must be rejected"
+            );
+        }
+        // One bad archive rejects the whole load.
+        assert!(ConfinedLoadSource::resolve(
+            "Game.esm",
+            &[],
+            &names(&["Meshes.bsa", absolute.to_str().unwrap()]),
+            &[],
+            &roots,
+        )
+        .is_err());
+    }
+
+    /// A symlink inside a root that points outside it does not escape.
+    #[cfg(unix)]
+    #[test]
+    fn confinement_rejects_a_symlink_out_of_the_root() {
+        let data = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("secret.esm"), b"x").unwrap();
+        std::os::unix::fs::symlink(
+            outside.path().join("secret.esm"),
+            data.path().join("link.esm"),
+        )
+        .unwrap();
+        let roots = vec![data.path().canonicalize().unwrap()];
+        assert_eq!(confine_to_roots("link.esm", &roots), None);
     }
 }

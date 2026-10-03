@@ -72,9 +72,10 @@ pub enum DebugRequest {
     /// `&mut VulkanContext` are both held (mirrors the existing
     /// `PendingCellTransition` pattern).
     LoadNif {
-        /// NIF path — either an absolute filesystem path (loose file)
-        /// or an archive-relative path like `meshes\foo.nif` resolved
-        /// through the active BSA / BA2 set.
+        /// NIF path — a loose file relative to the directory of one of
+        /// the engine's startup `--esm` / `--master` / `--bsa` args (no
+        /// absolute paths, no `..`; #4752), or an archive-relative path
+        /// like `meshes\foo.nif` resolved through the startup `--bsa` set.
         path: String,
         /// Optional diagnostic label — surfaces in engine logs and
         /// becomes the entity's `Name` when no name resolves from
@@ -83,6 +84,11 @@ pub enum DebugRequest {
     },
     /// Queue an interior cell load by editor ID. Same async-via-queue
     /// semantics as `LoadNif`.
+    ///
+    /// Every file path here (`esm`, `masters`, `bsas`, `textures_bsas`)
+    /// follows `LoadNif`'s loose-file rule: relative to the directory of
+    /// one of the engine's startup `--esm` / `--master` / `--bsa` args.
+    /// Any other path rejects the whole load (#5165).
     LoadInteriorCell {
         esm: String,
         cell: String,
@@ -94,7 +100,7 @@ pub enum DebugRequest {
         /// Texture BSA / BA2 archive paths.
         textures_bsas: Vec<String>,
     },
-    /// Queue an exterior grid load.
+    /// Queue an exterior grid load. Same path rule as `LoadInteriorCell`.
     LoadExteriorCell {
         esm: String,
         grid_x: i32,
