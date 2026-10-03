@@ -810,7 +810,7 @@ impl GearImportLoader {
                     .unwrap_or_default();
                 for root in roots {
                     let victims = subtree_entities_under(world, root);
-                    crate::cell_loader::unload::release_entities(world, ctx, &victims);
+                    crate::cell_loader::unload::release_entities(world, ctx, &victims, "gear release");
                 }
             }
             log::info!(
@@ -895,7 +895,7 @@ impl GearImportLoader {
                 }
                 None => {
                     let victims: Vec<EntityId> = (first..last).collect();
-                    crate::cell_loader::unload::release_entities(world, ctx, &victims);
+                    crate::cell_loader::unload::release_entities(world, ctx, &victims, "gear release");
                 }
             }
             world.remove::<PendingGearImport>(wearer);
