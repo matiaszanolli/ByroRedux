@@ -912,8 +912,10 @@ impl MeshRegistry {
     /// global SSBO generation. Streaming appends update the CPU pool and mesh
     /// offsets immediately, but the renderer may deliberately batch the GPU
     /// rebuild until the cell/LOD transaction settles. Commands for appended
-    /// ranges must remain out of raster/TLAS until then or they index past the
-    /// old buffer tail.
+    /// ranges must remain out of raster/TLAS — and the skin compute chain,
+    /// which reads `global_vertex_offset` against the bound buffer and
+    /// BLAS-builds the result — until then or they index past the old buffer
+    /// tail (#5187).
     pub fn is_geometry_resident(&self, handle: u32) -> bool {
         let Some(mesh) = self.get(handle) else {
             return false;

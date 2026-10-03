@@ -251,6 +251,31 @@ impl VulkanContext {
                         if !mesh.rt_capable {
                             continue;
                         }
+                        // #5187 (REN-D9-2026-10-03-01) — the skin-chain half
+                        // of #3372's residency gate (which `app_frame.rs`
+                        // applies to `in_raster`/`in_tlas` only). While a
+                        // streaming transaction defers
+                        // `rebuild_geometry_ssbo`, an appended mesh's
+                        // `global_vertex_offset` lies past the bound global
+                        // vertex buffer's end — or, post-compaction-plan,
+                        // inside another mesh's bytes — so dispatching
+                        // `skin_vertices.comp` against it is an OOB SSBO
+                        // read with `robustBufferAccess` off, and the
+                        // first-sight BLAS BUILD records the garbage as the
+                        // entity's ray-traced geometry. Pre-fix a static-pose
+                        // actor then kept that garbage forever: the
+                        // `has_populated_output` gate suppresses every later
+                        // re-dispatch, and nothing re-arms a slot when the
+                        // geometry becomes resident. Skipping the draw HERE
+                        // means no slot, no BLAS and no TLAS instance is
+                        // ever created from non-resident geometry, and the
+                        // gate re-arms itself: when the rebuild lands and
+                        // residency flips, the entity is collected again and
+                        // takes the ordinary first-sight path from valid
+                        // geometry.
+                        if !self.mesh_registry.is_geometry_resident(dc.mesh_handle) {
+                            continue;
+                        }
                         // #3231 — mirrors the `GpuInstance` morph lookup in
                         // `draw.rs`: gate on `morph_slot_backs_mesh` so a
                         // slot that survived a mesh remap (mod swap, cell
@@ -310,13 +335,20 @@ impl VulkanContext {
                     //
                     // #679 / AS-8-9 — also re-enter this path for
                     // entities whose BLAS has refit too many times
-                    // and degraded BVH traversal quality. Drop the
-                    // stale BLAS first; the partition below then
-                    // sees `needs_blas = true` and queues a fresh
-                    // BUILD against the next compute output. The
-                    // slot's output buffer is preserved (compute
-                    // keeps streaming poses through it), so only the
-                    // BLAS object itself is replaced.
+                    // and degraded BVH traversal quality.
+                    // #5194 — build-then-swap: the entity is queued for
+                    // a fresh BUILD while the OLD entry stays live. The
+                    // pre-fix form dropped the BLAS first and let
+                    // `needs_blas` turn true, so a BUILD failure
+                    // (result-buffer / AS create / scratch grow under
+                    // VRAM pressure) left the actor out of the TLAS
+                    // until an unrelated eviction cleared
+                    // `failed_skin_blas`. Now the TLAS keeps instancing
+                    // the old entry and Phase 4's drop-before-insert
+                    // (#2481) retires it only after the replacement is
+                    // recorded; the slot's output buffer is preserved
+                    // either way (compute keeps streaming poses through
+                    // it), so only the BLAS object itself is replaced.
                     //
                     // #911 / REN-D5-NEW-02 — Pre-fix this loop paid
                     // 2 fence-waits per first-sight entity (one-time
@@ -390,19 +422,20 @@ impl VulkanContext {
                             }
                         }
 
-                        if accel.should_rebuild_skinned_blas(entity_id) {
+                        let rebuild_due = accel.should_rebuild_skinned_blas(entity_id);
+                        if rebuild_due {
                             log::info!(
                                 "skin_compute BLAS rebuild for entity {entity_id} — \
-                                 refit chain reached {} frames, dropping for fresh BUILD (#679)",
+                                 refit chain reached {} frames, queueing fresh BUILD \
+                                 with swap-on-success (#679 / #5194)",
                                 accel
                                     .skinned_blas_entry(entity_id)
                                     .map(|e| e.refit_count)
                                     .unwrap_or(0),
                             );
-                            accel.drop_skinned_blas(entity_id);
                         }
                         let needs_blas = accel.skinned_blas_entry(entity_id).is_none();
-                        if !needs_slot && !needs_blas {
+                        if !needs_slot && !needs_blas && !rebuild_due {
                             continue;
                         }
                         // Skip retry on entities whose previous attempt
@@ -447,7 +480,7 @@ impl VulkanContext {
                                 }
                             }
                         }
-                        if needs_blas {
+                        if needs_blas || rebuild_due {
                             let Some(slot) = self.skin_slots.get(&entity_id) else {
                                 continue;
                             };
@@ -700,13 +733,36 @@ impl VulkanContext {
                                         // eviction re-opens it: one WARN per
                                         // pressure episode instead of one per
                                         // frame, per entity.
+                                        //
+                                        // #5194 — a forced-REBUILD failure is
+                                        // the different case: build-then-swap
+                                        // left the entity's pre-swap BLAS
+                                        // live, so keep it refitting (the
+                                        // degraded BVH the rebuild was fixing
+                                        // is the pre-fix failure mode's
+                                        // alternative, not a new cost) and
+                                        // reset its refit_count so the retry
+                                        // comes after another full refit
+                                        // cycle instead of every frame. Only
+                                        // a genuine first-sight failure — no
+                                        // entry at all — parks the entity in
+                                        // `failed_skin_blas`.
                                         Err(e) => {
-                                            log::warn!(
-                                                "skin_compute first-sight BLAS build failed for entity {entity_id}: {e} \
-                                                 — skinned RT disabled for this entity until an eviction frees capacity \
-                                                 (raster unaffected)"
-                                            );
-                                            self.failed_skin_blas.insert(entity_id);
+                                            if accel.skinned_blas_entry(entity_id).is_some() {
+                                                log::warn!(
+                                                    "skin_compute BLAS rebuild failed for entity {entity_id}: {e} \
+                                                     — keeping the live BLAS refitting (degraded BVH); \
+                                                     retry after another refit cycle (#5194)"
+                                                );
+                                                accel.reset_skinned_blas_refit_count(entity_id);
+                                            } else {
+                                                log::warn!(
+                                                    "skin_compute first-sight BLAS build failed for entity {entity_id}: {e} \
+                                                     — skinned RT disabled for this entity until an eviction frees capacity \
+                                                     (raster unaffected)"
+                                                );
+                                                self.failed_skin_blas.insert(entity_id);
+                                            }
                                         }
                                     }
                                 }
@@ -1090,9 +1146,17 @@ mod skin_built_this_frame_skip_tests {
         let ok_arm_pos = src
             .find("Ok(()) => {\n                                            self.last_skin_coverage_frame.first_sight_succeeded")
             .expect("the first-sight build result match must have an Ok(()) arm");
-        let err_arm_pos = src
-            .find("Err(e) => {\n                                            log::warn!(\n                                                \"skin_compute first-sight BLAS build failed")
-            .expect("the first-sight build result match must have an Err(e) arm");
+        // #5194 — the Err arm now discriminates a forced-rebuild failure
+        // (live entry kept, refit counter reset) from a genuine first-sight
+        // failure (parked in failed_skin_blas); the needle keys on the
+        // first-sight WARN that remains its else half.
+        let first_sight_warn_pos = src
+            .find("\"skin_compute first-sight BLAS build failed for entity {entity_id}: {e}")
+            .expect("the first-sight build result match must keep its Err(e) arm \
+                     ending in the first-sight WARN (#5194)");
+        let err_arm_pos = src[..first_sight_warn_pos]
+            .rfind("Err(e) => {")
+            .expect("the first-sight WARN must sit inside an Err(e) arm (#5194)");
         assert!(
             ok_arm_pos < insert_pos && insert_pos < err_arm_pos,
             "built_this_frame.insert must happen inside the Ok(()) arm only — a \
@@ -1426,6 +1490,82 @@ mod bind_inverse_upload_failure_blas_gate_tests {
             "the skip warning must be Once-gated — the #3569 requeue retries every frame, so \
              an un-gated warn spams once per frame for as long as the allocation pressure \
              lasts (the shape #4049 reports on the sibling path) (#3976)"
+        );
+    }
+}
+
+#[cfg(test)]
+mod forced_rebuild_swap_tests {
+    /// #5194 — the #679 forced rebuild must be build-then-swap: the live
+    /// BLAS stays in the TLAS while the replacement is recorded, and a
+    /// BUILD failure keeps the old entry refitting instead of parking the
+    /// actor in `failed_skin_blas` until an unrelated eviction.
+    #[test]
+    fn forced_rebuild_queues_a_build_without_pre_dropping_the_live_blas() {
+        let src = crate::source_scan::production_text(include_str!("skinned_blas_refit.rs"));
+
+        let rebuild_pos = src
+            .find("let rebuild_due = accel.should_rebuild_skinned_blas(entity_id);")
+            .expect("the forced-rebuild decision must be read into rebuild_due (#5194)");
+        let needs_blas_pos = src
+            .find("let needs_blas = accel.skinned_blas_entry(entity_id).is_none();")
+            .expect("the partition must still consult needs_blas");
+        let between = &src[rebuild_pos..needs_blas_pos];
+        assert!(
+            !between.contains("drop_skinned_blas"),
+            "the forced-rebuild arm must not pre-drop the live BLAS — Phase 4's \
+             drop-before-insert (#2481) is the only retire point, so a BUILD \
+             failure leaves the old entry refitting (#5194)"
+        );
+
+        let queue_pos = src
+            .find("if needs_blas || rebuild_due {")
+            .expect("rebuild-due entities must join the batched first-sight build (#5194)");
+
+        let err_pos = src
+            .find("if accel.skinned_blas_entry(entity_id).is_some() {")
+            .expect("a failed BUILD must discriminate rebuild (entry live) from first-sight (#5194)");
+        let reset_pos = src
+            .find("accel.reset_skinned_blas_refit_count(entity_id);")
+            .expect("a failed rebuild must reset the refit counter so the retry \
+                     cadence restarts instead of re-firing every frame (#5194)");
+        let failed_pos = src
+            .find("self.failed_skin_blas.insert(entity_id);")
+            .expect("a genuine first-sight failure must still park the entity (#2802)");
+        assert!(rebuild_pos < queue_pos);
+        assert!(err_pos < reset_pos && reset_pos < failed_pos);
+    }
+}
+
+#[cfg(test)]
+mod skin_residency_gate_tests {
+    /// #5187 — the skin chain must consume the same geometry-residency gate
+    /// the raster/TLAS mask does. The gate sits in the ONE collection loop
+    /// that feeds the dispatch, the first-sight slot/BLAS setup and the
+    /// refit loop, so skipping there keeps every downstream stage
+    /// consistent and re-arms automatically when residency flips.
+    #[test]
+    fn skin_dispatch_collection_skips_non_resident_geometry() {
+        let src = crate::source_scan::production_text(include_str!("skinned_blas_refit.rs"));
+
+        let rt_pos = src
+            .find("if !mesh.rt_capable {")
+            .expect("the rt_capable gate must still exist in the collection loop");
+        let residency_pos = src
+            .find("if !self.mesh_registry.is_geometry_resident(dc.mesh_handle) {")
+            .expect("the collection loop must gate on geometry residency — \
+                     the skin dispatch reads global_vertex_offset against the \
+                     BOUND global vertex buffer, and a first-sight BLAS \
+                     built from non-resident geometry is OOB-derived garbage \
+                     a static-pose actor keeps forever (#5187)");
+        let morph_pos = src
+            .find("let morph_slot_fields = self")
+            .expect("the morph lookup must still follow the gates");
+        assert!(
+            rt_pos < residency_pos && residency_pos < morph_pos,
+            "the residency gate must sit inside the dispatch-collection loop, \
+             after the rt_capable gate and before any slot/BLAS metadata is \
+             collected (#5187)"
         );
     }
 }
