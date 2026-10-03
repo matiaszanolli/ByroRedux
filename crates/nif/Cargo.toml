@@ -31,6 +31,16 @@ env_logger = { workspace = true }
 # only under `cargo test -p byroredux-nif --features dhat-heap`.
 dhat-heap = ["dep:dhat"]
 
+# #5050 — `harness = false`: dhat counts every allocation in the process
+# while a profiler is live, and the libtest harness's own threads (spawn,
+# capture, bookkeeping) polluted the exact `total_blocks == 1` pin in
+# roughly half of default parallel runs. The target's `main` runs its
+# tests sequentially instead, deterministically under any invocation;
+# feature-off builds compile it to a no-op `main` that exits 0.
+[[test]]
+name = "heap_allocation_bounds"
+harness = false
+
 [[example]]
 name = "nif_stats"
 path = "examples/nif_stats.rs"

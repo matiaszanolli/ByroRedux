@@ -15,6 +15,17 @@
 //! cargo test -p byroredux-nif --features dhat-heap --test heap_allocation_bounds
 //! ```
 //!
+//! The target runs as a `harness = false` sequential `main` (#5050):
+//! dhat counts every allocation in the process while a profiler is
+//! live, and the libtest harness keeps allocating on its own threads
+//! (test-thread spawn, output capture, result bookkeeping), which made
+//! the exact `total_blocks == 1` pin below fail in roughly half of
+//! default parallel runs. One test at a time on the main thread means
+//! nothing else allocates mid-measurement, the profiler singleton
+//! needs no lock, and the gate is deterministic under any invocation.
+//! With the feature off the binary compiles to a no-op `main` that
+//! exits 0.
+//!
 //! Runs in CI as its own `nif-heap-allocation-bounds` job (`ci.yml`) —
 //! dhat's `#[global_allocator]` override must not share a process with
 //! the default `cargo-test` job's suite. See #1763. Failures here
@@ -29,36 +40,82 @@
 //! catch order-of-magnitude regressions, not micro-shifts. Tighten as
 //! follow-up work lands. See [`#1247`].
 
-#![cfg(feature = "dhat-heap")]
+// With the feature off the only live item is the no-op `main` — the
+// fixtures below are then dead code by construction.
+#![cfg_attr(not(feature = "dhat-heap"), allow(dead_code))]
 
+#[cfg(feature = "dhat-heap")]
+fn main() {
+    use std::io::Write as _;
+
+    let tests: &[(&str, fn())] = &[
+        (
+            "forged_bone_count_does_not_allocate_the_bone_array",
+            forged_bone_count_does_not_allocate_the_bone_array,
+        ),
+        (
+            "bulk_array_allocates_exactly_one_output_buffer",
+            bulk_array_allocates_exactly_one_output_buffer,
+        ),
+        (
+            "parse_skyrim_se_single_node_stays_within_heap_budget",
+            parse_skyrim_se_single_node_stays_within_heap_budget,
+        ),
+        (
+            "parse_fo4_packed_vertices_stays_within_heap_budget",
+            parse_fo4_packed_vertices_stays_within_heap_budget,
+        ),
+        (
+            "parse_fo4_tangent_space_vertices_presizes_the_tangent_vec",
+            parse_fo4_tangent_space_vertices_presizes_the_tangent_vec,
+        ),
+        (
+            "parse_skyrim_se_geometry_particle_stays_within_heap_budget",
+            parse_skyrim_se_geometry_particle_stays_within_heap_budget,
+        ),
+        (
+            "parse_skin_blocks_stays_within_heap_budget",
+            parse_skin_blocks_stays_within_heap_budget,
+        ),
+    ];
+    let mut failed = 0usize;
+    for (name, test) in tests {
+        print!("{name} ... ");
+        std::io::stdout().flush().ok();
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(test)) {
+            Ok(()) => println!("ok"),
+            Err(_) => {
+                // The default panic hook already printed the assertion
+                // message and its location to stderr.
+                println!("FAILED");
+                failed += 1;
+            }
+        }
+    }
+    if failed > 0 {
+        println!("\n{failed} of {} tests failed", tests.len());
+        std::process::exit(1);
+    }
+    println!("\n{} tests passed", tests.len());
+}
+
+#[cfg(not(feature = "dhat-heap"))]
+fn main() {}
+
+#[cfg(feature = "dhat-heap")]
 use byroredux_nif::parse_nif;
 
+#[cfg(feature = "dhat-heap")]
 #[global_allocator]
 static ALLOC: dhat::Alloc = dhat::Alloc;
-
-// `dhat::Profiler` is a PROCESS-GLOBAL singleton — creating a second one
-// while the first is live panics ("a profiler is already running").
-// cargo runs `#[test]`s in parallel threads, so every profiler-using
-// test here must serialize through this lock and let its profiler drop
-// before the next acquires it. Declare the guard BEFORE the profiler so
-// drop order (reverse) releases the profiler first, then the lock.
-// `into_inner` ignores poisoning so one failing test doesn't cascade.
-//
-// Order within a test is lock -> build the fixture -> start the profiler.
-// dhat counts every allocation in the process while a profiler is live, so a
-// fixture built before the lock is taken lands in whichever sibling test's
-// profiler happens to be running. That was invisible while every fixture was
-// a few hundred bytes; it is not once one is 16 KB (#4617).
-static DHAT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// #4623: rejecting the bulk float read is too late if the bone Vec has
 /// already reserved 68 bytes per claimed element. Measure the reservation,
 /// since both the old and corrected parser otherwise return the same EOF.
-#[test]
+#[cfg(feature = "dhat-heap")]
 fn forged_bone_count_does_not_allocate_the_bone_array() {
     use byroredux_nif::{blocks::skin::BsSkinBoneData, header::NifHeader, stream::NifStream};
 
-    let _dhat_guard = DHAT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let count = 16_384u32;
     let mut bytes = count.to_le_bytes().to_vec();
     bytes.resize(4 + count as usize, 0); // passes the old one-byte-per-bone bound
@@ -77,11 +134,10 @@ fn forged_bone_count_does_not_allocate_the_bone_array() {
 
 /// #4796: a large bulk array must allocate only its final typed output.
 /// Peak-byte bounds on tiny whole-NIF fixtures cannot detect a scratch copy.
-#[test]
+#[cfg(feature = "dhat-heap")]
 fn bulk_array_allocates_exactly_one_output_buffer() {
     use byroredux_nif::{header::NifHeader, stream::NifStream, version::NifVersion};
 
-    let _dhat_guard = DHAT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let count = 65_536;
     let data: Vec<u8> = (0..count as u32).flat_map(u32::to_le_bytes).collect();
     let header = NifHeader::detached(NifVersion::V20_2_0_7, 0, 0);
@@ -194,13 +250,12 @@ fn build_skyrim_se_minimal_nif() -> Vec<u8> {
 /// bounded." Lifetime cumulative is sensitive to short-lived
 /// allocations (string interning churn, scratch vectors) that don't
 /// affect steady-state memory pressure.
-#[test]
+#[cfg(feature = "dhat-heap")]
 fn parse_skyrim_se_single_node_stays_within_heap_budget() {
     // The profiler is `Drop`-tied — collected stats reflect everything
     // allocated while it's live. Snapshot is taken inside the scope so
     // teardown allocations (the Vec / scene cleanup) don't pollute the
     // measurement.
-    let _dhat_guard = DHAT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let nif_bytes = build_skyrim_se_minimal_nif();
     let _profiler = dhat::Profiler::builder().testing().build();
     let scene = parse_nif(&nif_bytes).expect("synthetic Skyrim SE NIF should parse");
@@ -414,9 +469,8 @@ fn build_fo4_packed_vertex_nif(num_vertices: u16, tangent_space: bool) -> Vec<u8
 /// discipline (reverting `allocate_vec` to `Vec::new()` + per-element
 /// `push` growth) fails at CI cadence — the sibling zero-vertex
 /// fixtures above never execute that loop body at all.
-#[test]
+#[cfg(feature = "dhat-heap")]
 fn parse_fo4_packed_vertices_stays_within_heap_budget() {
-    let _dhat_guard = DHAT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let nif_bytes = build_fo4_packed_vertex_nif(16, false);
     let _profiler = dhat::Profiler::builder().testing().build();
     let scene = parse_nif(&nif_bytes).expect("synthetic FO4 packed-vertex NIF should parse");
@@ -469,10 +523,9 @@ fn parse_fo4_packed_vertices_stays_within_heap_budget() {
 /// the revert and tolerates a few allocations from the test harness's own
 /// threads on the other side (a parallel run has been seen to add ~2 blocks
 /// to one of the two measurements).
-#[test]
+#[cfg(feature = "dhat-heap")]
 fn parse_fo4_tangent_space_vertices_presizes_the_tangent_vec() {
     let measure = |tangent_space: bool| {
-        let _dhat_guard = DHAT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let nif_bytes = build_fo4_packed_vertex_nif(1000, tangent_space);
         let _profiler = dhat::Profiler::builder().testing().build();
         let scene = parse_nif(&nif_bytes).expect("synthetic FO4 tangent-space NIF should parse");
@@ -605,9 +658,8 @@ fn build_skyrim_se_geometry_particle_nif() -> Vec<u8> {
 /// regression in the geometry / particle block parsers' allocation
 /// discipline (the #832 / #833 / #408 family) fails at CI cadence rather
 /// than only under audit-cadence grep.
-#[test]
+#[cfg(feature = "dhat-heap")]
 fn parse_skyrim_se_geometry_particle_stays_within_heap_budget() {
-    let _dhat_guard = DHAT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let nif_bytes = build_skyrim_se_geometry_particle_nif();
     let _profiler = dhat::Profiler::builder().testing().build();
     let scene = parse_nif(&nif_bytes).expect("synthetic geometry+particle NIF should parse");
@@ -759,9 +811,8 @@ fn build_skin_blocks_nif() -> Vec<u8> {
 /// `NiSkinData`'s per-bone/weight vectors and `NiSkinPartition`'s strip
 /// triangle output, so a future `Vec::new()` regression in either path is
 /// measured by the same dhat CI job as the sibling parser fixtures.
-#[test]
+#[cfg(feature = "dhat-heap")]
 fn parse_skin_blocks_stays_within_heap_budget() {
-    let _dhat_guard = DHAT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let nif_bytes = build_skin_blocks_nif();
     let _profiler = dhat::Profiler::builder().testing().build();
     let scene = parse_nif(&nif_bytes).expect("synthetic skin-block NIF should parse");
