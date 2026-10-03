@@ -858,7 +858,7 @@ impl ApplicationHandler for App {
                 vec_row("groundcover_species", &self.groundcover_species),
                 vec_row("groundcover_species_table", &self.groundcover_species_table),
                 vec_row("groundcover_disturbers", &self.groundcover_disturbers),
-                // `GroundCoverCollectScratch`'s four containers, named
+                // `GroundCoverCollectScratch`'s five containers, named
                 // `<App field>.<its field>`.
                 vec_row(
                     "groundcover_collect_scratch.resident_cells",
@@ -869,6 +869,10 @@ impl ApplicationHandler for App {
                 vec_row(
                     "groundcover_collect_scratch.disturber_found",
                     &gc.disturber_found,
+                ),
+                vec_row(
+                    "groundcover_collect_scratch.layout_order",
+                    &gc.layout_order,
                 ),
                 set_row("in_use_mesh_scratch", &self.in_use_mesh_scratch),
                 set_row("in_use_tex_scratch", &self.in_use_tex_scratch),

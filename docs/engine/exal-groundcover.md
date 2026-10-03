@@ -1641,7 +1641,10 @@ Phases:
 - **Over budget** (#4920). When the placed plants need more instances than
   the tail holds, every record keeps the same fraction of its plants —
   `floor(plants × capacity / demand)` — and a plant's shapes are kept or
-  dropped together. Placement is logged once per episode and reported as
+  dropped together. Which plants a record keeps is spatial: LAYOUT ranks them
+  nearest chunk first (the host's `layout_order` permutation), so the cap thins
+  the farthest chunks before any near one (#5176). Ranking in residency-slot
+  order had left whole near-camera chunks bare. Placement is logged once per episode and reported as
   `DebugStats::groundcover_model_{demanded,emitted}`. A worldspace with more
   than `GROUNDCOVER_MODEL_MAX_RECORDS` (128) placeable records draws the
   first 128 in FormID order and logs the rest.

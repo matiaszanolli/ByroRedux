@@ -251,6 +251,20 @@ fn keep_nearest_chunks(candidates: &mut Vec<ChunkCandidate>, cap: usize) -> u32 
     dropped as u32
 }
 
+/// #5176 — write the model tier's LAYOUT visiting order: record `o` names the
+/// `o`-th nearest chunk, active chunks by horizontal camera distance, vacant
+/// slots last, slot index breaking ties. LAYOUT hands each record's plants
+/// their instance ranks in this order and an over-budget grant keeps the
+/// lowest ranks, so the cap thins the farthest chunks first instead of
+/// whichever residency slots happen to come last.
+fn assign_nearest_first_layout_order(chunks: &mut [GpuGroundCoverChunk], order: &mut [(f32, u32)]) {
+    debug_assert_eq!(chunks.len(), order.len());
+    order.sort_unstable_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+    for (chunk, &(_, slot)) in chunks.iter_mut().zip(order.iter()) {
+        chunk.layout_order = slot;
+    }
+}
+
 /// #4607 — the per-frame collection intermediates, caller-owned and
 /// cleared on entry so their allocations persist across exterior frames
 /// (the same pattern the output Vecs already follow).
@@ -260,6 +274,9 @@ pub(crate) struct GroundCoverCollectScratch {
     pub(crate) candidates: Vec<ChunkCandidate>,
     pub(crate) emitted: FxHashMap<usize, u32>,
     pub(crate) disturber_found: Vec<(f32, GpuGroundCoverDisturber)>,
+    /// #5176 — (horizontal camera distance, slot) per chunk record, sorted
+    /// into [`GpuGroundCoverChunk::layout_order`].
+    pub(crate) layout_order: Vec<(f32, u32)>,
 }
 
 /// Collect this frame's ground-cover scatter input.
@@ -386,6 +403,10 @@ pub(crate) fn collect_groundcover_frame(
         .max()
         .unwrap_or(0);
     chunks.resize(slot_count, GpuGroundCoverChunk::default());
+    // #5176 — vacant and truncated slots sort last.
+    let layout_order = &mut scratch.layout_order;
+    layout_order.clear();
+    layout_order.extend((0..slot_count as u32).map(|slot| (f32::INFINITY, slot)));
     for (slot, candidate) in residents.iter().copied() {
         let index = match emitted.get(&candidate.cell).copied() {
             Some(index) => index,
@@ -434,9 +455,12 @@ pub(crate) fn collect_groundcover_frame(
             seed: chunk_seed(candidate.base_xz),
             active: 1,
             entry_progress: residency.entry_progress(slot),
-            pad: [0; 2],
+            layout_order: 0,
+            pad: 0,
         };
+        layout_order[slot].0 = candidate.horizontal;
     }
+    assign_nearest_first_layout_order(chunks, layout_order);
     debug_assert!(chunks.len() <= GROUNDCOVER_MAX_CHUNKS as usize);
     debug_assert!(cells.len() <= MAX_GROUNDCOVER_CELLS);
     let _ = CHUNKS_PER_CELL;
@@ -1056,6 +1080,25 @@ fn species_selection_table(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #5176 — the model tier's LAYOUT order is a permutation of every
+    /// uploaded chunk record: nearest active chunk first, vacant slots last,
+    /// slot index breaking distance ties.
+    #[test]
+    fn layout_order_is_a_nearest_first_permutation() {
+        let mut chunks = vec![GpuGroundCoverChunk::default(); 5];
+        // Slot 1 is vacant (∞); slots 0 and 4 tie.
+        let mut order = vec![
+            (300.0, 0),
+            (f32::INFINITY, 1),
+            (50.0, 2),
+            (900.0, 3),
+            (300.0, 4),
+        ];
+        assign_nearest_first_layout_order(&mut chunks, &mut order);
+        let visit: Vec<u32> = chunks.iter().map(|chunk| chunk.layout_order).collect();
+        assert_eq!(visit, vec![2, 0, 4, 3, 1]);
+    }
 
     /// #5175 — the records key is exact: records k and k+64 flipping
     /// together, or a full 128-record cover going from none to all

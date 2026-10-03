@@ -365,7 +365,14 @@ shared uint sRecordTotal[GROUNDCOVER_MODEL_MAX_RECORDS];
 void layoutShapes(uint lane) {
     for (uint r = lane; r < GROUNDCOVER_MODEL_MAX_RECORDS; r += GROUNDCOVER_MODEL_WORKGROUP) {
         uint running = 0u;
-        for (uint c = 0u; c < pc.chunkCount; ++c) {
+        // #5176 — nearest chunk first, so a record's lowest ranks (what an
+        // over-budget grant keeps) are its nearest plants, not whichever
+        // residency slots come first.
+        for (uint o = 0u; o < pc.chunkCount; ++o) {
+            uint c = gcChunks[o].layoutOrder;
+            if (c >= pc.chunkCount) {
+                continue; // host invariant broken; never index past the upload
+            }
             uint slot = c * GROUNDCOVER_MODEL_MAX_RECORDS + r;
             gcCounts[GROUNDCOVER_MODEL_BASE_REGION + slot] = running;
             running += gcCounts[slot];

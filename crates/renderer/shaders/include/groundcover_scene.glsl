@@ -65,7 +65,11 @@ struct GroundCoverChunk {
     uint slotActive;
     /// 0→1 grow-in for a newly placed residency-ring slot.
     float entryProgress;
-    uvec2 pad;
+    /// #5176 — the model tier's LAYOUT visiting order: `gcChunks[o]` names
+    /// the `o`-th nearest chunk (vacant slots last). A permutation spread
+    /// over the array; it says nothing about the record that carries it.
+    uint layoutOrder;
+    uint pad;
 };
 
 /// One accepted blade. §4's ~16-byte record, and deliberately not a

@@ -1155,6 +1155,53 @@ mod tests {
         );
     }
 
+    /// #5176 — LAYOUT's rank base for one record, mirrored: chunks are
+    /// visited in the host's nearest-first permutation, so the grant's
+    /// `rank < count` keeps the nearest chunks' plants. Returns, per chunk
+    /// (slot order), how many of its plants survive a grant of `granted`.
+    fn surviving_per_chunk(counts: &[u32], order: &[u32], granted: u32) -> Vec<u32> {
+        let mut base = vec![0u32; counts.len()];
+        let mut running = 0;
+        for &chunk in order {
+            base[chunk as usize] = running;
+            running += counts[chunk as usize];
+        }
+        counts
+            .iter()
+            .zip(&base)
+            .map(|(&count, &base)| granted.saturating_sub(base).min(count))
+            .collect()
+    }
+
+    /// #5176 — over budget, the farthest chunks thin first. Slot order put
+    /// the camera's own chunk last, so a half grant left it bare while a
+    /// distant one kept every plant.
+    #[test]
+    fn over_budget_grant_keeps_the_nearest_chunks_plants() {
+        // Slots 0..3; slot 2 is nearest the camera, slot 0 farthest.
+        let counts = [10, 10, 10];
+        let nearest_first = [2, 1, 0];
+        assert_eq!(
+            surviving_per_chunk(&counts, &nearest_first, 15),
+            vec![0, 5, 10]
+        );
+        // Slot order — the pre-fix walk — starved the nearest chunk.
+        assert_eq!(surviving_per_chunk(&counts, &[0, 1, 2], 15), vec![10, 5, 0]);
+
+        let shader = include_str!("../../shaders/groundcover_models.comp");
+        let layout = shader
+            .split("void layoutShapes(uint lane) {")
+            .nth(1)
+            .expect("LAYOUT phase present");
+        let walk = layout
+            .find("uint c = gcChunks[o].layoutOrder;")
+            .expect("LAYOUT must walk chunks in the host's nearest-first order (#5176)");
+        let base = layout
+            .find("uint slot = c * GROUNDCOVER_MODEL_MAX_RECORDS + r;")
+            .expect("LAYOUT indexes the per-chunk record counts");
+        assert!(walk < base, "the permuted chunk must be the one LAYOUT bases");
+    }
+
     /// #4866: decoding a timer pair alone does not prove the GPU work writes it.
     #[test]
     fn model_timer_encloses_all_phases_and_stats_copy() {

@@ -132,7 +132,11 @@ pub struct GpuGroundCoverChunk {
     pub seed: u32,
     pub active: u32,
     pub entry_progress: f32,
-    pub pad: [u32; 2],
+    /// #5176 — the model tier's LAYOUT walks chunks in this permutation:
+    /// record `o` holds the index of the `o`-th nearest chunk (vacant slots
+    /// last), so an over-budget instance grant drops the farthest plants.
+    pub layout_order: u32,
+    pub pad: u32,
 }
 // SAFETY: as `GpuGroundCoverCell` — 32 bytes, all padding is named and
 // initialised by the host.
@@ -505,14 +509,16 @@ mod tests {
         let inactive = GpuGroundCoverChunk::default();
         assert_eq!(inactive.active, 0);
         assert_eq!(inactive.entry_progress, 0.0);
-        assert_eq!(inactive.pad, [0; 2]);
+        assert_eq!(inactive.layout_order, 0);
+        assert_eq!(inactive.pad, 0);
 
         let scene = include_str!("../../shaders/include/groundcover_scene.glsl");
         let scatter = include_str!("../../shaders/groundcover_scatter.comp");
         assert!(
             scene.contains("uint slotActive;")
                 && scene.contains("float entryProgress;")
-                && scene.contains("uvec2 pad;"),
+                && scene.contains("uint layoutOrder;")
+                && scene.contains("uint pad;"),
             "the GLSL record must retain the host's explicit inactive-slot and grow-in lanes"
         );
         assert!(
