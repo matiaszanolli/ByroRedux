@@ -15,6 +15,26 @@ on fandom domains 402s).
 Starfield has **no attributes** — same shape as FO4 (perks/skills replace
 them). `attributes: []`.
 
+## Vital pools — LOCKED (AVIF editor ids)
+
+Source: read-only AVIF EDID scan of `Starfield.esm` (2026-09-29, 1,107 AVIF
+records). The two player pools and their editor ids:
+
+| Pool | AVIF EDID | FormID |
+|---|---|---|
+| Health | `Health` | 0x2D4 |
+| Oxygen | `Oxygen` | 0x2D5 |
+
+There is **no `O2` EDID** — the scan's oxygen-family hits are `Oxygen`
+(0x2D5), `OxygenUseMult`, and `Player_Sprint_O2_DrainRate` (a GMST-style
+name carrying `O2` in its *suffix*, not an AVIF editor id). This sources
+`CharacterRulesProfile::STARFIELD`'s `vital_pools` row
+(`("HP", "Health"), ("O2", "Oxygen")` in `crates/core/src/character/profile.rs`)
+per the #4453 rule that a profile row may not claim data without a capture
+line. Latent today — Starfield carries `NpcStatModel::None`, so no player
+`ActorValues` exist until a stat seed lands — but the row must resolve the
+day one does (#5044).
+
 ## Skills — LOCKED (roster), PENDING (leveling curve + tier point-thresholds)
 
 Source: *starfield.fandom.com/wiki/Skills*, 2026-07-04. **82 skills across 5

@@ -226,7 +226,13 @@ impl CharacterRulesProfile {
         npc_stats: NpcStatModel::None,
         creature_stats: NpcStatModel::None,
         body_condition_base: None,
-        vital_pools: &[("HP", "Health"), ("O2", "O2")],
+        // #5044 — `Oxygen`, not `O2`: the AVIF EDID scan of `Starfield.esm`
+        // (1,107 records, see `charal-starfield-ruleset.md`) gives
+        // `Health` = 0x2D4 and `Oxygen` = 0x2D5 and no `O2` EDID at all —
+        // the old row resolved nothing, so the O2 bar would have silently
+        // dropped out of every candidate (`actor_value_form_id` drops
+        // unknown editor ids rather than erroring).
+        vital_pools: &[("HP", "Health"), ("O2", "Oxygen")],
         ruleset: RulesetBuilder::None,
     };
 
@@ -479,5 +485,20 @@ mod tests {
                 profile.name()
             );
         }
+    }
+
+    /// #5044 — Starfield's oxygen pool must name the AVIF editor id the
+    /// game actually authors. The `Starfield.esm` AVIF EDID scan (1,107
+    /// records, `charal-starfield-ruleset.md`) gives `Oxygen` = 0x2D5 and
+    /// no `O2` EDID, so the old `("O2", "O2")` row resolved nothing and
+    /// `actor_value_form_id` would have silently dropped the bar.
+    #[test]
+    fn starfield_oxygen_pool_names_the_real_avif_editor_id() {
+        assert_eq!(
+            CharacterRulesProfile::STARFIELD.vital_pools(),
+            &[("HP", "Health"), ("O2", "Oxygen")],
+            "Starfield vital pools must resolve against the AVIF scan \
+             (Health = 0x2D4, Oxygen = 0x2D5, no O2 EDID)"
+        );
     }
 }
