@@ -17,6 +17,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use byroredux_core::ecs::Resource;
 use byroredux_core::settings::{SettingValue, SettingsRegistry};
@@ -36,16 +37,21 @@ pub struct SettingsPersistence {
     /// Ids whose live registry value is a one-launch override (#4974). `save`
     /// leaves their stored value untouched until [`Self::unpin_stored`].
     pinned: BTreeSet<String>,
+    /// The value each id had when this frontend last loaded or saved it.
+    /// `save` writes only ids whose registry value has moved off it (#5162).
+    ///
+    /// Shared by every clone: the engine clones the persistence resource
+    /// before each save, and the baseline a save advances must be the one
+    /// the next save compares against. The lock is also held across a save,
+    /// which serialises this process's writers.
+    synced: Arc<Mutex<BTreeMap<String, SettingValue>>>,
 }
 
 impl Resource for SettingsPersistence {}
 
 impl SettingsPersistence {
     pub fn discover() -> Self {
-        Self {
-            path: discover_settings_path(),
-            pinned: BTreeSet::new(),
-        }
+        Self::at(discover_settings_path())
     }
 
     /// Persistence at an explicit path, e.g. a test's temporary directory.
@@ -53,6 +59,7 @@ impl SettingsPersistence {
         Self {
             path,
             pinned: BTreeSet::new(),
+            synced: Arc::default(),
         }
     }
 
@@ -74,6 +81,10 @@ impl SettingsPersistence {
     pub fn unpin_stored(&mut self, id: &str) -> bool {
         self.pinned.remove(id)
     }
+
+    fn synced(&self) -> MutexGuard<'_, BTreeMap<String, SettingValue>> {
+        self.synced.lock().unwrap_or_else(PoisonError::into_inner)
+    }
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -89,8 +100,20 @@ pub struct LoadReport {
     pub ignored: usize,
 }
 
+/// Overlay the stored values onto `registry`, then take its values as this
+/// frontend's synced baseline (#5162) — also when there is no file yet, since
+/// the defaults are then what this frontend has seen.
+///
+/// Call it again to pick up another frontend's writes: the launcher does so
+/// when its Settings screen opens and when the engine exits.
 pub fn load(registry: &mut SettingsRegistry, persistence: &SettingsPersistence) {
-    match load_from_path(registry, persistence.path()) {
+    let mut synced = persistence.synced();
+    let result = load_from_path(registry, persistence.path());
+    for entry in registry.entries() {
+        synced.insert(entry.id.clone(), entry.value.clone());
+    }
+    drop(synced);
+    match result {
         Ok(report) if report.applied > 0 || report.ignored > 0 => log::info!(
             "settings: loaded {} value(s), ignored {} from {}",
             report.applied,
@@ -106,12 +129,21 @@ pub fn load(registry: &mut SettingsRegistry, persistence: &SettingsPersistence) 
     }
 }
 
+/// Persist the ids this frontend changed since it last loaded or saved them.
 pub fn save(registry: &SettingsRegistry, persistence: &SettingsPersistence) {
-    if let Err(error) = save_to_path(registry, persistence.path(), &persistence.pinned) {
-        log::warn!(
+    let mut synced = persistence.synced();
+    match save_to_path(registry, persistence.path(), &persistence.pinned, &synced) {
+        Ok(written) => {
+            for id in written {
+                if let Some(entry) = registry.get(&id) {
+                    synced.insert(id, entry.value.clone());
+                }
+            }
+        }
+        Err(error) => log::warn!(
             "settings: could not save {}: {error}",
             persistence.path().display()
-        );
+        ),
     }
 }
 
@@ -168,11 +200,21 @@ fn load_from_path(registry: &mut SettingsRegistry, path: &Path) -> std::io::Resu
 ///
 /// Pinned ids ([`SettingsPersistence::pin_stored`]) keep whatever the file
 /// already holds for them, and stay absent if it holds nothing.
+///
+/// #5162 — only ids whose registry value differs from `synced` (the value
+/// this frontend last loaded or saved) are written; the rest keep whatever
+/// the file holds now. The launcher and the engine each hold a registry
+/// loaded once, and both used to write *every* entry: changing FOV in game,
+/// then toggling anything in the launcher, wrote the launcher's stale FOV
+/// back, and the engine did the same to launcher edits made while it ran.
+/// An id with no `synced` value (nothing loaded it) counts as changed.
+/// Returns the ids written; when there are none the file is not touched.
 fn save_to_path(
     registry: &SettingsRegistry,
     path: &Path,
     pinned: &BTreeSet<String>,
-) -> std::io::Result<()> {
+    synced: &BTreeMap<String, SettingValue>,
+) -> std::io::Result<Vec<String>> {
     let mut settings: BTreeMap<String, toml::Value> = match fs::read_to_string(path) {
         // First run: nothing to preserve.
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => BTreeMap::new(),
@@ -222,11 +264,16 @@ fn save_to_path(
             }
         },
     };
+    let mut written = Vec::new();
     for entry in registry.entries() {
-        if pinned.contains(&entry.id) {
+        if pinned.contains(&entry.id) || synced.get(&entry.id) == Some(&entry.value) {
             continue;
         }
         settings.insert(entry.id.clone(), encode_value(&entry.value));
+        written.push(entry.id.clone());
+    }
+    if written.is_empty() {
+        return Ok(written);
     }
     let source = toml::to_string_pretty(&StoredSettings {
         version: SETTINGS_VERSION,
@@ -257,7 +304,7 @@ fn save_to_path(
     // for why the old "Windows rename" branch guarded nothing real and
     // could copy the temp's partial bytes over the good file.
     byroredux_core::atomic_file::atomic_write(path, &temp_path, source.as_bytes())?;
-    Ok(())
+    Ok(written)
 }
 
 /// Where an unparseable settings file is copied aside before the save is
@@ -453,8 +500,11 @@ mod tests {
 
         // Launch override: seeded into the registry, pinned on disk.
         persistence.pin_stored("render.upscaler");
-        live.set("render.upscaler", SettingValue::Choice("fsr3/quality".into()))
-            .unwrap();
+        live.set(
+            "render.upscaler",
+            SettingValue::Choice("fsr3/quality".into()),
+        )
+        .unwrap();
         live.set("controls.sensitivity", SettingValue::Number(2.0))
             .unwrap();
         save(&live, &persistence);
@@ -472,6 +522,84 @@ mod tests {
         save(&live, &persistence);
         assert_eq!(
             stored(&persistence),
+            SettingValue::Choice("fsr3/quality".into())
+        );
+    }
+
+    /// #5162 — the launcher and the engine each load the file once and then
+    /// save. A save must write only what that frontend changed, so neither
+    /// reverts the other's newer value with its stale snapshot.
+    #[test]
+    fn a_save_does_not_revert_another_frontends_newer_value() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.toml");
+        let stored = |id: &str| {
+            let mut reloaded = registry();
+            load(&mut reloaded, &SettingsPersistence::at(path.clone()));
+            reloaded.get(id).unwrap().value.clone()
+        };
+
+        // Both frontends start from the same file.
+        let launcher_io = SettingsPersistence::at(path.clone());
+        let mut launcher = registry();
+        load(&mut launcher, &launcher_io);
+        let engine_io = SettingsPersistence::at(path.clone());
+        let mut engine = registry();
+        load(&mut engine, &engine_io);
+
+        // In game: sensitivity changes and is saved.
+        engine
+            .set("controls.sensitivity", SettingValue::Number(2.5))
+            .unwrap();
+        save(&engine, &engine_io);
+
+        // Back in the launcher, still holding its boot-time snapshot: an
+        // unrelated toggle must not write the old sensitivity back.
+        launcher
+            .set("interface.crosshair", SettingValue::Bool(false))
+            .unwrap();
+        save(&launcher, &launcher_io);
+        assert_eq!(stored("controls.sensitivity"), SettingValue::Number(2.5));
+        assert_eq!(stored("interface.crosshair"), SettingValue::Bool(false));
+
+        // The reverse: the engine's next save keeps the launcher's edit,
+        // through a clone of its persistence as the engine saves.
+        engine
+            .set(
+                "render.upscaler",
+                SettingValue::Choice("fsr3/quality".into()),
+            )
+            .unwrap();
+        save(&engine, &engine_io.clone());
+        assert_eq!(stored("interface.crosshair"), SettingValue::Bool(false));
+        assert_eq!(
+            stored("render.upscaler"),
+            SettingValue::Choice("fsr3/quality".into())
+        );
+
+        // A clone shares the baseline that save advanced: re-saving the same
+        // registry through another clone writes nothing (every write renames
+        // a fresh temp into place, so the inode would change).
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            let before = fs::metadata(&path).unwrap().ino();
+            save(&engine, &engine_io.clone());
+            assert_eq!(
+                fs::metadata(&path).unwrap().ino(),
+                before,
+                "an unchanged registry must not be re-written"
+            );
+        }
+
+        // Reloading picks up the other frontend's writes.
+        load(&mut launcher, &launcher_io);
+        assert_eq!(
+            launcher.get("controls.sensitivity").unwrap().value,
+            SettingValue::Number(2.5)
+        );
+        assert_eq!(
+            launcher.get("render.upscaler").unwrap().value,
             SettingValue::Choice("fsr3/quality".into())
         );
     }
@@ -533,7 +661,13 @@ mod tests {
                 SettingValue::Choice("fsr3/quality".to_owned()),
             )
             .unwrap();
-        save_to_path(&source, persistence.path(), &BTreeSet::new()).unwrap();
+        save_to_path(
+            &source,
+            persistence.path(),
+            &BTreeSet::new(),
+            &BTreeMap::new(),
+        )
+        .unwrap();
 
         let mut restored = registry();
         let report = load_from_path(&mut restored, persistence.path()).unwrap();
@@ -604,11 +738,9 @@ version = 1
         let path = dir.path().join("settings.toml");
         fs::write(&path, "not = = toml {{{").unwrap();
 
-        let error = save_to_path(&registry(), &path, &BTreeSet::new()).unwrap_err();
-        assert!(
-            error.to_string().contains("could not be parsed"),
-            "{error}"
-        );
+        let error =
+            save_to_path(&registry(), &path, &BTreeSet::new(), &BTreeMap::new()).unwrap_err();
+        assert!(error.to_string().contains("could not be parsed"), "{error}");
         assert_eq!(
             fs::read_to_string(&path).unwrap(),
             "not = = toml {{{",
@@ -632,7 +764,8 @@ version = 1
         let path = dir.path().join("settings.toml");
         fs::write(&path, "version = 99\n[settings]\n").unwrap();
 
-        let error = save_to_path(&registry(), &path, &BTreeSet::new()).unwrap_err();
+        let error =
+            save_to_path(&registry(), &path, &BTreeSet::new(), &BTreeMap::new()).unwrap_err();
         assert!(error.to_string().contains("newer"), "{error}");
         assert_eq!(
             fs::read_to_string(&path).unwrap(),
@@ -653,11 +786,8 @@ version = 1
         let path = dir.path().join("settings.toml");
         fs::create_dir(&path).unwrap();
 
-        assert!(save_to_path(&registry(), &path, &BTreeSet::new()).is_err());
-        assert!(
-            path.is_dir(),
-            "nothing may replace an unreadable path"
-        );
+        assert!(save_to_path(&registry(), &path, &BTreeSet::new(), &BTreeMap::new()).is_err());
+        assert!(path.is_dir(), "nothing may replace an unreadable path");
     }
 
     /// #5143 — the "Windows rename" fallback ran on any `atomic_write`

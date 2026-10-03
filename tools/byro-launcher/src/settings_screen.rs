@@ -50,8 +50,17 @@ impl SettingsState {
         }
     }
 
+    /// Re-read the file over the registry, picking up what the engine wrote
+    /// since this screen last loaded it (#5162). Called when the Settings
+    /// screen opens and when the engine exits, so the screen never shows —
+    /// or edits from — a value the engine has since replaced.
+    pub fn reload(&mut self) {
+        byroredux_settings_io::load(&mut self.registry, &self.persistence);
+    }
+
     /// Write through the shared persistence, which preserves keys this
-    /// registry does not know — the engine's key bindings among them.
+    /// registry does not know — the engine's key bindings among them — and
+    /// writes only the ids changed here (#5162).
     pub fn save(&mut self) {
         byroredux_settings_io::save(&self.registry, &self.persistence);
         self.dirty = false;

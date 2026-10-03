@@ -364,6 +364,16 @@ stored keys it does not recognise, which protects the engine from itself too —
 subsystem that has not registered yet at save time no longer costs the user its
 values.
 
+**Its sequel, for keys both sides know (#5162).** Each front end loads the file
+once, and both still wrote *every* entry they registered: change FOV in game,
+toggle anything in the launcher afterwards, and the launcher's boot-time FOV
+was written back (and the engine did the same to launcher edits made while it
+ran). `SettingsPersistence` now keeps a baseline — the value each id had when
+this front end last loaded or saved it, shared by every clone — and `save`
+writes only the ids whose value moved off it. The launcher also reloads the
+file when its Settings screen opens and when the engine exits, so it never
+shows, or edits from, a stale value.
+
 The `restart_required` flag on `SettingEntry` becomes meaningful for the first
 time: in the launcher, *nothing* is restart-required, because the process has
 not started. The launcher can therefore expose settings the in-game menu must

@@ -114,7 +114,7 @@ impl LauncherApp {
             return;
         };
         match process.poll() {
-            EngineStatus::Running => {}
+            EngineStatus::Running => return,
             EngineStatus::Finished => {
                 self.running = None;
                 self.status = "The game exited.".to_owned();
@@ -125,6 +125,8 @@ impl LauncherApp {
                 self.screen = Screen::Failure { code, tail };
             }
         }
+        // #5162 — the engine may have saved settings changed in game.
+        self.settings.reload();
     }
 
     fn browse(&mut self) {
@@ -165,6 +167,9 @@ impl eframe::App for LauncherApp {
                         self.browse();
                     }
                     if ui.button("Settings").clicked() {
+                        // #5162 — show what is on disk now, not the
+                        // launcher's startup snapshot.
+                        self.settings.reload();
                         self.screen = Screen::Settings;
                     }
                 });
