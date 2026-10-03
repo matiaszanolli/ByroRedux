@@ -70,24 +70,40 @@ impl TextureRegistry {
     /// A caller deciding whether to fetch a DDS ahead of its resolve uses
     /// this: once any view of the path is resident, the bytes were already
     /// read once and a prefetch would most likely be wasted work.
+    ///
+    /// #5053 — normalizes once and rewrites only the `|<clamp>[|cube][|linear]`
+    /// suffix in a single reused buffer. The 16 probes used to build 16 full
+    /// keyed Strings (~48 allocations) per fresh texture, on the prefetch
+    /// planner's main-thread path where a miss — the common case — pays for
+    /// every combination.
     pub fn has_any_view_of_path(&self, path: &str) -> bool {
-        (0..=3u8).any(|clamp_mode| {
-            [TextureViewKind::D2, TextureViewKind::Cube]
-                .into_iter()
-                .any(|view_kind| {
-                    [TextureColorSpace::Srgb, TextureColorSpace::Linear]
-                        .into_iter()
-                        .any(|color_space| {
-                            self.path_map
-                                .contains_key(&texture_keyed_path_with_color_space(
-                                    path,
-                                    clamp_mode,
-                                    view_kind,
-                                    color_space,
-                                ))
-                        })
-                })
-        })
+        let mut key = normalize_path(path);
+        let base_len = key.len();
+        for clamp_mode in 0..=3u8 {
+            key.truncate(base_len);
+            key.push('|');
+            key.push(char::from(b'0' + clamp_mode));
+            let clamp_len = key.len();
+            for view_kind in [TextureViewKind::D2, TextureViewKind::Cube] {
+                let view_len = if view_kind == TextureViewKind::Cube {
+                    key.truncate(clamp_len);
+                    key.push_str("|cube");
+                    key.len()
+                } else {
+                    clamp_len
+                };
+                for color_space in [TextureColorSpace::Srgb, TextureColorSpace::Linear] {
+                    key.truncate(view_len);
+                    if color_space == TextureColorSpace::Linear {
+                        key.push_str("|linear");
+                    }
+                    if self.path_map.contains_key(key.as_str()) {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
     }
 
     /// Acquire a texture handle by path, bumping the refcount on hit.

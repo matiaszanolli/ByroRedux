@@ -1232,3 +1232,38 @@ fn enqueue_rejects_when_bindless_array_full() {
         "queue must stay empty on rejection"
     );
 }
+
+/// #5053 — `has_any_view_of_path` reconstructs the 16 keyed-path variants by
+/// rewriting the suffix in one reused buffer instead of building 16 Strings.
+/// This pins the reconstruction against the authoritative builder: for every
+/// (clamp, view-kind, colour-space) combination, a view inserted under the
+/// builder's key must be found — a suffix grammar drift would miss resident
+/// textures and double-prefetch their bytes.
+#[test]
+fn has_any_view_of_path_finds_every_key_variant() {
+    for clamp_mode in 0..=3u8 {
+        for view_kind in [TextureViewKind::D2, TextureViewKind::Cube] {
+            for color_space in [TextureColorSpace::Srgb, TextureColorSpace::Linear] {
+                let mut reg = make_registry_for_overflow_test(16, 0);
+                reg.path_map.insert(
+                    texture_keyed_path_with_color_space(
+                        "shared.dds",
+                        clamp_mode,
+                        view_kind,
+                        color_space,
+                    ),
+                    1,
+                );
+                assert!(
+                    reg.has_any_view_of_path(r"Shared.dds"),
+                    "missed the {view_kind:?} clamp-{clamp_mode} {color_space:?} view"
+                );
+                assert!(
+                    !reg.has_any_view_of_path("other.dds"),
+                    "a miss must stay a miss for the {view_kind:?} clamp-{clamp_mode} \
+                     {color_space:?} seed"
+                );
+            }
+        }
+    }
+}
