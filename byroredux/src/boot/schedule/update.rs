@@ -121,6 +121,14 @@ pub(super) fn register_update_systems(scheduler: &mut Scheduler) {
             .reads::<byroredux_physics::Ragdoll>()
             .reads_resource::<crate::inventory::InventoryCatalog>()
             .reads::<byroredux_scripting::SceneAliasCandidate>()
+            // #5035 — the Npc Talk arm's bulk passes: the candidate filter
+            // queries `ActorValues` directly, and
+            // `running_quest_bound_entities` reads the quest-alias tables
+            // (`installed_alias_ids_by_quest` + the running-quest filter).
+            .reads::<byroredux_core::ecs::components::ActorValues>()
+            .reads_resource::<byroredux_scripting::SceneQuestAliasRegistry>()
+            .reads_resource::<byroredux_scripting::SceneActorBindings>()
+            .reads_resource::<byroredux_scripting::quest_stages::QuestStageState>()
             // #5043 / #5017 — the Talk arm skips actors in combat or
             // unconscious.
             .reads::<byroredux_scripting::AiCombatState>()
