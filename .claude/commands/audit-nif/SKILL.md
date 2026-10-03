@@ -83,7 +83,8 @@ its list is invisible to it); `blocks/controller/sequence_pre_10_1_0_106_tests.r
   declared by construction). It needs its own telemetry: `NiObject::opaque_tail_len` feeding
   `NifScene::opaque_tail_histogram` (#2625). Regression = a new tail-capturing block that
   doesn't wire it. Also confirm capture-to-`block_size` is used, never a hardcoded length
-  (Starfield `BSLightingShaderProperty` tail is 38 B on most content but bimodal `{38, 42}`).
+  (Starfield `BSLightingShaderProperty` tail is 0 B on most content — 480,757
+  of 483,837 blocks — with a 30 B tail on the remaining 3,080).
 - Pre-10.1.0.106 `NiSequence` / `ControlledBlock` / `NiControllerSequence`: exactly one of
   each `until="10.1.0.103"` / `since="10.1.0.106"` pair is present for any version (a read
   that fires both, or drops the `until` half, loses text keys and binds no channel);
@@ -139,7 +140,7 @@ First step: `git log --since=<last report> --format='%h %s' -- crates/nif/src/ve
 
 ### Dimension 3: Block Dispatch Coverage
 Paths: `crates/nif/src/blocks/mod.rs`, `crates/nif/tests/{per_block,block_coverage}_baselines.rs`, `crates/nif/tests/data/`, `crates/nif/src/corpus.rs`, `crates/nif/src/kfm.rs`
-First step: `cargo run -p byroredux-nif --release --example nif_stats -- <archive-or-dir> --tsv` and diff against `tests/data/per_block_baselines/<game>.tsv` (`--unknown-only` for the short view)
+First step: `cargo run -p byroredux-nif --release --example nif_stats -- <archive-or-dir> --tsv` — but do **not** diff it directly against `tests/data/per_block_baselines/<game>.tsv`: the two TSVs use different keys (#4265 — `nif_stats` keys `parsed` on the dispatched Rust struct name, the baselines on the header-advertised wire name), so they legitimately disagree on alias-collapsed families. Use `nif_stats --tsv` for the unknown/parsed split per struct, and the `per_block_baselines` gate itself (`--unknown-only` for the short view) for wire-name comparison against the checked-in baselines
 **Checklist**:
 - Dispatch is a hand-written `match type_name` in `parse_block_inner` (the `impl_ni_object!`
   macro only generates trait impls). Count top-level arms fresh — nested `match`es
