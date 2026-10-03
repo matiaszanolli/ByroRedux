@@ -24,6 +24,7 @@ pub mod lighting;
 pub mod math;
 pub mod radiometry;
 pub mod settings;
+pub mod source_scan;
 pub mod stealth;
 pub mod string;
 pub mod types;

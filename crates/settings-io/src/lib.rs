@@ -664,19 +664,9 @@ version = 1
     /// error and could copy the temp's possibly-partial bytes over the good
     /// file. Its removal is pinned statically because the failure it
     /// mishandled (disk full, EIO on sync) is OS-level and cannot be
-    /// fault-injected portably. The needle is assembled at run time so this
-    /// test's own source does not satisfy it.
+    /// fault-injected portably. Scans the production text only (#5164).
     #[test]
     fn save_has_no_nonatomic_clobber_fallback() {
-        let source = include_str!("lib.rs");
-        assert!(
-            source.contains("atomic_file::atomic_write"),
-            "the save must go through the shared durable writer"
-        );
-        let fallback_binding = ["rename", "_error"].concat();
-        assert!(
-            !source.contains(&fallback_binding),
-            "the clobber fallback must not come back"
-        );
+        byroredux_core::atomic_file::assert_no_clobber_fallback(include_str!("lib.rs"));
     }
 }

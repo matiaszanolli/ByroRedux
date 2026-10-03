@@ -161,16 +161,9 @@ mod tests {
         // #5143 — also pins that the non-atomic "Windows rename" fallback
         // (which ran on any `atomic_write` error and could copy the temp's
         // partial bytes over the good file) stays gone; the failure it
-        // mishandled is OS-level and cannot be fault-injected portably. The
-        // needle is assembled at run time so this test's own source does
-        // not satisfy it.
-        let source = include_str!("overrides.rs");
-        assert!(source.contains("byroredux_core::atomic_file::atomic_write"));
-        let fallback_binding = ["rename", "_error"].concat();
-        assert!(
-            !source.contains(&fallback_binding),
-            "the clobber fallback must not come back"
-        );
+        // mishandled is OS-level and cannot be fault-injected portably.
+        // Scans the production text only (#5164).
+        byroredux_core::atomic_file::assert_no_clobber_fallback(include_str!("overrides.rs"));
     }
 
     #[test]

@@ -328,22 +328,11 @@ mod tests {
 
     /// #5143 — the "Windows rename" fallback ran on any `atomic_write`
     /// error and could copy the temp's possibly-partial bytes over the good
-    /// file (disk full, EIO). Its removal is pinned statically because the
-    /// failure it mishandled is OS-level and cannot be fault-injected
-    /// portably.
+    /// file (disk full, EIO). Pinned statically over the production text
+    /// (#5164); see `assert_no_clobber_fallback` for the structural rule.
     #[test]
     fn save_has_no_nonatomic_clobber_fallback() {
-        let source = include_str!("lib.rs");
-        assert!(
-            source.contains("atomic_file::atomic_write"),
-            "the save must go through the shared durable writer"
-        );
-        // Assembled at run time so this test's own source does not satisfy it.
-        let fallback_binding = ["rename", "_error"].concat();
-        assert!(
-            !source.contains(&fallback_binding),
-            "the clobber fallback must not come back"
-        );
+        byroredux_core::atomic_file::assert_no_clobber_fallback(include_str!("lib.rs"));
     }
 
     fn sample() -> BootRequest {
@@ -469,11 +458,6 @@ mod tests {
         let path = dir.path().join("nested/boot.toml");
         sample().save(&path).unwrap();
         assert_eq!(BootRequest::load(&path).unwrap(), sample());
-    }
-
-    #[test]
-    fn save_uses_the_shared_atomic_file_writer() {
-        assert!(include_str!("lib.rs").contains("byroredux_core::atomic_file::atomic_write"));
     }
 
     #[test]
