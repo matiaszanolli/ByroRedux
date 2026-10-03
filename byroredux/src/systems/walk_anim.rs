@@ -31,17 +31,23 @@
 //!   path owns the pose from that instant, and a stale snapshot would
 //!   clobber it on the next package handover.
 //!
-//! Movement here is still the locomotion systems' fixed-speed XZ step, so
-//! the clip's authored stride can disagree slightly with 100 u/s — foot
-//! sliding, not drift. Driving movement from the walk clip's
-//! `RootMotionDelta` (produced every tick by the animation system for
-//! accum-root clips) is the deferred polish pass.
+//! Movement here is the locomotion systems' XZ step at the actor's
+//! clip-derived `WalkSpeed` (M42.11 — the six procedures + combat chase
+//! stamp it from the walk clip's authored accumulation-root stride, so
+//! the step length matches the animated gait rather than a fixed
+//! 100 u/s). What residual disagreement remains is stride-measurement
+//! noise, not a fixed-speed mismatch. Driving movement from the walk
+//! clip's `RootMotionDelta` (produced every tick by the animation
+//! system for accum-root clips) is the deferred polish pass.
 //!
 //! Registered `add_exclusive(Stage::PostUpdate, …)` **after** all six
 //! locomotion procedures, so the position this system reads is already
 //! this frame's final — a swap decided on stale positions would flicker
-//! at leg boundaries. Actors are never both seated and walking
-//! (a single winning package per NPC), so this never re-fights
+//! at leg boundaries. An actor *can* be both seated and displacing —
+//! combat chase does not suspend the ambient package, so a
+//! `StartCombat`ed seated actor chases while still `Seated` (#4703) —
+//! so the Pass-1 `Seated` check, not any package-exclusivity
+//! assumption, is what keeps this from re-fighting
 //! `sandbox_seat_system`'s parked player.
 
 use crate::components::{WalkAnimSnapshot, WalkAnimation};
@@ -51,11 +57,12 @@ use byroredux_core::ecs::{EntityId, World};
 use byroredux_core::math::Vec3;
 
 /// Per-tick XZ displacement rate (world units/second) at or below which an
-/// actor counts as stationary for clip purposes. The locomotion walk is
-/// 100 u/s and one tick of it is far above this at any sane framerate;
-/// the margin exists so a blocked-against-a-wall actor (KCC delivered
-/// ~zero translation) reads as idle instead of grinding a walk cycle in
-/// place.
+/// actor counts as stationary for clip purposes. Locomotion steps at the
+/// actor's clip-derived `WalkSpeed` (M42.11, sanity-clamped to
+/// [30, 250] u/s), and one tick of even the floor is far above this at any
+/// sane framerate; the margin exists so a blocked-against-a-wall actor
+/// (KCC delivered ~zero translation) reads as idle instead of grinding a
+/// walk cycle in place.
 const WALK_ANIM_MIN_SPEED: f32 = 8.0;
 
 /// Hysteresis dwell windows (seconds). A take needs the actor to have been
