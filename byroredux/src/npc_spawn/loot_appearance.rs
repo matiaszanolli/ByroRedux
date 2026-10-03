@@ -621,24 +621,6 @@ impl LootAppearanceLoader {
     }
 }
 
-/// Look up the wearer's inventory row for a form id, so a mid-life import's
-/// `NpcEquipmentPart` points at the same row the equip events name.
-fn inventory_index_for(
-    world: &World,
-    wearer: EntityId,
-    form_id: u32,
-) -> Option<byroredux_core::ecs::components::InventoryIndex> {
-    world.get::<Inventory>(wearer).and_then(|inventory| {
-        inventory
-            .items
-            .iter()
-            .position(|stack| stack.base_form_id == form_id)
-            .map(|index| {
-                byroredux_core::ecs::components::InventoryIndex(index as u32)
-            })
-    })
-}
-
 /// The player's body root when `wearer` is the player, `None` for any other
 /// wearer. Mid-life player gear parents under the body root — not the
 /// capsule — so it turns with the body's facing yaw and `set_player_view`'s
@@ -822,7 +804,6 @@ impl GearImportLoader {
             root,
             NpcEquipmentPart {
                 actor: wearer,
-                inventory_index: inventory_index_for(world, wearer, import.form_id),
                 form_id: import.form_id,
                 intrinsic_skin: false,
                 hidden_biped_mask: 0,
@@ -999,7 +980,6 @@ mod tests {
                 root,
                 NpcEquipmentPart {
                     actor,
-                    inventory_index: None,
                     form_id,
                     intrinsic_skin: intrinsic,
                     hidden_biped_mask: 0,
@@ -1182,7 +1162,6 @@ mod tests {
             root,
             NpcEquipmentPart {
                 actor: wearer,
-                inventory_index: None,
                 form_id: 0xABC,
                 intrinsic_skin: false,
                 hidden_biped_mask: 0,
@@ -1225,28 +1204,6 @@ mod tests {
         assert!(world.get::<PendingGearImport>(corpse).is_none());
     }
 
-    #[test]
-    fn inventory_index_lookup_maps_the_form_to_its_row() {
-        use super::inventory_index_for;
-
-        let mut world = World::new();
-        let wearer = world.spawn();
-        world.insert(
-            wearer,
-            Inventory {
-                items: vec![
-                    ItemStack::new(0x111, 1),
-                    ItemStack::new(0xABC, 1),
-                ],
-            },
-        );
-        assert_eq!(
-            inventory_index_for(&world, wearer, 0xABC)
-                .map(|index| index.0),
-            Some(1)
-        );
-        assert_eq!(inventory_index_for(&world, wearer, 0x999), None);
-    }
 }
 
 // ── #5028 — gear release on leaves-inventory ─────────────────────────
@@ -1275,7 +1232,6 @@ mod gear_release_tests {
                 root,
                 NpcEquipmentPart {
                     actor,
-                    inventory_index: None,
                     form_id,
                     intrinsic_skin: intrinsic,
                     hidden_biped_mask: 0,

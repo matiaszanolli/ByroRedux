@@ -344,7 +344,6 @@ pub(super) fn prepare_runtime_state(
         .map(|armor| RuntimeArmor {
             ownership: NpcEquipmentPart {
                 actor: placement_root,
-                inventory_index: armor.inv_idx,
                 form_id: armor.form_id,
                 intrinsic_skin: armor.intrinsic_skin,
                 hidden_biped_mask: armor.hidden_biped_mask,
@@ -441,7 +440,6 @@ pub(super) fn prepare_creature_state(
         .map(|armor| RuntimeArmor {
             ownership: NpcEquipmentPart {
                 actor: placement_root,
-                inventory_index: armor.inv_idx,
                 form_id: armor.form_id,
                 intrinsic_skin: armor.intrinsic_skin,
                 hidden_biped_mask: armor.hidden_biped_mask,

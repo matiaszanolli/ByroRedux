@@ -1090,12 +1090,13 @@ struct ResolvedArmor<'a> {
 
 /// Spawn-derived ownership of an armor NIF root. Multiple ARMA meshes may
 /// belong to one inventory row. Race skin is a body layer, not removable gear.
-/// Rebuilt on spawn, never serialized with process-local entity IDs. Consumers
-/// must reconcile inventory changes before using the row index after a load.
+/// Rebuilt on spawn, never serialized with process-local entity IDs.
+/// #5049 - no inventory-row field: hide/reveal and ownership match on
+/// `form_id`, and the row a form resolves to can change under a load or a
+/// stack merge, so a cached index was dead state that could only mislead.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct NpcEquipmentPart {
     pub actor: EntityId,
-    pub inventory_index: Option<InventoryIndex>,
     pub form_id: u32,
     pub intrinsic_skin: bool,
     /// Partitions removed at import time; restoring them requires a rebuild.

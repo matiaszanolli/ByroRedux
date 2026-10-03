@@ -675,7 +675,6 @@ mod tests {
             part_root,
             NpcEquipmentPart {
                 actor: part_actor,
-                inventory_index: None,
                 form_id: 0x1234,
                 intrinsic_skin: false,
                 hidden_biped_mask: 0,

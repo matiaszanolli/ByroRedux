@@ -687,7 +687,6 @@ mod tests {
         parent_part(&mut world, actor, body);
         let gear = NpcEquipmentPart {
             actor,
-            inventory_index: Some(InventoryIndex(3)),
             form_id: 0x1234,
             intrinsic_skin: false,
             hidden_biped_mask: 0,
@@ -698,7 +697,6 @@ mod tests {
         parent_equipment_part(&mut world, hands, gear);
         let skin = world.spawn();
         let skin_owner = NpcEquipmentPart {
-            inventory_index: None,
             form_id: 0x5678,
             intrinsic_skin: true,
             hidden_biped_mask: 4,
