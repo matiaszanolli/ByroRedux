@@ -1868,6 +1868,10 @@ pub fn execute_pending_save_loads(
                 // re-derive above).
                 world.remove::<crate::npc_spawn::PendingGearImport>(player);
                 crate::npc_spawn::loot_appearance::reconcile_worn_gear(world, player);
+                // #5058 — the ledger reset above cannot name the player's
+                // stale alias-injected memberships anymore, so strip them
+                // before the first refresh reads them as authored.
+                crate::inventory::reset_player_factions_to_record(world, player);
             }
             log::info!(
                 "save load: {location_label} reloaded ({count_label}); applied {} saved deltas \

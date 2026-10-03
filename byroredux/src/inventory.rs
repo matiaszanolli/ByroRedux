@@ -1651,6 +1651,49 @@ fn toggle_equip(world: &mut World, index: u32) -> MutationResult {
 ///
 /// Re-deriving is the whole point: the same function that owns the runtime
 /// transition owns the reload, so the two can't drift.
+/// #5058 — post-load faction reset for the process-lifetime player. The
+/// wholesale `restore_resources` reinstalls the alias-injection ledger with
+/// `factions` empty (its EntityId keys cannot survive a save), and the
+/// player — unlike an NPC — is not respawned, so the pre-load session's
+/// alias-injected memberships are still in its `FactionRanks`. The next
+/// alias refresh then reads each stale rank as an authored membership
+/// (`original_rank = Some`), and the release branch only strips
+/// `original_rank: None` — the injected faction would outlive every later
+/// alias release in the process and feed `faction_hostility_system`,
+/// `GetInFaction` and dialogue conditions the loaded save does not have.
+///
+/// Resetting to the authored record answer (the same Use-Factions terminal
+/// read the boot seed uses) gives the player the posture a respawned NPC
+/// already gets: record ranks, with the loaded save's running quests
+/// re-injecting their aliases on the next refresh. Scripted rank edits are
+/// lost exactly as they are for NPCs — `FactionRanks` is re-derived, not
+/// saved (SAVE-D2 classification).
+pub(crate) fn reset_player_factions_to_record(
+    world: &mut World,
+    player: byroredux_core::ecs::EntityId,
+) {
+    let Some(index_resource) = world.try_resource::<crate::cell_loader::LoadedCellIndex>() else {
+        return;
+    };
+    let index = index_resource.0.clone();
+    drop(index_resource);
+    let player_form_id = player_npc_form_id(index.game);
+    let Some(npc) = index.npcs.get(&player_form_id) else {
+        return;
+    };
+    let resolved = byroredux_plugin::equip::ResolvedNpc::resolve(npc, &index);
+    match crate::npc_spawn::faction_ranks_of(&resolved) {
+        Some(ranks) => {
+            world.insert(player, ranks);
+        }
+        None => {
+            // The record seeds no membership: any live FactionRanks on the
+            // player is session residue (stale alias injects included).
+            let _ = world.remove::<byroredux_core::ecs::components::FactionRanks>(player);
+        }
+    }
+}
+
 pub(crate) fn reconcile_player_equipped_weapon(
     world: &mut World,
     player: byroredux_core::ecs::EntityId,
@@ -3350,6 +3393,64 @@ mod tests {
             seeded.factions.map(|ranks| ranks.rank(0x1B2A4)),
             Some(Some(0))
         );
+    }
+
+    /// #5058 — the post-load reset gives the player the authored record
+    /// answer: a stale alias-injected membership (which the pre-load
+    /// session's refresh recorded as authored after the wholesale ledger
+    /// reset) is stripped, and a drifted rank on an authored faction
+    /// returns to the record value, so the first post-load alias refresh
+    /// re-injects only what the loaded save still binds.
+    #[test]
+    fn load_reset_strips_stale_alias_injected_player_factions() {
+        use std::sync::Arc;
+
+        use byroredux_core::ecs::components::FactionRanks;
+        use byroredux_plugin::esm::records::NpcRecord;
+
+        let mut index = EsmIndex::default();
+        index.npcs.insert(
+            PLAYER_NPC_FORM_ID,
+            NpcRecord {
+                factions: vec![byroredux_plugin::esm::records::FactionMembership {
+                    faction_form_id: 0x1B2A4,
+                    rank: 1,
+                }],
+                ..Default::default()
+            },
+        );
+        let mut world = World::new();
+        world.insert_resource(crate::cell_loader::LoadedCellIndex(Arc::new(index)));
+        let player = world.spawn();
+        // The pre-load session's live ranks: the authored faction drifted
+        // to rank 5, and the alias-injected membership the save does not
+        // carry sits beside it.
+        world.insert(
+            player,
+            FactionRanks::from_pairs([(0x1B2A4, 5), (0x0000_DEAD, 0)]),
+        );
+
+        reset_player_factions_to_record(&mut world, player);
+
+        {
+            let ranks = world
+                .get::<FactionRanks>(player)
+                .expect("an authored membership re-seeds the component");
+            assert_eq!(ranks.rank(0x1B2A4), Some(1), "record rank wins over session drift");
+            assert_eq!(
+                ranks.rank(0x0000_DEAD),
+                None,
+                "a stale alias-injected membership must not survive the load"
+            );
+        }
+
+        // Degradation: a record seeding no factions removes the component
+        // outright rather than leaving session residue behind.
+        let mut bare = EsmIndex::default();
+        bare.npcs.insert(PLAYER_NPC_FORM_ID, NpcRecord::default());
+        world.insert_resource(crate::cell_loader::LoadedCellIndex(Arc::new(bare)));
+        reset_player_factions_to_record(&mut world, player);
+        assert!(world.get::<FactionRanks>(player).is_none());
     }
 
     /// #4458 — the production path end to end: `install_catalog` builds
