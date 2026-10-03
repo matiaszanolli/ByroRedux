@@ -1,4 +1,7 @@
 //! Lift metric Starfield scene data into the common engine distance unit.
+//! FO76 authors its scene in engine units but shares Starfield's WATR DNAM
+//! decoder, and with it the per-metre absorption triplet (#5169); that one
+//! lane is the only FO76 lift.
 //!
 //! Called exactly once after a plugin's binary walk, before either public
 //! index is returned or merged. Per-record readers still expose wire values.
@@ -63,9 +66,38 @@ fn cell(cell: &mut CellData) {
     }
 }
 
+/// Per-metre WATR absorption → per-BU, for the slots the record's DNAM
+/// actually authored (offsets 4/8/12). A short or absent DNAM leaves the
+/// decoder's engine-unit defaults, which must not be lifted.
+fn watr_absorption_per_metre(water: &mut super::misc::WatrRecord) {
+    for (slot, offset) in water
+        .params
+        .absorption_coefficients
+        .iter_mut()
+        .zip([4, 8, 12])
+    {
+        if water.raw_dnam.len() >= offset + 4 {
+            *slot /= UNITS;
+        }
+    }
+}
+
 pub(super) fn normalize(index: &mut EsmIndex) {
-    if index.game != GameKind::Starfield {
-        return;
+    match index.game {
+        GameKind::Starfield => {}
+        // #5169 — FO76's WATR distances are BU (underwater fog -9000 / 850,
+        // noise falloff 4096, UV tiles 279+), but its absorption triplet is
+        // per-metre like Starfield's: five vanilla records author exactly
+        // Starfield's 0.3 / 0.075 / 0.01, and `ExtClearWaterDefault`'s
+        // 0.24 / 0.18 / 0.2 read per BU would make clear water opaque within
+        // ~4 BU (6 cm). Only that lane is lifted.
+        GameKind::Fallout76 => {
+            for water in index.waters.values_mut() {
+                watr_absorption_per_metre(water);
+            }
+            return;
+        }
+        _ => return,
     }
     for c in index
         .cells
@@ -157,17 +189,13 @@ pub(super) fn normalize(index: &mut EsmIndex) {
     // which must not be lifted. The noise UV tile sizes (120/124/128) stay
     // unlifted until a capture settles their unit.
     for water in index.waters.values_mut() {
+        watr_absorption_per_metre(water);
         let authored = |offset: usize| water.raw_dnam.len() >= offset + 4;
-        let (depth, absorption, near, far, falloff) =
-            (authored(0), authored(12), authored(40), authored(44), authored(132));
+        let (depth, near, far, falloff) =
+            (authored(0), authored(40), authored(44), authored(132));
         let p = &mut water.params;
         if depth {
             p.depth_amount *= UNITS;
-        }
-        if absorption {
-            for coefficient in &mut p.absorption_coefficients {
-                *coefficient /= UNITS;
-            }
         }
         if near {
             p.underwater_fog_near *= UNITS;

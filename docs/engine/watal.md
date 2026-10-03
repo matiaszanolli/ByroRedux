@@ -341,6 +341,11 @@ established scalar fog response. Its authored pigment concentrations remain
 in their vanilla 0..20 range and are normalized in the shader against the
 shared `STARFIELD_WATER_CONCENTRATION_REFERENCE`; `oceanness` retains its
 native 0..1 scale and feeds both absorption and forward scattering.
+FO76 shares Starfield's DNAM decoder. Its distances are engine units, but its
+absorption triplet is per-metre (five vanilla records author Starfield's exact
+0.3 / 0.075 / 0.01), so `spatial_units::normalize` lifts that lane alone ÷70
+(#5169). Its fourth concentration lane is authored 0.16–75.7 — not a 0..1
+oceanness — and keeps the zero sentinel; what it controls is **OPEN**.
 Its leading DNAM float is carried independently as `depth_amount`; xEdit's
 current Starfield definition names it `Depth Amount`, so it is not reused as
 an above-water fog distance. Creation-2 records retain the canonical fog

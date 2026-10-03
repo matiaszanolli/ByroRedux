@@ -789,7 +789,11 @@ fn resolve_water_specular(rec: &esm::records::misc::WatrRecord, mat: &mut WaterM
     }
 }
 
-fn resolve_water_noise_and_rain(rec: &esm::records::misc::WatrRecord, mat: &mut WaterMaterial) {
+fn resolve_water_noise_and_rain(
+    rec: &esm::records::misc::WatrRecord,
+    mat: &mut WaterMaterial,
+    game: GameKind,
+) {
     mat.wave_amplitude = rec.params.wave_amplitude;
     mat.wave_frequency = rec.params.wave_frequency;
     mat.blend_normals = rec.blend_normals.unwrap_or(true);
@@ -913,9 +917,19 @@ fn resolve_water_noise_and_rain(rec: &esm::records::misc::WatrRecord, mat: &mut 
             *dst = (src / STARFIELD_WATER_CONCENTRATION_REFERENCE).clamp(0.0, 1.0);
         }
     }
-    if oceanness.is_finite() && oceanness > 0.0 {
+    if concentration_lane3_is_oceanness(game) && oceanness.is_finite() && oceanness > 0.0 {
         mat.concentration[3] = oceanness.clamp(0.0, 1.0);
     }
+}
+
+/// Whether WATR DNAM's fourth concentration lane is Starfield's 0..1
+/// `oceanness` control. FO76 shares the decoder but authors that lane
+/// 0.16–75.7 (39 of its 47 vanilla records above 1) — a different quantity
+/// whose meaning is unestablished. Clamping it into `oceanness` turned most
+/// FO76 water, puddles included, into full ocean, so it keeps the zero
+/// sentinel until a source settles it (#5169). No other game authors it.
+fn concentration_lane3_is_oceanness(game: GameKind) -> bool {
+    matches!(game, GameKind::Starfield)
 }
 
 fn resolve_water_layer_motion(
@@ -1138,7 +1152,7 @@ pub(crate) fn resolve_water_material(
         if let Some(rec) = waters.get(&form) {
             resolve_water_colors(waters, rec, &mut mat);
             resolve_water_specular(rec, &mut mat);
-            resolve_water_noise_and_rain(rec, &mut mat);
+            resolve_water_noise_and_rain(rec, &mut mat, game);
             mat.source_form = rec.form_id;
             (kind, flow) = classify_water_kind_and_flow(rec, &mut mat, game);
             (normal_path, noise_paths) = resolve_water_texture_paths(rec, kind);
@@ -3469,7 +3483,7 @@ mod tests {
         );
         let mut waters = HashMap::new();
         waters.insert(rec.form_id, rec);
-        let (mat, _, _, _, _) = resolve_water_material(&waters, Some(0x000A_0008), GameKind::Skyrim);
+        let (mat, _, _, _, _) = resolve_water_material(&waters, Some(0x000A_0008), GameKind::Starfield);
         assert_eq!(mat.absorption_coefficients, [0.16558, 0.09624, 0.07627]);
         // #5151 — the per-BU values the parse boundary produces for the same
         // vanilla record must pass the translate floor unclipped.
@@ -3517,9 +3531,34 @@ mod tests {
             );
             let mut waters = HashMap::new();
             waters.insert(rec.form_id, rec);
-            let (mat, _, _, _, _) = resolve_water_material(&waters, Some(0x000A_000A), GameKind::Skyrim);
+            let (mat, _, _, _, _) = resolve_water_material(&waters, Some(0x000A_000A), GameKind::Starfield);
             assert_eq!(mat.concentration, [1.0, 0.0, 0.0, expected], "oceanness {authored}");
         }
+    }
+
+    /// #5169 — FO76 shares Starfield's DNAM decoder but authors the fourth
+    /// concentration lane 0.16–75.7, not a 0..1 oceanness. It keeps the zero
+    /// sentinel there instead of clamping most FO76 water to full ocean; the
+    /// same record under Starfield still promotes, so the gate is the game.
+    #[test]
+    fn fo76_fourth_concentration_lane_is_not_promoted_to_oceanness() {
+        let rec = calm_watr(
+            0x000A_000B,
+            "ExtMurkyWaterDefault",
+            WaterParams {
+                concentration: [0.00237, 0.0018, 0.00098, 8.0],
+                ..WaterParams::default()
+            },
+        );
+        let mut waters = HashMap::new();
+        waters.insert(rec.form_id, rec);
+        let (fo76, _, _, _, _) =
+            resolve_water_material(&waters, Some(0x000A_000B), GameKind::Fallout76);
+        assert_eq!(fo76.concentration[3], 0.0);
+        let (sf, _, _, _, _) =
+            resolve_water_material(&waters, Some(0x000A_000B), GameKind::Starfield);
+        assert_eq!(sf.concentration[3], 1.0);
+        assert_eq!(fo76.concentration[..3], sf.concentration[..3]);
     }
 
     #[test]

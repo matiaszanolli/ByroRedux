@@ -259,14 +259,23 @@ fn starfield_public_index_lifts_watr_dnam_distances() {
     assert_eq!(p.noise_falloff, 100.0 * 70.0);
 }
 
-/// Companion: FO76 (same DNAM decoder, engine-unit data) is never lifted.
+/// #5169 — FO76 shares the DNAM decoder; its lengths are engine units and
+/// stay put, but its absorption triplet is per-metre (five vanilla records
+/// author Starfield's exact 0.3 / 0.075 / 0.01) and takes the same ÷70.
 #[test]
-fn fo76_index_watr_keeps_authored_units() {
+fn fo76_index_watr_lifts_only_the_absorption_triplet() {
     let index = parse_esm(&water_plugin(279.0)).unwrap();
     assert_eq!(index.game, GameKind::Fallout76);
     let p = &index.waters[&0x18].params;
     assert_eq!(p.depth_amount, 8.0);
-    assert_eq!(p.absorption_coefficients, [0.16558, 0.096239, 0.076271]);
+    for (actual, metric) in p
+        .absorption_coefficients
+        .into_iter()
+        .zip([0.16558f32, 0.096239, 0.076271])
+    {
+        assert!((actual - metric / 70.0).abs() < 1.0e-9);
+    }
+    assert_eq!(p.underwater_fog_near, 0.0);
     assert_eq!(p.underwater_fog_far, 75.0);
     assert_eq!(p.noise_falloff, 100.0);
 }
