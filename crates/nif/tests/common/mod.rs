@@ -979,6 +979,27 @@ pub enum BaselineRegression {
     },
 }
 
+/// The corpus file count recorded in a baseline TSV's `#` header line
+/// (`total=N`), if the header is present and well-formed.
+///
+/// [`PerBlockHistogram::from_tsv`] deliberately drops `#` lines — the
+/// histogram only needs the rows. The per-block baseline harness reads
+/// this separately because the two failure modes it must tell apart live
+/// in that header: a `total=` that moved means the **install** was
+/// rewritten under the baseline (every per-type count is measured against
+/// a different corpus, so per-type diffs are noise), while an unchanged
+/// `total=` with per-type movement is same-corpus redistribution — the
+/// shape a real parser loss takes (#4628). Without this check the two
+/// read identically in the comparator's output.
+pub fn baseline_corpus_total(text: &str) -> Option<usize> {
+    let header = text.lines().find(|l| l.starts_with('#'))?;
+    header
+        .split('\t')
+        .find_map(|field| field.strip_prefix("total="))?
+        .parse()
+        .ok()
+}
+
 /// Compare a freshly-built histogram against a baseline. Improvements
 /// (current `unknown` < baseline, or current `parsed` > baseline) are
 /// silent — regenerate the baseline when fixing a parser. Returns one
@@ -1188,6 +1209,26 @@ mod tests {
         // baseline must not silently pass the regression gate.
         let tsv = "NiNode\t10\n";
         assert!(PerBlockHistogram::from_tsv(tsv).is_err());
+    }
+
+    // #4628 — the header's `total=` is the corpus-size record the
+    // baseline harness needs, and `from_tsv` alone cannot supply it.
+    #[test]
+    fn baseline_corpus_total_reads_the_header_but_not_the_rows() {
+        // `to_tsv`'s exact production shape (via `per_block_tsv_header`).
+        let tsv = "# nif_stats per-block histogram\ttotal=32709\nNiNode\t10\t0\n";
+        assert_eq!(baseline_corpus_total(tsv), Some(32709));
+
+        // No header, or a header without the field, is `None` — the
+        // caller treats that as "no corpus record to check", not as 0.
+        assert_eq!(baseline_corpus_total("NiNode\t10\t0\n"), None);
+        assert_eq!(
+            baseline_corpus_total("# some other comment\tclean=1\nNiNode\t10\t0\n"),
+            None
+        );
+        // A row that happens to contain `total=` must not answer for
+        // the header.
+        assert_eq!(baseline_corpus_total("total=5\t10\t0\n"), None);
     }
 
     // R3 regression-detection rules. Improvements (current better than

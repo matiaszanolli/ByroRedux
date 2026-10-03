@@ -183,8 +183,30 @@ fn run_baseline(game: Game) {
         )
     });
 
+    // #4628 — corpus-size drift check FIRST, ahead of the per-type
+    // comparator, because its output is the explanation the comparator
+    // cannot provide: a moved `total=` means the install was rewritten
+    // after the baseline was captured, so every per-type count below is
+    // measured against a *different corpus* and reads like parser loss
+    // even when the parser is innocent. A same-size redistribution (the
+    // 2026-09 Skyrim SE `BSDynamicTriShape`↔`BSTriShape` ±86 swap) is the
+    // one shape this check cannot see — that stays the comparator's job.
+    let corpus_drift = match common::baseline_corpus_total(&text) {
+        Some(baseline_total) if baseline_total != total_files => {
+            eprintln!(
+                "[{}] CORPUS DRIFT: baseline records total={} NIFs, the current \
+                 install walks {} — the game data moved under the baseline",
+                game.label(),
+                baseline_total,
+                total_files
+            );
+            Some(baseline_total)
+        }
+        _ => None,
+    };
+
     let regressions = compare_histograms(&hist, &baseline);
-    if regressions.is_empty() {
+    if regressions.is_empty() && corpus_drift.is_none() {
         eprintln!(
             "[{}] per-block baseline OK ({} types matched)",
             game.label(),
@@ -219,6 +241,19 @@ fn run_baseline(game: Game) {
             ),
         }
     }
+    if let Some(baseline_total) = corpus_drift {
+        panic!(
+            "[{}] checked-in baseline is stale: its header records total={} NIFs \
+             but the current install walks {} — per-type diffs above (if any) are \
+             corpus movement, not parser loss. Regenerate with \
+             `BYROREDUX_REGEN_BASELINES=1 cargo test -p byroredux-nif --test \
+             per_block_baselines -- --ignored` (#4628).",
+            game.label(),
+            baseline_total,
+            total_files
+        );
+    }
+
     panic!(
         "[{}] per-block-type histogram regressed against checked-in baseline. \
          Investigate the listed types; if the change is intentional, regenerate \

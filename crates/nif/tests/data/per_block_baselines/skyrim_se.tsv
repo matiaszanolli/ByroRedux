@@ -7,7 +7,7 @@ BSDamageStage	13	0
 BSDecalPlacementVectorExtraData	61	0
 BSDismemberSkinInstance	15728	0
 BSDistantObjectLargeRefExtraData	1522	0
-BSDynamicTriShape	21140	0
+BSDynamicTriShape	21054	0
 BSEffectShaderProperty	8116	0
 BSEffectShaderPropertyColorController	981	0
 BSEffectShaderPropertyFloatController	8682	0
@@ -44,7 +44,7 @@ BSStripPSysData	176	0
 BSStripParticleSystem	176	0
 BSSubIndexTriShape	6760	0
 BSTreeNode	55	0
-BSTriShape	71303	0
+BSTriShape	71389	0
 BSValueNode	791	0
 BSWaterShaderProperty	33	0
 BSWindModifier	10	0

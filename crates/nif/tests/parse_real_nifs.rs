@@ -537,18 +537,23 @@ fn parse_rate_fo4_all_meshes() {
 /// has zero — every `BSDistantObjectExtraData` block (#3461) sits in the
 /// content no gate opened.
 ///
-/// The 16 `*UpdateMain` archives are the live-service patch stack; each
-/// carries mesh overrides, so they are gated individually like the DLC
-/// archives on the other titles.
-///
 /// MEASURED 2026-08-29, and the reason this gate was worth adding: the two
-/// `GeneratedMeshes` archives carry a large truncation tail that no gate had
-/// ever seen. `GeneratedMeshes02` is **0.00% clean — all 2,049 of its NIFs
-/// truncate**, and `GeneratedMeshes01` is 95.03% (1,007 truncated). Both are
-/// 100% *recoverable*, so nothing hard-fails and the headline gate stays
-/// green; the content is distant-LOD, which points at the same
-/// `BSDistantObjectExtraData` dispatch gap as #3461. Every other FO76 archive
-/// is 100.00% clean. Total: 20/20 archives, 168,208 NIFs.
+/// `GeneratedMeshes` archives carried a large truncation tail no gate had
+/// ever seen (`GeneratedMeshes02` 0.00% clean, `GeneratedMeshes01` 95.03%),
+/// pointing at the `BSDistantObjectExtraData` dispatch gap of #3461.
+/// #4628 — re-measured 2026-10-03 on the post-2026-09-20 install: all five
+/// archives are 100.00% clean (102,980 NIFs total), so the two
+/// `GeneratedMeshes` floors were re-tightened from 0.945/0.0 to the
+/// measured−0.5% convention — at 0.0 the gate would have tolerated a full
+/// return of the 2,055-NIF truncation tail against an actual zero.
+///
+/// #4628 — the 16 `*UpdateMain` patch archives this list carried (00–15,
+/// measured 2026-08-29) are gone from the current install: the 2026-09-20
+/// rewrite of `SeventySix - Meshes.ba2` (58,469 → 63,305 NIFs) folded the
+/// live-service patch stack back into the base archive, so all 16 entries
+/// resolved to "skipping: not found" and silently un-walked the gate.
+/// `SeventySix - Startup.ba2` (12 NIFs) ships with the base game and is the
+/// remaining mesh-bearing archive the old list missed.
 ///
 /// NOTE (#3466): the `block_coverage_baselines` / `per_block_baselines`
 /// ceilings are deliberately NOT regenerated alongside this. Those harnesses
@@ -573,86 +578,26 @@ fn parse_rate_fo76_all_meshes() {
                 name: "SeventySix - StaticMeshes.ba2",
                 min_clean: 0.995,
             },
-            // 95.03% clean measured 2026-08-29 (19,238/20,245; 1,007 truncated,
-            // 100% recoverable). Floor is measured−0.5% per the convention, so
-            // it gates a REGRESSION from today's state — it is not an
-            // endorsement of the tail. See the module note below.
+            // 100.00% clean re-measured 2026-10-03 (#4628 install rewrite;
+            // 20,270 NIFs now). Floor is measured−0.5% per the convention —
+            // it was 0.945 against the pre-rewrite 95.03% with its 1,007-NIF
+            // truncation tail.
             ArchiveSpec {
                 name: "SeventySix - GeneratedMeshes01.ba2",
-                min_clean: 0.945,
+                min_clean: 0.995,
             },
-            // 0.00% clean measured 2026-08-29 — every one of its 2,049 NIFs
-            // truncates (100% recoverable, so no hard failure). A clean floor
-            // cannot gate anything below 0, so this entry is carried by the
-            // `recoverable >= 100%` assertion alone; the 0.0 is honest
-            // bookkeeping, not a threshold. Raise it the moment the tail is
-            // fixed, or the fix has nothing pinning it.
+            // 100.00% clean re-measured 2026-10-03 (2,055 NIFs now; the
+            // pre-rewrite archive truncated every NIF it had). Floor is
+            // measured−0.5% per the convention; the old 0.0 floor was honest
+            // bookkeeping for a tail this install no longer ships.
             ArchiveSpec {
                 name: "SeventySix - GeneratedMeshes02.ba2",
-                min_clean: 0.0,
-            },
-            ArchiveSpec {
-                name: "SeventySix - 00UpdateMain.ba2",
                 min_clean: 0.995,
             },
+            // 12 NIFs, added with the #4628 list repair. Floor measured−0.5%
+            // per the convention.
             ArchiveSpec {
-                name: "SeventySix - 01UpdateMain.ba2",
-                min_clean: 0.995,
-            },
-            ArchiveSpec {
-                name: "SeventySix - 02UpdateMain.ba2",
-                min_clean: 0.995,
-            },
-            ArchiveSpec {
-                name: "SeventySix - 03UpdateMain.ba2",
-                min_clean: 0.995,
-            },
-            ArchiveSpec {
-                name: "SeventySix - 04UpdateMain.ba2",
-                min_clean: 0.995,
-            },
-            ArchiveSpec {
-                name: "SeventySix - 05UpdateMain.ba2",
-                min_clean: 0.995,
-            },
-            ArchiveSpec {
-                name: "SeventySix - 06UpdateMain.ba2",
-                min_clean: 0.995,
-            },
-            ArchiveSpec {
-                name: "SeventySix - 07UpdateMain.ba2",
-                min_clean: 0.995,
-            },
-            ArchiveSpec {
-                name: "SeventySix - 08UpdateMain.ba2",
-                min_clean: 0.995,
-            },
-            ArchiveSpec {
-                name: "SeventySix - 09UpdateMain.ba2",
-                min_clean: 0.995,
-            },
-            ArchiveSpec {
-                name: "SeventySix - 10UpdateMain.ba2",
-                min_clean: 0.995,
-            },
-            ArchiveSpec {
-                name: "SeventySix - 11UpdateMain.ba2",
-                min_clean: 0.995,
-            },
-            ArchiveSpec {
-                name: "SeventySix - 12UpdateMain.ba2",
-                min_clean: 0.995,
-            },
-            ArchiveSpec {
-                name: "SeventySix - 13UpdateMain.ba2",
-                min_clean: 0.995,
-            },
-            ArchiveSpec {
-                name: "SeventySix - 14UpdateMain.ba2",
-                min_clean: 0.995,
-            },
-            ArchiveSpec {
-                name: "SeventySix - 15UpdateMain.ba2",
+                name: "SeventySix - Startup.ba2",
                 min_clean: 0.995,
             },
         ],
