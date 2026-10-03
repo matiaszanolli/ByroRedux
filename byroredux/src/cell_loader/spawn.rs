@@ -1143,17 +1143,21 @@ pub(crate) fn spawn_nif_lights(
         if !is_spawnable_nif_light(light) {
             continue;
         }
-        // #3557 (RT-11) — de-duplicate known exporter-artifact default
-        // lights by name. Gated on the allowlist first (cheap, and
-        // almost always false), so the `find_by_name` scan only runs
-        // for the rare artifact case, not on every ordinary content
-        // light. Ordinary lights keep spawning even if two REFRs
-        // happen to share a name — this only skips names confirmed to
-        // be exporter leftovers, not a general "first name wins" rule.
+        // #5189 (REN-D10-2026-10-03-01) — known exporter-artifact lights
+        // NEVER spawn as scene lights. Pre-fix this arm de-duplicated
+        // them (first carrier wins), which still left one full-white,
+        // shadow-traced directional lighting the whole scene: the
+        // `__MAX_Default_Light` ± key/fill pair is a 3ds Max exporter
+        // leftover scoped to its own subtree by the legacy engine
+        // (NiNode `effects` lists, pre-10.1.0.0), has no LIGH authority,
+        // and every vanilla instance is the artifact (48 Oblivion
+        // carriers, 0 in FNV/FO3). #5123 fixed only the multiplicity.
+        // Gated on the allowlist first (cheap, and almost always false)
+        // so ordinary lights keep spawning even if two REFRs share a
+        // name — this is a confirmed-name skip, not a general
+        // "first name wins" rule.
         if let Some(ref nif_name) = light.name {
-            if is_known_exporter_artifact_light_name(nif_name)
-                && world.find_by_name(nif_name).is_some()
-            {
+            if is_known_exporter_artifact_light_name(nif_name) {
                 continue;
             }
         }

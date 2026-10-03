@@ -48,10 +48,16 @@ pub struct ImportedLight {
     /// Outer cone half-angle in radians (0.0 for non-spot).
     pub outer_angle: f32,
     /// Names of the scene-graph nodes this light is restricted to,
-    /// resolved from the `NiDynamicEffect.Affected Nodes` Ptr list. An
-    /// empty `Vec` means "no restriction" (the light affects every
-    /// nearby surface). Skyrim+ FO4 (BSVER >= 130) drops this list at
-    /// the wire level, so it's always empty there. Renderer-side
+    /// resolved from the `NiDynamicEffect.Affected Nodes` Ptr list.
+    /// #5189 — an empty `Vec` does NOT mean "no restriction": Gamebryo
+    /// scopes a dynamic effect to its registered affected nodes
+    /// (`AttachAffectedNode` — "causes the effect to affect the entire
+    /// subtree rooted at the given object"), and pre-10.1.0.0 files
+    /// (Oblivion) carry no on-light list at all, so the scope is
+    /// serialized on the node side (`NiNode.effects`) and the empty
+    /// field means "scope carried elsewhere or none" — never
+    /// unrestricted. Skyrim+ FO4 (BSVER >= 130) drops the list at the
+    /// wire level, so it's always empty there. Renderer-side
     /// light-target filtering wiring is a separate change — pre-#335
     /// the importer dropped the field entirely. See #335.
     pub affected_node_names: Vec<Arc<str>>,
@@ -111,8 +117,8 @@ pub struct ImportedTextureEffect {
     /// Names of the scene-graph nodes this effect is restricted to,
     /// resolved from the `NiDynamicEffect.Affected Nodes` Ptr list.
     /// Same shape as [`ImportedLight::affected_node_names`] (#335) —
-    /// empty `Vec` means "no restriction" (the projection affects
-    /// every nearby surface).
+    /// empty means "scope carried elsewhere or none" (#5189), never
+    /// "no restriction".
     pub affected_node_names: Vec<Arc<str>>,
 }
 

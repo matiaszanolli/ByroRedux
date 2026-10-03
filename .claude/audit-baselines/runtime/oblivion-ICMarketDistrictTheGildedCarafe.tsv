@@ -35,6 +35,13 @@
 # row makes the mode part of the contract. skin_pool_* now come from the
 # bench: line's `skin=L/M+S` token, read at the measured frame. Draw-split
 # invariant holds: 78 <= 132 <= 330, 5 <= 2 x 78.
+# regenerated: 2026-10-03 (#5189 — CONTRACT-DERIVED regen, not live-captured:
+# light_count_directional 1 -> 0. The surviving artifact emitter was one half
+# of earshuman.nif's `__MAX_Default_Light` ± pair, kept by #5123's
+# first-carrier-wins de-dup. Gamebryo scopes the pair to its own subtree
+# (NiNode effects, pre-10.1.0.0), it has no LIGH authority, and every vanilla
+# instance is the exporter artifact (48 Oblivion carriers, 0 in FNV/FO3), so
+# the artifact no longer spawns as a scene light at all.
 # regenerated: 2026-09-29 (#5123 — CONTRACT-DERIVED regen, not live-captured:
 # light_count_directional 2 -> 1. The 2 measured both halves of Oblivion
 # earshuman.nif's `__MAX_Default_Light` ± pair: #3557's de-dup allowlist
@@ -131,7 +138,7 @@ tex_missing_base_color	0
 tex_missing_all_slots	0
 mesh_cache_failed_count	0
 light_count_point	8
-light_count_directional	1
+light_count_directional	0
 skin_pool_live	9
 skin_pool_max	1364
 skin_pool_overflow_attempts	0

@@ -288,16 +288,19 @@ fn light_radius_or_default_handles_nan() {
     assert!(result.is_finite());
 }
 
-// ── #3557 (RT-11) — exporter-artifact default-light de-dup ────────
+// ── #3557 (RT-11) → #5189 — exporter-artifact default lights ────────
 
-/// The headline regression: two REFRs each placing a mesh that carries
-/// an identically-named `__max_default_light` node must yield exactly
-/// ONE `LightSource` entity, not two byte-identical ones. Simulated
-/// here as two separate `spawn_nif_lights` calls sharing one `World`
-/// (matching how `spawn_placed_instances` is invoked once per REFR from
-/// the cell loader's REFR loop — see the issue's own evidence).
+/// The headline regression, as reshaped by #5189: two REFRs each placing
+/// a mesh that carries an identically-named `__max_default_light` node
+/// must yield ZERO `LightSource` entities. (#3557's original contract was
+/// "exactly one" — the de-dup still left one full-white, shadow-traced
+/// directional lighting the whole scene, which the legacy engine scoped
+/// to its own subtree.) Simulated here as two separate
+/// `spawn_nif_lights` calls sharing one `World` (matching how
+/// `spawn_placed_instances` is invoked once per REFR from the cell
+/// loader's REFR loop).
 #[test]
-fn spawn_nif_lights_deduplicates_known_exporter_artifact_by_name() {
+fn spawn_nif_lights_drops_known_exporter_artifact_by_name() {
     let mut world = World::new();
     world.insert_resource(byroredux_core::string::StringPool::new());
     let artifact_light = || ImportedLight {
@@ -337,9 +340,9 @@ fn spawn_nif_lights_deduplicates_known_exporter_artifact_by_name() {
         .map(|q| q.iter().count())
         .unwrap_or(0);
     assert_eq!(
-        count, 1,
-        "two REFRs contributing the same synthetic default light must \
-         yield one emitter, not double its contribution"
+        count, 0,
+        "an allowlisted exporter-artifact light never spawns — #5189 \
+         removed the survivor #3557's de-dup kept"
     );
 }
 
@@ -406,19 +409,19 @@ fn known_exporter_artifact_light_name_matches_only_the_documented_name() {
     assert!(is_known_exporter_artifact_light_name("__MAX_DEFAULT_LIGHT"));
 }
 
-/// #5123 (RT-2026-09-29-02) — the headline regression: Oblivion's
+/// #5123 (RT-2026-09-29-02) → #5189 (REN-D10-2026-10-03-01) — Oblivion's
 /// `earshuman.nif` carries TWO `NiDirectionalLight` nodes named
 /// `__MAX_Default_Light` (the classic Max key/fill ± pair), and the
 /// player body / NPC head assembly loads it more than once per process.
-/// Each load re-spawned both artifact lights because the #3557 allowlist
-/// compared case-sensitively against the lowercased dump name. Simulated
-/// as two consecutive `spawn_nif_lights` calls — skeleton+head first,
-/// the player body's own ear part second — using the EXACT vanilla
-/// spelling. After the fix only the first NIF's first artifact node
-/// spawns; the second node in the same call is skipped by the freshly
-/// inserted `Name`, and every later load by it too.
+/// #5123 fixed the multiplicity (case-insensitive de-dup, first carrier
+/// wins); #5189 removed the survivor entirely: the artifact is scoped to
+/// its own subtree by the legacy engine, has no LIGH authority, and every
+/// vanilla instance is the exporter artifact — so an allowlisted name
+/// NEVER spawns as a scene light, on any load, in any order. Simulated
+/// as two consecutive `spawn_nif_lights` calls using the EXACT vanilla
+/// spelling.
 #[test]
-fn spawn_nif_lights_deduplicates_vanilla_cased_max_artifact_across_loads() {
+fn spawn_nif_lights_never_spawns_known_exporter_artifact_lights() {
     let mut world = World::new();
     world.insert_resource(byroredux_core::string::StringPool::new());
     let ear_pair = || {
@@ -446,8 +449,7 @@ fn spawn_nif_lights_deduplicates_vanilla_cased_max_artifact_across_loads() {
         ]
     };
 
-    // First actor-part load (e.g. an NPC's head assembly): the ± pair's
-    // first node spawns, its sibling is deduplicated by name.
+    // First actor-part load (e.g. an NPC's head assembly).
     spawn_nif_lights(
         &mut world,
         &ear_pair(),
@@ -457,8 +459,7 @@ fn spawn_nif_lights_deduplicates_vanilla_cased_max_artifact_across_loads() {
         None,
         1.0,
     );
-    // Second load (the player body's own earshuman.nif): both nodes must
-    // deduplicate against the surviving first emitter.
+    // Second load (the player body's own earshuman.nif).
     spawn_nif_lights(
         &mut world,
         &ear_pair(),
@@ -474,9 +475,10 @@ fn spawn_nif_lights_deduplicates_vanilla_cased_max_artifact_across_loads() {
         .map(|q| q.iter().count())
         .unwrap_or(0);
     assert_eq!(
-        count, 1,
-        "two earshuman loads must yield ONE artifact emitter total — \
-         pre-#5123 the case-sensitive allowlist spawned all four"
+        count, 0,
+        "the Max exporter artifact never spawns as a scene light — \
+         pre-#5189 one full-white shadow-traced directional survived the \
+         de-dup and lit the whole scene"
     );
 }
 
