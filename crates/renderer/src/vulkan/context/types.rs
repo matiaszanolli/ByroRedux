@@ -10,6 +10,7 @@
 //! `context::DrawCommand`-style path across the tree is unchanged.
 
 use super::super::material::GpuMaterial;
+use super::super::scene_buffer::MATERIAL_KIND_MAX_LIGHTING_SHADER;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -369,12 +370,20 @@ pub struct DrawCommand {
 impl DrawCommand {
     /// Conservative certificate for the early-test shader. This is evaluated
     /// from the current draw, including animated alpha/depth state, not cached
-    /// at import. Only the default lit material kind (0) is admitted: new kinds
-    /// must explicitly be reviewed against every discard in triangle.frag.
+    /// at import. #5057 — the admitted material kinds are the reviewed set:
+    /// default lit (0) plus the `BSLightingShaderProperty` shader types
+    /// 1..=[`MATERIAL_KIND_MAX_LIGHTING_SHADER`] (16) the NIF importer
+    /// forwards verbatim, all of which only change shading. Every `discard`
+    /// in `triangle.frag` lives in arms this certificate already excludes
+    /// (alpha test, blend-only cull, effect-shader 101, fire-refraction
+    /// 103) and the shader never writes `gl_FragDepth` — pinned by
+    /// `early_fragment_kinds_have_no_discard_or_depth_write_path`. New
+    /// kinds must explicitly be reviewed against every discard in
+    /// triangle.frag.
     pub fn allows_early_fragment_tests(&self) -> bool {
         !self.alpha_blend
             && self.alpha_threshold == 0.0
-            && self.material_kind == 0
+            && self.material_kind <= MATERIAL_KIND_MAX_LIGHTING_SHADER
             && self.z_test
             && self.z_write
             && matches!(self.z_function, 1 | 3)
@@ -1087,5 +1096,149 @@ impl ScreenshotHandle {
         // #1174 — recover from poison. Aliased to the same Arc<Mutex>
         // as `ScreenshotBridge.result`; matching policy.
         self.result.lock().unwrap_or_else(|e| e.into_inner()).take()
+    }
+}
+
+#[cfg(test)]
+mod early_fragment_kind_tests {
+    //! #5057 — pins the review behind `allows_early_fragment_tests`' kind
+    //! allow-list (0..=`MATERIAL_KIND_MAX_LIGHTING_SHADER`) directly against
+    //! `triangle.frag`'s source: no `gl_FragDepth` write may appear at all,
+    //! and no `discard;` may be governed by an admitted-kind branch. The
+    //! census side (exactly the known discards) is pinned separately in
+    //! `reflect.rs`'s `discard`-count guard, which forces re-review of this
+    //! certificate whenever a new coverage path lands.
+
+    use super::*;
+
+    /// Strip `//` line comments and `/* */` block comments (byte-wise; the
+    /// file is UTF-8 with smart quotes in comments) so brace counting
+    /// cannot be corrupted by commented-out code.
+    fn strip_glsl_comments(src: &str) -> Vec<u8> {
+        let bytes = src.as_bytes();
+        let mut out = Vec::with_capacity(bytes.len());
+        let mut i = 0;
+        while i < bytes.len() {
+            match bytes[i] {
+                b'/' if i + 1 < bytes.len() && bytes[i + 1] == b'/' => {
+                    while i < bytes.len() && bytes[i] != b'\n' {
+                        i += 1;
+                    }
+                }
+                b'/' if i + 1 < bytes.len() && bytes[i + 1] == b'*' => {
+                    i += 2;
+                    while i + 1 < bytes.len() && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
+                        i += 1;
+                    }
+                    i = (i + 2).min(bytes.len());
+                    out.push(b' ');
+                }
+                _ => {
+                    out.push(bytes[i]);
+                    i += 1;
+                }
+            }
+        }
+        out
+    }
+
+    /// Kind value a `materialKind ==` comparison names. `None` means the
+    /// token is a constant this test does not know; the caller then treats
+    /// the branch as admitted (kind 0) so the test fails loudly instead of
+    /// silently passing an unmapped exclusion.
+    fn compared_kind(token: &str) -> Option<u32> {
+        let named = [
+            ("MATERIAL_KIND_GLASS", 100),
+            ("MATERIAL_KIND_EFFECT_SHADER", 101),
+            ("MATERIAL_KIND_NO_LIGHTING", 102),
+            ("MATERIAL_KIND_FIRE_REFRACTION", 103),
+            ("MATERIAL_KIND_MULTI_LAYER_PARALLAX", 11),
+        ];
+        if let Some(literal) = token.strip_suffix('u').and_then(|t| t.parse().ok()) {
+            return Some(literal);
+        }
+        named
+            .iter()
+            .find(|(name, _)| token.starts_with(*name))
+            .map(|&(_, value)| value)
+    }
+
+    #[test]
+    fn early_fragment_kinds_have_no_discard_or_depth_write_path() {
+        let src = strip_glsl_comments(include_str!("../../../shaders/triangle.frag"));
+
+        // An early fragment test makes the fixed-function depth write happen
+        // before the shader body; any `gl_FragDepth` write would be
+        // unobservable, so the certificate requires the shader never writes
+        // it. (Reads would also spell `gl_FragDepth`; none exist.)
+        assert!(
+            !src.windows(b"gl_FragDepth".len()).any(|w| w == b"gl_FragDepth"),
+            "triangle.frag writes gl_FragDepth — the early-test certificate \
+             (DrawCommand::allows_early_fragment_tests) is unsound until the \
+             write moves behind the certificate's exclusions (#5057)"
+        );
+
+        // Walk the stripped source tracking brace depth and the stack of open
+        // `materialKind ==` guards; every discard must answer to a
+        // non-admitted kind, or to no kind guard at all (the alpha-test /
+        // blend arms the certificate excludes through alpha_threshold and
+        // alpha_blend).
+        let needle = b"materialKind ==";
+        let mut depth: i32 = 0;
+        let mut open_guards: Vec<u32> = Vec::new();
+        let mut guard_depths: Vec<i32> = Vec::new();
+        let mut discards_seen = 0usize;
+        let mut i = 0;
+        while i < src.len() {
+            match src[i] {
+                b'{' => depth += 1,
+                b'}' => {
+                    depth -= 1;
+                    // Guards whose block just closed stop governing.
+                    while let Some(&guard_depth) = guard_depths.last() {
+                        if guard_depth >= depth {
+                            open_guards.pop();
+                            guard_depths.pop();
+                        } else {
+                            break;
+                        }
+                    }
+                }
+                _ if src[i..].starts_with(needle) => {
+                    let rest = &src[i + needle.len()..];
+                    let token: String = rest
+                        .iter()
+                        .skip_while(|b| b.is_ascii_whitespace())
+                        .take_while(|b| b.is_ascii_alphanumeric() || **b == b'_')
+                        .map(|b| *b as char)
+                        .collect();
+                    let kind = compared_kind(&token).unwrap_or(0);
+                    open_guards.push(kind);
+                    guard_depths.push(depth);
+                }
+                _ if src[i..].starts_with(b"discard;") => {
+                    discards_seen += 1;
+                    if let Some(&kind) = open_guards.last() {
+                        assert!(
+                            kind > MATERIAL_KIND_MAX_LIGHTING_SHADER,
+                            "discard; at byte {i} sits under materialKind {kind}, \
+                             inside the early-test allow-list \
+                             (0..={MATERIAL_KIND_MAX_LIGHTING_SHADER}); move it \
+                             behind the certificate's exclusions or extend the \
+                             review (#5057)"
+                        );
+                    }
+                    i += b"discard;".len();
+                    continue;
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+        assert!(
+            discards_seen >= 6,
+            "expected the six known discards; found {discards_seen} — the \
+             scanner broke or the census changed (reflect.rs pins the count)"
+        );
     }
 }

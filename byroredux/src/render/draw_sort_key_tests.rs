@@ -20,8 +20,21 @@ fn opaque_early_tests_reject_every_uncertified_coverage_or_depth_state() {
         assert!(!other.allows_early_fragment_tests());
         assert_ne!(draw_sort_key(&ordinary), draw_sort_key(&other));
     }
-    // Reject unknown future kinds as well as today's effects/glass/refraction.
-    for kind in (1..=104).chain([u32::MAX]) {
+    // #5057 — the reviewed BSLightingShaderProperty kinds (0..=16) admit
+    // early tests; everything above (unknown future kinds as well as
+    // today's glass/effect/no-lighting/fire-refraction) stays late-test.
+    let max_lit =
+        byroredux_renderer::vulkan::scene_buffer::MATERIAL_KIND_MAX_LIGHTING_SHADER;
+    for kind in 1..=max_lit {
+        let mut other = cmd(false, false, false);
+        other.material_kind = kind;
+        assert!(
+            other.allows_early_fragment_tests(),
+            "lighting-shader kind {kind} only changes shading — it belongs on \
+             the early-test pipeline after the #5057 review"
+        );
+    }
+    for kind in (max_lit + 1..=104).chain([u32::MAX]) {
         let mut other = cmd(false, false, false);
         other.material_kind = kind;
         assert!(!other.allows_early_fragment_tests());

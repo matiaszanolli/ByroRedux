@@ -389,6 +389,19 @@ pub const INSTANCE_FLAG_LOD_BLOCK: u32 = 1 << 9;
 /// independent sites (three Rust, one raw `11u` in triangle.frag).
 pub const MATERIAL_KIND_MULTI_LAYER_PARALLAX: u32 = 11;
 
+/// #5057 — the inclusive ceiling of the reviewed
+/// `BSLightingShaderProperty` shader types that reach the GPU verbatim as
+/// `material_kind` and only change shading (0 default lit; 1-16 env map,
+/// glow, parallax variants, face/skin/hair tint, eye env — see #344). The
+/// engine-classified kinds above it (100 glass, 101 effect, 102
+/// no-lighting, 103 fire-refraction) stay on the late-test pipeline: 101
+/// and 103 own `discard` paths in `triangle.frag`, and glass draws are
+/// alpha-blend. Admitted by `DrawCommand::allows_early_fragment_tests`,
+/// whose doc + source-scan pin
+/// (`early_fragment_kinds_have_no_discard_or_depth_write_path` in
+/// `context/types.rs`) hold the review.
+pub const MATERIAL_KIND_MAX_LIGHTING_SHADER: u32 = 16;
+
 /// `Glass` is the first such kind (#Tier C Phase 2): alpha-blend
 /// material, metalness < 0.3, not a decal. The fragment shader branches
 /// on this value to dispatch the RT reflection + refraction path —
