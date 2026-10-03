@@ -17,6 +17,7 @@ byroredux-plugin = { workspace = true }
 log = { workspace = true }
 serde = { workspace = true }
 toml = { workspace = true }
+toml_edit = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]

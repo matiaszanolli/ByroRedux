@@ -88,37 +88,59 @@ impl RootOverrides {
     /// Merge these overrides into a profiles file, preserving everything else
     /// in it.
     ///
-    /// The file is re-parsed as a generic TOML document and only the `[roots]`
-    /// table is replaced, so a hand-curated `[profiles.*]` block or
-    /// `[defaults]` table survives verbatim — including comments' absence
-    /// being the only casualty, which is why detection writes here rather than
-    /// into the block a user is likely to have edited.
+    /// Only the `[roots]` entries this set carries are edited, through a
+    /// format-preserving TOML document: comments, key order and formatting in
+    /// a hand-curated `[profiles.*]` block, `[defaults]` table — and the rest
+    /// of `[roots]` — survive byte for byte. #5166 — this used to round-trip
+    /// the whole file through `toml::Table`, which kept the values but dropped
+    /// every comment, and the launcher does it before every Play.
+    ///
+    /// When every root already holds the value it would be given, the file is
+    /// not written at all, so an unchanged detection is a read, not a rewrite.
     pub fn merge_into_file(&self, path: impl AsRef<Path>) -> Result<(), OverrideError> {
         let path = path.as_ref();
-        let mut document: toml::Table = match std::fs::read_to_string(path) {
-            Ok(text) => toml::from_str(&text).map_err(|source| OverrideError::Parse {
-                path: path.to_path_buf(),
-                source,
-            })?,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => toml::Table::new(),
+        let (original, exists) = match std::fs::read_to_string(path) {
+            Ok(text) => (text, true),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (String::new(), false),
             Err(source) => {
-                return Err(OverrideError::Write {
+                return Err(OverrideError::Read {
                     path: path.to_path_buf(),
                     source,
                 })
             }
         };
+        // Validate with the same parser `load` and the profile loader use, so
+        // a malformed file is refused with the same error type and never
+        // rewritten.
+        toml::from_str::<toml::Table>(&original).map_err(|source| OverrideError::Parse {
+            path: path.to_path_buf(),
+            source,
+        })?;
+        let mut document: toml_edit::DocumentMut =
+            original.parse().map_err(|error| OverrideError::Write {
+                path: path.to_path_buf(),
+                source: std::io::Error::other(error),
+            })?;
 
         // Start from what is already there so a detection run that finds four
         // of five games does not drop the fifth's remembered path.
-        let mut merged = match document.get(ROOTS_TABLE) {
-            Some(toml::Value::Table(existing)) => existing.clone(),
-            _ => toml::Table::new(),
-        };
-        for (profile, root) in &self.roots {
-            merged.insert(profile.clone(), toml::Value::String(root.clone()));
+        let roots = document.entry(ROOTS_TABLE).or_insert_with(toml_edit::table);
+        if !roots.is_table_like() {
+            *roots = toml_edit::table();
         }
-        document.insert(ROOTS_TABLE.to_owned(), toml::Value::Table(merged));
+        let roots = roots
+            .as_table_like_mut()
+            .expect("`[roots]` was just made a table");
+        let mut changed = false;
+        for (profile, root) in &self.roots {
+            if roots.get(profile).and_then(toml_edit::Item::as_str) != Some(root.as_str()) {
+                roots.insert(profile, toml_edit::value(root.as_str()));
+                changed = true;
+            }
+        }
+        if !changed && exists {
+            return Ok(());
+        }
 
         if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
             std::fs::create_dir_all(parent).map_err(|source| OverrideError::Write {
@@ -126,10 +148,7 @@ impl RootOverrides {
                 source,
             })?;
         }
-        let text = toml::to_string_pretty(&document).map_err(|error| OverrideError::Write {
-            path: path.to_path_buf(),
-            source: std::io::Error::other(error),
-        })?;
+        let text = document.to_string();
         let temp_path = byroredux_core::atomic_file::atomic_temp_path(path);
         // #5143 — no non-atomic fallback on `atomic_write` failure; see
         // `BootRequest::save` for why the old "Windows rename" branch
@@ -211,6 +230,70 @@ mod tests {
             Some("A.bsa")
         );
         assert_eq!(document["roots"]["fnv"].as_str(), Some("/games/FNV/Data"));
+    }
+
+    /// #5166 — comments, key order and formatting outside the edited roots
+    /// survive byte for byte; only the changed entry moves.
+    #[test]
+    fn merging_preserves_comments_and_formatting() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("profiles.toml");
+        let original = "# my install notes\n[defaults]\ngame = \"fnv\"   # the usual\n\n\
+                        [profiles.custom]\n# modded\nname = \"Modded FNV\"\nesm = \"Custom.esm\"\n\n\
+                        [roots]\n# external drive\nfo4 = \"/games/FO4/Data\"\nfnv = \"/old/FNV/Data\"\n";
+        std::fs::write(&path, original).unwrap();
+
+        overrides(&[("fnv", "/games/FNV/Data")])
+            .merge_into_file(&path)
+            .unwrap();
+
+        let written = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            written,
+            original.replace("/old/FNV/Data", "/games/FNV/Data"),
+            "only the changed root may differ"
+        );
+    }
+
+    /// #5166 — the launcher merges before every Play; an unchanged detection
+    /// must not rewrite the file at all. A write always renames a fresh temp
+    /// into place, so an unchanged inode means nothing was written.
+    #[cfg(unix)]
+    #[test]
+    fn merging_unchanged_roots_does_not_write() {
+        use std::os::unix::fs::MetadataExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("profiles.toml");
+        let found = overrides(&[("fnv", "/games/FNV/Data")]);
+        found.merge_into_file(&path).unwrap();
+        let before = std::fs::metadata(&path).unwrap().ino();
+
+        found.merge_into_file(&path).unwrap();
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().ino(),
+            before,
+            "an unchanged merge is a read, not a rewrite"
+        );
+
+        overrides(&[("fnv", "/moved/FNV/Data")])
+            .merge_into_file(&path)
+            .unwrap();
+        assert_ne!(
+            std::fs::metadata(&path).unwrap().ino(),
+            before,
+            "a changed root is written"
+        );
+    }
+
+    /// A malformed file is refused, not rewritten.
+    #[test]
+    fn merging_into_malformed_toml_is_refused_untouched() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("profiles.toml");
+        std::fs::write(&path, "not = = toml").unwrap();
+        let result = overrides(&[("fnv", "/games/FNV/Data")]).merge_into_file(&path);
+        assert!(matches!(result, Err(OverrideError::Parse { .. })));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "not = = toml");
     }
 
     /// A later run that finds fewer games must not forget the ones it found
