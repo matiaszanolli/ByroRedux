@@ -318,6 +318,36 @@ fn unload_cell_inner(
     crate::cell_loader::reference_state::capture(world, &victims);
     timings.snapshot_capture = phase_started.elapsed();
 
+    let (mesh_drops, freed_meshes, texture_drops) =
+        release_entities_timed(world, ctx, victims.clone(), &mut timings);
+
+    log::info!(
+        "Cell unload: {} entities, {} mesh refs ({} freed), {} texture refs released (cell_root {})",
+        victims.len(),
+        mesh_drops,
+        freed_meshes,
+        texture_drops,
+        cell_root,
+    );
+    timings
+}
+
+
+/// #5028 — release an arbitrary victim set the way cell teardown does:
+/// collect every GPU handle they hold, drop meshes/BLAS/textures with the
+/// refcount rules `unload_cell_inner` documents, queue skin/morph slot
+/// evictions, free item instances and Rapier bodies, then despawn the
+/// entities. Extracted verbatim from `unload_cell_inner` so the player's
+/// mid-life gear roots (never stamped into a cell range) can leave through
+/// the same path when their item leaves the inventory — the phases above
+/// (retention stripping, actor snapshots) are cell-eviction concerns and
+/// stay behind.
+fn release_entities_timed(
+    world: &mut World,
+    ctx: &mut VulkanContext,
+    victims: Vec<EntityId>,
+    timings: &mut UnloadPhaseTimings,
+) -> (usize, usize, usize) {
     // Collect every GPU handle the victims hold (mesh / texture /
     // terrain-tile slot) in one fan-out walk, then release them below.
     // Extracted into a pure fn over the `World` so its handle-coverage
@@ -480,16 +510,30 @@ fn unload_cell_inner(
         crate::components::bump_navmesh_residency(world);
     }
     timings.despawn = phase_started.elapsed();
+    (mesh_drops.len(), freed_meshes.len(), texture_drops.len())
+}
 
+/// #5028 — [`release_entities_timed`] plus the same global finishing pass
+/// (`finish_unload_batch`: sparse-tail handback + BLAS scratch shrink) that
+/// `unload_cell` runs after its victims, so a gear-root release leaves the
+/// world in the identical post-teardown state. Timings are internal here —
+/// gear release is a per-user-action event, not a streaming boundary the
+/// benchmark reports.
+pub(crate) fn release_entities(world: &mut World, ctx: &mut VulkanContext, victims: &[EntityId]) {
+    if victims.is_empty() {
+        return;
+    }
+    let mut timings = UnloadPhaseTimings::default();
+    let (mesh_refs, freed_meshes, texture_refs) =
+        release_entities_timed(world, ctx, victims.to_vec(), &mut timings);
+    let _ = finish_unload_batch(world, ctx);
     log::info!(
-        "Cell unload: {} entities, {} mesh refs ({} freed), {} texture refs released (cell_root {})",
-        victim_count,
-        mesh_drops.len(),
-        freed_meshes.len(),
-        texture_drops.len(),
-        cell_root,
+        "gear release: {} entities, {} mesh refs ({} freed), {} texture refs released",
+        victims.len(),
+        mesh_refs,
+        freed_meshes,
+        texture_refs,
     );
-    timings
 }
 
 fn finish_unload_batch(world: &mut World, ctx: &mut VulkanContext) -> Duration {

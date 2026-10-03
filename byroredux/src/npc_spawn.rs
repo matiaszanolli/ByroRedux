@@ -1148,6 +1148,24 @@ impl byroredux_core::ecs::Component for PendingGearImport {
     type Storage = byroredux_core::ecs::SparseSetStorage<Self>;
 }
 
+/// #5028 — worn gear whose item left the inventory entirely, awaiting root
+/// release. Queued by `loot_appearance::equipment_appearance_system` from
+/// `ItemEventBatch` leaves-transfers for wearers with **no** `CellRoot`
+/// (the player: their gear is never stamped into a cell range, so cell
+/// teardown cannot release it — NPC mid-life imports stay cell-owned and
+/// ride the normal range release). `GearImportLoader` drains it through
+/// `cell_loader::unload::release_entities`, the same despawn + GPU-handle
+/// release path cell teardown uses. Runtime handoff scratch, never
+/// serialized.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct PendingGearRelease {
+    pub(crate) form_ids: Vec<u32>,
+}
+
+impl byroredux_core::ecs::Component for PendingGearRelease {
+    type Storage = byroredux_core::ecs::SparseSetStorage<Self>;
+}
+
 /// Equip pipeline state built purely from `&NpcRecord` + `&EsmIndex`
 /// — no World, no VulkanContext, no archive I/O. Both spawn paths
 /// insert `inventory` + `equipment_slots` on the placement root

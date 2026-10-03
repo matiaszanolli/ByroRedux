@@ -100,13 +100,13 @@ pub(crate) fn status(world: &World, actor: EntityId) -> String {
         a.parts.get(a.next_part).map(|part| part.path.as_str()))
 }
 
-/// Mesh entities at or under `root`, cycle-safe. `NpcAppearanceHidden` is
-/// consumed by the render passes per mesh entity, so hiding a root means
-/// marking every mesh in its subtree.
-pub(crate) fn mesh_entities_under(world: &World, root: EntityId) -> Vec<EntityId> {
+/// Every entity at or under `root`, cycle-safe, `root` itself included.
+/// The full-subtree shape #5028 needs: releasing an imported gear root must
+/// despawn its nodes as well as its mesh entities.
+pub(crate) fn subtree_entities_under(world: &World, root: EntityId) -> Vec<EntityId> {
     let mut pending = vec![root];
     let mut seen = HashSet::new();
-    let mut meshes = Vec::new();
+    let mut entities = Vec::new();
     while let Some(entity) = pending.pop() {
         if !seen.insert(entity) {
             continue;
@@ -114,11 +114,19 @@ pub(crate) fn mesh_entities_under(world: &World, root: EntityId) -> Vec<EntityId
         if let Some(children) = world.get::<Children>(entity) {
             pending.extend(children.0.iter().copied());
         }
-        if world.get::<MeshHandle>(entity).is_some() {
-            meshes.push(entity);
-        }
+        entities.push(entity);
     }
-    meshes
+    entities
+}
+
+/// Mesh entities at or under `root`, cycle-safe. `NpcAppearanceHidden` is
+/// consumed by the render passes per mesh entity, so hiding a root means
+/// marking every mesh in its subtree.
+pub(crate) fn mesh_entities_under(world: &World, root: EntityId) -> Vec<EntityId> {
+    subtree_entities_under(world, root)
+        .into_iter()
+        .filter(|entity| world.get::<MeshHandle>(*entity).is_some())
+        .collect()
 }
 
 /// Collision entities standing in for `root`'s placement: standalone ECS
@@ -221,7 +229,11 @@ pub(crate) fn equipment_appearance_system(world: &World, _dt: f32) {
         .map(|(wearer, batch)| (wearer, batch.0.clone()))
         .collect();
     drop(events);
+    // #5028 — the item-transfer half runs even on frames with no equip
+    // events: an item can leave the inventory (drop, sell, destroy) without
+    // any equip/unequip transition alongside.
     if changes.is_empty() {
+        queue_gear_releases(world);
         return;
     }
     // A world with no part carriers at all (nothing spawned wearing gear)
@@ -275,6 +287,108 @@ pub(crate) fn equipment_appearance_system(world: &World, _dt: f32) {
         }
     }
     queue_midlife_imports(world, &changes, &gear_roots);
+    queue_gear_releases(world);
+}
+
+/// #5028 — queue release of worn gear whose item left the inventory
+/// entirely (an `ItemTransfer` with `added == false`, emitted by the loot /
+/// pickup paths; stack rows move whole today, but the wearer's live
+/// `Inventory` is consulted anyway so a future partial move cannot release
+/// gear that is still held). Only wearers with **no** `CellRoot` qualify:
+/// NPC mid-life imports are stamped into their cell's release range and
+/// leave through cell teardown, while the player's gear hangs off the body
+/// root with no range — pre-fix it stayed resident (geometry, BLAS, texture
+/// refcounts) until shutdown. Dead wearers stay skipped: death
+/// reconciliation owns their appearance. The drain side — despawn + GPU
+/// release through the cell-teardown path — lives in
+/// [`GearImportLoader::step_releases`].
+fn queue_gear_releases(world: &World) {
+    let Some(events) = world.query::<byroredux_scripting::ItemEventBatch>() else {
+        return;
+    };
+    let leaves: Vec<(EntityId, Vec<u32>)> = events
+        .iter()
+        .map(|(wearer, batch)| {
+            (
+                wearer,
+                batch
+                    .0
+                    .iter()
+                    .filter(|transfer| !transfer.added)
+                    .map(|transfer| transfer.item_form_id)
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .filter(|(_, forms)| !forms.is_empty())
+        .collect();
+    drop(events);
+    if leaves.is_empty() {
+        return;
+    }
+    // (actor, root, form id) for every non-intrinsic gear root — the same
+    // filter the hide/reveal half uses, so intrinsic skin can never be
+    // released by an inventory event.
+    let part_rows: Vec<(EntityId, EntityId, u32)> = world
+        .query::<NpcEquipmentPart>()
+        .map(|parts| {
+            parts
+                .iter()
+                .filter(|(_, part)| !part.intrinsic_skin)
+                .map(|(root, part)| (part.actor, root, part.form_id))
+                .collect()
+        })
+        .unwrap_or_default();
+    if part_rows.is_empty() {
+        return;
+    }
+    // Interior-mutability insert (the caller is a `&World` Late system), and
+    // only after every read guard above has dropped.
+    let Some(mut releases) = world.query_mut::<crate::npc_spawn::PendingGearRelease>() else {
+        return;
+    };
+    for (wearer, left_forms) in leaves {
+        if world.get::<Dead>(wearer).is_some() {
+            continue;
+        }
+        if world.get::<CellRoot>(wearer).is_some() {
+            continue;
+        }
+        let Some(inventory) = world.get::<Inventory>(wearer) else {
+            continue;
+        };
+        let to_release: Vec<u32> = left_forms
+            .into_iter()
+            .filter(|form_id| {
+                // Still-held items (a future partial move, or a second stack
+                // row of the same base form) must keep their meshes.
+                inventory
+                    .items
+                    .iter()
+                    .all(|stack| stack.base_form_id != *form_id)
+                    && part_rows
+                        .iter()
+                        .any(|&(actor, _, part_form)| actor == wearer && part_form == *form_id)
+            })
+            .collect();
+        if to_release.is_empty() {
+            continue;
+        }
+        log::info!(
+            "mid-life gear: item(s) left the inventory — queueing release of \
+             {} worn form(s) on {wearer}",
+            to_release.len(),
+        );
+        if let Some(pending) = releases.get_mut(wearer) {
+            pending.form_ids.extend(to_release);
+        } else {
+            releases.insert(
+                wearer,
+                crate::npc_spawn::PendingGearRelease {
+                    form_ids: to_release,
+                },
+            );
+        }
+    }
 }
 
 /// P3 mid-life gear import — queue the worn-mesh NIF import for an equip of
@@ -555,6 +669,60 @@ pub(crate) struct GearImportLoader {
 
 impl GearImportLoader {
     pub(crate) fn step(&mut self, world: &mut World, ctx: &mut VulkanContext) {
+        self.step_releases(world, ctx);
+        self.step_imports(world, ctx);
+    }
+
+    /// #5028 — drain [`PendingGearRelease`]: despawn each released form's
+    /// gear subtree through `cell_loader::unload::release_entities`, the
+    /// same GPU-handle + despawn path cell teardown uses, so an item that
+    /// left the inventory frees its geometry / BLAS / texture refcounts
+    /// instead of staying hidden-resident until shutdown.
+    fn step_releases(&mut self, world: &mut World, ctx: &mut VulkanContext) {
+        let pending: Vec<(EntityId, Vec<u32>)> = world
+            .query::<crate::npc_spawn::PendingGearRelease>()
+            .map(|query| {
+                query
+                    .iter()
+                    .map(|(wearer, release)| (wearer, release.form_ids.clone()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        for (wearer, form_ids) in pending {
+            world.remove::<crate::npc_spawn::PendingGearRelease>(wearer);
+            let released_forms = form_ids.len();
+            for form_id in form_ids {
+                let roots: Vec<EntityId> = world
+                    .query::<NpcEquipmentPart>()
+                    .map(|parts| {
+                        parts
+                            .iter()
+                            .filter(|&(root, part)| {
+                                part.actor == wearer
+                                    && part.form_id == form_id
+                                    && !part.intrinsic_skin
+                                    // Only un-stamped roots belong to this
+                                    // path; a cell-stamped root (an NPC's)
+                                    // releases with its cell range.
+                                    && world.get::<CellRoot>(root).is_none()
+                            })
+                            .map(|(root, _)| root)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                for root in roots {
+                    let victims = subtree_entities_under(world, root);
+                    crate::cell_loader::unload::release_entities(world, ctx, &victims);
+                }
+            }
+            log::info!(
+                "mid-life gear: released worn meshes of {} form(s) from {wearer}",
+                released_forms,
+            );
+        }
+    }
+
+    fn step_imports(&mut self, world: &mut World, ctx: &mut VulkanContext) {
         let Some((wearer, import)) = world.query::<PendingGearImport>().and_then(|query| {
             query
                 .iter()
@@ -614,13 +782,22 @@ impl GearImportLoader {
         let Some(root) = root.filter(|_| meshes > 0) else {
             // A failed import may leave partial entities — hide the whole
             // range so nothing draws unparented (same posture as the corpse
-            // loader); cell teardown releases them.
-            if let Some(cell) = world.get::<CellRoot>(wearer).map(|cell| cell.0) {
-                crate::cell_loader::stamp_cell_root_range(world, cell, first, last);
-            }
-            for entity in first..last {
-                if world.get::<MeshHandle>(entity).is_some() {
-                    world.insert(entity, NpcAppearanceHidden);
+            // loader); cell teardown releases them. A wearer with no cell
+            // (the player) has no teardown to lean on, so #5028 releases the
+            // partial range immediately instead of parking hidden entities
+            // nothing can reach later.
+            match world.get::<CellRoot>(wearer).map(|cell| cell.0) {
+                Some(cell) => {
+                    crate::cell_loader::stamp_cell_root_range(world, cell, first, last);
+                    for entity in first..last {
+                        if world.get::<MeshHandle>(entity).is_some() {
+                            world.insert(entity, NpcAppearanceHidden);
+                        }
+                    }
+                }
+                None => {
+                    let victims: Vec<EntityId> = (first..last).collect();
+                    crate::cell_loader::unload::release_entities(world, ctx, &victims);
                 }
             }
             world.remove::<PendingGearImport>(wearer);
@@ -1069,5 +1246,117 @@ mod tests {
             Some(1)
         );
         assert_eq!(inventory_index_for(&world, wearer, 0x999), None);
+    }
+}
+
+// ── #5028 — gear release on leaves-inventory ─────────────────────────
+
+#[cfg(test)]
+mod gear_release_tests {
+    use super::*;
+    use byroredux_scripting::{EquipmentEventBatch, ItemEventBatch, ItemTransfer};
+
+    /// A cellless wearer (the player's shape) with one imported gear root
+    /// (0xAAA) and one intrinsic skin root, an inventory that no longer
+    /// holds 0xAAA, and a leaves-transfer for it.
+    fn release_fixture() -> (World, EntityId, EntityId, EntityId) {
+        let mut world = World::new();
+        world.register::<NpcAppearanceHidden>();
+        world.register::<NpcEquipmentPart>();
+        world.register::<EquipmentEventBatch>();
+        world.register::<ItemEventBatch>();
+        world.register::<crate::npc_spawn::PendingGearRelease>();
+        let actor = world.spawn();
+        let gear = world.spawn();
+        let skin = world.spawn();
+        for (root, form_id, intrinsic) in [(gear, 0xAAAu32, false), (skin, 0xAAA, true)] {
+            world.insert(root, MeshHandle(root));
+            world.insert(
+                root,
+                NpcEquipmentPart {
+                    actor,
+                    inventory_index: None,
+                    form_id,
+                    intrinsic_skin: intrinsic,
+                    hidden_biped_mask: 0,
+                },
+            );
+        }
+        world.insert(actor, Inventory::new());
+        world.insert(
+            actor,
+            ItemEventBatch(vec![ItemTransfer {
+                item_form_id: 0xAAA,
+                count: 1,
+                added: false,
+                stolen: false,
+            }]),
+        );
+        (world, actor, gear, skin)
+    }
+
+    #[test]
+    fn leaving_the_inventory_queues_release_for_cellless_wearers() {
+        let (world, actor, _, _) = release_fixture();
+        equipment_appearance_system(&world, 0.0);
+        let pending = world
+            .get::<crate::npc_spawn::PendingGearRelease>(actor)
+            .expect("the left item's gear root must queue for release");
+        assert_eq!(pending.form_ids, vec![0xAAA]);
+    }
+
+    #[test]
+    fn cell_owned_wearers_still_release_through_their_cell_range() {
+        let (mut world, actor, _, _) = release_fixture();
+        world.insert(actor, CellRoot(actor));
+        equipment_appearance_system(&world, 0.0);
+        assert!(
+            world
+                .get::<crate::npc_spawn::PendingGearRelease>(actor)
+                .is_none(),
+            "a cell-stamped wearer's gear leaves with its cell's range"
+        );
+    }
+
+    #[test]
+    fn still_held_or_dead_wearers_keep_their_meshes() {
+        let (mut world, actor, _, _) = release_fixture();
+        world
+            .get_mut::<Inventory>(actor)
+            .unwrap()
+            .push(ItemStack::new(0xAAA, 1));
+        equipment_appearance_system(&world, 0.0);
+        assert!(world.get::<crate::npc_spawn::PendingGearRelease>(actor).is_none());
+
+        let (mut world, actor, _, _) = release_fixture();
+        world.insert(actor, Dead);
+        equipment_appearance_system(&world, 0.0);
+        assert!(
+            world.get::<crate::npc_spawn::PendingGearRelease>(actor).is_none(),
+            "death reconciliation owns a dead wearer's appearance"
+        );
+    }
+
+    /// The release target is the FULL subtree (nodes and meshes), not just
+    /// the mesh entities — despawning only meshes would strand the gear's
+    /// intermediate NiNodes under the body root forever.
+    #[test]
+    fn release_victims_span_the_whole_gear_subtree() {
+        let (mut world, _actor, gear, _) = release_fixture();
+        let node = world.spawn();
+        let leaf = world.spawn();
+        world.insert(leaf, MeshHandle(leaf));
+        add_child(&mut world, gear, node);
+        add_child(&mut world, node, leaf);
+        // A malformed cycle must not hang the walk.
+        add_child(&mut world, leaf, gear);
+
+        let victims = subtree_entities_under(&world, gear);
+        for expected in [gear, node, leaf] {
+            assert!(
+                victims.contains(&expected),
+                "subtree walk must reach {expected} (got {victims:?})"
+            );
+        }
     }
 }

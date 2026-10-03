@@ -81,7 +81,7 @@ mod terrain_lod;
 mod terrain_lod_btr;
 mod terrain_seam;
 mod transition;
-mod unload;
+pub(crate) mod unload;
 mod water;
 mod work_budget;
 

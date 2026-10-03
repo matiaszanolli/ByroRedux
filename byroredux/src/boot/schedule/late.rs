@@ -411,9 +411,14 @@ pub(super) fn register_late_systems(scheduler: &mut Scheduler) {
         crate::npc_spawn::loot_appearance::equipment_appearance_system,
         Access::new()
             .reads::<byroredux_scripting::EquipmentEventBatch>()
+            // #5028 — leaves-inventory transfers queue gear-root release.
+            .reads::<byroredux_scripting::ItemEventBatch>()
             .reads::<crate::npc_spawn::NpcEquipmentPart>()
             .reads::<byroredux_core::ecs::components::Dead>()
+            .reads::<byroredux_core::ecs::components::Inventory>()
+            .reads::<byroredux_core::ecs::CellRoot>()
             .writes::<crate::npc_spawn::loot_appearance::NpcAppearanceHidden>()
+            .writes::<crate::npc_spawn::PendingGearRelease>()
             .reads::<byroredux_core::ecs::Children>()
             .reads::<byroredux_core::ecs::MeshHandle>(),
     );
