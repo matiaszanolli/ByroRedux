@@ -79,6 +79,7 @@ impl VulkanContext {
             view_proj,
             draw_commands,
             lights,
+            light_ids,
             fog_volumes,
             bone_world,
             skin_offsets,
@@ -200,6 +201,7 @@ impl VulkanContext {
         } = self.assemble_camera_and_lights(
             frame,
             lights,
+            light_ids,
             fog_volumes,
             view_proj,
             camera_pos,

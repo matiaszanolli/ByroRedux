@@ -1,11 +1,16 @@
 //! Translate reservoir indices across the per-frame light priority sort.
-use super::{GpuLight, MAX_LIGHTS};
+use super::MAX_LIGHTS;
 use crate::vulkan::sync::MAX_FRAMES_IN_FLIGHT;
 use rustc_hash::FxHashMap;
 
 const INVALID: u32 = u32::MAX;
 type Identity = [u32; 4];
 
+/// #5055 — the ReSTIR remap identities this module tracks are CPU-only.
+/// They ride a `[[u32; 4]]` slice parallel to the `GpuLight` upload (never
+/// inside the GPU struct): authored lights use `[entity_id, 1, 0, 0]`, the
+/// scene key `[0, 2, 0, 0]`, and anything else `[0; 4]` = "no identity,
+/// sample fresh only".
 #[derive(Default)]
 pub(super) struct LightHistory {
     ids: [Vec<Identity>; MAX_FRAMES_IN_FLIGHT],
@@ -17,7 +22,11 @@ pub(super) struct LightHistory {
 }
 
 impl LightHistory {
-    pub(super) fn remap(&mut self, frame: usize, lights: &[GpuLight]) -> [u32; MAX_LIGHTS + 1] {
+    pub(super) fn remap(
+        &mut self,
+        frame: usize,
+        identities: &[Identity],
+    ) -> [u32; MAX_LIGHTS + 1] {
         let previous = (frame + MAX_FRAMES_IN_FLIGHT - 1) % MAX_FRAMES_IN_FLIGHT;
         self.scratch.clear();
         for (index, &id) in self.ids[previous].iter().enumerate() {
@@ -30,8 +39,8 @@ impl LightHistory {
                 .or_insert((index as u32, 0, INVALID, 0));
             entry.1 += 1;
         }
-        for (index, light) in lights.iter().take(MAX_LIGHTS).enumerate() {
-            if let Some(entry) = self.scratch.get_mut(&light.history_id) {
+        for (index, &id) in identities.iter().take(MAX_LIGHTS).enumerate() {
+            if let Some(entry) = self.scratch.get_mut(&id) {
                 entry.2 = index as u32;
                 entry.3 += 1;
             }
@@ -45,9 +54,9 @@ impl LightHistory {
         result
     }
 
-    pub(super) fn commit(&mut self, frame: usize, lights: &[GpuLight]) {
+    pub(super) fn commit(&mut self, frame: usize, identities: &[Identity]) {
         self.ids[frame].clear();
-        self.ids[frame].extend(lights.iter().take(MAX_LIGHTS).map(|light| light.history_id));
+        self.ids[frame].extend(identities.iter().take(MAX_LIGHTS).copied());
     }
 }
 
@@ -73,22 +82,16 @@ mod tests {
         }
     }
 
-    fn light(id: u32) -> GpuLight {
-        GpuLight {
-            history_id: [id, 1, 0, 0],
-            ..Default::default()
-        }
+    fn id(n: u32) -> Identity {
+        [n, 1, 0, 0]
     }
 
     #[test]
     fn follows_identity_through_sort_animation_and_motion() {
         let mut history = LightHistory::default();
-        history.commit(0, &[light(10), light(20), light(30)]);
-        let mut moved = light(20);
-        moved.position_radius = [100.0, 200.0, 300.0, 90.0];
-        moved.color_type = [0.5, 0.1, 0.0, 0.0];
+        history.commit(0, &[id(10), id(20), id(30)]);
         assert_eq!(
-            &history.remap(1, &[light(30), moved, light(10)])[..3],
+            &history.remap(1, &[id(30), id(20), id(10)])[..3],
             &[2, 1, 0]
         );
     }
@@ -96,29 +99,26 @@ mod tests {
     #[test]
     fn rejects_missing_unknown_and_ambiguous_identities() {
         let mut history = LightHistory::default();
-        history.commit(
-            0,
-            &[light(1), light(2), light(2), light(3), GpuLight::default()],
-        );
-        let map = history.remap(1, &[light(2), light(3), light(3), GpuLight::default()]);
+        history.commit(0, &[id(1), id(2), id(2), id(3), [0; 4]]);
+        let map = history.remap(1, &[id(2), id(3), id(3), [0; 4]]);
         assert!(map.iter().all(|&index| index == INVALID));
     }
 
     #[test]
     fn shrinking_list_can_remap_a_previous_high_index() {
         let mut history = LightHistory::default();
-        history.commit(0, &[light(1), light(2), light(3)]);
-        assert_eq!(&history.remap(1, &[light(3)])[..3], &[INVALID, INVALID, 0]);
+        history.commit(0, &[id(1), id(2), id(3)]);
+        assert_eq!(&history.remap(1, &[id(3)])[..3], &[INVALID, INVALID, 0]);
     }
 
     #[test]
     fn reads_previous_slot_and_does_not_advance_until_commit() {
         let mut history = LightHistory::default();
-        history.commit(0, &[light(1), light(2)]);
-        assert_eq!(&history.remap(1, &[light(2), light(1)])[..2], &[1, 0]);
-        assert_eq!(&history.remap(1, &[light(1), light(2)])[..2], &[0, 1]);
-        history.commit(1, &[light(2), light(1)]);
-        assert_eq!(&history.remap(0, &[light(1), light(2)])[..2], &[1, 0]);
+        history.commit(0, &[id(1), id(2)]);
+        assert_eq!(&history.remap(1, &[id(2), id(1)])[..2], &[1, 0]);
+        assert_eq!(&history.remap(1, &[id(1), id(2)])[..2], &[0, 1]);
+        history.commit(1, &[id(2), id(1)]);
+        assert_eq!(&history.remap(0, &[id(1), id(2)])[..2], &[1, 0]);
     }
 
     #[test]
@@ -147,11 +147,11 @@ mod tests {
     #[test]
     fn same_current_lights_can_need_a_different_mapping() {
         let mut history = LightHistory::default();
-        let lights = [light(1), light(2)];
-        history.commit(0, &lights);
-        let first = history.remap(1, &lights);
-        history.commit(0, &[light(2), light(1)]);
-        let second = history.remap(1, &lights);
+        let ids = [id(1), id(2)];
+        history.commit(0, &ids);
+        let first = history.remap(1, &ids);
+        history.commit(0, &[id(2), id(1)]);
+        let second = history.remap(1, &ids);
         // The SSBO dirty gate must hash the mapping as well as current lights.
         assert_ne!(first, second);
     }

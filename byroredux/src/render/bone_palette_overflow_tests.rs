@@ -105,6 +105,7 @@ fn run_build(world: &World) -> (Vec<[[f32; 4]; 4]>, rustc_hash::FxHashMap<Entity
         &mut gpu_lights,
         &mut Vec::new(),
         &mut Vec::new(),
+        &mut Vec::new(),
         &mut bone_world,
         &mut skin_offsets,
         &mut skin_slot_pool,

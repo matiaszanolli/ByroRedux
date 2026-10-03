@@ -38,6 +38,19 @@ impl VulkanContext {
             working_lights,
             128,
         );
+        // #5055 — the identity vec is one entry per light (same working set
+        // as the lights it parallels) and the resort scratch one decorated
+        // tuple per point light.
+        super::super::acceleration::shrink_scratch_if_oversized(
+            &mut self.scratch.frame_light_ids_scratch,
+            working_lights,
+            128,
+        );
+        super::super::acceleration::shrink_scratch_if_oversized(
+            &mut self.scratch.light_resort_scratch,
+            working_lights,
+            128,
+        );
         // #2486 / D5-01 — `previous_models_scratch` was restored here but
         // never shrunk, so it pinned its peak (~16 MB at `MAX_INSTANCES`) for
         // the session. It grows one entry per instance, so its own `len()` is

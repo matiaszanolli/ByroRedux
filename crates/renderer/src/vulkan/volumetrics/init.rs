@@ -108,6 +108,8 @@ impl VolumetricsPipeline {
             // Full extent: forces the first write to each buffer to cover the
             // whole range, since the allocation is not zero-initialised.
             fog_cluster_dirty_range: [(0, FOG_VOLUME_CLUSTER_COUNT); MAX_FRAMES_IN_FLIGHT],
+            fog_cluster_occupancy: Box::new([0u32; FOG_VOLUME_CLUSTER_COUNT]),
+            combustion_occupancy_buffers: Vec::new(),
             integration_pipeline: vk::Pipeline::null(),
             integration_pipeline_layout: vk::PipelineLayout::null(),
             integration_descriptor_set_layout: vk::DescriptorSetLayout::null(),
@@ -351,6 +353,23 @@ impl VolumetricsPipeline {
                 moment_buffer.flush_if_needed(device)
             })());
             partial.combustion_light_moment_buffers.push(moment_buffer);
+            // #4784 — per-slot coarse transport-occupancy mask on the 16³
+            // fog-cluster grid. Host-visible because `dispatch` zeroes it and
+            // seed-marks transported-source clusters before every submit (the
+            // all-slots fence wait at the top of `draw_frame` has retired its
+            // previous reader); the inject pass then accumulates GPU marks
+            // into it, and the NEXT frame's inject reads it as the skip gate.
+            let mut occupancy_buffer = try_or_cleanup!(GpuBuffer::create_host_visible(
+                device,
+                allocator,
+                std::mem::size_of::<[u32; FOG_VOLUME_CLUSTER_COUNT]>() as vk::DeviceSize,
+                vk::BufferUsageFlags::STORAGE_BUFFER,
+            ));
+            try_or_cleanup!((|| -> Result<()> {
+                occupancy_buffer.mapped_slice_mut()?.fill(0);
+                occupancy_buffer.flush_if_needed(device)
+            })());
+            partial.combustion_occupancy_buffers.push(occupancy_buffer);
         }
 
         // ── 3. Descriptor set layout ──────────────────────────────────
@@ -510,6 +529,19 @@ impl VolumetricsPipeline {
                 .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                 .descriptor_count(1)
                 .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            // 24/25: #4784 — this frame's transport-occupancy mask (GPU
+            // atomicOr marks) and the previous frame's (the read-side skip
+            // gate). Same per-FIF previous-rotation as bindings 14-23.
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(24)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(25)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::COMPUTE),
         ];
         validate_set_layout(
             0,
@@ -644,6 +676,18 @@ impl VolumetricsPipeline {
                 range: std::mem::size_of::<[GpuCombustionLightMoment; COMBUSTION_LIGHT_GRID_COUNT]>(
                 ) as vk::DeviceSize,
             }];
+            let occupancy_range =
+                std::mem::size_of::<[u32; FOG_VOLUME_CLUSTER_COUNT]>() as vk::DeviceSize;
+            let occupancy_out_info = [vk::DescriptorBufferInfo {
+                buffer: partial.combustion_occupancy_buffers[f].buffer,
+                offset: 0,
+                range: occupancy_range,
+            }];
+            let occupancy_in_info = [vk::DescriptorBufferInfo {
+                buffer: partial.combustion_occupancy_buffers[previous].buffer,
+                offset: 0,
+                range: occupancy_range,
+            }];
             let set = partial.descriptor_sets[f];
             let base_noise_info = [vk::DescriptorImageInfo::default()
                 .sampler(partial.density_noise_sampler)
@@ -677,6 +721,10 @@ impl VolumetricsPipeline {
                 write_storage_buffer(set, 18, &combustion_light_moment_info),
                 write_storage_image(set, 22, &combustion_optical_write_info),
                 write_combined_image_sampler(set, 23, &previous_combustion_optical_info),
+                // #4784 — occupancy out points at THIS frame's mask (GPU
+                // marks), in at the previous slot's (skip gate).
+                write_storage_buffer(set, 24, &occupancy_out_info),
+                write_storage_buffer(set, 25, &occupancy_in_info),
             ];
             // SAFETY: the written descriptor sets and the referenced froxel image
             // view + param UBO are freshly created here and not yet in use by any

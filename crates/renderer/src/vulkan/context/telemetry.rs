@@ -107,6 +107,20 @@ impl VulkanContext {
             capacity: self.scratch.frame_lights_scratch.capacity(),
             elem_size_bytes: size_of::<scene_buffer::GpuLight>(),
         });
+        // #5055 — the identity vec parallels `frame_lights_scratch` and the
+        // decorate-sort tuple carries one entry per point light.
+        rows.push(ScratchRow {
+            name: "frame_light_ids_scratch",
+            len: self.scratch.frame_light_ids_scratch.len(),
+            capacity: self.scratch.frame_light_ids_scratch.capacity(),
+            elem_size_bytes: size_of::<[u32; 4]>(),
+        });
+        rows.push(ScratchRow {
+            name: "light_resort_scratch",
+            len: self.scratch.light_resort_scratch.len(),
+            capacity: self.scratch.light_resort_scratch.capacity(),
+            elem_size_bytes: size_of::<(f32, scene_buffer::GpuLight, [u32; 4])>(),
+        });
         rows.push(ScratchRow {
             name: "previous_models_scratch",
             len: self.scratch.previous_models_scratch.len(),

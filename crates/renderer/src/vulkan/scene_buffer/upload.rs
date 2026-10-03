@@ -80,12 +80,25 @@ fn mark_bone_world_slot_written(state: &mut u8, frame_index: usize) {
 
 impl super::buffers::SceneBuffers {
     /// Upload light data for the current frame-in-flight.
+    ///
+    /// #5055 — `identities` is the CPU-side `[u32; 4]` slice parallel to
+    /// `lights` (same length, same order) that `LightHistory` remaps across
+    /// the per-frame priority sort. It is never uploaded: no shader reads a
+    /// light's identity, only the `previous_to_current` header this call
+    /// derives from it.
     pub fn upload_lights(
         &mut self,
         device: &ash::Device,
         frame_index: usize,
         lights: &[GpuLight],
+        identities: &[[u32; 4]],
     ) -> Result<()> {
+        debug_assert_eq!(
+            lights.len(),
+            identities.len(),
+            "light identities must stay parallel to the light array through \
+             every sort and filter (#5055)"
+        );
         let count = lights.len().min(MAX_LIGHTS);
         self.last_light_counts = (
             lights.len().min(u32::MAX as usize) as u32,
@@ -118,10 +131,10 @@ impl super::buffers::SceneBuffers {
         // that drops trailing lights still re-uploads when the kept
         // prefix changes, and a count change (including to/from zero)
         // always changes the hashed byte length.
-        let previous_to_current = self.light_history.remap(frame_index, &lights[..count]);
+        let previous_to_current = self.light_history.remap(frame_index, &identities[..count]);
         let hash = hash_light_upload(&lights[..count], &previous_to_current);
         if self.last_uploaded_light_hash[frame_index] == Some(hash) {
-            self.light_history.commit(frame_index, &lights[..count]);
+            self.light_history.commit(frame_index, &identities[..count]);
             return Ok(());
         }
 
@@ -185,7 +198,7 @@ impl super::buffers::SceneBuffers {
         // leaves the buffer in an indeterminate state, so we want the
         // next call to re-upload rather than skip.
         self.last_uploaded_light_hash[frame_index] = Some(hash);
-        self.light_history.commit(frame_index, &lights[..count]);
+        self.light_history.commit(frame_index, &identities[..count]);
         Ok(())
     }
 

@@ -300,6 +300,7 @@ impl App {
                 &mut self.cover_template_draws,
                 &mut self.water_commands,
                 &mut self.gpu_lights,
+                &mut self.light_ids,
                 &mut self.gpu_fog_volumes,
                 &mut self.light_sort_scratch,
                 &mut self.bone_world,
@@ -411,7 +412,20 @@ impl App {
             // and never enters this branch.
             if let Some(stage) = self.loading_screen.active_stage() {
                 stage.filter_frame_draws(&mut self.draw_commands, &mut self.water_commands);
-                self.gpu_lights.retain(|light| stage.keeps_light(light));
+                // #5055 — the identity vec is filtered with the lights so the
+                // two stay parallel; a plain `retain` cannot touch both, so
+                // compact by index (order-preserving, `GpuLight` is `Copy`).
+                debug_assert_eq!(self.gpu_lights.len(), self.light_ids.len());
+                let mut kept = 0usize;
+                for reader in 0..self.gpu_lights.len() {
+                    if stage.keeps_light(&self.gpu_lights[reader]) {
+                        self.gpu_lights[kept] = self.gpu_lights[reader];
+                        self.light_ids[kept] = self.light_ids[reader];
+                        kept += 1;
+                    }
+                }
+                self.gpu_lights.truncate(kept);
+                self.light_ids.truncate(kept);
                 self.gpu_fog_volumes.clear();
                 stage.apply_to_frame(&mut frame);
             }
@@ -626,6 +640,7 @@ impl App {
                 view_proj: &frame.view_proj,
                 draw_commands: &self.draw_commands,
                 lights: &self.gpu_lights,
+                light_ids: &self.light_ids,
                 fog_volumes: &self.gpu_fog_volumes,
                 bone_world: &self.bone_world,
                 skin_offsets: &self.skin_offsets,

@@ -153,7 +153,7 @@ measured allocations.
 
 | Buffer | Constant | Entries | Entry size | Per-frame | × 2 FIF |
 |---|---|---|---|---|---|
-| Light SSBO | `MAX_LIGHTS` = 1023 (`RESERVOIR_LIGHT_MASK`, #8e7582ed — not 512, that's `MAX_LIGHTS_PER_CLUSTER`) | 1023 | 80 B + 4 112 B header ⁴ | 86 KB | **172 KB** |
+| Light SSBO | `MAX_LIGHTS` = 1023 (`RESERVOIR_LIGHT_MASK`, #8e7582ed — not 512, that's `MAX_LIGHTS_PER_CLUSTER`) | 1023 | 64 B + 4 112 B header ⁴ | 70 KB | **139 KB** |
 | Instance SSBO ² | `INITIAL_INSTANCE_CAPACITY` = 65 536, grows to `MAX_INSTANCES` = 262 144 | 65 536 | 160 B (#3231) | 10.5 MB | **21.0 MB** (≤ 83.9 MB) |
 | Previous-model SSBO (`33d9a468`) ² | same | 65 536 | 64 B (`mat4`) | 4.2 MB | **8.4 MB** (≤ 33.6 MB) |
 | Indirect draw SSBO ³ | `MAX_INDIRECT_DRAWS` = 262 144 | 262 144 | 20 B | 5.2 MB | **10.5 MB** |
@@ -211,7 +211,7 @@ the replaced buffers retired through the deferred-destroy countdown. Not done:
 revisit if VRAM headroom becomes the constraint.
 
 ⁴ Each slot is `size_of::<LightHeader>() + size_of::<GpuLight>() * MAX_LIGHTS`
-= 4 112 + 1 023 × 80 = 85 952 B (`scene_buffer/buffers.rs`). The header is the
+= 4 112 + 1 023 × 64 = 69 584 B (`scene_buffer/buffers.rs`, 64 B since #5055). The header is the
 `u32` count, three pad words, and the `previous_to_current` remap of
 `MAX_LIGHTS + 1` = 1 024 `u32`s, so `lights[]` starts at offset 4 112, not 16
 (#4952). The row billed 64 B lights and no remap before that.

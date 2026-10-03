@@ -276,6 +276,15 @@ struct ScratchBuffers {
     /// the current frame. The input slice belongs to the application, so the
     /// renderer needs one reusable merge buffer before cluster upload.
     frame_lights_scratch: Vec<scene_buffer::GpuLight>,
+    /// #5055 — ReSTIR remap identities parallel to `frame_lights_scratch`
+    /// (one `[u32; 4]` per light, `[0; 4]` for renderer-appended combustion
+    /// lights). CPU-only: they feed `LightHistory`, never the SSBO.
+    frame_light_ids_scratch: Vec<[u32; 4]>,
+    /// #5055 — decorate-sort scratch `(score, light, identity)` for the
+    /// post-combustion-append priority re-sort in
+    /// `assemble_camera_and_lights`, so the parallel identity vec rides the
+    /// same permutation the lights do.
+    light_resort_scratch: Vec<(f32, scene_buffer::GpuLight, [u32; 4])>,
     /// Current-frame map reused while assembling the next submitted history.
     current_rigid_models_scratch: FxHashMap<u32, [f32; 16]>,
     /// Previous transforms realigned to this frame's sorted instance indices.

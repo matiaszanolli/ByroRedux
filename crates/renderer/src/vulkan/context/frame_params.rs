@@ -1943,6 +1943,11 @@ pub struct FrameInputs<'a> {
     pub draw_commands: &'a [DrawCommand],
     /// Scene lights for this frame.
     pub lights: &'a [scene_buffer::GpuLight],
+    /// #5055 — ReSTIR remap identities, one `[u32; 4]` per entry of
+    /// `lights` in the same order (authored lights `[entity_id, 1, 0, 0]`,
+    /// the scene key `[0, 2, 0, 0]`, everything else `[0; 4]`). CPU-only —
+    /// consumed by the light-history remap, never uploaded.
+    pub light_ids: &'a [[u32; 4]],
     /// Spatially bounded authored participating-medium primitives.
     pub fog_volumes: &'a [super::super::volumetrics::GpuFogVolume],
     /// M29.5/M29.6 — per-frame bone-world matrices for the GPU palette

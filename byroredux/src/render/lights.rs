@@ -12,7 +12,7 @@
 //! translation in `merge_external_material`; see
 //! `feedback_format_translation.md`.
 
-use byroredux_core::ecs::{GlobalTransform, LightKind, LightSource, World};
+use byroredux_core::ecs::{EntityId, GlobalTransform, LightKind, LightSource, World};
 use byroredux_core::lighting::{AttenuationModel, Emitter, VisibilityMask};
 
 use crate::components::{CellLightingRes, SkyParamsRes};
@@ -89,7 +89,6 @@ pub(super) fn gpu_light_from_emitter(
     let radiant_intensity = emitter.radiant_intensity.scaled(intensity_scale);
 
     byroredux_renderer::GpuLight {
-        history_id: [0; 4],
         position_radius: [
             position[0],
             position[1],
@@ -133,9 +132,27 @@ fn gi_priority_score(light: &byroredux_renderer::GpuLight) -> f32 {
     light.gi_priority_score()
 }
 
+/// `collect_lights`' ReSTIR identity companion (#5055): authored lights use
+/// `[entity_id, 1, 0, 0]`, the scene key `[0, 2, 0, 0]`, everything else
+/// `[0; 4]` ("no identity, sample fresh only"). Kept beside the collector
+/// (not in `GpuLight`) because no shader reads it — the light-history remap
+/// is a CPU-side job.
+pub(super) fn light_identity_for_entity(entity: EntityId) -> [u32; 4] {
+    [entity, 1, 0, 0]
+}
+
+/// The scene-key identity: `[0, 2, 0, 0]` marks the XCLL/exterior
+/// directional so its reservoir survives across the cell-key light's
+/// re-collection each frame.
+pub(super) const SCENE_KEY_IDENTITY: [u32; 4] = [0, 2, 0, 0];
+
 /// Collect both the cell directional light and all placed point lights
 /// into `gpu_lights`, appending — the caller is responsible for
 /// clearing the Vec before invoking.
+///
+/// `light_ids` receives one `[u32; 4]` ReSTIR identity per pushed light,
+/// in the same order (#5055) — the caller owns it for the same
+/// allocation-amortization reason as `gpu_lights` itself.
 ///
 /// **Order matters** for the renderer's per-frame upload contract:
 /// directional first (slot 0 if present), then point lights sorted by
@@ -156,7 +173,8 @@ fn gi_priority_score(light: &byroredux_renderer::GpuLight) -> f32 {
 pub(super) fn collect_lights(
     world: &World,
     gpu_lights: &mut Vec<byroredux_renderer::GpuLight>,
-    sort_scratch: &mut Vec<(f32, byroredux_renderer::GpuLight)>,
+    light_ids: &mut Vec<[u32; 4]>,
+    sort_scratch: &mut Vec<(f32, byroredux_renderer::GpuLight, [u32; 4])>,
 ) {
     // Cell directional light. Exterior cells emit the weather/TOD sun;
     // interiors emit their separate XCLL key light after applying the authored
@@ -182,7 +200,6 @@ pub(super) fn collect_lights(
         );
         if dir_color.iter().any(|channel| *channel > 0.0) {
             gpu_lights.push(byroredux_renderer::GpuLight {
-                history_id: [0, 2, 0, 0],
                 position_radius: [0.0, 0.0, 0.0, 0.0],
                 color_type: [dir_color[0], dir_color[1], dir_color[2], 2.0],
                 direction_angle: [
@@ -205,6 +222,7 @@ pub(super) fn collect_lights(
                     AttenuationModel::LegacySoftRange as u8 as f32,
                 ],
             });
+            light_ids.push(SCENE_KEY_IDENTITY);
         }
     }
 
@@ -215,6 +233,7 @@ pub(super) fn collect_lights(
     // which is why that suffix must be priority-ordered (see the sort
     // call below).
     let directional_count = gpu_lights.len();
+    debug_assert_eq!(light_ids.len(), directional_count);
 
     // Placed point lights from LIGH records. Read-only — no write
     // needed on either component. Previously used query_2_mut (#290 P4-04).
@@ -238,13 +257,13 @@ pub(super) fn collect_lights(
                 // radius/flags into `Emitter`; this shared boundary performs
                 // the same final unit conversion and packing for authored and
                 // procedural sources.
-                let mut gpu_light = gpu_light_from_emitter(
+                let gpu_light = gpu_light_from_emitter(
                     [t.translation.x, t.translation.y, t.translation.z],
                     light.emitter,
                     scale,
                 );
-                gpu_light.history_id = [entity, 1, 0, 0];
                 gpu_lights.push(gpu_light);
+                light_ids.push(light_identity_for_entity(entity));
             }
         }
     }
@@ -276,10 +295,18 @@ pub(super) fn collect_lights(
     // "per-frame" is the same combination every other scratch in this
     // module family already amortizes away, so it costs nothing to be
     // consistent. `clear` + `extend` keeps the backing allocation and
-    // only ever grows it to the high-water light count.
+    // only ever grows it to the high-water light count. #5055 — the
+    // decorated tuple carries the identity beside its light so the
+    // parallel vec takes the same permutation.
     let suffix = &mut gpu_lights[directional_count..];
+    let id_suffix = &mut light_ids[directional_count..];
     sort_scratch.clear();
-    sort_scratch.extend(suffix.iter().map(|l| (gi_priority_score(l), *l)));
+    sort_scratch.extend(
+        suffix
+            .iter()
+            .zip(id_suffix.iter())
+            .map(|(l, &id)| (gi_priority_score(l), *l, id)),
+    );
     // #2680 / PERF-D1-02 — `sort_unstable_by`, not `sort_by`: the stable sort
     // heap-allocates a light-count-sized temporary above its insertion-sort
     // cutoff, which would undo the caller-owned scratch #2172 just introduced.
@@ -288,8 +315,13 @@ pub(super) fn collect_lights(
     // and with it the overflow tail the MAX_LIGHTS clamp drops — does not
     // flicker frame to frame.
     sort_scratch.sort_unstable_by(|a, b| b.0.total_cmp(&a.0));
-    for (slot, (_, light)) in suffix.iter_mut().zip(sort_scratch.iter()) {
+    for ((slot, id_slot), (_, light, id)) in suffix
+        .iter_mut()
+        .zip(id_suffix.iter_mut())
+        .zip(sort_scratch.iter())
+    {
         *slot = *light;
+        *id_slot = *id;
     }
 
     // Log light count once per session.
@@ -421,7 +453,7 @@ mod directional_source_contract_tests {
         world.insert_resource(full_sun_sky_params());
 
         let mut lights = Vec::new();
-        collect_lights(&world, &mut lights, &mut Vec::new());
+        collect_lights(&world, &mut lights, &mut Vec::new(), &mut Vec::new());
 
         assert_eq!(
             lights.len(),
@@ -466,7 +498,7 @@ mod directional_source_contract_tests {
         world.insert_resource(full_sun_sky_params());
 
         let mut lights = Vec::new();
-        collect_lights(&world, &mut lights, &mut Vec::new());
+        collect_lights(&world, &mut lights, &mut Vec::new(), &mut Vec::new());
 
         assert_eq!(lights.len(), 1);
         let l = &lights[0];
@@ -500,7 +532,7 @@ mod directional_source_contract_tests {
         world.insert_resource(cell);
 
         let mut lights = Vec::new();
-        collect_lights(&world, &mut lights, &mut Vec::new());
+        collect_lights(&world, &mut lights, &mut Vec::new(), &mut Vec::new());
 
         assert_eq!(lights.len(), 1);
         assert!((lights[0].color_type[0] - 0.8).abs() < 1e-5);
@@ -518,7 +550,7 @@ mod directional_source_contract_tests {
         world.insert_resource(cell);
 
         let mut lights = Vec::new();
-        collect_lights(&world, &mut lights, &mut Vec::new());
+        collect_lights(&world, &mut lights, &mut Vec::new(), &mut Vec::new());
 
         assert!(lights.is_empty());
     }
@@ -531,7 +563,7 @@ mod directional_source_contract_tests {
         world.insert_resource(cell);
 
         let mut lights = Vec::new();
-        collect_lights(&world, &mut lights, &mut Vec::new());
+        collect_lights(&world, &mut lights, &mut Vec::new(), &mut Vec::new());
 
         assert_eq!(lights.len(), 1);
         assert!((lights[0].color_type[0] - 0.2).abs() < 1e-5);
@@ -546,7 +578,7 @@ mod directional_source_contract_tests {
         // No SkyParamsRes — fresh-boot or interior-only session.
 
         let mut lights = Vec::new();
-        collect_lights(&world, &mut lights, &mut Vec::new());
+        collect_lights(&world, &mut lights, &mut Vec::new(), &mut Vec::new());
 
         assert_eq!(lights.len(), 1);
         let l = &lights[0];
@@ -568,7 +600,7 @@ mod directional_source_contract_tests {
         world.insert_resource(full_sun_sky_params());
 
         let mut lights = Vec::new();
-        collect_lights(&world, &mut lights, &mut Vec::new());
+        collect_lights(&world, &mut lights, &mut Vec::new(), &mut Vec::new());
 
         assert_eq!(
             lights.len(),
@@ -619,14 +651,12 @@ mod gi_light_priority_tests {
     #[test]
     fn priority_score_favors_brighter_and_farther_reaching_lights() {
         let dim_small = byroredux_renderer::GpuLight {
-            history_id: [0; 4],
             position_radius: [0.0, 0.0, 0.0, 100.0],
             color_type: [0.05, 0.05, 0.05, 0.0],
             direction_angle: [0.0; 4],
             params: [1.0, 0.0, 0.0, 0.0],
         };
         let bright_large = byroredux_renderer::GpuLight {
-            history_id: [0; 4],
             position_radius: [0.0, 0.0, 0.0, 1000.0],
             color_type: [0.9, 0.8, 0.7, 0.0],
             direction_angle: [0.0; 4],
@@ -645,14 +675,12 @@ mod gi_light_priority_tests {
     #[test]
     fn priority_score_orders_by_radius_at_equal_brightness() {
         let near = byroredux_renderer::GpuLight {
-            history_id: [0; 4],
             position_radius: [0.0, 0.0, 0.0, 200.0],
             color_type: [0.5, 0.5, 0.5, 0.0],
             direction_angle: [0.0; 4],
             params: [1.0, 0.0, 0.0, 0.0],
         };
         let far = byroredux_renderer::GpuLight {
-            history_id: [0; 4],
             position_radius: [0.0, 0.0, 0.0, 800.0],
             color_type: [0.5, 0.5, 0.5, 0.0],
             direction_angle: [0.0; 4],
@@ -717,7 +745,7 @@ mod gi_light_priority_tests {
         );
 
         let mut lights = Vec::new();
-        collect_lights(&world, &mut lights, &mut Vec::new());
+        collect_lights(&world, &mut lights, &mut Vec::new(), &mut Vec::new());
 
         let no_projection_bit = lights
             .iter()
@@ -757,7 +785,7 @@ mod gi_light_priority_tests {
                 let mut world = World::new();
                 spawn_point_light_with_flags(&mut world, [0.0; 3], [1.0; 3], 256.0, projection);
                 let mut lights = Vec::new();
-                collect_lights(&world, &mut lights, &mut Vec::new());
+                collect_lights(&world, &mut lights, &mut Vec::new(), &mut Vec::new());
                 assert_eq!(lights.len(), 1);
                 assert_eq!(
                     lights[0].params[2],
@@ -782,19 +810,28 @@ mod gi_light_priority_tests {
         spawn_point_light(&mut world, [0.0; 3], [0.1; 3], 100.0);
         spawn_point_light(&mut world, [10.0; 3], [0.8; 3], 100.0);
         let mut lights = Vec::new();
+        let mut ids = Vec::new();
         let mut scratch = Vec::new();
-        collect_lights(&world, &mut lights, &mut scratch);
-        let before: Vec<_> = lights.iter().map(|l| l.history_id).collect();
+        collect_lights(&world, &mut lights, &mut ids, &mut scratch);
+        // #5055 — identities now ride the parallel CPU-side vec; they must
+        // still take the priority sort's permutation with the lights.
+        let before = ids.clone();
         assert_ne!(before[0], before[1]);
         assert!(before.iter().all(|id| *id != [0; 4]));
+        assert_eq!(
+            lights.len(),
+            ids.len(),
+            "identities must stay parallel to the light array"
+        );
         {
             let mut query = world.query_mut::<LightSource>().unwrap();
-            query.get_mut(before[0][0]).unwrap().dimmer = 0.01;
+            query.get_mut(before[0][0] as EntityId).unwrap().dimmer = 0.01;
         }
         lights.clear();
-        collect_lights(&world, &mut lights, &mut scratch);
-        assert_eq!(lights[0].history_id, before[1]);
-        assert_eq!(lights[1].history_id, before[0]);
+        ids.clear();
+        collect_lights(&world, &mut lights, &mut ids, &mut scratch);
+        assert_eq!(ids[0], before[1]);
+        assert_eq!(ids[1], before[0]);
     }
 
     #[test]
@@ -807,7 +844,7 @@ mod gi_light_priority_tests {
         spawn_point_light(&mut world, [20.0, 0.0, 0.0], [0.9, 0.9, 0.9], 900.0);
 
         let mut lights = Vec::new();
-        collect_lights(&world, &mut lights, &mut Vec::new());
+        collect_lights(&world, &mut lights, &mut Vec::new(), &mut Vec::new());
 
         assert_eq!(lights.len(), 3, "all three point lights must be collected");
         let scores: Vec<f32> = lights.iter().map(gi_priority_score).collect();
@@ -862,7 +899,7 @@ mod gi_light_priority_tests {
         spawn_point_light(&mut world, [5.0, 0.0, 0.0], [1.0, 1.0, 1.0], 5000.0);
 
         let mut lights = Vec::new();
-        collect_lights(&world, &mut lights, &mut Vec::new());
+        collect_lights(&world, &mut lights, &mut Vec::new(), &mut Vec::new());
 
         assert_eq!(lights.len(), 2);
         assert!(
@@ -917,7 +954,7 @@ mod light_kind_wiring_tests {
         );
 
         let mut lights = Vec::new();
-        collect_lights(&world, &mut lights, &mut Vec::new());
+        collect_lights(&world, &mut lights, &mut Vec::new(), &mut Vec::new());
 
         assert_eq!(lights.len(), 1);
         assert!(
@@ -947,7 +984,7 @@ mod light_kind_wiring_tests {
         );
 
         let mut lights = Vec::new();
-        collect_lights(&world, &mut lights, &mut Vec::new());
+        collect_lights(&world, &mut lights, &mut Vec::new(), &mut Vec::new());
 
         assert_eq!(lights.len(), 1);
         assert!(
@@ -982,7 +1019,7 @@ mod light_kind_wiring_tests {
         );
 
         let mut lights = Vec::new();
-        collect_lights(&world, &mut lights, &mut Vec::new());
+        collect_lights(&world, &mut lights, &mut Vec::new(), &mut Vec::new());
 
         assert_eq!(lights.len(), 1);
         assert_eq!(
@@ -1042,9 +1079,10 @@ mod sort_scratch_reuse_tests {
         }
 
         let mut lights = Vec::new();
+        let mut ids = Vec::new();
         let mut scratch = Vec::new();
 
-        collect_lights(&world, &mut lights, &mut scratch);
+        collect_lights(&world, &mut lights, &mut ids, &mut scratch);
         let warm_capacity = scratch.capacity();
         assert!(
             warm_capacity >= 12,
@@ -1052,7 +1090,8 @@ mod sort_scratch_reuse_tests {
         );
 
         lights.clear();
-        collect_lights(&world, &mut lights, &mut scratch);
+        ids.clear();
+        collect_lights(&world, &mut lights, &mut ids, &mut scratch);
         assert_eq!(
             scratch.capacity(),
             warm_capacity,
@@ -1075,16 +1114,17 @@ mod sort_scratch_reuse_tests {
         let mut scratch = vec![(
             f32::MAX,
             byroredux_renderer::GpuLight {
-                history_id: [0; 4],
                 position_radius: [7.0, 7.0, 7.0, 12_345.0],
                 color_type: [9.0, 9.0, 9.0, 0.0],
                 direction_angle: [0.0; 4],
                 params: [1.0, 0.0, 0.0, 0.0],
             },
+            [0; 4],
         )];
 
         let mut lights = Vec::new();
-        collect_lights(&world, &mut lights, &mut scratch);
+        let mut ids = Vec::new();
+        collect_lights(&world, &mut lights, &mut ids, &mut scratch);
 
         assert_eq!(lights.len(), 2, "only the two spawned lights may appear");
         assert!(

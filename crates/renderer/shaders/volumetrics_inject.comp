@@ -126,7 +126,6 @@ struct GpuLight {
     vec4 color_type;       // rgb = color, w = type (0=point, 1=spot, 2=directional)
     vec4 direction_angle;  // xyz = direction, w = spot angle cosine
     vec4 params;           // x = falloff, y = source radius, z = visibility bits, w = attenuation model
-    uvec4 history_id;
 };
 
 layout(std430, set = 0, binding = 3) readonly buffer LightBuffer {
@@ -218,6 +217,24 @@ layout(rgba16f, set = 0, binding = 16) uniform writeonly image3D combustionDynam
 layout(set = 0, binding = 17) uniform sampler3D previousCombustionDynamics;
 layout(rgba16f, set = 0, binding = 22) uniform writeonly image3D combustionOptical;
 layout(set = 0, binding = 23) uniform sampler3D previousCombustionOptical;
+
+// #4784 — coarse transport occupancy on the 16^3 fog-cluster grid, one bit
+// per cell. Binding 24 is THIS frame's mask (the inject pass marks it with
+// atomicOr wherever the state it writes carries combustion); binding 25 is
+// the PREVIOUS frame's mask, written once per dispatch by the host (zeroed,
+// then seed-marked for every cluster a transported-source volume spans) and
+// by last frame's GPU marks. A froxel whose cell and its 26 neighbours were
+// all empty last frame cannot receive transported mass this frame (per-step
+// displacement is far below one cell), so it skips the RK2 backtrace /
+// neighbour gather / midpoint-source probes entirely and falls through to
+// the dt == 0 carry — the empty majority of the grid stops paying ~27
+// trilinear history fetches per froxel whenever any emitter is active.
+layout(std430, set = 0, binding = 24) buffer CombustionOccupancyOut {
+    uint combustionOccupancyOut[];
+};
+layout(std430, set = 0, binding = 25) readonly buffer CombustionOccupancyIn {
+    uint combustionOccupancyIn[];
+};
 
 // Coarse radiant moments of the *transported* field, consumed by the host on
 // the next safe reuse of this frame-in-flight slot. This is the canonical
@@ -768,6 +785,57 @@ bool localFogCluster(vec3 worldPos, out FogClusterEntry cluster) {
         + cell.z * FOG_VOLUME_CLUSTER_DIM * FOG_VOLUME_CLUSTER_DIM;
     cluster = fogClusters[clusterIndex];
     return true;
+}
+
+// #4784 — the fog-cluster cell a world position falls in. Same mapping as
+// `localFogCluster`, but always clamped into the grid: the occupancy test is
+// a conservative membership question, and froxels outside the cluster grid
+// (beyond fog far) edge-clamp to the border cells whose occupancy the host
+// and GPU marks already govern.
+uint combustionClusterIndex(vec3 worldPos) {
+    vec3 gridCoord = clamp(
+        (worldPos - params.local_volume_grid.xyz) * max(params.local_volume_grid.w, 0.0),
+        vec3(0.0),
+        vec3(float(FOG_VOLUME_CLUSTER_DIM) - 1.0)
+    );
+    uvec3 cell = min(uvec3(gridCoord), uvec3(FOG_VOLUME_CLUSTER_DIM - 1u));
+    return cell.x
+        + cell.y * FOG_VOLUME_CLUSTER_DIM
+        + cell.z * FOG_VOLUME_CLUSTER_DIM * FOG_VOLUME_CLUSTER_DIM;
+}
+
+// #4784 — dilated occupancy test: true when this cell OR any of its 26
+// neighbours held combustion last frame. The one-frame mask lag plus this
+// one-cell dilation bounds the plume's reach conservatively (max transport
+// step is far below one cluster cell), so skipping the transport block on a
+// false here cannot drop mass that would have arrived.
+bool combustionNeighborhoodOccupied(uint clusterIndex) {
+    const uint plane = FOG_VOLUME_CLUSTER_DIM * FOG_VOLUME_CLUSTER_DIM;
+    uvec3 cell = uvec3(
+        clusterIndex % FOG_VOLUME_CLUSTER_DIM,
+        (clusterIndex / FOG_VOLUME_CLUSTER_DIM) % FOG_VOLUME_CLUSTER_DIM,
+        clusterIndex / plane
+    );
+    for (int z = -1; z <= 1; ++z) {
+        for (int y = -1; y <= 1; ++y) {
+            for (int x = -1; x <= 1; ++x) {
+                ivec3 neighbour = ivec3(cell) + ivec3(x, y, z);
+                if (any(lessThan(neighbour, ivec3(0)))
+                    || any(greaterThanEqual(
+                        neighbour,
+                        ivec3(FOG_VOLUME_CLUSTER_DIM)))) {
+                    continue;
+                }
+                uint index = uint(neighbour.x)
+                    + uint(neighbour.y) * FOG_VOLUME_CLUSTER_DIM
+                    + uint(neighbour.z) * plane;
+                if (combustionOccupancyIn[index] != 0u) {
+                    return true;
+                }
+            }
+        }
+    }
+    return false;
 }
 
 // The portal cluster indexes authored cone source rings and window planes
@@ -2197,6 +2265,7 @@ void transportCombustion(
     vec3 neighborStepZ,
     float dt,
     bool expired,
+    bool transportOccupied,
     out vec4 chemistry,
     out vec4 dynamics,
     out vec4 optical
@@ -2213,7 +2282,12 @@ void transportCombustion(
         destinationDynamics,
         probeOptical
     );
-    if (hadHistory && dt > 0.0) {
+    // #4784 — an occupancy miss skips the whole RK2 block (the six-neighbour
+    // gather, midpoint + source probes): this froxel's cell and its 26
+    // neighbours carried no combustion last frame, so no transported mass can
+    // arrive here this frame. Falling through to the carry below is exactly
+    // the dt == 0 path the scene-wide gate (#3131) already takes.
+    if (hadHistory && dt > 0.0 && transportOccupied) {
         bool destinationDynamicsExtended = false;
         if (combustionActivity(probeChemistry, probeOptical) < 0.08) {
             vec4 incomingDynamics;
@@ -2820,6 +2894,13 @@ void main() {
     vec4 combustion_optical = vec4(0.0);
     bool transportKnownEmpty = params.fog_reference.w < -1.5;
     if (!transportKnownEmpty) {
+        // #4784 — pay the 27-cell occupancy probe only on frames that would
+        // transport at all (live dt); the mark below still fires on paused
+        // frames so the mask tracks where combustion sits.
+        uint clusterIndex = combustionClusterIndex(field_world_pos);
+        bool transportOccupied = simulationDt > 0.0
+            && !transportExpired
+            && combustionNeighborhoodOccupied(clusterIndex);
         transportCombustion(
             field_world_pos,
             field_segment_start,
@@ -2829,6 +2910,7 @@ void main() {
             neighbor_step_z,
             simulationDt,
             transportExpired,
+            transportOccupied,
             chemistry,
             combustion_dynamics,
             combustion_optical
@@ -2840,6 +2922,9 @@ void main() {
             combustion_dynamics
         );
         imageStore(combustionOptical, coord, combustion_optical);
+        if (carriesCombustion(chemistry, combustion_optical)) {
+            atomicOr(combustionOccupancyOut[clusterIndex], 1u);
+        }
     }
 
     // View direction points FROM the sample point TOWARD the camera.

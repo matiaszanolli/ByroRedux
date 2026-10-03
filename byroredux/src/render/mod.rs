@@ -1027,10 +1027,13 @@ pub(crate) fn build_render_data(
     cover_template_draws: &mut Vec<(u32, DrawCommand)>,
     water_commands: &mut Vec<WaterDrawCommand>,
     gpu_lights: &mut Vec<byroredux_renderer::GpuLight>,
+    // #5055 — ReSTIR remap identities, one per light in `gpu_lights`
+    // (cleared and refilled in lockstep with it by `collect_lights`).
+    light_ids: &mut Vec<[u32; 4]>,
     gpu_fog_volumes: &mut Vec<byroredux_renderer::GpuFogVolume>,
     // Decorate-sort scratch for `collect_lights`' GI-priority ordering.
     // Caller-owned purely so its capacity survives the frame (#2172).
-    light_sort_scratch: &mut Vec<(f32, byroredux_renderer::GpuLight)>,
+    light_sort_scratch: &mut Vec<(f32, byroredux_renderer::GpuLight, [u32; 4])>,
     bone_world: &mut Vec<[[f32; 4]; 4]>,
     skin_offsets: &mut FxHashMap<EntityId, u32>,
     skin_slot_pool: &mut SkinSlotPool,
@@ -1044,6 +1047,7 @@ pub(crate) fn build_render_data(
     cover_template_draws.clear();
     water_commands.clear();
     gpu_lights.clear();
+    light_ids.clear();
     gpu_fog_volumes.clear();
     skin_offsets.clear();
     // R1 Phase 2 — clear the material table so the per-frame dedup
@@ -1166,7 +1170,7 @@ pub(crate) fn build_render_data(
             rayon::join(
                 || {
                     let start = mark(profile);
-                    lights::collect_lights(world, gpu_lights, light_sort_scratch);
+                    lights::collect_lights(world, gpu_lights, light_ids, light_sort_scratch);
                     took(start)
                 },
                 || {

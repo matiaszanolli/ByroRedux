@@ -848,6 +848,7 @@ impl ApplicationHandler for App {
                 vec_row("groundcover_model_table", &self.groundcover_model_table),
                 vec_row("water_commands", &self.water_commands),
                 vec_row("gpu_lights", &self.gpu_lights),
+                vec_row("light_ids", &self.light_ids),
                 vec_row("gpu_fog_volumes", &self.gpu_fog_volumes),
                 vec_row("light_sort_scratch", &self.light_sort_scratch),
                 vec_row("bone_world", &self.bone_world),

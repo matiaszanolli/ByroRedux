@@ -95,6 +95,7 @@ impl VulkanContext {
         &mut self,
         frame: usize,
         lights: &[scene_buffer::GpuLight],
+        light_ids: &[[u32; 4]],
         fog_volumes: &[super::super::volumetrics::GpuFogVolume],
         view_proj: &[f32; 16],
         camera_pos: [f32; 3],
@@ -113,8 +114,13 @@ impl VulkanContext {
         // submits canonical medium primitives, while only the renderer owns
         // the advected/cooled field that actually emits this delayed light.
         let mut frame_lights = std::mem::take(&mut self.scratch.frame_lights_scratch);
+        // #5055 — the ReSTIR remap identities ride a parallel CPU-side vec;
+        // they must survive this merge and the re-sort below in lockstep.
+        let mut frame_light_ids = std::mem::take(&mut self.scratch.frame_light_ids_scratch);
         frame_lights.clear();
         frame_lights.extend_from_slice(lights);
+        frame_light_ids.clear();
+        frame_light_ids.extend_from_slice(light_ids);
         if let Some(ref mut volumetrics) = self.post.volumetrics {
             if let Err(error) = volumetrics.append_combustion_surface_lights(
                 &self.device,
@@ -124,24 +130,48 @@ impl VulkanContext {
             ) {
                 log::warn!("combustion surface-light readback failed: {error}");
             }
+            // Appended field lights have no persistent emitter identity.
+            frame_light_ids.resize(frame_lights.len(), [0; 4]);
         }
         // The app already sorts authored local lights by `gi_priority_score`
         // so `upload_lights`' MAX_LIGHTS clamp drops the lowest-scoring tail
         // (#4017 retired the fixed-prefix GI scan that ordering first served).
         // Re-sort after adding field-derived lights using the canonical score
         // carried by GpuLight itself; directional lights remain pinned.
+        // #5055 — the decorate-sort carries the identity beside each light so
+        // the parallel vec takes the same permutation.
         let directional_count = frame_lights
             .iter()
             .take_while(|light| light.color_type[3] > 1.5)
             .count();
-        frame_lights[directional_count..]
-            .sort_unstable_by(|a, b| b.gi_priority_score().total_cmp(&a.gi_priority_score()));
+        let mut resort = std::mem::take(&mut self.scratch.light_resort_scratch);
+        resort.clear();
+        resort.extend(
+            frame_lights[directional_count..]
+                .iter()
+                .zip(&frame_light_ids[directional_count..])
+                .map(|(light, &id)| (light.gi_priority_score(), *light, id)),
+        );
+        resort.sort_unstable_by(|a, b| b.0.total_cmp(&a.0));
+        for ((slot, id_slot), (_, light, id)) in frame_lights[directional_count..]
+            .iter_mut()
+            .zip(&mut frame_light_ids[directional_count..])
+            .zip(&resort)
+        {
+            *slot = *light;
+            *id_slot = *id;
+        }
+        self.scratch.light_resort_scratch = resort;
         let lights = frame_lights.as_slice();
 
         // Upload scene data (lights + camera) BEFORE the render pass begins.
         self.scene_buffers
-            .upload_lights(&self.device, frame, lights)
+            .upload_lights(&self.device, frame, lights, &frame_light_ids)
             .unwrap_or_else(|e| log::warn!("Failed to upload lights: {e}"));
+        // #5055 — the identities' last consumer this frame is the upload's
+        // remap above; hand the scratch back before any error path below so
+        // it cannot be dropped (mirrors the #3837 rule for `frame_lights`).
+        self.scratch.frame_light_ids_scratch = frame_light_ids;
         // `tlas_written[frame]` lags one frame per FIF slot — on the
         // first frame each slot gets a successful TLAS, this still reads
         // `false` because `write_tlas` runs later in `draw_frame` (see

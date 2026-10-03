@@ -499,13 +499,16 @@ struct App {
     water_commands: Vec<byroredux_renderer::vulkan::water::WaterDrawCommand>,
     /// Reusable per-frame light buffer (cleared each frame, allocation retained).
     gpu_lights: Vec<byroredux_renderer::GpuLight>,
+    /// #5055 — ReSTIR remap identities, one `[u32; 4]` per entry of
+    /// `gpu_lights`, cleared and refilled in lockstep with it.
+    light_ids: Vec<[u32; 4]>,
     /// Reusable per-frame analytic local fog primitives.
     gpu_fog_volumes: Vec<byroredux_renderer::GpuFogVolume>,
     /// #2172 / PERF-D1-02 — decorate-sort scratch for `collect_lights`'
     /// GI-priority ordering. Held here for the same reason `gpu_lights`
     /// is: the buffer is rebuilt from scratch every frame, so only the
     /// allocation is worth carrying over.
-    light_sort_scratch: Vec<(f32, byroredux_renderer::GpuLight)>,
+    light_sort_scratch: Vec<(f32, byroredux_renderer::GpuLight, [u32; 4])>,
     /// M29.5/M29.6 — reusable per-frame bone-world matrices (column-
     /// major mat4 entries; slot 0 always identity). Sparse layout
     /// indexed by `skin_slot_id × MAX_BONES_PER_MESH`; the renderer
@@ -1131,6 +1134,7 @@ impl App {
             frame_work_deadline: None,
             water_commands: Vec::new(),
             gpu_lights: Vec::new(),
+            light_ids: Vec::new(),
             gpu_fog_volumes: Vec::new(),
             light_sort_scratch: Vec::new(),
             bone_world: Vec::new(),

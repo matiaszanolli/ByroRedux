@@ -679,6 +679,15 @@ fn nuclear_source_reaches_grid(volumes: &[GpuFogVolume], grid_center: [f32; 3], 
     })
 }
 
+/// #4784 — CPU twin of the shader's `isTransportedProfile`: every authored
+/// profile except homogeneous dust and light shafts feeds the transported
+/// combustion field, so its clusters must seed the occupancy mask even on
+/// the ignition frame (the GPU marks are one frame behind).
+fn is_transported_profile(volume: &GpuFogVolume) -> bool {
+    (volume.profile_params[0] - FOG_VOLUME_PROFILE_HOMOGENEOUS).abs() >= 0.5
+        && (volume.profile_params[0] - FOG_VOLUME_PROFILE_LIGHT_SHAFT).abs() >= 0.5
+}
+
 /// World-space candidate envelope of an authored cone ring or window plane
 /// swept along incoming sunlight through the camera-centred grid.
 struct FogPortalSweep {
@@ -813,6 +822,7 @@ fn build_fog_volume_clusters(
     entries: &mut [GpuFogClusterEntry; FOG_VOLUME_CLUSTER_COUNT],
     indices: &mut [u32],
     refs: &mut Vec<FogClusterRef>,
+    occupancy: &mut [u32; FOG_VOLUME_CLUSTER_COUNT],
 ) -> FogClusterBuild {
     let far = far_distance.max(1.0);
     let cell_size = (2.0 * far) / FOG_VOLUME_CLUSTER_DIM as f32;
@@ -831,6 +841,10 @@ fn build_fog_volume_clusters(
         entry.count = 0;
         entry.portal_count = 0;
     }
+    // #4784 — reset alongside the entry counts: the mask this frame's
+    // dispatch uploads is exactly the CPU seed marks below (GPU marks for the
+    // NEXT frame accumulate on top of it in the inject pass).
+    occupancy.fill(0);
     refs.clear();
 
     // #3834 — highest touched cluster index + 1, i.e. the length of the
@@ -947,12 +961,21 @@ fn build_fog_volume_clusters(
             continue;
         }
 
+        let transported_source = is_transported_profile(volume);
         for z in ranges[2].0..=ranges[2].1 {
             for y in ranges[1].0..=ranges[1].1 {
                 for x in ranges[0].0..=ranges[0].1 {
                     let cluster_index = x
                         + y * FOG_VOLUME_CLUSTER_DIM
                         + z * FOG_VOLUME_CLUSTER_DIM * FOG_VOLUME_CLUSTER_DIM;
+                    // #4784 — seed the occupancy mask for every cluster a
+                    // transported source spans, BEFORE the capacity check
+                    // below: ignition must reach the mask even when the
+                    // density list is full, or the first frame of a fire in a
+                    // busy cell would transport nowhere.
+                    if transported_source {
+                        occupancy[cluster_index] = 1;
+                    }
                     let entry = &mut entries[cluster_index];
                     if entry.count as usize >= MAX_FOG_VOLUMES_PER_CLUSTER {
                         continue;
@@ -1303,7 +1326,9 @@ fn combustion_light_from_moment(
     );
 
     Some(GpuLight {
-        history_id: [0; 4], // Transported field samples have no persistent emitter identity.
+        // Transported field samples have no persistent emitter identity, so
+        // `append_combustion_surface_lights` pairs each appended light with
+        // a [0; 4] entry in the collector's CPU-side identity vec (#5055).
         position_radius: [
             position[0],
             position[1],
@@ -1454,6 +1479,16 @@ pub struct VolumetricsPipeline {
     /// upload covers its union with the new range to clear stale counts.
     /// Initially full because host-visible allocations are not zeroed.
     fog_cluster_dirty_range: [(usize, usize); MAX_FRAMES_IN_FLIGHT],
+    /// #4784 — CPU staging for the per-frame transport-occupancy seed marks
+    /// (transported-source clusters), uploaded into the frame slot's GPU mask
+    /// before injection, where the pass adds its own atomic marks.
+    fog_cluster_occupancy: Box<[u32; FOG_VOLUME_CLUSTER_COUNT]>,
+    /// #4784 — per-frame-in-flight coarse transport-occupancy masks on the
+    /// 16³ fog-cluster grid. Slot f is zeroed + seed-marked by the host, marked
+    /// by the inject pass's atomics, and read (dilated) by the next frame's
+    /// inject as the skip gate. Host-visible; the all-slots fence wait at the
+    /// top of `draw_frame` retires the previous reader before the rewrite.
+    combustion_occupancy_buffers: Vec<GpuBuffer>,
 
     // ── Integration pass (Phase 3) ───────────────────────────────────
     integration_pipeline: vk::Pipeline,
@@ -1628,6 +1663,10 @@ impl VolumetricsPipeline {
         let mut index_len = 0usize;
         frame_params.local_volume_grid = if fog_volumes.is_empty() {
             self.fog_volume_upload.count = [0; 4];
+            // #4784 — no volumes means no CPU seed marks; the uploaded mask
+            // is all zeroes (GPU marks from the inject pass still accumulate
+            // on top for next frame's gate).
+            self.fog_cluster_occupancy.fill(0);
             let cell_size = (2.0 * fog_far) / FOG_VOLUME_CLUSTER_DIM as f32;
             [
                 camera_position[0] - fog_far,
@@ -1651,6 +1690,7 @@ impl VolumetricsPipeline {
                 &mut self.fog_cluster_entries,
                 &mut self.fog_cluster_indices,
                 &mut self.fog_cluster_refs,
+                &mut self.fog_cluster_occupancy,
             );
             cluster_hi = build.cluster_hi;
             cluster_lo = build.cluster_lo;
@@ -1707,6 +1747,14 @@ impl VolumetricsPipeline {
             }
             self.fog_cluster_dirty_range[frame] = (cluster_lo, cluster_hi);
         }
+        // #4784 — publish this frame's occupancy mask: zeroed + CPU
+        // seed-marked above (build or the empty branch), GPU atomic marks
+        // accumulate on top during injection. Rewritten unconditionally so a
+        // slot can never carry marks older than one frame; the all-slots
+        // fence wait at the top of `draw_frame` has retired the previous
+        // frame (the slot's last reader) before this host write.
+        self.combustion_occupancy_buffers[frame]
+            .write_mapped(device, &self.fog_cluster_occupancy[..])?;
         *fog_cluster_ns = fog_cluster_t0.elapsed().as_nanos() as u64;
         // HOST → COMPUTE_SHADER (UBO flush). Defense-in-depth, not a spec
         // requirement (#4182): mapped writes made before `queue_submit` are
@@ -2350,6 +2398,10 @@ impl VolumetricsPipeline {
             buf.destroy(device, allocator);
         }
         self.combustion_light_moment_buffers.clear();
+        for buf in &mut self.combustion_occupancy_buffers {
+            buf.destroy(device, allocator);
+        }
+        self.combustion_occupancy_buffers.clear();
         for buf in &mut self.integration_param_buffers {
             buf.destroy(device, allocator);
         }
@@ -3951,6 +4003,7 @@ mod unit_tests {
         let mut upload = GpuFogVolumeUpload::default();
         let mut entries = fog_cluster_entries();
         let mut indices = vec![0; FOG_VOLUME_INDEX_COUNT].into_boxed_slice();
+        let mut occupancy = Box::new([0u32; FOG_VOLUME_CLUSTER_COUNT]);
         let FogClusterBuild {
             cluster_hi,
             index_len,
@@ -3961,6 +4014,7 @@ mod unit_tests {
             &mut upload,
             &mut entries,
             &mut indices,
+        &mut occupancy,
         );
 
         assert!(
@@ -4015,6 +4069,7 @@ mod unit_tests {
         let mut upload = GpuFogVolumeUpload::default();
         let mut entries = fog_cluster_entries();
         let mut indices = vec![0; FOG_VOLUME_INDEX_COUNT].into_boxed_slice();
+        let mut occupancy = Box::new([0u32; FOG_VOLUME_CLUSTER_COUNT]);
 
         cluster_frame(
             &[shaft],
@@ -4022,6 +4077,7 @@ mod unit_tests {
             &mut upload,
             &mut entries,
             &mut indices,
+        &mut occupancy,
         );
         assert_eq!(entries[below].count, 0, "painted cone ends near y=-10");
         assert_eq!(entries[below].portal_count, 1);
@@ -4034,6 +4090,7 @@ mod unit_tests {
             &mut upload,
             &mut entries,
             &mut indices,
+        &mut occupancy,
         );
         assert_eq!(entries[below].portal_count, 0);
         assert_eq!(entries[moved].portal_count, 1);
@@ -4069,6 +4126,7 @@ mod unit_tests {
         let mut upload = GpuFogVolumeUpload::default();
         let mut entries = fog_cluster_entries();
         let mut indices = vec![0; FOG_VOLUME_INDEX_COUNT].into_boxed_slice();
+        let mut occupancy = Box::new([0u32; FOG_VOLUME_CLUSTER_COUNT]);
 
         cluster_frame(
             &[window],
@@ -4076,6 +4134,7 @@ mod unit_tests {
             &mut upload,
             &mut entries,
             &mut indices,
+        &mut occupancy,
         );
         assert_eq!(entries[straight].count, 0, "card density ends near z=0");
         assert_eq!(entries[straight].portal_count, 1);
@@ -4087,6 +4146,7 @@ mod unit_tests {
             &mut upload,
             &mut entries,
             &mut indices,
+        &mut occupancy,
         );
         assert_eq!(entries[straight].portal_count, 0);
         assert_eq!(entries[shifted].portal_count, 1);
@@ -4109,12 +4169,14 @@ mod unit_tests {
         let mut upload = GpuFogVolumeUpload::default();
         let mut entries = fog_cluster_entries();
         let mut indices = vec![0; FOG_VOLUME_INDEX_COUNT].into_boxed_slice();
+        let mut occupancy = Box::new([0u32; FOG_VOLUME_CLUSTER_COUNT]);
         let FogClusterBuild { cluster_hi, .. } = cluster_frame(
             &[far_away],
             [0.0, 1.0, 0.0],
             &mut upload,
             &mut entries,
             &mut indices,
+        &mut occupancy,
         );
         assert_eq!(cluster_hi, 0);
         assert!(entries.iter().all(|e| e.count == 0));
@@ -4133,12 +4195,14 @@ mod unit_tests {
         let mut upload = GpuFogVolumeUpload::default();
         let mut entries = fog_cluster_entries();
         let mut indices = vec![0; FOG_VOLUME_INDEX_COUNT].into_boxed_slice();
+        let mut occupancy = Box::new([0u32; FOG_VOLUME_CLUSTER_COUNT]);
         let grid = cluster_frame(
             &[volume],
             [0.0, 1.0, 0.0],
             &mut upload,
             &mut entries,
             &mut indices,
+        &mut occupancy,
         );
 
         assert_eq!(upload.count[0], 1);
@@ -4164,12 +4228,14 @@ mod unit_tests {
         let mut upload = GpuFogVolumeUpload::default();
         let mut entries = fog_cluster_entries();
         let mut indices = vec![0; FOG_VOLUME_INDEX_COUNT].into_boxed_slice();
+        let mut occupancy = Box::new([0u32; FOG_VOLUME_CLUSTER_COUNT]);
         cluster_frame(
             &[volume],
             [0.0, 1.0, 0.0],
             &mut upload,
             &mut entries,
             &mut indices,
+        &mut occupancy,
         );
         assert!(entries.iter().all(|entry| entry.count == 0));
     }
@@ -4183,6 +4249,7 @@ mod unit_tests {
         upload: &mut GpuFogVolumeUpload,
         entries: &mut [GpuFogClusterEntry; FOG_VOLUME_CLUSTER_COUNT],
         indices: &mut [u32],
+        occupancy: &mut [u32; FOG_VOLUME_CLUSTER_COUNT],
     ) -> FogClusterBuild {
         build_fog_volume_clusters(
             volumes,
@@ -4194,6 +4261,7 @@ mod unit_tests {
             entries,
             indices,
             &mut Vec::new(),
+            occupancy,
         )
     }
 
@@ -4220,12 +4288,14 @@ mod unit_tests {
         let mut upload = GpuFogVolumeUpload::default();
         let mut entries = fog_cluster_entries();
         let mut indices = vec![0; FOG_VOLUME_INDEX_COUNT].into_boxed_slice();
+        let mut occupancy = Box::new([0u32; FOG_VOLUME_CLUSTER_COUNT]);
         cluster_frame(
             &[shaft],
             [0.0, 1.0, 0.0],
             &mut upload,
             &mut entries,
             &mut indices,
+        &mut occupancy,
         );
         assert!(entries.iter().all(|e| e.count == 0));
         assert!(entries.iter().any(|e| e.portal_count > 0));
@@ -4239,6 +4309,7 @@ mod unit_tests {
             &mut upload,
             &mut entries,
             &mut indices,
+        &mut occupancy,
         );
         assert!(entries.iter().any(|e| e.count == 1));
         for entry in entries.iter().filter(|e| e.count > 0) {
@@ -4256,6 +4327,7 @@ mod unit_tests {
             &mut upload,
             &mut entries,
             &mut indices,
+        &mut occupancy,
         );
         assert!(entries.iter().any(|e| e.count > 0));
         assert!(entries.iter().any(|e| e.portal_count > 0));
@@ -4267,7 +4339,8 @@ mod unit_tests {
         let mut upload = GpuFogVolumeUpload::default();
         let mut entries = fog_cluster_entries();
         let mut indices = vec![0; FOG_VOLUME_INDEX_COUNT].into_boxed_slice();
-        let build = cluster_frame(&[volume], [0.0; 3], &mut upload, &mut entries, &mut indices);
+        let mut occupancy = Box::new([0u32; FOG_VOLUME_CLUSTER_COUNT]);
+        let build = cluster_frame(&[volume], [0.0; 3], &mut upload, &mut entries, &mut indices, &mut occupancy);
         assert!(build.cluster_lo > 0);
         assert!(build.cluster_lo < build.cluster_hi);
         for (index, entry) in entries.iter().enumerate() {
@@ -4374,6 +4447,7 @@ mod unit_tests {
         let mut upload = GpuFogVolumeUpload::default();
         let mut entries = fog_cluster_entries();
         let mut indices = vec![0; FOG_VOLUME_INDEX_COUNT].into_boxed_slice();
+        let mut occupancy = Box::new([0u32; FOG_VOLUME_CLUSTER_COUNT]);
         // Half-extent 5 inside one 20-unit cell centred on the camera.
         let build = cluster_frame(
             &[smoke_at([5.0, 5.0, 5.0], 4.0)],
@@ -4381,6 +4455,7 @@ mod unit_tests {
             &mut upload,
             &mut entries,
             &mut indices,
+        &mut occupancy,
         );
         let live: usize = entries
             .iter()
@@ -4405,6 +4480,7 @@ mod unit_tests {
         let mut upload = GpuFogVolumeUpload::default();
         let mut entries = fog_cluster_entries();
         let mut indices = vec![0; FOG_VOLUME_INDEX_COUNT].into_boxed_slice();
+        let mut occupancy = Box::new([0u32; FOG_VOLUME_CLUSTER_COUNT]);
         let volumes = [
             smoke_at([0.0, 0.0, 0.0], 30.0),
             smoke_at([10.0, 0.0, 0.0], 30.0),
@@ -4416,6 +4492,7 @@ mod unit_tests {
             &mut upload,
             &mut entries,
             &mut indices,
+        &mut occupancy,
         );
         let mut cursor = 0u32;
         for entry in &entries[..build.cluster_hi] {
@@ -4446,6 +4523,7 @@ mod unit_tests {
         let mut upload = GpuFogVolumeUpload::default();
         let mut entries = fog_cluster_entries();
         let mut indices = vec![0; FOG_VOLUME_INDEX_COUNT].into_boxed_slice();
+        let mut occupancy = Box::new([0u32; FOG_VOLUME_CLUSTER_COUNT]);
         let center = FOG_VOLUME_CLUSTER_DIM / 2;
         let center_cluster = center
             + center * FOG_VOLUME_CLUSTER_DIM
@@ -4460,6 +4538,7 @@ mod unit_tests {
             &mut upload,
             &mut entries,
             &mut indices,
+        &mut occupancy,
         );
         assert_eq!(entries[center_cluster].count, 1);
         assert!(
@@ -4473,6 +4552,7 @@ mod unit_tests {
             &mut upload,
             &mut entries,
             &mut indices,
+        &mut occupancy,
         );
         assert_eq!(entries[center_cluster].count, 1);
         assert_eq!(
@@ -4487,6 +4567,7 @@ mod unit_tests {
             &mut upload,
             &mut entries,
             &mut indices,
+        &mut occupancy,
         );
         assert!(
             entries.iter().all(|e| e.count == 0 && e.portal_count == 0),
@@ -4509,12 +4590,14 @@ mod unit_tests {
         let mut upload = GpuFogVolumeUpload::default();
         let mut entries = fog_cluster_entries();
         let mut indices = vec![0; FOG_VOLUME_INDEX_COUNT].into_boxed_slice();
+        let mut occupancy = Box::new([0u32; FOG_VOLUME_CLUSTER_COUNT]);
         let swept = cluster_frame(
             &[shaft],
             [1.0, 1.0, 0.0],
             &mut upload,
             &mut entries,
             &mut indices,
+        &mut occupancy,
         );
         let swept_portals: u32 = entries.iter().map(|e| e.portal_count).sum();
         assert!(swept_portals > 0, "fixture must exercise the sweep");
@@ -4529,6 +4612,7 @@ mod unit_tests {
             &mut entries,
             &mut indices,
             &mut Vec::new(),
+            &mut occupancy,
         );
         assert!(entries.iter().all(|e| e.portal_count == 0));
         assert!(gated.index_len < swept.index_len);
@@ -4629,3 +4713,138 @@ mod unit_tests {
 // checks are now:
 //   shader_constants::tests::affected_shaders_include_constants_header
 //   shader_constants::tests::generated_header_contains_all_defines
+
+/// #4784 — the coarse transport-occupancy mask. The CPU half seeds exactly
+/// the clusters transported-source volumes span; the GPU half (gate + marks)
+/// is pinned by `transport_occupancy_gate_is_wired_into_the_inject_pass`.
+#[cfg(test)]
+mod transport_occupancy_tests {
+    use super::*;
+
+    fn volume_at(center: [f32; 3], half_extent: f32, profile: f32) -> GpuFogVolume {
+        GpuFogVolume {
+            center_shape: [center[0], center[1], center[2], 1.0],
+            half_extents_extinction: [half_extent, half_extent, half_extent, 0.01],
+            inverse_rotation: [0.0, 0.0, 0.0, 1.0],
+            albedo_edge: [0.9, 0.9, 0.9, 0.4],
+            emission_temperature: [0.0; 4],
+            profile_params: [profile, 0.0, 0.0, 0.0],
+        }
+    }
+
+    fn build_marks(volumes: &[GpuFogVolume]) -> Box<[u32; FOG_VOLUME_CLUSTER_COUNT]> {
+        let mut upload = GpuFogVolumeUpload::default();
+        let mut entries = fog_cluster_entries();
+        let mut indices = vec![0; FOG_VOLUME_INDEX_COUNT].into_boxed_slice();
+        let mut occupancy = Box::new([0u32; FOG_VOLUME_CLUSTER_COUNT]);
+        build_fog_volume_clusters(
+            volumes,
+            [0.0; 3],
+            160.0,
+            [0.0, 1.0, 0.0],
+            false,
+            &mut upload,
+            &mut entries,
+            &mut indices,
+            &mut Vec::new(),
+            &mut occupancy,
+        );
+        occupancy
+    }
+
+    /// Transported profiles (flame, smoke, explosions) seed their clusters;
+    /// homogeneous dust and light shafts — the analytic, never-transported
+    /// profiles — must not, or the mask degrades to "everywhere a fog
+    /// volume exists" and the gate saves nothing.
+    #[test]
+    fn transported_sources_seed_the_occupancy_mask() {
+        let marks = build_marks(&[
+            volume_at([10.0, 10.0, 70.0], 5.0, FOG_VOLUME_PROFILE_FLAME),
+            volume_at([-60.0, 0.0, 0.0], 20.0, FOG_VOLUME_PROFILE_HOMOGENEOUS),
+            volume_at([40.0, 0.0, -40.0], 10.0, FOG_VOLUME_PROFILE_LIGHT_SHAFT),
+        ]);
+        assert!(
+            marks.iter().any(|&bit| bit != 0),
+            "the flame volume must seed its clusters"
+        );
+        let marked: Vec<usize> = marks
+            .iter()
+            .enumerate()
+            .filter(|&(_, &bit)| bit != 0)
+            .map(|(index, _)| index)
+            .collect();
+        // Grid: 160 m half-extent, 20 m cells, min corner (-160, -160, -160).
+        // The flame spans x∈[5,15] → cell 8, y same, z∈[65,75] → cell 11.
+        for &index in &marked {
+            let (x, y, z) = (
+                index % FOG_VOLUME_CLUSTER_DIM,
+                (index / FOG_VOLUME_CLUSTER_DIM) % FOG_VOLUME_CLUSTER_DIM,
+                index / (FOG_VOLUME_CLUSTER_DIM * FOG_VOLUME_CLUSTER_DIM),
+            );
+            let within_flame = (7..=8).contains(&x) && (7..=8).contains(&y) && (11..=12).contains(&z);
+            assert!(
+                within_flame,
+                "a mark appeared outside the flame's AABB at cell ({x},{y},{z}) — \
+                 the analytic volumes must not seed transport occupancy (#4784)"
+            );
+        }
+    }
+
+    /// A fresh build must not inherit the previous frame's marks: the mask
+    /// is rewritten every frame (zero + seed), with GPU marks accumulating
+    /// only on top of the current frame's copy.
+    #[test]
+    fn occupancy_marks_reset_between_builds() {
+        let _ = build_marks(&[volume_at([10.0, 10.0, 70.0], 5.0, FOG_VOLUME_PROFILE_FLAME)]);
+        let marks = build_marks(&[]);
+        assert!(
+            marks.iter().all(|&bit| bit == 0),
+            "an empty volume list must leave the mask all zeroes"
+        );
+    }
+
+    /// The GPU half: the inject pass must gate the RK2 transport block on
+    /// the dilated previous-frame mask and mark this frame's mask wherever
+    /// the state it writes carries combustion. Source-scan rather than
+    /// SPIR-V-disassembly: the surrounding contracts
+    /// (`combustion_profiles_feed_one_canonical_transported_contract`)
+    /// already pin this shader's text shape the same way.
+    #[test]
+    fn transport_occupancy_gate_is_wired_into_the_inject_pass() {
+        let shader = include_str!("../../shaders/volumetrics_inject.comp");
+        for contract in [
+            "layout(std430, set = 0, binding = 24) buffer CombustionOccupancyOut",
+            "layout(std430, set = 0, binding = 25) readonly buffer CombustionOccupancyIn",
+            "bool combustionNeighborhoodOccupied(uint clusterIndex)",
+            "bool transportOccupied = simulationDt > 0.0",
+            "if (hadHistory && dt > 0.0 && transportOccupied) {",
+            "atomicOr(combustionOccupancyOut[clusterIndex], 1u);",
+        ] {
+            assert!(
+                shader.contains(contract),
+                "the transport occupancy gate lost its wiring: {contract} (#4784)"
+            );
+        }
+        // The mark must sit after the field writes it samples, inside the
+        // transport-armed branch — not before the state exists.
+        let mark = shader
+            .find("atomicOr(combustionOccupancyOut[clusterIndex], 1u);")
+            .expect("occupancy mark");
+        let store = shader
+            .find("imageStore(combustionOptical, coord, combustion_optical);")
+            .expect("optical store");
+        assert!(
+            store < mark,
+            "the occupancy mark must follow the field writes it classifies (#4784)"
+        );
+        // And the gate must actually guard the RK2 block, not sit on a dead
+        // branch: `transportCombustion` receives the flag.
+        let call = shader
+            .find("            transportOccupied,\n            chemistry,")
+            .or_else(|| shader.find("transportOccupied,"));
+        assert!(
+            call.is_some(),
+            "`transportCombustion` must receive the occupancy gate (#4784)"
+        );
+    }
+}

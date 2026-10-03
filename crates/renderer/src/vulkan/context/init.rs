@@ -1668,6 +1668,8 @@ impl VulkanContext {
             scratch: ScratchBuffers {
                 gpu_instances_scratch: Vec::new(),
                 frame_lights_scratch: Vec::new(),
+                frame_light_ids_scratch: Vec::new(),
+                light_resort_scratch: Vec::new(),
                 current_rigid_models_scratch: FxHashMap::default(),
                 previous_models_scratch: Vec::new(),
                 batches_scratch: Vec::new(),
