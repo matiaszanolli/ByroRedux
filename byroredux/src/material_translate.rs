@@ -572,9 +572,15 @@ pub(crate) fn translate_texture_clamp_mode(source: &ImportedMaterial) -> u8 {
 ///   - `effect_shader_flags` packed as the union of the BSEffectShader
 ///     SLSF bits ([`crate::cell_loader::pack_effect_shader_flags`]), the
 ///     BGSM v>2 PBR/translucency/model-space-normals bits
-///     ([`crate::cell_loader::pack_imported_material_flags`]), and any
+///     ([`crate::cell_loader::pack_imported_material_flags`]), any
 ///     `extra_material_flags` the caller supplies (the cell loader's
-///     REFR-overlay model-space-normals bit; `0` for loose-NIF loads);
+///     REFR-overlay model-space-normals bit; `0` for loose-NIF loads),
+///     and the `_msn`-name classifier (#4548): a normal slot whose
+///     resolved path ends `_msn.dds` sets `MODEL_SPACE_NORMALS` here at
+///     the boundary — Bethesda's FaceGen pipeline swaps the generated
+///     head's normal texture to the per-NPC `_msn` without touching the
+///     shared skin material's authored bool, so the texture *name* is
+///     authoritative where the BGSM bit is stale;
 ///   - PBR scalars resolved: for NIF-imported content the keyword
 ///     classifier already ran at import time (`classify_legacy_pbr` in the
 ///     NIF mesh extractors) and populated `source.metalness_override/
@@ -720,10 +726,11 @@ pub(crate) fn translate_material(
                 })
             }),
         // #890 Stage 2 / #1077 Phase 2a — union of the BSEffect SLSF
-        // bits, the BGSM v>2 bits, and the caller's extra bits (REFR
-        // overlay model-space-normals on the cell path). All three
-        // contributors target the same `material_flag::*` layout so a
-        // single OR yields the word `GpuMaterial.material_flags` consumes.
+        // bits, the BGSM v>2 bits, the caller's extra bits (REFR
+        // overlay model-space-normals on the cell path), and the
+        // `_msn`-name classifier (#4548). All four contributors target
+        // the same `material_flag::*` layout so a single OR yields the
+        // word `GpuMaterial.material_flags` consumes.
         effect_shader_flags: crate::cell_loader::pack_effect_shader_flags(
             source.effect_shader.as_ref(),
         ) | crate::cell_loader::pack_imported_material_flags(source)
@@ -3425,7 +3432,8 @@ mod canonical_completeness_harness {
     /// #3462 — that contract used to be a claim rather than a fact: five
     /// copies had no assertion here at all (`water_shader_flags`,
     /// `is_water_shader`, `ior`, `parallax_height_in_alpha`, and two of
-    /// `effect_shader_flags`' three contributors), the first two of which
+    /// `effect_shader_flags`' then-three contributors — the union is
+    /// four-way since #4548), the first two of which
     /// gate the NIFAL↔WATAL seam. The assertions are below now, and
     /// [`every_source_derived_material_field_is_pinned_by_a_test`] derives
     /// the list from the literal itself so the next added copy cannot slip
@@ -3650,14 +3658,17 @@ mod canonical_completeness_harness {
         );
     }
 
-    /// #3462 — `effect_shader_flags` is a three-way OR, and the harness
-    /// above only ever exercises the middle contributor
-    /// (`pack_imported_material_flags`, via the fixture's soft/rim/back
-    /// lighting bools) with `extra_material_flags = 0` and no
-    /// `effect_shader`. A copy reduced to any single contributor keeps that
-    /// assertion green. Pin all three at once.
+    /// #3462 — `effect_shader_flags` is a four-way OR (#4548 added the
+    /// fourth), and the harness above only ever exercises the second
+    /// contributor (`pack_imported_material_flags`, via the fixture's
+    /// soft/rim/back lighting bools) with `extra_material_flags = 0`, no
+    /// `effect_shader`, and a tangent-space normal slot. A copy reduced to
+    /// any single contributor keeps that assertion green. Pin all four at
+    /// once — the `_msn` name rule needs its own call, because it and
+    /// `extra_material_flags` set the *same* bit (`MODEL_SPACE_NORMALS`)
+    /// and one fixture cannot attribute it.
     #[test]
-    fn translate_material_unions_all_three_effect_shader_flag_contributors() {
+    fn translate_material_unions_all_four_effect_shader_flag_contributors() {
         use byroredux_renderer::vulkan::material::material_flag::{
             EFFECT_SOFT, MODEL_SPACE_NORMALS, SOFT_LIGHTING,
         };
@@ -3673,7 +3684,9 @@ mod canonical_completeness_harness {
             ..ImportedMaterial::default()
         };
         // Contributor 3 — the caller's extra bits (the cell loader's REFR
-        // overlay model-space-normals bit; `0` for loose-NIF loads).
+        // overlay model-space-normals bit; `0` for loose-NIF loads). The
+        // normal slot here is tangent-space (`normal.dds`), so
+        // contributor 4 contributes nothing in this call.
         let material = translate_material(&source, None, kitchen_sink_paths(), MODEL_SPACE_NORMALS);
 
         for (bit, who) in [
@@ -3687,6 +3700,18 @@ mod canonical_completeness_harness {
                 "{who}'s contribution is missing from the union (#3462)"
             );
         }
+
+        // Contributor 4 — the `_msn`-name classifier alone: no extra
+        // bits, and a normal slot naming a `_msn.dds` map.
+        let mut paths = kitchen_sink_paths();
+        paths.textures.normal = Some("Textures/Test/head_msn.dds".to_string());
+        let material = translate_material(&source, None, paths, 0);
+        assert_ne!(
+            material.effect_shader_flags & MODEL_SPACE_NORMALS,
+            0,
+            "the `_msn`-name classifier's contribution is missing from \
+             the union (#4548)"
+        );
     }
 
     /// #3462 (NIFAL-2026-08-27-04) — the mechanised completeness check that
@@ -3760,7 +3785,7 @@ mod canonical_completeness_harness {
         // Split the literal into top-level `field: value` entries. Brace /
         // bracket / paren depth is tracked because several values span
         // multiple lines (`shader_type_fields`'s `if`, `effect_falloff`'s
-        // `map`/`or_else` chain, `effect_shader_flags`' three-way OR).
+        // `map`/`or_else` chain, `effect_shader_flags`' four-way OR).
         let mut fields: Vec<String> = Vec::new();
         let mut depth = 0i32;
         let mut name: Option<String> = None;

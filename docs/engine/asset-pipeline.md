@@ -378,8 +378,16 @@ data; the per-game quirks resolve here exactly once.
   bits ([`cell_loader::pack_effect_shader_flags`](../../byroredux/src/cell_loader.rs)),
   the BGSM v>2 PBR / translucency / model-space-normals bits
   ([`cell_loader::pack_imported_material_flags`](../../byroredux/src/cell_loader.rs)),
-  and any caller-supplied `extra_material_flags` (the cell loader passes
-  the REFR-overlay model-space-normals bit; loose-NIF loads pass `0`);
+  any caller-supplied `extra_material_flags` (the cell loader passes
+  the REFR-overlay model-space-normals bit; loose-NIF loads pass `0`),
+  and the `_msn`-name classifier (#4548): a normal slot whose resolved
+  path ends `_msn.dds` sets `MODEL_SPACE_NORMALS` at this boundary,
+  because Bethesda's FaceGen pipeline swaps the generated head's normal
+  texture to the per-NPC `_msn` without touching the shared skin
+  material's authored bool. Measured on the vanilla corpora
+  (2026-09-21 census) the rule fires on FO4 only — 1,470
+  FaceCustomization heads plus 3 inert dead-path bodies — and zero
+  times on Skyrim LE/SE, FO76, FNV, FO3, and Oblivion;
 - resolve PBR once via `Material::resolve_pbr()` so legacy inline-shader
   content lands with explicit `(metalness, roughness)` scalars (NaN
   sentinel → keyword classifier), just like BGSM content;

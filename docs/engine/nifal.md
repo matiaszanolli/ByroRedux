@@ -757,7 +757,10 @@ The material slice was executed this session as the template. Mechanics:
   3. `byroredux/src/cell_loader.rs::pack_imported_material_flags` is the shared
      feature-bit packer called inside `translate_material`; despite its module
      location, it runs for both cell and loose-NIF lowering. Placement-only bits
-     arrive separately through `extra_material_flags`.
+     arrive separately through `extra_material_flags`, and the fourth union
+     contributor — the `_msn`-name classifier — is a name-keyed rule inside
+     `translate_material` itself (see the lowering step 2 note above), not a
+     bit any caller passes in.
   4. `Material::resolve_pbr` runs inside the lowering step and guarantees finite,
      clamped canonical PBR scalars before the result reaches ECS consumers.
   5. `byroredux/src/material_translate.rs::resolve_normal_alpha_spec_roughness`,
@@ -837,8 +840,17 @@ The material slice was executed this session as the template. Mechanics:
 
   1. copies the scalars / colours / flags across;
   2. packs `effect_shader_flags` as the union of the BSEffect SLSF bits, the BGSM
-     v>2 bits, and the caller's extra bits (REFR-overlay model-space-normals on the
-     cell path; `0` on the loose-NIF path);
+     v>2 bits, the caller's extra bits (REFR-overlay model-space-normals on the
+     cell path; `0` on the loose-NIF path), and the `_msn`-name classifier
+     (#4548): a normal slot whose resolved path ends `_msn.dds` sets
+     `MODEL_SPACE_NORMALS` *here, inside `translate_material`* — the
+     classifier lives at the NIFAL boundary, not in the renderer and not as a
+     per-game special case. Bethesda's FaceGen pipeline swaps the generated
+     head's normal texture to the per-NPC `_msn` without touching the shared
+     skin material's authored bool, so the texture name is authoritative
+     where the BGSM bit is stale. Census (2026-09-21, vanilla corpora): fires
+     on FO4 only — 1,470 FaceCustomization heads + 3 inert dead-path bodies —
+     and zero times on Skyrim LE/SE, FO76, FNV, FO3, and Oblivion;
   3. seeds `metalness`/`roughness` from the pre-resolved override (`Some`) or a `NaN`
      sentinel. For NIF-imported content the keyword classifier already ran at import
      (`classify_legacy_pbr` in `crates/nif/src/import/mesh/`), so `Some(…)` is always
