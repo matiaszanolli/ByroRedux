@@ -1135,6 +1135,12 @@ impl VulkanContext {
                     }
                 }
             } else {
+                // #5072 — the app's egui context survives this rebuild, so
+                // its font atlas must come with us: drain the texture
+                // mirrors BEFORE destroy (the rebuilt renderer would else
+                // only ever see partial grow-deltas and answer every one
+                // with BadTexture, killing the overlay for the session).
+                let mirrors = pass.take_image_mirrors();
                 // SAFETY: `device_wait_idle` at the top of
                 // `recreate_swapchain_core` guarantees no in-flight command
                 // buffer references the old render pass or framebuffers
@@ -1150,7 +1156,26 @@ impl VulkanContext {
                         self.swapchain.state.extent,
                         in_flight_frames,
                     ) {
-                        Ok(rebuilt) => self.overlay.egui_pass = Some(rebuilt),
+                        Ok(mut rebuilt) => {
+                            // Replay the old pass's textures as full uploads;
+                            // a failure here is the same session-dead state
+                            // the hand-over exists to prevent, so disable the
+                            // overlay rather than limp into BadTexture spam.
+                            if let Err(e) = rebuilt.reseed_textures(
+                                mirrors,
+                                &self.graphics_queue,
+                                self.transfer_pool,
+                            ) {
+                                log::warn!(
+                                    "egui overlay texture re-seed after swapchain \
+                                     format change failed: {e:#} — overlay disabled \
+                                     for this session"
+                                );
+                                rebuilt.destroy(&self.device);
+                            } else {
+                                self.overlay.egui_pass = Some(rebuilt);
+                            }
+                        }
                         Err(e) => log::warn!(
                             "egui overlay rebuild after swapchain format change \
                              failed: {e:#} — overlay disabled for this session"
@@ -1980,6 +2005,47 @@ mod tests {
             format_check_pos < destroy_pos && destroy_pos < rebuild_pos,
             "the format-changed arm must destroy the old pass BEFORE \
              reconstructing a new one (#2475)"
+        );
+    }
+
+    /// #5072 — the format-change rebuild must hand the egui texture mirrors
+    /// (the font atlas above all) from the old pass to the rebuilt one:
+    /// take them BEFORE `destroy`, and re-seed the fresh pass with them
+    /// after `EguiPass::new`. Static source check — exercising a real
+    /// surface-format change needs a live swapchain, unavailable to
+    /// `cargo test`; the mirror → full-delta mapping itself is unit-tested
+    /// in `egui_pass.rs` (`reseed_tests`).
+    #[test]
+    fn egui_format_change_rebuild_hands_over_texture_mirrors() {
+        let src = production_src();
+
+        let take_pos = src
+            .find("let mirrors = pass.take_image_mirrors();")
+            .expect(
+                "the format-changed arm must drain the old pass's texture \
+                 mirrors — egui's context survives the rebuild and will only \
+                 send partial deltas afterwards (#5072)",
+            );
+        // `rfind` matches the existing convention: the format-changed arm's
+        // destroy is the last one in the source.
+        let destroy_pos = src
+            .rfind("pass.destroy(&self.device);")
+            .expect("the format-changed arm still destroys the old pass");
+        let rebuild_pos = src
+            .find("super::super::egui_pass::EguiPass::new(")
+            .expect("the format-changed arm must reconstruct via EguiPass::new");
+        let reseed_pos = src
+            .find(".reseed_textures(")
+            .expect("the rebuilt pass must be re-seeded with the handed-over mirrors");
+
+        assert!(
+            take_pos < destroy_pos,
+            "mirrors must be taken BEFORE destroy — destroy is the last reader \
+             of the old pass, and the mirrors must not die with it"
+        );
+        assert!(
+            destroy_pos < rebuild_pos && rebuild_pos < reseed_pos,
+            "the hand-over order is destroy → rebuild → reseed (#5072)"
         );
     }
 

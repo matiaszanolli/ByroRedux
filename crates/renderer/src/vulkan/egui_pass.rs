@@ -157,6 +157,26 @@ fn promote_partial_deltas(
     out
 }
 
+/// #5072 — one full-image delta per mirror, for re-seeding a rebuilt
+/// renderer. Kept as a free function so the mirror → delta mapping is
+/// unit-testable without a Vulkan device.
+fn mirror_full_deltas(
+    mirrors: &FxHashMap<TextureId, Arc<egui::ColorImage>>,
+) -> Vec<(TextureId, ImageDelta)> {
+    mirrors
+        .iter()
+        .map(|(id, image)| {
+            (
+                *id,
+                ImageDelta::full(
+                    ImageData::Color(Arc::clone(image)),
+                    egui::TextureOptions::default(),
+                ),
+            )
+        })
+        .collect()
+}
+
 impl EguiPass {
     pub fn new(
         device: ash::Device,
@@ -246,6 +266,43 @@ impl EguiPass {
     /// change without threading the value through the resize call chain.
     pub fn in_flight_frames(&self) -> usize {
         self.in_flight_frames
+    }
+
+    /// #5072 — drain the CPU-side texture mirrors ahead of a format-change
+    /// rebuild that will `destroy` this pass. The app's `egui::Context` is
+    /// not reset across the rebuild, so egui keeps believing its textures
+    /// (the font atlas above all) are resident and afterwards only sends
+    /// partial grow-deltas — which a fresh renderer answers with
+    /// `BadTexture` on every `set_textures` and `cmd_draw`. The mirrors
+    /// taken here are what [`Self::reseed_textures`] replays into the
+    /// rebuilt pass.
+    pub fn take_image_mirrors(&mut self) -> FxHashMap<TextureId, Arc<egui::ColorImage>> {
+        std::mem::take(&mut self.image_mirrors)
+    }
+
+    /// #5072 — replay every mirror taken from the previous pass as a full
+    /// upload into this freshly built one, then keep them as this pass's
+    /// mirrors so `promote_partial_deltas` keeps working for later partial
+    /// deltas. Full deltas on an all-new renderer are exactly the case the
+    /// crate handles cleanly (fresh image per id); options default to
+    /// linear filtering, matching the font atlas's own upload options.
+    pub fn reseed_textures(
+        &mut self,
+        mirrors: FxHashMap<TextureId, Arc<egui::ColorImage>>,
+        queue: &Mutex<vk::Queue>,
+        upload_command_pool: vk::CommandPool,
+    ) -> Result<()> {
+        let set = mirror_full_deltas(&mirrors);
+        if set.is_empty() {
+            self.image_mirrors = mirrors;
+            return Ok(());
+        }
+        let q = queue.lock().unwrap_or_else(|e| e.into_inner());
+        self.renderer
+            .set_textures(*q, upload_command_pool, &set)
+            .map_err(|e| anyhow!("egui reseed set_textures: {e:?}"))?;
+        self.image_mirrors = mirrors;
+        Ok(())
     }
 
     /// Recreate framebuffers + extent for a new swapchain (resize /
@@ -709,5 +766,52 @@ mod partial_delta_promotion_tests {
             &[Color32::BLACK; 4],
             "a rejected patch must not half-apply to the mirror"
         );
+    }
+}
+
+/// #5072 — the mirror → full-delta mapping that re-seeds a rebuilt pass.
+#[cfg(test)]
+mod reseed_tests {
+    use super::{mirror_full_deltas, TextureId};
+    use egui::{Color32, TextureOptions};
+    use rustc_hash::FxHashMap;
+    use std::sync::Arc;
+
+    fn image(size: [usize; 2], fill: Color32) -> Arc<egui::ColorImage> {
+        Arc::new(egui::ColorImage {
+            size,
+            pixels: vec![fill; size[0] * size[1]],
+            source_size: egui::Vec2::new(size[0] as f32, size[1] as f32),
+        })
+    }
+
+    #[test]
+    fn every_mirror_becomes_exactly_one_full_delta() {
+        let mut mirrors = FxHashMap::default();
+        mirrors.insert(TextureId::Managed(0), image([16, 12], Color32::RED));
+        mirrors.insert(TextureId::Managed(7), image([4, 4], Color32::BLUE));
+
+        let set = mirror_full_deltas(&mirrors);
+        assert_eq!(
+            set.len(),
+            2,
+            "one full upload per mirrored texture — the rebuilt renderer \
+             starts with none of them resident"
+        );
+        for (id, delta) in &set {
+            assert!(
+                delta.pos.is_none(),
+                "a re-seed must be a FULL delta: the fresh renderer has no \
+                 texels for a patch to blend against (#4986's rule, applied \
+                 at rebuild time)"
+            );
+            assert_eq!(mirrors[id].size, delta.image.size());
+            let _ = TextureOptions::default();
+        }
+    }
+
+    #[test]
+    fn empty_mirrors_reseed_nothing() {
+        assert!(mirror_full_deltas(&FxHashMap::default()).is_empty());
     }
 }
