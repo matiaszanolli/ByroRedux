@@ -23,15 +23,21 @@ use byroredux_game_detect as detect;
 use byroredux_game_detect::validate::{Severity, ValidationReport};
 
 fn main() -> ExitCode {
-    let args: Vec<String> = std::env::args().collect();
-    if args.iter().any(|arg| arg == "--help" || arg == "-h") {
-        print_usage();
-        return ExitCode::SUCCESS;
-    }
-    let write = args.iter().any(|arg| arg == "--write");
-    let profiles_path = value_of(&args, "--profiles")
-        .map(PathBuf::from)
-        .unwrap_or_else(default_profiles_path);
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let options = match parse_args(&args) {
+        Ok(Some(options)) => options,
+        Ok(None) => {
+            print_usage();
+            return ExitCode::SUCCESS;
+        }
+        Err(error) => {
+            eprintln!("byro-detect: {error}");
+            eprintln!("Run `byro-detect --help` for usage.");
+            return ExitCode::from(2);
+        }
+    };
+    let write = options.write;
+    let profiles_path = options.profiles.unwrap_or_else(default_profiles_path);
 
     let registry = detect::profiles::load_default();
     let candidates = detect::detect_all(&profiles_path);
@@ -128,11 +134,38 @@ fn print_report(candidate: &detect::Candidate, report: &ValidationReport) {
     }
 }
 
-fn value_of(args: &[String], flag: &str) -> Option<String> {
-    args.iter()
-        .position(|arg| arg == flag)
-        .and_then(|index| args.get(index + 1))
-        .cloned()
+#[derive(Debug, Default, PartialEq)]
+struct Options {
+    write: bool,
+    profiles: Option<PathBuf>,
+}
+
+/// Parse the arguments after the program name. `Ok(None)` means `--help`.
+///
+/// Strict on purpose (#5167): `--write` rewrites a file, so a mistyped flag
+/// (`--profile`) or a flag swallowed as a value (`--profiles --write`) must be
+/// a usage error rather than silently retargeting the write at the default
+/// profiles file.
+fn parse_args(args: &[String]) -> Result<Option<Options>, String> {
+    let mut options = Options::default();
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "-h" | "--help" => return Ok(None),
+            "--write" => options.write = true,
+            "--profiles" => {
+                let value = args
+                    .next()
+                    .filter(|value| !value.starts_with('-'))
+                    .ok_or("--profiles needs a path")?;
+                if options.profiles.replace(PathBuf::from(value)).is_some() {
+                    return Err("--profiles given more than once".to_string());
+                }
+            }
+            other => return Err(format!("unrecognised argument {other:?}")),
+        }
+    }
+    Ok(Some(options))
 }
 
 /// The same per-user file the engine's profile loader reads.
@@ -155,4 +188,45 @@ fn print_usage() {
     println!("                      which makes `--game <key>` resolve correctly on this machine.");
     println!("  --profiles <path>   Use this per-user profiles file instead of the default.");
     println!("  -h, --help          Show this message.");
+    println!();
+    println!("Unknown arguments, and a --profiles value that starts with '-', are usage");
+    println!("errors (exit status 2); nothing is written.");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(args: &[&str]) -> Result<Option<Options>, String> {
+        let args: Vec<String> = args.iter().map(|arg| arg.to_string()).collect();
+        parse_args(&args)
+    }
+
+    #[test]
+    fn accepts_the_documented_flags() {
+        assert_eq!(parse(&[]), Ok(Some(Options::default())));
+        assert_eq!(
+            parse(&["--write", "--profiles", "/tmp/p.toml"]),
+            Ok(Some(Options {
+                write: true,
+                profiles: Some(PathBuf::from("/tmp/p.toml")),
+            }))
+        );
+        assert_eq!(parse(&["--write", "--help"]), Ok(None));
+    }
+
+    /// #5167 — a typo must not fall back to writing the default file.
+    #[test]
+    fn rejects_an_unknown_flag() {
+        assert!(parse(&["--write", "--profile", "/tmp/p.toml"]).is_err());
+        assert!(parse(&["stray"]).is_err());
+    }
+
+    /// #5167 — `--profiles --write` must not take `--write` as the path.
+    #[test]
+    fn rejects_a_flag_as_the_profiles_value() {
+        assert!(parse(&["--profiles", "--write"]).is_err());
+        assert!(parse(&["--profiles"]).is_err());
+        assert!(parse(&["--profiles", "a", "--profiles", "b"]).is_err());
+    }
 }
