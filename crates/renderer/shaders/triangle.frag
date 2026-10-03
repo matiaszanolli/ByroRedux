@@ -3286,8 +3286,13 @@ void main() {
 
             float rawNdotL = dot(N, L);
             float NdotL = max(rawNdotL, 0.0);
+            // The contribution pre-gate passes horizon = 1.0: it is an
+            // upper bound, and #5191's clamp only zeroes the front core
+            // while the transmission-class back lobes (#5192) stay live in
+            // exactly the Ng·L <= 0 band the clamp covers — clamping here
+            // would skip lights that still contribute back-light.
             vec3 diffuseGate = bethesdaDiffuseLightFactor(
-                mat, lightingMask, rawNdotL);
+                mat, lightingMask, rawNdotL, 1.0);
             float legacyGate = max(
                 bethesdaRimFactor(mat, NdotV, NdotL),
                 bethesdaBackFactor(mat, rawNdotL));
@@ -3326,7 +3331,7 @@ void main() {
             // caching it per reservoir. The #1147 Phase 2b translucency
             // lobe lives there too (#4946), so it is shadowed like the rest.
             vec3 shadowableRadiance = shadowableLightRadiance(
-                i, N, V, NdotV, F0, albedo, lightingMask, backLightingMap,
+                i, N, geometricNormal, V, NdotV, F0, albedo, lightingMask, backLightingMap,
                 roughness, aaRoughness, metalness,
                 specStrength, specColor, mat, fragTangent, fragWorldPos, dbgFlags);
             bool needsVisibility = visibilityMaskNeedsTrace(lights[i].params.z);
@@ -3533,7 +3538,7 @@ void main() {
                     && rp.M > 0.0
                     && rp.W > 0.0 && !isnan(rp.W) && !isinf(rp.W)) {
                     vec3 rpRad = shadowableLightRadiance(
-                        rpLightIndex, N, V, NdotV, F0, albedo,
+                        rpLightIndex, N, geometricNormal, V, NdotV, F0, albedo,
                         lightingMask, backLightingMap, roughness, aaRoughness,
                         metalness,
                         specStrength, specColor, mat, fragTangent,
@@ -3656,7 +3661,7 @@ void main() {
                         && rn.W > 0.0 && !isnan(rn.W) && !isinf(rn.W)
                         && dot(geomN, nGeomN) >= SPATIAL_NORMAL_COS) {
                         vec3 rnRad = shadowableLightRadiance(
-                            rnLightIndex, N, V, NdotV, F0, albedo,
+                            rnLightIndex, N, geometricNormal, V, NdotV, F0, albedo,
                             lightingMask, backLightingMap, roughness, aaRoughness,
                             metalness,
                             specStrength, specColor, mat, fragTangent,
@@ -4025,7 +4030,7 @@ void main() {
                 // accumulated, so the subtraction cancels bit-for-bit
                 // against pass 1 instead of reading a cached vec3.
                 vec3 shadowable = shadowableLightRadiance(
-                    i, N, V, NdotV, F0, albedo, lightingMask, backLightingMap,
+                    i, N, geometricNormal, V, NdotV, F0, albedo, lightingMask, backLightingMap,
                     roughness, aaRoughness, metalness,
                     specStrength, specColor, mat, fragTangent, fragWorldPos, dbgFlags);
                 Lo = max(

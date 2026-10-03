@@ -113,9 +113,15 @@ float pointSpotAtten(
 }
 
 vec3 bethesdaDiffuseLightFactor(
-    GpuMaterial mat, vec3 lightingMask, float rawNdotL)
+    GpuMaterial mat, vec3 lightingMask, float rawNdotL, float horizon)
 {
-    float front = max(rawNdotL, 0.0);
+    // #5191 — the front core carries the geometric-horizon clamp: with the
+    // light behind the surface plane (Ng·L <= 0) a positive N·L can only
+    // come from the shading normal tilting past the plane, and pre-#5018
+    // the viewer-side shadow origin zeroed exactly that band (the ray
+    // self-hit). The wrap excess past the terminator is transmission-class
+    // (#5192) and stays unclamped.
+    float front = max(rawNdotL, 0.0) * horizon;
     if ((mat.materialFlags & MAT_FLAG_SOFT_LIGHTING) == 0u) {
         return vec3(front);
     }
@@ -172,7 +178,7 @@ float bethesdaBackFactor(GpuMaterial mat, float rawNdotL) {
 // against the shadowed subtraction. Assumes a point/spot/directional
 // light that already cleared the contribution gate.
 vec3 shadowableLightRadiance(
-    uint i, vec3 N, vec3 V, float NdotV, vec3 F0,
+    uint i, vec3 N, vec3 NG, vec3 V, float NdotV, vec3 F0,
     vec3 albedo, vec3 lightingMask, vec3 backLightingMap,
     float roughness, float aaRoughness, float metalness,
     float specStrength, vec3 specColor,
@@ -218,6 +224,34 @@ vec3 shadowableLightRadiance(
 
     float rawNdotL = dot(N, L);
     float NdotL = max(rawNdotL, 0.0);
+
+    // #5191 (REN-D2-2026-10-03-01) — geometric-horizon clamp. `NG` is the
+    // viewer-oriented dFdx/dFdy triangle plane; its side relative to `L`
+    // is the side the post-#5018 direction-aware ray origin starts from.
+    // The FRONT lobes (diffuse core, specular, rim) must not receive light
+    // from behind their own plane: pre-#5018 the viewer-side origin made
+    // the shadow ray self-hit and zeroed exactly this band, which acted as
+    // a de facto horizon clamp, and post-#5018 open or two-sided geometry
+    // (nothing behind within the light's reach) lets the ray through to
+    // the light. Clamp them explicitly. The BACK lobes (the soft-light
+    // wrap excess below, back-light, translucency — non-zero only where
+    // rawNdotL < 0) are #5018's reason for the light-side origin and stay
+    // unclamped; their closed-mesh self-occlusion is #5192's separate
+    // visibility-convention decision.
+    float gNdotL = dot(NG, L);
+    float horizon = step(0.0, gNdotL);
+    // #5192 (REN-D10-2026-10-03-02, OPEN) — the BACK lobes below (the
+    // soft-light wrap excess, back-light, translucency) self-occlude on
+    // closed meshes: post-#5018's light-side origin starts the shadow ray
+    // inside the body and the far wall commits, zeroing them inside
+    // shadowFade while `mix(1, V, shadowFade)` hands them back unshadowed
+    // past it. The fix is a per-lobe visibility convention (split the
+    // return into reflection vs transmission and trace the latter with the
+    // fragment's own instance skipped), which needs a live RenderDoc A/B
+    // (Skyrim soft-lit head beside a cell light; FO4 thick-translucency
+    // skin back-lit) to accept — see the issue for the full design and the
+    // before/after gates. Not deferred silently: this comment and the
+    // issue's design are the pointer in both directions.
 
     vec3 H = normalize(V + L);
     float NdotH = max(dot(N, H), 0.0);
@@ -322,15 +356,15 @@ vec3 shadowableLightRadiance(
         // longer carries a duplicate synthetic no-light sun/BRDF arm.
         diffuseBrdf = kD * albedo;
     }
-    vec3 diffuseFactor = bethesdaDiffuseLightFactor(mat, lightingMask, rawNdotL);
+    vec3 diffuseFactor = bethesdaDiffuseLightFactor(mat, lightingMask, rawNdotL, horizon);
     vec3 brdfResult = diffuseBrdf * diffuseFactor
-        + specular * specStrength * specColor * NdotL;
+        + specular * specStrength * specColor * NdotL * horizon;
 
     // Skyrim's soft/rim mask occupies translated slot 2; its back-light map
     // occupies slot 7. These are direct-light lobes, so evaluating them here
     // keeps ReSTIR selection, visibility, and the legacy shadow subtraction
     // byte-consistent with the ordinary diffuse/specular response.
-    float rim = bethesdaRimFactor(mat, NdotV, NdotL);
+    float rim = bethesdaRimFactor(mat, NdotV, NdotL * horizon);
     if (rim > 0.0) {
         brdfResult += albedo * clamp(lightingMask, 0.0, 1.0)
             * rim * (1.0 - metalness);
