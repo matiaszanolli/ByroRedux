@@ -1896,7 +1896,10 @@ impl Default for LightTuning {
 /// renderer's exposure/tonemap state each frame (mirroring `LightTuning`'s
 /// REND-#1451 pattern) and mutated by the `exposure` / `tonemap` console
 /// commands. Boot state comes from `--auto-exposure` / `--tonemap` via
-/// `RendererConfig`; the resource defaults match the renderer's own.
+/// `RendererConfig`; the resource defaults are the renderer's own
+/// constants (`DEFAULT_EXPOSURE` / `DEFAULT_ADAPTATION_SECONDS`), which
+/// the default impl reads directly (#5198 — hand-typed copies went stale
+/// once already).
 pub(crate) struct ExposureTuning {
     /// EV100 metering of the post-bloom scene (Frostbite §5.6) vs the fixed
     /// constant.
@@ -1915,11 +1918,18 @@ impl Resource for ExposureTuning {}
 
 impl Default for ExposureTuning {
     fn default() -> Self {
+        // #5198 — read the renderer's constants instead of hand-typed
+        // copies: `render_one_frame` pushes this resource over the context
+        // field every frame (including frame 0), so a drifted default
+        // silently overrides the renderer's own tuning.
+        use byroredux_renderer::vulkan::exposure::{
+            DEFAULT_ADAPTATION_SECONDS, DEFAULT_EXPOSURE,
+        };
         Self {
             auto: false,
-            fixed_exposure: 0.85,
+            fixed_exposure: DEFAULT_EXPOSURE,
             compensation_stops: 0.0,
-            adaptation_seconds: 0.2,
+            adaptation_seconds: DEFAULT_ADAPTATION_SECONDS,
             agx: false,
         }
     }
@@ -2500,5 +2510,27 @@ mod fx_hash_guard_tests {
             "build_subtree_name_map must stay FxHashMap (#3677) — it's what \
              actually populates SubtreeCache.map's inner map"
         );
+    }
+
+    /// #5198 — `ExposureTuning::default()` must carry the renderer's own
+    /// constants, not hand-typed copies: `render_one_frame` pushes this
+    /// resource over the context field every frame (including frame 0), so
+    /// a drifted default silently overrides the renderer's tuning — 0.5 s
+    /// from 7d99ba7f0's #5158 retune never ran because the hand-typed
+    /// default still said 0.2 s. The literal side pins the audited values
+    /// too, so retuning the renderer constant fails here loudly instead of
+    /// silently re-tuning the engine.
+    #[test]
+    fn exposure_tuning_defaults_match_the_renderer_constants() {
+        use crate::components::ExposureTuning;
+        use byroredux_renderer::vulkan::exposure::{
+            DEFAULT_ADAPTATION_SECONDS, DEFAULT_EXPOSURE,
+        };
+
+        let tuning = ExposureTuning::default();
+        assert_eq!(tuning.fixed_exposure, DEFAULT_EXPOSURE);
+        assert_eq!(tuning.adaptation_seconds, DEFAULT_ADAPTATION_SECONDS);
+        assert_eq!(DEFAULT_EXPOSURE, 0.85);
+        assert_eq!(DEFAULT_ADAPTATION_SECONDS, 0.5);
     }
 }

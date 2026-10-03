@@ -1759,7 +1759,7 @@ impl VulkanContext {
             // transition without strobing, slow enough that per-frame meter
             // jitter from the MC residual doesn't pump the exposure (#5158;
             // live-tunable via `exposure speed <sec>`).
-            exposure_adaptation_seconds: 0.5,
+            exposure_adaptation_seconds: super::super::exposure::DEFAULT_ADAPTATION_SECONDS,
             tonemap: renderer_config.tonemap,
             caustic_failed: false,
             caustic_cleared_on_skip: [false; MAX_FRAMES_IN_FLIGHT],

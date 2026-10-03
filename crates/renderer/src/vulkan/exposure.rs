@@ -39,6 +39,15 @@ pub const EXPOSURE_FORMAT: vk::Format = vk::Format::R32_SFLOAT;
 /// renderer.
 pub const DEFAULT_EXPOSURE: f32 = 0.85;
 
+/// #5198 — the auto-exposure adaptation time constant, in seconds. The one
+/// source for both the renderer's init value (`VulkanContext::new`) and the
+/// engine's `ExposureTuning::default()`: the engine copies the resource over
+/// the context field every frame (including frame 0), so two hand-typed
+/// defaults silently make the renderer's own dead — 7d99ba7f0's 0.5 s
+/// anti-pumping retune (#5158) never ran because the bin's `ExposureTuning`
+/// default still said 0.2 s.
+pub const DEFAULT_ADAPTATION_SECONDS: f32 = 0.5;
+
 /// Reflected-light meter calibration constant (ISO 2720), Frostbite §5.6.
 pub const LIGHT_METER_CALIBRATION_K: f32 = 12.5;
 /// Sensor sensitivity EV100 normalizes to (ISO 100).
