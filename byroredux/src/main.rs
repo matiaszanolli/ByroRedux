@@ -841,7 +841,9 @@ fn install_universal_settings(
 /// requester writes the registry itself, so the menu and `settings.toml` can
 /// never claim a mode that is not running. `chosen` is true when a requested
 /// switch landed: that is an explicit in-session choice, so it also releases a
-/// CLI launch override (#4974) and is persisted.
+/// CLI launch override (#4974) and is persisted. A non-`chosen` record is not
+/// a choice at all, so it pins the stored value instead (#5030): one
+/// transient FSR failure must not rewrite what a no-flag launch runs.
 pub(crate) fn record_active_upscaler(
     world: &World,
     active: byroredux_renderer::vulkan::upscaling::UpscalerMode,
@@ -863,17 +865,28 @@ pub(crate) fn record_active_upscaler(
     };
     // Scoped so the persistence write lock is released before the registry
     // read below — no nested resource locks.
-    let Some((released, persistence)) = world
+    let Some((should_save, persistence)) = world
         .try_resource_mut::<settings_io::SettingsPersistence>()
         .map(|mut persistence| {
-            let released =
-                chosen && persistence.unpin_stored(byroredux_debug_ui::UPSCALER_SETTING_ID);
-            (released, persistence.clone())
+            if chosen {
+                // An explicit in-session choice supersedes any launch
+                // override (#4974): release the pin and persist.
+                let released =
+                    persistence.unpin_stored(byroredux_debug_ui::UPSCALER_SETTING_ID);
+                (released || changed, persistence.clone())
+            } else {
+                // #5030 — a non-chosen record (the startup FSR→TAA promotion
+                // or a rolled-back switch) must not become the persisted
+                // default: pin whatever the file already holds, so neither
+                // this call nor a later unrelated save writes the fallback.
+                persistence.pin_stored(byroredux_debug_ui::UPSCALER_SETTING_ID);
+                (false, persistence.clone())
+            }
         })
     else {
         return;
     };
-    if changed || released {
+    if should_save {
         let settings = world.resource::<SettingsRegistry>();
         settings_io::save(&settings, &persistence);
     }
@@ -932,16 +945,40 @@ mod active_upscaler_setting_tests {
         assert_eq!(stored_upscaler(&path), Some(chosen.to_string()));
     }
 
-    /// #4975 — a switch that rolled back records the previous (running)
-    /// mode; with nothing pinned it is what the file holds.
+    /// #4975 / #5030 — a non-chosen record (the startup FSR→TAA promotion, or
+    /// a switch that rolled back) still shows the *running* mode in the
+    /// registry, but it is not a user choice: the file keeps whatever it
+    /// held, and the pin the record takes shields it from a later unrelated
+    /// save (#4974 mechanism).
     #[test]
-    fn rolled_back_switch_persists_the_running_mode_not_the_request() {
+    fn non_chosen_record_leaves_settings_toml_untouched() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("settings.toml");
         let world = world_at(path.clone());
+
         record_active_upscaler(&world, UpscalerMode::Taa, false);
-        assert_eq!(stored_upscaler(&path), Some("taa".to_string()));
+        assert_eq!(stored_upscaler(&path), None, "a fallback must not persist");
         assert_eq!(live_upscaler(&world), SettingValue::Choice("taa".into()));
+        assert!(
+            world
+                .resource_mut::<settings_io::SettingsPersistence>()
+                .unpin_stored(byroredux_debug_ui::UPSCALER_SETTING_ID),
+            "a non-chosen record must pin the stored value against later saves"
+        );
+
+        // The pin is what makes a later unrelated save harmless; with it
+        // released here, that save would write the fallback.
+        record_active_upscaler(&world, UpscalerMode::Taa, false);
+        let settings = world.resource::<SettingsRegistry>().clone();
+        let persistence = world
+            .resource::<settings_io::SettingsPersistence>()
+            .clone();
+        settings_io::save(&settings, &persistence);
+        assert_eq!(
+            stored_upscaler(&path),
+            None,
+            "the pin taken by the record must hold across unrelated saves"
+        );
     }
 
     /// #4975 — the menu change loop stages the upscaler without writing the
