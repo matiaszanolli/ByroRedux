@@ -235,11 +235,15 @@ vec3 perturbNormalGrad(
         // length like the sibling TBN builders already do
         // (`parallaxDisplaceUV`'s `dot(T, T) < 1e-8` bail,
         // `getRayHitTangentFrame`'s identical `worldT` guard, and
-        // `lighting.glsl`'s anisotropic-GGX frame since #3984) — Path 2
-        // below needs no equivalent guard because its derivative-built
-        // T is already tangent-plane by construction. Fall back to the
-        // unperturbed geometric normal: there is no valid tangent
-        // frame left to map the normal-map sample into.
+        // `lighting.glsl`'s anisotropic-GGX frame since #3984). Path 2
+        // below carries its own pair of guards for the same reason
+        // (#5199): "tangent-plane by construction" only ever covered
+        // T ∥ N, not T == 0 — the raw numerator can be exactly zero
+        // (constant V across the quad) with the projection of a
+        // non-zero T still able to collapse. Fall back to the
+        // unperturbed geometric normal in every collapsed case: there
+        // is no valid tangent frame left to map the normal-map sample
+        // into.
         if (dot(Tproj, Tproj) < 1e-8) {
             return N;
         }
@@ -277,8 +281,29 @@ vec3 perturbNormalGrad(
     // single-axis-negate mirrors) before removing it. Path-1 (authored
     // tangent) is unaffected — it carries handedness explicitly via
     // `vertexTangent.w`, never through this derivative identity.
-    vec3 T = normalize(dPdx * dUVdy.y - dPdy * dUVdx.y);
-    T = normalize(T - dot(T, N) * N);
+    //
+    // #5199 — the raw numerator has no length guarantee of its own. When
+    // V is constant across the pixel quad (`dUVdx.y == dUVdy.y == 0`: a
+    // U-only strip mapping, or float-equal V at large tiled UVs), the
+    // numerator is the zero vector and the first normalize() is 0/0 →
+    // NaN — which reaches the shaded normal, the G-buffer `octEncode`,
+    // RT origins, SVGF/TAA history and the bloom pyramid. The
+    // "tangent-plane by construction" property only ever ruled out a
+    // T ∉ plane, never T == 0. Guard the raw length like the sibling
+    // derivative builders (`parallaxDisplaceUV`'s `dot(T, T) < 1e-8`
+    // bail, `getRayHitTangentFrame`'s identical guard) and fall back to
+    // the unperturbed normal. The post-projection guard below stays:
+    // a non-zero raw T parallel to N still projects to zero.
+    vec3 Traw = dPdx * dUVdy.y - dPdy * dUVdx.y;
+    if (dot(Traw, Traw) < 1e-8) {
+        return N;
+    }
+    vec3 T = normalize(Traw);
+    T = T - dot(T, N) * N;
+    if (dot(T, T) < 1e-8) {
+        return N;
+    }
+    T = normalize(T);
     vec3 B = cross(N, T);
 
     mat3 TBN = mat3(T, B, N);

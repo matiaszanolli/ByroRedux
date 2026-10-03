@@ -2335,6 +2335,46 @@ fn every_gram_schmidt_tangent_frame_guards_the_projected_length() {
     );
 }
 
+/// #5199 — `perturbNormalGrad`'s Path 2 (screen-derivative TBN) normalizes
+/// the raw Lengyel numerator `dPdx * dUVdy.y - dPdy * dUVdx.y` and the
+/// post-projection T. "Tangent-plane by construction" only ever ruled out
+/// T off the plane, never T == 0: when V is constant across the pixel quad
+/// (`dUVdx.y == dUVdy.y == 0` — U-only strip mapping, or float-equal V at
+/// large tiled UVs) the raw numerator is the zero vector and the first
+/// `normalize()` is 0/0 → NaN into the shaded normal, the G-buffer
+/// `octEncode`, RT origins, SVGF/TAA history and the bloom pyramid. A
+/// non-zero raw T parallel to N still projects to zero, so the
+/// post-projection guard must stay too. Both guards, in order, before the
+/// frame is used — mirroring `parallaxDisplaceUV` / `getRayHitTangentFrame`.
+#[test]
+fn perturb_normal_grad_path2_guards_raw_and_projected_lengths() {
+    let material_sampling = include_str!("../../../shaders/include/material_sampling.glsl");
+    let body = glsl_fn_body(material_sampling, "vec3 perturbNormalGrad(");
+
+    let raw = body
+        .find("dot(Traw, Traw) < 1e-8")
+        .expect("Path 2 must guard the raw Lengyel numerator's length (#5199)");
+    let first_norm = body
+        .find("vec3 T = normalize(Traw);")
+        .expect("Path 2 must normalize the raw numerator only after the guard");
+    let projected = body
+        .find("if (dot(T, T) < 1e-8)")
+        .expect("Path 2 must keep a post-projection length guard (a non-zero                  raw T parallel to N projects to zero)");
+    assert!(
+        raw < first_norm && first_norm < projected,
+        "the raw-length guard must precede the first normalize() — after it          the 0/0 has already happened (#5199) — and the post-projection guard must follow the projection"
+    );
+
+    // The old Path-1 comment claimed Path 2 "needs no equivalent guard";
+    // that claim is what let the zero-length case ship unguarded. It must
+    // not come back.
+    assert!(
+        !body.contains("needs no equivalent guard"),
+        "the corrected #2815 comment must not re-claim that Path 2 needs no \
+         guard — it carries two (#5199)"
+    );
+}
+
 fn normalize_ident(s: &str) -> String {
     s.chars()
         .filter(|c| *c != '_')
@@ -7207,4 +7247,58 @@ fn blade_ground_colour_uses_the_shared_terrain_splat_chain() {
         blade_vert.contains("vTerrainBaseIndex = ground.valid ? cell.baseDiffuseIndex : 0u;"),
         "the vertex stage forwards the cell's base handle, zeroed off-terrain (#5174)"
     );
+}
+
+/// #5191 — the front lobes must carry the geometric-horizon clamp:
+/// post-#5018's direction-aware ray origin, a positive N·L with
+/// Ng·L <= 0 on open or two-sided geometry reaches the light instead
+/// of self-hitting, so `shadowableLightRadiance` clamps its front
+/// lobes (diffuse core, specular, rim) on `step(0, dot(NG, L))`. The
+/// back lobes (wrap excess, back-light, translucency) stay unclamped —
+/// they are #5018's reason for the light-side origin; their closed-
+/// mesh self-occlusion is #5192's separate decision. All four call
+/// sites must pass the CURRENT fragment's geometric normal so the
+/// #1369 bit-exactness invariant (unshadowed accumulation cancels
+/// against the shadowed subtraction) holds.
+#[test]
+fn shadowable_light_radiance_horizon_clamps_its_front_lobes() {
+    let lighting = include_str!("../../../shaders/include/lighting.glsl");
+    let body = glsl_fn_body(lighting, "vec3 shadowableLightRadiance(");
+
+    let sig = lighting
+        .find("uint i, vec3 N, vec3 NG, vec3 V, float NdotV")
+        .expect("the signature must carry the geometric normal NG (#5191)");
+    let clamp = body
+        .find("float horizon = step(0.0, gNdotL);")
+        .expect("the body must derive the horizon term from dot(NG, L) (#5191)");
+    let spec = body
+        .find("specular * specStrength * specColor * NdotL * horizon")
+        .expect("the specular lobe must carry the clamp (#5191)");
+    let rim = body
+        .find("bethesdaRimFactor(mat, NdotV, NdotL * horizon)")
+        .expect("the rim lobe must carry the clamp (#5191)");
+    assert!(
+        clamp < spec && spec < rim,
+        "the horizon term must precede the lobes it clamps (#5191)"
+    );
+    let _ = sig;
+    assert!(
+        body.contains("bethesdaDiffuseLightFactor(mat, lightingMask, rawNdotL, horizon)"),
+        "the diffuse front core must carry the clamp via the factor fn (#5191)"
+    );
+    assert!(
+        !body.contains("horizon = 1.0"),
+        "the shared BRDF must never see a neutralised horizon"
+    );
+
+    // Every triangle.frag call site passes the current fragment's
+    // geometric normal — a stale or reprojected normal would break the
+    // #1369 cancel invariant between the accumulate and subtract arms.
+    let tri = include_str!("../../../shaders/triangle.frag");
+        assert_eq!(
+            tri.matches(", N, geometricNormal, V, NdotV, F0, albedo,").count(),
+            4,
+            "all four call sites (pass-1 accumulate, temporal reuse, spatial \
+             reuse, legacy subtract) must pass geometricNormal (#5191 / #1369)"
+        );
 }
