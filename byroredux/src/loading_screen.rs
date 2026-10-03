@@ -360,7 +360,18 @@ impl LoadingScreen {
         let posed = posed_bounds(&pose, local_bounds);
         let fov_y = active_fov_y(world).unwrap_or(std::f32::consts::FRAC_PI_3);
         let Some(camera) = stage_camera(&posed, fov_y) else {
-            despawn_subtree(world, root);
+            // #5193 — `load_nif_bytes` already registered meshes/textures
+            // and built their BLAS by this point (this arm is reachable
+            // from data: an authored zero/non-finite scale or translation
+            // gives `posed_bounds` a degenerate radius). Release through
+            // the canonical path, not `despawn_subtree` (whose doc scopes
+            // it to pre-registration spawn failures).
+            crate::cell_loader::unload::release_entities(
+                world,
+                ctx,
+                &collect_subtree(world, root),
+                "loading-cover stage",
+            );
             log::warn!("loading.screen: model cannot be framed {archive_path}");
             return false;
         };
@@ -672,10 +683,19 @@ impl ModelStage {
     }
 }
 
-/// Despawn a retired stage's subtree and release its GPU state — the same
-/// refcount/BLAS/texture discipline as cell teardown, minus the cell
-/// machinery. Runs on the App poll (and defensively at re-begin). A `None`
-/// renderer (teardown races) still despawns the entities.
+/// Despawn a retired stage's subtree and release its GPU state. Runs on
+/// the App poll (and defensively at re-begin). A `None` renderer (teardown
+/// races) still despawns the entities.
+///
+/// #5193 — this used to be a hand-written subset of cell teardown (a copy
+/// that predated #5028's `release_entities` extraction by four hours) and
+/// missed the Rapier bodies and the skin/morph slot evictions: the stage
+/// NIF spawns bhk-derived `CollisionShape` + `RigidBodyData`, physics
+/// keeps registering and stepping newcomers at `dt = 0.0` while the cover
+/// is up, and every cover with a collision-bearing model left invisible
+/// fixed bodies colliding at the stage pose in the destination world,
+/// growing the broad-phase per user action. The canonical path releases
+/// all of it with the same refcount/BLAS/texture discipline.
 pub(crate) fn retire_stage(
     world: &mut World,
     ctx: Option<&mut VulkanContext>,
@@ -686,31 +706,7 @@ pub(crate) fn retire_stage(
         world.despawn_batch(victims);
         return;
     };
-    let fallback_tex = ctx.texture_registry.fallback();
-    let (mesh_drops, texture_drops, _terrain_slots) =
-        crate::cell_loader::collect_victim_gpu_handles(world, &victims, fallback_tex);
-    world.despawn_batch(victims);
-    // Mirror cell teardown: BLAS drops exactly when the last holder goes.
-    let mut handle_drop_count: std::collections::HashMap<u32, u32> =
-        std::collections::HashMap::new();
-    for &mh in &mesh_drops {
-        *handle_drop_count.entry(mh).or_insert(0) += 1;
-    }
-    let freed: Vec<u32> = handle_drop_count
-        .iter()
-        .filter_map(|(&h, &c)| match ctx.mesh_registry.refcount(h) {
-            Some(rc) if rc == c => Some(h),
-            _ => None,
-        })
-        .collect();
-    if let Some(ref mut accel) = ctx.accel_manager {
-        for &mh in &freed {
-            accel.drop_blas(mh);
-        }
-    }
-    ctx.mesh_registry.drop_meshes(&mesh_drops);
-    ctx.texture_registry
-        .drop_textures(&ctx.device, &texture_drops);
+    crate::cell_loader::unload::release_entities(world, ctx, &victims, "loading-cover stage");
 }
 
 #[cfg(test)]
@@ -1001,5 +997,69 @@ mod tests {
         );
         let (_, verdict) = first_backend_load_screen(&index).unwrap();
         assert!(matches!(verdict, LoadScreenVerdict::Model(Some(_))));
+    }
+}
+
+#[cfg(test)]
+mod retire_stage_routing_tests {
+    /// #5193 — `retire_stage` and the degenerate-pose arm must route
+    /// through the canonical `release_entities` teardown (#5028), not a
+    /// hand-written copy: the copy missed `release_victim_rapier_bodies`
+    /// (the stage NIF's bhk collision spawns real fixed bodies physics
+    /// keeps stepping at dt = 0.0 while the cover is up) and the
+    /// skin/morph unload queues, and the pre-registration arm leaked
+    /// every mesh/BLAS/texture refcount the stage had already acquired.
+    /// Strip `//`/`///` comment lines so the scan sees only code (the
+    /// `count_calls` shape npc_spawn's guard uses).
+    fn code_only(src: &str) -> String {
+        src.lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn stage_teardown_routes_through_the_canonical_release_path() {
+        let full = code_only(include_str!("loading_screen.rs"));
+        // Scan only `retire_stage`'s own region — the pin must not see its
+        // own assertion strings in this file's test modules (the #4069
+        // class of self-matching scan).
+        let start = full
+            .find("pub(crate) fn retire_stage(")
+            .expect("retire_stage must still exist");
+        let end = full[start..]
+            .find("mod tests {")
+            .map(|p| start + p)
+            .unwrap_or(full.len());
+        let src = &full[start..end];
+
+        assert!(
+            !src.contains("collect_victim_gpu_handles"),
+            "retire_stage must not keep its own handle-collection copy — cell \
+             teardown's refcount/BLAS/texture discipline lives in \
+             cell_loader::unload (#5193)"
+        );
+        assert!(
+            !src.contains("drop_meshes(") && !src.contains("drop_textures("),
+            "retire_stage must not call the GPU-drop registry APIs directly — \
+             release_entities owns that ordering (#5193)"
+        );
+        assert!(
+            src.contains("release_entities(world, ctx, &victims, \"loading-cover stage\")"),
+            "retire_stage must release through release_entities (#5193)"
+        );
+
+        // The degenerate-pose arm: load_nif_bytes has already registered
+        // meshes/textures/BLAS by then, so it must release through the
+        // canonical path too, not `despawn_subtree` alone.
+        let degenerate_pos = full
+            .find("let Some(camera) = stage_camera(&posed, fov_y) else {")
+            .expect("the stage_camera == None arm must still exist");
+        let arm = &full[degenerate_pos..degenerate_pos + 900];
+        assert!(
+            arm.contains("release_entities(") && arm.contains("loading-cover stage"),
+            "the stage_camera == None arm must release GPU state through the \
+             canonical path (#5193)"
+        );
     }
 }

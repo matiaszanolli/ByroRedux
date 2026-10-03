@@ -9,7 +9,7 @@
 //! `unload_cell` can't run without a `VulkanContext`), so a future change
 //! that drops the greyscale role from the walk fails here.
 
-use super::collect_victim_gpu_handles;
+use super::unload::collect_victim_gpu_handles;
 use crate::components::{MaterialTextureHandles, NormalMapHandle};
 use byroredux_core::ecs::{MeshHandle, TextureHandle, World};
 use byroredux_nif::import::MaterialTextureSet;

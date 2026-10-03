@@ -519,7 +519,12 @@ fn release_entities_timed(
 /// world in the identical post-teardown state. Timings are internal here —
 /// gear release is a per-user-action event, not a streaming boundary the
 /// benchmark reports.
-pub(crate) fn release_entities(world: &mut World, ctx: &mut VulkanContext, victims: &[EntityId]) {
+pub(crate) fn release_entities(
+    world: &mut World,
+    ctx: &mut VulkanContext,
+    victims: &[EntityId],
+    label: &str,
+) {
     if victims.is_empty() {
         return;
     }
@@ -527,8 +532,11 @@ pub(crate) fn release_entities(world: &mut World, ctx: &mut VulkanContext, victi
     let (mesh_refs, freed_meshes, texture_refs) =
         release_entities_timed(world, ctx, victims.to_vec(), &mut timings);
     let _ = finish_unload_batch(world, ctx);
+    // #5193 — the log label is a parameter now: the loading-cover stage
+    // release routes through this same path and must not masquerade as a
+    // gear release in the log.
     log::info!(
-        "gear release: {} entities, {} mesh refs ({} freed), {} texture refs released",
+        "{label}: {} entities, {} mesh refs ({} freed), {} texture refs released",
         victims.len(),
         mesh_refs,
         freed_meshes,

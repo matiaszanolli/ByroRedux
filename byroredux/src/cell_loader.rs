@@ -136,7 +136,6 @@ pub(crate) use nif_import_registry::{
 pub(crate) use refr::{build_refr_texture_overlay, expand_pkin_placements, expand_scol_placements};
 
 pub(crate) use euler::euler_zup_to_quat_yup_refr;
-pub(crate) use unload::collect_victim_gpu_handles;
 pub use euler::set_refr_rotation_mode_diag;
 
 pub(crate) use exterior::{
