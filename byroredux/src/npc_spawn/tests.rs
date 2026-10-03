@@ -2618,6 +2618,13 @@ fn resolve_inherited_call_sites_are_enumerated_and_pinned() {
     const RESUMABLE_PREBAKED_RS: &str = include_str!("resumable/prebaked.rs");
     const AI_PACKAGE_RS: &str = include_str!("ai_package.rs");
     const REFERENCES_MOD_RS: &str = include_str!("../cell_loader/references/mod.rs");
+    // #5047 — the pre-spawn player-body race boundary: attach_player_body
+    // resolves traits for the body's race before NpcSpawnJob exists, the
+    // same "boundary that cannot host the resolution yet" shape as
+    // cell_loader/references/mod.rs. The audit found this production call
+    // invisible to the guard (expected count stayed put while the real
+    // count moved 1→2).
+    const PLAYER_BODY_RS: &str = include_str!("../player_body.rs");
     const ACTOR_VALUE_DERIVE_RS: &str =
         include_str!("../../../crates/plugin/src/esm/records/actor_value_derive.rs");
 
@@ -2672,6 +2679,7 @@ fn resolve_inherited_call_sites_are_enumerated_and_pinned() {
             "cell_loader/references/mod.rs",
             count_calls(REFERENCES_MOD_RS, &call_names),
         ),
+        ("player_body.rs", count_calls(PLAYER_BODY_RS, &call_names)),
         (
             "esm/records/actor_value_derive.rs",
             count_calls(actor_value_derive_production, &call_names),
@@ -2690,13 +2698,14 @@ fn resolve_inherited_call_sites_are_enumerated_and_pinned() {
     // does not exist yet:
     // cell_loader/references/mod.rs: load_references_budgeted resolves
     //   traits for race BEFORE the async spawn job starts = 1.
-    let expected: [(&str, usize); 8] = [
+    let expected: [(&str, usize); 9] = [
         ("npc_spawn.rs", 0),
         ("npc_spawn/resumable/mod.rs", 0),
         ("npc_spawn/resumable/runtime.rs", 0),
         ("npc_spawn/resumable/prebaked.rs", 0),
         ("npc_spawn/ai_package.rs", 0),
         ("cell_loader/references/mod.rs", 1),
+        ("player_body.rs", 1),
         ("esm/records/actor_value_derive.rs", 0),
         ("inventory.rs", 0),
     ];

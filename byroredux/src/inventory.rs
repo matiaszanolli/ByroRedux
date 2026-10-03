@@ -370,11 +370,15 @@ fn build_player_character_template(index: &EsmIndex) -> PlayerCharacterTemplate 
     }
     // #4678 — level + Background ride the same resolved Player record the
     // derivation just consumed, so the stamps can't disagree with the
-    // values they sit beside.
-    let level = byroredux_plugin::esm::records::effective_actor_level(player);
+    // values they sit beside. #5047 — from the terminals, exactly like
+    // `stamp_character_components`: level from the Use-Stats source,
+    // race from the Use-Traits source, class from the Use-Stats source —
+    // a templated Player record then stamps one consistent answer instead
+    // of a terminal body race beside a shell Background race.
+    let level = byroredux_plugin::esm::records::effective_actor_level(resolved.stats);
     let background = Some(byroredux_core::character::Background {
-        race_form_id: player.race_form_id,
-        class_form_id: player.class_form_id,
+        race_form_id: resolved.r#traits.race_form_id,
+        class_form_id: resolved.stats.class_form_id,
     });
     // The ruleset is optional (profiles that build none); without it the
     // derivation stays the NPC answer, the pre-#4674 behaviour, rather
@@ -568,10 +572,13 @@ fn build_player_template_for(index: &EsmIndex, player_form_id: u32) -> PlayerInv
         );
         return PlayerInventoryTemplate::default();
     };
-    let actor_level = effective_actor_level(player);
     // #4457 — the player path resolves the TPLT view once and reads both
     // the derivation and the CNTO carry list through it.
+    // #5047 — level and outfit read the Use-Stats / Use-Inventory
+    // terminals, the same sources `NpcSpawnJob` consumes, so a templated
+    // Player expands its gear at the level the engine actually uses.
     let resolved = byroredux_plugin::equip::ResolvedNpc::resolve(player, index);
+    let actor_level = effective_actor_level(resolved.stats);
     let mut inventory = Inventory::new();
     let mut equipment = EquipmentSlots::new();
     let mut equipped_weapon = None;
@@ -579,7 +586,7 @@ fn build_player_template_for(index: &EsmIndex, player_form_id: u32) -> PlayerInv
 
     // Skyrim+ authors initial worn gear through OTFT. Older games generally
     // equip armor directly from CNTO, so their carried armor is equipped below.
-    if let Some(outfit_id) = player.default_outfit {
+    if let Some(outfit_id) = resolved.inventory.default_outfit {
         if let Some(outfit) = index.outfits.get(&outfit_id) {
             for &form_id in &outfit.items {
                 expanded.clear();
@@ -598,7 +605,7 @@ fn build_player_template_for(index: &EsmIndex, player_form_id: u32) -> PlayerInv
         }
     }
 
-    let equip_carried_armor = player.default_outfit.is_none();
+    let equip_carried_armor = resolved.inventory.default_outfit.is_none();
     for entry in &resolved.inventory.inventory {
         let count = entry.count.max(0) as u32;
         if count == 0 {
