@@ -1858,6 +1858,16 @@ pub fn execute_pending_save_loads(
                 .and_then(|entity| entity.0);
             if let Some(player) = player {
                 crate::inventory::reconcile_player_equipped_weapon(world, player);
+                // #5034 — a mid-life import in flight at save time is not
+                // saved (runtime handoff scratch) but survives on the
+                // process-lifetime player: left alone it would attach the
+                // pre-load session's gear after the slots it responded to
+                // are gone. Drop it, then diff the surviving body roots
+                // against the just-overlaid slots so worn gear agrees with
+                // the restored state (the visual sibling of the weapon
+                // re-derive above).
+                world.remove::<crate::npc_spawn::PendingGearImport>(player);
+                crate::npc_spawn::loot_appearance::reconcile_worn_gear(world, player);
             }
             log::info!(
                 "save load: {location_label} reloaded ({count_label}); applied {} saved deltas \

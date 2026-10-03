@@ -328,6 +328,13 @@ pub(crate) fn restore(world: &mut World, entity: EntityId) -> bool {
             world.despawn_batch(colliders);
         }
     }
+    // #5034 — the restore overwrote the spawn job's `EquipmentSlots` with
+    // the parked row, but the gear meshes the job spawned came from the
+    // record outfit. Diff the live roots against the restored slots so
+    // worn gear agrees with the state gameplay reads; the actor job has
+    // fully assembled by the time this runs (`stamp_quest_reference` calls
+    // restore only after `NpcSpawnProgress::Complete`).
+    crate::npc_spawn::loot_appearance::reconcile_worn_gear(world, entity);
     true
 }
 

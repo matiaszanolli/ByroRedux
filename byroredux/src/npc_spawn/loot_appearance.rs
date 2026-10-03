@@ -481,6 +481,122 @@ fn queue_midlife_imports(
     }
 }
 
+/// #5034 — post-load worn-gear reconcile. The event-driven
+/// [`equipment_appearance_system`] only acts on `EquipmentEventBatch`
+/// transitions, and a load emits none: the player's body root survives the
+/// reload carrying the pre-load session's hide markers, and a respawned NPC
+/// has `reference_state::restore` overlay the parked `EquipmentSlots` over
+/// roots the record outfit just spawned. Both leave third-person gear
+/// disagreeing with the restored slots while combat, `GetEquipped` and the
+/// save itself agree.
+///
+/// Diffs the wearer's live non-intrinsic gear roots against the restored
+/// `EquipmentSlots` (+ weapon slot) and produces the same three outcomes the
+/// event path would, computed from state instead of transitions: reveal a
+/// root whose form is equipped but hidden, hide a root whose form is no
+/// longer equipped but visible, and queue a [`PendingGearImport`] for an
+/// equipped form with no root at all. Dead wearers stay skipped (death
+/// reconciliation owns corpse appearance), and the reveal half only lifts
+/// `NpcAppearanceHidden` — which composes with the separate
+/// `HiddenFirstPerson` view marker — so a load in first person cannot
+/// un-hide the body. Called once per restored wearer; an import finishes
+/// across frames in [`GearImportLoader::step_imports`], which chains this
+/// reconcile again on completion so a wearer restored with several
+/// root-less equipped forms imports them one per frame, the same cadence
+/// the runtime event path gives a multi-equip burst.
+pub(crate) fn reconcile_worn_gear(world: &World, wearer: EntityId) {
+    if world.get::<Dead>(wearer).is_some() {
+        return;
+    }
+    // Equipped form ids: every occupied biped slot plus the weapon slot,
+    // resolved through the wearer's live inventory — a zero-count row is
+    // not worn. Nothing equipped means no reconcile: a stripped actor keeps
+    // exactly the bare-skin look it was saved with.
+    let equipped_forms: HashSet<u32> = world
+        .get::<EquipmentSlots>(wearer)
+        .map(|equipment| {
+            let indices = equipment
+                .occupants
+                .iter()
+                .filter_map(|slot| *slot)
+                .chain(equipment.weapon);
+            world
+                .get::<Inventory>(wearer)
+                .map(|inventory| {
+                    indices
+                        .filter_map(|index| inventory.get(index))
+                        .filter(|stack| stack.count > 0)
+                        .map(|stack| stack.base_form_id)
+                        .collect()
+                })
+                .unwrap_or_default()
+        })
+        .unwrap_or_default();
+    let roots: Vec<(EntityId, u32)> = world
+        .query::<NpcEquipmentPart>()
+        .map(|parts| {
+            parts
+                .iter()
+                .filter(|(_, part)| part.actor == wearer && !part.intrinsic_skin)
+                .map(|(root, part)| (root, part.form_id))
+                .collect()
+        })
+        .unwrap_or_default();
+    // Hide/reveal half — only where visibility disagrees with the slots.
+    // The event path always stamps a whole root's subtree uniformly, so
+    // "any mesh unhidden" is the root's visibility. Walks are collected
+    // before the marker write for the same guard hygiene the event path
+    // uses (the write goes through interior mutability, the caller being
+    // a `&World`).
+    let mut walks: Vec<(Vec<EntityId>, bool)> = Vec::new();
+    for (root, form_id) in &roots {
+        let expected_visible = equipped_forms.contains(form_id);
+        let meshes = mesh_entities_under(world, *root);
+        let hidden = meshes
+            .iter()
+            .all(|&entity| world.get::<NpcAppearanceHidden>(entity).is_some());
+        if expected_visible && hidden {
+            walks.push((meshes, false));
+        } else if !expected_visible && !hidden {
+            walks.push((meshes, true));
+        }
+    }
+    if !walks.is_empty() {
+        let Some(mut markers) = world.query_mut::<NpcAppearanceHidden>() else {
+            return;
+        };
+        for (entities, hide) in walks {
+            for entity in entities {
+                if hide {
+                    markers.insert(entity, NpcAppearanceHidden);
+                } else {
+                    markers.remove(entity);
+                }
+            }
+        }
+    }
+    // Import half — equipped forms with no root. The change list is
+    // synthesized in memory, never planted as an `EquipmentEventBatch`:
+    // consumers treat that marker as a runtime transition, and a load is
+    // not one.
+    let missing: Vec<byroredux_scripting::EquipmentChange> = equipped_forms
+        .iter()
+        .filter(|form_id| !roots.iter().any(|&(_, form)| form == **form_id))
+        .map(|&form_id| byroredux_scripting::EquipmentChange {
+            item_form_id: form_id,
+            equipped: true,
+        })
+        .collect();
+    if missing.is_empty() {
+        return;
+    }
+    let root_triples: Vec<(EntityId, EntityId, u32)> = roots
+        .into_iter()
+        .map(|(root, form_id)| (wearer, root, form_id))
+        .collect();
+    queue_midlife_imports(world, &[(wearer, missing)], &root_triples);
+}
+
 fn finish(world: &mut World, actor: EntityId) {
     if !fully_looted(world, actor) {
         return;
@@ -853,6 +969,12 @@ impl GearImportLoader {
             }
         }
         log::info!("mid-life gear: imported {path} for {wearer} (form {:08X})", import.form_id);
+        // #5034 — a load can restore several equipped forms that have no
+        // root, but the pending slot takes one import at a time. Re-running
+        // the reconcile now (root exists, slots unchanged) queues the next
+        // root-less form for the following frame — the same one-per-frame
+        // cadence a multi-equip burst gets from the runtime event path.
+        reconcile_worn_gear(world, wearer);
     }
 }
 
@@ -1136,6 +1258,88 @@ mod tests {
             .expect("an equip with no spawn-time root must queue its import");
         assert_eq!(pending.form_id, 0xABC);
         assert_eq!(pending.paths, vec![r"meshes\armor\cuirass.nif"]);
+    }
+
+    /// #5034 — the load reconcile produces the event path's three outcomes
+    /// from state alone: reveal an equipped-but-hidden root, hide an
+    /// unequipped-but-visible root, queue an import for an equipped form
+    /// with no root — with no `EquipmentEventBatch` in the world.
+    #[test]
+    fn load_reconcile_diffs_roots_against_restored_slots() {
+        use super::super::{ActorBodyClass, PendingGearImport};
+        use byroredux_plugin::equip::Gender;
+
+        let mut world = World::new();
+        world.register::<NpcAppearanceHidden>();
+        world.register::<PendingGearImport>();
+        world.register::<super::super::ActorBodyClass>();
+        world.register::<EquipmentEventBatch>();
+        let wearer = world.spawn();
+        world.insert(
+            wearer,
+            Inventory {
+                items: vec![ItemStack::new(0xAAA, 1), ItemStack::new(0xCCC, 1)],
+            },
+        );
+        let mut slots = EquipmentSlots::new();
+        slots.equip(0b1, InventoryIndex(0));
+        slots.equip_weapon(InventoryIndex(1));
+        world.insert(wearer, slots);
+        world.insert(
+            wearer,
+            ActorBodyClass {
+                gender: Gender::Male,
+                race_form_id: 0xD7,
+            },
+        );
+        // 0xCCC (the wielded row) has no root: the reconcile must queue its
+        // worn-mesh import, which needs an index entry to resolve a mesh
+        // from.
+        install_index(&mut world, 0xCCC, r"meshes\armor\gauntlet.nif");
+
+        let mesh_under = |world: &mut World, root: EntityId, form_id: u32| {
+            let mesh = world.spawn();
+            super::super::resumable::parent_part(world, root, mesh);
+            world.insert(mesh, MeshHandle(mesh));
+            world.insert(
+                root,
+                NpcEquipmentPart {
+                    actor: wearer,
+                    form_id,
+                    intrinsic_skin: false,
+                    hidden_biped_mask: 0,
+                },
+            );
+            mesh
+        };
+
+        // Equipped armor whose meshes the pre-load session hid (a saved
+        // unequip-then-re-equip, or a boot --load body): must be revealed.
+        let equipped_root = world.spawn();
+        let equipped_mesh = mesh_under(&mut world, equipped_root, 0xAAA);
+        world.insert(equipped_mesh, NpcAppearanceHidden);
+        // A root for a form the restored slots no longer equip: must be
+        // hidden.
+        let unequipped_root = world.spawn();
+        let unequipped_mesh = mesh_under(&mut world, unequipped_root, 0xBBB);
+
+        reconcile_worn_gear(&world, wearer);
+
+        assert!(
+            world.get::<NpcAppearanceHidden>(equipped_mesh).is_none(),
+            "a root whose form is equipped must be revealed"
+        );
+        assert!(
+            world.get::<NpcAppearanceHidden>(unequipped_mesh).is_some(),
+            "a root whose form is no longer equipped must be hidden"
+        );
+        let pending = world
+            .get::<PendingGearImport>(wearer)
+            .expect("an equipped form with no root must queue its import");
+        assert_eq!(pending.form_id, 0xCCC);
+        assert_eq!(pending.paths, vec![r"meshes\armor\gauntlet.nif"]);
+        // No synthetic batch leaked into the world for other consumers.
+        assert!(world.query::<EquipmentEventBatch>().unwrap().iter().next().is_none());
     }
 
     #[test]
