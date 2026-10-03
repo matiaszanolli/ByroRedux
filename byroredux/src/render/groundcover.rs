@@ -318,6 +318,7 @@ pub(crate) fn collect_groundcover_frame(
                 layer_affinity: cover.layer_affinity,
                 base_affinity: cover.base_affinity,
                 terrain_tile_slot: cover.terrain_tile_slot,
+                base_diffuse_index: cover.base_diffuse_index,
             },
             origin.origin_xz,
         ));
@@ -418,7 +419,9 @@ pub(crate) fn collect_groundcover_frame(
                     // diffuse indices from the terrain-tile SSBO through
                     // this slot (#4056). u32::MAX = no splat terrain.
                     terrain_tile_slot: cell.terrain_tile_slot,
-                    pad2: 0.0,
+                    // #5174 — couples blades to the base on cells with no
+                    // tile (a base and no ATXT paint).
+                    base_diffuse_index: cell.base_diffuse_index,
                 });
                 let index = (cells.len() - 1) as u32;
                 emitted.insert(candidate.cell, index);
@@ -549,6 +552,8 @@ pub(crate) struct EntityCell {
     /// §12.3's terrain-tile slot for the layer diffuse indices (#4056),
     /// `u32::MAX` when the cell has no splat terrain.
     terrain_tile_slot: u32,
+    /// The BTXT base diffuse handle, 0 when unresolved (#5174).
+    base_diffuse_index: u32,
 }
 
 /// CPU payload for the bindless Tier-3 detail atlas. Its rows are generated

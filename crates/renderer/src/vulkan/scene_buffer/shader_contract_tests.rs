@@ -7186,4 +7186,25 @@ fn blade_ground_colour_uses_the_shared_terrain_splat_chain() {
         "no renormalised average on the base-resolved path — the terrain's \
          own blend is an ordered mix over the base (#4907)"
     );
+
+    // #5174 — a cell with a BTXT base and no ATXT paint has no terrain tile.
+    // Its blades still couple to the base, from the cell record, or a root
+    // colour step appears along every border with a painted cell.
+    let no_tile_arm = blade
+        .split("} else if (vCard == 0u && vTerrainBaseIndex != 0u) {")
+        .nth(1)
+        .expect("blade.frag couples tile-less cells to their BTXT base (#5174)")
+        .split("\n    }")
+        .next()
+        .expect("no-tile arm terminates");
+    assert!(
+        no_tile_arm.contains("textures[nonuniformEXT(vTerrainBaseIndex)]")
+            && no_tile_arm.contains("albedo = mix(albedo, groundAlbedo, coupling);"),
+        "the no-tile arm samples the cell's base and applies the same coupling (#5174)"
+    );
+    let blade_vert = include_str!("../../../shaders/groundcover_blade.vert");
+    assert!(
+        blade_vert.contains("vTerrainBaseIndex = ground.valid ? cell.baseDiffuseIndex : 0u;"),
+        "the vertex stage forwards the cell's base handle, zeroed off-terrain (#5174)"
+    );
 }

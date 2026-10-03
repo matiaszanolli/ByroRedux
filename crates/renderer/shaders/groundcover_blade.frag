@@ -56,6 +56,7 @@ layout(location = 17) in vec2 vTerrainUv;
 layout(location = 18) in vec4 vTerrainSplat0;
 layout(location = 19) in vec4 vTerrainSplat1;
 layout(location = 20) flat in uint vTerrainTileSlot;
+layout(location = 21) flat in uint vTerrainBaseIndex;
 
 layout(location = 0) out vec4 outColor;
 layout(location = 2) out vec2 outMotion;
@@ -142,10 +143,11 @@ void main() {
     // derivatives is the only sound fetch (#4016's class of hazard; the
     // derivatives are captured unconditionally, before any branch, for the
     // same reason `triangle.frag` captures its splat gradients outside
-    // `terrainSplatActive`). And the blend is a weighted average over the
-    // painted layers, not `mix` against a base texture: the blade's base
-    // has no BTXT base layer of its own, and averaging the layers the splat
-    // actually paints is the ground colour the blade is standing in.
+    // `terrainSplatActive`). And the blend is the terrain's own composition
+    // — the BTXT base under the painted layers (#4907) — falling back to the
+    // painted-layer average only where the base is unresolved. A cell with a
+    // base and no ATXT paint has no terrain tile; its blades couple to the
+    // base alone, so no root-colour step appears at its border (#5174).
     vec2 terrainUvDx = dFdx(vTerrainUv);
     vec2 terrainUvDy = dFdy(vTerrainUv);
     if (vCard == 0u && vTerrainTileSlot != GROUNDCOVER_NO_TERRAIN_TILE) {
@@ -188,6 +190,14 @@ void main() {
                 albedo = mix(albedo, groundAlbedo / weightSum, coupling);
             }
         }
+    } else if (vCard == 0u && vTerrainBaseIndex != 0u) {
+        // #5174 — no tile: the terrain draws its base alone (no ATXT paint,
+        // or the tile table was full), so the base is the ground colour.
+        vec3 groundAlbedo = textureGrad(
+            textures[nonuniformEXT(vTerrainBaseIndex)],
+            vTerrainUv, terrainUvDx, terrainUvDy).rgb;
+        float coupling = clamp(sp.tipColour.a, 0.0, 1.0) * (1.0 - vBladeT);
+        albedo = mix(albedo, groundAlbedo, coupling);
     }
 
     // Per-blade colour jitter. A field of identically-coloured blades reads as

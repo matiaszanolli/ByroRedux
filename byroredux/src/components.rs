@@ -495,6 +495,11 @@ pub(crate) struct TerrainCoverInputs {
     /// the cell has no splat terrain (`allocate_terrain_tile` was never
     /// called) — a valid slot index can be 0, so "absent" cannot be 0.
     pub(crate) terrain_tile_slot: u32,
+    /// The resolved BTXT base diffuse handle (0 = unresolved). Rides the
+    /// cover inputs, not only the terrain tile, because a cell with a base
+    /// and no ATXT paint gets no tile — §12.3's ground-colour coupling must
+    /// still root its blades in the base it shows (#5174).
+    pub(crate) base_diffuse_index: u32,
     /// Authored `GRAS` FormID lists associated with the same eight LAND
     /// splat lanes as `layer_affinity` — each lane carries its LTEX's
     /// full `GNAM` array in authored order (#4642), empty when the layer

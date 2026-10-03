@@ -635,7 +635,10 @@ Each phase is independently useful and independently reviewable.
   so every later tier is authored against a correct backdrop. §12.3's
   ground-colour coupling is implemented (2026-09-24): the blade fragment
   blends the species gradient toward the terrain albedo sampled at the blade
-  base, by the per-species weight, fading to zero at the tip. Fixed-camera
+  base, by the per-species weight, fading to zero at the tip. The albedo is
+  the terrain's own composition, the BTXT base under its ATXT layers (#4907).
+  A cell with a base and no paint has no terrain tile; its blades couple to the
+  base alone, carried on the ground-cover cell record (#5174). Fixed-camera
   visual acceptance remains pending.
 - **Phase 4 — RT proxy shell.** Per-chunk shell, stochastic-absorption hit
   handling, refit on density change. **Gated, not scheduled** (revised

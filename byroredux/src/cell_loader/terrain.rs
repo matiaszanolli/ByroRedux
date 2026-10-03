@@ -1243,6 +1243,8 @@ pub(super) fn spawn_terrain_mesh(
             terrain_tile_slot: terrain_tile_index.unwrap_or(
                 byroredux_core::ecs::components::groundcover::GROUNDCOVER_NO_TERRAIN_TILE,
             ),
+            // #5174 — the base the terrain shows, tile or no tile.
+            base_diffuse_index: tex_handle,
         },
     );
     // #renderlayer — terrain LAND tiles ARE the architectural floor

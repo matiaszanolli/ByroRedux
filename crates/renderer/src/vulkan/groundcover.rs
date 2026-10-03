@@ -106,11 +106,11 @@ pub struct GpuGroundCoverCell {
     /// density field's ordered mix in `byroGcAffinity`. Previously this slot
     /// was `pad1`.
     pub base_affinity: f32,
-    /// Padding to the 64 B record. Kept as a named scalar (not folded into
-    /// an array) so the declaration matches the GLSL field for field, which
-    /// is what lets `name_diverging_glsl_rust_mirrors_stay_in_lockstep`
-    /// guard it (#4849).
-    pub pad2: f32,
+    /// The BTXT base diffuse texture handle, 0 when unresolved. §12.3's
+    /// ground-colour coupling roots blades in it on cells that have no
+    /// terrain tile (a base and no ATXT paint) — previously the `pad2` slot,
+    /// so the record stays 64 B (#5174).
+    pub base_diffuse_index: u32,
 }
 // SAFETY: `#[repr(C)]` over `f32`/`u32` only, explicitly padded to 64 bytes
 // with named fields, so every byte is initialised by a field write.

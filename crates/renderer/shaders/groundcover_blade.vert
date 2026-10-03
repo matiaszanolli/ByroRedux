@@ -195,6 +195,9 @@ layout(location = 19) out vec4 vTerrainSplat1;
 /// `GROUNDCOVER_NO_TERRAIN_TILE`. `flat`: it is a per-cell constant and a
 /// non-uniform index into `terrainTiles[]` must not be interpolated.
 layout(location = 20) flat out uint vTerrainTileSlot;
+/// The cell's BTXT base diffuse handle, 0 when unresolved — the coupling's
+/// substrate on cells with no terrain tile (a base and no ATXT paint, #5174).
+layout(location = 21) flat out uint vTerrainBaseIndex;
 
 // The scene set already binds CameraUBO at set 1 / binding 1.  Only the
 // leading fields through `jitter` are declared here; the descriptor's full
@@ -411,6 +414,7 @@ void main() {
     vTerrainTileSlot = ground.valid
         ? cell.terrainTileSlot
         : GROUNDCOVER_NO_TERRAIN_TILE;
+    vTerrainBaseIndex = ground.valid ? cell.baseDiffuseIndex : 0u;
     // Inverse of `cell_loader/terrain.rs`'s UV authoring: `u = col/32 *
     // TILES`, `v = (1 - row/32) * TILES`, with `col = (base.x - ox)/128`
     // and `row = (oz - base.z)/128` — the same grid mapping

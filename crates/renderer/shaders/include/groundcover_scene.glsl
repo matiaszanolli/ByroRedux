@@ -41,7 +41,10 @@ struct GroundCoverCell {
     /// The BTXT base LTEX's own `cover_affinity` (#4903) — starts the
     /// density field's ordered mix in `byroGcAffinity`. Previously `pad1`.
     float baseAffinity;
-    float pad2;
+    /// The BTXT base diffuse texture handle, 0 when unresolved. §12.3's
+    /// ground-colour coupling roots blades in it on cells with no terrain
+    /// tile (a base and no ATXT paint). Previously `pad2` (#5174).
+    uint baseDiffuseIndex;
 };
 
 /// One 512-unit ground-cover chunk — §4's unit of dispatch, culling and LOD.
