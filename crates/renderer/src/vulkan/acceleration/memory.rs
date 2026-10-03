@@ -71,8 +71,8 @@ impl AccelerationManager {
             self.blas_entries
                 .iter()
                 .flatten()
-                .map(|e| e.build_scratch_size),
-            self.skinned_blas.values().map(|e| e.build_scratch_size),
+                .map(|e| e.scratch_requirement()),
+            self.skinned_blas.values().map(|e| e.scratch_requirement()),
         );
 
         if peak == 0 {

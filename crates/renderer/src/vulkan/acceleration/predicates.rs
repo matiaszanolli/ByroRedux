@@ -415,9 +415,11 @@ pub(super) fn scratch_needs_growth(
 /// cell's skinned BLAS are only queued for unload, drained a later
 /// frame). See #2460 / AS-D1-NEW-01.
 ///
-/// Skinned entries carry the *build* scratch size and an UPDATE never
-/// needs more than its BUILD did, so taking the build size for them is
-/// conservative in the safe direction.
+/// Callers pass each entry's full scratch requirement —
+/// `BlasEntry::scratch_requirement()`, the max of `buildScratchSize` and
+/// the driver's `updateScratchSize` (#5195: the spec does not relate the
+/// two, and VUID-…-pInfos-12259 bounds an UPDATE by the latter). Static
+/// entries never refit, so their requirement is the BUILD size.
 pub(super) fn shared_blas_scratch_peak(
     static_sizes: impl IntoIterator<Item = vk::DeviceSize>,
     skinned_sizes: impl IntoIterator<Item = vk::DeviceSize>,

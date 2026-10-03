@@ -1173,6 +1173,9 @@ impl AccelerationManager {
                 last_used_frame: self.frame_counter,
                 size_bytes: blas_size,
                 build_scratch_size,
+                // Static (mesh-keyed) BLAS never refit, so they carry no
+                // UPDATE scratch requirement (#5195).
+                update_scratch_size: 0,
                 // Counted into `static_blas_bytes` just above (#3840).
                 counted_in_static_bytes: true,
                 // Static (mesh-keyed) BLAS never refit. See #679.

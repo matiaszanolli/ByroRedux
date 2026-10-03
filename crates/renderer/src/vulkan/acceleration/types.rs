@@ -60,6 +60,15 @@ pub struct BlasEntry {
     /// entries to decide the minimum scratch needed post-eviction. See
     /// issue #495.
     pub build_scratch_size: vk::DeviceSize,
+    /// Scratch-buffer capacity this BLAS's UPDATE mode requires
+    /// (`vkGetAccelerationStructureBuildSizesKHR`'s `updateScratchSize`,
+    /// captured from the same query as `build_scratch_size`). The spec
+    /// does not relate the two sizes — VUID-vkCmdBuildAccelerationStruc
+    /// turesKHR-pInfos-12259 bounds the UPDATE by the driver's
+    /// `updateScratchSize`, whatever it returned — so the skinned refit
+    /// path sizes, shrinks and asserts against the max of the two
+    /// (#5195). Static (mesh-keyed) BLAS never refit: this stays 0.
+    pub update_scratch_size: vk::DeviceSize,
     /// Whether `size_bytes` was counted into `static_blas_bytes` when this
     /// entry was created — `true` for static (mesh-keyed) BLAS, `false` for
     /// per-entity skinned ones, which only ever reach `total_blas_bytes`.
@@ -121,6 +130,18 @@ pub struct BlasEntry {
     /// they never refit, so the stored value is read-only there.
     /// See #1145 / SAFE-D6-NEW-01.
     pub built_flags: vk::BuildAccelerationStructureFlagsKHR,
+}
+
+impl BlasEntry {
+    /// The shared scratch capacity this entry must be able to run
+    /// against: its BUILD size, or its UPDATE size when it refits
+    /// (skinned entries). `shrink_blas_scratch_to_fit`'s peak walk and
+    /// `refit_skinned_blas`'s debug assert both go through this (#5195 —
+    /// the spec's `updateScratchSize` is not bounded by
+    /// `buildScratchSize`).
+    pub fn scratch_requirement(&self) -> vk::DeviceSize {
+        self.build_scratch_size.max(self.update_scratch_size)
+    }
 }
 
 /// Top-level acceleration structure state.

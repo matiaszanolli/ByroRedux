@@ -1003,8 +1003,11 @@ impl AccelerationManager {
                 &[padded_count as u32],
                 &mut sizes,
             );
-            // Scratch is sized for BUILD which is >= UPDATE per Vulkan
-            // spec, so the same buffer serves both modes.
+            // #5195 — the scratch is sized for the max of BUILD and
+            // UPDATE scratch: the spec does not relate the two sizes
+            // (VUID-…-pInfos-12259 bounds the UPDATE by the driver's
+            // `updateScratchSize`), so the same per-frame buffer can only
+            // serve both modes when it covers the larger of them.
 
             // DEVICE_LOCAL: GPU-built, GPU-read during ray queries.
             let mut tlas_buffer = GpuBuffer::create_device_local_uninit(
@@ -1043,10 +1046,12 @@ impl AccelerationManager {
             // Pad by `scratch_alignment_padding` so the device address can
             // be rounded up to `scratch_align` at the build site below
             // without the build overrunning the buffer (#1386). The refit
-            // (UPDATE) path reuses this buffer on the spec guarantee
-            // `BUILD scratch ≥ UPDATE scratch`, inheriting the headroom.
-            let scratch_size =
-                sizes.build_scratch_size + scratch_alignment_padding(self.scratch_align);
+            // (UPDATE) path reuses this buffer, which is sized for the max
+            // of BUILD and UPDATE scratch (#5195) and so inherits the
+            // headroom.
+            let scratch_size = sizes.build_scratch_size
+                .max(sizes.update_scratch_size)
+                + scratch_alignment_padding(self.scratch_align);
             let needs_new_scratch = scratch_needs_growth(
                 self.scratch_buffers[frame_index].as_ref().map(|b| b.size),
                 scratch_size,

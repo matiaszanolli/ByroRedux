@@ -74,6 +74,7 @@ impl AccelerationManager {
             geometry: vk::AccelerationStructureGeometryKHR<'static>,
             primitive_count: u32,
             build_scratch_size: vk::DeviceSize,
+            update_scratch_size: vk::DeviceSize,
             vertex_count: u32,
             index_count: u32,
         }
@@ -179,7 +180,15 @@ impl AccelerationManager {
                 }
             };
 
-            max_scratch_size = max_scratch_size.max(sizes.build_scratch_size);
+            // #5195 — the spec does not relate buildScratchSize and
+            // updateScratchSize: VUID-vkCmdBuildAccelerationStructuresKHR
+            // -pInfos-12259 bounds the UPDATE by the driver's
+            // `updateScratchSize`, whatever it returned. Size the shared
+            // scratch against the max of the two, never the BUILD size
+            // alone.
+            max_scratch_size = max_scratch_size
+                .max(sizes.build_scratch_size)
+                .max(sizes.update_scratch_size);
             prepared.push(PreparedSkinned {
                 entity_id,
                 accel,
@@ -187,6 +196,7 @@ impl AccelerationManager {
                 geometry,
                 primitive_count,
                 build_scratch_size: sizes.build_scratch_size,
+                update_scratch_size: sizes.update_scratch_size,
                 vertex_count,
                 index_count,
             });
@@ -205,8 +215,10 @@ impl AccelerationManager {
         // Pad by `scratch_alignment_padding` so the shared device address
         // captured below can be rounded up to `scratch_align` without the
         // build overrunning the buffer (#1386). The same padded buffer is
-        // reused by `refit_skinned_blas` (UPDATE scratch ≤ BUILD scratch),
-        // so its round-up inherits this headroom.
+        // reused by `refit_skinned_blas` — `max_scratch_size` above already
+        // covers this batch's UPDATE requirements (#5195: the spec does
+        // not bound `updateScratchSize` by `buildScratchSize`), so its
+        // round-up inherits this headroom.
         let scratch_size = max_scratch_size + scratch_alignment_padding(self.scratch_align);
         let need_new_scratch = scratch_needs_growth(
             self.blas_scratch_buffer.as_ref().map(|b| b.size),
@@ -391,6 +403,7 @@ impl AccelerationManager {
                     last_used_frame: self.frame_counter,
                     size_bytes: blas_size,
                     build_scratch_size: p.build_scratch_size,
+                    update_scratch_size: p.update_scratch_size,
                     // Skinned BLAS reach `total_blas_bytes` only — never
                     // `static_blas_bytes` (see the drop counterpart) (#3840).
                     counted_in_static_bytes: false,
@@ -550,12 +563,17 @@ impl AccelerationManager {
         // only writer that can shrink it beneath this entry's needs;
         // trip in debug if a future change reintroduces a peak walk that
         // misses `skinned_blas`.
+        //
+        // #5195 — the UPDATE's requirement is the driver's
+        // `updateScratchSize` (VUID-…-pInfos-12259), which the spec does
+        // not bound by the BUILD size, so the check is against the entry's
+        // full scratch requirement, not the BUILD size alone.
         debug_assert!(
-            scratch_buffer.size >= entry.build_scratch_size,
+            scratch_buffer.size >= entry.scratch_requirement(),
             "skinned BLAS refit for entity {entity_id}: shared scratch is {} B but this entry \
-             was built against {} B — see #2460",
+             requires {} B (max of build/update scratch) — see #2460 / #5195",
             scratch_buffer.size,
-            entry.build_scratch_size,
+            entry.scratch_requirement(),
         );
 
         // #2170 — the skinned slot output is position-only, so the AS
@@ -607,10 +625,10 @@ impl AccelerationManager {
             )
         };
         // Round up to `scratch_align`. This UPDATE reuses the BUILD's
-        // padded `blas_scratch_buffer` (UPDATE scratch ≤ BUILD scratch),
-        // so the round-up headroom is already present. Enforces
-        // VUID-…-pInfos-03715 in release; no-op on aligned drivers.
-        // See #1386 / #659.
+        // padded `blas_scratch_buffer`, sized for the entry's full scratch
+        // requirement (max of build/update, #5195), so the round-up
+        // headroom is already present. Enforces VUID-…-pInfos-03715 in
+        // release; no-op on aligned drivers. See #1386 / #659.
         let scratch_address = align_scratch_address(raw_scratch, scratch_align);
 
         // mode = UPDATE: src == dst == this entity's BLAS. Vulkan
@@ -668,6 +686,18 @@ impl AccelerationManager {
     /// first-sight build path so the next frame's
     /// `cmd_build_acceleration_structures(BUILD)` produces a fresh
     /// BVH that tightly fits the current pose. See #679 / AS-8-9.
+    /// #5194 — zero a live skinned entry's refit counter after a failed
+    /// forced REBUILD: the old BLAS keeps refitting (its BVH is degraded,
+    /// which the rebuild was fixing) and the next rebuild attempt comes
+    /// after another full refit cycle rather than every frame. No-op when
+    /// the entity has no entry — a failed first-sight build leaves nothing
+    /// to refit, and the caller parks that case in `failed_skin_blas`.
+    pub fn reset_skinned_blas_refit_count(&mut self, entity_id: EntityId) {
+        if let Some(entry) = self.skinned_blas.get_mut(&entity_id) {
+            entry.refit_count = 0;
+        }
+    }
+
     pub fn should_rebuild_skinned_blas(&self, entity_id: EntityId) -> bool {
         self.skinned_blas
             .get(&entity_id)
