@@ -813,11 +813,25 @@ pub(crate) fn groundcover_species_table_signature(world: &World) -> u64 {
 pub(crate) struct GroundCoverModelRecordsKey {
     generation: u64,
     blade_reach_bits: u32,
-    /// #4906 — which records have loaded shapes this frame, folded. The
+    /// #4906 — which records have loaded shapes this frame, one exact bit
+    /// per record (#5175: a rotate-xor fold aliased records k and k+64). The
     /// table weights by placeability, so shapes streaming in (or a record's
     /// model failing to load) must re-derive the table, not just a new
     /// cover generation.
-    placeable_fold: u64,
+    placeable: u128,
+}
+
+// #5175 — the placeable key holds one bit per record the model tier can draw.
+const _: () =
+    assert!(byroredux_renderer::shader_constants::GROUNDCOVER_MODEL_MAX_RECORDS <= u128::BITS);
+
+/// #4906 / #5175 — bit `r` set when record `r` (< `count`) produced template
+/// draws this frame. Exact, and allocation-free on the per-frame path.
+fn placeable_record_bits(records: impl IntoIterator<Item = u32>, count: usize) -> u128 {
+    records
+        .into_iter()
+        .filter(|&record| (record as usize) < count)
+        .fold(0, |bits, record| bits | 1u128 << record)
 }
 
 /// #4413 — the authored-model tier's records and record-selection table for
@@ -872,19 +886,11 @@ pub(crate) fn collect_groundcover_model_records(
     let count_ahead = cover.records.len().min(
         byroredux_renderer::shader_constants::GROUNDCOVER_MODEL_MAX_RECORDS as usize,
     );
-    let mut placeable = vec![false; count_ahead];
-    for (record, _) in draws.iter() {
-        if let Some(slot) = placeable.get_mut(*record as usize) {
-            *slot = true;
-        }
-    }
-    let placeable_fold = placeable
-        .iter()
-        .fold(placeable.len() as u64, |h, &p| h.rotate_left(1) ^ p as u64);
+    let placeable = placeable_record_bits(draws.iter().map(|(record, _)| *record), count_ahead);
     let current = GroundCoverModelRecordsKey {
         generation: cover.generation,
         blade_reach_bits: blade_reach.to_bits(),
-        placeable_fold,
+        placeable,
     };
     if *key == Some(current) {
         return Some(cover.grid_spacing);
@@ -929,8 +935,9 @@ pub(crate) fn collect_groundcover_model_records(
     }));
     let weights: Vec<f32> = used
         .iter()
-        .zip(&placeable)
-        .map(|(record, &can_place)| {
+        .enumerate()
+        .map(|(index, record)| {
+            let can_place = placeable >> index & 1 != 0;
             // #4906 — climate weight zeroed for records that cannot place:
             // their table share would place nothing while thinning every
             // record that does.
@@ -1044,6 +1051,31 @@ fn species_selection_table(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #5175 — the records key is exact: records k and k+64 flipping
+    /// together, or a full 128-record cover going from none to all
+    /// placeable, must change it (the old rotate-xor fold mapped both to the
+    /// same value, so the selection table went stale). Out-of-range records
+    /// never set a bit.
+    #[test]
+    fn placeable_key_distinguishes_every_record() {
+        let max = byroredux_renderer::shader_constants::GROUNDCOVER_MODEL_MAX_RECORDS as usize;
+        assert_ne!(
+            placeable_record_bits([0], max),
+            placeable_record_bits([64], max)
+        );
+        assert_ne!(
+            placeable_record_bits([], max),
+            placeable_record_bits([0, 64], max)
+        );
+        assert_ne!(
+            placeable_record_bits([], max),
+            placeable_record_bits(0..max as u32, max)
+        );
+        assert_eq!(placeable_record_bits([3, 9], 4), 1 << 3);
+        let all = placeable_record_bits(0..max as u32, max);
+        assert_eq!(all.count_ones() as usize, max);
+    }
 
     fn shares(table: &[u32], species: usize) -> Vec<usize> {
         let mut out = vec![0; species];
