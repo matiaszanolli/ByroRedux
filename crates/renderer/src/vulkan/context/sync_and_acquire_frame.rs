@@ -269,7 +269,14 @@ impl VulkanContext {
         // every frame): safe because `in_flight[frame]` was just waited on,
         // so this frame's descriptor set is idle. See WATAL §0 device-loss
         // hunt. (bindings 8/9 are PARTIALLY_BOUND, so the None case — no
-        // geometry yet / headless — leaves them validly unbound.)
+        // geometry yet / headless — leaves them validly unbound: they were
+        // never written, and with the RT flag dropped (dispatch_skin_and_
+        // cluster's geometry-dead arm, #5188) no shader dynamically uses
+        // them. #5188 — that now also covers the post-failure case: a
+        // rebuild that allocated after the old pair was retired leaves
+        // these fields `None` while the sets STILL name the retired
+        // `VkBuffer`s; the else arm closes the caustic gate and the RT
+        // flag keeps every read path off the stale descriptors.)
         if let (Some(vb), Some(ib)) = (
             self.mesh_registry.global_vertex_buffer.as_ref(),
             self.mesh_registry.global_index_buffer.as_ref(),
@@ -292,8 +299,61 @@ impl VulkanContext {
                     ib.size,
                 );
             }
+        } else if let Some(ref caustic) = self.post.caustic {
+            // #5188 — no live global geometry pair: close #5064's one-way
+            // latch so `record_caustic_splat_pass` skips instead of
+            // dispatching against the retired bindings 9/10. The frame's
+            // RT flag is dropped by `dispatch_skin_and_cluster`'s
+            // geometry-dead arm; `app_frame` keeps retrying the rebuild
+            // (`geometry_dirty` stays set until one succeeds).
+            caustic.clear_geometry_bound(frame);
         }
 
         Ok(Some((frame, img, suboptimal)))
+    }
+}
+
+#[cfg(test)]
+mod geometry_dead_invalidation_tests {
+    /// #5188 — a failed `build_geometry_ssbo` leaves the global geometry
+    /// fields `None` while the scene-set bindings 8/9 and the caustic
+    /// bindings 9/10 still name the retired `VkBuffer`s. The re-point's
+    /// else arm must close #5064's one-way caustic latch, and the TLAS
+    /// block must drop to non-RT shading so no shader dynamically reads
+    /// the stale descriptors (the PARTIALLY_BOUND posture covers only
+    /// never-dynamically-used descriptors).
+    #[test]
+    fn geometry_dead_closes_the_caustic_gate_and_drops_rt() {
+        let sync_src = crate::source_scan::production_text(include_str!("sync_and_acquire_frame.rs"));
+        let caustic_src = crate::source_scan::production_text(include_str!("../caustic.rs"));
+        let dispatch_src =
+            crate::source_scan::production_text(include_str!("dispatch_skin_and_cluster.rs"));
+
+        let else_pos = sync_src
+            .find("} else if let Some(ref caustic) = self.post.caustic {")
+            .expect("the re-point must gain an else arm — #5064's latch is \
+                     one-way and the failure window needs it closed (#5188)");
+        let clear_pos = sync_src[else_pos..]
+            .find("caustic.clear_geometry_bound(frame);")
+            .map(|p| else_pos + p)
+            .expect("the else arm must close the caustic gate (#5188)");
+        assert!(else_pos < clear_pos);
+
+        assert!(
+            caustic_src.contains("pub fn clear_geometry_bound(&self, frame: usize)"),
+            "CausticPipeline must expose the gate's closing half (#5188)"
+        );
+
+        let dead_pos = dispatch_src
+            .find("let geometry_dead = self.mesh_registry.global_vertex_buffer.is_none();")
+            .expect("the TLAS block must detect dead geometry globals (#5188)");
+        let guard_pos = dispatch_src
+            .find("if !tlas_build_failed && !geometry_dead {")
+            .expect("the RT-enable path must be skipped while geometry is dead (#5188)");
+        let patch_pos = dispatch_src[dead_pos..]
+            .find("patch_camera_rt_flag(&self.device, frame, 0.0)")
+            .map(|p| dead_pos + p)
+            .expect("the geometry-dead arm must drop the frame's RT flag (#5188)");
+        assert!(dead_pos < patch_pos && patch_pos < guard_pos);
     }
 }

@@ -761,6 +761,19 @@ impl CausticPipeline {
         self.geometry_bound[frame].load(Ordering::Relaxed)
     }
 
+    /// #5188 — close the dispatch gate for `frame`: the global geometry
+    /// pair is retired (a failed `build_geometry_ssbo` after
+    /// `rebuild_geometry_ssbo_atomic_fallback` released the old buffers),
+    /// so bindings 9/10 name destroyed `VkBuffer`s and the splat shader
+    /// dereferences both unconditionally on any committed hit. #5064's
+    /// latch is one-way (`write_geometry_buffers` only stores `true`) —
+    /// the failure window needs the opposite transition. The acquire-time
+    /// re-point re-opens the gate through `write_geometry_buffers` once a
+    /// successful rebuild provides fresh buffers.
+    pub fn clear_geometry_bound(&self, frame: usize) {
+        self.geometry_bound[frame].store(false, Ordering::Relaxed);
+    }
+
     /// Caustic accumulator view used by the composite pass as
     /// `usampler2DArray` — the same view the compute pass binds as storage,
     /// see [`CausticSlot::view`] (#2779).

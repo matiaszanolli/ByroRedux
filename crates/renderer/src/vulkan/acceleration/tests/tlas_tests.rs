@@ -850,9 +850,13 @@ fn as_build_to_ray_query_barrier_runs_on_both_build_tlas_arms() {
     let rt_flag_clear = src
         .find("Failed to clear rt_flag after TLAS build failure")
         .expect("the failure arm must still clear rt_flag");
+    // #5188 — the gate now also excludes a geometry-dead frame (dead
+    // geometry globals drop the whole RT-enable path, same shape as a
+    // failed build).
     let success_gate = src
-        .find("if !tlas_build_failed {")
-        .expect("the post-build descriptor write must still be gated on success");
+        .find("if !tlas_build_failed && !geometry_dead {")
+        .expect("the post-build descriptor write must still be gated on success \
+                 (and now also on geometry not being dead, #5188)");
 
     // The barrier must sit AFTER the whole if/else, not nested in the
     // success arm — i.e. past the failure arm's last statement.
@@ -874,9 +878,10 @@ fn as_build_to_ray_query_barrier_runs_on_both_build_tlas_arms() {
     );
 
     assert!(
-        src.contains("if !tlas_build_failed {"),
+        src.contains("if !tlas_build_failed && !geometry_dead {"),
         "the post-build descriptor write must stay gated on build success \
-         while the barrier itself does not (#2931)"
+         (and geometry liveness, #5188) while the barrier itself does not \
+         (#2931)"
     );
 }
 

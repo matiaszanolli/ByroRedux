@@ -411,7 +411,34 @@ impl VulkanContext {
                         vk::AccessFlags::ACCELERATION_STRUCTURE_READ_KHR,
                     );
 
-                    if !tlas_build_failed {
+                    // #5188 — geometry-globals dead: a failed
+                    // `build_geometry_ssbo` left the registry without a
+                    // global pair after the old one was retired. The TLAS
+                    // itself is fine (static BLAS are self-contained), but
+                    // every committed RT hit reconstructs UVs/normals
+                    // through scene-set bindings 8/9, which now name the
+                    // retired `VkBuffer`s. Drop to non-RT shading exactly
+                    // like a failed TLAS build (#2673): re-latch
+                    // `tlas_written` so the next frame's camera upload
+                    // carries rt_flag 0.0, patch this frame's copy in
+                    // place, and let the acquire-time re-point's caustic
+                    // else-arm keep the splat gate closed (#5064's latch
+                    // is one-way open). The first successful rebuild
+                    // re-opens both via the `first_tlas_this_slot` path.
+                    let geometry_dead = self.mesh_registry.global_vertex_buffer.is_none();
+                    if geometry_dead {
+                        self.scene_buffers.tlas_written[frame] = false;
+                        if let Err(e) =
+                            self.scene_buffers
+                                .patch_camera_rt_flag(&self.device, frame, 0.0)
+                        {
+                            log::warn!(
+                                "Failed to clear rt_flag after geometry-SSBO loss: {e}"
+                            );
+                        }
+                        self.rt_flag_last_frame = false;
+                    }
+                    if !tlas_build_failed && !geometry_dead {
                         if let Some(tlas_handle) = accel.tlas_handle(frame) {
                             self.tlas_built_this_frame = true;
                             // Capture whether this is the first time the
@@ -916,9 +943,13 @@ mod stale_tlas_compute_gate_tests {
             .expect("the TLAS-built flag must be set on the success arm");
         assert_eq!(this.matches(&set_needle).count(), 1, "exactly one set site");
         assert!(build < set, "the flag may only be set after build_tlas");
+        // #5188 — the arm's guard is now `!tlas_build_failed && !geometry_dead`
+        // (dead geometry globals drop the whole RT-enable path, same shape as
+        // a failed build).
         let success_arm = this[..set]
-            .rfind("if !tlas_build_failed {")
-            .expect("the set must sit inside the `!tlas_build_failed` arm (#4843)");
+            .rfind("if !tlas_build_failed && !geometry_dead {")
+            .expect("the set must sit inside the `!tlas_build_failed && !geometry_dead` \
+                     arm (#4843 / #5188)");
         assert!(build < success_arm, "the success arm must follow this frame's build");
         assert!(
             !this[success_arm..set].contains("} else"),
