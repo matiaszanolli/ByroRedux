@@ -863,52 +863,79 @@ fn a_full_callback_set_still_admits_the_adapter_lifecycle_names() {
     }
 }
 
-/// #3434 — the reservation is a bounded band, not a blanket exemption. The
-/// prefix is a naming convention, not a capability: movie content can call
-/// `addCallback("__byro" + i++, f)` exactly as cheaply as `addCallback("cb" +
-/// i++)`, so an unbounded exemption would hand back the unbounded heap growth
-/// the cap exists to stop, keyed off a string the movie chooses.
+/// #4719 — the #3434 band keyed its reservation on the `__byro` prefix,
+/// which is a naming convention, not a capability: 32 movie-authored
+/// `addCallback("__byro" + i++, f)` calls occupied the whole band ahead of
+/// the adapter's installer and locked the real lifecycle names out, exactly
+/// what the band existed to prevent. Exact-membership reservation must be
+/// immune to that: spoofed prefixed names fill the set to the cap and are
+/// refused like any other movie-chosen name, and the three real callbacks
+/// still get in afterward.
 #[test]
-fn the_engine_name_reservation_is_itself_bounded() {
+fn spoofed_engine_prefixed_names_do_not_displace_the_real_reservation() {
     let mut set = std::collections::BTreeSet::new();
     let mut capped = false;
 
     for i in 0..crate::MAX_DISTINCT_HOST_METHOD_NAMES {
         super::BridgeState::insert_bounded(&mut set, &mut capped, "callbacks", format!("cb{i}"));
     }
-    for i in 0..crate::RESERVED_HOST_METHOD_NAMES + 10 {
+    // More than the old 32-wide band, and prefixed exactly like engine
+    // names — none of them may reserve anything.
+    for i in 0..64 {
         super::BridgeState::insert_bounded(
             &mut set,
             &mut capped,
             "callbacks",
-            format!("{}Spoofed{i}", crate::ENGINE_NAME_PREFIX),
+            format!("__byroSpoofed{i}"),
         );
     }
-
     assert_eq!(
         set.len(),
-        crate::MAX_DISTINCT_HOST_METHOD_NAMES + crate::RESERVED_HOST_METHOD_NAMES,
-        "total residency must stay bounded by both budgets together"
+        crate::MAX_DISTINCT_HOST_METHOD_NAMES,
+        "spoofed `__byro*` names are movie-chosen names; they consume the \
+         main budget or are refused, and never a reservation"
     );
-}
+    assert!(
+        !set.iter().any(|name| name.starts_with("__byroSpoofed")),
+        "the spoofed names themselves must not have slipped in"
+    );
 
-/// #3434 — the reservation keys off a prefix the adapters have to keep
-/// carrying. Renaming one of these constants without the prefix would drop it
-/// out of the reserved band silently, and the symptom (a lifecycle callback
-/// lost only on movies that fill 1024 names first) is not one a normal test
-/// run would ever produce.
-#[test]
-fn every_engine_authored_callback_name_carries_the_reserved_prefix() {
+    // The adapter's installer runs after all of that movie code — the
+    // three real lifecycle names still land.
     for name in [
         crate::avm2_host::READY_CALLBACK,
         crate::avm2_host::DESTROY_CALLBACK,
         crate::avm2_host::LOADED_CALLBACK,
-        crate::avm2_host::DESTROYED_EVENT,
     ] {
-        assert!(
-            name.starts_with(crate::ENGINE_NAME_PREFIX),
-            "{name} must start with {}",
-            crate::ENGINE_NAME_PREFIX
-        );
+        super::BridgeState::insert_bounded(&mut set, &mut capped, "callbacks", name.to_string());
+        assert!(set.contains(name), "{name} must survive a spoofed band");
     }
+    assert_eq!(
+        set.len(),
+        crate::MAX_DISTINCT_HOST_METHOD_NAMES + 3,
+        "total residency is bounded by the main budget plus exactly the \
+         reserved list — no 32-wide band to occupy"
+    );
+}
+
+/// The reservation must track the adapter's real registration set, not a
+/// hand-retyped copy of it. `RESERVED_ENGINE_CALLBACKS` is built from the
+/// `avm2_host` constants directly, so this pins the wiring — a future
+/// adapter callback added to one but not the other shows up here (or at
+/// compile time, if the constant itself was extended).
+#[test]
+fn reserved_engine_callbacks_are_exactly_the_adapter_lifecycle_names() {
+    let mut reserved = super::RESERVED_ENGINE_CALLBACKS.to_vec();
+    reserved.sort_unstable();
+    let mut expected = [
+        crate::avm2_host::DESTROY_CALLBACK,
+        crate::avm2_host::LOADED_CALLBACK,
+        crate::avm2_host::READY_CALLBACK,
+    ];
+    expected.sort_unstable();
+    assert_eq!(
+        reserved, expected,
+        "RESERVED_ENGINE_CALLBACKS must enumerate the adapter's lifecycle \
+         registrations — extend it alongside avm2_host when a new one lands"
+    );
 }
