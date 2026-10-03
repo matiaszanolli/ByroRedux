@@ -216,6 +216,29 @@ fn apply_cdb_material(
     material.is_pbr = true;
     material.external_material_resolved = true;
 
+    // #5197 — a CDB hit with no authored scalars must NOT let
+    // `Material::resolve_pbr`'s NaN backstop re-run the keyword classifier
+    // over the CDB colour path: Starfield authors metalness/roughness
+    // (metal/rough slots — parked, and `MaterialParamFloat` — deliberately
+    // untranslated), and a filename guess on the resolved path fabricates
+    // conductors out of asset names (`iris_iron_color.dds` → a 0.9-metal
+    // eye; 275 of 12,581 corpus colour maps hit a metal arm). Stamp the
+    // classifier's own no-signal neutral instead — exactly what a
+    // signal-free path would have landed on — and only where neither the
+    // NIF import nor an inline-shader non-stub already authored real
+    // overrides. When the authoritative sources are translated (#3398),
+    // they overwrite this through the same fields.
+    if material.metalness_override.is_none() {
+        material.metalness_override =
+            Some(byroredux_core::ecs::components::material::PbrMaterial::NO_SIGNAL_NEUTRAL.metalness);
+        *touched = true;
+    }
+    if material.roughness_override.is_none() {
+        material.roughness_override =
+            Some(byroredux_core::ecs::components::material::PbrMaterial::NO_SIGNAL_NEUTRAL.roughness);
+        *touched = true;
+    }
+
     for (slot, path) in &cdb_mat.textures {
         match *slot {
             byroredux_sfmaterial::SLOT_COLOR => fill(
@@ -254,31 +277,62 @@ fn apply_cdb_material(
     }
 
     // Starfield's flat-colour materials: an enabled TextureReplacement
-    // authors a solid diffuse INSTEAD of any texture (36,866 corpus
-    // instances; the alpha channel is carried but not consumed yet).
-    if let Some([r, g, b, _a]) = cdb_mat.flat_color {
-        material.diffuse_color = [r, g, b];
-        *touched = true;
+    // authors a solid colour INSTEAD of the texture in the slot it
+    // replaces (#5190 — keyed by the texture-set's `Components.Index`,
+    // the same slot space `MRTextureFile` uses; 36,866 corpus instances,
+    // the alpha channel carried but not consumed yet). Translate ONLY the
+    // SLOT_COLOR replacement, and only when no colour texture landed in
+    // that slot — the shader multiplies the albedo by `diffuse_color`, so
+    // applying it beside a bound colour texture is a tint, not a
+    // replacement. Non-colour-slot replacements (normal/roughness/AO/…)
+    // have no flat-colour consumer role and stay parked with the parked
+    // texture kinds (#4429 table) — pre-fix the first walked replacement
+    // tinted the albedo whatever slot it sat on (a flat-normal became a
+    // blue tint).
+    if material.textures.base_color.is_none() {
+        if let Some((_, [r, g, b, _a])) = cdb_mat
+            .flat_color_slots
+            .iter()
+            .find(|(slot, _)| *slot == byroredux_sfmaterial::SLOT_COLOR)
+        {
+            material.diffuse_color = [*r, *g, *b];
+            *touched = true;
+        }
     }
 
     if let Some(threshold) = cdb_mat.alpha_test_threshold {
-        if threshold > 0.0 {
+        // #5196 — an explicit `HasOpacity = false` authors NO opacity
+        // channel. The threshold here samples base-colour alpha, and
+        // Starfield's real opacity source (slot 2) is parked, so such a
+        // material has nothing alpha-testable by construction — don't push
+        // it into the alpha-test path on the threshold alone.
+        if threshold > 0.0 && cdb_mat.has_opacity != Some(false) {
             material.alpha_test = true;
             material.alpha_threshold = threshold;
             *touched = true;
         }
     }
+    // #5196 — `IsGlass` is the authoritative authored glass signal, the
+    // same semantics the FO4 BGEM `glass_enabled` flag carries. Route it
+    // to the spawn-time classifier's positive input (`bgem_glass`) so an
+    // authored-glass CDB material becomes `MATERIAL_KIND_GLASS` even when
+    // neither the texture path nor the node name carries a glass keyword.
+    // `thin_glass` is NOT implied: that flag is the authored thin-shell /
+    // non-occluder distinction (the BGEM v21+ behavior bundle), the CDB
+    // carries no such component, and forcing it here rendered closed glass
+    // volumes as thin sheets.
     if cdb_mat.is_glass == Some(true) {
-        material.thin_glass = true;
+        material.bgem_glass = true;
         *touched = true;
     }
-    if cdb_mat.use_sss == Some(true) {
-        material.has_translucency = true;
-        if let Some(scale) = cdb_mat.transmissive_scale {
-            material.translucency_transmissive_scale = scale;
-        }
-        *touched = true;
-    }
+    // #5196 — `UseSSS` stays untranslated until a subsurface-colour source
+    // exists. `translucency_subsurface_color` defaults to [0,0,0]; the
+    // lighting lobe multiplies by it and evaluates to exactly 0, while the
+    // shader's `sssGate` (which ignores the colour) would still pass every
+    // back-facing light and buy visibility rays for a zero term. Setting
+    // `has_translucency` here was pure cost. Parked with the slot table
+    // (#3398): when the colour source lands, this arm sets the gate, the
+    // colour and the scale together.
 }
 
 /// Merge a BGSM, BGEM, or Starfield `.mat` sidecar into the
@@ -410,10 +464,14 @@ pub(crate) fn merge_external_material(
     // saw. Non-stub Starfield meshes (inline shader data present) still
     // arrive with real `Some(...)` overrides, unchanged.
     //
-    // Phase 2 (#3398, CDB per-field extraction) should *overwrite* whichever
-    // value is present here with CDB-authored data when a lookup succeeds; a
-    // lookup MISS correctly falls through to the sentinel/classifier fallback
-    // instead of silently keeping a fabricated constant.
+    // Phase 2 (#3398, CDB per-field extraction) landed for TEXTURES
+    // (canonical-fit slots through `apply_cdb_material`) and for the
+    // no-signal PBR scalars (#5197's dielectric neutral); it does NOT yet
+    // overwrite the scalars with CDB-AUTHORED data — the metal/rough slot
+    // semantics and `MaterialParamFloat` index mapping stay unverified, so
+    // authored extraction remains parked on #3398. A lookup MISS still
+    // falls through to the sentinel/classifier fallback instead of
+    // silently keeping a fabricated constant.
     //
     // #2709 (SF-D9-03) — `PresenceOnly`, not `Merged`: this arm sets exactly
     // one routing flag and forwards no authored field. Phase 2 should return
@@ -1656,6 +1714,221 @@ mod single_boundary_tests {
 /// in this module and in `asset_provider/tests/starfield_mat.rs`) still
 /// return the correct outcome with the trace call wired in, i.e. adding
 /// the diagnostic changed no behavior.
+#[cfg(test)]
+mod cdb_flat_color_tests {
+    use super::apply_cdb_material;
+    use byroredux_nif::import::{ImportedMaterial, ImportedMesh};
+    use byroredux_sfmaterial::{CdbMaterial, SLOT_COLOR, SLOT_NORMAL};
+
+    fn bare_material() -> ImportedMaterial {
+        ImportedMesh::from_geometry(
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        )
+        .material
+    }
+
+    fn cdb_with(
+        replacements: Vec<(u8, [f32; 4])>,
+        color_texture: Option<&str>,
+    ) -> CdbMaterial {
+        CdbMaterial {
+            textures: color_texture
+                .map(|p| vec![(SLOT_COLOR, p.to_string())])
+                .unwrap_or_default(),
+            flat_color_slots: replacements,
+            ..Default::default()
+        }
+    }
+
+    /// #5190 — the SLOT_COLOR replacement is the albedo when (and only
+    /// when) no colour texture landed in that slot: "instead of", never a
+    /// tint.
+    #[test]
+    fn slot_color_replacement_replaces_a_missing_colour_texture() {
+        let mut material = bare_material();
+        let mut pool = byroredux_core::string::StringPool::new();
+        let mut touched = false;
+        apply_cdb_material(
+            &mut material,
+            &cdb_with(vec![(SLOT_COLOR, [0.25, 0.5, 0.75, 1.0])], None),
+            &mut pool,
+            &mut touched,
+            &|_| true,
+        );
+        assert_eq!(material.diffuse_color, [0.25, 0.5, 0.75]);
+        assert!(touched);
+    }
+
+    /// #5190 — with a colour texture bound, the replacement must NOT tint
+    /// the albedo (pre-fix the first walked replacement always won, so a
+    /// flat-normal on the same set became a blue albedo).
+    #[test]
+    fn slot_color_replacement_does_not_tint_a_bound_colour_texture() {
+        let mut material = bare_material();
+        let mut pool = byroredux_core::string::StringPool::new();
+        let mut touched = false;
+        apply_cdb_material(
+            &mut material,
+            &cdb_with(
+                vec![(SLOT_COLOR, [0.25, 0.5, 0.75, 1.0])],
+                Some("Data\\Textures\\widget_color.DDS"),
+            ),
+            &mut pool,
+            &mut touched,
+            &|_| true,
+        );
+        assert_eq!(
+            material.diffuse_color,
+            [1.0, 1.0, 1.0],
+            "a bound colour texture wins over the slot-0 replacement"
+        );
+        assert!(
+            material.textures.base_color.is_some(),
+            "the colour texture stays bound"
+        );
+    }
+
+    /// #5190 — non-colour-slot replacements (normal/roughness/AO/…) have
+    /// no flat-colour consumer role; they must never reach the albedo.
+    #[test]
+    fn non_colour_slot_replacements_stay_parked() {
+        let mut material = bare_material();
+        let mut pool = byroredux_core::string::StringPool::new();
+        let mut touched = false;
+        apply_cdb_material(
+            &mut material,
+            &cdb_with(vec![(SLOT_NORMAL, [0.1, 0.2, 0.3, 1.0])], None),
+            &mut pool,
+            &mut touched,
+            &|_| true,
+        );
+        assert_eq!(
+            material.diffuse_color,
+            [1.0, 1.0, 1.0],
+            "a flat-normal replacement must not tint the albedo"
+        );
+    }
+
+    /// #5196 — `IsGlass` routes to the classifier's positive glass signal
+    /// (the `bgem_glass` input) and does NOT force the thin-shell flag:
+    /// the CDB carries no authored thin/non-occluder fact, and forcing
+    /// `thin_glass` rendered closed glass volumes as thin sheets.
+    #[test]
+    fn is_glass_routes_to_the_classifier_signal_without_thin_shell() {
+        let mut material = bare_material();
+        let mut pool = byroredux_core::string::StringPool::new();
+        let mut touched = false;
+        apply_cdb_material(
+            &mut material,
+            &CdbMaterial {
+                is_glass: Some(true),
+                ..Default::default()
+            },
+            &mut pool,
+            &mut touched,
+            &|_| true,
+        );
+        assert!(
+            material.bgem_glass,
+            "the CDB glass fact must feed the classifier's positive input"
+        );
+        assert!(
+            !material.thin_glass,
+            "thin_glass is an authored thin-shell fact the CDB does not carry"
+        );
+    }
+
+    /// #5196 — `UseSSS` stays parked until a subsurface-colour source is
+    /// translated: the lobe multiplies the default [0,0,0] colour (exactly
+    /// zero contribution) while the shader's sssGate would still buy
+    /// back-light visibility rays.
+    #[test]
+    fn use_sss_is_parked_until_a_colour_source_exists() {
+        let mut material = bare_material();
+        let mut pool = byroredux_core::string::StringPool::new();
+        let mut touched = false;
+        apply_cdb_material(
+            &mut material,
+            &CdbMaterial {
+                use_sss: Some(true),
+                transmissive_scale: Some(2.0),
+                ..Default::default()
+            },
+            &mut pool,
+            &mut touched,
+            &|_| true,
+        );
+        assert!(
+            !material.has_translucency,
+            "a zero-colour translucency lobe must not be enabled"
+        );
+    }
+
+    /// #5196 — an explicit `HasOpacity = false` keeps the material out of
+    /// the alpha-test path even with a positive threshold; without that
+    /// authoring (absent or true) the threshold still enables it.
+    #[test]
+    fn alpha_test_gates_on_an_explicit_has_opacity_false() {
+        let mut pool = byroredux_core::string::StringPool::new();
+
+        let mut material = bare_material();
+        let mut touched = false;
+        apply_cdb_material(
+            &mut material,
+            &CdbMaterial {
+                alpha_test_threshold: Some(0.5),
+                has_opacity: Some(false),
+                ..Default::default()
+            },
+            &mut pool,
+            &mut touched,
+            &|_| true,
+        );
+        assert!(
+            !material.alpha_test,
+            "an authored HasOpacity = false must gate the alpha test"
+        );
+
+        let mut material = bare_material();
+        let mut touched = false;
+        apply_cdb_material(
+            &mut material,
+            &CdbMaterial {
+                alpha_test_threshold: Some(0.5),
+                has_opacity: Some(true),
+                ..Default::default()
+            },
+            &mut pool,
+            &mut touched,
+            &|_| true,
+        );
+        assert!(material.alpha_test, "an authored opacity channel enables it");
+
+        let mut material = bare_material();
+        let mut touched = false;
+        apply_cdb_material(
+            &mut material,
+            &CdbMaterial {
+                alpha_test_threshold: Some(0.5),
+                has_opacity: None,
+                ..Default::default()
+            },
+            &mut pool,
+            &mut touched,
+            &|_| true,
+        );
+        assert!(
+            material.alpha_test,
+            "absent HasOpacity cannot gate (matches the pre-fix behaviour)"
+        );
+    }
+}
+
 #[cfg(test)]
 mod merge_outcome_telemetry_tests {
     use super::{trace_merge_outcome, MergeOutcome};

@@ -32,7 +32,21 @@ fn register_probed(provider: &mut MaterialProvider, bytes: &[u8]) {
 /// miniature (key join + alignment + layer walk); its one material,
 /// `materials\test\widget.mat`, carries color/normal/rough slots.
 fn register_indexed(provider: &mut MaterialProvider) {
-    let bytes = byroredux_sfmaterial::test_support::synthetic_material_cdb();
+    register_indexed_with(
+        byroredux_sfmaterial::test_support::synthetic_material_cdb(),
+        provider,
+    )
+}
+
+/// #5197 — the `register_indexed` shape over the iron-colour CDB variant.
+fn register_indexed_iron_color(provider: &mut MaterialProvider) {
+    register_indexed_with(
+        byroredux_sfmaterial::test_support::synthetic_material_cdb_with_iron_color(),
+        provider,
+    )
+}
+
+fn register_indexed_with(bytes: Vec<u8>, provider: &mut MaterialProvider) {
     let index = byroredux_sfmaterial::MaterialIndex::build(&bytes)
         .expect("synthetic CDB must index");
     const KEY: &str = "test-archive|materials\\materialsbeta.cdb";
@@ -257,13 +271,68 @@ fn mat_path_merges_cdb_authored_textures_when_indexed() {
         mesh.material.textures.smooth_spec.is_none(),
         "roughness stays parked — no silent sign flip into the gloss slot"
     );
-    // The fixture's texture set also carries an enabled
-    // TextureReplacement — the flat-colour authoring route.
+    // The fixture's texture set also carries an enabled slot-0
+    // TextureReplacement — but #5190: the replacement authors a colour
+    // INSTEAD of the texture in its slot, and base_color IS bound here, so
+    // the albedo must NOT be tinted. (Pre-fix this assertion pinned the
+    // texture × flat-colour product — exactly the bug.) The no-texture
+    // replacement case and the parked non-colour slots are pinned in
+    // merge.rs's `cdb_flat_color_tests`.
     assert_eq!(
         mesh.material.diffuse_color,
-        [0.25, 0.5, 0.75],
-        "an enabled TextureReplacement lands as the diffuse colour"
+        [1.0, 1.0, 1.0],
+        "a bound colour texture wins — the slot-0 replacement must not tint it"
     );
+}
+
+/// #5197 — a CDB hit must stamp dielectric-neutral PBR scalars instead of
+/// letting `Material::resolve_pbr`'s NaN backstop re-run the keyword
+/// classifier over the CDB colour path. Starfield authors
+/// metalness/roughness explicitly (parked metal/rough slots plus
+/// `MaterialParamFloat`, both untranslated), so the only scalars the merge
+/// can honestly supply are the classifier's own no-signal neutral; the
+/// filename guess fabricated conductors out of asset names — the corpus
+/// census puts 275 of 12,581 colour maps on a metal arm, including
+/// `iris_iron_color.dds` (a 0.9-metal eye) and fruit-bin bins.
+#[test]
+fn cdb_hit_stamps_neutral_scalars_instead_of_keyword_classifying() {
+    use crate::material_translate::{translate_material, ResolvedPaths};
+
+    let mut pool = byroredux_core::string::StringPool::new();
+    let mut provider = MaterialProvider::new();
+    register_indexed_iron_color(&mut provider);
+    assert!(provider.has_starfield_cdb());
+
+    let mut mesh =
+        imported_mesh_with_material_path(&mut pool, "materials/test/widget.mat");
+    let outcome = merge_external_material(&mut mesh.material, &mut provider, &mut pool, &|_| false);
+    assert_eq!(outcome, MergeOutcome::Merged);
+    assert_eq!(
+        mesh.material.metalness_override,
+        Some(0.0),
+        "dielectric metalness replaces the NaN sentinel — the keyword \
+         classifier would have said 0.9 for the iron-named colour path"
+    );
+    assert_eq!(
+        mesh.material.roughness_override,
+        Some(0.85),
+        "the classifier's no-signal matte replaces the NaN sentinel"
+    );
+
+    // End to end: the scalars the renderer sees are the neutral, not the
+    // fabricated conductor.
+    let material = translate_material(
+        &mesh.material,
+        None,
+        ResolvedPaths {
+            textures: byroredux_nif::import::MaterialTextureSet::default(),
+            material_path: None,
+            source_base_color: None,
+        },
+        0,
+    );
+    assert_eq!(material.metalness, 0.0);
+    assert_eq!(material.roughness, 0.85);
 }
 
 /// #3398 Phase 2 — a `.bgsm`-named Starfield reference that misses the

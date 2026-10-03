@@ -96,13 +96,23 @@ pub struct CdbMaterial {
     pub use_sss: Option<bool>,
     /// `TranslucencySettings.TransmissiveScale`.
     pub transmissive_scale: Option<f32>,
-    /// `TextureReplacement.Color` (rgba) from the first walked texture
-    /// set carrying an enabled replacement — Starfield's flat-color
-    /// materials author a solid colour INSTEAD of any texture (measured:
-    /// 36,866 corpus instances, `Color` + `Enabled` shapes only, never a
-    /// path; 2026-09-30 census).
-    pub flat_color: Option<[f32; 4]>,
+    /// Enabled `TextureReplacement` colours per texture slot
+    /// (`Components.Index`, the same slot space `MRTextureFile` uses) —
+    /// Starfield's flat-color materials author a solid colour INSTEAD of
+    /// the texture in the slot they replace (measured: 36,866 corpus
+    /// instances, `Color` + `Enabled` shapes only, never a path;
+    /// 2026-09-30 census). #5190 — keyed per slot: pre-fix the first
+    /// walked replacement won for the whole set whatever slot it sat on,
+    /// so a normal/roughness/AO replacement fabricated an albedo tint.
+    /// Disabled (`Enabled == false`) replacements are skipped at capture;
+    /// `Enabled` absent is treated as enabled (4,481 corpus instances).
+    pub flat_color_slots: Vec<(u8, [f32; 4])>,
 }
+
+/// #5190 — one texture-set object's enabled `TextureReplacement`
+/// entries, keyed by the texture slot each replaces (first capture per
+/// slot wins).
+type TextureReplacements = Vec<(u8, [f32; 4], Option<bool>)>;
 
 /// Compact per-CDB material index. Build once per CDB payload, share
 /// across provider rebuilds, look up by material path.
@@ -118,9 +128,9 @@ pub struct MaterialIndex {
     child_refs: std::collections::HashMap<u32, Vec<(RefKind, u32, u8)>>,
     /// Object → `MRTextureFile`/`TextureFile` slots (slot, path).
     textures: std::collections::HashMap<u32, Vec<(u8, String)>>,
-    /// Object → `TextureReplacement` (rgba, enabled) — first enabled
-    /// entry wins at lookup.
-    flat_colors: std::collections::HashMap<u32, ([f32; 4], Option<bool>)>,
+    /// Object → per-slot `TextureReplacement` (slot, rgba, enabled) —
+    /// #5190, first entry per slot wins at lookup.
+    flat_colors: std::collections::HashMap<u32, TextureReplacements>,
     /// Object → `MaterialParamFloat` (Index, Value).
     param_floats: std::collections::HashMap<u32, Vec<(u8, f32)>>,
     alpha: std::collections::HashMap<u32, (Option<f32>, Option<bool>)>,
@@ -290,12 +300,17 @@ impl MaterialIndex {
                 }
             }
         }
-        if out.flat_color.is_none() {
-            if let Some((color, enabled)) = self.flat_colors.get(&tex_set) {
+        if let Some(replacements) = self.flat_colors.get(&tex_set) {
+            for (slot, color, enabled) in replacements {
                 // `Enabled` absent (4,481 corpus instances) cannot gate —
-                // treat as enabled; only an explicit false skips.
-                if *enabled != Some(false) {
-                    out.flat_color = Some(*color);
+                // treat as enabled; only an explicit false skips. First
+                // texture set to supply a slot's replacement wins, mirroring
+                // the texture-slot merge above.
+                if *enabled == Some(false) {
+                    continue;
+                }
+                if !out.flat_color_slots.iter().any(|(s, _)| s == slot) {
+                    out.flat_color_slots.push((*slot, *color));
                 }
             }
         }
@@ -361,7 +376,14 @@ impl MaterialIndex {
                     _ => None,
                 };
                 if let Some(color) = color {
-                    self.flat_colors.entry(row.object).or_insert((color, enabled));
+                    // #5190 — `row.index` is the texture SLOT this
+                    // replacement replaces; keep every slot's replacement
+                    // (first-wins per slot) instead of the first one for
+                    // the whole set.
+                    let slots = self.flat_colors.entry(row.object).or_default();
+                    if !slots.iter().any(|(s, _, _)| *s == row.index) {
+                        slots.push((row.index, color, enabled));
+                    }
                 }
             }
             "BSMaterial::LayerID"
@@ -695,6 +717,21 @@ pub mod test_support {
     ///   material 10 ──LayerID(0)──> layer 11 ──MaterialID──> 12
     ///   12 ──TextureSetID──> 13; 13 carries MRTextureFile slots 0/1/3.
     pub fn synthetic_material_cdb() -> Vec<u8> {
+        synthetic_material_cdb_with_color("Data\\Textures\\widget_color.DDS")
+    }
+
+    /// #5197 — the same graph with a slot-0 colour path whose *filename*
+    /// the PBR keyword classifier would fabricate a conductor from
+    /// (`iron`). Lets consumer-side tests pin that a CDB hit stamps
+    /// dielectric-neutral scalars instead of re-running the classifier
+    /// over the resolved colour path.
+    pub fn synthetic_material_cdb_with_iron_color() -> Vec<u8> {
+        synthetic_material_cdb_with_color(
+            "Data\\Textures\\actors\\human\\faces\\eyes\\iris_iron_color.DDS",
+        )
+    }
+
+    fn synthetic_material_cdb_with_color(color_path: &'static str) -> Vec<u8> {
     let names = [
         "", // STRT index 0: empty string
         "BSComponentDB2::ID",
@@ -859,7 +896,10 @@ pub mod test_support {
     //   obj 13: MRTextureFile(1)      → instance 6
     //   obj 13: MRTextureFile(3)      → instance 7
     //   obj 13: TextureReplacement(0) → instance 8 (flat colour)
-    //   obj 10: CTName(0)             → instance 9 (noise)
+    //   obj 13: TextureReplacement(1) → instance 9 (flat normal, #5190 —
+    //                                   a NON-colour-slot replacement that
+    //                                   must not tint the albedo)
+    //   obj 10: CTName(0)             → instance 10 (noise)
     let component_rows: &[(u32, u32, u32)] = &[
         (10, 7, 0),
         (11, 8, 0),
@@ -868,6 +908,7 @@ pub mod test_support {
         (13, 10, 1),
         (13, 10, 3),
         (13, 13, 0),
+        (13, 13, 1),
         (10, 6, 0),
     ];
     let mut components = Vec::new();
@@ -903,7 +944,7 @@ pub mod test_support {
     let layer_objt = id_objt(g("BSMaterial::LayerID"), 11);
     let material_objt = id_objt(g("BSMaterial::MaterialID"), 12);
     let texset_objt = id_objt(g("BSMaterial::TextureSetID"), 13);
-    let tex0 = texture_objt(g("BSMaterial::MRTextureFile"), "Data\\Textures\\widget_color.DDS");
+    let tex0 = texture_objt(g("BSMaterial::MRTextureFile"), color_path);
     let tex1 = texture_objt(g("BSMaterial::MRTextureFile"), "Data\\Textures\\widget_normal.DDS");
     let tex3 = texture_objt(g("BSMaterial::MRTextureFile"), "Data\\Textures\\widget_rough.DDS");
     // TextureReplacement: Color.Value = (0.25, 0.5, 0.75, 1.0), Enabled.
@@ -917,6 +958,16 @@ pub mod test_support {
         texrep.extend_from_slice(&f.to_le_bytes());
     }
     texrep.push(1u8); // Enabled
+    // #5190 — a second replacement on slot 1 (the NORMAL slot): a flat
+    // ≈[0.1, 0.2, 0.3, 1] that a slot-agnostic consumer would have applied
+    // as an albedo tint. Capture must key it to slot 1; the merge must
+    // park it.
+    let mut texrep_normal = Vec::new();
+    texrep_normal.extend_from_slice(&t_texrep.to_le_bytes());
+    for f in [0.1f32, 0.2, 0.3, 1.0] {
+        texrep_normal.extend_from_slice(&f.to_le_bytes());
+    }
+    texrep_normal.push(1u8); // Enabled
 
     // ── assemble ──
     let mut bytes = Vec::new();
@@ -924,8 +975,8 @@ pub mod test_support {
     bytes.extend_from_slice(&8u32.to_le_bytes()); // header size
     bytes.extend_from_slice(&4u32.to_le_bytes()); // file version
     // chunk count incl. BETH: STRT + TYPE + one CLAS per class + OBJT
-    // + 3 LIST + MAPC + 8 stream objects
-    let chunk_count = 1 + 1 + 1 + classes.len() + 1 + 3 + 1 + 8;
+    // + 3 LIST + MAPC + 9 stream objects
+    let chunk_count = 1 + 1 + 1 + classes.len() + 1 + 3 + 1 + 9;
     bytes.extend_from_slice(&(chunk_count as u32).to_le_bytes());
     push_chunk(&mut bytes, b"STRT", &strt_payload);
     push_chunk(&mut bytes, b"TYPE", &(classes.len() as u32).to_le_bytes());
@@ -944,6 +995,7 @@ pub mod test_support {
     push_chunk(&mut bytes, b"OBJT", &tex1);
     push_chunk(&mut bytes, b"OBJT", &tex3);
     push_chunk(&mut bytes, b"OBJT", &texrep);
+    push_chunk(&mut bytes, b"OBJT", &texrep_normal);
     push_chunk(&mut bytes, b"OBJT", &ctname_objt);
     bytes
     }
@@ -987,10 +1039,16 @@ mod tests {
         assert_eq!(slot(SLOT_COLOR).as_deref(), Some("Data\\Textures\\widget_color.DDS"));
         assert_eq!(slot(SLOT_NORMAL).as_deref(), Some("Data\\Textures\\widget_normal.DDS"));
         assert_eq!(slot(SLOT_ROUGHNESS).as_deref(), Some("Data\\Textures\\widget_rough.DDS"));
+        // #5190 — per-slot replacements, keyed by the texture-set
+        // Components.Index: the fixture carries slot 0 (colour) and slot 1
+        // (normal).
         assert_eq!(
-            mat.flat_color,
-            Some([0.25, 0.5, 0.75, 1.0]),
-            "the enabled TextureReplacement lands as the flat colour"
+            mat.flat_color_slots,
+            vec![
+                (SLOT_COLOR, [0.25, 0.5, 0.75, 1.0]),
+                (SLOT_NORMAL, [0.1, 0.2, 0.3, 1.0]),
+            ],
+            "enabled TextureReplacements land per slot, not slot-agnostically"
         );
     }
 

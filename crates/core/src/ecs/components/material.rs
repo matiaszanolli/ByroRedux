@@ -869,6 +869,18 @@ pub struct PbrMaterial {
     pub metalness: f32,
 }
 
+impl PbrMaterial {
+    /// The classifier's no-signal terminal answer: dielectric, matte.
+    /// Named so producers that resolve an external material but carry no
+    /// authored scalars can stamp the SAME neutral the classifier would
+    /// have fallen back to, instead of a second hand-typed copy
+    /// (#5197 — Starfield CDB hits).
+    pub const NO_SIGNAL_NEUTRAL: Self = Self {
+        roughness: 0.85,
+        metalness: 0.0,
+    };
+}
+
 /// Provenance of `emissive_mult` — which authoring slot the scalar came
 /// from. Three NIF shader-property classes carry an "emissive multiplier"
 /// in different fields with **different semantics**; pre-#1280 step 4
@@ -1387,10 +1399,7 @@ pub fn classify_pbr_keyword(inputs: PbrClassifierInputs<'_>) -> PbrMaterial {
             metalness: 0.0,
         };
     }
-    PbrMaterial {
-        roughness: 0.85,
-        metalness: 0.0,
-    }
+    PbrMaterial::NO_SIGNAL_NEUTRAL
 }
 
 impl Material {
