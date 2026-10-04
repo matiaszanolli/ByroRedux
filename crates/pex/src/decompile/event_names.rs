@@ -5,8 +5,14 @@
 //!
 //! GENERATED from Champollion's `Decompiler/EventNames.hpp` (the three
 //! per-game `EventNames` lists, lowercased + deduplicated into one union).
-//! Regenerate with the extraction in commit history if Champollion adds
-//! events; do not hand-edit.
+//! #4471 — Champollion's frozen lists are themselves incomplete (its
+//! Starfield-era union predates shipped engine events), so this list is a
+//! superset: engine events vanilla base-class scripts implement but
+//! Champollion omits (census in the issue — `OnAttach`,
+//! `OnShipCruiseArrival`, `OnUnconscious`, …) are added by hand. New
+//! entries must be real engine events (implemented in base-class scripts),
+//! lowercased, and inserted in sorted position — the sorted+dedup guard
+//! fails otherwise.
 
 /// Sorted, lowercase built-in event names. Sorted so [`is_event_name`] can
 /// binary-search.
@@ -26,6 +32,7 @@ pub(crate) const EVENT_NAMES: &[&str] = &[
     "onaliasstarted",
     "onanimationevent",
     "onanimationeventunregistered",
+    "onattach",
     "onattachedtocell",
     "onbegin",
     "onbeginstate",
@@ -77,6 +84,7 @@ pub(crate) const EVENT_NAMES: &[&str] = &[
     "onexitshipinterior",
     "onfurnitureevent",
     "ongainlos",
+    "ongameplayoptionchanged",
     "ongetup",
     "ongrab",
     "onhit",
@@ -136,6 +144,7 @@ pub(crate) const EVENT_NAMES: &[&str] = &[
     "onplayerentervertibird",
     "onplayerfailedplotroute",
     "onplayerfalllongdistance",
+    "onplayerfasttravel",
     "onplayerfasttravelend",
     "onplayerfireweapon",
     "onplayerfollowerwarp",
@@ -152,7 +161,9 @@ pub(crate) const EVENT_NAMES: &[&str] = &[
     "onplayerpayfine",
     "onplayerplanetsurveycomplete",
     "onplayerscannedobject",
+    "onplayerscanplanet",
     "onplayersellship",
+    "onplayership",
     "onplayersleepstart",
     "onplayersleepstop",
     "onplayerswimming",
@@ -182,6 +193,7 @@ pub(crate) const EVENT_NAMES: &[&str] = &[
     "onscanned",
     "onsell",
     "onshipbought",
+    "onshipcruisearrival",
     "onshipdock",
     "onshipfartravel",
     "onshipgravjump",
@@ -198,6 +210,8 @@ pub(crate) const EVENT_NAMES: &[&str] = &[
     "onsit",
     "onsleepstart",
     "onsleepstop",
+    "onspaceshipcombatlistadded",
+    "onspaceshipcombatlistremoved",
     "onspeechchallengeavailable",
     "onspeechchallengecompletion",
     "onspellcast",
@@ -213,6 +227,8 @@ pub(crate) const EVENT_NAMES: &[&str] = &[
     "onstorybribenpc",
     "onstorycastmagic",
     "onstorychangelocation",
+    "onstorychangelocationex",
+    "onstoryclearlocation",
     "onstorycraftitem",
     "onstorycrimegold",
     "onstorycure",
@@ -244,6 +260,7 @@ pub(crate) const EVENT_NAMES: &[&str] = &[
     "onstoryservedtime",
     "onstoryshipdock",
     "onstoryshiplanding",
+    "onstoryspeechchallengecompletion",
     "onstorytrespass",
     "onterminalmenuenter",
     "onterminalmenuitemrun",
@@ -260,6 +277,7 @@ pub(crate) const EVENT_NAMES: &[&str] = &[
     "ontriggerenter",
     "ontriggerleave",
     "ontutorialevent",
+    "onunconscious",
     "onunequipped",
     "onunload",
     "onupdate",
@@ -304,5 +322,36 @@ mod tests {
         assert!(is_event_name("OnUpdate"));
         assert!(!is_event_name("MyHelperFunction"));
         assert!(!is_event_name("OnSomethingNobodyDefined"));
+    }
+
+    /// #4471 — Champollion's frozen `EventNames.hpp` is missing engine
+    /// events vanilla base-class scripts implement, so handlers for them
+    /// decompiled as `Function` instead of `Event` (census: 20 handlers
+    /// across 12 names on 26,641 scripts; the vanilla-source typos in the
+    /// same census are correctly NOT listed here). Pin all 12.
+    #[test]
+    fn the_census_engine_events_classify_as_events() {
+        for name in [
+            "OnAttach",
+            "OnStoryClearLocation",
+            "OnShipCruiseArrival",
+            "OnGameplayOptionChanged",
+            "OnUnconscious",
+            "OnStoryChangeLocationEx",
+            "OnSpaceshipCombatListAdded",
+            "OnSpaceshipCombatListRemoved",
+            "OnPlayerFastTravel",
+            "OnStorySpeechChallengeCompletion",
+            "OnPlayerScanPlanet",
+            "OnPlayerShip",
+        ] {
+            assert!(
+                is_event_name(name),
+                "`{name}` is an engine event (base-class census #4471) and \
+                 must classify as an Event"
+            );
+        }
+        // The correctly-demoted vanilla typos stay out of the list.
+        assert!(!is_event_name("oncelldetatch"));
     }
 }
