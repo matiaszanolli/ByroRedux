@@ -150,6 +150,7 @@ pub fn register_all(registry: &mut ComponentRegistry) {
     use byroredux_core::animation::{AnimationPlayer, AnimationStack};
     use byroredux_core::character::Perks;
     use byroredux_core::ecs::components::*;
+    use byroredux_core::ecs::components::water::WaterCurrentVolume;
 
     register_component::<Transform>(
         registry,
@@ -341,6 +342,82 @@ pub fn register_all(registry: &mut ComponentRegistry) {
     register_component::<CreatureAttack>(registry, "CreatureAttack", vec!["damage"]);
     register_component::<Perks>(registry, "Perks", vec!["entries"]);
     register_faction_reputation(registry);
+
+    // #4755 — the remainder of the inspect-carrying roster. Every core
+    // component with the `inspect` serde derive is now registered; the
+    // `every_inspectable_component_is_registered` roster test below fails
+    // when a new one lands without a registration, so this block only
+    // grows. Families kept together for scan-ability.
+    register_component::<Name>(registry, "Name", vec!["0"]);
+    register_component::<Parent>(registry, "Parent", vec!["0"]);
+    register_component::<Children>(registry, "Children", vec!["0"]);
+    // Animation-channel remainder — the visibility/alpha/color siblings
+    // above predate these three.
+    register_component::<AnimatedMorphWeights>(registry, "AnimatedMorphWeights", vec!["0"]);
+    register_component::<AnimatedShaderFloat>(registry, "AnimatedShaderFloat", vec!["0"]);
+    register_component::<AnimatedTextureFlip>(registry, "AnimatedTextureFlip", vec!["0"]);
+    // `LightSource`'s flicker counterpart (LIGH FNAM decode).
+    register_component::<LightFlicker>(
+        registry,
+        "LightFlicker",
+        vec![
+            "animation_flags",
+            "period_secs",
+            "intensity_amplitude",
+            "movement_amplitude",
+            "base_translation",
+            "phase_offset_secs",
+        ],
+    );
+    // Physics body + the water family (WATAL debugging: plane authoring,
+    // flow vectors, per-frame submersion/contact state).
+    register_component::<RigidBodyData>(
+        registry,
+        "RigidBodyData",
+        vec![
+            "motion_type",
+            "mass",
+            "friction",
+            "restitution",
+            "linear_damping",
+            "angular_damping",
+            "collidable",
+        ],
+    );
+    register_component::<WaterPlane>(
+        registry,
+        "WaterPlane",
+        vec!["kind", "material", "damage_per_second"],
+    );
+    register_component::<WaterFlow>(registry, "WaterFlow", vec!["direction", "speed"]);
+    register_component::<WaterVolume>(registry, "WaterVolume", vec!["min", "max"]);
+    register_component::<WaterCurrentVolume>(registry, "WaterCurrentVolume", vec!["volume", "flow"]);
+    register_component::<SubmersionState>(
+        registry,
+        "SubmersionState",
+        vec!["depth", "head_submerged", "surface_entity"],
+    );
+    register_component::<WaterContact>(
+        registry,
+        "WaterContact",
+        vec![
+            "surface_entity",
+            "depth",
+            "submerged_fraction",
+            "head_submerged",
+            "flow",
+            "damage_per_second",
+        ],
+    );
+    register_component::<CombustionState>(
+        registry,
+        "CombustionState",
+        vec!["start_time_seconds", "lifetime_seconds"],
+    );
+    register_component::<SpeedTreeWind>(registry, "SpeedTreeWind", vec!["response", "stiffness"]);
+    // Unit enum — serializes as its variant name, no named fields.
+    register_component::<RenderLayer>(registry, "RenderLayer", vec![]);
+    register_component::<TimedRestorations>(registry, "TimedRestorations", vec!["effects"]);
 }
 
 /// #4063 — the roster pin.
@@ -442,6 +519,103 @@ mod roster_tests {
         assert!(
             missing.is_empty(),
             "gameplay components required by #4755 are not registered: {missing:?}"
+        );
+    }
+
+    /// #4755 — the widened roster pin.
+    ///
+    /// The `*Behavior` guard above catches one family; this one closes
+    /// the class that gap came from. Every core component carrying the
+    /// `inspect` serde derive — i.e. every type that *can* go through
+    /// `register_component` — must actually be registered, so the next
+    /// inspectable component either lands with a debug registration or
+    /// fails this test instead of silently half-wiring. `FactionReputation`
+    /// is the one deliberate outsider: it keeps the inspect derive off
+    /// (not part of the save surface) and registers through the
+    /// hand-rolled read-only descriptor above, pinned separately by
+    /// `requested_gameplay_components_are_registered`.
+    #[test]
+    fn every_inspectable_component_is_registered() {
+        let registrations = include_str!("registration.rs")
+            .split_once("#[cfg(test)]")
+            .expect("this file has a test module")
+            .0;
+
+        // Recursive walk: inspect-carrying components live in
+        // `ecs/components/`, `character/`, and `animation/`, and the
+        // next one may add a fourth home — walk all of core/src.
+        let core_src = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../core/src"));
+        let mut stack = vec![core_src.to_path_buf()];
+        let mut inspectable: Vec<String> = Vec::new();
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(&dir).expect("core src is readable") {
+                let path = entry.expect("readable dir entry").path();
+                if path.is_dir() {
+                    stack.push(path);
+                    continue;
+                }
+                if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                    continue;
+                }
+                let src = std::fs::read_to_string(&path).expect("readable core file");
+                let lines: Vec<&str> = src.lines().collect();
+
+                let component_impls: Vec<String> = lines
+                    .iter()
+                    .filter_map(|line| {
+                        line.strip_prefix("impl Component for ")
+                            .map(|rest| rest.trim_end_matches(" {").to_string())
+                    })
+                    .collect();
+
+                for (i, line) in lines.iter().enumerate() {
+                    let trimmed = line.trim_start();
+                    let Some(rest) = ["pub struct ", "pub enum ", "struct ", "enum "]
+                        .iter()
+                        .find_map(|prefix| trimmed.strip_prefix(prefix))
+                    else {
+                        continue;
+                    };
+                    let name: String = rest
+                        .chars()
+                        .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                        .collect();
+                    // The inspect derive sits in the attribute block
+                    // directly above the declaration; doc comments and
+                    // other derives may interleave within that window.
+                    let window = lines[i.saturating_sub(4)..i].join("\n");
+                    let marker = format!("cfg_attr{}", "(feature = \"inspect\"");
+                    if name.is_empty()
+                        || !window.contains(&marker)
+                        || !component_impls.contains(&name)
+                    {
+                        continue;
+                    }
+                    inspectable.push(name);
+                }
+            }
+        }
+        inspectable.sort();
+
+        assert!(
+            inspectable.len() >= 60,
+            "the scan found only {} ({inspectable:?}) — the extraction broke, not the registry",
+            inspectable.len()
+        );
+
+        let missing: Vec<&String> = inspectable
+            .iter()
+            .filter(|name| {
+                let needle = format!("{}{}{}>", "register_component", "::<", name);
+                !registrations.contains(&needle)
+            })
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "{missing:?} carry the `inspect` derive but have no debug registration — \
+             `byro-dbg` cannot inspect them (#4755). Add a `register_component` \
+             call beside the others, or, if the type must stay unregistered, \
+             document why beside it and extend this test's exclusion."
         );
     }
 

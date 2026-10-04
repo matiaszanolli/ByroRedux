@@ -182,7 +182,7 @@ using the generic `register_component::<T>()` helper, called from
 `byroredux-core`). The registry is owned by the `DebugDrainSystem`
 (`DebugDrainSystem.registry`), not stored as a World resource.
 
-### Currently registered (49 components)
+### Currently registered (67 components)
 
 | Component | Fields |
 |-----------|--------|
@@ -235,6 +235,24 @@ using the generic `register_component::<T>()` helper, called from
 | `CreatureAttack` | damage — creature attack profile |
 | `Perks` | entries — owned perk ranks |
 | `FactionReputation` | entries — faction reputation values |
+| `Name` | (tuple: `"0"`) — interned entity name |
+| `Parent` | (tuple: `"0"`) — hierarchy parent entity |
+| `Children` | (tuple: `"0"`) — hierarchy child list |
+| `AnimatedMorphWeights` | (tuple) — per-morph weight vector |
+| `AnimatedShaderFloat` | (tuple) — `BSEffectShaderPropertyFloatController` |
+| `AnimatedTextureFlip` | (tuple) — flipbook frame sets per texture role (#3901) |
+| `LightFlicker` | animation_flags, period_secs, intensity_amplitude, movement_amplitude, base_translation, phase_offset_secs |
+| `RigidBodyData` | motion_type, mass, friction, restitution, linear_damping, angular_damping, collidable |
+| `WaterPlane` | kind, material, damage_per_second |
+| `WaterFlow` | direction, speed |
+| `WaterVolume` | min, max |
+| `WaterCurrentVolume` | volume, flow |
+| `SubmersionState` | depth, head_submerged, surface_entity |
+| `WaterContact` | surface_entity, depth, submerged_fraction, head_submerged, flow, damage_per_second |
+| `CombustionState` | start_time_seconds, lifetime_seconds |
+| `SpeedTreeWind` | response, stiffness |
+| `RenderLayer` | (enum variant) — depth-bias content layer |
+| `TimedRestorations` | effects — pending timed actor-value restores |
 
 Post-#517 the single `AnimatedColor` slot is split into one component per
 target. An entity with both a diffuse and an emissive controller now carries
@@ -1228,7 +1246,7 @@ byro> components
   TextureHandle
   Transform
   WorldBound
-(49 components)
+(67 components)
 
 byro> entities Inventory
   Entity 12 "saadia"
