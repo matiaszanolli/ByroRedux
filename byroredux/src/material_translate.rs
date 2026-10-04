@@ -585,11 +585,14 @@ pub(crate) fn translate_texture_clamp_mode(source: &ImportedMaterial) -> u8 {
 ///     classifier already ran at import time (`classify_legacy_pbr` in the
 ///     NIF mesh extractors) and populated `source.metalness_override/
 ///     roughness_override` as `Some(…)`, so [`Material::resolve_pbr`] here
-///     only clamps — its classifier arm is a sentinel-backstop (only fires
-///     when the override is `NaN`, i.e. for future non-NIF paths). BGSM/BGEM
-///     content also arrives pre-classified as `Some`. Either way every
-///     material exits with explicit `(metalness, roughness)` scalars; no
-///     render-time fallback. `feedback_format_translation.md` Stage 1.
+///     only clamps. BGSM content also arrives pre-classified as `Some`.
+///     **BGEM and the Starfield material-reference stubs do not**: both
+///     leave the overrides unset (`merge_bgem_arm`'s NaN sentinels,
+///     #2707's stub case), so the classifier arm is a live path for them
+///     — exactly the correction #4284 applied to `resolve_pbr`'s own doc.
+///     Either way every material exits with explicit `(metalness,
+///     roughness)` scalars; no render-time fallback.
+///     `feedback_format_translation.md` Stage 1.
 ///     (Structure: classify-at-import + clamp-at-translate. See #1346.)
 ///   - glass classified once, alpha-aware
 ///     ([`crate::helpers::classify_glass_into_material_with_provenance`]), after the PBR

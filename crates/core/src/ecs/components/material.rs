@@ -1442,7 +1442,11 @@ impl Material {
     /// `unwrap_or(NaN)`, so **both fields arrive non-NaN here** — the
     /// `if is_nan()` guard below is skipped and only the final clamp runs.
     ///
-    /// For **BGSM/BGEM** content the authored scalars also arrive as `Some`.
+    /// For **BGSM** content the authored scalars also arrive as `Some`.
+    /// **BGEM does not** — the effect-material arm authors no
+    /// smoothness/specular and leaves both overrides unset, so this
+    /// function's classifier arm runs for it (#4441; `merge_bgem_arm`'s
+    /// NaN sentinels).
     ///
     /// #4284 (SF-2026-09-11-D8-03) — the classifier arm below is NOT
     /// merely a future-proofing backstop: #2707 made it live today for
@@ -1469,13 +1473,13 @@ impl Material {
                 env_map_scale: self.env_map_scale,
                 has_normal_map: self.normal_map.is_some(),
                 specular_color: self.specular_color,
-                // This backstop path is unreachable for every
-                // pre-classified current producer (both NIF import via
-                // `classify_legacy_pbr` and BGSM/BGEM leave
-                // metalness/roughness non-NaN — see the doc above), but it
-                // is a real, live path for a source with no PBR signal at
-                // all (#2707 — the Starfield material-reference stub
-                // case). `Self::specular_authored` carries the real
+                // This backstop path is unreachable for the pre-classified
+                // producers (NIF import via `classify_legacy_pbr` and BGSM
+                // leave metalness/roughness non-NaN — see the doc above),
+                // but it is NOT future-proofing: BGEM (effect) materials
+                // and #2707's Starfield material-reference stubs arrive
+                // with no PBR signal at all, so this is a real, live path
+                // for them. `Self::specular_authored` carries the real
                 // signal all the way from `MaterialInfo::specular_authored`
                 // (`crates/nif`) through `ImportedMaterial` and
                 // `translate_material` for exactly this reason — reading
