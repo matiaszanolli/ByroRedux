@@ -1643,3 +1643,32 @@ fn the_reservation_covers_both_extents_and_the_upscaler_sdk() {
          difference IS the under-count #3988 reports, so it must be positive"
     );
 }
+
+/// #5202 — renderer.md described the LRU budget with the pre-#3839 formula
+/// (`device_local / 3` floored at 256 MB), which an operator sizing VRAM
+/// would over-read by up to 4× on a 12 GB card at the ceiling. Pin the doc
+/// to the real rule's shape: reservation subtracted, both clamp bounds
+/// named, re-derivation on resize mentioned, and the ledger linked.
+#[test]
+fn renderer_md_states_the_post_3839_blas_budget() {
+    let doc = include_str!("../../../../../../docs/engine/renderer.md");
+    let bullet = doc
+        .split_once("- **BLAS LRU eviction**:")
+        .expect("renderer.md must keep its BLAS LRU eviction bullet")
+        .1;
+    let bullet = &bullet[..bullet.find("\n- **").unwrap_or(bullet.len())];
+    for claim in [
+        "blas_budget_for_heap(heap, reserved)",
+        "MIN_BLAS_BUDGET_BYTES = 256 MB",
+        "MAX_BLAS_BUDGET_BYTES = 1 GiB",
+        "recompute_blas_budget_for_current_state",
+        "memory-budget.md",
+    ] {
+        assert!(
+            bullet.contains(claim),
+            "the BLAS LRU eviction bullet must state `{claim}` — the #3839 \
+             budget is reservation-subtracted, clamped both ways, and \
+             re-derived on resize: {bullet}"
+        );
+    }
+}

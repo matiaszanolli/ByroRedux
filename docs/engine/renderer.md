@@ -23,8 +23,9 @@ Source: `crates/renderer/src/vulkan/`
 - **Full Vulkan init chain** with validation layers in debug builds
 - **RT acceleration structures**: BLAS per mesh + per-skinned-entity BLAS
   refit + TLAS rebuilt per frame in `DEVICE_LOCAL` memory, gated by an
-  `AS_BUILD → ray-query-consumer` memory barrier, LRU eviction (budget = `device_local / 3`, floored at
-  256 MB), `ALLOW_COMPACTION` + async occupancy query + compacted copy
+  `AS_BUILD → ray-query-consumer` memory barrier, LRU eviction (budget =
+  `blas_budget_for_heap`: `(device_local − reserved) / 3`, clamped to
+  256 MB…1 GiB), `ALLOW_COMPACTION` + async occupancy query + compacted copy
   (M36: 20–50% BLAS memory reduction), batched build submission
 - **Multi-light SSBO**: up to `MAX_LIGHTS = 1023` point / spot / directional
   lights consumed by the fragment shader, with reservoir-selected
@@ -411,17 +412,34 @@ deliberate per-tier choices (rigid + TLAS prefer `FAST_TRACE`; skinned
 prefers `FAST_BUILD`). `built_flags` is recorded on every `BlasEntry` to
 guard `VUID-03667` at refit time (#1144 / #1145).
 
-- **BLAS per mesh**: built once when the mesh is uploaded, owned by the
+- **BLAS per mesh**: built by `build_blas_batched` at cell or NIF load
+  (not at mesh upload), owned by the
   `AccelerationManager` keyed by `MeshHandle`. Builds use
   `PREFER_FAST_TRACE | ALLOW_COMPACTION`. Builds are **batched** into a
   single submission per cell load (one fence, one scratch buffer shared
-  across the batch) rather than fencing per mesh.
+  across the batch) rather than fencing per mesh. An entry evicted by the
+  LRU is transparently restored by
+  `restore_missing_static_blas_for_draws` when a later frame draws its
+  mesh again.
 - **BLAS compaction (M36)**: after each batched build, an async occupancy
   query reports the compacted size; a compact copy is allocated at that
   exact size and the original BLAS is queued for `deferred_destroy`. 20–50%
   memory reduction on typical cells.
-- **BLAS LRU eviction**: budget is `device_local / 3`, floored at
-  `MIN_BLAS_BUDGET_BYTES = 256 MB`. When a new build would exceed budget,
+- **BLAS LRU eviction**: budget is `blas_budget_for_heap(heap, reserved)`
+  = `((heap − reserved) / 3).clamp(MIN_BLAS_BUDGET_BYTES,
+  MAX_BLAS_BUDGET_BYTES)` — the DEVICE_LOCAL heap minus
+  `screen_scaled_reservation_bytes` (the render-target + volumetrics +
+  upscaler reservation, which reaches ~2.3 GB at native 4K and *grows when
+  the window does*), one third of the remainder, clamped to
+  `MIN_BLAS_BUDGET_BYTES = 256 MB` … `MAX_BLAS_BUDGET_BYTES = 1 GiB`.
+  `recompute_blas_budget_for_current_state` re-derives it on resize.
+  Subtracting the reservation first is #3839's fix: on a 6 GB card at
+  1080p the old `device_local / 3` handed BLAS 2 GB while ~1.1 GB was
+  already committed elsewhere, so nothing evicted until the allocator
+  failed. The 1 GiB ceiling exists because some drivers expose system RAM
+  as a huge DEVICE_LOCAL heap where the OOM killer wins before eviction
+  helps. Ledger: `memory-budget.md` §Acceleration Structures. When a new
+  build would exceed budget,
   the LRU entries are evicted and their instances drop out of the next TLAS
   rebuild. `missing_blas` is counted split by cause — skinned / rigid /
   ssbo_evicted (#1228). The latest complete membership snapshot is persisted
@@ -746,13 +764,16 @@ Located in [`vulkan/scene_buffer/`](../../crates/renderer/src/vulkan/scene_buffe
 The renderer uses an SSBO (not a UBO) so the shader can iterate a variable
 number of lights without recompiling the pipeline (`MAX_LIGHTS = 1023`). The
 ceiling leaves packed ReSTIR index `0x3ff` reserved as "no selection". Each
-`GpuLight` is an 80-byte struct of four `vec4`s and a `uvec4` identity: `position_radius`
+`GpuLight` is a 64-byte struct of four `vec4`s: `position_radius`
 (xyz = world position, w = radius), `color_type` (rgb = color, w = type:
 0 point / 1 spot / 2 directional), `direction_angle` (xyz = direction,
 w = spot outer-angle cosine), and `params` (x = `falloff_exponent` from the
 LIGH DATA record, y = finite source radius, z = explicit `VisibilityMask`
-bits, w = `AttenuationModel`). `history_id` identifies the producer across
-light animation and priority reordering; zero declines selection reuse. A
+bits, w = `AttenuationModel`). The producer identity `history_id` used to
+ride a fifth `uvec4` lane on the GPU struct; since #5055 it stays CPU-side
+in `FrameInputs.light_ids` (`gpu_types.rs` says: do not re-add identity
+data there), so light animation and priority reordering resolve the same
+producer without paying the lane. A
 4096-byte previous-index-to-current-index table follows the SSBO's 16-byte
 count prefix, so temporal and spatial ReSTIR candidates still name the same
 light after sorting. The fragment shader evaluates the current
