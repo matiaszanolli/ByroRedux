@@ -207,7 +207,8 @@ crates/renderer/src/vulkan/
 │                       post-bloom scene, per-FIF adaptation, writes the
 │                       1×1 exposure texel FSR and presentation sample
 ├── presentation.rs     Output-resolution presentation pass —
-│                       `tonemap(graded * exposureTex)` (ACES|AgX switch),
+│                       chroma compress (§5154) then
+│                       `tonemap(compressed * exposureTex)` (ACES|AgX switch),
 │                       underwater extinction, swapchain write
 ├── volumetrics.rs      Froxel volumetric pipeline (M55) — 3D-texture
 │                       allocation + inject/integrate dispatch, output
@@ -355,7 +356,10 @@ the allocator fires after the logical device has already been destroyed.
     way the result is an output-resolution HDR image, which gives FSR one
     explicit frame-graph slot instead of letting a later pass silently
     bilinear-scale its inputs.
-24. Dispatch the **presentation** pass: `tonemap(graded * exposureTex)`
+24. Dispatch the **presentation** pass: the #5154 luma-preserving chroma
+    compress — `compressed = mix(luma(graded), graded, 2^(-0.25·lift))`, lift
+    in stops above the meter's neutral — followed by
+    `tonemap(compressed * exposureTex)`
     (the meter's per-FIF exposure; ACES|AgX switch) from that
     output-resolution HDR image into the swapchain image. This is the first
     pass that runs at output resolution, and the part of the frame an FSR

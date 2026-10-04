@@ -248,7 +248,8 @@ void main() {
     // partially, the Narkowicz ACES fit not at all). Compress chroma by
     // 2^(-falloff * lift), lift measured in stops above the meter's
     // neutral output (EV100 = 0 -> 1.2): one stop of adaptation costs a
-    // quarter stop of chroma, halving saturation at the 16x clamp. Desat
+    // quarter stop of chroma — about 0.88 chroma at the 2× envelope cap
+    // (#5158); `exposure ev` compensation can lift further. Desat
     // before the multiply — chroma ratios are scale-invariant, so this is
     // the same value the post-multiply chroma would carry. The Rust mirror
     // and behaviour pins live in tonemap.rs.

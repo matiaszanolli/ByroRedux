@@ -33,7 +33,7 @@ renderer architecture (BLAS/TLAS, sync, swapchain, teardown ordering) see
 | `ui.frag` | UI bindless texture sampling — no shading, straight texel output |
 | `composite.vert` | Fullscreen triangle via `gl_VertexIndex` — no vertex buffer; reused unmodified as `presentation.frag`'s vertex stage |
 | `composite.frag` | HDR compose — direct + SVGF-denoised indirect + dual caustic accumulator (glass/water), volumetric froxel sample (bloom is added afterwards, in place, by `bloom_apply.comp`). Emits linear HDR to an intermediate image (no tone-map, no swapchain write — see `presentation.frag`) |
-| `presentation.frag` | FSR 3.1 presentation pass — samples the upscaled (or native-blit-fallback) scene, applies `tonemap(graded * exposureTex)` (the exposure meter's per-FIF texel; ACES\|AgX display-transform switch) and underwater extinction, writes the swapchain (`PRESENT_SRC_KHR`) |
+| `presentation.frag` | FSR 3.1 presentation pass — samples the upscaled (or native-blit-fallback) scene, applies the #5154 luma-preserving chroma compress and `tonemap(compressed * exposureTex)` (the exposure meter's per-FIF texel; ACES\|AgX display-transform switch) and underwater extinction, writes the swapchain (`PRESENT_SRC_KHR`) |
 
 ### Compute
 
@@ -356,8 +356,9 @@ is not named here.
                            resolution HDR → output-resolution HDR. Raw
                            correctness debug views force the native path.
 20 [Presentation pass]    ─  raster (`record_presentation_pass`):
-                           composite.vert / presentation.frag —
-                           `tonemap(graded * exposureTex)` (the meter's
+                           composite.vert / presentation.frag — the #5154
+                           luma-preserving chroma compress, then
+                           `tonemap(compressed * exposureTex)` (the meter's
                            exposure; ACES|AgX via `tonemap.rs`), underwater
                            extinction,
                            writes the swapchain (`PRESENT_SRC_KHR`); then,

@@ -31,8 +31,9 @@ pub const LUMA_REC709: [f32; 3] = [0.2126, 0.7152, 0.0722];
 // 2^-EV100); `exposure.rs`'s EXPOSURE_CONSTANT resolves to it. As the
 // meter lifts above that point, presentation desaturates the tonemapper
 // input by 2^(-ADAPTATION_SAT_FALLOFF * lift_stops): one stop of lift
-// costs a quarter stop of chroma, halving saturation at the 16x clamp
-// (~3.7 stops). Lift-only — a bright scene never gains saturation.
+// costs a quarter stop of chroma — about 0.88 chroma at the 2× envelope
+// cap (#5158, ~0.74 stops); `exposure ev` compensation can lift further.
+// Lift-only — a bright scene never gains saturation.
 pub const EXPOSURE_METER_NEUTRAL: f32 = 1.2;
 pub const ADAPTATION_SAT_FALLOFF: f32 = 0.25;
 

@@ -161,7 +161,8 @@ pub fn tonemap(op: TonemapOp, x: [f32; 3]) -> [f32; 3] {
 /// magnify into hue shifts (the dark-scene saturation blowout). Chroma is
 /// compressed by `2^(-ADAPTATION_SAT_FALLOFF * lift_stops)`, lift measured
 /// in stops above the meter's neutral output: one stop of adaptation costs
-/// a quarter stop of chroma, halving saturation at the meter's 16x clamp.
+/// a quarter stop of chroma — about 0.88 chroma at the 2× envelope cap
+/// (#5158); `exposure ev` compensation can lift further.
 /// Lift-only — a bright scene never gains saturation, and the transform is
 /// the identity at or below neutral metering.
 pub fn adaptation_chroma_compress(color: [f32; 3], exposure: f32) -> [f32; 3] {

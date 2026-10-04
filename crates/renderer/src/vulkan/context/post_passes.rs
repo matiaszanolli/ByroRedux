@@ -1104,10 +1104,13 @@ impl VulkanContext {
         // colour, raw AO, …) and adapt the persistent per-slot exposure
         // toward it; presentation bypasses exposure for raw views, so the
         // damage shows as a pop + re-adaptation from the wrong starting
-        // value when the view is dismissed. Fixed mode (the default) just
+        // value when the view is dismissed. Fixed mode just
         // re-writes its constant, so the gate is only load-bearing in auto
         // mode — but skipping both keeps the slot untouched by debug
-        // frames, matching the siblings' unconditional shape.
+        // frames, matching the siblings' unconditional shape. (#5219:
+        // auto has been the boot default since 546e7fbc7 made
+        // `RendererConfig::default()` start in auto-exposure, so "fixed
+        // default" was stale.)
         if crate::shader_constants::render_debug_requires_raw_output(
             self.render_debug_flags,
             self.render_debug_mode.shader_value(),
