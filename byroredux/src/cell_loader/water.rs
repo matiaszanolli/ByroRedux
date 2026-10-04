@@ -826,11 +826,21 @@ pub(super) fn apply_placed_water_type(
     targets.len()
 }
 
-/// Extra cushion (in cells) beyond `radius_unload` the distant-water hole
-/// cuts out, so the distant quads don't touch right at the streaming
-/// boundary — mirrors the conservative-by-one-cell margin the terrain LOD
-/// ring's own `radius_unload` gate already relies on (#1871 / LC0703-02).
-const LOD_WATER_HOLE_MARGIN_CELLS: i32 = 1;
+/// The distant-water hole radius: the streaming boundary itself (#5244).
+/// Full-detail water exists for loaded cells (Chebyshev ≤ `radius_unload`);
+/// the distant mesh skips exactly those and emits from
+/// `radius_unload + 1` out — contiguous by construction. The old
+/// one-cell margin (#1871 heritage) guarded the single-sheet annulus of the
+/// wrong-height era, where overlap with near water double-blended visibly;
+/// with per-cell matching heights (#5243) its only effect was a permanent
+/// one-cell waterless ring at every boundary. The residual cost of
+/// exact contiguity is a few frames of coincident same-height quads
+/// between a grid crossing and the reconcile that unloads the now-distant
+/// ring — imperceptible next to that ring.
+#[inline]
+fn distant_water_hole_radius(radius_unload: i32) -> i32 {
+    radius_unload.max(0)
+}
 
 /// The per-cell inputs the distant-water builder needs — a projection of
 /// `CellData`'s XCLW tri-state (`water_height` + `water_height_is_explicit`)
@@ -985,14 +995,14 @@ fn lod_quad_heights(hist: &[(f32, u32)]) -> ([(f32, u32); 8], u8) {
 /// cell since #5243) — one quad per distant cell at that cell's
 /// **effective** water height (explicit XCLW → that height, absent → the
 /// WRLD `NAM3`/`NAM4` default, authored dry sentinel → skipped), built by
-/// [`build_distant_water_mesh`]. The ring runs from the streaming hole
-/// (`radius_unload` + a one-cell margin, so it never double-blends against
-/// the near, full-detail per-cell water) out to the distant-terrain LOD
-/// ring's total reach (`super::terrain_lod::lod_ring_reach_cells`) for
-/// visual consistency. Called once at worldspace entry; grid crossings
-/// rebuild the mesh through [`rebuild_lod_water_mesh`] — see
-/// [`LodWaterPlane`]'s doc for why the hole follows the player by rebuild,
-/// not by translation.
+/// [`build_distant_water_mesh`]. The ring runs from just past the
+/// streaming boundary (`radius_unload`, exactly contiguous with the loaded
+/// full-detail cells — see [`distant_water_hole_radius`], #5244) out to
+/// the distant-terrain LOD ring's total reach
+/// (`super::terrain_lod::lod_ring_reach_cells`) for visual consistency.
+/// Called once at worldspace entry; grid crossings rebuild the mesh
+/// through [`rebuild_lod_water_mesh`] — see [`LodWaterPlane`]'s doc for
+/// why the hole follows the player by rebuild, not by translation.
 ///
 /// Uses the SAME safe upload path [`spawn_water_plane`] does
 /// (`rt_enabled: false`, per-mesh buffer) — see [`LodWaterPlane`]'s doc for
@@ -1024,7 +1034,7 @@ pub(crate) fn spawn_lod_water_plane(
     // `terrain_lod` keeps the distant water from falling short of the terrain
     // it is supposed to meet.
     let reach = super::terrain_lod::lod_ring_reach_cells(game);
-    let hole_radius = (radius_unload + LOD_WATER_HOLE_MARGIN_CELLS).max(0);
+    let hole_radius = distant_water_hole_radius(radius_unload);
     // Degenerate: the streamed area already covers (or exceeds) the LOD
     // ring's own radius — no ring left to draw. Not expected on real content
     // (the LOD ring is sized far larger than any sane streaming radius), but
@@ -1178,7 +1188,7 @@ pub(crate) fn rebuild_lod_water_mesh(
     radius_unload: i32,
 ) -> bool {
     let reach = super::terrain_lod::lod_ring_reach_cells(game);
-    let hole_radius = (radius_unload + LOD_WATER_HOLE_MARGIN_CELLS).max(0);
+    let hole_radius = distant_water_hole_radius(radius_unload);
     let projection = distant_water_cells(cells);
     let geometry =
         build_distant_water_mesh(&projection, Some(default_height), player_grid, hole_radius, reach);
@@ -1196,6 +1206,11 @@ pub(crate) fn rebuild_lod_water_mesh(
         log::info!("LOD water mesh emptied: no wet distant cells @ grid {player_grid:?}");
         return false;
     }
+    let quads: u32 = height_histogram.iter().map(|(_, n)| n).sum();
+    log::info!(
+        "LOD water mesh rebuilt: {quads} quads, hole={hole_radius} cells, reach={reach} cells \
+         @ grid {player_grid:?}"
+    );
     let allocator = match ctx.allocator.as_ref() {
         Some(a) => a,
         None => return false,
@@ -1791,6 +1806,18 @@ mod tests {
             explicit,
             land_min: None,
         }
+    }
+
+    /// #5244 — the hole is the streaming boundary itself, no extra margin:
+    /// the loaded full-detail set covers ≤ `radius_unload`, the distant mesh
+    /// emits ≥ `radius_unload`+1, so the two are exactly contiguous. The
+    /// old +1 margin left a permanent one-cell waterless ring at every
+    /// boundary.
+    #[test]
+    fn distant_water_hole_is_exactly_the_streaming_boundary() {
+        assert_eq!(distant_water_hole_radius(4), 4);
+        assert_eq!(distant_water_hole_radius(0), 0);
+        assert_eq!(distant_water_hole_radius(-3), 0, "degenerate configs clamp");
     }
 
     /// The XCLW tri-state is the whole fix (#5243): an override cell's quad

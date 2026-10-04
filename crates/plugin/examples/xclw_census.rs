@@ -8,7 +8,7 @@
 //! Scratch probe for the W2 LOD-coverage investigation — not a gate.
 //!
 //! Usage:
-//!   cargo run --release -p byroredux-plugin --example xclw_census -- <ESM> [WORLD_SUBSTR]
+//!   cargo run --release -p byroredux-plugin --example xclw_census -- <ESM> [WORLD_SUBSTR] [GRID]
 
 use byroredux_plugin::esm;
 use std::collections::BTreeMap;
@@ -16,8 +16,16 @@ use std::collections::BTreeMap;
 fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let (Some(esm_path), world_filter) = (args.first(), args.get(1).map(String::as_str)) else {
-        anyhow::bail!("usage: xclw_census ESM [WORLD_SUBSTR]");
+        anyhow::bail!("usage: xclw_census ESM [WORLD_SUBSTR] [GRID]");
     };
+    // Optional per-ring bucket: with `GX,GY`, print how many distant-water
+    // quads (effective height, dry-sentinel skipped, LAND-min mask — the
+    // production builder's rules) each Chebyshev ring from that grid would
+    // contribute.
+    let ring_grid: Option<(i32, i32)> = args.get(2).and_then(|s| {
+        let v: Vec<i32> = s.split(',').filter_map(|p| p.trim().parse().ok()).collect();
+        (v.len() == 2).then_some((v[0], v[1]))
+    });
     let bytes = std::fs::read(esm_path)?;
     let index = esm::records::parse_esm(&bytes)?;
 
@@ -45,6 +53,9 @@ fn main() -> anyhow::Result<()> {
         // effective water ("wet at distance" — what distant water would draw).
         let mut wet_default = 0usize;
         let mut wet_override: BTreeMap<i64, usize> = BTreeMap::new();
+        // Per-Chebyshev-ring quad counts under the production rules.
+        let mut rings: BTreeMap<i32, usize> = BTreeMap::new();
+        let mut ring2600: BTreeMap<i32, usize> = BTreeMap::new();
 
         for cell in cells.values() {
             let effective = if cell.water_height_is_explicit {
@@ -74,6 +85,17 @@ fn main() -> anyhow::Result<()> {
                 } else {
                     wet_default += 1;
                 }
+                if let Some((px, py)) = ring_grid {
+                    let d = (cell.grid.unwrap_or((px, py)).0 - px)
+                        .abs()
+                        .max(cell.grid.unwrap_or((px, py)).1 - py);
+                    if d > 0 {
+                        *rings.entry(d).or_default() += 1;
+                        if (eff - 2600.0).abs() < 1.0 {
+                            *ring2600.entry(d).or_default() += 1;
+                        }
+                    }
+                }
             }
         }
         let total = absent + dry_sentinel + overrides.values().sum::<usize>();
@@ -98,6 +120,15 @@ fn main() -> anyhow::Result<()> {
         println!("  wet-at-distance at default: {wet_default} cells");
         if land_missing > 0 {
             println!("  (cells without parsed LAND: {land_missing})");
+        }
+        if let Some((px, py)) = ring_grid {
+            println!("  per-ring quads from grid ({px},{py}):");
+            let mut run = 0usize;
+            for d in 1..=64i32 {
+                let n = rings.get(&d).copied().unwrap_or(0);
+                run += n;
+                println!("    ring {d:2}: {n:3}  (cumulative >ring: {run}) [2600: {}]", ring2600.get(&d).copied().unwrap_or(0));
+            }
         }
     }
     Ok(())
