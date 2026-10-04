@@ -173,7 +173,12 @@ pub struct ModelShapeDraw {
     pub render_layer: byroredux_core::ecs::components::RenderLayer,
 }
 
-/// Placement totals read back one pipelined frame late.
+/// Placement totals of the most recent frame that dispatched the tier, read
+/// back one pipelined frame late. Any frame whose `prepare` finds nothing to
+/// place (no records, cover off, upload failure) zeroes the struct, so the
+/// numbers never outlive the placement that produced them (#5220) — an
+/// interior or a cover-less frame reports 0/0 rather than the last
+/// exterior's counts.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct GroundCoverModelStats {
     /// Instances the placed plants asked for.
@@ -504,6 +509,12 @@ impl GroundCoverModelTier {
             .min(GROUNDCOVER_MODEL_MAX_RECORDS as usize);
         // NaN-rejecting: a NaN spacing fails `> 0.0` and must bail too.
         if record_count == 0 || input.grid_spacing.is_nan() || input.grid_spacing <= 0.0 {
+            // #5220 — nothing to place this frame: drop the last placement's
+            // counts so a `stats` reader sees this frame's truth (0/0 in an
+            // interior or with cover off) rather than a latched exterior
+            // number. AFTER `harvest`, so a dispatch that did fire two frames
+            // ago is still consumed first.
+            self.stats = GroundCoverModelStats::default();
             return false;
         }
         let mut records = std::mem::take(&mut self.records_scratch);
@@ -599,6 +610,9 @@ impl GroundCoverModelTier {
             self.frame_grid_spacing = input.grid_spacing;
         } else {
             self.frame_draws.clear();
+            // #5220 — shapes-empty or upload-failed is also "nothing placed
+            // this frame": same un-latch as the early return above.
+            self.stats = GroundCoverModelStats::default();
         }
         self.records_scratch = records;
         self.shapes_scratch = shapes;
@@ -1243,6 +1257,44 @@ mod tests {
             .unwrap();
         assert!(end_method.contains("vk::PipelineStageFlags::BOTTOM_OF_PIPE"));
         assert!(end_method.contains("self.active_bits[frame] |= BIT_GROUNDCOVER_MODELS"));
+    }
+
+    /// #5220 — the tier's placement totals must not outlive the frame that
+    /// produced them: `DebugStats::groundcover_model_{demanded,emitted}` are
+    /// mirrored from `stats()` every frame, and a `prepare` that finds
+    /// nothing to place has to zero the latch so an interior / cover-off
+    /// frame reads 0/0 instead of the last exterior's counts. `prepare`
+    /// needs a device and a registry, so this pins the un-latch at source
+    /// level: both nothing-to-place paths must carry the reset, after the
+    /// `harvest` call that consumes any pending readback.
+    #[test]
+    fn prepare_unlatches_the_stats_when_nothing_is_placed() {
+        let source = crate::source_scan::production_text(include_str!("groundcover_models.rs"));
+        // Slice prepare's own text: the fn ends where `harvest` is declared.
+        let prepare = source
+            .split("pub fn prepare(")
+            .nth(1)
+            .expect("prepare must exist")
+            .split("    fn harvest(")
+            .next()
+            .expect("prepare's text must end at harvest");
+        let reset = "self.stats = GroundCoverModelStats::default();";
+        assert_eq!(
+            prepare.matches(reset).count(),
+            2,
+            "both nothing-to-place paths in `prepare` (the no-records early \
+             return and the not-ready tail) must reset the stats latch (#5220)"
+        );
+        let harvest = prepare
+            .find("self.harvest(device, frame);")
+            .expect("prepare must start with harvest");
+        for (at, _) in prepare.match_indices(reset) {
+            assert!(
+                at > harvest,
+                "the stats reset must come AFTER `harvest` — a dispatch that \
+                 fired two frames ago is still consumed by it (#5220)"
+            );
+        }
     }
 
     #[test]

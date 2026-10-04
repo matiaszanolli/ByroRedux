@@ -415,10 +415,13 @@ pub struct DebugStats {
     /// slot is dead weight — the actionable signal for finally
     /// implementing a generational-handle scheme.
     pub anim_clip_stub_count: u32,
-    /// Ground-cover authored-model tier (#4920), read back one pipelined
-    /// frame late: instances its placed plants asked for, and how many fit
-    /// the tail budget. `demanded > emitted` means placement was truncated —
-    /// every record keeps the same share of whole plants.
+    /// Ground-cover authored-model tier (#4920): the most recent frame's
+    /// placement counts, read back one pipelined frame late. `demanded >
+    /// emitted` means placement was truncated — every record keeps the same
+    /// share of whole plants. #5220: the tier zeroes these on any frame that
+    /// places nothing (interior, cover off, upload failure), so a reader
+    /// sees this frame's truth rather than a latched exterior count; 0/0
+    /// with no tier resident. Surfaced by the `stats` console command.
     pub groundcover_model_demanded: u32,
     pub groundcover_model_emitted: u32,
 }

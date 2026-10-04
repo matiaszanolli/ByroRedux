@@ -82,6 +82,15 @@ impl ConsoleCommand for StatsCommand {
                 "AnimClips: {} clips / {} stub (stranded, never reused)",
                 stats.anim_clip_count, stats.anim_clip_stub_count
             ),
+            // #4920/#5220 — the authored-model ground-cover tier's most
+            // recent placement, zeroed by any frame that places nothing
+            // (interior, cover off): `demanded > emitted` is the tail-budget
+            // truncation someone triaging missing plants is looking for.
+            format!(
+                "GCModels:  {} demanded / {} emitted (0/0 = no model-tier \
+                 placement this frame)",
+                stats.groundcover_model_demanded, stats.groundcover_model_emitted
+            ),
         ])
     }
 }
