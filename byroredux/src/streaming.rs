@@ -1726,11 +1726,11 @@ fn pre_parse_model_skip_reason(
 /// main-thread streaming drain.
 ///
 /// The coordinator resolves the CELL, canonicalizes and deduplicates its
-/// model paths, skips the caller's cache snapshot (#862), extracts bytes
-/// serially through the archive provider while [`parse_nif_pipeline`] parses
-/// earlier inputs on its private pool. `load_one_exterior_cell` can therefore
-/// spawn cached REFR assets directly while consuming this payload only for
-/// cache misses.
+/// model paths, skips the caller's cache snapshot (#862), and admits each
+/// input against the decoded-input budget; each pool task then extracts
+/// (archive read + inflate) and parses its own input (#3659).
+/// `load_one_exterior_cell` can therefore spawn cached REFR assets directly
+/// while consuming this payload only for cache misses.
 ///
 /// Returns a [`LoadCellPayload`] with an empty `parsed` map when the cell is
 /// absent, has no references, or every model was cached. The main-thread drain
