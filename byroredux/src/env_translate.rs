@@ -1400,10 +1400,19 @@ pub(crate) const NEUTRAL_SUN_GLARE: f32 = 1.0;
 /// values. Per-TOD cloud tint is sampled by `weather_system`; this seed is
 /// useful for the first frame before that system has run.
 fn weather_sky_state(wthr: &WeatherRecord, tod_slot: usize) -> WeatherSkyState {
+    use crate::systems::weather::fold_to_four_tod_slots;
     use byroredux_plugin::esm::records::weather::{
         SKY_STARS, SKY_SUNLIGHT, WTHR_AURORA_ALWAYS_VISIBLE, WTHR_AURORA_FOLLOWS_SUN,
     };
-    let slot = tod_slot.min(3);
+    // #5178 — the seed reads the 4-slot tables through the one shared fold
+    // (`fold_to_four_tod_slots`), not a private reduction: the previous
+    // `.min(3)` read `TOD_HIGH_NOON` as NIGHT where the shared fold gives
+    // DAY. The tint alpha is the JNAM multiplier alone — PNAM's fourth byte
+    // is padding (UESP: "rgb per TOD"), which is exactly how the steady-state
+    // sampler reads these tables (`cloud_layer_colors` goes through
+    // `to_rgb_f32` and the alpha comes from JNAM); the seed disagreed with
+    // it and scaled the first frame's cloud alpha by that padding.
+    let slot = fold_to_four_tod_slots(tod_slot);
     let mut cloud_tints = [[1.0; 4]; 4];
     for (layer, tint) in cloud_tints.iter_mut().enumerate() {
         let color = wthr.cloud_layer_colors[layer][slot];
@@ -1411,7 +1420,7 @@ fn weather_sky_state(wthr: &WeatherRecord, tod_slot: usize) -> WeatherSkyState {
             color.r as f32 / 255.0,
             color.g as f32 / 255.0,
             color.b as f32 / 255.0,
-            (color.a as f32 / 255.0 * wthr.cloud_layer_alphas[layer][slot]).clamp(0.0, 1.0),
+            wthr.cloud_layer_alphas[layer][slot].clamp(0.0, 1.0),
         ];
     }
 
@@ -1520,7 +1529,7 @@ pub(crate) fn translate_weather(
     climate: Option<&ClimateRecord>,
     imgs: &ImageSpaceSources<'_>,
 ) -> WeatherDataRes {
-    use byroredux_plugin::esm::records::weather::{SKY_COLOR_GROUPS, SKY_TIME_SLOTS};
+    use byroredux_plugin::esm::records::weather::{SKY_COLOR_GROUPS, SKY_TIME_SLOTS, TOD_DAY};
     let mut sky_colors = [[[0.0f32; 3]; SKY_TIME_SLOTS]; SKY_COLOR_GROUPS];
     for (dst_group, src_group) in sky_colors.iter_mut().zip(wthr.sky_colors.iter()) {
         for (dst, src) in dst_group.iter_mut().zip(src_group.iter()) {
@@ -1597,7 +1606,10 @@ pub(crate) fn translate_weather(
         cloud_layer_velocities_authored: wthr.cloud_layer_velocities_authored,
         cloud_layer_colors,
         cloud_layer_alphas: wthr.cloud_layer_alphas,
-        weather: weather_sky_state(wthr, 1),
+        // #5178 — the named constant, not a bare literal: both seed callers
+        // seed at DAY, and a magic index is how the third TOD reduction
+        // beside `fold_to_four_tod_slots` grew in the first place.
+        weather: weather_sky_state(wthr, TOD_DAY),
         // #4057 — `HNAM` is Oblivion-only, and its absence must be neutral:
         // FNV / FO3 / Skyrim+ ground cover has to render exactly as it did
         // before this field existed.
@@ -4799,6 +4811,63 @@ mod tests {
         assert!(wd.skyrim_dalc_per_tod.is_none());
         // The NAM0 table round-trips to f32.
         assert_eq!(wd.sky_colors[SKY_UPPER][TOD_DAY], [1.0, 0.0, 0.0]);
+        // #5178 — the seed's cloud tint samples the DAY PNAM/JNAM tables
+        // through the same rule the steady-state sampler applies: RGB from
+        // PNAM, alpha from JNAM alone. PNAM's fourth byte is padding
+        // (UESP: "rgb per TOD"), not an alpha multiplier — the pre-fix seed
+        // scaled this tint's alpha by 200/255.
+        assert_eq!(
+            wd.weather.cloud_tints[0],
+            [80.0 / 255.0, 90.0 / 255.0, 100.0 / 255.0, 0.5],
+            "the seed tint reads DAY's PNAM rgb + JNAM alpha, no fourth-byte \
+             padding multiplier (#5178)"
+        );
+    }
+
+    /// #5178 — the seed must read the 4-slot WTHR tables through the shared
+    /// `fold_to_four_tod_slots`, not a private `.min(3)`: the old reduction
+    /// mapped `TOD_HIGH_NOON` (4) onto NIGHT (3) where the shared fold gives
+    /// DAY. Both seed callers pass DAY today, so the misfold was unreachable
+    /// — pinned here so a future caller seeding at another TOD cannot
+    /// resurrect it.
+    #[test]
+    fn weather_sky_state_seed_folds_high_noon_onto_day() {
+        use byroredux_plugin::esm::records::weather::{TOD_HIGH_NOON, TOD_NIGHT};
+        let mut w = WeatherRecord::default();
+        w.cloud_layer_colors[0][TOD_DAY] = SkyColor {
+            r: 200,
+            g: 210,
+            b: 220,
+            a: 0,
+        };
+        w.cloud_layer_colors[0][TOD_NIGHT] = SkyColor {
+            r: 10,
+            g: 12,
+            b: 14,
+            a: 0,
+        };
+        w.cloud_layer_alphas[0][TOD_DAY] = 0.75;
+        w.cloud_layer_alphas[0][TOD_NIGHT] = 0.25;
+
+        let seeded = weather_sky_state(&w, TOD_HIGH_NOON);
+        assert_eq!(
+            &seeded.cloud_tints[0][..3],
+            &[200.0 / 255.0, 210.0 / 255.0, 220.0 / 255.0],
+            "HIGH_NOON must fold onto DAY's cloud tint, not NIGHT's (#5178)"
+        );
+        assert!(
+            (seeded.cloud_tints[0][3] - 0.75).abs() < 1e-6,
+            "HIGH_NOON must read DAY's JNAM alpha (#5178)"
+        );
+        // The steady-state sampler and the seed now agree by construction:
+        // for the same slot, translating at DAY and sampling at DAY give the
+        // same tint.
+        let wd = translate_weather(&w, None, &ImageSpaceSources::empty());
+        assert_eq!(
+            wd.weather.cloud_tints[0],
+            seeded.cloud_tints[0],
+            "the seed and the per-frame sampler must derive one quantity one way"
+        );
     }
 
     #[test]

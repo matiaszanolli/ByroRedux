@@ -710,8 +710,9 @@ fn sample_dalc_cube(
 
 /// The 6-slot sky-colour TOD index onto 4-slot WTHR data (sunrise, day,
 /// sunset, night): high_noon reads day, midnight reads night. Shared by
-/// every 4-slot consumer ([`sample_dalc_cube`], [`sample_image_space`]).
-fn fold_to_four_tod_slots(slot: usize) -> usize {
+/// every 4-slot consumer ([`sample_dalc_cube`], [`sample_image_space`],
+/// and `env_translate::weather_sky_state`'s seed — #5178).
+pub(crate) fn fold_to_four_tod_slots(slot: usize) -> usize {
     use byroredux_plugin::esm::records::weather::*;
     match slot {
         TOD_HIGH_NOON => TOD_DAY,
