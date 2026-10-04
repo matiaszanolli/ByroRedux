@@ -105,10 +105,14 @@ pub struct MorphSlot {
     target_count: u32,
     vertex_count: u32,
     /// LRU bookkeeping, same shape as `SkinSlot::last_used_frame` —
-    /// bumped every frame this entity appears in `draw_commands`
-    /// (including skip-path entries), read by the per-frame eviction
-    /// sweep. `0` means "never touched this frame yet" (sentinel,
-    /// mirrors `SkinSlot`).
+    /// stamped from ENTITY LIVENESS each frame by
+    /// `VulkanContext::refresh_morph_slot_lru` →
+    /// `skin_compute::refresh_live_slot_stamps` (#4294: stamping from the
+    /// draw list instead let a non-recreatable slot be reaped off a live
+    /// entity whose mesh never made the draw list — the dispatch loop
+    /// deliberately carries no LRU bump), read by the per-frame eviction
+    /// sweep. `0` is the never-stamped sentinel — `skin_lru_stamp` never
+    /// writes it (#4969).
     pub last_used_frame: u64,
 }
 

@@ -597,12 +597,13 @@ impl VulkanContext {
         };
 
         // 12d. Skin compute pipeline (M29 Phase 2) — feeds the skinned
-        // BLAS refit path. Created with the max
-        // slot ceiling matching `MAX_TOTAL_BONES / MAX_BONES_PER_MESH
-        // = 32` skinned meshes — same ceiling the bone-palette upload
-        // path enforces in `build_render_data`. Buffer bindings are
+        // BLAS refit path. Created with the max slot ceiling `SKIN_MAX_SLOTS`
+        // — the same ceiling the bone-palette upload path enforces in
+        // `build_render_data`. Buffer bindings are
         // deferred to per-dispatch (cell-transition robustness).
-        // See module-level `SKIN_MAX_SLOTS` const for the rationale.
+        // See the module-level `SKIN_MAX_SLOTS` const in `context/mod.rs`
+        // for the value and rationale (#5217: 32 was the pre-#900 ceiling;
+        // the live value is `(MAX_TOTAL_BONES / MAX_BONES_PER_MESH) - 1`).
         let mut skin_compute = match super::super::skin_compute::SkinComputePipeline::new(
             &device,
             pipeline_cache,
