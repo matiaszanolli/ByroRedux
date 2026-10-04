@@ -763,14 +763,27 @@ pub(crate) fn object_lod_archive_path(
 /// (`probe_lod_corpus` counts all three). FO4/FO76 bake their trees into
 /// the `.bto` and do not ship the family.
 ///
-/// Recon (2026-10-01, `tamriel.4.4.-12.btt`, 3 548 B, `Meshes1.bsa`): the
-/// file is **not** a renamed NIF — no `NetImmerse` header, no embedded
-/// texture strings. Header is three u32s (`15, 9, 21` — version, counts?),
-/// then fixed-size records of f32s whose first field reads as a ~21 000-unit
-/// world coordinate. A consumer must parse this bespoke billboard-instance
-/// format and instance camera-facing quads from the atlas; the `.lst` lists
-/// are generation-time species data and not needed to consume the baked
-/// `.btt`.
+/// Layout (census-verified 2026-10-02 against all 386 corpus `.btt` +
+/// their `.lst`, audit `EXT-D6-2026-10-02-02`): a `.btt` is a u32 **group
+/// count**, then per group a u32 **tree-type index** (keying the
+/// worldspace's `.lst`), a u32 count, and that many 32-byte records —
+/// f32 x, y, z (world, Z-up), f32 rotation (radians), f32 scale, u32 REFR
+/// FormID, two zero u32s. `tamriel.4.4.-12.btt`'s `15, 9, 21` header reads
+/// as 15 groups, first group type 9 with 21 trees. A `.lst` is a u32 count
+/// then 32-byte entries — u32 index, f32 width, f32 height, f32 u_min,
+/// v_min, u_max, v_max (rect in `<ws>treelod.dds`), u32. 380/386 `.btt`
+/// parse to exactly their length under this layout; the 6 exceptions
+/// (`dlc2solstheimworld.4.{12,16}.{4,8,12}.btt`) carry trailing bytes past
+/// their declared groups — **OPEN**, unexplained.
+///
+/// The `.lst` is **required**, not generation-time scratch: each
+/// billboard's world size (width/height) and atlas UV rect live only there
+/// (`tamriel.lst` entry 0: 566.4 × 1521.5 BU, UV (0.809, 0.002)–(0.895,
+/// 0.250)) — a consumer cannot size or place a `.btt` quad without it.
+/// Each `.btt` record carries a REFR FormID, so the tree tier *does* have
+/// per-object ids — #3307's "baked quads carry no per-object ids" premise
+/// holds for `.bto` but not here; revisit when VWD culling is designed.
+/// `exal.md`'s LOD section already states the `.btt`+`.lst` pairing.
 #[cfg_attr(not(test), allow(dead_code))] // #4913: the consumer is open work
 pub(crate) fn tree_lod_supported(game: GameKind) -> bool {
     matches!(game, GameKind::Skyrim)
