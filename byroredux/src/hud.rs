@@ -880,6 +880,18 @@ mod tests {
         values.iter().map(|v| v.to_string()).collect()
     }
 
+    /// #4723 — both `--hud` routes refuse through this one helper when a
+    /// `--menu` player owns the overlay, so the frame tick's hud-over-
+    /// ui_manager preference can never freeze a focused menu player.
+    #[test]
+    fn a_menu_owned_overlay_blocks_both_hud_routes() {
+        assert_eq!(
+            menu_owned_overlay_skip(true),
+            Some("hud: --menu owns the overlay — HUD route skipped"),
+        );
+        assert_eq!(menu_owned_overlay_skip(false), None);
+    }
+
     /// #4724 — the player-vs-NPC fraction contract: the pinned debug value
     /// wins (clamped to 0..1); the auto path reads the PLAYER's stamped
     /// actor value only (#4675 — the pre-fix first-stamped-actor scan made

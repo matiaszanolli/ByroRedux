@@ -21,7 +21,7 @@ impl ConsoleCommand for HudOnCommand {
         "hud.on"
     }
     fn description(&self) -> &str {
-        "Show the MenuXml HUD overlay"
+        "Show the HUD overlay (MenuXml or Scaleform backend)"
     }
     fn execute(&self, world: &World, _args: &str) -> CommandOutput {
         match world.try_resource_mut::<HudControl>() {
@@ -42,7 +42,7 @@ impl ConsoleCommand for HudOffCommand {
         "hud.off"
     }
     fn description(&self) -> &str {
-        "Hide the MenuXml HUD overlay"
+        "Hide the HUD overlay (MenuXml or Scaleform backend)"
     }
     fn execute(&self, world: &World, _args: &str) -> CommandOutput {
         match world.try_resource_mut::<HudControl>() {
@@ -146,7 +146,7 @@ impl ConsoleCommand for HudStatusCommand {
         "hud.status"
     }
     fn description(&self) -> &str {
-        "Report the MenuXml HUD state"
+        "Report the HUD state (MenuXml or Scaleform backend)"
     }
     fn execute(&self, world: &World, _args: &str) -> CommandOutput {
         match world.try_resource::<HudControl>() {
@@ -238,11 +238,92 @@ impl ConsoleCommand for HudDebugCommand {
             }
             None => {
                 if world.try_resource::<HudControl>().is_some() {
-                    CommandOutput::error("hud.debug: MenuXml HUD has no Scaleform bridge")
+                    CommandOutput::error("hud.debug: the Scaleform HUD has no host bridge to mirror")
                 } else {
                     CommandOutput::error("hud: not launched (start with --hud)")
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn hud_world() -> World {
+        let mut world = World::new();
+        world.insert_resource(HudControl::default());
+        world
+    }
+
+    /// `CommandOutput::error` is a "Error: "-prefixed line, not a variant.
+    fn assert_error(output: CommandOutput, needle: &str) {
+        let first = output
+            .lines
+            .first()
+            .unwrap_or_else(|| panic!("expected an error line, got empty output"));
+        assert!(
+            first.starts_with("Error: ") && first.contains(needle),
+            "`{first}` must be an error naming {needle}"
+        );
+    }
+
+    /// #4724 — `hud.values` parsing: correct-count pins land, `auto`
+    /// clears, the count and the 0-1 domain are enforced, and the
+    /// not-launched arm still reports.
+    #[test]
+    fn hud_values_pins_autos_and_rejects_bad_input() {
+        let world = hud_world();
+        let cmd = HudValuesCommand;
+
+        // Default control carries three bars (Oblivion labels). Reads are
+        // scoped so the lock tracker never sees a read guard across the
+        // next execute's write.
+        let out = cmd.execute(&world, "0.25 0.5 0.75");
+        assert!(!out.lines.is_empty() && !out.lines[0].starts_with("Error: "));
+        {
+            let bars = world.resource::<HudControl>().bars;
+            assert_eq!(
+                bars,
+                [Some(0.25), Some(0.5), Some(0.75)],
+                "three pins land in slot order"
+            );
+        }
+
+        cmd.execute(&world, "auto");
+        {
+            let bars = world.resource::<HudControl>().bars;
+            assert_eq!(bars, [None; 3], "`auto` returns the bars to actor-value derivation");
+        }
+
+        // Wrong count.
+        assert_error(cmd.execute(&world, "0.5"), "usage");
+        assert_error(cmd.execute(&world, "0.1 0.2 0.3 0.4"), "usage");
+        // Out of the fraction domain.
+        assert_error(cmd.execute(&world, "0.5 oops 0.5"), "0-1 fractions");
+        // Not launched.
+        let bare = World::new();
+        assert_error(cmd.execute(&bare, "0.5 0.5 0.5"), "not launched");
+    }
+
+    /// #4724 — `hud.heading` parsing: pins wrap into 0..360, `auto`
+    /// clears, junk is rejected.
+    #[test]
+    fn hud_heading_pins_wraps_and_rejects_junk() {
+        let world = hud_world();
+        let cmd = HudHeadingCommand;
+
+        cmd.execute(&world, "450");
+        assert_eq!(
+            world.resource::<HudControl>().heading,
+            Some(90.0),
+            "degrees wrap into 0..360"
+        );
+        cmd.execute(&world, "auto");
+        assert_eq!(world.resource::<HudControl>().heading, None);
+
+        assert_error(cmd.execute(&world, ""), "usage");
+        assert_error(cmd.execute(&world, "north"), "degrees 0-360");
     }
 }

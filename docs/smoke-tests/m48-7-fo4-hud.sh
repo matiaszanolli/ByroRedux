@@ -25,7 +25,7 @@
 #
 # Usage: docs/smoke-tests/m48-7-fo4-hud.sh
 #
-# Exit: 0 on success, non-zero on any gate failure.
+# Exit: 0 PASS, 77 SKIP (game data absent), non-zero FAIL.
 
 set -euo pipefail
 
@@ -40,7 +40,10 @@ BIN_DIR="$SCRIPT_DIR/../../target/debug"
 for f in "Fallout4.esm" "Fallout4 - Meshes.ba2" "Fallout4 - MeshesExtra.ba2" \
     "Fallout4 - Textures1.ba2" "Fallout4 - Materials.ba2" \
     "Fallout4 - Interface.ba2"; do
-    [ -f "$DATA/$f" ] || { echo "FAIL: missing $DATA/$f"; exit 1; }
+    if [ ! -f "$DATA/$f" ]; then
+        echo "smoke[m48-7-fo4-hud]: SKIP -- missing $DATA/$f"
+        exit 77
+    fi
 done
 [ -x "$BIN_DIR/byroredux" ] || { echo "FAIL: $BIN_DIR/byroredux not built"; exit 1; }
 

@@ -92,7 +92,10 @@ for name in p0-door-interaction p1-character-traversal p2-melee-core p5-save-res
     done
 done
 
-for name in m48-menu-load; do
+# #4724 — the four per-game HUD smokes honour the same SKIP != PASS
+# contract as m48-menu-load, so a dataless runner measures nothing rather
+# than failing (which is what kept them out of CI entirely).
+for name in m48-menu-load m48-4-oblivion-hud m48-5-fo3-hud m48-6-skyrim-hud m48-7-fo4-hud; do
     smoke="$ROOT_DIR/docs/smoke-tests/$name.sh"
     set +e
     output="$(env "${DATA_NEUTRALISE[@]}" "$smoke" 2>&1)"

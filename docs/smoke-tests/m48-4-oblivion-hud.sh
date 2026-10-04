@@ -20,7 +20,7 @@
 #
 # Usage: docs/smoke-tests/m48-4-oblivion-hud.sh
 #
-# Exit: 0 on success, non-zero on any gate failure.
+# Exit: 0 PASS, 77 SKIP (game data absent), non-zero FAIL.
 
 set -euo pipefail
 
@@ -38,7 +38,10 @@ BIN_DIR="$SCRIPT_DIR/../../target/debug"
 
 for f in "Oblivion.esm" "Oblivion - Meshes.bsa" \
     "Oblivion - Textures - Compressed.bsa" "Oblivion - Misc.bsa"; do
-    [ -f "$DATA/$f" ] || { echo "FAIL: missing $DATA/$f"; exit 1; }
+    if [ ! -f "$DATA/$f" ]; then
+        echo "smoke[m48-4-oblivion-hud]: SKIP -- missing $DATA/$f"
+        exit 77
+    fi
 done
 [ -x "$BIN_DIR/byroredux" ] || { echo "FAIL: $BIN_DIR/byroredux not built"; exit 1; }
 
