@@ -237,11 +237,13 @@ impl VulkanContext {
             &mut t,
         );
 
-        let lights = frame_lights.as_slice();
+        // #5212 — the MERGED app + combustion-surface list, not a shadow of the
+        // outer `lights` (see `merged_lights_feeds_the_scene_static_signals`).
+        let merged_lights = frame_lights.as_slice();
         // Capture this before returning the scratch Vec below: post passes
         // run after geometry recording, when `frame_lights` has deliberately
         // been handed back to its persistent allocation.
-        let local_emitters_present = has_radiating_local_emitter(lights);
+        let local_emitters_present = has_radiating_local_emitter(merged_lights);
         let BuildInstancesOutput {
             gpu_instances,
             previous_models,
@@ -257,7 +259,7 @@ impl VulkanContext {
             camera_cut,
             camera_static,
             pose_dirty,
-            lights,
+            merged_lights,
             &instance_map,
             ui_texture_handle,
             materials,
@@ -978,6 +980,62 @@ mod host_readback_flush_edge_tests {
                  (#4602). Gap:\n{gap}"
             );
         }
+    }
+}
+
+/// #5212 (REN-D7-2026-10-03-02) — the SVGF parked-α key (`next_svgf_temporal_alpha`'s
+/// `caustic_history_valid` chain) and ReSTIR's parked mode 2 see light changes only
+/// through the `caustic_scene_key` fold over the slice handed to
+/// `build_and_upload_instances`. That slice must be the MERGED list — the app's
+/// `lights` plus the combustion surface lights `assemble_camera_and_lights` appended
+/// and the #5055 priority re-sorted — or advected/cooling fire lights stop breaking
+/// parked accumulation and SVGF/ReSTIR freeze over a scene a burning field keeps
+/// changing. A live test is impractical (`draw_frame` needs a device), so this pins
+/// the wiring at source level; the slice excludes every test module, so a needle
+/// cannot match this test's own literals.
+#[cfg(test)]
+mod merged_lights_tests {
+    use super::draw_frame_body;
+
+    #[test]
+    fn merged_lights_feeds_the_scene_static_signals() {
+        let body = draw_frame_body();
+
+        let binding = "let merged_lights = frame_lights.as_slice();";
+        let bind_pos = body.find(binding).unwrap_or_else(|| {
+            panic!(
+                "draw_frame must bind `merged_lights` from `frame_lights` — the \
+                 merged camera+light-rig slice (#5212). If the binding moved into \
+                 `assemble_camera_and_lights`, update this pin alongside the \
+                 destructure."
+            )
+        });
+        // The old shape — a shadow reusing the app slice's name — is exactly
+        // the slip this pin exists to catch; never bring it back.
+        assert!(
+            !body.contains("let lights = frame_lights.as_slice();"),
+            "the merged light list must not shadow the app's `lights` parameter \
+             under its own name (#5212) — a shadow makes passing the un-merged \
+             app slice to `build_and_upload_instances` compile and pass"
+        );
+
+        let call = "self.build_and_upload_instances(";
+        let call_pos = body[bind_pos..]
+            .find(call)
+            .map(|rel| bind_pos + rel)
+            .expect("build_and_upload_instances must be called after the binding");
+        // The argument line, exactly: an argument named `lights` (the app
+        // slice, which still lexically scopes over the call) would compile
+        // and pass every behaviour test while dropping the renderer-appended
+        // combustion lights from every scene-static fold.
+        let arg = ["\n            merged_lights,\n"].concat();
+        assert!(
+            body[call_pos..].contains(&arg),
+            "build_and_upload_instances must receive `merged_lights` — the frame's \
+             merged app + combustion surface light list (#5212). Passing the bare \
+             app `lights` slice silently freezes SVGF/ReSTIR parked accumulation \
+             over renderer-derived fire"
+        );
     }
 }
 
