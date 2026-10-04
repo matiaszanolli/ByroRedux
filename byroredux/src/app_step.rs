@@ -126,7 +126,7 @@ impl App {
             {
                 ectx.grid = player_grid;
             }
-            state.recenter_lod_water(&mut self.world, player_grid);
+            state.recenter_lod_water(&mut self.world, ctx, player_grid);
             state.lod_reconcile_pending = true;
             state
                 .telemetry

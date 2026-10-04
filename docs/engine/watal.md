@@ -725,14 +725,30 @@ authored reflection/specular/refraction controls ·
 Procedural }` (A13) · `below_water_fog: { near, far, color }` (Skyrim DNAM split;
 sentinel = reuse above-water fog).
 
-### 5.2 Distant water — live, without a parallel material type
+### 5.2 Distant water — live, per cell, without a parallel material type
 
 Distant worldspace water reuses canonical `WaterPlane` / `WaterMaterial`; it
-does not introduce a second *WaterLod* material representation. The render-only
-`WaterLodInfo { height, water_form }` component retains provenance for
-diagnostics and streaming teardown, while worldspace bounds size the distant
-plane. Older games naturally use the same path with their translated sentinel
-material fields.
+does not introduce a second *WaterLod* material representation. Since #5243
+(2026-10-04, W2-01) the mesh is **per cell**: one quad per distant cell at
+that cell's *effective* water height — explicit `XCLW` → that height, absent
+`XCLW` → the WRLD `NAM3`/`NAM4` default, authored dry sentinel → skipped —
+ringed between the streaming hole (`radius_unload` + a one-cell margin) and
+the terrain-LOD reach, with quads whose LAND minimum sits above their water
+skipped as fully occluded. The pre-#5243 single sheet at the worldspace
+default was wrong on both sides of the census: FNV WastelandNV, Skyrim
+Tamriel and FO4 Commonwealth author **zero** inherit cells (every wet cell
+is an override), so the default sheet painted phantom ocean across their
+authored-dry basins while distant Lake Mead rendered 4,900 BU below its own
+rim. `crates/plugin/examples/xclw_census.rs` is the re-checkable census.
+The render-only `WaterLodInfo { height, water_form, quad_heights }`
+component retains provenance (default height, water form, and the live
+quad-height histogram `water.dump` reports) for diagnostics and streaming
+teardown. Older games naturally use the same path with their translated
+sentinel material fields. Grid crossings rebuild the mesh
+(`rebuild_lod_water_mesh`) — the hole is *which cells are skipped*, so the
+old translate-the-annulus trick cannot follow a per-cell mesh; only the
+mesh handle swaps, and an emptied ring keeps the entity mesh-less until a
+later crossing finds water again.
 
 ### 5.3 `PhysicsWaterConstants` — engine-defined buoyancy (ECS Resource)
 

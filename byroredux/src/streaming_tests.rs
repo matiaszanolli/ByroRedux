@@ -8,7 +8,7 @@
 
 use super::{
     build_stream_parse_pool, classify_payload, compute_streaming_deltas, join_with_timeout,
-    lod_water_recenter_delta, parse_model_keys, pre_parse_cell_panic_safe,
+    parse_model_keys, pre_parse_cell_panic_safe,
     pre_parse_model_skip_reason, recv_next_batch_request, stale_pending_coords, world_pos_to_grid,
     JoinTimeout, LoadCellPayload, LoadedCell, PayloadDecision, PreParseModelSkip, StreamingDeltas,
     StreamingLatencySummary, StreamingTelemetry, StreamingWorkerTimings,
@@ -16,17 +16,8 @@ use super::{
 use crate::asset_provider::{ResolveExtractTotals, TextureProvider};
 use crate::cell_loader::UnloadPhaseTimings;
 use byroredux_core::ecs::storage::EntityId;
-use byroredux_core::math::Vec3;
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
-
-#[test]
-fn lod_water_recenter_delta_maps_grid_y_to_negative_renderer_z() {
-    assert_eq!(
-        lod_water_recenter_delta((10, -4), (12, -1)),
-        Vec3::new(8192.0, 0.0, -12288.0)
-    );
-}
 
 fn loaded_set(coords: &[(i32, i32)]) -> HashMap<(i32, i32), LoadedCell> {
     coords

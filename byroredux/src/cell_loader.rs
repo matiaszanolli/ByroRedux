@@ -172,7 +172,7 @@ pub(crate) use terrain_lod::{stream_lod_blocks, unload_lod_block};
 pub(crate) use terrain_seam::{check_seam, SeamDirection};
 pub use unload::{unload_cell, unload_cells, UnloadPhaseTimings};
 pub(crate) use unload::purge_cinematic_retention_state;
-pub(crate) use water::{spawn_lod_water_plane, unload_lod_water_plane};
+pub(crate) use water::{rebuild_lod_water_mesh, spawn_lod_water_plane, unload_lod_water_plane};
 pub(crate) use work_budget::FrameTimeBudget;
 
 // The Studio gallery owns imported assets and its room through cell roots

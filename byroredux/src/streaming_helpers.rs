@@ -1041,9 +1041,10 @@ mod tests {
         );
         let mut water = Some(LodWaterPlane {
             entity: 6,
-            mesh_handle: 15,
+            mesh_handle: Some(15),
             normal_map_handle: Some(21),
             noise_map_handles: [22, 23, 24],
+            default_height: -2300.0,
             center_grid: (0, 0),
         });
 
@@ -1053,7 +1054,7 @@ mod tests {
         assert_eq!(terrain_out.len(), 2, "both terrain LOD blocks collected");
         assert_eq!(object_out.len(), 1, "the object LOD quad collected");
         assert_eq!(placement_out.len(), 1, "the placement LOD cell collected");
-        assert_eq!(water_out.expect("LOD water collected").mesh_handle, 15);
+        assert_eq!(water_out.expect("LOD water collected").mesh_handle, Some(15));
         assert!(
             terrain.is_empty(),
             "terrain ring drained — no leak left behind"

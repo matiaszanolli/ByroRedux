@@ -20,11 +20,9 @@
 //! bootstrap uses the same request and payload path instead of maintaining
 //! a second synchronous loader.
 
-use byroredux_core::ecs::components::Transform;
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::World;
 use byroredux_core::math::coord::EXTERIOR_CELL_UNITS;
-use byroredux_core::math::Vec3;
 use byroredux_core::string::StringPool;
 use byroredux_renderer::VulkanContext;
 use std::collections::{HashMap, HashSet};
@@ -487,24 +485,33 @@ pub struct LodBlock {
     pub hole_mask: u16,
 }
 
-/// Distant, worldspace-wide LOD water quad (#2449 / EXAL-01) — the `NAM3`/
-/// `NAM4` counterpart of a cell's full-detail `spawn_water_plane`. Unlike
-/// [`LodBlock`], this is a SINGLE entity per worldspace, not a
-/// per-ring-block streaming set: spawned once at worldspace entry
-/// (`cell_loader::water::spawn_lod_water_plane`) and reclaimed once on
-/// worldspace exit (`streaming_helpers::drain_streaming_state`).
+/// Distant, worldspace-wide LOD water mesh (#2449 / EXAL-01; per cell since
+/// #5243) — the distant counterpart of a cell's full-detail
+/// `spawn_water_plane`, built by `cell_loader::water::spawn_lod_water_plane`
+/// as one quad per distant cell at that cell's **effective** water height
+/// (explicit XCLW override → that height, absent → the WRLD `NAM3`/`NAM4`
+/// default, authored dry sentinel → skipped). Unlike [`LodBlock`], this is a
+/// SINGLE entity per worldspace, not a per-ring-block streaming set: spawned
+/// once at worldspace entry and reclaimed once on worldspace exit
+/// (`streaming_helpers::drain_streaming_state`).
 ///
-/// Its hole (cut out around the full-detail streamed area, so it doesn't
-/// double-blend against the near per-cell water) follows the player across
-/// grid boundaries by translating this entity. The mesh and GPU allocations
-/// remain stable; only the transform changes, matching the moving boundary
-/// without the cost and lifetime hazards of per-block water uploads. Like
-/// full-detail water, this render-only entity uses the safe per-mesh-buffer
-/// upload path (`rt_enabled: false`) and never enters the TLAS.
+/// The mesh's hole is *which cells are skipped*, so it follows the player
+/// across grid boundaries by REBUILDING the mesh
+/// (`cell_loader::water::rebuild_lod_water_mesh`) rather than by translation
+/// — the old single-sheet annulus could translate because its geometry was
+/// center-relative, but moving a per-cell mesh would drag every distant
+/// quad's world position with it. The rebuild swaps only the mesh handle;
+/// the entity, material, and texture handles stay, and an emptied ring
+/// (nothing wet within reach) keeps the entity mesh-less until a later
+/// crossing finds water again. Like full-detail water, this render-only
+/// entity uses the safe per-mesh-buffer upload path (`rt_enabled: false`)
+/// and never enters the TLAS.
 #[derive(Debug, Clone, Copy)]
 pub struct LodWaterPlane {
     pub entity: EntityId,
-    pub mesh_handle: u32,
+    /// Live mesh handle; `None` while the ring is dry (the entity persists,
+    /// mesh-less, until a rebuild finds water again).
+    pub mesh_handle: Option<u32>,
     /// Normal-map `TextureHandle` acquired via `resolve_texture` at spawn,
     /// mirroring `spawn_water_plane`'s `NormalMapHandle` refcount contract
     /// (#1338). `None` when the procedural-fallback normal is used (no
@@ -513,21 +520,12 @@ pub struct LodWaterPlane {
     /// NAM2–4 noise-map handles acquired for the LOD material. Zero entries
     /// are the shared fallback and are not refcounted.
     pub noise_map_handles: [u32; 3],
-    /// Grid used to author the annulus vertices. The mesh is translated by
-    /// the grid delta as the player crosses cells so its hole stays aligned
-    /// with the full-detail streaming radius without rebuilding GPU buffers.
+    /// The worldspace `NAM3`/`NAM4` default water height the mesh was
+    /// spawned with — what absent-XCLW cells inherit on rebuild.
+    pub default_height: f32,
+    /// Player grid the mesh was built around; the next grid crossing
+    /// triggers the rebuild that re-centers the hole.
     pub center_grid: (i32, i32),
-}
-
-/// Translation in renderer Y-up coordinates for a world-grid movement.
-/// Gamebryo's second grid axis maps to renderer -Z.
-#[inline]
-pub(crate) fn lod_water_recenter_delta(old_grid: (i32, i32), new_grid: (i32, i32)) -> Vec3 {
-    Vec3::new(
-        (new_grid.0 - old_grid.0) as f32 * EXTERIOR_CELL_UNITS,
-        0.0,
-        -(new_grid.1 - old_grid.1) as f32 * EXTERIOR_CELL_UNITS,
-    )
 }
 
 /// Worker request — main thread asks the worker to pre-parse a cell.
@@ -959,6 +957,17 @@ impl WorldStreamingState {
         ) else {
             return;
         };
+        // The worldspace's own cell table drives the per-cell distant mesh
+        // (#5243): explicit XCLW overrides at their height, absent XCLW at
+        // the worldspace default, authored dry sentinels skipped.
+        let empty = HashMap::new();
+        let cells = self
+            .wctx
+            .record_index
+            .cells
+            .exterior_cells
+            .get(&self.wctx.worldspace_key)
+            .unwrap_or(&empty);
         self.lod_water = crate::cell_loader::spawn_lod_water_plane(
             world,
             ctx,
@@ -966,30 +975,48 @@ impl WorldStreamingState {
             &self.wctx.record_index.waters,
             height,
             lod_water_form,
+            cells,
             player_grid,
             self.radius_unload,
             self.wctx.record_index.game,
         );
     }
 
-    /// Keep the distant-water annulus centered on the current full-detail
-    /// streaming hole. The mesh remains world-authored at its spawn center;
-    /// only the entity transform moves, so no Vulkan upload or texture churn
-    /// occurs when crossing a cell boundary.
-    pub fn recenter_lod_water(&mut self, world: &mut World, player_grid: (i32, i32)) {
+    /// Keep the distant-water mesh's hole centered on the current
+    /// full-detail streaming area. The hole is *which cells are skipped*, so
+    /// a grid crossing rebuilds the mesh (`rebuild_lod_water_mesh`) — only
+    /// the mesh handle swaps; the entity, material, and textures persist.
+    pub fn recenter_lod_water(
+        &mut self,
+        world: &mut World,
+        ctx: &mut VulkanContext,
+        player_grid: (i32, i32),
+    ) {
         let Some(plane) = self.lod_water.as_mut() else {
             return;
         };
         if plane.center_grid == player_grid {
             return;
         }
-        let delta = lod_water_recenter_delta(plane.center_grid, player_grid);
-        if let Some(mut transforms) = world.query_mut::<Transform>() {
-            if let Some(transform) = transforms.get_mut(plane.entity) {
-                transform.translation += delta;
-            }
-        }
-        plane.center_grid = player_grid;
+        let default_height = plane.default_height;
+        let empty = HashMap::new();
+        let cells = self
+            .wctx
+            .record_index
+            .cells
+            .exterior_cells
+            .get(&self.wctx.worldspace_key)
+            .unwrap_or(&empty);
+        crate::cell_loader::rebuild_lod_water_mesh(
+            world,
+            ctx,
+            plane,
+            cells,
+            default_height,
+            self.wctx.record_index.game,
+            player_grid,
+            self.radius_unload,
+        );
     }
 
     /// Send a load request to the worker. Returns `Err` if the worker

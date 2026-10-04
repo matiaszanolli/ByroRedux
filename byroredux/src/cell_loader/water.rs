@@ -75,11 +75,6 @@ const DEFAULT_INTERIOR_VOLUME_DEPTH: f32 = 200.0;
 /// fragment normal path still supplies the fine ripples.
 const FULL_DETAIL_WATER_GRID_SEGMENTS: usize = 16;
 
-/// Subdivisions per side of the distant-water annulus' outer-to-hole bands.
-/// Eight keeps the single worldspace mesh small while preventing its wave
-/// displacement from collapsing into four giant corner panels.
-const LOD_WATER_RING_SUBDIVISIONS: usize = 8;
-
 /// Whether a cell's authored `XCLW` height is a real interior water surface.
 ///
 /// #3548 — an `XCLW` of exactly `0.0` is Skyrim+/FO4's inert Creation-Kit
@@ -831,72 +826,101 @@ pub(super) fn apply_placed_water_type(
     targets.len()
 }
 
-/// Extra cushion (in cells) beyond `radius_unload` the LOD-water hole cuts
-/// out, so the annulus doesn't touch right at the streaming boundary —
-/// mirrors the conservative-by-one-cell margin the terrain LOD ring's own
-/// `radius_unload` gate already relies on (#1871 / LC0703-02).
+/// Extra cushion (in cells) beyond `radius_unload` the distant-water hole
+/// cuts out, so the distant quads don't touch right at the streaming
+/// boundary — mirrors the conservative-by-one-cell margin the terrain LOD
+/// ring's own `radius_unload` gate already relies on (#1871 / LC0703-02).
 const LOD_WATER_HOLE_MARGIN_CELLS: i32 = 1;
 
-/// Spawn the worldspace-wide distant LOD water quad (#2449 / EXAL-01) — the
-/// `NAM3`/`NAM4` counterpart of [`spawn_water_plane`]'s per-cell `XCLW`/
-/// `XCWT`. A single square annulus ("picture frame"): its outer edge
-/// matches the distant-terrain LOD ring's total reach
-/// (`super::terrain_lod::lod_ring_reach_cells`) for visual consistency, and its inner edge is a hole cut out around
-/// `player_grid` sized to `radius_unload` (+ a one-cell margin) so it
-/// doesn't overlap/double-blend against the near, full-detail per-cell
-/// water. Called once at worldspace entry — see [`LodWaterPlane`]'s doc for
-/// why the hole is a fixed snapshot rather than continuously re-centered.
-///
-/// Built as a 4×4 vertex grid (3×3 quads), holing out only the center quad
-/// — the same row-major `tl/tr/bl/br` two-triangle-per-quad topology
-/// `terrain_lod::spawn_lod_block` uses, so the winding convention is
-/// reused rather than re-derived. Uses the SAME safe upload path
-/// [`spawn_water_plane`] does (`rt_enabled: false`, per-mesh buffer) — see
-/// [`LodWaterPlane`]'s doc for why that matters.
-///
-/// Returns `None` when the worldspace has no LOD water, the requested
-/// radius leaves no annulus to draw (a huge streaming radius relative to
-/// the LOD ring — degenerate on real content), or the mesh upload fails.
-/// Pure geometry builder for [`spawn_lod_water_plane`]'s annulus mesh —
-/// split out so the degenerate-guard and hole-cutout/winding logic is
-/// unit-testable without a `VulkanContext`. `center_x_zup`/`center_y_zup`
-/// are cell-grid-index-based Z-up world coordinates (pre-conversion), the
-/// same convention `spawn_lod_block` uses for its block origin. Returns
-/// `None` when `inner >= outer` (degenerate — see the call site's doc).
-fn build_lod_water_frame(
-    outer: f32,
-    inner: f32,
-    center_x_zup: f32,
-    center_y_zup: f32,
-    lod_height: f32,
-) -> Option<(Vec<Vertex>, Vec<u32>)> {
-    if inner >= outer {
-        return None;
-    }
+/// The per-cell inputs the distant-water builder needs — a projection of
+/// `CellData`'s XCLW tri-state (`water_height` + `water_height_is_explicit`)
+/// plus the cell's LAND minimum, so the builder is unit-testable without
+/// constructing a full `CellData`.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct DistantWaterCell {
+    pub grid: (i32, i32),
+    pub water_height: Option<f32>,
+    pub explicit: bool,
+    /// Minimum LAND height (Z-up); `None` when the cell's landscape did not
+    /// parse. A quad whose LAND minimum sits above its effective water is
+    /// fully occluded and is skipped.
+    pub land_min: Option<f32>,
+}
 
-    let mut axis = Vec::with_capacity(2 * (LOD_WATER_RING_SUBDIVISIONS + 1));
-    for i in 0..=LOD_WATER_RING_SUBDIVISIONS {
-        let t = i as f32 / LOD_WATER_RING_SUBDIVISIONS as f32;
-        axis.push(-outer + (outer - inner) * t);
-    }
-    for i in 0..=LOD_WATER_RING_SUBDIVISIONS {
-        let t = i as f32 / LOD_WATER_RING_SUBDIVISIONS as f32;
-        axis.push(inner + (outer - inner) * t);
-    }
-    let cols: Vec<f32> = axis.iter().map(|offset| center_x_zup + offset).collect();
-    let rows: Vec<f32> = axis.iter().map(|offset| center_y_zup + offset).collect();
-    let n = axis.len();
+/// Built distant-water geometry: world-space quads (one per distant wet
+/// cell, at that cell's effective water height) plus the height histogram
+/// `water.dump` reports.
+pub(super) struct DistantWaterGeometry {
+    pub vertices: Vec<Vertex>,
+    pub indices: Vec<u32>,
+    /// `(height, quad count)` sorted by height — the distant mesh's height
+    /// census, for the spawn log and `water.dump`.
+    pub height_histogram: Vec<(f32, u32)>,
+}
 
-    let mut vertices: Vec<Vertex> = Vec::with_capacity(n * n);
-    for &world_y_zup in &rows {
-        for &world_x in &cols {
-            vertices.push(Vertex {
-                position: zup_to_yup_pos([world_x, world_y_zup, lod_height]),
+/// Build the distant (LOD) water mesh per cell at each cell's **effective**
+/// water height (#5243): explicit XCLW → that height; authored dry sentinel →
+/// skipped; absent → the worldspace default (`None` default → skipped).
+///
+/// The prior single-sheet annulus at the worldspace default was wrong on
+/// both sides of the census: FNV WastelandNV, Skyrim Tamriel and FO4
+/// Commonwealth author **zero** inherit cells (every wet cell is an
+/// override), so the default sheet painted phantom ocean across their
+/// authored-dry basins while distant Lake Mead / rivers rendered at the
+/// default height, buried below their own terrain. Quads are emitted only
+/// for cells between the streaming hole (`hole_radius`, Chebyshev) and the
+/// terrain-LOD ring's reach, and are skipped when the cell's LAND minimum
+/// sits above the effective water (the terrain fully occludes the quad).
+/// Cells whose landscape did not parse keep their quad — conservative, and
+/// correct for LAND-less open ocean.
+///
+/// Pure over the inputs (no `VulkanContext`) so the tri-state, hole, reach
+/// and LAND-mask logic is unit-testable.
+pub(super) fn build_distant_water_mesh(
+    cells: &[DistantWaterCell],
+    default_height: Option<f32>,
+    player_grid: (i32, i32),
+    hole_radius: i32,
+    reach: i32,
+) -> DistantWaterGeometry {
+    // UVs are relative to the player grid's corner, matching the old
+    // annulus's float-precision profile (the shader's origin-offset rebase
+    // handles the hashing side, #1502).
+    let center_x_zup = player_grid.0 as f32 * EXTERIOR_CELL_UNITS;
+    let center_y_zup = player_grid.1 as f32 * EXTERIOR_CELL_UNITS;
+    let mut out = DistantWaterGeometry {
+        vertices: Vec::new(),
+        indices: Vec::new(),
+        height_histogram: Vec::new(),
+    };
+    let mut heights: std::collections::BTreeMap<u32, u32> = std::collections::BTreeMap::new();
+    for cell in cells {
+        let distance =
+            (cell.grid.0 - player_grid.0).abs().max((cell.grid.1 - player_grid.1).abs());
+        if distance <= hole_radius || distance > reach {
+            continue;
+        }
+        let effective = if cell.explicit {
+            cell.water_height
+        } else {
+            default_height
+        };
+        let Some(height) = effective else {
+            continue; // authored dry sentinel (or no default to inherit)
+        };
+        if cell.land_min.is_some_and(|min| min > height) {
+            continue; // terrain fully occludes this quad
+        }
+        let x0 = cell.grid.0 as f32 * EXTERIOR_CELL_UNITS;
+        let y0 = cell.grid.1 as f32 * EXTERIOR_CELL_UNITS;
+        let x1 = x0 + EXTERIOR_CELL_UNITS;
+        let y1 = y0 + EXTERIOR_CELL_UNITS;
+        let base = out.vertices.len() as u32;
+        for (world_x, world_y_zup) in [(x0, y0), (x1, y0), (x0, y1), (x1, y1)] {
+            out.vertices.push(Vertex {
+                position: zup_to_yup_pos([world_x, world_y_zup, height]),
                 color: [1.0, 1.0, 1.0, 1.0],
                 normal: [0.0, 1.0, 0.0],
-                // World-space UV, matching `spawn_water_plane`'s "UVs don't
-                // matter visually, only their derivative magnitude"
-                // rationale for the normal-map perturb blend.
                 uv: [world_x - center_x_zup, world_y_zup - center_y_zup],
                 bone_indices: [0, 0, 0, 0],
                 bone_weights: [0.0, 0.0, 0.0, 0.0],
@@ -907,29 +931,75 @@ fn build_lod_water_frame(
                 tangent: [1.0, 0.0, 0.0, -1.0],
             });
         }
+        // Same tl/tr/bl/br two-triangle winding as `spawn_lod_block`.
+        out.indices.extend_from_slice(&[base, base + 1, base + 2, base + 1, base + 3, base + 2]);
+        *heights.entry(height.to_bits()).or_default() += 1;
     }
-
-    // The central quad band is the hole cut out for the full-detail streamed
-    // area. Same tl/tr/bl/br two-triangle winding as
-    // `spawn_lod_block`.
-    let hole_band = LOD_WATER_RING_SUBDIVISIONS;
-    let mut indices: Vec<u32> = Vec::with_capacity((n - 1) * (n - 1) * 6);
-    for r in 0..(n - 1) {
-        for c in 0..(n - 1) {
-            if r == hole_band && c == hole_band {
-                continue; // the hole
-            }
-            let tl = (r * n + c) as u32;
-            let tr = tl + 1;
-            let bl = ((r + 1) * n + c) as u32;
-            let br = bl + 1;
-            indices.extend_from_slice(&[tl, tr, bl, tr, br, bl]);
-        }
-    }
-
-    Some((vertices, indices))
+    let mut hist: Vec<(f32, u32)> = heights
+        .into_iter()
+        .map(|(bits, count)| (f32::from_bits(bits), count))
+        .collect();
+    // `total_cmp`, not the u32-key order it accumulated under: negative
+    // floats' bit patterns sort after positives'.
+    hist.sort_by(|a, b| a.0.total_cmp(&b.0));
+    out.height_histogram = hist;
+    out
 }
 
+/// Resolve a worldspace's exterior cells into the builder's projection.
+fn distant_water_cells(
+    cells: &HashMap<(i32, i32), esm::cell::CellData>,
+) -> Vec<DistantWaterCell> {
+    cells
+        .iter()
+        .map(|(grid, cell)| DistantWaterCell {
+            grid: *grid,
+            water_height: cell.water_height,
+            explicit: cell.water_height_is_explicit,
+            land_min: cell
+                .landscape
+                .as_ref()
+                .map(|land| land.heights.iter().copied().fold(f32::INFINITY, f32::min)),
+        })
+        .collect()
+}
+
+/// Cap the builder's height histogram into `WaterLodInfo`'s fixed array,
+/// keeping the largest buckets when a worldspace exceeds eight distinct
+/// heights — the dominant water never falls out of the dump.
+fn lod_quad_heights(hist: &[(f32, u32)]) -> ([(f32, u32); 8], u8) {
+    let mut slots = [(0.0f32, 0u32); 8];
+    let mut take: Vec<_> = hist.to_vec();
+    take.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.total_cmp(&b.0)));
+    let kept = take.len().min(8);
+    // Restore height order for a stable dump.
+    take.truncate(kept);
+    take.sort_by(|a, b| a.0.total_cmp(&b.0));
+    for (slot, entry) in slots.iter_mut().zip(take) {
+        *slot = entry;
+    }
+    (slots, kept as u8)
+}
+
+/// Spawn the worldspace-wide distant LOD water mesh (#2449 / EXAL-01, per
+/// cell since #5243) — one quad per distant cell at that cell's
+/// **effective** water height (explicit XCLW → that height, absent → the
+/// WRLD `NAM3`/`NAM4` default, authored dry sentinel → skipped), built by
+/// [`build_distant_water_mesh`]. The ring runs from the streaming hole
+/// (`radius_unload` + a one-cell margin, so it never double-blends against
+/// the near, full-detail per-cell water) out to the distant-terrain LOD
+/// ring's total reach (`super::terrain_lod::lod_ring_reach_cells`) for
+/// visual consistency. Called once at worldspace entry; grid crossings
+/// rebuild the mesh through [`rebuild_lod_water_mesh`] — see
+/// [`LodWaterPlane`]'s doc for why the hole follows the player by rebuild,
+/// not by translation.
+///
+/// Uses the SAME safe upload path [`spawn_water_plane`] does
+/// (`rt_enabled: false`, per-mesh buffer) — see [`LodWaterPlane`]'s doc for
+/// why that matters.
+///
+/// Returns `None` when the worldspace has no LOD water, no distant cell in
+/// the ring is wet, or the mesh upload fails.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn spawn_lod_water_plane(
     world: &mut World,
@@ -938,6 +1008,7 @@ pub(crate) fn spawn_lod_water_plane(
     waters: &HashMap<u32, esm::records::misc::WatrRecord>,
     lod_height: f32,
     lod_water_form: Option<u32>,
+    cells: &HashMap<(i32, i32), esm::cell::CellData>,
     player_grid: (i32, i32),
     radius_unload: i32,
     game: esm::reader::GameKind,
@@ -950,21 +1021,28 @@ pub(crate) fn spawn_lod_water_plane(
     // Track the terrain LOD ring's own reach, which since #2371 depends on
     // whether the game bakes a quadtree (Skyrim/FO4 reach their vanilla
     // `fBlockMaximumDistance`, the rest keep the synth ring). Reading it from
-    // `terrain_lod` keeps the water frame from falling short of the terrain
+    // `terrain_lod` keeps the distant water from falling short of the terrain
     // it is supposed to meet.
-    let outer = super::terrain_lod::lod_ring_reach_cells(game) as f32 * EXTERIOR_CELL_UNITS;
-    let inner = (radius_unload + LOD_WATER_HOLE_MARGIN_CELLS).max(0) as f32 * EXTERIOR_CELL_UNITS;
-    // Cell-grid-index-based Z-up world coordinates (pre-conversion), same
-    // convention `spawn_lod_block` uses for its block origin.
-    let center_x_zup = player_grid.0 as f32 * EXTERIOR_CELL_UNITS;
-    let center_y_zup = player_grid.1 as f32 * EXTERIOR_CELL_UNITS;
+    let reach = super::terrain_lod::lod_ring_reach_cells(game);
+    let hole_radius = (radius_unload + LOD_WATER_HOLE_MARGIN_CELLS).max(0);
     // Degenerate: the streamed area already covers (or exceeds) the LOD
-    // ring's own radius — no annulus left to draw. Not expected on real
-    // content (the LOD ring is sized far larger than any sane streaming
-    // radius), but a corrupt/extreme config must not build an inverted or
-    // zero-area mesh.
-    let (vertices, indices) =
-        build_lod_water_frame(outer, inner, center_x_zup, center_y_zup, lod_height)?;
+    // ring's own radius — no ring left to draw. Not expected on real content
+    // (the LOD ring is sized far larger than any sane streaming radius), but
+    // a corrupt/extreme config must not build a zero-area mesh.
+    if hole_radius >= reach {
+        return None;
+    }
+    let projection = distant_water_cells(cells);
+    let geometry =
+        build_distant_water_mesh(&projection, Some(lod_height), player_grid, hole_radius, reach);
+    if geometry.indices.is_empty() {
+        return None;
+    }
+    let DistantWaterGeometry {
+        vertices,
+        indices,
+        height_histogram,
+    } = geometry;
 
     let upload_ctx = GpuUploadCtx {
         device: &ctx.device,
@@ -1036,6 +1114,8 @@ pub(crate) fn spawn_lod_water_plane(
         WaterLodInfo {
             height: lod_height,
             water_form: lod_water_form,
+            quad_heights: lod_quad_heights(&height_histogram).0,
+            quad_height_count: lod_quad_heights(&height_histogram).1,
         },
     );
     world.insert(entity, ParticleEmitter::water_splash());
@@ -1048,26 +1128,114 @@ pub(crate) fn spawn_lod_water_plane(
     if let Some(flow) = flow {
         world.insert(entity, flow);
     }
-    // Distant water is a render-only annulus. It has no shoreline geometry,
-    // so a matching AABB `WaterVolume` would falsely submerge actors/cameras
-    // on dry land anywhere inside the square (the annulus itself cannot be
-    // represented by the canonical AABB). Near, streamed cell planes remain
-    // the authoritative source for swimming, buoyancy, currents, and splash
-    // interaction.
+    // Distant water is render-only. It has no shoreline geometry, so a
+    // matching AABB `WaterVolume` would falsely submerge actors/cameras on
+    // dry land anywhere inside a covered cell (per-cell quads still cannot
+    // be represented by the canonical AABB). Near, streamed cell planes
+    // remain the authoritative source for swimming, buoyancy, currents, and
+    // splash interaction.
     world.insert(entity, RenderLayer::Decal);
 
+    let quads: u32 = height_histogram.iter().map(|(_, n)| n).sum();
     log::info!(
-        "LOD water plane spawned: height={lod_height}, outer={outer:.0} BU, inner_hole={inner:.0} \
-         BU @ grid {player_grid:?}, kind={kind:?}",
+        "LOD water mesh spawned: {quads} quads, heights {} (worldspace default \
+         {lod_height}), hole={hole_radius} cells, reach={reach} cells @ grid \
+         {player_grid:?}, kind={kind:?}",
+        height_histogram
+            .iter()
+            .map(|(h, n)| format!("{h}×{n}"))
+            .collect::<Vec<_>>()
+            .join(", ")
     );
 
     Some(LodWaterPlane {
         entity,
-        mesh_handle,
+        mesh_handle: Some(mesh_handle),
         normal_map_handle: (resolved_normal_idx != 0).then_some(resolved_normal_idx),
         noise_map_handles: resolved_noise,
+        default_height: lod_height,
         center_grid: player_grid,
     })
+}
+
+/// Rebuild the distant-water mesh around a new player grid (#5243). The
+/// per-cell mesh's hole is which cells are skipped, so following the player
+/// across a grid boundary means rebuilding — the translated-hole trick the
+/// old single-sheet annulus used would drag every distant quad's world
+/// position with it. The entity, material, and texture handles are reused;
+/// only the mesh swaps. Returns `false` when the new mesh is empty (nothing
+/// wet in the ring): the old mesh is then released and the entity keeps
+/// living mesh-less until a later crossing finds water again.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn rebuild_lod_water_mesh(
+    world: &mut World,
+    ctx: &mut VulkanContext,
+    plane: &mut LodWaterPlane,
+    cells: &HashMap<(i32, i32), esm::cell::CellData>,
+    default_height: f32,
+    game: esm::reader::GameKind,
+    player_grid: (i32, i32),
+    radius_unload: i32,
+) -> bool {
+    let reach = super::terrain_lod::lod_ring_reach_cells(game);
+    let hole_radius = (radius_unload + LOD_WATER_HOLE_MARGIN_CELLS).max(0);
+    let projection = distant_water_cells(cells);
+    let geometry =
+        build_distant_water_mesh(&projection, Some(default_height), player_grid, hole_radius, reach);
+    let DistantWaterGeometry {
+        vertices,
+        indices,
+        height_histogram,
+    } = geometry;
+    if indices.is_empty() {
+        if let Some(handle) = plane.mesh_handle.take() {
+            ctx.mesh_registry.drop_mesh(handle);
+        }
+        world.remove::<MeshHandle>(plane.entity);
+        plane.center_grid = player_grid;
+        log::info!("LOD water mesh emptied: no wet distant cells @ grid {player_grid:?}");
+        return false;
+    }
+    let allocator = match ctx.allocator.as_ref() {
+        Some(a) => a,
+        None => return false,
+    };
+    let upload_ctx = GpuUploadCtx {
+        device: &ctx.device,
+        allocator,
+        queue: &ctx.graphics_queue,
+        command_pool: ctx.transfer_pool,
+    };
+    let new_handle = match ctx
+        .mesh_registry
+        .upload_scene_mesh(upload_ctx, &vertices, &indices, false, None)
+    {
+        Ok(h) => h,
+        Err(e) => {
+            log::warn!("LOD water mesh rebuild upload failed: {e}");
+            return false;
+        }
+    };
+    ctx.mesh_registry.note_mesh_provenance(
+        new_handle,
+        byroredux_renderer::MeshUploadSource::Water,
+        false,
+        None,
+    );
+    if let Some(old) = plane.mesh_handle.replace(new_handle) {
+        ctx.mesh_registry.drop_mesh(old);
+    }
+    world.insert(plane.entity, MeshHandle(new_handle));
+    // Overwrites when the mesh existed and re-adds after an emptied rebuild.
+    if let Some(mut lod) = world.query_mut::<WaterLodInfo>() {
+        if let Some(info) = lod.get_mut(plane.entity) {
+            let (heights, count) = lod_quad_heights(&height_histogram);
+            info.quad_heights = heights;
+            info.quad_height_count = count;
+        }
+    }
+    plane.center_grid = player_grid;
+    true
 }
 
 /// Tear down the worldspace-wide LOD water quad (#2449 / EXAL-01): release
@@ -1088,7 +1256,9 @@ pub(crate) fn unload_lod_water_plane(
             ctx.texture_registry.drop_texture(&ctx.device, noise_idx);
         }
     }
-    ctx.mesh_registry.drop_mesh(plane.mesh_handle);
+    if let Some(mesh) = plane.mesh_handle {
+        ctx.mesh_registry.drop_mesh(mesh);
+    }
     world.despawn(plane.entity);
 }
 
@@ -1612,90 +1782,222 @@ mod tests {
         assert_eq!(components.len(), 2);
     }
 
-    // ── build_lod_water_frame (#2449 / EXAL-01) ─────────────────────
+    // ── build_distant_water_mesh (#5243) ──────────────────────────────
 
-    /// A degenerate request (inner hole at or beyond the outer edge) must
-    /// build nothing rather than an inverted/zero-area mesh.
-    #[test]
-    fn degenerate_inner_not_less_than_outer_builds_nothing() {
-        assert!(build_lod_water_frame(1000.0, 1000.0, 0.0, 0.0, 0.0).is_none());
-        assert!(build_lod_water_frame(1000.0, 2000.0, 0.0, 0.0, 0.0).is_none());
+    fn distant_cell(grid: (i32, i32), water_height: Option<f32>, explicit: bool) -> DistantWaterCell {
+        DistantWaterCell {
+            grid,
+            water_height,
+            explicit,
+            land_min: None,
+        }
     }
 
-    /// A valid annulus request produces the expected vertex/triangle counts:
-    /// the two eight-subdivision bands form an 18×18 grid, with one central
-    /// quad removed for the hole.
+    /// The XCLW tri-state is the whole fix (#5243): an override cell's quad
+    /// sits at ITS height, an authored dry sentinel produces no quad, and an
+    /// absent XCLW inherits the worldspace default (or nothing when the
+    /// worldspace authors none). A `Some` height on a non-explicit cell also
+    /// inherits — `CellData`'s merge overwrites it with the base's value, so
+    /// the loader has never honoured it.
     #[test]
-    fn valid_annulus_has_expected_vertex_and_triangle_counts() {
-        let (vertices, indices) = build_lod_water_frame(2000.0, 500.0, 0.0, 0.0, 100.0)
-            .expect("outer > inner must build a frame");
-        let side = 2 * (LOD_WATER_RING_SUBDIVISIONS + 1);
-        assert_eq!(vertices.len(), side * side);
+    fn distant_water_honors_the_xclw_tri_state() {
+        let cells = [
+            distant_cell((0, 6), Some(2600.0), true), // override
+            distant_cell((6, 0), None, true),         // dry sentinel
+            distant_cell((0, -6), None, false),       // inherit
+            distant_cell((-6, 0), Some(42.0), false), // non-explicit value: inherits
+        ];
+        let geometry = build_distant_water_mesh(&cells, Some(-2300.0), (0, 0), 2, 8);
+        // Two heights: the 2600 override and the inherited -2300 (twice) —
+        // the dry sentinel contributes nothing.
+        assert_eq!(geometry.indices.len(), 3 * 6);
         assert_eq!(
-            indices.len(),
-            ((side - 1) * (side - 1) - 1) * 6,
-            "all grid quads except the center hole"
+            geometry.height_histogram,
+            vec![(-2300.0, 2), (2600.0, 1)]
         );
+        // No quad anywhere at the default over the dry-sentinel cell. Each
+        // quad's first vertex is its min corner, whose cell id divides
+        // exactly.
+        let quad_cells: Vec<((i32, i32), f32)> = geometry
+            .vertices
+            .chunks_exact(4)
+            .map(|quad| {
+                let v = quad[0];
+                (
+                    (
+                        (v.position[0] / EXTERIOR_CELL_UNITS) as i32,
+                        (-v.position[2] / EXTERIOR_CELL_UNITS) as i32,
+                    ),
+                    v.position[1],
+                )
+            })
+            .collect();
+        assert!(quad_cells.contains(&((0, 6), 2600.0)));
+        assert!(quad_cells.contains(&((0, -6), -2300.0)));
+        assert!(quad_cells.contains(&((-6, 0), -2300.0)));
+        assert!(!quad_cells.iter().any(|((col, _), _)| *col == 6));
+
+        // No worldspace default → inherit cells are dry too.
+        let geometry = build_distant_water_mesh(&cells, None, (0, 0), 2, 8);
+        assert_eq!(geometry.indices.len(), 6, "the 2600 override only");
     }
 
-    /// The center quad (the hole) must never appear as a triangle — its
-    /// four corner indices around the center hole must never all-three appear
-    /// together as one emitted triangle.
+    /// The ring runs from just outside the streaming hole to the terrain-LOD
+    /// reach: the hole-radius cell itself is skipped (its full-detail plane
+    /// covers it) and so is everything beyond the reach.
     #[test]
-    fn center_quad_is_never_emitted() {
-        let (_, indices) = build_lod_water_frame(2000.0, 500.0, 0.0, 0.0, 100.0)
-            .expect("outer > inner must build a frame");
-        let side = 2 * (LOD_WATER_RING_SUBDIVISIONS + 1);
-        let h = LOD_WATER_RING_SUBDIVISIONS as u32;
-        let side = side as u32;
-        let hole_corners: std::collections::HashSet<u32> = [
-            h * side + h,
-            h * side + h + 1,
-            (h + 1) * side + h,
-            (h + 1) * side + h + 1,
-        ]
-        .into_iter()
-        .collect();
-        for tri in indices.chunks_exact(3) {
-            let all_in_hole = tri.iter().all(|i| hole_corners.contains(i));
+    fn distant_water_hole_and_reach_window() {
+        let cells = [
+            distant_cell((2, 0), None, false),   // == hole radius: skipped
+            distant_cell((3, 0), None, false),   // hole+1: first kept
+            distant_cell((8, 0), None, false),   // == reach: kept
+            distant_cell((9, 0), None, false),   // beyond reach: skipped
+            distant_cell((2, 2), None, false),   // Chebyshev == hole radius: skipped
+            distant_cell((3, -3), None, false),  // Chebyshev hole+1: kept
+        ];
+        let geometry = build_distant_water_mesh(&cells, Some(0.0), (0, 0), 2, 8);
+        assert_eq!(geometry.indices.len(), 3 * 6);
+        // Each quad's first vertex is its min corner, whose cell id divides
+        // exactly.
+        let cols: std::collections::BTreeSet<(i32, i32)> = geometry
+            .vertices
+            .chunks_exact(4)
+            .map(|quad| {
+                let v = quad[0];
+                (
+                    (v.position[0] / EXTERIOR_CELL_UNITS) as i32,
+                    (-v.position[2] / EXTERIOR_CELL_UNITS) as i32,
+                )
+            })
+            .collect();
+        assert_eq!(cols, [(3, 0), (3, -3), (8, 0)].into_iter().collect());
+    }
+
+    /// A quad whose LAND minimum sits above its effective water is fully
+    /// occluded by the terrain and is skipped; a LAND-less cell keeps its
+    /// quad (conservative, and correct for open ocean).
+    #[test]
+    fn distant_water_land_mask_skips_occluded_quads() {
+        let mut occluded = distant_cell((0, 4), None, false);
+        occluded.land_min = Some(-100.0);
+        let mut visible = distant_cell((4, 0), None, false);
+        visible.land_min = Some(-5000.0);
+        let cells = [occluded, visible];
+        let geometry = build_distant_water_mesh(&cells, Some(-2300.0), (0, 0), 2, 8);
+        assert_eq!(geometry.indices.len(), 6, "only the visible quad");
+        // All surviving vertices are on the +X axis.
+        assert!(geometry.vertices.iter().all(|v| v.position[0] > 0.0));
+    }
+
+    /// Pin the coordinate conventions against a silent refactor: positions
+    /// are world-space Y-up with `y == effective height`, UVs are relative
+    /// to the player grid's corner, and each quad is two triangles over four
+    /// corner vertices with the `spawn_lod_block` winding.
+    #[test]
+    fn distant_water_positions_and_uvs_follow_the_conventions() {
+        let cells = [distant_cell((1, -2), Some(-1234.5), true)];
+        let geometry = build_distant_water_mesh(&cells, None, (0, 0), 0, 8);
+        assert_eq!(geometry.vertices.len(), 4);
+        assert_eq!(geometry.indices, [0, 1, 2, 1, 3, 2]);
+        for v in &geometry.vertices {
+            assert_eq!(v.position[1], -1234.5, "Y-up height = effective water");
+            // Cell (1,-2): X ∈ [4096, 8192], Z-up y ∈ [-8192, -4096] →
+            // Z = -y_zup ∈ [4096, 8192].
+            assert!((4096.0..=8192.0).contains(&v.position[0]));
+            assert!((4096.0..=8192.0).contains(&v.position[2]));
+            // Center-relative UV, player grid corner at the origin here.
+            assert_eq!(v.uv[0], v.position[0]);
+            assert_eq!(v.uv[1], -v.position[2]);
+        }
+    }
+
+    /// FNV data dir for the `#[ignore]`d real-data test below — soft-skip
+    /// unless `BYROREDUX_REQUIRE_GAME_DATA` is set (#3850's contract).
+    fn fnv_data_dir() -> Option<std::path::PathBuf> {
+        if let Some(v) = std::env::var_os("BYROREDUX_FNV_DATA").filter(|s| !s.is_empty()) {
+            let p = std::path::PathBuf::from(v);
+            assert!(p.is_dir(), "BYROREDUX_FNV_DATA points to {p:?}, not a directory");
+            return Some(p);
+        }
+        let p = std::path::PathBuf::from("/mnt/data/SteamLibrary/steamapps/common/Fallout New Vegas/Data");
+        p.is_dir().then_some(p)
+    }
+
+    /// #5243, real-data half: on WastelandNV the distant mesh must be
+    /// per-cell. The census (issue body) shows **zero** inherit cells and
+    /// 15,962 authored dry sentinels — so the mesh may contain no −2300
+    /// quad at all, every emitted quad must belong to a cell with resolved
+    /// water, and Lake Mead's 2600 band must be present beyond the hole.
+    ///
+    /// `cargo test -p byroredux -- --ignored distant_water`
+    #[test]
+    #[ignore = "needs FNV game data on disk"]
+    fn distant_water_mesh_is_per_cell_on_real_fnv() {
+        let Some(data) = fnv_data_dir() else {
+            eprintln!("Skipping: BYROREDUX_FNV_DATA not set and default path missing");
+            return;
+        };
+        let bytes = std::fs::read(data.join("FalloutNV.esm")).expect("read FalloutNV.esm");
+        let index = byroredux_plugin::esm::records::parse_esm(&bytes).expect("parse FalloutNV.esm");
+        let cells = index
+            .cells
+            .exterior_cells
+            .get("wastelandnv")
+            .expect("WastelandNV exterior cells");
+        let player_grid = (19, 13); // the W0/W1 fixture tile
+        let reach =
+            super::super::terrain_lod::lod_ring_reach_cells(esm::reader::GameKind::Fallout3NV);
+        let geometry = build_distant_water_mesh(
+            &distant_water_cells(cells),
+            Some(-2300.0),
+            player_grid,
+            4,
+            reach,
+        );
+        assert!(
+            !geometry.indices.is_empty(),
+            "Lake Mead sits well inside the ring; the distant mesh must have quads"
+        );
+        let mead = geometry
+            .height_histogram
+            .iter()
+            .find(|(h, _)| (*h - 2600.0).abs() < 1.0)
+            .map(|(_, n)| *n)
+            .unwrap_or(0);
+        assert!(
+            mead >= 200,
+            "the 2600 Lake Mead band must dominate the distant mesh (census: 412 override \
+             cells, 330 wet at distance); got histogram {:?}",
+            geometry.height_histogram
+        );
+        assert!(
+            !geometry
+                .height_histogram
+                .iter()
+                .any(|(h, _)| (*h - -2300.0).abs() < 1.0),
+            "no cell inherits the worldspace default (census: 0 absent XCLW), so no \
+             -2300 quad may exist — that was the phantom-water half of #5243"
+        );
+        // Every emitted quad belongs to a cell with resolved water and sits
+        // in the (hole, reach] window. Quads emit their min corner first, so
+        // its coordinates divide back to the cell id exactly.
+        for quad in geometry.vertices.chunks_exact(4) {
+            let v = quad[0];
+            let gx = (v.position[0] / EXTERIOR_CELL_UNITS) as i32;
+            let gy = (-v.position[2] / EXTERIOR_CELL_UNITS) as i32;
+            let distance = (gx - player_grid.0).abs().max((gy - player_grid.1).abs());
             assert!(
-                !all_in_hole,
-                "triangle {tri:?} must not be built entirely from the hole's own corners"
+                distance > 4 && distance <= reach,
+                "quad at ({gx},{gy}) distance {distance} outside the ring"
+            );
+            let cell = cells
+                .get(&(gx, gy))
+                .expect("emitted quad must belong to a real cell");
+            assert!(
+                cell.water_height.is_some(),
+                "cell ({gx},{gy}) resolves no water — a dry-sentinel quad leaked through"
             );
         }
-    }
-
-    /// Every emitted vertex's Y (the engine's up axis after the Z-up→Y-up
-    /// swap) must equal the authored LOD water height — a flat plane.
-    #[test]
-    fn every_vertex_sits_at_the_authored_height() {
-        let (vertices, _) = build_lod_water_frame(2000.0, 500.0, 0.0, 0.0, -1234.5)
-            .expect("outer > inner must build a frame");
-        for v in &vertices {
-            assert_eq!(
-                v.position[1], -1234.5,
-                "vertex {v:?} must sit at lod_height"
-            );
-        }
-    }
-
-    /// The outermost corner vertex's world position and UV must both
-    /// reflect the requested `outer` extent, offset by the requested
-    /// center — pins the coordinate convention (`center ± outer`) against
-    /// a future refactor silently swapping outer/inner or dropping the
-    /// center offset.
-    #[test]
-    fn outer_corner_position_and_uv_match_requested_extent() {
-        let (vertices, _) = build_lod_water_frame(2000.0, 500.0, 100.0, 200.0, 0.0)
-            .expect("outer > inner must build a frame");
-        // Row 0, col 0 = the (-outer, -outer) corner relative to center,
-        // i.e. world (100 - 2000, 200 - 2000) = (-1900, -1800) in Z-up X/Y.
-        let corner = vertices[0];
-        // Z-up→Y-up: (x, height, -y_zup).
-        assert_eq!(corner.position[0], -1900.0);
-        assert_eq!(corner.position[2], 1800.0);
-        // UV is center-relative, matching `spawn_water_plane`'s convention.
-        assert_eq!(corner.uv, [-2000.0, -2000.0]);
     }
 
     // ── translate_lod_water (#2449 / EXAL-01) ────────────────────────

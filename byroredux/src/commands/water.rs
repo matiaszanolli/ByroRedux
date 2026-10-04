@@ -63,14 +63,27 @@ impl ConsoleCommand for WaterDumpCommand {
         let mut lines = vec![format!("Water dump: planes={plane_count}")];
         let lod_q = world.query::<WaterLodInfo>();
         match lod_q.as_ref().and_then(|query| query.iter().next()) {
-            Some((entity, lod)) => lines.push(format!(
-                "  lod_water=entity:{} height={:.2} form={}",
-                entity,
-                lod.height,
-                lod.water_form
-                    .map(|form| format!("0x{form:08X}"))
-                    .unwrap_or_else(|| "none".to_string()),
-            )),
+            Some((entity, lod)) => {
+                // Per-cell distant water (#5243): report the heights actually
+                // drawn, not just the worldspace default.
+                let heights: Vec<String> = lod.quad_heights[..lod.quad_height_count as usize]
+                    .iter()
+                    .map(|(h, n)| format!("{h:.0}×{n}"))
+                    .collect();
+                lines.push(format!(
+                    "  lod_water=entity:{} height={:.2} (default) quads=[{}] form={}",
+                    entity,
+                    lod.height,
+                    if heights.is_empty() {
+                        "none".to_string()
+                    } else {
+                        heights.join(", ")
+                    },
+                    lod.water_form
+                        .map(|form| format!("0x{form:08X}"))
+                        .unwrap_or_else(|| "none".to_string()),
+                ))
+            }
             None => lines.push("  lod_water=none".to_string()),
         }
         match (camera, camera_state) {
@@ -341,6 +354,8 @@ mod tests {
             WaterLodInfo {
                 height: -500.0,
                 water_form: Some(0x00AB_CDEF),
+                quad_heights: [(2600.0, 331), (0.0, 0), (0.0, 0), (0.0, 0), (0.0, 0), (0.0, 0), (0.0, 0), (0.0, 0)],
+                quad_height_count: 1,
             },
         );
 
@@ -358,6 +373,8 @@ mod tests {
             WaterLodInfo {
                 height: -500.0,
                 water_form: None,
+                quad_heights: [(0.0, 0); 8],
+                quad_height_count: 0,
             },
         );
 
@@ -365,7 +382,7 @@ mod tests {
         assert!(output.contains("Water dump: planes=2"), "{output}");
         assert!(
             output.contains("lod_water=entity:")
-                && output.contains("height=-500.00 form=0x00ABCDEF"),
+                && output.contains("height=-500.00 (default) quads=[2600×331] form=0x00ABCDEF"),
             "{output}"
         );
         assert!(

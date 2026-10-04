@@ -331,7 +331,13 @@ route; its water is ~96 BU deep bed-to-surface, so the fixture declares
 depth instead. Fixture geometry, not the engine, decides which side of the
 exit the boundary crossing falls on, so that too is a declared fixture field.
 
-The wider shoreline/LOD perceptual capture set (W2/W3) remains open.
+The wider shoreline/LOD perceptual capture set (W2/W3) remains open. Its
+first chosen defect is closed: **W2-01 (#5243, 2026-10-04)** — the distant
+LOD water was one flat sheet at the worldspace default, painting phantom
+ocean across authored-dry cells and burying override-height water (distant
+Lake Mead) below its own basin; distant water is now per cell at each
+cell's effective XCLW height, chosen by the W0/W1 captures' elevated
+`water_term` evidence and the five-game XCLW census (`xclw_census.rs`).
 
 **Bootstrap landed 2026-08-10:** live dynamic-body current drag now consumes
 `WaterFlow` in the same pre-step as buoyancy, with bounded velocity matching and

@@ -307,8 +307,17 @@ impl Component for WaterNoiseMapHandles {
 /// a second gameplay water representation.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct WaterLodInfo {
+    /// The worldspace `NAM3`/`NAM4` default water height — provenance; the
+    /// distant mesh itself is per-cell (#5243).
     pub(crate) height: f32,
     pub(crate) water_form: Option<u32>,
+    /// `(height, quad count)` histogram of the live distant-water mesh, the
+    /// per-cell effective heights actually drawn. Sorted by height.
+    pub(crate) quad_heights: [(f32, u32); 8],
+    /// Number of valid entries in `quad_heights` (the histogram is capped at
+    /// 8 distinct heights; worldspaces measure 1–3 in practice, with Oblivion
+    /// Tamriel's lake ladder the observed maximum).
+    pub(crate) quad_height_count: u8,
 }
 impl Component for WaterLodInfo {
     type Storage = SparseSetStorage<Self>;
