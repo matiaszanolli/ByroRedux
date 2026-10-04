@@ -195,6 +195,26 @@ const FOG_CLUSTER_INDEX_STRIDE: usize =
     MAX_FOG_VOLUMES_PER_CLUSTER + MAX_FOG_PORTALS_PER_CLUSTER;
 const FOG_VOLUME_INDEX_COUNT: usize = FOG_VOLUME_CLUSTER_COUNT * FOG_CLUSTER_INDEX_STRIDE;
 
+/// #5208 — exact resident bytes of the six per-slot host-visible buffers
+/// `VolumetricsPipeline::new` creates (the sub-table in `memory-budget.md`
+/// §Volumetrics). These are **fixed-size**, unlike the section's main
+/// froxel-volume table: they key on the 16³ fog-cluster grid, the
+/// `MAX_GPU_FOG_VOLUMES`/`COMBUSTION_LIGHT_GRID_COUNT` caps and
+/// `VolumetricsParams`' layout, never on render resolution. Mostly
+/// CpuToGpu (BAR-eligible) memory — the index lists alone are 3 MiB per
+/// slot — which is the pressure class #4889 had to degrade around, so the
+/// ledger states it. `MAX_FRAMES_IN_FLIGHT` multiplied in.
+pub fn volumetrics_host_buffer_bytes() -> u64 {
+    (std::mem::size_of::<VolumetricsParams>()
+        + std::mem::size_of::<GpuFogVolumeUpload>()
+        + std::mem::size_of::<[GpuFogClusterEntry; FOG_VOLUME_CLUSTER_COUNT]>()
+        + FOG_VOLUME_INDEX_COUNT * std::mem::size_of::<u32>()
+        + GLSL_COMBUSTION_LIGHT_GRID_COUNT as usize
+            * std::mem::size_of::<GpuCombustionLightMoment>()
+        + std::mem::size_of::<[u32; FOG_VOLUME_CLUSTER_COUNT]>()) as u64
+        * MAX_FRAMES_IN_FLIGHT as u64
+}
+
 /// World-space analytic medium primitive consumed by
 /// `volumetrics_inject.comp`.
 #[repr(C, align(16))]
@@ -4846,5 +4866,70 @@ mod transport_occupancy_tests {
             call.is_some(),
             "`transportCombustion` must receive the occupancy gate (#4784)"
         );
+    }
+}
+
+/// #5208 — the per-slot host-visible buffer sub-table in
+/// `memory-budget.md` §Volumetrics must state what the code allocates.
+///
+/// The rows were absent until the 2026-10-03 audit: the section ledgers
+/// the six froxel volumes and the noise pair but none of the fixed-size
+/// host-visible SSBOs (~6.27 MiB across both slots, mostly the
+/// BAR-eligible 3 MiB/slot cluster-index lists — the pressure class
+/// #4889 degraded around). Same shape as the SKYAL/EXAL ledger pin in
+/// `groundcover.rs`: figures held to a size helper the allocation code
+/// shares, so a cap change fails here instead of silently rotting the
+/// doc.
+#[cfg(test)]
+mod memory_budget_ledger_tests {
+    fn grouped(n: u64) -> String {
+        let digits = n.to_string();
+        let mut out = String::new();
+        for (i, c) in digits.chars().enumerate() {
+            if i > 0 && (digits.len() - i).is_multiple_of(3) {
+                out.push(',');
+            }
+            out.push(c);
+        }
+        out
+    }
+
+    #[test]
+    fn volumetrics_host_buffer_ledger_matches_the_code() {
+        let doc = include_str!("../../../../docs/engine/memory-budget.md");
+        let section = doc
+            .split_once("### Volumetrics (M55)")
+            .expect("memory-budget.md must keep its Volumetrics section")
+            .1;
+        let section = &section[..section.find("\n## ").unwrap_or(section.len())];
+        let total = super::volumetrics_host_buffer_bytes();
+        let per_slot = total / super::MAX_FRAMES_IN_FLIGHT as u64;
+        let row = section
+            .lines()
+            .find(|line| line.starts_with("| **Total** (`volumetrics_host_buffer_bytes`) |"))
+            .unwrap_or_else(|| panic!("no host-buffer total row in the Volumetrics ledger"));
+        assert!(
+            row.contains(&format!("**{} B**", grouped(per_slot)))
+                && row.contains(&format!("**{} B**", grouped(total))),
+            "memory-budget.md states a stale host-buffer total for Volumetrics; \
+             the code allocates {}/{} B (per slot/total): {row}",
+            grouped(per_slot),
+            grouped(total)
+        );
+        // The named rows must all be present too — a missing row is the
+        // original finding, not just a stale number.
+        for buffer in [
+            "fog_cluster_index_buffers",
+            "fog_cluster_buffers",
+            "fog_volume_buffers",
+            "combustion_occupancy_buffers",
+            "combustion_light_moment_buffers",
+            "param_buffers",
+        ] {
+            assert!(
+                section.contains(&format!("`{buffer}`")),
+                "the Volumetrics host-buffer table lost its `{buffer}` row (#5208)"
+            );
+        }
     }
 }

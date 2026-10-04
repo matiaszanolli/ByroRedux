@@ -492,6 +492,26 @@ The pipeline also owns a private 64³ + 32³ R8 density-noise texture pair
 (288 KiB)** total. This is a second copy of the texels held by the shared
 SKYAL `CloudNoiseVolumes` pair; both are resident and must be counted.
 
+**Per-slot host-visible buffers** (#5208 — these rows were missing until
+the 2026-10-03 audit; sizes derive from the named constants and are pinned
+by `volumetrics_host_buffer_ledger_matches_the_code` in
+`volumetrics.rs`). Unlike every volume above they are **fixed-size** —
+they key on the 16³ fog-cluster grid and the `MAX_*` caps, never on render
+resolution:
+
+| Buffer (per frame-in-flight slot) | Size/slot | × 2 FIF | Memory |
+|---|---:|---:|---|
+| `fog_cluster_index_buffers` — 4096 clusters × (64 volume + 128 portal) refs × 4 B | 3,145,728 B (3 MiB) | 6,291,456 B | CpuToGpu |
+| `fog_cluster_buffers` — 4096 × `GpuFogClusterEntry` (4 × u32) | 65,536 B | 131,072 B | CpuToGpu |
+| `fog_volume_buffers` — `GpuFogVolumeUpload` (16 B header + 512 × 96 B) | 49,168 B | 98,336 B | CpuToGpu |
+| `combustion_occupancy_buffers` (#4784) — 4096 × u32 | 16,384 B | 32,768 B | CpuToGpu |
+| `combustion_light_moment_buffers` — 256 × `GpuCombustionLightMoment` (8 × u32) | 8,192 B | 16,384 B | GpuToCpu readback |
+| `param_buffers` — `VolumetricsParams` UBO (2 × mat4 + 13 × vec4) | 336 B | 672 B | CpuToGpu |
+| **Total** (`volumetrics_host_buffer_bytes`) | **3,285,344 B** | **6,570,688 B** (~6.27 MiB) | |
+
+All but the moment readback are BAR-eligible CpuToGpu, and the index lists
+alone are the bulk — the exact pressure class #4889 had to degrade around.
+
 One device-limit wrinkle (#4781): the grid's X/Y are 3D-image dimensions,
 bounded by `maxImageDimension3D` (2048 on Mesa ANV and lavapipe), not by the
 2D limit the render extent itself is checked against. When an explicit
