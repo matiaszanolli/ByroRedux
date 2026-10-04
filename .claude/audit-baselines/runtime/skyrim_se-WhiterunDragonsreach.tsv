@@ -133,6 +133,19 @@
 # explained — regen only once that entity rise itself is bisected. Reading
 # entities_total=8126 or skin_pool_live=83 as "current" is wrong; the
 # 2026-08-30 sweep measured entities_total=9363 / skin_pool_live=133 here.
+# regenerated: 2026-10-04 (#5235 — gpu_calls re-captured in ONE renderer-static run, engine 7ead491d7)
+# `3c197ed8c` (#5057) admitted lighting-shader material kinds 1-16 to early
+# fragment tests, merging adjacent draws into fewer indirect calls — an
+# improvement that landed without the same-commit TSV refresh the baselines
+# README requires. Attribution is the issue's own renderer-static probe pair
+# at a pinned camera pose: 8dbe179ad (= 3c197ed8c^) reproduces 35c
+# bit-for-bit; 3c197ed8c reads 34c with entities, cmds, batches and the
+# raster prefix unchanged. This capture (engine 7ead491d7, which contains
+# 3c197ed8c) reproduces the 3c197ed8c rows exactly: draws 2494/643b/34c
+# raster 1786, entities 9499, lights 28/0, skin 122/1364+0, pose
+# bit-identical to the #5125 rows below. Only gpu_calls and the advisory fps
+# rows move (wall_fps 163.6 -> 177.4; fps rows are advisory and not part of
+# the #5057 attribution).
 bench_mode	renderer-static
 bench_camera_pos	-448.000,-200.000,128.000
 bench_camera_forward	-0.016797,0.000000,-0.999859
@@ -145,9 +158,9 @@ light_count_directional	0
 skin_pool_live	122
 skin_pool_max	1364
 skin_pool_overflow_attempts	0
-bench_fps_p50	163.6
-bench_fps_avg	163.6
+bench_fps_p50	177.4
+bench_fps_avg	177.4
 bench_draws_cmds	2494
 bench_draws_raster_cmds	1786
 bench_draws_batches	643
-bench_draws_gpu_calls	35
+bench_draws_gpu_calls	34
