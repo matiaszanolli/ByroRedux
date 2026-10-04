@@ -428,14 +428,15 @@ bytes flags?). Likely leaf billboard descriptors.
 - `13008` — modal 11-byte payload; probably small fixed struct.
 - `13013` — 4-byte payload, a lone f32 (the same ≈0.0509 constant in
   every corpus sample; #4122 corrected the 7-byte reading).
-- `12002` (16 B), `12003` (20 B) — sized as `FixedBytes` in `tag.rs`, but
-  unlike every other entry in this section, **no corpus observation is
-  recorded for either**: no histogram, no confidence figure, no sample
-  offset. `12000`/`12001` appear among the bare markers above; `12002`/
-  `12003` have never been run through the same census. An earlier
-  revision of `tag.rs`'s comment glossed 12002 as "4 × f32 = matrix row?"
-  — that was an unsupported interpretation riding along with the
-  load-bearing size and has since been removed pending real evidence.
+- `12002` (16 B), `12003` (20 B) — sized as `FixedBytes` in `tag.rs`.
+  This section originally recorded **no corpus observation for either**;
+  #4122's 2026-09-24 tail walk supplied one (see "Side confirmation"
+  under the desync entry): both decode cleanly to their next tags, so
+  the sizes are boundary-verified even though their interiors remain
+  unpinned. `12000`/`12001` appear among the bare markers above. An
+  earlier revision of `tag.rs`'s comment glossed 12002 as
+  "4 × f32 = matrix row?" — that was an unsupported interpretation
+  riding along with the load-bearing size and has since been removed.
 
 ### False-tag confounders
 

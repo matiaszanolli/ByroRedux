@@ -115,14 +115,20 @@ pub struct SptScene {
     ///   alignment. The stream continues; the walker merely stops, because
     ///   [`TAG_MAX`](crate::parser::TAG_MAX) caps it at 13 999 and the next
     ///   tag bands start at 14 000.
-    /// - In 46 % of files the resync needs a 1-3 byte shift, meaning the
-    ///   walker stopped *inside* a payload it mis-sized rather than at any
-    ///   boundary.
+    /// - Pre-#4122, in 46 % of files the resync needed a 1-3 byte shift —
+    ///   the walker stopped *inside* a payload the dictionary mis-sized
+    ///   (`10002`, `10003`, `13013`; see the 2026-09-24 entry in
+    ///   format-notes.md). With those three entries fixed, the acceptance
+    ///   gate (`walker_stops_on_true_tlv_boundary`, game-data gated)
+    ///   measures **159/159 files stopping with resync shift 0 and a stop
+    ///   word inside the 14 000-band tail tags**.
     /// - No `.spt` in the corpus exceeds 8 793 bytes — below the cost of
     ///   274 vertices of position + normal + UV, for the entire file. There
     ///   is no geometry here to mark the start of.
     ///
-    /// Treat it as "where parsing gave up", which is what it measures.
+    /// Post-#4122 this is the true TLV boundary at `TAG_MAX` — the exact
+    /// precondition the #3808 closeout named for raising `TAG_MAX` and
+    /// dictionarying the 14 000-22 000 bands.
     pub tail_offset: usize,
     /// True when the walker stopped because it ran out of bytes
     /// (`is_eof`) rather than because it hit an out-of-range value (see

@@ -26,7 +26,7 @@ pub enum SptTagKind {
     /// Fixed-size opaque byte payload of N bytes (4 ≤ N ≤ 255).
     /// Used for tags whose interior layout we haven't pinned but
     /// whose total payload size is constant across the corpus
-    /// (e.g. tag `8003` = 52 bytes, tag `13013` = 7 bytes).
+    /// (e.g. tag `8003` = 52 bytes, tag `13013` = 4 bytes).
     FixedBytes(u8),
     /// `u32` length prefix followed by `length` raw bytes — almost
     /// always ASCII. Texture paths (`2000`, `4003`), BezierSpline
@@ -136,14 +136,14 @@ pub fn dispatch_tag(tag: u32) -> SptTagKind {
         // followed by the out-of-range tail tag 14007 (u32 payload),
         // then 14008 — byte-verified on three Oblivion files.
         13013 => SptTagKind::FixedBytes(4),
-        // 16 bytes — tag 12002. Size only; unlike the other FixedBytes
-        // entries above, no corpus histogram/confidence is recorded for
-        // this one in format-notes.md (see its "Recovered tag" table).
+        // 16 bytes — tag 12002. #4122's tail walk (2026-09-24,
+        // format-notes.md "Side confirmation") decoded both this and
+        // 12003 cleanly to their next tags, so the sizes carry a recorded
+        // corpus observation even though their interiors stay unpinned.
         // The "(4 × f32 = matrix row?)" gloss from an earlier revision of
         // this comment was an unsupported guess and has been removed.
         12002 => SptTagKind::FixedBytes(16),
-        // 20 bytes — tag 12003. Same caveat as 12002: size only, no
-        // recorded corpus evidence.
+        // 20 bytes — tag 12003. Same #4122 side confirmation as 12002.
         12003 => SptTagKind::FixedBytes(20),
 
         // ── String payload (u32 length + body) ────────────────────

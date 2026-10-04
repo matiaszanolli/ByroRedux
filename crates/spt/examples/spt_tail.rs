@@ -286,10 +286,11 @@ fn scan_tail(bytes: &[u8], tail_offset: usize) -> Vec<(usize, u32)> {
 /// so the tool and the test can never disagree about the shift.
 
 /// #4122 — pair each file's resync shift with the tags the walker decoded
-/// last before stopping. The walker's stop is 1–3 bytes off the true
-/// boundary in 46 % of the corpus (the 2026-09-07 desync table), and a
-/// mis-sized payload desyncs alignment, so the *last* decoded tag is the
-/// one whose dictionary entry under- or over-consumed. Prints a
+/// last before stopping. Pre-#4122 the walker's stop was 1–3 bytes off
+/// the true boundary in 46 % of the corpus (the 2026-09-07 desync
+/// table), and a mis-sized payload desyncs alignment, so the *last*
+/// decoded tag is the one whose dictionary entry under- or
+/// over-consumed. Prints a
 /// `(last tag, kind) → shift` histogram plus hex windows around each
 /// desynced stop, sized so the true payload boundary can be read off
 /// directly: the byte at `tail_offset + shift` starts the next real tag

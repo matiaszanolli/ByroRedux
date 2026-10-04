@@ -6,8 +6,8 @@
 //! are unconditional.
 //!
 //! Position-overrun is reported as `io::Error` rather than panicking;
-//! the parser surfaces those as `Err(SptParseError::Truncated)` with
-//! an offset stamp so consumers can pinpoint where the corruption
+//! the parser surfaces those as an `io::Error` of kind `UnexpectedEof`
+//! with an offset stamp so consumers can pinpoint where the corruption
 //! lives.
 
 use std::io;
