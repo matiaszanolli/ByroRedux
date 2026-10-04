@@ -889,9 +889,23 @@ impl AccelerationManager {
         });
 
         if let Err(e) = build_result {
-            // SAFETY: the build submission failed, so no in-flight command
-            // buffer references `prepared` or `query_pool`; both are owned
-            // here; device is live.
+            // #5201 — #4891's policy: a failure at `vkQueueSubmit` or the
+            // fence wait leaves the build command buffer possibly still
+            // executing. Destroying the ASes it writes and its query pool
+            // then races in-flight GPU work, so conservatively leak instead
+            // (the device is already failing; a bounded leak outlives it by
+            // nothing). `prepared` holds `GpuBuffer`s with Drop impls —
+            // `mem::forget` skips them, leaking the allocations. The query
+            // pool is a raw handle: leaking it means simply not destroying
+            // it here.
+            if super::super::texture::OneTimeCommandError::may_be_in_flight(&e) {
+                std::mem::forget(prepared);
+                return Err(e);
+            }
+            // SAFETY: the build submission failed before `vkQueueSubmit`
+            // (#4891 NotSubmitted — allocate/begin/record/end/fence setup),
+            // so no in-flight command buffer references `prepared` or
+            // `query_pool`; both are owned here; device is live.
             unsafe {
                 unwind_prepared(
                     &self.accel_loader,
@@ -1101,10 +1115,22 @@ impl AccelerationManager {
         }
 
         if let Err(e) = copy_result {
+            // #5201 — same #4891 branch as the build arm above: on a
+            // submit/fence-wait failure the compaction copies may still be
+            // executing, so leak both vecs rather than destroy ASes the GPU
+            // is still writing. (The query pool was already destroyed above
+            // — nothing in the copy command buffer references it, so that
+            // destroy is safe under both failure classes.)
+            if super::super::texture::OneTimeCommandError::may_be_in_flight(&e) {
+                std::mem::forget(prepared);
+                std::mem::forget(compact_accels);
+                return Err(e);
+            }
             // Clean up both original and compact structures on failure.
             for mut p in prepared {
-                // SAFETY: the copy submission failed, so no in-flight command
-                // buffer references `p.accel`; each accel + buffer is owned by
+                // SAFETY: the copy submission failed before `vkQueueSubmit`
+                // (#4891 NotSubmitted), so no in-flight command buffer
+                // references `p.accel`; each accel + buffer is owned by
                 // `prepared`; device is live.
                 unsafe {
                     self.accel_loader
@@ -1113,8 +1139,9 @@ impl AccelerationManager {
                 p.buffer.destroy(device, allocator);
             }
             for (_, accel, mut buf, _, _, _) in compact_accels {
-                // SAFETY: the copy submission failed, so the compacted `accel` was
-                // never read by any in-flight command buffer; each accel + buffer
+                // SAFETY: the copy submission failed before `vkQueueSubmit`
+                // (#4891 NotSubmitted), so the compacted `accel` was never
+                // read by any in-flight command buffer; each accel + buffer
                 // is owned by `compact_accels`; device is live.
                 unsafe {
                     self.accel_loader
