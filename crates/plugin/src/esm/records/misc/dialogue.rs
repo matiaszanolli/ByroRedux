@@ -222,12 +222,27 @@ pub enum ConversationTreeError {
 /// when Y` choice tree, owned by the parent `DIAL` topic via the
 /// nested Topic Children GRUP. Stub captures the response text +
 /// type byte + sibling links so quest / dialogue systems can
-/// enumerate branches without re-parsing. Conditions (CTDA/CTDT),
-/// scripts (SCHR/SCDA), and edits (NAM3) are deferred until the
-/// condition runtime lands. See #631.
+/// enumerate branches without re-parsing. Scripts (SCHR/SCDA) and
+/// edits (NAM3) are deferred; conditions (CTDA/CTDT) landed via
+/// #3614 and the `DATA` header via #4469. See #631.
 #[derive(Debug, Clone, Default)]
 pub struct InfoRecord {
     pub form_id: u32,
+    /// The INFO's own `DATA` header, byte 0: the dialogue `Type` (the
+    /// same byte-0-is-type convention `DialRecord::category` decodes
+    /// per game). Zero when the record authored no `DATA` (#4469 —
+    /// pre-fix the whole sub-record was silently discarded, on 22,327 /
+    /// 22,327 measured FO3 INFOs and 23,247 / 23,247 FNV).
+    pub info_type: u8,
+    /// The rest of the `DATA` payload after byte 0, as the raw
+    /// little-endian u16 bytes 1–2 carry (`parse_info` takes no
+    /// `GameKind`, so the per-game reading stays at the consumer).
+    /// FO3 / FNV: `Flags 1`, with bit `0x80` = Goodbye — xEdit's
+    /// `wbINFOAfterLoad` reads it to decide `DNAM` retention.
+    /// Oblivion: low byte = next speaker (0 Target / 1 Self / 2
+    /// Either), high byte = the 8-bit flags (`0x01` Goodbye, `0x02`
+    /// Random, `0x04` Say Once, …). Skyrim+ INFOs author no `DATA`.
+    pub data_flags: u16,
     /// Response text shown / spoken to the player: every authored
     /// [`Self::responses`] segment's `text`, joined in order with `"\n"`.
     /// #3616 — pre-fix this was `NAM1`'s bare assignment, so a
@@ -510,6 +525,21 @@ pub fn parse_info(
                 let raw = u32::from_le_bytes([sub.data[0], sub.data[1], sub.data[2], sub.data[3]]);
                 let remapped = remap.as_ref().map_or(raw, |r| r.remap(raw));
                 out.actor_form_id = remapped;
+            }
+            // #4469 — the INFO's own `DATA` header: byte 0 is the dialogue
+            // `Type`, the tail word is `Flags 1` on FO3/FNV (bit 0x80 =
+            // Goodbye; xEdit's `wbINFOAfterLoad` reads it to decide DNAM
+            // retention) and next-speaker + 8-bit flags on Oblivion. The
+            // payload is stored raw — `parse_info` takes no `GameKind`, so
+            // the per-game interpretation stays at the consumer, exactly
+            // like `DialRecord`'s byte-0 type convention. Pre-fix the
+            // sub-record was silently dropped on 100% of measured FO3/FNV
+            // INFOs.
+            b"DATA" if !sub.data.is_empty() => {
+                out.info_type = sub.data[0];
+                if sub.data.len() >= 3 {
+                    out.data_flags = u16::from_le_bytes([sub.data[1], sub.data[2]]);
+                }
             }
             // #3614 — `CTDT` is the legacy fixed-layout encoding of the
             // same condition; see `push_ctda`'s doc.
@@ -1095,6 +1125,39 @@ mod tests {
         let info = parse_info(0x9999, &subs, &None);
         assert_eq!(info.linked_from_topics, vec![0x0001_1111, 0x0001_2222]);
         assert_eq!(info.added_topics, vec![0x0001_3333]);
+    }
+
+    /// #4469 — the INFO's own `DATA` header (dialogue `Type` byte +
+    /// `Flags 1` word on FO3/FNV) was silently discarded on 22,327 /
+    /// 22,327 measured FO3 INFOs and 23,247 / 23,247 FNV. Byte 0 is
+    /// stored as `info_type` (the same byte-0 convention the DIAL arm
+    /// decodes per game), the tail as the raw LE u16 — a goodbye-flagged
+    /// FO3 line (`Flags 1` bit 0x80) must decode as such.
+    #[test]
+    fn parse_info_data_header_decodes_type_and_flags() {
+        // FO3/FNV shape: Type u8 + Flags 1 u16 (0x0080 = Goodbye).
+        let subs = vec![sub(b"DATA", [0u8, 0x80, 0x00])];
+        let info = parse_info(0x5678, &subs, &None);
+        assert_eq!(info.info_type, 0, "a plain Topic line");
+        assert_eq!(
+            info.data_flags, 0x0080,
+            "the goodbye bit must survive the parse (#4469)"
+        );
+
+        // Oblivion shape: Type u8 + Next speaker u8 + Flags u8 — stored
+        // raw in the same u16, low byte = next speaker, high = flags.
+        let subs = vec![sub(b"DATA", [3u8, 0x01, 0x02])];
+        let info = parse_info(0x5678, &subs, &None);
+        assert_eq!(info.info_type, 3, "Combat");
+        assert_eq!(
+            info.data_flags, 0x0201,
+            "next speaker 1 (Self) low byte, Say Once high byte (raw)"
+        );
+
+        // No DATA at all (a Skyrim+ INFO) keeps both fields at zero —
+        // the same Default convention as every other stub field.
+        let info = parse_info(0x5678, &[sub(b"NAM1", b"hi\0")], &None);
+        assert_eq!((info.info_type, info.data_flags), (0, 0));
     }
 
     /// #3614 — TCLF/NAME FormIDs are plugin-local like TCLT/PNAM/ANAM and
