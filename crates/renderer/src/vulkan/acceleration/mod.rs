@@ -69,6 +69,12 @@ pub struct TlasIntegritySnapshot {
     pub missing_skinned_blas: u32,
     pub missing_rigid_blas: u32,
     pub missing_ssbo_instance: u32,
+    /// #5200 — eligible draws dropped by `tlas_instance_transform` returning
+    /// `None` for a non-finite model matrix (#4633). Without this field the
+    /// snapshot reports `emitted < eligible` while every cause counter is
+    /// zero — the "FAIL, no cause" shape #1228/#3999 removed for the other
+    /// three drops.
+    pub non_finite_transform: u32,
 }
 
 /// Shadow-mask census over the instances the most recent TLAS build

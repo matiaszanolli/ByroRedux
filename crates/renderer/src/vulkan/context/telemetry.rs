@@ -503,6 +503,7 @@ impl VulkanContext {
         stats.missing_skinned_blas = tlas.missing_skinned_blas;
         stats.missing_rigid_blas = tlas.missing_rigid_blas;
         stats.missing_ssbo_instance = tlas.missing_ssbo_instance;
+        stats.non_finite_transform = tlas.non_finite_transform;
         stats.lights_submitted = lights_submitted;
         stats.lights_uploaded = lights_uploaded;
         stats.lights_dropped = lights_submitted.saturating_sub(lights_uploaded);

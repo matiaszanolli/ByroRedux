@@ -992,6 +992,13 @@ pub struct RtIntegrityStats {
     pub missing_rigid_blas: u32,
     /// Eligible draws missing the matching compacted instance-SSBO entry.
     pub missing_ssbo_instance: u32,
+    /// Eligible draws whose model matrix carried a non-finite cell, so the
+    /// TLAS gather dropped them instead of feeding a garbage
+    /// `VkTransformMatrixKHR` to the AS build (#4633). #5200 — without this
+    /// field a frame whose only drops are non-finite reports `emitted <
+    /// eligible` with every cause counter at zero, the "FAIL, no cause"
+    /// shape the #1228/#3999 integrity chain exists to prevent.
+    pub non_finite_transform: u32,
     /// Lights submitted by render-data collection before the global SSBO cap.
     pub lights_submitted: u32,
     /// Lights retained in the GPU SSBO after applying the global cap.
@@ -1060,6 +1067,7 @@ impl RtIntegrityStats {
             && self.missing_skinned_blas == 0
             && self.missing_rigid_blas == 0
             && self.missing_ssbo_instance == 0
+            && self.non_finite_transform == 0
             && self.lights_dropped == 0
             && self.cluster_overflowed == 0
             && self.cluster_dropped == 0
@@ -1076,6 +1084,7 @@ impl RtIntegrityStats {
             "rt-integrity: frame={} sampled={} rt_supported={} rt_flag={} \
              tlas_build={} tlas_eligible={} tlas_emitted={} \
              missing_skinned={} missing_rigid={} missing_ssbo={} \
+             non_finite_transform={} \
              lights_submitted={} lights_uploaded={} lights_dropped={} \
              cluster_sampled={} cluster_overflowed={} cluster_dropped={} \
              cluster_max={} \
@@ -1093,6 +1102,7 @@ impl RtIntegrityStats {
             self.missing_skinned_blas,
             self.missing_rigid_blas,
             self.missing_ssbo_instance,
+            self.non_finite_transform,
             self.lights_submitted,
             self.lights_uploaded,
             self.lights_dropped,
@@ -1785,7 +1795,8 @@ mod tests {
             clean.machine_line(),
             "rt-integrity: frame=42 sampled=1 rt_supported=1 rt_flag=1 \
              tlas_build=1 tlas_eligible=17 tlas_emitted=17 missing_skinned=0 \
-             missing_rigid=0 missing_ssbo=0 lights_submitted=0 \
+             missing_rigid=0 missing_ssbo=0 non_finite_transform=0 \
+             lights_submitted=0 \
              lights_uploaded=0 lights_dropped=0 cluster_sampled=1 \
              cluster_overflowed=0 cluster_dropped=0 cluster_max=23 \
              blas_total_bytes=0 blas_static_bytes=0 \
@@ -1821,6 +1832,23 @@ mod tests {
                  scratch_pending_destroy_count=1 texture_pending_destroy_count=5"
             ),
             "{line}"
+        );
+
+        // #5200 — non-finite-transform drops are the fourth cause. Pre-fix
+        // this state reported FAIL with every cause counter at zero (the
+        // "FAIL, no cause" shape), because only `tlas_emitted !=
+        // tlas_eligible` saw the gap.
+        let non_finite_only = RtIntegrityStats {
+            tlas_eligible: 17,
+            tlas_emitted: 16,
+            non_finite_transform: 1,
+            ..clean
+        };
+        assert_eq!(non_finite_only.verdict(), "FAIL");
+        let line = non_finite_only.machine_line();
+        assert!(
+            line.contains("missing_ssbo=0 non_finite_transform=1 "),
+            "the non-finite count must name the FAIL cause: {line}"
         );
     }
 

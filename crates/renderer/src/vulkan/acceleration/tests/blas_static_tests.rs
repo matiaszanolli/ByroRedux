@@ -464,6 +464,72 @@ mod blas_residency_telemetry_tests {
     }
 }
 
+/// #5200 — the #4633 non-finite-transform TLAS drops must reach the whole
+/// integrity chain, not just the rate-limited warn.
+///
+/// Pre-fix, the drop incremented a local counter consumed only by the warn,
+/// while `TlasIntegritySnapshot` had fields for the three older causes. A
+/// frame whose only drops were non-finite therefore reported
+/// `tlas_emitted < tlas_eligible` with every cause counter at zero — the
+/// "FAIL, no cause" shape #1228 and #3999 removed for the other causes, on
+/// exactly the corrupt-transform frames an operator most needs explained.
+/// The core end (verdict + `machine_line`) is pinned by the
+/// `rt_integrity_requires_a_complete_cross_layer_sample` test in
+/// `byroredux-core`; this pins the renderer half: gather → snapshot →
+/// telemetry copy → shared-sample-budget overflow marker.
+#[cfg(test)]
+mod tlas_non_finite_integrity_tests {
+    const TLAS_RS: &str = include_str!("../tlas.rs");
+    const ACCELERATION_MOD_RS: &str = include_str!("../mod.rs");
+    const TELEMETRY_RS: &str = include_str!("../../context/telemetry.rs");
+
+    #[test]
+    fn non_finite_transform_drops_reach_the_integrity_snapshot_and_telemetry() {
+        assert!(
+            TLAS_RS.contains("non_finite_transform: non_finite_transform as u32,"),
+            "build_tlas_instances must publish its non-finite drop count into \
+             TlasIntegritySnapshot — otherwise rt.integrity FAILs with every \
+             cause counter at zero (#5200)"
+        );
+        assert!(
+            TELEMETRY_RS.contains("stats.non_finite_transform = tlas.non_finite_transform;"),
+            "fill_rt_integrity_stats must copy the non-finite count from the \
+             snapshot into RtIntegrityStats, like the three BLAS/SSBO causes"
+        );
+        // The struct-side half: the field must exist beside its siblings.
+        let struct_src = ACCELERATION_MOD_RS
+            .split("pub struct TlasIntegritySnapshot {")
+            .nth(1)
+            .and_then(|body| body.split('}').next())
+            .expect("TlasIntegritySnapshot must still exist");
+        assert!(
+            struct_src.contains("pub non_finite_transform: u32,"),
+            "TlasIntegritySnapshot is missing the non_finite_transform field"
+        );
+    }
+
+    #[test]
+    fn non_finite_drops_count_in_the_warn_overflow_marker() {
+        // The "; ..." overflow marker compares against the shared
+        // MISSING_BLAS_SAMPLE_LIMIT budget. It must count non-finite drops
+        // alongside the three BLAS/SSBO causes, or a non-finite 6th offender
+        // can hide behind a "first 5 offenders" line that looks complete.
+        // `.last()` — a same-shaped local exists earlier in the file (the
+        // per-slot build path), so the first split would cut at its warn
+        // block instead of this gather's.
+        let gather = TLAS_RS
+            .split("let instance_count = instances.len() as u32;")
+            .last()
+            .and_then(|body| body.split("// #1142").next())
+            .expect("the post-gather warn block must still exist");
+        assert!(
+            gather.contains("missing_blas_total + non_finite_transform > missing_samples.len()"),
+            "the sample overflow marker must include the non-finite drops in \
+             its comparison (#5200)"
+        );
+    }
+}
+
 /// #4000 / PERF-D6-01 residual — the acceleration module carries its own
 /// hot-path-hashing pin.
 ///

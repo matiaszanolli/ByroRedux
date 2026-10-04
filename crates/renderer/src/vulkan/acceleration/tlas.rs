@@ -784,6 +784,9 @@ impl AccelerationManager {
             missing_skinned_blas: missing_skinned_blas as u32,
             missing_rigid_blas: missing_rigid_blas as u32,
             missing_ssbo_instance: missing_ssbo_instance as u32,
+            // #5200 — publish the #4633 drops so `rt.integrity` can name the
+            // cause instead of FAILing with every counter at zero.
+            non_finite_transform: non_finite_transform as u32,
         };
         if (missing_blas_total > 0 || non_finite_transform > 0) && frame_index == 0 {
             // Log once per second (at 60fps, frame_index 0 fires 30×/s — good enough).
@@ -802,7 +805,12 @@ impl AccelerationManager {
                         missing_samples.len(),
                         if missing_samples.len() == 1 { "" } else { "s" },
                         missing_samples.join("; "),
-                        if missing_blas_total > missing_samples.len() {
+                        // #5200 — non-finite drops share the sample budget,
+                        // so the overflow marker must count them too (it
+                        // compared only the three BLAS/SSBO causes and could
+                        // print "first 5 offenders" with a 6th non-finite
+                        // drop unsignalled).
+                        if missing_blas_total + non_finite_transform > missing_samples.len() {
                             "; ..."
                         } else {
                             ""
