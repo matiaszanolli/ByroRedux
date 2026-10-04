@@ -236,7 +236,7 @@ fn flatten_to_parts(
             // builds, so it can't be the only guard: a producer that
             // slips a non-finite or astronomically large half-extent
             // through (e.g. an unclamped REFR scale feeding
-            // `synthesize_packed_havok_proxy`) would otherwise hand
+            // `synthesize_packed_collision_proxy`) would otherwise hand
             // Rapier's broad-phase an effectively-infinite AABB that
             // overlaps the entire scene. Replace non-finite lanes with
             // the same degenerate-avoidance floor the other arms already
