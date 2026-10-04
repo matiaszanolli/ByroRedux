@@ -337,10 +337,17 @@ the stronger `Rapids` foam/normal profile.
 Starfield's DNAM color-absorption values survive translation as per-channel
 extinction coefficients; consumers apply Beer–Lambert transmission as
 `exp(-distance * coefficient)`. Older games retain the zero sentinel and the
-established scalar fog response. Its authored pigment concentrations remain
-in their vanilla 0..20 range and are normalized in the shader against the
-shared `STARFIELD_WATER_CONCENTRATION_REFERENCE`; `oceanness` retains its
+established scalar fog response. Its authored pigment concentrations arrive
+in their vanilla 0..20 range and are normalized at the WATAL translate
+boundary — ÷ the shared `STARFIELD_WATER_CONCENTRATION_REFERENCE`, in
+`env_translate.rs` (#4285: a per-game unit conversion at render time was the
+defect that commit fixed; `water.frag` only clamps). `oceanness` retains its
 native 0..1 scale and feeds both absorption and forward scattering.
+#5151 lifted Starfield's DNAM metres → Bethesda units at the same boundary
+(`spatial_units::normalize`, Starfield-gated, FO76 untouched): depth,
+underwater fog near/far, and noise falloff ×70, absorption ÷70.
+One #5151 leftover is **OPEN**: the noise-UV tile sizes at DNAM 120/124/128
+stay unlifted until a capture settles their unit.
 FO76 shares Starfield's DNAM decoder. Its distances are engine units, but its
 absorption triplet is per-metre (five vanilla records author Starfield's exact
 0.3 / 0.075 / 0.01), so `spatial_units::normalize` lifts that lane alone ÷70
@@ -497,11 +504,18 @@ evidence:
 | Skyrim | converts (+90°) | census R = 0.74, mean +6.2° after conversion |
 | FO4 | converts (+90°) | census R = 0.65, mean +1.5° |
 | FO76 | converts (+90°), **tentative** | re-run census mean +12.5° but R = 0.36 — closer to converted than any mirror, yet weak |
-| Oblivion | **un-rotated** | layer 0 is the angle of the editor's (x, y) scroll *pair*, not a bearing — the +90° read turned (x, y) into (−y, x) on e.g. `DefaultWater` |
+| Oblivion | **un-rotated, OPEN** | layer 0 is `atan2(y, x)` of the editor's (x, y) scroll *pair*, and "the angle is not a bearing" only refutes the +90° formula — it does not establish φ = θ. If the pair is a world-frame Z-up vector, the doc's own Z-up→Y-up map (§ above: (x, y, z) → (x, z, −y)) sends it to engine (x, −y), i.e. φ = −θ — the un-rotated read would mirror north/south (census θ = 45° DefaultWater, 63° dungeons, read NE/NNE world-frame vs SE/SSE un-rotated). If it is a UV-space vector the relation depends on Oblivion's water UV convention, which nobody has established. Settle with a capture or the shader's UV basis before calling a frame. |
 | FO3 / FNV | **un-rotated, OPEN** | 71/78 FNV and 47/53 FO3 records carry non-zero layer speeds but none has a NAM0 to census against; the un-rotated read is the pre-2026-09-24 status quo, not a frame claim |
 | Starfield | **un-rotated, OPEN** | R = 0.21 supports neither frame |
 
-The FO3/FNV and Starfield frames stay open until a census basis exists
+The same scoping silently changed Oblivion's `wind_direction` (`DATA[4]`,
+authored per #4931, the physics-current fallback for NAM0-less records at
+`env_translate.rs`'s `wind_direction` read): it went from the +90° read to
+un-rotated, so it inherits the same OPEN frame question as layer 0. Latent in
+vanilla — no Oblivion WATR has a directional kind (no river/stream/creek/rapid
+name, no NAM5, no NAM0), so the fallback never fires on shipped content.
+
+The Oblivion, FO3/FNV and Starfield frames stay open until a census basis exists
 (XWCU-agreeing river placements are the most promising source, the #4911
 helper makes the pattern side comparable). Pinned by
 `wind_angle_conversion_is_scoped_per_game`,
