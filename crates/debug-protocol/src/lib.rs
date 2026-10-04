@@ -39,7 +39,10 @@ pub enum DebugRequest {
     /// Find an entity by name (searches the Name component).
     FindEntity { name: String },
     /// Capture a screenshot of the current frame.
-    /// Optionally save to a file path; if None, returns raw PNG bytes.
+    /// Optionally save to a file path; if None, the server writes
+    /// `screenshot_<secs>.png` under its cwd's `screenshots/` and answers
+    /// [`DebugResponse::ScreenshotSaved`] (#5150 removed the never-built
+    /// base64 `Screenshot` response this `None` arm used to promise).
     Screenshot { path: Option<String> },
     /// Walk the scene hierarchy from a root entity. Returns each visited
     /// node's id, name, parent, children, and world translation. Used to
@@ -170,12 +173,6 @@ pub enum DebugResponse {
         /// Actual `cmd_draw_indexed` + `cmd_draw_indexed_indirect`
         /// invocations recorded — the real "draws" cost number. #1258.
         indirect_call_count: u32,
-    },
-    /// Screenshot captured — PNG bytes (base64-encoded for JSON transport).
-    Screenshot {
-        png_base64: String,
-        width: u32,
-        height: u32,
     },
     /// Screenshot saved to a file path.
     ScreenshotSaved { path: String },

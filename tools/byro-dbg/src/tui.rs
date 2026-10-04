@@ -380,7 +380,6 @@ fn variant_name(resp: &DebugResponse) -> &'static str {
         DebugResponse::ComponentList { .. } => "ComponentList",
         DebugResponse::SystemList { .. } => "SystemList",
         DebugResponse::Stats { .. } => "Stats",
-        DebugResponse::Screenshot { .. } => "Screenshot",
         DebugResponse::ScreenshotSaved { .. } => "ScreenshotSaved",
         DebugResponse::Ok => "Ok",
         DebugResponse::Pong => "Pong",

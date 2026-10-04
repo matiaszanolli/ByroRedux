@@ -18,7 +18,8 @@ The listener starts automatically in debug builds. Release builds require
 writes under `texture-dumps/`. Loose `LoadNif` paths stay within configured game
 data roots.
 
-> Last reconciled 2026-08-25 (Session 72 closeout). The doc was substantially
+> Last reconciled 2026-10-04 (#5150: screenshot response contract,
+> `tex.dump` default path, timeout figures). The doc was substantially
 > rewritten 2026-05-11 (`478b9c0`); since then the debug-UI plan (Phases 1–5)
 > added the `Metrics` / `LoadNif` / `Load*Cell` / `ListGameProfiles`
 > protocol surface, the `--tui` dashboard, the `near` /
@@ -120,7 +121,7 @@ enum is tagged with `#[serde(tag = "cmd", rename_all = "snake_case")]`.
 | `ListSystems` | List ECS systems in stage order |
 | `Stats` | FPS, frame time, entity/mesh/texture counts + draw-pipeline counts |
 | `FindEntity { name }` | Find entity by `Name` component |
-| `Screenshot { path? }` | Capture the composited frame as PNG (saved server-side if `path` is set, else returns base64 PNG) |
+| `Screenshot { path? }` | Capture the composited frame as PNG. Always saved server-side: `path` names the file, else the server writes `screenshot_<secs>.png` under its cwd's `screenshots/`; the reply is `ScreenshotSaved` either way (#5150 removed the never-implemented base64 return the doc used to promise) |
 | `WalkEntity { entity, max_depth }` | Depth-first hierarchy walk — each visited node's id, depth, parent, children, world + local translation/rotation, and `has_skinned_mesh` / `has_mesh_handle` markers. Inspects runtime trees (NPC spawn chains) without per-component serde derives. |
 | `InspectSkinnedMesh { entity }` | Dump a `SkinnedMesh`'s skeleton root, per-bone resolved entity + `GlobalTransform`, bind-inverses, the per-skin global transform, and the computed palette. Pairs with `WalkEntity` for the M41 Phase 1b.x palette-formula investigation (#841). |
 | `Inspect { entity? }` | Per-entity component dump — every registered component on the entity as `(name, JSON value)`. `entity: None` reads the world's `SelectedRef` (see "Picked-Ref Workflow"). The inspection half of the Bethesda-console `prid` + introspection pattern. |
@@ -132,8 +133,8 @@ enum is tagged with `#[serde(tag = "cmd", rename_all = "snake_case")]`.
 | `Ping` | Keep-alive / connection check |
 
 Notable response variants (`#[serde(tag = "kind", rename_all = "snake_case")]`):
-`Value`, `EntityList`, `ComponentList`, `SystemList`, `Stats`, `Screenshot`
-(base64 PNG), `ScreenshotSaved`, `Ok`, `Pong`, `Hierarchy`, `SkinnedMesh`,
+`Value`, `EntityList`, `ComponentList`, `SystemList`, `Stats`,
+`ScreenshotSaved`, `Ok`, `Pong`, `Hierarchy`, `SkinnedMesh`,
 `Inspect`, `Metrics`, `GameProfiles`, `Error`.
 
 ### `Stats` field breakdown (#1258 / PERF-D3-NEW-03 + #637 / FNV-D5-02)
@@ -365,7 +366,8 @@ tex.missing                 → entities with fallback texture + expected paths
 tex.loaded                  → unique loaded textures + fallback count
 tex.dump <bsa> <tex> [out]  → extract one texture from an on-disk archive,
                              decode it, and write a PNG for offline
-                             inspection (default `/tmp/tex_dump.png`; quote
+                             inspection (writes under `texture-dumps/`,
+                             default `texture-dumps/tex_dump.png`; quote
                              paths containing spaces). Menu art resolves
                              through the textures\menus / menus80 / menus50
                              resolution sets like the menu renderer; `.tex`
@@ -974,8 +976,11 @@ and the debug server, so the result slot is **owner-tagged**:
 - `ScreenshotBridge::take_result_for(owner)` only hands back bytes the matching
   owner requested (#1006), so the debug server never steals a PNG intended for
   the engine's own capture.
-- The per-client thread's 5 s `recv_timeout` can outrace the engine's 10-frame
-  capture ceiling on a paused / GPU-stalled engine. The drain system honours an
+- The per-client thread's 30 s `recv_timeout` (`COMMAND_RESPONSE_TIMEOUT`,
+  raised from 5 s by `dd99cd0f3`) can outrace the engine's 10-frame
+  capture ceiling on a paused / GPU-stalled engine; byro-dbg's own socket
+  read timeout is 10 s (the `Failed to configure socket read timeout`
+  path in `main.rs`). The drain system honours an
   abandonment `cancel` flag (#1007): it cancels the in-flight GPU capture and
   clears its bookkeeping rather than leaking a straggler PNG into the result
   slot.

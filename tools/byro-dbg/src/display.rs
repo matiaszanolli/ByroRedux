@@ -67,13 +67,6 @@ pub fn print_response(response: &DebugResponse) {
                 indirect_call_count
             );
         }
-        DebugResponse::Screenshot {
-            png_base64: _,
-            width: _,
-            height: _,
-        } => {
-            println!("Screenshot captured (raw data)");
-        }
         DebugResponse::ScreenshotSaved { path } => {
             println!("Screenshot saved: {}", path);
         }
