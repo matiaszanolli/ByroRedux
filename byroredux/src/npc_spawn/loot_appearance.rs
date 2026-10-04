@@ -619,15 +619,56 @@ fn finish(world: &mut World, actor: EntityId) {
     log::info!("npc.loot-appearance: restored body and hid worn gear actor={actor}");
 }
 
-/// Main-thread archive providers are opened lazily and reused across actors.
+/// Shared main-thread archive providers for the appearance loaders (#5061).
+///
+/// [`LootAppearanceLoader`] and [`GearImportLoader`] each used to lazily
+/// open their own `build_texture_provider` / `build_material_provider` pair:
+/// the first mid-life equip re-opened every mesh and texture archive (headers
+/// and file tables) on the main thread during gameplay, and the session kept
+/// a second and third resident copy of those tables plus a second BGSM cache.
+/// One instance is owned by `App` and lent to both loaders' `step`s — they
+/// run back-to-back on the main thread (`app_events.rs`), so a plain shared
+/// borrow needs no resource registration and no world-guard juggling with
+/// `load_nif_bytes_with_skeleton`'s `&mut World`.
 #[derive(Default)]
-pub(crate) struct LootAppearanceLoader {
+pub(crate) struct AppearanceProviders {
     providers: Option<(Vec<String>, TextureProvider, MaterialProvider)>,
 }
 
+impl AppearanceProviders {
+    /// Texture + material providers for the current args, opening the
+    /// archives on first use and reusing them for every later call with the
+    /// same args (the args cannot change mid-process; the key re-check keeps
+    /// the loaders' old per-step validation for free).
+    fn for_args(&mut self, args: &[String]) -> (&TextureProvider, &mut MaterialProvider) {
+        if self
+            .providers
+            .as_ref()
+            .is_none_or(|(key, _, _)| key.as_slice() != args)
+        {
+            self.providers = Some((
+                args.to_vec(),
+                crate::asset_provider::build_texture_provider(args),
+                crate::asset_provider::build_material_provider(args),
+            ));
+        }
+        let (_, textures, materials) = self.providers.as_mut().unwrap();
+        (textures, materials)
+    }
+}
+
+/// Main-thread archive providers are opened lazily and reused across actors.
+#[derive(Default)]
+pub(crate) struct LootAppearanceLoader {}
+
 impl LootAppearanceLoader {
     /// At most one NIF per frame, after the scheduler and save/cell drains.
-    pub(crate) fn step(&mut self, world: &mut World, ctx: &mut VulkanContext) {
+    pub(crate) fn step(
+        &mut self,
+        world: &mut World,
+        ctx: &mut VulkanContext,
+        providers: &mut AppearanceProviders,
+    ) {
         let Some(actor) = next_actor(world) else {
             return;
         };
@@ -679,18 +720,7 @@ impl LootAppearanceLoader {
             return;
         }
         let args = crate::cli_args::effective_args();
-        if self
-            .providers
-            .as_ref()
-            .is_none_or(|(key, _, _)| *key != args)
-        {
-            self.providers = Some((
-                args.clone(),
-                crate::asset_provider::build_texture_provider(&args),
-                crate::asset_provider::build_material_provider(&args),
-            ));
-        }
-        let (_, textures, materials) = self.providers.as_mut().unwrap();
+        let (textures, materials) = providers.for_args(&args);
         let Some(bytes) = textures.extract_mesh(&part.path) else {
             world.get_mut::<NpcLootAppearance>(actor).unwrap().failed = true;
             log::warn!(
@@ -753,22 +783,26 @@ fn player_gear_parent(world: &World, wearer: EntityId) -> Option<EntityId> {
 }
 
 /// P3 mid-life gear import — drains [`PendingGearImport`] at one NIF per
-/// frame, mirroring [`LootAppearanceLoader`]'s provider cache and DDS-flush
-/// posture. The difference is the reveal: these meshes are worn *now*, so a
+/// frame, mirroring [`LootAppearanceLoader`]'s DDS-flush posture and drawing
+/// from the same shared [`AppearanceProviders`] (#5061). The difference is
+/// the reveal: these meshes are worn *now*, so a
 /// successful import attaches immediately (no staged-hidden wait) — the only
 /// hiding is the player's view gate, via the same `HiddenFirstPerson` marker
 /// `set_player_view` restamps. Cell-owned wearers (NPCs) stamp the import
 /// into their cell's release range; the player has no `CellRoot` — their
 /// gear outlives cells exactly like the body it hangs from.
 #[derive(Default)]
-pub(crate) struct GearImportLoader {
-    providers: Option<(Vec<String>, TextureProvider, MaterialProvider)>,
-}
+pub(crate) struct GearImportLoader {}
 
 impl GearImportLoader {
-    pub(crate) fn step(&mut self, world: &mut World, ctx: &mut VulkanContext) {
+    pub(crate) fn step(
+        &mut self,
+        world: &mut World,
+        ctx: &mut VulkanContext,
+        providers: &mut AppearanceProviders,
+    ) {
         self.step_releases(world, ctx);
-        self.step_imports(world, ctx);
+        self.step_imports(world, ctx, providers);
     }
 
     /// #5028 — drain [`PendingGearRelease`]: despawn each released form's
@@ -820,7 +854,12 @@ impl GearImportLoader {
         }
     }
 
-    fn step_imports(&mut self, world: &mut World, ctx: &mut VulkanContext) {
+    fn step_imports(
+        &mut self,
+        world: &mut World,
+        ctx: &mut VulkanContext,
+        providers: &mut AppearanceProviders,
+    ) {
         let Some((wearer, import)) = world.query::<PendingGearImport>().and_then(|query| {
             query
                 .iter()
@@ -847,18 +886,7 @@ impl GearImportLoader {
             return;
         };
         let args = crate::cli_args::effective_args();
-        if self
-            .providers
-            .as_ref()
-            .is_none_or(|(key, _, _)| *key != args)
-        {
-            self.providers = Some((
-                args.clone(),
-                crate::asset_provider::build_texture_provider(&args),
-                crate::asset_provider::build_material_provider(&args),
-            ));
-        }
-        let (_, textures, materials) = self.providers.as_mut().unwrap();
+        let (textures, materials) = providers.for_args(&args);
         let Some(bytes) = textures.extract_mesh(&path) else {
             world.remove::<PendingGearImport>(wearer);
             log::warn!("mid-life gear: missing {path}; item {wearer} wears no mesh for it");
@@ -1410,8 +1438,31 @@ mod tests {
 
 }
 
-// ── #5028 — gear release on leaves-inventory ─────────────────────────
+#[cfg(test)]
+mod shared_providers_tests {
+    use super::*;
 
+    /// #5061 — the two appearance loaders must draw from ONE provider set:
+    /// a second call with the same args returns the same, already-opened
+    /// providers instead of rebuilding (the old per-loader `providers` fields
+    /// re-opened every archive on the first mid-life equip and kept a resident
+    /// copy of the archive tables + BGSM cache per loader).
+    #[test]
+    fn appearance_providers_are_built_once_and_shared() {
+        let mut providers = AppearanceProviders::default();
+        let args = vec!["byroredux".to_string()];
+
+        let (textures, _) = providers.for_args(&args);
+        let first = textures as *const TextureProvider;
+        let (textures, _) = providers.for_args(&args);
+        assert!(
+            std::ptr::eq(first, textures),
+            "same args must reuse the opened providers, not rebuild them"
+        );
+    }
+}
+
+// ── #5028 — gear release on leaves-inventory ─────────────────────────
 #[cfg(test)]
 mod gear_release_tests {
     use super::*;

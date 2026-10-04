@@ -1036,8 +1036,8 @@ impl ApplicationHandler for App {
             && self.streaming.as_ref().is_none_or(|stream| stream.persistent_apply.is_none())
         {
             if let Some(ctx) = self.renderer.as_mut() {
-                self.loot_appearance_loader.step(&mut self.world, ctx);
-                self.gear_import_loader.step(&mut self.world, ctx);
+                self.loot_appearance_loader.step(&mut self.world, ctx, &mut self.appearance_providers);
+                self.gear_import_loader.step(&mut self.world, ctx, &mut self.appearance_providers);
             }
         }
 

@@ -705,6 +705,11 @@ struct App {
     loading_screen: loading_screen::LoadingScreen,
     loot_appearance_loader: npc_spawn::loot_appearance::LootAppearanceLoader,
     gear_import_loader: npc_spawn::loot_appearance::GearImportLoader,
+    /// One archive-provider set shared by both appearance loaders (#5061) —
+    /// the first mid-life equip must not re-open every archive on the main
+    /// thread, and the session keeps one resident copy of the archive tables
+    /// and BGSM cache, not one per loader.
+    appearance_providers: npc_spawn::loot_appearance::AppearanceProviders,
     /// Debug server lifecycle owner (#855 / C6-NEW-02). Holding the
     /// handle keeps the TCP listener thread alive; the natural App::Drop
     /// fires the handle's Drop, which sets the shutdown flag and joins
@@ -1197,6 +1202,7 @@ impl App {
             loading_screen: loading_screen::LoadingScreen::default(),
             loot_appearance_loader: Default::default(),
             gear_import_loader: Default::default(),
+            appearance_providers: Default::default(),
             #[cfg(feature = "debug-server")]
             debug_server,
             debug_ui: None,
