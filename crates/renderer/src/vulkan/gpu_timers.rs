@@ -70,8 +70,9 @@
 //! | 54   | main pass, ground-cover blade draw (profile only) — start |
 //! | 55   | main pass, ground-cover blade draw (profile only) — end   |
 //!
-//! The original four brackets (skin dispatch / skin palette / BLAS refit / TAA) shipped
-//! with the #1194 perf-bisect work. The four added in debug-UI
+//! The original three brackets (skin dispatch / BLAS refit / TAA) shipped
+//! with the #1194 perf-bisect work; the skin-palette bracket (slots 28/29)
+//! was added later by #3676. The four added in debug-UI
 //! Phase 6 (main render / TLAS / cluster cull / SVGF) and the five
 //! added in Phase 7 (composite / SSAO / bloom / caustic splat /
 //! volumetrics) close the remaining "438 ms unaccounted" gap that
@@ -108,9 +109,15 @@
 //!
 //! ## When the driver lacks timestamp support
 //!
-//! `DeviceCapabilities::timestamp_supported == false` skips creation
-//! entirely; `last_snapshot()` returns zeroed values. Vanishingly
-//! rare on desktop GPUs (the spec mandates support on any device
+//! `DeviceCapabilities::gpu_timers_supported()` is the real gate
+//! (#1478): `timestamp_supported && timestamp_valid_bits > 0 &&
+//! host_query_reset_supported`. When it fails, `GpuPerFrameTimers::new`
+//! returns `Ok(None)` — no timer object is created at all, so
+//! `last_snapshot()` is never reached. Consumers see zeros through their
+//! own fallback: `telemetry.rs`'s `fill_skin_coverage_stats` clears every
+//! timer-backed stat (and every `_active` flag) in its not-timer arm.
+//! Vanishingly
+//! rare on desktop GPUs (the spec mandates timestamp support on any device
 //! that exposes `VK_KHR_acceleration_structure`, which is our RT
 //! gate) but the path stays sound.
 

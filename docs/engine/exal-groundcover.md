@@ -948,8 +948,9 @@ now encoded in the script instead of only in audit prose (#4482, #4509):
    `uint[8] × 3`, pinned by *gpu_terrain_tile_is_96_bytes* and by
    `ArrayStride 96` in the shipped `triangle.frag.spv`. (#4057 has since grown
    it to 144 B with §12.5's terrain-receiver fields, then #4056 added the
-   Tier-3 detail-atlas selector and brought it to its current 160 B — pinned
-   by `gpu_terrain_tile_is_160_bytes` — and it still carries no vertex offset.)
+   Tier-3 detail-atlas selector and #4903 the BTXT base lane — bringing it
+   to its current 176 B, pinned by `gpu_terrain_tile_is_176_bytes` — and it
+   still carries no vertex offset.)
 
    The locator is one record over: `GpuInstance.vertex_offset`
    ([`gpu_types.rs:109`](../../crates/renderer/src/vulkan/scene_buffer/gpu_types.rs#L109)).
@@ -1329,8 +1330,8 @@ attributes; the height stencil §3's shelter term needs goes through
 `byroSampleTerrain` against the global vertex SSBO, which `triangle.frag`
 already binds. The four remaining per-cell inputs — the affinity table, the
 water plane, the cell origin and the canopy thickness — ride `GpuTerrainTile`,
-which grew from 96 to 144 bytes for them and is now 160 B with the Tier-3
-detail-atlas selector. They ride that record rather than a
+which grew from 96 to 144 bytes for them, then to 176 B with the Tier-3
+detail-atlas selector and #4903's BTXT base lane. They ride that record rather than a
 new SSBO because that is exactly what it is: per-LAND-tile data indexed by the
 tile slot `GpuInstance.flags` already carries, so there is no parallel array
 and no second descriptor binding to keep in step.
