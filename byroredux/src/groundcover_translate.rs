@@ -68,9 +68,10 @@ use std::collections::HashMap;
 /// (`byroGcAffinity`). The palette/wind half below is live via
 /// `install_ground_cover`.
 ///
-/// #4054 — re-exported from `byroredux_core` rather than defined here: the
-/// scatter shader needs the same number for unpainted ground, and it reaches
-/// GLSL through the generated header.
+/// #4054 — re-exported from `byroredux_core` rather than defined here, so
+/// the keyword lookup and the terrain fill read one number. The former GLSL
+/// re-export is gone: post-#4903 the shader composes the BTXT base's own
+/// authored affinity instead of substituting a default for unpainted ground.
 pub use byroredux_core::ecs::components::groundcover::DEFAULT_COVER_AFFINITY as DEFAULT_AFFINITY;
 
 /// Substrings that mean "vegetation is deliberately absent here", checked

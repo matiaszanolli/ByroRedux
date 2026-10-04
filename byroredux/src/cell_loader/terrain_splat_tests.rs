@@ -187,8 +187,8 @@ fn btxt_transition_cell_edges_stay_hard_vanilla_parity() {
     let bases = [Some(0x10), Some(0x20), Some(0x30), Some(0x40)];
     let sw = base_transition_alpha(0, &bases);
     assert_eq!(sw[0], 1.0, "cell corner stays solid");
-    assert_eq!(sw[8], 1.0, "top edge (faces the cell above) stays solid");
-    assert_eq!(sw[8 * 17], 1.0, "left edge (faces the cell west) stays solid");
+    assert_eq!(sw[8], 1.0, "south edge (row 0 faces the cell south) stays solid");
+    assert_eq!(sw[8 * 17], 1.0, "west edge (col 0 faces the cell west) stays solid");
     // …while the internal edges do feather.
     assert_eq!(sw[16 * 17 + 8], 0.5, "internal north edge is feathered");
     assert_eq!(sw[8 * 17 + 16], 0.5, "internal east edge is feathered");

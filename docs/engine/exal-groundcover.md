@@ -149,11 +149,15 @@ which is both very visible and very hard to attribute once it ships.
 Each factor and where it comes from:
 
 - **`affinity(splat)`** — the 8 splat weights bilinearly sampled from the
-  surrounding terrain vertices, dotted with a per-layer canonical
-  `cover_affinity: f32`. This is the key reframing: a layer does not *enable*
+  surrounding terrain vertices, mixed over the BTXT base's own
+  `cover_affinity` in the terrain diffuse loop's order
+  (`a = base_affinity; a = mix(a, aff[i], w[i])` per lane, #4903). This is
+  the key reframing: a layer does not *enable*
   grass, it *weights* it. A dirt layer at 0.15 and a grass layer at 0.9 blend
   into a continuous gradient wherever the painter feathered them, and the
-  vegetation boundary stops coinciding with the texture boundary.
+  vegetation boundary stops coinciding with the texture boundary — and an
+  unpainted vertex reads its base's authored affinity (snow stays barren,
+  grassland stays vegetated) rather than a fabricated default.
 
   Worth being explicit about what this term is *not*: the splat authority is a
   17×17 alpha grid per 2048-unit quadrant
@@ -1195,7 +1199,9 @@ added its only reader). The blade vertex shader captures the terrain sample
 it already takes at the blade base — splat weights, the terrain-tile slot
 added to `GroundCoverCell`, and the terrain diffuse UV rebuilt from world
 position — and the fragment blends the species gradient toward the
-splat-weighted average of the cell's painted layer diffuse textures, by
+terrain's own composition (`byroTerrainSplatAlbedo`: the BTXT base under
+the painted layers, #4907, falling back to the painted-layer average only
+where the base is unresolved), by
 `coupling × (1 - blade_t)`: strongest at the root, zero at the tip. Cards
 skip the term (their colour already comes from the shared palette atlas, so
 they cannot drift from the ground). The UV reconstruction is pinned against
@@ -1625,8 +1631,15 @@ Phases:
   the points inside its footprint (#4919): 512 is not a multiple of FO3/FNV's
   80, and a grid restarted per chunk put 7 × 7 candidates where 6.4 × 6.4
   belong, a denser band along every chunk border. Each candidate picks
-  a record from a climate-weighted table and is accepted with probability
-  `density × affinity × slope × shelter × clump × distance_fade`. The
+  a record from the climate-weighted selection table — which is built over
+  **placeable records only** (#4906/#5175: a record whose model produced no
+  draws this frame is out of the table, so shapes streaming in re-derive it)
+  — and is accepted with probability `density × affinity × slope × shelter ×
+  clump × distance_fade`, where the uploaded `density` is the authored rate
+  **re-normalized by the record's table share** (`density / share`, capped
+  at 1, #4906): the scatter draws one candidate per lattice point from the
+  table, so without the bake every added record would dilute all the others.
+  The
   moisture factor is replaced by the record's own water rule, which is what
   lets kelp grow below the water plane. The blade tier's cover ray keeps
   models off roads. Counts and ranks are assigned in candidate order, so the

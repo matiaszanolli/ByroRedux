@@ -106,12 +106,12 @@ pub enum Climate {
 /// game whose naming we have not seen.
 ///
 /// Lives here rather than beside the keyword table in
-/// `byroredux::groundcover_translate` (#4054) because the scatter shader needs
-/// the same number for its *unpainted-ground* case — a vertex with every splat
-/// weight zero is the cell's base texture, which has no `LTEX` record and so
-/// no name to look up. The renderer re-exports it into
-/// `shader_constants.glsl`; a second hand-typed copy there would drift
-/// silently, since nothing renders differently until it does.
+/// `byroredux::groundcover_translate` (#4054) so the keyword lookup and the
+/// terrain fill read one number. Post-#4903 the *unpainted* ground no longer
+/// consumes it: the BTXT base has a real LTEX with its own authored
+/// affinity (the bin crate's `TerrainCoverInputs::base_affinity`), and the
+/// shader's fabricated-default substitution — with its GLSL re-export —
+/// was removed with it (#5177).
 pub const DEFAULT_COVER_AFFINITY: f32 = 0.15;
 
 /// Sentinel `water_height` meaning "this terrain cell has no water plane".

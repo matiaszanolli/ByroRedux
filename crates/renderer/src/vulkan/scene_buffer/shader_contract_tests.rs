@@ -7130,6 +7130,20 @@ fn groundcover_affinity_composes_the_base_in_diffuse_loop_order() {
         "byroGcAffinity must mix all eight splat lanes over the base, in lane \
          order (#4903)"
     );
+    // #5177 — the count above would pass a crossed-lane body
+    // (`affinity0.y` over `splat0.x`). Pin the pairing: every mix line
+    // reads the same vec index and swizzle on both sides, and the eight
+    // lines together cover each lane exactly once.
+    for (vec_idx, suffix) in (0..2_u32)
+        .flat_map(|v| ["x", "y", "z", "w"].map(move |s| (v, s)))
+    {
+        let line = format!("a = mix(a, affinity{vec_idx}.{suffix}, splat{vec_idx}.{suffix});");
+        assert!(
+            body.lines().any(|l| l.trim() == line),
+            "byroGcAffinity must pair affinity{vec_idx}.{suffix} with \
+             splat{vec_idx}.{suffix} on its own mix line (#5177 lane pairing)"
+        );
+    }
     // Both fabrications stay dead: no renormalisation by painted weight, no
     // default-affinity substitution for the unpainted base.
     assert!(

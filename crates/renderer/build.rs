@@ -280,7 +280,6 @@ fn main() {
     // the `u` suffix matters, the value overflows a signed int literal.
     writeln!(out, "#define GROUNDCOVER_NO_TERRAIN_TILE {GROUNDCOVER_NO_TERRAIN_TILE}u").unwrap();
     for (name, value) in [
-        ("GROUNDCOVER_DEFAULT_AFFINITY", GROUNDCOVER_DEFAULT_AFFINITY),
         ("GROUNDCOVER_NO_WATER", GROUNDCOVER_NO_WATER),
         ("GROUNDCOVER_SLOPE_GATE_START", GROUNDCOVER_SLOPE_GATE_START),
         ("GROUNDCOVER_SLOPE_GATE_FULL", GROUNDCOVER_SLOPE_GATE_FULL),

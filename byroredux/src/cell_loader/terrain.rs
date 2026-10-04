@@ -1084,8 +1084,9 @@ pub(super) fn spawn_terrain_mesh(
     // #4054 — the density field's two per-cell inputs. Resolved here because
     // this is the only place that has both: the resolved `LTEX` layer order
     // (which the shader's splat lanes are indexed by) and the caller's water
-    // height. Unfilled affinity slots take the default rather than zero — an
-    // unused layer must not read as a vegetation hole.
+    // height. Unfilled affinity slots keep the default fill; under #4903's
+    // ordered mix a zero-weight lane cannot affect the composed affinity
+    // either way, so the fill is uniformity, not correctness.
     let mut layer_affinity = [crate::groundcover_translate::DEFAULT_AFFINITY; 8];
     for (affinity, layer) in layer_affinity.iter_mut().zip(splat_layers.layers.iter()) {
         *affinity = layer.cover_affinity;

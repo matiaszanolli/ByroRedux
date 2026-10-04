@@ -477,9 +477,9 @@ impl Component for TerrainCellOrigin {
 #[derive(Debug, Clone, Default)]
 pub(crate) struct TerrainCoverInputs {
     /// `cover_affinity` per LAND splat layer, in the same layer order the
-    /// vertex splat lanes use. Unpainted slots hold the default rather than
-    /// zero — a zero would make an unused layer a hard vegetation hole, which
-    /// is the boundary artifact the design exists to remove.
+    /// vertex splat lanes use. Unpainted slots keep the default fill; under
+    /// #4903's ordered mix a zero-weight lane cannot affect the composed
+    /// affinity either way, so the fill is uniformity, not correctness.
     pub(crate) layer_affinity: [f32; 8],
     /// The BTXT base LTEX's own `cover_affinity` (#4903) — the ground the
     /// terrain shows wherever no splat layer paints. The density field

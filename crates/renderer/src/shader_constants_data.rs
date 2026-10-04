@@ -229,13 +229,11 @@ pub const GROUNDCOVER_BENCH_BLADE_VERTS: u32 = 8;
 // histogram over real cells (§11.3) — which is also how the values below get
 // calibrated, since several are starting points rather than derived constants.
 
-/// Affinity for a landscape layer with no name to look up — which in the
-/// shader means *unpainted* ground, the cell's base texture. Re-exported, not
-/// restated: `byroredux::groundcover_translate` resolves named layers against
-/// the same constant, and a drift between the two would move the vegetation
-/// boundary without moving anything a test looks at.
-pub const GROUNDCOVER_DEFAULT_AFFINITY: f32 =
-    byroredux_core::ecs::components::groundcover::DEFAULT_COVER_AFFINITY;
+// #5177 removed `GROUNDCOVER_DEFAULT_AFFINITY` here (the fabricated default
+// the pre-#4903 shader substituted for the unpainted base): no GLSL reads
+// it, the contract test pins its absence, and the base's real affinity
+// rides `GpuTerrainTile::base_cover_affinity` instead.
+
 /// Sentinel water height meaning "no water plane in this cell"; see
 /// `byroGcMoisture`, whose no-water path returns 1.0.
 pub const GROUNDCOVER_NO_WATER: f32 = byroredux_core::ecs::components::groundcover::NO_WATER_HEIGHT;
