@@ -1805,6 +1805,19 @@ impl VolumetricsPipeline {
         let previous = (frame + MAX_FRAMES_IN_FLIGHT - 1) % MAX_FRAMES_IN_FLIGHT;
         // One pair per history field: this frame's slot READ → WRITE, the
         // previous slot WRITE → READ.
+        //
+        // #5215 — the previous slot's combustion-occupancy mask has the same
+        // WRITE→READ edge (frame N-1's inject `atomicOr` marks on binding 24
+        // → this frame's inject read of the previous slot on binding 25), but
+        // deliberately carries NO buffer barrier here: it is ordered by the
+        // global COMPUTE `SHADER_WRITE` → `SHADER_READ` `memory_barrier` in
+        // `record_volumetrics_pass` (the cluster_cull buffers' barrier — its
+        // source scope reaches back across the submission boundary to the
+        // previous frame's inject). If that barrier is ever narrowed to a
+        // buffer barrier, add the mask to ITS destination scope (or a
+        // dedicated buffer barrier here); any barrier edit is a
+        // needs-syncval change. The mask's host-write half rests on the
+        // all-slots fence wait instead — rider 15 in `sync.rs`.
         let history_barriers = [
             &self.lighting_volumes,
             &self.emission_history_volumes,
@@ -4753,10 +4766,26 @@ mod transport_occupancy_tests {
     }
 
     fn build_marks(volumes: &[GpuFogVolume]) -> Box<[u32; FOG_VOLUME_CLUSTER_COUNT]> {
+        let mut occupancy = Box::new([0u32; FOG_VOLUME_CLUSTER_COUNT]);
+        build_marks_into(&mut occupancy, volumes);
+        occupancy
+    }
+
+    /// #5216 — the shared-buffer form. Production hands
+    /// `build_fog_volume_clusters` the persistent `fog_cluster_occupancy`
+    /// slice, so a build that forgot to reset would inherit whatever the
+    /// previous call left in it; every test that cares must go through THIS
+    /// helper, not allocate a fresh zeroed mask per call (a fresh zeroed
+    /// buffer makes the reset unpinnable — it passes with the `fill(0)`
+    /// deleted).
+    fn build_marks_into(
+        occupancy: &mut [u32; FOG_VOLUME_CLUSTER_COUNT],
+        volumes: &[GpuFogVolume],
+    ) {
         let mut upload = GpuFogVolumeUpload::default();
         let mut entries = fog_cluster_entries();
         let mut indices = vec![0; FOG_VOLUME_INDEX_COUNT].into_boxed_slice();
-        let mut occupancy = Box::new([0u32; FOG_VOLUME_CLUSTER_COUNT]);
+        let mut refs = Vec::new();
         build_fog_volume_clusters(
             volumes,
             [0.0; 3],
@@ -4766,10 +4795,9 @@ mod transport_occupancy_tests {
             &mut upload,
             &mut entries,
             &mut indices,
-            &mut Vec::new(),
-            &mut occupancy,
+            &mut refs,
+            occupancy,
         );
-        occupancy
     }
 
     /// Transported profiles (flame, smoke, explosions) seed their clusters;
@@ -4812,14 +4840,76 @@ mod transport_occupancy_tests {
 
     /// A fresh build must not inherit the previous frame's marks: the mask
     /// is rewritten every frame (zero + seed), with GPU marks accumulating
-    /// only on top of the current frame's copy.
+    /// only on top of the current frame's copy. ONE buffer across both
+    /// builds — the engine's mask is a persistent slot slice, so a deleted
+    /// `occupancy.fill(0)` leaves build 1's marks in it and fails here
+    /// (#5216: a fresh zeroed allocation per build cannot see that).
     #[test]
     fn occupancy_marks_reset_between_builds() {
-        let _ = build_marks(&[volume_at([10.0, 10.0, 70.0], 5.0, FOG_VOLUME_PROFILE_FLAME)]);
-        let marks = build_marks(&[]);
+        let mut occupancy = Box::new([0u32; FOG_VOLUME_CLUSTER_COUNT]);
+        build_marks_into(
+            &mut occupancy,
+            &[volume_at([10.0, 10.0, 70.0], 5.0, FOG_VOLUME_PROFILE_FLAME)],
+        );
         assert!(
-            marks.iter().all(|&bit| bit == 0),
-            "an empty volume list must leave the mask all zeroes"
+            occupancy.iter().any(|&bit| bit != 0),
+            "build 1 must seed marks — otherwise this test asserts nothing"
+        );
+
+        // Same buffer, flame at a disjoint spot: every surviving mark must
+        // sit in build 2's cells (x/y 3..=6 with a one-cell slop), so any
+        // mark inherited from build 1 (x/y 7..=8) fails. Same z band on
+        // purpose — only x/y has to disambiguate the two builds.
+        build_marks_into(
+            &mut occupancy,
+            &[volume_at([-60.0, -60.0, 70.0], 5.0, FOG_VOLUME_PROFILE_FLAME)],
+        );
+        let marked: Vec<usize> = occupancy
+            .iter()
+            .enumerate()
+            .filter(|&(_, &bit)| bit != 0)
+            .map(|(index, _)| index)
+            .collect();
+        assert!(
+            !marked.is_empty(),
+            "build 2 must seed marks — otherwise this test asserts nothing"
+        );
+        for &index in &marked {
+            let (x, y, _z) = (
+                index % FOG_VOLUME_CLUSTER_DIM,
+                (index / FOG_VOLUME_CLUSTER_DIM) % FOG_VOLUME_CLUSTER_DIM,
+                index / (FOG_VOLUME_CLUSTER_DIM * FOG_VOLUME_CLUSTER_DIM),
+            );
+            assert!(
+                (3..=6).contains(&x) && (3..=6).contains(&y),
+                "a mark survived at cell ({x},{y}) outside build 2's span — the \
+                 second build inherited the first build's marks, i.e. \
+                 `build_fog_volume_clusters` no longer resets the occupancy \
+                 mask (#5216)"
+            );
+        }
+    }
+
+    /// #5216 — the empty-volume arm never calls `build_fog_volume_clusters`;
+    /// it zeroes the mask directly in `dispatch` (an interior frame uploads
+    /// an all-zero mask so no stale CPU seed survives), and only a
+    /// production-text scan can see it. Anchored on the empty branch's own
+    /// opening so the needle cannot match the build-armed `fill(0)`.
+    #[test]
+    fn the_dispatch_empty_branch_resets_the_occupancy_mask() {
+        let src = crate::source_scan::production_text(include_str!("volumetrics.rs"));
+        let branch = src
+            .split_once("frame_params.local_volume_grid = if fog_volumes.is_empty() {")
+            .expect("dispatch's empty-volume branch")
+            .1
+            .split_once("} else {")
+            .expect("the empty arm closes before the cluster build")
+            .0;
+        assert!(
+            branch.contains("self.fog_cluster_occupancy.fill(0);"),
+            "the empty-volume arm must reset `fog_cluster_occupancy` — a frame \
+             with no volumes would otherwise upload the last placement's CPU \
+             seed marks and keep stale transport alive (#4784, #5216)"
         );
     }
 
@@ -4858,13 +4948,19 @@ mod transport_occupancy_tests {
             "the occupancy mark must follow the field writes it classifies (#4784)"
         );
         // And the gate must actually guard the RK2 block, not sit on a dead
-        // branch: `transportCombustion` receives the flag.
-        let call = shader
-            .find("            transportOccupied,\n            chemistry,")
-            .or_else(|| shader.find("transportOccupied,"));
+        // branch: `transportCombustion` receives the flag. No fallback
+        // needle (#5216) — the parameter declaration `bool transportOccupied,`
+        // in `transportCombustion`'s signature also matches a bare
+        // `"transportOccupied,"` search, so the old `.or_else` let a call
+        // site regressed to `true` stay green. The call-site argument pair
+        // (`transportOccupied,` then `chemistry,`) is indented twelve
+        // spaces; the declaration, four — matching the pair pins the CALL.
+        let arg = ["\n            transportOccupied,\n            chemistry,"].concat();
         assert!(
-            call.is_some(),
-            "`transportCombustion` must receive the occupancy gate (#4784)"
+            shader.contains(&arg),
+            "`transportCombustion` must receive the occupancy gate at its call \
+             site — passing a literal `true` (or dropping the argument) \
+             silently undoes the #4784 transport skip (#5216)"
         );
     }
 }

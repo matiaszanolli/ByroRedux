@@ -103,6 +103,18 @@ pub const MAX_FRAMES_IN_FLIGHT: usize = 2;
 //      old image and frees its descriptor set immediately. Frame N-1's
 //      overlay draw may still sample either; the one-frame defer is only a
 //      frame, and the all-slots wait is what retires N-1.
+//  15. `volumetrics.rs`'s `combustion_occupancy_buffers` (#5215) — frame N's
+//      `dispatch` host-zeroes and CPU-seed-marks slot `f` before upload,
+//      while frame N-1 (running slot `1-f`) read that SAME slot's mask
+//      through binding 25 (`CombustionOccupancyIn` = the previous slot): a
+//      fence on slot `f` alone never retires frame N-1's submission. A host
+//      write racing that GPU read yields a false-negative occupancy bit,
+//      which skips the RK2 transport block where combustion actually sits —
+//      a frozen plume. The mask's device-side RAW (frame N-1's atomicOr
+//      marks → frame N's inject read of the previous slot) is ordered
+//      separately, by the global COMPUTE SHADER_WRITE → SHADER_READ
+//      `memory_barrier` in `record_volumetrics_pass` — documented at
+//      Stage B in `volumetrics.rs::dispatch`, not by a dedicated barrier.
 //
 // #4601 — the wait's own argument is now pinned: the all-slots spelling
 // `wait_for_fences(&self.frame_sync.in_flight, true, u64::MAX)` is
@@ -710,6 +722,10 @@ mod tests {
             (
                 "image_mirrors",
                 crate::source_scan::production_text(include_str!("egui_pass.rs")),
+            ),
+            (
+                "combustion_occupancy_buffers",
+                crate::source_scan::production_text(include_str!("volumetrics.rs")),
             ),
         ] {
             assert!(
