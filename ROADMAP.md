@@ -166,8 +166,26 @@ stall outside the GPU in one run.
 **Against the previous record (`4c9a5b36`) this is a large regression on FO4
 content**: Dugout TAA 11.12 → 24.29 ms (FPS −54%), MedTek TAA 37.64 → 50.50 ms
 (−26%), Cornell TAA 9.20 → 10.72 ms (−14%). Prospector TAA is 5% faster and
-Whiterun Quality 24% faster. Entity, light and TLAS counts match the old record
-in every scene, so the content is unchanged. Compare wall and fence only:
+Whiterun Quality 24% faster. **Content was NOT unchanged**, despite what this
+paragraph originally claimed (FNV-2026-09-29-D6-01): Prospector lost 35
+entities and 35 TLAS instances (3149 → 3114, 928 → 893) in this refresh's
+window — attributed by the 2026-10-04 same-machine probe pair
+(renderer-stepped, orbit): `5570c221c^` reproduces 3149/928 and `5570c221c`
+reproduces 3114/904/893 bit-for-bit, so the dismemberment-cap
+reclassification (`is_dismemberment_cap` from body-part data; the same commit
+the 2026-09-29 runtime audit measured at −92 on AtomicWrangler) withheld ~35
+Prospector instances. The Prospector TAA "5% faster" is therefore measured
+on −35-instance content, not like-for-like. Whiterun (+12) and MedTek (+23)
+entity bumps landed between `4c9a5b36` and the *uncontrolled* middle record
+`cb44d99f6`, not in this window; Dugout's −11 entities/TLAS instances in the
+window remain unattributed (small; same probe procedure applies). Since this
+record Prospector moved again, attributed 2026-10-04 with two further probe
+pairs: +195 entities with draws/TLAS/lights stable (non-rendering accounting;
+the `a070baaad` player-body window — the same commit the #5125 fo4 regen
+measured at +187 — unprobed on FNV), then `f87490826` (Initially Disabled /
+Starts Dead withholding, #4813/#4814/#4820) took it to today's 2359
+entities / 814 draws / 803 TLAS, matching HEAD bit-for-bit
+(`f87490826^` reads 3309/904/893). Compare wall and fence only:
 `gpu_main` changed meaning in this range (#4808 starts it at COMPUTE, see
 R6a-stale-22). The fence wait carries the regression (Dugout TAA 4.13 →
 18.95 ms, MedTek TAA 16.12 → 35.48 ms), and draw batching roughly halved its
