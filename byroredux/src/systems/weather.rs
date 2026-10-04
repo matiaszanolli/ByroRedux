@@ -80,15 +80,17 @@ pub(crate) fn build_tod_keys(tod_hours: [f32; 4]) -> [(f32, usize); 7] {
     ]
 }
 
-/// Walk a `build_tod_keys` table at `hour` and return the bracketing
-/// `(slot_a, slot_b, t)` tuple for piecewise-linear palette + fog
-/// interpolation. `t` is the fraction along the `[slot_a → slot_b]`
-/// segment; pre/post-key hours land on the wrap segment
-/// `keys[last] → keys[0] + 24`.
+/// South-tilt of the sun arc (engine +Z = Bethesda −Y = south). The arc is
+/// otherwise a pure east → zenith → west semicircle; this tilts it slightly
+/// south so the sun is not dead-overhead at solar noon (#802 / SUN-N2).
 ///
-/// Hoisted out of `weather_system` so the current snapshot walk and
-/// the WTHR cross-fade target walk share one implementation —
-/// REN-D15-NEW-05 (audit `2026-05-09`).
+/// EXAL Q1 (docs/engine/exal.md §9): there is **no authored latitude / sun-angle
+/// field** anywhere in CLMT or WRLD, and the Gamebryo engine lineage has no
+/// astronomical model — the sun-path is engine-defined. So this is a deliberate
+/// engine constant, not a value read from data. #1019 ("per-worldspace latitude
+/// tilt") is therefore "pick a defensible engine value", not "find the field".
+pub(crate) const SUN_SOUTH_TILT: f32 = 0.15;
+
 /// Derive sun direction + intensity from the climate's `tod_hours`.
 ///
 /// `tod_hours = [sunrise_begin, sunrise_end, sunset_begin, sunset_end]`
@@ -108,17 +110,6 @@ pub(crate) fn build_tod_keys(tod_hours: [f32; 4]) -> [(f32, usize); 7] {
 /// intensity window was `[7, 17]`, which produced a ~40 min "below-
 /// horizon sun under sunrise-tinted sky" window on FO3 Capital
 /// Wasteland (`tod_hours = [5.333, 10.0, 17.0, 22.0]`).
-/// South-tilt of the sun arc (engine +Z = Bethesda −Y = south). The arc is
-/// otherwise a pure east → zenith → west semicircle; this tilts it slightly
-/// south so the sun is not dead-overhead at solar noon (#802 / SUN-N2).
-///
-/// EXAL Q1 (docs/engine/exal.md §9): there is **no authored latitude / sun-angle
-/// field** anywhere in CLMT or WRLD, and the Gamebryo engine lineage has no
-/// astronomical model — the sun-path is engine-defined. So this is a deliberate
-/// engine constant, not a value read from data. #1019 ("per-worldspace latitude
-/// tilt") is therefore "pick a defensible engine value", not "find the field".
-pub(crate) const SUN_SOUTH_TILT: f32 = 0.15;
-
 pub(crate) fn compute_sun_arc(hour: f32, tod_hours: [f32; 4]) -> ([f32; 3], f32) {
     let [sunrise_begin, sunrise_end, sunset_begin, sunset_end] = tod_hours;
     let day_span = (sunset_end - sunrise_begin).max(1e-3);
@@ -158,6 +149,15 @@ pub(crate) fn compute_sun_arc(hour: f32, tod_hours: [f32; 4]) -> ([f32; 3], f32)
     (sun_dir, sun_intensity)
 }
 
+/// Walk a `build_tod_keys` table at `hour` and return the bracketing
+/// `(slot_a, slot_b, t)` tuple for piecewise-linear palette + fog
+/// interpolation. `t` is the fraction along the `[slot_a → slot_b]`
+/// segment; pre/post-key hours land on the wrap segment
+/// `keys[last] → keys[0] + 24`.
+///
+/// Hoisted out of `weather_system` so the current snapshot walk and
+/// the WTHR cross-fade target walk share one implementation —
+/// REN-D15-NEW-05 (audit `2026-05-09`).
 pub(crate) fn pick_tod_pair(keys: &[(f32, usize); 7], hour: f32) -> (usize, usize, f32) {
     // Wrap pre-midnight hours (e.g. 0.5) into the [1, 25) range so the
     // last-key → first-key wrap segment is reachable from a single

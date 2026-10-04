@@ -552,7 +552,7 @@ lane's pieces:
 |---|---|---|
 | `interior_dalc_cube` (XCLL cube) | scene UBO `dalc_cube` | `interior_xcll_cube_reaches_sky_params_without_exterior_resource` (`render/sky.rs`) |
 | portal palette assembly | `portal_outdoor_sky`, `exterior_zenith_color` | `interior_only_session_bakes_procedural_outdoor_sky`, `interior_without_an_outdoor_environment_gets_no_portal_sky`, `stale_exterior_sky_params_res_does_not_leak_into_interior` |
-| `sky_lower.w` 1/2 modes | `weather_sky_details` (include/sky.glsl) | `night_sky_details_follow_the_outdoor_palette_not_the_weather_flag` (`sky_dome.rs`), `interior_portal_sky_preserves_room_weather_gate` (`context/draw.rs`) |
+| `sky_lower.w` 1/2 modes | `weather_sky_details` (include/sky.glsl) | `night_sky_details_follow_the_outdoor_palette_not_the_weather_flag` (`sky_dome.rs`), `interior_portal_sky_preserves_room_weather_gate` (`context/frame_params.rs`) |
 | `jitter.w` is_exterior | `triangle.frag` glass/ambient branches | jitter-pin batch in `shader_constants.rs` (#1125) |
 | portal-cloud lighting | cloud shell's `sun_illuminance` | `interior_portal_sky_clouds_are_lit_by_the_exterior_sunlight` |
 | `portal_sun` direction/radiance | volumetrics light shafts | `interior_only_boot_uses_live_clock_for_portal_sun`, `overcast_dims_the_portal_sun`, `interior_portal_sun_stays_dark_below_horizon` |

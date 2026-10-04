@@ -314,7 +314,8 @@ vec4 cloud_march(
     vec3 ambient = cloud_ambient_radiance(dome);
 
     float time = dome.weather_params.w;
-    // The host packs `[dir.x, speed, dir.z, 0]` (`build_composite_params`),
+    // The host packs `[dir.x, speed, dir.z, 0]` (`pack_sky_dome` in
+    // `context/frame_params.rs`, since #4925),
     // so direction is `.xz` and speed is `.y`. An earlier `.xy * .z` here folded
     // the speed into the direction and used `dir.z` as the speed, so the
     // layer drifted off-axis and stood still under a pure X wind.

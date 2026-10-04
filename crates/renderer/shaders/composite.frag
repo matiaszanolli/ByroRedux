@@ -572,7 +572,7 @@ void main() {
         // without occluding the sky, exactly as their `dst = ONE`
         // equation says. `direct` is already premultiplied against the
         // transparent-black clear the host uses whenever this branch is
-        // live (`draw.rs::hdr_clear`), so it adds in directly.
+        // live (`context/begin_frame_recording.rs`'s `hdr_clear`), so it adds in directly.
         //
         // #2920 / REN-D8-01 — restore the INDIRECT half of the same fix.
         // #2466 above rescued `direct` for these fragments but left the
