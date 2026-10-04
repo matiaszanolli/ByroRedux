@@ -514,8 +514,8 @@ pub(crate) struct TerrainCoverInputs {
     /// and no ATXT paint gets no tile — §12.3's ground-colour coupling must
     /// still root its blades in the base it shows (#5174).
     pub(crate) base_diffuse_index: u32,
-    /// Authored `GRAS` FormID lists associated with the same eight LAND
-    /// splat lanes as `layer_affinity` — each lane carries its LTEX's
+    /// Authored `GRAS` FormID lists associated with the same LAND splat
+    /// lanes as `layer_affinity` — each lane carries its LTEX's
     /// full `GNAM` array in authored order (#4642), empty when the layer
     /// has no `LTEX.GNAM` link (or is the executable's default land
     /// texture). The lists stay on the terrain entity because
@@ -1374,6 +1374,15 @@ pub(crate) struct SkyParamsRes {
     /// UBO and replaces the temporary `AMBIENT_AO_FLOOR` constant in
     /// `triangle.frag` with a normal-driven cube sample.
     pub(crate) current_dalc_cube: Option<DalcCubeYup>,
+    /// The effective TOD breakpoints in force this frame — the climate's
+    /// CLMT TNAM quad, or the blend of the source and target breakpoints
+    /// while a WTHR cross-fade is in flight (#5179). `weather_system`
+    /// republishes it every tick from the same value `compute_sun_arc` runs
+    /// on, so consumers that need "which dawn/dusk bands are live" (the GNAM
+    /// day/night surface blend, the `time` command's phase label) read this
+    /// one copy instead of re-deriving from `WeatherDataRes`, which still
+    /// holds the *source* climate until the fade promotes its target.
+    pub(crate) tod_hours: [f32; 4],
     /// Current TOD/transition-sampled precipitation, lightning, glare,
     /// aurora, cloud tint, and wind-direction controls.
     pub(crate) weather: WeatherSkyState,

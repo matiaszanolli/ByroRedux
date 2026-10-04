@@ -402,6 +402,7 @@ fn light_dump_handles_missing_and_present_resources() {
         inheritance_flags: None,
     });
     world.insert_resource(SkyParamsRes {
+        tod_hours: crate::systems::weather::DEFAULT_TOD_HOURS,
         zenith_color: [0.15, 0.3, 0.65],
         horizon_color: [0.55, 0.5, 0.42],
         lower_color: [0.165, 0.15, 0.126],

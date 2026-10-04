@@ -2,7 +2,7 @@
 
 use super::shared::*;
 
-use crate::components::{GameTimeRes, SkyParamsRes, WeatherDataRes};
+use crate::components::{GameTimeRes, SkyParamsRes};
 use crate::systems::weather::DEFAULT_TOD_HOURS;
 
 fn no_args(args: &str, usage: &str) -> Result<(), CommandOutput> {
@@ -59,9 +59,13 @@ fn phase(hour: f32, tod_hours: [f32; 4]) -> &'static str {
 }
 
 fn current_tod_hours(world: &World) -> [f32; 4] {
+    // #5179 — read the published effective breakpoints: during a WTHR
+    // cross-fade `WeatherDataRes` still holds the source climate, while
+    // `SkyParamsRes.tod_hours` is the blend the sun itself is steered by.
     world
-        .try_resource::<WeatherDataRes>()
-        .map_or(DEFAULT_TOD_HOURS, |weather| weather.tod_hours)
+        .try_resource::<SkyParamsRes>()
+        .map(|sky| sky.tod_hours)
+        .unwrap_or(DEFAULT_TOD_HOURS)
 }
 
 fn resample_lighting(world: &World) {

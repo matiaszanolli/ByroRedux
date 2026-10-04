@@ -404,6 +404,7 @@ mod directional_source_contract_tests {
         // worldspace load: full daytime sun, full intensity. Pre-#1282
         // the worry was this resource leaking into interior lighting.
         SkyParamsRes {
+            tod_hours: crate::systems::weather::DEFAULT_TOD_HOURS,
             zenith_color: [0.3, 0.5, 0.9],
             horizon_color: [0.8, 0.8, 0.9],
             lower_color: [0.4, 0.4, 0.45],

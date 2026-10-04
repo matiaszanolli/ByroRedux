@@ -14,6 +14,7 @@ use super::*;
 
 fn mk_sky(indices: [u32; 5]) -> SkyParamsRes {
     SkyParamsRes {
+        tod_hours: crate::systems::weather::DEFAULT_TOD_HOURS,
         zenith_color: [0.0; 3],
         horizon_color: [0.0; 3],
         lower_color: [0.0; 3],

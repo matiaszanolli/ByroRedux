@@ -1291,6 +1291,7 @@ pub(crate) fn translate_sky(
     wthr: &WeatherRecord,
     sun_dir: [f32; 3],
     textures: SkyTextures,
+    tod_hours: [f32; 4],
 ) -> SkyParamsRes {
     use byroredux_plugin::esm::records::weather::{
         SKY_HORIZON, SKY_LOWER, SKY_SUN, SKY_UPPER, TOD_DAY,
@@ -1318,6 +1319,10 @@ pub(crate) fn translate_sky(
         cloud_tile_scale_3: s3,
         cloud_texture_index_3: c3,
         current_dalc_cube: None,
+        // #5179 — the climate's own breakpoints seed the resource, so even
+        // the pre-first-tick frame reads the worldspace's dawn/dusk bands;
+        // `weather_system` republishes (blending during a cross-fade).
+        tod_hours,
         weather: weather_sky_state(wthr, TOD_DAY),
     }
 }
@@ -1786,6 +1791,9 @@ pub(crate) fn procedural_fallback_sky(sun_dir: [f32; 3]) -> SkyParamsRes {
         cloud_tile_scale_3: 0.0,
         cloud_texture_index_3: 0,
         current_dalc_cube: None,
+        // #5179 — a plugin-less world has no climate; the same fallback quad
+        // `climate_tod_hours(None)` returns keeps the two seed paths aligned.
+        tod_hours: FB_TOD_HOURS,
         weather: WeatherSkyState::default(),
     }
 }
@@ -4548,7 +4556,7 @@ mod tests {
             sun_sprite: 99,
         };
         let sun_dir = [0.0, 1.0, 0.0];
-        let sky = translate_sky(&w, sun_dir, textures);
+        let sky = translate_sky(&w, sun_dir, textures, crate::env_translate::FB_TOD_HOURS);
 
         // Colour slot routing.
         assert_eq!(sky.zenith_color, [10.0 / 255.0, 0.0, 0.0]);

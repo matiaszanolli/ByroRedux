@@ -322,6 +322,12 @@ fn apply_environment(
                 cloud_layers,
                 sun_sprite,
             },
+            // #5179 — seed the published breakpoints from the same climate
+            // the WATR-side `translate_weather` seeds `WeatherDataRes` with,
+            // so the sky resource carries the effective dawn/dusk bands from
+            // the first frame (`weather_system` keeps them republished,
+            // blending across a WTHR cross-fade).
+            crate::env_translate::climate_tod_hours(climate),
         );
         log::info!(
             "WTHR '{}': zenith={:?} horizon={:?} sun={:?} ambient={:?} sunlight={:?} fog_color={:?} fog_day={:.0}\u{2013}{:.0}",

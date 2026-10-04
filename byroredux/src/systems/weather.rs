@@ -1183,6 +1183,14 @@ pub(crate) fn weather_system(world: &World, dt: f32) {
         // cell, so the renderer's future consumer can branch on
         // `current_dalc_cube.is_some()` to gate the 6-axis sample.
         sky.current_dalc_cube = dalc_cube;
+        // #5179 — publish the effective breakpoints: the same blended quad
+        // `compute_sun_arc` just ran on. `WeatherDataRes.tod_hours` still
+        // holds the *source* climate for the whole fade (the target lives in
+        // `WeatherTransitionRes` until promotion), so a consumer reading it
+        // — water's GNAM day/night blend, the `time` command's phase label —
+        // followed the source for 8 s and stepped to the target's on the
+        // promotion frame while the sky, fog and sun eased.
+        sky.tod_hours = tod_hours;
     }
 
     // #803 — cloud scroll lives on `CloudSimState`, which survives
@@ -2607,6 +2615,7 @@ mod seeded_at_wrong_tod_resample_tests {
         // sentinel, what `compute_sun_arc(1.0, …)` itself returns), but
         // palette/intensity still at the TOD_DAY constants.
         world.insert_resource(SkyParamsRes {
+            tod_hours: DEFAULT_TOD_HOURS,
             zenith_color: NOON_ZENITH,
             horizon_color: [0.0; 3],
             lower_color: [0.0; 3],
@@ -2728,6 +2737,7 @@ mod dalc_cube_crossfade_tests {
             done: false,
         });
         world.insert_resource(SkyParamsRes {
+            tod_hours: DEFAULT_TOD_HOURS,
             zenith_color: [0.0; 3],
             horizon_color: [0.0; 3],
             lower_color: [0.0; 3],
@@ -3137,6 +3147,43 @@ mod sun_arc_crossfade_tests {
             sky.sun_direction,
             compute_sun_arc(12.0, [6.0, 10.0, 18.0, 22.0]).0,
             "sanity: the two arcs differ, so a flat source arc is observable"
+        );
+    }
+
+    /// #5179 — the *effective* breakpoints are published on `SkyParamsRes`
+    /// so every TOD-band consumer (water's GNAM day/night surface blend, the
+    /// `time` command's phase label) eases with the cross-fade the way the
+    /// sky, fog and sun already do (#4926). Reading `WeatherDataRes`
+    /// instead — which holds the source climate until promotion — made the
+    /// night factor follow the source for the whole fade and step to the
+    /// target's on the promotion frame.
+    #[test]
+    fn the_published_breakpoints_ease_with_the_crossfade() {
+        let source = weather_with_tod([6.0, 10.0, 18.0, 22.0]);
+        let target = weather_with_tod([7.5, 11.5, 16.5, 20.5]);
+        // 4 s into an 8 s fade: t = 0.5 → blended tod_hours.
+        let world = world_at_noon(source, Some(target), 4.0);
+        weather_system(&world, 0.0);
+
+        let sky = world.try_resource::<SkyParamsRes>().unwrap();
+        assert_eq!(
+            sky.tod_hours, [6.75, 10.75, 17.25, 21.25],
+            "mid-fade the published breakpoints must be the blend, not the \
+             source climate's (#5179)"
+        );
+
+        // Water's night factor at a dawn hour where the two climates
+        // disagree now rides the eased bands: strictly between the two
+        // climates' own factors, instead of the source's held flat.
+        let hour = 7.0;
+        let eased = night_factor_for_hour(hour, sky.tod_hours);
+        let src_only = night_factor_for_hour(hour, [6.0, 10.0, 18.0, 22.0]);
+        let tgt_only = night_factor_for_hour(hour, [7.5, 11.5, 16.5, 20.5]);
+        assert_ne!(src_only, tgt_only, "sanity: the dawn bands differ");
+        assert!(
+            eased > src_only.min(tgt_only) && eased < src_only.max(tgt_only),
+            "the eased night factor ({eased}) must sit strictly between the \
+             source's ({src_only}) and the target's ({tgt_only})"
         );
     }
 

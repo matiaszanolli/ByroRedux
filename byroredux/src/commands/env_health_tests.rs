@@ -37,6 +37,7 @@ fn healthy_exterior() -> (CellLightingRes, SkyParamsRes) {
         inheritance_flags: None,
     };
     let sky = SkyParamsRes {
+        tod_hours: crate::systems::weather::DEFAULT_TOD_HOURS,
         zenith_color: [0.20, 0.35, 0.70],
         horizon_color: [0.60, 0.62, 0.58],
         lower_color: [0.18, 0.16, 0.14],

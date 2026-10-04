@@ -126,7 +126,17 @@ pub(super) fn reemit_water_planes(
     let game_hour = world
         .try_resource::<crate::components::GameTimeRes>()
         .map(|clock| clock.hour);
-    let tod_hours = weather.as_ref().map(|w| w.tod_hours);
+    // #5179 — the effective breakpoints live on `SkyParamsRes` (the same
+    // blended quad `compute_sun_arc` steers the sun by): during a WTHR
+    // cross-fade `WeatherDataRes.tod_hours` still holds the *source*
+    // climate, so reading it here made the surface's day/night blend follow
+    // the source for the whole fade and step to the target's on promotion.
+    // Fall back to the installed weather's own breakpoints for a world where
+    // no sky has been published yet.
+    let tod_hours = world
+        .try_resource::<crate::components::SkyParamsRes>()
+        .map(|sky| sky.tod_hours)
+        .or_else(|| weather.as_ref().map(|w| w.tod_hours));
     drop(weather);
     let night_factor = match (game_hour, tod_hours) {
         (Some(hour), Some(hours)) => crate::systems::weather::night_factor_for_hour(hour, hours),
