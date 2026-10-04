@@ -1241,4 +1241,36 @@ mod early_fragment_kind_tests {
              scanner broke or the census changed (reflect.rs pins the count)"
         );
     }
+
+    /// #5205 — doc pin: `shader-pipeline.md` §Per-Frame Submission Order
+    /// step 6 must describe the certificate's actual kind range. It said
+    /// "material kind 0" for the four months since #5057 widened the
+    /// allow-list to `MATERIAL_KIND_MAX_LIGHTING_SHADER`, so a reader
+    /// auditing early-Z soundness for kinds 1–16 would wrongly conclude
+    /// they still go through late tests.
+    #[test]
+    fn shader_pipeline_doc_names_the_real_early_test_kind_range() {
+        let doc = include_str!("../../../../../docs/engine/shader-pipeline.md");
+        let step6 = doc
+            .split("6  [Main render pass]")
+            .nth(1)
+            .and_then(|rest: &str| rest.split("6b [Barrier]").next())
+            .expect("shader-pipeline.md step 6 must still exist");
+        assert!(
+            step6.contains("0..=`MATERIAL_KIND_MAX_LIGHTING_SHADER`"),
+            "step 6 must name the real allow-list, not a stale 'material \
+             kind 0' phrasing (#5057/#5205)"
+        );
+        assert!(
+            step6.contains("early_fragment_kinds_have_no_discard_or"),
+            "step 6 must point at the pin that forces re-review of the \
+             kind certificate (#5205)"
+        );
+        // The renderOrigin.w uploader pointer: draw.rs lost that upload to
+        // the #3282 phase split; the doc must name the file that has it.
+        assert!(
+            doc.contains("uploaded in `context/assemble_camera_and_lights.rs`"),
+            "the renderOrigin.w pointer must name assemble_camera_and_lights.rs (#5205)"
+        );
+    }
 }

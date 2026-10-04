@@ -249,8 +249,13 @@ is not named here.
      triangle.vert / .frag  geometry + RT ray-queries. Certified opaque
                             batches (`DrawCommand::allows_early_fragment_
                             tests`: no blend, no alpha test, material kind
-                            0, depth test+write, LESS/LEQUAL, no decal or
-                            wireframe) bind `pipeline_early`, the same
+                            0..=`MATERIAL_KIND_MAX_LIGHTING_SHADER` (16 —
+                            the reviewed BSLightingShaderProperty types;
+                            the kind review is pinned by
+                            `early_fragment_kinds_have_no_discard_or_
+                            depth_write_path`), depth test+write, LESS/
+                            LEQUAL, no decal or wireframe) bind
+                            `pipeline_early`, the same
                             vertex stage with `triangle_early.frag.spv`
                             (`layout(early_fragment_tests)`); everything
                             else binds `pipeline`
@@ -873,10 +878,11 @@ entirely in **render-origin-relative** space so `viewProj × worldPos`
 keeps full f32 precision at large offsets:
 
 > **`renderOrigin.w` is not padding.** It carries the FSR
-> one-frame-reset flag, uploaded in `context/draw.rs` and read by
-> `triangle.frag`'s FSR-reset debug view. Several shader-side comments
-> described it as unused until #2164/L-10 — the same trap #1928 fixed for
-> `VolumetricsParams.render_origin.w`. Don't claim the slot.
+> one-frame-reset flag, uploaded in `context/assemble_camera_and_lights.rs`
+> (with the other per-frame camera fields since the #3282 phase split) and
+> read by `triangle.frag`'s FSR-reset debug view. Several shader-side
+> comments described it as unused until #2164/L-10 — the same trap #1928
+> fixed for `VolumetricsParams.render_origin.w`. Don't claim the slot.
 
 - Rigid draws: the instance `model` translation is rebased on the CPU.
 - Skinned draws: `triangle.vert` rebases the blended bone-palette
