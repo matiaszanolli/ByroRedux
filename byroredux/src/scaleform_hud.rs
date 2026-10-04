@@ -59,12 +59,20 @@ const HUD_RENDER_PACING: RenderPacing = RenderPacing {
 /// Which Scaleform game's HUD this driver serves. Selection is
 /// structural: whichever vanilla interface archive sits beside `--esm`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ScaleformGame {
-    /// AVM1 — `Skyrim - Interface.bsa`, `ScaleformProfile::SkyrimAvm1`.
+pub(crate) enum ScaleformGame {    /// AVM1 — `Skyrim - Interface.bsa`, `ScaleformProfile::SkyrimAvm1`.
     Skyrim,
     /// AVM2 — `Fallout4 - Interface.ba2`, `ScaleformProfile::Fallout4Avm2`,
     /// with the injected BGSCodeObj forwarding adapter.
     Fallout4,
+}
+
+/// The payload shape a [`ScaleformGame`] poll handler returns (#4725).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PollPayload {
+    /// The three driven bars, in `hud.values` order.
+    Bars,
+    /// The bars followed by the compass heading.
+    BarsAndHeading,
 }
 
 /// One driven bar: console label + the canonical AVIF **editor id** the
@@ -83,6 +91,25 @@ impl ScaleformGame {
         match self {
             Self::Skyrim => "Skyrim - Interface.bsa",
             Self::Fallout4 => "Fallout4 - Interface.ba2",
+        }
+    }
+
+    /// The menu→engine poll handlers this game's HUD widgets call, as
+    /// (callback name, payload shape) data on the game itself (#4725 —
+    /// the choice used to be an `if` inside launch). The names are the
+    /// SkyUI HUD-widget poll protocol, which is not in FO4's BGSCodeObj
+    /// catalog (registering them on an FO4 bridge would seed
+    /// `known_methods` with names no FO4 menu calls). No FO4 handlers
+    /// are fabricated — FO4's catalog has no meter-shaped queries, so
+    /// `unknown/unanswered` (via `hud.debug`) stays the discovery
+    /// instrument there.
+    pub(crate) fn poll_handlers(self) -> &'static [(&'static str, PollPayload)] {
+        match self {
+            Self::Skyrim => &[
+                ("updateStats", PollPayload::Bars),
+                ("RequestPlayerInfo", PollPayload::BarsAndHeading),
+            ],
+            Self::Fallout4 => &[],
         }
     }
 
@@ -278,33 +305,22 @@ pub(crate) fn launch(
 
     let bridge = ui.host_bridge().expect("menu loaded above");
 
-    // Response handlers — the menu→engine channel. Registered for
-    // Skyrim only: the names are the SkyUI HUD-widget poll protocol,
-    // which is not in FO4's BGSCodeObj catalog (registering them on an
-    // FO4 bridge would seed `known_methods` with names no FO4 menu
-    // calls). No FO4 handlers are fabricated — FO4's catalog has no
-    // meter-shaped queries, so `unknown/unanswered` (via `hud.debug`)
-    // stays the discovery instrument there.
+    // Response handlers — the menu→engine channel. The per-game set is
+    // [`ScaleformGame::poll_handlers`] data (#4725), not an inline `if`.
     let snapshot: Rc<RefCell<HudSnapshot>> = Rc::new(RefCell::new(HudSnapshot::default()));
-    if game == ScaleformGame::Skyrim {
-        let stats = snapshot.clone();
-        bridge.set_response_handler("updateStats", move |_args| {
-            let s = stats.borrow();
-            vec![
-                ScaleformValue::Number((s.bars[0] * 100.0) as f64),
-                ScaleformValue::Number((s.bars[1] * 100.0) as f64),
-                ScaleformValue::Number((s.bars[2] * 100.0) as f64),
-            ]
-        });
-        let player_info = snapshot.clone();
-        bridge.set_response_handler("RequestPlayerInfo", move |_args| {
-            let s = player_info.borrow();
-            vec![
-                ScaleformValue::Number((s.bars[0] * 100.0) as f64),
-                ScaleformValue::Number((s.bars[1] * 100.0) as f64),
-                ScaleformValue::Number((s.bars[2] * 100.0) as f64),
-                ScaleformValue::Number(s.heading as f64),
-            ]
+    for (name, payload) in game.poll_handlers() {
+        let snapshot = snapshot.clone();
+        bridge.set_response_handler(*name, move |_args| {
+            let s = snapshot.borrow();
+            let mut values: Vec<ScaleformValue> = s
+                .bars
+                .iter()
+                .map(|bar| ScaleformValue::Number((bar * 100.0) as f64))
+                .collect();
+            if matches!(payload, PollPayload::BarsAndHeading) {
+                values.push(ScaleformValue::Number(s.heading as f64));
+            }
+            values
         });
     }
 
@@ -435,8 +451,11 @@ impl ScaleformHudDriver {
     /// discovery instrument is `hud.debug`'s callback mirror.
     fn push(&mut self, ui: &mut UiManager, fractions: [f32; 3], heading: f32) {
         for name in &self.callbacks {
-            if name.starts_with("__byro") {
-                continue; // the injected adapter's lifecycle hooks
+            // The injected adapter's lifecycle hooks — exact membership
+            // per the #4719 reservation model, not a re-typed prefix
+            // literal (#4725).
+            if byroredux_ui::RESERVED_ENGINE_CALLBACKS.contains(&name.as_str()) {
+                continue;
             }
             let args: Vec<ScaleformValue> = match name.as_str() {
                 // SkyUI-class meter pushes (shapes are the working
@@ -493,4 +512,96 @@ mod tests {
             "the driver publishes the live bar fractions each tick"
         );
     }
+
+    /// #4725 — the per-game poll-handler set is table data on
+    /// [`ScaleformGame`], not an inline `if` in launch: Skyrim registers
+    /// the SkyUI HUD-widget polls, FO4 registers none (its catalog has no
+    /// meter-shaped queries).
+    #[test]
+    fn poll_handlers_are_per_game_table_data() {
+        let skyrim: Vec<_> = ScaleformGame::Skyrim
+            .poll_handlers()
+            .iter()
+            .map(|(name, payload)| (*name, *payload))
+            .collect();
+        assert_eq!(
+            skyrim,
+            vec![
+                ("updateStats", PollPayload::Bars),
+                ("RequestPlayerInfo", PollPayload::BarsAndHeading),
+            ],
+            "the SkyUI poll protocol is the whole Skyrim table"
+        );
+        assert!(
+            ScaleformGame::Fallout4.poll_handlers().is_empty(),
+            "no FO4 handlers are fabricated"
+        );
+    }
+
+
+    /// #4724 — Scaleform archive discovery: `--hud` without `--esm` is an
+    /// error, a directory carrying a vanilla interface archive selects its
+    /// game (Skyrim probed before FO4), and a non-Scaleform install stays
+    /// silent (`Ok(None)`) so the MenuXml probe reports its own candidates.
+    #[test]
+    fn hud_scaleform_args_discovers_by_interface_archive() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let esm = dir.path().join("Skyrim.esm");
+        std::fs::write(&esm, b"").unwrap();
+
+        // No --hud flag: silent.
+        assert_eq!(
+            hud_scaleform_args(&["--esm".into(), esm.to_str().unwrap().into()]).unwrap(),
+            None
+        );
+        // --hud without --esm: the archive root is unresolvable.
+        assert!(hud_scaleform_args(&["--hud".into()]).is_err());
+        // No interface archive beside the ESM: silent (MenuXml probe owns it).
+        assert_eq!(
+            hud_scaleform_args(&["--hud".into(), "--esm".into(), esm.to_str().unwrap().into()])
+                .unwrap(),
+            None
+        );
+
+        // Skyrim's archive wins the probe order.
+        std::fs::write(dir.path().join("Skyrim - Interface.bsa"), b"").unwrap();
+        let (game, archive) = hud_scaleform_args(
+            &["--hud".into(), "--esm".into(), esm.to_str().unwrap().into()],
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(game, ScaleformGame::Skyrim);
+        assert!(archive.ends_with("Skyrim - Interface.bsa"));
+
+        // An FO4 install (no Skyrim archive) selects Fallout4.
+        std::fs::remove_file(dir.path().join("Skyrim - Interface.bsa")).unwrap();
+        std::fs::write(dir.path().join("Fallout4 - Interface.ba2"), b"").unwrap();
+        let (game, _) = hud_scaleform_args(
+            &["--hud".into(), "--esm".into(), esm.to_str().unwrap().into()],
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(game, ScaleformGame::Fallout4);
+    }
+
+    /// #4724 — the push table skips the adapter's reserved lifecycle
+    /// callbacks (exact membership per #4719) without disturbing the
+    /// gameplay-shaped pushes around it.
+    #[test]
+    fn the_push_table_skips_reserved_engine_callbacks() {
+        let mut d = driver();
+        // The adapter's own registered lifecycle name — read from the
+        // exported reservation table, not re-typed (#4725's rule).
+        let lifecycle = byroredux_ui::RESERVED_ENGINE_CALLBACKS[0];
+        d.callbacks = vec![lifecycle.to_string(), "UpdateStats".to_string()];
+        let mut ui = UiManager::new(4, 4);
+        // No panic, and the reserved name never reaches invoke_callback
+        // (an empty manager's invoke is a silent no-op either way — this
+        // call pins that the guard path is live).
+        d.push(&mut ui, [0.5, 0.5, 0.5], 90.0);
+        assert!(
+            byroredux_ui::RESERVED_ENGINE_CALLBACKS.contains(&lifecycle),
+            "sanity: the exercised lifecycle name is one of the reserved"
+        );
+       }
 }

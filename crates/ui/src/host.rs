@@ -84,7 +84,7 @@ pub const MAX_DISTINCT_HOST_METHOD_NAMES: usize = 1024;
 /// Extend this list — and only with constants the engine itself
 /// registers — when a future adapter adds a lifecycle callback whose
 /// absence is functional, not just diagnostic.
-const RESERVED_ENGINE_CALLBACKS: [&str; 3] = [
+pub const RESERVED_ENGINE_CALLBACKS: [&str; 3] = [
     crate::avm2_host::READY_CALLBACK,
     crate::avm2_host::LOADED_CALLBACK,
     crate::avm2_host::DESTROY_CALLBACK,
