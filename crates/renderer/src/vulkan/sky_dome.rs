@@ -45,6 +45,32 @@ pub(crate) fn sky_dome_fields(sky_glsl: &str) -> Vec<String> {
         .collect()
 }
 
+/// Top-level function names a GLSL source declares: lines of the shape
+/// `type name(` with the known scalar/vector return types. Indented lines
+/// (locals, call sites, struct members) and comments do not match — a
+/// declaration with an initializer (`float x = foo(`) fails the name check
+/// on the space in `x = foo`, so the result is the *declaration* set, which
+/// is exactly what a forked copy must re-declare (#5180).
+#[cfg(test)]
+fn glsl_function_names(src: &str) -> Vec<String> {
+    const TYPES: [&str; 7] = ["vec2", "vec3", "vec4", "float", "bool", "int", "uint"];
+    src.lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with("//") {
+                return None;
+            }
+            let (ty, rest) = line.split_once(char::is_whitespace)?;
+            if !TYPES.contains(&ty) {
+                return None;
+            }
+            let name = rest.split('(').next()?.trim();
+            (!name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'))
+                .then(|| name.to_owned())
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -114,22 +140,64 @@ mod tests {
 
     /// The point of the extraction: exactly one implementation. If the sky
     /// functions reappear in a consumer, the include has been bypassed.
+    ///
+    /// #5180 — the forbidden set is *derived* from the declarations in
+    /// `sky.glsl` + `clouds.glsl`, not hand-listed: the previous four hard
+    /// needles had rotted (two named functions retired by 564d0d2fe), so the
+    /// guard's only remaining teeth were the include line, and neither live
+    /// entry point (`sky_radiance`, `cloud_march`) nor the other consumer
+    /// (`sky_cube.comp`) was checked at all.
     #[test]
     fn composite_does_not_carry_its_own_copy_of_the_sky() {
+        const CLOUDS_GLSL: &str = include_str!("../../shaders/include/clouds.glsl");
+        const SKY_CUBE: &str = include_str!("../../shaders/sky_cube.comp");
+
+        let mut forbidden = glsl_function_names(SKY_GLSL);
+        forbidden.extend(glsl_function_names(CLOUDS_GLSL));
+        forbidden.sort();
+        forbidden.dedup();
+        // Sanity on the parser itself: if the declaration walk silently
+        // matched nothing, every fork check below would pass vacuously.
         assert!(
-            COMPOSITE.contains("#include \"include/sky.glsl\""),
-            "composite.frag must consume the shared sky dome, not its own copy",
+            forbidden.len() >= 15,
+            "parsed only {} sky/cloud function names — the parser has lost the \
+             declarations",
+            forbidden.len()
         );
-        for gone in [
-            "vec3 compute_sky(",
-            "vec4 weather_procedural_cloud(",
-            "vec3 weather_sky_details(",
-            "float weather_star_field(",
+        for live in [
+            "sky_radiance",
+            "cloud_march",
+            "weather_sky_details",
+            "weather_star_field",
         ] {
             assert!(
-                !COMPOSITE.contains(gone),
-                "composite.frag re-declares `{gone}` — the sky has been forked back \
-                 out of include/sky.glsl",
+                forbidden.iter().any(|name| name == live),
+                "the derived sky function set lost `{live}` — the live entry \
+                 points must stay pinned"
+            );
+        }
+
+        for (shader, src) in [("composite.frag", COMPOSITE), ("sky_cube.comp", SKY_CUBE)] {
+            assert!(
+                src.contains("#include \"include/sky.glsl\""),
+                "{shader} must consume the shared sky dome, not its own copy"
+            );
+            let declared = glsl_function_names(src);
+            for name in &forbidden {
+                assert!(
+                    !declared.contains(name),
+                    "{shader} re-declares `{name}` — the sky has been forked \
+                     back out of include/sky.glsl"
+                );
+            }
+            // `cloud_march` is internal to the sky include: consumers reach
+            // the clouds through `sky_radiance`. A copy of the march body
+            // under a new local name would evade the declaration check
+            // above; a call site cannot evade this one.
+            assert!(
+                !src.contains("cloud_march("),
+                "{shader} calls `cloud_march(` directly — the cloud march is \
+                 sky.glsl's implementation detail"
             );
         }
     }
