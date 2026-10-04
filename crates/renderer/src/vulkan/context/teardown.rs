@@ -335,10 +335,15 @@ impl Drop for VulkanContext {
             // Destroy persistent transfer fence (#302). device_wait_idle
             // above ensures it's not signaled in-flight.
             {
-                let fence = *self
-                    .transfer_fence
-                    .lock()
-                    .expect("transfer fence lock poisoned");
+                // #5209 — #4599's poison policy, one lock further out: the
+                // transfer-fence mutex is held across reset/submit/wait in
+                // `with_one_time_commands_inner`, so a panic inside that
+                // window poisons it. `expect`ing here would skip
+                // `save_pipeline_cache`, `destroy_device` and
+                // `destroy_instance`. Poison only means a one-time
+                // submission panicked mid-window; the fence handle itself
+                // is still valid (and idle, per the wait above).
+                let fence = *super::super::allocator::lock_recovering(&self.transfer_fence);
                 self.device.destroy_fence(fence, None);
             }
             self.device.destroy_command_pool(self.transfer_pool, None);

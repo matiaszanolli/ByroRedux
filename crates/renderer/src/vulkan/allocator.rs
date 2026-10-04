@@ -767,4 +767,43 @@ mod tests {
             );
         }
     }
+
+    /// #5209 — the allowlist scan above counts only allocator-spelling
+    /// acquires, so `VulkanContext::drop`'s
+    /// `.expect("transfer fence lock poisoned")` was invisible to it. The
+    /// transfer-fence mutex is held across reset/submit/wait in
+    /// `with_one_time_commands_inner`; a panic in that window (the queue
+    /// lock was the one panicking call) poisons it, and the Drop-side
+    /// `expect` then skipped `save_pipeline_cache` / `destroy_device` /
+    /// `destroy_instance` — exactly #4599's failure mode, one lock further
+    /// out. Teardown must recover every poisoned lock it acquires, whatever
+    /// the mutex guards, so this scan covers the whole
+    /// `expect("… lock poisoned")` family in `teardown.rs` plus the
+    /// in-window queue acquire that used to be the poisoning panic.
+    #[test]
+    fn teardown_path_recovers_poisoned_locks_beyond_the_allocator_family() {
+        let src = include_str!("context/teardown.rs");
+        let production = src
+            .split_once("\n#[cfg(test)]\nmod ")
+            .map_or(src, |(prod, _)| prod);
+        assert!(
+            !production.contains("lock poisoned"),
+            "VulkanContext::drop must recover poisoned locks (lock_recovering), \
+             never expect on them — a panic in teardown skips \
+             save_pipeline_cache/destroy_device/destroy_instance (#4599/#5209)",
+        );
+        assert!(
+            production.contains("lock_recovering(&self.transfer_fence)"),
+            "the transfer-fence acquire in Drop must go through the recovery \
+             helper (#5209)",
+        );
+
+        let texture = crate::source_scan::production_text(include_str!("texture.rs"));
+        assert!(
+            texture.contains("let q = lock_recovering(queue);"),
+            "the queue acquire inside the fence window must recover poison — \
+             it was the one panicking call that poisoned the transfer-fence \
+             mutex in the first place (#5209)",
+        );
+    }
 }

@@ -1,6 +1,6 @@
 //! GPU texture: image upload via staging buffer, layout transitions, sampler.
 
-use super::allocator::{free_allocation_recovering, SharedAllocator};
+use super::allocator::{free_allocation_recovering, lock_recovering, SharedAllocator};
 use super::buffer::{StagingGuard, StagingPool};
 use super::descriptors::{
     color_subresource_mips_layers, image_barrier_transfer_dst_to_shader_read_layers,
@@ -859,6 +859,13 @@ where
         // uses the fence at a time. Otherwise fall back to per-call
         // create/destroy for early-init paths that don't yet have a
         // persistent fence.
+        // #5209 — this one deliberately stays an `expect`: a poisoned
+        // transfer-fence mutex means a prior window was interrupted with
+        // the fence's in-use state unknown, so reusing the fence would be
+        // unsound. Propagating the panic is the safe choice here — the
+        // recovery happens on the teardown side
+        // (`VulkanContext::drop`'s `lock_recovering`), which destroys the
+        // fence after `device_wait_idle` instead of reusing it.
         let fence_guard = reusable_fence.map(|m| m.lock().expect("one-time fence lock poisoned"));
         // #1861 — every fallible call from here on must free `cmd` (already
         // past `end_command_buffer`, so no re-ending needed — just
@@ -902,7 +909,12 @@ where
         // (below) deliberately stays held across the wait — the fence must
         // not be reset/reused by another caller mid-wait.
         let submit_result = {
-            let q = queue.lock().expect("graphics queue lock poisoned");
+            // #5209 — recover a poisoned queue lock instead of panicking:
+            // this is the one call inside the `fence_guard` window that can
+            // panic, and a panic here poisons the transfer-fence mutex in
+            // turn. A poisoned queue mutex only means another thread
+            // panicked mid-submit; the queue handle is still valid.
+            let q = lock_recovering(queue);
             device.queue_submit(*q, &[submit_info], fence)
         };
         if let Err(e) = submit_result {
@@ -989,10 +1001,12 @@ mod one_time_failure_class_tests {
         )));
     }
 
-    /// Both orchestrators that own recorded-against resources consult the
+    /// Every orchestrator that owns recorded-against resources consults the
     /// classifier instead of applying one policy to every failure — the
     /// asymmetry #4891 reported (one always forgot, the other always
-    /// destroyed).
+    /// destroyed). #5201 added the two `build_blas_batched` arms: they own
+    /// the BLAS originals/compactions the submissions write, so they belong
+    /// under the same rule.
     #[test]
     fn both_upload_orchestrators_branch_on_the_failure_class() {
         let needle = format!("OneTimeCommandError::{}(", "may_be_in_flight");
@@ -1005,6 +1019,11 @@ mod one_time_failure_class_tests {
             (
                 "texture_registry/upload.rs",
                 include_str!("../texture_registry/upload.rs"),
+            ),
+            // #5201 — no test module here either.
+            (
+                "acceleration/blas_static.rs",
+                include_str!("acceleration/blas_static.rs"),
             ),
         ] {
             assert!(
@@ -1032,7 +1051,7 @@ mod one_time_lock_scope_tests {
     fn queue_guard_released_before_one_time_fence_wait() {
         let src = crate::source_scan::production_text(include_str!("texture.rs"));
         let lock_pos = src
-            .find("graphics queue lock poisoned")
+            .find("let q = lock_recovering(queue);")
             .expect("one-time helper should lock the graphics queue");
         let submit_pos = src
             .find("submit one-time commands")
