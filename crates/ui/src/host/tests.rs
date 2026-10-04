@@ -291,16 +291,18 @@ fn skyrim_catalog_is_pinned_sorted_and_profile_specific() {
         catalog.find("RequestPlayerInfo").unwrap().kind,
         ScaleformHostMethodKind::Request
     );
-    // 12 from SkyUI's fourth-argument rule, plus the 2 of the sweep's 68 that
-    // the name-prefix heuristic classifies as queries. The split by provenance
-    // is pinned in `catalog.rs`'s own tests.
+    // 14 from SkyUI's fourth-argument rule (12 original + the two #4720
+    // promotions, `LoadDLC` and `RequestLoadingText`), plus the 2 of the
+    // sweep's remaining 66 that the name-prefix heuristic classifies as
+    // queries. The split by provenance is pinned in `catalog.rs`'s own
+    // tests.
     assert_eq!(
         catalog
             .methods()
             .iter()
             .filter(|method| method.kind == ScaleformHostMethodKind::Request)
             .count(),
-        14
+        16
     );
     assert!(catalog
         .methods()

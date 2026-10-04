@@ -55,10 +55,14 @@
 //! method names that no movie contains. Clearing can only lose a call site,
 //! never invent one, and [`Avm1HostCallInventory::unresolved`] counts the
 //! sites that were recognised as `GameDelegate.call` but whose name did not
-//! survive: it reads **0** on the vanilla corpus, which is what makes the
-//! resulting inventory a measurement rather than a sample.
+//! survive. The vanilla corpus reads **72**: every one of those passes a
+//! *runtime* name (`this.callbackName` and friends) that no static walk can
+//! resolve, so 72 is the upper bound the corpus sweep asserts — the
+//! inventory is a measurement of everything statically readable plus an
+//! exact count of what is not (#4721 — this paragraph used to claim 0,
+//! which the sweep's own `<= 72` assertion contradicted).
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use swf::avm1::read::Reader as Avm1Reader;
 use swf::avm1::types::{Action, Value};
@@ -76,19 +80,36 @@ const HOST_DELEGATE_CALL: &str = "call";
 pub struct Avm1HostCallInventory {
     /// Distinct host method names passed to `GameDelegate.call`.
     pub methods: BTreeSet<String>,
+    /// #4720 — per method, the `CallMethod` argument count of its resolved
+    /// `GameDelegate.call` site(s). SkyUI's fourth-argument rule reads this:
+    /// a site passing four arguments passes a response callback and expects
+    /// the host to `respond`; a two-argument site is a fire-and-forget
+    /// command. A method called at several sites keeps the maximum — the
+    /// vanilla corpus has no mixed-arity name (526 resolved sites, census in
+    /// #4720), so the max is the site count wherever the rule has a say.
+    pub arg_counts: BTreeMap<String, usize>,
     /// `GameDelegate.call` sites whose first argument did not resolve to a
     /// literal — a dynamic name, or a stack the walk had to clear.
     ///
     /// Reported rather than silently dropped because it is the difference
     /// between "this movie calls nothing else" and "this walk could not
-    /// see what else it calls". A sweep asserting the catalog is complete
-    /// is only sound while this is 0.
+    /// see what else it calls". The vanilla corpus holds exactly 72 such
+    /// sites (all runtime names), so the sweep asserts this stays at or
+    /// below 72 — climbing above it means the walk started *losing*
+    /// resolvable sites (#4721 — this doc used to claim the assertion was
+    /// "only sound at 0").
     pub unresolved: usize,
 }
 
 impl Avm1HostCallInventory {
     fn merge(&mut self, other: Self) {
         self.methods.extend(other.methods);
+        for (name, count) in other.arg_counts {
+            self.arg_counts
+                .entry(name)
+                .and_modify(|seen| *seen = (*seen).max(count))
+                .or_insert(count);
+        }
         self.unresolved += other.unresolved;
     }
 }
@@ -302,12 +323,19 @@ fn scan_block(code: &[u8], version: u8, pool: &[String]) -> Avm1HostCallInventor
                 }
                 let args = stack.split_off(stack.len() - count);
                 if is_host_call {
-                    // `call(methodName, argsArray)` — the host method name is
-                    // the first argument, which AVM1 pushes last, so it sits
-                    // nearest the top of the operand run.
+                    // `call(methodName, argsArray[, scope[, callback]])` — the
+                    // host method name is the first argument, which AVM1 pushes
+                    // last, so it sits nearest the top of the operand run. The
+                    // call's own argument count rides with it: four arguments
+                    // means the site passed a response callback (#4720).
                     match args.last().and_then(StackValue::as_str) {
                         Some(name) => {
                             found.methods.insert(name.to_string());
+                            found
+                                .arg_counts
+                                .entry(name.to_string())
+                                .and_modify(|seen| *seen = (*seen).max(count))
+                                .or_insert(count);
                         }
                         None => found.unresolved += 1,
                     }

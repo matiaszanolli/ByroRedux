@@ -167,15 +167,19 @@ impl ScaleformHostCatalog {
 // is the expected shape for a SkyUI-sourced list — SkyUI replaces these menus.
 //
 // #3103, regeneration half — those 68 are now merged in, bringing this array
-// to 142 (the 141 the sweep found plus `SliderClose`). The blocker recorded
-// here was that SkyUI's "a fourth argument means request" test cannot classify
-// them, because every vanilla call site passes exactly two arguments. That is
-// still true, and it is why they are NOT `Measured`: they carry #3773's
-// `HeuristicNamePrefix` provenance and are classified by the same name-prefix
-// rule #2966 applied to Fallout 4 (`Get*` / `Is*` / `Should*` / `Can*` /
-// `get*`, camelCase-boundary matched so `Cancel` does not read as `Can*`).
-// Only 2 of the 68 match (`GetMouseButtonForSetDestination`, `ShouldShowMod`);
-// the other 66 default to `Command`.
+// to 142 (the 141 the sweep found plus `SliderClose`). #4720 closed the
+// gap this paragraph used to record: the sweep's scanner now records each
+// site's `CallMethod` argument count, and SkyUI's "a fourth argument means
+// the call expects a response" rule transfers after all — the corpus DOES
+// carry fourth-argument sites, 27 of them (one per request-typed method),
+// against 320 two-argument command sites, with no name ever at mixed
+// arities. The rule is pinned by the corpus sweep test ("four-arg ⇔
+// Request", all 142 entries). `LoadDLC` and `RequestLoadingText` — measured
+// four-argument at their call sites — were promoted out of the heuristic
+// bucket into `Measured` requests on exactly that evidence; the remaining
+// 66 keep `HeuristicNamePrefix` provenance (2 of them —
+// `GetMouseButtonForSetDestination`, `ShouldShowMod` — match the #2966
+// prefix rule; the other 64 default to `Command`, all measured two-argument).
 //
 // Landing a guess here is sound for the same reason it was for Fallout 4, and
 // the reason is worth restating because it is what makes the difference
@@ -245,7 +249,11 @@ static SKYRIM_SKYUI_METHODS: &[ScaleformHostMethod] = &[
     ScaleformHostMethod::command("ItemSelect"),
     ScaleformHostMethod::command("ItemTransfer"),
     ScaleformHostMethod::command("LOAD"),
-    ScaleformHostMethod::command_heuristic("LoadDLC"),
+    // #4720 — the corpus sweep measured its one call site passing four
+    // arguments (scope + response callback), which is SkyUI's own
+    // fourth-argument rule typing it Request. Promoted from #3773's
+    // name-prefix `Command` exactly as the array doc prescribes.
+    ScaleformHostMethod::request("LoadDLC"),
     ScaleformHostMethod::command("LoadGame"),
     ScaleformHostMethod::command_heuristic("MOD"),
     ScaleformHostMethod::command("MarkerClick"),
@@ -282,7 +290,9 @@ static SKYRIM_SKYUI_METHODS: &[ScaleformHostMethod] = &[
     ScaleformHostMethod::command("RequestInputMappings"),
     ScaleformHostMethod::request("RequestIsOnPC"),
     ScaleformHostMethod::request("RequestItemCardInfo"),
-    ScaleformHostMethod::command_heuristic("RequestLoadingText"),
+    // #4720 — measured four-argument call site (response callback);
+    // see `LoadDLC` above.
+    ScaleformHostMethod::request("RequestLoadingText"),
     ScaleformHostMethod::command("RequestObjectivesData"),
     ScaleformHostMethod::request("RequestPlayerInfo"),
     ScaleformHostMethod::request("RequestQuestsData"),
@@ -711,15 +721,19 @@ mod tests {
             .iter()
             .filter(|m| m.provenance == ScaleformKindProvenance::HeuristicNamePrefix)
             .count();
-        assert_eq!(measured, 74, "the original SkyUI-sourced entries");
-        assert_eq!(heuristic, 68, "the #3103 corpus-sweep-added entries");
+        // #4720 — 74 + 68 became 76 + 66 when `LoadDLC` and
+        // `RequestLoadingText` were promoted to `Measured` requests on the
+        // measured four-argument call sites.
+        assert_eq!(measured, 76, "the original SkyUI-sourced entries plus the              two #4720 promotions");
+        assert_eq!(heuristic, 66, "the #3103 corpus-sweep-added entries, minus              the two #4720 promotions");
         assert_eq!(SKYRIM_SKYUI_METHODS.len(), measured + heuristic);
     }
 
     /// The heuristic half must stay a *minority* classification decision: the
     /// prefix set only recognises queries, so every name it does not match
-    /// becomes a `Command`. Two of the 68 matched (`GetMouseButtonFor…`,
-    /// `ShouldShowMod`), and `Cancel` is the camelCase-boundary case that must
+    /// becomes a `Command`. Two of the 66 remaining sweep entries matched
+    /// (`GetMouseButtonFor…`, `ShouldShowMod`), and `Cancel` is the
+    /// camelCase-boundary case that must
     /// NOT match `Can*` — if that boundary rule is ever dropped, `Cancel`,
     /// `CharacterSelected` and friends silently become requests.
     #[test]

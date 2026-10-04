@@ -61,6 +61,54 @@ fn reads_the_method_name_out_of_a_vanilla_call_site() {
         vec!["CloseMenu"]
     );
     assert_eq!(found.unresolved, 0);
+    // #4720 — the scanner keeps the call's own argument count: the
+    // two-argument vanilla shape is a command under the fourth-argument
+    // rule.
+    assert_eq!(found.arg_counts.get("CloseMenu"), Some(&2));
+}
+
+/// #4720 — a four-argument `GameDelegate.call` site passes scope + response
+/// callback, which is SkyUI's fourth-argument rule typing it `Request`. The
+/// scanner had this count in hand all along and discarded it; it now rides
+/// the inventory so the corpus sweep can pin "four-arg ⇔ Request" against
+/// the catalog.
+#[test]
+fn a_four_argument_site_records_the_callback_bearing_count() {
+    // Transcribed the same way as `vanilla_call_site`, with two more
+    // arguments between the args array and the count: the scope object and
+    // the response-callback name. Emission order is the observed
+    // right-to-left one (last call argument first).
+    let actions = vec![
+        push(vec![Value::Str(text("onLoadDLCResponse"))]),
+        push(vec![Value::Str(text("this"))]),
+        Action::GetVariable,
+        push(vec![Value::Int(0)]),
+        Action::InitArray,
+        push(vec![
+            Value::Str(text("LoadDLC")),
+            Value::Int(4),
+            Value::Str(text("gfx")),
+        ]),
+        Action::GetVariable,
+        push(vec![Value::Str(text("io"))]),
+        Action::GetMember,
+        push(vec![Value::Str(text("GameDelegate"))]),
+        Action::GetMember,
+        push(vec![Value::Str(text("call"))]),
+        Action::CallMethod,
+        Action::Pop,
+    ];
+    let found = scan_block(&assemble(&actions), 15, &[]);
+    assert_eq!(
+        found.methods.iter().map(String::as_str).collect::<Vec<_>>(),
+        vec!["LoadDLC"]
+    );
+    assert_eq!(
+        found.arg_counts.get("LoadDLC"),
+        Some(&4),
+        "the callback-bearing arity must survive into the inventory"
+    );
+    assert_eq!(found.unresolved, 0);
 }
 
 /// The receiver is matched on the last component of the member chain, so a
@@ -307,20 +355,63 @@ fn installed_skyrim_host_calls_are_all_cataloged() {
     // does, because the catalog has been regenerated from this sweep's own
     // result. The 68 entries it used to be short are merged in.
     //
-    // The blocker this assertion used to record still stands on its own terms:
-    // SkyUI's "a fourth callback argument means request" rule does not
-    // transfer, since every vanilla call site passes exactly two arguments. So
-    // those 68 did not become `Measured` — they carry `HeuristicNamePrefix`
-    // provenance and the same prefix rule Fallout 4's sweep additions use, and
-    // `catalog.rs`'s own doc records why a guess is admissible for `kind`
-    // specifically (it selects a diagnostic bucket, never a queued call or a
-    // returned value). `skyrim_catalog_provenance_split_matches_the_3103_sweep`
-    // pins the 74/68 split so neither half drifts.
+    // #4720 retired the blocker this assertion used to record ("SkyUI's
+    // fourth-argument rule does not transfer — every vanilla call site passes
+    // exactly two arguments"): the scanner now carries each site's argument
+    // count, and the corpus measurably disagrees with the old premise — the
+    // request-typed methods are called with four arguments (scope + response
+    // callback), the command-typed ones with two, and no name mixes arities.
+    // Two entries whose sites measured four arguments (`LoadDLC`,
+    // `RequestLoadingText`) were promoted out of #3773's name-prefix bucket
+    // into `Measured` requests; the rest keep `HeuristicNamePrefix`, and
+    // `skyrim_catalog_provenance_split_matches_the_3103_sweep` pins the 76/66
+    // split so neither half drifts.
     assert!(
         uncataloged.is_empty(),
         "the shipped Skyrim menus call {} host methods absent from \
          SKYRIM_SKYUI_METHODS: {uncataloged:?}",
         uncataloged.len(),
+    );
+
+    // #4720 — the fourth-argument rule, pinned against the corpus for every
+    // entry the sweep can see: a four-argument site expects a `respond` and
+    // must be typed `Request`; a two-argument site must be `Command`. A
+    // counterexample is either a misclassified catalog entry (the diagnostic
+    // gap the issue was filed for) or a corpus change that re-opens the
+    // question — both want to fail loudly here.
+    let mut four_arg = 0usize;
+    let mut two_arg = 0usize;
+    for (name, count) in &found.arg_counts {
+        let method = catalog
+            .find(name)
+            .unwrap_or_else(|| panic!("{name}: completeness asserted above"));
+        assert!(
+            *count == 2 || *count == 4,
+            "{name}: unexpected {count}-argument call arity"
+        );
+        let expected = if *count == 4 {
+            four_arg += 1;
+            crate::ScaleformHostMethodKind::Request
+        } else {
+            two_arg += 1;
+            crate::ScaleformHostMethodKind::Command
+        };
+        assert_eq!(
+            method.kind, expected,
+            "{name}: catalog types it {:?} but its call site passes {count} \
+             arguments — the fourth-argument rule says {expected:?}",
+            method.kind,
+        );
+    }
+    eprintln!(
+        "  arities: {four_arg} four-argument (request) methods, {two_arg} \
+         two-argument (command) methods"
+    );
+    assert!(
+        four_arg >= 14,
+        "the corpus previously measured 14 request-typed methods called with \
+         four arguments; only {four_arg} resolved — the scanner is reading less \
+         than it did"
     );
     assert!(
         found.methods.len() >= 141,
