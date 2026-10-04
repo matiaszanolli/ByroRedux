@@ -20,4 +20,4 @@ Source: `docs/audits/AUDIT_FO4_2026-10-03.md` (HEAD `32f4450d9`)
 - **Suggested Fix**: rewrite the two sentences together with #5228's fix.
 
 ## Completeness Checks
-- [ ] **DOCS**: the module doc states all-bands decode (#4234) and the world-absolute exterior frame; the spec cite points at the real section
+- [x] **DOCS**: the module doc states all-bands decode (#4234) and the world-absolute exterior frame; the spec cite points at the real section

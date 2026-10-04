@@ -34,5 +34,5 @@ Source: `docs/audits/AUDIT_FO4_2026-10-03.md` (HEAD `32f4450d9`)
   - Accept on the p6 smoke script plus a visual check of one FO4 cover with a large authored rotation.
 
 ## Completeness Checks
-- [ ] **TESTS**: a `[0, 0, π]` → 180° yaw pin on the FO4 TRNS branch; the Skyrim `RNAM` (i16 degrees) branch keeps `to_radians()`
-- [ ] **SIBLING**: Starfield shares the TRNS parse through `load_screen.rs` — its covers are posed from radians too
+- [x] **TESTS**: a `[0, 0, π]` → 180° yaw pin on the FO4 TRNS branch; the Skyrim `RNAM` (i16 degrees) branch keeps `to_radians()`
+- [x] **SIBLING**: Starfield shares the TRNS parse through `load_screen.rs` — its covers are posed from radians too

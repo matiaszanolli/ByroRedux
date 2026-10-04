@@ -45,6 +45,6 @@ Source: `docs/audits/AUDIT_FO4_2026-10-03.md` (HEAD `32f4450d9`)
   - Accept on an FO4 exterior capture: Diamond City outskirts or Sanctuary, both far from (0,0).
 
 ## Completeness Checks
-- [ ] **SIBLING**: both precombine routes (resumable `PrecombinedSpawnJob` and non-resumable `spawn_placed_instances`) place exterior bakes at zero origin; interiors and grid (0,0) unchanged
-- [ ] **TESTS**: an `#[ignore]`d real-data guard decodes one exterior `_oc.nif` and asserts placed instance translations fall inside the cell's world XY rectangle (mirrors `switchboard_precombine_transforms_match_authored_bounds`)
-- [ ] **DOCS**: `docs/engine/fo4-csg-format.md` §Placement, the `/audit-fo4` Dimension 1 checklist line, and the `precombined.rs` module doc (#5233) no longer state the cell-local premise
+- [x] **SIBLING**: both precombine routes (resumable `PrecombinedSpawnJob` and non-resumable `spawn_placed_instances`) place exterior bakes at zero origin; interiors and grid (0,0) unchanged
+- [x] **TESTS**: an `#[ignore]`d real-data guard decodes one exterior `_oc.nif` and asserts placed instance translations fall inside the cell's world XY rectangle (mirrors `switchboard_precombine_transforms_match_authored_bounds`)
+- [x] **DOCS**: `docs/engine/fo4-csg-format.md` §Placement, the `/audit-fo4` Dimension 1 checklist line, and the `precombined.rs` module doc (#5233) no longer state the cell-local premise
