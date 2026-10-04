@@ -10,6 +10,10 @@ use byroredux_core::ecs::{Component, Resource, SparseSetStorage};
 use byroredux_core::lighting::BETHESDA_UNITS_PER_METER;
 use byroredux_core::math::Vec3;
 use byroredux_core::string::FixedString;
+// #5173 — the per-lane ground-cover arrays below size from the same splat
+// constant the terrain tile + shader loops size from, so a lane bump cannot
+// leave this component silently 8-wide while the rest of the chain moves.
+use byroredux_renderer::shader_constants::TERRAIN_SPLAT_LAYERS;
 use rustc_hash::FxHashMap;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
@@ -480,7 +484,8 @@ pub(crate) struct TerrainCoverInputs {
     /// vertex splat lanes use. Unpainted slots keep the default fill; under
     /// #4903's ordered mix a zero-weight lane cannot affect the composed
     /// affinity either way, so the fill is uniformity, not correctness.
-    pub(crate) layer_affinity: [f32; 8],
+    /// Sized from `TERRAIN_SPLAT_LAYERS` (#5173).
+    pub(crate) layer_affinity: [f32; TERRAIN_SPLAT_LAYERS as usize],
     /// The BTXT base LTEX's own `cover_affinity` (#4903) — the ground the
     /// terrain shows wherever no splat layer paints. The density field
     /// composes `base_affinity` first and mixes each lane over it in the
@@ -519,7 +524,7 @@ pub(crate) struct TerrainCoverInputs {
     // Kept at the terrain/streaming boundary for the authored-card tier;
     // procedural ground-cover intentionally does not consume these IDs.
     #[allow(dead_code)]
-    pub(crate) authored_grass: [Vec<u32>; 8],
+    pub(crate) authored_grass: [Vec<u32>; TERRAIN_SPLAT_LAYERS as usize],
 }
 impl Component for TerrainCoverInputs {
     type Storage = SparseSetStorage<Self>;

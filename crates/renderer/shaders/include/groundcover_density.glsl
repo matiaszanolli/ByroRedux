@@ -127,14 +127,20 @@ float byroGcAffinity(
     float baseAffinity
 ) {
     float a = baseAffinity;
-    a = mix(a, affinity0.x, splat0.x);
-    a = mix(a, affinity0.y, splat0.y);
-    a = mix(a, affinity0.z, splat0.z);
-    a = mix(a, affinity0.w, splat0.w);
-    a = mix(a, affinity1.x, splat1.x);
-    a = mix(a, affinity1.y, splat1.y);
-    a = mix(a, affinity1.z, splat1.z);
-    a = mix(a, affinity1.w, splat1.w);
+    // #5173 — one lane loop over TERRAIN_SPLAT_LAYERS, the affinities
+    // indexed exactly like the weights (same vec4 pair split at
+    // TERRAIN_SPLAT_LANES_PER_WORD). The unrolled 8-mix form this replaces
+    // kept running on 8 lanes if the splat constant ever grew, while the
+    // colour chain (`byroTerrainSplatAlbedo`) followed it.
+    for (uint i = 0u; i < TERRAIN_SPLAT_LAYERS; ++i) {
+        float w = i < TERRAIN_SPLAT_LANES_PER_WORD
+            ? splat0[i]
+            : splat1[i - TERRAIN_SPLAT_LANES_PER_WORD];
+        float aff = i < TERRAIN_SPLAT_LANES_PER_WORD
+            ? affinity0[i]
+            : affinity1[i - TERRAIN_SPLAT_LANES_PER_WORD];
+        a = mix(a, aff, w);
+    }
     return clamp(a, 0.0, 1.0);
 }
 

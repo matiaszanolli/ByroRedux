@@ -7124,31 +7124,31 @@ fn groundcover_affinity_composes_the_base_in_diffuse_loop_order() {
         .next()
         .expect("function body terminates");
     // The composition: base first, then one ordered mix per lane in lane
-    // order — eight of them.
+    // order. #5173 — that walk is a `for` loop over `TERRAIN_SPLAT_LAYERS`
+    // (the unrolled 8-mix form kept running on 8 lanes if the splat constant
+    // grew, while `byroTerrainSplatAlbedo` followed it), so pin the loop
+    // shape rather than a count of 8.
     assert!(
         body.contains("float a = baseAffinity;"),
         "byroGcAffinity must start from the base lane's authored affinity (#4903)"
     );
-    assert_eq!(
-        body.matches("a = mix(a,").count(),
-        8,
-        "byroGcAffinity must mix all eight splat lanes over the base, in lane \
-         order (#4903)"
+    assert!(
+        body.contains("for (uint i = 0u; i < TERRAIN_SPLAT_LAYERS; ++i)")
+            && body.matches("a = mix(a,").count() == 1,
+        "byroGcAffinity must walk all TERRAIN_SPLAT_LAYERS lanes in order, one \
+         ordered mix per lane (#4903, #5173 loop form)"
     );
-    // #5177 — the count above would pass a crossed-lane body
-    // (`affinity0.y` over `splat0.x`). Pin the pairing: every mix line
-    // reads the same vec index and swizzle on both sides, and the eight
-    // lines together cover each lane exactly once.
-    for (vec_idx, suffix) in (0..2_u32)
-        .flat_map(|v| ["x", "y", "z", "w"].map(move |s| (v, s)))
-    {
-        let line = format!("a = mix(a, affinity{vec_idx}.{suffix}, splat{vec_idx}.{suffix});");
-        assert!(
-            body.lines().any(|l| l.trim() == line),
-            "byroGcAffinity must pair affinity{vec_idx}.{suffix} with \
-             splat{vec_idx}.{suffix} on its own mix line (#5177 lane pairing)"
-        );
-    }
+    // The affinities must be indexed exactly like the weights — the same
+    // vec4-pair split at TERRAIN_SPLAT_LANES_PER_WORD — so a lane bump moves
+    // both chains together and a crossed pairing cannot come back (#5177).
+    // Matched whitespace-insensitively so formatting cannot defeat the pin.
+    let flat: String = body.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(
+        flat.contains("? splat0[i] : splat1[i - TERRAIN_SPLAT_LANES_PER_WORD]")
+            && flat.contains("? affinity0[i] : affinity1[i - TERRAIN_SPLAT_LANES_PER_WORD]"),
+        "byroGcAffinity must index the affinities through the same lane loop \
+         as the weights (#5177 pairing, #5173 loop form)"
+    );
     // Both fabrications stay dead: no renormalisation by painted weight, no
     // default-affinity substitution for the unpainted base.
     assert!(

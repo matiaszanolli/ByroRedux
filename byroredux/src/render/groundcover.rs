@@ -24,7 +24,7 @@ use byroredux_renderer::shader_constants::{
     GROUNDCOVER_BLADES_PER_POINT, GROUNDCOVER_CHUNKS_PER_CELL_SIDE, GROUNDCOVER_CHUNK_UNITS, GROUNDCOVER_DETAIL_ATLAS_EDGE,
     GROUNDCOVER_DRAW_DISTANCE, GROUNDCOVER_INTERACTION_MAX_DISTURBERS,
     GROUNDCOVER_INTERACTION_HALF_LIFE_SECONDS, GROUNDCOVER_INTERACTION_UNITS,
-    GROUNDCOVER_MAX_CHUNKS,
+    GROUNDCOVER_MAX_CHUNKS, TERRAIN_SPLAT_LAYERS,
 };
 use byroredux_renderer::vulkan::groundcover::{
     GpuGroundCoverCell, GpuGroundCoverChunk, GpuGroundCoverDisturber, GpuGroundCoverSpecies,
@@ -569,7 +569,9 @@ pub(crate) struct EntityCell {
     origin_xz: [f32; 2],
     vertex_offset: u32,
     water_y: f32,
-    layer_affinity: [f32; 8],
+    /// Sized from the splat constant like [`TerrainCoverInputs`]'s own array
+    /// (#5173) — the two must stay the same width by construction.
+    layer_affinity: [f32; TERRAIN_SPLAT_LAYERS as usize],
     /// The BTXT base's own affinity — starts the density field's ordered
     /// mix (#4903).
     base_affinity: f32,

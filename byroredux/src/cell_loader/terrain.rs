@@ -1087,7 +1087,11 @@ pub(super) fn spawn_terrain_mesh(
     // height. Unfilled affinity slots keep the default fill; under #4903's
     // ordered mix a zero-weight lane cannot affect the composed affinity
     // either way, so the fill is uniformity, not correctness.
-    let mut layer_affinity = [crate::groundcover_translate::DEFAULT_AFFINITY; 8];
+    // #5173 — sized from the splat constant like every other per-lane array
+    // in this chain: a `zip` fill over a hard-coded 8 would silently drop
+    // lanes 8+ the moment `TERRAIN_SPLAT_LAYERS` grew.
+    let mut layer_affinity =
+        [crate::groundcover_translate::DEFAULT_AFFINITY; TERRAIN_SPLAT_LAYERS as usize];
     for (affinity, layer) in layer_affinity.iter_mut().zip(splat_layers.layers.iter()) {
         *affinity = layer.cover_affinity;
     }
@@ -1115,9 +1119,9 @@ pub(super) fn spawn_terrain_mesh(
     // number that cannot change while the cell is resident.
     let canopy_height = mean_palette_blade_height(world);
     let terrain_tile_index = if !splat_layers.layers.is_empty() {
-        let mut diffuse_indices = [0u32; 8];
-        let mut normal_indices = [0u32; 8];
-        let mut specular_indices = [0u32; 8];
+        let mut diffuse_indices = [0u32; TERRAIN_SPLAT_LAYERS as usize];
+        let mut normal_indices = [0u32; TERRAIN_SPLAT_LAYERS as usize];
+        let mut specular_indices = [0u32; TERRAIN_SPLAT_LAYERS as usize];
         for (i, layer) in splat_layers.layers.iter().enumerate() {
             diffuse_indices[i] = layer.diffuse_index;
             normal_indices[i] = layer.normal_index;
