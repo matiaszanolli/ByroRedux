@@ -265,13 +265,15 @@ pub(crate) fn setup_scene(
     // the MenuXml profiles (Oblivion / FO3 / FNV). The routes are mutually
     // exclusive per run: a Scaleform win suppresses the MenuXml probe (its
     // archive candidates cannot match a Skyrim install anyway), and a
-    // `--menu` launch suppresses the Scaleform HUD (see
-    // `scaleform_hud::launch`). The frame tick prefers `hud` over
-    // `ui_manager` when both exist, which only `--menu` + a MenuXml game
-    // can produce.
+    // `--menu` launch suppresses BOTH HUD routes (`menu_owned_overlay_skip`
+    // — #4723, pre-fix only the Scaleform route refused, so `--menu` + a
+    // MenuXml game constructed both drivers and the frame tick's
+    // hud-over-ui_manager preference froze the menu player while it still
+    // held input focus). That tick preference therefore never sees both
+    // set.
     *scaleform_hud = crate::scaleform_hud::launch(ctx, world, ui_manager, ui_texture_handle, &args);
     if scaleform_hud.is_none() {
-        *hud = crate::hud::launch_hud(ctx, world, &args);
+        *hud = crate::hud::launch_hud(ctx, world, ui_manager, &args);
         if hud.is_some() {
             *ui_texture_handle = Some(hud.as_ref().unwrap().current_texture());
         }

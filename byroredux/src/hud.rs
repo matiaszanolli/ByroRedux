@@ -15,8 +15,11 @@
 //! Skyrim is the Scaleform route: `crate::scaleform_hud` launches
 //! `hudmenu.swf` through the Ruffle player and owns that driver. The two
 //! routes share the [`HudControl`] command resource and are mutually
-//! exclusive per run (scene.rs launches the Scaleform probe first; a
-//! won Scaleform route suppresses this module's MenuXml launch).
+//! exclusive per run: a `--menu` player owns the overlay first (both
+//! routes refuse through [`menu_owned_overlay_skip`], #4723), a won
+//! Scaleform route suppresses this module's MenuXml launch, and the
+//! frame tick prefers `hud` over `ui_manager` when both exist — which
+//! the guards make unreachable.
 //!
 //! Shared machinery — archive resolution, the persistent overlay
 //! texture, change-signature + cadence throttling — is game-agnostic.
@@ -460,11 +463,28 @@ fn hud_archive_args(args: &[String]) -> Result<Option<(String, String, HudGamePr
 /// opens the archives, assembles the per-game HUD content, registers the
 /// transparent overlay textures, and logs the `hud: loaded` line a smoke
 /// gate can grep.
+/// The one `--menu`-owns-the-overlay refusal both `--hud` routes apply
+/// (#4723 — this used to guard the Scaleform route only; the MenuXml
+/// launch had no `ui_manager` parameter at all, so `--menu … --hud` on an
+/// Oblivion/FO3/FNV game constructed both drivers: the frame tick
+/// preferred `hud`, and the `--menu` player froze while still holding
+/// input focus — movement, mouse look and Escape→pause all dead, with no
+/// error logged). One declaration, so the two routes cannot drift apart
+/// again; each logs which route it skipped.
+pub(crate) fn menu_owned_overlay_skip(menu_player_installed: bool) -> Option<&'static str> {
+    menu_player_installed.then_some("hud: --menu owns the overlay — HUD route skipped")
+}
+
 pub(crate) fn launch_hud(
     ctx: &mut byroredux_renderer::vulkan::context::VulkanContext,
     world: &mut World,
+    ui_manager: &Option<byroredux_ui::UiManager>,
     args: &[String],
 ) -> Option<MenuXmlHud> {
+    if let Some(reason) = menu_owned_overlay_skip(ui_manager.is_some()) {
+        log::info!("{reason} (MenuXml)");
+        return None;
+    }
     let (misc_path, textures_path, profile) = match hud_archive_args(args) {
         Ok(Some(triple)) => triple,
         Ok(None) => return None,
@@ -858,6 +878,106 @@ mod tests {
 
     fn argv(values: &[&str]) -> Vec<String> {
         values.iter().map(|v| v.to_string()).collect()
+    }
+
+    /// #4724 — the player-vs-NPC fraction contract: the pinned debug value
+    /// wins (clamped to 0..1); the auto path reads the PLAYER's stamped
+    /// actor value only (#4675 — the pre-fix first-stamped-actor scan made
+    /// a bar track any NPC), and every "no signal" arm degrades to full.
+    #[test]
+    fn fraction_pins_clamps_and_reads_only_the_player() {
+        let mut world = World::new();
+        let player = world.spawn();
+        let mut values = ActorValues::new();
+        // Health 25 of a 100 max → 0.25.
+        values.set_base(43, 100.0);
+        values.apply_damage(43, 75.0);
+        world.insert(player, values);
+        world.insert_resource(PlayerEntity(Some(player)));
+        // A bystander NPC carrying the same key must be irrelevant.
+        let npc = world.spawn();
+        let mut npc_values = ActorValues::new();
+        npc_values.set_base(43, 1000.0);
+        world.insert(npc, npc_values);
+
+        // Pinned wins over everything, clamped.
+        assert_eq!(fraction(&world, Some(43), Some(0.75)), 0.75);
+        assert_eq!(fraction(&world, Some(43), Some(9.0)), 1.0);
+        assert_eq!(fraction(&world, Some(43), Some(-3.0)), 0.0);
+
+        // Auto reads the player's 0.25, not the bystander's 1.0.
+        assert!((fraction(&world, Some(43), None) - 0.25).abs() < 1e-6);
+
+        // Every no-signal arm is full, never zero.
+        assert_eq!(fraction(&world, None, None), 1.0, "no vitals resource");
+        let mut bare = World::new();
+        assert_eq!(fraction(&bare, Some(43), None), 1.0, "no player stamped");
+        let orphan = bare.spawn();
+        bare.insert(orphan, ActorValues::new());
+        bare.insert_resource(PlayerEntity(Some(orphan)));
+        assert_eq!(fraction(&bare, Some(43), None), 1.0, "key not carried");
+        // A degenerate 0-max value cannot divide.
+        let mut zero = ActorValues::new();
+        zero.set_base(43, 0.0);
+        bare.insert(orphan, zero);
+        assert_eq!(fraction(&bare, Some(43), None), 1.0, "zero-max degenerate");
+    }
+
+    /// #4724 — the change-signature combiner: stable within a process, and
+    /// every lane participates (a lane that stopped mattering would freeze
+    /// the HUD upload on its first frame).
+    #[test]
+    fn hash_signature_is_stable_and_lane_sensitive() {
+        let base = (1u32, 2u32, 3u32, 4i32, 5u8);
+        assert_eq!(hash_signature(base), hash_signature(base));
+        let (b0, b1, b2, b3, b4) = base;
+        for candidate in [
+            (b0 + 1, b1, b2, b3, b4),
+            (b0, b1 + 1, b2, b3, b4),
+            (b0, b1, b2 + 1, b3, b4),
+            (b0, b1, b2, b3 + 1, b4),
+            (b0, b1, b2, b3, b4 + 1),
+        ] {
+            assert_ne!(
+                hash_signature(base),
+                hash_signature(candidate),
+                "lane {candidate:?} must change the signature"
+            );
+        }
+    }
+
+    /// #4724 — the bar table composes `fraction` per profile slot: a pinned
+    /// control value wins per slot, an unpinned one falls through to the
+    /// player's actor values (full when the player carries nothing), and the
+    /// driver publishes what it derived into `HudControl::live`.
+    #[test]
+    fn bar_fractions_composes_the_profile_table_through_fraction() {
+        let mut world = World::new();
+        let player = world.spawn();
+        let mut values = ActorValues::new();
+        values.set_base(7, 100.0);
+        values.apply_damage(7, 90.0);
+        world.insert(player, values);
+        world.insert_resource(PlayerEntity(Some(player)));
+
+        let profile = HudGameProfile::oblivion();
+        let control = HudControl {
+            bars: [Some(0.1), None, Some(0.9)],
+            ..HudControl::default()
+        };
+        world.insert_resource(control);
+        // The player carries no Oblivion bar keys here: slot 0 pinned (0.1),
+        // slot 1 auto → full, slot 2 pinned (0.9).
+        let out = bar_fractions(&world, &control, &profile);
+        assert_eq!(out[0], 0.1);
+        assert!((out[1] - 1.0).abs() < 1e-6);
+        assert_eq!(out[2], 0.9);
+        // The auto arm's derivation is published for hud.status.
+        {
+            let control = world.resource::<HudControl>();
+            assert_eq!(control.live[1], Some(1.0), "the auto slot's derivation");
+            assert_eq!(control.live[0], Some(0.1), "pinned slots publish too");
+        }
     }
 
     /// A data directory holding the named (empty) files — `hud_archive_args`

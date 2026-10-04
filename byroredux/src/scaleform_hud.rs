@@ -248,8 +248,8 @@ pub(crate) fn launch(
             return None;
         }
     };
-    if ui_manager.is_some() {
-        log::info!("hud: --menu owns the overlay — Scaleform HUD route skipped");
+    if let Some(reason) = crate::hud::menu_owned_overlay_skip(ui_manager.is_some()) {
+        log::info!("{reason} (Scaleform)");
         return None;
     }
 
