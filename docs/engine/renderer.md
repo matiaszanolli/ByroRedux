@@ -549,8 +549,10 @@ images, ping-pong descriptor sets, first-frame guard, resize hooks.
 Per-frame flow:
 
 1. The vertex shader applies a Halton(2,3) sub-pixel projection jitter
-   driven by `CameraUbo.jitter` (period 16 — #1093 — chosen as the nearest
-   power of two above the natural LCM-6 period). The motion-vector attachment
+   driven by `CameraUbo.jitter` (period 16 — #1093; motivation open — the
+   original "LCM-6 period" rationale was retracted because Halton sequences
+   are aperiodic; see `taa_jitter` in `context/frame_params.rs`). The
+   motion-vector attachment
    is computed from **un-jittered** positions so reprojection stays correct.
 2. `taa.comp` samples current HDR color, reprojects history through the
    motion vector via a Catmull-Rom 9-tap resample, clips it against the

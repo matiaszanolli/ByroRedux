@@ -710,7 +710,7 @@ pipeline. Defined in
 | Set | Binding | Type | Resource | Used by |
 |---|---|---|---|---|
 | 0 | 0 | `COMBINED_IMAGE_SAMPLER` (bindless array) | All scene textures | triangle, water, ui, composite |
-| 0 | 1 | `STORAGE_IMAGE` (bindless) | Per-pass read/write images | bloom, svgf, taa |
+| 0 | 1 | `COMBINED_IMAGE_SAMPLER` (bindless array) | Environment cubemaps — `samplerCube cubemaps[]` (`include/bindings.glsl`). Declared alongside binding 0 by `build_bindless_descriptor_bindings` (`texture_registry/mod.rs`); the set-0 layout is one array per sampler dimension | triangle (the only `cubemaps[]` consumer today — env-map reflections; water / groundcover_blade share the layout for binding 0) |
 | 1 | 0 | `STORAGE_BUFFER` | Light buffer (`u32 count` + 3 pad + 1024-entry `previousLightToCurrent` remap + `GpuLight[]` at offset 4112) | triangle, groundcover_blade |
 | 1 | 1 | `UNIFORM_BUFFER` | `GpuCamera` (368 B) | triangle, water, cluster_cull |
 | 1 | 2 | `ACCELERATION_STRUCTURE` | TLAS | triangle, water |
@@ -757,10 +757,12 @@ Volumetrics uses its own private `set = 0` layout, split across two shaders
 that do NOT share one binding scheme — neither binds any Set-1 resource
 above.
 
-`volumetrics_inject.comp` (24 bindings — widened twice past the original 12:
-#2228/#2231's fog-volume work, then the combustion-transport bindings below.
-Regenerated 2026-09-11 from the live `layout(...)` declarations after #3829
-found the table two generations stale; verify against the source before
+`volumetrics_inject.comp` (26 bindings — widened three times past the
+original 12: #2228/#2231's fog-volume work, then the combustion-transport
+bindings below, then #4784's combustion-occupancy pair. Regenerated
+2026-10-04 from the live `layout(...)` declarations after #3829
+found the table two generations stale and #5214 found it one more behind;
+verify against the source before
 relying on this table for a new binding):
 
 | Binding | Type | Resource |
@@ -789,10 +791,12 @@ relying on this table for a new binding):
 | 21 | `STORAGE_BUFFER` (read-only) | `BoundaryIndexBuffer` — flat `uint[]` index data for the above |
 | 22 | `STORAGE_IMAGE` (`rgba16f`, write-only) | `combustionOptical` — (spectral scattering σ_s.rgb, reserved), current slot |
 | 23 | `COMBINED_IMAGE_SAMPLER` (`sampler3D`) | `previousCombustionOptical` — prior frame-in-flight slot |
+| 24 | `STORAGE_BUFFER` | `CombustionOccupancyOut` — 16³ `u32` fog-cluster transport-occupancy mask, current frame-in-flight slot: inject's `atomicOr` marks every cluster whose transported state carries combustion (#4784). Rotated per slot — host-zeroed + CPU-seeded at the top of `dispatch`, GPU marks accumulate during injection |
+| 25 | `STORAGE_BUFFER` (read-only) | `CombustionOccupancyIn` — the *previous* frame-in-flight slot's mask, the dilated skip gate for the RK2 transport block (`combustionNeighborhoodOccupied`, #4784) |
 
 Bindings are not laid out in strictly ascending declaration order in the
-source (12–18 declare in order, then 19–21, then 22–23 return to the
-combustion-optical group started at 14/16) — this table is ordered by
+source (0–17 declare in order, then 22–25, then 18–21) — this table is
+ordered by
 binding number, not by source line, so cross-reference by number rather
 than by position when checking against the shader.
 
