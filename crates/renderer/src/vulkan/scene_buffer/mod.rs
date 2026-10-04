@@ -31,6 +31,7 @@ pub(crate) use gpu_types::GpuSelectedRayProbe;
 pub use gpu_types::{
     GpuCamera, GpuDalcCube, GpuInstance, GpuLight, GpuPreviousModel, GpuTerrainTile,
 };
+pub use light_history::sort_lights_by_priority_with_ids;
 pub use ray_budget::{GpuRayBudget, RtLodTelemetry};
 
 #[cfg(test)]

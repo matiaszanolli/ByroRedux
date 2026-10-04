@@ -130,37 +130,29 @@ impl VulkanContext {
             ) {
                 log::warn!("combustion surface-light readback failed: {error}");
             }
-            // Appended field lights have no persistent emitter identity.
-            frame_light_ids.resize(frame_lights.len(), [0; 4]);
         }
+        // #5204 — the resize is OUTSIDE the `if let`: appended field lights
+        // have no persistent emitter identity, but the lengths must be equal
+        // by construction on every path into `upload_lights` below — with it
+        // inside, a volumetrics-absent frame only matched if the caller kept
+        // the vecs matched, and a mismatch panicked at `identities[..count]`
+        // in release.
+        frame_light_ids.resize(frame_lights.len(), [0; 4]);
         // The app already sorts authored local lights by `gi_priority_score`
         // so `upload_lights`' MAX_LIGHTS clamp drops the lowest-scoring tail
         // (#4017 retired the fixed-prefix GI scan that ordering first served).
         // Re-sort after adding field-derived lights using the canonical score
         // carried by GpuLight itself; directional lights remain pinned.
-        // #5055 — the decorate-sort carries the identity beside each light so
-        // the parallel vec takes the same permutation.
-        let directional_count = frame_lights
-            .iter()
-            .take_while(|light| light.color_type[3] > 1.5)
-            .count();
+        // #5055/#5204 — the shared decorate-sort carries the identity beside
+        // each light so the parallel vec takes the same permutation; it is
+        // the same helper `collect_lights` uses, so the invariant has one
+        // tested implementation.
         let mut resort = std::mem::take(&mut self.scratch.light_resort_scratch);
-        resort.clear();
-        resort.extend(
-            frame_lights[directional_count..]
-                .iter()
-                .zip(&frame_light_ids[directional_count..])
-                .map(|(light, &id)| (light.gi_priority_score(), *light, id)),
+        scene_buffer::sort_lights_by_priority_with_ids(
+            &mut frame_lights,
+            &mut frame_light_ids,
+            &mut resort,
         );
-        resort.sort_unstable_by(|a, b| b.0.total_cmp(&a.0));
-        for ((slot, id_slot), (_, light, id)) in frame_lights[directional_count..]
-            .iter_mut()
-            .zip(&mut frame_light_ids[directional_count..])
-            .zip(&resort)
-        {
-            *slot = *light;
-            *id_slot = *id;
-        }
         self.scratch.light_resort_scratch = resort;
         let lights = frame_lights.as_slice();
 

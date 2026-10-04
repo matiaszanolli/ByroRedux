@@ -1,10 +1,65 @@
 //! Translate reservoir indices across the per-frame light priority sort.
+use super::GpuLight;
 use super::MAX_LIGHTS;
 use crate::vulkan::sync::MAX_FRAMES_IN_FLIGHT;
 use rustc_hash::FxHashMap;
 
 const INVALID: u32 = u32::MAX;
 type Identity = [u32; 4];
+
+/// #5204 — the one decorate-sort that permutes lights and their parallel
+/// identity vec together.
+///
+/// The `previousLightToCurrent[]` header this module builds requires every
+/// light's identity to take exactly the permutation its `GpuLight` took.
+/// Two sites need that permutation (the bin crate's `collect_lights` and
+/// the renderer's post-combustion re-sort in `assemble_camera_and_lights`);
+/// pre-#5204 each hand-copied the decorate-sort-undecorate dance, and only
+/// the bin site had a test. A future edit to one copy that forgot the
+/// identity zip would silently remap temporal/spatial ReSTIR reservoirs to
+/// the wrong lights — shading corruption no layout or validation test can
+/// see.
+///
+/// Directional lights (the `color_type[3] > 1.5` prefix) are pinned: only
+/// the point-light suffix after it is reordered, by descending
+/// `gi_priority_score` so the `MAX_LIGHTS` clamp drops the lowest-scoring
+/// tail deterministically (the policy `upload.rs`'s overflow warn
+/// documents). `sort_unstable_by`, per #2680: stability buys nothing on a
+/// freshly decorated buffer and the stable sort would heap-allocate.
+pub fn sort_lights_by_priority_with_ids(
+    lights: &mut [GpuLight],
+    light_ids: &mut [[u32; 4]],
+    scratch: &mut Vec<(f32, GpuLight, [u32; 4])>,
+) {
+    debug_assert_eq!(
+        lights.len(),
+        light_ids.len(),
+        "lights and identities must be parallel (#5055/#5204)"
+    );
+    let directional_count = lights
+        .iter()
+        .take_while(|light| light.color_type[3] > 1.5)
+        .count();
+    // #2034 — decorate once (Schwartzian transform) instead of scoring in
+    // the comparator; #2172 — the caller-owned scratch amortises away the
+    // per-frame allocation.
+    scratch.clear();
+    scratch.extend(
+        lights[directional_count..]
+            .iter()
+            .zip(&light_ids[directional_count..])
+            .map(|(light, &id)| (light.gi_priority_score(), *light, id)),
+    );
+    scratch.sort_unstable_by(|a, b| b.0.total_cmp(&a.0));
+    for ((slot, id_slot), (_, light, id)) in lights[directional_count..]
+        .iter_mut()
+        .zip(&mut light_ids[directional_count..])
+        .zip(scratch.iter())
+    {
+        *slot = *light;
+        *id_slot = *id;
+    }
+}
 
 /// #5055 — the ReSTIR remap identities this module tracks are CPU-only.
 /// They ride a `[[u32; 4]]` slice parallel to the `GpuLight` upload (never
@@ -154,5 +209,52 @@ mod tests {
         let second = history.remap(1, &ids);
         // The SSBO dirty gate must hash the mapping as well as current lights.
         assert_ne!(first, second);
+    }
+
+    /// #5204 — the shared decorate-sort. Both call sites
+    /// (`collect_lights` in the bin crate, the post-combustion re-sort in
+    /// `assemble_camera_and_lights`) feed `upload_lights` → `remap` with
+    /// its output, so the identity vec must take the light vec's exact
+    /// permutation, and the directional prefix must not move.
+    #[test]
+    fn sort_lights_by_priority_with_ids_keeps_identities_glued_and_directionals_pinned() {
+        fn point(rgb: f32, radius: f32) -> GpuLight {
+            GpuLight {
+                color_type: [rgb, rgb, rgb, 0.0],
+                position_radius: [0.0, 0.0, 0.0, radius],
+                ..Default::default()
+            }
+        }
+        fn directional() -> GpuLight {
+            GpuLight {
+                color_type: [1.0, 1.0, 1.0, 2.0],
+                ..Default::default()
+            }
+        }
+        // Directional prefix (low score by the suffix metric, must stay at
+        // the front anyway) + three point lights with distinct scores.
+        let mut lights = vec![
+            directional(),
+            point(0.1, 5.0), // score 1.5
+            point(1.0, 4.0), // score 12 — highest
+            point(0.5, 4.0), // score 6
+        ];
+        let mut ids = vec![id(0), id(1), id(2), id(3)];
+        let mut scratch = Vec::new();
+        sort_lights_by_priority_with_ids(&mut lights, &mut ids, &mut scratch);
+
+        assert_eq!(ids, vec![id(0), id(2), id(3), id(1)]);
+        assert_eq!(lights[0].color_type[3], 2.0, "directional stays pinned");
+        // The lights themselves re-ordered by descending score.
+        let scores: Vec<f32> = lights[1..].iter().map(|l| l.gi_priority_score()).collect();
+        assert_eq!(scores, vec![12.0, 6.0, 1.5]);
+
+        // Scratch reuse: a second, shorter sort must not be polluted by the
+        // stale tail of the first (the #2172 clear+extend contract).
+        let mut lights2 = vec![point(0.2, 1.0), point(0.9, 1.0)];
+        let mut ids2 = vec![id(10), id(11)];
+        sort_lights_by_priority_with_ids(&mut lights2, &mut ids2, &mut scratch);
+        assert_eq!(ids2, vec![id(11), id(10)]);
+        assert!((lights2[0].gi_priority_score() - 2.7).abs() < 1e-5);
     }
 }

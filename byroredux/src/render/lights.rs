@@ -126,8 +126,14 @@ pub(super) fn gpu_light_from_emitter(
 /// (`pathHitRadiance`) scores lights per hit with its own top-K, so
 /// this score no longer gates what GI sees; it survives because the
 /// MAX_LIGHTS clamp drops the lowest-scoring tail of the suffix this
-/// orders (see the sort call below) — the sorted order is the contract
-/// upload_lights' overflow warn documents.
+/// orders — the sorted order is the contract upload_lights' overflow
+/// warn documents.
+///
+/// #5204 — production sorting moved into the renderer's shared
+/// `sort_lights_by_priority_with_ids` (which scores via the
+/// `GpuLight::gi_priority_score` method directly); this local wrapper
+/// survives for the ordering tests below.
+#[cfg(test)]
 fn gi_priority_score(light: &byroredux_renderer::GpuLight) -> f32 {
     light.gi_priority_score()
 }
@@ -291,38 +297,21 @@ pub(super) fn collect_lights(
     // #2172 / PERF-D1-02 — the decorate buffer is caller-owned and reused
     // rather than freshly allocated each frame. #2034 judged the
     // allocation negligible on size grounds and it is (point-light counts
-    // are streaming-RIS-capped, typically <50), but "small" and
-    // "per-frame" is the same combination every other scratch in this
-    // module family already amortizes away, so it costs nothing to be
+    // are streaming-RIS-capped, typically <50), but "small" and "per-frame"
+    // is the same combination every other scratch in this module family
+    // already amortizes away, so it costs nothing to be
     // consistent. `clear` + `extend` keeps the backing allocation and
     // only ever grows it to the high-water light count. #5055 — the
     // decorated tuple carries the identity beside its light so the
     // parallel vec takes the same permutation.
-    let suffix = &mut gpu_lights[directional_count..];
-    let id_suffix = &mut light_ids[directional_count..];
-    sort_scratch.clear();
-    sort_scratch.extend(
-        suffix
-            .iter()
-            .zip(id_suffix.iter())
-            .map(|(l, &id)| (gi_priority_score(l), *l, id)),
-    );
-    // #2680 / PERF-D1-02 — `sort_unstable_by`, not `sort_by`: the stable sort
-    // heap-allocates a light-count-sized temporary above its insertion-sort
-    // cutoff, which would undo the caller-owned scratch #2172 just introduced.
-    // Stability buys nothing on a freshly decorated buffer, and pattern-defeating
-    // quicksort is still deterministic for a given input, so the sorted order —
-    // and with it the overflow tail the MAX_LIGHTS clamp drops — does not
-    // flicker frame to frame.
-    sort_scratch.sort_unstable_by(|a, b| b.0.total_cmp(&a.0));
-    for ((slot, id_slot), (_, light, id)) in suffix
-        .iter_mut()
-        .zip(id_suffix.iter_mut())
-        .zip(sort_scratch.iter())
-    {
-        *slot = *light;
-        *id_slot = *id;
-    }
+    //
+    // #5204 — the sort itself is the renderer's shared
+    // `sort_lights_by_priority_with_ids`, the ONE tested implementation of
+    // the light ↔ identity parallel invariant (the renderer's
+    // post-combustion re-sort used to be a hand-copied twin of this block
+    // with no test). `sort_unstable_by` per #2680: stability buys nothing
+    // on a freshly decorated buffer and the stable sort heap-allocates.
+    byroredux_renderer::sort_lights_by_priority_with_ids(gpu_lights, light_ids, sort_scratch);
 
     // Log light count once per session.
     {
