@@ -1363,13 +1363,23 @@ mod tests {
     #[test]
     fn water_rapids_third_layer_uses_world_xz_flow() {
         let src = include_str!("../../shaders/water.frag");
+        // #4929 superseded the raw-speed arm this test used to pin: the
+        // Rapids third layer now consumes the CPU-baked `normalScrollC`
+        // (authored rate, flow-biased at the translate boundary). What
+        // still needs pinning is that no arm re-derives a scroll from the
+        // Y-up flow vector in the wrong plane — world XY instead of XZ —
+        // or from the raw BU/s magnitude.
         assert!(
-            src.contains("vec2(push.flow.x, push.flow.z) * push.flow.w * 2.0"),
-            "rapids' third normal layer must project the Y-up flow vector onto XZ"
+            !src.contains("push.flow.xy * push.flow.w"),
+            "rapids must not use world XY, whose Y component is zero for horizontal water"
         );
         assert!(
-            !src.contains("push.flow.xy * push.flow.w * 2.0"),
-            "rapids must not use world XY, whose Y component is zero for horizontal water"
+            !src.contains("push.flow.w * 2.0"),
+            "no layer may read the flow's BU/s magnitude as a UV/s scroll rate (#4929)"
+        );
+        assert!(
+            src.contains("vec2 thirdScroll = normalScrollC;"),
+            "the Rapids third layer consumes the translate's flow-biased authored rate"
         );
     }
 
@@ -2450,6 +2460,24 @@ mod push_constant_block_tests {
 #[cfg(test)]
 mod reflection_intensity_contract_tests {
     const WATER_FRAG_SRC: &str = include_str!("../../shaders/water.frag");
+
+    /// #4929 — the Rapids third normal layer scrolls at the authored
+    /// CPU-baked rate; the former arm read the current's BU/s directly as
+    /// UV/s (44× the translate's intent), strobing the whitewater.
+    #[test]
+    fn rapids_third_layer_uses_the_authored_scroll_rate() {
+        assert!(
+            WATER_FRAG_SRC.contains("vec2 thirdScroll = normalScrollC;"),
+            "water.frag re-derived the Rapids third-layer scroll from the \
+             raw flow speed (#4929 relapse) — the translate boundary owns \
+             the flow-biased rate; the shader must consume it"
+        );
+        assert!(
+            !WATER_FRAG_SRC.contains("push.flow.w * 2.0"),
+            "water.frag re-introduced a BU/s-as-UV/s scroll arm (#4929) — \
+             flow.w is world units per second, not UV per second"
+        );
+    }
 
     /// Reflection Magnitude is the sole ray-colour intensity multiplier,
     /// applied unconditionally after the hit/miss arms — never compounded

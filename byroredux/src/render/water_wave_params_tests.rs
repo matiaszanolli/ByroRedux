@@ -643,3 +643,77 @@ fn ripple_event_reaches_water_gpu_params() {
     let draws = run_build(&world);
     assert_eq!(draws[0].params.ripple, [10.0, 20.0, 0.75, 19.0]);
 }
+
+/// Flowing kinds damp the atmospheric weather transport to
+/// `FLOWING_WATER_WEATHER_TRANSPORT` while calm water keeps it whole — the
+/// flow term owns visible transport on rivers (measured on the White River
+/// fixture: full-rate weather swept the surface cross-current several
+/// times faster than the authored 2.876 BU/s flow). The damping must apply
+/// to every composed layer so the aggregate surface motion keeps its shape.
+#[test]
+fn flowing_kinds_damp_the_weather_transport_but_calm_keeps_it() {
+    let wind = WindField {
+        direction: [1.0, 0.0],
+        speed: 200.0,
+        gust_amplitude: 0.0,
+        gust_frequency: 0.0,
+    };
+    // Full-rate weather scroll for a 200 BU/s wind.
+    let weather_x = 200.0
+        * byroredux_core::ecs::components::water::WEATHER_SCROLL_PER_BU_PER_S;
+
+    let mut calm = world_with_water_plane(
+        1.5, 2.0, 73.0, 1.0 / 488.0, [0.7, 0.6, 0.5], [0.9, 0.5, 0.1, 0.2],
+        [9.0, 500.0, 0.34, 3.2],
+    );
+    calm.insert_resource(wind);
+    let params = &run_build(&calm)[0].params;
+    assert_eq!(
+        params.scroll[0],
+        weather_x + WaterMaterial::default().scroll_a[0],
+        "calm water carries the full weather transport over its authored scroll"
+    );
+    assert_eq!(
+        params.scroll_c[0],
+        weather_x * 0.45,
+        "layer C keeps its 0.45 weather share on calm water"
+    );
+
+    let mut river = world_with_water_plane(
+        1.5, 2.0, 73.0, 1.0 / 488.0, [0.7, 0.6, 0.5], [0.9, 0.5, 0.1, 0.2],
+        [9.0, 500.0, 0.34, 3.2],
+    );
+    river.insert_resource(wind);
+    let water_entity = river
+        .query::<WaterPlane>()
+        .and_then(|q| q.iter().next().map(|(e, _)| e))
+        .expect("plane exists");
+    {
+        let mut pq = river.query_mut::<WaterPlane>().unwrap();
+        let plane = pq.get_mut(water_entity).unwrap();
+        plane.kind = WaterKind::River;
+    }
+    let params = &run_build(&river)[0].params;
+    let damped = weather_x * WaterKind::FLOWING_WATER_WEATHER_TRANSPORT;
+    assert_eq!(
+        params.scroll[0],
+        damped + WaterMaterial::default().scroll_a[0],
+        "a river's layer A carries the damped weather transport"
+    );
+    assert_eq!(
+        params.scroll[2],
+        damped * 0.65 + WaterMaterial::default().scroll_b[0],
+        "layer B keeps its 0.65 share of the damped transport over its authored scroll"
+    );
+    assert_eq!(
+        params.scroll_c[0],
+        damped * 0.45,
+        "layer C keeps its 0.45 share of the damped transport"
+    );
+    assert_eq!(
+        params.tune[3],
+        1.5 * (1.0 + 0.5 * (200.0 / 220.0)),
+        "the wind wave amplitude scale stays FULL strength on flowing kinds — \
+         only transport is damped"
+    );
+}

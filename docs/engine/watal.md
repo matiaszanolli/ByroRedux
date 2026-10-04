@@ -453,6 +453,19 @@ paint flat 0.08 grey) and `m-exteriors.sh water` floors its capture mean —
 `reflection_intensity_contract_tests` in `vulkan/water.rs` pins the GLSL source
 shape.
 
+**Flowing-water transport composition (#5245, 2026-10-04):** on flowing kinds
+(River/Rapids/Waterfall) the canonical flow term owns visible transport and
+the atmospheric weather scroll is damped to
+`WaterKind::FLOWING_WATER_WEATHER_TRANSPORT` (0.35) — applied identically by
+the renderer upload and the CPU crest sampler, so the #3207
+visible-water/gameplay phase contract holds. Measured on the White River
+fixture: full-rate weather (up to ~0.33 UV/s cross-wind) swept the surface
+several times faster than the authored ~0.13 UV/s downstream flow. The
+wind's chop amplitude stays full strength — only transport is damped. The
+Rapids third normal layer also now scrolls at the CPU-baked authored rate
+(#4929): its former arm read the current's BU/s directly as UV/s (44x too
+fast), strobing the whitewater.
+
 **Directional-scroll frame (#4544 superseded by #4727, 2026-09-24; scoped per
 game by #4910, 2026-10-01):** WATR's per-layer wind angles are wind-FROM
 compass bearings in the record's Z-up frame (0 = from game north; see the §2
@@ -732,9 +745,14 @@ does not introduce a second *WaterLod* material representation. Since #5243
 (2026-10-04, W2-01) the mesh is **per cell**: one quad per distant cell at
 that cell's *effective* water height — explicit `XCLW` → that height, absent
 `XCLW` → the WRLD `NAM3`/`NAM4` default, authored dry sentinel → skipped —
-ringed between the streaming hole (`radius_unload` + a one-cell margin) and
-the terrain-LOD reach, with quads whose LAND minimum sits above their water
-skipped as fully occluded. The pre-#5243 single sheet at the worldspace
+ringed between the streaming hole and the terrain-LOD reach, with quads
+whose LAND minimum sits above their water skipped as fully occluded. Since
+#5244 the hole is exactly the streaming boundary (`radius_unload`): the
+loaded full-detail set covers ≤ `radius_unload` and the distant mesh emits
+≥ `radius_unload`+1 — contiguous by construction, where the old
+one-cell margin (#1871 heritage, from the wrong-height-sheet era) cut a
+permanent waterless ring at every boundary. The pre-#5243 single sheet at
+the worldspace
 default was wrong on both sides of the census: FNV WastelandNV, Skyrim
 Tamriel and FO4 Commonwealth author **zero** inherit cells (every wet cell
 is an override), so the default sheet painted phantom ocean across their

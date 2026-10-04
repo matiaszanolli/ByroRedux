@@ -836,9 +836,13 @@ void main() {
     bool blendAuthoredNormals = push.noise_falloff.y > 0.5;
     bool hasAuthoredThirdLayer = noiseMapC != noiseMapA && noiseMapC != noiseMapB;
     if (blendAuthoredNormals && (kind == WATER_RAPIDS || hasAuthoredThirdLayer)) {
-        vec2 thirdScroll = kind == WATER_RAPIDS
-            ? vec2(push.flow.x, push.flow.z) * push.flow.w * 2.0
-            : normalScrollC;
+        // #4929 — Rapids shares the authored third-layer rate
+        // (`normalScrollC`, flow-biased on the CPU side like layer A).
+        // The former `flow.xz * flow.w * 2.0` arm read the current's
+        // BU/s directly as UV/s — 44x the translate's intent (8 BU/s
+        // scrolled 16 UV/s) — strobing the whitewater and leaving the
+        // cross-current wind scroll as the only coherent motion.
+        vec2 thirdScroll = normalScrollC;
         float thirdWeight = kind == WATER_RAPIDS ? 0.7 : 0.35;
         vec3 nC = sampleFlowAdvectedNormal(
             noiseMapC,

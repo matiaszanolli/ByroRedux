@@ -222,6 +222,21 @@ pub(super) fn reemit_water_planes(
         mat.reflection_tint = mat
             .reflection_tint
             .map(|channel| channel * mat.reflection_hdr_multiplier.max(0.0));
+        // Flowing kinds damp the atmospheric transport to
+        // `FLOWING_WATER_WEATHER_TRANSPORT` — the flow term owns visible
+        // transport there, and a full-rate weather scroll sweeps the
+        // surface cross-current several times faster than the authored
+        // flow (measured on the White River fixture; see the constant's
+        // doc). Calm water keeps the full weather scroll. The same damping
+        // is applied by the CPU crest sampler (#3207 coherence).
+        let weather_scroll = if plane.kind.is_flowing() {
+            [
+                weather_scroll[0] * WaterKind::FLOWING_WATER_WEATHER_TRANSPORT,
+                weather_scroll[1] * WaterKind::FLOWING_WATER_WEATHER_TRANSPORT,
+            ]
+        } else {
+            weather_scroll
+        };
         // Starfield's flow-map tile scale is a visual UV-rate control, not a
         // physics velocity. Keep the canonical `WaterFlow` speed bounded and
         // scale only the authored wave scroll vectors here.

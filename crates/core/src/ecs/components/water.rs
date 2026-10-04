@@ -139,6 +139,29 @@ impl WaterKind {
         !matches!(self, WaterKind::Waterfall | WaterKind::Lava)
     }
 
+    /// `true` for kinds whose visible surface transport is owned by the
+    /// canonical `WaterFlow` term (downstream advection), not the
+    /// atmospheric wind.
+    #[inline]
+    pub fn is_flowing(self) -> bool {
+        matches!(self, WaterKind::River | WaterKind::Rapids | WaterKind::Waterfall)
+    }
+
+    /// Fraction of the atmospheric weather scroll that flowing kinds
+    /// ([`Self::is_flowing`]) add to their normal-layer transport.
+    ///
+    /// On flowing water the flow term owns visible transport; the wind
+    /// keeps its full chop amplitude (`wind_wave_scale`) but a full-rate
+    /// weather transport reads as a violent cross-current sweep — measured
+    /// live on the Skyrim White River fixture (2026-10-04,
+    /// `RiverWaterFlowNE`, flow 2.876 BU/s): weather up to ~0.33 UV/s in
+    /// the wind direction against a ~0.13 UV/s downstream flow term, i.e.
+    /// the surface visibly moved sideways several times faster than it
+    /// flowed (the live report behind this constant). Applied identically
+    /// by the renderer upload and the CPU crest sampler so the #3207
+    /// phase-coherence contract holds.
+    pub const FLOWING_WATER_WEATHER_TRANSPORT: f32 = 0.35;
+
     /// Whether this semantic kind implies a directed current.
     pub const fn has_directional_flow(self) -> bool {
         matches!(
