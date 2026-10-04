@@ -285,6 +285,39 @@ fn memory_budget_ledger_records_the_indirect_buffer_as_deliberate() {
     );
 }
 
+/// #5172 — `GpuTerrainTile` grew 160 → 176 B (#4903/#4907's base-affinity
+/// and base-diffuse tail) and six texts kept billing the old size, including
+/// this ledger row naming a pin test that no longer exists. Keep the row
+/// honest against the live struct: exact size, exact KB, the live pin's
+/// name, and no stale `160` left anywhere in the row.
+#[test]
+fn memory_budget_ledger_pins_the_terrain_tile_row() {
+    const BUDGET_MD: &str = include_str!("../../../../../docs/engine/memory-budget.md");
+    let row = BUDGET_MD
+        .lines()
+        .find(|line| line.starts_with("| Terrain tile SSBO"))
+        .expect("memory-budget.md must keep a terrain-tile row");
+
+    let size = size_of::<super::gpu_types::GpuTerrainTile>();
+    let kilobytes = size * super::constants::MAX_TERRAIN_TILES / 1024;
+    for claim in [
+        format!("{size} B"),
+        format!("~{kilobytes} KB"),
+        "gpu_terrain_tile_is_176_bytes".to_string(),
+    ] {
+        assert!(
+            row.contains(&claim),
+            "the terrain-tile row must state `{claim}` ({size} B × MAX_TERRAIN_TILES, pinned \
+             by `gpu_terrain_tile_is_176_bytes`): {row}"
+        );
+    }
+    assert!(
+        !row.contains("160"),
+        "a `160` survived in the terrain-tile row — the pre-#4903 size or the retired \
+         `gpu_terrain_tile_is_160_bytes` pin: {row}"
+    );
+}
+
 /// #4952 — the light SSBO is a `LightHeader` (count, pads and the
 /// `MAX_LIGHTS + 1` previous→current remap) followed by `GpuLight[]`. The
 /// ledger row billed 64 B lights with no header, and both descriptor tables

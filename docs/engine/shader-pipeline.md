@@ -690,7 +690,7 @@ ReSTIR invalid-selection sentinel and is never occupied by a real light.
 | `MAX_MATERIALS` | 16 384 | 432 B each; deduplicated per frame |
 | `MAX_TOTAL_BONES` | 196 608 | `floor(196 608 / 144)` = 1 365 palette slots, minus reserved slot 0 → **1 364 allocatable** skinned meshes (M29.6). Not an exact product: 1 365 × 144 = 196 560 leaves a 48-bone unused tail |
 | `MAX_PENDING_BIND_INVERSE_UPLOADS_PER_FRAME` | 1 366 | First-sight bind-inverse upload cap |
-| `MAX_TERRAIN_TILES` | 1 024 | 160 B each (`GpuTerrainTile`) |
+| `MAX_TERRAIN_TILES` | 1 024 | 176 B each (`GpuTerrainTile`) |
 | `IDENTITY_BONE_SLOT` | 0 | Slot 0 is always the identity matrix |
 
 ---

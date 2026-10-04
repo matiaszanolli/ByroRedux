@@ -1405,10 +1405,60 @@ mod bindings_glsl_contract_pin {
 /// Scope is live source, engine docs, the audit skills and the top-level
 /// status docs. `docs/audits/`, `HISTORY.md` and `.claude/issues/` are
 /// dated records and are not scanned.
+///
+/// #5203 widened the guard from `GpuMaterial` alone to every `Gpu*`
+/// struct with a size-pin test: `GpuLight`, `GpuTerrainTile`,
+/// `GpuInstance`, `GpuCamera`. The 2026-10 window produced two such
+/// size drifts (#4903 terrain 160 → 176 B, #5055 light 80 → 64 B) and
+/// both left stale prose behind in more places than the code moved.
 #[cfg(test)]
 mod gpu_material_size_claims {
     use super::GpuMaterial;
     use std::path::{Path, PathBuf};
+
+    /// Every size-pinned `Gpu*` record with its live size. The pin test
+    /// names map onto these via `<snake_name>_is_<N>_bytes` (rule 1).
+    fn pinned_sizes() -> Vec<(&'static str, usize)> {
+        use crate::vulkan::scene_buffer::{GpuCamera, GpuInstance, GpuLight, GpuTerrainTile};
+        vec![
+            ("GpuMaterial", std::mem::size_of::<GpuMaterial>()),
+            ("GpuLight", std::mem::size_of::<GpuLight>()),
+            ("GpuTerrainTile", std::mem::size_of::<GpuTerrainTile>()),
+            ("GpuInstance", std::mem::size_of::<GpuInstance>()),
+            ("GpuCamera", std::mem::size_of::<GpuCamera>()),
+        ]
+    }
+
+    /// Rule-1 prefixes: the pin-test family each type spells its size pin
+    /// as — `gpu_material_size_is_432_bytes` but `gpu_light_is_64_bytes`
+    /// for everyone else — mapped to the live size the digits must state.
+    fn pinned_prefixes() -> Vec<(String, usize)> {
+        pinned_sizes()
+            .into_iter()
+            .map(|(name, size)| {
+                let snake = name.strip_prefix("Gpu").unwrap_or(name).to_ascii_lowercase();
+                let prefix = if name == "GpuMaterial" {
+                    format!("gpu_{snake}_size_is")
+                } else {
+                    format!("gpu_{snake}_is")
+                };
+                (prefix, size)
+            })
+            .collect()
+    }
+
+    /// Rule 2's plausibility window: a claim counts only when it lands
+    /// within ~0.55×…1.9× of the anchored type's live size. Real size
+    /// drift is incremental — every one in history (80→64 light, 160→176
+    /// terrain, 112/128→160 instance, 336/352→368 camera, the material
+    /// 260–432 chain) sits inside the window — while sub-component prose
+    /// on a line that names the struct ("three `mat4` (192 B) plus eleven
+    /// vec4 (176 B)") sits outside it and must not read as a whole-struct
+    /// claim.
+    fn within_drift_window(value: usize, live: usize) -> bool {
+        let (value, live) = (value as f64, live as f64);
+        (0.55..=1.9).contains(&(value / live))
+    }
 
     fn workspace_root() -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
@@ -1477,7 +1527,20 @@ mod gpu_material_size_claims {
 
     /// Dated narrative. Mirrors #4042's `HISTORIC_MARKERS`: a line that
     /// tells the story of an old size is not a claim about the current one.
-    const HISTORIC_MARKERS: &[&str] = &[" at R1", "was ", "grew", "before", "used to", "Closed ("];
+    /// `then-`/`grown` cover "didn't touch GpuCamera's then-336 B layout
+    /// (since grown to …)" prose; `, 2026-` covers explicitly date-stamped
+    /// arrows in the status docs ("`GpuInstance` 400 → 112 B, 2026-05-01").
+    const HISTORIC_MARKERS: &[&str] = &[
+        " at R1",
+        "was ",
+        "grew",
+        "grown",
+        "then-",
+        "before",
+        "used to",
+        "Closed (",
+        ", 2026-",
+    ];
 
     /// Every `Gpu*` type name on `line`, as `(start, name)`.
     fn gpu_types(line: &str) -> Vec<(usize, &str)> {
@@ -1503,28 +1566,47 @@ mod gpu_material_size_claims {
         rest.starts_with('→') || rest.starts_with("->")
     }
 
-    /// The sizes a line asserts as the current `GpuMaterial` size (rule 2).
+    /// The sizes a line asserts as the current size of a pinned `Gpu*`
+    /// type (rule 2), as `(type name, claimed bytes)` pairs.
     ///
-    /// A number counts when it carries a size unit, the nearest `Gpu*` type
-    /// on the line is `GpuMaterial` (so `368-byte GpuCamera` on the same line
-    /// is not read as a material size), and it is not the "from" side of a
-    /// history arrow anywhere on the line — which also excuses the last
-    /// element of one chain that a later `432 → 428` continues.
-    fn current_size_claims(line: &str) -> Vec<usize> {
+    /// A number counts when it carries a size unit and the nearest `Gpu*`
+    /// type on the line is one of the size-pinned types (so a claim glued
+    /// to a non-pinned `Gpu*` neighbour is not read as a pinned size), and
+    /// it is not the "from" side of a history arrow anywhere on the line —
+    /// which also excuses the last element of one chain that a later
+    /// `432 → 428` continues.
+    fn current_size_claims(line: &str) -> Vec<(&'static str, usize)> {
+        let pinned = pinned_sizes();
         let types = gpu_types(line);
-        if !types.iter().any(|&(_, name)| name == "GpuMaterial") {
+        if !types
+            .iter()
+            .any(|&(_, name)| pinned.iter().any(|&(p, _)| p == name))
+        {
             return Vec::new();
         }
+        let nearest_pinned = |start: usize| -> Option<&'static str> {
+            types
+                .iter()
+                .min_by_key(|&&(pos, _)| pos.abs_diff(start))
+                .map(|&(_, name)| name)
+                .and_then(|name| {
+                    pinned
+                        .iter()
+                        .find(|&&(p, _)| p == name)
+                        .map(|(p, _)| *p)
+                })
+        };
         // "300 bytes at R1, 432 bytes today" is history and a current claim
         // on one line; the `today` size is read even past the markers.
         if HISTORIC_MARKERS.iter().any(|m| line.contains(m)) {
             return numbers(line)
                 .into_iter()
-                .filter(|&(_, _, end)| {
+                .filter_map(|(value, _, end)| {
                     let after = &line[end..];
-                    after.starts_with(" bytes today") || after.starts_with(" B today")
+                    (after.starts_with(" bytes today") || after.starts_with(" B today"))
+                        .then_some(value)
                 })
-                .map(|(value, _, _)| value)
+                .filter_map(|value| nearest_pinned(0).map(|name| (name, value)))
                 .collect();
         }
         let all = numbers(line);
@@ -1534,43 +1616,53 @@ mod gpu_material_size_claims {
             .map(|&(value, _, _)| value)
             .collect();
         all.iter()
-            .filter(|&&(value, start, end)| {
-                // Part of an identifier, a `#1234` reference, or a
-                // `0x`/decimal/thousands literal: not a size.
+            .filter_map(|&(value, start, end)| {
+                // Part of an identifier, a `#1234` reference, a
+                // `0x`/decimal/thousands literal, or a parenthesised
+                // sub-component ("(352 B + 16 B …)"): not a whole-struct
+                // claim.
                 let glued = line[..start].chars().last().is_some_and(|c| {
-                    c.is_ascii_alphanumeric() || matches!(c, '_' | '#' | '.' | ',')
+                    c.is_ascii_alphanumeric() || matches!(c, '_' | '#' | '.' | ',' | '(')
                 });
                 let after = line[end..].trim_start_matches('*');
                 let unit = (after.starts_with(" B")
                     && !after[2..].starts_with(|c: char| c.is_ascii_alphanumeric()))
                     || after.starts_with("-byte")
                     || after.starts_with(" bytes");
-                let nearest = types
-                    .iter()
-                    .min_by_key(|&&(pos, _)| pos.abs_diff(start))
-                    .map(|&(_, name)| name);
-                !glued && unit && nearest == Some("GpuMaterial") && !from_sides.contains(&value)
+                (!glued && unit && !from_sides.contains(&value))
+                    .then(|| nearest_pinned(start).map(|name| (name, value)))
+                    .flatten()
             })
-            .map(|&(value, _, _)| value)
+            .filter(|&(name, value)| {
+                pinned_sizes()
+                    .iter()
+                    .find(|&&(p, _)| p == name)
+                    .is_some_and(|&(_, live)| within_drift_window(value, live))
+            })
             .collect()
     }
 
-    /// Plausible `GpuMaterial` record-size band for rule 4. A bare
-    /// `N bytes` claim inside the doc of a `GpuMaterial`-typed item is
+    /// Plausible pinned-record size band for rule 4. A bare
+    /// `N bytes` claim inside the doc of an item typed by a pinned
+    /// `Gpu*` struct is
     /// only treated as a size claim when N lands in this band, so
     /// unrelated byte prose near the symbol ("16 bytes at a time" —
     /// FxHasher's chunk width) stays out; compounds like "4-byte u32"
     /// never carry a standalone " bytes"/" B" unit and are excluded by
-    /// the unit test itself. If the record ever outgrows the band this
+    /// the unit test itself. The 48 B floor admits every stale size in
+    /// history (smallest: `GpuLight`'s retired 80) while keeping lane /
+    /// chunk prose out; the ceiling guards against unrelated large byte
+    /// counts. If a record ever outgrows the band this
     /// assert fires — widen it rather than let the rule go silent.
-    const BARE_CLAIM_BAND: (usize, usize) = (128, 4096);
+    const BARE_CLAIM_BAND: (usize, usize) = (48, 4096);
 
     /// Rule 4 (#4522): bare `N bytes` / `N B` claims inside the `///` doc
-    /// block of an item that names `GpuMaterial`, returning
-    /// `(1-based line, value)` pairs. The item is the first non-blank
-    /// line after the block, attributes (`#[repr(C)]`, `#[derive…]`)
-    /// skipped, so the struct's own multi-attribute declaration still
-    /// attaches its doc.
+    /// block of an item that names a size-pinned `Gpu*` type, returning
+    /// `(1-based line, value, anchored type)` triples. The item is the
+    /// first non-blank line after the block, attributes (`#[repr(C)]`,
+    /// `#[derive…]`) skipped, so the struct's own multi-attribute
+    /// declaration still attaches its doc. The anchor is the first
+    /// pinned type named on the item line.
     ///
     /// Exclusions, tuned against the live tree so only genuine size
     /// prose flags:
@@ -1580,9 +1672,11 @@ mod gpu_material_size_claims {
     ///   block chains `272 B → 260 B → …` across lines and a chain's
     ///   "to" side can land on the *next* line, so no per-line reading
     ///   of an arrow-bearing line is trustworthy;
-    /// - numbers glued into identifiers, `#issue` references or
-    ///   thousands separators, and values outside [`BARE_CLAIM_BAND`].
-    fn bare_doc_block_claims(text: &str) -> Vec<(usize, usize)> {
+    /// - numbers glued into identifiers, `#issue` references, thousands
+    ///   separators or a parenthesised sub-component breakdown, and
+    ///   values outside [`BARE_CLAIM_BAND`].
+    fn bare_doc_block_claims(text: &str) -> Vec<(usize, usize, &'static str)> {
+        let pinned = pinned_sizes();
         let live = std::mem::size_of::<GpuMaterial>();
         assert!(
             live >= BARE_CLAIM_BAND.0 && live <= BARE_CLAIM_BAND.1,
@@ -1608,9 +1702,17 @@ mod gpu_material_size_claims {
             while item < lines.len() && lines[item].trim_start().starts_with("#[") {
                 item += 1;
             }
-            if !lines.get(item).is_some_and(|line| line.contains("GpuMaterial")) {
+            let Some(anchor) = lines
+                .get(item)
+                .and_then(|line| {
+                    pinned
+                        .iter()
+                        .find(|(name, _)| line.contains(name))
+                        .map(|(name, _)| *name)
+                })
+            else {
                 continue;
-            }
+            };
             for (line_no, line) in lines[block..i].iter().enumerate() {
                 let line_no = block + line_no;
                 if HISTORIC_MARKERS.iter().any(|m| line.contains(m))
@@ -1621,15 +1723,20 @@ mod gpu_material_size_claims {
                 }
                 for (value, start, end) in numbers(line) {
                     let glued = line[..start].chars().last().is_some_and(|c| {
-                        c.is_ascii_alphanumeric() || matches!(c, '_' | '#' | '.' | ',')
+                        c.is_ascii_alphanumeric() || matches!(c, '_' | '#' | '.' | ',' | '(')
                     });
                     let after = line[end..].trim_start_matches('*');
                     let unit = (after.starts_with(" B")
                         && !after[2..].starts_with(|c: char| c.is_ascii_alphanumeric()))
                         || after.starts_with(" bytes");
                     let in_band = value >= BARE_CLAIM_BAND.0 && value <= BARE_CLAIM_BAND.1;
-                    if !glued && unit && in_band {
-                        out.push((line_no + 1, value));
+                    let anchor_live = pinned
+                        .iter()
+                        .find(|&&(name, _)| name == anchor)
+                        .map(|&(_, size)| size)
+                        .unwrap_or(usize::MAX);
+                    if !glued && unit && in_band && within_drift_window(value, anchor_live) {
+                        out.push((line_no + 1, value, anchor));
                     }
                 }
             }
@@ -1639,8 +1746,15 @@ mod gpu_material_size_claims {
 
     #[test]
     fn no_file_states_a_stale_gpu_material_size() {
-        let live = std::mem::size_of::<GpuMaterial>();
-        let prefix = concat!("gpu_material_size_is", "_");
+        let pinned = pinned_sizes();
+        let live_for = |name: &str| {
+            pinned
+                .iter()
+                .find(|(n, _)| *n == name)
+                .map(|(_, size)| *size)
+                .unwrap_or(0)
+        };
+        let prefixes = pinned_prefixes();
         let mut stale = Vec::new();
         for path in scanned_files() {
             let Ok(text) = std::fs::read_to_string(&path) else {
@@ -1651,39 +1765,52 @@ mod gpu_material_size_claims {
                 Some((head, _)) => head.to_string(),
                 None => text,
             };
-            // Rule 4 (#4522) — bare byte claims in the doc block of a
-            // `GpuMaterial`-typed item; block-structured, so it runs once
-            // per Rust file before the per-line rules below.
+            // Rule 4 (#4522) — bare byte claims in the doc block of an item
+            // typed by a size-pinned `Gpu*`; block-structured, so it runs
+            // once per Rust file before the per-line rules below.
             if path.extension().and_then(|e| e.to_str()) == Some("rs") {
-                for (line_no, value) in bare_doc_block_claims(&text) {
-                    if value != live {
+                for (line_no, value, anchor) in bare_doc_block_claims(&text) {
+                    if value != live_for(anchor) {
                         let line = text.lines().nth(line_no - 1).unwrap_or("").trim();
-                        stale.push(format!("{}:{}: {}", path.display(), line_no, line));
+                        stale.push(format!(
+                            "{}:{}: [{} ≠ {} B] {}",
+                            path.display(),
+                            line_no,
+                            anchor,
+                            live_for(anchor),
+                            line
+                        ));
                     }
                 }
             }
             for (idx, line) in text.lines().enumerate() {
                 // Rule 1.
                 let dated = HISTORIC_MARKERS.iter().any(|m| line.contains(m));
-                for (pos, _) in line.match_indices(prefix).filter(|_| !dated) {
-                    let rest = &line[pos + prefix.len()..];
-                    let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
-                    if rest[digits.len()..].starts_with("_bytes")
-                        && digits.parse::<usize>().ok() != Some(live)
-                    {
-                        stale.push(format!("{}:{}: {}", path.display(), idx + 1, line.trim()));
+                for (prefix, live) in &prefixes {
+                    for (pos, _) in line.match_indices(prefix.as_str()).filter(|_| !dated) {
+                        let rest = &line[pos + prefix.len()..];
+                        let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+                        if rest[digits.len()..].starts_with("_bytes")
+                            && digits.parse::<usize>().ok() != Some(*live)
+                        {
+                            stale.push(format!("{}:{}: {}", path.display(), idx + 1, line.trim()));
+                        }
                     }
                 }
                 // Rule 2.
-                if current_size_claims(line).iter().any(|&n| n != live) {
+                if current_size_claims(line)
+                    .iter()
+                    .any(|&(name, n)| n != live_for(name))
+                {
                     stale.push(format!("{}:{}: {}", path.display(), idx + 1, line.trim()));
                 }
             }
         }
         assert!(
             stale.is_empty(),
-            "these lines state a GpuMaterial size other than the live {live} B \
-             (#4114) — correct them, or phrase history as `old → new`:\n{}",
+            "these lines state a size other than the live one for a pinned Gpu* \
+             struct ({:?}) — correct them, or phrase history as `old → new`:\n{}",
+            pinned,
             stale.join("\n")
         );
     }
@@ -1733,41 +1860,48 @@ mod gpu_material_size_claims {
     }
 
     /// The scanner itself: history reads as history, a current claim does
-    /// not, and identifiers or issue numbers are not sizes.
+    /// not, and identifiers or issue numbers are not sizes. Since #5203
+    /// the claims are `(type, size)` pairs — a `GpuCamera` size on a
+    /// line that also names `GpuMaterial` belongs to the camera.
     #[test]
     fn the_claim_scanner_separates_history_from_current_sizes() {
         assert_eq!(
             current_size_claims("the 432-byte `GpuMaterial` layout"),
-            vec![432]
+            vec![("GpuMaterial", 432)]
         );
         assert_eq!(
             current_size_claims("`GpuMaterial` — 428 bytes, SSBO"),
-            vec![428]
+            vec![("GpuMaterial", 428)]
         );
         assert_eq!(
             current_size_claims("**`GpuMaterial` size is pinned at 432 B** by"),
-            vec![432]
+            vec![("GpuMaterial", 432)]
         );
         assert_eq!(
             current_size_claims("`GpuMaterial` 396 → 432 → 428 B (#3909)"),
-            vec![428]
+            vec![("GpuMaterial", 428)]
         );
         assert_eq!(
             current_size_claims("`GpuMaterial` 348→432 B (glass), then 432→428 B (#3909)"),
-            vec![428]
+            vec![("GpuMaterial", 428)]
         );
         assert!(current_size_claims("`GpuMaterial` was 300 bytes at R1").is_empty());
         assert_eq!(
             current_size_claims("`GpuMaterial` was 300 bytes at R1 (432 bytes today,"),
-            vec![432]
+            vec![("GpuMaterial", 432)]
         );
-        assert!(current_size_claims("the 368-byte `GpuCamera` and `GpuMaterial` tests").is_empty());
+        assert_eq!(
+            current_size_claims("the 368-byte `GpuCamera` and `GpuMaterial` tests"),
+            vec![("GpuCamera", 368)]
+        );
         assert!(current_size_claims("`GpuMaterial` (#3909) x432 B_ok").is_empty());
         assert!(current_size_claims("no type here: 432 B").is_empty());
+        // A non-pinned neighbour stays out of scope.
+        assert!(current_size_claims("`GpuSelectedRayProbe` 48 B").is_empty());
     }
 
     /// The rule-4 scanner itself (#4522): a bare byte claim under the doc
-    /// of a `GpuMaterial`-typed item is a size claim even when the claim
+    /// of a size-pinned-typed item is a size claim even when the claim
     /// line names no type; unrelated byte prose, history arrows, dated
     /// history and attribute-separated items behave as documented.
     #[test]
@@ -1776,20 +1910,21 @@ mod gpu_material_size_claims {
 
         // The #4522 shape: the stale size sits on its own line, no type.
         let stale = format!("/// ~27 steps for these\n///    428 bytes, and building.\n{item}");
-        assert_eq!(bare_doc_block_claims(&stale), vec![(2, 428)]);
+        assert_eq!(bare_doc_block_claims(&stale), vec![(2, 428, "GpuMaterial")]);
 
         // The corrected doc states the live size; extraction still sees it
         // (the != live comparison happens in the tree scan, not here).
         let live = format!("/// ~27 steps for these\n///    432 bytes, and building.\n{item}");
-        assert_eq!(bare_doc_block_claims(&live), vec![(2, 432)]);
+        assert_eq!(bare_doc_block_claims(&live), vec![(2, 432, "GpuMaterial")]);
 
         // A ` B` spelling is a claim too.
         let b_unit = format!("/// total 431 B\n{item}");
-        assert_eq!(bare_doc_block_claims(&b_unit), vec![(1, 431)]);
+        assert_eq!(bare_doc_block_claims(&b_unit), vec![(1, 431, "GpuMaterial")]);
 
-        // Doc not attached to a GpuMaterial-typed item: out of scope.
-        let other = "///    428 bytes of state.\npub fn hash_gpu_light_fields(l: &GpuLight)";
-        assert!(bare_doc_block_claims(other).is_empty());
+        // #5203: docs of items typed by any *other* pinned struct are in
+        // scope too, anchored to that struct.
+        let light = "///    80 B total.\npub fn hash_fields(l: &GpuLight)";
+        assert_eq!(bare_doc_block_claims(light), vec![(1, 80, "GpuLight")]);
 
         // Unrelated byte prose near the symbol: FxHasher's chunk width
         // sits below the band; a field-width "4-byte" compound has no
@@ -1812,7 +1947,7 @@ mod gpu_material_size_claims {
         // (the struct's own declaration carries two).
         let attrs = "#[repr(C)]\n#[derive(Clone, Copy)]\npub struct GpuMaterial {";
         let attached = format!("/// record is 431 bytes.\n{attrs}");
-        assert_eq!(bare_doc_block_claims(&attached), vec![(1, 431)]);
+        assert_eq!(bare_doc_block_claims(&attached), vec![(1, 431, "GpuMaterial")]);
     }
 }
 

@@ -7,7 +7,7 @@
 use ash::vk;
 
 /// Maximum lights we can upload per frame. The SSBO is pre-allocated to this size.
-/// 1023 lights × 80 bytes plus the 4112-byte remap header is about 84 KiB
+/// 1023 lights × 64 bytes plus the 4112-byte remap header is about 68 KiB
 /// per frame. Raised from 512 after
 /// the R2 integrity oracle measured 656 authored lights in Cydonia; the old
 /// cap discarded 144 before cluster assignment. The non-power-of-two ceiling
@@ -257,7 +257,7 @@ const _: () = assert!(
 pub const MAX_INDIRECT_DRAWS: usize = MAX_INSTANCES;
 
 /// Maximum number of `GpuTerrainTile` slots held in the per-frame
-/// terrain-tile SSBO. 1024 × 160 B = 160 KB — one slot per
+/// terrain-tile SSBO. 1024 × 176 B = 176 KB — one slot per
 /// terrain-mesh entity. A 3×3 loaded-cell grid emits 9 tiles; larger
 /// exterior loads stay well under the cap. Capped at 65535 by the
 /// 16-bit index packed into `GpuInstance.flags` (bits 16..31). See #470.

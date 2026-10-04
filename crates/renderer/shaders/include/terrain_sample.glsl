@@ -17,7 +17,7 @@
 // ## Locating a cell's vertices
 //
 // `exal-groundcover.md` §11.1 originally said the base-vertex offset lives on
-// the terrain-tile record. It does not. `GpuTerrainTile` (160 B) carries the
+// the terrain-tile record. It does not. `GpuTerrainTile` (176 B) carries the
 // per-layer diffuse / normal / specular indices, the §3 cover-affinity rows
 // and the cell's grid origin (#4057), but no vertex offset. The offset lives
 // on `GpuInstance.vertex_offset`, so the caller passes it in and owns the

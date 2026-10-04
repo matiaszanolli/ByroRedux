@@ -444,10 +444,10 @@ pub(super) fn hash_material_slice(materials: &[super::super::material::GpuMateri
 /// `gpu_instance_is_160_bytes_std430_compatible`) ≈ 1.12 MiB/frame;
 /// static interiors produce byte-identical slices in steady state so the
 /// copy + flush skip saves ~67 MB/s sustained PCIe at 60 fps. (#2692 — the
-/// 112 B / 805 KB / 48 MB/s figures here predated #2219's
-/// `skinned_vertex_address`; #4029 — the 128 B / 920 KB / 54 MB/s figures
-/// that replaced them predated #3231's growth to 160 B and were never
-/// recomputed.)
+/// then-112 B / 805 KB / 48 MB/s figures here predated #2219's
+/// `skinned_vertex_address`; #4029 — the then-128 B / 920 KB / 54 MB/s
+/// figures that replaced them predated #3231's growth to 160 B and were
+/// never recomputed.)
 ///
 /// `GpuInstance` is `#[repr(C)]` scalars **plus three `u64`s**
 /// (`skinned_vertex_address`, `morph_delta_address`, `morph_weight_address`),
@@ -520,7 +520,7 @@ pub(super) fn hash_indirect_slice(draws: &[ash::vk::DrawIndexedIndirectCommand])
 /// that was still unconditional while every sibling had already gained
 /// the gate.
 ///
-/// `GpuLight` is `#[repr(C)]` with four `[f32; 4]` fields, one `[u32; 4]` identity, and no
+/// `GpuLight` is `#[repr(C)]` with four `[f32; 4]` fields and no
 /// implicit padding. The hash covers the clamped
 /// prefix actually written (`lights[..count]`), so its length changing
 /// (e.g. the scene going from N lights to 0) always changes the hash
@@ -550,10 +550,10 @@ pub(super) fn hash_light_upload(
 /// hash-view conversion is one auditable unit; the invariant it states
 /// is the same one `upload_lights`' raw `copy_nonoverlapping` already
 /// rests on.
-// SAFETY: `GpuLight` is `#[repr(C)]` with four `[f32; 4]` fields and
-// one `[u32; 4]` identity (16 B each, 80 B total) — homogeneous scalar arrays tile the declared
+// SAFETY: `GpuLight` is `#[repr(C)]` with four `[f32; 4]` fields
+// (16 B each, 64 B total) — homogeneous scalar arrays tile the declared
 // size with no implicit padding, so every byte of a valid instance is
 // initialised. Same argument as `unsafe impl NoUninit for
-// GpuSelectedRayProbe` in `gpu_types.rs`; `gpu_light_is_80_bytes` (in
+// GpuSelectedRayProbe` in `gpu_types.rs`; `gpu_light_is_64_bytes` (in
 // `gpu_instance_layout_tests.rs`) holds the layout fixed.
 unsafe impl crate::vulkan::buffer::NoUninit for super::gpu_types::GpuLight {}
