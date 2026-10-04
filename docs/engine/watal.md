@@ -333,7 +333,12 @@ or localized WATR editor ID to `River`, so FO76/Starfield-style authored flow
 cannot silently fall back to calm-water physics just because its name is not
 an English `river`/`stream` token. Its bounded magnitude drives the canonical
 current speed as well; velocities at the documented rapids threshold select
-the stronger `Rapids` foam/normal profile.
+the stronger `Rapids` foam/normal profile. The placed-water merge arm follows
+the same rule (#5183): a REFR `XWCU` current on a Calm WATR promotes the
+merged plane's kind through the identical Rapids-threshold logic instead of
+returning a `WaterFlow` onto a plane whose kind says "no directed current"
+(8 FO4 REFRs — 7 interior ponds and `ExtOldGulletWater` — carried a physics
+current the visible calm surface disagreed with).
 Starfield's DNAM color-absorption values survive translation as per-channel
 extinction coefficients; consumers apply Beer–Lambert transmission as
 `exp(-distance * coefficient)`. Older games retain the zero sentinel and the

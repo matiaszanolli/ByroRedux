@@ -674,7 +674,9 @@ fn watr_damage_per_second(
 ///   `BSWaterShaderProperty` meshes carry no water parameters of their own.
 ///   The NIF's authored reflection/refraction gates still apply.
 /// - A vertical sheet the NIF path classified as `Waterfall` keeps that kind
-///   and its downward flow; every other piece takes the WATR's kind.
+///   and its downward flow; every other piece takes the WATR's kind —
+///   promoted Calm → River/Rapids when the REFR carries an authored `XWCU`
+///   current, mirroring the WATR arm's own flow-promotion rule (#5183).
 /// - The REFR's own `XWCU` velocity (entry 0, Gamebyro Z-up) wins over the
 ///   WATR current — and #4911: when it wins, the pattern scroll term is
 ///   recomposed from it, so ripples, foam and the physics current agree.
@@ -711,10 +713,30 @@ fn merge_placed_water(
     // #4911 — an XWCU winner recomposes the flow scrolls from itself. For
     // the agreeing majority (within 3.8° of their WATR) the result is the
     // composition the WATR arm already produced; for the divergent few the
-    // pattern stops running across the current. The flowing-kind gate
-    // mirrors the WATR arm — a calm WATR never carries a flow term.
+    // pattern stops running across the current.
+    // #5183 — the kind follows the flow the same way the WATR arm promotes
+    // an authored NAM0 current (`classify_water_kind_and_flow`): Calm →
+    // Rapids at `SPEED_RAPIDS`, else River; only a Calm kind promotes (Lava
+    // keeps, mirroring the WATR arm's lava-wins rule). Pre-fix the merge arm
+    // returned the XWCU current onto a Calm plane with its authored scrolls
+    // — a `WaterFlow` on a water whose kind says "no directed current",
+    // against the component's own invariant, so floating bodies drifted
+    // while the surface pattern sat still (8 FO4 REFRs, census on the issue).
+    let kind = match (&reference_flow, watr_kind) {
+        (Some(reference), WaterKind::Calm) => {
+            if reference.speed >= WaterFlow::SPEED_RAPIDS {
+                WaterKind::Rapids
+            } else {
+                WaterKind::River
+            }
+        }
+        _ => watr_kind,
+    };
+    if kind != watr_kind {
+        material.foam_strength = kind.canonical_foam_strength();
+    }
     if let Some(reference) = reference_flow {
-        if watr_kind.has_directional_flow() {
+        if kind.has_directional_flow() {
             crate::env_translate::compose_flow_scrolls(
                 &mut material,
                 watr_record,
@@ -725,7 +747,7 @@ fn merge_placed_water(
         }
     }
     let plane = WaterPlane {
-        kind: watr_kind,
+        kind,
         material,
         damage_per_second,
     };
@@ -1525,17 +1547,21 @@ mod tests {
         assert_eq!(plane.material.scroll_c, plane.material.scroll_a);
     }
 
-    /// #4911 — the flowing-kind gate mirrors the WATR arm: a calm WATR
-    /// never carries a flow term, so an XWCU winner must not synthesize one
-    /// onto its authored scrolls.
+    /// #5183 — the merge arm follows the WATR arm's rule for an authored
+    /// current: an XWCU winner on a Calm WATR promotes the kind (Rapids at
+    /// `SPEED_RAPIDS`, else River) instead of returning a `WaterFlow` onto
+    /// a water whose kind says "no directed current". Pre-fix the physics
+    /// current reached bodies while the surface kept the WATR's unrelated
+    /// authored scrolls — the disagreement #4911 set out to remove (8 FO4
+    /// REFRs: 7 interior ponds + `ExtOldGulletWater`).
     #[test]
-    fn calm_watr_keeps_its_scrolls_under_an_xwcu_winner() {
+    fn xwcu_current_promotes_a_calm_watr_like_the_watr_arm() {
         let (plane, flow) = merge_placed_water(
             &mesh_plane(WaterKind::Calm, 0x00C4),
             None,
             &esm::records::misc::WatrRecord::default(),
             WaterMaterial {
-                scroll_a: [7.0, 11.0],
+                scroll_a: [7.0, 11.0], // the Calm-authored term, stale now
                 scroll_b: [13.0, 17.0],
                 scroll_c: [19.0, 23.0],
                 ..watr(0.2)
@@ -1546,11 +1572,47 @@ mod tests {
             Some([3.0, 4.0, 0.0]),
             esm::reader::GameKind::Skyrim,
         );
+        assert_eq!(
+            plane.kind,
+            WaterKind::River,
+            "an authored current cannot ride a Calm plane (#5183)"
+        );
         let flow = flow.expect("the physics current still wins");
         assert_eq!(flow.direction, [0.6, 0.0, -0.8]);
-        assert_eq!(plane.material.scroll_a, [7.0, 11.0]);
-        assert_eq!(plane.material.scroll_b, [13.0, 17.0]);
-        assert_eq!(plane.material.scroll_c, [19.0, 23.0]);
+
+        // The pattern term follows the promoted flow — the same composition
+        // the River case produces, so ripples and current agree.
+        let uv = 5.0 * crate::env_translate::WATER_SCROLL_UV_PER_BU_PER_S;
+        let shear = crate::env_translate::WATER_PERPENDICULAR_SHEAR_SCROLL;
+        assert_eq!(plane.material.scroll_a, [0.6 * uv, -0.8 * uv]);
+        assert_eq!(plane.material.scroll_b, [0.8 * uv * shear, 0.6 * uv * shear]);
+        assert_eq!(
+            plane.material.foam_strength,
+            WaterKind::River.canonical_foam_strength(),
+            "foam follows the promoted kind"
+        );
+    }
+
+    /// #5183 — the promotion threshold matches the WATR arm's: at
+    /// `SPEED_RAPIDS` the kind lands on Rapids, not River.
+    #[test]
+    fn xwcu_current_at_rapids_speed_promotes_all_the_way() {
+        let (plane, _) = merge_placed_water(
+            &mesh_plane(WaterKind::Calm, 0x00C4),
+            None,
+            &esm::records::misc::WatrRecord::default(),
+            watr(0.2),
+            WaterKind::Calm,
+            None,
+            0.0,
+            Some([8.0, 0.0, 0.0]),
+            esm::reader::GameKind::Skyrim,
+        );
+        assert_eq!(plane.kind, WaterKind::Rapids);
+        assert_eq!(
+            plane.material.foam_strength,
+            WaterKind::Rapids.canonical_foam_strength()
+        );
     }
 
     // `resolve_water_material` (+ its WATR reflection-tint / default-tint
