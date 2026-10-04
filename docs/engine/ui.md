@@ -15,7 +15,7 @@ Source: [`crates/ui/src/`](../../crates/ui/src/)
 
 > Status note (2026-07-26): R4 selected pinned Ruffle plus ByroRedux-owned
 > Bethesda profiles. The first M48 slice now includes profile detection,
-> a bidirectional ExternalInterface bridge, and a pinned 74-method
+> a bidirectional ExternalInterface bridge, and a pinned 142-method
 > Skyrim/SkyUI host catalog. The second slice adds Fallout 4's
 > `BGSCodeObj` lifecycle, a 269-method installed-corpus catalog, and
 > an injected AVM2 forwarding adapter. The third slice adds a BSA/BA2-backed
@@ -600,12 +600,15 @@ values or argument-dependent response handlers use the re-entrant callback
 path, and diagnostics distinguish known commands, missing responses,
 registered extensions, and unknown methods.
 
-`ScaleformHostCatalog::for_profile(SkyrimAvm1)` contains the 74 literal
-`GameDelegate.call` method names in the SkyUI source tree pinned at
-`835428728e2305865e220fdfc99d791434955eb1`; 12 are marked as callback
-requests. Catalog entries are recognition and protocol metadata, not claims
-that gameplay behavior exists. The engine must still implement or explicitly
-stub each drained call.
+`ScaleformHostCatalog::for_profile(SkyrimAvm1)` carries 142 `GameDelegate.call`
+method names: the 74 literal entries read off the SkyUI source tree pinned at
+`835428728e2305865e220fdfc99d791434955eb1` plus the 68 the #3103 corpus sweep
+measured in `Skyrim - Interface.bsa`. 16 are marked as callback requests —
+14 by SkyUI's fourth-argument rule (including `LoadDLC` and
+`RequestLoadingText`, whose corpus call sites pass scope + response callback,
+#4720) and 2 by the name-prefix heuristic. Catalog entries are recognition
+and protocol metadata, not claims that gameplay behavior exists. The engine
+must still implement or explicitly stub each drained call.
 
 Fallout 4 does not use Skyrim's protocol. Its dynamic menu root constructs
 `BGSCodeObj`; native code fills that object with function values and invokes
@@ -679,7 +682,7 @@ diagnostics.
 
 | Profile | What exists now | What must be created |
 |---|---|---|
-| Skyrim AVM1 | `GameDelegate` transport, 74 recognized methods, 12 request contracts, response re-entry | Per-method engine behavior and remaining `_global.gfx` compatibility |
+| Skyrim AVM1 | `GameDelegate` transport, 142 recognized methods, 16 request contracts, response re-entry | Per-method engine behavior and remaining `_global.gfx` compatibility |
 | Fallout 4 AVM2 | `BGSCodeObj` lifecycle, 269 installed-corpus methods, generated forwarding ABC, object-aware dispatch, BA2-backed imports, HUD/Pip-Boy/Atomic Command lifecycle and inventory checks | Per-method engine behavior and remaining GFx compatibility |
 | FO3/FNV | XML corpus confirmed; no SWF profile | Separate legacy XML UI runtime or translation path |
 
@@ -743,12 +746,12 @@ notes for the format-string system menus rely on.
 
 ## Tests
 
-The UI crate has **59 default tests plus 2 ignored** installed-corpus smokes
-(measured 2026-08-31 with `cargo test -p byroredux-ui -- --list` and
+The UI crate has **101 default tests plus 3 ignored** installed-corpus smokes
+(measured 2026-10-04 with `cargo test -p byroredux-ui -- --list` and
 `cargo test -p byroredux-ui -- --list --ignored`; re-measure rather than
-trusting this line — it has drifted five times now: `prepare::tests` ×4,
-`lib::tests::the_frame_driver_reads_the_drop_counter_beside_the_drain`, and
-one `host::tests` addition account for the growth since the last count).
+trusting this line — it has drifted repeatedly: #4721 re-measured it after
+the count had drifted six times, most recently through the #3103 corpus-sweep
+additions and #4720's four-argument scanner tests).
 The executable adds
 winit-translation tests in `byroredux/src/ui_input.rs`. The synthetic
 non-Bethesda SWFs come from Ruffle's pinned ExternalInterface fixtures:
@@ -758,7 +761,7 @@ non-Bethesda SWFs come from Ruffle's pinned ExternalInterface fixtures:
   key, and text-control events before verifying ActionScript → host calls,
   callback discovery, and host → ActionScript invocation through Ruffle's
   null renderer.
-- Unit coverage pins profile detection, the 74-method sorted catalog,
+- Unit coverage pins profile detection, the 142-method sorted catalog,
   profile isolation, Skyrim request-ID normalization and response routing,
   dispatch diagnostics, monotonically sequenced calls, nested value
   conversion, Ruffle event conversion, winit key semantics, text-control

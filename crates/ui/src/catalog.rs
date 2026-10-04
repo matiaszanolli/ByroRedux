@@ -19,21 +19,25 @@ pub enum ScaleformHostMethodKind {
 /// name-prefix heuristic guessed.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ScaleformKindProvenance {
-    /// `kind` reflects a measured fact: Skyrim's `kind` follows directly
-    /// from the AVM1 GameDelegate protocol (every entry a direct command,
-    /// see [`SKYRIM_SKYUI_METHODS`]'s own doc), and the FO4 catalog's
-    /// original 138 F4CF-reconstructed entries had `kind` read from
-    /// reconstructed ActionScript source, not inferred from the name.
+    /// `kind` reflects a measured fact: Skyrim's original 74 entries follow
+    /// the AVM1 GameDelegate protocol from SkyUI's own source (the
+    /// fourth-argument rule — commands plus 12 requests, joined by #4720's
+    /// two corpus-promoted requests; see [`SKYRIM_SKYUI_METHODS`]'s own
+    /// doc), and the FO4 catalog's original 138 F4CF-reconstructed entries
+    /// had `kind` read from reconstructed ActionScript source, not inferred
+    /// from the name.
     Measured,
     /// `kind` was inferred from a `Get*`/`Is*`/`Should*`/`Can*`/`get*`
     /// name-prefix heuristic — the 131 entries #2966's corpus sweep added
-    /// to the FO4 catalog. The heuristic's boundary is demonstrably
+    /// to the FO4 catalog, plus the 66 Skyrim sweep entries #3103 added
+    /// that stayed heuristic after #4720 promoted its two measured
+    /// four-argument sites. The heuristic's boundary is demonstrably
     /// imprecise (#3773): every `Request`-classified entry happens to match
     /// the prefix set (none was ever promoted to `Request` against evidence
     /// that contradicted the rule), while at least 16 `Command`-classified
-    /// names carry query-shaped verbs (`Request*`, `Check*`, `Validate*`,
-    /// …) the prefix set doesn't cover at all — so a `Command` here is a
-    /// weaker claim than a `Measured` one.
+    /// FO4 names carry query-shaped verbs (`Request*`, `Check*`,
+    /// `Validate*`, …) the prefix set doesn't cover at all — so a
+    /// `Command` here is a weaker claim than a `Measured` one.
     HeuristicNamePrefix,
 }
 
@@ -73,9 +77,10 @@ impl ScaleformHostMethod {
         }
     }
 
-    /// #3773 — sibling of [`Self::command`] for one of the #2966 sweep's
-    /// 131 name-prefix-inferred FO4 entries. See
-    /// [`ScaleformKindProvenance::HeuristicNamePrefix`].
+    /// #3773 — sibling of [`Self::command`] for one of the corpus-sweep
+    /// entries typed by the name-prefix heuristic (#2966's 131 FO4 entries,
+    /// #3103's 66 Skyrim entries — see
+    /// [`ScaleformKindProvenance::HeuristicNamePrefix`]).
     const fn command_heuristic(name: &'static str) -> Self {
         Self {
             name,
@@ -84,9 +89,10 @@ impl ScaleformHostMethod {
         }
     }
 
-    /// #3773 — sibling of [`Self::request`] for one of the #2966 sweep's
-    /// 131 name-prefix-inferred FO4 entries. See
-    /// [`ScaleformKindProvenance::HeuristicNamePrefix`].
+    /// #3773 — sibling of [`Self::request`] for one of the corpus-sweep
+    /// entries typed by the name-prefix heuristic (#2966's 131 FO4 entries,
+    /// #3103's 2 remaining Skyrim entries — see
+    /// [`ScaleformKindProvenance::HeuristicNamePrefix`]).
     const fn request_heuristic(name: &'static str) -> Self {
         Self {
             name,
