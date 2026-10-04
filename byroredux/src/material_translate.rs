@@ -2497,6 +2497,10 @@ mod tests {
     ///   real spawner added there fails this test. Only its four
     ///   material-free demo primitives — `cube`, `quad`, `red_tri`,
     ///   `blue_tri` — are exempt, by entity name.
+    /// - `cell_loader/water.rs`'s `plane.entity` re-insert is exempt by
+    ///   entity name: `rebuild_lod_water_mesh` swaps the mesh of the LOD
+    ///   water entity whose material `spawn_lod_water_plane` already
+    ///   translated, and never removes that `Material` (#5243).
     /// - Two drawn surfaces are recorded exemptions that no insert scan here
     ///   can reach. Save `restore_world` (`crates/save`) reinserts saved
     ///   `Material`s through the save registry. EXAL ground-cover blades are
@@ -2579,6 +2583,15 @@ mod tests {
                     // scan, but exempt those four inserts by entity name.
                     if name == "scene.rs"
                         && ["cube", "quad", "red_tri", "blue_tri"].contains(&entity)
+                    {
+                        continue;
+                    }
+                    // `rebuild_lod_water_mesh` swaps the mesh on the LOD
+                    // water entity `spawn_lod_water_plane` already gave its
+                    // boundary material; the `Material` is never removed, so
+                    // the re-insert is not a new draw (#5243).
+                    if name.replace('\\', "/") == "cell_loader/water.rs"
+                        && entity == "plane.entity"
                     {
                         continue;
                     }

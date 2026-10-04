@@ -205,7 +205,7 @@ grep -Fq '000236A5:DraugrGreatsword:damage=17' "$SKYRIM_FIXTURE" \
 FNV_FIXTURE="$ROOT_DIR/docs/smoke-tests/fixtures/fnv.env"
 grep -Fq 'FIXTURE_ESM="FalloutNV.esm"' "$FNV_FIXTURE" \
     || fail "the FNV fixture no longer targets FalloutNV.esm"
-grep -Fq 'NPC ref=00104C6D base=00104C6C' "$FNV_FIXTURE" \
+grep -Fq 'NPC ref=00104F08 base=00104F09' "$FNV_FIXTURE" \
     || fail "the FNV fixture no longer pins its frozen reference/base pair"
 
 # #3273 — M48's gate is only meaningful while it asserts the route's positive
