@@ -3961,6 +3961,13 @@ mod tests {
     /// (FO3/FNV `OffsetNoise`, Oblivion NNAM-vs-Skyrim TNAM texture roles,
     /// the pre-Skyrim formats' missing tail bytes) — is covered by
     /// `water_sentinels_hold_on_real_watr_per_game` below.
+    ///
+    /// #5184 — since #4910 the translate takes a `GameKind`, so a future
+    /// per-game `match` that sets a sentinel field (`ior`, `uv_scale_*`,
+    /// `shoreline_width`, …) is now expressible at this boundary. The guard
+    /// resolves **both records under every `GameKind`**: within a game the
+    /// two shapes must agree, and every game must land on the canonical
+    /// default — which transitively pins cross-game invariance.
     #[test]
     fn resolve_water_material_sentinels_are_game_invariant() {
         // "Oblivion-shaped": sparse DATA — colours + a short fog only.
@@ -3993,161 +4000,239 @@ mod tests {
         waters.insert(oblivion.form_id, oblivion);
         waters.insert(skyrim.form_id, skyrim);
 
-        let (ob, ob_kind, ob_flow, _, _) = resolve_water_material(&waters, Some(0x0001_0000), GameKind::Skyrim);
-        let (sk, _, _, _, _) = resolve_water_material(&waters, Some(0x0002_0000), GameKind::Skyrim);
-        let def = WaterMaterial::default();
-
-        // AUTHORED fields differ (proves the two records are distinct).
-        assert_ne!(
-            ob.fog_far, sk.fog_far,
-            "authored fog must differ between the two records"
-        );
-
-        // SENTINEL fields no game authors must be identical across games
-        // AND equal to the canonical default — the translate-up invariant.
-        // #4486: the loop used to pin 5 scalars; it now walks the full §4
-        // sentinel list, including the rows the unpinned-list audit named
-        // (underwater fog/depth zeros, specular sentinels, the wave
-        // defaults, absorption/concentration Starfield columns).
-        for (label, a, b, d) in [
-            ("ior", ob.ior, sk.ior, def.ior),
-            (
-                "shoreline_width",
-                ob.shoreline_width,
-                sk.shoreline_width,
-                def.shoreline_width,
-            ),
-            ("uv_scale_a", ob.uv_scale_a, sk.uv_scale_a, def.uv_scale_a),
-            ("uv_scale_b", ob.uv_scale_b, sk.uv_scale_b, def.uv_scale_b),
-            ("uv_scale_c", ob.uv_scale_c, sk.uv_scale_c, def.uv_scale_c),
-            ("depth_amount", ob.depth_amount, sk.depth_amount, def.depth_amount),
-            (
-                "underwater_fog_near",
-                ob.underwater_fog_near,
-                sk.underwater_fog_near,
-                def.underwater_fog_near,
-            ),
-            (
-                "underwater_fog_far",
-                ob.underwater_fog_far,
-                sk.underwater_fog_far,
-                def.underwater_fog_far,
-            ),
-            (
-                "underwater_fog_amount",
-                ob.underwater_fog_amount,
-                sk.underwater_fog_amount,
-                def.underwater_fog_amount,
-            ),
-            (
-                "specular_magnitude",
-                ob.specular_magnitude,
-                sk.specular_magnitude,
-                def.specular_magnitude,
-            ),
-            (
-                "specular_radius",
-                ob.specular_radius,
-                sk.specular_radius,
-                def.specular_radius,
-            ),
-            (
-                "normal_magnitude",
-                ob.normal_magnitude,
-                sk.normal_magnitude,
-                def.normal_magnitude,
-            ),
-            (
-                "above_water_fog_amount",
-                ob.above_water_fog_amount,
-                sk.above_water_fog_amount,
-                def.above_water_fog_amount,
-            ),
-            ("flowmap_scale", ob.flowmap_scale, sk.flowmap_scale, def.flowmap_scale),
-            ("noise_falloff", ob.noise_falloff, sk.noise_falloff, def.noise_falloff),
-            (
-                "angular_velocity",
-                ob.angular_velocity,
-                sk.angular_velocity,
-                def.angular_velocity,
-            ),
-            // WATAL Phase 1 defaults — the unauthored wave shape is the
-            // named canonical constant, not a local literal.
-            (
-                "wave_amplitude",
-                ob.wave_amplitude,
-                sk.wave_amplitude,
-                byroredux_core::ecs::components::water::DEFAULT_WATER_WAVE_AMPLITUDE,
-            ),
-            (
-                "wave_frequency",
-                ob.wave_frequency,
-                sk.wave_frequency,
-                byroredux_core::ecs::components::water::DEFAULT_WATER_WAVE_FREQUENCY,
-            ),
-            (
-                "foam_strength",
-                ob.foam_strength,
-                sk.foam_strength,
-                def.foam_strength,
-            ),
+        for game in [
+            GameKind::Oblivion,
+            GameKind::Fallout3NV,
+            GameKind::Skyrim,
+            GameKind::Fallout4,
+            GameKind::Fallout76,
+            GameKind::Starfield,
         ] {
-            assert_eq!(a, b, "SENTINEL `{label}` must be game-invariant");
-            assert_eq!(a, d, "SENTINEL `{label}` must equal the canonical default");
+            let (ob, ob_kind, ob_flow, _, _) =
+                resolve_water_material(&waters, Some(0x0001_0000), game);
+            let (sk, _, _, _, _) = resolve_water_material(&waters, Some(0x0002_0000), game);
+            let def = WaterMaterial::default();
+
+            // AUTHORED fields differ (proves the two records are distinct).
+            assert_ne!(
+                ob.fog_far, sk.fog_far,
+                "authored fog must differ between the two records ({game:?})"
+            );
+
+            // SENTINEL fields no game authors must be identical across games
+            // AND equal to the canonical default — the translate-up invariant.
+            // #4486: the loop used to pin 5 scalars; it now walks the full §4
+            // sentinel list, including the rows the unpinned-list audit named
+            // (underwater fog/depth zeros, specular sentinels, the wave
+            // defaults, absorption/concentration Starfield columns).
+            for (label, a, b, d) in [
+                ("ior", ob.ior, sk.ior, def.ior),
+                (
+                    "shoreline_width",
+                    ob.shoreline_width,
+                    sk.shoreline_width,
+                    def.shoreline_width,
+                ),
+                ("uv_scale_a", ob.uv_scale_a, sk.uv_scale_a, def.uv_scale_a),
+                ("uv_scale_b", ob.uv_scale_b, sk.uv_scale_b, def.uv_scale_b),
+                ("uv_scale_c", ob.uv_scale_c, sk.uv_scale_c, def.uv_scale_c),
+                ("depth_amount", ob.depth_amount, sk.depth_amount, def.depth_amount),
+                (
+                    "underwater_fog_near",
+                    ob.underwater_fog_near,
+                    sk.underwater_fog_near,
+                    def.underwater_fog_near,
+                ),
+                (
+                    "underwater_fog_far",
+                    ob.underwater_fog_far,
+                    sk.underwater_fog_far,
+                    def.underwater_fog_far,
+                ),
+                (
+                    "underwater_fog_amount",
+                    ob.underwater_fog_amount,
+                    sk.underwater_fog_amount,
+                    def.underwater_fog_amount,
+                ),
+                (
+                    "specular_magnitude",
+                    ob.specular_magnitude,
+                    sk.specular_magnitude,
+                    def.specular_magnitude,
+                ),
+                (
+                    "specular_radius",
+                    ob.specular_radius,
+                    sk.specular_radius,
+                    def.specular_radius,
+                ),
+                (
+                    "normal_magnitude",
+                    ob.normal_magnitude,
+                    sk.normal_magnitude,
+                    def.normal_magnitude,
+                ),
+                (
+                    "above_water_fog_amount",
+                    ob.above_water_fog_amount,
+                    sk.above_water_fog_amount,
+                    def.above_water_fog_amount,
+                ),
+                ("flowmap_scale", ob.flowmap_scale, sk.flowmap_scale, def.flowmap_scale),
+                ("noise_falloff", ob.noise_falloff, sk.noise_falloff, def.noise_falloff),
+                (
+                    "angular_velocity",
+                    ob.angular_velocity,
+                    sk.angular_velocity,
+                    def.angular_velocity,
+                ),
+                // WATAL Phase 1 defaults — the unauthored wave shape is the
+                // named canonical constant, not a local literal.
+                (
+                    "wave_amplitude",
+                    ob.wave_amplitude,
+                    sk.wave_amplitude,
+                    byroredux_core::ecs::components::water::DEFAULT_WATER_WAVE_AMPLITUDE,
+                ),
+                (
+                    "wave_frequency",
+                    ob.wave_frequency,
+                    sk.wave_frequency,
+                    byroredux_core::ecs::components::water::DEFAULT_WATER_WAVE_FREQUENCY,
+                ),
+                (
+                    "foam_strength",
+                    ob.foam_strength,
+                    sk.foam_strength,
+                    def.foam_strength,
+                ),
+            ] {
+                assert_eq!(
+                    a, b,
+                    "SENTINEL `{label}` must be game-invariant ({game:?})"
+                );
+                assert_eq!(
+                    a, d,
+                    "SENTINEL `{label}` must equal the canonical default ({game:?})"
+                );
+            }
+            // Array sentinels — each shape checked as its own pair.
+            assert_eq!(
+                ob.alpha_controls, sk.alpha_controls,
+                "SENTINEL must be game-invariant ({game:?})"
+            );
+            assert_eq!(
+                ob.alpha_controls, def.alpha_controls,
+                "SENTINEL must equal the default ({game:?})"
+            );
+            assert_eq!(
+                ob.depth_weights, sk.depth_weights,
+                "SENTINEL must be game-invariant ({game:?})"
+            );
+            assert_eq!(
+                ob.depth_weights, def.depth_weights,
+                "SENTINEL must equal the default ({game:?})"
+            );
+            assert_eq!(
+                ob.effect_controls, sk.effect_controls,
+                "SENTINEL must be game-invariant ({game:?})"
+            );
+            assert_eq!(
+                ob.effect_controls, def.effect_controls,
+                "SENTINEL must equal the default ({game:?})"
+            );
+            assert_eq!(
+                ob.noise_amplitude_scales, sk.noise_amplitude_scales,
+                "SENTINEL must be game-invariant ({game:?})"
+            );
+            assert_eq!(
+                ob.noise_amplitude_scales, def.noise_amplitude_scales,
+                "SENTINEL must equal the default ({game:?})"
+            );
+            assert_eq!(
+                ob.normal_falloff, sk.normal_falloff,
+                "SENTINEL must be game-invariant ({game:?})"
+            );
+            assert_eq!(
+                ob.normal_falloff, def.normal_falloff,
+                "SENTINEL must equal the default ({game:?})"
+            );
+            assert_eq!(
+                ob.absorption_coefficients, sk.absorption_coefficients,
+                "SENTINEL must be game-invariant ({game:?})"
+            );
+            assert_eq!(
+                ob.absorption_coefficients, def.absorption_coefficients,
+                "SENTINEL must equal the default ({game:?})"
+            );
+            assert_eq!(
+                ob.concentration, sk.concentration,
+                "SENTINEL must be game-invariant ({game:?})"
+            );
+            assert_eq!(
+                ob.concentration, def.concentration,
+                "SENTINEL must equal the default ({game:?})"
+            );
+            assert_eq!(
+                ob.uv_offset, sk.uv_offset,
+                "SENTINEL must be game-invariant ({game:?})"
+            );
+            assert_eq!(
+                ob.uv_offset, def.uv_offset,
+                "SENTINEL must equal the default ({game:?})"
+            );
+            assert_eq!(
+                ob.blend_normals, sk.blend_normals,
+                "SENTINEL must be game-invariant ({game:?})"
+            );
+            assert!(
+                ob.blend_normals,
+                "no FNAM blend bit authored → compatibility default ({game:?})"
+            );
+            // Procedural bindless sentinels — handles are assigned downstream of
+            // this boundary, so `resolve` must leave them unset.
+            assert_eq!(
+                ob.normal_map_index,
+                u32::MAX,
+                "no texture authored → procedural sentinel ({game:?})"
+            );
+            assert_eq!(
+                ob.flow_map_index,
+                u32::MAX,
+                "cell WATR → no mesh flow map ({game:?})"
+            );
+            assert_eq!(
+                ob.noise_map_indices,
+                [u32::MAX; 3],
+                "no noise layers authored → procedural sentinel ({game:?})"
+            );
+            // Deep-tint fallback: no GNAM variant on either record, so the
+            // day/night palettes mirror the record's own base deep tint instead
+            // of inventing a per-variant value.
+            assert_eq!(
+                ob.day_deep_color, ob.deep_color,
+                "day palette mirrors base without GNAM ({game:?})"
+            );
+            assert_eq!(
+                ob.night_deep_color, ob.deep_color,
+                "night palette mirrors base without GNAM ({game:?})"
+            );
+            assert_eq!(
+                sk.day_deep_color, sk.deep_color,
+                "day palette mirrors base without GNAM ({game:?})"
+            );
+            assert_eq!(
+                sk.night_deep_color, sk.deep_color,
+                "night palette mirrors base without GNAM ({game:?})"
+            );
+            // Calm water authors no flow — a real distinction, not a leak.
+            assert!(matches!(ob_kind, WaterKind::Calm));
+            assert!(
+                ob_flow.is_none(),
+                "calm water has no synthesized flow ({game:?})"
+            );
         }
-        // Array sentinels — each shape checked as its own triple.
-        assert_eq!(ob.alpha_controls, sk.alpha_controls, "SENTINEL must be game-invariant");
-        assert_eq!(ob.alpha_controls, def.alpha_controls, "SENTINEL must equal the default");
-        assert_eq!(ob.depth_weights, sk.depth_weights, "SENTINEL must be game-invariant");
-        assert_eq!(ob.depth_weights, def.depth_weights, "SENTINEL must equal the default");
-        assert_eq!(ob.effect_controls, sk.effect_controls, "SENTINEL must be game-invariant");
-        assert_eq!(ob.effect_controls, def.effect_controls, "SENTINEL must equal the default");
-        assert_eq!(
-            ob.noise_amplitude_scales, sk.noise_amplitude_scales,
-            "SENTINEL must be game-invariant"
-        );
-        assert_eq!(
-            ob.noise_amplitude_scales, def.noise_amplitude_scales,
-            "SENTINEL must equal the default"
-        );
-        assert_eq!(ob.normal_falloff, sk.normal_falloff, "SENTINEL must be game-invariant");
-        assert_eq!(ob.normal_falloff, def.normal_falloff, "SENTINEL must equal the default");
-        assert_eq!(
-            ob.absorption_coefficients, sk.absorption_coefficients,
-            "SENTINEL must be game-invariant"
-        );
-        assert_eq!(
-            ob.absorption_coefficients, def.absorption_coefficients,
-            "SENTINEL must equal the default"
-        );
-        assert_eq!(ob.concentration, sk.concentration, "SENTINEL must be game-invariant");
-        assert_eq!(ob.concentration, def.concentration, "SENTINEL must equal the default");
-        assert_eq!(ob.uv_offset, sk.uv_offset, "SENTINEL must be game-invariant");
-        assert_eq!(ob.uv_offset, def.uv_offset, "SENTINEL must equal the default");
-        assert_eq!(
-            ob.blend_normals, sk.blend_normals,
-            "SENTINEL must be game-invariant"
-        );
-        assert!(ob.blend_normals, "no FNAM blend bit authored → compatibility default");
-        // Procedural bindless sentinels — handles are assigned downstream of
-        // this boundary, so `resolve` must leave them unset.
-        assert_eq!(ob.normal_map_index, u32::MAX, "no texture authored → procedural sentinel");
-        assert_eq!(ob.flow_map_index, u32::MAX, "cell WATR → no mesh flow map");
-        assert_eq!(
-            ob.noise_map_indices,
-            [u32::MAX; 3],
-            "no noise layers authored → procedural sentinel"
-        );
-        // Deep-tint fallback: no GNAM variant on either record, so the
-        // day/night palettes mirror the record's own base deep tint instead
-        // of inventing a per-variant value.
-        assert_eq!(ob.day_deep_color, ob.deep_color, "day palette mirrors base without GNAM");
-        assert_eq!(ob.night_deep_color, ob.deep_color, "night palette mirrors base without GNAM");
-        assert_eq!(sk.day_deep_color, sk.deep_color, "day palette mirrors base without GNAM");
-        assert_eq!(sk.night_deep_color, sk.deep_color, "night palette mirrors base without GNAM");
-        // Calm water authors no flow — a real distinction, not a leak.
-        assert!(matches!(ob_kind, WaterKind::Calm));
-        assert!(ob_flow.is_none(), "calm water has no synthesized flow");
     }
 
     /// #4486 / EXT-D5-2026-09-19-02 — the §4 sentinel invariant against
