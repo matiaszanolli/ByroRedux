@@ -177,12 +177,20 @@ float bethesdaBackFactor(GpuMaterial mat, float rawNdotL) {
 // expression and the unshadowed accumulation cancels bit-for-bit
 // against the shadowed subtraction. Assumes a point/spot/directional
 // light that already cleared the contribution gate.
+//
+// #5192 — the return value is the REFLECTION-class half only (diffuse
+// front core, specular, rim, front-side wrap). The TRANSMISSION-class
+// half (wrap excess / back-light / translucency — non-zero only where
+// rawNdotL < 0) leaves through `transmissionRadiance`; consumers that
+// apply traced shadow visibility must leave that half unshadowed. The
+// full unshadowed radiance is `return + transmissionRadiance`.
 vec3 shadowableLightRadiance(
     uint i, vec3 N, vec3 NG, vec3 V, float NdotV, vec3 F0,
     vec3 albedo, vec3 lightingMask, vec3 backLightingMap,
     float roughness, float aaRoughness, float metalness,
     float specStrength, vec3 specColor,
-    GpuMaterial mat, vec4 fragTangent, vec3 fragWorldPos, uint dbgFlags)
+    GpuMaterial mat, vec4 fragTangent, vec3 fragWorldPos, uint dbgFlags,
+    out vec3 transmissionRadiance)
 {
     vec3 lightPos = lights[i].position_radius.xyz;
     float radius = lights[i].position_radius.w;
@@ -240,18 +248,24 @@ vec3 shadowableLightRadiance(
     // visibility-convention decision.
     float gNdotL = dot(NG, L);
     float horizon = step(0.0, gNdotL);
-    // #5192 (REN-D10-2026-10-03-02, OPEN) — the BACK lobes below (the
-    // soft-light wrap excess, back-light, translucency) self-occlude on
-    // closed meshes: post-#5018's light-side origin starts the shadow ray
-    // inside the body and the far wall commits, zeroing them inside
-    // shadowFade while `mix(1, V, shadowFade)` hands them back unshadowed
-    // past it. The fix is a per-lobe visibility convention (split the
-    // return into reflection vs transmission and trace the latter with the
-    // fragment's own instance skipped), which needs a live RenderDoc A/B
-    // (Skyrim soft-lit head beside a cell light; FO4 thick-translucency
-    // skin back-lit) to accept — see the issue for the full design and the
-    // before/after gates. Not deferred silently: this comment and the
-    // issue's design are the pointer in both directions.
+    // #5192 (REN-D10-2026-10-03-02) — RESOLVED as a per-lobe visibility
+    // convention: this function now splits its result into a
+    // reflection-class part (returned) and a transmission-class part
+    // (`transmissionRadiance` out param), and every consumer that applies
+    // traced shadow visibility multiplies only the reflection part — the
+    // transmission lobes stay unshadowed, the convention the reference
+    // content model authored them under (most local lights are not shadow
+    // casters in FO3/FNV/Skyrim content). The alternative design (trace the
+    // transmission part with the fragment's own instance skipped via a
+    // candidate-loop instanceCustomIndex test) would also re-shadow them
+    // against REAL occluders, at the cost of abandoning
+    // TerminateOnFirstHit on those queries; that trade stays available if
+    // back-lit SSS ever shows wall-bleed on real content. Pre-fix, the
+    // post-#5018 light-side origin started the shared shadow ray just
+    // inside a closed body and the far wall committed as opaque, zeroing
+    // exactly these lobes inside shadowFade while `mix(1, V, shadowFade)`
+    // handed them back unshadowed past it — the authored soft terminator
+    // and back-lit SSS blinked on at 12 000 BU.
 
     vec3 H = normalize(V + L);
     float NdotH = max(dot(N, H), 0.0);
@@ -357,8 +371,19 @@ vec3 shadowableLightRadiance(
         diffuseBrdf = kD * albedo;
     }
     vec3 diffuseFactor = bethesdaDiffuseLightFactor(mat, lightingMask, rawNdotL, horizon);
-    vec3 brdfResult = diffuseBrdf * diffuseFactor
+    // #5192 — per-lobe split. The transmission-class part of the response
+    // is, by construction, non-zero ONLY where rawNdotL < 0 (light behind
+    // the shading plane): the wrap excess (there `front` is 0, so
+    // `diffuseFactor` itself IS the wrapped transmission), the back-light
+    // lobe and the translucency lobe below. `backSide` gates exactly that
+    // half-space, so the reflection part keeps the front-side wrap
+    // (`rawNdotL >= 0`, ray starts outside the surface — no self-occlusion)
+    // and `x - x` / `x - 0` keep it bit-identical to the unsplit value.
+    float backSide = rawNdotL < 0.0 ? 1.0 : 0.0;
+    vec3 diffuseTransmission = diffuseFactor * backSide;
+    vec3 brdfReflection = diffuseBrdf * (diffuseFactor - diffuseTransmission)
         + specular * specStrength * specColor * NdotL * horizon;
+    vec3 brdfTransmission = diffuseBrdf * diffuseTransmission;
 
     // Skyrim's soft/rim mask occupies translated slot 2; its back-light map
     // occupies slot 7. These are direct-light lobes, so evaluating them here
@@ -366,12 +391,12 @@ vec3 shadowableLightRadiance(
     // byte-consistent with the ordinary diffuse/specular response.
     float rim = bethesdaRimFactor(mat, NdotV, NdotL * horizon);
     if (rim > 0.0) {
-        brdfResult += albedo * clamp(lightingMask, 0.0, 1.0)
+        brdfReflection += albedo * clamp(lightingMask, 0.0, 1.0)
             * rim * (1.0 - metalness);
     }
     float back = bethesdaBackFactor(mat, rawNdotL);
     if (back > 0.0) {
-        brdfResult += albedo * max(backLightingMap, vec3(0.0))
+        brdfTransmission += albedo * max(backLightingMap, vec3(0.0))
             * back * (1.0 - metalness);
     }
 
@@ -381,11 +406,13 @@ vec3 shadowableLightRadiance(
     // `MAT_FLAG_TRANSLUCENCY` so legacy content (every NIF without a v>=8
     // BGSM) gets exactly zero contribution. Bethesda-style "fake SSS":
     // back-light by inverted N·L, mixed with the authored subsurface colour.
-    // #4946 — evaluated here, beside the Skyrim back-light lobe, so it is
-    // shadowed like every other direct lobe: ReSTIR pHat, the finalize
-    // visibility and the legacy subtraction all see it. It used to be added
-    // to `Lo` from the unshadowed radiance of every cluster light (sun
-    // included), leaking through walls and terrain shadow.
+    // #4946 — evaluated here, beside the Skyrim back-light lobe, so ReSTIR
+    // pHat, the finalize and the legacy subtraction all see it. It used to
+    // be added to `Lo` from the unshadowed radiance of every cluster light
+    // (sun included), leaking through walls and terrain shadow. #5192 — it
+    // lands in the TRANSMISSION half of the split (non-zero only where
+    // rawNdotL < 0), so it stays unshadowed rather than being zeroed by the
+    // self-occluding light-side shadow ray on closed meshes.
     if ((mat.materialFlags & MAT_FLAG_TRANSLUCENCY) != 0u) {
         // Peaks at the anti-light direction: the back side.
         float backDotL = max(-rawNdotL, 0.0);
@@ -411,12 +438,13 @@ vec3 shadowableLightRadiance(
             ((mat.materialFlags & MAT_FLAG_TRANSLUCENCY_MIX_ALBEDO) != 0u)
                 ? subsurfaceCol * albedo
                 : subsurfaceCol;
-        brdfResult += sssTint
+        brdfTransmission += sssTint
             * mat.translucencyTransmissiveScale
             * thicknessShape
             * turbMod;
     }
-    return brdfResult * unshadowedRadiance;
+    transmissionRadiance = brdfTransmission * unshadowedRadiance;
+    return brdfReflection * unshadowedRadiance;
 }
 
 // Per-emitter visibility mask shared by direct, reflected and GI paths.

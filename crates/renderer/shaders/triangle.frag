@@ -3206,6 +3206,11 @@ void main() {
         // redundant. This is a register-local cache, so it needs no history
         // invalidation or additional VRAM traffic.
         vec3  restirSelectedRadiance = vec3(0.0);
+        // #5192 — transmission-class companion of the selected light's
+        // radiance (wrap excess / back-light / translucency). Kept beside
+        // the selection so the finalize can shade the two halves with
+        // different visibility conventions.
+        vec3  restirSelectedTransmission = vec3(0.0);
         float restirWSum = 0.0;          // running reservoir weight sum
         float restirM = 0.0;             // effective sample count
         float restirPHat = 0.0;          // target pdf of the selected sample
@@ -3329,11 +3334,20 @@ void main() {
             // shadowableLightRadiance() so the shadow pass recomputes
             // the identical value from the light index rather than
             // caching it per reservoir. The #1147 Phase 2b translucency
-            // lobe lives there too (#4946), so it is shadowed like the rest.
+            // lobe lives there too (#4946). #5192 — the function now
+            // splits its result into reflection (returned) and
+            // transmission (`transmissionRadiance`, the rawNdotL < 0
+            // lobes); every quantity below wants the FULL unshadowed
+            // sum, which is why `fullRadiance` recombines them here. Only
+            // the finalize's visibility term treats the halves
+            // differently.
+            vec3 transmissionLobe;
             vec3 shadowableRadiance = shadowableLightRadiance(
                 i, N, geometricNormal, V, NdotV, F0, albedo, lightingMask, backLightingMap,
                 roughness, aaRoughness, metalness,
-                specStrength, specColor, mat, fragTangent, fragWorldPos, dbgFlags);
+                specStrength, specColor, mat, fragTangent, fragWorldPos, dbgFlags,
+                transmissionLobe);
+            vec3 fullRadiance = shadowableRadiance + transmissionLobe;
             bool needsVisibility = visibilityMaskNeedsTrace(lights[i].params.z);
 
             // Accumulate as if unshadowed (legacy subtractive estimator
@@ -3342,7 +3356,7 @@ void main() {
             // Imported cell lights use full material-aware visibility, so
             // walls, objects and actors all participate in the same query.
             if (!useRestir || !needsVisibility) {
-                Lo += shadowableRadiance;
+                Lo += fullRadiance;
             }
 
             // (Per-light ambient fill REMOVED here — 2026-05-27.)
@@ -3372,12 +3386,12 @@ void main() {
             // The fade now applies only to the visibility term at finalize.
             if (directShadowRayEnabled && needsVisibility) {
                 // Target pdf: luminance of the to-be-subtracted radiance
-                // (`shadowableRadiance` computed above). Sampling
+                // (`fullRadiance` computed above). Sampling
                 // proportional to this approximates the optimal
                 // "importance sample by potential contribution". #1369 —
                 // only the light index + selection weight are stored; the
                 // radiance itself is recomputed in pass 2.
-                float w_i = max(dot(shadowableRadiance,
+                float w_i = max(dot(fullRadiance,
                     vec3(RESTIR_LUMA_X, RESTIR_LUMA_Y, RESTIR_LUMA_Z)), 1e-6);
                 if (useRestir) {
                     // Stream the cluster into ONE reservoir (RIS). A fresh
@@ -3385,13 +3399,14 @@ void main() {
                     // decorrelated so temporal reuse accumulates diversity.
                     restirWSum += w_i;
                     restirM += 1.0;
-                    restirUnshadowedSum += shadowableRadiance;
+                    restirUnshadowedSum += fullRadiance;
                     float u = hash2_pixel_frame(uvec2(gl_FragCoord.xy),
                         uint(resFrameSeed) * 64u + ci).x;
                     if (u * restirWSum < w_i) {
                         restirY = i;
                         restirPHat = w_i;
                         restirSelectedRadiance = shadowableRadiance;
+                        restirSelectedTransmission = transmissionLobe;
                     }
                 }
 #if ENABLE_LEGACY_WRS
@@ -3537,13 +3552,18 @@ void main() {
                     && visibilityMaskNeedsTrace(lights[rpLightIndex].params.z)
                     && rp.M > 0.0
                     && rp.W > 0.0 && !isnan(rp.W) && !isinf(rp.W)) {
+                    vec3 rpTransmission;
                     vec3 rpRad = shadowableLightRadiance(
                         rpLightIndex, N, geometricNormal, V, NdotV, F0, albedo,
                         lightingMask, backLightingMap, roughness, aaRoughness,
                         metalness,
                         specStrength, specColor, mat, fragTangent,
-                        fragWorldPos, dbgFlags);
-                    float rpPHat = max(dot(rpRad,
+                        fragWorldPos, dbgFlags, rpTransmission);
+                    // #5192 — pHat scores the FULL unshadowed radiance;
+                    // the halves ride along for the finalize's per-lobe
+                    // visibility.
+                    vec3 rpFull = rpRad + rpTransmission;
+                    float rpPHat = max(dot(rpFull,
                         vec3(RESTIR_LUMA_X, RESTIR_LUMA_Y, RESTIR_LUMA_Z)), 1e-6);
                     float mPrev = min(rp.M, RESTIR_M_CAP);
                     // Combine (1/M form, Bitterli Alg. 4): the incoming
@@ -3557,6 +3577,7 @@ void main() {
                         restirY = rpLightIndex;
                         restirPHat = rpPHat;
                         restirSelectedRadiance = rpRad;
+                        restirSelectedTransmission = rpTransmission;
                     }
                 }
                 // Radiance is stricter than selection reuse: it is only valid
@@ -3660,13 +3681,16 @@ void main() {
                         && rn.M > 0.0
                         && rn.W > 0.0 && !isnan(rn.W) && !isinf(rn.W)
                         && dot(geomN, nGeomN) >= SPATIAL_NORMAL_COS) {
+                        vec3 rnTransmission;
                         vec3 rnRad = shadowableLightRadiance(
                             rnLightIndex, N, geometricNormal, V, NdotV, F0, albedo,
                             lightingMask, backLightingMap, roughness, aaRoughness,
                             metalness,
                             specStrength, specColor, mat, fragTangent,
-                            fragWorldPos, dbgFlags);
-                        float rnPHat = max(dot(rnRad,
+                            fragWorldPos, dbgFlags, rnTransmission);
+                        // #5192 — pHat scores the FULL unshadowed radiance.
+                        vec3 rnFull = rnRad + rnTransmission;
+                        float rnPHat = max(dot(rnFull,
                             vec3(RESTIR_LUMA_X, RESTIR_LUMA_Y, RESTIR_LUMA_Z)), 1e-6);
                         float mN = min(rn.M, SPATIAL_M_CAP);
                         float wN = rn.W * rnPHat * mN;
@@ -3678,6 +3702,7 @@ void main() {
                             restirY = rnLightIndex;
                             restirPHat = rnPHat;
                             restirSelectedRadiance = rnRad;
+                            restirSelectedTransmission = rnTransmission;
                         }
                     }
                 }
@@ -3805,10 +3830,21 @@ void main() {
                     visibility = mix(vec3(1.0), transmissionFrame, shadowFade);
                 } // end shadow-ray trace (shadowFade > 0.01)
                 vec3 rad = restirSelectedRadiance;
-                // This frame's unbiased ReSTIR estimate of the pixel's direct
-                // shadowed radiance: rad·W·V̄ (V̄ = K-ray averaged visibility,
-                // distance-faded toward fully-lit per #2554).
-                frameContribution = rad * restirW * visibility;
+                // #5192 — per-lobe visibility. Only the REFLECTION half of
+                // the selected radiance takes the traced `visibility`: the
+                // transmission half (wrap excess / back-light / SSS) is
+                // non-zero only where the light sits behind the shading
+                // plane, where the #5018 light-side origin starts the ray
+                // inside a closed mesh and the far wall commits — zeroing
+                // exactly the lobes it was supposed to model. Keeping that
+                // half unshadowed restores the authored convention (most
+                // reference-content local lights are not shadow casters)
+                // and makes the estimate agree with the pHat that selected
+                // the light, instead of spending the reservoir sample on a
+                // guaranteed-dark candidate. At visibility == 1 the sum is
+                // the unchanged unshadowed value.
+                frameContribution = rad * restirW * visibility
+                    + restirSelectedTransmission * restirW;
                 selectedVisibilityDebug = visibility;
             }
 
@@ -4029,10 +4065,16 @@ void main() {
                 // the same shadowableLightRadiance() the streaming pass
                 // accumulated, so the subtraction cancels bit-for-bit
                 // against pass 1 instead of reading a cached vec3.
+                // #5192 — only the REFLECTION half is subtracted: the
+                // transmission-class lobes pass 1 added stay (the traced
+                // ray self-occludes inside a closed mesh exactly where
+                // they are non-zero — see the finalize's per-lobe split).
+                vec3 legacyTransmissionLobe;
                 vec3 shadowable = shadowableLightRadiance(
                     i, N, geometricNormal, V, NdotV, F0, albedo, lightingMask, backLightingMap,
                     roughness, aaRoughness, metalness,
-                    specStrength, specColor, mat, fragTangent, fragWorldPos, dbgFlags);
+                    specStrength, specColor, mat, fragTangent, fragWorldPos, dbgFlags,
+                    legacyTransmissionLobe);
                 Lo = max(
                     Lo - shadowable * W * (vec3(1.0) - transmission) * shadowFade,
                     vec3(0.0));

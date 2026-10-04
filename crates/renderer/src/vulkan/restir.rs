@@ -398,7 +398,9 @@ mod tests {
     #[test]
     fn direct_history_accumulates_a_shadow_ratio_not_radiance() {
         let src = include_str!("../../shaders/triangle.frag");
-        assert!(src.contains("restirUnshadowedSum += shadowableRadiance;"));
+        // #5192 — the unshadowed sum accumulates the recombined FULL
+        // radiance (reflection + transmission halves).
+        assert!(src.contains("restirUnshadowedSum += fullRadiance;"));
         assert!(src.contains("frameContribution / max(restirUnshadowedSum, vec3(1e-6))"));
         assert!(src.contains("accum = mix(prevAccum, ratioFrame, alpha);"));
         assert!(
@@ -586,7 +588,11 @@ mod tests {
              far-field estimate converges to the unshadowed BRDF value"
         );
         assert!(
-            src.contains("frameContribution = rad * restirW * visibility;"),
+            // #5192 — the finalize shades the reflection half with the
+            // traced visibility and keeps the transmission half unshadowed;
+            // at visibility == 1 the sum is the full unshadowed rad·W.
+            src.contains("frameContribution = rad * restirW * visibility")
+                && src.contains("+ restirSelectedTransmission * restirW;"),
             "the ReSTIR finalize must not re-apply shadowFade to the whole \
              contribution — that fades the light, not the shadow"
         );

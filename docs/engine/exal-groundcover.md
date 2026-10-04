@@ -1337,8 +1337,11 @@ and no second descriptor binding to keep in step.
 
 `canopy_height == 0` disables the term, which is what a LOD tile, a BTXT-only
 cell, an interior and a worldspace with no resolved palette all arrive as. The
-attenuation attaches at `shadowableLightRadiance`'s single exit, for
-directional lights only — splitting it across `triangle.frag`'s five call
+attenuation attaches at `shadowableLightRadiance`'s `unshadowedRadiance`
+factor, for directional lights only. Since #5192 the function has two exits —
+the reflection return and the `transmissionRadiance` out param — and both are
+scaled by that same factor, so the term still reaches every consumer
+uniformly; splitting it across `triangle.frag`'s four call
 sites would break the #1369 invariant that the ReSTIR estimator's shadowed
 subtraction cancel bit-for-bit against its unshadowed accumulation.
 

@@ -4240,6 +4240,10 @@ fn translucency_drives_the_per_light_contribution_gate() {
 /// to `Lo` in the cluster loop from `lightColor * atten`, with no visibility
 /// term for any light, the sun included: foliage in a building's shadow kept
 /// full sun transmission, and a lamp behind a wall lit the far side's SSS.
+/// #5192 refinement: it folds into the function's TRANSMISSION half, which
+/// the consumers deliberately leave unshadowed (a shadow ray toward a light
+/// behind the surface starts inside a closed mesh) — "evaluated with the
+/// other direct lobes" no longer implies "zeroed by the traced visibility".
 #[test]
 fn translucency_lobe_is_shadowed_with_the_other_direct_lobes() {
     let lighting = include_str!("../../../shaders/include/lighting.glsl");
@@ -4248,8 +4252,8 @@ fn translucency_lobe_is_shadowed_with_the_other_direct_lobes() {
         .expect("lighting.glsl must define shadowableLightRadiance")
         .1;
     let body = &body[..body
-        .find("return brdfResult * unshadowedRadiance;")
-        .expect("shadowableLightRadiance must return brdfResult * unshadowedRadiance")];
+        .find("return brdfReflection * unshadowedRadiance;")
+        .expect("shadowableLightRadiance must return brdfReflection * unshadowedRadiance")];
     let back = body
         .find("bethesdaBackFactor(mat, rawNdotL)")
         .expect("the back-light lobe must stay in shadowableLightRadiance");
@@ -4258,8 +4262,9 @@ fn translucency_lobe_is_shadowed_with_the_other_direct_lobes() {
         .expect("the translucency lobe must be evaluated in shadowableLightRadiance (#4946)");
     assert!(back < sss, "the translucency lobe belongs beside the back-light lobe");
     assert!(
-        body[sss..].contains("brdfResult += sssTint"),
-        "the translucency lobe must fold into brdfResult, which the shadowed return scales"
+        body[sss..].contains("brdfTransmission += sssTint"),
+        "the translucency lobe must fold into the transmission half, which \
+         every consumer sees through the #5192 split"
     );
 
     let frag = include_str!("../../../shaders/triangle.frag");
@@ -7315,4 +7320,107 @@ fn shadowable_light_radiance_horizon_clamps_its_front_lobes() {
             "all four call sites (pass-1 accumulate, temporal reuse, spatial \
              reuse, legacy subtract) must pass geometricNormal (#5191 / #1369)"
         );
+}
+
+/// #5192 (REN-D10-2026-10-03-02) — the per-lobe visibility split.
+///
+/// The transmission-class lobes (soft-light wrap excess, back-light,
+/// translucency — non-zero only where rawNdotL < 0) model light arriving
+/// THROUGH the surface. Post-#5018's light-side ray origin starts the
+/// shared shadow ray just inside a closed mesh and the far wall commits as
+/// opaque, so one traced visibility for the whole BRDF zeroed exactly
+/// these lobes inside shadowFade (and `mix(1, V, shadowFade)` handed them
+/// back unshadowed past it — the authored soft terminator blinked on at
+/// 12 000 BU). The resolution: `shadowableLightRadiance` splits its result
+/// into reflection (return) + transmission (`transmissionRadiance` out),
+/// and every visibility consumer shades only the reflection half with the
+/// traced term — the transmission half stays unshadowed, the convention
+/// the reference content authored those lobes under. This pins the split
+/// at the source: the half-space gate, which accumulator each lobe feeds,
+/// and the finalize's two-term estimate.
+#[test]
+fn shadowable_light_radiance_splits_transmission_lobes_from_traced_visibility() {
+    let lighting = include_str!("../../../shaders/include/lighting.glsl");
+    let body = glsl_fn_body(lighting, "vec3 shadowableLightRadiance(");
+
+    // The out param is the split's shipping lane.
+    assert!(
+        lighting[..lighting.find("vec3 shadowableLightRadiance(").unwrap() + 600]
+            .contains("out vec3 transmissionRadiance)"),
+        "the signature must expose the transmission half (#5192)"
+    );
+
+    // The half-space gate: transmission is exactly the rawNdotL < 0 part.
+    let back_side = body
+        .find("float backSide = rawNdotL < 0.0 ? 1.0 : 0.0;")
+        .expect("the split needs the back-side half-space gate (#5192)");
+    let split = body
+        .find("vec3 diffuseTransmission = diffuseFactor * backSide;")
+        .expect("the wrap excess must be routed through the gate (#5192)");
+    assert!(
+        back_side < split,
+        "the gate must be derived before the split uses it (#5192)"
+    );
+
+    // Front lobes feed brdfReflection (still horizon-clamped per #5191);
+    // the back lobes feed brdfTransmission.
+    assert!(
+        body.contains("vec3 brdfReflection = diffuseBrdf * (diffuseFactor - diffuseTransmission)"),
+        "the reflection half must exclude the gated transmission (#5192)"
+    );
+    assert!(
+        body.contains("brdfTransmission += albedo * max(backLightingMap"),
+        "the back-light lobe must feed the transmission half (#5192)"
+    );
+    assert!(
+        body.contains("brdfTransmission += sssTint"),
+        "the translucency lobe must feed the transmission half (#5192)"
+    );
+    assert!(
+        body.contains("transmissionRadiance = brdfTransmission * unshadowedRadiance;")
+            && body.contains("return brdfReflection * unshadowedRadiance;"),
+        "both halves must leave scaled by the same unshadowed radiance (#5192)"
+    );
+
+    // triangle.frag — every call site takes the out param, the unshadowed
+    // quantities recombine the halves, and the finalize shades only the
+    // reflection half with the traced visibility.
+    let tri = include_str!("../../../shaders/triangle.frag");
+    for out_param in [
+        "transmissionLobe",
+        "rpTransmission",
+        "rnTransmission",
+        "legacyTransmissionLobe",
+    ] {
+        assert!(
+            tri.contains(out_param),
+            "a shadowableLightRadiance call site lost its `{out_param}` out \
+             param — the split must reach every consumer (#5192)"
+        );
+    }
+    assert!(
+        tri.contains("vec3 fullRadiance = shadowableRadiance + transmissionLobe;"),
+        "pass-1's unshadowed accumulation (Lo, restirUnshadowedSum, pHat) \
+         must use the recombined FULL radiance (#5192)"
+    );
+    // The finalize's ASSIGNMENT (not the earlier `vec3 frameContribution =
+    // vec3(0.0);` declaration) — anchor on the visibility product itself.
+    let visibility_pos = tri
+        .find("rad * restirW * visibility")
+        .expect("the finalize must shade the reflection half by visibility (#5192)");
+    let finalize = &tri[visibility_pos..visibility_pos + 400];
+    assert!(
+        finalize.contains("+ restirSelectedTransmission * restirW;"),
+        "the finalize must apply the traced visibility to the reflection \
+         half ONLY — the transmission half stays unshadowed (#5192)"
+    );
+    // The selection registers must be wired at all three selection sites,
+    // or the finalize reads a stale zero transmission for reused picks.
+    // (4 matches = the zero-init declaration + the three sites.)
+    assert_eq!(
+        tri.matches("restirSelectedTransmission = ").count(),
+        4,
+        "all three selection sites (streaming, temporal reuse, spatial \
+         reuse) must set the transmission companion register (#5192)"
+    );
 }
