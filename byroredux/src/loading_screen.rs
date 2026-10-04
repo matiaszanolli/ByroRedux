@@ -277,10 +277,25 @@ impl LoadingScreen {
                     return false;
                 }
             };
-            if let Some(Artwork::Image { texture: old, .. }) = self.artwork.take() {
-                ctx.texture_registry.drop_texture(&ctx.device, old);
-            } else if let Some(stage) = self.retired_stage.take() {
-                retire_stage(world, Some(ctx), *stage);
+            // #5206 — release whatever cover this artwork replaces. The
+            // retained Image is the normal repeat-transition case (dropped
+            // here, mirroring the model-stage site); a still-live Stage
+            // means a begin raced ahead of the App poll's retirement drain,
+            // so retire it now instead of dropping its handles on the floor
+            // (the pre-fix `if let Image`/`else if` shape did exactly that
+            // to a taken-but-unmatched Stage).
+            match self.artwork.take() {
+                Some(Artwork::Image { texture: old, .. }) => {
+                    ctx.texture_registry.drop_texture(&ctx.device, old);
+                }
+                Some(Artwork::Stage(stage)) => {
+                    retire_stage(world, Some(ctx), *stage);
+                }
+                None => {
+                    if let Some(stage) = self.retired_stage.take() {
+                        retire_stage(world, Some(ctx), *stage);
+                    }
+                }
             }
             self.artwork = Some(Artwork::Image {
                 key: key.to_owned(),
@@ -392,6 +407,21 @@ impl LoadingScreen {
             mesh_handles.len(),
             screen.flags & FLAG_NO_ROTATION != 0
         );
+        // #5206 — a retained image cover being replaced by a model cover
+        // must release its texture, mirroring `present_image_artwork`'s
+        // Image→Image replace. Pre-fix the plain overwrite dropped the
+        // handle on the floor: the refcount never reached zero, so the
+        // registry never freed or redirected the bindless slot — one leaked
+        // artwork texture per image→model switch, resident until shutdown.
+        // A Stage here is the begin-raced-the-poll case (see the sibling
+        // comment in `present_image_artwork`); retire rather than drop it.
+        match self.artwork.take() {
+            Some(Artwork::Image { texture, .. }) => {
+                ctx.texture_registry.drop_texture(&ctx.device, texture);
+            }
+            Some(Artwork::Stage(stage)) => retire_stage(world, Some(ctx), *stage),
+            None => {}
+        }
         self.artwork = Some(Artwork::Stage(Box::new(ModelStage {
             key: key.to_owned(),
             root,
@@ -1099,5 +1129,57 @@ mod retire_stage_routing_tests {
             "the stage_camera == None arm must release GPU state through the \
              canonical path (#5193)"
         );
+    }
+}
+
+/// #5206 — both artwork replacement sites must release the cover they
+/// replace before overwriting `self.artwork`.
+///
+/// `spawn_model_stage` used to assign `Some(Artwork::Stage(..))` over a
+/// retained `Artwork::Image` without `drop_texture`: the handle fell on the
+/// floor, the refcount never reached zero, and the registry never freed or
+/// redirected the bindless slot — one leaked original-artwork texture per
+/// image→model switch, resident until shutdown. The sibling shape in
+/// `present_image_artwork` (`if let Some(Artwork::Image ..}) = take()` /
+/// `else if`) also dropped a taken-but-unmatched `Stage` box as plain
+/// memory, leaking its entities outright. Both sites now `match` on the
+/// taken artwork and release every variant. Source pin (the #5193
+/// precedent): the release needs a live `VulkanContext`, so the ordering is
+/// asserted against the code.
+#[cfg(test)]
+mod artwork_replacement_release_tests {
+    fn code_only(src: &str) -> String {
+        src.lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn replacing_artwork_releases_the_old_cover_first() {
+        let full = code_only(include_str!("loading_screen.rs"));
+        for (site, assign_needle) in [
+            ("spawn_model_stage", "self.artwork = Some(Artwork::Stage(Box::new(ModelStage {"),
+            ("present_image_artwork", "self.artwork = Some(Artwork::Image {"),
+        ] {
+            let assign = full
+                .find(assign_needle)
+                .unwrap_or_else(|| panic!("{site} must still assign its artwork"));
+            let window = &full[assign.saturating_sub(1400)..assign];
+            assert!(
+                window.contains("match self.artwork.take()"),
+                "{site} must release the old artwork via a match on take() \
+                 before assigning — a bare overwrite leaks the replaced cover (#5206)",
+            );
+            assert!(
+                window.contains("drop_texture(&ctx.device,"),
+                "{site}'s release must drop a replaced image cover's texture (#5206)",
+            );
+            assert!(
+                window.contains("retire_stage(world, Some(ctx), *stage)"),
+                "{site}'s release must retire a replaced stage cover, not drop \
+                 its handles as plain memory (#5206)",
+            );
+        }
     }
 }
