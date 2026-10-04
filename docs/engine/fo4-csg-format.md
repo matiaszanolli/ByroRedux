@@ -195,7 +195,10 @@ pick a single band. Verified: indices are 0-based and dense
 Vertices are in the object's **local** space (centroid ≈ origin, extent
 ≈ bounding-sphere radius). Each `BSPackedGeomDataCombined` instance in
 the shared-geom header supplies a `transform` (placement, in the same
-space as the cell) and a `bounding_sphere`. Apply the Z-up→Y-up
+frame as the cell's REFR `DATA` positions — **world-absolute on
+exteriors**, and the cell-local frame with the cell at the world origin
+on interiors) and a `bounding_sphere`. The loader therefore places bakes
+at a zero origin on both routes (#5228). Apply the Z-up→Y-up
 conversion the rest of the importer uses.
 
 ## Validation summary

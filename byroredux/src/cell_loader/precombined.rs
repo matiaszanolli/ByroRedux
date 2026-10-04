@@ -18,9 +18,12 @@
 //! zlib-compressed PSG keyed by filename hash + offset). Note that the naming
 //! plugin is not always the cell's owner — a plugin re-baking a master-owned
 //! cell keeps the master's filename but moves the geometry into its own blob
-//! (#2369). Meshes are decoded to Y-up, spawned at cell-local identity, and
-//! tagged as `RenderLayer::Architecture`. LOD is
-//! selected by triangle count (finest LOD only, per `fo4-csg-format.md:138-142`).
+//! (#2369). Meshes are decoded to Y-up, spawned at a `Vec3::ZERO` placement
+//! root — interior bakes are cell-local with the cell at the world origin,
+//! while exterior `_oc.nif` instance transforms are world-absolute in the
+//! same frame as the exterior REFR `DATA` positions (#5228) — and tagged as
+//! `RenderLayer::Architecture`. Every populated LOD band is decoded (#4234;
+//! see `fo4-csg-format.md` §"Triangles and LOD selection").
 //! Absorption gate in [`super::load::load_cell_with_masters`] (conditional on
 //! spawn count) honors the cell's `absorbed_refs` list, suppressing per-REFR
 //! rendering of baked REFRs.
@@ -226,6 +229,10 @@ impl PrecombinedSpawnJob {
     pub(super) fn advance(
         mut self,
         cell: &CellData,
+        // Placement root for the bake. Always `Vec3::ZERO`: interior bakes
+        // are cell-local and the interior cell sits at the world origin,
+        // while exterior `_oc.nif` instance transforms are already
+        // world-absolute (#5228).
         cell_origin: Vec3,
         world: &mut World,
         ctx: &mut VulkanContext,
@@ -642,6 +649,9 @@ fn csg_paths_by_name_hash(
 #[allow(clippy::too_many_arguments)]
 pub(super) fn spawn_precombined_meshes(
     cell: &CellData,
+    // Placement root for the bake. Always `Vec3::ZERO` — interior bakes are
+    // cell-local with the cell at the world origin, and exterior bakes carry
+    // world-absolute instance transforms (#5228).
     cell_origin: Vec3,
     world: &mut World,
     ctx: &mut VulkanContext,
@@ -1393,6 +1403,144 @@ mod tests {
             "'{rebake}' decodes against the blob its own objects name"
         );
         eprintln!("dlc re-bake '{rebake}' → {} mesh(es)", right.len());
+    }
+
+    /// #5228 — exterior `_oc.nif` instance transforms are **world-absolute**
+    /// (the same frame as the exterior REFR `DATA` positions, which spawn
+    /// with no cell offset), so the loader must place bakes at a zero origin.
+    /// 1ed8dc0bd (#1222) assumed cell-local coordinates and composed
+    /// `cell_grid_to_world_yup(gx, gy)` on top, landing every exterior bake
+    /// one grid cell further out than its own cell — the absorbed REFRs were
+    /// suppressed in place and the architecture appeared in far cells.
+    ///
+    /// This is the exterior counterpart of the interior-only switchboard
+    /// test below: cell `000a801e` sits at grid (−20, 22), so its bake's
+    /// instances must already decode inside that cell's world XY rectangle.
+    /// Under the offset composition they decode ~one full cell further out
+    /// (the grid corner lands on top of the already-absolute coordinates).
+    ///
+    /// Gated on the installed FO4 data:
+    /// `cargo test -p byroredux -- --ignored exterior_precombine`.
+    #[test]
+    #[ignore = "needs FO4 game data on disk"]
+    fn exterior_precombine_instances_are_world_absolute() {
+        use byroredux_core::math::coord::EXTERIOR_CELL_UNITS;
+        use byroredux_core::math::Vec2;
+        let Some(data) = fo4_data_dir() else {
+            eprintln!("Skipping: BYROREDUX_FO4_DATA not set and default path missing");
+            return;
+        };
+        let ba2 = Ba2Archive::open(data.join("Fallout4 - MeshesExtra.ba2"))
+            .expect("open MeshesExtra.ba2");
+        // Precondition only — the resolver below re-opens per bake because
+        // `one_csg` moves the archive into its closure.
+        CsgArchive::open(data.join("Fallout4 - Geometry.csg")).expect("open Geometry.csg");
+
+        // Root-level (Fallout4.esm-owned) bake of the exterior cell at
+        // grid (−20, 22): X ∈ [−81920, −77824], Y ∈ [90112, 94208] (Z-up).
+        const GX: i32 = -20;
+        const GY: i32 = 22;
+        let x_lo = GX as f32 * EXTERIOR_CELL_UNITS;
+        let y_lo = GY as f32 * EXTERIOR_CELL_UNITS;
+        let x_hi = x_lo + EXTERIOR_CELL_UNITS;
+        let y_hi = y_lo + EXTERIOR_CELL_UNITS;
+        let paths: Vec<_> = ba2
+            .list_files()
+            .into_iter()
+            .filter(|n| {
+                n.starts_with("meshes\\precombined\\000a801e_")
+                    && n.ends_with("_oc.nif")
+                    // Root-level only: a DLC re-bake would live one dir down
+                    // and belong to a different grid.
+                    && n.matches('\\').count() == 2
+            })
+            .collect();
+        assert!(
+            !paths.is_empty(),
+            "the vanilla bake of exterior cell 000a801e must be present"
+        );
+
+        let mut instances = 0usize;
+        let mut sum = Vec2::ZERO;
+        let mut worst: Option<(String, Vec2)> = None;
+        for path in &paths {
+            let bytes = ba2.extract(path).expect("extract exterior _oc.nif");
+            let scene = byroredux_nif::parse_nif(&bytes).expect("parse exterior _oc.nif");
+            let resolve = one_csg(
+                data.join("Fallout4.esm").to_str().unwrap(),
+                CsgArchive::open(data.join("Fallout4 - Geometry.csg")).expect("re-open CSG"),
+            );
+            let mut pool = StringPool::new();
+            let (meshes, _dedup) = build_precombine_meshes(&scene, &resolve, &mut pool);
+            assert!(
+                !meshes.is_empty(),
+                "'{path}' decoded no meshes — the frame check below needs the decode to run"
+            );
+            for mesh in &meshes {
+                // `translation` is Y-up; Z-up y is −z (see zup_point_to_yup).
+                let zup = Vec2::new(mesh.translation[0], -mesh.translation[2]);
+                instances += 1;
+                sum += zup;
+                // Every instance decodes within its own cell (a bake may
+                // poke slightly over a seam; one extra half-cell of margin).
+                let inside = zup.x >= x_lo - 2048.0
+                    && zup.x <= x_hi + 2048.0
+                    && zup.y >= y_lo - 2048.0
+                    && zup.y <= y_hi + 2048.0;
+                if !inside && worst.is_none() {
+                    worst = Some(((*path).to_string(), zup));
+                }
+            }
+        }
+        assert!(instances > 0, "the bake must yield placed instances");
+        let mean = sum / instances as f32;
+        assert!(
+            mean.x >= x_lo && mean.x <= x_hi && mean.y >= y_lo && mean.y <= y_hi,
+            "mean instance {mean:?} must decode inside cell ({GX},{GY})'s world \
+             rectangle [{x_lo},{x_hi}]×[{y_lo},{y_hi}] — world-absolute frame (#5228)"
+        );
+        let Some((path, zup)) = worst else {
+            eprintln!(
+                "exterior bake 000a801e ({GX},{GY}): {instances} instances, mean {mean:?}"
+            );
+            return;
+        };
+        panic!(
+            "instance at {zup:?} ('{path}') decodes outside cell ({GX},{GY})'s \
+             rectangle — the bake must be world-absolute (#5228)"
+        );
+    }
+
+    /// #5228 — the decode-side frame contract above is only half the guard:
+    /// the offset was applied at the spawn call site, not in the decode. This
+    /// is the CI-reachable half: it reads `exterior.rs`'s own source and
+    /// requires the streaming apply job to advance the precombine cursor at
+    /// a zero origin. Coarse by design (the `include_str!` pattern this repo
+    /// already uses in `load.rs`); a Vulkan device + game data gate for the
+    /// real thing does not exist in `cargo test`.
+    #[test]
+    fn exterior_apply_advances_precombine_at_zero_origin() {
+        let source = include_str!("exterior.rs");
+        // `exterior.rs` has two `job.advance(` sites — the outer
+        // `ExteriorCellApplyJob` loop and the precombine cursor inside it.
+        // Anchor on the progress type only the inner call consumes.
+        let progress = source
+            .find("PrecombinedSpawnProgress")
+            .expect("exterior.rs must consume precombine spawn progress");
+        let call = source[..progress]
+            .rfind("job.advance(")
+            .expect("the precombine cursor advance call");
+        let window = &source[call..(call + 800).min(source.len())];
+        assert!(
+            window.contains("Vec3::ZERO"),
+            "the exterior precombine advance must pass a zero origin — exterior \
+             bakes are world-absolute (#5228)"
+        );
+        assert!(
+            !window.contains("cell_grid_to_world_yup"),
+            "composing the cell-grid origin with world-absolute exterior bake \
+             transforms places every tile at ≈2× its world position (#5228)"
+        );
     }
 
     /// Switchboard transform diagnostic. The packed record's authored

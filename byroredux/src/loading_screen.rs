@@ -477,24 +477,38 @@ pub(crate) struct StagePose {
 }
 
 fn stage_pose(screen: &LoadScreenRecord, transform: Option<&LoadScreenTransform>) -> StagePose {
-    let (translation_zup, rotation_deg, scale) = match transform {
-        Some(trns) => (trns.translation, trns.rotation_deg, trns.scale),
-        None => (
-            screen.initial_translation.unwrap_or([0.0; 3]),
-            screen
+    // TRNS `DATA` rotation is radians (`wbPosRot`, like FO4 REFR DATA —
+    // #5229); Skyrim's inline RNAM is i16 degrees, so only that arm
+    // converts. Both feed `euler_zup_to_quat_yup_refr` raw angles.
+    let (translation_zup, rotation, scale) = match transform {
+        Some(trns) => (
+            trns.translation,
+            crate::cell_loader::euler_zup_to_quat_yup_refr(
+                trns.rotation_rad[0],
+                trns.rotation_rad[1],
+                trns.rotation_rad[2],
+            ),
+            trns.scale,
+        ),
+        None => {
+            let deg = screen
                 .initial_rotation
                 .map(|r| [r[0] as f32, r[1] as f32, r[2] as f32])
-                .unwrap_or([0.0; 3]),
-            screen.initial_scale.unwrap_or(1.0),
-        ),
+                .unwrap_or([0.0; 3]);
+            (
+                screen.initial_translation.unwrap_or([0.0; 3]),
+                crate::cell_loader::euler_zup_to_quat_yup_refr(
+                    deg[0].to_radians(),
+                    deg[1].to_radians(),
+                    deg[2].to_radians(),
+                ),
+                screen.initial_scale.unwrap_or(1.0),
+            )
+        }
     };
     StagePose {
         translation: Vec3::from_array(coord::zup_to_yup_pos(translation_zup)),
-        rotation: crate::cell_loader::euler_zup_to_quat_yup_refr(
-            rotation_deg[0].to_radians(),
-            rotation_deg[1].to_radians(),
-            rotation_deg[2].to_radians(),
-        ),
+        rotation,
         scale,
     }
 }
@@ -832,12 +846,23 @@ mod tests {
         let screen_record = LoadScreenRecord {
             initial_scale: Some(2.0),
             initial_translation: Some([10.0, 20.0, 30.0]),
+            initial_rotation: Some([90, 0, 0]),
             ..Default::default()
         };
         let pose = stage_pose(&screen_record, None);
         // [x, z, -y] Z-up→Y-up, same as every REFR placement.
         assert_eq!(pose.translation, Vec3::new(10.0, 30.0, -20.0));
         assert_eq!(pose.scale, 2.0);
+        // Skyrim's inline RNAM is i16 *degrees* — that arm keeps the
+        // conversion (#5229).
+        assert_eq!(
+            pose.rotation,
+            crate::cell_loader::euler_zup_to_quat_yup_refr(
+                90f32.to_radians(),
+                0.0,
+                0.0
+            )
+        );
     }
 
     #[test]
@@ -851,7 +876,11 @@ mod tests {
             editor_id: "t".into(),
             around_origin: false,
             translation: [1.0, 2.0, 3.0],
-            rotation_deg: [90.0, 0.0, 0.0],
+            // `wbPosRot`: TRNS DATA rotation is radians (#5229). A π yaw is
+            // a value FO4 actually ships (LoadingBarberTransform carries
+            // 6.1 ≈ −π/6 per axis); the old fixture's [90, 0, 0] is a degree
+            // magnitude FO4 never produces.
+            rotation_rad: [0.0, 0.0, std::f32::consts::PI],
             scale: 0.5,
             zoom_bounds: None,
             malformed_fields: Vec::new(),
@@ -859,6 +888,15 @@ mod tests {
         let pose = stage_pose(&screen_record, Some(&trns));
         assert_eq!(pose.translation, Vec3::new(1.0, 3.0, -2.0));
         assert_eq!(pose.scale, 0.5);
+        // Radians pass through raw: a π yaw is a half turn about the
+        // vertical axis, so the model's X axis must come out negated. Under
+        // the old double conversion π became 0.0548 rad (≈3.1°) and the
+        // model stayed near identity.
+        let facing = pose.rotation * Vec3::X;
+        assert!(
+            facing.distance(Vec3::new(-1.0, 0.0, 0.0)) < 1e-4,
+            "π yaw must pose a half turn, got facing {facing:?}"
+        );
     }
 
     #[test]
@@ -989,7 +1027,7 @@ mod tests {
                 editor_id: String::new(),
                 around_origin: false,
                 translation: [1.0, 2.0, 3.0],
-                rotation_deg: [0.0; 3],
+                rotation_rad: [0.0; 3],
                 scale: 1.0,
                 zoom_bounds: None,
                 malformed_fields: Vec::new(),

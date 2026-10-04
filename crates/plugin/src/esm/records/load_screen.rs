@@ -144,12 +144,14 @@ pub fn parse_lscr(
 ///
 /// Layout: `wbDefinitionsFO4.pas` `wbRecord(TRNS)`: EDID, header flag
 /// 0x8000 "Around Origin", and a required `DATA` struct of position (3×f32),
-/// rotation (3×f32, degrees — same float-degree convention as FO4 REFR
-/// DATA), scale, then optional zoom min/max (`SetOptionalFrom(2)`: a
-/// 28-byte DATA with the zoom tail dropped is legal; 36 bytes with it).
+/// rotation (3×f32, **radians** — `wbPosRot`, the same convention as FO4
+/// REFR `DATA` rotation; every component of the 1,259 base+DLC TRNS values
+/// sits in [0, 2π], on radian landmarks like 3.142/1.571/0.524), scale,
+/// then optional zoom min/max (`SetOptionalFrom(2)`: a 28-byte DATA with
+/// the zoom tail dropped is legal; 36 bytes with it).
 /// Verified against installed `Fallout4.esm` (LoadingBarberTransform:
-/// 36-byte DATA, e.g. pos [12, 350, -31.9] rot [6.1, 0, 6.1] scale 1.0
-/// zoom [-0.5, 1.0]).
+/// 36-byte DATA, e.g. pos [12, 350, -31.9] rot [6.1, 0, 6.1] — a
+/// −10.5°-per-axis pose — scale 1.0 zoom [-0.5, 1.0]).
 #[derive(Debug, Clone)]
 pub struct LoadScreenTransform {
     pub form_id: u32,
@@ -159,7 +161,7 @@ pub struct LoadScreenTransform {
     /// backend does not consume it yet.
     pub around_origin: bool,
     pub translation: [f32; 3],
-    pub rotation_deg: [f32; 3],
+    pub rotation_rad: [f32; 3],
     pub scale: f32,
     pub zoom_bounds: Option<[f32; 2]>,
     /// Same conservatism contract as [`LoadScreenRecord::malformed_fields`]:
@@ -175,7 +177,7 @@ pub fn parse_trns(form_id: u32, flags: u32, subs: &[SubRecord]) -> LoadScreenTra
         editor_id: String::new(),
         around_origin: flags & 0x8000 != 0,
         translation: [0.0; 3],
-        rotation_deg: [0.0; 3],
+        rotation_rad: [0.0; 3],
         scale: 1.0,
         zoom_bounds: None,
         malformed_fields: Vec::new(),
@@ -202,7 +204,7 @@ pub fn parse_trns(form_id: u32, flags: u32, subs: &[SubRecord]) -> LoadScreenTra
                     continue;
                 }
                 out.translation = [floats[0], floats[1], floats[2]];
-                out.rotation_deg = [floats[3], floats[4], floats[5]];
+                out.rotation_rad = [floats[3], floats[4], floats[5]];
                 out.scale = floats[6];
                 if d.len() == 36 {
                     out.zoom_bounds = Some([floats[7], floats[8]]);

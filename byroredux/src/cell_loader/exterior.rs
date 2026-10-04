@@ -2034,7 +2034,13 @@ impl ExteriorCellApplyJob {
             let first_entity = world.next_entity_id();
             match job.advance(
                 cell,
-                cell_grid_to_world_yup(self.gx, self.gy),
+                // The bake's instance transforms are world-absolute on
+                // exteriors — the same frame as the exterior REFR `DATA`
+                // positions, which spawn with no cell offset. Adding the
+                // grid origin here would place every tile at ≈2× its world
+                // position (#5228; 1ed8dc0bd assumed cell-local coords
+                // before any CSG reader existed).
+                Vec3::ZERO,
                 world,
                 ctx,
                 tex_provider,

@@ -231,7 +231,9 @@ fn trns_decodes_the_full_thirty_six_byte_data() {
     assert_eq!(record.editor_id, "LoadingBarberTransform");
     assert!(record.around_origin, "header flag 0x8000 is Around Origin");
     assert_eq!(record.translation, [12.0, 350.0, -31.9]);
-    assert_eq!(record.rotation_deg, [6.102, 0.0, 6.102]);
+    // wbPosRot radians (#5229): 6.102 ≈ 2π − π/6, a −10.5° per-axis pose —
+    // a degree magnitude FO4 never ships.
+    assert_eq!(record.rotation_rad, [6.102, 0.0, 6.102]);
     assert_eq!(record.scale, 1.0);
     assert_eq!(record.zoom_bounds, Some([-0.5, 1.0]));
     assert!(record.malformed_fields.is_empty());
