@@ -462,24 +462,34 @@ impl Framebuffer {
 /// Word-wrap `text` to `wrap_width` texels (0 = no wrap), capped at
 /// `wrap_lines` (0 = unlimited). Wraps on spaces; a single word longer
 /// than the width is not broken (vanilla HUD strings are short).
+///
+/// Linear in the text length (#5024): `measure_width` is a plain sum of
+/// per-glyph advances (no kerning), so the line's width is carried and
+/// each word costs one word measure plus one append — the whole candidate
+/// is never re-measured. Menu XML is untrusted input (#4715); a long
+/// `<string>` under a large `wrapwidth` used to go quadratic here on
+/// every HUD render.
 pub fn wrap(text: &str, font: &Font, wrap_width: f32, wrap_lines: u32) -> Vec<String> {
     let mut lines: Vec<String> = Vec::new();
     if wrap_width <= 0.0 {
         lines.push(text.to_string());
     } else {
         let mut current = String::new();
+        let mut current_width = 0.0;
+        let space_width = font.measure_width(" ");
         for word in text.split(' ') {
-            let candidate = if current.is_empty() {
-                word.to_string()
-            } else {
-                format!("{current} {word}")
-            };
-            if font.measure_width(&candidate) > wrap_width && !current.is_empty() {
-                lines.push(std::mem::take(&mut current));
-                current = word.to_string();
-            } else {
-                current = candidate;
+            let word_width = font.measure_width(word);
+            if !current.is_empty() {
+                if current_width + space_width + word_width > wrap_width {
+                    lines.push(std::mem::take(&mut current));
+                    current_width = 0.0;
+                } else {
+                    current.push(' ');
+                    current_width += space_width;
+                }
             }
+            current.push_str(word);
+            current_width += word_width;
         }
         lines.push(current);
     }
@@ -767,5 +777,69 @@ mod tests {
         );
         let reds: Vec<u8> = fb.pixels.chunks_exact(4).map(|p| p[0]).collect();
         assert_eq!(reds, [20, 30, 40, 50]);
+    }
+
+    fn probe_font(advance: f32) -> Font {
+        use crate::font::Glyph;
+        Font {
+            point_size: 28.0,
+            texture_name: "probe".into(),
+            glyphs: (0..256)
+                .map(|_| Glyph {
+                    u0: 0.0,
+                    v0: 0.0,
+                    u1: 0.0,
+                    v1: 0.0,
+                    width: 8.0,
+                    height: 8.0,
+                    advance,
+                    y_offset: 0.0,
+                    inked: true,
+                })
+                .collect(),
+            atlas: Rgba8::new(1, 1),
+        }
+    }
+
+    /// #5024 — `wrap` carried the line's width instead of re-measuring the
+    /// whole `current + " " + word` candidate per word. With a `wrapwidth`
+    /// larger than the text, the old shape was O(n²) in the string length:
+    /// 40k words took ~1.4 s per HUD render (release), and doubling the
+    /// word count quadrupled it. The linear shape finishes the same input
+    /// in milliseconds even in this debug build; the budget only has to be
+    /// generous enough to never flake on a slow runner while still failing
+    /// the quadratic shape well inside the test timeout.
+    #[test]
+    fn wrap_of_a_huge_string_under_a_wide_wrapwidth_stays_linear() {
+        let font = probe_font(9.0);
+        let text = "abcd ".repeat(40_000);
+        let started = std::time::Instant::now();
+        let lines = wrap(&text, &font, 1.0e9, 0);
+        let elapsed = started.elapsed();
+
+        // One line: nothing ever exceeds the (huge) width.
+        assert_eq!(lines, vec![text]);
+        assert!(
+            elapsed.as_secs() < 5,
+            "wrap went quadratic again: 40k words took {elapsed:?}"
+        );
+    }
+
+    /// The running width must wrap exactly where the re-measured candidate
+    /// did: the carried sum and `measure_width` of the whole line are the
+    /// same per-glyph advances, so the break points are unchanged.
+    #[test]
+    fn wrap_break_points_match_the_measured_candidate() {
+        // Advance 9: "word" = 36, "word word" = 81 > 60 → one word per line
+        // except where two fit ("ab ab" = 45 ≤ 60).
+        let font = probe_font(9.0);
+        assert_eq!(wrap("word word word", &font, 60.0, 0), vec!["word", "word", "word"]);
+        assert_eq!(wrap("ab ab ab", &font, 60.0, 0), vec!["ab ab", "ab"]);
+        // A single word longer than the width is not broken, and leads its line.
+        assert_eq!(wrap("x longword y", &font, 10.0, 0), vec!["x", "longword", "y"]);
+        // wrap_lines cap and the no-wrap / empty fallbacks keep their shapes.
+        assert_eq!(wrap("a b c", &font, 0.0, 0), vec!["a b c"]);
+        assert_eq!(wrap("a b c", &font, 1.0e9, 2), vec!["a b c"]);
+        assert_eq!(wrap("", &font, 60.0, 0), vec![""]);
     }
 }
