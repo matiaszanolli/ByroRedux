@@ -20,16 +20,16 @@ commit. Live state only: when something closes, it becomes a one-liner under
 
 ## Status
 
-**Last session close:** Session 93, 2026-10-01, HEAD `0f9142832`. Workspace
+**Last session close:** Session 94, 2026-10-03, HEAD `83fbbaaac`. Workspace
 numbers (tests, LOC, files, issue dirs) live in [Project Stats](#project-stats)
 only.
 
 **Gates.** On local rustc 1.96.0, `cargo clippy --workspace --all-targets`
 is clean: #5115 took the ungated `--all-targets` bucket from 824 sites to
-zero, re-measured 0 at this close. CI gates only the non-`--all-targets` form,
+zero at the Session 93 close. CI gates only the non-`--all-targets` form,
 and hosted CI is red on two jobs (see [Known Issues](#known-issues)). The
-bench-of-record below was taken at `a37fcba3c`, 180 commits before this close
-(R6a-stale-23). Its one open regression, **R6a-regress-22**, turned out to be
+bench-of-record below was taken at `a37fcba3c`, 255 commits before this close
+(R6a-stale-24). Its one open regression, **R6a-regress-22**, turned out to be
 the bench camera moving with `b9e961eeb`'s interior spawn ladder, not
 renderer code (#5128, 2026-09-30); a small residual stays open.
 
@@ -103,8 +103,9 @@ renderer code (#5128, 2026-09-30); a small residual stays open.
   blocks the slice.
 - RT lighting and material recovery: R0–R3 are complete. The rest is tracked
   in [`rt-lighting-material-recovery.md`](docs/engine/rt-lighting-material-recovery.md).
-- WATAL: W0 and W1 are closed. The next step is choosing the first W2/W3
-  shoreline/LOD defect from the captures
+- WATAL: W0 and W1 are closed. W2's first defect is fixed: distant water is
+  drawn per cell at each cell's XCLW height (#5243). The next step is the next
+  W2/W3 shoreline/LOD defect from the captures
   ([`watal.md`](docs/engine/watal.md)).
 
 ### How to run a bench
@@ -589,9 +590,10 @@ it; the full list as it stood on 2026-09-29 (open and closed) is in
 
 ### Performance and measurement
 
-- [ ] **R6a-stale-23 — bench-of-record `a37fcba3c` is 180 commits stale**
-  (2026-10-01 close). Frame-path changes since: #5154, #5018, #5062, #5064,
-  #4902/#4909/#4915. Re-run `scripts/fsr-bench-matrix.sh 3 300` with a
+- [ ] **R6a-stale-24 — bench-of-record `a37fcba3c` is 255 commits stale**
+  (2026-10-03 close). Frame-path changes since: #5154, #5018/#5191, #5062,
+  #5064, #4902/#4909/#4915, #5055/#4784, #5158's exposure retune
+  (`7d99ba7f0`), #5243. Re-run `scripts/fsr-bench-matrix.sh 3 300` with a
   same-machine control; no HEAD frame-time claim is current until then.
 - [ ] **R6a-regress-22 — residual after the camera move** (filed 2026-09-28,
   re-stated 2026-09-30 by #5128). The original reading ("FO4 frame time
@@ -628,17 +630,14 @@ it; the full list as it stood on 2026-09-29 (open and closed) is in
   once, set `scene_entity_floor` from the observed count, and add `gridcross`
   to the default set. Until then, accept no ground-cover perf claim in either
   direction.
-- [ ] **Teardown SIGSEGV** (filed 2026-09-09): all 75 runs of the `4c9a5b36`
-  matrix segfaulted on exit after an "outstanding references" allocator log,
-  against 0 of 30 at `e6282349`. #4187 (`4777908b`) fixed the staging-pool
-  allocator path, and the demo scene now exits cleanly. The 75-run game-cell
-  matrix has not been re-checked for it — check exit status on the next
-  refresh.
-- [ ] **`gpu_main` can read longer than the wall frame** (e.g. 13.27 ms inside
-  an 11.12 ms frame), which makes per-pass attribution and the report's
-  negative "render recovery" cells untrustworthy. #4808 moved the bracket's
-  start to COMPUTE; whether that cures the over-read has not been measured.
-  Wall and fence columns are unaffected.
+- [ ] **Teardown SIGSEGV** (filed 2026-09-09): all 75 `4c9a5b36` runs
+  segfaulted on exit ("outstanding references"), 0 of 30 at `e6282349`. #4187
+  (`4777908b`) fixed the staging-pool path and the demo scene exits cleanly;
+  check the game-cell matrix's exit status on the next refresh.
+- [ ] **`gpu_main` can read longer than the wall frame** (13.27 ms inside an
+  11.12 ms frame), so per-pass attribution and negative "render recovery"
+  cells are untrustworthy; wall and fence are unaffected. #4808 moved the
+  bracket start to COMPUTE, cure unmeasured.
 
 **Decided, do not re-file:** PERF-REGRESSION-6c56e311 (#2161). The ~2.2×
 main-pass cost of glass-transmitting shadows plus the second diffuse GI bounce
@@ -653,11 +652,10 @@ performance finding. The measured knob table is in
   total size`, ~20 times in multi-minute `--bench-hold` sessions and 0 in
   short ones. Suspected cause: a `dds::mip_size` rounding gap. Needs a
   targeted repro plus an allocation assert.
-- [ ] **FO76 `GeneratedMeshes` truncation tail** (2026-08-29): `02` is 0.00%
-  clean (all 2 049 NIFs truncate) and `01` 95.03%, all recoverable. The
-  suspected `BSDistantObjectExtraData` dispatch gap (#3461) has since closed;
-  the sweep has not been re-run. When it is, raise the `0.0` floor and
-  regenerate baselines.
+- [ ] **FO76 `GeneratedMeshes` truncation tail** (2026-08-29): `02` 0.00%
+  clean (all 2 049 truncate), `01` 95.03%, all recoverable. The suspected
+  gap (#3461) has closed but the sweep was not re-run; then raise the `0.0`
+  floor and regenerate baselines.
 - [ ] **Fire lighting is on by default and never had its visual check.**
   `2325c1de` replaced `render/fire_lights.rs` (and its reach canary) with
   `append_combustion_surface_lights` from the transported field, which flipped
@@ -680,25 +678,26 @@ performance finding. The measured knob table is in
   unverified.
 - [ ] **FO3/FNV SCPT records are parsed but not executed.** The SCDA
   interpreter (M47.3) runs Oblivion quest scripts only.
-- [ ] **`NiStencilProperty` is parsed but never applied.** Pipelines are built
-  with `stencil_test_enable(false)` on a stencil-less `D32_SFLOAT` depth
-  format. The fix needs per-material stencil pipeline variants plus a
-  stencil-bearing format, so it waits for a consumer (recorded under #4213).
+- [ ] **`NiStencilProperty` is parsed but never applied** (stencil test off,
+  stencil-less `D32_SFLOAT`). Needs per-material stencil variants plus a
+  stencil format, so it waits for a consumer (#4213).
 - [ ] **One Starfield NIF (`meshes\marker_radius.nif`) asks for a 318 MB
-  single allocation**, above `MAX_SINGLE_ALLOC_BYTES` (256 MB). Raising the
-  cap weakens the defence against hostile `u32` sizes. One file in the
-  corpus.
+  single allocation**, above `MAX_SINGLE_ALLOC_BYTES` (256 MB); raising the
+  cap weakens the hostile-`u32` defence. One file in the corpus.
 - [ ] **Starfield CDB Phase 2: texture slots landed, closure unverified**
   ([#3398](https://github.com/matiaszanolli/ByroRedux/issues/3398)). A
   streaming `MaterialIndex` (`224a19372`) feeds the `.mat` arm of
   `merge_external_material` (`18fce7e43`): a hit forwards texture slots and
-  flat-colour replacements as `Merged`, a miss keeps the Phase-1 PBR flip.
-  Owed before closing: the issue's definition of done and a live Cydonia render.
+  flat-colour replacements as `Merged`, a miss keeps the Phase-1 PBR flip;
+  per-slot replacements, scalars and flags translate honestly (#5190, #5196,
+  #5197). Owed before closing: the issue's definition of done and a live Cydonia render.
 
 ### Infrastructure and tooling
 
-- [ ] **Hosted CI is red on two of ten jobs** (run on `2fb4c5f2f`,
-  2026-10-01; neither is filed yet). Shader parity now passes (#5116).
+- [ ] **Hosted CI is red on two of ten jobs** (re-checked on `6355078e7`,
+  2026-10-03; neither is filed yet). A third, *Playable smoke gate
+  contracts*, went red with `7d99ba7f0`'s FNV fixture retarget and was fixed
+  at the Session 94 close.
   - *Test + Check + Clippy*: CI's `@stable` toolchain is newer than the local
     1.96.0 and fires `clippy::chunks_exact_to_as_chunks` (menuxml, hkx,
     plugin, renderer) plus an `f32: From<f64>` fallback in debug-ui.
@@ -716,17 +715,17 @@ performance finding. The measured knob table is in
 
 ## Project Stats
 
-Ground-truth as of 2026-10-01 (session close, HEAD `0f9142832`). Every
+Ground-truth as of 2026-10-03 (session close, HEAD `83fbbaaac`). Every
 figure in this table was measured at that HEAD, not carried forward.
 
 | Metric                                  | Value                        |
 |-----------------------------------------|------------------------------|
-| Rust source lines (`src/` dirs)         | ~677 432                      |
-| Rust total lines (all `.rs`, excl. `target/`) | ~726 738                 |
-| Source files (`.rs`, excl. `target/`)   | 1204 total · 1114 outside `tests/` dirs (+6 / +6 since the 2026-09-29 close) |
+| Rust source lines (`src/` dirs)         | ~684 303                      |
+| Rust total lines (all `.rs`, excl. `target/`) | ~733 998                 |
+| Source files (`.rs`, excl. `target/`)   | 1207 total · 1117 outside `tests/` dirs (+3 / +3 since the 2026-10-01 close) |
 | Workspace members                       | 34 (count the `[workspace] members` block only — an unscoped `grep -c '^\s*"' Cargo.toml` returns 39, picking up quoted lines elsewhere in the file; 29 crates (incl. `menuxml`, added in Session 88) + `byroredux` binary + 4 tools: `byro-detect`, `byro-launcher`, `byro-dbg`, `texture-upscale`; `tools/nifskope` exists on disk but is not a workspace member) |
-| Tests                                   | **9081 passing, 0 failing** (`cargo test --workspace --no-fail-fast` on rustc 1.96.0, 2026-10-01; 259 ignored). Clean full-workspace run, including doc-tests. Always pass `--no-fail-fast` for the ground-truth count — without it, `cargo test --workspace` stops after the first binary with a failure and silently omits every crate queued behind it (Session 77 saw this first-hand: 1836 vs the true 6905) — and beware shell pipes: `cargo test … | tail` reports the *pipe's* exit code, which masked a toolchain-version failure here before the 2026-09-18 session caught it. |
-| Open issue directories                  | 5083 (`.claude/issues/`)     |
+| Tests                                   | **9172 passing, 0 failing** (`cargo test --workspace --no-fail-fast` on rustc 1.96.0, 2026-10-03; 261 ignored). The full run was 9171 / 1: the boundary-material spawner guard, which `98061ec58` had turned red. It was fixed at this close and re-run on its own. Always pass `--no-fail-fast` for the ground-truth count — without it, `cargo test --workspace` stops after the first binary with a failure and silently omits every crate queued behind it (Session 77 saw this first-hand: 1836 vs the true 6905) — and beware shell pipes: `cargo test … | tail` reports the *pipe's* exit code, which masked a toolchain-version failure here before the 2026-09-18 session caught it. |
+| Open issue directories                  | 5169 (`.claude/issues/`)     |
 | NIFs in per-game integration sweeps     | **604 787** across seven games (2026-08-29, #3369 + #3466 took this from 184 886 by widening the gates to every mesh-bearing archive each game ships; Oblivion re-measured 2026-09-07 under #3925 to include its eight DLC archives). Oblivion 9 612 · FO3 17 172 · FNV 20 746 · Skyrim SE 33 424 · FO4 235 082 · FO76 168 208 · Starfield 120 543. |
 | Per-game NIF clean-parse rate           | See the [compatibility matrix](#compatibility-matrix) — it is the single home for per-game parse rates, sweep dates and residual truncation tails. Summary only: 100% clean on Oblivion / FO3 / FNV / Skyrim SE / FO4 / Starfield (Starfield re-measured 2026-09-24, #4440); **FO76 98.18%** — the 2026-08-29 corpus widening (#3466) exposed a 3 056-NIF truncation tail in its two `GeneratedMeshes` archives that no gate had ever opened. Recoverable 100% on all seven. |
 | Supported archive formats               | BSA v103/v104/v105, BA2 v1/v2/v3/v7/v8 |
