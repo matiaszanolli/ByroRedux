@@ -669,6 +669,30 @@ fn recreate_descriptor_sets_allocates_the_replacement_before_the_old_pool_dies()
         "self.descriptor_pool must not name the replacement before the old \
          pool is destroyed (#4886)"
     );
+
+    // #5207 — the replacement samplers must be the LAST fallible step.
+    // Created before the pool they were a local `Option<[vk::Sampler; 4]>`
+    // with no Drop, so the pool/set failure arms leaked all four handles
+    // (four more per #2156 rollback retry). Here their creation sits after
+    // the set allocation, and their own error arm frees the pool+sets it
+    // created, so every failure path still leaves nothing behind.
+    let create_samplers = body
+        .find("create_material_samplers(")
+        .expect("the replacement samplers must still be created");
+    assert!(
+        alloc_sets < create_samplers,
+        "create_material_samplers must run after allocate_descriptor_sets — \
+         otherwise a pool/set failure leaks the four sampler handles (#5207)"
+    );
+    let sampler_err_arm = body[create_samplers..]
+        .find("destroy_descriptor_pool(new_pool")
+        .expect("the sampler-creation error arm must free the new pool");
+    assert!(
+        sampler_err_arm < body[create_samplers..]
+            .find("destroy_descriptor_pool(self.descriptor_pool")
+            .expect("the old pool retire must still follow"),
+        "the sampler error arm must clean up before the old pool is touched (#5207)"
+    );
 }
 
 // ── #4885 — `texture: None` slots must be rewritten on resize ──

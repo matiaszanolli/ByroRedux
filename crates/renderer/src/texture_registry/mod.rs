@@ -1043,16 +1043,6 @@ impl TextureRegistry {
         _new_swapchain_image_count: u32,
         mip_lod_bias: f32,
     ) -> Result<()> {
-        let replacement_samplers = if (self.mip_lod_bias - mip_lod_bias).abs() > f32::EPSILON {
-            Some(create_material_samplers(
-                device,
-                self.max_sampler_anisotropy,
-                mip_lod_bias,
-            )?)
-        } else {
-            None
-        };
-
         // Recreate pool + sets (must match new() flags: UPDATE_AFTER_BIND).
         // #4886 — allocate into locals first; `self.descriptor_pool` and
         // `self.bindless_sets` keep naming the live old objects until every
@@ -1091,6 +1081,35 @@ impl TextureRegistry {
                 return Err(e)
                     .context("Failed to reallocate bindless texture descriptor sets");
             }
+        };
+
+        // #5207 — the replacement samplers are the LAST fallible step, not
+        // the first. Created up top they were a local
+        // `Option<[vk::Sampler; 4]>` with no Drop and no error-arm consumer,
+        // so a pool-creation or set-allocation failure leaked all four
+        // handles (and #2156's `set_upscaler_mode` rollback re-enters this
+        // function — four more per retry). `create_material_samplers`
+        // unwinds its own partial failure; this arm frees the pool+sets it
+        // created so the registry is still left exactly as it was.
+        let replacement_samplers = if (self.mip_lod_bias - mip_lod_bias).abs() > f32::EPSILON {
+            match create_material_samplers(
+                device,
+                self.max_sampler_anisotropy,
+                mip_lod_bias,
+            ) {
+                Ok(samplers) => Some(samplers),
+                Err(e) => {
+                    // SAFETY: `new_pool` is the live pool created above;
+                    // destroying it implicitly frees `new_sets`, which was
+                    // allocated from it and never committed.
+                    unsafe {
+                        device.destroy_descriptor_pool(new_pool, None);
+                    }
+                    return Err(e);
+                }
+            }
+        } else {
+            None
         };
 
         // Past the last fallible step — retire the old pool (destroying it
