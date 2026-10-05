@@ -322,8 +322,6 @@ impl MeshArchive {
     }
 }
 
-/// Resolve the data directory for a game, falling back to the default Steam
-/// path. Returns `None` and prints a skip notice if neither resolves.
 /// #3850 — the strict lane for real-data tests.
 ///
 /// `BYROREDUX_REQUIRE_GAME_DATA=1` turns an absent corpus into a hard
@@ -344,6 +342,9 @@ pub fn require_game_data(env_var: &str, tried: &std::path::Path) {
     }
 }
 
+/// Resolve the data directory for a game, falling back to the default Steam
+/// path. Returns `None` — after [`require_game_data`]'s strict-lane verdict
+/// — and prints a skip notice if neither resolves.
 pub fn game_data_dir(game: Game) -> Option<PathBuf> {
     if let Some(val) = std::env::var(game.env_var()).ok().filter(|s| !s.is_empty()) {
         let path = PathBuf::from(&val);

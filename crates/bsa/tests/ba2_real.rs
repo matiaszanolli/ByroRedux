@@ -25,10 +25,6 @@ use byroredux_bsa::{Ba2Archive, Ba2Variant};
 use std::io::Write;
 use std::path::PathBuf;
 
-/// Resolve a `Data/` directory from an env var, falling back to the
-/// canonical Steam install path on the dev machine. Mirrors the
-/// `crates/nif/tests/common/mod.rs::game_data_dir` pattern so all
-/// real-data tests gate the same way.
 /// #3850 — the strict lane for real-data tests.
 ///
 /// `BYROREDUX_REQUIRE_GAME_DATA=1` turns an absent corpus into a hard
@@ -60,6 +56,12 @@ fn require_archive(path: &std::path::Path) {
     eprintln!("Skipping: {path:?} not found");
 }
 
+/// Resolve a `Data/` directory from an env var, falling back to the
+/// canonical Steam install path on the dev machine. Mirrors the
+/// `crates/nif/tests/common/mod.rs::game_data_dir` pattern so all
+/// real-data tests gate the same way. Returns `None` — after
+/// [`require_game_data`]'s strict-lane verdict — when neither resolves,
+/// so the caller can skip cleanly.
 fn data_dir(env_var: &str, fallback: &str) -> Option<PathBuf> {
     if let Some(v) = std::env::var(env_var).ok().filter(|s| !s.is_empty()) {
         let p = PathBuf::from(&v);

@@ -30,10 +30,6 @@ use byroredux_plugin::esm::reader::GameKind;
 use byroredux_plugin::esm::test_paths;
 use std::path::PathBuf;
 
-/// Resolve a `Data/` directory from an env var, falling back to the
-/// canonical Steam install path on the dev machine. Returns `None` when
-/// neither resolves — the test then skips cleanly. Mirrors the pattern
-/// from `crates/nif/tests/common/mod.rs::game_data_dir`.
 /// #3850 — the strict lane for real-data tests.
 ///
 /// `BYROREDUX_REQUIRE_GAME_DATA=1` turns an absent corpus into a hard
@@ -54,6 +50,11 @@ fn require_game_data(env_var: &str, tried: &std::path::Path) {
     }
 }
 
+/// Resolve a `Data/` directory from an env var, falling back to the
+/// canonical Steam install path on the dev machine. Returns `None` when
+/// neither resolves — after [`require_game_data`]'s strict-lane verdict —
+/// the test then skips cleanly. Mirrors the pattern from
+/// `crates/nif/tests/common/mod.rs::game_data_dir`.
 fn data_dir(env_var: &str, fallback: &str) -> Option<PathBuf> {
     if let Some(v) = std::env::var(env_var).ok().filter(|s| !s.is_empty()) {
         let p = PathBuf::from(&v);
