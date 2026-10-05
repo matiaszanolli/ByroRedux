@@ -246,6 +246,62 @@ fn fnv_actor_value_roster_and_health_resolve_on_shipped_master() {
     );
 }
 
+/// #5238 — the sourced NPC Health curve (`DATA` Base Health + authored
+/// `fAVDNPCHealth{Endurance,Level}Mult` + exe-default
+/// `fAVDNPCHealthEnduranceOffset`) must reproduce the vanilla in-game
+/// totals on the shipped masters, not the player curve the old row seeded.
+/// Sample set from the issue's table; editor ids are the shipped EDIDs.
+#[test]
+#[ignore = "needs FNV/FO3 game data on disk"]
+fn fo3_fnv_named_npc_health_matches_the_authored_curve() {
+    let health_of = |editor_id: &str| -> Option<f32> {
+        for (env, default, master) in [
+            (test_paths::FNV_ENV, test_paths::FNV_DEFAULT, "FalloutNV.esm"),
+            (
+                test_paths::FO3_ENV,
+                test_paths::FO3_DEFAULT,
+                "Fallout3.esm",
+            ),
+        ] {
+            let Some(data) = data_dir(env, default) else {
+                continue;
+            };
+            let bytes = std::fs::read(data.join(master)).expect("read master");
+            let index = parse_esm(&bytes).expect("parse master");
+            if let Some(npc) = index
+                .npcs
+                .values()
+                .find(|npc| npc.editor_id.eq_ignore_ascii_case(editor_id))
+            {
+                let health_key = index.health_actor_value_key().expect("Health AVIF");
+                return byroredux_plugin::esm::records::derive_npc_actor_values(npc, &index)
+                    .into_iter()
+                    .find(|(form_id, _)| *form_id == health_key)
+                    .map(|(_, value)| value);
+            }
+        }
+        None
+    };
+
+    // FNV — issue samples with their record base/END/level.
+    assert_eq!(
+        health_of("GSEasyPete"),
+        Some(65.0),
+        "Easy Pete: base 50 + 5·(END 4−1) + 5·(L 1−1)"
+    );
+    assert_eq!(
+        health_of("GSSunnySmiles"),
+        Some(90.0),
+        "Sunny Smiles: base 70 + 5·3 + 5·1"
+    );
+    // FO3 — the most drastic player-curve miss in the issue table.
+    assert_eq!(
+        health_of("ThreeDog"),
+        Some(25.0),
+        "Three Dog: base 10 + 5·3 + 5·0 (the player curve seeded 180)"
+    );
+}
+
 #[test]
 #[ignore = "needs Skyrim SE game data on disk"]
 fn skyrim_health_resolves_to_authored_avif_form_id() {

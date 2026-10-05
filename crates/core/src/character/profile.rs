@@ -11,18 +11,61 @@ use super::{
     SkillSet,
 };
 
-/// A sourced linear END + level curve used to seed auto-calculated NPC Health.
+/// A sourced FO3/FNV NPC Health curve (#5238): the record's `DATA` Base
+/// Health plus two GMST-driven terms,
+/// `base_health + endurance_multiplier·(END + offset) + level_multiplier·(L + offset)`.
+///
+/// All three coefficients are engine settings, not invented constants: the
+/// masters author `fAVDNPCHealthEnduranceMult` = `fAVDNPCHealthLevelMult` =
+/// 5.0 (FormIDs 0xAE66A / 0xAE66B, both Fallout3.esm and FalloutNV.esm,
+/// measured with `crates/plugin/examples/health_gmst_dump.rs`), and the exe
+/// default table carries `fAVDNPCHealthEnduranceOffset` = −1.0 ( Fallout3.exe
+/// packed default-GMST table, 0xcf8a9c; neither master authors an override;
+/// GECK's settings list corroborates the setting's existence). The GECK
+/// *Stats Tab — NPC* note ("Base Health: Health is calculated with Endurance
+/// and level. This value is then added to that result") supplies the base
+/// term, which each record authors per-NPC. Applied per-term, the −1.0
+/// offset composes to the −10 constant every vanilla sample shows: the fit
+/// `base + 5·(END−1) + 5·(L−1)` reproduces 15/15 fandom infobox `hp` values
+/// across both masters (Easy Pete 65, Sunny Smiles 90, Ringo 120, Boone 230,
+/// Benny 205, Veronica 235, Cass 210, Raul 280; Three Dog 25, Gob 35, Nova
+/// 40, Moira 80, Lucas Simms 60, Charon 240, Clover 240) — pinned by
+/// `fo3_fnv_npc_health_curve_reproduces_the_vanilla_samples`. The previous
+/// "curve" here was the *player* formula with "sourced" in its doc, which
+/// every actual source contradicts (the capture's own Health row said
+/// "player formulas (NPCs derive separately)").
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct NpcHealthCurve {
-    pub bias: f32,
     pub endurance_multiplier: f32,
     pub level_multiplier: f32,
+    pub offset: f32,
 }
 
 impl NpcHealthCurve {
+    /// The derived Health value: the record's own Base Health plus the two
+    /// GMST-driven terms. `base_health` is the `NPC_` `DATA` field (#5005),
+    /// clamped non-negative by the caller — a non-positive Base Health is
+    /// the authored starts-dead convention, and the corpse rule owns it.
     #[must_use]
-    pub fn evaluate(self, endurance: f32, level: f32) -> f32 {
-        self.bias + self.endurance_multiplier * endurance + self.level_multiplier * level
+    pub fn evaluate(self, base_health: f32, endurance: f32, level: f32) -> f32 {
+        base_health
+            + self.endurance_multiplier * (endurance + self.offset)
+            + self.level_multiplier * (level + self.offset)
+    }
+
+    /// Overlay authored GMST values on the engine-supplied fallback curve.
+    /// Missing settings retain the measured constants, keeping older masters
+    /// and synthetic fixtures deterministic while allowing mods to retune
+    /// the parsed curve — the same discipline as
+    /// [`super::leveling::LevelingModel::with_gmst`].
+    #[must_use]
+    pub fn with_gmst(self, gmst: impl Fn(&str) -> Option<f32>) -> Self {
+        Self {
+            endurance_multiplier: gmst("fAVDNPCHealthEnduranceMult")
+                .unwrap_or(self.endurance_multiplier),
+            level_multiplier: gmst("fAVDNPCHealthLevelMult").unwrap_or(self.level_multiplier),
+            offset: gmst("fAVDNPCHealthEnduranceOffset").unwrap_or(self.offset),
+        }
     }
 }
 
@@ -44,6 +87,23 @@ pub enum NpcStatModel {
     /// [`CharacterRulesProfile::creature_stat_model`], so consumers still
     /// branch on record kind rather than on game identity.
     CreatureData,
+}
+
+impl NpcStatModel {
+    /// The [`NpcHealthCurve`] when this model class-auto-calculates
+    /// (`ClassAutoCalc`), for consumers and tests that need the curve off
+    /// the model without matching the variant again.
+    #[must_use]
+    pub const fn health_curve(self) -> NpcHealthCurve {
+        match self {
+            Self::ClassAutoCalc { health } => health,
+            _ => NpcHealthCurve {
+                endurance_multiplier: 0.0,
+                level_multiplier: 0.0,
+                offset: 0.0,
+            },
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -137,11 +197,16 @@ impl CharacterRulesProfile {
     pub const FALLOUT3: Self = Self {
         name: "Fallout 3",
         skills: SkillSet::FALLOUT3,
+        // #5238 — the authored NPC pair (fAVDNPCHealth{Endurance,Level}Mult =
+        // 5.0/5.0) plus the exe-default fAVDNPCHealthEnduranceOffset = −1.0;
+        // see NpcHealthCurve for the full sourcing. The old row here was the
+        // player curve (bias 90 = 100 − the level mult), which no source
+        // applies to NPCs.
         npc_stats: NpcStatModel::ClassAutoCalc {
             health: NpcHealthCurve {
-                bias: 90.0,
-                endurance_multiplier: 20.0,
-                level_multiplier: 10.0,
+                endurance_multiplier: 5.0,
+                level_multiplier: 5.0,
+                offset: -1.0,
             },
         },
         creature_stats: NpcStatModel::CreatureData,
@@ -153,12 +218,14 @@ impl CharacterRulesProfile {
     pub const FALLOUT_NEW_VEGAS: Self = Self {
         name: "Fallout: New Vegas",
         skills: SkillSet::FALLOUT_NV,
-        // 100 + 20·END + 5·(Level−1) = 95 + 20·END + 5·Level.
+        // #5238 — same sourced NPC pair as FO3; the two masters author the
+        // identical fAVDNPCHealth{Endurance,Level}Mult = 5.0/5.0 (their
+        // *player* level mults differ: 10 vs 5).
         npc_stats: NpcStatModel::ClassAutoCalc {
             health: NpcHealthCurve {
-                bias: 95.0,
-                endurance_multiplier: 20.0,
+                endurance_multiplier: 5.0,
                 level_multiplier: 5.0,
+                offset: -1.0,
             },
         },
         creature_stats: NpcStatModel::CreatureData,
@@ -320,8 +387,10 @@ mod tests {
         let NpcStatModel::ClassAutoCalc { health: fnv_health } = fnv.npc_stat_model() else {
             panic!("FNV must class-auto-calculate NPC stats");
         };
-        assert_eq!(fo3_health.evaluate(5.0, 2.0), 210.0);
-        assert_eq!(fnv_health.evaluate(5.0, 2.0), 205.0);
+        assert_eq!(
+            fo3_health, fnv_health,
+            "both masters author the identical fAVDNPCHealth{{Endurance,Level}}Mult pair"
+        );
         // #4453 — FO4 is the only sourced `Stored` profile; FO76 and
         // Starfield are `None` until their NPC_ stat wire layouts are
         // captured (pinned separately by
@@ -330,6 +399,77 @@ mod tests {
             CharacterRulesProfile::FALLOUT4.npc_stat_model(),
             NpcStatModel::Stored
         );
+    }
+
+    /// #5238 — the sourced curve reproduces the vanilla NPC Health table:
+    /// `base + 5·(END−1) + 5·(L−1)` against the issue's 15 fandom infobox
+    /// `hp` samples, five per representative slice (base/END/level from the
+    /// records, measured with the probe).
+    #[test]
+    fn fo3_fnv_npc_health_curve_reproduces_the_vanilla_samples() {
+        let curve = CharacterRulesProfile::FALLOUT_NEW_VEGAS
+            .npc_stat_model()
+            .health_curve();
+        // (base, END, level, wiki hp) — FNV: Easy Pete, Sunny Smiles, Ringo,
+        // Boone, Raul (levels 1–14 span the curve's reach).
+        for &(base, end, level, hp) in &[
+            (50.0, 4.0, 1.0, 65.0),
+            (70.0, 4.0, 2.0, 90.0),
+            (75.0, 6.0, 5.0, 120.0),
+            (190.0, 5.0, 5.0, 230.0),
+            (200.0, 4.0, 14.0, 280.0),
+        ] {
+            assert_eq!(
+                curve.evaluate(base, end, level),
+                hp,
+                "FNV sample (base {base}, END {end}, L {level})"
+            );
+        }
+        // FO3: Three Dog (base 10), Lucas Simms (base 10, END 6, L 6),
+        // Clover (base 225) — same coefficients, FO3's differing *player*
+        // level mult does not touch the NPC curve.
+        let fo3 = CharacterRulesProfile::FALLOUT3.npc_stat_model().health_curve();
+        for &(base, end, level, hp) in &[
+            (10.0, 4.0, 1.0, 25.0),
+            (10.0, 6.0, 6.0, 60.0),
+            (225.0, 4.0, 1.0, 240.0),
+        ] {
+            assert_eq!(
+                fo3.evaluate(base, end, level),
+                hp,
+                "FO3 sample (base {base}, END {end}, L {level})"
+            );
+        }
+    }
+
+    /// #5238 — the GMST overlay retunes all three coefficients by editor id
+    /// and leaves authored values in place when a setting is missing (the
+    /// LevelingModel::with_gmst discipline; both masters author the mults,
+    /// neither authors the offset).
+    #[test]
+    fn npc_health_curve_overlays_authored_gmsts() {
+        let curve = CharacterRulesProfile::FALLOUT3
+            .npc_stat_model()
+            .health_curve();
+        let gmst = |name: &str| match name {
+            "fAVDNPCHealthEnduranceMult" => Some(6.0),
+            "fAVDNPCHealthEnduranceOffset" => Some(-2.0),
+            _ => None,
+        };
+        let tuned = curve.with_gmst(gmst);
+        assert_eq!(tuned.endurance_multiplier, 6.0);
+        assert_eq!(tuned.offset, -2.0);
+        assert_eq!(
+            tuned.level_multiplier, curve.level_multiplier,
+            "a missing setting must retain the sourced constant"
+        );
+        // The vanilla authored pair resolves to the same curve the profile
+        // carries, so a real master's overlay is a no-op.
+        let from_master = curve.with_gmst(|name| match name {
+            "fAVDNPCHealthEnduranceMult" | "fAVDNPCHealthLevelMult" => Some(5.0),
+            _ => None,
+        });
+        assert_eq!(from_master, curve);
     }
 
     /// #2941 — `esm_header_selects_one_canonical_character_profile`

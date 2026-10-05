@@ -90,7 +90,7 @@ base + tag it's the **complete player skill model** for FO3/FNV.
 
 | Stat | Gov | FO3 formula | FNV formula | Status |
 |---|---|---|---|---|
-| Health | END + level | `90 + END·20 + Level·10` | `100 + END·20 + (Level−1)·5` | **BUILT** (player ruleset + NPC auto-calc seed) |
+| Health (NPC) | END + level | `base + 5·(END−1) + 5·(Level−1)` | same | **BUILT** (#5238 — authored `fAVDNPCHealth{Endurance,Level}Mult` = 5/5 + exe-default `fAVDNPCHealthEnduranceOffset` = −1 per term; 15/15 vanilla infobox pin) |
 | Action Points | AGI | `65 + 2·AGI` (cap 85) | `65 + 3·AGI` (cap 95) | **BUILT** (formula sourced; NPC scope unsourced, #2937; code conservatively treats it player-only) |
 | Carry Weight | STR | `150 + 10·STR` | `150 + 10·STR` | **BUILT** (actor-general) |
 | Critical Chance | Luck | `Luck × 1%` (cap 10%) | `Luck × 1%` (Luck>10 inert) | **BUILT** (formula LOCKED, `critchance` AV; **scope unsourced** — no capture line states whether NPCs derive it, code explicitly ships ActorGeneral pending a per-stat citation, #4450 / pinned by `fo3_fnv_crit_melee_unarmed_scopes_are_actor_general_pending_a_source`) |
@@ -109,8 +109,18 @@ CHARAL profile as `body_condition_base: Some(100.0)` on the `FALLOUT3` and
 `FALLOUT_NEW_VEGAS` rows (`crates/core/src/character/profile.rs`, #4447 —
 Oblivion/Skyrim+ profiles leave it `None`).
 
-Health: `fAVDHealthLevelMult` = **10** (FO3) / **5** (FNV); base **90 → 100**. Player
-formulas (NPCs derive separately). Source: fandom *Hit Points*.
+Health (NPCs, #5238): `base + fAVDNPCHealthEnduranceMult·(END + fAVDNPCHealthEnduranceOffset)
++ fAVDNPCHealthLevelMult·(Level + fAVDNPCHealthEnduranceOffset)` — both masters author the
+mult pair at **5.0 / 5.0** (FormIDs 0xAE66A / 0xAE66B, measured with
+`crates/plugin/examples/health_gmst_dump.rs`), the offset is an **exe default of −1.0**
+(Fallout3.exe packed default-GMST table; neither master authors an override; GECK settings
+list corroborates the setting), and `base` is each record's own `DATA` Base Health (GECK
+*Stats Tab — NPC*: "Health is calculated with Endurance and level. This value is then added
+to that result."). The per-term −1 composes to the −10 constant that fits 15/15 vanilla
+infobox `hp` samples across both masters (pinned by
+`fo3_fnv_named_npc_health_matches_the_authored_curve`). The player formulas
+(`fAVDHealthEnduranceMult` = 20, `fAVDHealthLevelMult` = 10 FO3 / 5 FNV) are a separate
+path and do not apply to NPCs — the row above previously carried them by mistake.
 
 Carry Weight: `fAVDCarryWeight{Base=150, Mult=10}` — actor-general (NPCs/companions
 too), same GMST family as FO4 (`Base=200, Mult=10`) and FO76 (`Base=150, Mult=5` —

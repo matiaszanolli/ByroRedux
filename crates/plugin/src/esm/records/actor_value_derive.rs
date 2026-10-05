@@ -227,9 +227,15 @@ pub fn derive_resolved_actor_values(
     let mut values = match model {
         NpcStatModel::Stored => derive_stored_actor_values(resolved, index),
         NpcStatModel::RaceBaseOffsets => derive_skyrim_actor_values(stats, traits, index),
-        NpcStatModel::ClassAutoCalc { health } => {
-            derive_autocalc_actor_values(stats, index, index.character_rules, health)
-        }
+        NpcStatModel::ClassAutoCalc { health } => derive_autocalc_actor_values(
+            stats,
+            index,
+            index.character_rules,
+            // #5238 — retune the curve from the load-order GMSTs; both
+            // vanilla masters author the mult pair, mods may retune any of
+            // the three settings.
+            health.with_gmst(|name| index.game_setting_float(name)),
+        ),
         NpcStatModel::CreatureData => derive_creature_actor_values(stats, index),
         NpcStatModel::None => Vec::new(),
     };
@@ -465,7 +471,13 @@ fn derive_autocalc_actor_values(
     if let Some(fid) = index.health_actor_value_key() {
         let endurance = f32::from(special[2]);
         let level = f32::from(effective_actor_level(npc));
-        let health = health_curve.evaluate(endurance, level);
+        // #5238 — the GECK-authored Base Health term: "Health is calculated
+        // with Endurance and level. This value is then added to that
+        // result." (GECK Stats Tab — NPC.) Non-positive values are the
+        // authored starts-dead convention (#5005's corpse rule) and are
+        // clamped for the seeding path; those actors are dead regardless.
+        let base_health = npc.data_base_health.unwrap_or(0).max(0) as f32;
+        let health = health_curve.evaluate(base_health, endurance, level);
         out.push((fid, health));
     }
     out
@@ -616,7 +628,9 @@ mod tests {
         assert_eq!(val("Throwing"), 2.0 + 2.0 * 5.0 + 3.0, "END 5"); // Survival = 15
         assert_eq!(val("Science"), 2.0 + 2.0 * 7.0 + 3.0, "INT 7"); // 19
         assert_eq!(val("Barter"), 2.0 + 2.0 * 4.0 + 3.0, "CHA 4"); // 13
-        assert_eq!(val("Health"), 200.0, "100 + 20·END at level 1");
+        // #5238 — the sourced NPC curve: base (unset → 0) + 5·(END−1) +
+        // 5·(L−1); END 5, L 1 → 20.
+        assert_eq!(val("Health"), 20.0, "base 0 + 5·(END−1) + 5·(L−1)");
 
         // 7 SPECIAL + 13 FNV skills + Health.
         assert_eq!(pairs.len(), 21);
@@ -648,9 +662,10 @@ mod tests {
         let pairs = derive_npc_actor_values(&npc, &index);
         let health_fid = index.health_actor_value_key().unwrap();
         let health = pairs.iter().find(|(f, _)| *f == health_fid).unwrap().1;
-        // FNV: 95 + 20·END + 5·L. END 5, L 0 → 195. The `.max(1)` copy
-        // evaluated the same record at L 1 and returned 200.
-        assert_eq!(health, 195.0);
+        // #5238 — sourced NPC curve: base 0 + 5·(END−1) + 5·(L−1); END 5,
+        // L 0 → 20 − 5 = 15. The level term keeps feeding at the record's
+        // own level (0), which is the agreement this test pins.
+        assert_eq!(health, 15.0);
     }
 
     /// #2956 — a templated `Lvl*` shell's own `class_form_id` must be
@@ -690,9 +705,10 @@ mod tests {
         };
         assert_eq!(val("Strength"), 8.0, "template's SPECIAL, not the shell's");
         assert_eq!(val("Endurance"), 9.0);
+        // #5238 — sourced NPC curve, base unset → 0: 5·(9−1) + 5·(20−1) = 135.
         assert_eq!(
             val("Health"),
-            95.0 + 20.0 * 9.0 + 5.0 * 20.0,
+            5.0 * (9.0 - 1.0) + 5.0 * (20.0 - 1.0),
             "template's level (20) feeds the Health curve, not the shell's (1)"
         );
     }
