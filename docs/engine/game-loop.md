@@ -148,6 +148,7 @@ The live schedule built in `App::new` is:
 | `Update` | `player_derived_stats_system` + `pool_regen_tick_system` | exclusive + declared | Refreshes the player's stamped PlayerOnly pools (#5039), then fixed-step character-pool regeneration when the per-game ruleset enables it |
 | `Update` | `animation_system` | declared | Advances `AnimationPlayer`/`AnimationStack`, writes `Transform` + all animated-channel storages |
 | `Update` | `spin_system` + `animate_lights_system` | exclusive | Demo cube spin; procedural candle/chandelier flicker (Phase 17) |
+| `Update` | `loading_model_turntable_system` | exclusive | Creation-era loading-screen turntable: spins the `LoadingModelStage` entity at `LOADING_TURNTABLE_RAD_PER_S` unless it opts out via `no_rotation` (e60911864); same marker-gated single-entity shape as `spin_system`, sequenced after the Update batch |
 | `Update` | `player_body_facing_system` | exclusive + declared | Third-person body facing from the shared yaw accumulator (#4995); Update placement so PostUpdate propagation resolves it same-frame |
 | `PostUpdate` | `make_transform_propagation_system()` | declared | Parent→child `GlobalTransform` (BFS) |
 | `PostUpdate` | `particle_system` | exclusive + declared | Needs final emitter world origin (#401); consumes `ParticleEmitter::rate` one frame after Late's submersion write (#3653) |
@@ -157,7 +158,7 @@ The live schedule built in `App::new` is:
 | `Physics` | `physics_sync_system` | declared | Rapier step → `Transform` writeback |
 | `Late` | `camera_follow_system` | declared | M28.5 — runs after physics settle |
 | `Late` | `billboard_system` | exclusive + declared | Overwrites computed world rotation (#225); moved from PostUpdate (#3652) to read this frame's camera pose |
-| `Late` | `footstep_system` | exclusive + declared | Reads the propagated camera `GlobalTransform` (#848); moved from PostUpdate (#3652) for the same pose-staleness reason |
+| `Late` | `footstep_system` | exclusive + declared | Fires stride-crossing footsteps from each emitter's propagated `GlobalTransform` (#848); since #5146 the character-mode emitter rides the player body, while the FlyCam camera emitter keeps the original mover role; moved from PostUpdate (#3652) for the same pose-staleness reason |
 | `Late` | ragdoll + submersion + water damage/reconciliation/interaction/audio | exclusive | Applies final physics pose and bridges water contacts into gameplay/presentation events |
 | `Late` | `reverb_zone_system` | declared | Cell-acoustics → audio reverb send (M44 Phase 6) |
 | `Late` | `audio_system` | exclusive | Listener pose / emitter update (M44) |
