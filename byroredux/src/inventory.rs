@@ -3538,10 +3538,12 @@ mod tests {
         let values = world
             .get::<ActorValues>(player)
             .expect("the player body must carry its derived actor values");
+        // #5238 — the sourced NPC curve with no authored Base Health:
+        // 0 + 5·(END 5−1) + 5·(L 1−1) = 20 (was the player curve's 200).
         assert_eq!(
             values.current(index.health_actor_value_key().unwrap()),
-            200.0,
-            "95 + 20·5 + 5·1"
+            20.0,
+            "0 + 5·(END 5−1) + 5·(L 1−1)"
         );
         // #4984 — release before the ActorVitals read: production takes
         // `ActorVitals → ActorValues` (`commit_actor_value_deaths`).

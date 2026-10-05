@@ -139,9 +139,11 @@ fn fnv_spawned_actor_gets_derived_health_and_combat_consumes_it() {
     let target = world.spawn();
     stamp_actor_values(&mut world, target, &ResolvedNpc::resolve(&npc, &index), &index);
     assert_eq!(world.get::<ActorVitals>(target).unwrap().health, health);
+    // #5238 — the sourced NPC curve with no authored Base Health:
+    // 0 + 5·(END 5−1) + 5·(L 1−1) = 20 (was the player curve's 200).
     assert_eq!(
         world.get::<ActorValues>(target).unwrap().current(health),
-        200.0
+        20.0
     );
 
     let aggressor = world.spawn();
@@ -172,7 +174,8 @@ fn fnv_spawned_actor_gets_derived_health_and_combat_consumes_it() {
     crate::combat::combat_damage_system(&world, 0.0);
     assert_eq!(
         world.get::<ActorValues>(target).unwrap().current(health),
-        182.0
+        2.0,
+        "20 derived Health − 18 damage (was 182 under the player curve)"
     );
 }
 
