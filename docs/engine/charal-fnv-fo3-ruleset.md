@@ -91,13 +91,13 @@ base + tag it's the **complete player skill model** for FO3/FNV.
 | Stat | Gov | FO3 formula | FNV formula | Status |
 |---|---|---|---|---|
 | Health (NPC) | END + level | `base + 5·(END−1) + 5·(Level−1)` | same | **BUILT** (#5238 — authored `fAVDNPCHealth{Endurance,Level}Mult` = 5/5 + exe-default `fAVDNPCHealthEnduranceOffset` = −1 per term; 15/15 vanilla infobox pin) |
-| Action Points | AGI | `65 + 2·AGI` (cap 85) | `65 + 3·AGI` (cap 95) | **BUILT** (formula sourced; NPC scope unsourced, #2937; code conservatively treats it player-only) |
+| Action Points | AGI | `65 + 2·AGI` (cap 85) | `65 + 3·AGI` (cap 95) | **BUILT** (formula sourced; the GECK *Stats Tab — NPC* "Reported Stats" list has **no AP entry** (#5240), corroborating #2937's conservative player-only choice) |
 | Carry Weight | STR | `150 + 10·STR` | `150 + 10·STR` | **BUILT** (actor-general) |
-| Critical Chance | Luck | `Luck × 1%` (cap 10%) | `Luck × 1%` (Luck>10 inert) | **BUILT** (formula LOCKED, `critchance` AV; **scope unsourced** — no capture line states whether NPCs derive it, code explicitly ships ActorGeneral pending a per-stat citation, #4450 / pinned by `fo3_fnv_crit_melee_unarmed_scopes_are_actor_general_pending_a_source`) |
-| Melee Damage | STR | `STR × 0.5` | `STR × 0.5` | **BUILT** (formula LOCKED, additive bonus; **scope unsourced** — explicit ActorGeneral choice pending a citation, #4450, same pin) |
-| Unarmed Damage | **Unarmed skill** | `ceil((10 + Unarmed)/20)` | same | **BUILT** (formula LOCKED, skill-governed; **scope unsourced** — explicit ActorGeneral choice pending a citation, #4450, same pin) |
-| Radiation Resistance | END | `(END−1)·2` (cap 85%) | `(END−1)·2` (cap 85%) | **BUILT** (actor-general, `RadResist` AV) |
-| Poison Resistance | END | `(END−1)·5` (uncapped) | `(END−1)·5` (uncapped) | **BUILT** (actor-general, hidden, `PoisonResist` AV) |
+| Critical Chance | Luck | `Luck × 1%` (cap 10%) | `Luck × 1%` (Luck>10 inert) | **BUILT** (formula LOCKED, `critchance` AV; **scope SOURCED actor-general** — GECK *Stats Tab — NPC*: "Generally the same as the NPC's luck" (#5240); pinned by `fo3_fnv_geck_npc_page_scopes_the_shared_derived_rows`) |
+| Melee Damage | STR | `STR × 0.5` | `STR × 0.5` | **BUILT, scope CONFLICTED** (#5240) — the GECK *Stats Tab — NPC* page says "**Melee Damage: Not used.**" for NPCs, but whether that means the AV never enters NPC attack math (→ player-only) or only that the dialog field is inert is unadjudicated; code keeps the actor-general `0.5·STR` bonus (`melee_damage_charal_bonus`) until xNVSE `ActorValueOwner` usage or an in-game NPC melee measurement settles it. Pinned by `fo3_fnv_geck_npc_page_scopes_the_shared_derived_rows` |
+| Unarmed Damage | **Unarmed skill** | `ceil((10 + Unarmed)/20)` | same | **BUILT** (formula LOCKED, skill-governed; **scope SOURCED actor-general** — GECK *Stats Tab — NPC*: "Calculated from the Unarmed skill" (#5240); same pin) |
+| Radiation Resistance | END | `(END−1)·2` (cap 85%) | `(END−1)·2` (cap 85%) | **BUILT** (actor-general, `RadResist` AV; GECK *Stats Tab — NPC*: "Derived from the NPC's Endurance" — #5240) |
+| Poison Resistance | END | `(END−1)·5` (uncapped) | `(END−1)·5` (uncapped) | **BUILT** (actor-general, hidden, `PoisonResist` AV; GECK *Stats Tab — NPC*: "Derived from the NPC's Endurance" — #5240) |
 | Pickpocket chance | **Sneak skill** | `floor(40+0.6·Sneak−ceil(V/2)−0.6·TargetSneak)`, clamped [5,85]% | same (FNV shares FO3's engine) | **LOCKED** (§below, gameplay input) |
 
 Body-condition AVs (7) — base **100**, GECK *Stats List*. FO3/FNV seed the seven
@@ -405,7 +405,11 @@ Action Points: `65 + 2·AGI` (FO3, cap 85) / `65 + 3·AGI` (FNV, cap 95) — sam
 Points*.
 >
 > **#2937 — NPC scope not sourced here.** This page confirms the FO3/FNV *formula*
-> only. Unlike Carry Weight above ("actor-general (NPCs/companions too)"), nothing
+> only. (#5240 update: the GECK *Stats Tab — NPC* "Reported Stats" list — which
+> covers crit, unarmed and both resists as NPC-derived — has **no Action Points
+> entry at all**, consistent with the conservative `player_only` choice below;
+> absence of evidence is still not a scope citation, so the row stays
+> conservative pending an engine-side check.) Unlike Carry Weight above ("actor-general (NPCs/companions too)"), nothing
 > cited for Action Points states whether FO3/FNV NPCs derive AP the same way the
 > player does, derive it differently, or ship a baked value (the way FO4 NPCs read
 > `DNAM`, which *is* sourced — but that evidence is FO4-specific). `fallout.rs`

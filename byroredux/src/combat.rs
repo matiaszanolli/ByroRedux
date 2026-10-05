@@ -445,7 +445,12 @@ pub(crate) fn attack_damage(world: &World, aggressor: EntityId) -> f32 {
 /// CHARAL-derived additive Melee Damage bonus on top of a weapon's own
 /// authored damage (#3092) — FO3/FNV `STR × 0.5`, per
 /// `docs/engine/charal-fnv-fo3-ruleset.md`'s "an **additive** bonus to Melee
-/// Weapon damage" (matching how `resolve_inherited_stats`/similar CHARAL
+/// Weapon damage". #5240 — the GECK *Stats Tab — NPC* page says
+/// "Melee Damage: Not used." for NPCs; if an in-engine check confirms the AV
+/// never enters NPC attack math, this bonus and the row's `ActorGeneral`
+/// scope both narrow to the player (today the bonus reaches every aggressor
+/// with the row, including `npc_combat_ai_system`'s) — until then the
+/// status quo stands, per the capture's CONFLICTED row. (matching how `resolve_inherited_stats`/similar CHARAL
 /// consumers degrade: a missing piece means zero contribution, never a
 /// panic). `0.0` — not an error — whenever any link in the chain is
 /// unavailable: no [`MeleeDamageConfig`] (the loaded game authors no

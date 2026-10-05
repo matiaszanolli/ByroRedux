@@ -19,10 +19,15 @@
 //! document locks the FO3/FNV AP *formula* but never states its scope, and
 //! FO4's "NPCs ship baked values" evidence is FO4-specific. See
 //! [`fallout3_ruleset`]'s AP row for the reasoning. Critical Chance / Melee
-//! Damage / Unarmed Damage are likewise an explicit, UNsourced `ActorGeneral`
-//! choice (#4450) — the capture states no scope for them either, and the
-//! choice is pinned by
-//! `fo3_fnv_crit_melee_unarmed_scopes_are_actor_general_pending_a_source`.
+//! Damage / Unarmed Damage were likewise an explicit, UNsourced `ActorGeneral`
+//! choice (#4450) — since #5240, the GECK *Stats Tab — NPC* "Reported Stats"
+//! page SOURCES crit ("Generally the same as the NPC's luck") and unarmed
+//! ("Calculated from the Unarmed skill") as actor-general, is silent on AP
+//! (corroborating #2937's conservative `player_only`), and says
+//! "**Melee Damage: Not used.**" for NPCs — a conflict the code resolves
+//! conservatively toward the status quo (actor-general) until an in-engine
+//! check adjudicates it. All of it is pinned by
+//! `fo3_fnv_geck_npc_page_scopes_the_shared_derived_rows`.
 //!
 //! FO3/FNV attach both the [`AttributeSet::FALLOUT`] SPECIAL roster and their
 //! distinct [`SkillSet::FALLOUT3`] / [`SkillSet::FALLOUT_NV`] skill roster +
@@ -321,23 +326,27 @@ mod tests {
         );
     }
 
-    /// #4450 — the mirror of the #2937 AP decision, pinned the same way:
-    /// Critical Chance / Melee Damage / Unarmed Damage ship `ActorGeneral`
-    /// as an explicit choice with NO capture line stating their scope (the
-    /// capture's derived table annotates Health / Carry Weight / Rad /
-    /// Poison / AP, and is silent on these three). Pin the chosen behavior
-    /// so a silent flip — in either direction — is a deliberate, reviewed
-    /// change accompanied by a per-stat citation in
-    /// `charal-fnv-fo3-ruleset.md`.
+    /// #4450 → #5240 — the shared derived rows' scopes, now cited per stat
+    /// from the GECK *Stats Tab — NPC* "Reported Stats" page: crit
+    /// ("Generally the same as the NPC's luck") and unarmed ("Calculated
+    /// from the Unarmed skill") are SOURCED `ActorGeneral`; Melee Damage's
+    /// "**Not used.**" line is an unadjudicated conflict — one reading makes
+    /// the AV player-only, the other takes it as the dialog field being
+    /// inert — so the code keeps `ActorGeneral` until an xNVSE
+    /// `ActorValueOwner` check or an in-game NPC melee measurement settles
+    /// it. Pin the chosen behavior so a silent flip — in either direction —
+    /// is a deliberate, reviewed change accompanied by a per-stat citation
+    /// in `charal-fnv-fo3-ruleset.md`.
     #[test]
-    fn fo3_fnv_crit_melee_unarmed_scopes_are_actor_general_pending_a_source() {
+    fn fo3_fnv_geck_npc_page_scopes_the_shared_derived_rows() {
         for rs in [fallout3_ruleset(full), falloutnv_ruleset(full)] {
             for out in [0x2D2, 0x2D3, 0x2D4] {
                 assert_eq!(
                     rs.derived_formula(out).unwrap().scope,
                     DerivedScope::ActorGeneral,
-                    "{out:#06X}'s ActorGeneral scope is an explicit unsourced choice \
-                     (#4450), not a captured fact; flipping it needs a citation"
+                    "{out:#06X}'s ActorGeneral scope is cited for crit/unarmed (#5240) \
+                     and deliberately retained under an unadjudicated conflict for \
+                     melee damage; flipping any of them is a reviewed edit"
                 );
             }
         }
