@@ -94,8 +94,8 @@ through live collision/streaming, and returns grounded to the interior. The
 smoke's bounded holds resolve through live bindings, its look fixture writes
 the normal mouse-look accumulator, and no camera/body teleport participates in
 the route. Door transitions now honor an explicit `--radius`, allowing the gate
-to retain a radius-1 exterior ring. Gamepad physical sources remain open, so P1
-as a whole is not closed yet.
+to retain a radius-1 exterior ring. Gamepad physical sources remain open; they
+are a follow-on, not a P1 blocker (the slice as a whole closed 2026-10-01).
 
 #### Live-environment recheck (2026-09-16)
 
