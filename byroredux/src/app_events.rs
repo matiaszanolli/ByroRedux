@@ -251,12 +251,21 @@ impl ApplicationHandler for App {
                 // Driver monitoring is optional; missing NVML, unsupported
                 // vendors, or ambiguous device matches leave its metrics n/a.
                 let selected_gpu = unsafe {
+                    // SAFETY: `ctx.instance` is live and `ctx.physical_device`
+                    // was enumerated from it; the query writes only into the
+                    // returned properties struct (the same call the device
+                    // picker makes in `vulkan/device.rs`).
                     ctx.instance
                         .get_physical_device_properties(ctx.physical_device)
                 };
-                let selected_gpu_name =
-                    unsafe { std::ffi::CStr::from_ptr(selected_gpu.device_name.as_ptr()) }
-                        .to_string_lossy();
+                // `device_name_as_c_str` reads the spec-guaranteed
+                // NUL-terminated `char[VK_MAX_PHYSICAL_DEVICE_NAME_SIZE]`
+                // without a raw-pointer cast; the err arm is unreachable for
+                // a conforming driver and degrades to an empty name.
+                let selected_gpu_name = selected_gpu
+                    .device_name_as_c_str()
+                    .unwrap_or_default()
+                    .to_string_lossy();
                 self.world
                     .resource::<crate::systems::MetricsState>()
                     .configure_nvidia_monitor(selected_gpu.vendor_id, &selected_gpu_name);
@@ -957,6 +966,19 @@ impl ApplicationHandler for App {
         let systems_t0 = Instant::now();
         if !simulation_paused {
             self.scheduler.run(&self.world, dt);
+        } else {
+            // #5141 — the native pause menu used to gate the whole
+            // scheduler, taking the debug-server drain with it: commands
+            // queued while a Pause/Settings/Inventory page was open sat in
+            // the queue, answered "timeout waiting for engine response",
+            // then every retried one fired in a burst the moment the menu
+            // closed. Keep exactly the drain alive while the simulation is
+            // frozen — inspecting (and mutating) the world through the
+            // debugger is the most natural thing to do while paused. The
+            // dialogue page already opted out of `simulation_paused` for
+            // the same reason (766e1746e).
+            self.scheduler
+                .run_exclusive_named(&self.world, dt, "debug_drain_system");
         }
         let atw_scheduler_ns = systems_t0.elapsed().as_nanos() as u64;
         if self.bench_frames_target.is_some() && self.renderer.is_some() {
