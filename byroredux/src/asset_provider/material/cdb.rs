@@ -109,19 +109,46 @@ fn cdb_material_index(source: &str, inner: &str) -> Option<Arc<MaterialIndex>> {
         return cached.clone();
     }
     let built = (|| {
-        let archive = Archive::open(source).ok()?;
-        let bytes = archive.extract(inner).ok()?;
+        // #5319 (PAR-D2-2026-10-05-01) — this was the raw `.ok()?` shape
+        // #4658 removed from the providers: open/extract failures hit
+        // neither warn arm, so a CDB whose archive could not be
+        // re-opened (or whose entry failed to re-extract) memoized None
+        // for the process with no log line — indistinguishable from
+        // "this material is not in any CDB". Match, warn with the
+        // source/path/error, then memoize.
+        let archive = match Archive::open(source) {
+            Ok(archive) => archive,
+            Err(e) => {
+                log::warn!(
+                    "Starfield CDB '{inner}' in '{source}': archive open \
+                     failed ({e}) — .mat lookups fall back to PBR routing only"
+                );
+                return None;
+            }
+        };
+        let bytes = match archive.extract(inner) {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                log::warn!(
+                    "Starfield CDB '{inner}' in '{source}': extract \
+                     failed ({e}) — .mat lookups fall back to PBR routing only"
+                );
+                return None;
+            }
+        };
         match MaterialIndex::build(&bytes) {
             Ok(index) => {
                 log::info!(
-                    "Starfield CDB '{inner}' in '{source}': material index built                      ({} keyed objects)",
+                    "Starfield CDB '{inner}' in '{source}': material index built \
+                     ({} keyed objects)",
                     index.material_count()
                 );
                 Some(Arc::new(index))
             }
             Err(e) => {
                 log::warn!(
-                    "Starfield CDB '{inner}' in '{source}': material index build                      failed ({e}) — .mat lookups fall back to PBR routing only"
+                    "Starfield CDB '{inner}' in '{source}': material index build \
+                     failed ({e}) — .mat lookups fall back to PBR routing only"
                 );
                 None
             }
@@ -360,4 +387,55 @@ pub(super) fn apply_cdb_pbr_fallback(material: &mut ImportedMaterial, path: &str
         }
     }
     MergeOutcome::PresenceOnly
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// #5319 (PAR-D2-2026-10-05-01) — the lazy build's open/extract arms
+    /// used to be raw `.ok()?` (the shape #4658 removed elsewhere): a CDB
+    /// whose archive cannot be re-opened memoized `None` for the process
+    /// with NO log line, indistinguishable from "not in any CDB". The
+    /// arms now warn (source, path, error) before memoizing; this test
+    /// pins the memoized-failure contract those arms feed — a failed
+    /// open resolves to None, is memoized under the source|inner key,
+    /// and stays None on the cached second call. (Log emission itself is
+    /// not assertable here without hijacking the process-global logger.)
+    #[test]
+    fn unfetchable_cdb_resolves_none_and_memoizes_the_failure() {
+        let source = "byroredux-cdb-test:definitely-not-on-disk.ba2";
+        let inner = "materials\\materialsbeta.cdb";
+        let key = format!("{source}|{inner}");
+
+        // Whatever a parallel test left behind — start from a clean slot.
+        sf_cdb_index_cache()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&key);
+
+        assert!(
+            cdb_material_index(source, inner).is_none(),
+            "an archive that cannot be opened must resolve to None"
+        );
+        let cached = sf_cdb_index_cache()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&key)
+            .cloned();
+        assert!(
+            matches!(cached, Some(None)),
+            "the failed build must be memoized as None, got {cached:?}"
+        );
+        assert!(
+            cdb_material_index(source, inner).is_none(),
+            "the memoized failure must answer the second lookup"
+        );
+
+        // Leave no stale slot for parallel tests to trip over.
+        sf_cdb_index_cache()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&key);
+    }
 }
