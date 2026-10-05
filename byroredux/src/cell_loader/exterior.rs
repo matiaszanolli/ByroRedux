@@ -1417,21 +1417,51 @@ fn log_foreground_readiness(worldspace: &str, readiness: &ExteriorForegroundRead
     );
 }
 
+/// Pick the exterior worldspace key. Priority (D4-1 / #1655, #2340):
+///   1. Caller-supplied `--wrld <name>` (case-insensitive EDID match).
+///   2. Worldspace(s) that contain the requested grid coord. A unique
+///      match wins; ambiguous matches use the preferred game-default list,
+///      then stable most-cells/name ordering.
+///   3. When no worldspace contains the grid, the preferred game-default
+///      list: WastelandNV (FNV), Wasteland (FO3 Capital Wasteland), Tamriel
+///      (Oblivion), Skyrim (Skyrim).
+///   4. Worldspace with the most cells (ultimate fallback).
+///
+/// Pre-fix the Wasteland EDID was missing, so `--esm Fallout3.esm
+/// --grid 0,0` landed on the max-cells fallback and silently picked
+/// the wrong worldspace when any DLC master added its own. See #444.
+/// #5226 — an override that matches nothing is a CLI typo, not a hint to
+/// run the heuristic: it errors naming the requested EDID and the loaded
+/// set, instead of silently loading a different worldspace's cell (a
+/// `MegatonWrld` typo on FO3 used to land on Wasteland's copy of the same
+/// coordinate).
 fn select_worldspace_key<T>(
     exterior_cells: &std::collections::HashMap<String, std::collections::HashMap<(i32, i32), T>>,
     center_x: i32,
     center_y: i32,
     radius: i32,
     wrld_override: Option<&str>,
-) -> Option<String> {
-    if let Some(name) = wrld_override.and_then(|requested| {
-        exterior_cells
+) -> anyhow::Result<String> {
+    if let Some(requested) = wrld_override {
+        if let Some(name) = exterior_cells
             .keys()
             .find(|candidate| candidate.eq_ignore_ascii_case(requested))
             .cloned()
-    }) {
-        log::info!("Using worldspace '{name}' (from --wrld override)");
-        return Some(name);
+        {
+            log::info!("Using worldspace '{name}' (from --wrld override)");
+            return Ok(name);
+        }
+        let mut available: Vec<&str> = exterior_cells.keys().map(String::as_str).collect();
+        available.sort_unstable();
+        anyhow::bail!(
+            "--wrld '{}' matches no loaded worldspace (available: {})",
+            requested,
+            if available.is_empty() {
+                "none".to_string()
+            } else {
+                available.join(", ")
+            },
+        );
     }
 
     let min_x = center_x.saturating_sub(radius);
@@ -1475,10 +1505,10 @@ fn select_worldspace_key<T>(
             .find(|(candidate, _)| candidate.eq_ignore_ascii_case(preferred))
             .map(|(candidate, _)| (*candidate).clone())
     }) {
-        return Some(name);
+        return Ok(name);
     }
     if let Some((name, _)) = containing.first() {
-        return Some((*name).clone());
+        return Ok((*name).clone());
     }
 
     if let Some(name) = PREFERRED_WORLDSPACES.iter().find_map(|preferred| {
@@ -1487,7 +1517,7 @@ fn select_worldspace_key<T>(
             .find(|candidate| candidate.eq_ignore_ascii_case(preferred))
             .cloned()
     }) {
-        return Some(name);
+        return Ok(name);
     }
 
     let mut by_size: Vec<_> = exterior_cells.iter().collect();
@@ -1497,7 +1527,10 @@ fn select_worldspace_key<T>(
             .cmp(&cells_a.len())
             .then_with(|| name_a.cmp(name_b))
     });
-    by_size.first().map(|(name, _)| (*name).clone())
+    by_size
+        .first()
+        .map(|(name, _)| (*name).clone())
+        .ok_or_else(|| anyhow::anyhow!("No worldspace found in plugin set"))
 }
 
 #[cfg(test)]
@@ -1507,6 +1540,56 @@ mod worldspace_selection_tests {
 
     fn cells(coords: &[(i32, i32)]) -> HashMap<(i32, i32), ()> {
         coords.iter().copied().map(|coord| (coord, ())).collect()
+    }
+
+    /// #5226 — MegatonWorld and Wasteland both contain (-1,-7): the
+    /// explicit override picks MegatonWorld (case-insensitively), where
+    /// the no-override heuristic would have to break the tie itself.
+    #[test]
+    fn a_matching_wrld_override_wins_over_the_grid_chain() {
+        let worldspaces = HashMap::from([
+            ("MegatonWorld".to_string(), cells(&[(-1, -7)])),
+            ("Wasteland".to_string(), cells(&[(-1, -7)])),
+        ]);
+        assert_eq!(
+            select_worldspace_key(&worldspaces, -1, -7, 0, Some("megatonworld"))
+                .expect("the override matches")
+                .as_str(),
+            "MegatonWorld"
+        );
+    }
+
+    /// #5226 — an unmatched override is a CLI typo, not a hint to run the
+    /// grid heuristic: it errors naming the requested EDID and the loaded
+    /// set. Pre-fix `--wrld MegatonWrld --grid -1,-7` silently loaded
+    /// Wasteland's cell at the same coordinate.
+    #[test]
+    fn an_unmatched_wrld_override_errors_naming_the_loaded_set() {
+        let worldspaces = HashMap::from([
+            ("MegatonWorld".to_string(), cells(&[(-1, -7)])),
+            ("Wasteland".to_string(), cells(&[(-1, -7)])),
+        ]);
+        let err = select_worldspace_key(&worldspaces, -1, -7, 0, Some("MegatonWrld"))
+            .expect_err("a typo must not fall through to the grid heuristic");
+        let message = format!("{err:#}");
+        assert!(message.contains("MegatonWrld"), "{message}");
+        assert!(
+            message.contains("MegatonWorld") && message.contains("Wasteland"),
+            "the available EDIDs must be listed: {message}"
+        );
+    }
+
+    /// The no-override path keeps its own error when the plugin set
+    /// carries no exterior worldspaces at all.
+    #[test]
+    fn no_worldspaces_without_an_override_still_errors() {
+        let worldspaces: HashMap<String, HashMap<(i32, i32), ()>> = HashMap::new();
+        let err = select_worldspace_key(&worldspaces, 0, 0, 0, None)
+            .expect_err("no worldspace is an error");
+        assert!(
+            format!("{err:#}").contains("No worldspace found"),
+            "{err:#}"
+        );
     }
 
     #[test]
@@ -1526,8 +1609,10 @@ mod worldspace_selection_tests {
                 }
 
                 assert_eq!(
-                    select_worldspace_key(&worldspaces, 0, 0, 0, None).as_deref(),
-                    Some(preferred)
+                    select_worldspace_key(&worldspaces, 0, 0, 0, None)
+                        .expect("a worldspace matches the grid")
+                        .as_str(),
+                    preferred
                 );
             }
         }
@@ -1541,8 +1626,10 @@ mod worldspace_selection_tests {
         ]);
 
         assert_eq!(
-            select_worldspace_key(&worldspaces, 20, 20, 0, None).as_deref(),
-            Some("anchorage")
+            select_worldspace_key(&worldspaces, 20, 20, 0, None)
+                .expect("a worldspace matches the grid")
+                .as_str(),
+            "anchorage"
         );
     }
 
@@ -1554,8 +1641,10 @@ mod worldspace_selection_tests {
         ]);
 
         assert_eq!(
-            select_worldspace_key(&worldspaces, 0, 0, 0, None).as_deref(),
-            Some("largeworld")
+            select_worldspace_key(&worldspaces, 0, 0, 0, None)
+                .expect("a worldspace matches the grid")
+                .as_str(),
+            "largeworld"
         );
     }
 
@@ -1633,26 +1722,16 @@ pub fn build_exterior_world_context(
     let (record_index, load_order) = parse_record_indexes_in_load_order(&plugin_paths)?;
     let index = &record_index.cells;
 
-    // Find the best worldspace. Priority (D4-1 / #1655, #2340):
-    //   1. Caller-supplied `--wrld <name>` (case-insensitive EDID match).
-    //   2. Worldspace(s) that contain the requested grid coord. A unique
-    //      match wins; ambiguous matches use the preferred game-default list,
-    //      then stable most-cells/name ordering.
-    //   3. When no worldspace contains the grid, the preferred game-default
-    //      list: WastelandNV (FNV), Wasteland (FO3 Capital Wasteland), Tamriel
-    //      (Oblivion), Skyrim (Skyrim).
-    //   4. Worldspace with the most cells (ultimate fallback).
-    // Pre-fix the Wasteland EDID was missing, so `--esm Fallout3.esm
-    // --grid 0,0` landed on the max-cells fallback and silently picked
-    // the wrong worldspace when any DLC master added its own. See #444.
+    // Best worldspace per `select_worldspace_key`'s documented priority:
+    // `--wrld` override (an unmatched one is an error, #5226), then
+    // grid-containment → game defaults → most cells (#444).
     let worldspace_key = select_worldspace_key(
         &index.exterior_cells,
         center_x,
         center_y,
         radius,
         wrld_override,
-    )
-    .ok_or_else(|| anyhow::anyhow!("No worldspace found in plugin set"))?;
+    )?;
 
     log::info!(
         "Exterior world context built: worldspace '{}' (target ({},{}) ±{})",
