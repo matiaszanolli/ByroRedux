@@ -9,7 +9,7 @@
 //! Adding more fields later is straightforward; the parsers walk sub-records
 //! by 4-char code and ignore anything they don't recognize.
 
-use super::common::{remap_fid, CommonItemFields};
+use super::common::{remap_efid, remap_fid, CommonItemFields};
 use crate::esm::reader::{FormIdRemap, GameKind, SubRecord};
 use crate::esm::sub_reader::SubReader;
 
@@ -920,7 +920,12 @@ pub fn parse_keym(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
     }
 }
 
-pub fn parse_alch(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>) -> ItemRecord {
+pub fn parse_alch(
+    form_id: u32,
+    subs: &[SubRecord],
+    game: GameKind,
+    remap: &Option<FormIdRemap>,
+) -> ItemRecord {
     let mut common = CommonItemFields::from_subs_with_remap(subs, remap);
     let mut magic_effects = Vec::new();
     let mut addiction_chance = 0.0f32;
@@ -940,8 +945,14 @@ pub fn parse_alch(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
                 addiction_chance = r.f32_or_default();
             }
             b"EFID" => {
-                // #3714 SIBLING — embedded MGEF FormID.
-                magic_effects.push(remap_fid(SubReader::new(&sub.data).u32_or_default(), remap));
+                // #3714 SIBLING — embedded MGEF FormID. #5076 — Oblivion's
+                // is a 4-char effect code, not a FormID, and skips the
+                // remap (`remap_efid` carries the rule).
+                magic_effects.push(remap_efid(
+                    SubReader::new(&sub.data).u32_or_default(),
+                    game,
+                    remap,
+                ));
             }
             _ => {}
         }
@@ -968,7 +979,7 @@ pub fn parse_alch_for_game(
     game: GameKind,
     remap: &Option<FormIdRemap>,
 ) -> ItemRecord {
-    let mut item = parse_alch(form_id, subs, remap);
+    let mut item = parse_alch(form_id, subs, game, remap);
     let authored = consumable::parse_effects(subs, game, remap);
     let immediate = authored
         .as_ref()
@@ -1040,13 +1051,23 @@ pub fn parse_alch_for_game(
     item
 }
 
-pub fn parse_ingr(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>) -> ItemRecord {
+pub fn parse_ingr(
+    form_id: u32,
+    subs: &[SubRecord],
+    game: GameKind,
+    remap: &Option<FormIdRemap>,
+) -> ItemRecord {
     let common = CommonItemFields::from_subs_with_remap(subs, remap);
     let mut magic_effects = Vec::new();
     for sub in subs {
         if &sub.sub_type == b"EFID" {
-            // #3714 SIBLING — embedded MGEF FormID.
-            magic_effects.push(remap_fid(SubReader::new(&sub.data).u32_or_default(), remap));
+            // #3714 SIBLING — embedded MGEF FormID. #5076 — Oblivion's is
+            // a 4-char effect code, not a FormID, and skips the remap.
+            magic_effects.push(remap_efid(
+                SubReader::new(&sub.data).u32_or_default(),
+                game,
+                remap,
+            ));
         }
     }
     ItemRecord {
@@ -1444,6 +1465,44 @@ mod tests {
             };
             assert!(magic_effects.is_empty());
         }
+    }
+
+    /// #5076 — the ALCH/INGR EFID arms route through the same game gate
+    /// as the SPEL/ENCH accumulator: Oblivion's 4-char effect code skips
+    /// the remap even with masters (its ASCII high byte would read as an
+    /// out-of-range mod index), while every other game's FormID EFID
+    /// keeps the `parse_spel_efid_is_remapped` contract.
+    #[test]
+    fn oblivion_alch_and_ingr_efid_codes_skip_the_remap() {
+        let remap = Some(FormIdRemap::regular(2, vec![0]));
+        let code = u32::from_le_bytes(*b"FIDG");
+
+        let alch = parse_alch(0x1, &[sub(b"EFID", b"FIDG")], GameKind::Oblivion, &remap);
+        let ItemKind::Aid { magic_effects, .. } = alch.kind else {
+            panic!("ALCH is an Aid")
+        };
+        assert_eq!(magic_effects, vec![code], "the code is verbatim, not a FormID");
+
+        let ingr = parse_ingr(0x2, &[sub(b"EFID", b"FIDG")], GameKind::Oblivion, &remap);
+        let ItemKind::Ingredient { magic_effects } = ingr.kind else {
+            panic!("INGR is an Ingredient")
+        };
+        assert_eq!(magic_effects, vec![code], "the code is verbatim, not a FormID");
+
+        // The gate is per game, not global: a self-referencing FormID
+        // EFID remaps onto the plugin's own global slot on Skyrim and
+        // stays verbatim on Oblivion.
+        let self_ref = 0x0100_7777u32.to_le_bytes();
+        let alch = parse_alch(0x3, &[sub(b"EFID", &self_ref)], GameKind::Skyrim, &remap);
+        let ItemKind::Aid { magic_effects, .. } = alch.kind else {
+            panic!("ALCH is an Aid")
+        };
+        assert_eq!(magic_effects, vec![0x0200_7777]);
+        let alch = parse_alch(0x4, &[sub(b"EFID", &self_ref)], GameKind::Oblivion, &remap);
+        let ItemKind::Aid { magic_effects, .. } = alch.kind else {
+            panic!("ALCH is an Aid")
+        };
+        assert_eq!(magic_effects, vec![0x0100_7777]);
     }
 
     fn build_data_weap(value: u32, weight: f32, damage: u16, clip: u8) -> Vec<u8> {

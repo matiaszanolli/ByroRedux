@@ -66,7 +66,7 @@ pub(super) fn dispatch_item_group(
                 .insert(fid, parse_alch_for_game(fid, subs, game, &remap));
         })?,
         b"INGR" => extract_records_with_modl(reader, end, b"INGR", statics, &mut |fid, subs| {
-            index.items.insert(fid, parse_ingr(fid, subs, &remap));
+            index.items.insert(fid, parse_ingr(fid, subs, game, &remap));
         })?,
         b"BOOK" => extract_records_with_modl(reader, end, b"BOOK", statics, &mut |fid, subs| {
             index.items.insert(fid, parse_book(fid, subs, game, &remap));

@@ -5,7 +5,7 @@
 //! that show up in every record: null-terminated strings, full-name lookups,
 //! model paths, primitive reads at known offsets.
 
-use crate::esm::reader::{FormIdRemap, SubRecord};
+use crate::esm::reader::{FormIdRemap, GameKind, SubRecord};
 use crate::esm::strings_table::StringTableSet;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -233,6 +233,39 @@ pub fn remap_fid(raw: u32, remap: &Option<FormIdRemap>) -> u32 {
         return 0;
     }
     remap.as_ref().map_or(raw, |r| r.remap(raw))
+}
+
+/// `remap_fid` for xEdit fields typed `wbFormIDCk(…, [TYPE, FFFF])`: the
+/// `FFFF` is the authored "none" sentinel, and vanilla authors it heavily
+/// (45% of FO4's TRDA emotion rows). Its mod-index byte is 255, so on any
+/// multi-master load it lands in `FormIdRemap::remap`'s out-of-range warn
+/// arm — one false warning per row, burying the genuinely-malformed case
+/// that arm exists to catch. The sentinel (like 0) bypasses the remap and
+/// round-trips unchanged; every other value remaps. #4172 fixed the MGEF
+/// `associated_item` site inline; #5075 made this the shared form so the
+/// family stops growing copies.
+pub fn remap_fid_or_sentinel(raw: u32, remap: &Option<FormIdRemap>) -> u32 {
+    if raw == 0 || raw == 0xFFFF_FFFF {
+        return raw;
+    }
+    remap.as_ref().map_or(raw, |r| r.remap(raw))
+}
+
+/// `remap_fid` for the `EFID` effect chain opener, which is a FormID-shaped
+/// MGEF cross-reference on every game except Oblivion — there it is
+/// `wbInteger('Magic Effect Name', itU32, wbChar4)` (xEdit
+/// `wbDefinitionsTES4.pas:1499`), a 4-char effect code like `b"FIDG"`
+/// resolved through `EsmIndex::magic_effects_by_code`, not a FormID.
+/// Remapping it reads its ASCII high byte (0x41–0x5A) as a mod index:
+/// always out of range, so one false warn per effect on every Oblivion
+/// DLC/mod — 717 across the vanilla set — and, with ≥65 masters, a silent
+/// rewrite into a real slot's FormID space. #5076 — gated here so every
+/// EFID decode site inherits the rule instead of re-deriving it.
+pub fn remap_efid(raw: u32, game: GameKind, remap: &Option<FormIdRemap>) -> u32 {
+    if game == GameKind::Oblivion {
+        return raw;
+    }
+    remap_fid(raw, remap)
 }
 
 pub fn find_sub<'a>(subs: &'a [SubRecord], code: &[u8; 4]) -> Option<&'a [u8]> {

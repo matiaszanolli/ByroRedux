@@ -1,6 +1,8 @@
 //! `DIAL` / `INFO` / `MESG` dialogue and message records.
 
-use super::super::common::{read_lstring_or_zstring, read_zstring, remap_fid, CommonNamedFields};
+use super::super::common::{
+    read_lstring_or_zstring, read_zstring, remap_fid, remap_fid_or_sentinel, CommonNamedFields,
+};
 use super::super::condition::{push_ctda, ComparisonOp, ConditionList, ConditionValue, RunOn};
 use super::super::script_instance::{
     parse_info_fragments, InfoScriptFragment, ScriptInstanceData,
@@ -507,15 +509,23 @@ pub fn parse_info(
                 let mut segment = ResponseSegment::default();
                 match sub.data.len() {
                     len if len >= 20 => {
-                        segment.emotion_keyword =
-                            remap_fid(SubReader::new(&sub.data[0..4]).u32_or_default(), remap);
+                        // #5075 — the emotion KYWD is xEdit
+                        // `wbFormIDCk('Emotion', [KYWD, FFFF])`; the none
+                        // sentinel (45% of vanilla FO4's rows) must
+                        // bypass the remap, not warn out-of-range.
+                        segment.emotion_keyword = remap_fid_or_sentinel(
+                            SubReader::new(&sub.data[0..4]).u32_or_default(),
+                            remap,
+                        );
                         segment.response_number = sub.data[4];
                         segment.sound_form_id =
                             remap_fid(SubReader::new(&sub.data[5..9]).u32_or_default(), remap);
                     }
                     len if len >= 12 => {
-                        segment.emotion_keyword =
-                            remap_fid(SubReader::new(&sub.data[0..4]).u32_or_default(), remap);
+                        segment.emotion_keyword = remap_fid_or_sentinel(
+                            SubReader::new(&sub.data[0..4]).u32_or_default(),
+                            remap,
+                        );
                         segment.wem_file = SubReader::new(&sub.data[4..8]).u32_or_default();
                     }
                     _ => {}
@@ -1370,6 +1380,32 @@ mod tests {
         );
         assert_eq!(info.responses[1].response_number, 0);
         assert_eq!(info.responses[1].emotion_keyword, 0);
+    }
+
+    /// #5075 — the TRDA emotion field is xEdit
+    /// `wbFormIDCk('Emotion', [KYWD, FFFF])`: the `FFFF` none sentinel is
+    /// authored on ~45% of vanilla FO4's rows (and 40–52% of the DLC
+    /// plugins'), and its 0xFF mod index must bypass the remap rather than
+    /// warn out-of-range once per row on every plugin with masters — the
+    /// same class as #4172's MGEF `associated_item` fix.
+    #[test]
+    fn trda_emotion_none_sentinel_bypasses_the_remap() {
+        use crate::esm::reader::FormIdRemap;
+        let remap = FormIdRemap::regular(1, vec![0]);
+        let mut fo4 = vec![0u8; 20];
+        fo4[0..4].copy_from_slice(&0xFFFF_FFFFu32.to_le_bytes()); // none sentinel
+        fo4[4] = 7; // response number
+        fo4[5..9].copy_from_slice(&0x0100_3344u32.to_le_bytes()); // sound (self)
+        let subs = vec![sub(b"TRDA", &fo4), sub(b"NAM1", b"Line.\0")];
+        let info = parse_info(0x99, &subs, &Some(remap));
+        let seg = &info.responses[0];
+        assert_eq!(
+            seg.emotion_keyword, 0xFFFF_FFFF,
+            "the none sentinel must round-trip verbatim, never enter the \
+             remap's out-of-range warn arm"
+        );
+        assert_eq!(seg.response_number, 7);
+        assert_eq!(seg.sound_form_id, 0x0100_3344, "a regular ref still rides the remap");
     }
 
     /// #4645 — the Starfield 12-byte TRDA payload decodes: emotion KYWD

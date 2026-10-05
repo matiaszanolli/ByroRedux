@@ -1,6 +1,8 @@
 //! Magic / perks records.
 
-use super::super::common::{read_lstring_or_zstring, remap_fid, CommonNamedFields};
+use super::super::common::{
+    read_lstring_or_zstring, remap_efid, remap_fid, remap_fid_or_sentinel, CommonNamedFields,
+};
 use super::super::condition::{push_ctda, ConditionList};
 use crate::esm::reader::{FormIdRemap, GameKind, SubRecord};
 use crate::esm::sub_reader::SubReader;
@@ -587,8 +589,11 @@ impl MagicEffectAccumulator {
             b"EFID" if sub.data.len() >= 4 => {
                 // #4071 — EFID is an MGEF cross-reference. Remapped at the
                 // latch so every caller of this accumulator inherits it
-                // rather than each re-deriving the rule.
-                self.pending_efid = remap_fid(SubReader::new(&sub.data).u32_or_default(), remap);
+                // rather than each re-deriving the rule. #5076 — except on
+                // Oblivion, where it is a 4-char effect code (wbChar4) and
+                // must skip the remap; `remap_efid` carries the rule.
+                self.pending_efid =
+                    remap_efid(SubReader::new(&sub.data).u32_or_default(), self.game, remap);
             }
             b"EFIT" if sub.data.len() >= 12 && self.pending_efid != 0 => {
                 let Some((magnitude, area, duration)) = self.decode_efit(&sub.data) else {
@@ -926,19 +931,13 @@ pub fn parse_mgef(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
                     // same kind of embedded FormID as light_form_id @24
                     // below; #3715 remapped only that one.
                     // #4172 — the documented "no item" sentinel
-                    // (0xFFFFFFFF) must bypass the remap: its mod_index
-                    // byte is 255, which on any multi-master load falls
-                    // into FormIdRemap::remap's suspicious-out-of-range
-                    // warn arm, logging one false warning per no-item MGEF
-                    // (common, well-documented authored data) and drowning
-                    // the genuinely-malformed case that branch exists to
-                    // catch. The value round-trips either way; the guard
-                    // keeps the log honest.
-                    out.associated_item = if header.associated_item == 0xFFFF_FFFF {
-                        0xFFFF_FFFF
-                    } else {
-                        remap_fid(header.associated_item, remap)
-                    };
+                    // (0xFFFFFFFF) bypasses the remap: its mod_index byte
+                    // is 255, which on any multi-master load falls into
+                    // FormIdRemap::remap's suspicious-out-of-range warn
+                    // arm. Now routed through the shared
+                    // `remap_fid_or_sentinel` (#5075) that the TRDA
+                    // emotion site uses.
+                    out.associated_item = remap_fid_or_sentinel(header.associated_item, remap);
                     out.magic_school = header.magic_school;
                     out.resistance_av = header.resistance_av;
                     // #3715 — embedded light-effect FormID.
@@ -1650,6 +1649,48 @@ mod tests {
             "a self-referencing EFID must land on the plugin's own global \
              slot, not keep its plugin-local mod index"
         );
+    }
+
+    /// #5076 — Oblivion's EFID is `wbInteger('Magic Effect Name', itU32,
+    /// wbChar4)` — a 4-char effect code like `b"FIDG"`, not a FormID — so
+    /// it must skip the remap even when the plugin has masters (its ASCII
+    /// high byte would read as an out-of-range mod index and warn, 717
+    /// times across the vanilla Oblivion DLC set). Every other game's EFID
+    /// keeps remapping, the `parse_spel_efid_is_remapped` contract.
+    #[test]
+    fn oblivion_efid_effect_code_skips_the_remap() {
+        let remap = Some(FormIdRemap::regular(2, vec![0]));
+        // Oblivion EFIT: the 4-char code repeated @0, magnitude i32 @4,
+        // area @8, duration @12 (24 bytes).
+        let mut efit = Vec::new();
+        efit.extend_from_slice(b"FIDG"); // code echoed in the pair
+        efit.extend_from_slice(&5i32.to_le_bytes()); // magnitude
+        efit.extend_from_slice(&0u32.to_le_bytes()); // area
+        efit.extend_from_slice(&3u32.to_le_bytes()); // duration
+        efit.extend_from_slice(&[0u8; 8]); // tail to 24
+        assert_eq!(efit.len(), 24);
+
+        let subs = vec![sub(b"EFID", b"FIDG"), sub(b"EFIT", &efit)];
+        let s = parse_spel(0x6668, &subs, GameKind::Oblivion, &remap);
+        assert_eq!(s.effects.len(), 1);
+        assert_eq!(
+            s.effects[0].effect_form_id,
+            u32::from_le_bytes(*b"FIDG"),
+            "the effect code is stored verbatim, never read as a FormID"
+        );
+        assert_eq!((s.effects[0].magnitude, s.effects[0].duration), (5.0, 3));
+
+        // The gate is per game, not global: the same accumulator with an
+        // in-range FormID EFID remaps it on FO3/FNV but stores it verbatim
+        // on Oblivion.
+        let form_subs = vec![
+            sub(b"EFID", 0x0100_7777u32.to_le_bytes()), // self-ref
+            sub(b"EFIT", &efit),
+        ];
+        let s = parse_spel(0x6669, &form_subs, GameKind::Fallout3NV, &remap);
+        assert_eq!(s.effects[0].effect_form_id, 0x0200_7777);
+        let s = parse_spel(0x666A, &form_subs, GameKind::Oblivion, &remap);
+        assert_eq!(s.effects[0].effect_form_id, 0x0100_7777);
     }
 
     #[test]
