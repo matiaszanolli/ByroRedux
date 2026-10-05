@@ -1704,6 +1704,18 @@ enum PreflightDecision {
     Insert(String),
 }
 
+/// Whether a MODL path names a SpeedTree `.spt` binary.
+///
+/// SPT-2026-09-29-D3-02 — this used to slice `path[path.len() - 4..]` by
+/// byte index, which panics when the 4th-from-last byte falls inside a
+/// multi-byte character: `read_zstring`'s `from_utf8_lossy` turns a cp1252
+/// byte into 3-byte U+FFFD, and mod content can author UTF-8 paths. Test the
+/// raw bytes instead — a `&[u8]` has no char boundaries.
+fn is_spt_model_path(path: &str) -> bool {
+    let bytes = path.as_bytes();
+    bytes.len() >= 4 && bytes[bytes.len() - 4..].eq_ignore_ascii_case(b".spt")
+}
+
 /// Apply the two cache layers in the same order as the production
 /// pre-parse filter. The request snapshot wins when a key is present in both
 /// sets; otherwise the worker memo suppresses a result already emitted by an
@@ -1819,9 +1831,7 @@ fn pre_parse_cell(
         // format! allocations run per UNIQUE model, not per REFR. The
         // early-continue arms replay the memoized outcome.
         if !decisions.contains_key(model_path) {
-            let d = if model_path.len() >= 4
-                && model_path[model_path.len() - 4..].eq_ignore_ascii_case(".spt")
-            {
+            let d = if is_spt_model_path(model_path) {
                 // #3735 — SpeedTree `.spt` binaries are not NIFs; see the
                 // comment above for why prefetching them was actively
                 // harmful.

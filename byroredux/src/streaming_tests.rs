@@ -7,11 +7,11 @@
 //! silently miscompute the load / unload set.
 
 use super::{
-    build_stream_parse_pool, classify_payload, compute_streaming_deltas, join_with_timeout,
-    parse_model_keys, pre_parse_cell_panic_safe,
-    pre_parse_model_skip_reason, recv_next_batch_request, stale_pending_coords, world_pos_to_grid,
-    JoinTimeout, LoadCellPayload, LoadedCell, PayloadDecision, PreParseModelSkip, StreamingDeltas,
-    StreamingLatencySummary, StreamingTelemetry, StreamingWorkerTimings,
+    build_stream_parse_pool, classify_payload, compute_streaming_deltas, is_spt_model_path,
+    join_with_timeout, parse_model_keys, pre_parse_cell_panic_safe, pre_parse_model_skip_reason,
+    recv_next_batch_request, stale_pending_coords, world_pos_to_grid, JoinTimeout, LoadCellPayload,
+    LoadedCell, PayloadDecision, PreParseModelSkip, StreamingDeltas, StreamingLatencySummary,
+    StreamingTelemetry, StreamingWorkerTimings,
 };
 use crate::asset_provider::{ResolveExtractTotals, TextureProvider};
 use crate::cell_loader::UnloadPhaseTimings;
@@ -719,4 +719,30 @@ fn pre_parse_parallel_branch_uses_the_dedicated_pool() {
             .all(|name| name.starts_with("byro-stream-parse-")),
         "production Phase 2 escaped its dedicated pool: {thread_names:?}"
     );
+}
+
+// ── .spt extension check is char-boundary safe (SPT-2026-09-29-D3-02) ──
+
+#[test]
+fn spt_check_tolerates_a_non_ascii_tail() {
+    // The old byte-index slice panicked here: `x\u{FFFD}ab` puts the last
+    // byte of the 3-byte replacement char exactly 4 from the end.
+    assert!(is_spt_model_path("x\u{FFFD}ab.spt"));
+    assert!(!is_spt_model_path("x\u{FFFD}ab.nif"));
+    // The reported shape — a cp1252 byte decoded to U+FFFD inside the tail.
+    assert!(is_spt_model_path("trees\\lava\u{FFFD}d.spt"));
+    assert!(!is_spt_model_path("meshes\\tree.nif"));
+    // Vanilla shapes keep their verdicts.
+    assert!(is_spt_model_path("meshes\\landscape\\trees\\beechautotrees.spt"));
+    assert!(is_spt_model_path("BEECHAUTO.SPT"));
+    assert!(!is_spt_model_path("meshes\\tree.sptx"));
+    assert!(!is_spt_model_path(".sp"));
+    assert!(!is_spt_model_path(""));
+}
+
+#[test]
+fn spt_check_is_case_insensitive_on_the_extension_only() {
+    assert!(is_spt_model_path("TREE.SPT"));
+    assert!(is_spt_model_path("tree.Spt"));
+    assert!(!is_spt_model_path("SPT.sptx"));
 }
