@@ -945,8 +945,11 @@ mod tests {
     /// #5161 fixture: an actor rooted at the world origin plus two bones at
     /// the given translations, template-bound with one loose joint. The
     /// actor carries a `GlobalTransform` so the relative seed check has an
-    /// anchor (production always has one).
-    fn two_bone_world_at(bone_translations: [Vec3; 2]) -> (World, EntityId, [EntityId; 2]) {
+    /// anchor (production always has one). The parameter deliberately
+    /// avoids the deferred BSBoneLOD per-bone translation field's name —
+    /// the extra_data progress canary whole-repo-scans for it, and this
+    /// helper's local name once read as a consumer.
+    fn two_bone_world_at(bone_offsets: [Vec3; 2]) -> (World, EntityId, [EntityId; 2]) {
         let mut world = World::new();
         world.register::<Transform>();
         world.register::<GlobalTransform>();
@@ -964,7 +967,7 @@ mod tests {
                 scale: 1.0,
             },
         );
-        let bones = bone_translations.map(|translation| {
+        let bones = bone_offsets.map(|translation| {
             let bone = world.spawn();
             world.insert(
                 bone,
