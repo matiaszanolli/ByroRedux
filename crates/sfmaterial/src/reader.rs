@@ -799,10 +799,26 @@ fn skip_user_class_body(
     cur: &mut Cursor<'_>,
     is_diff: bool,
 ) -> Result<()> {
-    let field_layout = state.class_for(type_ref)?.fields.clone();
+    let (field_layout, read_order) = {
+        let class = state.class_for(type_ref)?;
+        (class.fields.clone(), class.read_order.clone())
+    };
     let mut chunk_fields = Vec::new();
     if !is_diff {
-        for field in &field_layout {
+        // #5323 (PAR-D3-2026-10-05-01) — walk the offset-sorted
+        // `read_order`, exactly like `read_user_class_body` (#3398:
+        // "any sequential reader MUST walk this order"). This path used
+        // declaration order, so on a class whose declaration order
+        // differs from offset order AND that carries a variable-size
+        // inline field (`String`) or a chunk field (`List`/`Map`) among
+        // the reordered ones, skip and read disagree on how many bytes
+        // a field consumes or which side chunk belongs to which field.
+        // Vanilla hides this (XMCOLOR is the only divergent class and
+        // its four u8s consume identically in both orders); a mod or
+        // Creation CDB desynced into ObjectTrailingBytes / a skipped
+        // instance consuming the wrong side chunks.
+        for idx in &read_order {
+            let field = &field_layout[*idx as usize];
             if state.is_chunk_type(field.type_ref) {
                 chunk_fields.push(field.type_ref);
             } else {
@@ -1235,6 +1251,130 @@ fn read_u32_le(bytes: &[u8], pos: usize) -> Result<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #5323 (PAR-D3-2026-10-05-01) — skip ≡ read on a reordered class
+    /// with a variable-size inline field and a chunk field. Declaration
+    /// order (`b: Int32`, `a: String`, `items: List`) disagrees with
+    /// offset order (`a@0`, `b@6`, `items@14`); the read path walks
+    /// `read_order` (#3398) and the skip path used to walk
+    /// `field_layout`, so on exactly this shape the two paths consumed
+    /// different byte counts and could bind side chunks to the wrong
+    /// field. Vanilla hides it (XMCOLOR's four u8s consume identically
+    /// in both orders); the pin is byte-exact cursor agreement plus the
+    /// offset-correct field bindings.
+    #[test]
+    fn skip_and_read_consume_identically_on_a_reordered_class() {
+        let int32 = TypeReference::new(BuiltinType::Int32 as i32);
+        let string = TypeReference::new(BuiltinType::String as i32);
+        let list = TypeReference::new(BuiltinType::List as i32);
+        let class = Class {
+            name_offset: 7,
+            name: "Reordered".to_string(),
+            type_id: 99,
+            flags: ClassFlags(0),
+            fields: vec![
+                Field {
+                    name: "b".to_string(),
+                    type_ref: int32,
+                    offset: 6,
+                    size: 4,
+                },
+                Field {
+                    name: "a".to_string(),
+                    type_ref: string,
+                    offset: 0,
+                    size: 6,
+                },
+                Field {
+                    name: "items".to_string(),
+                    type_ref: list,
+                    offset: 14,
+                    size: 0,
+                },
+            ],
+            read_order: vec![1, 0, 2], // a@0, b@6, then the List chunk
+        };
+        // Inline bytes laid out by OFFSET: "abcd" (u16 len + 4 bytes),
+        // then the u32 — NOT declaration order (u32 first).
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&4u16.to_le_bytes());
+        bytes.extend_from_slice(b"abcd");
+        bytes.extend_from_slice(&0x1122_3344u32.to_le_bytes());
+        // The LIST side chunk: elem type Int32, count 1, one u32 element.
+        let mut list_payload = Vec::new();
+        list_payload.extend_from_slice(&int32.id.to_le_bytes());
+        list_payload.extend_from_slice(&1i32.to_le_bytes());
+        list_payload.extend_from_slice(&0xCAFE_BABEu32.to_le_bytes());
+        let list_start = bytes.len();
+        bytes.extend_from_slice(&list_payload);
+
+        let inline_len = 2 + 4 + 4;
+        let file_bytes: &[u8] = &bytes;
+        let fresh_chunks = || {
+            VecDeque::from([Chunk {
+                kind: ChunkType::List,
+                start: list_start,
+                size: list_payload.len(),
+            }])
+        };
+
+        // READ path — binds values to names and consumes the side chunk.
+        let mut read_state = State {
+            bytes: file_bytes,
+            chunks: fresh_chunks(),
+            classes: vec![class.clone()],
+            class_by_name_offset: HashMap::from([(7, 0)]),
+            strings: StringTable::new(Vec::new()),
+            depth: 0,
+        };
+        let mut read_cur = Cursor::new(file_bytes);
+        let value = read_user_class_body(
+            &mut read_state,
+            TypeReference::new(7),
+            &mut read_cur,
+            false,
+        )
+        .expect("read path");
+
+        // SKIP path — identical inputs, fresh chunk queue.
+        let mut skip_state = State {
+            bytes: file_bytes,
+            chunks: fresh_chunks(),
+            classes: vec![class],
+            class_by_name_offset: HashMap::from([(7, 0)]),
+            strings: StringTable::new(Vec::new()),
+            depth: 0,
+        };
+        let mut skip_cur = Cursor::new(file_bytes);
+        skip_user_class_body(&mut skip_state, TypeReference::new(7), &mut skip_cur, false)
+            .expect("skip path");
+
+        assert_eq!(read_cur.pos, skip_cur.pos, "skip must consume exactly the bytes read does");
+        assert_eq!(read_cur.pos, inline_len, "the offset-ordered inline region only");
+        assert!(
+            read_state.chunks.is_empty() && skip_state.chunks.is_empty(),
+            "both paths must consume the LIST side chunk"
+        );
+        let Value::Object(obj) = value else {
+            panic!("expected an object value");
+        };
+        match (
+            obj.fields.get("a"),
+            obj.fields.get("b"),
+            obj.fields.get("items"),
+        ) {
+            (
+                Some(Value::String(s)),
+                Some(Value::I32(v)),
+                Some(Value::List(items)),
+            ) => {
+                assert_eq!(s, "abcd", "offset-order binding: 'abcd' belongs to 'a'");
+                assert_eq!(*v, 0x1122_3344u32 as i32, "the u32 belongs to 'b'");
+                assert_eq!(items.len(), 1, "the side chunk belongs to 'items'");
+            }
+            other => panic!("wrong field bindings: {other:?}"),
+        }
+    }
 
     /// #2633 (SF-D3-05) — `insert_field` must reject a duplicate field
     /// name instead of silently keeping the second value
