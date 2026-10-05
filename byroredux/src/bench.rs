@@ -584,6 +584,7 @@ mod runtime_baseline_schema_tests {
         "tex_missing_all_slots",
         "mesh_cache_failed_count",
         "light_count_point",
+        "light_count_spot",
         "light_count_directional",
         "skin_pool_live",
         "skin_pool_max",

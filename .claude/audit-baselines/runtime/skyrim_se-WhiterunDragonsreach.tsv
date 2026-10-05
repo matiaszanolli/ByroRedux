@@ -1,3 +1,19 @@
+# regenerated: 2026-10-05 (#5132 — light_count_spot row added; light rows
+# re-captured in ONE renderer-static run per game, engine f75ac66cb)
+# RT-2026-09-29-06: the schema had no spot-light row, so the b9e961eeb
+# Point->Spot reclassification read as a point-count regression on FO4.
+# REQUIRED_METRICS and the skill's Phase 3 table gain light_count_spot
+# (exact, same source: kind= rows in light.dump). Fresh tallies: point
+# and directional are UNCHANGED on every fixture (30/11/680/8/28 point,
+# 0 directional); spot is 0 everywhere but FO4's 5. The 5 FO4 spots were
+# spot-checked against their LIGH records via
+# `cargo run -p byroredux-plugin --example spot_light_census --
+# Fallout4.esm InstituteBioScience`: the cell authors 6 spot placements,
+# the five defaultLight*Spot* records (fov 90 -> engine cone_cos 0.7071)
+# classify Spot, and the sixth (KlaxonLightGlowNS, fov 80, flags 0x4001)
+# stays Point — 685 = 680 + 5, no light lost. Draw/skin/pose/texture
+# rows re-verified bit-identical to the held baselines in the same run;
+# only the advisory fps rows moved (wall-clock, never a finding).
 # regenerated: 2026-09-30 (#5125 — every row re-captured in ONE renderer-static run, engine 60cd7028c)
 # Camera move, not a renderer change. `b9e961eeb` replaced the interior spawn
 # door/bbox heuristic with a ladder (COCMarkerHeading, then the partner door's
@@ -153,6 +169,7 @@ entities_total	9499
 tex_missing_base_color	0
 tex_missing_all_slots	2
 mesh_cache_failed_count	0
+light_count_spot	0
 light_count_point	28
 light_count_directional	0
 skin_pool_live	122

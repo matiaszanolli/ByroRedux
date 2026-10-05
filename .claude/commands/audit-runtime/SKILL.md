@@ -70,7 +70,7 @@ Keys must match the committed TSV rows (`byroredux/src/bench.rs` `REQUIRED_METRI
 | `tex_missing_base_color` | `tex.missing`: count of `[slot=base_color]` lines | ≤ baseline (strict) |
 | `tex_missing_all_slots` | `tex.missing` summary count | informational: report Δ, never a finding |
 | `mesh_cache_failed_count` | `mesh.cache failed` summary | ≤ baseline |
-| `light_count_point` / `light_count_directional` | `light.dump`: count of `kind=Point` / `kind=Directional` rows (**not** the `emitters: N` tally, which includes directional ones; not the mere presence of a `CellLightingRes` block) | exact |
+| `light_count_point` / `light_count_spot` / `light_count_directional` | `light.dump`: count of `kind=Point` / `kind=Spot` / `kind=Directional` rows (**not** the `emitters: N` tally, which includes directional ones; not the mere presence of a `CellLightingRes` block). #5132 — the Point→Spot reclassification (`b9e961eeb`) makes the split load-bearing: without the spot row, a correct reclassification reads as a point-count regression and a wrong one goes unnoticed | exact |
 | `skin_pool_max` | `bench:` `skin=L/M+S` (`M`) | exact |
 | `skin_pool_overflow_attempts` | `skin=` (`S`) | `== 0` |
 | `skin_pool_live` | `skin=` (`L`) | advisory Δ |
