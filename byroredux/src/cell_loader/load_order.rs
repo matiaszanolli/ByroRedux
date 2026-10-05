@@ -440,6 +440,23 @@ struct ArchiveStringSource {
     by_plugin: HashMap<PathBuf, Vec<Archive>>,
 }
 
+/// The directory a plugin's companion string archives are discovered in:
+/// the plugin's own parent, or the cwd for a bare relative name.
+///
+/// A bare `--esm Skyrim.esm` (the smoke/CLI convention: cwd is the game
+/// Data dir) has parent `Some("")`, not `None` — `read_dir("")` fails and
+/// discovery silently finds nothing, so every lstring in the session reads
+/// as a `<lstring 0x…>` placeholder. Treat an empty parent as the cwd,
+/// exactly like `load_with_archive`'s own loose-file lookup one layer down.
+/// Extracted from `discover` so the regression test exercises the
+/// production expression rather than a copy of it (#5303).
+fn strings_archive_directory(plugin_path: &Path) -> &Path {
+    plugin_path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or(Path::new("."))
+}
+
 impl ArchiveStringSource {
     fn read(&mut self, plugin_path: &Path, relative_path: &str) -> Option<Vec<u8>> {
         let archives = self
@@ -450,16 +467,7 @@ impl ArchiveStringSource {
     }
 
     fn discover(plugin_path: &Path) -> Vec<Archive> {
-        // A bare `--esm Skyrim.esm` (the smoke/CLI convention: cwd is the
-        // game Data dir) has parent `Some("")`, not `None` — `read_dir("")`
-        // fails and discovery silently finds nothing, so every lstring in
-        // the session reads as a `<lstring 0x…>` placeholder. Treat an
-        // empty parent as the cwd, exactly like `load_with_archive`'s own
-        // loose-file lookup one layer down.
-        let directory = plugin_path
-            .parent()
-            .filter(|parent| !parent.as_os_str().is_empty())
-            .unwrap_or(Path::new("."));
+        let directory = strings_archive_directory(plugin_path);
         let plugin_stem = plugin_path
             .file_stem()
             .unwrap_or_default()
@@ -1586,21 +1594,29 @@ fn allocate_global_slot_partitions_medium_light_and_regular() {
 /// session as a `<lstring 0x…>` placeholder. The smoke that caught this
 /// live is `p4-quest-route.sh` (MarkarthWarrens, 2026-09-30): the objective
 /// banner rendered with placeholder text until this fix.
+///
+/// #5303 — the first version of this test copied the parent-fallback
+/// expression inline and asserted `read_dir` on its own copy, so reverting
+/// the fix left it green. Assert on the production helper `discover()`
+/// routes through instead.
 #[test]
 fn string_archive_discovery_treats_a_bare_plugin_name_as_the_cwd() {
-    // The Data dir of an installed Skyrim SE carries `Skyrim - Interface.bsa`
-    // beside the plugin; absent an install, the contract this test pins is
-    // discoverability of the CWD itself, so probe with the repo's own dir
-    // and a plugin name with no parent.
-    let cwd_plugin = Path::new("Cargo.toml");
-    let directory = cwd_plugin
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .unwrap_or(Path::new("."));
-    let read = std::fs::read_dir(directory)
-        .expect("an empty parent must resolve to the cwd, not to an unreadable ''");
-    assert!(
-        read.count() > 0,
-        "read_dir on the empty-parent fallback must list the cwd"
+    // The exact regression shape: a bare relative plugin name.
+    assert_eq!(
+        strings_archive_directory(Path::new("Skyrim.esm")),
+        Path::new("."),
+        "an empty parent (`Some(\"\")`) must resolve to the cwd, not to \
+         the unreadable ''"
     );
+    // A real parent passes through unchanged — the fallback is only for
+    // the bare-name case.
+    assert_eq!(
+        strings_archive_directory(Path::new("Data/Skyrim.esm")),
+        Path::new("Data")
+    );
+    // And the fallback contract is readable in practice: `read_dir` on it
+    // must succeed, which it never did on `""` pre-fix.
+    let read = std::fs::read_dir(strings_archive_directory(Path::new("Cargo.toml")))
+        .expect("the cwd fallback must be a readable directory");
+    assert!(read.count() > 0, "the cwd fallback must list the cwd");
 }
