@@ -528,6 +528,35 @@ impl Scheduler {
         }
     }
 
+    /// Run a single exclusive system by name, skipping every other
+    /// system and every parallel batch.
+    ///
+    /// #5141 — the engine's native pause menu gates `run` entirely, which
+    /// silently stopped `debug_drain_system` with it: debug commands queued
+    /// while a menu page was open answered "timeout", then all fired in a
+    /// burst when the game resumed. The caller (the engine's paused frame
+    /// path) uses this to keep exactly the drain alive while the simulation
+    /// is frozen. Returns whether a system with that name was found and
+    /// run.
+    ///
+    /// Per-system timing is skipped on this path (the tracker in `run`
+    /// exists to attribute the full frame's stage wall-clock; a lone
+    /// paused-mode system has no stage to attribute against).
+    pub fn run_exclusive_named(&mut self, world: &World, dt: f32, name: &str) -> bool {
+        for data in self.stages.values_mut() {
+            for entry in &mut data.exclusive {
+                // Read the name before the `&mut` run call — same borrow
+                // discipline as `run_tracked`'s tracked arm.
+                let matches = entry.system.name() == name;
+                if matches {
+                    entry.system.run(world, dt);
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
     /// Returns the names of all registered systems, in stage order.
     ///
     /// Within each stage, parallel systems appear first, then exclusive.
@@ -1007,6 +1036,75 @@ mod tests {
         });
 
         scheduler.run(&world, 0.0);
+    }
+
+    // ── run_exclusive_named: the paused-mode drain path (#5141) ──────────
+
+    struct CountingSystem {
+        runs: Arc<AtomicU32>,
+        name: &'static str,
+    }
+
+    impl System for CountingSystem {
+        fn run(&mut self, _world: &World, _dt: f32) {
+            self.runs.fetch_add(1, Ordering::SeqCst);
+        }
+
+        fn name(&self) -> &'static str {
+            self.name
+        }
+    }
+
+    #[test]
+    fn run_exclusive_named_runs_only_the_named_system() {
+        let world = World::new();
+        let drain_runs = Arc::new(AtomicU32::new(0));
+        let other_exclusive_runs = Arc::new(AtomicU32::new(0));
+        let parallel_runs = Arc::new(AtomicU32::new(0));
+
+        let mut scheduler = Scheduler::new();
+        scheduler.add_to(
+            Stage::Late,
+            CountingSystem {
+                runs: Arc::clone(&parallel_runs),
+                name: "parallel",
+            },
+        );
+        scheduler.add_exclusive(
+            Stage::Late,
+            CountingSystem {
+                runs: Arc::clone(&other_exclusive_runs),
+                name: "other_exclusive",
+            },
+        );
+        scheduler.add_exclusive(
+            Stage::Late,
+            CountingSystem {
+                runs: Arc::clone(&drain_runs),
+                name: "debug_drain_system",
+            },
+        );
+
+        assert!(scheduler.run_exclusive_named(&world, 0.0, "debug_drain_system"));
+        assert_eq!(
+            drain_runs.load(Ordering::SeqCst),
+            1,
+            "the named system must run exactly once per call"
+        );
+        assert_eq!(
+            other_exclusive_runs.load(Ordering::SeqCst),
+            0,
+            "other exclusive systems must stay gated"
+        );
+        assert_eq!(
+            parallel_runs.load(Ordering::SeqCst),
+            0,
+            "parallel batches must stay gated"
+        );
+
+        // Unknown names report a miss and run nothing.
+        assert!(!scheduler.run_exclusive_named(&world, 0.0, "no_such_system"));
+        assert_eq!(drain_runs.load(Ordering::SeqCst), 1);
     }
 
     // ── add() defaults to Stage::Update ─────────────────────────────────

@@ -142,6 +142,19 @@ impl System for DebugDrainSystem {
         };
 
         for cmd in commands {
+            // #5141 — the client already gave up on this command (its
+            // `recv_timeout` elapsed and it set `cancel` before sending the
+            // timeout error). Running it now would fire the mutation long
+            // after the client was told it failed — once per retry, since
+            // every timed-out attempt stays queued. Screenshots keep their
+            // richer in-flight handling below.
+            if cmd.cancel.load(Ordering::Acquire) {
+                let _ = cmd
+                    .response_tx
+                    .send(DebugResponse::error("command cancelled (client stopped waiting)"));
+                continue;
+            }
+
             // Handle screenshot requests specially — they span multiple frames.
             if let DebugRequest::Screenshot { ref path } = cmd.request {
                 if self.pending_screenshot.is_some() {
@@ -287,5 +300,39 @@ mod tests {
             "the queued Stats command must be drained (and answered) on the \
              same frame the screenshot was cancelled, not deferred a frame"
         );
+    }
+
+    /// #5141 — a command whose client already timed out (`cancel` set by
+    /// the per-client thread before the drain ever ran) must be answered
+    /// with the cancellation error and NEVER evaluated: the mutation would
+    /// fire long after the client was told it failed, once per retry, when
+    /// the queue finally drains.
+    #[test]
+    fn cancelled_command_is_answered_without_evaluation() {
+        let queue: crate::listener::CommandQueue = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut system = DebugDrainSystem::new(Arc::clone(&queue));
+
+        // An Eval against an empty world: if the drain evaluated it, the
+        // evaluator's own answer would come back instead of the
+        // cancellation error this test pins.
+        let (rx, cancel) = try_enqueue_command(&queue, DebugRequest::Eval {
+            expr: "1 + 1".to_string(),
+        })
+        .expect("queue has capacity for one command");
+        cancel.store(true, Ordering::Release);
+
+        let world = World::new();
+        system.run(&world, 0.0);
+
+        match rx.try_recv() {
+            Ok(DebugResponse::Error { message }) => assert!(
+                message.contains("cancelled"),
+                "a cancelled command must be answered with the cancellation \
+                 error, got: {message}"
+            ),
+            other => panic!(
+                "a cancelled command must not be evaluated — got {other:?}"
+            ),
+        }
     }
 }
