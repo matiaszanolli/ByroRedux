@@ -354,6 +354,92 @@ pub(crate) fn apply_starts_dead(world: &mut World, entity: EntityId) {
     crate::combat::queue_dead_actor_reconciliation(world, entity);
 }
 
+/// The base script's editor id for one placed reference, resolving the
+/// `SCRI` FormID through the record maps that carry one (activators are
+/// the dismember-trigger idiom's base; actors carry their own). `None`
+/// when the base is not a scripted kind or the script does not resolve.
+fn base_script_editor_id(
+    index: &byroredux_plugin::esm::records::EsmIndex,
+    base_form_id: u32,
+) -> Option<String> {
+    let script = index
+        .activators
+        .get(&base_form_id)
+        .map(|acti| acti.script_form_id)
+        .or_else(|| {
+            index
+                .npcs
+                .get(&base_form_id)
+                .map(|npc| npc.script_form_id)
+        })?;
+    index.scripts.get(&script).map(|s| s.editor_id.clone())
+}
+
+/// #5223 — FO3/FNV's second authored-corpse idiom, recognised from the
+/// data because the engine runs no FO3 ObScript. A placed trigger whose
+/// base script is the vanilla `GenericBiped*DismembermentSCRIPT` family
+/// runs `linkedRef.killactor linkedRef <limb>` once in an unconditional
+/// `Begin OnLoad` under `doOnce` — the corpse only exists after that
+/// script fires in the real game, so these placements must load dead.
+/// The sibling idiom is an actor base whose OWN `SCRI` kills it on load
+/// (`GenericKillSCRIPT`, `OnLoadKillSelf`, or the dismember family
+/// itself — FFEU04NPC1 carries `GenericBipedRandomMultiDismemberment
+/// SCRIPT` on its base and dies the same way).
+///
+/// Measured on the shipped masters (2026-10-04,
+/// `crates/plugin/examples/corpse_trigger_probe.rs`): FO3 = 85 linked
+/// targets + 3 self-killed placements; FNV = 10 + 2. 49 of the FO3
+/// targets sit on positive-health bases (mostly the `LvlSuperMutant*DIS
+/// MEMBER` leveled family) — the ones the #5005 base-health rule cannot
+/// see; the audit also notes all 6 FO3 "XRGD over a live base" refs are
+/// among the 85, so with this stamp FO3 `XRGD ⇒ corpse` holds 498/498.
+pub(crate) fn script_killed_corpse_forms(
+    refs: &[byroredux_plugin::esm::cell::PlacedRef],
+    index: &byroredux_plugin::esm::records::EsmIndex,
+) -> std::collections::HashSet<u32> {
+    const DISMEMBERMENT_FAMILY: &str = "DismembermentSCRIPT";
+    const SELF_KILL_SCRIPTS: [&str; 2] = ["GenericKillSCRIPT", "OnLoadKillSelf"];
+
+    let mut killed: std::collections::HashSet<u32> = std::collections::HashSet::new();
+    // Pass 1 — dismember triggers: a linked-ref placement whose base
+    // script is the family marks every XLKR target in the same cell.
+    for placed in refs {
+        if placed.linked_refs.is_empty() {
+            continue;
+        }
+        let Some(script) = base_script_editor_id(index, placed.base_form_id) else {
+            continue;
+        };
+        if !script.contains(DISMEMBERMENT_FAMILY) {
+            continue;
+        }
+        for link in &placed.linked_refs {
+            killed.insert(link.target);
+        }
+    }
+    // Pass 2 — self-killing bases: an ACTOR placement whose base's own
+    // SCRI is an unconditional kill-on-load script. Actor bases only —
+    // the activator arm would otherwise re-match the kill *executors*
+    // (the triggers themselves), which are not corpses.
+    for placed in refs {
+        if killed.contains(&placed.form_id) {
+            continue;
+        }
+        let Some(npc) = index.npcs.get(&placed.base_form_id) else {
+            continue;
+        };
+        let Some(script) = index.scripts.get(&npc.script_form_id) else {
+            continue;
+        };
+        if script.editor_id.contains(DISMEMBERMENT_FAMILY)
+            || SELF_KILL_SCRIPTS.iter().any(|s| *s == script.editor_id)
+        {
+            killed.insert(placed.form_id);
+        }
+    }
+    killed
+}
+
 /// #5017 — FO4+'s ACHR "Starts Unconscious" (bit 13): the actor spawns
 /// unconscious, as if `SetUnconscious(true)` ran before its first frame. The
 /// vanilla population is powered-down robots and turrets that a terminal,
@@ -557,6 +643,82 @@ pub(crate) fn mark_picked_up(world: &World, entity: EntityId) {
                     dead: false,
                     picked_up: true,
                 },
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod script_kill_tests {
+    use super::*;
+
+    /// #5223 — the recognizer's measured population on the shipped
+    /// masters: FO3 = 85 dismember-trigger link targets + 3 self-killed
+    /// placements (88 distinct); FNV = 10 + 2 (12 distinct). Pinned so a
+    /// decode or recognizer regression shows as a count change, exactly
+    /// like the #5005 corpse census beside it.
+    #[test]
+    #[ignore = "needs FO3/FNV game data on disk"]
+    fn fo3_fnv_script_killed_corpses_match_the_measured_census() {
+        for (env, default, master, linked, self_killed) in [
+            (
+                "BYROREDUX_FO3_DATA",
+                "/mnt/data/SteamLibrary/steamapps/common/Fallout 3 goty/Data",
+                "Fallout3.esm",
+                85,
+                3,
+            ),
+            (
+                "BYROREDUX_FNV_DATA",
+                "/mnt/data/SteamLibrary/steamapps/common/Fallout New Vegas/Data",
+                "FalloutNV.esm",
+                10,
+                2,
+            ),
+        ] {
+            let dir = std::env::var(env)
+                .map(std::path::PathBuf::from)
+                .unwrap_or(std::path::PathBuf::from(default));
+            if !dir.is_dir() {
+                eprintln!("[script kills] skipping {master}: game data unavailable");
+                continue;
+            }
+            let bytes = std::fs::read(dir.join(master)).expect("read master");
+            let index = byroredux_plugin::esm::parse_esm(&bytes).expect("parse master");
+            let cells = index.cells.cells.values().chain(
+                index
+                    .cells
+                    .exterior_cells
+                    .values()
+                    .flat_map(|tile| tile.values()),
+            ).chain(index.cells.worldspace_persistent_cells.values());
+            // A persistent placement can be walked in more than one cell's
+            // children; the recognizer runs per cell at load, but the
+            // census is the cross-cell union of form ids.
+            let mut union = std::collections::HashSet::new();
+            let mut linked_union = std::collections::HashSet::new();
+            for cell in cells {
+                union.extend(script_killed_corpse_forms(&cell.references, &index));
+                for p in &cell.references {
+                    if p.linked_refs.is_empty() {
+                        continue;
+                    }
+                    if super::base_script_editor_id(&index, p.base_form_id)
+                        .is_some_and(|s| s.contains("DismembermentSCRIPT"))
+                    {
+                        linked_union.extend(p.linked_refs.iter().map(|l| l.target));
+                    }
+                }
+            }
+            assert_eq!(
+                linked_union.len(),
+                linked,
+                "{master}: dismember-trigger link targets"
+            );
+            assert_eq!(
+                union.len(),
+                linked + self_killed,
+                "{master}: linked + self-killed, no overlap"
             );
         }
     }

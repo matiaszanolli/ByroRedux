@@ -4788,10 +4788,15 @@ fn fnv_corpses_key_on_base_health_not_xrgd() {
 }
 
 /// The FO3 twin of [`fnv_corpses_key_on_base_health_not_xrgd`]: 498
-/// placements of a health-≤0 base. FO3's live-posed counterexamples are
-/// the `MS06SuperMutantGunDEAD` family — dead-named but healthy by
-/// design, per the CS wiki's leveled-list corpse workflow (positive
-/// health + a die-at-spawn ability), so they stay outside the decode.
+/// placements of a health-≤0 base. The `MS06SuperMutantGunDEAD` family is
+/// dead-named but healthy by base health — its placements are corpses via
+/// the OTHER FO3 mechanism (#5223): a `GenericBiped*DismembermentSCRIPT`
+/// trigger linked by `XLKR` runs `linkedRef.killactor` in an unconditional
+/// `Begin OnLoad` under `doOnce`, so they load dead through the bin-side
+/// `script_killed_corpse_forms` recognizer, not this decode. (The old
+/// "die-at-spawn ability" rationale here was wrong — the base's only SPLO
+/// is `RadImmunity`, and MS06's quest script calls them "the dead super
+/// mutants".)
 #[test]
 #[ignore = "needs FO3 game data on disk"]
 fn fo3_corpses_key_on_base_health_not_xrgd() {
@@ -4815,6 +4820,7 @@ fn fo3_corpses_key_on_base_health_not_xrgd() {
         .expect("MS06SuperMutantGunDEAD must exist in the master");
     assert!(
         !spawner.starts_dead,
-        "dead-named but healthy (leveled-list die-at-spawn workflow) — not a decode target"
+        "dead-named but healthy by base health — its placements are #5223 \
+         dismember-trigger corpses, not this decode's target"
     );
 }

@@ -990,7 +990,7 @@ fn parse_refr_group_inner(
                             shape_type,
                         });
                     }
-                    // XLKR — Linked refs. Layout: keyword(u32) +
+                    // XLKR — Linked refs. Skyrim layout: keyword(u32) +
                     // target(u32) = 8 bytes. Multiple XLKR allowed per
                     // REFR (patrol markers, door pairs, activator
                     // targets). Pre-#412 NPCs didn't patrol and doors
@@ -999,6 +999,18 @@ fn parse_refr_group_inner(
                         let keyword = reader.remap_form_id(r.u32_or_default());
                         let target = reader.remap_form_id(r.u32_or_default());
                         linked_refs.push(LinkedRef { keyword, target });
+                    }
+                    // #5223 — FO3/FNV layout: the linked reference's FormID
+                    // alone (xEdit `wbFormIDCk`), no keyword half. Measured
+                    // on Fallout3.esm's StatesmanHotel02Dismember01REF
+                    // (0x000AB3EB): `XLKR` with a 4-byte payload; the old
+                    // `>= 8` gate (written for Skyrim's layout) silently
+                    // dropped every FO3/FNV link — all 85 dismember-trigger
+                    // links among them — so nothing downstream could ever
+                    // see a linked ref on those games.
+                    b"XLKR" if sub.data.len() >= 4 => {
+                        let target = reader.remap_form_id(r.u32_or_default());
+                        linked_refs.push(LinkedRef { keyword: 0, target });
                     }
                     // XLRT — one or more LCRT FormIDs classifying this
                     // placed reference for Radiant Story / quest-alias

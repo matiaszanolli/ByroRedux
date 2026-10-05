@@ -329,6 +329,11 @@ pub(super) fn load_references_budgeted(
     job: Option<Box<ReferenceLoadJob>>,
     budget: &mut FrameTimeBudget,
 ) -> ReferenceLoadProgress {
+    // #5223 — FO3/FNV's script-killed corpses (dismember-trigger links +
+    // kill-on-load base scripts), recognised once per call; computed before
+    // the job branch so a resumed job consults the same set.
+    let script_killed_corpses =
+        super::reference_state::script_killed_corpse_forms(refs, record_index);
     let mut job = if let Some(job) = job {
         job
     } else {
@@ -753,7 +758,10 @@ pub(super) fn load_references_budgeted(
                                 // BASE actor (NPC_/CREA header bit 0x80000),
                                 // not the placement, so the resolved record
                                 // ORs its flag in here.
-                                if placed_ref.starts_dead || npc.starts_dead {
+                                if placed_ref.starts_dead
+                                    || npc.starts_dead
+                                    || script_killed_corpses.contains(&placed_ref.form_id)
+                                {
                                     super::reference_state::apply_starts_dead(world, root);
                                 }
                                 // #5017 — FO4+ dormant robots and turrets.
