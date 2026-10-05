@@ -207,6 +207,9 @@ impl ConsoleCommand for PhysStatsCommand {
         let keyframe_refused = pw.keyframe_targets_refused_total();
         let seed_refused = pw.ragdoll_seed_refusals_total();
         let velocity_clamps = pw.velocity_clamps_total();
+        // #5246 — third-offence articulation detaches: the escalation end
+        // of the clamp ladder, one line per persistently exploding rig.
+        let explosive_detaches = pw.explosive_detaches_total();
         drop(pw);
 
         let mut lines = vec![
@@ -222,6 +225,7 @@ impl ConsoleCommand for PhysStatsCommand {
             format!("  keyframe refusals: total={keyframe_refused}"),
             format!("  ragdoll seed refusals: total={seed_refused}"),
             format!("  velocity clamps: total={velocity_clamps}"),
+            format!("  explosive detaches: total={explosive_detaches}"),
         ];
         // `awake_dynamic == 0 && !pending_wake` is exactly the static-scene
         // fast path's condition, so surfacing both together tells the

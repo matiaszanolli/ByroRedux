@@ -81,9 +81,10 @@ const MAX_DYNAMIC_SUBSTEP_DISPLACEMENT: f32 = 2_048.0;
 /// — 6× under [`MAX_DYNAMIC_SUBSTEP_DISPLACEMENT`] and nine orders of
 /// magnitude under the grid boundary. No engine-driven dynamic body moves
 /// legitimately at 20 000 BU/s (~285 m/s): the fastest authored motion
-/// class (arrows) sits near 6 000. A body clamped on two consecutive
-/// substeps is still exploding and is *parked* (velocities zeroed, slept),
-/// the same containment the invalid-solve restore applies.
+/// class (arrows) sits near 6 000. Escalation is by LIFETIME burst count
+/// (see `explosion_offences`): 1 = clamp, 2 = park (velocities zeroed,
+/// slept — the invalid-solve restore's containment), 3 = detach the
+/// body's whole articulation (#5246).
 pub const VELOCITY_SANITY_CAP_BU_PER_S: f32 = 20_000.0;
 /// #5161 — sanity cap on angular speed (≈16 rev/s); explosions reach 1e10+.
 const ANGULAR_VELOCITY_SANITY_CAP_RAD_PER_S: f32 = 100.0;
@@ -331,11 +332,20 @@ pub struct PhysicsWorld {
     /// per substep. Surfaced via [`Self::velocity_clamps_total`] into
     /// `phys.stats`.
     velocity_clamps_total: u64,
-    /// Bodies clamped on their most recent substep without a clean substep
-    /// between (#5161). A second consecutive clamp means the solve is
-    /// *persistently* exploding for that body — it gets parked (velocities
-    /// zeroed, slept) instead of vibrating at the cap forever.
-    explosion_watch: std::collections::HashSet<RigidBodyHandle>,
+    /// Lifetime solver-explosion burst count per body (#5161/#5246).
+    /// Deliberately never cleared on clean substeps — the FNV
+    /// SLscorpionBurrowINT log showed the same body parked four times
+    /// because every wake-and-re-explosion cycle looked like a fresh first
+    /// offence when the state was a set cleared on clean substeps. The
+    /// count drives the escalation ladder: 1 = clamp, 2 = park, 3+ =
+    /// detach the body's whole articulation. Keyed by the full handle
+    /// (index + generation), so rapier handle reuse never aliases a count.
+    explosion_offences: std::collections::HashMap<RigidBodyHandle, u32>,
+    /// Lifetime articulation detaches ordered by
+    /// [`Self::clamp_explosive_velocities`]' third-offence escalation
+    /// (#5246). Surfaced via [`Self::explosive_detaches_total`] into
+    /// `phys.stats`.
+    explosive_detaches_total: u64,
     /// Every multibody joint this world built (`build_ragdoll` pushes; the
     /// set has no mutable whole-set iterator and rapier's internal index is
     /// `pub(crate)`). Stale handles (detached articulations) return `None`
@@ -488,7 +498,8 @@ impl PhysicsWorld {
             ragdoll_seed_refusals_total: 0,
             body_labels: std::collections::HashMap::new(),
             velocity_clamps_total: 0,
-            explosion_watch: std::collections::HashSet::new(),
+            explosion_offences: std::collections::HashMap::new(),
+            explosive_detaches_total: 0,
             articulation_joints: Vec::new(),
         }
     }
@@ -952,20 +963,42 @@ impl PhysicsWorld {
                 };
                 (*body.linvel(), *body.angvel())
             };
-            let speed = linvel.norm();
-            let spin = angvel.norm();
+            // #5246 — NaN is the containment hole's fingerprint: rapier's
+            // broad-phase clamps a NaN-positioned collider's AABB to the
+            // multi-SAP grid corners (na::clamp(NaN, ±max) lands finite),
+            // and those corner AABBs pass the finite rejection and poison
+            // the layer structure. A NaN velocity therefore must never be
+            // *passed through* — one integration step later it is a NaN
+            // position inside pipeline.step, before any of this code can
+            // run again. Classify non-finite as maximally explosive and
+            // zero it outright.
+            let lin_finite = linvel.iter().all(|v| v.is_finite());
+            let ang_finite = angvel.iter().all(|v| v.is_finite());
+            let speed = if lin_finite {
+                linvel.norm()
+            } else {
+                f32::INFINITY
+            };
+            let spin = if ang_finite {
+                angvel.norm()
+            } else {
+                f32::INFINITY
+            };
             if speed <= VELOCITY_SANITY_CAP_BU_PER_S
                 && spin <= ANGULAR_VELOCITY_SANITY_CAP_RAD_PER_S
             {
-                self.explosion_watch.remove(&handle);
                 continue;
             }
-            let capped_linvel = if speed > VELOCITY_SANITY_CAP_BU_PER_S {
+            let capped_linvel = if !lin_finite {
+                nalgebra::zero()
+            } else if speed > VELOCITY_SANITY_CAP_BU_PER_S {
                 linvel * (VELOCITY_SANITY_CAP_BU_PER_S / speed)
             } else {
                 linvel
             };
-            let capped_angvel = if spin > ANGULAR_VELOCITY_SANITY_CAP_RAD_PER_S {
+            let capped_angvel = if !ang_finite {
+                nalgebra::zero()
+            } else if spin > ANGULAR_VELOCITY_SANITY_CAP_RAD_PER_S {
                 angvel * (ANGULAR_VELOCITY_SANITY_CAP_RAD_PER_S / spin)
             } else {
                 angvel
@@ -982,33 +1015,52 @@ impl PhysicsWorld {
                 body.set_angvel(capped_angvel, false);
             }
             self.velocity_clamps_total = self.velocity_clamps_total.saturating_add(1);
-            if !self.explosion_watch.insert(handle) {
-                // Second consecutive clamped substep: the solve is
-                // persistently exploding for this body. Park it the same
-                // way the invalid-solve restore does — zeroed velocities,
-                // asleep at its current (still sane, cap-bounded) pose —
-                // instead of letting it vibrate at the cap forever.
+            // #5246 — lifetime offence count, NOT a set cleared on clean
+            // substeps: the SLscorpionBurrowINT log showed the same body
+            // parked four times because every wake-and-re-explosion cycle
+            // looked like a fresh first offence. Escalation ladder — first
+            // burst clamps, second parks, third detaches the whole
+            // articulation (the invalid-solve restore's own tool) so a
+            // persistently exploding rig cannot churn forever.
+            let offences = self.explosion_offences.entry(handle).or_insert(0);
+            *offences += 1;
+            let label = self
+                .body_labels
+                .get(&handle)
+                .map(String::as_str)
+                .unwrap_or("unlabelled");
+            if *offences >= 3 {
                 if let Some(body) = self.bodies.get_mut(handle) {
                     body.set_linvel(nalgebra::zero(), false);
                     body.set_angvel(nalgebra::zero(), false);
                     body.sleep();
                 }
-                self.explosion_watch.remove(&handle);
-                let label = self
-                    .body_labels
-                    .get(&handle)
-                    .map(String::as_str)
-                    .unwrap_or("unlabelled");
+                // Detaches every multibody joint containing `handle`; a
+                // free body afterwards, so no forward kinematics can
+                // re-teleport it. Idempotent for bodies without joints.
+                self.multibody_joints
+                    .remove_multibody_articulations(handle, false);
+                self.explosive_detaches_total = self.explosive_detaches_total.saturating_add(1);
+                log::error!(
+                    "physics: detached {handle:?} [{label}]'s articulation after \
+                     {offences} solver-explosion bursts (#5246)"
+                );
+            } else if *offences == 2 {
+                // Second burst: the solve is persistently exploding for
+                // this body. Park it the same way the invalid-solve
+                // restore does — zeroed velocities, asleep at its current
+                // (still sane, cap-bounded) pose — instead of letting it
+                // vibrate at the cap forever.
+                if let Some(body) = self.bodies.get_mut(handle) {
+                    body.set_linvel(nalgebra::zero(), false);
+                    body.set_angvel(nalgebra::zero(), false);
+                    body.sleep();
+                }
                 log::error!(
                     "physics: parked {handle:?} [{label}] after repeated solver-explosion \
                      velocities (still sane, slept at current pose) (#5161)"
                 );
             } else {
-                let label = self
-                    .body_labels
-                    .get(&handle)
-                    .map(String::as_str)
-                    .unwrap_or("unlabelled");
                 log::warn!(
                     "physics: clamped explosive velocity on {handle:?} [{label}] to the \
                      sanity cap (#5161)"
@@ -1048,6 +1100,12 @@ impl PhysicsWorld {
     /// Lifetime velocity-clamp count, for `phys.stats` (#5161).
     pub fn velocity_clamps_total(&self) -> u64 {
         self.velocity_clamps_total
+    }
+
+    /// Lifetime third-offence articulation detaches, for `phys.stats`
+    /// (#5246).
+    pub fn explosive_detaches_total(&self) -> u64 {
+        self.explosive_detaches_total
     }
 
     /// Read a dynamic body's mass (BU³ × density). Buoyancy derives the
@@ -2489,10 +2547,12 @@ mod tests {
         assert_eq!(w.bodies[handle].linvel().norm(), 0.0);
     }
 
-    /// #5161 — a clean substep between explosions clears the watch entry,
-    /// so a much-later isolated burst clamps without parking.
+    /// #5246 — the offence count is LIFETIME, not cleared by clean substeps:
+    /// the FNV SLscorpionBurrowINT log showed the same body parked four
+    /// times because every wake-and-re-explosion cycle looked like a fresh
+    /// first offence. Second burst parks even after a clean substep.
     #[test]
-    fn a_clean_substep_between_clamps_avoids_parking() {
+    fn a_second_burst_parks_even_after_a_clean_substep() {
         let mut w = PhysicsWorld::new();
         let handle = w.bodies.insert(RigidBodyBuilder::dynamic().build());
         w.dynamic_bodies.push(handle);
@@ -2501,18 +2561,97 @@ mod tests {
             .set_linvel(Vector::new(100_000.0, 0.0, 0.0), false);
         w.step(PHYSICS_DT);
         assert_eq!(w.velocity_clamps_total(), 1);
+        assert!(!w.bodies[handle].is_sleeping());
 
-        // The capped velocity decays under gravity but stays clean — the
-        // watch entry must clear.
+        // The capped velocity decays under gravity but stays clean.
         w.step(PHYSICS_DT);
         assert_eq!(w.velocity_clamps_total(), 1);
 
-        // A fresh burst: clamped again, still not parked.
+        // A fresh burst — the second lifetime offence parks the body.
         w.bodies[handle]
             .set_linvel(Vector::new(100_000.0, 0.0, 0.0), false);
         w.step(PHYSICS_DT);
         assert_eq!(w.velocity_clamps_total(), 2);
-        assert!(!w.bodies[handle].is_sleeping());
+        assert!(
+            w.bodies[handle].is_sleeping(),
+            "the second lifetime offence must park the body"
+        );
+    }
+
+    /// #5246 — a NaN velocity is ZEROED on its first clamp, never passed
+    /// through: NaN fails both the `<=` cap and the `>` rescale
+    /// comparisons, so the pre-#5246 clamp counted it without writing
+    /// anything — and one integration step later the NaN position reached
+    /// the broad phase, whose grid clamp turns NaN AABBs into corner-
+    /// clamped finite ones that poison the multi-SAP layers.
+    #[test]
+    fn nan_velocities_are_zeroed_on_the_first_clamp() {
+        let mut w = PhysicsWorld::new();
+        let handle = w.bodies.insert(RigidBodyBuilder::dynamic().build());
+        w.dynamic_bodies.push(handle);
+
+        w.bodies[handle]
+            .set_linvel(Vector::new(f32::NAN, 1.0, 0.0), false);
+        w.bodies[handle]
+            .set_angvel(Vector::new(0.0, f32::NAN, 0.0), false);
+        // Called directly, not through `step`: the per-substep restore's
+        // finiteness check covers velocities too, so a NaN state that
+        // reaches a substep boundary is restored (rolled back + detached)
+        // before the clamp ever runs. The clamp's NaN branch exists for
+        // the states it DOES see between calls — the ones the restore's
+        // break-on-restore skipped.
+        w.clamp_explosive_velocities();
+
+        let linvel = *w.bodies[handle].linvel();
+        let angvel = *w.bodies[handle].angvel();
+        assert!(
+            linvel.iter().all(|v| v.is_finite()) && linvel.norm() <= 1.0,
+            "NaN linear velocity must be zeroed, got {linvel:?}"
+        );
+        assert!(
+            angvel.iter().all(|v| v.is_finite()),
+            "NaN angular velocity must be zeroed, got {angvel:?}"
+        );
+        assert_eq!(w.velocity_clamps_total(), 1);
+    }
+
+    /// #5246 — the third lifetime burst detaches the body's articulation
+    /// (the invalid-solve restore's own tool), so a persistently exploding
+    /// rig cannot churn clamp → park → wake → explode forever. Driven on a
+    /// plain dynamic body because a multibody LINK's velocity is
+    /// solver-owned — `set_linvel` on it is replaced by forward kinematics
+    /// before the clamp could ever see it; the joint-removal mechanics
+    /// themselves are pinned by the #4687 restore tests.
+    #[test]
+    fn the_third_burst_detaches_the_articulation() {
+        let mut w = PhysicsWorld::new();
+        let victim = w.bodies.insert(RigidBodyBuilder::dynamic().build());
+        w.dynamic_bodies.push(victim);
+        w.set_body_label(victim, "actor 295 bone bip01 neck1".to_owned());
+
+        for burst in 1..=3 {
+            w.bodies[victim]
+                .set_linvel(Vector::new(100_000.0, 0.0, 0.0), false);
+            // Re-arm the world: a parked rig sleeps, the static-scene fast
+            // path takes zero substeps unless the wake flag is armed —
+            // exactly the wake-and-re-explosion cycle the escalation
+            // exists to terminate.
+            w.wake();
+            w.step(PHYSICS_DT);
+            assert_eq!(
+                w.velocity_clamps_total(),
+                burst as u64,
+                "burst {burst} must clamp"
+            );
+        }
+        assert_eq!(
+            w.explosive_detaches_total(),
+            1,
+            "the third lifetime burst must escalate to a detach"
+        );
+        // And the victim is parked: finite, zeroed, asleep.
+        assert!(w.bodies[victim].is_sleeping());
+        assert!(w.bodies[victim].linvel().norm() == 0.0);
     }
 
 
