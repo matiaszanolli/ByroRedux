@@ -213,6 +213,9 @@ pub enum Token {
     #[token("As", ignore(ascii_case))]
     KwAs,
 
+    #[token("Is", ignore(ascii_case))]
+    KwIs,
+
     #[token("New", ignore(ascii_case))]
     KwNew,
 
@@ -405,6 +408,7 @@ impl std::fmt::Display for Token {
             Token::KwEndWhile => write!(f, "'EndWhile'"),
             Token::KwReturn => write!(f, "'Return'"),
             Token::KwAs => write!(f, "'As'"),
+            Token::KwIs => write!(f, "'Is'"),
             Token::KwNew => write!(f, "'New'"),
             Token::KwParent => write!(f, "'Parent'"),
             Token::KwSelf => write!(f, "'Self'"),

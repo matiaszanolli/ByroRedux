@@ -873,6 +873,44 @@ mod tests {
         assert!(s.body.is_empty());
     }
 
+    /// #5322 (PEX-D4-2026-10-05-01) — the audit probe: `If f is Actor`
+    /// documented FO4 syntax. Pre-fix `is` lexed as an identifier, the
+    /// condition ended at `f`, and the tail was glued into a fabricated
+    /// `VarDecl { ty: "is", name: "Actor" }` with ZERO errors. Now `is`
+    /// is the type-test operator and the `If` body stays empty.
+    #[test]
+    fn fo4_is_condition_parses_as_a_type_test() {
+        let s = parse(
+            "ScriptName T\n\
+             Function F()\n\
+             If f is Actor\n\
+             EndIf\n\
+             EndFunction\n",
+        );
+        let Some(ScriptItem::Function(func)) = s.body.first().map(|item| &item.node) else {
+            panic!("expected a function item");
+        };
+        let Some(stmt) = func.body.first() else {
+            panic!("expected the If statement");
+        };
+        let Stmt::If {
+            condition,
+            body,
+            elseif_clauses,
+            else_body,
+        } = &stmt.node
+        else {
+            panic!("expected Stmt::If, got {:?}", stmt.node);
+        };
+        assert!(
+            matches!(&condition.node, Expr::Is { .. }),
+            "condition must be the type-test form, got {:?}",
+            condition.node
+        );
+        assert!(body.is_empty(), "no fabricated statements in the If body");
+        assert!(elseif_clauses.is_empty() && else_body.is_none());
+    }
+
     /// SCR-D4-02 (#1734) — after a recoverable error in the FIRST top-level
     /// item, recovery must resume at the next line so the SECOND item still
     /// parses. Pre-fix `skip_to_next_line` walked to EOF and dropped it.

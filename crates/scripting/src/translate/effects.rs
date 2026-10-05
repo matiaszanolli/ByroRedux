@@ -633,6 +633,7 @@ fn is_side_effect_free(e: &Expr) -> bool {
             is_side_effect_free(&left.node) && is_side_effect_free(&right.node)
         }
         Expr::Cast { expr, .. } => is_side_effect_free(&expr.node),
+        Expr::Is { expr, .. } => is_side_effect_free(&expr.node),
         Expr::New { size, .. } => is_side_effect_free(&size.node),
         Expr::ArrayLit(items) => items.iter().all(|i| is_side_effect_free(&i.node)),
         Expr::IntLit(_)

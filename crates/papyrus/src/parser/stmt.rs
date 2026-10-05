@@ -365,6 +365,48 @@ mod tests {
             .collect())
     }
 
+    /// #5322 (PEX-D4-2026-10-05-01) — the statement terminator is
+    /// enforced: `expect_eol` used to return `Ok` for whatever followed
+    /// the statement, so a glued tail parsed as a second statement with
+    /// zero errors. Now the tail is a recovered error and is skipped,
+    /// leaving exactly the first statement in the block.
+    #[test]
+    fn glued_statement_tail_is_an_error_and_not_a_statement() {
+        let (preprocessed, _map) = preprocess("Int x = 0 y = 2\n");
+        let (tokens, _errs) = lex(&preprocessed);
+        let mut parser = Parser::new(tokens);
+        let stmts = parser.parse_block(&[]).expect("block parses with recovery");
+        assert_eq!(stmts.len(), 1, "only the first statement may parse");
+        assert!(
+            matches!(stmts[0].node, Stmt::VarDecl(_)),
+            "the surviving statement is the declaration"
+        );
+        assert!(
+            !parser.errors().is_empty(),
+            "the glued tail must be recorded as an error"
+        );
+    }
+
+    /// #5322 — terminator-safe recovery: a `x = 1 EndIf` glue must NOT
+    /// consume `EndIf`, or the enclosing block's terminator check eats
+    /// the wrong token and mis-nests. The keyword stays unconsumed for
+    /// `parse_block` to find.
+    #[test]
+    fn glued_block_terminator_stays_for_the_enclosing_block() {
+        let (preprocessed, _map) = preprocess("Int x = 0 EndIf\nInt ok = 1\n");
+        let (tokens, _errs) = lex(&preprocessed);
+        let mut parser = Parser::new(tokens);
+        let stmts = parser
+            .parse_block(&[Token::KwEndIf])
+            .expect("block parses with recovery");
+        assert_eq!(stmts.len(), 1, "only the declaration parses; EndIf terminates");
+        assert!(!parser.errors().is_empty(), "the glue is an error");
+        assert!(
+            matches!(parser.peek(), Some(Token::KwEndIf)),
+            "EndIf must remain unconsumed for the enclosing block"
+        );
+    }
+
     // ── #1712 / SCR-D4-01 — statement recursion-depth guard ──
 
     /// Build `depth` nested `<kw> True … End<kw>` blocks around a single

@@ -215,6 +215,7 @@ fn expression_contains_string(expression: &Expr, needle: &str) -> bool {
                 || expression_contains_string(&right.node, needle)
         }
         Expr::Cast { expr, .. } => expression_contains_string(&expr.node, needle),
+        Expr::Is { expr, .. } => expression_contains_string(&expr.node, needle),
         Expr::New { size, .. } => expression_contains_string(&size.node, needle),
         Expr::ArrayLit(values) => values
             .iter()
@@ -262,6 +263,7 @@ fn expression_contains_call(expression: &Expr, receiver: &str, method: &str) -> 
                 || expression_contains_call(&right.node, receiver, method)
         }
         Expr::Cast { expr, .. } => expression_contains_call(&expr.node, receiver, method),
+        Expr::Is { expr, .. } => expression_contains_call(&expr.node, receiver, method),
         Expr::New { size, .. } => expression_contains_call(&size.node, receiver, method),
         Expr::ArrayLit(values) => values
             .iter()

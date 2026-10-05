@@ -105,6 +105,11 @@ impl Parser {
                     lhs = self.parse_cast(lhs)?;
                     continue;
                 }
+                Token::KwIs if PREC_CAST > min_bp => {
+                    self.enter_chain_link()?;
+                    lhs = self.parse_is(lhs)?;
+                    continue;
+                }
                 _ => {}
             }
 
@@ -362,6 +367,23 @@ impl Parser {
         let span = lhs.span.merge(target_type.span);
         Ok(Spanned::new(
             Expr::Cast {
+                expr: Box::new(lhs),
+                target_type,
+            },
+            span,
+        ))
+    }
+
+    /// Parse FO4 `is Type` type-test suffix (#5322). Same precedence
+    /// family as `as`; before `Is` had a token, the word lexed as an
+    /// identifier and the statement tail became a fabricated second
+    /// statement (`If f is Actor` → `If f` + `VarDecl is Actor`).
+    fn parse_is(&mut self, lhs: Spanned<Expr>) -> Result<Spanned<Expr>, ParseError> {
+        self.advance(); // consume 'is'
+        let target_type = self.parse_type()?;
+        let span = lhs.span.merge(target_type.span);
+        Ok(Spanned::new(
+            Expr::Is {
                 expr: Box::new(lhs),
                 target_type,
             },
@@ -761,6 +783,47 @@ mod tests {
             }
             other => panic!("expected Cast, got {other:?}"),
         }
+    }
+
+    /// #5322 (PEX-D4-2026-10-05-01) — FO4 type-test operator. `is` used
+    /// to lex as a bare identifier, ending the expression and leaving
+    /// the tail to be glued into a fabricated following statement.
+    #[test]
+    fn test_is_type_test() {
+        let e = parse_expr_str("f is Actor").unwrap();
+        match &e.node {
+            Expr::Is { expr, target_type } => {
+                assert_ident(&expr.node, "f");
+                assert!(
+                    matches!(&target_type.node, Type::Object(id) if id.eq_ignore_case("Actor"))
+                );
+            }
+            other => panic!("expected Is, got {other:?}"),
+        }
+    }
+
+    /// #5322 — `is` shares the cast precedence level: it binds tighter
+    /// than the boolean operators, so `f is Actor && g` is
+    /// `Is(f, Actor) && g`.
+    #[test]
+    fn test_is_binds_tighter_than_boolops() {
+        let e = parse_expr_str("f is Actor && g").unwrap();
+        match &e.node {
+            Expr::BinaryOp { left, .. } => {
+                assert!(matches!(&left.node, Expr::Is { .. }));
+            }
+            other => panic!("expected BinaryOp, got {other:?}"),
+        }
+    }
+
+    /// #5322 — the lib entry point must consume its whole input: a
+    /// parsed prefix with trailing tokens is now an error, not a silent
+    /// truncation (these two shapes returned `Ok` pre-fix).
+    #[test]
+    fn parse_expr_rejects_trailing_tokens() {
+        assert!(crate::parse_expr("a > 5 b").is_err());
+        assert!(crate::parse_expr("Game.GetPlayer() garbage tokens").is_err());
+        assert!(crate::parse_expr("a > 5").is_ok());
     }
 
     #[test]

@@ -32,6 +32,10 @@ pub fn parse_expr(source: &str) -> Result<Spanned<Expr>, Vec<ParseError>> {
     let mut parser = parser::Parser::new(tokens);
     match parser.parse_expr() {
         Ok(expr) => {
+            // #5322 — a single-expression entry point must consume its
+            // whole input: `Game.GetPlayer() garbage tokens` used to
+            // return the parsed prefix and drop the tail silently.
+            parser.require_input_end("expression");
             if parser.errors().is_empty() {
                 Ok(Spanned::new(
                     expr.node,

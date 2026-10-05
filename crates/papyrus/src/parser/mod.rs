@@ -244,25 +244,86 @@ impl Parser {
     }
 
     /// Try to consume a newline (or EOF). Statement terminator.
+    ///
+    /// #5322 (PEX-D4-2026-10-05-01) — the terminator is now ENFORCED.
+    /// This used to return `Ok` for whatever followed the statement
+    /// ("be lenient"), so when the Pratt loop stopped at a token it did
+    /// not recognise, the tail was silently re-parsed as a new
+    /// statement: `If f is Actor` became `If f` plus a fabricated
+    /// `VarDecl` named `Actor`, with zero errors. Now the stray token is
+    /// recorded as a recovered `UnexpectedToken` and the rest of the
+    /// line is skipped, so strict-fail callers checking `errors()` see
+    /// it and the tail can no longer glue. DocComments still pass (a
+    /// `;;` doc comment precedes the next top-level item), and
+    /// [`Self::skip_to_line_end`] leaves block terminators (`EndIf`,
+    /// `Else`, …) unconsumed so the enclosing block still finds them.
     pub fn expect_eol(&mut self) -> Result<(), ParseError> {
-        // After a statement, we expect a newline or EOF
-        // Skip doc comments that might follow
-        if self.pos < self.tokens.len() {
-            match &self.tokens[self.pos].token {
-                Token::Newline => {
-                    self.pos += 1;
-                    Ok(())
-                }
-                Token::DocComment(_) => Ok(()), // doc comment on next line
-                _ if self.pos >= self.tokens.len() => Ok(()),
-                _ => {
-                    // Check if this token is on a new line by looking for preceding newline
-                    // For now, be lenient — many Papyrus scripts don't have strict EOL
-                    Ok(())
-                }
+        if self.pos >= self.tokens.len() {
+            return Ok(()); // EOF is fine
+        }
+        match &self.tokens[self.pos].token {
+            Token::Newline => {
+                self.pos += 1;
+                Ok(())
             }
-        } else {
-            Ok(()) // EOF is fine
+            Token::DocComment(_) => Ok(()), // doc comment on next line
+            _ => {
+                let error = ParseError::unexpected_token(
+                    "end of statement (newline)",
+                    Some(self.tokens[self.pos].token.clone()),
+                    self.tokens[self.pos].span,
+                );
+                self.push_error(error);
+                self.skip_to_line_end();
+                Ok(())
+            }
+        }
+    }
+
+    /// Raw-token walk to the next line boundary, for statement-
+    /// terminator recovery (#5322). Stops — without consuming — at any
+    /// block/item terminator keyword: a `x = 1 EndIf` glue must leave
+    /// `EndIf` for the enclosing `parse_block` terminator check,
+    /// otherwise recovery eats the terminator and mis-nests the block.
+    fn skip_to_line_end(&mut self) {
+        while let Some((tok, _)) = self.advance_raw() {
+            match tok {
+                Token::Newline => return,
+                Token::KwElse
+                | Token::KwElseIf
+                | Token::KwEndIf
+                | Token::KwEndWhile
+                | Token::KwEndEvent
+                | Token::KwEndFunction
+                | Token::KwEndProperty
+                | Token::KwEndState => {
+                    self.pos -= 1; // un-consume: the block owns this token
+                    return;
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// #5322 — after a construct that must consume its whole input (the
+    /// console/probe single-expression entry point), any remaining token
+    /// is trailing garbage the construct silently ignored. Recorded as a
+    /// recovered error rather than returned, so the caller's existing
+    /// `errors()` check surfaces it.
+    pub fn require_input_end(&mut self, context: &str) {
+        self.skip_newlines();
+        while self.pos < self.tokens.len()
+            && matches!(self.tokens[self.pos].token, Token::DocComment(_))
+        {
+            self.pos += 1;
+            self.skip_newlines();
+        }
+        if self.pos < self.tokens.len() {
+            self.errors.push(ParseError::unexpected_token(
+                format!("end of {context}"),
+                Some(self.tokens[self.pos].token.clone()),
+                self.tokens[self.pos].span,
+            ));
         }
     }
 
