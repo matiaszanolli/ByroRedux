@@ -24,8 +24,11 @@
 //!   form id) stands in as the opening line.
 //! - A topic inside a branch that is not its starting topic, or the start of
 //!   a branch with neither flag, is reached only through a link.
-//! - Oblivion / FO3 / FNV author no branches, so their topics are all list
-//!   entries (FO3/FNV's DIAL `Top-level` flag is not decoded).
+//! - Oblivion authors no branches, so its topics are all list entries.
+//!   FO3/FNV author no branches either, but their DIAL `DATA` carries a
+//!   flags byte (#5224): only the `Top-level` (0x02) topics are list
+//!   entries — 844 of Fallout3.esm's 5,130 Topic DIALs — and the rest are
+//!   reached through a link.
 //!
 //! Deliberate scope (per the fixture's no-speculative-breadth rule):
 //!
@@ -130,7 +133,9 @@ enum TopicEntry {
     /// A Blocking branch's starting topic: pre-empts the list when it passes.
     Blocking,
     /// A list entry: a Top-Level branch's starting topic, or a topic with no
-    /// branch (Oblivion–FNV, or a branch the loaded plugins do not define).
+    /// branch (Oblivion, or a branch the loaded plugins do not define). On
+    /// FO3/FNV a branch-less topic is only a list entry when its DIAL
+    /// `DATA` flags carry `Top-level` (#5224).
     TopLevel,
     /// Reached only through another INFO's `TCLT` link.
     LinkOnly,
@@ -141,6 +146,12 @@ fn topic_entry(index: &EsmIndex, record: &DialRecord) -> TopicEntry {
         .branch
         .and_then(|branch| index.dialogue_branches.get(&branch))
     else {
+        // #5224 — a Fallout-era topic whose `DATA` flags lack `Top-level`
+        // is choice-only: never an opening entry. `None` (any other game,
+        // or no `DATA` authored) keeps the pre-#5224 shape.
+        if record.top_level() == Some(false) {
+            return TopicEntry::LinkOnly;
+        }
         return TopicEntry::TopLevel;
     };
     if branch.starting_topic != record.form_id {
@@ -1162,6 +1173,23 @@ mod tests {
         });
         npc_dialogue_selection_system(&world);
         assert!(selected(&world, eltrys).is_some(), "awake: talks");
+    }
+
+    /// #5224 — a branch-less FO3/FNV topic is a list entry only when its
+    /// DIAL `DATA` flags carry `Top-level` (0x02); the choice-only rest
+    /// are reached through a link. Unknown flags (`None` — other games,
+    /// or no `DATA`) keep the pre-#5224 shape.
+    #[test]
+    fn a_branch_less_fallout_topic_needs_the_top_level_flag() {
+        let index = byroredux_plugin::esm::records::EsmIndex::default();
+        let mut choice_only = fixture_topic();
+        choice_only.data_flags = Some(0x00);
+        let mut top = fixture_topic();
+        top.data_flags = Some(0x02);
+        let unknown = fixture_topic();
+        assert_eq!(topic_entry(&index, &choice_only), TopicEntry::LinkOnly);
+        assert_eq!(topic_entry(&index, &top), TopicEntry::TopLevel);
+        assert_eq!(topic_entry(&index, &unknown), TopicEntry::TopLevel);
     }
 
     /// #5037 fixture: MS01's real shape in miniature. A blocking branch

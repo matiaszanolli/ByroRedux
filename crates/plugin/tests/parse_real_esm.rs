@@ -152,6 +152,39 @@ fn fo4_dialogue_branches_and_categories() {
     }
 }
 
+/// #5224 — FO3/FNV author the DIAL topic flags in `DATA` byte 1:
+/// `Top-level` (0x02) marks the topics that open the menu, `Rumors`
+/// (0x01) the radio gossip. Raw census on the GOTY master (audit
+/// FO3-D2-02): 5,130 Type-0 Topic DIALs, flags 0x00 ×4,284 / 0x02 ×844 /
+/// 0x01 ×1 — so only 844 would ever be menu entries, not all 5,130.
+#[test]
+#[ignore = "needs FO3 game data on disk"]
+fn fallout3_dial_topic_flags_census() {
+    use byroredux_plugin::esm::records::DialogueCategory;
+    let Some(data) = data_dir(test_paths::FO3_ENV, test_paths::FO3_DEFAULT) else {
+        eprintln!("[FO3/DIAL flags] skipping: game data unavailable");
+        return;
+    };
+    let bytes = std::fs::read(data.join("Fallout3.esm")).expect("read Fallout3.esm");
+    let index = parse_esm(&bytes).expect("parse Fallout3.esm");
+    let topics: Vec<_> = index
+        .dialogues
+        .values()
+        .filter(|d| d.category == DialogueCategory::Topic)
+        .collect();
+    assert_eq!(topics.len(), 5_130);
+    assert_eq!(
+        topics.iter().filter(|d| d.top_level() == Some(true)).count(),
+        844,
+        "the Top-level Topics — every other one is choice-only"
+    );
+    assert_eq!(
+        topics.iter().filter(|d| d.data_flags == Some(0x01)).count(),
+        1,
+        "the lone Rumors-flagged Topic DIAL"
+    );
+}
+
 /// #2905 — FNAM is a display/coercion hint; FLTV is always an IEEE f32.
 #[test]
 #[ignore = "needs FNV game data on disk"]

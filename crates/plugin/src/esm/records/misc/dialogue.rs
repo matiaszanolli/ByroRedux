@@ -29,6 +29,13 @@ pub struct DialRecord {
     /// The topic's `DATA` category, translated per game into one canonical
     /// enum. See [`DialogueCategory`] for the per-game layouts (#5045).
     pub category: DialogueCategory,
+    /// FO3/FNV `DATA` byte 1 — the topic flags (xEdit `wbDefinitionsFO3`:
+    /// `Rumors` 0x01, `Top-level` 0x02). `None` on every other game, and
+    /// when the record authored no `DATA` at all; a 1-byte `DATA` (xEdit
+    /// marks the flags byte optional) reads as flags `0x00`. #5224 — the
+    /// pre-fix decode dropped the byte, so every owned branch-less
+    /// Fallout-era topic would have listed as a top-level menu entry.
+    pub data_flags: Option<u8>,
     /// Skyrim+ `BNAM` — the [`DlbrRecord`] dialogue branch this topic belongs
     /// to (global space). `None` on Oblivion / FO3 / FNV, which author no
     /// branches.
@@ -40,6 +47,17 @@ pub struct DialRecord {
     /// `extract_dial_with_info` walker. Each entry is one branch of the
     /// dialogue (a single NPC response + its conditions / triggers).
     pub infos: Vec<InfoRecord>,
+}
+
+impl DialRecord {
+    /// #5224 — the `Top-level` bit (0x02) of [`Self::data_flags`]: only a
+    /// Topic DIAL with it set opens the Fallout-era topic menu; the rest
+    /// are reached through INFO `TCLT` choices. `None` when the flags are
+    /// unknown (any other game, or no `DATA` authored) — consumers keep
+    /// the pre-#5224 behaviour then.
+    pub fn top_level(&self) -> Option<bool> {
+        self.data_flags.map(|flags| flags & 0x02 != 0)
+    }
 }
 
 /// A `DIAL` topic's category, translated from each game's `DATA` layout
@@ -394,7 +412,16 @@ pub fn parse_dial(
                 }
             }
             // #5045 — the category byte and its enum are per game.
-            b"DATA" => out.category = DialogueCategory::from_data(game, &sub.data),
+            // #5224 — FO3/FNV author the topic flags in DATA byte 1
+            // (Rumors 0x01, Top-level 0x02, xEdit `wbDefinitionsFO3`).
+            // Stored for `DialRecord::top_level`; no other game reads
+            // byte 1 as flags (Skyrim+ carry the category there).
+            b"DATA" => {
+                out.category = DialogueCategory::from_data(game, &sub.data);
+                if game == GameKind::Fallout3NV && !sub.data.is_empty() {
+                    out.data_flags = Some(sub.data.get(1).copied().unwrap_or(0));
+                }
+            }
             // Skyrim+ dialogue branch; Oblivion–FNV author no BNAM on DIAL.
             b"BNAM" if sub.data.len() >= 4 => {
                 let branch = remap_fid(SubReader::new(&sub.data).u32_or_default(), remap);
@@ -909,6 +936,50 @@ mod tests {
         // Index 1 / 4 labels differ per game — kept raw.
         let favor = parse_dial(0x1, &[sub(b"DATA", [0, 1, 0, 0])], &None, GameKind::Skyrim);
         assert_eq!(favor.category, DialogueCategory::Other(1));
+    }
+
+    /// #5224 — FO3/FNV author the topic flags in DATA byte 1 (`Rumors`
+    /// 0x01, `Top-level` 0x02); the pre-fix decode dropped the byte. Every
+    /// other game keeps `data_flags` at `None` — on Skyrim+ byte 1 is the
+    /// category byte, not a flags byte.
+    #[test]
+    fn fallout_era_dial_flags_decode_and_other_games_stay_none() {
+        let top = parse_dial(
+            0x1,
+            &[sub(b"DATA", [0u8, 0x02])],
+            &None,
+            GameKind::Fallout3NV,
+        );
+        assert_eq!(top.category, DialogueCategory::Topic);
+        assert_eq!(top.top_level(), Some(true));
+
+        let rumors = parse_dial(
+            0x2,
+            &[sub(b"DATA", [0u8, 0x01])],
+            &None,
+            GameKind::Fallout3NV,
+        );
+        assert_eq!(
+            rumors.top_level(),
+            Some(false),
+            "Rumors alone is not Top-level"
+        );
+
+        // xEdit marks the flags byte optional; a 1-byte DATA reads as
+        // flags 0x00, i.e. not top-level.
+        let short = parse_dial(0x3, &[sub(b"DATA", [0u8])], &None, GameKind::Fallout3NV);
+        assert_eq!(short.top_level(), Some(false));
+
+        // No DATA at all stays unknown (`None`), like every other game.
+        let none = parse_dial(0x4, &[sub(b"EDID", b"X\0")], &None, GameKind::Fallout3NV);
+        assert_eq!(none.top_level(), None);
+
+        // Skyrim+'s byte 1 is the category — stored as such, never as flags.
+        let skyrim = parse_dial(0x5, &[sub(b"DATA", [0u8, 2u8, 0, 0])], &None, GameKind::Skyrim);
+        assert_eq!(skyrim.category, DialogueCategory::Scene);
+        assert_eq!(skyrim.top_level(), None);
+        let oblivion = parse_dial(0x6, &[sub(b"DATA", [0u8])], &None, GameKind::Oblivion);
+        assert_eq!(oblivion.top_level(), None);
     }
 
     #[test]
