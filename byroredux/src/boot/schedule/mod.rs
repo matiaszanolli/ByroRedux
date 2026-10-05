@@ -540,6 +540,16 @@ mod system_access_declaration_tests {
     const COMBAT_AI_SRC: &str = include_str!("../../systems/combat_ai.rs");
     const AI_PACKAGE_SRC: &str = include_str!("../../npc_spawn/ai_package.rs");
     const ANIM_CONVERT_SRC: &str = include_str!("../../anim_convert.rs");
+    // #5307 — the spoken-INFO fragment path: the bin system calls into the
+    // scripting crate (apply_spoken_info_fragment → apply_fragment_guard_free),
+    // whose deferred-effects flush writes the fragment queues and, on a dirty
+    // frame, SceneActorBindings via the scene.rs helper.
+    const NPC_DIALOGUE_SRC: &str = include_str!("../../systems/npc_dialogue.rs");
+    const FRAGMENT_SYSTEMS_SRC: &str =
+        include_str!("../../../../crates/scripting/src/fragment/systems.rs");
+    const FRAGMENT_EFFECTS_SRC: &str =
+        include_str!("../../../../crates/scripting/src/fragment/effects.rs");
+    const SCRIPTING_SCENE_SRC: &str = include_str!("../../../../crates/scripting/src/scene.rs");
 
     /// The nine `add_to_with_access` registrations, each mapped to the
     /// function bodies that make up its acquisition surface.
@@ -983,6 +993,27 @@ mod system_access_declaration_tests {
         assert_declares_everything_it_acquires(
             &[(OBSCRIPT_SRC, "legacy_obscript_load_order_system")],
             "legacy_obscript_load_order_system",
+        );
+    }
+
+    /// #5307 — the selection system's spoken-INFO path writes the fragment
+    /// queues (`apply_fragment_guard_free` → `apply_effects` /
+    /// `apply_at_depth` take `FragmentExecutionQueue` and
+    /// `PendingFragmentActivations` with `try_resource_mut`) and marks
+    /// `SceneActorBindings` dirty (`mark_scene_actor_bindings_dirty`), but
+    /// the row declared all three as reads. The scan follows the bin system
+    /// into the scripting crate so the row's write declarations can no
+    /// longer silently rot back to reads.
+    #[test]
+    fn npc_dialogue_selection_declares_everything_the_spoken_fragment_path_acquires() {
+        assert_declares_everything_it_acquires(
+            &[
+                (NPC_DIALOGUE_SRC, "npc_dialogue_selection_system_inner"),
+                (FRAGMENT_SYSTEMS_SRC, "apply_spoken_info_fragment"),
+                (FRAGMENT_EFFECTS_SRC, "apply_fragment_guard_free"),
+                (SCRIPTING_SCENE_SRC, "mark_scene_actor_bindings_dirty"),
+            ],
+            "make_npc_dialogue_selection_system",
         );
     }
 }

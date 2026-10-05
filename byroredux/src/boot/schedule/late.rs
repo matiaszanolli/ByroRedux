@@ -456,8 +456,30 @@ pub(super) fn register_late_systems(scheduler: &mut Scheduler) {
             // fragment table feeds the effects, and the executor's guard-free
             // unit journals stage transitions and defers latent tails.
             .reads_resource::<byroredux_scripting::DialogueInfoFragments>()
-            .reads_resource::<byroredux_scripting::FragmentExecutionQueue>()
-            .reads_resource::<byroredux_scripting::PendingFragmentActivations>()
+            // #5307 — the spoken-fragment path WRITES these three:
+            // `apply_fragment_guard_free` → `apply_effects` takes
+            // `FragmentExecutionQueue` (`try_resource_mut`, effects.rs) for
+            // suspended tails; `DeferredFragmentEffects::apply_at_depth`
+            // appends `PendingFragmentActivations` and, on a dirty frame,
+            // flips `SceneActorBindings.dirty` via
+            // `mark_scene_actor_bindings_dirty`. They were declared reads —
+            // an under-declaration that would make a parallel-lane
+            // promotion of this row look safe when it is not.
+            .writes_resource::<byroredux_scripting::FragmentExecutionQueue>()
+            .writes_resource::<byroredux_scripting::PendingFragmentActivations>()
+            .writes_resource::<byroredux_scripting::SceneActorBindings>()
+            // #5307 — the shared `apply_effects` body reaches every Effect
+            // variant an authored INFO fragment can carry: enable/lock state
+            // writes, cinematic-mode writes, faction-relation writes, and
+            // the form/provider/VMAD resolution reads. Surfaced by the
+            // `npc_dialogue_selection_declares_everything_…` source scan.
+            .writes_resource::<byroredux_scripting::ReferenceEnableState>()
+            .writes_resource::<byroredux_scripting::ReferenceLockState>()
+            .writes_resource::<byroredux_scripting::CinematicPresentationState>()
+            .writes_resource::<byroredux_scripting::FactionRelations>()
+            .reads_resource::<byroredux_scripting::LoadOrderIdentity>()
+            .reads_resource::<byroredux_scripting::PapyrusProviderRuntime>()
+            .reads_resource::<byroredux_scripting::QuestDefinitionRegistry>()
             .reads_resource::<byroredux_scripting::papyrus_demo::PapyrusPlayerEntity>()
             .writes_resource::<byroredux_scripting::quest_stages::QuestStageState>()
             .writes_resource::<byroredux_scripting::quest_stages::QuestObjectiveState>()
