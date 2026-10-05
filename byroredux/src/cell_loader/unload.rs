@@ -1,6 +1,6 @@
 //! Cell teardown — despawn entities + free GPU resources.
 
-use byroredux_core::ecs::components::{CellRoot, Children, Inventory, ItemInstanceId};
+use byroredux_core::ecs::components::{CellRoot, Children, Inventory, ItemInstanceId, Parent};
 use byroredux_core::ecs::resources::ItemInstancePool;
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::{AnimatedTextureFlip, MeshHandle, TextureHandle, World};
@@ -495,6 +495,18 @@ fn release_entities_timed(
     // Remove every surviving component row for the victim entities.
     let victim_count = victims.len();
     let phase_started = Instant::now();
+    // #5310 — a partial-subtree release (the #5028 gear path: the player
+    // body root survives, the released gear root was its child) must
+    // detach victims from parents that survive the despawn. `despawn_batch`
+    // frees component rows only — it never edits another entity's
+    // `Children` (its doc pins that as by-design for whole-chain cell
+    // teardown) — so without this step every equip → drop cycle left the
+    // despawned root's id in the body root's `Children`, growing a
+    // dangling entry that propagation and the child-reference budget walk
+    // forever (entity ids are never recycled, so nothing aliases; the
+    // leak is per-release and process-lifetime). Whole-chain teardowns are
+    // unaffected: a victim's parent is itself a victim and is skipped.
+    detach_victims_from_surviving_parents(world, &victims);
     world.despawn_batch(victims);
     if victim_count > 0 {
         // Quest-alias bindings may point at actor candidates owned by this
@@ -511,6 +523,51 @@ fn release_entities_timed(
     }
     timings.despawn = phase_started.elapsed();
     (mesh_drops.len(), freed_meshes.len(), texture_drops.len())
+}
+
+/// #5310 — before a despawn sweep, detach every victim whose `Parent`
+/// survives the sweep: drop the victim's id from that parent's `Children`
+/// (and the `Parent` row itself, which the despawn would remove anyway).
+/// Whole-chain teardowns (cell unload) pay one `Parent` query and no-op;
+/// partial-subtree releases (#5028's gear release) leave no dangling
+/// child id behind.
+fn detach_victims_from_surviving_parents(world: &mut World, victims: &[EntityId]) {
+    if victims.is_empty() {
+        return;
+    }
+    // Pass 1 — read the victims' Parent rows (dropping the read guard
+    // before any Children write, per the TypeId-sorted acquisition
+    // contract: Parent before Children).
+    let victim_set: HashSet<EntityId> = victims.iter().copied().collect();
+    let mut detach: Vec<(EntityId, EntityId)> = Vec::new();
+    for &victim in victims {
+        let Some(parent) = world.get::<Parent>(victim).map(|p| p.0) else {
+            continue;
+        };
+        if victim_set.contains(&parent) {
+            // The parent dies in the same sweep — `despawn_batch` clears
+            // both sides; no edit needed (and none would be safe).
+            continue;
+        }
+        detach.push((parent, victim));
+    }
+    if detach.is_empty() {
+        return;
+    }
+    // The Children storage may not exist at all in a world that never
+    // parented anything — same guard `add_child` uses before its
+    // `query_mut`.
+    if world.query::<Children>().is_none() {
+        return;
+    }
+    // Pass 2 — one Children write scope for every surviving parent.
+    let mut cq = world.query_mut::<Children>().unwrap();
+    for (parent, victim) in detach {
+        let Some(children) = cq.get_mut(parent) else {
+            continue;
+        };
+        children.0.retain(|child| *child != victim);
+    }
 }
 
 /// #5028 — [`release_entities_timed`] plus the same global finishing pass
@@ -1282,5 +1339,67 @@ mod victim_drain_tests {
 
         world.insert_resource(CellRootIndex::new());
         assert!(drain_cell_victims(&mut world, root).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod detach_tests {
+    use super::*;
+
+    /// #5310 — a partial-subtree release (the #5028 gear path: the player
+    /// body root survives, the released gear root was its child) must not
+    /// leave the despawned root's id in the surviving parent's `Children`.
+    /// `despawn_batch` never edits another entity's `Children`, so the
+    /// detach step is what prunes it.
+    #[test]
+    fn partial_subtree_release_detaches_victims_from_surviving_parents() {
+        let mut world = World::new();
+        world.register::<Children>();
+        world.register::<Parent>();
+        let body = world.spawn();
+        let gear_root = world.spawn();
+        world.insert(body, Children(vec![gear_root]));
+        world.insert(gear_root, Parent(body));
+
+        detach_victims_from_surviving_parents(&mut world, &[gear_root]);
+
+        let cq = world.query::<Children>().unwrap();
+        assert!(
+            !cq.get(body).unwrap().0.contains(&gear_root),
+            "the surviving parent's Children must not keep the released root"
+        );
+    }
+
+    /// Whole-chain teardown (cell unload): a victim whose parent also dies
+    /// in the same sweep is skipped — `despawn_batch` clears both sides.
+    #[test]
+    fn whole_chain_release_skips_victims_whose_parent_also_dies() {
+        let mut world = World::new();
+        world.register::<Children>();
+        world.register::<Parent>();
+        let body = world.spawn();
+        let gear = world.spawn();
+        world.insert(body, Children(vec![gear]));
+        world.insert(gear, Parent(body));
+
+        // Only the detach step runs here (no despawn) — it must not edit
+        // a parent that is itself a victim.
+        detach_victims_from_surviving_parents(&mut world, &[body, gear]);
+
+        let cq = world.query::<Children>().unwrap();
+        assert!(
+            cq.get(body).unwrap().0.contains(&gear),
+            "a same-sweep parent is left untouched; the despawn clears it"
+        );
+    }
+
+    /// A world that never parented anything (no `Children` storage at
+    /// all) must detach no-op, not panic on a missing storage.
+    #[test]
+    fn detach_is_safe_in_a_world_without_children_storage() {
+        let mut world = World::new();
+        let victim = world.spawn();
+        detach_victims_from_surviving_parents(&mut world, &[victim]);
+        // Survival is the assertion.
     }
 }
