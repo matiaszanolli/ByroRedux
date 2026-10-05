@@ -35,7 +35,7 @@ use anyhow::{Context, Result};
 use ash::vk;
 
 use super::allocator::SharedAllocator;
-use super::buffer::{GpuBuffer, NoUninit};
+use super::buffer::{GpuBuffer, NoUninit, byte_view};
 use super::reflect::{validate_set_layout, ReflectedShader};
 use super::sync::MAX_FRAMES_IN_FLIGHT;
 use crate::shader_constants::{
@@ -137,17 +137,12 @@ struct ModelPush {
     grid_spacing: f32,
     pad: u32,
 }
-
-fn push_bytes(push: &ModelPush) -> &[u8] {
-    // SAFETY: `#[repr(C)]` over 4-byte scalars with no padding, so every byte
-    // is initialised; the slice borrows `push`.
-    unsafe {
-        std::slice::from_raw_parts(
-            (push as *const ModelPush).cast::<u8>(),
-            std::mem::size_of::<ModelPush>(),
-        )
-    }
-}
+// SAFETY: `#[repr(C)]` over 4-byte scalars, 64 bytes, the one padding word
+// named (`pad`) and initialised by every constructor; `host_mirrors_match_
+// the_shader_strides` pins the size. Adding a field that breaks the tiling
+// now fails the `NoUninit` gate here instead of pushing uninitialised bytes
+// into `vkCmdPushConstants` (#5122).
+unsafe impl NoUninit for ModelPush {}
 
 /// Everything the tier needs from the host for one frame.
 pub struct GroundCoverModelFrame<'a> {
@@ -825,7 +820,9 @@ impl GroundCoverModelTier {
                     self.pipeline_layout,
                     vk::ShaderStageFlags::COMPUTE,
                     0,
-                    push_bytes(&push),
+                    // #5122 — the sanctioned `T → &[u8]` path: `ModelPush:
+                    // NoUninit` is the audited padding proof.
+                    byte_view(std::slice::from_ref(&push)),
                 );
                 device.cmd_dispatch(cmd, groups, 1, 1);
                 barrier(
