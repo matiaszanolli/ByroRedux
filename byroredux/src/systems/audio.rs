@@ -151,10 +151,38 @@ pub(crate) fn footstep_system(world: &World, _dt: f32) {
 
     // #5146 — the walking body in character mode; `None` in FlyCam (or
     // before the rig spawns), where the camera emitter keeps its original
-    // mover role.
-    let player_body = world
+    // mover role. #5305 — the body's airborne/swim gate is resolved to an
+    // owned `(body, gated)` pair HERE, before any query or resource guard
+    // is taken. #5146 originally did these per-entity gets inside the
+    // GlobalTransform + FootstepEmitter scope below, which recorded
+    // `GlobalTransform → CharacterController` / `→ WaterContact` edges
+    // (plus the same edges out of `FootstepEmitter`/`FootstepScratch`).
+    // Production already holds the reverse edges — `character_controller_
+    // system`: CharacterController → Transform; propagation: Transform →
+    // GlobalTransform; `make_water_interaction_system`/`water_damage_
+    // system`: WaterContact → GlobalTransform/ActorValues — so three
+    // cycles closed and the BYRO_LOCK_ORDER_CHECK lane went red. There is
+    // no runtime deadlock (the participants are all Late exclusives), but
+    // the detector's edges are process-wide and cannot tell an exclusive
+    // caller from a parallel one (#4616), so the gate must leave no edge
+    // behind. The values are per-frame inputs the loop below only reads,
+    // so resolving them once up front is behaviour-identical.
+    let body_gate = world
         .try_resource::<crate::systems::PlayerEntity>()
-        .and_then(|player| player.0);
+        .and_then(|player| player.0)
+        .map(|body| {
+            let controller = world.get::<byroredux_physics::CharacterController>(body);
+            let grounded = controller
+                .as_deref()
+                .is_some_and(|c: &byroredux_physics::CharacterController| c.is_grounded);
+            let swimming = match (&controller, world.get::<WaterContact>(body)) {
+                (Some(c), Some(contact)) => {
+                    depth_reaches_swimlevel(contact.depth, c.half_height + c.radius)
+                }
+                _ => false,
+            };
+            (body, !grounded || swimming)
+        });
 
     // Phase 1: walk every emitter, accumulate stride, collect the
     // positions where a footstep should fire this tick. Holding
@@ -190,33 +218,14 @@ pub(crate) fn footstep_system(world: &World, _dt: f32) {
                 fs.initialised = true;
                 continue;
             }
-            // #5146 — character-mode gating. The controller/contact reads
-            // are per-entity gets on separate storages, released within the
-            // statement; the system is a Late exclusive, so nothing runs
-            // concurrently against these locks.
-            if let Some(body) = player_body {
-                if entity != body {
-                    // A camera-borne emitter while a body exists: keep it
-                    // re-seeded so a later FlyCam switch doesn't replay the
-                    // whole boom arc as one stride burst.
-                    fs.last_position = pos;
-                    fs.accumulated_stride = 0.0;
-                    continue;
-                }
-                let controller = world.get::<byroredux_physics::CharacterController>(entity);
-                let grounded = controller
-                    .as_deref()
-                    .is_some_and(|c: &byroredux_physics::CharacterController| c.is_grounded);
-                let swimming = match (&controller, world.get::<WaterContact>(entity)) {
-                    (Some(c), Some(contact)) => {
-                        depth_reaches_swimlevel(contact.depth, c.half_height + c.radius)
-                    }
-                    _ => false,
-                };
-                if !grounded || swimming {
-                    // Airborne or swimming: stride does not accumulate.
-                    // Re-seed so the landing / water-exit distance never
-                    // replays as a burst of steps.
+            // #5146 — character-mode gating, gate pre-resolved above
+            // (#5305). A camera-borne emitter while a body exists stays
+            // re-seeded so a later FlyCam switch doesn't replay the whole
+            // boom arc as one stride burst; the body emitter re-seeds
+            // while airborne or swimming so the landing / water-exit
+            // distance never replays as a burst of steps.
+            if let Some((body, gated)) = body_gate {
+                if entity != body || gated {
                     fs.last_position = pos;
                     fs.accumulated_stride = 0.0;
                     continue;
@@ -970,6 +979,53 @@ mod footstep_tests {
             "the landing step must fire exactly its own distance, not the \
              replayed air travel"
         );
+    }
+
+    /// #5305 — the character-mode gate must resolve the body's
+    /// `CharacterController`/`WaterContact` reads as owned values BEFORE
+    /// the GlobalTransform/FootstepEmitter guards are taken. Under the CI
+    /// lock-order detector, taking them inside that scope recorded
+    /// `GlobalTransform → CharacterController` / `→ WaterContact`, which
+    /// closed three production cycles (`CharacterController → Transform →
+    /// GlobalTransform → CharacterController`, `GlobalTransform →
+    /// WaterContact → GlobalTransform`, and the ActorVitals chain) and
+    /// reddened the lane from tests elsewhere in this binary.
+    #[test]
+    fn footstep_gate_does_not_close_the_character_or_water_lock_cycles() {
+        if std::env::var_os("BYRO_LOCK_ORDER_CHECK").as_deref() != Some(std::ffi::OsStr::new("1")) {
+            return;
+        }
+
+        let (mut world, body, _cam) = character_mode_world(0.5);
+        world.insert(
+            body,
+            byroredux_core::ecs::components::water::WaterContact::default(),
+        );
+
+        // Transform -> GlobalTransform (transform propagation's order),
+        // then CharacterController -> Transform (character_controller_
+        // system's order) — the production edges the pre-fix gets closed
+        // against.
+        {
+            let _transform = world.query::<Transform>().unwrap();
+            let _global = world.query::<GlobalTransform>().unwrap();
+        }
+        {
+            let _controller = world
+                .query::<byroredux_physics::CharacterController>()
+                .unwrap();
+            let _transform = world.query::<Transform>().unwrap();
+        }
+
+        // Pre-fix this took CharacterController + WaterContact while
+        // holding the GlobalTransform/FootstepEmitter guards and the
+        // detector panicked here; with the owned-value gate it records no
+        // cycle-closing edge. Two ticks: the first only seeds the
+        // emitters (the gate branch is unreachable then); the second
+        // evaluates the body gate — the exact shape the CI lane panicked
+        // on.
+        footstep_system(&world, 1.0 / 60.0);
+        footstep_system(&world, 1.0 / 60.0);
     }
 }
 
