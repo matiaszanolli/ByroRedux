@@ -587,21 +587,56 @@ struct ElementContent {
 /// 256 bounds every vanilla document (the corpora splice a handful each).
 const MAX_INCLUDE_SPLICES: usize = 256;
 
+/// #5314 (PAR-D1-2026-10-05-01) — total fragment BYTES spliced per
+/// top-level parse. The splice count alone bounds fetches, not output:
+/// each splice re-parses the whole fragment into fresh `TileSeed`s, so
+/// 256 splices × an arbitrary fragment grew the document linearly at
+/// ~7.2 MiB resident per KiB of fragment (a few KB of mod-archive
+/// payload expanding to gigabytes). Census of the three legacy corpora
+/// (2026-10-05): the heaviest vanilla document splices 38,378 bytes of
+/// distinct fragments; 256 KiB is ~7× that and bounds the worst-case
+/// tile arena at a few tens of MiB even for pure-`<rect/>` fragments.
+const MAX_INCLUDE_BYTES: usize = 256 * 1024;
+
+/// #5314 — per-fragment cap, enforced BEFORE the fetched bytes enter the
+/// per-document cache. Without it, fragments too large to ever splice
+/// (a 4 MiB mod prefab compresses to ~6 KB) were still fetched once per
+/// distinct path and kept alive by the cache for the whole parse — up to
+/// 256 × the fragment size of retained bytes. 64 KiB is ~5× the largest
+/// vanilla fragment (12,582 B, FNV); anything bigger is not a prefab.
+const MAX_INCLUDE_FRAGMENT_BYTES: usize = 64 * 1024;
+
+/// #5314 — total tiles materialized per document (root + all spliced
+/// fragments). The 48-level cap bounds DEPTH only; without a total cap a
+/// wide-enough document (or fragment fan-out) grows the arena without
+/// bound. Census: the largest vanilla document has 205 tiles; 16,384 is
+/// 80× that and caps the arena at a few MiB.
+const MAX_DOCUMENT_TILES: usize = 16_384;
+
 /// Per-document `<include>` state, threaded through the parse recursion
 /// (#5007). The budget and cycle checks run BEFORE any fragment fetch,
 /// and fetched bytes are memoized by resolved archive path, so a hostile
 /// fragment — e.g. N self-includes, or anything after the budget is
 /// spent — costs O(1) fetches per distinct path instead of
 /// O(includes × fragment bytes) of extract + inflate work on the main
-/// thread.
+/// thread. #5314 extends it with the document-wide size budgets
+/// (spliced bytes, total tiles) that bound the parse OUTPUT, not just
+/// the fetch work.
 struct IncludeState {
     /// Active nesting stack of resolved archive paths — the cycle key.
     seen: Vec<String>,
     /// Remaining splices across the whole document.
     budget: usize,
+    /// Fragment bytes spliced so far across the whole document (#5314).
+    bytes_spent: usize,
+    /// Tiles materialized so far, root document and fragments
+    /// combined (#5314).
+    tiles: usize,
     /// Probe results by resolved archive path. A miss (`None`) is cached
     /// too, so repeated dead includes cost one archive probe per
-    /// candidate spelling, not one per include element.
+    /// candidate spelling, not one per include element. Oversized
+    /// fragments (#5314) cache as `None` — unusable for splicing — so
+    /// their bytes are never retained.
     cache: HashMap<String, Option<Vec<u8>>>,
     /// Dead-include causes already reported. A hostile fragment can
     /// repeat the same cycle / missing / budget-exhausted include
@@ -615,6 +650,8 @@ impl IncludeState {
         IncludeState {
             seen: Vec::new(),
             budget: MAX_INCLUDE_SPLICES,
+            bytes_spent: 0,
+            tiles: 0,
             cache: HashMap::new(),
             warned: HashSet::new(),
         }
@@ -628,6 +665,18 @@ impl IncludeState {
                 "budget" => log::warn!(
                     "menuxml: include splice budget ({MAX_INCLUDE_SPLICES}) exhausted \
                      at '{path}' — further splices truncated"
+                ),
+                "bytes" => log::warn!(
+                    "menuxml: include byte budget ({MAX_INCLUDE_BYTES}) exhausted \
+                     at '{path}' — further splices truncated"
+                ),
+                "oversize" => log::warn!(
+                    "menuxml: include fragment '{path}' exceeds \
+                     {MAX_INCLUDE_FRAGMENT_BYTES} bytes — skipped"
+                ),
+                "tiles" => log::warn!(
+                    "menuxml: document tile budget ({MAX_DOCUMENT_TILES}) exceeded — \
+                     further tiles truncated"
                 ),
                 "missing" => log::warn!("menuxml: include '{path}' not found"),
                 other => log::warn!("menuxml: include '{path}' skipped ({other})"),
@@ -723,6 +772,13 @@ fn splice_include(
         includes.warn_once("budget", path);
         return;
     }
+    // #5314 — byte budget check FIRST (before any probe or fetch): once
+    // the spliced-byte budget is spent, nothing further can fit, so
+    // further includes must not touch the source at all.
+    if includes.bytes_spent >= MAX_INCLUDE_BYTES {
+        includes.warn_once("bytes", path);
+        return;
+    }
     // Vanilla authors prefab includes relative to `menus\prefabs\`
     // (`<include src="button_long.xml"/>` from menus\dialog\*.xml).
     // Also accept a menus\-relative form and a raw archive path.
@@ -762,6 +818,16 @@ fn splice_include(
         }
         match src.menu_xml(cand) {
             Some(bytes) => {
+                // #5314 — an oversized fragment can never fit the byte
+                // budget, so treat it as absent for this spelling and
+                // cache `None`: the bytes are dropped, later includes of
+                // the same path do not refetch, and the next candidate
+                // spelling still gets its probe.
+                if bytes.len() > MAX_INCLUDE_FRAGMENT_BYTES {
+                    includes.warn_once("oversize", path);
+                    includes.cache.insert(key.clone(), None);
+                    continue;
+                }
                 includes.cache.insert(key.clone(), Some(bytes.clone()));
                 resolved = Some((key.clone(), bytes));
                 break;
@@ -775,6 +841,14 @@ fn splice_include(
         includes.warn_once("missing", path);
         return;
     };
+    // #5314 — per-document budget on total spliced bytes: a splice that
+    // would push the document over the cap is refused without consuming
+    // the splice count (it never happens).
+    if includes.bytes_spent + bytes.len() > MAX_INCLUDE_BYTES {
+        includes.warn_once("bytes", path);
+        return;
+    }
+    includes.bytes_spent += bytes.len();
     includes.budget -= 1;
     let Ok(text) = String::from_utf8(bytes) else {
         includes.warn_once("utf8", path);
@@ -818,6 +892,19 @@ fn parse_tile_element(
     depth: usize,
 ) -> Option<TileSeed> {
     let kind = TileKind::from_element(name)?;
+    // #5314 — total tile cap (root document + spliced fragments): the
+    // 48-level cap bounds depth only, so a wide document or a small
+    // fragment spliced 256× grew the arena without bound. Over the cap
+    // the element's subtree is skipped wholesale (no recursive parse,
+    // no include splices inside it).
+    if includes.tiles >= MAX_DOCUMENT_TILES {
+        includes.warn_once("tiles", "");
+        if !self_closing {
+            skip_element_subtree(scanner);
+        }
+        return None;
+    }
+    includes.tiles += 1;
     let tile_name = attr_value(attrs, "name");
     if self_closing {
         return Some(TileSeed {

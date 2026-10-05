@@ -425,6 +425,107 @@ fn repeated_sequential_includes_share_one_fetch() {
     assert_eq!(doc.tiles[x].traits.get("width"), Some(&RawTrait::Num(5.0)));
 }
 
+/// #5314 (PAR-D1-2026-10-05-01) — the splice COUNT budget bounds fetches,
+/// not output: each splice re-parses the whole fragment, so 256 splices ×
+/// an unbounded fragment grew the document linearly at ~7.2 MiB resident
+/// per KiB of fragment. The byte budget must stop splicing once
+/// MAX_INCLUDE_BYTES (256 KiB) of fragment text has been consumed: with
+/// ten ~48 KiB fragments offered, exactly the five that fit (5 × 49,015 =
+/// 245,075 ≤ 262,144; a sixth would exceed it) splice, in order.
+#[test]
+fn include_byte_budget_bounds_total_spliced_bytes() {
+    let mut files: HashMap<String, String> = HashMap::new();
+    // ~48 KiB each: marker + padding, far under the 64 KiB per-fragment
+    // cap but big enough that five exhaust the 256 KiB document budget.
+    for i in 0..10 {
+        files.insert(
+            format!("menus\\prefabs\\k{i}.xml"),
+            format!("<string>marker{i:02} {}</string>", "A".repeat(49_000)),
+        );
+    }
+    let host = format!(
+        r#"<menu name="A"><image name="x">{}</image></menu>"#,
+        (0..10)
+            .map(|i| format!(r#"<include src="k{i}.xml"/>"#))
+            .collect::<String>()
+    );
+    let mut s = CountingSource { files, probes: Default::default() };
+    let doc = parse_document(&host, &mut s);
+    let x = doc.name_index["x"];
+    match doc.tiles[x].traits.get("string") {
+        Some(RawTrait::Str(v)) => {
+            assert!(
+                v.starts_with("marker04"),
+                "exactly the five fragments that fit the byte budget must splice \
+                 (last spliced = k04), got {:?}",
+                &v[..16.min(v.len())]
+            );
+            assert!(!v.contains("marker05"), "k05 must be refused by the byte budget");
+        }
+        other => panic!("string trait present after splices, got {other:?}"),
+    }
+}
+
+/// #5314 — a fragment larger than MAX_INCLUDE_FRAGMENT_BYTES (64 KiB) can
+/// never fit the byte budget, so it must be treated as absent: no tiles
+/// or traits from it, its bytes never cached, and later includes of the
+/// same path must not refetch (the cached `None` answers them).
+#[test]
+fn oversized_include_fragment_is_skipped_and_not_refetched() {
+    let mut files: HashMap<String, String> = HashMap::new();
+    // 19 + 9,400 × 7 = 65,819 bytes: over the 64 KiB per-fragment cap.
+    files.insert(
+        "menus\\prefabs\\big.xml".to_string(),
+        format!("<width> 42 </width>{}", "<rect/>".repeat(9_400)),
+    );
+    let host = r#"<menu name="A"><image name="x"><include src="big.xml"/><include src="big.xml"/></image></menu>"#;
+    let mut s = CountingSource { files, probes: Default::default() };
+    let doc = parse_document(host, &mut s);
+    let x = doc.name_index["x"];
+    assert_ne!(
+        doc.tiles[x].traits.get("width"),
+        Some(&RawTrait::Num(42.0)),
+        "the oversized fragment must not contribute traits"
+    );
+    assert_eq!(doc.tiles[x].children.len(), 0, "no tiles from the oversized fragment");
+    // First include probes all three candidate spellings exactly once
+    // (prefabs\big.xml fetched + rejected, two misses); the second include
+    // must hit the cache, not the source.
+    let probes = s.probes.borrow();
+    assert_eq!(
+        probes.iter().filter(|p| *p == "menus\\prefabs\\big.xml").count(),
+        1,
+        "the oversized fragment must be fetched once, then answered from the cache"
+    );
+    assert_eq!(
+        probes.iter().filter(|p| *p == "menus\\big.xml").count(),
+        1,
+        "candidate-spelling misses are also cached per document"
+    );
+}
+
+/// #5314 — the 48-level cap bounds tile DEPTH only; a wide document (or a
+/// small fragment spliced 256×) had no total bound on materialized tiles.
+/// The total tile cap must truncate a 20,000-tile document at
+/// MAX_DOCUMENT_TILES instead of materializing the full arena.
+#[test]
+fn document_tile_cap_bounds_total_tiles() {
+    let host = format!(
+        r#"<menu name="A">{}</menu>"#,
+        (0..20_000)
+            .map(|i| format!(r#"<rect name="r{i}"/>"#))
+            .collect::<String>()
+    );
+    let mut s = src(&[]);
+    let doc = parse_document(&host, &mut s);
+    // Must equal MAX_DOCUMENT_TILES (private to parse.rs) + the root.
+    assert!(
+        doc.tiles.len() <= 16_385,
+        "the total tile cap must bound the arena (got {} tiles)",
+        doc.tiles.len()
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Evaluator — pins the wiki's fold semantics against vanilla constructs
 // ---------------------------------------------------------------------------
