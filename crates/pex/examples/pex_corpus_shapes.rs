@@ -166,8 +166,10 @@ fn norm_expr(e: &Expr, out: &mut String) {
             norm_expr(&right.node, out);
             out.push(')');
         }
-        // Casts are transparent to the recognizers — unwrap.
+        // Casts and FO4 `is` type tests are transparent to the
+        // recognizers — unwrap (#5322).
         Expr::Cast { expr, .. } => norm_expr(&expr.node, out),
+        Expr::Is { expr, .. } => norm_expr(&expr.node, out),
         Expr::New { .. } => out.push_str("new"),
         Expr::ArrayLit(_) => out.push_str("[..]"),
     }
