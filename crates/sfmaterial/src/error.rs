@@ -127,6 +127,29 @@ pub enum Error {
     #[error("ran out of chunks while reading {context}")]
     ChunkQueueEmpty { context: &'static str },
 
+    // ── #5320 (PAR-D2-2026-10-05-02) — MaterialIndex::build used to
+    // degrade silently on all of these; each is now a typed error the
+    // consumer logs instead of an `Ok` with an empty or misaligned
+    // index.
+
+    #[error("CDB carries no BSComponentDB2::DBFileIndex instance — the object key join cannot be built")]
+    MissingDbFileIndex,
+
+    #[error("a second BSComponentDB2::DBFileIndex instance (the row/instance join allows exactly one)")]
+    DuplicateDbFileIndex,
+
+    #[error(
+        "Components rows ({rows}) do not match the {instances} stream instances after the \
+         DBFileIndex — the row/instance join would attribute materials to the wrong objects"
+    )]
+    RowInstanceMismatch { rows: usize, instances: usize },
+
+    #[error(
+        "DBFileIndex instance carried as a {kind:?} chunk — only OBJT/USER are supported; \
+         reading a diff payload in offset order would misparse every field"
+    )]
+    UnsupportedDbFileIndexChunk { kind: ChunkType },
+
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 }

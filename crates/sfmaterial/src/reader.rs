@@ -1187,6 +1187,12 @@ impl<'a> Cursor<'a> {
         Self { bytes, pos: 0 }
     }
 
+    /// Bytes consumed so far — for trailing-bytes assertions by
+    /// out-of-module streamers (`index.rs`'s DBFileIndex path, #5320).
+    pub(crate) fn pos(&self) -> usize {
+        self.pos
+    }
+
     pub(crate) fn read_bytes(&mut self, n: usize) -> Result<&'a [u8]> {
         if self.pos + n > self.bytes.len() {
             return Err(Error::UnexpectedEof {

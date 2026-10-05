@@ -201,10 +201,10 @@ impl MaterialIndex {
             let class_name = peek_top_level_class_name(&state)?;
             if class_name.as_deref() == Some("BSComponentDB2::DBFileIndex") {
                 if base.is_some() {
-                    return Err(Error::WrongChunkType {
-                        wanted: ChunkType::Objt,
-                        got: ChunkType::Objt,
-                    });
+                    // #5320 — a second index poisons the row/instance
+                    // join; name the cause instead of the old
+                    // contextless WrongChunkType { Objt, Objt }.
+                    return Err(Error::DuplicateDbFileIndex);
                 }
                 stream_db_file_index(&mut state, &mut idx)?;
                 base = Some(pos + 1);
@@ -221,6 +221,26 @@ impl MaterialIndex {
                 skip_top_level_value(&mut state)?;
             }
             pos += 1;
+        }
+        // #5320 (PAR-D2-2026-10-05-02) — a degraded build must not look
+        // like a successful one. No index means `base` stayed `None` and
+        // every instance was skipped: the old return was `Ok` with an
+        // empty index, surfaced only as an info-level "0 keyed objects".
+        let Some(base) = base else {
+            return Err(Error::MissingDbFileIndex);
+        };
+        // The `Components[j]` ↔ instance `base + j` alignment is the
+        // load-bearing join (measured 1,438,778 / 1,438,778 on the base
+        // CDB); a mismatch means `capture_instance` silently dropped
+        // rows or left rows uncaptured, attributing every texture to the
+        // wrong object. Count the post-index stream instances and refuse
+        // the misaligned join.
+        let instances = pos - base;
+        if idx.rows.len() != instances {
+            return Err(Error::RowInstanceMismatch {
+                rows: idx.rows.len(),
+                instances,
+            });
         }
         Ok(idx)
     }
@@ -505,8 +525,15 @@ fn stream_db_file_index(state: &mut State<'_>, idx: &mut MaterialIndex) -> Resul
     let (is_cast, is_diff) = match kind {
         ChunkType::Objt => (false, false),
         ChunkType::User => (true, false),
-        ChunkType::Diff => (false, true),
-        ChunkType::Usrd => (true, true),
+        // #5320 — DIFF/USRD were "supported" here but the payload's
+        // inline fields were read in offset order, which only holds for
+        // whole (non-diff) payloads; a diff payload indexes fields by
+        // declaration slot. Vanilla's index is an OBJT, so the only
+        // thing the old arms produced was a silent misparse of mod
+        // data. Reject loudly instead.
+        ChunkType::Diff | ChunkType::Usrd => {
+            return Err(Error::UnsupportedDbFileIndexChunk { kind });
+        }
         _ => {
             return Err(Error::WrongChunkType {
                 wanted: ChunkType::Objt,
@@ -591,6 +618,14 @@ fn stream_db_file_index(state: &mut State<'_>, idx: &mut MaterialIndex) -> Resul
     if is_cast {
         let _trailing = cur.read_u32()?;
     }
+    // #5320 — mirror `consume_object`'s ObjectTrailingBytes check: the
+    // inline payload must end exactly at the last declared field, or the
+    // index was built against a payload whose layout doesn't match its
+    // class declaration.
+    let leftover = payload.len() - cur.pos();
+    if leftover != 0 {
+        return Err(Error::ObjectTrailingBytes { leftover });
+    }
     Ok(())
 }
 
@@ -630,6 +665,10 @@ fn stream_list(state: &mut State<'_>, mut f: impl FnMut(&Value)) -> Result<()> {
 /// the test suite, not API.
 #[doc(hidden)]
 pub mod test_support {
+    /// One synthetic-CDB chunk: fourCC + payload, header stripped so
+    /// tests can splice the instance stream freely.
+    pub type SyntheticCdbChunks = Vec<(&'static [u8; 4], Vec<u8>)>;
+
     use super::*;
 
     // ── synthetic CDB builder ────────────────────────────────────────
@@ -731,7 +770,16 @@ pub mod test_support {
         )
     }
 
-    fn synthetic_material_cdb_with_color(color_path: &'static str) -> Vec<u8> {
+    pub fn synthetic_material_cdb_with_color(color_path: &'static str) -> Vec<u8> {
+        assemble_synthetic_cdb(&synthetic_cdb_chunks(color_path))
+    }
+
+    /// #5320 — the synthetic CDB as (fourCC, payload) chunks, WITHOUT the
+    /// BETH header, so tests can mutate the instance stream (drop /
+    /// duplicate / corrupt the DBFileIndex, append unlisted instances)
+    /// and re-serialize with [`assemble_synthetic_cdb`]. The unmutated
+    /// list assembles byte-identical to the pre-refactor fixture.
+    pub fn synthetic_cdb_chunks(color_path: &'static str) -> SyntheticCdbChunks {
     let names = [
         "", // STRT index 0: empty string
         "BSComponentDB2::ID",
@@ -969,34 +1017,46 @@ pub mod test_support {
     }
     texrep_normal.push(1u8); // Enabled
 
-    // ── assemble ──
+    let mut chunks: SyntheticCdbChunks = vec![
+        (b"STRT", strt_payload),
+        (b"TYPE", (classes.len() as u32).to_le_bytes().to_vec()),
+        (b"OBJT", dbfile_objt),
+        (b"LIST", objects),
+        (b"LIST", components),
+        (b"LIST", edges),
+        (b"MAPC", component_types),
+        (b"OBJT", layer_objt),
+        (b"OBJT", material_objt),
+        (b"OBJT", texset_objt),
+        (b"OBJT", tex0),
+        (b"OBJT", tex1),
+        (b"OBJT", tex3),
+        (b"OBJT", texrep),
+        (b"OBJT", texrep_normal),
+        (b"OBJT", ctname_objt),
+    ];
+    // One CLAS per class, right after TYPE.
+    chunks.splice(
+        2..2,
+        classes
+            .into_iter()
+            .map(|c| (b"CLAS" as &'static [u8; 4], c)),
+    );
+    chunks
+    }
+
+    /// Serialize a chunk list (see [`synthetic_cdb_chunks`]) back into a
+    /// full BETH-prefixed CDB payload. Chunk count includes BETH, as the
+    /// on-disk format counts it.
+    pub fn assemble_synthetic_cdb(chunks: &SyntheticCdbChunks) -> Vec<u8> {
     let mut bytes = Vec::new();
     bytes.extend_from_slice(&0x4854_4542u32.to_le_bytes()); // BETH
     bytes.extend_from_slice(&8u32.to_le_bytes()); // header size
     bytes.extend_from_slice(&4u32.to_le_bytes()); // file version
-    // chunk count incl. BETH: STRT + TYPE + one CLAS per class + OBJT
-    // + 3 LIST + MAPC + 9 stream objects
-    let chunk_count = 1 + 1 + 1 + classes.len() + 1 + 3 + 1 + 9;
-    bytes.extend_from_slice(&(chunk_count as u32).to_le_bytes());
-    push_chunk(&mut bytes, b"STRT", &strt_payload);
-    push_chunk(&mut bytes, b"TYPE", &(classes.len() as u32).to_le_bytes());
-    for c in &classes {
-        push_chunk(&mut bytes, b"CLAS", c);
+    bytes.extend_from_slice(&((chunks.len() + 1) as u32).to_le_bytes());
+    for (kind, payload) in chunks {
+        push_chunk(&mut bytes, kind, payload);
     }
-    push_chunk(&mut bytes, b"OBJT", &dbfile_objt);
-    push_chunk(&mut bytes, b"LIST", &objects);
-    push_chunk(&mut bytes, b"LIST", &components);
-    push_chunk(&mut bytes, b"LIST", &edges);
-    push_chunk(&mut bytes, b"MAPC", &component_types);
-    push_chunk(&mut bytes, b"OBJT", &layer_objt);
-    push_chunk(&mut bytes, b"OBJT", &material_objt);
-    push_chunk(&mut bytes, b"OBJT", &texset_objt);
-    push_chunk(&mut bytes, b"OBJT", &tex0);
-    push_chunk(&mut bytes, b"OBJT", &tex1);
-    push_chunk(&mut bytes, b"OBJT", &tex3);
-    push_chunk(&mut bytes, b"OBJT", &texrep);
-    push_chunk(&mut bytes, b"OBJT", &texrep_normal);
-    push_chunk(&mut bytes, b"OBJT", &ctname_objt);
     bytes
     }
 
@@ -1018,8 +1078,108 @@ pub mod test_support {
 
 #[cfg(test)]
 mod tests {
-    use super::test_support::synthetic_material_cdb;
+    use super::test_support::{
+        assemble_synthetic_cdb, synthetic_cdb_chunks, synthetic_material_cdb, SyntheticCdbChunks,
+    };
     use super::*;
+
+    /// The chunk list of the unmutated synthetic CDB, with the position
+    /// of the DBFileIndex instance (the first OBJT) handy.
+    fn mutable_chunks() -> (SyntheticCdbChunks, usize) {
+        let chunks = synthetic_cdb_chunks("Data\\Textures\\widget_color.DDS");
+        let dbfile = chunks
+            .iter()
+            .position(|(kind, _)| **kind == *b"OBJT")
+            .expect("the fixture carries the DBFileIndex OBJT");
+        (chunks, dbfile)
+    }
+
+    /// #5320 (PAR-D2-2026-10-05-02) — a CDB with no DBFileIndex used to
+    /// build `Ok` with an empty index (only visible as an info-level
+    /// "0 keyed objects"); it must be a typed error instead.
+    #[test]
+    fn build_rejects_a_cdb_without_a_dbfile_index() {
+        let (mut chunks, dbfile) = mutable_chunks();
+        chunks.remove(dbfile);
+        let err = MaterialIndex::build(&assemble_synthetic_cdb(&chunks))
+            .expect_err("an index-less CDB must not build an empty index");
+        assert!(
+            matches!(err, Error::MissingDbFileIndex),
+            "expected MissingDbFileIndex, got {err:?}"
+        );
+    }
+
+    /// #5320 — a second DBFileIndex poisons the row/instance join; name
+    /// the cause instead of the old contextless
+    /// WrongChunkType { wanted: Objt, got: Objt }.
+    #[test]
+    fn build_rejects_a_second_dbfile_index() {
+        let (mut chunks, dbfile) = mutable_chunks();
+        let dup = chunks[dbfile].clone();
+        // After the DBFileIndex's four queued side chunks (Objects /
+        // Components / Edges LISTs + ComponentTypes MAPC) — inside them
+        // would corrupt the FIRST index's own stream instead.
+        chunks.insert(dbfile + 5, dup);
+        let err = MaterialIndex::build(&assemble_synthetic_cdb(&chunks))
+            .expect_err("a duplicate DBFileIndex must be rejected");
+        assert!(
+            matches!(err, Error::DuplicateDbFileIndex),
+            "expected DuplicateDbFileIndex, got {err:?}"
+        );
+    }
+
+    /// #5320 — a stream instance without a Components row shifts the
+    /// load-bearing join; every capture past the gap attributes materials
+    /// to the wrong object. `build` must refuse rather than misattribute.
+    #[test]
+    fn build_rejects_a_row_instance_mismatch() {
+        let (mut chunks, _) = mutable_chunks();
+        // The trailing CTName instance duplicated: rows stay at 9, the
+        // post-index instance stream grows to 10.
+        let extra = chunks.last().expect("stream instances").clone();
+        chunks.push(extra);
+        let err = MaterialIndex::build(&assemble_synthetic_cdb(&chunks))
+            .expect_err("an unlisted stream instance must break the join");
+        assert!(
+            matches!(err, Error::RowInstanceMismatch { rows: 9, instances: 10 }),
+            "expected RowInstanceMismatch {{ rows: 9, instances: 10 }}, got {err:?}"
+        );
+    }
+
+    /// #5320 — the DBFileIndex inline payload must end exactly at its
+    /// last declared field, mirroring consume_object's trailing-bytes
+    /// contract (stream_db_file_index had no such check).
+    #[test]
+    fn build_rejects_trailing_bytes_in_the_dbfile_index() {
+        let (mut chunks, dbfile) = mutable_chunks();
+        chunks[dbfile].1.push(0xAB);
+        let err = MaterialIndex::build(&assemble_synthetic_cdb(&chunks))
+            .expect_err("trailing bytes past the declared fields must be rejected");
+        assert!(
+            matches!(err, Error::ObjectTrailingBytes { leftover: 1 }),
+            "expected ObjectTrailingBytes {{ leftover: 1 }}, got {err:?}"
+        );
+    }
+
+    /// #5320 — a DIFF-shaped DBFileIndex was "supported" but misread (its
+    /// inline fields were consumed in offset order, not diff field-index
+    /// order); it must now be a loud typed error.
+    #[test]
+    fn build_rejects_a_diff_shaped_dbfile_index() {
+        let (mut chunks, dbfile) = mutable_chunks();
+        chunks[dbfile].0 = b"DIFF";
+        let err = MaterialIndex::build(&assemble_synthetic_cdb(&chunks))
+            .expect_err("a DIFF-shaped DBFileIndex must be rejected");
+        assert!(
+            matches!(
+                err,
+                Error::UnsupportedDbFileIndexChunk {
+                    kind: ChunkType::Diff
+                }
+            ),
+            "expected UnsupportedDbFileIndexChunk {{ Diff }}, got {err:?}"
+        );
+    }
 
     #[test]
     fn index_builds_and_resolves_the_full_join_chain() {
