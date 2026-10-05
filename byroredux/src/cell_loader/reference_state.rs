@@ -8,6 +8,7 @@
 
 use std::collections::HashMap;
 
+use super::load_order::LoadOrder;
 use byroredux_core::ecs::components::{
     ActorValues, Dead, EquipmentSlots, EquippedWeapon, FormIdComponent, Inventory, ItemStack,
 };
@@ -354,15 +355,15 @@ pub(crate) fn apply_starts_dead(world: &mut World, entity: EntityId) {
     crate::combat::queue_dead_actor_reconciliation(world, entity);
 }
 
-/// The base script's editor id for one placed reference, resolving the
-/// `SCRI` FormID through the record maps that carry one (activators are
-/// the dismember-trigger idiom's base; actors carry their own). `None`
-/// when the base is not a scripted kind or the script does not resolve.
-fn base_script_editor_id(
+/// The base script's `SCRI` FormID for one placed reference, resolving
+/// through the record maps that carry one (activators are the
+/// dismember-trigger idiom's base; actors carry their own). `None` when
+/// the base is not a scripted kind or the script does not resolve.
+fn base_script_form_id(
     index: &byroredux_plugin::esm::records::EsmIndex,
     base_form_id: u32,
-) -> Option<String> {
-    let script = index
+) -> Option<u32> {
+    index
         .activators
         .get(&base_form_id)
         .map(|acti| acti.script_form_id)
@@ -371,9 +372,59 @@ fn base_script_editor_id(
                 .npcs
                 .get(&base_form_id)
                 .map(|npc| npc.script_form_id)
-        })?;
-    index.scripts.get(&script).map(|s| s.editor_id.clone())
+        })
 }
+
+/// #5304 — the load-order plugins (lowercased basenames) whose SCPT
+/// records may define the kill-on-load scripts: the shipped FO3 GOTY and
+/// FNV masters. A merged table is sound because a name can only sit in
+/// the load order of the game that ships it. A patch or mod that
+/// *overrides* one of these SCPTs wins the merged index under the vanilla
+/// form id but resolves to the overriding plugin here, so its conditional
+/// body is declined instead of spawning live actors as corpses.
+const VANILLA_KILL_SCRIPT_PLUGINS: [&str; 12] = [
+    "fallout3.esm",
+    "anchorage.esm",
+    "thepitt.esm",
+    "brokensteel.esm",
+    "pointlookout.esm",
+    "zeta.esm",
+    "falloutnv.esm",
+    "deadmoney.esm",
+    "honesthearts.esm",
+    "oldworldblues.esm",
+    "lonesomeroad.esm",
+    "gunrunnersarsenal.esm",
+];
+
+/// #5304 — true when the SCPT with this form id was *defined* by one of
+/// the shipped vanilla masters (see [`VANILLA_KILL_SCRIPT_PLUGINS`]).
+/// Unresolvable form ids decline: the recognizer only ever trusts
+/// provably-vanilla scripts.
+fn script_is_vanilla(script_form_id: u32, load_order: &LoadOrder) -> bool {
+    super::load_order::plugin_for_form_id(script_form_id, load_order)
+        .is_some_and(|plugin| VANILLA_KILL_SCRIPT_PLUGINS.contains(&plugin))
+}
+
+/// The exact `GenericBiped*DismembermentSCRIPT` EDIDs shipped by FO3 and
+/// FNV, measured with `corpse_trigger_probe.rs` across every master of
+/// both games (2026-10-05): FO3 defines all 11, FNV defines the
+/// `Head`/`HeadArmsLegs`/`LeftLeg` subset, and no DLC defines any — so
+/// this list is complete for shipped content. Shared with the census
+/// test's independent pass-1 re-derivation.
+const DISMEMBERMENT_FAMILY_EDIDS: [&str; 11] = [
+    "GenericBipedHeadDismembermentSCRIPT",
+    "GenericBipedHeadArmsDismembermentSCRIPT",
+    "GenericBipedHeadArmsLegsDismembermentSCRIPT",
+    "GenericBipedHeadLegsDismembermentSCRIPT",
+    "GenericBipedLeftArmDismembermentSCRIPT",
+    "GenericBipedLeftLegDismembermentSCRIPT",
+    "GenericBipedLeftLegLeftArmDismembermentSCRIPT",
+    "GenericBipedRandomMultiDismembermentSCRIPT",
+    "GenericBipedRightArmDismembermentSCRIPT",
+    "GenericBipedRightLegDismembermentSCRIPT",
+    "GenericBipedRightLegRightArmDismembermentSCRIPT",
+];
 
 /// #5223 — FO3/FNV's second authored-corpse idiom, recognised from the
 /// data because the engine runs no FO3 ObScript. A placed trigger whose
@@ -386,6 +437,14 @@ fn base_script_editor_id(
 /// itself — FFEU04NPC1 carries `GenericBipedRandomMultiDismemberment
 /// SCRIPT` on its base and dies the same way).
 ///
+/// #5304 — the family is matched by the exact shipped EDIDs, and a match
+/// only counts when the winning SCPT record is defined by a shipped
+/// vanilla master ([`VANILLA_KILL_SCRIPT_PLUGINS`]). The original
+/// substring match (`contains("DismembermentSCRIPT")`) admitted any mod
+/// script whose editor id merely contained the substring, and an
+/// override patch could replace a family script's body wholesale; both
+/// would mark live actors dead.
+///
 /// Measured on the shipped masters (2026-10-04,
 /// `crates/plugin/examples/corpse_trigger_probe.rs`): FO3 = 85 linked
 /// targets + 3 self-killed placements; FNV = 10 + 2. 49 of the FO3
@@ -396,8 +455,8 @@ fn base_script_editor_id(
 pub(crate) fn script_killed_corpse_forms(
     refs: &[byroredux_plugin::esm::cell::PlacedRef],
     index: &byroredux_plugin::esm::records::EsmIndex,
+    load_order: &LoadOrder,
 ) -> std::collections::HashSet<u32> {
-    const DISMEMBERMENT_FAMILY: &str = "DismembermentSCRIPT";
     const SELF_KILL_SCRIPTS: [&str; 2] = ["GenericKillSCRIPT", "OnLoadKillSelf"];
 
     let mut killed: std::collections::HashSet<u32> = std::collections::HashSet::new();
@@ -407,10 +466,14 @@ pub(crate) fn script_killed_corpse_forms(
         if placed.linked_refs.is_empty() {
             continue;
         }
-        let Some(script) = base_script_editor_id(index, placed.base_form_id) else {
+        let Some(script_form_id) = base_script_form_id(index, placed.base_form_id) else {
             continue;
         };
-        if !script.contains(DISMEMBERMENT_FAMILY) {
+        let in_family = index
+            .scripts
+            .get(&script_form_id)
+            .is_some_and(|script| DISMEMBERMENT_FAMILY_EDIDS.contains(&script.editor_id.as_str()));
+        if !in_family || !script_is_vanilla(script_form_id, load_order) {
             continue;
         }
         for link in &placed.linked_refs {
@@ -431,9 +494,9 @@ pub(crate) fn script_killed_corpse_forms(
         let Some(script) = index.scripts.get(&npc.script_form_id) else {
             continue;
         };
-        if script.editor_id.contains(DISMEMBERMENT_FAMILY)
-            || SELF_KILL_SCRIPTS.iter().any(|s| *s == script.editor_id)
-        {
+        let recognized = DISMEMBERMENT_FAMILY_EDIDS.contains(&script.editor_id.as_str())
+            || SELF_KILL_SCRIPTS.contains(&script.editor_id.as_str());
+        if recognized && script_is_vanilla(script.form_id, load_order) {
             killed.insert(placed.form_id);
         }
     }
@@ -657,6 +720,12 @@ mod script_kill_tests {
     /// placements (88 distinct); FNV = 10 + 2 (12 distinct). Pinned so a
     /// decode or recognizer regression shows as a count change, exactly
     /// like the #5005 corpse census beside it.
+    ///
+    /// #5304 — the recognizer additionally requires the matching SCPT to
+    /// resolve to a shipped vanilla master via the load order; the census
+    /// parses a single master with no remap, where every defined record
+    /// carries that master's own top-byte-0 slot, so a one-entry
+    /// [`LoadOrder`] reproduces the production attribution exactly.
     #[test]
     #[ignore = "needs FO3/FNV game data on disk"]
     fn fo3_fnv_script_killed_corpses_match_the_measured_census() {
@@ -685,6 +754,12 @@ mod script_kill_tests {
             }
             let bytes = std::fs::read(dir.join(master)).expect("read master");
             let index = byroredux_plugin::esm::parse_esm(&bytes).expect("parse master");
+            // A single-master load order: every record the parse produced
+            // is defined by this master and carries its own slot byte.
+            let load_order = LoadOrder::new(
+                vec![master.to_ascii_lowercase()],
+                vec![byroredux_plugin::esm::reader::GlobalSlot::Regular(0)],
+            );
             let cells = index.cells.cells.values().chain(
                 index
                     .cells
@@ -698,14 +773,25 @@ mod script_kill_tests {
             let mut union = std::collections::HashSet::new();
             let mut linked_union = std::collections::HashSet::new();
             for cell in cells {
-                union.extend(script_killed_corpse_forms(&cell.references, &index));
+                union.extend(script_killed_corpse_forms(&cell.references, &index, &load_order));
                 for p in &cell.references {
                     if p.linked_refs.is_empty() {
                         continue;
                     }
-                    if super::base_script_editor_id(&index, p.base_form_id)
-                        .is_some_and(|s| s.contains("DismembermentSCRIPT"))
-                    {
+                    // Independent re-derivation of pass 1 under the #5304
+                    // gate: exact family EDID + vanilla defining plugin.
+                    let recognized = super::base_script_form_id(&index, p.base_form_id)
+                        .and_then(|script| {
+                            index
+                                .scripts
+                                .get(&script)
+                                .map(|s| (script, s.editor_id.clone()))
+                        })
+                        .is_some_and(|(script, edid)| {
+                            DISMEMBERMENT_FAMILY_EDIDS.contains(&edid.as_str())
+                                && script_is_vanilla(script, &load_order)
+                        });
+                    if recognized {
                         linked_union.extend(p.linked_refs.iter().map(|l| l.target));
                     }
                 }
@@ -722,7 +808,126 @@ mod script_kill_tests {
             );
         }
     }
+
+    /// #5304 — the kill-on-load recognizer must not trust a script by name
+    /// alone. A mod script whose editor id merely contains
+    /// `DismembermentSCRIPT` (a name-alike) is declined, as is an exact
+    /// vanilla EDID whose defining plugin is NOT a shipped vanilla master
+    /// (a same-EDID override patch). Only an exact vanilla EDID resolving
+    /// to a vanilla-master-defined SCPT marks corpses.
+    #[test]
+    fn kill_on_load_recognition_requires_exact_edid_and_vanilla_master() {
+        use byroredux_plugin::esm::cell::{LinkedRef, PlacedRef};
+        use byroredux_plugin::esm::records::{NpcRecord, ScriptRecord};
+
+        // FNV plus one mod: form ids with top byte 0 resolve to the
+        // vanilla master, top byte 1 to the mod plugin.
+        let load_order = LoadOrder::new(
+            vec!["falloutnv.esm".to_owned(), "CoolMod.esp".to_owned()],
+            vec![
+                byroredux_plugin::esm::reader::GlobalSlot::Regular(0),
+                byroredux_plugin::esm::reader::GlobalSlot::Regular(1),
+            ],
+        );
+
+        let mut index = byroredux_plugin::esm::records::EsmIndex::default();
+        let mut script = |form_id: u32, editor_id: &str| {
+            index.scripts.insert(
+                form_id,
+                ScriptRecord {
+                    form_id,
+                    editor_id: editor_id.to_owned(),
+                    ..Default::default()
+                },
+            );
+        };
+        // The real vanilla family script, defined by FalloutNV.esm …
+        script(0x0000_1111, "GenericBipedHeadDismembermentSCRIPT");
+        // … a mod script whose EDID merely contains the substring …
+        script(0x0100_2222, "MyDismembermentSCRIPT");
+        // … a same-EDID override of a self-kill script, defined by the mod
+        // plugin (a patch replacing the vanilla body) …
+        script(0x0100_3333, "GenericKillSCRIPT");
+        // … and a vanilla-defined self-kill script.
+        script(0x0000_4444, "GenericKillSCRIPT");
+
+        let mut npc = |form_id: u32, script_form_id: u32| {
+            index.npcs.insert(
+                form_id,
+                NpcRecord {
+                    form_id,
+                    script_form_id,
+                    ..Default::default()
+                },
+            );
+        };
+        npc(0x0000_A001, 0x0000_1111); // vanilla dismember family
+        npc(0x0000_A002, 0x0100_2222); // name-alike
+        npc(0x0000_A003, 0x0000_4444); // vanilla self-kill
+        npc(0x0000_A004, 0x0100_3333); // overridden self-kill
+
+        let placed = |form_id: u32, base_form_id: u32, target: Option<u32>| PlacedRef {
+            form_id,
+            base_form_id,
+            group_type: 0xFF,
+            position: [0.0; 3],
+            rotation: [0.0; 3],
+            scale: 1.0,
+            enable_parent: None,
+            teleport: None,
+            reputation_ref: None,
+            primitive: None,
+            linked_refs: target
+                .map(|target| vec![LinkedRef { keyword: 0, target }])
+                .unwrap_or_default(),
+            location_ref_types: Vec::new(),
+            rooms: Vec::new(),
+            portals: Vec::new(),
+            radius_override: None,
+            alt_texture_ref: None,
+            land_texture_ref: None,
+            texture_slot_swaps: Vec::new(),
+            emissive_light_ref: None,
+            material_swap_ref: None,
+            ownership: None,
+            script_instance: None,
+            lock: None,
+            water_velocity: None,
+            item_count: None,
+            initially_disabled: false,
+            starts_dead: false,
+            starts_unconscious: false,
+            ragdoll_pose: Vec::new(),
+        };
+
+        // Pass 1 triggers (linked targets) and pass 2 actors.
+        let refs = vec![
+            placed(0x0000_6001, 0x0000_A001, Some(0x0000_5001)),
+            placed(0x0000_6002, 0x0000_A002, Some(0x0000_5002)),
+            placed(0x0000_6003, 0x0000_A003, None),
+            placed(0x0000_6004, 0x0000_A004, None),
+        ];
+
+        let killed = script_killed_corpse_forms(&refs, &index, &load_order);
+        assert!(
+            killed.contains(&0x0000_5001),
+            "an exact vanilla family EDID defined by a vanilla master must mark its link target"
+        );
+        assert!(
+            !killed.contains(&0x0000_5002),
+            "a name-alike mod EDID must NOT mark its link target"
+        );
+        assert!(
+            killed.contains(&0x0000_6003),
+            "a vanilla-defined self-kill base must mark its placement"
+        );
+        assert!(
+            !killed.contains(&0x0000_6004),
+            "a self-kill script overridden by a non-vanilla plugin must NOT mark its placement"
+        );
+    }
 }
+
 
 #[cfg(test)]
 mod tests {

@@ -331,9 +331,12 @@ pub(super) fn load_references_budgeted(
 ) -> ReferenceLoadProgress {
     // #5223 — FO3/FNV's script-killed corpses (dismember-trigger links +
     // kill-on-load base scripts), recognised once per call; computed before
-    // the job branch so a resumed job consults the same set.
+    // the job branch so a resumed job consults the same set. #5304 — the
+    // load order is what proves a matching SCPT is vanilla-defined (exact
+    // EDID + defining-plugin gate) rather than a mod name-alike or an
+    // override of a vanilla script.
     let script_killed_corpses =
-        super::reference_state::script_killed_corpse_forms(refs, record_index);
+        super::reference_state::script_killed_corpse_forms(refs, record_index, load_order);
     let mut job = if let Some(job) = job {
         job
     } else {
