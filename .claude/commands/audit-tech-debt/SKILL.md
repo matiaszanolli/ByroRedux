@@ -144,10 +144,12 @@ Doc rot misleads the next reader and the next audit. **Run the gate first**: `_a
 backticked path in the audit skills AND `docs/engine/*.md` against the tree (fatal on STALE) and lists backticked
 symbols found in no tracked `.rs` file (advisory — clear it, do not learn to scroll past it). STALE refs are
 auto-eligible findings (trivial). Guards that already police a class — aim at what they cannot see:
-- **`GpuMaterial` size**: `gpu_material_size_claims` (`crates/renderer/src/vulkan/material_tests.rs`) scans `crates`,
-  `byroredux`, `tools`, `docs/engine`, `.claude/commands` and the top-level status docs for a stale `GpuMaterial` byte
-  count (plus `bindings_glsl_states_the_real_struct_size`). It does NOT cover `GpuCamera` / `GpuInstance` / `Vertex::SIZE` or
-  a size stated without the type name — cross-check those against the layout tests, never the prose:
+- **GPU-struct sizes**: `gpu_material_size_claims` (`crates/renderer/src/vulkan/material_tests.rs`) scans `crates`,
+  `byroredux`, `tools`, `docs/engine`, `.claude/commands` and the top-level status docs for a stale byte count of every
+  size-pinned struct — `GpuMaterial`, `GpuLight`, `GpuTerrainTile`, `GpuInstance`, `GpuCamera` since #5203
+  (`pinned_sizes()`; plus `bindings_glsl_states_the_real_struct_size`). It CANNOT see `Vertex::SIZE` (a size written
+  without the type name) or `GpuWaterParams`-class structs outside `pinned_sizes()` — cross-check those against the
+  layout tests, never the prose:
   `grep -rn "fn gpu_.*_is_[0-9]\+_bytes\|size_of::<Gpu" crates/renderer/src/vulkan/`. A GPU-size claim found stale in
   prose is MEDIUM (severity table).
 - **Deleted `Material::classify_pbr`**: `no_source_file_frames_the_deleted_classify_pbr_as_live`
