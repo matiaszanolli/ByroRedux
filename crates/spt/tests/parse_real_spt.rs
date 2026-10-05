@@ -236,6 +236,15 @@ struct BoundaryStats {
     on_boundary: u32,
     /// Stops whose resync shift is 0 (`parser::best_resync_shift`).
     shift_zero: u32,
+    /// `.spt` entries the archive listed but `extract` could not read.
+    /// SPT-2026-09-29-D1-02 — a silent drop here removed the file from
+    /// the gate's denominator, exactly the shape a fatal walker path
+    /// would need to hide.
+    extract_failures: u32,
+    /// `.spt` files where `parse_spt` returned a fatal error (a
+    /// mis-size that reads as an array-cap / string-cap / underflow —
+    /// the five fatal conditions #3752 enumerates).
+    parse_failures: u32,
     /// `(path, stop word, shift)` for every file failing either check.
     violations: Vec<(String, u32, usize)>,
 }
@@ -299,16 +308,35 @@ fn walker_stops_on_true_tlv_boundary() {
             .map(|f| f.to_string())
             .collect();
 
+        // Per-archive stats so the printout names THIS archive's deltas;
+        // folding the running `totals` into the per-game line (the old
+        // shape) mislabeled FNV's 10 as FO3's 20 as OBL's 133.
+        let mut per_game = BoundaryStats::default();
         for path in &spt_files {
-            let Ok(bytes) = archive.extract(path) else {
-                continue;
+            let bytes = match archive.extract(path) {
+                Ok(b) => b,
+                Err(e) => {
+                    eprintln!("[{label}] extract failed on {}: {}", path, e);
+                    per_game.extract_failures += 1;
+                    continue;
+                }
             };
-            let Ok(scene) = parse_spt(&bytes) else {
-                continue;
+            per_game.total_files += 1;
+            let scene = match parse_spt(&bytes) {
+                Ok(scene) => scene,
+                Err(e) => {
+                    // A fatal parse is not a coverage miss — it is the
+                    // walker reading garbage (dictionary mis-size), the
+                    // exact HIGH the SKILL rates this gate for. Counted,
+                    // printed per game, and hard-failed below instead of
+                    // silently shrinking the denominator.
+                    eprintln!("[{label}] parse_spt failed on {}: {}", path, e);
+                    per_game.parse_failures += 1;
+                    continue;
+                }
             };
-            totals.total_files += 1;
             if scene.reached_eof {
-                totals.reached_eof += 1;
+                per_game.reached_eof += 1;
                 continue;
             }
             let stop = scene.tail_offset;
@@ -325,25 +353,50 @@ fn walker_stops_on_true_tlv_boundary() {
             };
             let on_boundary = word.is_some_and(|w| (TAIL_TAG_MIN..=TAIL_TAG_MAX).contains(&w));
             if on_boundary {
-                totals.on_boundary += 1;
+                per_game.on_boundary += 1;
             }
             if shift == 0 {
-                totals.shift_zero += 1;
+                per_game.shift_zero += 1;
             }
-            if (!on_boundary || shift != 0)
-                && totals.violations.len() < 12 {
-                    totals.violations.push((path.clone(), word.unwrap_or(0), shift));
-                }
+            if (!on_boundary || shift != 0) && per_game.violations.len() < 12 {
+                per_game.violations.push((path.clone(), word.unwrap_or(0), shift));
+            }
         }
         eprintln!(
-            "[{label}] {} files | {} on boundary | {} shift-0 | {} eof",
-            totals.total_files, totals.on_boundary, totals.shift_zero, totals.reached_eof,
+            "[{label}] {} files | {} on boundary | {} shift-0 | {} eof | \
+             {} extract-fail | {} parse-fail",
+            per_game.total_files,
+            per_game.on_boundary,
+            per_game.shift_zero,
+            per_game.reached_eof,
+            per_game.extract_failures,
+            per_game.parse_failures,
         );
+        totals.total_files += per_game.total_files;
+        totals.reached_eof += per_game.reached_eof;
+        totals.on_boundary += per_game.on_boundary;
+        totals.shift_zero += per_game.shift_zero;
+        totals.extract_failures += per_game.extract_failures;
+        totals.parse_failures += per_game.parse_failures;
+        totals.violations.extend(per_game.violations);
     }
 
     assert!(
         totals.total_files > 0,
         "no `.spt` corpus found — set BYROREDUX_FNV_DATA / _FO3_DATA / _OBL_DATA"
+    );
+    assert_eq!(
+        totals.extract_failures, 0,
+        "{} listed `.spt` files failed to extract — the gate must see every \
+         file it gates",
+        totals.extract_failures
+    );
+    assert_eq!(
+        totals.parse_failures, 0,
+        "{} `.spt` files hit a fatal parse_spt error (array-cap / string-cap \
+         / underflow — a dictionary entry mis-sizes its payload). Dropped \
+         files used to leave the denominator silently (SPT-2026-09-29-D1-02).",
+        totals.parse_failures
     );
     assert_eq!(
         totals.on_boundary,
