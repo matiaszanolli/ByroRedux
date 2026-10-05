@@ -406,24 +406,30 @@ The bounded Vulkan exterior smoke also passes for all four installed profiles;
 the wider FO3/FO76/Starfield visual matrix still depends on those game data
 sets being available.
 
-**Wind-angle frame per game (#4932).** `WaterParams::noise_wind_directions` (and
+**Wind-angle frame per game (#4932, scoped by #4910).** `WaterParams::noise_wind_directions` (and
 the `wind_direction` alias) is stored untransformed, in the record's own frame;
-`watr_angle_to_engine_xz` applies the single +90° rotation at the translate
-boundary. The field carries two conventions:
+`watr_angle_to_engine_xz` applies the +90° bearing rotation at the translate
+boundary **only for the games whose census supports it** — the conversion is
+per-game, not a convention shared by every layout. Per-game evidence (layer
+angle minus the engine-frame NAM0 flow heading `atan2(−y, x)`, circular mean
+over speed > 0 layers):
 
-| Game | Source | Convention |
-|---|---|---|
-| Skyrim | DNAM[100/104/108], degrees; layer 1 promoted into `wind_direction` | wind-FROM compass bearing, Z-up: 0 = from game north (pattern travels south), 90° = from east, clockwise from above |
-| FO4 | DNAM[128/132/136], degrees; layer 1 promoted | same wind-FROM bearing |
-| FO76 / Starfield | DNAM[84/88/92], degrees; layer 1 promoted | same wind-FROM bearing |
-| FO3 / FNV | layers: DNAM/DATA[100/104/108], degrees; `wind_direction`: DATA/DNAM[4] | layers: same wind-FROM bearing. `wind_direction` is the dead editor default 90.0 on every shipped record, so it never counts as authored |
-| Oblivion | layer 0: `atan2(y, x)` of the DATA[28]/[32] scroll-speed pair; `wind_direction`: DATA[4] | layer 0 is a direction-of-travel angle counter-clockwise from the pair's x axis, not a bearing; `wind_direction` varies per record and is authored when present |
+| Game | Source | Authored frame | Conversion | Census evidence |
+|---|---|---|---|---|
+| Skyrim | DNAM[100/104/108], degrees; layer 1 promoted into `wind_direction` | wind-FROM compass bearing, Z-up: 0 = from game north (pattern travels south), 90° = from east, clockwise from above | +90° applied | −84.1° raw mean, 51 non-zero layers, R = 0.72, 48/51 negative, Rayleigh p ≈ 6e-12; direction-named editor IDs corroborate per record (#4727, #4932) |
+| FO4 | DNAM[128/132/136], degrees; layer 1 promoted | same wind-FROM bearing | +90° applied | −87.7° raw mean, 108 layers, R = 0.65, p ≈ 1e-19 (re-run: −88.5°, n = 107, p ≈ 2e-20) |
+| FO76 | DNAM[84/88/92], degrees; layer 1 promoted | wind-FROM bearing, tentatively | +90° applied | +12.5° corrected mean, R = 0.36 — closer to converted than any mirror, but weak (re-run: −77.5° raw, n = 138, p ≈ 1e-8); **tentative**, both frames not fully excluded |
+| Starfield | DNAM[84/88/92], degrees; layer 1 promoted | **unverified — no census support** | none applied (+90° retired 2026-10-01) | +50.3° raw mean, n = 36, R = 0.21, p ≈ 0.2 — supports neither frame. The un-rotated read is the pre-2026-09-24 status quo, not a claim about the authored frame |
+| FO3 / FNV | layers: DNAM/DATA[100/104/108], degrees; `wind_direction`: DATA/DNAM[4] | **untestable by this method** — 71/78 FNV and 47/53 FO3 records carry non-zero layer speeds but none ships a NAM0 to census against | none applied | no NAM0 ⇒ no flow heading to diff against. `wind_direction` is the dead editor default 90.0 on every shipped record, so it never counts as authored |
+| Oblivion | layer 0: `atan2(y, x)` of the DATA[28]/[32] scroll-speed pair; `wind_direction`: DATA[4] | layer 0 is a **Cartesian direction-of-travel angle** counter-clockwise from the pair's x axis, not a bearing | none applied (#4910: the +90° read turned (x, y) into (−y, x) with no evidence for any Oblivion record, `DefaultWater` among them) | frame follows from the field's definition, not a census; `wind_direction` varies per record and is authored when present |
 
 Engine XZ: φ is measured from +X toward +Z, and +Z is game **south**, because
 Z-up (x, y, z) maps to Y-up (x, z, −y). Whether `wind_direction` is an authored
 heading is decided at parse time (`WaterParams::wind_direction_authored`, #4931),
 never re-tested at translate time. A missing field or a short DNAM is not
-authored.
+authored. The Starfield / FO3 / FNV rows are recorded as OPEN frames — the
+per-game scoping (`wind_angle_conversion_is_scoped_per_game`) pins that they
+do not convert until a census does.
 
 ### Spawn — **functional, coarse**
 
