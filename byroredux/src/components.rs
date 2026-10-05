@@ -41,6 +41,23 @@ impl Component for LoadingModelStage {
     type Storage = SparseSetStorage<Self>;
 }
 
+/// #5306 — the loading cover's own frame clock: wall-clock frame advance
+/// while the cover is up, `0.0` while it is down. Stamped next to
+/// [`byroredux_core::ecs::DeltaTime`] in `about_to_wait` and read by
+/// `loading_model_turntable_system`.
+///
+/// Why this exists: the loading branch holds the scheduler's `dt` at `0.0`
+/// for exactly the frames a `LoadingModelStage` exists (simulation time
+/// must stand still under the cover), so a system driven by scheduler-`dt`
+/// can never animate the cover. This resource is the wall-clock escape
+/// hatch for the one piece of cover-side motion. Absent resource degrades
+/// to no rotation rather than a panic, so a registration gap shows up as a
+/// static model, not a crash.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct LoadingCoverClock(pub(crate) f32);
+
+impl Resource for LoadingCoverClock {}
+
 /// Component for entities that use alpha blending, carrying the Gamebryo
 /// blend factors extracted from NiAlphaProperty flags.
 ///

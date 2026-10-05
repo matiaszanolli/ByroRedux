@@ -729,6 +729,16 @@ impl ApplicationHandler for App {
 
         // Update time resources.
         world_resource_set::<DeltaTime>(&self.world, |r| r.0 = dt);
+        // #5306 — the cover clock carries the frame's wall-clock advance to
+        // the loading-model turntable. The loading branch above pins `dt` to
+        // 0.0 for exactly the frames a `LoadingModelStage` exists, so the
+        // scheduler's dt can never animate the cover; the clock hands the
+        // turntable the real frame time instead and stays 0.0 while the
+        // cover is down.
+        let cover_dt = if self.loading_screen.active() { wall_dt } else { 0.0 };
+        world_resource_set::<crate::components::LoadingCoverClock>(&self.world, |r| {
+            r.0 = cover_dt
+        });
         if !simulation_paused {
             world_resource_set::<TotalTime>(&self.world, |r| r.0 += dt);
         }

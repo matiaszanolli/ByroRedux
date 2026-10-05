@@ -12,6 +12,7 @@ use crate::components::{
     CellRootIndex, FootstepConfig, InputState, NameIndex, SubtreeCache, WaterAudioConfig,
     WaterAudioState,
 };
+use crate::components::LoadingCoverClock;
 use crate::interaction::{
     ActionBindings, ActionState, InjectedKeyHold, InjectedKeyPulse, InteractionCandidateScratch,
     InteractionState, InteractionTrace,
@@ -26,6 +27,11 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
 
     // Register built-in resources.
     world.insert_resource(DeltaTime(0.0));
+    // #5306 — wall-clock advance while the loading cover is up (0.0
+    // otherwise), stamped next to DeltaTime and read by the loading-model
+    // turntable, whose stage only exists on frames where the scheduler's
+    // dt is pinned to 0.0.
+    world.insert_resource(LoadingCoverClock(0.0));
     world.insert_resource(TotalTime(0.0));
     world.insert_resource(byroredux_core::ecs::resources::HardcoreMode::default());
     world.insert_resource(EngineConfig {
