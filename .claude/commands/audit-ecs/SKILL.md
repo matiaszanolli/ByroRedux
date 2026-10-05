@@ -188,7 +188,11 @@ stage's parallel batch), not a stage. Registered per stage in `register_{early,u
   system that lost its declaration, or an exclusive that a test above says must declare. Enumerate live
   counts with `rg -c` on the four `add_*` forms; never quote a total.
 - **Panic policy is fail-fast** (#1412): do not report a missing `catch_unwind`. `Scheduler::run` takes
-  `&mut self` and `Scheduler` is deliberately not a `Resource` (re-entry impossible, #868).
+  `&mut self` and `Scheduler` is deliberately not a `Resource` (re-entry impossible, #868). The one other
+  entry point is `Scheduler::run_exclusive_named` (#5141, `00115f7a5`): the engine's paused frame path runs
+  exactly `debug_drain_system` through it while the pause menu gates `run` (pinned by
+  `run_exclusive_named_runs_only_the_named_system`). It bypasses stage order and per-system timing, so any
+  new caller must name a system with no same-frame producer/consumer dependency.
   `add_*` warns on duplicate names; `try_add_*` returns `Err(name)` across the flat name space (#312).
 - Cross-stage sequencing (a consumer in an earlier stage than its producer) is invisible to the
   analyzer — see `/audit-concurrency` Dim 4 for the pinned cases and the by-hand rule.

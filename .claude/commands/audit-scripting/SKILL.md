@@ -25,7 +25,7 @@ analogue of NIFAL's no-fabrication rule).
 
 ## Scope
 
-`crates/scripting/src/` (~44k LOC): `translate/` (`mod`, `source`, `archetype`, `compose`, `effects`, `tables`,
+`crates/scripting/src/` (~45k LOC): `translate/` (`mod`, `source`, `archetype`, `compose`, `effects`, `tables`,
 `recognizers/{quest_stage_gate,rumble,two_state_activator}`); `fragment.rs` + `fragment/{effects,populate,
 state,systems}.rs`; `quest_stages.rs`, `globals.rs`, `vm_state.rs`, `events.rs`, `cleanup.rs`, `timer.rs`,
 `recurring_update.rs`, `condition.rs`, `trigger.rs`, `player_control.rs`, `equipment.rs`, `registry.rs`;
@@ -45,8 +45,10 @@ Object / Story Manager fills, true `LCTN`, reference collections, unloaded-world
 packages/spells/keywords overlays — real gaps, don't re-file as discoveries), crate docstrings
 (`translate/mod.rs`, `fragment.rs`, `cleanup.rs` marker house rules).
 
-**Known-open — cite, don't re-file** (verified 2026-09-29 with `gh issue view`): #3817 (`HorseTetherState`/
-`ActorCinematicState` never terminate, so cinematic-retained entities never re-adopt cell lifetime). #4113/#4115
+**Known-open — cite, don't re-file** (verified 2026-10-05 with `gh issue view`): #3817 (`HorseTetherState`/
+`ActorCinematicState` never terminate in-session, so cinematic-retained entities never re-adopt cell lifetime;
+the *save-load* source of stale rows is closed by `purge_cinematic_retention_state`, #5056 `a197e8563`),
+#4415 (magic runtime partial). #4113/#4115
 are open but live in `crates/papyrus`/`crates/pex` (`/audit-papyrus`). Closed since 2026-09-19: #4334 (once-only
 persistence, `ReferenceScriptState`), #4190, #4116.
 Not gaps: the M47.1 condition resolvers and fragment lowerer are implemented and live-verified; `MoveTo`
@@ -104,7 +106,8 @@ they cannot see:
   non-literal for a default-only parameter, is a finding; the pattern is "accept only the literal-default form,
   decline the rest" (`MoveTo`: ≤ `MOVE_TO_MAX_ARGS`=6 with offsets `0.0`, rotation flags at defaults;
   `AddItem`: literal `abSilent`). Post-2026-09-19 primitives to hold to this: `StopCombat`, `AddSpell` (accepts
-  and drops a literal `abVerbose`), `RemoveSpell` (#4414/#4415).
+  and drops a literal `abVerbose`), `RemoveSpell` (#4414/#4415), `SetUnconscious` (`prim_set_unconscious`,
+  `[abUnconscious = true]`, player receiver declines; #5017 `3c08cfe50`).
 - **Receiver/hole binding never defaults to form-id 0**: `QuestRef::{OwningQuest, SelfRef, Property}` must
   fully resolve (`OwningQuest` needs `ctx.owning_quest`; `SelfRef` on a REFR declines); `ObjectRef` has no
   bare-receiver case (`receiver_object` rejects `self`; object locals resolve through
@@ -155,6 +158,9 @@ apply_effect_itself, the_nested_lock_residual_list_names_every_type_apply_effect
   `apply_effects_declines_conditional_with_unresolvable_guard`), with a `warn!`.
 - **Cascade**: `MAX_CASCADE = 64` bounds only fragment-emitted (`is_cascade`) `SetStage`s, not authored
   ingress; FIFO `VecDeque`; overflow warns; a no-op re-set (`previous == new`) does not cascade.
+- **Objective transitions** (#5153): `QuestObjectiveState` mutators push a bounded `QuestObjectiveEvent` only on
+  false→true flips (`objective_mutators_emit_transitions_only`); the queue is serde-skipped presentation
+  (drained by the app frame into announcements) — a repeat/un-flip that emits is the regression.
 - **Quest journal**: `QuestStageState` keeps a sequenced event journal (`QUEST_EVENT_RETENTION` = 16 384) with
   three fixed subscribers (`SCENE_QUEST_EVENT_SUBSCRIBER`, `FRAGMENT_QUEST_EVENT_SUBSCRIBER`, `TERMINAL_QUEST_EVENT_SUBSCRIBER`), each polling its own cursor
   (`missed_events > 0` ⇒ the subscriber must resync from canonical state). `set_stage` keeps `stages_done`
@@ -174,6 +180,10 @@ apply_effect_itself, the_nested_lock_residual_list_names_every_type_apply_effect
   sibling `ReferenceScriptState` (#4334, save v26): fire-once triggers park their script there and the
   recognizer's spawn closure consults it so a reload does not re-arm. A "simplification" that keys any of the
   three ledgers by entity is the regression.
+- `Effect::StartCombat` also removes the actor's `AmbientEngagement` (moved into `crates/scripting/src/combat.rs`
+  beside `AiCombatState`) in its own guard scope, so a scripted fight is never auto-dropped by the ambient
+  disengage (#5046 `fef67f3c3`); `Effect::SetUnconscious` writes `ActorControlState` (mutually exclusive with
+  restrained) and ends the actor's combat — both acquisitions belong in `apply_effect`'s lock inventory.
 - `Effect::AddSpell`/`RemoveSpell` apply through `magic::{add_spell,remove_spell}` (`SpellList` + permanent
   `ActorValues` modifier, add/undo symmetric — `add_and_remove_spell_apply_and_undo_permanent_modifiers`); both
   types are nested under the quest lock, so they belong in `apply_effect`'s lock inventory.
@@ -203,7 +213,10 @@ Guards: `cleanup.rs::every_drained_marker_is_a_documented_pattern_a_marker`, `cl
 - **CTDA OR-precedence** (`condition.rs::evaluate`): consecutive `or_next` conditions form a block that binds
   tighter than the AND chain (`A AND B OR C AND D` = `A AND (B OR C) AND D`); empty list → `true`; guards
   `or_precedence_quirk_*`, `and_chain_short_circuits_on_first_false`. Function catalog per the module-doc
-  table (indices verified against TES5Edit); unknown functions return the documented safe default, `RunOn`
+  table (indices verified against TES5Edit); `GetIsID` compares the Run-On's **base** object
+  (`SceneAliasCandidate::base_form_id`), not the placed ref (#5041 `1816bbc14`,
+  `get_is_id_matches_run_on_base_object_not_placed_reference`); `GetActorValue` reads through
+  `CharacterRuleset::actor_value` (the shared derived+modifier composer, #5042 — `/audit-character` Dim 4); unknown functions return the documented safe default, `RunOn`
   resolution declines (condition fails) on an unresolvable target rather than defaulting to the subject; a
   wrong sentinel flips a condition. `crates/plugin/src/consumables.rs` borrows fn-586 semantics by profile
   (`/audit-character` Dim 1).
@@ -284,10 +297,23 @@ The M47.2 MQ101 cart sequence is the first scripted sequence that drives *animat
   unbinds an alias (`subject_requirement_never_excludes_a_passing_subject`,
   `condition_only_identity_fill_binds_what_the_full_scan_would`).
 - **NPC dialogue selection** (`systems/npc_dialogue.rs`, Late exclusive): consumes the player's `ActivateEvent`
-  on a living NPC that `running_quests_binding_entity` names, walks owned DIALs (`DialRecord::quest_refs` —
-  QSTI and, for Skyrim, QNAM) in ascending FormID order, picks via `select_first_info` (actor subject, player
-  target — the SCEN path's discipline), stamps `NpcDialogueTopic`; UI re-selection goes through
-  `select_topic_by_form_id` and must re-check live ownership. The egui response page itself is `/audit-tooling`.
+  on an NPC that `running_quests_binding_entity` names (owned DIALs via `DialRecord::quest_refs` — QSTI and,
+  for Skyrim, QNAM). Candidates are **Player-category** topics with an INFO that passes `select_first_info` for
+  this NPC (actor subject, player target); a qualifying **Blocking** DLBR entry opens the conversation and its
+  INFO's TCLT links replace the list; otherwise the list is the **Top-Level** starting topics, and mid-branch
+  children are reached only through links (#5037/#5045 `7ab87c0fb`; FO3/FNV branch-less topics without the DIAL
+  Top-level flag are link-only, #5224 `305363122`). It stamps `NpcDialogueTopic` on exactly one NPC (the
+  surface keys on `DialogueSurfaceState::npc`, #5038); both entry points gate on `player_can_act` and the shared
+  `npc_refuses_dialogue` (dead / `AiCombatState` / unconscious), also applied by the interaction Talk arm
+  (#5043, `1d31ced2b`). UI re-selection goes through `select_topic_by_form_id` and must re-check live
+  ownership. **Spoken-line fragments** (#5152, `c59600138`): `DialogueInfoFragments` (TIF_ INFO VMAD, rebuilt
+  from plugin data, unsaved) dispatches the line's OnBegin at selection and the outgoing line's OnEnd on
+  selection change / close via `apply_spoken_info_fragment` — the same guard-free executor + journal polling
+  as the quest/scene dispatchers (`the_spoken_lines_fragments_advance_the_stage`). The force-greet entry is
+  deliberately undecoded. Talk-candidate filtering (`populate_candidates`, `byroredux/src/interaction.rs`)
+  takes each alias-resource guard alone and builds bulk sets per storage (`running_quest_bound_entities`;
+  #5025 `2a1a7a362` closed two ABBA cycles, #5109 `83d52707e`) — a guard nest reintroduced there reddens the
+  lock-order lane. The egui response page itself is `/audit-tooling`.
 - **Marker patterns** for this domain (Pattern B, drained at consumer head): `Scene{Start,Stop}Request`,
   `SceneActionCompletionBatch`, `DialoguePresentationEventBatch`, `DialogueLineCompletionBatch`,
   `ScenePackage*Batch`, `EvaluatePackageRequest`, `MotionTypeChangeRequest` (tail-drains exactly what it
@@ -350,7 +376,10 @@ SCTX frontend (`ScriptSource::Obscript` placeholder).
   design — cadence restarts on load and script locals are re-executed fresh per run (documented M47.3
   residual, not silent save loss); `StartQuest`/`StopQuest` attach/detach the script loop consistently.
   Phase-2 gaps (object-script blocks, Message UI, per-quest quest-delay time, actor-state functions) are
-  documented in ROADMAP M47.3 — not new findings.
+  documented in ROADMAP M47.3 — not new findings. The 255-script corpus gate in `obscript_quests.rs`
+  (`#[ignore]`d) now resolves Oblivion.esm via `test_paths::oblivion_esm()`, panics under
+  `BYROREDUX_REQUIRE_GAME_DATA=1` instead of returning green, and runs in `.github/workflows/real-data-gates.yml`
+  (#5088 `1377d3463`).
 - **Legacy load-order/extender path**: `attach_scpt_script` resolves SCPT via `ScriptRegistry` (logs an error
   when the resource is absent); dialect selection is by *profile row*, pinned by
   `obscript_dialect_follows_the_profile_not_the_game_kind`; source-less FNV/FO3 bytecode is decoded
@@ -371,7 +400,7 @@ is `/audit-tooling`; audit here the runtime that consumes it.
   obey `MAX_SCRIPT_ARRAY_ELEMENTS`/`MAX_SCRIPT_CALL_BYTES`/`MAX_PENDING_PAPYRUS_MOD_EVENTS`. `execute.rs` has
   `unreachable!` arms guarded by "validated …" invariants — each must be truly established by lowering.
   The `catching_panics` net (#3948) wraps the translate/lower path; check whether runtime execution in
-  `papyrus_provider_system` has any equivalent (unverified as of 2026-09-19).
+  `papyrus_provider_system` has any equivalent (none found 2026-10-05: no `catch_unwind` under `papyrus_provider/`).
 - **Decline-on-unmodeled at the seam**: a provider call that cannot be typed declines the whole fragment/
   handler (`lower_provider_call` errors → `None`), it never lowers a prefix and silently drops the tail; a
   `PapyrusProviderRuntime::default()` with a non-empty catalog but `callback: None` is not servable (Dim 1).

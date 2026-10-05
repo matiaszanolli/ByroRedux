@@ -51,9 +51,10 @@ constraint CInfo decode is a NIF seam).
    nightly per title in `.github/workflows/real-data-gates.yml` (`BYROREDUX_REQUIRE_GAME_DATA=1`,
    so an absent corpus is a failed job). Locally: one title at a time,
    `BYROREDUX_<GAME>_DATA=<Data dir> cargo test -p byroredux-nif --test per_block_baselines <game> -- --ignored --nocapture`.
-   Known-open (2026-09-29): the workflow only became parseable with #4619, and no
-   `byroredux-game-data` self-hosted runner is registered (repo runner count 0), so **no nightly
-   result exists** — a green default `cargo test` says nothing about parse rates; run the gate locally.
+   Still true 2026-10-05: the workflow parses since d98769436 (#4619, closed), but no
+   `byroredux-game-data` self-hosted runner is registered (repo runner count 0) — every scheduled
+   run queues and is cancelled at 24 h, so **no nightly result exists**. A green default
+   `cargo test` says nothing about parse rates; run the gate locally.
 
 ## Phase 2: Dimensions
 
@@ -111,7 +112,7 @@ its list is invisible to it); `blocks/controller/sequence_pre_10_1_0_106_tests.r
 ### Dimension 2: Version Gating (highest report yield)
 Paths: `crates/nif/src/{version,shader_flags}.rs`, all `stream.bsver()` / `stream.version()` sites in `blocks/`
 First step: `git log --since=<last report> --format='%h %s' -- crates/nif/src/version.rs crates/nif/src/shader_flags.rs`, then for every parser changed since, compare each `since=`/`until=`/`vercond` in nif.xml with the gate written; `grep -rn 'V10_1_0_106\|V10_1_0_103' crates/nif/src/blocks` shows raw uses of constants a `NifVersion` helper already encodes.
-**Guard**: the `detect_*` tests in `version.rs`. Nothing guards helper-vs-literal use.
+**Guard**: the `detect_*` tests in `version.rs`; `crates/nif/src/version_literal_tests.rs` (72769b95a, #5119) fails on any bare `NifVersion(0x…)` literal or bare decimal `bsver` comparison in production `src/` outside `version.rs`. Nothing guards a *named* constant used where a `NifVersion` helper already encodes the gate.
 **Checklist**:
 - `NifVariant::detect` covers every `(version, user_version, user_version_2)` combination of
   the seven titles + the FO3-dev edge case. `impl NifVariant` is minimal (`detect`, `bsver`);
@@ -160,10 +161,14 @@ First step: `cargo run -p byroredux-nif --release --example nif_stats -- <archiv
   clean-rate floor (`min_clean`, 0.995) plus recoverable 100% — truncation counts as
   recoverable, so the floor is what catches silent clean-rate collapse. New coverage
   findings should land as a baseline-test extension; `BYROREDUX_REGEN_BASELINES=1`
-  regenerates after an intentional change.
+  regenerates after an intentional change. `run_baseline` compares each TSV's own `total=` header
+  (`baseline_corpus_total`) against the walked corpus *before* the per-type comparator, so an
+  install that grew or shrank fails naming the corpus drift rather than reading as parser loss
+  (#4628).
 - `kfm.rs` (KFM binary catalog, v1.2.0.0–2.2.0.0, transcribed from `NiKFMTool::ReadBinary`)
   has no engine consumer today — audit for version-gate fidelity and `allocate_vec` bounds
-  only; "unused" is not a finding.
+  only (its `read_cstring` bounds the `i32` length against remaining bytes and
+  `MAX_SINGLE_ALLOC_BYTES`, #4631); "unused" is not a finding.
 **Output**: `/tmp/audit/nif/dim_3.md`
 
 ### Dimension 4: Geometry Extraction & Import Handoff
@@ -175,7 +180,9 @@ This is the *parse → ECS* handoff; per-game material classification is `/audit
 `tangent_convention_tests.rs`, `tests/normal_synthesis_corpus.rs` (ignored), `import/walk/tests.rs`.
 **Checklist**:
 - All `NiAVObject` fields via the `.av.*` sub-struct. Coordinate conversion (Z-up → Y-up,
-  `coord.rs`) applied consistently to positions, normals, rotations.
+  `coord.rs`) applied consistently to positions, normals, rotations. `compose_transforms`
+  neutralises an overflowed (finite-input, non-finite-product) result through the #4549
+  sanitiser (#4633, `compose_transforms_overflowing_products_are_neutralized`).
 - Per-game geometry path: classic `NiTriShape` (Oblivion/FO3/FNV) vs Skyrim SE+ packed-half
   `BSTriShape` vs Starfield `BSGeometry` (bulk-read via `read_u16_array` + unpack; import
   extractor in `import/mesh/bs_geometry.rs`). Each decodes its own stride and index format.
@@ -283,7 +290,8 @@ parses then silently drops collision; *nif_shape_dispatch_resolve_parity*);
 ### Dimension 6: Allocation Hygiene (PERF)
 Paths: `crates/nif/src/stream.rs`, `blocks/**/*.rs` callers, `crates/nif/tests/heap_allocation_bounds*.rs`, `byroredux/src/streaming.rs` (`pre_parse_cell`)
 First step: `cargo test -p byroredux-nif --features dhat-heap --test heap_allocation_bounds` (CI job `nif-heap-allocation-bounds` runs the three heap files, each its own process)
-**Guards**: the dhat-gated `heap_allocation_bounds.rs` (single node, FO4 packed vertices,
+**Guards**: the dhat-gated `heap_allocation_bounds.rs` (a `harness = false` sequential main since
+#5050 — libtest's own threads polluted its exact `total_blocks == 1` pin; single node, FO4 packed vertices,
 SSE geometry+particle, skin blocks), `heap_allocation_bounds_geometry.rs`,
 `heap_allocation_bounds_import.rs`; `stream.rs` unit tests
 (`allocate_vec_sized_*`, `allocate_vec_min_bytes_uses_the_supplied_minimum_not_size_of`);
@@ -309,7 +317,7 @@ exactly for a `VF_TANGENTS | VF_NORMALS` descriptor and not otherwise, both pack
   input, admitted first against `STREAM_PARSE_INPUT_BYTES` (64 MiB) by the archive-declared size
   (`mesh_declared_size`) so nothing is allocated before admission; cells with < 8 fresh inputs
   keep a serial fast path. A coordinator-side extract-all barrier returning is the regression
-  (the function's own doc comment still describes serial extraction — stale).
+  (its doc comment was corrected to the per-task extract in 3deda6bb7, #5063).
 - `NifStream` caps any single file-driven allocation (256 MB); confirm new readers route
   through the capped helpers, not raw `vec![0; n]`.
 **Output**: `/tmp/audit/nif/dim_6.md`

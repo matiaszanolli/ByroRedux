@@ -54,7 +54,7 @@ ruleset.md` — **the authority for every constant**; a coefficient no capture s
   event (Dim 5 doc sweep).
 - Oblivion `RulesetBuilder::None` is deliberate (no AVIF pre-FO3 → no resolver); pinned by
   `oblivion_still_has_no_runtime_ruleset_and_that_is_deliberate`. FO76/Starfield: captures, no builders.
-- Open (verified 2026-09-29) — cite, do not re-file: #4137 (six `template_flags` bits with no consumer),
+- Open (verified 2026-10-05) — cite, do not re-file: #4137 (six `template_flags` bits with no consumer),
   #4232 (`effective_actor_level` returns 0 verbatim), #4415 (magic runtime partial). The 2026-09-19 report's
   #4452-#4457/#4459-#4463 are all closed — regression checks now. Verify with `gh issue view` before citing.
 
@@ -105,7 +105,8 @@ First step: `grep -rn 'GameKind\|\.game ==\|game_kind' crates/core/src/character
 - **Profile rows must be sourced**: a row for an unwired family may not claim a wire format without a
   capture line (FO76/Starfield were reset to `NpcStatModel::None`, #4453); the same holds for `vital_pools`
   (per-profile roster since #4679 — a consumer-side `GameKind` pool list is the regression); the "blocked, not forgotten" comment pattern
-  (Oblivion arm) is the template. Pins: `fallout_profiles_keep_roster_health_and_ruleset_in_lockstep`,
+  (Oblivion arm) is the template; Starfield's pool roster is `("O2", "Oxygen")`, the AVIF EDID its master
+  authors (#5044 `9bac2d87b` — an unresolvable `"O2"` EDID once silently dropped the bar). Pins: `fallout_profiles_keep_roster_health_and_ruleset_in_lockstep`,
   `skyrim_profile_builds_a_ruleset_and_actually_calls_gmst`.
 **Output**: `/tmp/audit/character/dim_1.md`
 
@@ -122,7 +123,10 @@ First step: `cargo test -p byroredux-core character::derived character::fallout 
   deferral. A row with no scope annotation in its capture is *unsourced* (#4450: documented + pinned);
   every consumer that evaluates for an arbitrary entity must check scope (`crates/scripting/src/
   condition.rs` and, since #4452, `melee_damage_charal_bonus` do). `PlayerOnly` rows are evaluated for the
-  player at stamping (#4674) — verify no NPC path reaches them.
+  player only (stamped #4674, refreshed per frame since #5039) — verify no NPC path reaches them. FO3/FNV
+  shared-row scopes cite the GECK *Stats Tab — NPC* page (#5240 `3826c2792`,
+  `fo3_fnv_geck_npc_page_scopes_the_shared_derived_rows`); Melee Damage is annotated CONFLICTED and kept
+  actor-general deliberately — do not re-file the flip without the settle bar the capture names.
 - **Chaining**: SPECIAL + skills must be in `ActorValues` before dependents evaluate (order is the
   mechanism, no dependency graph); an unpopulated input reads a *documented* default, not accidental 0.
 - `eval` stays allocation-free, no game branch; `DerivedStatFormula` `Copy` + 36 B
@@ -163,25 +167,44 @@ First step: `cargo test -p byroredux --bin byroredux resolve_inherited_call_site
   in `examples/`) is the regression (#3171/#4095); `pc_level_mult_actors_resolve_to_calc_min_not_the_raw_
   multiplier` calls it through the plugin crate. TPLT template inheritance: since #4457 the population boundary resolves
   every category once through `ResolvedNpc::resolve` (`crates/plugin/src/equip.rs`) and consumers read the
-  resolved type; the guard pins production `resolve_inherited_*` calls per file (one left, pre-spawn race
-  in `cell_loader/references/mod.rs`) — a new direct call or a raw `npc.<field>` read is the recurrence
+  resolved type; the guard pins production `resolve_inherited_*` calls per file (two left, both pre-spawn
+  race boundaries: `cell_loader/references/mod.rs` and `player_body.rs`, the latter joined in #5047
+  `c20dcdb04`, which also moved the player's level/Background/outfit reads onto the Use-Stats/Use-Traits/
+  Use-Inventory terminals) — a new direct call or a raw `npc.<field>` read is the recurrence
   (fix-by-addition made it worse in #4086). Verify the enumerated count moved only deliberately, and that new reads honor `template_flags` rather than overwriting inherited values (six bits still have no consumer: #4137).
 - **Writers vs stamps (silent no-op class)**: for every writer that gates on a component
   (`consume_item`/`restoration_system`/drowning gate on player `ActorValues`+`ActorVitals`), find a
   *production* insert of that component on the entity class the writer targets; unit tests hand-insert and
   hide the gap (#4458: fixed by `attach_to_player`). The player now carries `CharacterLevel`/`Background`
   from the resolved Player record (#4678); `CharacterLevel` is still unsaved, so the first XP writer trips
-  `validate_progression_state` (`/audit-save`).
+  `validate_progression_state` (`/audit-save`). The player's `FactionRanks` is re-derived from the record
+  (Use-Factions terminal) on load, not saved (#5058 `be3cd9468`) — a scripted rank edit is lost on load by
+  design, exactly as for a respawned NPC.
 - **Magic modifiers (#4415)**: `byroredux_scripting::magic::apply_constant_modifiers` adds constant-spell
   amounts to an `ActorValues` *permanent modifier* at spawn and on `AddSpell`/`RemoveSpell`. Check it never
-  writes base, that add/remove are symmetric, and whether a derived output whose input it modifies
-  (e.g. an END ability → Health) is re-evaluated or silently stale.
+  writes base and that add/remove are symmetric. **Derived-value composition** (#5042 `c9254beb8`):
+  `CharacterRuleset::actor_value` is the one composer — an authored carried base (`ActorValue::base_authored`,
+  set only by `set_base`) wins; otherwise an actor-general `Absolute` row supplies the base and the entry's
+  modifier + damage layers compose on top (a modifier-only placeholder entry once read as the bare modifier:
+  Finesse CritChance 5). `GetActorValue` (`crates/scripting/src/condition.rs`) and
+  `melee_damage_charal_bonus` must both call it; a consumer reading `derived_value` or the raw entry alone is
+  the regression. **Player pools** (#5039): the player's `PlayerOnly` Health/AP base is a *cache* of the
+  formula, refreshed by `CharacterRuleset::refresh_player_only_bases` (allocation-free) at stamping, after
+  `attach_to_player`'s constant spells, and every frame by `player_derived_stats_system`
+  (`byroredux/src/systems/character.rs`, Update) — the one documented exception to computed-on-demand
+  (`docs/engine/charal.md` §6); a refresh must preserve the damage and modifier layers.
 - `build_character_ruleset` returns `None` for Oblivion/FO76/Starfield; every caller must treat `None` as
   "no CHARAL for this game", never "use the default ruleset" (Fallout formulas on a TES actor).
 - `resolve` = `index.actor_value_form_id(editor_id)`: an unresolved EditorID skips its formula
   (`push_derived` resolve-or-skip), never registers one keyed on `0`.
 - Ordering: base attributes + skills written before dependent derived stats; FO3/FNV class auto-calc
   `skill = 2 + 2×SPECIAL + ceil(Luck/2)` implemented, tag-skill part still *absent* not guessed.
+  FO3/FNV NPC Health is the **NPC** curve, not the player row (#5238 `c71eeed80`): `NpcHealthCurve` in
+  `NpcStatModel::ClassAutoCalc` = `NPC_` `DATA` Base Health + `fAVDNPCHealthEnduranceMult`·(END + offset) +
+  `fAVDNPCHealthLevelMult`·(L + offset), measured 5 / 5 / −1 with `with_gmst` overlaying authored GMSTs
+  (pins `fo3_fnv_npc_health_curve_reproduces_the_vanilla_samples` — 15 infobox samples — and the `#[ignore]`d
+  `fo3_fnv_named_npc_health_matches_the_authored_curve`). The player-curve constants (bias 90/95, END·20)
+  on an NPC path are the regression.
 - Skyrim `derive_skyrim_actor_values`: Health/Magicka/Stamina resolve **independently** (race base +
   signed ACBS offset, own AVIF; `RaceRecord.starting_*` are `Option<f32>`) — a missing pool suppresses
   only itself. The capture's class/level term is deferred and must be disclosed in place (#4454).

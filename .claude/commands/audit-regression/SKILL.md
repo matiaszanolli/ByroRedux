@@ -29,9 +29,11 @@ base=$(git rev-list -1 --before="$D 23:59" HEAD)
 git diff --name-only "$base"..HEAD -- '*.rs' '*.glsl' '*.comp' '*.frag' '*.vert' > /tmp/audit/churn.txt
 # earlier fix commits on the files that changed since, ranked by overlap:
 xargs -a /tmp/audit/churn.txt -I{} git log "$base" --format=%s -- {} \
-  | grep -oiE '(fix|fixes|fixed|close[sd]?|resolve[sd]?) #[0-9]+' | grep -oE '[0-9]+' \
-  | sort | uniq -c | sort -rn | head -"${LIMIT:-40}" > /tmp/audit/candidates.txt
+  | grep -oiE '(fix|fixes|fixed|close[sd]?|resolve[sd]?) #[0-9]+(( *(,|\+|&|and) *| )#[0-9]+)*' \
+  | grep -oE '[0-9]+' | sort | uniq -c | sort -rn | head -"${LIMIT:-40}" > /tmp/audit/candidates.txt
 ```
+
+The `(…#N)*` tail is load-bearing: multi-issue subjects (`Fix #5075 + #5076: …`, `Fix #5215, #5216: …`) are common, and a single-`#N` pattern drops every issue after the first — 11 of 279 fixed issues in the 2026-09-29 → 10-05 window. Issue numbers cited later in a subject (`… catches up with #5154`) are deliberately not matched.
 
 Take the top candidates, then `gh issue view <N> --repo matiaszanolli/ByroRedux --json number,title,body,closedAt,labels` for each. If the churn list is empty or short, top up with `gh issue list --repo matiaszanolli/ByroRedux --state closed --label bug --limit 50 --json number,title,body,closedAt,labels`. Never trust a hand-typed closed-issue count; ask the API.
 

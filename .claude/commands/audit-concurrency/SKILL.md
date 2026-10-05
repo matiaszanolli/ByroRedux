@@ -56,7 +56,8 @@ artifact). "This barrier looks wrong" is a HYPOTHESIS row, not a fix.
 
 ## Phase 1: Setup
 
-1. Parse `$ARGUMENTS`. 2. `mkdir -p /tmp/audit/concurrency`.
+1. Parse `$ARGUMENTS`. 2. `mkdir -p /tmp/audit/concurrency`. Toolchain: every `cargo test -p byroredux`
+   step below needs rustc >= 1.94 — rustup cargo per `docs/contributing.md` § Toolchain note (#4466) — or the bin crate gives no feedback.
 3. `gh issue list --repo matiaszanolli/ByroRedux --limit 200 --json number,title,state,labels > /tmp/audit/concurrency/issues.json`
 
 ## Phase 2: Launch Dimension Agents
@@ -71,7 +72,9 @@ First step: `git log --since=<last-report-date> --format='%h %s' -- crates/rende
   (`VUID-vkQueueSubmit-queue-00893`): bind the `MutexGuard` and keep it across `queue_submit` /
   `queue_present` even though `vk::Queue` is `Copy` (a temporary `.lock().unwrap()` drops at end of
   statement — `draw.rs` documents this at the submit). Release before any `wait_for_fences`. Also check the
-  one-time-command submit in `texture.rs` (`one_time_lock_scope_tests` pins lock → submit → unlock → wait, #1713).
+  one-time-command submit in `texture.rs` (`one_time_lock_scope_tests` pins lock → submit → unlock → wait, #1713;
+  the queue acquire inside the fence window is `lock_recovering`, the fence lock still `expect`s by design and
+  `VulkanContext::drop` recovers it — #5209).
 - **Frame-in-flight discipline (the both-slots wait).** `sync_and_acquire_frame.rs` waits on all
   `in_flight` fences before re-recording; that is the safety argument for the immediate scratch free in
   `build_skinned_blas_batched_on_cmd`, the TLAS resize, and every non-per-FIF resource. It is
@@ -110,7 +113,7 @@ First step: `git log --since=<last-report-date> --format='%h %s' -- crates/rende
 **Output**: `/tmp/audit/concurrency/dim_1.md`
 
 ### Dimension 2: Compute → AS → Fragment Chains
-Paths: `crates/renderer/src/vulkan/{skin_compute,svgf,taa,caustic,water_caustic,volumetrics,bloom,groundcover,sky_cube,material}.rs`, `crates/renderer/src/vulkan/context/{post_passes,dispatch_skin_and_cluster,skinned_blas_refit}.rs`
+Paths: `crates/renderer/src/vulkan/{skin_compute,svgf,taa,caustic,water_caustic,volumetrics,bloom,groundcover,sky_cube,material}.rs`, `crates/renderer/src/vulkan/groundcover/`, `crates/renderer/src/vulkan/context/{post_passes,dispatch_skin_and_cluster,skinned_blas_refit}.rs`
 First step: `git log --since=<last-report-date> --format='%h %s' -- crates/renderer/src/vulkan/context/post_passes.rs crates/renderer/src/vulkan/*.rs`
 **Checklist**:
 - **Skin chain (M29).** Palette build (`skin_compute.rs`) → `COMPUTE_WRITE→SHADER_READ` → per-mesh skin output →
@@ -130,7 +133,7 @@ First step: `git log --since=<last-report-date> --format='%h %s' -- crates/rende
 - **Bloom (#931).** per-mip `SHADER_WRITE → SHADER_READ` image barriers on both pyramids (post-barrier
   on the just-written mip only); `up_mips[0]` completes before composite samples it. Caustic: CLEAR → COMPUTE → FRAGMENT.
 - **Ground-cover / sky-bake compute** (pipeline semantics belong to `/audit-exterior`): sync correctness
-  stays here. `groundcover.rs::record_scatter` orders counter zero-fill → extrema seeds (TRANSFER→TRANSFER,
+  stays here. `groundcover/frame.rs::record_scatter` orders counter zero-fill → extrema seeds (TRANSFER→TRANSFER,
   #4293), scatter → publish incl. counter readback (#4181), and the interaction field's trailing barrier;
   `sky_cube.rs::record_bake` runs mid-frame (`context/build_and_upload_instances.rs`) — check its
   publish barrier before the first consumer. Evidence is a `BYRO_VALIDATION` capture, not reading.
@@ -142,13 +145,19 @@ First step: `git log --since=<last-report-date> --format='%h %s' -- crates/rende
   `ExposureResource` slot, sampled unconditionally by `presentation.frag` and the FSR dispatch — the slot
   write must be published before both consumers, in fixed mode too.
 - **MaterialBuffer SSBO.** upload is `HOST_WRITE → VERTEX/FRAGMENT_READ`, before draw recording; flag only if it moves into a mid-frame compute path.
-- Known-open 2026-09-29: #4989 (narrowed palette dispatches write one SSBO back to back with no barrier) and
-  #4780 (the #3685 skip-clear latch also skips the temporal reset, leaving `history_valid` true).
+- **Volumetrics skip path (#4780, fixed d213521ef).** The #3685 skip-clear latch owns only the GPU clear
+  (`record_neutral_frame`); the temporal reset is `record_skipped_frame`, run on EVERY not-dispatched frame
+  (incl. the dispatch `Err` arm). Guard: `every_skipped_frame_drops_the_temporal_history_not_just_the_first`.
+  The combustion occupancy mask is host-zeroed per slot and rides the all-slots fence wait (`sync.rs` rider
+  list, #5215); its device RAW rests on `record_volumetrics_pass`'s global COMPUTE barrier — narrowing that
+  barrier is a needs-syncval change.
+- Closed not-reproduced (#4989, not a fix): back-to-back narrowed palette dispatches into one SSBO with no
+  barrier — zero SYNC-HAZARD on four games incl. a forced two-run plan. Re-raise only with a `BYRO_VALIDATION` hazard.
 **Output**: `/tmp/audit/concurrency/dim_2.md`
 
 ### Dimension 3: ECS Lock Ordering & Deadlock (system level)
 Paths: `crates/core/src/ecs/{world,lock_tracker}.rs`, `byroredux/src/systems/`, `byroredux/src/extensions/`, `.github/workflows/ci.yml`
-First step: `BYRO_LOCK_ORDER_CHECK=1 cargo test -p byroredux` — the binary's graph is where every recent cycle lived (#4982–#4984; core alone stays green) — then CI's `lock-order-check` form, `cargo test --workspace --no-fail-fast --exclude byroredux-ui`. A nonzero failure count is a hard regression
+First step: `BYRO_LOCK_ORDER_CHECK=1 cargo test -p byroredux` — the binary's graph is where every recent cycle lived (#4982–#4984, #5025; core alone stays green) — then CI's `lock-order-check` form, `cargo test --workspace --no-fail-fast --exclude byroredux-ui`. A nonzero failure count is a hard regression
 Machinery — TypeId-sorted pairs, tracker-scope arming, `lock_tracker` internals (check-before-insert,
 `GRAPH` poison recovery, recursive-read warning) and poison resolution — is `/audit-ecs` Dim 1; do not
 re-audit it here. This dimension owns how *systems* use it.
@@ -166,9 +175,12 @@ re-audit it here. This dimension owns how *systems* use it.
   `vulkan-validation` (the only job where rayon dispatches the real parallel batch against a real world;
   pinned by `vulkan_validation_job_enables_the_lock_order_detector`, `vulkan_validation_job_fails_on_a_panic`
   and `vulkan_validation_job_resolves_lavapipe_and_fails_on_init_failure` in
-  `byroredux/src/scheduler_access_tests.rs`). Known-open 2026-09-29 (#4987): that lane has not yet been seen to
-  reach a device — read the run log for a device-selection line before counting live-batch coverage. A green
-  run proves only what it exercised.
+  `byroredux/src/scheduler_access_tests.rs`). Since #4987 (6d5d8fa5f) the lane hard-fails unless the bench
+  log carries the `Selected GPU:` line (`vulkan_validation_job_requires_a_selected_device`), so a green run
+  did reach a device — but it drives a 5-frame `--bench-frames` run of the default no-game-data scene, and a
+  green run proves only what it exercised. Its `[Vulkan]` gate matches every level the log filter admits,
+  and the renderer crate rides at info for that gate, so WARN-level performance warnings
+  (`WARNING-Shader-OutputNotConsumed`) redden it too — read which severity fired before calling a red run a hazard.
 - **The graph cannot tell `&mut World` from `&World`.** A function holding several read guards at once under
   `&mut World` cannot deadlock but still records edges and reddens the lane (#4982, the unload capture
   passes). The fix is the same snapshot-then-acquire shape, not an exemption.

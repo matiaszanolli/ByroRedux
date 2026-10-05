@@ -19,8 +19,9 @@ CI gate already enforces an invariant, the dimension names the guard and aims at
 See `.claude/commands/_audit-common.md` for layout, crate roster, methodology, dedup, severity and finding
 format. Young code has had the fewest sweeps — find it with
 `git log --diff-filter=A --since=<last-report-date> --name-only --format= -- 'crates/*/Cargo.toml' 'tools/*/Cargo.toml'`
-plus the crates the last report never names (today `crates/sdk`, `crates/mod-runtime`, `crates/menuxml`,
-`crates/scripting`, `crates/save`, `crates/hkx`, `crates/spt`, and `tools/`). File real findings there; do not
+plus the crates the last report never names (`for c in crates/*/; do grep -q "$c" <last-report> || echo "$c"; done`;
+the 2026-09-29 report named none of `sdk`, `mod-runtime`, `menuxml`, `scripting`, `save`, `hkx`, `spt`, `pex`,
+`sfmaterial`, `audio`, `debug-ui`, `game-detect`, nor `tools/`). File real findings there; do not
 just note the crate is young. `crates/cxx-bridge` and `crates/platform` are deliberate placeholders owned here:
 check they have not grown a second job or silent consumers, not that they are small.
 
@@ -77,11 +78,11 @@ Tech-debt findings default to **LOW** (see `_audit-severity.md`). Promote only o
      echo "test files >2000 total LOC (lower priority, separate bucket): $(find crates byroredux tools -name '*.rs' -not -path 'tools/nifskope/*' -exec wc -l {} + | awk '$1>2000 && $2!="total"' | wc -l)"
    } > /tmp/audit/tech-debt/baseline.txt
    ```
-   Measured 2026-09-29 (diff direction only, re-run, never quote): markers 21 (15 are `XXXX` false positives),
-   `allow(dead_code)` 27, `unimplemented!/todo!()` **0** (a fresh hit is notable), `#[ignore]` 250 (217 on
-   2026-09-19; tools-inclusive — earlier reports scoped to `crates`+`byroredux` read lower), production >2000
-   LOC: **7** (3 on 2026-09-19 — the primary bucket more than doubled in ten days), test-heavy >2000: 61. A
-   raw whole-repo grep for `#[ignore]` also matches markdown prose — keep `--include='*.rs'`.
+   Measured 2026-10-05 (diff direction only, re-run, never quote): markers 22 (15 are `XXXX` false positives),
+   `allow(dead_code)` 34 (27 on 2026-09-29), `unimplemented!/todo!()` **0** (a fresh hit is notable), `#[ignore]` 265
+   (250; tools-inclusive — earlier reports scoped to `crates`+`byroredux` read lower), production >2000 LOC: **5**
+   (7 on 2026-09-29: the #5087/#5089/#5090/#5091 splits retired four, two new crossers arrived), test-heavy >2000: 66.
+   A raw whole-repo grep for `#[ignore]` also matches markdown prose — keep `--include='*.rs'`.
 
 ## Phase 2: Dimension Agents
 
@@ -238,7 +239,7 @@ First step: read the version-gate and budget sites; do not regex blindly (most l
 
 ### Dimension 8: Dead Code & Backwards-Compat Cruft
 Paths: `crates/`, `byroredux/`, `tools/`, every `Cargo.toml`
-First step: `cargo clippy --workspace -- -D warnings` (the CI gate) and the greps below
+First step: `cargo clippy --workspace --keep-going -- -D warnings` (the CI gate) and the greps below
 ```bash
 grep -RInE 'allow\(dead_code\)' crates byroredux tools --exclude-dir=nifskope
 grep -RInE '#\[deprecated\]|// *removed:|_unused|fn .*_unused' crates byroredux
@@ -247,10 +248,11 @@ cargo machete 2>/dev/null || echo "cargo machete not installed — scan Cargo.to
 - **Unused-dependency gate**: CI job `Unused dependencies` runs `cargo machete` (#3890) — a red run is a finding. Its
   blind spots are macro-only and re-export-only use (the job comment says so); the hand scan earns its keep there and on
   deps used only under a non-default feature.
-- **Clippy gate** (CI job `Test + Check + Clippy` runs `cargo clippy --workspace -- -D warnings`; the toolchain is stable, so
-  a new rustc/clippy raises lints on untouched code — rustc 1.96 did, commit 800802516). A red gate is a finding: list each
-  failing lint and file. Run `--all-targets --keep-going` too (the plain form aborts at the first failing crate);
-  test/example-target lints are outside the CI gate — report them as a lower-priority bucket. Check every
+- **Clippy gate** (CI job `Test + Check + Clippy` runs `cargo clippy --workspace --keep-going -- -D warnings` plus a
+  renderer-only `undocumented_unsafe_blocks` re-lint, #5121; the toolchain is stable, so a new rustc/clippy raises lints on
+  untouched code — rustc 1.96 did (800802516), 1.98 did (530c9e7aa)). A red gate is a finding: list each failing lint and
+  file. Run `--all-targets --keep-going` too; test/example-target lints are outside the CI gate — report them as a
+  lower-priority bucket (the workspace example build itself went red once, the #3894 class, 530c9e7aa). Check every
   `#[allow(clippy::…)]` carries a reason comment (the house style for `too_many_arguments`).
 - Each `#[allow(dead_code)]`: called now or still dead? Delete if dead. `pub fn` in a private module nobody imports (`cargo +nightly rustc -p <crate> -- -W unused`);
   `mod.rs`/`lib.rs` re-exports with no consumer; `_`-prefixed params that survived a refactor (delete, do not rename);
@@ -269,8 +271,9 @@ grep -RInE '^[[:space:]]*#\[ignore' --include='*.rs' crates byroredux tools
 grep -RInE '^[[:space:]]*#\[ignore' --include='*.rs' crates byroredux tools | grep -viE 'game data|installed|\.(bsa|ba2|esm)|BSA|BA2|ESM|audio device|vulkan|gpu|rt-capable|display|opt-in|corpus|real (data|master)|steam|env'
 ```
 - **Guards**: `workspace_hygiene_tests` (`byroredux/src/workspace_hygiene_tests.rs`) — `every_ignore_attribute_carries_a_reason`
-  (a bare `#[ignore]` fails; the reason text is the triage input), `no_tmp_scratch_examples_are_committed` (`_tmp_*`
-  probes), and the `classify_pbr` check (Dim 3). Confirm they are not themselves `#[ignore]`d.
+  (a bare `#[ignore]` fails; the reason text is the triage input), `no_tmp_scratch_examples_are_committed` (`_tmp_*` /
+  `tmp_*` probes) plus `no_committed_example_self_describes_as_disposable` (module doc opening "throwaway / one-off / TEMP",
+  #5114), `no_test_attribute_is_stacked_on_another`, and the `classify_pbr` check (Dim 3). Confirm they are not themselves `#[ignore]`d.
 - Most `#[ignore]`s gate Vulkan / game-data / audio tests — not debt. Triage the remainder: does a reason name an issue
   (`gh issue view N`), and if it guards a closed CRITICAL/HIGH fix → MEDIUM.
 - Tests with only smoke assertions (`assert!(result.is_ok())`); commented-out assertions in passing tests; tests that

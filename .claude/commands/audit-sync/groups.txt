@@ -1,0 +1,15 @@
+# /audit-sync agent groups: one background agent per non-comment line.
+# Format: <group-name>: <skill> <skill> ...   (skill = directory name minus `audit-`)
+# Every `.claude/commands/audit-*/` directory must appear exactly once (prep.sh checks).
+# The `meta` group also owns the shared `_audit-*` files and the `.agents/skills` shims.
+# Rebalance by the weights prep.sh prints: split a group whose routed-file count dwarfs the rest.
+renderer: renderer performance
+safety: safety concurrency tech-debt
+esm: esm legacy-compat regression
+nif: nif nifal speedtree parsers
+ecs: ecs character save scripting papyrus
+gameplay: gameplay physics audio
+exterior: exterior runtime
+legacy-games: fnv fo3 oblivion
+creation-games: skyrim fo4 starfield
+meta: ui tooling incremental publish suite sync

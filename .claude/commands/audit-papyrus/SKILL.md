@@ -143,7 +143,11 @@ First step: `cargo test -p byroredux-pex -- decompile::`; with game data: `cargo
   `auto_state_name`) is `is_auto` (#4473, `case_colliding_state_names_mark_exactly_one_auto`) — keying scope on the auto match inverted 983 vanilla scripts (#4319;
   `named_auto_state_stays_an_auto_state_and_the_empty_state_is_script_scope`). Event iff (`on`-prefixed AND
   `is_event_name`) OR `::remote_`-prefixed; `EVENT_NAMES` is a sorted lowercase union binary-searched
-  (`list_is_sorted_for_binary_search`); a missing engine event demotes a handler to a function.
+  (`list_is_sorted_for_binary_search`); a missing engine event demotes a handler to a function. The list is a
+  documented **superset** of Champollion's frozen `EventNames.hpp`: 12 real engine events it omits
+  (`OnAttach`, `OnStoryClearLocation`, ten Starfield) are hand-added in sorted position from a base-class
+  corpus census (#4471 `0611cd116`; `the_census_engine_events_classify_as_events`, which also keeps vanilla
+  typos like `oncelldetatch` out) — an addition needs the same census evidence, not a guess.
 - **The decompile-rate claim measures robustness, not fidelity.** Verify `pex_corpus_smoke` counts `Err` and
   panics as failures and tallies after `decompile_script`. Its shape check must not share an
   implementation rule with the code under test — the #3017 check and `decompile_script` shared the wrong
@@ -169,8 +173,14 @@ First step: `cargo test -p byroredux-papyrus -- depth chain the_two_parser_depth
   `Extends`, variable/function/group flags, property and local initializers) moved construct-continuation
   decisions to the raw stream, each pinned by an `*_on_the_next_line_*` test in `script.rs` plus
   `single_line_forms_of_the_4763_sites_still_parse`. Remaining `peek()`/`check()` sites should sit behind an
-  explicit `skip_newlines()` or a bracket-bounded list; `expect()` still skips newlines (`Auto` ⏎ `State S`
-  glues — known residual class, noted in #4763).
+  explicit `skip_newlines()` or a bracket-bounded list. `expect()` / `expect_ident()` still skip newlines, so
+  a keyword's **mandatory operand** goes through `expect_same_line` / `expect_raw` / `expect_ident_raw`
+  (`parser/mod.rs`; #5021, `3b7ffa670`): declaration names, the `Extends` target, the `(` after a function
+  name, `State` after `Auto`, the If/ElseIf/While condition start — pinned by
+  `a_mandatory_operand_on_the_next_line_is_an_error`, `auto_on_its_own_line_does_not_make_an_auto_state`,
+  `extends_with_its_target_on_the_next_line_sets_no_parent`, `single_line_forms_of_the_5021_sites_still_parse`.
+  Only closing keywords may keep the newline-skipping `expect`; a new declaration keyword that uses it is the
+  regression.
 - **Precedence/associativity**: `BinaryOp::precedence` Or=1, And=2, comparisons=3, Add/Sub/StrCat=4,
   Mul/Div/Mod=5, unary=6, cast=7/postfix=8 (`PREC_*` in `expr.rs`); left-assoc hinges on `op_prec <= min_bp →
   break`. (Bethesda's inverted CTDA OR/AND precedence is a *condition-evaluation* concern in
@@ -178,7 +188,9 @@ First step: `cargo test -p byroredux-papyrus -- depth chain the_two_parser_depth
 - **`preprocess`**: `\`+`\n`/`\r\n`/lone `\r` elided (2/3/2 bytes) with exact `OffsetMap` counts (a wrong count
   drifts every later span); a trailing `\` at EOF is emitted, not swallowed. Keywords are
   `ignore(ascii_case)` and win over the `Ident` regex. Lone CR is a line terminator and CRLF one `Newline`
-  (`bare_cr_is_a_newline_and_crlf_is_one_newline`, #4479 — a CR-only file once lexed to zero newlines);
+  (`bare_cr_is_a_newline_and_crlf_is_one_newline`, #4479 — a CR-only file once lexed to zero newlines); a `;`
+  line comment likewise stops at the first `\r` *or* `\n` (`line_comment_ends_at_a_bare_cr`, #5019 `a75c7dc33` —
+  it once searched only `\n`, swallowing a CR-only file to EOF with zero errors);
   `0x` and exponent shapes route through `MalformedNumber` to a `LexError`, not an adjacent token pair.
 - **Recovery**: `parse_script` returns `Ok((Script, Vec<ParseError>))` for partial success and `Err` only for
   fatal; `skip_to_next_line` always consumes ≥1 token (no infinite loop); callers needing strict-fail check

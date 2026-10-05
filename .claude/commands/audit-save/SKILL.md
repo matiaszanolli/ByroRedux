@@ -71,7 +71,11 @@ Not covered by any guard (the audit's real work): the **two-list drift** between
 `MUTABLE_DELTA_COLUMNS`; staleness of `NOT_SAVED_BY_DESIGN` *reasons*; whether a baseline refresh
 without a bump was *justified*; manual `impl Serialize` types (invisible to both serde guards);
 the extension-state payload's own versioning (Dim 2); semantic correctness of load-apply ordering beyond
-the two pinned pre-reload cases.
+the two pinned pre-reload cases; and **path-qualified impls** — the completeness guard's `impl_target_type`
+matches only the literal `impl Component for X` / `impl Resource for X` line shapes, so
+`impl byroredux_core::ecs::Resource for X` is invisible to it (as of 2026-10-05, eight such types are neither
+registered nor allowlisted, e.g. `GracefulExitRequested`, `PendingGearRelease`, `TriggerOccupancyState` —
+`rg -n 'impl [a-z_:]+::(Resource|Component) for' crates/*/src byroredux/src` and classify each by hand).
 
 ## Parameters / Extra Fields
 
@@ -112,7 +116,10 @@ First step: `git log -p -S'register_' --since=<last report> -- byroredux/src/sav
   `FollowState`/`EscortState`/`Seated`/cinematic pair (`EntityId`, registry handles), `ActorVitals`
   (write-once FormID key). A column with an `EntityId`/handle must also be covered by
   `validate_saved_entity_references` (Dim 4).
-- **Replacing columns**: `Perks`, `TimedRestorations` use `register_replacing_component` — saved absence is
+- **Replacing columns**: `Perks`, `TimedRestorations`, `Dead`, `ActorControlState` use
+  `register_replacing_component` (the last two since #5027/#5052 `7aa1d7741` — the process-lifetime player
+  outlives the reload, so an additive `Dead`/restraint row survived a load into an alive save; pinned by
+  `dead_and_restraint_cleared_on_live_player_by_saved_absence`) — saved absence is
   authoritative for FormID-matched entities (empty column kept in the snapshot; a *missing* column is not a
   tombstone). Ordinary columns are additive-only, so **every runtime removal of an overlaid component needs a
   reconciler** (`reconcile_dead_actor_runtime_state`, `reconcile_player_equipped_weapon`); the guard enforces
@@ -120,9 +127,13 @@ First step: `git log -p -S'register_' --since=<last report> -- byroredux/src/sav
   the cell reload?) and whether a new persisted fact (disable, pickup, lock) chose the marker-plus-
   reconciler or FormID-keyed-ledger model (`ReferenceEnableState`, `ReferenceLockState`,
   `PersistentReferenceStates` — resources keyed by FormID survive cell unload; a component would not).
-  The overlay emits no `EquipmentEventBatch`: presentation derived from an overlaid column on the
-  process-lifetime player (the P3 player body's gear meshes / `NpcAppearanceHidden`, driven by
-  `equipment_appearance_system`) needs its own post-load re-derivation — check one exists.
+  The overlay emits no `EquipmentEventBatch`: presentation derived from an overlaid column is re-derived by
+  `reconcile_worn_gear` (`byroredux/src/npc_spawn/loot_appearance.rs`, #5034 `20717d5b7`) — run on the player after
+  `apply_deltas` and on NPCs from `reference_state::restore`; it diffs live roots against restored slots
+  (reveal / hide / queue `PendingGearImport`) and synthesizes no event batch. A new presentation fact derived
+  from an overlaid column needs the same treatment. Re-derived-not-saved player state: `FactionRanks` is reset
+  to the record by `reset_player_factions_to_record` after the overlay (#5058 `be3cd9468` — alias-injected
+  ranks otherwise outlived the load).
 - **P3/P4 runtime state (2026-09-29)**: player body (`PlayerBodyRoot`, `PlayerBodyRootEntity`, `HiddenFirstPerson`,
   `PlayerCameraView`), mid-life gear import (`NpcSkeletonBones`, `ActorBodyClass`, `PendingGearImport`,
   `PendingInventoryActions`) and NPC dialogue (`NpcDialogueTopic`, `DialogueSurfaceState`) are all
@@ -133,7 +144,8 @@ First step: `git log -p -S'register_' --since=<last report> -- byroredux/src/sav
   `BTreeMap` and component rows are sorted by entity id (`registry.rs`), but saved **resources** serialize
   as-is — at 2026-09-19 `Globals(HashMap<u32, f32>)`, `QuestStageState`, `ReferenceEnableState` (`HashSet`),
   `ReferenceLockState` and `PersistentReferenceStates::pair_rows` all emit hash-iteration order, so two saves
-  of equal state can differ in bytes/CRC — known-open #4748 (re-verified 2026-09-29; cite, don't re-file). A MEDIUM
+  of equal state can differ in bytes/CRC — known-open #4748 (re-verified 2026-10-05: `Globals` is still a
+  `HashMap`; cite, don't re-file). A MEDIUM
   doc/contract mismatch (not data loss) unless something diffs or hashes saves. Do not claim determinism at the row level without checking this.
 - **`next_entity`** is saved verbatim and replayed via `set_next_entity` before inserts; `insert_batch`'s
   `entity < next_entity` is a `debug_assert` only (release inserts at an unspawned id silently — MEDIUM);
@@ -143,8 +155,9 @@ First step: `git log -p -S'register_' --since=<last report> -- byroredux/src/sav
 ### Dimension 2: Format & Schema Discipline (registry fidelity + `FORMAT_MAJOR`)
 Paths: `crates/save/src/{snapshot,registry}.rs`, `save_io/serde_default_guard_tests.rs`, `crates/save/Cargo.toml`, `crates/core/Cargo.toml`
 First step: `cargo test -p byroredux --bin byroredux serde_default_guard` ; `git log --since=<last report> --format='%h %cs %s' -- crates/save/src/snapshot.rs`
-- **Bump rule** (read the `FORMAT_MAJOR` doc comment in `snapshot.rs`, 30 as of 2026-09-29 — do not
-  hardcode the number elsewhere): intra-type shape changes need a bump because `schema_fingerprint` hashes
+- **Bump rule** (read the `FORMAT_MAJOR` doc comment in `snapshot.rs`, 32 as of 2026-10-05 — v31 #5042
+  `ActorValue.base_authored`, v32 #5017 `ActorControlState.unconscious` + the parked `ReferenceState` control
+  state; do not hardcode the number elsewhere): intra-type shape changes need a bump because `schema_fingerprint` hashes
   only column keys (+ replacing policy). A new required field, retyped field, or new `Option` in a saved
   type bumps; `#[serde(default)]` is forbidden as a compatibility mechanism (guard) — even where the default
   would be correct for every old save. Read-compatible changes move the shape baseline **without** a bump:
@@ -193,10 +206,16 @@ Guarded (see ledger): header gate order (length → magic → major → schema f
 checked bounds → CRC over the payload only → `serde_json::from_slice`), advisory `minor`, slot-name strictness
 (`save_42.ess.tmp` rejected), `slots_by_recency` newest-first with slot-number tie-break, ring wrap/resume.
 Residual checks:
-- **`atomic_write` (shared with `settings_io`)** order is exactly: create tmp → `write_all` → `flush` →
-  `sync_all` → byte-exact read-back (mismatch deletes the tmp and errors) → `rename` → parent-directory
-  fsync. Rename-before-fsync or a length-only read-back is a HIGH durability hole. `write_slot` only adds
-  `create_dir_all`; both callers must still use the one helper.
+- **`atomic_write`** (`crates/core/src/atomic_file.rs`; shared with `crates/settings-io`,
+  `crates/boot-request`, `crates/game-detect/src/overrides.rs`) order is exactly: create tmp → `write_all` →
+  `flush` → `sync_all` → byte-exact read-back → `rename` (all inside `stage_and_rename`) → parent-directory
+  fsync. **Any** failure up to the rename removes the temp (#5163 `69fd54fb2`; `failed_rename_removes_the_temp`),
+  and no caller may fall back to copying/renaming the temp over the target on error — the old "Windows rename"
+  fallback clobbered good files on disk-full (#5143 `2e95f0bbf`). The three non-save writers pin that with
+  `assert_no_clobber_fallback` (production text only, via `core::source_scan`); `write_slot` has no such pin
+  and only adds `create_dir_all` + its fixed `save_<slot>.ess.tmp` name (other writers use the unique
+  `atomic_temp_path`). Rename-before-fsync, a length-only read-back, or a new fallback branch is a HIGH
+  durability hole.
 - **Ring never clobbers the last good save**: `SaveState::new` must build the ring via `SaveRing::resume`
   (not `new`), and the cursor advances only after a committed write (`quicksave_ring_cursor_does_not_advance_on_validation_abort`).
 - **Minor-version + default-fill**: `decode` accepts newer minors and serde default-fills; that is the exact
@@ -214,7 +233,10 @@ First step: `grep -n 'fn validate_\|validate_[a-z_]*(world' crates/save/src/vali
   `write_slot`; ring advance and the `SaveComplete` session event only after the commit. Any alternate save
   path that bypasses the gates (console, player action, SDK) is HIGH; input adapters must enqueue through
   `queue_player_save_action` (post-scheduler drain — `save_world` takes ~30 storage + resource read locks, so
-  a live scheduler lane needs the ABBA analysis re-derived; `/audit-concurrency`).
+  a live scheduler lane needs the ABBA analysis re-derived; `/audit-concurrency`). Current ingresses: the
+  winit F5/F9 intercept, the pause menu, and the debug `input.press quicksave|quickload`, which resolves
+  through `ActionBindings` to the same F5/F9 edges (`queue_debug_action_press`, `byroredux/src/interaction.rs`,
+  `bae84e54b`; `quicksave_press_joins_the_player_save_queue_through_the_f5_binding`).
 - **Coverage**: `validate_world` currently runs hierarchy, equipment, saved-entity references (session-local
   `EntityId` fields of columns excluded from the overlay — grep the function for the live column list),
   animation (`AnimationPlayer`, `AnimationStack` root + layer clips, `Seated.animation_restore`),
@@ -240,12 +262,19 @@ First step: read `execute_pending_save_loads` top to bottom against the sequence
   `ItemInstancePool` — teardown's `release_victim_item_instances` needs the live pool, #4135) →
   `without_parked_state` wraps the reload (outgoing session's `PersistentReferenceStates` and
   `StreamStateSnapshots` are set aside and restored on failure) → teardown + reload (`validate_cell_loadable`
-  preflight first, so a missing ESM/cell keeps the live session) → `restore_extension_state` → wholesale
+  preflight first, so a missing ESM/cell keeps the live session; then `purge_cinematic_retention_state`
+  drops every `ActorCinematicState`/`HorseTetherState` row so the convoy is not retained across the teardown
+  as a ghost twin sharing a `FormIdPair` — #5056 `a197e8563`, both reload arms + both debug-load paths, never
+  ordinary cell transitions) → `restore_extension_state` → wholesale
   `restore_resources` **again** (idempotent; re-asserts `CurrentCellContext`/`PlayerPose`; the second call is
-  not redundant) → `drop_entity_bound_continuations` on `PapyrusProviderContinuationQueue` (session-local
+  not redundant) → `restore_resident` (parked rows for resident placements, #4695) → `drop_entity_bound_continuations` on `PapyrusProviderContinuationQueue` (session-local
   `EntityRef` handles must not resume, #4139) → `reseat_ambient_packages_after_restore` (re-pick packages
-  against the restored clock *before* the overlay, #4815) → `build_form_id_remap` → `apply_deltas(MUTABLE_DELTA_COLUMNS)`
-  → dead/equipped-weapon reconcilers → diagnostic `validate_world` → `apply_player_pose` LAST (after the
+  against the restored clock *before* the overlay, #4815) → `build_form_id_remap` → park the snapshot rows
+  whose `FormIdPair` did not resolve (`unresolved_form_id_pairs` → `park_unresolved_snapshot_rows` into
+  `PersistentReferenceStates`, #5054 `17e720430` — the exterior reload streams only `radius_load`, so the
+  save's hysteresis-band rows were dropped and their loot duplicated; `unresolved_snapshot_rows_are_parked_for_the_next_respawn`)
+  → `apply_deltas(MUTABLE_DELTA_COLUMNS)` → dead/equipped-weapon reconcilers, `reconcile_worn_gear`,
+  `reset_player_factions_to_record` → diagnostic `validate_world` → `apply_player_pose` LAST (after the
   overlay of `CharacterController`, whose motion fields pose-restore then zeroes; a new field on either
   side needs an explicit decision). Any failure after the reload returns immediately, never falling through
   into pose-restore on a partial overlay. Idempotency: teardown is unconditional, so a second load of the same

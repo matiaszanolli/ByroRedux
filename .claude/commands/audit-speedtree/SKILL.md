@@ -20,7 +20,9 @@ render *something* instead of failing or going treeless.
   was 86/159): three dictionary entries were mis-sized — `10002` stride 1→32, `10003` stride
   8→32 (`u32` count + count × 8 f32), `13013` 7→4 B. Guard: opt-in
   `walker_stops_on_true_tlv_boundary` (every non-EOF stop word in the 14000–23000 tail band *and*
-  `parser::best_resync_shift` == 0; the same fn drives `spt_tail --culprit`). The precondition
+  `parser::best_resync_shift` == 0; the same fn drives `spt_tail --culprit`). Extract/parse drops
+  are counted per archive and asserted to zero, so a fatal `parse_spt` error fails the gate instead
+  of shrinking its denominator (fixed in b0faf598a, #5139). The precondition
   for raising `TAG_MAX` / dictionarying the 14000–22000 bands is now met but not acted on; any
   consumer reading past `tail_offset` is still new territory.
 - SNAM/CNAM are parsed but deliberately not consumed: `SpeedTreeWind` uses the neutral `(1, 0)`
@@ -45,7 +47,8 @@ Read `.claude/commands/_audit-common.md` and `.claude/commands/_audit-severity.m
   `resolve_tree_icon_path`); `cell_loader/nif_import_registry.rs` (`spt_cache_key`,
   `CachedNifImport.speedtree_wind`); `cell_loader/spawn/mesh_instance.rs` (attaches `Billboard`
   from `mesh.billboard_mode` and `SpeedTreeWind`, routes through `translate_material`);
-  `byroredux/src/streaming.rs` (skips `.spt` in prefetch).
+  `byroredux/src/streaming.rs` (skips `.spt` in prefetch via `is_spt_model_path`, a byte-level
+  suffix test — a `&str` byte-index slice there panicked on a trailing U+FFFD, fixed in c83e4837a, #5137).
 - `byroredux/src/scene/nif_loader.rs` — the `--tree` loose route: a **parallel** path calling
   `import_spt_scene` with `SptImportParams::default()` (no TREE metadata).
 - `crates/plugin/src/esm/records/tree.rs` (`parse_tree` → `TreeRecord`: OBND/ICON/MODB/SNAM/CNAM/
@@ -215,8 +218,9 @@ Lower risk, but a wrong size is the Dim 1 desync trigger — spot-check.
   8009 = 52 B, 13008 = 11 B, 13013 = 4 B, ArrayBytes 10002 / 10003 stride 32 — the #4122
   byte-verified sizes); a size contradicting the observed histogram is MEDIUM. 12002 (16 B) /
   12003 (20 B) were unobserved before #4122 and now decode cleanly in the corpus tail
-  (`format-notes.md` 2026-09-24; the `tag.rs` comment still says "size only") — flag only if a
-  real sample contradicts them.
+  (`format-notes.md` 2026-09-24; the `tag.rs` / `scene.rs` / `stream.rs` prose was brought in line
+  in 567d7e064, #5138) — flag only if a real sample contradicts them, or if doc prose drifts back
+  to the pre-#4122 desync state.
 - Confounder tags (`4096`, `5376` — string-length values inside the tag band) must stay `Unknown`.
 - A tag at ≥ 1% corpus frequency still `Unknown` needs a `format-notes.md` rationale (LOW).
 **Output**: `/tmp/audit/speedtree/dim_5.md`

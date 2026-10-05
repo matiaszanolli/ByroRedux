@@ -20,20 +20,21 @@ a dimension whose Paths have no commits since the last `AUDIT_SAFETY_*` report.
 
 Census recipe: `grep -rwo unsafe <crate>/src | wc -l` for tokens, `grep -rnE 'unsafe[[:space:]]*\{' <crate>/src`
 for blocks — **read the hits**: substring counts also match identifiers (`byroredux` reports 3 tokens and
-only 1 real block). Measured 2026-09-29:
+only 1 real block). Measured 2026-10-05:
 
-- `crates/renderer/src`: **946** word tokens (951 by the substring recipe; 879 on 2026-09-19) — 733 `unsafe {`
-  blocks (678), 95 declared `unsafe fn` (the loose `grep 'unsafe fn'` reads ~139: prose and source-scan
-  strings), 34 `unsafe impl`, ~829 `SAFETY` mentions. Still growing: new since 2026-09-19 are
-  `vulkan/groundcover_models.rs` (16 blocks), `vulkan/exposure_meter.rs` (8), `texture_registry/dynamic_rgba.rs`
-  (1 + the `unsafe fn record_pending_rgba_uploads`), and `vulkan/gpu_timers.rs` grew 43 → 62 (now the densest
-  file). Compare against the previous report, not this text.
+- `crates/renderer/src`: **939** word tokens (948 by the substring recipe; 946 on 2026-09-29) — 720 `unsafe {`
+  blocks (733), 96 declared `unsafe fn` (the loose `grep 'unsafe fn'` reads ~144: prose and source-scan
+  strings), 35 `unsafe impl` (new: `NoUninit for ModelPush`), ~816 `SAFETY` mentions. First net shrink: the
+  #4599 poison-policy extraction cut `vulkan/buffer.rs` 40 → 19 blocks; `vulkan/groundcover.rs` split into
+  `vulkan/groundcover/{construct,frame}.rs` (18 + 12). Densest files: `vulkan/gpu_timers.rs` (62),
+  `vulkan/groundcover_bench.rs` and `vulkan/acceleration/blas_static.rs` (29 each). Compare against the previous
+  report, not this text.
 - Tail: `crates/fsr3-sys` 10 blocks (one is the test-only `byro_fsr3_abi_layout` probe; Dim 1), `crates/nif` 1
   POD-read site + 4 `unsafe impl AnyBitPattern` (Dim 2), `crates/core` 4 in `ecs/query.rs` (`/audit-ecs` Dim 3)
   + 1 in `string/mod.rs` (`from_utf8_unchecked` after an ASCII-only fold) + 1 test-only, `crates/pex` 1
-  transmute (Dim 2), `byroredux` 3 — `cell_loader/unload.rs` 1 and two in `app_events.rs` (the NVML GPU-name
-  probe, `get_physical_device_properties` + `CStr::from_ptr`, 0925f7926, **no SAFETY comment** at
-  2026-09-29), `tools/byro-launcher/src/preflight.rs` 1 block + 1 `unsafe fn` (Vulkan loader probe),
+  transmute (Dim 2), `byroredux` 2 — `cell_loader/unload.rs` 1 and the NVML GPU-name probe's
+  `get_physical_device_properties` in `app_events.rs` (both commented since b7bc84722/#5120, which also replaced the
+  `CStr::from_ptr` block with `device_name_as_c_str`), `tools/byro-launcher/src/preflight.rs` 1 block + 1 `unsafe fn` (Vulkan loader probe),
   `crates/plugin` test-only env-var edits, `crates/cxx-bridge` one `unsafe extern "C++"`.
 - No `unsafe` at all (the remaining hits are prose): `crates/{audio,bgsm,boot-request,bsa,debug-protocol,
   debug-server,debug-ui,facegen,game-detect,hkx,menuxml,mod-runtime,papyrus,physics,platform,save,scripting,
@@ -121,11 +122,15 @@ First step: `cargo test -p byroredux rapier_release && grep -rn 'DeferredDestroy
   (`remove_resource` / re-insert in `byroredux/src/app_events.rs`); its `Drop` calls the driver, so a
   `World` that outlives the context makes it call a destroyed device (CRITICAL). Check the
   panic-unwind path can't skip the removal.
-- **Allocator-lock poison policy is not uniform**: `GpuImage` create/free recover with `into_inner()` (#4089;
-  a poisoned lock means another thread panicked, and a second panic in teardown is not recovery), while
-  `buffer.rs`, `allocator.rs` and `texture.rs` still `.expect("… poisoned")`. Flag an `.expect` reachable from
-  `Drop`/teardown (double panic) or a silent recovery with no rationale comment (#2398); a create-path panic is
-  a deliberate choice, not automatically a finding. Known-open 2026-09-29: the Drop/teardown reach is #4599.
+- **Allocator-lock poison policy** (#4089 → #4599, e94075d75): every free/destroy/`Drop` site routes through
+  `allocator::{lock_recovering, into_inner_recovering, free_allocation_recovering}` (a poisoned lock means another
+  thread panicked; a second panic in teardown aborts or skips `destroy_device`). Direct `.expect`/`.lock().unwrap()`
+  acquires survive only on allocation-side and read-only report paths, pinned per file by
+  `allocator_lock_direct_acquires_are_confined_to_allocation_and_reports`; #5209 (c22fc3f2a) extended it past the
+  allocator spelling — `VulkanContext::drop` recovers the transfer-fence lock
+  (`teardown_path_recovers_poisoned_locks_beyond_the_allocator_family`). Flag a new `.expect` reachable from
+  `Drop`/teardown, an allowlist bumped without a reason, or a silent recovery with no rationale comment (#2398); a
+  create-path panic is a deliberate choice, not automatically a finding.
 - **egui**: texture free is deferred one frame (`pending_free`) on `draw_frame`'s fence wait — freeing on the
   arriving frame is UAF. Partial deltas are promoted to full uploads from a CPU mirror (#4986), so replacing an
   existing id retires an image too; both retirements rest on the all-slots fence wait (#4988, a rider in
@@ -142,12 +147,14 @@ Paths: `crates/renderer/src/vulkan/`, `crates/renderer/src/lib.rs`
 First step: `grep -rn undocumented_unsafe_blocks crates` (expect the one `deny` in `crates/renderer/src/lib.rs`, no `allow` escapes), then the census recipe
 
 - **Guard (renderer)**: `crates/renderer/src/lib.rs` carries `#![deny(clippy::undocumented_unsafe_blocks)]` (#1904), so a
-  comment-less `unsafe {}` in the renderer fails `cargo clippy` in the CI job `Test + Check + Clippy`
-  (`cargo clippy --workspace -- -D warnings`); it is inert under `cargo build` / `cargo test`. Confirm the `deny` is
+  comment-less `unsafe {}` in the renderer fails `cargo clippy` in the CI job `Test + Check + Clippy`; it is inert under
+  `cargo build` / `cargo test`. Since #5121 (530c9e7aa) the workspace step runs `--keep-going` and a dedicated step
+  (`cargo clippy -p byroredux-renderer --no-deps -- -D clippy::undocumented_unsafe_blocks`) re-lints the renderer on
+  its own closure, so an upstream crate's new-toolchain clippy failure can no longer disarm the gate — confirm both survive. Confirm the `deny` is
   present and unescaped. The lint sees `unsafe {}` blocks only: `unsafe fn` bodies and the 34 renderer `unsafe impl`s
   need a justification found by reading. Crates outside the renderer have no such lint — sweep comment-less blocks
-  there by hand (at 2026-09-29 all commented in `fsr3-sys`, `nif`, `core`, `pex`, `byro-launcher`; `byroredux`
-  has the two bare `app_events.rs` blocks above); a comment-less block is MEDIUM.
+  there by hand (at 2026-10-05 all commented in `fsr3-sys`, `nif`, `core`, `pex`, `byro-launcher` and `byroredux`); a
+  comment-less block is MEDIUM.
 - The audit's value is therefore the *truth* of each invariant, not its presence: for each new or changed block, does the
   stated precondition (device live, handles from this device, not in flight, pointer valid for the call) hold at THIS call
   site? A commented block whose invariant is FALSE is the higher-severity finding.
@@ -157,7 +164,7 @@ First step: `grep -rn undocumented_unsafe_blocks crates` (expect the one `deny` 
 
 ### 5. Vulkan Spec Compliance (HIGH — flag what `cargo test` can't see)
 Paths: `crates/renderer/src/vulkan/`
-First step: CI job `vulkan-validation` (lavapipe, `.github/workflows/ci.yml`) fails on any `[Vulkan]` ERROR line; locally `BYRO_VALIDATION=1`. Known-open 2026-09-29 (#4987, regression of #4596): #4596's fixes still never reached a device — a hard-coded `lvp_icd.x86_64.json` left the loader with no ICD. The lane now globs the manifest and goes red on "Vulkan init failed" (pinned by `vulkan_validation_job_resolves_lavapipe_and_fails_on_init_failure`); findings may claim lane coverage only once a run's log shows a device-selection line, not from the job conclusion
+First step: CI job `vulkan-validation` (lavapipe, `.github/workflows/ci.yml`) fails on any `[Vulkan]` line; locally `BYRO_VALIDATION=1`. Since #4987 (6d5d8fa5f) the lane globs the lavapipe manifest, goes red on "Vulkan init failed", and requires the `Selected GPU:` line (`vulkan_validation_job_resolves_lavapipe_and_fails_on_init_failure`, `vulkan_validation_job_requires_a_selected_device`). It boots only the 5-frame default scene, and lifting the renderer log to info for that gate also admits WARN-level `[Vulkan]` performance warnings — read the severity of what fired; never cite a green run as coverage of a game-data path
 
 Render-pass / barrier / pipeline-state claims invisible to `cargo test` are "needs validation-layer or RenderDoc
 verification" (`/audit-concurrency` guardrail); report emitted validation errors verbatim.
@@ -167,7 +174,7 @@ verification" (`/audit-concurrency` guardrail); report emitted validation errors
   TLAS UPDATE count == BUILD count; skin-BLAS refit vertex/geometry count == BUILD (a bone-count change forces a
   rebuild). Wrong AS geometry/address = CRITICAL. The TLAS resize `device_wait_idle` (#1390) is defence behind the
   both-slots fence wait (`/audit-concurrency` Dim 1) — verify one of the two survives.
-- **Depth-capture format (#3570)**: `depth_capture_record_copy` / `_finish_readback` (`context/depth_capture.rs`)
+- **Depth-capture format (#3570)**: `depth_capture_record_copy` / `depth_capture_finish_readback` (`context/depth_capture.rs`)
   consult the live depth format; D16 devices refuse rather than misdecode as f32.
 - `VK_KHR_ray_query` is enabled and feature-gated before any ray-query use.
 - **Compute layout hygiene**: images used as storage-write + sampled-read stay in `GENERAL`; `initialize_layouts`
@@ -220,7 +227,7 @@ First step: `cargo test -p byroredux-renderer shader_constants && cargo test -p 
   producer must run `resolve_pbr()` or build already-finite values. Collision translate
   (`crates/nif/src/import/collision/mod.rs`) half-extents/radii and emitter rate/lifespan/size
   (`extract_emitter_params` → `apply_emitter_params`) must be finite and bounded at the extract boundary.
-  Known-open 2026-09-29: #4782 (volumetric raw V-buffer temporal history has no non-finite guard).
+  Volumetric raw V-buffer history: non-finite guard + finite-fp16 clamp on the store since #4782 (17e17de5e).
 - **Bone palette overflow**: `SkinSlotPool` warns once (`overflow_warned`, count in `overflow_attempt_count`) and
   excess entities fall back to bind pose rather than over-indexing; tests in
   `byroredux/src/render/bone_palette_overflow_tests.rs`.
@@ -235,7 +242,7 @@ Paths: `crates/mod-runtime/src/`, `crates/sdk/src/{identity,service}.rs`, `byror
 First step: `cargo tree -p byroredux-mod-runtime | grep -i wasi` (must print nothing) and `grep -c 'require_' crates/mod-runtime/src/runtime/capabilities.rs`
 
 `crates/mod-runtime` (wasmtime component-model host, no `unsafe`) is wired into the engine: `byroredux/src/extensions/`
-(~10.7k LOC, `unsafe`-free) is reached from `main.rs` (`load_requested_extensions`, `queue_session_event`) and
+(~10.8k LOC, `unsafe`-free) is reached from `main.rs` (`load_requested_extensions`, `queue_session_event`) and
 `app_events.rs` (`shutdown_extension_host`, `extension_ui_menu_sync`). Audit it as a live path.
 
 - **Absence, not promise**: the crate doc says no WASI is linked; `wasmtime` is declared with

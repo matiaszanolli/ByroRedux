@@ -5,7 +5,7 @@ argument-hint: "--focus <dimensions> --game <name> --depth shallow|deep"
 
 # ESM / Plugin Parser Audit
 
-Audit `crates/plugin/` (~64k LOC in `src/`) as a parser: GRUP walker, sub-record byte
+Audit `crates/plugin/` (~66k LOC in `src/`) as a parser: GRUP walker, sub-record byte
 accounting, per-record schema dispatch, FormID load-order remap, CELL/WRLD walkers, and
 the `EsmIndex` → ECS handoff. Per-game audits (`/audit-fnv`, `/audit-skyrim`, …) each
 sample one game's slice; this skill owns the parser itself.
@@ -73,6 +73,9 @@ stays here, Dim 4); CHARAL formulas (`/audit-character`).
 ESM→ECS Handoff, CELL/WRLD and FormID remap; the 2026-09-21 report's MEDIUMs were Byte
 Accounting (Oblivion `LVLO`/`LVLD`, FO4 `TERM`, `LTEX.GNAM`) and Header/GRUP (inflation
 ceiling, skip-arm clamp), all found by Dim 8's real-data census — run it, don't skip it.
+The 2026-09-29 report's MEDIUM/LOWs were again Byte Accounting + FormID: non-FormID `u32`s
+fed to the remap (FO4 `TRDA` `FFFF` sentinel, Oblivion `EFID` char4 codes), fixed in
+`9b099b31f` (#5075/#5076) — see Dim 3 shape (4).
 
 ## Phase 2: Dimensions
 
@@ -165,7 +168,13 @@ entries** in the diff — each is a human decision, not a proof.
 (`CommonNamedFields::from_subs_with_remap`, #4067); (2) a GRUP **label** that encodes a
 FormID (DIAL topic-children label vs remapped DIAL id, #4079 — check every label-dispatch
 site like a sub-record field); (3) a `HashMap<u32, _>` in `EsmIndex` keyed by, or compared
-against, a raw plugin-local id.
+against, a raw plugin-local id. **Inverse shape (4)** — a non-FormID `u32` routed *into*
+`remap_fid` (only `0` short-circuits, so every row warns through the out-of-range arm on a
+plugin with masters): xEdit `wbFormIDCk([…, FFFF])` fields go through
+`remap_fid_or_sentinel`, and Oblivion `EFID` (a `wbChar4` effect code resolved via
+`magic_effects_by_code`) through the game-gated `remap_efid` (`records/common.rs`;
+`9b099b31f`, #5075/#5076). A new sentinel-bearing field or char4 code calling `remap_fid`
+inline is the regression.
 **Checklist**:
 - `GlobalSlot::Regular` keeps 24 bits; `GlobalSlot::Light` (`0xFE` space) packs a 12-bit
   sub-index and keeps only the low **12** object-id bits (`0x0FFF` masks on both sides);
@@ -251,14 +260,28 @@ First step: `git log --since=<last report> --format='%h %cs %s' -- crates/plugin
   consumer reads it yet — verify it stays populated per-scope, not that a consumer exists.
 - All three walkers depth-bounded (see Dim 1): `parse_cell_group`, `parse_wrld_children`,
   `parse_refr_group`.
-- Placement header flags (#4813/#4814): `PlacedRef.initially_disabled` = `0x800` on every
-  placement type; `starts_dead` = `0x200` on `ACHR` gated on `EsmVariant::Tes5Plus` — that
-  variant includes FO3/FNV, though only xEdit's TES5 list was checked; confirm the bit
-  there before trusting it.
+- Placement header flags (`f87490826`, #4813/#4814): `PlacedRef.initially_disabled` =
+  `0x800` on every placement type; `PlacedRef.starts_dead` = `0x200` on `ACHR` gated on
+  `EsmVariant::Tes5Plus`; `starts_unconscious` = `0x2000` on `ACHR`, FO4/FO76/Starfield only
+  (#5017). The placement bit is **not** the corpse marker on every game, and each other game
+  is settled at its own layer: Oblivion = base `NPC_`/`CREA` header `0x80000`
+  (`base_actor_starts_dead`, `dispatch_actor.rs`, Oblivion-gated, #5013); FO3/FNV = base
+  `DATA` health ≤ 0 (`NpcRecord::starts_dead`, #5005 — `0x80000` is not a marker there,
+  and `XRGD` is a ragdoll *pose*, not a death signal) plus the script-killed idiom
+  (`717f39a82`, #5223 — a dismember-family trigger's `XLKR` target; FO3/FNV `XLKR` is **4 B**,
+  the target FormID alone, vs TES5's 8 B keyword+target — a `len >= 8` gate silently dropped
+  every FO3/FNV link). A zero placement `starts_dead` means "no placement-level marker",
+  not "alive"; the cell loader ORs both
+  (`byroredux/src/cell_loader/references/mod.rs` → `apply_starts_dead`). Flag any per-game gate that reads one of these bits on a game
+  whose xEdit list does not define it.
 - Starfield metric → 70/m lift (`records/spatial_units.rs::normalize`, called once at the
-  end of each plugin's walk in `parse.rs`): positions, light radii, fog/fade distances,
-  water heights, LAND heights, NAVM vertices. Check new Starfield distance fields join it,
-  dimensionless fields (XSCL, Euler) stay out, and no path normalizes an index twice.
+  end of each plugin's walk in `parse.rs`): positions, light radii, XCLL/LGTM fog/fade +
+  SF height-fog (#5002), WTHR fog distances + height-fog tail (#5001/#5134), water heights,
+  WATR `DNAM` lengths ×70 and per-metre absorption ÷70 — only for offsets the record
+  authored (#5151, `24cb577d2`), LAND heights, NAVM vertices. FO76 is BU-native except the
+  shared-decoder WATR absorption lane, its only lift (#5169). Check new Starfield distance
+  fields join it, dimensionless fields (XSCL, Euler) stay out, decoder defaults for an
+  unauthored field are never lifted, and no path normalizes an index twice.
 - Lighting-template inheritance is per-field; "absent" and "authored zero" stay distinct.
 - **XCLL** is size- and game-validated: `xcll_canonical_sizes(game)`; the ≥92-byte
   ambient-cube arm fires only for Skyrim/FO4/FO76 (Starfield has its own ≥108 arm) — a non-canonical 92+ XCLL on

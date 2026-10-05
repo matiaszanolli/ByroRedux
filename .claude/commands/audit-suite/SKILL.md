@@ -7,7 +7,7 @@ argument-hint: "--preset <name> | --area <path…> | --changed <git-scope>"
 
 Read `_audit-common.md` and `_audit-severity.md` for shared protocol.
 
-This skill owns no audit logic: it **selects** audits and fans them out as background agents, then merges their reports. Audits are `.claude/commands/audit-<name>/SKILL.md`, invoked `/audit-<name>`. `/audit-publish` is post-processing and never appears in a suite. Who owns which path: `.claude/commands/_audit-owners.md`.
+This skill owns no audit logic: it **selects** audits and fans them out as background agents, then merges their reports. Audits are `.claude/commands/audit-<name>/SKILL.md`, invoked `/audit-<name>`. `/audit-publish` (post-processing) and `/audit-sync` (skill maintenance) are not audits and never appear in a suite. Who owns which path: `.claude/commands/_audit-owners.md`.
 
 ## Modes
 
@@ -76,7 +76,7 @@ Each is just `--area` over these paths (neighbors apply):
 
 1. Parse the mode. Unknown preset → list the tables above and stop. `mkdir -p /tmp/audit`.
 2. Launch each audit as a **background agent**, max 3 concurrent — they read the tree and write distinct reports, so there is no ordering dependency.
-3. **Orchestration hazard**: an agent that fans out its own sub-agents cannot receive their completion notices and will drop real findings from its report (seen on the 2026-08-03 `comprehensive` run: three real findings — incl. a HIGH ragdoll double-compose — were reported "clean"). Tell every launched audit up front to analyse dimensions synchronously or to write `/tmp/audit/<name>/dim_N.md` scratch files. Before accepting "no findings" for a dimension, check that scratch file against the written report.
+3. **Orchestration hazard**: an agent that fans out its own sub-agents cannot receive their completion notices and will drop real findings from its report (seen on the 2026-08-03 `comprehensive` run: three real findings — incl. a HIGH ragdoll double-compose — were reported "clean"). Tell every launched audit up front to analyse dimensions synchronously or to write `/tmp/audit/<name>/dim_N.md` scratch files. Before accepting "no findings" for a dimension, check that scratch file against the written report. Also tell each audit to **skip its final `rm -rf /tmp/audit/<name>`**; the suite deletes those directories itself once the reconciliation is done.
 4. Each audit writes `docs/audits/AUDIT_<TYPE>_<TODAY>.md` (`_audit-common.md` § Report Finalization). Verify each exists with real content, not a placeholder.
 5. Merge into a summary; warn prominently if any CRITICAL:
 
