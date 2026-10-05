@@ -49,7 +49,16 @@ pub struct HkxAnimation {
 /// track. A hostile packfile can otherwise provide a tiny set of blocks but a
 /// `num_frames` value large enough to make `Vec::with_capacity` abort the
 /// process (#3011).
-const MAX_TRANSFORM_SAMPLES: usize = 16_000_000;
+///
+/// #5316 (PAR-D1-2026-10-05-02) — 16 M was 128× the vanilla maximum: the
+/// SE Animations.bsa census (`skyrim_se_spline_dimensions_census_stays_
+/// under_the_gate_ceilings`) measures the largest real clip at 124,821
+/// samples (`paired_dlc1seranaholdsvyrthur.hkx`, 201 tracks × 621 frames),
+/// and #5006's mask-table cost already ties output to file bytes at ~64
+/// samples per file byte — so the only work this backstop did was admit
+/// the audit probe's 279 KB file at 15.7 M samples / 597 MiB. Now set
+/// from the census at 8× the measured maximum.
+const MAX_TRANSFORM_SAMPLES: usize = 1_000_000;
 
 /// #5006 (PAR-D1-2026-09-29-01) — ceiling on a clip's declared
 /// `max_frames_per_block`. 256 is the Havok compressor's default and the
@@ -1302,6 +1311,14 @@ mod tests {
             "vanilla max_frames_per_block {max_mfpb} exceeds the gate ceiling \
              {MAX_FRAMES_PER_BLOCK} — re-measure and raise the ceiling"
         );
+        // #5316 (PAR-D1-2026-10-05-02) — the absolute sample backstop is
+        // census-derived too: a vanilla re-export that grows past it must
+        // trip this gate, not silently start paying the 597 MiB decode.
+        assert!(
+            max_samples <= MAX_TRANSFORM_SAMPLES as u64,
+            "vanilla max samples {max_samples} exceeds the gate ceiling \
+             {MAX_TRANSFORM_SAMPLES} — re-measure and raise the ceiling"
+        );
     }
 
     /// The layout walk must reproduce, for 8-byte pointers, exactly the
@@ -1578,6 +1595,48 @@ mod tests {
         // frames cannot carry 3906 frames.
         let err = decode_spline_animation(&bytes)
             .expect_err("frames beyond the declared block capacity must be rejected");
+        assert_eq!(
+            err,
+            HkxError::InvalidData("unsupported spline clip dimensions")
+        );
+    }
+
+    /// #5316 (PAR-D1-2026-10-05-02) — the audit probe shape: a 279 KB
+    /// hand-built spline clip with 15 tracks, 4096 blocks, the vanilla
+    /// mfpb ceiling of 256, and `num_frames = 4096*255 + 1` satisfies
+    /// every relative check (#4655's frames-vs-blocks tie exactly,
+    /// #5006's mfpb ceiling at equality) and decoded to 15,667,215
+    /// samples / 597 MiB — only the absolute MAX_TRANSFORM_SAMPLES
+    /// backstop can reject it. The backstop is now census-derived
+    /// (1 M = 8× the vanilla maximum of 124,821) instead of 16 M.
+    #[test]
+    fn decode_spline_animation_rejects_the_279kb_spline_probe() {
+        use crate::packfile::fixtures::PackfileBuilder;
+
+        let mut data = vec![0u8; 0x60];
+        data[0x10..0x14].copy_from_slice(&5u32.to_le_bytes()); // spline-compressed
+        data[0x14..0x18].copy_from_slice(&1.0f32.to_le_bytes()); // duration
+        data[0x18..0x1c].copy_from_slice(&15u32.to_le_bytes()); // transform_count
+        data[0x38..0x3c].copy_from_slice(&(4096u32 * 255 + 1).to_le_bytes()); // num_frames
+        data[0x3c..0x40].copy_from_slice(&4096u32.to_le_bytes()); // num_blocks
+        data[0x40..0x44].copy_from_slice(&256u32.to_le_bytes()); // mfpb = ceiling
+        data[0x44..0x48].copy_from_slice(&(15u32 * 4).to_le_bytes()); // mask_size = tracks*4
+        data[0x50..0x54].copy_from_slice(&(1.0f32 / 30.0).to_le_bytes()); // frame_duration
+
+        let mut builder = PackfileBuilder {
+            data,
+            ..Default::default()
+        };
+        let class = builder.class("hkaSplineCompressedAnimation");
+        builder.virtual_fixups.push((0, 0, class));
+        let bytes = builder.build();
+
+        // 15 tracks x 1,044,481 frames = 15,667,215 samples: every
+        // relative check passes, so only the census-derived absolute cap
+        // can reject this (597 MiB of decode pre-fix).
+        let err = decode_spline_animation(&bytes).expect_err(
+            "the 279 KB probe's 15.7M-sample expansion must exceed the census-derived cap",
+        );
         assert_eq!(
             err,
             HkxError::InvalidData("unsupported spline clip dimensions")
