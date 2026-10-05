@@ -32,6 +32,90 @@ use byroredux_core::math::{Mat3, Quat, Vec3};
 use rapier3d::prelude::*;
 use std::collections::VecDeque;
 
+/// #5161 — sanity bounds for a ragdoll body's world-space seed pose.
+///
+/// Authored worldspace coordinates top out around ±3e5 BU, so a seed beyond
+/// [`SEED_SANE_ABS_BOUND_BU`] is corruption with certainty — the same
+/// argument as the keyframe-target bound in `world.rs`
+/// (`KEYFRAME_TARGET_SANE_BOUND_BU`), and the same ~2600× margin under
+/// rapier 0.22's multi-SAP grid boundary (≈2.68e11) that an insane pose
+/// trips through the collider's predictive AABB. The second failure class
+/// is *relative*: bones planted millions of BU from their own actor root
+/// (the "million-unit bone coordinates despite correct actor-root
+/// placement" instability, slice doc §corpse) stay under the absolute bound
+/// yet still explode the joint solver, which derives link velocities from
+/// the root-to-link separation. [`SEED_SANE_MAX_ROOT_OFFSET_BU`] caps that:
+/// the largest authored skeleton reach (dragon-class) is ~1e4 BU, so 1e5
+/// keeps a decade of headroom while catching the million-unit class
+/// outright.
+pub const SEED_SANE_ABS_BOUND_BU: f32 = 1.0e8;
+pub const SEED_SANE_MAX_ROOT_OFFSET_BU: f32 = 1.0e5;
+
+/// Why a ragdoll body's seed pose was rejected by [`seed_pose_is_sane`].
+#[derive(Debug, Clone, PartialEq)]
+pub enum SeedInsanity {
+    NonFinite,
+    BeyondWorldBound { translation_norm: f32 },
+    BeyondActorReach { distance: f32 },
+}
+
+impl std::fmt::Display for SeedInsanity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NonFinite => write!(f, "non-finite seed pose"),
+            Self::BeyondWorldBound { translation_norm } => write!(
+                f,
+                "seed |t|={translation_norm:.3e} beyond the sane world bound \
+                 {SEED_SANE_ABS_BOUND_BU:.0e}"
+            ),
+            Self::BeyondActorReach { distance } => write!(
+                f,
+                "seed {distance:.3e} BU from the actor root, beyond the \
+                 {SEED_SANE_MAX_ROOT_OFFSET_BU:.0e} BU actor-reach bound"
+            ),
+        }
+    }
+}
+
+/// The body whose seed pose failed validation, as [`build_ragdoll`] and
+/// `activate_ragdoll` report it. An articulation is all-or-nothing: no body
+/// of a rejected spec reaches Rapier, so the actor keeps its last animated
+/// pose instead of an exploding multibody.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SeedRejection {
+    pub body_index: usize,
+    pub entity: EntityId,
+    pub cause: SeedInsanity,
+}
+
+/// #5161 — validate one ragdoll body's world-space seed pose before it can
+/// reach Rapier. `actor_root` is the activating actor's world translation;
+/// `None` skips the relative check (the caller had no root
+/// `GlobalTransform`). Checked at both boundaries that compose a seed: the
+/// bin-side activator validates against the actor root (the relative class),
+/// and [`build_ragdoll`] re-validates absolutely as the construction-side
+/// backstop for any future builder.
+pub fn seed_pose_is_sane(
+    translation: Vec3,
+    rotation: Quat,
+    actor_root: Option<Vec3>,
+) -> Result<(), SeedInsanity> {
+    if !translation.is_finite() || !rotation.is_finite() {
+        return Err(SeedInsanity::NonFinite);
+    }
+    let translation_norm = translation.length();
+    if translation_norm > SEED_SANE_ABS_BOUND_BU {
+        return Err(SeedInsanity::BeyondWorldBound { translation_norm });
+    }
+    if let Some(root) = actor_root {
+        let distance = (translation - root).length();
+        if distance > SEED_SANE_MAX_ROOT_OFFSET_BU {
+            return Err(SeedInsanity::BeyondActorReach { distance });
+        }
+    }
+    Ok(())
+}
+
 /// One rigid body of a ragdoll, already resolved to engine world space.
 #[derive(Debug, Clone)]
 pub struct RagdollBodySpec {
@@ -259,7 +343,28 @@ fn ragdoll_dynamic_shape(shape: &CollisionShape) -> CollisionShape {
 /// the actor. Creates one dynamic body + collider per spec body, orients
 /// the constraint graph into a tree, and inserts a multibody joint per
 /// edge. Calls [`PhysicsWorld::wake`] so the first step simulates it.
-pub fn build_ragdoll(pw: &mut PhysicsWorld, spec: &RagdollSpec, cfg: &ContactConfig) -> Ragdoll {
+///
+/// #5161 — refuses the whole spec when any body's seed pose is absolutely
+/// insane ([`seed_pose_is_sane`]; the caller adds the actor-relative check)
+/// *before* touching the world, so a rejected activation leaves no bodies,
+/// colliders or joints behind and counts one refusal. Each built body is
+/// registered with a default `body_labels` entry ("entity N") for the
+/// invalid-solve evidence log; the bin-side activator enriches it.
+pub fn build_ragdoll(
+    pw: &mut PhysicsWorld,
+    spec: &RagdollSpec,
+    cfg: &ContactConfig,
+) -> Result<Ragdoll, SeedRejection> {
+    for (body_index, b) in spec.bodies.iter().enumerate() {
+        if let Err(cause) = seed_pose_is_sane(b.translation, b.rotation, None) {
+            pw.note_ragdoll_seed_refusal();
+            return Err(SeedRejection {
+                body_index,
+                entity: b.entity,
+                cause,
+            });
+        }
+    }
     // 1. Rigid bodies + colliders.
     let mut handles: Vec<RigidBodyHandle> = Vec::with_capacity(spec.bodies.len());
     // #3492 — the buoyancy scan cannot recover either of these from the ECS:
@@ -291,6 +396,9 @@ pub fn build_ragdoll(pw: &mut PhysicsWorld, spec: &RagdollSpec, cfg: &ContactCon
             .angular_damping(effective_angular_damping)
             .build();
         let h = pw.bodies.insert(body);
+        // #5161 — default evidence-log label; the bin-side activator
+        // overwrites it with the actor + bone name it resolved at seed time.
+        pw.set_body_label(h, format!("entity {}", b.entity));
         // #4682 — ragdoll bodies are dynamic; index them for the per-substep
         // recovery snapshot (a freshly activated ragdoll's first solve is
         // exactly the case the snapshot exists to cover).
@@ -416,6 +524,9 @@ pub fn build_ragdoll(pw: &mut PhysicsWorld, spec: &RagdollSpec, cfg: &ContactCon
                 }
             }
             joints.push(jh);
+            // #5161 — the velocity clamp walks this index every substep;
+            // the set itself exposes no mutable whole-set iteration.
+            pw.articulation_joints.push(jh);
         } else {
             log::warn!(
                 "ragdoll: multibody joint {}→{} rejected (would form a loop?) — skipped",
@@ -437,7 +548,7 @@ pub fn build_ragdoll(pw: &mut PhysicsWorld, spec: &RagdollSpec, cfg: &ContactCon
     pw.mark_colliders_dirty();
     pw.wake();
 
-    Ragdoll {
+    Ok(Ragdoll {
         bodies: spec
             .bodies
             .iter()
@@ -446,7 +557,7 @@ pub fn build_ragdoll(pw: &mut PhysicsWorld, spec: &RagdollSpec, cfg: &ContactCon
             .collect(),
         joints,
         buoyancy,
-    }
+    })
 }
 
 /// A tree edge after orientation: `flip` is true when the constraint's
@@ -811,6 +922,133 @@ mod tests {
         }
     }
 
+    /// #5161 — the seed gate must accept the authored pose classes: an
+    /// interior at any authored worldspace coordinate (±3e5 BU), bones
+    /// within dragon-class reach of their actor root.
+    #[test]
+    fn seed_pose_is_sane_accepts_authored_poses() {
+        let far_exterior = Vec3::new(3.0e5, -2.0e5, 4.0e3);
+        let bone = far_exterior + Vec3::new(30.0, 90.0, -10.0);
+        assert_eq!(seed_pose_is_sane(bone, Quat::IDENTITY, Some(far_exterior)), Ok(()));
+        // Without a known actor root only the absolute check applies.
+        assert_eq!(seed_pose_is_sane(bone, Quat::IDENTITY, None), Ok(()));
+    }
+
+    /// #5161 — a NaN/∞ seed (decomposed bone or template-local garbage)
+    /// must be refused outright.
+    #[test]
+    fn seed_pose_is_sane_rejects_non_finite_poses() {
+        assert_eq!(
+            seed_pose_is_sane(Vec3::new(1.0, f32::NAN, 0.0), Quat::IDENTITY, None),
+            Err(SeedInsanity::NonFinite)
+        );
+        assert_eq!(
+            seed_pose_is_sane(
+                Vec3::ZERO,
+                Quat::from_array([f32::INFINITY, 0.0, 0.0, 1.0]),
+                None,
+            ),
+            Err(SeedInsanity::NonFinite)
+        );
+    }
+
+    /// #5161 — beyond the absolute sane world bound, with and without an
+    /// actor root: the absolute class always rejects.
+    #[test]
+    fn seed_pose_is_sane_rejects_beyond_world_bound() {
+        let insane = Vec3::new(2.7e13, 0.0, 0.0);
+        assert_eq!(
+            seed_pose_is_sane(insane, Quat::IDENTITY, None),
+            Err(SeedInsanity::BeyondWorldBound {
+                translation_norm: 2.7e13
+            })
+        );
+        assert!(matches!(
+            seed_pose_is_sane(insane, Quat::IDENTITY, Some(insane)),
+            Err(SeedInsanity::BeyondWorldBound { .. })
+        ));
+    }
+
+    /// #5161 — the relative class: a bone planted a million BU from its own
+    /// actor root passes the absolute bound but explodes the joint solver
+    /// anyway. A known root must reject it; an unknown root must not.
+    #[test]
+    fn seed_pose_is_sane_rejects_beyond_actor_reach() {
+        let root = Vec3::new(1.0e5, 0.0, 0.0);
+        let million_unit_bone = root + Vec3::new(1.0e6, 0.0, 0.0);
+        assert_eq!(
+            seed_pose_is_sane(million_unit_bone, Quat::IDENTITY, Some(root)),
+            Err(SeedInsanity::BeyondActorReach { distance: 1.0e6 })
+        );
+        assert_eq!(seed_pose_is_sane(million_unit_bone, Quat::IDENTITY, None), Ok(()));
+    }
+
+    /// #5161 — a spec with one insane seed must be rejected wholesale
+    /// BEFORE any body, collider or joint reaches the world (no partial
+    /// articulation), and the refusal must be counted.
+    #[test]
+    fn build_ragdoll_rejects_an_insane_spec_without_touching_the_world() {
+        let mut pw = PhysicsWorld::new();
+        let pre_bodies = pw.body_count();
+        let pre_colliders = pw.colliders.len();
+        let spec = RagdollSpec {
+            bodies: vec![
+                ball_body(1, 0.0, 1000.0),
+                ball_body(2, 2.7e13, 1000.0),
+                ball_body(3, 50.0, 1000.0),
+            ],
+            constraints: vec![loose_ragdoll(0, 1), loose_ragdoll(1, 2)],
+        };
+        let rejection = build_ragdoll(&mut pw, &spec, &ContactConfig::DEFAULT)
+            .expect_err("an absolutely insane seed must be rejected");
+        assert_eq!(rejection.body_index, 1);
+        assert_eq!(rejection.entity, 2u32);
+        assert!(matches!(
+            rejection.cause,
+            SeedInsanity::BeyondWorldBound { .. }
+        ));
+        assert_eq!(
+            pw.body_count(),
+            pre_bodies,
+            "no body of a rejected spec may reach the world"
+        );
+        assert_eq!(pw.colliders.len(), pre_colliders, "no collider may leak");
+        assert_eq!(
+            pw.ragdoll_seed_refusals_total(),
+            1,
+            "construction-side rejection must count exactly one refusal"
+        );
+    }
+
+    /// #5161 — every built ragdoll body carries a default evidence-log
+    /// label naming its bone entity, and `remove_body` (via
+    /// `remove_ragdoll`) drops it again so the map cannot accumulate one
+    /// stale entry per despawned corpse.
+    #[test]
+    fn ragdoll_bodies_are_labelled_for_the_evidence_log_and_unlabelled_on_teardown() {
+        let mut pw = PhysicsWorld::new();
+        let spec = RagdollSpec {
+            bodies: vec![ball_body(42, 0.0, 1000.0), ball_body(43, 50.0, 1000.0)],
+            constraints: vec![loose_ragdoll(0, 1)],
+        };
+        let rag = build_ragdoll(&mut pw, &spec, &ContactConfig::DEFAULT).expect("sane ragdoll seed");
+        for &(entity, handle, _) in &rag.bodies {
+            assert_eq!(
+                pw.body_label(handle),
+                Some(format!("entity {entity}").as_str()),
+                "default label must name the bone entity"
+            );
+        }
+        pw.remove_ragdoll(&rag);
+        for &(_, handle, _) in &rag.bodies {
+            assert_eq!(
+                pw.body_label(handle),
+                None,
+                "torn-down bodies must not leave stale labels"
+            );
+        }
+    }
+
     /// #2861 — `build_ragdoll` is the only production collider site that
     /// omitted `default_contact_skin_bu`. Rapier sums the skin of both
     /// colliders in a pair, so an unskinned limb got half the intended margin
@@ -824,7 +1062,7 @@ mod tests {
             constraints: vec![loose_ragdoll(0, 1)],
         };
         let cfg = ContactConfig::DEFAULT;
-        let rag = build_ragdoll(&mut pw, &spec, &cfg);
+        let rag = build_ragdoll(&mut pw, &spec, &cfg).expect("sane ragdoll seed");
 
         assert!(cfg.default_contact_skin_bu > 0.0, "config precondition");
         for (_, body, _) in &rag.bodies {
@@ -851,7 +1089,7 @@ mod tests {
             bodies: vec![heavy, ball_body(2, 50.0, 100.0)],
             constraints: vec![loose_ragdoll(0, 1)],
         };
-        let rag = build_ragdoll(&mut pw, &spec, &ContactConfig::DEFAULT);
+        let rag = build_ragdoll(&mut pw, &spec, &ContactConfig::DEFAULT).expect("sane ragdoll seed");
         assert_eq!(
             pw.integration_parameters.num_solver_iterations,
             global_iterations
@@ -892,7 +1130,7 @@ mod tests {
             bodies: vec![ball_body(1, 0.0, 0.0)],
             constraints: vec![],
         };
-        let rag = build_ragdoll(&mut pw, &spec, &ContactConfig::DEFAULT);
+        let rag = build_ragdoll(&mut pw, &spec, &ContactConfig::DEFAULT).expect("sane ragdoll seed");
         let handle = rag.bodies[0].1;
 
         // The >60 fps shape: wake armed, but the accumulator gate runs no
@@ -927,7 +1165,7 @@ mod tests {
             bodies: vec![scaled, ball_body(2, 50.0, 0.0)],
             constraints: vec![loose_ragdoll(0, 1)],
         };
-        let rag = build_ragdoll(&mut pw, &spec, &ContactConfig::DEFAULT);
+        let rag = build_ragdoll(&mut pw, &spec, &ContactConfig::DEFAULT).expect("sane ragdoll seed");
 
         let radius_of = |index: usize| {
             let rb = pw.bodies.get(rag.bodies[index].1).expect("body");
@@ -961,7 +1199,7 @@ mod tests {
             ],
             constraints: vec![loose_ragdoll(0, 1), loose_ragdoll(1, 2)],
         };
-        let rag = build_ragdoll(&mut pw, &spec, &ContactConfig::DEFAULT);
+        let rag = build_ragdoll(&mut pw, &spec, &ContactConfig::DEFAULT).expect("sane ragdoll seed");
         assert_eq!(rag.bodies.len(), 3);
         assert_eq!(rag.joints.len(), 2, "two multibody joints created");
 
@@ -1032,7 +1270,7 @@ mod tests {
             bodies: vec![ball_body(1, 0.0, 1000.0), child],
             constraints: vec![prismatic_rail(0, 1, travel)],
         };
-        let rag = build_ragdoll(&mut pw, &spec, &ContactConfig::DEFAULT);
+        let rag = build_ragdoll(&mut pw, &spec, &ContactConfig::DEFAULT).expect("sane ragdoll seed");
         pw.step(PHYSICS_DT);
         let root = body_translation(&pw, rag.bodies[0].1).unwrap();
         let child = body_translation(&pw, rag.bodies[1].1).unwrap();
@@ -1100,7 +1338,7 @@ mod tests {
             // Authored travel ±1, seeded 1000 past the rail zero.
             constraints: vec![prismatic_rail(0, 1, 1.0)],
         };
-        let rag = build_ragdoll(&mut pw, &spec, &ContactConfig::DEFAULT);
+        let rag = build_ragdoll(&mut pw, &spec, &ContactConfig::DEFAULT).expect("sane ragdoll seed");
         pw.step(PHYSICS_DT);
 
         let root = body_translation(&pw, rag.bodies[0].1).unwrap();
@@ -1133,7 +1371,7 @@ mod tests {
             constraints: vec![loose_ragdoll(0, 1)],
         };
 
-        let rag = build_ragdoll(&mut pw, &spec, &ContactConfig::DEFAULT);
+        let rag = build_ragdoll(&mut pw, &spec, &ContactConfig::DEFAULT).expect("sane ragdoll seed");
         let child_handle = rag.bodies[1].1;
         pw.step(PHYSICS_DT);
 
@@ -1177,7 +1415,7 @@ mod tests {
                     joint,
                 }],
             };
-            let rag = build_ragdoll(&mut pw, &spec, &ContactConfig::DEFAULT);
+            let rag = build_ragdoll(&mut pw, &spec, &ContactConfig::DEFAULT).expect("sane ragdoll seed");
             pw.step(PHYSICS_DT);
             let root = body_translation(&pw, rag.bodies[0].1).unwrap();
             let child = body_translation(&pw, rag.bodies[1].1).unwrap();
@@ -1269,7 +1507,7 @@ mod tests {
             bodies: vec![root, child],
             constraints: vec![loose_ragdoll(0, 1)],
         };
-        let rag = build_ragdoll(&mut pw, &spec, &ContactConfig::DEFAULT);
+        let rag = build_ragdoll(&mut pw, &spec, &ContactConfig::DEFAULT).expect("sane ragdoll seed");
 
         let (multibody, _) = pw.multibody_joints.get(rag.joints[0]).unwrap();
         assert!(
@@ -1439,7 +1677,7 @@ mod tests {
             bodies: vec![body],
             constraints: vec![],
         };
-        let rag = build_ragdoll(&mut pw, &spec, &ContactConfig::DEFAULT);
+        let rag = build_ragdoll(&mut pw, &spec, &ContactConfig::DEFAULT).expect("sane ragdoll seed");
         let h = rag.bodies[0].1;
         let pi = pw.bodies[h]
             .mass_properties()
@@ -1540,7 +1778,7 @@ mod tests {
         };
 
         for cycle in 0..3 {
-            let rag = build_ragdoll(&mut pw, &spec, &ContactConfig::DEFAULT);
+            let rag = build_ragdoll(&mut pw, &spec, &ContactConfig::DEFAULT).expect("sane ragdoll seed");
             assert_eq!(
                 rag.bodies.len(),
                 7,
@@ -1592,7 +1830,7 @@ mod tests {
             constraints: vec![loose_ragdoll(0, 1), loose_ragdoll(0, 2)],
         };
 
-        let rag = build_ragdoll(&mut pw, &spec, &cfg);
+        let rag = build_ragdoll(&mut pw, &spec, &cfg).expect("sane ragdoll seed");
         let authored = 0.05_f32; // `ball_body`'s angular_damping
 
         for (idx, (_, h, _)) in rag.bodies.iter().enumerate() {
@@ -1603,6 +1841,67 @@ mod tests {
                  (per-joint application would give {} on the two-joint body)",
                 authored + 0.75,
                 authored + 1.5,
+            );
+        }
+    }
+    /// #5161 — an articulation's exploding REDUCED-COORDINATE velocity is
+    /// invisible to the body-speed cap (forward kinematics integrates it
+    /// before any body-level clamp runs) and teleports its links through
+    /// the broad-phase grid in one step. The DOF clamp must cap it — and
+    /// zero non-finite DOFs — before the next substep can integrate it.
+    #[test]
+    fn exploding_articulation_dofs_are_capped_before_forward_kinematics() {
+        let mut w = PhysicsWorld::new();
+        let cfg = ContactConfig::DEFAULT;
+        let spec = RagdollSpec {
+            bodies: vec![
+                ball_body(1, 0.0, 1000.0),
+                ball_body(2, 50.0, 1000.0),
+                ball_body(3, 100.0, 1000.0),
+            ],
+            constraints: vec![loose_ragdoll(0, 1), loose_ragdoll(1, 2)],
+        };
+        let rag = build_ragdoll(&mut w, &spec, &cfg).expect("sane ragdoll seed");
+        assert_eq!(rag.joints.len(), 2, "both joints built");
+
+        // Inject an explosive generalized velocity straight into the
+        // multibody state — the same state forward kinematics integrates.
+        // 600 rad/s at the ~50-BU limb radius swings a link ~500 BU in one
+        // substep: over the DOF cap, under the invalid-solve restore's
+        // 2 048-BU displacement bound (which would claim the body first
+        // and sleep it), so the clamp is the guard under test.
+        {
+            let (multibody, _) = w
+                .multibody_joints
+                .get_mut(rag.joints[0])
+                .expect("live joint");
+            let mut vels = multibody.generalized_velocity_mut();
+            for v in vels.iter_mut() {
+                *v = 600.0;
+            }
+        }
+
+        // The first substep still integrates the pre-clamp value — the
+        // clamp runs at the end of the substep and bounds the NEXT one.
+        w.step(PHYSICS_DT);
+        assert!(
+            w.velocity_clamps_total() >= 1,
+            "the exploding DOF must be clamped (and counted)"
+        );
+        let pre: Vec<Vec3> = rag
+            .bodies
+            .iter()
+            .filter_map(|&(_, h, _)| body_translation(&w, h))
+            .collect();
+        w.step(PHYSICS_DT);
+        for (i, &(_, h, _)) in rag.bodies.iter().enumerate() {
+            let post = body_translation(&w, h).expect("live link");
+            let moved = (post - pre[i]).length();
+            let bound = 200.0; // 50-BU limb radius × 100 rad/s × dt ≈ 83; 200 is headroom.
+            let pre_dbg = pre[i];
+            assert!(
+                moved <= bound,
+                "link {i} must not teleport under a capped DOF: {pre_dbg:?} → {post:?}"
             );
         }
     }

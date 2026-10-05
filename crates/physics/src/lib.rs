@@ -34,7 +34,8 @@ pub use components::{
 };
 pub use config::{ContactConfig, TriMeshFlagBits};
 pub use ragdoll::{
-    build_ragdoll, RagdollBodySpec, RagdollConstraintSpec, RagdollJointSpec, RagdollSpec,
+    build_ragdoll, seed_pose_is_sane, RagdollBodySpec, RagdollConstraintSpec, RagdollJointSpec,
+    RagdollSpec, SeedInsanity, SeedRejection,
 };
 pub use sync::{
     dump_spawn_collider_census, physics_sync_system, register_newcomers_and_refresh_queries,

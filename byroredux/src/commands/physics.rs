@@ -201,8 +201,12 @@ impl ConsoleCommand for PhysStatsCommand {
         let (recoveries_total, bodies_restored_last_frame, parked) = pw.recovery_counts();
         // #5161 — keyframe refusals are the keyframed-bone counterpart of the
         // recovery counters above: insane animation-authored targets kept out
-        // of Rapier before they can panic the multi-SAP broad phase.
+        // of Rapier before they can panic the multi-SAP broad phase. Seed
+        // refusals are the ragdoll-attach counterpart: insane seeds rejected
+        // before `build_ragdoll` creates an articulation on them.
         let keyframe_refused = pw.keyframe_targets_refused_total();
+        let seed_refused = pw.ragdoll_seed_refusals_total();
+        let velocity_clamps = pw.velocity_clamps_total();
         drop(pw);
 
         let mut lines = vec![
@@ -216,6 +220,8 @@ impl ConsoleCommand for PhysStatsCommand {
                  parked_pre_broken={parked}"
             ),
             format!("  keyframe refusals: total={keyframe_refused}"),
+            format!("  ragdoll seed refusals: total={seed_refused}"),
+            format!("  velocity clamps: total={velocity_clamps}"),
         ];
         // `awake_dynamic == 0 && !pending_wake` is exactly the static-scene
         // fast path's condition, so surfacing both together tells the

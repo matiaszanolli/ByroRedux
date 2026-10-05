@@ -203,7 +203,7 @@ fn spawn_ragdoll_actor(world: &mut World) -> (byroredux_core::ecs::storage::Enti
     };
     let ragdoll = {
         let mut pw = world.resource_mut::<PhysicsWorld>();
-        build_ragdoll(&mut pw, &spec, &ContactConfig::DEFAULT)
+        build_ragdoll(&mut pw, &spec, &ContactConfig::DEFAULT).expect("sane ragdoll seed")
     };
     world.insert(actor, ragdoll.clone());
     (actor, ragdoll)

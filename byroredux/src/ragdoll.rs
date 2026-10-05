@@ -30,8 +30,8 @@ use byroredux_core::math::{Quat, Vec3};
 use byroredux_nif::import::{ImportedJointKind, ImportedRagdoll};
 use byroredux_physics::ragdoll::body_pose;
 use byroredux_physics::{
-    build_ragdoll, ContactConfig, PhysicsWorld, Ragdoll, RagdollBodySpec, RagdollConstraintSpec,
-    RagdollJointSpec, RagdollSpec, RapierHandles,
+    build_ragdoll, seed_pose_is_sane, ContactConfig, PhysicsWorld, Ragdoll, RagdollBodySpec,
+    RagdollConstraintSpec, RagdollJointSpec, RagdollSpec, RapierHandles,
 };
 
 /// Per-actor ragdoll blueprint, resolved at spawn against the loaded
@@ -307,10 +307,18 @@ fn joint_from_imported(k: &ImportedJointKind) -> RagdollJointSpec {
 /// the actor's [`RagdollTemplate`], seeds each body from its bone's
 /// current `GlobalTransform`, builds the multibody, and attaches
 /// [`Ragdoll`] + [`RagdollActive`]. Returns the body count on success.
+///
+/// #5161 — the seed pose of every body is validated
+/// ([`seed_pose_is_sane`]) against the actor root's world translation
+/// before anything reaches Rapier. A rejected activation builds nothing:
+/// the actor keeps its last animated pose (its keyframed bone bodies keep
+/// receiving — and the keyframe gate keeps refusing — the insane pushes)
+/// instead of an articulation whose first solve explodes and poisons the
+/// multi-SAP broad phase for the rest of the session.
 pub fn activate_ragdoll(world: &World, actor: EntityId) -> Result<usize, String> {
     // 1. Build the world-seeded spec while holding the read guards, then
     //    drop them before taking the PhysicsWorld write lock.
-    let spec = {
+    let (spec, labels, seed_rejection) = {
         let tq = world
             .query::<RagdollTemplate>()
             .ok_or("RagdollTemplate storage not registered")?;
@@ -321,6 +329,13 @@ pub fn activate_ragdoll(world: &World, actor: EntityId) -> Result<usize, String>
             .query::<GlobalTransform>()
             .ok_or("GlobalTransform storage not registered")?;
 
+        // #5161 — the actor root anchors the relative seed check and the
+        // evidence-log labels. A missing root `GlobalTransform` skips the
+        // relative check (only the absolute bound applies).
+        let root_translation = gtq.get(actor).map(|gt| gt.translation);
+        let mut labels: Vec<String> = Vec::with_capacity(template.bodies.len());
+        let mut seed_rejection: Option<String> = None;
+
         let mut bodies = Vec::with_capacity(template.bodies.len());
         for b in &template.bodies {
             let gt = gtq
@@ -329,12 +344,34 @@ pub fn activate_ragdoll(world: &World, actor: EntityId) -> Result<usize, String>
             // World seed = bone global ∘ body-local offset.
             let translation = gt.translation + gt.rotation * (b.local_translation * gt.scale);
             let rotation = gt.rotation * b.local_rotation;
+            // #5161 — the composed seed is what reaches Rapier, so it is
+            // what gets validated. Logging the raw bone-global magnitude
+            // next to the composed seed separates the two upstream classes:
+            // a sane bone with an insane seed indicts the template-local
+            // offset (HKX import); an insane bone global indicts the
+            // skeleton/animation side.
+            if let Err(cause) = seed_pose_is_sane(translation, rotation, root_translation) {
+                let bone_name = crate::commands::shared::resolve_entity_name(world, b.bone)
+                    .unwrap_or_else(|| "<unnamed>".to_owned());
+                seed_rejection = Some(format!(
+                    "bone {bone_name} (entity {}): seed |t|={:.3e}, bone global |t|={:.3e}: {cause}",
+                    b.bone,
+                    translation.length(),
+                    gt.translation.length(),
+                ));
+                break;
+            }
             log::debug!(
                 "ragdoll seed: actor={actor} bone={} position={translation:?} rotation={rotation:?} scale={} mass={}",
                 b.bone,
                 gt.scale,
                 b.mass,
             );
+            labels.push(format!(
+                "actor {actor} bone {}",
+                crate::commands::shared::resolve_entity_name(world, b.bone)
+                    .unwrap_or_else(|| format!("entity {}", b.bone)),
+            ));
             bodies.push(RagdollBodySpec {
                 entity: b.bone,
                 translation,
@@ -357,36 +394,55 @@ pub fn activate_ragdoll(world: &World, actor: EntityId) -> Result<usize, String>
                 restitution: b.restitution,
             });
         }
-        // #2868 — the joint pivots are authored in the same bind space as the
-        // shapes and must be seeded against the same scale as the body poses
-        // above. `activate_ragdoll` is the one boundary where the live actor
-        // scale and the authored spec meet, so the multiplication belongs
-        // here; `build_joint` stays unit-agnostic. Each side takes its own
-        // endpoint body's scale, since each pivot is in that body's frame.
-        // A constraint naming an out-of-range body index is left unscaled —
-        // `orient_tree` drops it, and fabricating a scale for a body that
-        // doesn't exist would hide the upstream defect.
-        let constraints = template
-            .constraints
-            .iter()
-            .map(|c| {
-                let scale_of = |index: usize| bodies.get(index).map(|b: &RagdollBodySpec| b.scale);
-                let joint = match (scale_of(c.body_a), scale_of(c.body_b)) {
-                    (Some(scale_a), Some(scale_b)) => c.joint.scaled_pivots(scale_a, scale_b),
-                    _ => c.joint.clone(),
-                };
-                RagdollConstraintSpec {
-                    body_a: c.body_a,
-                    body_b: c.body_b,
-                    joint,
-                }
-            })
-            .collect();
-        RagdollSpec {
-            bodies,
-            constraints,
+        if seed_rejection.is_some() {
+            // Guards drop at block end; the truncated spec is discarded by
+            // the caller below, after the refusal has been counted without
+            // any ECS read guard held across the PhysicsWorld lock.
+            (
+                RagdollSpec {
+                    bodies: Vec::new(),
+                    constraints: Vec::new(),
+                },
+                labels,
+                seed_rejection,
+            )
+        } else {
+            // #2868 — the joint pivots are authored in the same bind space as
+            // the shapes and must be seeded against the same scale as the body
+            // poses above. `activate_ragdoll` is the one boundary where the
+            // live actor scale and the authored spec meet, so the
+            // multiplication belongs here; `build_joint` stays unit-agnostic.
+            // Each side takes its own endpoint body's scale, since each pivot
+            // is in that body's frame. A constraint naming an out-of-range
+            // body index is left unscaled — `orient_tree` drops it, and
+            // fabricating a scale for a body that doesn't exist would hide
+            // the upstream defect.
+            let constraints = template
+                .constraints
+                .iter()
+                .map(|c| {
+                    let scale_of =
+                        |index: usize| bodies.get(index).map(|b: &RagdollBodySpec| b.scale);
+                    let joint = match (scale_of(c.body_a), scale_of(c.body_b)) {
+                        (Some(scale_a), Some(scale_b)) => c.joint.scaled_pivots(scale_a, scale_b),
+                        _ => c.joint.clone(),
+                    };
+                    RagdollConstraintSpec {
+                        body_a: c.body_a,
+                        body_b: c.body_b,
+                        joint,
+                    }
+                })
+                .collect();
+            (RagdollSpec { bodies, constraints }, labels, seed_rejection)
         }
     };
+    if let Some(reason) = seed_rejection {
+        world
+            .resource_mut::<PhysicsWorld>()
+            .note_ragdoll_seed_refusal();
+        return Err(format!("ragdoll seed rejected: {reason}"));
+    }
 
     // 1.5. #2083 — capture any ragdoll from a prior activation of this actor.
     //    Re-activating (e.g. a second `ragdoll <id>`) rebuilt a fresh Rapier
@@ -410,7 +466,25 @@ pub fn activate_ragdoll(world: &World, actor: EntityId) -> Result<usize, String>
         if let Some(old) = &old_ragdoll {
             pw.remove_ragdoll(old);
         }
-        build_ragdoll(&mut pw, &spec, &cfg)
+        match build_ragdoll(&mut pw, &spec, &cfg) {
+            Ok(ragdoll) => {
+                // #5161 — enrich the builder's default evidence labels with
+                // the actor + bone name resolved at seed time, so a later
+                // invalid-solve log names the exploding articulation.
+                for ((_, handle, _), label) in ragdoll.bodies.iter().zip(&labels) {
+                    pw.set_body_label(*handle, label.clone());
+                }
+                ragdoll
+            }
+            Err(rejection) => {
+                // Counted inside `build_ragdoll`; the actor-reach class is
+                // rejected above, before it could ever reach here.
+                return Err(format!(
+                    "ragdoll seed rejected: body {} (entity {}): {}",
+                    rejection.body_index, rejection.entity, rejection.cause
+                ));
+            }
+        }
     };
     let n = ragdoll.bodies.len();
     log::debug!("ragdoll handles: actor={actor} bodies={:?} colliders={:?}", ragdoll.bodies, ragdoll.buoyancy.iter().map(|b| b.collider).collect::<Vec<_>>());
@@ -752,6 +826,10 @@ pub fn ragdoll_writeback_system(world: &World, _dt: f32) {
 mod installed_tests;
 
 #[cfg(test)]
+#[path = "ragdoll_skeever_probe_tests.rs"]
+mod skeever_probe;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use byroredux_core::ecs::Transform;
@@ -862,6 +940,160 @@ mod tests {
             "writeback should move the bone down under gravity: {init_y} → {}",
             end.y
         );
+    }
+
+    /// #5161 fixture: an actor rooted at the world origin plus two bones at
+    /// the given translations, template-bound with one loose joint. The
+    /// actor carries a `GlobalTransform` so the relative seed check has an
+    /// anchor (production always has one).
+    fn two_bone_world_at(bone_translations: [Vec3; 2]) -> (World, EntityId, [EntityId; 2]) {
+        let mut world = World::new();
+        world.register::<Transform>();
+        world.register::<GlobalTransform>();
+        world.register::<RagdollTemplate>();
+        world.register::<RagdollActive>();
+        world.register::<Ragdoll>();
+        world.insert_resource(PhysicsWorld::new());
+
+        let actor = world.spawn();
+        world.insert(
+            actor,
+            GlobalTransform {
+                translation: Vec3::ZERO,
+                rotation: Quat::IDENTITY,
+                scale: 1.0,
+            },
+        );
+        let bones = bone_translations.map(|translation| {
+            let bone = world.spawn();
+            world.insert(
+                bone,
+                GlobalTransform {
+                    translation,
+                    rotation: Quat::IDENTITY,
+                    scale: 1.0,
+                },
+            );
+            bone
+        });
+        let template = RagdollTemplate {
+            bodies: bones
+                .iter()
+                .map(|&bone| RagdollTemplateBody {
+                    bone,
+                    local_translation: Vec3::ZERO,
+                    local_rotation: Quat::IDENTITY,
+                    shape: CollisionShape::Ball { radius: 5.0 },
+                    mass: 4.0,
+                    linear_damping: 0.05,
+                    angular_damping: 0.05,
+                    friction: 0.5,
+                    restitution: 0.0,
+                })
+                .collect(),
+            constraints: vec![RagdollTemplateConstraint {
+                body_a: 0,
+                body_b: 1,
+                joint: RagdollJointSpec::Ragdoll {
+                    twist_a: Vec3::X,
+                    plane_a: Vec3::Y,
+                    pivot_a: Vec3::new(25.0, 0.0, 0.0),
+                    twist_b: Vec3::X,
+                    plane_b: Vec3::Y,
+                    pivot_b: Vec3::new(-25.0, 0.0, 0.0),
+                    cone_max: std::f32::consts::PI,
+                    twist_min: -std::f32::consts::PI,
+                    twist_max: std::f32::consts::PI,
+                },
+            }],
+        };
+        world.insert(actor, template);
+        (world, actor, bones)
+    }
+
+    /// #5161 — a bone whose composed seed lands a million BU from its actor
+    /// root (the "million-unit bone coordinates despite correct actor-root
+    /// placement" instability) must refuse the WHOLE activation: no Rapier
+    /// bodies, no ragdoll components, exactly one counted refusal.
+    #[test]
+    fn activation_refuses_a_seed_beyond_actor_reach() {
+        let (world, actor, _) =
+            two_bone_world_at([Vec3::new(50.0, 1000.0, 0.0), Vec3::new(1.0e6, 1000.0, 0.0)]);
+
+        let error = activate_ragdoll(&world, actor).expect_err("insane reach must refuse");
+        assert!(
+            error.contains("ragdoll seed rejected") && error.contains("actor-reach"),
+            "refusal must name the cause: {error}"
+        );
+        {
+            let pw = world.resource::<PhysicsWorld>();
+            assert_eq!(pw.body_count(), 0, "no body of a rejected spec may exist");
+            assert_eq!(
+                pw.ragdoll_seed_refusals_total(),
+                1,
+                "the bin-side rejection must count exactly one refusal"
+            );
+        }
+        assert!(world.query::<Ragdoll>().unwrap().get(actor).is_none());
+        assert!(world.query::<RagdollActive>().unwrap().get(actor).is_none());
+    }
+
+    /// #5161 — a non-finite bone pose (decomposed bone transform) must be
+    /// refused before `build_ragdoll` can insert a NaN body into Rapier.
+    #[test]
+    fn activation_refuses_a_non_finite_seed() {
+        let (world, actor, _) = two_bone_world_at([
+            Vec3::new(50.0, 1000.0, 0.0),
+            Vec3::new(50.0, f32::NAN, 0.0),
+        ]);
+
+        let error = activate_ragdoll(&world, actor).expect_err("NaN seed must refuse");
+        assert!(
+            error.contains("non-finite"),
+            "refusal must name the cause: {error}"
+        );
+        let pw = world.resource::<PhysicsWorld>();
+        assert_eq!(pw.body_count(), 0);
+        assert_eq!(pw.ragdoll_seed_refusals_total(), 1);
+    }
+
+    /// #5161 — a successful activation labels every ragdoll body with the
+    /// actor + bone name, so the invalid-solve evidence log can name the
+    /// exploding articulation without any ECS access.
+    #[test]
+    fn activation_labels_ragdoll_bodies_for_the_evidence_log() {
+        use byroredux_core::ecs::components::Name;
+        use byroredux_core::string::StringPool;
+
+        let (mut world, actor, bones) =
+            two_bone_world_at([Vec3::new(0.0, 1000.0, 0.0), Vec3::new(50.0, 1000.0, 0.0)]);
+        let mut pool = StringPool::new();
+        let names = ["Spine", "Head"].map(|name| pool.intern(name));
+        world.insert_resource(pool);
+        for (&bone, sym) in bones.iter().zip(names) {
+            world.insert(bone, Name(sym));
+        }
+
+        activate_ragdoll(&world, actor).expect("sane seeds must activate");
+        let ragdoll = world
+            .query::<Ragdoll>()
+            .unwrap()
+            .get(actor)
+            .expect("activation must attach the ragdoll")
+            .clone();
+        let pw = world.resource::<PhysicsWorld>();
+        for (&bone, sym) in bones.iter().zip(names) {
+            let resolved = world
+                .try_resource::<StringPool>()
+                .unwrap()
+                .resolve(sym)
+                .unwrap()
+                .to_owned();
+            assert_eq!(
+                pw.body_label(ragdoll.bodies.iter().find(|b| b.0 == bone).expect("labelled").1),
+                Some(format!("actor {actor} bone {resolved}").as_str()),
+            );
+        }
     }
 
     /// Regression for #2868 and #3065. `activate_ragdoll` is the boundary

@@ -146,7 +146,8 @@ mod tests {
                 constraints: vec![],
             },
             &ContactConfig::DEFAULT,
-        );
+        )
+        .expect("sane ragdoll seed");
         world.insert(skeleton, rag);
         world.insert_resource(physics);
         (world, actor, skeleton)

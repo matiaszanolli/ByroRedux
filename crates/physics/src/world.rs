@@ -67,6 +67,36 @@ pub const KILL_PLANE_Y: f32 = -25_000.0;
 /// contact.
 const MAX_DYNAMIC_SUBSTEP_DISPLACEMENT: f32 = 2_048.0;
 
+/// #5161 — sanity cap on a dynamic body's speed. The real-cell P2 route
+/// proved the missing guard class: a ragdoll articulation kicked by deep
+/// floor penetration (authored-capsule-vs-rock geometry mismatch) explodes
+/// the constraint solve within ONE `pipeline.step` call to |v|≈7.7e15 BU/s;
+/// the *next* call's position integration then places its AABB near rapier
+/// 0.22's multi-SAP grid boundary (≈2.68e11) and poisons the broad-phase
+/// layer structure — irrecoverably, since the collider proxy ids are
+/// `pub(crate)` — and a later proxy insertion panics `sap_axis.rs`. The
+/// per-substep snapshot restore only sees the explosion after it already
+/// happened. Clamping every dynamic body's velocity at the end of each
+/// substep bounds the worst position change to [`Self::clamp`]·dt ≈ 333 BU
+/// — 6× under [`MAX_DYNAMIC_SUBSTEP_DISPLACEMENT`] and nine orders of
+/// magnitude under the grid boundary. No engine-driven dynamic body moves
+/// legitimately at 20 000 BU/s (~285 m/s): the fastest authored motion
+/// class (arrows) sits near 6 000. A body clamped on two consecutive
+/// substeps is still exploding and is *parked* (velocities zeroed, slept),
+/// the same containment the invalid-solve restore applies.
+pub const VELOCITY_SANITY_CAP_BU_PER_S: f32 = 20_000.0;
+/// #5161 — sanity cap on angular speed (≈16 rev/s); explosions reach 1e10+.
+const ANGULAR_VELOCITY_SANITY_CAP_RAD_PER_S: f32 = 100.0;
+/// #5161 — sanity cap on one articulation DOF's generalized velocity
+/// (rad/s for the ragdoll/hinge joints' angular axes, BU/s for the
+/// prismatic rail; every authored class moves far slower than this). The
+/// body-speed cap above cannot see these: articulation links integrate
+/// their reduced-coordinate DOF velocities (`Multibody::velocities`)
+/// through forward kinematics BEFORE the body-level clamp can matter, so
+/// an exploding DOF teleports its links through the broad-phase grid in
+/// one step even with every rigid body capped. Non-finite DOFs are zeroed.
+pub(crate) const ARTICULATION_DOF_SANITY_CAP: f32 = 100.0;
+
 /// #5161 — sanity bound for a keyframed body target pushed from an ECS
 /// GlobalTransform. Authored worldspace coordinates top out around ±3e5 BU,
 /// so a translation beyond 1e8 is corruption with certainty — while still
@@ -282,6 +312,35 @@ pub struct PhysicsWorld {
     /// repeats every frame for as long as the animation keeps emitting the
     /// broken pose, so the `log::error!` fires once per body, not per frame.
     keyframe_refusals_logged: std::collections::HashSet<RigidBodyHandle>,
+    /// Lifetime count of ragdoll activations refused at attach time (#5161)
+    /// — a seed pose that failed `seed_pose_is_sane`, counted once per
+    /// rejected spec whether the rejection came from `build_ragdoll`'s own
+    /// absolute backstop or the bin-side actor-reach check. Surfaced via
+    /// [`Self::ragdoll_seed_refusals_total`] into `phys.stats`.
+    ragdoll_seed_refusals_total: u64,
+    /// #5161 — human-readable label per rapier body, for the invalid-solve
+    /// evidence log (`restore_invalid_dynamic_bodies`). Ragdoll bodies have
+    /// no `RapierHandles` component to reverse-look them up with, so
+    /// `build_ragdoll` registers "entity N" (the bone) at insert and the
+    /// bin-side activator enriches it with the actor + bone name. Dropped
+    /// in [`Self::remove_body`]; keyed by the full handle (index +
+    /// generation), so rapier handle reuse can never alias an old label.
+    body_labels: std::collections::HashMap<RigidBodyHandle, String>,
+    /// Lifetime count of velocity clamps applied by
+    /// [`Self::clamp_explosive_velocities`] (#5161) — one per clamped body
+    /// per substep. Surfaced via [`Self::velocity_clamps_total`] into
+    /// `phys.stats`.
+    velocity_clamps_total: u64,
+    /// Bodies clamped on their most recent substep without a clean substep
+    /// between (#5161). A second consecutive clamp means the solve is
+    /// *persistently* exploding for that body — it gets parked (velocities
+    /// zeroed, slept) instead of vibrating at the cap forever.
+    explosion_watch: std::collections::HashSet<RigidBodyHandle>,
+    /// Every multibody joint this world built (`build_ragdoll` pushes; the
+    /// set has no mutable whole-set iterator and rapier's internal index is
+    /// `pub(crate)`). Stale handles (detached articulations) return `None`
+    /// from `get_mut` and are skipped, so the vector never needs sweeping.
+    pub(crate) articulation_joints: Vec<rapier3d::prelude::MultibodyJointHandle>,
 }
 
 /// A dynamic body's state immediately before one Rapier substep.
@@ -315,13 +374,16 @@ fn restore_invalid_dynamic_bodies(
     bodies: &mut RigidBodySet,
     multibody_joints: &mut MultibodyJointSet,
     snapshots: impl IntoIterator<Item = DynamicBodySnapshot>,
+    body_labels: &std::collections::HashMap<RigidBodyHandle, String>,
 ) -> (usize, Vec<RigidBodyHandle>) {
     let mut restored = 0;
     let mut detached_articulations: Vec<RigidBodyHandle> = Vec::new();
     // #5161 — the recovery log alone cannot say WHAT went insane. Record the
     // pre-restore state of the first few bodies per event (translation
-    // magnitude + velocity magnitude) so the next investigation reads the
-    // explosion's class straight off the log instead of re-instrumenting.
+    // magnitude + velocity magnitude + the body's registered label) so the
+    // next investigation reads the explosion's class — and WHICH actor's
+    // articulation produced it — straight off the log instead of
+    // re-instrumenting.
     let mut evidence = Vec::new();
     for snapshot in snapshots {
         let Some(body) = bodies.get(snapshot.handle) else {
@@ -331,8 +393,12 @@ fn restore_invalid_dynamic_bodies(
             continue;
         }
         if evidence.len() < 3 {
+            let label = body_labels
+                .get(&snapshot.handle)
+                .map(String::as_str)
+                .unwrap_or("unlabelled");
             evidence.push(format!(
-                "{:?} at |t|={:.3e} |v|={:.3e}",
+                "{:?} [{label}] at |t|={:.3e} |v|={:.3e}",
                 snapshot.handle,
                 body.translation().norm(),
                 body.linvel().norm(),
@@ -419,6 +485,11 @@ impl PhysicsWorld {
             bodies_parked_total: 0,
             keyframe_targets_refused_total: 0,
             keyframe_refusals_logged: std::collections::HashSet::new(),
+            ragdoll_seed_refusals_total: 0,
+            body_labels: std::collections::HashMap::new(),
+            velocity_clamps_total: 0,
+            explosion_watch: std::collections::HashSet::new(),
+            articulation_joints: Vec::new(),
         }
     }
 
@@ -464,6 +535,9 @@ impl PhysicsWorld {
             )
             .is_some();
         if removed {
+            // #5161 — the evidence-label dies with the body; the map must
+            // not accumulate one stale entry per despawned ragdoll bone.
+            self.body_labels.remove(&handle);
             // Rapier processes neighbour wake-ups from removed colliders during
             // `pipeline.step()`. Re-arm the static-scene fast path so that
             // deferred cleanup and those wake-ups are not stranded when the
@@ -836,6 +910,146 @@ impl PhysicsWorld {
         self.keyframe_targets_refused_total
     }
 
+    /// #5161 — register the human-readable label for one rapier body (see
+    /// the `body_labels` field doc). `build_ragdoll` writes the default;
+    /// the bin-side activator enriches it.
+    pub fn set_body_label(&mut self, handle: RigidBodyHandle, label: String) {
+        self.body_labels.insert(handle, label);
+    }
+
+    /// #5161 — a body's registered evidence-log label, if any.
+    pub fn body_label(&self, handle: RigidBodyHandle) -> Option<&str> {
+        self.body_labels.get(&handle).map(String::as_str)
+    }
+
+    /// #5161 — count one refused ragdoll activation. `build_ragdoll` calls
+    /// this for its own absolute rejection; the bin-side activator calls it
+    /// for the actor-reach rejection that never reaches `build_ragdoll`.
+    /// The paths are mutually exclusive, so the count never doubles.
+    pub fn note_ragdoll_seed_refusal(&mut self) {
+        self.ragdoll_seed_refusals_total = self.ragdoll_seed_refusals_total.saturating_add(1);
+    }
+
+    /// Lifetime refused-ragdoll-seed count, for `phys.stats` (#5161).
+    pub fn ragdoll_seed_refusals_total(&self) -> u64 {
+        self.ragdoll_seed_refusals_total
+    }
+
+    /// #5161 — cap every dynamic body's speed at
+    /// [`VELOCITY_SANITY_CAP_BU_PER_S`] (and spin at
+    /// [`ANGULAR_VELOCITY_SANITY_CAP_RAD_PER_S`]), called at the end of
+    /// every `pipeline.step` substep. See the cap constant's doc for why
+    /// this is the only guard that runs *before* an explosion's positions
+    /// reach the broad phase. A body clamped on consecutive substeps is
+    /// parked; a clean substep returns it to watch-list absence.
+    fn clamp_explosive_velocities(&mut self) {
+        let mut clamped: Vec<(RigidBodyHandle, nalgebra::Vector3<f32>, nalgebra::Vector3<f32>)> =
+            Vec::new();
+        for &handle in &self.dynamic_bodies {
+            let (linvel, angvel) = {
+                let Some(body) = self.bodies.get(handle) else {
+                    continue;
+                };
+                (*body.linvel(), *body.angvel())
+            };
+            let speed = linvel.norm();
+            let spin = angvel.norm();
+            if speed <= VELOCITY_SANITY_CAP_BU_PER_S
+                && spin <= ANGULAR_VELOCITY_SANITY_CAP_RAD_PER_S
+            {
+                self.explosion_watch.remove(&handle);
+                continue;
+            }
+            let capped_linvel = if speed > VELOCITY_SANITY_CAP_BU_PER_S {
+                linvel * (VELOCITY_SANITY_CAP_BU_PER_S / speed)
+            } else {
+                linvel
+            };
+            let capped_angvel = if spin > ANGULAR_VELOCITY_SANITY_CAP_RAD_PER_S {
+                angvel * (ANGULAR_VELOCITY_SANITY_CAP_RAD_PER_S / spin)
+            } else {
+                angvel
+            };
+            clamped.push((handle, capped_linvel, capped_angvel));
+        }
+        for (handle, capped_linvel, capped_angvel) in clamped {
+            {
+                let body = self
+                    .bodies
+                    .get_mut(handle)
+                    .expect("clamped body was just read under exclusive set access");
+                body.set_linvel(capped_linvel, false);
+                body.set_angvel(capped_angvel, false);
+            }
+            self.velocity_clamps_total = self.velocity_clamps_total.saturating_add(1);
+            if !self.explosion_watch.insert(handle) {
+                // Second consecutive clamped substep: the solve is
+                // persistently exploding for this body. Park it the same
+                // way the invalid-solve restore does — zeroed velocities,
+                // asleep at its current (still sane, cap-bounded) pose —
+                // instead of letting it vibrate at the cap forever.
+                if let Some(body) = self.bodies.get_mut(handle) {
+                    body.set_linvel(nalgebra::zero(), false);
+                    body.set_angvel(nalgebra::zero(), false);
+                    body.sleep();
+                }
+                self.explosion_watch.remove(&handle);
+                let label = self
+                    .body_labels
+                    .get(&handle)
+                    .map(String::as_str)
+                    .unwrap_or("unlabelled");
+                log::error!(
+                    "physics: parked {handle:?} [{label}] after repeated solver-explosion \
+                     velocities (still sane, slept at current pose) (#5161)"
+                );
+            } else {
+                let label = self
+                    .body_labels
+                    .get(&handle)
+                    .map(String::as_str)
+                    .unwrap_or("unlabelled");
+                log::warn!(
+                    "physics: clamped explosive velocity on {handle:?} [{label}] to the \
+                     sanity cap (#5161)"
+                );
+            }
+        }
+        // Articulation DOFs: forward kinematics integrates these BEFORE any
+        // body-level clamp can matter, so an exploding reduced-coordinate
+        // velocity teleports its links through the broad-phase grid in one
+        // step even with every rigid body capped above (#5161).
+        let mut clamped_dofs = 0usize;
+        for &joint in &self.articulation_joints {
+            let Some((multibody, _)) = self.multibody_joints.get_mut(joint) else {
+                continue;
+            };
+            let mut vels = multibody.generalized_velocity_mut();
+            for i in 0..vels.len() {
+                let v = vels[i];
+                if !v.is_finite() {
+                    vels[i] = 0.0;
+                    clamped_dofs += 1;
+                } else if v.abs() > ARTICULATION_DOF_SANITY_CAP {
+                    vels[i] = v.signum() * ARTICULATION_DOF_SANITY_CAP;
+                    clamped_dofs += 1;
+                }
+            }
+        }
+        if clamped_dofs > 0 {
+            self.velocity_clamps_total = self.velocity_clamps_total.saturating_add(1);
+            log::warn!(
+                "physics: clamped {clamped_dofs} exploding articulation DOF velocities to the \
+                 sanity cap (#5161)"
+            );
+        }
+    }
+
+    /// Lifetime velocity-clamp count, for `phys.stats` (#5161).
+    pub fn velocity_clamps_total(&self) -> u64 {
+        self.velocity_clamps_total
+    }
+
     /// Read a dynamic body's mass (BU³ × density). Buoyancy derives the
     /// gravity-cancelling force from this; exposed so the water systems
     /// stay in engine types without reaching into `RigidBodySet`.
@@ -1018,6 +1232,7 @@ impl PhysicsWorld {
                 &mut self.bodies,
                 &mut self.multibody_joints,
                 snapshots,
+                &self.body_labels,
             );
             if restored > 0 {
                 log::error!(
@@ -1034,6 +1249,11 @@ impl PhysicsWorld {
                 steps += 1;
                 break;
             }
+            // #5161 — caps velocities before they can be integrated into an
+            // insane position. The restore branch above already sanitises
+            // its bodies (rolled back + slept), so skipping the clamp there
+            // loses nothing.
+            self.clamp_explosive_velocities();
             steps += 1;
             // Budget check AFTER the step so at least one substep always
             // runs (a slow frame must still advance the sim). When physics
@@ -2232,6 +2452,70 @@ mod tests {
         assert!(y < 1000.0, "ball did not fall; y = {}", y);
     }
 
+    /// #5161 — a solver explosion's velocity is capped at the end of the
+    /// substep that produced it, so the next substep's integration cannot
+    /// carry the body's AABB anywhere near the multi-SAP grid boundary; a
+    /// body that keeps exploding on the next substep is parked (zeroed
+    /// velocities, slept) instead of vibrating at the cap. The test
+    /// velocity sits in the clamp-only window — above the sanity cap but
+    /// under the per-substep displacement the invalid-solve restore would
+    /// otherwise claim first (20 000 < 100 000 ≤ 122 880 = 2048·60).
+    #[test]
+    fn explosive_velocities_are_capped_and_persistent_exploders_are_parked() {
+        let mut w = PhysicsWorld::new();
+        let handle = w.bodies.insert(RigidBodyBuilder::dynamic().build());
+        w.dynamic_bodies.push(handle);
+        w.set_body_label(handle, "actor 2484 bone RArm_Palm".to_owned());
+
+        w.bodies[handle]
+            .set_linvel(Vector::new(100_000.0, 0.0, 0.0), false);
+        w.step(PHYSICS_DT);
+        let speed = w.bodies[handle].linvel().norm();
+        assert!(
+            speed <= VELOCITY_SANITY_CAP_BU_PER_S,
+            "explosive speed must be capped, got {speed}"
+        );
+        assert_eq!(w.velocity_clamps_total(), 1);
+        assert!(!w.bodies[handle].is_sleeping(), "first clamp only watches");
+
+        // Still exploding on the next substep → parked.
+        w.bodies[handle]
+            .set_linvel(Vector::new(100_000.0, 0.0, 0.0), false);
+        w.step(PHYSICS_DT);
+        assert!(
+            w.bodies[handle].is_sleeping(),
+            "a second consecutive clamped substep must park the body"
+        );
+        assert_eq!(w.bodies[handle].linvel().norm(), 0.0);
+    }
+
+    /// #5161 — a clean substep between explosions clears the watch entry,
+    /// so a much-later isolated burst clamps without parking.
+    #[test]
+    fn a_clean_substep_between_clamps_avoids_parking() {
+        let mut w = PhysicsWorld::new();
+        let handle = w.bodies.insert(RigidBodyBuilder::dynamic().build());
+        w.dynamic_bodies.push(handle);
+
+        w.bodies[handle]
+            .set_linvel(Vector::new(100_000.0, 0.0, 0.0), false);
+        w.step(PHYSICS_DT);
+        assert_eq!(w.velocity_clamps_total(), 1);
+
+        // The capped velocity decays under gravity but stays clean — the
+        // watch entry must clear.
+        w.step(PHYSICS_DT);
+        assert_eq!(w.velocity_clamps_total(), 1);
+
+        // A fresh burst: clamped again, still not parked.
+        w.bodies[handle]
+            .set_linvel(Vector::new(100_000.0, 0.0, 0.0), false);
+        w.step(PHYSICS_DT);
+        assert_eq!(w.velocity_clamps_total(), 2);
+        assert!(!w.bodies[handle].is_sleeping());
+    }
+
+
     #[test]
     fn static_floor_blocks_dynamic_ball() {
         let mut w = PhysicsWorld::new();
@@ -2589,7 +2873,7 @@ mod tests {
         assert!(!body_state_is_finite(&bodies[handle]));
 
         assert_eq!(
-            restore_invalid_dynamic_bodies(&mut bodies, &mut MultibodyJointSet::new(), [snapshot])
+            restore_invalid_dynamic_bodies(&mut bodies, &mut MultibodyJointSet::new(), [snapshot], &std::collections::HashMap::new())
                 .0,
             1
         );
@@ -2615,7 +2899,7 @@ mod tests {
         );
 
         assert_eq!(
-            restore_invalid_dynamic_bodies(&mut bodies, &mut MultibodyJointSet::new(), [snapshot])
+            restore_invalid_dynamic_bodies(&mut bodies, &mut MultibodyJointSet::new(), [snapshot], &std::collections::HashMap::new())
                 .0,
             1
         );
@@ -2863,7 +3147,7 @@ mod tests {
         });
 
         let (restored, detached) =
-            restore_invalid_dynamic_bodies(&mut bodies, &mut multibody_joints, snapshots);
+            restore_invalid_dynamic_bodies(&mut bodies, &mut multibody_joints, snapshots, &std::collections::HashMap::new());
         assert_eq!(restored, 2);
         assert!(
             detached.contains(&a) && detached.contains(&c),

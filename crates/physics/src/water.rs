@@ -2537,7 +2537,7 @@ pub(crate) mod ragdoll_buoyancy_tests {
         };
         let ragdoll = {
             let mut pw = world.resource_mut::<PhysicsWorld>();
-            build_ragdoll(&mut pw, &spec, &ContactConfig::DEFAULT)
+            build_ragdoll(&mut pw, &spec, &ContactConfig::DEFAULT).expect("sane ragdoll seed")
         };
         let actor = world.spawn();
         world.insert(actor, ragdoll);
@@ -2601,7 +2601,7 @@ pub(crate) mod ragdoll_buoyancy_tests {
 
         let ragdoll = {
             let mut pw = world.resource_mut::<PhysicsWorld>();
-            build_ragdoll(&mut pw, &spec, &cfg)
+            build_ragdoll(&mut pw, &spec, &cfg).expect("sane ragdoll seed")
         };
         let recorded = ragdoll.buoyancy.first().expect("one body recorded");
         assert_eq!(recorded.linear_damping, 0.05);
