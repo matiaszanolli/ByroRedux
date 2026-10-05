@@ -1493,12 +1493,12 @@ mod tests {
         // EFID remaps onto the plugin's own global slot on Skyrim and
         // stays verbatim on Oblivion.
         let self_ref = 0x0100_7777u32.to_le_bytes();
-        let alch = parse_alch(0x3, &[sub(b"EFID", &self_ref)], GameKind::Skyrim, &remap);
+        let alch = parse_alch(0x3, &[sub(b"EFID", self_ref)], GameKind::Skyrim, &remap);
         let ItemKind::Aid { magic_effects, .. } = alch.kind else {
             panic!("ALCH is an Aid")
         };
         assert_eq!(magic_effects, vec![0x0200_7777]);
-        let alch = parse_alch(0x4, &[sub(b"EFID", &self_ref)], GameKind::Oblivion, &remap);
+        let alch = parse_alch(0x4, &[sub(b"EFID", self_ref)], GameKind::Oblivion, &remap);
         let ItemKind::Aid { magic_effects, .. } = alch.kind else {
             panic!("ALCH is an Aid")
         };
