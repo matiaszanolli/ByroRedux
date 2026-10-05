@@ -189,9 +189,12 @@ pub(crate) fn stream_object_lod_blocks(
         world_bounds: worldspace_cell_bounds(wctx),
         // #3502 — the object ring's only fallback for a missing quad is the
         // `ObjectLodBlock::empty()` sentinel below, so subdividing into an
-        // unbaked level draws nothing. FO3 bakes 93 of its 422 object quads
-        // at level 8 with no level-4 sibling; without this those
-        // worldspaces lose every distant building in the middle band.
+        // unbaked level draws nothing. FO3 bakes 93 of its 366 plain object
+        // quads at level 8 with no level-4 sibling (the archive's 422
+        // `blocks\` entries also carry 54 `.high.` variants and 2
+        // `…postapocalypse.nif` — variant files, not additional quads);
+        // without this those worldspaces lose every distant building in the
+        // middle band.
         coarsen_to_available: true,
     };
     let mut desired = lod_bands::select_lod_quads(
@@ -674,7 +677,10 @@ pub(crate) enum ObjectLodScheme {
 ///
 /// #3502 — the FO3 "level4 and level8" line above hides a per-worldspace
 /// split that matters to the descent. Seven of FO3's fifteen bake objects at
-/// level 8 with **no level-4 sibling at all** — 93 of its 422 object quads:
+/// level 8 with **no level-4 sibling at all** — 93 of its 366 plain object
+/// quads (65 of them washmontop's; 366 base + 331 DLC = 697 plain quads
+/// corpus-wide — the archive's 422 `blocks\` entries count file variants:
+/// 54 `.high.` plus 2 `…postapocalypse.nif` beside the 366 plain forms):
 ///
 /// ```text
 /// dcworld01 {8: 3}   dcworld03 {8: 4}   dcworld06 {8: 6}   dcworld12 {8: 8}
@@ -688,19 +694,21 @@ pub(crate) enum ObjectLodScheme {
 ///
 /// #4468 — the Fallout-legacy DLC archives bake a second, higher-detail
 /// object-quad filename variant `<world>.level<L>.high.<x>.<y>.nif` beside
-/// the plain form. Verified census (`probe_lod_corpus`'s `.high.` counter +
-/// `bsa_list`): FO3 `Anchorage - Main.bsa` ships 60 — dlc02anchoragebattle
-/// 12, dlc02chinesehq 13, dlc02glacier 21, dlc02overlook 11, tlandscape 3 —
+/// the plain form, and so does the base archive. Verified census
+/// (`probe_lod_corpus`'s `.high.` counter + `bsa_list`): `Fallout -
+/// Meshes.bsa` ships 54 (28 `washmontop` level8, 26 `wasteland` level4),
+/// FO3 `Anchorage - Main.bsa` ships 60 — dlc02anchoragebattle 12,
+/// dlc02chinesehq 13, dlc02glacier 21, dlc02overlook 11, tlandscape 3 —
 /// and FNV `LonesomeRoad - Main.bsa` ships 19 (nvdlc04dividevistaworld);
-/// all level4, and every `.high.` coordinate has a plain sibling in the
-/// same archive (set-difference = 0 in both), so the plain-form descent
-/// still finds a quad everywhere the variant exists — a detail-fidelity
-/// difference only, no coverage hole. [`object_lod_archive_path`] builds
-/// only the plain form, deliberately: no source documents vanilla's
-/// LOD-distance selection rule for the variant, and inventing one is the
-/// invented-behavior work the project's no-guessing policy exists to
-/// prevent. A future consumer must probe `.high.` first and fall back to
-/// plain (never the reverse), keeping the verified sibling invariant.
+/// all with a plain sibling in the same archive (set-difference = 0 in
+/// every case), so the plain-form descent still finds a quad everywhere
+/// the variant exists — a detail-fidelity difference only, no coverage
+/// hole. [`object_lod_archive_path`] builds only the plain form,
+/// deliberately: no source documents vanilla's LOD-distance selection rule
+/// for the variant, and inventing one is the invented-behavior work the
+/// project's no-guessing policy exists to prevent. A future consumer must
+/// probe `.high.` first and fall back to plain (never the reverse),
+/// keeping the verified sibling invariant.
 pub(crate) fn object_lod_scheme(game: GameKind) -> Option<ObjectLodScheme> {
     match game {
         // FO76 joins under #4488: the `.bto` family lives across TWO

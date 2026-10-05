@@ -118,7 +118,7 @@ const ULTRA_MAX_DISTANCE_BU: f32 = 250_000.0;
 // availability predicate — except on the object ring, where a quad whose
 // whole subtree is unbaked coarsens instead (#3502). FNV bakes every
 // worldspace's `blocks\` quads at level 4 and never needs that; FO3 bakes 93
-// of 422 at level 8 only.
+// of its 366 plain quads at level 8 only.
 const FALLOUT_LEGACY_REFINE_BU: &[f32] = &[50_000.0, 75_000.0, 112_500.0];
 const FALLOUT_LEGACY_MAX_CELLS: i32 = 64;
 
@@ -292,9 +292,11 @@ pub(crate) struct LodBandSelection<'a> {
     ///
     /// FNV never exposed the difference — every FNV worldspace bakes its
     /// `blocks\` quads at level 4, the finest, which always emits. FO3 bakes
-    /// 93 of its 422 object quads at level 8 with no level-4 sibling
-    /// (`WashMonTop`'s 65, `ParadiseFalls`, five `DCworld*`), and those
-    /// worldspaces lost every distant building in the ~5..15-cell band
+    /// 93 of its 366 plain object quads at level 8 with no level-4 sibling
+    /// (`WashMonTop`'s 65, `ParadiseFalls`, five `DCworld*`; the archive's
+    /// 422 `blocks\` entries also carry 54 `.high.` variants and 2
+    /// `…postapocalypse.nif` — variant files, not additional quads), and
+    /// those worldspaces lost every distant building in the ~5..15-cell band
     /// whenever the streaming radius put `exclude_within` below
     /// `cells_from_bu(FALLOUT_LEGACY_REFINE_BU[0])` = 12.
     pub(crate) coarsen_to_available: bool,

@@ -446,9 +446,11 @@ starts from the corrected state.
    2026-08-12). `LodBandLadder::for_game` reads each game's own
    `fBlockLevel0/1/2Distance` from the shipped `Ultra.ini`; both `.btr`
    (`terrain_lod_btr.rs`) and `.bto` (`object_lod.rs`) consume the same
-   ladder. Oblivion/FO3/FNV correctly stay single-ring (no baked quadtree
-   exists for those games) — that is the right per-game fallback, not a
-   remaining gap.
+   ladder. FO3/FNV are not single-ring: they bake worldspace block
+   quadtrees (`blocks\<world>.level<L>.<x>.<y>.nif`) that
+   `ObjectLodScheme::FalloutLegacyBlocks` descends (#3203, #3321).
+   Oblivion — which ships no baked quadtree — is the one single-ring
+   fallback, and that is the right per-game shape, not a remaining gap.
 2. [x] **Far-plane / depth-resolution measurement** — done (commit
    `9e96a9f9`, 2026-08-12). `DEFAULT_RENDER_DISTANCE` is derived and
    compile-time-asserted against the widest LOD ring's far-corner diagonal
