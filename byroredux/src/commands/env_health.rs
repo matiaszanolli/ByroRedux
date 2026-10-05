@@ -482,11 +482,19 @@ impl ConsoleCommand for EnvHealthCommand {
         // Evidence, not gates — see the module doc on why fog ordering is
         // reported rather than asserted.
         if let Some(lit) = lighting.as_deref() {
+            // EXT-D1-2026-09-29-02 — `BASE_FOG_STRENGTH` (0.8) scales the
+            // medium's extinction at the frame boundary, so the value the
+            // GPU integrates is NOT the stored medium's. Print both: tuning
+            // or debugging fog from the raw medium alone read 25 % denser
+            // than what was actually rendered.
             lines.push(format!(
-                "env: fog near={:.1} far={:.1} extinction={:.6}/m{}",
+                "env: fog near={:.1} far={:.1} extinction={:.6}/m gpu_extinction={:.6}/m \
+                 (medium × {:.2} frame scale){}",
                 lit.fog_near,
                 lit.fog_far,
                 lit.fog_medium.extinction_per_meter,
+                lit.fog_medium.extinction_per_meter * crate::fog::BASE_FOG_STRENGTH,
+                crate::fog::BASE_FOG_STRENGTH,
                 if lit.fog_far <= lit.fog_near {
                     " (inverted ramp — fog disabled by the fitter)"
                 } else {

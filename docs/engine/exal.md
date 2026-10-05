@@ -251,6 +251,34 @@ parser tier).
    `default_water_height: None` = "no default water"). Those are documented as
    canonical sentinels, not "fill it in later".
 
+### 3.1 Engine choice: base-fog strength (EXT-D1-2026-09-29-02)
+
+The canonical `FogMedium.extinction_per_meter` is **not** what the GPU
+integrates. Every fitted/transmitted medium is multiplied by
+`BASE_FOG_STRENGTH = 0.8` (`byroredux/src/fog.rs`) at the frame boundary —
+the single `fog_extinction_per_meter` producer site in `app_frame.rs`, so
+every producer (XCLL ramp fit, weather blend, FO4/FO76 authored height
+profiles, cell transitions) scales identically.
+
+* **Provenance:** presentation direction, 2026-09-28 — "go just a bit lower
+  regarding base fog". The faithful legacy-ramp fit and the authored FO4/FO76
+  height profiles both translate correctly but read denser than the vanilla
+  look; 0.8 ≈ −0.32 stops of visibly thinner haze with the same colour and
+  falloff shape. No authored scalar is being approximated — like
+  `SUN_SOUTH_TILT`, this is a documented engine choice, not a translation.
+* **Scope: every medium, exterior and interior alike.** The scale is
+  game-invariant and sits outside `FogMedium`, so interior XCLL/LGTM fog is
+  thinned too, although the rationale cites exterior haze. Revisit if
+  interiors ever need the unscaled authored density.
+* **Albedo, coverage and scale height are untouched** — fog hue and altitude
+  behaviour stay exactly the authored ones.
+* **Observability:** `env.health` prints both values (`extinction=` for the
+  stored medium and `gpu_extinction=` for the scaled value the renderer
+  integrates), so tuning reads what the frame actually does. The translate
+  tests and every other `FogMedium` consumer keep reporting the unscaled
+  medium by design: 0.8 is a render-side presentation constant, not part of
+  the canonical representation.
+
 The per-frame `weather_system` stays where it is — it is a *consumer* that samples
 the canonical `WeatherDataRes`, not a translate site. (There is no *SunModel* — see the EXAL-vs-current-code note below; sun state rides `WeatherDataRes`.)
 
