@@ -359,10 +359,12 @@ impl SceneFragments {
 ///
 /// The OnBegin binding runs when the response is selected (spoken) — the
 /// activation- and topic-click paths both route through that selection. The
-/// OnEnd binding is stored but not yet dispatched: "the line is finished"
-/// has no runtime event while the response surface models selection only.
-/// Vanilla's 3 773 OnEnd-only INFOs stay inert (logged at dispatch-lookup
-/// time by the populate walk's absent-begin diagnostic), never guessed.
+/// OnEnd binding runs when the line stops being the spoken one: another
+/// selection replaces it, or the conversation surface closes (the same
+/// dispatch path as OnBegin; `byroredux`'s npc_dialogue
+/// `speak_info_end_fragment`, #5152). INFOs with neither binding stay inert
+/// (logged at dispatch-lookup time by the populate walk's absent-begin
+/// diagnostic), never guessed.
 #[derive(Debug, Clone, Default)]
 pub struct DialogueInfoFragments {
     map: Arc<HashMap<u32, InfoFragmentEffects>>,

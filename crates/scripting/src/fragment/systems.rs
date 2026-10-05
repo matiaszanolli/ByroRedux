@@ -206,21 +206,6 @@ pub fn scene_fragment_dispatch_system(world: &World, _dt: f32) {
     crate::quest_stages::push_quest_stage_advances(world, player, advances);
 }
 
-/// Consume [`QuestStageAdvanced`] markers and run the matching
-/// `(quest, stage)` fragments, cascading any `SetStage`s they perform
-/// (bounded by [`MAX_CASCADE`]). Runs after `quest_advance_system` (which
-/// emits the initial markers) and before end-of-frame cleanup.
-///
-/// Effect resolution passes the quest's own registered VMAD (see
-/// [`QuestStageFragments::insert_vmad`]), when one was registered, so
-/// `Self`/owning-quest-targeted effects always apply and a cross-quest
-/// `Property`-targeted effect resolves too, as long as the named property
-/// is an `Object`-typed binding on the quest's own VMAD. Object, scene,
-/// player-control, package, and cinematic effects apply directly against the
-/// live ECS world; latent tails are handed to [`FragmentExecutionQueue`].
-/// Unrecognized operations still decline the whole fragment at lowering. The
-/// table is empty (and this a no-op) on loads without `--scripts-bsa` or on
-/// pre-Papyrus games.
 /// Execute one spoken `INFO` line's fragment from the dialogue path — the
 /// INFO twin of the scene dispatcher's per-fragment unit: guard-free apply
 /// plus journal polling, with the caller handing the returned advances to
@@ -236,6 +221,21 @@ pub fn apply_spoken_info_fragment(
     poll_fragment_generated_advances(world, direct)
 }
 
+/// Consume [`QuestStageAdvanced`] markers and run the matching
+/// `(quest, stage)` fragments, cascading any `SetStage`s they perform
+/// (bounded by [`MAX_CASCADE`]). Runs after `quest_advance_system` (which
+/// emits the initial markers) and before end-of-frame cleanup.
+///
+/// Effect resolution passes the quest's own registered VMAD (see
+/// [`QuestStageFragments::insert_vmad`]), when one was registered, so
+/// `Self`/owning-quest-targeted effects always apply and a cross-quest
+/// `Property`-targeted effect resolves too, as long as the named property
+/// is an `Object`-typed binding on the quest's own VMAD. Object, scene,
+/// player-control, package, and cinematic effects apply directly against the
+/// live ECS world; latent tails are handed to [`FragmentExecutionQueue`].
+/// Unrecognized operations still decline the whole fragment at lowering. The
+/// table is empty (and this a no-op) on loads without `--scripts-bsa` or on
+/// pre-Papyrus games.
 pub fn quest_fragment_dispatch_system(world: &World) {
     // Snapshot compatibility ingress before taking resource locks. The
     // sequenced journal below is authoritative; batches remain accepted for
