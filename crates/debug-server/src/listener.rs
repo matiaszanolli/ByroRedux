@@ -6,7 +6,7 @@
 //! processes the queue each frame and sends responses back.
 
 use crate::system::DebugDrainSystem;
-use byroredux_debug_protocol::{wire, DebugRequest, DebugResponse};
+use byroredux_debug_protocol::{wire, COMMAND_RESPONSE_TIMEOUT, DebugRequest, DebugResponse};
 use std::io::BufWriter;
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -14,12 +14,6 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex, Weak};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
-
-/// Allow cold scene and pipeline stalls to finish before a debug request is
-/// abandoned. The previous five-second limit dropped the initial water
-/// diagnostics on FO3's exterior fixture, leaving its above-surface capture
-/// without a response.
-const COMMAND_RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// A pending command: the request and a channel to send the response back.
 pub(crate) struct PendingCommand {

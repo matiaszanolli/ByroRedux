@@ -414,6 +414,30 @@ fn spawn_net_thread(mut stream: TcpStream) -> (Sender<DebugRequest>, Receiver<De
                             break;
                         }
                     }
+                    // #5140 — a read timeout is the engine being slow (a
+                    // synchronous cell load stalls frames; the next poll
+                    // waits out the whole load), not a disconnect. Report
+                    // "engine busy" and keep the thread alive: quitting the
+                    // dashboard here used to read as "engine disconnected".
+                    // A frame that timed out mid-decode may have consumed
+                    // partial bytes; if the stream is truly desynced the
+                    // next decode fails with a non-timeout error and the
+                    // disconnect path below runs.
+                    Err(ref e)
+                        if matches!(
+                            e.kind(),
+                            io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                        ) =>
+                    {
+                        if resp_tx
+                            .send(DebugResponse::error(
+                                "engine busy — no response within the client read timeout",
+                            ))
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
                     Err(_) => break,
                 }
             }

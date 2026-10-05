@@ -8,7 +8,9 @@
 mod display;
 mod tui;
 
-use byroredux_debug_protocol::{wire, DebugRequest, DebugResponse, DEFAULT_PORT};
+use byroredux_debug_protocol::{
+    wire, CLIENT_READ_TIMEOUT, DebugRequest, DebugResponse, DEFAULT_PORT,
+};
 use std::io::{self, BufRead, Write};
 use std::net::TcpStream;
 
@@ -160,8 +162,13 @@ fn parse_shorthand(input: &str) -> Option<DebugRequest> {
     }
 }
 
+/// #5140 — the client read timeout must sit ABOVE the server's
+/// `COMMAND_RESPONSE_TIMEOUT` (30 s) so a slow answer arrives as the
+/// server's own timeout error instead of the client dying with
+/// `WouldBlock` mid-wait. One shared pair of constants in
+/// `debug-protocol` keeps the two sides ordered.
 fn configure_read_timeout(stream: &TcpStream) -> io::Result<()> {
-    stream.set_read_timeout(Some(std::time::Duration::from_secs(10)))
+    stream.set_read_timeout(Some(CLIENT_READ_TIMEOUT))
 }
 
 #[cfg(test)]
@@ -182,13 +189,16 @@ mod tests {
     }
 
     #[test]
-    fn configures_a_ten_second_read_timeout() {
+    fn read_timeout_exceeds_the_server_response_timeout() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
         configure_read_timeout(&client).unwrap();
-        assert_eq!(
-            client.read_timeout().unwrap(),
-            Some(std::time::Duration::from_secs(10))
+        let read = client.read_timeout().unwrap();
+        assert_eq!(read, Some(CLIENT_READ_TIMEOUT));
+        assert!(
+            read > Some(byroredux_debug_protocol::COMMAND_RESPONSE_TIMEOUT),
+            "the client read timeout must outrun the server's response \
+             timeout, or 10–30 s answers kill the client first (#5140)"
         );
     }
 }

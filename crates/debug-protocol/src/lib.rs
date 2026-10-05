@@ -11,6 +11,23 @@ use serde::{Deserialize, Serialize};
 /// Default TCP port for the debug server.
 pub const DEFAULT_PORT: u16 = 9876;
 
+/// How long the debug server's per-client thread waits for the engine's
+/// drain system to answer one command before giving up and replying with a
+/// timeout error. Raised 5 s → 30 s by dd99cd0f3: the initial water
+/// diagnostics on FO3's exterior fixture outlasted the old limit.
+pub const COMMAND_RESPONSE_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_secs(30);
+
+/// Client-side socket read timeout (byro-dbg REPL and TUI).
+///
+/// #5140 — must exceed [`COMMAND_RESPONSE_TIMEOUT`] so the server's own
+/// timeout error always lands before the client gives up. With the client
+/// below the server (10 s vs 30 s), any command answering in 10–30 s
+/// closed the REPL and quit the TUI with "engine disconnected" — the same
+/// cold-stall class dd99cd0f3 fixed on the server side, reintroduced a day
+/// later on the client side.
+pub const CLIENT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(35);
+
 // ── Request ─────────────────────────────────────────────────────────────
 
 /// A command sent from the CLI client to the engine.
