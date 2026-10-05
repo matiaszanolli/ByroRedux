@@ -974,7 +974,11 @@ fn spawn_initial_camera(
     world.insert(cam, byroredux_audio::AudioListener);
     // M44 Phase 3.5: opt the camera into footstep dispatch. Stride
     // threshold + per-footstep volume are read from `FootstepConfig`
-    // (engine-wide resource set up in `App::new`).
+    // (engine-wide resource set up in `App::new`). This is the FLY-CAM
+    // emitter: character mode moves it onto the player body after the
+    // rig spawns (#5146), and `footstep_system` skips camera emitters
+    // while a body exists — the third-person boom turned every mouse
+    // look into footsteps.
     world.insert(cam, crate::components::FootstepEmitter::new());
     // Submersion state is recomputed each frame by `submersion_system`
     // from active `WaterPlane` / `WaterVolume` entities. Pre-inserting
@@ -1217,6 +1221,13 @@ fn spawn_player_body(
         );
         byroredux_scripting::mark_scene_actor_bindings_dirty(world);
         world.insert_resource(crate::systems::PlayerEntity(Some(body)));
+        // AUD-2026-09-29-D5-01 (#5146) — in character mode the body is the
+        // footstep source, not the camera: the camera sits on a 180 BU
+        // third-person boom, so a stationary mouse-look sweep produced ~21
+        // footsteps and the V-toggle fired one per press. The camera's
+        // emitter (inserted in `setup_camera_and_lights`) stays for FlyCam
+        // scenes; `footstep_system` skips it while a player body exists.
+        world.insert(body, crate::components::FootstepEmitter::new());
         // M47.0 — the scripting crate's papyrus_demo systems
         // (rumble_on_activate, quest_advance, mg07_door,
         // dlc2_ttr4a) fetch this resource UNCONDITIONALLY at the

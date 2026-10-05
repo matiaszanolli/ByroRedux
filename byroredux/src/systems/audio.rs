@@ -1,6 +1,6 @@
 //! Audio routing systems — reverb zones, footstep emitters, and water audio.
 
-use byroredux_core::ecs::components::water::SubmersionState;
+use byroredux_core::ecs::components::water::{SubmersionState, WaterContact};
 use byroredux_core::ecs::{ActiveCamera, EntityId, GlobalTransform, World};
 use byroredux_core::math::Vec3;
 use byroredux_scripting::{RippleEvent, SplashEvent};
@@ -108,6 +108,21 @@ pub(crate) fn reverb_zone_system(world: &World, _dt: f32) {
 /// crossed. Vertical movement (jumping, falling, elevators) does
 /// NOT count toward stride.
 ///
+/// # Which entity walks (#5146)
+///
+/// In character mode the stride source is the player BODY
+/// (`PlayerEntity`), not the camera: the camera rides a 180 BU
+/// third-person boom, so a stationary mouse-look sweep moved it ~1131
+/// BU along an arc (~21 phantom footsteps), the V-toggle fired one per
+/// press, and steps positioned at the boom trailed the body by 2.6 m.
+/// While a body exists, camera-borne emitters are re-seeded instead of
+/// accumulating; FlyCam scenes (no body) keep the original
+/// camera-is-the-mover behaviour. The body emitter additionally
+/// accumulates only while grounded and NOT swimming — airborne arcs
+/// and swim strokes no longer play the dirt-walk footstep; re-seeding
+/// on the gated frames means the landing/exit distance never replays
+/// as a burst.
+///
 /// No-ops cleanly when:
 ///   - `FootstepConfig` resource isn't registered (engine started
 ///     without audio wiring).
@@ -119,9 +134,11 @@ pub(crate) fn reverb_zone_system(world: &World, _dt: f32) {
 ///     don't emit a "phantom footstep" against the default zero pose.
 ///
 /// Spawn a `FootstepEmitter` on the player entity to opt in. The
-/// fly-camera attach is wired in `scene.rs::setup_scene`.
+/// fly-camera attach is wired in `scene.rs::setup_scene`; the
+/// character-mode attach is on the body in the player-spawn arm.
 pub(crate) fn footstep_system(world: &World, _dt: f32) {
     use crate::components::{FootstepConfig, FootstepEmitter, FootstepScratch};
+    use crate::systems::character::depth_reaches_swimlevel;
 
     let Some(config) = world.try_resource::<FootstepConfig>() else {
         return;
@@ -131,6 +148,13 @@ pub(crate) fn footstep_system(world: &World, _dt: f32) {
     };
     let volume = config.volume;
     drop(config);
+
+    // #5146 — the walking body in character mode; `None` in FlyCam (or
+    // before the rig spawns), where the camera emitter keeps its original
+    // mover role.
+    let player_body = world
+        .try_resource::<crate::systems::PlayerEntity>()
+        .and_then(|player| player.0);
 
     // Phase 1: walk every emitter, accumulate stride, collect the
     // positions where a footstep should fire this tick. Holding
@@ -165,6 +189,38 @@ pub(crate) fn footstep_system(world: &World, _dt: f32) {
                 fs.last_position = pos;
                 fs.initialised = true;
                 continue;
+            }
+            // #5146 — character-mode gating. The controller/contact reads
+            // are per-entity gets on separate storages, released within the
+            // statement; the system is a Late exclusive, so nothing runs
+            // concurrently against these locks.
+            if let Some(body) = player_body {
+                if entity != body {
+                    // A camera-borne emitter while a body exists: keep it
+                    // re-seeded so a later FlyCam switch doesn't replay the
+                    // whole boom arc as one stride burst.
+                    fs.last_position = pos;
+                    fs.accumulated_stride = 0.0;
+                    continue;
+                }
+                let controller = world.get::<byroredux_physics::CharacterController>(entity);
+                let grounded = controller
+                    .as_deref()
+                    .is_some_and(|c: &byroredux_physics::CharacterController| c.is_grounded);
+                let swimming = match (&controller, world.get::<WaterContact>(entity)) {
+                    (Some(c), Some(contact)) => {
+                        depth_reaches_swimlevel(contact.depth, c.half_height + c.radius)
+                    }
+                    _ => false,
+                };
+                if !grounded || swimming {
+                    // Airborne or swimming: stride does not accumulate.
+                    // Re-seed so the landing / water-exit distance never
+                    // replays as a burst of steps.
+                    fs.last_position = pos;
+                    fs.accumulated_stride = 0.0;
+                    continue;
+                }
             }
             // XZ-plane delta only — vertical (Y) motion isn't a step.
             let dx = pos.x - fs.last_position.x;
@@ -708,6 +764,211 @@ mod footstep_tests {
             strongest_ready_ripple(&candidates, &cooldowns),
             Some((quiet_surface, Vec3::new(1.0, 2.0, 3.0), 0.2)),
             "one surface's cooldown must not suppress a different surface"
+        );
+    }
+
+    // ── #5146 — footsteps follow the body, gated to grounded land motion ──
+
+    /// Character-mode fixture: a grounded player body carrying the emitter,
+    /// the legacy camera emitter still in the world, and `PlayerEntity`
+    /// pointing at the body — the exact shape `scene.rs` builds.
+    fn character_mode_world(volume: f32) -> (World, EntityId, EntityId) {
+        let (mut world, _sound) = synth_world(volume);
+        let body = world.spawn();
+        world.insert(body, Transform::IDENTITY);
+        world.insert(
+            body,
+            GlobalTransform::new(Vec3::ZERO, Quat::IDENTITY, 1.0),
+        );
+        let mut cc = byroredux_physics::CharacterController::HUMAN;
+        cc.is_grounded = true;
+        world.insert(body, cc);
+        world.insert(body, FootstepEmitter::new());
+        world.insert_resource(crate::systems::PlayerEntity(Some(body)));
+
+        let cam = world.spawn();
+        world.insert(
+            cam,
+            GlobalTransform::new(
+                Vec3::new(0.0, 52.0, -180.0),
+                Quat::IDENTITY,
+                1.0,
+            ),
+        );
+        world.insert(cam, FootstepEmitter::new());
+        (world, body, cam)
+    }
+
+    /// #5146 — a full stationary mouse-look sweep in third person moves the
+    /// camera ~1131 BU along its 180 BU boom (~21 phantom footsteps pre-fix)
+    /// and the view toggle fired one per press. With the emitter on the
+    /// body, the orbiting camera must produce nothing, and both emitters
+    /// must come out re-seeded rather than accumulating the arc for a later
+    /// mode switch to replay.
+    #[test]
+    fn orbiting_camera_with_stationary_body_fires_nothing() {
+        let (world, body, cam) = character_mode_world(0.5);
+
+        footstep_system(&world, 1.0 / 60.0); // seed both emitters
+
+        const FRAMES: usize = 60;
+        let dt = 1.0 / FRAMES as f32;
+        for frame in 1..=FRAMES {
+            // One full circle on the boom per second.
+            let angle = core::f32::consts::TAU * frame as f32 / FRAMES as f32;
+            let mut q = world.query_mut::<GlobalTransform>().unwrap();
+            q.get_mut(cam).unwrap().translation =
+                Vec3::new(angle.sin() * 180.0, 52.0, -angle.cos() * 180.0);
+            drop(q);
+            footstep_system(&world, dt);
+            let mut scratch = world.resource_mut::<FootstepScratch>();
+            assert!(
+                scratch.triggers.is_empty(),
+                "frame {frame}: the camera orbit fired footsteps {:?} — a \
+                 stationary body must not step (#5146)",
+                scratch.triggers
+            );
+            scratch.triggers.clear();
+        }
+        assert_eq!(
+            world
+                .resource::<byroredux_audio::AudioWorld>()
+                .pending_oneshot_count(),
+            0
+        );
+        let q = world.query::<FootstepEmitter>().unwrap();
+        assert_eq!(
+            q.get(body).unwrap().accumulated_stride,
+            0.0,
+            "the stationary body must accumulate nothing"
+        );
+        assert_eq!(
+            q.get(cam).unwrap().accumulated_stride,
+            0.0,
+            "the camera emitter must stay re-seeded, not accumulate the boom arc"
+        );
+    }
+
+    /// #5146 — a swimming body must not play the dirt-walk footstep (the
+    /// whole WATAL W1 swim route used to), and the re-seed must keep the
+    /// swim distance from replaying on exit: the first grounded land step
+    /// after surfacing fires exactly its own distance.
+    #[test]
+    fn swimming_body_is_silent_and_exit_does_not_replay_the_swim_distance() {
+        let (mut world, body, _cam) = character_mode_world(0.5);
+        // Below swimlevel: depth > (half_height + radius) × 0.35 = 22.4 BU.
+        {
+            let mut q = world
+                .query_mut::<byroredux_physics::CharacterController>()
+                .unwrap();
+            q.get_mut(body).unwrap().is_grounded = false;
+        }
+        world.insert(
+            body,
+            byroredux_core::ecs::components::water::WaterContact {
+                depth: 30.0,
+                ..Default::default()
+            },
+        );
+
+        footstep_system(&world, 1.0 / 60.0); // seed
+
+        let dt = 1.0 / 60.0;
+        for frame in 1..=90 {
+            // 300 BU of swim travel — four strides' worth.
+            let mut q = world.query_mut::<GlobalTransform>().unwrap();
+            q.get_mut(body).unwrap().translation =
+                Vec3::new(300.0 * frame as f32 / 90.0, -20.0, 0.0);
+            drop(q);
+            footstep_system(&world, dt);
+            let mut scratch = world.resource_mut::<FootstepScratch>();
+            assert!(
+                scratch.triggers.is_empty(),
+                "frame {frame}: swimming fired footsteps {:?} (#5146)",
+                scratch.triggers
+            );
+            scratch.triggers.clear();
+        }
+
+        // Surface + ground: dry contact, grounded, walk exactly one
+        // threshold → exactly one footstep, not the 300 BU swim replay.
+        {
+            let mut q = world
+                .query_mut::<byroredux_core::ecs::components::water::WaterContact>()
+                .unwrap();
+            q.get_mut(body).unwrap().depth = 0.0;
+        }
+        {
+            let mut q = world
+                .query_mut::<byroredux_physics::CharacterController>()
+                .unwrap();
+            q.get_mut(body).unwrap().is_grounded = true;
+        }
+        {
+            let mut q = world.query_mut::<GlobalTransform>().unwrap();
+            let gt = q.get_mut(body).unwrap();
+            gt.translation =
+                Vec3::new(300.0 + FootstepEmitter::new().stride_threshold, 0.0, 0.0);
+        }
+        footstep_system(&world, dt);
+        assert_eq!(
+            world.resource::<FootstepScratch>().triggers.len(),
+            1,
+            "the first grounded land step after a swim must fire exactly its \
+             own distance, not the accumulated swim travel"
+        );
+    }
+
+    /// #5146 — airborne travel (run-up to a jump, falling arcs) must not
+    /// fire, and the landing must not replay the air distance.
+    #[test]
+    fn airborne_body_is_silent_and_landing_does_not_replay_the_air_distance() {
+        let (world, body, _cam) = character_mode_world(0.5);
+        {
+            let mut q = world
+                .query_mut::<byroredux_physics::CharacterController>()
+                .unwrap();
+            q.get_mut(body).unwrap().is_grounded = false;
+        }
+
+        footstep_system(&world, 1.0 / 60.0); // seed
+
+        let dt = 1.0 / 60.0;
+        for frame in 1..=30 {
+            // A 500 BU horizontal jump arc.
+            let mut q = world.query_mut::<GlobalTransform>().unwrap();
+            q.get_mut(body).unwrap().translation =
+                Vec3::new(500.0 * frame as f32 / 30.0, 60.0, 0.0);
+            drop(q);
+            footstep_system(&world, dt);
+            let mut scratch = world.resource_mut::<FootstepScratch>();
+            assert!(
+                scratch.triggers.is_empty(),
+                "frame {frame}: airborne travel fired footsteps {:?} (#5146)",
+                scratch.triggers
+            );
+            scratch.triggers.clear();
+        }
+
+        // Land, then walk one threshold on the ground → exactly one.
+        {
+            let mut q = world
+                .query_mut::<byroredux_physics::CharacterController>()
+                .unwrap();
+            q.get_mut(body).unwrap().is_grounded = true;
+        }
+        {
+            let mut q = world.query_mut::<GlobalTransform>().unwrap();
+            let gt = q.get_mut(body).unwrap();
+            gt.translation =
+                Vec3::new(500.0 + FootstepEmitter::new().stride_threshold, 0.0, 0.0);
+        }
+        footstep_system(&world, dt);
+        assert_eq!(
+            world.resource::<FootstepScratch>().triggers.len(),
+            1,
+            "the landing step must fire exactly its own distance, not the \
+             replayed air travel"
         );
     }
 }

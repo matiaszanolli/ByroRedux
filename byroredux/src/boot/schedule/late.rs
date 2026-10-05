@@ -82,10 +82,10 @@ pub(super) fn register_late_systems(scheduler: &mut Scheduler) {
             .writes::<byroredux_core::ecs::GlobalTransform>(),
     );
     // M44 Phase 3.5 / #3652 — footstep dispatch. Reads `GlobalTransform` for
-    // the world-space spawn position; the only entity that ever carries a
-    // `FootstepEmitter` is the active camera (`scene.rs`'s player-spawn
-    // path), so in player/third-person mode this is the SAME cross-stage
-    // hazard `make_billboard_system` just above was moved here to fix —
+    // the world-space spawn position; the emitter lives on the active camera
+    // in FlyCam and on the player body in character mode (`scene.rs`), so in
+    // player/third-person mode this is the SAME cross-stage hazard
+    // `make_billboard_system` just above was moved here to fix —
     // `camera_follow_system`'s pose, not last frame's. Pre-#848 this was in
     // `Stage::Update`, ahead of PostUpdate propagation, for the same class
     // of staleness one stage earlier; #848 moved it to a PostUpdate
@@ -97,14 +97,20 @@ pub(super) fn register_late_systems(scheduler: &mut Scheduler) {
     // like `particle_system`'s #3653 comment above documents. Also gains a
     // declared Access here for the first time (previously a bare
     // `add_exclusive`, unlike every neighboring exclusive in this file).
+    // #5146 adds the character-mode locomotion reads: `PlayerEntity` picks
+    // the walking body, `CharacterController.is_grounded` and the
+    // `WaterContact` swimlevel gate accumulation to grounded land motion.
     scheduler.add_exclusive_with_access(
         Stage::Late,
         footstep_system,
         Access::new()
             .reads_resource::<FootstepConfig>()
+            .reads_resource::<crate::systems::PlayerEntity>()
             .writes_resource::<crate::components::FootstepScratch>()
             .writes_resource::<byroredux_audio::AudioWorld>()
             .reads::<byroredux_core::ecs::GlobalTransform>()
+            .reads::<byroredux_physics::CharacterController>()
+            .reads::<byroredux_core::ecs::components::water::WaterContact>()
             .writes::<crate::components::FootstepEmitter>(),
     );
     // M41.x — ragdoll writeback. Stage::Late guarantees it runs after
