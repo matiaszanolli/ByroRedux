@@ -865,7 +865,11 @@ fn installed_masters_water_fields_are_finite_and_ordered() {
                     && water_mud_brown.params.concentration[2] > 1.0,
                 "vanilla pigment concentrations must not be normalized at the parser boundary"
             );
-            assert!((water_clear.params.depth_amount - 8.0).abs() < 1.0e-5);
+            // #5151 — depth amount is a DNAM metric field like the falloff
+            // and fog lanes above: Starfield's authored 8 m lifts to engine
+            // units (×70). The pre-lift pin here was the one lane the
+            // #5151 sweep missed.
+            assert!((water_clear.params.depth_amount - 8.0 * 70.0).abs() < 1.0e-5);
             assert_eq!(water_clear.params.fog_near, 80.0);
             assert_eq!(water_clear.params.fog_far, 600.0);
         }
