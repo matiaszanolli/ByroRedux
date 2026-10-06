@@ -17,6 +17,7 @@
 //! by the merge arms, and they are what `/audit-nifal` reads first.
 
 mod cdb;
+mod loose_mat;
 mod merge;
 mod provider;
 

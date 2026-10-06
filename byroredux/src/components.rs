@@ -391,14 +391,13 @@ pub(crate) enum MaterialTextureSource {
     Bgsm,
     /// An external BGEM filled the canonical role.
     Bgem,
-    // #3906 (SF-2026-09-05-D3-01) — no `Mat` arm. It was here, documented as
-    // "a Starfield `.mat`/CDB record filled the canonical role", and nothing
-    // could produce it: Starfield CDB support is at Phase 1 (header probe
-    // only), so no code path resolves a texture role out of a `.mat`. Its
-    // only observable effect was `mat.dump` advertising a `src=mat` label
-    // that never appeared, which reads as "the sidecar was not consulted"
-    // rather than "this is not implemented yet". Restore it with the Phase-2
-    // code that fills a role from the CDB, at the site that fills it.
+    /// A Starfield `.mat` source filled the canonical role — the loose
+    /// JSON file (#4277 Stage A) or the compiled CDB row
+    /// (`apply_cdb_material`). #3906 removed an earlier copy of this arm
+    /// because nothing could produce it and `mat.dump`'s `src=mat` label
+    /// lied by absence; the arm returns with the Phase-2 code that fills
+    /// roles, at the site that fills them, exactly as #3906 prescribed.
+    Mat,
     /// A placement-level XATO/XTNM/XTXR texture-set override won.
     TxstOverride,
     /// The legacy `<base>_n.dds` convention synthesized a normal path.
@@ -414,6 +413,7 @@ impl MaterialTextureSource {
             Self::NifTextureSet => "nif-texture-set",
             Self::Bgsm => "bgsm",
             Self::Bgem => "bgem",
+            Self::Mat => "mat",
             Self::TxstOverride => "txst-override",
             Self::DerivedNormal => "derived-normal",
             Self::RuntimeOverride => "runtime-override",
@@ -427,6 +427,10 @@ impl From<byroredux_nif::import::ImportedTextureSource> for MaterialTextureSourc
             byroredux_nif::import::ImportedTextureSource::NifTextureSet => Self::NifTextureSet,
             byroredux_nif::import::ImportedTextureSource::Bgsm => Self::Bgsm,
             byroredux_nif::import::ImportedTextureSource::Bgem => Self::Bgem,
+            // #4277 — the Starfield `.mat` sidecar source (loose JSON file
+            // or compiled CDB row). Shares the provenance spelling
+            // `mat.dump` documents.
+            byroredux_nif::import::ImportedTextureSource::Mat => Self::Mat,
         }
     }
 }
