@@ -357,6 +357,38 @@ order: when an artifact reads as "chrome / posterized", run
 
 ## 2. Superseded bench records
 
+### Same-session control for the live `a37fcba3c` record (90 runs, Dugout + MedTek, 2026-09-28)
+
+Moved from ROADMAP at the Session 95 close; its third conclusion was
+superseded by #5128 (R6a-regress-22, a camera-origin move).
+
+HEAD's harness and reporter drove three binaries back to back in one session,
+each with an isolated settings file: `4c9a5b36` (the outgoing record, rebuilt),
+`99933f87b` (the parent of this session's two commits) and HEAD. Raw rows:
+`docs/audits/BENCH_control_4c9a5b36_vs_a37fcba3c.tsv`,
+`docs/audits/BENCH_control_99933f87b_vs_a37fcba3c.tsv` and
+`docs/audits/BENCH_control_a37fcba3c_same_session.tsv`. The harness stamps the
+repo HEAD, so each file's `engine=` stamp is corrected by hand.
+
+| Scene / config | `4c9a5b36` | `99933f87b` | HEAD `a37fcba3c` |
+|---|---:|---:|---:|
+| Dugout TAA | **11.17 ms** (fence 4.59) | 24.65 ms (fence 19.31) | 24.65 ms (fence 19.11) |
+| Dugout FSR Quality | 9.22 ms | 14.38 ms | 14.59 ms |
+| MedTek TAA | **34.22 ms** (fence 14.51) | 50.38 ms (fence 35.48) | 49.97 ms (fence 34.96) |
+| MedTek FSR Quality | 22.14 ms | 27.87 ms | 28.36 ms |
+
+Three conclusions, all measured:
+- **Not the machine**: `4c9a5b36` rebuilt today reproduces its own record
+  (Dugout TAA 11.12 then, 11.17 now).
+- **Not this session's commits**: `99933f87b` and HEAD agree within run-to-run
+  spread, so `efc059f3a` / `a37fcba3c` (including the #4940 ReSTIR
+  normalisation and the #4942 ratio accumulator) cost nothing measurable.
+- ~~**The regression is in the 733 commits `4c9a5b36..99933f87b`.**~~
+  Superseded 2026-09-30 (#5128): the entity/light/TLAS match ruled out
+  content but not the camera. `b9e961eeb` (inside the range) moved the
+  stepped camera's origin, the spawn pose, into the room. With both builds
+  pinned to one pose the doubling disappears; see **R6a-regress-22** below.
+
 ### R6a-stale-15 refresh (2026-07-18, HEAD `8a668eff`)
 
 **Superseded bench-of-record** (R6a-stale-15 refresh, HEAD `8a668eff`,
