@@ -2,10 +2,8 @@
 //!
 //! Functions: parse_cell_group, parse_refr_group, parse_land_record.
 
-use super::helpers::{read_form_id, read_form_id_array, read_zstring};
 use super::*;
 use crate::esm::reader::GameKind;
-use crate::esm::records::common::read_lstring_or_zstring;
 use crate::esm::records::script_instance::ScriptInstanceData;
 use crate::esm::records::{parse_navm, NavmRecord};
 use crate::esm::sub_reader::SubReader;
@@ -211,225 +209,22 @@ fn parse_cell_group_inner(
             let header = reader.read_record_header()?;
             if &header.record_type == b"CELL" {
                 let subs = reader.read_sub_records(&header)?;
-                let mut editor_id = String::new();
-                // #624 / SK-D6-NEW-02 — display name from FULL. Routes
-                // through the lstring helper so localized Skyrim plugins
-                // get a `<lstring 0x…>` placeholder instead of garbage
-                // 3-byte cstrings.
-                let mut display_name: Option<String> = None;
+                // #5309 — every walker-shared CELL sub-record (FULL,
+                // XCLW, the Skyrim extended FormID slots, XCMT/XCCM,
+                // XLCN/XEZN, XCLR, LTMP, the ownership tuple, RCLR, and
+                // the FO4 precombine pair) decodes in
+                // `CellSubrecordFields::absorb`; this walker keeps only
+                // its interior-specific arms (DATA, XCLL).
+                let mut fields = super::helpers::CellSubrecordFields::default();
                 let mut is_interior = false;
                 let mut show_sky = None;
                 let mut lighting = None;
-                let mut water_height: Option<f32> = None;
-                let mut water_height_is_explicit = false;
-                let mut image_space_form: Option<u32> = None;
-                let mut water_type_form: Option<u32> = None;
-                let mut acoustic_space_form: Option<u32> = None;
-                let mut music_type_form: Option<u32> = None;
-                // #693 / O3-N-05 — pre-Skyrim XCMT (1-byte enum) and
-                // Skyrim XCCM (4-byte CLMT FormID). Both fell to the
-                // catch-all `_` arm pre-fix.
-                let mut music_type_enum: Option<u8> = None;
-                let mut climate_override: Option<u32> = None;
-                let mut location_form: Option<u32> = None;
-                // #4173 — XEZN encounter-zone FormID (references an ECZN
-                // record; spawn scaling / faction ownership per cell).
-                let mut encounter_zone_form: Option<u32> = None;
-                let mut regions: Vec<u32> = Vec::new();
-                // SK-D6-02 / #566 — LTMP lighting-template FormID. Skyrim+
-                // cells that omit XCLL fall back to this LGTM reference;
-                // pre-#566 the link was dropped on the catch-all `_` arm
-                // and the cell rendered with the engine default ambient.
-                let mut lighting_template_form: Option<u32> = None;
-                // #692 — XOWN / XRNK / XGLB ownership tuple. All three
-                // sub-records optional; cell ends up with `Some` only
-                // when at least XOWN is present. XRNK and XGLB without
-                // XOWN are nonsensical and dropped (the consumer would
-                // have nothing to gate against).
-                let mut ownership_owner: Option<u32> = None;
-                let mut ownership_rank: Option<i32> = None;
-                let mut ownership_global: Option<u32> = None;
-                // #970 / OBL-D3-NEW-06 — Oblivion-era cell-level RGB
-                // tint override (`RCLR`, 3 bytes). Rare even on
-                // Oblivion (editor-authored), absent on FO3+ vanilla.
-                // Parsed cross-game; the field is harmless when None
-                // and lets modded post-Oblivion cells still surface
-                // the override.
-                let mut regional_color_override: Option<[u8; 3]> = None;
-                // #1188 — FO4+ PreCombined Mesh references. XCRI holds
-                // (u32 mesh_count + u32 ref_count + N×u32 hashes +
-                // M×u32 absorbed-refr formids). XPRI holds a smaller
-                // additional list of refr formids absorbed by the
-                // precombines. Both lists feed `absorbed_refs` which
-                // the cell loader uses to decide individual REFR placement
-                // against the geometry baked into the `_oc.nif` files
-                // referenced by `precombined_mesh_hashes`.
-                //
-                // #2699 — "absorbed" is the ESM's word, and it is NOT a
-                // promise that every listed REFR's geometry is in the bake.
-                // The loader only erases STAT/SCOL entries; the other 21 769
-                // across 232 vanilla FO4 interiors are retained whole,
-                // because dropping them costs gameplay identity and it is
-                // not established that their meshes are baked. Do not read
-                // this comment as settling that — see
-                // `precombine_can_replace_record` in
-                // `byroredux/src/cell_loader/references/mod.rs`.
-                //
-                // Empirically decoded against vanilla
-                // `DmndDugoutInn01` (form 0x00001E5D, 39 hashes / 962
-                // XCRI refs / 102 XPRI refs) — see the audit memory.
-                let mut precombined_mesh_hashes: Vec<u32> = Vec::new();
-                let mut absorbed_refs: std::collections::HashSet<u32> =
-                    std::collections::HashSet::new();
 
                 for sub in &subs {
                     match &sub.sub_type {
-                        b"EDID" => editor_id = read_zstring(&sub.data),
-                        // #624 / SK-D6-NEW-02 — Skyrim cells DO ship FULL
-                        // (e.g. WhiterunBanneredMare's FULL = "The
-                        // Bannered Mare"). Pre-fix this fell to the
-                        // catch-all `_` arm and the display name was
-                        // dropped. The lstring helper auto-routes the
-                        // 4-byte STRINGS-table case for localized
-                        // plugins.
-                        b"FULL" => display_name = Some(read_lstring_or_zstring(&sub.data)),
                         b"DATA" if !sub.data.is_empty() => {
                             is_interior = sub.data[0] & 1 != 0;
                             show_sky = Some(sub.data[0] & 0x80 != 0);
-                        }
-                        b"XCLW" => {
-                            // XCLW: f32 water plane height in world units
-                            // (Z-up). Same layout across Oblivion / FO3 / FNV
-                            // / Skyrim — the cell's water surface sits at
-                            // this Z (interior) or Z-in-worldspace (exterior).
-                            // `gated_water_height` returns None for the
-                            // `#INT_MIN#` / FLT_MAX "no water" sentinels.
-                            // `water_height_is_explicit` keeps that None
-                            // distinct from an absent XCLW. See #397 /
-                            // #356 / #1305.
-                            water_height_is_explicit = true;
-                            water_height = super::helpers::gated_water_height(&sub.data);
-                        }
-                        // Skyrim extended CELL sub-records (#356). Each is
-                        // a 4-byte FormID; the walker previously dropped
-                        // them on the `_` arm so the renderer / audio /
-                        // quest system had no per-cell context.
-                        b"XCIM" => image_space_form = read_form_id(reader, &sub.data),
-                        b"XCWT" => water_type_form = read_form_id(reader, &sub.data),
-                        // LTMP — lighting-template FormID (SK-D6-02 / #566).
-                        // Same shape as the other 4-byte FormID slots; the
-                        // cell loader walks `EsmIndex.lighting_templates`
-                        // when XCLL is absent so vanilla Skyrim interior
-                        // cells (Solitude inn cluster, Dragonsreach
-                        // throne room, Markarth cells) render with the
-                        // template ambient instead of the engine default.
-                        b"LTMP" => lighting_template_form = read_form_id(reader, &sub.data),
-                        b"XCAS" => acoustic_space_form = read_form_id(reader, &sub.data),
-                        b"XCMO" => music_type_form = read_form_id(reader, &sub.data),
-                        // #1188 — XCRI: FO4+ PreCombined Mesh references.
-                        //   `u32 mesh_count + u32 ref_count
-                        //    + mesh_count × u32 hashes
-                        //    + ref_count × u32 visibility-group refs`
-                        // For each hash, the precombined NIF file lives
-                        // at `meshes\precombined\<cell_fid:08x>_<hash:08x>_oc.nif`.
-                        //
-                        // The `ref_count`-sized tail is the
-                        // **visibility group** for the precombines —
-                        // refs participating in the combined-cull bake.
-                        // It is NOT "refs to skip individual spawn"
-                        // (the Dmnd Dugout Inn first-iteration regressed
-                        // the bar / couch / lamps because we treated
-                        // these as absorbed). Skip-placement is XPRI's
-                        // job, below.
-                        b"XCRI" if sub.data.len() >= 8 => {
-                            let mesh_count =
-                                u32::from_le_bytes(sub.data[0..4].try_into().unwrap()) as usize;
-                            let ref_count =
-                                u32::from_le_bytes(sub.data[4..8].try_into().unwrap()) as usize;
-                            let expected =
-                                8 + mesh_count.saturating_mul(4) + ref_count.saturating_mul(4);
-                            if expected != sub.data.len() {
-                                log::warn!(
-                                    "CELL {:08X} XCRI size mismatch: hdr={}+{} expected_payload={} \
-                                     actual={} — skipping",
-                                    header.form_id,
-                                    mesh_count,
-                                    ref_count,
-                                    expected,
-                                    sub.data.len(),
-                                );
-                            } else {
-                                precombined_mesh_hashes.reserve(mesh_count);
-                                let mut off = 8;
-                                for _ in 0..mesh_count {
-                                    let h = u32::from_le_bytes(
-                                        sub.data[off..off + 4].try_into().unwrap(),
-                                    );
-                                    precombined_mesh_hashes.push(h);
-                                    off += 4;
-                                }
-                                // We intentionally do NOT consume the
-                                // ref_count tail into `absorbed_refs`.
-                                // See XPRI below for the skip-placement
-                                // source of truth.
-                            }
-                        }
-                        // #1188 — XPRI: list of REFR formids absorbed
-                        // into precombines (~100 entries for FO4
-                        // interiors; matches the architecture-only
-                        // shell). The cell loader MUST skip these
-                        // REFRs' individual placement — their geometry
-                        // is already baked into the `_oc.nif` files
-                        // referenced by `precombined_mesh_hashes`.
-                        // Format: pure `N × u32`.
-                        b"XPRI" if sub.data.len() % 4 == 0 => {
-                            absorbed_refs.reserve(sub.data.len() / 4);
-                            for chunk in sub.data.as_chunks::<4>().0 {
-                                let fid = u32::from_le_bytes(*chunk);
-                                absorbed_refs.insert(reader.remap_form_id(fid));
-                            }
-                        }
-                        // #693 / O3-N-05 — XCMT pre-Skyrim music enum
-                        // (Oblivion / FO3 / FNV). 1-byte payload.
-                        b"XCMT" if !sub.data.is_empty() => {
-                            music_type_enum = Some(sub.data[0]);
-                        }
-                        // #693 / O3-N-05 — XCCM Skyrim climate override
-                        // (per-cell CLMT FormID, exterior cells only,
-                        // but a few interior mods have been seen with
-                        // it for "outside through window" effects).
-                        b"XCCM" => climate_override = read_form_id(reader, &sub.data),
-                        b"XLCN" => location_form = read_form_id(reader, &sub.data),
-                        // #4173 — XEZN encounter zone (ECZN FormID), the
-                        // CELL-side half of the spawn-scaling pair; the
-                        // ECZN records themselves were already parsed.
-                        b"XEZN" => encounter_zone_form = read_form_id(reader, &sub.data),
-                        // XCLR is a packed FormID array — region tags
-                        // referenced by REGN records. Variable length;
-                        // empty list is normal.
-                        b"XCLR" => regions = read_form_id_array(reader, &sub.data),
-                        // #692 — XOWN owner, XRNK faction-rank gate,
-                        // XGLB global-variable FormID. Same shape on
-                        // CELL + REFR. Cross-game (Oblivion / FO3 /
-                        // FNV / Skyrim+).
-                        b"XOWN" => {
-                            ownership_owner = read_form_id(reader, &sub.data);
-                        }
-                        b"XRNK" => {
-                            ownership_rank = SubReader::new(&sub.data).i32().ok();
-                        }
-                        b"XGLB" => {
-                            ownership_global = read_form_id(reader, &sub.data);
-                        }
-                        // #970 / OBL-D3-NEW-06 — Oblivion CELL regional
-                        // tint. nif.xml-equivalent here is the GECK
-                        // CELL Edit, "Regional Map Color" picker; on
-                        // disk it's `RCLR` with 3 RGB bytes (no alpha).
-                        // Some plugins ship a 4-byte payload with a
-                        // trailing pad — accept >= 3 and read the
-                        // first three bytes only.
-                        b"RCLR" if sub.data.len() >= 3 => {
-                            regional_color_override = Some([sub.data[0], sub.data[1], sub.data[2]]);
                         }
                         b"XCLL" if sub.data.len() >= 28 => {
                             // XCLL layout (shared 28-byte prefix across all games):
@@ -653,18 +448,41 @@ fn parse_cell_group_inner(
                                 starfield: None,
                             });
                         }
-                        _ => {}
+                        // Everything walker-shared falls through to
+                        // `CellSubrecordFields::absorb` (#5309).
+                        _ => {
+                            fields.absorb(reader, header.form_id, sub);
+                        }
                     }
                 }
+
+                let ownership = fields.ownership();
+                let super::helpers::CellSubrecordFields {
+                    editor_id,
+                    display_name,
+                    water_height,
+                    water_height_is_explicit,
+                    image_space_form,
+                    water_type_form,
+                    acoustic_space_form,
+                    music_type_form,
+                    music_type_enum,
+                    climate_override,
+                    location_form,
+                    encounter_zone_form,
+                    regions,
+                    lighting_template_form,
+                    ownership_owner: _,
+                    ownership_rank: _,
+                    ownership_global: _,
+                    regional_color_override,
+                    precombined_mesh_hashes,
+                    absorbed_refs,
+                } = fields;
 
                 if is_interior {
                     let canonical_id = canonical_interior_cell_id(header.form_id, &editor_id);
                     let key = canonical_id.to_ascii_lowercase();
-                    let ownership = ownership_owner.map(|owner| CellOwnership {
-                        owner_form_id: owner,
-                        faction_rank: ownership_rank,
-                        global_var_form_id: ownership_global,
-                    });
                     cells.insert(
                         key.clone(),
                         CellData {

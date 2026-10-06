@@ -191,7 +191,7 @@ fn parse_wrld_captures_derived_worldspace_parent_link() {
 /// sub-record list. Mirrors `build_wrld_record`'s shape; broken out
 /// so #1220's exterior precombined test can drop a CELL inside a
 /// WRLD-children group.
-fn build_cell_record(form_id: u32, subs: &[(&[u8; 4], Vec<u8>)]) -> Vec<u8> {
+pub(super) fn build_cell_record(form_id: u32, subs: &[(&[u8; 4], Vec<u8>)]) -> Vec<u8> {
     let mut sub_data = Vec::new();
     for (ty, payload) in subs {
         put_sub(&mut sub_data, ty, payload);
@@ -209,7 +209,7 @@ fn build_cell_record(form_id: u32, subs: &[(&[u8; 4], Vec<u8>)]) -> Vec<u8> {
 /// Wrap a buffer in a GRUP-world-children header (group_type=1). The
 /// `wrld_form_id` becomes the group label per ESM convention — the
 /// walker uses this to bind the children back to their parent WRLD.
-fn build_world_children_group(wrld_form_id: u32, payload: &[u8]) -> Vec<u8> {
+pub(super) fn build_world_children_group(wrld_form_id: u32, payload: &[u8]) -> Vec<u8> {
     let mut group = Vec::new();
     group.extend_from_slice(b"GRUP");
     group.extend_from_slice(&((24 + payload.len()) as u32).to_le_bytes());
@@ -220,7 +220,7 @@ fn build_world_children_group(wrld_form_id: u32, payload: &[u8]) -> Vec<u8> {
     group
 }
 
-fn build_cell_children_group(cell_form_id: u32, group_type: u32, payload: &[u8]) -> Vec<u8> {
+pub(super) fn build_cell_children_group(cell_form_id: u32, group_type: u32, payload: &[u8]) -> Vec<u8> {
     let mut group = Vec::new();
     group.extend_from_slice(b"GRUP");
     group.extend_from_slice(&((24 + payload.len()) as u32).to_le_bytes());
@@ -351,9 +351,10 @@ fn parse_wrld_exterior_cell_captures_precombined_xcri_xpri() {
         v
     };
     // XCRI: 2 mesh hashes + 3 visibility-group refs. Layout matches
-    // `walkers.rs:158-190` exactly: u32 mesh_count + u32 ref_count +
-    // mesh_count × u32 hashes + ref_count × u32 visibility refs (tail
-    // intentionally NOT consumed into absorbed_refs).
+    // `CellSubrecordFields::absorb`'s XCRI arm exactly (helpers.rs):
+    // u32 mesh_count + u32 ref_count + mesh_count × u32 hashes +
+    // ref_count × u32 visibility refs (tail intentionally NOT consumed
+    // into absorbed_refs).
     let xcri = {
         let mut v = Vec::with_capacity(8 + 2 * 4 + 3 * 4);
         v.extend_from_slice(&2u32.to_le_bytes()); // mesh_count

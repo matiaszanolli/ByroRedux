@@ -24,4 +24,5 @@ mod merge;
 mod movs;
 mod refr;
 mod txst;
+mod walker_equivalence;
 mod wrld;

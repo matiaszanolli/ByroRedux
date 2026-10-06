@@ -2,11 +2,10 @@
 //!
 //! Functions: parse_wrld_group, parse_wrld_children.
 
-use super::helpers::{read_form_id, read_form_id_array, read_zstring};
+use super::helpers::{read_form_id, read_zstring};
 use super::walkers::parse_refr_group;
 use crate::esm::reader::GameKind;
 use super::*;
-use crate::esm::records::common::read_lstring_or_zstring;
 
 /// Walk the WRLD group hierarchy to find exterior cells and their placed references.
 ///
@@ -375,68 +374,14 @@ fn parse_wrld_children_inner(
             let header = reader.read_record_header()?;
             if &header.record_type == b"CELL" {
                 let subs = reader.read_sub_records(&header)?;
-                let mut editor_id = String::new();
-                // #624 / SK-D6-NEW-02 — exterior CELLs also ship FULL
-                // (named worldspace tiles like SolitudeWorld, the cell
-                // covering Whiterun's market district). Pre-fix the
-                // sub-record was dropped on the catch-all `_` arm.
-                let mut display_name: Option<String> = None;
+                // #5309 — every walker-shared CELL sub-record decodes in
+                // `CellSubrecordFields::absorb` (see the interior walker);
+                // this walker keeps only its exterior-specific XCLC arm.
+                let mut fields = super::helpers::CellSubrecordFields::default();
                 let mut grid = None;
-                let mut water_height: Option<f32> = None;
-                let mut water_height_is_explicit = false;
-                let mut image_space_form: Option<u32> = None;
-                let mut water_type_form: Option<u32> = None;
-                let mut acoustic_space_form: Option<u32> = None;
-                let mut music_type_form: Option<u32> = None;
-                // #693 / O3-N-05 — pre-Skyrim XCMT (1-byte enum) and
-                // Skyrim XCCM (4-byte CLMT FormID, the per-cell
-                // climate override). Both fell to the catch-all `_`
-                // arm pre-fix; XCCM is the more impactful one on
-                // exterior cells (boss arenas, scripted-weather
-                // pockets, interior-feeling exteriors).
-                let mut music_type_enum: Option<u8> = None;
-                let mut climate_override: Option<u32> = None;
-                let mut location_form: Option<u32> = None;
-                // #4173 — XEZN encounter zone, exterior-cell arm.
-                let mut encounter_zone_form: Option<u32> = None;
-                let mut regions: Vec<u32> = Vec::new();
-                // SK-D6-02 / #566 — exterior cells can also carry an
-                // LTMP lighting-template FormID. Same fallback semantics
-                // as interior cells: XCLL wins, LGTM fills in.
-                let mut lighting_template_form: Option<u32> = None;
-                // #692 — exterior CELL ownership (worldspace owner +
-                // faction-rank gate + global-var gate). Same layout as
-                // interior CELL above; cross-game.
-                let mut ownership_owner: Option<u32> = None;
-                let mut ownership_rank: Option<i32> = None;
-                let mut ownership_global: Option<u32> = None;
-                // #970 / OBL-D3-NEW-06 — exterior CELL RCLR. The audit
-                // observed this on Oblivion only; FO3+ vanilla uses
-                // LGTM/CLMT instead. Parse cross-game so modded
-                // exterior cells in any era still surface the override.
-                let mut regional_color_override: Option<[u8; 3]> = None;
-                // #1220 / D3-NEW-01 — FO4+ PreCombined Mesh references
-                // on EXTERIOR cells. Commonwealth open-world tiles
-                // (Concord, Sanctuary Hills, Boston, Diamond City
-                // Marketplace) ship per-tile precombined NIFs — this
-                // is FO4's headline performance feature, and the
-                // vast majority of the 124,871 entries in
-                // `Fallout4 - MeshesExtra.ba2` are exterior tiles.
-                // Pre-#1220 the exterior walker hardcoded empty,
-                // masquerading as "interior-only"; that left the
-                // optimisation unreachable for the cells it was
-                // designed for. Sub-record layout mirrors the
-                // interior path verbatim — see `walkers.rs:158-204`.
-                let mut precombined_mesh_hashes: Vec<u32> = Vec::new();
-                let mut absorbed_refs: std::collections::HashSet<u32> =
-                    std::collections::HashSet::new();
 
                 for sub in &subs {
                     match &sub.sub_type {
-                        b"EDID" => editor_id = read_zstring(&sub.data),
-                        // #624 — auto-routes the localized 4-byte
-                        // STRINGS-table case via the lstring helper.
-                        b"FULL" => display_name = Some(read_lstring_or_zstring(&sub.data)),
                         b"XCLC" if sub.data.len() >= 8 => {
                             let grid_x = i32::from_le_bytes([
                                 sub.data[0],
@@ -452,119 +397,38 @@ fn parse_wrld_children_inner(
                             ]);
                             grid = Some((grid_x, grid_y));
                         }
-                        // XCLW water-plane height. `gated_water_height`
-                        // returns None for the `#INT_MIN#` / FLT_MAX
-                        // "no water" sentinels; the explicit bit stops
-                        // those dry cells inheriting WRLD water (#1305 /
-                        // OBL-D6-NEW-02).
-                        b"XCLW" => {
-                            water_height_is_explicit = true;
-                            water_height = super::helpers::gated_water_height(&sub.data);
+                        // Everything walker-shared falls through to
+                        // `CellSubrecordFields::absorb` (#5309).
+                        _ => {
+                            fields.absorb(reader, header.form_id, sub);
                         }
-                        // Skyrim extended sub-records — see the interior
-                        // walker above for semantics. Exterior cells use
-                        // the same encoding. #356.
-                        b"XCIM" => image_space_form = read_form_id(reader, &sub.data),
-                        b"XCWT" => water_type_form = read_form_id(reader, &sub.data),
-                        b"XCAS" => acoustic_space_form = read_form_id(reader, &sub.data),
-                        b"XCMO" => music_type_form = read_form_id(reader, &sub.data),
-                        // #693 / O3-N-05 — see interior walker for
-                        // semantics. XCMT is rare on exterior cells
-                        // (most exteriors use the worldspace default
-                        // music) but pinned for completeness; XCCM
-                        // is the load-bearing one here.
-                        b"XCMT" if !sub.data.is_empty() => {
-                            music_type_enum = Some(sub.data[0]);
-                        }
-                        b"XCCM" => climate_override = read_form_id(reader, &sub.data),
-                        b"XLCN" => location_form = read_form_id(reader, &sub.data),
-                        // #4173 — XEZN encounter zone (ECZN FormID).
-                        b"XEZN" => encounter_zone_form = read_form_id(reader, &sub.data),
-                        b"XCLR" => regions = read_form_id_array(reader, &sub.data),
-                        // LTMP — lighting template FormID (SK-D6-02 / #566).
-                        b"LTMP" => lighting_template_form = read_form_id(reader, &sub.data),
-                        // #692 — exterior CELL ownership tuple (mirrors
-                        // the interior walker arms above).
-                        b"XOWN" if sub.data.len() >= 4 => {
-                            ownership_owner = read_form_id(reader, &sub.data);
-                        }
-                        b"XRNK" if sub.data.len() >= 4 => {
-                            ownership_rank = Some(i32::from_le_bytes([
-                                sub.data[0],
-                                sub.data[1],
-                                sub.data[2],
-                                sub.data[3],
-                            ]));
-                        }
-                        b"XGLB" if sub.data.len() >= 4 => {
-                            ownership_global = read_form_id(reader, &sub.data);
-                        }
-                        // #970 / OBL-D3-NEW-06 — see interior walker
-                        // for semantics. Oblivion exterior cells are
-                        // the dominant authoring site for this tag.
-                        b"RCLR" if sub.data.len() >= 3 => {
-                            regional_color_override = Some([sub.data[0], sub.data[1], sub.data[2]]);
-                        }
-                        // #1220 / D3-NEW-01 — XCRI: FO4+ PreCombined
-                        // Mesh hash list + visibility-group tail.
-                        // Layout exact mirror of the interior walker
-                        // at `walkers.rs:158-190`. The `ref_count`
-                        // tail is the visibility group, NOT the
-                        // skip-placement set — that's XPRI's job.
-                        b"XCRI" if sub.data.len() >= 8 => {
-                            let mesh_count =
-                                u32::from_le_bytes(sub.data[0..4].try_into().unwrap()) as usize;
-                            let ref_count =
-                                u32::from_le_bytes(sub.data[4..8].try_into().unwrap()) as usize;
-                            let expected =
-                                8 + mesh_count.saturating_mul(4) + ref_count.saturating_mul(4);
-                            if expected != sub.data.len() {
-                                log::warn!(
-                                    "CELL {:08X} XCRI size mismatch: hdr={}+{} expected_payload={} \
-                                     actual={} — skipping",
-                                    header.form_id,
-                                    mesh_count,
-                                    ref_count,
-                                    expected,
-                                    sub.data.len(),
-                                );
-                            } else {
-                                precombined_mesh_hashes.reserve(mesh_count);
-                                let mut off = 8;
-                                for _ in 0..mesh_count {
-                                    let h = u32::from_le_bytes(
-                                        sub.data[off..off + 4].try_into().unwrap(),
-                                    );
-                                    precombined_mesh_hashes.push(h);
-                                    off += 4;
-                                }
-                                // Visibility-group tail intentionally
-                                // not consumed — see XPRI below.
-                            }
-                        }
-                        // #1220 / D3-NEW-01 — XPRI: REFR formids
-                        // absorbed into the precombines. The cell
-                        // loader honours this set only when the
-                        // precombined-spawn pass produced > 0
-                        // entities (conditional-absorption gate in
-                        // `load.rs:170` for interiors; exterior
-                        // wiring lands separately under #1221).
-                        b"XPRI" if sub.data.len() % 4 == 0 => {
-                            absorbed_refs.reserve(sub.data.len() / 4);
-                            for chunk in sub.data.as_chunks::<4>().0 {
-                                let fid = u32::from_le_bytes(*chunk);
-                                absorbed_refs.insert(reader.remap_form_id(fid));
-                            }
-                        }
-                        _ => {}
                     }
                 }
 
-                let ownership = ownership_owner.map(|owner| CellOwnership {
-                    owner_form_id: owner,
-                    faction_rank: ownership_rank,
-                    global_var_form_id: ownership_global,
-                });
+                let ownership = fields.ownership();
+                let super::helpers::CellSubrecordFields {
+                    editor_id,
+                    display_name,
+                    water_height,
+                    water_height_is_explicit,
+                    image_space_form,
+                    water_type_form,
+                    acoustic_space_form,
+                    music_type_form,
+                    music_type_enum,
+                    climate_override,
+                    location_form,
+                    encounter_zone_form,
+                    regions,
+                    lighting_template_form,
+                    ownership_owner: _,
+                    ownership_rank: _,
+                    ownership_global: _,
+                    regional_color_override,
+                    precombined_mesh_hashes,
+                    absorbed_refs,
+                } = fields;
+
                 let cell = CellData {
                     form_id: header.form_id,
                     editor_id,
