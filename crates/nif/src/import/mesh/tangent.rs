@@ -375,8 +375,10 @@ pub fn bs_tangents_zup_to_yup(zup: &[[f32; 4]]) -> Vec<[f32; 4]> {
 }
 
 /// Y-up sibling of [`synthesize_tangents`] for inputs already in the
-/// renderer's coordinate space — namely Starfield `BSGeometry` (positions
-/// and normals decoded Y-up by the BSGeometryMeshData parser) and SSE
+/// renderer's coordinate space — namely Starfield `BSGeometry`
+/// (positions / normals arrive in **source mesh-local Z-up units** —
+/// `BSGeometryMeshData.vertices`'s documented contract — and are
+/// basis-changed through `zup_to_yup_pos` at import, b9e961eeb) and SSE
 /// skin-reconstructed `BSTriShape` (positions / normals / uvs filled
 /// from `try_reconstruct_sse_geometry` which writes Y-up). The Z-up
 /// flavour applies a `(x, y, z) → (x, z, -y)` swap at both the

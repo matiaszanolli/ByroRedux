@@ -160,7 +160,8 @@ as a monolith.
    variants will need similar remaps — currently no place to register them.
 6. **Tangent extraction has 4 distinct paths** — `NiBinaryExtraData` Z-up blob
    (Oblivion/FO3/FNV), inline packed half-float (Skyrim SE BSTriShape), SSE
-   skin-reconstruction Y-up (`sse_recon.rs`), UDEC3 Y-up (Starfield BSGeometry).
+   skin-reconstruction Y-up (`sse_recon.rs`), Starfield BSGeometry UDEC3
+   (parsed Z-up, basis-changed to Y-up at import since b9e961eeb).
    Synthesis fallback has TWO variants (`synthesize_tangents` Z-up,
    `synthesize_tangents_yup` Y-up) and callers pick the right one based on
    knowing their input space — no enforcement.
