@@ -2197,6 +2197,15 @@ mod denoiser_anchor_rot_tests {
         ("vulkan/caustic.rs", include_str!("caustic.rs")),
         ("vulkan/water_caustic.rs", include_str!("water_caustic.rs")),
         ("vulkan/volumetrics.rs", include_str!("volumetrics.rs")),
+        // #5094 — the split halves join their init.rs sibling.
+        (
+            "vulkan/volumetrics/fog_clusters.rs",
+            include_str!("volumetrics/fog_clusters.rs"),
+        ),
+        (
+            "vulkan/volumetrics/combustion.rs",
+            include_str!("volumetrics/combustion.rs"),
+        ),
         // #2256 — construction half, split out of the file above. Same
         // negative-scan reasoning as the rest of this list.
         (

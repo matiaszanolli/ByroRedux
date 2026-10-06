@@ -18,6 +18,7 @@
 
 const MAIN_RS: &str = include_str!("main.rs");
 const APP_EVENTS_RS: &str = include_str!("app_events.rs");
+const APP_FRAME_RS: &str = include_str!("app_frame.rs");
 /// #3855 — `boot.rs` became the `boot/` directory, so this is now the
 /// concatenation of every file it split into rather than one `include_str!`.
 /// Every assertion below still sees the same text: a registration that moves
@@ -1080,4 +1081,46 @@ fn paused_frame_drain_names_the_system_through_the_shared_constant() {
         "a duplicated drain-name string literal reappeared at the engine \
          call site next to the shared constant (#5292)",
     );
+}
+
+/// #5096 (regression of #4342) — the per-frame driver functions regrow
+/// because only `draw_frame` had a size budget. These pins freeze each at
+/// its 2026-10-06 measured size: a new addition that grows one must move
+/// the work into a helper/module and say so here, not raise the pin.
+/// Counts the function body's raw lines (declaration through the brace
+/// that closes it).
+fn function_line_count(source: &str, declaration: &str) -> usize {
+    let start = source
+        .find(declaration)
+        .unwrap_or_else(|| panic!("`{declaration}` not found in source"));
+    let body = &source[start..];
+    let mut depth: i32 = 0;
+    let mut began = false;
+    for (i, line) in body.lines().enumerate() {
+        depth += line.matches('{').count() as i32;
+        depth -= line.matches('}').count() as i32;
+        if line.contains('{') {
+            began = true;
+        }
+        if began && depth <= 0 {
+            return i + 1;
+        }
+    }
+    panic!("`{declaration}` never closed");
+}
+
+#[test]
+fn per_frame_driver_functions_stay_within_their_size_pins() {
+    for (source, declaration, pin) in [
+        // about_to_wait was 822 when #4342 was filed; +222 since.
+        (APP_EVENTS_RS, "fn about_to_wait(", 1044usize),
+        // render_one_frame: #4342 extracted it to 591; +125 since.
+        (APP_FRAME_RS, "fn render_one_frame(", 716),
+    ] {
+        let measured = function_line_count(source, declaration);
+        assert!(
+            measured <= pin,
+            "`{declaration}` carries {measured} lines (pin {pin}) — move the new              work into a helper or module and record the decision, rather than              raising the pin (#5096)"
+        );
+    }
 }

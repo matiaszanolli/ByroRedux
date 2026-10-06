@@ -2034,3 +2034,41 @@ mod texture_source_provenance_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod size_pin_tests {
+    /// #5096 (regression of #4342) — `merge_bgsm_arm` regrew to 669 (+111)
+    /// with no budget watching it. Pinned at its 2026-10-06 measured size:
+    /// move new merge arms into a helper and record the decision instead of
+    /// raising the pin.
+    const MERGE_BGSM_ARM_LINE_PIN: usize = 708;
+
+    fn function_line_count(source: &str, declaration: &str) -> usize {
+        let start = source
+            .find(declaration)
+            .unwrap_or_else(|| panic!("`{declaration}` not found"));
+        let body = &source[start..];
+        let mut depth: i32 = 0;
+        let mut began = false;
+        for (i, line) in body.lines().enumerate() {
+            depth += line.matches('{').count() as i32;
+            depth -= line.matches('}').count() as i32;
+            if line.contains('{') {
+                began = true;
+            }
+            if began && depth <= 0 {
+                return i + 1;
+            }
+        }
+        panic!("`{declaration}` never closed");
+    }
+
+    #[test]
+    fn merge_bgsm_arm_stays_within_its_size_pin() {
+        let measured = function_line_count(include_str!("merge.rs"), "fn merge_bgsm_arm(");
+        assert!(
+            measured <= MERGE_BGSM_ARM_LINE_PIN,
+            "`merge_bgsm_arm` carries {measured} lines (pin {MERGE_BGSM_ARM_LINE_PIN})              — move the new merge arm into a helper and record the decision, rather              than raising the pin (#5096)"
+        );
+    }
+}

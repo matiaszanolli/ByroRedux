@@ -1839,9 +1839,12 @@ mod skip_clear_mask_pin_tests {
     /// simply not listed (#3844).
     #[test]
     fn no_accumulator_clears_outside_the_shared_helper() {
-        const ACCUMULATORS: [(&str, &str); 3] = [
+        const ACCUMULATORS: [(&str, &str); 5] = [
             ("caustic.rs", include_str!("caustic.rs")),
             ("volumetrics.rs", include_str!("volumetrics.rs")),
+            // #5094 — the split halves; same negative-scan reasoning.
+            ("volumetrics/fog_clusters.rs", include_str!("volumetrics/fog_clusters.rs")),
+            ("volumetrics/combustion.rs", include_str!("volumetrics/combustion.rs")),
             ("water_caustic.rs", include_str!("water_caustic.rs")),
         ];
         // Assembled at run time so this file's own contribution — the literal

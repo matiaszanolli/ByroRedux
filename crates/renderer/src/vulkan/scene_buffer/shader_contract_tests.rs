@@ -1672,7 +1672,14 @@ fn name_diverging_glsl_rust_mirrors_stay_in_lockstep() {
     let volumetrics_comp = include_str!("../../../shaders/volumetrics_inject.comp");
     let cluster_cull = include_str!("../../../shaders/cluster_cull.comp");
     let bindings = include_str!("../../../shaders/include/bindings.glsl");
-    let volumetrics_rs = include_str!("../volumetrics.rs");
+    // #5094 — GpuFogClusterEntry moved to volumetrics/fog_clusters.rs; the
+    // driver file is still scanned for the rest of its mirrors.
+    let volumetrics_rs = format!(
+        "{}\n{}\n{}",
+        include_str!("../volumetrics.rs"),
+        include_str!("../volumetrics/fog_clusters.rs"),
+        include_str!("../volumetrics/combustion.rs")
+    );
     let compute_rs = include_str!("../compute.rs");
     let groundcover_scene = include_str!("../../../shaders/include/groundcover_scene.glsl");
     let groundcover_rs = include_str!("../groundcover.rs");
@@ -1717,7 +1724,7 @@ fn name_diverging_glsl_rust_mirrors_stay_in_lockstep() {
             "FogClusterEntry",
             volumetrics_comp,
             "struct FogClusterEntry",
-            volumetrics_rs,
+            &volumetrics_rs,
             "struct GpuFogClusterEntry",
             NO_ALIASES,
         ),
@@ -1725,7 +1732,7 @@ fn name_diverging_glsl_rust_mirrors_stay_in_lockstep() {
             "CombustionLightMoment",
             volumetrics_comp,
             "struct CombustionLightMoment",
-            volumetrics_rs,
+            &volumetrics_rs,
             "struct GpuCombustionLightMoment",
             NO_ALIASES,
         ),
@@ -2427,7 +2434,13 @@ fn parse_rust_struct_fields_typed(src: &str, decl: &str) -> Vec<(String, String)
             continue;
         };
         let lhs = line[..colon].trim();
-        let ident = lhs.strip_prefix("pub ").unwrap_or(lhs).trim();
+        // #5094 — `pub(crate)` fields scan too (GpuFogClusterEntry moved to a
+        // submodule and its fields stayed crate-visible).
+        let ident = lhs
+            .strip_prefix("pub ")
+            .or_else(|| lhs.strip_prefix("pub(crate) "))
+            .unwrap_or(lhs)
+            .trim();
         if !is_ident(ident) {
             continue;
         }
