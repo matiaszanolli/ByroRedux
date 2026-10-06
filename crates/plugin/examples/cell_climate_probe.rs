@@ -30,6 +30,14 @@ fn main() {
     for w in index.weathers.values() {
         println!("  WTHR {:08X} {}", w.form_id, w.editor_id);
     }
+    for c in index.climates.values() {
+        if c.editor_id.contains("Akila") || c.editor_id.contains("Cydonia") {
+            println!("  CLMT {:08X} {} weathers={:?} tod={:?}..{:?}",
+                c.form_id, c.editor_id,
+                c.weathers.iter().map(|w| (w.weather_form_id, w.chance)).collect::<Vec<_>>(),
+                (c.sunrise_begin, c.sunrise_end), (c.sunset_begin, c.sunset_end));
+        }
+    }
     for offset in [(0, 0), (1, 0), (-1, 0), (0, 1), (0, -1)] {
         let key = (gx + offset.0, gy + offset.1);
         let Some(cell) = cells.get(&key) else {
