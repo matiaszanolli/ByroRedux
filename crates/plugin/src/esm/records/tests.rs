@@ -2909,7 +2909,7 @@ const EXEMPT_NO_U32_READS: &[(&str, &str)] = &[
 /// short and every entry costs a human decision — that is the point.
 const EXEMPT_JUSTIFIED: &[(&str, &str, &str)] = &[
     (
-        "actor/mod.rs",
+        "actor/class.rs",
         "parse_clas",
         "CLAS DATA is attribute/specialization/skill *indices* and a flag \
          word — ordinals into a fixed roster, not FormIDs. See CHARAL's \
@@ -3140,6 +3140,10 @@ fn parsers_that_take_a_remap_actually_use_it() {
 fn remap_fid_has_exactly_one_definition() {
     let sources = [
         ("actor/mod.rs", include_str!("actor/mod.rs")),
+        ("actor/npc.rs", include_str!("actor/npc.rs")),
+        ("actor/race.rs", include_str!("actor/race.rs")),
+        ("actor/class.rs", include_str!("actor/class.rs")),
+        ("actor/faction.rs", include_str!("actor/faction.rs")),
         ("container.rs", include_str!("container.rs")),
         ("misc/pack.rs", include_str!("misc/pack.rs")),
         ("misc/water.rs", include_str!("misc/water.rs")),
