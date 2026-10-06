@@ -11,6 +11,19 @@ use rapier3d::prelude::*;
 
 use crate::broad_phase::FixedPairFilterBroadPhase;
 
+// #5311 (TD1-2026-10-05-01) — the query/KCC impl and the explosion
+// recovery/containment cluster live in child modules; `step` consumes
+// the recovery entry points directly.
+mod queries;
+mod recovery;
+
+pub use queries::{CharacterMoveParams, CharacterMoveResult};
+use recovery::{body_state_is_finite, restore_invalid_dynamic_bodies, DynamicBodySnapshot};
+#[cfg(test)]
+use recovery::MAX_DYNAMIC_SUBSTEP_DISPLACEMENT;
+#[cfg(test)]
+use queries::character_capsule;
+
 /// Fixed physics tick in seconds. 60 Hz matches Skyrim/FO4.
 pub const PHYSICS_DT: f32 = 1.0 / 60.0;
 /// Cap on substeps per frame to prevent spiral-of-death.
@@ -57,15 +70,6 @@ pub const BU_PER_METER: f32 = byroredux_core::lighting::BETHESDA_UNITS_PER_METER
 /// of leaving the playable volume. See the kill-plane in
 /// [`PhysicsWorld::step`].
 pub const KILL_PLANE_Y: f32 = -25_000.0;
-/// Largest plausible dynamic-body movement in one fixed 60 Hz substep.
-///
-/// This is a *delta*, never an absolute coordinate: exterior worlds may be
-/// far from the origin, while an object moving 2,048 BU (about 29 m) in
-/// 1/60th second is already far beyond ordinary character, ragdoll, debris,
-/// or projectile motion. It is a backstop for finite solver explosions — a
-/// NaN check alone cannot catch a body launched billions of BU by one bad
-/// contact.
-const MAX_DYNAMIC_SUBSTEP_DISPLACEMENT: f32 = 2_048.0;
 
 /// #5161 — sanity cap on a dynamic body's speed. The real-cell P2 route
 /// proved the missing guard class: a ragdoll articulation kicked by deep
@@ -86,8 +90,6 @@ const MAX_DYNAMIC_SUBSTEP_DISPLACEMENT: f32 = 2_048.0;
 /// slept — the invalid-solve restore's containment), 3 = detach the
 /// body's whole articulation (#5246).
 pub const VELOCITY_SANITY_CAP_BU_PER_S: f32 = 20_000.0;
-/// #5161 — sanity cap on angular speed (≈16 rev/s); explosions reach 1e10+.
-const ANGULAR_VELOCITY_SANITY_CAP_RAD_PER_S: f32 = 100.0;
 /// #5161 — sanity cap on one articulation DOF's generalized velocity
 /// (rad/s for the ragdoll/hinge joints' angular axes, BU/s for the
 /// prismatic rail; every authored class moves far slower than this). The
@@ -98,16 +100,6 @@ const ANGULAR_VELOCITY_SANITY_CAP_RAD_PER_S: f32 = 100.0;
 /// one step even with every rigid body capped. Non-finite DOFs are zeroed.
 pub(crate) const ARTICULATION_DOF_SANITY_CAP: f32 = 100.0;
 
-/// #5161 — sanity bound for a keyframed body target pushed from an ECS
-/// GlobalTransform. Authored worldspace coordinates top out around ±3e5 BU,
-/// so a translation beyond 1e8 is corruption with certainty — while still
-/// ~2600× below rapier 0.22's multi-SAP grid boundary (≈2.68e11), which an
-/// insane kinematic target's derived velocity (`(target − current)/dt`) can
-/// trip through the collider's predictive AABB as a broad-phase panic. The
-/// substep recovery only snapshots `Dynamic` bodies, and live actor skeleton
-/// bones are keyframed (`keyframe_live_ragdoll_bones`) — so this boundary
-/// check in `accept_keyframe_target` is the only guard they have.
-const KEYFRAME_TARGET_SANE_BOUND_BU: f32 = 1.0e8;
 
 /// Collision-group bit reserved for a **live actor's keyframed ragdoll-bone**
 /// colliders (#2873).
@@ -351,104 +343,6 @@ pub struct PhysicsWorld {
     /// `pub(crate)`). Stale handles (detached articulations) return `None`
     /// from `get_mut` and are skipped, so the vector never needs sweeping.
     pub(crate) articulation_joints: Vec<rapier3d::prelude::MultibodyJointHandle>,
-}
-
-/// A dynamic body's state immediately before one Rapier substep.
-///
-/// A malformed contact must never turn a valid saved scene into a permanent
-/// broken island. Keeping this snapshot at the physics boundary lets us retain
-/// the last known-good pose if Rapier returns non-finite values or a physically
-/// impossible contact/constraint jump. It is intentionally per-substep: a
-/// long catch-up frame must not roll a body back farther than the one solve
-/// that corrupted it.
-#[derive(Clone)]
-struct DynamicBodySnapshot {
-    handle: RigidBodyHandle,
-    position: Isometry<Real>,
-}
-
-fn body_state_is_finite(body: &RigidBody) -> bool {
-    body.translation().iter().all(|v| v.is_finite())
-        && body.rotation().coords.iter().all(|v| v.is_finite())
-        && body.linvel().iter().all(|v| v.is_finite())
-        && body.angvel().iter().all(|v| v.is_finite())
-}
-
-fn body_needs_recovery(body: &RigidBody, snapshot: &DynamicBodySnapshot) -> bool {
-    !body_state_is_finite(body)
-        || (body.translation() - snapshot.position.translation.vector).norm()
-            > MAX_DYNAMIC_SUBSTEP_DISPLACEMENT
-}
-
-fn restore_invalid_dynamic_bodies(
-    bodies: &mut RigidBodySet,
-    multibody_joints: &mut MultibodyJointSet,
-    snapshots: impl IntoIterator<Item = DynamicBodySnapshot>,
-    body_labels: &std::collections::HashMap<RigidBodyHandle, String>,
-) -> (usize, Vec<RigidBodyHandle>) {
-    let mut restored = 0;
-    let mut detached_articulations: Vec<RigidBodyHandle> = Vec::new();
-    // #5161 — the recovery log alone cannot say WHAT went insane. Record the
-    // pre-restore state of the first few bodies per event (translation
-    // magnitude + velocity magnitude + the body's registered label) so the
-    // next investigation reads the explosion's class — and WHICH actor's
-    // articulation produced it — straight off the log instead of
-    // re-instrumenting.
-    let mut evidence = Vec::new();
-    for snapshot in snapshots {
-        let Some(body) = bodies.get(snapshot.handle) else {
-            continue;
-        };
-        if !body_needs_recovery(body, &snapshot) {
-            continue;
-        }
-        if evidence.len() < 3 {
-            let label = body_labels
-                .get(&snapshot.handle)
-                .map(String::as_str)
-                .unwrap_or("unlabelled");
-            evidence.push(format!(
-                "{:?} [{label}] at |t|={:.3e} |v|={:.3e}",
-                snapshot.handle,
-                body.translation().norm(),
-                body.linvel().norm(),
-            ));
-        }
-        // Rapier's get_mut marks a body modified even when the caller only
-        // reads it. Keep healthy snapshots out of the next step's dirty list.
-        let body = bodies
-            .get_mut(snapshot.handle)
-            .expect("recovery body was just read under exclusive set access");
-        body.set_position(snapshot.position, false);
-        // Multibody links must remain dynamic in Rapier. Sleep the damaged
-        // island rather than changing its motion type, which would turn a
-        // recoverable solver error into a structural multibody panic.
-        body.sleep();
-        // #4687(c) — collect EVERY invalid handle instead of only the
-        // first. `remove_multibody_articulations` detaches the single
-        // articulation containing its argument, so the old
-        // `get_or_insert(first)` left every OTHER simultaneously-invalidated
-        // articulation intact: its un-invalidated links stayed awake and
-        // re-emitted the corrupt pose next substep (a second error log and
-        // one more forfeited backlog per extra articulation). A repeat
-        // handle is a no-op — removal is per-articulation and idempotent.
-        detached_articulations.push(snapshot.handle);
-        restored += 1;
-    }
-    for handle in &detached_articulations {
-        // Detach broken articulations through Rapier's supported API. This
-        // keeps the restored bodies as sleeping dynamics instead of letting
-        // the next contact solve re-enter the known-bad constraint graph.
-        multibody_joints.remove_multibody_articulations(*handle, false);
-    }
-    if !evidence.is_empty() {
-        log::error!(
-            "physics: invalid-solve evidence (first of {}): {}",
-            restored,
-            evidence.join(", ")
-        );
-    }
-    (restored, detached_articulations)
 }
 
 impl PhysicsWorld {
@@ -776,20 +670,6 @@ impl PhysicsWorld {
         true
     }
 
-    /// #4683 (PHYS-D3-2026-09-21-01) — solver-explosion recovery counts:
-    /// `(lifetime recovery EVENTS, BODIES restored in the most recent
-    /// `step` call, lifetime pre-broken bodies parked at step entry)`.
-    /// #5127 — the first two are different units: an event restores one
-    /// or more bodies, so `.1` may exceed `.0`. The recovery's only
-    /// pre-#4683 signal was one `log::error!`; every ragdoll stability
-    /// gate read post-recovery state and could not see it happen.
-    pub fn recovery_counts(&self) -> (u64, u32, u64) {
-        (
-            self.recoveries_total,
-            self.bodies_restored_last_frame,
-            self.bodies_parked_total,
-        )
-    }
 
     /// Live dynamic bodies tracked by the recovery-snapshot index (#4682).
     /// Diagnostic only; a stale handle not yet compacted out is excluded.
@@ -804,122 +684,9 @@ impl PhysicsWorld {
             .count()
     }
 
-    /// #4687(b) (PHYS-D2-2026-09-21-02) — `set_position` defers collider
-    /// sync to the next pipeline step, so straight after a restore the
-    /// query pipeline (just advanced incrementally by the step above)
-    /// indexes the restored bodies' colliders at their EXPLODED or NaN
-    /// pose: one frame of ray/shape queries against geometry that was
-    /// already rolled back. Propagate the restored poses into the
-    /// colliders and refresh exactly those leaves.
-    ///
-    /// #5126 — `refit_and_rebalance` MUST be `true`. In rapier 0.22 the
-    /// `false` form only marks the leaves dirty (`pre_update_or_insert`);
-    /// leaf AABBs are refit only under `true`, which `PhysicsPipeline::step`
-    /// passes on its final substep — so the tree we inherit holds the
-    /// EXPLODED AABB, and a dirty-but-unrefit leaf left the restored body
-    /// invisible to every ray/KCC/LOS query until the next frame's step.
-    /// The refit + rebalance runs only on recovery frames.
-    fn refresh_query_geometry_after_restore(&mut self, invalid_handles: &[RigidBodyHandle]) {
-        self.bodies
-            .propagate_modified_body_positions_to_colliders(&mut self.colliders);
-        let mut touched_colliders: Vec<ColliderHandle> = Vec::new();
-        for &h in invalid_handles {
-            if let Some(body) = self.bodies.get(h) {
-                touched_colliders.extend(body.colliders().iter().copied());
-            }
-        }
-        self.query_pipeline
-            .update_incremental(&self.colliders, &touched_colliders, &[], true);
-    }
 
-    /// #4687(a) (PHYS-D2-2026-09-21-02) — put dynamics that are ALREADY
-    /// non-finite before any substep to sleep. The per-substep recovery
-    /// snapshot filters such a body out (it has no valid prior pose to
-    /// roll back to), and its NaN coordinates also fail every comparison
-    /// against the kill plane — so pre-#4687 it stayed in the active set
-    /// forever, kept the static-scene fast path permanently off, and was
-    /// recoverable by nothing. Zeroing the velocities and sleeping it
-    /// parks the corruption in place (the same terminal state the
-    /// restore path produces) instead of paying for it every frame.
-    /// Called at the top of `step`, before the fast-path gate, from the
-    /// cheap dynamic index (#4682).
-    fn recover_pre_broken_bodies(&mut self) {
-        let mut parked = 0usize;
-        for &handle in &self.dynamic_bodies {
-            let Some(body) = self.bodies.get(handle) else {
-                continue;
-            };
-            if body.body_type() != RigidBodyType::Dynamic
-                || body_state_is_finite(body)
-                || body.is_sleeping()
-            {
-                continue;
-            }
-            // The finite-state check is read-only; enqueue a Rapier user
-            // change only for the rare body that actually needs parking.
-            let body = self
-                .bodies
-                .get_mut(handle)
-                .expect("pre-broken body was just read under exclusive set access");
-            body.set_linvel(Vector::zeros(), false);
-            body.set_angvel(Vector::zeros(), false);
-            body.sleep();
-            parked += 1;
-        }
-        if parked > 0 {
-            log::error!(
-                "physics: parked {parked} dynamic body/bodies whose state was \
-                 already non-finite before the step (corrupt seed or contact); \
-                 they were zeroed and put to sleep — the recovery snapshot has \
-                 no prior pose to roll them back to"
-            );
-            self.bodies_parked_total = self.bodies_parked_total.saturating_add(parked as u64);
-        }
-    }
 
-    /// #5161 — gate one `push_kinematic` target. Returns `false` (and
-    /// records the refusal) when the target is non-finite or its
-    /// translation lies beyond [`KEYFRAME_TARGET_SANE_BOUND_BU`]: live
-    /// actor bones are keyframed, the per-substep recovery only covers
-    /// `Dynamic` bodies, and an insane kinematic target's derived velocity
-    /// (`(target − current)/dt`) trips rapier's multi-SAP grid boundary as
-    /// a broad-phase panic — the class that killed the live Skyrim P2
-    /// fight. The body is left at its last accepted pose; the
-    /// animation-side source of the broken transform stays visible (and
-    /// open) as the rendering-side corruption it already is.
-    pub fn accept_keyframe_target(
-        &mut self,
-        handle: RigidBodyHandle,
-        target: &Isometry<Real>,
-    ) -> bool {
-        let t = target.translation.vector;
-        let q = target.rotation.coords;
-        let sane = [t.x, t.y, t.z].into_iter().all(|v| {
-            v.is_finite() && v.abs() <= KEYFRAME_TARGET_SANE_BOUND_BU
-        }) && q.iter().all(|v| v.is_finite());
-        if sane {
-            return true;
-        }
-        self.keyframe_targets_refused_total =
-            self.keyframe_targets_refused_total.saturating_add(1);
-        if self.keyframe_refusals_logged.insert(handle) {
-            log::error!(
-                "physics: refused a keyframed target for body {handle:?} at \
-                 ({:.1}, {:.1}, {:.1}) — non-finite or beyond the sane world bound \
-                 ({} BU); the body keeps its last accepted pose (#5161)",
-                t.x,
-                t.y,
-                t.z,
-                KEYFRAME_TARGET_SANE_BOUND_BU as u64
-            );
-        }
-        false
-    }
 
-    /// Lifetime refused-keyframe-target count, for `phys.stats` (#5161).
-    pub fn keyframe_targets_refused_total(&self) -> u64 {
-        self.keyframe_targets_refused_total
-    }
 
     /// #5161 — register the human-readable label for one rapier body (see
     /// the `body_labels` field doc). `build_ragdoll` writes the default;
@@ -933,180 +700,10 @@ impl PhysicsWorld {
         self.body_labels.get(&handle).map(String::as_str)
     }
 
-    /// #5161 — count one refused ragdoll activation. `build_ragdoll` calls
-    /// this for its own absolute rejection; the bin-side activator calls it
-    /// for the actor-reach rejection that never reaches `build_ragdoll`.
-    /// The paths are mutually exclusive, so the count never doubles.
-    pub fn note_ragdoll_seed_refusal(&mut self) {
-        self.ragdoll_seed_refusals_total = self.ragdoll_seed_refusals_total.saturating_add(1);
-    }
 
-    /// Lifetime refused-ragdoll-seed count, for `phys.stats` (#5161).
-    pub fn ragdoll_seed_refusals_total(&self) -> u64 {
-        self.ragdoll_seed_refusals_total
-    }
 
-    /// #5161 — cap every dynamic body's speed at
-    /// [`VELOCITY_SANITY_CAP_BU_PER_S`] (and spin at
-    /// [`ANGULAR_VELOCITY_SANITY_CAP_RAD_PER_S`]), called at the end of
-    /// every `pipeline.step` substep. See the cap constant's doc for why
-    /// this is the only guard that runs *before* an explosion's positions
-    /// reach the broad phase. A body clamped on consecutive substeps is
-    /// parked; a clean substep returns it to watch-list absence.
-    fn clamp_explosive_velocities(&mut self) {
-        let mut clamped: Vec<(RigidBodyHandle, nalgebra::Vector3<f32>, nalgebra::Vector3<f32>)> =
-            Vec::new();
-        for &handle in &self.dynamic_bodies {
-            let (linvel, angvel) = {
-                let Some(body) = self.bodies.get(handle) else {
-                    continue;
-                };
-                (*body.linvel(), *body.angvel())
-            };
-            // #5246 — NaN is the containment hole's fingerprint: rapier's
-            // broad-phase clamps a NaN-positioned collider's AABB to the
-            // multi-SAP grid corners (na::clamp(NaN, ±max) lands finite),
-            // and those corner AABBs pass the finite rejection and poison
-            // the layer structure. A NaN velocity therefore must never be
-            // *passed through* — one integration step later it is a NaN
-            // position inside pipeline.step, before any of this code can
-            // run again. Classify non-finite as maximally explosive and
-            // zero it outright.
-            let lin_finite = linvel.iter().all(|v| v.is_finite());
-            let ang_finite = angvel.iter().all(|v| v.is_finite());
-            let speed = if lin_finite {
-                linvel.norm()
-            } else {
-                f32::INFINITY
-            };
-            let spin = if ang_finite {
-                angvel.norm()
-            } else {
-                f32::INFINITY
-            };
-            if speed <= VELOCITY_SANITY_CAP_BU_PER_S
-                && spin <= ANGULAR_VELOCITY_SANITY_CAP_RAD_PER_S
-            {
-                continue;
-            }
-            let capped_linvel = if !lin_finite {
-                nalgebra::zero()
-            } else if speed > VELOCITY_SANITY_CAP_BU_PER_S {
-                linvel * (VELOCITY_SANITY_CAP_BU_PER_S / speed)
-            } else {
-                linvel
-            };
-            let capped_angvel = if !ang_finite {
-                nalgebra::zero()
-            } else if spin > ANGULAR_VELOCITY_SANITY_CAP_RAD_PER_S {
-                angvel * (ANGULAR_VELOCITY_SANITY_CAP_RAD_PER_S / spin)
-            } else {
-                angvel
-            };
-            clamped.push((handle, capped_linvel, capped_angvel));
-        }
-        for (handle, capped_linvel, capped_angvel) in clamped {
-            {
-                let body = self
-                    .bodies
-                    .get_mut(handle)
-                    .expect("clamped body was just read under exclusive set access");
-                body.set_linvel(capped_linvel, false);
-                body.set_angvel(capped_angvel, false);
-            }
-            self.velocity_clamps_total = self.velocity_clamps_total.saturating_add(1);
-            // #5246 — lifetime offence count, NOT a set cleared on clean
-            // substeps: the SLscorpionBurrowINT log showed the same body
-            // parked four times because every wake-and-re-explosion cycle
-            // looked like a fresh first offence. Escalation ladder — first
-            // burst clamps, second parks, third detaches the whole
-            // articulation (the invalid-solve restore's own tool) so a
-            // persistently exploding rig cannot churn forever.
-            let offences = self.explosion_offences.entry(handle).or_insert(0);
-            *offences += 1;
-            let label = self
-                .body_labels
-                .get(&handle)
-                .map(String::as_str)
-                .unwrap_or("unlabelled");
-            if *offences >= 3 {
-                if let Some(body) = self.bodies.get_mut(handle) {
-                    body.set_linvel(nalgebra::zero(), false);
-                    body.set_angvel(nalgebra::zero(), false);
-                    body.sleep();
-                }
-                // Detaches every multibody joint containing `handle`; a
-                // free body afterwards, so no forward kinematics can
-                // re-teleport it. Idempotent for bodies without joints.
-                self.multibody_joints
-                    .remove_multibody_articulations(handle, false);
-                self.explosive_detaches_total = self.explosive_detaches_total.saturating_add(1);
-                log::error!(
-                    "physics: detached {handle:?} [{label}]'s articulation after \
-                     {offences} solver-explosion bursts (#5246)"
-                );
-            } else if *offences == 2 {
-                // Second burst: the solve is persistently exploding for
-                // this body. Park it the same way the invalid-solve
-                // restore does — zeroed velocities, asleep at its current
-                // (still sane, cap-bounded) pose — instead of letting it
-                // vibrate at the cap forever.
-                if let Some(body) = self.bodies.get_mut(handle) {
-                    body.set_linvel(nalgebra::zero(), false);
-                    body.set_angvel(nalgebra::zero(), false);
-                    body.sleep();
-                }
-                log::error!(
-                    "physics: parked {handle:?} [{label}] after repeated solver-explosion \
-                     velocities (still sane, slept at current pose) (#5161)"
-                );
-            } else {
-                log::warn!(
-                    "physics: clamped explosive velocity on {handle:?} [{label}] to the \
-                     sanity cap (#5161)"
-                );
-            }
-        }
-        // Articulation DOFs: forward kinematics integrates these BEFORE any
-        // body-level clamp can matter, so an exploding reduced-coordinate
-        // velocity teleports its links through the broad-phase grid in one
-        // step even with every rigid body capped above (#5161).
-        let mut clamped_dofs = 0usize;
-        for &joint in &self.articulation_joints {
-            let Some((multibody, _)) = self.multibody_joints.get_mut(joint) else {
-                continue;
-            };
-            let mut vels = multibody.generalized_velocity_mut();
-            for i in 0..vels.len() {
-                let v = vels[i];
-                if !v.is_finite() {
-                    vels[i] = 0.0;
-                    clamped_dofs += 1;
-                } else if v.abs() > ARTICULATION_DOF_SANITY_CAP {
-                    vels[i] = v.signum() * ARTICULATION_DOF_SANITY_CAP;
-                    clamped_dofs += 1;
-                }
-            }
-        }
-        if clamped_dofs > 0 {
-            self.velocity_clamps_total = self.velocity_clamps_total.saturating_add(1);
-            log::warn!(
-                "physics: clamped {clamped_dofs} exploding articulation DOF velocities to the \
-                 sanity cap (#5161)"
-            );
-        }
-    }
 
-    /// Lifetime velocity-clamp count, for `phys.stats` (#5161).
-    pub fn velocity_clamps_total(&self) -> u64 {
-        self.velocity_clamps_total
-    }
 
-    /// Lifetime third-offence articulation detaches, for `phys.stats`
-    /// (#5246).
-    pub fn explosive_detaches_total(&self) -> u64 {
-        self.explosive_detaches_total
-    }
 
     /// Read a dynamic body's mass (BU³ × density). Buoyancy derives the
     /// gravity-cancelling force from this; exposed so the water systems
@@ -1229,99 +826,14 @@ impl PhysicsWorld {
 
         let mut steps = 0u32;
         while self.accumulator >= PHYSICS_DT && steps < MAX_SUBSTEPS {
-            // Newly activated ragdolls are absent from Rapier's active
-            // islands until *after* their first pipeline step. Snapshot all
-            // dynamics so their first solve is recoverable too. #4682 — the
-            // dynamics come from the maintained index, not an arena walk:
-            // iterating every slot (fixed bodies included) cost 1.77 ms per
-            // substep on a 95 k-body world, ~10× the solver it protects.
-            // The per-entry liveness + type re-check keeps the index's
-            // staleness tolerance honest (see the field doc), and waking by
-            // contact mid-step needs no index update — the body was indexed
-            // at insert regardless of sleep state.
-            self.dynamic_bodies
-                .retain(|h| self.bodies.get(*h).is_some());
-            let snapshots: Vec<_> =
-                self.dynamic_bodies
-                    .iter()
-                    .filter_map(|&handle| {
-                        let body = self.bodies.get(handle)?;
-                        (body.body_type() == RigidBodyType::Dynamic
-                            && body_state_is_finite(body))
-                        .then_some(DynamicBodySnapshot {
-                            handle,
-                            position: *body.position(),
-                        })
-                    })
-                    .collect();
-            self.pipeline.step(
-                &self.gravity,
-                &self.integration_parameters,
-                &mut self.islands,
-                &mut self.broad_phase,
-                &mut self.narrow_phase,
-                &mut self.bodies,
-                &mut self.colliders,
-                &mut self.impulse_joints,
-                &mut self.multibody_joints,
-                &mut self.ccd_solver,
-                // #4685 (PHYS-D6-2026-09-21-02) — hand the pipeline our
-                // query pipeline so it advances INCREMENTALLY inside the
-                // step: rapier 0.22's `PhysicsPipeline::step` never calls
-                // the O(all-colliders) `QueryPipeline::update`; it calls
-                // `update_incremental` once per step (on the last substep),
-                // re-inserting only the colliders this step marked
-                // modified/removed. The old `None` here was defending
-                // against a full-rebuild-per-substep cost that does not
-                // exist — and forced the O(all-colliders) full rebuild in
-                // the post-loop below instead (measured 9.6 ms/frame on a
-                // 95 k-collider world vs 0.10 ms incremental). #2890's
-                // real history (a genuine in-substep full rebuild at every
-                // substep) was fixed by `6e55b492` removing that design,
-                // not by starving the pipeline of incremental updates.
-                // Explicit `update_query_pipeline` call sites — e.g. the
-                // spawn ground-snap — are unaffected.
-                Some(&mut self.query_pipeline),
-                &(),
-                &(),
-            );
-            self.accumulator -= PHYSICS_DT;
-            let (restored, invalid_handles) = restore_invalid_dynamic_bodies(
-                &mut self.bodies,
-                &mut self.multibody_joints,
-                snapshots,
-                &self.body_labels,
-            );
-            if restored > 0 {
-                log::error!(
-                    "physics: restored {restored} dynamic body/bodies after an invalid solve; \
-                     affected bodies were put to sleep at their prior pose"
-                );
-                self.recoveries_total = self.recoveries_total.saturating_add(1);
-                self.bodies_restored_last_frame =
-                    self.bodies_restored_last_frame.saturating_add(restored as u32);
-                self.refresh_query_geometry_after_restore(&invalid_handles);
-                // Do not spend further catch-up substeps on the same
-                // freshly-invalidated contact island this frame.
-                self.accumulator = 0.0;
+            if matches!(
+                self.run_substep(loop_start, budget),
+                SubstepOutcome::Stop
+            ) {
                 steps += 1;
                 break;
             }
-            // #5161 — caps velocities before they can be integrated into an
-            // insane position. The restore branch above already sanitises
-            // its bodies (rolled back + slept), so skipping the clamp there
-            // loses nothing.
-            self.clamp_explosive_velocities();
             steps += 1;
-            // Budget check AFTER the step so at least one substep always
-            // runs (a slow frame must still advance the sim). When physics
-            // has spent its per-frame wall-time, forfeit the leftover
-            // accumulator — catching up is futile once a single substep
-            // already costs more wall-time than the sim-time it produces.
-            if loop_start.elapsed().as_secs_f32() >= budget {
-                self.accumulator = 0.0;
-                break;
-            }
         }
         // Consume the wake only once a substep has actually run (#2856).
         // Clearing it before the loop dropped one-shot wakes on any frame
@@ -1383,6 +895,116 @@ impl PhysicsWorld {
         }
         steps
     }
+
+    /// One catch-up substep: snapshot every dynamic body, run rapier's
+    /// pipeline, then contain any solver explosion the substep produced
+    /// (restore + clamp, #5161/#5246). Extracted from `step`'s loop
+    /// (#5311) — the loop body had grown past the function that drives
+    /// it. Returns [`SubstepOutcome::Stop`] when the catch-up loop must
+    /// not run another substep this frame: either a body was restored
+    /// (do not spend further substeps on the same freshly-invalidated
+    /// contact island) or the wall-clock budget ran out (#1698).
+    fn run_substep(&mut self, loop_start: std::time::Instant, budget: f32) -> SubstepOutcome {
+        // Newly activated ragdolls are absent from Rapier's active
+        // islands until *after* their first pipeline step. Snapshot all
+        // dynamics so their first solve is recoverable too. #4682 — the
+        // dynamics come from the maintained index, not an arena walk:
+        // iterating every slot (fixed bodies included) cost 1.77 ms per
+        // substep on a 95 k-body world, ~10× the solver it protects.
+        // The per-entry liveness + type re-check keeps the index's
+        // staleness tolerance honest (see the field doc), and waking by
+        // contact mid-step needs no index update — the body was indexed
+        // at insert regardless of sleep state.
+        self.dynamic_bodies.retain(|h| self.bodies.get(*h).is_some());
+        let snapshots: Vec<_> = self
+            .dynamic_bodies
+            .iter()
+            .filter_map(|&handle| {
+                let body = self.bodies.get(handle)?;
+                (body.body_type() == RigidBodyType::Dynamic && body_state_is_finite(body))
+                    .then_some(DynamicBodySnapshot {
+                        handle,
+                        position: *body.position(),
+                    })
+            })
+            .collect();
+        self.pipeline.step(
+            &self.gravity,
+            &self.integration_parameters,
+            &mut self.islands,
+            &mut self.broad_phase,
+            &mut self.narrow_phase,
+            &mut self.bodies,
+            &mut self.colliders,
+            &mut self.impulse_joints,
+            &mut self.multibody_joints,
+            &mut self.ccd_solver,
+            // #4685 (PHYS-D6-2026-09-21-02) — hand the pipeline our
+            // query pipeline so it advances INCREMENTALLY inside the
+            // step: rapier 0.22's `PhysicsPipeline::step` never calls
+            // the O(all-colliders) `QueryPipeline::update`; it calls
+            // `update_incremental` once per step (on the last substep),
+            // re-inserting only the colliders this step marked
+            // modified/removed. The old `None` here was defending
+            // against a full-rebuild-per-substep cost that does not
+            // exist — and forced the O(all-colliders) full rebuild in
+            // the post-loop below instead (measured 9.6 ms/frame on a
+            // 95 k-collider world vs 0.10 ms incremental). #2890's
+            // real history (a genuine in-substep full rebuild at every
+            // substep) was fixed by `6e55b492` removing that design,
+            // not by starving the pipeline of incremental updates.
+            // Explicit `update_query_pipeline` call sites — e.g. the
+            // spawn ground-snap — are unaffected.
+            Some(&mut self.query_pipeline),
+            &(),
+            &(),
+        );
+        self.accumulator -= PHYSICS_DT;
+        let (restored, invalid_handles) = restore_invalid_dynamic_bodies(
+            &mut self.bodies,
+            &mut self.multibody_joints,
+            snapshots,
+            &self.body_labels,
+        );
+        if restored > 0 {
+            log::error!(
+                "physics: restored {restored} dynamic body/bodies after an invalid solve; \
+                 affected bodies were put to sleep at their prior pose"
+            );
+            self.recoveries_total = self.recoveries_total.saturating_add(1);
+            self.bodies_restored_last_frame =
+                self.bodies_restored_last_frame.saturating_add(restored as u32);
+            self.refresh_query_geometry_after_restore(&invalid_handles);
+            // Do not spend further catch-up substeps on the same
+            // freshly-invalidated contact island this frame.
+            self.accumulator = 0.0;
+            return SubstepOutcome::Stop;
+        }
+        // #5161 — caps velocities before they can be integrated into an
+        // insane position. The restore branch above already sanitises
+        // its bodies (rolled back + slept), so skipping the clamp there
+        // loses nothing.
+        self.clamp_explosive_velocities();
+        // Budget check AFTER the step so at least one substep always
+        // runs (a slow frame must still advance the sim). When physics
+        // has spent its per-frame wall-time, forfeit the leftover
+        // accumulator — catching up is futile once a single substep
+        // already costs more wall-time than the sim-time it produces.
+        if loop_start.elapsed().as_secs_f32() >= budget {
+            self.accumulator = 0.0;
+            return SubstepOutcome::Stop;
+        }
+        SubstepOutcome::Continue
+    }
+}
+
+/// Follow-up decision of one [`PhysicsWorld::run_substep`] for the
+/// catch-up loop in `step`.
+enum SubstepOutcome {
+    /// Run another substep if accumulator and substep budget allow.
+    Continue,
+    /// Stop the catch-up loop this frame.
+    Stop,
 }
 
 impl Default for PhysicsWorld {
@@ -1392,690 +1014,6 @@ impl Default for PhysicsWorld {
 }
 
 impl Resource for PhysicsWorld {}
-
-/// Result of a [`PhysicsWorld::move_character`] step. Mirrors Rapier's
-/// `EffectiveCharacterMovement` but with engine-side types so callers
-/// don't pull in `rapier3d::prelude::*`. See M28.5.
-#[derive(Debug, Clone, Copy)]
-pub struct CharacterMoveResult {
-    /// Effective translation in engine world-space (Y-up). Apply this
-    /// to the character body's Transform + queue as the kinematic
-    /// next-translation.
-    pub translation: byroredux_core::math::Vec3,
-    /// Whether the character ended the step touching the ground.
-    /// Read by the controller system to gate jump triggers + zero
-    /// vertical velocity on landing.
-    pub grounded: bool,
-    /// Whether the character is currently sliding down a steep slope
-    /// (slope > `max_slope_climb_deg`). Not consumed today; surfaced
-    /// for future stamina / damage hooks.
-    pub is_sliding_down_slope: bool,
-}
-
-/// Movement-step parameters for [`PhysicsWorld::move_character`]. Pure
-/// data so the engine-side controller stays decoupled from
-/// `rapier3d::control::KinematicCharacterController` field layout.
-#[derive(Debug, Clone, Copy)]
-pub struct CharacterMoveParams {
-    /// Capsule half-height (Y-axis), excludes caps. BU.
-    pub capsule_half_height: f32,
-    /// Capsule radius. BU.
-    pub capsule_radius: f32,
-    /// Current body position in engine world-space (Y-up).
-    pub position: byroredux_core::math::Vec3,
-    /// Desired translation for this step (engine world-space).
-    /// Caller is responsible for combining horizontal motion with
-    /// gravity-integrated vertical motion into a single vector.
-    pub desired_translation: byroredux_core::math::Vec3,
-    /// Time-step (seconds) for ground-detection friction.
-    pub dt: f32,
-    /// Max climbable slope, degrees. KCC default 50°.
-    pub max_slope_climb_deg: f32,
-    /// Auto-step max height, BU. KCC default 32 BU (~46 cm — covers
-    /// canonical Bethesda stairs).
-    pub step_height: f32,
-    /// Auto-step minimum platform width (tread depth). BU. Rapier only
-    /// steps up when the surface above the obstacle is at least this
-    /// wide. Smaller = more permissive. 8 BU handles FNV doorsteps
-    /// whose treads are often 8-16 BU deep; using capsule_radius here
-    /// blocks autostep on narrow thresholds.
-    pub step_min_width: f32,
-    /// Ground-snap distance, BU. Holds the character on terrain
-    /// rolls without per-step bouncing.
-    pub snap_to_ground: f32,
-    /// Optional rapier collider handle to exclude from the
-    /// shapecast — pass the character's own collider here so the
-    /// KCC doesn't self-hit.
-    pub exclude_collider: Option<rapier3d::prelude::ColliderHandle>,
-    /// Optional interaction-group mask for the shapecast. `None` keeps the
-    /// default (collide with everything not excluded otherwise). M42.10 —
-    /// NPC locomotion passes [`actor_move_interaction_groups`] here: like
-    /// the `cast_ray_down` self-hit problem (#2873), each bone is a
-    /// separate body, so a single `exclude_collider` can never cover the
-    /// walker's own bones — they all carry [`ACTOR_BONE_GROUP`] and the
-    /// group is masked wholesale, which masks EVERY actor's bones (NPCs
-    /// ghost through NPCs; #4690). Dynamics stay included in the sweep,
-    /// but `move_character` applies no collision impulses to them: a
-    /// walker is blocked by clutter it cannot push or step over.
-    pub filter_groups: Option<rapier3d::prelude::InteractionGroups>,
-    /// `KinematicCharacterController.offset` distance in BU. Sourced
-    /// from `ContactConfig::kcc_offset_bu` by the controller system;
-    /// surfaced as a param so `move_character` stays pure (no resource
-    /// lookups on PhysicsWorld). Wider keeps the capsule from grazing
-    /// TriMesh edges; narrower lets the player fit tighter clearances.
-    pub kcc_offset_bu: f32,
-}
-
-impl PhysicsWorld {
-    /// Rebuild the `QueryPipeline` BVH from the current `ColliderSet`.
-    ///
-    /// `pipeline.step()` updates the query pipeline as a side-effect of
-    /// each physics tick, but newly-inserted colliders are invisible to
-    /// `cast_ray` / `intersection_with_shape` / etc. until the next
-    /// step runs. M28.5 character spawn needs to ray-cast the floor
-    /// BEFORE the first physics tick (the spawn position depends on
-    /// the result), so we call this explicitly after newcomer
-    /// registration to flush the BVH.
-    pub fn update_query_pipeline(&mut self) {
-        self.query_pipeline.update(&self.colliders);
-        self.colliders_dirty = false;
-    }
-
-    /// Defer the query-pipeline rebuild until the next physics boundary.
-    pub fn mark_colliders_dirty(&mut self) {
-        self.colliders_dirty = true;
-    }
-
-    /// Cast a downward ray from `origin` and return the Y-coordinate
-    /// of the first solid hit (the highest solid surface below the
-    /// ray's start point), if any. Used by M28.5 character spawn to
-    /// place the body on the actual floor rather than at
-    /// `aabb.max.y + N` which lands on the building's exterior roof
-    /// — that roof has structural gaps the KCC can slip through.
-    ///
-    /// Ranges over fixed (static) colliders only. `max_distance` is
-    /// in BU; pass the AABB height + slack.
-    ///
-    /// **Caller must have called [`update_query_pipeline`]** since the
-    /// last collider insertion, otherwise the BVH is stale and the ray
-    /// will report no hits even when colliders exist.
-    ///
-    /// Returns the world-space Y of the hit; the caller adds capsule
-    /// `half_height + offset` to place the capsule centre above the
-    /// surface.
-    ///
-    /// `excluded_body` must be passed whenever the origin can lie inside a
-    /// body — the player capsule, or an actor's own keyframed ragdoll bones.
-    /// `exclude_dynamic()` does NOT cover those: both are
-    /// `KinematicPositionBased`, and with `solid = true` rapier returns an
-    /// impact at `toi = 0` for a ray starting inside a shape, which always
-    /// wins the closest-hit search. The parameter is deliberately mandatory
-    /// (rather than a defaulted sibling method) so every call site has to
-    /// decide — a silent self-hit is invisible, since the returned
-    /// `origin.y` is exactly what most callers use as their fallback (#2859).
-    ///
-    /// A live actor's keyframed ragdoll bones need no handle here: they carry
-    /// [`ACTOR_BONE_GROUP`] and are masked out wholesale by
-    /// [`ground_probe_groups`] (#2873). That matters because each bone is a
-    /// separate body — `excluded_body` could never cover all ~18 of them.
-    pub fn cast_ray_down(
-        &self,
-        origin: byroredux_core::math::Vec3,
-        max_distance: f32,
-        excluded_body: Option<rapier3d::prelude::RigidBodyHandle>,
-    ) -> Option<f32> {
-        use rapier3d::prelude::*;
-        let ray = Ray::new(
-            point![origin.x, origin.y, origin.z],
-            vector![0.0, -1.0, 0.0],
-        );
-        // Restrict to fixed, non-sensor geometry — we don't want to spawn the
-        // player standing on a dropped barrel, nor on a non-collidable marker
-        // (#3116). See `solid_probe_filter`.
-        let mut filter = solid_probe_filter();
-        if let Some(body) = excluded_body {
-            filter = filter.exclude_rigid_body(body);
-        }
-        self.query_pipeline
-            .cast_ray(
-                &self.bodies,
-                &self.colliders,
-                &ray,
-                max_distance,
-                /* solid = */ true,
-                filter,
-            )
-            .map(|(_handle, toi)| origin.y - toi)
-    }
-
-    /// Cast a normalized gameplay ray against solid colliders.
-    ///
-    /// Sensors are excluded because trigger volumes do not obstruct sight.
-    /// `excluded_body` is normally the player capsule: a camera ray can begin
-    /// inside that body, which would otherwise return an immediate self-hit.
-    /// The query pipeline must have been refreshed after collider insertion,
-    /// matching [`cast_ray_down`](Self::cast_ray_down)'s contract.
-    pub fn cast_ray(
-        &self,
-        origin: byroredux_core::math::Vec3,
-        direction: byroredux_core::math::Vec3,
-        max_distance: f32,
-        excluded_body: Option<rapier3d::prelude::RigidBodyHandle>,
-    ) -> Option<PhysicsRayHit> {
-        if max_distance <= 0.0 || !max_distance.is_finite() {
-            return None;
-        }
-        let direction = direction.normalize_or_zero();
-        if direction.length_squared() == 0.0 {
-            return None;
-        }
-
-        let ray = Ray::new(
-            point![origin.x, origin.y, origin.z],
-            vector![direction.x, direction.y, direction.z],
-        );
-        let mut filter = QueryFilter::default().exclude_sensors();
-        if let Some(body) = excluded_body {
-            filter = filter.exclude_rigid_body(body);
-        }
-        self.query_pipeline
-            .cast_ray(
-                &self.bodies,
-                &self.colliders,
-                &ray,
-                max_distance,
-                /* solid = */ true,
-                filter,
-            )
-            .map(|(collider, distance)| PhysicsRayHit {
-                body: self.colliders.get(collider).and_then(|hit| hit.parent()),
-                distance,
-            })
-    }
-
-    /// #5160 — a swept melee corridor: the same query surface as
-    /// [`cast_ray`] (query pipeline, sensors excluded, optional own-body
-    /// exclusion), but the ray is widened to a ball of `corridor_radius`
-    /// because a swing sweeps a volume, not a line.
-    ///
-    /// Authored actor bone colliders are small boxes — measured 16-18 BU on
-    /// FNV humanoids — so a zero-width ray can thread the gaps between them
-    /// even with the aim centred on the actor: observed as a guaranteed
-    /// `melee swing missed` from a textbook approach pose (p2-melee-core on
-    /// `GSSettlercm`, 2026-10-01, where a 1.6° pitch difference decided
-    /// hit vs thread-the-gap). Damage is actor-level, so the corridor is
-    /// the honest target volume; per-bone fidelity is unaffected — the
-    /// corridor still resolves through the actor's own bone colliders.
-    pub fn cast_ray_corridor(
-        &self,
-        origin: byroredux_core::math::Vec3,
-        direction: byroredux_core::math::Vec3,
-        max_distance: f32,
-        corridor_radius: f32,
-        excluded_body: Option<rapier3d::prelude::RigidBodyHandle>,
-    ) -> Option<PhysicsRayHit> {
-        if max_distance <= 0.0 || !max_distance.is_finite() {
-            return None;
-        }
-        let direction = direction.normalize_or_zero();
-        if direction.length_squared() == 0.0 {
-            return None;
-        }
-        if corridor_radius <= 0.0 {
-            return self.cast_ray(origin, direction, max_distance, excluded_body);
-        }
-
-        use rapier3d::parry::query::ShapeCastOptions;
-        use rapier3d::prelude::*;
-        let shape = Ball::new(corridor_radius);
-        let pos = Isometry::translation(origin.x, origin.y, origin.z);
-        let mut filter = QueryFilter::default().exclude_sensors();
-        if let Some(body) = excluded_body {
-            filter = filter.exclude_rigid_body(body);
-        }
-        self.query_pipeline
-            .cast_shape(
-                &self.bodies,
-                &self.colliders,
-                &pos,
-                &Vector::new(direction.x, direction.y, direction.z),
-                &shape,
-                ShapeCastOptions {
-                    target_distance: 0.0,
-                    stop_at_penetration: false,
-                    max_time_of_impact: max_distance,
-                    compute_impact_geometry_on_penetration: false,
-                },
-                filter,
-            )
-            .map(|(collider, hit)| PhysicsRayHit {
-                body: self.colliders.get(collider).and_then(|hit| hit.parent()),
-                distance: hit.time_of_impact,
-            })
-    }
-
-    /// #4414 — does solid world geometry block the straight line `from → to`?
-    ///
-    /// The sight test ambient faction hostility gates an attack on. Uses the
-    /// same [`solid_probe_filter`] as every solid-world probe: fixed,
-    /// non-sensor geometry with every actor's bones masked, so neither the
-    /// two actors nor a bystander between them occlude — walls, floors and
-    /// fixed props do. `excluded_body` is the player capsule, a kinematic
-    /// body `exclude_dynamic` does not cover, which a ray aimed at the
-    /// player would otherwise always hit. Same **caller must have called
-    /// [`update_query_pipeline`](Self::update_query_pipeline)** contract as
-    /// the other probes.
-    pub fn line_of_sight_blocked(
-        &self,
-        from: byroredux_core::math::Vec3,
-        to: byroredux_core::math::Vec3,
-        excluded_body: Option<rapier3d::prelude::RigidBodyHandle>,
-    ) -> bool {
-        let delta = to - from;
-        let distance = delta.length();
-        if distance <= 0.0 || !distance.is_finite() {
-            return false;
-        }
-        let direction = delta / distance;
-        let ray = Ray::new(
-            point![from.x, from.y, from.z],
-            vector![direction.x, direction.y, direction.z],
-        );
-        let mut filter = solid_probe_filter();
-        if let Some(body) = excluded_body {
-            filter = filter.exclude_rigid_body(body);
-        }
-        self.query_pipeline
-            .cast_ray(
-                &self.bodies,
-                &self.colliders,
-                &ray,
-                distance,
-                /* solid = */ true,
-                filter,
-            )
-            .is_some()
-    }
-
-    /// Like [`cast_ray_down`](Self::cast_ray_down), but sweeps a capsule of
-    /// the given dimensions instead of a zero-width ray. A bare ray can pass
-    /// clean through a gap beside a sloped or narrow piece of architecture
-    /// that a real capsule of nonzero radius would still clip — #2013 traced
-    /// exactly this gap: the M28.5 door-spawn nudge picks an XZ a fixed
-    /// distance into the room, and a ray straight down from that single
-    /// point can miss the actual walkable floor a capsule spawned there
-    /// would rest on (or, conversely, clip a sloped decoration a bare ray
-    /// slips past — either way the ray and the KCC's own shape disagree).
-    ///
-    /// Returns the world-space Y of the surface a capsule of this size would
-    /// rest on (equivalent contract to `cast_ray_down`: the caller still adds
-    /// `half_height + radius + offset` to place the capsule centre above it).
-    ///
-    /// Same **caller must have called [`update_query_pipeline`]** and
-    /// fixed-bodies-only caveats as `cast_ray_down`.
-    ///
-    /// **No walkable-normal screen.** As of #3971 this form has no production
-    /// caller left: the spawn ladder, the door-arrival ladder and `phys.census`
-    /// use [`cast_capsule_down_onto_walkable_surface`] (#2193), and the
-    /// character controller's per-frame ground probe moved to
-    /// [`cast_capsule_down_surface_and_normal`] so it can screen the half of
-    /// its answer that feeds `is_grounded` while keeping the raw hit for its
-    /// anti-drift correction. A new floor probe almost certainly wants one of
-    /// those two rather than this.
-    ///
-    /// [`cast_capsule_down_onto_walkable_surface`]: Self::cast_capsule_down_onto_walkable_surface
-    /// [`cast_capsule_down_surface_and_normal`]: Self::cast_capsule_down_surface_and_normal
-    pub fn cast_capsule_down(
-        &self,
-        origin: byroredux_core::math::Vec3,
-        capsule_half_height: f32,
-        capsule_radius: f32,
-        max_distance: f32,
-        excluded_body: Option<rapier3d::prelude::RigidBodyHandle>,
-    ) -> Option<f32> {
-        self.cast_capsule_down_surface_and_normal(
-            origin,
-            capsule_half_height,
-            capsule_radius,
-            max_distance,
-            excluded_body,
-        )
-        .map(|(surface_y, _)| surface_y)
-    }
-
-    /// Capsule floor probe that rejects walls and other non-walkable hits.
-    ///
-    /// A vertical capsule sweep can hit nearby door frames or shell walls
-    /// before its bottom reaches the floor. Those hits have a near-horizontal
-    /// normal and must not be used as a character spawn surface (#2193).
-    /// Normal orientation is deliberately ignored: legacy Havok architecture
-    /// can be consistently inward-wound, but its geometric slope is still a
-    /// valid basis for deciding whether a surface is walkable.
-    pub fn cast_capsule_down_onto_walkable_surface(
-        &self,
-        origin: byroredux_core::math::Vec3,
-        capsule_half_height: f32,
-        capsule_radius: f32,
-        max_distance: f32,
-        min_walkable_normal_y: f32,
-        excluded_body: Option<rapier3d::prelude::RigidBodyHandle>,
-    ) -> Option<f32> {
-        self.cast_capsule_down_surface_and_normal(
-            origin,
-            capsule_half_height,
-            capsule_radius,
-            max_distance,
-            excluded_body,
-        )
-        .and_then(|(surface_y, normal_y)| {
-            (normal_y.abs() >= min_walkable_normal_y.clamp(0.0, 1.0)).then_some(surface_y)
-        })
-    }
-
-    /// The unfiltered form of [`cast_capsule_down_onto_walkable_surface`]:
-    /// returns `(surface_y, normal1.y)` for the first hit, walkable or not.
-    ///
-    /// Public because the walkable wrapper collapses two very different
-    /// outcomes into `None` — "the swept capsule hit nothing" and "it hit
-    /// something whose slope failed the walkable test" — and a spawn that
-    /// misses every rung needs to tell those apart. Re-running the probe
-    /// through this entry point on the failure path is what lets
-    /// `dump_spawn_collider_census` report *"unfiltered sweep hit y=… with
-    /// normal_y=… → REJECTED as non-walkable"* instead of mis-attributing a
-    /// 60° ramp to a transform-composition bug (#2874).
-    ///
-    /// [`cast_capsule_down_onto_walkable_surface`]: Self::cast_capsule_down_onto_walkable_surface
-    pub fn cast_capsule_down_surface_and_normal(
-        &self,
-        origin: byroredux_core::math::Vec3,
-        capsule_half_height: f32,
-        capsule_radius: f32,
-        max_distance: f32,
-        excluded_body: Option<rapier3d::prelude::RigidBodyHandle>,
-    ) -> Option<(f32, f32)> {
-        use rapier3d::parry::query::ShapeCastOptions;
-        use rapier3d::prelude::*;
-        let shape = character_capsule(capsule_half_height, capsule_radius);
-        let pos = Isometry::translation(origin.x, origin.y, origin.z);
-        let mut filter = solid_probe_filter();
-        if let Some(body) = excluded_body {
-            filter = filter.exclude_rigid_body(body);
-        }
-        self.query_pipeline
-            .cast_shape(
-                &self.bodies,
-                &self.colliders,
-                &pos,
-                &-Vector::y_axis(),
-                &shape,
-                ShapeCastOptions {
-                    target_distance: 0.0,
-                    stop_at_penetration: false,
-                    max_time_of_impact: max_distance,
-                    compute_impact_geometry_on_penetration: true,
-                },
-                filter,
-            )
-            .map(|(_handle, hit)| {
-                (
-                    origin.y - hit.time_of_impact - capsule_half_height - capsule_radius,
-                    hit.normal1.y,
-                )
-            })
-    }
-
-    /// Test the final capsule placement, not just the supporting floor.
-    /// Downward casts with `stop_at_penetration=false` can find floor while
-    /// already inside a door. Use the same solid-world filter as floor probes
-    /// (including kinematic architecture, excluding sensors and actor bones).
-    /// The query pipeline must be current, as for the floor probes.
-    pub fn capsule_overlaps_solid(
-        &self,
-        center: byroredux_core::math::Vec3,
-        half_height: f32,
-        radius: f32,
-        excluded_body: Option<RigidBodyHandle>,
-    ) -> bool {
-        let shape = character_capsule(half_height, radius);
-        let pos = Isometry::translation(center.x, center.y, center.z);
-        let mut filter = solid_probe_filter();
-        if let Some(body) = excluded_body {
-            filter = filter.exclude_rigid_body(body);
-        }
-        self.query_pipeline
-            .intersection_with_shape(&self.bodies, &self.colliders, &pos, &shape, filter)
-            .is_some()
-    }
-
-    /// Diagnostic — compute the AABB of all static colliders in the
-    /// world, plus the count. Returns `None` when there are no static
-    /// colliders. Used by the M28.5 controller's one-shot "collider
-    /// world overlaps character XZ?" sanity log.
-    pub fn static_colliders_aabb(&self) -> Option<([f32; 3], [f32; 3], u32)> {
-        use rapier3d::prelude::*;
-        let mut min = [f32::INFINITY; 3];
-        let mut max = [f32::NEG_INFINITY; 3];
-        let mut count = 0u32;
-        for (_h, c) in self.colliders.iter() {
-            // #3116 — a sensor sitting where the floor should be is not a
-            // floor, so it must not count toward "the collision world is
-            // populated". Mirrors the discrimination `NearbyCollider::is_sensor`
-            // already carries (#2874).
-            if c.is_sensor() {
-                continue;
-            }
-            if let Some(parent) = c.parent() {
-                if let Some(rb) = self.bodies.get(parent) {
-                    if rb.body_type() == RigidBodyType::Fixed {
-                        let aabb = c.compute_aabb();
-                        min[0] = min[0].min(aabb.mins.x);
-                        min[1] = min[1].min(aabb.mins.y);
-                        min[2] = min[2].min(aabb.mins.z);
-                        max[0] = max[0].max(aabb.maxs.x);
-                        max[1] = max[1].max(aabb.maxs.y);
-                        max[2] = max[2].max(aabb.maxs.z);
-                        count += 1;
-                    }
-                }
-            }
-        }
-        if count == 0 {
-            None
-        } else {
-            Some((min, max, count))
-        }
-    }
-
-    /// Diagnostic — every collider whose AABB overlaps the vertical column
-    /// of half-width `radius` around `(x, z)`, whatever its body type
-    /// (#2202).
-    ///
-    /// [`static_colliders_aabb`](Self::static_colliders_aabb) answers
-    /// "is the collision world populated and does it overlap this cell?" —
-    /// cell-wide bounds and a Fixed-only count. That reads healthy for a
-    /// cell with 2560 fixed colliders and a hole exactly under the player's
-    /// spawn, which is why it cannot discriminate between a collider that
-    /// is absent, a collider that exists but is Dynamic (and so invisible
-    /// to both that census and the `exclude_dynamic` spawn probe), and a
-    /// collider that exists as Fixed but composed to the wrong Y.
-    ///
-    /// This one is deliberately unfiltered: the *point* is to see colliders
-    /// the spawn probe cannot. Returned entries carry the parent body handle
-    /// so the caller can resolve it back to an entity and its
-    /// `PhysicsSourceForm`.
-    ///
-    /// Sorted by **distance from `probe_y`**, nearest first (#2875). The
-    /// pre-fix ordering sorted by absolute AABB centre Y descending and took
-    /// only the first N, which inverted the diagnostic: the question is "is
-    /// there a floor at or below the spawn?", whose answer lives at the low
-    /// end of the column, while a two-storey inn's roof beams and upper
-    /// landing monopolise the high end. In the dense-interior case this
-    /// census exists for, the evidence was exactly what got truncated away.
-    pub fn colliders_near_xz(
-        &self,
-        x: f32,
-        probe_y: f32,
-        z: f32,
-        radius: f32,
-    ) -> Vec<NearbyCollider> {
-        use rapier3d::prelude::*;
-        let mut out = Vec::new();
-        for (_h, c) in self.colliders.iter() {
-            let aabb = c.compute_aabb();
-            // Column overlap test — a wall whose AABB straddles the column
-            // counts even if its centre is far away.
-            if aabb.maxs.x < x - radius
-                || aabb.mins.x > x + radius
-                || aabb.maxs.z < z - radius
-                || aabb.mins.z > z + radius
-            {
-                continue;
-            }
-            let parent = c.parent();
-            let body_type = parent
-                .and_then(|p| self.bodies.get(p))
-                .map(|rb| match rb.body_type() {
-                    RigidBodyType::Fixed => "Fixed",
-                    RigidBodyType::Dynamic => "Dynamic",
-                    RigidBodyType::KinematicPositionBased => "KinematicPos",
-                    RigidBodyType::KinematicVelocityBased => "KinematicVel",
-                })
-                .unwrap_or("orphan");
-            out.push(NearbyCollider {
-                body: parent,
-                body_type,
-                is_sensor: c.is_sensor(),
-                aabb_min: [aabb.mins.x, aabb.mins.y, aabb.mins.z],
-                aabb_max: [aabb.maxs.x, aabb.maxs.y, aabb.maxs.z],
-            });
-        }
-        // Distance from the probe height, nearest first. Ties (a floor slab
-        // and a ceiling slab equidistant from the probe) break downward, so
-        // the one that could actually be a floor reads first.
-        let distance = |c: &NearbyCollider| {
-            let centre = 0.5 * (c.aabb_min[1] + c.aabb_max[1]);
-            ((centre - probe_y).abs(), centre > probe_y)
-        };
-        out.sort_by(|a, b| {
-            let (ad, a_above) = distance(a);
-            let (bd, b_above) = distance(b);
-            ad.partial_cmp(&bd)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then(a_above.cmp(&b_above))
-        });
-        out
-    }
-
-    /// Drive a kinematic character body forward one step using
-    /// Rapier's `KinematicCharacterController` (M28.5). Returns the
-    /// effective collide-and-slide-corrected motion + grounded status.
-    ///
-    /// Caller is responsible for:
-    ///   1. Combining horizontal WASD-driven motion with vertical
-    ///      gravity-integrated motion into `params.desired_translation`.
-    ///   2. Applying `result.translation` to the character body's
-    ///      `Transform` (engine-side) AND
-    ///      `set_next_kinematic_translation` (Rapier-side) so the
-    ///      simulation + ECS stay in lockstep.
-    ///   3. Resetting `vertical_velocity` to 0 on `result.grounded`
-    ///      transitions and to `jump_velocity` on jump triggers.
-    pub fn move_character(&self, params: CharacterMoveParams) -> CharacterMoveResult {
-        use rapier3d::control::{CharacterAutostep, CharacterLength, KinematicCharacterController};
-        use rapier3d::prelude::*;
-
-        // M28.5 KCC offset — at Skyrim's 70 BU/m scale, 0.5 BU
-        // was only 7 mm of skin between the capsule and any surface,
-        // letting the KCC's swept cast graze TriMesh edges and tunnel
-        // through tiny gaps (Whiterun Bannered Mare floor planks have
-        // ~1-2 BU vertex-gaps where adjacent collision triangles meet;
-        // the 0.5 BU offset wasn't enough margin). The value lives on
-        // `ContactConfig::kcc_offset_bu` (default 4 BU ≈ 5.7 cm) and
-        // is plumbed through `CharacterMoveParams` so a single resource
-        // edit can re-tune every character.
-        //
-        // Min slide angle: half-way between climb limit and 90° — once
-        // the slope is steeper than this, the controller starts
-        // sliding the character down instead of trying to hold pose.
-        let controller = KinematicCharacterController {
-            up: Vector::y_axis(),
-            offset: CharacterLength::Absolute(params.kcc_offset_bu.max(0.0)),
-            slide: true,
-            autostep: Some(CharacterAutostep {
-                max_height: CharacterLength::Absolute(params.step_height.max(0.0)),
-                min_width: CharacterLength::Absolute(params.step_min_width.max(0.1)),
-                include_dynamic_bodies: false,
-            }),
-            max_slope_climb_angle: params.max_slope_climb_deg.to_radians(),
-            min_slope_slide_angle: ((params.max_slope_climb_deg + 90.0) * 0.5).to_radians(),
-            snap_to_ground: if params.snap_to_ground > 0.0 {
-                Some(CharacterLength::Absolute(params.snap_to_ground))
-            } else {
-                None
-            },
-            ..Default::default()
-        };
-
-        let shape = character_capsule(params.capsule_half_height, params.capsule_radius);
-        let pos = Isometry::translation(params.position.x, params.position.y, params.position.z);
-        let desired = Vector::new(
-            params.desired_translation.x,
-            params.desired_translation.y,
-            params.desired_translation.z,
-        );
-
-        // #3116 — sensors must be excluded here too. Rapier 0.22's
-        // `KinematicCharacterController` does not add the flag for you: the
-        // only mutation it makes to the caller's filter is
-        // `filter.flags |= QueryFilterFlags::EXCLUDE_DYNAMIC`
-        // (`control/character_controller.rs:670`), and the sweep passes that
-        // same filter straight into `queries.cast_shape`. Without this, every
-        // Havok layer-15 body registered as a sensor since #2549 still walls
-        // off the player — for the character controller that change was a
-        // no-op, which is the exact bug #2549 was filed to fix.
-        let base = QueryFilter::default().exclude_sensors();
-        let base = match params.filter_groups {
-            Some(groups) => base.groups(groups),
-            None => base,
-        };
-        let filter = if let Some(exclude) = params.exclude_collider {
-            base.exclude_collider(exclude)
-        } else {
-            base
-        };
-
-        let result = controller.move_shape(
-            params.dt.max(1e-6),
-            &self.bodies,
-            &self.colliders,
-            &self.query_pipeline,
-            &shape,
-            &pos,
-            desired,
-            filter,
-            |_| {},
-        );
-
-        CharacterMoveResult {
-            translation: byroredux_core::math::Vec3::new(
-                result.translation.x,
-                result.translation.y,
-                result.translation.z,
-            ),
-            grounded: result.grounded,
-            is_sliding_down_slope: result.is_sliding_down_slope,
-        }
-    }
-}
-
-/// The character / ground-probe capsule, by value. #4614 — the sweep and
-/// overlap queries only need `&dyn Shape`, so the stack `Capsule` replaces
-/// `SharedShape::capsule_y`, whose `Arc` was one heap allocation + free per
-/// call: per walking NPC per tick since M42.10, plus the player and every
-/// ground probe. Also the one place the degenerate-extent floor lives, for
-/// #4134's clamp to extend.
-fn character_capsule(half_height: f32, radius: f32) -> rapier3d::parry::shape::Capsule {
-    rapier3d::parry::shape::Capsule::new_y(half_height.max(1e-3), radius.max(1e-3))
-}
 
 #[cfg(test)]
 mod tests {
@@ -2098,12 +1036,17 @@ mod tests {
             assert_eq!(stack.radius, shared.radius);
         }
 
-        let src = include_str!("world.rs");
-        let production = &src[..src.find("#[cfg(test)]\nmod tests {").expect("tests module")];
-        assert!(
-            !production.contains("SharedShape::capsule_y("),
-            "character sweeps and ground probes must use character_capsule, not a per-call Arc"
-        );
+        // Production now spans three files (#5311) — scan them all, so a
+        // per-call `SharedShape::capsule_y` cannot hide in a split-out module.
+        fn production(src: &str) -> &str {
+            src.split_once("#[cfg(test)]\nmod ").map_or(src, |(head, _)| head)
+        }
+        for file in [include_str!("mod.rs"), include_str!("queries.rs"), include_str!("recovery.rs")] {
+            assert!(
+                !production(file).contains("SharedShape::capsule_y("),
+                "character sweeps and ground probes must use character_capsule, not a per-call Arc"
+            );
+        }
     }
 
     /// Test helper: legacy single-`SharedShape` API. Assumes the input
@@ -3437,7 +2380,7 @@ mod tests {
     /// observable from behaviour.
     #[test]
     fn step_cost_rationale_is_scoped_to_history_and_names_the_real_cost_centre() {
-        let src = crate::source_scan::production_text(include_str!("world.rs"));
+        let src = crate::source_scan::production_text(include_str!("mod.rs"));
         let start = src
             .find("        // Static-scene fast path")
             .expect("the fast path rationale is still here");
@@ -3491,7 +2434,7 @@ mod tests {
     /// them in sync.
     #[test]
     fn kinematic_count_doc_agrees_with_the_fast_paths_own_rationale() {
-        let src = crate::source_scan::production_text(include_str!("world.rs"));
+        let src = crate::source_scan::production_text(include_str!("mod.rs"));
         let accessor_start = src
             .find("pub fn active_island_counts")
             .expect("the accessor must still exist under this name");
@@ -3568,7 +2511,7 @@ mod tests {
     /// mutating `pw.bodies` directly — the state the audit found.
     #[test]
     fn buoyancy_applies_forces_through_the_public_wrappers() {
-        let src = include_str!("water.rs");
+        let src = include_str!("../water.rs");
         let start = src
             .find("pub(crate) fn apply_buoyancy")
             .expect("the buoyancy phase is still here");
@@ -4381,9 +3324,9 @@ mod audit_2026_08_13_regressions {
 /// `sync.rs`'s `tick_documentation_tests`.
 #[cfg(test)]
 mod wake_contract_tests {
-    const WORLD_RS: &str = include_str!("world.rs");
-    const SYNC_RS: &str = include_str!("sync.rs");
-    const WATER_RS: &str = include_str!("water.rs");
+    const WORLD_RS: &str = include_str!("mod.rs");
+    const SYNC_RS: &str = include_str!("../sync.rs");
+    const WATER_RS: &str = include_str!("../water.rs");
 
     /// `wake`'s doc, from the start of its doc block to the `pub fn wake`.
     fn wake_doc() -> &'static str {
