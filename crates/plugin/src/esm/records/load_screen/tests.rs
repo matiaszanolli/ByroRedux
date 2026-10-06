@@ -225,11 +225,11 @@ fn trns_data_bytes() -> Vec<u8> {
 fn trns_decodes_the_full_thirty_six_byte_data() {
     let record = parse_trns(
         0x0022DBAC,
-        0x8000,
+        0x0001_0000,
         &[sub(b"EDID", b"LoadingBarberTransform\0"), sub(b"DATA", trns_data_bytes())],
     );
     assert_eq!(record.editor_id, "LoadingBarberTransform");
-    assert!(record.around_origin, "header flag 0x8000 is Around Origin");
+    assert!(record.around_origin, "header bit 16 (0x10000) is Around Origin");
     assert_eq!(record.translation, [12.0, 350.0, -31.9]);
     // wbPosRot radians (#5229): 6.102 ≈ 2π − π/6, a −10.5° per-axis pose —
     // a degree magnitude FO4 never ships.
@@ -247,6 +247,20 @@ fn trns_accepts_the_zoomless_twenty_eight_byte_form() {
     assert_eq!(record.zoom_bounds, None);
     assert_eq!(record.scale, 1.0);
     assert!(record.malformed_fields.is_empty());
+}
+
+/// #5296: xEdit's `wbFlagsList([{0x00008000} 16, 'Around Origin'])` takes
+/// the bit *index* 16 — `0x10000`. The brace comment is a typo in xEdit
+/// itself: no vanilla TRNS ships `0x8000`, and 62 FO4 + 19 Starfield
+/// records ship `0x10000`.
+#[test]
+fn trns_around_origin_is_header_bit_sixteen_not_xedit_comment_typo() {
+    let around = parse_trns(1, 0x0001_0000, &[sub(b"DATA", trns_data_bytes())]);
+    assert!(around.around_origin, "0x10000 (bit index 16) must set Around Origin");
+    // The xEdit brace-comment value is an unrelated header bit; reading it
+    // left every vanilla around-origin screen posed on bounds centre.
+    let typo_bit = parse_trns(1, 0x8000, &[sub(b"DATA", trns_data_bytes())]);
+    assert!(!typo_bit.around_origin, "0x8000 is not Around Origin");
 }
 
 #[test]

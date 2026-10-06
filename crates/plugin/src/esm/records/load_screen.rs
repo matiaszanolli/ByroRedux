@@ -143,7 +143,7 @@ pub fn parse_lscr(
 /// FO4+ `TRNS` — the authored stage transform an LSCR's TNAM points at.
 ///
 /// Layout: `wbDefinitionsFO4.pas` `wbRecord(TRNS)`: EDID, header flag
-/// 0x8000 "Around Origin", and a required `DATA` struct of position (3×f32),
+/// "Around Origin", and a required `DATA` struct of position (3×f32),
 /// rotation (3×f32, **radians** — `wbPosRot`, the same convention as FO4
 /// REFR `DATA` rotation; every component of the 1,259 base+DLC TRNS values
 /// sits in [0, 2π], on radian landmarks like 3.142/1.571/0.524), scale,
@@ -156,9 +156,13 @@ pub fn parse_lscr(
 pub struct LoadScreenTransform {
     pub form_id: u32,
     pub editor_id: String,
-    /// Header flag 0x8000 — rotate the model around its origin rather
-    /// than its bounds centre. Retained faithfully; the first model
-    /// backend does not consume it yet.
+    /// Header bit 16 (`0x0001_0000`) — rotate the model around its origin
+    /// rather than its bounds centre. xEdit's `wbFlagsList([{0x00008000}
+    /// 16, 'Around Origin'])` takes the bit *index* 16, like every other
+    /// entry in those lists; the `{0x00008000}` brace comment is a typo in
+    /// xEdit itself, and no vanilla TRNS ships `0x8000` (FO4 census: 62
+    /// records set `0x10000`, 0 set `0x8000`; Starfield 19). Retained
+    /// faithfully; the first model backend does not consume it yet.
     pub around_origin: bool,
     pub translation: [f32; 3],
     pub rotation_rad: [f32; 3],
@@ -175,7 +179,7 @@ pub fn parse_trns(form_id: u32, flags: u32, subs: &[SubRecord]) -> LoadScreenTra
     let mut out = LoadScreenTransform {
         form_id,
         editor_id: String::new(),
-        around_origin: flags & 0x8000 != 0,
+        around_origin: flags & 0x0001_0000 != 0,
         translation: [0.0; 3],
         rotation_rad: [0.0; 3],
         scale: 1.0,
