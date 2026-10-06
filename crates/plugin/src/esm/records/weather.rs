@@ -62,6 +62,20 @@ pub const TOD_NIGHT: usize = 3;
 pub const TOD_HIGH_NOON: usize = 4;
 pub const TOD_MIDNIGHT: usize = 5;
 
+/// #5363 — the WTHR named exactly `DefaultWeather`, when the load order
+/// ships one (Starfield always does; it is the game's canonical default
+/// weather, a full NAM0 palette). The stand-in consumers reach for when a
+/// climate's own weather table references only records the engine cannot
+/// decode yet (Starfield's WTHS). Deterministic: an EDID is a unique key,
+/// so at most one record matches.
+pub fn default_weather_by_edid<'a>(
+    weathers: &'a std::collections::HashMap<u32, WeatherRecord>,
+) -> Option<&'a WeatherRecord> {
+    weathers
+        .values()
+        .find(|wthr| wthr.editor_id == "DefaultWeather")
+}
+
 /// RGBA color from NAM0 sub-record (u8 per channel).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SkyColor {

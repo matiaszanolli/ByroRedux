@@ -28,6 +28,16 @@ pub struct ClimateRecord {
     pub editor_id: String,
     /// Ordered weather list with chances. First entry is typically the default.
     pub weathers: Vec<ClimateWeather>,
+    /// #5363 — Starfield's `WSLT` ("weather seasonal list") table: the same
+    /// `(form_id, chance, global)` 12-byte rows as WLST, but the form IDs
+    /// reference **`WTHS`** records (SF's replacement weather type — an
+    /// `EDID` + `REFL` pair whose payload is the BGS parameter blob
+    /// `BGSWeatherSettingsForm`, not the WTHR sub-record schema). 26 of
+    /// vanilla Starfield's 47 climates author only WSLT (Akila, Vectera
+    /// Base, …); the other 21 carry a legacy WLST as well. Parsed and
+    /// retained as evidence + the future WTHS decoder's input — consumers
+    /// resolve weather through [`Self::weathers`] only until WTHS decodes.
+    pub seasonal_weathers: Vec<ClimateWeather>,
     /// Sun texture path (from FNAM).
     pub sun_texture: Option<String>,
     /// Sunrise/sunset timing data from TNAM (6 bytes: sunrise begin/end,
@@ -102,6 +112,24 @@ pub fn parse_clmt(
                         }
                     }
                     r.skip_or_eof(trailing_pad);
+                }
+            }
+
+            // #5363 — Starfield WSLT, the seasonal weather table whose rows
+            // reference WTHS records (see [`Self::seasonal_weathers`]).
+            // Same 12-byte stride as the FO3+ WLST; Starfield only.
+            b"WSLT" if matches!(game, GameKind::Starfield) => {
+                let mut r = SubReader::new(&sub.data);
+                while let (Ok(fid), Ok(chance_bits)) = (r.u32(), r.u32()) {
+                    if fid != 0 {
+                        record.seasonal_weathers.push(ClimateWeather {
+                            weather_form_id: remap_fid(fid, remap),
+                            chance: chance_bits as i32,
+                        });
+                    }
+                    if r.u32().is_err() {
+                        break;
+                    }
                 }
             }
 
@@ -191,6 +219,48 @@ mod tests {
             &None,
         );
         assert_eq!(c.weathers[0].weather_form_id, 0x0100_0ABC);
+    }
+
+    /// #5363 — byte-verified against vanilla `Starfield.esm`: 26 of the 47
+    /// CLMTs (ClimateUniqueAkila, ClimateUniqueVecteraBase, …) author **no
+    /// WLST at all** — their weather table is `WSLT`, whose rows reference
+    /// `WTHS` records (the SF replacement weather type). Akila's seven rows
+    /// are `(formID, chance, global=0)` with chances summing to exactly 100.
+    /// The rows decode into `seasonal_weathers` (remapped like WLST ids),
+    /// while `weathers` stays empty — that emptiness is the authored shape,
+    /// not a WLST decode bug.
+    #[test]
+    fn parse_clmt_starfield_wslt_is_the_wths_referencing_seasonal_table() {
+        // The first three rows of Akila's WSLT, verbatim from the record.
+        let rows: [(u32, i32); 3] =
+            [(0x0031_FC4C, 25), (0x0031_FC4D, 25), (0x0031_FC4B, 15)];
+        let mut wslt = Vec::new();
+        for (fid, chance) in rows {
+            wslt.extend_from_slice(&fid.to_le_bytes());
+            wslt.extend_from_slice(&chance.to_le_bytes());
+            wslt.extend_from_slice(&0u32.to_le_bytes());
+        }
+        let c = parse_clmt(
+            0x0033_19E1,
+            &[sub(b"EDID", b"ClimateUniqueAkila\0"), sub(b"WSLT", wslt)],
+            GameKind::Starfield,
+            &None,
+        );
+        assert!(c.weathers.is_empty(), "no WLST authored — weathers is empty");
+        assert_eq!(c.seasonal_weathers.len(), 3);
+        assert_eq!(c.seasonal_weathers[0].weather_form_id, 0x0031_FC4C);
+        assert_eq!(c.seasonal_weathers[0].chance, 25);
+        assert_eq!(c.seasonal_weathers[2].chance, 15);
+
+        // WSLT is Starfield-only: the same bytes under an earlier game's
+        // CLMT must not populate anything (an unknown sub-record there).
+        let earlier = parse_clmt(
+            1,
+            &[sub(b"WSLT", vec![0u8; 12])],
+            GameKind::Fallout4,
+            &None,
+        );
+        assert!(earlier.seasonal_weathers.is_empty());
     }
 
     #[test]
