@@ -73,7 +73,9 @@ impl VulkanContext {
         // the SVGF previous-slot G-buffer read (#282) carries an
         // in-command-buffer barrier — then validated with
         // `BYRO_VALIDATION=1` on both upscaler modes per the
-        // speculative-Vulkan rule.
+        // speculative-Vulkan rule. #5117 — that throughput half is
+        // tracked, with these preconditions as acceptance criteria, as
+        // #5365; #4606 itself remains closed on its doc half.
         let fence_t0 = Instant::now();
         // SAFETY: every entry of `in_flight` is a live fence — the vec is built with exactly `MAX_FRAMES_IN_FLIGHT` `create_fence` calls and `recreate_in_flight_for_frame` replaces rather than nulls (only `images_in_flight` is ever `Fence::null()`). All were signal-targets of prior `queue_submit`s or created pre-signaled, so the wait cannot deadlock. This frame's `cmd` is not re-recorded until this wait returns, so the GPU is done with the prior recording.
         unsafe {

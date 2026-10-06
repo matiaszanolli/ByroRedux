@@ -32,7 +32,9 @@ non-`--all-targets` form; hosted CI status is under
 `a37fcba3c`, 390 commits before this close (R6a-stale-25). Its one open
 regression, **R6a-regress-22**, turned out to be
 the bench camera moving with `b9e961eeb`'s interior spawn ladder, not
-renderer code (#5128, 2026-09-30); a small residual stays open.
+renderer code (#5128, 2026-09-30); a small residual stays open — the
+top-of-frame all-slots fence wait that dominates GPU-bound frames
+(#5365, the tracked throughput half of closed #4606/#5117).
 
 **What works today.**
 - **Content loading.** Interior cells load and render from unmodified game
