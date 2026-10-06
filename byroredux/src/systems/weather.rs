@@ -18,7 +18,7 @@ use crate::components::{
 ///
 /// `tod_hours = [sunrise_begin, sunrise_end, sunset_begin, sunset_end]`
 /// in floating-point game hours (CLMT TNAM bytes divided by 6). The
-/// returned 7-entry table is `(hour, TOD slot index)` pairs the
+/// returned 8-entry table is `(hour, TOD slot index)` pairs the
 /// interpolator walks in increasing-hour order:
 ///
 ///  - `midnight` (synthetic — TNAM doesn't encode it; anchored at 1h)
@@ -28,12 +28,31 @@ use crate::components::{
 ///  - `sunset_begin - 2h` (clamped) → `TOD_DAY` re-anchor — preserves
 ///    the `day → sunset` ease-in the pre-#463 hardcoded path had
 ///  - `sunset_begin` → `TOD_SUNSET`
+///  - `sunset_end` → `TOD_SUNSET` (the sunset hold — see below)
 ///  - `sunset_end + 2h` (clamped against `sunset_begin` and against the
 ///    `keys[0] + 24` wrap point) → `TOD_NIGHT`
 ///
+/// # The sunset hold
+///
+/// `compute_sun_arc` puts the sun **on the horizon exactly at
+/// `sunset_end`** — the visible arc spans `[sunrise_begin, sunset_end]`,
+/// so through the `[sunset_begin, sunset_end]` window the sun is still
+/// visibly descending and only touches the horizon at the window's end.
+/// The palette must match: the authored `TOD_SUNSET` colours hold
+/// through the whole descent, and the slide to `TOD_NIGHT` eases in only
+/// after the sun is gone (the existing `+2h` tail). Pre-fix the single
+/// `(sunset_begin, SUNSET) → (night, NIGHT)` span started the night
+/// slide at the top of the window, so by the golden hour — sun near the
+/// horizon, the moment a sunset *is* — the palette had already blended
+/// `window/(window+2)` toward night (Skyrim's 4.5 h window: 69% night;
+/// FO3/FNV's 4 h: 67%): a slate-grey dusk with the warm band gone, in
+/// every game, exactly when the sun was lowest. The same lockstep keeps
+/// fog on the `TOD_SUNSET` half-day distance through the descent instead
+/// of clamping to night fog while the sun still lights the terrain.
+///
 /// Kept `pub(crate)` so the unit test in this module can pin the
 /// formula independently of a full World setup.
-pub(crate) fn build_tod_keys(tod_hours: [f32; 4]) -> [(f32, usize); 7] {
+pub(crate) fn build_tod_keys(tod_hours: [f32; 4]) -> [(f32, usize); 8] {
     use byroredux_plugin::esm::records::weather::*;
     let [sunrise_begin, sunrise_end, sunset_begin, sunset_end] = tod_hours;
     let afternoon_peak = (sunrise_end + sunset_begin) * 0.5;
@@ -69,6 +88,11 @@ pub(crate) fn build_tod_keys(tod_hours: [f32; 4]) -> [(f32, usize); 7] {
     // bound that still holds it. Mirrors #2473's predecessor-relative
     // treatment of key 4 (`afternoon_cool`).
     let night = (sunset_end + 2.0).max(sunset_begin + 0.1).min(24.9);
+    // The sunset hold's end (see the function doc): the sun touches the
+    // horizon at `sunset_end`, clamped inside `(sunset_begin, night)` so
+    // the key chain stays strictly increasing on the same broken-data
+    // extremes the two clamps above already defend.
+    let sunset_hold_end = sunset_end.max(sunset_begin + 0.05).min(night - 0.05);
     [
         (midnight, TOD_MIDNIGHT),
         (sunrise_begin, TOD_SUNRISE),
@@ -76,6 +100,7 @@ pub(crate) fn build_tod_keys(tod_hours: [f32; 4]) -> [(f32, usize); 7] {
         (afternoon_peak, TOD_HIGH_NOON),
         (afternoon_cool, TOD_DAY),
         (sunset_begin, TOD_SUNSET),
+        (sunset_hold_end, TOD_SUNSET),
         (night, TOD_NIGHT),
     ]
 }
@@ -158,7 +183,7 @@ pub(crate) fn compute_sun_arc(hour: f32, tod_hours: [f32; 4]) -> ([f32; 3], f32)
 /// Hoisted out of `weather_system` so the current snapshot walk and
 /// the WTHR cross-fade target walk share one implementation —
 /// REN-D15-NEW-05 (audit `2026-05-09`).
-pub(crate) fn pick_tod_pair(keys: &[(f32, usize); 7], hour: f32) -> (usize, usize, f32) {
+pub(crate) fn pick_tod_pair(keys: &[(f32, usize); 8], hour: f32) -> (usize, usize, f32) {
     // Wrap pre-midnight hours (e.g. 0.5) into the [1, 25) range so the
     // last-key → first-key wrap segment is reachable from a single
     // monotonic compare below.
@@ -1625,7 +1650,7 @@ mod tod_keys_tests {
 
     /// Pre-#463 default — FNV Mojave-style hardcoded breakpoints.
     /// Verifies the fallback path still produces the same key table
-    /// synthetic test cells used to get.
+    /// synthetic test cells used to get (plus the sunset-hold key).
     #[test]
     fn default_tod_hours_reproduce_pre_fix_fnv_keys() {
         let keys = build_tod_keys([6.0, 10.0, 18.0, 22.0]);
@@ -1636,7 +1661,8 @@ mod tod_keys_tests {
             (14.0, TOD_HIGH_NOON), // midpoint(10, 18)
             (16.0, TOD_DAY),       // sunset_begin - 2
             (18.0, TOD_SUNSET),
-            (24.0, TOD_NIGHT), // (22+2).max(18+0.1).min(24.9) = 24 — #2820
+            (22.0, TOD_SUNSET), // the sunset hold — sun on horizon at 22
+            (24.0, TOD_NIGHT),  // (22+2).max(18+0.1).min(24.9) = 24 — #2820
         ];
         for (i, ((h, s), (eh, es))) in keys.iter().zip(expected.iter()).enumerate() {
             assert!(
@@ -1669,7 +1695,7 @@ mod tod_keys_tests {
             "Wasteland SUNSET key must fire before FNV SUNSET"
         );
         // Slot identities stay put — only the hour anchors change.
-        for i in 0..7 {
+        for i in 0..8 {
             assert_eq!(
                 wasteland[i].1, fnv[i].1,
                 "slot ordering must match across climates"
@@ -1721,7 +1747,7 @@ mod tod_keys_tests {
     fn tod_keys_clamp_night_relative_to_sunset_begin_on_late_sunset_climates() {
         let keys = build_tod_keys([6.0, 10.0, 23.5, 24.0]);
         let sunset_begin = keys[5].0;
-        let night = keys[6].0;
+        let night = keys[7].0;
         assert!(
             night > sunset_begin,
             "night ({night:.2}) must be strictly after sunset_begin \
@@ -1740,12 +1766,56 @@ mod tod_keys_tests {
         ] {
             let keys = build_tod_keys(tod_hours);
             let sunset_end = tod_hours[3];
-            let night = keys[6].0;
+            let night = keys[7].0;
             assert!(
                 (night - (sunset_end + 2.0)).abs() < 1e-5,
                 "night ({night:.2}) must equal sunset_end + 2h ({:.2}) on vanilla \
                  content, not be compressed by the clamp",
                 sunset_end + 2.0
+            );
+        }
+    }
+
+    /// The sunset hold — the palette stays on the authored `TOD_SUNSET`
+    /// colours through the sun's whole visible descent, because
+    /// `compute_sun_arc` puts the sun on the horizon exactly at
+    /// `sunset_end`. Pre-fix the night slide started at `sunset_begin`,
+    /// so at the golden hour (sun near the horizon) the palette was
+    /// already `window/(window+2)` blended toward night — 69% night on
+    /// Skyrim's 4.5 h window, 67% on FO3/FNV's 4 h — and every game
+    /// rendered the golden hour as a slate-grey dusk.
+    #[test]
+    fn tod_keys_hold_sunset_through_the_suns_descent() {
+        for tod_hours in [
+            [6.0, 10.0, 18.0, 22.0],   // FNV
+            [5.333, 10.0, 17.0, 22.0], // FO3 Capital Wasteland
+            [6.0, 8.0, 16.0, 20.5],    // Skyrim SE Tamriel-style window
+        ] {
+            let keys = build_tod_keys(tod_hours);
+            let [_, _, sunset_begin, sunset_end] = tod_hours;
+            assert_eq!(
+                keys[6],
+                (sunset_end, TOD_SUNSET),
+                "the hold key anchors the pure SUNSET palette at sunset_end, \
+                 where the sun touches the horizon"
+            );
+            // One hour before the sun reaches the horizon the walk must
+            // still be inside the SUNSET→SUNSET hold segment: slot pair
+            // (SUNSET, SUNSET), t irrelevant — no night blend at all.
+            let golden = sunset_end - 1.0;
+            let (a, b, _) = pick_tod_pair(&keys, golden);
+            assert!(
+                golden > sunset_begin && a == TOD_SUNSET && b == TOD_SUNSET,
+                "golden hour {golden:.2} must hold the SUNSET palette (got slots \
+                 {a}→{b}), not blend toward night — tod_hours {tod_hours:?}"
+            );
+            // And the night slide eases in only after the sun is gone:
+            // one hour past sunset_end the pair is (SUNSET, NIGHT).
+            let (a, b, _) = pick_tod_pair(&keys, sunset_end + 1.0);
+            assert!(
+                a == TOD_SUNSET && b == TOD_NIGHT,
+                "one hour past sunset_end the palette must be easing \
+                 SUNSET→NIGHT (got {a}→{b})"
             );
         }
     }
