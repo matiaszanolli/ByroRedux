@@ -1461,8 +1461,8 @@ pub fn parse_watr(
             b"NAM5" => out.flow_noise_texture_path = read_zstring(&sub.data),
             b"NAM1" if sub.data.len() >= 12 => {
                 let mut angular_velocity = [0.0; 3];
-                for (slot, bytes) in angular_velocity.iter_mut().zip(sub.data.chunks_exact(4)) {
-                    *slot = f32::from_le_bytes(bytes.try_into().expect("4-byte NAM1 component"));
+                for (slot, bytes) in angular_velocity.iter_mut().zip(sub.data.as_chunks::<4>().0) {
+                    *slot = f32::from_le_bytes(*bytes);
                 }
                 if angular_velocity.iter().all(|value| value.is_finite()) {
                     out.params.angular_velocity = angular_velocity;

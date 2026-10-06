@@ -91,7 +91,7 @@ pub fn parse_pgrd(form_id: u32, subs: &[SubRecord]) -> PathGridRecord {
                 out.declared_point_count = SubReader::new(&sub.data).u16_or_default();
             }
             b"PGRP" => {
-                for chunk in sub.data.chunks_exact(16) {
+                for chunk in sub.data.as_chunks::<16>().0 {
                     let mut r = SubReader::new(chunk);
                     let x = r.f32_or_default();
                     let y = r.f32_or_default();
@@ -106,7 +106,7 @@ pub fn parse_pgrd(form_id: u32, subs: &[SubRecord]) -> PathGridRecord {
             // and sub-record order is not guaranteed.
             b"PGRR" => pgrr = Some(&sub.data),
             b"PGRI" => {
-                for chunk in sub.data.chunks_exact(16) {
+                for chunk in sub.data.as_chunks::<16>().0 {
                     let mut r = SubReader::new(chunk);
                     let point_index = r.u16_or_default();
                     let _pad = r.u16_or_default();

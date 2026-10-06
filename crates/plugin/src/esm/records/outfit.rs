@@ -77,8 +77,8 @@ pub fn parse_otft(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
         // `-D warnings`). A second sub-record of interest turns it back
         // into a `match`.
         if &sub.sub_type == b"INAM" {
-            for chunk in sub.data.chunks_exact(4) {
-                let id = u32::from_le_bytes(chunk.try_into().expect("chunks_exact(4)"));
+            for chunk in sub.data.as_chunks::<4>().0 {
+                let id = u32::from_le_bytes(*chunk);
                 out.items.push(remap_fid(id, remap));
             }
         }

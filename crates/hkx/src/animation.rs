@@ -509,8 +509,9 @@ pub fn decode_spline_animation(bytes: &[u8]) -> Result<HkxAnimation> {
             .local_target(binding + layout.binding_track_to_bone.pointer)
             .ok_or(HkxError::InvalidData("transform binding array is unbound"))?;
         let raw = pack.data_slice(offset, binding_count * 2, "transform bindings")?;
-        raw.chunks_exact(2)
-            .map(|bytes| Ok(u16::from_le_bytes(bytes.try_into().unwrap())))
+        raw.as_chunks::<2>().0
+            .iter()
+            .map(|bytes| Ok(u16::from_le_bytes(*bytes)))
             .collect::<Result<Vec<_>>>()?
     };
     let annotations = read_annotations(&pack, &layout, object, duration)?;
@@ -728,8 +729,9 @@ fn read_pack_u32_array(
         .ok_or(HkxError::InvalidData("spline offset array size overflow"))?;
     let raw = pack.data_slice(offset, byte_count, label)?;
     Ok(raw
-        .chunks_exact(4)
-        .map(|bytes| u32::from_le_bytes(bytes.try_into().unwrap()))
+        .as_chunks::<4>().0
+        .iter()
+        .map(|bytes| u32::from_le_bytes(*bytes))
         .collect())
 }
 

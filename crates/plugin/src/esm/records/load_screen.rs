@@ -196,8 +196,8 @@ pub fn parse_trns(form_id: u32, flags: u32, subs: &[SubRecord]) -> LoadScreenTra
                     continue;
                 }
                 let mut floats = [0.0f32; 9];
-                for (slot, chunk) in d.chunks_exact(4).enumerate() {
-                    floats[slot] = f32::from_le_bytes(chunk.try_into().unwrap());
+                for (slot, chunk) in d.as_chunks::<4>().0.iter().enumerate() {
+                    floats[slot] = f32::from_le_bytes(*chunk);
                 }
                 if !floats.iter().all(|v| v.is_finite()) {
                     out.malformed_fields.push(sub.sub_type);

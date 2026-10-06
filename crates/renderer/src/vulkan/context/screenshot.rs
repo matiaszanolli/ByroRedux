@@ -88,7 +88,7 @@ impl VulkanContext {
 
         // Swapchain format is B8G8R8A8_SRGB — convert BGRA → RGBA for PNG.
         let mut rgba = Vec::with_capacity(data.len());
-        for pixel in data.chunks_exact(4) {
+        for pixel in data.as_chunks::<4>().0 {
             rgba.push(pixel[2]); // R
             rgba.push(pixel[1]); // G
             rgba.push(pixel[0]); // B

@@ -154,11 +154,11 @@ pub fn parse_imad(form_id: u32, subs: &[SubRecord]) -> ImadRecord {
 }
 
 fn push_scalar(keys: &mut Vec<ImadScalarKey>, data: &[u8]) {
-    keys.extend(data.chunks_exact(8).filter_map(scalar_key));
+    keys.extend(data.as_chunks::<8>().0.iter().filter_map(|c| scalar_key(c)));
 }
 
 fn push_color(keys: &mut Vec<ImadColorKey>, data: &[u8]) {
-    keys.extend(data.chunks_exact(20).filter_map(color_key));
+    keys.extend(data.as_chunks::<20>().0.iter().filter_map(|c| color_key(c)));
 }
 
 #[cfg(test)]

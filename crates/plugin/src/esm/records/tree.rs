@@ -187,7 +187,8 @@ pub fn parse_tree(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
     // against mod-authored TREE records with corrupt SNAM payloads).
     let leaf_indices = find_sub(subs, b"SNAM")
         .map(|data| {
-            data.chunks_exact(4)
+            data.as_chunks::<4>().0
+                .iter()
                 .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
                 .collect()
         })

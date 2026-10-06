@@ -1,7 +1,6 @@
 //! The godray lab scene (#5090 split of `cornell.rs`): a reproducible,
 //! game-data-free interior for the unmarked-hole godray path, plus its
 //! `--godray-lab` / `--godray-lab-sealed` mode parsing.
-use super::builders::*;
 use super::*;
 
 /// Reproducible, game-data-free interior for the unmarked-hole godray path.

@@ -1473,13 +1473,13 @@ fn parse_npc_fo4_facemorph(
         // table across multiple sub-records (last-wins per arm
         // would silently drop earlier entries — `extend` preserves).
         b"MSDK" if sub.data.len() >= 4 => {
-            for chunk in sub.data.chunks_exact(4) {
+            for chunk in sub.data.as_chunks::<4>().0 {
                 face.slider_keys
                     .push(u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
             }
         }
         b"MSDV" if sub.data.len() >= 4 => {
-            for chunk in sub.data.chunks_exact(4) {
+            for chunk in sub.data.as_chunks::<4>().0 {
                 face.slider_values
                     .push(f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
             }
@@ -1532,7 +1532,7 @@ fn parse_npc_actor_values(record: &mut NpcRecord, sub: &SubRecord, remap: &Optio
         // malformed trailing partial rather than panicking cell load.
         b"PRPS" => {
             record.actor_value_props.reserve(sub.data.len() / 8);
-            for chunk in sub.data.chunks_exact(8) {
+            for chunk in sub.data.as_chunks::<8>().0 {
                 let avif = u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
                 let value = f32::from_le_bytes([chunk[4], chunk[5], chunk[6], chunk[7]]);
                 record

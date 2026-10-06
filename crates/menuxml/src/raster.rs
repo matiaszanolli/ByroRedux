@@ -78,7 +78,7 @@ impl Framebuffer {
     }
 
     pub fn clear(&mut self, rgba: [u8; 4]) {
-        for px in self.pixels.chunks_exact_mut(4) {
+        for px in self.pixels.as_chunks_mut::<4>().0 {
             px.copy_from_slice(&rgba);
         }
     }

@@ -551,8 +551,8 @@ fn parse_wrld_children_inner(
                         // wiring lands separately under #1221).
                         b"XPRI" if sub.data.len() % 4 == 0 => {
                             absorbed_refs.reserve(sub.data.len() / 4);
-                            for chunk in sub.data.chunks_exact(4) {
-                                let fid = u32::from_le_bytes(chunk.try_into().unwrap());
+                            for chunk in sub.data.as_chunks::<4>().0 {
+                                let fid = u32::from_le_bytes(*chunk);
                                 absorbed_refs.insert(reader.remap_form_id(fid));
                             }
                         }

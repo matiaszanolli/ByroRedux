@@ -1,7 +1,6 @@
 //! The RT oracle ladder (#5090 split of `cornell.rs`): rungs L0-L5 and
 //! the skinned/mirrored variants, the manifest contract, mode parsing,
 //! scene construction, and the shared-skin probe pair.
-use super::builders::*;
 use super::glass_dragon::SUN_DIR_RAW;
 use super::*;
 

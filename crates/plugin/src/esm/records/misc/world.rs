@@ -633,7 +633,8 @@ fn decode_nvgd(data: &[u8]) -> Option<NavmGridAccel> {
         let end = pos.checked_add(count.checked_mul(2)?)?;
         let raw = data.get(pos..end)?;
         cells.push(
-            raw.chunks_exact(2)
+            raw.as_chunks::<2>().0
+                .iter()
                 .map(|c| u16::from_le_bytes([c[0], c[1]]))
                 .collect(),
         );
@@ -1445,7 +1446,8 @@ fn decode_image_space(
 ) -> Option<ImageSpace> {
     use crate::esm::reader::GameKind;
     let floats = |data: &[u8]| -> Vec<f32> {
-        data.chunks_exact(4)
+        data.as_chunks::<4>().0
+            .iter()
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect()
     };

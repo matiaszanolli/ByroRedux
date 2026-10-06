@@ -167,7 +167,7 @@ pub fn draw_hud(ctx: &Context, snapshot: &PanelSnapshot) {
             Order::Middle,
             Id::new("gameplay_crosshair"),
         ));
-        let stroke = Stroke::new(1.5, Color32::from_white_alpha(220));
+        let stroke = Stroke::new(1.5_f32, Color32::from_white_alpha(220));
         for (from, to) in [
             (egui::vec2(-7.0, 0.0), egui::vec2(-2.0, 0.0)),
             (egui::vec2(2.0, 0.0), egui::vec2(7.0, 0.0)),
@@ -468,7 +468,7 @@ pub fn draw_game_menu(
         .frame(
             Frame::window(&ctx.style())
                 .fill(Color32::from_rgb(20, 23, 29))
-                .stroke(Stroke::new(1.0, Color32::from_gray(75)))
+                .stroke(Stroke::new(1.0_f32, Color32::from_gray(75)))
                 .corner_radius(CornerRadius::same(10))
                 .inner_margin(Margin::same(22)),
         )

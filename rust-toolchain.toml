@@ -1,0 +1,13 @@
+# TD8-2026-10-05-01 / #5308 — pin the compiler the workspace is verified
+# against. The clippy job used to install whatever `stable` was current on
+# the day, so a new rustc's new lints landed as a surprise red board (the
+# 1.99 `chunks_exact_to_as_chunks` wave kept CI red for four days and
+# stopped the gate from linting every downstream crate). Bump this pin
+# deliberately — run the full gate locally, then commit the bump — so
+# toolchain drift shows up in a controlled change, not in CI.
+#
+# Local note: the distro cargo shadows the rustup shims and ignores this
+# file; the documented `rustup which --toolchain` workaround in
+# docs/contributing.md §Tests is unaffected (see AGENTS.md / #4466).
+[toolchain]
+channel = "1.96.0"

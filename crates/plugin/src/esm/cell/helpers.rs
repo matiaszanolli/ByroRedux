@@ -37,7 +37,8 @@ pub(super) fn read_form_id(reader: &EsmReader, data: &[u8]) -> Option<u32> {
 /// bytes that don't make a full FormID are silently dropped — they're
 /// always alignment padding rather than a partial entry.
 pub(super) fn read_form_id_array(reader: &EsmReader, data: &[u8]) -> Vec<u32> {
-    data.chunks_exact(4)
+    data.as_chunks::<4>().0
+        .iter()
         .map(|c| reader.remap_form_id(u32::from_le_bytes([c[0], c[1], c[2], c[3]])))
         .collect()
 }
@@ -109,7 +110,8 @@ pub(super) fn decode_ragdoll_pose(data: &[u8]) -> Vec<super::RagdollPoseBone> {
             data.len()
         );
     }
-    data.chunks_exact(ENTRY)
+    data.as_chunks::<ENTRY>().0
+        .iter()
         .map(|entry| {
             let float =
                 |offset: usize| f32::from_le_bytes(entry[offset..offset + 4].try_into().unwrap());

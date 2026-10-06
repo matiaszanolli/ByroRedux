@@ -1,7 +1,6 @@
 //! The native-scale Skyrim glass-dragon experiment (#5090 split of
 //! `cornell.rs`): room constants, material override, and the
 //! `--cornell-glass-dragon` mode parsing.
-use super::builders::*;
 use super::*;
 
 /// Vanilla Skyrim SE bronze-dragon display mesh used by the large glass-
