@@ -322,12 +322,16 @@ pub struct CellData {
     pub precombined_mesh_hashes: Vec<u32>,
     /// FO4+ REFRs absorbed into the cell's precombined meshes —
     /// union of the XCRI ref-list (962 entries on Dugout Inn) and the
-    /// XPRI sub-record (additional 102 form IDs). The cell loader
-    /// MUST skip these REFRs during normal placement: their geometry
-    /// is already baked into the `_oc.nif` files referenced by
-    /// [`precombined_mesh_hashes`], and spawning them individually
-    /// would produce double geometry + z-fighting. Empty for non-FO4
-    /// cells. #1188.
+    /// XPRI sub-record (additional 102 form IDs). For the STAT/SCOL
+    /// subset the cell loader skips individual placement (their
+    /// geometry is baked into the `_oc.nif` files referenced by
+    /// [`precombined_mesh_hashes`]; spawning it individually would
+    /// double-draw and z-fight). Non-STAT/SCOL members are retained
+    /// and spawned in full: whether the bake carries their geometry is
+    /// unsettled (#2699 — see `byroredux`'s `precombine_can_replace_record`
+    /// for the measurement and the inconclusive mesh-name control), and
+    /// suppressing wrongly would delete authored furniture from 232
+    /// cells. Empty for non-FO4 cells. #1188.
     pub absorbed_refs: std::collections::HashSet<u32>,
     /// Per-cell navmesh records (`NAVM`) collected from the cell's
     /// `Cell Persistent Children` (group_type 8) and `Cell Temporary

@@ -161,10 +161,17 @@ impl CellSubrecordFields {
             }
             // #1188 / #1220 — XPRI: list of REFR formids absorbed into
             // precombines (~100 entries for FO4 interiors; matches the
-            // architecture-only shell). The cell loader MUST skip these
-            // REFRs' individual placement — their geometry is already
-            // baked into the `_oc.nif` files referenced by
-            // `precombined_mesh_hashes`. Format: pure `N × u32`.
+            // architecture-only shell). For the STAT/SCOL subset the cell
+            // loader skips individual placement — their geometry is baked
+            // into the `_oc.nif` files referenced by
+            // `precombined_mesh_hashes`. Non-STAT/SCOL members (FURN,
+            // CONT, ACTI, TERM, MSTT — 141 on Switchboard alone, 21 769
+            // across 232 cells) are deliberately NOT skipped: whether the
+            // bake carries their geometry is unsettled (see
+            // `byroredux`'s `precombine_can_replace_record` for the
+            // measurement and the inconclusive mesh-name control),
+            // and suppressing wrongly deletes authored content. Format:
+            // pure `N × u32`.
             b"XPRI" if sub.data.len().is_multiple_of(4) => {
                 self.absorbed_refs.reserve(sub.data.len() / 4);
                 for chunk in sub.data.as_chunks::<4>().0 {

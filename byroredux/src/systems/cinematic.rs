@@ -1,7 +1,7 @@
 //! App-side sinks for scripted cinematic requests.
 
 use crate::components::{AnimationTarget, CinematicReAdoption, CellRootIndex, IdleClipCatalog};
-use byroredux_core::ecs::components::{CellRoot, Children, GlobalTransform};
+use byroredux_core::ecs::components::{CellRoot, Children};
 use byroredux_core::animation::{AnimationPlayer, RootMotionDelta};
 use byroredux_core::ecs::components::RigidBodyData;
 use byroredux_core::ecs::Transform;
