@@ -3950,6 +3950,51 @@ fn apply_effect_family_bodies(src: &str) -> String {
     bodies
 }
 
+/// The bodies of the `crate::magic` functions the `AddSpell` /
+/// `RemoveSpell` and racial-pair arms of `apply_effect` call out to
+/// (#5071).
+///
+/// Those arms apply inline under the quest guards (unlike the deferred
+/// `SetEnemy`), but their acquisitions sit in a different module — the
+/// fragment-body scan above is structurally blind to them, which is how
+/// `SpellList` / `SpellCatalog` / `ActorValues` / `RaceSpells` aged out of
+/// the inventory. Every function named here must be found; a rename fails
+/// loud instead of silently scanning green.
+fn magic_callout_bodies(src: &str) -> String {
+    const CALLOUTS: &[&str] = &[
+        "add_spell",
+        "remove_spell",
+        "add_race_spells",
+        "remove_race_spells",
+        "apply_constant_modifiers",
+    ];
+    let mut bodies = String::new();
+    for wanted in CALLOUTS {
+        let mut at = 0usize;
+        let mut found = false;
+        while let Some((nl, name)) = next_top_level_fn(src, at) {
+            at = nl + 1;
+            if name != *wanted {
+                continue;
+            }
+            let end = src[nl..]
+                .find("\n}\n")
+                .map(|offset| nl + offset)
+                .unwrap_or(src.len());
+            bodies.push_str(&src[nl..end]);
+            bodies.push('\n');
+            found = true;
+            break;
+        }
+        assert!(
+            found,
+            "`{wanted}` not found in magic.rs — the #5071 call-out scan broke, \
+             not the doc"
+        );
+    }
+    bodies
+}
+
 /// The declaration of `apply_effect` in [`crate::fragment::SOURCES`], as
 /// (offset of the leading newline, declaration line start).
 fn apply_effect_declaration(src: &str) -> usize {
@@ -4001,16 +4046,23 @@ fn nested_lock_contract_documents_apply_effect_itself() {
 /// storage/resource type `apply_effect` actually acquires must be named in
 /// its own doc block — the next arm that adds one fails here instead of
 /// silently ageing the inventory the Dim-6 checklist delegates to.
+///
+/// #5071 — "actually acquires" includes the one module the fragment bodies
+/// call out to: the inline `crate::magic` arms' acquisitions are scanned
+/// from `magic.rs` alongside the fragment sources, so a call-out one
+/// module away can no longer hide a type from this inventory.
 #[test]
 fn the_nested_lock_residual_list_names_every_type_apply_effect_acquires() {
     const FRAGMENT_RS: &str = crate::fragment::SOURCES;
+    const MAGIC_RS: &str = include_str!("../magic.rs");
 
     let contract_start = FRAGMENT_RS
         .find("**Nested-lock safety depends on exclusive scheduling.**")
         .expect("apply_effect's nested-lock residual list");
     let body_start = apply_effect_declaration(FRAGMENT_RS);
     let doc = &FRAGMENT_RS[contract_start..body_start];
-    let bodies = apply_effect_family_bodies(FRAGMENT_RS);
+    let mut bodies = apply_effect_family_bodies(FRAGMENT_RS);
+    bodies.push_str(&magic_callout_bodies(MAGIC_RS));
     let body = bodies.as_str();
 
     // `.query_mut::<crate::HorseTetherState>()` -> `HorseTetherState`.

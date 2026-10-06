@@ -661,8 +661,18 @@ pub(crate) fn copied_transform(world: &World, entity: EntityId) -> Option<Transf
 ///   - **via [`resolve_actor`]** — `PapyrusPlayerEntity` (read)
 ///   - **via [`entity_global_form_id`]** — `FormIdPool` (read)
 ///   - **via [`update_actor_cinematic_state`]** — `ActorCinematicState`
+///   - **via `crate::magic::{add_spell, remove_spell}`** (the
+///     `AddSpell`/`RemoveSpell` arms, applied inline rather than deferred —
+///     no cycle: every quest-resource system is exclusive) — `SpellList`
+///     (write), then through `apply_constant_modifiers`:
+///     `SpellCatalog` (read) and `ActorValues` (write), each released
+///     before the next is taken
+///   - **via `crate::magic::{add_race_spells, remove_race_spells}`** (the
+///     #4415 racial pair, same inline shape) — `RaceSpells` (read, cloned
+///     out and released) plus the `add_spell`/`remove_spell` chain above
+///     once per racial spell
 ///
-/// so ~15 distinct storage/resource types across ~20 sites. "Directly in
+/// so ~19 distinct storage/resource types across ~24 sites. "Directly in
 /// the match arms" is now one delegation hop away: #4340 moved each family
 /// of arms into an `apply_<family>_effect` helper below (globals,
 /// inventory, placement, scene, lock ledger, player control, vehicle
@@ -671,7 +681,13 @@ pub(crate) fn copied_transform(world: &World, entity: EntityId) -> Option<Transf
 /// [`apply_quest_scoped_effect`]. Nothing about the nesting changed — the
 /// helpers run inside the same two guards, this list still inventories
 /// every lock any of them takes, and the #3949 scan below reads their
-/// bodies together with this function's. The `FragmentExecutionQueue`
+/// bodies together with this function's. The `crate::magic` call-outs are
+/// one hop *further* away (a different module, which the fragment-body
+/// scan is structurally blind to — #5071), so the scan also reads the
+/// five `magic.rs` functions those arms reach; the deferral option was
+/// declined because the arms are already exclusive-lane-safe and deferring
+/// would change ordering semantics P4 relies on. The
+/// `FragmentExecutionQueue`
 /// write is *not* in this list: it belongs to the latent-continuation path
 /// in the dispatch system, outside these guards.
 ///
