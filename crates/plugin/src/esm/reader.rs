@@ -65,20 +65,22 @@ pub(crate) const FLAG_DELETED: u32 = 0x0000_0020;
 const MAX_RECORD_INFLATION_RATIO: usize = 2048;
 
 /// Floor under [`MAX_RECORD_INFLATION_RATIO`], so a tiny compressed
-/// payload is not held to a tiny ceiling (#3399). The worst observed
-/// ratios all come from ~60–85 byte `LAND` records, where a pure
-/// multiple would be the binding constraint; 64 KiB clears the largest
-/// of those (7 658 bytes) by 8×.
+/// payload is not held to a tiny ceiling (#3399). At the 2048:1 ratio
+/// above this binds only for compressed payloads under 32 bytes; the
+/// census's worst real ratio comes from an 834-byte Starfield `SFTR`
+/// (#4640), whose ratio product (~1.6 MB) clears this floor outright —
+/// the floor exists for the payloads smaller still.
 const MIN_RECORD_INFLATED_CEILING: usize = 64 * 1024;
 
 /// Absolute ceiling on one record's inflated size, whatever its
 /// compressed length (#3399). The ratio bound alone scales with the
 /// attacker's input — a 100 MB compressed record could still claim
 /// 51 GB under it — so the two are combined. The largest real inflated
-/// record across the same four masters is 225 433 bytes (`Fallout4.esm`),
-/// which this clears by ~290×. Sibling of `byroredux_bsa::safety`'s
-/// `MAX_CHUNK_BYTES`, set lower because one ESM *record* has far tighter
-/// realistic bounds than one archive chunk.
+/// record in the seven-master census above is 655 482 bytes (Starfield
+/// `SFTR` `0x00167A07`), which this clears by ~100×. Sibling of
+/// `byroredux_bsa::safety`'s `MAX_CHUNK_BYTES`, set lower because one
+/// ESM *record* has far tighter realistic bounds than one archive
+/// chunk.
 const MAX_RECORD_INFLATED_BYTES: usize = 64 * 1024 * 1024;
 
 /// The inflated-size ceiling for a record whose compressed payload is
@@ -276,9 +278,10 @@ impl GameKind {
                 // silently swap armor weight and health and zero every
                 // weapon's value/weight/damage. See #439 / audit FO3-3-01.
                 if hedr_version >= 60.0 {
-                    // Floor deliberately far below the real 266.0 (#3405):
-                    // nothing else in the lineage exceeds 1.71, so the whole
-                    // decade above 60 is free for FO76's outlier scheme.
+                    // Floor deliberately far below every sampled FO76 value
+                    // (68.0 → 266.0 → 279.0; #3405/#4643): nothing else in
+                    // the lineage exceeds 1.71, so the whole decade above 60
+                    // is free for FO76's outlier scheme.
                     Self::Fallout76
                 } else if (1.6..=1.8).contains(&hedr_version) {
                     Self::Skyrim
@@ -2361,11 +2364,13 @@ mod tests {
     /// every shape vanilla actually ships. Census over all seven masters
     /// (#4640, table on [`MAX_RECORD_INFLATION_RATIO`]): 383 406
     /// compressed records, worst real ratio 785.9:1 (Starfield `SFTR`
-    /// `0x00167A07`, 834 compressed bytes to 655 482), largest real
-    /// inflated record 225 433 bytes (FO4). None is rejected.
+    /// `0x00167A07`, 834 compressed bytes to 655 482 — also the largest
+    /// real inflated record), largest outside Starfield 225 433 bytes
+    /// (FO4). None is rejected.
     #[test]
     fn inflation_ceiling_clears_every_observed_vanilla_shape() {
-        // The worst observed ratio, at the compressed length it occurred at.
+        // The pre-#4640 worst observed ratio (a ~75-byte `LAND` shape,
+        // ~102:1) at the compressed length it occurred at.
         assert!(record_inflation_ceiling(75) >= 7_658);
         // The Starfield SFTR worst-ratio record — the shape that exceeded
         // the old 512:1 bound (#4640): 834 bytes → 655 482 (785.9:1).
@@ -2373,8 +2378,8 @@ mod tests {
             record_inflation_ceiling(834) >= 655_482,
             "the vanilla Starfield SFTR record 0x00167A07 must clear the ceiling"
         );
-        // The largest observed inflated record — even if it had been the
-        // worst-ratio record too, which it is not.
+        // FO4's largest inflated record — the biggest outside Starfield —
+        // even if it had been the worst-ratio record too, which it is not.
         assert!(record_inflation_ceiling(225_433 / 102) >= 225_433);
         // And the bound still bites on the two attack shapes.
         assert!(record_inflation_ceiling(4) < u32::MAX as usize);
