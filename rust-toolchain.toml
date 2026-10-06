@@ -11,3 +11,4 @@
 # docs/contributing.md §Tests is unaffected (see AGENTS.md / #4466).
 [toolchain]
 channel = "1.96.0"
+components = ["clippy"]
