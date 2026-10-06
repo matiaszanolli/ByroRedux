@@ -7,8 +7,8 @@
 
 use super::super::walkers::parse_cell_group;
 use super::wrld::{
-    build_cell_children_group, build_cell_record, build_world_children_group,
-    build_wrld_group, build_wrld_record, parse_synthetic_wrld,
+    build_cell_record, build_world_children_group, build_wrld_group, build_wrld_record,
+    parse_synthetic_wrld,
 };
 use crate::esm::reader::{EsmReader, EsmVariant, GameKind};
 use std::collections::HashMap;
