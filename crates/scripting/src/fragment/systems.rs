@@ -207,18 +207,31 @@ pub fn scene_fragment_dispatch_system(world: &World, _dt: f32) {
 }
 
 /// Execute one spoken `INFO` line's fragment from the dialogue path — the
-/// INFO twin of the scene dispatcher's per-fragment unit: guard-free apply
-/// plus journal polling, with the caller handing the returned advances to
-/// the shared player sink. Exposed for `byroredux`'s npc_dialogue system;
-/// production fragment execution itself stays inside this crate.
+/// INFO twin of the scene dispatcher's per-fragment unit: guard-free apply,
+/// with the caller handing the returned advances to the shared player sink.
+/// Exposed for `byroredux`'s npc_dialogue system; production fragment
+/// execution itself stays inside this crate.
+///
+/// #5297 — deliberately does **not** poll the fragment journal, unlike the
+/// callers inside the subscriber's own dispatch window
+/// ([`quest_fragment_dispatch_system`]'s head and cascade loop). The spoken
+/// path runs in `Stage::Late`, after this frame's
+/// [`quest_fragment_dispatch_system`] and just before `event_cleanup_system`
+/// drains `QuestStageAdvancedBatch`: polling there claimed the journal
+/// cursor and re-emitted into a batch with no remaining reader, so the
+/// spoken line's own `SetStage` — and any other transition still pending on
+/// the cursor — never ran its stage fragment. The journal entry now stays
+/// unclaimed for the next frame's dispatcher; the direct advances ride the
+/// player sink exactly like [`fragment_continuation_system`]'s (whose batch
+/// mirror the dispatcher deduplicates against the journal when both
+/// survive, i.e. on the UI selection paths that run outside the scheduler).
 pub fn apply_spoken_info_fragment(
     world: &World,
     effects: &[Effect],
     context: QuestFormId,
     vmad: Option<&ScriptInstanceData>,
 ) -> Vec<QuestStageAdvanced> {
-    let direct = apply_fragment_guard_free(world, effects, context, vmad);
-    poll_fragment_generated_advances(world, direct)
+    apply_fragment_guard_free(world, effects, context, vmad)
 }
 
 /// Consume [`QuestStageAdvanced`] markers and run the matching

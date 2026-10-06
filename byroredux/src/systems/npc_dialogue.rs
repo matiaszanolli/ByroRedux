@@ -335,10 +335,15 @@ fn apply_selection(world: &World, npc: EntityId, topic: NpcDialogueTopic, record
 /// Same execution unit as the scene dispatcher: `apply_fragment_guard_free`
 /// snapshots + flushes the deferred effects, and any direct stage advances
 /// ride the shared player sink (`push_quest_stage_advances`) so the cascade
-/// and the journal stay interleaved with every other producer. A no-op when
-/// the populate walk never filled the table (no `--scripts-bsa`, pre-Papyrus
-/// game) or the line has no OnBegin binding — most INFO dialogue is inert
-/// flavor, and 3 773 of vanilla's 5 257 bound INFOs are OnEnd-only.
+/// and the journal stay interleaved with every other producer. #5297 — the
+/// journal is *not* polled here (see `apply_spoken_info_fragment`): this
+/// runs in `Stage::Late`, and a poll would claim the cursor ahead of the
+/// next frame's Update dispatcher while the re-emitted batch is drained
+/// unread by `event_cleanup_system` at the end of this same stage. A no-op
+/// when the populate walk never filled the table (no `--scripts-bsa`,
+/// pre-Papyrus game) or the line has no OnBegin binding — most INFO
+/// dialogue is inert flavor, and 3 773 of vanilla's 5 257 bound INFOs are
+/// OnEnd-only.
 fn speak_info_begin_fragment(world: &World, topic: &NpcDialogueTopic) {
     let Some((effects, context, vmad)) = spoken_fragment_effects(world, topic.info_form_id, true)
     else {
@@ -1124,6 +1129,43 @@ mod tests {
             .find(|advance| advance.quest.0 == HELPER_QUEST && advance.new_stage == 13)
             .expect("the OnBegin SetStage advanced the helper quest to 13");
         assert_eq!(begin_advance.previous_stage, 0);
+
+        // #5297 — the Late-stage spoken dispatch must survive the
+        // end-of-frame batch drain and still run the new stage's QUST
+        // fragment on the next Update. Pre-fix, `apply_spoken_info_fragment`
+        // polled the fragment journal here in Late: the poll claimed the
+        // SetStage-13 cursor, the re-emitted batch was drained unread by
+        // `event_cleanup_system` at the end of the same stage, and the
+        // dispatcher saw neither — the stage fragment never ran.
+        let mut stage_fragments = byroredux_scripting::QuestStageFragments::default();
+        stage_fragments.insert(
+            QuestFormId(HELPER_QUEST),
+            13,
+            vec![Effect::SetStage {
+                quest: QuestRef::SelfRef,
+                stage: 14,
+            }],
+        );
+        world.insert_resource(stage_fragments);
+        // The real Late→Update ordering: cleanup drains the batch mirrors
+        // first, then the dispatcher polls the journal.
+        byroredux_scripting::event_cleanup_system(&world, 0.0);
+        assert!(
+            world
+                .query::<byroredux_scripting::quest_stages::QuestStageAdvancedBatch>()
+                .map(|query| query.iter().next().is_none())
+                .unwrap_or(true),
+            "the Late tail drained the batch mirrors"
+        );
+        byroredux_scripting::quest_fragment_dispatch_system(&world);
+        assert_eq!(
+            world
+                .resource::<QuestStageState>()
+                .get_stage(QuestFormId(HELPER_QUEST)),
+            14,
+            "the spoken line's SetStage-13 must still run its stage fragment \
+             after the Late-stage batch drain (#5297)"
+        );
 
         // Closing the conversation runs the open line's... nothing (no
         // end binding on INFO_ELTRYS), but selects the rumors topic whose
