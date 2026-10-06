@@ -294,6 +294,7 @@ impl NpcSpawnState {
             Self::Prebaked(state) => match state.phase {
                 PrebakedPhase::Skeleton => "skeleton",
                 PrebakedPhase::Facegen => "pre-baked FaceGen",
+                PrebakedPhase::HeadParts(_) => "PNAM head-part fallback",
                 PrebakedPhase::Armor(_) => "armor",
                 PrebakedPhase::Finalize => "finalization",
             },
@@ -1039,6 +1040,7 @@ mod tests {
             equipped_armor_count: 0,
             combat_anim_draugr: false,
             player_body: false,
+            head_fallback: Vec::new(),
             phase: PrebakedPhase::Facegen,
         };
 
@@ -1049,6 +1051,80 @@ mod tests {
         assert_eq!(state.phase, PrebakedPhase::Armor(0));
         assert_eq!(state.placement_root, placement_root);
         assert!(state.skel_root.is_some());
+    }
+
+    /// #5095 — vanilla Skyrim ships no facegeom for the player record, so
+    /// the pre-baked miss is the player's *normal* path, and it used to
+    /// jump straight to armor: a headless third-person body. The miss now
+    /// routes through the NPC's authored PNAM head parts when it has any
+    /// (the player record authors ManHead / eyes / hair / brows), and only
+    /// an NPC with neither source stays headless.
+    #[test]
+    fn missing_prebaked_facegen_falls_back_to_authored_head_parts() {
+        let mut world = World::new();
+        let mut state = PrebakedNpcState {
+            skeleton_path: None,
+            appearance: NpcLootAppearance::default(),
+            placement_root: world.spawn(),
+            skel_root: None,
+            skel_map: HashMap::new(),
+            facegen_path: None,
+            tint_path: None,
+            armor: Vec::new(),
+            facegen_hidden_mask: 0,
+            equipped_armor_count: 0,
+            combat_anim_draugr: false,
+            player_body: true,
+            head_fallback: vec![
+                "actors\\character\\character assets\\malehead.nif".into(),
+                "actors\\character\\character assets\\eyes.nif".into(),
+            ],
+            phase: PrebakedPhase::Facegen,
+        };
+
+        state.skip_missing_facegen();
+        assert_eq!(
+            state.phase,
+            PrebakedPhase::HeadParts(0),
+            "the miss enters the head-part fallback, not armor"
+        );
+    }
+
+    /// #5095 — the fallback source itself: the NPC's `PNAM` head-part list
+    /// resolved through `HDPT.MODL`, authored order kept, unresolvable
+    /// FormIDs and path-less records skipped.
+    #[test]
+    fn prebaked_head_fallback_paths_follow_pnam_order_and_skip_unresolvable() {
+        use byroredux_plugin::esm::records::HdptRecord;
+
+        let hdpt = |form_id: u32, model: &str| HdptRecord {
+            form_id,
+            editor_id: String::new(),
+            full_name: String::new(),
+            model_path: model.to_owned(),
+            flags: 0,
+        };
+        let mut index = EsmIndex::default();
+        index.head_parts.insert(0xAA00_0001, hdpt(0xAA00_0001, "malehead.nif"));
+        index.head_parts.insert(0xAA00_0002, hdpt(0xAA00_0002, ""));
+        // 0xAA00_0003 deliberately absent — a dangling PNAM reference.
+
+        let npc_with_parts = NpcRecord {
+            form_id: 7,
+            face_morphs: Some(byroredux_plugin::esm::records::NpcFaceMorphs {
+                head_parts: vec![0xAA00_0001, 0xAA00_0003, 0xAA00_0002],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert_eq!(
+            prebaked_head_fallback_paths(&npc_with_parts, &index),
+            vec!["malehead.nif".to_owned()],
+            "authored order, dangling refs and path-less HDPTs skipped"
+        );
+
+        let npc_without = NpcRecord::default();
+        assert!(prebaked_head_fallback_paths(&npc_without, &index).is_empty());
     }
 
     /// Regression for #2276 (PERF-D7-02): `parent_part` used to re-walk
@@ -1195,6 +1271,7 @@ mod tests {
             equipped_armor_count: 0,
             combat_anim_draugr: false,
             player_body: true,
+            head_fallback: Vec::new(),
             phase: PrebakedPhase::Finalize,
         };
         // The armor phases push worn roots into `original_roots` during a

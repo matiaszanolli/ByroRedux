@@ -1300,8 +1300,10 @@ ownership via the new `player.body` command, no self-targeting in
 third-person capture. Still open at that checkpoint: third-person walk/idle
 animation (the body moves rigid with the capsule), mid-life gear import for
 newly acquired items (shared with the NPC re-equip scope note above), and
-player FaceGen (vanilla ships no facegeom for the player record — the
-graceful miss leaves the race-default head).
+player FaceGen (vanilla ships no facegeom for the player record; #5095
+closed the headless half — the pre-baked miss now assembles the head from
+the player's authored PNAM head-part HDPTs, so the third-person player has
+head, eyes, hair and brows; a true per-player FaceGen face remains open).
 
 **Third-person walk/idle animation (2026-09-29):** the rigid-body half is
 closed — `player_body::attach_player_locomotion_animation` (the tail of

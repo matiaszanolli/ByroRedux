@@ -32,7 +32,8 @@
 //! `GearImportLoader` imports and attaches the worn mesh (hidden in first
 //! person via `HiddenFirstPerson`). One half stays open and is tracked in the
 //! slice doc: player FaceGen (vanilla ships no facegeom for the player
-//! record — the graceful miss leaves the race-default head).
+//! record — #5095: the pre-baked miss now assembles the head from the
+//! player's authored PNAM head-part HDPTs instead of leaving none).
 
 use std::collections::HashSet;
 
@@ -628,8 +629,17 @@ pub(crate) fn status_line(world: &World) -> String {
         .try_resource::<PlayerCameraView>()
         .map(|view| format!("{:?}", *view))
         .unwrap_or_else(|| "unset".to_string());
+    // #5095 — the pre-baked PNAM head-part fallback's loaded roots (the
+    // head a facegeom-less NPC — vanilla Skyrim's player — gets). The P3
+    // smoke gates on `head_parts>0` so a headless player body fails the
+    // gate again.
+    let head_parts = world
+        .query::<crate::npc_spawn::PrebakedHeadPart>()
+        .map(|heads| heads.iter().count())
+        .unwrap_or(0);
     format!(
-        "player.body: root={root} meshes={} hidden_first_person={} view={} {} {} parts=[{}]",
+        "player.body: root={root} meshes={} hidden_first_person={} head_parts={head_parts} \
+         view={} {} {} parts=[{}]",
         meshes.len(),
         hidden,
         view,

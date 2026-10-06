@@ -21,15 +21,37 @@ pub(super) struct PrebakedNpcState {
     pub(super) combat_anim_draugr: bool,
     /// Player-body attach — same finalize-skip contract as the runtime twin.
     pub(super) player_body: bool,
+    /// #5095 — the NPC's own `PNAM` head-part meshes (HDPT model paths, in
+    /// authored order), the fallback assembled by
+    /// [`PrebakedPhase::HeadParts`] when the per-NPC FaceGen mesh is
+    /// missing. Vanilla Skyrim ships no `facegeom\skyrim.esm\00000007.nif`
+    /// for the player record, so the third-person player rendered
+    /// headless — no head, eyes, hair or brows — through exactly this
+    /// miss; the player's authored PNAM list (ManHead / eyes / hair /
+    /// brows) is the data a head needs.
+    pub(super) head_fallback: Vec<String>,
     pub(super) phase: PrebakedPhase,
 }
 
 impl PrebakedNpcState {
     /// Missing per-NPC FaceGen is a visual degradation, not the end of the
-    /// spawn job. Armor, animation/ragdoll targeting, AI, and descendant
+    /// spawn job. #5095 — the head degrades to the NPC's authored PNAM
+    /// head parts when there are any (vanilla Skyrim's player is the
+    /// canonical case: no player facegeom exists, but the record authors
+    /// its head-part list); only an NPC with neither source continues
+    /// headless. Armor, animation/ragdoll targeting, AI, and descendant
     /// tagging still have to finalize on the already-loaded skeleton.
     pub(super) fn skip_missing_facegen(&mut self) -> UnitOutcome {
-        self.phase = PrebakedPhase::Armor(0);
+        if self.head_fallback.is_empty() {
+            self.phase = PrebakedPhase::Armor(0);
+        } else {
+            log::info!(
+                "NPC pre-baked FaceGen miss — assembling the head from {} \
+                 authored PNAM head part(s) instead",
+                self.head_fallback.len(),
+            );
+            self.phase = PrebakedPhase::HeadParts(0);
+        }
         UnitOutcome::Continue
     }
 }
@@ -38,6 +60,11 @@ impl PrebakedNpcState {
 pub(super) enum PrebakedPhase {
     Skeleton,
     Facegen,
+    /// #5095 — the PNAM head-part fallback for a missing per-NPC FaceGen
+    /// mesh; index into [`PrebakedNpcState::head_fallback`]. Transitions to
+    /// `Armor(0)` when the list is exhausted, exactly where the Facegen
+    /// phase's success path goes.
+    HeadParts(usize),
     Armor(usize),
     Finalize,
 }
@@ -133,8 +160,28 @@ pub(super) fn prepare_prebaked_state(
         equipped_armor_count: 0,
         combat_anim_draugr: is_draugr_race(index.races.get(&traits.race_form_id)),
         player_body,
+        head_fallback: prebaked_head_fallback_paths(npc, index),
         phase: PrebakedPhase::Skeleton,
     }
+}
+
+/// #5095 — the NPC's own `PNAM` head-part meshes (`HDPT.MODL` paths, in
+/// authored order), for a missing per-NPC FaceGen mesh. Unresolvable
+/// FormIDs and path-less records are skipped: a half list beats none, and
+/// the alternative (a wrong-form collision) is exactly what the load
+/// order's remap already prevents. Pure so a unit test can pin the
+/// ordering and the skip rules without a GPU.
+pub(super) fn prebaked_head_fallback_paths(npc: &NpcRecord, index: &EsmIndex) -> Vec<String> {
+    npc.face_morphs
+        .as_ref()
+        .map_or(Vec::new(), |face| {
+            face.head_parts
+                .iter()
+                .filter_map(|form| index.head_parts.get(form))
+                .map(|hdpt| hdpt.model_path.clone())
+                .filter(|path| !path.is_empty())
+                .collect()
+        })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -247,6 +294,67 @@ pub(super) fn advance_prebaked_unit(
                 }
             }
             state.phase = PrebakedPhase::Armor(0);
+            UnitOutcome::Continue
+        }
+        PrebakedPhase::HeadParts(index) => {
+            // #5095 — a facegeom-less NPC's head, assembled from its own
+            // PNAM head-part list. Loaded like the Facegen mesh it stands
+            // in for (same skeleton map, same #3409 hidden-partition
+            // handling for a helmet that displaces the head), parented to
+            // the placement root, and registered as a restorable part so
+            // re-equip swaps restore it the way they restore the facegen.
+            let Some(part_path) = state.head_fallback.get(index) else {
+                state.phase = PrebakedPhase::Armor(0);
+                return UnitOutcome::Continue;
+            };
+            match tex_provider.extract_mesh(part_path) {
+                Some(data) => {
+                    let hidden_biped_mask = state.facegen_hidden_mask;
+                    let mut hide_displaced_head =
+                        |scene: &mut byroredux_nif::import::ImportedScene| {
+                            hide_skin_partitions(scene, hidden_biped_mask);
+                        };
+                    let pre_spawn: Option<
+                        &mut dyn FnMut(&mut byroredux_nif::import::ImportedScene),
+                    > = (hidden_biped_mask != 0).then_some(&mut hide_displaced_head);
+                    let (_, root, _) = load_nif_bytes_with_skeleton(
+                        world,
+                        ctx,
+                        &data,
+                        part_path,
+                        tex_provider,
+                        mat_provider,
+                        Some(&state.skel_map),
+                        None,
+                        pre_spawn,
+                    );
+                    if let Some(root) = root {
+                        parent_part(world, state.placement_root, root);
+                        // #5095 — mark the fallback head so player.body can
+                        // count it (the P3 head gate).
+                        world.insert(root, crate::npc_spawn::PrebakedHeadPart);
+                        if hidden_biped_mask != 0 {
+                            state.appearance.original_roots.push(root);
+                            state.appearance.parts.push(RestorePart {
+                                path: part_path.to_owned(),
+                                tint: None,
+                            });
+                        }
+                    }
+                }
+                None => log::debug!(
+                    "NPC {:08X} ({}): head-part mesh '{}' not in archives",
+                    npc.form_id,
+                    npc.editor_id,
+                    part_path,
+                ),
+            }
+            let next = index + 1;
+            state.phase = if next < state.head_fallback.len() {
+                PrebakedPhase::HeadParts(next)
+            } else {
+                PrebakedPhase::Armor(0)
+            };
             UnitOutcome::Continue
         }
         PrebakedPhase::Armor(index) => {

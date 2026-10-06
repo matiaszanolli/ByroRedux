@@ -295,6 +295,8 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     // P3 mid-life gear import — retained spawn bone map + body class, and
     // the equip→import handoff slot the GearImportLoader drains.
     world.register::<crate::npc_spawn::NpcSkeletonBones>();
+    // #5095 — pre-baked PNAM head-part fallback markers (player.body count).
+    world.register::<crate::npc_spawn::PrebakedHeadPart>();
     world.register::<crate::npc_spawn::ActorBodyClass>();
     world.register::<crate::npc_spawn::PendingGearImport>();
     world.register::<crate::npc_spawn::PendingGearRelease>();
