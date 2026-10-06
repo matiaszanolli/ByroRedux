@@ -80,6 +80,14 @@ impl App {
         };
         let player_grid = streaming::world_pos_to_grid(player_pos.x, player_pos.z);
         let state = self.streaming.as_mut().unwrap();
+        // #3817 — cinematic convoy entities pending cell re-adoption.
+        // One resource read when the pending list is empty (the normal
+        // session); the stream step is where the world and the loaded-cell
+        // map coexist, so it is also the only place adoption can resolve.
+        crate::systems::retry_cinematic_readoption(
+            &mut self.world,
+            &state.loaded,
+        );
         // #2451 / EXAL-03 — a cell may pin its own CLMT via XCCM, which
         // re-resolves sky + weather (through the same crossfade a
         // worldspace change uses) when it differs from what is installed.

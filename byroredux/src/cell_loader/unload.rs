@@ -126,11 +126,10 @@ fn remove_all<T: byroredux_core::ecs::Component>(world: &mut World) -> usize {
 /// that happen to be retained — means a retained entity keeps its
 /// `CellRoot`, and stays fully reversible if its tether/cinematic state
 /// ends first (nothing to undo — it was never touched), right up until
-/// its own home cell actually tries to reclaim it. That narrower case is
-/// still a real gap (no re-adoption path exists once the strip does
-/// fire) — see #3254's follow-up for making retention fully reversible;
-/// this closes the "any unrelated unload orphans it immediately"
-/// half, which is the one with no legitimate reason to fire at all.
+/// its own home cell actually tries to reclaim it. #3817 closed that
+/// narrower case: the route system now releases the tether at the
+/// authored route's terminal marker and re-adopts stripped entities via
+/// the streaming step, so retention is reversible end to end.
 fn strip_retained_cell_root(world: &mut World, victims: &[EntityId], retained: &HashSet<EntityId>) {
     if retained.is_empty() {
         return;

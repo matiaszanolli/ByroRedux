@@ -1694,6 +1694,21 @@ impl CellRootIndex {
     }
 }
 
+/// Entities whose cinematic tether/vehicle chain ended (#3817) while no
+/// loaded cell covered their position, so the re-adoption pass could not
+/// stamp a `CellRoot` on them yet. The cinematic route system retries this
+/// list every tick: once an entity sits inside a loaded exterior cell it is
+/// stamped onto that cell's root (and removed here); an entity that has
+/// been despawned some other way is dropped. Un-rooted entities are
+/// despawn-immune to cell unload (nothing enumerates them), so a pending
+/// entry that never resolves means a permanently resident entity — the
+/// list bounds and surfaces that population instead of hiding it.
+#[derive(Default)]
+pub(crate) struct CinematicReAdoption {
+    pub(crate) pending: Vec<EntityId>,
+}
+impl Resource for CinematicReAdoption {}
+
 impl NameIndex {
     pub(crate) fn new() -> Self {
         Self {

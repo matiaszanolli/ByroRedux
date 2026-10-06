@@ -176,6 +176,9 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     world.insert_resource(NameIndex::new());
     world.insert_resource(SubtreeCache::new());
     world.insert_resource(CellRootIndex::new());
+    // #3817 — cinematic entities pending cell re-adoption after their
+    // tether ended outside any loaded cell. Empty until a release fires.
+    world.insert_resource(crate::components::CinematicReAdoption::default());
     world.insert_resource(byroredux_physics::PhysicsWorld::new());
     // M28.5 follow-up — engine-wide contact / KCC tunables. Owned
     // as a resource so a single edit propagates through every

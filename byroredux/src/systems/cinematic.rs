@@ -1,6 +1,7 @@
 //! App-side sinks for scripted cinematic requests.
 
-use crate::components::{AnimationTarget, IdleClipCatalog};
+use crate::components::{AnimationTarget, CinematicReAdoption, CellRootIndex, IdleClipCatalog};
+use byroredux_core::ecs::components::{CellRoot, Children, GlobalTransform};
 use byroredux_core::animation::{AnimationPlayer, RootMotionDelta};
 use byroredux_core::ecs::components::RigidBodyData;
 use byroredux_core::ecs::Transform;
@@ -287,6 +288,7 @@ pub(crate) fn cinematic_horse_route_system(world: &World, dt: f32) {
         u32,
         byroredux_core::math::Vec3,
         byroredux_core::math::Quat,
+        bool,
     )> = {
         // #4546 — Transform (canonical-early) before HorseTetherState:
         // vehicle_attachment_system observes Transform → ACState →
@@ -326,6 +328,7 @@ pub(crate) fn cinematic_horse_route_system(world: &World, dt: f32) {
                     target,
                     horse_transform.translation,
                     horse_transform.rotation,
+                    false,
                 ))
             })
             .collect()
@@ -336,7 +339,7 @@ pub(crate) fn cinematic_horse_route_system(world: &World, dt: f32) {
 
     let decisions: Vec<_> = pending
         .into_iter()
-        .filter_map(|(cart, horse, target, current, rotation)| {
+        .filter_map(|(cart, horse, target, current, rotation, _arrived_terminal)| {
             let marker = routes.position(target)?;
             // A terminal cart marker's authored heading carries the native
             // tether beyond the explicit chain and through downstream trigger
@@ -397,11 +400,22 @@ pub(crate) fn cinematic_horse_route_system(world: &World, dt: f32) {
             } else {
                 target
             };
-            Some((cart, horse, translation, new_rotation, next_target))
+            // #3817 — the tether's authored route is exhausted: the horse
+            // has arrived at a marker with no further XLKR link (its
+            // destination is the terminal marker's heading extension).
+            // This is where vanilla's opening convoy stops, and it is the
+            // only authored signal the engine has for "the drive is over"
+            // — releasing here is what keeps a tethered cart from being
+            // retained (and un-reclaimable) for the rest of the session.
+            let arrived_terminal = remaining.length_squared()
+                <= super::locomotion::LOCOMOTION_ARRIVAL_EPSILON
+                    * super::locomotion::LOCOMOTION_ARRIVAL_EPSILON
+                && routes.linked_reference(target).is_none();
+            Some((cart, horse, translation, new_rotation, next_target, arrived_terminal))
         })
         .collect();
     if let Some(mut transforms) = world.query_mut::<Transform>() {
-        for (_, horse, translation, rotation, _) in &decisions {
+        for (_, horse, translation, rotation, _, _) in &decisions {
             if let Some(transform) = transforms.get_mut(*horse) {
                 transform.translation = *translation;
                 if let Some(rotation) = rotation {
@@ -411,17 +425,218 @@ pub(crate) fn cinematic_horse_route_system(world: &World, dt: f32) {
         }
     }
     if let Some(mut tethers) = world.query_mut::<HorseTetherState>() {
-        for (cart, _, _, _, next_target) in &decisions {
+        for (cart, _, _, _, next_target, _) in &decisions {
             if let Some(tether) = tethers.get_mut(*cart) {
                 tether.route_target_form_id = Some(*next_target);
             }
         }
     }
     if world.try_resource::<PhysicsWorld>().is_some() {
-        for (_, horse, translation, _, _) in decisions {
-            byroredux_physics::set_kinematic_translation(world, horse, translation);
+        for (_, horse, translation, _, _, arrived_terminal) in &decisions {
+            if !arrived_terminal {
+                // A convoy parked at its terminal never moves again; the
+                // per-tick kinematic re-pin stops with it.
+                byroredux_physics::set_kinematic_translation(world, *horse, *translation);
+            }
         }
     }
+    let terminal_arrivals: Vec<(EntityId, EntityId)> = decisions
+        .iter()
+        .filter(|(_, _, _, _, _, arrived)| *arrived)
+        .map(|(cart, horse, _, _, _, _)| (*cart, *horse))
+        .collect();
+    release_finished_tethers(world, &terminal_arrivals);
+}
+
+/// #3817 — end a tether whose authored XLKR route is exhausted, and
+/// queue the formerly-retained convoy for cell re-adoption.
+///
+/// `cinematic_retained_entities` (cell_loader/unload.rs) keeps a cart, its
+/// horse, its riders and their whole render subtrees out of cell teardown
+/// for as long as a `HorseTetherState` / attached `ActorCinematicState`
+/// exists — and neither state was ever removed in production, so once a
+/// convoy's home cell unloaded mid-tether (the #3254-scoped strip), the
+/// cart, horse, every rider and all their GPU resources stayed resident
+/// at their last transform across worldspace changes and interior
+/// transitions, permanently. The route system is the one place that
+/// *knows* the drive is over: the horse has arrived at the terminal
+/// marker of its authored XLKR chain — the point where vanilla's own
+/// convoy stops.
+///
+/// Release is behaviour-invisible at the terminal: horse and cart are
+/// parked, so un-pinning the cart from the horse and the riders from the
+/// cart leaves every transform exactly where it was. The cart keeps its
+/// keyframed motion type (a parked cart cannot slide, matching vanilla's
+/// settled cart), riders keep `cart_seat` / `vehicle_local_*` so a later
+/// scripted exit animation still resolves, and the exit-cart path is
+/// `awaited_event`-driven — it never reads `vehicle`.
+///
+/// Re-adoption covers the half the #3254 fix deferred: an entity that
+/// lost its `CellRoot` to a mid-tether home-cell unload has no owner and
+/// no path back. Released entities without a `CellRoot` are queued on
+/// the [`CinematicReAdoption`] pending list, and the streaming step's
+/// retry (`retry_cinematic_readoption`) stamps each onto the root of
+/// whatever loaded exterior cell contains it — an un-rooted entity is
+/// despawn-immune to cell unload, so the pending list is what bounds
+/// that population instead of a silent permanent residency.
+fn release_finished_tethers(world: &World, finished: &[(EntityId, EntityId)]) {
+    if finished.is_empty() {
+        return;
+    }
+    let carts: Vec<EntityId> = finished.iter().map(|(cart, _)| *cart).collect();
+
+    // ── Read pass 1 — riders attached to a finishing cart. ──
+    let riders: Vec<(EntityId, EntityId)> = match world.query::<ActorCinematicState>() {
+        Some(states) => states
+            .iter()
+            .filter_map(|(actor, state)| {
+                let vehicle = state.vehicle?;
+                carts.contains(&vehicle).then_some((actor, vehicle))
+            })
+            .collect(),
+        None => Vec::new(),
+    };
+
+    // ── Read pass 2 — carts + horses + riders + their render subtrees. ──
+    let mut seeds: Vec<EntityId> =
+        finished.iter().copied().flat_map(|(cart, horse)| [cart, horse]).collect();
+    seeds.extend(riders.iter().map(|(actor, _)| *actor));
+    let release_set: std::collections::HashSet<EntityId> = {
+        let children = world.query::<Children>();
+        let mut set = std::collections::HashSet::new();
+        let mut stack = seeds;
+        while let Some(entity) = stack.pop() {
+            if set.insert(entity) {
+                if let Some(row) = children.as_ref().and_then(|c| c.get(entity)) {
+                    stack.extend(row.0.iter().copied());
+                }
+            }
+        }
+        set
+    };
+
+    // ── Read pass 3 — who needs adoption. Entities still owned by their
+    // (loaded) home cell need nothing; the rest are queued for the
+    // streaming step's re-adoption retry, which resolves the loaded
+    // exterior cell at each entity's position (`WorldStreamingState`
+    // lives on the App, not in the ECS, so the route system cannot see
+    // it — #3817).
+    let unplaced: Vec<EntityId> = {
+        let roots = world.query::<CellRoot>();
+        release_set
+            .iter()
+            .filter(|entity| !roots.as_ref().is_some_and(|roots| roots.get(**entity).is_some()))
+            .copied()
+            .collect()
+    };
+
+    // ── Write pass — one storage at a time. ──
+    if let Some(mut tethers) = world.query_mut::<HorseTetherState>() {
+        for cart in &carts {
+            if tethers.remove(*cart).is_some() {
+                log::info!(
+                    "cinematic tether on cart entity {cart} released: authored route terminal reached (#3817)"
+                );
+            }
+        }
+    }
+    if !riders.is_empty() {
+        if let Some(mut states) = world.query_mut::<ActorCinematicState>() {
+            for (actor, vehicle) in &riders {
+                if let Some(state) = states.get_mut(*actor) {
+                    if state.vehicle == Some(*vehicle) {
+                        state.vehicle = None;
+                    }
+                }
+            }
+        }
+    }
+    if !unplaced.is_empty() {
+        log::info!(
+            "{} released cinematic entit(y/ies) lack a cell owner — queued for re-adoption by the streaming step (#3817)",
+            unplaced.len()
+        );
+        if let Some(mut pending) = world.try_resource_mut::<CinematicReAdoption>() {
+            pending.pending.extend(unplaced);
+        }
+    }
+}
+
+/// Retry pass for [`CinematicReAdoption`]: entities whose release landed
+/// outside every loaded cell get adopted the moment one loads beneath
+/// them. Called from the streaming step (which owns both the world and
+/// the loaded-cell map) — with an empty list (the normal session) it is
+/// one resource read. Returns how many entities were adopted.
+///
+/// An un-rooted entity is despawn-immune to cell unload (nothing
+/// enumerates it), so entries are dropped here only when the entity has
+/// been despawned by some path outside cell teardown.
+pub(crate) fn retry_cinematic_readoption(
+    world: &mut World,
+    loaded: &std::collections::HashMap<(i32, i32), crate::streaming::LoadedCell>,
+) -> usize {
+    let Some(pending) = world.try_resource::<CinematicReAdoption>() else {
+        return 0;
+    };
+    if pending.pending.is_empty() {
+        return 0;
+    }
+
+    // Read pass — partition into adopted / alive-still-pending / dead.
+    // All storage guards are read-only here and drop before the writes
+    // below (read-then-write on one storage is the lock-order hygiene
+    // the ECS rules require).
+    let mut adoptions: Vec<(EntityId, EntityId)> = Vec::new();
+    let mut still_pending: Vec<EntityId> = Vec::new();
+    {
+        let transforms = world.query::<Transform>();
+        let roots = world.query::<CellRoot>();
+        for &entity in &pending.pending {
+            let Some(gt) = transforms.as_ref().and_then(|t| t.get(entity)) else {
+                // Every convoy entity is a world entity with a Transform
+                // (the render subtree included); one without is a despawn
+                // from outside cell teardown — drop it.
+                continue;
+            };
+            if roots.as_ref().is_some_and(|roots| roots.get(entity).is_some()) {
+                continue; // adopted by an earlier tick
+            }
+            let (gx, gy) = crate::streaming::world_pos_to_grid(gt.translation.x, gt.translation.z);
+            match loaded.get(&(gx, gy)) {
+                Some(cell) => adoptions.push((entity, cell.cell_root)),
+                None => still_pending.push(entity),
+            }
+        }
+    }
+    let adopted = adoptions.len();
+    let dropped = pending
+        .pending
+        .len()
+        .saturating_sub(adopted + still_pending.len());
+    drop(pending);
+
+    for (entity, root) in &adoptions {
+        world.insert(*entity, CellRoot(*root));
+        if let Some(mut idx) = world.try_resource_mut::<CellRootIndex>() {
+            idx.map.entry(*root).or_default().push(*entity);
+        }
+    }
+    if adopted > 0 {
+        log::info!(
+            "cinematic re-adoption: {adopted} entit(y/ies) stamped onto loaded              exterior cell roots (#3817)"
+        );
+    }
+    if dropped > 0 {
+        log::info!(
+            "cinematic re-adoption: {dropped} pending entit(y/ies) were despawned              outside cell teardown and dropped (#3817)"
+        );
+    }
+    if adopted > 0 || dropped > 0 {
+        if let Some(mut pending) = world.try_resource_mut::<CinematicReAdoption>() {
+            pending.pending = still_pending;
+        }
+    }
+    adopted
 }
 
 /// Per-frame scratch for [`scene_trigger_actor_approach_system_inner`], owned
@@ -1639,4 +1854,220 @@ mod tests {
             "the between-scenes router must call the gate's shared predicate (#4333)"
         );
     }
+    /// #3817 — the full retention lifecycle: a tethered convoy drives its
+    /// authored XLKR route, the terminal marker is reached (vanilla's own
+    /// convoy stops there), and the release must (a) remove the
+    /// `HorseTetherState`, (b) detach riders' vehicle attachment while
+    /// keeping their seat bookkeeping, and (c) queue the entities that
+    /// lost their `CellRoot` (the #3254 mid-tether strip) for
+    /// re-adoption — never leave them as permanent zombies.
+    #[test]
+    fn tether_releases_at_the_authored_route_terminal_and_detaches_riders() {
+        use byroredux_core::math::{Quat, Vec3};
+
+        let mut world = World::new();
+        world.register::<Transform>();
+        world.register::<GlobalTransform>();
+        world.register::<HorseTetherState>();
+        world.register::<ActorCinematicState>();
+        world.register::<CellRoot>();
+        world.register::<Children>();
+        world.insert_resource(CinematicReAdoption::default());
+        world.insert_resource(CellRootIndex::new());
+        byroredux_scripting::install_package_target_positions(
+            &mut world,
+            [
+                (0x100, Vec3::new(5.0, 20.0, 0.0)),
+                (0x101, Vec3::new(100.0, 0.0, 0.0)),
+            ],
+        );
+        byroredux_scripting::install_package_linked_references(
+            &mut world,
+            [(0x100, vec![(0, 0x101)])],
+        );
+        byroredux_scripting::install_package_target_directions(&mut world, [(0x101, Vec3::X)]);
+
+        let horse = world.spawn();
+        let cart = world.spawn();
+        let rider = world.spawn();
+        // World positions inside exterior grid (0, 0) so the re-adoption
+        // retry resolves them to the cell root the test registers below.
+        world.insert(horse, Transform::IDENTITY);
+        world.insert(cart, Transform::new(Vec3::new(100.0, 0.0, -100.0), Quat::IDENTITY, 1.0));
+        world.insert(rider, Transform::new(Vec3::new(100.0, 2.0, -100.0), Quat::IDENTITY, 1.0));
+        world.insert(
+            horse,
+            SceneAliasCandidate {
+                reference_form_id: 0x90,
+                base_form_id: 0x91,
+                linked_refs: vec![(0, 0x100)],
+                location_ref_types: Vec::new(),
+            },
+        );
+        world.insert(
+            cart,
+            HorseTetherState {
+                horse,
+                horse_local_translation: Vec3::ZERO,
+                horse_local_rotation: Quat::IDENTITY,
+                route_target_form_id: None,
+            },
+        );
+        world.insert(
+            rider,
+            ActorCinematicState {
+                vehicle: Some(cart),
+                vehicle_local_translation: Some(Vec3::new(0.0, 2.0, 0.0)),
+                vehicle_local_rotation: Some(Quat::IDENTITY),
+                cart_seat: Some(2),
+                ..Default::default()
+            },
+        );
+
+        // Drive until the horse has arrived at the terminal marker's
+        // heading extension (~x = 4096 + 100 at walk speed 100 u/s) and
+        // the release fires. The loop must not depend on exact tick
+        // arithmetic — it terminates on the observable.
+        let mut released = false;
+        for _ in 0..2_000 {
+            cinematic_horse_route_system(&world, 0.1);
+            if world.get::<HorseTetherState>(cart).is_none() {
+                released = true;
+                break;
+            }
+        }
+        assert!(
+            released,
+            "the tether must release once the authored route terminal is              reached — retention would otherwise be permanent (#3817)"
+        );
+
+        // (b) rider detachment: attachment gone, seat bookkeeping kept so
+        // a later scripted exit animation still resolves.
+        let (vehicle_after, seat, local) = {
+            let rider_state = world.get::<ActorCinematicState>(rider).unwrap();
+            (rider_state.vehicle, rider_state.cart_seat, rider_state.vehicle_local_translation)
+        };
+        assert_eq!(vehicle_after, None, "the rider must detach");
+        assert_eq!(seat, Some(2));
+        assert_eq!(local, Some(Vec3::new(0.0, 2.0, 0.0)));
+
+        // (c) neither cart nor rider carried a `CellRoot` (the #3254 strip
+        // fired when the home cell unloaded mid-tether) — both must now be
+        // queued for re-adoption, not silently un-owned forever.
+        let queued = world
+            .try_resource::<CinematicReAdoption>()
+            .map(|p| p.pending.clone())
+            .expect("re-adoption resource");
+        assert!(
+            queued.contains(&cart) && queued.contains(&rider),
+            "un-rooted released entities must be queued for re-adoption, got {queued:?}"
+        );
+
+        // The streaming step's retry adopts them onto the loaded cell at
+        // their position. World-space (100, ·, -100) is grid (0, 0).
+        let mut loaded = std::collections::HashMap::new();
+        let cell_root = world.spawn();
+        loaded.insert((0, 0), crate::streaming::LoadedCell { cell_root });
+        let adopted = crate::systems::retry_cinematic_readoption(&mut world, &loaded);
+        assert_eq!(adopted, 2, "both un-rooted entities must be adopted");
+        assert_eq!(
+            world.get::<CellRoot>(cart).map(|root| root.0),
+            Some(cell_root)
+        );
+        assert_eq!(
+            world.get::<CellRoot>(rider).map(|root| root.0),
+            Some(cell_root)
+        );
+        // The horse drove past the cell boundary during the route (its
+        // terminal extension is ~4096 units out) — it is still un-owned in
+        // an unloaded grid cell, so it stays pending until a cell loads
+        // beneath it. That is the surfaced-bounded-population contract,
+        // not a leak.
+        assert_eq!(
+            world.try_resource::<CinematicReAdoption>().map(|p| p.pending.clone()),
+            Some(vec![horse]),
+            "only the entity outside every loaded cell may stay pending"
+        );
+        assert!(
+            world
+                .try_resource::<CellRootIndex>()
+                .map(|idx| idx
+                    .map
+                    .get(&cell_root)
+                    .is_some_and(|owned| owned.contains(&cart) && owned.contains(&rider)))
+                .unwrap_or(false),
+            "the re-adoption must be registered in the unload index, or the              next cell unload cannot find them"
+        );
+    }
+
+    /// #3817 companion pin — a convoy that kept its `CellRoot` (the common
+    /// case: the home cell is still loaded when the route ends) must NOT
+    /// be queued for re-adoption; it simply stops being retained.
+    #[test]
+    fn tether_release_touches_nothing_when_the_home_cell_still_owns_the_convoy() {
+        use byroredux_core::math::{Quat, Vec3};
+
+        let mut world = World::new();
+        world.register::<Transform>();
+        world.register::<GlobalTransform>();
+        world.register::<HorseTetherState>();
+        world.register::<CellRoot>();
+        world.insert_resource(CinematicReAdoption::default());
+        byroredux_scripting::install_package_target_positions(
+            &mut world,
+            [(0x100, Vec3::new(5.0, 20.0, 0.0)), (0x101, Vec3::new(100.0, 0.0, 0.0))],
+        );
+        byroredux_scripting::install_package_linked_references(
+            &mut world,
+            [(0x100, vec![(0, 0x101)])],
+        );
+
+        let horse = world.spawn();
+        let cart = world.spawn();
+        world.insert(horse, Transform::IDENTITY);
+        world.insert(
+            horse,
+            SceneAliasCandidate {
+                reference_form_id: 0x90,
+                base_form_id: 0x91,
+                linked_refs: vec![(0, 0x100)],
+                location_ref_types: Vec::new(),
+            },
+        );
+        world.insert(
+            cart,
+            HorseTetherState {
+                horse,
+                horse_local_translation: Vec3::ZERO,
+                horse_local_rotation: Quat::IDENTITY,
+                route_target_form_id: None,
+            },
+        );
+        // Still owned by its loaded home cell.
+        let home = world.spawn();
+        world.insert(cart, CellRoot(home));
+        world.insert(horse, CellRoot(home));
+
+        let mut released = false;
+        for _ in 0..2_000 {
+            cinematic_horse_route_system(&world, 0.1);
+            if world.get::<HorseTetherState>(cart).is_none() {
+                released = true;
+                break;
+            }
+        }
+        assert!(released, "the tether must still release");
+        assert_eq!(
+            world.get::<CellRoot>(cart).map(|root| root.0),
+            Some(home),
+            "a still-owned entity must keep its root untouched"
+        );
+        assert!(
+            world
+                .try_resource::<CinematicReAdoption>()
+                .is_some_and(|p| p.pending.is_empty()),
+            "nothing may be queued when every released entity is still owned"
+        );
+    }
+
 }
