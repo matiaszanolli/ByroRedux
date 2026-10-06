@@ -1867,7 +1867,6 @@ mod tests {
 
         let mut world = World::new();
         world.register::<Transform>();
-        world.register::<GlobalTransform>();
         world.register::<HorseTetherState>();
         world.register::<ActorCinematicState>();
         world.register::<CellRoot>();
@@ -2009,7 +2008,6 @@ mod tests {
 
         let mut world = World::new();
         world.register::<Transform>();
-        world.register::<GlobalTransform>();
         world.register::<HorseTetherState>();
         world.register::<CellRoot>();
         world.insert_resource(CinematicReAdoption::default());

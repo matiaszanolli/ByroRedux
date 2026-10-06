@@ -1776,9 +1776,13 @@ pub(super) struct DrawBatch {
     /// them from (#2165). The material kind is the real signal; depth
     /// state never was.
     ///
-    /// MUST be part of the merge key ([`group_state`]): a non-glass
-    /// leader would otherwise swallow a glass batch into its indirect
-    /// group and silently drop that batch's split.
+    /// MUST gate the indirect merge key ([`group_state`]) for the
+    /// population the split can actually reach — blended batches: a
+    /// non-glass two-sided blend leader would otherwise swallow a glass
+    /// batch into its indirect group and silently drop that batch's
+    /// split (#2165). The key carries the *split-eligibility predicate*,
+    /// not this raw flag, so opaque glass runs (where the split is
+    /// structurally unreachable) merge normally (#2764).
     pub order_dependent_glass: bool,
 }
 
@@ -1813,10 +1817,22 @@ pub(super) fn group_state(
         b.z_function,
         // #2165 — split-eligibility must split the group too. The
         // gather loop admits a batch on `group_state` equality alone,
-        // so without this limb a non-glass two-sided blend leader would
-        // absorb a following glass batch and rasterize it in one
-        // CULL_NONE indirect draw, losing the back-then-front ordering.
-        b.order_dependent_glass,
+        // so a split-eligible (needs_two_sided_blend_split) candidate
+        // must never match a non-eligible leader's key, or it gets
+        // rasterized in one CULL_NONE indirect draw and loses the
+        // back-then-front ordering. The limb is the *eligibility
+        // predicate itself*, not the raw `order_dependent_glass` flag:
+        // the split can only ever apply to blended pipelines, so
+        // carrying the raw flag also split every OPAQUE glass run —
+        // three indirect groups where one merges, on a boundary whose
+        // protected split is structurally unreachable there (#2764).
+        // For blended batches the limb is belt-and-braces: the
+        // `Blended` key already carries the flag as
+        // `preserve_opaque_gbuffer`, so key equality implies flag
+        // equality and the limb adds nothing today — it keeps the
+        // #2165 guarantee should the pipeline key ever drop that
+        // field.
+        needs_two_sided_blend_split(b),
     )
 }
 
@@ -2688,6 +2704,59 @@ mod group_state_tests {
         let mut decal = batch();
         decal.render_layer = RenderLayer::Decal;
         assert_ne!(group_state(&base), group_state(&decal));
+    }
+
+    /// #2764 — the group key carries split *eligibility*
+    /// ([`needs_two_sided_blend_split`]), not the raw glass flag.
+    /// `is_refractive_glass` accepts opaque MultiLayerParallax, but the
+    /// split the key protects requires a blended pipeline, so an opaque
+    /// glass-flagged batch must not fragment an otherwise-homogeneous
+    /// opaque run into extra indirect groups.
+    #[test]
+    fn opaque_glass_flag_does_not_split_groups() {
+        let base = batch();
+        let mut opaque_mlp = batch();
+        opaque_mlp.order_dependent_glass = true;
+        assert_eq!(
+            group_state(&base),
+            group_state(&opaque_mlp),
+            "an opaque batch's glass flag must not break the merge key — \
+             the split it protects requires a blended pipeline (#2764)",
+        );
+    }
+
+    /// #2165, pinned at the group level: a split-eligible two-sided
+    /// blended glass batch and a two-sided blended non-glass batch must
+    /// NOT share a key, or the gather would absorb the glass batch into
+    /// one CULL_NONE indirect draw and lose the back-then-front ordering.
+    #[test]
+    fn blended_glass_flag_still_splits_groups() {
+        let make = |order_dependent_glass| DrawBatch {
+            mesh_handle: 1,
+            pipeline_key: PipelineKey::Blended {
+                src: 6,
+                dst: 0,
+                wireframe: false,
+                preserve_opaque_gbuffer: order_dependent_glass,
+            },
+            two_sided: true,
+            render_layer: RenderLayer::Clutter,
+            first_instance: 0,
+            instance_count: 1,
+            index_count: 3,
+            global_index_offset: 0,
+            global_vertex_offset: 0,
+            z_test: true,
+            z_write: false,
+            z_function: 3,
+            order_dependent_glass,
+        };
+        assert_ne!(
+            group_state(&make(true)),
+            group_state(&make(false)),
+            "a split-eligible glass blend must not merge into a non-glass \
+             leader's group (#2165)",
+        );
     }
 }
 
