@@ -52,6 +52,13 @@ fn cell(cell: &mut CellData) {
             vector(velocity);
         }
         optional(&mut refr.radius_override);
+        // #5299 — XRGD ragdoll-pose positions are metric on Starfield
+        // (median entry offset 0.162 vs FO4's 15.33 BU), the same distance
+        // lane as `refr.position`; the Euler rotations are dimensionless
+        // and stay wire-valued.
+        for bone in &mut refr.ragdoll_pose {
+            vector(&mut bone.position);
+        }
         // REFR XSCL and Euler angles are dimensionless. SCOL composition
         // must not multiply the unit conversion again through parent scale.
     }

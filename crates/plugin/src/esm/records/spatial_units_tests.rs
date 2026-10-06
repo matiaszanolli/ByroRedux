@@ -26,6 +26,11 @@ fn scene_plugin(hedr_version: f32) -> Vec<u8> {
         .collect();
     let mut teleport = 30u32.to_le_bytes().to_vec();
     teleport.extend(&pose);
+    // #5299 — one 28-byte XRGD wbRagdoll entry (bone id + 3 pad + pos×3 +
+    // rot×3) so the ragdoll-pose lift rides the same fixture as the other
+    // placement distances.
+    let mut ragdoll = vec![7u8, 0, 0, 0];
+    ragdoll.extend(&pose);
     let refr = build_record(
         b"REFR",
         20,
@@ -35,6 +40,7 @@ fn scene_plugin(hedr_version: f32) -> Vec<u8> {
             (b"XSCL", 2.0f32.to_le_bytes().to_vec()),
             (b"XTEL", teleport),
             (b"XRDS", 8.0f32.to_le_bytes().to_vec()),
+            (b"XRGD", ragdoll),
         ],
     );
     let mut cell = build_record(
@@ -62,6 +68,12 @@ fn starfield_public_index_converts_placements_and_lights_together() {
     assert_eq!(refr.radius_override, Some(560.0));
     assert_eq!(refr.scale, 2.0);
     assert_eq!(refr.rotation, [0.1, 0.2, 0.3]);
+    // #5299 — the XRGD bone position lifts like every other Starfield
+    // placement distance; its Euler rotation stays wire-valued.
+    assert_eq!(refr.ragdoll_pose.len(), 1);
+    assert_eq!(refr.ragdoll_pose[0].bone_id, 7);
+    assert_eq!(refr.ragdoll_pose[0].position, [140.0, 210.0, 280.0]);
+    assert_eq!(refr.ragdoll_pose[0].rotation, [0.1, 0.2, 0.3]);
     let light = index.cells.statics[&10].light_data.as_ref().unwrap();
     assert_eq!(light.radius, 350.0);
     assert_eq!(light.movement_amplitude, 35.0);
@@ -98,6 +110,8 @@ fn legacy_index_placements_keep_authored_units() {
         assert_eq!(refr.position, [2.0, 3.0, 4.0]);
         assert_eq!(refr.radius_override, Some(8.0));
         assert_eq!(refr.scale, 2.0);
+        // Legacy XRGD offsets are authored in engine units already.
+        assert_eq!(refr.ragdoll_pose[0].position, [2.0, 3.0, 4.0]);
     }
 }
 
