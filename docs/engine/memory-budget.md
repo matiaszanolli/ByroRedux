@@ -130,7 +130,7 @@ that would cross the cap is fully extracted before it is dropped. The
 transient can therefore exceed 256 MiB by up to one texture per stream-pool
 thread, times the largest DDS in flight. The pool has
 `available_parallelism() / 2` threads, floored at 1 (`build_stream_parse_pool`
-in `byroredux/src/streaming.rs`): 16 on the 32-thread dev box. Queued keys
+in `byroredux/src/streaming/pre_parse.rs`): 16 on the 32-thread dev box. Queued keys
 hold no bytes.
 
 Telemetry is on the `streaming:` bench line. `tex_prefetch_peak_mib` is the

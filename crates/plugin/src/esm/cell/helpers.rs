@@ -165,7 +165,7 @@ impl CellSubrecordFields {
             // REFRs' individual placement — their geometry is already
             // baked into the `_oc.nif` files referenced by
             // `precombined_mesh_hashes`. Format: pure `N × u32`.
-            b"XPRI" if sub.data.len() % 4 == 0 => {
+            b"XPRI" if sub.data.len().is_multiple_of(4) => {
                 self.absorbed_refs.reserve(sub.data.len() / 4);
                 for chunk in sub.data.as_chunks::<4>().0 {
                     let fid = u32::from_le_bytes(*chunk);

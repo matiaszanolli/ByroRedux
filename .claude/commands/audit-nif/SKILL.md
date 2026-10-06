@@ -288,7 +288,7 @@ parses then silently drops collision; *nif_shape_dispatch_resolve_parity*);
 **Output**: `/tmp/audit/nif/dim_5.md`
 
 ### Dimension 6: Allocation Hygiene (PERF)
-Paths: `crates/nif/src/stream.rs`, `blocks/**/*.rs` callers, `crates/nif/tests/heap_allocation_bounds*.rs`, `byroredux/src/streaming.rs` (`pre_parse_cell`)
+Paths: `crates/nif/src/stream.rs`, `blocks/**/*.rs` callers, `crates/nif/tests/heap_allocation_bounds*.rs`, `byroredux/src/streaming/pre_parse.rs` (`pre_parse_cell`)
 First step: `cargo test -p byroredux-nif --features dhat-heap --test heap_allocation_bounds` (CI job `nif-heap-allocation-bounds` runs the three heap files, each its own process)
 **Guards**: the dhat-gated `heap_allocation_bounds.rs` (a `harness = false` sequential main since
 #5050 — libtest's own threads polluted its exact `total_blocks == 1` pin; single node, FO4 packed vertices,

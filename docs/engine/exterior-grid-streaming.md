@@ -74,7 +74,7 @@ game-agnostic representation for rendering.
 ## 3. Radius → grid cells
 
 Chebyshev (square) neighborhoods, not circular, come from the single
-`compute_streaming_deltas` pure function in `byroredux/src/streaming.rs`:
+`compute_streaming_deltas` pure function in `byroredux/src/streaming/mod.rs`:
 for `dx, dy` in `-radius_load..=radius_load`, insert `(px+dx, py+dy)` into
 the desired set, diff against the currently-loaded set, and closest-first
 sort `to_load`. Both bootstrap and steady-state dispatch that result through
@@ -84,7 +84,8 @@ closed-channel rollback.
 
 ## 4. Streaming Phase 1: async pre-parse worker
 
-A real background thread + `mpsc` pipeline in `byroredux/src/streaming.rs`.
+A real background thread + `mpsc` pipeline in `byroredux/src/streaming/`
+(`mod.rs` spawns the worker; `pre_parse.rs` holds the parse side).
 `WorldStreamingState::new` spawns a worker thread running
 `cell_pre_parse_worker`, which pulls `LoadCellRequest`s off an
 `mpsc::Receiver`, does the NIF-parse/BSA-extract work off the main thread

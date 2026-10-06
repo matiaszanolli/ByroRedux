@@ -20,10 +20,16 @@ use super::imported_mesh_with_material_path;
 /// count on success — so a regression in `probe_starfield_cdb` now fails
 /// these tests instead of passing them.
 fn register_probed(provider: &mut MaterialProvider, bytes: &[u8]) {
+    register_probed_from(provider, bytes, "test-archive");
+}
+
+fn register_probed_from(provider: &mut MaterialProvider, bytes: &[u8], source: &str) {
     if crate::asset_provider::material::probe_starfield_cdb(bytes, "test").is_some() {
-        provider.register_starfield_cdb_probe("test-archive".into(), "materials\\materialsbeta.cdb".into());
+        provider.register_starfield_cdb_probe(source.into(), CDB_INNER_PATH.into());
     }
 }
+
+const CDB_INNER_PATH: &str = "materials\\materialsbeta.cdb";
 
 /// #3398 Phase 2 — register a synthetic CDB whose material index is
 /// ALREADY BUILT and cached, so `merge_external_material` exercises the
@@ -34,6 +40,7 @@ fn register_probed(provider: &mut MaterialProvider, bytes: &[u8]) {
 fn register_indexed(provider: &mut MaterialProvider) {
     register_indexed_with(
         byroredux_sfmaterial::test_support::synthetic_material_cdb(),
+        "test-archive-widget",
         provider,
     )
 }
@@ -42,16 +49,21 @@ fn register_indexed(provider: &mut MaterialProvider) {
 fn register_indexed_iron_color(provider: &mut MaterialProvider) {
     register_indexed_with(
         byroredux_sfmaterial::test_support::synthetic_material_cdb_with_iron_color(),
+        "test-archive-iron-color",
         provider,
     )
 }
 
-fn register_indexed_with(bytes: Vec<u8>, provider: &mut MaterialProvider) {
-    let index = byroredux_sfmaterial::MaterialIndex::build(&bytes)
-        .expect("synthetic CDB must index");
-    const KEY: &str = "test-archive|materials\\materialsbeta.cdb";
-    sf_cdb_index_cache_insert_for_test(KEY, std::sync::Arc::new(index));
-    register_probed(provider, &bytes);
+/// Each fixture gets its own archive `source`, so its entry in the
+/// process-global `sf_cdb_index_cache` is its own key: two fixtures
+/// injected under one shared key race under the parallel test runner, and
+/// the widget test read the iron-colour index (`iris_iron_color.dds`).
+fn register_indexed_with(bytes: Vec<u8>, source: &str, provider: &mut MaterialProvider) {
+    let index =
+        byroredux_sfmaterial::MaterialIndex::build(&bytes).expect("synthetic CDB must index");
+    let key = format!("{source}|{CDB_INNER_PATH}");
+    sf_cdb_index_cache_insert_for_test(&key, std::sync::Arc::new(index));
+    register_probed_from(provider, &bytes, source);
 }
 
 /// Synthetic minimal CDB: BETH magic + header + STRT (empty) + TYPE

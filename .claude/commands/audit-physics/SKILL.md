@@ -50,7 +50,7 @@ Audits whether the simulation is *correct*, not just locked/unsafe: `crates/phys
 **Output**: `/tmp/audit/physics/dim_1.md`
 
 ### Dim 2: Step, Wake & the 4(+1)-Phase Sync Tick
-**Paths**: `crates/physics/src/{world,sync,components,broad_phase}.rs`, `byroredux/src/boot/schedule/physics.rs`, `byroredux/src/cell_loader/rapier_release_tests.rs`
+**Paths**: `crates/physics/src/world/` (incl. `recovery.rs`), `crates/physics/src/{sync,components,broad_phase}.rs`, `byroredux/src/boot/schedule/physics.rs`, `byroredux/src/cell_loader/rapier_release_tests.rs`
 **First step**: `git log --since=D -- crates/physics/src/world.rs crates/physics/src/sync.rs byroredux/src/boot/schedule/physics.rs`
 **Guards**: `byroredux/src/scheduler_access_tests.rs::physics_sync_declaration_reads_all_phase_and_diagnostic_types` + `contact_config_read_is_declared_on_both_physics_systems` (access declaration; it has been forgotten four times), `cell_loader/rapier_release_tests.rs` (cell-unload handle release). Beyond them:
 - Accumulator clamp to `MAX_SUBSTEPS * PHYSICS_DT` precedes the loop; `frame_dt.max(0.0)` guards NaN/negative. The catch-up loop stops at `SUBSTEP_TIME_BUDGET` and drops backlog (slow-motion, never a jump); the budget timer is the one documented non-determinism source, no wall-clock or `HashMap` order elsewhere in the solver path.
@@ -76,7 +76,7 @@ Audits whether the simulation is *correct*, not just locked/unsafe: `crates/phys
 **Output**: `/tmp/audit/physics/dim_3.md`
 
 ### Dim 4: Character Controller, Grounding & the NPC KCC (M42.10)
-**Paths**: `crates/physics/src/{world,components}.rs`, `byroredux/src/systems/{character,locomotion}.rs`
+**Paths**: `crates/physics/src/world/queries.rs` (`move_character`), `crates/physics/src/components.rs`, `byroredux/src/systems/{character,locomotion}.rs`
 **First step**: `git log --since=D -- byroredux/src/systems/character.rs byroredux/src/systems/locomotion.rs crates/physics/src/world.rs`
 **Guards**: `world.rs::kcc_filter_groups_mask_actor_bone_colliders` (non-vacuous: the unmasked sweep must be blocked), `capsule_clearance_rejects_door_overlap_and_can_exclude_self`, `capsule_clearance_ignores_sensors_and_live_actor_bones`; `character.rs` tests for `integrate_vertical`/`horizontal_motion`; `locomotion.rs::stuck_tests`. Physics-side contract only; NPC behaviour is `/audit-gameplay`.
 - **NPC step**: `step_toward_detailed` drives XZ through `PhysicsWorld::move_character` with `filter_groups: Some(actor_move_interaction_groups())`, which equals `ground_probe_groups()` (masks `ACTOR_BONE_GROUP` wholesale — so NPCs ghost through NPCs, and clutter blocks but is never shoved: no collision impulses, autostep refuses dynamic bodies; #4690). The airborne fallback `cast_ray_down` is origin-lifted by `LOCOMOTION_GROUND_RAY_UP_OFFSET` (256) and clamped to `LOCOMOTION_MAX_DROP` (256 BU) so a ledge cannot teleport the actor under the shell; its `None` exclusion is correct only because the group mask covers the actor's ~18 bone bodies (a bone is a separate body, so a single `exclude_collider` can never cover them). Any new NPC cast without the mask self-hits.
@@ -102,7 +102,7 @@ Audits whether the simulation is *correct*, not just locked/unsafe: `crates/phys
 **Output**: `/tmp/audit/physics/dim_5.md`
 
 ### Dim 6: Queries, Diagnostics & Cost
-**Paths**: `crates/physics/src/{world,sync}.rs` (casts, census), `byroredux/src/commands/physics.rs`
+**Paths**: `crates/physics/src/world/{queries,mod}.rs` (casts, census), `crates/physics/src/sync.rs`, `byroredux/src/commands/physics.rs`
 **First step**: `git log --since=D -- crates/physics/src/sync.rs byroredux/src/commands/physics.rs`
 **Guards**: `sync.rs::census_excluded_body_prevents_a_self_hit_on_the_players_own_capsule`, `census_reports_full_extent_and_scale_not_just_the_y_range`.
 - Every cast the controllers use excludes the caster (self-hit = permanently grounded on your own capsule): the player passes its body handle, actors use the group mask (Dim 4). A live census caller (`phys.census`) must pass `Some(player_body)`. `cast_ray_corridor` (#5160: a ball shape-cast on the same query surface as `cast_ray`, sensors excluded, used by the melee swing and the `combat.approach` LOS check in `commands/view.rs`) excludes one body only — a live actor's own keyframed bones are separate bodies and stay hittable (combat treats a self-root hit as a miss; `/audit-gameplay` Dim 4). Guard `corridor_cast_hits_a_bone_the_zero_width_ray_threads`.

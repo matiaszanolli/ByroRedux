@@ -101,7 +101,7 @@ fn tag_stream_start(file: &[u8]) -> Option<usize> {
     }
     let nbits = file[8] >> 3;
     let total_bits = 5 + nbits as usize * 4;
-    let rect_end = 8 + (total_bits + 7) / 8 + 4;
+    let rect_end = 8 + total_bits.div_ceil(8) + 4;
     (rect_end < file.len()).then_some(rect_end)
 }
 
@@ -412,7 +412,7 @@ mod dialect_tests {
 
     fn tag(code: u16, body: &[u8]) -> Vec<u8> {
         let mut out = Vec::with_capacity(6 + body.len());
-        out.extend_from_slice(&(((code << 6) | (body.len() as u16 & 0x3F)) as u16).to_le_bytes());
+        out.extend_from_slice(&((code << 6) | (body.len() as u16 & 0x3F)).to_le_bytes());
         out.extend_from_slice(body);
         out
     }

@@ -68,7 +68,7 @@ Each is just `--area` over these paths (neighbors apply):
 | `esm-deep` / `character-deep` / `physics-deep` | `crates/plugin/` / `crates/core/src/character/` / `crates/physics/` `byroredux/src/ragdoll.rs` |
 | `ui-deep` / `audio-deep` / `save-deep` | `crates/ui/` `crates/menuxml/` `byroredux/src/{hud,scaleform_hud,ui_input,objectives}.rs` / `crates/audio/` / `crates/save/` `byroredux/src/save_io/` |
 | `scripting-deep` / `speedtree-deep` | `crates/{scripting,pex,papyrus}/` / `crates/spt/` |
-| `streaming-deep` | `byroredux/src/streaming.rs` `byroredux/src/npc_spawn/` `byroredux/src/cell_loader/` |
+| `streaming-deep` | `byroredux/src/streaming/` `byroredux/src/npc_spawn/` `byroredux/src/cell_loader/` |
 | `exterior-deep` / `gameplay-deep` / `parsers-deep` / `tooling-deep` | the new owners' `Paths:` lines |
 | `legacy-deep` | `legacy-compat` alone |
 

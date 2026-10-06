@@ -68,9 +68,9 @@ pub const TOD_MIDNIGHT: usize = 5;
 /// climate's own weather table references only records the engine cannot
 /// decode yet (Starfield's WTHS). Deterministic: an EDID is a unique key,
 /// so at most one record matches.
-pub fn default_weather_by_edid<'a>(
-    weathers: &'a std::collections::HashMap<u32, WeatherRecord>,
-) -> Option<&'a WeatherRecord> {
+pub fn default_weather_by_edid(
+    weathers: &std::collections::HashMap<u32, WeatherRecord>,
+) -> Option<&WeatherRecord> {
     weathers
         .values()
         .find(|wthr| wthr.editor_id == "DefaultWeather")

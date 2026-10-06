@@ -227,7 +227,7 @@ First step: `cargo test -p byroredux-core ecs::systems`
 Paths: `byroredux/src/{streaming,npc_spawn}*`, `byroredux/src/cell_loader/unload.rs`, `crates/core/src/ecs/components/`, `crates/scripting/src/{events,timer,cleanup}.rs`, `crates/core/src/animation/registry.rs`
 First step: `cargo test -p byroredux rapier_release` then read `git log --since=<last-report-date> -- crates/core/src/ecs/components`
 
-- **Cell load/unload symmetry** (`streaming.rs`, `cell_loader/unload.rs`): every component/resource row a
+- **Cell load/unload symmetry** (`streaming/`, `cell_loader/unload.rs`): every component/resource row a
   cell load attaches is removed on unload (no orphan `CharacterController`, `LightFlicker`,
   `RapierHandles`, animation players, `SeatReservations` claims whose furniture or claimant is gone).
   Spawn dispatch is idempotent — one REFR FormId never spawns twice.

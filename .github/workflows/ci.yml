@@ -286,10 +286,12 @@ jobs:
         with:
           components: miri
       - uses: Swatinem/rust-cache@v2
+      # `+nightly` is load-bearing: rust-toolchain.toml (#5308) pins 1.96.0,
+      # which overrides the nightly installed above and ships no miri.
       - name: cargo miri setup
-        run: cargo miri setup
+        run: cargo +nightly miri setup
       - name: cargo miri test (ecs::world::tests, scheduler test excluded)
-        run: cargo miri test -p byroredux-core --lib ecs::world::tests -- --skip resource_visible_to_system_via_scheduler
+        run: cargo +nightly miri test -p byroredux-core --lib ecs::world::tests -- --skip resource_visible_to_system_via_scheduler
 
   # ──────────────────────────────────────────────────────────────────────────
   # NIF heap-allocation regression (TD9-001 / #1247 / #1381 / #1763)

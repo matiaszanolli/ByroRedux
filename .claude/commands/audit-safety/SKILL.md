@@ -105,7 +105,7 @@ First step: `grep -rnE 'transmute|from_raw_parts|set_len|from_utf8_unchecked|uns
   per `/audit-esm`; NIF shape resolution #1385; ECS hierarchy via `HierarchyTraversalGuard`).
 
 ### 3. Memory & Resource Leaks, Drop Ordering (HIGH when per-frame/per-cell)
-Paths: `crates/physics/src/world.rs`, `byroredux/src/cell_loader/unload.rs`, `crates/renderer/src/{deferred_destroy,mesh}.rs`, `crates/renderer/src/texture_registry/`, `byroredux/src/app_events.rs`
+Paths: `crates/physics/src/world/`, `byroredux/src/cell_loader/unload.rs`, `crates/renderer/src/{deferred_destroy,mesh}.rs`, `crates/renderer/src/texture_registry/`, `byroredux/src/app_events.rs`
 First step: `cargo test -p byroredux rapier_release && grep -rn 'DeferredDestroyQueue<' crates/renderer/src | grep -v deferred_destroy.rs`
 
 - **Rapier bodies on cell unload (#1520)**: `release_victim_rapier_bodies` frees bodies, colliders, joints and

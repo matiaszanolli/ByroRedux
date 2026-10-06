@@ -47,7 +47,7 @@ Read `.claude/commands/_audit-common.md` and `.claude/commands/_audit-severity.m
   `resolve_tree_icon_path`); `cell_loader/nif_import_registry.rs` (`spt_cache_key`,
   `CachedNifImport.speedtree_wind`); `cell_loader/spawn/mesh_instance.rs` (attaches `Billboard`
   from `mesh.billboard_mode` and `SpeedTreeWind`, routes through `translate_material`);
-  `byroredux/src/streaming.rs` (skips `.spt` in prefetch via `is_spt_model_path`, a byte-level
+  `byroredux/src/streaming/pre_parse.rs` (skips `.spt` in prefetch via `is_spt_model_path`, a byte-level
   suffix test — a `&str` byte-index slice there panicked on a trailing U+FFFD, fixed in c83e4837a, #5137).
 - `byroredux/src/scene/nif_loader.rs` — the `--tree` loose route: a **parallel** path calling
   `import_spt_scene` with `SptImportParams::default()` (no TREE metadata).

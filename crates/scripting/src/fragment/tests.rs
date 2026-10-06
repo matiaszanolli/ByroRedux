@@ -1084,7 +1084,7 @@ fn player_ref_property_receivers_decline_on_all_three_npc_only_arms() {
         PropertyValue, ScriptInstance, ScriptInstanceData, ScriptProperty,
     };
 
-    let mut world = fixture();
+    let world = fixture();
     let player = world.resource::<PapyrusPlayerEntity>().0;
     // The state a cinematic leaves the player in: restrained. A
     // PlayerRef-driven SetUnconscious used to clear exactly this.

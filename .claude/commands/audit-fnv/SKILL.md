@@ -44,7 +44,7 @@ Ordered by FNV risk: cell load first (highest blast radius), gameplay-data slice
 
 ### Dimension 1: Cell Loading & Streaming
 **Subagent**: `general-purpose`
-**Paths**: `byroredux/src/cell_loader/` (general files; `terrain*`, `water.rs`, `lod*`, `object_lod.rs`, `placement_lod.rs` are `/audit-exterior`), `byroredux/src/scene/`, `byroredux/src/streaming.rs`, `docs/engine/pipeline-overview.md`, `docs/engine/exterior-grid-streaming.md`
+**Paths**: `byroredux/src/cell_loader/` (general files; `terrain*`, `water.rs`, `lod*`, `object_lod.rs`, `placement_lod.rs` are `/audit-exterior`), `byroredux/src/scene/`, `byroredux/src/streaming/`, `docs/engine/pipeline-overview.md`, `docs/engine/exterior-grid-streaming.md`
 **First step**: `git log --since=<date> --format='%h %cs %s' -- byroredux/src/cell_loader byroredux/src/scene byroredux/src/streaming.rs`
 - Interior `GSProspectorSaloonInterior`: entity/draw counts vs the ROADMAP row; XCLL lighting resolves (`fog_far_color` optional field; an authored LIGH falloff of 0.0 must resolve to the pre-Skyrim quadratic default, `falloff_exponent_sentinel_resolves_per_layout_generation` in `byroredux/src/systems/light_anim.rs`); `NiAlphaProperty` decal routing.
 - Exterior WastelandNV radius 3 and the FNV-specific data: default land texture `DirtWasteland01.dds` via `DefaultLandTexture::for_game` (guard `default_land_textures_exist_in_vanilla_archives`, `--ignored`); WTHR/CLMT/terrain/water translation mechanism -> `/audit-exterior`. Repeatable gate: `docs/smoke-tests/m-exteriors.sh fnv static|boundary|soak|cycle|water`.

@@ -145,7 +145,7 @@ The highest-yield surface: a 16-core Ryzen must never be the bottleneck.
 **Output**: `/tmp/audit/performance/dim_6.md`
 
 ### Dimension 7: World streaming, cell transitions & parse cost
-**Paths**: `byroredux/src/{streaming,streaming_helpers,app_step}.rs`, `byroredux/src/cell_loader/{unload,transition,load,work_budget,precombined,nif_import_registry,partial}.rs`, `byroredux/src/asset_provider/texture_prefetch.rs`, `byroredux/src/npc_spawn.rs`, `crates/sfmaterial/src/reader.rs`, `crates/nif/src/{stream.rs,import/,blocks/}`, `crates/plugin/src/esm/records/parse.rs`.
+**Paths**: `byroredux/src/streaming/`, `byroredux/src/{streaming_helpers,app_step}.rs`, `byroredux/src/cell_loader/{unload,transition,load,work_budget,precombined,nif_import_registry,partial}.rs`, `byroredux/src/asset_provider/texture_prefetch.rs`, `byroredux/src/npc_spawn.rs`, `crates/sfmaterial/src/reader.rs`, `crates/nif/src/{stream.rs,import/,blocks/}`, `crates/plugin/src/esm/records/parse.rs`.
 **First step**: `git log --since=… --format='%h %s' -- byroredux/src/streaming.rs byroredux/src/cell_loader crates/nif/src/stream.rs crates/plugin/src/esm`; the `cpu_ms:` split classifies a stall (Dim 8).
 **Guard**: `byroredux/src/streaming_tests.rs`; NIF dhat bounds (`crates/nif/tests/heap_allocation_bounds*.rs`, a sequential `harness = false` main since #5050); mid-life equip and corpse appearance share one `AppearanceProviders` archive set (#5061) — a loader opening its own archives on the main thread is the regression.
 **Checklist**:
