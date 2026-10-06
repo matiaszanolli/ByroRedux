@@ -670,11 +670,12 @@ them, Oblivion and FO76, were wrong in *direction*, not just stale):
 | Oblivion | **100% (9 612 / 9 612), 0 truncations** | 100% | the #687/#688/#698 marker files now parse whole — the previously-documented "6 residual v3.3.0.13" no longer exist |
 | Fallout 3 | 100% (17 172) | 100% | shared FNV parser |
 | Fallout NV | 100% (20 746) | 100% | reference title |
-| Skyrim SE | 100% (33 468) | 100% | BSTriShape packed-vertex format |
-| Fallout 4 | 100% vanilla (254 648 incl. third-party) | 100% | FaceGen truncation tail resolved (#1457) |
-| Fallout 76 | **100% clean** (was 98.18%, 165 164 / 168 220) | 100% | The `GeneratedMeshes` tail's gap — `BSDistantObjectExtraData` had no dispatch arm, 112,716 `NiUnknown` blocks across `SeventySix - GeneratedMeshes01/02.ba2` — was closed by #3461 (2026-09-02). This row otherwise predates the 2026-08-30 refresh date above it; see [Game Compatibility](game-compatibility.md) for the current live figure (58 469 files, 100% clean at last measurement). |
+| Skyrim SE | 100% (33 468, 8 archives — #3712 added the 44-NIF `Animations` archive; re-measured 2026-09-29) | 100% | BSTriShape packed-vertex format |
+| Skyrim LE | 100% (**22 466 / 22 466**, `Skyrim - Meshes.bsa`; gated since fb8173fe0) | 100% | classic pre-BSTriShape blocks; parse-only |
+| Fallout 4 | 100% (**235 082 vanilla across 8 archives**; 254 648 incl. third-party) | 100% | FaceGen truncation tail resolved (#1457) |
+| Fallout 76 | **100% clean (102 968**, re-measured 2026-09-29 over 4 of the 20 mesh-bearing archives, incl. both `GeneratedMeshes`) | 100% | The `GeneratedMeshes` tail's gap — `BSDistantObjectExtraData` had no dispatch arm, 112,716 `NiUnknown` blocks across `SeventySix - GeneratedMeshes01/02.ba2` — was closed by #3461 (2026-09-02); the 2026-08-29 sweep's 98.18% (165 164 / 168 220) and the pre-widening 58 469-file figure are both superseded. |
 | Starfield | **100% clean** — 120 543 / 120 543 over the 13-archive gate, re-measured 2026-09-24 (the 2026-08-30 whole-install sweep counted 120 836 files at 99.98%) | 100% | BSGeometry / SkinAttach / BoneTranslations dispatch (#708, #754 BSWeakReferenceNode); the #2105 truncation tail is fixed and the later residuals no longer reproduce (#3524 closed, #4440) |
-| **Cumulative swept** | **624 702** (was 184 886 pre-widening) | — | full mesh-archive sweeps, per-game counts in [Game Compatibility](game-compatibility.md) |
+| **Cumulative swept** | **562 057** across the eight gated titles (was 624 702 over the pre-LE seven at the 2026-08-29 sweep widths; the delta is FO76's re-measured 4-archive 102 968 corpus, SE's +44 Animations NIFs and the newly-recorded 22 466 LE gate) | — | full mesh-archive sweeps, per-game counts in [Game Compatibility](game-compatibility.md) |
 
 The two big bring-ups since the N26 era were:
 
