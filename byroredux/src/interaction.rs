@@ -1302,31 +1302,30 @@ fn populate_candidates(world: &World, candidates: &mut FxHashMap<EntityId, Inter
         let player = world
             .try_resource::<crate::systems::PlayerEntity>()
             .and_then(|player| player.0);
-        let bound = byroredux_scripting::running_quest_bound_entities(world);
-        // #5109 — the refusal, actor and binding filters are bulk set
-        // builds whose storage guards are each held alone, replacing the
-        // per-candidate `World::get` chains that re-locked the same four
-        // storages for every placement root in every loaded cell, every
-        // frame.
+        // #5293 — the bound set is small (tens of entities on a live load)
+        // and now memoized on the binding + quest-lifecycle generations;
+        // it used to rebuild the whole alias-definition table — one Vec per
+        // alias-bearing quest in the load order — plus the actor and
+        // candidate sets every frame. With `bound` as the driver, the
+        // #5109 bulk builds invert into per-entity probes whose storage
+        // guards are each held alone (the #5025 lock-order rule).
+        let bound = byroredux_scripting::running_quest_bound_entities_cached(world);
         let refusals = crate::systems::npc_dialogue::collect_dialogue_refusals(world);
-        let actors: FxHashSet<EntityId> = world
-            .query::<byroredux_core::ecs::components::ActorValues>()
-            .map(|query| query.iter().map(|(entity, _)| entity).collect())
-            .unwrap_or_default();
-        let candidate_entities: Vec<EntityId> = world
-            .query::<byroredux_scripting::SceneAliasCandidate>()
-            .map(|identities| identities.iter().map(|(entity, _)| entity).collect())
-            .unwrap_or_default();
-        let talkable: Vec<EntityId> = candidate_entities
-            .into_iter()
-            .filter(|entity| Some(*entity) != player)
+        for entity in bound {
+            if Some(entity) == player {
+                continue;
+            }
             // #5043 — the dead, the fighting and the unconscious offer no
             // "Talk"; the dialogue selection refuses the same states.
-            .filter(|entity| !refusals.refuses(*entity))
-            .filter(|entity| actors.contains(entity))
-            .filter(|entity| bound.contains(entity))
-            .collect();
-        for entity in talkable {
+            if refusals.refuses(entity) {
+                continue;
+            }
+            if !world.has::<byroredux_core::ecs::components::ActorValues>(entity) {
+                continue;
+            }
+            if !world.has::<byroredux_scripting::SceneAliasCandidate>(entity) {
+                continue;
+            }
             candidates.entry(entity).or_insert(InteractionKind::Npc);
         }
     }

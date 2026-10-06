@@ -1335,3 +1335,88 @@ fn running_quest_bound_entities_is_the_bulk_inverse_of_the_scalar_helper() {
         "only the actor the running quest binds is in the bulk set"
     );
 }
+
+/// #5293 — the per-frame Talk arm's bound set is memoized on the two
+/// change generations that fully determine it (the binding table's and
+/// the quest lifecycle's). This is the perf guard the site never had: the
+/// rebuild materializes the whole alias-definition table — one Vec per
+/// alias-bearing quest in the load order (FO4: 1,336) — plus a running
+/// set over the same keys, and `populate_candidates` calls it every frame
+/// on the Update exclusive head.
+#[test]
+fn running_quest_bound_cache_serves_hits_and_invalidates_on_both_generations() {
+    let mut world = World::new();
+    crate::register(&mut world);
+    world.insert_resource(QuestStageState::default());
+    world
+        .resource_mut::<QuestStageState>()
+        .start_quest(QuestFormId(QUEST), None);
+    let bound = world.spawn();
+    world.insert(
+        bound,
+        SceneAliasCandidate {
+            reference_form_id: 0xA1,
+            base_form_id: 0xB1,
+            linked_refs: Vec::new(),
+            location_ref_types: Vec::new(),
+        },
+    );
+    install_scene_quest_aliases(
+        &mut world,
+        [QustRecord {
+            form_id: QUEST,
+            aliases: vec![QuestAlias {
+                alias_id: 1,
+                fill_type: Some(AliasFillType::ForcedReference(0xA1)),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }],
+    );
+    refresh_scene_actor_bindings(&world);
+
+    // Miss → one rebuild; unchanged generations → served from cache.
+    let first = running_quest_bound_entities_cached(&world);
+    assert!(first.contains(&bound));
+    assert_eq!(world.resource::<RunningQuestBoundCache>().rebuilds, 1);
+    let second = running_quest_bound_entities_cached(&world);
+    assert_eq!(second, first);
+    assert_eq!(
+        world.resource::<RunningQuestBoundCache>().rebuilds,
+        1,
+        "no binding or lifecycle change: the set must come from the cache"
+    );
+
+    // Quest-lifecycle half of the key: stopping the quest empties the set…
+    world.resource_mut::<QuestStageState>().stop(QuestFormId(QUEST));
+    let stopped = running_quest_bound_entities_cached(&world);
+    assert!(stopped.is_empty(), "a stopped quest binds nobody");
+    assert_eq!(world.resource::<RunningQuestBoundCache>().rebuilds, 2);
+    // …and the cached empty is itself a hit — an empty result must be
+    // cached, not treated as a miss that rebuilds every frame.
+    assert!(running_quest_bound_entities_cached(&world).is_empty());
+    assert_eq!(world.resource::<RunningQuestBoundCache>().rebuilds, 2);
+
+    // Restarting the quest repopulates the set (lifecycle half again).
+    world
+        .resource_mut::<QuestStageState>()
+        .start_quest(QuestFormId(QUEST), None);
+    assert!(running_quest_bound_entities_cached(&world).contains(&bound));
+    assert_eq!(world.resource::<RunningQuestBoundCache>().rebuilds, 3);
+
+    // Binding half of the key: a direct bind invalidates without any
+    // lifecycle change. Alias 2 is not an installed definition, so the
+    // set's content is unchanged — the rebuild count is what proves the
+    // invalidation fired.
+    world
+        .resource_mut::<SceneActorBindings>()
+        .bind(QuestFormId(QUEST), 2, bound);
+    let rebound = running_quest_bound_entities_cached(&world);
+    assert!(rebound.contains(&bound));
+    assert_eq!(
+        world.resource::<RunningQuestBoundCache>().rebuilds,
+        4,
+        "a binding-table change must invalidate the memo even when the \
+         derived set happens to be equal"
+    );
+}

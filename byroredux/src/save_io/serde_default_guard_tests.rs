@@ -676,7 +676,17 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // deque (and the INFO fragment table joined the not-saved registry).
     // A skipped field is never serialized — no save's bytes change, and
     // old and new snapshots decode identically.
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xa0f6_fc9a_e915_b8a1;
+    // 2026-10-05 (#5293) — refreshed WITHOUT a major bump, the
+    // file-scoped sweep class again: `quest_stages.rs` moved because the
+    // `pub(crate)` widening + comment on `QuestRevision::bump` (the token
+    // `SceneActorBindings` now stamps as its change key) sits inside
+    // `impl QuestRevision`, and `QuestRevision` is a serde-derived tuple
+    // struct whose brace-matching sweeps that impl — the same
+    // `VisibilityMask` / `3ce970a5a` mechanism. The type is still a plain
+    // `u64` newtype that is `serde(skip)`-ed inside `QuestStageState`, so
+    // no save's bytes change (`quest_revision_keys_never_reach_a_save`
+    // still pins that).
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xacde_ab13_0aeb_1996;
     // ---- earlier refresh history (kept for the false-positive record) ----
     // 2026-09-21 (W2.10 flip) — refreshed WITHOUT a major bump, the same
     // `VisibilityMask` tuple-struct sweep class as the two entries below:

@@ -564,6 +564,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("SceneActionCompletionBatch", "one-shot batch drained every tick by scene_playback_system"),
         ("SceneActorBindings", "fully computed/cached resource, rebuilt from scratch off static registries whenever marked dirty"),
         ("SceneAliasCandidate", "write-once at REFR-spawn time from static reference/base-record identity, re-derived identically every reload"),
+        ("RunningQuestBoundCache", "per-frame memo of running_quest_bound_entities keyed on the SceneActorBindings and QuestStageState change generations (#5293); both halves are either saved or rebuilt after load, so the first uncached call after a load recomputes it correctly"),
         ("RemoteSceneActorStub", "derived marker attached only to synthetic offscreen scene actors; remote aliases and their stubs are reconstructed from static QUST/SCEN identity on reload"),
         ("SceneEventBatch", "one-shot batch drained every tick"),
         ("SceneFragmentInvocationBatch", "one-shot batch drained every tick"),

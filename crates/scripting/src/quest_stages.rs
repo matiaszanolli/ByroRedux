@@ -73,7 +73,9 @@ impl QuestRevision {
         Self(NEXT_QUEST_REVISION.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
     }
 
-    fn bump(&mut self) {
+    // pub(crate) — `SceneActorBindings` stamps the same token shape as its
+    // change key (#5293).
+    pub(crate) fn bump(&mut self) {
         *self = Self::fresh();
     }
 }

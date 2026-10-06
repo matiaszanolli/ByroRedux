@@ -26,7 +26,7 @@ use crate::condition::{
     SubjectRequirement,
 };
 use crate::papyrus_demo::PapyrusPlayerEntity;
-use crate::quest_stages::{QuestFormId, QuestStageState};
+use crate::quest_stages::{QuestFormId, QuestRevision, QuestStageState};
 
 /// Operator-facing explanation of one quest alias's current fill state.
 ///
@@ -898,6 +898,9 @@ pub fn refresh_scene_actor_bindings(world: &World) -> usize {
     let mut bindings = world.resource_mut::<SceneActorBindings>();
     bindings.actors = resolved;
     bindings.dirty = false;
+    // #5293 — every commit is a potential content change; bump the change
+    // key unconditionally (a spurious bump costs one memo rebuild).
+    bindings.revision.bump();
     count
 }
 
@@ -1007,4 +1010,65 @@ pub fn running_quest_bound_entities(world: &World) -> FxHashSet<EntityId> {
             .collect(),
         None => FxHashSet::default(),
     }
+}
+
+/// #5293 — memoized [`running_quest_bound_entities`] for the per-frame
+/// caller (`populate_candidates`, the Update exclusive head). The rebuild
+/// materializes the whole alias-definition table — one `Vec<i32>` per
+/// alias-bearing quest in the load order (FO4: 1,336 of them) — plus a
+/// running set over the same keys, every frame, ungated.
+///
+/// The key is the pair of change generations that fully determine the
+/// answer: [`SceneActorBindings::revision`] (bumped by `bind` and every
+/// refresh commit) and `QuestStageState::revision()` (stamped by every
+/// quest-state mutator — a superset of the running-set changes, so an
+/// occasional rebuild is wasted but never skipped). Both tokens are
+/// process-wide monotone and fresh on construction, so a wholesale
+/// save-load replacement cannot collide with a cached key (#4612's
+/// contract; the post-load alias refresh bumps the bindings half anyway).
+///
+/// Guards are each taken and released alone, like the rebuild: the two
+/// generation reads, the cache read, and the cache write.
+#[derive(Debug, Default)]
+pub struct RunningQuestBoundCache {
+    /// `(bindings, lifecycle)` generation pair; `None` on a half means the
+    /// resource is absent, which the default `(None, None)` key matches —
+    /// correctly serving the empty set, since absent resources bind
+    /// nothing.
+    key: (Option<QuestRevision>, Option<QuestRevision>),
+    bound: FxHashSet<EntityId>,
+    /// Diagnostics: how many times the set was actually rebuilt versus
+    /// served from cache. Surfaces in tests as the perf guard the site
+    /// never had.
+    pub rebuilds: u64,
+}
+
+impl Resource for RunningQuestBoundCache {}
+
+/// [`running_quest_bound_entities`], served from
+/// [`RunningQuestBoundCache`] when neither generation moved. Worlds
+/// without the cache resource (ad-hoc test worlds) always rebuild — the
+/// pre-#5293 behavior.
+pub fn running_quest_bound_entities_cached(world: &World) -> FxHashSet<EntityId> {
+    let key = {
+        let bindings = world.try_resource::<SceneActorBindings>().map(|b| b.revision());
+        let stages = world
+            .try_resource::<QuestStageState>()
+            .map(|s| s.revision());
+        (bindings, stages)
+    };
+    // Cache read alone: the hit path clones the small bound set (tens of
+    // entities on a live load) and never holds the guard across a probe.
+    if let Some(cache) = world.try_resource::<RunningQuestBoundCache>() {
+        if cache.key == key {
+            return cache.bound.clone();
+        }
+    }
+    let bound = running_quest_bound_entities(world);
+    if let Some(mut cache) = world.try_resource_mut::<RunningQuestBoundCache>() {
+        cache.key = key;
+        cache.bound = bound.clone();
+        cache.rebuilds += 1;
+    }
+    bound
 }

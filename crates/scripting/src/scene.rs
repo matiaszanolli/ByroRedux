@@ -73,6 +73,14 @@ impl SceneRegistry {
 pub struct SceneActorBindings {
     actors: HashMap<(QuestFormId, i32), EntityId>,
     dirty: bool,
+    /// #5293 — change key for per-frame consumers that memoize a derived
+    /// set (see [`quest_alias::RunningQuestBoundCache`]). Mirrors
+    /// `QuestRevision`'s #4612 contract: fresh on every construction, so a
+    /// wholesale replacement cannot collide with a key cached from its
+    /// predecessor, and bumped on every content change (`bind`, refresh
+    /// commit). A bump on an unchanged table is fine — it only forces one
+    /// extra rebuild.
+    revision: crate::quest_stages::QuestRevision,
 }
 
 impl Resource for SceneActorBindings {}
@@ -80,6 +88,7 @@ impl Resource for SceneActorBindings {}
 impl SceneActorBindings {
     pub fn bind(&mut self, quest: QuestFormId, alias_id: i32, entity: EntityId) {
         self.actors.insert((quest, alias_id), entity);
+        self.revision.bump();
     }
 
     pub fn resolve(&self, quest: QuestFormId, alias_id: i32) -> Option<EntityId> {
@@ -90,6 +99,11 @@ impl SceneActorBindings {
     /// the scheduled alias refresh has not run yet.
     pub fn is_dirty(&self) -> bool {
         self.dirty
+    }
+
+    /// The table's change key (#5293). See the field's doc.
+    pub fn revision(&self) -> crate::quest_stages::QuestRevision {
+        self.revision
     }
 }
 
@@ -122,6 +136,11 @@ pub fn register(world: &mut World) {
     }
     if world.try_resource::<SceneActorBindings>().is_none() {
         world.insert_resource(SceneActorBindings::default());
+    }
+    // #5293 — the per-frame bound-set memo. Absent in ad-hoc test worlds,
+    // which then always rebuild (the pre-#5293 behavior).
+    if world.try_resource::<quest_alias::RunningQuestBoundCache>().is_none() {
+        world.insert_resource(quest_alias::RunningQuestBoundCache::default());
     }
     if world.try_resource::<SceneQuestAliasRegistry>().is_none() {
         world.insert_resource(SceneQuestAliasRegistry::default());
