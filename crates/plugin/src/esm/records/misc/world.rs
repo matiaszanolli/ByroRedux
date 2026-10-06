@@ -835,6 +835,13 @@ pub struct RegnRecord {
     /// `WNAM` — weather form that this region enforces. `None` when the
     /// region inherits from its worldspace.
     pub weather_form: Option<u32>,
+    /// `CNAM` — climate form. **Oblivion only**: vanilla `Oblivion.esm`
+    /// authors no climate on the Tamriel WRLD (zero `CNAM` bytes in the
+    /// record — the only TamrielClimate references on disk are two
+    /// special-case worldspaces' CNAMs and other REGNs'); Cyrodiil's
+    /// climate reaches cells through the region chain instead: CELL
+    /// `XCLR` → REGN `CNAM` → CLMT. No other game authors REGN CNAM.
+    pub climate_form: Option<u32>,
     /// `RCLR` — RGB region tint for map shading. Stored as raw u8[3];
     /// alpha byte (if any) is ignored.
     pub color: Option<[u8; 3]>,
@@ -969,6 +976,14 @@ pub fn parse_regn(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
         match &sub.sub_type {
             b"WNAM" if sub.data.len() >= 4 => {
                 out.weather_form = SubReader::new(&sub.data).u32().ok();
+            }
+            // Oblivion's region→climate link (see [`Self::climate_form`]).
+            // `remap_fid` like every other cross-record form on this record.
+            b"CNAM" if sub.data.len() >= 4 => {
+                out.climate_form = sub
+                    .data
+                    .get(0..4)
+                    .map(|bytes| remap_fid(u32::from_le_bytes(bytes.try_into().unwrap()), remap));
             }
             b"RCLR" if sub.data.len() >= 3 => {
                 out.color = Some([sub.data[0], sub.data[1], sub.data[2]]);

@@ -1618,6 +1618,106 @@ mod worldspace_selection_tests {
         }
     }
 
+    /// The Oblivion region→climate rung — vanilla Tamriel authors no WRLD
+    /// climate; its cells reach a climate through CELL XCLR → REGN CNAM.
+    /// The helper must take the first region that carries a resolvable
+    /// climate in XCLR order, probe the four orthogonal neighbours when
+    /// the exact center grid has no cell, and return None when no region
+    /// of any probed cell carries one.
+    #[test]
+    fn region_climate_follows_xclr_order_and_neighbour_probes() {
+        use crate::cell_loader::exterior::region_climate_for_center;
+        use byroredux_plugin::esm::cell::CellData;
+        use byroredux_plugin::esm::cell::EsmCellIndex;
+        use byroredux_plugin::esm::records::RegnRecord;
+        use std::collections::HashMap;
+
+        let region = |climate: Option<u32>| RegnRecord {
+            form_id: 0,
+            editor_id: String::new(),
+            weather_form: None,
+            climate_form: climate,
+            color: None,
+            areas: Vec::new(),
+            entries: Vec::new(),
+        };
+        let cell_with_regions = |regions: &[u32]| CellData {
+            form_id: 0,
+            editor_id: String::new(),
+            display_name: None,
+            references: Vec::new(),
+            is_interior: false,
+            show_sky: None,
+            grid: None,
+            lighting: None,
+            landscape: None,
+            water_height: None,
+            water_height_is_explicit: false,
+            image_space_form: None,
+            water_type_form: None,
+            acoustic_space_form: None,
+            music_type_form: None,
+            music_type_enum: None,
+            climate_override: None,
+            location_form: None,
+            encounter_zone_form: None,
+            regions: regions.to_vec(),
+            lighting_template_form: None,
+            ownership: None,
+            regional_color_override: None,
+            precombined_mesh_hashes: Vec::new(),
+            absorbed_refs: std::collections::HashSet::new(),
+            navmeshes: Vec::new(),
+            pathgrids: Vec::new(),
+            deleted_refs: Vec::new(),
+        };
+        let mut index = EsmCellIndex::default();
+        let mut tamriel = HashMap::new();
+        // (0,0) carries two regions in XCLR order: the first is
+        // climate-less, the second carries the climate — order must win.
+        tamriel.insert((0, 0), cell_with_regions(&[0xAA00_0001, 0xAA00_0002]));
+        // (1,0) — a neighbour whose single region carries a different
+        // climate, only reachable when the center grid has no cell.
+        tamriel.insert((1, 0), cell_with_regions(&[0xAA00_0003]));
+        index.exterior_cells.insert("tamriel".into(), tamriel);
+
+        let mut regions = HashMap::new();
+        regions.insert(0xAA00_0001u32, region(None));
+        regions.insert(0xAA00_0002u32, region(Some(0x00_01C52)));
+        regions.insert(0xAA00_0003u32, region(Some(0x00_0688E2)));
+
+        // Center cell present: first climate-bearing region in XCLR order.
+        assert_eq!(
+            region_climate_for_center(&index, "tamriel", 0, 0, &regions),
+            Some(0x00_01C52),
+            "the first region with a climate wins, XCLR order"
+        );
+        // No cell at the exact center (wilderness gap): the orthogonal
+        // neighbour probes reach (1,0) and its region's climate answers.
+        assert_eq!(
+            region_climate_for_center(&index, "tamriel", 2, 0, &regions),
+            Some(0x00_0688E2),
+            "a missing center falls through to the (1,0) neighbour"
+        );
+        // Diagonal-only neighbours are NOT probed (orthogonal ring only):
+        // (2,1)'s probes are (2,1),(3,1),(1,1),(2,2),(2,0) — none exist.
+        assert_eq!(
+            region_climate_for_center(&index, "tamriel", 2, 1, &regions),
+            None,
+            "diagonal-only neighbours are out of the probe ring — None, not a guess"
+        );
+        // Unknown worldspace or no climate anywhere: None.
+        assert_eq!(region_climate_for_center(&index, "nowhere", 0, 0, &regions), None);
+        let mut bare = HashMap::new();
+        bare.insert((5, 5), cell_with_regions(&[0xAA00_0001]));
+        index.exterior_cells.insert("bare".into(), bare);
+        assert_eq!(
+            region_climate_for_center(&index, "bare", 5, 5, &regions),
+            None,
+            "a region without CNAM contributes nothing"
+        );
+    }
+
     #[test]
     fn lone_non_default_grid_match_still_beats_game_default() {
         let worldspaces = HashMap::from([
@@ -1766,26 +1866,62 @@ pub fn build_exterior_world_context(
     // child worldspaces (Skyrim DLC/holdout worlds, FO4 sub-worlds,
     // Oblivion-plane worlds) and silently falls back to the procedural
     // default sky.
-    let climate = crate::env_translate::resolve_worldspace_climate(
+    let climate_form = crate::env_translate::resolve_worldspace_climate(
         &record_index.cells.worldspaces,
         &record_index.cells.worldspace_climates,
         &worldspace_key,
     )
-    .and_then(|fid| record_index.climates.get(&fid).cloned())
-    .inspect(|climate| {
-        log::info!(
-            "Worldspace '{}' climate '{}' ({:08X}): {} weathers, \
-                 sunrise {:.2}–{:.2}h, sunset {:.2}–{:.2}h",
-            worldspace_key,
-            climate.editor_id,
-            climate.form_id,
-            climate.weathers.len(),
-            climate.sunrise_begin as f32 / 6.0,
-            climate.sunrise_end as f32 / 6.0,
-            climate.sunset_begin as f32 / 6.0,
-            climate.sunset_end as f32 / 6.0,
-        );
+    .or_else(|| {
+        // The Oblivion rungs — vanilla `Oblivion.esm` authors no climate on
+        // the Tamriel WRLD at all (zero `CNAM` bytes in the record; the only
+        // TamrielClimate references on disk are one special-case worldspace
+        // and one Shivering-Isles region, neither of which covers Cyrodiil),
+        // so neither the WRLD link nor the region chain (CELL XCLR → REGN
+        // CNAM, which only SI regions carry) can resolve Tamriel's climate.
+        // Two data-anchored fallbacks: the CS names a worldspace's own
+        // climate `"<worldspace>Climate"` (Tamriel → TamrielClimate, whose
+        // WLST authors Clear at 100), else the climate carrying the most
+        // authored weathers — the provincial default. Every other game
+        // links WRLD → CLMT directly, so these rungs are inert elsewhere.
+        let region_climate = region_climate_for_center(
+            index,
+            &worldspace_key,
+            center_x,
+            center_y,
+            &record_index.regions,
+        )
+        .or_else(|| {
+            (record_index.game == byroredux_plugin::esm::reader::GameKind::Oblivion)
+                .then(|| named_or_richest_climate(&record_index.climates, &worldspace_key))
+                .flatten()
+        });
+        if region_climate.is_some() {
+            log::info!(
+                "Worldspace '{}' has no WRLD climate — resolved through the \
+                 region chain / Oblivion naming convention ({},{})",
+                worldspace_key,
+                center_x,
+                center_y,
+            );
+        }
+        region_climate
     });
+    let climate = climate_form
+        .and_then(|fid| record_index.climates.get(&fid).cloned())
+        .inspect(|climate| {
+            log::info!(
+                "Worldspace '{}' climate '{}' ({:08X}): {} weathers, \
+                     sunrise {:.2}–{:.2}h, sunset {:.2}–{:.2}h",
+                worldspace_key,
+                climate.editor_id,
+                climate.form_id,
+                climate.weathers.len(),
+                climate.sunrise_begin as f32 / 6.0,
+                climate.sunrise_end as f32 / 6.0,
+                climate.sunset_begin as f32 / 6.0,
+                climate.sunset_end as f32 / 6.0,
+            );
+        });
     let default_weather = climate.as_ref().and_then(|climate| {
         let (wthr, chance) =
             crate::env_translate::resolve_default_weather(climate, &record_index.weathers)?;
@@ -1823,6 +1959,60 @@ pub fn build_exterior_world_context(
         default_water_height,
         default_water_type_form,
     })
+}
+
+/// The climate the center cell's regions carry (Oblivion's region→climate
+/// chain — see the caller). Walks the center cell's `XCLR` FormID list in
+/// authored order and returns the first region's `CNAM` that resolves in
+/// `regions`. The exact center cell is preferred; if the grid has no cell
+/// there (a wilderness gap), the four orthogonal neighbours are probed —
+/// Oblivion's regions span dozens of cells, so the nearest cell's region
+/// set is the same set.
+fn region_climate_for_center(
+    index: &byroredux_plugin::esm::cell::EsmCellIndex,
+    worldspace_key: &str,
+    center_x: i32,
+    center_y: i32,
+    regions: &std::collections::HashMap<u32, byroredux_plugin::esm::records::RegnRecord>,
+) -> Option<u32> {
+    let cells = index.exterior_cells.get(worldspace_key)?;
+    let probes = [(center_x, center_y), (center_x + 1, center_y), (center_x - 1, center_y), (center_x, center_y + 1), (center_x, center_y - 1)];
+    for (gx, gy) in probes {
+        let Some(cell) = cells.get(&(gx, gy)) else {
+            continue;
+        };
+        for region_fid in &cell.regions {
+            if let Some(climate) = regions
+                .get(region_fid)
+                .and_then(|region| region.climate_form)
+            {
+                return Some(climate);
+            }
+        }
+    }
+    None
+}
+
+/// The Oblivion no-WRLD-climate fallback (see the caller): the climate the
+/// Construction Set names after this worldspace (`"<worldspace>Climate"`,
+/// case-insensitive — Tamriel → TamrielClimate), else the climate with the
+/// most authored weathers (the provincial default). Ties break on the
+/// lowest FormID for determinism.
+fn named_or_richest_climate(
+    climates: &std::collections::HashMap<u32, byroredux_plugin::esm::records::ClimateRecord>,
+    worldspace_key: &str,
+) -> Option<u32> {
+    let convention = format!("{}climate", worldspace_key.to_ascii_lowercase());
+    if let Some((fid, _)) = climates
+        .iter()
+        .find(|(_, climate)| climate.editor_id.to_ascii_lowercase() == convention)
+    {
+        return Some(*fid);
+    }
+    climates
+        .iter()
+        .max_by_key(|(fid, climate)| (climate.weathers.len(), std::cmp::Reverse(**fid)))
+        .map(|(fid, _)| *fid)
 }
 
 /// Load a single exterior cell at `(gx, gy)`.
