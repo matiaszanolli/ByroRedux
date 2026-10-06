@@ -154,6 +154,39 @@ fn resolve_actor(
     }
 }
 
+/// #5298 — the actor half of [`resolve_actor`] for effects whose runtime is
+/// NPC-only (`StartCombat` / `StopCombat` / `SetUnconscious`). The
+/// lowering-time check (`actor == ActorRef::Player`) is syntactic: Skyrim's
+/// ubiquitous `Actor Property PlayerRef Auto` lowers as
+/// `ActorRef::Object(..)` (VMAD `Object { form_id: 0x14, alias: -1 }`), and
+/// since #4694 that resolves to the player entity at runtime — so the static
+/// check alone let `PlayerRef.SetUnconscious(true)` clear the player's
+/// `restrained` flag mid-cinematic and `PlayerRef.StartCombat` steer the
+/// player's Transform (#4323's impact). Declining on the *resolved* identity
+/// here catches the property spelling, a player-filled quest alias, and
+/// `Game.GetPlayer()` alike. The player stays legal as a combat **target**,
+/// which is a different argument of a different arm.
+fn resolve_npc_actor(
+    vmad: Option<&ScriptInstanceData>,
+    world: &World,
+    context: QuestFormId,
+    via: &ActorRef,
+    bindings: &crate::scene::SceneActorBindings,
+) -> Option<byroredux_core::ecs::storage::EntityId> {
+    let entity = resolve_actor(vmad, world, context, via, bindings)?;
+    let player = world
+        .try_resource::<crate::papyrus_demo::PapyrusPlayerEntity>()
+        .map(|player| player.0);
+    if player == Some(entity) {
+        log::debug!(
+            "fragment effect skipped: the resolved actor is the player, whose \
+             combat/unconscious runtime is unmodeled (#5298)"
+        );
+        return None;
+    }
+    Some(entity)
+}
+
 pub(crate) fn actors_3d_loaded(
     vmad: Option<&ScriptInstanceData>,
     world: &World,
@@ -1527,7 +1560,10 @@ fn apply_ai_combat_effect(
             None
         }
         Effect::StartCombat { actor, target } => {
-            let actor = resolve_actor(vmad, world, context, actor, &deferred.scene_actor_bindings)?;
+            // #5298 — the combatant must be an NPC; the target may be the
+            // player (`Attacker.StartCombat(PlayerRef)` is the common shape).
+            let actor =
+                resolve_npc_actor(vmad, world, context, actor, &deferred.scene_actor_bindings)?;
             let target =
                 resolve_actor(vmad, world, context, target, &deferred.scene_actor_bindings)?;
             if let Some(mut states) = world.query_mut::<crate::AiCombatState>() {
@@ -1550,14 +1586,16 @@ fn apply_ai_combat_effect(
             None
         }
         Effect::StopCombat { actor } => {
-            let actor = resolve_actor(vmad, world, context, actor, &deferred.scene_actor_bindings)?;
+            let actor =
+                resolve_npc_actor(vmad, world, context, actor, &deferred.scene_actor_bindings)?;
             if let Some(mut states) = world.query_mut::<crate::AiCombatState>() {
                 states.remove(actor);
             }
             None
         }
         Effect::SetUnconscious { actor, unconscious } => {
-            let actor = resolve_actor(vmad, world, context, actor, &deferred.scene_actor_bindings)?;
+            let actor =
+                resolve_npc_actor(vmad, world, context, actor, &deferred.scene_actor_bindings)?;
             if !crate::update_actor_control(world, actor, |state| {
                 state.set_unconscious(*unconscious)
             }) {

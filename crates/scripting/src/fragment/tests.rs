@@ -1069,6 +1069,89 @@ fn combat_gate_effects_set_faction_hostility_and_arm_ai_combat_state() {
     assert!(!crate::is_unconscious(&world, attacker));
 }
 
+/// #5298 — the player-decline rule for the NPC-only arms is checked on the
+/// *resolved* actor, not the lowered spelling. Skyrim's ubiquitous
+/// `Actor Property PlayerRef Auto` lowers as `ActorRef::Object` (VMAD
+/// `Object { form_id: 0x14, alias: -1 }`), which since #4694 resolves to
+/// the player entity at runtime — so the syntactic `ActorRef::Player`
+/// check in the lowering let these through. Pre-fix,
+/// `PlayerRef.SetUnconscious(true)` cleared the player's `restrained`
+/// flag mid-cinematic and `PlayerRef.StartCombat` armed the NPC combat
+/// runtime on the player (#4323's impact).
+#[test]
+fn player_ref_property_receivers_decline_on_all_three_npc_only_arms() {
+    use byroredux_plugin::esm::records::script_instance::{
+        PropertyValue, ScriptInstance, ScriptInstanceData, ScriptProperty,
+    };
+
+    let mut world = fixture();
+    let player = world.resource::<PapyrusPlayerEntity>().0;
+    // The state a cinematic leaves the player in: restrained. A
+    // PlayerRef-driven SetUnconscious used to clear exactly this.
+    crate::update_actor_control(&world, player, |state| state.set_restrained(true));
+
+    let vmad = ScriptInstanceData {
+        scripts: vec![ScriptInstance {
+            name: "QuestScript".into(),
+            status: 0,
+            properties: vec![ScriptProperty {
+                name: "PlayerRef".into(),
+                status: 1,
+                value: PropertyValue::Object {
+                    form_id: 0x14,
+                    alias: -1,
+                },
+            }],
+        }],
+        ..Default::default()
+    };
+    let player_ref = || {
+        crate::translate::effects::ActorRef::Object(ObjectRef::Property("PlayerRef".into()))
+    };
+    let effects = [
+        Effect::SetUnconscious {
+            actor: player_ref(),
+            unconscious: true,
+        },
+        Effect::StartCombat {
+            actor: player_ref(),
+            target: crate::translate::effects::ActorRef::Player,
+        },
+        Effect::StopCombat {
+            actor: player_ref(),
+        },
+    ];
+    let mut deferred = DeferredFragmentEffects::new(&world);
+    {
+        let (mut stages, mut objectives) =
+            world.resource_2_mut::<QuestStageState, QuestObjectiveState>();
+        apply_effects(
+            &effects,
+            Q,
+            Some(&vmad),
+            &world,
+            &mut stages,
+            &mut objectives,
+            &mut deferred,
+        );
+    }
+    deferred.apply(&world);
+
+    let state = *world.get::<crate::ActorControlState>(player).unwrap();
+    assert!(
+        !state.unconscious,
+        "PlayerRef.SetUnconscious must not reach the player's ActorControlState"
+    );
+    assert!(
+        state.restrained,
+        "the mid-cinematic restraint must survive PlayerRef.SetUnconscious (#5298)"
+    );
+    assert!(
+        world.get::<crate::AiCombatState>(player).is_none(),
+        "PlayerRef.StartCombat must not steer the player's combat runtime"
+    );
+}
+
 /// Regression for #2539: lifecycle metadata must come from a snapshot captured
 /// before the paired quest-state guards, and alias invalidation must remain
 /// queued until those guards drop.
