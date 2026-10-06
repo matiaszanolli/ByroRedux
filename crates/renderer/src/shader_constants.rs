@@ -911,269 +911,95 @@ mod tests {
         );
     }
 
-    /// Verify the generated GLSL header contains the expected #define lines.
-    /// This pins that build.rs actually emitted the current values.
+    /// The committed header must be exactly what `SHADER_DEFINES` renders —
+    /// the whole former hand-typed `(name, format!)` pin list in one
+    /// comparison (#5097). This pins every value, every `u` suffix, every
+    /// float format, the DBG_* catalog emits (#1482/#1860), the #2978
+    /// raw-output fold, and the RT_COMPILE_ABLATION_MASK override wrapper;
+    /// a constant edited in the data file without regenerating (or a table
+    /// entry that lies about the format) fails here instead of shipping a
+    /// stale or lying `.spv`.
+    ///
+    /// The retired list also carried two history notes worth keeping:
+    /// #2234 (REN-D9-01) — `SKIN_OUTPUT_STRIDE_FLOATS` was once emitted by
+    /// build.rs but missing from the pin list, baking a stale value into
+    /// `skin_vertices.comp`'s committed `.spv`; and `BGSM_AUTHORED` is
+    /// deliberately NOT mirrored to GLSL.
     #[test]
-    fn generated_header_contains_all_defines() {
+    fn generated_header_matches_the_define_table_byte_for_byte() {
         let header = include_str!("../shaders/include/shader_constants.glsl");
-        for (name, expected) in [
-            // #4347 — the one GPU copy of the Rec. 709 luma weights.
-            (
-                "LUMA_REC709",
-                format!(
-                    "#define LUMA_REC709 vec3({:?}, {:?}, {:?})",
-                    LUMA_REC709[0], LUMA_REC709[1], LUMA_REC709[2]
-                ),
-            ),
-            ("CLUSTER_TILES_X", format!("#define CLUSTER_TILES_X {CLUSTER_TILES_X}u")),
-            ("CLUSTER_TILES_Y", format!("#define CLUSTER_TILES_Y {CLUSTER_TILES_Y}u")),
-            ("CLUSTER_SLICES_Z", format!("#define CLUSTER_SLICES_Z {CLUSTER_SLICES_Z}u")),
-            ("MAX_LIGHTS_PER_CLUSTER", format!("#define MAX_LIGHTS_PER_CLUSTER {MAX_LIGHTS_PER_CLUSTER}u")),
-            ("MAX_LIGHTS", format!("#define MAX_LIGHTS {MAX_LIGHTS}u")),
-            ("RESERVOIR_LIGHT_BITS", format!("#define RESERVOIR_LIGHT_BITS {RESERVOIR_LIGHT_BITS}u")),
-            ("RESERVOIR_LIGHT_MASK", format!("#define RESERVOIR_LIGHT_MASK {RESERVOIR_LIGHT_MASK}u")),
-            ("RESERVOIR_SURFACE_MASK", format!("#define RESERVOIR_SURFACE_MASK {RESERVOIR_SURFACE_MASK}u")),
-            ("VERTEX_STRIDE_FLOATS", format!("#define VERTEX_STRIDE_FLOATS {VERTEX_STRIDE_FLOATS}u")),
-            // #2234 (REN-D9-01) — was emitted by build.rs but missing from
-            // this pin-list, unlike its VERTEX_STRIDE_FLOATS/MAX_BONES_PER_MESH/
-            // SKIN_WORKGROUP_SIZE siblings that bake into the same skin
-            // compute shader's committed `.spv`.
-            ("SKIN_OUTPUT_STRIDE_FLOATS", format!("#define SKIN_OUTPUT_STRIDE_FLOATS {SKIN_OUTPUT_STRIDE_FLOATS}u")),
-            ("MAX_BONES_PER_MESH", format!("#define MAX_BONES_PER_MESH {MAX_BONES_PER_MESH}u")),
-            // No `u` suffix — used in a `layout(local_size_x = …)` qualifier (#1758).
-            ("SKIN_WORKGROUP_SIZE", format!("#define SKIN_WORKGROUP_SIZE {SKIN_WORKGROUP_SIZE}")),
-            ("MATERIAL_KIND_GLASS", format!("#define MATERIAL_KIND_GLASS {MATERIAL_KIND_GLASS}u")),
-            ("MATERIAL_KIND_EFFECT_SHADER", format!("#define MATERIAL_KIND_EFFECT_SHADER {MATERIAL_KIND_EFFECT_SHADER}u")),
-            ("MATERIAL_KIND_NO_LIGHTING", format!("#define MATERIAL_KIND_NO_LIGHTING {MATERIAL_KIND_NO_LIGHTING}u")),
-            ("MATERIAL_KIND_FIRE_REFRACTION", format!("#define MATERIAL_KIND_FIRE_REFRACTION {MATERIAL_KIND_FIRE_REFRACTION}u")),
-            ("GLASS_RAY_BUDGET", format!("#define GLASS_RAY_BUDGET {GLASS_RAY_BUDGET}u")),
-            ("GLASS_RAY_COST", format!("#define GLASS_RAY_COST {GLASS_RAY_COST}u")),
-            ("WORKGROUP_X", format!("#define WORKGROUP_X {WORKGROUP_X}")),
-            ("WORKGROUP_Y", format!("#define WORKGROUP_Y {WORKGROUP_Y}")),
-            ("WORKGROUP_Z", format!("#define WORKGROUP_Z {WORKGROUP_Z}")),
-            ("THREADS_PER_CLUSTER", format!("#define THREADS_PER_CLUSTER {THREADS_PER_CLUSTER}")),
-            ("BLOOM_INTENSITY", format!("#define BLOOM_INTENSITY {BLOOM_INTENSITY:?}")),
-            ("BLOOM_THRESHOLD", format!("#define BLOOM_THRESHOLD {BLOOM_THRESHOLD:?}")),
-            ("BLOOM_KNEE", format!("#define BLOOM_KNEE {BLOOM_KNEE:?}")),
-            ("CLOUD_LAYER_BOTTOM", format!("#define CLOUD_LAYER_BOTTOM {CLOUD_LAYER_BOTTOM:?}")),
-            ("CLOUD_LAYER_TOP", format!("#define CLOUD_LAYER_TOP {CLOUD_LAYER_TOP:?}")),
-            ("CLOUD_PLANET_RADIUS", format!("#define CLOUD_PLANET_RADIUS {CLOUD_PLANET_RADIUS:?}")),
-            ("CLOUD_CHEAP_SAMPLES_ZENITH", format!("#define CLOUD_CHEAP_SAMPLES_ZENITH {CLOUD_CHEAP_SAMPLES_ZENITH}")),
-            ("CLOUD_CHEAP_SAMPLES_HORIZON", format!("#define CLOUD_CHEAP_SAMPLES_HORIZON {CLOUD_CHEAP_SAMPLES_HORIZON}")),
-            ("CLOUD_MAX_MARCH_ITERATIONS", format!("#define CLOUD_MAX_MARCH_ITERATIONS {CLOUD_MAX_MARCH_ITERATIONS}")),
-            ("CLOUD_LIGHT_STEPS", format!("#define CLOUD_LIGHT_STEPS {CLOUD_LIGHT_STEPS}")),
-            ("CLOUD_PHASE_G0", format!("#define CLOUD_PHASE_G0 {CLOUD_PHASE_G0:?}")),
-            ("CLOUD_PHASE_G1", format!("#define CLOUD_PHASE_G1 {CLOUD_PHASE_G1:?}")),
-            ("CLOUD_PHASE_BLEND", format!("#define CLOUD_PHASE_BLEND {CLOUD_PHASE_BLEND:?}")),
-            ("CLOUD_MS_OCTAVES", format!("#define CLOUD_MS_OCTAVES {CLOUD_MS_OCTAVES}")),
-            ("CLOUD_MS_SCATTERING_FALLOFF", format!("#define CLOUD_MS_SCATTERING_FALLOFF {CLOUD_MS_SCATTERING_FALLOFF:?}")),
-            ("CLOUD_MS_EXTINCTION_FALLOFF", format!("#define CLOUD_MS_EXTINCTION_FALLOFF {CLOUD_MS_EXTINCTION_FALLOFF:?}")),
-            ("CLOUD_MS_ECCENTRICITY_FALLOFF", format!("#define CLOUD_MS_ECCENTRICITY_FALLOFF {CLOUD_MS_ECCENTRICITY_FALLOFF:?}")),
-            ("CLOUD_EXTINCTION_PER_METER", format!("#define CLOUD_EXTINCTION_PER_METER {CLOUD_EXTINCTION_PER_METER:?}")),
-            ("VOLUME_FAR", format!("#define VOLUME_FAR {VOLUME_FAR:?}")),
-            ("NORMAL_ALPHA_SPEC_BIT", format!("#define NORMAL_ALPHA_SPEC_BIT {NORMAL_ALPHA_SPEC_BIT}u")),
-            ("PARALLAX_ALPHA_HEIGHT_BIT", format!("#define PARALLAX_ALPHA_HEIGHT_BIT {PARALLAX_ALPHA_HEIGHT_BIT}u")),
-            ("TINT_ALPHA_WEIGHT_BIT", format!("#define TINT_ALPHA_WEIGHT_BIT {TINT_ALPHA_WEIGHT_BIT}u")),
-            ("WATER_CALM", format!("#define WATER_CALM {WATER_CALM}u")),
-            ("WATER_RIVER", format!("#define WATER_RIVER {WATER_RIVER}u")),
-            ("WATER_RAPIDS", format!("#define WATER_RAPIDS {WATER_RAPIDS}u")),
-            ("WATER_WATERFALL", format!("#define WATER_WATERFALL {WATER_WATERFALL}u")),
-            ("WATER_LAVA", format!("#define WATER_LAVA {WATER_LAVA}u")),
-            ("DEFAULT_WATER_WAVE_AMPLITUDE", format!("#define DEFAULT_WATER_WAVE_AMPLITUDE {DEFAULT_WATER_WAVE_AMPLITUDE:?}")),
-            ("DEFAULT_WATER_WAVE_FREQUENCY", format!("#define DEFAULT_WATER_WAVE_FREQUENCY {DEFAULT_WATER_WAVE_FREQUENCY:?}")),
-            ("WATER_COLUMN_ABSORPTION_SHAPE", format!("#define WATER_COLUMN_ABSORPTION_SHAPE {WATER_COLUMN_ABSORPTION_SHAPE:?}")),
-            ("WATER_FLOW_MAP_CYCLE_SECONDS", format!("#define WATER_FLOW_MAP_CYCLE_SECONDS {WATER_FLOW_MAP_CYCLE_SECONDS:?}")),
-            ("DEFAULT_GLASS_BLUR_SCALE", format!("#define DEFAULT_GLASS_BLUR_SCALE {DEFAULT_GLASS_BLUR_SCALE:?}")),
-            ("DEFAULT_GLASS_REFRACTION_SCALE", format!("#define DEFAULT_GLASS_REFRACTION_SCALE {DEFAULT_GLASS_REFRACTION_SCALE:?}")),
-            ("FOG_VOLUME_CLUSTER_DIM", format!("#define FOG_VOLUME_CLUSTER_DIM {FOG_VOLUME_CLUSTER_DIM}u")),
-            ("MAX_FOG_VOLUMES_PER_CLUSTER", format!("#define MAX_FOG_VOLUMES_PER_CLUSTER {MAX_FOG_VOLUMES_PER_CLUSTER}u")),
-            ("FOG_VOLUME_PROFILE_HOMOGENEOUS", format!("#define FOG_VOLUME_PROFILE_HOMOGENEOUS {FOG_VOLUME_PROFILE_HOMOGENEOUS:?}")),
-            ("FOG_VOLUME_PROFILE_SMOKE", format!("#define FOG_VOLUME_PROFILE_SMOKE {FOG_VOLUME_PROFILE_SMOKE:?}")),
-            ("FOG_VOLUME_PROFILE_FLAME", format!("#define FOG_VOLUME_PROFILE_FLAME {FOG_VOLUME_PROFILE_FLAME:?}")),
-            ("FOG_VOLUME_PROFILE_EXPLOSION", format!("#define FOG_VOLUME_PROFILE_EXPLOSION {FOG_VOLUME_PROFILE_EXPLOSION:?}")),
-            ("FOG_VOLUME_PROFILE_EXPLOSION_OIL", format!("#define FOG_VOLUME_PROFILE_EXPLOSION_OIL {FOG_VOLUME_PROFILE_EXPLOSION_OIL:?}")),
-            ("FOG_VOLUME_PROFILE_EXPLOSION_NUCLEAR", format!("#define FOG_VOLUME_PROFILE_EXPLOSION_NUCLEAR {FOG_VOLUME_PROFILE_EXPLOSION_NUCLEAR:?}")),
-            // #1920 — 10 defines `build.rs` emits that this value-pin had
-            // never covered (found by an audit sweep alongside the former
-            // shadow-mask constants, which shipped without a pin).
-            ("CLUSTER_NEAR", format!("#define CLUSTER_NEAR {CLUSTER_NEAR:?}")),
-            ("CLUSTER_FAR_FLOOR", format!("#define CLUSTER_FAR_FLOOR {CLUSTER_FAR_FLOOR:?}")),
-            ("CLUSTER_FAR_FALLBACK", format!("#define CLUSTER_FAR_FALLBACK {CLUSTER_FAR_FALLBACK:?}")),
-            ("VERTEX_COLOR_OFFSET_FLOATS", format!("#define VERTEX_COLOR_OFFSET_FLOATS {VERTEX_COLOR_OFFSET_FLOATS}u")),
-            ("VERTEX_NORMAL_OFFSET_FLOATS", format!("#define VERTEX_NORMAL_OFFSET_FLOATS {VERTEX_NORMAL_OFFSET_FLOATS}u")),
-            ("VERTEX_UV_OFFSET_FLOATS", format!("#define VERTEX_UV_OFFSET_FLOATS {VERTEX_UV_OFFSET_FLOATS}u")),
-            ("VERTEX_BONE_INDICES_OFFSET_FLOATS", format!("#define VERTEX_BONE_INDICES_OFFSET_FLOATS {VERTEX_BONE_INDICES_OFFSET_FLOATS}u")),
-            ("VERTEX_BONE_WEIGHTS_OFFSET_FLOATS", format!("#define VERTEX_BONE_WEIGHTS_OFFSET_FLOATS {VERTEX_BONE_WEIGHTS_OFFSET_FLOATS}u")),
-            ("VERTEX_TANGENT_OFFSET_FLOATS", format!("#define VERTEX_TANGENT_OFFSET_FLOATS {VERTEX_TANGENT_OFFSET_FLOATS}u")),
-            ("RENDER_LAYER_ARCHITECTURE", format!("#define RENDER_LAYER_ARCHITECTURE {RENDER_LAYER_ARCHITECTURE}u")),
-            ("RENDER_LAYER_CLUTTER", format!("#define RENDER_LAYER_CLUTTER {RENDER_LAYER_CLUTTER}u")),
-            ("RENDER_LAYER_ACTOR", format!("#define RENDER_LAYER_ACTOR {RENDER_LAYER_ACTOR}u")),
-            ("RENDER_LAYER_DECAL", format!("#define RENDER_LAYER_DECAL {RENDER_LAYER_DECAL}u")),
-            ("FOG_VOLUME_SHAPE_SPHERE", format!("#define FOG_VOLUME_SHAPE_SPHERE {FOG_VOLUME_SHAPE_SPHERE}u")),
-            ("FOG_VOLUME_SHAPE_ELLIPSOID", format!("#define FOG_VOLUME_SHAPE_ELLIPSOID {FOG_VOLUME_SHAPE_ELLIPSOID}u")),
-            ("FOG_VOLUME_SHAPE_BOX", format!("#define FOG_VOLUME_SHAPE_BOX {FOG_VOLUME_SHAPE_BOX}u")),
-            ("FOG_VOLUME_SHAPE_CONE", format!("#define FOG_VOLUME_SHAPE_CONE {FOG_VOLUME_SHAPE_CONE}u")),
-            ("VISIBILITY_LAYER_ARCHITECTURE", format!("#define VISIBILITY_LAYER_ARCHITECTURE {VISIBILITY_LAYER_ARCHITECTURE}u")),
-            ("VISIBILITY_LAYER_STATIC_PROP", format!("#define VISIBILITY_LAYER_STATIC_PROP {VISIBILITY_LAYER_STATIC_PROP}u")),
-            ("VISIBILITY_LAYER_DYNAMIC_ACTOR", format!("#define VISIBILITY_LAYER_DYNAMIC_ACTOR {VISIBILITY_LAYER_DYNAMIC_ACTOR}u")),
-            ("VISIBILITY_LAYER_FOLIAGE", format!("#define VISIBILITY_LAYER_FOLIAGE {VISIBILITY_LAYER_FOLIAGE}u")),
-            ("VISIBILITY_LAYER_GLASS", format!("#define VISIBILITY_LAYER_GLASS {VISIBILITY_LAYER_GLASS}u")),
-            ("VISIBILITY_LAYER_EFFECT", format!("#define VISIBILITY_LAYER_EFFECT {VISIBILITY_LAYER_EFFECT}u")),
-            ("VISIBILITY_MASK_ALL_OPAQUE", format!("#define VISIBILITY_MASK_ALL_OPAQUE {VISIBILITY_MASK_ALL_OPAQUE}u")),
-            ("VISIBILITY_MASK_SOLID", format!("#define VISIBILITY_MASK_SOLID {VISIBILITY_MASK_SOLID}u")),
-            ("VISIBILITY_MASK_FULL", format!("#define VISIBILITY_MASK_FULL {VISIBILITY_MASK_FULL}u")),
-            ("ATTENUATION_MODEL_LEGACY_SOFT_RANGE", format!("#define ATTENUATION_MODEL_LEGACY_SOFT_RANGE {ATTENUATION_MODEL_LEGACY_SOFT_RANGE}u")),
-            ("ATTENUATION_MODEL_INVERSE_SQUARE", format!("#define ATTENUATION_MODEL_INVERSE_SQUARE {ATTENUATION_MODEL_INVERSE_SQUARE}u")),
-            ("WORLD_UNITS_PER_METER", format!("#define WORLD_UNITS_PER_METER {WORLD_UNITS_PER_METER:?}")),
-            ("LEGACY_LIGHT_CULL_RANGE_MULTIPLIER", format!("#define LEGACY_LIGHT_CULL_RANGE_MULTIPLIER {LEGACY_LIGHT_CULL_RANGE_MULTIPLIER:?}")),
-            ("ADIABATIC_FLAME_TEMPERATURE_K", format!("#define ADIABATIC_FLAME_TEMPERATURE_K {ADIABATIC_FLAME_TEMPERATURE_K:?}")),
-            ("COMBUSTION_REACTION_RATE_PER_SECOND", format!("#define COMBUSTION_REACTION_RATE_PER_SECOND {COMBUSTION_REACTION_RATE_PER_SECOND:?}")),
-            ("COMBUSTION_RICH_SOOT_YIELD", format!("#define COMBUSTION_RICH_SOOT_YIELD {COMBUSTION_RICH_SOOT_YIELD:?}")),
-            ("COMBUSTION_LEAN_SOOT_YIELD", format!("#define COMBUSTION_LEAN_SOOT_YIELD {COMBUSTION_LEAN_SOOT_YIELD:?}")),
-            ("COMBUSTION_SOOT_OXIDATION_RATE_PER_SECOND", format!("#define COMBUSTION_SOOT_OXIDATION_RATE_PER_SECOND {COMBUSTION_SOOT_OXIDATION_RATE_PER_SECOND:?}")),
-            ("COMBUSTION_SOOT_SINGLE_SCATTER_ALBEDO_RGB", format!("#define COMBUSTION_SOOT_SINGLE_SCATTER_ALBEDO_RGB vec3({:?}, {:?}, {:?})", COMBUSTION_SOOT_SINGLE_SCATTER_ALBEDO_RGB[0], COMBUSTION_SOOT_SINGLE_SCATTER_ALBEDO_RGB[1], COMBUSTION_SOOT_SINGLE_SCATTER_ALBEDO_RGB[2])),
-            ("COMBUSTION_LOCAL_LIGHT_PHASE_FORWARD_G", format!("#define COMBUSTION_LOCAL_LIGHT_PHASE_FORWARD_G {COMBUSTION_LOCAL_LIGHT_PHASE_FORWARD_G:?}")),
-            ("COMBUSTION_LOCAL_LIGHT_PHASE_BACKWARD_G", format!("#define COMBUSTION_LOCAL_LIGHT_PHASE_BACKWARD_G {COMBUSTION_LOCAL_LIGHT_PHASE_BACKWARD_G:?}")),
-            ("COMBUSTION_LOCAL_LIGHT_PHASE_MIX", format!("#define COMBUSTION_LOCAL_LIGHT_PHASE_MIX {COMBUSTION_LOCAL_LIGHT_PHASE_MIX:?}")),
-            ("COMBUSTION_MULTISCATTER_OCTAVE1_WEIGHT", format!("#define COMBUSTION_MULTISCATTER_OCTAVE1_WEIGHT {COMBUSTION_MULTISCATTER_OCTAVE1_WEIGHT:?}")),
-            ("COMBUSTION_MULTISCATTER_OCTAVE2_WEIGHT", format!("#define COMBUSTION_MULTISCATTER_OCTAVE2_WEIGHT {COMBUSTION_MULTISCATTER_OCTAVE2_WEIGHT:?}")),
-            ("COMBUSTION_BFECC_ERROR_CORRECTION_STRENGTH", format!("#define COMBUSTION_BFECC_ERROR_CORRECTION_STRENGTH {COMBUSTION_BFECC_ERROR_CORRECTION_STRENGTH:?}")),
-            ("COMBUSTION_BFECC_ERROR_TRACE_THRESHOLD", format!("#define COMBUSTION_BFECC_ERROR_TRACE_THRESHOLD {COMBUSTION_BFECC_ERROR_TRACE_THRESHOLD:?}")),
-            ("COMBUSTION_SOOT_OXIDATION_START_TEMPERATURE_K", format!("#define COMBUSTION_SOOT_OXIDATION_START_TEMPERATURE_K {COMBUSTION_SOOT_OXIDATION_START_TEMPERATURE_K:?}")),
-            ("COMBUSTION_SOOT_OXIDATION_FULL_TEMPERATURE_K", format!("#define COMBUSTION_SOOT_OXIDATION_FULL_TEMPERATURE_K {COMBUSTION_SOOT_OXIDATION_FULL_TEMPERATURE_K:?}")),
-            ("EXPLOSION_EXPANSION_TIME_SECONDS", format!("#define EXPLOSION_EXPANSION_TIME_SECONDS {EXPLOSION_EXPANSION_TIME_SECONDS:?}")),
-            ("EXPLOSION_IMPULSE_DURATION_SECONDS", format!("#define EXPLOSION_IMPULSE_DURATION_SECONDS {EXPLOSION_IMPULSE_DURATION_SECONDS:?}")),
-            ("NUCLEAR_EXPLOSION_EXPANSION_SCALE", format!("#define NUCLEAR_EXPLOSION_EXPANSION_SCALE {NUCLEAR_EXPLOSION_EXPANSION_SCALE:?}")),
-            ("NUCLEAR_EXPLOSION_BUOYANCY_SCALE", format!("#define NUCLEAR_EXPLOSION_BUOYANCY_SCALE {NUCLEAR_EXPLOSION_BUOYANCY_SCALE:?}")),
-            ("NUCLEAR_EXPLOSION_SMOKE_MASS_SCALE", format!("#define NUCLEAR_EXPLOSION_SMOKE_MASS_SCALE {NUCLEAR_EXPLOSION_SMOKE_MASS_SCALE:?}")),
-            ("COMBUSTION_OVERPRESSURE_DISSIPATION_PER_SECOND", format!("#define COMBUSTION_OVERPRESSURE_DISSIPATION_PER_SECOND {COMBUSTION_OVERPRESSURE_DISSIPATION_PER_SECOND:?}")),
-            ("COMBUSTION_MAX_PRESSURE_ACCELERATION_MPS2", format!("#define COMBUSTION_MAX_PRESSURE_ACCELERATION_MPS2 {COMBUSTION_MAX_PRESSURE_ACCELERATION_MPS2:?}")),
-            ("COMBUSTION_MAX_DILUTION_RATE_PER_SECOND", format!("#define COMBUSTION_MAX_DILUTION_RATE_PER_SECOND {COMBUSTION_MAX_DILUTION_RATE_PER_SECOND:?}")),
-            ("COMBUSTION_VORTICITY_CONFINEMENT_SPEED_MPS", format!("#define COMBUSTION_VORTICITY_CONFINEMENT_SPEED_MPS {COMBUSTION_VORTICITY_CONFINEMENT_SPEED_MPS:?}")),
-            ("COMBUSTION_MAX_VORTICITY_ACCELERATION_MPS2", format!("#define COMBUSTION_MAX_VORTICITY_ACCELERATION_MPS2 {COMBUSTION_MAX_VORTICITY_ACCELERATION_MPS2:?}")),
-            ("COMBUSTION_TURBULENCE_COARSE_EDDY_SCALE_METERS", format!("#define COMBUSTION_TURBULENCE_COARSE_EDDY_SCALE_METERS {COMBUSTION_TURBULENCE_COARSE_EDDY_SCALE_METERS:?}")),
-            ("COMBUSTION_TURBULENCE_DETAIL_EDDY_SCALE_METERS", format!("#define COMBUSTION_TURBULENCE_DETAIL_EDDY_SCALE_METERS {COMBUSTION_TURBULENCE_DETAIL_EDDY_SCALE_METERS:?}")),
-            ("COMBUSTION_TURBULENCE_COARSE_RISE_SPEED_MPS", format!("#define COMBUSTION_TURBULENCE_COARSE_RISE_SPEED_MPS {COMBUSTION_TURBULENCE_COARSE_RISE_SPEED_MPS:?}")),
-            ("COMBUSTION_TURBULENCE_DETAIL_RISE_SPEED_MPS", format!("#define COMBUSTION_TURBULENCE_DETAIL_RISE_SPEED_MPS {COMBUSTION_TURBULENCE_DETAIL_RISE_SPEED_MPS:?}")),
-            ("COMBUSTION_AEROSOL_DISSIPATION_PER_SECOND", format!("#define COMBUSTION_AEROSOL_DISSIPATION_PER_SECOND {COMBUSTION_AEROSOL_DISSIPATION_PER_SECOND:?}")),
-            ("COMBUSTION_AEROSOL_LIFT_ACCELERATION_MPS2", format!("#define COMBUSTION_AEROSOL_LIFT_ACCELERATION_MPS2 {COMBUSTION_AEROSOL_LIFT_ACCELERATION_MPS2:?}")),
-            ("COMBUSTION_AEROSOL_LIFT_EXTINCTION_SCALE", format!("#define COMBUSTION_AEROSOL_LIFT_EXTINCTION_SCALE {COMBUSTION_AEROSOL_LIFT_EXTINCTION_SCALE:?}")),
-            ("COMBUSTION_COOLED_AEROSOL_SOURCE_TEMPERATURE_K", format!("#define COMBUSTION_COOLED_AEROSOL_SOURCE_TEMPERATURE_K {COMBUSTION_COOLED_AEROSOL_SOURCE_TEMPERATURE_K:?}")),
-            ("COMBUSTION_EXPLOSION_SMOKE_EXTINCTION_SCALE", format!("#define COMBUSTION_EXPLOSION_SMOKE_EXTINCTION_SCALE {COMBUSTION_EXPLOSION_SMOKE_EXTINCTION_SCALE:?}")),
-            ("COMBUSTION_FUEL_VAPOUR_REMOVAL_PER_SECOND", format!("#define COMBUSTION_FUEL_VAPOUR_REMOVAL_PER_SECOND {COMBUSTION_FUEL_VAPOUR_REMOVAL_PER_SECOND:?}")),
-            ("COMBUSTION_RADIANCE_REMOVAL_PER_SECOND", format!("#define COMBUSTION_RADIANCE_REMOVAL_PER_SECOND {COMBUSTION_RADIANCE_REMOVAL_PER_SECOND:?}")),
-            ("COMBUSTION_THERMAL_COOLING_PER_SECOND", format!("#define COMBUSTION_THERMAL_COOLING_PER_SECOND {COMBUSTION_THERMAL_COOLING_PER_SECOND:?}")),
-            ("COMBUSTION_THERMAL_BUOYANCY_ACCELERATION_MPS2", format!("#define COMBUSTION_THERMAL_BUOYANCY_ACCELERATION_MPS2 {COMBUSTION_THERMAL_BUOYANCY_ACCELERATION_MPS2:?}")),
-            ("COMBUSTION_VELOCITY_DAMPING_PER_SECOND", format!("#define COMBUSTION_VELOCITY_DAMPING_PER_SECOND {COMBUSTION_VELOCITY_DAMPING_PER_SECOND:?}")),
-            ("COMBUSTION_REACTION_HEAT_RESPONSE", format!("#define COMBUSTION_REACTION_HEAT_RESPONSE {COMBUSTION_REACTION_HEAT_RESPONSE:?}")),
-            ("FLAME_FUEL_BOUNDARY_HEIGHT_FRACTION", format!("#define FLAME_FUEL_BOUNDARY_HEIGHT_FRACTION {FLAME_FUEL_BOUNDARY_HEIGHT_FRACTION:?}")),
-            ("FLAME_REACTION_ZONE_HEIGHT_FRACTION", format!("#define FLAME_REACTION_ZONE_HEIGHT_FRACTION {FLAME_REACTION_ZONE_HEIGHT_FRACTION:?}")),
-            ("FLAME_REACTION_ZONE_FADE_START_FRACTION", format!("#define FLAME_REACTION_ZONE_FADE_START_FRACTION {FLAME_REACTION_ZONE_FADE_START_FRACTION:?}")),
-            ("FLAME_SOURCE_LATERAL_SPEED_MPS", format!("#define FLAME_SOURCE_LATERAL_SPEED_MPS {FLAME_SOURCE_LATERAL_SPEED_MPS:?}")),
-            ("FLAME_SOURCE_VELOCITY_RESPONSE_PER_SECOND", format!("#define FLAME_SOURCE_VELOCITY_RESPONSE_PER_SECOND {FLAME_SOURCE_VELOCITY_RESPONSE_PER_SECOND:?}")),
-            ("COMBUSTION_LIGHT_GRID_X", format!("#define COMBUSTION_LIGHT_GRID_X {COMBUSTION_LIGHT_GRID_X}u")),
-            ("COMBUSTION_LIGHT_GRID_Y", format!("#define COMBUSTION_LIGHT_GRID_Y {COMBUSTION_LIGHT_GRID_Y}u")),
-            ("COMBUSTION_LIGHT_GRID_Z", format!("#define COMBUSTION_LIGHT_GRID_Z {COMBUSTION_LIGHT_GRID_Z}u")),
-            ("COMBUSTION_LIGHT_GRID_COUNT", format!("#define COMBUSTION_LIGHT_GRID_COUNT {COMBUSTION_LIGHT_GRID_COUNT}u")),
-            ("COMBUSTION_LIGHT_HALF_EXTENT_XZ_METERS", format!("#define COMBUSTION_LIGHT_HALF_EXTENT_XZ_METERS {COMBUSTION_LIGHT_HALF_EXTENT_XZ_METERS:?}")),
-            ("COMBUSTION_LIGHT_HALF_EXTENT_Y_METERS", format!("#define COMBUSTION_LIGHT_HALF_EXTENT_Y_METERS {COMBUSTION_LIGHT_HALF_EXTENT_Y_METERS:?}")),
-            ("COMBUSTION_LIGHT_FIXED_SCALE", format!("#define COMBUSTION_LIGHT_FIXED_SCALE {COMBUSTION_LIGHT_FIXED_SCALE:?}")),
-            ("COMBUSTION_LIGHT_VOLUME_FIXED_SCALE", format!("#define COMBUSTION_LIGHT_VOLUME_FIXED_SCALE {COMBUSTION_LIGHT_VOLUME_FIXED_SCALE:?}")),
-            ("SHADOW_FADE_START", format!("#define SHADOW_FADE_START {SHADOW_FADE_START:?}")),
-            ("SHADOW_FADE_END", format!("#define SHADOW_FADE_END {SHADOW_FADE_END:?}")),
-            ("DIRECTIONAL_SHADOW_TRACE_DISTANCE", format!("#define DIRECTIONAL_SHADOW_TRACE_DISTANCE {DIRECTIONAL_SHADOW_TRACE_DISTANCE:?}")),
-            ("GI_HIT_LIGHT_CAP", format!("#define GI_HIT_LIGHT_CAP {GI_HIT_LIGHT_CAP}u")),
-            ("GI_SAMPLE_LUMINANCE_CLAMP", format!("#define GI_SAMPLE_LUMINANCE_CLAMP {GI_SAMPLE_LUMINANCE_CLAMP:?}")),
-            ("CAUSTIC_FIXED_SCALE", format!("#define CAUSTIC_FIXED_SCALE {CAUSTIC_FIXED_SCALE:?}")),
-            ("RT_ABLATION_DIRECT_SHADOW", format!("#define RT_ABLATION_DIRECT_SHADOW {RT_ABLATION_DIRECT_SHADOW}u")),
-            ("RT_ABLATION_GI", format!("#define RT_ABLATION_GI {RT_ABLATION_GI}u")),
-            ("RT_ABLATION_REFLECTION_GLASS", format!("#define RT_ABLATION_REFLECTION_GLASS {RT_ABLATION_REFLECTION_GLASS}u")),
-            ("RT_ABLATION_ALL_RAYS", format!("#define RT_ABLATION_ALL_RAYS {RT_ABLATION_ALL_RAYS}u")),
-            ("RT_COMPILE_ABLATION_MASK", format!("#define RT_COMPILE_ABLATION_MASK {RT_COMPILE_ABLATION_MASK}u")),
-            ("ENABLE_LEGACY_WRS", format!("#define ENABLE_LEGACY_WRS {ENABLE_LEGACY_WRS}")),
-            // DBG_* bits are pinned below via the shared DBG_BITS catalog
-            // (every constant, count-checked by
-            // dbg_bits_catalog_covers_every_dbg_constant) — see #1482 / #1860.
-            ("INSTANCE_FLAG_NON_UNIFORM_SCALE", format!("#define INSTANCE_FLAG_NON_UNIFORM_SCALE {INSTANCE_FLAG_NON_UNIFORM_SCALE}u")),
-            ("INSTANCE_FLAG_ALPHA_BLEND", format!("#define INSTANCE_FLAG_ALPHA_BLEND {INSTANCE_FLAG_ALPHA_BLEND}u")),
-            ("INSTANCE_FLAG_CAUSTIC_SOURCE", format!("#define INSTANCE_FLAG_CAUSTIC_SOURCE {INSTANCE_FLAG_CAUSTIC_SOURCE}u")),
-            ("INSTANCE_FLAG_TERRAIN_SPLAT", format!("#define INSTANCE_FLAG_TERRAIN_SPLAT {INSTANCE_FLAG_TERRAIN_SPLAT}u")),
-            ("INSTANCE_RENDER_LAYER_SHIFT", format!("#define INSTANCE_RENDER_LAYER_SHIFT {INSTANCE_RENDER_LAYER_SHIFT}u")),
-            ("INSTANCE_RENDER_LAYER_MASK", format!("#define INSTANCE_RENDER_LAYER_MASK {INSTANCE_RENDER_LAYER_MASK}u")),
-            ("INSTANCE_FLAG_FLAT_SHADING", format!("#define INSTANCE_FLAG_FLAT_SHADING {INSTANCE_FLAG_FLAT_SHADING}u")),
-            ("INSTANCE_FLAG_DIFFUSE_ALPHA", format!("#define INSTANCE_FLAG_DIFFUSE_ALPHA {INSTANCE_FLAG_DIFFUSE_ALPHA}u")),
-            ("INSTANCE_TERRAIN_TILE_SHIFT", format!("#define INSTANCE_TERRAIN_TILE_SHIFT {INSTANCE_TERRAIN_TILE_SHIFT}u")),
-            ("INSTANCE_TERRAIN_TILE_MASK", format!("#define INSTANCE_TERRAIN_TILE_MASK {INSTANCE_TERRAIN_TILE_MASK}u")),
-            ("TERRAIN_SPLAT_LAYERS", format!("#define TERRAIN_SPLAT_LAYERS {TERRAIN_SPLAT_LAYERS}u")),
-            ("TERRAIN_SPLAT_LANES_PER_WORD", format!("#define TERRAIN_SPLAT_LANES_PER_WORD {TERRAIN_SPLAT_LANES_PER_WORD}u")),
-            ("MAT_FLAG_VERTEX_COLOR_EMISSIVE", format!("#define MAT_FLAG_VERTEX_COLOR_EMISSIVE {MAT_FLAG_VERTEX_COLOR_EMISSIVE}u")),
-            ("MAT_FLAG_EFFECT_SOFT", format!("#define MAT_FLAG_EFFECT_SOFT {MAT_FLAG_EFFECT_SOFT}u")),
-            ("MAT_FLAG_EFFECT_PALETTE_COLOR", format!("#define MAT_FLAG_EFFECT_PALETTE_COLOR {MAT_FLAG_EFFECT_PALETTE_COLOR}u")),
-            ("MAT_FLAG_EFFECT_PALETTE_ALPHA", format!("#define MAT_FLAG_EFFECT_PALETTE_ALPHA {MAT_FLAG_EFFECT_PALETTE_ALPHA}u")),
-            ("MAT_FLAG_EFFECT_LIT", format!("#define MAT_FLAG_EFFECT_LIT {MAT_FLAG_EFFECT_LIT}u")),
-            ("MAT_FLAG_PBR_BSDF", format!("#define MAT_FLAG_PBR_BSDF {MAT_FLAG_PBR_BSDF}u")),
-            ("MAT_FLAG_TRANSLUCENCY", format!("#define MAT_FLAG_TRANSLUCENCY {MAT_FLAG_TRANSLUCENCY}u")),
-            ("MAT_FLAG_MODEL_SPACE_NORMALS", format!("#define MAT_FLAG_MODEL_SPACE_NORMALS {MAT_FLAG_MODEL_SPACE_NORMALS}u")),
-            ("MAT_FLAG_TRANSLUCENCY_THICK_OBJECT", format!("#define MAT_FLAG_TRANSLUCENCY_THICK_OBJECT {MAT_FLAG_TRANSLUCENCY_THICK_OBJECT}u")),
-            ("MAT_FLAG_TRANSLUCENCY_MIX_ALBEDO", format!("#define MAT_FLAG_TRANSLUCENCY_MIX_ALBEDO {MAT_FLAG_TRANSLUCENCY_MIX_ALBEDO}u")),
-            ("MAT_FLAG_THIN_GLASS", format!("#define MAT_FLAG_THIN_GLASS {MAT_FLAG_THIN_GLASS}u")),
-            ("MAT_FLAG_SOFT_LIGHTING", format!("#define MAT_FLAG_SOFT_LIGHTING {MAT_FLAG_SOFT_LIGHTING}u")),
-            ("MAT_FLAG_RIM_LIGHTING", format!("#define MAT_FLAG_RIM_LIGHTING {MAT_FLAG_RIM_LIGHTING}u")),
-            ("MAT_FLAG_BACK_LIGHTING", format!("#define MAT_FLAG_BACK_LIGHTING {MAT_FLAG_BACK_LIGHTING}u")),
-            ("MAT_FLAG_EFFECT_LI_SHIFT", format!("#define MAT_FLAG_EFFECT_LI_SHIFT {MAT_FLAG_EFFECT_LI_SHIFT}u")),
-            // BGSM_AUTHORED intentionally NOT mirrored to GLSL — see build.rs.
-            // #3745 / TD7-2026-08-30-01 — shared water.frag/triangle.frag RT reach budgets.
-            ("RT_REFLECTION_MAX_DIST", format!("#define RT_REFLECTION_MAX_DIST {RT_REFLECTION_MAX_DIST:?}")),
-            ("RT_REFRACTION_MAX_DIST", format!("#define RT_REFRACTION_MAX_DIST {RT_REFRACTION_MAX_DIST:?}")),
-            ("RT_DIST_FALLOFF", format!("#define RT_DIST_FALLOFF {RT_DIST_FALLOFF:?}")),
-        ] {
-            assert!(
-                header.contains(&expected),
-                "shader_constants.glsl missing or wrong value for {name}: expected `{expected}`",
-            );
-        }
-        // Every DBG_* bit, driven from the shared catalog so this
-        // value-pin can never again cover a subset (#1482 / #1860).
-        for (name, value) in DBG_BITS {
-            let expected = format!("#define {name} {value}u");
-            assert!(
-                header.contains(&expected),
-                "shader_constants.glsl missing or wrong value for {name}: expected `{expected}`",
-            );
-        }
-        for (name, value) in RENDER_DEBUG_MODES {
-            let expected = format!("#define {name} {value}u");
-            assert!(
-                header.contains(&expected),
-                "shader_constants.glsl missing or wrong value for {name}: expected `{expected}`",
-            );
-        }
-        // #2978 — the raw-output policy the shaders consume, folded from the
-        // same two catalogs the Rust predicate walks. Rebuilt here rather
-        // than pinned as a literal so adding a view to either catalog moves
-        // this expectation with it.
-        let expected_mask = format!(
-            "#define DBG_VIZ_RAW_OUTPUT_ANY_MASK {}u",
-            dbg_viz_raw_output_any_mask()
+        let rendered = render_shader_constants_header();
+        assert_eq!(
+            header, rendered,
+            "shader_constants.glsl drifted from SHADER_DEFINES — run \
+             `cargo build -p byroredux-renderer` to regenerate, then \
+             recompile the affected shaders"
         );
+    }
+
+    /// Every SCREAMING_CASE constant in the data file must be either emitted
+    /// by the table or on this documented exclusion list — the enforcement
+    /// that a new constant is "one edit plus one table line" (#5097).
+    ///
+    /// Exclusions are the catalog constants (their *contents* are emitted
+    /// entry by entry: `DBG_BITS`/`RENDER_DEBUG_MODES` as `Define` rows,
+    /// `DBG_VIZ_RAW_OUTPUT_ANY`/`_ALL` through
+    /// [`HeaderLine::DbgVizRequiresRawOutput`], `FOG_VOLUME_PROFILES` as
+    /// individual defines) and three Rust-side-only scalars that no shader
+    /// reads today.
+    #[test]
+    fn the_define_table_covers_every_screaming_shader_constant() {
+        const NOT_EMITTED: &[&str] = &[
+            // The table itself (this scan reads the file it lives in).
+            "SHADER_DEFINES",
+            // Catalogs — emitted entry by entry, not as a whole.
+            "DBG_BITS",
+            "DBG_VIZ_RAW_OUTPUT_ANY",
+            "DBG_VIZ_RAW_OUTPUT_ALL",
+            "FOG_VOLUME_PROFILES",
+            "RENDER_DEBUG_MODES",
+            // Rust-side-only scalars (no GLSL consumer today).
+            "COMBUSTION_AEROSOL_LINGER_SECONDS",
+            "GROUNDCOVER_MODEL_MAX_INSTANCES",
+            "GROUNDCOVER_MODEL_STATS_WORDS",
+        ];
+
+        let table_names: std::collections::HashSet<&str> = SHADER_DEFINES
+            .iter()
+            .filter_map(|line| match line {
+                HeaderLine::Define(name, _) | HeaderLine::Overridable(name, _) => Some(*name),
+                _ => None,
+            })
+            .collect();
         assert!(
-            header.contains(&expected_mask),
-            "shader_constants.glsl missing or wrong DBG_VIZ_RAW_OUTPUT_ANY_MASK: \
-             expected `{expected_mask}`",
+            table_names.len() > 300,
+            "the table lost most of its defines — the extraction broke, not the data"
         );
-        let mut expected_predicate = String::from(
-            "#define DBG_VIZ_REQUIRES_RAW_OUTPUT(flags) \
-                          (((flags) & DBG_VIZ_RAW_OUTPUT_ANY_MASK) != 0u",
-        );
-        for (name, _) in DBG_VIZ_RAW_OUTPUT_ALL {
-            expected_predicate.push_str(&format!(" || ((flags) & {name}) == {name}"));
+
+        let mut not_emitted: std::collections::HashSet<&str> =
+            NOT_EMITTED.iter().copied().collect();
+        for name in shader_constant_data_names() {
+            assert!(
+                table_names.contains(name) || not_emitted.remove(name),
+                "`{name}` is declared in shader_constants_data.rs but has no \
+                 SHADER_DEFINES entry and no exclusion — add the HeaderLine::Define \
+                 row (the table IS the header) or document why it is not emitted"
+            );
         }
-        expected_predicate.push(')');
         assert!(
-            header.contains(&expected_predicate),
-            "shader_constants.glsl missing or wrong DBG_VIZ_REQUIRES_RAW_OUTPUT: \
-             expected `{expected_predicate}`",
+            not_emitted.is_empty(),
+            "stale NOT_EMITTED entries (the constant is gone): {not_emitted:?}"
         );
+
+        // Reverse direction: a table name that is not a real const is a typo
+        // that renders a zero-initialized lie into the header.
+        let declared = shader_constant_data_names();
+        for name in &table_names {
+            assert!(
+                declared.contains(name),
+                "SHADER_DEFINES emits `{name}` but no such const is declared"
+            );
+        }
     }
 
     /// Direct-light shadow reach is scene policy, not cell-kind policy.

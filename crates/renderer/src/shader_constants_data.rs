@@ -2002,3 +2002,604 @@ pub const DBG_BITS: &[(&str, u32)] = &[
 /// #1758 established for `SKIN_WORKGROUP_SIZE`, that A/B now costs a shader
 /// recompile instead of a per-frame register tax on every production build.
 pub const ENABLE_LEGACY_WRS: u32 = 0;
+
+// ---------------------------------------------------------------------------
+// Generated-header emit table (#5097)
+//
+// The three-way hand-typing this table retires: a constant was declared here,
+// hand-emitted by a `writeln!` in `build.rs` (choosing the `u` suffix or the
+// `{:?}` float format by hand), and re-typed a third time in
+// `shader_constants.rs`'s pin list — where a wrong suffix typed twice passed
+// both gates. Now `SHADER_DEFINES` below is the one place the header's lines
+// are declared, `build.rs` walks it, and the pin test re-renders it and
+// compares the committed `shader_constants.glsl` byte for byte.
+//
+// Adding a constant is one edit plus one table line: declare it above, add
+// the `HeaderLine::Define(..)` entry in its section (the sections and their
+// order ARE the header), rebuild. The table-covers-all test below fails if
+// the declaration landed without its entry.
+
+/// One value shape a GLSL `#define` can carry, with the emission format
+/// bound to the variant so the `u` suffix / float `{:?}` decision is made
+/// once, here, not re-typed at an emitter and a pin list.
+#[derive(Clone, Copy)]
+pub enum ShaderValue {
+    /// `{NAME}u` — a `u32` const, uint literal.
+    Uint(u32),
+    /// `{NAME}` — a `u32` const emitted without the suffix: workgroup-size
+    /// and `layout(local_size_x = …)` / `#if` consumers take plain ints
+    /// (#1758, #3308).
+    UintPlain(u32),
+    /// `{NAME:?}` — an `f32` const, always with a decimal point.
+    Float(f32),
+    /// `vec3({NAME[0]:?}, {NAME[1]:?}, {NAME[2]:?})` — an `[f32; 3]` const.
+    Vec3(&'static [f32; 3]),
+}
+
+/// One line of the generated header, in emit order. The variants cover
+/// every line shape `shader_constants.glsl` has (#5097).
+#[derive(Clone, Copy)]
+pub enum HeaderLine {
+    /// `#define NAME value`
+    Define(&'static str, ShaderValue),
+    /// `#ifndef NAME` / `#define NAME value` / `#endif` — a define the
+    /// compile command may override (RT_COMPILE_ABLATION_MASK's A/B gate).
+    Overridable(&'static str, ShaderValue),
+    /// The #2978 raw-output block: catalog-derived `DBG_VIZ_RAW_OUTPUT_ANY_MASK`
+    /// plus the `DBG_VIZ_REQUIRES_RAW_OUTPUT(flags)` predicate macro, folded
+    /// from [`DBG_VIZ_RAW_OUTPUT_ANY`] / [`DBG_VIZ_RAW_OUTPUT_ALL`] so the
+    /// header, the shaders and the Rust predicate cannot drift apart.
+    DbgVizRequiresRawOutput,
+    /// A `//` comment line (section headers, per-constant rationale).
+    Comment(&'static str),
+    /// A blank line.
+    Blank,
+}
+
+fn push_define_line(out: &mut String, name: &str, value: &ShaderValue) {
+    let rendered = match value {
+        ShaderValue::Uint(v) => format!("{v}u"),
+        ShaderValue::UintPlain(v) => format!("{v}"),
+        ShaderValue::Float(v) => format!("{v:?}"),
+        ShaderValue::Vec3(v) => format!("vec3({:?}, {:?}, {:?})", v[0], v[1], v[2]),
+    };
+    out.push_str("#define ");
+    out.push_str(name);
+    out.push(' ');
+    out.push_str(&rendered);
+    out.push('\n');
+}
+
+impl HeaderLine {
+    /// Append this line (or block) to `out`, exactly as the header carries it.
+    pub fn render(&self, out: &mut String) {
+        match self {
+            HeaderLine::Define(name, value) => push_define_line(out, name, value),
+            HeaderLine::Overridable(name, value) => {
+                out.push_str("#ifndef ");
+                out.push_str(name);
+                out.push('\n');
+                push_define_line(out, name, value);
+                out.push_str("#endif\n");
+            }
+            HeaderLine::DbgVizRequiresRawOutput => {
+                out.push_str("// Debug views that must bypass the post-transport frame graph.\n");
+                let names: Vec<&str> =
+                    DBG_VIZ_RAW_OUTPUT_ANY.iter().map(|(name, _)| *name).collect();
+                out.push_str(&format!("// Any-of: {}\n", names.join(" | ")));
+                out.push_str(&format!(
+                    "#define DBG_VIZ_RAW_OUTPUT_ANY_MASK {}u\n",
+                    dbg_viz_raw_output_any_mask()
+                ));
+                let mut predicate = String::from(
+                    "(((flags) & DBG_VIZ_RAW_OUTPUT_ANY_MASK) != 0u",
+                );
+                for (name, _) in DBG_VIZ_RAW_OUTPUT_ALL {
+                    predicate.push_str(&format!(" || ((flags) & {name}) == {name}"));
+                }
+                predicate.push(')');
+                out.push_str("#define DBG_VIZ_REQUIRES_RAW_OUTPUT(flags) ");
+                out.push_str(&predicate);
+                out.push('\n');
+            }
+            HeaderLine::Comment(text) => {
+                out.push_str("// ");
+                out.push_str(text);
+                out.push('\n');
+            }
+            HeaderLine::Blank => out.push('\n'),
+        }
+    }
+}
+
+/// Render the whole `shaders/include/shader_constants.glsl` from
+/// [`SHADER_DEFINES`]. `build.rs` writes this; the byte-exact pin test
+/// re-renders it and compares against the committed file — there is no
+/// third copy of the emit format to drift.
+pub fn render_shader_constants_header() -> String {
+    let mut out = String::with_capacity(24 * 1024);
+    out.push_str("// AUTO-GENERATED by crates/renderer/build.rs — DO NOT EDIT\n");
+    out.push_str("// Source of truth: crates/renderer/src/shader_constants_data.rs\n");
+    out.push_str("// Regenerate:   cargo build -p byroredux-renderer\n");
+    out.push_str(
+        "// Then recompile shaders (from crates/renderer/shaders/): \
+glslangValidator -V -I. <shader> -o <shader>.spv\n",
+    );
+    out.push_str("//\n");
+    out.push_str(
+        "// Integer #defines carry the `u` suffix (uint literals); floats always\n",
+    );
+    out.push_str("// have a decimal point. Workgroup-size #defines omit the suffix so they\n");
+    out.push_str(
+        "// work in layout(local_size_x = WORKGROUP_X) qualifiers.\n",
+    );
+    out.push('\n');
+    out.push_str("#ifndef BYRO_SHADER_CONSTANTS_GLSL\n");
+    out.push_str("#define BYRO_SHADER_CONSTANTS_GLSL\n");
+    for line in SHADER_DEFINES {
+        line.render(&mut out);
+    }
+    out.push_str("#endif // BYRO_SHADER_CONSTANTS_GLSL\n");
+    out
+}
+
+/// Every line of `shaders/include/shader_constants.glsl`, in emit order —
+/// sections, comments and all. The table is the header.
+pub const SHADER_DEFINES: &[HeaderLine] = &[
+    HeaderLine::Blank,
+    HeaderLine::Comment("Depth-buffer convention (#3308)"),
+    HeaderLine::Define("BYRO_REVERSED_Z", ShaderValue::UintPlain(BYRO_REVERSED_Z)),
+    HeaderLine::Define("BYRO_DEPTH_CLEAR", ShaderValue::Float(BYRO_DEPTH_CLEAR)),
+    HeaderLine::Blank,
+    HeaderLine::Comment("Rec. 709 luma weights, linear sRGB (#4347)"),
+    HeaderLine::Define("LUMA_REC709", ShaderValue::Vec3(&LUMA_REC709)),
+    HeaderLine::Blank,
+    HeaderLine::Comment("Cluster grid"),
+    HeaderLine::Define("CLUSTER_TILES_X", ShaderValue::Uint(CLUSTER_TILES_X)),
+    HeaderLine::Define("CLUSTER_TILES_Y", ShaderValue::Uint(CLUSTER_TILES_Y)),
+    HeaderLine::Define("CLUSTER_SLICES_Z", ShaderValue::Uint(CLUSTER_SLICES_Z)),
+    HeaderLine::Define("CLUSTER_NEAR", ShaderValue::Float(CLUSTER_NEAR)),
+    HeaderLine::Define("CLUSTER_FAR_FLOOR", ShaderValue::Float(CLUSTER_FAR_FLOOR)),
+    HeaderLine::Define("CLUSTER_FAR_FALLBACK", ShaderValue::Float(CLUSTER_FAR_FALLBACK)),
+    HeaderLine::Define("MAX_LIGHTS_PER_CLUSTER", ShaderValue::Uint(MAX_LIGHTS_PER_CLUSTER)),
+    HeaderLine::Blank,
+    HeaderLine::Comment("ReSTIR reservoir packing + scene-light upload count"),
+    HeaderLine::Define("MAX_LIGHTS", ShaderValue::Uint(MAX_LIGHTS as u32)),
+    HeaderLine::Define("RESERVOIR_LIGHT_BITS", ShaderValue::Uint(RESERVOIR_LIGHT_BITS)),
+    HeaderLine::Define("RESERVOIR_LIGHT_MASK", ShaderValue::Uint(RESERVOIR_LIGHT_MASK)),
+    HeaderLine::Define("RESERVOIR_SURFACE_MASK", ShaderValue::Uint(RESERVOIR_SURFACE_MASK)),
+    HeaderLine::Blank,
+    HeaderLine::Comment("Ray-query alpha-skip walk budget (#2265 / TD7-001)"),
+    HeaderLine::Define("MAX_ALPHA_SKIP_LAYERS", ShaderValue::Uint(MAX_ALPHA_SKIP_LAYERS)),
+    HeaderLine::Blank,
+    HeaderLine::Comment("RT reach budgets shared between water.frag and triangle.frag (#3745 / TD7-2026-08-30-01)"),
+    HeaderLine::Define("RT_REFLECTION_MAX_DIST", ShaderValue::Float(RT_REFLECTION_MAX_DIST)),
+    HeaderLine::Define("RT_REFRACTION_MAX_DIST", ShaderValue::Float(RT_REFRACTION_MAX_DIST)),
+    HeaderLine::Define("RT_DIST_FALLOFF", ShaderValue::Float(RT_DIST_FALLOFF)),
+    HeaderLine::Blank,
+    HeaderLine::Comment("Vertex layout (global SSBO)"),
+    HeaderLine::Define("VERTEX_STRIDE_FLOATS", ShaderValue::Uint(VERTEX_STRIDE_FLOATS)),
+    HeaderLine::Comment("Skinned-vertex output stride — position only (#2170)."),
+    HeaderLine::Define("SKIN_OUTPUT_STRIDE_FLOATS", ShaderValue::Uint(SKIN_OUTPUT_STRIDE_FLOATS)),
+    HeaderLine::Define("VERTEX_COLOR_OFFSET_FLOATS", ShaderValue::Uint(VERTEX_COLOR_OFFSET_FLOATS)),
+    HeaderLine::Define("VERTEX_NORMAL_OFFSET_FLOATS", ShaderValue::Uint(VERTEX_NORMAL_OFFSET_FLOATS)),
+    HeaderLine::Define("VERTEX_UV_OFFSET_FLOATS", ShaderValue::Uint(VERTEX_UV_OFFSET_FLOATS)),
+    HeaderLine::Define("VERTEX_BONE_INDICES_OFFSET_FLOATS", ShaderValue::Uint(VERTEX_BONE_INDICES_OFFSET_FLOATS)),
+    HeaderLine::Define("VERTEX_BONE_WEIGHTS_OFFSET_FLOATS", ShaderValue::Uint(VERTEX_BONE_WEIGHTS_OFFSET_FLOATS)),
+    HeaderLine::Comment("Splat lanes are packed 4x u8 unorm, not floats — recover with"),
+    HeaderLine::Comment("unpackUnorm4x8(floatBitsToUint(vertexData[base + N]))."),
+    HeaderLine::Define("VERTEX_SPLAT0_OFFSET_FLOATS", ShaderValue::Uint(VERTEX_SPLAT0_OFFSET_FLOATS)),
+    HeaderLine::Define("VERTEX_SPLAT1_OFFSET_FLOATS", ShaderValue::Uint(VERTEX_SPLAT1_OFFSET_FLOATS)),
+    HeaderLine::Blank,
+    HeaderLine::Comment("Exterior LAND terrain grid (#4052)"),
+    HeaderLine::Define("LAND_GRID_VERTS", ShaderValue::Uint(LAND_GRID_VERTS)),
+    HeaderLine::Define("LAND_VERTEX_SPACING", ShaderValue::Float(LAND_VERTEX_SPACING)),
+    HeaderLine::Define("EXTERIOR_CELL_UNITS", ShaderValue::Float(EXTERIOR_CELL_UNITS)),
+    HeaderLine::Define("LAND_TEXTURE_TILES_PER_CELL", ShaderValue::Float(LAND_TEXTURE_TILES_PER_CELL)),
+    HeaderLine::Define("VERTEX_TANGENT_OFFSET_FLOATS", ShaderValue::Uint(VERTEX_TANGENT_OFFSET_FLOATS)),
+    HeaderLine::Blank,
+    HeaderLine::Comment("Ground-cover chunking + §11.1 sampling bench (#4052)"),
+    HeaderLine::Define("GROUNDCOVER_CHUNK_UNITS", ShaderValue::Float(GROUNDCOVER_CHUNK_UNITS)),
+    HeaderLine::Define("GROUNDCOVER_DETAIL_ATLAS_EDGE", ShaderValue::Uint(GROUNDCOVER_DETAIL_ATLAS_EDGE)),
+    HeaderLine::Define("GROUNDCOVER_DETAIL_NORMAL_STRENGTH", ShaderValue::Float(GROUNDCOVER_DETAIL_NORMAL_STRENGTH)),
+    HeaderLine::Define("GROUNDCOVER_CHUNKS_PER_CELL_SIDE", ShaderValue::Uint(GROUNDCOVER_CHUNKS_PER_CELL_SIDE)),
+    HeaderLine::Define("GROUNDCOVER_BENCH_WORKGROUP", ShaderValue::UintPlain(GROUNDCOVER_BENCH_WORKGROUP)),
+    HeaderLine::Define("GROUNDCOVER_BENCH_BLADE_VERTS", ShaderValue::Uint(GROUNDCOVER_BENCH_BLADE_VERTS)),
+    HeaderLine::Blank,
+    HeaderLine::Comment("Ground-cover density field + scatter (#4054)"),
+    HeaderLine::Define("GROUNDCOVER_NO_TERRAIN_TILE", ShaderValue::Uint(GROUNDCOVER_NO_TERRAIN_TILE)),
+    HeaderLine::Define("GROUNDCOVER_NO_WATER", ShaderValue::Float(GROUNDCOVER_NO_WATER)),
+    HeaderLine::Define("GROUNDCOVER_SLOPE_GATE_START", ShaderValue::Float(GROUNDCOVER_SLOPE_GATE_START)),
+    HeaderLine::Define("GROUNDCOVER_SLOPE_GATE_FULL", ShaderValue::Float(GROUNDCOVER_SLOPE_GATE_FULL)),
+    HeaderLine::Define("GROUNDCOVER_MOISTURE_FALLOFF_UNITS", ShaderValue::Float(GROUNDCOVER_MOISTURE_FALLOFF_UNITS)),
+    HeaderLine::Define("GROUNDCOVER_MOISTURE_FLOOR", ShaderValue::Float(GROUNDCOVER_MOISTURE_FLOOR)),
+    HeaderLine::Define("GROUNDCOVER_MOISTURE_SUBMERGED_DEPTH", ShaderValue::Float(GROUNDCOVER_MOISTURE_SUBMERGED_DEPTH)),
+    HeaderLine::Define("GROUNDCOVER_SHELTER_CURVATURE_SCALE", ShaderValue::Float(GROUNDCOVER_SHELTER_CURVATURE_SCALE)),
+    HeaderLine::Define("GROUNDCOVER_SHELTER_STRENGTH", ShaderValue::Float(GROUNDCOVER_SHELTER_STRENGTH)),
+    HeaderLine::Define("GROUNDCOVER_CLUMP_CELL_UNITS", ShaderValue::Float(GROUNDCOVER_CLUMP_CELL_UNITS)),
+    HeaderLine::Define("GROUNDCOVER_CLUMP_CONTRAST", ShaderValue::Float(GROUNDCOVER_CLUMP_CONTRAST)),
+    HeaderLine::Define("GROUNDCOVER_CLUMP_FLOOR", ShaderValue::Float(GROUNDCOVER_CLUMP_FLOOR)),
+    HeaderLine::Define("GROUNDCOVER_REGION_UNITS", ShaderValue::Float(GROUNDCOVER_REGION_UNITS)),
+    HeaderLine::Define("GROUNDCOVER_REGION_AMPLITUDE", ShaderValue::Float(GROUNDCOVER_REGION_AMPLITUDE)),
+    HeaderLine::Define("GROUNDCOVER_FADE_START", ShaderValue::Float(GROUNDCOVER_FADE_START)),
+    HeaderLine::Define("CLOUD_REF_WIDTH", ShaderValue::Float(CLOUD_REF_WIDTH)),
+    HeaderLine::Define("CLOUD_TILE_SCALE_LAYER_0", ShaderValue::Float(CLOUD_TILE_SCALE_LAYER_0)),
+    HeaderLine::Define("GROUNDCOVER_DRAW_DISTANCE", ShaderValue::Float(GROUNDCOVER_DRAW_DISTANCE)),
+    HeaderLine::Define("GROUNDCOVER_SCATTER_WORKGROUP", ShaderValue::UintPlain(GROUNDCOVER_SCATTER_WORKGROUP)),
+    HeaderLine::Define("GROUNDCOVER_MODEL_WORKGROUP", ShaderValue::UintPlain(GROUNDCOVER_MODEL_WORKGROUP)),
+    HeaderLine::Define("GROUNDCOVER_WIND_NOISE_UNITS", ShaderValue::Float(GROUNDCOVER_WIND_NOISE_UNITS)),
+    HeaderLine::Define("GROUNDCOVER_WIND_MAX_BEND", ShaderValue::Float(GROUNDCOVER_WIND_MAX_BEND)),
+    HeaderLine::Define("GROUNDCOVER_WIND_ADVECTION_SCALE", ShaderValue::Float(GROUNDCOVER_WIND_ADVECTION_SCALE)),
+    HeaderLine::Define("GROUNDCOVER_WIND_HARMONIC_FREQUENCY_MULTIPLIER", ShaderValue::Float(GROUNDCOVER_WIND_HARMONIC_FREQUENCY_MULTIPLIER)),
+    HeaderLine::Define("GROUNDCOVER_WIND_SECONDARY_AMPLITUDE", ShaderValue::Float(GROUNDCOVER_WIND_SECONDARY_AMPLITUDE)),
+    HeaderLine::Define("GROUNDCOVER_WIND_LATERAL_FRACTION", ShaderValue::Float(GROUNDCOVER_WIND_LATERAL_FRACTION)),
+    HeaderLine::Define("GROUNDCOVER_MAX_WIND_SPEED", ShaderValue::Float(GROUNDCOVER_MAX_WIND_SPEED)),
+    HeaderLine::Define("GROUNDCOVER_TWO_PI", ShaderValue::Float(GROUNDCOVER_TWO_PI)),
+    HeaderLine::Define("GROUNDCOVER_WIND_FLOW_FLOOR", ShaderValue::Float(GROUNDCOVER_WIND_FLOW_FLOOR)),
+    HeaderLine::Define("GROUNDCOVER_WIND_STIFFNESS_ATTENUATION", ShaderValue::Float(GROUNDCOVER_WIND_STIFFNESS_ATTENUATION)),
+    HeaderLine::Define("GROUNDCOVER_REST_LEAN_BASE", ShaderValue::Float(GROUNDCOVER_REST_LEAN_BASE)),
+    HeaderLine::Define("GROUNDCOVER_REST_LEAN_VARIATION", ShaderValue::Float(GROUNDCOVER_REST_LEAN_VARIATION)),
+    HeaderLine::Define("GROUNDCOVER_TERRAIN_NORMAL_WEIGHT", ShaderValue::Float(GROUNDCOVER_TERRAIN_NORMAL_WEIGHT)),
+    HeaderLine::Define("GROUNDCOVER_TWIST_RADIANS", ShaderValue::Float(GROUNDCOVER_TWIST_RADIANS)),
+    HeaderLine::Define("GROUNDCOVER_MIN_VISIBLE_HALF_WIDTH_PIXELS", ShaderValue::Float(GROUNDCOVER_MIN_VISIBLE_HALF_WIDTH_PIXELS)),
+    HeaderLine::Define("GROUNDCOVER_MAX_WIDTH_MULTIPLIER", ShaderValue::Float(GROUNDCOVER_MAX_WIDTH_MULTIPLIER)),
+    HeaderLine::Define("GROUNDCOVER_COLOUR_JITTER_MIN", ShaderValue::Float(GROUNDCOVER_COLOUR_JITTER_MIN)),
+    HeaderLine::Define("GROUNDCOVER_COLOUR_JITTER_MAX", ShaderValue::Float(GROUNDCOVER_COLOUR_JITTER_MAX)),
+    HeaderLine::Blank,
+    HeaderLine::Comment("Ground-cover light response (§12.1/12.2/12.5/12.6, #4057)"),
+    HeaderLine::Define("GROUNDCOVER_CANOPY_EXTINCTION_K", ShaderValue::Float(GROUNDCOVER_CANOPY_EXTINCTION_K)),
+    HeaderLine::Define("GROUNDCOVER_CANOPY_LEAF_AREA_DENSITY", ShaderValue::Float(GROUNDCOVER_CANOPY_LEAF_AREA_DENSITY)),
+    HeaderLine::Define("GROUNDCOVER_CANOPY_MIN_COS", ShaderValue::Float(GROUNDCOVER_CANOPY_MIN_COS)),
+    HeaderLine::Define("GROUNDCOVER_SKY_DIFFUSIVITY", ShaderValue::Float(GROUNDCOVER_SKY_DIFFUSIVITY)),
+    HeaderLine::Define("GROUNDCOVER_BLADE_TRANSMISSION_EXTINCTION", ShaderValue::Float(GROUNDCOVER_BLADE_TRANSMISSION_EXTINCTION)),
+    HeaderLine::Define("GROUNDCOVER_TRANSMISSION_DISTORTION", ShaderValue::Float(GROUNDCOVER_TRANSMISSION_DISTORTION)),
+    HeaderLine::Define("GROUNDCOVER_TRANSMISSION_POWER", ShaderValue::Float(GROUNDCOVER_TRANSMISSION_POWER)),
+    HeaderLine::Define("GROUNDCOVER_SHEEN_F0", ShaderValue::Float(GROUNDCOVER_SHEEN_F0)),
+    HeaderLine::Define("GROUNDCOVER_SHEEN_ROUGHNESS", ShaderValue::Float(GROUNDCOVER_SHEEN_ROUGHNESS)),
+    HeaderLine::Blank,
+    HeaderLine::Comment("Ground-cover interaction field (§12.4, #4058)"),
+    HeaderLine::Define("GROUNDCOVER_INTERACTION_UNITS", ShaderValue::Float(GROUNDCOVER_INTERACTION_UNITS)),
+    HeaderLine::Define("GROUNDCOVER_INTERACTION_HALF_LIFE_SECONDS", ShaderValue::Float(GROUNDCOVER_INTERACTION_HALF_LIFE_SECONDS)),
+    HeaderLine::Define("GROUNDCOVER_INTERACTION_MAX_BEND", ShaderValue::Float(GROUNDCOVER_INTERACTION_MAX_BEND)),
+    HeaderLine::Define("GROUNDCOVER_INTERACTION_TEXELS", ShaderValue::Uint(GROUNDCOVER_INTERACTION_TEXELS)),
+    HeaderLine::Define("GROUNDCOVER_INTERACTION_MAX_DISTURBERS", ShaderValue::Uint(GROUNDCOVER_INTERACTION_MAX_DISTURBERS)),
+    HeaderLine::Define("GROUNDCOVER_INTERACTION_WORKGROUP", ShaderValue::UintPlain(GROUNDCOVER_INTERACTION_WORKGROUP)),
+    HeaderLine::Define("GROUNDCOVER_BLADE_SEGMENTS_NEAR", ShaderValue::Uint(GROUNDCOVER_BLADE_SEGMENTS_NEAR)),
+    HeaderLine::Define("GROUNDCOVER_BLADE_SEGMENTS_MID", ShaderValue::Uint(GROUNDCOVER_BLADE_SEGMENTS_MID)),
+    HeaderLine::Define("GROUNDCOVER_VERTS_PER_SEGMENT", ShaderValue::Uint(GROUNDCOVER_VERTS_PER_SEGMENT)),
+    HeaderLine::Define("GROUNDCOVER_BLADES_PER_POINT", ShaderValue::Uint(GROUNDCOVER_BLADES_PER_POINT)),
+    HeaderLine::Define("GROUNDCOVER_SPECIES_TABLE_SIZE", ShaderValue::Uint(GROUNDCOVER_SPECIES_TABLE_SIZE)),
+    HeaderLine::Define("GROUNDCOVER_CANDIDATES_PER_THREAD", ShaderValue::Uint(GROUNDCOVER_CANDIDATES_PER_THREAD)),
+    HeaderLine::Define("GROUNDCOVER_MAX_BLADES_PER_CHUNK", ShaderValue::Uint(GROUNDCOVER_MAX_BLADES_PER_CHUNK)),
+    HeaderLine::Define("GROUNDCOVER_MAX_CHUNKS", ShaderValue::Uint(GROUNDCOVER_MAX_CHUNKS)),
+    HeaderLine::Define("GROUNDCOVER_MODEL_POINTS_PER_CHUNK", ShaderValue::Uint(GROUNDCOVER_MODEL_POINTS_PER_CHUNK)),
+    HeaderLine::Define("GROUNDCOVER_MODEL_MAX_RECORDS", ShaderValue::Uint(GROUNDCOVER_MODEL_MAX_RECORDS)),
+    HeaderLine::Define("GROUNDCOVER_MODEL_MAX_SHAPES", ShaderValue::Uint(GROUNDCOVER_MODEL_MAX_SHAPES)),
+    HeaderLine::Define("GROUNDCOVER_MODEL_PHASE_PLACE", ShaderValue::Uint(GROUNDCOVER_MODEL_PHASE_PLACE)),
+    HeaderLine::Define("GROUNDCOVER_MODEL_PHASE_LAYOUT", ShaderValue::Uint(GROUNDCOVER_MODEL_PHASE_LAYOUT)),
+    HeaderLine::Define("GROUNDCOVER_MODEL_PHASE_EMIT", ShaderValue::Uint(GROUNDCOVER_MODEL_PHASE_EMIT)),
+    HeaderLine::Define("GROUNDCOVER_MODEL_RECORD_FLAG_UNIFORM_SCALING", ShaderValue::Uint(GROUNDCOVER_MODEL_RECORD_FLAG_UNIFORM_SCALING)),
+    HeaderLine::Define("GROUNDCOVER_MODEL_RECORD_FLAG_FIT_TO_SLOPE", ShaderValue::Uint(GROUNDCOVER_MODEL_RECORD_FLAG_FIT_TO_SLOPE)),
+    HeaderLine::Define("GROUNDCOVER_MODEL_SHAPE_FLAG_NON_UNIFORM", ShaderValue::Uint(GROUNDCOVER_MODEL_SHAPE_FLAG_NON_UNIFORM)),
+    HeaderLine::Define("GROUNDCOVER_MODEL_RECORD_BITS", ShaderValue::Uint(GROUNDCOVER_MODEL_RECORD_BITS)),
+    HeaderLine::Define("GROUNDCOVER_WATER_RULE_ABOVE_AT_LEAST", ShaderValue::Uint(GROUNDCOVER_WATER_RULE_ABOVE_AT_LEAST)),
+    HeaderLine::Define("GROUNDCOVER_WATER_RULE_ABOVE_AT_MOST", ShaderValue::Uint(GROUNDCOVER_WATER_RULE_ABOVE_AT_MOST)),
+    HeaderLine::Define("GROUNDCOVER_WATER_RULE_BELOW_AT_LEAST", ShaderValue::Uint(GROUNDCOVER_WATER_RULE_BELOW_AT_LEAST)),
+    HeaderLine::Define("GROUNDCOVER_WATER_RULE_BELOW_AT_MOST", ShaderValue::Uint(GROUNDCOVER_WATER_RULE_BELOW_AT_MOST)),
+    HeaderLine::Define("GROUNDCOVER_WATER_RULE_EITHER_AT_LEAST", ShaderValue::Uint(GROUNDCOVER_WATER_RULE_EITHER_AT_LEAST)),
+    HeaderLine::Define("GROUNDCOVER_WATER_RULE_EITHER_AT_MOST", ShaderValue::Uint(GROUNDCOVER_WATER_RULE_EITHER_AT_MOST)),
+    HeaderLine::Define("GROUNDCOVER_MODEL_SEED_SALT", ShaderValue::Uint(GROUNDCOVER_MODEL_SEED_SALT)),
+    HeaderLine::Define("GROUNDCOVER_MODEL_COUNT_REGION", ShaderValue::Uint(GROUNDCOVER_MODEL_COUNT_REGION)),
+    HeaderLine::Define("GROUNDCOVER_MODEL_BASE_REGION", ShaderValue::Uint(GROUNDCOVER_MODEL_BASE_REGION)),
+    HeaderLine::Define("GROUNDCOVER_MODEL_CHUNK_TOTAL_REGION", ShaderValue::Uint(GROUNDCOVER_MODEL_CHUNK_TOTAL_REGION)),
+    HeaderLine::Define("GROUNDCOVER_MODEL_SHAPE_REGION", ShaderValue::Uint(GROUNDCOVER_MODEL_SHAPE_REGION)),
+    HeaderLine::Define("GROUNDCOVER_MODEL_STATS_REGION", ShaderValue::Uint(GROUNDCOVER_MODEL_STATS_REGION)),
+    HeaderLine::Define("GROUNDCOVER_HISTOGRAM_BUCKETS", ShaderValue::Uint(GROUNDCOVER_HISTOGRAM_BUCKETS)),
+    HeaderLine::Blank,
+    HeaderLine::Comment("Ground-cover blade geometry guards"),
+    HeaderLine::Define("GROUNDCOVER_BEZIER_CONTROL_FRACTION", ShaderValue::Float(GROUNDCOVER_BEZIER_CONTROL_FRACTION)),
+    HeaderLine::Define("GROUNDCOVER_BLADE_VECTOR_EPSILON", ShaderValue::Float(GROUNDCOVER_BLADE_VECTOR_EPSILON)),
+    HeaderLine::Define("GROUNDCOVER_PROJECTED_DEPTH_EPSILON", ShaderValue::Float(GROUNDCOVER_PROJECTED_DEPTH_EPSILON)),
+    HeaderLine::Blank,
+    HeaderLine::Comment("Skinning"),
+    HeaderLine::Define("MAX_BONES_PER_MESH", ShaderValue::Uint(MAX_BONES_PER_MESH)),
+    HeaderLine::Define("SKIN_WORKGROUP_SIZE", ShaderValue::UintPlain(SKIN_WORKGROUP_SIZE)),
+    HeaderLine::Blank,
+    HeaderLine::Comment("Material kind enum (`GpuMaterial.materialKind`)."),
+    HeaderLine::Comment("Authoritative values: scene_buffer/constants.rs. #1401."),
+    HeaderLine::Define("MATERIAL_KIND_MULTI_LAYER_PARALLAX", ShaderValue::Uint(MATERIAL_KIND_MULTI_LAYER_PARALLAX)),
+    HeaderLine::Define("MATERIAL_KIND_GLASS", ShaderValue::Uint(MATERIAL_KIND_GLASS)),
+    HeaderLine::Define("MATERIAL_KIND_EFFECT_SHADER", ShaderValue::Uint(MATERIAL_KIND_EFFECT_SHADER)),
+    HeaderLine::Define("MATERIAL_KIND_NO_LIGHTING", ShaderValue::Uint(MATERIAL_KIND_NO_LIGHTING)),
+    HeaderLine::Define("MATERIAL_KIND_FIRE_REFRACTION", ShaderValue::Uint(MATERIAL_KIND_FIRE_REFRACTION)),
+    HeaderLine::Define("RENDER_LAYER_ARCHITECTURE", ShaderValue::Uint(RENDER_LAYER_ARCHITECTURE)),
+    HeaderLine::Define("RENDER_LAYER_CLUTTER", ShaderValue::Uint(RENDER_LAYER_CLUTTER)),
+    HeaderLine::Define("RENDER_LAYER_ACTOR", ShaderValue::Uint(RENDER_LAYER_ACTOR)),
+    HeaderLine::Define("RENDER_LAYER_DECAL", ShaderValue::Uint(RENDER_LAYER_DECAL)),
+    HeaderLine::Define("TONEMAP_OP_ACES", ShaderValue::Uint(TONEMAP_OP_ACES)),
+    HeaderLine::Define("TONEMAP_OP_AGX", ShaderValue::Uint(TONEMAP_OP_AGX)),
+    HeaderLine::Define("EXPOSURE_METER_NEUTRAL", ShaderValue::Float(EXPOSURE_METER_NEUTRAL)),
+    HeaderLine::Define("ADAPTATION_SAT_FALLOFF", ShaderValue::Float(ADAPTATION_SAT_FALLOFF)),
+    HeaderLine::Define("FOG_VOLUME_SHAPE_SPHERE", ShaderValue::Uint(FOG_VOLUME_SHAPE_SPHERE)),
+    HeaderLine::Define("FOG_VOLUME_SHAPE_ELLIPSOID", ShaderValue::Uint(FOG_VOLUME_SHAPE_ELLIPSOID)),
+    HeaderLine::Define("FOG_VOLUME_SHAPE_BOX", ShaderValue::Uint(FOG_VOLUME_SHAPE_BOX)),
+    HeaderLine::Define("FOG_VOLUME_SHAPE_CONE", ShaderValue::Uint(FOG_VOLUME_SHAPE_CONE)),
+    HeaderLine::Define("VISIBILITY_LAYER_ARCHITECTURE", ShaderValue::Uint(VISIBILITY_LAYER_ARCHITECTURE)),
+    HeaderLine::Define("VISIBILITY_LAYER_STATIC_PROP", ShaderValue::Uint(VISIBILITY_LAYER_STATIC_PROP)),
+    HeaderLine::Define("VISIBILITY_LAYER_DYNAMIC_ACTOR", ShaderValue::Uint(VISIBILITY_LAYER_DYNAMIC_ACTOR)),
+    HeaderLine::Define("VISIBILITY_LAYER_FOLIAGE", ShaderValue::Uint(VISIBILITY_LAYER_FOLIAGE)),
+    HeaderLine::Define("VISIBILITY_LAYER_GLASS", ShaderValue::Uint(VISIBILITY_LAYER_GLASS)),
+    HeaderLine::Define("VISIBILITY_LAYER_EFFECT", ShaderValue::Uint(VISIBILITY_LAYER_EFFECT)),
+    HeaderLine::Define("VISIBILITY_MASK_ALL_OPAQUE", ShaderValue::Uint(VISIBILITY_MASK_ALL_OPAQUE)),
+    HeaderLine::Define("VISIBILITY_MASK_SOLID", ShaderValue::Uint(VISIBILITY_MASK_SOLID)),
+    HeaderLine::Define("VISIBILITY_MASK_FULL", ShaderValue::Uint(VISIBILITY_MASK_FULL)),
+    HeaderLine::Define("ATTENUATION_MODEL_LEGACY_SOFT_RANGE", ShaderValue::Uint(ATTENUATION_MODEL_LEGACY_SOFT_RANGE)),
+    HeaderLine::Define("ATTENUATION_MODEL_INVERSE_SQUARE", ShaderValue::Uint(ATTENUATION_MODEL_INVERSE_SQUARE)),
+    HeaderLine::Define("WORLD_UNITS_PER_METER", ShaderValue::Float(WORLD_UNITS_PER_METER)),
+    HeaderLine::Define("LEGACY_LIGHT_CULL_RANGE_MULTIPLIER", ShaderValue::Float(LEGACY_LIGHT_CULL_RANGE_MULTIPLIER)),
+    HeaderLine::Define("ADIABATIC_FLAME_TEMPERATURE_K", ShaderValue::Float(ADIABATIC_FLAME_TEMPERATURE_K)),
+    HeaderLine::Define("COMBUSTION_REACTION_RATE_PER_SECOND", ShaderValue::Float(COMBUSTION_REACTION_RATE_PER_SECOND)),
+    HeaderLine::Define("COMBUSTION_RICH_SOOT_YIELD", ShaderValue::Float(COMBUSTION_RICH_SOOT_YIELD)),
+    HeaderLine::Define("COMBUSTION_LEAN_SOOT_YIELD", ShaderValue::Float(COMBUSTION_LEAN_SOOT_YIELD)),
+    HeaderLine::Define("COMBUSTION_SOOT_OXIDATION_RATE_PER_SECOND", ShaderValue::Float(COMBUSTION_SOOT_OXIDATION_RATE_PER_SECOND)),
+    HeaderLine::Define("COMBUSTION_SOOT_SINGLE_SCATTER_ALBEDO_RGB", ShaderValue::Vec3(&COMBUSTION_SOOT_SINGLE_SCATTER_ALBEDO_RGB)),
+    HeaderLine::Define("COMBUSTION_LOCAL_LIGHT_PHASE_FORWARD_G", ShaderValue::Float(COMBUSTION_LOCAL_LIGHT_PHASE_FORWARD_G)),
+    HeaderLine::Define("COMBUSTION_LOCAL_LIGHT_PHASE_BACKWARD_G", ShaderValue::Float(COMBUSTION_LOCAL_LIGHT_PHASE_BACKWARD_G)),
+    HeaderLine::Define("COMBUSTION_LOCAL_LIGHT_PHASE_MIX", ShaderValue::Float(COMBUSTION_LOCAL_LIGHT_PHASE_MIX)),
+    HeaderLine::Define("COMBUSTION_MULTISCATTER_OCTAVE1_WEIGHT", ShaderValue::Float(COMBUSTION_MULTISCATTER_OCTAVE1_WEIGHT)),
+    HeaderLine::Define("COMBUSTION_MULTISCATTER_OCTAVE2_WEIGHT", ShaderValue::Float(COMBUSTION_MULTISCATTER_OCTAVE2_WEIGHT)),
+    HeaderLine::Define("COMBUSTION_SOOT_OXIDATION_START_TEMPERATURE_K", ShaderValue::Float(COMBUSTION_SOOT_OXIDATION_START_TEMPERATURE_K)),
+    HeaderLine::Define("COMBUSTION_SOOT_OXIDATION_FULL_TEMPERATURE_K", ShaderValue::Float(COMBUSTION_SOOT_OXIDATION_FULL_TEMPERATURE_K)),
+    HeaderLine::Define("EXPLOSION_EXPANSION_TIME_SECONDS", ShaderValue::Float(EXPLOSION_EXPANSION_TIME_SECONDS)),
+    HeaderLine::Define("EXPLOSION_IMPULSE_DURATION_SECONDS", ShaderValue::Float(EXPLOSION_IMPULSE_DURATION_SECONDS)),
+    HeaderLine::Define("NUCLEAR_EXPLOSION_EXPANSION_SCALE", ShaderValue::Float(NUCLEAR_EXPLOSION_EXPANSION_SCALE)),
+    HeaderLine::Define("NUCLEAR_EXPLOSION_BUOYANCY_SCALE", ShaderValue::Float(NUCLEAR_EXPLOSION_BUOYANCY_SCALE)),
+    HeaderLine::Define("NUCLEAR_EXPLOSION_SMOKE_MASS_SCALE", ShaderValue::Float(NUCLEAR_EXPLOSION_SMOKE_MASS_SCALE)),
+    HeaderLine::Define("COMBUSTION_OVERPRESSURE_DISSIPATION_PER_SECOND", ShaderValue::Float(COMBUSTION_OVERPRESSURE_DISSIPATION_PER_SECOND)),
+    HeaderLine::Define("COMBUSTION_MAX_PRESSURE_ACCELERATION_MPS2", ShaderValue::Float(COMBUSTION_MAX_PRESSURE_ACCELERATION_MPS2)),
+    HeaderLine::Define("COMBUSTION_MAX_DILUTION_RATE_PER_SECOND", ShaderValue::Float(COMBUSTION_MAX_DILUTION_RATE_PER_SECOND)),
+    HeaderLine::Define("COMBUSTION_VORTICITY_CONFINEMENT_SPEED_MPS", ShaderValue::Float(COMBUSTION_VORTICITY_CONFINEMENT_SPEED_MPS)),
+    HeaderLine::Define("COMBUSTION_MAX_VORTICITY_ACCELERATION_MPS2", ShaderValue::Float(COMBUSTION_MAX_VORTICITY_ACCELERATION_MPS2)),
+    HeaderLine::Define("COMBUSTION_TURBULENCE_COARSE_EDDY_SCALE_METERS", ShaderValue::Float(COMBUSTION_TURBULENCE_COARSE_EDDY_SCALE_METERS)),
+    HeaderLine::Define("COMBUSTION_TURBULENCE_DETAIL_EDDY_SCALE_METERS", ShaderValue::Float(COMBUSTION_TURBULENCE_DETAIL_EDDY_SCALE_METERS)),
+    HeaderLine::Define("COMBUSTION_TURBULENCE_COARSE_RISE_SPEED_MPS", ShaderValue::Float(COMBUSTION_TURBULENCE_COARSE_RISE_SPEED_MPS)),
+    HeaderLine::Define("COMBUSTION_TURBULENCE_DETAIL_RISE_SPEED_MPS", ShaderValue::Float(COMBUSTION_TURBULENCE_DETAIL_RISE_SPEED_MPS)),
+    HeaderLine::Define("COMBUSTION_AEROSOL_DISSIPATION_PER_SECOND", ShaderValue::Float(COMBUSTION_AEROSOL_DISSIPATION_PER_SECOND)),
+    HeaderLine::Define("COMBUSTION_AEROSOL_LIFT_ACCELERATION_MPS2", ShaderValue::Float(COMBUSTION_AEROSOL_LIFT_ACCELERATION_MPS2)),
+    HeaderLine::Define("COMBUSTION_AEROSOL_LIFT_EXTINCTION_SCALE", ShaderValue::Float(COMBUSTION_AEROSOL_LIFT_EXTINCTION_SCALE)),
+    HeaderLine::Define("COMBUSTION_COOLED_AEROSOL_SOURCE_TEMPERATURE_K", ShaderValue::Float(COMBUSTION_COOLED_AEROSOL_SOURCE_TEMPERATURE_K)),
+    HeaderLine::Define("COMBUSTION_EXPLOSION_SMOKE_EXTINCTION_SCALE", ShaderValue::Float(COMBUSTION_EXPLOSION_SMOKE_EXTINCTION_SCALE)),
+    HeaderLine::Define("COMBUSTION_FUEL_VAPOUR_REMOVAL_PER_SECOND", ShaderValue::Float(COMBUSTION_FUEL_VAPOUR_REMOVAL_PER_SECOND)),
+    HeaderLine::Define("COMBUSTION_RADIANCE_REMOVAL_PER_SECOND", ShaderValue::Float(COMBUSTION_RADIANCE_REMOVAL_PER_SECOND)),
+    HeaderLine::Define("COMBUSTION_THERMAL_COOLING_PER_SECOND", ShaderValue::Float(COMBUSTION_THERMAL_COOLING_PER_SECOND)),
+    HeaderLine::Define("COMBUSTION_THERMAL_BUOYANCY_ACCELERATION_MPS2", ShaderValue::Float(COMBUSTION_THERMAL_BUOYANCY_ACCELERATION_MPS2)),
+    HeaderLine::Define("COMBUSTION_VELOCITY_DAMPING_PER_SECOND", ShaderValue::Float(COMBUSTION_VELOCITY_DAMPING_PER_SECOND)),
+    HeaderLine::Define("COMBUSTION_REACTION_HEAT_RESPONSE", ShaderValue::Float(COMBUSTION_REACTION_HEAT_RESPONSE)),
+    HeaderLine::Define("FLAME_FUEL_BOUNDARY_HEIGHT_FRACTION", ShaderValue::Float(FLAME_FUEL_BOUNDARY_HEIGHT_FRACTION)),
+    HeaderLine::Define("FLAME_REACTION_ZONE_HEIGHT_FRACTION", ShaderValue::Float(FLAME_REACTION_ZONE_HEIGHT_FRACTION)),
+    HeaderLine::Define("FLAME_REACTION_ZONE_FADE_START_FRACTION", ShaderValue::Float(FLAME_REACTION_ZONE_FADE_START_FRACTION)),
+    HeaderLine::Define("FLAME_SOURCE_LATERAL_SPEED_MPS", ShaderValue::Float(FLAME_SOURCE_LATERAL_SPEED_MPS)),
+    HeaderLine::Define("FLAME_SOURCE_VELOCITY_RESPONSE_PER_SECOND", ShaderValue::Float(FLAME_SOURCE_VELOCITY_RESPONSE_PER_SECOND)),
+    HeaderLine::Define("COMBUSTION_BFECC_ERROR_CORRECTION_STRENGTH", ShaderValue::Float(COMBUSTION_BFECC_ERROR_CORRECTION_STRENGTH)),
+    HeaderLine::Define("COMBUSTION_BFECC_ERROR_TRACE_THRESHOLD", ShaderValue::Float(COMBUSTION_BFECC_ERROR_TRACE_THRESHOLD)),
+    HeaderLine::Blank,
+    HeaderLine::Comment("Transported-combustion light-moment reduction"),
+    HeaderLine::Define("COMBUSTION_LIGHT_GRID_X", ShaderValue::Uint(COMBUSTION_LIGHT_GRID_X)),
+    HeaderLine::Define("COMBUSTION_LIGHT_GRID_Y", ShaderValue::Uint(COMBUSTION_LIGHT_GRID_Y)),
+    HeaderLine::Define("COMBUSTION_LIGHT_GRID_Z", ShaderValue::Uint(COMBUSTION_LIGHT_GRID_Z)),
+    HeaderLine::Define("COMBUSTION_LIGHT_GRID_COUNT", ShaderValue::Uint(COMBUSTION_LIGHT_GRID_COUNT)),
+    HeaderLine::Define("COMBUSTION_LIGHT_HALF_EXTENT_XZ_METERS", ShaderValue::Float(COMBUSTION_LIGHT_HALF_EXTENT_XZ_METERS)),
+    HeaderLine::Define("COMBUSTION_LIGHT_HALF_EXTENT_Y_METERS", ShaderValue::Float(COMBUSTION_LIGHT_HALF_EXTENT_Y_METERS)),
+    HeaderLine::Define("COMBUSTION_LIGHT_FIXED_SCALE", ShaderValue::Float(COMBUSTION_LIGHT_FIXED_SCALE)),
+    HeaderLine::Define("COMBUSTION_LIGHT_VOLUME_FIXED_SCALE", ShaderValue::Float(COMBUSTION_LIGHT_VOLUME_FIXED_SCALE)),
+    HeaderLine::Blank,
+    HeaderLine::Define("SHADOW_FADE_START", ShaderValue::Float(SHADOW_FADE_START)),
+    HeaderLine::Define("SHADOW_FADE_END", ShaderValue::Float(SHADOW_FADE_END)),
+    HeaderLine::Define("DIRECTIONAL_SHADOW_TRACE_DISTANCE", ShaderValue::Float(DIRECTIONAL_SHADOW_TRACE_DISTANCE)),
+    HeaderLine::Blank,
+    HeaderLine::Comment("Glass / IOR ray budget"),
+    HeaderLine::Define("GLASS_RAY_BUDGET", ShaderValue::Uint(GLASS_RAY_BUDGET)),
+    HeaderLine::Define("GI_VISIBLE_LIGHT_CAP", ShaderValue::Uint(GI_VISIBLE_LIGHT_CAP)),
+    HeaderLine::Comment("Mesh-ID attachment (R32_UINT): bit 31 is the ALPHA_BLEND_NO_HISTORY"),
+    HeaderLine::Comment("flag; set, the low 31 bits are an alpha draw index, not a stable ID."),
+    HeaderLine::Define("MESH_ID_NO_HISTORY_BIT", ShaderValue::Uint(MESH_ID_NO_HISTORY_BIT)),
+    HeaderLine::Define("MESH_ID_STABLE_MASK", ShaderValue::Uint(MESH_ID_STABLE_MASK)),
+    HeaderLine::Comment("#3879 — GpuRayBudget shader-side ceilings. Each must be >= the"),
+    HeaderLine::Comment("matching tier-3 value in AdaptiveRayBudget::settings_for_tier,"),
+    HeaderLine::Comment("which now reads these same constants. Unsuffixed - cast at use."),
+    HeaderLine::Define("MAX_DIRECT_SHADOW_SAMPLES", ShaderValue::UintPlain(MAX_DIRECT_SHADOW_SAMPLES)),
+    HeaderLine::Define("MAX_PATH_SEGMENTS", ShaderValue::UintPlain(MAX_PATH_SEGMENTS)),
+    HeaderLine::Define("MAX_SHADED_HITS", ShaderValue::UintPlain(MAX_SHADED_HITS)),
+    HeaderLine::Define("MAX_FROXEL_LIGHTS", ShaderValue::UintPlain(MAX_FROXEL_LIGHTS)),
+    HeaderLine::Define("MAX_RAY_QUALITY_TIER", ShaderValue::UintPlain(MAX_RAY_QUALITY_TIER)),
+    HeaderLine::Define("MAX_REFRACT_PASSTHRUS", ShaderValue::UintPlain(MAX_REFRACT_PASSTHRUS)),
+    HeaderLine::Define("GLASS_RAY_COST", ShaderValue::Uint(GLASS_RAY_COST)),
+    HeaderLine::Blank,
+    HeaderLine::Comment("One-bounce GI light cap (shadow ray per light at a bounce hit)"),
+    HeaderLine::Define("GI_HIT_LIGHT_CAP", ShaderValue::Uint(GI_HIT_LIGHT_CAP)),
+    HeaderLine::Define("GI_SAMPLE_LUMINANCE_CLAMP", ShaderValue::Float(GI_SAMPLE_LUMINANCE_CLAMP)),
+    HeaderLine::Blank,
+    HeaderLine::Comment("Caustic accumulation"),
+    HeaderLine::Define("CAUSTIC_FIXED_SCALE", ShaderValue::Float(CAUSTIC_FIXED_SCALE)),
+    HeaderLine::Blank,
+    HeaderLine::Comment("Compute workgroup sizes (bloom, volumetrics, SSAO, TAA)."),
+    HeaderLine::Comment("Used in layout(local_size_x = WORKGROUP_X, ...) — no `u` suffix."),
+    HeaderLine::Define("WORKGROUP_X", ShaderValue::UintPlain(WORKGROUP_X)),
+    HeaderLine::Define("WORKGROUP_Y", ShaderValue::UintPlain(WORKGROUP_Y)),
+    HeaderLine::Define("WORKGROUP_Z", ShaderValue::UintPlain(WORKGROUP_Z)),
+    HeaderLine::Blank,
+    HeaderLine::Comment("Clustered light culling thread count (no `u` suffix — used in"),
+    HeaderLine::Comment("`layout(local_size_x = THREADS_PER_CLUSTER)`)."),
+    HeaderLine::Define("THREADS_PER_CLUSTER", ShaderValue::UintPlain(THREADS_PER_CLUSTER)),
+    HeaderLine::Blank,
+    HeaderLine::Comment("Bloom + volumetrics tunables (floats — always decimal)."),
+    HeaderLine::Define("BLOOM_INTENSITY", ShaderValue::Float(BLOOM_INTENSITY)),
+    HeaderLine::Define("BLOOM_THRESHOLD", ShaderValue::Float(BLOOM_THRESHOLD)),
+    HeaderLine::Define("BLOOM_KNEE", ShaderValue::Float(BLOOM_KNEE)),
+    HeaderLine::Define("CLOUD_LAYER_BOTTOM", ShaderValue::Float(CLOUD_LAYER_BOTTOM)),
+    HeaderLine::Define("CLOUD_LAYER_TOP", ShaderValue::Float(CLOUD_LAYER_TOP)),
+    HeaderLine::Define("CLOUD_PLANET_RADIUS", ShaderValue::Float(CLOUD_PLANET_RADIUS)),
+    HeaderLine::Define("CLOUD_CHEAP_SAMPLES_ZENITH", ShaderValue::UintPlain(CLOUD_CHEAP_SAMPLES_ZENITH)),
+    HeaderLine::Define("CLOUD_CHEAP_SAMPLES_HORIZON", ShaderValue::UintPlain(CLOUD_CHEAP_SAMPLES_HORIZON)),
+    HeaderLine::Define("CLOUD_MAX_MARCH_ITERATIONS", ShaderValue::UintPlain(CLOUD_MAX_MARCH_ITERATIONS)),
+    HeaderLine::Define("CLOUD_LIGHT_STEPS", ShaderValue::UintPlain(CLOUD_LIGHT_STEPS)),
+    HeaderLine::Define("CLOUD_PHASE_G0", ShaderValue::Float(CLOUD_PHASE_G0)),
+    HeaderLine::Define("CLOUD_PHASE_G1", ShaderValue::Float(CLOUD_PHASE_G1)),
+    HeaderLine::Define("CLOUD_PHASE_BLEND", ShaderValue::Float(CLOUD_PHASE_BLEND)),
+    HeaderLine::Define("CLOUD_MS_OCTAVES", ShaderValue::UintPlain(CLOUD_MS_OCTAVES)),
+    HeaderLine::Define("CLOUD_MS_SCATTERING_FALLOFF", ShaderValue::Float(CLOUD_MS_SCATTERING_FALLOFF)),
+    HeaderLine::Define("CLOUD_MS_EXTINCTION_FALLOFF", ShaderValue::Float(CLOUD_MS_EXTINCTION_FALLOFF)),
+    HeaderLine::Define("CLOUD_MS_ECCENTRICITY_FALLOFF", ShaderValue::Float(CLOUD_MS_ECCENTRICITY_FALLOFF)),
+    HeaderLine::Define("CLOUD_EXTINCTION_PER_METER", ShaderValue::Float(CLOUD_EXTINCTION_PER_METER)),
+    HeaderLine::Define("VOLUME_FAR", ShaderValue::Float(VOLUME_FAR)),
+    HeaderLine::Blank,
+    HeaderLine::Comment("Per-instance flag bits (`GpuInstance.flags`, lower 16 bits)."),
+    HeaderLine::Comment("Authoritative values: scene_buffer/constants.rs. #1190."),
+    HeaderLine::Define("INSTANCE_FLAG_NON_UNIFORM_SCALE", ShaderValue::Uint(INSTANCE_FLAG_NON_UNIFORM_SCALE)),
+    HeaderLine::Define("INSTANCE_FLAG_ALPHA_BLEND", ShaderValue::Uint(INSTANCE_FLAG_ALPHA_BLEND)),
+    HeaderLine::Define("INSTANCE_FLAG_CAUSTIC_SOURCE", ShaderValue::Uint(INSTANCE_FLAG_CAUSTIC_SOURCE)),
+    HeaderLine::Define("INSTANCE_FLAG_TERRAIN_SPLAT", ShaderValue::Uint(INSTANCE_FLAG_TERRAIN_SPLAT)),
+    HeaderLine::Define("INSTANCE_RENDER_LAYER_SHIFT", ShaderValue::Uint(INSTANCE_RENDER_LAYER_SHIFT)),
+    HeaderLine::Define("INSTANCE_RENDER_LAYER_MASK", ShaderValue::Uint(INSTANCE_RENDER_LAYER_MASK)),
+    HeaderLine::Define("INSTANCE_FLAG_FLAT_SHADING", ShaderValue::Uint(INSTANCE_FLAG_FLAT_SHADING)),
+    HeaderLine::Define("INSTANCE_FLAG_DIFFUSE_ALPHA", ShaderValue::Uint(INSTANCE_FLAG_DIFFUSE_ALPHA)),
+    HeaderLine::Define("INSTANCE_FLAG_LOD_BLOCK", ShaderValue::Uint(INSTANCE_FLAG_LOD_BLOCK)),
+    HeaderLine::Define("INSTANCE_TERRAIN_TILE_SHIFT", ShaderValue::Uint(INSTANCE_TERRAIN_TILE_SHIFT)),
+    HeaderLine::Define("INSTANCE_TERRAIN_TILE_MASK", ShaderValue::Uint(INSTANCE_TERRAIN_TILE_MASK)),
+    HeaderLine::Comment("LAND splat geometry (#5113): channel count + lanes per vertex weight word."),
+    HeaderLine::Define("TERRAIN_SPLAT_LAYERS", ShaderValue::Uint(TERRAIN_SPLAT_LAYERS)),
+    HeaderLine::Define("TERRAIN_SPLAT_LANES_PER_WORD", ShaderValue::Uint(TERRAIN_SPLAT_LANES_PER_WORD)),
+    HeaderLine::Blank,
+    HeaderLine::Comment("Per-material flag bits (`GpuMaterial.materialFlags`)."),
+    HeaderLine::Comment("Authoritative values: vulkan/material.rs `material_flag::*`. #1190."),
+    HeaderLine::Define("MAT_FLAG_VERTEX_COLOR_EMISSIVE", ShaderValue::Uint(MAT_FLAG_VERTEX_COLOR_EMISSIVE)),
+    HeaderLine::Define("MAT_FLAG_EFFECT_SOFT", ShaderValue::Uint(MAT_FLAG_EFFECT_SOFT)),
+    HeaderLine::Define("MAT_FLAG_EFFECT_PALETTE_COLOR", ShaderValue::Uint(MAT_FLAG_EFFECT_PALETTE_COLOR)),
+    HeaderLine::Define("MAT_FLAG_EFFECT_PALETTE_ALPHA", ShaderValue::Uint(MAT_FLAG_EFFECT_PALETTE_ALPHA)),
+    HeaderLine::Define("MAT_FLAG_EFFECT_LIT", ShaderValue::Uint(MAT_FLAG_EFFECT_LIT)),
+    HeaderLine::Define("MAT_FLAG_PBR_BSDF", ShaderValue::Uint(MAT_FLAG_PBR_BSDF)),
+    HeaderLine::Define("MAT_FLAG_TRANSLUCENCY", ShaderValue::Uint(MAT_FLAG_TRANSLUCENCY)),
+    HeaderLine::Define("MAT_FLAG_MODEL_SPACE_NORMALS", ShaderValue::Uint(MAT_FLAG_MODEL_SPACE_NORMALS)),
+    HeaderLine::Define("MAT_FLAG_TRANSLUCENCY_THICK_OBJECT", ShaderValue::Uint(MAT_FLAG_TRANSLUCENCY_THICK_OBJECT)),
+    HeaderLine::Define("MAT_FLAG_TRANSLUCENCY_MIX_ALBEDO", ShaderValue::Uint(MAT_FLAG_TRANSLUCENCY_MIX_ALBEDO)),
+    HeaderLine::Define("MAT_FLAG_THIN_GLASS", ShaderValue::Uint(MAT_FLAG_THIN_GLASS)),
+    HeaderLine::Define("MAT_FLAG_SOFT_LIGHTING", ShaderValue::Uint(MAT_FLAG_SOFT_LIGHTING)),
+    HeaderLine::Define("MAT_FLAG_RIM_LIGHTING", ShaderValue::Uint(MAT_FLAG_RIM_LIGHTING)),
+    HeaderLine::Define("MAT_FLAG_BACK_LIGHTING", ShaderValue::Uint(MAT_FLAG_BACK_LIGHTING)),
+    HeaderLine::Define("MAT_FLAG_MSN_HAS_AUTHORED_Z", ShaderValue::Uint(MAT_FLAG_MSN_HAS_AUTHORED_Z)),
+    HeaderLine::Define("MAT_FLAG_EFFECT_LI_SHIFT", ShaderValue::Uint(MAT_FLAG_EFFECT_LI_SHIFT)),
+    HeaderLine::Blank,
+    HeaderLine::Comment("Normal-alpha-as-spec marker bit (OR'd into `GpuMaterial.glossMapIndex`)."),
+    HeaderLine::Define("NORMAL_ALPHA_SPEC_BIT", ShaderValue::Uint(NORMAL_ALPHA_SPEC_BIT)),
+    HeaderLine::Blank,
+    HeaderLine::Comment("Alpha-channel-height marker bit (OR'd into `GpuMaterial.parallaxMapIndex`)."),
+    HeaderLine::Define("PARALLAX_ALPHA_HEIGHT_BIT", ShaderValue::Uint(PARALLAX_ALPHA_HEIGHT_BIT)),
+    HeaderLine::Blank,
+    HeaderLine::Comment("Tint-alpha-weight marker bit (OR'd into `GpuMaterial.tintMapIndex`)."),
+    HeaderLine::Define("TINT_ALPHA_WEIGHT_BIT", ShaderValue::Uint(TINT_ALPHA_WEIGHT_BIT)),
+    HeaderLine::Blank,
+    HeaderLine::Comment("Water motion-kind enum (matches `byroredux::cell_loader::water::WaterKind`)."),
+    HeaderLine::Define("WATER_CALM", ShaderValue::Uint(WATER_CALM)),
+    HeaderLine::Define("WATER_RIVER", ShaderValue::Uint(WATER_RIVER)),
+    HeaderLine::Define("WATER_RAPIDS", ShaderValue::Uint(WATER_RAPIDS)),
+    HeaderLine::Define("WATER_WATERFALL", ShaderValue::Uint(WATER_WATERFALL)),
+    HeaderLine::Define("WATER_LAVA", ShaderValue::Uint(WATER_LAVA)),
+    HeaderLine::Define("DEFAULT_WATER_WAVE_AMPLITUDE", ShaderValue::Float(DEFAULT_WATER_WAVE_AMPLITUDE)),
+    HeaderLine::Define("DEFAULT_WATER_WAVE_FREQUENCY", ShaderValue::Float(DEFAULT_WATER_WAVE_FREQUENCY)),
+    HeaderLine::Define("WATER_COLUMN_ABSORPTION_SHAPE", ShaderValue::Float(WATER_COLUMN_ABSORPTION_SHAPE)),
+    HeaderLine::Define("WATER_FLOW_MAP_CYCLE_SECONDS", ShaderValue::Float(WATER_FLOW_MAP_CYCLE_SECONDS)),
+    HeaderLine::Blank,
+    HeaderLine::Comment("BGEM v21+ glass neutral pivots — `triangle.frag` divides the"),
+    HeaderLine::Comment("authored scalars by these (#3459)."),
+    HeaderLine::Define("DEFAULT_GLASS_BLUR_SCALE", ShaderValue::Float(DEFAULT_GLASS_BLUR_SCALE)),
+    HeaderLine::Define("DEFAULT_GLASS_REFRACTION_SCALE", ShaderValue::Float(DEFAULT_GLASS_REFRACTION_SCALE)),
+    HeaderLine::Blank,
+    HeaderLine::Comment("Local fog-volume clustering (M55/Session 62)."),
+    HeaderLine::Define("FOG_VOLUME_CLUSTER_DIM", ShaderValue::Uint(FOG_VOLUME_CLUSTER_DIM)),
+    HeaderLine::Define("MAX_FOG_VOLUMES_PER_CLUSTER", ShaderValue::Uint(MAX_FOG_VOLUMES_PER_CLUSTER)),
+    HeaderLine::Define("MAX_FOG_PORTALS_PER_CLUSTER", ShaderValue::Uint(MAX_FOG_PORTALS_PER_CLUSTER)),
+    HeaderLine::Define("MAX_COMPOSITE_SKY_APERTURES", ShaderValue::Uint(MAX_COMPOSITE_SKY_APERTURES)),
+    HeaderLine::Define("FOG_APERTURE_RIM_PROBE_RADIUS_BU", ShaderValue::Float(FOG_APERTURE_RIM_PROBE_RADIUS_BU)),
+    HeaderLine::Define("FOG_APERTURE_RIM_NORMAL_DOT_MIN", ShaderValue::Float(FOG_APERTURE_RIM_NORMAL_DOT_MIN)),
+    HeaderLine::Define("FOG_APERTURE_RIM_PLANE_TOLERANCE_BU", ShaderValue::Float(FOG_APERTURE_RIM_PLANE_TOLERANCE_BU)),
+    HeaderLine::Define("FOG_VOLUME_PROFILE_HOMOGENEOUS", ShaderValue::Float(FOG_VOLUME_PROFILE_HOMOGENEOUS)),
+    HeaderLine::Define("FOG_VOLUME_PROFILE_SMOKE", ShaderValue::Float(FOG_VOLUME_PROFILE_SMOKE)),
+    HeaderLine::Define("FOG_VOLUME_PROFILE_FLAME", ShaderValue::Float(FOG_VOLUME_PROFILE_FLAME)),
+    HeaderLine::Define("FOG_VOLUME_PROFILE_EXPLOSION", ShaderValue::Float(FOG_VOLUME_PROFILE_EXPLOSION)),
+    HeaderLine::Define("FOG_VOLUME_PROFILE_EXPLOSION_OIL", ShaderValue::Float(FOG_VOLUME_PROFILE_EXPLOSION_OIL)),
+    HeaderLine::Define("FOG_VOLUME_PROFILE_EXPLOSION_NUCLEAR", ShaderValue::Float(FOG_VOLUME_PROFILE_EXPLOSION_NUCLEAR)),
+    HeaderLine::Define("FOG_VOLUME_PROFILE_LIGHT_SHAFT", ShaderValue::Float(FOG_VOLUME_PROFILE_LIGHT_SHAFT)),
+    HeaderLine::Blank,
+    HeaderLine::Comment("Structured renderer correctness views (`GpuCamera.renderDebug.x`)."),
+    HeaderLine::Define("RENDER_DEBUG_FINAL", ShaderValue::Uint(RENDER_DEBUG_FINAL)),
+    HeaderLine::Define("RENDER_DEBUG_SHADOW_VISIBILITY", ShaderValue::Uint(RENDER_DEBUG_SHADOW_VISIBILITY)),
+    HeaderLine::Define("RENDER_DEBUG_SELECTED_LIGHT", ShaderValue::Uint(RENDER_DEBUG_SELECTED_LIGHT)),
+    HeaderLine::Define("RENDER_DEBUG_DIRECT_ONLY", ShaderValue::Uint(RENDER_DEBUG_DIRECT_ONLY)),
+    HeaderLine::Define("RENDER_DEBUG_INDIRECT_ONLY", ShaderValue::Uint(RENDER_DEBUG_INDIRECT_ONLY)),
+    HeaderLine::Define("RENDER_DEBUG_MATERIAL_LOBE", ShaderValue::Uint(RENDER_DEBUG_MATERIAL_LOBE)),
+    HeaderLine::Define("RENDER_DEBUG_COMPOSITE_TERM", ShaderValue::Uint(RENDER_DEBUG_COMPOSITE_TERM)),
+    HeaderLine::Define("RENDER_DEBUG_RT_LOD", ShaderValue::Uint(RENDER_DEBUG_RT_LOD)),
+    HeaderLine::Define("RENDER_DEBUG_VOLUMETRIC_TERM", ShaderValue::Uint(RENDER_DEBUG_VOLUMETRIC_TERM)),
+    HeaderLine::Define("RENDER_DEBUG_MATERIAL_ROLE", ShaderValue::Uint(RENDER_DEBUG_MATERIAL_ROLE)),
+    HeaderLine::Define("RENDER_DEBUG_WATER_TERM", ShaderValue::Uint(RENDER_DEBUG_WATER_TERM)),
+    HeaderLine::Define("RENDER_DEBUG_WATER_NORMAL", ShaderValue::Uint(RENDER_DEBUG_WATER_NORMAL)),
+    HeaderLine::Define("RENDER_DEBUG_TERRAIN_LOD", ShaderValue::Uint(RENDER_DEBUG_TERRAIN_LOD)),
+    HeaderLine::Define("RENDER_DEBUG_WATER_REFL", ShaderValue::Uint(RENDER_DEBUG_WATER_REFL)),
+    HeaderLine::Define("RENDER_DEBUG_FACING_RATIO", ShaderValue::Uint(RENDER_DEBUG_FACING_RATIO)),
+    HeaderLine::Define("RENDER_DEBUG_RESTIR_LIGHT", ShaderValue::Uint(RENDER_DEBUG_RESTIR_LIGHT)),
+    HeaderLine::Define("RENDER_DEBUG_MODE_MAX", ShaderValue::Uint(RENDER_DEBUG_MODE_MAX)),
+    HeaderLine::Define("RENDER_DEBUG_LEGACY_FLAGS", ShaderValue::Uint(RENDER_DEBUG_LEGACY_FLAGS)),
+    HeaderLine::Blank,
+    HeaderLine::Comment("Debug-viz bit flags (set via console for renderer bisects)."),
+    HeaderLine::Define("DBG_BYPASS_POM", ShaderValue::Uint(DBG_BYPASS_POM)),
+    HeaderLine::Define("DBG_BYPASS_DETAIL", ShaderValue::Uint(DBG_BYPASS_DETAIL)),
+    HeaderLine::Define("DBG_VIZ_NORMALS", ShaderValue::Uint(DBG_VIZ_NORMALS)),
+    HeaderLine::Define("DBG_VIZ_TANGENT", ShaderValue::Uint(DBG_VIZ_TANGENT)),
+    HeaderLine::Define("DBG_BYPASS_NORMAL_MAP", ShaderValue::Uint(DBG_BYPASS_NORMAL_MAP)),
+    HeaderLine::Define("DBG_RESERVED_20", ShaderValue::Uint(DBG_RESERVED_20)),
+    HeaderLine::Define("DBG_VIZ_RENDER_LAYER", ShaderValue::Uint(DBG_VIZ_RENDER_LAYER)),
+    HeaderLine::Define("DBG_VIZ_GLASS_PASSTHRU", ShaderValue::Uint(DBG_VIZ_GLASS_PASSTHRU)),
+    HeaderLine::Define("DBG_DISABLE_SPECULAR_AA", ShaderValue::Uint(DBG_DISABLE_SPECULAR_AA)),
+    HeaderLine::Define("DBG_VIZ_AO", ShaderValue::Uint(DBG_VIZ_AO)),
+    HeaderLine::Define("DBG_BYPASS_VERTEX_COLOR", ShaderValue::Uint(DBG_BYPASS_VERTEX_COLOR)),
+    HeaderLine::Define("DBG_DISABLE_AO", ShaderValue::Uint(DBG_DISABLE_AO)),
+    HeaderLine::Define("DBG_LEGACY_LIGHT_ATTEN", ShaderValue::Uint(DBG_LEGACY_LIGHT_ATTEN)),
+    HeaderLine::Define("DBG_DISABLE_MULTISCATTER", ShaderValue::Uint(DBG_DISABLE_MULTISCATTER)),
+    HeaderLine::Define("DBG_DISABLE_ATROUS", ShaderValue::Uint(DBG_DISABLE_ATROUS)),
+    HeaderLine::Define("DBG_DISABLE_RESTIR", ShaderValue::Uint(DBG_DISABLE_RESTIR)),
+    HeaderLine::Define("DBG_DISABLE_SPATIAL", ShaderValue::Uint(DBG_DISABLE_SPATIAL)),
+    HeaderLine::Define("DBG_VIZ_MOTION", ShaderValue::Uint(DBG_VIZ_MOTION)),
+    HeaderLine::Define("DBG_DISABLE_TEMPORAL", ShaderValue::Uint(DBG_DISABLE_TEMPORAL)),
+    HeaderLine::Define("DBG_VIZ_RAW_INDIRECT", ShaderValue::Uint(DBG_VIZ_RAW_INDIRECT)),
+    HeaderLine::Define("DBG_VIZ_MATERIAL_STATE", ShaderValue::Uint(DBG_VIZ_MATERIAL_STATE)),
+    HeaderLine::Define("DBG_VIZ_GI_BOUNCE", ShaderValue::Uint(DBG_VIZ_GI_BOUNCE)),
+    HeaderLine::Define("DBG_VIZ_FSR_TEMPORAL", ShaderValue::Uint(DBG_VIZ_FSR_TEMPORAL)),
+    HeaderLine::Define("DBG_VIZ_NONFINITE", ShaderValue::Uint(DBG_VIZ_NONFINITE)),
+    HeaderLine::Define("DBG_VIZ_SHADOW_OFFSET", ShaderValue::Uint(DBG_VIZ_SHADOW_OFFSET)),
+    HeaderLine::Define("DBG_VIZ_NORMAL_DIVERGENCE", ShaderValue::Uint(DBG_VIZ_NORMAL_DIVERGENCE)),
+    HeaderLine::Define("DBG_VIZ_DIRECT", ShaderValue::Uint(DBG_VIZ_DIRECT)),
+    HeaderLine::Define("DBG_DISABLE_DIRECT_SHADOWS", ShaderValue::Uint(DBG_DISABLE_DIRECT_SHADOWS)),
+    HeaderLine::Define("DBG_DISABLE_GI_RAYS", ShaderValue::Uint(DBG_DISABLE_GI_RAYS)),
+    HeaderLine::Define("DBG_DISABLE_REFLECTION_GLASS_RAYS", ShaderValue::Uint(DBG_DISABLE_REFLECTION_GLASS_RAYS)),
+    HeaderLine::Define("DBG_DISABLE_ALL_MAIN_RAYS", ShaderValue::Uint(DBG_DISABLE_ALL_MAIN_RAYS)),
+    HeaderLine::Define("DBG_VIZ_SELECTED_LIGHT", ShaderValue::Uint(DBG_VIZ_SELECTED_LIGHT)),
+    HeaderLine::Define("DBG_VIZ_MATERIAL_LOBES", ShaderValue::Uint(DBG_VIZ_MATERIAL_LOBES)),
+    HeaderLine::Define("DBG_VIZ_RT_LOD", ShaderValue::Uint(DBG_VIZ_RT_LOD)),
+    HeaderLine::Define("DBG_VIZ_SHADOW_VISIBILITY", ShaderValue::Uint(DBG_VIZ_SHADOW_VISIBILITY)),
+    HeaderLine::Blank,
+    HeaderLine::DbgVizRequiresRawOutput,
+    HeaderLine::Blank,
+    HeaderLine::Comment("Main-pass ray-query decomposition."),
+    HeaderLine::Define("RT_ABLATION_DIRECT_SHADOW", ShaderValue::Uint(RT_ABLATION_DIRECT_SHADOW)),
+    HeaderLine::Define("RT_ABLATION_GI", ShaderValue::Uint(RT_ABLATION_GI)),
+    HeaderLine::Define("RT_ABLATION_REFLECTION_GLASS", ShaderValue::Uint(RT_ABLATION_REFLECTION_GLASS)),
+    HeaderLine::Define("RT_ABLATION_ALL_RAYS", ShaderValue::Uint(RT_ABLATION_ALL_RAYS)),
+    HeaderLine::Overridable("RT_COMPILE_ABLATION_MASK", ShaderValue::Uint(RT_COMPILE_ABLATION_MASK)),
+    HeaderLine::Blank,
+    HeaderLine::Comment("#1799 / PERF-D5-NEW-01 — compile-time gate for the legacy 16-slot"),
+    HeaderLine::Comment("WRS reservoir arrays. 0 (default): preprocessed out of"),
+    HeaderLine::Comment("triangle.frag entirely. 1: restores the pre-fix always-compiled"),
+    HeaderLine::Comment("behavior for A/B against ReSTIR (requires a shader recompile)."),
+    HeaderLine::Define("ENABLE_LEGACY_WRS", ShaderValue::UintPlain(ENABLE_LEGACY_WRS)),
+    HeaderLine::Blank,
+];
