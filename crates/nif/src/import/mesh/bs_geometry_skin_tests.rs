@@ -494,10 +494,29 @@ fn bs_geometry_skin_weights_plumbed_through_when_present() {
 
 /// A vertex authoring more than 4 influences keeps only the top 4 by
 /// weight — the lowest two (bones 0 and 1) must be dropped entirely.
+/// #4268 note: the fixture needs a six-bone list now that indices are
+/// bounded by the skin's bone count — the ordering-under-test is
+/// unchanged, the scene just carries the bones those indices name.
 #[test]
 fn bs_geometry_skin_weights_keeps_top_four_by_weight() {
-    let scene = two_bone_skin_scene();
-    let shape = bs_geometry_with_skin(3);
+    let mut blocks: Vec<Box<dyn crate::blocks::NiObject>> = Vec::new();
+    for i in 0..6 {
+        blocks.push(Box::new(bone_node(&format!("Bone{i}"))));
+    }
+    blocks.push(Box::new(BsSkinInstance {
+        skeleton_root_ref: BlockRef(0),
+        bone_data_ref: BlockRef(7),
+        bone_refs: (0..6).map(BlockRef).collect(),
+        scales: Vec::new(),
+    }));
+    blocks.push(Box::new(BsSkinBoneData {
+        bones: (0..6).map(bone_trans).collect(),
+    }));
+    let scene = NifScene {
+        blocks,
+        ..NifScene::default()
+    };
+    let shape = bs_geometry_with_skin(6);
     let mesh_data = mesh_data_with_weights(
         1,
         6,
@@ -547,4 +566,58 @@ fn bs_geometry_skin_weights_vertex_count_mismatch_falls_back_to_empty() {
     assert!(skin.vertex_bone_weights.is_empty());
     // Bones themselves are unaffected by the mismatch.
     assert_eq!(skin.bones.len(), 2);
+}
+
+// ── #4268 — bone-index bound ──────────────────────────────────────────
+//
+// convert_bs_geometry_skin_weights is the one per-vertex bone-index
+// producer that passed `.mesh` bone indices through unbounded. The render
+// side's palette contract (render/skinned.rs) documents that every
+// producer bounds indices by the mesh's bone count at import time; an
+// out-of-range index would read a reused or unallocated palette slot's
+// stale matrix. Not reachable on vanilla retail content — a malformed or
+// hostile .mesh (or future mod) authors one.
+
+/// An out-of-range bone index declines the whole weight set — never a
+/// clamp. The skin still resolves (bones, skeleton root), but the vertex
+/// arrays degrade to empty so the mesh renders in bind pose rather than
+/// deforming through whatever matrix happens to sit in the stale slot.
+#[test]
+fn bs_geometry_skin_weights_with_out_of_range_bone_index_decline() {
+    let scene = two_bone_skin_scene();
+    let shape = bs_geometry_with_skin(3);
+    // Bone 7 does not exist in the two-bone list (Spine, Head).
+    let mesh_data = mesh_data_with_weights(
+        2,
+        2,
+        vec![
+            vec![bone_weight(0, 65535), bone_weight(1, 0)],
+            vec![bone_weight(7, 40000), bone_weight(0, 4)],
+        ],
+    );
+    let skin = extract_skin_bs_geometry(&scene, &shape, &mesh_data, None)
+        .expect("bone resolution must still succeed");
+
+    assert!(
+        skin.vertex_bone_indices.is_empty(),
+        "an out-of-range index must decline the weight set, not clamp"
+    );
+    assert!(skin.vertex_bone_weights.is_empty());
+    assert_eq!(skin.bones.len(), 2, "the bone list itself is unaffected");
+}
+
+/// Boundary: the highest legal index (bone_count - 1) passes through
+/// untouched — the bound must not eat the last bone.
+#[test]
+fn bs_geometry_skin_weights_last_bone_index_is_in_range() {
+    let scene = two_bone_skin_scene();
+    let shape = bs_geometry_with_skin(3);
+    let mesh_data = mesh_data_with_weights(
+        1,
+        1,
+        vec![vec![bone_weight(1, 65535)]],
+    );
+    let skin = extract_skin_bs_geometry(&scene, &shape, &mesh_data, None)
+        .expect("valid skin resolves");
+    assert_eq!(skin.vertex_bone_indices[0], [1, 0, 0, 0]);
 }

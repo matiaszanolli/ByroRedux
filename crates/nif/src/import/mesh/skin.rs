@@ -320,11 +320,32 @@ pub fn extract_skin_bs_tri_shape(
 fn convert_bs_geometry_skin_weights(
     mesh_data: &BSGeometryMeshData,
     num_vertices: usize,
+    bone_count: usize,
 ) -> (Vec<[u16; 4]>, Vec<[f32; 4]>) {
     if mesh_data.weights_per_vert == 0
         || mesh_data.skin_weights.is_empty()
         || mesh_data.skin_weights.len() != num_vertices
     {
+        return (Vec::new(), Vec::new());
+    }
+    // #4268 — the render side's palette contract (render/skinned.rs)
+    // relies on every producer bounding its per-vertex bone indices by
+    // the mesh's own bone count at import time; an unbounded index
+    // reads a reused or unallocated palette slot's stale matrix. Vanilla
+    // retail Starfield never authors one, but a malformed or hostile
+    // .mesh could. Decline the whole skin — never clamp — per the
+    // crate's skip-don't-guess convention: a wrong-bone clamp silently
+    // deforms, while an empty array degrades to the bind pose.
+    if mesh_data
+        .skin_weights
+        .iter()
+        .flatten()
+        .any(|bw| bw.bone_index as usize >= bone_count)
+    {
+        log::warn!(
+            "BSGeometry skin: per-vertex bone index >= bone count ({bone_count}) — \
+             declining skin weights (bind pose) rather than guessing a bone"
+        );
         return (Vec::new(), Vec::new());
     }
 
@@ -517,8 +538,10 @@ pub fn extract_skin_bs_geometry(
         });
     }
     let skeleton_root = resolve_node_name(scene, inst.skeleton_root_ref);
+    // #4268 — `bone_refs.len()` is the palette bound; it equals
+    // `bone_data.bones.len()` by the count check at the top of this fn.
     let (vertex_bone_indices, vertex_bone_weights) =
-        convert_bs_geometry_skin_weights(mesh_data, mesh_data.vertices.len());
+        convert_bs_geometry_skin_weights(mesh_data, mesh_data.vertices.len(), inst.bone_refs.len());
     // BSSkin (FO4+/Skyrim SE/Starfield) doesn't carry a per-skin global
     // transform; identity matches the OpenMW FO4-mesh fallback.
     Some(ImportedSkin {
