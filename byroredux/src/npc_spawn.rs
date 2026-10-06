@@ -597,6 +597,16 @@ pub fn creature_idle_kf_path(dir: &str) -> String {
     format!("{dir}idle.kf")
 }
 
+/// The FO3/FNV "Child" race translation: RACE DATA bit 2, gated on the
+/// game because Oblivion reuses that bit for BeastRace. One canonical
+/// helper (#5079) — the NPC spawn path, the player-body walk-clip
+/// resolution, and any future consumer must agree on whether a race is
+/// child, or the player and NPCs of one race pick different body or walk
+/// variants. `None` covers callers without a resolved RACE record.
+pub fn is_child_race(game: GameKind, race_flags: Option<u32>) -> bool {
+    matches!(game, GameKind::Fallout3NV) && race_flags.is_some_and(|flags| flags & 0x04 != 0)
+}
+
 /// Hardcoded vanilla body NIF paths for KF-era humanoids.
 ///
 /// The TES4/Fallout RACE `MODL` entries describe head parts, not the body.

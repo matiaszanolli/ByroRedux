@@ -402,12 +402,11 @@ fn attach_player_locomotion_animation(
     }
 
     // Walk: the same resolution ladder the NPC finalize uses — KF games
-    // the per-body-class clip (gender from ACBS, the FNV-only child race
-    // flag, exactly as `prepare_runtime_state` derives them), Skyrim+ the
+    // the per-body-class clip (gender from ACBS, the FO3/FNV child race
+    // flag through the shared `is_child_race` translation), Skyrim+ the
     // decoded HKX walk.
     let gender = Gender::from_acbs_flags(npc.acbs_flags);
-    let is_child = matches!(game, GameKind::Fallout3NV)
-        && race_flags.is_some_and(|flags| flags & 0x04 != 0);
+    let is_child = crate::npc_spawn::is_child_race(game, race_flags);
     let walk_handle = if game.has_kf_animations() {
         crate::npc_spawn::humanoid_walk_kf_path(game, gender, is_child)
             .and_then(|path| world.resource::<AnimationClipRegistry>().get_by_path(path))

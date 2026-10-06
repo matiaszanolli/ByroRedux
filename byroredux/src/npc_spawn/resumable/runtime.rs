@@ -221,10 +221,7 @@ pub(super) fn prepare_runtime_state(
         .iter()
         .map(|path| RestorePart::body(path))
         .collect();
-    // FO3/FNV RACE DATA bit 2 is the authored Child flag. Oblivion reuses
-    // that bit for BeastRace, so the game gate is part of the translation.
-    let is_child = matches!(game, GameKind::Fallout3NV)
-        && race.is_some_and(|race| race.race_flags & 0x04 != 0);
+    let is_child = crate::npc_spawn::is_child_race(game, race.map(|race| race.race_flags));
     let body_paths = humanoid_body_paths(game, gender, is_child)
         .iter()
         .filter(|path| {

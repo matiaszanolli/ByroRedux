@@ -2879,3 +2879,26 @@ fn cnto_leveled_counts_match_the_container_path() {
     );
     assert_eq!(npc_rows, container_rows, "corpse loot must equal container loot for the same list");
 }
+
+/// #5079 — the FO3/FNV Child translation is one shared helper, not a
+/// per-consumer copy. The game gate is load-bearing: Oblivion reuses RACE
+/// DATA bit 2 for BeastRace, so the same bit must not read as Child there,
+/// and Skyrim+ child races do not use the flag at all (#2455 unverified).
+#[test]
+fn is_child_race_keeps_oblivion_beast_race_distinct_from_fo3_fnv_child() {
+    assert!(
+        is_child_race(GameKind::Fallout3NV, Some(0x04)),
+        "FO3/FNV bit 2 is the authored Child flag"
+    );
+    assert!(
+        !is_child_race(GameKind::Oblivion, Some(0x04)),
+        "the same bit is BeastRace on Oblivion — the game gate is the translation"
+    );
+    assert!(!is_child_race(GameKind::Skyrim, Some(0x04)));
+    assert!(!is_child_race(GameKind::Fallout4, Some(0x04)));
+    assert!(!is_child_race(GameKind::Fallout3NV, Some(0x00)));
+    assert!(
+        !is_child_race(GameKind::Fallout3NV, None),
+        "no resolved RACE record is never child"
+    );
+}
