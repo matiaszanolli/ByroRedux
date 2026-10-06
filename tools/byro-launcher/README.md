@@ -7,6 +7,13 @@ cargo run -p byro-launcher
 cargo run -p byro-launcher -- --profiles <path>   # use a different profiles file
 ```
 
+`--profiles` parsing is strict (#5294): a typo (`--profile x`), a bare
+trailing `--profiles`, or a flag where the path belongs is a usage error
+(exit 2), never a silent fall-back to `~/.byroredux/profiles.toml` — a Play
+click writes `[roots]` into the selected file. The engine is spawned with
+`BYRO_PROFILES=<path>` so it resolves profiles through the same file
+(`docs/engine/launcher.md` §2.6).
+
 On Linux, the launcher normally follows the desktop's native window backend.
 For X11-only or headless environments that expose an X server alongside a
 stale Wayland variable, set `BYROREDUX_LAUNCHER_X11=1`.

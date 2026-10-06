@@ -37,7 +37,20 @@ fn main() -> ExitCode {
         }
     };
     let write = options.write;
-    let profiles_path = options.profiles.unwrap_or_else(default_profiles_path);
+    // #5294 — the shared per-user path, not a local copy: the engine skips
+    // the per-user layer when no home exists, while this tool would have
+    // written a cwd-relative `.byroredux/profiles.toml` the engine never
+    // reads. Error instead.
+    let profiles_path = match options
+        .profiles
+        .or_else(detect::profiles::user_profiles_path)
+    {
+        Some(path) => path,
+        None => {
+            eprintln!("byro-detect: no home directory for the default profiles file; pass --profiles <path>");
+            return ExitCode::from(2);
+        }
+    };
 
     let registry = detect::profiles::load_default();
     let candidates = detect::detect_all(&profiles_path);
@@ -168,15 +181,6 @@ fn parse_args(args: &[String]) -> Result<Option<Options>, String> {
     Ok(Some(options))
 }
 
-/// The same per-user file the engine's profile loader reads.
-fn default_profiles_path() -> PathBuf {
-    let home = std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
-        .map(PathBuf::from)
-        .unwrap_or_default();
-    home.join(".byroredux").join("profiles.toml")
-}
-
 fn print_usage() {
     println!("byro-detect — find installed games the engine can load");
     println!();
@@ -187,6 +191,10 @@ fn print_usage() {
     println!("  --write             Record detected paths in the profiles file's [roots] table,");
     println!("                      which makes `--game <key>` resolve correctly on this machine.");
     println!("  --profiles <path>   Use this per-user profiles file instead of the default.");
+    println!("                      The engine reads it too when started with");
+    println!("                      BYRO_PROFILES=<path> ($BYRO_PROFILES overrides the home");
+    println!("                      default in the engine's profile loader, #5294); without it,");
+    println!("                      --write here edits a file the engine never reads.");
     println!("  -h, --help          Show this message.");
     println!();
     println!("Unknown arguments, and a --profiles value that starts with '-', are usage");

@@ -90,7 +90,7 @@ impl LauncherApp {
             self.status = format!("Could not write {}: {error}", path.display());
             return;
         }
-        match EngineProcess::spawn(&engine, &path) {
+        match EngineProcess::spawn(&engine, &path, &self.state.profiles_path) {
             Ok(process) => {
                 self.running = Some(process);
                 self.play_menu = None;

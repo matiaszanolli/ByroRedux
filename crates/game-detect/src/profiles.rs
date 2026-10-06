@@ -270,9 +270,9 @@ pub fn load_default() -> GameProfileRegistry {
         }
     }
 
-    // Per-user override.
-    if let Some(home) = home_dir() {
-        let user_path = home.join(".byroredux").join("profiles.toml");
+    // Per-user override (#5294 — $BYRO_PROFILES when the launcher pointed
+    // the engine at a different file, else the home default).
+    if let Some(user_path) = selected_user_path() {
         if user_path.exists() {
             merge_from(&user_path, &mut out);
         }
@@ -284,8 +284,7 @@ pub fn load_default() -> GameProfileRegistry {
     // full `[profiles.<key>]` block: a shipped profile that later gains an
     // archive must still gain it on a machine detection has touched. See
     // `byroredux_game_detect::overrides`.
-    if let Some(home) = home_dir() {
-        let user_path = home.join(".byroredux").join("profiles.toml");
+    if let Some(user_path) = selected_user_path() {
         match crate::RootOverrides::load(&user_path) {
             Ok(overrides) => apply_root_overrides(overrides.roots, &mut out),
             Err(error) => eprintln!("[roots] could not read {}: {error}", user_path.display()),
@@ -397,10 +396,58 @@ fn home_dir() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
+/// The per-user profiles file the engine reads when the standard location
+/// is right: `~/.byroredux/profiles.toml` (#5294). `None` when no home
+/// directory can be determined — the engine then simply skips the
+/// per-user layer, while callers that must *write* the file (the
+/// launcher, `byro-detect --write`) treat that as an error rather than
+/// falling back to a cwd-relative path the engine never reads.
+pub fn user_profiles_path() -> Option<PathBuf> {
+    home_dir().map(|home| home.join(".byroredux").join("profiles.toml"))
+}
+
+/// Environment override that selects the profiles file the engine reads
+/// (#5294): the launcher exports it on the engine it spawns whenever its
+/// own `--profiles` names a different file, so "ready" in a custom-file
+/// launcher and the engine it starts agree. Every per-user layer of
+/// [`load_default`] — the profile merge and both `[roots]` passes —
+/// follows this one selector, so a custom file stays self-consistent
+/// across profiles and roots.
+pub const PROFILES_ENV: &str = "BYRO_PROFILES";
+
+fn selected_user_path() -> Option<PathBuf> {
+    selected_user_path_from(std::env::var_os(PROFILES_ENV))
+}
+
+fn selected_user_path_from(env: Option<std::ffi::OsString>) -> Option<PathBuf> {
+    env.map(PathBuf::from).or_else(user_profiles_path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::io::Write;
+
+    /// #5294 — `$BYRO_PROFILES` selects the per-user file `load_default`
+    /// reads (profile merge and both `[roots]` passes); unset falls back
+    /// to the home default, and neither invents a cwd-relative path.
+    #[test]
+    fn selected_user_path_prefers_the_env_override() {
+        let from_env =
+            |value: Option<&str>| selected_user_path_from(value.map(std::ffi::OsString::from));
+        assert_eq!(
+            from_env(Some("/tmp/alt-profiles.toml")),
+            Some(PathBuf::from("/tmp/alt-profiles.toml"))
+        );
+        let fallback = from_env(None).expect("this machine has a home dir");
+        assert_eq!(fallback, user_profiles_path().unwrap());
+        assert!(
+            fallback.ends_with(".byroredux/profiles.toml"),
+            "the default is the per-user file the engine documents, not a \
+             cwd-relative path: {}",
+            fallback.display()
+        );
+    }
 
     #[test]
     fn parses_in_memory_toml() {

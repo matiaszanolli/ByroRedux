@@ -65,13 +65,24 @@ pub enum EngineStatus {
 impl EngineProcess {
     /// Launch the engine against a boot-request file.
     ///
+    /// `profiles_path` is exported as `$BYRO_PROFILES` so the engine reads
+    /// the same profiles file the launcher validated against and wrote
+    /// `[roots]` into (#5294) — pre-fix the engine always fell back to
+    /// `~/.byroredux/profiles.toml`, which a `--profiles` launcher could
+    /// silently disagree with.
+    ///
     /// stderr is piped and drained on a reader thread rather than inherited:
     /// an inherited stderr goes to a terminal that, for the launcher's actual
     /// audience, does not exist.
-    pub fn spawn(engine: &Path, boot_request: &Path) -> std::io::Result<Self> {
+    pub fn spawn(
+        engine: &Path,
+        boot_request: &Path,
+        profiles_path: &Path,
+    ) -> std::io::Result<Self> {
         let mut child = Command::new(engine)
             .arg("--boot")
             .arg(boot_request)
+            .env(byroredux_game_detect::profiles::PROFILES_ENV, profiles_path)
             // Run from the engine's own directory so its relative asset paths
             // (`assets/debug_profiles.toml`, shader blobs) resolve the same way
             // they do when started from a shell.
@@ -207,24 +218,37 @@ mod tests {
         /// The engine must be invoked as `--boot <path>` — the one thing the
         /// launcher and the engine's `expand_boot_request` seam have to agree
         /// on, and the only part of the handoff not covered by either side's
-        /// own tests.
+        /// own tests. #5294 — it must also receive the launcher's profiles
+        /// file as `$BYRO_PROFILES`, or a `--profiles` launcher validates
+        /// against a file the engine it starts never reads.
         #[test]
-        fn the_engine_is_invoked_with_the_boot_request_path() {
+        fn the_engine_is_invoked_with_the_boot_request_path_and_profiles_env() {
             let _serialised = serialised();
             let dir = tempfile::tempdir().unwrap();
             let seen = dir.path().join("argv.txt");
             let engine = stub(
                 dir.path(),
-                &format!("printf '%s\\n' \"$@\" > {}", seen.display()),
+                &format!(
+                    "printf '%s\\n' \"$@\" > {seen}\nprintf '%s\\n' \"${{BYRO_PROFILES:-unset}}\" >> {seen}",
+                    seen = seen.display()
+                ),
             );
             let request = dir.path().join("boot.toml");
             std::fs::write(&request, "version = 1\n").unwrap();
+            let profiles = dir.path().join("alt-profiles.toml");
 
-            let mut process = EngineProcess::spawn(&engine, &request).unwrap();
+            let mut process = EngineProcess::spawn(&engine, &request, &profiles).unwrap();
             assert_eq!(wait_for(&mut process), EngineStatus::Finished);
             let argv = std::fs::read_to_string(&seen).unwrap();
             let argv: Vec<&str> = argv.lines().collect();
-            assert_eq!(argv, ["--boot", request.to_str().unwrap()]);
+            assert_eq!(
+                argv,
+                [
+                    "--boot",
+                    request.to_str().unwrap(),
+                    profiles.to_str().unwrap(),
+                ]
+            );
         }
 
         /// A clean exit is not a failure and must not open the crash screen.
@@ -233,7 +257,8 @@ mod tests {
             let _serialised = serialised();
             let dir = tempfile::tempdir().unwrap();
             let engine = stub(dir.path(), "exit 0");
-            let mut process = EngineProcess::spawn(&engine, &dir.path().join("boot.toml")).unwrap();
+            let mut process =
+                EngineProcess::spawn(&engine, &dir.path().join("boot.toml"), dir.path()).unwrap();
             assert_eq!(wait_for(&mut process), EngineStatus::Finished);
         }
 
@@ -248,7 +273,8 @@ mod tests {
                 dir.path(),
                 "echo 'vkCreateDevice failed: ERROR_INITIALIZATION_FAILED' >&2\nexit 3",
             );
-            let mut process = EngineProcess::spawn(&engine, &dir.path().join("boot.toml")).unwrap();
+            let mut process =
+                EngineProcess::spawn(&engine, &dir.path().join("boot.toml"), dir.path()).unwrap();
             match wait_for(&mut process) {
                 EngineStatus::Failed { code, tail } => {
                     assert_eq!(code, Some(3));
@@ -275,7 +301,8 @@ mod tests {
                     "i=0; while [ $i -lt {total} ]; do echo line$i >&2; i=$((i+1)); done; exit 1"
                 ),
             );
-            let mut process = EngineProcess::spawn(&engine, &dir.path().join("boot.toml")).unwrap();
+            let mut process =
+                EngineProcess::spawn(&engine, &dir.path().join("boot.toml"), dir.path()).unwrap();
             let EngineStatus::Failed { tail, .. } = wait_for(&mut process) else {
                 panic!("expected Failed");
             };

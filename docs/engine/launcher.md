@@ -227,6 +227,20 @@ This mirrors the precedence `expand_game_profile_args` already implements
 mismatch, which is a *user-visible install problem*, not a parse warning — the
 engine refuses with a message naming both versions rather than half-loading.
 
+### 2.6 Profiles-file agreement (#5294)
+
+The launcher's `--profiles <path>` flag selects the file detection validates
+against and `[roots]` writes land in. The engine it spawns receives that same
+path as `$BYRO_PROFILES`, which `profiles::load_default` honours for *every*
+per-user layer — the profile merge and both `[roots]` passes — so a game shown
+"ready" in a `--profiles` launcher resolves through the same file in the
+engine. Without the env var the engine reads `~/.byroredux/profiles.toml`
+only; `byro-detect --write --profiles <path>` edits a file the engine never
+reads unless the engine is started with `BYRO_PROFILES=<path>` (its `--help`
+says so). Pre-#5294 the engine ignored a custom path entirely and the
+launcher's argument scan was loose — a typo like `--profile x` silently
+retargeted real writes at the default file.
+
 ---
 
 ## 3. Install detection and validation
