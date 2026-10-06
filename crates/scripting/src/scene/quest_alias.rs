@@ -915,8 +915,10 @@ pub fn quest_alias_refresh_system(world: &World, _dt: f32) {
 /// (`DialRecord::quest_refs` is the authored NPC→topic edge the engine has
 /// been missing); there is no authored direct NPC→DIAL map.
 ///
-/// A quest with no installed alias definition or no `QuestStageState`
-/// resource cannot bind anything, so it never appears.
+/// A quest with no installed alias definition never appears (it can bind
+/// nothing). A missing `QuestStageState` resource — tool and test worlds;
+/// the live engine always installs it — does *not* filter: every
+/// alias-bound quest counts as running in that case.
 ///
 /// #5025 — each resource guard is taken and released alone. The previous
 /// nest held `SceneQuestAliasRegistry` + `SceneActorBindings` +
