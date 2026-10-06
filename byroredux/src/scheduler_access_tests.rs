@@ -17,6 +17,7 @@
 //! `scheduler_access_invariants_hold_on_the_real_schedule` below.
 
 const MAIN_RS: &str = include_str!("main.rs");
+const APP_EVENTS_RS: &str = include_str!("app_events.rs");
 /// #3855 — `boot.rs` became the `boot/` directory, so this is now the
 /// concatenation of every file it split into rather than one `include_str!`.
 /// Every assertion below still sees the same text: a registration that moves
@@ -1051,5 +1052,32 @@ fn reverb_zone_is_parallel_and_audio_is_exclusive_in_late() {
         "audio_system must stay a bare exclusive registration — the reverb \
          ordering guarantee is 'parallel batch completes before exclusives' \
          (#4146)"
+    );
+}
+
+/// #5292 — the paused-frame drain (#5141) must name the drain system
+/// through the debug-server's shared `DRAIN_SYSTEM_NAME` constant, never a
+/// hand-typed literal: a rename of `DebugDrainSystem::name()` used to
+/// leave the literal behind, `run_exclusive_named` silently returned
+/// `false`, and the #5141 paused-drain regression returned unseen. The
+/// scheduler's own `run_exclusive_named` test cannot catch this — it
+/// registers its own system under its own copy of the name — so the tie
+/// is pinned here, on the engine call site.
+#[test]
+fn paused_frame_drain_names_the_system_through_the_shared_constant() {
+    let call = APP_EVENTS_RS
+        .find("run_exclusive_named(")
+        .expect("the paused-frame drain call in app_events.rs");
+    let window = &APP_EVENTS_RS[call..(call + 400).min(APP_EVENTS_RS.len())];
+    assert!(
+        window.contains("byroredux_debug_server::DRAIN_SYSTEM_NAME"),
+        "the paused-frame drain must name the drain system via the shared \
+         DRAIN_SYSTEM_NAME constant — a hand-typed literal is exactly how \
+         #5141's fix silently dies to a rename (#5292)",
+    );
+    assert!(
+        !window.contains("\"debug_drain_system\""),
+        "a duplicated drain-name string literal reappeared at the engine \
+         call site next to the shared constant (#5292)",
     );
 }

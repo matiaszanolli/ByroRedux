@@ -29,6 +29,14 @@ struct PendingScreenshot {
     cancel: Arc<AtomicBool>,
 }
 
+/// The name the engine's paused-frame drain calls
+/// [`Scheduler::run_exclusive_named`](byroredux_core::ecs::scheduler::Scheduler::run_exclusive_named)
+/// with (#5141). #5292 — one shared constant instead of a hand-typed copy at
+/// the engine call site: a rename of the system used to leave the copy
+/// behind, `run_exclusive_named` returned `false`, and nothing reported it —
+/// exactly the #5141 paused-drain regression returning unseen.
+pub const DRAIN_SYSTEM_NAME: &str = "debug_drain_system";
+
 /// The drain system that processes debug commands each frame.
 ///
 /// Stored in the scheduler as an exclusive Late-stage system.
@@ -205,7 +213,7 @@ impl System for DebugDrainSystem {
     }
 
     fn name(&self) -> &'static str {
-        "debug_drain_system"
+        DRAIN_SYSTEM_NAME
     }
 }
 

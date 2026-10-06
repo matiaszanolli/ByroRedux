@@ -987,8 +987,33 @@ impl ApplicationHandler for App {
             // debugger is the most natural thing to do while paused. The
             // dialogue page already opted out of `simulation_paused` for
             // the same reason (766e1746e).
-            self.scheduler
-                .run_exclusive_named(&self.world, dt, "debug_drain_system");
+            //
+            // #5292 — the name is `DRAIN_SYSTEM_NAME`, the same constant
+            // `DebugDrainSystem::name()` returns, not a hand-typed copy: a
+            // rename used to leave this literal behind, the call returned
+            // `false`, and nothing reported it (the #5141 regression
+            // returning unseen). A miss is legitimate only when the server
+            // never started (feature off, or bind refused — the drain
+            // system is registered solely on `debug_server::start`'s
+            // success path), so the debug assert is gated on the handle.
+            #[cfg(feature = "debug-server")]
+            {
+                let drained = self.scheduler.run_exclusive_named(
+                    &self.world,
+                    dt,
+                    byroredux_debug_server::DRAIN_SYSTEM_NAME,
+                );
+                debug_assert!(
+                    drained || self.debug_server.is_none(),
+                    "paused-frame drain did not find the debug-server system \
+                     by its shared name"
+                );
+            }
+            #[cfg(not(feature = "debug-server"))]
+            {
+                // No drain system exists without the debug-server feature;
+                // there is nothing to keep alive while paused.
+            }
         }
         let atw_scheduler_ns = systems_t0.elapsed().as_nanos() as u64;
         if self.bench_frames_target.is_some() && self.renderer.is_some() {

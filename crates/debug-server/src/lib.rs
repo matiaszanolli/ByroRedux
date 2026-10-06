@@ -13,6 +13,7 @@ use byroredux_core::ecs::scheduler::{Scheduler, Stage};
 // Re-export core's SystemList so the evaluator can find it.
 pub use byroredux_core::ecs::resources::SystemList;
 pub use listener::DebugServerHandle;
+pub use system::DRAIN_SYSTEM_NAME;
 
 /// Start the debug server: register components, spawn the TCP listener,
 /// and add the drain system to the scheduler. Returns the shutdown-aware
