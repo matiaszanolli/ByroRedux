@@ -411,7 +411,23 @@ vec3 sky_radiance(
         }
 
         float sun_visibility = 1.0 - clamp(cloud_occlusion, 0.0, 1.0) * 0.94;
-        sky += disc_color * sun_intensity * dome.weather_sky.w * disc * sun_visibility;
+        // #sunset-disc — the disc keeps a fixed luminance contrast against
+        // the sky behind it: extinction reddens the sun but never dims it
+        // below its surroundings until it sets, and a physical disc is
+        // orders of magnitude brighter than the sky. The authored term
+        // (`disc_color × sun_intensity × sun_glare`) reaches that on its
+        // own only for bright-authored suns (FNV's [1.0, 0.49, 0.16] at
+        // ×3.5 intensity); Skyrim's dim [0.33, 0.10, 0.0] slid under the
+        // horizon glow and rendered no disc at all — the sunset was a
+        // diffuse bright band with no sun in it. The floor lifts the
+        // authored term by a luminance ratio only (hue preserved), and
+        // never attenuates: noon discs already dominate.
+        vec3 disc_base = disc_color * sun_intensity * dome.weather_sky.w;
+        float disc_lum = dot(disc_base, LUMA_REC709);
+        float local_sky_lum = dot(sky, LUMA_REC709);
+        vec3 disc_rgb =
+            disc_base * max(1.0, local_sky_lum * 1.8 / max(disc_lum, 1.0e-5));
+        sky += disc_rgb * disc * sun_visibility;
     }
 
     // Sun glow: soft radial halo around the sun.
