@@ -20,7 +20,8 @@
 //!   `GlobalTransform`.
 //! - [`OneShotSound`] component — transient marker for "play this
 //!   once and remove." Cleaned up by [`audio_system`] after dispatch.
-//! - [`audio_system`] — ECS system that updates listener position,
+//! - [`audio_system`] — ECS system that updates listener position and
+//!   follows moving emitters,
 //!   plays new emitters, and prunes finished one-shots.
 //!
 //! # Phase 2 (this commit)
@@ -323,15 +324,16 @@ pub use kira::sound::static_sound::{
 pub(crate) const SUB_TRACK_CAPACITY: usize = 512;
 pub(crate) const SEND_TRACK_CAPACITY: usize = 32;
 
-/// One currently-playing sound. The `_track` field keeps the spatial
+/// One currently-playing sound. The `track` field keeps the spatial
 /// sub-track alive — dropping it would tear down playback even if the
-/// `handle` is still ticking. `entity` is `Some(EntityId)` for the
+/// `handle` is still ticking — and carries the position updates for
+/// entity-backed emitters (#3086). `entity` is `Some(EntityId)` for the
 /// entity-based `OneShotSound + AudioEmitter` flow (Phase 3) and
 /// `None` for queue-driven fire-and-forget plays (Phase 3.5
-/// `play_oneshot`). When `Some`, the prune pass removes the
-/// `AudioEmitter` component on completion so a downstream cleanup
-/// system can despawn the entity. Underscore-prefix on `_track`
-/// because we hold it for `Drop` side effect only.
+/// `play_oneshot`), whose position is by contract the one captured at
+/// queue time — there is no entity to follow. When `Some`, the prune
+/// pass removes the `AudioEmitter` component on completion so a
+/// downstream cleanup system can despawn the entity.
 ///
 /// Whether the underlying kira sound is looping (set via
 /// `loop_region(..)` at dispatch) is decided at the `Pending` /
@@ -340,7 +342,13 @@ pub(crate) const SEND_TRACK_CAPACITY: usize = 32;
 struct ActiveSound {
     entity: Option<EntityId>,
     handle: StaticSoundHandle,
-    _track: SpatialTrackHandle,
+    track: SpatialTrackHandle,
+    /// The position (audio-space metres) the spatial track was last
+    /// placed at — initialised from the dispatch position so a
+    /// stationary emitter pushes zero per-tick commands, and compared
+    /// by [`sync_emitter_positions`] so a moving source pushes one
+    /// `set_position` only on ticks where it actually moved (#3086).
+    last_position: Option<Vec3>,
     /// Low-pass control kept with the spatial track so water transitions can
     /// be applied to sounds that are already playing.
     underwater_filter: FilterHandle,
@@ -434,6 +442,13 @@ pub struct AudioWorld {
     /// Whether the active listener is head-submerged. The engine water
     /// system updates this before `audio_system` dispatches new sounds.
     underwater: bool,
+    /// Commands pushed by [`sync_emitter_positions`] over the process
+    /// lifetime (#3086). One push per entity-backed emitter per tick it
+    /// actually moved — the per-frame cost of the emitter follow pass
+    /// is this counter's delta, and a stationary emitter pushes zero.
+    /// Surfaced for tests and smoke gates the same way
+    /// [`Self::oneshots_requested`] is.
+    emitter_position_updates: u64,
 }
 
 impl Default for AudioWorld {
@@ -521,6 +536,7 @@ impl AudioWorld {
             manager: None,
             multi_listener_warned: false,
             underwater: false,
+            emitter_position_updates: 0,
         }
     }
 
@@ -540,6 +556,15 @@ impl AudioWorld {
     /// for telemetry — a runaway count signals a pruning regression.
     pub fn active_sound_count(&self) -> usize {
         self.active_sounds.len()
+    }
+
+    /// `set_position` commands pushed to entity-backed emitters'
+    /// spatial tracks over the process lifetime (#3086). A stationary
+    /// emitter pushes zero per tick; one push per moving emitter per
+    /// tick it moved. Zero forever on a session with moving emitters
+    /// means the follow pass is not running.
+    pub fn emitter_position_updates(&self) -> u64 {
+        self.emitter_position_updates
     }
 
     /// Number of one-shots queued but not yet dispatched. Drained on
@@ -802,7 +827,9 @@ impl Default for Attenuation {
 
 /// Static-payload audio emitter. Holds the decoded sound data and
 /// attenuation. The audio system reads the entity's `GlobalTransform`
-/// every frame to update the spatial position.
+/// every frame and keeps the spatial sub-track anchored to it — a sound
+/// from a moving actor follows the actor (#3086; change-gated, so a
+/// stationary emitter costs no per-tick commands).
 ///
 /// Phase 1 ships static (fully-decoded) sounds only. Streaming
 /// (for ambient music / long loops) lands in Phase 5.
@@ -860,13 +887,13 @@ impl Component for OneShotSound {
     type Storage = SparseSetStorage<Self>;
 }
 
-/// Per-frame audio update — synchronises listener pose, plays new
-/// one-shots through per-emitter spatial sub-tracks, prunes finished
-/// sounds. `Stage::Late` is the canonical home (after transform
-/// propagation has produced final world poses for the listener and
-/// every emitter).
+/// Per-frame audio update — synchronises listener pose, follows moving
+/// emitters, plays new one-shots through per-emitter spatial sub-tracks,
+/// prunes finished sounds. `Stage::Late` is the canonical home (after
+/// transform propagation has produced final world poses for the listener
+/// and every emitter).
 ///
-/// The five passes, in body order:
+/// The six passes, in body order:
 ///
 /// 1. **Listener sync** ([`sync_listener_pose`]): locate the (single)
 ///    `AudioListener` entity. On first frame, lazily call
@@ -874,20 +901,26 @@ impl Component for OneShotSound {
 ///    frames, push pose updates through `ListenerHandle::set_position` /
 ///    `set_orientation`. Positions cross the BU→metre seam here
 ///    ([`bu_to_audio_space`]).
-/// 2. **Underwater filters** ([`update_underwater_filters`]): drive every
+/// 2. **Emitter follow** ([`sync_emitter_positions`], #3086): for every
+///    entity-backed active sound, push the source entity's current
+///    `GlobalTransform` into its spatial sub-track so a sound emitted
+///    from a moving actor stays anchored to it. Change-gated — a
+///    stationary emitter pushes zero commands per tick (the counter is
+///    [`AudioWorld::emitter_position_updates`]).
+/// 3. **Underwater filters** ([`update_underwater_filters`]): drive every
 ///    live sub-track's low-pass cutoff and wet/dry mix to match
 ///    [`AudioWorld::underwater`], which `water_audio_system` sets from the
 ///    camera's `SubmersionState`.
-/// 3. **Drain the pending queue** ([`AudioWorld::play_oneshot`]'s Phase 3.5
+/// 4. **Drain the pending queue** ([`AudioWorld::play_oneshot`]'s Phase 3.5
 ///    path): dispatch each queued entry through the spatial-sub-track path.
 ///    No entity allocation — this is the API for Systems, which cannot spawn.
-/// 4. **Dispatch new one-shots**: for each entity carrying both
+/// 5. **Dispatch new one-shots**: for each entity carrying both
 ///    `OneShotSound` + `AudioEmitter`, create a spatial sub-track
 ///    anchored at the entity's `GlobalTransform`, play the sound on
 ///    that track, and remove `OneShotSound` so the dispatcher won't
 ///    re-trigger next frame. The `AudioEmitter` stays so callers
 ///    can query "is this entity still playing?" via the active list.
-/// 5. **Prune stopped**: walk `active_sounds`, drop any whose handle
+/// 6. **Prune stopped**: walk `active_sounds`, drop any whose handle
 ///    reports `PlaybackState::Stopped`. Removing the entity's
 ///    `AudioEmitter` lets a downstream cleanup system (or the cell
 ///    unloader) despawn it without coupling to audio state.
@@ -900,10 +933,55 @@ pub fn audio_system(world: &World, _dt: f32) {
     }
 
     sync_listener_pose(world, &mut audio_world);
+    sync_emitter_positions(world, &mut audio_world);
     update_underwater_filters(&mut audio_world);
     drain_pending_oneshots(&mut audio_world);
     dispatch_new_oneshots(world, &mut audio_world);
     prune_stopped_sounds(world, &mut audio_world);
+}
+
+/// Push every entity-backed active sound's spatial sub-track to its
+/// source entity's current `GlobalTransform` (#3086).
+///
+/// Pre-fix, an emitter's position was captured once at dispatch and
+/// never refreshed — the `AudioEmitter` docstring promised a per-frame
+/// update the system never performed, so footsteps, weapon fire and
+/// looping ambients on moving actors (or vehicles) detached from their
+/// source. The listener half was always updated per frame, which made
+/// the failure directional and easy to misread as a listener-pose bug.
+///
+/// Queue-driven sounds (`entity: None`) are fire-and-forget by
+/// contract — there is no entity to follow — and music is non-spatial,
+/// so neither is touched here. An entity that has been despawned or
+/// lost its `GlobalTransform` mid-playback is skipped; the prune sweep
+/// owns its termination.
+///
+/// Per-tick cost: one `GlobalTransform` lookup per entity-backed
+/// active sound plus one kira `set_position` command **only on ticks
+/// where the source actually moved** — the dispatch position seeds
+/// `ActiveSound::last_position`, so a stationary emitter (the vast
+/// majority: torches, ambient loops, machinery) costs a comparison and
+/// nothing else. The listener update above remains unconditional, as
+/// it always was.
+fn sync_emitter_positions(world: &World, audio_world: &mut AudioWorld) {
+    let Some(gt_q) = world.query::<GlobalTransform>() else {
+        return;
+    };
+    for active in &mut audio_world.active_sounds {
+        let Some(entity) = active.entity else {
+            continue;
+        };
+        let Some(gt) = gt_q.get(entity) else {
+            continue;
+        };
+        let position = bu_to_audio_space(gt.translation);
+        if active.last_position == Some(position) {
+            continue;
+        }
+        active.track.set_position(position, Tween::default());
+        active.last_position = Some(position);
+        audio_world.emitter_position_updates += 1;
+    }
 }
 
 /// Drive every live sub-track's low-pass to match the listener's submersion
@@ -1095,7 +1173,11 @@ fn drain_pending_oneshots(audio_world: &mut AudioWorld) {
         audio_world.active_sounds.push(ActiveSound {
             entity: None,
             handle,
-            _track: track,
+            track,
+            // Fire-and-forget: the track sits at the queued position for
+            // its whole life (`entity == None`, nothing to follow), so
+            // the seeded value is final (#3086).
+            last_position: Some(bu_to_audio_space(p.position)),
             underwater_filter,
             underwater,
             // Queue-driven sounds have `entity == None` — they're
@@ -1250,7 +1332,11 @@ fn dispatch_new_oneshots(world: &World, audio_world: &mut AudioWorld) {
         audio_world.active_sounds.push(ActiveSound {
             entity: Some(p.entity),
             handle,
-            _track: track,
+            track,
+            // The sub-track was created AT the dispatch position, so that
+            // is the seeded `last_position` — a stationary emitter's
+            // follow pass is a comparison per tick, not a command (#3086).
+            last_position: Some(bu_to_audio_space(p.position)),
             underwater_filter,
             underwater,
             unload_fade_ms: p.unload_fade_ms,

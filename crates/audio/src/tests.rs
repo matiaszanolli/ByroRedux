@@ -911,6 +911,7 @@ fn play_oneshot_queue_caps_at_max_pending_when_active() {
         manager: Some(manager),
         multi_listener_warned: false,
         underwater: false,
+        emitter_position_updates: 0,
     };
     let sound = Arc::new(StaticSoundData {
         sample_rate: 22_050,
@@ -1530,4 +1531,130 @@ fn both_dispatch_paths_build_the_filter_through_one_call_site() {
 /// survive rustfmt re-wrapping a call across lines.
 fn squeeze_whitespace(src: &str) -> String {
     src.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// **#3086** — an entity-backed emitter's spatial sub-track follows the
+/// source entity's `GlobalTransform`. The dispatch pass seeds the track
+/// position; the follow pass (`sync_emitter_positions`) pushes a
+/// `set_position` only on ticks where the source actually moved, so the
+/// observable is `AudioWorld::emitter_position_updates`: stationary
+/// after dispatch pushes 0, a move pushes exactly 1, standing still
+/// again pushes no more. kira's spatial handles expose no position
+/// readback, so the counter is the contract's observable; playback
+/// staying `Playing` across the moves pins the pass as non-destructive.
+///
+/// `#[ignore]` — needs a working audio device (kira has no headless
+/// test backend; the headless fallback early-returns before any pass).
+#[test]
+#[ignore = "needs a working audio device"]
+fn emitter_position_follows_the_source_entity_regression_3086() {
+    use kira::sound::static_sound::StaticSoundSettings;
+    use std::time::Duration;
+
+    let manager = match kira::AudioManager::<kira::backend::DefaultBackend>::new(
+        kira::AudioManagerSettings::default(),
+    ) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("skipping #3086 regression — no audio device: {e}");
+            return;
+        }
+    };
+    let audio_world = AudioWorld {
+        active_sounds: Vec::new(),
+        pending_oneshots: std::collections::VecDeque::new(),
+        oneshots_requested: 0,
+        music: None,
+        reverb_send: None,
+        reverb_send_db: f32::NEG_INFINITY,
+        listener: None,
+        manager: Some(manager),
+        multi_listener_warned: false,
+        underwater: false,
+        emitter_position_updates: 0,
+    };
+    let sound = Arc::new(StaticSoundData {
+        sample_rate: 22_050,
+        frames: Arc::from(
+            vec![kira::Frame { left: 0.0, right: 0.0 }; 2205].into_boxed_slice(),
+        ),
+        settings: StaticSoundSettings::default(),
+        slice: None,
+    });
+
+    let mut world = byroredux_core::ecs::World::new();
+    let listener = world.spawn();
+    world.insert(listener, Transform::IDENTITY);
+    world.insert(listener, GlobalTransform::IDENTITY);
+    world.insert(listener, AudioListener);
+
+    let emitter = world.spawn();
+    fn place(world: &mut byroredux_core::ecs::World, e: byroredux_core::ecs::storage::EntityId, v: glam::Vec3) {
+        world.insert(e, Transform::new(v, glam::Quat::IDENTITY, 1.0));
+        world.insert(e, GlobalTransform::new(v, glam::Quat::IDENTITY, 1.0));
+    }
+    place(&mut world, emitter, glam::Vec3::new(0.0, 0.0, 5.0));
+    world.insert(
+        emitter,
+        AudioEmitter {
+            sound: Arc::clone(&sound),
+            attenuation: Attenuation::default(),
+            volume: 0.0, // silence — the assertions are on bookkeeping
+            looping: true,
+            unload_fade_ms: DEFAULT_UNLOAD_FADE_MS,
+        },
+    );
+    world.insert(emitter, OneShotSound);
+
+    // Tick 1 — dispatch. The track is created AT the dispatch position,
+    // so the follow pass must push nothing.
+    world.insert_resource(audio_world);
+    audio_system(&world, 0.016);
+    assert_eq!(
+        world.resource::<AudioWorld>().active_sound_count(),
+        1,
+        "looping emitter must dispatch"
+    );
+    assert_eq!(
+        world.resource::<AudioWorld>().emitter_position_updates(),
+        0,
+        "a freshly-dispatched stationary emitter must push zero position commands"
+    );
+
+    // Move the source; the next tick must follow it — exactly one push.
+    place(&mut world, emitter, glam::Vec3::new(3.0, 0.0, 5.0));
+    audio_system(&world, 0.016);
+    assert_eq!(
+        world.resource::<AudioWorld>().emitter_position_updates(),
+        1,
+        "moving the emitter must push exactly one set_position"
+    );
+
+    // Stand still; no further pushes.
+    audio_system(&world, 0.016);
+    assert_eq!(
+        world.resource::<AudioWorld>().emitter_position_updates(),
+        1,
+        "a stationary emitter must keep costing nothing per tick"
+    );
+
+    // Move again; one more push, and playback must have survived it all.
+    place(&mut world, emitter, glam::Vec3::new(6.0, 0.0, 5.0));
+    audio_system(&world, 0.016);
+    assert_eq!(
+        world.resource::<AudioWorld>().emitter_position_updates(),
+        2
+    );
+    assert_eq!(
+        world.resource::<AudioWorld>().active_sound_count(),
+        1,
+        "the sound must still be live"
+    );
+    std::thread::sleep(Duration::from_millis(30));
+    audio_system(&world, 0.016);
+    assert_eq!(
+        world.resource::<AudioWorld>().active_sound_count(),
+        1,
+        "the follow pass must not terminate or disturb playback"
+    );
 }
