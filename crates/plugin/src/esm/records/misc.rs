@@ -47,7 +47,7 @@ pub use character::{
 };
 pub use dialogue::{
     build_conversation_tree, parse_dial, parse_dlbr, parse_info, parse_mesg, ConversationTree,
-    ConversationTreeError, DialRecord, DialogueCategory, DlbrRecord, InfoRecord, MesgRecord,
+    ConversationTreeError, DialRecord, DialogueCategory, DlbrRecord, InfoDataHeader, InfoRecord, MesgRecord,
 };
 pub use effects::{
     parse_avif, parse_efsh, parse_expl, parse_imod, parse_ipct, parse_ipds, parse_proj, parse_repu,
