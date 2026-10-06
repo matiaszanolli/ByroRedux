@@ -1108,10 +1108,7 @@ mod skin_slot_pool_hasher_tests {
     /// match this file's own assertion strings or the tests' local
     /// std collections.
     fn production_src() -> &'static str {
-        SKIN_SLOT_POOL_RS
-            .split_once("\n#[cfg(test)]")
-            .expect("skin_slot_pool.rs lost its test modules")
-            .0
+        crate::source_scan::production_text(SKIN_SLOT_POOL_RS)
     }
 
     #[test]

@@ -1,55 +1,20 @@
 //! Helpers for the crate's source-scan tests — tests that `include_str!` a
 //! source file and assert on its text because the property they pin (an
 //! ordering, a gate, a teardown sequence) needs a device to exercise.
+//!
+//! The helpers themselves live in `byroredux-core::source_scan` (#5100):
+//! this module re-exports them so the crate's scans keep one import path
+//! and the cut stays defined exactly once.
 
-/// A source file's production text: everything before its first
-/// `#[cfg(test)] mod`.
-///
-/// `include_str!` brings in the file's test modules too, and those spell out
-/// every needle the tests search for. A scan over the whole text is therefore
-/// satisfied by the test's own literals whether or not the production code it
-/// guards still exists — the defect class of #3442, #4604 and #4842. Scan this
-/// instead.
-///
-/// The cut matches `#[cfg(test)]` followed by `mod`, so a `#[cfg(test)] use`
-/// import earlier in the file does not truncate production code. A file whose
-/// test modules are interleaved with production code (`context/draw.rs`) is not
-/// served by this — a needle that lives after the first test module fails the
-/// scan loudly rather than passing — and slices the function it guards
-/// instead.
-pub(crate) fn production_text(src: &str) -> &str {
-    src.split_once("\n#[cfg(test)]\nmod ")
-        .expect("source has no `#[cfg(test)] mod` — nothing to cut, so it is not a self-scan")
-        .0
-}
-
-/// Every `.rs` file under `dir`, recursively. For the tests that walk the
-/// crate's own source to derive what a guard must cover, rather than naming it.
-#[cfg(test)]
-pub(crate) fn rust_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
-    for entry in std::fs::read_dir(dir).expect("readable source directory") {
-        let path = entry.expect("readable directory entry").path();
-        if path.is_dir() {
-            rust_files(&path, out);
-        } else if path.extension().is_some_and(|ext| ext == "rs") {
-            out.push(path);
-        }
-    }
-}
+pub(crate) use byroredux_core::source_scan::production_text;
+pub(crate) use byroredux_core::source_scan::rust_files;
+pub(crate) use byroredux_core::source_scan::strip_test_modules;
 
 #[cfg(test)]
 mod tests {
-    use super::{production_text, rust_files};
+    use super::rust_files;
     use std::collections::BTreeMap;
     use std::path::Path;
-
-    #[test]
-    fn cuts_at_the_first_test_module_and_not_at_a_test_only_import() {
-        let src = "fn a() {}\n#[cfg(test)]\nuse x;\nfn b() {}\n#[cfg(test)]\nmod tests {\n    needle\n}\n";
-        let production = production_text(src);
-        assert_eq!(production, "fn a() {}\n#[cfg(test)]\nuse x;\nfn b() {}");
-        assert!(!production.contains("needle"));
-    }
 
     /// Per file, the number of `include_str!` calls that read the file they sit
     /// in without going through [`production_text`]. Each is a scan over text
@@ -88,7 +53,8 @@ mod tests {
         ("vulkan/context/teardown.rs", 1),
         ("vulkan/device.rs", 2),
         ("vulkan/egui_pass.rs", 1),
-        ("vulkan/frame_upscaler.rs", 4),
+        // frame_upscaler.rs dropped off this list entirely (#5100): all four
+        // of its self-scans now go through `production_text`.
         ("vulkan/gpu_timers.rs", 2),
         ("vulkan/image.rs", 1),
         ("vulkan/material_tests.rs", 1),
@@ -101,7 +67,10 @@ mod tests {
         ("vulkan/sync.rs", 1),
         ("vulkan/taa.rs", 1),
         ("vulkan/texture.rs", 2),
-        ("vulkan/water.rs", 2),
+        // water.rs 2→1 (#5100): the pass-bind-hoist scan now goes through
+        // `production_text`; the remaining self-read is the blend-table /
+        // module-doc pin, a whole-file doc audit by design.
+        ("vulkan/water.rs", 1),
     ];
 
     /// The count of unwrapped self-including `include_str!` calls in `text`,

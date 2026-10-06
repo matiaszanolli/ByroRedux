@@ -1316,10 +1316,8 @@ mod tests {
     /// live device and an active SDK context.
     #[test]
     fn fsr_scene_color_barrier_asserts_the_layout_it_hard_codes() {
-        let production = include_str!("frame_upscaler.rs")
-            .split_once("\n#[cfg(test)]")
-            .expect("frame_upscaler.rs has a #[cfg(test)] module")
-            .0;
+        let production =
+            crate::source_scan::production_text(include_str!("frame_upscaler.rs"));
         let fn_start = production
             .find("unsafe fn record_fsr_barriers_before(")
             .expect("record_fsr_barriers_before must still exist");
@@ -1352,7 +1350,6 @@ mod tests {
     /// a unit test at all.
     #[test]
     fn every_dispatch_failure_latch_raises_the_temporal_discontinuity_edge() {
-        const FRAME_UPSCALER_RS: &str = include_str!("frame_upscaler.rs");
         const POST_PASSES_RS: &str = include_str!("context/post_passes.rs");
 
         // Every assignment to `dispatch_failure` inside `record`'s recovery
@@ -1360,10 +1357,8 @@ mod tests {
         // clears it to `None`, which is not a latch.
         // Scan production code only — the needles below also occur in this
         // test's own body.
-        let production = FRAME_UPSCALER_RS
-            .split_once("\n#[cfg(test)]")
-            .expect("frame_upscaler.rs has a #[cfg(test)] module")
-            .0;
+        let production =
+            crate::source_scan::production_text(include_str!("frame_upscaler.rs"));
         let latches: Vec<&str> = production
             .match_indices("self.dispatch_failure =")
             .map(|(i, _)| &production[i..])
@@ -1411,27 +1406,28 @@ mod tests {
         const GBUFFER_RS: &str = include_str!("gbuffer.rs");
         const SCREENSHOT_RS: &str = include_str!("context/screenshot.rs");
         const DEPTH_CAPTURE_RS: &str = include_str!("context/depth_capture.rs");
-        const FRAME_UPSCALER_RS: &str = include_str!("frame_upscaler.rs");
+        let frame_upscaler_production =
+            crate::source_scan::production_text(include_str!("frame_upscaler.rs"));
 
         // (source, needle identifying the fn, human label)
         let sites: &[(&str, &str, &str)] = &[
             (
-                FRAME_UPSCALER_RS,
+                frame_upscaler_production,
                 "unsafe fn record_native_blit(",
                 "record_native_blit",
             ),
             (
-                FRAME_UPSCALER_RS,
+                frame_upscaler_production,
                 "unsafe fn record_fsr_barriers_before(",
                 "record_fsr_barriers_before",
             ),
             (
-                FRAME_UPSCALER_RS,
+                frame_upscaler_production,
                 "unsafe fn record_fsr_depth_restore(",
                 "record_fsr_depth_restore",
             ),
             (
-                FRAME_UPSCALER_RS,
+                frame_upscaler_production,
                 "unsafe fn record_fsr_barriers_after(",
                 "record_fsr_barriers_after",
             ),
@@ -1624,10 +1620,7 @@ mod fsr_input_barrier_tests {
     }
 
     fn production_src() -> &'static str {
-        include_str!("frame_upscaler.rs")
-            .split_once("\n#[cfg(test)]")
-            .expect("frame_upscaler.rs lost its test modules")
-            .0
+        crate::source_scan::production_text(include_str!("frame_upscaler.rs"))
     }
 }
 

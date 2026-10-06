@@ -477,14 +477,15 @@ mod flip_role_tests {
     /// `asset_provider::texture`'s `flip_role_profiles_match_the_static_role_table`.
     #[test]
     fn flip_frames_resolve_through_the_per_role_resolver() {
-        let src = include_str!("anim_convert.rs");
-        // Line-anchored: a doc comment above the first test module mentions
-        // `#[cfg(test)]` as prose, and a bare split_once would truncate the
-        // production half at that line.
-        let prod = src
-            .split_once("\n#[cfg(test)]\n")
-            .map(|(p, _)| p)
-            .unwrap_or(src);
+        // The shared cut (#5100): it requires `\nmod ` after the attribute,
+        // so the doc prose above the first test module that mentions
+        // `#[cfg(test)]` cannot truncate the production half — and a file
+        // that loses its test modules panics instead of falling back to the
+        // whole text, which is how this scan was once satisfiable by its
+        // own assertion literals (#4842's defect class).
+        let prod = byroredux_core::source_scan::production_text(include_str!(
+            "anim_convert.rs"
+        ));
         assert!(
             prod.contains("resolve_flip_texture_for_role"),
             "the flipbook frame resolve must route through the per-role resolver (#4426)"

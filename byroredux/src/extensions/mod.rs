@@ -506,91 +506,14 @@ const SOURCES: &str = concat!(
 #[cfg(test)]
 mod delivery_plumbing_shape_tests {
     use super::SOURCES as EXTENSIONS_RS;
+    // #5100 — the brace-stripping production cut lives in
+    // `byroredux_core::source_scan::strip_test_modules` now; this file's
+    // test modules are interleaved with production code, so the first-cut
+    // `production_text` does not apply here.
+    use byroredux_core::source_scan::strip_test_modules as production_text;
     /// This file's own text, for the concat-coverage scan — kept separate
     /// from `SOURCES` so the scan reads the list, not the whole host.
     const SOURCES_LIST: &str = include_str!("mod.rs");
-
-    /// Production text only: `#[cfg(test)] mod <name> { .. }` blocks removed
-    /// by brace matching.
-    ///
-    /// Truncating at the first `#[cfg(test)]` instead would silently drop the
-    /// production code that follows an inner test module — this file has one
-    /// at ~line 3900 with thousands of production lines after it — and the
-    /// scans below would then pass by not looking (the #4069 lesson). A
-    /// block-less `mod foo;` is skipped explicitly for the same reason: brace
-    /// matching from there would swallow the next item whole.
-    fn production_text(src: &str) -> String {
-        let mut out = String::with_capacity(src.len());
-        let mut rest = src;
-        while let Some(at) = rest.find("#[cfg(test)]") {
-            out.push_str(&rest[..at]);
-            let after = &rest[at..];
-            const ATTR: &str = "#[cfg(test)]";
-            // The `mod` must follow the attribute IMMEDIATELY (whitespace and
-            // an optional visibility only). Searching the whole remainder
-            // would let an item-level `#[cfg(test)]` bind to some distant
-            // `mod` and strip every production line between them — which is
-            // how this helper first reported "no hand-written literals": by
-            // deleting the code it was supposed to scan.
-            let body = &after[ATTR.len()..];
-            let lead = body.len() - body.trim_start().len();
-            let trimmed = body.trim_start();
-            let vis = ["pub(crate) ", "pub(super) ", "pub "]
-                .into_iter()
-                .find(|v| trimmed.starts_with(v))
-                .map_or(0, str::len);
-            let Some(mod_at) = trimmed[vis..]
-                .starts_with("mod ")
-                .then_some(ATTR.len() + lead + vis)
-            else {
-                // Item-level attribute — step past it and keep the text.
-                out.push_str(&after[..ATTR.len()]);
-                rest = &after[ATTR.len()..];
-                continue;
-            };
-            let tail = &after[mod_at..];
-            let brace = tail.find('{');
-            let semi = tail.find(';');
-            match (brace, semi) {
-                // `mod foo;` — no body here to strip.
-                (Some(b), Some(sc)) if sc < b => {
-                    out.push_str(&after[..mod_at + sc + 1]);
-                    rest = &after[mod_at + sc + 1..];
-                }
-                (None, Some(sc)) => {
-                    out.push_str(&after[..mod_at + sc + 1]);
-                    rest = &after[mod_at + sc + 1..];
-                }
-                (Some(b), _) => {
-                    let mut depth = 0usize;
-                    let bytes = tail.as_bytes();
-                    let mut i = b;
-                    while i < bytes.len() {
-                        match bytes[i] {
-                            b'{' => depth += 1,
-                            b'}' => {
-                                depth -= 1;
-                                if depth == 0 {
-                                    break;
-                                }
-                            }
-                            _ => {}
-                        }
-                        i += 1;
-                    }
-                    // `i` lands on the closing brace, or on `bytes.len()`
-                    // for an unbalanced tail; clamp either way.
-                    let resume = (mod_at + i + 1).min(after.len());
-                    rest = &after[resume..];
-                }
-                (None, None) => {
-                    rest = "";
-                }
-            }
-        }
-        out.push_str(rest);
-        out
-    }
 
     /// The eleven-field commit context must be built in exactly one place.
     ///

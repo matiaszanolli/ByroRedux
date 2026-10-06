@@ -1843,10 +1843,8 @@ mod app_scratch_telemetry_coverage_tests {
 
         // The rows this file publishes, and nothing else it says: the test
         // module below spells every name it looks for.
-        let production = include_str!("app_events.rs")
-            .split_once("\n#[cfg(test)]\nmod ")
-            .expect("app_events.rs has test modules")
-            .0;
+        let production =
+            byroredux_core::source_scan::production_text(include_str!("app_events.rs"));
         let rows_start = production
             .find("tlm.rows.extend([")
             .expect("about_to_wait must publish the App scratch rows");
@@ -1957,10 +1955,8 @@ mod screenshot_timing_tests {
 mod atw_bracket_nesting_tests {
     #[test]
     fn atw_brackets_are_siblings_and_atw_post_contains_render_one_frame() {
-        let production = include_str!("app_events.rs")
-            .split_once("\n#[cfg(test)]\nmod ")
-            .expect("app_events.rs has test modules")
-            .0;
+        let production =
+            byroredux_core::source_scan::production_text(include_str!("app_events.rs"));
         let body = &production[production
             .find("fn about_to_wait(")
             .expect("App must still implement about_to_wait")..];
@@ -1998,10 +1994,8 @@ mod atw_bracket_nesting_tests {
     /// vulkan-validation CI lane, #4987).
     #[test]
     fn about_to_wait_skips_the_scheduler_without_a_renderer() {
-        let production = include_str!("app_events.rs")
-            .split_once("\n#[cfg(test)]\nmod ")
-            .expect("app_events.rs has test modules")
-            .0;
+        let production =
+            byroredux_core::source_scan::production_text(include_str!("app_events.rs"));
         let body = &production[production
             .find("fn about_to_wait(")
             .expect("App must still implement about_to_wait")..];
@@ -2067,10 +2061,8 @@ mod allocator_teardown_order_tests {
 
     #[test]
     fn shutdown_releases_allocator_resource_before_renderer() {
-        let production = include_str!("app_events.rs")
-            .split_once("\n#[cfg(test)]\nmod ")
-            .expect("app_events.rs has test modules")
-            .0;
+        let production =
+            byroredux_core::source_scan::production_text(include_str!("app_events.rs"));
         let shutdown = body(
             production,
             "pub(crate) fn shutdown(&mut self, event_loop: &ActiveEventLoop)",

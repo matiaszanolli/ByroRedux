@@ -1523,6 +1523,7 @@ fn skip_clear_decision(ran: bool, already_cleared: bool) -> (bool, bool) {
 #[cfg(test)]
 mod tests {
     use super::{skip_clear_decision, volumetric_open_sky_flag, volumetric_sun, SkyParams};
+    use crate::source_scan::strip_test_modules;
 
     #[test]
     fn shader_pipeline_documents_every_record_pass_helper() {
@@ -1647,83 +1648,6 @@ mod tests {
         }
     }
 
-    /// `src` with every `#[cfg(test)] mod … { … }` block removed. The module's
-    /// extent is found by brace depth from its opening brace, skipping string,
-    /// raw-string and char literals and `//` comments so a brace inside one
-    /// cannot end the module early. Panics if a test module survives.
-    fn strip_test_modules(src: &str) -> String {
-        const MARK: &str = "#[cfg(test)]\nmod ";
-        let mut out = String::new();
-        let mut rest = src;
-        while let Some(at) = rest.find(MARK) {
-            out.push_str(&rest[..at]);
-            let body = &rest[at..];
-            let close = module_end(body).expect("test module closes");
-            rest = &body[close..];
-        }
-        out.push_str(rest);
-        assert!(!out.contains(MARK), "a test module survived the strip");
-        out
-    }
-
-    /// Byte offset just past the brace that closes the first `{…}` in `src`.
-    fn module_end(src: &str) -> Option<usize> {
-        let b = src.as_bytes();
-        let (mut i, mut depth) = (0usize, 0usize);
-        while i < b.len() {
-            match b[i] {
-                b'/' if b.get(i + 1) == Some(&b'/') => {
-                    while i < b.len() && b[i] != b'\n' {
-                        i += 1;
-                    }
-                }
-                b'r' if matches!(b.get(i + 1), Some(b'#' | b'"'))
-                    && (i == 0 || !(b[i - 1].is_ascii_alphanumeric() || b[i - 1] == b'_')) =>
-                {
-                    let hashes = b[i + 1..].iter().take_while(|&&c| c == b'#').count();
-                    if b.get(i + 1 + hashes) != Some(&b'"') {
-                        i += 1;
-                        continue;
-                    }
-                    let mut terminator = vec![b'"'];
-                    terminator.extend(std::iter::repeat_n(b'#', hashes));
-                    let from = i + 2 + hashes;
-                    let len = b[from..]
-                        .windows(terminator.len())
-                        .position(|w| w == terminator.as_slice())?;
-                    i = from + len + terminator.len();
-                    continue;
-                }
-                b'"' => {
-                    i += 1;
-                    while i < b.len() && b[i] != b'"' {
-                        i += if b[i] == b'\\' { 2 } else { 1 };
-                    }
-                }
-                // A char literal (`'{'`, `'\\''`); a lifetime (`'a`) has no
-                // closing quote two or three bytes on and is left alone.
-                b'\'' => {
-                    if b.get(i + 1) == Some(&b'\\') {
-                        if let Some(end) = b[i + 2..].iter().position(|&c| c == b'\'') {
-                            i += 2 + end;
-                        }
-                    } else if b.get(i + 2) == Some(&b'\'') {
-                        i += 2;
-                    }
-                }
-                b'{' => depth += 1,
-                b'}' => {
-                    depth = depth.checked_sub(1)?;
-                    if depth == 0 {
-                        return Some(i + 1);
-                    }
-                }
-                _ => {}
-            }
-            i += 1;
-        }
-        None
-    }
 
     #[test]
     fn volumetric_sun_uses_portal_lane_only_inside() {

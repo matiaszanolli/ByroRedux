@@ -1900,16 +1900,12 @@ mod tests {
 /// resurrect the #1258 unbound-descriptor-set crash) fails here.
 #[cfg(test)]
 mod pass_bind_hoist_tests {
-    const WATER_RS: &str = include_str!("water.rs");
     const GEOMETRY_PASS_RS: &str = include_str!("context/geometry_pass.rs");
 
     /// Everything before the test modules — needed so the needles below
     /// cannot match this file's own assertion strings.
     fn water_production_src() -> &'static str {
-        WATER_RS
-            .split_once("\n#[cfg(test)]")
-            .expect("water.rs lost its test modules")
-            .0
+        crate::source_scan::production_text(include_str!("water.rs"))
     }
 
     /// Body of `record_draw`, from its signature to the closing brace at
