@@ -146,6 +146,27 @@ impl ConsoleCommand for LightDumpCommand {
                         "CLMT FNAM sprite"
                     }
                 ));
+                lines.push(format!(
+                    "  cloud_coverage     = {:.3}  (weather grade below)",
+                    sky.weather.cloud_coverage
+                ));
+                if let Some(base) = world.try_resource::<byroredux_scripting::ImageSpaceBase>() {
+                    let grade = base.0;
+                    lines.push(format!(
+                        "  image_space_base   = sat={:.3} bri={:.3} con={:.3} tint={:.3}/{:.3}/{:.3} w={:.3}",
+                        grade.saturation,
+                        grade.brightness,
+                        grade.contrast,
+                        grade.tint_color[0],
+                        grade.tint_color[1],
+                        grade.tint_color[2],
+                        grade.tint_color[3],
+                    ));
+                } else {
+                    lines.push(
+                        "  image_space_base   = <absent — identity grade>".to_string(),
+                    );
+                }
             }
             None => {
                 lines.push("SkyParamsRes: <not present — no exterior cell loaded>".to_string());
