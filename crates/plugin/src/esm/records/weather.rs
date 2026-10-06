@@ -317,8 +317,17 @@ pub struct WeatherRecord {
     /// Sunrise / Day / Sunset / Night (xEdit `wbWeatherImageSpaces`; FO4's
     /// four later Early/Late Sunrise/Sunset slots are not read — the
     /// weather TOD model has no such keys). `None` = NULL / unauthored.
-    /// FO3/FNV weathers carry IMADs per slot instead, and no IMGS.
+    /// FO3/FNV weathers carry IMADs per slot instead, and no IMGS — see
+    /// [`Self::image_space_modifiers`].
     pub image_spaces: [Option<u32>; 4],
+    /// FO3/FNV `\x00IAD`..`\x05IAD`: the IMAD ("Image Space Adapter") per
+    /// time of day, in the NAM0 slot order — Sunrise, Day, Sunset, Night,
+    /// then FNV's High Noon and Midnight (xEdit `wbDefinitions{FO3,FNV}.pas`,
+    /// WTHR; FO3 authors only the first four). This is where those games
+    /// keep a weather's colour grade — as cinematic mult/add + tint curves
+    /// composed onto the worldspace's base IMGS. Load-order remapped;
+    /// `None` = NULL / unauthored. Always all-`None` on other games.
+    pub image_space_modifiers: [Option<u32>; SKY_TIME_SLOTS],
     /// Cloud texture paths. FNV/FO3 ship 4 layers (DNAM/CNAM/ANAM/BNAM
     /// = layers 0–3 in schema-emission order); Oblivion ships 2
     /// (DNAM = 0, CNAM = 1). Paths are `textures\`-root-relative
@@ -387,6 +396,7 @@ impl Default for WeatherRecord {
             skyrim_precipitation_effect: None,
             skyrim_visual_effect: None,
             image_spaces: [None; 4],
+            image_space_modifiers: [None; SKY_TIME_SLOTS],
             cloud_textures: [None, None, None, None],
             skyrim_cloud_textures: [const { None }; 32],
             oblivion_hdr: None,
@@ -430,6 +440,15 @@ pub fn parse_wthr(
             // #4416 — FO4 authors IMSP like Skyrim (FO3/FNV never do).
             b"IMSP" if sub.data.len() >= 16 => {
                 record.image_spaces = parse_image_spaces(&sub.data, remap);
+            }
+            // FO3/FNV per-TOD IMADs (`\x00IAD`..`\x05IAD`). The code byte is
+            // the slot index; FO4's IMSP-era records never carry them.
+            [slot @ 0..=5, b'I', b'A', b'D']
+                if matches!(game, GameKind::Fallout3NV) && sub.data.len() >= 4 =>
+            {
+                let raw = u32::from_le_bytes(sub.data[0..4].try_into().unwrap());
+                record.image_space_modifiers[*slot as usize] =
+                    (raw != 0).then(|| remap_fid(raw, remap));
             }
 
             // NAM0: sky colors. Two on-disk strides exist:
@@ -650,9 +669,6 @@ pub fn parse_wthr(
     record
 }
 
-/// Return the exact Creation-era NAM0 `(group_count, tod_slot_count)` for
-/// canonical FO4/FO76 payload sizes. xEdit gates the extra four TOD samples at
-/// form version 111 and the final two fog-high groups at form version 119.
 /// `IMSP` — the first four IMGS FormIDs (Sunrise, Day, Sunset, Night),
 /// load-order remapped; a NULL slot is `None`. See
 /// [`WeatherRecord::image_spaces`].
@@ -663,6 +679,9 @@ fn parse_image_spaces(data: &[u8], remap: &Option<FormIdRemap>) -> [Option<u32>;
     })
 }
 
+/// Return the exact Creation-era NAM0 `(group_count, tod_slot_count)` for
+/// canonical FO4/FO76 payload sizes. xEdit gates the extra four TOD samples at
+/// form version 111 and the final two fog-high groups at form version 119.
 fn creation_nam0_shape(size: usize) -> Option<(usize, usize)> {
     match size {
         272 => Some((17, 4)),
@@ -1090,6 +1109,27 @@ mod tests {
     use super::*;
     use crate::esm::reader::GameKind;
     use crate::esm::records::test_support::sub;
+
+    /// FO3/FNV `\x00IAD`..`\x05IAD` — the per-TOD weather IMADs land in
+    /// their slot (the code byte is the slot); NULL reads `None`; other games
+    /// never decode them.
+    #[test]
+    fn fo3_fnv_weather_imad_slots_follow_the_code_byte() {
+        let fid = |v: u32| v.to_le_bytes().to_vec();
+        let subs = [
+            sub(&[0x00, b'I', b'A', b'D'], fid(0x0001_0001)),
+            sub(&[0x01, b'I', b'A', b'D'], fid(0x0001_0002)),
+            sub(&[0x03, b'I', b'A', b'D'], fid(0)),
+            sub(&[0x04, b'I', b'A', b'D'], fid(0x0001_0005)),
+        ];
+        let w = parse_wthr(1, &subs, GameKind::Fallout3NV, &None);
+        assert_eq!(
+            w.image_space_modifiers,
+            [Some(0x0001_0001), Some(0x0001_0002), None, None, Some(0x0001_0005), None]
+        );
+        let fo4 = parse_wthr(1, &subs, GameKind::Fallout4, &None);
+        assert_eq!(fo4.image_space_modifiers, [None; SKY_TIME_SLOTS]);
+    }
 
     #[test]
     fn parse_wthr_basic() {

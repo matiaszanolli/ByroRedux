@@ -6,7 +6,7 @@
 //! lets the runtime sample them without retaining opaque plugin bytes.
 
 use super::super::common::CommonNamedFields;
-use crate::esm::reader::SubRecord;
+use crate::esm::reader::{GameKind, SubRecord};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ImadScalarKey {
@@ -105,7 +105,25 @@ fn color_key(data: &[u8]) -> Option<ImadColorKey> {
 /// Decode the Skyrim/FO3-family IMAD channels used by cinematic rendering.
 /// Unknown HDR/DOF channels remain safely ignored until they have a live
 /// consumer.
-pub fn parse_imad(form_id: u32, subs: &[SubRecord]) -> ImadRecord {
+///
+/// The cinematic block's sub-record codes are per game. Skyrim / FO4 / FO76
+/// author `0x11` Saturation, `0x12` Brightness, `0x13` Contrast (xEdit
+/// `wbTimeInterpolatorsMultAdd`). FO3/FNV author four channels in the
+/// `IMGS.DNAM` cinematic order — `0x11` Saturation, `0x12` Contrast Avg Lum,
+/// `0x13` Contrast, `0x14` Brightness. Each code's add curve is the code +
+/// `0x40` (`Q`/`R`/`S`/`T IAD`).
+///
+/// The FO3/FNV `0x12`/`0x13` assignment deliberately departs from xEdit's
+/// (and JIP NVSE's) IMAD labels, which name `0x12` Contrast. Census of every
+/// FO3 + FNV IMAD (the weather "ISFX" grades set channels as mult 0 + add
+/// target): 109 records set `0x12` and the values span 0.0..1.4, with the
+/// *daytime* Capital Wasteland grades (`WastelandDayISFX`,
+/// `WastelandEastDayISFX`) at exactly 0.0 — a contrast of zero is a flat
+/// grey frame, which those weathers plainly do not render, while a contrast
+/// pivot of zero is ordinary. `0x13` instead sits in 0.9..1.7 (median 1.03),
+/// the same band as the `IMGS` Contrast value. The pivot is not consumed —
+/// the presentation grade pivots on a fixed mid-grey, as for `IMGS`.
+pub fn parse_imad(form_id: u32, subs: &[SubRecord], game: GameKind) -> ImadRecord {
     let mut out = ImadRecord {
         form_id,
         ..Default::default()
@@ -117,7 +135,25 @@ pub fn parse_imad(form_id: u32, subs: &[SubRecord]) -> ImadRecord {
     // is unchanged.
     let common = CommonNamedFields::from_subs_with_remap(subs, &None);
     out.editor_id = common.editor_id;
+    // (brightness, contrast) cinematic code bytes; saturation is 0x11 on all.
+    let (bri, con) = match game {
+        GameKind::Fallout3NV => (0x14u8, 0x13u8),
+        _ => (0x12, 0x13),
+    };
     for sub in subs {
+        if let [code, b'I', b'A', b'D'] = sub.sub_type {
+            let (mult, add) = (code & !0x40, code & 0x40 != 0);
+            let channel = match mult {
+                0x11 => Some((&mut out.saturation_mult, &mut out.saturation_add)),
+                c if c == bri => Some((&mut out.brightness_mult, &mut out.brightness_add)),
+                c if c == con => Some((&mut out.contrast_mult, &mut out.contrast_add)),
+                _ => None,
+            };
+            if let Some((m, a)) = channel {
+                push_scalar(if add { a } else { m }, &sub.data);
+            }
+            continue;
+        }
         match &sub.sub_type {
             b"DNAM" => {
                 if let Some(bytes) = sub.data.get(0..4) {
@@ -141,12 +177,6 @@ pub fn parse_imad(form_id: u32, subs: &[SubRecord]) -> ImadRecord {
             b"NAM1" => push_scalar(&mut out.radial_blur_ramp_down, &sub.data),
             b"NAM2" => push_scalar(&mut out.radial_blur_down_start, &sub.data),
             b"NAM4" => push_scalar(&mut out.motion_blur_strength, &sub.data),
-            [0x11, b'I', b'A', b'D'] => push_scalar(&mut out.saturation_mult, &sub.data),
-            b"QIAD" => push_scalar(&mut out.saturation_add, &sub.data),
-            [0x12, b'I', b'A', b'D'] => push_scalar(&mut out.brightness_mult, &sub.data),
-            b"RIAD" => push_scalar(&mut out.brightness_add, &sub.data),
-            [0x13, b'I', b'A', b'D'] => push_scalar(&mut out.contrast_mult, &sub.data),
-            b"SIAD" => push_scalar(&mut out.contrast_add, &sub.data),
             _ => {}
         }
     }
@@ -191,6 +221,7 @@ mod tests {
                 sub(&[0x11, b'I', b'A', b'D'], scalar),
                 sub(b"TNAM", color),
             ],
+            GameKind::Skyrim,
         );
 
         assert_eq!(record.editor_id, "PlayerAlduinIMOD");
@@ -203,6 +234,42 @@ mod tests {
         assert_eq!(record.tint_color[0].color, [1.0, 0.5, 0.25, 0.75]);
     }
 
+    /// FO3/FNV order the cinematic block Saturation / Contrast Avg Lum /
+    /// Contrast / Brightness (`0x11..=0x14`, the IMGS order — see
+    /// [`parse_imad`]), Skyrim+ Saturation / Brightness / Contrast — the same
+    /// code byte means a different channel per game.
+    #[test]
+    fn cinematic_codes_follow_the_game_layout() {
+        let key = |value: f32| {
+            let mut bytes = 0.0f32.to_le_bytes().to_vec();
+            bytes.extend_from_slice(&value.to_le_bytes());
+            bytes
+        };
+        let subs = [
+            sub(&[0x11, b'I', b'A', b'D'], key(0.5)),
+            sub(&[0x51, b'I', b'A', b'D'], key(0.05)),
+            sub(&[0x12, b'I', b'A', b'D'], key(1.2)),
+            sub(&[0x52, b'I', b'A', b'D'], key(0.02)),
+            sub(&[0x13, b'I', b'A', b'D'], key(0.7)),
+            sub(&[0x14, b'I', b'A', b'D'], key(0.9)),
+            sub(&[0x54, b'I', b'A', b'D'], key(0.04)),
+        ];
+        let fnv = parse_imad(1, &subs, GameKind::Fallout3NV);
+        assert_eq!(fnv.saturation_mult[0].value, 0.5);
+        assert_eq!(fnv.saturation_add[0].value, 0.05);
+        // 0x12/0x52 is the contrast pivot on FO3/FNV — never the contrast.
+        assert_eq!(fnv.contrast_mult[0].value, 0.7);
+        assert!(fnv.contrast_add.is_empty());
+        assert_eq!(fnv.brightness_mult[0].value, 0.9);
+        assert_eq!(fnv.brightness_add[0].value, 0.04);
+
+        let skyrim = parse_imad(1, &subs, GameKind::Skyrim);
+        assert_eq!(skyrim.brightness_mult[0].value, 1.2);
+        assert_eq!(skyrim.brightness_add[0].value, 0.02);
+        assert_eq!(skyrim.contrast_mult[0].value, 0.7);
+        assert!(skyrim.contrast_add.is_empty());
+    }
+
     #[test]
     fn ignores_truncated_keys_and_keeps_safe_center() {
         let record = parse_imad(
@@ -212,6 +279,7 @@ mod tests {
                 sub(b"BNAM", vec![0; 7]),
                 sub(b"TNAM", vec![0; 19]),
             ],
+            GameKind::Skyrim,
         );
         assert_eq!(record.radial_blur_center, [0.5, 0.5]);
         assert!(record.blur_radius.is_empty());

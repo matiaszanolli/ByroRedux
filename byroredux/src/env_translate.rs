@@ -34,6 +34,7 @@ use byroredux_core::ecs::components::water::{
 use byroredux_plugin::esm;
 use byroredux_plugin::esm::cell::WorldspaceRecord;
 use byroredux_plugin::esm::reader::GameKind;
+use byroredux_plugin::esm::records::weather::SKY_TIME_SLOTS;
 use byroredux_plugin::esm::records::{ClimateRecord, WeatherRecord};
 
 use crate::components::{
@@ -1630,20 +1631,24 @@ pub(crate) fn translate_weather(
             .map_or(1.0, |hdr| hdr.sunlight_dimmer.max(0.0)),
         // #4914 — resolved at this boundary, not patched by the caller:
         // the weather's IMSP, else the worldspace's inherited INAM, else
-        // the identity grade (#4416).
+        // the identity grade (#4416), with FO3/FNV's per-TOD weather IMAD
+        // folded on top.
         image_space: imgs.resolve(Some(wthr)),
     }
 }
 
-/// #4416 — the worldspace and IMGS tables an exterior's base image space is
-/// resolved from, handed to [`translate_weather`] so the translation is the
-/// single authority for the whole `WeatherDataRes` (#4914: the caller-side
-/// patch left `image_space` identity-shaped at the boundary, and a second
-/// caller would have silently rendered ungraded exteriors).
+/// #4416 — the worldspace, IMGS and IMAD tables an exterior's base image
+/// space is resolved from, handed to [`translate_weather`] so the
+/// translation is the single authority for the whole `WeatherDataRes`
+/// (#4914: the caller-side patch left `image_space` identity-shaped at the
+/// boundary, and a second caller would have silently rendered ungraded
+/// exteriors).
 pub(crate) struct ImageSpaceSources<'a> {
     pub worldspaces: &'a HashMap<String, WorldspaceRecord>,
     pub worldspace_key: &'a str,
     pub image_spaces: &'a HashMap<u32, byroredux_plugin::esm::records::ImgsRecord>,
+    /// The IMAD table, for FO3/FNV's per-TOD weather modifiers.
+    pub modifiers: &'a HashMap<u32, byroredux_plugin::esm::records::ImadRecord>,
 }
 
 impl ImageSpaceSources<'_> {
@@ -1657,43 +1662,80 @@ impl ImageSpaceSources<'_> {
         static EMPTY_IMAGE_SPACES: std::sync::LazyLock<
             HashMap<u32, byroredux_plugin::esm::records::ImgsRecord>,
         > = std::sync::LazyLock::new(HashMap::new);
+        static EMPTY_MODIFIERS: std::sync::LazyLock<
+            HashMap<u32, byroredux_plugin::esm::records::ImadRecord>,
+        > = std::sync::LazyLock::new(HashMap::new);
         Self {
             worldspaces: &EMPTY_WORLDSPACES,
             worldspace_key: "",
             image_spaces: &EMPTY_IMAGE_SPACES,
+            modifiers: &EMPTY_MODIFIERS,
         }
     }
 
-    /// An exterior's base image space per WTHR time-of-day slot (Sunrise,
-    /// Day, Sunset, Night), the canonical grade `weather_system` samples.
-    /// Precedence, per the record definitions (xEdit, #4416):
+    /// An exterior's image space per sky-colour time-of-day slot (Sunrise,
+    /// Day, Sunset, Night, High Noon, Midnight — the NAM0 order), the
+    /// canonical grade `weather_system` samples. The base grade, per the
+    /// record definitions (xEdit, #4416):
     ///
-    /// 1. The weather's own `IMSP` (Skyrim/FO4). A NULL slot is the identity.
+    /// 1. The weather's own `IMSP` (Skyrim/FO4). A NULL slot is the identity;
+    ///    High Noon / Midnight read Day / Night (IMSP authors four slots).
     /// 2. Otherwise the worldspace's `INAM` (FO3/FNV), inherited up the `WNAM`
     ///    chain through PNAM bit 5 ("Use Image Space Data") like the other
-    ///    inheritable worldspace fields, in all four slots.
+    ///    inheritable worldspace fields, in every slot.
     /// 3. Otherwise the identity grade.
     ///
     /// An IMGS FormID with no decodable grade also reads as the identity.
-    pub(crate) fn resolve(&self, weather: Option<&WeatherRecord>) -> [byroredux_scripting::ImageSpace; 4] {
+    ///
+    /// FO3/FNV then fold the weather's per-slot IMAD (`\x00IAD`..`\x05IAD`)
+    /// over that base — the weather's colour grade: the Mojave's amber noon,
+    /// The Pitt's haze, Point Lookout's swamp cast, Anchorage's simulation
+    /// grade. Per the GECK ("an imagespace modifier attached to a weather is
+    /// active whenever that weather is active"; a non-*Animatable* modifier
+    /// ignores its duration) it applies at full strength, held at its first
+    /// key (`t = 0`): every vanilla weather IMAD is non-animatable and keys
+    /// its authored grade at `t = 0`, with editor-default keys after it (FO3
+    /// `WastelandDayISFX`'s `t = 1` tint is pure blue at full weight). A slot
+    /// with no IMAD — every FO3 High Noon / Midnight — reads Day / Night's,
+    /// the same synthesis the 4-slot NAM0 tables get (#533).
+    pub(crate) fn resolve(
+        &self,
+        weather: Option<&WeatherRecord>,
+    ) -> [byroredux_scripting::ImageSpace; SKY_TIME_SLOTS] {
+        use crate::systems::weather::fold_to_four_tod_slots;
         let decode = |form: Option<u32>| {
             form.and_then(|form| self.image_spaces.get(&form))
                 .and_then(|imgs| imgs.image_space)
                 .unwrap_or_default()
         };
-        if let Some(slots) = weather
+        let base: [byroredux_scripting::ImageSpace; SKY_TIME_SLOTS] = match weather
             .map(|w| w.image_spaces)
             .filter(|slots| slots.iter().any(Option::is_some))
         {
-            return slots.map(decode);
-        }
-        let worldspace = inherit_up_chain(
-            self.worldspaces,
-            self.worldspace_key,
-            pnam::INHERIT_IMAGE_SPACE,
-            |_, w| w.image_space_form,
-        );
-        [decode(worldspace); 4]
+            Some(slots) => std::array::from_fn(|slot| decode(slots[fold_to_four_tod_slots(slot)])),
+            None => {
+                let worldspace = inherit_up_chain(
+                    self.worldspaces,
+                    self.worldspace_key,
+                    pnam::INHERIT_IMAGE_SPACE,
+                    |_, w| w.image_space_form,
+                );
+                [decode(worldspace); SKY_TIME_SLOTS]
+            }
+        };
+        let Some(weather) = weather else {
+            return base;
+        };
+        let modifiers = &weather.image_space_modifiers;
+        std::array::from_fn(|slot| {
+            let form = modifiers[slot].or(modifiers[fold_to_four_tod_slots(slot)]);
+            match form.and_then(|form| self.modifiers.get(&form)) {
+                Some(imad) => {
+                    byroredux_scripting::cinematic::apply_image_space_modifier(base[slot], imad, 0.0, 1.0)
+                }
+                None => base[slot],
+            }
+        })
     }
 }
 
@@ -2099,13 +2141,14 @@ mod tests {
                 worldspaces,
                 worldspace_key: "c",
                 image_spaces: &image_spaces,
+                modifiers: &HashMap::new(),
             }
             .resolve(weather)
         };
 
         assert_eq!(
             resolve(None, &inheriting),
-            [grade(0.8); 4],
+            [grade(0.8); 6],
             "inherited INAM"
         );
         let not_flagged = parent_child(
@@ -2116,7 +2159,7 @@ mod tests {
             0,
             WorldspaceRecord::default(),
         );
-        assert_eq!(resolve(None, &not_flagged), [ImageSpace::default(); 4]);
+        assert_eq!(resolve(None, &not_flagged), [ImageSpace::default(); 6]);
 
         let weather = WeatherRecord {
             image_spaces: [Some(0xA1), None, Some(0xA1), Some(0xFFFF)],
@@ -2128,10 +2171,100 @@ mod tests {
                 grade(0.5),
                 ImageSpace::default(),
                 grade(0.5),
+                ImageSpace::default(),
+                ImageSpace::default(),
                 ImageSpace::default()
             ],
-            "IMSP wins; NULL and unknown slots are the identity"
+            "IMSP wins; NULL and unknown slots are the identity; High Noon / \
+             Midnight read Day / Night"
         );
+    }
+
+    /// FO3/FNV — the weather's per-TOD IMAD folds over the worldspace's
+    /// `INAM` grade at full strength, held at its first key: "multiply by
+    /// zero and add the target" sets a channel, a plain multiply scales the
+    /// base, and the tint composites by alpha. A slot with no IMAD (FO3's
+    /// High Noon / Midnight) reads Day / Night's; FNV's authored High Noon
+    /// stays its own.
+    #[test]
+    fn weather_imad_folds_over_the_worldspace_grade_per_slot() {
+        use byroredux_plugin::esm::records::{ImadColorKey, ImadRecord, ImadScalarKey, ImgsRecord};
+        use byroredux_plugin::esm::records::weather::{TOD_DAY, TOD_HIGH_NOON, TOD_MIDNIGHT, TOD_NIGHT, TOD_SUNRISE};
+        use byroredux_scripting::ImageSpace;
+
+        let key = |time, value| ImadScalarKey { time, value };
+        // NVDefaultExterior-shaped base: warm tint at 33%.
+        let base = ImageSpace {
+            saturation: 1.1,
+            brightness: 1.0,
+            contrast: 1.1,
+            tint_color: [1.0, 0.5, 0.0, 0.33],
+        };
+        let image_spaces = HashMap::from([(
+            0xB0,
+            ImgsRecord {
+                form_id: 0xB0,
+                image_space: Some(base),
+                ..Default::default()
+            },
+        )]);
+        let worldspaces = HashMap::from([(
+            "w".to_string(),
+            WorldspaceRecord {
+                image_space_form: Some(0xB0),
+                ..Default::default()
+            },
+        )]);
+        let day = ImadRecord {
+            form_id: 0xD1,
+            // Set: mult 0 + add 0.875 at t=0, editor-default identity at t=1.
+            saturation_mult: vec![key(0.0, 0.0), key(1.0, 1.0)],
+            saturation_add: vec![key(0.0, 0.875), key(1.0, 0.0)],
+            // Scale: x1.3 at t=0.
+            brightness_mult: vec![key(0.0, 1.3), key(1.0, 1.1)],
+            tint_color: vec![
+                ImadColorKey { time: 0.0, color: [0.0, 0.0, 1.0, 0.5] },
+                // The editor default after the authored key: pure blue at full
+                // weight. Sampling it would paint the exterior blue.
+                ImadColorKey { time: 1.0, color: [0.0, 0.0, 1.0, 1.0] },
+            ],
+            ..Default::default()
+        };
+        let noon = ImadRecord {
+            form_id: 0xD2,
+            contrast_mult: vec![key(0.0, 0.0)],
+            contrast_add: vec![key(0.0, 1.5)],
+            ..Default::default()
+        };
+        let modifiers = HashMap::from([(0xD1, day), (0xD2, noon)]);
+        let sources = ImageSpaceSources {
+            worldspaces: &worldspaces,
+            worldspace_key: "w",
+            image_spaces: &image_spaces,
+            modifiers: &modifiers,
+        };
+
+        let mut weather = WeatherRecord::default();
+        weather.image_space_modifiers[TOD_DAY] = Some(0xD1);
+        let slots = sources.resolve(Some(&weather));
+        assert_eq!(slots[TOD_SUNRISE], base, "no IMAD: the worldspace grade");
+        assert_eq!(slots[TOD_NIGHT], base);
+        assert_eq!(slots[TOD_MIDNIGHT], base, "Midnight reads Night's (none)");
+        let graded = slots[TOD_DAY];
+        assert_eq!(graded.saturation, 0.875, "mult 0 + add sets the channel");
+        assert!((graded.brightness - 1.3).abs() < 1e-6, "a plain mult scales the base");
+        assert_eq!(graded.contrast, base.contrast, "an unauthored channel is untouched");
+        // GECK tint rule: alpha-weighted average of the base's warm 0.33 and
+        // the IMAD's blue 0.5, at the highest alpha.
+        assert_eq!(graded.tint_color[3], 0.5);
+        assert!((graded.tint_color[2] - 0.5 / 0.83).abs() < 1e-6, "blue weighs 0.5 of 0.83");
+        assert!((graded.tint_color[0] - 0.33 / 0.83).abs() < 1e-6);
+        assert_eq!(slots[TOD_HIGH_NOON], graded, "FO3: High Noon reads Day's IMAD");
+
+        weather.image_space_modifiers[TOD_HIGH_NOON] = Some(0xD2);
+        let slots = sources.resolve(Some(&weather));
+        assert_eq!(slots[TOD_HIGH_NOON].contrast, 1.5, "FNV: High Noon keeps its own IMAD");
+        assert_eq!(slots[TOD_HIGH_NOON].saturation, base.saturation);
     }
 
     /// #4914 — the boundary, not the caller, owns the image space: a
@@ -2166,6 +2299,7 @@ mod tests {
             worldspaces: &HashMap::new(),
             worldspace_key: "c",
             image_spaces: &image_spaces,
+            modifiers: &HashMap::new(),
         };
         let wd = translate_weather(&weather, None, &sources);
         assert_eq!(wd.image_space[0].saturation, 0.5);
@@ -2178,7 +2312,7 @@ mod tests {
 
         // The empty sources reproduce the pre-#4914 fallback: identity.
         let fallback = translate_weather(&weather, None, &ImageSpaceSources::empty());
-        assert_eq!(fallback.image_space, [ImageSpace::default(); 4]);
+        assert_eq!(fallback.image_space, [ImageSpace::default(); 6]);
     }
 
     fn parent_child(

@@ -126,7 +126,7 @@ pub(super) fn dispatch_misc_stub_group(
         b"IMAD" => extract_records(reader, end, b"IMAD", &mut |fid, subs| {
             index
                 .imagespace_modifiers
-                .insert(fid, parse_imad(fid, subs));
+                .insert(fid, parse_imad(fid, subs, game));
         })?,
         b"LSCR" => {
             super::grup_walker::extract_records_with_flags(

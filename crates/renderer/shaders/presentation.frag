@@ -234,9 +234,16 @@ void main() {
     vec3 graded = mix(vec3(luminance), scene.rgb, max(params.grade.x, 0.0));
     graded = (graded - vec3(0.18)) * max(params.grade.z, 0.0) + vec3(0.18);
     graded *= max(params.grade.y, 0.0);
+    // Cinematic tint: blend toward the graded luminance carried in the tint
+    // hue. Both CK wikis (GECK + Creation Kit, "ImageSpace Modifiers" /
+    // Cinematic / Tint): at full alpha it "will render the entire scene in
+    // shades of the RGB color", and "will never raise the color level high
+    // enough to completely wash out the scene". A plain multiply instead
+    // darkened every hue away from the tint (blue sky under the Mojave's
+    // amber went near-black) rather than shifting it toward the tint.
     graded = mix(
         graded,
-        graded * normalizedLegacyColor(params.tintColor.rgb),
+        vec3(dot(graded, LUMA_REC709)) * normalizedLegacyColor(params.tintColor.rgb),
         clamp(params.tintColor.a, 0.0, 1.0)
     );
     float exposure = texelFetch(exposureTex, ivec2(0), 0).r;

@@ -369,7 +369,8 @@ fn apply_environment(
         }
         // Full NAM0 table + per-climate TOD breakpoints + Skyrim DALC cube
         // (Z-up→Y-up once) + the exterior's base image space (this weather's
-        // IMSP, else the worldspace's inherited INAM, #4914/#4416), all
+        // IMSP, else the worldspace's inherited INAM, #4914/#4416, plus the
+        // FO3/FNV weather IMAD per time of day), all
         // resolved at the EXAL boundary — the translation is the single
         // authority for the whole WeatherDataRes.
         let new_weather = crate::env_translate::translate_weather(
@@ -379,6 +380,7 @@ fn apply_environment(
                 worldspaces: &wctx.record_index.cells.worldspaces,
                 worldspace_key: &wctx.worldspace_key,
                 image_spaces: &wctx.record_index.image_spaces,
+                modifiers: &wctx.record_index.imagespace_modifiers,
             },
         );
         // First-time bootstrap: insert directly. A subsequent worldspace

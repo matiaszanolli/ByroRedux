@@ -479,32 +479,21 @@ fn assemble_image_space_frame(
             radial_center_weight += weight;
         }
 
-        apply_grade(
-            &mut frame.saturation,
-            &record.saturation_mult,
-            &record.saturation_add,
+        let graded = apply_image_space_modifier(
+            ImageSpace {
+                saturation: frame.saturation,
+                brightness: frame.brightness,
+                contrast: frame.contrast,
+                tint_color: frame.tint_color,
+            },
+            record,
             time,
             strength,
         );
-        apply_grade(
-            &mut frame.brightness,
-            &record.brightness_mult,
-            &record.brightness_add,
-            time,
-            strength,
-        );
-        apply_grade(
-            &mut frame.contrast,
-            &record.contrast_mult,
-            &record.contrast_add,
-            time,
-            strength,
-        );
-        composite_color(
-            &mut frame.tint_color,
-            sample_color(&record.tint_color, time, [1.0, 1.0, 1.0, 0.0]),
-            strength,
-        );
+        frame.saturation = graded.saturation;
+        frame.brightness = graded.brightness;
+        frame.contrast = graded.contrast;
+        frame.tint_color = graded.tint_color;
         composite_color(
             &mut frame.fade_color,
             sample_color(&record.fade_color, time, [0.0; 4]),
@@ -519,6 +508,46 @@ fn assemble_image_space_frame(
         ];
     }
     frame
+}
+
+/// The cinematic half of one IMAD sample applied to a grade: saturation,
+/// brightness and contrast as `value x mult + add`, the tint blended per
+/// [`blend_tint`] (see [`assemble_image_space_frame`]). Shared by the per-frame
+/// scripted-IMAD fold and the translation-time fold of FO3/FNV weather IMADs
+/// onto a worldspace's base image space, so both obey one rule.
+pub fn apply_image_space_modifier(
+    mut grade: ImageSpace,
+    record: &ImadRecord,
+    time: f32,
+    strength: f32,
+) -> ImageSpace {
+    apply_grade(
+        &mut grade.saturation,
+        &record.saturation_mult,
+        &record.saturation_add,
+        time,
+        strength,
+    );
+    apply_grade(
+        &mut grade.brightness,
+        &record.brightness_mult,
+        &record.brightness_add,
+        time,
+        strength,
+    );
+    apply_grade(
+        &mut grade.contrast,
+        &record.contrast_mult,
+        &record.contrast_add,
+        time,
+        strength,
+    );
+    blend_tint(
+        &mut grade.tint_color,
+        sample_color(&record.tint_color, time, [1.0, 1.0, 1.0, 0.0]),
+        strength,
+    );
+    grade
 }
 
 fn apply_grade(
@@ -594,6 +623,29 @@ fn sample_color(keys: &[ImadColorKey], time: f32, default: [f32; 4]) -> [f32; 4]
     )
 }
 
+/// Tint stacking per the GECK / Creation Kit "ImageSpace Modifiers" page:
+/// "the final tint color RGB ... is the weighted average of all the tint
+/// colors (the tint alpha is the weight). The alpha of the final tint color
+/// is the highest alpha from all the active modifiers." The base image
+/// space's tint takes part as one more weighted colour. `target` carries the
+/// tints folded so far as a single participant weighted by its alpha, which
+/// is exact for the common base + one modifier and keeps the highest-alpha
+/// rule exact for any count. (Alpha-over compositing instead compounded the
+/// strengths — the Mojave's 0.33 base + 0.39 weather tint read as 0.59.)
+fn blend_tint(target: &mut [f32; 4], source: [f32; 4], strength: f32) {
+    let weight = (source[3] * strength).clamp(0.0, 1.0);
+    let prior = target[3].clamp(0.0, 1.0);
+    let total = weight + prior;
+    if total > f32::EPSILON {
+        for channel in 0..3 {
+            target[channel] = (source[channel] * weight + target[channel] * prior) / total;
+        }
+    }
+    target[3] = prior.max(weight);
+}
+
+/// Alpha-over compositing, for the fade colour: a fade must be able to reach
+/// full coverage over whatever is beneath it.
 fn composite_color(target: &mut [f32; 4], source: [f32; 4], strength: f32) {
     let alpha = (source[3] * strength).clamp(0.0, 1.0);
     let prior_alpha = target[3].clamp(0.0, 1.0);
@@ -797,7 +849,8 @@ mod tests {
 
     /// #4416 — with no IMAD active the frame IS the cell's base image space;
     /// an active IMAD applies `base x mult + add` on top of it (not onto
-    /// the identity), and its tint composites over the base tint by alpha.
+    /// the identity), and its tint blends with the base tint per the GECK
+    /// rule: alpha-weighted average colour, highest alpha.
     #[test]
     fn imads_compose_onto_the_base_image_space() {
         const IMAD: u32 = 0x0010_1DAD;
@@ -845,9 +898,8 @@ mod tests {
         assert!((frame.saturation - 0.4).abs() < 1e-6, "0.8 x 0.5");
         assert!((frame.brightness - 1.45).abs() < 1e-6, "1.2 x 1 + 0.25");
         assert_eq!(frame.contrast, 1.4, "no contrast tracks: the base stands");
-        // Alpha-over: 0.5 + 0.5 x (1 - 0.5) = 0.75 combined weight.
-        assert!((frame.tint_color[3] - 0.75).abs() < 1e-6);
-        assert!(frame.tint_color[0] > 0.0 && frame.tint_color[2] > 0.0);
+        // Red @ 0.5 and blue @ 0.5: an even average, the highest alpha.
+        assert_eq!(frame.tint_color, [0.5, 0.0, 0.5, 0.5]);
     }
 
     /// Regression for #2260 (TD2-101): pin `sample_scalar`'s keyed-lerp

@@ -710,8 +710,9 @@ fn sample_dalc_cube(
 
 /// The 6-slot sky-colour TOD index onto 4-slot WTHR data (sunrise, day,
 /// sunset, night): high_noon reads day, midnight reads night. Shared by
-/// every 4-slot consumer ([`sample_dalc_cube`], [`sample_image_space`],
-/// and `env_translate::weather_sky_state`'s seed — #5178).
+/// every 4-slot consumer ([`sample_dalc_cube`], the image-space resolve's
+/// `IMSP` / FO3 IMAD synthesis, and `env_translate::weather_sky_state`'s
+/// seed — #5178).
 pub(crate) fn fold_to_four_tod_slots(slot: usize) -> usize {
     use byroredux_plugin::esm::records::weather::*;
     match slot {
@@ -722,14 +723,15 @@ pub(crate) fn fold_to_four_tod_slots(slot: usize) -> usize {
 }
 
 /// #4416 — the exterior base image space at the colour interpolator's
-/// `(slot_a, slot_b, t)`, over the 4-slot `IMSP` table.
+/// `(slot_a, slot_b, t)`, over the same 6-slot table as the sky colours
+/// (FNV authors distinct High Noon / Midnight weather IMADs).
 fn sample_image_space(
-    slots: &[byroredux_scripting::ImageSpace; 4],
+    slots: &[byroredux_scripting::ImageSpace; byroredux_plugin::esm::records::weather::SKY_TIME_SLOTS],
     slot_a: usize,
     slot_b: usize,
     t: f32,
 ) -> byroredux_scripting::ImageSpace {
-    slots[fold_to_four_tod_slots(slot_a)].lerp(slots[fold_to_four_tod_slots(slot_b)], t)
+    slots[slot_a].lerp(slots[slot_b], t)
 }
 
 /// #2816 — a flat, isotropic stand-in cube for the side of a WTHR
@@ -2223,11 +2225,12 @@ mod interior_gate_tests {
     }
 
     /// #4416 — in an exterior the weather system publishes the base image
-    /// space sampled at the live hour (noon folds onto the Day slot); in an
-    /// interior it leaves the cell's own `XCIM` grade alone.
+    /// space sampled at the live hour (noon samples the High Noon slot, which
+    /// the translation fills from Day when unauthored); in an interior it
+    /// leaves the cell's own `XCIM` grade alone.
     #[test]
     fn exterior_image_space_is_published_and_interior_one_kept() {
-        use byroredux_plugin::esm::records::weather::{TOD_DAY, TOD_NIGHT};
+        use byroredux_plugin::esm::records::weather::{TOD_DAY, TOD_HIGH_NOON, TOD_NIGHT};
         use byroredux_scripting::{ImageSpace, ImageSpaceBase};
         let day = ImageSpace {
             saturation: 0.7,
@@ -2244,6 +2247,7 @@ mod interior_gate_tests {
             {
                 let mut wd = world.resource_mut::<WeatherDataRes>();
                 wd.image_space[TOD_DAY] = day;
+                wd.image_space[TOD_HIGH_NOON] = day;
                 wd.image_space[TOD_NIGHT] = ImageSpace {
                     saturation: 0.1,
                     ..ImageSpace::default()
@@ -2266,7 +2270,7 @@ mod interior_gate_tests {
     /// session. Post-completion frames must publish the target's grade.
     #[test]
     fn image_space_is_promoted_when_the_transition_completes() {
-        use byroredux_plugin::esm::records::weather::TOD_DAY;
+        use byroredux_plugin::esm::records::weather::{TOD_DAY, TOD_HIGH_NOON};
         use byroredux_scripting::{ImageSpace, ImageSpaceBase};
         let source_grade = ImageSpace {
             saturation: 0.7,
@@ -2281,6 +2285,7 @@ mod interior_gate_tests {
         {
             let mut wd = world.resource_mut::<WeatherDataRes>();
             wd.image_space[TOD_DAY] = source_grade;
+            wd.image_space[TOD_HIGH_NOON] = source_grade;
         }
         // `WeatherDataRes` is neither Clone nor Default; the target is the
         // same neutral snapshot `build_world` inserts, with its own grade.
@@ -2308,6 +2313,7 @@ mod interior_gate_tests {
             image_space: Default::default(),
         };
         target.image_space[TOD_DAY] = target_grade;
+        target.image_space[TOD_HIGH_NOON] = target_grade;
         // A tenth of a second from completion.
         world.insert_resource(WeatherTransitionRes {
             target,
