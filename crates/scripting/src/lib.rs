@@ -88,7 +88,8 @@ pub use fragment::{
 pub use globals::Globals;
 pub use load_order::LoadOrderIdentity;
 pub use magic::{
-    add_spell, remove_spell, CanonicalSpell, ConstantModifier, SpellCatalog, SpellList,
+    add_race_spells, add_spell, remove_race_spells, remove_spell, CanonicalSpell,
+    ConstantModifier, RaceSpells, SpellCatalog, SpellList,
 };
 pub use obscript::{
     decode_extender_calls, legacy_load_order_call, ObscriptArgument, ObscriptCall, ObscriptDecode,
@@ -179,6 +180,8 @@ pub fn register(world: &mut World) {
     // #4415 — actor spell lists (stamped at spawn, mutated by AddSpell /
     // RemoveSpell effects through `query_mut`, so pre-registered).
     world.register::<SpellList>();
+    // #4415 — the racial SPLO set `AddRaceSpells`/`RemoveRaceSpells` use.
+    world.register::<RaceSpells>();
     // Canonical event markers. OnInitEvent + OnCellLoadEvent +
     // OnTriggerEnterEvent + EquipmentEventBatch join the existing
     // ActivateEvent / HitEvent / TimerExpired in the script-event

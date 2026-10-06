@@ -765,6 +765,28 @@ pub(crate) fn apply_effect(
             }
             None
         }
+        // #4415 — the script-defined racial pair. The racial set was
+        // level-resolved and stamped as `RaceSpells` at spawn, so the apply
+        // needs no index; each member goes through the same add/remove the
+        // scripted `AddSpell` uses (constant modifiers included).
+        Effect::AddRaceSpells { actor } | Effect::RemoveRaceSpells { actor } => {
+            let actor = resolve_actor(vmad, world, context, actor, &deferred.scene_actor_bindings)?;
+            let adding = matches!(effect, Effect::AddRaceSpells { .. });
+            let changed = if adding {
+                crate::magic::add_race_spells(world, actor)
+            } else {
+                crate::magic::remove_race_spells(world, actor)
+            };
+            if !changed {
+                let verb = if adding {
+                    "AddRaceSpells"
+                } else {
+                    "RemoveRaceSpells"
+                };
+                log::debug!("quest {context:?}: {verb} on entity {actor} changed nothing");
+            }
+            None
+        }
         Effect::Wait { .. } | Effect::WaitForActors3DLoaded { .. } => None,
         Effect::Conditional { .. } => {
             unreachable!("conditional effects are expanded by apply_effects")
@@ -1804,6 +1826,8 @@ fn apply_quest_scoped_effect(
         | Effect::EvaluatePackage { .. }
         | Effect::Wait { .. }
         | Effect::WaitForActors3DLoaded { .. }
+        | Effect::AddRaceSpells { .. }
+        | Effect::RemoveRaceSpells { .. }
         | Effect::ProviderCall(_) => {
             unreachable!("object-targeting effects are handled by apply_effect directly")
         }

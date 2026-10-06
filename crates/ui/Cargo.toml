@@ -5,6 +5,7 @@ edition = "2021"
 license.workspace = true
 
 [dependencies]
+flate2 = { workspace = true }
 byroredux-bsa = { workspace = true }
 
 # Ruffle — Rust Flash player (git, pinned to nightly-2026-03-28)

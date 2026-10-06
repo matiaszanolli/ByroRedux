@@ -524,6 +524,11 @@ fn import_asset_paths(
     if !is_swf(movie_data) {
         return Ok((Vec::new(), Vec::new()));
     }
+    // #4470 — dependency movies speak the same Scaleform dialect as the
+    // root (Starfield's imported components carry the same flag-clear
+    // PlaceObject3 records); normalize before the parse.
+    let normalized = crate::prepare::normalize_scaleform_dialect(movie_data);
+    let movie_data: &[u8] = normalized.as_deref().unwrap_or(movie_data);
     let decompressed = swf::decompress_swf(movie_data)
         .map_err(|error| format!("failed to decompress imported Scaleform movie: {error}"))?;
     let movie = swf::parse_swf(&decompressed)

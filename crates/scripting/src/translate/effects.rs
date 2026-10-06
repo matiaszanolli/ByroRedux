@@ -286,6 +286,15 @@ pub enum Effect {
     AddSpell { actor: ActorRef, spell: ObjectRef },
     /// #4415 — `<actor>.RemoveSpell(<spell>)`, undoing the above.
     RemoveSpell { actor: ActorRef, spell: ObjectRef },
+    /// #4415 — `AddRaceSpells()` / `<actor>.AddRaceSpells()`: re-apply the
+    /// actor's RACE-authored `SPLO` set (level-resolved at spawn and held
+    /// as the `RaceSpells` component). Vanilla calls it unqualified from a
+    /// quest script's own helper (MQ101QuestScript), which is why the
+    /// unqualified spelling is the one that must lower.
+    AddRaceSpells { actor: ActorRef },
+    /// #4415 — `RemoveRaceSpells()`: clear exactly the racial set above
+    /// from the actor's live `SpellList` (a scripted `AddSpell` survives).
+    RemoveRaceSpells { actor: ActorRef },
     /// `<actor>.PlayIdle(<idle>)`. The runtime preserves the IDLE FormID as
     /// an animation-backend request even when the current game uses HKX.
     PlayIdle { actor: ActorRef, idle: ObjectRef },
@@ -733,6 +742,8 @@ const EFFECT_PRIMITIVES: &[EffectPrimitive] = &[
     prim_set_unconscious,
     prim_add_spell,
     prim_remove_spell,
+    prim_add_race_spells,
+    prim_remove_race_spells,
     prim_play_idle,
     prim_set_vehicle,
     prim_tether_to_horse,
@@ -1428,6 +1439,59 @@ fn prim_remove_spell(e: &Expr, scope: &Scope) -> Option<Effect> {
         actor: receiver_actor(object, scope)?,
         spell: receiver_object(&args[0].value.node, scope)?,
     })
+}
+
+/// #4415 — `AddRaceSpells` / `RemoveRaceSpells` are *script-defined*
+/// helpers on quest scripts (MQ101QuestScript authors both), not
+/// `actor.psc` methods — the translator sees an unqualified call to the
+/// own script's function. Lowering by name is sound without inlining the
+/// helper's body because the semantic is stateless: re-apply / clear the
+/// actor's race `SPLO` set, which spawn pre-stamped as `RaceSpells`. A
+/// member-call spelling with an actor receiver is accepted too; a
+/// non-actor receiver (the script itself) means the player, the only
+/// object vanilla's helpers touch.
+fn lower_race_spells(e: &Expr, method: &str, adding: bool) -> Option<Effect> {
+    if !prim_race_spells_arity_ok(e, method) {
+        return None;
+    }
+    // Vanilla's helpers act on the player; a receiver is either the script
+    // itself or a player expression, and both mean the player here.
+    Some(if adding {
+        Effect::AddRaceSpells {
+            actor: ActorRef::Player,
+        }
+    } else {
+        Effect::RemoveRaceSpells {
+            actor: ActorRef::Player,
+        }
+    })
+}
+
+/// `Name()` or `<object>.Name()` — argless; anything else declines. The
+/// receiver is NOT distinguished: vanilla's script-defined helpers act on
+/// the player regardless of spelling, so both shapes lower to the player.
+fn prim_race_spells_arity_ok(e: &Expr, method: &str) -> bool {
+    let Expr::Call { callee, args } = e else {
+        return false;
+    };
+    if !args.is_empty() {
+        return false;
+    }
+    match &callee.node {
+        Expr::Ident(name) => name.0.eq_ignore_ascii_case(method),
+        Expr::MemberAccess { member, .. } => member.node.0.eq_ignore_ascii_case(method),
+        _ => false,
+    }
+}
+
+fn prim_add_race_spells(e: &Expr, _scope: &Scope) -> Option<Effect> {
+    // Arity (zero args) is bounded by `prim_race_spells_arity_ok` inside.
+    lower_race_spells(e, "AddRaceSpells", true)
+}
+
+fn prim_remove_race_spells(e: &Expr, _scope: &Scope) -> Option<Effect> {
+    // Arity (zero args) is bounded by `prim_race_spells_arity_ok` inside.
+    lower_race_spells(e, "RemoveRaceSpells", false)
 }
 
 fn prim_play_idle(e: &Expr, scope: &Scope) -> Option<Effect> {

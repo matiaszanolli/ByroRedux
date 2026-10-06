@@ -686,7 +686,13 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // `u64` newtype that is `serde(skip)`-ed inside `QuestStageState`, so
     // no save's bytes change (`quest_revision_keys_never_reach_a_save`
     // still pins that).
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xacde_ab13_0aeb_1996;
+    // 2026-10-06 (#4415) — refreshed WITHOUT a major bump, the file-scoped
+    // sweep class again: `magic.rs` gained the `RaceSpells` component beside
+    // the saved `SpellList`, and the guard's brace-matching sweeps the new
+    // component's definition into the same file's hashed span. `RaceSpells`
+    // itself is deliberately NOT_SAVED (spawn-derived, re-stamped every
+    // reload), so no save's bytes change.
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x459f_a93c_e96d_4e1f;
     // ---- earlier refresh history (kept for the false-positive record) ----
     // 2026-09-21 (W2.10 flip) — refreshed WITHOUT a major bump, the same
     // `VisibilityMask` tuple-struct sweep class as the two entries below:

@@ -146,6 +146,17 @@ impl Component for SpellList {
     type Storage = SparseSetStorage<Self>;
 }
 
+/// #4415 — the actor's RACE-authored `SPLO` set, level-resolved at spawn
+/// (the exact spells `AddRaceSpells` re-applies and `RemoveRaceSpells`
+/// clears). Spawn-derived, re-derived identically on every reload, so it
+/// is deliberately not part of a save.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RaceSpells(pub Vec<u32>);
+
+impl Component for RaceSpells {
+    type Storage = SparseSetStorage<Self>;
+}
+
 /// Put `spell` on `actor` (Papyrus `Actor.AddSpell`) and, if it is a
 /// constant spell, apply its value changes. `false` — and no change — when
 /// the actor already carries it or has no `SpellList`. The second is a
@@ -193,6 +204,37 @@ pub fn remove_spell(world: &World, actor: EntityId, spell: u32) -> bool {
         apply_constant_modifiers(world, actor, spell, -1.0);
     }
     removed
+}
+
+/// #4415 — re-apply the actor's racial `SPLO` set (`AddRaceSpells`): the
+/// spawn-stamped [`RaceSpells`] component minus what the live `SpellList`
+/// already carries. `false` when nothing was missing (Papyrus' idempotent
+/// no-op); logged like [`add_spell`] when the actor has no `SpellList`.
+pub fn add_race_spells(world: &World, actor: EntityId) -> bool {
+    let racial = world
+        .get::<RaceSpells>(actor)
+        .map(|spells| spells.0.clone())
+        .unwrap_or_default();
+    let mut any = false;
+    for &spell in &racial {
+        any |= add_spell(world, actor, spell);
+    }
+    any
+}
+
+/// #4415 — clear exactly the racial set (`RemoveRaceSpells`): every racial
+/// spell still on the live list goes, each undoing its constant modifiers;
+/// a scripted `AddSpell` survives. `false` when none were present.
+pub fn remove_race_spells(world: &World, actor: EntityId) -> bool {
+    let racial = world
+        .get::<RaceSpells>(actor)
+        .map(|spells| spells.0.clone())
+        .unwrap_or_default();
+    let mut any = false;
+    for &spell in &racial {
+        any |= remove_spell(world, actor, spell);
+    }
+    any
 }
 
 /// Apply (`direction` 1) or undo (-1) one spell's constant modifiers on the
@@ -422,5 +464,37 @@ mod tests {
         assert_eq!(health(&world), 100.0);
         assert!(!remove_spell(&world, actor, 0x20));
         assert_eq!(world.get::<SpellList>(actor).unwrap().0, vec![0x21]);
+    }
+
+    /// #4415 — `AddRaceSpells` / `RemoveRaceSpells` operate on exactly the
+    /// spawn-stamped racial set: re-apply adds only what is missing
+    /// (constant modifiers included), clear removes only the racial
+    /// entries and leaves a scripted `AddSpell` alone.
+    #[test]
+    fn race_spell_pair_reapplies_and_clears_only_the_racial_set() {
+        let mut world = World::new();
+        world.register::<SpellList>();
+        world.register::<RaceSpells>();
+        world.insert_resource(SpellCatalog::from_index(&index()));
+        let actor = world.spawn();
+        // Racial set: 0x20 (constant +25 health) and 0x30. Live list starts
+        // with 0x20 already present plus a scripted 0x21.
+        world.insert(actor, RaceSpells(vec![0x20, 0x30]));
+        world.insert(actor, SpellList(vec![0x20, 0x21]));
+
+        assert!(add_race_spells(&world, actor), "0x30 was missing");
+        assert_eq!(
+            world.get::<SpellList>(actor).unwrap().0,
+            vec![0x20, 0x21, 0x30]
+        );
+        assert!(!add_race_spells(&world, actor), "idempotent the second time");
+
+        assert!(remove_race_spells(&world, actor));
+        assert_eq!(
+            world.get::<SpellList>(actor).unwrap().0,
+            vec![0x21],
+            "the scripted AddSpell survives the racial clear"
+        );
+        assert!(!remove_race_spells(&world, actor));
     }
 }

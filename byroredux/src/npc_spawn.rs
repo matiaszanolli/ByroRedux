@@ -149,6 +149,11 @@ fn stamp_spell_list(
     index: &EsmIndex,
 ) {
     let spells = byroredux_plugin::equip::resolve_actor_spells(resolved, index);
+    // #4415 — the racial subset on its own component, so the scripted
+    // AddRaceSpells / RemoveRaceSpells pair can re-apply / clear exactly
+    // it without an index at apply time.
+    let racial = byroredux_plugin::equip::resolve_racial_spells(resolved, index);
+    world.insert(placement_root, byroredux_scripting::RaceSpells(racial));
     if spells.is_empty() {
         world.insert(placement_root, byroredux_scripting::SpellList(spells));
         return;

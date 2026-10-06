@@ -854,18 +854,37 @@ pub fn expand_leveled_spell(form_id: u32, actor_level: i16, index: &EsmIndex, ou
 /// actor's level, duplicates dropped in first-seen order.
 pub fn resolve_actor_spells(resolved: &ResolvedNpc<'_>, index: &EsmIndex) -> Vec<u32> {
     let level = crate::esm::records::effective_actor_level(resolved.stats);
-    let race_spells = index
-        .races
-        .get(&resolved.r#traits.race_form_id)
-        .map(|race| race.spells.as_slice())
-        .unwrap_or_default();
     let mut expanded = Vec::new();
-    for &form_id in resolved.spells.spells.iter().chain(race_spells) {
+    for &form_id in resolved.spells.spells.iter().chain(racial_spells(resolved, index)) {
         expand_leveled_spell(form_id, level, index, &mut expanded);
     }
     let mut seen = std::collections::HashSet::new();
     expanded.retain(|form_id| seen.insert(*form_id));
     expanded
+}
+
+/// #4415 — the actor's RACE-authored `SPLO` set, level-expanded and
+/// deduplicated: exactly the spells Papyrus' `AddRaceSpells` /
+/// `RemoveRaceSpells` re-apply / clear. Spawn stamps it as the
+/// `RaceSpells` component so the scripted pair can operate without an
+/// `EsmIndex` at apply time.
+pub fn resolve_racial_spells(resolved: &ResolvedNpc<'_>, index: &EsmIndex) -> Vec<u32> {
+    let level = crate::esm::records::effective_actor_level(resolved.stats);
+    let mut expanded = Vec::new();
+    for &form_id in racial_spells(resolved, index) {
+        expand_leveled_spell(form_id, level, index, &mut expanded);
+    }
+    let mut seen = std::collections::HashSet::new();
+    expanded.retain(|form_id| seen.insert(*form_id));
+    expanded
+}
+
+fn racial_spells<'a>(resolved: &'a ResolvedNpc<'_>, index: &'a EsmIndex) -> &'a [u32] {
+    index
+        .races
+        .get(&resolved.r#traits.race_form_id)
+        .map(|race| race.spells.as_slice())
+        .unwrap_or_default()
 }
 
 /// The shared leveled-list walk behind [`expand_leveled_form_id`] and

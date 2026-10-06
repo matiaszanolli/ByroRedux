@@ -1082,6 +1082,7 @@ dependencies = [
  "async-channel",
  "byroredux-bsa",
  "byroredux-plugin",
+ "flate2",
  "futures",
  "log",
  "ruffle_core",

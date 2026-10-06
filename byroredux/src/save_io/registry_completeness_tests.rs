@@ -561,6 +561,9 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("RecurringUpdate", "forward-latent — its only writer is unreachable in production today (no live Dlc2Ttr4aPlayerScript spawn site); re-evaluate the moment a real RegisterForUpdate recognizer lands"),
         // RumbleOnActivate: FIXED — registered (#2382 / SAVE-D1-17), no
         // longer allowlisted here.
+        // Spawn-derived at every reload from the RACE SPLO table (#4415);
+        // AddRaceSpells/RemoveRaceSpells re-apply it against the live list.
+        ("RaceSpells", "the actor's RACE SPLO set, level-resolved and re-stamped at every spawn/reload; the scripted AddRaceSpells/RemoveRaceSpells pair re-derives its effect from it (#4415)"),
         ("SceneActionCompletionBatch", "one-shot batch drained every tick by scene_playback_system"),
         ("SceneActorBindings", "fully computed/cached resource, rebuilt from scratch off static registries whenever marked dirty"),
         ("SceneAliasCandidate", "write-once at REFR-spawn time from static reference/base-record identity, re-derived identically every reload"),

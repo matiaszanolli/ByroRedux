@@ -31,6 +31,129 @@
 use url::Url;
 
 use crate::avm2_host::{inject_into_parsed_movie, ScaleformHostObjectState};
+
+/// #4470 — normalize Starfield's Scaleform SWF dialect before Ruffle sees
+/// it. The pinned `swf` reader (`0dde9813`) rejects a `PlaceObject3` whose
+/// flags carry neither `MOVE` nor `HAS_CHARACTER` — "Invalid PlaceObject
+/// type" — while Scaleform's authoring emits exactly that form as a
+/// place-by-class-name record: byte-verified on the shipped
+/// `interface\hudmenu.swf`, all four PlaceObject3 records (nested in
+/// DefineSprites) carry flags `0x0824` = HAS_MATRIX | HAS_NAME |
+/// HAS_CLASS_NAME with both action bits clear.
+///
+/// The shim sets the `MOVE` bit on those records, the nearest action the
+/// stock reader accepts (`PlaceObjectAction::Modify`): length-preserving,
+/// so no tag or stream length is rewritten. The four records degrade to
+/// Modify-at-empty-depth (inert on the first frames they appear in)
+/// instead of failing the whole parse — which is what unblocks menu
+/// loading; the class-instance placement itself remains unmodelled until
+/// an upstream re-pin (#4470 keeps tracking that).
+///
+/// Returns `None` when nothing needed patching (including non-CWS/FWS
+/// containers), so the no-injection fast path can keep the original bytes.
+pub(crate) fn normalize_scaleform_dialect(swf_data: &[u8]) -> Option<Vec<u8>> {
+    const DEFINE_SPRITE: u16 = 39;
+    const PLACE_OBJECT_3: u16 = 70;
+    if swf_data.len() < 8 {
+        return None;
+    }
+    let signature = &swf_data[0..3];
+    let (mut file, compressed): (Vec<u8>, bool) = match signature {
+        b"CWS" => ( decompress_zlib_after_header(swf_data)?, true),
+        b"FWS" => (swf_data.to_vec(), false),
+        // ZWS (LZMA) is not something this shim touches; leave it to the
+        // stock loader.
+        _ => return None,
+    };
+    let tags_start = tag_stream_start(&file)?;
+    let patched = patch_place_object3_stream(&mut file[tags_start..], DEFINE_SPRITE, PLACE_OBJECT_3);
+    if patched == 0 {
+        return None;
+    }
+    // Re-emit uncompressed: FWS signature + fixed total length. The tag
+    // stream's own bytes never moved.
+    file[0..3].copy_from_slice(b"FWS");
+    let len = file.len() as u32;
+    file[4..8].copy_from_slice(&len.to_le_bytes());
+    log::info!(
+        "Scaleform dialect: set MOVE on {patched} PlaceObject3 record(s) with neither          MOVE nor HAS_CHARACTER (Starfield hudmenu class-name places, #4470)"
+    );
+    let _ = compressed;
+    Some(file)
+}
+
+fn decompress_zlib_after_header(swf_data: &[u8]) -> Option<Vec<u8>> {
+    use std::io::Read;
+    let mut out = swf_data[0..8].to_vec();
+    let mut decoder = flate2::read::ZlibDecoder::new(&swf_data[8..]);
+    let mut body = Vec::new();
+    decoder.read_to_end(&mut body).ok()?;
+    out.extend_from_slice(&body);
+    Some(out)
+}
+
+/// Byte offset where the tag stream begins in an uncompressed SWF: skip
+/// the 8-byte file header, the stage RECT (5-bit count + 4 fields), the
+/// frame-rate and frame-count u16s.
+fn tag_stream_start(file: &[u8]) -> Option<usize> {
+    if file.len() < 9 {
+        return None;
+    }
+    let nbits = file[8] >> 3;
+    let total_bits = 5 + nbits as usize * 4;
+    let rect_end = 8 + (total_bits + 7) / 8 + 4;
+    (rect_end < file.len()).then_some(rect_end)
+}
+
+/// Walk a tag stream (and DefineSprite bodies within it), setting MOVE on
+/// every PlaceObject3 whose action bits are both clear. Length-preserving;
+/// returns the patch count.
+fn patch_place_object3_stream(stream: &mut [u8], define_sprite: u16, place_object_3: u16) -> usize {
+    let mut patched = 0;
+    let mut p = 0usize;
+    while p + 2 <= stream.len() {
+        let code_and_len = u16::from_le_bytes([stream[p], stream[p + 1]]);
+        let code = code_and_len >> 6;
+        let mut len = (code_and_len & 0x3F) as usize;
+        let mut hdr = 2usize;
+        if len == 0x3F {
+            if p + 6 > stream.len() {
+                break;
+            }
+            len = u32::from_le_bytes([stream[p + 2], stream[p + 3], stream[p + 4], stream[p + 5]])
+                as usize;
+            hdr = 6;
+        }
+        // An END tag (code 0) closes this stream.
+        if code == 0 {
+            break;
+        }
+        let body_start = p + hdr;
+        let body_end = body_start + len;
+        if body_end > stream.len() {
+            break;
+        }
+        if code == place_object_3 && len >= 4 {
+            let flags = u16::from_le_bytes([stream[body_start], stream[body_start + 1]]);
+            if flags & 0b0000_0000_0000_0011 == 0 {
+                let fixed = flags | 0b1; // MOVE
+                stream[body_start..body_start + 2].copy_from_slice(&fixed.to_le_bytes());
+                patched += 1;
+            }
+        } else if code == define_sprite && len >= 4 {
+            // DefineSprite body: character id u16 + frame count u16, then a
+            // nested (END-terminated) tag stream.
+            patched += patch_place_object3_stream(
+                &mut stream[body_start + 4..body_end],
+                define_sprite,
+                place_object_3,
+            );
+        }
+        p = body_end;
+    }
+    patched
+}
+
 use crate::navigator::import_asset_paths_from_tags;
 use crate::{ScaleformHostCatalog, ScaleformProfile};
 
@@ -78,6 +201,10 @@ pub(crate) fn prepare_movie(
     expected_profile: Option<ScaleformProfile>,
     movie_url: Option<&Url>,
 ) -> Result<PreparedMovie, String> {
+    // #4470 — the dialect shim runs before every stage, so detection,
+    // injection and Ruffle's parse all see the same normalized bytes.
+    let normalized = normalize_scaleform_dialect(swf_data);
+    let swf_data: &[u8] = normalized.as_deref().unwrap_or(swf_data);
     let decompressed =
         swf::decompress_swf(swf_data).map_err(|error| format!("Failed to parse SWF: {error}"))?;
     let profile = ScaleformProfile::from_header(&decompressed.header);
@@ -251,5 +378,115 @@ mod tests {
             ScaleformHostObjectState::NotPresent
         );
         assert_eq!(prepared.data, data);
+    }
+}
+
+// ── #4470 — Starfield's PlaceObject3 dialect ─────────────────────────────
+//
+// hudmenu.swf's four PlaceObject3 records (nested in DefineSprites) carry
+// flags 0x0824 — HAS_MATRIX | HAS_NAME | HAS_CLASS_NAME, action bits both
+// clear — which the pinned swf reader rejects as "Invalid PlaceObject
+// type". The shim sets MOVE, length-preserving.
+
+#[cfg(test)]
+mod dialect_tests {
+    use super::*;
+
+    /// A minimal uncompressed SWF: header (FWS v12), a 1-bit-per-field
+    /// stage RECT, frame rate/count, then the given tag stream and END.
+    fn swf_with_tags(tags: &[u8]) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(b"FWS");
+        out.push(12);
+        out.extend_from_slice(&0u32.to_le_bytes()); // length, fixed below
+        // RECT: nbits=0 → 5 header bits + 0 field bits = 1 byte (0x00).
+        out.push(0x00);
+        out.extend_from_slice(&30u16.to_le_bytes()); // frame rate
+        out.extend_from_slice(&1u16.to_le_bytes()); // frame count
+        out.extend_from_slice(tags);
+        out.extend_from_slice(&[0x00, 0x00]); // END tag
+        let len = out.len() as u32;
+        out[4..8].copy_from_slice(&len.to_le_bytes());
+        out
+    }
+
+    fn tag(code: u16, body: &[u8]) -> Vec<u8> {
+        let mut out = Vec::with_capacity(6 + body.len());
+        out.extend_from_slice(&(((code << 6) | (body.len() as u16 & 0x3F)) as u16).to_le_bytes());
+        out.extend_from_slice(body);
+        out
+    }
+
+    fn sprite(inner: &[u8]) -> Vec<u8> {
+        let mut body = Vec::new();
+        body.extend_from_slice(&7u16.to_le_bytes()); // character id
+        body.extend_from_slice(&1u16.to_le_bytes()); // frame count
+        body.extend_from_slice(inner);
+        body.extend_from_slice(&[0x00, 0x00]); // sprite END
+        tag(39, &body)
+    }
+
+    /// A PlaceObject3 body whose flags carry neither MOVE nor
+    /// HAS_CHARACTER (the Starfield form, 0x0824), depth 0x1125.
+    fn starfield_place3() -> Vec<u8> {
+        let mut body = Vec::new();
+        body.extend_from_slice(&0x0824u16.to_le_bytes()); // flags
+        body.extend_from_slice(&0x1125u16.to_le_bytes()); // depth
+        body.extend_from_slice(b"SomeClass\0");
+        body.extend_from_slice(&[0; 12]); // matrix bits + name stub
+        body
+    }
+
+    #[test]
+    fn shim_sets_move_on_starfield_place_object3_inside_sprites() {
+        let file = swf_with_tags(&sprite(&tag(70, &starfield_place3())));
+        let normalized =
+            normalize_scaleform_dialect(&file).expect("the bad record must be patched");
+        // FWS out, length fixed.
+        assert_eq!(&normalized[0..3], b"FWS");
+        assert_eq!(
+            u32::from_le_bytes(normalized[4..8].try_into().unwrap()) as usize,
+            normalized.len()
+        );
+        // The flags word now carries MOVE (bit 0); nothing else moved.
+        let idx = normalized
+            .windows(2)
+            .position(|w| w == 0x0825u16.to_le_bytes())
+            .expect("flags 0x0824 → 0x0825");
+        assert!(idx > 8);
+        assert!(!normalized.windows(2).any(|w| w == 0x0824u16.to_le_bytes()));
+    }
+
+    #[test]
+    fn clean_movies_and_healthy_place3_are_untouched() {
+        // A healthy PlaceObject3 (HAS_CHARACTER set) must not be rewritten.
+        let mut healthy = starfield_place3();
+        healthy[0..2].copy_from_slice(&0x0826u16.to_le_bytes());
+        let file = swf_with_tags(&sprite(&tag(70, &healthy)));
+        assert!(normalize_scaleform_dialect(&file).is_none());
+        // An ordinary movie without PlaceObject3 at all.
+        let plain = swf_with_tags(&tag(2, &[0x01, 0x00, 0x61, 0x00]));
+        assert!(normalize_scaleform_dialect(&plain).is_none());
+        // A short buffer and a non-SWF signature decline.
+        assert!(normalize_scaleform_dialect(b"ZWS\x00\x00").is_none());
+        assert!(normalize_scaleform_dialect(b"abc").is_none());
+    }
+
+    #[test]
+    fn compressed_container_is_re_emitted_uncompressed() {
+        use std::io::Write;
+        let file = swf_with_tags(&sprite(&tag(70, &starfield_place3())));
+        let mut encoder =
+            flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder.write_all(&file[8..]).unwrap();
+        let body = encoder.finish().unwrap();
+        let mut cws = file[0..8].to_vec();
+        cws[0..3].copy_from_slice(b"CWS");
+        cws.extend_from_slice(&body);
+        let normalized = normalize_scaleform_dialect(&cws).expect("CWS is handled");
+        assert_eq!(&normalized[0..3], b"FWS");
+        assert!(normalize_scaleform_dialect(&cws).is_some());
+        // The patch is visible in the re-emitted stream.
+        assert!(normalized.windows(2).any(|w| w == 0x0825u16.to_le_bytes()));
     }
 }
