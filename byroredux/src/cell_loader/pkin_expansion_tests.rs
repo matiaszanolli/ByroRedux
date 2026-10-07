@@ -3,12 +3,17 @@
 //! Same qualified path preserved (`pkin_expansion_tests::FOO`).
 
 //! Regression tests for #589 (FO4-DIM4-03) — PKIN (Pack-In) REFR
-//! expansion. Every `CNAM` content ref spawns at the outer REFR's
-//! transform. Pre-fix the 872 vanilla Fallout4.esm PKIN records
+//! expansion. Pre-fix the 872 vanilla Fallout4.esm PKIN records
 //! were routed through the MODL-only parser and their CNAM lists
 //! were silently dropped.
+//!
+//! #5231 corrected the model the fixtures below encode: every vanilla
+//! CNAM is the pack-in's template CELL, and vanilla carries zero
+//! PKIN-based REFRs (the CK bakes pack-ins into ordinary REFRs), so the
+//! base-record fan-out shape is the MOD-authored case. The CELL-typed
+//! CNAM behaviour is pinned separately at the bottom.
 use super::*;
-use byroredux_plugin::esm::cell::EsmCellIndex;
+use byroredux_plugin::esm::cell::{CellData, EsmCellIndex};
 use byroredux_plugin::esm::records::{PkinRecord, ScolPart, ScolPlacement, ScolRecord};
 
 fn mk_pkin(form_id: u32, editor_id: &str, contents: Vec<u32>) -> PkinRecord {
@@ -25,6 +30,45 @@ fn mk_pkin(form_id: u32, editor_id: &str, contents: Vec<u32>) -> PkinRecord {
         // shape is unchanged.
         filter: Vec::new(),
     }
+}
+
+/// A minimal CELL with the given form ID — the CNAM target shape of
+/// every vanilla PKIN (#5231). Keyed under any canonical-id string: the
+/// expander's CELL scan reads `form_id` off the values, not the key.
+fn template_cell(form_id: u32, edid: &str) -> (String, CellData) {
+    (
+        edid.to_ascii_lowercase(),
+        CellData {
+            form_id,
+            editor_id: edid.to_string(),
+            display_name: None,
+            references: Vec::new(),
+            is_interior: true,
+            show_sky: None,
+            grid: None,
+            lighting: None,
+            landscape: None,
+            water_height: None,
+            water_height_is_explicit: false,
+            image_space_form: None,
+            water_type_form: None,
+            acoustic_space_form: None,
+            music_type_form: None,
+            music_type_enum: None,
+            climate_override: None,
+            location_form: None,
+            encounter_zone_form: None,
+            regions: Vec::new(),
+            lighting_template_form: None,
+            ownership: None,
+            regional_color_override: None,
+            precombined_mesh_hashes: Vec::new(),
+            absorbed_refs: std::collections::HashSet::new(),
+            navmeshes: Vec::new(),
+            pathgrids: Vec::new(),
+            deleted_refs: Vec::new(),
+        },
+    )
 }
 
 /// Baseline: a base form that isn't a PKIN returns `None` so the
@@ -325,5 +369,56 @@ fn expand_pkin_with_cached_scol_child_does_not_recurse() {
     // Cached path emits SCOL's own form id at outer position — the
     // downstream cell_loader resolves model_path normally.
     assert_eq!(synths[0].0, scol_id);
+    assert_eq!(synths[0].1, outer_pos);
+}
+
+// ── #5231 — CELL-typed CNAMs (every vanilla PKIN) ──────────────────
+
+/// A CNAM that resolves to a CELL is the pack-in's template cell, not a
+/// placeable base: it must be an explicit miss (warn + skip) rather than
+/// a synthetic placement that silently fails every base lookup. An
+/// all-CELL contents list — every vanilla PKIN — returns `None` so the
+/// outer REFR reaches the default single-entry path's miss accounting.
+#[test]
+fn expand_pkin_cell_typed_cnam_is_an_explicit_miss() {
+    let mut index = EsmCellIndex::default();
+    let pkin_id = 0x0069_0001;
+    let template_cell_id = 0x000A_0BCD;
+    index.packins.insert(
+        pkin_id,
+        mk_pkin(pkin_id, "WorkshopPackIn", vec![template_cell_id]),
+    );
+    let (key, cell) = template_cell(template_cell_id, "WorkshopPackInTemplate");
+    index.cells.insert(key, cell);
+
+    let result = expand_pkin_placements(pkin_id, Vec3::ZERO, Quat::IDENTITY, 1.0, &index);
+    assert!(
+        result.is_none(),
+        "an all-CELL contents list must return None — the outer REFR runs the \
+         default path whose miss accounting names it (#5231)"
+    );
+}
+
+/// Mixed contents (the mod-authored shape alongside a template CELL):
+/// the CELL child is skipped with the explicit miss; the base-record
+/// children still fan out at the outer transform.
+#[test]
+fn expand_pkin_skips_the_cell_child_but_fans_out_base_children() {
+    let mut index = EsmCellIndex::default();
+    let pkin_id = 0x0069_0002;
+    let template_cell_id = 0x000A_0BCE;
+    let stat_id = 0x0010_7777;
+    index.packins.insert(
+        pkin_id,
+        mk_pkin(pkin_id, "MixedPackIn", vec![template_cell_id, stat_id]),
+    );
+    let (key, cell) = template_cell(template_cell_id, "MixedPackInTemplate");
+    index.cells.insert(key, cell);
+
+    let outer_pos = Vec3::new(12.0, 34.0, 56.0);
+    let synths = expand_pkin_placements(pkin_id, outer_pos, Quat::IDENTITY, 1.0, &index)
+        .expect("the base-record child must still fan out");
+    assert_eq!(synths.len(), 1, "only the non-CELL child is emitted");
+    assert_eq!(synths[0].0, stat_id);
     assert_eq!(synths[0].1, outer_pos);
 }

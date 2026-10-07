@@ -153,6 +153,75 @@ fn fo4_dialogue_branches_and_categories() {
     }
 }
 
+/// #5231 / FO4-D4-02 — every vanilla PKIN `CNAM` names the pack-in's
+/// template CELL, not a content base record: the CK bakes pack-in
+/// contents into ordinary REFRs at placement time, so 0 vanilla REFRs
+/// place a PKIN. Census (audit FO4-D4-02): Fallout4.esm 872 PKINs, all
+/// CNAMs CELL-typed; DLCRobot 21 PKINs (20 with a CNAM), DLCCoast 64,
+/// DLCworkshop03 6, DLCNukaWorld 46 — all CELL-typed. The pkin.rs doc
+/// model and the spawn-time explicit-miss skip (#5231) rest on this
+/// shape; a non-CELL CNAM here means either a new authoring shape the
+/// docs must cover or a CELL-index regression.
+#[test]
+#[ignore = "needs FO4 game data on disk"]
+fn fo4_pkin_cnam_targets_are_template_cells() {
+    let Some(data) = data_dir(test_paths::FO4_ENV, test_paths::FO4_DEFAULT) else {
+        eprintln!("[FO4/PKIN] skipping: game data unavailable");
+        return;
+    };
+    for name in [
+        "Fallout4.esm",
+        "DLCRobot.esm",
+        "DLCCoast.esm",
+        "DLCworkshop03.esm",
+        "DLCNukaWorld.esm",
+    ] {
+        let path = data.join(name);
+        if !path.is_file() {
+            eprintln!("[FO4/PKIN] skipping {name}: not installed");
+            continue;
+        }
+        let bytes = std::fs::read(&path).expect("read ESM");
+        let index = parse_esm(&bytes).expect("parse ESM");
+        let mut cell_ids: std::collections::HashSet<u32> =
+            index.cells.cells.values().map(|c| c.form_id).collect();
+        for grid in index.cells.exterior_cells.values() {
+            cell_ids.extend(grid.values().map(|c| c.form_id));
+        }
+        cell_ids.extend(
+            index
+                .cells
+                .worldspace_persistent_cells
+                .values()
+                .map(|c| c.form_id),
+        );
+        assert!(
+            !index.cells.packins.is_empty(),
+            "{name}: expected PKIN records"
+        );
+        let mut cell_typed = 0usize;
+        let mut non_cell: Vec<String> = Vec::new();
+        for pkin in index.cells.packins.values() {
+            for &cnam in &pkin.contents {
+                if cell_ids.contains(&cnam) {
+                    cell_typed += 1;
+                } else {
+                    non_cell.push(format!("'{}' CNAM {cnam:#010x}", pkin.editor_id));
+                }
+            }
+        }
+        assert!(
+            non_cell.is_empty(),
+            "{name}: PKIN CNAMs that are not their template CELL ({}): {non_cell:?}",
+            non_cell.len(),
+        );
+        eprintln!(
+            "[FO4/PKIN] {name}: {cell_typed} CELL-typed CNAMs across {} PKINs",
+            index.cells.packins.len()
+        );
+    }
+}
+
 /// #5224 — FO3/FNV author the DIAL topic flags in `DATA` byte 1:
 /// `Top-level` (0x02) marks the topics that open the menu, `Rumors`
 /// (0x01) the radio gossip. Raw census on the GOTY master (audit

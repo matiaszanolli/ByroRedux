@@ -1,22 +1,28 @@
 //! PKIN (Pack-In) — FO4+ reusable content bundle.
 //!
-//! A PKIN groups one or more base records (typically LVLI / CONT /
-//! STAT / MSTT / FURN) behind a single form ID so a level designer
-//! can drop "a generic workbench with loot" as one REFR instead of
-//! authoring every child placement individually. The CELL parser
-//! surfaces the REFR normally; at spawn time the cell loader resolves
-//! the base FormID, sees it's a PKIN, and enumerates the PKIN's
-//! [`PkinRecord::contents`] list — emitting one synthetic placement
-//! per content ref at the outer REFR's transform.
+//! A PKIN names one **template CELL** (`CNAM`) whose references are the
+//! pack-in's contents: a level designer drops the pack-in in the CK and
+//! the CK *bakes* that CELL's placements into ordinary REFRs at placement
+//! time. Vanilla data carries **no PKIN-based REFR** (census, #5231:
+//! 0 across Fallout4.esm and every DLC), so the pack-in never round-trips
+//! through a shipped plugin — the baked REFRs do. The expander's
+//! content-base fan-out below therefore only ever fires on mod-authored
+//! PKIN REFRs; a CELL-typed CNAM (every vanilla one) is logged as an
+//! explicit miss instead, because instancing a template CELL's references
+//! under an outer transform is unimplemented (#5231).
 //!
 //! **Sub-record layout** (per FO4 xEdit v4.2 / UESP `Fallout4Mod:PKIN`):
 //!
 //! - `EDID` — editor ID (z-string; required on vanilla records)
 //! - `FULL` — optional display name (z-string); present on a minority
 //!   of records, usually mod-authored.
-//! - `CNAM` — u32 form ID of the content base record. Vanilla authors
-//!   typically ship a single CNAM per PKIN; we collect every CNAM
-//!   sub-record so authored-multi-child bundles round-trip.
+//! - `CNAM` — u32 form ID of the pack-in's **template CELL** (#5231
+//!   corrected the model: community docs once read this as a content
+//!   base record — LVLI/CONT/STAT — but every vanilla CNAM resolves to a
+//!   CELL: 872/872 Fallout4.esm, 20/21 DLCRobot, 64/64 DLCCoast, 6/6
+//!   DLCworkshop03, 46/46 DLCNukaWorld). Vanilla authors typically ship
+//!   a single CNAM per PKIN; we collect every CNAM sub-record so
+//!   authored-multi-child bundles round-trip.
 //! - `VNAM` — optional u32 form ID (workshop / preview marker).
 //!   Semantics not documented by community tools; captured for future
 //!   consumer wiring.
@@ -33,12 +39,12 @@
 //! Vanilla Fallout4.esm ships 872 PKIN records. Pre-#589 the cell
 //! parser routed PKIN through the MODL-only catch-all at `cell.rs:521`
 //! which silently produced a `StaticObject { model_path: "" }` — the
-//! CNAM-driven content list was discarded on every record. REFR spawn
-//! sites would then see an empty model path, drop through to the
-//! light-only branch (no LIGH data either), and contribute zero world
-//! content.
+//! CNAM list was discarded on every record. REFR spawn sites would then
+//! see an empty model path, drop through to the light-only branch (no
+//! LIGH data either), and contribute zero world content.
 //!
-//! See audit FO4-DIM4-03 / #589.
+//! See audit FO4-DIM4-03 / #589; the CNAM semantic correction is #5231
+//! (FO4-D4-02).
 
 use crate::esm::reader::{FormIdRemap, SubRecord};
 use crate::esm::records::common::{remap_fid, CommonNamedFields};
@@ -50,10 +56,14 @@ pub struct PkinRecord {
     pub editor_id: String,
     /// Display name (`FULL`). Empty when the record omits the sub.
     pub full_name: String,
-    /// Content form IDs resolved from `CNAM` sub-records. Each entry
-    /// points at a LVLI / CONT / STAT / MSTT / FURN (or similar) that
-    /// defines the actual packed content. Vanilla records typically
-    /// carry one CNAM; multi-CNAM records are accepted for safety.
+    /// Form IDs resolved from `CNAM` sub-records. **Every vanilla CNAM is
+    /// the pack-in's template CELL** (#5231) — the CK bakes that CELL's
+    /// placements into ordinary REFRs at drop time, which is why vanilla
+    /// carries no PKIN-based REFR. A base-record (LVLI/CONT/STAT/…)
+    /// CNAM is a mod-authored shape; the spawn-time expander fans those
+    /// out and logs CELL-typed CNAMs as an explicit miss. Vanilla records
+    /// typically carry one CNAM; multi-CNAM records are accepted for
+    /// safety.
     pub contents: Vec<u32>,
     /// Optional `VNAM` form ID — community tools describe this as a
     /// workshop / preview reference. Kept verbatim for future consumer

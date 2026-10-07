@@ -529,13 +529,19 @@ const MAX_PKIN_DEPTH: u32 = 4;
 
 /// Expand a PKIN (Pack-In) REFR into synthetic children.
 ///
-/// PKIN records (FO4+) bundle LVLI / CONT / STAT / MSTT / FURN references
-/// behind a single form ID so a level designer can drop a reusable
-/// "generic workbench with loot" as one REFR. The parser captures every
-/// `CNAM` sub-record into `PkinRecord::contents` at ESM-load time; this
-/// helper fans the REFR out into one synthetic placement per content
-/// entry — all at the SAME outer transform (PKIN carries no per-child
-/// placement data, unlike SCOL).
+/// #5231 (FO4-D4-02) corrected the data model: every vanilla PKIN `CNAM`
+/// names the pack-in's **template CELL**, not a content base — the CK
+/// bakes that CELL's placements into ordinary REFRs at drop time, so
+/// vanilla data contains **zero PKIN-based REFRs** and this expander only
+/// ever runs on mod-authored placements. A CNAM that resolves to a CELL
+/// is logged as an explicit miss and skipped (instancing a template
+/// CELL's references under the outer transform is unimplemented); the
+/// fan-out below is the mod-authored base-record shape, kept from #589.
+///
+/// The parser captures every `CNAM` sub-record into `PkinRecord::contents`
+/// at ESM-load time; this helper fans the REFR out into one synthetic
+/// placement per content entry — all at the SAME outer transform (PKIN
+/// carries no per-child placement data, unlike SCOL).
 ///
 /// PKIN-of-PKIN nesting is resolved recursively up to [`MAX_PKIN_DEPTH`]
 /// levels (#635 / FNV-D3-06) so a child PKIN's contents fan out instead
@@ -547,8 +553,10 @@ const MAX_PKIN_DEPTH: u32 = 4;
 /// the one case that still stays single-level — no LVLI helper exists yet
 /// (#386).
 ///
-/// Returns `None` when the outer REFR's base isn't a PKIN, or when the
-/// PKIN's `contents` list is empty.
+/// Returns `None` when the outer REFR's base isn't a PKIN, when the
+/// PKIN's `contents` list is empty, or when every child was skipped as a
+/// CELL-typed CNAM (the caller then runs the outer REFR through the
+/// default single-entry path, whose miss accounting names it).
 ///
 /// Pre-#589 all 872 vanilla Fallout4.esm PKIN records silently produced
 /// no world content because the MODL-only parser discarded the CNAM
@@ -577,6 +585,20 @@ fn expand_pkin_placements_with_depth(
     }
     let mut out = Vec::with_capacity(pkin.contents.len());
     for &child_form_id in &pkin.contents {
+        // #5231 — a CNAM that resolves to a CELL is the pack-in's template
+        // cell (every vanilla CNAM), not a placeable base. Instancing its
+        // references under the outer transform is unimplemented; skip it
+        // with an explicit miss instead of emitting a synthetic placement
+        // that silently fails every base lookup downstream.
+        if index_resolves_to_cell(index, child_form_id) {
+            log::warn!(
+                "PKIN {base_form_id:#010x} ('{}') CNAM {child_form_id:#010x} is its template \
+                 CELL — pack-in instancing is unimplemented, skipping the synthetic \
+                 placement (#5231)",
+                pkin.editor_id,
+            );
+            continue;
+        }
         // Recurse into nested PKINs up to the depth cap. Past the cap,
         // fall through to the leaf path so the synthetic placement at
         // least gets logged via `stat_miss` accounting (matches pre-#635
@@ -617,7 +639,33 @@ fn expand_pkin_placements_with_depth(
         }
         out.push((child_form_id, outer_pos, outer_rot, outer_scale));
     }
+    // #5231 — an all-CELL contents list (every vanilla PKIN) leaves
+    // nothing placeable; return `None` so the caller runs the outer REFR
+    // through the default single-entry path instead of spawning nothing
+    // without a trace.
+    if out.is_empty() {
+        return None;
+    }
     Some(out)
+}
+
+/// #5231 — does `form_id` resolve to a CELL record in this index? No
+/// form-id-keyed CELL map exists (`cells` is keyed by canonical lookup ID,
+/// exterior cells by worldspace+grid), so this scans the three CELL maps.
+/// The expander is a cold path — vanilla data carries zero PKIN-based
+/// REFRs, because the CK bakes pack-in contents into ordinary REFRs at
+/// placement time — so a linear scan per child beats carrying a dedicated
+/// CELL-form-id index for a population vanilla never produces.
+fn index_resolves_to_cell(index: &esm::cell::EsmCellIndex, form_id: u32) -> bool {
+    index.cells.values().any(|c| c.form_id == form_id)
+        || index
+            .exterior_cells
+            .values()
+            .any(|grid| grid.values().any(|c| c.form_id == form_id))
+        || index
+            .worldspace_persistent_cells
+            .values()
+            .any(|c| c.form_id == form_id)
 }
 
 /// Produce the list of `(base_form_id, composed_pos, composed_rot,
