@@ -851,6 +851,72 @@ impl ConsoleCommand for DialogueStatusCommand {
     }
 }
 
+/// `dialogue.forcegreet <entity|.> <pack_formid>` — #5367 Phase F's
+/// install door for a force-greet: stamps the [`ForceGreetDirective`]
+/// bridge from an authored Dialogue-procedure (`PKDT` 15) PACK. The
+/// procedure validates the package (procedure + decoded `PKDD` topic)
+/// and the system does the walking + opening. Vanilla FO3/FNV install
+/// these packages from quest scripts, which the engine does not run —
+/// this door is the drivable equivalent for gates and fixtures until
+/// the quest-installer path carries them.
+pub(crate) struct DialogueForceGreetCommand;
+
+impl ConsoleCommand for DialogueForceGreetCommand {
+    fn name(&self) -> &str {
+        "dialogue.forcegreet"
+    }
+
+    fn description(&self) -> &str {
+        "Install a force-greet from a Dialogue-procedure PACK onto an NPC"
+    }
+
+    fn execute(&self, world: &World, args: &str) -> CommandOutput {
+        let mut tokens = args.split_whitespace();
+        let (Some(entity_tok), Some(pack_tok)) = (tokens.next(), tokens.next()) else {
+            return CommandOutput::error(
+                "usage: dialogue.forcegreet <entity|.> <pack_formid>",
+            );
+        };
+        let entity = match resolve_console_entity(world, entity_tok) {
+            Ok(entity) => entity,
+            Err(error) => return CommandOutput::error(error),
+        };
+        let Some(pack_id) = parse_console_u32(pack_tok) else {
+            return CommandOutput::error(format!("bad PACK FormID `{pack_tok}`"));
+        };
+        let Some(index) = world.try_resource::<crate::cell_loader::LoadedCellIndex>() else {
+            return CommandOutput::error("no loaded plugin index");
+        };
+        let Some(pack) = index.0.packages.get(&pack_id) else {
+            return CommandOutput::error(format!("no PACK {pack_id:08X} in the loaded plugins"));
+        };
+        const PROCEDURE_DIALOGUE: u32 = 15;
+        if pack.procedure_type != PROCEDURE_DIALOGUE {
+            return CommandOutput::error(format!(
+                "PACK {pack_id:08X} ('{}') is procedure {}, not Dialogue (15)",
+                pack.editor_id, pack.procedure_type
+            ));
+        }
+        let directive = crate::systems::forcegreet::ForceGreetDirective {
+            topic: pack.dialogue_topic,
+            radius: 128.0,
+        };
+        let Some(mut directives) = world.query_mut::<crate::systems::forcegreet::ForceGreetDirective>()
+        else {
+            return CommandOutput::error("force-greet storage unavailable");
+        };
+        directives.insert(entity, directive);
+        CommandOutput::line(format!(
+            "force-greet installed on entity {entity} from PACK {} ('{}') — topic {}",
+            pack_id,
+            pack.editor_id,
+            pack.dialogue_topic
+                .map(|topic| format!("{topic:08X}"))
+                .unwrap_or_else(|| "generic greeting".to_string()),
+        ))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

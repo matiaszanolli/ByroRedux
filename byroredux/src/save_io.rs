@@ -528,6 +528,12 @@ pub fn build_save_registry() -> SaveRegistry {
         // to default on every save/load.
         .register_resource::<QuestStageState>("QuestStageState")
         .register_resource::<QuestObjectiveState>("QuestObjectiveState")
+        // #5367 Phase L — spoken Say-Once INFO bookkeeping: a said line
+        // stays disqualified after an F5/F9 cycle, exactly the
+        // quest-state contract beside it.
+        .register_resource::<byroredux_scripting::DialogueSpokenInfoForms>(
+            "DialogueSpokenInfoForms",
+        )
         // MQ101's startup fragment writes GameHour before advancing to stage
         // 10. GLOB values are mutable game state, so a save/load must retain
         // the scripted value instead of silently restoring the ESM default.

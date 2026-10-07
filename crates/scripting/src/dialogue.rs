@@ -40,6 +40,51 @@ pub struct DialogueQuestPriorities {
 
 impl Resource for DialogueQuestPriorities {}
 
+/// INFO FormIDs spoken at least once this save (#5367 Phase L). Keyed by
+/// the INFO's own FormID; consulted by [`select_info`] so a said
+/// Say-Once line stops qualifying until the save is reverted. This set
+/// IS save-facing state — the bin crate registers it in the save schema.
+#[derive(Debug, Clone, Default)]
+#[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
+pub struct DialogueSpokenInfoForms(pub std::collections::HashSet<u32>);
+
+impl Resource for DialogueSpokenInfoForms {}
+
+/// The dialogue selection RNG (#5367 Phase L). xorshift64 state — every
+/// Random pick advances it, so a pinned seed makes selection
+/// deterministic for tests; a fresh world's time-seeded default is fine
+/// for play. Which greeting an old save rolled is not state anything
+/// reads back, so the state itself is never persisted.
+#[derive(Debug, Clone, Copy)]
+pub struct DialogueRandomState(pub u64);
+
+impl Default for DialogueRandomState {
+    fn default() -> Self {
+        // Splitmix64 of the process clock — never the xorshift fixed
+        // point 0, and not a trivially guessable first roll.
+        let mut z = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0x9E37_79B9_7F4A_7C15);
+        z = (z.wrapping_add(0x9E37_79B9_7F4A_7C15)) | 1;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        Self(z ^ (z >> 31))
+    }
+}
+
+impl Resource for DialogueRandomState {}
+
+/// Record that `info_form_id` has been spoken (#5367 Phase L). Called
+/// by the activation surface when a line is applied. A no-op when the
+/// resource is absent — [`crate::register`] installs it, so that is
+/// only a pre-registration test world.
+pub fn note_info_spoken(world: &World, info_form_id: u32) {
+    if let Some(mut spoken) = world.try_resource_mut::<DialogueSpokenInfoForms>() {
+        spoken.0.insert(info_form_id);
+    }
+}
+
 impl DialogueQuestPriorities {
     /// Build from `(form_id, priority)` pairs — `QustRecord`'s
     /// `form_id`/`priority` at the install site.
@@ -182,6 +227,13 @@ pub fn register(world: &mut World) {
     if world.try_resource::<DialogueQuestPriorities>().is_none() {
         world.insert_resource(DialogueQuestPriorities::default());
     }
+    // #5367 Phase L — Say-Once bookkeeping and the selection RNG.
+    if world.try_resource::<DialogueSpokenInfoForms>().is_none() {
+        world.insert_resource(DialogueSpokenInfoForms::default());
+    }
+    if world.try_resource::<DialogueRandomState>().is_none() {
+        world.insert_resource(DialogueRandomState::default());
+    }
 }
 
 /// Install parsed DIAL/INFO records. Re-installation refreshes definitions by
@@ -259,9 +311,21 @@ fn select_info<'a>(
             std::cmp::Reverse(priorities.priority_of(quest))
         });
     }
-    order.into_iter().find_map(|i| {
+    // filter_map, not find_map: the #5367 Phase L Random pool needs every
+    // passing candidate, not just the first.
+    let passing = order.into_iter().filter_map(|i| {
         let info = &topic.infos[i];
         if !info_quest_is_running(info) {
+            return None;
+        }
+        // #5367 Phase L — a spoken Say-Once line stops qualifying for
+        // the rest of the save (a missing spoken-set resource treats
+        // nothing as said: tests and pre-install worlds).
+        if info.say_once()
+            && world
+                .try_resource::<DialogueSpokenInfoForms>()
+                .is_some_and(|spoken| spoken.0.contains(&info.form_id))
+        {
             return None;
         }
         // The INFO's own quest drives quest-scoped condition functions
@@ -278,8 +342,34 @@ fn select_info<'a>(
             context = context.with_quest(quest);
         }
         (actor_matches(info, world, actor) && evaluate(&info.conditions, world, &context))
-            .then_some(info)
-    })
+            .then_some((i, info))
+    });
+
+    // #5367 Phase L — Random: a passing NON-random candidate wins in
+    // file/priority order (the deterministic quest line — the P4 route's
+    // contract); only when every passing candidate is Random-flagged do
+    // they form the uniform pool (the greeting mainstay). Deterministic
+    // under a pinned `DialogueRandomState` seed; with no RNG resource
+    // installed (pre-install test worlds) the pool's first candidate
+    // wins, preserving the pre-#5367 contract.
+    let passing: Vec<(usize, &InfoRecord)> = passing.collect();
+    let pick = match passing.iter().position(|(_, info)| !info.random()) {
+        Some(deterministic) => deterministic,
+        None if passing.is_empty() => return None,
+        None => match world.try_resource_mut::<DialogueRandomState>() {
+            Some(mut state) => xorshift64(&mut state.0) as usize % passing.len(),
+            None => 0,
+        },
+    };
+    passing.get(pick).map(|(_, info)| *info)
+}
+
+/// xorshift64 — deterministic, stateless-of-global-RNG uniform source.
+fn xorshift64(state: &mut u64) -> u64 {
+    *state ^= *state << 13;
+    *state ^= *state >> 7;
+    *state ^= *state << 17;
+    *state
 }
 
 /// Public activation-route wrapper around the SCEN-path [`select_info`]:
@@ -537,6 +627,93 @@ mod tests {
     const QUEST: u32 = 0x300;
     const INFO: u32 = 0x400;
     const ACTION: u32 = 12;
+
+    // ── #5367 Phase L: line-lifetime selection semantics ───────────
+
+    fn flagged_info(form_id: u32, text: &str, flags1: u8) -> InfoRecord {
+        InfoRecord {
+            form_id,
+            response_text: text.to_owned(),
+            data: Some(byroredux_plugin::esm::records::InfoDataHeader {
+                flags1,
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    /// A passing NON-random INFO wins in file order even when Random
+    /// INFOs also pass — the deterministic quest line the P4 route
+    /// gates on.
+    #[test]
+    fn non_random_candidate_keeps_priority_over_the_random_pool() {
+        let mut world = World::new();
+        super::register(&mut world);
+        let actor = world.spawn();
+        let record = topic(vec![
+            flagged_info(0x401, "roll me", 0x02),     // Random
+            flagged_info(0x402, "the fixed line", 0), // plain
+        ]);
+        world.insert_resource(DialogueRandomState(12345));
+        for _ in 0..8 {
+            let picked = select_first_info(&record, &world, Some(actor), None);
+            assert_eq!(picked.expect("selects").form_id, 0x402);
+        }
+    }
+
+    /// An all-Random pool rolls: with a pinned seed the picks vary
+    /// across repeated selections (the state advances every roll).
+    #[test]
+    fn all_random_pool_rolls_under_a_pinned_seed() {
+        let mut world = World::new();
+        super::register(&mut world);
+        let actor = world.spawn();
+        let record = topic(vec![
+            flagged_info(0x401, "greeting one", 0x02),
+            flagged_info(0x402, "greeting two", 0x02),
+            flagged_info(0x403, "greeting three", 0x02),
+        ]);
+        world.insert_resource(DialogueRandomState(0xC0FFEE));
+        let mut distinct = std::collections::HashSet::new();
+        for _ in 0..24 {
+            distinct.insert(select_first_info(&record, &world, Some(actor), None)
+                .expect("a pool member passes")
+                .form_id);
+        }
+        assert!(
+            distinct.len() >= 2,
+            "the pool must roll, not always take the first: {distinct:?}"
+        );
+    }
+
+    /// A spoken Say-Once line stops qualifying; without the spoken-set
+    /// resource nothing is disqualified.
+    #[test]
+    fn say_once_line_disqualifies_after_being_spoken() {
+        let mut world = World::new();
+        super::register(&mut world);
+        let actor = world.spawn();
+        let record = topic(vec![
+            flagged_info(0x401, "said it once", 0x04), // Say Once
+            flagged_info(0x402, "the follow-up", 0),
+        ]);
+
+        // Before: the Say-Once line is the first passing candidate.
+        assert_eq!(
+            select_first_info(&record, &world, Some(actor), None)
+                .expect("selects")
+                .form_id,
+            0x401
+        );
+        // Spoken: disqualified, the follow-up takes over.
+        world.insert_resource(DialogueSpokenInfoForms([0x401].into_iter().collect()));
+        assert_eq!(
+            select_first_info(&record, &world, Some(actor), None)
+                .expect("selects")
+                .form_id,
+            0x402
+        );
+    }
 
     fn info(form_id: u32, actor_form_id: u32, text: &str) -> InfoRecord {
         InfoRecord {

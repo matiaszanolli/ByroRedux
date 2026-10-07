@@ -1,9 +1,12 @@
 # Dialogue trees: the greeting, line-lifetime, and force-greet layers
 
-**Status**: PROPOSED (2026-10-07). No code lands from this document by
-itself — it is the scoping pass for the dialogue remainder of M43's
-open scope ("the dialogue tree with its UI") and the `Dialogue` item on
-M42's blocked-procedure list. The activation-driven core is already
+**Status**: Phases G, L and F **landed 2026-10-07** (#5367),
+live-gated by
+[`dt1-dialogue-layers.sh`](../smoke-tests/dt1-dialogue-layers.sh).
+Remaining: Phase 4 (Skyrim force-greet behind the PKDT decode), the SM
+`ADIA` tie-in, and Phase V (voice). This document was the scoping pass
+for the dialogue remainder of M43's open scope and the `Dialogue` item
+on M42's blocked-procedure list. The activation-driven core is already
 shipped; this doc scopes what the corpus proves is missing on top of
 it. The Story Manager landed first (#5366 Phases 0–1) because SM events
 are dialogue-adjacent producers; this is its natural follower.
@@ -122,17 +125,33 @@ for every phase above, a blocker for none.
 
 ## 5. Phases
 
-1. **G — greetings** (FO3/FNV first: 5–6.6k lines each, 118–134
-   unconditional so a fixture needs no condition machinery). Gate: a
-   quest-less FNV Prospector patron greets on activation with a
-   passing greeting line — today it selects nothing.
-2. **L — line lifetime**. Gate: a Random greeting varies across
-   activations in a pinned-seed test; a Goodbye line ends its
-   conversation without the page's Close; a SayOnce line does not
-   repeat across an F5/F9 cycle.
-3. **F — force-greet (FO3/FNV)**. Gate: a live route where a
-   procedure-15 package walks an NPC to the player and opens its
-   topic without activation.
+1. **G — greetings. Landed 2026-10-07.** `open_conversation` falls
+   back to the master's generic greeting topic (`GREETING` on FO3/FNV,
+   `DialogueGenericHello` on Skyrim) when no owned quest topic
+   qualifies — the quest-less-patron hole. Live gate
+   (`dt1-dialogue-layers.sh` leg 1): activating Doc Mitchell on a
+   fresh FNV boot selects the authored `GREETING` line (info 0x107222)
+   where pre-#5367 selected nothing.
+2. **L — line lifetime. Landed 2026-10-07.** `select_info` collects
+   every passing candidate: a NON-random passing INFO keeps priority
+   (the P4 route's deterministic quest line — pinned by its own test),
+   an all-Random pool rolls uniformly through a seeded `DialogueRandomState`;
+   spoken Say-Once INFOs are disqualified through the saved
+   `DialogueSpokenInfoForms` set (save format v33); a spoken Goodbye
+   line ends its conversation when the presentation estimate elapses
+   (the Late close check + the app-layer page close). All three pinned
+   by unit tests.
+3. **F — force-greet (FO3/FNV). Landed 2026-10-07.** `PKDD`'s topic
+   FormID decoded onto `PackRecord::dialogue_topic` (census floor: 263
+   of 332 FNV packages carry one); a `ForceGreetDirective` bridge walks
+   the NPC to the player and opens the package's topic without
+   activation, through the same selection path. Vanilla installs these
+   packages from quest scripts the engine does not run, so the
+   `dialogue.forcegreet` console door is the drivable installer
+   (quest/alias installers adopt the same bridge when they carry
+   one). Live gate (`dt1-dialogue-layers.sh` leg 2): PACK 0x000613BB
+   (`CitGunnyGreetPlayer`) walks Doc Mitchell to the player and opens
+   topic 0xC8 with no activation.
 4. **Skyrim force-greet + SM `ADIA` tie-in** (behind the Skyrim PKDT
    procedure decode). 5. **V — voice.**
 

@@ -63,6 +63,13 @@ pub struct PackRecord {
     /// packages normally inherit their procedure tree from a type-19 PACK;
     /// templates themselves carry a null reference.
     pub package_template_form_id: Option<u32>,
+    /// FO3/FNV `PKDD` dialogue-topic reference for the Dialogue procedure
+    /// (`procedure_type == 15`): the FormID at offset 4 of the 24-byte
+    /// package-data payload. Census 2026-10-07 (#5367 Phase F): 136/386
+    /// FO3 and 263/332 FNV proc-15 packs author a topic; the rest write
+    /// zero — force-greet opens the master's generic `GREETING` instead.
+    /// `None` on every other procedure and when no topic is authored.
+    pub dialogue_topic: Option<u32>,
     /// Number of authored package-data inputs declared by `PKCU`.
     pub data_input_count: u32,
     /// CK-maintained package-data schema version from `PKCU`.
@@ -710,6 +717,16 @@ pub fn parse_pack(
                 let template = remap_fid(r.u32_or_default(), remap);
                 out.package_template_form_id = (template != 0).then_some(template);
                 out.package_template_version = r.u32_or_default();
+            }
+            b"PKDD" if sub.data.len() >= 8 => {
+                // #5367 Phase F — the Dialogue procedure's data input: the
+                // topic to force. Offset 4 of the 24-byte payload (see the
+                // field doc for the corpus split).
+                let topic = remap_fid(
+                    u32::from_le_bytes(sub.data[4..8].try_into().unwrap()),
+                    remap,
+                );
+                out.dialogue_topic = (topic != 0).then_some(topic);
             }
             b"PSDT" if sub.data.len() >= 8 => {
                 // FO3/FNV PSDT (8 bytes): month i8, dayOfWeek i8, date u8,
@@ -1894,5 +1911,33 @@ mod tests {
         assert!(p.is_sandbox());
         assert_eq!(p.conditions.len(), 1);
         assert_eq!(p.conditions[0].function_index, 72);
+    }
+
+    /// #5367 Phase F — the Dialogue procedure's `PKDD` topic decode: the
+    /// FormID at offset 4, zero meaning "the generic greeting", remapped
+    /// like every other cross-record reference.
+    #[test]
+    fn pkdd_decodes_the_dialogue_topic() {
+        let mut pkdd = vec![0u8; 24];
+        pkdd[4..8].copy_from_slice(&0x0003_06CFu32.to_le_bytes());
+        let subs = vec![
+            sub(b"EDID", b"CitGunnyGreetPlayer\0"),
+            sub(b"PKDT", {
+                let mut d = vec![0u8; 8];
+                d[4] = 15; // Dialogue procedure
+                d
+            }),
+            sub(b"PKDD", pkdd),
+        ];
+        let pack = parse_pack(0x0006_13BB, &subs, &None, GameKind::Fallout3NV);
+        assert_eq!(pack.procedure_type, 15);
+        assert_eq!(pack.dialogue_topic, Some(0x0003_06CF));
+
+        // Zero topic: force-greet with the generic greeting.
+        let mut zero = vec![0u8; 24];
+        zero[4..8].copy_from_slice(&0u32.to_le_bytes());
+        let subs = vec![sub(b"PKDD", zero)];
+        let pack = parse_pack(1, &subs, &None, GameKind::Fallout3NV);
+        assert_eq!(pack.dialogue_topic, None);
     }
 }

@@ -484,7 +484,13 @@ pub(super) fn register_late_systems(scheduler: &mut Scheduler) {
             .writes_resource::<byroredux_scripting::quest_stages::QuestStageState>()
             .writes_resource::<byroredux_scripting::quest_stages::QuestObjectiveState>()
             .writes::<byroredux_scripting::quest_stages::QuestStageAdvancedBatch>()
-            .writes_resource::<crate::systems::npc_dialogue::DialogueSurfaceState>(),
+            .writes_resource::<crate::systems::npc_dialogue::DialogueSurfaceState>()
+            // #5367 Phase L — the Goodbye close reads the clock, and the
+            // spoken Say-Once set is both read (disqualification inside
+            // selection) and written (`note_info_spoken` on apply).
+            .reads_resource::<byroredux_core::ecs::resources::TotalTime>()
+            .writes_resource::<byroredux_scripting::DialogueSpokenInfoForms>()
+            .reads_resource::<byroredux_scripting::DialogueRandomState>(),
     );
     scheduler.add_exclusive_with_access(
         Stage::Late,

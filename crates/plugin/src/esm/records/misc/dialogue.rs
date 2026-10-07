@@ -380,6 +380,47 @@ pub struct InfoDataHeader {
     pub flags2: Option<u8>,
 }
 
+/// The `Flags 1` bits the dialogue *runtime* consumes (#5367 Phase L).
+/// Oblivion documents all three directly (xEdit TES4: `0x01` Goodbye,
+/// `0x02` Random, `0x04` Say Once); FO3/FNV share the low-bit layout —
+/// bit 0 Goodbye is parser-verified (see `flags1`), and bits 1/2 match
+/// the 2026-10-07 corpus distribution (FO3: 5 596 Random-shape /
+/// 1 149 SayOnce-shape INFOs; FNV: 1 731 / 2 918 — values 2/4 in
+/// isolation, never mixed with bit 7's Speech Challenge domain).
+/// Skyrim authors `DATA` on 924 of 31 465 INFOs; the rest carry no
+/// flags and simply qualify for none of these behaviors.
+impl InfoDataHeader {
+    /// The conversation ends when this line's presentation finishes.
+    pub fn goodbye(&self) -> bool {
+        self.flags1 & 0x01 != 0
+    }
+    /// Among *passing* candidates, this INFO joins the uniform random
+    /// pool instead of file/priority order (the greeting mainstay).
+    pub fn random(&self) -> bool {
+        self.flags1 & 0x02 != 0
+    }
+    /// Spoken once per save: a said line stops qualifying.
+    pub fn say_once(&self) -> bool {
+        self.flags1 & 0x04 != 0
+    }
+}
+
+impl InfoRecord {
+    /// [`InfoDataHeader::goodbye`] on this record's typed `DATA`;
+    /// `false` when it authored none.
+    pub fn goodbye(&self) -> bool {
+        self.data.as_ref().is_some_and(InfoDataHeader::goodbye)
+    }
+    /// [`InfoDataHeader::random`]; `false` when it authored no `DATA`.
+    pub fn random(&self) -> bool {
+        self.data.as_ref().is_some_and(InfoDataHeader::random)
+    }
+    /// [`InfoDataHeader::say_once`]; `false` when it authored no `DATA`.
+    pub fn say_once(&self) -> bool {
+        self.data.as_ref().is_some_and(InfoDataHeader::say_once)
+    }
+}
+
 /// One `TRDT`+`NAM1`+`NAM2` response segment (#3616). xEdit's TES4
 /// definitions author these as a repeated struct
 /// (`wbRArray('Responses', wbRStruct('Response', [TRDT, NAM1, NAM2]))`),

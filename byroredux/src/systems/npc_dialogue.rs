@@ -84,6 +84,10 @@ pub(crate) struct NpcDialogueTopic {
     /// The NPC's whole owned-topic list, the selected one included — the
     /// response surface's list column.
     pub(crate) topics: Vec<DialogueTopicEntry>,
+    /// #5367 Phase L — the chosen line carries the INFO `Goodbye` flag:
+    /// the conversation ends when its presentation finishes (the
+    /// estimated-duration close), not the page's Close button.
+    pub(crate) goodbye: bool,
 }
 
 impl Component for NpcDialogueTopic {
@@ -95,12 +99,17 @@ impl Component for NpcDialogueTopic {
 /// the app layer opens the native dialogue page when it sees a serial it
 /// has not opened yet. `opened_serial` is the app side's watermark, not
 /// gameplay state — the whole resource is runtime plumbing, never
-/// serialized.
+/// serialized. #5367 Phase L adds the Goodbye close: `close_after` is the
+/// `TotalTime` second at which a spoken Goodbye line ends the
+/// conversation, and `close_requested` is the app-side cue to shut the
+/// page (set by the close system after `end_open_conversation` ran).
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct DialogueSurfaceState {
     pub(crate) serial: u64,
     pub(crate) npc: Option<EntityId>,
     pub(crate) opened_serial: u64,
+    pub(crate) close_after: Option<f32>,
+    pub(crate) close_requested: bool,
 }
 
 impl byroredux_core::ecs::Resource for DialogueSurfaceState {}
@@ -250,14 +259,33 @@ fn select_on_topic(
             response_number: info.response_number,
             emotion_type: info.emotion_type,
             topics: topic_entries(menu),
+            goodbye: info.goodbye(),
         },
         record.clone(),
     ))
 }
 
+/// The master's generic activation-greeting topic (#5367 Phase G).
+/// The corpus convention (2026-10-07 census, `dialogue-trees.md` §2):
+/// FO3/FNV author exactly one DIAL with EDID `GREETING` (its `HELLO`
+/// sibling is the ambient passing bark, not the activation path);
+/// Skyrim authors `DialogueGenericHello`. The 300-400 other
+/// greeting-named DIALs per master are quest-specific and already ride
+/// quest ownership like any owned topic.
+fn generic_greeting_record(index: &EsmIndex) -> Option<&DialRecord> {
+    index
+        .dialogues
+        .values()
+        .find(|record| matches!(record.editor_id.as_str(), "GREETING" | "DialogueGenericHello"))
+}
+
 /// The activation's opening selection (#5037): a qualifying Blocking entry
 /// pre-empts everything and its links become the list; otherwise the first
-/// Top-Level entry opens the Top-Level list.
+/// Top-Level entry opens the Top-Level list. #5367 Phase G: when the NPC
+/// owns no qualifying quest topic at all, the master's generic greeting
+/// opens instead — the quest-less-patron hole ("selects nothing") — with
+/// the greeting topic itself as the list (its INFOs typically link
+/// nowhere; the conversation closes from the page or a Goodbye line).
 fn open_conversation(
     index: &EsmIndex,
     owned: &[&DialRecord],
@@ -275,8 +303,12 @@ fn open_conversation(
         return select_on_topic(index, record, world, npc, player, &[]);
     }
     let menu = top_level_menu(index, owned, world, npc, player);
-    let first = *menu.first()?;
-    select_on_topic(index, first, world, npc, player, &menu)
+    if let Some(first) = menu.first() {
+        let first = *first;
+        return select_on_topic(index, first, world, npc, player, &menu);
+    }
+    let greeting = generic_greeting_record(index)?;
+    select_on_topic(index, greeting, world, npc, player, &[])
 }
 
 /// Apply one selection: registry install (the presentation side's record
@@ -322,7 +354,19 @@ fn apply_selection(world: &World, npc: EntityId, topic: NpcDialogueTopic, record
     if let Some(mut surface) = world.try_resource_mut::<DialogueSurfaceState>() {
         surface.serial += 1;
         surface.npc = Some(npc);
+        // #5367 Phase L — a Goodbye line closes the conversation when its
+        // presentation finishes (subtitle-estimated; voice duration
+        // replaces the estimate when Phase V wires audio).
+        surface.close_after = topic.goodbye.then(|| {
+            let now = world
+                .try_resource::<byroredux_core::ecs::resources::TotalTime>()
+                .map(|time| time.0)
+                .unwrap_or_default();
+            now + byroredux_scripting::estimate_dialogue_duration(&topic.speaker_text)
+        });
     }
+    // #5367 Phase L — the spoken set feeds Say-Once disqualification.
+    byroredux_scripting::note_info_spoken(world, topic.info_form_id);
     log::info!(
         "npc dialogue: selected topic {:#08X} ('{}') info {:#08X} for NPC {npc} (quest {:?})",
         topic.topic_form_id,
@@ -405,6 +449,42 @@ fn dispatch_spoken_fragment(
     byroredux_scripting::quest_stages::push_quest_stage_advances(world, player, advances);
 }
 
+/// #5367 Phase F — a force-greet package opened the conversation without
+/// activation: the *package* authorizes the topic (ownership via running
+/// quests is bypassed — that is the point of the procedure), the INFO
+/// gate is still the evaluator, and the generic greeting stands in when
+/// the package authored no topic (`PKDD` zero). Same two-pass
+/// gather-then-apply discipline as the activation path. Returns whether
+/// a line was applied.
+pub(crate) fn forcegreet_open(world: &World, npc: EntityId, topic: Option<u32>) -> bool {
+    let Some(index) = world.try_resource::<LoadedCellIndex>() else {
+        return false;
+    };
+    let index = index.0.clone();
+    let Some(player) = world
+        .try_resource::<PlayerEntity>()
+        .and_then(|player| player.0)
+    else {
+        return false;
+    };
+    if npc_refuses_dialogue(world, npc).is_some() {
+        return false;
+    }
+    let record = match topic {
+        Some(form_id) => index.dialogues.get(&form_id).cloned(),
+        None => generic_greeting_record(&index).cloned(),
+    };
+    let Some(record) = record else {
+        return false;
+    };
+    let Some((selected, record)) = select_on_topic(&index, &record, world, npc, player, &[])
+    else {
+        return false;
+    };
+    apply_selection(world, npc, selected, record);
+    true
+}
+
 /// The conversation surface closed: the open line's OnEnd fragment runs
 /// (the line stops being spoken), then the selection stamp and the surface
 /// cue clear. Called from the shared resume path when the dialogue page is
@@ -426,6 +506,32 @@ pub(crate) fn end_open_conversation(world: &World) {
     }
     if let Some(mut surface) = world.try_resource_mut::<DialogueSurfaceState>() {
         surface.npc = None;
+        // #5367 Phase L — the close can come from the page (Close/Escape)
+        // instead of the Goodbye timer; either way no close is pending.
+        surface.close_after = None;
+    }
+}
+
+/// #5367 Phase L — end a Goodbye conversation when its line's
+/// presentation finishes: `end_open_conversation` (OnEnd fragments,
+/// selection cleared) plus the app-side page-close cue. Called at the
+/// head of the Late selection system; a no-op every frame no Goodbye
+/// line is open.
+fn npc_dialogue_goodbye_close_check(world: &World) {
+    let due = world
+        .try_resource::<DialogueSurfaceState>()
+        .and_then(|surface| surface.close_after)
+        .is_some_and(|close_after| {
+            world
+                .try_resource::<byroredux_core::ecs::resources::TotalTime>()
+                .is_some_and(|time| time.0 >= close_after)
+        });
+    if !due {
+        return;
+    }
+    end_open_conversation(world);
+    if let Some(mut surface) = world.try_resource_mut::<DialogueSurfaceState>() {
+        surface.close_requested = true;
     }
 }
 
@@ -503,6 +609,11 @@ struct NpcDialogueScratch {
 }
 
 fn npc_dialogue_selection_system_inner(world: &World, scratch: &mut NpcDialogueScratch) {
+    // #5367 Phase L — a spoken Goodbye line ends its conversation when
+    // the presentation finishes (before any new selection this frame).
+    // Same exclusive lane, same conversation lifecycle owner.
+    npc_dialogue_goodbye_close_check(world);
+
     // ── Pass 1: read-only gather + decide. ──
     scratch.selections.clear();
     // #5043 / #4701 — a dead player drives no dialogue, the same gate the
@@ -545,11 +656,9 @@ fn npc_dialogue_selection_system_inner(world: &World, scratch: &mut NpcDialogueS
             continue;
         }
         let owned_quests = running_quests_binding_entity(world, npc);
-        if owned_quests.is_empty() {
-            continue;
-        }
-        // Deterministic order: the owned topics ascending by form id — the
-        // same record the fixture route must stably select every run.
+        // #5367 Phase G — an empty owned set no longer ends the walk: the
+        // generic greeting still opens a conversation for a quest-less
+        // patron. `open_conversation` decides between the two.
         let owned = owned_topic_records(&index, &owned_quests);
         let Some((topic, record)) = open_conversation(&index, &owned, world, npc, player) else {
             continue;
@@ -797,6 +906,142 @@ mod tests {
         let player = world.spawn();
         world.insert_resource(crate::systems::PlayerEntity(Some(player)));
         player
+    }
+
+    // ── #5367 Phases G + L ──────────────────────────────────────────
+
+    const GREETING_TOPIC: u32 = 0x30_00C8;
+    const INFO_GREETING: u32 = 0x30_00C9;
+    const INFO_GREETING_BYE: u32 = 0x30_00CA;
+
+    fn greeting_index(with_goodbye: bool) -> crate::cell_loader::LoadedCellIndex {
+        let bye_info = InfoRecord {
+            form_id: INFO_GREETING_BYE,
+            response_text: "Go away, stranger.".to_string(),
+            data: Some(byroredux_plugin::esm::records::InfoDataHeader {
+                flags1: 0x01, // Goodbye
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut index = byroredux_plugin::esm::records::EsmIndex::default();
+        let plain_greeting = InfoRecord {
+            form_id: INFO_GREETING,
+            response_text: "Hey there, stranger.".to_string(),
+            // Say Once: the spoken set can disqualify this branch so the
+            // Goodbye one below is reachable — the same discipline the
+            // live masters author greetings with.
+            data: Some(byroredux_plugin::esm::records::InfoDataHeader {
+                flags1: 0x04,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        index.dialogues.insert(
+            GREETING_TOPIC,
+            DialRecord {
+                form_id: GREETING_TOPIC,
+                editor_id: "GREETING".to_string(),
+                infos: vec![plain_greeting, bye_info],
+                ..Default::default()
+            },
+        );
+        let _ = with_goodbye;
+        crate::cell_loader::LoadedCellIndex(std::sync::Arc::new(index))
+    }
+
+    /// #5367 Phase G — a patron bound to no running quest still opens a
+    /// conversation: the master's generic greeting is the opening line
+    /// (pre-#5367 this activation selected nothing).
+    #[test]
+    fn quest_less_npc_opens_with_the_generic_greeting() {
+        let mut world = World::new();
+        world.register::<ActivateEvent>();
+        world.register::<NpcDialogueTopic>();
+        world.register::<SceneAliasCandidate>();
+        world.register::<Dead>();
+        world.insert_resource(DialogueRegistry::default());
+        world.insert_resource(DialogueSurfaceState::default());
+        let player = spawn_player(&mut world);
+        let patron = spawn_actor(&mut world, 0xAB_0001, 0x97_0001);
+        world.insert_resource(greeting_index(false));
+
+        world.insert(patron, ActivateEvent { activator: player });
+        npc_dialogue_selection_system(&world);
+
+        let topic = selected(&world, patron).expect("the greeting selects");
+        assert_eq!(topic.topic_form_id, GREETING_TOPIC);
+        assert_eq!(topic.info_form_id, INFO_GREETING);
+        assert_eq!(topic.speaker_text, "Hey there, stranger.");
+        // The greeting stands as its own list entry.
+        assert_eq!(
+            topic
+                .topics
+                .iter()
+                .map(|entry| entry.topic_form_id)
+                .collect::<Vec<_>>(),
+            vec![GREETING_TOPIC]
+        );
+    }
+
+    /// #5367 Phase L — a Goodbye line arms the timed close; once
+    /// `TotalTime` passes the estimate, the Late system ends the
+    /// conversation (OnEnd ran via `end_open_conversation`) and cues the
+    /// page close.
+    #[test]
+    fn goodbye_line_ends_the_conversation_when_its_duration_passes() {
+        let mut world = World::new();
+        world.register::<ActivateEvent>();
+        world.register::<NpcDialogueTopic>();
+        world.register::<SceneAliasCandidate>();
+        world.register::<Dead>();
+        world.insert_resource(DialogueRegistry::default());
+        world.insert_resource(DialogueSurfaceState::default());
+        world.insert_resource(byroredux_core::ecs::resources::TotalTime(10.0));
+        let player = spawn_player(&mut world);
+        let patron = spawn_actor(&mut world, 0xAB_0001, 0x97_0001);
+        world.insert_resource(greeting_index(true));
+
+        // The Goodbye branch is the only passing INFO when the plain one
+        // is disqualified — Say-Once it via the spoken set, which the
+        // activation itself stamps.
+        world.insert_resource(byroredux_scripting::DialogueSpokenInfoForms(
+            [INFO_GREETING].into_iter().collect(),
+        ));
+        world.insert(patron, ActivateEvent { activator: player });
+        npc_dialogue_selection_system(&world);
+        // The end-of-Late cleanup drains the marker; do the same so the
+        // later runs exercise only the timed close, not a re-activation.
+        if let Some(mut events) = world.query_mut::<ActivateEvent>() {
+            events.remove(patron);
+        }
+
+        let topic = selected(&world, patron).expect("the goodbye line selects");
+        assert_eq!(topic.info_form_id, INFO_GREETING_BYE);
+        assert!(topic.goodbye);
+        {
+            let surface = world.resource::<DialogueSurfaceState>();
+            let close_after =
+                surface.close_after.expect("goodbye arms the timed close");
+            assert!(
+                close_after > 10.0,
+                "close_after is now + the estimated duration, not now"
+            );
+            assert!(!surface.close_requested);
+        }
+
+        // Not yet due: nothing ends.
+        world.insert_resource(byroredux_core::ecs::resources::TotalTime(10.5));
+        npc_dialogue_selection_system(&world);
+        assert!(selected(&world, patron).is_some(), "still open early");
+
+        // Due: the conversation ends and the page close is requested.
+        world.insert_resource(byroredux_core::ecs::resources::TotalTime(30.0));
+        npc_dialogue_selection_system(&world);
+        assert!(selected(&world, patron).is_none(), "the goodbye ended it");
+        let surface = world.resource::<DialogueSurfaceState>();
+        assert!(surface.close_requested);
+        assert_eq!(surface.close_after, None);
     }
 
     fn selected(world: &World, npc: EntityId) -> Option<NpcDialogueTopic> {

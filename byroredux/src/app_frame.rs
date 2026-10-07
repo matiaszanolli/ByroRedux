@@ -154,10 +154,9 @@ impl App {
             }
         }
         // P4 blocker 2 — open the native dialogue surface once per applied
-        // selection. The Late selection system bumps the serial; the app
+        // selection: the Late selection system bumps the serial; the app
         // layer owns the open (focus transfer + modal state), watermarking
-        // against `opened_serial` so the surface re-opens on every fresh
-        // activation or topic click, not every frame.
+        // against `opened_serial` so it re-opens on every fresh selection.
         let fresh_selection = self
             .world
             .try_resource::<crate::systems::npc_dialogue::DialogueSurfaceState>()
@@ -171,6 +170,7 @@ impl App {
             }
             self.open_dialogue_menu();
         }
+        self.close_dialogue_menu_if_goodbye_ended();
         let mut snapshot = if self
             .debug_ui
             .as_ref()
@@ -829,6 +829,28 @@ impl App {
         cpu_t.rof_pre_draw_ms = rof_pre_draw_ns as f32 * NS_TO_MS;
         cpu_t.rof_draw_call_ms = rof_draw_call_ns as f32 * NS_TO_MS;
         cpu_t.rof_post_draw_ms = rof_post_draw_ns as f32 * NS_TO_MS;
+    }
+
+    /// #5367 Phase L — a spoken Goodbye line ended its conversation (the
+    /// Late system already ran OnEnd + cleared the selection); this is
+    /// the page-close half, reaching the same modal teardown the page's
+    /// own Close button does. Extracted from `render_one_frame` per the
+    /// #5096 size-pin discipline.
+    fn close_dialogue_menu_if_goodbye_ended(&mut self) {
+        let goodbye_close = self
+            .world
+            .try_resource::<crate::systems::npc_dialogue::DialogueSurfaceState>()
+            .is_some_and(|surface| surface.close_requested);
+        if !goodbye_close {
+            return;
+        }
+        if let Some(mut surface) = self
+            .world
+            .try_resource_mut::<crate::systems::npc_dialogue::DialogueSurfaceState>()
+        {
+            surface.close_requested = false;
+        }
+        self.close_dialogue_menu();
     }
 }
 

@@ -1356,6 +1356,17 @@ impl App {
         }
     }
 
+    /// #5367 Phase L — the Goodbye-close half. The Late system already
+    /// ended the conversation (OnEnd ran, selection cleared); this is the
+    /// same modal teardown the page's own Close button reaches, minus the
+    /// now-redundant `end_open_conversation`.
+    fn close_dialogue_menu(&mut self) {
+        if let Some(ui) = self.debug_ui.as_mut() {
+            ui.close_game_menu();
+        }
+        self.capture_world_input();
+    }
+
     fn resume_from_game_menu(&mut self) {
         // #5152 — the dialogue page closing (its Close button or Escape)
         // ends the open line: the OnEnd fragment runs and the selection

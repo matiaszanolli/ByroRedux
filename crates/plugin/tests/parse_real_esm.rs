@@ -5076,3 +5076,69 @@ fn story_manager_fo4_census_floor() {
     assert!(mnemonics.contains(b"HACK"));
     assert!(mnemonics.contains(b"LCLD"));
 }
+
+/// #5367 Phases G + F — dialogue greeting + force-greet census floors on
+/// `FalloutNV.esm` (2026-10-07 census, `docs/engine/dialogue-trees.md` §2):
+/// the literal `GREETING`/`HELLO` generic topics exist, the
+/// greeting-named DIAL family is a subsystem (447 DIALs / 6,643 INFOs),
+/// and the Dialogue procedure (PKDT 15) carries a decoded `PKDD` topic on
+/// 263 of 332 packages.
+#[test]
+#[ignore = "needs FNV game data on disk"]
+fn dialogue_greeting_and_forcegreet_fnv_floor() {
+    let Some(data) = data_dir(test_paths::FNV_ENV, test_paths::FNV_DEFAULT) else {
+        eprintln!("[FNV dialogue] skipping: game data unavailable");
+        return;
+    };
+    let bytes = std::fs::read(data.join("FalloutNV.esm")).expect("read FalloutNV.esm");
+    let index = parse_esm(&bytes).expect("parse FalloutNV.esm");
+
+    // Phase G — the generic activation greeting exists by the corpus rule.
+    let generic: Vec<&str> = index
+        .dialogues
+        .values()
+        .map(|record| record.editor_id.as_str())
+        .filter(|id| matches!(*id, "GREETING" | "HELLO" | "DialogueGenericHello"))
+        .collect();
+    assert!(
+        generic.contains(&"GREETING") && generic.contains(&"HELLO"),
+        "the literal generic greeting topics must exist: {generic:?}"
+    );
+
+    // The greeting family is subsystem-scale (447 by the Python census
+    // counting EDID + FULL; 438 through this parser's EDID-only view —
+    // the floor pins the parser's own number).
+    let greeting_dials = index
+        .dialogues
+        .values()
+        .filter(|record| {
+            record.editor_id.to_ascii_lowercase().contains("greet")
+                || record.editor_id.to_ascii_lowercase().contains("hello")
+        })
+        .count();
+    assert!(
+        greeting_dials >= 430,
+        "greeting-named DIAL floor (parser-measured 438): {greeting_dials}"
+    );
+
+    // Phase F — Dialogue-procedure packages with a decoded topic
+    // (census: 332 packages, 263 carrying a PKDD topic).
+    let mut dialogue_packages = 0usize;
+    let mut with_topic = 0usize;
+    for pack in index.packages.values() {
+        if pack.procedure_type == 15 {
+            dialogue_packages += 1;
+            if pack.dialogue_topic.is_some() {
+                with_topic += 1;
+            }
+        }
+    }
+    assert!(
+        dialogue_packages >= 330,
+        "Dialogue-procedure PACK floor (measured 332): {dialogue_packages}"
+    );
+    assert!(
+        with_topic >= 260,
+        "PKDD topic floor (measured 263): {with_topic}"
+    );
+}

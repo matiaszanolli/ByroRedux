@@ -29,6 +29,8 @@ mod particle;
 mod patrol;
 pub(crate) mod restoration;
 mod sandbox;
+// #5367 Phase F — force-greet (Dialogue AI package procedure).
+pub(crate) mod forcegreet;
 // #5366 — Story Manager event producers (CLOC via the cell-loader
 // location contexts; KILL lives at the combat death site).
 pub(crate) mod story_events;

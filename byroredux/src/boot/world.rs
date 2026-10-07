@@ -306,6 +306,8 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     // P4 blocker 1 — the activation-driven dialogue topic selection.
     world.register::<crate::systems::npc_dialogue::NpcDialogueTopic>();
     world.insert_resource(crate::systems::npc_dialogue::DialogueSurfaceState::default());
+    // #5367 Phase F — force-greet directives (Dialogue-procedure packages).
+    world.register::<crate::systems::forcegreet::ForceGreetDirective>();
     world.register::<crate::npc_spawn::loot_appearance::NpcLootAppearance>();
     world.register::<crate::npc_spawn::loot_appearance::NpcAppearanceHidden>();
     world.register::<crate::ragdoll::RagdollActive>();

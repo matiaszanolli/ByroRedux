@@ -417,6 +417,12 @@ pub(super) fn register_update_systems(scheduler: &mut Scheduler) {
     // the SCEN package system drains the transient marker. Time-driven checks
     // are bounded to one pass per in-game minute inside the system.
     scheduler.add_exclusive(Stage::Update, crate::npc_spawn::ambient_ai_package_system);
+    // #5367 Phase F — force-greet directives (Dialogue-procedure
+    // packages) walk their NPCs to the player and open the conversation
+    // without activation. After the ambient package system so a fresh
+    // install greets on the next tick; before the Late dialogue
+    // selection so the opened surface serials once.
+    scheduler.add_exclusive(Stage::Update, crate::systems::forcegreet::forcegreet_system);
     // M47.3 — legacy ObScript quest scripts (Oblivion/FO3/FNV): run each
     // running quest's GameMode block on the vanilla 5 s cadence. Exclusive
     // beside `ambient_ai_package_system`: it drives `QuestStageState`

@@ -83,7 +83,11 @@ screenshot floor, and dismissal after the destination applies, and
 [`sm1-story-manager.sh`](docs/smoke-tests/sm1-story-manager.sh) gates
 Story Manager event dispatch live on Skyrim (#5366): the boot-time CLOC
 event must start quests through the canonical lifecycle, including the
-unconditional `CRLocationExpansionNode` → `CRHoldExpansion` chain.
+unconditional `CRLocationExpansionNode` → `CRHoldExpansion` chain, and
+[`dt1-dialogue-layers.sh`](docs/smoke-tests/dt1-dialogue-layers.sh)
+gates the dialogue greeting + force-greet layers on FNV (#5367): a
+quest-less activation must greet, and a Dialogue-procedure PACK must
+open its conversation without activation.
 
 ### Shader Compilation
 ```bash

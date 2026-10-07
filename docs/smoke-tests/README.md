@@ -53,6 +53,7 @@ docs/smoke-tests/p5-quest-persistence.sh         # Skyrim SE: MS01 objective sta
 docs/smoke-tests/p5-door-transition.sh fnv       # save/reload both sides of the P0 door route
 docs/smoke-tests/p5-soak.sh fnv                  # 30-min repeated transitions/saves soak (BYROREDUX_SOAK_MINUTES)
 docs/smoke-tests/sm1-story-manager.sh            # Skyrim SE: Story Manager CLOC dispatch starts quests live (#5366)
+docs/smoke-tests/dt1-dialogue-layers.sh          # FNV: greeting on quest-less activation + PACK-driven force-greet (#5367)
 ```
 
 Every game-specific value — data dir, archives, cell, camera pose, destination

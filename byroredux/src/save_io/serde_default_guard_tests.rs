@@ -618,7 +618,7 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // types are all on `registry_completeness_tests.rs`'s
     // `NOT_SAVED_BY_DESIGN` allowlist (rebuilt from XCWT/WATR/GRAS at cell or
     // worldspace entry), so no snapshot has ever contained either shape.
-    const BASELINE_MAJOR: u16 = 32;
+    const BASELINE_MAJOR: u16 = 33;
     // #4465 — refreshed WITH a major bump (v24 -> v25). `ReferenceState`
     // gained the required `picked_up` tombstone field (the durable half of
     // the P3 `PickedUp` marker, carried through the registered
@@ -692,7 +692,7 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // component's definition into the same file's hashed span. `RaceSpells`
     // itself is deliberately NOT_SAVED (spawn-derived, re-stamped every
     // reload), so no save's bytes change.
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x459f_a93c_e96d_4e1f;
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x005c_742b_9ce8_3bd8;
     // ---- earlier refresh history (kept for the false-positive record) ----
     // 2026-09-21 (W2.10 flip) — refreshed WITHOUT a major bump, the same
     // `VisibilityMask` tuple-struct sweep class as the two entries below:
@@ -735,6 +735,12 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // fn delegating to `for_legacy_projection`) moved the scan span. The
     // type's serialized shape is still a plain `u8` newtype — no field
     // added, removed, or retyped — so no snapshot decodes differently.
+    //
+    // v32 -> v33 (#5367 Phase L) — refreshed WITH a major bump:
+    // `DialogueSpokenInfoForms` joined the saved registry as a NEW
+    // resource (the spoken Say-Once ledger) — its absence in pre-v33
+    // snapshots means a said-once line can legitimately re-qualify after
+    // loading an old save, the same forward-default the format gates.
     //
     // v25 -> v26 (#4282/#4334) — refreshed WITH a major bump, both
     // directions at once: `Material` gained the optional capture-only

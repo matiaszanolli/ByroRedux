@@ -63,10 +63,11 @@ pub use condition::{
     ConditionFunction,
 };
 pub use dialogue::{
-    estimate_dialogue_duration, install_dialogue_records, scene_dialogue_system,
-    select_first_info, ActiveDialogueLine, DialogueLine, DialogueLineCompletionBatch,
-    DialoguePlayback, DialoguePresentationEvent, DialoguePresentationEventBatch,
-    DialogueQuestPriorities, DialogueRegistry,
+    estimate_dialogue_duration, install_dialogue_records, note_info_spoken,
+    scene_dialogue_system, select_first_info, ActiveDialogueLine, DialogueLine,
+    DialogueLineCompletionBatch, DialoguePlayback, DialoguePresentationEvent,
+    DialoguePresentationEventBatch, DialogueQuestPriorities, DialogueRandomState,
+    DialogueRegistry, DialogueSpokenInfoForms,
 };
 pub use equipment::{
     emit_equipment_changes, emit_item_transfers, install_equip_item_catalog, EquipItemCatalog,
