@@ -48,7 +48,7 @@ fn main() {
     let mut pool = byroredux_core::string::StringPool::new();
     for path in archive.list_files() {
         let lower = path.to_ascii_lowercase();
-        if !lower.ends_with(".nif") || !(lower.contains("lightbeam") || lower.contains("godray")) {
+        if !byroredux_nif::corpus::is_nif_entry(&lower) || !(lower.contains("lightbeam") || lower.contains("godray")) {
             continue;
         }
         if detail_filter

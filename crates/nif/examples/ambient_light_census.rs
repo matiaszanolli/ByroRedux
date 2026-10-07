@@ -42,14 +42,14 @@ fn main() {
             let a = byroredux_bsa::Ba2Archive::open(path).expect("open ba2");
             a.list_files()
                 .iter()
-                .filter(|f| f.to_ascii_lowercase().ends_with(".nif"))
+                .filter(|f| byroredux_nif::corpus::is_nif_entry(f))
                 .map(|f| (f.to_string(), a.extract(f).unwrap_or_default()))
                 .collect()
         } else {
             let a = byroredux_bsa::BsaArchive::open(path).expect("open bsa");
             a.list_files()
                 .iter()
-                .filter(|f| f.to_ascii_lowercase().ends_with(".nif"))
+                .filter(|f| byroredux_nif::corpus::is_nif_entry(f))
                 .map(|f| (f.to_string(), a.extract(f).unwrap_or_default()))
                 .collect()
         };

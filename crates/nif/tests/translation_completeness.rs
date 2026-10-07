@@ -377,7 +377,7 @@ fn collect_stats(archive: &MeshArchive, resolver: Option<&dyn MeshResolver>) -> 
     let mut files: Vec<String> = archive
         .list_files()
         .into_iter()
-        .filter(|p| p.to_ascii_lowercase().ends_with(".nif"))
+        .filter(|p| byroredux_nif::corpus::is_nif_entry(p))
         .collect();
     files.sort();
     let files = stratified_sample(files, SAMPLE_LIMIT);
@@ -995,7 +995,7 @@ fn dark_texture_role_population_matches_the_documented_census() {
         let mut dark_set = 0usize;
         for (archive_name, archive) in archives {
             for file in archive.list_files() {
-                if !file.to_ascii_lowercase().ends_with(".nif") {
+                if !byroredux_nif::corpus::is_nif_entry(&file) {
                     continue;
                 }
                 nifs += 1;

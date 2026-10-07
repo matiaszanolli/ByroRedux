@@ -39,14 +39,14 @@ fn main() {
         let arch = Ba2Archive::open(archive_path).expect("open BA2");
         arch.list_files()
             .into_iter()
-            .filter(|f| f.to_lowercase().ends_with(".nif"))
+            .filter(|f| byroredux_nif::corpus::is_nif_entry(f))
             .filter_map(|f| arch.extract(f).ok().map(|b| (f.to_string(), b)))
             .collect()
     } else {
         let arch = BsaArchive::open(archive_path).expect("open BSA");
         arch.list_files()
             .into_iter()
-            .filter(|f| f.to_lowercase().ends_with(".nif"))
+            .filter(|f| byroredux_nif::corpus::is_nif_entry(f))
             .filter_map(|f| arch.extract(f).ok().map(|b| (f.to_string(), b)))
             .collect()
     };

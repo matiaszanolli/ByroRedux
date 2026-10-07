@@ -34,7 +34,7 @@ fn main() {
         let mut examples: Vec<String> = Vec::new();
 
         for path in archive.list_files() {
-            if !path.to_ascii_lowercase().ends_with(".nif") {
+            if !byroredux_nif::corpus::is_nif_entry(path) {
                 continue;
             }
             let Ok(bytes) = archive.extract(path) else {

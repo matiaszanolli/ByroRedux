@@ -129,6 +129,65 @@ mod tests {
         assert!(!is_nif_entry("meshes/nif_notes.txt"));
     }
 
+    /// #5259 — the corpus definition lives once, in this file. A
+    /// hand-rolled `ends_with(".nif")` filter under `tests/` or
+    /// `examples/` silently drops every renamed-NIF LOD entry (22k+
+    /// `.bto`/`.btr` files on FO76 alone) from a census or a baseline —
+    /// the #2587/#4154/#4629 failure shape, reintroduced in-window by
+    /// `sf_matpath_dump` (2026-09-30) after #4629's sweep. The scan
+    /// rejects the hand-rolled spelling; the two exempt files carry
+    /// deliberate `.nif ∪ .kf` scopes that `is_nif_entry` (NIF-only by
+    /// design — KF clips are animation, not meshes) cannot express.
+    #[test]
+    fn corpus_filters_route_through_is_nif_entry() {
+        const EXEMPT: &[(&str, &str)] = &[
+            ("float_channel_survey.rs", "the .nif ∪ .kf animation survey"),
+            (
+                "parse_real_nifs.rs",
+                "the torch-folder scope and the .nif ∪ .kf archive census",
+            ),
+        ];
+
+        let crate_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let mut violations = Vec::new();
+        for dir in ["tests", "examples"] {
+            let mut stack = vec![crate_root.join(dir)];
+            while let Some(dir) = stack.pop() {
+                for entry in std::fs::read_dir(&dir).expect("readable tests/examples dir") {
+                    let path = entry.expect("readable dir entry").path();
+                    if path.is_dir() {
+                        stack.push(path);
+                        continue;
+                    }
+                    if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                        continue;
+                    }
+                    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                    if EXEMPT.iter().any(|(exempt, _)| *exempt == name) {
+                        continue;
+                    }
+                    let src = std::fs::read_to_string(&path).expect("readable source");
+                    for (i, line) in src.lines().enumerate() {
+                        if line.contains("ends_with(\".nif\")") {
+                            violations.push(format!(
+                                "{}:{}  hand-rolled .nif filter — route through \
+                                 corpus::is_nif_entry",
+                                path.display(),
+                                i + 1
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            violations.is_empty(),
+            "the .nif-only corpus rule was hand-rolled again — .bto/.btr LOD \
+             entries silently drop out of that census (#2587/#4154/#4629):\n{}",
+            violations.join("\n")
+        );
+    }
+
     #[test]
     fn header_forms_share_the_total_key() {
         let with = per_block_tsv_header(10, Some((8, 2)));

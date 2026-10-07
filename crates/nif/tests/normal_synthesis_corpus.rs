@@ -44,7 +44,7 @@ fn derived_normals_agree_with_authored_ones() {
             for path in archive
                 .list_files()
                 .into_iter()
-                .filter(|p| p.ends_with(".nif"))
+                .filter(|p| byroredux_nif::corpus::is_nif_entry(p))
                 .take(2000)
             {
                 let Ok(bytes) = archive.extract(&path) else {
@@ -112,7 +112,7 @@ fn lod_and_facegen_geometry_no_longer_imports_flat() {
     let cases: [LodCase; 3] = [
         (
             Game::Oblivion,
-            &|p: &str| p.contains("landscape\\lod\\") && p.ends_with(".nif"),
+            &|p: &str| p.contains("landscape\\lod\\") && byroredux_nif::corpus::is_nif_entry(p),
             "distant-terrain LOD",
         ),
         (

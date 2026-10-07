@@ -7,7 +7,7 @@ fn main() {
     let (mut files, mut with_emitter, mut rate_some) = (0usize, 0usize, 0usize);
     let mut samples: Vec<(String, f32)> = Vec::new();
     for f in archive.list_files() {
-        if !f.to_ascii_lowercase().ends_with(".nif") {
+        if !byroredux_nif::corpus::is_nif_entry(f) {
             continue;
         }
         let Ok(bytes) = archive.extract(f) else {

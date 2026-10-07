@@ -132,7 +132,7 @@ fn main() {
 
     let mut stats = Stats::default();
 
-    if target.to_lowercase().ends_with(".nif") {
+    if byroredux_nif::corpus::is_nif_entry(target) {
         let bytes = std::fs::read(target).expect("read nif");
         println!("# {}", target);
         inspect(target, &bytes, &mut stats, true);
@@ -143,7 +143,7 @@ fn main() {
             .iter()
             .filter(|p| {
                 let pl = p.to_lowercase();
-                pl.ends_with(".nif") && filter.as_ref().map(|f| pl.contains(f)).unwrap_or(true)
+                byroredux_nif::corpus::is_nif_entry(&pl) && filter.as_ref().map(|f| pl.contains(f)).unwrap_or(true)
             })
             .take(limit)
             .map(|s| s.to_string())

@@ -14,7 +14,7 @@ fn main() {
     let mut emitted = 0usize;
     for f in arc.list_files() {
         let lower = f.to_lowercase();
-        if !lower.ends_with(".nif") {
+        if !byroredux_nif::corpus::is_nif_entry(&lower) {
             continue;
         }
         if pat.is_empty() || lower.contains(&pat) {

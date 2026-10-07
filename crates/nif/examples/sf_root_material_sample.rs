@@ -42,7 +42,7 @@ fn main() {
 
     let entries: Vec<String> = archive.list_files().iter().map(|s| s.to_string()).collect();
     for entry in &entries {
-        if !entry.to_ascii_lowercase().ends_with(".nif") {
+        if !byroredux_nif::corpus::is_nif_entry(entry) {
             continue;
         }
         total_nifs += 1;

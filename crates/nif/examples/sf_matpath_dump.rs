@@ -32,7 +32,7 @@ fn main() {
         let nifs: Vec<String> = a
             .list_files()
             .into_iter()
-            .filter(|n| n.to_ascii_lowercase().ends_with(".nif"))
+            .filter(|n| byroredux_nif::corpus::is_nif_entry(n))
             .map(|s| s.to_string())
             .take(cap)
             .collect();

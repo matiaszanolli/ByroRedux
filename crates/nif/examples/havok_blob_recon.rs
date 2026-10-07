@@ -89,7 +89,7 @@ fn main() {
         .iter()
         .filter(|f| {
             let l = f.to_ascii_lowercase();
-            l.ends_with(".nif") && l.contains(&needle)
+            byroredux_nif::corpus::is_nif_entry(&l) && l.contains(&needle)
         })
         .map(|f| f.to_string())
         .collect();
