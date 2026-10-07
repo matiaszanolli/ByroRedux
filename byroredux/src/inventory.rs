@@ -1651,6 +1651,16 @@ fn toggle_equip(world: &mut World, index: u32) -> MutationResult {
 ///
 /// Re-deriving is the whole point: the same function that owns the runtime
 /// transition owns the reload, so the two can't drift.
+pub(crate) fn reconcile_player_equipped_weapon(
+    world: &mut World,
+    player: byroredux_core::ecs::EntityId,
+) {
+    let weapon_slot = world
+        .get::<EquipmentSlots>(player)
+        .and_then(|equipment| equipment.weapon);
+    reconcile_equipped_weapon(world, player, weapon_slot);
+}
+
 /// #5058 — post-load faction reset for the process-lifetime player. The
 /// wholesale `restore_resources` reinstalls the alias-injection ledger with
 /// `factions` empty (its EntityId keys cannot survive a save), and the
@@ -1692,16 +1702,6 @@ pub(crate) fn reset_player_factions_to_record(
             let _ = world.remove::<byroredux_core::ecs::components::FactionRanks>(player);
         }
     }
-}
-
-pub(crate) fn reconcile_player_equipped_weapon(
-    world: &mut World,
-    player: byroredux_core::ecs::EntityId,
-) {
-    let weapon_slot = world
-        .get::<EquipmentSlots>(player)
-        .and_then(|equipment| equipment.weapon);
-    reconcile_equipped_weapon(world, player, weapon_slot);
 }
 
 fn reconcile_equipped_weapon(
