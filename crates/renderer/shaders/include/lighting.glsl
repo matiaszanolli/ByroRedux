@@ -182,8 +182,14 @@ float bethesdaBackFactor(GpuMaterial mat, float rawNdotL) {
 // front core, specular, rim, front-side wrap). The TRANSMISSION-class
 // half (wrap excess / back-light / translucency — non-zero only where
 // rawNdotL < 0) leaves through `transmissionRadiance`; consumers that
-// apply traced shadow visibility must leave that half unshadowed. The
-// full unshadowed radiance is `return + transmissionRadiance`.
+// apply traced shadow visibility multiply the reflection half by the
+// shared visibility and the transmission half by
+// `traceLightTransmittanceSkippingInstance` — a trace that skips the
+// receiver's own instance, since the light-side shadow-ray origin sits
+// inside a closed body for exactly these lobes (#5249; the brief
+// #5192 interlude left the half unshadowed, which re-opened #4946's
+// wall-bleed for every light). The full unshadowed radiance is
+// `return + transmissionRadiance`.
 vec3 shadowableLightRadiance(
     uint i, vec3 N, vec3 NG, vec3 V, float NdotV, vec3 F0,
     vec3 albedo, vec3 lightingMask, vec3 backLightingMap,
@@ -249,23 +255,19 @@ vec3 shadowableLightRadiance(
     float gNdotL = dot(NG, L);
     float horizon = step(0.0, gNdotL);
     // #5192 (REN-D10-2026-10-03-02) — RESOLVED as a per-lobe visibility
-    // convention: this function now splits its result into a
-    // reflection-class part (returned) and a transmission-class part
-    // (`transmissionRadiance` out param), and every consumer that applies
-    // traced shadow visibility multiplies only the reflection part — the
-    // transmission lobes stay unshadowed, the convention the reference
-    // content model authored them under (most local lights are not shadow
-    // casters in FO3/FNV/Skyrim content). The alternative design (trace the
-    // transmission part with the fragment's own instance skipped via a
-    // candidate-loop instanceCustomIndex test) would also re-shadow them
-    // against REAL occluders, at the cost of abandoning
-    // TerminateOnFirstHit on those queries; that trade stays available if
-    // back-lit SSS ever shows wall-bleed on real content. Pre-fix, the
-    // post-#5018 light-side origin started the shared shadow ray just
-    // inside a closed body and the far wall committed as opaque, zeroing
-    // exactly these lobes inside shadowFade while `mix(1, V, shadowFade)`
-    // handed them back unshadowed past it — the authored soft terminator
-    // and back-lit SSS blinked on at 12 000 BU.
+    // convention: this function splits its result into a reflection-class
+    // part (returned) and a transmission-class part (`transmissionRadiance`
+    // out param). Consumers multiply the reflection part by the shared
+    // traced visibility; the transmission part takes its own trace with
+    // the fragment's instance skipped (#5249 took the alternative this
+    // comment originally deferred). Pre-fix, the post-#5018 light-side
+    // origin started the shared shadow ray just inside a closed body and
+    // the far wall committed as opaque, zeroing exactly these lobes inside
+    // shadowFade while `mix(1, V, shadowFade)` handed them back unshadowed
+    // past it — the authored soft terminator and back-lit SSS blinked on
+    // at 12 000 BU. #5192 first left the half unshadowed wholesale, which
+    // restored the lobes but re-opened #4946's leak-through-walls symptom
+    // for every light, the sun and XCLL directional included.
 
     vec3 H = normalize(V + L);
     float NdotH = max(dot(N, H), 0.0);
@@ -411,8 +413,8 @@ vec3 shadowableLightRadiance(
     // be added to `Lo` from the unshadowed radiance of every cluster light
     // (sun included), leaking through walls and terrain shadow. #5192 — it
     // lands in the TRANSMISSION half of the split (non-zero only where
-    // rawNdotL < 0), so it stays unshadowed rather than being zeroed by the
-    // self-occluding light-side shadow ray on closed meshes.
+    // rawNdotL < 0), whose consumers shadow it with the own-instance-
+    // skipping trace (#5249) instead of the self-occluding light-side ray.
     if ((mat.materialFlags & MAT_FLAG_TRANSLUCENCY) != 0u) {
         // Peaks at the anti-light direction: the back side.
         float backDotL = max(-rawNdotL, 0.0);
@@ -486,6 +488,29 @@ vec3 traceLightTransmittanceDetailed(
         visibilityMask,
         committedInstance,
         committedDistance
+    );
+}
+
+// #5249 — the transmission lobes' own visibility: `traceShadowTransmittance`
+// above with the receiver's own instance skipped. See the transport's
+// doc comment for why the light-side origin makes the shared trace
+// self-occlude exactly these lobes inside a closed mesh.
+vec3 traceLightTransmittanceSkippingInstance(
+    uint lightIndex,
+    vec3 origin,
+    vec3 direction,
+    float maxDist,
+    int skipInstance
+) {
+    uint visibilityMask = decodeVisibilityMask(lights[lightIndex].params.z);
+    if (!visibilityMaskNeedsTrace(lights[lightIndex].params.z)) return vec3(1.0);
+    return traceShadowTransmittanceSkippingInstance(
+        origin,
+        direction,
+        maxDist,
+        lights[lightIndex].params.y,
+        visibilityMask,
+        skipInstance
     );
 }
 

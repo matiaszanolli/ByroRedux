@@ -4253,10 +4253,11 @@ fn translucency_drives_the_per_light_contribution_gate() {
 /// to `Lo` in the cluster loop from `lightColor * atten`, with no visibility
 /// term for any light, the sun included: foliage in a building's shadow kept
 /// full sun transmission, and a lamp behind a wall lit the far side's SSS.
-/// #5192 refinement: it folds into the function's TRANSMISSION half, which
-/// the consumers deliberately leave unshadowed (a shadow ray toward a light
-/// behind the surface starts inside a closed mesh) — "evaluated with the
-/// other direct lobes" no longer implies "zeroed by the traced visibility".
+/// #5192 refinement: it folds into the function's TRANSMISSION half. #5249
+/// refinement: that half is shadowed by its own trace, which skips the
+/// receiver's instance (the shared light-side ray self-occludes inside a
+/// closed body for exactly these rawNdotL < 0 lobes) — so the #4946
+/// wall-bleed stays closed without zeroing the lobe on closed meshes.
 #[test]
 fn translucency_lobe_is_shadowed_with_the_other_direct_lobes() {
     let lighting = include_str!("../../../shaders/include/lighting.glsl");
@@ -7423,9 +7424,36 @@ fn shadowable_light_radiance_splits_transmission_lobes_from_traced_visibility() 
         .expect("the finalize must shade the reflection half by visibility (#5192)");
     let finalize = &tri[visibility_pos..visibility_pos + 400];
     assert!(
-        finalize.contains("+ restirSelectedTransmission * restirW;"),
-        "the finalize must apply the traced visibility to the reflection \
-         half ONLY — the transmission half stays unshadowed (#5192)"
+        finalize.contains("+ restirSelectedTransmission * restirW * transmissionVisibility;"),
+        "the finalize must shade the transmission half by its OWN visibility, \
+         not the shared one and not none (#5192/#5249)"
+    );
+    // #5249 — that visibility is a trace which skips the receiver's own
+    // instance: the shared light-side ray self-occludes inside a closed
+    // body for exactly the rawNdotL < 0 lobes (#5192's zero), while the
+    // unshadowed interlude re-opened #4946's wall-bleed for every light.
+    let skip_pos = tri
+        .find("traceLightTransmittanceSkippingInstance(")
+        .expect("the finalize must trace the transmission half's own visibility (#5249)");
+    let skip_call = &tri[skip_pos..skip_pos + 400];
+    assert!(
+        skip_call.contains("fragInstanceIndex"),
+        "the skip trace must pass the fragment's own instance (#5249)"
+    );
+    assert!(
+        skip_pos < visibility_pos,
+        "the skip trace is computed before the finalize assignment that uses it (#5249)"
+    );
+    let transport = include_str!("../../../shaders/include/shadow_transport.glsl");
+    let skip_body = transport
+        .find("vec3 traceShadowTransmittanceSkippingInstance(")
+        .expect("shadow_transport.glsl must define the own-instance skip trace (#5249)");
+    let skip_body = &transport[skip_body..];
+    assert!(
+        skip_body.contains("rayQueryGetIntersectionInstanceCustomIndexEXT")
+            && skip_body.contains("advanceShadowRayPastHit"),
+        "the skip trace must walk past own hits, not zero on them (#5249) — \
+         zeroing is the #5192 self-occlusion this exists to avoid"
     );
     // The selection registers must be wired at all three selection sites,
     // or the finalize reads a stale zero transmission for reused picks.

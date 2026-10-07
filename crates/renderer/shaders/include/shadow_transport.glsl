@@ -176,4 +176,52 @@ vec3 traceShadowTransmittance(
     );
 }
 
+// #5249 — visibility of a light segment that ignores the receiver's OWN
+// instance: the transmission lobes' shadow ray. #5018's light-side origin
+// starts that ray just inside a closed body, so the body's own surfaces
+// must not block the very lobe modelling light transmitting THROUGH them
+// (#5192's self-occlusion zero) — while every other blocker (a building
+// between the sun and back-lit foliage, the wall behind a shadowed
+// interior NPC — the #4946 wall-bleed #5192 re-opened) still must. Own
+// hits are skipped by advancing past them, the same transport the
+// alpha-skip walk above uses; the first FOREIGN hit defers to the shared
+// alpha/glass-aware trace for the remaining leg, so translucent blockers
+// keep their tint semantics. Exhausting MAX_TRANSMISSION_SELF_SKIPS
+// reports lit — the #5192 conservative default — rather than zeroing the
+// lobe on an unbounded self-overlap. Opaque layers only: the glass walk
+// is about what the ray passes THROUGH, which the own body is not.
+vec3 traceShadowTransmittanceSkippingInstance(
+    vec3 origin, vec3 direction, float maxDist,
+    float emitterRadius, uint visibilityMask, int skipInstance
+) {
+    uint mask = visibilityMask & VISIBILITY_MASK_ALL_OPAQUE;
+    vec3 at = origin;
+    float remaining = maxDist;
+    for (int hop = 0; hop < int(MAX_TRANSMISSION_SELF_SKIPS); ++hop) {
+        rayQueryEXT skipRQ;
+        rayQueryInitializeEXT(
+            skipRQ, topLevelAS, gl_RayFlagsOpaqueEXT,
+            mask,
+            at, 0.0, direction, remaining);
+        while (rayQueryProceedEXT(skipRQ)) {}
+        if (rayQueryGetIntersectionTypeEXT(skipRQ, true)
+            == gl_RayQueryCommittedIntersectionNoneEXT) {
+            return vec3(1.0);
+        }
+        int hitIdx = rayQueryGetIntersectionInstanceCustomIndexEXT(skipRQ, true);
+        if (hitIdx != skipInstance) {
+            // A foreign blocker: hand the remaining leg to the shared
+            // transport so alpha-aware and glass blockers keep their
+            // visibility semantics along this ray too.
+            return traceShadowTransmittance(
+                at, direction, remaining, emitterRadius, mask);
+        }
+        float hitT = rayQueryGetIntersectionTEXT(skipRQ, true);
+        if (!advanceShadowRayPastHit(at, remaining, direction, hitT)) {
+            return vec3(1.0);
+        }
+    }
+    return vec3(1.0);
+}
+
 #endif

@@ -3830,21 +3830,41 @@ void main() {
                     visibility = mix(vec3(1.0), transmissionFrame, shadowFade);
                 } // end shadow-ray trace (shadowFade > 0.01)
                 vec3 rad = restirSelectedRadiance;
-                // #5192 — per-lobe visibility. Only the REFLECTION half of
-                // the selected radiance takes the traced `visibility`: the
+                // #5192/#5249 — per-lobe visibility. The REFLECTION half of
+                // the selected radiance takes the traced `visibility`. The
                 // transmission half (wrap excess / back-light / SSS) is
                 // non-zero only where the light sits behind the shading
-                // plane, where the #5018 light-side origin starts the ray
-                // inside a closed mesh and the far wall commits — zeroing
-                // exactly the lobes it was supposed to model. Keeping that
-                // half unshadowed restores the authored convention (most
-                // reference-content local lights are not shadow casters)
-                // and makes the estimate agree with the pHat that selected
-                // the light, instead of spending the reservoir sample on a
-                // guaranteed-dark candidate. At visibility == 1 the sum is
-                // the unchanged unshadowed value.
+                // plane, where the #5018 light-side origin starts the shared
+                // ray inside a closed mesh and the far wall commits —
+                // zeroing exactly the lobes it was supposed to model. So it
+                // takes its OWN trace, one that skips this fragment's
+                // instance: real occluders (a building between the sun and
+                // back-lit foliage, the wall behind a shadowed interior NPC
+                // — #4946's wall-bleed, which #5192's unshadowed interlude
+                // re-opened) shadow the lobe again while the own body never
+                // does. Reuses shadow ray 0's direction — already
+                // K-jittered per frame, so the EMA below averages the
+                // penumbra exactly like the reflection half's history. Lit
+                // when no transmission lobe is active, when the rays are
+                // skipped past the fade, or when the skip budget runs out
+                // (the #5192 conservative default). pHat still scores the
+                // half unshadowed, so reservoir selection may favour
+                // behind-wall lights on these materials; the finalize no
+                // longer pays them out.
+                vec3 transmissionVisibility = vec3(1.0);
+                if (dot(restirSelectedTransmission, restirSelectedTransmission) > 1e-12
+                    && shadowFade > 0.01) {
+                    transmissionVisibility = mix(vec3(1.0),
+                        traceLightTransmittanceSkippingInstance(
+                            i,
+                            selectedRayOrigin,
+                            selectedRayDirection,
+                            selectedRayTMax,
+                            fragInstanceIndex),
+                        shadowFade);
+                }
                 frameContribution = rad * restirW * visibility
-                    + restirSelectedTransmission * restirW;
+                    + restirSelectedTransmission * restirW * transmissionVisibility;
                 selectedVisibilityDebug = visibility;
             }
 

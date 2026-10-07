@@ -588,13 +588,21 @@ mod tests {
              far-field estimate converges to the unshadowed BRDF value"
         );
         assert!(
-            // #5192 — the finalize shades the reflection half with the
-            // traced visibility and keeps the transmission half unshadowed;
-            // at visibility == 1 the sum is the full unshadowed rad·W.
+            // #5192/#5249 — the finalize shades the reflection half with
+            // the shared traced visibility and the transmission half with
+            // its own own-instance-skipping visibility, whose fade is
+            // already folded into `transmissionVisibility` via the same
+            // mix-toward-fully-lit form above; at visibility == 1 the sum
+            // is the full unshadowed rad·W.
             src.contains("frameContribution = rad * restirW * visibility")
-                && src.contains("+ restirSelectedTransmission * restirW;"),
+                && src.contains("+ restirSelectedTransmission * restirW * transmissionVisibility;"),
             "the ReSTIR finalize must not re-apply shadowFade to the whole \
              contribution — that fades the light, not the shadow"
+        );
+        assert!(
+            src.contains("transmissionVisibility = mix(vec3(1.0),"),
+            "the transmission half's fade must interpolate its own visibility \
+             toward fully lit, exactly like the reflection half's (#5249)"
         );
         assert!(
             !src.contains("rad * restirW * transmissionFrame * shadowFade"),
