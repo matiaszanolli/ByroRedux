@@ -1662,6 +1662,24 @@ fn exterior_reload_bootstrap_mode() -> crate::scene::ExteriorBootstrapMode {
     crate::scene::ExteriorBootstrapMode::FullRadius
 }
 
+/// #5034 / #5255 — drop the player's mid-life gear handoff scratch
+/// (both the equip-import queue #5034 and the release queue #5028)
+/// before a reload's reconcile reads the restored slots.
+///
+/// Neither component is saved (runtime scratch), but both survive the
+/// world replacement on the process-lifetime player body. Left alone:
+/// a stale import would attach the pre-load session's gear after the
+/// slots it responded to are gone, and — because the gear loader's
+/// drain runs *after* `step_save_loads` in the frame — a release queued
+/// before the load would despawn a gear root `reconcile_worn_gear` just
+/// revealed for the loaded slots, with nothing re-importing it. The
+/// restored `Inventory`/`EquipmentSlots` are the authority; the next
+/// genuine equip/leaves transfer re-queues whichever half applies.
+fn clear_player_gear_handoff_scratch(world: &mut World, player: byroredux_core::ecs::EntityId) {
+    world.remove::<crate::npc_spawn::PendingGearImport>(player);
+    world.remove::<crate::npc_spawn::PendingGearRelease>(player);
+}
+
 /// Drain a queued live-load: reload the saved cell or exterior worldspace
 /// via the existing loaders (full GPU/physics/camera setup), restore saved
 /// resources, then overlay the form-id-keyed mutable component deltas.
@@ -1894,15 +1912,13 @@ pub fn execute_pending_save_loads(
                 .and_then(|entity| entity.0);
             if let Some(player) = player {
                 crate::inventory::reconcile_player_equipped_weapon(world, player);
-                // #5034 — a mid-life import in flight at save time is not
-                // saved (runtime handoff scratch) but survives on the
-                // process-lifetime player: left alone it would attach the
-                // pre-load session's gear after the slots it responded to
-                // are gone. Drop it, then diff the surviving body roots
+                // #5034 / #5255 — drop the player's mid-life gear handoff
+                // scratch before the reconcile diffs the body roots
                 // against the just-overlaid slots so worn gear agrees with
                 // the restored state (the visual sibling of the weapon
                 // re-derive above).
-                world.remove::<crate::npc_spawn::PendingGearImport>(player);
+                clear_player_gear_handoff_scratch(world, player);
+                crate::npc_spawn::loot_appearance::reconcile_worn_gear(world, player);
                 crate::npc_spawn::loot_appearance::reconcile_worn_gear(world, player);
                 // #5058 — the ledger reset above cannot name the player's
                 // stale alias-injected memberships anymore, so strip them

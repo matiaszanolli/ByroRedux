@@ -118,22 +118,57 @@ fn discover_scan_roots_finds_every_workspace_crate_and_byroredux() {
     }
 }
 
-/// Extract `X` from a `impl Component for X` / `impl Resource for X`
-/// line (leading whitespace stripped first — every real impl in this
-/// tree sits at module level with no indentation, but this tolerates
-/// one anyway). Returns `None` for a non-matching line. A generic type
+/// Extract `X` from an `impl Component for X` / `impl Resource for X`
+/// line — including a fully-qualified trait path
+/// (`impl byroredux_core::ecs::Resource for X`; #5255: eight such impls
+/// were invisible to the two literal prefixes and classified nowhere).
+/// Leading whitespace stripped first — every real impl in this tree sits
+/// at module level with no indentation, but this tolerates one anyway.
+/// Returns `None` for a non-matching line. A generic type
 /// (`impl Component for Foo<T>`) would capture just `Foo`, which is
 /// fine — no generic Component/Resource impl exists in the scanned
 /// directories today.
 fn impl_target_type(line: &str) -> Option<&str> {
     let trimmed = line.trim_start();
-    let rest = trimmed
-        .strip_prefix("impl Component for ")
-        .or_else(|| trimmed.strip_prefix("impl Resource for "))?;
-    let end = rest
+    let rest = trimmed.strip_prefix("impl")?;
+    // Word boundary: `impl` must be followed by whitespace or a generic
+    // header, not an identifier that merely starts with it.
+    if !rest.starts_with('<') && !rest.starts_with(char::is_whitespace) {
+        return None;
+    }
+    // Tolerate a generic-parameter list (`impl<T> Component for X`) —
+    // depth-matched, since the header's `<…>` may itself nest.
+    let rest = if rest.starts_with('<') {
+        let mut depth = 0usize;
+        let mut end = None;
+        for (i, byte) in rest.bytes().enumerate() {
+            match byte {
+                b'<' => depth += 1,
+                b'>' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = Some(i + 1);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        rest[end?..].trim_start()
+    } else {
+        rest.trim_start()
+    };
+    // The trait may be a `::`-qualified path; only the final segment
+    // decides whether this is a Component/Resource impl at all.
+    let (trait_path, target) = rest.split_once(" for ")?;
+    match trait_path.rsplit("::").next()? {
+        "Component" | "Resource" => {}
+        _ => return None,
+    }
+    let end = target
         .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
-        .unwrap_or(rest.len());
-    (end > 0).then(|| &rest[..end])
+        .unwrap_or(target.len());
+    (end > 0).then(|| &target[..end])
 }
 
 /// Is the attribute opening at `src[at..]` a test-only gate — `#[cfg(test)]`
@@ -341,6 +376,31 @@ impl Component for AfterEverything {}
     );
 }
 
+/// #5255 — discovery must see fully-qualified trait paths, not just the
+/// two literal prefixes. Eight production impls
+/// (`impl byroredux_core::ecs::Resource for GracefulExitRequested`, …)
+/// sat outside the old matcher and were classified nowhere — the next
+/// fully-qualified impl that DID need saving would have passed the guard
+/// silently.
+#[test]
+fn qualified_impl_paths_are_discovered() {
+    let fixture = r##"
+impl byroredux_core::ecs::Resource for Qualified {}
+impl crate::ecs::Component for AlsoQualified {}
+impl<T> byroredux_core::ecs::Component for GenericType<T> {}
+impl std::ops::Drop for NotAComponent {}
+impl Default for NotEither {}
+impl SomeTrait for Neither {}
+"##;
+    let names: Vec<_> = fixture.lines().filter_map(impl_target_type).collect();
+    assert_eq!(
+        names,
+        ["Qualified", "AlsoQualified", "GenericType"],
+        "a qualified `impl …::(Component|Resource) for X` line must yield X; \
+         non-Component/Resource impls must stay undiscovered: {names:?}"
+    );
+}
+
 /// #2295 (SAVE-D1-12) — registry-completeness guard, generalized past
 /// the NPC-spawn-stamped surface
 /// `npc_spawn_stamped_components_are_saved_or_intentionally_rederived`
@@ -525,7 +585,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("DialogueLineCompletionBatch", "one-shot presentation-ingress batch, snapshotted+drained every tick"),
         ("DialoguePlayback", "documented #1696-style rationale on the type itself (#2294)"),
         ("DialoguePresentationEventBatch", "one-shot presentation batch, drained at the start of every tick before being repopulated the same tick"),
-        ("ItemEventBatch", "one-shot item-transfer event batch, drained by event_cleanup_system at end of frame; no reader yet (#4713)"),
+        ("ItemEventBatch", "one-shot item-transfer event batch: read mid-frame by loot_appearance::queue_gear_releases (#5028), then drained by event_cleanup_system at end of frame"),
         ("DialogueRegistry", "populated once from parsed DIAL/INFO ESM records, only ever read afterward"),
         ("Dlc2Ttr4aPlayerScript", "forward-latent — no live production spawn site exists outside tests/examples"),
         ("EquipItemCatalog", "populated once at cell/plugin load, only ever read afterward"),
@@ -586,6 +646,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("StartGameQuestRegistry", "populated once from ESM QUST records; its own doc states repeated cell loads are idempotent by design"),
         ("TimerExpired", "one-shot event marker drained every frame by event_cleanup_system"),
         ("TriggerVolume", "occupancy is engineered (fix #1817) to self-correct via a None-sentinel cold-start re-seed with zero observable difference"),
+        ("TriggerOccupancyState", "previous-frame actor/volume occupancy scratch for NPC-driven crossings (scripting/trigger.rs) — EntityId-keyed session sets rebuilt from live positions every observed tick; the player-occupancy half that IS save-relevant lives in TriggerVolume itself"),
         ("TwoStateTransitionBatch", "one-shot presentation batch drained every tick; the state it summarizes (TwoStateActivator) is already registered"),
         ("UiMessageCommand", "one-shot command marker drained every frame; its only writer is unreachable in production today (same reason as MG07LabyrinthianDoor)"),
         // ── crates/physics/src/ ──────────────────────────────────────
@@ -615,11 +676,15 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("InteriorSkyExposureRes", "current CELL Show Sky flag, rederived from parsed CELL DATA on every interior cell load"),
         ("ProvisionalOutdoorEnvironment", "marks the interior-boot canonical outdoor default (#4902); re-installed by the interior cell load when no worldspace sky exists and consumed by the first worldspace weather, never saved"),
         ("CellRootIndex", "inverted CellRoot->owned-entities index, repopulated by cell_loader::stamp_cell_root every cell load (#791)"),
+        ("CellLoadPhaseTimings", "last cell load's per-phase wall-clock telemetry (esm parse, precombined spawn, …), overwritten by every load — diagnostics, not gameplay state"),
         ("CloudSimState", "cloud-scroll accumulator, seeded at [0,0] only when absent — both apply_worldspace_weather branches use an is_none() guard so the accumulator survives interior visits and only a fresh session (or save/load round-trip, which does not snapshot it) resets it to [0,0] (see its own #803 doc)"),
         ("WeatherSurfaceState", "history-dependent exterior rain-film and snow-coverage state; session/worldspace simulation state is rebuilt dry rather than serialized until per-cell exposure persistence exists"),
         ("CombatState", "session-local attack timing and smoke telemetry; canonical Health/Dead/EquippedWeapon state is saved separately"),
         ("AiCombatState", "NPC combat runtime armed by two producers, Effect::StartCombat (MQ101 combat gate) and, since #4414, faction_hostility_system: target is a session-local EntityId, same #4139/#1696 hazard class as ActorCinematicState::vehicle. Ambient combat is re-derived after a load — faction_hostility_system re-creates it within EVALUATION_PERIOD_SECS (0.5 s) when the pair is still in range and in sight — so only a scripted StartCombat against a target that is not otherwise hostile is lost, the same posture CombatState/MeleeState already take for player combat"),
         ("CurrentCellRoot", "tracks the interior placement-root entity, set fresh by load_cell_with_masters and cleared by execute_pending before each cell load"),
+        ("GracefulExitRequested", "one-shot process-quit flag polled by the next about_to_wait (engine.quit / window close); a restored value would describe the saving session's shutdown, not gameplay"),
+        ("SceneEffectSoftCache", "per-frame memo of the scene's effect-shader-flag classification, keyed on the world's structural generation and recomputed from already-saved Material state after any load"),
+        ("ScaleformHudDiag", "hud.debug diagnostics mirror copied out of the Scaleform driver on its diagnostic cadence — operator observability, never gameplay"),
         ("DebugLoadArchiveSet", "debug cell.load console-command bookkeeping (#2078), outside the normal single-launch CLI path"),
         ("DoorTeleport", "XTEL destination data, rederived identically from the plugin's parsed REFR every cell load"),
         ("PlacementContentWithheld", "marker on a placement root spawned disabled (#4820), re-stamped every cell load from the same inputs that withheld the content — the saved ReferenceEnableState ledger and the REFR's authored Initially Disabled flag"),
@@ -667,6 +732,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("PlayerInventoryTemplate", "read-only starting loadout rebuilt from the master Player NPC record; live Inventory/EquipmentSlots are saved separately"),
         ("PlayerCharacterTemplate", "read-only CHARAL seed (ActorValues/ActorVitals) rebuilt from the master Player NPC record via derive_npc_actor_values (#4458); live actor values are saved separately"),
         ("PlayerVitals", "native HUD vitals-bar keys (display label + AVIF FormID) resolved from the plugin's AVIF table by install_catalog; pure presentation wiring — the values it reads live in the saved ActorValues column"),
+        ("HudControl", "console-facing HUD control (backend choice, visibility, hud.values-pinned bar fractions) inserted at launch and mutated only by hud.* commands — operator presentation state, not gameplay; the pinned fractions overlay values derived from saved ActorValues"),
         ("PlayerMode", "engine-wide FlyCam/Character flag set at scene-setup from CLI flags + scene type, not gameplay state"),
         ("RagdollActive", "marker for live ragdoll simulation, same physics-rebuild posture as PhysicsWorld above — not snapshot-restored"),
         ("RagdollTemplate", "per-actor ragdoll blueprint resolved at spawn against the loaded skeleton, rederived identically every load — same posture as PhysicsWorld"),
@@ -689,8 +755,10 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("WalkStuckTimer", "runtime blocked-leg scratch (M42.10), cleared on package handover and re-accumulated from zero against the same deterministic obstacle — same posture as NavPath"),
         ("WalkSpeed", "authored locomotion speed (M42.11), re-derived at spawn from the walk clip's accumulation-root travel — same posture as WalkAnimation"),
         ("NpcSkeletonBones", "P3 mid-life gear import: the spawn job's bone-name → entity map, retained on the actor so an equip of a never-worn item can import its mesh against the living skeleton — spawn-derived, re-derived identically every load, same posture as AnimationTarget (never serialize process-local entity IDs)"),
+        ("PrebakedHeadPart", "#5095 marker on the mesh root the pre-baked spawn's PNAM head-part fallback loaded, so player.body can report head_parts=N — spawn-derived, re-derived identically every load, never serialized"),
         ("ActorBodyClass", "P3 mid-life gear import: the gender + race the spawn path resolved gear meshes with, retained so a mid-life equip resolves the same meshes — spawn-derived, same posture as AnimationTarget"),
         ("PendingGearImport", "P3 mid-life gear import: one equipped item's worn-mesh import handoff from the equip-appearance system to the GearImportLoader — runtime scratch drained within frames, same posture as NavPath"),
+        ("PendingGearRelease", "#5028 mid-life gear release handoff from equipment_appearance_system to the GearImportLoader — runtime scratch drained within frames, same posture as PendingGearImport; dropped on the player at load beside it, since a pre-load release drained after the reload would despawn gear the restored slots just revealed (#5255)"),
         ("DialogueSurfaceState", "P4 blocker 2: the response surface's open-once-per-selection serial + the app side's opened watermark — runtime plumbing drained every frame, same posture as InjectedKeyPulse"),
         ("NpcDialogueTopic", "P4 blocker 1: the activation-driven dialogue topic selection stamped on an NPC — re-derives from the authored DIAL/INFO records + running quests on the next activation, same posture as InteractionTrace"),
         ("PendingInventoryActions", "P3: the inv.equip command's handoff queue, drained through apply_action each frame — runtime plumbing, same posture as InjectedKeyPulse"),
@@ -704,6 +772,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("SettingsPersistence", "process-local user-config path; preferences are independently persisted in settings.toml, never inside a gameplay save"),
         ("SkyParamsRes", "WTHR sky rendering parameters, rebuilt from the parsed record every exterior cell load"),
         ("SoundArchiveProvider", "engine-wide --sounds-bsa archive handle(s) opened once at startup (EX-16 item 5 / #2372), same posture as FootstepConfig/WaterAudioConfig/ScriptProvider — audio assets are re-resolved, not gameplay save state"),
+        ("ScriptProvider", "engine-wide --scripts-bsa archive handle(s) opened once at startup; compiled PEX lookups are re-resolved from the archive every attach, never gameplay save state — same posture as SoundArchiveProvider"),
         ("Spinning", "demo-scene marker component, not present on any real gameplay content"),
         ("StudioSession", "editor-mode state for the `--studio` asset-preview/inspection host (SDK v0.1); ObjectId bindings and undo transforms describe a tooling session over loose NIF/asset content, never gameplay in a player save"),
         ("StudioArchives", "the `--studio` material gallery's per-game archive providers and asset listings, opened on demand for a tooling session — re-openable from the game profiles, never gameplay save state"),
@@ -834,5 +903,22 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
          the configured core, scripting, physics, audio, plugin, and binary roots \
          must be registered XOR allowlisted. \
          Offenders: {offenders:#?}",
+    );
+
+    // #5255 — the reverse direction: every allowlisted name must still be
+    // discovered by the scan. A hand row whose type was renamed, deleted,
+    // or whose impl moved out of the scanned roots (or under a `#[cfg(test)]`
+    // gate) would otherwise keep "classifying" nothing while staying green —
+    // and a renamed type would surface as a fresh offender while its stale
+    // row hid the rename.
+    let found_names: std::collections::HashSet<&str> =
+        found.iter().map(|(name, _)| name.as_str()).collect();
+    let stale_rows: Vec<&str> = allowlisted.difference(&found_names).copied().collect();
+    assert!(
+        stale_rows.is_empty(),
+        "SAVE-D1-12 (#5255): NOT_SAVED_BY_DESIGN rows no longer matching any \
+         discovered production impl (renamed, deleted, moved out of the \
+         scanned roots, or now test-gated): {stale_rows:#?} — update or drop \
+         the rows",
     );
 }

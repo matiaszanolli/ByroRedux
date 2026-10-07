@@ -1804,3 +1804,49 @@ fn container_and_corpse_loot_survive_encoded_live_overlay() {
         );
     }
 }
+
+/// Regression: #5255 — the post-load player cleanup must drop BOTH gear
+/// handoff queues. #5034 covered the import half; the release sibling
+/// (#5028) survived on the process-lifetime body, and the gear loader
+/// drains releases AFTER `step_save_loads` in the frame — so a release
+/// queued before the load despawned a gear root the reload's
+/// `reconcile_worn_gear` just revealed for the loaded slots, and nothing
+/// re-imported it. Both queues are runtime scratch; the restored
+/// Inventory is the authority and the next genuine event re-queues.
+#[test]
+fn load_clears_both_player_gear_handoff_queues() {
+    let mut world = World::new();
+    world.register::<crate::npc_spawn::PendingGearImport>();
+    world.register::<crate::npc_spawn::PendingGearRelease>();
+    let player = world.spawn();
+    world.insert(
+        player,
+        crate::npc_spawn::PendingGearImport {
+            form_id: 0xAAA,
+            paths: vec![r"meshes\armor\pre_load.nif".to_string()],
+        },
+    );
+    world.insert(
+        player,
+        crate::npc_spawn::PendingGearRelease {
+            form_ids: vec![0xBBB],
+        },
+    );
+
+    clear_player_gear_handoff_scratch(&mut world, player);
+
+    assert!(
+        world
+            .get::<crate::npc_spawn::PendingGearImport>(player)
+            .is_none(),
+        "the #5034 import queue must still be dropped at load"
+    );
+    assert!(
+        world
+            .get::<crate::npc_spawn::PendingGearRelease>(player)
+            .is_none(),
+        "the #5028 release queue must be dropped beside it (#5255) — a \
+         surviving release would despawn restored gear when the gear \
+         loader steps later in the frame"
+    );
+}
