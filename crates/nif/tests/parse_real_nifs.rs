@@ -555,12 +555,17 @@ fn parse_rate_fo4_all_meshes() {
 /// `SeventySix - Startup.ba2` (12 NIFs) ships with the base game and is the
 /// remaining mesh-bearing archive the old list missed.
 ///
-/// NOTE (#3466): the `block_coverage_baselines` / `per_block_baselines`
-/// ceilings are deliberately NOT regenerated alongside this. Those harnesses
-/// key on `Game::mesh_archives` and compare absolute counts; regenerating them
-/// before #3461 lands would bake FO76's 112,716 `NiUnknown` blocks into the
-/// accepted ceiling. This gate is rate-based, so it can widen independently —
-/// which is the whole reason the two tiers are separate.
+/// Historical NOTE (#3466): the `block_coverage_baselines` /
+/// `per_block_baselines` baselines were once deliberately NOT regenerated
+/// alongside this gate, because doing so before #3461 landed would have
+/// baked FO76's then-112,716 `NiUnknown` blocks into the accepted ceiling.
+/// #3461 landed 2026-09-02 and #4628 regenerated `fallout_76.tsv` with 0
+/// unknowns; #5260 since re-measured the other three drift-stale coverage
+/// totals (FO4 805,148 / FO76 1,770,751 / SSE 856,103, all 0 NiUnknown)
+/// and the ceiling gate now pins `total_blocks` itself, so a rewritten
+/// install can never drift silently again. This gate is rate-based, so it
+/// can widen independently — which is the whole reason the two tiers are
+/// separate.
 #[test]
 #[ignore = "needs FO76 game data on disk"]
 fn parse_rate_fo76_all_meshes() {

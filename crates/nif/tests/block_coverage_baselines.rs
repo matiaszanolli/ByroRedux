@@ -304,7 +304,9 @@ fn measure_coverage(game: Game) -> Option<Coverage> {
 }
 
 /// Baseline file: two `key\tvalue` lines (`total_blocks`, `unknown_blocks`)
-/// plus a `#` header. Hand-readable and diffable.
+/// plus a `#` header. Hand-readable and diffable; both lines are
+/// load-bearing — the ceiling gate pins the NiUnknown count and, since
+/// #5260, the corpus total.
 fn baseline_path(stem: &str) -> PathBuf {
     baselines_dir().join(format!("{stem}.tsv"))
 }
@@ -319,11 +321,24 @@ fn write_baseline(path: &std::path::Path, cov: &Coverage) {
     std::fs::write(path, body).expect("write baseline");
 }
 
-fn read_baseline_unknown(text: &str) -> usize {
-    text.lines()
+/// Read the two `key\tvalue` baseline lines. #5260 — `total_blocks` used
+/// to be written but never read, so a stale total (FO4/FO76/SSE drifted
+/// when their installs were rewritten) never warned and readers were
+/// misled about corpus size. Now the ceiling gate also pins the total,
+/// mirroring #4628's `baseline_corpus_total` check in
+/// `per_block_baselines`.
+fn read_baseline(text: &str) -> (usize, usize) {
+    let total = text
+        .lines()
+        .find_map(|l| l.strip_prefix("total_blocks\t"))
+        .and_then(|v| v.trim().parse().ok())
+        .expect("baseline missing `total_blocks` line");
+    let unknown = text
+        .lines()
         .find_map(|l| l.strip_prefix("unknown_blocks\t"))
         .and_then(|v| v.trim().parse().ok())
-        .expect("baseline missing `unknown_blocks` line")
+        .expect("baseline missing `unknown_blocks` line");
+    (total, unknown)
 }
 
 /// Shared driver for the sized-game ceiling tests.
@@ -357,7 +372,26 @@ fn run_unknown_ceiling(game: Game, stem: &str) {
             e
         ),
     };
-    let baseline_unknown = read_baseline_unknown(&text);
+    let (baseline_total, baseline_unknown) = read_baseline(&text);
+
+    // #5260 — corpus drift FIRST, ahead of the ceiling comparison,
+    // because it is the explanation the ceiling gate cannot provide
+    // (mirrors #4628's per_block_baselines check): vanilla archives are
+    // fixed content, so a moved total means the install was rewritten
+    // after the baseline was captured and both recorded numbers describe
+    // a different corpus than the one just measured.
+    assert!(
+        cov.total_blocks == baseline_total,
+        "[{}] corpus drift: baseline records total_blocks={} but the current \
+         install measures {} — the game data moved under the baseline, so the \
+         NiUnknown ceiling below describes a different corpus. If the rewrite \
+         is intentional, regenerate with `BYROREDUX_REGEN_BASELINES=1 cargo \
+         test -p byroredux-nif --test block_coverage_baselines -- --ignored` \
+         (#5260).",
+        game.label(),
+        baseline_total,
+        cov.total_blocks,
+    );
 
     // Vanilla archives are fixed content, so the counts are deterministic:
     // a parser change can only lower the unknown count (improvement) or
