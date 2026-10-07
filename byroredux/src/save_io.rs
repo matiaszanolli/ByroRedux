@@ -937,6 +937,42 @@ impl ConsoleCommand for SaveCommand {
                  once the destination has finished loading.",
             );
         }
+        // #5253 — the flag above is derived state, synced once per frame at
+        // the head of `step_player_save_actions`, and is correct only for
+        // the drain that immediately follows it. The other production
+        // ingress reads it across a gap: the remote console dispatches
+        // inside `DebugDrainSystem` (before that frame's sync) and the
+        // native-overlay console dispatches from `render_one_frame` (after
+        // `step_cell_transition`). A cover-less transition —
+        // `loading_screen.begin` failing for lack of artwork — tears both
+        // contexts down inside `step_cell_transition`, so for the rest of
+        // that frame (and into the next frame's scheduler) the flag still
+        // reads `false` while the world already carries neither context.
+        // Read the invariant itself instead of the flag: with a cell index
+        // installed, a context-less world is exactly the unloadable-
+        // snapshot state above, whatever the flag claims. The index is
+        // installed at cell-load moments only (interior
+        // `load_cell_with_masters`, the exterior `assemble_exterior_streaming`
+        // funnel) and never removed by teardown, so an index without a
+        // context cannot be a legitimate loose-NIF / pre-cell boot state.
+        if world
+            .try_resource::<crate::cell_loader::LoadedCellIndex>()
+            .is_some()
+            && world
+                .try_resource::<crate::cell_loader::CurrentCellContext>()
+                .is_none()
+            && world
+                .try_resource::<crate::cell_loader::CurrentExteriorContext>()
+                .is_none()
+        {
+            return CommandOutput::error(
+                "save REFUSED: the session has a loaded cell index but neither an \
+                 interior nor an exterior cell context — a cell transition is \
+                 mid-flight (or its loading cover failed to start), so this save \
+                 would be written successfully and then be permanently unloadable. \
+                 Try again once the destination has finished loading.",
+            );
+        }
         // #4372 — honor `Game.SetInChargen(abDisableSaving = true)`. MQ101
         // disables saving around the execution-block race menu; before this
         // gate the flag was recorded and read by nothing, so a quicksave went

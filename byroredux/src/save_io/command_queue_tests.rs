@@ -634,6 +634,80 @@ fn a_save_taken_mid_cell_transition_is_refused_not_written() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Regression: #5253 (SAVE-D4-2026-10-05-01) — the #4138 flag gate reads
+/// derived state that is only fresh for the player-action drain that
+/// immediately follows the sync. The remote console (inside
+/// `DebugDrainSystem`) and the native-overlay console (inside
+/// `render_one_frame`) both read it across a frame boundary, and a
+/// cover-less transition — `loading_screen.begin` failing for lack of
+/// artwork — tears both contexts down inside `step_cell_transition`
+/// *after* that frame's sync, so the flag still reads `false` while the
+/// world already carries neither context. A `save` landing in that window
+/// used to pass the gate and write a snapshot that is permanently
+/// unloadable, with a success message. The gate now also reads the
+/// invariant itself: a `LoadedCellIndex` installed with neither context
+/// present refuses, whatever the flag claims.
+#[test]
+fn a_save_with_an_index_but_no_context_is_refused_even_when_the_flag_is_stale() {
+    use crate::cell_loader::{CellTransitionInFlight, CurrentCellContext, LoadedCellIndex};
+
+    let mut world = World::new();
+    world.insert_resource(StringPool::new());
+    world.insert_resource(FormIdPool::new());
+    world.insert_resource(build_save_registry());
+    let dir = std::env::temp_dir().join(format!("byro_5253_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    world.insert_resource(SaveState::new(dir.clone(), 4));
+    world.insert_resource(PendingSaveLoadSlot::default());
+    world.insert_resource(crate::extensions::SessionEventQueue::default());
+    // The cover-less-teardown frame: the cell index is still installed
+    // (teardown never removes it), both contexts are gone, and the
+    // per-frame sync — published before `step_cell_transition` ran —
+    // still says no transition is in flight.
+    world.insert_resource(LoadedCellIndex(
+        std::sync::Arc::new(byroredux_plugin::esm::records::EsmIndex::default()),
+    ));
+    world.insert_resource(CellTransitionInFlight(false));
+
+    let out = SaveCommand.execute(&world, "0");
+    assert!(
+        out.lines.iter().any(|l| l.contains("REFUSED")),
+        "a context-less save must be refused even with the flag stale: {:?}",
+        out.lines
+    );
+    assert!(
+        out.lines
+            .iter()
+            .any(|l| l.contains("permanently unloadable")),
+        "the refusal must say why: {:?}",
+        out.lines
+    );
+    assert!(
+        !out.lines.iter().any(|l| l.contains("saved slot")),
+        "nothing may be written: {:?}",
+        out.lines
+    );
+    assert!(
+        !dir.join("slot0.sav").exists(),
+        "the refusal must happen before any disk write"
+    );
+
+    // And once the destination context is installed, the same save goes
+    // through — an index alone is not a refusal, the missing context is.
+    world.insert_resource(CurrentCellContext {
+        cell_editor_id: "GSDocMitchellHouse".to_string(),
+        esm_path: "FalloutNV.esm".to_string(),
+        masters: vec![],
+    });
+    let out = SaveCommand.execute(&world, "0");
+    assert!(
+        out.lines.iter().any(|l| l.contains("saved slot 0")),
+        "the gate must be transient, not a permanent block: {:?}",
+        out.lines
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// Regression: #4372 — `Game.SetInChargen(abDisableSaving = true)` must block
 /// saving, the way MQ101's execution-block race menu expects. The flag used to
 /// be recorded and read by nothing, so a quicksave succeeded inside the block.

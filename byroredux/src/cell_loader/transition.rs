@@ -106,8 +106,19 @@ impl Resource for CurrentCellContext {}
 /// `App::interior_transition`, rather than insert/remove calls threaded
 /// through the six sites that assign that field. The sync happens at the
 /// head of `step_player_save_actions`, immediately before the queued-save
-/// drain it guards, so it cannot go stale between the two — and there is
-/// exactly one place to keep correct instead of six.
+/// drain it guards, so it cannot go stale *between those two* — and there
+/// is exactly one place to keep correct instead of six.
+///
+/// #5253 — that freshness guarantee covers the player-action drain only.
+/// The other production ingress (`SaveCommand` via the remote console in
+/// `DebugDrainSystem`, or the native-overlay console in
+/// `render_one_frame`) reads this flag across a frame boundary, and a
+/// cover-less transition tears both contexts down inside
+/// `step_cell_transition` — after the sync, so the flag reads `false`
+/// while the world already has neither context. The save gate therefore
+/// also reads the invariant itself (`LoadedCellIndex` installed but
+/// neither context present), which cannot be stale because it *is* the
+/// state that makes the snapshot unloadable.
 pub struct CellTransitionInFlight(pub bool);
 
 impl Resource for CellTransitionInFlight {}
