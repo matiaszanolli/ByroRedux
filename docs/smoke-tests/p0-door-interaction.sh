@@ -57,7 +57,7 @@ arrival_log="$LOG_DIR/arrival.debug.log"
 
 cd "$ROOT_DIR"
 BYRO_DEBUG_PORT="$PORT" BYRO_DEBUG_SERVER=1 \
-RUST_LOG="warn,byroredux::interaction=info,byroredux::cell_loader::transition=info,byroredux::app_step=info" \
+RUST_LOG="warn,byroredux::interaction=info,byroredux::cell_loader::transition=info,byroredux::app_step=info,byroredux::asset_provider=info" \
 cargo run --release --quiet -- \
     "${SMOKE_ENGINE_ARGS[@]}" \
     --cell "$P0_CELL" \
@@ -105,6 +105,20 @@ require_in() {
 require_in "$preflight_log" "$P0_TARGET_KIND" "camera-forward target is a real XTEL door"
 require_in "$preflight_log" "$P0_PROMPT" "native interaction prompt is present"
 require_in "$preflight_log" "activations=0" "fixture starts without a stale activation edge"
+
+# #5257 — optional per-fixture patch-archive mount evidence: the engine
+# logs every archive open at info (`Opened <kind> archive: '<path>'`,
+# enabled in RUST_LOG above), and the fixture's needles are path tails
+# with the log's trailing quote (e.g. FNV's `Update.bsa'`), which no
+# other archive name can end with. Games without a patch archive (the
+# other fixtures) leave the list empty and skip this block.
+for archive_needle in "${FIXTURE_REQUIRED_ARCHIVE_LOGS[@]:-}"; do
+    # `"${undef[@]:-}"` expands to one EMPTY word (not zero) — skip it or
+    # the grep degenerates to always-pass for fixtures without the var.
+    [[ -n "$archive_needle" ]] || continue
+    require_in "$engine_stderr" "$archive_needle" \
+        "fixture-required patch archive mounted ($archive_needle)"
+done
 
 # A failed preflight cannot recover from an injected E press: there is no
 # target to activate. Exit before the transition wait so the useful live

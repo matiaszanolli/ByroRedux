@@ -131,10 +131,17 @@ run_scene_args() {
       ARGS=(--cornell)
       ;;
     prospector)
+      # #5257 — `Update.bsa` mounts LAST in both pools, mirroring the
+      # `--game fnv` profile's lists (last-listed wins, #3637/#3896). None
+      # of its 55 NIFs are Prospector content, so the bench-of-record
+      # numbers are unchanged; land this change byte-identically across
+      # the next same-machine control so the record stays comparable.
       ARGS=(--esm FalloutNV.esm --cell GSProspectorSaloonInterior
             --bsa "Fallout - Meshes.bsa"
+            --bsa "Update.bsa"
             --textures-bsa "Fallout - Textures.bsa"
-            --textures-bsa "Fallout - Textures2.bsa")
+            --textures-bsa "Fallout - Textures2.bsa"
+            --textures-bsa "Update.bsa")
       ;;
     whiterun)
       ARGS=(--esm Skyrim.esm --cell WhiterunBanneredMare

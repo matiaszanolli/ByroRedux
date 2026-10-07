@@ -987,7 +987,12 @@ fnv_run () {
     local esm="$FNV_DATA/FalloutNV.esm"
     local meshes="$FNV_DATA/Fallout - Meshes.bsa"
     local textures="$FNV_DATA/Fallout - Textures.bsa"
-    profile_ready fnv "$esm" "$meshes" "$textures" || return 0
+    # #5257 — the patch archive mounts LAST in both pools, mirroring the
+    # `--game fnv` profile (last-listed wins, #3637/#3896). None of its
+    # NIFs lie on the Goodsprings/Lake Mead routes, so the gate's
+    # population assertions are unchanged.
+    local update="$FNV_DATA/Update.bsa"
+    profile_ready fnv "$esm" "$meshes" "$textures" "$update" || return 0
     local grid="0,0"
     if [[ "$MODE" == water ]]; then
         # Lake Mead: contiguous full-detail CELL water around grid (19,13).
@@ -995,7 +1000,8 @@ fnv_run () {
     fi
     run_profile fnv "$FNV_DATA" WastelandNV "$grid" 2500 700 12 \
         --esm "$esm" --grid "$grid" --radius 1 --wrld WastelandNV \
-        --bsa "$meshes" --textures-bsa "$textures"
+        --bsa "$meshes" --bsa "$update" --textures-bsa "$textures" \
+        --textures-bsa "$update"
 }
 
 fo3_run () {
