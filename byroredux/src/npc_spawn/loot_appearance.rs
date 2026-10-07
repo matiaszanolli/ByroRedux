@@ -410,12 +410,22 @@ fn queue_gear_releases(world: &World) {
 /// ARMAs and a legacy ARMO picks the same gendered `MODL`/`MOD3`. Dead
 /// wearers stay skipped (death reconciliation owns corpse appearance), and
 /// a wearer already pending one import is not re-queued.
+///
+/// #5266 — the per-wearer pick happens AFTER resolution: a wearer's
+/// requests are kept in encounter order and the first form that resolves
+/// to a worn mesh wins the single pending slot. Pre-fix the FIRST request
+/// won outright and only resolved later, so a form that resolves to
+/// nothing (a WEAP — weapons get no mid-life mesh import — or a meshless
+/// ARMO) consumed the slot and was discarded, stranding every servable
+/// form behind it with nothing to retry the batch.
 fn queue_midlife_imports(
     world: &World,
     changes: &[(EntityId, Vec<byroredux_scripting::EquipmentChange>)],
     gear_roots: &[(EntityId, EntityId, u32)],
 ) {
-    let mut requests: Vec<(EntityId, u32)> = Vec::new();
+    // Every equipped root-less form per wearer, in encounter order and
+    // deduped — the resolve loop below picks one per wearer.
+    let mut requests: Vec<(EntityId, Vec<u32>)> = Vec::new();
     for (wearer, batch) in changes {
         if world.get::<Dead>(*wearer).is_some() {
             continue;
@@ -430,8 +440,13 @@ fn queue_midlife_imports(
             if has_root {
                 continue;
             }
-            if !requests.iter().any(|(w, _)| w == wearer) {
-                requests.push((*wearer, change.item_form_id));
+            match requests.iter_mut().find(|(w, _)| w == wearer) {
+                Some((_, forms)) => {
+                    if !forms.contains(&change.item_form_id) {
+                        forms.push(change.item_form_id);
+                    }
+                }
+                None => requests.push((*wearer, vec![change.item_form_id])),
             }
         }
     }
@@ -445,18 +460,16 @@ fn queue_midlife_imports(
     let index = index_resource.0.clone();
     drop(index_resource);
     let mut inserts: Vec<(EntityId, PendingGearImport)> = Vec::new();
-    for (wearer, form_id) in requests {
+    for (wearer, forms) in requests {
         if world.get::<PendingGearImport>(wearer).is_some() {
             continue;
         }
         let Some(class) = world.get::<ActorBodyClass>(wearer).map(|c| *c) else {
             continue;
         };
-        let Some(item) = index.items.get(&form_id) else {
-            continue;
-        };
-        let paths: Vec<String> =
-            byroredux_plugin::equip::resolve_armor_meshes(
+        let picked = forms.into_iter().find_map(|form_id| {
+            let item = index.items.get(&form_id)?;
+            let paths: Vec<String> = byroredux_plugin::equip::resolve_armor_meshes(
                 item,
                 class.gender,
                 class.race_form_id,
@@ -466,13 +479,17 @@ fn queue_midlife_imports(
             .into_iter()
             .map(str::to_owned)
             .collect();
-        if paths.is_empty() {
-            log::debug!(
-                "mid-life gear: no worn mesh resolved for {form_id:08X} — nothing to import"
-            );
-            continue;
+            if paths.is_empty() {
+                log::debug!(
+                    "mid-life gear: no worn mesh resolved for {form_id:08X} — nothing to import"
+                );
+                return None;
+            }
+            Some(PendingGearImport { form_id, paths })
+        });
+        if let Some(import) = picked {
+            inserts.push((wearer, import));
         }
-        inserts.push((wearer, PendingGearImport { form_id, paths }));
     }
     if inserts.is_empty() {
         return;
@@ -502,7 +519,9 @@ fn queue_midlife_imports(
 /// save itself agree.
 ///
 /// Diffs the wearer's live non-intrinsic gear roots against the restored
-/// `EquipmentSlots` (+ weapon slot) and produces the same three outcomes the
+/// `EquipmentSlots` (biped slots — weapons get no mid-life mesh import,
+/// see the `equipped_forms` note below) and produces the same three
+/// outcomes the
 /// event path would, computed from state instead of transitions: reveal a
 /// root whose form is equipped but hidden, hide a root whose form is no
 /// longer equipped but visible, and queue a [`PendingGearImport`] for an
@@ -519,26 +538,32 @@ pub(crate) fn reconcile_worn_gear(world: &World, wearer: EntityId) {
     if world.get::<Dead>(wearer).is_some() {
         return;
     }
-    // Equipped form ids: every occupied biped slot plus the weapon slot,
-    // resolved through the wearer's live inventory — a zero-count row is
-    // not worn. Nothing equipped means no reconcile: a stripped actor keeps
+    // Equipped form ids: every occupied biped slot, resolved through the
+    // wearer's live inventory — a zero-count row is not worn. Collected in
+    // slot order (deduped), so the import half's `missing` list is
+    // deterministic — pre-#5266 this was a `HashSet`, and which form the
+    // one-slot import queue picked varied from run to run. The weapon slot
+    // is deliberately NOT part of this set: no spawn arm and no mid-life
+    // path ever gives a weapon a mesh (`NpcEquipmentPart` roots come only
+    // from `armor_to_spawn` and the armor import), so the wielded form sat
+    // in `missing` on every call and — winning the old first-request-wins
+    // queue — starved real armor imports of the single slot forever.
+    // Nothing equipped means no reconcile: a stripped actor keeps
     // exactly the bare-skin look it was saved with.
-    let equipped_forms: HashSet<u32> = world
+    let equipped_forms: Vec<u32> = world
         .get::<EquipmentSlots>(wearer)
         .map(|equipment| {
-            let indices = equipment
-                .occupants
-                .iter()
-                .filter_map(|slot| *slot)
-                .chain(equipment.weapon);
+            let indices = equipment.occupants.iter().filter_map(|slot| *slot);
             world
                 .get::<Inventory>(wearer)
                 .map(|inventory| {
-                    indices
-                        .filter_map(|index| inventory.get(index))
-                        .filter(|stack| stack.count > 0)
-                        .map(|stack| stack.base_form_id)
-                        .collect()
+                    let mut forms: Vec<u32> = Vec::new();
+                    for stack in indices.filter_map(|index| inventory.get(index)) {
+                        if stack.count > 0 && !forms.contains(&stack.base_form_id) {
+                            forms.push(stack.base_form_id);
+                        }
+                    }
+                    forms
                 })
                 .unwrap_or_default()
         })
@@ -938,6 +963,13 @@ impl GearImportLoader {
                 }
             }
             world.remove::<PendingGearImport>(wearer);
+            // Deliberately NOT chained into another reconcile: this form
+            // still resolves (it was queued), so a re-run would re-queue
+            // the same dead end once per frame. A per-wearer queue that
+            // skips failed forms is #5031's rework; until then a wearer
+            // whose FIRST missing form fails at the file level stalls the
+            // forms behind it (resolve-level dead ends no longer do —
+            // #5266 picks past them before the queue).
             log::warn!("mid-life gear: import failed {path}; item stays meshless");
             return;
         };
@@ -1322,7 +1354,12 @@ mod tests {
         );
         let mut slots = EquipmentSlots::new();
         slots.equip(0b1, InventoryIndex(0));
-        slots.equip_weapon(InventoryIndex(1));
+        // #5266 — the weapon slot is not part of the reconcile's equipped
+        // set (weapons never get a mid-life mesh import), so the import
+        // half's root-less form rides a biped slot. The real-weapon stall
+        // this test used to paper over is pinned separately, in
+        // `load_reconcile_with_a_real_weapon_queues_armor_in_slot_order`.
+        slots.equip(0b100, InventoryIndex(1));
         world.insert(wearer, slots);
         world.insert(
             wearer,
@@ -1331,9 +1368,9 @@ mod tests {
                 race_form_id: 0xD7,
             },
         );
-        // 0xCCC (the wielded row) has no root: the reconcile must queue its
-        // worn-mesh import, which needs an index entry to resolve a mesh
-        // from.
+        // 0xCCC (the hand-slot row) has no root: the reconcile must queue
+        // its worn-mesh import, which needs an index entry to resolve a
+        // mesh from.
         install_index(&mut world, 0xCCC, r"meshes\armor\gauntlet.nif");
 
         let mesh_under = |world: &mut World, root: EntityId, form_id: u32| {
@@ -1379,6 +1416,154 @@ mod tests {
         assert_eq!(pending.paths, vec![r"meshes\armor\gauntlet.nif"]);
         // No synthetic batch leaked into the world for other consumers.
         assert!(world.query::<EquipmentEventBatch>().unwrap().iter().next().is_none());
+    }
+
+    /// #5266 — a WEAP record the way the ESM parser builds one: NOT an
+    /// `ItemKind::Armor`, so `resolve_armor_meshes` returns no paths for it.
+    fn legacy_weapon(form_id: u32) -> byroredux_plugin::esm::records::ItemRecord {
+        use byroredux_plugin::esm::records::common::CommonItemFields;
+        use byroredux_plugin::esm::records::{ItemKind, ItemRecord};
+        ItemRecord {
+            form_id,
+            common: CommonItemFields::default(),
+            kind: ItemKind::Weapon {
+                ammo_form: 0,
+                damage: 12,
+                clip_size: 0,
+                anim_type: 0,
+                ap_cost: 0.0,
+                skill_form: 0,
+                min_spread: 0.0,
+                spread: 0.0,
+                crit_mult: 0.0,
+                reach: 0.0,
+                speed: 0.0,
+                reload_anim: 0,
+                vats: None,
+            },
+        }
+    }
+
+    fn install_items(world: &mut World, items: Vec<byroredux_plugin::esm::records::ItemRecord>) {
+        let mut index = byroredux_plugin::esm::records::EsmIndex {
+            game: byroredux_plugin::esm::reader::GameKind::Fallout3NV,
+            ..Default::default()
+        };
+        for item in items {
+            index.items.insert(item.form_id, item);
+        }
+        world.insert_resource(crate::cell_loader::LoadedCellIndex(Arc::new(index)));
+    }
+
+    /// #5266 (GAME-D1-2026-10-05-01) — a loaded player with a REAL WEAP in
+    /// the weapon slot plus two root-less armors must deterministically
+    /// queue the first armor in slot order. Pre-fix the weapon form sat in
+    /// `missing` on every call (weapons never get a mid-life mesh import),
+    /// `missing` came out of a `HashSet`, and the one-request queue let the
+    /// weapon win the slot and resolve to nothing — nothing imported, the
+    /// success-chained reconcile never ran, and the third-person gear
+    /// varied from run to run.
+    #[test]
+    fn load_reconcile_with_a_real_weapon_queues_armor_in_slot_order() {
+        use super::super::{ActorBodyClass, PendingGearImport};
+        use byroredux_plugin::equip::Gender;
+
+        let mut world = World::new();
+        world.register::<NpcAppearanceHidden>();
+        world.register::<PendingGearImport>();
+        world.register::<super::super::ActorBodyClass>();
+        world.register::<EquipmentEventBatch>();
+        let wearer = world.spawn();
+        world.insert(
+            wearer,
+            Inventory {
+                items: vec![
+                    ItemStack::new(0xAAA, 1), // cuirass, no root
+                    ItemStack::new(0xBBB, 1), // helmet, no root
+                    ItemStack::new(0xDDD, 1), // the wielded pistol
+                ],
+            },
+        );
+        let mut slots = EquipmentSlots::new();
+        slots.equip(0b1, InventoryIndex(0));
+        slots.equip(0b100, InventoryIndex(1));
+        slots.equip_weapon(InventoryIndex(2));
+        world.insert(wearer, slots);
+        world.insert(
+            wearer,
+            ActorBodyClass {
+                gender: Gender::Male,
+                race_form_id: 0xD7,
+            },
+        );
+        install_items(
+            &mut world,
+            vec![
+                legacy_armor(0xAAA, r"meshes\armor\cuirass.nif"),
+                legacy_armor(0xBBB, r"meshes\armor\helmet.nif"),
+                legacy_weapon(0xDDD),
+            ],
+        );
+
+        reconcile_worn_gear(&world, wearer);
+
+        let pending = world
+            .get::<PendingGearImport>(wearer)
+            .expect("the first root-less armor must queue its import");
+        assert_eq!(
+            pending.form_id, 0xAAA,
+            "slot order decides: the cuirass before the helmet, never the weapon"
+        );
+        assert_eq!(pending.paths, vec![r"meshes\armor\cuirass.nif"]);
+    }
+
+    /// #5266 — the same stall on the runtime event path: an equip burst
+    /// whose weapon change precedes an armor change must still queue the
+    /// armor. Pre-fix the first-request-wins pick chose the WEAP, whose
+    /// resolve is empty, and the batch was discarded with nothing queued
+    /// and no chained reconcile to retry it.
+    #[test]
+    fn an_equip_burst_with_a_weapon_change_still_queues_the_armor() {
+        use super::super::{ActorBodyClass, PendingGearImport};
+        use byroredux_plugin::equip::Gender;
+
+        let mut world = World::new();
+        world.register::<EquipmentEventBatch>();
+        world.register::<PendingGearImport>();
+        world.register::<super::super::ActorBodyClass>();
+        let wearer = world.spawn();
+        world.insert(
+            wearer,
+            ActorBodyClass {
+                gender: Gender::Male,
+                race_form_id: 0xD7,
+            },
+        );
+        install_items(
+            &mut world,
+            vec![legacy_armor(0xABC, r"meshes\armor\cuirass.nif"), legacy_weapon(0xDDD)],
+        );
+        world.insert(
+            wearer,
+            EquipmentEventBatch(vec![
+                EquipmentChange {
+                    item_form_id: 0xDDD,
+                    equipped: true,
+                },
+                EquipmentChange {
+                    item_form_id: 0xABC,
+                    equipped: true,
+                },
+            ]),
+        );
+
+        equipment_appearance_system(&world, 1.0 / 60.0);
+
+        let pending = world
+            .get::<PendingGearImport>(wearer)
+            .expect("the armor behind a weapon change must still queue");
+        assert_eq!(pending.form_id, 0xABC);
+        assert_eq!(pending.paths, vec![r"meshes\armor\cuirass.nif"]);
     }
 
     #[test]
