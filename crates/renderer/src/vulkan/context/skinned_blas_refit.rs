@@ -689,10 +689,12 @@ impl VulkanContext {
                             // `first_sight_builds`; the
                             // COMPUTE→AS_BUILD barrier just emitted
                             // hands those writes to the build inputs.
-                            // The helper queries every entity's
-                            // `build_scratch_size`, grows
-                            // `blas_scratch_buffer` ONCE to the max
-                            // demand of the batch, then records each
+                            // The helper sizes the shared scratch from
+                            // each entity's max of BUILD and UPDATE
+                            // scratch (#5195 — the spec does not bound
+                            // updateScratchSize by buildScratchSize),
+                            // grows `blas_scratch_buffer` ONCE to the
+                            // max demand of the batch, then records each
                             // build with an internal scratch-serialise
                             // barrier (`AS_WRITE→AS_WRITE`) between
                             // iterations so the shared scratch is
