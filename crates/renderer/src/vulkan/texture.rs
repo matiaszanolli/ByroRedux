@@ -866,7 +866,7 @@ where
         // recovery happens on the teardown side
         // (`VulkanContext::drop`'s `lock_recovering`), which destroys the
         // fence after `device_wait_idle` instead of reusing it.
-        let fence_guard = reusable_fence.map(|m| m.lock().expect("one-time fence lock poisoned"));
+        let mut fence_guard = reusable_fence.map(|m| m.lock().expect("one-time fence lock poisoned"));
         // #1861 — every fallible call from here on must free `cmd` (already
         // past `end_command_buffer`, so no re-ending needed — just
         // `free_command_buffers`) and destroy the fence *if we created it*
@@ -928,7 +928,60 @@ where
                 "submit one-time commands",
             ));
         }
+        // #5270 — the ONE failure site where "the call errored" does not
+        // mean "the submission never happened": the commands were submitted
+        // above, and `vkWaitForFences` with an infinite timeout can only
+        // fail with ERROR_DEVICE_LOST or an OOM (host/device). Disposal must
+        // branch on that, or the helper violates the MaybeInFlight contract
+        // it itself returns (#4891: "the commands may be pending, so the
+        // caller must keep what they reference alive") with its own objects:
+        //
+        // * ERROR_DEVICE_LOST — the spec's Lost Device section guarantees
+        //   pending work completes "as if" it finished; destroying and
+        //   freeing are valid. Keep the historic disposal so teardown
+        //   reclaims the memory instead of holding it.
+        // * OOM — the commands may genuinely still be executing. Freeing
+        //   `cmd` would violate VUID-vkFreeCommandBuffers-pCommandBuffers-
+        //   00047, destroying the fence VUID-vkDestroyFence-fence-01120, and
+        //   letting a later caller `reset_fences` the reusable fence
+        //   VUID-vkResetFences-pFences-01123. Leak the owned fence and `cmd`
+        //   (both are reclaimed at pool/device teardown — the disposition
+        //   the callers already give their staging memory on this class) and
+        //   poison the reusable fence's mutex (see below).
         if let Err(e) = device.wait_for_fences(&[fence], true, u64::MAX) {
+            if e != vk::Result::ERROR_DEVICE_LOST {
+                // Reusable-fence path: poison the mutex so no later caller
+                // can reset a fence that may still be tied to pending work —
+                // the next `lock().expect` (#5209) refuses to proceed and
+                // teardown's `lock_recovering` destroys the fence after
+                // `device_wait_idle`. The poison is delivered by a CAUGHT
+                // panic raised while the guard is still alive (std sets the
+                // poison flag when a guard unwinds): an ordinary `panic!`
+                // here would unwind through callers such as
+                // `blas_static.rs` and DROP the staging/BLAS allocations
+                // their MaybeInFlight arms deliberately keep alive (#5201).
+                // `AssertUnwindSafe` is sound because the guard is consumed
+                // by the panic itself and nothing else crosses the boundary.
+                if !owned {
+                    let panic_msg = format!(
+                        "one-time fence wait failed ({e:?}) with the submission \
+                         possibly pending — reusable fence poisoned (#5270/#5209)"
+                    );
+                    let guard = fence_guard.take();
+                    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+                        // The guard must be alive when the panic unwinds —
+                        // its MutexGuard::drop mid-panic is what sets the
+                        // mutex's poison flag.
+                        let _held = &guard;
+                        panic!("{panic_msg}");
+                    }));
+                }
+                return Err(OneTimeCommandError::maybe_in_flight(
+                    e,
+                    "wait for one-time commands — command buffer and fence \
+                     leaked pending GPU completion",
+                ));
+            }
             if owned {
                 device.destroy_fence(fence, None);
             }
@@ -936,7 +989,7 @@ where
             device.free_command_buffers(pool, &[cmd]);
             return Err(OneTimeCommandError::maybe_in_flight(
                 e,
-                "wait for one-time commands",
+                "wait for one-time commands (device lost)",
             ));
         }
         if owned {
@@ -1032,6 +1085,58 @@ mod one_time_failure_class_tests {
             );
         }
     }
+
+    /// #5270 — the wait-failure arm must honour the MaybeInFlight contract it
+    /// returns for its OWN objects: with an infinite timeout the wait can
+    /// only fail with ERROR_DEVICE_LOST or an OOM, and only DEVICE_LOST
+    /// makes the submission's completion a spec guarantee (Lost Device
+    /// section). On anything else the command buffer may still be pending,
+    /// so the arm may neither free it nor destroy the fence, and the
+    /// reusable fence must be poisoned rather than returned to circulation.
+    /// Static needle scan (no GPU device under `cargo test`), mirroring
+    /// `one_time_lock_scope_tests`; the pre-#5270 arm ran
+    /// free_command_buffers + destroy_fence on every wait error.
+    #[test]
+    fn wait_failure_arm_disposes_only_on_device_loss() {
+        let src = crate::source_scan::production_text(include_str!("texture.rs"));
+        let wait_pos = src
+            .find("if let Err(e) = device.wait_for_fences(&[fence], true, u64::MAX)")
+            .expect("one-time helper waits on its fence");
+        let tail = src[wait_pos..]
+            .find("\n    Ok(())")
+            .expect("helper tail follows the wait arm");
+        let arm = &src[wait_pos..wait_pos + tail];
+
+        let branch_pos = arm
+            .find("if e != vk::Result::ERROR_DEVICE_LOST {")
+            .expect("wait arm branches on device loss before any disposal");
+        let free_pos = arm
+            .find("device.free_command_buffers(pool, &[cmd])")
+            .expect("wait arm frees the command buffer in its device-lost branch");
+        let destroy_pos = arm
+            .find("device.destroy_fence(fence, None)")
+            .expect("wait arm destroys the owned fence in its device-lost branch");
+        let poison_pos = arm
+            .find("catch_unwind")
+            .expect("wait arm poisons the reusable fence via a caught panic");
+        assert!(
+            branch_pos < free_pos && branch_pos < destroy_pos,
+            "#5270: the wait arm's disposal calls must sit only after the \
+             ERROR_DEVICE_LOST branch",
+        );
+        assert!(
+            poison_pos < free_pos,
+            "#5270: the possibly-pending path must poison the reusable fence \
+             (VUID-vkResetFences-pFences-01123), not return it to circulation",
+        );
+        assert!(
+            !arm[..branch_pos].contains("device.free_command_buffers")
+                && !arm[..branch_pos].contains("device.destroy_fence"),
+            "#5270: no disposal may run before the DEVICE_LOST branch — the \
+             submission may still be pending (VUID-vkFreeCommandBuffers-\
+             pCommandBuffers-00047 / VUID-vkDestroyFence-fence-01120)",
+        );
+    }
 }
 
 #[cfg(test)]
@@ -1094,11 +1199,21 @@ mod one_time_lock_scope_tests {
     /// callers that re-enter on every swapchain recreate rather than once at
     /// load time.
     ///
+    /// #5270 narrowed it for the fence-wait arm: with an infinite timeout the
+    /// wait only fails with DEVICE_LOST or an OOM, and only DEVICE_LOST
+    /// guarantees the submission completed — the wait arm's free now lives in
+    /// its `ERROR_DEVICE_LOST` sub-arm only, and the possibly-pending sub-arm
+    /// deliberately leaks `cmd` (and the owned fence) instead.
+    /// `one_time_failure_class_tests::wait_failure_arm_disposes_only_on_device_loss`
+    /// pins that split; this test keeps pinning that the device-lost sub-arm
+    /// still frees.
+    ///
     /// Static source check (no GPU device under `cargo test`), same seam as
     /// `queue_guard_released_before_one_time_fence_wait` above. Counts
     /// `free_command_buffers(pool, &[cmd])` call sites in the function
-    /// body: 1 (begin) + 1 (closure-failure) + 1 (end) + 4 (the four
-    /// post-submit fallible calls) + 1 (success tail) = 8.
+    /// body: 1 (begin) + 1 (closure-failure) + 1 (end) + 4 (create_fence +
+    /// reset_fences + queue_submit + the wait arm's device-lost sub-arm) +
+    /// 1 (success tail) = 8.
     #[test]
     fn one_time_commands_free_cmd_buffer_on_every_error_path() {
         let src = include_str!("texture.rs");
@@ -1117,9 +1232,10 @@ mod one_time_lock_scope_tests {
             "expected 8 free_command_buffers(pool, &[cmd]) call sites in \
              with_one_time_commands_inner (begin_command_buffer + \
              closure-failure + end_command_buffer + create_fence + \
-             reset_fences + queue_submit + wait_for_fences error arms + the \
-             success tail) — found {free_count}. A new fallible call was \
-             likely added without a matching cleanup arm (#1861 / #2157).",
+             reset_fences + queue_submit + the wait arm's device-lost \
+             sub-arm + the success tail) — found {free_count}. A new \
+             fallible call was likely added without a matching cleanup arm \
+             (#1861 / #2157 / #5270).",
         );
 
         // Every one of the post-allocation fallible calls must be
@@ -1132,7 +1248,10 @@ mod one_time_lock_scope_tests {
             "create one-time fence",
             "reset reusable one-time fence",
             "submit one-time commands",
-            "wait for one-time commands",
+            // #5270 — the wait arm's free is in the device-lost sub-arm;
+            // the possibly-pending sub-arm must NOT free (pinned by
+            // `wait_failure_arm_disposes_only_on_device_loss`).
+            "wait for one-time commands (device lost)",
         ] {
             let pos = body
                 .find(context_needle)
