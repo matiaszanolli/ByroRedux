@@ -7,10 +7,11 @@
 //! `NifVersion(0x…)` in non-test sources, all 37 bare `bsver <op> N` hits in
 //! comments or strings) — but nothing enforced it, so a reintroduced literal
 //! would have compiled silently. This guard re-runs the sweep on every test
-//! run: it walks `src/`, cuts each file's production text, strips comments
-//! and string/char literals (the 37 comment hits must not false-positive),
-//! and rejects both needles. `version.rs` is exempt: it is the constants
-//! authority the rule routes through.
+//! run: it walks `src/`, strips comments and string/char literals (the 37
+//! comment hits must not false-positive), blanks every `#[cfg(test)]`-gated
+//! `mod` item (the synthetic fixtures legitimately exercise old wire
+//! versions), and rejects both needles. `version.rs` is exempt: it is the
+//! constants authority the rule routes through.
 
 use std::path::{Path, PathBuf};
 
@@ -28,15 +29,85 @@ fn walk_rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// A file's production text: everything before its first `#[cfg(test)] mod`
-/// module (the two-line shape every test declaration in this crate uses; a
-/// `#[cfg(test)] use` import does not match the needle and stays in). The
-/// literals the rule bans do appear inside test modules legitimately —
-/// synthetic fixtures exercise old wire versions — so the cut is what keeps
-/// this a production rule.
-fn production_text(src: &str) -> &str {
-    src.split_once("\n#[cfg(test)]\nmod ")
-        .map_or(src, |(production, _)| production)
+/// Blank every `#[cfg(test)]`-gated `mod` item (both the `mod name;`
+/// file-declaration and the inline `mod name { … }`) out of
+/// already-stripped text, preserving newlines and every other byte
+/// offset so violations keep reporting real line numbers.
+///
+/// #5258 — the old production cut truncated the file at the FIRST
+/// `\n#[cfg(test)]\nmod `, which is right for a positive scan (a needle
+/// after the cut fails loudly) but wrong for this *negative* scan: any
+/// production code after an early test-module declaration was never
+/// scanned and nothing reported it (controller/mod.rs hid lines 22-902 —
+/// every controller parser and 8 live version gates; texture.rs hid the
+/// `NiTextureEffect` parser; import/walk/mod.rs hid its name resolvers).
+/// Braces inside literals are not a hazard here: the input is the output
+/// of [`strip_comments_and_strings`], which has already blanked comment
+/// and literal contents — and the same stripping is what keeps a
+/// `#[cfg(test)]` *mention* in a comment or string from triggering a
+/// blank.
+fn blank_test_gated_mods(code: &str) -> String {
+    let needle = "#[cfg(test)]";
+    let bytes = code.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut copied = 0;
+    let mut i = 0;
+    while let Some(found) = code[i..].find(needle) {
+        let at = i + found;
+        i = at + needle.len();
+        // The attribute gates the next item; whitespace (including blank
+        // lines) between attribute and item does not change that.
+        let mut cursor = i;
+        while matches!(bytes.get(cursor), Some(b' ' | b'\t' | b'\r' | b'\n')) {
+            cursor += 1;
+        }
+        let rest = &code[cursor..];
+        let Some(after_mod) = rest.strip_prefix("mod ") else {
+            // A `#[cfg(test)]`-gated non-`mod` item (a `use`, a field):
+            // leave it — it is not where fixture literals live.
+            continue;
+        };
+        // The item ends either at the declaration's `;` or at the end of
+        // the inline module's brace-matched body.
+        let end = match after_mod.find('{') {
+            Some(brace) if after_mod[..brace].find(';').is_none() => {
+                let body_at = cursor + "mod ".len() + brace;
+                let mut depth = 0usize;
+                let mut body_end = bytes.len();
+                for (offset, byte) in bytes[body_at..].iter().enumerate() {
+                    match byte {
+                        b'{' => depth += 1,
+                        b'}' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                body_end = body_at + offset + 1;
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                body_end
+            }
+            _ => {
+                // `mod name;` — blank through the first `;`, which cannot
+                // belong to a body because an inline module's `{` came
+                // first when there was one.
+                let semi = after_mod.find(';').map_or(cursor + rest.len(), |s| {
+                    cursor + "mod ".len() + s + 1
+                });
+                semi
+            }
+        };
+        // Keep the removed range's newlines so surviving lines keep their
+        // line numbers in the violation report.
+        out.extend_from_slice(&code[copied..at].as_bytes());
+        out.extend(code[at..end].bytes().map(|b| if b == b'\n' { b'\n' } else { b' ' }));
+        copied = end;
+        i = end;
+    }
+    out.extend_from_slice(&code[copied..].as_bytes());
+    String::from_utf8(out).expect("blanking preserves UTF-8 boundaries")
 }
 
 /// Blank out comment text and string/char literal contents, preserving
@@ -283,7 +354,7 @@ fn line_of(code: &str, offset: usize) -> usize {
 }
 
 fn violations_in(rel_path: &str, src: &str) -> Vec<String> {
-    let code = strip_comments_and_strings(production_text(src));
+    let code = blank_test_gated_mods(&strip_comments_and_strings(src));
     let mut out = Vec::new();
     for (needle, sites) in [
         ("NifVersion(0x…)", find_nif_version_hex_literals(&code)),
@@ -298,8 +369,9 @@ fn violations_in(rel_path: &str, src: &str) -> Vec<String> {
 
 fn is_exempt(rel_path: &str) -> bool {
     // Test files (tests.rs, *_tests.rs, dispatch_tests/) hold the synthetic
-    // fixtures the production cut cannot cover when a whole file IS a test
-    // module; version.rs is the constants authority the rule routes through.
+    // fixtures the mod blanker cannot see when a whole file IS a test
+    // module declared without its own `#[cfg(test)]` attribute;
+    // version.rs is the constants authority the rule routes through.
     rel_path == "src/version.rs" || rel_path.contains("test")
 }
 
@@ -376,11 +448,43 @@ fn the_needles_flag_live_code_but_not_comment_or_constant_spellings() {
     }
 }
 
-/// The production cut excludes a trailing test module, so a fixture's
-/// synthetic literals do not trip the tree scan.
+/// The blanker excludes test-gated modules — trailing (the common shape)
+/// AND early ones — so a fixture's synthetic literals do not trip the
+/// scan while every production item around them stays scanned.
 #[test]
-fn the_production_cut_excludes_a_trailing_test_module() {
+fn test_gated_modules_are_blanked_without_hiding_what_surrounds_them() {
+    // Trailing inline module (the old cut's exact case).
     let src = "fn a() {}\n\n#[cfg(test)]\nmod fixtures {\n    NifVersion(0x1401_0001);\n}\n";
-    let stripped = strip_comments_and_strings(production_text(src));
-    assert!(find_nif_version_hex_literals(&stripped).is_empty());
+    let code = blank_test_gated_mods(&strip_comments_and_strings(src));
+    assert!(find_nif_version_hex_literals(&code).is_empty());
+    assert!(code.contains("fn a() {}"));
+
+    // #5258 — an EARLY test module must hide only itself: production
+    // code after it stays scanned. The old first-occurrence cut never
+    // scanned the second function.
+    let src = "mod pre { }\n\n#[cfg(test)]\nmod fixtures;\n\nfn parser() {\n    let v = NifVersion(0x1401_0001);\n}\n\n#[cfg(test)]\nmod more_fixtures;\n";
+    let code = blank_test_gated_mods(&strip_comments_and_strings(src));
+    assert!(
+        !find_nif_version_hex_literals(&code).is_empty(),
+        "a bare literal after an early test-module declaration must be \
+         scanned — the cut hid every production item after it (#5258)"
+    );
+    assert!(!code.contains("fixtures"));
+
+    // A `#[cfg(test)]`-gated non-mod item (the walk/mod.rs use) stays,
+    // and a mention inside a comment cannot trigger a blank: stripping
+    // runs before the blanker.
+    let src = "#[cfg(test)]\npub(super) use something;\n// mentions #[cfg(test)] mod here\nfn real() {}\n#[cfg(test)]\nmod tests {\n    NifVersion(0x1401_0001);\n}\n";
+    let code = blank_test_gated_mods(&strip_comments_and_strings(src));
+    assert!(code.contains("pub(super) use something;"));
+    assert!(code.contains("fn real() {}"));
+    assert!(find_nif_version_hex_literals(&code).is_empty());
+
+    // Line numbers survive the blank: the guard reports `file:line`.
+    let src = "fn a() {}\n#[cfg(test)]\nmod fixtures {\n    x();\n}\nfn b() {}\n";
+    let code = blank_test_gated_mods(&strip_comments_and_strings(src));
+    let line_of = |text: &str, needle: &str| {
+        text.lines().position(|l| l.contains(needle)).unwrap() + 1
+    };
+    assert_eq!(line_of(&code, "fn b() {}"), line_of(src, "fn b() {}"));
 }
