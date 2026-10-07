@@ -1049,10 +1049,11 @@ fn bgsm_merge_falls_back_to_neutral_roughness_when_smoothness_is_one_with_no_glo
     );
 }
 
-/// Sibling of the fallback test above: when a gloss map DOES resolve (even
-/// from a template parent, not just the leaf), the shader has per-pixel
-/// information to modulate with, so the merge must NOT override the
-/// authored 0.04 floor.
+/// Sibling of the fallback test above: when a gloss map DOES resolve, the
+/// shader has per-pixel information to modulate with, so the merge must NOT
+/// override the authored 0.04 floor. The leaf-authored case is here; the
+/// template-parent case below (#5234) is the one the #3639 fallback's
+/// position after the chain walk actually exists for.
 #[test]
 fn bgsm_merge_keeps_the_floor_when_smoothness_is_one_and_a_gloss_map_resolves() {
     let mut pool = byroredux_core::string::StringPool::new();
@@ -1086,6 +1087,63 @@ fn bgsm_merge_keeps_the_floor_when_smoothness_is_one_and_a_gloss_map_resolves() 
         (roughness - 0.04).abs() < 1e-5,
         "a resolvable gloss map means the shader CAN modulate the floor back \
          up per-pixel — the merge must leave it at 0.04, got {roughness}"
+    );
+}
+
+/// #5234 — the #3639 fallback's whole reason to sit AFTER the chain walk:
+/// the gloss map that disarms it can arrive from the template parent alone
+/// (the leaf authors `smooth_spec_texture` empty, the parent supplies it).
+/// The sibling above cannot catch a fallback that runs inside the walk or
+/// keys on the leaf's own path — its fixture has the gloss on the leaf, so
+/// both wrong placements still see "a gloss map somewhere". This one would
+/// take 0.5 from either regression.
+#[test]
+fn bgsm_merge_keeps_the_floor_when_the_gloss_map_comes_from_the_template_parent() {
+    let mut pool = byroredux_core::string::StringPool::new();
+    let path = "materials/tests/mirror_parent_gloss.bgsm";
+    let mut provider = MaterialProvider::new();
+    provider.insert_bgsm_for_test(
+        path,
+        ResolvedMaterial {
+            file: BgsmFile {
+                // The leaf authors the near-mirror finish but NOT the gloss
+                // map — only the parent's smooth_spec fills the slot.
+                specular_enabled: true,
+                smoothness: 1.0,
+                specular_color: [1.0, 1.0, 1.0],
+                specular_mult: 1.0,
+                smooth_spec_texture: String::new(),
+                ..Default::default()
+            },
+            parent: Some(Arc::new(ResolvedMaterial {
+                file: BgsmFile {
+                    smooth_spec_texture: "textures/tests/parent_gloss.dds".to_string(),
+                    ..Default::default()
+                },
+                parent: None,
+            })),
+        },
+    );
+    let mut mesh = imported_mesh_with_material_path(&mut pool, path);
+
+    assert!(merge_external_material(&mut mesh.material, &mut provider, &mut pool, &|_| false).merged());
+
+    // The chain walk, not the leaf, supplied the slot — if this fails the
+    // fixture is no longer exercising the after-the-walk placement at all.
+    assert_eq!(
+        pool.resolve(mesh.material.textures.smooth_spec.expect("parent gloss must fill the slot")),
+        Some("textures/tests/parent_gloss.dds")
+    );
+
+    let roughness = mesh
+        .material
+        .roughness_override
+        .expect("BGSM arm must still author roughness");
+    assert!(
+        (roughness - 0.04).abs() < 1e-5,
+        "a gloss map resolved from the template parent is still a resolvable \
+         gloss map — the fallback must stay disarmed and leave the floor at \
+         0.04, got {roughness}"
     );
 }
 
