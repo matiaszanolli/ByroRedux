@@ -329,14 +329,32 @@ pub(super) fn load_references_budgeted(
     job: Option<Box<ReferenceLoadJob>>,
     budget: &mut FrameTimeBudget,
 ) -> ReferenceLoadProgress {
-    // #5223 — FO3/FNV's script-killed corpses (dismember-trigger links +
-    // kill-on-load base scripts), recognised once per call; computed before
-    // the job branch so a resumed job consults the same set. #5304 — the
-    // load order is what proves a matching SCPT is vanilla-defined (exact
-    // EDID + defining-plugin gate) rather than a mod name-alike or an
-    // override of a vanilla script.
-    let script_killed_corpses =
-        super::reference_state::script_killed_corpse_forms(refs, record_index, load_order);
+    // #5223/#5248 — FO3/FNV's script-killed corpses (dismember-trigger
+    // links + kill-on-load base scripts). FormIDs are global, but a
+    // trigger and its target never share one of these calls: the
+    // persistent CELL applies with `local_refs`, each grid cell with its
+    // own `cell.references` — so the per-call computation #5223 shipped
+    // missed every exterior trigger → persistent-target link (29
+    // live-base FO3 corpses). Compute over every cell ONCE per load
+    // order, cache as a resource, consult from every apply — computed
+    // before the job branch so a resumed job reads the same set.
+    // #5304 — the load order is what proves a matching SCPT is
+    // vanilla-defined (exact EDID + defining-plugin gate) rather than a
+    // mod name-alike or an override of a vanilla script.
+    let cached = world
+        .try_resource::<super::reference_state::ScriptKilledCorpseForms>()
+        .map(|killed| Arc::clone(&killed.0));
+    let script_killed_corpses = cached.unwrap_or_else(|| {
+        let killed = super::reference_state::script_killed_corpse_forms_for_load_order(
+            record_index,
+            load_order,
+        );
+        let shared = Arc::new(killed);
+        world.insert_resource(super::reference_state::ScriptKilledCorpseForms(Arc::clone(
+            &shared,
+        )));
+        shared
+    });
     let mut job = if let Some(job) = job {
         job
     } else {

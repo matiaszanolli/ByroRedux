@@ -460,6 +460,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("SettingsRegistry", "user preferences persist independently in settings.toml and are installed before scene setup"),
         ("AfflictionStatus", "forward-latent: affliction_tick_system has no production scheduler registration; classify as gameplay state when activated"),
         ("CharacterRuleset", "immutable game-profile rules, idempotently constructed on first cell load (byroredux/src/cell_loader/references/mod.rs), not at boot"),
+        ("ScriptKilledCorpseForms", "derived once per load order from the parsed masters over every cell (#5248), like CharacterRuleset beside it; the dead-state facts it stamps persist through the saved reference rows, and the set is rebuilt on first cell load"),
         ("MeleeDamageConfig", "immutable Fallout combat tuning, idempotently constructed alongside CharacterRuleset on first cell load, not at boot; absent on games authoring no MeleeDamage AVIF (#3092)"),
         ("CharacterLevel", "known progression gap guarded by validate_progression_state: saves are refused once non-default XP/level state exists (#2947)"),
         ("Background", "derived character-creation metadata with no live production mutator; re-created with the actor"),

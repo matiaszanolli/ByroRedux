@@ -466,6 +466,12 @@ const DISMEMBERMENT_FAMILY_EDIDS: [&str; 11] = [
 /// MEMBER` leveled family) — the ones the #5005 base-health rule cannot
 /// see; the audit also notes all 6 FO3 "XRGD over a live base" refs are
 /// among the 85, so with this stamp FO3 `XRGD ⇒ corpse` holds 498/498.
+///
+/// **Locality warning (#5248)**: this per-call form only recognises a
+/// trigger and target that share one `refs` slice. In production every
+/// apply consults [`script_killed_corpse_forms_for_load_order`] instead —
+/// the cross-cell union — because an exterior trigger and its
+/// persistent-CELL target never share a call.
 pub(crate) fn script_killed_corpse_forms(
     refs: &[byroredux_plugin::esm::cell::PlacedRef],
     index: &byroredux_plugin::esm::records::EsmIndex,
@@ -513,6 +519,57 @@ pub(crate) fn script_killed_corpse_forms(
         if recognized && script_is_vanilla(script.form_id, load_order) {
             killed.insert(placed.form_id);
         }
+    }
+    killed
+}
+
+/// #5248 — the per-load-order script-killed corpse set, shared by every
+/// reference apply. FormIDs are global, but a trigger and its target
+/// never share a [`super::references::load_references_budgeted`] call:
+/// the worldspace persistent CELL applies with its own `local_refs`
+/// (which hold the persistent actors), while each temporary exterior
+/// grid cell applies with `cell.references` (which hold the
+/// non-persistent trigger activators). The per-call computation #5223
+/// shipped therefore missed every exterior trigger → persistent-target
+/// link — 29 live-base FO3 corpses (all five MS06 refs among them).
+/// Computing over every cell once and consulting the cached set from
+/// every apply makes recognition locality-independent by construction,
+/// and also drops the per-resume recomputation (a re-scan cloning
+/// editor-id strings across FNV's 4,495 `XLKR` placements on every
+/// budgeted resume).
+///
+/// Valid for the process's load order, like `CharacterRuleset` — the
+/// order is fixed at boot, so there is nothing to invalidate.
+#[derive(Debug, Default, Clone)]
+pub(crate) struct ScriptKilledCorpseForms(pub std::sync::Arc<std::collections::HashSet<u32>>);
+
+impl Resource for ScriptKilledCorpseForms {}
+
+/// The recognizer run over **every** cell in the index — interior,
+/// exterior grid, and worldspace persistent — unioned. This is the
+/// census view, and since #5248 the production one: the result is
+/// cached as [`ScriptKilledCorpseForms`] and consulted by every
+/// `load_references_budgeted` call, persistent CELL and grid cells
+/// alike.
+pub(crate) fn script_killed_corpse_forms_for_load_order(
+    index: &byroredux_plugin::esm::records::EsmIndex,
+    load_order: &LoadOrder,
+) -> std::collections::HashSet<u32> {
+    let mut killed = std::collections::HashSet::new();
+    let cells = index
+        .cells
+        .cells
+        .values()
+        .chain(
+            index
+                .cells
+                .exterior_cells
+                .values()
+                .flat_map(|tile| tile.values()),
+        )
+        .chain(index.cells.worldspace_persistent_cells.values());
+    for cell in cells {
+        killed.extend(script_killed_corpse_forms(&cell.references, index, load_order));
     }
     killed
 }
@@ -740,6 +797,13 @@ mod script_kill_tests {
     /// parses a single master with no remap, where every defined record
     /// carries that master's own top-byte-0 slot, so a one-entry
     /// [`LoadOrder`] reproduces the production attribution exactly.
+    ///
+    /// #5248 — the census is locality-aware: each cell's refs are fed to
+    /// the recognizer separately (that is what production did per call),
+    /// and the shared per-load-order set every apply consults must equal
+    /// the union — plus the MS06 pin that a persistent-CELL target whose
+    /// trigger sits in a temporary exterior cell is reached only by the
+    /// shared set, never by the persistent cell's own refs.
     #[test]
     #[ignore = "needs FO3/FNV game data on disk"]
     fn fo3_fnv_script_killed_corpses_match_the_measured_census() {
@@ -786,8 +850,15 @@ mod script_kill_tests {
             // census is the cross-cell union of form ids.
             let mut union = std::collections::HashSet::new();
             let mut linked_union = std::collections::HashSet::new();
+            // #5248 — the persistent CELL's own per-call view, the set the
+            // persistent apply consulted before the fix. An exterior
+            // trigger's target never shares its call, so cross-bucket
+            // links are invisible here.
+            let mut persistent_cell_union = std::collections::HashSet::new();
             for cell in cells {
-                union.extend(script_killed_corpse_forms(&cell.references, &index, &load_order));
+                let recognized =
+                    script_killed_corpse_forms(&cell.references, &index, &load_order);
+                union.extend(recognized.iter().copied());
                 for p in &cell.references {
                     if p.linked_refs.is_empty() {
                         continue;
@@ -809,6 +880,37 @@ mod script_kill_tests {
                         linked_union.extend(p.linked_refs.iter().map(|l| l.target));
                     }
                 }
+            }
+            for cell in index.cells.worldspace_persistent_cells.values() {
+                persistent_cell_union
+                    .extend(script_killed_corpse_forms(&cell.references, &index, &load_order));
+            }
+            // The load-order-wide set every apply consults since #5248
+            // must equal the census union — same recognizer, made
+            // locality-independent by construction.
+            let load_order_wide =
+                script_killed_corpse_forms_for_load_order(&index, &load_order);
+            assert_eq!(
+                load_order_wide, union,
+                "{master}: the shared per-load-order set must equal the per-cell union"
+            );
+            if master == "Fallout3.esm" {
+                // #5248 — MS06 "Head of State": trigger 000645DF-class
+                // placements sit in temporary dcworld09 grid cells while
+                // their targets (000645E0 among them) live ONLY in the
+                // worldspace persistent CELL. The persistent apply's own
+                // refs could never see the trigger — the set it consulted
+                // pre-fix — while the shared set reaches the target.
+                const MS06_GUN_DEAD: u32 = 0x0006_45E0;
+                assert!(
+                    !persistent_cell_union.contains(&MS06_GUN_DEAD),
+                    "{master}: the persistent CELL's own refs must not recognise the \
+                     cross-cell MS06 target (locality premise)"
+                );
+                assert!(
+                    load_order_wide.contains(&MS06_GUN_DEAD),
+                    "{master}: the shared set must reach the persistent-CELL MS06 target"
+                );
             }
             assert_eq!(
                 linked_union.len(),
