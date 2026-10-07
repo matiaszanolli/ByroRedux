@@ -482,6 +482,38 @@ fn spawn_nif_lights_never_spawns_known_exporter_artifact_lights() {
     );
 }
 
+/// #5264 (NIF-D4-2026-10-05-02) — the count gate and the spawn loop must
+/// share one predicate. A LIGH whose model carries only the
+/// `__MAX_Default_Light` pair (full-white, so the colour half passes)
+/// must count ZERO, or the ESM LIGH `LightSource` fallback in
+/// `spawn_placed_instances` / `spawn_mesh_instance` is suppressed by a
+/// phantom "spawned" NIF light and the fixture renders dark — the #632
+/// failure shape returning through #5189's unconditional name skip.
+#[test]
+fn artifact_only_array_counts_zero_so_esm_fallback_fires() {
+    let nif_lights = vec![ImportedLight {
+        translation: [0.0, 0.0, 0.0],
+        direction: [0.8947, 0.3716, 0.2478],
+        color: [1.0, 1.0, 1.0],
+        radius: 0.0,
+        kind: LightKind::Directional,
+        outer_angle: 0.0,
+        affected_node_names: Vec::new(),
+        name: Some(std::sync::Arc::from("__MAX_Default_Light")),
+    }];
+    // The colour half alone would pass — the name half is what rejects.
+    assert!(
+        !is_spawnable_nif_light(&nif_lights[0]),
+        "a known exporter-artifact light must fail the shared spawnable \
+         predicate (#5264)"
+    );
+    assert_eq!(
+        count_spawnable_nif_lights(&nif_lights),
+        0,
+        "an artifact-only array must count zero so the ESM LIGH fallback fires"
+    );
+}
+
 // ── M46.0 / #561 multi-plugin helpers ─────────────────────────────
 
 #[test]

@@ -308,20 +308,27 @@ fn spawn_packed_collision_proxy(
     true
 }
 
-/// `true` when an `ImportedLight` has a non-trivial diffuse colour
-/// contribution and therefore would actually spawn a `LightSource`
+/// `true` when an `ImportedLight` would actually spawn a `LightSource`
 /// entity. Authored-off placeholder lights (FNV light-bulb meshes
 /// park a zero-colour `NiPointLight` to mark intent without baking
 /// the colour; the ESM LIGH base record carries the real value)
 /// fail this predicate so the ESM-fallback gate in
 /// `spawn_placed_instances` can attach the authoritative LightSource
-/// instead.
+/// instead. Known exporter-artifact lights (`__MAX_Default_Light`,
+/// #5189) fail it too — #5264: the spawn loop and the count gate must
+/// share ONE predicate, else a LIGH whose model carries only the
+/// artifact pair reports 1-2 "spawned" NIF lights while spawning 0,
+/// suppressing the ESM-authored fallback and leaving the fixture dark.
 ///
 /// Threshold of `1e-4` matches the in-loop check exactly — kept as
 /// a free function so #632's regression tests can pin the predicate
 /// without standing up a full Vulkan context.
 pub(crate) fn is_spawnable_nif_light(light: &byroredux_nif::import::ImportedLight) -> bool {
     light.color[0] + light.color[1] + light.color[2] >= 1e-4
+        && !light
+            .name
+            .as_ref()
+            .is_some_and(|n| is_known_exporter_artifact_light_name(n))
 }
 
 /// F3 (2026-05-27) — build a static `CollisionShape::TriMesh` +
@@ -1134,32 +1141,19 @@ pub(crate) fn spawn_nif_lights(
     // for NiPointLights with constant-only attenuation coefficients).
     let esm_radius = light_data.as_ref().map(|ld| ld.radius);
     for light in nif_lights {
-        // Skip lights whose diffuse contribution is effectively zero —
-        // these are usually authored-off placeholders. The audit's
-        // FNV Prospector Saloon evidence: light-bulb meshes ship a
-        // disabled NiPointLight to mark intent without baking colour;
-        // the ESM LIGH base record carries the real authored colour.
-        // Predicate kept in lockstep with `is_spawnable_nif_light`.
+        // Skip lights that would not spawn a scene light: zero-colour
+        // placeholders (authored-off intent markers — the ESM LIGH base
+        // record carries the real colour) AND known exporter-artifact
+        // lights (#5189/REN-D10-2026-10-03-01 — the `__MAX_Default_Light`
+        // ± key/fill pair is a 3ds Max exporter leftover scoped to its own
+        // subtree by the legacy engine, has no LIGH authority, and every
+        // vanilla instance is the artifact; pre-#5189 a de-dup still left
+        // one full-white, shadow-traced directional lighting the whole
+        // scene). #5264 — both halves live in the one predicate, so this
+        // loop and `count_spawnable_nif_lights` (the ESM-fallback gate)
+        // can never disagree about what "spawned" means.
         if !is_spawnable_nif_light(light) {
             continue;
-        }
-        // #5189 (REN-D10-2026-10-03-01) — known exporter-artifact lights
-        // NEVER spawn as scene lights. Pre-fix this arm de-duplicated
-        // them (first carrier wins), which still left one full-white,
-        // shadow-traced directional lighting the whole scene: the
-        // `__MAX_Default_Light` ± key/fill pair is a 3ds Max exporter
-        // leftover scoped to its own subtree by the legacy engine
-        // (NiNode `effects` lists, pre-10.1.0.0), has no LIGH authority,
-        // and every vanilla instance is the artifact (48 Oblivion
-        // carriers, 0 in FNV/FO3). #5123 fixed only the multiplicity.
-        // Gated on the allowlist first (cheap, and almost always false)
-        // so ordinary lights keep spawning even if two REFRs share a
-        // name — this is a confirmed-name skip, not a general
-        // "first name wins" rule.
-        if let Some(ref nif_name) = light.name {
-            if is_known_exporter_artifact_light_name(nif_name) {
-                continue;
-            }
         }
         let nif_pos = Vec3::new(
             light.translation[0],
