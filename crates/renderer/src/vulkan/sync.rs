@@ -75,8 +75,9 @@ pub const MAX_FRAMES_IN_FLIGHT: usize = 2;
 //      immediately (`acceleration/memory.rs`). At N = 2 the next slot's
 //      last user is frame N-1, which only the all-slots wait has
 //      retired; a per-slot wait on frame N's own slot never covers it.
-//   8. `groundcover.rs`'s `prepare` on `current_frame` (#4601) — runs
-//      from the app BEFORE this frame's `draw_frame`: it harvests
+//   8. `groundcover/frame.rs`'s `prepare` on `current_frame` (#4601;
+//      #5089 split it out of `groundcover.rs`) — runs from the app
+//      BEFORE this frame's `draw_frame`: it harvests
 //      `counter_readback[frame]`, host-writes six per-slot buffers and
 //      rewrites that slot's descriptor sets. Its "must be called after
 //      slot `frame`'s fence has been waited" contract holds only through
@@ -714,6 +715,14 @@ mod tests {
             (
                 "groundcover_models",
                 crate::source_scan::production_text(include_str!("groundcover_models.rs")),
+            ),
+            (
+                // #5265 — rider 8's site: `groundcover/frame.rs`'s `prepare`
+                // harvests `counter_readback[frame]`. The #5089 split moved it
+                // out of `groundcover.rs` and nothing pinned it, so the rider
+                // pointed at a file that no longer contains the function.
+                "counter_readback",
+                crate::source_scan::production_text(include_str!("groundcover/frame.rs")),
             ),
             (
                 "pending_free",
