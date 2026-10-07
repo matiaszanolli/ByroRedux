@@ -293,12 +293,13 @@ Nothing arms combat ambiently, though, so most creatures still never attack.
 Skyrim's NPC population derives Health, Magicka and Stamina, each
 independently from its own `RACE.DATA` starting value plus its own signed
 `ACBS` offset (`derive_skyrim_actor_values`, landed `1d0c5d4b` 2026-08-24,
-verified against `Skyrim.esm`) — no other actor values or skills. FO4/FO76/
-Starfield share one "stored" mechanism (`NPC_` `PRPS` property pairs
-pass through verbatim, plus baked `DNAM` Health/Action Points); FO4 is
-exercised against real content, FO76/Starfield inherit the same decoder "by
-lineage" with the `DNAM` tail explicitly flagged unconfirmed
-(`crates/plugin/src/esm/reader.rs`).
+verified against `Skyrim.esm`) — no other actor values or skills. FO4 is the
+only game whose "stored" mechanism populates actors (`NPC_` `PRPS` property
+pairs pass through verbatim, plus baked `DNAM` Health/Action Points),
+exercised against real content. FO76/Starfield still run the `PRPS`/`DNAM`
+decoders (`crates/plugin/src/esm/reader.rs`, the `DNAM` tail flagged
+unconfirmed), but since #4453 their profiles pin `NpcStatModel::None` — the
+parse reaches no actor until a wire-layout capture lands (#4453).
 
 Leveling, pool regen, and affliction are uniformly `✗` across every game:
 `CharacterLevel.xp` is stamped `0` at spawn and nothing increments it;
