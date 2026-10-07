@@ -96,12 +96,13 @@ top-of-frame all-slots fence wait that dominates GPU-bound frames
   compressed `NVNM` body is still undecoded.
 - FO4/FO76/Starfield actors have no walk-clip source; their ragdolls wait on
   the `BhkSystemBinary` blob decoder.
-- Dialogue's activation core is live (P4 + #5037/#5224/#5271), but the
-  greeting layer, Random/SayOnce/Goodbye line lifetime and force-greet
-  are unmodeled ([`dialogue-trees.md`](docs/engine/dialogue-trees.md),
-  #5367), as is perk entry-point composition (M43, M47.2). Story
-  Manager Phases 2–4 (#5366): event-data condition run-ons, `DNAM`
-  node-flag decode, LCTN-granular location events, FO4 quest pools.
+- Dialogue: the greeting layer, Random/SayOnce/Goodbye line lifetime
+  and FO3/FNV force-greet are live and smoke-gated (#5367,
+  [`dialogue-trees.md`](docs/engine/dialogue-trees.md)); Skyrim
+  force-greet (PKDT decode) and voice remain. Perk entry-point
+  composition (M43, M47.2) and Story Manager Phases 2–4 (#5366:
+  event-data condition run-ons, `DNAM` node-flag decode, LCTN-granular
+  location events, FO4 quest pools) are open.
 - Starfield CDB materials: `.mat` texture slots merge from the streaming CDB
   index (`224a19372`, `18fce7e43`); #3398 stays open until its definition of
   done is checked.
@@ -119,10 +120,10 @@ top-of-frame all-slots fence wait that dominates GPU-bound frames
   ([`sm1-story-manager.sh`](docs/smoke-tests/sm1-story-manager.sh)); next is
   Phase 2 — `RunOn::EventData` condition targets and alias fill from event
   data ([`story-manager.md`](docs/engine/story-manager.md)).
-- Dialogue trees (#5367): scoping doc landed
-  ([`dialogue-trees.md`](docs/engine/dialogue-trees.md)) — greeting layer,
-  Random/SayOnce/Goodbye line lifetime, force-greet; next is Phase G
-  (greetings) on the FNV fixture.
+- Dialogue trees (#5367): Phases G/L/F landed and live-gated
+  ([`dt1-dialogue-layers.sh`](docs/smoke-tests/dt1-dialogue-layers.sh));
+  next is Phase V (voice) or the Skyrim force-greet behind its PKDT
+  decode ([`dialogue-trees.md`](docs/engine/dialogue-trees.md)).
 - RT lighting and material recovery: R0–R3 are complete. The rest is tracked
   in [`rt-lighting-material-recovery.md`](docs/engine/rt-lighting-material-recovery.md).
 - WATAL: W0 and W1 are closed. W2's first defect is fixed: distant water is
@@ -267,10 +268,10 @@ Open follow-ons, none of them a slice blocker:
 - Skyrim `p2-melee-core.sh` passes end to end since #5161 (`5ae7f8ad4`) and
   #5246 contained the ragdoll solver explosion before the broad phase;
   #5352 (HIGH) is a recovery-substep gap left in that clamp.
-- P1: Skyrim's W1 water leg is skipped (land-side KCC wedge). P4: the
-  greeting / line-lifetime / force-greet layers beyond the activation
-  core are unmodeled (#5367). Gamepad sources and a second game route
-  are not started.
+- P1: Skyrim's W1 water leg is skipped (land-side KCC wedge). P4's
+  greeting / line-lifetime / force-greet layers landed with #5367
+  (Skyrim force-greet and voice remain). Gamepad sources and a second
+  game route are not started.
 
 ### Milestone tiers
 
@@ -307,7 +308,7 @@ design doc.
 | #   | Milestone | State | Depends on |
 |-----|-----------|-------|------------|
 | M42 | AI packages | **Shipped:** PACK decode (PKDT/PSDT/PLDT/PTDT, #446). CTDA-gated package selection through the M47.1 evaluator, failing open on out-of-catalog functions (M42.2). Re-evaluation at game-minute boundaries and on Papyrus `EvaluatePackageRequest` (M42.9, #2652). Seven procedures — Sandbox seat with per-marker reservations, Wander, Travel, Follow, Escort, Guard, Patrol — run by default behind a `BYRO_NO_AI_LOCOMOTION=1` kill-switch, with authored per-game walk clips at stride-matched speed and KCC-backed steps (M42.10/M42.11, 2026-09-18). Plus ambient hostility (#4414), disengagement (#4816) and re-seating after a save load (#4815). **Open:** the 10 non-locomotion procedures (Find/Eat/Sleep/Accompany/UseItemAt/Ambush/FleeNotCombat/CastMagic/Dialogue/UseWeapon), each blocked on a missing subsystem. Also: `PTD2`, calendar-aware scheduling, sit-enter beyond FNV/FO3, legacy sleep/lean marker disambiguation, and FO4+ walk sources. NearReference target resolution was deprioritized (~12% of targets resolve). Trace: [`npc-spawn-ai-packages.md`](docs/engine/npc-spawn-ai-packages.md). | M28.5, M41 |
-| M43 | Quests & dialogue | **Shipped:** the quest core — version-aware stages, logs, objectives and targets; full lifecycle transitions; Papyrus quest effects; save-persistent progress; loaded-reference alias fill with conditions and reservations; faction/inventory injections. `quest.*` observability commands, with [`m43-quest-runtime.sh`](docs/smoke-tests/m43-quest-runtime.sh) driving the production path. **Shipped (2026-10-07):** the Story Manager slice (#5366 Phases 0–1) — `SMBN`/`SMEN`/`SMQN` decode into `EsmIndex.story_manager_nodes` (census floors pinned: 571 nodes / 24 events / 1191 of 1811 Skyrim quests SM-referenced), a dispatcher walking each event's node chain through the M47.1 evaluator into the canonical lifecycle, `KILL`/`CLOC` producers, live-gated by [`sm1-story-manager.sh`](docs/smoke-tests/sm1-story-manager.sh) (six quests on the boot-time CLOC, incl. the unconditional `CRHoldExpansion` chain). Design: [`story-manager.md`](docs/engine/story-manager.md). **Open:** SM Phases 2–4 (#5366 — event-data condition run-ons, alias fill from event data, `DNAM`/`XNAM`/`QNAM` flag decode, LCTN-granular location events, FO4 `NNAM` quest pools), the dialogue greeting / Random-SayOnce-Goodbye / force-greet layers ([`dialogue-trees.md`](docs/engine/dialogue-trees.md), #5367), reference collections, true LCTN/unloaded-world resolution, created-object spawning, and the dialogue UI polish beyond the native page. These are subsystem boundaries, not missing QUST bytes. | M24.2, M41, M47.1 |
+| M43 | Quests & dialogue | **Shipped:** the quest core — version-aware stages, logs, objectives and targets; full lifecycle transitions; Papyrus quest effects; save-persistent progress; loaded-reference alias fill with conditions and reservations; faction/inventory injections. `quest.*` observability commands, with [`m43-quest-runtime.sh`](docs/smoke-tests/m43-quest-runtime.sh) driving the production path. **Shipped (2026-10-07):** the Story Manager slice (#5366 Phases 0–1) — `SMBN`/`SMEN`/`SMQN` decode into `EsmIndex.story_manager_nodes` (census floors pinned: 571 nodes / 24 events / 1191 of 1811 Skyrim quests SM-referenced), a dispatcher walking each event's node chain through the M47.1 evaluator into the canonical lifecycle, `KILL`/`CLOC` producers, live-gated by [`sm1-story-manager.sh`](docs/smoke-tests/sm1-story-manager.sh) (six quests on the boot-time CLOC, incl. the unconditional `CRHoldExpansion` chain). Design: [`story-manager.md`](docs/engine/story-manager.md). **Shipped (2026-10-07):** the dialogue greeting / Random-SayOnce-Goodbye / force-greet layers (#5367 — generic-greeting fallback opens quest-less conversations, the line-lifetime flags select/persist/close on, `PKDD` force-greet walks and opens without activation; live-gated by [`dt1-dialogue-layers.sh`](docs/smoke-tests/dt1-dialogue-layers.sh); design: [`dialogue-trees.md`](docs/engine/dialogue-trees.md)). **Open:** SM Phases 2–4 (#5366 — event-data condition run-ons, alias fill from event data, `DNAM`/`XNAM`/`QNAM` flag decode, LCTN-granular location events, FO4 `NNAM` quest pools), Skyrim force-greet + dialogue voice (#5367), reference collections, true LCTN/unloaded-world resolution, created-object spawning, and the dialogue UI polish beyond the native page. These are subsystem boundaries, not missing QUST bytes. | M24.2, M41, M47.1 |
 | M46 | Full plugin loading | Discover, sort, merge, and resolve conflicts across the full load order. Builds on M46.0 (CLI wiring), the `plugin/resolver.rs` DAG, and the parallel per-plugin walk (#3813). | M24.2, M46.0 |
 | M48 | UI integration | **Shipped:** the Scaleform host bridge — Skyrim/SkyUI 142-method catalog, the FO4 `BGSCodeObj` 269-method catalog with a generated AVM2 adapter, and an archive-backed navigator (`--menu … --menu-archive …`). The MenuXml crate (FOLD evaluator, layout, CPU raster) drives the Oblivion HUD (M48.4) and FO3/FNV through a game-agnostic profile (M48.5). `--hud` runs the vanilla Skyrim (M48.6) and FO4 (M48.7) `hudmenu.swf` transparently over the world, with a smoke per route. Starfield's `hudmenu.swf` now parses through a PlaceObject3 dialect shim (#4470); its profile and catalog are not built. **Open:** method behaviour and `_global.gfx` stubs, font fidelity, menu-stack policy, and Papyrus/ECS ↔ UI callbacks. Vanilla Skyrim/FO4 HUD meters stay empty: the game feeds them by GFx object-path invocation, which Ruffle cannot reach, so they need AVM1 injection or SkyUI-class menus. Design: [`ui.md`](docs/engine/ui.md). | R4, M48.4, M48.6 |
 
@@ -771,6 +772,7 @@ figure in this table was measured at that HEAD, not carried forward.
 | Per-game full mesh sweep (clean rates above; recoverable 100% gate)       | `cargo test -p byroredux-nif --release --test parse_real_nifs -- --ignored parse_rate`                                                                                                          |
 | FO3 ESM parse floors, #3756 (index sum ≥ 44 000, measured 44 718 — an index sum that double-counts by design, not a record count; the file holds 718 952 records; placed refs ≥ 573 000; exterior cells ≥ 41 900) | `cargo test -p byroredux-plugin --release --test parse_real_esm -- --ignored --exact parse_rate_fo3_esm`                                                                                       |
 | FNV ESM parse floors (index sum ≥ 76 000, measured 78 575; same index-sum caveat as the FO3 row) | `cargo test -p byroredux-plugin --release --test parse_real_esm -- --ignored --exact parse_rate_fnv_esm`                                                                                       |
+| Dialogue greeting + force-greet census floors, #5367 (FNV: GREETING/HELLO topics exist, ≥438 greeting DIALs [parser-measured 438], ≥330 Dialogue-procedure PACKs with ≥260 PKDD topics [332/263]) — the source of the dialogue counts in M43's row | `cargo test -p byroredux-plugin --release --test parse_real_esm -- --ignored dialogue_greeting` |
 | Story Manager census floors, #5366 (Skyrim: 571 nodes / 24 event mnemonics / 448 SMQNs / 1191 SM-referenced quests / 441-of-443 sibling integrity, exact; FO4: 311 / 17 count floors) — the source of every SM count claim in M43's row and the live smoke's target chain | `cargo test -p byroredux-plugin --release --test parse_real_esm -- --ignored story_manager` |
 
 **Rule**: every "FPS / ms / count" claim in this document must have a
