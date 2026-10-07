@@ -3694,6 +3694,77 @@ fn actor_value_projection_and_deferred_apply_use_portable_avif_identity_atomical
     )));
 }
 
+/// #5239 — `SetBase` on the player's `PlayerOnly` pool routes into the
+/// permanent-modifier layer: `player_derived_stats_system` re-stamps the
+/// base every frame, so a plain base write reports success and is
+/// silently reverted one tick later. The routed write composes with
+/// every future re-derivation instead (the GECK's SetActorValue
+/// behaviour — "80 from base health, and 100 for the rest").
+#[test]
+fn sdk_set_base_on_player_derived_pool_routes_into_the_modifier_layer() {
+    use byroredux_core::character::{
+        CharacterLevel, CharacterRuleset, DerivedInput, DerivedStatFormula, LevelingModel,
+    };
+    const END: u32 = 0x07;
+    const HEALTH: u32 = 0x2D4;
+    let ruleset = CharacterRuleset::new(LevelingModel::FO4).with_derived(
+        HEALTH,
+        DerivedStatFormula::bilinear(
+            DerivedInput::actor_value(END),
+            4.5,
+            DerivedInput::LEVEL,
+            2.5,
+            0.5,
+            77.5,
+        )
+        .floored()
+        .player_only(),
+    );
+    let mut world = World::new();
+    let player = world.spawn();
+    world.insert_resource(crate::systems::PlayerEntity(Some(player)));
+    let mut values = ActorValues::from_pairs([(END, 5.0)]);
+    ruleset.refresh_player_only_bases(&mut values, 1); // the #4674 stamp
+    world.insert(player, values);
+    world.insert(player, CharacterLevel { level: 1, xp: 0 });
+    world.insert_resource(ruleset);
+    let order = crate::cell_loader::load_order::LoadOrder::new(
+        vec!["Skyrim.esm".into()],
+        vec![byroredux_plugin::esm::reader::GlobalSlot::Regular(0)],
+    );
+    world.insert_resource(
+        crate::cell_loader::load_order::GlobalFormIdResolver::from_load_order(&order),
+    );
+    let health_ref = FormRef::new(
+        byroredux_core::form_id::PluginId::from_filename("Skyrim.esm")
+            .0
+            .to_be_bytes(),
+        HEALTH,
+    );
+
+    let mut host =
+        ExtensionHost::new(SandboxConfig::default(), ComponentStoreLimits::default()).unwrap();
+    let handle = host.bind_entity(player, None).unwrap();
+    host.pending_actor_value_writes.push(
+        ActorValueCommand::new(handle, health_ref, ActorValueOperation::SetBase, 500.0).unwrap(),
+    );
+    apply_pending_actor_value_writes(&world, &mut host);
+
+    // The SDK read the mutated state back through the same composition
+    // before commit; the live component must agree with it after the
+    // next refresh tick.
+    crate::systems::player_derived_stats_system(&world, 0.0);
+    let avs = world.get::<ActorValues>(player).unwrap();
+    assert_eq!(avs.current(HEALTH), 605.0, "formula base 105 + modifier 500");
+    assert_eq!(
+        avs.get(HEALTH).unwrap().base,
+        105.0,
+        "the formula owns the base; only the modifier was written"
+    );
+    assert_eq!(avs.get(HEALTH).unwrap().permanent_mod, 500.0);
+    assert!(host.take_diagnostics().is_empty());
+}
+
 /// #4702 — an SDK batch that drives Health to zero (by `Damage`, or by
 /// lowering the ceiling with `SetBase`) performs the same alive→dead
 /// transition as every other Health writer: `Dead` inserted and the

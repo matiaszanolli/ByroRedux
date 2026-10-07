@@ -144,6 +144,15 @@ impl ActorValues {
         self.values.entry(avif_form_id).or_default().permanent_mod += delta;
     }
 
+    /// Set the permanent-modifier layer outright — the `modav` counterpart
+    /// that replaces instead of adding. #5239 — the write sites use this to
+    /// route a `SetBase` on the player's `PlayerOnly` pools into the
+    /// modifier layer, where `refresh_player_only_bases` never treads (a
+    /// plain base write there is reverted one tick later).
+    pub fn set_permanent(&mut self, avif_form_id: u32, value: f32) {
+        self.values.entry(avif_form_id).or_default().permanent_mod = value;
+    }
+
     /// Add to the temporary-modifier layer (active effects).
     pub fn mod_temporary(&mut self, avif_form_id: u32, delta: f32) {
         self.values.entry(avif_form_id).or_default().temporary_mod += delta;

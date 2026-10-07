@@ -411,6 +411,16 @@ pub(super) fn apply_pending_actor_value_writes(world: &World, host: &mut Extensi
         // flagged. `resolver` is dropped immediately after the read loop
         // below (it is unused past that point) so it also doesn't
         // overlap the later `query_mut::<ActorValues>()` write pass.
+        // #5239 — `SetBase` on the player's `PlayerOnly` pools routes into
+        // the modifier layer (GECK SetActorValue: the player's base health
+        // is never modified); a plain base write there is reverted by
+        // `player_derived_stats_system` one frame later. Read BEFORE the
+        // `values` query, keeping the canonical `CharacterRuleset` →
+        // `ActorValues` order (#3441) the #3819 note below documents.
+        let player = world
+            .try_resource::<crate::systems::PlayerEntity>()
+            .and_then(|player| player.0);
+        let ruleset = world.try_resource::<byroredux_core::character::CharacterRuleset>();
         let values = world
             .query::<ActorValues>()
             .ok_or_else(|| "ActorValues storage is unavailable".to_owned())?;
@@ -432,7 +442,17 @@ pub(super) fn apply_pending_actor_value_writes(world: &World, host: &mut Extensi
                 staged.entry(command.entity).or_insert(values)
             };
             match command.operation {
-                ActorValueOperation::SetBase => actor_values.set_base(actor_value, command.value),
+                ActorValueOperation::SetBase => {
+                    if player == Some(command.entity)
+                        && ruleset
+                            .as_ref()
+                            .is_some_and(|ruleset| ruleset.is_player_derived_pool(actor_value))
+                    {
+                        actor_values.set_permanent(actor_value, command.value);
+                    } else {
+                        actor_values.set_base(actor_value, command.value);
+                    }
+                }
                 ActorValueOperation::ModifyPermanent => {
                     actor_values.mod_permanent(actor_value, command.value)
                 }
@@ -462,6 +482,7 @@ pub(super) fn apply_pending_actor_value_writes(world: &World, host: &mut Extensi
         }
         drop(values);
         drop(resolver);
+        drop(ruleset);
         let committed: Vec<EntityId> = staged.keys().copied().collect();
         let mut live = world
             .query_mut::<ActorValues>()

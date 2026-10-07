@@ -13,6 +13,10 @@ use super::shared::*;
 use byroredux_core::ecs::components::ActorValues;
 
 /// `setav <entity|.> <av_formid> <value>` — set an actor value's **base**.
+/// On the player's derived pools (Health/AP, per the active ruleset) the
+/// write routes into the permanent-modifier layer instead (#5239): the
+/// per-frame refresh owns the base there, and the GECK documents that a
+/// player `SetActorValue` never modifies base health.
 pub(crate) struct SetAvCommand;
 
 impl ConsoleCommand for SetAvCommand {
@@ -70,6 +74,19 @@ fn edit_av(world: &World, args: &str, cmd: &str, edit: AvEdit) -> CommandOutput 
         return CommandOutput::error(format!("{cmd}: bad value `{val_tok}`"));
     };
 
+    // #5239 — a SetBase on the player's derived pools routes into the
+    // permanent-modifier layer, or the per-frame refresh reverts it one
+    // tick later. The redirect facts are read BEFORE the ActorValues
+    // write query, in the canonical `CharacterRuleset` → `ActorValues`
+    // order (#3441), so no guard is held across the write.
+    let player_pool = world
+        .try_resource::<crate::systems::PlayerEntity>()
+        .and_then(|player| player.0)
+        .is_some_and(|player| player == entity)
+        && world
+            .try_resource::<byroredux_core::character::CharacterRuleset>()
+            .is_some_and(|ruleset| ruleset.is_player_derived_pool(av));
+
     let Some(mut q) = world.query_mut::<ActorValues>() else {
         return CommandOutput::error(format!("{cmd}: no ActorValues storage in the world"));
     };
@@ -81,7 +98,13 @@ fn edit_av(world: &World, args: &str, cmd: &str, edit: AvEdit) -> CommandOutput 
 
     let before = avs.current(av);
     match edit {
-        AvEdit::SetBase => avs.set_base(av, value),
+        AvEdit::SetBase => {
+            if player_pool {
+                avs.set_permanent(av, value);
+            } else {
+                avs.set_base(av, value);
+            }
+        }
         AvEdit::ModPermanent => avs.mod_permanent(av, value),
     }
     let after = avs.current(av);
@@ -159,6 +182,66 @@ mod tests {
         crate::systems::player_derived_stats_system(&world, 0.0);
         // floor(77.5 + 4.5·7 + 2.5 + 0.5·7) = 115.
         assert_eq!(health(&world), 115.0);
+    }
+
+    /// #5239 — `setav` on the player's derived pools survives the per-frame
+    /// refresh: the write routes into the permanent-modifier layer (the
+    /// GECK's SetActorValue behaviour — "80 from base health, and 100 for
+    /// the rest"), so `player_derived_stats_system` re-derives only the
+    /// base half. The pre-#5239 plain base write was silently reverted one
+    /// tick after reporting success.
+    #[test]
+    fn setav_on_player_derived_pool_survives_the_refresh() {
+        use byroredux_core::character::{
+            CharacterLevel, CharacterRuleset, DerivedInput, DerivedStatFormula, LevelingModel,
+        };
+        const END: u32 = 0x07;
+        const HEALTH: u32 = 0x2D4;
+        let ruleset = CharacterRuleset::new(LevelingModel::FO4).with_derived(
+            HEALTH,
+            DerivedStatFormula::bilinear(
+                DerivedInput::actor_value(END),
+                4.5,
+                DerivedInput::LEVEL,
+                2.5,
+                0.5,
+                77.5,
+            )
+            .floored()
+            .player_only(),
+        );
+        let mut world = World::new();
+        let player = world.spawn();
+        world.insert_resource(crate::systems::PlayerEntity(Some(player)));
+        let mut values = ActorValues::from_pairs([(END, 5.0)]);
+        ruleset.refresh_player_only_bases(&mut values, 1); // the #4674 stamp
+        world.insert(player, values);
+        world.insert(player, CharacterLevel { level: 1, xp: 0 });
+        world.insert_resource(ruleset);
+        let health = |world: &World| world.get::<ActorValues>(player).unwrap().current(HEALTH);
+        assert_eq!(health(&world), 105.0);
+
+        // setav Health 500 → modifier 500 on top of the formula base, so
+        // the reported value sticks instead of reverting to 105 next tick.
+        let out = run(&world, &format!("{player} 0x2D4 500"), true);
+        assert!(out.contains("105 -> 605"), "got: {out}");
+        crate::systems::player_derived_stats_system(&world, 0.0);
+        assert_eq!(health(&world), 605.0);
+        {
+            let avs = world.get::<ActorValues>(player).unwrap();
+            assert_eq!(
+                avs.get(HEALTH).unwrap().base,
+                105.0,
+                "the formula owns the base; only the modifier was written"
+            );
+            assert_eq!(avs.get(HEALTH).unwrap().permanent_mod, 500.0);
+        }
+
+        // The base half still tracks its inputs: modav Endurance re-derives
+        // 115, and the modifier rides on top.
+        run(&world, &format!("{player} 0x07 2"), false);
+        crate::systems::player_derived_stats_system(&world, 0.0);
+        assert_eq!(health(&world), 615.0);
     }
 
     #[test]

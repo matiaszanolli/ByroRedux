@@ -171,6 +171,20 @@ impl CharacterRuleset {
         base + layers
     }
 
+    /// #5239 — whether `avif` is one of this game's `PlayerOnly` +
+    /// `Absolute` outputs (FO3/FNV/FO4 Health + AP, …): the stats
+    /// [`Self::refresh_player_only_bases`] re-stamps every frame. A plain
+    /// `set_base` on such a key, on the player, is silently reverted one
+    /// tick later, so the write sites ask this before writing and route
+    /// into the permanent-modifier layer instead — the GECK's
+    /// SetActorValue behaviour ("For the player, this will not modify
+    /// base health … 80 from base health, and 100 for the rest").
+    pub fn is_player_derived_pool(&self, avif: u32) -> bool {
+        self.derived_formula(avif).is_some_and(|formula| {
+            formula.scope == DerivedScope::PlayerOnly && formula.kind == DerivedOutput::Absolute
+        })
+    }
+
     /// #5039 — re-evaluate every `PlayerOnly` + `Absolute` stat (FO3/FNV/FO4
     /// Health + AP, …) against the player's *current* inputs and write the
     /// results as the authored base. Returns whether any base changed.
@@ -376,6 +390,47 @@ mod tests {
         let mut avs = ActorValues::from_pairs([(STR, 7.0), (END, 5.0), (AGI, 6.0)]);
         assert!(!rs.refresh_player_only_bases(&mut avs, 1));
         assert!(avs.get(AV_CARRY).is_none());
+    }
+
+    /// #5239 — the predicate the write sites route on: only `PlayerOnly` +
+    /// `Absolute` outputs (the stats the refresh re-stamps every frame)
+    /// count as player pools. A `Multiplier` row or an actor-general row
+    /// does not, and neither does an input key like Endurance.
+    #[test]
+    fn is_player_derived_pool_covers_only_player_only_absolute_outputs() {
+        let rs = CharacterRuleset::new(LevelingModel::FO4)
+            .with_derived(
+                AV_HEALTH,
+                DerivedStatFormula::bilinear(av(END), 4.5, DerivedInput::LEVEL, 2.5, 0.5, 77.5)
+                    .floored()
+                    .player_only(),
+            )
+            .with_derived(AV_AP, DerivedStatFormula::affine(av(AGI), 0.1, 1.0).as_multiplier());
+        assert!(rs.is_player_derived_pool(AV_HEALTH));
+        assert!(!rs.is_player_derived_pool(AV_AP), "Multiplier row");
+        assert!(!rs.is_player_derived_pool(AV_CARRY), "unregistered");
+        assert!(!rs.is_player_derived_pool(END), "a formula input, not an output");
+    }
+
+    /// #5239 — a routed `SetBase` lands in the permanent-modifier layer
+    /// and the next refresh re-derives only the base half (GECK
+    /// SetActorValue: "80 from base health, and 100 for the rest").
+    #[test]
+    fn set_permanent_survives_the_player_refresh() {
+        let rs = CharacterRuleset::new(LevelingModel::FO4).with_derived(
+            AV_HEALTH,
+            DerivedStatFormula::bilinear(av(END), 4.5, DerivedInput::LEVEL, 2.5, 0.5, 77.5)
+                .floored()
+                .player_only(),
+        );
+        let mut avs = ActorValues::from_pairs([(END, 5.0)]);
+        rs.refresh_player_only_bases(&mut avs, 1);
+        assert_eq!(avs.current(AV_HEALTH), 105.0);
+
+        avs.set_permanent(AV_HEALTH, 100.0);
+        rs.refresh_player_only_bases(&mut avs, 1);
+        assert_eq!(avs.get(AV_HEALTH).unwrap().base, 105.0);
+        assert_eq!(avs.current(AV_HEALTH), 205.0, "base 105 + modifier 100");
     }
 
     #[test]

@@ -410,8 +410,15 @@ value: `CharacterRuleset::refresh_player_only_bases` re-evaluates it at stamping
 again after `attach_to_player` applies the record's constant spells, and every
 frame in `player_derived_stats_system`. So any END/AGI/level writer (abilities,
 `setav`/`modav`, the SDK, a future level-up) reaches Health/AP without a hook of
-its own. Damage and modifier layers on the pool survive a refresh. Routing every
-`current()` reader through the ruleset would remove the exception.
+its own. Damage and modifier layers on the pool survive a refresh. A deliberate
+`SetBase` on the pool **itself** (`setav Health`, the SDK's
+`ActorValueOperation::SetBase`) therefore routes into the permanent-modifier layer
+at the write sites (#5239): the GECK documents that a player `SetActorValue`
+never modifies base health — `player.SetAv Health 100` leaves the formula base
+alone and the 100 lands on top of it ("80 from base health, and 100 for the
+rest"). The plain base write would be reverted by the next refresh; the modifier
+write composes with every future re-derivation. Routing every `current()` reader
+through the ruleset would remove the exception.
 
 ---
 
