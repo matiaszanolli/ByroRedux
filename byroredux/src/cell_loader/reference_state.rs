@@ -297,7 +297,20 @@ pub(crate) fn restore(world: &mut World, entity: EntityId) -> bool {
     }
     if state.dead {
         world.insert(entity, Dead);
-        crate::combat::reconcile_dead_actor(world, entity);
+        // #5267 (GAME-D4-2026-10-05-01) — queue the death teardown for the
+        // Late-stage sink (`reconcile_pending_dead_actors_system`) instead
+        // of running it here, mirroring `apply_starts_dead` right below
+        // (#4814). This restore runs at actor-job completion, on a freshly
+        // respawned skeleton whose bone `GlobalTransform`s are still
+        // un-propagated identity (new entities spawn with
+        // `GlobalTransform::IDENTITY`; only the placement root is seeded),
+        // so a synchronous `reconcile_dead_actor` would seed every ragdoll
+        // body from `bone GT ∘ local offset` at the world origin — within
+        // #5161's sanity bound that builds an origin ragdoll, beyond it the
+        // activation is rejected with the `AnimationPlayer` strip already
+        // applied and nothing to retry. The Late drain runs after PostUpdate
+        // propagation, so the seed reads real bone globals.
+        crate::combat::queue_dead_actor_reconciliation(world, entity);
     }
     if state.picked_up {
         // The item left with the player in a previous session/visit; the
@@ -345,7 +358,8 @@ pub(crate) fn restore(world: &mut World, entity: EntityId) -> bool {
 /// the Late-stage sink every other death goes through. Queued rather than
 /// run here because the ragdoll seeds from bone `GlobalTransform`s, which a
 /// freshly spawned skeleton does not have in world space until the next
-/// PostUpdate propagation. No-op when [`restore`] already made it dead.
+/// PostUpdate propagation. No-op when [`restore`] already made it dead
+/// (restore queues its own reconciliation since #5267).
 /// Called by the actor-job completion after [`restore`], never mid-job.
 pub(crate) fn apply_starts_dead(world: &mut World, entity: EntityId) {
     if world.get::<Dead>(entity).is_some() {
@@ -1166,6 +1180,55 @@ mod tests {
                 .queued(),
             &[corpse],
             "a corpse restore already reconciled is left alone"
+        );
+    }
+
+    /// #5267 (GAME-D4-2026-10-05-01) — a restored corpse's death teardown is
+    /// QUEUED for the Late sink, not run at the restore point. Restore runs
+    /// at actor-job completion on an un-propagated skeleton (bone globals
+    /// still identity), so a synchronous reconcile would seed the ragdoll
+    /// from the world origin — the exact hazard #4814 queued
+    /// `apply_starts_dead` to avoid on the sibling path.
+    #[test]
+    fn dead_restore_queues_the_teardown_for_the_late_sink() {
+        use byroredux_core::animation::AnimationPlayer;
+
+        let mut world = world();
+        world.insert_resource(crate::combat::PendingDeathReconciliations::default());
+        world.register::<AnimationPlayer>();
+        world.register::<crate::ragdoll::RagdollActive>();
+
+        // Park a dead row: evict a live actor marked Dead.
+        let parked = reference(&mut world, "Skyrim.esm", 0x310);
+        world.insert(parked, Inventory::new());
+        world.insert(parked, Dead);
+        evict(&mut world, &[parked]);
+
+        // Respawn + restore at the actor-job completion point, with an
+        // AnimationPlayer to observe the (deferred) teardown against.
+        let corpse = reference(&mut world, "Skyrim.esm", 0x310);
+        world.insert(corpse, Inventory::new());
+        world.insert(corpse, AnimationPlayer::new(0));
+        assert!(restore(&mut world, corpse));
+        assert!(world.get::<Dead>(corpse).is_some());
+        assert_eq!(
+            world
+                .resource::<crate::combat::PendingDeathReconciliations>()
+                .queued(),
+            &[corpse],
+            "the death teardown must be queued, not run synchronously"
+        );
+        assert!(
+            world.get::<AnimationPlayer>(corpse).is_some(),
+            "the animation strip must not run before PostUpdate propagation"
+        );
+        assert!(world.get::<crate::ragdoll::RagdollActive>(corpse).is_none());
+
+        // The Late drain performs the teardown.
+        crate::combat::reconcile_pending_dead_actors_system(&world, 0.0);
+        assert!(
+            world.get::<AnimationPlayer>(corpse).is_none(),
+            "the Late drain owns the death teardown"
         );
     }
 
