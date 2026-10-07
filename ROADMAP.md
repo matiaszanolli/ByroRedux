@@ -76,6 +76,11 @@ top-of-frame all-slots fence wait that dominates GPU-bound frames
   `SPLO` racial pair (#4415).
   Dialogue: NPC activation selects a topic, a native response surface
   presents the INFO, and its `TIF_` fragments dispatch (P4).
+  Story Manager (#5366 Phases 0–1, 2026-10-07): Skyrim+ quests autostart
+  from the authored event tree — `SMBN`/`SMEN`/`SMQN` decode, `KILL` /
+  `CLOC` producers, condition-gated dispatch through the M47.1
+  evaluator into the canonical quest lifecycle, live-gated by
+  [`sm1-story-manager.sh`](docs/smoke-tests/sm1-story-manager.sh).
 - **Save/load.** Full-ECS snapshot with validation gates, atomic write and
   live load-apply (M45/M45.1).
 - **Audio.** kira spatial audio: footsteps, ambient, music, per-cell reverb,
@@ -86,12 +91,15 @@ top-of-frame all-slots fence wait that dominates GPU-bound frames
 
 **What doesn't work yet.**
 - AI beyond locomotion: 10 of ~17 package procedures need subsystems that do
-  not exist (item use, package combat, magic, dialogue), and there is no
-  cross-tile NAVM pathfinding.
+  not exist (item use, package combat, magic, dialogue). NAVM pathfinding
+  covers the five pre-FO4 games including cross-tile joins (#3802); FO4's
+  compressed `NVNM` body is still undecoded.
 - FO4/FO76/Starfield actors have no walk-clip source; their ragdolls wait on
   the `BhkSystemBinary` blob decoder.
-- Full dialogue trees (the force-greet blocking branch is unmodeled), Story
-  Manager events, perk entry-point composition (M43, M47.2).
+- Full dialogue trees (the force-greet blocking branch is unmodeled) and
+  perk entry-point composition (M43, M47.2). Story Manager Phases 2–4
+  (#5366): event-data condition run-ons, `DNAM` node-flag decode,
+  LCTN-granular location events, FO4 quest pools.
 - Starfield CDB materials: `.mat` texture slots merge from the streaming CDB
   index (`224a19372`, `18fce7e43`); #3398 stays open until its definition of
   done is checked.
@@ -105,6 +113,10 @@ top-of-frame all-slots fence wait that dominates GPU-bound frames
 - The [playable vertical slice](#playable-vertical-slice) is **complete**
   (P0–P5, closed 2026-10-01). Its follow-ons are listed there; none of them
   blocks the slice.
+- Story Manager (#5366): Phases 0–1 shipped and live-gated
+  ([`sm1-story-manager.sh`](docs/smoke-tests/sm1-story-manager.sh)); next is
+  Phase 2 — `RunOn::EventData` condition targets and alias fill from event
+  data ([`story-manager.md`](docs/engine/story-manager.md)).
 - RT lighting and material recovery: R0–R3 are complete. The rest is tracked
   in [`rt-lighting-material-recovery.md`](docs/engine/rt-lighting-material-recovery.md).
 - WATAL: W0 and W1 are closed. W2's first defect is fixed: distant water is
@@ -266,7 +278,7 @@ design doc.
 
 | #     | Milestone | State | Depends on |
 |-------|-----------|-------|------------|
-| M47.2 | Full scripting runtime | **Shipped slices:** a Champollion-port `.pex` decompiler (99.996% of the corpus) lowered through the recognizer chain, with VMAD attach from `--scripts-bsa`; quest-advance and trigger volumes (Session 51); QUST stage fragments (Session 55); quest aliases and object-targeting effects (Session 59); the MQ101 SCEN/PACK scene runtime backed by `crates/hkx` (Session 62); the quest-area completion pass (2026-08-07); and an SKSE-family script-extender provider slice (~23.9k LOC, tested in-crate but never audited against real mods). **Open:** recognizer catalog breadth (OnEquip/OnHit emit sites), ESM-native 136-event dispatch, perk entry-point composition, general NPC playback from HKX, and the Story Manager / LCTN / created-object / reference-collection alias operations. Design: [`m47-2-design.md`](docs/engine/m47-2-design.md), [`sdk-v0.1-development-plan.md`](docs/engine/sdk-v0.1-development-plan.md). | R5, M30.2, M43 |
+| M47.2 | Full scripting runtime | **Shipped slices:** a Champollion-port `.pex` decompiler (99.996% of the corpus) lowered through the recognizer chain, with VMAD attach from `--scripts-bsa`; quest-advance and trigger volumes (Session 51); QUST stage fragments (Session 55); quest aliases and object-targeting effects (Session 59); the MQ101 SCEN/PACK scene runtime backed by `crates/hkx` (Session 62); the quest-area completion pass (2026-08-07); and an SKSE-family script-extender provider slice (~23.9k LOC, tested in-crate but never audited against real mods). **Open:** recognizer catalog breadth (OnEquip/OnHit emit sites), perk entry-point composition, general NPC playback from HKX, and the LCTN / created-object / reference-collection alias operations — the Story Manager event-node dispatch half landed with #5366 Phases 0–1, its remaining breadth (event-data run-ons, node-flag decode, FO4 pools) tracked there. Design: [`m47-2-design.md`](docs/engine/m47-2-design.md), [`sdk-v0.1-development-plan.md`](docs/engine/sdk-v0.1-development-plan.md). | R5, M30.2, M43 |
 | M47.3 | ObScript quest VM (Oblivion) | **Phase 1 shipped 2026-09-18:** an SCDA bytecode interpreter runs every running quest's `Begin GameMode` block on the vanilla 5 s cadence and lowers onto `QuestStageState`/`Globals`. Its opcode table was recovered by aligning source against bytecode over vanilla `Oblivion.esm` (2 349 of 2 393 scripts decode clean), and it was verified live (MS23 self-advances to stage 90). **Phase 2:** non-GameMode blocks (OnActivate/OnTrigger on object scripts), Message/MessageBox UI, per-quest `fquestdelaytime`, actor-state functions (GetDeadCount/GetItemCount/GetDistance), and the remaining ~60-command corpus. | M47.2, M42.10 |
 
 #### Tier 5 — Renderer polish (quality, not capability)
@@ -288,7 +300,7 @@ design doc.
 | #   | Milestone | State | Depends on |
 |-----|-----------|-------|------------|
 | M42 | AI packages | **Shipped:** PACK decode (PKDT/PSDT/PLDT/PTDT, #446). CTDA-gated package selection through the M47.1 evaluator, failing open on out-of-catalog functions (M42.2). Re-evaluation at game-minute boundaries and on Papyrus `EvaluatePackageRequest` (M42.9, #2652). Seven procedures — Sandbox seat with per-marker reservations, Wander, Travel, Follow, Escort, Guard, Patrol — run by default behind a `BYRO_NO_AI_LOCOMOTION=1` kill-switch, with authored per-game walk clips at stride-matched speed and KCC-backed steps (M42.10/M42.11, 2026-09-18). Plus ambient hostility (#4414), disengagement (#4816) and re-seating after a save load (#4815). **Open:** the 10 non-locomotion procedures (Find/Eat/Sleep/Accompany/UseItemAt/Ambush/FleeNotCombat/CastMagic/Dialogue/UseWeapon), each blocked on a missing subsystem. Also: `PTD2`, calendar-aware scheduling, sit-enter beyond FNV/FO3, legacy sleep/lean marker disambiguation, and FO4+ walk sources. NearReference target resolution was deprioritized (~12% of targets resolve). Trace: [`npc-spawn-ai-packages.md`](docs/engine/npc-spawn-ai-packages.md). | M28.5, M41 |
-| M43 | Quests & dialogue | **Shipped:** the quest core — version-aware stages, logs, objectives and targets; full lifecycle transitions; Papyrus quest effects; save-persistent progress; loaded-reference alias fill with conditions and reservations; faction/inventory injections. `quest.*` observability commands, with [`m43-quest-runtime.sh`](docs/smoke-tests/m43-quest-runtime.sh) driving the production path. **Open:** Story Manager event payloads and search, reference collections, true LCTN/unloaded-world resolution, created-object spawning, broader condition/event coverage, and the dialogue tree with its UI. These are subsystem boundaries, not missing QUST bytes. | M24.2, M41, M47.1 |
+| M43 | Quests & dialogue | **Shipped:** the quest core — version-aware stages, logs, objectives and targets; full lifecycle transitions; Papyrus quest effects; save-persistent progress; loaded-reference alias fill with conditions and reservations; faction/inventory injections. `quest.*` observability commands, with [`m43-quest-runtime.sh`](docs/smoke-tests/m43-quest-runtime.sh) driving the production path. **Shipped (2026-10-07):** the Story Manager slice (#5366 Phases 0–1) — `SMBN`/`SMEN`/`SMQN` decode into `EsmIndex.story_manager_nodes` (census floors pinned: 571 nodes / 24 events / 1191 of 1811 Skyrim quests SM-referenced), a dispatcher walking each event's node chain through the M47.1 evaluator into the canonical lifecycle, `KILL`/`CLOC` producers, live-gated by [`sm1-story-manager.sh`](docs/smoke-tests/sm1-story-manager.sh) (six quests on the boot-time CLOC, incl. the unconditional `CRHoldExpansion` chain). Design: [`story-manager.md`](docs/engine/story-manager.md). **Open:** SM Phases 2–4 (#5366 — event-data condition run-ons, alias fill from event data, `DNAM`/`XNAM`/`QNAM` flag decode, LCTN-granular location events, FO4 `NNAM` quest pools), reference collections, true LCTN/unloaded-world resolution, created-object spawning, and the dialogue tree with its UI. These are subsystem boundaries, not missing QUST bytes. | M24.2, M41, M47.1 |
 | M46 | Full plugin loading | Discover, sort, merge, and resolve conflicts across the full load order. Builds on M46.0 (CLI wiring), the `plugin/resolver.rs` DAG, and the parallel per-plugin walk (#3813). | M24.2, M46.0 |
 | M48 | UI integration | **Shipped:** the Scaleform host bridge — Skyrim/SkyUI 142-method catalog, the FO4 `BGSCodeObj` 269-method catalog with a generated AVM2 adapter, and an archive-backed navigator (`--menu … --menu-archive …`). The MenuXml crate (FOLD evaluator, layout, CPU raster) drives the Oblivion HUD (M48.4) and FO3/FNV through a game-agnostic profile (M48.5). `--hud` runs the vanilla Skyrim (M48.6) and FO4 (M48.7) `hudmenu.swf` transparently over the world, with a smoke per route. Starfield's `hudmenu.swf` now parses through a PlaceObject3 dialect shim (#4470); its profile and catalog are not built. **Open:** method behaviour and `_global.gfx` stubs, font fidelity, menu-stack policy, and Papyrus/ECS ↔ UI callbacks. Vanilla Skyrim/FO4 HUD meters stay empty: the game feeds them by GFx object-path invocation, which Ruffle cannot reach, so they need AVM1 injection or SkyUI-class menus. Design: [`ui.md`](docs/engine/ui.md). | R4, M48.4, M48.6 |
 
@@ -752,6 +764,7 @@ figure in this table was measured at that HEAD, not carried forward.
 | Per-game full mesh sweep (clean rates above; recoverable 100% gate)       | `cargo test -p byroredux-nif --release --test parse_real_nifs -- --ignored parse_rate`                                                                                                          |
 | FO3 ESM parse floors, #3756 (index sum ≥ 44 000, measured 44 718 — an index sum that double-counts by design, not a record count; the file holds 718 952 records; placed refs ≥ 573 000; exterior cells ≥ 41 900) | `cargo test -p byroredux-plugin --release --test parse_real_esm -- --ignored --exact parse_rate_fo3_esm`                                                                                       |
 | FNV ESM parse floors (index sum ≥ 76 000, measured 78 575; same index-sum caveat as the FO3 row) | `cargo test -p byroredux-plugin --release --test parse_real_esm -- --ignored --exact parse_rate_fnv_esm`                                                                                       |
+| Story Manager census floors, #5366 (Skyrim: 571 nodes / 24 event mnemonics / 448 SMQNs / 1191 SM-referenced quests / 441-of-443 sibling integrity, exact; FO4: 311 / 17 count floors) — the source of every SM count claim in M43's row and the live smoke's target chain | `cargo test -p byroredux-plugin --release --test parse_real_esm -- --ignored story_manager` |
 
 **Rule**: every "FPS / ms / count" claim in this document must have a
 repro command in this table. `/session-close` refuses edits that add
