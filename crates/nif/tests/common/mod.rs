@@ -411,6 +411,12 @@ pub fn open_mesh_archive(game: Game) -> Option<MeshArchive> {
 /// as `PARSED shrank`, i.e. a parser regression that didn't happen. A host
 /// with only the base game skips the game instead, the same way it already
 /// skips a host with no game data at all.
+///
+/// `None` is reserved for an absent file. An archive that is present but
+/// fails to `open` panics (#5232, the #4660 sibling rule): a BA2/BSA reader
+/// regression that rejects the corpus would otherwise turn every
+/// baseline-comparison gate into a passing no-op, exactly like a missing
+/// install but with no `skipping:` line anyone reads.
 pub fn open_all_mesh_archives(game: Game) -> Option<Vec<(&'static str, MeshArchive)>> {
     let data = game_data_dir(game)?;
     let mut opened = Vec::with_capacity(game.mesh_archives().len());
@@ -432,15 +438,12 @@ pub fn open_all_mesh_archives(game: Game) -> Option<Vec<(&'static str, MeshArchi
         };
         match result {
             Ok(a) => opened.push((*name, a)),
-            Err(e) => {
-                eprintln!(
-                    "[{}] skipping: failed to open {:?}: {}",
-                    game.label(),
-                    path,
-                    e
-                );
-                return None;
-            }
+            Err(e) => panic!(
+                "[{}] archive {:?} is present but failed to open: {}",
+                game.label(),
+                path,
+                e
+            ),
         }
     }
     Some(opened)
@@ -485,6 +488,10 @@ pub fn open_optional_mesh_archives(game: Game) -> Vec<(&'static str, MeshArchive
 
 /// Open an arbitrary BA2 archive by explicit filename within a game's data dir.
 /// Used by multi-archive tests (e.g. the 5-archive Starfield mesh sweep).
+///
+/// `None` means absent only; present-but-unopenable panics (#5232, the
+/// #4660 sibling rule — an open failure here would otherwise make every
+/// caller's `continue` a silent skip-green).
 pub fn open_ba2_by_name(game: Game, archive_name: &str) -> Option<MeshArchive> {
     let data = game_data_dir(game)?;
     let archive_path = data.join(archive_name);
@@ -494,15 +501,12 @@ pub fn open_ba2_by_name(game: Game, archive_name: &str) -> Option<MeshArchive> {
     }
     match Ba2Archive::open(&archive_path).map(MeshArchive::Ba2) {
         Ok(a) => Some(a),
-        Err(e) => {
-            eprintln!(
-                "[{}] skipping: failed to open {:?}: {}",
-                game.label(),
-                archive_path,
-                e
-            );
-            None
-        }
+        Err(e) => panic!(
+            "[{}] archive {:?} is present but failed to open: {}",
+            game.label(),
+            archive_path,
+            e
+        ),
     }
 }
 

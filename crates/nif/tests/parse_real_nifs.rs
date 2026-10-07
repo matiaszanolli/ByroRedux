@@ -364,6 +364,16 @@ fn run_all_meshes_gate(game: Game, archives: &[ArchiveSpec]) {
         archives.len(),
         total_nifs,
     );
+    // #5232 — the data dir resolved, so at least one spec archive must have
+    // too. Without this, an all-absent corpus (or the pre-#5232 silent
+    // skip-on-open-failure) left the loop body unexecuted and the gate green
+    // with zero NIFs measured.
+    assert!(
+        walked > 0,
+        "[{}] data dir resolved but 0/{} spec archives were present",
+        game.label(),
+        archives.len(),
+    );
 }
 
 /// Full Starfield mesh corpus — walks all 5 vanilla mesh archives so the
