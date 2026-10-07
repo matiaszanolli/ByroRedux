@@ -1,11 +1,13 @@
 //! On-disk save slots — atomic writes and a slot ring.
 //!
 //! A save is written to `<dir>/save_<slot>.ess` via the standard
-//! crash-safe dance: write to a `.tmp` sibling, `fsync`, re-read and
-//! verify the bytes match, then atomically `rename` over the target.
-//! A power cut mid-write leaves the old `save_<slot>.ess` intact and a
-//! stray `.tmp` that the next save overwrites — never a half-written
-//! live slot.
+//! crash-safe dance: stage into a unique hidden
+//! `.save_<slot>.ess.<pid>.<n>.tmp` sibling (#5247 — unique per attempt,
+//! so two engine processes sharing a save directory never quicksave into
+//! the same staging inode), `fsync`, re-read and verify the bytes match,
+//! then atomically `rename` over the target. A power cut mid-write
+//! leaves the old `save_<slot>.ess` intact; a failed attempt removes its
+//! own staging file (#5163) — never a half-written live slot.
 //!
 //! [`SaveRing`] picks the next slot round-robin so a quicksave never
 //! immediately clobbers the most recent good save (Bethesda's "F5 ate my
@@ -32,16 +34,23 @@ pub fn slot_path(dir: &Path, slot: u32) -> PathBuf {
 
 /// Write `bytes` to `slot` under `dir`, crash-safely.
 ///
-/// Creates `dir` if absent. Writes `save_<slot>.ess.tmp`, flushes +
-/// fsyncs it, re-reads to confirm the bytes landed, then renames over
-/// the live slot. The re-read catches a lying filesystem / short write
-/// before it can replace a good save with a bad one.
+/// Creates `dir` if absent. Stages into a unique hidden
+/// `.save_<slot>.ess.<pid>.<n>.tmp` sibling, flushes + fsyncs it, re-reads
+/// to confirm the bytes landed, then renames over the live slot. The
+/// re-read catches a lying filesystem / short write before it can replace
+/// a good save with a bad one.
 pub fn write_slot(dir: &Path, slot: u32, bytes: &[u8]) -> Result<PathBuf, SaveError> {
     // Kept here, not in `atomic_write`: this function's contract promises it.
     fs::create_dir_all(dir)?;
     let final_path = slot_path(dir, slot);
-    let tmp_path = final_path.with_extension(format!("{SAVE_EXT}.tmp"));
-    atomic_write(&final_path, &tmp_path, bytes)
+    // #5247 — the fixed `.ess.tmp` sibling made two engine processes
+    // sharing a save directory race on one staging inode: both ring
+    // cursors resume from the same mtimes, so both can pick the same
+    // slot, and one rename can then consume the inode the other is
+    // still writing. The shared helper's pid + counter naming gives
+    // every attempt its own.
+    let temp_path = byroredux_core::atomic_file::atomic_temp_path(&final_path);
+    byroredux_core::atomic_file::atomic_write(&final_path, &temp_path, bytes)
         .map_err(SaveError::Io)
         .map(|()| final_path)
 }
@@ -291,6 +300,7 @@ mod tests {
         assert_eq!(parse_slot_filename("save_0.ess"), Some(0));
         assert_eq!(parse_slot_filename("save_42.ess"), Some(42));
         assert_eq!(parse_slot_filename("save_42.ess.tmp"), None);
+        assert_eq!(parse_slot_filename(".save_42.ess.7.0.tmp"), None);
         assert_eq!(parse_slot_filename("notes.txt"), None);
         assert_eq!(parse_slot_filename("save_x.ess"), None);
     }
@@ -302,11 +312,26 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         assert_eq!(latest_slot(&dir), None);
-        fs::write(dir.join("save_9.ess.tmp"), b"newer temp").unwrap();
+        // The staging shape `write_slot` actually creates (#5247).
+        fs::write(
+            dir.join(format!(".save_9.ess.{}.0.tmp", std::process::id())),
+            b"newer temp",
+        )
+        .unwrap();
         assert_eq!(latest_slot(&dir), None, "temp files are never live slots");
         fs::write(slot_path(&dir, 2), b"valid-name slot").unwrap();
         assert_eq!(latest_slot(&dir), Some(2));
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// #5247 — `write_slot` is the fourth durable writer moved onto the
+    /// shared unique-temp staging helper, pinned like the settings,
+    /// boot-request and game-detect writers (#5164): exactly one
+    /// `atomic_write` call, the staging path bound and passed, no
+    /// clobbering fallback.
+    #[test]
+    fn write_slot_has_no_clobber_fallback() {
+        byroredux_core::atomic_file::assert_no_clobber_fallback(include_str!("disk.rs"));
     }
 
     #[test]
@@ -331,8 +356,17 @@ mod tests {
         let payload = b"BYRSAVE\0 some bytes here";
         let path = write_slot(&dir, 2, payload).unwrap();
         assert!(path.exists());
-        // No leftover temp file after a clean write.
-        assert!(!path.with_extension("ess.tmp").exists());
+        // No leftover staging files after a clean write: the unique
+        // staging names are hidden dotfiles, so the honest check is that
+        // every directory entry parses as a live slot (#5247).
+        let names: Vec<String> = fs::read_dir(&dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            names.iter().all(|name| parse_slot_filename(name).is_some()),
+            "stranded staging temps: {names:?}"
+        );
 
         assert_eq!(read_slot(&dir, 2).unwrap(), payload);
         assert_eq!(list_slots(&dir), vec![2]);
