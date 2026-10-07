@@ -16,8 +16,23 @@
 # only the advisory fps rows moved (wall-clock, never a finding).
 # Oblivion note: entities_total read 928 this pass against the held 929
 # (-1 body, inside the +/-2 % band; stats/bench cross-check agreed at 928).
-# Held, not regenerated — the band exists for exactly this noise, and no
-# other row moved.
+# Held then; adopted 2026-10-07 (#5236) so every row below comes from this
+# ONE capture. The -1 vs the 09-30 #5125 capture matches #5189's artifact
+# no-spawn below (the surviving __MAX_Default_Light carrier stops spawning
+# a scene light entity with it) — consistent, not separately bisected.
+# This run is also the live confirmation of the light_count_directional
+# history: #5123 took it 2 -> 1, #5189 took it 1 -> 0, and this capture
+# measured 0 directional live. #5236 un-buried both blocks (they sat under
+# the 09-16 narrative, and the 09-30 block's text still claimed the row
+# "stays 1") and reordered this file newest-first.
+# regenerated: 2026-10-03 (#5189 — CONTRACT-DERIVED regen, not live-captured:
+# light_count_directional 1 -> 0. The surviving artifact emitter was one half
+# of earshuman.nif's `__MAX_Default_Light` ± pair, kept by #5123's
+# first-carrier-wins de-dup. Gamebryo scopes the pair to its own subtree
+# (NiNode effects, pre-10.1.0.0), it has no LIGH authority, and every vanilla
+# instance is the exporter artifact (48 Oblivion carriers, 0 in FNV/FO3), so
+# the artifact no longer spawns as a scene light at all.
+# Confirmed live by the 2026-10-05 #5132 capture above (0 directional).
 # regenerated: 2026-09-30 (#5125 — every row re-captured in ONE renderer-static run, engine 60cd7028c)
 # Camera move, not a renderer change. `b9e961eeb` replaced the interior spawn
 # door/bbox heuristic with a ladder (COCMarkerHeading, then the partner door's
@@ -40,28 +55,9 @@
 # `a070baaad` (+177 measured in the audit's bisect; the baseline 745 vs
 # `cb44d99f6`'s 757 was the known in-band creep) - this regen recorded 929
 # against the audit capture's 934, a 5-entity capture-to-capture variance
-# not separately attributed. light_count_directional stays 1 (RT-2,
-# #5123, fixed). skin_pool_live 4 -> 9 and the fps rows are advisory.
-# regenerated: 2026-09-16 (#4417 — every row re-captured in ONE renderer-static run)
-# Mode change, not a code change. capture.sh now pins `--bench-mode
-# renderer-static` (authored camera, dt=0). Every row below this header's
-# predecessors was captured with no --bench-mode, which the engine resolves to
-# `system-live` (free camera, wall-clock dt). The two modes place the camera
-# differently, so the frustum and the whole draw split differ. Same build:
-#   system-live      draws=330/20b/2c raster=22
-#   renderer-static  draws=330/78b/5c raster=132
-# The system-live capture reproduced the previous draw rows exactly, so the
-# draw-row move below is the camera, not a regression. The new `bench_mode`
-# row makes the mode part of the contract. skin_pool_* now come from the
-# bench: line's `skin=L/M+S` token, read at the measured frame. Draw-split
-# invariant holds: 78 <= 132 <= 330, 5 <= 2 x 78.
-# regenerated: 2026-10-03 (#5189 — CONTRACT-DERIVED regen, not live-captured:
-# light_count_directional 1 -> 0. The surviving artifact emitter was one half
-# of earshuman.nif's `__MAX_Default_Light` ± pair, kept by #5123's
-# first-carrier-wins de-dup. Gamebryo scopes the pair to its own subtree
-# (NiNode effects, pre-10.1.0.0), it has no LIGH authority, and every vanilla
-# instance is the exporter artifact (48 Oblivion carriers, 0 in FNV/FO3), so
-# the artifact no longer spawns as a scene light at all.
+# not separately attributed. light_count_directional stayed 1 at this regen
+# (RT-2, #5123, fixed) — superseded 2026-10-03 by the #5189 block above
+# (1 -> 0). skin_pool_live 4 -> 9 and the fps rows are advisory.
 # regenerated: 2026-09-29 (#5123 — CONTRACT-DERIVED regen, not live-captured:
 # light_count_directional 2 -> 1. The 2 measured both halves of Oblivion
 # earshuman.nif's `__MAX_Default_Light` ± pair: #3557's de-dup allowlist
@@ -76,6 +72,19 @@
 # light_count_point stays 8. It is the count of `kind=Point` rows: this cell
 # dumps `LightSource emitters: 10` = 8 point + 2 directional (#4419).
 # entities_total 745 is unchanged since the 2026-09-13 #4124 regen below.
+# regenerated: 2026-09-16 (#4417 — every row re-captured in ONE renderer-static run)
+# Mode change, not a code change. capture.sh now pins `--bench-mode
+# renderer-static` (authored camera, dt=0). Every row below this header's
+# predecessors was captured with no --bench-mode, which the engine resolves to
+# `system-live` (free camera, wall-clock dt). The two modes place the camera
+# differently, so the frustum and the whole draw split differ. Same build:
+#   system-live      draws=330/20b/2c raster=22
+#   renderer-static  draws=330/78b/5c raster=132
+# The system-live capture reproduced the previous draw rows exactly, so the
+# draw-row move below is the camera, not a regression. The new `bench_mode`
+# row makes the mode part of the contract. skin_pool_* now come from the
+# bench: line's `skin=L/M+S` token, read at the measured frame. Draw-split
+# invariant holds: 78 <= 132 <= 330, 5 <= 2 x 78.
 # regenerated: 2026-09-13 (#4124 / RT-2 — entities_total 705 -> 745 (+5.67%),
 # past the +/-2% band for the first time since the 2026-08-26 regen. The
 # render-load contract was already untouched at the time of filing:
@@ -153,7 +162,7 @@
 bench_mode	renderer-static
 bench_camera_pos	266.899,382.821,-204.473
 bench_camera_forward	-0.058378,0.000000,0.998294
-entities_total	929
+entities_total	928
 tex_missing_base_color	0
 tex_missing_all_slots	0
 mesh_cache_failed_count	0

@@ -14,6 +14,23 @@
 # stays Point — 685 = 680 + 5, no light lost. Draw/skin/pose/texture
 # rows re-verified bit-identical to the held baselines in the same run;
 # only the advisory fps rows moved (wall-clock, never a finding).
+# regenerated: 2026-10-04 (#5235 — batches/gpu_calls re-captured in ONE renderer-static run, engine 7ead491d7)
+# `3c197ed8c` (#5057) admitted lighting-shader material kinds 1-16 to early
+# fragment tests. That changes which pipeline a draw binds, so adjacent draws
+# merge into fewer batches and indirect calls — an improvement that landed
+# without the same-commit TSV refresh the baselines README requires, leaving
+# the gate loose (fo4 could have slid back up to 723b/110c and still read
+# green). Attribution is the issue's own renderer-static probe pair at a
+# pinned camera pose: 8dbe179ad (= 3c197ed8c^) reproduces 723b/110c
+# bit-for-bit; 3c197ed8c reads 700b/108c with entities, cmds and the raster
+# prefix unchanged. This capture (engine 7ead491d7, which contains
+# 3c197ed8c) reproduces the 3c197ed8c rows exactly: draws 3971/700b/108c
+# raster 3618, entities 16885, lights 680/0, skin 132/1364+0, pose
+# bit-identical to the #5125 rows below. Only batches/gpu_calls and the
+# advisory fps rows move (wall_fps 24.1 -> 44.4 — desktop load at capture
+# time; fps rows are advisory and not part of the #5057 attribution).
+# (Moved to chronological position 2026-10-07, #5236; content unchanged —
+# it had been appended below the older blocks.)
 # regenerated: 2026-09-30 (#5125 — every row re-captured in ONE renderer-static run, engine 60cd7028c)
 # Camera move, not a renderer change. `b9e961eeb` replaced the interior spawn
 # door/bbox heuristic with a ladder (COCMarkerHeading, then the partner door's
@@ -164,21 +181,6 @@
 # (always 1, could never fail — #3424); the real per-emitter dump measures
 # 0 directional / 685 point. Added light_count_point, corrected
 # light_count_directional.
-# regenerated: 2026-10-04 (#5235 — batches/gpu_calls re-captured in ONE renderer-static run, engine 7ead491d7)
-# `3c197ed8c` (#5057) admitted lighting-shader material kinds 1-16 to early
-# fragment tests. That changes which pipeline a draw binds, so adjacent draws
-# merge into fewer batches and indirect calls — an improvement that landed
-# without the same-commit TSV refresh the baselines README requires, leaving
-# the gate loose (fo4 could have slid back up to 723b/110c and still read
-# green). Attribution is the issue's own renderer-static probe pair at a
-# pinned camera pose: 8dbe179ad (= 3c197ed8c^) reproduces 723b/110c
-# bit-for-bit; 3c197ed8c reads 700b/108c with entities, cmds and the raster
-# prefix unchanged. This capture (engine 7ead491d7, which contains
-# 3c197ed8c) reproduces the 3c197ed8c rows exactly: draws 3971/700b/108c
-# raster 3618, entities 16885, lights 680/0, skin 132/1364+0, pose
-# bit-identical to the #5125 rows below. Only batches/gpu_calls and the
-# advisory fps rows move (wall_fps 24.1 -> 44.4 — desktop load at capture
-# time; fps rows are advisory and not part of the #5057 attribution).
 bench_mode	renderer-static
 bench_camera_pos	426.895,364.248,-162.693
 bench_camera_forward	0.781582,0.000000,-0.623802
