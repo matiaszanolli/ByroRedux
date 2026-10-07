@@ -291,10 +291,17 @@ pub(crate) fn equipment_appearance_system(world: &World, _dt: f32) {
 }
 
 /// #5028 — queue release of worn gear whose item left the inventory
-/// entirely (an `ItemTransfer` with `added == false`, emitted by the loot /
-/// pickup paths; stack rows move whole today, but the wearer's live
-/// `Inventory` is consulted anyway so a future partial move cannot release
-/// gear that is still held). Only wearers with **no** `CellRoot` qualify:
+/// entirely (an `ItemTransfer` with `added == false`). #5268 — the path
+/// is forward-latent: no production producer can emit `added == false`
+/// for the player yet. `transfer_loot` emits it on the *source* only and
+/// refuses `player == source`; `pickup_loot` emits only `added: true`;
+/// and no drop / sell / destroy path exists. The only cellless wearer in
+/// practice is the player, so the drain here waits for the first
+/// player-side removal path (its six tests insert the event by hand).
+/// The wearer's live `Inventory` is consulted anyway so a future partial
+/// move cannot release gear that is still held — and a zeroed row does
+/// not count as held, because rows are zeroed in place, never removed.
+/// Only wearers with **no** `CellRoot` qualify:
 /// NPC mid-life imports are stamped into their cell's release range and
 /// leave through cell teardown, while the player's gear hangs off the body
 /// root with no range — pre-fix it stayed resident (geometry, BLAS, texture
@@ -360,11 +367,15 @@ fn queue_gear_releases(world: &World) {
             .into_iter()
             .filter(|form_id| {
                 // Still-held items (a future partial move, or a second stack
-                // row of the same base form) must keep their meshes.
+                // row of the same base form) must keep their meshes. A
+                // zeroed row of the same base is NOT still held: rows are
+                // zeroed in place, never removed, so presence alone would
+                // block a legitimate release forever (#5268 — same
+                // count > 0 convention `reconcile_worn_gear` applies).
                 inventory
                     .items
                     .iter()
-                    .all(|stack| stack.base_form_id != *form_id)
+                    .all(|stack| !(stack.base_form_id == *form_id && stack.count > 0))
                     && part_rows
                         .iter()
                         .any(|&(actor, _, part_form)| actor == wearer && part_form == *form_id)
@@ -1546,6 +1557,24 @@ mod gear_release_tests {
             world.get::<crate::npc_spawn::PendingGearRelease>(actor).is_none(),
             "death reconciliation owns a dead wearer's appearance"
         );
+    }
+
+    /// #5268 — a zeroed same-base row (the zero-in-place convention) must
+    /// not read as "still held": only a row with `count > 0` blocks the
+    /// release, else a `Stack` transfer's zeroed source row would keep the
+    /// wearer's mesh resident forever.
+    #[test]
+    fn a_zeroed_same_base_row_does_not_count_as_still_held() {
+        let (mut world, actor, _, _) = release_fixture();
+        world
+            .get_mut::<Inventory>(actor)
+            .unwrap()
+            .push(ItemStack::new(0xAAA, 0));
+        equipment_appearance_system(&world, 0.0);
+        let pending = world
+            .get::<crate::npc_spawn::PendingGearRelease>(actor)
+            .expect("a zeroed row is not still held — release must queue");
+        assert_eq!(pending.form_ids, vec![0xAAA]);
     }
 
     /// The release target is the FULL subtree (nodes and meshes), not just
