@@ -1107,16 +1107,20 @@ pub(super) fn spawn_mesh_instance(
         .filter(|o| o.model_space_normals)
         .map(|_| byroredux_renderer::vulkan::material::material_flag::MODEL_SPACE_NORMALS)
         .unwrap_or(0);
-    let material = crate::material_translate::translate_material(
-        source_material,
-        mesh.name.as_deref(),
-        crate::material_translate::ResolvedPaths {
-            textures: eff_textures.clone(),
-            material_path: eff_material_path.clone(),
-            source_base_color: paths.source_base_color.clone(),
-        },
-        extra_material_flags,
-    );
+    // #5230 — the provenance variant: the spawn-time resolvers below need
+    // to know when the glass classifier forced a deliberate mirror state,
+    // so they do not read its 0.04 floor as a BGSM clamp-floor pin.
+    let (material, translate_provenance) =
+        crate::material_translate::translate_material_with_provenance(
+            source_material,
+            mesh.name.as_deref(),
+            crate::material_translate::ResolvedPaths {
+                textures: eff_textures.clone(),
+                material_path: eff_material_path.clone(),
+                source_base_color: paths.source_base_color.clone(),
+            },
+            extra_material_flags,
+        );
 
     // Load texture (shared resolve: cache → BSA → fallback).
     // #610 — pass the diffuse-slot `TexClampMode` so the bindless
@@ -1364,10 +1368,13 @@ pub(super) fn spawn_mesh_instance(
     // not resolve. Must run AFTER MaterialTextureHandles is attached:
     // the whole point is to use the shader's resolved-handle predicate
     // rather than the merge boundary's authored-path one.
+    // #5230 — exempt the classifier's forced mirror panes: their 0.04 is
+    // deliberate, not a clamp-floor pin.
     crate::material_translate::resolve_unresolved_gloss_neutral_roughness(
         world,
         entity,
         source_material.bgsm_pbr_scalars_authored,
+        translate_provenance.mirror_pane_forced,
     );
     // #2490 — the blend/decal/facing markers derive from the raw
     // `ImportedMaterial` at the same single boundary the `Material`

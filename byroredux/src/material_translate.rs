@@ -563,6 +563,24 @@ pub(crate) fn translate_texture_clamp_mode(source: &ImportedMaterial) -> u8 {
     source.texture_clamp_mode
 }
 
+/// #5230 — what [`translate_material_with_provenance`] decided about a
+/// material beyond its lowered [`Material`] fields. Spawn-time passes that
+/// would second-guess a scalar from its value alone must exempt deliberate
+/// classifier states, and this is the channel for that exemption.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct MaterialTranslateProvenance {
+    /// The glass classifier's mirror-pane branch fired: an opaque-conductor
+    /// mirror (`*mirror*` mesh on a glass-keyword texture, kind-0) forced
+    /// metalness 1.0 / roughness 0.04 onto the material. The forced floor is
+    /// NOT "a BGSM stuck at the clamp floor", so
+    /// [`unresolved_gloss_neutral_roughness`] must leave it alone — the
+    /// value-based inference read exactly 0.04 as #3639's clamp and
+    /// neutralised it to 0.5, producing metalness 1.0 / roughness 0.5: a
+    /// blurred chrome sheet that is neither the authored values nor the
+    /// classifier's mirror (#5230).
+    pub mirror_pane_forced: bool,
+}
+
 /// Translate a source-normalized [`ImportedMaterial`] + caller-resolved
 /// paths into the
 /// canonical [`Material`] component.
@@ -601,12 +619,28 @@ pub(crate) fn translate_texture_clamp_mode(source: &ImportedMaterial) -> u8 {
 ///   - glass classified once, alpha-aware
 ///     ([`crate::helpers::classify_glass_into_material_with_provenance`]), after the PBR
 ///     resolve so the forced glass roughness wins.
+///
+/// Lower an [`ImportedMaterial`] to the canonical [`Material`] (see
+/// [`translate_material_with_provenance`]). Spawn sites that also run the
+/// post-attachment resolvers should call the provenance variant instead, so
+/// deliberate classifier states can exempt themselves from those passes.
 pub(crate) fn translate_material(
     source: &ImportedMaterial,
     mesh_name: Option<&str>,
     paths: ResolvedPaths,
     extra_material_flags: u32,
 ) -> Material {
+    translate_material_with_provenance(source, mesh_name, paths, extra_material_flags).0
+}
+
+/// [`translate_material`] plus the decisions that only become load-bearing
+/// after the material is attached (see [`MaterialTranslateProvenance`]).
+pub(crate) fn translate_material_with_provenance(
+    source: &ImportedMaterial,
+    mesh_name: Option<&str>,
+    paths: ResolvedPaths,
+    extra_material_flags: u32,
+) -> (Material, MaterialTranslateProvenance) {
     let ResolvedPaths {
         textures,
         material_path,
@@ -845,7 +879,7 @@ pub(crate) fn translate_material(
             .unwrap_or(byroredux_core::ecs::components::material::DEFAULT_PARALLAX_MAX_PASSES),
     };
     material.resolve_pbr();
-    crate::helpers::classify_glass_into_material_with_provenance(
+    let mirror_pane_forced = crate::helpers::classify_glass_into_material_with_provenance(
         &mut material,
         mesh_name,
         texture_path.as_deref(),
@@ -883,7 +917,10 @@ pub(crate) fn translate_material(
         // valid coverage for the keyword/BGEM arms above, not this one.
         source.window_env_mapping && source.has_alpha,
     );
-    material
+    (
+        material,
+        MaterialTranslateProvenance { mirror_pane_forced },
+    )
 }
 
 /// Derive the blend / decal / facing **marker components** from the raw
@@ -1364,8 +1401,14 @@ pub(crate) fn resolve_normal_alpha_spec_roughness(
 /// The floor test is what keeps this a no-op on everything else, including
 /// the population the boundary already neutralised (it is sitting at 0.5, not
 /// the floor) and every material whose authored smoothness was not near-mirror.
+///
+/// `mirror_pane_forced` (#5230) exempts the glass classifier's forced mirror
+/// state: its 0.04 has exactly the floor's value but not the floor's meaning,
+/// and rewriting it leaves metalness 1.0 / roughness 0.5 — a blurred chrome
+/// sheet that is neither authored nor the classifier's mirror.
 pub(crate) fn unresolved_gloss_neutral_roughness(
     bgsm_pbr_scalars_authored: bool,
+    mirror_pane_forced: bool,
     roughness: f32,
     gloss_map_index: u32,
 ) -> Option<f32> {
@@ -1374,6 +1417,11 @@ pub(crate) fn unresolved_gloss_neutral_roughness(
     // statement about authored BGSM smoothness. Keyword-classified legacy
     // content never lands here and must not be second-guessed.
     if !bgsm_pbr_scalars_authored {
+        return None;
+    }
+    // #5230 — the classifier's mirror wrote this 0.04 deliberately; the
+    // value alone cannot tell the two apart.
+    if mirror_pane_forced {
         return None;
     }
     // The shader's own predicate, verbatim: a handle of 0 is "no gloss map
@@ -1393,6 +1441,7 @@ pub(crate) fn resolve_unresolved_gloss_neutral_roughness(
     world: &mut World,
     entity: EntityId,
     bgsm_pbr_scalars_authored: bool,
+    mirror_pane_forced: bool,
 ) {
     let Some(roughness) = world.get::<Material>(entity).map(|m| m.roughness) else {
         return;
@@ -1401,9 +1450,12 @@ pub(crate) fn resolve_unresolved_gloss_neutral_roughness(
         .get::<MaterialTextureHandles>(entity)
         .map(|handles| handles.textures.smooth_spec)
         .unwrap_or(0);
-    if let Some(r) =
-        unresolved_gloss_neutral_roughness(bgsm_pbr_scalars_authored, roughness, gloss_map_index)
-    {
+    if let Some(r) = unresolved_gloss_neutral_roughness(
+        bgsm_pbr_scalars_authored,
+        mirror_pane_forced,
+        roughness,
+        gloss_map_index,
+    ) {
         if let Some(m) = world.get_mut::<Material>(entity) {
             m.roughness = r;
         }
@@ -2524,6 +2576,9 @@ mod tests {
             "translate_texture_only_material_with_clamp(",
             "translate_texture_only_material_with_authored_msn(",
             "translate_material(",
+            // #5230 — the provenance twin of `translate_material(`; same
+            // canonical lowering, plus the mirror-pane bit for the resolvers.
+            "translate_material_with_provenance(",
             // `.bto` sub-meshes delegate to this wrapper, which translates
             // their ImportedMaterial and attaches the canonical result.
             "insert_object_lod_submesh_material(",
@@ -4231,7 +4286,7 @@ mod unresolved_gloss_neutral_tests {
     #[test]
     fn an_authored_but_unresolved_gloss_map_takes_the_neutral_fallback() {
         assert_eq!(
-            unresolved_gloss_neutral_roughness(true, NEAR_MIRROR_ROUGHNESS_FLOOR, 0),
+            unresolved_gloss_neutral_roughness(true, false, NEAR_MIRROR_ROUGHNESS_FLOOR, 0),
             Some(NEAR_MIRROR_NEUTRAL_ROUGHNESS),
             "handle 0 means no gloss map is bound — whether none was authored \
              or the authored one failed to resolve. Both leave the material \
@@ -4241,11 +4296,11 @@ mod unresolved_gloss_neutral_tests {
 
     /// The sibling the boundary already gets right, re-checked through the
     /// resolved predicate: a gloss map that DID resolve gives the shader
-    /// per-texel information, so the authored floor must survive.
+    /// per-pixel information, so the authored floor must survive.
     #[test]
     fn a_resolved_gloss_map_keeps_the_near_mirror_floor() {
         assert_eq!(
-            unresolved_gloss_neutral_roughness(true, NEAR_MIRROR_ROUGHNESS_FLOOR, 7),
+            unresolved_gloss_neutral_roughness(true, false, NEAR_MIRROR_ROUGHNESS_FLOOR, 7),
             None,
             "a bound gloss map is exactly the per-pixel escape the floor \
              assumes — overriding it here would undo authored near-mirror \
@@ -4259,7 +4314,7 @@ mod unresolved_gloss_neutral_tests {
     #[test]
     fn the_neutral_is_a_fixed_point() {
         assert_eq!(
-            unresolved_gloss_neutral_roughness(true, NEAR_MIRROR_NEUTRAL_ROUGHNESS, 0),
+            unresolved_gloss_neutral_roughness(true, false, NEAR_MIRROR_NEUTRAL_ROUGHNESS, 0),
             None,
             "the material the #3639 boundary arm already neutralised sits at \
              the neutral, not the floor, so this must not fire again (#3905)"
@@ -4272,7 +4327,7 @@ mod unresolved_gloss_neutral_tests {
     #[test]
     fn non_bgsm_material_is_never_second_guessed() {
         assert_eq!(
-            unresolved_gloss_neutral_roughness(false, NEAR_MIRROR_ROUGHNESS_FLOOR, 0),
+            unresolved_gloss_neutral_roughness(false, false, NEAR_MIRROR_ROUGHNESS_FLOOR, 0),
             None,
             "only BGSM-authored scalars reach the clamp floor via \
              `(1.0 - smoothness)`; legacy content must keep whatever \
@@ -4287,12 +4342,76 @@ mod unresolved_gloss_neutral_tests {
     fn an_authored_roughness_above_the_floor_is_left_alone() {
         for roughness in [0.05_f32, 0.2, 0.6, 1.0] {
             assert_eq!(
-                unresolved_gloss_neutral_roughness(true, roughness, 0),
+                unresolved_gloss_neutral_roughness(true, false, roughness, 0),
                 None,
                 "roughness {roughness} is authored, not the clamp floor — \
                  #3639 is about the near-mirror pin specifically (#3905)"
             );
         }
+    }
+
+    /// #5230 — the glass classifier's mirror-pane branch writes exactly the
+    /// floor's value (0.04) with metalness 1.0. The value-based floor test
+    /// cannot tell that deliberate mirror from a BGSM stuck at the clamp, so
+    /// the neutralisation fired and left metalness 1.0 / roughness 0.5: a
+    /// blurred chrome sheet that is neither authored nor the classifier's
+    /// mirror. The forced-mirror provenance bit is the exemption.
+    #[test]
+    fn a_forced_mirror_pane_is_exempt_even_sitting_at_the_floor() {
+        assert_eq!(
+            unresolved_gloss_neutral_roughness(true, true, NEAR_MIRROR_ROUGHNESS_FLOOR, 0),
+            None,
+            "the classifier's mirror 0.04 is a deliberate opaque-conductor \
+             finish, not a clamp-floor pin with a missing per-pixel escape — \
+             it must survive the spawn pass (#5230)"
+        );
+    }
+
+    /// #5230 end-to-end through the translate boundary: a BGSM-authored
+    /// kind-0 pane named `*mirror*` on a glass-keyword texture takes the
+    /// classifier's mirror state, reports it in the provenance, and the
+    /// resolver — fed that provenance the way both spawn sites now feed it —
+    /// leaves the mirror alone even though every value-level precondition of
+    /// the #3905 pass holds.
+    #[test]
+    fn a_bgsm_mirror_pane_keeps_its_mirror_through_the_spawn_pass_gate() {
+        let source = ImportedMaterial {
+            // The post-#3639 merge outcome for a spec-on pane with no gloss
+            // authored anywhere: neutralised to 0.5, scalars authored.
+            bgsm_pbr_scalars_authored: true,
+            from_bgsm: true,
+            metalness_override: Some(0.0),
+            roughness_override: Some(NEAR_MIRROR_NEUTRAL_ROUGHNESS),
+            has_alpha: true,
+            ..ImportedMaterial::default()
+        };
+        let paths = ResolvedPaths {
+            textures: MaterialTextureSet {
+                base_color: Some("textures/glass/mirrorpane.dds".to_string()),
+                ..MaterialTextureSet::default()
+            },
+            material_path: Some("materials/tests/mirror.bgsm".to_string()),
+            source_base_color: None,
+        };
+        let (material, provenance) =
+            translate_material_with_provenance(&source, Some("bathroommirror01"), paths, 0);
+
+        assert!(provenance.mirror_pane_forced, "the classifier must report the forced mirror");
+        assert_eq!(material.metalness, 1.0);
+        assert!(
+            (material.roughness - NEAR_MIRROR_ROUGHNESS_FLOOR).abs() < 1e-6,
+            "the classifier's mirror floor, got {}",
+            material.roughness
+        );
+        // The spawn pass gate, fed exactly what the spawn sites feed it: the
+        // authored flag, the provenance, the Material's own roughness and a
+        // gloss handle of 0 (no map resolved).
+        assert_eq!(
+            unresolved_gloss_neutral_roughness(true, provenance.mirror_pane_forced, material.roughness, 0),
+            None,
+            "pre-#5230 this returned Some(0.5) — metalness 1.0 with a 0.5 \
+             roughness is the blurred-chrome collision (#5230)"
+        );
     }
 
     /// The two halves of the rule must agree on the value, or a material would

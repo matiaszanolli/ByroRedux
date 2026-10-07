@@ -1294,19 +1294,23 @@ fn spawn_nif_mesh(
     // `mesh.material` tier at each use site. `world.insert` further
     // down moves `material`, so pull copies of the small Copy fields
     // this loop iteration still needs afterward.
-    let material = crate::material_translate::translate_material(
-        &mesh.material,
-        mesh.name.as_deref(),
-        crate::material_translate::ResolvedPaths {
-            textures: owned_textures.clone(),
-            material_path: owned_material_path.clone(),
-            // #4229 — loose-NIF load has no REFR texture-slot overlay at
-            // all, so `owned_textures` is always the mesh's own path;
-            // `None` correctly disables the overlay-divergence check.
-            source_base_color: None,
-        },
-        0,
-    );
+    // #5230 — the provenance variant: the spawn-time resolver below needs
+    // to know when the glass classifier forced a deliberate mirror state,
+    // so it does not read its 0.04 floor as a BGSM clamp-floor pin.
+    let (material, translate_provenance) =
+        crate::material_translate::translate_material_with_provenance(
+            &mesh.material,
+            mesh.name.as_deref(),
+            crate::material_translate::ResolvedPaths {
+                textures: owned_textures.clone(),
+                material_path: owned_material_path.clone(),
+                // #4229 — loose-NIF load has no REFR texture-slot overlay at
+                // all, so `owned_textures` is always the mesh's own path;
+                // `None` correctly disables the overlay-divergence check.
+                source_base_color: None,
+            },
+            0,
+        );
     let material_kind = material.material_kind;
     let mesh_water = material.is_water_shader;
     let canonical_clamp_mode = material.texture_clamp_mode;
@@ -1501,10 +1505,13 @@ fn spawn_nif_mesh(
     // not resolve. Must run AFTER MaterialTextureHandles is attached:
     // the whole point is to use the shader's resolved-handle predicate
     // rather than the merge boundary's authored-path one.
+    // #5230 — exempt the classifier's forced mirror panes: their 0.04 is
+    // deliberate, not a clamp-floor pin.
     crate::material_translate::resolve_unresolved_gloss_neutral_roughness(
         world,
         entity,
         mesh.material.bgsm_pbr_scalars_authored,
+        translate_provenance.mirror_pane_forced,
     );
 
     if let Some(ref name) = mesh.name {

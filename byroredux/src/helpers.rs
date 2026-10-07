@@ -91,6 +91,14 @@ fn classify_glass_into_material(
     );
 }
 
+/// Returns whether the **mirror-pane branch fired** — the classifier forced
+/// its opaque-conductor mirror state (`material_kind = 0`, metalness 1.0,
+/// roughness 0.04) onto the material. That state is deliberate, so the
+/// spawn-time #3905 pass (`resolve_unresolved_gloss_neutral_roughness`)
+/// exempts it: the forced 0.04 is not "a BGSM stuck at the clamp floor" and
+/// must not be neutralised to 0.5 (#5230 — the rewrite left metalness 1.0 /
+/// roughness 0.5, a blurred chrome sheet that is neither authored nor the
+/// classifier's mirror).
 #[allow(clippy::too_many_arguments)] // Same signal set as classify_glass_into_material, plus the provenance tuple it returns.
 pub(crate) fn classify_glass_into_material_with_provenance(
     material: &mut Material,
@@ -102,7 +110,7 @@ pub(crate) fn classify_glass_into_material_with_provenance(
     external_material_resolved: bool,
     from_bgsm: bool,
     window_env_mapping: bool,
-) {
+) -> bool {
     let keyword_match = texture_path.is_some_and(is_glass_keyword_path)
         || mesh_name.is_some_and(is_glass_keyword_path);
     // #2710 / #4283 — the effect-shader carrier is promoted to glass by an
@@ -178,7 +186,7 @@ pub(crate) fn classify_glass_into_material_with_provenance(
         && !effect_glass_carrier)
         || lit_carrier_authored_dispatch
     {
-        return;
+        return false;
     }
     if is_mirror_pane(mesh_name, texture_path, has_transparent_coverage) {
         // #4255 — an authored non-default lit dispatch that survived the
@@ -187,15 +195,15 @@ pub(crate) fn classify_glass_into_material_with_provenance(
         // material IS already the mirror dispatch; forcing it to the
         // generic `material_kind = 0` path is a downgrade, not a fix.
         if (1..=20).contains(&material.material_kind) {
-            return;
+            return false;
         }
         material.material_kind = 0;
         material.metalness = MIRROR_METALNESS;
         material.roughness = MIRROR_ROUGHNESS;
-        return;
+        return true;
     }
     if !has_transparent_coverage || is_decal {
-        return;
+        return false;
     }
     // Conductors are never inferred as glass from a keyword. An authored
     // BGEM glass signal is stronger than the source carrier's fallback PBR
@@ -205,7 +213,7 @@ pub(crate) fn classify_glass_into_material_with_provenance(
     let bgem_effect_fallback =
         bgem_glass && material.material_kind == byroredux_renderer::MATERIAL_KIND_EFFECT_SHADER;
     if material.metalness >= 0.3 && !bgem_effect_fallback {
-        return;
+        return false;
     }
     // #4237 / FO3-D1-2026-09-11-02 — an authored FO3/FNV
     // `Window_Environment_Mapping`/`Eye_Environment_Mapping` shader-flag
@@ -215,10 +223,11 @@ pub(crate) fn classify_glass_into_material_with_provenance(
     // surfaces (#4391, measured in `translate_material`), because vanilla
     // sets these bits on alpha-tested cutout atlases that are not glass.
     if !keyword_match && !bgem_glass && !window_env_mapping {
-        return;
+        return false;
     }
     material.material_kind = byroredux_renderer::MATERIAL_KIND_GLASS;
     material.apply_surface_behavior(GLASS_SURFACE_BEHAVIOR);
+    false
 }
 
 /// Add a child entity to a parent's Children component, creating it if needed.
