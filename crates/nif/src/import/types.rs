@@ -52,12 +52,16 @@ pub struct ImportedLight {
     /// #5189 — an empty `Vec` does NOT mean "no restriction": Gamebryo
     /// scopes a dynamic effect to its registered affected nodes
     /// (`AttachAffectedNode` — "causes the effect to affect the entire
-    /// subtree rooted at the given object"), and pre-10.1.0.0 files
-    /// (Oblivion) carry no on-light list at all, so the scope is
-    /// serialized on the node side (`NiNode.effects`) and the empty
-    /// field means "scope carried elsewhere or none" — never
-    /// unrestricted. Skyrim+ FO4 (BSVER >= 130) drops the list at the
-    /// wire level, so it's always empty there. Renderer-side
+    /// subtree rooted at the given object"). Oblivion-era content
+    /// (v20.0.0.x) carries the list on the wire — nif.xml gates
+    /// `Num Affected Nodes` / `Affected Nodes` `since="10.1.0.0"` (the
+    /// `until="4.0.0.2"` band is Morrowind-era) — but writes it empty
+    /// and registers scope on the node side (`NiNode.effects`), so the
+    /// empty field means "scope carried elsewhere or none" — never
+    /// unrestricted. Do NOT gate the read off for v20.0: that is a
+    /// 4-byte under-read per light on a format with no `block_sizes`,
+    /// which truncates the scene. FO4 (BSVER >= 130) drops the list at
+    /// the wire level, so it's always empty there. Renderer-side
     /// light-target filtering wiring is a separate change — pre-#335
     /// the importer dropped the field entirely. See #335.
     pub affected_node_names: Vec<Arc<str>>,
