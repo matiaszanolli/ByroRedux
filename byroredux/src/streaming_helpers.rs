@@ -112,12 +112,21 @@ pub(crate) fn reconcile_lod_rings(
     let tex_provider = state.tex_provider.clone();
     let wctx = state.wctx.clone();
     let lod_grid_origin = cell_loader::worldspace_lod_grid_origin(wctx.as_ref());
+    // #5222 — scan the Fallout-legacy authored-quad index once per
+    // streaming state (the opened archive set never changes under it);
+    // every other game never pays the name-table walk.
+    if state.legacy_lod_quads.is_none()
+        && wctx.record_index.game == byroredux_plugin::esm::reader::GameKind::Fallout3NV
+    {
+        state.legacy_lod_quads = Some(cell_loader::LegacyLodQuadIndex::scan(tex_provider.as_ref()));
+    }
     let resident_full_cells: HashSet<_> = state.loaded.keys().copied().collect();
     let input = LodReconcileInput {
         tex_provider: tex_provider.as_ref(),
         wctx: wctx.as_ref(),
         player_grid,
         lod_grid_origin,
+        legacy_lod_quads: state.legacy_lod_quads.as_ref(),
         resident_full_cells: &resident_full_cells,
     };
     // Every provider draws on its own attempt allowance (so a large terrain

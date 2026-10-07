@@ -257,6 +257,106 @@ pub(crate) fn lod_ring_reach_cells(game: GameKind) -> i32 {
 ///   and the finest band always reports available because heightmap synth
 ///   can cover any footprint.
 /// * **Oblivion** keeps the single synthesized [`LOD_RADIUS_BLOCKS`]-deep ring.
+///
+/// #5222 — the Fallout-legacy terrain selection: the authored colour
+/// quads the band ring touches
+/// ([`super::lod_bands::select_authored_lod_quads`]), plus level-4 synth
+/// completion for ring ground no authored quad covers.
+///
+/// The completion tiles are only added where a candidate tile overlaps NO
+/// selected quad at all — zero overlap, not zero coverage. A tile that
+/// half-overlaps an authored quad is left alone: drawing it would
+/// double-draw (and z-fight) the covered half with coplanar distant
+/// terrain, while leaving it leaves at most an authoring-seam hole, the
+/// same posture as the object ring's empty sentinel. Vanilla's LOD
+/// generator bakes full per-worldspace coverage, so the completion is a
+/// safety net for worldspace edges and modded gaps, not the normal path.
+fn legacy_desired_lod_quads(
+    authored: &[(i32, i32, i32)],
+    ladder: &super::lod_bands::LodBandLadder,
+    player: (i32, i32),
+    world_bounds: Option<((i32, i32), (i32, i32))>,
+) -> Vec<(i32, i32, i32)> {
+    let selected =
+        super::lod_bands::select_authored_lod_quads(authored, ladder, player, world_bounds);
+    // Cell-coverage window around the player, padded one finest tile so
+    // boundary tiles are evaluated whole. max_cells is 64 and the tile is
+    // 4 cells, so the window edges stay tile-aligned.
+    let reach = ladder.max_cells() + LOD_BLOCK_CELLS;
+    let size = 2 * reach + 1;
+    let cell_covered = |cx: i32, cy: i32| {
+        let (ix, iy) = (cx - player.0 + reach, cy - player.1 + reach);
+        (0..size).contains(&ix) && (0..size).contains(&iy)
+    };
+    let mut covered = vec![false; (size * size) as usize];
+    for &(level, qx, qy) in &selected {
+        for dy in 0..level {
+            for dx in 0..level {
+                let (ix, iy) = (
+                    (qx + dx - player.0 + reach) as usize,
+                    (qy + dy - player.1 + reach) as usize,
+                );
+                if ix < size as usize && iy < size as usize {
+                    covered[iy * size as usize + ix] = true;
+                }
+            }
+        }
+    }
+    let mut out = selected.clone();
+    let (bx, by) = (
+        player.0.div_euclid(LOD_BLOCK_CELLS) * LOD_BLOCK_CELLS - reach,
+        player.1.div_euclid(LOD_BLOCK_CELLS) * LOD_BLOCK_CELLS - reach,
+    );
+    let tiles_per_side = (2 * reach) / LOD_BLOCK_CELLS + 1;
+    for tj in 0..tiles_per_side {
+        for ti in 0..tiles_per_side {
+            let (tx, ty) = (
+                bx + ti * LOD_BLOCK_CELLS,
+                by + tj * LOD_BLOCK_CELLS,
+            );
+            if !super::lod_bands::quad_intersects_bounds(tx, ty, LOD_BLOCK_CELLS, world_bounds)
+            {
+                continue;
+            }
+            // Same ring bound as the authored selection — the reach-padded
+            // window's rim cells sit beyond `max_cells` and stay undrawn,
+            // exactly as the descent's outer-band prune left them.
+            if quad_min_chebyshev(tx, ty, LOD_BLOCK_CELLS, player) > ladder.max_cells() {
+                continue;
+            }
+            // Any uncovered cell inside the tile?
+            let mut has_uncovered = false;
+            'cells: for dy in 0..LOD_BLOCK_CELLS {
+                for dx in 0..LOD_BLOCK_CELLS {
+                    let (cx, cy) = (tx + dx, ty + dy);
+                    if !cell_covered(cx, cy) {
+                        continue;
+                    }
+                    let (ix, iy) = (
+                        (cx - player.0 + reach) as usize,
+                        (cy - player.1 + reach) as usize,
+                    );
+                    if !covered[iy * size as usize + ix] {
+                        has_uncovered = true;
+                        break 'cells;
+                    }
+                }
+            }
+            if !has_uncovered {
+                continue;
+            }
+            // Zero-overlap guard: skip any tile a selected quad touches.
+            let overlaps = out.iter().any(|&(level, qx, qy)| {
+                tx < qx + level && qx < tx + LOD_BLOCK_CELLS && ty < qy + level && qy < ty + LOD_BLOCK_CELLS
+            });
+            if !overlaps {
+                out.push((LOD_BLOCK_CELLS, tx, ty));
+            }
+        }
+    }
+    out
+}
+
 #[allow(clippy::too_many_arguments)]
 fn desired_lod_quads(
     ladder: Option<&LodBandLadder>,
@@ -359,41 +459,60 @@ pub(crate) fn stream_lod_blocks(
     let grid_origin = input.lod_grid_origin;
     let ladder = LodBandLadder::for_terrain_game(game);
 
-    let desired = desired_lod_quads(
-        ladder.as_ref(),
-        player_grid,
-        grid_origin,
-        // Boundary quads must be selected so their per-cell mask can fill
-        // every coordinate that is not actually resident at full detail.
-        -1,
-        worldspace_cell_bounds(wctx),
-        |level, qx, qy| lod_blocks.contains_key(&(level, qx, qy)),
-        // #3385 — memoised: the probe allocates several `String`s and hashes
-        // one lookup per open archive, and its answer cannot change while
-        // this `WorldStreamingState` lives.
-        |level, qx, qy| {
-            *available_cache.entry((level, qx, qy)).or_insert_with(|| {
-                if combined_lod_supported(game) {
-                    tex_provider.has_mesh(&super::terrain_lod_btr::btr_archive_path(
-                        worldspace_key,
-                        level,
-                        qx,
-                        qy,
-                    ))
-                } else {
-                    translate_terrain_lod_textures(
-                        game,
-                        worldspace_key,
-                        world_form_id,
-                        level,
-                        qx,
-                        qy,
-                    )
-                    .is_some_and(|lod| tex_provider.has_texture(&lod.diffuse_path))
-                }
-            })
-        },
-    );
+    let desired = if game == GameKind::Fallout3NV {
+        // #5222 — the Fallout legacy family selects from the archive
+        // name-table index instead of the `(0,0)`-anchored descent: 835 of
+        // its 2,231 authored terrain quads sit on lattices no derived
+        // origin reproduces, so their diffuse/normal DDS never resolved
+        // and the terrain fell back to the tiled base LTEX everywhere
+        // off-grid. Authored quads now draw with their real colour; the
+        // level-4 synth completion below keeps the old coverage guarantee
+        // for ground no authored quad covers.
+        let authored = input
+            .legacy_lod_quads
+            .map(|index| index.terrain_for(worldspace_key))
+            .unwrap_or_default();
+        ladder
+            .as_ref()
+            .map(|ladder| legacy_desired_lod_quads(&authored, ladder, player_grid, worldspace_cell_bounds(wctx)))
+            .unwrap_or_default()
+    } else {
+        desired_lod_quads(
+            ladder.as_ref(),
+            player_grid,
+            grid_origin,
+            // Boundary quads must be selected so their per-cell mask can fill
+            // every coordinate that is not actually resident at full detail.
+            -1,
+            worldspace_cell_bounds(wctx),
+            |level, qx, qy| lod_blocks.contains_key(&(level, qx, qy)),
+            // #3385 — memoised: the probe allocates several `String`s and hashes
+            // one lookup per open archive, and its answer cannot change while
+            // this `WorldStreamingState` lives.
+            |level, qx, qy| {
+                *available_cache.entry((level, qx, qy)).or_insert_with(|| {
+                    if combined_lod_supported(game) {
+                        tex_provider.has_mesh(&super::terrain_lod_btr::btr_archive_path(
+                            worldspace_key,
+                            level,
+                            qx,
+                            qy,
+                        ))
+                    } else {
+                        translate_terrain_lod_textures(
+                            game,
+                            worldspace_key,
+                            world_form_id,
+                            level,
+                            qx,
+                            qy,
+                        )
+                        .is_some_and(|lod| tex_provider.has_texture(&lod.diffuse_path))
+                    }
+                })
+            },
+        )
+    };
     let desired_set: HashSet<_> = desired.iter().copied().collect();
 
     let mut spawned = 0usize;
@@ -1345,4 +1464,64 @@ mod tests {
         assert_eq!(block_cell_origin(0, 0, soul_cairn), soul_cairn);
         assert_eq!(block_cell_origin(1, 1, soul_cairn), (-48, -47));
     }
+    /// #5222 — the legacy terrain completion: ground no authored quad
+    /// touches gets a level-4 synth tile, ground an authored quad covers
+    /// does not (no overlap, no double-draw).
+    #[test]
+    fn legacy_completion_covers_only_unauthored_ground() {
+        let ladder = LodBandLadder::for_terrain_game(byroredux_plugin::esm::reader::GameKind::Fallout3NV)
+            .expect("FO3/FNV terrain ladder");
+        let player = (0, 0);
+        // One authored level-16 quad well east of the player, on an
+        // off-(0,0) lattice position for good measure.
+        let authored = vec![(16, 20, 4)];
+        let selected = legacy_desired_lod_quads(&authored, &ladder, player, None);
+
+        assert!(selected.contains(&(16, 20, 4)), "the authored quad is selected");
+        // The player's own ground is served by a completion tile at the
+        // finest level — the pre-#5222 synth guarantee.
+        assert!(
+            selected
+                .iter()
+                .any(|&(level, qx, qy)| level == LOD_BLOCK_CELLS
+                    && player.0 >= qx
+                    && player.0 < qx + level
+                    && player.1 >= qy
+                    && player.1 < qy + level),
+            "uncovered ground must get a level-4 synth tile"
+        );
+        // No completion tile overlaps the authored quad.
+        for &(level, qx, qy) in &selected {
+            if level == LOD_BLOCK_CELLS {
+                assert!(
+                    qx + level <= 20 || 20 + 16 <= qx || qy + level <= 4 || 4 + 16 <= qy,
+                    "completion tile ({qx}, {qy}) overlaps the authored quad — \
+                     that would double-draw distant terrain"
+                );
+            }
+        }
+        // And when the authored set covers everything in reach, no
+        // completion tile fires: every selection is an authored quad.
+        let mut full = Vec::new();
+        for qy in -20..20i32 {
+            for qx in -20..20i32 {
+                full.push((4, qx * 4, qy * 4));
+            }
+        }
+        let selected_full = legacy_desired_lod_quads(&full, &ladder, player, None);
+        assert!(
+            selected_full.iter().all(|q| full.contains(q)),
+            "a complete authored tiling needs no invented completion tiles"
+        );
+        // Every in-reach authored quad is selected (the ones beyond the
+        // ring's 64-cell reach are legitimately absent).
+        assert_eq!(
+            selected_full.len(),
+            full.iter()
+                .filter(|&&(l, qx, qy)| quad_min_chebyshev(qx, qy, l, player) <= ladder.max_cells())
+                .count(),
+            "the in-reach authored tiling must be selected exactly"
+        );
+    }
 }
+

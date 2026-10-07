@@ -18,6 +18,8 @@ use byroredux_plugin::esm::reader::GameKind;
 use byroredux_renderer::{Vertex, VulkanContext};
 
 use crate::asset_provider::TextureProvider;
+
+use super::LegacyLodQuadIndex;
 use crate::env_translate::{terrain_lod_layout, TerrainLodLayout};
 
 use super::exterior::ExteriorWorldContext;
@@ -47,7 +49,16 @@ pub(crate) struct LodReconcileInput<'a> {
     pub(crate) wctx: &'a ExteriorWorldContext,
     pub(crate) player_grid: (i32, i32),
     /// Worldspace-relative cell-grid origin used by Skyrim+/FO4 baked LOD.
+    ///
+    /// #5222 — the Fallout legacy family no longer consults this: its
+    /// authored quads sit on per-worldspace lattices no single origin
+    /// reproduces, so those rings select from the archive name-table index
+    /// ([`LegacyLodQuadIndex`]) instead.
     pub(crate) lod_grid_origin: (i32, i32),
+    /// #5222 — the authored-quad index for the Fallout legacy family
+    /// (`None` on every other game; scanned once per streaming state).
+    /// Object and terrain rings alike select their quads from it.
+    pub(crate) legacy_lod_quads: Option<&'a LegacyLodQuadIndex>,
     /// Cells whose full-detail representation is actually resident now.
     /// The unload radius is only a possible residency bound, not a promise
     /// that every cell inside it has been populated.
@@ -92,6 +103,15 @@ pub(crate) fn legacy_landscape_lod_supported(game: GameKind) -> bool {
 /// `usable_cell_bounds`; derived/synthetic worldspaces that omit NAM0 fall
 /// back to the component-wise minimum of their explicit exterior cells.
 /// Older games keep their existing absolute synth/placement grids.
+///
+/// #5222 — the FO3/FNV legacy family no longer derives anything from this:
+/// its authored quads sit on per-worldspace lattices (26 of 29
+/// worldspace/level sets off `(0,0)`; no single origin — NAM0 included —
+/// explains them, and `washmontop` level 8 alone spans three y residues),
+/// so those rings select from the archive name-table index
+/// (`legacy_lod_index::LegacyLodQuadIndex`) by footprint instead. The
+/// `(0, 0)` early return below survives for the synth/placement grids that
+/// still consume it.
 pub(crate) fn worldspace_lod_grid_origin(wctx: &ExteriorWorldContext) -> (i32, i32) {
     if !combined_lod_supported(wctx.record_index.game) {
         return (0, 0);

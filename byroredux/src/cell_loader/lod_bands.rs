@@ -415,6 +415,87 @@ pub(crate) fn select_lod_quads(
     out
 }
 
+/// #5222 — select from a worldspace's **authored** quad set (the archive
+/// name-table index, `legacy_lod_index`) instead of a derived lattice.
+///
+/// The Fallout legacy family's quads sit on per-worldspace lattices no
+/// single origin reproduces (`select_lod_quads`' `quad_origin` anchoring
+/// missed 425 of 697 FO3 object quads and 835 of 2,231 terrain quads,
+/// including every `#3502` level-8-only worldspace), so this enumerates
+/// the index and decides per quad:
+///
+/// * **Ring touch** — the quad's `[qx, qx+L) × [qy, qy+L)` footprint must
+///   reach inside the ladder's outer band (`quad_min_chebyshev ≤
+///   `max_cells`) and intersect the worldspace bounds, when known.
+/// * **Distance band** — a quad whose centre is inside its own
+///   `refine_threshold` yields the ground to the finer level, exactly as
+///   the descent's too-near test does — but only when a finer level is
+///   actually authored for this worldspace. With none (the #3502
+///   level-8-only shape) the inner test is dropped, so the coarser quad
+///   fills its own near band instead of hollowing it out.
+/// * **Seam suppression** — a finer quad whose centre a selected
+///   immediately-coarser quad contains is dropped: at a band seam the
+///   coarser quad keeps the ground, mirroring the descent, which never
+///   emits a child of a quad it drew itself.
+///
+/// Assumes a level's authored quads tile the ground they cover (vanilla's
+/// LOD generator bakes full worldspace coverage); a partial authoring
+/// leaves holes rather than overlapping draws, the same posture as the
+/// object ring's empty sentinel.
+///
+/// Order is deterministic `(level, qy, qx)`; callers re-sort by their own
+/// streaming priorities.
+pub(crate) fn select_authored_lod_quads(
+    authored: &[(i32, i32, i32)],
+    ladder: &LodBandLadder,
+    player: (i32, i32),
+    world_bounds: Option<((i32, i32), (i32, i32))>,
+) -> Vec<(i32, i32, i32)> {
+    let levels: Vec<i32> = {
+        let mut ls: Vec<i32> = authored.iter().map(|&(l, _, _)| l).collect();
+        ls.sort_unstable();
+        ls.dedup();
+        ls
+    };
+    let mut selected: Vec<(i32, i32, i32)> = Vec::new();
+    // Coarse first, so the seam suppression can consult already-selected
+    // coarser quads.
+    for &level in levels.iter().rev() {
+        let any_finer = levels.iter().any(|&l| l < level);
+        for &(l, qx, qy) in authored {
+            if l != level {
+                continue;
+            }
+            if !quad_intersects_bounds(qx, qy, level, world_bounds) {
+                continue;
+            }
+            if quad_min_chebyshev(qx, qy, level, player) > ladder.max_cells() {
+                continue;
+            }
+            if let (Some(threshold), true) = (ladder.refine_threshold(level), any_finer) {
+                let center_cells = quad_center_chebyshev_halves(qx, qy, level, player) / 2;
+                if center_cells <= threshold {
+                    continue;
+                }
+            }
+            let (cx, cy) = (qx + level / 2, qy + level / 2);
+            let swallowed_by_coarser = selected.iter().any(|&(l2, x2, y2)| {
+                l2 == level * 2
+                    && x2 <= cx
+                    && cx < x2 + l2
+                    && y2 <= cy
+                    && cy < y2 + l2
+            });
+            if swallowed_by_coarser {
+                continue;
+            }
+            selected.push((level, qx, qy));
+        }
+    }
+    selected.sort_unstable();
+    selected
+}
+
 /// Whether any quad **strictly finer** than `level` inside the level-`level`
 /// quad at `(qx, qy)` has a baked asset (#3502).
 ///
@@ -455,7 +536,7 @@ fn any_available_below(
 
 /// Whether the level-`level` quad at `(qx, qy)` touches the worldspace's
 /// inclusive cell bounds. Unknown bounds accept everything.
-fn quad_intersects_bounds(
+pub(crate) fn quad_intersects_bounds(
     qx: i32,
     qy: i32,
     level: i32,
@@ -1168,4 +1249,112 @@ mod tests {
             }
         }
     }
+    // ── #5222 — authored-index selection (the Fallout-legacy family) ──
+
+    /// A full level-4/8/16 tiling on the dcworld03 lattices (L4 residue
+    /// (0, 2), L8 residue (0, 6) — the audit's census): the selection must
+    /// reach quads the (0,0)-anchored descent could never enumerate, and
+    /// cover the player's own ground.
+    #[test]
+    fn authored_selection_reaches_off_lattice_quads() {
+        let ladder = fallout_legacy_ladder();
+        let player = (2, 3);
+        let mut authored = Vec::new();
+        // Level 4: qx ≡ 0, qy ≡ 2 (mod 4) across the near ground.
+        for qy in -2..8i32 {
+            for qx in -2..8i32 {
+                authored.push((4, qx * 4, qy * 4 + 2));
+            }
+        }
+        // Level 8: qx ≡ 0, qy ≡ 6 (mod 8), a coarse ring beyond them.
+        for qy in -1..4i32 {
+            for qx in -1..4i32 {
+                authored.push((8, qx * 8, qy * 8 + 6));
+            }
+        }
+        let selected = select_authored_lod_quads(&authored, &ladder, player, None);
+        assert!(
+            selected
+                .iter()
+                .any(|&(_, _qx, qy)| qy.rem_euclid(4) == 2),
+            "a y-residue-2 lattice is unreachable from any origin derivation —              the #5222 population"
+        );
+        // The player's own ground is covered by SOME selected quad.
+        assert!(
+            selected.iter().any(|&(level, qx, qy)| player.0 >= qx
+                && player.0 < qx + level
+                && player.1 >= qy
+                && player.1 < qy + level),
+            "the selection must cover the player's own cell"
+        );
+        // Every selection is an authored quad — nothing invented.
+        for q in &selected {
+            assert!(authored.contains(q), "selected {q:?} is not authored");
+        }
+    }
+
+    /// The #3502 shape through the authored path: a level-8-only
+    /// worldspace must fill its own near band (no finer level exists to
+    /// yield to), instead of the coarsen escape's 16-cell hollow.
+    #[test]
+    fn authored_level_8_only_selection_fills_its_near_band() {
+        let ladder = fallout_legacy_ladder();
+        let player = (0, 0);
+        let mut authored = Vec::new();
+        for qy in -3..4i32 {
+            for qx in -3..4i32 {
+                authored.push((8, qx * 8 + 4, qy * 8 + 2));
+            }
+        }
+        let selected = select_authored_lod_quads(&authored, &ladder, player, None);
+        assert!(
+            selected
+                .iter()
+                .any(|&(level, qx, qy)| level == 8 && quad_min_chebyshev(qx, qy, 8, player) < 16),
+            "with no finer level authored, the near band is the level-8              quads' own — the 8..15-cell hollow must not exist (#5222/#3502)"
+        );
+    }
+
+    /// The band partition holds on the authored path too: near ground is
+    /// the finer level's, far ground the coarser level's, and the seam
+    /// suppression keeps an emitted level-8 quad from double-drawing with
+    /// the level-4 quads beneath it.
+    #[test]
+    fn authored_selection_partitions_between_levels() {
+        let ladder = fallout_legacy_ladder();
+        let player = (0, 0);
+        let mut authored = Vec::new();
+        // A full level-4 tiling near and far.
+        for qy in -6..10i32 {
+            for qx in -6..10i32 {
+                authored.push((4, qx * 4, qy * 4));
+            }
+        }
+        // Level 8 on the same lattice beyond the level-4 band.
+        for qy in -4..6i32 {
+            for qx in -4..6i32 {
+                authored.push((8, qx * 8, qy * 8));
+            }
+        }
+        let selected = select_authored_lod_quads(&authored, &ladder, player, None);
+        let mut covered: HashSet<(i32, i32)> = HashSet::new();
+        for &(level, qx, qy) in &selected {
+            for y in qy..qy + level {
+                for x in qx..qx + level {
+                    assert!(
+                        covered.insert((x, y)),
+                        "cell ({x}, {y}) covered twice by level-{level} quad                          ({qx}, {qy}) — the seam suppression failed"
+                    );
+                }
+            }
+        }
+        // Near ground is served by the finer level, not the coarse one.
+        assert!(
+            selected
+                .iter()
+                .any(|&(level, _, _)| level == 4 && quad_min_chebyshev(0, 0, 4, player) == 0),
+            "the player's own ground must draw at the finest authored level"
+        );
+    }
 }
+

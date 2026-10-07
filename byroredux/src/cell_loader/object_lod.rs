@@ -197,22 +197,41 @@ pub(crate) fn stream_object_lod_blocks(
         // middle band.
         coarsen_to_available: true,
     };
-    let mut desired = lod_bands::select_lod_quads(
-        &selection,
-        |level, qx, qy| blocks.contains_key(&(level, qx, qy)),
-        // #3385 — memoised for the same reason as the terrain ring's probe.
-        |level, qx, qy| {
-            *available_cache.entry((level, qx, qy)).or_insert_with(|| {
-                tex_provider.has_mesh(&object_lod_archive_path(
-                    scheme,
-                    &wctx.worldspace_key,
-                    level,
-                    qx,
-                    qy,
-                ))
-            })
-        },
-    );
+    let mut desired = if matches!(scheme, ObjectLodScheme::FalloutLegacyBlocks) {
+        // #5222 — the Fallout legacy family selects from the archive
+        // name-table index instead of a derived lattice: 26 of 29 FO3
+        // worldspace/level sets sit off the `(0,0)` grid no origin
+        // (`quad_origin`) reproduces, so every lattice probe missed and no
+        // distant object drew outside `wasteland`. The ladder's bands still
+        // partition distance; only the enumeration is authored.
+        let authored = input
+            .legacy_lod_quads
+            .map(|index| index.objects_for(wctx.worldspace_key.as_str()))
+            .unwrap_or_default();
+        lod_bands::select_authored_lod_quads(
+            &authored,
+            &ladder,
+            player_grid,
+            selection.world_bounds,
+        )
+    } else {
+        lod_bands::select_lod_quads(
+            &selection,
+            |level, qx, qy| blocks.contains_key(&(level, qx, qy)),
+            // #3385 — memoised for the same reason as the terrain ring's probe.
+            |level, qx, qy| {
+                *available_cache.entry((level, qx, qy)).or_insert_with(|| {
+                    tex_provider.has_mesh(&object_lod_archive_path(
+                        scheme,
+                        &wctx.worldspace_key,
+                        level,
+                        qx,
+                        qy,
+                    ))
+                })
+            },
+        )
+    };
     desired.retain(|&(level, qx, qy)| {
         !quad_intersects_full_detail(level, qx, qy, input.resident_full_cells)
     });
@@ -1440,6 +1459,7 @@ mod lod_clamp_resolve_tests {
 #[cfg(test)]
 mod lod_mesh_provenance_tests {
     const LOD_SOURCES: &[(&str, &str)] = &[
+        ("legacy_lod_index.rs", include_str!("legacy_lod_index.rs")),
         ("lod_bands.rs", include_str!("lod_bands.rs")),
         ("lod_coverage.rs", include_str!("lod_coverage.rs")),
         ("lod_support.rs", include_str!("lod_support.rs")),

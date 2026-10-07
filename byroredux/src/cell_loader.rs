@@ -63,6 +63,7 @@ mod index;
 mod interior_spawn;
 mod load;
 pub(crate) mod load_order;
+mod legacy_lod_index;
 mod lod_bands;
 mod lod_coverage;
 mod lod_support;
@@ -104,6 +105,9 @@ pub use transition::{
 //     `app_step.rs` and `commands/scene.rs`; `transition` is a private
 //     module, so this re-export is the only path those links can resolve.
 pub(crate) use transition::{InteriorCellApply, InteriorCellApplyProgress};
+// #5222 — the Fallout-legacy authored-LOD-quad index; re-exported for
+// `streaming::WorldStreamingState`'s cached field.
+pub(crate) use legacy_lod_index::LegacyLodQuadIndex;
 #[allow(unused_imports)]
 pub use transition::{PendingCellTransition, QueueDoorTransitionError, QueuedDoorTransition};
 // `clear_current_exterior_identity` is an internal teardown helper (only
@@ -573,6 +577,8 @@ mod finish_partial_tests;
 mod interior_spawn_tests;
 #[cfg(test)]
 mod inventory_release_tests;
+#[cfg(test)]
+mod legacy_lod_index_tests;
 #[cfg(test)]
 mod lgtm_fallback_tests;
 #[cfg(test)]

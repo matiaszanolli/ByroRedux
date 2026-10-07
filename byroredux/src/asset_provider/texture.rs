@@ -258,6 +258,19 @@ impl TextureProvider {
             .any(|archive| archive.contains(path))
     }
 
+    /// #5222 — every file name in every open mesh and texture archive,
+    /// borrowed raw (the consumer normalises case/separator). Consumed once
+    /// per streaming state by the Fallout-legacy authored-LOD-quad index
+    /// (`cell_loader::legacy_lod_index`); never call this per frame. Uses
+    /// [`Archive::all_paths`] (honest for both BSA and BA2), not the
+    /// BA2-only [`Archive::list_files`].
+    pub(crate) fn all_archive_names(&self) -> impl Iterator<Item = &str> + '_ {
+        self.mesh_archives
+            .iter()
+            .chain(self.texture_archives.iter())
+            .flat_map(|archive| archive.all_paths())
+    }
+
     /// [`Self::extract_mesh`]'s exact-key counterpart. See
     /// [`Self::has_mesh_exact`] for why the `.spt` route needs it.
     pub(crate) fn extract_mesh_exact(&self, path: &str) -> Option<Vec<u8>> {

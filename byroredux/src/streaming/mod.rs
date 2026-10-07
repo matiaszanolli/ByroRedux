@@ -314,6 +314,13 @@ pub struct WorldStreamingState {
     /// per-frame, not DoS-facing. Cleared with the rings in
     /// `drain_streaming_state`.
     pub lod_terrain_available: rustc_hash::FxHashMap<(i32, i32, i32), bool>,
+    /// #5222 — the Fallout-legacy authored-LOD-quad index (objects from
+    /// the `meshes\landscape\lod\<ws>\blocks\` name tables, terrain colour
+    /// from the `diffuse\` DDS names), scanned once from the open archive
+    /// set. `None` until the first legacy reconcile, and permanently on
+    /// every other game — whose rings keep deriving quads from the WRLD
+    /// origin / descent.
+    pub(crate) legacy_lod_quads: Option<crate::cell_loader::LegacyLodQuadIndex>,
     /// Baked-object half of [`Self::lod_terrain_available`] (#3385).
     pub lod_object_available: rustc_hash::FxHashMap<(i32, i32, i32), bool>,
     /// Real load/unload/reload churn on `lod_blocks`' keys, independent of
@@ -475,6 +482,7 @@ impl WorldStreamingState {
             object_lod_blocks: HashMap::new(),
             lod_terrain_available: rustc_hash::FxHashMap::default(),
             lod_object_available: rustc_hash::FxHashMap::default(),
+            legacy_lod_quads: None,
             terrain_lod_churn: crate::cell_loader::ChurnTracker::default(),
             object_lod_churn: crate::cell_loader::ChurnTracker::default(),
             placement_lod_blocks: HashMap::new(),
