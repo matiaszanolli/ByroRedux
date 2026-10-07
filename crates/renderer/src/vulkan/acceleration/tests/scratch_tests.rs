@@ -607,8 +607,14 @@ mod tlas_scratch_shrink_tests {
                  inside an `if let Some(scratch) = new_scratch` block",
             );
         let peak_write = TLAS_RS
-            .find("self.tlas_scratch_peak_bytes[frame_index] = sizes.build_scratch_size;")
-            .expect("ensure_tlas_state must still record the fresh build's scratch peak");
+            .find(
+                "self.tlas_scratch_peak_bytes[frame_index] = sizes\n                .build_scratch_size\n                .max(sizes.update_scratch_size);",
+            )
+            .expect(
+                "ensure_tlas_state must still record the fresh build's scratch peak — as the \
+                 max of BUILD and UPDATE scratch (#5250: the shrink target must cover the \
+                 refit path, whose updateScratchSize the spec does not bound by the build's)",
+            );
         assert!(
             new_scratch_close < peak_write,
             "the peak write must come AFTER (outside) the conditional scratch \

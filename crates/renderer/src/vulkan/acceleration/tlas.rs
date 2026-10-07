@@ -1139,16 +1139,22 @@ impl AccelerationManager {
             // Record this build's scratch requirement on the slot
             // (#682 / MEM-2-7). The fresh-create path is the ONLY site
             // that re-runs `vkGetAccelerationStructureBuildSizesKHR`
-            // for TLAS — refit/update reuse the existing scratch on
-            // the spec guarantee `BUILD ≥ UPDATE`. So this is the
-            // canonical peak for the slot's lifetime, written
-            // unconditionally even if the existing scratch buffer is
-            // big enough to skip realloc above: a previous-slot's
-            // larger peak shouldn't permanently inflate a smaller
-            // current-slot's recorded peak. Written past the commit
-            // point so a failed resize doesn't leave telemetry claiming
-            // a peak that was never allocated (#2673).
-            self.tlas_scratch_peak_bytes[frame_index] = sizes.build_scratch_size;
+            // for TLAS — refit/update reuse the existing scratch — so
+            // this is the canonical peak for the slot's lifetime,
+            // written unconditionally even if the existing scratch
+            // buffer is big enough to skip realloc above: a
+            // previous-slot's larger peak shouldn't permanently
+            // inflate a smaller current-slot's recorded peak. Written
+            // past the commit point so a failed resize doesn't leave
+            // telemetry claiming a peak that was never allocated
+            // (#2673). #5195 / #5250 — the spec does NOT bound UPDATE
+            // scratch by BUILD scratch (VUID-…-pInfos-12259), and
+            // `shrink_tlas_scratch_to_fit` reallocates from this
+            // record: record the max of both modes so a shrink can
+            // never cut the slot below what its refit path needs.
+            self.tlas_scratch_peak_bytes[frame_index] = sizes
+                .build_scratch_size
+                .max(sizes.update_scratch_size);
 
             self.tlas[frame_index] = Some(TlasState {
                 accel,

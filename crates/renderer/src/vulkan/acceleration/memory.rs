@@ -290,8 +290,9 @@ impl AccelerationManager {
     ///    against `tlas_scratch_peak_bytes[slot_index]` (recorded at
     ///    last fresh build). If hysteresis fires, reallocate at peak
     ///    **plus [`scratch_alignment_padding`]** (#2915 — the recorded
-    ///    peak is the unpadded `build_scratch_size`, and `build_tlas`
-    ///    rounds the device address up before submitting). The peak is a
+    ///    peak is the unpadded `max(build, update)` scratch size
+    ///    (#5250), and `build_tlas` rounds the device address up
+    ///    before submitting). The peak is a
     ///    static property of the live slot's geometry between fresh
     ///    builds, so this is a reliable target. The replacement is
     ///    allocated before the old buffer is retired, so a failed

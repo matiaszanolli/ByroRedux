@@ -146,7 +146,10 @@ pub struct AccelerationManager {
     /// per-build allocation.
     pub(super) scratch_buffers: [Option<GpuBuffer>; MAX_FRAMES_IN_FLIGHT],
     /// Per-slot record of the most recent fresh-build's
-    /// `sizes.build_scratch_size`. Drives [`Self::shrink_tlas_scratch_to_fit`]'s
+    /// `max(build_scratch_size, update_scratch_size)` (#5250 — the
+    /// shrink target must cover the refit path too, and the spec does
+    /// not bound UPDATE by BUILD, VUID-…-pInfos-12259). Drives
+    /// [`Self::shrink_tlas_scratch_to_fit`]'s
     /// hysteresis check (#682 / MEM-2-7) — the BLAS path can derive its
     /// peak from `blas_entries`, but TLAS scratch sizing is determined
     /// at slot-create time by the AS spec's
