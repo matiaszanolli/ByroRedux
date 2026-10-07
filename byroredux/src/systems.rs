@@ -29,6 +29,9 @@ mod particle;
 mod patrol;
 pub(crate) mod restoration;
 mod sandbox;
+// #5366 — Story Manager event producers (CLOC via the cell-loader
+// location contexts; KILL lives at the combat death site).
+pub(crate) mod story_events;
 mod travel;
 mod walk_anim;
 mod combat_anim;

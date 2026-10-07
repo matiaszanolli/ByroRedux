@@ -109,8 +109,9 @@ impl SceneActorBindings {
 
 // Split into topic submodules (#2408 / TD1-005); glob-re-exported so
 // every `crate::scene::*` path — including `lib.rs`'s public surface —
-// is unchanged.
-mod playback;
+// is unchanged. `playback` is additionally `pub(crate)` for the shared
+// `drain::<T>` marker helper (#5366's `StoryEvent` drains through it).
+pub(crate) mod playback;
 mod quest_alias;
 
 pub use playback::*;

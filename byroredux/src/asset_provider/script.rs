@@ -575,6 +575,17 @@ pub(crate) fn populate_scene_runtime(
         &index.quests,
         &index.scripts,
     );
+    // #5366 — the Story Manager tree (Skyrim+): fold the parsed
+    // SMBN/SMEN/SMQN node map into the dispatchable resource. Empty and
+    // a no-op on Oblivion/FO3/FNV, which author no SM records — their
+    // quest autostart is the script path above.
+    let sm_nodes = byroredux_scripting::story_manager::install_story_manager(
+        world,
+        &index.story_manager_nodes,
+    );
+    if sm_nodes > 0 {
+        log::info!("Installed Story Manager tree: {sm_nodes} nodes");
+    }
     let mut engine_start_quests = 0usize;
     if index.game == byroredux_plugin::esm::reader::GameKind::Skyrim {
         // Skyrim.exe treats MQ101 (Unbound) as the canonical new-game root

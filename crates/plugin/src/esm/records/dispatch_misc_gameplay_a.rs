@@ -160,6 +160,25 @@ pub(super) fn dispatch_misc_gameplay_a_group(
             &mut index.dialogue_branches,
             game,
         )?,
+        // #5366 — Story Manager nodes. Skyrim+ authors three flat
+        // top-level groups (`SMBN` branch / `SMEN` event / `SMQN`
+        // quest); the tree is pointer-encoded (PNAM parent + SNAM
+        // next-sibling), so no nesting walk is needed. Pointer fields
+        // remap inside `parse_sm_node`.
+        b"SMBN" | b"SMEN" | b"SMQN" => {
+            let sm_remap = reader.get_form_id_remap();
+            let label_copy = *label;
+            extract_records(reader, end, label, &mut |fid, subs| {
+                let kind = match &label_copy {
+                    b"SMBN" => SmNodeKind::Branch,
+                    b"SMEN" => SmNodeKind::Event,
+                    _ => SmNodeKind::Quest,
+                };
+                index
+                    .story_manager_nodes
+                    .insert(fid, parse_sm_node(kind, fid, subs, &sm_remap));
+            })?;
+        }
         // #5037 — Skyrim's top-level `DLBR` group (FO4 nests its branches
         // under `QUST`, routed above).
         b"DLBR" => {

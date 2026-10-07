@@ -40,6 +40,7 @@
 //! | `SceneStartRequest`, `SceneStopRequest`, `SceneActionCompletionBatch` | `scene::playback::scene_playback_system` |
 //! | `DialoguePresentationEventBatch`, `DialogueLineCompletionBatch` | `dialogue::scene_dialogue_system` |
 //! | `ScenePackageEventBatch`, `ScenePackageCompletionBatch`, `EvaluatePackageRequest` | `package::scene_package_system` |
+//! | `StoryEvent` | `story_manager::story_manager_dispatch_system` (#5366) |
 //! | `TwoStateTransitionBatch` | `vm_state::two_state_activator_system` |
 //! | `MotionTypeChangeRequest` | `byroredux::systems::cinematic` (the one tail-drain — it removes exactly the entities it snapshotted, after an empty-set early return that strands nothing) |
 //!
@@ -197,6 +198,11 @@ mod contract_tests {
                 "EvaluatePackageRequest",
                 include_str!("package.rs"),
                 "drain::<EvaluatePackageRequest>",
+            ),
+            (
+                "StoryEvent",
+                include_str!("story_manager.rs"),
+                "drain::<StoryEvent>",
             ),
             (
                 "TwoStateTransitionBatch",

@@ -525,7 +525,7 @@ fn release_finished_tethers(world: &World, finished: &[(EntityId, EntityId)]) {
         let roots = world.query::<CellRoot>();
         release_set
             .iter()
-            .filter(|entity| !roots.as_ref().is_some_and(|roots| roots.get(**entity).is_some()))
+            .filter(|entity| roots.as_ref().is_none_or(|roots| roots.get(**entity).is_none()))
             .copied()
             .collect()
     };

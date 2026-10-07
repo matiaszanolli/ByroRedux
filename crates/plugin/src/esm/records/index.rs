@@ -19,8 +19,8 @@ use super::{
     MinimalEsmRecord, ResolvedLoadScreenModel,
     NaviRecord, NavmRecord,
     NpcRecord, OtftRecord, PackRecord, PerkRecord, ProjRecord, QustRecord, RaceRecord, RegnRecord,
-    RepuRecord, ScenRecord, ScriptRecord, SlgmRecord, SounRecord, SpelRecord, TermRecord,
-    TreeRecord, WatrRecord, WeatherRecord,
+    RepuRecord, ScenRecord, ScriptRecord, SlgmRecord, SmNodeRecord, SounRecord, SpelRecord,
+    TermRecord, TreeRecord, WatrRecord, WeatherRecord,
 };
 use std::collections::{HashMap, HashSet};
 
@@ -198,6 +198,14 @@ pub struct EsmIndex {
     pub packages: HashMap<u32, PackRecord>,
     /// `QUST` quests — Story Manager / Radiant Story entry points.
     pub quests: HashMap<u32, QustRecord>,
+    /// Skyrim+ Story Manager nodes (`SMBN` / `SMEN` / `SMQN`), keyed by
+    /// the node's own FormID. Empty on Oblivion / FO3 / FNV (those games
+    /// author no SM records — quest autostart is script-side). The tree
+    /// is encoded by pointers (`PNAM` parent + `SNAM` next-sibling);
+    /// the runtime fold into a dispatchable tree lives in
+    /// `byroredux_scripting::story_manager`. See #5366 and
+    /// `docs/engine/story-manager.md`.
+    pub story_manager_nodes: HashMap<u32, SmNodeRecord>,
     /// Skyrim+ `SCEN` records — condition-gated phase timelines containing
     /// dialogue, package, and timer actions plus Papyrus event fragments.
     pub scenes: HashMap<u32, ScenRecord>,
@@ -650,6 +658,7 @@ impl EsmIndex {
             map_category!("hair", hair),
             map_category!("packages", packages),
             map_category!("quests", quests),
+            map_category!("story_manager_nodes", story_manager_nodes),
             map_category!("scenes", scenes),
             map_category!("dialogues", dialogues),
             map_category!("dialogue_branches", dialogue_branches),

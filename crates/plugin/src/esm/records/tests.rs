@@ -1860,8 +1860,12 @@ fn categories_table_row_count_pinned() {
     //   transform an LSCR's TNAM points at; without a row a TRNS wipe
     //   passed the parse-rate floor silently and every FO4 load screen
     //   fell to the missing-artwork rejection).
+    // Bumped 102 → 103 in #5366 (story_manager_nodes — Skyrim+ SMBN/SMEN/
+    //   SMQN quest-autostart tree; without a row an SM category wipe would
+    //   pass the parse-rate floor silently and 65% of Skyrim's quests would
+    //   lose their autostart path invisibly).
     // Bump in lockstep with the struct + `categories()` edits.
-    assert_eq!(EsmIndex::categories().len(), 102);
+    assert_eq!(EsmIndex::categories().len(), 103);
 }
 
 /// Regression test for #989 — `.STRINGS` companion file resolves lstring

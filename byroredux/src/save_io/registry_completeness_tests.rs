@@ -501,6 +501,10 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("QuestAliasReadinessGateRegistry", "static engine-supplied quest-alias gate definitions rebuilt from installed quest content"),
         ("SceneFragments", "static lowered SCEN VMAD fragment definitions rebuilt from plugin data on scene installation"),
         ("DialogueInfoFragments", "static lowered INFO (TIF_) VMAD fragment definitions rebuilt from plugin data by the session populate walk (#5152)"),
+        // ── Story Manager (#5366) ───────────────────────────────────
+        ("StoryEvent", "one-frame Pattern-B marker drained by story_manager_dispatch_system at its head; carries session-local EntityIds only (#2672)"),
+        ("SmTree", "immutable fold of the parsed SMBN/SMEN/SMQN node map; rebuilt from the load order by install_story_manager every boot, same posture as NavmeshTile"),
+        ("StoryLocationCursor", "session-local CLOC change-detection cursor; a fresh boot/load legitimately re-fires the event the cursor would have suppressed"),
         ("AudioWorld", "owns live kira manager/handles and is reconstructed as process audio infrastructure"),
         ("AudioListener", "derived marker attached to the active camera during scene setup"),
         ("AudioEmitter", "decoded asset/handle payload rebuilt from authored sound data when its source spawns"),

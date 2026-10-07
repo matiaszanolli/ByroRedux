@@ -33,6 +33,7 @@ pub mod quest_stages;
 pub mod recurring_update;
 pub mod registry;
 pub mod scene;
+pub mod story_manager;
 pub mod timer;
 pub mod translate;
 pub mod trigger;
@@ -45,6 +46,10 @@ pub use cinematic::{
     ImageSpaceModifierApplication, MotionTypeChangeRequest,
 };
 pub use cleanup::event_cleanup_system;
+pub use story_manager::{
+    build_story_manager_tree, emit_change_location_on_key_change, install_story_manager,
+    story_manager_dispatch_system, SmTree, SmTreeNode, StoryEvent, StoryLocationCursor,
+};
 pub use combat::{AiCombatState, AmbientEngagement, FactionReactionOverride, FactionRelations};
 pub use compatibility::{
     analyze_obscript_bytecode_compatibility, analyze_pex_compatibility,
@@ -211,6 +216,8 @@ pub fn register(world: &mut World) {
     papyrus_provider::register(world);
     recurring_update::register(world);
     quest_stages::register(world);
+    // #5366 — Story Manager dispatch (transient StoryEvent markers).
+    story_manager::register(world);
     // M47.2 (b2) — quest-stage fragment dispatch. Registers the
     // QuestStageAdvanced component storage (via quest_advance below it's
     // also registered, idempotent) and the QuestStageFragments /

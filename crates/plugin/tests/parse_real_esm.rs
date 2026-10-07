@@ -4931,3 +4931,148 @@ fn fo3_corpses_key_on_base_health_not_xrgd() {
          dismember-trigger corpses, not this decode's target"
     );
 }
+
+/// #5366 Phase 0 — Story Manager census floors on `Skyrim.esm`.
+///
+/// Every number is the 2026-10-07 corpus census
+/// (`docs/engine/story-manager.md` §1/§3) minus a small safety margin:
+/// 571 nodes (99 SMBN / 24 SMEN / 448 SMQN), 24 distinct event
+/// mnemonics, 425/448 SMQN `NNAM` quest links resolving into
+/// `index.quests`, 1191/1811 quests SM-referenced, and the corpus
+/// invariants (root node `Root` at `0x5B`, every SMEN parented to it,
+/// sibling links sharing their source's parent).
+#[test]
+#[ignore = "needs Skyrim SE game data on disk"]
+fn story_manager_skyrim_census_floor() {
+    let Some(data) = data_dir(test_paths::SKYRIM_SE_ENV, test_paths::SKYRIM_SE_DEFAULT) else {
+        eprintln!("[Skyrim SM] skipping: game data unavailable");
+        return;
+    };
+    let bytes = std::fs::read(data.join("Skyrim.esm")).expect("read Skyrim.esm");
+    let index = parse_esm(&bytes).expect("parse Skyrim.esm");
+    use byroredux_plugin::esm::records::{SmNodeKind, SmNodeRecord};
+
+    let nodes: Vec<&SmNodeRecord> = index.story_manager_nodes.values().collect();
+    assert!(
+        nodes.len() >= 560,
+        "SM node census floor (measured 571): {}",
+        nodes.len()
+    );
+    let events = nodes
+        .iter()
+        .filter(|n| n.kind == SmNodeKind::Event)
+        .collect::<Vec<_>>();
+    let quests = nodes
+        .iter()
+        .filter(|n| n.kind == SmNodeKind::Quest)
+        .count();
+    assert!(quests >= 440, "SMQN floor (measured 448): {quests}");
+
+    // One SMEN per event mnemonic; KILL and CLOC must be in the set.
+    let mut mnemonics: Vec<[u8; 4]> = events
+        .iter()
+        .filter_map(|n| n.event_mnemonic)
+        .collect();
+    mnemonics.sort_unstable();
+    mnemonics.dedup();
+    assert_eq!(
+        mnemonics.len(),
+        24,
+        "exactly one SMEN per event mnemonic (census: 24)"
+    );
+    assert!(mnemonics.contains(b"KILL"));
+    assert!(mnemonics.contains(b"CLOC"));
+
+    // Corpus invariants: the in-map root `Root` at 0x5B, and every SMEN
+    // parents to it.
+    let root = index
+        .story_manager_nodes
+        .get(&0x0000_005B)
+        .expect("Skyrim authors the Story Manager root SMBN at 0x5B");
+    assert_eq!(root.editor_id, "Root");
+    assert_eq!(root.parent, 0);
+    assert!(events.iter().all(|n| n.parent == 0x0000_005B));
+
+    // Quest links resolve into the parsed QUST map; distinct SM-referenced
+    // quests near the census's 1191.
+    let mut linked_quests = std::collections::HashSet::new();
+    for node in &nodes {
+        for &q in &node.quest_links {
+            if index.quests.contains_key(&q) {
+                linked_quests.insert(q);
+            }
+        }
+    }
+    assert!(
+        linked_quests.len() >= 1100,
+        "distinct SM-referenced quests floor (measured 1191): {}",
+        linked_quests.len()
+    );
+
+    // Sibling-chain integrity: ≥90% of in-tree next_sibling targets share
+    // the source's parent (measured 441/443).
+    let mut in_tree = 0usize;
+    let mut same_parent = 0usize;
+    for node in &nodes {
+        if node.next_sibling != 0 {
+            if let Some(target) = index.story_manager_nodes.get(&node.next_sibling) {
+                in_tree += 1;
+                if target.parent == node.parent {
+                    same_parent += 1;
+                }
+            }
+        }
+    }
+    assert!(
+        same_parent * 10 >= in_tree * 9,
+        "sibling chain integrity: {same_parent}/{in_tree}"
+    );
+    eprintln!(
+        "[Skyrim SM] nodes={} events={} quests={} linked_quests={linked_quests_len} siblings={same_parent}/{in_tree}",
+        nodes.len(),
+        events.len(),
+        quests,
+        linked_quests_len = linked_quests.len()
+    );
+}
+
+/// #5366 Phase 0 — FO4 dialect floors. Count-only: a bare single-file
+/// parse carries no load-order remap, and Fallout4.esm authors its
+/// self-references under the `0x01` master byte (records themselves sit
+/// at `0x00`), so quest-link resolution is asserted only in the
+/// load-order lane, not here.
+#[test]
+#[ignore = "needs FO4 game data on disk"]
+fn story_manager_fo4_census_floor() {
+    let Some(data) = data_dir(test_paths::FO4_ENV, test_paths::FO4_DEFAULT) else {
+        eprintln!("[FO4 SM] skipping: game data unavailable");
+        return;
+    };
+    let bytes = std::fs::read(data.join("Fallout4.esm")).expect("read Fallout4.esm");
+    let index = parse_esm(&bytes).expect("parse Fallout4.esm");
+    use byroredux_plugin::esm::records::SmNodeKind;
+
+    let nodes = &index.story_manager_nodes;
+    assert!(
+        nodes.len() >= 300,
+        "FO4 SM nodes floor (measured 311): {}",
+        nodes.len()
+    );
+    let mut mnemonics = nodes
+        .values()
+        .filter(|n| n.kind == SmNodeKind::Event)
+        .filter_map(|n| n.event_mnemonic)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        mnemonics.len(),
+        17,
+        "exactly one SMEN per FO4 event mnemonic (census: 17)"
+    );
+    mnemonics.sort_unstable();
+    mnemonics.dedup();
+    assert_eq!(mnemonics.len(), 17, "FO4 mnemonics are distinct");
+    // The FO4-only surface must be present: HACK (terminals) and LCLD
+    // (location loaded) are absent from Skyrim's catalog.
+    assert!(mnemonics.contains(b"HACK"));
+    assert!(mnemonics.contains(b"LCLD"));
+}

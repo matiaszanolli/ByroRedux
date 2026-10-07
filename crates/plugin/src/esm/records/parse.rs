@@ -59,7 +59,8 @@ pub const DISPATCH_HANDLED_FOURCCS: &[[u8; 4]] = &[
     *b"MGEF", *b"MICN", *b"MISC", *b"MOVS", *b"MSET", *b"MSTT", *b"MSWP", *b"MUSC", *b"NAVI",
     *b"NAVM", *b"NOTE", *b"NPC_", *b"OMOD", *b"OTFT", *b"PACK", *b"PERK", *b"PKIN", *b"PROJ",
     *b"PWAT", *b"QUST", *b"RACE", *b"RADS", *b"RCCT", *b"RCPE", *b"REGN", *b"REPU", *b"RGDL",
-    *b"SCEN", *b"SCOL", *b"SCPT", *b"SCRL", *b"SECH", *b"SGST", *b"SLGM", *b"SLPD", *b"SOUN",
+    *b"SCEN", *b"SCOL", *b"SCPT", *b"SCRL", *b"SECH", *b"SGST", *b"SLGM", *b"SLPD", *b"SMBN",
+    *b"SMEN", *b"SMQN", *b"SOUN",
     *b"SPEL", *b"STAT", *b"TACT", *b"TERM", *b"TREE", *b"TRNS", *b"TXST", *b"VTYP", *b"WATR",
     *b"WEAP",
     *b"WRLD", *b"WTHR",
@@ -402,7 +403,7 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
             }
             b"WTHR" | b"CLMT" | b"SCPT" | b"WATR" | b"NAVI" | b"NAVM" | b"REGN" | b"ECZN"
             | b"LGTM" | b"IMGS" | b"HDPT" | b"EYES" | b"HAIR" | b"PACK" | b"QUST" | b"DIAL"
-            | b"DLBR" | b"SCEN" | b"MESG" | b"PERK" => {
+            | b"DLBR" | b"SCEN" | b"MESG" | b"PERK" | b"SMBN" | b"SMEN" | b"SMQN" => {
                 dispatch_misc_gameplay_a::dispatch_misc_gameplay_a_group(
                     &label,
                     &mut reader,

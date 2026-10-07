@@ -93,20 +93,19 @@ fn blank_test_gated_mods(code: &str) -> String {
                 // `mod name;` — blank through the first `;`, which cannot
                 // belong to a body because an inline module's `{` came
                 // first when there was one.
-                let semi = after_mod.find(';').map_or(cursor + rest.len(), |s| {
+                after_mod.find(';').map_or(cursor + rest.len(), |s| {
                     cursor + "mod ".len() + s + 1
-                });
-                semi
+                })
             }
         };
         // Keep the removed range's newlines so surviving lines keep their
         // line numbers in the violation report.
-        out.extend_from_slice(&code[copied..at].as_bytes());
+        out.extend_from_slice(&code.as_bytes()[copied..at]);
         out.extend(code[at..end].bytes().map(|b| if b == b'\n' { b'\n' } else { b' ' }));
         copied = end;
         i = end;
     }
-    out.extend_from_slice(&code[copied..].as_bytes());
+    out.extend_from_slice(&code.as_bytes()[copied..]);
     String::from_utf8(out).expect("blanking preserves UTF-8 boundaries")
 }
 

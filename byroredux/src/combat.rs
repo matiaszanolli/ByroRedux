@@ -362,6 +362,23 @@ pub(crate) fn combat_damage_system(world: &World, _dt: f32) {
             if let Some(mut dead) = world.query_mut::<Dead>() {
                 dead.insert(target, Dead);
             }
+            // #5366 — KILL story event, raised on the slain actor. The
+            // Story Manager dispatcher consumes it same-frame or next
+            // (Pattern B marker); on pre-Creation titles it is a no-op —
+            // no SM tree is installed, so no mnemonic root resolves.
+            if let Some(mut story) =
+                world.query_mut::<byroredux_scripting::story_manager::StoryEvent>()
+            {
+                story.insert(
+                    target,
+                    byroredux_scripting::story_manager::StoryEvent {
+                        mnemonic: *b"KILL",
+                        subject: event.aggressor,
+                        object: Some(target),
+                        location: None,
+                    },
+                );
+            }
             outcome.push_str(&reconcile_dead_actor(world, target));
         }
 

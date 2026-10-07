@@ -63,6 +63,16 @@ pub(super) fn register_update_systems(scheduler: &mut Scheduler) {
     fn quest_advance_dispatch(world: &World, _dt: f32) {
         byroredux_scripting::papyrus_demo::quest_advance::quest_advance_system(world)
     }
+    // #5366 — Story Manager producers + dispatch. The wrapper shapes
+    // exist so the registrations below read as a pair: the CLOC
+    // producer raises the marker, the dispatcher drains and walks the
+    // tree in the same frame.
+    fn story_change_location_dispatch(world: &World, _dt: f32) {
+        crate::systems::story_events::story_change_location_system(world)
+    }
+    fn story_manager_dispatch(world: &World, _dt: f32) {
+        byroredux_scripting::story_manager_dispatch_system(world)
+    }
     // SCR-D6-NEW-02 (#1768) — the runtime scripting systems that were
     // registered (component/resource) but never scheduled. Both ride
     // the same exclusive-in-Update lane as the demo dispatchers above:
@@ -371,6 +381,15 @@ pub(super) fn register_update_systems(scheduler: &mut Scheduler) {
     // Start Game Enabled quests here so Begin On Quest Start scenes observe
     // the same-frame transition.
     scheduler.add_exclusive(Stage::Update, byroredux_scripting::quest_startup_system);
+    // #5366 — Story Manager: raise CLOC on session-location change, then
+    // dispatch every raised story event. Runs right after quest_startup
+    // and before the alias refresh so an SM-started quest is
+    // indistinguishable from a Start Game Enabled one to everything
+    // downstream (aliases, scenes, fragments) — and the KILL marker the
+    // combat damage system raises is drained here too, one frame later
+    // at the latest.
+    scheduler.add_exclusive(Stage::Update, story_change_location_dispatch);
+    scheduler.add_exclusive(Stage::Update, story_manager_dispatch);
     // Quest aliases are a general QUST facility, not a SCEN implementation
     // detail. Refresh after startup/cell candidate changes even when the load
     // order contains no scene records; the dirty fast path is allocation-free.
