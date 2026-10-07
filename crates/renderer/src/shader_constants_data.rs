@@ -37,6 +37,17 @@ pub const LUMA_REC709: [f32; 3] = [0.2126, 0.7152, 0.0722];
 pub const EXPOSURE_METER_NEUTRAL: f32 = 1.2;
 pub const ADAPTATION_SAT_FALLOFF: f32 = 0.25;
 
+// #5254 — the EV100 meter calibration, Frostbite §5.6: `EV100 =
+// log2(L * S / K)` with the reflected-light meter constant K = 12.5
+// (ISO 2720) and sensor sensitivity S = 100 (ISO 100). `vulkan/exposure.rs`
+// resolves its constants from here, and the metering shader reads the
+// ratio as a `#define` — hand-typing `8.0` in the shader let a retune of
+// K (ISO 2720 allows 12.5 to 14) move the Rust mirror functions and the
+// #5158 envelope tests while the GPU meter stayed behind.
+pub const LIGHT_METER_CALIBRATION_K: f32 = 12.5;
+pub const SENSOR_SENSITIVITY_S: f32 = 100.0;
+pub const EXPOSURE_METER_S_OVER_K: f32 = SENSOR_SENSITIVITY_S / LIGHT_METER_CALIBRATION_K;
+
 // Cluster grid
 pub const CLUSTER_TILES_X: u32 = 16;
 pub const CLUSTER_TILES_Y: u32 = 9;
@@ -2319,6 +2330,9 @@ pub const SHADER_DEFINES: &[HeaderLine] = &[
     HeaderLine::Define("TONEMAP_OP_ACES", ShaderValue::Uint(TONEMAP_OP_ACES)),
     HeaderLine::Define("TONEMAP_OP_AGX", ShaderValue::Uint(TONEMAP_OP_AGX)),
     HeaderLine::Define("EXPOSURE_METER_NEUTRAL", ShaderValue::Float(EXPOSURE_METER_NEUTRAL)),
+    HeaderLine::Define("LIGHT_METER_CALIBRATION_K", ShaderValue::Float(LIGHT_METER_CALIBRATION_K)),
+    HeaderLine::Define("SENSOR_SENSITIVITY_S", ShaderValue::Float(SENSOR_SENSITIVITY_S)),
+    HeaderLine::Define("EXPOSURE_METER_S_OVER_K", ShaderValue::Float(EXPOSURE_METER_S_OVER_K)),
     HeaderLine::Define("ADAPTATION_SAT_FALLOFF", ShaderValue::Float(ADAPTATION_SAT_FALLOFF)),
     HeaderLine::Define("FOG_VOLUME_SHAPE_SPHERE", ShaderValue::Uint(FOG_VOLUME_SHAPE_SPHERE)),
     HeaderLine::Define("FOG_VOLUME_SHAPE_ELLIPSOID", ShaderValue::Uint(FOG_VOLUME_SHAPE_ELLIPSOID)),

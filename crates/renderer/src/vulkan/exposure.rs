@@ -49,12 +49,19 @@ pub const DEFAULT_EXPOSURE: f32 = 0.85;
 pub const DEFAULT_ADAPTATION_SECONDS: f32 = 0.5;
 
 /// Reflected-light meter calibration constant (ISO 2720), Frostbite §5.6.
-pub const LIGHT_METER_CALIBRATION_K: f32 = 12.5;
-/// Sensor sensitivity EV100 normalizes to (ISO 100).
-pub const SENSOR_SENSITIVITY_S: f32 = 100.0;
+/// #5254 — resolves to `shader_constants_data.rs` (the generated header's
+/// source) so the GPU meter's `EXPOSURE_METER_S_OVER_K` and this module's
+/// `ev100_from_average_luminance` retune together.
+pub const LIGHT_METER_CALIBRATION_K: f32 = crate::shader_constants::LIGHT_METER_CALIBRATION_K;
+/// Sensor sensitivity EV100 normalizes to (ISO 100). Same single source as
+/// [`LIGHT_METER_CALIBRATION_K`].
+pub const SENSOR_SENSITIVITY_S: f32 = crate::shader_constants::SENSOR_SENSITIVITY_S;
 /// Middle-grey exposure constant of the Frostbite formulation. Resolves to
 /// the shared `EXPOSURE_METER_NEUTRAL` (#5154) so the metering shader, the
-/// presentation chroma compress and this module cannot disagree.
+/// presentation chroma compress and this module cannot disagree. With
+/// #5254 the S/K ratio is single-sourced the same way, so the whole
+/// photometry chain — meter shader, mirror functions, envelope tests —
+/// retunes from `shader_constants_data.rs` alone.
 pub const EXPOSURE_CONSTANT: f32 = crate::shader_constants::EXPOSURE_METER_NEUTRAL;
 /// Auto-exposure envelope — the simulated eye-adaptation range, in stops
 /// around the calibrated operating point (an exterior meters L̄ ≈ 0.15 →
@@ -75,7 +82,8 @@ pub const MIN_AUTO_EXPOSURE: f32 = 1.0 / 32.0;
 pub const MAX_AUTO_EXPOSURE: f32 = 2.0;
 
 /// EV100 for an average scene luminance — mirror of the metering shader's
-/// `log2(max(L, 1e-6) * 8.0)` (S/K = 100/12.5 = 8).
+/// `log2(max(L, 1e-6) * EXPOSURE_METER_S_OVER_K)`; the ratio comes from the
+/// same `shader_constants_data.rs` entry the generated header emits (#5254).
 pub fn ev100_from_average_luminance(average_luminance: f32) -> f32 {
     (average_luminance.max(1.0e-6) * SENSOR_SENSITIVITY_S / LIGHT_METER_CALIBRATION_K).log2()
 }

@@ -455,5 +455,29 @@ mod tests {
             "no hand-typed Rec.709 weights — they sat outside the shared \
              constant's net once already (#5218)"
         );
+        // #5254 — the S/K meter calibration is single-sourced the same way:
+        // `shader_constants_data.rs` emits `EXPOSURE_METER_S_OVER_K` and
+        // `exposure.rs` resolves `SENSOR_SENSITIVITY_S`/`LIGHT_METER_CALIBRA-
+        // TION_K` from it, so a K retune (ISO 2720 allows 12.5 to 14) moves
+        // the GPU meter, the Rust mirror functions and the #5158 envelope
+        // tests together. A hand-typed `8.0` in the shader would strand the
+        // meter on the old calibration.
+        assert!(
+            src.contains("* EXPOSURE_METER_S_OVER_K);"),
+            "the EV100 term must multiply the shared EXPOSURE_METER_S_OVER_K \
+             (#5254), not a hand-typed S/K ratio"
+        );
+        assert!(
+            !src.contains("* 8.0"),
+            "no hand-typed S/K = 8.0 — it sat outside the shared constant's \
+             net once already (#5254)"
+        );
+        assert_eq!(
+            crate::shader_constants::EXPOSURE_METER_S_OVER_K,
+            crate::vulkan::exposure::SENSOR_SENSITIVITY_S
+                / crate::vulkan::exposure::LIGHT_METER_CALIBRATION_K,
+            "the header's S/K ratio must equal the ratio exposure.rs resolves \
+             from the same constants (#5254)"
+        );
     }
 }
