@@ -409,9 +409,17 @@ fn vulkan_validation_job_fails_on_a_panic() {
 /// the pre-#4987 lane spent its whole life green without ever creating a
 /// VkInstance (`ERROR_INCOMPATIBLE_DRIVER` on every sampled main run).
 /// The gate is the `Selected GPU:` info line from
-/// `crates/renderer/src/vulkan/device.rs`, so the job must also lift the
-/// renderer crate above the lane's `RUST_LOG=error` floor or the grep
-/// targets output the filter can never contain.
+/// `crates/renderer/src/vulkan/device.rs`, so the job must lift that
+/// module above the lane's `RUST_LOG=error` floor or the grep targets
+/// output the filter can never contain.
+///
+/// #5263 / CONC-D3-2026-10-05-01 — the lift is scoped to the DEVICE MODULE
+/// (`byroredux_renderer::vulkan::device`), not the whole renderer crate:
+/// crate-wide `=info` also lifted `debug.rs`'s messenger callback, whose
+/// WARN lines (`WARNING-Shader-OutputNotConsumed` performance warnings)
+/// then matched the job's severity-blind `[Vulkan]` grep and reddened the
+/// lane with zero validation errors on every run. The messenger module
+/// must stay at the error floor so only real errors reach the gate.
 #[test]
 fn vulkan_validation_job_requires_a_selected_device() {
     let job = vulkan_validation_job();
@@ -422,10 +430,17 @@ fn vulkan_validation_job_requires_a_selected_device() {
          (#4987)",
     );
     assert!(
-        job.contains("RUST_LOG=error,byroredux_renderer=info"),
-        "the vulkan-validation job must surface renderer info logs, or the \
-         'Selected GPU:' gate greps for a line the error-only filter \
-         swallows (#4987)",
+        job.contains("RUST_LOG=error,byroredux_renderer::vulkan::device=info"),
+        "the vulkan-validation job must lift the device module (the \
+         'Selected GPU:' source) above the error floor, scoped narrowly — \
+         a crate-wide info lift re-raises the messenger's WARN lines into \
+         the severity-blind '[Vulkan]' gate (#4987, #5263)",
+    );
+    assert!(
+        !job.contains("RUST_LOG=error,byroredux_renderer=info"),
+        "the vulkan-validation job lifted the whole renderer crate to info \
+         again — the debug messenger's WARN-level performance warnings \
+         would redden the lane with zero validation errors (#5263)"
     );
 }
 

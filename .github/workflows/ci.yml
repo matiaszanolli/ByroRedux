@@ -393,11 +393,20 @@ jobs:
           # production-budget policy, not a correctness one).
           export BYRO_ALLOW_CPU_VULKAN_DEVICE=1
           # Error-level globally: every [Vulkan] line at this level is a real
-          # validation error from the debug messenger callback. The renderer
-          # crate rides at info so the positive #4987 device-selection gate
-          # below can see the "Selected GPU:" line (device.rs logs it at
-          # info, which an error-only filter would swallow).
-          export RUST_LOG=error,byroredux_renderer=info
+          # validation error from the debug messenger callback. Only the
+          # device module rides at info — that is where the "Selected GPU:"
+          # line the #4987 gate below greps for is logged
+          # (device.rs), and it is all the lane needs. #5263 /
+          # CONC-D3-2026-10-05-01: lifting the whole renderer crate to info
+          # (the pre-fix `byroredux_renderer=info`) also lifted the debug
+          # messenger's WARN lines (debug.rs), so 9-10 ERROR-free
+          # `WARNING-Shader-OutputNotConsumed` performance warnings failed
+          # the `[Vulkan]` grep on every run and the lane's red status
+          # carried no information for five days. With the lift scoped to
+          # the device module, the messenger module stays at the error
+          # floor: WARN lines never reach the output, ERROR lines still do
+          # and still fail the gate.
+          export RUST_LOG=error,byroredux_renderer::vulkan::device=info
 
           # xvfb-run provides the display winit needs.
           # --bench-frames exits after N rendered frames (no --bench-hold).
@@ -447,7 +456,7 @@ jobs:
           # nothing either if the bench never selected a device (e.g. a
           # silent early bail). Device selection logs "Selected GPU:" at
           # info level (crates/renderer/src/vulkan/device.rs), which is why
-          # RUST_LOG above lifts the renderer crate above the error floor.
+          # RUST_LOG above lifts that module above the error floor.
           if ! echo "$OUTPUT" | grep -qF 'Selected GPU:'; then
             echo ""
             echo "::error::No 'Selected GPU:' line in the bench output — the run never selected a Vulkan device, so neither the validation layer nor the parallel-batch lock-order detector ran against a real world (#4987)."
