@@ -52,6 +52,7 @@ docs/smoke-tests/p5-f5-f9-quicksave.sh fnv       # F5/F9 bound-input quicksave/q
 docs/smoke-tests/p5-quest-persistence.sh         # Skyrim SE: MS01 objective state vs F9 + process restart
 docs/smoke-tests/p5-door-transition.sh fnv       # save/reload both sides of the P0 door route
 docs/smoke-tests/p5-soak.sh fnv                  # 30-min repeated transitions/saves soak (BYROREDUX_SOAK_MINUTES)
+docs/smoke-tests/sm1-story-manager.sh            # Skyrim SE: Story Manager CLOC dispatch starts quests live (#5366)
 ```
 
 Every game-specific value — data dir, archives, cell, camera pose, destination

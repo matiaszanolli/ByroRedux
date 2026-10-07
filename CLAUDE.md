@@ -79,7 +79,11 @@ graceful quit (`engine.quit`), a `BYRO_VALIDATION=1` clean leg, and the
 [`p6-loading-model.sh`](docs/smoke-tests/p6-loading-model.sh) gates the
 Creation-era LSCR model loading cover on Skyrim (inline SNAM/RNAM/XNAM
 pose) and FO4 (TNAM→TRNS) — census, cover begin/present, a rendered-frame
-screenshot floor, and dismissal after the destination applies.
+screenshot floor, and dismissal after the destination applies, and
+[`sm1-story-manager.sh`](docs/smoke-tests/sm1-story-manager.sh) gates
+Story Manager event dispatch live on Skyrim (#5366): the boot-time CLOC
+event must start quests through the canonical lifecycle, including the
+unconditional `CRLocationExpansionNode` → `CRHoldExpansion` chain.
 
 ### Shader Compilation
 ```bash

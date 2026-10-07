@@ -263,6 +263,13 @@ pub fn emit_change_location_on_key_change(
 /// and a Start Game Enabled quest are indistinguishable to everything
 /// downstream (alias refresh, SCEN playback, fragment dispatch).
 ///
+/// Two-phase by necessity, not style: the condition evaluator may READ
+/// `QuestStageState` (`GetStage` and friends), so holding its WRITE
+/// guard across the walk is a same-thread re-entry the lock tracker
+/// rejects. Phase A walks the tree read-only and collects quest-start
+/// candidates; phase B takes the write guard and starts them,
+/// re-checking `is_started` under it.
+///
 /// Pattern B: the drain at the head is unconditional — no early return
 /// sits between the top of the system and it.
 pub fn story_manager_dispatch_system(world: &World) {
@@ -274,53 +281,89 @@ pub fn story_manager_dispatch_system(world: &World) {
     if events.is_empty() {
         return;
     }
-    let Some(tree) = world.try_resource::<SmTree>() else {
-        return;
+    let candidates = {
+        let Some(tree) = world.try_resource::<SmTree>() else {
+            return;
+        };
+        let registry = world.try_resource::<QuestDefinitionRegistry>();
+        let stages = world.try_resource::<QuestStageState>();
+        let mut candidates = Vec::new();
+        for event in &events {
+            dispatch_story_event(
+                world,
+                &tree,
+                &mut WalkState {
+                    event,
+                    registry: registry.as_deref(),
+                    stages: stages.as_deref(),
+                    candidates: &mut candidates,
+                },
+            );
+        }
+        candidates
     };
     let Some(mut stages) = world.try_resource_mut::<QuestStageState>() else {
         return;
     };
-    for event in &events {
-        dispatch_story_event(world, &tree, &mut stages, event);
+    for candidate in candidates {
+        if stages.is_started(candidate.quest) {
+            continue;
+        }
+        stages.start_quest(candidate.quest, candidate.start_up_stage);
+        log::info!(
+            "#5366 story manager: started quest {:#010X} ('{}') via node '{}' \
+             on '{}' event",
+            candidate.quest.0,
+            candidate.editor_id,
+            candidate.node_editor_id,
+            String::from_utf8_lossy(&candidate.mnemonic),
+        );
     }
+}
+
+/// A quest the walk wants started, gathered during the read-only phase.
+struct QuestStartCandidate {
+    quest: QuestFormId,
+    start_up_stage: Option<u16>,
+    editor_id: String,
+    node_editor_id: String,
+    mnemonic: [u8; 4],
+}
+
+/// Bundles the per-event walk state so the recursive step stays under
+/// the arity threshold and every field's read/write role is visible at
+/// the call site.
+struct WalkState<'a> {
+    event: &'a StoryEvent,
+    registry: Option<&'a QuestDefinitionRegistry>,
+    stages: Option<&'a QuestStageState>,
+    candidates: &'a mut Vec<QuestStartCandidate>,
 }
 
 fn dispatch_story_event(
     world: &World,
     tree: &SmTree,
-    stages: &mut QuestStageState,
-    event: &StoryEvent,
+    state: &mut WalkState<'_>,
 ) {
-    let Some(&root) = tree.roots_by_mnemonic.get(&event.mnemonic) else {
+    let Some(&root) = tree.roots_by_mnemonic.get(&state.event.mnemonic) else {
         return;
     };
-    let registry = world.try_resource::<QuestDefinitionRegistry>();
     // One visited bitmap for the whole event walk: a node is evaluated
     // at most once per event, which bounds malformed sibling cycles and
     // makes re-reachable nodes cheap no-ops.
     let mut visited = vec![false; tree.nodes.len()];
-    walk_siblings(
-        world,
-        tree,
-        stages,
-        event,
-        registry.as_deref(),
-        tree.nodes[root].first_child,
-        &mut visited,
-    );
+    walk_siblings(world, tree, state, tree.nodes[root].first_child, &mut visited);
 }
 
-/// Evaluate a sibling chain in order. A node that passes runs its quest
-/// links (Quest kind) and descends into its children (Branch/Event);
-/// one that fails skips its whole subtree. Traversal then continues
-/// with the next sibling regardless — the shares-event default
-/// documented on the module.
+/// Evaluate a sibling chain in order. A node that passes collects its
+/// quest links (Quest kind) and descends into its children
+/// (Branch/Event); one that fails skips its whole subtree. Traversal
+/// then continues with the next sibling regardless — the shares-event
+/// default documented on the module.
 fn walk_siblings(
     world: &World,
     tree: &SmTree,
-    stages: &mut QuestStageState,
-    event: &StoryEvent,
-    registry: Option<&QuestDefinitionRegistry>,
+    state: &mut WalkState<'_>,
     head: Option<usize>,
     visited: &mut [bool],
 ) {
@@ -332,39 +375,31 @@ fn walk_siblings(
         visited[index] = true;
         let node = &tree.nodes[index];
         let continuation = node.next_sibling;
-        let mut context = ConditionContext::for_subject(event.subject);
-        context.target = event.object;
+        let mut context = ConditionContext::for_subject(state.event.subject);
+        context.target = state.event.object;
         if evaluate(&node.conditions, world, &context) {
             if node.kind == SmNodeKind::Quest {
                 for &quest in &node.quest_links {
                     let quest = QuestFormId(quest);
-                    if stages.is_started(quest) {
+                    if state.stages.is_some_and(|stages| stages.is_started(quest)) {
                         continue;
                     }
-                    let start_up =
-                        registry.and_then(|registry| registry.start_up_stage(quest));
-                    stages.start_quest(quest, start_up);
-                    log::info!(
-                        "#5366 story manager: started quest {:#010X} ('{}') via node '{}' \
-                         on '{}' event",
-                        quest.0,
-                        registry
+                    state.candidates.push(QuestStartCandidate {
+                        quest,
+                        start_up_stage: state
+                            .registry
+                            .and_then(|registry| registry.start_up_stage(quest)),
+                        editor_id: state
+                            .registry
                             .and_then(|registry| registry.editor_id(quest))
-                            .unwrap_or("?"),
-                        node.editor_id,
-                        String::from_utf8_lossy(&event.mnemonic),
-                    );
+                            .unwrap_or("?")
+                            .to_owned(),
+                        node_editor_id: node.editor_id.clone(),
+                        mnemonic: state.event.mnemonic,
+                    });
                 }
             }
-            walk_siblings(
-                world,
-                tree,
-                stages,
-                event,
-                registry,
-                node.first_child,
-                visited,
-            );
+            walk_siblings(world, tree, state, node.first_child, visited);
         }
         current = continuation;
     }

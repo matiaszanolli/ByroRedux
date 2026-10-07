@@ -1,6 +1,8 @@
 # Story Manager event dispatch
 
-**Status**: Phase 0 + Phase 1 **landed 2026-10-07** (#5366): the
+**Status**: Phase 0 + Phase 1 **landed 2026-10-07** (#5366), including
+the live Phase-1 gate
+([`sm1-story-manager.sh`](../smoke-tests/sm1-story-manager.sh)): the
 `SMBN`/`SMEN`/`SMQN` decode (`crates/plugin/src/esm/records/misc/story_manager.rs`
 → `EsmIndex.story_manager_nodes`), the `SmTree` fold + `StoryEvent`
 dispatcher (`crates/scripting/src/story_manager.rs`), and two producers
@@ -276,12 +278,21 @@ tree itself (rederived from the load order every boot).
    cell-loader location contexts (interior: cell editor-id; exterior:
    worldspace+grid — coarser than LCTN granularity, tightened in Phase
    2). Shares-event is the continue-past default until `DNAM` decodes
-   (§5). Gate note: the *unit* gates landed (synthetic tree dispatch,
-   sibling ordering, cycle termination, failing-branch gating,
-   producer dedup); the *live* Skyrim smoke (an SM-started quest
-   demonstrably starting in-engine) is still owed and belongs with
-   Phase 2's condition work, where a node conditioned on event data can
-   be told apart from an unconditional start.
+   (§5). The **live gate landed 2026-10-07**
+   ([`sm1-story-manager.sh`](../smoke-tests/sm1-story-manager.sh)):
+   booting the Skyrim profile into WhiterunDragonsreach with a player
+   fires CLOC on the initial location-context install, and the
+   dispatcher starts six quests through the canonical lifecycle — the
+   deterministic unconditional target `CRLocationExpansionNode` →
+   `CRHoldExpansion` (QUST flags 0x0, so the start is attributable to
+   nothing but the SM) plus five genuinely condition-gated nodes
+   (`WIGreetingNodeSHARES`, `CWChangeLocationScenes`), read back
+   through byro-dbg as `state: running` with aliases bound same-frame.
+   The smoke's first run also caught a real defect: holding the
+   `QuestStageState` write guard across condition evaluation deadlocks
+   against `GetStage`-family reads (lock_tracker); the dispatcher is
+   two-phase by necessity — a read-only walk collecting candidates,
+   then the starts under the write guard.
 3. **Phase 2 — conditions on event data + alias fill.** Evaluator
    run-on extension + P4 alias integration. Gate: a quest whose node
    conditions on event data (the tutorial's killer-conditions shape)
