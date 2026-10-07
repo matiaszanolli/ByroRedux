@@ -831,27 +831,40 @@ fn spawn_demo_primitives(world: &mut World, ctx: &mut VulkanContext, has_nif_con
             queue,
             command_pool: pool,
         };
+        // #5261 (CONC-D2-2026-10-05-01) — the demo primitives go through
+        // `upload_scene_mesh` (per-mesh buffers PLUS the global geometry
+        // pool), not per-mesh-only `upload`. #5188's geometry-dead arm drops
+        // to non-RT shading whenever the registry has no global geometry
+        // pair — which was the PERMANENT state of this demo scene, so the
+        // CI validation lane (which runs exactly this scene) never exercised
+        // a single RT consumer: no fragment ray queries, no caustic splat
+        // (its latch is closed by the geometry-dead arm), no volumetrics
+        // TLAS path, no RT GI. Feeding the global pool makes
+        // `global_vertex_buffer` live, so rt_flag stays 1 and the lane's
+        // `rt-integrity:` line reads `rt_flag=1 tlas_build=1` again — and
+        // the CI gate added with this fix fails the job if it ever goes
+        // quiet.
         let cube_handle = ctx
             .mesh_registry
-            .upload(upload_ctx, &verts, &idxs, rt, None)
+            .upload_scene_mesh(upload_ctx, &verts, &idxs, rt, None)
             .expect("Failed to upload cube mesh");
 
         let (quad_verts, quad_idxs) = quad_vertices();
         let quad_handle = ctx
             .mesh_registry
-            .upload(upload_ctx, &quad_verts, &quad_idxs, rt, None)
+            .upload_scene_mesh(upload_ctx, &quad_verts, &quad_idxs, rt, None)
             .expect("Failed to upload quad mesh");
 
         let (red_verts, red_idxs) = triangle_vertices([1.0, 0.2, 0.2]);
         let red_handle = ctx
             .mesh_registry
-            .upload(upload_ctx, &red_verts, &red_idxs, rt, None)
+            .upload_scene_mesh(upload_ctx, &red_verts, &red_idxs, rt, None)
             .expect("Failed to upload red triangle mesh");
 
         let (blue_verts, blue_idxs) = triangle_vertices([0.2, 0.2, 1.0]);
         let blue_handle = ctx
             .mesh_registry
-            .upload(upload_ctx, &blue_verts, &blue_idxs, rt, None)
+            .upload_scene_mesh(upload_ctx, &blue_verts, &blue_idxs, rt, None)
             .expect("Failed to upload blue triangle mesh");
 
         // Batched BLAS build for RT shadows on demo meshes.

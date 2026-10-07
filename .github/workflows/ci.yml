@@ -454,6 +454,23 @@ jobs:
             exit 1
           fi
 
+          # #5261 / CONC-D2-2026-10-05-01 — the RT half of the positive gate.
+          # This lane runs the content-free demo scene, and #5188's
+          # geometry-dead arm drops to non-RT shading whenever the registry
+          # has no global geometry pair — which had become the demo scene's
+          # permanent state, silently turning OFF every RT consumer here
+          # (fragment ray queries, the caustic splat latch, the volumetrics
+          # TLAS path, RT GI) while the job stayed green. The bench prints a
+          # machine-readable `rt-integrity:` line; a silent RT-off must fail
+          # the job instead of passing it. The fix lives in
+          # byroredux/src/scene.rs::spawn_demo_primitives (global-pool
+          # uploads); if this fires, something re-blinded the lane.
+          if ! echo "$OUTPUT" | grep -qE 'rt-integrity:.*rt_flag=1 .*tlas_build=1'; then
+            echo ""
+            echo "::error::No 'rt-integrity: ... rt_flag=1 tlas_build=1' line in the bench output — the validation lane is not exercising the RT consumers, so a barrier/descriptor hazard on any of them would go unseen (#5261)."
+            exit 1
+          fi
+
       - name: Assert renderer-static scene-state determinism
         env:
           # #4987 — LVP_ICD is the glob-resolved manifest exported to
