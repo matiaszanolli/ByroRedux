@@ -586,10 +586,14 @@ pub(crate) fn translate_texture_clamp_mode(source: &ImportedMaterial) -> u8 {
 ///     NIF mesh extractors) and populated `source.metalness_override/
 ///     roughness_override` as `Some(…)`, so [`Material::resolve_pbr`] here
 ///     only clamps. BGSM content also arrives pre-classified as `Some`.
-///     **BGEM and the Starfield material-reference stubs do not**: both
-///     leave the overrides unset (`merge_bgem_arm`'s NaN sentinels,
-///     #2707's stub case), so the classifier arm is a live path for them
-///     — exactly the correction #4284 applied to `resolve_pbr`'s own doc.
+///     **BGEM and the Starfield material-reference stubs do not**: BGEM
+///     leaves the overrides unset (`merge_bgem_arm`'s NaN sentinels), and
+///     a Starfield stub does too **only when its `.mat` misses the CDB**
+///     (or no CDB is loaded) — #5197 stamps a CDB hit's unset overrides
+///     with `PbrMaterial::NO_SIGNAL_NEUTRAL` in `apply_cdb_material`
+///     (#2707's stub case), so the classifier arm is a live path for BGEM
+///     and CDB misses but never for a CDB hit — exactly the correction
+///     #4284 applied to `resolve_pbr`'s own doc.
 ///     Either way every material exits with explicit `(metalness,
 ///     roughness)` scalars; no render-time fallback.
 ///     `feedback_format_translation.md` Stage 1.

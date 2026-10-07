@@ -1453,9 +1453,15 @@ impl Material {
     /// Starfield's material-reference-stub case (measured at 97.9% of
     /// Starfield meshes in a sampled corpus), which leaves
     /// `metalness`/`roughness` NaN with no pre-classified override to
-    /// seed from. Do not remove this arm as "dead code" — doing so would
-    /// ship raw NaN into `GpuMaterial` for the majority of Starfield
-    /// content.
+    /// seed from. #5197 narrowed that population: a stub whose `.mat`
+    /// hits the Starfield CDB has any unset override pre-seeded with
+    /// [`PbrMaterial::NO_SIGNAL_NEUTRAL`] (`apply_cdb_material`), so it
+    /// arrives non-NaN and skips this arm — the arm stays live for BGEM
+    /// and for CDB misses (and runs with no CDB loaded). Do not remove
+    /// the arm as "dead code" — a CDB miss would ship raw NaN into
+    /// `GpuMaterial` — and do not re-classify CDB hits: the neutral
+    /// stamp is what keeps filename guesses (`iris_iron_color.dds` → a
+    /// 0.9-metal eye) out of the scalars.
     ///
     /// Either way, after this returns the renderer reads `metalness` /
     /// `roughness` directly — no render-time fallback. Every material
@@ -1477,8 +1483,10 @@ impl Material {
                 // producers (NIF import via `classify_legacy_pbr` and BGSM
                 // leave metalness/roughness non-NaN — see the doc above),
                 // but it is NOT future-proofing: BGEM (effect) materials
-                // and #2707's Starfield material-reference stubs arrive
-                // with no PBR signal at all, so this is a real, live path
+                // and #2707's Starfield material-reference stubs whose
+                // `.mat` misses the CDB (or with no CDB loaded) arrive
+                // with no PBR signal at all — #5197 pre-seeds CDB hits
+                // with NO_SIGNAL_NEUTRAL — so this is a real, live path
                 // for them. `Self::specular_authored` carries the real
                 // signal all the way from `MaterialInfo::specular_authored`
                 // (`crates/nif`) through `ImportedMaterial` and
