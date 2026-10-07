@@ -321,6 +321,15 @@ pub struct InfoRecord {
     /// `PNAM` previous-info ref — the prior INFO in this branch. 0
     /// means "this is the first response in the chain".
     pub previous_info: u32,
+    /// #5271 — `QSTI`, the INFO's **own** owning quest. FO3/FNV/Oblivion
+    /// author it on every INFO (census: 23,247/23,247 measured FNV INFOs);
+    /// the DIAL-level [`DialRecord::quest_refs`] list every quest that owns
+    /// the TOPIC, and one topic can list several — in the GECK an INFO
+    /// counts only while THIS quest is running, its priority orders the
+    /// topic's INFOs, and its dialogue conditions gate them. Skyrim+/FO4
+    /// author no per-INFO QSTI (ownership is DIAL-side `QNAM`); `0` there
+    /// means "no per-INFO quest — use the topic's ownership".
+    pub quest: u32,
     /// `ANAM` actor form ID — restricts this response to a specific NPC.
     /// 0 means the response works for any actor.
     pub actor_form_id: u32,
@@ -582,6 +591,16 @@ pub fn parse_info(
                 let raw = SubReader::new(&sub.data).u32_or_default();
                 let remapped = remap.as_ref().map_or(raw, |r| r.remap(raw));
                 out.previous_info = remapped;
+            }
+            // #5271 — the INFO's own owning quest. Distinct from the
+            // DIAL-level QSTI/QNAM arm in `parse_dial`: that one lists
+            // every quest owning the TOPIC, while each FO3/FNV/Oblivion
+            // INFO names the one whose running state gates it. Last
+            // sub-record wins, matching the PNAM/ANAM assign convention.
+            b"QSTI" if sub.data.len() >= 4 => {
+                let raw = SubReader::new(&sub.data).u32_or_default();
+                let remapped = remap.as_ref().map_or(raw, |r| r.remap(raw));
+                out.quest = remapped;
             }
             b"ANAM" if sub.data.len() >= 4 => {
                 let raw = u32::from_le_bytes([sub.data[0], sub.data[1], sub.data[2], sub.data[3]]);
@@ -1518,15 +1537,20 @@ mod tests {
             sub(b"PNAM", 0x00_050000u32.to_le_bytes()), // plugin 0 (master), form 0x050000
             sub(b"TCLT", 0x01_030000u32.to_le_bytes()), // plugin 1 (this), form 0x030000
             sub(b"ANAM", 0x00_020000u32.to_le_bytes()), // plugin 0 (master), form 0x020000
+            // #5271 — the INFO's own owning quest, remapped like its
+            // sibling reference subs.
+            sub(b"QSTI", 0x00_040000u32.to_le_bytes()), // plugin 0 (master), form 0x040000
         ];
         // With remap: plugin 0 stays 0 (master), plugin 1 stays 1 (this)
         let info = parse_info(0x5678, &subs, &Some(remap));
         assert_eq!(info.previous_info, 0x00_050000);
         assert_eq!(info.topic_links[0], 0x01_030000);
         assert_eq!(info.actor_form_id, 0x00_020000);
+        assert_eq!(info.quest, 0x00_040000, "#5271 — QSTI remaps with the rest");
         // Verify that without remap, values are identical (no remap = identity)
         let info_no_remap = parse_info(0x5678, &subs, &None);
         assert_eq!(info_no_remap.previous_info, info.previous_info);
+        assert_eq!(info_no_remap.quest, info.quest);
     }
 
     #[test]

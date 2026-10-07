@@ -613,6 +613,13 @@ pub(crate) fn populate_scene_runtime(
     if quest_aliases > 0 {
         log::info!("Installed alias definitions for {quest_aliases} quests");
     }
+    // #5271 — the INFO-level QSTI semantics need every quest's authored
+    // priority (a multi-quest topic's INFOs compete by it), not just the
+    // scene-referenced subset; installed unconditionally because the
+    // activation dialogue route reads it without any SCEN in play.
+    world.insert_resource(byroredux_scripting::DialogueQuestPriorities::from_quests(
+        index.quests.values().map(|quest| (quest.form_id, quest.priority)),
+    ));
     // M42.9 / #2652 — ambient NPC package stacks must remain resolvable after
     // spawn so schedule boundaries and Papyrus EvaluatePackage can select a
     // new winner. Previously this registry received only SCEN-referenced PACK

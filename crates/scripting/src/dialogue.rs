@@ -19,11 +19,42 @@ use byroredux_plugin::esm::records::{DialRecord, InfoRecord, SceneActionType};
 
 use crate::condition::{evaluate, ConditionContext};
 use crate::papyrus_demo::PapyrusPlayerEntity;
-use crate::quest_stages::QuestFormId;
+use crate::quest_stages::{QuestFormId, QuestStageState};
 use crate::scene::{
     append_scene_completions, drain, snapshot, SceneAliasCandidate, SceneEvent, SceneEventBatch,
     ScenePlayer,
 };
+
+/// #5271 — authored quest priorities (QUST `priority`), for ordering a
+/// multi-quest topic's INFOs: an INFO whose owning quest is running
+/// competes by that quest's priority, higher first, with authored file
+/// order inside a tie (GECK *Quest Data Tab*: the quest's priority orders
+/// its INFOs). Installed once per load beside
+/// [`install_dialogue_records`]; when absent the selection keeps
+/// authored file order — the pre-#5271 behaviour, and the only sane
+/// fallback for a registry built without quest data.
+#[derive(Debug, Clone, Default)]
+pub struct DialogueQuestPriorities {
+    priority: HashMap<u32, u8>,
+}
+
+impl Resource for DialogueQuestPriorities {}
+
+impl DialogueQuestPriorities {
+    /// Build from `(form_id, priority)` pairs — `QustRecord`'s
+    /// `form_id`/`priority` at the install site.
+    pub fn from_quests(quests: impl IntoIterator<Item = (u32, u8)>) -> Self {
+        Self {
+            priority: quests.into_iter().collect(),
+        }
+    }
+
+    /// The quest's authored priority, `0` when unknown (an unloaded or
+    /// malformed QUST — lowest precedence, matching the GECK's default).
+    pub fn priority_of(&self, quest: u32) -> u8 {
+        self.priority.get(&quest).copied().unwrap_or(0)
+    }
+}
 
 /// Immutable authored dialogue topics keyed by global-space DIAL FormID.
 #[derive(Debug, Clone, Default)]
@@ -148,6 +179,9 @@ pub fn register(world: &mut World) {
     if world.try_resource::<DialogueRegistry>().is_none() {
         world.insert_resource(DialogueRegistry::default());
     }
+    if world.try_resource::<DialogueQuestPriorities>().is_none() {
+        world.insert_resource(DialogueQuestPriorities::default());
+    }
 }
 
 /// Install parsed DIAL/INFO records. Re-installation refreshes definitions by
@@ -197,21 +231,64 @@ fn select_info<'a>(
     player: Option<EntityId>,
 ) -> Option<&'a InfoRecord> {
     let subject = actor.or(player).unwrap_or_default();
-    let owning_quest = topic.quest_refs.first().copied().map(QuestFormId);
-    let mut context = ConditionContext::for_subject(subject);
-    context.target = player;
-    if let Some(quest) = owning_quest {
-        context = context.with_quest(quest);
+    let topic_quest = topic.quest_refs.first().copied().map(QuestFormId);
+    // #5271 — a FO3/FNV/Oblivion INFO carries its OWN owning quest
+    // (`QSTI`) and counts only while that quest is running (GECK Quest
+    // Data Tab). A multi-quest topic lists every owner in `quest_refs`,
+    // so gating on "any listed quest runs" lets a stopped quest's line
+    // win in file order. INFOs without a QSTI (Skyrim+/FO4 — ownership
+    // is DIAL-side QNAM) keep the topic-level ownership, which the
+    // activation route already filtered for running state.
+    let stages = world.try_resource::<QuestStageState>();
+    let info_quest_is_running = |info: &InfoRecord| match stages.as_deref() {
+        None => true,
+        Some(stages) => info.quest == 0 || stages.is_running(QuestFormId(info.quest)),
+    };
+    // #5271 — quest priority orders the candidates (higher first,
+    // authored file order inside a tie). Only reorder when priorities
+    // are installed; the stable sort keeps file order otherwise.
+    let mut order: Vec<usize> = (0..topic.infos.len()).collect();
+    if let Some(priorities) = world.try_resource::<DialogueQuestPriorities>() {
+        order.sort_by_key(|&i| {
+            let quest = topic.infos[i].quest;
+            let quest = if quest != 0 {
+                quest
+            } else {
+                topic_quest.map(|q| q.0).unwrap_or(0)
+            };
+            std::cmp::Reverse(priorities.priority_of(quest))
+        });
     }
-    topic.infos.iter().find(|info| {
-        actor_matches(info, world, actor) && evaluate(&info.conditions, world, &context)
+    order.into_iter().find_map(|i| {
+        let info = &topic.infos[i];
+        if !info_quest_is_running(info) {
+            return None;
+        }
+        // The INFO's own quest drives quest-scoped condition functions
+        // (GetStage & co.); topic ownership is the fallback for
+        // QSTI-less INFOs.
+        let context_quest = if info.quest != 0 {
+            Some(QuestFormId(info.quest))
+        } else {
+            topic_quest
+        };
+        let mut context = ConditionContext::for_subject(subject);
+        context.target = player;
+        if let Some(quest) = context_quest {
+            context = context.with_quest(quest);
+        }
+        (actor_matches(info, world, actor) && evaluate(&info.conditions, world, &context))
+            .then_some(info)
     })
 }
 
 /// Public activation-route wrapper around the SCEN-path [`select_info`]:
-/// the first INFO on `topic` whose speaker matches `actor` (ANAM, or the
-/// GetIsID-derived speaker) and whose CTDA list passes with the actor as
-/// subject and the player as target — the authored greeting/topic pick.
+/// the first eligible INFO on `topic` — its speaker matching `actor`
+/// (ANAM, or the GetIsID-derived speaker), its CTDA list passing with
+/// the actor as subject and the player as target, and (FO3/FNV/Oblivion,
+/// #5271) its own `QSTI` quest running — ordered by quest priority when
+/// [`DialogueQuestPriorities`] is installed. The authored greeting/topic
+/// pick.
 pub fn select_first_info<'a>(
     topic: &'a DialRecord,
     world: &World,

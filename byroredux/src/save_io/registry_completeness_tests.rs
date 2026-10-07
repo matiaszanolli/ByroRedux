@@ -588,6 +588,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("DialoguePresentationEventBatch", "one-shot presentation batch, drained at the start of every tick before being repopulated the same tick"),
         ("ItemEventBatch", "one-shot item-transfer event batch: read mid-frame by loot_appearance::queue_gear_releases (#5028), then drained by event_cleanup_system at end of frame"),
         ("DialogueRegistry", "populated once from parsed DIAL/INFO ESM records, only ever read afterward"),
+        ("DialogueQuestPriorities", "authored QUST priorities installed once per load (#5271), only ever read afterward — same posture as DialogueRegistry"),
         ("Dlc2Ttr4aPlayerScript", "forward-latent — no live production spawn site exists outside tests/examples"),
         ("EquipItemCatalog", "populated once at cell/plugin load, only ever read afterward"),
         ("EvaluatePackageRequest", "one-shot ingress marker, drained every tick by scene_package_system"),

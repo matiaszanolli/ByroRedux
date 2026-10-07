@@ -237,7 +237,15 @@ fn select_on_topic(
             topic_form_id: record.form_id,
             topic_editor_id: record.editor_id.clone(),
             info_form_id: info.form_id,
-            owning_quest: record.quest_refs.first().copied(),
+            // #5271 — name the quest that actually owns the SPOKEN line
+            // (its QSTI), not the topic's first listed owner: on a
+            // multi-quest topic those differ, and the log previously
+            // attributed the line to a quest that may not even run.
+            owning_quest: if info.quest != 0 {
+                Some(info.quest)
+            } else {
+                record.quest_refs.first().copied()
+            },
             speaker_text: info.response_text.clone(),
             response_number: info.response_number,
             emotion_type: info.emotion_type,
@@ -1369,5 +1377,117 @@ mod tests {
             assert_eq!(listed(&topic), vec![TOP_ENTRY]);
             assert!(select_topic_by_form_id(&mut world, eltrys, SCENE).is_err());
         }
+    }
+
+    // ── #5271 — per-INFO QSTI ownership on a multi-quest topic ──────
+
+    const QUEST_OTHER: u32 = 0x0001_9CDE;
+    const TOPIC_MULTI: u32 = 0x20_0030;
+    const INFO_STOPPED: u32 = 0x20_0031;
+    const INFO_RUNNING: u32 = 0x20_0032;
+    const INFO_LOW_PRIO: u32 = 0x20_0033;
+    const INFO_HIGH_PRIO: u32 = 0x20_0034;
+
+    fn info_with_quest(form_id: u32, quest: u32, text: &str) -> InfoRecord {
+        InfoRecord {
+            quest,
+            ..info(form_id, 0, text)
+        }
+    }
+
+    fn multi_quest_world() -> (World, EntityId, EntityId) {
+        let mut world = World::new();
+        world.register::<ActivateEvent>();
+        world.register::<NpcDialogueTopic>();
+        world.register::<SceneAliasCandidate>();
+        world.register::<Dead>();
+        world.insert_resource(DialogueRegistry::default());
+        world.insert_resource(DialogueSurfaceState::default());
+        let player = spawn_player(&mut world);
+        let npc = spawn_actor(&mut world, SPEAKER_REF, SPEAKER_BASE);
+        install_quest(&mut world, SPEAKER_REF, 1);
+        (world, npc, player)
+    }
+
+    fn install_multi_quest_topic(world: &mut World, infos: Vec<InfoRecord>) {
+        let mut index = byroredux_plugin::esm::records::EsmIndex::default();
+        index.dialogues.insert(
+            TOPIC_MULTI,
+            DialRecord {
+                form_id: TOPIC_MULTI,
+                editor_id: "DoctorMedical".to_string(),
+                full_name: "Medical".to_string(),
+                // One topic, two owning quests — the #5271 shape. The NPC
+                // reaches it through QUEST (bound + running).
+                quest_refs: vec![QUEST, QUEST_OTHER],
+                infos,
+                ..Default::default()
+            },
+        );
+        world.insert_resource(crate::cell_loader::LoadedCellIndex(Arc::new(index)));
+    }
+
+    /// #5271 — the INFO whose own quest is stopped must not speak just
+    /// because a sibling owner of the topic is running: the running
+    /// quest's later INFO wins instead of file order.
+    #[test]
+    fn a_stopped_quests_info_does_not_speak_through_a_running_sibling() {
+        let (mut world, npc, player) = multi_quest_world();
+        install_multi_quest_topic(
+            &mut world,
+            vec![
+                info_with_quest(INFO_STOPPED, QUEST_OTHER, "The stopped quest's line."),
+                info_with_quest(INFO_RUNNING, QUEST, "The running quest's line."),
+            ],
+        );
+        start_quest(&mut world);
+        refresh_scene_actor_bindings(&world);
+        world.insert(npc, ActivateEvent { activator: player });
+
+        npc_dialogue_selection_system(&world);
+
+        let topic = selected(&world, npc).expect("the running quest's INFO selects");
+        assert_eq!(
+            topic.info_form_id, INFO_RUNNING,
+            "the stopped quest's INFO must not win by file order (#5271)"
+        );
+        assert_eq!(topic.owning_quest, Some(QUEST));
+    }
+
+    /// #5271 — when both quests run, the higher-priority quest's INFO wins
+    /// regardless of file order, and the selection attributes the line to
+    /// the spoken INFO's quest.
+    #[test]
+    fn a_higher_priority_quests_info_wins_in_a_multi_quest_topic() {
+        let (mut world, npc, player) = multi_quest_world();
+        install_multi_quest_topic(
+            &mut world,
+            vec![
+                info_with_quest(INFO_LOW_PRIO, QUEST, "Priority 50 line."),
+                info_with_quest(INFO_HIGH_PRIO, QUEST_OTHER, "Priority 80 line."),
+            ],
+        );
+        let mut stages = QuestStageState::default();
+        stages.start_quest(QuestFormId(QUEST), None);
+        stages.start_quest(QuestFormId(QUEST_OTHER), None);
+        world.insert_resource(stages);
+        world.insert_resource(byroredux_scripting::DialogueQuestPriorities::from_quests(
+            [(QUEST, 50), (QUEST_OTHER, 80)],
+        ));
+        refresh_scene_actor_bindings(&world);
+        world.insert(npc, ActivateEvent { activator: player });
+
+        npc_dialogue_selection_system(&world);
+
+        let topic = selected(&world, npc).expect("a qualifying INFO selects");
+        assert_eq!(
+            topic.info_form_id, INFO_HIGH_PRIO,
+            "quest priority orders the topic's INFOs, higher first (#5271)"
+        );
+        assert_eq!(
+            topic.owning_quest,
+            Some(QUEST_OTHER),
+            "the selection names the SPOKEN line's quest, not the topic's first owner (#5271)"
+        );
     }
 }
