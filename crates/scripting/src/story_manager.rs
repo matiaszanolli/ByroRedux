@@ -264,7 +264,7 @@ pub fn build_story_manager_tree(records: &HashMap<u32, SmNodeRecord>) -> SmTree 
 
     let mut tree = SmTree::default();
     let mut by_form_id: HashMap<u32, usize> = HashMap::with_capacity(sorted.len());
-    for record in sorted {
+    for record in &sorted {
         by_form_id.insert(record.form_id, tree.nodes.len());
         tree.nodes.push(SmTreeNode {
             form_id: record.form_id,
@@ -307,9 +307,13 @@ pub fn build_story_manager_tree(records: &HashMap<u32, SmNodeRecord>) -> SmTree 
     }
 
     // Children by parent, then each group's chain head. The head is the
-    // member no in-group sibling points at.
+    // member no in-group sibling points at. Members are collected in
+    // arena (FormID-sorted) order — `records.values()` here would make
+    // the cycle fallback `members[0]` (and every order-sensitive walk:
+    // do-all round-robin, random pick) HashMap-iteration-dependent,
+    // which flaked CI (#5366 P2 tests).
     let mut children_by_parent: HashMap<u32, Vec<usize>> = HashMap::new();
-    for record in records.values() {
+    for record in &sorted {
         if record.parent != 0 && by_form_id.contains_key(&record.parent) {
             let index = by_form_id[&record.form_id];
             children_by_parent.entry(record.parent).or_default().push(index);
@@ -469,6 +473,13 @@ pub fn story_manager_dispatch_system(world: &World) {
         }
         (candidates, wraps)
     };
+    // Phase 2's post-start writes (`StoryEventAliasFill` + the
+    // `SceneActorBindings` dirty flag) are deferred past the stages
+    // guard: the alias refresh holds `SceneActorBindings` while its
+    // conditions read `QuestStageState`, so taking bindings under the
+    // stages WRITE here closed the ABBA cycle the CI lock-order lane
+    // reported (#5366).
+    let mut started_event_fills: Vec<(QuestFormId, EventDataSlots)> = Vec::new();
     let Some(mut stages) = world.try_resource_mut::<QuestStageState>() else {
         return;
     };
@@ -501,16 +512,7 @@ pub fn story_manager_dispatch_system(world: &World) {
             runtime.fired[candidate.pool_index] = true;
             runtime.last_fire_hours[candidate.pool_index] = hours as f32;
         }
-        // Phase 2 — record the event's slots for this quest's `FromEvent`
-        // aliases and mark the binding table dirty so the alias refresh
-        // (scheduled right after this system) re-fills with them. One
-        // resource write at a time: the fill map first, then bindings.
-        if let Some(mut fills) = world.try_resource_mut::<StoryEventAliasFill>() {
-            fills.0.insert(candidate.quest, candidate.slots);
-        }
-        if let Some(mut bindings) = world.try_resource_mut::<SceneActorBindings>() {
-            bindings.request_refresh();
-        }
+        started_event_fills.push((candidate.quest, candidate.slots));
         log::info!(
             "#5366 story manager: started quest {:#010X} ('{}') via node '{}' \
              on '{}' event",
@@ -519,6 +521,21 @@ pub fn story_manager_dispatch_system(world: &World) {
             candidate.node_editor_id,
             String::from_utf8_lossy(&candidate.mnemonic),
         );
+    }
+    drop(stages);
+    // Phase 2 — record the event's slots for this quest's `FromEvent`
+    // aliases and mark the binding table dirty so the alias refresh
+    // (scheduled right after this system) re-fills with them. One
+    // resource write at a time: the fill map first, then bindings.
+    if !started_event_fills.is_empty() {
+        if let Some(mut fills) = world.try_resource_mut::<StoryEventAliasFill>() {
+            for (quest, slots) in &started_event_fills {
+                fills.0.insert(*quest, *slots);
+            }
+        }
+        if let Some(mut bindings) = world.try_resource_mut::<SceneActorBindings>() {
+            bindings.request_refresh();
+        }
     }
 }
 
