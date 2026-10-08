@@ -461,3 +461,80 @@ fn declared_size_matches_extract_across_bsa_versions() {
         );
     }
 }
+
+/// #5367 Phase V probe/floor — FNV's voice archive opens and the
+/// Phase-G greeting line's authored voice file resolves under the
+/// documented convention `sound\voice\<plugin>\<voice-type
+/// EDID>\<INFO formid 8-hex>_<response>.ogg`. Doc Mitchell's greeting
+/// INFO is 0x00107222 (`dt1-dialogue-layers.sh` leg 1's line); his
+/// voice type is `MaleUniqueDocMitchell` (VTCK — the folder-name
+/// convention this test pins). Uncompressed v104 (archive flag
+/// measured: `compressed=0`).
+#[test]
+#[ignore = "needs FNV game data on disk"]
+fn fnv_voices_bsa_resolves_greeting_line_voice() {
+    let Some(data) = fnv_data_dir() else {
+        require_game_data(
+            "BYROREDUX_FNV_DATA",
+            std::path::Path::new("/mnt/data/SteamLibrary/steamapps/common/Fallout New Vegas/Data"),
+        );
+        eprintln!("[FNV voices] skipping: game data unavailable");
+        return;
+    };
+    let archive = BsaArchive::open(data.join("Fallout - Voices1.bsa"))
+        .unwrap_or_else(|e| panic!("open Voices1.bsa failed: {e}"));
+    assert!(
+        archive.file_count() >= 100_000,
+        "FNV voice archive scale (measured 105 517): {}",
+        archive.file_count()
+    );
+    let bytes = archive
+        .extract("sound\\voice\\falloutnv.esm\\maleuniquedocmitchell\\vcg01_greeting_00107222_1.ogg")
+        .unwrap_or_else(|e| panic!("greeting voice extract failed: {e}"));
+    assert_eq!(&bytes[..4], b"OggS", "an Ogg Vorbis stream");
+}
+
+/// #5367 Phase V classification — Skyrim SE's voice container. The
+/// `Skyrim - Voices_en0.bsa` (v105) holds `.fuz` files; this test pins
+/// the container shape the doc records: a `FUZE`-magic wrapper whose
+/// body carries the `.lip` phoneme data followed by the audio stream
+/// (XMA2 on LE; SE's codec confirmed by the bytes below). Decoding
+/// XMA2 is its own project — the Phase V runtime is the Ogg path
+/// (FO3/FNV); this test exists so the V2 scope statement cites bytes,
+/// not folklore.
+#[test]
+#[ignore = "needs Skyrim SE game data on disk"]
+fn skyrim_fuz_container_shape() {
+    let Some(data) = skyrimse_data_dir() else {
+        require_game_data(
+            "BYROREDUX_SKYRIMSE_DATA",
+            std::path::Path::new(
+                "/mnt/data/SteamLibrary/steamapps/common/Skyrim Special Edition/Data",
+            ),
+        );
+        eprintln!("[Skyrim fuz] skipping: game data unavailable");
+        return;
+    };
+    let archive = BsaArchive::open(data.join("Skyrim - Voices_en0.bsa"))
+        .unwrap_or_else(|e| panic!("open Voices_en0.bsa failed: {e}"));
+    let fuz = archive
+        .list_files()
+        .into_iter()
+        .find(|p| p.ends_with(".fuz"))
+        .expect("the archive holds .fuz entries")
+        .to_owned();
+    let bytes = archive
+        .extract(&fuz)
+        .unwrap_or_else(|e| panic!("extract {fuz} failed: {e}"));
+    assert_eq!(&bytes[..4], b"FUZE", "the FUZ container magic");
+    // FUZE layout: magic, version u32, then a WAV chunk ("RIFX"/"RIFF")
+    // carrying the lip data, then the audio chunk. Record the shape.
+    let riff_at = bytes
+        .windows(4)
+        .position(|w| w == b"RIFX" || w == b"RIFF")
+        .expect("a RIFF lip chunk inside the FUZ");
+    eprintln!(
+        "[fuz] {fuz}: {} bytes, FUZE ok, RIFF lip chunk at {riff_at}",
+        bytes.len()
+    );
+}

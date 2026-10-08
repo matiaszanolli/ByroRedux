@@ -60,13 +60,18 @@ wait_log() {
 
 env BYRO_DEBUG_PORT="$PORT" BYRO_DEBUG_SERVER=1 \
     BYROREDUX_SETTINGS_PATH="$LOG_DIR/settings.toml" \
-    RUST_LOG="warn,byroredux::asset_provider=info" \
+    RUST_LOG="warn,byroredux::asset_provider=info,byroredux::systems::dialogue_voice=info" \
     target/release/byroredux \
     --game fnv --cell GSDocMitchellHouse \
     --player --bench-frames 30 --bench-hold \
     >"$LOG_DIR/session.stdout" 2>"$LOG_DIR/session.stderr" &
 engine_pid=$!
 wait_log "$LOG_DIR/session.stderr" 'bench-hold:'
+# Let the quest/dialogue systems take their first ticks (Start Game
+# Enabled quests install, conditions evaluate against the started
+# clock) before activating — activating on the load frame races the
+# first selection pass.
+sleep 2
 
 # ── Phase G: the quest-less activation greets ─────────────────────
 debug_command 'find("DocMitchell")' "$LOG_DIR/find.log" || fail 'find unavailable'
@@ -81,6 +86,17 @@ grep -Fq "topic 0x0000C8" "$LOG_DIR/greet.log" \
 grep -Fq 'npc '"$entity" "$LOG_DIR/greet.log" \
     || fail "Phase G: no selection stamped on Doc Mitchell"
 echo "smoke[dt1-dialogue-layers]: Phase G PASS — quest-less activation greets"
+
+# ── Phase V: the greeted line carries its authored voice ──────────
+# The FNV profile opens `Fallout - Voices1.bsa` through the sounds
+# list (the archive this phase made a consumer for); the presented
+# greeting resolves `sound\voice\falloutnv.esm\maleuniquedocmitchell\
+# vcg01_greeting_00107222_1.ogg` (quest `VCG01` + topic `GREETING`
+# EDIDs — INFO records carry none), decodes, and schedules at the
+# NPC. The resolution+decode+request path is device-independent (the
+# audio queue counts a request even without an output device).
+wait_log "$LOG_DIR/session.stderr" "voice type 'maleuniquedocmitchell', plugin falloutnv.esm"
+echo "smoke[dt1-dialogue-layers]: Phase V PASS — greeting voice resolved and scheduled"
 
 # ── Phase F: the force-greet package opens without activation ─────
 # End the G conversation first so the F assertion reads a fresh serial.

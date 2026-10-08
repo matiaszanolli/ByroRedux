@@ -248,6 +248,11 @@ pub enum ConversationTreeError {
 #[derive(Debug, Clone, Default)]
 pub struct InfoRecord {
     pub form_id: u32,
+    /// The INFO's own `EDID`. Not used for matching (conditions and
+    /// speaker filters are), but Bethesda's voice-file naming embeds it:
+    /// `sound\\voice\\<plugin>\\<voice type>\\<EDID>_<formid>_<n>`
+    /// (#5367 Phase V), so the runtime needs it verbatim.
+    pub editor_id: String,
     /// The INFO's own `DATA` header, typed (#4469 decoded it — pre-fix the
     /// whole sub-record was silently discarded, on 22,327 / 22,327 measured
     /// FO3 INFOs and 23,247 / 23,247 FNV; #5295 typed it — the old raw-u16
@@ -527,6 +532,8 @@ pub fn parse_info(
     let mut current_response: Option<ResponseSegment> = None;
     for sub in subs {
         match &sub.sub_type {
+            // #5367 Phase V — kept verbatim for the voice-file naming.
+            b"EDID" => out.editor_id = read_zstring(&sub.data),
             b"NAM1" => {
                 current_response.get_or_insert_with(Default::default).text =
                     read_lstring_or_zstring(&sub.data);

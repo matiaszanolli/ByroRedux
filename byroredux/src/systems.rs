@@ -12,6 +12,7 @@ mod billboard;
 mod bounds;
 mod camera;
 mod character;
+mod dialogue_voice;
 mod cinematic;
 pub(crate) mod combat_ai;
 mod debug;

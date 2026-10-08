@@ -333,6 +333,22 @@ fn apply_selection(world: &World, npc: EntityId, topic: NpcDialogueTopic, record
     for existing in &outgoing {
         speak_info_end_fragment(world, existing);
     }
+    // #5367 Phase V — resolve the voice while the record is still
+    // owned (insert_topic takes it below). The file name is composed
+    // from the selection's topic + owning-quest EDIDs.
+    let voice_seconds = record
+        .infos
+        .iter()
+        .find(|info| info.form_id == topic.info_form_id)
+        .and_then(|info| {
+            crate::systems::dialogue_voice::play_line_voice(
+                world,
+                npc,
+                info,
+                &topic.topic_editor_id,
+                topic.owning_quest,
+            )
+        });
     if let Some(mut registry) = world.try_resource_mut::<DialogueRegistry>() {
         registry.insert_topic(record);
     }
@@ -355,14 +371,16 @@ fn apply_selection(world: &World, npc: EntityId, topic: NpcDialogueTopic, record
         surface.serial += 1;
         surface.npc = Some(npc);
         // #5367 Phase L — a Goodbye line closes the conversation when its
-        // presentation finishes (subtitle-estimated; voice duration
-        // replaces the estimate when Phase V wires audio).
+        // presentation finishes (voice duration when Phase V resolved
+        // it, the subtitle estimate otherwise).
         surface.close_after = topic.goodbye.then(|| {
             let now = world
                 .try_resource::<byroredux_core::ecs::resources::TotalTime>()
                 .map(|time| time.0)
                 .unwrap_or_default();
-            now + byroredux_scripting::estimate_dialogue_duration(&topic.speaker_text)
+            let estimate =
+                byroredux_scripting::estimate_dialogue_duration(&topic.speaker_text);
+            now + voice_seconds.map(|s| s as f32).unwrap_or(estimate).max(0.1)
         });
     }
     // #5367 Phase L — the spoken set feeds Say-Once disqualification.

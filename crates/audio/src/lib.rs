@@ -1504,6 +1504,20 @@ pub fn load_sound_from_bytes(bytes: Vec<u8>) -> Result<StaticSoundData, FromFile
     StaticSoundData::from_cursor(cursor)
 }
 
+/// #5367 Phase V — a settings-only copy of `sound` that starts `secs`
+/// seconds from now. Lets a caller schedule sequential one-shots (a
+/// dialogue line's response segments) through the same
+/// [`AudioWorld::play_oneshot`] queue without holding kira types: the
+/// underlying `Arc<[Frame]>` samples are shared, only the start-time
+/// setting differs.
+pub fn with_start_delay(sound: &std::sync::Arc<StaticSoundData>, secs: f64) -> std::sync::Arc<StaticSoundData> {
+    std::sync::Arc::new(
+        (**sound)
+            .clone()
+            .start_time(kira::StartTime::Delayed(std::time::Duration::from_secs_f64(secs.max(0.0)))),
+    )
+}
+
 /// **Phase 5**: decode a fully-buffered audio blob as a streaming
 /// sound. Unlike [`load_sound_from_bytes`], the result decodes
 /// audio frames incrementally during playback — appropriate for

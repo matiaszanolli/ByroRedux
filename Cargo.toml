@@ -187,7 +187,7 @@ walkdir = "2.5"
 # streaming/static sound formats (WAV/OGG/MP3/FLAC). Fallback strategy
 # for CI/headless: AudioWorld holds an Option<AudioManager>; init
 # failure (no audio device) leaves it None and the ECS system no-ops.
-kira = "0.10"
+kira = { version = "0.10", features = ["wav", "ogg"] }
 
 # C++ interop
 cxx = "1"

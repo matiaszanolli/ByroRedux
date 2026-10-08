@@ -1864,7 +1864,6 @@ fn categories_table_row_count_pinned() {
     //   SMQN quest-autostart tree; without a row an SM category wipe would
     //   pass the parse-rate floor silently and 65% of Skyrim's quests would
     //   lose their autostart path invisibly).
-    // Bump in lockstep with the struct + `categories()` edits.
     assert_eq!(EsmIndex::categories().len(), 103);
 }
 

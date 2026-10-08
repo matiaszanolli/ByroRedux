@@ -121,7 +121,8 @@ would consume.
 (kira) has no dialogue consumer, and FNV's Voices BSA is deliberately
 unopened (`profiles.toml`'s "no dialogue consumer exists yet"). Wire
 per-line voice playback when a line is presented. Last: it is polish
-for every phase above, a blocker for none.
+for every phase above, a blocker for none. **Landed 2026-10-08** —
+see §5 phase 5.
 
 ## 5. Phases
 
@@ -153,7 +154,25 @@ for every phase above, a blocker for none.
    (`CitGunnyGreetPlayer`) walks Doc Mitchell to the player and opens
    topic 0xC8 with no activation.
 4. **Skyrim force-greet + SM `ADIA` tie-in** (behind the Skyrim PKDT
-   procedure decode). 5. **V — voice.**
+   procedure decode).
+5. **V — voice. Landed 2026-10-08.** The authored FNV file-name
+   convention is `sound\voice\<plugin>\<voice-type EDID>\<quest
+   EDID>_<topic EDID>_<formid 8-hex>_<n>.ogg` — composed from the
+   owning quest's and topic's EDIDs because INFO records routinely
+   carry none of their own (the live-gated greeting 0x107222 has no
+   EDID; its file is `vcg01_greeting_00107222_1.ogg`). The voice type
+   resolves NPC → `VTCK` → indexed `VTYP` EDID; the plugin segment
+   from the INFO FormID's load-order slot. `Fallout - Voices1.bsa`
+   joined the FNV profile's sounds list (105,517 entries — its first
+   consumer), and `apply_selection` resolves/decodes/schedules the
+   segments sequentially (kira delayed start) at the NPC, with the
+   total voice duration replacing the Phase-L subtitle estimate in the
+   Goodbye close. A line with no resolvable voice keeps the estimate —
+   missing audio is the common modded shape, not an error. `.fuz`
+   (Skyrim+) is a different container (FUZE + RIFF lip + XMA2) —
+   deliberately V2 scope. Live gate (`dt1-dialogue-layers.sh` leg 3):
+   the fresh-boot greeting resolves 1 segment / 5.0 s in
+   `maleuniquedocmitchell`.
 
 ## 6. What this document does NOT decide
 
