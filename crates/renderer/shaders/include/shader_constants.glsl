@@ -34,6 +34,8 @@
 
 // Ray-query alpha-skip walk budget (#2265 / TD7-001)
 #define MAX_ALPHA_SKIP_LAYERS 8u
+// Transmission-lobe self-skip hop budget (#5249)
+#define MAX_TRANSMISSION_SELF_SKIPS 8u
 
 // RT reach budgets shared between water.frag and triangle.frag (#3745 / TD7-2026-08-30-01)
 #define RT_REFLECTION_MAX_DIST 5000.0

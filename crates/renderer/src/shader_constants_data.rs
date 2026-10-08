@@ -102,6 +102,23 @@ const _: () = {
 // value to change instead of three to find.
 pub const MAX_ALPHA_SKIP_LAYERS: u32 = 8;
 
+// #5249 — own-instance hops the transmission lobes' shadow ray may take
+// before falling back to "lit" (#5192's conservative default). Each hop
+// advances past one surface of the receiver's own body (the #5018
+// light-side origin starts just inside it); the budget only has to cover
+// a body's own surfaces along one lobe ray, never foreign blockers (the
+// first foreign hit hands the leg to the shared alpha/glass-aware
+// transport). Sibling budget of `MAX_ALPHA_SKIP_LAYERS` above — same
+// order of body-surface crossings, so it shares the 8-layer sizing
+// rationale rather than inventing a second number.
+//
+// The shader half of #5249 (`shadow_transport.glsl`'s
+// `traceShadowTransmittanceSkippingInstance`) shipped using this name
+// without the definition ever landing here, which left `triangle.frag`
+// uncompilable from source and its committed `.spv` pair frozen at a
+// pre-fix intermediate (the FNV-interior black-wall regression).
+pub const MAX_TRANSMISSION_SELF_SKIPS: u32 = 8;
+
 // RT reach budgets shared between `water.frag` and `triangle.frag`.
 //
 // #3745 / TD7-2026-08-30-01 — before this, both budgets were hand-typed
@@ -2182,6 +2199,11 @@ pub const SHADER_DEFINES: &[HeaderLine] = &[
     HeaderLine::Blank,
     HeaderLine::Comment("Ray-query alpha-skip walk budget (#2265 / TD7-001)"),
     HeaderLine::Define("MAX_ALPHA_SKIP_LAYERS", ShaderValue::Uint(MAX_ALPHA_SKIP_LAYERS)),
+    HeaderLine::Comment("Transmission-lobe self-skip hop budget (#5249)"),
+    HeaderLine::Define(
+        "MAX_TRANSMISSION_SELF_SKIPS",
+        ShaderValue::Uint(MAX_TRANSMISSION_SELF_SKIPS),
+    ),
     HeaderLine::Blank,
     HeaderLine::Comment("RT reach budgets shared between water.frag and triangle.frag (#3745 / TD7-2026-08-30-01)"),
     HeaderLine::Define("RT_REFLECTION_MAX_DIST", ShaderValue::Float(RT_REFLECTION_MAX_DIST)),
