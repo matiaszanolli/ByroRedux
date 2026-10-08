@@ -153,8 +153,23 @@ see §5 phase 5.
    one). Live gate (`dt1-dialogue-layers.sh` leg 2): PACK 0x000613BB
    (`CitGunnyGreetPlayer`) walks Doc Mitchell to the player and opens
    topic 0xC8 with no activation.
-4. **Skyrim force-greet + SM `ADIA` tie-in** (behind the Skyrim PKDT
-   procedure decode).
+4. **Skyrim force-greet. Landed 2026-10-08.** Skyrim authors
+   force-greet as a `ForceGreet` leaf in the `PKCU` type-19 procedure
+   tree, its topic riding the `Topic` data input's first type-0 `PDTO`
+   FormID — the same authored role `PKDD` plays on FO3/FNV.
+   `PackRecord::force_greet` resolves both dialects (the FO3/FNV
+   procedure-15 byte can't false-positive on a tree pack: those read
+   18/19 and the classic enum stops at 16), the leaf's `PKC2` input
+   indexes resolving the topic first with an any-input fallback for
+   template inheritance. Census: exactly 5 `ForceGreet` packs in
+   Skyrim.esm, 2 with an authored topic
+   (`dunWhiteRiverWatch_WatchmanForcegreetTemplate` 0x00108E85 →
+   0x000812F2, `OrcGuardOutsideForcegreetPackage` 0x000BBAA4 →
+   0x000BBA8B), the other 3 generic-greeting — the same authored
+   remainder as FNV. `dialogue.forcegreet` installs either dialect;
+   `dt2-skyrim-forcegreet.sh` gates the resolution arms and the
+   activation-less open (DialogueGenericHello). The SM `ADIA` tie-in
+   remains deferred with the ADIA-family decode (#5366 §3.1).
 5. **V — voice. Landed 2026-10-08.** The authored FNV file-name
    convention is `sound\voice\<plugin>\<voice-type EDID>\<quest
    EDID>_<topic EDID>_<formid 8-hex>_<n>.ogg` — composed from the

@@ -91,8 +91,13 @@ killer / player victim) must be refused by the authored R1/R2 node
 conditions, and
 [`dt1-dialogue-layers.sh`](docs/smoke-tests/dt1-dialogue-layers.sh)
 gates the dialogue greeting + force-greet layers on FNV (#5367): a
-quest-less activation must greet, and a Dialogue-procedure PACK must
-open its conversation without activation.
+quest-less activation must greet, a Dialogue-procedure PACK must
+open its conversation without activation, and the voice line must
+resolve, and
+[`dt2-skyrim-forcegreet.sh`](docs/smoke-tests/dt2-skyrim-forcegreet.sh)
+gates the Skyrim force-greet dialect (#5367): the `ForceGreet`
+procedure-tree leaf's `Topic` input resolves its authored topic and
+a topic-less package greets generically, opening with no activation.
 
 ### Shader Compilation
 ```bash

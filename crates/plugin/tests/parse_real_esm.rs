@@ -27,6 +27,7 @@
 
 use byroredux_plugin::esm::parse_esm;
 use byroredux_plugin::esm::reader::GameKind;
+use byroredux_plugin::esm::records::misc::ForceGreetLine;
 use byroredux_plugin::esm::test_paths;
 use std::path::PathBuf;
 
@@ -5141,6 +5142,64 @@ fn dialogue_greeting_and_forcegreet_fnv_floor() {
     assert!(
         with_topic >= 260,
         "PKDD topic floor (measured 263): {with_topic}"
+    );
+}
+
+/// #5367 — the Skyrim force-greet dialect, censused through
+/// `PackRecord::force_greet`.
+///
+/// Skyrim authors force-greet as a `ForceGreet` leaf in the type-19
+/// procedure tree, its topic riding the `Topic` data input's first
+/// type-0 `PDTO` FormID (the same authored role FO3/FNV's `PKDD` plays
+/// for procedure 15). Census 2026-10-08 over Skyrim.esm's 5,961 PACKs:
+/// exactly 5 carry a `ForceGreet` leaf; 2 author a topic
+/// (`dunWhiteRiverWatch_WatchmanForcegreetTemplate` 0x00108E85 →
+/// 0x000812F2, `OrcGuardOutsideForcegreetPackage` 0x000BBAA4 →
+/// 0x000BBA8B); the other 3 author only the type-1 `PDTO` constant and
+/// resolve to the generic greeting — the same authored-remainder shape
+/// as FNV's 69 topic-less proc-15 packs.
+#[test]
+#[ignore = "needs installed Skyrim SE data"]
+fn force_greet_skyrim_tree_dialect_floor() {
+    let Some(data) = data_dir(test_paths::SKYRIM_SE_ENV, test_paths::SKYRIM_SE_DEFAULT) else {
+        eprintln!("[Skyrim force-greet] skipping: game data unavailable");
+        return;
+    };
+    let bytes = std::fs::read(data.join("Skyrim.esm")).expect("read Skyrim.esm");
+    let index = parse_esm(&bytes).expect("parse Skyrim.esm");
+
+    let mut force_greets = 0usize;
+    let mut generic = 0usize;
+    let mut topics = Vec::new();
+    for pack in index.packages.values() {
+        match pack.force_greet() {
+            ForceGreetLine::Topic(topic) => {
+                force_greets += 1;
+                topics.push((pack.form_id, topic));
+            }
+            ForceGreetLine::GenericGreeting => {
+                force_greets += 1;
+                generic += 1;
+            }
+            ForceGreetLine::NotAForceGreet => {}
+        }
+    }
+    assert!(
+        force_greets >= 5,
+        "ForceGreet-leaf PACK floor (census 5): {force_greets}"
+    );
+    assert!(
+        generic >= 3,
+        "topic-less ForceGreet floor (census 3): {generic}"
+    );
+    assert!(
+        topics.contains(&(0x0010_8E85, 0x0008_12F2)),
+        "the White River Watch watchman pack must resolve its authored \
+         topic (got {topics:?})"
+    );
+    assert!(
+        topics.contains(&(0x000B_BAA4, 0x000B_BA8B)),
+        "the Orc-guard pack must resolve its authored topic (got {topics:?})"
     );
 }
 

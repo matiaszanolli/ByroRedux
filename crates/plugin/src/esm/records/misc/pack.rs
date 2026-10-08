@@ -165,6 +165,25 @@ pub struct PackDataInput {
     pub value: PackDataValue,
 }
 
+/// What a force-greet package installs its carrier to speak, resolved
+/// game-agnostically for the #5367 Phase-F bridge. The two dialects:
+/// FO3/FNV's `PKDT` procedure 15 (Dialogue) carrying the `PKDD` topic,
+/// and Skyrim+'s `ForceGreet` leaf in the `PKCU`/type-19 procedure
+/// tree carrying its `Topic` data input (`PDTO` type 0).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ForceGreetLine {
+    /// An authored topic FormID.
+    Topic(u32),
+    /// A force-greet package with no authored topic — the carrier opens
+    /// the master's generic greeting instead (the authored shape of the
+    /// remainder of both corpora: FNV 69/332 proc-15 packs write a zero
+    /// `PKDD`; Skyrim 3/5 `ForceGreet` leaves author only the type-1
+    /// `PDTO` constant).
+    GenericGreeting,
+    /// Not a force-greet package in either dialect.
+    NotAForceGreet,
+}
+
 /// Typed value carried by a Skyrim+ package data input.
 #[derive(Debug, Clone, PartialEq)]
 pub enum PackDataValue {
@@ -370,6 +389,61 @@ impl PackSchedule {
 }
 
 impl PackRecord {
+    /// Resolve this package's force-greet line across both dialects
+    /// (#5367 Phase F / Skyrim follow-up). FO3/FNV: `PKDT` procedure
+    /// 15 (Dialogue) + `PKDD`'s topic. Skyrim+: a `ForceGreet` leaf in
+    /// the type-19 tree, its topic read through the leaf's `PKC2`
+    /// input indexes (falling back to any `Topic`-typed input when the
+    /// leaf authors none — the template inheritance case). The
+    /// `procedure_type == 15` byte test can't false-positive on a
+    /// Skyrim tree pack: those read 18/19, and the FO3/FNV enum stops
+    /// at 16.
+    pub fn force_greet(&self) -> ForceGreetLine {
+        const PROCEDURE_DIALOGUE: u32 = 15;
+        if self.procedure_type == PROCEDURE_DIALOGUE {
+            return match self.dialogue_topic {
+                Some(topic) => ForceGreetLine::Topic(topic),
+                None => ForceGreetLine::GenericGreeting,
+            };
+        }
+        let Some(leaf) = self
+            .procedures
+            .iter()
+            .find(|procedure| procedure.procedure_type == "ForceGreet")
+        else {
+            return ForceGreetLine::NotAForceGreet;
+        };
+        let topic_from = |input: &PackDataInput| {
+            let PackDataValue::Topics(topics) = &input.value else {
+                return None;
+            };
+            topics
+                .iter()
+                .find(|topic| topic.topic_type == 0 && topic.value != 0)
+                .map(|topic| topic.value)
+        };
+        let topic = leaf
+            .data_input_indexes
+            .iter()
+            .find_map(|index| {
+                self.data_inputs
+                    .iter()
+                    .find(|input| input.index == *index)
+                    .and_then(topic_from)
+            })
+            .or_else(|| {
+                // No indexed input carried a topic — the leaf inherits
+                // its template's inputs (concrete packs reference the
+                // template's slots only through `PKCU`). Any authored
+                // `Topic` input on the pack is the same authored line.
+                self.data_inputs.iter().find_map(topic_from)
+            });
+        match topic {
+            Some(topic) => ForceGreetLine::Topic(topic),
+            None => ForceGreetLine::GenericGreeting,
+        }
+    }
+
     /// True when this package's procedure is `Sandbox` (the idle-in-area
     /// behavior that drives furniture use).
     pub fn is_sandbox(&self) -> bool {
@@ -911,6 +985,97 @@ mod tests {
         assert_eq!(p.package_flags, 0x0000_0421);
         assert_eq!(p.procedure_type, 6);
         assert!(!p.is_sandbox());
+    }
+
+    /// `force_greet` across both dialects. The FO3/FNV arm is the
+    /// procedure-15 byte + `PKDD`; the Skyrim arm is the `ForceGreet`
+    /// tree leaf + its `Topic` data input, reached through the leaf's
+    /// `PKC2` indexes first and the any-input fallback second.
+    #[test]
+    fn force_greet_resolves_both_dialects() {
+        // FO3/FNV: procedure 15 with and without a PKDD topic, and a
+        // non-dialogue procedure refusing entirely.
+        let mut pkdt = Vec::new();
+        pkdt.extend_from_slice(&0u32.to_le_bytes());
+        pkdt.extend_from_slice(&15u32.to_le_bytes());
+        let mut pkdd = Vec::new();
+        pkdd.extend_from_slice(&0u32.to_le_bytes());
+        pkdd.extend_from_slice(&0x000C_8Eu32.to_le_bytes());
+        let with_topic = parse_pack(
+            0x1,
+            &vec![sub(b"PKDT", &pkdt), sub(b"PKDD", &pkdd)],
+            &None,
+            GameKind::default(),
+        );
+        assert_eq!(with_topic.force_greet(), ForceGreetLine::Topic(0xC8E));
+        let no_topic = parse_pack(
+            0x2,
+            &vec![sub(b"PKDT", &pkdt.clone())],
+            &None,
+            GameKind::default(),
+        );
+        assert_eq!(no_topic.force_greet(), ForceGreetLine::GenericGreeting);
+        let mut travel = Vec::new();
+        travel.extend_from_slice(&0u32.to_le_bytes());
+        travel.extend_from_slice(&6u32.to_le_bytes());
+        let travel_pack = parse_pack(
+            0x3,
+            &vec![sub(b"PKDT", &travel)],
+            &None,
+            GameKind::default(),
+        );
+        assert_eq!(travel_pack.force_greet(), ForceGreetLine::NotAForceGreet);
+
+        // Skyrim: a ForceGreet leaf whose PKC2 indexes the Topic input.
+        let mut skyrim = PackRecord {
+            form_id: 0x4,
+            ..Default::default()
+        };
+        skyrim.procedures.push(PackProcedure {
+            procedure_type: "ForceGreet".to_string(),
+            data_input_indexes: vec![7],
+            ..Default::default()
+        });
+        skyrim.data_inputs.push(PackDataInput {
+            index: 7,
+            value_type: "Topic".to_string(),
+            value: PackDataValue::Topics(vec![
+                // The type-1 PDTO constant the corpus authors alongside
+                // the topic — skipped by the resolver.
+                PackTopicData {
+                    topic_type: 1,
+                    value: 0x4F4B_4308,
+                },
+                PackTopicData {
+                    topic_type: 0,
+                    value: 0x000B_BA8B,
+                },
+            ]),
+        });
+        assert_eq!(skyrim.force_greet(), ForceGreetLine::Topic(0xBBA8B));
+
+        // Template inheritance: the leaf authors no PKC2 indexes, the
+        // Topic input still rides the pack — resolved by fallback.
+        skyrim.procedures[0].data_input_indexes.clear();
+        assert_eq!(skyrim.force_greet(), ForceGreetLine::Topic(0xBBA8B));
+
+        // A ForceGreet leaf with no topic anywhere greets generically —
+        // the authored shape of 3 of the corpus's 5 packs.
+        skyrim.data_inputs.clear();
+        assert_eq!(skyrim.force_greet(), ForceGreetLine::GenericGreeting);
+
+        // A tree without a ForceGreet leaf is not a force-greet pack,
+        // even when it carries a Topic input (the Say procedure's shape).
+        skyrim.procedures[0].procedure_type = "Say".to_string();
+        skyrim.data_inputs.push(PackDataInput {
+            index: 7,
+            value_type: "Topic".to_string(),
+            value: PackDataValue::Topics(vec![PackTopicData {
+                topic_type: 0,
+                value: 0x000B_BA8B,
+            }]),
+        });
+        assert_eq!(skyrim.force_greet(), ForceGreetLine::NotAForceGreet);
     }
 
     /// The procedure type is a single BYTE at PKDT offset 4. Real FNV

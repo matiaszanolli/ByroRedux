@@ -867,7 +867,7 @@ impl ConsoleCommand for DialogueForceGreetCommand {
     }
 
     fn description(&self) -> &str {
-        "Install a force-greet from a Dialogue-procedure PACK onto an NPC"
+        "Install a force-greet onto an NPC (Dialogue-procedure or ForceGreet-tree PACK)"
     }
 
     fn execute(&self, world: &World, args: &str) -> CommandOutput {
@@ -890,15 +890,24 @@ impl ConsoleCommand for DialogueForceGreetCommand {
         let Some(pack) = index.0.packages.get(&pack_id) else {
             return CommandOutput::error(format!("no PACK {pack_id:08X} in the loaded plugins"));
         };
-        const PROCEDURE_DIALOGUE: u32 = 15;
-        if pack.procedure_type != PROCEDURE_DIALOGUE {
+        // Both authored dialects install the same bridge: FO3/FNV's
+        // `PKDT` procedure 15 (`PKDD` topic) and Skyrim+'s `ForceGreet`
+        // procedure-tree leaf (its `Topic` data input).
+        use byroredux_plugin::esm::records::misc::ForceGreetLine;
+        let line = pack.force_greet();
+        if matches!(line, ForceGreetLine::NotAForceGreet) {
             return CommandOutput::error(format!(
-                "PACK {pack_id:08X} ('{}') is procedure {}, not Dialogue (15)",
-                pack.editor_id, pack.procedure_type
+                "PACK {pack_id:08X} ('{}') carries no force-greet \
+                 (FO3/FNV: Dialogue procedure 15; Skyrim+: a ForceGreet \
+                 procedure leaf)",
+                pack.editor_id
             ));
         }
         let directive = crate::systems::forcegreet::ForceGreetDirective {
-            topic: pack.dialogue_topic,
+            topic: match line {
+                ForceGreetLine::Topic(topic) => Some(topic),
+                _ => None,
+            },
             radius: 128.0,
         };
         let Some(mut directives) = world.query_mut::<crate::systems::forcegreet::ForceGreetDirective>()
@@ -910,9 +919,10 @@ impl ConsoleCommand for DialogueForceGreetCommand {
             "force-greet installed on entity {entity} from PACK {} ('{}') — topic {}",
             pack_id,
             pack.editor_id,
-            pack.dialogue_topic
-                .map(|topic| format!("{topic:08X}"))
-                .unwrap_or_else(|| "generic greeting".to_string()),
+            match line {
+                ForceGreetLine::Topic(topic) => format!("{topic:08X}"),
+                _ => "generic greeting".to_string(),
+            },
         ))
     }
 }
