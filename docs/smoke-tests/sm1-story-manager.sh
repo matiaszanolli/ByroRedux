@@ -9,16 +9,23 @@
 #      None → Some location-key change (Phase 2: keyed on the cell's
 #      `XLCN` LCTN — DragonsreachLocation), and the dispatcher walks
 #      the CLOC subtree in the same frame.
-#   3. `CRLocationExpansionNode` (SMQN 0x000F9076) is the one fully
-#      condition-free chain under Skyrim's CLOC event node (corpus
-#      census, 2026-10-07), so it must start `CRHoldExpansion`
-#      (QUST 0x000F9075, DNAM flags 0x0) through the canonical
-#      `QuestStageState` lifecycle.
+#   3. Phase 3 semantics: `WIGreetingNodeSHARES` (SMQN 0x000C791B,
+#      DNAM 0x20000 = Shares Event, its fn-145 condition passing
+#      trivially at boot) starts `WIGreeting` (QUST 0x000C7919), and
+#      `CWChangeLocationScenes` (SMQN 0x000D5176, DNAM 0x0 — NO shares
+#      bit, its fn-56 == 0.0 condition passing at boot) then starts one
+#      pool quest and CONSUMES the event: every node below it in the
+#      stack — including the previously-anchored unconditional
+#      `CRLocationExpansionNode` → `CRHoldExpansion` chain — must NOT
+#      evaluate. The boot set is exactly the two starts above (the
+#      Phase-1 six-quest boot was the pre-decode continue-always
+#      placeholder).
 #
-# Attribution is airtight: that quest cannot start via any other engine
+# Attribution is airtight: neither quest can start via any other engine
 # path (not Start Game Enabled, not the MQ101 engine root, no script
-# attachment at boot), and the dispatcher's #5366 log line names the
-# node and event.
+# attachment at boot), the dispatcher's #5366 log lines name the nodes
+# and event, and the CRHoldExpansion negative is the shares-consume
+# proof.
 #
 # Phase 2 legs (event-data conditions): `MGSuspension` (QUST 0x0005B5DC)
 # is a KILL-subtree node whose authored conditions read the event's
@@ -93,16 +100,28 @@ engine_pid=$!
 # alone authors 571 nodes; DLC masters are not on this load order).
 wait_log "$LOG_DIR/session.stderr" 'Installed Story Manager tree: 571 nodes'
 
-# The dispatcher's own attribution line — node, quest, event.
-wait_log "$LOG_DIR/session.stderr" "started quest 0x000F9075 ('CRHoldExpansion') via node 'CRLocationExpansionNode' on 'CLOC' event"
+# The dispatcher's own attribution lines — node, quest, event. The
+# sharing node fires first; the non-sharing CW node fires second and
+# consumes the CLOC event.
+wait_log "$LOG_DIR/session.stderr" "started quest 0x000C7919 ('WIGreeting') via node 'WIGreetingNodeSHARES' on 'CLOC' event"
+wait_log "$LOG_DIR/session.stderr" "started quest 0x000D5165 ('CW00SolitudeMapTableScene') via node 'CWChangeLocationScenes' on 'CLOC' event"
 
-# And the authoritative runtime state, read back through the debug CLI.
-debug_command 'quest.show 0x000F9075' "$LOG_DIR/quest.log" \
+# The authoritative runtime state, read back through the debug CLI.
+debug_command 'quest.show 0x000C7919' "$LOG_DIR/quest.log" \
     || fail 'quest.show unavailable'
-grep -Fq 'Quest 0x000F9075' "$LOG_DIR/quest.log" \
-    || fail 'quest.show did not report CRHoldExpansion'
+grep -Fq 'Quest 0x000C7919' "$LOG_DIR/quest.log" \
+    || fail 'quest.show did not report WIGreeting'
 grep -Fq 'state: running' "$LOG_DIR/quest.log" \
-    || fail "CRHoldExpansion is not running: $(sed -n '1,6p' "$LOG_DIR/quest.log")"
+    || fail "WIGreeting is not running: $(sed -n '1,6p' "$LOG_DIR/quest.log")"
+
+# Phase 3 consume proof: CRHoldExpansion sits BELOW the non-sharing
+# CWChangeLocationScenes in the CLOC stack, so the consumed event must
+# leave it stopped — the Phase-1 boot anchor is now the negative.
+debug_command 'quest.show 0x000F9075' "$LOG_DIR/crhold.log" \
+    || fail 'quest.show CRHoldExpansion unavailable'
+if grep -Fq 'state: running' "$LOG_DIR/crhold.log"; then
+    fail "CRHoldExpansion started — the non-sharing CWChangeLocationScenes did not consume the CLOC event"
+fi
 
 # ── Phase 2: event-data condition selectivity, live ─────────────────
 #
@@ -137,7 +156,8 @@ if grep -Fq 'state: running' "$LOG_DIR/mgsuspension2.log"; then
 fi
 
 stop_engine
-echo "smoke[sm1-story-manager]: PASS -- CLOC dispatched, CRLocationExpansionNode"
-echo "started CRHoldExpansion (0x000F9075) through QuestStageState;"
+echo "smoke[sm1-story-manager]: PASS -- CLOC dispatched: WIGreetingNodeSHARES"
+echo "started WIGreeting (0x000C7919); the non-sharing CWChangeLocationScenes fired"
+echo "CW00SolitudeMapTableScene and consumed the event (CRHoldExpansion stopped);"
 echo "MGSuspension (0x0005B5DC) correctly refused both non-matching KILL events"
 echo "(no-killer and player-victim legs; R1/R2 event-data gates); artifacts: $LOG_DIR"

@@ -527,6 +527,12 @@ pub fn build_save_registry() -> SaveRegistry {
         // (quest_advance, dlc2_ttr4a, mg07_door). Pre-fix it silently reverted
         // to default on every save/load.
         .register_resource::<QuestStageState>("QuestStageState")
+        // #5366 Phase 3 — Story Manager node-policy state (do-all fired
+        // marks, RNAM reset timestamps), so a quickload cannot resurrect
+        // a radiant the pre-save world already fired.
+        .register_resource::<byroredux_scripting::StoryManagerNodeState>(
+            "StoryManagerNodeState",
+        )
         .register_resource::<QuestObjectiveState>("QuestObjectiveState")
         // #5367 Phase L — spoken Say-Once INFO bookkeeping: a said line
         // stays disqualified after an F5/F9 cycle, exactly the

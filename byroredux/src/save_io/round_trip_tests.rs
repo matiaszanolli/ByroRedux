@@ -1850,3 +1850,115 @@ fn load_clears_both_player_gear_handoff_queues() {
          loader steps later in the frame"
     );
 }
+
+/// #5366 Phase 3 — Story Manager node-policy state survives save/load,
+/// and the restored state still gates: a pool entry inside its RNAM
+/// window at save time stays blocked after the load (the quickload
+/// cannot resurrect a fired radiant).
+#[test]
+fn story_manager_node_state_survives_save_load_and_still_gates() {
+    use byroredux_plugin::esm::records::{SmNodeKind, SmNodePolicies, SmNodeRecord, SmQuestLink};
+    use byroredux_scripting::{
+        install_story_manager, story_manager_dispatch_system, StoryClock, StoryEvent,
+        StoryManagerNodeState, StoryManagerRng,
+    };
+    use byroredux_scripting::quest_stages::QuestStageState;
+    use std::collections::HashMap;
+
+    let reg = build_save_registry();
+    let mut src = World::new();
+    src.insert_resource(FormIdPool::new());
+    byroredux_scripting::register(&mut src);
+
+    // One KILL node, pool of two, the first carrying a 48h reset window.
+    let node = SmNodeRecord {
+        form_id: 30,
+        parent: 10,
+        next_sibling: 0,
+        kind: SmNodeKind::Quest,
+        quests: vec![
+            SmQuestLink {
+                form_id: 0x111,
+                reset_hours: 48.0,
+            },
+            SmQuestLink {
+                form_id: 0x222,
+                reset_hours: 0.0,
+            },
+        ],
+        policies: SmNodePolicies {
+            shares_event: true,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let root = SmNodeRecord {
+        form_id: 10,
+        parent: 0,
+        kind: SmNodeKind::Event,
+        event_mnemonic: Some(*b"KILL"),
+        ..Default::default()
+    };
+    let records: HashMap<u32, SmNodeRecord> =
+        [(30u32, node), (10u32, root)].into_iter().collect();
+    install_story_manager(&mut src, &records);
+    src.insert_resource(QuestStageState::default());
+    src.insert_resource(StoryClock { hours: 100.0 });
+
+    let fire = |world: &mut World| {
+        let actor = world.spawn();
+        if let Some(mut events) = world.query_mut::<StoryEvent>() {
+            events.insert(
+                actor,
+                StoryEvent {
+                    mnemonic: *b"KILL",
+                    reference_1: actor,
+                    reference_2: None,
+                    location_1: None,
+                    location_2: None,
+                },
+            );
+        }
+        story_manager_dispatch_system(world);
+    };
+    fire(&mut src);
+    {
+        let mut stages = src.try_resource_mut::<QuestStageState>().unwrap();
+        stages.stop(byroredux_scripting::QuestFormId(0x111));
+    }
+    // F5: save at hour 110, then advance past the encode/decode dance.
+    src.insert_resource(StoryClock { hours: 110.0 });
+    let snapshot = save_world(&src, &reg).unwrap();
+    let bytes = encode(&snapshot, reg.schema_fingerprint()).unwrap();
+    let decoded = decode(&bytes, reg.schema_fingerprint()).unwrap();
+
+    let mut dst = World::new();
+    dst.insert_resource(FormIdPool::new());
+    byroredux_scripting::register(&mut dst);
+    install_story_manager(&mut dst, &records);
+    dst.insert_resource(StoryClock { hours: 111.0 });
+    restore_world(&mut dst, &reg, &decoded).unwrap();
+
+    // The restored marks carried: entry 0 fired at hour 100.
+    {
+        let state = dst.try_resource::<StoryManagerNodeState>().unwrap();
+        let runtime = state.nodes.get(&30).expect("node state restored");
+        assert_eq!(runtime.fired, vec![true]);
+        assert_eq!(runtime.last_fire_hours, vec![100.0]);
+    }
+    // And they still gate: at hour 111 the 48h window (fired at 100)
+    // blocks entry 0, so a re-fire starts the windowless entry 1.
+    fire(&mut dst);
+    let stages = dst.try_resource_mut::<QuestStageState>().unwrap();
+    assert!(stages.is_running(byroredux_scripting::QuestFormId(0x222)));
+    drop(stages);
+    {
+        let stages = dst.try_resource::<QuestStageState>().unwrap();
+        assert!(
+            !stages.is_running(byroredux_scripting::QuestFormId(0x111)),
+            "the restored reset window must block the pre-save fire's \
+             entry — the quickload cannot resurrect it"
+        );
+    }
+    let _ = StoryManagerRng::default();
+}

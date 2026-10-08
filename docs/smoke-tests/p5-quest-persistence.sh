@@ -14,6 +14,9 @@
 #   4. The restored chain is live: setstage 35 again displays objective 35.
 #   5. F5 again, engine.quit, relaunch with --load: the stage-35 state
 #      survives the process restart.
+#   6. #5366 Phase 3: the SM-fired WIGreeting (boot CLOC start) is still
+#      running after the F9 quickload — the Story Manager's quest
+#      lifecycle and node-policy state ride the same save.
 #
 # `quest.show`/`quest.setstage` are the canonical-command setup posture (the
 # console-free route is the post-P5 goal); `input.press quicksave`/`quickload`
@@ -165,6 +168,14 @@ require_in "22: displayed=false" "objective 22's post-save display was undone by
 dbg "$LOG_DIR/a6-relive.log" "quest.setstage $QUEST 35" "quest.show $QUEST"
 require_in "result: set stage=35" "the restored chain advanced again after quickload" "$LOG_DIR/a6-relive.log"
 require_in "35: displayed=true" "objective 35 re-displayed after restore + advance" "$LOG_DIR/a6-relive.log"
+
+# ── #5366 Phase 3 — the SM-fired quest survived the F5/F9 round trip ────────
+# The boot-time CLOC starts WIGreeting (0x000C7919) through the Story
+# Manager in this cell too; the quicksave→quickload cycle must carry it
+# (lifecycle + the node-policy state that says the boot event fired).
+dbg "$LOG_DIR/a5b-smquest.log" "quest.show 0x000C7919"
+require_in "Quest 0x000C7919" "the SM-fired WIGreeting is present after quickload" "$LOG_DIR/a5b-smquest.log"
+require_in "state: running" "WIGreeting (SM CLOC start) survived the F5/F9 round trip" "$LOG_DIR/a5b-smquest.log"
 
 # ── Session B — the same state survives a process restart ───────────────────
 dbg "$LOG_DIR/a7-quicksave2.log" "input.press quicksave"

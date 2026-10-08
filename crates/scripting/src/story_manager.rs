@@ -18,15 +18,13 @@
 //! recorded in [`StoryEventAliasFill`] here and consumed by
 //! `refresh_scene_actor_bindings`, which owns the binding table).
 //!
-//! Phase-1 semantics decisions, both revisited when `DNAM` decodes
-//! (#5366 §5 alignment pass):
-//!
-//! - **Traversal continues past a firing node.** The CK tutorial
-//!   ("Bethesda Tutorial Story Manager", local reference wiki) states
-//!   the "Shares Event" flag is the intended default in almost all
-//!   circumstances, so until the `DNAM` bit that encodes it is verified
-//!   against the corpus, continuing is the conservative majority
-//!   behavior. The stop-on-fire variant is one flag read away.
+//! Node policies (Phase 3): traversal order and continuation follow the
+//! authored `DNAM` bits — random parents shuffle their child chain, a
+//! processed quest node without `Shares Event` consumes the event once
+//! it finishes, quest pools honor do-all-before-repeating round-robin
+//! and per-quest `RNAM` reset windows. (The Phase-1 "continue past a
+//! firing node" default was this rule's placeholder until the bits
+//! decoded.)
 //! - **Subject/Object derive from the slots.** `ConditionContext`'s
 //!   subject is R2 when the event has one (KILL killer — the doer),
 //!   else R1 (CLOC actor); its target is R1 (KILL victim). This is the
@@ -45,7 +43,7 @@ use byroredux_core::ecs::sparse_set::SparseSetStorage;
 use byroredux_core::ecs::storage::{Component, EntityId};
 use byroredux_core::ecs::world::World;
 use byroredux_plugin::esm::records::condition::ConditionList;
-use byroredux_plugin::esm::records::{SmNodeKind, SmNodeRecord};
+use byroredux_plugin::esm::records::{SmNodeKind, SmNodePolicies, SmQuestLink, SmNodeRecord};
 use std::collections::HashMap;
 
 use crate::condition::{evaluate, ConditionContext, EventDataSlots};
@@ -116,8 +114,11 @@ pub struct SmTreeNode {
     /// Chain head among this node's children, computed at build so
     /// dispatch never re-derives ordering.
     pub first_child: Option<usize>,
-    /// `SMQN.NNAM` quest links in authored order.
-    pub quest_links: Vec<u32>,
+    /// `SMQN.NNAM` quest pool with `RNAM` reset windows, authored order.
+    pub quests: Vec<SmQuestLink>,
+    /// `DNAM` node policies (random / do-all-before-repeating /
+    /// shares-event), decoded at parse (#5366 Phase 3).
+    pub policies: SmNodePolicies,
 }
 
 /// The dispatchable Story Manager tree. Built once per load order from
@@ -145,6 +146,94 @@ pub struct StoryLocationCursor {
 }
 
 impl Resource for StoryLocationCursor {}
+
+/// Node-local dispatch state a save must carry (#5366 Phase 3):
+/// do-all-before-repeating fired marks and `RNAM` reset timestamps,
+/// keyed by node FormID, indexed by pool entry.
+///
+/// This is the piece that makes a quickload unable to resurrect a
+/// radiant the pre-save world already fired: without it, the post-load
+/// tree starts with clean cursors and re-fires quests whose reset
+/// window or round-robin position the save's world had already spent.
+/// Sizes itself to each node's pool at first touch, so a load-order
+/// change that reorders a pool simply misaligns (and the fired marks
+/// gate re-fires, the safe direction).
+#[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct StoryManagerNodeState {
+    /// Per node, per pool entry. Empty until the node first fires.
+    pub nodes: HashMap<u32, SmNodeRuntime>,
+}
+
+impl Resource for StoryManagerNodeState {}
+
+/// One node's dispatch bookkeeping. Vectors align with the node's quest
+/// pool by index.
+#[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SmNodeRuntime {
+    /// `true` once the pool entry has been started by this node — the
+    /// do-all-before-repeating round-robin mark.
+    pub fired: Vec<bool>,
+    /// Game-hours timestamp of each pool entry's last start (for the
+    /// `RNAM` reset window); `0.0` = never.
+    pub last_fire_hours: Vec<f32>,
+}
+
+/// Total elapsed game hours, synced each frame by the engine from its
+/// canonical clock (`GameTimeRes`). The dispatcher reads it for `RNAM`
+/// reset windows. `NOT_SAVED_BY_DESIGN`: derived from the saved game
+/// clock every frame.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct StoryClock {
+    pub hours: f64,
+}
+
+impl Resource for StoryClock {}
+
+/// Selection RNG for random node policies. Seeded fresh per process
+/// like the dialogue selector's (`DialogueRandomState` — a plain field
+/// behind `resource_mut`, the house shape); `NOT_SAVED_BY_DESIGN` —
+/// which radiant a post-load random pick chooses is not state anything
+/// reads back.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoryManagerRng {
+    pub state: u64,
+}
+
+impl Default for StoryManagerRng {
+    fn default() -> Self {
+        let seed = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0x9E37_79B9_7F4A_7C15);
+        Self { state: seed }
+    }
+}
+
+impl StoryManagerRng {
+    /// Next uniform `u64` (SplitMix64). Chosen over a full PRNG crate
+    /// dependency for the same reason the dialogue selector rolls its
+    /// own: the selection quality a node-pool pick needs is minimal.
+    pub fn next_u64(&mut self) -> u64 {
+        self.state = self.state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = self.state;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    }
+
+    /// Uniform index in `0..len` (widening multiply — unbiased for any
+    /// realistic len).
+    pub fn pick(&mut self, len: usize) -> usize {
+        if len <= 1 {
+            return 0;
+        }
+        (((self.next_u64() >> 32) as u128 * len as u128) >> 32) as usize
+    }
+}
+
+impl Resource for StoryManagerRng {}
 
 /// Event data each SM-started quest's `FromEvent` aliases fill from,
 /// keyed by quest — written by the dispatcher's start phase, read by the
@@ -185,7 +274,8 @@ pub fn build_story_manager_tree(records: &HashMap<u32, SmNodeRecord>) -> SmTree 
             conditions: record.conditions.clone(),
             next_sibling: None,
             first_child: None,
-            quest_links: record.quest_links.clone(),
+            quests: record.quests.clone(),
+            policies: record.policies,
         });
     }
 
@@ -259,6 +349,17 @@ pub fn install_story_manager(world: &mut World, records: &HashMap<u32, SmNodeRec
     }
     if world.try_resource::<StoryEventAliasFill>().is_none() {
         world.insert_resource(StoryEventAliasFill::default());
+    }
+    // Phase 3 — node-policy state (saved), the game-hours clock the
+    // engine syncs from GameTimeRes, and the selection RNG.
+    if world.try_resource::<StoryManagerNodeState>().is_none() {
+        world.insert_resource(StoryManagerNodeState::default());
+    }
+    if world.try_resource::<StoryClock>().is_none() {
+        world.insert_resource(StoryClock::default());
+    }
+    if world.try_resource::<StoryManagerRng>().is_none() {
+        world.insert_resource(StoryManagerRng::default());
     }
     count
 }
@@ -337,36 +438,69 @@ pub fn story_manager_dispatch_system(world: &World) {
     if events.is_empty() {
         return;
     }
-    let candidates = {
+    let hours = world
+        .try_resource::<StoryClock>()
+        .map_or(0.0, |clock| clock.hours);
+    let outcome = {
         let Some(tree) = world.try_resource::<SmTree>() else {
             return;
         };
         let registry = world.try_resource::<QuestDefinitionRegistry>();
         let stages = world.try_resource::<QuestStageState>();
+        let node_state = world.try_resource::<StoryManagerNodeState>();
+        let mut rng = world.try_resource_mut::<StoryManagerRng>();
         let mut candidates = Vec::new();
+        let mut wraps = Vec::new();
         for event in &events {
-            dispatch_story_event(
-                world,
-                &tree,
-                &mut WalkState {
-                    event,
-                    slots: event.slots(),
-                    registry: registry.as_deref(),
-                    stages: stages.as_deref(),
-                    candidates: &mut candidates,
-                },
-            );
+            let mut walk = WalkState {
+                event,
+                slots: event.slots(),
+                registry: registry.as_deref(),
+                stages: stages.as_deref(),
+                candidates: &mut candidates,
+                node_state: node_state.as_deref(),
+                rng: rng.as_deref_mut(),
+                hours,
+                consumed: false,
+                pending_wraps: Vec::new(),
+            };
+            dispatch_story_event(world, &tree, &mut walk);
+            wraps.append(&mut walk.pending_wraps);
         }
-        candidates
+        (candidates, wraps)
     };
     let Some(mut stages) = world.try_resource_mut::<QuestStageState>() else {
         return;
     };
-    for candidate in candidates {
-        if stages.is_started(candidate.quest) {
+    for candidate in &outcome.0 {
+        if stages.is_running(candidate.quest) {
             continue;
         }
         stages.start_quest(candidate.quest, candidate.start_up_stage);
+        // Phase 3 — the pool mark (do-all `fired`, `RNAM`
+        // `last_fire_hours`) lands only for quests that actually
+        // started, with any do-all wrap applied first.
+        if let Some(mut node_state) = world.try_resource_mut::<StoryManagerNodeState>() {
+            // A wrap clears the fired set only when its node actually
+            // started something this dispatch — otherwise the wrap is
+            // re-derived on the next fire.
+            if outcome.1.contains(&candidate.node) {
+                if let Some(runtime) = node_state.nodes.get_mut(&candidate.node) {
+                    for fired in &mut runtime.fired {
+                        *fired = false;
+                    }
+                }
+            }
+            let runtime = node_state.nodes.entry(candidate.node).or_default();
+            if runtime.fired.len() <= candidate.pool_index {
+                runtime.fired.resize(candidate.pool_index + 1, false);
+                runtime
+                    .last_fire_hours
+                    .resize(candidate.pool_index + 1, 0.0);
+            }
+            runtime.fired[candidate.pool_index] = true;
+            runtime.last_fire_hours[candidate.pool_index] = hours as f32;
+        }
         // Phase 2 — record the event's slots for this quest's `FromEvent`
         // aliases and mark the binding table dirty so the alias refresh
         // (scheduled right after this system) re-fills with them. One
@@ -397,6 +531,10 @@ struct QuestStartCandidate {
     mnemonic: [u8; 4],
     /// The raising event's slots, carried for the `FromEvent` alias fill.
     slots: EventDataSlots,
+    /// Owning node FormID + pool index, for the Phase-3 state marks
+    /// (do-all `fired`, `RNAM` `last_fire_hours`).
+    node: u32,
+    pool_index: usize,
 }
 
 /// Bundles the per-event walk state so the recursive step stays under
@@ -408,6 +546,19 @@ struct WalkState<'a> {
     registry: Option<&'a QuestDefinitionRegistry>,
     stages: Option<&'a QuestStageState>,
     candidates: &'a mut Vec<QuestStartCandidate>,
+    /// Phase 3 — node-policy state (do-all marks, reset timestamps),
+    /// read during the walk; writes go through `pending_marks` and are
+    /// applied by phase B only for quests it actually starts.
+    node_state: Option<&'a StoryManagerNodeState>,
+    rng: Option<&'a mut StoryManagerRng>,
+    /// Total game hours for `RNAM` reset windows (`StoryClock`).
+    hours: f64,
+    /// `true` once a processed non-sharing quest node consumed the
+    /// event — every remaining sibling walk stops.
+    consumed: bool,
+    /// Nodes whose do-all fired set wraps this event (every eligible
+    /// entry had run); phase B clears them when applying the new mark.
+    pending_wraps: Vec<u32>,
 }
 
 fn dispatch_story_event(
@@ -422,29 +573,69 @@ fn dispatch_story_event(
     // at most once per event, which bounds malformed sibling cycles and
     // makes re-reachable nodes cheap no-ops.
     let mut visited = vec![false; tree.nodes.len()];
-    walk_siblings(world, tree, state, tree.nodes[root].first_child, &mut visited);
+    walk_siblings(
+        world,
+        tree,
+        state,
+        tree.nodes[root].first_child,
+        // Event roots author no random policy (census: SMEN DNAM = 0),
+        // so the top-level chain is stacked by construction.
+        false,
+        &mut visited,
+    );
 }
 
-/// Evaluate a sibling chain in order. A node that passes collects its
-/// quest links (Quest kind) and descends into its children
-/// (Branch/Event); one that fails skips its whole subtree. Traversal
-/// then continues with the next sibling regardless — the shares-event
-/// default documented on the module.
+/// Evaluate a sibling chain. Phase-3 semantics (#5366):
+///
+/// - **Order** — stacked (the default) evaluates the authored `SNAM`
+///   order; a random parent (`DNAM & 0x1` on the node whose children
+///   this chain is) evaluates the chain in a seeded random permutation
+///   ("a Random node will process all its child nodes randomly", SM
+///   Event Node — local CK wiki).
+/// - **Descend** — a node whose conditions pass is processed (quest
+///   pool picked, children walked); one that fails skips its subtree.
+/// - **Consume** — a PROCESSED quest node without `Shares Event`
+///   (`DNAM & 0x20000`) consumes the event once it finishes: every
+///   remaining sibling walk stops. Per the CK rule text ("the event
+///   will be consumed and the Story Manager will stop as soon as it
+///   finishes with that node") this keys on the node being processed,
+///   not on a quest actually starting — the wiki's own compatibility
+///   warning ("higher on the list than any quest node that doesn't
+///   [share]") is about placement, not firing.
 fn walk_siblings(
     world: &World,
     tree: &SmTree,
     state: &mut WalkState<'_>,
     head: Option<usize>,
+    parent_random: bool,
     visited: &mut [bool],
 ) {
-    let mut current = head;
+    let Some(head) = head else { return };
+    let mut chain = Vec::new();
+    let mut current = Some(head);
     while let Some(index) = current {
         if visited[index] {
             break;
         }
         visited[index] = true;
+        chain.push(index);
+        current = tree.nodes[index].next_sibling;
+    }
+    // Random parent policy: same chain, seeded shuffle. A world without
+    // the RNG resource keeps authored order (conservative stacked).
+    if parent_random {
+        if let Some(rng) = state.rng.as_deref_mut() {
+            for i in (1..chain.len()).rev() {
+                let j = rng.pick(i + 1);
+                chain.swap(i, j);
+            }
+        }
+    }
+    for index in chain {
+        if state.consumed {
+            return;
+        }
         let node = &tree.nodes[index];
-        let continuation = node.next_sibling;
         // Subject = the doer: R2 when the event carries one (KILL
         // killer), else R1 (CLOC actor). Target = R1 (KILL victim).
         // `RunOn::EventData` tags resolve through the same slots.
@@ -454,31 +645,127 @@ fn walk_siblings(
         .with_event_data(&state.slots);
         context.target = Some(state.event.reference_1);
         if evaluate(&node.conditions, world, &context) {
+            let queued_before = state.candidates.len();
             if node.kind == SmNodeKind::Quest {
-                for &quest in &node.quest_links {
-                    let quest = QuestFormId(quest);
-                    if state.stages.is_some_and(|stages| stages.is_started(quest)) {
-                        continue;
-                    }
-                    state.candidates.push(QuestStartCandidate {
-                        quest,
-                        start_up_stage: state
-                            .registry
-                            .and_then(|registry| registry.start_up_stage(quest)),
-                        editor_id: state
-                            .registry
-                            .and_then(|registry| registry.editor_id(quest))
-                            .unwrap_or("?")
-                            .to_owned(),
-                        node_editor_id: node.editor_id.clone(),
-                        mnemonic: state.event.mnemonic,
-                        slots: state.slots,
-                    });
-                }
+                process_quest_node(tree, state, index);
             }
-            walk_siblings(world, tree, state, node.first_child, visited);
+            walk_siblings(world, tree, state, node.first_child, node.policies.random, visited);
+            // A processed non-sharing quest node consumes the event —
+            // after its own subtree finishes.
+            if node.kind == SmNodeKind::Quest && !node.policies.shares_event {
+                state.consumed = true;
+                return;
+            }
+            // Random parent, choose-one: the CK tutorial's "it will
+            // choose one of its child nodes randomly" — the chain stops
+            // at the first child that queued a start, so a random
+            // branch fires one quest per event even when every child
+            // shares.
+            if parent_random
+                && node.kind == SmNodeKind::Quest
+                && state.candidates.len() > queued_before
+            {
+                return;
+            }
         }
-        current = continuation;
+    }
+}
+
+/// Pick and queue one quest from a passing quest node's pool, honoring
+/// the Phase-3 policies:
+///
+/// - Eligibility: not currently started, and past its `RNAM` reset
+///   window (`reset_hours > 0` requires `now - last_fire >= window`).
+/// - Do-all-before-repeating (`DNAM & 0x10000`): prefer unfired pool
+///   entries; when every eligible entry has fired, the round-robin
+///   wraps — the selection treats all as fresh and the fired set is
+///   cleared when phase B applies the new mark.
+/// - Random (`DNAM & 0x1`): uniform pick among the preferred entries;
+///   stacked: first in authored order.
+fn process_quest_node(tree: &SmTree, state: &mut WalkState<'_>, index: usize) {
+    let node = &tree.nodes[index];
+    let runtime = state
+        .node_state
+        .and_then(|states| states.nodes.get(&node.form_id));
+    let fired = runtime.map(|rt| rt.fired.as_slice()).unwrap_or(&[]);
+    let last_fire = runtime
+        .map(|rt| rt.last_fire_hours.as_slice())
+        .unwrap_or(&[]);
+
+    let eligible: Vec<usize> = (0..node.quests.len())
+        .filter(|&i| {
+            let quest = QuestFormId(node.quests[i].form_id);
+            // Running quests are ineligible; stopped ones may re-fire
+            // (the radiant rerun path — `is_started` would block a
+            // stopped quest's restart forever).
+            if state.stages.is_some_and(|stages| stages.is_running(quest)) {
+                return false;
+            }
+            hours_gate_open(
+                node.quests[i].reset_hours,
+                last_fire.get(i).copied(),
+                state.hours,
+            )
+        })
+        .collect();
+    if eligible.is_empty() {
+        return;
+    }
+
+    let preferred: Vec<usize> = if node.policies.do_all_before_repeating {
+        let unfired: Vec<usize> = eligible
+            .iter()
+            .copied()
+            .filter(|&i| !fired.get(i).copied().unwrap_or(false))
+            .collect();
+        if unfired.is_empty() {
+            // Every eligible entry has run — the authored wrap point.
+            state.pending_wraps.push(node.form_id);
+            eligible
+        } else {
+            unfired
+        }
+    } else {
+        eligible
+    };
+
+    let pick = if node.policies.random {
+        match state.rng.as_deref_mut() {
+            Some(rng) => preferred[rng.pick(preferred.len())],
+            None => preferred[0],
+        }
+    } else {
+        preferred[0]
+    };
+
+    let quest = QuestFormId(node.quests[pick].form_id);
+    state.candidates.push(QuestStartCandidate {
+        quest,
+        start_up_stage: state
+            .registry
+            .and_then(|registry| registry.start_up_stage(quest)),
+        editor_id: state
+            .registry
+            .and_then(|registry| registry.editor_id(quest))
+            .unwrap_or("?")
+            .to_owned(),
+        node_editor_id: node.editor_id.clone(),
+        mnemonic: state.event.mnemonic,
+        slots: state.slots,
+        node: node.form_id,
+        pool_index: pick,
+    });
+}
+
+/// `RNAM` reset gate: open when no window is authored, the entry has
+/// never fired, or `now` is past `window` hours since the last fire.
+fn hours_gate_open(window: f32, last_fire: Option<f32>, now: f64) -> bool {
+    if window <= 0.0 {
+        return true;
+    }
+    match last_fire {
+        None | Some(0.0) => true,
+        Some(last) => now - f64::from(last) >= f64::from(window),
     }
 }
 
@@ -517,12 +804,29 @@ mod tests {
     }
 
     fn quest_node(form_id: u32, parent: u32, next_sibling: u32, quests: &[u32]) -> SmNodeRecord {
+        quest_node_full(form_id, parent, next_sibling, quests, SmNodePolicies::default())
+    }
+
+    fn quest_node_full(
+        form_id: u32,
+        parent: u32,
+        next_sibling: u32,
+        quests: &[u32],
+        policies: SmNodePolicies,
+    ) -> SmNodeRecord {
         SmNodeRecord {
             form_id,
             parent,
             next_sibling,
             kind: SmNodeKind::Quest,
-            quest_links: quests.to_vec(),
+            quests: quests
+                .iter()
+                .map(|&form_id| SmQuestLink {
+                    form_id,
+                    reset_hours: 0.0,
+                })
+                .collect(),
+            policies,
             ..Default::default()
         }
     }
@@ -589,9 +893,10 @@ mod tests {
         }
         story_manager_dispatch_system(&world);
         let stages = world.try_resource::<QuestStageState>().unwrap();
-        // Both members of the cycle still fired exactly once.
+        // The chain-head member fired; non-sharing, it consumed the
+        // event before the cycle's second member evaluated.
         assert!(stages.is_started(QuestFormId(0x222)));
-        assert!(stages.is_started(QuestFormId(0x333)));
+        assert!(!stages.is_started(QuestFormId(0x333)));
     }
 
     /// End-to-end: a KILL event walks the tree and starts the linked
@@ -626,10 +931,12 @@ mod tests {
             story_manager_dispatch_system(&world);
         }
         {
-            // Shares-event default: BOTH sibling quest nodes fired.
+            // Phase 3: node 30 processed (no conditions) and carries no
+            // Shares Event bit — it consumes the event after starting
+            // its quest, so sibling 31 never evaluates.
             let stages = world.try_resource::<QuestStageState>().unwrap();
             assert!(stages.is_started(QuestFormId(0x000F_0A10)));
-            assert!(stages.is_started(QuestFormId(0x000F_0A11)));
+            assert!(!stages.is_started(QuestFormId(0x000F_0A11)));
         }
         // The marker drained: nothing left for a second pass.
         let remaining = world
@@ -745,7 +1052,7 @@ fn event_data_killer_condition_gates_the_start() {
         parent: 10,
         next_sibling: 0,
         kind: SmNodeKind::Quest,
-        quest_links: vec![0x555],
+        quests: vec![SmQuestLink { form_id: 0x555, reset_hours: 0.0 }],
         conditions: vec![Condition {
             function_index: 72, // GetIsID
             comparator: ComparisonOp::Eq,
@@ -890,7 +1197,7 @@ fn event_data_r1_resolves_and_location_tags_fail_cleanly() {
         parent: 10,
         next_sibling: 0,
         kind: SmNodeKind::Quest,
-        quest_links: vec![0x556],
+        quests: vec![SmQuestLink { form_id: 0x556, reset_hours: 0.0 }],
         conditions: vec![Condition {
             function_index: 72, // GetIsID
             comparator: ComparisonOp::Eq,
@@ -1104,6 +1411,329 @@ fn event_data_r1_resolves_and_location_tags_fail_cleanly() {
                 .try_resource::<StoryEventAliasFill>()
                 .is_some_and(|fills| fills.0.contains_key(&QuestFormId(MGSUSPENSION))),
             "the start records its event slots for FromEvent alias fills"
+        );
+    }
+    /// Phase 3 — a sharing quest node passes the event on: both
+    /// siblings fire. The consume of the previous test is this test's
+    /// control group (same tree, one bit different).
+    #[test]
+    fn sharing_quest_node_passes_the_event_on() {
+        let shares = SmNodePolicies {
+            shares_event: true,
+            ..Default::default()
+        };
+        let tree = build_story_manager_tree(&records(vec![
+            event_node(10, b"KILL"),
+            branch(20, 10, 0),
+            quest_node_full(30, 20, 31, &[0x111], shares),
+            quest_node_full(31, 20, 0, &[0x222], shares),
+        ]));
+        let mut world = setup_world();
+        world.insert_resource(tree);
+        world.insert_resource(QuestStageState::default());
+        world.insert_resource(StoryEventAliasFill::default());
+        let actor = world.spawn();
+        if let Some(mut events) = world.query_mut::<StoryEvent>() {
+            events.insert(
+                actor,
+                StoryEvent {
+                    mnemonic: *b"KILL",
+                    reference_1: actor,
+                    reference_2: None,
+                    location_1: None,
+                    location_2: None,
+                },
+            );
+        }
+        story_manager_dispatch_system(&world);
+        let stages = world.try_resource::<QuestStageState>().unwrap();
+        assert!(stages.is_started(QuestFormId(0x111)));
+        assert!(stages.is_started(QuestFormId(0x222)));
+    }
+
+    /// Phase 3 — a processed non-sharing node consumes the event even
+    /// when its pool starts nothing (every entry already running): the
+    /// CK rule keys on processing, not on starting.
+    #[test]
+    fn processed_non_sharing_node_consumes_even_without_a_start() {
+        let tree = build_story_manager_tree(&records(vec![
+            event_node(10, b"KILL"),
+            quest_node(30, 10, 31, &[0x111]),
+            quest_node(31, 10, 0, &[0x222]),
+        ]));
+        let mut world = setup_world();
+        world.insert_resource(tree);
+        // 0x111 already running: node 30 processes, starts nothing.
+        let mut stages = QuestStageState::default();
+        stages.start_quest(QuestFormId(0x111), None);
+        world.insert_resource(stages);
+        world.insert_resource(StoryEventAliasFill::default());
+        let actor = world.spawn();
+        if let Some(mut events) = world.query_mut::<StoryEvent>() {
+            events.insert(
+                actor,
+                StoryEvent {
+                    mnemonic: *b"KILL",
+                    reference_1: actor,
+                    reference_2: None,
+                    location_1: None,
+                    location_2: None,
+                },
+            );
+        }
+        story_manager_dispatch_system(&world);
+        let stages = world.try_resource::<QuestStageState>().unwrap();
+        assert!(
+            !stages.is_started(QuestFormId(0x222)),
+            "node 30 processed without sharing — the event died there"
+        );
+    }
+
+    /// Phase 3 — do-all-before-repeating: across fires the pool cycles
+    /// through every quest before repeating one, and the fired marks
+    /// land in the persisted node state.
+    #[test]
+    fn do_all_before_repeating_round_robins_the_pool() {
+        let do_all = SmNodePolicies {
+            do_all_before_repeating: true,
+            shares_event: true,
+            ..Default::default()
+        };
+        let tree = build_story_manager_tree(&records(vec![
+            event_node(10, b"KILL"),
+            quest_node_full(30, 10, 0, &[0x111, 0x222, 0x333], do_all),
+        ]));
+        let mut world = setup_world();
+        world.insert_resource(tree);
+        world.insert_resource(QuestStageState::default());
+        world.insert_resource(StoryManagerNodeState::default());
+        world.insert_resource(StoryEventAliasFill::default());
+
+        let started: Vec<u32> = (0..3)
+            .map(|_| {
+                {
+                    let mut stages = world.try_resource_mut::<QuestStageState>().unwrap();
+                    for q in [0x111, 0x222, 0x333] {
+                        stages.stop(QuestFormId(q));
+                    }
+                }
+                let actor = world.spawn();
+                if let Some(mut events) = world.query_mut::<StoryEvent>() {
+                    events.insert(
+                        actor,
+                        StoryEvent {
+                            mnemonic: *b"KILL",
+                            reference_1: actor,
+                            reference_2: None,
+                            location_1: None,
+                            location_2: None,
+                        },
+                    );
+                }
+                story_manager_dispatch_system(&world);
+                let stages = world.try_resource::<QuestStageState>().unwrap();
+                [0x111, 0x222, 0x333]
+                    .into_iter()
+                    .find(|q| stages.is_running(QuestFormId(*q)))
+                    .expect("each fire starts exactly one pool quest")
+            })
+            .collect();
+        assert_eq!(
+            started,
+            vec![0x111, 0x222, 0x333],
+            "stacked do-all visits the pool in order, never repeating"
+        );
+
+        // The marks persist in the node state resource.
+        {
+            let state = world.try_resource::<StoryManagerNodeState>().unwrap();
+            let runtime = state.nodes.get(&30).expect("state recorded for node 30");
+            assert_eq!(runtime.fired, vec![true, true, true]);
+        }
+
+        // Fourth fire (after stopping the quests so all are eligible
+        // again): the pool wrapped — every entry re-eligible, marks
+        // cleared by the wrap, first picked again.
+        {
+            let mut stages = world.try_resource_mut::<QuestStageState>().unwrap();
+            for q in [0x111, 0x222, 0x333] {
+                stages.stop(QuestFormId(q));
+            }
+        }
+        let actor = world.spawn();
+        if let Some(mut events) = world.query_mut::<StoryEvent>() {
+            events.insert(
+                actor,
+                StoryEvent {
+                    mnemonic: *b"KILL",
+                    reference_1: actor,
+                    reference_2: None,
+                    location_1: None,
+                    location_2: None,
+                },
+            );
+        }
+        story_manager_dispatch_system(&world);
+        let state = world.try_resource::<StoryManagerNodeState>().unwrap();
+        let runtime = state.nodes.get(&30).unwrap();
+        assert_eq!(
+            runtime.fired,
+            vec![true, false, false],
+            "the wrap cleared the round-robin before the new mark"
+        );
+    }
+
+    /// Phase 3 — `RNAM` reset window: a fired pool entry is blocked
+    /// inside its window and eligible again once the game clock passes
+    /// it.
+    #[test]
+    fn rnam_reset_window_gates_refires() {
+        let node = SmNodeRecord {
+            form_id: 30,
+            parent: 10,
+            next_sibling: 0,
+            kind: SmNodeKind::Quest,
+            quests: vec![
+                SmQuestLink {
+                    form_id: 0x111,
+                    reset_hours: 48.0,
+                },
+                SmQuestLink {
+                    form_id: 0x222,
+                    reset_hours: 0.0,
+                },
+            ],
+            policies: SmNodePolicies {
+                shares_event: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let tree = build_story_manager_tree(&records(vec![
+            event_node(10, b"KILL"),
+            node,
+        ]));
+        let mut world = setup_world();
+        world.insert_resource(tree);
+        world.insert_resource(QuestStageState::default());
+        world.insert_resource(StoryManagerNodeState::default());
+        world.insert_resource(StoryEventAliasFill::default());
+        world.insert_resource(StoryClock { hours: 100.0 });
+        let fire = |world: &mut World| {
+            let actor = world.spawn();
+            if let Some(mut events) = world.query_mut::<StoryEvent>() {
+                events.insert(
+                    actor,
+                    StoryEvent {
+                        mnemonic: *b"KILL",
+                        reference_1: actor,
+                        reference_2: None,
+                        location_1: None,
+                        location_2: None,
+                    },
+                );
+            }
+            story_manager_dispatch_system(world);
+        };
+
+        // Stop 0x111 between fires so eligibility is the reset window's,
+        // not is_started's.
+        let stop = |world: &World| {
+            let mut stages = world.try_resource_mut::<QuestStageState>().unwrap();
+            stages.stop(QuestFormId(0x111));
+            stages.stop(QuestFormId(0x222));
+        };
+
+        fire(&mut world); // starts 0x111 (first eligible)
+        stop(&world);
+        // 10 hours later: inside 0x111's 48h window → 0x222 instead.
+        world.insert_resource(StoryClock { hours: 110.0 });
+        fire(&mut world);
+        {
+            let state = world.try_resource::<StoryManagerNodeState>().unwrap();
+            assert_eq!(
+                state.nodes[&30].last_fire_hours,
+                vec![100.0, 110.0],
+                "both entries carry their fire timestamps"
+            );
+        }
+        stop(&world);
+        // 50 hours after 0x111's fire: window passed → 0x111 again.
+        world.insert_resource(StoryClock { hours: 150.0 });
+        fire(&mut world);
+        {
+            let state = world.try_resource::<StoryManagerNodeState>().unwrap();
+            assert_eq!(state.nodes[&30].last_fire_hours, vec![150.0, 110.0]);
+        }
+    }
+
+    /// Phase 3 — a random parent visits its whole child chain (seeded
+    /// shuffle changes order, never membership), and a random quest
+    /// node picks uniformly from its pool: across many fires every pool
+    /// entry is picked.
+    #[test]
+    fn random_parent_and_pool_visit_everything() {
+        let random = SmNodePolicies {
+            random: true,
+            shares_event: true,
+            ..Default::default()
+        };
+        // Random branch with two condition-free quest children.
+        let tree = build_story_manager_tree(&records(vec![
+            event_node(10, b"KILL"),
+            SmNodeRecord {
+                form_id: 20,
+                parent: 10,
+                next_sibling: 0,
+                kind: SmNodeKind::Branch,
+                policies: random,
+                ..Default::default()
+            },
+            quest_node_full(30, 20, 31, &[0x111], random),
+            quest_node_full(31, 20, 0, &[0x222], random),
+        ]));
+        let mut world = setup_world();
+        world.insert_resource(tree);
+        world.insert_resource(QuestStageState::default());
+        world.insert_resource(StoryManagerNodeState::default());
+        world.insert_resource(StoryEventAliasFill::default());
+        world.insert_resource(StoryManagerRng::default());
+
+        let mut seen_first = std::collections::HashSet::new();
+        for _ in 0..40 {
+            let mut stages = world.try_resource_mut::<QuestStageState>().unwrap();
+            stages.stop(QuestFormId(0x111));
+            stages.stop(QuestFormId(0x222));
+            drop(stages);
+            let actor = world.spawn();
+            if let Some(mut events) = world.query_mut::<StoryEvent>() {
+                events.insert(
+                    actor,
+                    StoryEvent {
+                        mnemonic: *b"KILL",
+                        reference_1: actor,
+                        reference_2: None,
+                        location_1: None,
+                        location_2: None,
+                    },
+                );
+            }
+            story_manager_dispatch_system(&world);
+            let stages = world.try_resource::<QuestStageState>().unwrap();
+            assert!(
+                stages.is_running(QuestFormId(0x111)) ^ stages.is_running(QuestFormId(0x222)),
+                "exactly one child fires per event"
+            );
+            if stages.is_running(QuestFormId(0x111)) {
+                seen_first.insert(0);
+            } else {
+                seen_first.insert(1);
+            }
+        }
+        assert_eq!(
+            seen_first.len(),
+            2,
+            "the seeded shuffle/pick reaches both children across fires"
         );
     }
 }

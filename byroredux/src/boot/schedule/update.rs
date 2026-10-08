@@ -71,6 +71,16 @@ pub(super) fn register_update_systems(scheduler: &mut Scheduler) {
         crate::systems::story_events::story_change_location_system(world)
     }
     fn story_manager_dispatch(world: &World, _dt: f32) {
+        // #5366 Phase 3 — sync the Story Manager's clock from the
+        // canonical game time (advanced by weather_system in Early)
+        // before dispatch reads it for RNAM reset windows.
+        if let Some(time) = world.try_resource::<crate::components::GameTimeRes>() {
+            if let Some(mut clock) =
+                world.try_resource_mut::<byroredux_scripting::StoryClock>()
+            {
+                clock.hours = time.day as f64 * 24.0 + f64::from(time.hour);
+            }
+        }
         byroredux_scripting::story_manager_dispatch_system(world)
     }
     // SCR-D6-NEW-02 (#1768) — the runtime scripting systems that were

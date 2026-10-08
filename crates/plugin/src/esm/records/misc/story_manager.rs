@@ -24,11 +24,14 @@
 //!   shape shared with QUST/PACK/INFO, decoded through
 //!   [`push_ctda`](super::super::condition::push_ctda).
 //!
-//! Deliberately raw (`#5366` alignment pass, doc §5): `DNAM` / `XNAM` /
-//! `QNAM` are kept as unparsed u32s (observed value domains are in the
-//! doc; bit semantics are NOT settled), and the FO4/Starfield tail
-//! subrecords (`HNAM`, `RNAM`, `MNAM`, …) land in [`SmNodeRecord::extras`]
-//! untouched rather than being guessed at.
+//! Decoded since Phase 3 (`#5366` doc §3.3): the `DNAM` policy bits
+//! (random / do-all-before-repeating / shares-event — see
+//! [`SmNodePolicies`]) and `RNAM` per-quest reset hours (see
+//! [`SmQuestLink`]). Deliberately raw (`#5366` alignment pass, doc §5):
+//! the open `DNAM` bits (`0x2`, `0x40000`) and `XNAM` / `QNAM` stay
+//! unparsed u32s (observed domains in the doc), and the FO4/Starfield
+//! tail subrecords (`HNAM`, `MNAM`, …) land in
+//! [`SmNodeRecord::extras`] untouched rather than being guessed at.
 
 use super::super::common::{read_zstring, remap_fid};
 use super::super::condition::{push_ctda, ConditionList};
@@ -44,6 +47,71 @@ pub enum SmNodeKind {
     Event,
     /// `SMQN` — quest node: leaf that starts its `NNAM` quest(s).
     Quest,
+}
+
+/// One `NNAM` quest link in an `SMQN`'s pool, with its `RNAM` companion.
+///
+/// `RNAM` (346/448 Skyrim `SMQN`s) is the CK's per-quest **Hours until
+/// reset** — "the Story Manager will not attempt to start this quest
+/// again until the indicated number of Game Hours has passed. If this
+/// number is 0.0000, this check is ignored" (SM Event Node, local CK
+/// wiki). It follows its `NNAM` in the subrecord stream (corpus:
+/// `MQ304SovngardeScenes` alternates `NNAM,RNAM=2.4 / NNAM,RNAM=4.8 /
+/// NNAM,RNAM=4.8`; the `WEBountyCollector*` holds carry 1152.0 = 48
+/// game days). `0.0` = no reset check authored.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SmQuestLink {
+    pub form_id: u32,
+    /// `RNAM` game-hours reset window; `0.0` when no `RNAM` follows the
+    /// `NNAM` (the ignored-by-contract default).
+    pub reset_hours: f32,
+}
+
+/// `DNAM` node-policy bits, decoded (#5366 Phase 3 census, 2026-10-07).
+///
+/// The CK's node properties (SM Event Node, local wiki) map onto the
+/// observed value domain (`{0, 1, 2, 0x10000, 0x10001, …, 0x70001}` — a
+/// low byte plus `0x10000/0x20000/0x40000`) as:
+///
+/// - **`0x1` = Random** (else Stacked): carried by exactly the
+///   `CompanionsRadiantNode`-style branches and random quest nodes;
+///   `SMEN` roots are always 0.
+/// - **`0x20000` = Shares Event**: every `*SHARES*`-named `SMQN` in the
+///   corpus carries it (`WIGreetingNodeSHARES` = `0x20000`,
+///   `BQ*NodeSHARES` = `0x30001`, …), no branch ever sets it — matching
+///   the CK UI, where the checkbox exists on quest nodes only.
+///   `WIKillEventsRandomChance`=`0x10000` vs sibling
+///   `WIKillEventsNoRandomChanceSHARES`=`0x20000` splits the bits.
+/// - **`0x10000` = Do all before repeating**: clusters exactly on the
+///   radiant-cycle families (BQ bounty holds, WE/WI wilderness
+///   incidents, `WEPriorityQuests`) whose authored behavior is
+///   round-robin over the quest pool.
+///
+/// Still `[open]` (raw `dnam`/`xnam`/`qnam` kept verbatim): `0x2`
+/// (`MS04/MS06IncreaseLevelNodeSHARES`=`0x20002`; candidate: Warn if no
+/// child quest started), `0x40000` (`FavorChangeLocation*`=`0x60000`;
+/// candidates: the Num-quests-to-run / Max-concurrent checkboxes, with
+/// `QNAM` 0–68 as one of the numbers), and `XNAM` (0–2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct SmNodePolicies {
+    /// `DNAM & 0x1` — random child/pool selection instead of stacked
+    /// order.
+    pub random: bool,
+    /// `DNAM & 0x10000` — attempt every pool quest before repeating one.
+    pub do_all_before_repeating: bool,
+    /// `DNAM & 0x20000` — keep processing the event after this quest
+    /// node; clear consumes it.
+    pub shares_event: bool,
+}
+
+impl SmNodePolicies {
+    pub fn from_dnam(dnam: u32) -> Self {
+        Self {
+            random: dnam & 0x1 != 0,
+            do_all_before_repeating: dnam & 0x1_0000 != 0,
+            shares_event: dnam & 0x2_0000 != 0,
+        }
+    }
 }
 
 /// One Story Manager node (`SMBN` / `SMEN` / `SMQN` record).
@@ -68,13 +136,17 @@ pub struct SmNodeRecord {
     /// `CITC`-counted CTDA/CIS1/CIS2 conditions. Empty = fires
     /// unconditionally (the shared evaluator's contract).
     pub conditions: ConditionList,
-    /// `NNAM` quest FormIDs, `SMQN` only, in authored order. Zero
-    /// entries are dropped (the "no link" sentinel), so an empty vec on
-    /// a Quest node means the node genuinely starts nothing.
-    pub quest_links: Vec<u32>,
-    /// `DNAM` u32, raw. Observed domain: 0x0, 0x1, 0x10001, 0x20000,
-    /// 0x20001, 0x30001, 0x50001, 0x60000, 0x70001 across Skyrim/FO4/SF.
-    /// Bit semantics pending #5366's alignment pass — do not decode.
+    /// `NNAM` quest pool with each link's `RNAM` reset window, `SMQN`
+    /// only, in authored order. Zero entries are dropped (the "no link"
+    /// sentinel), so an empty vec on a Quest node means the node
+    /// genuinely starts nothing.
+    pub quests: Vec<SmQuestLink>,
+    /// `DNAM` policy bits, decoded (see [`SmNodePolicies`]). The raw
+    /// u32 is kept alongside for the still-open bits.
+    pub policies: SmNodePolicies,
+    /// `DNAM` u32, raw. Decoded bits: 0x1 random / 0x10000
+    /// do-all-before-repeating / 0x20000 shares-event. Open: 0x2, 0x40000
+    /// (see [`SmNodePolicies`]'s doc).
     pub dnam: Option<u32>,
     /// `XNAM` u32, raw (observed 0/1/2, meaning pending #5366).
     pub xnam: Option<u32>,
@@ -120,14 +192,32 @@ pub fn parse_sm_node(
                 // Zeros are the "no link" sentinel, not a real record.
                 let quest = remap_fid(u32::from_le_bytes(sub.data[..4].try_into().unwrap()), remap);
                 if quest != 0 {
-                    node.quest_links.push(quest);
+                    node.quests.push(SmQuestLink {
+                        form_id: quest,
+                        reset_hours: 0.0,
+                    });
+                }
+            }
+            b"RNAM" if sub.data.len() >= 4 => {
+                // Per-quest "Hours until reset" for the NNAM it follows
+                // (see `SmQuestLink`). A stray RNAM with no preceding
+                // link is malformed authoring — skip it loudly.
+                let hours = f32::from_le_bytes(sub.data[..4].try_into().unwrap());
+                match node.quests.last_mut() {
+                    Some(link) => link.reset_hours = hours,
+                    None => log::warn!(
+                        "#5366: RNAM reset window {:?}h with no preceding NNAM — dropped",
+                        hours
+                    ),
                 }
             }
             b"CTDA" | b"CTDT" | b"CIS1" | b"CIS2" => {
                 push_ctda(sub, remap, &mut node.conditions);
             }
             b"DNAM" if sub.data.len() >= 4 => {
-                node.dnam = Some(u32::from_le_bytes(sub.data[..4].try_into().unwrap()));
+                let dnam = u32::from_le_bytes(sub.data[..4].try_into().unwrap());
+                node.policies = SmNodePolicies::from_dnam(dnam);
+                node.dnam = Some(dnam);
             }
             b"XNAM" if sub.data.len() >= 4 => {
                 node.xnam = Some(u32::from_le_bytes(sub.data[..4].try_into().unwrap()));
@@ -197,11 +287,26 @@ mod tests {
             sub(b"NNAM", 0x000F_0A10u32.to_le_bytes()),
         ];
         let node = parse_sm_node(SmNodeKind::Quest, 0x0001_703E, &subs, &None);
-        assert_eq!(node.quest_links, vec![0x000F_0A10]);
+        assert_eq!(
+            node.quests,
+            vec![SmQuestLink {
+                form_id: 0x000F_0A10,
+                reset_hours: 0.0
+            }]
+        );
         assert_eq!(node.conditions.len(), 1);
         assert_eq!(node.conditions[0].function_index, 72);
         assert!(node.conditions[0].param_2_text.is_some());
         assert_eq!(node.dnam, Some(0x0001_0001));
+        // 0x10001 = random | do-all-before-repeating, not sharing.
+        assert_eq!(
+            node.policies,
+            SmNodePolicies {
+                random: true,
+                do_all_before_repeating: true,
+                shares_event: false
+            }
+        );
         assert_eq!(node.qnam, Some(1));
         // DNAM is deliberately not decoded into flags yet (#5366 §5).
         assert_eq!(node.event_mnemonic, None);
@@ -215,7 +320,10 @@ mod tests {
             sub(b"NNAM", 0x0016_4167u32.to_le_bytes()),
         ];
         let node = parse_sm_node(SmNodeKind::Quest, 0x0024_9E50, &subs, &None);
-        assert_eq!(node.quest_links, vec![0x0015_7577, 0x0016_4167]);
+        assert_eq!(
+            node.quests.iter().map(|link| link.form_id).collect::<Vec<_>>(),
+            vec![0x0015_7577, 0x0016_4167]
+        );
     }
 
     #[test]
@@ -233,7 +341,10 @@ mod tests {
         let node = parse_sm_node(SmNodeKind::Quest, 0x0201_4CBA, &subs, &Some(remap));
         assert_eq!(node.parent, 0x0101_7045);
         assert_eq!(node.next_sibling, 0x0101_7046);
-        assert_eq!(node.quest_links, vec![0x0101_7047]);
+        assert_eq!(
+            node.quests.iter().map(|link| link.form_id).collect::<Vec<_>>(),
+            vec![0x0101_7047]
+        );
     }
 
     #[test]
@@ -256,5 +367,30 @@ mod tests {
         let node = parse_sm_node(SmNodeKind::Event, 1, &subs, &None);
         assert_eq!(node.parent, 0);
         assert_eq!(node.event_mnemonic, None);
+    }
+    /// `RNAM` reset hours pair with their preceding `NNAM` (the
+    /// MQ304SovngardeScenes corpus shape) and a stray RNAM is dropped
+    /// loudly.
+    #[test]
+    fn rnam_reset_hours_pair_with_their_nnam() {
+        let subs = vec![
+            // Stray: arrives before any NNAM.
+            sub(b"RNAM", 48.0_f32.to_le_bytes()),
+            sub(b"NNAM", 0x000E_DF6Au32.to_le_bytes()),
+            sub(b"RNAM", 2.4_f32.to_le_bytes()),
+            sub(b"NNAM", 0x000F_1A41u32.to_le_bytes()),
+            sub(b"RNAM", 4.8_f32.to_le_bytes()),
+            // No RNAM follows this link — the ignored-by-contract 0.0.
+            sub(b"NNAM", 0x000F_1A44u32.to_le_bytes()),
+        ];
+        let node = parse_sm_node(SmNodeKind::Quest, 1, &subs, &None);
+        assert_eq!(
+            node.quests,
+            vec![
+                SmQuestLink { form_id: 0x000E_DF6A, reset_hours: 2.4 },
+                SmQuestLink { form_id: 0x000F_1A41, reset_hours: 4.8 },
+                SmQuestLink { form_id: 0x000F_1A44, reset_hours: 0.0 },
+            ]
+        );
     }
 }

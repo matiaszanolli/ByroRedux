@@ -4997,7 +4997,8 @@ fn story_manager_skyrim_census_floor() {
     // quests near the census's 1191.
     let mut linked_quests = std::collections::HashSet::new();
     for node in &nodes {
-        for &q in &node.quest_links {
+        for link in &node.quests {
+            let q = link.form_id;
             if index.quests.contains_key(&q) {
                 linked_quests.insert(q);
             }
@@ -5243,4 +5244,96 @@ fn story_manager_skyrim_event_data_slot_floor() {
         fill_r1 >= 600,
         "R1-tagged fills (WIKill-style victim aliases, measured ~1000 across tags): {fill_r1}"
     );
+}
+
+/// #5366 Phase 3 — node-policy (`DNAM`) and reset-window (`RNAM`) floors
+/// on `Skyrim.esm`, from the 2026-10-07 census:
+///
+/// - `DNAM & 0x20000` (Shares Event) on ≥140 `SMQN`s, and on EVERY
+///   `*SHARES*`-named quest node — the name-based anchor that pinned the
+///   bit. No branch/event node sets it.
+/// - `DNAM & 0x1` (Random) on branches (the `CompanionsRadiantNode`
+///   shape) and quest nodes; `SMEN` roots are always `DNAM = 0`.
+/// - `DNAM & 0x10000` (Do all before repeating) on ≥120 nodes — the
+///   BQ/WE/WI radiant-cycle cluster.
+/// - Nonzero `RNAM` reset windows on ≥70 nodes (346 `RNAM` subrecords;
+///   most carry 0.0 = ignored), with the corpus anchors
+///   `SkyHavenSparringNode` = 48.0h and the `WEBountyCollector*` holds
+///   = 1152.0h, and `MQ304SovngardeScenes`'s three-link pool pairing
+///   2.4 / 4.8 / 4.8.
+#[test]
+#[ignore = "needs Skyrim SE game data on disk"]
+fn story_manager_skyrim_node_policy_floor() {
+    let Some(data) = data_dir(test_paths::SKYRIM_SE_ENV, test_paths::SKYRIM_SE_DEFAULT) else {
+        eprintln!("[Skyrim SM policies] skipping: game data unavailable");
+        return;
+    };
+    let bytes = std::fs::read(data.join("Skyrim.esm")).expect("read Skyrim.esm");
+    let index = parse_esm(&bytes).expect("parse Skyrim.esm");
+    use byroredux_plugin::esm::records::{SmNodeKind, SmNodeRecord};
+
+    let nodes: Vec<&SmNodeRecord> = index.story_manager_nodes.values().collect();
+    let (mut shares, mut random, mut do_all, mut with_reset) = (0, 0, 0, 0);
+    let mut shares_named_without_bit: Vec<&str> = Vec::new();
+    let mut event_with_policy = 0;
+    for node in &nodes {
+        let dnam = node.dnam.unwrap_or(0);
+        if node.policies.shares_event {
+            shares += 1;
+        }
+        if node.policies.random {
+            random += 1;
+        }
+        if node.policies.do_all_before_repeating {
+            do_all += 1;
+        }
+        if node.quests.iter().any(|link| link.reset_hours > 0.0) {
+            with_reset += 1;
+        }
+        if node.editor_id.contains("SHARES")
+            && node.kind == SmNodeKind::Quest
+            && !node.policies.shares_event
+        {
+            shares_named_without_bit.push(&node.editor_id);
+        }
+        if node.kind == SmNodeKind::Event && dnam != 0 {
+            event_with_policy += 1;
+        }
+    }
+    assert!(shares >= 140, "shares-event floor (measured 146): {shares}");
+    assert!(random >= 70, "random floor (measured 76): {random}");
+    assert!(do_all >= 120, "do-all floor (measured 128): {do_all}");
+    assert!(with_reset >= 70, "RNAM reset floor (measured 75 nodes with a nonzero window): {with_reset}");
+    assert!(
+        shares_named_without_bit.is_empty(),
+        "every *SHARES*-named quest node carries the shares bit:          {shares_named_without_bit:?}"
+    );
+    assert_eq!(
+        event_with_policy, 0,
+        "SMEN event roots author no policy bits (census: all 24 are DNAM=0)"
+    );
+
+    // The anchors the census decoded semantics from.
+    let by_edid = |edid: &str| {
+        index
+            .story_manager_nodes
+            .values()
+            .find(|node| node.editor_id == edid)
+            .unwrap_or_else(|| panic!("{edid} must exist in Skyrim.esm"))
+    };
+    let sparring = by_edid("SkyHavenSparringNode");
+    assert_eq!(sparring.quests[0].reset_hours, 48.0);
+    let bounty = by_edid("WEBountyCollectorWhiterunNode");
+    assert_eq!(bounty.quests[0].reset_hours, 1152.0);
+    let sovngarde = by_edid("MQ304SovngardeScenes");
+    let hours: Vec<f32> = sovngarde.quests.iter().map(|q| q.reset_hours).collect();
+    assert_eq!(hours, vec![2.4, 4.8, 4.8]);
+
+    // The policy cluster the do-all bit was pinned on: every BQ hold
+    // bounty node is random + do-all + shares (0x30001).
+    for edid in ["BQReachNodeSHARES", "BQRiftNodeSHARES", "BQEastmarchNodeSHARES"] {
+        let node = by_edid(edid);
+        assert!(node.policies.random && node.policies.do_all_before_repeating && node.policies.shares_event,
+            "{edid} must be 0x30001-shaped (random|do-all|shares)");
+    }
 }

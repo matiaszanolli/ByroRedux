@@ -1,17 +1,19 @@
 # Story Manager event dispatch
 
-**Status**: Phases 0–2 **landed 2026-10-07** (#5366), including the live
+**Status**: Phases 0–3 **landed 2026-10-07** (#5366), including the live
 gate ([`sm1-story-manager.sh`](../smoke-tests/sm1-story-manager.sh)),
-now covering both the Phase-1 boot leg and the Phase-2 event-data
-selectivity legs: the `SMBN`/`SMEN`/`SMQN` decode
-(`crates/plugin/src/esm/records/misc/story_manager.rs` →
+now covering the Phase-3 authored boot set (shares-consume included),
+and the Phase-2 event-data selectivity legs: the `SMBN`/`SMEN`/`SMQN`
+decode (`crates/plugin/src/esm/records/misc/story_manager.rs` →
 `EsmIndex.story_manager_nodes`), the `SmTree` fold + `StoryEvent`
 dispatcher (`crates/scripting/src/story_manager.rs`), two producers
 (`KILL` at the combat death site, `CLOC` from the cell-loader location
 contexts at LCTN granularity via `XLCN`), `RunOn::EventData` condition
-resolution over the corpus-decoded R1/R2/L1/L2 slots, and `FromEvent`
-(`ALFE`/`ALFD`) alias fills fed from the raising event. Phases 3–4
-remain open. This document remains the design authority; it is the
+resolution over the corpus-decoded R1/R2/L1/L2 slots, `FromEvent`
+(`ALFE`/`ALFD`) alias fills fed from the raising event, and the decoded
+`DNAM` node policies (random / do-all-before-repeating / shares-event)
+with `RNAM` per-quest reset windows and save-persistent node state.
+Phase 4 remains open. This document remains the design authority; it is the
 scoping pass for the Story Manager half of M43's open scope ("Story
 Manager event payloads and search") and the M47.2 row's "ESM-native
 event dispatch / Story Manager" item.
@@ -99,7 +101,8 @@ verification below should be treated as decoded.
 | `ENAM` char[4] | SMEN | event mnemonic; exactly one SMEN per mnemonic per master (24 Skyrim / 17 FO4 / 20 Starfield) | **[verified]** structure; per-mnemonic mapping in §3.1 |
 | `CITC` u32 + `CTDA`×N + `CIS2` | all | node conditions (existing CTDA representation) | **[verified]** shape |
 | `NNAM` u32 | SMQN | the QUST this node starts | **[verified]** — Skyrim 425/448 resolve to QUST records via EDID cross-check (e.g. `MS05KingOlafsFestivalStarter` → its QUST) |
-| `DNAM` u32 | all | flags (stacked/random, shares-event, …) | **[open]** — observed values: 0x0, 0x1, 0x10001, 0x20000, 0x20001, 0x30001, 0x50001, 0x60000, 0x70001 (combinatorial: a low bit + 0x10000/0x20000/0x40000 bits) |
+| `DNAM` u32 | all | node-policy flags — 0x1 random, 0x10000 do-all-before-repeating, 0x20000 shares-event (Phase-3 decode, §3.3) | **[decoded]** — bits 0x2 and 0x40000 remain **[open]** |
+| `RNAM` f32 | SMQN | per-quest hours-until-reset window, follows its `NNAM` | **[decoded]** (Phase 3; §3.3) |
 | `XNAM` u32 | all | small int (0/1/2; 0 dominant) | **[open]** |
 | `QNAM` u32 | SMQN | small int 0–14 | **[open]** (candidate: repeat/priority; do not guess) |
 | `SNAM` u32 | SMBN/SMEN | when present, points at another node — see §5 | **[open]** (distinct from the sibling use on SMQN) |
@@ -175,6 +178,30 @@ IncreaseSkill, `NVPE` NewVoicePower, `DEAD` DiscoverDeadBody, `BRIB` /
 LAND`. The mnemonic→event-name table is runtime data, not code — it
 ships as a per-game table with provenance comments.
 
+### 3.3 Node policies and reset windows (the Phase-3 census)
+
+The CK's node-property model (SM Event Node, local wiki) decodes onto
+`DNAM`'s observed domain (`{0, 1, 2, 0x10000…0x70001}` — a low byte plus
+`0x10000/0x20000/0x40000`):
+
+| Bit | Property | Corpus anchors |
+|---|---|---|
+| `0x1` | Random (else Stacked) | the `CompanionsRadiantNode` / `WERoadQuests` branches; `SMEN` roots are always 0 |
+| `0x10000` | Do all before repeating | clusters on the radiant-cycle families (BQ bounty holds `0x30001`, WE/WI wilderness incidents, `WEPriorityQuests`) |
+| `0x20000` | Shares Event (SMQN only) | every `*SHARES*`-named quest node; `WIKillEventsRandomChance`=`0x10000` vs sibling `WIKillEventsNoRandomChanceSHARES`=`0x20000`; branches never set it, matching the CK UI |
+
+`RNAM` (346 Skyrim `SMQN`s) is the per-quest **Hours until reset** —
+"the Story Manager will not attempt to start this quest again until the
+indicated number of Game Hours has passed" — following its `NNAM`
+(`MQ304SovngardeScenes` pairs 2.4/4.8/4.8 across its three-link pool;
+the `WEBountyCollector*` holds carry 1152.0 = 48 game days; most RNAMs
+are 0.0 = ignored). `0x2` (`MS04/MS06IncreaseLevelNodeSHARES`=`0x20002`;
+candidate: Warn if no child quest started) and `0x40000`
+(`FavorChangeLocation*`=`0x60000`; candidates: the Num-quests-to-run /
+Max-concurrent checkboxes, `QNAM` 0–68 as one of the numbers) stay
+**[open]**, raw in `SmNodeRecord::dnam`. Floored by
+`story_manager_skyrim_node_policy_floor` (`parse_real_esm.rs`).
+
 ## 4. Provenance — how every number above was measured
 
 One-off Python census (mmap walk mirroring `EsmVariant` header sizes:
@@ -200,12 +227,8 @@ house pattern: floors, not pinned counts, exactly like
 
 Each item has a method; none is a guess:
 
-1. **`DNAM` flag bits.** Hypothesis from the CK tutorial's node
-   settings: stacked-vs-random, shares-event, do-all-before-repeating.
-   Method: cross the observed value set against the CK wiki's Story
-   Manager node documentation, then confirm each bit by finding a node
-   whose editor ID / in-game behavior pins it (the tutorial's own
-   `DA08KillFriendNode` example is a good candidate).
+1. **`DNAM` flag bits.** Resolved at Phase 3 for the three policy bits
+   (§3.3); `0x2` and `0x40000` remain open.
 2. **`XNAM` / `QNAM` ints.** Small observed domains (0–2, 0–14).
    Method: correlate with CK-exposed node properties on named nodes.
 3. **`SNAM` on SMBN/SMEN.** Distinct from the SMQN sibling use; likely
@@ -267,9 +290,11 @@ each node's `CTDA` set through the M47.1 evaluator with
 R1/R2 tags (L-tags fail pending a location runtime). A passing SMQN
 starts its quest via the existing quest lifecycle, records its slots in
 `StoryEventAliasFill`, and the P4 alias refresh fills `FromEvent`
-aliases from them. Traversal honors the §5-settled flag bits
-(shares-event → continue; random → pick one child;
-do-all-before-repeating → node-local round-robin state — Phase 3).
+aliases from them. Traversal honors the decoded `DNAM` bits (§3.3): shares-event →
+continue past a processed quest node (else consume the event), random →
+shuffled child order stopping at the first fire / uniform pool pick,
+do-all-before-repeating → the persisted round-robin marks, `RNAM`
+windows → the persisted last-fire timestamps (Phase 3, landed).
 `SendStoryEvent` (already catalogued in the SKSE compatibility surface)
 lowers onto the same marker — that is the `SCPT` event node's producer
 (and `sm.event`, the debug-console producer, landed with Phase 2 for
@@ -371,9 +396,31 @@ tree itself (rederived from the load order every boot).
    legs in `sm1-story-manager.sh` (`sm.event` raising the real marker;
    both non-matching KILL events refused). New console command:
    `sm.event`.
-4. **Phase 3 — node policies + persistence.** Random/shares/repeat
-   flags, save/restore of node state, the F5→door→F9 soak leg extended
-   to an SM-fired quest.
+4. **Phase 3 — node policies + persistence. Landed 2026-10-07
+   (#5366).** `DNAM` decodes (§3.3) into `SmNodePolicies`; the walk
+   honors all three bits: random parents shuffle their child chain and
+   stop at the first child that fires (the tutorial's "choose one of
+   its child nodes randomly"), random quest nodes pick uniformly from
+   the eligible pool, do-all-before-repeating round-robins the pool
+   (fired marks persisted, wrapping when every eligible entry has run),
+   and a PROCESSED quest node without Shares Event consumes the event
+   ("the Story Manager will stop as soon as it finishes with that
+   node" — keyed on processing per the CK rule text and its
+   compatibility warning, not on a quest actually starting). The
+   Phase-1 continue-always placeholder is gone, which changes the live
+   boot set to the authored one: `WIGreetingNodeSHARES` +
+   `CWChangeLocationScenes` (which then consumes; `CRHoldExpansion`
+   below it correctly stays stopped — pinned as the sm1 negative).
+   `RNAM` windows gate re-fires through `StoryClock` (synced from
+   `GameTimeRes` each frame) with last-fire timestamps in
+   `StoryManagerNodeState` — save-registered, so a quickload cannot
+   resurrect a fired radiant. Gates: the policy/round-robin/hours/
+   consume/consume-without-start unit family, the node-policy corpus
+   floor, the `story_manager_node_state_survives_save_load_and_still_
+   gates` round-trip, the updated sm1 live legs, and the F5/F9 leg of
+   `p5-quest-persistence.sh` extended to the SM-fired `WIGreeting`.
+   Eligibility moved from `is_started` to `is_running` — stopped
+   radiants re-fire, the rerun path.
 5. **Phase 4 — FO4/SF dialect + breadth producers.** `NNAM` pools,
    `HNAM`/`RNAM`/`MNAM`, remaining producers as their subsystems land.
    Gate: FO4 Minutemen-recruitment-style radiant (a 16-quest pool node)
@@ -381,8 +428,9 @@ tree itself (rederived from the load order every boot).
 
 ## 8. What this document does NOT decide
 
-- The `DNAM`/`XNAM`/`QNAM` semantics (§5's job; nothing here relies on
-  the hypothesis being right).
+- The remaining `DNAM` bits (`0x2`, `0x40000`) and `XNAM`/`QNAM`
+  semantics (§5's job; the Phase-3 runtime relies only on the three
+  decoded policy bits and `RNAM`).
 - ~~Whether `StoryEvent` payloads grow a typed per-mnemonic enum or stay
   slot-based~~ — decided at Phase 2: the wire format's four positional
   slots verbatim (§3.2).
