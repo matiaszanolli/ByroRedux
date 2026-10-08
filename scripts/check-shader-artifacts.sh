@@ -6,7 +6,14 @@ set -euo pipefail
 repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 shader_root="${repo_root}/crates/renderer/shaders"
 compiler="${GLSLANG_VALIDATOR:-glslangValidator}"
-expected_version="11:16.2.0"
+# Exact compiler versions whose SPIR-V code generation is verified
+# byte-identical across the full artifact set, in both directions:
+# 16.2.0 (ubuntu:26.04 `glslang-tools`, the CI container) reproduced the
+# 16.4.0-built triangle pair of #5368, and 16.4.0 (this host's distro)
+# reproduces every 16.2-era binary. Cross-verified on the f8950e7cc CI
+# run. Adding a version here requires re-proving that parity — the pin
+# exists because SPIR-V code generation is version-dependent in general.
+expected_versions=("11:16.2.0" "11:16.4.0")
 
 if ! command -v "${compiler}" >/dev/null 2>&1; then
     echo "check-shader-artifacts: ${compiler} not found" >&2
@@ -14,8 +21,15 @@ if ! command -v "${compiler}" >/dev/null 2>&1; then
 fi
 
 actual_version="$("${compiler}" -dumpfullversion)"
-if [[ "${actual_version}" != "${expected_version}" ]]; then
-    echo "check-shader-artifacts: expected glslang ${expected_version}, got ${actual_version}" >&2
+version_ok=0
+for expected_version in "${expected_versions[@]}"; do
+    if [[ "${actual_version}" == "${expected_version}" ]]; then
+        version_ok=1
+        break
+    fi
+done
+if [[ "${version_ok}" -ne 1 ]]; then
+    echo "check-shader-artifacts: expected glslang ${expected_versions[*]}, got ${actual_version}" >&2
     echo "exact compiler parity is required because SPIR-V code generation is version-dependent" >&2
     exit 2
 fi
@@ -67,4 +81,4 @@ if [[ "${drift}" -ne 0 ]]; then
     exit 1
 fi
 
-echo "check-shader-artifacts: ${#shaders[@]} shaders + opaque early-test variant match glslang ${actual_version}"
+echo "check-shader-artifacts: ${#shaders[@]} shaders + opaque early-test variant match glslang ${actual_version} (byte-parity proven against ${expected_versions[*]})"
