@@ -17,6 +17,7 @@
 
 use crate::cell_loader::{CurrentCellContext, CurrentExteriorContext, LoadedCellIndex};
 use crate::systems::character::PlayerEntity;
+use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::world::World;
 use std::hash::{Hash, Hasher};
 
@@ -60,7 +61,7 @@ pub fn story_change_location_system(world: &World) {
 /// The current cell's `XLCN` LCTN, interior or exterior grid cell, from
 /// the loaded plugin index. `None` when the index is absent, the cell
 /// isn't found, or the record authors no location (wilderness grids).
-fn resolve_current_lctn(world: &World) -> Option<u32> {
+pub(crate) fn resolve_current_lctn(world: &World) -> Option<u32> {
     let index = world.try_resource::<LoadedCellIndex>()?.0.clone();
     if let Some(cell) = world.try_resource::<CurrentCellContext>() {
         return index
@@ -88,4 +89,54 @@ fn location_hash(parts: &[&str]) -> u64 {
         part.hash(&mut hasher);
     }
     hasher.finish()
+}
+
+/// #5366 Phase 4 — `AHEL` (Actor Hello): raised when a conversation
+/// opens (activation greeting or force-greet — the #5367 surfaces).
+/// `OnStoryHello(akLocation, akActor1, akActor2)`: L1 = the session's
+/// current LCTN, R1 = the greeter, R2 = the greeted party. On
+/// pre-Creation titles this is a no-op (no SM tree installed).
+pub(crate) fn raise_hello_story_event(world: &World, greeter: EntityId, greeted: EntityId) {
+    use byroredux_scripting::story_manager::StoryEvent;
+    let Some(mut events) = world.query_mut::<StoryEvent>() else {
+        return;
+    };
+    events.insert(
+        greeter,
+        StoryEvent {
+            mnemonic: *b"AHEL",
+            reference_1: greeter,
+            reference_2: Some(greeted),
+            location_1: resolve_current_lctn(world),
+            location_2: None,
+        },
+    );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// #5366 Phase 4 — the AHEL producer stamps the hello shape the CK
+    /// documents (`OnStoryHello(akLocation, akActor1, akActor2)`):
+    /// greeter → R1, greeted → R2, session LCTN → L1 (absent index →
+    /// none, the loose-NIF/no-context shape).
+    #[test]
+    fn hello_event_carries_greeter_greeted_and_session_location() {
+        let mut world = World::new();
+        byroredux_scripting::register(&mut world);
+        let greeter = world.spawn();
+        let greeted = world.spawn();
+        raise_hello_story_event(&world, greeter, greeted);
+        let event = world
+            .query::<byroredux_scripting::story_manager::StoryEvent>()
+            .map(|events| events.iter().next().map(|(_, event)| *event))
+            .unwrap_or_default()
+            .expect("the hello marker is raised on the greeter");
+        assert_eq!(event.mnemonic, *b"AHEL");
+        assert_eq!(event.reference_1, greeter);
+        assert_eq!(event.reference_2, Some(greeted));
+        assert_eq!(event.location_1, None, "no loaded index — no session LCTN");
+        assert_eq!(event.location_2, None);
+    }
 }

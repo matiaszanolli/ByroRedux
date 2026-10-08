@@ -28,10 +28,11 @@
 //! (random / do-all-before-repeating / shares-event — see
 //! [`SmNodePolicies`]) and `RNAM` per-quest reset hours (see
 //! [`SmQuestLink`]). Deliberately raw (`#5366` alignment pass, doc §5):
-//! the open `DNAM` bits (`0x2`, `0x40000`) and `XNAM` / `QNAM` stay
-//! unparsed u32s (observed domains in the doc), and the FO4/Starfield
-//! tail subrecords (`HNAM`, `MNAM`, …) land in
-//! [`SmNodeRecord::extras`] untouched rather than being guessed at.
+//! the open `DNAM` bits (`0x2`, `0x40000`), `XNAM` / `QNAM`, and the
+//! FO4+/Starfield `HNAM` (hours-shaped float, node-level-reset
+//! candidate) / `MNAM` stay unparsed u32s (observed domains in the
+//! doc) rather than being guessed at; unrecognized tail subrecords
+//! land in [`SmNodeRecord::extras`] verbatim.
 
 use super::super::common::{read_zstring, remap_fid};
 use super::super::condition::{push_ctda, ConditionList};
@@ -148,6 +149,16 @@ pub struct SmNodeRecord {
     /// do-all-before-repeating / 0x20000 shares-event. Open: 0x2, 0x40000
     /// (see [`SmNodePolicies`]'s doc).
     pub dnam: Option<u32>,
+    /// `HNAM` u32, FO4+/Starfield only, raw. Read as f32 LE the corpus
+    /// values are hours-magnitude floats — 72.0 on
+    /// `MinutemenRecruitmentPostMin02`, 24.0/12.0/1.0 on FO4 encounter
+    /// nodes, 0.3 on Starfield conversations nodes — the shape of a
+    /// node-level reset window. **[open]**: semantics unverified; the
+    /// runtime does not gate on it.
+    pub hnam: Option<u32>,
+    /// `MNAM` u32, FO4 (rare) / Starfield (common, sits between `XNAM`
+    /// and `QNAM`), raw. Small ints (observed 1–22). **[open]**.
+    pub mnam: Option<u32>,
     /// `XNAM` u32, raw (observed 0/1/2, meaning pending #5366).
     pub xnam: Option<u32>,
     /// `QNAM` u32, raw, `SMQN` only (observed 0..14, meaning pending
@@ -224,6 +235,12 @@ pub fn parse_sm_node(
             }
             b"QNAM" if sub.data.len() >= 4 => {
                 node.qnam = Some(u32::from_le_bytes(sub.data[..4].try_into().unwrap()));
+            }
+            b"HNAM" if sub.data.len() >= 4 => {
+                node.hnam = Some(u32::from_le_bytes(sub.data[..4].try_into().unwrap()));
+            }
+            b"MNAM" if sub.data.len() >= 4 => {
+                node.mnam = Some(u32::from_le_bytes(sub.data[..4].try_into().unwrap()));
             }
             // CITC is the CTDA count; CTDA presence is authoritative, so
             // the counter itself is read past.
@@ -349,6 +366,9 @@ mod tests {
 
     #[test]
     fn fo4_dialect_tail_lands_in_extras_verbatim() {
+        // HNAM/MNAM decode as typed-raw fields since Phase 4 (a full
+        // 4-byte payload); sub-4-byte tails are short authoring and ride
+        // in extras verbatim alongside the genuinely unrecognized.
         let subs = vec![
             sub(b"HNAM", [0x01, 0x00]),
             sub(b"RNAM", [0xAA, 0xBB, 0xCC]),
@@ -356,9 +376,12 @@ mod tests {
             sub(b"UNKN", [0xFF]),
         ];
         let node = parse_sm_node(SmNodeKind::Quest, 0x0024_9E50, &subs, &None);
-        assert_eq!(node.extras.len(), 4);
+        assert_eq!(node.extras.len(), 3);
         assert_eq!(node.extras[0], (*b"HNAM", vec![0x01, 0x00]));
-        assert_eq!(node.extras[3], (*b"UNKN", vec![0xFF]));
+        assert_eq!(node.extras[2], (*b"UNKN", vec![0xFF]));
+        // Short HNAM reads as absent; the full MNAM decoded.
+        assert_eq!(node.hnam, None);
+        assert_eq!(node.mnam, Some(0x1234_5678));
     }
 
     #[test]
@@ -392,5 +415,36 @@ mod tests {
                 SmQuestLink { form_id: 0x000F_1A44, reset_hours: 0.0 },
             ]
         );
+    }
+    /// FO4/SF tail: `HNAM` (hours-shaped float, raw) and `MNAM` decode
+    /// as typed-raw u32s instead of landing in `extras`.
+    #[test]
+    fn fo4_tail_hnam_mnam_decode_typed_raw() {
+        let subs = vec![
+            sub(b"EDID", b"MinutemenRecruitmentPostMin02\0"),
+            sub(b"DNAM", 0x0001_0001u32.to_le_bytes()),
+            sub(b"XNAM", 0u32.to_le_bytes()),
+            sub(b"HNAM", 72.0_f32.to_le_bytes()),
+            sub(b"QNAM", 0u32.to_le_bytes()),
+            sub(b"NNAM", 0x0015_7577u32.to_le_bytes()),
+        ];
+        let node = parse_sm_node(SmNodeKind::Quest, 0x0024_9E50, &subs, &None);
+        assert_eq!(node.hnam, Some(0x4290_0000)); // 72.0f as raw LE u32
+        assert_eq!(node.mnam, None);
+        assert!(
+            node.extras.is_empty(),
+            "HNAM no longer rides in extras: {:?}",
+            node.extras
+        );
+        // Starfield shape: MNAM between XNAM and QNAM.
+        let subs = vec![
+            sub(b"DNAM", 0u32.to_le_bytes()),
+            sub(b"XNAM", 0u32.to_le_bytes()),
+            sub(b"MNAM", 0x0000_0016u32.to_le_bytes()),
+            sub(b"QNAM", 0u32.to_le_bytes()),
+            sub(b"NNAM", 0x0016_4167u32.to_le_bytes()),
+        ];
+        let node = parse_sm_node(SmNodeKind::Quest, 1, &subs, &None);
+        assert_eq!(node.mnam, Some(22));
     }
 }

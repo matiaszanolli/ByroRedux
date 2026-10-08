@@ -81,7 +81,7 @@ Creation-era LSCR model loading cover on Skyrim (inline SNAM/RNAM/XNAM
 pose) and FO4 (TNAM→TRNS) — census, cover begin/present, a rendered-frame
 screenshot floor, and dismissal after the destination applies, and
 [`sm1-story-manager.sh`](docs/smoke-tests/sm1-story-manager.sh) gates
-Story Manager event dispatch live on Skyrim (#5366 Phases 1–3): the
+Story Manager event dispatch live on Skyrim (#5366 Phases 1–4): the
 boot-time CLOC event must start the authored set through the canonical
 lifecycle (`WIGreetingNodeSHARES`, then the non-sharing
 `CWChangeLocationScenes` which consumes the event — leaving

@@ -1736,4 +1736,122 @@ fn event_data_r1_resolves_and_location_tags_fail_cleanly() {
             "the seeded shuffle/pick reaches both children across fires"
         );
     }
+    /// #5366 Phase 4 gate — the FO4 radiant-pool shape on real authored
+    /// content: `WorkshopAttackNode` (SMQN 0x00250E6C, under the `SCPT`
+    /// root) carries a 15-quest pool with random +
+    /// do-all-before-repeating — the same policy word as the
+    /// Minutemen-recruitment node the design doc names — and a
+    /// condition-free path from its event root (corpus-checked; the
+    /// Minutemen node itself gates on fn 576/56/77, all outside the
+    /// catalog, so the gate runs on this sibling shape). Across fires
+    /// it must cycle every pool quest before repeating one.
+    /// `#[ignore]`d like the MGSuspension gate — needs Fallout4.esm.
+    #[test]
+    #[ignore = "needs FO4 game data on disk"]
+    fn fo4_radiant_pool_cycles_on_real_content() {
+        let data = byroredux_plugin::esm::test_paths::fo4_data_dir();
+        let esm = data.join("Fallout4.esm");
+        if !esm.is_file() {
+            eprintln!("[FO4 pool gate] skipping: no Fallout4.esm at {esm:?}");
+            return;
+        }
+        let bytes = std::fs::read(&esm).expect("read Fallout4.esm");
+        let index = byroredux_plugin::esm::parse_esm(&bytes).expect("parse Fallout4.esm");
+
+        const NODE: u32 = 0x0017_39B1;
+        const SUPER_MUTANT_FACTION: u32 = 0x0005_8305;
+        let record = index
+            .story_manager_nodes
+            .get(&NODE)
+            .expect("SuperMutantConversationQuests must exist in Fallout4.esm");
+        assert_eq!(record.editor_id, "SuperMutantConversationQuests");
+        assert!(record.policies.random && record.policies.shares_event);
+        assert!(
+            record.quests.len() >= 4,
+            "the super-mutant conversation pool (census: 4): {}",
+            record.quests.len()
+        );
+        let pool: Vec<u32> = record.quests.iter().map(|q| q.form_id).collect();
+
+        let mut world = setup_world();
+        install_story_manager(&mut world, &index.story_manager_nodes);
+        world.insert_resource(QuestStageState::default());
+        // Fixed seed: the random pool pick is deterministic, so the
+        // all-entries-cycled assertion below is not a flake.
+        world.insert_resource(StoryManagerRng { state: 0x1234_5678 });
+        let actor_a = world.spawn();
+        let actor_b = world.spawn();
+        for actor in [actor_a, actor_b] {
+            world.insert(
+                actor,
+                byroredux_core::ecs::components::FactionRanks::from_pairs([(
+                    SUPER_MUTANT_FACTION,
+                    0,
+                )]),
+            );
+        }
+
+        let fire_adia = |world: &mut World| -> u32 {
+            if let Some(mut events) = world.query_mut::<StoryEvent>() {
+                events.insert(
+                    actor_a,
+                    StoryEvent {
+                        mnemonic: *b"ADIA",
+                        reference_1: actor_a,
+                        reference_2: Some(actor_b),
+                        location_1: None,
+                        location_2: None,
+                    },
+                );
+            }
+            story_manager_dispatch_system(world);
+            // One pool quest runs per fire; stop it so the next fire is
+            // eligible again, and report which one ran.
+            let mut stages = world.try_resource_mut::<QuestStageState>().unwrap();
+            let started = pool
+                .iter()
+                .copied()
+                .find(|q| stages.is_running(QuestFormId(*q)))
+                .expect("each ADIA fire starts exactly one pool quest");
+            stages.stop(QuestFormId(started));
+            started
+        };
+
+        // Without the faction, the R1/R2 GetInFaction gate must refuse.
+        let outsider_a = world.spawn();
+        let outsider_b = world.spawn();
+        if let Some(mut events) = world.query_mut::<StoryEvent>() {
+            events.insert(
+                outsider_a,
+                StoryEvent {
+                    mnemonic: *b"ADIA",
+                    reference_1: outsider_a,
+                    reference_2: Some(outsider_b),
+                    location_1: None,
+                    location_2: None,
+                },
+            );
+        }
+        story_manager_dispatch_system(&world);
+        {
+            let stages = world.try_resource::<QuestStageState>().unwrap();
+            assert!(
+                pool.iter().all(|q| !stages.is_running(QuestFormId(*q))),
+                "actors outside the authored faction — the FO4 event-data gate refuses"
+            );
+        }
+
+        // With it: random selection cycles every pool quest across fires.
+        let mut fired: Vec<u32> = Vec::new();
+        for _ in 0..24 {
+            fired.push(fire_adia(&mut world));
+        }
+        let distinct = fired.iter().copied().collect::<std::collections::HashSet<_>>();
+        assert_eq!(
+            distinct.len(),
+            pool.len(),
+            "the radiant pool cycles different quests across fires (seeded): \
+             started {fired:#X?} of pool {pool:#X?}"
+        );
+    }
 }

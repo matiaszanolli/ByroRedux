@@ -482,6 +482,9 @@ pub(crate) fn forcegreet_open(world: &World, npc: EntityId, topic: Option<u32>) 
         return false;
     };
     apply_selection(world, npc, selected, record);
+    // #5366 Phase 4 — the hello story event rides every opened
+    // conversation (greeter → R1, player → R2).
+    crate::systems::story_events::raise_hello_story_event(world, npc, player);
     true
 }
 
@@ -676,6 +679,9 @@ fn npc_dialogue_selection_system_inner(world: &World, scratch: &mut NpcDialogueS
     // ── Pass 2: apply. ──
     for selection in &scratch.selections {
         apply_selection(world, selection.npc, selection.topic.clone(), selection.record.clone());
+        // #5366 Phase 4 — each opened activation conversation raises the
+        // hello story event (greeter → R1, player → R2).
+        crate::systems::story_events::raise_hello_story_event(world, selection.npc, player);
     }
 }
 

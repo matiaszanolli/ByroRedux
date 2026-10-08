@@ -5337,3 +5337,90 @@ fn story_manager_skyrim_node_policy_floor() {
             "{edid} must be 0x30001-shaped (random|do-all|shares)");
     }
 }
+
+/// #5366 Phase 4 — the FO4 dialect: same `DNAM` policy vocabulary
+/// (2026-10-08 census: shares-bit on ≥140 `SMQN`s, `SMEN` roots all 0),
+/// authored quest pools at Skyrim-unseen scale (`RETravelQuests` 44),
+/// `RNAM` pairing carried over (`BoSGenericConversationNode` 26/26),
+/// and the typed-raw FO4 tail (`HNAM` hours-shaped float, `MNAM` int).
+/// The Minutemen-recruitment anchor: 14-link pool (the design doc's
+/// "16" was the pre-census guess), `HNAM` = 72.0h, first `RNAM`
+/// = 4320.0h, random + do-all.
+#[test]
+#[ignore = "needs FO4 game data on disk"]
+fn story_manager_fo4_dialect_floor() {
+    let Some(data) = data_dir(test_paths::FO4_ENV, test_paths::FO4_DEFAULT) else {
+        eprintln!("[FO4 SM dialect] skipping: game data unavailable");
+        return;
+    };
+    let bytes = std::fs::read(data.join("Fallout4.esm")).expect("read Fallout4.esm");
+    let index = parse_esm(&bytes).expect("parse Fallout4.esm");
+    use byroredux_plugin::esm::records::{SmNodeKind, SmNodeRecord};
+
+    let nodes: Vec<&SmNodeRecord> = index.story_manager_nodes.values().collect();
+    let mut shares = 0;
+    let mut random = 0;
+    let mut do_all = 0;
+    let mut event_with_policy = 0;
+    let mut max_pool: (String, usize) = (String::new(), 0);
+    let mut paired_rnam = 0;
+    let mut hnam_count = 0;
+    for node in &nodes {
+        if node.policies.shares_event {
+            shares += 1;
+        }
+        if node.policies.random {
+            random += 1;
+        }
+        if node.policies.do_all_before_repeating {
+            do_all += 1;
+        }
+        if node.kind == SmNodeKind::Event && node.dnam.is_some_and(|dnam| dnam != 0) {
+            event_with_policy += 1;
+        }
+        if node.quests.len() > max_pool.1 {
+            max_pool = (node.editor_id.clone(), node.quests.len());
+        }
+        if node.quests.len() >= 2
+            && node.quests.iter().filter(|q| q.reset_hours > 0.0).count() >= 2
+        {
+            paired_rnam += 1;
+        }
+        if node.hnam.is_some() {
+            hnam_count += 1;
+        }
+    }
+    assert!(shares >= 140, "FO4 shares floor (measured 145): {shares}");
+    assert!(random >= 70, "FO4 random floor (measured ~80): {random}");
+    assert!(do_all >= 35, "FO4 do-all floor (measured 39): {do_all}");
+    assert_eq!(event_with_policy, 0, "FO4 SMEN roots author no policy bits");
+    assert!(
+        max_pool.1 >= 40,
+        "FO4 pool floor (RETravelQuests measured 44): {max_pool:?}"
+    );
+    assert!(
+        paired_rnam >= 20,
+        "FO4 RNAM pairing floor (BoSGenericConversationNode 26/26 + others, measured ~25): {paired_rnam}"
+    );
+    assert!(hnam_count >= 15, "FO4 HNAM floor (measured 17): {hnam_count}");
+
+    // The Minutemen-recruitment anchor.
+    let minutemen = index
+        .story_manager_nodes
+        .values()
+        .find(|node| node.editor_id == "MinutemenRecruitmentPostMin02")
+        .expect("MinutemenRecruitmentPostMin02 must exist in Fallout4.esm");
+    assert_eq!(minutemen.quests.len(), 14, "the doc's 16 was pre-census");
+    assert!(minutemen.policies.random && minutemen.policies.do_all_before_repeating);
+    assert_eq!(minutemen.hnam, Some(0x4290_0000)); // 72.0h as raw LE u32
+    // Exactly one pool entry carries the 180-day window; the census's
+    // raw walk showed one RNAM whose NNAM position this pins.
+    assert_eq!(
+        minutemen
+            .quests
+            .iter()
+            .filter(|q| q.reset_hours == 4320.0)
+            .count(),
+        1
+    );
+}

@@ -1,19 +1,19 @@
 # Story Manager event dispatch
 
-**Status**: Phases 0–3 **landed 2026-10-07** (#5366), including the live
-gate ([`sm1-story-manager.sh`](../smoke-tests/sm1-story-manager.sh)),
-now covering the Phase-3 authored boot set (shares-consume included),
-and the Phase-2 event-data selectivity legs: the `SMBN`/`SMEN`/`SMQN`
-decode (`crates/plugin/src/esm/records/misc/story_manager.rs` →
-`EsmIndex.story_manager_nodes`), the `SmTree` fold + `StoryEvent`
-dispatcher (`crates/scripting/src/story_manager.rs`), two producers
-(`KILL` at the combat death site, `CLOC` from the cell-loader location
-contexts at LCTN granularity via `XLCN`), `RunOn::EventData` condition
-resolution over the corpus-decoded R1/R2/L1/L2 slots, `FromEvent`
-(`ALFE`/`ALFD`) alias fills fed from the raising event, and the decoded
-`DNAM` node policies (random / do-all-before-repeating / shares-event)
-with `RNAM` per-quest reset windows and save-persistent node state.
-Phase 4 remains open. This document remains the design authority; it is the
+**Status**: Phases 0–4 **landed 2026-10-07/08** (#5366). The runtime is
+complete for the Skyrim dialect and the FO4/SF decode is in: the
+`SMBN`/`SMEN`/`SMQN` parse (`crates/plugin/src/esm/records/misc/story_manager.rs`
+→ `EsmIndex.story_manager_nodes`, FO4/SF tail typed-raw), the `SmTree`
+fold + `StoryEvent` dispatcher (`crates/scripting/src/story_manager.rs`),
+three producers (`KILL` at combat death, `CLOC` at `XLCN` LCTN
+granularity, `AHEL` at conversation open — activation greeting and
+force-greet), `RunOn::EventData` over the corpus-decoded R1/R2/L1/L2
+slots, `FromEvent` alias fills, and the `DNAM` policies with `RNAM`
+reset windows over save-persistent node state. Remaining under the
+Phase-4 umbrella: breadth producers whose subsystems have not landed
+(`SCPT` needs the Papyrus `SendStoryEvent` native surface, `LEVL` a
+level-up transition, crime/crafting/pickpocket their systems) and the
+open `DNAM`/`HNAM`/`MNAM`/`XNAM`/`QNAM` semantics. This document remains the design authority; it is the
 scoping pass for the Story Manager half of M43's open scope ("Story
 Manager event payloads and search") and the M47.2 row's "ESM-native
 event dispatch / Story Manager" item.
@@ -103,10 +103,12 @@ verification below should be treated as decoded.
 | `NNAM` u32 | SMQN | the QUST this node starts | **[verified]** — Skyrim 425/448 resolve to QUST records via EDID cross-check (e.g. `MS05KingOlafsFestivalStarter` → its QUST) |
 | `DNAM` u32 | all | node-policy flags — 0x1 random, 0x10000 do-all-before-repeating, 0x20000 shares-event (Phase-3 decode, §3.3) | **[decoded]** — bits 0x2 and 0x40000 remain **[open]** |
 | `RNAM` f32 | SMQN | per-quest hours-until-reset window, follows its `NNAM` | **[decoded]** (Phase 3; §3.3) |
+| `HNAM` u32 (as f32) | SMQN, FO4+ | hours-magnitude float — 72.0 on the Minutemen node, 0.3–24.0 elsewhere; candidate node-level reset window | **[open]** (typed-raw since Phase 4; runtime does not gate) |
+| `MNAM` u32 | SMQN, FO4 rare / SF common | small int (1–22) | **[open]** (typed-raw since Phase 4) |
 | `XNAM` u32 | all | small int (0/1/2; 0 dominant) | **[open]** |
 | `QNAM` u32 | SMQN | small int 0–14 | **[open]** (candidate: repeat/priority; do not guess) |
 | `SNAM` u32 | SMBN/SMEN | when present, points at another node — see §5 | **[open]** (distinct from the sibling use on SMQN) |
-| FO4+: `HNAM`, repeated `NNAM` array, `RNAM` | SMQN | FO4 quest nodes can carry a *pool* of candidate quests (the 16-`NNAM` `MinutemenRecruitmentPostMin02` node) | **[open]** — FO4/SF dialect |
+| FO4+: repeated `NNAM` pool + `RNAM` | SMQN | pools at Skyrim-unseen scale (`RETravelQuests` 44; the Minutemen node's pool measured **14**, not the 16 this doc first guessed), `RNAM` pairing identical to Skyrim's | **[decoded]** (Phase 4 census; same bits, same `RNAM` semantics) |
 | SF: `MNAM` | SMQN | — | **[open]** |
 
 A census artifact worth recording so the Phase-0 test floors aren't
@@ -305,10 +307,15 @@ live gating).
 Phasing follows this, not the catalog order — start where the engine
 already has the surface:
 
-- **Ready-ish**: `KILL` (combat death exists, M41/#4414),
-  `CLOC` (cell-transition steppers), `AHEL`-adjacent activation
-  (P0), `LEVL` (ActorValues/setav), `SCPT` (Papyrus/SKSE-compat
-  SendStoryEvent).
+- **Landed**: `KILL` (combat death site, Phase 1), `CLOC`
+  (cell-transition at LCTN granularity, Phase 2), `AHEL` (every opened
+  conversation — activation greeting and force-greet, Phase 4).
+- **Deferred until their subsystems land**: `SCPT` (needs the Papyrus
+  `SendStoryEvent` native-call surface — no native runtime yet),
+  `LEVL`/`SKIL` (no level-up/skill-increment transition site),
+  `DEAD` (no dead-body discovery logic), crime/arrest/crafting/
+  pickpocket families, FO4's `HACK`/`LOCK`/`IRON`/`OAAT`/`TMEE`/
+  `LCLD`/`AOBJ`, Starfield's ship surface.
 - **Needs a producer**: crime/arrest/jail family (`ADCR ARRT ESJA JAIL
   BRIB INTM FLAT` — no crime system yet), crafting (`CRFT`),
   pickpocket/steal (`AIPL REMP AFAV`), `DEAD`, `SKIL`, FO4's
@@ -421,10 +428,25 @@ tree itself (rederived from the load order every boot).
    `p5-quest-persistence.sh` extended to the SM-fired `WIGreeting`.
    Eligibility moved from `is_started` to `is_running` — stopped
    radiants re-fire, the rerun path.
-5. **Phase 4 — FO4/SF dialect + breadth producers.** `NNAM` pools,
-   `HNAM`/`RNAM`/`MNAM`, remaining producers as their subsystems land.
-   Gate: FO4 Minutemen-recruitment-style radiant (a 16-quest pool node)
-   cycling different quests across fires.
+5. **Phase 4 — FO4/SF dialect + breadth producers. Landed
+   2026-10-08 (#5366).** The census (doc §3 field table): FO4/SF share
+   Skyrim's `DNAM` bit vocabulary exactly (SF adds 0x50001/0x70001
+   combinations of the same bits), author pools at scale
+   (`RETravelQuests` 44), pair `RNAM` identically, and add the
+   typed-raw `HNAM` hours-float + `MNAM` int tail. The Minutemen
+   anchor is measured at a **14**-link pool (this doc's "16" was the
+   pre-census guess), `HNAM` 72.0h, first `RNAM` 4320.0h, random +
+   do-all. Every large FO4 pool gates on fn 576/56/77 (all outside the
+   M47.1 catalog — full-path reachability corpus-checked), so the gate
+   runs on the fully-reachable `SuperMutantConversationQuests`
+   (4-pool, random+shares, its only conditions `GetInFaction` on the
+   event's R1/R2 — the Phase-2 run-on live on FO4 content):
+   `fo4_radiant_pool_cycles_on_real_content` crafts the faction,
+   proves the faction-negative refuses, and cycles the whole pool
+   across seeded fires. The `AHEL` producer landed at the #5367
+   conversation-open surfaces (`OnStoryHello`: L1 session LCTN, R1
+   greeter, R2 greeted). Producers still deferred per §6.4.
+   Floors: `story_manager_fo4_dialect_floor`.
 
 ## 8. What this document does NOT decide
 
