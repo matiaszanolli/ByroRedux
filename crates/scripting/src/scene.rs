@@ -101,6 +101,15 @@ impl SceneActorBindings {
         self.dirty
     }
 
+    /// Request an alias refresh. #5366 Phase 2's dispatcher calls this
+    /// after starting a quest so its `FromEvent` aliases (recorded in
+    /// [`crate::story_manager::StoryEventAliasFill`]) are filled by the
+    /// refresh scheduled right after it, same frame. Direct field access
+    /// stays module-private: every other dirty-marking site is in here.
+    pub fn request_refresh(&mut self) {
+        self.dirty = true;
+    }
+
     /// The table's change key (#5293). See the field's doc.
     pub fn revision(&self) -> crate::quest_stages::QuestRevision {
         self.revision

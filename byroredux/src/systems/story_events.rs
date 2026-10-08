@@ -1,21 +1,27 @@
-//! Engine-side Story Manager event producers — #5366 Phase 1.
+//! Engine-side Story Manager event producers — #5366 Phases 1–2.
 //!
 //! The scripting crate owns dispatch (`story_manager_dispatch_system`)
 //! and the marker; this module owns the engine surfaces that raise it.
 //! Phase 1 wires `CLOC` here (the session's location identity from the
 //! cell-loader contexts) — `KILL` is raised directly at the combat
 //! death site in `crate::combat`, which has the aggressor in scope.
+//!
+//! Phase 2 tightens the CLOC key to Skyrim's location granularity: when
+//! the current cell resolves an LCTN (`XLCN`, already decoded into
+//! `CellData::location_form`), the key is that LCTN — moving between
+//! two cells of one location no longer fires, moving within one hold
+//! between authored locations does. Cells without an LCTN (wilderness
+//! grids) keep the Phase-1 worldspace+grid key, so cadence there is
+//! unchanged. The resolved LCTN rides on the event as `L2` (new) with
+//! the previous fire's as `L1` (old).
 
-use crate::cell_loader::{CurrentCellContext, CurrentExteriorContext};
+use crate::cell_loader::{CurrentCellContext, CurrentExteriorContext, LoadedCellIndex};
 use crate::systems::character::PlayerEntity;
 use byroredux_core::ecs::world::World;
 use std::hash::{Hash, Hasher};
 
 /// System: raise a `CLOC` story event when the session's location
-/// identity changes. Interior identity is the cell editor-id; exterior
-/// identity is worldspace + grid, so every grid crossing fires — a
-/// coarser cadence than Skyrim's LCTN granularity, tightened in #5366
-/// Phase 2 when event-carried location FormIDs map through LCTN.
+/// identity changes.
 ///
 /// No player entity (loose-NIF demo, spawn ladders): no event — a
 /// location change nobody occupies is not a story event.
@@ -26,7 +32,15 @@ pub fn story_change_location_system(world: &World) {
     else {
         return;
     };
-    let key = if let Some(cell) = world.try_resource::<CurrentCellContext>() {
+    // LCTN first (Phase 2): interior cells by editor-id, exterior grid
+    // cells by worldspace+grid. The loaded index is installed on every
+    // load path; without it (or without an `XLCN`) the location stays
+    // `None` and the key falls back to the Phase-1 identity.
+    let location = resolve_current_lctn(world);
+    let key = if let Some(lctn) = location {
+        let parts: [&str; 2] = ["lctn", &format!("{:08X}", lctn)];
+        Some(location_hash(&parts))
+    } else if let Some(cell) = world.try_resource::<CurrentCellContext>() {
         let parts: [&str; 2] = [&cell.esm_path, &cell.cell_editor_id];
         Some(location_hash(&parts))
     } else if let Some(exterior) = world.try_resource::<CurrentExteriorContext>() {
@@ -39,8 +53,31 @@ pub fn story_change_location_system(world: &World) {
         None
     };
     byroredux_scripting::story_manager::emit_change_location_on_key_change(
-        world, key, player, None,
+        world, key, player, location,
     );
+}
+
+/// The current cell's `XLCN` LCTN, interior or exterior grid cell, from
+/// the loaded plugin index. `None` when the index is absent, the cell
+/// isn't found, or the record authors no location (wilderness grids).
+fn resolve_current_lctn(world: &World) -> Option<u32> {
+    let index = world.try_resource::<LoadedCellIndex>()?.0.clone();
+    if let Some(cell) = world.try_resource::<CurrentCellContext>() {
+        return index
+            .cells
+            .cells
+            .get(&cell.cell_editor_id.to_ascii_lowercase())
+            .and_then(|data| data.location_form);
+    }
+    if let Some(exterior) = world.try_resource::<CurrentExteriorContext>() {
+        return index
+            .cells
+            .exterior_cells
+            .get(&exterior.worldspace_key)
+            .and_then(|grid| grid.get(&exterior.grid))
+            .and_then(|data| data.location_form);
+    }
+    None
 }
 
 /// Process-local identity hash for change detection only — never

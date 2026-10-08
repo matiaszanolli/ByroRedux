@@ -1,4 +1,4 @@
-//! Story Manager dispatch runtime — #5366 Phase 1.
+//! Story Manager dispatch runtime — #5366 Phases 1–2.
 //!
 //! Folds the parsed `SMBN`/`SMEN`/`SMQN` node map
 //! ([`EsmIndex::story_manager_nodes`]) into an [`SmTree`] whose children
@@ -9,6 +9,15 @@
 //! through the canonical [`QuestStageState`] lifecycle (the same path
 //! Start Game Enabled and Papyrus `Start()` use).
 //!
+//! Phase-2 additions on top of the Phase-1 walk: the event carries its
+//! data as the four positional slots the wire format tags (`R1`/`R2`
+//! references, `L1`/`L2` locations — see [`EventDataSlots`]), so a node
+//! CTDA with `RunOn::EventData` resolves its tag against the raising
+//! event, and a started quest's `FromEvent` (`ALFE`/`ALFD`) aliases
+//! fill from those same slots through the P4 alias refresh (the fill is
+//! recorded in [`StoryEventAliasFill`] here and consumed by
+//! `refresh_scene_actor_bindings`, which owns the binding table).
+//!
 //! Phase-1 semantics decisions, both revisited when `DNAM` decodes
 //! (#5366 §5 alignment pass):
 //!
@@ -18,18 +27,18 @@
 //!   circumstances, so until the `DNAM` bit that encodes it is verified
 //!   against the corpus, continuing is the conservative majority
 //!   behavior. The stop-on-fire variant is one flag read away.
-//! - **Condition run-on is Subject/Object only.** The event's subject
-//!   slots into `ConditionContext::subject` (killer, entering actor…)
-//!   and its object into `target` (victim…). `RunOn::EventData` still
-//!   resolves `None` (condition fails) — the per-mnemonic event-data
-//!   alias table is Phase 2.
+//! - **Subject/Object derive from the slots.** `ConditionContext`'s
+//!   subject is R2 when the event has one (KILL killer — the doer),
+//!   else R1 (CLOC actor); its target is R1 (KILL victim). This is the
+//!   Phase-1 mapping verbatim, now expressed over the corpus-verified
+//!   slots.
 //!
 //! Producers: the engine wires two — `KILL` at the combat death
-//! transition (`byroredux/src/combat.rs`) and `CLOC` through
-//! [`emit_change_location_on_key_change`], fed the session's
-//! cell/worldspace identity each frame by an engine-side system.
-//! Papyrus `SendStoryEvent` lowers onto the same marker when its
-//! producer lands.
+//! transition (`byroredux/src/combat.rs`: R1 slain, R2 aggressor) and
+//! `CLOC` through [`emit_change_location_on_key_change`], fed the
+//! session's cell/worldspace identity plus LCTN each frame by an
+//! engine-side system. Papyrus `SendStoryEvent` lowers onto the same
+//! marker when its producer lands.
 
 use byroredux_core::ecs::resource::Resource;
 use byroredux_core::ecs::sparse_set::SparseSetStorage;
@@ -39,8 +48,9 @@ use byroredux_plugin::esm::records::condition::ConditionList;
 use byroredux_plugin::esm::records::{SmNodeKind, SmNodeRecord};
 use std::collections::HashMap;
 
-use crate::condition::{evaluate, ConditionContext};
+use crate::condition::{evaluate, ConditionContext, EventDataSlots};
 use crate::quest_stages::{QuestDefinitionRegistry, QuestFormId, QuestStageState};
+use crate::scene::SceneActorBindings;
 
 /// One raised story event — the ECS replacement for the engine's story
 /// event queue entry. Transient marker (**Pattern B**, #2672): it has
@@ -48,19 +58,38 @@ use crate::quest_stages::{QuestDefinitionRegistry, QuestFormId, QuestStageState}
 /// snapshots and drains it at its head. Producers attach it to the
 /// entity the event most concerns (the slain actor for `KILL`, the
 /// entering actor for `CLOC`).
+///
+/// The payload is the wire format's positional slots (corpus-verified
+/// against Skyrim + DLCs, #5366 Phase 2): R1/R2 are the event's two
+/// references and L1/L2 its locations. Which thing each slot holds is
+/// per-mnemonic and follows the Papyrus `OnStory*` parameter order —
+/// `KILL`: R1 victim, R2 killer; `CLOC`: R1 actor, L1 old, L2 new.
 #[derive(Debug, Clone, Copy)]
 pub struct StoryEvent {
     /// 4-byte event mnemonic (`"KILL"`, `"CLOC"`, …) matching the
     /// `SMEN.ENAM` catalog parsed off the master.
     pub mnemonic: [u8; 4],
-    /// Event-data slot 1: killer, caster, entering actor. Conditions
-    /// with `RunOn::Subject` evaluate against this entity.
-    pub subject: EntityId,
-    /// Event-data slot 2: victim, target. `RunOn::Target` evaluates
-    /// against this entity; `None` fails such conditions.
-    pub object: Option<EntityId>,
-    /// Location FormID (LCTN/CELL) when the event carries one.
-    pub location: Option<u32>,
+    /// `R1` — first event reference (KILL victim, CLOC entering actor).
+    pub reference_1: EntityId,
+    /// `R2` — second event reference (KILL killer, CAST spell target).
+    pub reference_2: Option<EntityId>,
+    /// `L1` — first event location (CLOC location left).
+    pub location_1: Option<u32>,
+    /// `L2` — second event location (CLOC location entered).
+    pub location_2: Option<u32>,
+}
+
+impl StoryEvent {
+    /// The [`EventDataSlots`] view the condition evaluator and the
+    /// `FromEvent` alias fill consume.
+    pub fn slots(&self) -> EventDataSlots {
+        EventDataSlots {
+            reference_1: Some(self.reference_1),
+            reference_2: self.reference_2,
+            location_1: self.location_1,
+            location_2: self.location_2,
+        }
+    }
 }
 
 impl Component for StoryEvent {
@@ -104,14 +133,31 @@ pub struct SmTree {
 
 impl Resource for SmTree {}
 
-/// Last location key the CLOC producer observed. `NOT_SAVED_BY_DESIGN`:
+/// Last location key the CLOC producer observed, plus the LCTN it
+/// resolved to (the `L1` the next change carries). `NOT_SAVED_BY_DESIGN`:
 /// after a load the first post-load frame fires a fresh CLOC, which is
 /// the engine behavior the event describes anyway (you changed location
 /// by loading).
 #[derive(Default)]
-pub struct StoryLocationCursor(pub Option<u64>);
+pub struct StoryLocationCursor {
+    pub key: Option<u64>,
+    pub location: Option<u32>,
+}
 
 impl Resource for StoryLocationCursor {}
+
+/// Event data each SM-started quest's `FromEvent` aliases fill from,
+/// keyed by quest — written by the dispatcher's start phase, read by the
+/// P4 alias refresh (`refresh_scene_actor_bindings`), which owns the
+/// binding table. Latest fire wins (a re-fired radiant re-fills); an
+/// entry stays for the session so an alias refresh after a cell reload
+/// can still fill, matching how world-candidate fills behave.
+/// `NOT_SAVED_BY_DESIGN`: after a load the quests restart through fresh
+/// events, which rewrite their entries.
+#[derive(Debug, Default)]
+pub struct StoryEventAliasFill(pub HashMap<QuestFormId, EventDataSlots>);
+
+impl Resource for StoryEventAliasFill {}
 
 /// Fold the parsed node records into an [`SmTree`].
 ///
@@ -209,22 +255,29 @@ pub fn install_story_manager(world: &mut World, records: &HashMap<u32, SmNodeRec
     let count = tree.nodes.len();
     world.insert_resource(tree);
     if world.try_resource::<StoryLocationCursor>().is_none() {
-        world.insert_resource(StoryLocationCursor(None));
+        world.insert_resource(StoryLocationCursor::default());
+    }
+    if world.try_resource::<StoryEventAliasFill>().is_none() {
+        world.insert_resource(StoryEventAliasFill::default());
     }
     count
 }
 
-/// Engine-side CLOC producer half: fire a `CLOC` StoryEvent on `subject`
+/// Engine-side CLOC producer half: fire a `CLOC` StoryEvent on `actor`
 /// exactly when the session's location `key` differs from the cursor's.
 ///
 /// `key` is an opaque process-local identity (the engine hashes the
-/// cell editor-id / worldspace+grid context); `None` means "no location
-/// context" (loose-NIF mode, mid-transition window) — the cursor
-/// follows along but no event fires for it.
+/// LCTN when the current cell resolves one — Skyrim's granularity —
+/// else the cell editor-id / worldspace+grid); `None` means "no
+/// location context" (loose-NIF mode, mid-transition window) — the
+/// cursor follows along but no event fires for it. `location` is the
+/// LCTN FormID the key resolved to when one exists; the previous
+/// fire's LCTN rides out as the event's `L1` and `location` becomes
+/// its `L2`.
 pub fn emit_change_location_on_key_change(
     world: &World,
     key: Option<u64>,
-    subject: EntityId,
+    actor: EntityId,
     location: Option<u32>,
 ) -> bool {
     // The install pass always creates the cursor alongside the tree; a
@@ -232,10 +285,12 @@ pub fn emit_change_location_on_key_change(
     let Some(mut cursor) = world.try_resource_mut::<StoryLocationCursor>() else {
         return false;
     };
-    if cursor.0 == key {
+    if cursor.key == key {
         return false;
     }
-    cursor.0 = key;
+    let previous_location = cursor.location;
+    cursor.key = key;
+    cursor.location = location;
     // Release the resource write before touching the marker storage so
     // this path never nests two acquisitions.
     drop(cursor);
@@ -244,12 +299,13 @@ pub fn emit_change_location_on_key_change(
     }
     if let Some(mut events) = world.query_mut::<StoryEvent>() {
         events.insert(
-            subject,
+            actor,
             StoryEvent {
                 mnemonic: *b"CLOC",
-                subject,
-                object: None,
-                location,
+                reference_1: actor,
+                reference_2: None,
+                location_1: previous_location,
+                location_2: location,
             },
         );
         return true;
@@ -294,6 +350,7 @@ pub fn story_manager_dispatch_system(world: &World) {
                 &tree,
                 &mut WalkState {
                     event,
+                    slots: event.slots(),
                     registry: registry.as_deref(),
                     stages: stages.as_deref(),
                     candidates: &mut candidates,
@@ -310,6 +367,16 @@ pub fn story_manager_dispatch_system(world: &World) {
             continue;
         }
         stages.start_quest(candidate.quest, candidate.start_up_stage);
+        // Phase 2 — record the event's slots for this quest's `FromEvent`
+        // aliases and mark the binding table dirty so the alias refresh
+        // (scheduled right after this system) re-fills with them. One
+        // resource write at a time: the fill map first, then bindings.
+        if let Some(mut fills) = world.try_resource_mut::<StoryEventAliasFill>() {
+            fills.0.insert(candidate.quest, candidate.slots);
+        }
+        if let Some(mut bindings) = world.try_resource_mut::<SceneActorBindings>() {
+            bindings.request_refresh();
+        }
         log::info!(
             "#5366 story manager: started quest {:#010X} ('{}') via node '{}' \
              on '{}' event",
@@ -328,6 +395,8 @@ struct QuestStartCandidate {
     editor_id: String,
     node_editor_id: String,
     mnemonic: [u8; 4],
+    /// The raising event's slots, carried for the `FromEvent` alias fill.
+    slots: EventDataSlots,
 }
 
 /// Bundles the per-event walk state so the recursive step stays under
@@ -335,6 +404,7 @@ struct QuestStartCandidate {
 /// the call site.
 struct WalkState<'a> {
     event: &'a StoryEvent,
+    slots: EventDataSlots,
     registry: Option<&'a QuestDefinitionRegistry>,
     stages: Option<&'a QuestStageState>,
     candidates: &'a mut Vec<QuestStartCandidate>,
@@ -375,8 +445,14 @@ fn walk_siblings(
         visited[index] = true;
         let node = &tree.nodes[index];
         let continuation = node.next_sibling;
-        let mut context = ConditionContext::for_subject(state.event.subject);
-        context.target = state.event.object;
+        // Subject = the doer: R2 when the event carries one (KILL
+        // killer), else R1 (CLOC actor). Target = R1 (KILL victim).
+        // `RunOn::EventData` tags resolve through the same slots.
+        let mut context = ConditionContext::for_subject(
+            state.event.reference_2.unwrap_or(state.event.reference_1),
+        )
+        .with_event_data(&state.slots);
+        context.target = Some(state.event.reference_1);
         if evaluate(&node.conditions, world, &context) {
             if node.kind == SmNodeKind::Quest {
                 for &quest in &node.quest_links {
@@ -396,6 +472,7 @@ fn walk_siblings(
                             .to_owned(),
                         node_editor_id: node.editor_id.clone(),
                         mnemonic: state.event.mnemonic,
+                        slots: state.slots,
                     });
                 }
             }
@@ -408,6 +485,7 @@ fn walk_siblings(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use byroredux_plugin::esm::records::condition::RunOn;
 
     /// Components must be registered on a fresh World before storages
     /// resolve (`query_mut` on an unregistered component returns `None`,
@@ -502,9 +580,10 @@ mod tests {
                 actor,
                 StoryEvent {
                     mnemonic: *b"KILL",
-                    subject: actor,
-                    object: None,
-                    location: None,
+                    reference_1: actor,
+                    reference_2: None,
+                    location_1: None,
+                    location_2: None,
                 },
             );
         }
@@ -537,9 +616,10 @@ mod tests {
                     victim,
                     StoryEvent {
                         mnemonic: *b"KILL",
-                        subject: killer,
-                        object: Some(victim),
-                        location: None,
+                        reference_1: victim,
+                        reference_2: Some(killer),
+                        location_1: None,
+                        location_2: None,
                     },
                 );
             }
@@ -564,9 +644,10 @@ mod tests {
                 victim,
                 StoryEvent {
                     mnemonic: *b"ZZZZ",
-                    subject: killer,
-                    object: None,
-                    location: None,
+                    reference_1: victim,
+                    reference_2: Some(killer),
+                    location_1: None,
+                    location_2: None,
                 },
             );
         }
@@ -608,9 +689,10 @@ mod tests {
                 actor,
                 StoryEvent {
                     mnemonic: *b"CLOC",
-                    subject: actor,
-                    object: None,
-                    location: None,
+                    reference_1: actor,
+                    reference_2: None,
+                    location_1: None,
+                    location_2: None,
                 },
             );
         }
@@ -625,7 +707,7 @@ mod tests {
     #[test]
     fn change_location_fires_once_per_key() {
         let mut world = setup_world();
-        world.insert_resource(StoryLocationCursor(None));
+        world.insert_resource(StoryLocationCursor::default());
         let actor = world.spawn();
         assert!(emit_change_location_on_key_change(&world, Some(1), actor, None));
         assert!(!emit_change_location_on_key_change(&world, Some(1), actor, None));
@@ -639,5 +721,389 @@ mod tests {
             .map(|query| query.iter().count())
             .unwrap_or(0);
         assert_eq!(remaining, 0);
+    }
+
+/// The R-slot tag a CTDA tail (or ALFD) carries — helper so the tests
+/// below read as the wire format does.
+#[cfg(test)]
+fn tag(bytes: &[u8; 2]) -> u32 {
+    u32::from(bytes[0]) | (u32::from(bytes[1]) << 8)
+}
+
+/// #5366 Phase 2 gate shape — the tutorial's killer conditions: a KILL
+/// node gated on `GetIsID(player)` run on EventData R2 starts only when
+/// the event's killer IS the player. Same node, same world, two events:
+/// matching starts, non-matching does not.
+#[test]
+fn event_data_killer_condition_gates_the_start() {
+    use byroredux_plugin::esm::records::condition::{ComparisonOp, Condition, ConditionValue};
+    use byroredux_plugin::esm::records::{AliasFillType, QustRecord};
+
+    const PLAYER_BASE: u32 = 0x0000_0007;
+    let killer_node = SmNodeRecord {
+        form_id: 30,
+        parent: 10,
+        next_sibling: 0,
+        kind: SmNodeKind::Quest,
+        quest_links: vec![0x555],
+        conditions: vec![Condition {
+            function_index: 72, // GetIsID
+            comparator: ComparisonOp::Eq,
+            comparand: ConditionValue::Literal(1.0),
+            param_1: PLAYER_BASE,
+            run_on: RunOn::EventData,
+            extra_data_id: tag(b"R2"),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let tree = build_story_manager_tree(&records(vec![
+        event_node(10, b"KILL"),
+        killer_node,
+    ]));
+    let mut world = setup_world();
+    world.insert_resource(tree);
+    world.insert_resource(QuestStageState::default());
+    world.insert_resource(StoryEventAliasFill::default());
+
+    let victim = world.spawn();
+    let player_killer = world.spawn();
+    let other_killer = world.spawn();
+    world.insert(
+        player_killer,
+        crate::scene::SceneAliasCandidate {
+            reference_form_id: 0x14,
+            base_form_id: PLAYER_BASE,
+            linked_refs: Vec::new(),
+            location_ref_types: Vec::new(),
+        },
+    );
+    world.insert(
+        other_killer,
+        crate::scene::SceneAliasCandidate {
+            reference_form_id: 0x99,
+            base_form_id: 0x0004_0A10,
+            linked_refs: Vec::new(),
+            location_ref_types: Vec::new(),
+        },
+    );
+
+    // Non-matching event first: an NPC killer must NOT start the quest.
+    if let Some(mut events) = world.query_mut::<StoryEvent>() {
+        events.insert(
+            victim,
+            StoryEvent {
+                mnemonic: *b"KILL",
+                reference_1: victim,
+                reference_2: Some(other_killer),
+                location_1: None,
+                location_2: None,
+            },
+        );
+    }
+    story_manager_dispatch_system(&world);
+    assert!(
+        !world
+            .try_resource::<QuestStageState>()
+            .is_some_and(|stages| stages.is_started(QuestFormId(0x555))),
+        "NPC killer — GetIsID(player) on R2 fails, quest stays stopped"
+    );
+
+    // Matching event: the player killer starts it.
+    if let Some(mut events) = world.query_mut::<StoryEvent>() {
+        events.insert(
+            victim,
+            StoryEvent {
+                mnemonic: *b"KILL",
+                reference_1: victim,
+                reference_2: Some(player_killer),
+                location_1: None,
+                location_2: None,
+            },
+        );
+    }
+    story_manager_dispatch_system(&world);
+    assert!(
+        world
+            .try_resource::<QuestStageState>()
+            .is_some_and(|stages| stages.is_started(QuestFormId(0x555))),
+        "player killer — GetIsID(player) on R2 passes, quest starts"
+    );
+
+    // Phase 2's other half: the started quest's event data was recorded
+    // for its FromEvent aliases, and the alias refresh was requested.
+    let slots = world
+        .try_resource::<StoryEventAliasFill>()
+        .and_then(|fills| fills.0.get(&QuestFormId(0x555)).copied());
+    assert_eq!(
+        slots,
+        Some(crate::condition::EventDataSlots {
+            reference_1: Some(victim),
+            reference_2: Some(player_killer),
+            location_1: None,
+            location_2: None,
+        }),
+        "the raising event's slots are recorded for FromEvent alias fills"
+    );
+    assert!(
+        world
+            .try_resource::<crate::scene::SceneActorBindings>()
+            .is_some_and(|bindings| bindings.is_dirty()),
+        "quest start requests an alias refresh so FromEvent fills land same-frame"
+    );
+
+    // And the recorded event feeds a FromEvent alias through the real
+    // refresh (the full Phase-2 loop: event → conditions → start → fill).
+    crate::scene::install_scene_quest_aliases(
+        &mut world,
+        [QustRecord {
+            form_id: 0x555,
+            aliases: vec![byroredux_plugin::esm::records::QuestAlias {
+                alias_id: 4,
+                fill_type: Some(AliasFillType::FromEvent {
+                    event_type: *b"KILL",
+                    data: tag(b"R1") as i32,
+                }),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }],
+    );
+    crate::scene::refresh_scene_actor_bindings(&world);
+    assert_eq!(
+        world
+            .try_resource::<crate::scene::SceneActorBindings>()
+            .and_then(|bindings| bindings.resolve(QuestFormId(0x555), 4)),
+        Some(victim),
+        "FromEvent R1 alias binds the event's victim"
+    );
+}
+
+/// An R1-tagged condition reads the victim slot (WIKill06's `Victim`
+/// alias shape mirrored on the condition side), and an L-tagged one
+/// fails cleanly — no location-as-entity runtime yet.
+#[test]
+fn event_data_r1_resolves_and_location_tags_fail_cleanly() {
+    use byroredux_plugin::esm::records::condition::{ComparisonOp, Condition, ConditionValue};
+    let node = |extra: u32| SmNodeRecord {
+        form_id: 30,
+        parent: 10,
+        next_sibling: 0,
+        kind: SmNodeKind::Quest,
+        quest_links: vec![0x556],
+        conditions: vec![Condition {
+            function_index: 72, // GetIsID
+            comparator: ComparisonOp::Eq,
+            comparand: ConditionValue::Literal(1.0),
+            param_1: 0xDEAD,
+            run_on: RunOn::EventData,
+            extra_data_id: extra,
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let victim = |world: &mut World, base: u32| {
+        let entity = world.spawn();
+        world.insert(
+            entity,
+            crate::scene::SceneAliasCandidate {
+                reference_form_id: base,
+                base_form_id: base,
+                linked_refs: Vec::new(),
+                location_ref_types: Vec::new(),
+            },
+        );
+        entity
+    };
+
+    // R1 + matching base → fires.
+    let mut world = setup_world();
+    world.insert_resource(build_story_manager_tree(&records(vec![
+        event_node(10, b"KILL"),
+        node(tag(b"R1")),
+    ])));
+    world.insert_resource(QuestStageState::default());
+    let target = victim(&mut world, 0xDEAD);
+    if let Some(mut events) = world.query_mut::<StoryEvent>() {
+        events.insert(
+            target,
+            StoryEvent {
+                mnemonic: *b"KILL",
+                reference_1: target,
+                reference_2: None,
+                location_1: None,
+                location_2: None,
+            },
+        );
+    }
+    story_manager_dispatch_system(&world);
+    assert!(world
+        .try_resource::<QuestStageState>()
+        .is_some_and(|stages| stages.is_started(QuestFormId(0x556))));
+
+    // L2 tag on the same matching base → no entity to run on → no fire.
+    let mut world = setup_world();
+    world.insert_resource(build_story_manager_tree(&records(vec![
+        event_node(10, b"CLOC"),
+        node(tag(b"L2")),
+    ])));
+    world.insert_resource(QuestStageState::default());
+    let actor = victim(&mut world, 0xDEAD);
+    if let Some(mut events) = world.query_mut::<StoryEvent>() {
+        events.insert(
+            actor,
+            StoryEvent {
+                mnemonic: *b"CLOC",
+                reference_1: actor,
+                reference_2: None,
+                location_1: None,
+                location_2: Some(0x18A56),
+            },
+        );
+    }
+    story_manager_dispatch_system(&world);
+    assert!(!world
+        .try_resource::<QuestStageState>()
+        .is_some_and(|stages| stages.is_started(QuestFormId(0x556))));
+
+    // Unrecognized tag bytes → no fire, no crash.
+    let mut world = setup_world();
+    world.insert_resource(build_story_manager_tree(&records(vec![
+        event_node(10, b"KILL"),
+        node(0x00FF_00FF),
+    ])));
+    world.insert_resource(QuestStageState::default());
+    let actor = victim(&mut world, 0xDEAD);
+    if let Some(mut events) = world.query_mut::<StoryEvent>() {
+        events.insert(
+            actor,
+            StoryEvent {
+                mnemonic: *b"KILL",
+                reference_1: actor,
+                reference_2: None,
+                location_1: None,
+                location_2: None,
+            },
+        );
+    }
+    story_manager_dispatch_system(&world);
+    assert!(!world
+        .try_resource::<QuestStageState>()
+        .is_some_and(|stages| stages.is_started(QuestFormId(0x556))));
+}
+    /// #5366 Phase 2 gate on real authored content — the KILL-subtree
+    /// node `MGSuspension` (SMQN → QUST 0x0005B5DC) with its actual
+    /// authored CTDAs: GetIsRace≠X on R2, GetIsID(player) on R2,
+    /// GetInFaction on R2 and R1, GetStage-family == 0 on Subject.
+    /// Same node, same world, three events: the matching killer starts
+    /// the quest; a non-player killer and a non-faction victim each
+    /// keep it stopped. `#[ignore]`'d like the plugin crate's floors —
+    /// needs the Skyrim SE master on disk.
+    #[test]
+    #[ignore = "needs Skyrim SE game data on disk"]
+    fn mgsuspension_kill_gate_on_real_skyrim_content() {
+        use byroredux_core::ecs::components::FactionRanks;
+        let data = byroredux_plugin::esm::test_paths::skyrim_se_data_dir();
+        let esm = data.join("Skyrim.esm");
+        if !esm.is_file() {
+            eprintln!("[MGSuspension gate] skipping: no Skyrim.esm at {esm:?}");
+            return;
+        }
+        let bytes = std::fs::read(&esm).expect("read Skyrim.esm");
+        let index = byroredux_plugin::esm::parse_esm(&bytes).expect("parse Skyrim.esm");
+        assert!(
+            index.story_manager_nodes.len() >= 560,
+            "the Phase-0 floor guard also guards this test's setup"
+        );
+
+        const MGSUSPENSION: u32 = 0x0005_B5DC;
+        const COLLEGE_FACTION: u32 = 0x0001_F259;
+        let killer_in_college = |world: &mut World, player: bool| {
+            let entity = world.spawn();
+            world.insert(
+                entity,
+                crate::scene::SceneAliasCandidate {
+                    reference_form_id: if player { 0x14 } else { 0x9999 },
+                    base_form_id: if player { 0x0000_0007 } else { 0x0004_0A10 },
+                    linked_refs: Vec::new(),
+                    location_ref_types: Vec::new(),
+                },
+            );
+            if player {
+                world.insert(entity, FactionRanks::from_pairs([(COLLEGE_FACTION, 0)]));
+            }
+            entity
+        };
+        let victim_in_college = |world: &mut World, member: bool| {
+            let entity = world.spawn();
+            if member {
+                world.insert(entity, FactionRanks::from_pairs([(COLLEGE_FACTION, 0)]));
+            }
+            entity
+        };
+        let world_with_tree = || {
+            let mut world = setup_world();
+            let count = install_story_manager(&mut world, &index.story_manager_nodes);
+            assert!(count >= 560);
+            world.insert_resource(QuestStageState::default());
+            world
+        };
+        let fire_kill = |world: &World, victim: EntityId, killer: EntityId| {
+            if let Some(mut events) = world.query_mut::<StoryEvent>() {
+                events.insert(
+                    victim,
+                    StoryEvent {
+                        mnemonic: *b"KILL",
+                        reference_1: victim,
+                        reference_2: Some(killer),
+                        location_1: None,
+                        location_2: None,
+                    },
+                );
+            }
+            story_manager_dispatch_system(world);
+        };
+        let started = |world: &World| {
+            world
+                .try_resource::<QuestStageState>()
+                .is_some_and(|stages| stages.is_started(QuestFormId(MGSUSPENSION)))
+        };
+
+        // Negative first: an NPC killer (not the player) must not start it.
+        let mut world = world_with_tree();
+        let victim = victim_in_college(&mut world, true);
+        let killer = killer_in_college(&mut world, false);
+        fire_kill(&world, victim, killer);
+        assert!(
+            !started(&world),
+            "NPC killer — GetIsID(player) on R2 fails against the authored CTDA"
+        );
+
+        // Negative: player killer, victim outside the faction.
+        let mut world = world_with_tree();
+        let victim = victim_in_college(&mut world, false);
+        let killer = killer_in_college(&mut world, true);
+        fire_kill(&world, victim, killer);
+        assert!(
+            !started(&world),
+            "victim not in the faction — GetInFaction on R1 fails"
+        );
+
+        // Matching: player-in-college kills a college member.
+        let mut world = world_with_tree();
+        let victim = victim_in_college(&mut world, true);
+        let killer = killer_in_college(&mut world, true);
+        fire_kill(&world, victim, killer);
+        assert!(
+            started(&world),
+            "the matching event starts MGSuspension through the real authored \
+             conditions — the Phase-2 gate"
+        );
+        assert!(
+            world
+                .try_resource::<StoryEventAliasFill>()
+                .is_some_and(|fills| fills.0.contains_key(&QuestFormId(MGSUSPENSION))),
+            "the start records its event slots for FromEvent alias fills"
+        );
     }
 }

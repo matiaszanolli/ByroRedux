@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
-# SM1 gate (#5366 Phase 1) — Story Manager event dispatch, live.
+# SM1 gate (#5366 Phases 1–2) — Story Manager event dispatch, live.
 #
-#   1. Boot the Skyrim SE profile into WhiterunDragonsreach with a
+#   1. Boot the Skyrim SE profile into WhiterunDragonsReach with a
 #      player (`--player` installs `PlayerEntity`; without it the CLOC
 #      producer correctly declines to fire).
 #   2. The initial interior load installs `CurrentCellContext`
 #      (`cell_loader/load.rs`), the CLOC producer fires once on the
-#      None → Some location-key change, and the dispatcher walks the
-#      CLOC subtree in the same frame.
+#      None → Some location-key change (Phase 2: keyed on the cell's
+#      `XLCN` LCTN — DragonsreachLocation), and the dispatcher walks
+#      the CLOC subtree in the same frame.
 #   3. `CRLocationExpansionNode` (SMQN 0x000F9076) is the one fully
 #      condition-free chain under Skyrim's CLOC event node (corpus
 #      census, 2026-10-07), so it must start `CRHoldExpansion`
@@ -18,6 +19,19 @@
 # path (not Start Game Enabled, not the MQ101 engine root, no script
 # attachment at boot), and the dispatcher's #5366 log line names the
 # node and event.
+#
+# Phase 2 legs (event-data conditions): `MGSuspension` (QUST 0x0005B5DC)
+# is a KILL-subtree node whose authored conditions read the event's
+# slots — GetIsID(player) on R2 (the killer), GetInFaction on R2 and
+# R1 (the victim). `sm.event` raises the real StoryEvent marker and two
+# non-matching events must each be refused: one with no killer at all
+# (R2-tagged conditions cannot resolve) and one where the killer IS
+# the player but the victim (also the player) carries no college
+# faction (the R1 GetInFaction gate). The matching-event positive and
+# the NPC-killer negative run as the
+# `mgsuspension_kill_gate_on_real_skyrim_content` Rust gate on the
+# same authored node (scripting crate), which can stage factions on
+# the raised entities.
 set -euo pipefail
 
 PORT="${BYRO_DEBUG_PORT:-19876}"
@@ -90,6 +104,40 @@ grep -Fq 'Quest 0x000F9075' "$LOG_DIR/quest.log" \
 grep -Fq 'state: running' "$LOG_DIR/quest.log" \
     || fail "CRHoldExpansion is not running: $(sed -n '1,6p' "$LOG_DIR/quest.log")"
 
+# ── Phase 2: event-data condition selectivity, live ─────────────────
+#
+# Leg A — no killer slot: a KILL event whose R2 is unset cannot satisfy
+# any R2-tagged condition (missing reference → condition fails).
+debug_command 'sm.event KILL r1=player' "$LOG_DIR/smevent.log" \
+    || fail "sm.event unavailable: $(sed -n '1,5p' "$LOG_DIR/smevent.log")"
+grep -Fq "raised 'KILL'" "$LOG_DIR/smevent.log" \
+    || fail "sm.event did not raise: $(sed -n '1,5p' "$LOG_DIR/smevent.log")"
+sleep 1
+debug_command 'quest.show 0x0005B5DC' "$LOG_DIR/mgsuspension.log" \
+    || fail 'quest.show MGSuspension unavailable'
+if grep -Fq 'state: running' "$LOG_DIR/mgsuspension.log"; then
+    fail "MGSuspension started without a killer — the R2 conditions cannot resolve"
+fi
+grep -Fq 'Quest 0x0005B5DC' "$LOG_DIR/mgsuspension.log" \
+    || fail 'quest.show did not report MGSuspension (0x0005B5DC)'
+
+# Leg B — killer passes, victim fails: the player IS the R2 the
+# GetIsID(player) condition wants, but as R1 they carry no college
+# faction, so the GetInFaction-on-R1 authored CTDA must refuse the
+# start. Both halves of the event-data gate exercised on one event.
+debug_command 'sm.event KILL r1=player r2=player' "$LOG_DIR/smevent2.log" \
+    || fail 'second sm.event unavailable'
+grep -Fq "raised 'KILL'" "$LOG_DIR/smevent2.log" \
+    || fail 'second sm.event did not raise'
+sleep 1
+debug_command 'quest.show 0x0005B5DC' "$LOG_DIR/mgsuspension2.log" \
+    || true
+if grep -Fq 'state: running' "$LOG_DIR/mgsuspension2.log"; then
+    fail "MGSuspension started for a non-faction victim — the R1 GetInFaction gate failed"
+fi
+
 stop_engine
 echo "smoke[sm1-story-manager]: PASS -- CLOC dispatched, CRLocationExpansionNode"
-echo "started CRHoldExpansion (0x000F9075) through QuestStageState; artifacts: $LOG_DIR"
+echo "started CRHoldExpansion (0x000F9075) through QuestStageState;"
+echo "MGSuspension (0x0005B5DC) correctly refused both non-matching KILL events"
+echo "(no-killer and player-victim legs; R1/R2 event-data gates); artifacts: $LOG_DIR"

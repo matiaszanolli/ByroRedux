@@ -81,9 +81,12 @@ Creation-era LSCR model loading cover on Skyrim (inline SNAM/RNAM/XNAM
 pose) and FO4 (TNAM→TRNS) — census, cover begin/present, a rendered-frame
 screenshot floor, and dismissal after the destination applies, and
 [`sm1-story-manager.sh`](docs/smoke-tests/sm1-story-manager.sh) gates
-Story Manager event dispatch live on Skyrim (#5366): the boot-time CLOC
-event must start quests through the canonical lifecycle, including the
-unconditional `CRLocationExpansionNode` → `CRHoldExpansion` chain, and
+Story Manager event dispatch live on Skyrim (#5366 Phases 1–2): the
+boot-time CLOC event must start quests through the canonical lifecycle,
+including the unconditional `CRLocationExpansionNode` →
+`CRHoldExpansion` chain, and hand-raised `sm.event` KILL events with
+non-matching event data (no killer / player victim) must be refused by
+the authored R1/R2 node conditions, and
 [`dt1-dialogue-layers.sh`](docs/smoke-tests/dt1-dialogue-layers.sh)
 gates the dialogue greeting + force-greet layers on FNV (#5367): a
 quest-less activation must greet, and a Dialogue-procedure PACK must

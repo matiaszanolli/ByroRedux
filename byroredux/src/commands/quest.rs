@@ -917,6 +917,135 @@ impl ConsoleCommand for DialogueForceGreetCommand {
     }
 }
 
+pub(crate) struct SmEventCommand;
+
+/// #5366 Phase 2 — raise a Story Manager event by hand for live gating.
+///
+/// The marker is the real [`StoryEvent`] the engine producers raise, so
+/// dispatch, node conditions (including `RunOn::EventData` tags), quest
+/// starts, and `FromEvent` alias fills all run exactly as for an
+/// engine-raised event — only the producer is synthetic, the same
+/// posture as Papyrus `SendStoryEvent` lowering onto this marker.
+impl ConsoleCommand for SmEventCommand {
+    fn name(&self) -> &str {
+        "sm.event"
+    }
+
+    fn description(&self) -> &str {
+        "Raise a Story Manager event (sm.event KILL r1=<formid|player> [r2=…] [l1=…] [l2=…])"
+    }
+
+    fn execute(&self, world: &World, args: &str) -> CommandOutput {
+        let mut tokens = args.split_whitespace();
+        let Some(mnemonic_tok) = tokens.next() else {
+            return CommandOutput::error("usage: sm.event <MNEMONIC> r1=<formid|player> [r2=…] [l1=…] [l2=…]");
+        };
+        let mnemonic_str = mnemonic_tok.to_ascii_uppercase();
+        if mnemonic_str.len() < 3 || mnemonic_str.len() > 4 || !mnemonic_str.is_ascii() {
+            return CommandOutput::error(format!(
+                "bad event mnemonic `{mnemonic_tok}` (3–4 ASCII letters, e.g. KILL)"
+            ));
+        }
+        let mut mnemonic = [0u8; 4];
+        mnemonic[..mnemonic_str.len()].copy_from_slice(mnemonic_str.as_bytes());
+
+        let mut reference_1 = None;
+        let mut reference_2 = None;
+        let mut location_1 = None;
+        let mut location_2 = None;
+        for token in tokens {
+            let Some((slot, value)) = token.split_once('=') else {
+                return CommandOutput::error(format!("bad slot `{token}` (expected r1=/r2=/l1=/l2=)"));
+            };
+            match slot {
+                "l1" | "l2" => {
+                    let Some(form) = parse_console_u32(value) else {
+                        return CommandOutput::error(format!("bad LCTN FormID `{value}`"));
+                    };
+                    if slot == "l1" {
+                        location_1 = Some(form);
+                    } else {
+                        location_2 = Some(form);
+                    }
+                }
+                "r1" | "r2" => {
+                    let entity = if value.eq_ignore_ascii_case("player") {
+                        match world
+                            .try_resource::<crate::systems::PlayerEntity>()
+                            .and_then(|player| player.0)
+                        {
+                            Some(entity) => entity,
+                            None => {
+                                return CommandOutput::error(
+                                    "no player entity in this session (--player)",
+                                );
+                            }
+                        }
+                    } else {
+                        let Some(form) = parse_console_u32(value) else {
+                            return CommandOutput::error(format!("bad FormID `{value}`"));
+                        };
+                        match byroredux_scripting::condition::resolve_entity_by_global_form_id(world, form) {
+                            Some(entity) => entity,
+                            None => {
+                                return CommandOutput::error(format!(
+                                    "no loaded entity for FormID {form:08X}"
+                                ));
+                            }
+                        }
+                    };
+                    if slot == "r1" {
+                        reference_1 = Some(entity);
+                    } else {
+                        reference_2 = Some(entity);
+                    }
+                }
+                _ => {
+                    return CommandOutput::error(format!(
+                        "unknown slot `{slot}` (r1/r2/l1/l2 only)"
+                    ));
+                }
+            }
+        }
+        let Some(reference_1) = reference_1 else {
+            return CommandOutput::error("r1 is required (the event's first reference)");
+        };
+        let event = byroredux_scripting::story_manager::StoryEvent {
+            mnemonic,
+            reference_1,
+            reference_2,
+            location_1,
+            location_2,
+        };
+        let Some(mut events) = world.query_mut::<byroredux_scripting::story_manager::StoryEvent>()
+        else {
+            return CommandOutput::error("StoryEvent storage unavailable");
+        };
+        // Attach to the doer when the event names one (KILL killer),
+        // else the first reference — the marker's owner is bookkeeping
+        // for the drain, never read by dispatch itself.
+        let owner = event.reference_2.unwrap_or(event.reference_1);
+        events.insert(owner, event);
+        CommandOutput::line(format!(
+            "raised '{}' (r1={} r2={} l1={} l2={}) — dispatch runs on the next Update",
+            mnemonic_str,
+            event.reference_1,
+            event
+                .reference_2
+                .map(|entity| entity.to_string())
+                .unwrap_or_else(|| "-".into()),
+            event
+                .location_1
+                .map(|form| format!("{form:08X}"))
+                .unwrap_or_else(|| "-".into()),
+            event
+                .location_2
+                .map(|form| format!("{form:08X}"))
+                .unwrap_or_else(|| "-".into()),
+        ))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

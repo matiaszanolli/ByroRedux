@@ -366,6 +366,10 @@ pub(crate) fn combat_damage_system(world: &World, _dt: f32) {
             // Story Manager dispatcher consumes it same-frame or next
             // (Pattern B marker); on pre-Creation titles it is a no-op —
             // no SM tree is installed, so no mnemonic root resolves.
+            // Phase 2 slots: R1 = victim, R2 = killer (corpus-verified —
+            // `WIKill06` fills its `Victim` alias from R1 and
+            // `DA08KillFriendNode`'s tutorial-documented killer
+            // conditions run on R2).
             if let Some(mut story) =
                 world.query_mut::<byroredux_scripting::story_manager::StoryEvent>()
             {
@@ -373,9 +377,10 @@ pub(crate) fn combat_damage_system(world: &World, _dt: f32) {
                     target,
                     byroredux_scripting::story_manager::StoryEvent {
                         mnemonic: *b"KILL",
-                        subject: event.aggressor,
-                        object: Some(target),
-                        location: None,
+                        reference_1: target,
+                        reference_2: Some(event.aggressor),
+                        location_1: None,
+                        location_2: None,
                     },
                 );
             }

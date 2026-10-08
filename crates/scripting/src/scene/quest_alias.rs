@@ -15,6 +15,7 @@ use byroredux_core::ecs::sparse_set::SparseSetStorage;
 use byroredux_core::ecs::storage::{Component, EntityId};
 use byroredux_core::ecs::world::World;
 use rustc_hash::{FxHashMap, FxHashSet};
+use byroredux_plugin::esm::records::condition::event_data_slot;
 use byroredux_plugin::esm::records::{
     AliasFillType, QuestAlias, QustRecord, ALIAS_FLAG_ALLOW_DEAD, ALIAS_FLAG_ALLOW_RESERVED,
     ALIAS_FLAG_ALLOW_REUSE, ALIAS_FLAG_CLOSEST, ALIAS_FLAG_RESERVES,
@@ -730,6 +731,14 @@ pub fn refresh_scene_actor_bindings(world: &World) -> usize {
     quests.sort_by_key(|(quest, _)| quest.0);
     let mut resolved = world.resource::<SceneActorBindings>().actors.clone();
     resolved.retain(|(quest, _), _| !registered_quests.contains(quest));
+    // #5366 Phase 2 — SM-started quests' `FromEvent` fills, recorded by
+    // the dispatcher at quest start. One snapshot read; absent resource
+    // (no Story Manager installed) leaves the map empty, and pre-Creation
+    // titles author no ALFE anyway.
+    let story_fills = world
+        .try_resource::<crate::story_manager::StoryEventAliasFill>()
+        .map(|fills| fills.0.clone())
+        .unwrap_or_default();
     let mut external_aliases = Vec::new();
     let mut reserved = HashSet::new();
 
@@ -745,6 +754,46 @@ pub fn refresh_scene_actor_bindings(world: &World) -> usize {
             }) = alias.fill_type
             {
                 external_aliases.push((*quest, alias.clone(), source_quest, source_alias));
+                continue;
+            }
+
+            // #5366 Phase 2 — fill straight from the recorded event data
+            // (`ALFE`'s mnemonic matched the raising event when the
+            // dispatcher recorded it; the `ALFD` tag names the slot).
+            // Event fills bypass the candidate scan by design — the
+            // event's references ARE the fill. An L-tag (or an event this
+            // quest never started from) leaves the alias unbound; the
+            // location-alias runtime and cross-event re-keying are
+            // Phase-3+ scope, surfaced by `quest.aliases` as
+            // `StoryManagerEventUnavailable`.
+            if let Some(AliasFillType::FromEvent { data, .. }) = alias.fill_type {
+                if let Some(slots) = story_fills.get(quest) {
+                    if let Some(entity) =
+                        event_data_slot(data as u32).and_then(|slot| slots.reference(slot))
+                    {
+                        let allow_reuse = alias.flags.has(ALIAS_FLAG_ALLOW_REUSE);
+                        if allow_reuse || !used.contains(&entity) {
+                            resolved.insert((*quest, alias.alias_id), entity);
+                            if !allow_reuse {
+                                used.insert(entity);
+                            }
+                            if alias.flags.has(ALIAS_FLAG_RESERVES) {
+                                reserved.insert(entity);
+                            }
+                            if let Some(target_alias) = alias.force_into_alias {
+                                resolved.insert((*quest, target_alias), entity);
+                            }
+                        }
+                    } else {
+                        log::debug!(
+                            "#5366: quest {:08X} alias {} FromEvent tag {:08X} has no \
+                             reference slot in the recorded event (location tag or no event)",
+                            quest.0,
+                            alias.alias_id,
+                            data,
+                        );
+                    }
+                }
                 continue;
             }
 

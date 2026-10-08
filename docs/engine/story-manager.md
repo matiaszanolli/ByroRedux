@@ -1,16 +1,20 @@
 # Story Manager event dispatch
 
-**Status**: Phase 0 + Phase 1 **landed 2026-10-07** (#5366), including
-the live Phase-1 gate
-([`sm1-story-manager.sh`](../smoke-tests/sm1-story-manager.sh)): the
-`SMBN`/`SMEN`/`SMQN` decode (`crates/plugin/src/esm/records/misc/story_manager.rs`
-→ `EsmIndex.story_manager_nodes`), the `SmTree` fold + `StoryEvent`
-dispatcher (`crates/scripting/src/story_manager.rs`), and two producers
+**Status**: Phases 0–2 **landed 2026-10-07** (#5366), including the live
+gate ([`sm1-story-manager.sh`](../smoke-tests/sm1-story-manager.sh)),
+now covering both the Phase-1 boot leg and the Phase-2 event-data
+selectivity legs: the `SMBN`/`SMEN`/`SMQN` decode
+(`crates/plugin/src/esm/records/misc/story_manager.rs` →
+`EsmIndex.story_manager_nodes`), the `SmTree` fold + `StoryEvent`
+dispatcher (`crates/scripting/src/story_manager.rs`), two producers
 (`KILL` at the combat death site, `CLOC` from the cell-loader location
-contexts). Phases 2–4 remain open. This document remains the design
-authority; it is the scoping pass for the Story Manager half of M43's
-open scope ("Story Manager event payloads and search") and the M47.2
-row's "ESM-native event dispatch / Story Manager" item.
+contexts at LCTN granularity via `XLCN`), `RunOn::EventData` condition
+resolution over the corpus-decoded R1/R2/L1/L2 slots, and `FromEvent`
+(`ALFE`/`ALFD`) alias fills fed from the raising event. Phases 3–4
+remain open. This document remains the design authority; it is the
+scoping pass for the Story Manager half of M43's open scope ("Story
+Manager event payloads and search") and the M47.2 row's "ESM-native
+event dispatch / Story Manager" item.
 
 ## 1. What the Story Manager is (and which games have one)
 
@@ -110,6 +114,47 @@ real walker recurses (`records/grup_walker.rs`); the Rust-side floors
 will measure the true counts, and the Python census's FO4/SF
 quest-resolution rates are meaningless for that reason (§4 note).
 
+### 3.2 Event-data slots (the Phase-2 census)
+
+Conditions and alias fills that read the *event itself* select their
+slot with a 2-byte ASCII tag stored in the low half of the selecting
+integer — the CTDA tail (`extra_data_id`) when `run_on == 7`
+(`RunOn::EventData`), and QUST `ALFD` beside `ALFE` for
+`AliasFillType::FromEvent` fills:
+
+| Tag | Value | Holds (per mnemonic, Papyrus `OnStory*` param order) |
+|---|---|---|
+| `R1` | `0x3152` | first reference — KILL victim, CLOC actor, CAST caster, SCPT ref1 |
+| `R2` | `0x3252` | second reference — KILL killer, CAST target, SCPT ref2 |
+| `L1` | `0x314C` | first location — CLOC old, SCPT/SendStoryEvent `akLoc` |
+| `L2` | `0x324C` | second location — CLOC new |
+
+Census (2026-10-07, Skyrim.esm + DLCs): 302 run-on-7 SM-node CTDAs read
+R1×218 / R2×83 / L×0 (the L vocabulary is `ALFD`-only on nodes) plus
+one malformed non-ASCII tail; 2 065 Skyrim `FromEvent` alias fills span
+all four tags. The semantic anchors that pin the mapping: the CK
+tutorial's own `DA08KillFriendNode` ("we're checking that the player is
+the one doing the killing, wielding the Ebony Blade") authors
+`GetIsID(0x7)` + `GetEquipped(0x4A38F)` both on the **R2** tag → R2 =
+killer; `WIKill06`'s `Victim` alias fills from **R1** → R1 = victim;
+`WIChangeLocation04` fills `OldLocation`←L1 and `NewLocation`←L2.
+Floored by `story_manager_skyrim_event_data_slot_floor`
+(`crates/plugin/tests/parse_real_esm.rs`), including the DA08 anchor.
+
+One catalog fall-out measured at the same time: Skyrim condition
+functions the M47.1 catalog did not carry — `GetInFaction` (**71**, all
+6 904 corpus uses take a FACT param; FO3/FNV author no CTDA at 71, so
+the shared catalog cannot mislabel them) landed with Phase 2, and
+several more were identified by param-record-type census for later:
+`GetStage`-family **56** (316 QUST-param uses — distinct from the
+catalog's 58, which Skyrim also uses 8 029×), `GetGlobalValue` **74**,
+random-roll **77**, `HasSpell` **223**, `GetInCurrentLoc` **359**,
+`HasKeyword` **560**, `LocationHasKeyword` **562**, and a location
+comparator at **565**. `fn 576` (330 uses, `param_1` packing the same
+ASCII-tag vocabulary in its *high* half — DA08's `0x3256_0002` names
+R2) is the suspected `GetRelationshipRank`-on-event-data but stays
+undecoded pending verification.
+
 ### 3.1 Event catalogs (observed mnemonics)
 
 | Game | Mnemonics |
@@ -198,29 +243,37 @@ fail-visible-not-fatal posture used elsewhere.
 
 ### 6.3 Dispatch
 
-One new transient marker family mirroring `events.rs`:
+One new transient marker family mirroring `events.rs` (landed shape,
+Phase 2):
 
 ```rust
 pub struct StoryEvent {
-    pub mnemonic: SmEventMnemonic,   // per-game table (§3.1)
-    pub subject: EntityId,           // event data, slot 1 (killer, actor…)
-    pub object: EntityId,            // slot 2 (victim, target…)
-    pub location: Option<FormId>,    // LCTN where the game carries one
-    pub extra: SmallVec<[FormId; 4]>,
+    pub mnemonic: [u8; 4],           // the SMEN.ENAM catalog (§3.1)
+    pub reference_1: EntityId,       // "R1" — KILL victim, CLOC actor…
+    pub reference_2: Option<EntityId>, // "R2" — KILL killer…
+    pub location_1: Option<u32>,     // "L1" — CLOC old LCTN…
+    pub location_2: Option<u32>,     // "L2" — CLOC new LCTN…
 }
 ```
 
-`story_manager_system` (post-combat/post-transition stage, pre-cleanup):
-for each `StoryEvent`, look up the mnemonic's root, walk children in
-sibling order evaluating each node's `CTDA` set through the M47.1
-evaluator extended with run-on targets `EventSubject` / `EventObject` /
-`EventLocation`. A passing SMQN starts its quest via the existing quest
-lifecycle and fills aliases from the event data through the P4 alias
-machinery. Traversal honors the §5-settled flag bits (shares-event →
-continue; random → pick one child; do-all-before-repeating → node-local
-round-robin state). `SendStoryEvent` (already catalogued in the SKSE
-compatibility surface) lowers onto the same marker — that is the
-`SCPT` event node's producer.
+The slots are the wire format's own (§3.2) — the Phase-1 open question
+"typed per-mnemonic enum vs slot-based" resolved in favor of exactly
+these four positional slots, because that is what CTDA tails and `ALFD`
+address and no mnemonic carries more. `story_manager_dispatch_system`
+(Stage::Update, after `quest_startup_system`): for each `StoryEvent`,
+look up the mnemonic's root, walk children in sibling order evaluating
+each node's `CTDA` set through the M47.1 evaluator with
+`ConditionContext::event_data` set — `RunOn::EventData` resolves the
+R1/R2 tags (L-tags fail pending a location runtime). A passing SMQN
+starts its quest via the existing quest lifecycle, records its slots in
+`StoryEventAliasFill`, and the P4 alias refresh fills `FromEvent`
+aliases from them. Traversal honors the §5-settled flag bits
+(shares-event → continue; random → pick one child;
+do-all-before-repeating → node-local round-robin state — Phase 3).
+`SendStoryEvent` (already catalogued in the SKSE compatibility surface)
+lowers onto the same marker — that is the `SCPT` event node's producer
+(and `sm.event`, the debug-console producer, landed with Phase 2 for
+live gating).
 
 ### 6.4 Producer inventory (what can fire today)
 
@@ -293,10 +346,31 @@ tree itself (rederived from the load order every boot).
    against `GetStage`-family reads (lock_tracker); the dispatcher is
    two-phase by necessity — a read-only walk collecting candidates,
    then the starts under the write guard.
-3. **Phase 2 — conditions on event data + alias fill.** Evaluator
-   run-on extension + P4 alias integration. Gate: a quest whose node
-   conditions on event data (the tutorial's killer-conditions shape)
-   starts only for matching events.
+3. **Phase 2 — conditions on event data + alias fill. Landed
+   2026-10-07 (#5366).** The event payload is the wire format's four
+   positional slots (`StoryEvent { reference_1, reference_2,
+   location_1, location_2 }`; §3.2), with Subject≡R2-else-R1 and
+   Target≡R1 preserving the Phase-1 context mapping over the
+   corpus-verified slots. `RunOn::EventData` resolves its tag through
+   the new `ConditionContext::event_data` (`EventDataSlots`) — R-tags
+   to entities, L-tags to `None` (no location-as-entity runtime yet,
+   a documented Phase-3+ deferral). `FromEvent` aliases fill from the
+   same slots: the dispatcher records them per started quest in
+   `StoryEventAliasFill` and requests an alias refresh, and
+   `refresh_scene_actor_bindings` binds R-tagged fills directly
+   (L-tagged stay unbound, surfacing as
+   `StoryManagerEventUnavailable` in `quest.aliases`). `GetInFaction`
+   (Skyrim 71) joined the M47.1 catalog. The CLOC producer keys on the
+   cell's `XLCN` LCTN when one resolves (Skyrim's location
+   granularity; wilderness grids keep the Phase-1 key) and carries
+   old/new LCTN as L1/L2. Gates: the Rust e2e
+   `mgsuspension_kill_gate_on_real_skyrim_content` (scripting crate,
+   real authored node — matching killer starts the quest, non-player
+   killer and non-faction victim each keep it stopped), the corpus
+   floor `story_manager_skyrim_event_data_slot_floor`, and two live
+   legs in `sm1-story-manager.sh` (`sm.event` raising the real marker;
+   both non-matching KILL events refused). New console command:
+   `sm.event`.
 4. **Phase 3 — node policies + persistence.** Random/shares/repeat
    flags, save/restore of node state, the F5→door→F9 soak leg extended
    to an SM-fired quest.
@@ -309,8 +383,9 @@ tree itself (rederived from the load order every boot).
 
 - The `DNAM`/`XNAM`/`QNAM` semantics (§5's job; nothing here relies on
   the hypothesis being right).
-- Whether `StoryEvent` payloads grow a typed per-mnemonic enum or stay
-  slot-based — decide at Phase 1 with two producers live.
+- ~~Whether `StoryEvent` payloads grow a typed per-mnemonic enum or stay
+  slot-based~~ — decided at Phase 2: the wire format's four positional
+  slots verbatim (§3.2).
 - The pre-Creation equivalents: Oblivion/FO3/FNV quest autostart is
   script-side (SCDA quest scripts / result scripts), already M47.3/M43
   scope; no SM runtime is retrofitted for them.

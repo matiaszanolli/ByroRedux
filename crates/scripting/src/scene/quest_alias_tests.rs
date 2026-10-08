@@ -1420,3 +1420,152 @@ fn running_quest_bound_cache_serves_hits_and_invalidates_on_both_generations() {
          derived set happens to be equal"
     );
 }
+
+/// #5366 Phase 2 — a `FromEvent` alias fills from the event slots the
+/// dispatcher recorded at quest start (R-tag), an L-tag stays unbound,
+/// and the fill survives later refreshes because it is re-derived from
+/// the recorded event each pass, not written once.
+#[test]
+fn from_event_alias_fills_from_the_recorded_story_event() {
+    let mut world = World::new();
+    crate::register(&mut world);
+    world.insert_resource(QuestStageState::default());
+    world
+        .resource_mut::<QuestStageState>()
+        .start_quest(QuestFormId(QUEST), None);
+    let victim = world.spawn();
+    let killer = world.spawn();
+    install_scene_quest_aliases(
+        &mut world,
+        [QustRecord {
+            form_id: QUEST,
+            aliases: vec![
+                QuestAlias {
+                    alias_id: 1,
+                    fill_type: Some(AliasFillType::FromEvent {
+                        event_type: *b"KILL",
+                        // ALFD stores the same ASCII tag as a CTDA tail:
+                        // 0x3152 = "R1" (the victim slot).
+                        data: 0x3152,
+                    }),
+                    ..Default::default()
+                },
+                QuestAlias {
+                    alias_id: 2,
+                    fill_type: Some(AliasFillType::FromEvent {
+                        event_type: *b"KILL",
+                        // 0x3252 = "R2" (the killer slot).
+                        data: 0x3252,
+                    }),
+                    ..Default::default()
+                },
+                QuestAlias {
+                    alias_id: 3,
+                    fill_type: Some(AliasFillType::FromEvent {
+                        event_type: *b"CLOC",
+                        // 0x324C = "L2" (CLOC's new location) — a
+                        // location slot, no fill until a location-alias
+                        // runtime exists.
+                        data: 0x324C,
+                    }),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        }],
+    );
+    world.insert_resource(crate::story_manager::StoryEventAliasFill(
+        [(
+            QuestFormId(QUEST),
+            crate::condition::EventDataSlots {
+                reference_1: Some(victim),
+                reference_2: Some(killer),
+                location_1: None,
+                location_2: Some(0x18A56),
+            },
+        )]
+        .into_iter()
+        .collect(),
+    ));
+
+    refresh_scene_actor_bindings(&world);
+    {
+        let bindings = world.resource::<SceneActorBindings>();
+        assert_eq!(
+            bindings.resolve(QuestFormId(QUEST), 1),
+            Some(victim),
+            "R1-tagged FromEvent alias fills with the event's first reference"
+        );
+        assert_eq!(
+            bindings.resolve(QuestFormId(QUEST), 2),
+            Some(killer),
+            "R2-tagged FromEvent alias fills with the event's second reference"
+        );
+        assert_eq!(
+            bindings.resolve(QuestFormId(QUEST), 3),
+            None,
+            "L-tagged FromEvent alias stays unbound (no location-alias runtime)"
+        );
+    }
+
+    // A later refresh (any dirty-mark) re-derives the same fills from the
+    // recorded event rather than losing them to the candidate rebuild.
+    world
+        .resource_mut::<SceneActorBindings>()
+        .request_refresh();
+    refresh_scene_actor_bindings(&world);
+    assert_eq!(
+        world
+            .resource::<SceneActorBindings>()
+            .resolve(QuestFormId(QUEST), 1),
+        Some(victim)
+    );
+}
+
+/// Without a recorded event (the quest started by script/console, or no
+/// Story Manager at all), a `FromEvent` alias simply stays unbound —
+/// never a crash, never a world-candidate fill.
+#[test]
+fn from_event_alias_without_recorded_event_stays_unbound() {
+    let mut world = World::new();
+    crate::register(&mut world);
+    world.insert_resource(QuestStageState::default());
+    world
+        .resource_mut::<QuestStageState>()
+        .start_quest(QuestFormId(QUEST), None);
+    let bystander = world.spawn();
+    world.insert(
+        bystander,
+        SceneAliasCandidate {
+            reference_form_id: 0xA1,
+            base_form_id: 0xB1,
+            linked_refs: Vec::new(),
+            location_ref_types: Vec::new(),
+        },
+    );
+    install_scene_quest_aliases(
+        &mut world,
+        [QustRecord {
+            form_id: QUEST,
+            aliases: vec![QuestAlias {
+                alias_id: 1,
+                fill_type: Some(AliasFillType::FromEvent {
+                    event_type: *b"KILL",
+                    data: 0x3152,
+                }),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }],
+    );
+
+    refresh_scene_actor_bindings(&world);
+
+    assert_eq!(
+        world
+            .resource::<SceneActorBindings>()
+            .resolve(QuestFormId(QUEST), 1),
+        None,
+        "no recorded event — the alias declines rather than scanning candidates"
+    );
+}

@@ -58,7 +58,9 @@ use std::ops::RangeInclusive;
 
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::world::World;
-use byroredux_plugin::esm::records::condition::{Condition, ConditionList, ConditionValue, RunOn};
+use byroredux_plugin::esm::records::condition::{
+    event_data_slot, Condition, ConditionList, ConditionValue, EventDataSlot, RunOn,
+};
 
 use crate::quest_stages::QuestFormId;
 use crate::scene::SceneActorBindings;
@@ -105,6 +107,14 @@ pub enum ConditionFunction {
     /// returned when the actor carries no `FactionRanks`).
     /// FO3 / FNV / Skyrim index **73**.
     GetFactionRank,
+    /// `GetInFaction(faction_form_id) → f32`. Boolean membership probe
+    /// off the same `FactionRanks` component as `GetFactionRank`: 1.0
+    /// when the actor holds any rank in `param_1`'s faction, 0.0
+    /// otherwise. Skyrim function index **71** (6 904 corpus uses, every
+    /// `param_1` a FACT; FO3 / FNV author no CTDA at 71 across their
+    /// condition-bearing record types — INFO/PACK/QUST/NPC_/PERK
+    /// censused — so the shared catalog cannot mislabel them there).
+    GetInFaction,
     /// `GetLevel → f32`. The Run-On actor's character level from its
     /// `CharacterLevel` component (0.0 when absent). No parameter.
     /// FO3 / FNV / Skyrim index **80**.
@@ -191,6 +201,7 @@ impl ConditionFunction {
             69 => Self::GetIsRace,
             72 => Self::GetIsID,
             73 => Self::GetFactionRank,
+            71 => Self::GetInFaction,
             80 => Self::GetLevel,
             182 => Self::GetEquipped,
             448 | 449 => Self::HasPerk,
@@ -207,7 +218,7 @@ impl ConditionFunction {
 
     /// Every known (non-[`Unknown`](Self::Unknown)) function — the catalog the
     /// debug console enumerates and resolves names against.
-    pub const CATALOG: [ConditionFunction; 20] = [
+    pub const CATALOG: [ConditionFunction; 21] = [
         Self::GetDistance,
         Self::GetActorValue,
         Self::GetDead,
@@ -218,6 +229,7 @@ impl ConditionFunction {
         Self::GetIsRace,
         Self::GetIsID,
         Self::GetFactionRank,
+        Self::GetInFaction,
         Self::GetLevel,
         Self::GetEquipped,
         Self::HasPerk,
@@ -243,6 +255,7 @@ impl ConditionFunction {
             Self::GetIsRace => "GetIsRace",
             Self::GetIsID => "GetIsID",
             Self::GetFactionRank => "GetFactionRank",
+            Self::GetInFaction => "GetInFaction",
             Self::GetLevel => "GetLevel",
             Self::GetEquipped => "GetEquipped",
             Self::HasPerk => "HasPerk",
@@ -285,6 +298,7 @@ impl ConditionFunction {
             | Self::GetIsRace
             | Self::GetIsID
             | Self::GetFactionRank
+            | Self::GetInFaction
             | Self::GetLevel
             | Self::GetEquipped
             | Self::HasPerk
@@ -379,6 +393,41 @@ pub struct ConditionContext<'a> {
     /// `None` for every consumer outside that loop, which then reads the
     /// committed table exactly as before.
     pub pending_alias_bindings: Option<&'a HashMap<(QuestFormId, i32), EntityId>>,
+    /// The Story Manager event's positional data slots, consulted by
+    /// `RunOn::EventData` (#5366 Phase 2). `None` outside SM dispatch —
+    /// a quest-stage or dialogue CTDA authored with run-on EventData
+    /// fails exactly as before.
+    pub event_data: Option<&'a EventDataSlots>,
+}
+
+/// The Story Manager event's positional data slots (#5366 Phase 2) —
+/// the runtime half of [`EventDataSlot`]'s wire tags. R1/R2 hold the
+/// event's two references (KILL: victim, killer; CLOC: actor), L1/L2
+/// its locations as authored LCTN FormIDs (CLOC: old, new).
+///
+/// Locations are FormIDs, not entities — the runtime has no
+/// location-as-entity yet — so an L-slot tagged by a condition stays
+/// unresolved (the condition fails) and an L-slot tagged by a
+/// `FromEvent` alias fill stays unbound. Both are documented Phase-3+
+/// deferrals, not silent drops: the resolve paths trace when they hit.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct EventDataSlots {
+    pub reference_1: Option<EntityId>,
+    pub reference_2: Option<EntityId>,
+    pub location_1: Option<u32>,
+    pub location_2: Option<u32>,
+}
+
+impl EventDataSlots {
+    /// The entity an [`EventDataSlot`] tag selects, if that slot is a
+    /// populated reference.
+    pub fn reference(&self, slot: EventDataSlot) -> Option<EntityId> {
+        match slot {
+            EventDataSlot::Reference1 => self.reference_1,
+            EventDataSlot::Reference2 => self.reference_2,
+            EventDataSlot::Location1 | EventDataSlot::Location2 => None,
+        }
+    }
 }
 
 impl<'a> ConditionContext<'a> {
@@ -393,6 +442,7 @@ impl<'a> ConditionContext<'a> {
             linked_reference: None,
             quest: None,
             pending_alias_bindings: None,
+            event_data: None,
         }
     }
 
@@ -414,9 +464,18 @@ impl<'a> ConditionContext<'a> {
         self
     }
 
+    /// Attach the Story Manager event's data slots so `RunOn::EventData`
+    /// CTDAs can resolve the R1/R2 tag in `Condition.extra_data_id`
+    /// (#5366 Phase 2).
+    pub fn with_event_data(mut self, event_data: &'a EventDataSlots) -> Self {
+        self.event_data = Some(event_data);
+        self
+    }
+
     /// Resolve a [`RunOn`] choice to a concrete EntityId. Returns
     /// `None` when the slot isn't populated or the choice references
-    /// data M47.1 doesn't yet plumb (alias / package / event data).
+    /// data the evaluator doesn't yet plumb (package data, location
+    /// event slots).
     fn resolve(&self, run_on: RunOn, condition: &Condition, world: &World) -> Option<EntityId> {
         match run_on {
             RunOn::Subject => Some(self.subject),
@@ -448,14 +507,42 @@ impl<'a> ConditionContext<'a> {
                 let bindings = world.try_resource::<SceneActorBindings>()?;
                 bindings.resolve(quest, alias_id)
             }
-            RunOn::PackageData | RunOn::EventData => {
+            RunOn::PackageData => {
                 log::trace!(
-                    "M47.1: RunOn::{:?} (extra_data_id={:08X}) — \
-                     alias / package / event resolvers deferred",
-                    run_on,
+                    "M47.1: RunOn::PackageData (extra_data_id={:08X}) — package \
+                     resolver deferred",
                     condition.extra_data_id,
                 );
                 None
+            }
+            // #5366 Phase 2 — the tag in `extra_data_id`'s low half names
+            // one of the event's positional slots. R-tags resolve to the
+            // event's references; L-tags name locations, which are FormIDs
+            // rather than entities here, so they stay unresolved (and
+            // fail the condition) until a location runtime exists.
+            RunOn::EventData => {
+                let slots = self.event_data?;
+                match event_data_slot(condition.extra_data_id) {
+                    Some(slot @ (EventDataSlot::Reference1 | EventDataSlot::Reference2)) => {
+                        slots.reference(slot)
+                    }
+                    Some(slot @ (EventDataSlot::Location1 | EventDataSlot::Location2)) => {
+                        log::trace!(
+                            "#5366: RunOn::EventData location tag {:?} — no \
+                             location-as-entity runtime yet, condition fails",
+                            slot,
+                        );
+                        None
+                    }
+                    None => {
+                        log::debug!(
+                            "#5366: RunOn::EventData with unrecognized slot tag \
+                             ({:08X}) — condition fails",
+                            condition.extra_data_id,
+                        );
+                        None
+                    }
+                }
             }
         }
     }
@@ -694,6 +781,21 @@ pub fn evaluate_function(
                 .get::<FactionRanks>(entity)
                 .and_then(|f| f.rank(condition.param_1))
                 .map_or(-1.0, |rank| rank as f32)
+        }
+        ConditionFunction::GetInFaction => {
+            // GetInFaction(faction_form_id) → 1.0 when the Run-On actor
+            // holds any rank in `param_1`'s faction, 0.0 otherwise. Same
+            // `FactionRanks` read and the same source-space faction-id
+            // compare as `GetFactionRank` above, collapsed to membership.
+            use byroredux_core::ecs::components::FactionRanks;
+            if world
+                .get::<FactionRanks>(entity)
+                .is_some_and(|f| f.rank(condition.param_1).is_some())
+            {
+                1.0
+            } else {
+                0.0
+            }
         }
         ConditionFunction::GetLevel => {
             // GetLevel → the Run-On actor's character level (0.0 when the
@@ -1993,7 +2095,9 @@ mod tests {
             cond(68, ComparisonOp::Ge, 1.0, false).with_param_1(0x20),
             cond(72, ComparisonOp::Eq, 1.0, false).with_param_1(0xA0),
             cond(46, ComparisonOp::Eq, 1.0, false),
-            cond(71, ComparisonOp::Eq, 1.0, false),
+            // An out-of-catalog index (GetInFaction claimed 71 in
+            // #5366 Phase 2; pick one no master authors anywhere).
+            cond(990, ComparisonOp::Eq, 1.0, false),
             cond(74, ComparisonOp::Eq, 0.0, false),
         ];
         (world, subjects, shapes)
@@ -2184,6 +2288,96 @@ mod tests {
             absolute, 75.0,
             "absolute actor-general rows must still resolve (10*5 + 25) — the \
              gate keys on `kind`, not on derived-ness"
+        );
+    }
+
+    /// #5366 Phase 2 — `RunOn::EventData` resolves the R1/R2 tag in the
+    /// CTDA tail against the context's event slots; L-tags and unknown
+    /// tags fail the condition; a context without event data fails it
+    /// exactly as before Phase 2.
+    #[test]
+    fn event_data_run_on_resolves_reference_tags_only() {
+        use byroredux_core::ecs::components::FactionRanks;
+        use byroredux_plugin::esm::records::condition::{event_data_slot, EventDataSlot};
+
+        let tag = |bytes: &[u8; 2]| u32::from(bytes[0]) | (u32::from(bytes[1]) << 8);
+        assert_eq!(event_data_slot(tag(b"R1")), Some(EventDataSlot::Reference1));
+        assert_eq!(event_data_slot(tag(b"R2")), Some(EventDataSlot::Reference2));
+        assert_eq!(event_data_slot(tag(b"L1")), Some(EventDataSlot::Location1));
+        assert_eq!(event_data_slot(tag(b"L2")), Some(EventDataSlot::Location2));
+        assert_eq!(event_data_slot(0x00FF_00FF), None);
+
+        let mut world = World::new();
+        let subject = world.spawn();
+        let r1 = world.spawn();
+        let r2 = world.spawn();
+        // GetInFaction(0xF00D) == 1 on the tagged slot — true for r2 only.
+        world.insert(r2, FactionRanks::from_pairs([(0xF00D, 0)]));
+        let condition = |extra: u32| Condition {
+            function_index: 71,
+            comparator: ComparisonOp::Eq,
+            comparand: ConditionValue::Literal(1.0),
+            param_1: 0xF00D,
+            run_on: RunOn::EventData,
+            extra_data_id: extra,
+            ..Default::default()
+        };
+        let slots = EventDataSlots {
+            reference_1: Some(r1),
+            reference_2: Some(r2),
+            location_1: Some(0x18A49),
+            location_2: Some(0x18A56),
+        };
+        let ctx = ConditionContext::for_subject(subject).with_event_data(&slots);
+        assert!(
+            evaluate_condition(&condition(tag(b"R2")), &world, &ctx),
+            "R2 is in the faction"
+        );
+        assert!(
+            !evaluate_condition(&condition(tag(b"R1")), &world, &ctx),
+            "R1 is not"
+        );
+        assert!(
+            !evaluate_condition(&condition(tag(b"L2")), &world, &ctx),
+            "location tags have no entity to run on"
+        );
+        assert!(
+            !evaluate_condition(&condition(0x00FF_00FF), &world, &ctx),
+            "unknown tags fail"
+        );
+        assert!(
+            !evaluate_condition(
+                &condition(tag(b"R2")),
+                &world,
+                &ConditionContext::for_subject(subject)
+            ),
+            "no event data in the context — fails as in Phase 1"
+        );
+    }
+
+    /// GetInFaction (Skyrim 71) — membership collapses the same
+    /// `FactionRanks` read GetFactionRank does.
+    #[test]
+    fn get_in_faction_reads_membership() {
+        use byroredux_core::ecs::components::FactionRanks;
+        let mut world = World::new();
+        let member = world.spawn();
+        world.insert(member, FactionRanks::from_pairs([(0xF00D, 2), (0xBAAD, 0)]));
+        let outsider = world.spawn();
+        world.insert(outsider, FactionRanks::from_pairs([(0xBAAD, 3)]));
+        let condition = Condition {
+            function_index: 71,
+            comparator: ComparisonOp::Eq,
+            comparand: ConditionValue::Literal(1.0),
+            param_1: 0xF00D,
+            ..Default::default()
+        };
+        assert!(evaluate_condition(&condition, &world, &ctx(member)));
+        assert!(!evaluate_condition(&condition, &world, &ctx(outsider)));
+        let bare = world.spawn();
+        assert!(
+            !evaluate_condition(&condition, &world, &ctx(bare)),
+            "no FactionRanks — not in the faction"
         );
     }
 }

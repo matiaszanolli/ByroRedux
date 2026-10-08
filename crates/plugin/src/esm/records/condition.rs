@@ -161,6 +161,54 @@ pub enum ConditionValue {
     Global(u32),
 }
 
+/// One positional slot of a Story Manager event's data (#5366 Phase 2).
+///
+/// The wire format stores the slot selector as a 2-byte ASCII tag in the
+/// low half of the selecting integer (the CTDA tail after `run_on == 7`,
+/// and QUST `ALFD` beside `ALFE`): `"R1"` / `"R2"` name the event's two
+/// object references, `"L1"` / `"L2"` its two locations. Census over
+/// Skyrim + DLCs (2026-10-07): every one of the 302 Skyrim run-on-7 CTDA
+/// tails and every `ALFD` decodes to one of these four tags — plus one
+/// malformed non-ASCII tail that reads as no slot.
+///
+/// Which *thing* each slot holds is per-mnemonic, matching the Papyrus
+/// `OnStory*` parameter order (`KILL`: R1 victim, R2 killer — proven by
+/// `DA08KillFriendNode`'s tutorial-documented killer conditions running
+/// on R2 and `WIKill06`'s `Victim` alias filling from R1; `CLOC`: R1
+/// actor, L1 old location, L2 new location — `WIChangeLocation04`'s
+/// `OldLocation`/`NewLocation` aliases; `SCPT`/`SendStoryEvent(akLoc,
+/// akRef1, akRef2, …)`: L1, R1, R2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum EventDataSlot {
+    /// `"R1"` — first event reference (KILL victim, CLOC actor, SCPT ref1).
+    Reference1,
+    /// `"R2"` — second event reference (KILL killer, SCPT ref2).
+    Reference2,
+    /// `"L1"` — first event location (CLOC old, SCPT/SendStoryEvent akLoc).
+    Location1,
+    /// `"L2"` — second event location (CLOC new).
+    Location2,
+}
+
+/// Decode an event-data slot selector (`Condition::extra_data_id` under
+/// `RunOn::EventData`, or `AliasFillType::FromEvent`'s `ALFD` value).
+///
+/// Accepts the raw authored integer; the tag lives in its low 16 bits
+/// (`0x3152` = `"R1"`, `0x3252` = `"R2"`, `0x314C` = `"L1"`,
+/// `0x324C` = `"L2"`). Anything else — including Skyrim's single
+/// malformed non-ASCII tail — reads as `None`, which callers treat as
+/// "condition fails" / "alias does not fill from this event".
+pub fn event_data_slot(id: u32) -> Option<EventDataSlot> {
+    match (id & 0xFFFF) as u16 {
+        0x3152 => Some(EventDataSlot::Reference1),
+        0x3252 => Some(EventDataSlot::Reference2),
+        0x314C => Some(EventDataSlot::Location1),
+        0x324C => Some(EventDataSlot::Location2),
+        _ => None,
+    }
+}
+
+
 /// Stable, case-insensitive identity for a CTDA string parameter.
 ///
 /// Skyrim stores condition string parameters in `CIS1` / `CIS2`

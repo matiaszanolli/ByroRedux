@@ -5142,3 +5142,105 @@ fn dialogue_greeting_and_forcegreet_fnv_floor() {
         "PKDD topic floor (measured 263): {with_topic}"
     );
 }
+
+/// #5366 Phase 2 — the event-data slot wire format, censused.
+///
+/// The CTDA tail after `run_on == 7` and the QUST `ALFD` beside `ALFE`
+/// both store a 2-byte ASCII slot tag in their low half (`R1`/`R2`
+/// references, `L1`/`L2` locations — 2026-10-07 census over Skyrim.esm:
+/// 302 run-on-7 CTDAs reading R1=218 / R2=83 / L=0 plus one malformed
+/// non-ASCII tail; 2 065 `FromEvent` alias fills across all four tags).
+/// The DA08 anchor pins the semantic mapping the runtime relies on:
+/// the tutorial-documented killer conditions (`GetIsID(player)`,
+/// `GetEquipped(Ebony Blade)`) both run on the `R2` tag.
+#[test]
+#[ignore = "needs Skyrim SE game data on disk"]
+fn story_manager_skyrim_event_data_slot_floor() {
+    let Some(data) = data_dir(test_paths::SKYRIM_SE_ENV, test_paths::SKYRIM_SE_DEFAULT) else {
+        eprintln!("[Skyrim SM slots] skipping: game data unavailable");
+        return;
+    };
+    let bytes = std::fs::read(data.join("Skyrim.esm")).expect("read Skyrim.esm");
+    let index = parse_esm(&bytes).expect("parse Skyrim.esm");
+    use byroredux_plugin::esm::records::condition::{event_data_slot, EventDataSlot, RunOn};
+    use byroredux_plugin::esm::records::{AliasFillType, SmNodeKind};
+
+    let (mut run_on_event, mut r1, mut r2, mut locations, mut unrecognized) = (0, 0, 0, 0, 0);
+    let mut anchor: Option<&byroredux_plugin::esm::records::SmNodeRecord> = None;
+    for node in index.story_manager_nodes.values() {
+        if node.editor_id == "DA08KillFriendNode" {
+            anchor = Some(node);
+        }
+        for condition in &node.conditions {
+            if condition.run_on == RunOn::EventData {
+                run_on_event += 1;
+                match event_data_slot(condition.extra_data_id) {
+                    Some(EventDataSlot::Reference1) => r1 += 1,
+                    Some(EventDataSlot::Reference2) => r2 += 1,
+                    Some(EventDataSlot::Location1 | EventDataSlot::Location2) => locations += 1,
+                    None => unrecognized += 1,
+                }
+            }
+        }
+    }
+    assert!(
+        run_on_event >= 290,
+        "run_on=7 CTDA floor (measured 302): {run_on_event}"
+    );
+    assert!(r1 >= 210, "R1 tag floor (measured 218): {r1}");
+    assert!(r2 >= 80, "R2 tag floor (measured 83): {r2}");
+    assert_eq!(
+        locations, 0,
+        "SM node CTDAs author no location tags — the L vocabulary is ALFD-only"
+    );
+    assert_eq!(
+        unrecognized, 1,
+        "exactly one malformed non-ASCII tail (census)"
+    );
+
+    // The anchor: both tutorial killer conditions run on R2. This is the
+    // evidence that R2 = killer on KILL events; if it moves, the runtime's
+    // slot mapping moved with it.
+    let anchor = anchor.expect("DA08KillFriendNode must exist in Skyrim.esm");
+    assert_eq!(anchor.kind, SmNodeKind::Quest);
+    let killer_conditions = anchor
+        .conditions
+        .iter()
+        .filter(|condition| {
+            condition.run_on == RunOn::EventData
+                && event_data_slot(condition.extra_data_id) == Some(EventDataSlot::Reference2)
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        killer_conditions.len(),
+        2,
+        "GetIsID(player) + GetEquipped(Ebony Blade), both on the R2 tag"
+    );
+    assert!(killer_conditions
+        .iter()
+        .any(|condition| condition.function_index == 72 && condition.param_1 == 0x0000_0007));
+    assert!(killer_conditions
+        .iter()
+        .any(|condition| condition.function_index == 182 && condition.param_1 == 0x0004_A38F));
+
+    // QUST side: FromEvent (ALFE+ALFD) fills across the four tags.
+    let (mut fills, mut fill_r1) = (0, 0);
+    for quest in index.quests.values() {
+        for alias in &quest.aliases {
+            if let Some(AliasFillType::FromEvent { data, .. }) = alias.fill_type {
+                fills += 1;
+                if event_data_slot(data as u32) == Some(EventDataSlot::Reference1) {
+                    fill_r1 += 1;
+                }
+            }
+        }
+    }
+    assert!(
+        fills >= 2000,
+        "FromEvent alias-fill floor on Skyrim.esm (measured 2065): {fills}"
+    );
+    assert!(
+        fill_r1 >= 600,
+        "R1-tagged fills (WIKill-style victim aliases, measured ~1000 across tags): {fill_r1}"
+    );
+}
