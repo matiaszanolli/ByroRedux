@@ -74,11 +74,15 @@ First step: `git log --since=<last-report-date> --format='%h %s' -- crates/rende
   statement — `draw.rs` documents this at the submit). Release before any `wait_for_fences`. Also check the
   one-time-command submit in `texture.rs` (`one_time_lock_scope_tests` pins lock → submit → unlock → wait, #1713;
   the queue acquire inside the fence window is `lock_recovering`, the fence lock still `expect`s by design and
-  `VulkanContext::drop` recovers it — #5209).
+  `VulkanContext::drop` recovers it — #5209). The helper's wait-failure arm frees its command buffer / fence only on
+  `ERROR_DEVICE_LOST`; any other error leaves a possibly-pending submission alone and poisons the reusable-fence mutex
+  via a caught panic (#5270, d194f7d60; pinned by `wait_failure_arm_disposes_only_on_device_loss`).
 - **Frame-in-flight discipline (the both-slots wait).** `sync_and_acquire_frame.rs` waits on all
   `in_flight` fences before re-recording; that is the safety argument for the immediate scratch free in
   `build_skinned_blas_batched_on_cmd`, the TLAS resize, and every non-per-FIF resource. It is
-  device-idle-equivalent only at `MAX_FRAMES_IN_FLIGHT == 2`. Guard: the const-assert in `sync.rs`
+  device-idle-equivalent only at `MAX_FRAMES_IN_FLIGHT == 2`. The wait is a known throughput cost (dominates GPU-bound
+  frames), not a sync bug: narrowing it is tracked as #5365 (open; preconditions: per-FIF or deferred-destroy riders, the
+  #282 in-command-buffer barrier, a `BYRO_VALIDATION=1` run on both upscaler modes) — do not re-file it. Guard: the const-assert in `sync.rs`
   (#870) and `frames_in_flight_contract_names_every_dependent_resource` (#3643) — confirm neither
   is `#[ignore]`d and a FIF bump would fail them. `image_available[frame]` must not be reused while an
   acquire is pending (comment block at the acquire → submit window); `render_finished` is per swapchain
@@ -113,7 +117,7 @@ First step: `git log --since=<last-report-date> --format='%h %s' -- crates/rende
 **Output**: `/tmp/audit/concurrency/dim_1.md`
 
 ### Dimension 2: Compute → AS → Fragment Chains
-Paths: `crates/renderer/src/vulkan/{skin_compute,svgf,taa,caustic,water_caustic,volumetrics,bloom,groundcover,sky_cube,material}.rs`, `crates/renderer/src/vulkan/groundcover/`, `crates/renderer/src/vulkan/context/{post_passes,dispatch_skin_and_cluster,skinned_blas_refit}.rs`
+Paths: `crates/renderer/src/vulkan/{skin_compute,svgf,taa,caustic,water_caustic,volumetrics,bloom,groundcover,sky_cube,material}.rs`, `crates/renderer/src/vulkan/{groundcover,volumetrics}/`, `crates/renderer/src/vulkan/context/{post_passes,dispatch_skin_and_cluster,skinned_blas_refit}.rs`
 First step: `git log --since=<last-report-date> --format='%h %s' -- crates/renderer/src/vulkan/context/post_passes.rs crates/renderer/src/vulkan/*.rs`
 **Checklist**:
 - **Skin chain (M29).** Palette build (`skin_compute.rs`) → `COMPUTE_WRITE→SHADER_READ` → per-mesh skin output →
@@ -210,9 +214,11 @@ The access model and the mechanical declaration guard (`system_access_declaratio
   `resource_mut` (+ `try_`), `world.get` / `get_mut` / `has` and generic `remove_component` /
   `insert_component` (#4994, #4821) — not `query_2_mut`, `resource_2_mut` or inferred types; it follows calls
   within a listed file but cross-file hops only where `PARALLEL_SYSTEMS` lists them (#4994,
-  `cross_file_hops_and_get_forms_reach_their_acquisitions`); closures and macros; exclusive systems (three are
-  scanned — `npc_combat_ai_system`, `papyrus_provider_system`, `legacy_obscript_load_order_system`; others only
-  by the non-empty-access tests).
+  `cross_file_hops_and_get_forms_reach_their_acquisitions`); closures and macros; exclusive systems (four are
+  scanned — `npc_combat_ai_system`, `papyrus_provider_system`, `legacy_obscript_load_order_system`, and
+  `npc_dialogue_selection_system`, whose scan follows the spoken-INFO fragment path into the scripting crate, #5307;
+  others only by the non-empty-access tests). The table and these scans live in `system_access_declaration_tests`
+  (`byroredux/src/boot/schedule/mod.rs`).
   An under-declared parallel system makes `known_conflict_count() == 0` unsound (the same-session
   `fly_camera_system` `GlobalTransform` write is the precedent, commit ac1d44f5c).
 - **Cross-stage sequencing is invisible to the analyzer** (`analyze_pair` reasons within one stage). A
@@ -222,7 +228,8 @@ The access model and the mechanical declaration guard (`system_access_declaratio
   the previous frame's wind by design, #3111/#4186), `billboard_runs_after_camera_follow_in_late`,
   `footstep_runs_after_camera_follow_in_late`, `submersion_runs_after_camera_follow_and_before_water_audio`
   (#3652/#3180/#4185 — each was a real one-frame-stale bug), `player_body_facing_runs_in_update_before_propagation`
-  (#4995). For any NEW single-writer / multi-reader resource,
+  (#4995), and the spoken-INFO path in Stage::Late must not claim the fragment journal cursor
+  its same-frame `QuestStageAdvancedBatch` drains unread (#5297, 68a06509a). For any NEW single-writer / multi-reader resource,
   check writer-stage ≤ reader-stage and that a test like these pins it; fix by moving the *consumer* to
   a Late exclusive after the writer, not by moving the writer.
 - **Exclusives** run serially after the parallel batch and are never paired; undeclared ones are by design (a

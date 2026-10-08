@@ -63,7 +63,7 @@ use crate::components::{SandboxSitClip, SeatReservations};
 /// center for). Most sandboxing actors carry a real authored radius from
 /// PLDT (npc_spawn.rs); 512 was the estimate before that landed — still a
 /// reasonable FNV-interior-scale default for the no-PLDT case.
-const SEAT_SEARCH_RADIUS: f32 = 512.0;
+pub(crate) const SEAT_SEARCH_RADIUS: f32 = 512.0;
 
 /// True when a furniture marker is a *sit* entry. Reads the already-
 /// resolved [`FurnitureMarkerKind`] (#2010 / NIFAL-D4-01) — the era
@@ -72,7 +72,7 @@ const SEAT_SEARCH_RADIUS: f32 = 512.0;
 /// (`furniture_component`), not re-derived here from
 /// `heading_z_radians`'s presence. Legacy sleep/lean markers are still a
 /// known v0 over-match (see `FurnitureMarkerKind::Sit` docs).
-fn is_sit_marker(m: &FurnitureMarker) -> bool {
+pub(crate) fn is_sit_marker(m: &FurnitureMarker) -> bool {
     m.kind == FurnitureMarkerKind::Sit
 }
 
@@ -117,7 +117,7 @@ fn seat_world_transform(furn: &GlobalTransform, m: &FurnitureMarker) -> GlobalTr
 /// same logic serves both a bare furniture-entity key (tests) and the
 /// production `(furniture, marker index)` key, which lets several markers on
 /// one multi-seat furniture reserve independently.
-fn pick_nearest_seat<K: Copy + Eq + std::hash::Hash>(
+pub(crate) fn pick_nearest_seat<K: Copy + Eq + std::hash::Hash>(
     actor_pos: Vec3,
     seats: &[(K, GlobalTransform)],
     reserved: &HashMap<K, EntityId>,
@@ -151,6 +151,99 @@ struct SandboxScratch {
     seats: Vec<((EntityId, u32), GlobalTransform)>,
 }
 
+/// Gather the world-space seat transform of every furniture marker
+/// matching `accept`, keyed `(furniture entity, marker index)` so a
+/// multi-seat piece offers one seat per marker. Shared by the sandbox
+/// seat system (sit markers) and the M42 eat/sleep procedures (eat =
+/// sit markers, sleep = sleep markers with a sit fallback) — the gather
+/// half of the seating path, kept identical so reservation semantics
+/// can't drift between consumers.
+pub(crate) fn collect_marker_seats(
+    world: &World,
+    out: &mut Vec<((EntityId, u32), GlobalTransform)>,
+    accept: impl Fn(&FurnitureMarker) -> bool,
+) {
+    let Some(gq) = world.query::<GlobalTransform>() else {
+        return;
+    };
+    let Some(furn_q) = world.query::<Furniture>() else {
+        return;
+    };
+    for (furn_e, furn) in furn_q.iter() {
+        let Some(furn_g) = gq.get(furn_e) else {
+            continue;
+        };
+        for (idx, marker) in furn.markers.iter().enumerate() {
+            if !accept(marker) {
+                continue;
+            }
+            out.push(((furn_e, idx as u32), seat_world_transform(furn_g, marker)));
+        }
+    }
+}
+
+/// Apply one frame's seat assignments — the write half of the seating
+/// path, shared by the sandbox seat system and the M42 eat/sleep
+/// procedures: snap each root to its marker's world transform, park the
+/// sit-enter clip's final frame (`playing = false`, #3333 restore
+/// captured pre-park), and tag `Seated` so the one-shot guard skips the
+/// actor next frame. `sit_handle`/`hold_time` come from the
+/// [`SandboxSitClip`] resource the caller resolved.
+pub(crate) fn apply_seat_assignments(
+    world: &World,
+    sit_handle: u32,
+    hold_time: f32,
+    assignments: &[(EntityId, EntityId, GlobalTransform)],
+) {
+    if assignments.is_empty() {
+        return;
+    }
+    // Snap the placement root — a propagation root, so local == world.
+    if let Some(mut tq) = world.query_mut::<Transform>() {
+        for (npc, _, seat) in assignments {
+            if let Some(t) = tq.get_mut(*npc) {
+                t.translation = seat.translation;
+                t.rotation = seat.rotation;
+                // scale left as-authored
+            }
+        }
+    }
+    let mut restores: Vec<SeatedAnimationRestore> = Vec::with_capacity(assignments.len());
+    if let Some(mut pq) = world.query_mut::<AnimationPlayer>() {
+        for (npc, _, _) in assignments {
+            if let Some(p) = pq.get_mut(*npc) {
+                restores.push(SeatedAnimationRestore {
+                    clip_handle: p.clip_handle,
+                    local_time: p.local_time,
+                    prev_time: p.prev_time,
+                    playing: p.playing,
+                    speed: p.speed,
+                });
+                p.clip_handle = sit_handle;
+                p.local_time = hold_time;
+                p.prev_time = hold_time;
+                p.playing = false;
+                p.speed = 1.0;
+            } else {
+                restores.push(SeatedAnimationRestore::default());
+            }
+        }
+    } else {
+        restores.resize(assignments.len(), SeatedAnimationRestore::default());
+    }
+    if let Some(mut sq) = world.query_mut::<Seated>() {
+        for ((npc, furn, _), animation_restore) in assignments.iter().zip(restores) {
+            sq.insert(
+                *npc,
+                Seated {
+                    furniture: *furn,
+                    animation_restore,
+                },
+            );
+        }
+    }
+}
+
 /// Seat sandboxing actors in nearby furniture. Registered
 /// `add_exclusive(Stage::PostUpdate, …)` so it reads this frame's
 /// propagated `GlobalTransform`s; the snapped root propagates to the
@@ -173,52 +266,47 @@ fn sandbox_seat_system_inner(world: &World, _dt: f32, scratch: &mut SandboxScrat
     // lock-tracker sees no conflict; writes happen in Pass 2 after these
     // read guards drop.
     scratch.assignments.clear();
+    // #3354 — the real steady-state early-out. None of the guards above
+    // ("no sit clip", "no furniture", "no seats") is "everyone who wants a
+    // seat already has one", and `SandboxBehavior` is never removed on
+    // seating (only `Seated` is added), so `sandbox_q` stays non-empty and
+    // the seat build below used to run every frame for the life of the
+    // cell — long after the last actor sat down. This scan is
+    // O(sandboxing actors) with no allocation, against the
+    // O(furniture x markers) `GlobalTransform::compose` sweep it guards.
+    // Scoped (not held across the seat gather below) so
+    // `collect_marker_seats`' own `Seated`-free guards never nest inside
+    // another same-type acquisition.
     {
-        let Some(gq) = world.query::<GlobalTransform>() else {
-            return;
-        };
-        let Some(furn_q) = world.query::<Furniture>() else {
-            return; // no furniture in this cell
-        };
         let seated_q = world.query::<Seated>();
-
-        // #3354 — the real steady-state early-out. None of the guards above
-        // ("no sit clip", "no furniture", "no seats") is "everyone who wants a
-        // seat already has one", and `SandboxBehavior` is never removed on
-        // seating (only `Seated` is added), so `sandbox_q` stays non-empty and
-        // the seat build below used to run every frame for the life of the
-        // cell — long after the last actor sat down. This scan is
-        // O(sandboxing actors) with no allocation, against the
-        // O(furniture x markers) `GlobalTransform::compose` sweep it guards.
         let any_unseated = sandbox_q
             .iter()
             .any(|(npc, _)| !seated_q.as_ref().is_some_and(|s| s.contains(npc)));
         if !any_unseated {
             return;
         }
+    }
 
-        // World-space seat transform for *every* sit marker on each
-        // furniture, keyed `(furniture entity, marker index)` so a multi-seat
-        // piece (counter / bench / multi-chair table) offers one seat per
-        // marker instead of just its first (M42.2 seat-polish).
-        scratch.seats.clear();
-        for (furn_e, furn) in furn_q.iter() {
-            let Some(furn_g) = gq.get(furn_e) else {
-                continue;
-            };
-            for (idx, marker) in furn.markers.iter().enumerate() {
-                if !is_sit_marker(marker) {
-                    continue;
-                }
-                scratch
-                    .seats
-                    .push(((furn_e, idx as u32), seat_world_transform(furn_g, marker)));
-            }
-        }
-        if scratch.seats.is_empty() {
+    // World-space seat transform for *every* sit marker on each
+    // furniture, keyed `(furniture entity, marker index)` so a multi-seat
+    // piece (counter / bench / multi-chair table) offers one seat per
+    // marker instead of just its first (M42.2 seat-polish). The gather
+    // lives in [`collect_marker_seats`] (shared with the M42 eat/sleep
+    // procedures).
+    scratch.seats.clear();
+    collect_marker_seats(world, &mut scratch.seats, is_sit_marker);
+    if scratch.seats.is_empty() {
+        return; // no furniture in this cell (or no sit markers)
+    }
+
+    {
+        let Some(gq) = world.query::<GlobalTransform>() else {
             return;
-        }
-
+        };
+        let Some(furn_q) = world.query::<Furniture>() else {
+            return;
+        };
+        let seated_q = world.query::<Seated>();
         let mut reservations = world.resource_mut::<SeatReservations>();
         for (npc, behavior) in sandbox_q.iter() {
             if seated_q.as_ref().is_some_and(|s| s.contains(npc)) {
@@ -277,72 +365,13 @@ fn sandbox_seat_system_inner(world: &World, _dt: f32, scratch: &mut SandboxScrat
         return;
     }
 
-    // ── Pass 2: apply writes (each a scoped single-type lock). ──
-    // Snap the placement root — a propagation root, so local == world.
-    if let Some(mut tq) = world.query_mut::<Transform>() {
-        for (npc, _, seat) in &scratch.assignments {
-            if let Some(t) = tq.get_mut(*npc) {
-                t.translation = seat.translation;
-                t.rotation = seat.rotation;
-                // scale left as-authored
-            }
-        }
-    }
-    // Park on the sit-enter clip's FINAL frame: `local_time = hold_time`
-    // (clip duration) so the apply phase samples each channel's last key (the
-    // fully-seated end pose), and `playing = false` so `advance_time` freezes
-    // it — the enter clip's cycle is `Reverse`, which would otherwise ping-pong
-    // back to standing. This is what lowers the body onto the seat (the enter
-    // clip's `Bip01`/`NonAccum` channels, absent from the sit loops). See the
-    // M42.1 diagnosis in this module's docs.
-    //
-    // #3333 — capture what each field held *before* the park, so un-seating
-    // can put it back. Without this the actor keeps `playing = false` on the
-    // sit-enter clip's last frame forever: `clear_ambient_behavior` removes
-    // `Seated` but has no way to reconstruct an idle player (it has neither
-    // the archive nor the actor's idle handle), so the actor walks its next
-    // package in a frozen chair pose. Collected here rather than read back in
-    // the teardown because by then the park has already overwritten it.
-    let mut restores: Vec<SeatedAnimationRestore> = Vec::with_capacity(scratch.assignments.len());
-    if let Some(mut pq) = world.query_mut::<AnimationPlayer>() {
-        for (npc, _, _) in &scratch.assignments {
-            if let Some(p) = pq.get_mut(*npc) {
-                restores.push(SeatedAnimationRestore {
-                    clip_handle: p.clip_handle,
-                    local_time: p.local_time,
-                    prev_time: p.prev_time,
-                    playing: p.playing,
-                    speed: p.speed,
-                });
-                p.clip_handle = sit_handle;
-                p.local_time = hold_time;
-                p.prev_time = hold_time;
-                p.playing = false;
-                p.speed = 1.0;
-            } else {
-                // No AnimationPlayer to park — record a neutral restore so the
-                // index stays aligned with `assignments`. The teardown only
-                // applies a restore to an actor that has a player, so this
-                // entry can never be written anywhere.
-                restores.push(SeatedAnimationRestore::default());
-            }
-        }
-    } else {
-        restores.resize(scratch.assignments.len(), SeatedAnimationRestore::default());
-    }
-    // Tag Seated (storage pre-registered at boot so insert lands).
-    if let Some(mut sq) = world.query_mut::<Seated>() {
-        for ((npc, furn, _), animation_restore) in scratch.assignments.iter().zip(restores) {
-            sq.insert(
-                *npc,
-                Seated {
-                    furniture: *furn,
-                    animation_restore,
-                },
-            );
-        }
-    }
+    // ── Pass 2: apply writes (each a scoped single-type lock) — snap,
+    // sit-enter final-frame park (#3333 restore captured pre-park),
+    // `Seated` tag. Shared with the M42 eat/sleep procedures through
+    // [`apply_seat_assignments`].
+    apply_seat_assignments(world, sit_handle, hold_time, &scratch.assignments);
 }
+
 
 /// Sandbox seat system factory — returns a closure with a persistent
 /// [`SandboxScratch`] (#2033 / PERF-D1-2026-07-16-01). Behavior is

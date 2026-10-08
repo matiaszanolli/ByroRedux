@@ -384,6 +384,13 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     world.register::<byroredux_core::ecs::components::GuardBehavior>();
     world.register::<byroredux_core::ecs::components::GuardState>();
 
+    // M42 — pre-register the Eat/Sleep marker + walk-state storages so
+    // `eat_sleep_system`'s `query::<EatBehavior>()`/`query::<SleepBehavior>()`
+    // skip-scans and `query_mut::<EatSleepState>().insert(...)` resolve
+    // even before the first dining/sleeping actor spawns.
+    world.register::<byroredux_core::ecs::components::EatBehavior>();
+    world.register::<byroredux_core::ecs::components::SleepBehavior>();
+    world.register::<byroredux_core::ecs::components::EatSleepState>();
     // M42.8 — pre-register the Patrol marker + runtime-state storages so
     // `patrol_system`'s `query::<PatrolBehavior>()` skip-scan and
     // `query_mut::<PatrolState>().insert(...)` resolve even before the

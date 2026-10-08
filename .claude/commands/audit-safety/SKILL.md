@@ -20,7 +20,7 @@ a dimension whose Paths have no commits since the last `AUDIT_SAFETY_*` report.
 
 Census recipe: `grep -rwo unsafe <crate>/src | wc -l` for tokens, `grep -rnE 'unsafe[[:space:]]*\{' <crate>/src`
 for blocks — **read the hits**: substring counts also match identifiers (`byroredux` reports 3 tokens and
-only 1 real block). Measured 2026-10-05:
+only 1 real block). Measured 2026-10-08 (unchanged since 2026-10-05; 116 commits added no `unsafe`):
 
 - `crates/renderer/src`: **939** word tokens (948 by the substring recipe; 946 on 2026-09-29) — 720 `unsafe {`
   blocks (733), 96 declared `unsafe fn` (the loose `grep 'unsafe fn'` reads ~144: prose and source-scan
@@ -151,9 +151,9 @@ First step: `grep -rn undocumented_unsafe_blocks crates` (expect the one `deny` 
   `cargo build` / `cargo test`. Since #5121 (530c9e7aa) the workspace step runs `--keep-going` and a dedicated step
   (`cargo clippy -p byroredux-renderer --no-deps -- -D clippy::undocumented_unsafe_blocks`) re-lints the renderer on
   its own closure, so an upstream crate's new-toolchain clippy failure can no longer disarm the gate — confirm both survive. Confirm the `deny` is
-  present and unescaped. The lint sees `unsafe {}` blocks only: `unsafe fn` bodies and the 34 renderer `unsafe impl`s
+  present and unescaped. The lint sees `unsafe {}` blocks only: `unsafe fn` bodies and the 35 renderer `unsafe impl`s
   need a justification found by reading. Crates outside the renderer have no such lint — sweep comment-less blocks
-  there by hand (at 2026-10-05 all commented in `fsr3-sys`, `nif`, `core`, `pex`, `byro-launcher` and `byroredux`); a
+  there by hand (at 2026-10-08 all commented in `fsr3-sys`, `nif`, `core`, `pex`, `byro-launcher` and `byroredux`); a
   comment-less block is MEDIUM.
 - The audit's value is therefore the *truth* of each invariant, not its presence: for each new or changed block, does the
   stated precondition (device live, handles from this device, not in flight, pointer valid for the call) hold at THIS call

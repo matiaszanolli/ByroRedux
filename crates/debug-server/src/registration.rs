@@ -283,6 +283,17 @@ pub fn register_all(registry: &mut ComponentRegistry) {
         "PatrolState",
         vec!["home", "target", "phase", "pick_count"],
     );
+    // M42 — Eat/Sleep (procedures 3/4): the behavior pair shares one
+    // walk-then-seat runtime; `EatSleepState` carries the one-shot walk
+    // destination an operator needs when an actor circles instead of
+    // dining.
+    register_component::<EatBehavior>(registry, "EatBehavior", vec!["radius", "target_form_id", "form_id"]);
+    register_component::<SleepBehavior>(
+        registry,
+        "SleepBehavior",
+        vec!["radius", "target_form_id", "form_id"],
+    );
+    register_component::<EatSleepState>(registry, "EatSleepState", vec!["destination"]);
     register_component::<AnimatedVisibility>(registry, "AnimatedVisibility", vec!["0"]);
     register_component::<AnimatedAlpha>(registry, "AnimatedAlpha", vec!["0"]);
     // Post-#517 split: five target-specific color components replaced

@@ -112,7 +112,7 @@ its list is invisible to it); `blocks/controller/sequence_pre_10_1_0_106_tests.r
 ### Dimension 2: Version Gating (highest report yield)
 Paths: `crates/nif/src/{version,shader_flags}.rs`, all `stream.bsver()` / `stream.version()` sites in `blocks/`
 First step: `git log --since=<last report> --format='%h %s' -- crates/nif/src/version.rs crates/nif/src/shader_flags.rs`, then for every parser changed since, compare each `since=`/`until=`/`vercond` in nif.xml with the gate written; `grep -rn 'V10_1_0_106\|V10_1_0_103' crates/nif/src/blocks` shows raw uses of constants a `NifVersion` helper already encodes.
-**Guard**: the `detect_*` tests in `version.rs`; `crates/nif/src/version_literal_tests.rs` (72769b95a, #5119) fails on any bare `NifVersion(0x…)` literal or bare decimal `bsver` comparison in production `src/` outside `version.rs`. Nothing guards a *named* constant used where a `NifVersion` helper already encodes the gate.
+**Guard**: the `detect_*` tests in `version.rs`; `crates/nif/src/version_literal_tests.rs` (72769b95a, #5119) fails on any bare `NifVersion(0x…)` literal or bare decimal `bsver` comparison in production `src/` outside `version.rs`. The scan blanks each `#[cfg(test)]` module individually (a first-occurrence cut once hid every later production item, #5258). Nothing guards a *named* constant used where a `NifVersion` helper already encodes the gate.
 **Checklist**:
 - `NifVariant::detect` covers every `(version, user_version, user_version_2)` combination of
   the seven titles + the FO3-dev edge case. `impl NifVariant` is minimal (`detect`, `bsver`);
@@ -155,8 +155,10 @@ First step: `cargo run -p byroredux-nif --release --example nif_stats -- <archiv
   struct name (several arms parse multiple wire types into one struct — `BhkRigidBody.is_t`,
   `NiPSysBlock.original_type`); the corpus definition is shared in `corpus.rs`
   (`NIF_ENTRY_EXTENSIONS` includes `.bto`/`.btr` — renamed NIFs; a second private copy of
-  the rule is the regression); the gates walk **every** mesh-bearing archive
-  (`open_all_mesh_archives` all-or-nothing, `open_optional_mesh_archives` present-only,
+  the rule is the regression; every corpus filter routes through `corpus::is_nif_entry`, pinned by
+  a source scan, #5259); the gates walk **every** mesh-bearing archive
+  (`open_all_mesh_archives` all-or-nothing, `open_optional_mesh_archives` present-only — a
+  present-but-unopenable archive panics and an all-absent corpus fails, #5232;
   `run_all_meshes_gate` with a *per-archive* `limit`); `parse_real_nifs` asserts a per-archive
   clean-rate floor (`min_clean`, 0.995) plus recoverable 100% — truncation counts as
   recoverable, so the floor is what catches silent clean-rate collapse. New coverage
@@ -199,6 +201,9 @@ This is the *parse → ECS* handoff; per-game material classification is `/audit
   partition-local. Regression = re-applying a partition palette to the packed channel (the
   deleted *remap_bs_tri_shape_bone_indices* behaviour) or `vertex_map` to triangles.
   `sse_recon::try_reconstruct_sse_geometry` and `skin::*` consume the right counts.
+  Starfield `BSGeometry` skin weights are bounded the same way: `convert_bs_geometry_skin_weights`
+  declines the whole weight set (bind pose, never a clamp) when any bone index >= the skin's bone
+  count (#4268, 0abc86c8b; the palette bound in `render/skinned.rs` is a producer-upheld invariant).
 - **Particle emitters**: `NiPSysEmitter`/`NiPSysEmitterCtlr`/`NiPSysEmitterCtlrData`/
   `NiPSysGrowFadeModifier` are typed (`blocks/particle.rs`); params flow
   `extract_emitter_params` / `extract_emitter_rate` (`import/walk/emitter.rs`) →

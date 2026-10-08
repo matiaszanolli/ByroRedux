@@ -5,7 +5,7 @@ argument-hint: "--focus <dimensions> --game <name> --depth shallow|deep"
 
 # ESM / Plugin Parser Audit
 
-Audit `crates/plugin/` (~66k LOC in `src/`) as a parser: GRUP walker, sub-record byte
+Audit `crates/plugin/` (~68k LOC in `src/`) as a parser: GRUP walker, sub-record byte
 accounting, per-record schema dispatch, FormID load-order remap, CELL/WRLD walkers, and
 the `EsmIndex` → ECS handoff. Per-game audits (`/audit-fnv`, `/audit-skyrim`, …) each
 sample one game's slice; this skill owns the parser itself.
@@ -22,7 +22,7 @@ shared protocol (dedup, methodology, finding format). Do not duplicate them here
 `esm/records/` (`parse.rs` = the top-level GRUP walker `parse_esm[_with_load_order]`;
 `mod.rs` is a re-export barrel; `index.rs` `EsmIndex`; eight `dispatch_*.rs` routers;
 `grup_walker.rs`; per-type decoders incl. `actor/`, `items.rs`, `items/consumable.rs`,
-`container.rs`, `condition.rs`, `weather.rs`, `load_screen.rs`, `misc/*.rs`),
+`container.rs`, `condition.rs`, `weather.rs`, `load_screen.rs`, `misc/*.rs` incl. `story_manager.rs`),
 `esm/cell/` (`walkers.rs`, `support.rs`, `wrld.rs`, `helpers.rs`, `mod.rs` data types),
 `esm/strings_table.rs`, `equip.rs`, and the Redux-native tier
 (`datastore`/`manifest`/`record`/`resolver`).
@@ -243,7 +243,7 @@ map is a `categories()` row or a reasoned exclusion); `cell::plugin_loading_doc_
   `CREA CNAM` is not a class (#3383); `FACT` rank ladder (#3338); `ARMO` contributes every
   race-matching `ARMA` (#3357), `MOD3` is the female mesh (#3414); a `REFR` tombstone
   removes the placement wherever it lives (#3362); FO76 `HEDR` is patch-dependent — 279.0 on the 2026-09-20 patch, never pin it (#3405, #4643);
-  DIAL quest ownership reads `QSTI` **or** `QNAM` (Skyrim authors `QNAM`; `parse_dial`).
+  DIAL quest ownership reads `QSTI` **or** `QNAM` (Skyrim authors `QNAM`; `parse_dial`); FO3/FNV/Oblivion INFOs also carry their **own** owning quest in `InfoRecord.quest` (`QSTI`, remapped, 23,247/23,247 FNV INFOs; `dbc07e8f0`, #5271 — Skyrim+/FO4 author none, `0` = use the topic's ownership); INFO `DATA` is typed `InfoDataHeader` (info_type / next_speaker / flags1 / flags2; Goodbye = Flags 1 bit 0) and Skyrim's 8-byte `DATA` lands raw in `skyrim_data` (`25b678106`, #5295); `SMBN`/`SMEN`/`SMQN` decode into `story_manager_nodes` (`misc/story_manager.rs`, #5366).
 - `equip.rs::main_body_bit` FO76/Starfield arms are a **provisional inference**
   (`PROVISIONAL (#4074)`, pinned by `fo76_and_starfield_arms_are_marked_provisional`) —
   known and marked; report only if the marker is removed without an xEdit citation.
@@ -258,7 +258,7 @@ First step: `git log --since=<last report> --format='%h %cs %s' -- crates/plugin
   `PlacedRef.group_type` is re-derived at each nested GRUP in `parse_refr_group_inner`
   (only the nested position accepts 10; at CELL/WRLD level 10 is Quest Children). No
   consumer reads it yet — verify it stays populated per-scope, not that a consumer exists.
-- All three walkers depth-bounded (see Dim 1): `parse_cell_group`, `parse_wrld_children`,
+- Interior and exterior CELL sub-record walkers share one decode, `CellSubrecordFields::absorb` (`cell/helpers.rs`, #5309) — a field added to only one walker's arm is the regression. All three walkers depth-bounded (see Dim 1): `parse_cell_group`, `parse_wrld_children`,
   `parse_refr_group`.
 - Placement header flags (`f87490826`, #4813/#4814): `PlacedRef.initially_disabled` =
   `0x800` on every placement type; `PlacedRef.starts_dead` = `0x200` on `ACHR` gated on
@@ -278,7 +278,7 @@ First step: `git log --since=<last report> --format='%h %cs %s' -- crates/plugin
   end of each plugin's walk in `parse.rs`): positions, light radii, XCLL/LGTM fog/fade +
   SF height-fog (#5002), WTHR fog distances + height-fog tail (#5001/#5134), water heights,
   WATR `DNAM` lengths ×70 and per-metre absorption ÷70 — only for offsets the record
-  authored (#5151, `24cb577d2`), LAND heights, NAVM vertices. FO76 is BU-native except the
+  authored (#5151, `24cb577d2`), LAND heights, NAVM vertices, XRGD ragdoll-pose offsets (`5f1a862be`, #5299; Euler stays wire-valued). FO76 is BU-native except the
   shared-decoder WATR absorption lane, its only lift (#5169). Check new Starfield distance
   fields join it, dimensionless fields (XSCL, Euler) stay out, decoder defaults for an
   unauthored field are never lifted, and no path normalizes an index twice.

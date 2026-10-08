@@ -10,6 +10,8 @@ nif: nif nifal speedtree parsers
 ecs: ecs character save scripting papyrus
 gameplay: gameplay physics audio
 exterior: exterior runtime
-legacy-games: fnv fo3 oblivion
-creation-games: skyrim fo4 starfield
+fnv: fnv
+fo3-oblivion: fo3 oblivion
+skyrim: skyrim
+fo4-starfield: fo4 starfield
 meta: ui tooling incremental publish suite sync

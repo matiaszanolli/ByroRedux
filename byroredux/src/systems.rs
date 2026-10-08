@@ -13,6 +13,7 @@ mod bounds;
 mod camera;
 mod character;
 mod dialogue_voice;
+pub(crate) mod eat_sleep;
 mod cinematic;
 pub(crate) mod combat_ai;
 mod debug;

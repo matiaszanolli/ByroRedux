@@ -181,6 +181,15 @@ First step: `cargo test -p byroredux-papyrus -- depth chain the_two_parser_depth
   `extends_with_its_target_on_the_next_line_sets_no_parent`, `single_line_forms_of_the_5021_sites_still_parse`.
   Only closing keywords may keep the newline-skipping `expect`; a new declaration keyword that uses it is the
   regression.
+- **Statement termination** (#5322 `a5c3f2428`): `expect_eol` (`parser/mod.rs`) used to accept ANY token after a
+  statement, so a tail the Pratt loop stopped at re-parsed as a new statement (`If f is Actor` became a
+  truthiness test plus a fabricated `VarDecl`) with zero errors. It now records a recovered `UnexpectedToken` for
+  anything but Newline/EOF/DocComment and skips to line end via `skip_to_line_end`, which leaves block terminators
+  (`EndIf`, `Else*`, `End*`) unconsumed so a glued `x = 1 EndIf` still closes its block
+  (`glued_statement_tail_is_an_error_and_not_a_statement`); `parse_expr` (debug console, offline preflight) ends in
+  `require_input_end` (`parse_expr_rejects_trailing_tokens`). FO4 `is` is a keyword with an `Expr::Is` type-test
+  node at cast precedence (`test_is_type_test`); downstream exhaustive matches treat it as transparent to the operand
+  (the `.pex` side still lowers `OpCode::Is` to an object-typed `Cast`, so the two frontends do NOT yet share one shape).
 - **Precedence/associativity**: `BinaryOp::precedence` Or=1, And=2, comparisons=3, Add/Sub/StrCat=4,
   Mul/Div/Mod=5, unary=6, cast=7/postfix=8 (`PREC_*` in `expr.rs`); left-assoc hinges on `op_prec <= min_bp →
   break`. (Bethesda's inverted CTDA OR/AND precedence is a *condition-evaluation* concern in

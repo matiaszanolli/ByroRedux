@@ -35,6 +35,7 @@ pub mod physics_source;
 pub mod precombine;
 pub mod render_layer;
 pub mod restoration;
+pub mod eat_sleep;
 pub mod sandbox;
 pub mod scene_flags;
 pub mod skinned_mesh;
@@ -98,6 +99,7 @@ pub use render_layer::{
     escalate_small_static_to_clutter, render_layer_with_decal_escalation, RenderLayer,
     SMALL_STATIC_RADIUS_UNITS,
 };
+pub use eat_sleep::{EatBehavior, EatSleepState, SleepBehavior};
 pub use sandbox::{SandboxBehavior, Seated, SeatedAnimationRestore};
 pub use scene_flags::SceneFlags;
 pub use skinned_mesh::{SkinnedMesh, MAX_BONES_PER_MESH};

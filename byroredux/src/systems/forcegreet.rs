@@ -18,6 +18,11 @@ use byroredux_core::ecs::storage::{Component, EntityId};
 use byroredux_core::ecs::world::World;
 use byroredux_core::math::Vec3;
 
+/// Open distance in Bethesda units — vanilla's force-greet radius family
+/// is 100-200; this is the shared default both the console door and the
+/// ambient Dialogue-procedure wiring install with.
+pub(crate) const FORCE_GREET_RADIUS: f32 = 128.0;
+
 /// The force-greet bridge state. One-shot: consumed the moment the
 /// conversation opens (removed with the directive). `NOT_SAVED_BY_DESIGN`
 /// — a save taken mid-approach re-greets after load, which is the
@@ -28,7 +33,7 @@ pub(crate) struct ForceGreetDirective {
     /// master's generic greeting.
     pub topic: Option<u32>,
     /// Open distance in Bethesda units (vanilla's force-greet radius
-    /// family is 100-200; the console door defaults to 128).
+    /// family is 100-200; [`FORCE_GREET_RADIUS`] is the default).
     pub radius: f32,
 }
 

@@ -82,6 +82,10 @@ pub enum ConditionFunction {
     GetActorValue,
     /// `GetDistance(target_form_id) → f32`. Squared-distance reduces
     /// to a single sqrt at evaluation time. FO3 / FNV / Skyrim index **1**.
+    /// CTDA fn 0 — the pressed MessageBox button, `-1` until one is
+    /// chosen (the engine runs no MessageBoxes yet, so a constant -1;
+    /// see `from_index`'s arm for why mapping it matters).
+    GetButtonPressed,
     GetDistance,
     /// `GetDead → f32`. Returns 1.0 while the Run-On actor carries the
     /// sparse `Dead` lifecycle marker, otherwise 0.0. FO3 / FNV / Skyrim
@@ -191,6 +195,15 @@ impl ConditionFunction {
         // (448 Skyrim, 449 FO3/FNV); both map to the same behaviour. Reputation
         // (573/575) is FNV-only.
         match index {
+            // 0 = GetButtonPressed: -1 until a MessageBox button is
+            // chosen. Mapping it keeps the common `GetButtonPressed == N`
+            // package/quest gate honestly FALSE pre-menu instead of the
+            // fail-open pass an Unknown function gets — the FNV corpus
+            // authors it on Sunny Smiles' quest-gated anytime packages
+            // (e.g. `SunnyMeetPlayerDialoguePackage`), where fail-open let
+            // the package win at every hour and starved the scheduled
+            // Sleep/Eat procedures below it (M42).
+            0 => Self::GetButtonPressed,
             1 => Self::GetDistance,
             14 => Self::GetActorValue,
             46 => Self::GetDead,
@@ -218,7 +231,8 @@ impl ConditionFunction {
 
     /// Every known (non-[`Unknown`](Self::Unknown)) function — the catalog the
     /// debug console enumerates and resolves names against.
-    pub const CATALOG: [ConditionFunction; 21] = [
+    pub const CATALOG: [ConditionFunction; 22] = [
+        Self::GetButtonPressed,
         Self::GetDistance,
         Self::GetActorValue,
         Self::GetDead,
@@ -245,6 +259,7 @@ impl ConditionFunction {
     /// The canonical xEdit function name (for console listing / parsing).
     pub fn name(self) -> &'static str {
         match self {
+            Self::GetButtonPressed => "GetButtonPressed",
             Self::GetDistance => "GetDistance",
             Self::GetActorValue => "GetActorValue",
             Self::GetDead => "GetDead",
@@ -306,7 +321,8 @@ impl ConditionFunction {
             | Self::HasLoaded3D
             | Self::GetReputation
             | Self::GetReputationThreshold => true,
-            Self::GetStage
+            Self::GetButtonPressed
+            | Self::GetStage
             | Self::GetStageDone
             | Self::IsSceneActionComplete
             | Self::IsHardcore
@@ -691,6 +707,13 @@ pub fn evaluate_function(
                 Some(rs) => rs.actor_value(condition.param_1, &avs, level),
                 None => avs.current(condition.param_1),
             }
+        }
+        ConditionFunction::GetButtonPressed => {
+            // -1 until a MessageBox button is chosen; the engine runs no
+            // MessageBoxes, so this is the constant pre-menu value (an
+            // authored `GetButtonPressed == N` gate evaluates FALSE,
+            // which is the vanilla pre-menu behaviour — see from_index).
+            -1.0
         }
         ConditionFunction::GetDistance => {
             // GetDistance(target_form_id) → ‖subject − target‖ in world units.

@@ -316,6 +316,23 @@ pub const PROCEDURE_ESCORT: u32 = 2;
 /// is indefinite, like Wander) — see `systems::guard` module docs. See M42.
 pub const PROCEDURE_GUARD: u32 = 14;
 
+/// FO3/FNV procedure index for `Eat` — walk to the `PLDT` dining
+/// location and sit at the nearest furniture marker for the schedule
+/// window. 706 NPC-default references across FalloutNV.esm (2026-10-08
+/// census) — the most-referenced procedure without a runtime before M42.
+pub const PROCEDURE_EAT: u32 = 3;
+
+/// FO3/FNV procedure index for `Sleep` — walk to the `PLDT` bedroom
+/// location and occupy the bed's sleep marker. 617 NPC-default
+/// references across FalloutNV.esm (2026-10-08 census).
+pub const PROCEDURE_SLEEP: u32 = 4;
+
+/// FO3/FNV procedure index for `Dialogue` — approach the player and
+/// open a conversation without activation (the force-greet; #5367
+/// Phase F built the bridge, M42 wires it into ambient selection).
+/// 141 NPC-default references across FalloutNV.esm (2026-10-08 census).
+pub const PROCEDURE_DIALOGUE: u32 = 15;
+
 /// PACK schedule window from PSDT (FO3/FNV). `start_hour = None` when the raw
 /// `time` byte is -1 (0xFF) = "any time". `duration_hours` is the PSDT
 /// duration (in hours for FO3/FNV — verified against FalloutNV.esm: a

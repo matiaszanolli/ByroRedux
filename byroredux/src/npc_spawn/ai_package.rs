@@ -10,12 +10,15 @@ use super::EsmIndex;
 use crate::components::{AmbientPackageRuntime, GameTimeRes, NavPath, SeatReservations};
 use byroredux_core::animation::AnimationPlayer;
 use byroredux_core::ecs::components::{
-    Dead, EscortBehavior, EscortState, Escorted, FollowBehavior, FollowState, GuardBehavior,
-    GuardState, PatrolBehavior, PatrolState, SandboxBehavior, Seated, TravelBehavior, TravelState,
-    Traveled, WanderBehavior, WanderState,
+    Dead, EatBehavior, EatSleepState, EscortBehavior, EscortState, Escorted, FollowBehavior,
+    FollowState, GuardBehavior, GuardState, PatrolBehavior, PatrolState, SandboxBehavior, Seated,
+    SleepBehavior, TravelBehavior, TravelState, Traveled, WanderBehavior, WanderState,
 };
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::{Component, World};
+use byroredux_plugin::esm::records::misc::pack::{
+    PROCEDURE_DIALOGUE, PROCEDURE_EAT, PROCEDURE_SLEEP,
+};
 use byroredux_plugin::esm::records::{
     PackDataValue, PackLocationTarget, PackRecord, PackTargetKind,
 };
@@ -87,6 +90,27 @@ enum AmbientBehavior {
     Patrol {
         patrol_radius: Option<f32>,
         actor_form_id: u32,
+    },
+    /// M42 — Eat (procedure 3): walk to the PLDT dining location, then
+    /// sit at the nearest furniture marker.
+    Eat {
+        radius: Option<f32>,
+        target_form_id: Option<u32>,
+        actor_form_id: u32,
+    },
+    /// M42 — Sleep (procedure 4): walk to the PLDT bedroom location,
+    /// then occupy the nearest sleep marker (sit-pose v0).
+    Sleep {
+        radius: Option<f32>,
+        target_form_id: Option<u32>,
+        actor_form_id: u32,
+    },
+    /// M42 + #5367 — Dialogue (procedure 15): the active package
+    /// installs the force-greet bridge; `forcegreet_system` does the
+    /// approach + open. Consumed on the first greet — re-installed only
+    /// when a different package wins and this one wins back.
+    Dialogue {
+        topic: Option<u32>,
     },
 }
 
@@ -169,6 +193,29 @@ impl AmbientBehavior {
             Some(Self::Patrol {
                 patrol_radius: location_radius,
                 actor_form_id,
+            })
+        } else if package.procedure_type == PROCEDURE_EAT {
+            Some(Self::Eat {
+                radius: location_radius,
+                target_form_id: location_reference,
+                actor_form_id,
+            })
+        } else if package.procedure_type == PROCEDURE_SLEEP {
+            Some(Self::Sleep {
+                radius: location_radius,
+                target_form_id: location_reference,
+                actor_form_id,
+            })
+        } else if package.procedure_type == PROCEDURE_DIALOGUE {
+            // #5367 Phase F's bridge, now driven by ambient selection:
+            // the winning Dialogue-procedure package installs the
+            // force-greet with its authored `PKDD` topic (or the
+            // generic greeting). The Skyrim tree dialect is NOT wired
+            // here — vanilla lists no ForceGreet-tree package on NPC_
+            // defaults (installed by quest scripts instead), the same
+            // posture the console door keeps.
+            Some(Self::Dialogue {
+                topic: package.dialogue_topic,
             })
         } else {
             Self::from_skyrim_procedure_tree(package, template, actor_form_id)
@@ -332,6 +379,43 @@ impl AmbientBehavior {
                     },
                 );
             }
+            Self::Eat {
+                radius,
+                target_form_id,
+                actor_form_id,
+            } => {
+                world.insert(
+                    actor,
+                    EatBehavior {
+                        radius,
+                        target_form_id,
+                        form_id: actor_form_id,
+                    },
+                );
+            }
+            Self::Sleep {
+                radius,
+                target_form_id,
+                actor_form_id,
+            } => {
+                world.insert(
+                    actor,
+                    SleepBehavior {
+                        radius,
+                        target_form_id,
+                        form_id: actor_form_id,
+                    },
+                );
+            }
+            Self::Dialogue { topic } => {
+                world.insert(
+                    actor,
+                    crate::systems::forcegreet::ForceGreetDirective {
+                        topic,
+                        radius: crate::systems::forcegreet::FORCE_GREET_RADIUS,
+                    },
+                );
+            }
         }
     }
 
@@ -416,6 +500,40 @@ impl AmbientBehavior {
                     form_id: actor_form_id,
                 },
             ),
+            Self::Eat {
+                radius,
+                target_form_id,
+                actor_form_id,
+            } => insert_component(
+                world,
+                actor,
+                EatBehavior {
+                    radius,
+                    target_form_id,
+                    form_id: actor_form_id,
+                },
+            ),
+            Self::Sleep {
+                radius,
+                target_form_id,
+                actor_form_id,
+            } => insert_component(
+                world,
+                actor,
+                SleepBehavior {
+                    radius,
+                    target_form_id,
+                    form_id: actor_form_id,
+                },
+            ),
+            Self::Dialogue { topic } => insert_component(
+                world,
+                actor,
+                crate::systems::forcegreet::ForceGreetDirective {
+                    topic,
+                    radius: crate::systems::forcegreet::FORCE_GREET_RADIUS,
+                },
+            ),
         }
     }
 }
@@ -483,6 +601,13 @@ pub(crate) fn clear_ambient_behavior(world: &World, actor: EntityId) {
     remove_component::<GuardState>(world, actor);
     remove_component::<PatrolBehavior>(world, actor);
     remove_component::<PatrolState>(world, actor);
+    remove_component::<EatBehavior>(world, actor);
+    remove_component::<SleepBehavior>(world, actor);
+    remove_component::<EatSleepState>(world, actor);
+    // The Dialogue procedure's bridge self-consumes on the open, but a
+    // package handover mid-approach must not leave the actor walking at
+    // the player under its next procedure.
+    remove_component::<crate::systems::forcegreet::ForceGreetDirective>(world, actor);
     // M42.10 — the oscillating walkers' blocked-timer scratch belongs to
     // the behavior runtime, not the actor: a package handover must not
     // carry a half-accumulated stuck timer into the next procedure.
@@ -686,6 +811,9 @@ pub(crate) fn ambient_ai_package_system(world: &World, _dt: f32) {
         .filter(|(actor, last)| requested.contains(actor) || *last != Some(minute))
         .map(|(actor, _)| actor)
         .collect();
+    if std::env::var_os("BYRO_M42_DEBUG").is_some() {
+        log::warn!("[m42-tick] minute={minute} due={}", due.len());
+    }
     if due.is_empty() {
         return;
     }
@@ -761,6 +889,12 @@ pub(crate) fn ambient_ai_package_system(world: &World, _dt: f32) {
                 .unwrap_or(package);
             AmbientBehavior::from_package(package, template, runtime.actor_form_id)
         });
+        if std::env::var_os("BYRO_M42_DEBUG").is_some() {
+            log::warn!(
+                "[m42-eval] actor {actor} -> {:?}",
+                active_package_form_id.map(|id| format!("{id:08X}"))
+            );
+        }
         updates.push((
             actor,
             active_package_form_id,
@@ -770,10 +904,14 @@ pub(crate) fn ambient_ai_package_system(world: &World, _dt: f32) {
     }
     drop(registry);
 
-    for &(actor, _, behavior, changed) in &updates {
+    for &(actor, active_id, behavior, changed) in &updates {
         if !changed {
             continue;
         }
+        log::info!(
+            "[m42-reselect] actor {actor} -> pack {:?}",
+            active_id.map(|id| format!("{id:08X}"))
+        );
         clear_ambient_behavior(world, actor);
         if let Some(behavior) = behavior {
             behavior.insert_at_runtime(world, actor);
@@ -801,8 +939,9 @@ mod tests {
         ComparisonOp, Condition, ConditionValue, RunOn,
     };
     use byroredux_plugin::esm::records::misc::pack::{
-        PackDataInput, PackLocation, PackProcedure, PackSchedule, PROCEDURE_GUARD,
-        PROCEDURE_SANDBOX, PROCEDURE_TRAVEL, PROCEDURE_WANDER,
+        PackDataInput, PackLocation, PackProcedure, PackSchedule, PROCEDURE_DIALOGUE,
+        PROCEDURE_EAT, PROCEDURE_GUARD, PROCEDURE_SANDBOX, PROCEDURE_SLEEP, PROCEDURE_TRAVEL,
+        PROCEDURE_WANDER,
     };
     use byroredux_plugin::esm::records::{AliasInjectedData, SceneActionType};
     use byroredux_scripting::quest_stages::QuestStageState;
@@ -831,6 +970,10 @@ mod tests {
         world.register::<GuardState>();
         world.register::<PatrolBehavior>();
         world.register::<PatrolState>();
+        world.register::<EatBehavior>();
+        world.register::<SleepBehavior>();
+        world.register::<EatSleepState>();
+        world.register::<crate::systems::forcegreet::ForceGreetDirective>();
         world.register::<NavPath>();
         world.insert_resource(QuestStageState::default());
         world.insert_resource(GameTimeRes::frozen_at(hour));
@@ -957,6 +1100,72 @@ mod tests {
         install_package_records(&mut world, all_packages);
         ambient_ai_package_system(&world, 0.0);
         (world, actor)
+    }
+
+    /// M42 — the three newly wired procedures install their runtimes
+    /// from ambient selection: Eat/Sleep their walk-then-seat behaviors,
+    /// Dialogue the #5367 force-greet bridge carrying the package's
+    /// authored `PKDD` topic (generic greeting when none). A schedule
+    /// handover away from a Dialogue package must consume the bridge so
+    /// the actor does not keep approaching the player under its next
+    /// procedure.
+    #[test]
+    fn eat_sleep_dialogue_procedures_install_and_hand_over() {
+        let (world, actor) = setup_actor(12.0, vec![pack(0x300, PROCEDURE_EAT, None)]);
+        assert!(
+            world.has::<EatBehavior>(actor),
+            "an active Eat package installs the walk-then-seat behavior"
+        );
+        let (world, actor) = setup_actor(23.0, vec![pack(0x400, PROCEDURE_SLEEP, None)]);
+        assert!(world.has::<SleepBehavior>(actor));
+
+        let mut dialogue = pack(0x500, PROCEDURE_DIALOGUE, None);
+        dialogue.dialogue_topic = Some(0xC8);
+        let (world, actor) = setup_actor(12.0, vec![dialogue]);
+        assert_eq!(
+            world
+                .get::<crate::systems::forcegreet::ForceGreetDirective>(actor)
+                .map(|directive| directive.topic),
+            Some(Some(0xC8)),
+            "an active Dialogue package installs the force-greet bridge \
+             with the package's PKDD topic"
+        );
+
+        // Handover: the Dialogue window (8-10) gives way to a Sandbox
+        // package (10-12) at the minute boundary — the bridge is
+        // consumed, the next behavior installs.
+        let mut dialogue_scheduled = pack(
+            0x500,
+            PROCEDURE_DIALOGUE,
+            Some(PackSchedule {
+                start_hour: Some(8),
+                duration_hours: 2,
+            }),
+        );
+        dialogue_scheduled.dialogue_topic = Some(0xC8);
+        let sandbox = pack(
+            0x100,
+            PROCEDURE_SANDBOX,
+            Some(PackSchedule {
+                start_hour: Some(10),
+                duration_hours: 2,
+            }),
+        );
+        let (mut world, actor) = setup_actor(9.0, vec![dialogue_scheduled, sandbox]);
+        assert!(world.has::<crate::systems::forcegreet::ForceGreetDirective>(actor));
+        world.insert_resource(GameTimeRes::frozen_at(11.0));
+        // Clear the minute stamp so the minute gate re-runs this actor
+        // (the game-minute boundary does this naturally).
+        {
+            let mut runtimes = world.query_mut::<AmbientPackageRuntime>().unwrap();
+            runtimes.get_mut(actor).unwrap().last_evaluated_game_minute = None;
+        }
+        ambient_ai_package_system(&world, 0.0);
+        assert!(
+            !world.has::<crate::systems::forcegreet::ForceGreetDirective>(actor),
+            "the package handover consumes the force-greet bridge"
+        );
+        assert!(world.has::<SandboxBehavior>(actor));
     }
 
     #[test]

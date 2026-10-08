@@ -78,10 +78,11 @@ Tech-debt findings default to **LOW** (see `_audit-severity.md`). Promote only o
      echo "test files >2000 total LOC (lower priority, separate bucket): $(find crates byroredux tools -name '*.rs' -not -path 'tools/nifskope/*' -exec wc -l {} + | awk '$1>2000 && $2!="total"' | wc -l)"
    } > /tmp/audit/tech-debt/baseline.txt
    ```
-   Measured 2026-10-05 (diff direction only, re-run, never quote): markers 22 (15 are `XXXX` false positives),
-   `allow(dead_code)` 34 (27 on 2026-09-29), `unimplemented!/todo!()` **0** (a fresh hit is notable), `#[ignore]` 265
-   (250; tools-inclusive — earlier reports scoped to `crates`+`byroredux` read lower), production >2000 LOC: **5**
-   (7 on 2026-09-29: the #5087/#5089/#5090/#5091 splits retired four, two new crossers arrived), test-heavy >2000: 66.
+   Measured 2026-10-08 (diff direction only, re-run, never quote): markers 24 (15 are `XXXX` false positives),
+   `allow(dead_code)` 34, `unimplemented!/todo!()` **0** (a fresh hit is notable), `#[ignore]` 281 (265 on 2026-10-05;
+   tools-inclusive — earlier reports scoped to `crates`+`byroredux` read lower), production >2000 LOC: **3**
+   (`shader_constants_data.rs` is a data table, Dim 1; `byroredux/src/components.rs`; `crates/scripting/src/fragment/effects.rs`;
+   5 on 2026-10-05; watch-list within 5%: `crates/nif/src/import/types.rs`, `byroredux/src/save_io.rs`), test-heavy >2000: 69.
    A raw whole-repo grep for `#[ignore]` also matches markdown prose — keep `--include='*.rs'`.
 
 ## Phase 2: Dimension Agents
@@ -133,7 +134,8 @@ chains (BC1/BC3/BC5/RGBA) and image-layout barrier sequences repeated per pass i
 (`vulkan/image.rs` `GpuImage` and the shared barrier helpers are the consolidation targets — a pass that still
 hand-rolls create/bind/destroy is a candidate); `vk::WriteDescriptorSet` builder boilerplate; ESM sub-record parse loops
 across `crates/plugin/src/esm/records/`; AI-procedure systems sharing scaffolding; near-identical per-game HUD/profile
-tables. The Z-up→Y-up conversion has one home, `crates/core/src/math/coord.rs` (`zup_to_yup_pos`,
+tables; source-scan helpers (`production_text`, `count_identifier`) have ONE home, `crates/core/src/source_scan.rs` (#5100,
+655b317c9) — a re-copied cut in a test module is a regression. The Z-up→Y-up conversion has one home, `crates/core/src/math/coord.rs` (`zup_to_yup_pos`,
 `zup_to_yup_quat_wxyz`); re-exports elsewhere are not leaks — a genuine reimplementation would live outside that file.
 
 ### Dimension 3: Stale Documentation & Comments
@@ -251,8 +253,10 @@ cargo machete 2>/dev/null || echo "cargo machete not installed — scan Cargo.to
   blind spots are macro-only and re-export-only use (the job comment says so); the hand scan earns its keep there and on
   deps used only under a non-default feature.
 - **Clippy gate** (CI job `Test + Check + Clippy` runs `cargo clippy --workspace --keep-going -- -D warnings` plus a
-  renderer-only `undocumented_unsafe_blocks` re-lint, #5121; the toolchain is stable, so a new rustc/clippy raises lints on
-  untouched code — rustc 1.96 did (800802516), 1.98 did (530c9e7aa)). A red gate is a finding: list each failing lint and
+  renderer-only `undocumented_unsafe_blocks` re-lint, #5121; the toolchain is pinned at 1.96.0 by `rust-toolchain.toml` since #5308 (b24cb46b6) after floating
+  `stable` let rustc 1.99's *chunks_exact_to_as_chunks* wave turn the gate red for four days — rustc 1.96 (800802516) and 1.98
+  (530c9e7aa) raised lints on untouched code too; a toolchain bump is now a deliberate commit, and the distro cargo ignores
+  the pin). A red gate is a finding: list each failing lint and
   file. Run `--all-targets --keep-going` too; test/example-target lints are outside the CI gate — report them as a
   lower-priority bucket (the workspace example build itself went red once, the #3894 class, 530c9e7aa). Check every
   `#[allow(clippy::…)]` carries a reason comment (the house style for `too_many_arguments`).

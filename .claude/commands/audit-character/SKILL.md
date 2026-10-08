@@ -54,8 +54,8 @@ ruleset.md` — **the authority for every constant**; a coefficient no capture s
   event (Dim 5 doc sweep).
 - Oblivion `RulesetBuilder::None` is deliberate (no AVIF pre-FO3 → no resolver); pinned by
   `oblivion_still_has_no_runtime_ruleset_and_that_is_deliberate`. FO76/Starfield: captures, no builders.
-- Open (verified 2026-10-05) — cite, do not re-file: #4137 (six `template_flags` bits with no consumer),
-  #4232 (`effective_actor_level` returns 0 verbatim), #4415 (magic runtime partial). The 2026-09-19 report's
+- Open (verified 2026-10-08) — cite, do not re-file: #4137 (six `template_flags` bits with no consumer),
+  #4232 (`effective_actor_level` returns 0 verbatim). #4415 (magic runtime) is closed (`9813af435`). The 2026-09-19 report's
   #4452-#4457/#4459-#4463 are all closed — regression checks now. Verify with `gh issue view` before citing.
 
 ## Parameters
@@ -180,7 +180,7 @@ First step: `cargo test -p byroredux --bin byroredux resolve_inherited_call_site
   `validate_progression_state` (`/audit-save`). The player's `FactionRanks` is re-derived from the record
   (Use-Factions terminal) on load, not saved (#5058 `be3cd9468`) — a scripted rank edit is lost on load by
   design, exactly as for a respawned NPC.
-- **Magic modifiers (#4415)**: `byroredux_scripting::magic::apply_constant_modifiers` adds constant-spell
+- **Magic modifiers (#4415, closed)**: `byroredux_scripting::magic::apply_constant_modifiers` adds constant-spell
   amounts to an `ActorValues` *permanent modifier* at spawn and on `AddSpell`/`RemoveSpell`. Check it never
   writes base and that add/remove are symmetric. **Derived-value composition** (#5042 `c9254beb8`):
   `CharacterRuleset::actor_value` is the one composer — an authored carried base (`ActorValue::base_authored`,
@@ -208,7 +208,11 @@ First step: `cargo test -p byroredux --bin byroredux resolve_inherited_call_site
 - Skyrim `derive_skyrim_actor_values`: Health/Magicka/Stamina resolve **independently** (race base +
   signed ACBS offset, own AVIF; `RaceRecord.starting_*` are `Option<f32>`) — a missing pool suppresses
   only itself. The capture's class/level term is deferred and must be disclosed in place (#4454).
-- `setav`/`modav` write the *base* component, not a derived output the next tick recomputes.
+- `setav`/`modav` write the *base* component, not a derived output the next tick recomputes — except the
+  player's `PlayerOnly` derived pools: `setav`/SDK `SetBase` there route through
+  `CharacterRuleset::is_player_derived_pool` into the permanent modifier layer (`set_permanent`, composed total =
+  formula base + value), because `refresh_player_only_bases` would revert a base write in one tick (#5239
+  `2464a52d7`; matches the GECK SetActorValue note). Non-player targets and actor-general stats keep `set_base`.
 **Output**: `/tmp/audit/character/dim_4.md`
 
 ### Dimension 5: Coverage, Documentation & Doctrine Drift — second-highest yield

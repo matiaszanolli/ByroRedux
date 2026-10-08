@@ -83,7 +83,8 @@ Rules: rows are **path prefixes**; the FIRST matching row routes a changed file,
 | `byroredux/src/cell_loader/lod` | exterior, performance | MEDIUM |
 | `byroredux/src/cell_loader/object_lod.rs` | exterior, performance | MEDIUM |
 | `byroredux/src/cell_loader/placement_lod.rs` | exterior, performance | MEDIUM |
-| `byroredux/src/cell_loader/reference_state.rs` | gameplay, save, concurrency Dim 5 | MEDIUM |
+| `byroredux/src/cell_loader/legacy_lod_index` | exterior, performance; fo3, fnv | MEDIUM |
+| `byroredux/src/cell_loader/reference_state.rs` | gameplay, save, concurrency Dim 5; fnv, fo3 | MEDIUM |
 | `byroredux/src/cell_loader/stream_snapshot.rs` | save, performance | MEDIUM |
 | `byroredux/src/cell_loader/interior_spawn.rs` | gameplay; per-game | MEDIUM |
 | `byroredux/src/cell_loader/load_order.rs` | esm, concurrency Dim 7; per-game | HIGH |
@@ -105,6 +106,9 @@ Rules: rows are **path prefixes**; the FIRST matching row routes a changed file,
 | `byroredux/src/systems/npc_dialogue.rs` | scripting Dim 5, gameplay Dim 2 | MEDIUM |
 | `byroredux/src/systems/cinematic.rs` | scripting | MEDIUM |
 | `byroredux/src/systems/loading_model.rs` | gameplay Dim 6, renderer; skyrim, fo4 | LOW |
+| `byroredux/src/systems/story_events.rs` | scripting Dim 5, gameplay; skyrim | MEDIUM |
+| `byroredux/src/systems/forcegreet.rs` | gameplay Dim 2, scripting Dim 5; fnv, fo3, skyrim | MEDIUM |
+| `byroredux/src/systems/dialogue_voice.rs` | gameplay Dim 2, audio; fnv, fo3 | MEDIUM |
 | `byroredux/src/systems/` | ecs, performance | MEDIUM |
 | `byroredux/src/render/{sky,water,groundcover}.rs` | exterior, renderer, performance, concurrency Dim 7 | MEDIUM |
 | `byroredux/src/render/` | renderer, performance, concurrency Dim 7 | MEDIUM |
@@ -161,6 +165,9 @@ Rules: rows are **path prefixes**; the FIRST matching row routes a changed file,
 | `byroredux/examples/` | tooling | LOW |
 | `scripts/renderer-eval-groundcover.sh` | exterior, runtime | LOW |
 | `scripts/` | runtime, performance | LOW |
+| `docs/smoke-tests/sm1-story-manager.sh` | runtime, scripting | LOW |
+| `docs/smoke-tests/dt1-dialogue-layers.sh` | runtime, gameplay, scripting; fnv, fo3 | LOW |
+| `docs/smoke-tests/dt2-skyrim-forcegreet.sh` | runtime, gameplay, scripting; skyrim | LOW |
 | `docs/smoke-tests/` | runtime | LOW |
 | `docs/` | tech-debt (doc rot) | LOW |
 | `.claude/commands/` | tech-debt (audit infrastructure) | LOW |
@@ -171,6 +178,7 @@ Rules: rows are **path prefixes**; the FIRST matching row routes a changed file,
 | `.github/` | tech-debt, runtime (CI lanes) | LOW |
 | `Cargo.` | tech-debt, safety (dependency drift) | LOW |
 | `byroredux/Cargo.toml` | tech-debt | LOW |
+| `rust-toolchain.toml` | tech-debt | LOW |
 | `README.md` | tech-debt (doc rot) | LOW |
 | `ROADMAP.md` | tech-debt (doc rot) | LOW |
 | `HISTORY.md` | tech-debt (doc rot) | LOW |

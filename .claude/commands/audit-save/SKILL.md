@@ -71,11 +71,10 @@ Not covered by any guard (the audit's real work): the **two-list drift** between
 `MUTABLE_DELTA_COLUMNS`; staleness of `NOT_SAVED_BY_DESIGN` *reasons*; whether a baseline refresh
 without a bump was *justified*; manual `impl Serialize` types (invisible to both serde guards);
 the extension-state payload's own versioning (Dim 2); semantic correctness of load-apply ordering beyond
-the two pinned pre-reload cases; and **path-qualified impls** — the completeness guard's `impl_target_type`
-matches only the literal `impl Component for X` / `impl Resource for X` line shapes, so
-`impl byroredux_core::ecs::Resource for X` is invisible to it (as of 2026-10-05, eight such types are neither
-registered nor allowlisted, e.g. `GracefulExitRequested`, `PendingGearRelease`, `TriggerOccupancyState` —
-`rg -n 'impl [a-z_:]+::(Resource|Component) for' crates/*/src byroredux/src` and classify each by hand).
+the two pinned pre-reload cases. (Path-qualified `impl byroredux_core::ecs::Resource for X` impls were
+invisible to `impl_target_type` until #5255 `6b494d002`: it now parses the trait path's final segment, the nine
+formerly unclassified types are allowlisted, and the guard also asserts every `NOT_SAVED_BY_DESIGN` row matches a
+discovered production impl — a renamed/deleted type can no longer keep a stale row. Still judge the *reasons*.)
 
 ## Parameters / Extra Fields
 
@@ -136,6 +135,7 @@ First step: `git log -p -S'register_' --since=<last report> -- byroredux/src/sav
   ranks otherwise outlived the load).
 - **P3/P4 runtime state (2026-09-29)**: player body (`PlayerBodyRoot`, `PlayerBodyRootEntity`, `HiddenFirstPerson`,
   `PlayerCameraView`), mid-life gear import (`NpcSkeletonBones`, `ActorBodyClass`, `PendingGearImport`,
+  `PendingGearRelease` — both dropped together on load by `clear_player_gear_handoff_scratch`, #5255 `6b494d002`,
   `PendingInventoryActions`) and NPC dialogue (`NpcDialogueTopic`, `DialogueSurfaceState`) are all
   `NOT_SAVED_BY_DESIGN`; `ObjectiveHudCache` is an `App` field, not a Resource. Verify each reason (body subtree
   entities have no `FormIdComponent`: captured by `save_world`, never remapped — the basis of `RigidBodyData`'s
@@ -144,9 +144,10 @@ First step: `git log -p -S'register_' --since=<last report> -- byroredux/src/sav
   `BTreeMap` and component rows are sorted by entity id (`registry.rs`), but saved **resources** serialize
   as-is — at 2026-09-19 `Globals(HashMap<u32, f32>)`, `QuestStageState`, `ReferenceEnableState` (`HashSet`),
   `ReferenceLockState` and `PersistentReferenceStates::pair_rows` all emit hash-iteration order, so two saves
-  of equal state can differ in bytes/CRC — known-open #4748 (re-verified 2026-10-05: `Globals` is still a
-  `HashMap`; cite, don't re-file). A MEDIUM
-  doc/contract mismatch (not data loss) unless something diffs or hashes saves. Do not claim determinism at the row level without checking this.
+  of equal state can differ in bytes/CRC. #4748 is closed as a doc fix: the `Snapshot` doc in `snapshot.rs` now
+  says the payload "is not guaranteed deterministic for equal logical state" (`Globals` is still a `HashMap`, by
+  design of that resolution). A new claim of reproducible CRCs, or a consumer that diffs/hashes saves, reopens
+  it (MEDIUM doc/contract mismatch, not data loss). Do not claim determinism at the row level without checking this.
 - **`next_entity`** is saved verbatim and replayed via `set_next_entity` before inserts; `insert_batch`'s
   `entity < next_entity` is a `debug_assert` only (release inserts at an unspawned id silently — MEDIUM);
   `StringPool::dump`/`from_dump` preserves symbol order (a reordered dump = every `Name` wrong = CRITICAL).
@@ -155,9 +156,9 @@ First step: `git log -p -S'register_' --since=<last report> -- byroredux/src/sav
 ### Dimension 2: Format & Schema Discipline (registry fidelity + `FORMAT_MAJOR`)
 Paths: `crates/save/src/{snapshot,registry}.rs`, `save_io/serde_default_guard_tests.rs`, `crates/save/Cargo.toml`, `crates/core/Cargo.toml`
 First step: `cargo test -p byroredux --bin byroredux serde_default_guard` ; `git log --since=<last report> --format='%h %cs %s' -- crates/save/src/snapshot.rs`
-- **Bump rule** (read the `FORMAT_MAJOR` doc comment in `snapshot.rs`, 32 as of 2026-10-05 — v31 #5042
+- **Bump rule** (read the `FORMAT_MAJOR` doc comment in `snapshot.rs`, 33 as of 2026-10-08 — v31 #5042
   `ActorValue.base_authored`, v32 #5017 `ActorControlState.unconscious` + the parked `ReferenceState` control
-  state; do not hardcode the number elsewhere): intra-type shape changes need a bump because `schema_fingerprint` hashes
+  state, v33 #5367 `14cff35ae` new saved resource `DialogueSpokenInfoForms` (Say-Once ledger); do not hardcode the number elsewhere): intra-type shape changes need a bump because `schema_fingerprint` hashes
   only column keys (+ replacing policy). A new required field, retyped field, or new `Option` in a saved
   type bumps; `#[serde(default)]` is forbidden as a compatibility mechanism (guard) — even where the default
   would be correct for every old save. Read-compatible changes move the shape baseline **without** a bump:
@@ -212,9 +213,9 @@ Residual checks:
   fsync. **Any** failure up to the rename removes the temp (#5163 `69fd54fb2`; `failed_rename_removes_the_temp`),
   and no caller may fall back to copying/renaming the temp over the target on error — the old "Windows rename"
   fallback clobbered good files on disk-full (#5143 `2e95f0bbf`). The three non-save writers pin that with
-  `assert_no_clobber_fallback` (production text only, via `core::source_scan`); `write_slot` has no such pin
-  and only adds `create_dir_all` + its fixed `save_<slot>.ess.tmp` name (other writers use the unique
-  `atomic_temp_path`). Rename-before-fsync, a length-only read-back, or a new fallback branch is a HIGH
+  `assert_no_clobber_fallback` (production text only, via `core::source_scan`); `write_slot` is pinned by
+  `write_slot_has_no_clobber_fallback` and stages through the unique `atomic_temp_path` (#5247 `eb08e14fd`;
+  the old fixed `save_<slot>.ess.tmp` raced two processes sharing a save dir) after `create_dir_all`. Rename-before-fsync, a length-only read-back, or a new fallback branch is a HIGH
   durability hole.
 - **Ring never clobbers the last good save**: `SaveState::new` must build the ring via `SaveRing::resume`
   (not `new`), and the cursor advances only after a committed write (`quicksave_ring_cursor_does_not_advance_on_validation_abort`).
@@ -228,7 +229,9 @@ Paths: `byroredux/src/save_io.rs` (`SaveCommand::execute`, `validate_form_ids`, 
 First step: `grep -n 'fn validate_\|validate_[a-z_]*(world' crates/save/src/validate.rs byroredux/src/save_io.rs`
 - **Order in `SaveCommand::execute`**: refusals first (`CellTransitionInFlight` — a mid-transition save would be
   written and permanently unloadable; `CinematicPresentationState.disable_saving` — `Game.SetInChargen`
-  `abDisableSaving`), then `validate_world` + `validate_form_ids` + `validate_cinematic_entity_refs`
+  `abDisableSaving`; plus the context-invariant refusal #5253 `27562f8ae` — `LoadedCellIndex` present but neither
+  `CurrentCellContext` nor `CurrentExteriorContext` means an unloadable snapshot even when the synced flag still
+  reads `false`, as in the console ingresses that dispatch outside the drain), then `validate_world` + `validate_form_ids` + `validate_cinematic_entity_refs`
   (abort, up to 20 lines, nothing written), then `save_world` → `capture_extension_state` → `encode` →
   `write_slot`; ring advance and the `SaveComplete` session event only after the commit. Any alternate save
   path that bypasses the gates (console, player action, SDK) is HIGH; input adapters must enqueue through
@@ -263,7 +266,7 @@ First step: read `execute_pending_save_loads` top to bottom against the sequence
   `without_parked_state` wraps the reload (outgoing session's `PersistentReferenceStates` and
   `StreamStateSnapshots` are set aside and restored on failure) → teardown + reload (`validate_cell_loadable`
   preflight first, so a missing ESM/cell keeps the live session; then `purge_cinematic_retention_state`
-  drops every `ActorCinematicState`/`HorseTetherState` row so the convoy is not retained across the teardown
+  drops every `ActorCinematicState`/`HorseTetherState` row (and the unsaved `CinematicReAdoption` list, #3817) so the convoy is not retained across the teardown
   as a ghost twin sharing a `FormIdPair` — #5056 `a197e8563`, both reload arms + both debug-load paths, never
   ordinary cell transitions) → `restore_extension_state` → wholesale
   `restore_resources` **again** (idempotent; re-asserts `CurrentCellContext`/`PlayerPose`; the second call is

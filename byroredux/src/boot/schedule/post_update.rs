@@ -123,6 +123,10 @@ pub(super) fn register_post_update_systems(scheduler: &mut Scheduler) {
         // patrol-route data is decoded anywhere yet — see
         // `systems::patrol` module docs).
         scheduler.add_exclusive(Stage::PostUpdate, crate::systems::make_patrol_system());
+        // M42 — Eat/Sleep (procedures 3/4): walk once to the PLDT
+        // location, then seat at the nearest matching furniture marker
+        // through the sandbox path. See `systems::eat_sleep` docs.
+        scheduler.add_exclusive(Stage::PostUpdate, crate::systems::eat_sleep::eat_sleep_system);
         // M42.10 — walk-cycle playback. See `systems::walk_anim` module
         // docs for the take/restore/yield/abandon protocol.
         scheduler.add_exclusive(

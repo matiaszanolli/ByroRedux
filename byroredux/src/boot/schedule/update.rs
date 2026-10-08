@@ -350,6 +350,13 @@ pub(super) fn register_update_systems(scheduler: &mut Scheduler) {
             .writes::<byroredux_core::ecs::components::GuardState>()
             .writes::<byroredux_core::ecs::components::PatrolBehavior>()
             .writes::<byroredux_core::ecs::components::PatrolState>()
+            // M42 Eat/Sleep + the Dialogue force-greet bridge — same
+            // `clear_ambient_behavior` teardown family as the pairs
+            // above.
+            .writes::<byroredux_core::ecs::components::EatBehavior>()
+            .writes::<byroredux_core::ecs::components::SleepBehavior>()
+            .writes::<byroredux_core::ecs::components::EatSleepState>()
+            .writes::<crate::systems::forcegreet::ForceGreetDirective>()
             .writes::<crate::components::WalkStuckTimer>()
             .writes::<crate::components::NavPath>()
             .writes::<byroredux_scripting::HitEvent>(),

@@ -161,8 +161,9 @@ stage's parallel batch), not a stage. Registered per stage in `register_{early,u
   `every_parallel_system_declares_everything_it_acquires` scans each parallel system's body (same-file
   callees to depth 3, plus the explicit cross-file hops in `PARALLEL_SYSTEMS`) and fails if an acquired
   type is missing from its `Access`; `the_parallel_system_table_covers_every_parallel_registration`
-  fails when an `add_to_with_access` lands outside the table; three exclusive fns are covered too
-  (`npc_combat_ai_system`, `papyrus_provider_system`, `legacy_obscript_load_order_system`), and
+  fails when an `add_to_with_access` lands outside the table; four exclusive fns are covered too
+  (`npc_combat_ai_system`, `papyrus_provider_system`, `legacy_obscript_load_order_system`,
+  `npc_dialogue_selection_system` — #5307), and
   `cross_file_hops_and_get_forms_reach_their_acquisitions` pins that the table's cross-file hops and the
   `get` forms actually surface types (#4994).
   Sibling gates in `scheduler_access_tests.rs`: `scheduler_access_invariants_hold_on_the_real_schedule`
@@ -190,7 +191,7 @@ stage's parallel batch), not a stage. Registered per stage in `register_{early,u
 - **Panic policy is fail-fast** (#1412): do not report a missing `catch_unwind`. `Scheduler::run` takes
   `&mut self` and `Scheduler` is deliberately not a `Resource` (re-entry impossible, #868). The one other
   entry point is `Scheduler::run_exclusive_named` (#5141, `00115f7a5`): the engine's paused frame path runs
-  exactly `debug_drain_system` through it while the pause menu gates `run` (pinned by
+  exactly `debug_drain_system` through it (its name is a shared constant asserted against the live schedule, #5292 `8a9989070`) while the pause menu gates `run` (pinned by
   `run_exclusive_named_runs_only_the_named_system`). It bypasses stage order and per-system timing, so any
   new caller must name a system with no same-frame producer/consumer dependency.
   `add_*` warns on duplicate names; `try_add_*` returns `Err(name)` across the flat name space (#312).
