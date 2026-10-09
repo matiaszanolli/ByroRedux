@@ -606,6 +606,16 @@ const MAX_INCLUDE_BYTES: usize = 256 * 1024;
 /// vanilla fragment (12,582 B, FNV); anything bigger is not a prefab.
 const MAX_INCLUDE_FRAGMENT_BYTES: usize = 64 * 1024;
 
+/// #5399 — per-document cap on bytes FETCHED from the source, spliced or
+/// not. The spliced-byte budget bounds the output, but a refused fetch
+/// spent nothing against it: a document that spliced to one byte under
+/// `MAX_INCLUDE_BYTES` and then named K distinct in-size prefabs paid K
+/// archive extracts (64 KiB each, ~640 MiB for K = 10,000) before
+/// refusing every one. Twice the splice budget leaves headroom for the
+/// misses and refusals an honest document makes on its way to the splice
+/// cap.
+const MAX_INCLUDE_FETCHED_BYTES: usize = 2 * MAX_INCLUDE_BYTES;
+
 /// #5314 — total tiles materialized per document (root + all spliced
 /// fragments). The 48-level cap bounds DEPTH only; without a total cap a
 /// wide-enough document (or fragment fan-out) grows the arena without
@@ -629,6 +639,9 @@ struct IncludeState {
     budget: usize,
     /// Fragment bytes spliced so far across the whole document (#5314).
     bytes_spent: usize,
+    /// Fragment bytes fetched from the source so far, spliced or refused
+    /// (#5399).
+    bytes_fetched: usize,
     /// Tiles materialized so far, root document and fragments
     /// combined (#5314).
     tiles: usize,
@@ -651,6 +664,7 @@ impl IncludeState {
             seen: Vec::new(),
             budget: MAX_INCLUDE_SPLICES,
             bytes_spent: 0,
+            bytes_fetched: 0,
             tiles: 0,
             cache: HashMap::new(),
             warned: HashSet::new(),
@@ -669,6 +683,10 @@ impl IncludeState {
                 "bytes" => log::warn!(
                     "menuxml: include byte budget ({MAX_INCLUDE_BYTES}) exhausted \
                      at '{path}' — further splices truncated"
+                ),
+                "fetched" => log::warn!(
+                    "menuxml: include fetch budget ({MAX_INCLUDE_FETCHED_BYTES}) exhausted \
+                     at '{path}' — further includes skipped"
                 ),
                 "oversize" => log::warn!(
                     "menuxml: include fragment '{path}' exceeds \
@@ -779,6 +797,12 @@ fn splice_include(
         includes.warn_once("bytes", path);
         return;
     }
+    // #5399 — fetch budget check, also before any probe: refused fetches
+    // never reach `bytes_spent`, so only this bounds the extract work.
+    if includes.bytes_fetched >= MAX_INCLUDE_FETCHED_BYTES {
+        includes.warn_once("fetched", path);
+        return;
+    }
     // Vanilla authors prefab includes relative to `menus\prefabs\`
     // (`<include src="button_long.xml"/>` from menus\dialog\*.xml).
     // Also accept a menus\-relative form and a raw archive path.
@@ -818,6 +842,7 @@ fn splice_include(
         }
         match src.menu_xml(cand) {
             Some(bytes) => {
+                includes.bytes_fetched += bytes.len();
                 // #5314 — an oversized fragment can never fit the byte
                 // budget, so treat it as absent for this spelling and
                 // cache `None`: the bytes are dropped, later includes of
@@ -827,6 +852,15 @@ fn splice_include(
                     includes.warn_once("oversize", path);
                     includes.cache.insert(key.clone(), None);
                     continue;
+                }
+                // #5399 — the spliced-byte budget only grows, so a
+                // fragment that cannot fit now never will: refuse it
+                // before caching and cache `None`, so its bytes are not
+                // retained for the rest of the parse.
+                if includes.bytes_spent + bytes.len() > MAX_INCLUDE_BYTES {
+                    includes.cache.insert(key.clone(), None);
+                    includes.warn_once("bytes", path);
+                    return;
                 }
                 includes.cache.insert(key.clone(), Some(bytes.clone()));
                 resolved = Some((key.clone(), bytes));

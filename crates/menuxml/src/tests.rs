@@ -504,6 +504,54 @@ fn oversized_include_fragment_is_skipped_and_not_refetched() {
     );
 }
 
+/// #5399 (PAR-D1-2026-10-08-01) — a refused fragment must not cost an
+/// unbounded number of fetches. Four in-size fragments splice the
+/// document to one byte under the 256 KiB budget; the next 1,000 distinct
+/// in-size prefabs can never fit. Pre-fix each was fetched (an archive
+/// extract in production), cached as `Some(bytes)`, and only then
+/// refused: 1,000 fetches, ~64 MB resident. The fetch budget (2× the
+/// splice budget) must stop the source being probed after a handful.
+#[test]
+fn refused_includes_are_bounded_by_the_fetch_budget() {
+    let mut files: HashMap<String, String> = HashMap::new();
+    // Three 65,536-byte fragments + one of 65,535 = 262,143 bytes spliced.
+    let fill = |len: usize, tag: &str| {
+        let head = format!("<string>{tag}</string>");
+        format!("{head}{}", "A".repeat(len - head.len()))
+    };
+    for (i, len) in [65_536usize, 65_536, 65_536, 65_535].into_iter().enumerate() {
+        files.insert(format!("menus\\prefabs\\f{i}.xml"), fill(len, &format!("fill{i}")));
+    }
+    for i in 0..1_000 {
+        files.insert(format!("menus\\prefabs\\g{i}.xml"), fill(60_000, &format!("g{i}")));
+    }
+    let includes: String = (0..4)
+        .map(|i| format!(r#"<include src="f{i}.xml"/>"#))
+        .chain((0..1_000).map(|i| format!(r#"<include src="g{i}.xml"/>"#)))
+        .collect();
+    let host = format!(r#"<menu name="A"><image name="x">{includes}</image></menu>"#);
+    let mut s = CountingSource { files, probes: Default::default() };
+    let doc = parse_document(&host, &mut s);
+    let x = doc.name_index["x"];
+    assert_eq!(
+        doc.tiles[x].traits.get("string"),
+        Some(&RawTrait::Str("fill3".into())),
+        "the four fragments that fit the splice budget still splice"
+    );
+    let probes = s.probes.borrow();
+    let refused_fetches = probes
+        .iter()
+        .filter(|p| p.starts_with("menus\\prefabs\\g"))
+        .count();
+    // 262,143 B already fetched; each 60,000 B refusal adds to the 524,288 B
+    // fetch budget, so the fifth crosses it and nothing further is probed.
+    assert!(
+        refused_fetches <= 5,
+        "refused includes must stop fetching once the fetch budget is spent, \
+         got {refused_fetches} fetches of the 1,000 refused fragments"
+    );
+}
+
 /// #5314 — the 48-level cap bounds tile DEPTH only; a wide document (or a
 /// small fragment spliced 256×) had no total bound on materialized tiles.
 /// The total tile cap must truncate a 20,000-tile document at
