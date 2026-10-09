@@ -212,6 +212,27 @@ pub(crate) fn parse_wrld_group(
                         _ => {}
                     }
                 }
+                // #5374 — pre-FO3 inheritance is "child ⟹ inherit
+                // everything": Oblivion authors no PNAM, so a child
+                // worldspace's zero `parent_flags` means "absent", not
+                // "inherit nothing". Stamp the inherit-all word at the
+                // parse boundary (the same shape the #2735 fix
+                // suggested) so the bit-gated walks resolve the
+                // parent's water/climate/LOD without every consumer
+                // carrying a second, game-aware walk. Census premise:
+                // 54/54 Oblivion roots author NAM2, 0/30 children do,
+                // and the below-sea-level cells cluster exactly in the
+                // children (Bravil, Leyawiin, the Imperial City, New
+                // Sheoth). An authored zero PNAM on FO3+ stays a real
+                // zero — this arm only runs for Oblivion.
+                if game == GameKind::Oblivion && record.parent_worldspace.is_some() {
+                    const INHERIT_LAND: u16 = 0x01;
+                    const INHERIT_LOD: u16 = 0x02;
+                    const INHERIT_WATER: u16 = 0x08;
+                    const INHERIT_CLIMATE: u16 = 0x10;
+                    record.parent_flags |=
+                        INHERIT_LAND | INHERIT_LOD | INHERIT_WATER | INHERIT_CLIMATE;
+                }
                 if !record.editor_id.is_empty() {
                     let key = record.editor_id.to_ascii_lowercase();
                     let cell_bounds = record.usable_cell_bounds();

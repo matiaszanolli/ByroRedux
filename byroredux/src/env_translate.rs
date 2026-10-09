@@ -219,9 +219,16 @@ pub(crate) fn default_water_for_worldspace(
     });
     if game == GameKind::Oblivion {
         // No DNAM on Oblivion WRLD → sea level Z=0, only where the
-        // worldspace advertises default water via NAM2. (Oblivion authors no
-        // PNAM either, so the chain walk is a no-op there and this stays the
-        // pre-#2735 behaviour exactly.)
+        // worldspace advertises default water via NAM2. #5374: Oblivion
+        // authors no PNAM, so the bit-gated walk above can never leave a
+        // child — pre-FO3 inheritance is "child ⟹ inherit everything"
+        // (54/54 roots author NAM2, 0/30 children do), resolved by the
+        // flag-less walk. BravilWorld, LeyawiinWorld, the Imperial City
+        // districts and the New Sheoth worldspaces all resolve Tamriel's /
+        // SEWorld's water form this way.
+        let water_form = water_form.or_else(|| {
+            inherit_all_up_chain(worldspaces, worldspace_key, |_, w| w.water_form)
+        });
         return match water_form {
             Some(form) => (Some(0.0), Some(form)),
             None => (None, None),
@@ -385,6 +392,46 @@ where
                 None
             })?;
         current = parent_key.clone();
+    }
+}
+
+/// #5374 — the pre-FO3 inheritance walk. Oblivion authors no PNAM at
+/// all: a child worldspace (`WNAM` set) inherits every inheritable
+/// field from its parent, and "absent ⟺ inherited" is the shape the
+/// #2735 correlation read out of FO3+'s PNAM bits. The census pins
+/// the premise: 54/54 Oblivion roots author `NAM2` while 0/30 children
+/// do, and the below-sea-level cells cluster exactly in the child
+/// worldspaces (Bravil's canals, Leyawiin's river, the Imperial City
+/// lake shore, New Sheoth). Same walk as [`inherit_up_chain`] with the
+/// bit gate removed — a child with its own value still wins.
+fn inherit_all_up_chain<T, F>(
+    worldspaces: &HashMap<String, WorldspaceRecord>,
+    start_key: &str,
+    extract: F,
+) -> Option<T>
+where
+    F: Fn(&str, &WorldspaceRecord) -> Option<T>,
+{
+    let mut current = start_key.to_string();
+    let mut visited = std::collections::HashSet::new();
+    loop {
+        let record = worldspaces.get(&current)?;
+        if let Some(value) = extract(&current, record) {
+            return Some(value);
+        }
+        if !visited.insert(current.clone()) {
+            log::warn!(
+                "inherit_all_up_chain: cyclic WNAM chain from '{start_key}' \
+                 (revisited '{current}') — treating as unresolved",
+            );
+            return None;
+        }
+        let parent_fid = record.parent_worldspace?;
+        let parent_key = worldspaces
+            .iter()
+            .find(|(_, record)| record.form_id == parent_fid)
+            .map(|(key, _)| key.clone())?;
+        current = parent_key;
     }
 }
 
@@ -2540,10 +2587,42 @@ mod tests {
     }
 
     #[test]
-    fn oblivion_is_unaffected_by_inheritance() {
-        // Oblivion authors no PNAM at all, so the walk is inert and the
-        // sea-level path is byte-for-byte its pre-#2735 behaviour.
+    fn oblivion_child_inherits_parents_water_without_pnam() {
+        // #5374 — Oblivion authors no PNAM: pre-FO3 inheritance is
+        // "child ⟹ inherit everything" (the census: 54/54 roots author
+        // NAM2, 0/30 children do; the below-sea-level cells cluster in
+        // the children — BravilWorld, LeyawiinWorld, the IC districts,
+        // New Sheoth). A child with NO own NAM2 resolves the parent's
+        // water form; a child with its own keeps it.
         let map = parent_child(
+            WorldspaceRecord {
+                water_form: Some(0x0000_00AB),
+                ..Default::default()
+            },
+            0,
+            WorldspaceRecord::default(),
+        );
+        assert_eq!(
+            default_water_for_worldspace(&map, "c", GameKind::Oblivion),
+            (Some(0.0), Some(0x0000_00AB)),
+            "a child worldspace without its own NAM2 inherits the parent's \
+             water (the flag-less walk)"
+        );
+        // A root worldspace with no own water still resolves nothing —
+        // the flag-less walk only follows a real WNAM.
+        let root = HashMap::from([(
+            "r".to_string(),
+            WorldspaceRecord {
+                form_id: 0x0000_0300,
+                ..Default::default()
+            },
+        )]);
+        assert_eq!(
+            default_water_for_worldspace(&root, "r", GameKind::Oblivion),
+            (None, None)
+        );
+        // An authored own value still wins over the parent.
+        let both = parent_child(
             WorldspaceRecord {
                 water_form: Some(0x0000_00AB),
                 ..Default::default()
@@ -2555,7 +2634,7 @@ mod tests {
             },
         );
         assert_eq!(
-            default_water_for_worldspace(&map, "c", GameKind::Oblivion),
+            default_water_for_worldspace(&both, "c", GameKind::Oblivion),
             (Some(0.0), Some(0x0000_00CD)),
         );
     }
