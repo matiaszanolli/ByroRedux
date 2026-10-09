@@ -116,7 +116,10 @@ pub(crate) fn reconcile_lod_rings(
     // streaming state (the opened archive set never changes under it);
     // every other game never pays the name-table walk.
     if state.legacy_lod_quads.is_none()
-        && wctx.record_index.game == byroredux_plugin::esm::reader::GameKind::Fallout3NV
+        && matches!(
+            crate::env_translate::terrain_lod_layout(wctx.record_index.game),
+            crate::env_translate::TerrainLodLayout::FalloutLegacy
+        )
     {
         state.legacy_lod_quads = Some(cell_loader::LegacyLodQuadIndex::scan(tex_provider.as_ref()));
     }

@@ -486,6 +486,108 @@ pub(crate) fn resolve_worldspace_climate(
     })
 }
 
+/// The exterior climate for `worldspace_key` at the streaming center
+/// `(center_x, center_y)` — every climate rung settled at this one
+/// boundary (#5423; exal.md's single-boundary rule), table-shaped per
+/// game:
+///
+/// 1. the WRLD `CNAM` link, chasing the `WNAM` parent chain when the
+///    PNAM climate-inherit bit opts in ([`resolve_worldspace_climate`],
+///    #2450/EXAL-02) — every game's primary rung;
+/// 2. the region chain (the center cell's `XCLR` → REGN `CNAM`; see
+///    [`region_climate_for_center`]) — data-driven, all games, though
+///    only Oblivion-era regions author a REGN `CNAM` at all (#5421);
+/// 3. the Oblivion-only naming / richest-climate rung
+///    ([`named_or_richest_climate`]): vanilla `Oblivion.esm` authors no
+///    climate on the Tamriel WRLD (zero `CNAM` bytes; the only
+///    TamrielClimate references on disk are one special-case worldspace
+///    and one Shivering-Isles region), so neither rung above can
+///    resolve Cyrodiil's climate.
+pub(crate) fn resolve_exterior_climate(
+    cells: &byroredux_plugin::esm::cell::EsmCellIndex,
+    climates: &HashMap<u32, ClimateRecord>,
+    regions: &HashMap<u32, byroredux_plugin::esm::records::RegnRecord>,
+    worldspace_key: &str,
+    center_x: i32,
+    center_y: i32,
+    game: GameKind,
+) -> Option<u32> {
+    if let Some(form) =
+        resolve_worldspace_climate(&cells.worldspaces, &cells.worldspace_climates, worldspace_key)
+    {
+        return Some(form);
+    }
+    let fallback = region_climate_for_center(cells, worldspace_key, center_x, center_y, regions)
+        .or_else(|| match game {
+            GameKind::Oblivion => named_or_richest_climate(climates, worldspace_key),
+            _ => None,
+        });
+    if fallback.is_some() {
+        log::info!(
+            "Worldspace '{}' has no WRLD climate — resolved through the \
+             region chain / Oblivion naming convention ({},{})",
+            worldspace_key,
+            center_x,
+            center_y,
+        );
+    }
+    fallback
+}
+
+/// The center cell's region-chain climate: walk the `XCLR` FormID list in
+/// authored order and return the first region's `CNAM` that resolves in
+/// `regions`. The exact center cell is preferred; if the grid has no cell
+/// there (a wilderness gap), the four orthogonal neighbours are probed —
+/// Oblivion's regions span dozens of cells, so the nearest cell's region
+/// set is the same set.
+pub(crate) fn region_climate_for_center(
+    index: &byroredux_plugin::esm::cell::EsmCellIndex,
+    worldspace_key: &str,
+    center_x: i32,
+    center_y: i32,
+    regions: &HashMap<u32, byroredux_plugin::esm::records::RegnRecord>,
+) -> Option<u32> {
+    let cells = index.exterior_cells.get(worldspace_key)?;
+    let probes = [(center_x, center_y), (center_x + 1, center_y), (center_x - 1, center_y), (center_x, center_y + 1), (center_x, center_y - 1)];
+    for (gx, gy) in probes {
+        let Some(cell) = cells.get(&(gx, gy)) else {
+            continue;
+        };
+        for region_fid in &cell.regions {
+            if let Some(climate) = regions
+                .get(region_fid)
+                .and_then(|region| region.climate_form)
+            {
+                return Some(climate);
+            }
+        }
+    }
+    None
+}
+
+/// The Oblivion no-WRLD-climate fallback (see
+/// [`resolve_exterior_climate`]): the climate the Construction Set names
+/// after this worldspace (`"<worldspace>Climate"`, case-insensitive —
+/// Tamriel → TamrielClimate), else the climate with the most authored
+/// weathers (the provincial default). Ties break on the lowest FormID
+/// for determinism.
+fn named_or_richest_climate(
+    climates: &HashMap<u32, ClimateRecord>,
+    worldspace_key: &str,
+) -> Option<u32> {
+    let convention = format!("{}climate", worldspace_key.to_ascii_lowercase());
+    if let Some((fid, _)) = climates
+        .iter()
+        .find(|(_, climate)| climate.editor_id.to_ascii_lowercase() == convention)
+    {
+        return Some(*fid);
+    }
+    climates
+        .iter()
+        .max_by_key(|(fid, climate)| (climate.weathers.len(), std::cmp::Reverse(**fid)))
+        .map(|(fid, _)| *fid)
+}
+
 /// Resolve the climate in effect for one exterior cell: its own `XCCM`
 /// override when it authors one, otherwise the worldspace climate
 /// [`resolve_worldspace_climate`] settled (#2451 / EXAL-03).

@@ -459,7 +459,13 @@ pub(crate) fn stream_lod_blocks(
     let grid_origin = input.lod_grid_origin;
     let ladder = LodBandLadder::for_terrain_game(game);
 
-    let desired = if game == GameKind::Fallout3NV {
+    // #5423 — gate on the layout table, not the GameKind: a future title
+    // adopting the Fallout legacy layout takes the authored name-table
+    // path in this ring exactly like object_lod gates on its scheme.
+    let desired = if matches!(
+        crate::env_translate::terrain_lod_layout(game),
+        crate::env_translate::TerrainLodLayout::FalloutLegacy
+    ) {
         // #5222 — the Fallout legacy family selects from the archive
         // name-table index instead of the `(0,0)`-anchored descent: 835 of
         // its 2,231 authored terrain quads sit on lattices no derived

@@ -1626,7 +1626,7 @@ mod worldspace_selection_tests {
     /// of any probed cell carries one.
     #[test]
     fn region_climate_follows_xclr_order_and_neighbour_probes() {
-        use crate::cell_loader::exterior::region_climate_for_center;
+        use crate::env_translate::region_climate_for_center;
         use byroredux_plugin::esm::cell::CellData;
         use byroredux_plugin::esm::cell::EsmCellIndex;
         use byroredux_plugin::esm::records::RegnRecord;
@@ -1866,46 +1866,19 @@ pub fn build_exterior_world_context(
     // child worldspaces (Skyrim DLC/holdout worlds, FO4 sub-worlds,
     // Oblivion-plane worlds) and silently falls back to the procedural
     // default sky.
-    let climate_form = crate::env_translate::resolve_worldspace_climate(
-        &record_index.cells.worldspaces,
-        &record_index.cells.worldspace_climates,
+    // #5423 — every climate rung (WRLD link → region chain → the
+    // Oblivion naming/richest fallbacks) settles in one table-shaped
+    // boundary helper in env_translate, beside `resolve_worldspace_climate`
+    // and `resolve_default_weather`; no `game ==` branch here.
+    let climate_form = crate::env_translate::resolve_exterior_climate(
+        index,
+        &record_index.climates,
+        &record_index.regions,
         &worldspace_key,
-    )
-    .or_else(|| {
-        // The Oblivion rungs — vanilla `Oblivion.esm` authors no climate on
-        // the Tamriel WRLD at all (zero `CNAM` bytes in the record; the only
-        // TamrielClimate references on disk are one special-case worldspace
-        // and one Shivering-Isles region, neither of which covers Cyrodiil),
-        // so neither the WRLD link nor the region chain (CELL XCLR → REGN
-        // CNAM, which only SI regions carry) can resolve Tamriel's climate.
-        // Two data-anchored fallbacks: the CS names a worldspace's own
-        // climate `"<worldspace>Climate"` (Tamriel → TamrielClimate, whose
-        // WLST authors Clear at 100), else the climate carrying the most
-        // authored weathers — the provincial default. Every other game
-        // links WRLD → CLMT directly, so these rungs are inert elsewhere.
-        let region_climate = region_climate_for_center(
-            index,
-            &worldspace_key,
-            center_x,
-            center_y,
-            &record_index.regions,
-        )
-        .or_else(|| {
-            (record_index.game == byroredux_plugin::esm::reader::GameKind::Oblivion)
-                .then(|| named_or_richest_climate(&record_index.climates, &worldspace_key))
-                .flatten()
-        });
-        if region_climate.is_some() {
-            log::info!(
-                "Worldspace '{}' has no WRLD climate — resolved through the \
-                 region chain / Oblivion naming convention ({},{})",
-                worldspace_key,
-                center_x,
-                center_y,
-            );
-        }
-        region_climate
-    });
+        center_x,
+        center_y,
+        record_index.game,
+    );
     let climate = climate_form
         .and_then(|fid| record_index.climates.get(&fid).cloned())
         .inspect(|climate| {
@@ -1967,58 +1940,6 @@ pub fn build_exterior_world_context(
 }
 
 /// The climate the center cell's regions carry (Oblivion's region→climate
-/// chain — see the caller). Walks the center cell's `XCLR` FormID list in
-/// authored order and returns the first region's `CNAM` that resolves in
-/// `regions`. The exact center cell is preferred; if the grid has no cell
-/// there (a wilderness gap), the four orthogonal neighbours are probed —
-/// Oblivion's regions span dozens of cells, so the nearest cell's region
-/// set is the same set.
-fn region_climate_for_center(
-    index: &byroredux_plugin::esm::cell::EsmCellIndex,
-    worldspace_key: &str,
-    center_x: i32,
-    center_y: i32,
-    regions: &std::collections::HashMap<u32, byroredux_plugin::esm::records::RegnRecord>,
-) -> Option<u32> {
-    let cells = index.exterior_cells.get(worldspace_key)?;
-    let probes = [(center_x, center_y), (center_x + 1, center_y), (center_x - 1, center_y), (center_x, center_y + 1), (center_x, center_y - 1)];
-    for (gx, gy) in probes {
-        let Some(cell) = cells.get(&(gx, gy)) else {
-            continue;
-        };
-        for region_fid in &cell.regions {
-            if let Some(climate) = regions
-                .get(region_fid)
-                .and_then(|region| region.climate_form)
-            {
-                return Some(climate);
-            }
-        }
-    }
-    None
-}
-
-/// The Oblivion no-WRLD-climate fallback (see the caller): the climate the
-/// Construction Set names after this worldspace (`"<worldspace>Climate"`,
-/// case-insensitive — Tamriel → TamrielClimate), else the climate with the
-/// most authored weathers (the provincial default). Ties break on the
-/// lowest FormID for determinism.
-fn named_or_richest_climate(
-    climates: &std::collections::HashMap<u32, byroredux_plugin::esm::records::ClimateRecord>,
-    worldspace_key: &str,
-) -> Option<u32> {
-    let convention = format!("{}climate", worldspace_key.to_ascii_lowercase());
-    if let Some((fid, _)) = climates
-        .iter()
-        .find(|(_, climate)| climate.editor_id.to_ascii_lowercase() == convention)
-    {
-        return Some(*fid);
-    }
-    climates
-        .iter()
-        .max_by_key(|(fid, climate)| (climate.weathers.len(), std::cmp::Reverse(**fid)))
-        .map(|(fid, _)| *fid)
-}
 
 /// Load a single exterior cell at `(gx, gy)`.
 ///
