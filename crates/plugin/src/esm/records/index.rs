@@ -14,7 +14,7 @@ use super::{
     ContainerRecord, CstyRecord, DialRecord, DlbrRecord, EcznRecord, EfshRecord, EnchRecord,
     ExplRecord, EyesRecord, FactionRecord, FlstRecord, GameSetting, GlobalRecord, GrasRecord, HairRecord,
     HdptRecord,
-    IdleRecord, ImadRecord, ImgsRecord, ImodRecord, IpctRecord, IpdsRecord, ItemRecord,
+    IdleRecord, ImadRecord, ImgsRecord, ImodRecord, InfoRecord, IpctRecord, IpdsRecord, ItemRecord,
     LeveledList, LgtmRecord, LoadScreenRecord, LoadScreenTransform, MesgRecord, MgefRecord,
     MinimalEsmRecord, ResolvedLoadScreenModel,
     NaviRecord, NavmRecord,
@@ -84,6 +84,37 @@ macro_rules! cell_category {
             |_index: &mut EsmIndex, _deleted: &HashSet<u32>| {},
         )
     };
+}
+
+/// #5375 — fold one override plugin's INFO into the topic's composed
+/// list. A same-FormID INFO replaces its master copy in place (keeping
+/// the position the authored chain gives it); a new INFO inserts
+/// directly after its `PNAM` (`previous_info`) predecessor when that
+/// INFO is already in the list — the chain order Bethesda serializes
+/// the Topic Children group in, which the dialogue selection's
+/// file-order tie-break consumes. A `PNAM` of 0 is the chain head, so a
+/// brand-new head goes first; a predecessor this side of the merge has
+/// not seen yet falls back to append.
+fn fold_info_into_topic(infos: &mut Vec<InfoRecord>, info: InfoRecord) {
+    if let Some(position) = infos
+        .iter()
+        .position(|existing| existing.form_id == info.form_id)
+    {
+        infos[position] = info;
+        return;
+    }
+    let insert_at = if info.previous_info == 0 {
+        Some(0)
+    } else {
+        infos
+            .iter()
+            .position(|existing| existing.form_id == info.previous_info)
+            .map(|position| position + 1)
+    };
+    match insert_at {
+        Some(at) => infos.insert(at, info),
+        None => infos.push(info),
+    }
 }
 
 /// Aggregated index of every record category we currently parse.
@@ -660,7 +691,51 @@ impl EsmIndex {
             map_category!("quests", quests),
             map_category!("story_manager_nodes", story_manager_nodes),
             map_category!("scenes", scenes),
-            map_category!("dialogues", dialogues),
+            // #5375 — DIAL is the one top-level category whose authored
+            // payload lives in CHILD records (INFO, in the Topic Children
+            // sub-GRUP), and a later plugin's override copy of a topic
+            // carries only ITS OWN new/changed INFOs — the engine composes
+            // the topic's line set across the load order by INFO FormID.
+            // `extend`'s last-write-wins on the whole `DialRecord`
+            // dropped every earlier plugin's INFO list: each FNV story
+            // DLC erased 8.5-9.9k FalloutNV.esm INFOs and shrank
+            // `GREETING` from 5,300 lines to 11-129; Skyrim's Update.esm
+            // emptied whole Skyrim.esm topics the same way. The override's
+            // header fields still replace the master's; its INFOs fold
+            // into the master's list via [`fold_info_into_topic`], and
+            // the prune arm removes Deleted-INFO tombstones from every
+            // topic (a DIAL tombstone still removes the topic itself).
+            (
+                "dialogues",
+                |index: &EsmIndex| index.dialogues.len(),
+                |target: &mut EsmIndex, source: &mut EsmIndex| {
+                    let source_dialogues = std::mem::take(&mut source.dialogues);
+                    for (form_id, mut override_dial) in source_dialogues {
+                        match target.dialogues.get_mut(&form_id) {
+                            None => {
+                                target.dialogues.insert(form_id, override_dial);
+                            }
+                            Some(master) => {
+                                for info in std::mem::take(&mut override_dial.infos) {
+                                    fold_info_into_topic(&mut master.infos, info);
+                                }
+                                master.editor_id = override_dial.editor_id;
+                                master.full_name = override_dial.full_name;
+                                master.quest_refs = override_dial.quest_refs;
+                                master.category = override_dial.category;
+                                master.data_flags = override_dial.data_flags;
+                                master.branch = override_dial.branch;
+                            }
+                        }
+                    }
+                },
+                |index: &mut EsmIndex, deleted: &HashSet<u32>| {
+                    index.dialogues.retain(|form_id, _| !deleted.contains(form_id));
+                    for dial in index.dialogues.values_mut() {
+                        dial.infos.retain(|info| !deleted.contains(&info.form_id));
+                    }
+                },
+            ),
             map_category!("dialogue_branches", dialogue_branches),
             map_category!("messages", messages),
             map_category!("perks", perks),
@@ -1639,15 +1714,26 @@ mod tests {
         // added `map_category_keyed_by_value!` for the one table keyed by
         // something other than the record's own FormID. Missing it here
         // made this guard report `magic_effects_by_code` as uncounted.
+        // #5375 — a row can also be hand-written (a category needing
+        // bespoke merge semantics, like `dialogues`' INFO folding); those
+        // name the field in a concrete count closure instead, so both row
+        // shapes are recognized.
         let counted: Vec<&str> = INDEX_RS[table_start..table_end]
             .lines()
             .map(str::trim)
             .filter_map(|line| {
-                line.strip_prefix("map_category!(")
+                if let Some(rest) = line
+                    .strip_prefix("map_category!(")
                     .or_else(|| line.strip_prefix("map_category_keyed_by_value!("))
+                {
+                    return rest.split_once(", ").map(|(_, field)| {
+                        field.trim_end_matches("),").trim()
+                    });
+                }
+                line.strip_prefix("|index: &EsmIndex| index.")
+                    .and_then(|rest| rest.strip_suffix(".len(),"))
+                    .map(str::trim)
             })
-            .filter_map(|rest| rest.split_once(", "))
-            .map(|(_, field)| field.trim_end_matches("),").trim())
             .collect();
         assert!(
             counted.len() >= 90,
@@ -2231,5 +2317,140 @@ mod tests {
         assert_eq!(idx.game_setting_float("fxplevelupbase"), Some(80.0));
         assert_eq!(idx.game_setting_float("iXPBase"), Some(150.0));
         assert_eq!(idx.game_setting_float("missing"), None);
+    }
+
+    /// #5375 — an override DIAL replaces the master's TOPIC header but
+    /// folds its INFO children into the master's list by FormID instead
+    /// of replacing the whole record: an override's Topic Children group
+    /// holds only its own new/changed INFOs, so last-write-wins dropped
+    /// 8.5-9.9k master INFOs per FNV story DLC and emptied topics an
+    /// override touched without adding lines.
+    #[test]
+    fn dialogue_override_folds_infos_into_the_master_topic() {
+        use super::{DialRecord, InfoRecord};
+
+        const TOPIC: u32 = 0x0000_00C8; // FNV's GREETING form id
+        let info = |form_id: u32, previous: u32, text: &str| InfoRecord {
+            form_id,
+            previous_info: previous,
+            response_text: text.to_string(),
+            ..Default::default()
+        };
+
+        // Master: chain A -> B -> C.
+        let mut master = EsmIndex::default();
+        master.dialogues.insert(
+            TOPIC,
+            DialRecord {
+                form_id: TOPIC,
+                editor_id: "GREETING".to_string(),
+                quest_refs: vec![0x0000_14D0],
+                infos: vec![info(0xA, 0, "a"), info(0xB, 0xA, "b"), info(0xC, 0xB, "c")],
+                ..Default::default()
+            },
+        );
+
+        // DLC override: replaces B's text, adds D after B, deletes C,
+        // and re-authors the header (new quest owner).
+        let mut dlc = EsmIndex::default();
+        dlc.dialogues.insert(
+            TOPIC,
+            DialRecord {
+                form_id: TOPIC,
+                editor_id: "GREETING".to_string(),
+                quest_refs: vec![0x0100_0F71],
+                infos: vec![info(0xB, 0xA, "b-override"), info(0xD, 0xB, "d-new")],
+                ..Default::default()
+            },
+        );
+        dlc.deleted_record_metadata.insert(0xC);
+
+        master.merge_from(dlc);
+
+        let merged = &master.dialogues[&TOPIC];
+        assert_eq!(
+            merged.quest_refs,
+            vec![0x0100_0F71],
+            "the override's header fields replace the master's"
+        );
+        let ids: Vec<(u32, String)> = merged
+            .infos
+            .iter()
+            .map(|i| (i.form_id, i.response_text.clone()))
+            .collect();
+        assert_eq!(
+            ids,
+            vec![
+                (0xA, "a".to_string()),
+                (0xB, "b-override".to_string()),
+                (0xD, "d-new".to_string()),
+            ],
+            "B is replaced in place, D lands after its PNAM predecessor B, \
+             and the Deleted tombstone removes C"
+        );
+    }
+
+    /// #5375 — an override that ships a DIAL copy with NO Topic Children
+    /// leaves the master's lines intact (pre-fix it emptied the topic),
+    /// and a topic only the override carries inserts whole.
+    #[test]
+    fn dialogue_override_without_children_keeps_master_infos() {
+        use super::{DialRecord, InfoRecord};
+
+        let mut master = EsmIndex::default();
+        master.dialogues.insert(
+            0x01,
+            DialRecord {
+                form_id: 0x01,
+                editor_id: "RadioHello".to_string(),
+                infos: vec![
+                    InfoRecord {
+                        form_id: 0x10,
+                        ..Default::default()
+                    },
+                    InfoRecord {
+                        form_id: 0x11,
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            },
+        );
+
+        let mut patch = EsmIndex::default();
+        patch.dialogues.insert(
+            0x01,
+            DialRecord {
+                form_id: 0x01,
+                editor_id: "RadioHello".to_string(),
+                infos: Vec::new(), // override copy, no children group
+                ..Default::default()
+            },
+        );
+        // A topic the master does not have arrives whole.
+        patch.dialogues.insert(
+            0x02,
+            DialRecord {
+                form_id: 0x02,
+                editor_id: "NewTopic".to_string(),
+                infos: vec![InfoRecord {
+                    form_id: 0x20,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+        );
+
+        master.merge_from(patch);
+        assert_eq!(
+            master.dialogues[&0x01].infos.len(),
+            2,
+            "a childless override copy must not empty the master's topic"
+        );
+        assert_eq!(
+            master.dialogues[&0x02].infos.len(),
+            1,
+            "an override-only topic arrives whole"
+        );
     }
 }
