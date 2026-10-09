@@ -508,6 +508,23 @@ fn vulkan_validation_job_resolves_lavapipe_and_fails_on_init_failure() {
     );
 }
 
+/// #5261 / CONC-D3-2026-10-08-04 — the job's RT-integrity assertion is the
+/// only guard against the lane silently going blind to the RT consumers
+/// again (the #4596 / #4987 / #5261 class: permanent pool state turns RT
+/// off, the job stays green). Every other assertion in that job has a
+/// source pin beside it; this one must too, or a workflow edit that drops
+/// it still passes `cargo test`.
+#[test]
+fn vulkan_validation_job_requires_live_rt() {
+    let job = vulkan_validation_job();
+    assert!(
+        job.contains("grep -qE 'rt-integrity:.*rt_flag=1 .*tlas_build=1'"),
+        "the vulkan-validation job no longer asserts a live RT frame — dropping \
+         this grep lets the lane go green while ray queries / caustics / the \
+         volumetrics TLAS path silently run RT-off (#5261, #4987, #4596)",
+    );
+}
+
 /// #4993 — the `lock-order-check` step pipes `cargo test` through `tee`.
 /// With no `shell:` key the step runs under `bash -e {0}` (no pipefail), so
 /// `$?` is tee's status and the lane went green on every failure that was not
