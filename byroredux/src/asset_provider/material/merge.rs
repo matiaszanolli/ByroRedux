@@ -438,9 +438,9 @@ pub(crate) fn merge_external_material(
 
     // `.mat` short-circuits: vanilla Starfield ships no `.mat`/`.bgsm`/
     // `.bgem` sidecars, but an installed Creation/mod archive can — 20 JSON
-    // `.mat` exports measured across 129 installed archives (2026-08-30).
-    // The short-circuit is retained anyway because no JSON `.mat` resolver
-    // exists yet, not because the files cannot exist. See
+    // `.mat` exports across four Creation archives (2026-10-09). A loose
+    // file decodes through `loose_mat` (#4277/#5396); everything else
+    // resolves through the CDB below. See
     // [`apply_cdb_pbr_fallback`] for the full rationale and for why the
     // `.bgsm`/`.bgem` names do NOT short-circuit here any more (#3230).
     //
@@ -482,13 +482,17 @@ pub(crate) fn merge_external_material(
     if starfield_cdb_gate && path.ends_with(".mat") {
         // #4277 — Stage A, the deliverable #762 closed without building: a
         // loose `.mat` FILE in the archives is the authored source the CDB
-        // compiles from, so it wins over the compiled lookup. Vanilla ships
-        // none (0 across this install's 129 archives; the census found 20,
-        // all third-party, in the Creation corpus) — this is the mod path.
+        // compiles from, so a file that decodes wins over the compiled
+        // lookup. Vanilla ships none; four Creation archives carry 20 —
+        // this is the mod path. #5396 — a file that does not decode no
+        // longer pre-empts the CDB: it falls through to the lookup below.
         if let Some(bytes) = provider.extract_from_archives(&path) {
-            let outcome = apply_loose_mat(material, &bytes, pool, &mut touched, texture_exists);
-            trace_merge_outcome(&path, outcome);
-            return outcome;
+            if let Some(outcome) =
+                apply_loose_mat(material, &bytes, pool, &mut touched, texture_exists)
+            {
+                trace_merge_outcome(&path, outcome);
+                return outcome;
+            }
         }
         // #3398 Phase 2 — resolve through the CDB material index next;
         // the Phase-1 PBR-routing flip is now the lookup-MISS fallback.
@@ -1664,6 +1668,62 @@ fn merge_bgem_arm(
     None
 }
 
+/// #4277 — merge the loose `.mat` file's bytes. The caller (the `.mat`
+/// arm above) has already confirmed the bytes exist in the archives.
+/// Payload decode is `parse_loose_mat`'s; this fn owns the boundary-side
+/// application. #5396 — only a file that decodes is applied (and routes
+/// the material as authored external PBR); `None` means "not decodable",
+/// and the caller falls through to the CDB lookup and its miss fallback
+/// (`apply_cdb_pbr_fallback`), so an undecodable loose file neither hides
+/// the CDB row nor half-implements the fallback's provenance (#5436).
+fn apply_loose_mat(
+    material: &mut ImportedMaterial,
+    bytes: &[u8],
+    pool: &mut byroredux_core::string::StringPool,
+    touched: &mut bool,
+    texture_exists: &dyn Fn(&str) -> bool,
+) -> Option<MergeOutcome> {
+    let (stage, cdb_mat) = super::loose_mat::parse_loose_mat(bytes)?;
+    if stage != super::loose_mat::LooseMatStage::Decoded {
+        log::debug!("loose .mat present but no recognized component — resolving through the CDB");
+        return None;
+    }
+    material.is_pbr = true;
+    let textures_before = material.textures;
+    apply_cdb_material(material, &cdb_mat, pool, touched, texture_exists);
+    record_external_texture_sources(material, &textures_before, ImportedTextureSource::Mat);
+    Some(if *touched {
+        MergeOutcome::Merged
+    } else {
+        MergeOutcome::PresenceOnly
+    })
+}
+
+#[cfg(test)]
+mod loose_mat_merge_tests {
+    use super::*;
+
+    /// #5396 — an undecodable loose file returns `None` so the `.mat` arm
+    /// falls through to the CDB; a decodable one is applied.
+    #[test]
+    fn only_a_decodable_loose_mat_is_applied() {
+        let mut pool = byroredux_core::string::StringPool::new();
+        let mut material = ImportedMaterial::default();
+        let mut touched = false;
+        let exists = |_: &str| true;
+        let undecodable = br#"{"Objects": [{"Components": [{"Data": {"Name": "x"}, "Index": 0, "Type": "BSComponentDB::CTName"}]}]}"#;
+        assert!(apply_loose_mat(&mut material, undecodable, &mut pool, &mut touched, &exists).is_none());
+        assert!(apply_loose_mat(&mut material, b"not json", &mut pool, &mut touched, &exists).is_none());
+        assert!(!material.is_pbr, "a file that does not decode leaves routing to the CDB arm");
+
+        let decodable = br#"{"Objects": [{"Components": [{"Data": {"FileName": "Data/Textures/a_color.dds"}, "Index": 0, "Type": "BSMaterial::MRTextureFile"}]}]}"#;
+        let outcome = apply_loose_mat(&mut material, decodable, &mut pool, &mut touched, &exists);
+        assert_eq!(outcome, Some(MergeOutcome::Merged));
+        assert!(material.is_pbr);
+        assert!(material.external_material_resolved);
+    }
+}
+
 /// #2412 / #3857 — pin the invariant the split had to preserve.
 ///
 /// #2412 examined `merge_external_material` at 678 LOC and closed with an
@@ -1679,48 +1739,6 @@ fn merge_bgem_arm(
 /// existing merge test on the day someone marks it `pub(crate)` and calls it
 /// directly from a per-game path, which is the failure #2412 was guarding
 /// against.
-/// #4277 — merge the loose `.mat` file's bytes. The caller (the `.mat`
-/// arm above) has already confirmed the bytes exist in the archives; that
-/// alone routes the material as authored external PBR. Payload decode is
-/// `parse_loose_mat`'s; this fn owns the boundary-side application.
-fn apply_loose_mat(
-    material: &mut ImportedMaterial,
-    bytes: &[u8],
-    pool: &mut byroredux_core::string::StringPool,
-    touched: &mut bool,
-    texture_exists: &dyn Fn(&str) -> bool,
-) -> MergeOutcome {
-    material.is_pbr = true;
-    let textures_before = material.textures;
-    match super::loose_mat::parse_loose_mat(bytes) {
-        Some((super::loose_mat::LooseMatStage::Decoded, cdb_mat)) => {
-            apply_cdb_material(material, &cdb_mat, pool, touched, texture_exists);
-            record_external_texture_sources(material, &textures_before, ImportedTextureSource::Mat);
-            if *touched {
-                MergeOutcome::Merged
-            } else {
-                MergeOutcome::PresenceOnly
-            }
-        }
-        Some((super::loose_mat::LooseMatStage::Undecodable, _)) => {
-            log::debug!(
-                "loose .mat present but no recognized component; routing PBR only \
-                 (payload spellings parked on a real sample — #4277)"
-            );
-            record_external_texture_sources(material, &textures_before, ImportedTextureSource::Mat);
-            MergeOutcome::PresenceOnly
-        }
-        None => {
-            log::debug!(
-                "loose .mat present but not JSON — recognition-only (PBR routing, no \
-                 authored field); payload decode parked on a real sample (#4277)"
-            );
-            record_external_texture_sources(material, &textures_before, ImportedTextureSource::Mat);
-            MergeOutcome::PresenceOnly
-        }
-    }
-}
-
 #[cfg(test)]
 mod single_boundary_tests {
     /// Exactly one exported function in this file, and it is the merge entry

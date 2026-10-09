@@ -5,34 +5,42 @@
 //! and the shipped answer is the compiled Component Database
 //! (`materialsbeta.cdb`, handled by [`super::cdb`]). The *loose* form —
 //! a `.mat` JSON file sitting in an archive — is the authored source the
-//! CDB compiles from. The census cited in `cdb.rs`'s doc found only 20
-//! loose `.mat` across the full 129-archive + Creation corpus, all
-//! third-party, and a re-scan of this install's 129 archives with
-//! `ba2_grep` finds **zero** — so no vanilla sample exists to derive the
-//! JSON dialect from.
+//! CDB compiles from. Vanilla ships none; this install's Creation
+//! archives carry 20 (`qog-pawnshop`, `sp2_factionrequisitionkiosks`,
+//! `starfieldresourcerevival`, `avontechshipyards` — `ba2_grep`,
+//! 2026-10-09).
 //!
-//! What CAN be sourced without a sample: the component type names and
-//! property names, because the compiled CDB stores them verbatim in its
-//! string tables (see `crates/sfmaterial/src/index.rs`'s per-field docs —
-//! `MRTextureFile`, `TextureReplacement`, `MaterialParamFloat`,
-//! `AlphaSettingsComponent.AlphaTestThreshold`/`HasOpacity`,
-//! `EffectSettingsComponent.IsGlass`,
-//! `TranslucencySettings.UseSSS`/`TransmissiveScale`, `Components.Index`,
-//! `Color`, `Enabled`, `Value`). The decode below matches those spellings
-//! (plus case-insensitive tolerance for hand-edited mods) and ignores
-//! everything it does not recognize — a partial decode fills only the
-//! components it understood, and a non-JSON payload degrades to
-//! recognition-only rather than a guess.
+//! #5396 — the layout, read off those installed files (the first decoder
+//! was written for an invented one and decoded none of them):
+//!
+//! ```text
+//! { "Filename": …, "Import": [ … ], "Version": 1, "Summary": { … },
+//!   "Objects": [ { "Parent": …, "ID": …, "Edges": [ … ],
+//!       "Components": [ { "Type": "BSMaterial::MRTextureFile", "Index": 0,
+//!                         "Data": { "FileName": "Data\\Textures\\…\\x_color.dds" } },
+//!                       { "Type": "BSMaterial::TextureReplacement", "Index": 7,
+//!                         "Data": { "Enabled": "true",
+//!                                   "Color": { "Type": "BSMaterial::Color",
+//!                                     "Data": { "Value": { "Type": "XMFLOAT4",
+//!                                       "Data": { "x": "1.000000", "y": …, "z": …, "w": … } } } } } },
+//!                       { "Type": "BSMaterial::AlphaSettingsComponent", "Index": 0,
+//!                         "Data": { "AlphaTestThreshold": "0.5", "HasOpacity": "true" } } ] } ] }
+//! ```
+//!
+//! Components live at `Objects[].Components[]`, their properties under
+//! `Data`; scalars and bools are **strings**; a texture path carries a
+//! `Data\` prefix. A loose file is a diff against its `Parent` material:
+//! a property it does not author is inherited, so nothing absent is
+//! filled with a default — an enabled replacement with no `Color` (two of
+//! the four samples) contributes no colour.
 //!
 //! Stage A contract:
 //! * a loose `.mat` file that the archives actually carry **wins over the
-//!   CDB** — the loose file is the authored source;
-//! * a decodable file merges its recognized components (`Merged`);
-//! * an undecodable-but-present file still routes as an authored external
-//!   material (`is_pbr` + `ImportedTextureSource::Mat` provenance,
-//!   `PresenceOnly`) instead of falling through to the CDB key hash;
-//! * everything is parked on a real sample: when one lands, fix the
-//!   spellings here against it.
+//!   CDB** when it decodes — the loose file is the authored source;
+//! * a decodable file merges its recognized components (`Decoded`);
+//! * a file with no recognized component, or no JSON at all, does not
+//!   pre-empt the CDB: the caller falls through to the compiled lookup
+//!   (#5396 — it used to return recognition-only and hide the CDB row).
 
 use byroredux_sfmaterial::CdbMaterial;
 
@@ -41,87 +49,98 @@ use byroredux_sfmaterial::CdbMaterial;
 pub(crate) enum LooseMatStage {
     /// JSON decoded; recognized components captured below.
     Decoded,
-    /// Present in the archives but not decodable as the component JSON —
-    /// recognition-only (PBR routing + provenance, no authored field).
+    /// JSON with the component layout, but no component this decoder
+    /// recognizes.
     Undecodable,
 }
 
 /// Decode a loose `.mat` payload into the [`CdbMaterial`] shape
 /// `apply_cdb_material` already consumes. Returns `None` when the bytes
-/// are not JSON at all.
+/// are not JSON or carry no `Objects` array.
 pub(crate) fn parse_loose_mat(bytes: &[u8]) -> Option<(LooseMatStage, CdbMaterial)> {
     let value: serde_json::Value = serde_json::from_slice(bytes).ok()?;
-    let components = find_array(&value, &["Components", "components"])?;
+    let objects = value.as_object()?.get("Objects")?.as_array()?;
+    let components = objects
+        .iter()
+        .filter_map(|object| object.get("Components")?.as_array())
+        .flatten()
+        .filter_map(|component| component.as_object());
     let mut out = CdbMaterial::default();
     let mut recognized = false;
-    for component in components.iter().filter_map(|v| v.as_object()) {
+    for component in components {
         let type_name = component
-            .iter()
-            .find(|(k, _)| k.starts_with('$') || k.eq_ignore_ascii_case("Type"))
-            .and_then(|(_, v)| v.as_str())
+            .get("Type")
+            .and_then(|v| v.as_str())
             .unwrap_or_default();
-        let get = |name: &str| {
-            component
-                .iter()
-                .find(|(k, _)| k.eq_ignore_ascii_case(name))
-                .map(|(_, v)| v)
+        let Some(data) = component.get("Data").and_then(|v| v.as_object()) else {
+            continue;
         };
-        let index = get("Index")
+        // PAR-D3-2026-10-08-02 — an out-of-range slot is dropped, never
+        // wrapped onto another slot.
+        let index = component
+            .get("Index")
             .and_then(|v| v.as_u64())
-            .map(|v| v as u8);
-        if type_name.contains("MRTextureFile") || type_name.contains("TextureFile") {
-            if let (Some(slot), Some(file)) = (index, get("File").or_else(|| get("Path"))) {
-                if let Some(file) = file.as_str() {
+            .and_then(|v| u8::try_from(v).ok());
+        match type_name.rsplit("::").next().unwrap_or_default() {
+            "MRTextureFile" => {
+                if let (Some(slot), Some(file)) =
+                    (index, data.get("FileName").and_then(|v| v.as_str()))
+                {
+                    let file = texture_path(file);
                     if !file.is_empty() {
-                        out.textures.push((slot, file.replace('/', "\\")));
+                        out.textures.push((slot, file));
                         recognized = true;
                     }
                 }
             }
-        } else if type_name.contains("TextureReplacement") {
-            let enabled = get("Enabled").and_then(|v| v.as_bool());
-            if enabled != Some(false) {
-                if let (Some(slot), Some(color)) = (index, get("Color")) {
-                    let rgba = decode_rgba(color);
-                    out.flat_color_slots.push((slot, rgba));
-                    if color_is_authored(color) {
+            "TextureReplacement" => {
+                // `Enabled` absent counts as enabled — the CDB capture's
+                // rule (`CdbMaterial::flat_color_slots`).
+                if json_bool(data.get("Enabled")) != Some(false) {
+                    if let (Some(slot), Some(rgba)) =
+                        (index, data.get("Color").and_then(xmfloat4))
+                    {
+                        out.flat_color_slots.push((slot, rgba));
                         recognized = true;
                     }
                 }
             }
-        } else if type_name.contains("MaterialParamFloat") {
-            if let (Some(idx), Some(value)) = (index, get("Value").or_else(|| get("Float"))) {
-                if let Some(value) = value.as_f64() {
-                    out.param_floats.push((idx, value as f32));
+            "MaterialParamFloat" => {
+                if let (Some(idx), Some(value)) = (index, json_f32(data.get("Value"))) {
+                    out.param_floats.push((idx, value));
                     recognized = true;
                 }
             }
-        } else if type_name.contains("AlphaSettings") {
-            if let Some(v) = get("AlphaTestThreshold").and_then(|v| v.as_f64()) {
-                out.alpha_test_threshold = Some(v as f32);
-                recognized = true;
+            "AlphaSettingsComponent" => {
+                if let Some(v) = json_f32(data.get("AlphaTestThreshold")) {
+                    out.alpha_test_threshold = Some(v);
+                    recognized = true;
+                }
+                if let Some(v) = json_bool(data.get("HasOpacity")) {
+                    out.has_opacity = Some(v);
+                    recognized = true;
+                }
             }
-            if let Some(v) = get("HasOpacity").and_then(|v| v.as_bool()) {
-                out.has_opacity = Some(v);
-                recognized = true;
+            "EffectSettingsComponent" => {
+                if let Some(v) = json_bool(data.get("IsGlass")) {
+                    out.is_glass = Some(v);
+                    recognized = true;
+                }
             }
-        } else if type_name.contains("EffectSettings") {
-            if let Some(v) = get("IsGlass").and_then(|v| v.as_bool()) {
-                out.is_glass = Some(v);
-                recognized = true;
+            "TranslucencySettingsComponent" | "TranslucencySettings" => {
+                if let Some(v) = json_bool(data.get("UseSSS")) {
+                    out.use_sss = Some(v);
+                    recognized = true;
+                }
+                if let Some(v) = json_f32(data.get("TransmissiveScale")) {
+                    out.transmissive_scale = Some(v);
+                    recognized = true;
+                }
             }
-        } else if type_name.contains("TranslucencySettings") {
-            if let Some(v) = get("UseSSS").and_then(|v| v.as_bool()) {
-                out.use_sss = Some(v);
-                recognized = true;
-            }
-            if let Some(v) = get("TransmissiveScale").and_then(|v| v.as_f64()) {
-                out.transmissive_scale = Some(v as f32);
-                recognized = true;
-            }
+            // Unrecognized component types are ignored — a partial decode
+            // is strictly better than declining the file.
+            _ => {}
         }
-        // Unrecognized component types are ignored — a partial decode is
-        // strictly better than declining the file.
     }
     Some((
         if recognized {
@@ -133,111 +152,144 @@ pub(crate) fn parse_loose_mat(bytes: &[u8]) -> Option<(LooseMatStage, CdbMateria
     ))
 }
 
-/// The `Components` array, whichever key spelling it landed under.
-fn find_array<'v>(
-    value: &'v serde_json::Value,
-    keys: &[&str],
-) -> Option<&'v Vec<serde_json::Value>> {
-    let object = value.as_object()?;
-    keys.iter()
-        .find_map(|k| object.get(*k))
-        .or_else(|| {
-            object
-                .iter()
-                .find(|(k, _)| keys.iter().any(|want| k.eq_ignore_ascii_case(want)))
-                .map(|(_, v)| v)
-        })
-        .and_then(|v| v.as_array())
-}
-
-fn decode_rgba(color: &serde_json::Value) -> [f32; 4] {
-    match color {
-        serde_json::Value::Array(items) => {
-            let channel = |i: usize| {
-                items
-                    .get(i)
-                    .and_then(|v| v.as_f64())
-                    .map(|v| v as f32)
-                    .unwrap_or(1.0)
-            };
-            [channel(0), channel(1), channel(2), channel(3)]
-        }
-        // A hex string (`"#RRGGBB"` / `"RRGGBBAA"`) is the other common
-        // Bethesda JSON colour spelling; tolerated, not yet sourced.
-        serde_json::Value::String(s) => {
-            let hex = s.trim_start_matches('#');
-            let channel = |i: usize| {
-                u8::from_str_radix(hex.get(i..i + 2).unwrap_or("FF"), 16).unwrap_or(255) as f32
-                    / 255.0
-            };
-            if hex.len() >= 6 {
-                [channel(0), channel(2), channel(4), channel(6.min(hex.len().saturating_sub(2)))]
-            } else {
-                [1.0; 4]
-            }
-        }
-        _ => [1.0; 4],
+/// A texture path in the archive convention: backslash separators and
+/// no `Data\` prefix (the loose file writes `Data\Textures\…`).
+fn texture_path(file: &str) -> String {
+    let file = file.replace('/', "\\");
+    match file.get(..5) {
+        Some(prefix) if prefix.eq_ignore_ascii_case("data\\") => file[5..].to_string(),
+        _ => file,
     }
 }
 
-/// A `Color` that actually carries a value (not `null` / empty).
-fn color_is_authored(color: &serde_json::Value) -> bool {
-    !color.is_null()
+/// A bool authored as a JSON bool or as the string `"true"` / `"false"`
+/// (the loose files' spelling).
+fn json_bool(value: Option<&serde_json::Value>) -> Option<bool> {
+    match value? {
+        serde_json::Value::Bool(b) => Some(*b),
+        serde_json::Value::String(s) if s.eq_ignore_ascii_case("true") => Some(true),
+        serde_json::Value::String(s) if s.eq_ignore_ascii_case("false") => Some(false),
+        _ => None,
+    }
+}
+
+/// A finite float authored as a JSON number or a numeric string.
+fn json_f32(value: Option<&serde_json::Value>) -> Option<f32> {
+    let v = match value? {
+        serde_json::Value::Number(n) => n.as_f64()? as f32,
+        serde_json::Value::String(s) => s.trim().parse::<f32>().ok()?,
+        _ => return None,
+    };
+    v.is_finite().then_some(v)
+}
+
+/// A `BSMaterial::Color`: `Data.Value.Data` holds the `XMFLOAT4`'s
+/// `x`/`y`/`z`/`w`. All four channels must be authored — a missing one
+/// is not invented.
+fn xmfloat4(color: &serde_json::Value) -> Option<[f32; 4]> {
+    let channels = color.get("Data")?.get("Value")?.get("Data")?;
+    Some([
+        json_f32(channels.get("x"))?,
+        json_f32(channels.get("y"))?,
+        json_f32(channels.get("z"))?,
+        json_f32(channels.get("w"))?,
+    ])
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// #5396 — verbatim excerpts of installed Creation files (the
+    /// `galacticpawnshopterminal_terminalcase.mat` texture-set object,
+    /// `portablegreenhouse02.mat`'s alpha settings and
+    /// `lasersight_white.mat`'s two replacements), in their real layout.
+    const REAL_LAYOUT: &[u8] = br#"{
+	"Filename" : "Materials\\QOG\\Pawnshop\\GalacticPawnShopTerminal_TerminalCase.mat",
+	"Import" : [ "Data\\MATERIALS\\Layered\\ShaderModels\\ColorEmissive.mat" ],
+	"Objects" :
+	[
+		{
+			"Components" :
+			[
+				{ "Data" : { "Name" : "GalacticPawnShopTerminal_TerminalCase_TextureSet1" }, "Index" : 0, "Type" : "BSComponentDB::CTName" },
+				{ "Data" : { "Enabled" : "false" }, "Index" : 7, "Type" : "BSMaterial::TextureReplacement" },
+				{ "Data" : { "FileName" : "Data\\Textures\\QOG\\Pawnshop\\GalacticPawnShopTerminal\\TerminalCase_color.dds" }, "Index" : 0, "Type" : "BSMaterial::MRTextureFile", "Version" : 2 },
+				{ "Data" : { "FileName" : "Data\\Textures\\QOG\\Pawnshop\\GalacticPawnShopTerminal\\TerminalCase_normal.dds" }, "Index" : 1, "Type" : "BSMaterial::MRTextureFile", "Version" : 2 },
+				{ "Data" : { "FileName" : "Data\\Textures\\QOG\\Pawnshop\\GalacticPawnShopTerminal\\TerminalCase_emissive.dds" }, "Index" : 7, "Type" : "BSMaterial::MRTextureFile", "Version" : 2 }
+			],
+			"ID" : "res:CE0A3062:000625D2:A183B6ED",
+			"Parent" : "res:68CD9647:0005AE81:A06346EA"
+		},
+		{
+			"Components" :
+			[
+				{ "Data" : { "AlphaTestThreshold" : "0.5", "HasOpacity" : "true", "OpacitySourceLayer" : "MATERIAL_LAYER_1" }, "Index" : 0, "Type" : "BSMaterial::AlphaSettingsComponent" },
+				{ "Data" : { "Enabled" : "true" }, "Index" : 2, "Type" : "BSMaterial::TextureReplacement" },
+				{ "Data" : { "Color" : { "Data" : { "Value" : { "Data" : { "w" : "1.000000", "x" : "1.000000", "y" : "0.428672", "z" : "1.000000" }, "Type" : "XMFLOAT4" } }, "Type" : "BSMaterial::Color" }, "Enabled" : "true" }, "Index" : 3, "Type" : "BSMaterial::TextureReplacement" }
+			]
+		}
+	],
+	"Version" : 1
+}"#;
+
+    /// #5396 — the real layout decodes end to end: `Data\` stripped from
+    /// texture paths, string scalars and bools parsed, the nested
+    /// `XMFLOAT4` colour read, and an authored-disabled replacement or an
+    /// enabled one with no `Color` contributes nothing.
     #[test]
-    fn decodes_the_cited_component_spellings() {
-        let json = br#"{
-            "Components": [
-                {"$type": "MRTextureFile", "Index": 0, "File": "textures/foo/bar_d.dds"},
-                {"$type": "MRTextureFile", "Index": 3, "File": "textures/foo/bar_r.dds"},
-                {"$type": "MaterialParamFloat", "Index": 1, "Value": 0.25},
-                {"$type": "AlphaSettingsComponent", "AlphaTestThreshold": 0.5, "HasOpacity": true},
-                {"$type": "EffectSettingsComponent", "IsGlass": true},
-                {"$type": "TranslucencySettings", "UseSSS": true, "TransmissiveScale": 0.8},
-                {"$type": "TextureReplacement", "Index": 4, "Color": [0.25, 0.5, 0.75, 1.0], "Enabled": true},
-                {"$type": "SomethingUnknownToUs", "Whatever": 1}
-            ]
-        }"#;
-        let (stage, mat) = parse_loose_mat(json).expect("decodes");
+    fn decodes_the_installed_loose_mat_layout() {
+        let (stage, mat) = parse_loose_mat(REAL_LAYOUT).expect("decodes");
         assert_eq!(stage, LooseMatStage::Decoded);
-        assert!(mat
-            .textures
-            .contains(&(0, "textures\\foo\\bar_d.dds".to_owned())));
-        assert!(mat.textures.contains(&(3, "textures\\foo\\bar_r.dds".to_owned())));
-        assert_eq!(mat.param_floats, vec![(1, 0.25)]);
+        assert_eq!(
+            mat.textures,
+            vec![
+                (0, "Textures\\QOG\\Pawnshop\\GalacticPawnShopTerminal\\TerminalCase_color.dds".to_owned()),
+                (1, "Textures\\QOG\\Pawnshop\\GalacticPawnShopTerminal\\TerminalCase_normal.dds".to_owned()),
+                (7, "Textures\\QOG\\Pawnshop\\GalacticPawnShopTerminal\\TerminalCase_emissive.dds".to_owned()),
+            ]
+        );
         assert_eq!(mat.alpha_test_threshold, Some(0.5));
         assert_eq!(mat.has_opacity, Some(true));
-        assert_eq!(mat.is_glass, Some(true));
-        assert_eq!(mat.use_sss, Some(true));
-        assert_eq!(mat.transmissive_scale, Some(0.8));
-        assert_eq!(mat.flat_color_slots.len(), 1);
-        assert_eq!(mat.flat_color_slots[0].0, 4);
+        assert_eq!(
+            mat.flat_color_slots,
+            vec![(3, [1.0, 0.428672, 1.0, 1.0])],
+            "slot 7 is authored-disabled and slot 2 authors no colour"
+        );
     }
 
+    /// PAR-D3-2026-10-08-02 — an out-of-range `Index` is dropped, not
+    /// wrapped onto slot 0.
     #[test]
-    fn disabled_texture_replacement_is_skipped() {
-        let json = br#"{"components": [
-            {"$type": "TextureReplacement", "Index": 0, "Color": [1,1,1,1], "Enabled": false}
-        ]}"#;
-        let (_, mat) = parse_loose_mat(json).expect("lowercase components key tolerated");
+    fn out_of_range_index_is_dropped_not_wrapped() {
+        let json = br#"{"Objects": [{"Components": [
+            {"Data": {"FileName": "Data\\Textures\\x.dds"}, "Index": 256, "Type": "BSMaterial::MRTextureFile"}
+        ]}]}"#;
+        let (stage, mat) = parse_loose_mat(json).expect("parses");
+        assert_eq!(stage, LooseMatStage::Undecodable);
+        assert!(mat.textures.is_empty());
+    }
+
+    /// A colour missing a channel is not completed with an invented value.
+    #[test]
+    fn partial_colour_is_not_completed() {
+        let json = br#"{"Objects": [{"Components": [
+            {"Data": {"Enabled": "true", "Color": {"Data": {"Value": {"Data": {"x": "1", "y": "0", "z": "0"}}}}},
+             "Index": 0, "Type": "BSMaterial::TextureReplacement"}
+        ]}]}"#;
+        let (_, mat) = parse_loose_mat(json).expect("parses");
         assert!(mat.flat_color_slots.is_empty());
     }
 
     #[test]
-    fn non_json_degrades_to_undecodable_none() {
+    fn non_json_or_no_objects_is_none() {
         assert!(parse_loose_mat(b"\x00\x01binary garbage").is_none());
-        // JSON without a Components array is not the dialect we know.
         assert!(parse_loose_mat(br#"{"hello": "world"}"#).is_none());
     }
 
     #[test]
     fn recognized_nothing_is_undecodable_stage_not_a_failure() {
-        let json = br#"{"Components": [{"$type": "FutureComponent"}]}"#;
+        let json = br#"{"Objects": [{"Components": [{"Data": {"Name": "x"}, "Index": 0, "Type": "BSComponentDB::CTName"}]}]}"#;
         let (stage, _) = parse_loose_mat(json).expect("parses");
         assert_eq!(stage, LooseMatStage::Undecodable);
     }
