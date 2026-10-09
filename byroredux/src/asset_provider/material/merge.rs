@@ -476,9 +476,13 @@ pub(crate) fn merge_external_material(
     // falls through to the sentinel/classifier fallback instead of
     // silently keeping a fabricated constant.
     //
-    // #2709 (SF-D9-03) — `PresenceOnly`, not `Merged`: this arm sets exactly
-    // one routing flag and forwards no authored field. Phase 2 should return
-    // `Merged` once a CDB lookup actually supplies data.
+    // #2709 (SF-D9-03) established this arm as `PresenceOnly` — one routing
+    // flag, no authored field, "`Merged` once a CDB lookup actually supplies
+    // data". Phase 2 (#3398) now does: a CDB hit forwards the canonical-fit
+    // textures, the flat-colour replacement (#5190), alpha-test and authored
+    // glass (#5196), so the arm below returns `Merged` whenever the lookup
+    // touched anything. `PresenceOnly` survives only as the lookup-MISS
+    // fallback shape.
     if starfield_cdb_gate && path.ends_with(".mat") {
         // #4277 — Stage A, the deliverable #762 closed without building: a
         // loose `.mat` FILE in the archives is the authored source the CDB

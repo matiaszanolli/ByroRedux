@@ -675,20 +675,32 @@ put 17,998 files (39%) on these five kinds. **`MaterialTextureSet`'s 22 roles
 have no destination for any of them**, and the near-miss roles are wrong, not
 merely imperfect: `smooth_spec` is consumed as *gloss* (`roughness = mix(1.0,
 roughness, glossTexel.r)` in `triangle.frag`), so routing `_rough` there is a
-silent sign flip, and `specular` is a colour map, not metalness. Until CDB
-Phase 2 (#3398 — the loose `.mat` JSON resolver #4277 needs the same roles)
-lands its per-texture extraction, zero Starfield texture roles are produced,
-so the gap is latent; the parked vocabulary is recorded here so Phase 2
-cannot quietly misroute 39% of the game's textures into semantically wrong
-slots. The Phase-2 contract: each kind lands as a **named** `MaterialTextureSet`
+silent sign flip, and `specular` is a colour map, not metalness. CDB Phase 2
+(#3398) landed its per-texture extraction for the canonical-fit slots —
+colour / normal / emissive forward through `apply_cdb_material`
+(`asset_provider/material/merge.rs`; the loose `.mat` JSON resolver #4277
+rides the same lookup), pinned by `mat_path_merges_cdb_authored_textures_when_indexed`
+and `mat_path_lookup_miss_keeps_presence_only_and_no_textures`
+(`asset_provider/tests/starfield_mat.rs`) — but the five parked kinds still
+have no `MaterialTextureSet` destination (the opacity / roughness / metal /
+ao / transmissive CDB slots stay parked; #5381 moved `_height` out of the
+canonical `height` role because Starfield authors it as an alpha-layer blend,
+not parallax), so the recorded vocabulary below remains the contract the next
+phase must honour. The Phase-2 **scalar** translations that did land, all in
+`apply_cdb_material`: the `SLOT_COLOR` flat-colour replacement →
+`diffuse_color` (#5190 — replacement-only, never a tint beside a bound
+colour texture), `AlphaTestThreshold` → `alpha_test`/`alpha_threshold` with
+the `HasOpacity = false` guard (#5196), and `IsGlass` → the `bgem_glass`
+classifier input with `thin_glass` deliberately NOT implied (#5196);
+`UseSSS` stays parked until a subsurface-colour source exists — the gate
+alone bought visibility rays for a zero term (#5196). The contract for the
+parked kinds: each lands as a **named** `MaterialTextureSet`
 role with documented channel semantics, a `GpuMaterial` lane (lockstep
 `bindings.glsl` change against the 428 B pin) and a `triangle.frag` consumer —
 never a CDB slot index, never a reuse of `smooth_spec`/`specular`. When the
 first role lands, `starfield_single_channel_kinds_are_parked_by_name_or_canonical`
-(the XOR guard beside the zero-forwarding pin in `asset_provider/tests/starfield_mat.rs`)
-forces this table and the struct to move together, and
-`mat_path_forwards_no_texture_roles_until_cdb_phase_2_lands` gets rewritten
-to assert the new named roles.
+(the XOR guard beside the lookup-miss pin in `asset_provider/tests/starfield_mat.rs`)
+forces this table and the struct to move together.
 
 ### Passthroughs — parked / dropped inventory (surveyed 2026-06-02)
 
@@ -769,10 +781,12 @@ The material slice was executed this session as the template. Mechanics:
      attached — the second phase, below.
 
 - **Drawn-surface exemptions, recorded** (#4304). "Every drawn surface's
-  canonical material is produced at one boundary" has exactly four
-  deliberate exemptions:
-  - Cornell's synthetic fixtures;
-  - `crates/save`'s reconstructed materials;
+  canonical material is produced at one boundary" has deliberate
+  exemptions:
+  - Cornell's synthetic fixtures (the Cornell room lives in
+    `cornell/builders.rs`, outside the spawner scan's roots by choice);
+  - `crates/save`'s reconstructed materials (`restore_world` reinserts
+    saved `Material`s through the save registry);
   - **EXAL ground cover**: blades shade from `GroundCoverPalette`
     (`groundcover_translate.rs`) with no `Material`, no `GpuMaterial` row and
     no `MaterialTable` intern. That is the correct shape (no `Imported*`
@@ -783,6 +797,16 @@ The material slice was executed this session as the template. Mechanics:
     cards that spawn as `FogVolume`s with no `Material` at all — a
     translation to a different canonical category, recorded there with its
     path scope and media tuning constants (#5102).
+  - `scene.rs`'s four material-free demo primitives (`cube`, `quad`,
+    `red_tri`, `blue_tri`), exempt by entity name in the spawner guard.
+
+  The spawner guard (`every_exterior_spawner_inserts_a_boundary_material`,
+  `material_translate.rs`) owns the current set — it is the source of truth
+  for the count, not this list. It also records two **scan-level**
+  exemptions that are not boundary exemptions: the LOD-water `plane.entity`
+  re-insert keeps the `Material` `spawn_lod_water_plane` already translated
+  (#5243), and `npc_spawn/resumable/mod.rs`'s mock `MeshHandle`s are
+  test-only (stripped by the scan's inline-test-module rule).
 
 - **Two-phase boundary** (#2330). `translate_material` runs *before* texture
   handles exist, so any field whose value depends on which textures actually

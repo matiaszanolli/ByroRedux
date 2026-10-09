@@ -1104,7 +1104,7 @@ impl ConsoleCommand for MatSetCommand {
             }
             // #4023 (REN-2026-09-06-D21-01) — the glass optics group:
             // `to_gpu_material` assigns all four verbatim and the shader reads
-            // them, but `cornell.rs`'s `glass()` constructor leaves them at
+            // them, but `cornell/builders.rs`'s `glass()` constructor leaves them at
             // `Material::default()` with no console path to sweep them. Same
             // no-clamp treatment as `ior` above — these are authored blend
             // factors / a refractive scale with no single valid range the

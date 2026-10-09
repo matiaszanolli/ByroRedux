@@ -2539,8 +2539,8 @@ mod tests {
     ///   `render/water.rs` destructures a `MeshHandle` to re-emit a draw and
     ///   would be a false positive under the looser match.
     /// - It strips inline `#[cfg(test)] mod …` blocks, not just `_tests.rs`
-    ///   siblings. `npc_spawn/resumable.rs` builds mock `MeshHandle`s in its
-    ///   test module and is not a spawner at all; meanwhile `nif_loader.rs`
+    ///   siblings. `npc_spawn/resumable/mod.rs` builds mock `MeshHandle`s in
+    ///   its test module and is not a spawner at all; meanwhile `nif_loader.rs`
     ///   carries production code *after* its test module and
     ///   `terrain_lod.rs` a `#[cfg(test)]` helper *before* its own, so
     ///   truncating at the first or last `#[cfg(test)]` silently drops a real
@@ -2548,10 +2548,10 @@ mod tests {
     ///
     /// Scope — what the scan leaves out, and why (#4964):
     ///
-    /// - `cornell.rs` is outside [`SPAWNER_ROOTS`] by choice. Its Cornell
-    ///   room is a synthetic RT fixture with hand-built `Material`s, not a
-    ///   draw population from game content, which is what the NIFAL boundary
-    ///   invariant is about.
+    /// - `cornell/` is outside [`SPAWNER_ROOTS`] by choice. Its Cornell
+    ///   room (`cornell/builders.rs`) is a synthetic RT fixture with
+    ///   hand-built `Material`s, not a draw population from game content,
+    ///   which is what the NIFAL boundary invariant is about.
     /// - `scene.rs` is a root (#4856) and is scanned like any other file, so a
     ///   real spawner added there fails this test. Only its four
     ///   material-free demo primitives — `cube`, `quad`, `red_tri`,
@@ -2765,7 +2765,7 @@ mod tests {
     /// mesh-spawning code, walked by
     /// [`every_exterior_spawner_inserts_a_boundary_material`].
     ///
-    /// A list rather than the whole crate so `cornell.rs`'s synthetic fixture
+    /// A list rather than the whole crate so `cornell/`'s synthetic fixture
     /// stays out; `scene.rs` is in, with its demo primitives exempted by
     /// name. See that test's doc for the full scope and the exemptions
     /// recorded elsewhere.
