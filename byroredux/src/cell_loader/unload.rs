@@ -555,28 +555,38 @@ fn release_entities_timed(
 /// #5310 — before a despawn sweep, detach every victim whose `Parent`
 /// survives the sweep: drop the victim's id from that parent's `Children`
 /// (and the `Parent` row itself, which the despawn would remove anyway).
-/// Whole-chain teardowns (cell unload) pay one `Parent` query and no-op;
+/// Whole-chain teardowns (cell unload) pay one `Parent` read guard and a
+/// binary-search membership test per victim (#5418 — the old shape took
+/// a per-victim `world.get::<Parent>`, one full read-lock round-trip
+/// each, and built a `HashSet` of every victim unconditionally);
 /// partial-subtree releases (#5028's gear release) leave no dangling
 /// child id behind.
 fn detach_victims_from_surviving_parents(world: &mut World, victims: &[EntityId]) {
     if victims.is_empty() {
         return;
     }
-    // Pass 1 — read the victims' Parent rows (dropping the read guard
-    // before any Children write, per the TypeId-sorted acquisition
-    // contract: Parent before Children).
-    let victim_set: HashSet<EntityId> = victims.iter().copied().collect();
+    // Pass 1 — the victims' Parent rows under ONE read guard (dropped at
+    // the end of this scope, before any Children write, per the
+    // TypeId-sorted acquisition contract: Parent before Children).
+    // Membership is a binary search over a sorted copy of the sweep —
+    // callers are free to pass unsorted slices (`release_entities`'s
+    // gear path), so the sort is local and defensive.
+    let mut sorted_victims: Vec<EntityId> = victims.to_vec();
+    sorted_victims.sort_unstable();
     let mut detach: Vec<(EntityId, EntityId)> = Vec::new();
-    for &victim in victims {
-        let Some(parent) = world.get::<Parent>(victim).map(|p| p.0) else {
-            continue;
-        };
-        if victim_set.contains(&parent) {
-            // The parent dies in the same sweep — `despawn_batch` clears
-            // both sides; no edit needed (and none would be safe).
-            continue;
+    if let Some(parents) = world.query::<Parent>() {
+        for &victim in victims {
+            let Some(parent) = parents.get(victim).map(|p| p.0) else {
+                continue;
+            };
+            if sorted_victims.binary_search(&parent).is_ok() {
+                // The parent dies in the same sweep — `despawn_batch`
+                // clears both sides; no edit needed (and none would be
+                // safe).
+                continue;
+            }
+            detach.push((parent, victim));
         }
-        detach.push((parent, victim));
     }
     if detach.is_empty() {
         return;
@@ -1242,6 +1252,42 @@ mod retention_hoisting_tests {
             body.matches("cinematic_retained_entities(").count(),
             1,
             "unload_cells must call the whole-world scan exactly once per batch"
+        );
+    }
+
+    /// #5418 — the detach pass keeps its single-guard shape: one
+    /// `query::<Parent>()` scope for the whole sweep, membership by
+    /// binary search over a sorted slice, and no per-victim
+    /// `world.get::<Parent>` (each call is a full read-lock
+    /// acquire/release including lock-tracker bookkeeping, O(victims) on
+    /// every cell unload) and no rebuilt per-sweep `HashSet`.
+    #[test]
+    fn detach_victims_takes_one_parent_guard_for_the_whole_sweep() {
+        let src = production_source();
+        let fn_start = src
+            .find("fn detach_victims_from_surviving_parents(")
+            .expect("detach_victims_from_surviving_parents must still exist");
+        let fn_end = src[fn_start..]
+            .find("\n/// #5028")
+            .map(|rel| fn_start + rel)
+            .expect("release_entities's doc must still follow the detach pass");
+        let body = &src[fn_start..fn_end];
+        assert!(
+            body.contains("world.query::<Parent>()"),
+            "the detach pass must read every victim's Parent under one \
+             query guard (#5418)"
+        );
+        assert!(
+            !body.contains("world.get::<Parent>"),
+            "a per-victim world.get::<Parent> crept back into the detach \
+             pass — that is one full read-lock round-trip per victim per \
+             cell unload, the exact class #5418 removed"
+        );
+        assert!(
+            !body.contains("HashSet<EntityId>"),
+            "the sweep-membership test is a binary search over a sorted \
+             slice; rebuilding the per-sweep HashSet is the shape #5418 \
+             removed"
         );
     }
 }
