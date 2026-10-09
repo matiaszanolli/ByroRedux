@@ -54,6 +54,7 @@ docs/smoke-tests/p5-door-transition.sh fnv       # save/reload both sides of the
 docs/smoke-tests/p5-soak.sh fnv                  # 30-min repeated transitions/saves soak (BYROREDUX_SOAK_MINUTES)
 docs/smoke-tests/sm1-story-manager.sh            # Skyrim SE: Story Manager CLOC dispatch starts quests live (#5366)
 docs/smoke-tests/dt1-dialogue-layers.sh          # FNV: greeting on quest-less activation + PACK-driven force-greet (#5367)
+docs/smoke-tests/m42-eat-sleep.sh              # FNV: Eat/Sleep schedule procedures — window selection, walk-then-seat (#M42)
 docs/smoke-tests/dt2-skyrim-forcegreet.sh        # Skyrim SE: ForceGreet-tree PACK dialect resolves its PDTO topic / greets generically (#5367)
 ```
 

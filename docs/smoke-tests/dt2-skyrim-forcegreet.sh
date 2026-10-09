@@ -40,6 +40,17 @@ fail() {
     exit 1
 }
 
+# #5427 — the SKIP≠PASS contract every per-game gate honours: a runner
+# without the game's data measures nothing (exit 77, never a pass),
+# before any port or build work.
+DATA="${BYROREDUX_SKYRIMSE_DATA:-/mnt/data/SteamLibrary/steamapps/common/Skyrim Special Edition/Data}"
+for f in "Skyrim.esm" "Skyrim - Meshes0.bsa" "Skyrim - Textures0.bsa"; do
+    if [ ! -f "$DATA/$f" ]; then
+        echo "smoke[dt2-skyrim-forcegreet]: SKIP -- missing $DATA/$f"
+        exit 77
+    fi
+done
+
 if ss -ltn "sport = :$PORT" | grep -q LISTEN; then
     fail "port $PORT already occupied; refusing to attach to another session"
 fi

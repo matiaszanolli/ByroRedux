@@ -34,6 +34,17 @@ fail() {
     exit 1
 }
 
+# #5427 — the SKIP≠PASS contract every per-game gate honours: a runner
+# without the game's data measures nothing (exit 77, never a pass),
+# before any port or build work.
+DATA="${BYROREDUX_FNV_DATA:-/mnt/data/SteamLibrary/steamapps/common/Fallout New Vegas/Data}"
+for f in "FalloutNV.esm" "Fallout - Meshes.bsa" "Fallout - Textures.bsa"; do
+    if [ ! -f "$DATA/$f" ]; then
+        echo "smoke[dt1-dialogue-layers]: SKIP -- missing $DATA/$f"
+        exit 77
+    fi
+done
+
 if ss -ltn "sport = :$PORT" | grep -q LISTEN; then
     fail "port $PORT already occupied; refusing to attach to another session"
 fi

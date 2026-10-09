@@ -98,6 +98,12 @@ resolve, and
 gates the Skyrim force-greet dialect (#5367): the `ForceGreet`
 procedure-tree leaf's `Topic` input resolves its authored topic and
 a topic-less package greets generically, opening with no activation.
+[`m42-eat-sleep.sh`](docs/smoke-tests/m42-eat-sleep.sh)
+gates the M42 Eat/Sleep behavior components live on FNV
+(GSProspectorSaloonInterior): the settler must be awake at the boot
+hour, `time.set 23` inside his 22:00–08:00 window must hand him
+`SleepBehavior`, and the walk-then-seat runtime must seat HIM at the
+bed (the seat leg is scoped to the found entity).
 
 ### Shader Compilation
 ```bash

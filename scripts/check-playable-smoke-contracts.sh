@@ -108,6 +108,23 @@ for name in m48-menu-load m48-4-oblivion-hud m48-5-fo3-hud m48-6-skyrim-hud m48-
     echo "playable-smoke-contracts: PASS -- $name distinguishes SKIP from PASS"
 done
 
+# #5427 — the dialogue / Story Manager / M42 live gates added in the
+# #5366/#5367 window honour the same SKIP != PASS contract, so a
+# dataless runner measures nothing instead of reporting them red (the
+# reason #4724 kept gates out of CI).
+for name in dt1-dialogue-layers m42-eat-sleep sm1-story-manager dt2-skyrim-forcegreet; do
+    smoke="$ROOT_DIR/docs/smoke-tests/$name.sh"
+    set +e
+    output="$(env "${DATA_NEUTRALISE[@]}" "$smoke" 2>&1)"
+    status=$?
+    set -e
+    [[ $status -eq 77 ]] \
+        || fail "$name missing-data path exited $status instead of SKIP=77"
+    grep -Fq "smoke[$name]: SKIP -- missing" <<<"$output" \
+        || fail "$name did not emit an explicit SKIP diagnostic"
+    echo "playable-smoke-contracts: PASS -- $name distinguishes SKIP from PASS"
+done
+
 # An unknown game must be a loud configuration error, never a SKIP that a CI
 # lane would read as "data absent, nothing to do".
 set +e

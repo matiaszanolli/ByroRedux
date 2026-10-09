@@ -38,6 +38,17 @@ fail() {
     exit 1
 }
 
+# #5427 — the SKIP≠PASS contract every per-game gate honours: a runner
+# without the game's data measures nothing (exit 77, never a pass),
+# before any port or build work.
+DATA="${BYROREDUX_FNV_DATA:-/mnt/data/SteamLibrary/steamapps/common/Fallout New Vegas/Data}"
+for f in "FalloutNV.esm" "Fallout - Meshes.bsa" "Fallout - Textures.bsa"; do
+    if [ ! -f "$DATA/$f" ]; then
+        echo "smoke[m42-eat-sleep]: SKIP -- missing $DATA/$f"
+        exit 77
+    fi
+done
+
 if ss -ltn "sport = :$PORT" | grep -q LISTEN; then
     fail "port $PORT already occupied; refusing to attach to another session"
 fi
@@ -97,6 +108,10 @@ until grep -Fq "Entity $entity" "$LOG_DIR/sleep.log" 2>/dev/null; do
 done
 echo "smoke[m42-eat-sleep]: selection PASS — time.set 23 handed the settler SleepBehavior"
 
-wait_log "$LOG_DIR/session.stderr" '[m42] sleep npc='
+# #5427 — scope the seat leg to the settler the gate found: the log
+# line prints for ANY NPC that sits, and after time.set 23 every
+# Sleep-package NPC in the saloon is a candidate, so an unscoped wait
+# could pass with the target still standing.
+wait_log "$LOG_DIR/session.stderr" "[m42] sleep npc=$entity"
 echo "smoke[m42-eat-sleep]: seat PASS — the walk-then-seat runtime seated her at the bed"
 echo "smoke[m42-eat-sleep]: PASS — Sleep procedure live; artifacts: $LOG_DIR"
