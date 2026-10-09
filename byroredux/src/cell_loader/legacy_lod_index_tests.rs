@@ -150,15 +150,53 @@ fn washmontop_level8_spans_multiple_residues_and_all_select() {
         "census: washmontop level 8 spans y residues 2/4/7 — found {residues:?}"
     );
 
-    // Select from one residue's quad: the multi-residue siblings are
-    // independent quads, and the selection must not assume one lattice.
+    // #5387 — the multi-residue siblings are leftovers from different
+    // LOD generations whose footprints overlap; selection keeps the
+    // MAJORITY lattice and must select its members, never draw the
+    // overlapping minority.
     let ladder = LodBandLadder::for_object_game(GameKind::Fallout3NV).expect("FO3 object ladder");
-    for &(l, qx, qy) in level8.iter().take(3) {
+
+    // The majority residue class of level 8.
+    let mut counts: std::collections::HashMap<(i32, i32), usize> =
+        std::collections::HashMap::new();
+    for &(_, qx, qy) in level8.iter() {
+        *counts.entry((qx.rem_euclid(8), qy.rem_euclid(8))).or_insert(0) += 1;
+    }
+    let (majority, _) = counts
+        .iter()
+        .max_by_key(|(residue, count)| (**count, std::cmp::Reverse(**residue)))
+        .expect("washmontop level 8 is non-empty");
+    let majority_quads: Vec<_> = level8
+        .iter()
+        .copied()
+        .filter(|&(_, qx, qy)| (qx.rem_euclid(8), qy.rem_euclid(8)) == *majority)
+        .collect();
+
+    for &(l, qx, qy) in majority_quads.iter().take(3) {
         let player = (qx + l / 2, qy + l / 2);
         let selected = select_authored_lod_quads(&quads, &ladder, player, None);
         assert!(
             selected.contains(&(l, qx, qy)),
-            "standing in quad ({qx}, {qy}), that quad must be selected"
+            "standing in majority-generation quad ({qx}, {qy}), that quad must be selected"
         );
+        // #5387's real-data pin: no two selected same-level quads'
+        // footprints overlap anywhere on washmontop.
+        for level in [4i32, 8] {
+            let same_level: Vec<_> =
+                selected.iter().copied().filter(|&(l, _, _)| l == level).collect();
+            for (i, &(l1, x1, y1)) in same_level.iter().enumerate() {
+                for &(l2, x2, y2) in same_level.iter().skip(i + 1) {
+                    let overlap = x1 < x2 + l2
+                        && x2 < x1 + l1
+                        && y1 < y2 + l2
+                        && y2 < y1 + l1;
+                    assert!(
+                        !overlap,
+                        "selected same-level quads ({l1},{x1},{y1}) and ({l2},{x2},{y2}) \
+                         overlap — the leftover-generation prune missed them (#5387)"
+                    );
+                }
+            }
+        }
     }
 }

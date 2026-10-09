@@ -438,10 +438,60 @@ pub(crate) fn select_lod_quads(
 ///   coarser quad keeps the ground, mirroring the descent, which never
 ///   emits a child of a quad it drew itself.
 ///
-/// Assumes a level's authored quads tile the ground they cover (vanilla's
-/// LOD generator bakes full worldspace coverage); a partial authoring
-/// leaves holes rather than overlapping draws, the same posture as the
-/// object ring's empty sentinel.
+/// #5387 — resolve same-level footprint overlaps among authored quads.
+///
+/// A single LOD generation tiles one level on ONE lattice: every quad
+/// sits at `(qx, qy)` with `qx ≡ rx (mod level)` for a fixed
+/// `(rx, ry)` (FO3's `x12.y-25`-style name tables). Quads from
+/// leftover runs of a DIFFERENT generation sit on other residues and
+/// overlap the dominant tiling. Per level, keep the residue class with
+/// the most members (ties break on the smallest `(rx, ry)` for
+/// determinism); members of one class are pairwise disjoint by
+/// construction, so the kept set cannot overlap. A clean single-
+/// generation table (FNV, both games' terrain diffuse — census: 0
+/// overlaps) has one class and passes through unchanged.
+fn prune_same_level_overlaps(authored: &[(i32, i32, i32)]) -> Vec<(i32, i32, i32)> {
+    let mut levels: Vec<i32> = authored.iter().map(|&(l, _, _)| l).collect();
+    levels.sort_unstable();
+    levels.dedup();
+    let mut out = Vec::with_capacity(authored.len());
+    for level in levels {
+        let mut classes: std::collections::HashMap<(i32, i32), usize> =
+            std::collections::HashMap::new();
+        for &(l, qx, qy) in authored {
+            if l == level {
+                *classes
+                    .entry((qx.rem_euclid(level), qy.rem_euclid(level)))
+                    .or_insert(0) += 1;
+            }
+        }
+        let Some(winner) = classes
+            .iter()
+            .max_by_key(|(residue, count)| (**count, std::cmp::Reverse(**residue)))
+            .map(|(residue, _)| *residue)
+        else {
+            continue;
+        };
+        out.extend(
+            authored
+                .iter()
+                .filter(|&&(l, qx, qy)| {
+                    l == level && (qx.rem_euclid(level), qy.rem_euclid(level)) == winner
+                })
+                .copied(),
+        );
+    }
+    out
+}
+
+/// Same-level overlaps are resolved first (#5387): six FO3 worldspaces
+/// (washmontop worst — 65 overlapping pairs of 37 level-8 quads, plus
+/// four DC worldspaces and two level-4 sets) ship name-table leftovers
+/// from different LOD generation runs, whose 8-/4-cell footprints — and
+/// geometry — overlap on the same level, z-fighting and double-drawing
+/// the distant buildings. [`prune_same_level_overlaps`] keeps the
+/// majority lattice-residue class; see its doc. FNV and the terrain
+/// diffuse tables census 0 overlaps and pass through untouched.
 ///
 /// Order is deterministic `(level, qy, qx)`; callers re-sort by their own
 /// streaming priorities.
@@ -451,6 +501,7 @@ pub(crate) fn select_authored_lod_quads(
     player: (i32, i32),
     world_bounds: Option<((i32, i32), (i32, i32))>,
 ) -> Vec<(i32, i32, i32)> {
+    let authored = prune_same_level_overlaps(authored);
     let levels: Vec<i32> = {
         let mut ls: Vec<i32> = authored.iter().map(|&(l, _, _)| l).collect();
         ls.sort_unstable();
@@ -462,7 +513,7 @@ pub(crate) fn select_authored_lod_quads(
     // coarser quads.
     for &level in levels.iter().rev() {
         let any_finer = levels.iter().any(|&l| l < level);
-        for &(l, qx, qy) in authored {
+        for &(l, qx, qy) in &authored {
             if l != level {
                 continue;
             }
@@ -554,6 +605,36 @@ pub(crate) fn quad_intersects_bounds(
 mod tests {
     use super::*;
     use std::collections::HashSet;
+
+    /// #5387 — same-level leftover-generation overlaps: a level-8 table
+    /// whose dominant lattice holds residue (0,0) plus leftover blocks
+    /// on residues (4,4)/(4,2) (the washmontop shape) selects only the
+    /// majority generation — no z-fighting double draws — while a clean
+    /// single-lattice table passes through unchanged (FNV/terrain
+    /// diffuse census: 0 overlaps).
+    #[test]
+    fn same_level_leftover_generation_quads_are_pruned() {
+        let ladder = LodBandLadder::for_object_game(GameKind::Fallout3NV)
+            .expect("FO3 object ladder");
+        // Dominant generation: two disjoint residue-(0,0) quads.
+        let mut authored = vec![(8, 0, 0), (8, 8, 0)];
+        // Leftovers from another run: residue (4,4) and (4,2), whose
+        // 8-cell footprints overlap the dominant tiling.
+        authored.push((8, 4, 4));
+        authored.push((8, 12, -6));
+
+        let selected = select_authored_lod_quads(&authored, &ladder, (4, 0), None);
+        assert_eq!(
+            selected,
+            vec![(8, 0, 0), (8, 8, 0)],
+            "the majority lattice wins; the overlapping leftovers are dropped"
+        );
+
+        // A clean table (one lattice) is untouched.
+        let clean = vec![(8, 0, 0), (8, 8, 0), (8, 0, 8)];
+        let selected = select_authored_lod_quads(&clean, &ladder, (4, 4), None);
+        assert_eq!(selected, vec![(8, 0, 0), (8, 0, 8), (8, 8, 0)]);
+    }
 
     fn skyrim() -> LodBandLadder {
         LodBandLadder::for_game(GameKind::Skyrim).expect("Skyrim ships baked quadtree LOD")
