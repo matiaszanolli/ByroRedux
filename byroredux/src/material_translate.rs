@@ -1062,7 +1062,7 @@ pub(crate) fn translate_texture_only_material_with_clamp(
     texture_path: Option<String>,
     texture_clamp_mode: u8,
 ) -> Material {
-    translate_texture_only_material_with_authored_msn_and_clamp(texture_path, false, texture_clamp_mode)
+    translate_texture_only_material_with_authored_msn(texture_path, false, texture_clamp_mode)
 }
 
 /// #4632 — the texture-only variant for populations whose *source data*
@@ -1081,18 +1081,11 @@ pub(crate) fn translate_texture_only_material_with_authored_msn(
     model_space_normals: bool,
     texture_clamp_mode: u8,
 ) -> Material {
-    translate_texture_only_material_with_authored_msn_and_clamp(
-        texture_path,
-        model_space_normals,
-        texture_clamp_mode,
-    )
-}
-
-fn translate_texture_only_material_with_authored_msn_and_clamp(
-    texture_path: Option<String>,
-    model_space_normals: bool,
-    texture_clamp_mode: u8,
-) -> Material {
+    // #5281 — this is the single three-argument body of the texture-only
+    // boundary; `_with_clamp` and the bare wrapper below are the two- and
+    // one-argument spellings of it. It had a pure-forward twin
+    // (`…_and_clamp`, 235a90ba2) whose only difference was the name the
+    // spawner guard's needle list had to track.
     let msn_flag = if model_space_normals {
         byroredux_renderer::vulkan::material::material_flag::MODEL_SPACE_NORMALS
     } else {
