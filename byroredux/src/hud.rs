@@ -459,10 +459,6 @@ fn hud_archive_args(args: &[String]) -> Result<Option<(String, String, HudGamePr
     )))
 }
 
-/// Launch the HUD when `--hud` is present. Mirrors `launch_archive_menu`:
-/// opens the archives, assembles the per-game HUD content, registers the
-/// transparent overlay textures, and logs the `hud: loaded` line a smoke
-/// gate can grep.
 /// The one `--menu`-owns-the-overlay refusal both `--hud` routes apply
 /// (#4723 — this used to guard the Scaleform route only; the MenuXml
 /// launch had no `ui_manager` parameter at all, so `--menu … --hud` on an
@@ -475,6 +471,10 @@ pub(crate) fn menu_owned_overlay_skip(menu_player_installed: bool) -> Option<&'s
     menu_player_installed.then_some("hud: --menu owns the overlay — HUD route skipped")
 }
 
+/// Launch the HUD when `--hud` is present. Mirrors `launch_archive_menu`:
+/// opens the archives, assembles the per-game HUD content, registers the
+/// transparent overlay texture (#4892 collapsed the triple buffer to one),
+/// and logs the `hud: loaded` line a smoke gate can grep.
 pub(crate) fn launch_hud(
     ctx: &mut byroredux_renderer::vulkan::context::VulkanContext,
     world: &mut World,

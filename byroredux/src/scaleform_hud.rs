@@ -59,7 +59,8 @@ const HUD_RENDER_PACING: RenderPacing = RenderPacing {
 /// Which Scaleform game's HUD this driver serves. Selection is
 /// structural: whichever vanilla interface archive sits beside `--esm`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ScaleformGame {    /// AVM1 — `Skyrim - Interface.bsa`, `ScaleformProfile::SkyrimAvm1`.
+pub(crate) enum ScaleformGame {
+    /// AVM1 — `Skyrim - Interface.bsa`, `ScaleformProfile::SkyrimAvm1`.
     Skyrim,
     /// AVM2 — `Fallout4 - Interface.ba2`, `ScaleformProfile::Fallout4Avm2`,
     /// with the injected BGSCodeObj forwarding adapter.
@@ -445,18 +446,20 @@ impl ScaleformHudDriver {
     /// Push one frame of state into the movie through its registered
     /// callbacks. The vanilla HUDs register no state channels (Skyrim:
     /// the GameDelegate `call`/`respond` pair; FO4: the adapter's own
-    /// `__byro*` lifecycle hooks, skipped by the prefix guard), so
-    /// against vanilla this finds no targets and that is correct. The
-    /// table exists for menus that register state callbacks — the
-    /// discovery instrument is `hud.debug`'s callback mirror.
+    /// `__byro*` lifecycle hooks, which the reservation table keeps out —
+    /// #4719/#4725), so against vanilla this finds no targets and that is
+    /// correct. The table exists for menus that register state callbacks —
+    /// the discovery instrument is `hud.debug`'s callback mirror.
+    ///
+    /// #5278 — the loop carries no explicit reserved-name skip: the match
+    /// below handles exactly four gameplay names, and
+    /// `the_push_table_never_targets_a_reserved_engine_callback` pins that
+    /// those four and `RESERVED_ENGINE_CALLBACKS` are disjoint, so the
+    /// `_ => continue` arm already declines every reserved lifecycle hook.
+    /// An arm that ever names one fails that test and the guard must come
+    /// back.
     fn push(&mut self, ui: &mut UiManager, fractions: [f32; 3], heading: f32) {
         for name in &self.callbacks {
-            // The injected adapter's lifecycle hooks — exact membership
-            // per the #4719 reservation model, not a re-typed prefix
-            // literal (#4725).
-            if byroredux_ui::RESERVED_ENGINE_CALLBACKS.contains(&name.as_str()) {
-                continue;
-            }
             let args: Vec<ScaleformValue> = match name.as_str() {
                 // SkyUI-class meter pushes (shapes are the working
                 // hypothesis pinned against on-screen evidence).
@@ -584,24 +587,40 @@ mod tests {
         assert_eq!(game, ScaleformGame::Fallout4);
     }
 
-    /// #4724 — the push table skips the adapter's reserved lifecycle
-    /// callbacks (exact membership per #4719) without disturbing the
-    /// gameplay-shaped pushes around it.
+    /// #4724/#5278 — no reserved engine callback can ever receive a push.
+    /// The table handles exactly the four gameplay names below, and this
+    /// asserts those and `RESERVED_ENGINE_CALLBACKS` are DISJOINT — the
+    /// property that lets `push`'s `_ => continue` arm decline every
+    /// reserved lifecycle hook with no explicit guard (the pre-#5278 skip
+    /// could never fire and the pre-#5278 test asserted nothing: it pushed
+    /// into a playerless `UiManager` where invoke is a no-op, then checked
+    /// the reservation table against itself). A future arm naming a
+    /// reserved hook fails here, and the explicit guard must come back.
     #[test]
-    fn the_push_table_skips_reserved_engine_callbacks() {
-        let mut d = driver();
-        // The adapter's own registered lifecycle name — read from the
-        // exported reservation table, not re-typed (#4725's rule).
-        let lifecycle = byroredux_ui::RESERVED_ENGINE_CALLBACKS[0];
-        d.callbacks = vec![lifecycle.to_string(), "UpdateStats".to_string()];
-        let mut ui = UiManager::new(4, 4);
-        // No panic, and the reserved name never reaches invoke_callback
-        // (an empty manager's invoke is a silent no-op either way — this
-        // call pins that the guard path is live).
-        d.push(&mut ui, [0.5, 0.5, 0.5], 90.0);
-        assert!(
-            byroredux_ui::RESERVED_ENGINE_CALLBACKS.contains(&lifecycle),
-            "sanity: the exercised lifecycle name is one of the reserved"
-        );
-       }
+    fn the_push_table_never_targets_a_reserved_engine_callback() {
+        let handled = ["UpdateStats", "updateStats", "UpdateCompass", "updateCompass"];
+        // The arm set must stay exactly `handled` — pin the production
+        // table's arms so extending it without re-reading this test is
+        // caught by the production scan below, then check the disjointness.
+        let production = include_str!("scaleform_hud.rs");
+        let push = production
+            .split("fn push(&mut self")
+            .nth(1)
+            .expect("push must stay in this file")
+            .split("\n    }")
+            .next()
+            .expect("push body terminates");
+        for name in handled {
+            assert!(
+                push.contains(&format!("\"{name}\"")),
+                "the handled-name list above must match push's arms ({name} missing)"
+            );
+        }
+        for reserved in byroredux_ui::RESERVED_ENGINE_CALLBACKS {
+            assert!(
+                !handled.contains(&reserved),
+                "{reserved}: a reserved lifecycle hook must never become a push target"
+            );
+        }
+    }
 }
