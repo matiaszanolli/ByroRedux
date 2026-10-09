@@ -27,12 +27,16 @@
 //! Decoded since Phase 3 (`#5366` doc §3.3): the `DNAM` policy bits
 //! (random / do-all-before-repeating / shares-event — see
 //! [`SmNodePolicies`]) and `RNAM` per-quest reset hours (see
-//! [`SmQuestLink`]). Deliberately raw (`#5366` alignment pass, doc §5):
-//! the open `DNAM` bits (`0x2`, `0x40000`), `XNAM` / `QNAM`, and the
-//! FO4+/Starfield `HNAM` (hours-shaped float, node-level-reset
-//! candidate) / `MNAM` stay unparsed u32s (observed domains in the
-//! doc) rather than being guessed at; unrecognized tail subrecords
-//! land in [`SmNodeRecord::extras`] verbatim.
+//! [`SmQuestLink`]). #5420 named the remaining fields from xEdit's own
+//! definitions (`TES5.pas` SMBN/SMEN/SMQN, and the FO4/FO76/SF1
+//! variants): `XNAM` = Max concurrent quests, `MNAM` = Num quests to
+//! run, `HNAM` = Hours until reset (FO4+), `QNAM` = Quest Count (the
+//! `NNAM` array's `SetCountPath`), TES5 `FNAM` = 24 Hours Till Reset
+//! (bool), FO76 `UNAM` = Priority (per quest), and `DNAM` bits
+//! `0x2` = Warn if no child quest started / `0x40000` = the
+//! Num-quests-to-run checkbox. The values stay raw u32s where the
+//! runtime does not consume the semantics; unrecognized tail
+//! subrecords land in [`SmNodeRecord::extras`] verbatim.
 
 use super::super::common::{read_zstring, remap_fid};
 use super::super::condition::{push_ctda, ConditionList};
@@ -88,11 +92,12 @@ pub struct SmQuestLink {
 ///   incidents, `WEPriorityQuests`) whose authored behavior is
 ///   round-robin over the quest pool.
 ///
-/// Still `[open]` (raw `dnam`/`xnam`/`qnam` kept verbatim): `0x2`
-/// (`MS04/MS06IncreaseLevelNodeSHARES`=`0x20002`; candidate: Warn if no
-/// child quest started), `0x40000` (`FavorChangeLocation*`=`0x60000`;
-/// candidates: the Num-quests-to-run / Max-concurrent checkboxes, with
-/// `QNAM` 0–68 as one of the numbers), and `XNAM` (0–2).
+/// #5420 closed the last two bits from xEdit's definitions: `0x2` =
+/// **Warn if no child quest started** (`MS04/MS06IncreaseLevelNodeSHARES`
+/// = `0x20002`), and `0x40000` = the **Num-quests-to-run** checkbox
+/// (`FavorChangeLocation*` = `0x60000`), whose count is authored in
+/// `MNAM`/`XNAM`. The raw `dnam`/`xnam`/`qnam` u32s stay on the record
+/// beside the decoded bits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct SmNodePolicies {
     /// `DNAM & 0x1` — random child/pool selection instead of stacked
@@ -103,6 +108,10 @@ pub struct SmNodePolicies {
     /// `DNAM & 0x20000` — keep processing the event after this quest
     /// node; clear consumes it.
     pub shares_event: bool,
+    /// `DNAM & 0x2` — **Warn if no child quest started** (#5420, xEdit
+    /// `TES5.pas` SM node flags). Editor-side diagnostic; no runtime
+    /// consumer yet.
+    pub warn_if_no_child_quest_started: bool,
 }
 
 impl SmNodePolicies {
@@ -111,6 +120,7 @@ impl SmNodePolicies {
             random: dnam & 0x1 != 0,
             do_all_before_repeating: dnam & 0x1_0000 != 0,
             shares_event: dnam & 0x2_0000 != 0,
+            warn_if_no_child_quest_started: dnam & 0x2 != 0,
         }
     }
 }
@@ -146,24 +156,37 @@ pub struct SmNodeRecord {
     /// u32 is kept alongside for the still-open bits.
     pub policies: SmNodePolicies,
     /// `DNAM` u32, raw. Decoded bits: 0x1 random / 0x10000
-    /// do-all-before-repeating / 0x20000 shares-event. Open: 0x2, 0x40000
+    /// do-all-before-repeating / 0x20000 shares-event / 0x2 warn-if-no-
+    /// child-quest-started; 0x40000 is the Num-quests-to-run checkbox
     /// (see [`SmNodePolicies`]'s doc).
     pub dnam: Option<u32>,
-    /// `HNAM` u32, FO4+/Starfield only, raw. Read as f32 LE the corpus
-    /// values are hours-magnitude floats — 72.0 on
+    /// `HNAM` — **Hours until reset** (#5420, xEdit FO4+/SF1 SM nodes),
+    /// raw u32 whose f32 LE reading is hours-magnitude: 72.0 on
     /// `MinutemenRecruitmentPostMin02`, 24.0/12.0/1.0 on FO4 encounter
-    /// nodes, 0.3 on Starfield conversations nodes — the shape of a
-    /// node-level reset window. **[open]**: semantics unverified; the
-    /// runtime does not gate on it.
+    /// nodes, 0.3 on Starfield conversation nodes. FO4+/Starfield only;
+    /// the runtime does not gate on it yet.
     pub hnam: Option<u32>,
-    /// `MNAM` u32, FO4 (rare) / Starfield (common, sits between `XNAM`
-    /// and `QNAM`), raw. Small ints (observed 1–22). **[open]**.
+    /// `MNAM` — **Num quests to run** (#5420, xEdit FO4/SF1 SM nodes;
+    /// TES5.pas shares the definition). FO4 (rare) / Starfield (common,
+    /// sits between `XNAM` and `QNAM`), raw; observed 1–22. The runtime
+    /// starts one quest per node today (#5420 impact note).
     pub mnam: Option<u32>,
-    /// `XNAM` u32, raw (observed 0/1/2, meaning pending #5366).
+    /// `XNAM` — **Max concurrent quests** (#5420, xEdit
+    /// `TES5.pas:7056-7111`), raw; observed 0/1/2 on vanilla.
     pub xnam: Option<u32>,
-    /// `QNAM` u32, raw, `SMQN` only (observed 0..14, meaning pending
-    /// #5366 — candidate repeat/priority, unverified).
+    /// `QNAM` — **Quest Count** (#5420, xEdit: the `NNAM` array's
+    /// `SetCountPath`), raw, `SMQN` only. Census: `QNAM ==
+    /// count(NNAM)` on 448/448 Skyrim, 219/219 FO4 and 354/354
+    /// Starfield `SMQN`s — a redundant authoring of the pool size, not
+    /// a priority/repeat knob.
     pub qnam: Option<u32>,
+    /// `FNAM` — **24 Hours Till Reset** (#5420, xEdit `TES5.pas` SMQN
+    /// bool). TES5 only (5 vanilla `SMQN`s), raw u32; no runtime
+    /// consumer yet.
+    pub fnam: Option<u32>,
+    /// `UNAM` — **Priority** (#5420, xEdit FO76 SMQN, per quest). FO76
+    /// only; raw u32, no runtime consumer.
+    pub unam: Option<u32>,
     /// Unrecognized / pending-decode tail subrecords (FO4+ `HNAM`,
     /// `RNAM`, Starfield `MNAM`, …), preserved verbatim for the
     /// #5366 Phase-4 dialect pass.
@@ -241,6 +264,15 @@ pub fn parse_sm_node(
             }
             b"MNAM" if sub.data.len() >= 4 => {
                 node.mnam = Some(u32::from_le_bytes(sub.data[..4].try_into().unwrap()));
+            }
+            // #5420 — TES5's '24 Hours Till Reset' bool (5 vanilla SMQNs)
+            // and FO76's per-quest 'Priority'. Raw u32s, 4-byte payloads;
+            // shorter tails ride in extras like every other arm here.
+            b"FNAM" if sub.data.len() >= 4 => {
+                node.fnam = Some(u32::from_le_bytes(sub.data[..4].try_into().unwrap()));
+            }
+            b"UNAM" if sub.data.len() >= 4 => {
+                node.unam = Some(u32::from_le_bytes(sub.data[..4].try_into().unwrap()));
             }
             // CITC is the CTDA count; CTDA presence is authoritative, so
             // the counter itself is read past.
@@ -321,7 +353,8 @@ mod tests {
             SmNodePolicies {
                 random: true,
                 do_all_before_repeating: true,
-                shares_event: false
+                shares_event: false,
+                warn_if_no_child_quest_started: false
             }
         );
         assert_eq!(node.qnam, Some(1));
@@ -447,4 +480,33 @@ mod tests {
         let node = parse_sm_node(SmNodeKind::Quest, 1, &subs, &None);
         assert_eq!(node.mnam, Some(22));
     }
+    /// #5420 — the xEdit-named tail fields decode: TES5 `FNAM`
+    /// (24 Hours Till Reset), the `DNAM` 0x2 warn bit, and `QNAM` as
+    /// the redundant NNAM count (the census's 100% match).
+    #[test]
+    fn smqn_decodes_xedit_named_tail_fields() {
+        let subs = vec![
+            sub(b"EDID", b"WEJSFNNode\0"),
+            // 0x20002 = shares | warn-if-no-child-quest-started
+            // (the MS04/MS06IncreaseLevelNodeSHARES corpus shape).
+            sub(b"DNAM", 0x0002_0002u32.to_le_bytes()),
+            sub(b"XNAM", 1u32.to_le_bytes()),
+            sub(b"FNAM", 1u32.to_le_bytes()),
+            sub(b"QNAM", 2u32.to_le_bytes()),
+            sub(b"NNAM", 0x0001_7577u32.to_le_bytes()),
+            sub(b"NNAM", 0x0001_7578u32.to_le_bytes()),
+        ];
+        let node = parse_sm_node(SmNodeKind::Quest, 0x0001_7579, &subs, &None);
+        assert_eq!(node.fnam, Some(1), "TES5 FNAM decodes instead of riding extras");
+        assert_eq!(node.unam, None);
+        assert!(node.policies.warn_if_no_child_quest_started);
+        assert!(node.policies.shares_event);
+        assert!(!node.policies.random);
+        // QNAM is the NNAM array's own count (SetCountPath), per the
+        // 448/448 Skyrim census — not a priority knob.
+        assert_eq!(node.qnam, Some(2));
+        assert_eq!(node.quests.len(), 2);
+        assert!(node.extras.is_empty(), "FNAM no longer rides extras: {:?}", node.extras);
+    }
 }
+

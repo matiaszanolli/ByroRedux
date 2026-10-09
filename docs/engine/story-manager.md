@@ -13,7 +13,8 @@ reset windows over save-persistent node state. Remaining under the
 Phase-4 umbrella: breadth producers whose subsystems have not landed
 (`SCPT` needs the Papyrus `SendStoryEvent` native surface, `LEVL` a
 level-up transition, crime/crafting/pickpocket their systems) and the
-open `DNAM`/`HNAM`/`MNAM`/`XNAM`/`QNAM` semantics. This document remains the design authority; it is the
+unconsumed `DNAM`/`HNAM`/`MNAM`/`XNAM`/`QNAM` semantics — named from
+xEdit since #5420, awaiting runtime consumers. This document remains the design authority; it is the
 scoping pass for the Story Manager half of M43's open scope ("Story
 Manager event payloads and search") and the M47.2 row's "ESM-native
 event dispatch / Story Manager" item.
@@ -101,15 +102,17 @@ verification below should be treated as decoded.
 | `ENAM` char[4] | SMEN | event mnemonic; exactly one SMEN per mnemonic per master (24 Skyrim / 17 FO4 / 20 Starfield) | **[verified]** structure; per-mnemonic mapping in §3.1 |
 | `CITC` u32 + `CTDA`×N + `CIS2` | all | node conditions (existing CTDA representation) | **[verified]** shape |
 | `NNAM` u32 | SMQN | the QUST this node starts | **[verified]** — Skyrim 425/448 resolve to QUST records via EDID cross-check (e.g. `MS05KingOlafsFestivalStarter` → its QUST) |
-| `DNAM` u32 | all | node-policy flags — 0x1 random, 0x10000 do-all-before-repeating, 0x20000 shares-event (Phase-3 decode, §3.3) | **[decoded]** — bits 0x2 and 0x40000 remain **[open]** |
+| `DNAM` u32 | all | node-policy flags — 0x1 random, 0x10000 do-all-before-repeating, 0x20000 shares-event (Phase-3 decode, §3.3); 0x2 warn-if-no-child-quest-started, 0x40000 the Num-quests-to-run checkbox | **[decoded]** — #5420 closed the last two bits from xEdit `TES5.pas`; the runtime still consumes only the Phase-3 three |
 | `RNAM` f32 | SMQN | per-quest hours-until-reset window, follows its `NNAM` | **[decoded]** (Phase 3; §3.3) |
-| `HNAM` u32 (as f32) | SMQN, FO4+ | hours-magnitude float — 72.0 on the Minutemen node, 0.3–24.0 elsewhere; candidate node-level reset window | **[open]** (typed-raw since Phase 4; runtime does not gate) |
-| `MNAM` u32 | SMQN, FO4 rare / SF common | small int (1–22) | **[open]** (typed-raw since Phase 4) |
-| `XNAM` u32 | all | small int (0/1/2; 0 dominant) | **[open]** |
-| `QNAM` u32 | SMQN | small int 0–14 | **[open]** (candidate: repeat/priority; do not guess) |
+| `HNAM` u32 (as f32) | SMQN, FO4+ | **Hours until reset** (xEdit FO4+/SF1) — 72.0 on the Minutemen node, 0.3–24.0 elsewhere | **[named]** #5420 (typed-raw since Phase 4; runtime does not gate) |
+| `MNAM` u32 | SMQN, FO4 rare / SF common | **Num quests to run** (xEdit FO4/SF1) — observed 1–22 | **[named]** #5420; the runtime still starts one quest per node |
+| `XNAM` u32 | all | **Max concurrent quests** (xEdit `TES5.pas:7056-7111`) — observed 0/1/2 | **[named]** #5420 |
+| `QNAM` u32 | SMQN | **Quest Count** — the `NNAM` array's `SetCountPath`; census `QNAM == count(NNAM)` on 448/448 Skyrim, 219/219 FO4, 354/354 Starfield | **[named]** #5420 (not a priority/repeat knob) |
+| `FNAM` u32 | SMQN, TES5 | **24 Hours Till Reset** bool (xEdit `TES5.pas`; 5 vanilla SMQNs) | **[named]** #5420 (raw; no runtime consumer) |
+| `UNAM` u32 | SMQN, FO76 | **Priority**, per quest (xEdit FO76) | **[named]** #5420 (raw; no runtime consumer) |
 | `SNAM` u32 | SMBN/SMEN | when present, points at another node — see §5 | **[open]** (distinct from the sibling use on SMQN) |
 | FO4+: repeated `NNAM` pool + `RNAM` | SMQN | pools at Skyrim-unseen scale (`RETravelQuests` 44; the Minutemen node's pool measured **14**, not the 16 this doc first guessed), `RNAM` pairing identical to Skyrim's | **[decoded]** (Phase 4 census; same bits, same `RNAM` semantics) |
-| SF: `MNAM` | SMQN | — | **[open]** |
+| SF: `MNAM` | SMQN | Num quests to run (#5420) | **[named]** |
 
 A census artifact worth recording so the Phase-0 test floors aren't
 misread: FO4 and Starfield keep their DIAL/INFO inside per-QUST child
@@ -230,9 +233,12 @@ house pattern: floors, not pinned counts, exactly like
 Each item has a method; none is a guess:
 
 1. **`DNAM` flag bits.** Resolved at Phase 3 for the three policy bits
-   (§3.3); `0x2` and `0x40000` remain open.
-2. **`XNAM` / `QNAM` ints.** Small observed domains (0–2, 0–14).
-   Method: correlate with CK-exposed node properties on named nodes.
+   (§3.3); #5420 closed `0x2` (warn if no child quest started) and
+   `0x40000` (the Num-quests-to-run checkbox) from xEdit's definitions.
+2. **`XNAM` / `QNAM` ints.** #5420: xEdit defines `XNAM` as Max
+   concurrent quests and `QNAM` as the `NNAM` Quest Count (the census's
+   100% `QNAM == count(NNAM)` match). Both stay raw on the record until
+   a runtime consumer needs them.
 3. **`SNAM` on SMBN/SMEN.** Distinct from the SMQN sibling use; likely
    a "node to notify / shared event target" link. Method: enumerate the
    ≤100 occurrences with EDIDs; the pattern will be obvious.
@@ -454,9 +460,10 @@ tree itself (rederived from the load order every boot).
 
 ## 8. What this document does NOT decide
 
-- The remaining `DNAM` bits (`0x2`, `0x40000`) and `XNAM`/`QNAM`
-  semantics (§5's job; the Phase-3 runtime relies only on the three
-  decoded policy bits and `RNAM`).
+- Honouring Num-quests-to-run (`MNAM`) / Max-concurrent (`XNAM`) — the
+  field semantics are named since #5420, but the Phase-3 runtime still
+  relies only on the three decoded policy bits and `RNAM`, starting one
+  quest per node.
 - ~~Whether `StoryEvent` payloads grow a typed per-mnemonic enum or stay
   slot-based~~ — decided at Phase 2: the wire format's four positional
   slots verbatim (§3.2).
