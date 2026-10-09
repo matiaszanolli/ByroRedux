@@ -63,9 +63,23 @@ pub(crate) fn forcegreet_system(world: &World, dt: f32) {
     else {
         return;
     };
+    // #5392 — the same `player_can_act` gate the activation and
+    // topic-click paths apply (#4701/#5043): a dead player is not
+    // greeted. The directives stay pending rather than consumed — a
+    // greeter does not walk to a corpse, and a revived player is still
+    // owed the greeting.
+    if !crate::systems::player_can_act(world) {
+        return;
+    }
     let Some(player_pos) = world.get::<GlobalTransform>(player).map(|t| t.translation) else {
         return;
     };
+    // #5392 — the NPC the player is already talking to, if any. A
+    // force-greet must not pre-empt that conversation (`apply_selection`
+    // would strip the partner's line and fire its OnEnd mid-sentence).
+    let open_partner = world
+        .try_resource::<crate::systems::npc_dialogue::DialogueSurfaceState>()
+        .and_then(|surface| surface.npc);
     // #5371 — the three-pass shape every other locomotion system
     // shares (travel.rs / patrol.rs / wander.rs / …): `PhysicsWorld` is
     // a lock-order sink ("nothing taken under it", docs/engine/ecs.md),
@@ -126,7 +140,15 @@ pub(crate) fn forcegreet_system(world: &World, dt: f32) {
             steps.push((npc, Step::Walk { new_pos, rotation: new_rotation }));
             continue;
         }
-        steps.push((npc, Step::Open { topic: directive.topic }));
+        match open_partner {
+            // #5392 — already in conversation with this greeter: the
+            // greeting has nothing left to open, so it is consumed.
+            Some(partner) if partner == npc => steps.push((npc, Step::Refuses)),
+            // Another conversation is open: hold the directive in
+            // radius until it closes.
+            Some(_) => {}
+            None => steps.push((npc, Step::Open { topic: directive.topic })),
+        }
     }
     // Pass 2 — apply the writes, then open the conversations (the
     // dialogue stack acquires its own guards; the physics guard is
@@ -248,6 +270,81 @@ mod tests {
             "the greeter reaches the player through alternating \\
 
              system+propagation frames (still {last_distance} away)"
+        );
+    }
+
+    /// A player at the origin and a greeter already inside its radius
+    /// carrying a topic-less directive. No `LoadedCellIndex`: any open
+    /// attempt fails, and #5376 consumes a failed open — so a directive
+    /// still present afterwards proves no open was attempted.
+    fn in_radius_greeter() -> (World, EntityId, EntityId) {
+        let mut world = World::new();
+        world.register::<ForceGreetDirective>();
+        world.register::<GlobalTransform>();
+        world.register::<Transform>();
+        world.register::<byroredux_core::ecs::components::actor_state::Dead>();
+        let player = world.spawn();
+        world.insert(player, GlobalTransform::default());
+        world.insert(player, Transform::default());
+        world.insert_resource(crate::systems::character::PlayerEntity(Some(player)));
+        let npc = world.spawn();
+        world.insert(
+            npc,
+            GlobalTransform {
+                translation: Vec3::new(10.0, 0.0, 0.0),
+                ..Default::default()
+            },
+        );
+        world.insert(npc, Transform::default());
+        world.insert(
+            npc,
+            ForceGreetDirective {
+                topic: None,
+                radius: FORCE_GREET_RADIUS,
+            },
+        );
+        (world, player, npc)
+    }
+
+    /// #5392 — a dead player is never force-greeted, and the directive is
+    /// held, not consumed.
+    #[test]
+    fn dead_player_holds_the_forcegreet_directive() {
+        let (world, player, npc) = in_radius_greeter();
+        if let Some(mut dead) =
+            world.query_mut::<byroredux_core::ecs::components::actor_state::Dead>()
+        {
+            dead.insert(player, byroredux_core::ecs::components::actor_state::Dead);
+        }
+        forcegreet_system(&world, 0.5);
+        assert!(
+            world.get::<ForceGreetDirective>(npc).is_some(),
+            "a dead player must not be greeted; the directive stays pending"
+        );
+    }
+
+    /// #5392 — an open conversation with another NPC holds the directive
+    /// instead of pre-empting that conversation; an open conversation with
+    /// the greeter itself consumes it.
+    #[test]
+    fn open_conversation_holds_or_consumes_the_forcegreet_directive() {
+        use crate::systems::npc_dialogue::DialogueSurfaceState;
+        let (mut world, _player, npc) = in_radius_greeter();
+        let partner = world.spawn();
+        world.insert_resource(DialogueSurfaceState {
+            npc: Some(partner),
+            ..Default::default()
+        });
+        forcegreet_system(&world, 0.5);
+        assert!(
+            world.get::<ForceGreetDirective>(npc).is_some(),
+            "a live conversation with another NPC must not be hijacked"
+        );
+        world.try_resource_mut::<DialogueSurfaceState>().unwrap().npc = Some(npc);
+        forcegreet_system(&world, 0.5);
+        assert!(
+            world.get::<ForceGreetDirective>(npc).is_none(),
+            "already talking to the greeter: the greeting is consumed"
         );
     }
 

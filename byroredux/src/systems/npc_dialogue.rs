@@ -506,7 +506,8 @@ pub(crate) fn forcegreet_open(world: &World, npc: EntityId, topic: Option<u32>) 
     else {
         return false;
     };
-    if npc_refuses_dialogue(world, npc).is_some() {
+    // #5392 — the gate every other dialogue-open path applies.
+    if !crate::systems::player_can_act(world) || npc_refuses_dialogue(world, npc).is_some() {
         return false;
     }
     // #5426 — borrow the record end to end: the only whole-DialRecord
