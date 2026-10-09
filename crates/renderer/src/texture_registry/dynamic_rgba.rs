@@ -62,9 +62,14 @@ impl DynamicRgbaUploads {
                 update.recorded_slot = None;
             }
         }
-        // A completed frame means staging works again on this device —
-        // re-arm the once-per-episode warn (#4889).
-        self.staging_skip_logged = false;
+        // #5275 — the re-arm does NOT live here. The frame that skipped its
+        // upload still records and submits successfully (the degraded arms
+        // return Ok), so clearing on submit re-armed the warn every frame
+        // under a persistent failure: one warn plus one host-visible arena
+        // allocation attempt (~8.3 MB at 1080p, ~33 MB at 4K) per frame,
+        // for the whole episode. The re-arm moved to the end of
+        // `record_pending_rgba_uploads`, which only a recording that
+        // actually uploaded its dirty set reaches.
     }
 
     pub(super) fn destroy(&mut self, device: &ash::Device, allocator: &SharedAllocator) {
@@ -287,6 +292,13 @@ impl TextureRegistry {
             offset += update.pixels.len(); // RGBA byte counts keep offsets 4-byte aligned.
             update.recorded_slot = Some(frame);
         }
+        // #5275 — reaching the end means every dirty update recorded against
+        // this frame's staging (both degraded arms and the released/resized
+        // drops return or continue above): staging demonstrably works again,
+        // so the once-per-episode warn may re-arm. A `bytes == 0` frame
+        // proves nothing and keeps the flag — the episode only ends when an
+        // upload actually succeeds.
+        self.dynamic_rgba.staging_skip_logged = false;
         Ok(())
     }
 }
@@ -402,5 +414,49 @@ mod tests {
         uploads.submitted(1);
         assert!(!uploads.updates[&7].dirty);
         assert_eq!(uploads.updates[&7].pixels, [2; 4]);
+    }
+
+    /// #5275 — the once-per-episode warn must survive `submitted`: the
+    /// frame that skipped its upload still records and submits (both
+    /// degraded arms return Ok), so a submit-time re-arm meant a
+    /// persistent staging failure warned — and re-attempted the arena
+    /// allocation — every frame. Only a recording that actually uploads
+    /// its dirty set re-arms; that path needs a device, so its placement
+    /// is pinned structurally beside the behavioural half.
+    #[test]
+    fn a_submitted_skip_frame_does_not_rearm_the_episode_warn() {
+        let mut uploads = DynamicRgbaUploads::default();
+        uploads.queue(7, 1, 1, &[1; 4]).unwrap();
+        // Frame N: the staging failure fires — the flag latches.
+        uploads.staging_skip_logged = true;
+        // Frame N records (skipping the upload) and submits successfully —
+        // exactly the audit's skip → submit → skip cycle.
+        uploads.submitted(0);
+        assert!(
+            uploads.staging_skip_logged,
+            "submit alone must not clear the episode flag — the skip frame's \
+             own submission re-armed it every frame pre-#5275"
+        );
+
+        let production = crate::source_scan::production_text(include_str!("dynamic_rgba.rs"));
+        let submitted = production
+            .split("pub(super) fn submitted(")
+            .nth(1)
+            .expect("submitted must stay in this file")
+            .split("\n    }")
+            .next()
+            .expect("function body terminates");
+        assert!(
+            !submitted.contains("staging_skip_logged = false"),
+            "the re-arm must not live in `submitted` (#5275)"
+        );
+        let record = production
+            .split("pub(crate) unsafe fn record_pending_rgba_uploads(")
+            .nth(1)
+            .expect("record_pending_rgba_uploads must stay in this file");
+        assert!(
+            record.contains("self.dynamic_rgba.staging_skip_logged = false;"),
+            "the re-arm lives at the end of a fully-recorded upload pass (#5275)"
+        );
     }
 }
