@@ -123,14 +123,21 @@ EOF
     # empty world: the old `|| echo 0` parse read a dead byro-dbg session
     # as "0 billboards" and pointed the HARD FAIL at the (healthy) .spt
     # extension switch.
-    if ! grep -qE '^\([0-9]+ entities\)' "$dbg_log"; then
+    # #5360 — `(no entities)` is a *valid* answer (count 0): byro-dbg
+    # prints it for an empty EntityList, and in piped-stdin mode it rides
+    # after the unterminated `byro> ` prompt, so the match is unanchored.
+    # Treating it as "never answered" inverted the diagnosis — a broken
+    # .spt route (the gate's own target regression) was blamed on the
+    # attach.
+    if ! grep -qE '\((no|[0-9]+) entities\)' "$dbg_log"; then
         echo "smoke[$label]: HARD FAIL — byro-dbg never answered 'entities Billboard' \
-(no '(N entities)' row in $dbg_log — the attach itself failed; see the session log above)"
+(no '(N entities)' or '(no entities)' row in $dbg_log — the attach itself failed; see the session log above)"
         eval "$kill_engine"
         return 1
     fi
     local billboards
-    billboards=$(grep -oE '^\([0-9]+ entities\)' "$dbg_log" | sed -n '1p' | grep -oE '[0-9]+' || echo 0)
+    billboards=$(grep -oE '\((no|[0-9]+) entities\)' "$dbg_log" | sed -n '1p' \
+        | sed 's/(no entities)/(0 entities)/' | grep -oE '[0-9]+' || echo 0)
     : "${billboards:=0}"
 
     local tex_miss
