@@ -183,7 +183,7 @@ using the generic `register_component::<T>()` helper, called from
 `byroredux-core`). The registry is owned by the `DebugDrainSystem`
 (`DebugDrainSystem.registry`), not stored as a World resource.
 
-### Currently registered (70 components)
+### Currently registered (71 components)
 
 | Component | Fields |
 |-----------|--------|
@@ -1253,7 +1253,7 @@ byro> components
   TextureHandle
   Transform
   WorldBound
-(70 components)
+(71 components)
 
 byro> entities Inventory
   Entity 12 "saadia"

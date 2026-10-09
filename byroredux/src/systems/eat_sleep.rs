@@ -1,11 +1,13 @@
 //! M42 — Eat (FO3/FNV `PKDT` procedure 3) and Sleep (procedure 4)
 //! procedures, v0.
 //!
-//! Both share one runtime: walk once to the package's `PLDT` location
-//! (the dining area / bedroom — resolved through Travel's
-//! `resolve_destination`, so a `NearReference` PLDT lands the actor at
-//! the authored furniture and a missing one hash-picks within the
-//! radius), then occupy the nearest furniture marker through the
+//! Both share one runtime: walk once to the package's `PLDT` anchor
+//! (#5391 — [`EatSleepLocation`]: a `NearReference` lands the actor at
+//! the authored furniture, "near editor location" at its
+//! [`EditorPlacement`], "in cell" stays put while that cell is resident
+//! and idles otherwise, and every other type stays where the actor
+//! stands — no random walk), then occupy the nearest furniture marker
+//! within the location radius through the
 //! sandbox seating path (`collect_marker_seats` + `pick_nearest_seat` +
 //! `apply_seat_assignments` — the same reservations, root snap, and
 //! sit-enter final-frame park). Eat seats at **sit** markers; Sleep at
@@ -22,8 +24,8 @@
 //! (restoring the pre-park animation, #3333) exactly as Sandbox does.
 
 use byroredux_core::ecs::components::{
-    EatBehavior, EatSleepState, FurnitureMarker, FurnitureMarkerKind, GlobalTransform, Seated,
-    SleepBehavior, Transform,
+    EatBehavior, EatSleepLocation, EatSleepState, EditorPlacement, FurnitureMarker,
+    FurnitureMarkerKind, GlobalTransform, Seated, SleepBehavior, Transform,
 };
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::World;
@@ -57,8 +59,7 @@ struct EatSleepActor {
     npc: EntityId,
     kind: EatOrSleep,
     radius: Option<f32>,
-    target_form_id: Option<u32>,
-    form_id: u32,
+    location: EatSleepLocation,
 }
 
 pub(crate) fn eat_sleep_system(world: &World, dt: f32) {
@@ -69,8 +70,7 @@ pub(crate) fn eat_sleep_system(world: &World, dt: f32) {
                 npc,
                 kind: EatOrSleep::Eat,
                 radius: behavior.radius,
-                target_form_id: behavior.target_form_id,
-                form_id: behavior.form_id,
+                location: behavior.location,
             });
         }
     }
@@ -80,8 +80,7 @@ pub(crate) fn eat_sleep_system(world: &World, dt: f32) {
                 npc,
                 kind: EatOrSleep::Sleep,
                 radius: behavior.radius,
-                target_form_id: behavior.target_form_id,
-                form_id: behavior.form_id,
+                location: behavior.location,
             });
         }
     }
@@ -107,8 +106,7 @@ pub(crate) fn eat_sleep_system(world: &World, dt: f32) {
         npc,
         kind,
         radius,
-        target_form_id,
-        form_id,
+        location,
     } in actors
     {
         // One-shot walk destination: resolve on first sight, reuse
@@ -117,17 +115,11 @@ pub(crate) fn eat_sleep_system(world: &World, dt: f32) {
         let destination = match world.get::<EatSleepState>(npc).map(|state| state.destination) {
             Some(destination) => destination,
             None => {
-                let home = world
-                    .get::<GlobalTransform>(npc)
-                    .map(|transform| transform.translation)
-                    .unwrap_or_default();
-                let destination = super::travel::resolve_destination(
-                    world,
-                    target_form_id,
-                    radius.unwrap_or(super::sandbox::SEAT_SEARCH_RADIUS),
-                    form_id,
-                    home,
-                );
+                // #5391 — an `InCell` package whose cell is not resident
+                // idles (resolved again next tick, no walk, no seat).
+                let Some(destination) = resolve_anchor(world, npc, location) else {
+                    continue;
+                };
                 if let Some(mut states) = world.query_mut::<EatSleepState>() {
                     states.insert(npc, EatSleepState { destination });
                 }
@@ -188,6 +180,52 @@ pub(crate) fn eat_sleep_system(world: &World, dt: f32) {
         // beds author none; Eat sits.
         seat_at_marker(world, npc, kind, radius);
     }
+}
+
+/// #5391 — the walk destination for one actor's `PLDT` anchor, resolved
+/// once. `None` only for an `InCell` package whose cell is not the
+/// resident interior.
+fn resolve_anchor(world: &World, npc: EntityId, location: EatSleepLocation) -> Option<Vec3> {
+    let current = world.get::<GlobalTransform>(npc)?.translation;
+    match location {
+        // An unresolvable reference (not loaded) keeps the actor where it
+        // is rather than inventing a point.
+        EatSleepLocation::NearReference(form_id) => Some(
+            super::travel::resolve_near_reference_target(world, Some(form_id)).unwrap_or(current),
+        ),
+        EatSleepLocation::InCell(cell_form_id) => {
+            cell_is_resident(world, cell_form_id).then_some(current)
+        }
+        EatSleepLocation::NearEditorLocation => Some(
+            world
+                .get::<EditorPlacement>(npc)
+                .map(|placement| placement.translation)
+                .unwrap_or(current),
+        ),
+        EatSleepLocation::NearCurrentLocation => Some(current),
+    }
+}
+
+/// Whether `cell_form_id` is the interior currently loaded. Exterior
+/// `InCell` targets are not resolved (v0) and read as not resident.
+fn cell_is_resident(world: &World, cell_form_id: u32) -> bool {
+    // Each guard drops before the next is taken.
+    let Some(key) = world
+        .try_resource::<crate::cell_loader::CurrentCellContext>()
+        .map(|context| context.cell_editor_id.to_ascii_lowercase())
+    else {
+        return false;
+    };
+    world
+        .try_resource::<crate::cell_loader::LoadedCellIndex>()
+        .is_some_and(|index| {
+            index
+                .0
+                .cells
+                .cells
+                .get(&key)
+                .is_some_and(|cell| cell.form_id == cell_form_id)
+        })
 }
 
 /// Seat one arrived actor at its procedure's marker kind, reusing the
@@ -268,6 +306,7 @@ mod tests {
         world.register::<EatBehavior>();
         world.register::<SleepBehavior>();
         world.register::<EatSleepState>();
+        world.register::<EditorPlacement>();
         world.register::<GlobalTransform>();
         world.register::<Transform>();
         world.register::<Seated>();
@@ -286,8 +325,8 @@ mod tests {
         (world, actor)
     }
 
-    /// Far from the destination (the behavior's fallback hash-pick is
-    /// deterministic by form_id), the actor walks: an `EatSleepState`
+    /// Far from the destination (a "near editor location" package whose
+    /// placement is 300 units away), the actor walks: an `EatSleepState`
     /// lands on first sight and the step advances `Transform` — the
     /// authoritative pose on a propagation root (#5373: the step used
     /// to write `GlobalTransform`, which the next propagation rebuilt
@@ -297,9 +336,15 @@ mod tests {
         let (mut world, actor) = setup();
         world.insert(
             actor,
+            EditorPlacement {
+                translation: Vec3::new(300.0, 0.0, 0.0),
+            },
+        );
+        world.insert(
+            actor,
             EatBehavior {
                 radius: Some(512.0),
-                target_form_id: None,
+                location: EatSleepLocation::NearEditorLocation,
                 form_id: 0xAA,
             },
         );
@@ -308,7 +353,7 @@ mod tests {
         let destination = state.destination;
         assert!(
             destination.x != 0.0 || destination.z != 0.0,
-            "the fallback hash-pick resolves a non-origin destination"
+            "the editor placement resolves a non-origin destination"
         );
         let moved = world.get::<Transform>(actor).expect("transform").translation;
         let before = Vec3::ZERO;
@@ -332,9 +377,15 @@ mod tests {
         let (mut world, actor) = setup();
         world.insert(
             actor,
+            EditorPlacement {
+                translation: Vec3::new(300.0, 0.0, 0.0),
+            },
+        );
+        world.insert(
+            actor,
             EatBehavior {
                 radius: Some(512.0),
-                target_form_id: None,
+                location: EatSleepLocation::NearEditorLocation,
                 form_id: 0xAA,
             },
         );
@@ -379,7 +430,7 @@ mod tests {
             actor,
             EatBehavior {
                 radius: None,
-                target_form_id: None,
+                location: EatSleepLocation::NearCurrentLocation,
                 form_id: 0xAA,
             },
         );
@@ -434,9 +485,15 @@ mod tests {
         world.insert_resource(byroredux_physics::PhysicsWorld::new());
         world.insert(
             actor,
+            EditorPlacement {
+                translation: Vec3::new(300.0, 0.0, 0.0),
+            },
+        );
+        world.insert(
+            actor,
             EatBehavior {
                 radius: Some(512.0),
-                target_form_id: None,
+                location: EatSleepLocation::NearEditorLocation,
                 form_id: 0xAB,
             },
         );
@@ -459,7 +516,7 @@ mod tests {
             actor,
             SleepBehavior {
                 radius: None,
-                target_form_id: None,
+                location: EatSleepLocation::NearCurrentLocation,
                 form_id: 0xAB,
             },
         );
@@ -493,5 +550,83 @@ mod tests {
             .get::<Seated>(actor)
             .expect("the sleeper occupies the bed marker");
         assert_eq!(seated_at.furniture, bed);
+    }
+
+    /// #5391 — "near current location" (and every type without an
+    /// anchor) stays put: the destination is where the actor stands, so
+    /// no random walk precedes the seat search.
+    #[test]
+    fn near_current_location_does_not_walk() {
+        let (mut world, actor) = setup();
+        world.insert(
+            actor,
+            EatBehavior {
+                radius: Some(512.0),
+                location: EatSleepLocation::NearCurrentLocation,
+                form_id: 0xAA,
+            },
+        );
+        eat_sleep_system(&world, 1.0);
+        assert_eq!(
+            world.get::<EatSleepState>(actor).expect("state").destination,
+            Vec3::ZERO
+        );
+        assert_eq!(world.get::<Transform>(actor).expect("transform").translation, Vec3::ZERO);
+    }
+
+    /// #5391 — "near editor location" anchors on the authored placement,
+    /// not on wherever an earlier package left the actor, and resolves
+    /// to the same point again after the unsaved state is dropped (a
+    /// load) — the allowlist's idempotence claim.
+    #[test]
+    fn near_editor_location_anchors_on_the_placement_across_reloads() {
+        let (mut world, actor) = setup();
+        let home = Vec3::new(-200.0, 0.0, 50.0);
+        world.insert(actor, EditorPlacement { translation: home });
+        // A Travel package walked the actor to a bar 900 units away.
+        world.insert(
+            actor,
+            GlobalTransform {
+                translation: Vec3::new(900.0, 0.0, 0.0),
+                ..Default::default()
+            },
+        );
+        world.insert(
+            actor,
+            SleepBehavior {
+                radius: None,
+                location: EatSleepLocation::NearEditorLocation,
+                form_id: 0xAA,
+            },
+        );
+        eat_sleep_system(&world, 0.1);
+        assert_eq!(world.get::<EatSleepState>(actor).expect("state").destination, home);
+        if let Some(mut states) = world.query_mut::<EatSleepState>() {
+            states.remove(actor);
+        }
+        eat_sleep_system(&world, 0.1);
+        assert_eq!(
+            world.get::<EatSleepState>(actor).expect("state").destination,
+            home,
+            "the re-resolved destination after a load is the same point"
+        );
+    }
+
+    /// #5391 — an `InCell` package whose cell is not the resident
+    /// interior idles: no destination, no walk.
+    #[test]
+    fn in_cell_package_idles_when_its_cell_is_not_resident() {
+        let (mut world, actor) = setup();
+        world.insert(
+            actor,
+            EatBehavior {
+                radius: None,
+                location: EatSleepLocation::InCell(0x0001_2345),
+                form_id: 0xAA,
+            },
+        );
+        eat_sleep_system(&world, 1.0);
+        assert!(world.get::<EatSleepState>(actor).is_none());
+        assert_eq!(world.get::<Transform>(actor).expect("transform").translation, Vec3::ZERO);
     }
 }

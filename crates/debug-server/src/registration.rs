@@ -287,13 +287,16 @@ pub fn register_all(registry: &mut ComponentRegistry) {
     // walk-then-seat runtime; `EatSleepState` carries the one-shot walk
     // destination an operator needs when an actor circles instead of
     // dining.
-    register_component::<EatBehavior>(registry, "EatBehavior", vec!["radius", "target_form_id", "form_id"]);
+    register_component::<EatBehavior>(registry, "EatBehavior", vec!["radius", "location", "form_id"]);
     register_component::<SleepBehavior>(
         registry,
         "SleepBehavior",
-        vec!["radius", "target_form_id", "form_id"],
+        vec!["radius", "location", "form_id"],
     );
     register_component::<EatSleepState>(registry, "EatSleepState", vec!["destination"]);
+    // #5391 — the authored placement a "near editor location" Eat/Sleep
+    // package anchors on.
+    register_component::<EditorPlacement>(registry, "EditorPlacement", vec!["translation"]);
     register_component::<AnimatedVisibility>(registry, "AnimatedVisibility", vec!["0"]);
     register_component::<AnimatedAlpha>(registry, "AnimatedAlpha", vec!["0"]);
     // Post-#517 split: five target-specific color components replaced

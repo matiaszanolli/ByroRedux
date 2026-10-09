@@ -2,9 +2,9 @@
 //! behavior markers.
 //!
 //! Both procedures share one v0 runtime (`byroredux/src/systems/
-//! eat_sleep.rs`): walk once to the package's `PLDT` location (dining
-//! area / bedroom — resolved through the same `NearReference` helper
-//! Travel uses, with the hash-picked radius fallback), then occupy the
+//! eat_sleep.rs`): walk once to the package's `PLDT` anchor (an
+//! [`EatSleepLocation`] — the reference, the actor's
+//! [`EditorPlacement`], or where it stands; #5391), then occupy the
 //! nearest furniture marker — a sit marker for Eat, a sleep marker for
 //! Sleep (falling back to sit when a cell's beds carry no sleep
 //! markers) — through the same reservation + sit-enter park the
@@ -16,24 +16,61 @@
 //! `EatSleepState` is runtime-only and deliberately absent from the
 //! save registry: a save taken mid-walk re-selects the package on load
 //! (`reseat_ambient_packages_after_restore`) and re-resolves the
-//! destination on the next tick, which is the behavior the one-shot
-//! walk describes anyway.
+//! destination on the next tick from the same anchor — a reference or
+//! the editor placement resolve to the same point, and "near current
+//! location" is by definition where the restored actor stands.
 
 use crate::ecs::sparse_set::SparseSetStorage;
 use crate::ecs::storage::Component;
 use crate::math::Vec3;
+
+/// #5391 — where an Eat/Sleep package's `PLDT` anchors the actor: the
+/// walk destination and the centre of the seat search ("any chair within
+/// the location radius" — GECK *Eat Package* / *Sleep Package*).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
+pub enum EatSleepLocation {
+    /// Location type 0 — the reference's live position.
+    NearReference(u32),
+    /// Location type 1 — any marker within the radius while this CELL is
+    /// the resident interior; the actor idles otherwise.
+    InCell(u32),
+    /// Location type 3 — the actor's [`EditorPlacement`].
+    NearEditorLocation,
+    /// Location type 2, and every type with no resolvable anchor here
+    /// (4 Object ID, 5 Object Type, 6 Linked Ref, 7 Package Location, no
+    /// `PLDT`): where the actor stands when the package takes over.
+    #[default]
+    NearCurrentLocation,
+}
+
+/// #5391 — the actor's authored placement (its `ACHR`/`ACRE` position),
+/// stamped once at spawn and never moved: the anchor of a "near editor
+/// location" package, which must not follow the actor wherever an
+/// earlier package walked it. Re-stamped from the ESM on every spawn, so
+/// it needs no save.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
+pub struct EditorPlacement {
+    pub translation: Vec3,
+}
+
+impl Component for EditorPlacement {
+    type Storage = SparseSetStorage<Self>;
+}
 
 /// Marker: this actor's active package is an Eat procedure — walk to
 /// the `PLDT` location, then sit at the nearest dining furniture.
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
 pub struct EatBehavior {
-    /// `PLDT` search radius around the target (game units).
+    /// `PLDT` search radius around the anchor (game units).
     pub radius: Option<f32>,
-    /// `PLDT` `NearReference` FormID for the walk destination.
-    pub target_form_id: Option<u32>,
-    /// The actor's own base FormID — the hash seed for the fallback
-    /// destination pick, mirroring `WanderBehavior`/`TravelBehavior`.
+    /// `PLDT` anchor (#5391).
+    pub location: EatSleepLocation,
+    /// The actor's own base FormID (diagnostics — `[m42]` logs and the
+    /// debug inspector). #5391 retired the hash-picked fallback walk it
+    /// used to seed.
     pub form_id: u32,
 }
 
@@ -47,7 +84,7 @@ impl Component for EatBehavior {
 #[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
 pub struct SleepBehavior {
     pub radius: Option<f32>,
-    pub target_form_id: Option<u32>,
+    pub location: EatSleepLocation,
     pub form_id: u32,
 }
 

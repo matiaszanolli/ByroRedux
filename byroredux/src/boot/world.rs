@@ -391,6 +391,8 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     world.register::<byroredux_core::ecs::components::EatBehavior>();
     world.register::<byroredux_core::ecs::components::SleepBehavior>();
     world.register::<byroredux_core::ecs::components::EatSleepState>();
+    // #5391 — stamped at NPC spawn; the "near editor location" anchor.
+    world.register::<byroredux_core::ecs::components::EditorPlacement>();
     // M42.8 — pre-register the Patrol marker + runtime-state storages so
     // `patrol_system`'s `query::<PatrolBehavior>()` skip-scan and
     // `query_mut::<PatrolState>().insert(...)` resolve even before the

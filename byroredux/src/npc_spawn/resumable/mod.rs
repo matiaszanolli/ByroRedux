@@ -369,6 +369,14 @@ fn spawn_placement_root<'a>(
     if player_body {
         return (placement_root, resolved);
     }
+    // #5391 — the authored placement, kept fixed for "near editor
+    // location" packages however far later packages walk the actor.
+    world.insert(
+        placement_root,
+        byroredux_core::ecs::components::EditorPlacement {
+            translation: ref_pos,
+        },
+    );
     stamp_faction_ranks(world, placement_root, &resolved);
     // #4817 — `CombatDisposition` is NOT stamped here: this root is live for
     // every frame the job yields, before its body loads and before the

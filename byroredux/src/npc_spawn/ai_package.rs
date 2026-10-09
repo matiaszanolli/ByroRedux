@@ -10,7 +10,8 @@ use super::EsmIndex;
 use crate::components::{AmbientPackageRuntime, GameTimeRes, NavPath, SeatReservations};
 use byroredux_core::animation::AnimationPlayer;
 use byroredux_core::ecs::components::{
-    Dead, EatBehavior, EatSleepState, EscortBehavior, EscortState, Escorted, FollowBehavior,
+    Dead, EatBehavior, EatSleepLocation, EatSleepState, EscortBehavior, EscortState, Escorted,
+    FollowBehavior,
     FollowState, GuardBehavior, GuardState, PatrolBehavior, PatrolState, SandboxBehavior, Seated,
     SleepBehavior, TravelBehavior, TravelState, Traveled, WanderBehavior, WanderState,
 };
@@ -120,14 +121,14 @@ enum AmbientBehavior {
     /// sit at the nearest furniture marker.
     Eat {
         radius: Option<f32>,
-        target_form_id: Option<u32>,
+        location: EatSleepLocation,
         actor_form_id: u32,
     },
     /// M42 — Sleep (procedure 4): walk to the PLDT bedroom location,
     /// then occupy the nearest sleep marker (sit-pose v0).
     Sleep {
         radius: Option<f32>,
-        target_form_id: Option<u32>,
+        location: EatSleepLocation,
         actor_form_id: u32,
     },
     /// M42 + #5367 — Dialogue (procedure 15): the active package
@@ -137,6 +138,26 @@ enum AmbientBehavior {
     Dialogue {
         topic: Option<u32>,
     },
+}
+
+/// #5391 — an Eat/Sleep package's `PLDT` as the anchor the runtime walks
+/// to and searches around. Types with no resolvable anchor here stay
+/// where the actor stands (the old fallback hash-picked a random point
+/// around the actor's *current* position for every non-reference type,
+/// so "near editor location" followed wherever an earlier package had
+/// walked it and re-rolled after every load).
+fn eat_sleep_location(package: &PackRecord) -> EatSleepLocation {
+    match package.location {
+        Some(location) => match location.target {
+            PackLocationTarget::NearReference(form_id) => EatSleepLocation::NearReference(form_id),
+            PackLocationTarget::InCell(form_id) => EatSleepLocation::InCell(form_id),
+            PackLocationTarget::Other(_) if location.location_type == 3 => {
+                EatSleepLocation::NearEditorLocation
+            }
+            _ => EatSleepLocation::NearCurrentLocation,
+        },
+        None => EatSleepLocation::NearCurrentLocation,
+    }
 }
 
 impl AmbientBehavior {
@@ -222,13 +243,13 @@ impl AmbientBehavior {
         } else if package.procedure_type == PROCEDURE_EAT {
             Some(Self::Eat {
                 radius: location_radius,
-                target_form_id: location_reference,
+                location: eat_sleep_location(package),
                 actor_form_id,
             })
         } else if package.procedure_type == PROCEDURE_SLEEP {
             Some(Self::Sleep {
                 radius: location_radius,
-                target_form_id: location_reference,
+                location: eat_sleep_location(package),
                 actor_form_id,
             })
         } else if package.procedure_type == PROCEDURE_DIALOGUE {
@@ -448,28 +469,28 @@ impl AmbientBehavior {
             }
             Self::Eat {
                 radius,
-                target_form_id,
+                location,
                 actor_form_id,
             } => {
                 world.insert(
                     actor,
                     EatBehavior {
                         radius,
-                        target_form_id,
+                        location,
                         form_id: actor_form_id,
                     },
                 );
             }
             Self::Sleep {
                 radius,
-                target_form_id,
+                location,
                 actor_form_id,
             } => {
                 world.insert(
                     actor,
                     SleepBehavior {
                         radius,
-                        target_form_id,
+                        location,
                         form_id: actor_form_id,
                     },
                 );
@@ -569,27 +590,27 @@ impl AmbientBehavior {
             ),
             Self::Eat {
                 radius,
-                target_form_id,
+                location,
                 actor_form_id,
             } => insert_component(
                 world,
                 actor,
                 EatBehavior {
                     radius,
-                    target_form_id,
+                    location,
                     form_id: actor_form_id,
                 },
             ),
             Self::Sleep {
                 radius,
-                target_form_id,
+                location,
                 actor_form_id,
             } => insert_component(
                 world,
                 actor,
                 SleepBehavior {
                     radius,
-                    target_form_id,
+                    location,
                     form_id: actor_form_id,
                 },
             ),
