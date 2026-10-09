@@ -183,7 +183,7 @@ using the generic `register_component::<T>()` helper, called from
 `byroredux-core`). The registry is owned by the `DebugDrainSystem`
 (`DebugDrainSystem.registry`), not stored as a World resource.
 
-### Currently registered (67 components)
+### Currently registered (70 components)
 
 | Component | Fields |
 |-----------|--------|
