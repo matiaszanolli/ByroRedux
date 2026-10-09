@@ -9,7 +9,8 @@ use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use crate::components::{
-    CellRootIndex, MaterialTextureHandles, NormalMapHandle, TerrainTileSlot, WaterNoiseMapHandles,
+    CellRootIndex, CinematicReAdoption, MaterialTextureHandles, NormalMapHandle, TerrainTileSlot,
+    WaterNoiseMapHandles,
 };
 
 /// Active native vehicle chains have crossed their source cell boundary by
@@ -49,7 +50,10 @@ fn cinematic_retained_entities(world: &World) -> HashSet<EntityId> {
 }
 
 /// Drop every live `ActorCinematicState` / `HorseTetherState` row, emptying
-/// [`cinematic_retained_entities`] for the teardown that follows.
+/// [`cinematic_retained_entities`] for the teardown that follows, and
+/// despawn the `CinematicReAdoption` pending list — released convoy
+/// entities waiting for a cell to load under them carry no `CellRoot`,
+/// so the teardown's `CellRootIndex` walk cannot see them (#5379).
 ///
 /// #5056 — session-replacement loads (save load, debug load) tear down and
 /// re-spawn the whole world. Both components carry session-local `EntityId`s
@@ -81,6 +85,30 @@ pub(crate) fn purge_cinematic_retention_state(world: &mut World) {
         log::info!(
             "session replace: detached {detached} cinematic/tether state row(s) so the \
              teardown despawns the convoy instead of retaining it (#5056)"
+        );
+    }
+    // #5379 — released convoy entities still waiting for a cell to load
+    // under them sit on `CinematicReAdoption.pending` with NO `CellRoot`,
+    // so the teardown below cannot enumerate them (it walks
+    // `CellRootIndex` victims). Un-purged they survive the load, the
+    // reload spawns fresh copies of the same REFR/ACHR, and ghost +
+    // fresh share a `FormIdPair` — #5056's hazard (2) reopened through
+    // the #3817 path. Despawn them here, then clear the list.
+    let pending: Vec<EntityId> = world
+        .try_resource::<CinematicReAdoption>()
+        .map(|pending| pending.pending.clone())
+        .unwrap_or_default();
+    if !pending.is_empty() {
+        let queued = pending.len();
+        // `despawn_batch` is a no-op on ids an earlier path already
+        // despawned, so the list can go in wholesale.
+        world.despawn_batch(pending);
+        if let Some(mut pending) = world.try_resource_mut::<CinematicReAdoption>() {
+            pending.pending.clear();
+        }
+        log::info!(
+            "session replace: despawned {queued} pending cinematic re-adoption \
+             entit(y/ies) the teardown could not enumerate (#5379)"
         );
     }
 }
@@ -1094,6 +1122,51 @@ mod cinematic_retention_tests {
                 .get(unrelated)
                 .is_some(),
             "an entity with no cinematic involvement must be untouched"
+        );
+    }
+
+    /// #5379 — the purge must also despawn the `CinematicReAdoption`
+    /// pending list: those released convoy entities carry no `CellRoot`,
+    /// so the teardown's victim walk cannot enumerate them and they would
+    /// survive the session replacement as `FormIdPair` ghost twins of the
+    /// fresh spawns the reload creates.
+    #[test]
+    fn purge_despawns_pending_readoption_entities() {
+        let mut world = World::new();
+        world.register::<byroredux_core::ecs::Transform>();
+        let ghost = world.spawn();
+        world.insert(ghost, byroredux_core::ecs::Transform::IDENTITY);
+        let bystander = world.spawn();
+        world.insert(
+            bystander,
+            byroredux_core::ecs::Transform::from_translation(byroredux_core::math::Vec3::ONE),
+        );
+        world.insert_resource(CinematicReAdoption { pending: vec![ghost] });
+
+        purge_cinematic_retention_state(&mut world);
+
+        assert!(
+            world
+                .query::<byroredux_core::ecs::Transform>()
+                .unwrap()
+                .get(ghost)
+                .is_none(),
+            "the pending ghost must be despawned with the session"
+        );
+        assert!(
+            world
+                .query::<byroredux_core::ecs::Transform>()
+                .unwrap()
+                .get(bystander)
+                .is_some(),
+            "entities not on the pending list are the teardown's business, not the purge's"
+        );
+        assert_eq!(
+            world
+                .try_resource::<CinematicReAdoption>()
+                .map(|pending| pending.pending.clone()),
+            Some(Vec::new()),
+            "the pending list is cleared"
         );
     }
 }

@@ -501,7 +501,7 @@ fn release_finished_tethers(world: &World, finished: &[(EntityId, EntityId)]) {
     let mut seeds: Vec<EntityId> =
         finished.iter().copied().flat_map(|(cart, horse)| [cart, horse]).collect();
     seeds.extend(riders.iter().map(|(actor, _)| *actor));
-    let release_set: std::collections::HashSet<EntityId> = {
+    let (release_set, player_subtree) = {
         let children = world.query::<Children>();
         let mut set = std::collections::HashSet::new();
         let mut stack = seeds;
@@ -512,7 +512,33 @@ fn release_finished_tethers(world: &World, finished: &[(EntityId, EntityId)]) {
                 }
             }
         }
-        set
+        // #5379 — the process-lifetime player is never cell-owned
+        // (`player_body.rs`: the body root survives live cell reloads by
+        // design). A player rider reaches this walk through its Children,
+        // and queueing it would let `retry_cinematic_readoption` stamp a
+        // `CellRoot` on it — after which the next streaming unload or
+        // save-load teardown despawns the player and the session is left
+        // with no body. Collect the player's own subtree here so pass 3
+        // can leave every member out of the queue.
+        let player = world
+            .try_resource::<crate::systems::character::PlayerEntity>()
+            .and_then(|player| player.0);
+        let player_subtree = match player {
+            Some(player) => {
+                let mut subtree = std::collections::HashSet::new();
+                let mut stack = vec![player];
+                while let Some(entity) = stack.pop() {
+                    if subtree.insert(entity) {
+                        if let Some(row) = children.as_ref().and_then(|c| c.get(entity)) {
+                            stack.extend(row.0.iter().copied());
+                        }
+                    }
+                }
+                subtree
+            }
+            None => std::collections::HashSet::new(),
+        };
+        (set, player_subtree)
     };
 
     // ── Read pass 3 — who needs adoption. Entities still owned by their
@@ -520,12 +546,15 @@ fn release_finished_tethers(world: &World, finished: &[(EntityId, EntityId)]) {
     // streaming step's re-adoption retry, which resolves the loaded
     // exterior cell at each entity's position (`WorldStreamingState`
     // lives on the App, not in the ECS, so the route system cannot see
-    // it — #3817).
+    // it — #3817). The player subtree never queues (#5379).
     let unplaced: Vec<EntityId> = {
         let roots = world.query::<CellRoot>();
         release_set
             .iter()
-            .filter(|entity| roots.as_ref().is_none_or(|roots| roots.get(**entity).is_none()))
+            .filter(|entity| {
+                !player_subtree.contains(*entity)
+                    && roots.as_ref().is_none_or(|roots| roots.get(**entity).is_none())
+            })
             .copied()
             .collect()
     };
@@ -591,7 +620,34 @@ pub(crate) fn retry_cinematic_readoption(
     {
         let transforms = world.query::<Transform>();
         let roots = world.query::<CellRoot>();
+        let children = world.query::<Children>();
+        // #5379 — the process-lifetime player is never cell-owned, no
+        // matter who queued it: a `CellRoot` stamp here would make the
+        // next streaming unload / save-load teardown despawn the player.
+        // Members of the player's subtree are consumed (dropped from the
+        // pending list), not adopted.
+        let player = world
+            .try_resource::<crate::systems::character::PlayerEntity>()
+            .and_then(|player| player.0);
+        let player_subtree = match player {
+            Some(player) => {
+                let mut subtree = std::collections::HashSet::new();
+                let mut stack = vec![player];
+                while let Some(entity) = stack.pop() {
+                    if subtree.insert(entity) {
+                        if let Some(row) = children.as_ref().and_then(|c| c.get(entity)) {
+                            stack.extend(row.0.iter().copied());
+                        }
+                    }
+                }
+                subtree
+            }
+            None => std::collections::HashSet::new(),
+        };
         for &entity in &pending.pending {
+            if player_subtree.contains(&entity) {
+                continue;
+            }
             let Some(gt) = transforms.as_ref().and_then(|t| t.get(entity)) else {
                 // Every convoy entity is a world entity with a Transform
                 // (the render subtree included); one without is a despawn
@@ -1996,6 +2052,96 @@ mod tests {
                     .is_some_and(|owned| owned.contains(&cart) && owned.contains(&rider)))
                 .unwrap_or(false),
             "the re-adoption must be registered in the unload index, or the              next cell unload cannot find them"
+        );
+    }
+
+    /// #5379 — the process-lifetime player rides the convoy (Skyrim
+    /// MQ101's opening cart ride) but must never be queued for cell
+    /// re-adoption: a `CellRoot` stamp on the player makes the next
+    /// streaming unload or save-load teardown despawn it, leaving the
+    /// session with no body. Covers both guards: the release walk
+    /// excludes the player's subtree, and the retry declines a player
+    /// entry even when one is handed to it directly.
+    #[test]
+    fn player_rider_is_never_queued_or_cell_adopted() {
+        use byroredux_core::math::{Quat, Vec3};
+
+        let mut world = World::new();
+        world.register::<Transform>();
+        world.register::<HorseTetherState>();
+        world.register::<ActorCinematicState>();
+        world.register::<CellRoot>();
+        world.register::<Children>();
+        world.insert_resource(CinematicReAdoption::default());
+        world.insert_resource(CellRootIndex::new());
+
+        let horse = world.spawn();
+        let cart = world.spawn();
+        let player = world.spawn();
+        let body = world.spawn();
+        // Everything inside exterior grid (0, 0), so the retry below CAN
+        // resolve a loaded cell at each position — the test's point is
+        // that the player must not resolve to one.
+        world.insert(horse, Transform::new(Vec3::new(100.0, 0.0, -100.0), Quat::IDENTITY, 1.0));
+        world.insert(cart, Transform::new(Vec3::new(100.0, 0.0, -100.0), Quat::IDENTITY, 1.0));
+        world.insert(player, Transform::new(Vec3::new(100.0, 2.0, -100.0), Quat::IDENTITY, 1.0));
+        world.insert(body, Transform::new(Vec3::new(100.0, 2.0, -99.0), Quat::IDENTITY, 1.0));
+        world.insert(player, Children(vec![body]));
+        world.insert(
+            cart,
+            HorseTetherState {
+                horse,
+                horse_local_translation: Vec3::ZERO,
+                horse_local_rotation: Quat::IDENTITY,
+                route_target_form_id: None,
+            },
+        );
+        world.insert(
+            player,
+            ActorCinematicState {
+                vehicle: Some(cart),
+                ..Default::default()
+            },
+        );
+        world.insert_resource(crate::systems::character::PlayerEntity(Some(player)));
+
+        release_finished_tethers(&world, &[(cart, horse)]);
+
+        let queued = world
+            .try_resource::<CinematicReAdoption>()
+            .map(|p| p.pending.clone())
+            .expect("re-adoption resource");
+        assert!(
+            !queued.contains(&player) && !queued.contains(&body),
+            "the player and its body subtree must never queue for cell \
+             adoption, got {queued:?}"
+        );
+        assert!(
+            queued.contains(&cart) && queued.contains(&horse),
+            "the convoy itself still queues"
+        );
+
+        // Defense in depth: a player entry that reaches the list anyway
+        // (queued before this fix, or by a future installer) is consumed
+        // by the retry, never adopted.
+        if let Some(mut pending) = world.try_resource_mut::<CinematicReAdoption>() {
+            pending.pending.push(player);
+        }
+        let mut loaded = std::collections::HashMap::new();
+        let cell_root = world.spawn();
+        loaded.insert((0, 0), crate::streaming::LoadedCell { cell_root });
+        crate::systems::retry_cinematic_readoption(&mut world, &loaded);
+        assert!(
+            world.get::<CellRoot>(player).is_none(),
+            "the retry must never stamp a CellRoot on the process-lifetime player"
+        );
+        let after = world
+            .try_resource::<CinematicReAdoption>()
+            .map(|p| p.pending.clone())
+            .expect("re-adoption resource");
+        assert!(
+            !after.contains(&player),
+            "the doctored player entry is consumed, not kept pending"
         );
     }
 
