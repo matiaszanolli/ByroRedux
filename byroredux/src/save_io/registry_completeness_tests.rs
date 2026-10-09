@@ -515,6 +515,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("AudioEmitter", "decoded asset/handle payload rebuilt from authored sound data when its source spawns"),
         ("OneShotSound", "one-frame dispatch marker removed immediately after audio playback begins"),
         ("SoundCache", "decoded audio asset cache repopulated on demand"),
+        ("VoiceSoundCache", "byte-budgeted voice decode LRU (#5382) — decodes repopulate on demand and eviction resets recency, neither of which a save should freeze"),
         ("DataStore", "immutable resolved plugin-record database rebuilt from manifests/plugins at boot"),
         // ── crates/core/src/ecs/components/ ─────────────────────────
         ("ActiveCamera", "set once at scene/cell setup (scene.rs), no gameplay mutator reassigns it"),

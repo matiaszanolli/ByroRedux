@@ -1815,5 +1815,145 @@ impl SoundCache {
 
 impl Resource for SoundCache {}
 
+/// #5382 — byte-budgeted LRU cache for dialogue voice lines.
+///
+/// [`SoundCache`] is process-lifetime by design: its consumers (combat
+/// SFX, UI) draw from a closed keyspace of archive staples. Dialogue
+/// voice is the first open-ended keyspace — every distinct spoken line
+/// retains ~0.19 MB of decoded PCM per voiced second (measured on Doc
+/// Mitchell's 5 s mono 24 kHz greeting → 960,400 B of stereo `f32`
+/// frames), and FNV's Voices1 archive alone holds 105,517 candidates —
+/// so voice rides this separate cache instead of the shared one.
+///
+/// Same `get_or_load` contract as [`SoundCache`] (the loader runs under
+/// the cache write guard, preserving the #5383 cache→provider lock
+/// order), with two bounds the shared cache lacks:
+///
+/// - decoded PCM is evicted least-recently-used once `bytes_estimate`
+///   exceeds the budget (default 64 MiB ≈ one recent conversation's
+///   worth of lines); playing handles keep their own `Arc` clone alive,
+///   exactly like [`SoundCache::clear`].
+/// - negative entries are capped and *counted* (`negative_len`) instead
+///   of accumulating silently — a miss storm on a modded voices archive
+///   clears the negative set once past the cap and re-probes, rather
+///   than growing for the process lifetime.
+pub struct VoiceSoundCache {
+    budget_bytes: usize,
+    /// LRU order — index 0 is most recently used.
+    entries: Vec<(String, Arc<StaticSoundData>, usize)>,
+    resident_bytes: usize,
+    negatives: std::collections::HashSet<String>,
+}
+
+/// Negative-entry cap: past this many distinct misses the set clears and
+/// re-probes. Sized so the common per-session distinct-miss population
+/// (wrong voice type, absent DLC archives) stays cached, while a broken
+/// path storm cannot grow the set without bound.
+pub const VOICE_NEGATIVE_CAP: usize = 4096;
+
+impl Default for VoiceSoundCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl VoiceSoundCache {
+    pub const DEFAULT_BUDGET_BYTES: usize = 64 * 1024 * 1024;
+
+    pub fn new() -> Self {
+        Self::with_budget(Self::DEFAULT_BUDGET_BYTES)
+    }
+
+    pub fn with_budget(budget_bytes: usize) -> Self {
+        Self {
+            budget_bytes,
+            entries: Vec::new(),
+            resident_bytes: 0,
+            negatives: std::collections::HashSet::new(),
+        }
+    }
+
+    /// Cache hit → reuse (and mark most-recent), cache miss → extract and
+    /// decode through `loader`, same shape as [`SoundCache::get_or_load`].
+    /// A newly decoded sound evicts least-recently-used entries until the
+    /// byte budget holds; the just-inserted entry is never evicted by its
+    /// own insertion. Returns `None` on a miss or decode failure, both
+    /// remembered as (capped) negatives.
+    pub fn get_or_load<F>(&mut self, path: &str, loader: F) -> Option<Arc<StaticSoundData>>
+    where
+        F: FnOnce() -> Option<Vec<u8>>,
+    {
+        let key = path.to_ascii_lowercase();
+        if let Some(i) = self.entries.iter().position(|(k, ..)| *k == key) {
+            let (k, sound, bytes) = self.entries.remove(i);
+            self.entries.insert(0, (k, sound.clone(), bytes));
+            return Some(sound);
+        }
+        if self.negatives.contains(&key) {
+            return None;
+        }
+        let Some(bytes) = loader() else {
+            self.remember_negative(key);
+            return None;
+        };
+        match load_sound_from_bytes(bytes) {
+            Ok(sound) => {
+                let pcm_bytes = sound.frames.len() * std::mem::size_of::<kira::Frame>();
+                self.resident_bytes += pcm_bytes;
+                let arc = Arc::new(sound);
+                self.entries.insert(0, (key, Arc::clone(&arc), pcm_bytes));
+                while self.resident_bytes > self.budget_bytes && self.entries.len() > 1 {
+                    let (_, _, evicted) = self.entries.pop().expect("len > 1 checked above");
+                    self.resident_bytes -= evicted;
+                }
+                Some(arc)
+            }
+            Err(e) => {
+                log::warn!("M44: decode failed for voice '{path}': {e}");
+                self.remember_negative(key);
+                None
+            }
+        }
+    }
+
+    fn remember_negative(&mut self, key: String) {
+        if self.negatives.len() >= VOICE_NEGATIVE_CAP {
+            self.negatives.clear();
+        }
+        self.negatives.insert(key);
+    }
+
+    /// Number of cached voice decodes (telemetry — see
+    /// [`SoundCache::len`] for the shared-cache counterpart).
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// Distinct cached misses — surfaced because the shared cache's
+    /// uncounted `None` entries were invisible to telemetry (#5382).
+    pub fn negative_len(&self) -> usize {
+        self.negatives.len()
+    }
+
+    /// Resident decoded PCM, same accounting as
+    /// [`SoundCache::bytes_estimate`]. Bounded by the budget by
+    /// construction; a value pinned at the budget with `len()` still
+    /// growing is the signal the LRU is churning.
+    pub fn bytes_estimate(&self) -> usize {
+        self.resident_bytes
+    }
+
+    /// The LRU's byte budget.
+    pub fn budget_bytes(&self) -> usize {
+        self.budget_bytes
+    }
+}
+
+impl Resource for VoiceSoundCache {}
+
 #[cfg(test)]
 mod tests;

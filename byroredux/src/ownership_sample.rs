@@ -68,6 +68,16 @@ pub(crate) fn sample_ecs_owners(world: &World, out: &mut OwnershipSnapshot) {
         out.sound_cache_entries = cache.len() as u64;
         out.sound_cache_bytes = cache.bytes_estimate() as u64;
     }
+
+    // #5382 — the voice LRU's footprint is its own class: entries and
+    // bytes are budget-bounded by construction, and the negative count
+    // (capped, unlike the shared cache's uncounted misses) is the signal
+    // for a miss storm on a modded voices archive.
+    if let Some(voice) = world.try_resource::<byroredux_audio::VoiceSoundCache>() {
+        out.voice_cache_entries = voice.len() as u64;
+        out.voice_cache_bytes = voice.bytes_estimate() as u64;
+        out.voice_cache_negatives = voice.negative_len() as u64;
+    }
 }
 
 /// Sample the GPU-side owners.

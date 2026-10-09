@@ -1879,3 +1879,96 @@ fn anchored_voice_follows_survives_prune_and_stops() {
         "the faded line must leave the active list"
     );
 }
+
+// ---------------------------------------------------------------------------
+// VoiceSoundCache (#5382)
+// ---------------------------------------------------------------------------
+
+/// Minimal 16-bit mono PCM WAV — symphonia's probe decodes it through the
+/// same `StaticSoundData::from_cursor` path the archive extractor feeds.
+fn wav_bytes(frames: usize) -> Vec<u8> {
+    let data_len = frames * 2;
+    let mut b = Vec::with_capacity(44 + data_len);
+    b.extend_from_slice(b"RIFF");
+    b.extend_from_slice(&((36 + data_len) as u32).to_le_bytes());
+    b.extend_from_slice(b"WAVE");
+    b.extend_from_slice(b"fmt ");
+    b.extend_from_slice(&16u32.to_le_bytes());
+    b.extend_from_slice(&1u16.to_le_bytes()); // PCM
+    b.extend_from_slice(&1u16.to_le_bytes()); // mono
+    b.extend_from_slice(&24_000u32.to_le_bytes());
+    b.extend_from_slice(&48_000u32.to_le_bytes());
+    b.extend_from_slice(&2u16.to_le_bytes());
+    b.extend_from_slice(&16u16.to_le_bytes());
+    b.extend_from_slice(b"data");
+    b.extend_from_slice(&(data_len as u32).to_le_bytes());
+    b.extend(std::iter::repeat(0u8).take(data_len));
+    b
+}
+
+/// #5382 — voice decodes evict least-recently-used once the byte budget
+/// is exceeded, a hit refreshes recency, and an evicted path re-decodes
+/// on its next request. The shared `SoundCache` keeps every entry for
+/// the process lifetime — fine for its closed SFX keyspace, unbounded
+/// for the 105k-entry voices archive.
+#[test]
+fn voice_cache_evicts_lru_under_byte_budget() {
+    use std::cell::Cell;
+    let frame_size = std::mem::size_of::<kira::Frame>();
+    // Two 6-frame decodes (48 B each) fit in 100 B; a third must evict.
+    let mut cache = VoiceSoundCache::with_budget(100);
+    let loads = Cell::new(0usize);
+    let loader = || {
+        loads.set(loads.get() + 1);
+        Some(wav_bytes(6))
+    };
+
+    let a = cache.get_or_load(r"sound\voice\game\a_1.ogg", loader).expect("decode");
+    assert_eq!(a.frames.len(), 6, "mono wav decodes to 6 frames");
+    cache.get_or_load(r"sound\voice\game\b_1.ogg", loader).expect("decode");
+    assert_eq!(cache.len(), 2);
+    assert_eq!(cache.bytes_estimate(), 2 * 6 * frame_size);
+    assert_eq!(loads.get(), 2);
+
+    // Recency refresh: touching `a` again makes `b` the LRU victim.
+    cache.get_or_load(r"sound\voice\game\A_1.OGG", loader).expect("hit");
+    assert_eq!(loads.get(), 2, "case-insensitive hit must skip the loader");
+
+    let c = cache.get_or_load(r"sound\voice\game\c_1.ogg", loader).expect("decode");
+    assert_eq!(cache.len(), 2, "budget holds two decodes");
+    assert!(cache.bytes_estimate() <= cache.budget_bytes());
+    assert_eq!(loads.get(), 3);
+
+    // `b` was evicted (not `a`, which was refreshed) — it re-decodes.
+    let b = cache.get_or_load(r"sound\voice\game\b_1.ogg", loader).expect("re-decode");
+    assert_eq!(loads.get(), 4, "evicted entry decodes again");
+    // Distinct decodes are distinct Arcs; the refreshed `a` was preserved.
+    assert!(!Arc::ptr_eq(&a, &c));
+    assert!(!Arc::ptr_eq(&b, &c));
+}
+
+/// #5382 — negative entries are capped, not process-lifetime: past the
+/// cap the set clears and re-probes, and the count is surfaced instead
+/// of silently accumulating like the shared cache's uncounted `None`s.
+#[test]
+fn voice_cache_negatives_are_capped_and_counted() {
+    let mut cache = VoiceSoundCache::new();
+    for i in 0..VOICE_NEGATIVE_CAP {
+        let path = format!(r"sound\voice\game\missing_{i}.ogg");
+        assert!(cache.get_or_load(&path, || None).is_none());
+    }
+    assert_eq!(cache.negative_len(), VOICE_NEGATIVE_CAP);
+    assert!(cache.is_empty(), "misses never create positive entries");
+    // One more distinct miss clears the set and starts it over at 1.
+    assert!(cache.get_or_load(r"sound\voice\game\missing_next.ogg", || None).is_none());
+    assert_eq!(cache.negative_len(), 1);
+    // A repeated miss inside the new set stays cached (no re-probe).
+    let mut probes = 0;
+    assert!(cache
+        .get_or_load(r"sound\voice\game\missing_next.ogg", || {
+            probes += 1;
+            None
+        })
+        .is_none());
+    assert_eq!(probes, 0, "negative hit must skip the loader");
+}

@@ -141,6 +141,15 @@ pub struct OwnershipSnapshot {
     pub sound_cache_entries: u64,
     /// Estimated decoded PCM bytes retained by `SoundCache`.
     pub sound_cache_bytes: u64,
+    /// `VoiceSoundCache` decodes (#5382) — bounded by the LRU budget.
+    pub voice_cache_entries: u64,
+    /// Decoded PCM bytes retained by `VoiceSoundCache` — pinned at the
+    /// budget while entries churn is the LRU working as designed, but a
+    /// value above budget would mean the eviction loop broke.
+    pub voice_cache_bytes: u64,
+    /// `VoiceSoundCache` negative entries — capped (#5382), unlike the
+    /// shared cache's uncounted `None` values.
+    pub voice_cache_negatives: u64,
     /// Live `ScriptVariables` rows (per-entity Papyrus VM state).
     pub script_variable_rows: u64,
     /// Live `ScriptTimer` rows.
@@ -305,6 +314,21 @@ impl OwnershipSnapshot {
                 policy: Bounded,
             },
             OwnerClass {
+                name: "voice_cache_entries",
+                value: self.voice_cache_entries,
+                policy: Bounded,
+            },
+            OwnerClass {
+                name: "voice_cache_bytes",
+                value: self.voice_cache_bytes,
+                policy: Bounded,
+            },
+            OwnerClass {
+                name: "voice_cache_negatives",
+                value: self.voice_cache_negatives,
+                policy: Bounded,
+            },
+            OwnerClass {
                 name: "script_variable_rows",
                 value: self.script_variable_rows,
                 policy: Exact,
@@ -384,6 +408,9 @@ impl OwnershipSnapshot {
         self.audio_pending_oneshots = next();
         self.sound_cache_entries = next();
         self.sound_cache_bytes = next();
+        self.voice_cache_entries = next();
+        self.voice_cache_bytes = next();
+        self.voice_cache_negatives = next();
         self.script_variable_rows = next();
         self.script_timer_rows = next();
         self.particle_emitters = next();

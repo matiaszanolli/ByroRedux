@@ -23,9 +23,10 @@ fn classes_cover_every_field() {
     // it represents would then be invisible, which is the exact failure mode
     // EX-08 exists to prevent. Bump this deliberately, alongside `classes()`
     // *and* `write_values()`.
-    // The ground-cover occupancy classes and decoded-audio cache bytes are
-    // each represented in the ownership gate.
-    assert_eq!(OwnershipSnapshot::default().classes().len(), 26);
+    // The ground-cover occupancy classes, decoded-audio cache bytes and
+    // the #5382 voice-LRU classes are each represented in the ownership
+    // gate.
+    assert_eq!(OwnershipSnapshot::default().classes().len(), 29);
 }
 
 #[test]

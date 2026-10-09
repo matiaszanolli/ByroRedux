@@ -201,6 +201,11 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     // never fails on a missing audio device.
     world.insert_resource(byroredux_audio::AudioWorld::new());
     world.insert_resource(byroredux_audio::SoundCache::new());
+    // #5382 — dialogue voice decodes ride the byte-budgeted LRU, not
+    // the process-lifetime `SoundCache`: the voices archive is an
+    // open-ended keyspace (105k FNV candidates, ~0.19 MB PCM per voiced
+    // second) that would otherwise grow resident memory without bound.
+    world.insert_resource(byroredux_audio::VoiceSoundCache::new());
     // M44 Phase 3.5 — footstep config. `default_sound` is None
     // until/unless the cell loader (or a future asset-provider
     // hook) decodes a BSA-archived sound and stores it here.

@@ -1012,9 +1012,10 @@ mod system_access_declaration_tests {
     /// longer silently rot back to reads.
     ///
     /// #5414 — `apply_selection`'s two cross-file hops are listed too:
-    /// `play_line_voice` (dialogue_voice.rs; SoundCache/AudioWorld writes,
-    /// SoundArchiveProvider/LoadedPluginSet/GlobalFormIdResolver/GlobalTransform
-    /// reads) and
+    /// `play_line_voice` (dialogue_voice.rs; #5382 VoiceSoundCache +
+    /// AudioWorld writes, SoundArchiveProvider/LoadedPluginSet/
+    /// GlobalFormIdResolver/GlobalTransform reads, plus the AudioWorld
+    /// read of the device gate) and
     /// `raise_hello_story_event` (story_events.rs; the `StoryEvent` write
     /// plus the cell-context reads). Without the explicit entries the
     /// same-file callee walk never sees either and the row can rot again.

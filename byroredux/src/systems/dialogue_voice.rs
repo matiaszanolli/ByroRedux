@@ -36,13 +36,19 @@
 //!
 //! Playback rides the `SoundArchiveProvider` (opened through the
 //! profile's sounds list — FNV's Voices BSA joins it with this phase)
-//! and the `SoundCache`/`AudioWorld` pair: each response segment is
-//! extracted once, decoded once, and scheduled sequentially (segment
-//! *n* starts when *n-1* ends, via kira's delayed start). The total
-//! voice duration replaces the subtitle presentation estimate wherever
-//! the runtime had one (the Phase-L Goodbye close). A line with no
-//! resolvable voice falls back to the estimate exactly as before —
-//! missing audio is the common modded-game shape, not an error.
+//! and the `VoiceSoundCache`/`AudioWorld` pair: each response segment is
+//! decoded once per LRU residency and scheduled sequentially (segment
+//! *n* starts when *n-1* ends, via kira's delayed start). #5382 — voice
+//! does **not** use the shared `SoundCache`: its keyspace is the
+//! 105k-entry Voices archive (every distinct spoken line a new key,
+//! ~0.19 MB PCM per voiced second), so it rides the byte-budgeted LRU
+//! instead, and a session with no active audio device resolves nothing
+//! at all (no extract, no decode — the `AudioWorld::is_active` gate
+//! runs before any archive work). The total voice duration replaces the
+//! subtitle presentation estimate wherever the runtime had one (the
+//! Phase-L Goodbye close). A line with no resolvable voice falls back to
+//! the estimate exactly as before — missing audio is the common
+//! modded-game shape, not an error.
 
 use byroredux_core::ecs::components::GlobalTransform;
 use byroredux_core::ecs::storage::EntityId;
@@ -116,6 +122,73 @@ fn voice_owner(world: &World, form_id: u32) -> Option<(String, u32)> {
         .map(|name| (name, pair.local.0))
 }
 
+/// The decode half of [`play_line_voice`]: walk the response segments
+/// through the `VoiceSoundCache` (#5382 — the byte-budgeted LRU, not the
+/// process-lifetime `SoundCache`). Split out so the lock-order contract
+/// (#5383) is exercisable without an active audio device — the
+/// `AudioWorld::is_active` gate lives in the caller.
+#[allow(clippy::too_many_arguments)] // the pieces of one voice-line lookup; a struct would just re-name them
+fn resolve_voice_segments(
+    world: &World,
+    plugin: &str,
+    voice_type: &str,
+    quest_edid: &str,
+    topic_edid: &str,
+    local_id: u32,
+    info_form_id: u32,
+    responses: &[u8],
+) -> Option<Vec<std::sync::Arc<byroredux_audio::Sound>>> {
+    let mut sounds = Vec::with_capacity(responses.len());
+    {
+        // #5383 — cache → provider, `combat_anim`'s order: the loader
+        // reads the archive provider INSIDE `get_or_load`, under the
+        // cache write guard. The pre-fix shape took the provider read
+        // first and the cache write under it — the reverse edge — so the
+        // type-keyed lock-order graph recorded both directions across the
+        // two systems and any detector session covering a voiced line
+        // and a first-time combat sound closed a cycle.
+        let mut cache = world.try_resource_mut::<byroredux_audio::VoiceSoundCache>()?;
+        for (segment, &response) in responses.iter().enumerate() {
+            let candidates = voice_path_candidates(
+                plugin,
+                voice_type,
+                quest_edid,
+                topic_edid,
+                local_id,
+                response,
+            );
+            let sound = candidates.iter().find_map(|path| {
+                cache.get_or_load(path, || {
+                    let provider = world.try_resource::<SoundArchiveProvider>()?;
+                    if provider.is_empty() {
+                        return None;
+                    }
+                    provider.extract(path)
+                })
+            });
+            let Some(sound) = sound else {
+                log::debug!(
+                    "#5367 V: no voice file for info {info_form_id:#X} segment {response} \
+                     (voice type '{voice_type}', plugin {plugin}, quest '{quest_edid}', \
+                     topic '{topic_edid}')",
+                );
+                if segment == 0 {
+                    // The line's first segment is its voice; without it
+                    // there is nothing to schedule. Later gaps keep the
+                    // schedule but shorten the line (logged below).
+                    return None;
+                }
+                break;
+            };
+            sounds.push(sound);
+        }
+    }
+    if sounds.is_empty() {
+        return None;
+    }
+    Some(sounds)
+}
+
 /// Resolve, decode, and schedule the INFO's voice segments at the NPC.
 /// Returns the total voice seconds when at least one segment resolved;
 /// `None` keeps the caller's subtitle estimate. `topic_edid` /
@@ -129,6 +202,15 @@ pub(crate) fn play_line_voice(
     topic_edid: &str,
     quest_form_id: Option<u32>,
 ) -> Option<f64> {
+    // #5382 — a session with no audio device resolves no voice at all:
+    // no archive extract, no decode, no cache fill. The pre-fix shape
+    // populated the cache before `AudioWorld` discarded the play.
+    {
+        let audio = world.try_resource::<byroredux_audio::AudioWorld>()?;
+        if !audio.is_active() {
+            return None;
+        }
+    }
     // #5410 — a speaker with no `GlobalTransform` is mid-despawn or
     // never placed: skip playback instead of voicing from the world
     // origin (the old `unwrap_or_default`). Read up front so a
@@ -184,56 +266,16 @@ pub(crate) fn play_line_voice(
             })
             .collect()
     };
-    let mut sounds = Vec::with_capacity(responses.len());
-    {
-        // #5383 — cache → provider, `combat_anim`'s order: the loader
-        // reads the archive provider INSIDE `get_or_load`, under the
-        // cache write guard. The pre-fix shape took the provider read
-        // first and the cache write under it — the reverse edge — so the
-        // type-keyed lock-order graph recorded both directions across
-        // the two systems and any detector session covering a voiced
-        // line and a first-time combat sound closed a cycle.
-        let mut cache = world.try_resource_mut::<byroredux_audio::SoundCache>()?;
-        for (segment, &response) in responses.iter().enumerate() {
-            let candidates = voice_path_candidates(
-                &plugin,
-                &voice_type,
-                quest_edid,
-                topic_edid,
-                local_id,
-                response,
-            );
-            let sound = candidates.iter().find_map(|path| {
-                cache.get_or_load(path, || {
-                    let provider = world.try_resource::<SoundArchiveProvider>()?;
-                    if provider.is_empty() {
-                        return None;
-                    }
-                    provider.extract(path)
-                })
-            });
-            let Some(sound) = sound else {
-                log::debug!(
-                    "#5367 V: no voice file for info {:#X} segment {response} \
-                     (voice type '{voice_type}', plugin {plugin}, quest '{}', \
-                     topic '{topic_edid}')",
-                    info.form_id,
-                    quest_edid,
-                );
-                if segment == 0 {
-                    // The line's first segment is its voice; without it
-                    // there is nothing to schedule. Later gaps keep the
-                    // schedule but shorten the line (logged below).
-                    return None;
-                }
-                break;
-            };
-            sounds.push(sound);
-        }
-    }
-    if sounds.is_empty() {
-        return None;
-    }
+    let sounds = resolve_voice_segments(
+        world,
+        &plugin,
+        &voice_type,
+        quest_edid,
+        topic_edid,
+        local_id,
+        info.form_id,
+        &responses,
+    )?;
 
     let mut total = 0.0;
     {
@@ -366,22 +408,23 @@ mod tests {
             path
         );
     }
-    /// #5383 — one process, both `SoundCache` consumers: a first-time
-    /// combat sound (`combat_anim::play_oneshot_cached`) and a voiced
-    /// dialogue line (`play_line_voice`) acquire the cache and the
+    /// #5383 — one process, both sound-cache consumers: a first-time
+    /// combat sound (`combat_anim::play_oneshot_cached` on the shared
+    /// `SoundCache`) and a voiced dialogue line (the `VoiceSoundCache`
+    /// through `resolve_voice_segments`) acquire their cache and the
     /// archive provider in ONE order (cache → provider, inside
     /// `get_or_load`). The pre-fix voice path took the provider read
     /// first and the cache write under it, so the type-keyed lock-order
     /// graph recorded both directions and any detector session
-    /// (`BYRO_LOCK_ORDER_CHECK=1`) covering both closed a cycle.
+    /// (`BYRO_LOCK_ORDER_CHECK=1`) covering both closed a cycle. The
+    /// decode half is driven directly because `play_line_voice`'s
+    /// `AudioWorld::is_active` gate (#5382) returns before any guard on
+    /// a headless world — the acquisition order lives here, unchanged.
     #[test]
     fn voice_and_combat_sound_paths_share_one_cache_provider_order() {
-        use crate::cell_loader::load_order::{GlobalFormIdResolver, LoadOrder};
-        use byroredux_plugin::esm::reader::GlobalSlot;
-        use byroredux_plugin::esm::records::MinimalEsmRecord;
-
         let mut world = World::new();
         world.insert_resource(byroredux_audio::SoundCache::default());
+        world.insert_resource(byroredux_audio::VoiceSoundCache::default());
         world.insert_resource(crate::asset_provider::audio::SoundArchiveProvider::new());
         world.insert_resource(byroredux_audio::AudioWorld::headless());
 
@@ -393,8 +436,39 @@ mod tests {
             byroredux_core::math::Vec3::ZERO,
         );
 
-        // The dialogue-voice consumer, driven far enough to reach its own
-        // cache write and in-loader provider read.
+        // The dialogue-voice consumer's decode half: same
+        // cache-write → in-loader provider-read shape.
+        let voiced = resolve_voice_segments(
+            &world,
+            "falloutnv.esm",
+            "maleuniquedocmitchell",
+            "vcg01",
+            "GREETING",
+            0x0010_7222,
+            0x0010_7222,
+            &[1],
+        );
+        assert!(voiced.is_none(), "an empty archive voices nothing");
+        // And the pairing does not panic under BYRO_LOCK_ORDER_CHECK=1 —
+        // that is this test's role in the detector lane.
+    }
+
+    /// #5382 — a session with no active audio device resolves no voice:
+    /// `play_line_voice` returns before touching the voice cache, so a
+    /// headless dialogue-heavy session decodes and retains nothing. The
+    /// pre-fix shape filled the cache first and let `AudioWorld` discard
+    /// the play.
+    #[test]
+    fn inactive_audio_session_resolves_and_caches_no_voice() {
+        use crate::cell_loader::load_order::{GlobalFormIdResolver, LoadOrder};
+        use byroredux_plugin::esm::reader::GlobalSlot;
+        use byroredux_plugin::esm::records::MinimalEsmRecord;
+
+        let mut world = World::new();
+        world.insert_resource(byroredux_audio::VoiceSoundCache::default());
+        world.insert_resource(crate::asset_provider::audio::SoundArchiveProvider::new());
+        world.insert_resource(byroredux_audio::AudioWorld::headless());
+
         let mut index = byroredux_plugin::esm::records::EsmIndex::default();
         index.npcs.insert(
             0x0000_0001,
@@ -442,13 +516,10 @@ mod tests {
             ..Default::default()
         };
 
-        // An empty provider: both loaders still record the acquisition
-        // edge (the guard is taken before the emptiness check), and the
-        // line resolves no sound — the lock order is the assertion.
-        let voiced = play_line_voice(&world, npc, &info, "GREETING", Some(0x0000_0C8C));
-        assert!(voiced.is_none(), "an empty archive voices nothing");
-        // And the pairing does not panic under BYRO_LOCK_ORDER_CHECK=1 —
-        // that is this test's role in the detector lane.
+        assert!(play_line_voice(&world, npc, &info, "GREETING", Some(0x0000_0C8C)).is_none());
+        let cache = world.resource::<byroredux_audio::VoiceSoundCache>();
+        assert_eq!(cache.len(), 0, "no decode may be retained");
+        assert_eq!(cache.negative_len(), 0, "no miss may be cached either");
     }
 }
 
