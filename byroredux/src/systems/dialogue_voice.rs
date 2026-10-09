@@ -96,6 +96,11 @@ pub(crate) fn play_line_voice(
     topic_edid: &str,
     quest_form_id: Option<u32>,
 ) -> Option<f64> {
+    // #5410 — a speaker with no `GlobalTransform` is mid-despawn or
+    // never placed: skip playback instead of voicing from the world
+    // origin (the old `unwrap_or_default`). Read up front so a
+    // transform-less NPC does no archive work either.
+    let position = world.get::<GlobalTransform>(npc).map(|t| t.translation)?;
     let index = world
         .try_resource::<crate::cell_loader::LoadedCellIndex>()?
         .0
@@ -175,17 +180,18 @@ pub(crate) fn play_line_voice(
         return None;
     }
 
-    let position = world
-        .get::<GlobalTransform>(npc)
-        .map(|t| t.translation)
-        .unwrap_or_default();
     let mut total = 0.0;
     {
         let mut audio = world.try_resource_mut::<byroredux_audio::AudioWorld>()?;
         for sound in &sounds {
             let duration = sound.duration().as_secs_f64();
             let at = byroredux_audio::with_start_delay(sound, total);
-            audio.play_oneshot(
+            // #5410 — entity-anchored, not fire-and-forget: the follow
+            // pass repositions each segment's track at the NPC while it
+            // talks, and `stop_sounds_for` gives the conversation-close
+            // path a handle to cut the line with.
+            audio.play_oneshot_following(
+                npc,
                 at,
                 position,
                 byroredux_audio::Attenuation::default(),

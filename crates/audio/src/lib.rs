@@ -327,20 +327,33 @@ pub(crate) const SEND_TRACK_CAPACITY: usize = 32;
 /// One currently-playing sound. The `track` field keeps the spatial
 /// sub-track alive — dropping it would tear down playback even if the
 /// `handle` is still ticking — and carries the position updates for
-/// entity-backed emitters (#3086). `entity` is `Some(EntityId)` for the
-/// entity-based `OneShotSound + AudioEmitter` flow (Phase 3) and
-/// `None` for queue-driven fire-and-forget plays (Phase 3.5
-/// `play_oneshot`), whose position is by contract the one captured at
-/// queue time — there is no entity to follow. When `Some`, the prune
-/// pass removes the `AudioEmitter` component on completion so a
-/// downstream cleanup system can despawn the entity.
+/// entity-backed emitters (#3086) and entity-anchored queue plays
+/// (#5410). The three coupling modes:
+///
+/// - [`SoundSource::Detached`] — fire-and-forget queue plays
+///   ([`AudioWorld::play_oneshot`], Phase 3.5): the position is by
+///   contract the one captured at queue time, nothing follows it, and
+///   the sound runs to natural termination (no stop path, by design).
+/// - [`SoundSource::Emitter`] — the entity-based `OneShotSound +
+///   AudioEmitter` flow (Phase 3): the follow pass tracks the entity's
+///   `GlobalTransform` (#3086), the prune pass stops the sound when the
+///   emitter component goes away, and completion removes the
+///   `AudioEmitter` so a downstream cleanup system can despawn the
+///   entity.
+/// - [`SoundSource::Anchored`] (#5410) — an entity-anchored queue play
+///   ([`AudioWorld::play_oneshot_following`]): the follow pass tracks
+///   the entity exactly like `Emitter`, but there is no emitter
+///   component lifecycle — the sound plays to natural termination
+///   unless [`AudioWorld::stop_sounds_for`] stops it (dialogue voice:
+///   the NPC carries no `AudioEmitter`, and its line must survive SFX
+///   emitter churn while still tracking a walking speaker).
 ///
 /// Whether the underlying kira sound is looping (set via
 /// `loop_region(..)` at dispatch) is decided at the `Pending` /
 /// `AudioEmitter` layer; `ActiveSound` itself doesn't need to carry
 /// that bit post-#858 since the prune sweep no longer branches on it.
 struct ActiveSound {
-    entity: Option<EntityId>,
+    source: SoundSource,
     handle: StaticSoundHandle,
     track: SpatialTrackHandle,
     /// The position (audio-space metres) the spatial track was last
@@ -371,15 +384,56 @@ struct ActiveSound {
     stop_issued: bool,
 }
 
-/// Fire-and-forget one-shot queued via [`AudioWorld::play_oneshot`].
-/// Drained and dispatched by `audio_system` at the start of each
-/// frame. Lives in `AudioWorld` rather than as ECS components so
-/// callers without `&mut World` (Systems) can still trigger sounds.
+/// How an [`ActiveSound`] couples to an entity — see the struct doc for
+/// the full contract of each mode (#5410 split the old
+/// `Option<EntityId>` into three modes because entity-following and
+/// emitter-lifecycle are independent: a dialogue voice needs the first
+/// and must not have the second).
+enum SoundSource {
+    /// Queue-driven fire-and-forget: position frozen at queue time.
+    Detached,
+    /// `OneShotSound + AudioEmitter` dispatch: follows the entity, stops
+    /// with the emitter component, removes it on completion.
+    Emitter(EntityId),
+    /// Entity-anchored queue play: follows the entity, stops only via
+    /// [`AudioWorld::stop_sounds_for`], no emitter lifecycle.
+    Anchored(EntityId),
+}
+
+impl SoundSource {
+    /// The followed entity, if this sound has one (both `Emitter` and
+    /// `Anchored` track a `GlobalTransform`).
+    fn followed_entity(&self) -> Option<EntityId> {
+        match self {
+            SoundSource::Detached => None,
+            SoundSource::Emitter(entity) | SoundSource::Anchored(entity) => Some(*entity),
+        }
+    }
+
+    /// Whether the prune pass's emitter-presence coupling applies (only
+    /// `Emitter` — an `Anchored` voice must survive SFX emitter churn on
+    /// the same NPC).
+    fn emitter_coupled(&self) -> Option<EntityId> {
+        match self {
+            SoundSource::Emitter(entity) => Some(*entity),
+            SoundSource::Detached | SoundSource::Anchored(_) => None,
+        }
+    }
+}
+
+/// One-shot queued through [`AudioWorld::play_oneshot`] (detached) or
+/// [`AudioWorld::play_oneshot_following`] (entity-anchored). Drained and
+/// dispatched by `audio_system` at the start of each frame. Lives in
+/// `AudioWorld` rather than as ECS components so callers without
+/// `&mut World` (Systems) can still trigger sounds.
 struct PendingOneShot {
     sound: Arc<StaticSoundData>,
     position: Vec3,
     attenuation: Attenuation,
     volume: f32,
+    /// #5410 — `Detached` for plain `play_oneshot`; `Anchored(entity)`
+    /// for a voice line whose speaker may walk while talking.
+    source: SoundSource,
 }
 
 /// Resource holding the `kira::AudioManager` + listener + active-sound
@@ -626,7 +680,83 @@ impl AudioWorld {
             position,
             attenuation,
             volume,
+            source: SoundSource::Detached,
         });
+    }
+
+    /// #5410 — as [`Self::play_oneshot`], but the dispatched sound is
+    /// ANCHORED to `entity`: the per-tick follow pass repositions its
+    /// spatial track at the entity's `GlobalTransform`, so a speaker
+    /// who walks while talking (force-greet approach, followers, a
+    /// package resuming after Goodbye) keeps voicing from where they
+    /// are, not where the line began. Unlike the `AudioEmitter` flow
+    /// there is no emitter component lifecycle — the sound plays to
+    /// natural termination unless [`Self::stop_sounds_for`] stops it,
+    /// so ambient SFX emitter churn on the same entity cannot truncate
+    /// a line. `position` is still required (the dispatch-time anchor
+    /// and the fallback if the entity's transform is absent on a tick).
+    pub fn play_oneshot_following(
+        &mut self,
+        entity: EntityId,
+        sound: Arc<StaticSoundData>,
+        position: Vec3,
+        attenuation: Attenuation,
+        volume: f32,
+    ) {
+        self.oneshots_requested = self.oneshots_requested.saturating_add(1);
+        if self.manager.is_none() {
+            return;
+        }
+        const MAX_PENDING: usize = 256;
+        if self.pending_oneshots.len() >= MAX_PENDING {
+            log::warn!(
+                "M44: pending one-shot queue at cap ({MAX_PENDING}); dropping oldest. \
+                 audio_system may not be running, or the queue is being filled \
+                 faster than it's drained."
+            );
+            self.pending_oneshots.pop_front();
+        }
+        self.pending_oneshots.push_back(PendingOneShot {
+            sound,
+            position,
+            attenuation,
+            volume,
+            source: SoundSource::Anchored(entity),
+        });
+    }
+
+    /// #5410 — fade out every active sound coupled to `entity` (both the
+    /// emitter-dispatched SFX and the anchored queue plays, i.e. a
+    /// speaker's voice line) and drop any of its still-queued segments,
+    /// returning how many were stopped or dequeued. This is the stop hook
+    /// the queue path never had: conversation close, topic change, and
+    /// actor death route their audio teardown through here instead of
+    /// letting a multi-segment line keep playing across a door or cell
+    /// transition at stale world coordinates.
+    pub fn stop_sounds_for(&mut self, entity: EntityId, fade_ms: f32) -> usize {
+        // Segments still waiting for dispatch are removed outright — a
+        // fade applies to playing handles, not queue entries.
+        let before = self.pending_oneshots.len();
+        self.pending_oneshots.retain(|pending| {
+            !matches!(pending.source, SoundSource::Anchored(e) | SoundSource::Emitter(e) if e == entity)
+        });
+        let mut stopped = before - self.pending_oneshots.len();
+        let tween = Tween {
+            start_time: kira::StartTime::Immediate,
+            duration: Duration::from_secs_f32(fade_ms.max(0.0) / 1000.0),
+            easing: kira::Easing::Linear,
+        };
+        for sound in &mut self.active_sounds {
+            if sound.stop_issued {
+                continue;
+            }
+            if sound.source.followed_entity() == Some(entity) {
+                sound.handle.stop(tween);
+                sound.stop_issued = true;
+                stopped += 1;
+            }
+        }
+        stopped
     }
 
     /// **Phase 5**: play a streaming sound through the main track.
@@ -950,25 +1080,26 @@ pub fn audio_system(world: &World, _dt: f32) {
 /// source. The listener half was always updated per frame, which made
 /// the failure directional and easy to misread as a listener-pose bug.
 ///
-/// Queue-driven sounds (`entity: None`) are fire-and-forget by
-/// contract — there is no entity to follow — and music is non-spatial,
-/// so neither is touched here. An entity that has been despawned or
-/// lost its `GlobalTransform` mid-playback is skipped; the prune sweep
-/// owns its termination.
+/// Queue-driven detached sounds are fire-and-forget by contract — there
+/// is no entity to follow — and music is non-spatial, so neither is
+/// touched here. `Anchored` queue plays (#5410, dialogue voice) follow
+/// exactly like emitters. An entity that has been despawned or lost its
+/// `GlobalTransform` mid-playback is skipped; the prune sweep owns the
+/// `Emitter` half's termination, `stop_sounds_for` the `Anchored` half's.
 ///
 /// Per-tick cost: one `GlobalTransform` lookup per entity-backed
 /// active sound plus one kira `set_position` command **only on ticks
 /// where the source actually moved** — the dispatch position seeds
 /// `ActiveSound::last_position`, so a stationary emitter (the vast
 /// majority: torches, ambient loops, machinery) costs a comparison and
-/// nothing else. The listener update above remains unconditional, as
-/// it always was.
+/// nothing else. The listener update above remains unconditional, as it
+/// always was.
 fn sync_emitter_positions(world: &World, audio_world: &mut AudioWorld) {
     let Some(gt_q) = world.query::<GlobalTransform>() else {
         return;
     };
     for active in &mut audio_world.active_sounds {
-        let Some(entity) = active.entity else {
+        let Some(entity) = active.source.followed_entity() else {
             continue;
         };
         let Some(gt) = gt_q.get(entity) else {
@@ -1171,26 +1302,27 @@ fn drain_pending_oneshots(audio_world: &mut AudioWorld) {
             }
         };
         audio_world.active_sounds.push(ActiveSound {
-            entity: None,
+            source: p.source,
             handle,
             track,
-            // Fire-and-forget: the track sits at the queued position for
-            // its whole life (`entity == None`, nothing to follow), so
-            // the seeded value is final (#3086).
+            // `Detached`: the track sits at the queued position for its
+            // whole life (nothing to follow), so the seeded value is
+            // final (#3086). `Anchored` (#5410): the dispatch position
+            // anchors the track and the follow pass corrects it on the
+            // first tick the speaker has moved.
             last_position: Some(bu_to_audio_space(p.position)),
             underwater_filter,
             underwater,
-            // Queue-driven sounds have `entity == None` — they're
-            // intentionally decoupled from despawn coupling (no
-            // entity, no cell unload to truncate against), so the
-            // prune sweep's emitter-presence check skips them and
-            // they run to natural termination as `play_oneshot`'s
-            // documented contract requires. `unload_fade_ms` is
-            // never consulted on this branch.
+            // Queue-driven sounds carry no emitter lifecycle — `Detached`
+            // runs to natural termination as `play_oneshot`'s documented
+            // contract requires, and `Anchored` stops only through
+            // `stop_sounds_for` (#5410). The prune sweep's
+            // emitter-presence check skips both, and
+            // `unload_fade_ms` is never consulted on this branch.
             unload_fade_ms: DEFAULT_UNLOAD_FADE_MS,
             // Queue-driven sounds never re-enter the prune sweep's
-            // stop branch (no entity → no despawn signal), so this
-            // flag stays `false` for life. See #844 / #858.
+            // stop branch, so this flag stays `false` until an explicit
+            // `stop_sounds_for` flips it. See #844 / #858 / #5410.
             stop_issued: false,
         });
     }
@@ -1330,7 +1462,7 @@ fn dispatch_new_oneshots(world: &World, audio_world: &mut AudioWorld) {
             }
         };
         audio_world.active_sounds.push(ActiveSound {
-            entity: Some(p.entity),
+            source: SoundSource::Emitter(p.entity),
             handle,
             track,
             // The sub-track was created AT the dispatch position, so that
@@ -1370,10 +1502,11 @@ fn prune_stopped_sounds(world: &World, audio_world: &mut AudioWorld) {
     // playing past the despawn at the stale entity transform until
     // natural termination (50 ms – 3 s typical), surfacing as faint
     // cross-cell SFX bleed on fast interior↔interior fast-travel.
-    // Queue-driven plays (`entity == None`, see `play_oneshot`) are
-    // unaffected — no entity, no despawn coupling, they run to
-    // natural termination as `play_oneshot`'s documented contract
-    // requires.
+    // #5410 — only `SoundSource::Emitter` entries carry that despawn
+    // coupling. Detached queue plays have no entity by contract, and
+    // `Anchored` plays (dialogue voice) deliberately keep talking
+    // through SFX emitter churn on the same speaker: both run to
+    // natural termination (or an explicit `stop_sounds_for`).
     let emitter_q = world.query::<AudioEmitter>();
     let mut to_stop_indices: Vec<usize> = Vec::new();
     for (idx, s) in audio_world.active_sounds.iter().enumerate() {
@@ -1386,7 +1519,7 @@ fn prune_stopped_sounds(world: &World, audio_world: &mut AudioWorld) {
         if s.stop_issued {
             continue;
         }
-        let Some(entity) = s.entity else {
+        let Some(entity) = s.source.emitter_coupled() else {
             continue;
         };
         let still_has_emitter = emitter_q
@@ -1420,11 +1553,11 @@ fn prune_stopped_sounds(world: &World, audio_world: &mut AudioWorld) {
     let mut finished: Vec<EntityId> = Vec::new();
     audio_world.active_sounds.retain(|s| {
         if matches!(s.handle.state(), PlaybackState::Stopped) {
-            // Queue-driven plays have `entity == None` — nothing to
-            // clean up on the ECS side. Entity-driven plays surface
-            // their `EntityId` so the prune pass can remove the
-            // `AudioEmitter` component.
-            if let Some(e) = s.entity {
+            // Queue-driven plays (Detached, and Anchored since #5410)
+            // have no emitter component to clean up. Emitter-dispatched
+            // plays surface their `EntityId` so the prune pass can
+            // remove the `AudioEmitter` component.
+            if let Some(e) = s.source.emitter_coupled() {
                 finished.push(e);
             }
             false

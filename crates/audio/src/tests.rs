@@ -33,6 +33,54 @@ fn explicit_headless_world_discards_playback_without_retaining_sound() {
     assert_eq!(Arc::strong_count(&sound), 1);
 }
 
+/// #5410 — the entity-anchored queue variant carries the same
+/// drops-on-inactive-audio contract as `play_oneshot` (#853): a
+/// headless world counts the request and queues nothing.
+#[test]
+fn play_oneshot_following_drops_on_inactive_audio() {
+    let mut audio = AudioWorld::headless();
+    assert!(!audio.is_active());
+    let before = audio.oneshots_requested();
+    audio.play_oneshot_following(
+        7,
+        test_sound(),
+        Vec3::ZERO,
+        Attenuation::default(),
+        1.0,
+    );
+    assert_eq!(
+        audio.oneshots_requested(),
+        before + 1,
+        "the anchored variant must count its request like play_oneshot"
+    );
+    assert_eq!(
+        audio.pending_oneshot_count(),
+        0,
+        "nothing may be queued without a device (#853)"
+    );
+}
+
+/// #5410 — `stop_sounds_for` must be safe on a headless world (no
+/// active sounds, nothing queued) — conversation close runs on every
+/// session, audio device or not.
+#[test]
+fn stop_sounds_for_is_a_no_op_on_a_headless_world() {
+    let mut audio = AudioWorld::headless();
+    assert_eq!(audio.stop_sounds_for(7, 200.0), 0);
+    audio.play_oneshot_following(
+        7,
+        test_sound(),
+        Vec3::ZERO,
+        Attenuation::default(),
+        1.0,
+    );
+    assert_eq!(
+        audio.stop_sounds_for(7, 200.0),
+        0,
+        "a dropped-on-inactive request stops nothing"
+    );
+}
+
 /// AudioWorld must construct cleanly even when there's no audio
 /// device — CI and headless servers have neither, and a panic
 /// here would refuse to launch the engine.
@@ -1706,5 +1754,128 @@ fn emitter_position_follows_the_source_entity_regression_3086() {
         world.resource::<AudioWorld>().active_sound_count(),
         1,
         "the follow pass must not terminate or disturb playback"
+    );
+}
+
+/// #5410 — an entity-ANCHORED queue play (the dialogue-voice call
+/// shape) must (a) follow its speaker exactly like an emitter,
+/// (b) SURVIVE the prune sweep's emitter-presence stop — the speaker
+/// carries no `AudioEmitter`, and the old binary `entity` field made
+/// follow-and-emitter-lifecycle inseparable, which is exactly why
+/// voice rode the frozen fire-and-forget path — and (c) actually stop
+/// through `stop_sounds_for`, the hook the queue path never had.
+///
+/// `#[ignore]` — needs a working audio device (kira has no headless
+/// test backend; the headless fallback early-returns before any pass).
+#[test]
+#[ignore = "needs a working audio device"]
+fn anchored_voice_follows_survives_prune_and_stops() {
+    use kira::sound::static_sound::StaticSoundSettings;
+
+    let manager = match kira::AudioManager::<kira::backend::DefaultBackend>::new(
+        kira::AudioManagerSettings::default(),
+    ) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("skipping #5410 regression — no audio device: {e}");
+            return;
+        }
+    };
+    let mut audio_world = AudioWorld {
+        active_sounds: Vec::new(),
+        pending_oneshots: std::collections::VecDeque::new(),
+        oneshots_requested: 0,
+        music: None,
+        reverb_send: None,
+        reverb_send_db: f32::NEG_INFINITY,
+        listener: None,
+        manager: Some(manager),
+        multi_listener_warned: false,
+        underwater: false,
+        emitter_position_updates: 0,
+    };
+    let sound = Arc::new(StaticSoundData {
+        sample_rate: 22_050,
+        frames: Arc::from(vec![kira::Frame::ZERO; 2205].into_boxed_slice()),
+        settings: StaticSoundSettings::default(),
+        slice: None,
+    });
+
+    let mut world = byroredux_core::ecs::World::new();
+    let listener = world.spawn();
+    world.insert(listener, Transform::IDENTITY);
+    world.insert(listener, GlobalTransform::IDENTITY);
+    world.insert(listener, AudioListener);
+
+    let npc = world.spawn();
+    fn place(
+        world: &mut byroredux_core::ecs::World,
+        e: byroredux_core::ecs::storage::EntityId,
+        v: glam::Vec3,
+    ) {
+        world.insert(e, Transform::new(v, glam::Quat::IDENTITY, 1.0));
+        world.insert(e, GlobalTransform::new(v, glam::Quat::IDENTITY, 1.0));
+    }
+    place(&mut world, npc, glam::Vec3::new(0.0, 0.0, 5.0));
+    // Deliberately NO `AudioEmitter` on the NPC: a speaker is not an
+    // SFX emitter, and the anchored line must not care.
+
+    // Queue the anchored line (the dialogue-voice call shape) and tick.
+    audio_world.play_oneshot_following(
+        npc,
+        Arc::clone(&sound),
+        glam::Vec3::new(0.0, 0.0, 5.0),
+        Attenuation::default(),
+        0.0, // silence — the assertions are on bookkeeping
+    );
+    world.insert_resource(audio_world);
+    audio_system(&world, 0.016);
+    assert_eq!(
+        world.resource::<AudioWorld>().active_sound_count(),
+        1,
+        "the anchored voice must dispatch"
+    );
+    assert_eq!(
+        world.resource::<AudioWorld>().emitter_position_updates(),
+        0,
+        "dispatch seeds the position; a stationary speaker pushes nothing"
+    );
+
+    // The prune half of the pin: several ticks with no AudioEmitter on
+    // the speaker must NOT stop the line (the emitter-presence stop
+    // applies to `SoundSource::Emitter` only).
+    for _ in 0..4 {
+        audio_system(&world, 0.016);
+    }
+    assert_eq!(
+        world.resource::<AudioWorld>().active_sound_count(),
+        1,
+        "an anchored voice must survive the prune sweep — the speaker \
+         carries no AudioEmitter, and stopping on its absence was the \
+         coupling #5410 split apart"
+    );
+
+    // The follow half: move the speaker, one set_position lands.
+    place(&mut world, npc, glam::Vec3::new(3.0, 0.0, 5.0));
+    audio_system(&world, 0.016);
+    assert_eq!(
+        world.resource::<AudioWorld>().emitter_position_updates(),
+        1,
+        "a walking speaker's voice must follow them, not stay frozen at \
+         the line start (#5410)"
+    );
+
+    // The stop half: the queue path's first stop hook.
+    let stopped = world
+        .try_resource_mut::<AudioWorld>()
+        .map(|mut audio| audio.stop_sounds_for(npc, 10.0))
+        .unwrap_or(0);
+    assert_eq!(stopped, 1, "stop_sounds_for must stop the anchored line");
+    std::thread::sleep(Duration::from_millis(30));
+    audio_system(&world, 0.016);
+    assert_eq!(
+        world.resource::<AudioWorld>().active_sound_count(),
+        0,
+        "the faded line must leave the active list"
     );
 }
