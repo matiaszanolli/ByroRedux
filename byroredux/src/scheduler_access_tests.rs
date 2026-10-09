@@ -483,6 +483,81 @@ fn player_body_facing_runs_in_update_before_propagation() {
     );
 }
 
+/// #5415 / CONC-D4-2026-10-08-02 — three Update-stage ordering contracts
+/// were registration order plus a comment, with nothing in the suite
+/// noticing a reorder (each sibling pin — `billboard_runs_after_camera_
+/// follow_in_late`, `player_body_facing_runs_in_update_before_propagation`,
+/// … — was added after a real one-frame-stale bug):
+///
+/// 1. the CLOC producer precedes the Story Manager dispatcher, which
+///    precedes `quest_alias_refresh_system` — the dispatcher writes
+///    `StoryEventAliasFill` and flips `SceneActorBindings` dirty so the
+///    refresh fills `FromEvent` aliases the SAME frame (#5366);
+/// 2. `forcegreet_system` sits after `ambient_ai_package_system` (the
+///    installer of `ForceGreetDirective`) so a fresh install greets on
+///    the next tick at the latest;
+/// 3. it sits before the Late `npc_dialogue_selection` so the opened
+///    surface serials once (#5367 Phase F).
+#[test]
+fn story_dispatch_and_forcegreet_update_ordering_is_pinned() {
+    use byroredux_core::ecs::Stage;
+
+    let report = crate::boot::build_scheduler().access_report();
+    let position_in = |stage: Stage, needle: &str| {
+        report
+            .stages
+            .iter()
+            .find(|s| s.stage == stage)
+            .and_then(|s| s.systems.iter().position(|row| row.name.contains(needle)))
+    };
+
+    let (cloc, dispatch, alias) = (
+        position_in(Stage::Update, "story_change_location_dispatch"),
+        position_in(Stage::Update, "story_manager_dispatch"),
+        position_in(Stage::Update, "quest_alias_refresh_system"),
+    );
+    assert!(
+        cloc.is_some() && dispatch.is_some() && alias.is_some(),
+        "fixture break: the SM trio (CLOC producer, dispatcher, alias \
+         refresh) must all be registered in Update"
+    );
+    assert!(
+        cloc.unwrap() < dispatch.unwrap(),
+        "story_change_location_dispatch must raise CLOC before \
+         story_manager_dispatch runs, or a location change loses a frame \
+         to dispatch latency (#5366)"
+    );
+    assert!(
+        dispatch.unwrap() < alias.unwrap(),
+        "story_manager_dispatch must precede quest_alias_refresh_system — \
+         the dispatcher writes StoryEventAliasFill / dirties \
+         SceneActorBindings for the refresh to consume in the same frame \
+         (#5366, #5415)"
+    );
+
+    let (ambient, forcegreet) = (
+        position_in(Stage::Update, "ambient_ai_package_system"),
+        position_in(Stage::Update, "forcegreet_system"),
+    );
+    assert!(
+        ambient.is_some() && forcegreet.is_some(),
+        "fixture break: ambient_ai_package_system and forcegreet_system \
+         must both be registered in Update"
+    );
+    assert!(
+        ambient.unwrap() < forcegreet.unwrap(),
+        "forcegreet_system must run after ambient_ai_package_system — the \
+         installer stamps ForceGreetDirective, and inverting the pair \
+         delays every fresh force-greet by a frame (#5367 Phase F, #5415)"
+    );
+    assert!(
+        position_in(Stage::Late, "npc_dialogue_selection").is_some(),
+        "fixture break: the Late dialogue selection must stay registered \
+         after Update's forcegreet_system so the opened surface serials \
+         once (#5367 Phase F)"
+    );
+}
+
 /// #4987 — the lane must resolve the lavapipe ICD manifest instead of
 /// hard-coding a filename. noble's mesa ships `lvp_icd.x86_64.json`, but
 /// noble-updates ships `lvp_icd.json`; the hard-coded name left the loader
