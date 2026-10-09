@@ -618,7 +618,7 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // types are all on `registry_completeness_tests.rs`'s
     // `NOT_SAVED_BY_DESIGN` allowlist (rebuilt from XCWT/WATR/GRAS at cell or
     // worldspace entry), so no snapshot has ever contained either shape.
-    const BASELINE_MAJOR: u16 = 34;
+    const BASELINE_MAJOR: u16 = 35;
     // #4465 — refreshed WITH a major bump (v24 -> v25). `ReferenceState`
     // gained the required `picked_up` tombstone field (the durable half of
     // the P3 `PickedUp` marker, carried through the registered
@@ -697,7 +697,12 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // `SetBase` reroute's own destination, split out of the
     // constant-spell `permanent_mod`), with no `serde(default)`
     // (#1714) — pre-v34 saves are rejected.
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x96e7_1410_8849_2a6f;
+    // 2026-10-09 (#5394) — refreshed WITH a major bump (v34 -> v35):
+    // `StoryEventAliasFill` (per-quest `StoryEventFill`: the session
+    // `EventDataSlots` `serde(skip)`-ed, the reference slots' FormIds
+    // saved) joined the saved registry as a NEW resource, so a restored
+    // Story-Manager quest's `FromEvent` aliases re-fill after a load.
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xf796_4556_41fb_1f2c;
     // ---- earlier refresh history (kept for the false-positive record) ----
     // 2026-09-21 (W2.10 flip) — refreshed WITHOUT a major bump, the same
     // `VisibilityMask` tuple-struct sweep class as the two entries below:

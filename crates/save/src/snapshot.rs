@@ -265,7 +265,13 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 /// derived pools, split out of the constant-spell `permanent_mod` so an
 /// ability's add/remove stays lossless on both sides. No `serde(default)`
 /// (#1714); pre-v34 saves are rejected.
-pub const FORMAT_MAJOR: u16 = 34;
+///
+/// v34 -> v35 (#5394): a new resource column, `StoryEventAliasFill` — each
+/// Story-Manager-started quest's event slots, persisted as reference FormIds
+/// so a restored quest's `FromEvent` aliases re-fill after a load. A pre-v35
+/// save carries no record of those events, so its restored SM quests would
+/// silently keep unbound aliases; rejected like the other column additions.
+pub const FORMAT_MAJOR: u16 = 35;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

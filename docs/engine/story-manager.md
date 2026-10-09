@@ -400,7 +400,12 @@ tree itself (rederived from the load order every boot).
    `StoryEventAliasFill` and requests an alias refresh, and
    `refresh_scene_actor_bindings` binds R-tagged fills directly
    (L-tagged stay unbound, surfacing as
-   `StoryManagerEventUnavailable` in `quest.aliases`). `GetInFaction`
+   `StoryManagerEventUnavailable` in `quest.aliases`). #5394: the fill
+   is saved (format v35) — each R slot also records its reference FormId
+   (PlayerRef `0x14` for the player), and the refresh re-resolves it among
+   the resident candidates whenever the session id is gone or names a
+   different reference, so a restored SM quest re-fills its event aliases
+   after a load or a cell reload. `GetInFaction`
    (Skyrim 71) joined the M47.1 catalog. The CLOC producer keys on the
    cell's `XLCN` LCTN when one resolves (Skyrim's location
    granularity; wilderness grids keep the Phase-1 key) and carries

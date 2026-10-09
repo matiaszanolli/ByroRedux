@@ -49,7 +49,7 @@ pub use cleanup::event_cleanup_system;
 pub use story_manager::{
     build_story_manager_tree, emit_change_location_on_key_change, install_story_manager,
     story_manager_dispatch_system, SmNodeRuntime, SmTree, SmTreeNode, StoryClock, StoryEvent,
-    StoryEventAliasFill, StoryLocationCursor, StoryManagerNodeState, StoryManagerRng,
+    StoryEventAliasFill, StoryEventFill, StoryLocationCursor, StoryManagerNodeState, StoryManagerRng,
 };
 pub use combat::{AiCombatState, AmbientEngagement, FactionReactionOverride, FactionRelations};
 pub use compatibility::{

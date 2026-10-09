@@ -235,20 +235,61 @@ impl StoryManagerRng {
 
 impl Resource for StoryManagerRng {}
 
+/// One SM-started quest's recorded event data (#5394): the session slots
+/// plus the reference slots' portable identity.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+#[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
+pub struct StoryEventFill {
+    /// The event's slots this session. Not saved — the reference slots
+    /// are session `EntityId`s, meaningless to another process.
+    #[cfg_attr(feature = "save", serde(skip))]
+    pub slots: EventDataSlots,
+    /// The R1/R2 slots' global reference FormIds (the actor's
+    /// `SceneAliasCandidate::reference_form_id`, or `0x14` for the
+    /// player), captured at dispatch: what the alias refresh re-resolves
+    /// after a load or a cell reload gave the actor a new id. Location
+    /// slots are not carried — no alias consumes them yet (Phase 3+).
+    pub reference_forms: [Option<u32>; 2],
+}
+
+impl StoryEventFill {
+    /// The entity a reference slot names now. The session id wins while it
+    /// still carries the recorded identity; otherwise (a fresh-process
+    /// load, a despawned or reused id) the recorded FormId is resolved
+    /// again. `identity_of` maps an entity to its reference FormId and
+    /// `resolve` the reverse — both over the refresh's resident candidates.
+    pub fn reference(
+        &self,
+        slot: byroredux_plugin::esm::records::condition::EventDataSlot,
+        identity_of: impl Fn(EntityId) -> Option<u32>,
+        resolve: impl Fn(u32) -> Option<EntityId>,
+    ) -> Option<EntityId> {
+        let form = match slot {
+            byroredux_plugin::esm::records::condition::EventDataSlot::Reference1 => self.reference_forms[0],
+            byroredux_plugin::esm::records::condition::EventDataSlot::Reference2 => self.reference_forms[1],
+            _ => return None,
+        };
+        match (self.slots.reference(slot), form) {
+            (Some(entity), Some(form)) if identity_of(entity) == Some(form) => Some(entity),
+            (_, Some(form)) => resolve(form),
+            (session, None) => session,
+        }
+    }
+}
+
 /// Event data each SM-started quest's `FromEvent` aliases fill from,
 /// keyed by quest — written by the dispatcher's start phase, read by the
 /// P4 alias refresh (`refresh_scene_actor_bindings`), which owns the
 /// binding table. Latest fire wins (a re-fired radiant re-fills).
-/// #5419 — the entries are **session-scoped, not reload-stable**: the
-/// reference slots hold session `EntityId`s, and a cell unload despawns
-/// the referenced actor (a reload gives it a new id this map never
-/// sees). The refresh's FromEvent arm probes liveness/Dead before
-/// binding and leaves the alias unbound — surfaced as
-/// `StoryManagerEventUnavailable` — until a re-fired event re-fills.
-/// `NOT_SAVED_BY_DESIGN`: after a load the quests restart through fresh
-/// events, which rewrite their entries.
+/// #5394 — saved: an SM-started quest is restored as running and its
+/// starting event is never raised again, so its `FromEvent` aliases can
+/// only re-fill from this record. The reference slots persist as
+/// FormIds ([`StoryEventFill::reference_forms`]) and resolve back to
+/// entities in the refresh; that also re-binds an actor a cell reload
+/// gave a new id (#5419's liveness probe still guards the rest).
 #[derive(Debug, Default)]
-pub struct StoryEventAliasFill(pub HashMap<QuestFormId, EventDataSlots>);
+#[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
+pub struct StoryEventAliasFill(pub HashMap<QuestFormId, StoryEventFill>);
 
 impl Resource for StoryEventAliasFill {}
 
@@ -532,15 +573,50 @@ pub fn story_manager_dispatch_system(world: &World) {
     // (scheduled right after this system) re-fills with them. One
     // resource write at a time: the fill map first, then bindings.
     if !started_event_fills.is_empty() {
+        // #5394 — capture each reference slot's portable identity before
+        // the fill write (component and player reads, guards scoped).
+        let fills_to_write: Vec<(QuestFormId, StoryEventFill)> = started_event_fills
+            .iter()
+            .map(|(quest, slots)| {
+                let form_of = |entity: Option<EntityId>| entity.and_then(|e| reference_form_of(world, e));
+                (
+                    *quest,
+                    StoryEventFill {
+                        slots: *slots,
+                        reference_forms: [form_of(slots.reference_1), form_of(slots.reference_2)],
+                    },
+                )
+            })
+            .collect();
         if let Some(mut fills) = world.try_resource_mut::<StoryEventAliasFill>() {
-            for (quest, slots) in &started_event_fills {
-                fills.0.insert(*quest, *slots);
+            for (quest, fill) in fills_to_write {
+                fills.0.insert(quest, fill);
             }
         }
         if let Some(mut bindings) = world.try_resource_mut::<SceneActorBindings>() {
             bindings.request_refresh();
         }
     }
+}
+
+/// Bethesda's PlayerRef sentinel (never a placed record) — the portable
+/// identity a player-valued event slot persists as (#5394).
+pub(crate) const PLAYER_REF_FORM_ID: u32 = 0x14;
+
+/// #5394 — an event reference's portable identity: `0x14` for the player
+/// (PlayerRef), else the placed reference FormId its alias candidate
+/// carries. `None` for an entity with neither (it stays session-only).
+fn reference_form_of(world: &World, entity: EntityId) -> Option<u32> {
+    if world
+        .try_resource::<crate::papyrus_demo::PapyrusPlayerEntity>()
+        .is_some_and(|player| player.0 == entity)
+    {
+        return Some(PLAYER_REF_FORM_ID);
+    }
+    world
+        .get::<crate::scene::SceneAliasCandidate>(entity)
+        .map(|candidate| candidate.reference_form_id)
+        .filter(|form| *form != 0)
 }
 
 /// A quest the walk wants started, gathered during the read-only phase.
@@ -809,6 +885,31 @@ fn hours_gate_open(window: f32, last_fire: Option<f32>, now: f64) -> bool {
 
 #[cfg(test)]
 mod tests {
+    /// #5394 — the portable identity a recorded event slot persists as:
+    /// PlayerRef for the player, the candidate's reference FormId for a
+    /// placed actor, nothing for an entity with neither.
+    #[test]
+    fn reference_form_of_names_the_player_and_placed_references() {
+        let mut world = World::new();
+        crate::register(&mut world);
+        let player = world.spawn();
+        world.insert_resource(crate::papyrus_demo::PapyrusPlayerEntity(player));
+        let placed = world.spawn();
+        world.insert(
+            placed,
+            crate::scene::SceneAliasCandidate {
+                reference_form_id: 0x0001_2345,
+                base_form_id: 0x0001_2346,
+                linked_refs: Vec::new(),
+                location_ref_types: Vec::new(),
+            },
+        );
+        let bare = world.spawn();
+        assert_eq!(super::reference_form_of(&world, player), Some(super::PLAYER_REF_FORM_ID));
+        assert_eq!(super::reference_form_of(&world, placed), Some(0x0001_2345));
+        assert_eq!(super::reference_form_of(&world, bare), None);
+    }
+
     use super::*;
     use byroredux_plugin::esm::records::condition::RunOn;
 
@@ -1307,7 +1408,7 @@ fn event_data_killer_condition_gates_the_start() {
     // for its FromEvent aliases, and the alias refresh was requested.
     let slots = world
         .try_resource::<StoryEventAliasFill>()
-        .and_then(|fills| fills.0.get(&QuestFormId(0x555)).copied());
+        .and_then(|fills| fills.0.get(&QuestFormId(0x555)).map(|fill| fill.slots));
     assert_eq!(
         slots,
         Some(crate::condition::EventDataSlots {

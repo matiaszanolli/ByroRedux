@@ -1482,11 +1482,14 @@ fn from_event_alias_fills_from_the_recorded_story_event() {
     world.insert_resource(crate::story_manager::StoryEventAliasFill(
         [(
             QuestFormId(QUEST),
-            crate::condition::EventDataSlots {
-                reference_1: Some(victim),
-                reference_2: Some(killer),
-                location_1: None,
-                location_2: Some(0x18A56),
+            crate::story_manager::StoryEventFill {
+                slots: crate::condition::EventDataSlots {
+                    reference_1: Some(victim),
+                    reference_2: Some(killer),
+                    location_1: None,
+                    location_2: Some(0x18A56),
+                },
+                reference_forms: [None, None],
             },
         )]
         .into_iter()
@@ -1515,6 +1518,109 @@ fn from_event_alias_fills_from_the_recorded_story_event() {
 
     // A later refresh (any dirty-mark) re-derives the same fills from the
     // recorded event rather than losing them to the candidate rebuild.
+    world
+        .resource_mut::<SceneActorBindings>()
+        .request_refresh();
+    refresh_scene_actor_bindings(&world);
+    assert_eq!(
+        world
+            .resource::<SceneActorBindings>()
+            .resolve(QuestFormId(QUEST), 1),
+        Some(victim)
+    );
+}
+
+/// #5394 (GAME-D7-2026-10-08-01) — after a fresh-process load the fill
+/// carries no session ids, only the reference FormIds recorded at
+/// dispatch. The refresh must re-resolve them among the resident
+/// candidates (and PlayerRef to the player) instead of leaving the
+/// restored SM quest's event aliases unbound. A session id that now
+/// names a different reference re-resolves too.
+#[test]
+fn from_event_alias_re_resolves_recorded_reference_forms_after_a_load() {
+    let mut world = World::new();
+    crate::register(&mut world);
+    world.insert_resource(QuestStageState::default());
+    world
+        .resource_mut::<QuestStageState>()
+        .start_quest(QuestFormId(QUEST), None);
+    let victim = world.spawn();
+    world.insert(victim, GlobalTransform::default());
+    world.insert(
+        victim,
+        SceneAliasCandidate {
+            reference_form_id: 0x0005_0001,
+            base_form_id: 0x0005_0002,
+            linked_refs: Vec::new(),
+            location_ref_types: Vec::new(),
+        },
+    );
+    let impostor = world.spawn();
+    world.insert(impostor, GlobalTransform::default());
+    world.insert(
+        impostor,
+        SceneAliasCandidate {
+            reference_form_id: 0x0005_0099,
+            base_form_id: 0x0005_0002,
+            linked_refs: Vec::new(),
+            location_ref_types: Vec::new(),
+        },
+    );
+    let player = world.spawn();
+    world.insert(player, GlobalTransform::default());
+    world.insert_resource(crate::papyrus_demo::PapyrusPlayerEntity(player));
+    install_scene_quest_aliases(
+        &mut world,
+        [QustRecord {
+            form_id: QUEST,
+            aliases: vec![
+                QuestAlias {
+                    alias_id: 1,
+                    fill_type: Some(AliasFillType::FromEvent {
+                        event_type: *b"KILL",
+                        data: 0x3152, // R1 — the victim
+                    }),
+                    ..Default::default()
+                },
+                QuestAlias {
+                    alias_id: 2,
+                    fill_type: Some(AliasFillType::FromEvent {
+                        event_type: *b"KILL",
+                        data: 0x3252, // R2 — the killer (the player)
+                    }),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        }],
+    );
+    // The state a load leaves: slots dropped (not saved), FormIds kept.
+    world.insert_resource(crate::story_manager::StoryEventAliasFill(
+        [(
+            QuestFormId(QUEST),
+            crate::story_manager::StoryEventFill {
+                slots: crate::condition::EventDataSlots::default(),
+                reference_forms: [Some(0x0005_0001), Some(0x14)],
+            },
+        )]
+        .into_iter()
+        .collect(),
+    ));
+    refresh_scene_actor_bindings(&world);
+    {
+        let bindings = world.resource::<SceneActorBindings>();
+        assert_eq!(bindings.resolve(QuestFormId(QUEST), 1), Some(victim));
+        assert_eq!(bindings.resolve(QuestFormId(QUEST), 2), Some(player));
+    }
+
+    // A session id now naming a different reference does not win.
+    world
+        .resource_mut::<crate::story_manager::StoryEventAliasFill>()
+        .0
+        .get_mut(&QuestFormId(QUEST))
+        .unwrap()
+        .slots
+        .reference_1 = Some(impostor);
     world
         .resource_mut::<SceneActorBindings>()
         .request_refresh();
@@ -1585,11 +1691,14 @@ fn from_event_alias_skips_stale_and_dead_slot_entities() {
     world.insert_resource(crate::story_manager::StoryEventAliasFill(
         [(
             QuestFormId(QUEST),
-            crate::condition::EventDataSlots {
-                reference_1: Some(despawned),
-                reference_2: Some(dead),
-                location_1: None,
-                location_2: None,
+            crate::story_manager::StoryEventFill {
+                slots: crate::condition::EventDataSlots {
+                    reference_1: Some(despawned),
+                    reference_2: Some(dead),
+                    location_1: None,
+                    location_2: None,
+                },
+                reference_forms: [None, None],
             },
         )]
         .into_iter()

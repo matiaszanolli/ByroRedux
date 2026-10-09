@@ -739,6 +739,10 @@ pub fn refresh_scene_actor_bindings(world: &World) -> usize {
         .try_resource::<crate::story_manager::StoryEventAliasFill>()
         .map(|fills| fills.0.clone())
         .unwrap_or_default();
+    // #5394 — the player for PlayerRef-recorded event slots.
+    let story_player = world
+        .try_resource::<PapyrusPlayerEntity>()
+        .map(|player| player.0);
     let mut external_aliases = Vec::new();
     let mut reserved = HashSet::new();
 
@@ -767,9 +771,32 @@ pub fn refresh_scene_actor_bindings(world: &World) -> usize {
             // Phase-3+ scope, surfaced by `quest.aliases` as
             // `StoryManagerEventUnavailable`.
             if let Some(AliasFillType::FromEvent { data, .. }) = alias.fill_type {
-                if let Some(slots) = story_fills.get(quest) {
-                    if let Some(entity) =
-                        event_data_slot(data as u32).and_then(|slot| slots.reference(slot))
+                if let Some(fill) = story_fills.get(quest) {
+                    // #5394 — the session id while it still names the
+                    // recorded reference, else that reference resolved
+                    // among this refresh's resident candidates (a
+                    // fresh-process load or a cell reload re-binds).
+                    let identity_of = |entity: EntityId| {
+                        if story_player == Some(entity) {
+                            return Some(crate::story_manager::PLAYER_REF_FORM_ID);
+                        }
+                        index
+                            .by_entity
+                            .get(&entity)
+                            .map(|&position| candidates[position].1.reference_form_id)
+                    };
+                    let resolve = |form: u32| {
+                        if form == crate::story_manager::PLAYER_REF_FORM_ID {
+                            return story_player;
+                        }
+                        index
+                            .by_reference
+                            .get(&form)
+                            .and_then(|positions| positions.first())
+                            .map(|&position| candidates[position].0)
+                    };
+                    if let Some(entity) = event_data_slot(data as u32)
+                        .and_then(|slot| fill.reference(slot, identity_of, resolve))
                     {
                         // #5419 — the fill's slots hold session EntityIds.
                         // A cell unload despawns the referenced actor, and

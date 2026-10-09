@@ -533,6 +533,12 @@ pub fn build_save_registry() -> SaveRegistry {
         .register_resource::<byroredux_scripting::StoryManagerNodeState>(
             "StoryManagerNodeState",
         )
+        // #5394 — an SM-started quest restores as running and its starting
+        // event is never raised again, so its `FromEvent` aliases can only
+        // re-fill from this record (reference slots persist as FormIds).
+        .register_resource::<byroredux_scripting::StoryEventAliasFill>(
+            "StoryEventAliasFill",
+        )
         .register_resource::<QuestObjectiveState>("QuestObjectiveState")
         // #5367 Phase L — spoken Say-Once INFO bookkeeping: a said line
         // stays disqualified after an F5/F9 cycle, exactly the

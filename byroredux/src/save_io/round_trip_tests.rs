@@ -1851,6 +1851,54 @@ fn load_clears_both_player_gear_handoff_queues() {
     );
 }
 
+/// #5394 (GAME-D7-2026-10-08-01) — the Story Manager's per-quest event
+/// fill survives a save/load as reference FormIds (the session slots are
+/// not saved): a restored SM quest's `FromEvent` aliases can re-resolve
+/// their victim/killer instead of staying unbound for the rest of the save.
+#[test]
+fn story_event_alias_fill_survives_save_load_as_reference_forms() {
+    use byroredux_scripting::{QuestFormId, StoryEventAliasFill, StoryEventFill};
+
+    let reg = build_save_registry();
+    let mut src = World::new();
+    src.insert_resource(FormIdPool::new());
+    byroredux_scripting::register(&mut src);
+    let victim = src.spawn();
+    src.insert_resource(StoryEventAliasFill(
+        [(
+            QuestFormId(0x0004_0001),
+            StoryEventFill {
+                slots: byroredux_scripting::condition::EventDataSlots {
+                    reference_1: Some(victim),
+                    reference_2: None,
+                    location_1: None,
+                    location_2: Some(0x0001_8A56),
+                },
+                reference_forms: [Some(0x0005_0001), Some(0x14)],
+            },
+        )]
+        .into_iter()
+        .collect(),
+    ));
+    let snapshot = save_world(&src, &reg).unwrap();
+    let bytes = encode(&snapshot, reg.schema_fingerprint()).unwrap();
+    let decoded = decode(&bytes, reg.schema_fingerprint()).unwrap();
+
+    let mut dst = World::new();
+    dst.insert_resource(FormIdPool::new());
+    byroredux_scripting::register(&mut dst);
+    restore_world(&mut dst, &reg, &decoded).unwrap();
+
+    let fills = dst.try_resource::<StoryEventAliasFill>().expect("restored");
+    let fill = fills.0.get(&QuestFormId(0x0004_0001)).expect("the quest's fill restored");
+    assert_eq!(fill.reference_forms, [Some(0x0005_0001), Some(0x14)]);
+    assert_eq!(
+        fill.slots,
+        byroredux_scripting::condition::EventDataSlots::default(),
+        "session EntityIds are not carried across a save"
+    );
+}
+
 /// #5366 Phase 3 — Story Manager node-policy state survives save/load,
 /// and the restored state still gates: a pool entry inside its RNAM
 /// window at save time stays blocked after the load (the quickload
