@@ -16,6 +16,17 @@
 //! entry position is the documented v0 approximation for the lie-down
 //! clip no archive this engine reads carries.
 //!
+//! #5390 — the Sleep-marker preference is only reachable on Skyrim+:
+//! `FurnitureMarkerKind::Sleep` resolves from `animation_type == 2`,
+//! a Skyrim+ `BSFurnitureMarker` field, and legacy Oblivion/FO3/FNV
+//! markers author `animation_type = 0` (the documented v0 `Sit`
+//! over-match, which includes beds and lean markers — Phase C's
+//! `furnituremarkerNN.nif` decode is the real fix). On FO3/FNV the sit
+//! fallback IS the sleep path: every sleeper takes the nearest sit
+//! marker, chairs included, and an Eat actor can symmetrically take a
+//! bed's marker. The fallback logs at debug so a live session can see
+//! which arm fired.
+//!
 //! The walk is the same straight-line `step_toward` locomotion the
 //! force-greet bridge uses (KCC-backed, single resident NAVM tile) —
 //! the v0 pathing caveat the other M42 procedures document applies here
@@ -245,6 +256,18 @@ fn seat_at_marker(world: &World, npc: EntityId, kind: EatOrSleep, radius: Option
         super::sandbox::collect_marker_seats(world, &mut collected, is_sleep_marker);
     }
     if collected.is_empty() {
+        // #5390 — on FO3/FNV this is not "no bed found" but "no bed can
+        // EVER resolve": legacy markers author animation_type 0 and the
+        // translate boundary reads them all as Sit (see the module doc).
+        // The fallback is the legacy sleep path by design until Phase C
+        // decodes furnituremarkerNN.
+        if is_sleep {
+            log::debug!(
+                "[m42] sleep npc={npc}: no decodable Sleep marker in range — \
+                 legacy cells author none (animation_type 0 over-match, #5390); \
+                 seating at the nearest sit marker"
+            );
+        }
         super::sandbox::collect_marker_seats(world, &mut collected, super::sandbox::is_sit_marker);
     }
     if collected.is_empty() {
@@ -550,6 +573,61 @@ mod tests {
             .get::<Seated>(actor)
             .expect("the sleeper occupies the bed marker");
         assert_eq!(seated_at.furniture, bed);
+    }
+
+    /// #5390 — the legacy FO3/FNV shape: no marker in the cell can
+    /// resolve `FurnitureMarkerKind::Sleep` (the field keys on
+    /// `animation_type == 2`, a Skyrim+ `BSFurnitureMarker` field;
+    /// legacy markers author 0 and all read as Sit). The sit fallback
+    /// IS the legacy sleep path — the documented v0 contract until
+    /// Phase C decodes `furnituremarkerNN.nif` — so the sleeper seats
+    /// at the nearest sit marker, chairs included.
+    #[test]
+    fn legacy_sleep_actor_seats_at_the_sit_fallback() {
+        let (mut world, actor) = setup();
+        world.insert_resource(SandboxSitClip(Some((7, 0.5))));
+        world.insert(
+            actor,
+            SleepBehavior {
+                radius: None,
+                location: EatSleepLocation::NearCurrentLocation,
+                form_id: 0xAB,
+            },
+        );
+        world.insert(
+            actor,
+            EatSleepState {
+                destination: Vec3::ZERO,
+            },
+        );
+        // The legacy shape: animation_type 0, translated to Sit.
+        let chair = world.spawn();
+        world.insert(
+            chair,
+            Furniture {
+                markers: vec![FurnitureMarker {
+                    local_offset: [10.0, 0.0, 0.0],
+                    heading_z_radians: None,
+                    animation_type: 0,
+                    kind: FurnitureMarkerKind::Sit,
+                }],
+            },
+        );
+        world.insert(
+            chair,
+            GlobalTransform {
+                translation: Vec3::ZERO,
+                ..Default::default()
+            },
+        );
+        eat_sleep_system(&world, 1.0);
+        let seated_at = world
+            .get::<Seated>(actor)
+            .expect("the legacy sleeper seats through the fallback");
+        assert_eq!(
+            seated_at.furniture, chair,
+            "with no decodable Sleep marker the sit fallback is the sleep path"
+        );
     }
 
     /// #5391 — "near current location" (and every type without an
