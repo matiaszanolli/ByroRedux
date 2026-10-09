@@ -3701,7 +3701,7 @@ fn actor_value_projection_and_deferred_apply_use_portable_avif_identity_atomical
 /// every future re-derivation instead (the GECK's SetActorValue
 /// behaviour — "80 from base health, and 100 for the rest").
 #[test]
-fn sdk_set_base_on_player_derived_pool_routes_into_the_modifier_layer() {
+fn sdk_set_base_on_player_derived_pool_routes_into_the_override_layer() {
     use byroredux_core::character::{
         CharacterLevel, CharacterRuleset, DerivedInput, DerivedStatFormula, LevelingModel,
     };
@@ -3755,13 +3755,17 @@ fn sdk_set_base_on_player_derived_pool_routes_into_the_modifier_layer() {
     // next refresh tick.
     crate::systems::player_derived_stats_system(&world, 0.0);
     let avs = world.get::<ActorValues>(player).unwrap();
-    assert_eq!(avs.current(HEALTH), 605.0, "formula base 105 + modifier 500");
+    assert_eq!(avs.current(HEALTH), 605.0, "formula base 105 + override 500");
     assert_eq!(
         avs.get(HEALTH).unwrap().base,
         105.0,
-        "the formula owns the base; only the modifier was written"
+        "the formula owns the base; only the override was written"
     );
-    assert_eq!(avs.get(HEALTH).unwrap().permanent_mod, 500.0);
+    // #5412 — the override layer, not permanent_mod: the constant-spell
+    // layer keeps its own sum beside the routed SetBase ("any modifiers
+    // are left intact", FO4 CK SetValue).
+    assert_eq!(avs.get(HEALTH).unwrap().set_override, 500.0);
+    assert_eq!(avs.get(HEALTH).unwrap().permanent_mod, 0.0);
     assert!(host.take_diagnostics().is_empty());
 }
 

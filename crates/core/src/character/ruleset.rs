@@ -176,9 +176,11 @@ impl CharacterRuleset {
     /// [`Self::refresh_player_only_bases`] re-stamps every frame. A plain
     /// `set_base` on such a key, on the player, is silently reverted one
     /// tick later, so the write sites ask this before writing and route
-    /// into the permanent-modifier layer instead — the GECK's
-    /// SetActorValue behaviour ("For the player, this will not modify
-    /// base health … 80 from base health, and 100 for the rest").
+    /// into the `set_override` layer instead (#5412 — the Oblivion CS
+    /// note's "base untouched, value on top" reading; the FO4 CK's
+    /// `SetValue` agrees on the half that matters here, "any modifiers
+    /// are left intact", which the old permanent_mod destination
+    /// violated by overwriting the constant-spell sum).
     pub fn is_player_derived_pool(&self, avif: u32) -> bool {
         self.derived_formula(avif).is_some_and(|formula| {
             formula.scope == DerivedScope::PlayerOnly && formula.kind == DerivedOutput::Absolute
@@ -412,11 +414,14 @@ mod tests {
         assert!(!rs.is_player_derived_pool(END), "a formula input, not an output");
     }
 
-    /// #5239 — a routed `SetBase` lands in the permanent-modifier layer
+    /// #5239/#5412 — a routed `SetBase` lands in the `set_override` layer
     /// and the next refresh re-derives only the base half (GECK
-    /// SetActorValue: "80 from base health, and 100 for the rest").
+    /// SetActorValue: "80 from base health, and 100 for the rest"). The
+    /// permanent-modifier layer — the constant-spell sum — stays
+    /// untouched beside it: a +30 Health ability survives the override
+    /// and is subtracted once, by its own removal, never by a SetBase.
     #[test]
-    fn set_permanent_survives_the_player_refresh() {
+    fn set_override_survives_the_player_refresh_and_keeps_permanent_mod() {
         let rs = CharacterRuleset::new(LevelingModel::FO4).with_derived(
             AV_HEALTH,
             DerivedStatFormula::bilinear(av(END), 4.5, DerivedInput::LEVEL, 2.5, 0.5, 77.5)
@@ -427,10 +432,26 @@ mod tests {
         rs.refresh_player_only_bases(&mut avs, 1);
         assert_eq!(avs.current(AV_HEALTH), 105.0);
 
-        avs.set_permanent(AV_HEALTH, 100.0);
+        // A constant ability's bonus sits in the permanent layer.
+        avs.mod_permanent(AV_HEALTH, 30.0);
+        avs.set_override(AV_HEALTH, 100.0);
         rs.refresh_player_only_bases(&mut avs, 1);
         assert_eq!(avs.get(AV_HEALTH).unwrap().base, 105.0);
-        assert_eq!(avs.current(AV_HEALTH), 205.0, "base 105 + modifier 100");
+        assert_eq!(avs.get(AV_HEALTH).unwrap().permanent_mod, 30.0);
+        assert_eq!(
+            avs.current(AV_HEALTH),
+            235.0,
+            "base 105 + override 100 + the ability's 30 — pre-#5412 the \
+             override replaced the 30"
+        );
+
+        // Removing the ability subtracts its own amount exactly once.
+        avs.mod_permanent(AV_HEALTH, -30.0);
+        assert_eq!(
+            avs.current(AV_HEALTH),
+            205.0,
+            "base 105 + override 100, the ability's removal is lossless"
+        );
     }
 
     #[test]

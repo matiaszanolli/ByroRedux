@@ -618,7 +618,7 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // types are all on `registry_completeness_tests.rs`'s
     // `NOT_SAVED_BY_DESIGN` allowlist (rebuilt from XCWT/WATR/GRAS at cell or
     // worldspace entry), so no snapshot has ever contained either shape.
-    const BASELINE_MAJOR: u16 = 33;
+    const BASELINE_MAJOR: u16 = 34;
     // #4465 — refreshed WITH a major bump (v24 -> v25). `ReferenceState`
     // gained the required `picked_up` tombstone field (the durable half of
     // the P3 `PickedUp` marker, carried through the registered
@@ -692,7 +692,12 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // component's definition into the same file's hashed span. `RaceSpells`
     // itself is deliberately NOT_SAVED (spawn-derived, re-stamped every
     // reload), so no save's bytes change.
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x005c_742b_9ce8_3bd8;
+    // 2026-10-09 (#5412) — refreshed WITH a major bump (v33 -> v34):
+    // `ActorValue` gained the required `set_override` layer (the player
+    // `SetBase` reroute's own destination, split out of the
+    // constant-spell `permanent_mod`), with no `serde(default)`
+    // (#1714) — pre-v34 saves are rejected.
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x96e7_1410_8849_2a6f;
     // ---- earlier refresh history (kept for the false-positive record) ----
     // 2026-09-21 (W2.10 flip) — refreshed WITHOUT a major bump, the same
     // `VisibilityMask` tuple-struct sweep class as the two entries below:
@@ -741,6 +746,13 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // resource (the spoken Say-Once ledger) — its absence in pre-v33
     // snapshots means a said-once line can legitimately re-qualify after
     // loading an old save, the same forward-default the format gates.
+    //
+    // v33 -> v34 (#5412) — refreshed WITH a major bump: `ActorValue`
+    // gained the required `set_override` layer (the player `SetBase`
+    // reroute's own destination, split out of the constant-spell
+    // `permanent_mod` so an ability's add/remove stays lossless beside a
+    // routed `setav`). No `serde(default)` (#1714); pre-v34 saves are
+    // rejected.
     //
     // v25 -> v26 (#4282/#4334) — refreshed WITH a major bump, both
     // directions at once: `Material` gained the optional capture-only
@@ -1008,3 +1020,4 @@ fn serde_guard_ignores_skipped_fields_and_non_keys() {
     ));
     assert!(!serde_attr_declares_unsafe_default("// #[serde(default)]"));
 }
+

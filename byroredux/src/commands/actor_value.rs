@@ -74,8 +74,8 @@ fn edit_av(world: &World, args: &str, cmd: &str, edit: AvEdit) -> CommandOutput 
         return CommandOutput::error(format!("{cmd}: bad value `{val_tok}`"));
     };
 
-    // #5239 — a SetBase on the player's derived pools routes into the
-    // permanent-modifier layer, or the per-frame refresh reverts it one
+    // #5239/#5412 — a SetBase on the player's derived pools routes into
+    // the set_override layer, or the per-frame refresh reverts it one
     // tick later. The redirect facts are read BEFORE the ActorValues
     // write query, in the canonical `CharacterRuleset` → `ActorValues`
     // order (#3441), so no guard is held across the write.
@@ -100,7 +100,7 @@ fn edit_av(world: &World, args: &str, cmd: &str, edit: AvEdit) -> CommandOutput 
     match edit {
         AvEdit::SetBase => {
             if player_pool {
-                avs.set_permanent(av, value);
+                avs.set_override(av, value);
             } else {
                 avs.set_base(av, value);
             }
@@ -221,7 +221,7 @@ mod tests {
         let health = |world: &World| world.get::<ActorValues>(player).unwrap().current(HEALTH);
         assert_eq!(health(&world), 105.0);
 
-        // setav Health 500 → modifier 500 on top of the formula base, so
+        // setav Health 500 → override 500 on top of the formula base, so
         // the reported value sticks instead of reverting to 105 next tick.
         let out = run(&world, &format!("{player} 0x2D4 500"), true);
         assert!(out.contains("105 -> 605"), "got: {out}");
@@ -232,16 +232,41 @@ mod tests {
             assert_eq!(
                 avs.get(HEALTH).unwrap().base,
                 105.0,
-                "the formula owns the base; only the modifier was written"
+                "the formula owns the base; only the override was written"
             );
-            assert_eq!(avs.get(HEALTH).unwrap().permanent_mod, 500.0);
+            assert_eq!(avs.get(HEALTH).unwrap().set_override, 500.0);
+            // #5412 — the constant-spell layer keeps its own sum: a
+            // routed setav neither seeds nor erases it (pre-#5412 the
+            // redirect overwrote permanent_mod outright).
+            assert_eq!(avs.get(HEALTH).unwrap().permanent_mod, 0.0);
+        }
+
+        // #5412 — an ability's constant bonus composes beside the override
+        // and survives a later setav intact ("any modifiers are left
+        // intact", FO4 CK SetValue). Pre-#5412 the reroute overwrote the
+        // constant-spell layer, so the bonus vanished under a setav and
+        // its later removal subtracted it a second time.
+        if let Some(mut avs) = world.get_mut::<ActorValues>(player) {
+            avs.mod_permanent(HEALTH, 30.0);
         }
 
         // The base half still tracks its inputs: modav Endurance re-derives
-        // 115, and the modifier rides on top.
+        // 115, and the override + ability ride on top.
         run(&world, &format!("{player} 0x07 2"), false);
         crate::systems::player_derived_stats_system(&world, 0.0);
-        assert_eq!(health(&world), 615.0);
+        assert_eq!(health(&world), 645.0, "base 115 + override 500 + the ability's 30");
+
+        run(&world, &format!("{player} 0x2D4 200"), true);
+        {
+            let avs = world.get::<ActorValues>(player).unwrap();
+            assert_eq!(
+                avs.get(HEALTH).unwrap().permanent_mod,
+                30.0,
+                "a re-setav replaces the override, never the ability's bonus"
+            );
+            assert_eq!(avs.get(HEALTH).unwrap().set_override, 200.0);
+        }
+        assert_eq!(health(&world), 345.0, "base 115 + override 200 + ability 30");
     }
 
     #[test]

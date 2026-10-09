@@ -21,27 +21,41 @@
 //!
 //! ## Composition
 //!
-//! `current = base + permanent + temporary − damage` (the Bethesda actor-value
-//! layering — see the actor-value-system design). `base` is the race/class/
-//! level result, `permanent` is perk/enchant offsets, `temporary` is active
-//! effects, and `damage` is a separately-restored negative offset (e.g. limb
-//! or health damage). An AV the actor doesn't carry composes to `0.0`,
+//! `current = base + set_override + permanent + temporary − damage` (the
+//! Bethesda actor-value layering — see the actor-value-system design).
+//! `base` is the race/class/level result, `set_override` is a deliberate
+//! `SetBase` on a player-derived pool (#5412), `permanent` is perk/enchant
+//! offsets, `temporary` is active effects, and `damage` is a
+//! separately-restored negative offset (e.g. limb or health damage). An AV
+//! the actor doesn't carry composes to `0.0`,
 //! matching Bethesda's "absent actor value → default 0" contract.
 
 use crate::ecs::sparse_set::SparseSetStorage;
 use crate::ecs::storage::Component;
 use std::collections::HashMap;
 
-/// The four composition layers of a single actor value, plus whether the
+/// The five composition layers of a single actor value, plus whether the
 /// base layer was ever authored.
 ///
-/// `current()` folds them per the actor-value model. All four default to
+/// `current()` folds them per the actor-value model. All layers default to
 /// `0.0`, so a freshly-inserted entry reads `0.0` until a base is set.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 #[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
 pub struct ActorValue {
     /// Race + class + level result (or formula / editor default).
     pub base: f32,
+    /// #5412 — a deliberate `SetBase` on a player-derived pool, rerouted
+    /// out of `base` (the per-frame `refresh_player_only_bases` owns that
+    /// half and would revert it one tick later). Its OWN layer, not
+    /// [`Self::permanent_mod`]: the permanent layer is the magic
+    /// runtime's constant-spell sum (`mod_permanent(±amount)` per
+    /// applied/removed ability), and the #5239 redirect that wrote here
+    /// overwrote every active ability bonus on the pool (a +30 Health
+    /// perk vanished under `setav Health 100`; removing the perk then
+    /// subtracted its 30 again from a value that never had it). Required
+    /// field, no `serde(default)` (#1714): saves from before the layer
+    /// are rejected by the v34 format-major bump.
+    pub set_override: f32,
     /// Permanent offsets — perks, enchantments, equipped gear.
     pub permanent_mod: f32,
     /// Temporary offsets — active magic effects (potions, spells).
@@ -59,9 +73,9 @@ pub struct ActorValue {
 }
 
 impl ActorValue {
-    /// `base + permanent + temporary − damage`.
+    /// `base + set_override + permanent + temporary − damage`.
     pub fn current(&self) -> f32 {
-        self.base + self.permanent_mod + self.temporary_mod - self.damage
+        self.base + self.set_override + self.permanent_mod + self.temporary_mod - self.damage
     }
 }
 
@@ -144,11 +158,21 @@ impl ActorValues {
         self.values.entry(avif_form_id).or_default().permanent_mod += delta;
     }
 
+    /// Set the [`ActorValue::set_override`] layer outright — #5412's
+    /// destination for a deliberate `SetBase` on the player's derived
+    /// pools (`refresh_player_only_bases` never touches it, so the write
+    /// survives the per-frame refresh) that keeps the permanent-modifier
+    /// layer — the constant-spell sum — intact ("modifiers are left
+    /// intact", FO4 CK `SetValue`). Replaces any earlier override.
+    pub fn set_override(&mut self, avif_form_id: u32, value: f32) {
+        self.values.entry(avif_form_id).or_default().set_override = value;
+    }
+
     /// Set the permanent-modifier layer outright — the `modav` counterpart
-    /// that replaces instead of adding. #5239 — the write sites use this to
-    /// route a `SetBase` on the player's `PlayerOnly` pools into the
-    /// modifier layer, where `refresh_player_only_bases` never treads (a
-    /// plain base write there is reverted one tick later).
+    /// that replaces instead of adding. #5412: this is the CONSTANT-SPELL
+    /// layer; the player `SetBase` reroute no longer lands here (an
+    /// overwrite discarded every active ability bonus on the pool — see
+    /// [`Self::set_override`]).
     pub fn set_permanent(&mut self, avif_form_id: u32, value: f32) {
         self.values.entry(avif_form_id).or_default().permanent_mod = value;
     }

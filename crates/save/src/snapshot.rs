@@ -259,7 +259,13 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 /// flag, and the parked `ReferenceState` gained the required `control`
 /// field that carries it across eviction. No `serde(default)`; pre-v32 saves
 /// are rejected.
-pub const FORMAT_MAJOR: u16 = 33;
+///
+/// v33 -> v34 (#5412): every `ActorValue` gained the required `set_override`
+/// layer — the destination for a deliberate `SetBase` on the player's
+/// derived pools, split out of the constant-spell `permanent_mod` so an
+/// ability's add/remove stays lossless on both sides. No `serde(default)`
+/// (#1714); pre-v34 saves are rejected.
+pub const FORMAT_MAJOR: u16 = 34;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

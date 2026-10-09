@@ -411,10 +411,11 @@ pub(super) fn apply_pending_actor_value_writes(world: &World, host: &mut Extensi
         // flagged. `resolver` is dropped immediately after the read loop
         // below (it is unused past that point) so it also doesn't
         // overlap the later `query_mut::<ActorValues>()` write pass.
-        // #5239 — `SetBase` on the player's `PlayerOnly` pools routes into
-        // the modifier layer (GECK SetActorValue: the player's base health
-        // is never modified); a plain base write there is reverted by
-        // `player_derived_stats_system` one frame later. Read BEFORE the
+        // #5239/#5412 — `SetBase` on the player's `PlayerOnly` pools
+        // routes into the set_override layer (GECK SetActorValue: the
+        // player's base health is never modified); a plain base write
+        // there is reverted by `player_derived_stats_system` one frame
+        // later. Read BEFORE the
         // `values` query, keeping the canonical `CharacterRuleset` →
         // `ActorValues` order (#3441) the #3819 note below documents.
         let player = world
@@ -448,7 +449,12 @@ pub(super) fn apply_pending_actor_value_writes(world: &World, host: &mut Extensi
                             .as_ref()
                             .is_some_and(|ruleset| ruleset.is_player_derived_pool(actor_value))
                     {
-                        actor_values.set_permanent(actor_value, command.value);
+                        // #5412 — the override layer, not permanent_mod:
+                        // the magic runtime sums constant spells there, and
+                        // an overwrite discarded every active ability bonus
+                        // on the pool ("modifiers are left intact", FO4 CK
+                        // SetValue).
+                        actor_values.set_override(actor_value, command.value);
                     } else {
                         actor_values.set_base(actor_value, command.value);
                     }

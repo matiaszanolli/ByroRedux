@@ -412,13 +412,28 @@ frame in `player_derived_stats_system`. So any END/AGI/level writer (abilities,
 `setav`/`modav`, the SDK, a future level-up) reaches Health/AP without a hook of
 its own. Damage and modifier layers on the pool survive a refresh. A deliberate
 `SetBase` on the pool **itself** (`setav Health`, the SDK's
-`ActorValueOperation::SetBase`) therefore routes into the permanent-modifier layer
-at the write sites (#5239): the GECK documents that a player `SetActorValue`
-never modifies base health — `player.SetAv Health 100` leaves the formula base
-alone and the 100 lands on top of it ("80 from base health, and 100 for the
-rest"). The plain base write would be reverted by the next refresh; the modifier
-write composes with every future re-derivation. Routing every `current()` reader
-through the ruleset would remove the exception.
+`ActorValueOperation::SetBase`) therefore routes into the `set_override` layer
+at the write sites (#5239, re-layered #5412): a player `SetActorValue` never
+modifies base health — `player.SetAv Health 100` leaves the formula base
+alone and the 100 lands on top of it. The plain base write would be reverted
+by the next refresh; the override write composes with every future
+re-derivation.
+
+**Sourcing of that redirect (#5412).** The only per-game documentation of
+"base untouched, value on top" is the *Oblivion* CS wiki's SetActorValue note
+("80 from base health, and 100 for the rest" — END×2 figures are TES4's);
+FO3/FNV inherit it here as an Oblivion-derived behaviour, unverified against
+those games' own tooling. The FO4 Creation Kit's `SetValue` documents the
+other half explicitly — "Sets the base value … **Any modifiers are left
+intact**" — which the pre-#5412 destination (an overwrite of the
+permanent-modifier layer) violated on every game: the magic runtime sums
+constant-spell bonuses there (`mod_permanent(±amount)` per applied/removed
+ability), so a routed `setav Health 100` discarded a carried +30 Health perk
+and its later removal subtracted the 30 a second time. `set_override` is that
+layer's own slot: constant spells keep `permanent_mod`, the override never
+touches it, and an ability's add/remove stays lossless on both sides.
+Routing every `current()` reader through the ruleset would remove the
+exception.
 
 ---
 
