@@ -88,12 +88,14 @@ pub struct DdsMetadata {
     pub is_cubemap: bool,
     /// Byte offset where pixel data begins (128 standard, 148 for DX10 extended header).
     pub data_offset: usize,
-    /// Set for an uncompressed `DDPF_RGB` DDS that is NOT 32-bpp
-    /// R8G8B8A8 and must be CPU-expanded to R8G8B8A8 before upload
-    /// (#1542). When `Some`, `format`/`block_size` already describe the
-    /// *post-expansion* R8G8B8A8 target, and the caller must run
-    /// [`expand_uncompressed_rgb`] on the raw bytes rather than uploading
-    /// them directly. `None` for every zero-copy format (BC, 32-bpp RGBA).
+    /// Set for an uncompressed `DDPF_RGB` DDS whose channel masks do not
+    /// match a canonical zero-copy order (16/24-bpp files, and 32-bpp
+    /// layouts like X8R8G8B8) and must be CPU-expanded to R8G8B8A8 before
+    /// upload (#1542, #5378). When `Some`, `format`/`block_size` already
+    /// describe the *post-expansion* R8G8B8A8 target, and the caller must
+    /// run [`expand_uncompressed_rgb`] on the raw bytes rather than
+    /// uploading them directly. `None` for every zero-copy format (BC,
+    /// canonical-order 32-bpp RGBA/BGRA).
     pub expand: Option<RgbExpand>,
 }
 
@@ -109,11 +111,11 @@ pub enum TextureColorSpace {
     Linear,
 }
 
-/// Source pixel layout for a 16- or 24-bpp uncompressed `DDPF_RGB` DDS
-/// that needs CPU expansion to R8G8B8A8 (#1542). The channel masks come
-/// straight from DDS_PIXELFORMAT, so any ordering — 16-bpp A1R5G5B5 /
-/// A4R4G4B4 / R5G6B5, 24-bpp R8G8B8 / B8G8R8 — decodes from the masks
-/// alone without enumerating named formats.
+/// Source pixel layout for an uncompressed `DDPF_RGB` DDS that needs CPU
+/// expansion to R8G8B8A8 (#1542, #5378). The channel masks come straight
+/// from DDS_PIXELFORMAT, so any ordering — 16-bpp A1R5G5B5 / A4R4G4B4 /
+/// R5G6B5, 24-bpp R8G8B8 / B8G8R8, 32-bpp X8R8G8B8 — decodes from the
+/// masks alone without enumerating named formats.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RgbExpand {
     /// Source bits per pixel — 16 or 24.
@@ -498,19 +500,57 @@ pub fn parse_dds(data: &[u8]) -> Result<DdsMetadata> {
     } else if pf_flags & DDPF_RGB != 0 {
         let bpp = pf_rgb_bit_count;
         if bpp == 32 {
-            // 32-bpp R8G8B8A8 uploads directly — zero-copy.
-            Ok(DdsMetadata {
-                width,
-                height,
-                mip_count,
-                format: vk::Format::R8G8B8A8_SRGB,
-                block_size: 4, // bytes per pixel
-                compressed: false,
-                array_layers: if legacy_cubemap { 6 } else { 1 },
-                is_cubemap: legacy_cubemap,
-                data_offset: HEADER_SIZE,
-                expand: None,
-            })
+            // #5378 — a 32-bpp DDPF_RGB file is not implicitly R8G8B8A8:
+            // the channel masks decide the byte order, and the majority
+            // layout in the vanilla archives is the reverse (A8R8G8B8 /
+            // X8R8G8B8 store B,G,R,(A|X) on disk — every Skyrim SE
+            // terrain-LOD diffuse atlas, the tree-LOD atlases, the
+            // FO3/FNV water noise maps). Only the two exact canonical
+            // orders with a real alpha mask keep a zero-copy path;
+            // everything else CPU-expands from the masks below.
+            let r_mask = read_u32(data, 92);
+            let g_mask = read_u32(data, 96);
+            let b_mask = read_u32(data, 100);
+            let a_mask = read_u32(data, 104);
+            match (r_mask, g_mask, b_mask, a_mask) {
+                (0x0000_00FF, 0x0000_FF00, 0x00FF_0000, 0xFF00_0000) => {
+                    // R8G8B8A8 byte order — zero-copy.
+                    Ok(DdsMetadata {
+                        width,
+                        height,
+                        mip_count,
+                        format: vk::Format::R8G8B8A8_SRGB,
+                        block_size: 4, // bytes per pixel
+                        compressed: false,
+                        array_layers: if legacy_cubemap { 6 } else { 1 },
+                        is_cubemap: legacy_cubemap,
+                        data_offset: HEADER_SIZE,
+                        expand: None,
+                    })
+                }
+                (0x00FF_0000, 0x0000_FF00, 0x0000_00FF, 0xFF00_0000) => {
+                    // A8R8G8B8 — bytes B,G,R,A on disk. Zero-copy as
+                    // B8G8R8A8, the same pairing the DX10 path gives the
+                    // BGRA dxgi formats; `average_rgb` already swaps for
+                    // the B8G8R8A8 pair.
+                    Ok(DdsMetadata {
+                        width,
+                        height,
+                        mip_count,
+                        format: vk::Format::B8G8R8A8_SRGB,
+                        block_size: 4,
+                        compressed: false,
+                        array_layers: if legacy_cubemap { 6 } else { 1 },
+                        is_cubemap: legacy_cubemap,
+                        data_offset: HEADER_SIZE,
+                        expand: None,
+                    })
+                }
+                _ => uncompressed_expand_meta(
+                    data, width, height, mip_count, legacy_cubemap, bpp,
+                    r_mask, g_mask, b_mask, a_mask,
+                ),
+            }
         } else if bpp == 16 || bpp == 24 {
             // #1542 — FO3/FNV-era font glyph atlases (16-bpp, e.g.
             // A1R5G5B5 / A4R4G4B4) and the HUD compass (24-bpp R8G8B8)
@@ -521,55 +561,79 @@ pub fn parse_dds(data: &[u8]) -> Result<DdsMetadata> {
             let g_mask = read_u32(data, 96);
             let b_mask = read_u32(data, 100);
             let a_mask = read_u32(data, 104);
-            ensure!(
-                r_mask | g_mask | b_mask != 0,
-                "Uncompressed {bpp}-bpp DDS has empty RGB channel masks — cannot decode",
-            );
-            validate_expand_masks(bpp, r_mask, g_mask, b_mask, a_mask)?;
-            let meta = DdsMetadata {
-                width,
-                height,
-                mip_count,
-                // Post-expansion target — the raw bytes are `bpp`-bpp until
-                // `expand_uncompressed_rgb` runs.
-                format: vk::Format::R8G8B8A8_SRGB,
-                block_size: 4,
-                compressed: false,
-                array_layers: if legacy_cubemap { 6 } else { 1 },
-                is_cubemap: legacy_cubemap,
-                data_offset: HEADER_SIZE,
-                expand: Some(RgbExpand {
-                    src_bpp: bpp,
-                    r_mask,
-                    g_mask,
-                    b_mask,
-                    a_mask,
-                }),
-            };
-            // #4835 — every other format is length-checked at upload
-            // (`record_dds_upload` compares the raw file tail against
-            // `total_data_size`), but this arm's upload buffer is SYNTHESISED, so
-            // that comparison passes by construction and a header-only file
-            // would expand into an all-black image of whatever size its header
-            // declares — up to ~358 MB for one 8192² 24-bpp 2D file, ~2.1 GB for
-            // a legacy cubemap. The source bytes have to be counted here, where
-            // they are still the file's own.
-            let needed = expand_source_size(&meta).unwrap_or(0);
-            let available = (data.len() - HEADER_SIZE) as u64;
-            ensure!(
-                available >= needed,
-                "Uncompressed {bpp}-bpp DDS payload too small: {available} bytes for \
-                 {width}x{height} {mip_count} mips x {} layers ({needed} expected) — \
-                 refusing to expand a truncated file into a blank image",
-                meta.array_layers,
-            );
-            Ok(meta)
+            uncompressed_expand_meta(
+                data, width, height, mip_count, legacy_cubemap, bpp,
+                r_mask, g_mask, b_mask, a_mask,
+            )
         } else {
             bail!("Unsupported uncompressed DDS: {bpp} bpp (RGB masks; expected 16/24/32)");
         }
     } else {
         bail!("Unsupported DDS pixel format (flags={:#x})", pf_flags);
     }
+}
+
+/// Build the CPU-expansion metadata for an uncompressed `DDPF_RGB` DDS
+/// whose masks do not match a zero-copy canonical order: 16/24-bpp files
+/// (#1542) and non-canonical 32-bpp layouts — X8R8G8B8's absent alpha
+/// mask, X8B8G8R8, exotic splits (#5378). Shared by both `parse_dds`
+/// arms so the mask validation and the #4835 payload check cannot drift.
+#[allow(clippy::too_many_arguments)]
+fn uncompressed_expand_meta(
+    data: &[u8],
+    width: u32,
+    height: u32,
+    mip_count: u32,
+    legacy_cubemap: bool,
+    bpp: u32,
+    r_mask: u32,
+    g_mask: u32,
+    b_mask: u32,
+    a_mask: u32,
+) -> Result<DdsMetadata> {
+    ensure!(
+        r_mask | g_mask | b_mask != 0,
+        "Uncompressed {bpp}-bpp DDS has empty RGB channel masks — cannot decode",
+    );
+    validate_expand_masks(bpp, r_mask, g_mask, b_mask, a_mask)?;
+    let meta = DdsMetadata {
+        width,
+        height,
+        mip_count,
+        // Post-expansion target — the raw bytes are `bpp`-bpp until
+        // `expand_uncompressed_rgb` runs.
+        format: vk::Format::R8G8B8A8_SRGB,
+        block_size: 4,
+        compressed: false,
+        array_layers: if legacy_cubemap { 6 } else { 1 },
+        is_cubemap: legacy_cubemap,
+        data_offset: HEADER_SIZE,
+        expand: Some(RgbExpand {
+            src_bpp: bpp,
+            r_mask,
+            g_mask,
+            b_mask,
+            a_mask,
+        }),
+    };
+    // #4835 — every other format is length-checked at upload
+    // (`record_dds_upload` compares the raw file tail against
+    // `total_data_size`), but this arm's upload buffer is SYNTHESISED, so
+    // that comparison passes by construction and a header-only file
+    // would expand into an all-black image of whatever size its header
+    // declares — up to ~358 MB for one 8192² 24-bpp 2D file, ~2.1 GB for
+    // a legacy cubemap. The source bytes have to be counted here, where
+    // they are still the file's own.
+    let needed = expand_source_size(&meta).unwrap_or(0);
+    let available = (data.len() - HEADER_SIZE) as u64;
+    ensure!(
+        available >= needed,
+        "Uncompressed {bpp}-bpp DDS payload too small: {available} bytes for \
+         {width}x{height} {mip_count} mips x {} layers ({needed} expected) — \
+         refusing to expand a truncated file into a blank image",
+        meta.array_layers,
+    );
+    Ok(meta)
 }
 
 /// Parse DDS metadata and select the Vulkan UNORM/SRGB view required by the
@@ -623,7 +687,8 @@ fn format_for_color_space(format: vk::Format, color_space: TextureColorSpace) ->
     }
 }
 
-/// Expand a 16- or 24-bpp uncompressed `DDPF_RGB` DDS to a contiguous
+/// Expand a 16/24/32-bpp uncompressed `DDPF_RGB` DDS (whose masks are not
+/// a canonical zero-copy order) to a contiguous
 /// R8G8B8A8 buffer covering all mips, laid out mip-0-first to match what
 /// the upload path expects for `block_size = 4` (#1542).
 ///
@@ -984,8 +1049,14 @@ pub(crate) mod tests {
         buf[76..80].copy_from_slice(&32u32.to_le_bytes());
         // dwFlags = DDPF_RGB | DDPF_ALPHAPIXELS
         buf[80..84].copy_from_slice(&(DDPF_RGB | DDPF_ALPHAPIXELS).to_le_bytes());
-        // rgbBitCount = 32
+        // rgbBitCount = 32, canonical RGBA-order masks (R in the low
+        // byte) — #5378 made the masks load-bearing for the zero-copy
+        // path, so the fixture has to author them.
         buf[88..92].copy_from_slice(&32u32.to_le_bytes());
+        buf[92..96].copy_from_slice(&0x0000_00FFu32.to_le_bytes());
+        buf[96..100].copy_from_slice(&0x0000_FF00u32.to_le_bytes());
+        buf[100..104].copy_from_slice(&0x00FF_0000u32.to_le_bytes());
+        buf[104..108].copy_from_slice(&0xFF00_0000u32.to_le_bytes());
         buf
     }
 
@@ -1141,6 +1212,63 @@ pub(crate) mod tests {
         assert_eq!(meta.block_size, 4);
         assert!(!meta.compressed);
         assert!(meta.expand.is_none(), "32-bpp RGBA uploads zero-copy");
+    }
+
+    /// #5378 — A8R8G8B8 (B,G,R,A on disk) is the majority 32-bpp layout
+    /// in the vanilla archives (tree-LOD atlases, DLC1 cubemaps, water
+    /// noise maps). It stays zero-copy, as B8G8R8A8.
+    #[test]
+    fn parse_uncompressed_a8r8g8b8_zero_copies_as_bgra() {
+        let data = make_rgb_header(
+            2,
+            2,
+            32,
+            [0x00FF_0000, 0x0000_FF00, 0x0000_00FF, 0xFF00_0000],
+            &[[10, 20, 30, 255]; 4].concat(),
+        );
+        let meta = parse_dds(&data).unwrap();
+        assert_eq!(meta.format, vk::Format::B8G8R8A8_SRGB);
+        assert!(meta.expand.is_none(), "canonical BGRA order uploads zero-copy");
+        // The sibling consumer: `average_rgb` must swap for the BGRA pair,
+        // or the GI bounce albedo reads the file's blue as red.
+        approx(
+            average_rgb(&meta, &data).unwrap(),
+            [30.0 / 255.0, 20.0 / 255.0, 10.0 / 255.0],
+        );
+    }
+
+    /// #5378 — X8R8G8B8 (alpha mask 0, the Skyrim SE terrain-LOD diffuse
+    /// atlases) has no zero-copy Vulkan format: the unused X byte would be
+    /// sampled as alpha. It CPU-expands from the masks, which both lands
+    /// each channel in its slot and forces A=255.
+    #[test]
+    fn parse_uncompressed_x8r8g8b8_expands_channels_and_forces_opaque() {
+        let data = make_rgb_header(
+            1,
+            1,
+            32,
+            [0x00FF_0000, 0x0000_FF00, 0x0000_00FF, 0],
+            &[10, 20, 30, 0],
+        );
+        let meta = parse_dds(&data).unwrap();
+        assert_eq!(meta.format, vk::Format::R8G8B8A8_SRGB);
+        let ex = meta.expand.expect("X8R8G8B8 must CPU-expand");
+        assert_eq!(ex.src_bpp, 32);
+        assert_eq!(upload_pixels(&meta, &data).as_ref(), &[30, 20, 10, 255]);
+    }
+
+    /// #5378 — a 32-bpp header whose RGB masks are all zero describes no
+    /// decodable colour; rejected like the 16/24-bpp case.
+    #[test]
+    fn reject_32bpp_with_empty_rgb_masks() {
+        let data = make_rgb_header(
+            1,
+            1,
+            32,
+            [0, 0, 0, 0xFF00_0000],
+            &[0, 0, 0, 255],
+        );
+        assert!(parse_dds(&data).is_err());
     }
 
     /// Single-mip uncompressed `DDPF_RGB` header at `bpp` with the given
