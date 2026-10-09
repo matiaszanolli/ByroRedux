@@ -285,7 +285,6 @@ pub(crate) fn character_controller_system(world: &World, dt: f32) {
         world,
         current_pos,
         controller.half_height + controller.radius,
-        marker_flow,
     );
     // Match the OpenMW swimlevel convention: merely wetting the capsule's
     // feet does not switch the controller from walking to swimming. The
@@ -1108,32 +1107,43 @@ pub(crate) fn horizontal_motion(yaw: f32, move_dir: Vec3, speed: f32, dt: f32) -
 /// projectile. Waterfalls keep their vertical flow in the buoyancy path and
 /// contribute no horizontal drift.
 ///
-/// - Swimming: the column's composed flow (plane + marker, #4691), scaled by
-///   the submerged fraction.
+/// - Swimming: the plane column's flow scaled by the submerged fraction, PLUS
+///   the placed `WaterCurrentVolume` marker at full strength (#5357) — the
+///   dynamic path's exact composition (water.rs applies the marker's
+///   `current_force` at `frac = 1.0` beside the plane's fraction-scaled drag).
+///   Pre-#5357 the #4691 composition folded both into one vector and scaled
+///   the whole thing by the fraction, so stepping into the swim state dropped
+///   the marker's drift by the submerged fraction (~32% at the swimlevel
+///   threshold) while a barrel beside the swimmer kept the full current.
 /// - Not swimming: the placed `WaterCurrentVolume` marker alone, at full
 ///   strength. #5129 — this is the dynamic path's marker arm, which applies
 ///   the marker drag at `frac = 1.0` to any body whose centre is inside the
 ///   box, whether or not a `WaterPlane` column covers it. Pre-fix the marker
 ///   was read only inside a submerged plane column, so in a current box that
 ///   outruns its plane's footprint or surface-mesh strip a barrel drifted and
-///   the player beside it did not.
+///   the player beside it did not. The player ignoring plane flow while
+///   wading is documented design — see [`player_water_state`].
 pub(crate) fn player_current_drift(
     swim: Option<&PlayerWaterState>,
     marker_flow: Option<WaterFlow>,
     dt: f32,
 ) -> Vec3 {
-    let (flow, fraction) = match swim {
-        Some(state) => match state.flow {
-            Some(flow) => (flow, state.fraction),
-            None => return Vec3::ZERO,
-        },
-        None => match marker_flow {
-            Some(flow) => (flow, 1.0),
-            None => return Vec3::ZERO,
-        },
-    };
-    Vec3::new(flow.direction[0], 0.0, flow.direction[2])
-        * (flow.speed * 0.35 * fraction.clamp(0.0, 1.0) * dt)
+    /// One source's drift: the flow projected onto the XZ plane, scaled by
+    /// the source's own strength factor and the bound.
+    fn drift(flow: &WaterFlow, frac: f32, dt: f32) -> Vec3 {
+        Vec3::new(flow.direction[0], 0.0, flow.direction[2])
+            * (flow.speed * 0.35 * frac.clamp(0.0, 1.0) * dt)
+    }
+    let marker = || marker_flow.as_ref().map(|flow| drift(flow, 1.0, dt));
+    match swim {
+        Some(state) => state
+            .flow
+            .as_ref()
+            .map(|flow| drift(flow, state.fraction, dt))
+            .unwrap_or(Vec3::ZERO)
+            + marker().unwrap_or(Vec3::ZERO),
+        None => marker().unwrap_or(Vec3::ZERO),
+    }
 }
 
 /// The flow of the placed `WaterCurrentVolume` marker (XWCU + XPRM
@@ -1168,11 +1178,14 @@ fn placed_current_flow_at(world: &World, pos: Vec3) -> Option<WaterFlow> {
 /// This mirrors the dynamic-body buoyancy calculation for the one body that
 /// pass cannot see (the player is `KinematicPositionBased`, and
 /// `apply_buoyancy_with_scratch` selects `MotionType::Dynamic` plus ragdoll
-/// bones only) — including the placed-`WaterCurrentVolume` arm (#3974): a
-/// marker containing the capsule centre composes with the plane's own flow
-/// (#4691), the same composition the dynamic path resolves. A marker with no
-/// plane column under it produces no state here and reaches the player
-/// through [`player_current_drift`] instead (#5129). The result is published as a real [`WaterContact`] by
+/// bones only). The placed-`WaterCurrentVolume` arm is resolved separately
+/// (#3974/#5129): the marker never enters this state — the published
+/// [`WaterContact`] carries the plane column's own flow, exactly what the
+/// dynamic path's contact write publishes (`flow: s.flow`), and the marker
+/// reaches the player through [`player_current_drift`] composed as plane ×
+/// submerged fraction + marker × 1.0 (#4691/#5357). A marker with no plane
+/// column under it produces no state here and reaches the player through the
+/// same drift path. The result is published as a real [`WaterContact`] by
 /// [`sync_player_water_contact`], so the kinematic player reaches the same
 /// `water.contacts` diagnostic and the same downstream consumers as every
 /// other wet body.
@@ -1182,7 +1195,9 @@ pub(crate) struct PlayerWaterState {
     pub(crate) surface_y: f32,
     /// Fraction of the capsule's vertical span below `surface_y`.
     pub(crate) fraction: f32,
-    /// The current acting on the capsule; `None` is calm water.
+    /// The plane column's own current; `None` is calm water. Deliberately
+    /// not composed with the placed-marker flow (#5357) — see the struct
+    /// doc.
     pub(crate) flow: Option<WaterFlow>,
     /// FO3/FNV authored water damage per second. Zero is harmless water.
     pub(crate) damage_per_second: f32,
@@ -1191,12 +1206,10 @@ pub(crate) struct PlayerWaterState {
 }
 
 /// Return the nearest water column intersecting a capsule centred at `pos`.
-/// `marker_flow` is [`placed_current_flow_at`]'s answer for the same `pos`.
 fn player_water_state(
     world: &World,
     pos: Vec3,
     half_span: f32,
-    marker_flow: Option<WaterFlow>,
 ) -> Option<PlayerWaterState> {
     // Frame-global inputs are sampled once before any water storage guard is
     // acquired. Besides avoiding one resource re-lock per plane, this keeps
@@ -1243,33 +1256,16 @@ fn player_water_state(
             continue;
         }
         let distance = (surface_y - pos.y).abs();
-        // #4691 (PHYS-D5-2026-09-21-01) — COMPOSITION parity with the
-        // dynamic path: there a co-located plane and marker BOTH apply
-        // (plane drag × submerged fraction, then marker drag — "so a
-        // co-located water plane's force does not discard the marker's
-        // current", water.rs). The old `or_else` here made the plane's
-        // flow win, so in rapids a swimmer felt only the plane while the
-        // barrel beside them felt both. Both sources now contribute as
-        // velocity vectors; a single-source case stays verbatim.
-        let plane_flow = flow_q.as_ref().and_then(|q| q.get(entity).copied());
-        let flow = match (plane_flow, marker_flow) {
-            (Some(a), Some(b)) => {
-                let x = a.direction[0] * a.speed + b.direction[0] * b.speed;
-                let y = a.direction[1] * a.speed + b.direction[1] * b.speed;
-                let z = a.direction[2] * a.speed + b.direction[2] * b.speed;
-                let mag = (x * x + y * y + z * z).sqrt();
-                if mag <= f32::EPSILON {
-                    None
-                } else {
-                    Some(WaterFlow {
-                        direction: [x / mag, y / mag, z / mag],
-                        speed: mag,
-                    })
-                }
-            }
-            (only, None) => only,
-            (None, Some(marker)) => Some(marker),
-        };
+        // #4691 — the plane column's own flow, verbatim. The marker's
+        // current is deliberately NOT folded in here (#5357): the dynamic
+        // path scales the plane's drag by the submerged fraction and the
+        // marker's at 1.0, so folding them into one vector forces one
+        // shared scale — pre-#5357 that scale was the fraction, which
+        // silently discounted the marker the moment the player started
+        // swimming. `player_current_drift` composes the two sources with
+        // their own scales, and `sync_player_water_contact` publishes this
+        // plane-only flow, matching the dynamic contact write's `s.flow`.
+        let flow = flow_q.as_ref().and_then(|q| q.get(entity).copied());
         if best.as_ref().is_none_or(|candidate| distance < candidate.1) {
             best = Some((
                 PlayerWaterState {
@@ -1834,7 +1830,7 @@ mod tests {
 
     /// The controller's sampling sequence: marker first, then the columns.
     fn sample_player_water(world: &World, pos: Vec3, half_span: f32) -> Option<PlayerWaterState> {
-        player_water_state(world, pos, half_span, placed_current_flow_at(world, pos))
+        player_water_state(world, pos, half_span)
     }
 
     /// #5129 — a placed current box that extends past its plane's XZ
@@ -1906,11 +1902,15 @@ mod tests {
         );
     }
 
-    /// #5129 — while swimming the column's composed flow wins (scaled by
-    /// the submerged fraction); the raw marker argument is not added a
-    /// second time on top of the #4691 composition.
+    /// #5357 — while swimming, the two current sources keep their own
+    /// scales, mirroring the dynamic path: the plane column's flow is
+    /// scaled by the submerged fraction, the placed marker applies at full
+    /// strength. Pre-#5357 the composed vector was scaled by the fraction
+    /// as a whole, so the walk→swim boundary stepped the marker's drift
+    /// down by the fraction while the barrel beside the swimmer kept the
+    /// full current.
     #[test]
-    fn swimming_drift_uses_the_composed_column_flow_only() {
+    fn swimming_drift_scales_the_plane_by_fraction_and_the_marker_at_full_strength() {
         let dt = 1.0 / 60.0;
         let state = PlayerWaterState {
             surface_y: 0.0,
@@ -1927,10 +1927,27 @@ mod tests {
             speed: 9.0,
         });
         let drift = player_current_drift(Some(&state), marker, dt);
-        assert!(drift.x == 0.0 && (drift.z - 2.0 * 0.35 * 0.5 * dt).abs() < 1e-6);
+        assert!(
+            (drift.x - 9.0 * 0.35 * dt).abs() < 1e-6,
+            "the marker must stay at full strength while swimming, got {drift:?}"
+        );
+        assert!(
+            (drift.z - 2.0 * 0.35 * 0.5 * dt).abs() < 1e-6,
+            "the plane column keeps its fraction scaling, got {drift:?}"
+        );
 
+        // A calm plane must not swallow the marker either: a barrel in a
+        // current box on a calm lake feels the full marker current, and so
+        // must the swimmer (pre-#5357 this case returned ZERO).
         let calm = PlayerWaterState { flow: None, ..state };
-        assert_eq!(player_current_drift(Some(&calm), marker, dt), Vec3::ZERO);
+        let drift = player_current_drift(Some(&calm), marker, dt);
+        assert!(
+            (drift.x - 9.0 * 0.35 * dt).abs() < 1e-6 && drift.z == 0.0,
+            "a calm column must not discount the marker, got {drift:?}"
+        );
+
+        // Calm water with no marker anywhere: nothing.
+        assert_eq!(player_current_drift(Some(&calm), None, dt), Vec3::ZERO);
     }
 
     /// #4791 — the `WaterCurrentVolume` storage exists only after an XWCU
@@ -1969,12 +1986,13 @@ mod tests {
 
     /// #3974 — the kinematic player's sampler reads a placed
     /// `WaterCurrentVolume` marker containing the capsule centre
-    /// (#3114/#3268); water outside the marker stays calm. #4691 — when a
-    /// plane ALSO authors a flow, the two compose ADDITIVELY (velocity
-    /// vectors summed), the same both-sources composition the dynamic
-    /// path applies; a single-source case stays verbatim.
+    /// (#3114/#3268); water outside the marker stays calm. #5357 — the
+    /// marker never enters the column state itself (the published
+    /// `WaterContact.flow` is the plane's own flow, dynamic-path parity);
+    /// it reaches the swimmer through `player_current_drift`, where both
+    /// sources contribute additively with their own scales.
     #[test]
-    fn player_water_state_falls_back_to_a_placed_current_volume() {
+    fn the_marker_reaches_the_swimmer_through_drift_not_the_column_state() {
         use byroredux_core::ecs::components::water::WaterCurrentVolume;
 
         let mut world = World::new();
@@ -2014,22 +2032,26 @@ mod tests {
             },
         );
 
+        let dt = 1.0 / 60.0;
         let pos = Vec3::new(0.0, -2.5, 0.0); // capsule centre inside both
         let state = sample_player_water(&world, pos, 40.0).expect("submerged");
-        let flow = state
-            .flow
-            .expect("the marker's current must reach the player");
-        assert_eq!(flow.speed, 3.0);
+        assert!(
+            state.flow.is_none(),
+            "a calm plane's column state stays calm — the marker travels the \
+             drift path, not the state (#5357)"
+        );
+        let drift =
+            player_current_drift(Some(&state), placed_current_flow_at(&world, pos), dt);
+        assert!(
+            (drift.x - 3.0 * 0.35 * dt).abs() < 1e-6 && drift.z == 0.0,
+            "the marker must push the swimmer at full strength, got {drift:?}"
+        );
 
-        // Outside the marker's box the calm plane stays calm.
-        let outside =
-            sample_player_water(&world, Vec3::new(8.0, -2.5, 0.0), 40.0).expect("submerged");
-        assert!(outside.flow.is_none());
-
-        // #4691 — plane flow + marker flow compose additively: plane
-        // (0,0,1)×1 plus marker (1,0,0)×3 = vector (3,0,1). The dynamic
-        // path applies both sources to the barrel beside the swimmer;
-        // the swimmer must feel both too.
+        // #4691 — when the plane ALSO authors a flow, both sources reach
+        // the swimmer: the state carries the plane's own flow verbatim,
+        // and the drift composes plane × fraction + marker × 1.0, the same
+        // both-sources composition the dynamic path applies to the barrel
+        // beside the swimmer.
         world.insert(
             lake,
             WaterFlow {
@@ -2038,27 +2060,37 @@ mod tests {
             },
         );
         let state = sample_player_water(&world, pos, 40.0).expect("submerged");
-        let flow = state.flow.expect("both sources must reach the player");
-        let expected = (3.0f32 * 3.0 + 1.0).sqrt();
-        assert!(
-            (flow.speed - expected).abs() < 1e-4,
-            "summed magnitude {expected}, got {}",
-            flow.speed
+        let plane_flow = state.flow.expect("the plane's own flow");
+        assert_eq!(
+            (plane_flow.speed, plane_flow.direction),
+            (1.0, [0.0, 0.0, 1.0]),
+            "the state carries the plane verbatim, not composed"
         );
+        let drift =
+            player_current_drift(Some(&state), placed_current_flow_at(&world, pos), dt);
         assert!(
-            (flow.direction[0] - 3.0 / expected).abs() < 1e-4
-                && (flow.direction[2] - 1.0 / expected).abs() < 1e-4,
-            "the summed direction must lean marker-ward: {:?}",
-            flow.direction
+            (drift.x - 3.0 * 0.35 * dt).abs() < 1e-6
+                && (drift.z - 1.0 * 0.35 * state.fraction * dt).abs() < 1e-6,
+            "plane × fraction + marker × 1.0, got {drift:?} (fraction {})",
+            state.fraction
         );
 
         // Outside the marker the plane flows alone — verbatim, not summed.
-        let outside = sample_player_water(&world, Vec3::new(8.0, -2.5, 0.0), 40.0)
-            .expect("submerged");
+        let outside =
+            sample_player_water(&world, Vec3::new(8.0, -2.5, 0.0), 40.0).expect("submerged");
         let outside_flow = outside.flow.expect("the plane's own flow");
         assert_eq!(
             (outside_flow.speed, outside_flow.direction),
             (1.0, [0.0, 0.0, 1.0])
+        );
+        let drift = player_current_drift(
+            Some(&outside),
+            placed_current_flow_at(&world, Vec3::new(8.0, -2.5, 0.0)),
+            dt,
+        );
+        assert!(
+            drift.x == 0.0 && (drift.z - 1.0 * 0.35 * outside.fraction * dt).abs() < 1e-6,
+            "outside the marker only the plane's share remains, got {drift:?}"
         );
     }
 
