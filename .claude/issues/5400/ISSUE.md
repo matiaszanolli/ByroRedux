@@ -1,0 +1,46 @@
+# #5400: PAR-D3-2026-10-08-01: the menuxml DDS decoder has no 16-bpp support, so 49 vanilla Oblivion menu textures never decode, and the HUD reports them as "not found"
+
+**Labels**: medium,import-pipeline,ui,bug,game:oblivion
+**URL**: https://github.com/matiaszanolli/ByroRedux/issues/5400
+
+**Source**: `docs/audits/AUDIT_PARSERS_2026-10-08.md` — `PAR-D3-2026-10-08-01` (HEAD `00f580e09`)
+
+- **Severity**: MEDIUM
+- **Dimension**: Version Gating (format coverage)
+- **Location**:
+  - `crates/menuxml/src/tex.rs:289-297` (`bytes_per_px` accepts only 8, 24 and 32).
+  - `crates/menuxml/src/menu.rs:456-463`: `find_map(|p| assets.texture(p)).and_then(decode_dds)`, followed by the "not found in any resolution set" warning.
+- **Status**: NEW. #1542 fixed 16/24-bpp only in the renderer's `parse_dds`.
+- **Trigger Input**: vanilla `Oblivion - Textures - Compressed.bsa`, uncompressed 16-bpp headers:
+  - 48 × A4R4G4B4: flags `0x41`, masks `0f00/00f0/000f/f000`.
+  - 1 × R5G6B5: flags `0x40`, `textures\menus\misc\healthbar3dbw.dds`.
+- **Description**:
+  - The breakdown by folder:
+
+    | Folder under `textures\menus\` | Files |
+    |---|---|
+    | `icons\magic` | 21 |
+    | `map\world` | 20 |
+    | `map` (including `main_page.dds`, `main_page_shadow.dds`) | 2 |
+    | `map\log` | 2 |
+    | `book` (including `book_background.dds`, `book_mark.dds`) | 2 |
+    | `icons` (`icon_small_eye.dds`) | 1 |
+    | `misc` | 1 |
+
+  - Vanilla XML references some of them: `hud_reticle.xml` names `icon_small_eye.dds`, and `book_menu.xml` and `prefabs\scroll_line.xml` name `book_background.dds` (`menuprobe --bin bsagrep`). The magic-effect and world-map icons are fed by the runtime.
+  - For each of these files `decode_dds` returns `None`, with only a debug-level log.
+  - `MenuRenderer` then warns "menu texture '…' not found in any resolution set". The file was found but could not be decoded, so an operator is sent looking for a missing archive.
+  - `find_map` also stops at the first **present** candidate, so a decodable sibling in another resolution set is never tried.
+- **Evidence**: the `ddscensus` output in `/tmp/audit/parsers/dim_3.md`. FO3 and FNV have no 16-bpp DDS under `menus`. Their 16-bpp files are `textures\fonts\glow_*_lod_a.dds`, which the font profiles do not name.
+- **Impact**:
+  - **Today:** the Oblivion `--hud` driver loads only `hud_main_menu.xml`, so the live HUD is not affected yet. `tex.dump` fails on these files.
+  - **When more Oblivion menus are driven:** the sneak eye (reticle), the book, map and log pages, and the magic and world-map icons will render blank. This is vanilla content failing to decode in a parser this skill owns. It is MEDIUM rather than HIGH only because no menu driven today references these files.
+- **Related**: #1542, PAR-D2-2026-10-08-01, REN-D5-2026-10-08-02.
+- **Suggested Fix**:
+  - Accept `bit_count == 16` (2 bytes per pixel) through the same mask path once PAR-D2-2026-10-08-01's mask arithmetic is fixed. A4R4G4B4, R5G6B5, A1R5G5B5 and A8L8 then fall out of the generic masked decode.
+  - Make the `menu.rs` warning distinguish "present but undecodable".
+  - Add a header census of `textures\menus\` per legacy game to the menuxml corpus lane, asserting zero undecodable headers.
+
+## Completeness Checks
+- [ ] **SIBLING**: Same pattern checked in related files (FO3/FNV font profiles' 16-bpp glow textures; renderer `parse_dds` (#1542))
+- [ ] **TESTS**: A regression test pins this specific fix
