@@ -147,7 +147,17 @@ pub fn extract_skin_ni_tri_shape(
     let skeleton_root = resolve_node_name(scene, skeleton_root_ref);
 
     // Build dense per-vertex weight tables.
-    let (vertex_bone_indices, vertex_bone_weights) = densify_sparse_weights(num_vertices, data);
+    let (mut vertex_bone_indices, mut vertex_bone_weights) =
+        densify_sparse_weights(num_vertices, data);
+    // #5389 sibling — the classic NiSkinData channel carries bone
+    // indices into the same `bone_refs` list; bound it by the same
+    // rule so the render-side palette invariant holds for every
+    // producer, not just the ones #4268 touched.
+    decline_unbounded_packed_indices(
+        &mut vertex_bone_indices,
+        &mut vertex_bone_weights,
+        bone_refs.len(),
+    );
 
     // M41.0 Phase 1b.x — surface NiSkinData::skinTransform (the global
     // per-skin transform). Bethesda body NIFs ship this with a non-
@@ -243,6 +253,17 @@ pub fn extract_skin_bs_tri_shape(
             return None;
         }
         let bones = build_imported_bones(scene, bone_refs_slice, data)?;
+        // #5389 — #4268's rule for the packed BSTriShape channel (this
+        // covers the inline arrays AND the SSE global-buffer payload,
+        // which merge above): an index at or above the mesh's own bone
+        // count reads a reused or unallocated palette slot's stale
+        // matrix, the exact invariant render/skinned.rs documents.
+        // Decline the whole weight set — never clamp.
+        decline_unbounded_packed_indices(
+            &mut vertex_bone_indices,
+            &mut vertex_bone_weights,
+            bone_refs_slice.len(),
+        );
         let skeleton_root = resolve_node_name(scene, skeleton_root_ref);
         let global_skin_transform = ni_transform_to_yup_matrix(&data.skin_transform);
         return Some(ImportedSkin {
@@ -273,6 +294,15 @@ pub fn extract_skin_bs_tri_shape(
                 bounding_sphere: bt.bounding_sphere,
             });
         }
+        // #5389 — same bound on the FO4/SSE arm; see the NiSkin arm's
+        // note. Vanilla census: 0 out-of-range influences across all
+        // 8 FO4 mesh BA2s (23,099 skinned meshes), so this is
+        // defense-in-depth for mods and malformed files.
+        decline_unbounded_packed_indices(
+            &mut vertex_bone_indices,
+            &mut vertex_bone_weights,
+            inst.bone_refs.len(),
+        );
         let skeleton_root = resolve_node_name(scene, inst.skeleton_root_ref);
         // BSSkin (FO4+/Skyrim SE) doesn't carry a per-skin global
         // transform; identity is the right default per OpenMW's
@@ -573,6 +603,27 @@ pub fn extract_skin_bs_geometry(
 /// Installed SSE Draugr/body/hand data independently confirms agreement
 /// between raw packed indices and expanded partition indices. The former
 /// #613/#2577 remap changed 4,893 of 11,669 weighted lanes in that sample.
+/// #5389 — #4268's decline rule applied to the BSTriShape packed
+/// channel: any per-vertex bone index at or above the mesh's own bone
+/// count empties BOTH arrays (the mesh falls back to bind pose) instead
+/// of deforming through whatever stale matrix sits in the palette slot
+/// the index happens to reach. Never clamps — a wrong-bone clamp
+/// silently deforms.
+fn decline_unbounded_packed_indices(
+    indices: &mut Vec<[u16; 4]>,
+    weights: &mut Vec<[f32; 4]>,
+    bone_count: usize,
+) {
+    if indices.iter().flatten().any(|&index| index as usize >= bone_count) {
+        log::warn!(
+            "BSTriShape skin: per-vertex bone index >= bone count ({bone_count}) — \
+             declining skin weights (bind pose) rather than guessing a bone (#4268 rule)"
+        );
+        indices.clear();
+        weights.clear();
+    }
+}
+
 pub fn widen_packed_bone_indices(bone_indices: &[[u8; 4]]) -> Vec<[u16; 4]> {
     bone_indices
         .iter()

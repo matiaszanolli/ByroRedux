@@ -391,3 +391,170 @@ fn missing_skin_partition_preserves_packed_indices() {
     let skin = extract_skin_bs_tri_shape(&scene, shape_ref, &[]).unwrap();
     assert_eq!(skin.vertex_bone_indices[0], [3u16, 0, 0, 0]);
 }
+
+/// #5389 — the packed BSTriShape channel is bounded by the mesh's own
+/// bone count (#4268's rule, which until now covered only the Starfield
+/// BSGeometry producer on a false "siblings already bound" premise): an
+/// out-of-range index declines the whole weight set — bones and
+/// skeleton root still resolve, the vertex arrays empty, the mesh
+/// renders in bind pose. Never a clamp.
+#[test]
+fn bs_tri_shape_skin_with_out_of_range_bone_index_declines() {
+    // Same four-bone NiSkinInstance shape as the remap test above, but
+    // vertex 1 packs global index 7 against the four-bone list.
+    let bone_node = || -> Box<dyn crate::blocks::NiObject> {
+        Box::new(NiNode {
+            av: NiAVObjectData {
+                net: empty_net(),
+                flags: 0,
+                transform: NiTransform::default(),
+                properties: Vec::new(),
+                collision_ref: BlockRef::NULL,
+            },
+            children: Vec::new(),
+            effects: Vec::new(),
+        })
+    };
+    let shape = BsTriShape {
+        av: NiAVObjectData {
+            net: empty_net(),
+            flags: 0,
+            transform: NiTransform::default(),
+            properties: Vec::new(),
+            collision_ref: BlockRef::NULL,
+        },
+        center: NiPoint3::default(),
+        radius: 0.0,
+        skin_ref: BlockRef(1),
+        shader_property_ref: BlockRef::NULL,
+        alpha_property_ref: BlockRef::NULL,
+        vertex_desc: 0,
+        num_triangles: 0,
+        num_vertices: 2,
+        vertices: vec![NiPoint3::default(), NiPoint3 { x: 1.0, y: 0.0, z: 0.0 }],
+        uvs: Vec::new(),
+        normals: Vec::new(),
+        vertex_colors: Vec::new(),
+        triangles: Vec::new(),
+        bone_weights: vec![[0.5, 0.5, 0.0, 0.0], [0.9, 0.1, 0.0, 0.0]],
+        bone_indices: vec![[0, 1, 0, 0], [7, 0, 0, 0]],
+        tangents: Vec::new(),
+        kind: BsTriShapeKind::Plain,
+        data_size: 0,
+    };
+    let skin_instance = NiSkinInstance {
+        data_ref: BlockRef(2),
+        skin_partition_ref: BlockRef(3),
+        skeleton_root_ref: BlockRef::NULL,
+        bone_refs: vec![BlockRef(4), BlockRef(5), BlockRef(6), BlockRef(7)],
+    };
+    let bone = || crate::blocks::skin::BoneData {
+        skin_transform: NiTransform::default(),
+        bounding_sphere: [0.0; 4],
+        vertex_weights: Vec::new(),
+    };
+    let skin_data = NiSkinData {
+        skin_transform: NiTransform::default(),
+        bones: vec![bone(), bone(), bone(), bone()],
+    };
+    let mut scene = NifScene::default();
+    scene.blocks.push(Box::new(shape));
+    scene.blocks.push(Box::new(skin_instance));
+    scene.blocks.push(Box::new(skin_data));
+    scene.blocks.push(Box::new(NiSkinPartition {
+        partitions: Vec::new(),
+        global_vertex_data: None,
+    }));
+    scene.blocks.push(bone_node());
+    scene.blocks.push(bone_node());
+    scene.blocks.push(bone_node());
+    scene.blocks.push(bone_node());
+
+    let shape_ref = scene.get_as::<BsTriShape>(0).unwrap();
+    let skin = extract_skin_bs_tri_shape(&scene, shape_ref, &[])
+        .expect("bone resolution must still succeed");
+    assert!(
+        skin.vertex_bone_indices.is_empty(),
+        "an out-of-range packed index must decline the weight set, not clamp"
+    );
+    assert!(skin.vertex_bone_weights.is_empty());
+    assert_eq!(skin.bones.len(), 4, "the bone list itself is unaffected");
+}
+
+/// #5389 boundary — the highest legal index (bone_count - 1) passes
+/// through untouched; the bound must not eat the last bone.
+#[test]
+fn bs_tri_shape_skin_last_bone_index_is_in_range() {
+    let bone_node = || -> Box<dyn crate::blocks::NiObject> {
+        Box::new(NiNode {
+            av: NiAVObjectData {
+                net: empty_net(),
+                flags: 0,
+                transform: NiTransform::default(),
+                properties: Vec::new(),
+                collision_ref: BlockRef::NULL,
+            },
+            children: Vec::new(),
+            effects: Vec::new(),
+        })
+    };
+    let shape = BsTriShape {
+        av: NiAVObjectData {
+            net: empty_net(),
+            flags: 0,
+            transform: NiTransform::default(),
+            properties: Vec::new(),
+            collision_ref: BlockRef::NULL,
+        },
+        center: NiPoint3::default(),
+        radius: 0.0,
+        skin_ref: BlockRef(1),
+        shader_property_ref: BlockRef::NULL,
+        alpha_property_ref: BlockRef::NULL,
+        vertex_desc: 0,
+        num_triangles: 0,
+        num_vertices: 1,
+        vertices: vec![NiPoint3::default()],
+        uvs: Vec::new(),
+        normals: Vec::new(),
+        vertex_colors: Vec::new(),
+        triangles: Vec::new(),
+        bone_weights: vec![[1.0, 0.0, 0.0, 0.0]],
+        bone_indices: vec![[3, 0, 0, 0]],
+        tangents: Vec::new(),
+        kind: BsTriShapeKind::Plain,
+        data_size: 0,
+    };
+    let skin_instance = NiSkinInstance {
+        data_ref: BlockRef(2),
+        skin_partition_ref: BlockRef(3),
+        skeleton_root_ref: BlockRef::NULL,
+        bone_refs: vec![BlockRef(4), BlockRef(5), BlockRef(6), BlockRef(7)],
+    };
+    let bone = || crate::blocks::skin::BoneData {
+        skin_transform: NiTransform::default(),
+        bounding_sphere: [0.0; 4],
+        vertex_weights: Vec::new(),
+    };
+    let skin_data = NiSkinData {
+        skin_transform: NiTransform::default(),
+        bones: vec![bone(), bone(), bone(), bone()],
+    };
+    let mut scene = NifScene::default();
+    scene.blocks.push(Box::new(shape));
+    scene.blocks.push(Box::new(skin_instance));
+    scene.blocks.push(Box::new(skin_data));
+    scene.blocks.push(Box::new(NiSkinPartition {
+        partitions: Vec::new(),
+        global_vertex_data: None,
+    }));
+    scene.blocks.push(bone_node());
+    scene.blocks.push(bone_node());
+    scene.blocks.push(bone_node());
+    scene.blocks.push(bone_node());
+
+    let shape_ref = scene.get_as::<BsTriShape>(0).unwrap();
+    let skin = extract_skin_bs_tri_shape(&scene, shape_ref, &[]).unwrap();
+    assert_eq!(skin.vertex_bone_indices[0], [3, 0, 0, 0]);
+    assert_eq!(skin.vertex_bone_weights[0], [1.0, 0.0, 0.0, 0.0]);
+}
