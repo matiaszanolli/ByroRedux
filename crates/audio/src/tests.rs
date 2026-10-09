@@ -1447,7 +1447,7 @@ fn every_kira_position_site_goes_through_the_unit_seam() {
     // Both dispatch paths (queue + entity).
     assert_eq!(
         lib_rs
-            .matches("add_spatial_sub_track( listener_id, bu_to_audio_space(p.position)")
+            .matches("add_spatial_sub_track( listener_id, bu_to_audio_space(p.position")
             .count(),
         2,
         "expected both spatial dispatch paths to convert BU -> metres (#3178)"
@@ -1456,6 +1456,56 @@ fn every_kira_position_site_goes_through_the_unit_seam() {
         !lib_rs.contains("add_spatial_sub_track(listener_id, p.position"),
         "a spatial dispatch path still passes raw Bethesda units to kira (#3178)"
     );
+    // #5411 — the per-tick emitter follow (b4f08089b) is a third kind of
+    // kira position site, and reverting its conversion to raw
+    // `gt.translation` would leave every guard above green while placing
+    // every MOVING emitter 70x too far away (inaudible past ~43 cm —
+    // #3178's failure mode).
+    assert!(
+        lib_rs.contains("let position = bu_to_audio_space(gt.translation);"),
+        "the emitter-follow site no longer converts BU -> metres before \
+         set_position (#5411, #3178)"
+    );
+    assert!(
+        !lib_rs.contains("set_position(gt.translation"),
+        "a kira set_position site passes raw Bethesda units again (#5411)"
+    );
+}
+
+/// #5411 — `with_start_delay` is the crate API behind multi-segment
+/// dialogue voice (#5367 Phase V) and had no test of any kind. All three
+/// assertions are device-free: the `Delayed` start-time setting lands,
+/// the sample frames are SHARED (the whole point of the settings-only
+/// copy), and a negative delay clamps to zero instead of panicking at
+/// `Duration::from_secs_f64`.
+#[test]
+fn with_start_delay_sets_the_start_time_and_shares_frames() {
+    let sound = test_sound();
+
+    let delayed = with_start_delay(&sound, 1.5);
+    match delayed.settings.start_time {
+        kira::StartTime::Delayed(duration) => {
+            assert_eq!(duration, Duration::from_secs_f64(1.5));
+        }
+        other => panic!("expected a Delayed start time, got {other:?}"),
+    }
+    assert!(
+        Arc::ptr_eq(&sound.frames, &delayed.frames),
+        "the delayed copy must share the Arc<[Frame]> samples, not clone them"
+    );
+    assert_eq!(delayed.sample_rate, sound.sample_rate);
+
+    let clamped = with_start_delay(&sound, -3.0);
+    match clamped.settings.start_time {
+        kira::StartTime::Delayed(duration) => {
+            assert_eq!(
+                duration,
+                Duration::ZERO,
+                "a negative delay must clamp to zero, not panic"
+            );
+        }
+        other => panic!("expected a Delayed start time, got {other:?}"),
+    }
 }
 
 // ---------------------------------------------------------------------------
