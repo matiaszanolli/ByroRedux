@@ -1922,44 +1922,21 @@ pub fn build_exterior_world_context(
                 climate.sunset_end as f32 / 6.0,
             );
         });
+    // #5424 — the whole default-weather rule, WTHS stand-in included,
+    // lives in `resolve_default_weather` so this resolve and the per-cell
+    // XCCM re-resolve pick by the same rule.
     let default_weather = climate.as_ref().and_then(|climate| {
-        let resolved =
-            crate::env_translate::resolve_default_weather(climate, &record_index.weathers);
-        if let Some((wthr, chance)) = resolved {
-            log::info!(
-                "Default weather: '{}' ({:08X}, chance {})",
-                wthr.editor_id,
-                wthr.form_id,
-                chance,
-            );
-            return Some(wthr.clone());
-        }
-        // #5363 — 26 of vanilla Starfield's 47 climates author only the
-        // WSLT seasonal table, whose rows reference WTHS records (SF's
-        // replacement weather type — an EDID + REFL parameter blob, not the
-        // WTHR schema; see `ClimateRecord::seasonal_weathers`). Until WTHS
-        // decodes, no WTHR resolves for those climates and the exterior
-        // would fall to the generic procedural palette. The authored
-        // `DefaultWeather` WTHR — the game's canonical default, a full NAM0
-        // palette — stands in instead: still authored Starfield data, and
-        // the climate's own TNAM clock applies either way.
-        if !climate.seasonal_weathers.is_empty() {
-            if let Some(wthr) = byroredux_plugin::esm::records::weather::default_weather_by_edid(
-                &record_index.weathers,
-            ) {
+        crate::env_translate::resolve_default_weather(climate, &record_index.weathers).map(
+            |(wthr, chance)| {
                 log::info!(
-                    "Default weather: climate '{}' carries only WTHS-referencing WSLT rows \
-                     ({} entries, no decodable WTHR) — using the authored DefaultWeather \
-                     '{} ({:08X})' until WTHS decodes (#5363)",
-                    climate.editor_id,
-                    climate.seasonal_weathers.len(),
+                    "Default weather: '{}' ({:08X}, chance {})",
                     wthr.editor_id,
                     wthr.form_id,
+                    chance,
                 );
-                return Some(wthr.clone());
-            }
-        }
-        None
+                wthr.clone()
+            },
+        )
     });
 
     // Resolve the worldspace-default water once (#1305 / OBL-D6-NEW-02).

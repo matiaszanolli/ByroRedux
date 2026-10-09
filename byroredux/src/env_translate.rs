@@ -525,25 +525,59 @@ pub(crate) fn resolve_cell_climate(
 }
 
 /// The default weather for `climate`: its highest-chance WTHR entry that
-/// resolves to a parsed record.
+/// resolves to a parsed record, or — when the climate authors no
+/// decodable WTHR at all — the #5363 WTHS stand-in below.
 ///
 /// Negative chances are mod sentinels / subtractive weights and are
 /// filtered before the max (#476). Shared by the once-per-worldspace
 /// resolve in `build_exterior_world_context` and the per-cell XCCM
 /// re-resolve (#2451), so a cell override picks its weather by exactly the
-/// same rule the worldspace default did.
+/// same rule the worldspace default did — #5424 moved the stand-in here
+/// from the worldspace path so BOTH callers share the whole rule: an
+/// XCCM pocket on a WTHS-only climate applies the stand-in's weather
+/// (and its TNAM clock), and leaving the pocket restores it.
+///
+/// #5363 — 26 of vanilla Starfield's 47 climates author only the WSLT
+/// seasonal table, whose rows reference WTHS records (SF's replacement
+/// weather type — an EDID + REFL parameter blob, not the WTHR schema;
+/// see `ClimateRecord::seasonal_weathers`). Until WTHS decodes, no WTHR
+/// resolves for those climates and the exterior would fall to the
+/// generic procedural palette. The authored `DefaultWeather` WTHR — the
+/// game's canonical default, a full NAM0 palette — stands in instead:
+/// still authored Starfield data, and the climate's own TNAM clock
+/// applies either way. The chance slot carries `i32::MAX` (the
+/// canonical-default sentinel, not a lottery weight).
 pub(crate) fn resolve_default_weather<'a>(
     climate: &ClimateRecord,
     weathers: &'a HashMap<u32, WeatherRecord>,
 ) -> Option<(&'a WeatherRecord, i32)> {
-    let best = climate
+    if let Some(best) = climate
         .weathers
         .iter()
         .filter(|w| w.chance >= 0)
-        .max_by_key(|w| w.chance)?;
-    weathers
-        .get(&best.weather_form_id)
-        .map(|wthr| (wthr, best.chance))
+        .max_by_key(|w| w.chance)
+    {
+        if let Some(wthr) = weathers.get(&best.weather_form_id) {
+            return Some((wthr, best.chance));
+        }
+    }
+    if !climate.seasonal_weathers.is_empty() {
+        if let Some(wthr) =
+            byroredux_plugin::esm::records::weather::default_weather_by_edid(weathers)
+        {
+            log::info!(
+                "Default weather: climate '{}' carries only WTHS-referencing WSLT rows \
+                 ({} entries, no decodable WTHR) — using the authored DefaultWeather \
+                 '{} ({:08X})' until WTHS decodes (#5363)",
+                climate.editor_id,
+                climate.seasonal_weathers.len(),
+                wthr.editor_id,
+                wthr.form_id,
+            );
+            return Some((wthr, i32::MAX));
+        }
+    }
+    None
 }
 
 /// Every worldspace key from `start_key` up its `WNAM` parent chain, most
@@ -5237,6 +5271,108 @@ mod tests {
         assert_eq!(
             wd.sky_colors[SKY_HORIZON][0],
             wd.sky_colors[SKY_HORIZON][TOD_DAY]
+        );
+    }
+}
+
+#[cfg(test)]
+mod default_weather_rule_tests {
+    use super::resolve_default_weather;
+    use byroredux_plugin::esm::records::climate::{ClimateRecord, ClimateWeather};
+    use byroredux_plugin::esm::records::weather::WeatherRecord;
+    use std::collections::HashMap;
+
+    /// #5424/#5363 — ONE default-weather rule serves both the
+    /// worldspace resolve and the per-cell XCCM re-resolve: a climate
+    /// whose only weather table is the WTHS-referencing WSLT rows
+    /// resolves to the authored `DefaultWeather` WTHR stand-in, so an
+    /// XCCM pocket on a WTHS-only climate applies (and leaving it
+    /// restores) the stand-in's weather instead of keeping the pocket's
+    /// sky for the rest of the session.
+    #[test]
+    fn wths_only_climate_resolves_the_defaultweather_stand_in() {
+        let mut weathers = HashMap::new();
+        weathers.insert(
+            0x0001_0000,
+            WeatherRecord {
+                form_id: 0x0001_0000,
+                editor_id: "DefaultWeather".to_owned(),
+                ..Default::default()
+            },
+        );
+        let climate = ClimateRecord {
+            form_id: 0x0002_0000,
+            editor_id: "AkilaClimate".to_owned(),
+            weathers: Vec::new(),
+            seasonal_weathers: vec![ClimateWeather {
+                weather_form_id: 0x0003_0000, // a WTHS — not in the WTHR map
+                chance: 100,
+            }],
+            ..Default::default()
+        };
+
+        let resolved = resolve_default_weather(&climate, &weathers);
+        assert_eq!(
+            resolved.map(|(wthr, _)| wthr.form_id),
+            Some(0x0001_0000),
+            "the WTHS-only climate resolves the authored DefaultWeather stand-in"
+        );
+        assert_eq!(
+            resolved.map(|(_, chance)| chance),
+            Some(i32::MAX),
+            "the stand-in carries the canonical-default sentinel, not a lottery weight"
+        );
+
+        // Leaving the pocket (the plain worldspace resolve) picks the
+        // same stand-in — the same function, the same rule.
+        let worldspace_pass = resolve_default_weather(&climate, &weathers);
+        assert_eq!(
+            resolved.map(|(w, c)| (w.form_id, c)),
+            worldspace_pass.map(|(w, c)| (w.form_id, c))
+        );
+    }
+
+    /// The normal path is unchanged beside the stand-in: the
+    /// highest-chance WTHR entry wins, negative sentinel chances are
+    /// filtered, and a climate with a resolvable WLST never consults
+    /// the stand-in even when WSLT rows exist too.
+    #[test]
+    fn resolvable_wlst_wins_over_the_stand_in() {
+        let mut weathers = HashMap::new();
+        weathers.insert(
+            0x0001_0000,
+            WeatherRecord {
+                form_id: 0x0001_0000,
+                editor_id: "DefaultWeather".to_owned(),
+                ..Default::default()
+            },
+        );
+        weathers.insert(
+            0x0004_0000,
+            WeatherRecord {
+                form_id: 0x0004_0000,
+                editor_id: "Clear".to_owned(),
+                ..Default::default()
+            },
+        );
+        let climate = ClimateRecord {
+            weathers: vec![
+                ClimateWeather { weather_form_id: 0x0004_0000, chance: 60 },
+                ClimateWeather { weather_form_id: 0x0004_0000, chance: -1 },
+            ],
+            seasonal_weathers: vec![ClimateWeather {
+                weather_form_id: 0x0003_0000,
+                chance: 100,
+            }],
+            ..Default::default()
+        };
+        assert_eq!(
+            resolve_default_weather(&climate, &weathers).map(|(wthr, chance)| (
+                wthr.form_id,
+                chance
+            )),
+            Some((0x0004_0000, 60)),
+            "the resolvable WLST entry wins; the negative sentinel never does"
         );
     }
 }
