@@ -63,6 +63,12 @@ pub struct PackRecord {
     /// packages normally inherit their procedure tree from a type-19 PACK;
     /// templates themselves carry a null reference.
     pub package_template_form_id: Option<u32>,
+    /// FO3/FNV `PKDD` Dialogue Type enum for the Dialogue procedure.
+    /// `0` = Conversation (force a full player conversation), `1` =
+    /// Say To (one spoken line, no menu), `2+` = other/unused. Census
+    /// (#5376): FO3 authors 345 Conversation vs 15 Say-To package
+    /// references; Say-To must not install a player conversation.
+    pub dialogue_type: u8,
     /// FO3/FNV `PKDD` dialogue-topic reference for the Dialogue procedure
     /// (`procedure_type == 15`): the FormID at offset 4 of the 24-byte
     /// package-data payload. Census 2026-10-07 (#5367 Phase F): 136/386
@@ -811,8 +817,11 @@ pub fn parse_pack(
             }
             b"PKDD" if sub.data.len() >= 8 => {
                 // #5367 Phase F — the Dialogue procedure's data input: the
-                // topic to force. Offset 4 of the 24-byte payload (see the
-                // field doc for the corpus split).
+                // topic to force. Byte 0 is the Dialogue Type enum
+                // (#5376: 0 = Conversation, 1 = Say To — a spoken line
+                // without a menu, never a player conversation); offset
+                // 4 of the 24-byte payload is the topic.
+                out.dialogue_type = sub.data[0];
                 let topic = remap_fid(
                     u32::from_le_bytes(sub.data[4..8].try_into().unwrap()),
                     remap,

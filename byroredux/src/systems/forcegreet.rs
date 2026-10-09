@@ -4,12 +4,15 @@
 //! A procedure-15 package makes the NPC approach the player and open a
 //! conversation *without activation*, speaking the package's authored
 //! topic (`PKDD`'s FormID, decoded on [`PackRecord::dialogue_topic`]) or
-//! the master's generic greeting when none is authored. Vanilla FO3/FNV
-//! never lists these packages on NPC_ defaults (0 references across both
-//! masters) — they are installed by quest scripts — so the runtime keys
-//! on a [`ForceGreetDirective`] bridge component that any installer can
-//! stamp: the `dialogue.forcegreet` console door today, quest/alias
-//! package installers when those paths carry one.
+//! the master's generic greeting when none is authored. The #5376
+//! census: vanilla lists 141 FNV / 365 FO3 procedure-15 packages on
+//! NPC_ defaults — most installed by quest scripts on top — so ambient
+//! selection installs the bridge only from a fully-modeled,
+//! player-targeted Conversation (`AmbientBehavior::from_package`'s
+//! three decline gates); any other shape goes through the
+//! [`ForceGreetDirective`] bridge the `dialogue.forcegreet` console
+//! door stamps, which quests/aliases adopt when those installers
+//! carry one.
 
 use crate::systems::npc_dialogue::forcegreet_open;
 use byroredux_core::ecs::components::{GlobalTransform, Transform};
@@ -146,6 +149,14 @@ pub(crate) fn forcegreet_system(world: &World, dt: f32) {
             Step::Refuses => opened.push(*npc), // consume below
             Step::Open { topic } => {
                 if forcegreet_open(world, *npc, *topic) {
+                    opened.push(*npc);
+                } else {
+                    // #5376 — a failed open (topic missing from the
+                    // index, or every INFO's conditions failing) is
+                    // consumed too. Retrying every frame glued the NPC
+                    // to the player and re-ran the whole selection
+                    // stack per frame for as long as the directive
+                    // lived. One greet per install either way.
                     opened.push(*npc);
                 }
             }

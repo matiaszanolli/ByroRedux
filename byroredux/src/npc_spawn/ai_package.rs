@@ -55,6 +55,31 @@ fn package_conditions_pass(
     evaluate(conditions, world, ctx)
 }
 
+/// #5376 — whether a package's whole condition list could be evaluated
+/// (no uncatalogued function anywhere). Distinct from
+/// [`package_conditions_pass`]'s fail-open: that is the *selection*
+/// answer ("may this package run?"), this is the *confidence* answer
+/// ("was the selection decided on modeled terms?"). An intrusive
+/// procedure — one that takes control of the actor toward the player —
+/// must not install from a pass that fail-open manufactured: 56 of the
+/// 60 FNV NPC bases whose first eligible package is a Dialogue package
+/// pass only because a condition (fn 79 GetQuestVariable, 59
+/// occurrences) is uncatalogued, so vanilla's quest-gated force-greets
+/// fired on first contact regardless of quest state, and again after
+/// every load and every combat.
+fn package_conditions_fully_modeled(
+    conditions: &byroredux_plugin::esm::records::condition::ConditionList,
+) -> bool {
+    conditions.iter().all(|condition| {
+        !matches!(
+            byroredux_scripting::condition::ConditionFunction::from_index(
+                condition.function_index
+            ),
+            byroredux_scripting::condition::ConditionFunction::Unknown(_)
+        )
+    })
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum AmbientBehavior {
     Sandbox {
@@ -207,16 +232,58 @@ impl AmbientBehavior {
                 actor_form_id,
             })
         } else if package.procedure_type == PROCEDURE_DIALOGUE {
-            // #5367 Phase F's bridge, now driven by ambient selection:
-            // the winning Dialogue-procedure package installs the
-            // force-greet with its authored `PKDD` topic (or the
-            // generic greeting). The Skyrim tree dialect is NOT wired
-            // here — vanilla lists no ForceGreet-tree package on NPC_
-            // defaults (installed by quest scripts instead), the same
-            // posture the console door keeps.
-            Some(Self::Dialogue {
-                topic: package.dialogue_topic,
-            })
+            // #5367 Phase F's bridge, now driven by ambient selection —
+            // but only from a fully-modeled, player-targeted
+            // Conversation (#5376). The ambient selector fails
+            // condition lists open (any uncatalogued function passes
+            // the package), which used to arm a player-control
+            // takeover from terms the evaluator never ran: 60 FNV NPC
+            // bases force-greeted on first contact whatever the quest
+            // state, again after every load and every combat. Three
+            // gates now, all cheap and all corpus-shaped:
+            //   - fully modeled: the fail-open pass does not install;
+            //   - PTDT targets the player (or no target at all —
+            //     4 of 141 FNV refs name a non-player reference, and
+            //     FO3 is far worse at 179 of 365; those greets speak
+            //     to their authored reference, not to the player);
+            //   - PKDD Dialogue Type is Conversation (Say To is one
+            //     spoken line with no menu).
+            // The `dialogue.forcegreet` console door keeps installing
+            // any Dialogue package unconditionally — it is the
+            // drivable installer for gates and fixtures, not an
+            // ambient behavior (#5367 Phase F's design).
+            // The Skyrim tree dialect is NOT wired here — vanilla
+            // lists no ForceGreet-tree package on NPC_ defaults
+            // (installed by quest scripts instead).
+            // The player reference is the literal 0x00000014 (never
+            // plugin-local — Bethesda's special player REFR), so the
+            // static check is exact: a PTDT that names anything else
+            // (or names an object/other kind) greets its authored
+            // reference, not the player.
+            let targets_player = match package.target.map(|target| target.target) {
+                None => true,
+                Some(PackTargetKind::SpecificReference(0x0000_0014)) => true,
+                Some(_) => false,
+            };
+            if package_conditions_fully_modeled(&package.conditions)
+                && targets_player
+                && package.dialogue_type == 0
+            {
+                Some(Self::Dialogue {
+                    topic: package.dialogue_topic,
+                })
+            } else {
+                log::debug!(
+                    "#5376: Dialogue package {} ('{}') declined ambient install \
+                     (modeled={}, targets_player={}, dialogue_type={})",
+                    package.form_id,
+                    package.editor_id,
+                    package_conditions_fully_modeled(&package.conditions),
+                    targets_player,
+                    package.dialogue_type,
+                );
+                None
+            }
         } else {
             Self::from_skyrim_procedure_tree(package, template, actor_form_id)
         }
@@ -1100,6 +1167,72 @@ mod tests {
         install_package_records(&mut world, all_packages);
         ambient_ai_package_system(&world, 0.0);
         (world, actor)
+    }
+
+    /// #5376 — the three decline gates on the ambient Dialogue arm:
+    /// a fail-open conditions pass, a non-player PTDT reference, and a
+    /// Say-To dialogue type must each leave the bridge uninstalled
+    /// (the console door keeps installing unconditionally — it is the
+    /// drivable installer, not an ambient behavior).
+    #[test]
+    fn dialogue_ambient_install_declines_unmodeled_offtarget_sayto() {
+        use byroredux_plugin::esm::records::condition::{
+            ComparisonOp, Condition, ConditionValue,
+        };
+        use byroredux_plugin::esm::records::misc::pack::PackTarget;
+
+        // Uncatalogued fn 79 (GetQuestVariable — the corpus's dominant
+        // blocker, 59 of the 60 FNV bases): the fail-open SELECTS the
+        // package (it is the first eligible) but the bridge must not
+        // install.
+        let mut unmodeled = pack(0x600, PROCEDURE_DIALOGUE, None);
+        unmodeled.conditions = vec![Condition {
+            function_index: 79,
+            comparator: ComparisonOp::Eq,
+            comparand: ConditionValue::Literal(0.0),
+            ..Default::default()
+        }];
+        let (world, actor) = setup_actor(12.0, vec![unmodeled]);
+        assert!(
+            !world.has::<crate::systems::forcegreet::ForceGreetDirective>(actor),
+            "a fail-open conditions pass must not arm the player-facing bridge"
+        );
+
+        // A PTDT naming a non-player reference (the FO3 shape: 179 of
+        // 365 Dialogue refs target another reference).
+        let mut offtarget = pack(0x601, PROCEDURE_DIALOGUE, None);
+        offtarget.target = Some(PackTarget {
+            target_type: 0,
+            target: PackTargetKind::SpecificReference(0x000E_27FC),
+            count_or_distance: 0,
+        });
+        let (world, actor) = setup_actor(12.0, vec![offtarget]);
+        assert!(
+            !world.has::<crate::systems::forcegreet::ForceGreetDirective>(actor),
+            "a package targeting another reference must not force a player conversation"
+        );
+
+        // Say-To (dialogue_type 1): one spoken line, no menu.
+        let mut say_to = pack(0x602, PROCEDURE_DIALOGUE, None);
+        say_to.dialogue_type = 1;
+        let (world, actor) = setup_actor(12.0, vec![say_to]);
+        assert!(
+            !world.has::<crate::systems::forcegreet::ForceGreetDirective>(actor),
+            "a Say-To package is a spoken line, not a player conversation"
+        );
+
+        // The player reference (0x14) still installs.
+        let mut player_targeted = pack(0x603, PROCEDURE_DIALOGUE, None);
+        player_targeted.target = Some(PackTarget {
+            target_type: 0,
+            target: PackTargetKind::SpecificReference(0x0000_0014),
+            count_or_distance: 0,
+        });
+        let (world, actor) = setup_actor(12.0, vec![player_targeted]);
+        assert!(
+            world.has::<crate::systems::forcegreet::ForceGreetDirective>(actor),
+            "a player-targeted modeled Conversation still installs"
+        );
     }
 
     /// M42 — the three newly wired procedures install their runtimes
