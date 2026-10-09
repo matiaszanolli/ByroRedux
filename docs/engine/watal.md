@@ -351,8 +351,12 @@ native 0..1 scale and feeds both absorption and forward scattering.
 #5151 lifted Starfield's DNAM metres → Bethesda units at the same boundary
 (`spatial_units::normalize`, Starfield-gated, FO76 untouched): depth,
 underwater fog near/far, and noise falloff ×70, absorption ÷70.
-One #5151 leftover is **OPEN**: the noise-UV tile sizes at DNAM 120/124/128
-stay unlifted until a capture settles their unit.
+Three DNAM lane families keep an **unsettled unit**, tracked capture-gated
+in #5170: the noise-UV tile sizes (120/124/128, vanilla 72.11 / 39 / 13 —
+metric would tile normals ~70× too finely, and a 72.11 m tile read as BU
+is 5 048, past the translate clamp), the displacement simulator
+(72/76/80), and the normal falloff triplet (52/56/60). None is lifted;
+`starfield_watr_defers_the_unclassified_dnam_lanes` pins the deferral.
 FO76 shares Starfield's DNAM decoder. Its distances are engine units, but its
 absorption triplet is per-metre (five vanilla records author Starfield's exact
 0.3 / 0.075 / 0.01), so `spatial_units::normalize` lifts that lane alone ÷70

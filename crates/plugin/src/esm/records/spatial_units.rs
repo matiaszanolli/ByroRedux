@@ -193,8 +193,12 @@ pub(super) fn normalize(index: &mut EsmIndex) {
     // 0.07627 — liquid water's red > green > blue). Lengths ×UNITS, inverse
     // lengths ÷UNITS. Only fields the record actually authored are touched:
     // a short or absent DNAM leaves the decoder's engine-unit defaults,
-    // which must not be lifted. The noise UV tile sizes (120/124/128) stay
-    // unlifted until a capture settles their unit.
+    // which must not be lifted. #5170 — the unit of three lane families is
+    // still unsettled (capture-gated tracker): the noise-UV tile sizes
+    // (120/124/128, vanilla 72.11 / 39 / 13), the displacement simulator
+    // (72/76/80) and the normal falloff triplet (52/56/60). None is lifted
+    // here; `starfield_watr_defers_the_unclassified_dnam_lanes` pins that
+    // deferral.
     for water in index.waters.values_mut() {
         watr_absorption_per_metre(water);
         let authored = |offset: usize| water.raw_dnam.len() >= offset + 4;
