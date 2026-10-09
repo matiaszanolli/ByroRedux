@@ -382,10 +382,9 @@ const FFX_OPTIONAL_EXTENSIONS: &[&CStr] = &[
 
 fn has_device_extension(available: &[vk::ExtensionProperties], name: &CStr) -> bool {
     available.iter().any(|ext| {
-        // SAFETY: `extension_name` is a fixed-size, null-terminated Vulkan
-        // driver result and its pointer remains valid for the lifetime of
-        // `ext`.
-        unsafe { CStr::from_ptr(ext.extension_name.as_ptr()) == name }
+        // #5273 — ash's bounded accessor scans the fixed array, so a
+        // non-conforming (non-terminated) driver name cannot read past it.
+        ext.extension_name_as_c_str().unwrap_or_default() == name
     })
 }
 
@@ -460,13 +459,11 @@ pub fn pick_physical_device(
             instance.get_physical_device_properties(device)
         };
         if !is_hardware_render_device(properties.device_type) {
-            // SAFETY: device_name is a fixed-size [c_char; 256] array
-            // null-terminated by the Vulkan driver. The pointer remains valid
-            // while `properties` is in scope.
-            let name = unsafe { CStr::from_ptr(properties.device_name.as_ptr()) };
+            // #5273/#5120 — ash's bounded `device_name_as_c_str()` over the
+            // fixed array, not an unbounded `CStr::from_ptr`.
             log::warn!(
                 "Rejecting Vulkan CPU device {:?}: software ray tracing would consume system RAM and is not playable",
-                name,
+                properties.device_name_as_c_str().unwrap_or_default(),
             );
             continue;
         }
@@ -475,10 +472,7 @@ pub fn pick_physical_device(
         {
             let device_local_bytes = total_device_local_bytes(instance, device);
             let preference = device_preference_key(properties.device_type, device_local_bytes);
-            // SAFETY: device_name is a fixed-size [c_char; 256] array
-            // null-terminated by the Vulkan driver. The pointer remains valid
-            // while `properties` is in scope.
-            let name = unsafe { CStr::from_ptr(properties.device_name.as_ptr()) };
+            let name = properties.device_name_as_c_str().unwrap_or_default();
             log::info!(
                 "Suitable GPU: {:?} ({:?}, {} MiB device-local, ray query: {}, sync2: {})",
                 name,
@@ -519,9 +513,10 @@ pub fn pick_physical_device(
         );
     };
 
-    // SAFETY: device_name is owned by the selected properties value and is
-    // null-terminated by the Vulkan driver.
-    let name = unsafe { CStr::from_ptr(selected.properties.device_name.as_ptr()) };
+    let name = selected
+        .properties
+        .device_name_as_c_str()
+        .unwrap_or_default();
     log::info!(
         "Selected GPU: {:?} ({:?}, {} MiB device-local, ray query: {}, sync2: {})",
         name,
@@ -647,11 +642,13 @@ fn is_device_suitable(
         ray_query: &ray_query_features,
     });
     if !missing.is_empty() {
-        // SAFETY: device_name is a fixed-size [c_char; 256] array
-        // null-terminated by the Vulkan driver. The pointer remains valid
-        // while `properties` is in scope.
-        let name = unsafe { CStr::from_ptr(properties.device_name.as_ptr()) };
-        log::warn!("Rejecting GPU {name:?}: missing required Vulkan features {missing:?}");
+        // #5273/#5120 — bounded accessor; the unbounded from_ptr form this
+        // block added in #4895 read past `properties` on a non-conforming
+        // driver name.
+        log::warn!(
+            "Rejecting GPU {:?}: missing required Vulkan features {missing:?}",
+            properties.device_name_as_c_str().unwrap_or_default(),
+        );
         return Ok(None);
     }
     let synchronization2_supported = vulkan13_features.synchronization2 == vk::TRUE;
@@ -1209,6 +1206,26 @@ mod caps_tests {
             ["rayQuery"]
         );
         assert_eq!(all_required_feature_names().len(), 12);
+    }
+
+    /// #5273 — every `device_name` / `extension_name` read in this file
+    /// goes through ash's bounded `*_as_c_str()` accessors
+    /// (`CStr::from_bytes_until_nul` over the fixed array), never an
+    /// unbounded `CStr::from_ptr` whose soundness rests on the driver
+    /// NUL-terminating the name. #5120 set that spelling on the bin side;
+    /// #5273 brought the renderer's four device-name blocks (and the
+    /// extension-name comparison) in line. Scanned over production text —
+    /// this test's own message names the banned call.
+    #[test]
+    fn device_names_read_through_bounded_accessors() {
+        let production = crate::source_scan::production_text(include_str!("device.rs"));
+        let banned = format!("{}{}", "CStr::from", "_ptr(");
+        assert!(
+            !production.contains(&banned),
+            "use properties.device_name_as_c_str() / ext.extension_name_as_c_str() \
+             instead — the unbounded form reads past `properties` on a \
+             non-conforming driver name (#5273/#5120)"
+        );
     }
 
     /// #4895 — every feature `create_logical_device` enables with a literal
