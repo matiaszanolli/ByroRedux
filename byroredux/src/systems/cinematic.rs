@@ -1,7 +1,7 @@
 //! App-side sinks for scripted cinematic requests.
 
 use crate::components::{AnimationTarget, CinematicReAdoption, CellRootIndex, IdleClipCatalog};
-use byroredux_core::ecs::components::{CellRoot, Children};
+use byroredux_core::ecs::components::{CellRoot, Children, Parent};
 use byroredux_core::animation::{AnimationPlayer, RootMotionDelta};
 use byroredux_core::ecs::components::RigidBodyData;
 use byroredux_core::ecs::Transform;
@@ -549,11 +549,17 @@ fn release_finished_tethers(world: &World, finished: &[(EntityId, EntityId)]) {
     // it — #3817). The player subtree never queues (#5379).
     let unplaced: Vec<EntityId> = {
         let roots = world.query::<CellRoot>();
+        // #5384 — queue only PARENTLESS members: a subtree node's local
+        // `Transform` cannot resolve a cell, so queueing it only ever
+        // parked it in `pending` forever (or, pre-#5384, bound it to a
+        // wrong origin cell). The root's adoption stamps the subtree.
+        let parents = world.query::<Parent>();
         release_set
             .iter()
             .filter(|entity| {
                 !player_subtree.contains(*entity)
                     && roots.as_ref().is_none_or(|roots| roots.get(**entity).is_none())
+                    && parents.as_ref().is_none_or(|parents| parents.get(**entity).is_none())
             })
             .copied()
             .collect()
@@ -615,11 +621,20 @@ pub(crate) fn retry_cinematic_readoption(
     // All storage guards are read-only here and drop before the writes
     // below (read-then-write on one storage is the lock-order hygiene
     // the ECS rules require).
-    let mut adoptions: Vec<(EntityId, EntityId)> = Vec::new();
+    // #5384 — only PARENTLESS members resolve a cell: a subtree node's
+    // `Transform` is local (an offset from its parent), so mapping it
+    // through `world_pos_to_grid` sent render-subtree nodes to whatever
+    // origin cell happened to be loaded (splitting the hierarchy across
+    // cells) or left them pending forever — orphaned meshes that outlive
+    // their root and survive its cell's unload. A parented node now
+    // rides with its root: the root's adoption stamps the whole
+    // `Children` subtree with the same `CellRoot`.
+    let mut adoptions: Vec<(EntityId, EntityId, Vec<EntityId>)> = Vec::new();
     let mut still_pending: Vec<EntityId> = Vec::new();
     {
         let transforms = world.query::<Transform>();
         let roots = world.query::<CellRoot>();
+        let parents = world.query::<Parent>();
         let children = world.query::<Children>();
         // #5379 — the process-lifetime player is never cell-owned, no
         // matter who queued it: a `CellRoot` stamp here would make the
@@ -657,9 +672,34 @@ pub(crate) fn retry_cinematic_readoption(
             if roots.as_ref().is_some_and(|roots| roots.get(entity).is_some()) {
                 continue; // adopted by an earlier tick
             }
+            if parents.as_ref().is_some_and(|parents| parents.get(entity).is_some()) {
+                // A subtree node cannot resolve a cell from a local
+                // transform (#5384); its root carries it. Consumed, not
+                // kept pending.
+                log::debug!(
+                    "cinematic re-adoption: entity {entity} is parented — \
+                     riding its root's adoption (#5384)"
+                );
+                continue;
+            }
             let (gx, gy) = crate::streaming::world_pos_to_grid(gt.translation.x, gt.translation.z);
             match loaded.get(&(gx, gy)) {
-                Some(cell) => adoptions.push((entity, cell.cell_root)),
+                Some(cell) => {
+                    // The root's whole Children subtree lands with it.
+                    let mut subtree = vec![entity];
+                    let mut stack = vec![entity];
+                    while let Some(node) = stack.pop() {
+                        if let Some(row) = children.as_ref().and_then(|c| c.get(node)) {
+                            for &child in row.0.iter() {
+                                if !player_subtree.contains(&child) {
+                                    subtree.push(child);
+                                    stack.push(child);
+                                }
+                            }
+                        }
+                    }
+                    adoptions.push((entity, cell.cell_root, subtree));
+                }
                 None => still_pending.push(entity),
             }
         }
@@ -671,15 +711,21 @@ pub(crate) fn retry_cinematic_readoption(
         .saturating_sub(adopted + still_pending.len());
     drop(pending);
 
-    for (entity, root) in &adoptions {
-        world.insert(*entity, CellRoot(*root));
-        if let Some(mut idx) = world.try_resource_mut::<CellRootIndex>() {
-            idx.map.entry(*root).or_default().push(*entity);
+    let mut adopted_entities = 0usize;
+    for (entity, root, subtree) in &adoptions {
+        for member in subtree {
+            world.insert(*member, CellRoot(*root));
+            if let Some(mut idx) = world.try_resource_mut::<CellRootIndex>() {
+                idx.map.entry(*root).or_default().push(*member);
+            }
         }
+        adopted_entities += subtree.len();
     }
     if adopted > 0 {
         log::info!(
-            "cinematic re-adoption: {adopted} entit(y/ies) stamped onto loaded              exterior cell roots (#3817)"
+            "cinematic re-adoption: {adopted} root entit(y/ies) + \
+             {adopted_entities} subtree member(s) stamped onto loaded exterior \
+             cell roots (#3817, #5384)"
         );
     }
     if dropped > 0 {
@@ -2143,6 +2189,95 @@ mod tests {
             !after.contains(&player),
             "the doctored player entry is consumed, not kept pending"
         );
+    }
+
+    /// #5384 — a released convoy's PARENTED render subtree must ride its
+    /// root's adoption: pre-fix the retry read each member's LOCAL
+    /// `Transform` (a few units from its parent), mapped it to an origin
+    /// grid cell, and either split the hierarchy across two cells or left
+    /// the node pending forever — orphaned meshes that outlive their root
+    /// and keep drawing where they last stood. Only the parentless root
+    /// queues, and its adoption stamps the whole subtree.
+    #[test]
+    fn parented_subtree_rides_the_roots_adoption() {
+        use byroredux_core::math::{Quat, Vec3};
+
+        let mut world = World::new();
+        world.register::<Transform>();
+        world.register::<HorseTetherState>();
+        world.register::<ActorCinematicState>();
+        world.register::<CellRoot>();
+        world.register::<Children>();
+        world.register::<Parent>();
+        world.insert_resource(CinematicReAdoption::default());
+        world.insert_resource(CellRootIndex::new());
+
+        let horse = world.spawn();
+        let cart = world.spawn();
+        let rider = world.spawn();
+        let bone = world.spawn();
+        // Cart, rider and a render-subtree bone (parented to the cart).
+        world.insert(horse, Transform::new(Vec3::new(100.0, 0.0, -100.0), Quat::IDENTITY, 1.0));
+        world.insert(cart, Transform::new(Vec3::new(100.0, 0.0, -100.0), Quat::IDENTITY, 1.0));
+        world.insert(rider, Transform::new(Vec3::new(100.0, 2.0, -100.0), Quat::IDENTITY, 1.0));
+        // The bone's LOCAL offset — a few units from the cart, which
+        // pre-fix mapped to a wrong origin grid cell.
+        world.insert(bone, Transform::new(Vec3::new(2.0, 0.0, 1.0), Quat::IDENTITY, 1.0));
+        world.insert(cart, Children(vec![bone]));
+        world.insert(bone, Parent(cart));
+        world.insert(
+            cart,
+            HorseTetherState {
+                horse,
+                horse_local_translation: Vec3::ZERO,
+                horse_local_rotation: Quat::IDENTITY,
+                route_target_form_id: None,
+            },
+        );
+        world.insert(
+            rider,
+            ActorCinematicState {
+                vehicle: Some(cart),
+                ..Default::default()
+            },
+        );
+
+        release_finished_tethers(&world, &[(cart, horse)]);
+
+        // The parented bone never queues — only the parentless roots do.
+        let queued = world
+            .try_resource::<CinematicReAdoption>()
+            .map(|p| p.pending.clone())
+            .expect("re-adoption resource");
+        assert!(
+            !queued.contains(&bone),
+            "a parented subtree node must never queue for cell adoption, got {queued:?}"
+        );
+        assert!(queued.contains(&cart) && queued.contains(&rider));
+
+        // The retry adopts the roots at their WORLD positions and stamps
+        // the subtree with the same CellRoot — the hierarchy stays whole.
+        let mut loaded = std::collections::HashMap::new();
+        let cell_root = world.spawn();
+        loaded.insert((0, 0), crate::streaming::LoadedCell { cell_root });
+        crate::systems::retry_cinematic_readoption(&mut world, &loaded);
+        assert_eq!(
+            world.get::<CellRoot>(cart).map(|root| root.0),
+            Some(cell_root)
+        );
+        assert_eq!(
+            world.get::<CellRoot>(rider).map(|root| root.0),
+            Some(cell_root)
+        );
+        assert_eq!(
+            world.get::<CellRoot>(bone).map(|root| root.0),
+            Some(cell_root),
+            "the parented bone rides the cart root's adoption — same cell, \
+             hierarchy whole, one unload despawns all of it (#5384)"
+        );
+        assert!(world
+            .try_resource::<CinematicReAdoption>()
+            .is_some_and(|p| p.pending.is_empty()));
     }
 
     /// #3817 companion pin — a convoy that kept its `CellRoot` (the common
