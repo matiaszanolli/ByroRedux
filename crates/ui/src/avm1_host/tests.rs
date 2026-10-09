@@ -63,8 +63,8 @@ fn reads_the_method_name_out_of_a_vanilla_call_site() {
     assert_eq!(found.unresolved, 0);
     // #4720 — the scanner keeps the call's own argument count: the
     // two-argument vanilla shape is a command under the fourth-argument
-    // rule.
-    assert_eq!(found.arg_counts.get("CloseMenu"), Some(&2));
+    // rule. #5274 — (min, max) so a mixed-arity name is detectable.
+    assert_eq!(found.arg_counts.get("CloseMenu"), Some(&(2, 2)));
 }
 
 /// #4720 — a four-argument `GameDelegate.call` site passes scope + response
@@ -105,7 +105,7 @@ fn a_four_argument_site_records_the_callback_bearing_count() {
     );
     assert_eq!(
         found.arg_counts.get("LoadDLC"),
-        Some(&4),
+        Some(&(4, 4)),
         "the callback-bearing arity must survive into the inventory"
     );
     assert_eq!(found.unresolved, 0);
@@ -379,17 +379,27 @@ fn installed_skyrim_host_calls_are_all_cataloged() {
     // counterexample is either a misclassified catalog entry (the diagnostic
     // gap the issue was filed for) or a corpus change that re-opens the
     // question — both want to fail loudly here.
+    //
+    // #5274 — the scanner records (min, max) per name, so a MIXED-ARITY
+    // name is detectable for the first time: min < max breaks the rule in
+    // both directions at once and fails here instead of silently collapsing
+    // onto the max.
     let mut four_arg = 0usize;
     let mut two_arg = 0usize;
-    for (name, count) in &found.arg_counts {
+    for (name, (min, max)) in &found.arg_counts {
         let method = catalog
             .find(name)
             .unwrap_or_else(|| panic!("{name}: completeness asserted above"));
         assert!(
-            *count == 2 || *count == 4,
-            "{name}: unexpected {count}-argument call arity"
+            min == max,
+            "{name}: MIXED call arity ({min}..{max}) — the fourth-argument \
+             rule cannot type one name at two arities (#5274)"
         );
-        let expected = if *count == 4 {
+        assert!(
+            *max == 2 || *max == 4,
+            "{name}: unexpected {max}-argument call arity"
+        );
+        let expected = if *max == 4 {
             four_arg += 1;
             crate::ScaleformHostMethodKind::Request
         } else {
@@ -398,7 +408,7 @@ fn installed_skyrim_host_calls_are_all_cataloged() {
         };
         assert_eq!(
             method.kind, expected,
-            "{name}: catalog types it {:?} but its call site passes {count} \
+            "{name}: catalog types it {:?} but its call site passes {max} \
              arguments — the fourth-argument rule says {expected:?}",
             method.kind,
         );
@@ -408,10 +418,11 @@ fn installed_skyrim_host_calls_are_all_cataloged() {
          two-argument (command) methods"
     );
     assert!(
-        four_arg >= 14,
-        "the corpus previously measured 14 request-typed methods called with \
-         four arguments; only {four_arg} resolved — the scanner is reading less \
-         than it did"
+        four_arg >= 16,
+        "the corpus measures 16 request-typed methods called with four \
+         arguments (every cataloged request, #5274 re-derived: command 62 / \
+         request 14 / sweep-command 64 / sweep-request 2); only {four_arg} \
+         resolved — the scanner is reading less than it did"
     );
     assert!(
         found.methods.len() >= 141,

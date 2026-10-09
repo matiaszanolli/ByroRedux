@@ -80,14 +80,16 @@ const HOST_DELEGATE_CALL: &str = "call";
 pub struct Avm1HostCallInventory {
     /// Distinct host method names passed to `GameDelegate.call`.
     pub methods: BTreeSet<String>,
-    /// #4720 — per method, the `CallMethod` argument count of its resolved
-    /// `GameDelegate.call` site(s). SkyUI's fourth-argument rule reads this:
-    /// a site passing four arguments passes a response callback and expects
-    /// the host to `respond`; a two-argument site is a fire-and-forget
-    /// command. A method called at several sites keeps the maximum — the
-    /// vanilla corpus has no mixed-arity name (526 resolved sites, census in
-    /// #4720), so the max is the site count wherever the rule has a say.
-    pub arg_counts: BTreeMap<String, usize>,
+    /// #4720 — per method, the (min, max) `CallMethod` argument count of
+    /// its resolved `GameDelegate.call` site(s). SkyUI's fourth-argument
+    /// rule reads this: a site passing four arguments passes a response
+    /// callback and expects the host to `respond`; a two-argument site is
+    /// a fire-and-forget command. #5274 — both bounds are recorded, not
+    /// just the max: min < max is a MIXED-ARITY name, which the rule
+    /// cannot type and the sweep test fails on. The vanilla corpus has
+    /// none (526 resolved sites, census in #4720 — min == max for every
+    /// name), so the max remains the arity wherever the rule has a say.
+    pub arg_counts: BTreeMap<String, (usize, usize)>,
     /// `GameDelegate.call` sites whose first argument did not resolve to a
     /// literal — a dynamic name, or a stack the walk had to clear.
     ///
@@ -104,11 +106,11 @@ pub struct Avm1HostCallInventory {
 impl Avm1HostCallInventory {
     fn merge(&mut self, other: Self) {
         self.methods.extend(other.methods);
-        for (name, count) in other.arg_counts {
+        for (name, (min, max)) in other.arg_counts {
             self.arg_counts
                 .entry(name)
-                .and_modify(|seen| *seen = (*seen).max(count))
-                .or_insert(count);
+                .and_modify(|seen| *seen = (seen.0.min(min), seen.1.max(max)))
+                .or_insert((min, max));
         }
         self.unresolved += other.unresolved;
     }
@@ -334,8 +336,8 @@ fn scan_block(code: &[u8], version: u8, pool: &[String]) -> Avm1HostCallInventor
                             found
                                 .arg_counts
                                 .entry(name.to_string())
-                                .and_modify(|seen| *seen = (*seen).max(count))
-                                .or_insert(count);
+                                .and_modify(|seen| *seen = (seen.0.min(count), seen.1.max(count)))
+                                .or_insert((count, count));
                         }
                         None => found.unresolved += 1,
                     }

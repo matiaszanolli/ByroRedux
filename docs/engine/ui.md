@@ -604,9 +604,13 @@ registered extensions, and unknown methods.
 method names: the 74 literal entries read off the SkyUI source tree pinned at
 `835428728e2305865e220fdfc99d791434955eb1` plus the 68 the #3103 corpus sweep
 measured in `Skyrim - Interface.bsa`. 16 are marked as callback requests —
-14 by SkyUI's fourth-argument rule (including `LoadDLC` and
-`RequestLoadingText`, whose corpus call sites pass scope + response callback,
-#4720) and 2 by the name-prefix heuristic. Catalog entries are recognition
+every one by SkyUI's fourth-argument rule over measured evidence: 12 read
+off the pinned sources, and 4 (`LoadDLC`, `RequestLoadingText`,
+`GetMouseButtonForSetDestination`, `ShouldShowMod`) whose corpus call sites
+pass scope + response callback (#4720/#5274 — the name-prefix heuristic
+classifies no Skyrim entry any more; the corpus resolves 16 four-argument
+requests and 125 two-argument commands with no mixed-arity name). Catalog
+entries are recognition
 and protocol metadata, not claims that gameplay behavior exists. The engine
 must still implement or explicitly stub each drained call.
 
@@ -746,9 +750,11 @@ notes for the format-string system menus rely on.
 
 ## Tests
 
-The UI crate has **101 default tests plus 3 ignored** installed-corpus smokes
-(measured 2026-10-04 with `cargo test -p byroredux-ui -- --list` and
-`cargo test -p byroredux-ui -- --list --ignored`; re-measure rather than
+The UI crate has **99 default tests plus 3 ignored** installed-corpus smokes
+(measured 2026-10-09 with `cargo test -p byroredux-ui` after #5274's
+provenance rework — the lib target's own summary. `-- --list` includes the
+ignored tests in its count, which is how this line's predecessor
+double-counted them as "101 default plus 3 ignored". Re-measure rather than
 trusting this line — it has drifted repeatedly: #4721 re-measured it after
 the count had drifted six times, most recently through the #3103 corpus-sweep
 additions and #4720's four-argument scanner tests).

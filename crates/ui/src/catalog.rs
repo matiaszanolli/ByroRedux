@@ -19,25 +19,29 @@ pub enum ScaleformHostMethodKind {
 /// name-prefix heuristic guessed.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ScaleformKindProvenance {
-    /// `kind` reflects a measured fact: Skyrim's original 74 entries follow
-    /// the AVM1 GameDelegate protocol from SkyUI's own source (the
-    /// fourth-argument rule — commands plus 12 requests, joined by #4720's
-    /// two corpus-promoted requests; see [`SKYRIM_SKYUI_METHODS`]'s own
-    /// doc), and the FO4 catalog's original 138 F4CF-reconstructed entries
-    /// had `kind` read from reconstructed ActionScript source, not inferred
-    /// from the name.
+    /// `kind` reflects a measured fact. Two evidence classes: Skyrim's
+    /// original 74 entries follow the AVM1 GameDelegate protocol from
+    /// SkyUI's own source (the fourth-argument rule — commands plus 12
+    /// requests, joined by #4720's two corpus-promoted requests; see
+    /// [`SKYRIM_SKYUI_METHODS`]'s own doc), and the 66 #3103 corpus-sweep
+    /// entries carry a measured per-site arity (#4721's scanner records
+    /// every `CallMethod` argument count) which SkyUI's rule types — four
+    /// arguments ⇔ `Request`, the two-argument complement ⇔ `Command`
+    /// (#5274's promotion; the corpus has no mixed-arity name). The FO4
+    /// catalog's original 138 F4CF-reconstructed entries had `kind` read
+    /// from reconstructed ActionScript source, not inferred from the name.
     Measured,
     /// `kind` was inferred from a `Get*`/`Is*`/`Should*`/`Can*`/`get*`
     /// name-prefix heuristic — the 131 entries #2966's corpus sweep added
-    /// to the FO4 catalog, plus the 66 Skyrim sweep entries #3103 added
-    /// that stayed heuristic after #4720 promoted its two measured
-    /// four-argument sites. The heuristic's boundary is demonstrably
-    /// imprecise (#3773): every `Request`-classified entry happens to match
-    /// the prefix set (none was ever promoted to `Request` against evidence
-    /// that contradicted the rule), while at least 16 `Command`-classified
-    /// FO4 names carry query-shaped verbs (`Request*`, `Check*`,
-    /// `Validate*`, …) the prefix set doesn't cover at all — so a
-    /// `Command` here is a weaker claim than a `Measured` one.
+    /// to the FO4 catalog, whose sweep was name-only (no per-site arity
+    /// was recorded, so no rule can type them). The heuristic's boundary
+    /// is demonstrably imprecise (#3773): every `Request`-classified entry
+    /// happens to match the prefix set (none was ever promoted to
+    /// `Request` against evidence that contradicted the rule), while at
+    /// least 16 `Command`-classified FO4 names carry query-shaped verbs
+    /// (`Request*`, `Check*`, `Validate*`, …) the prefix set doesn't cover
+    /// at all — so a `Command` here is a weaker claim than a `Measured`
+    /// one. No Skyrim entry carries this provenance any more (#5274).
     HeuristicNamePrefix,
 }
 
@@ -174,18 +178,20 @@ impl ScaleformHostCatalog {
 //
 // #3103, regeneration half — those 68 are now merged in, bringing this array
 // to 142 (the 141 the sweep found plus `SliderClose`). #4720 closed the
-// gap this paragraph used to record: the sweep's scanner now records each
+// gap this paragraph used to record: the sweep's scanner records each
 // site's `CallMethod` argument count, and SkyUI's "a fourth argument means
-// the call expects a response" rule transfers after all — the corpus DOES
-// carry fourth-argument sites, 27 of them (one per request-typed method),
-// against 320 two-argument command sites, with no name ever at mixed
-// arities. The rule is pinned by the corpus sweep test ("four-arg ⇔
-// Request", all 142 entries). `LoadDLC` and `RequestLoadingText` — measured
-// four-argument at their call sites — were promoted out of the heuristic
-// bucket into `Measured` requests on exactly that evidence; the remaining
-// 66 keep `HeuristicNamePrefix` provenance (2 of them —
-// `GetMouseButtonForSetDestination`, `ShouldShowMod` — match the #2966
-// prefix rule; the other 64 default to `Command`, all measured two-argument).
+// the call expects a response" rule transfers after all — the corpus
+// resolves 16 four-argument request methods and 125 two-argument command
+// methods, with no name ever at a mixed arity (the sweep test asserts
+// exactly that). The rule is pinned by the corpus sweep test ("four-arg ⇔
+// Request", every cataloged entry). #5274 — the arity measurement covers
+// the whole sweep set, not just the two names #4720 promoted: all 68
+// entries are `Measured` now (`LoadDLC` / `RequestLoadingText` by their
+// four-argument sites, the other 66 — including
+// `GetMouseButtonForSetDestination` and `ShouldShowMod` — by the same
+// rule over their own measured sites: four arguments ⇔ `Request`, the
+// two-argument complement ⇔ `Command`). No Skyrim entry keeps the
+// name-prefix heuristic.
 //
 // Landing a guess here is sound for the same reason it was for Fallout 4, and
 // the reason is worth restating because it is what makes the difference
@@ -199,56 +205,58 @@ impl ScaleformHostCatalog {
 // has never heard of this method", not "we measured it and can't type it".
 //
 // A fourth-argument call site appearing in some future corpus (a SkyUI install,
-// a DLC archive) is evidence that promotes an entry to `Measured`; the
-// provenance split is pinned exactly so that has to be a deliberate edit.
+// a DLC archive) is more measured evidence for an entry already `Measured`
+// since #5274; a site that disagrees with the entry's kind is a
+// fourth-argument-rule counterexample and wants the corpus sweep test to fail
+// loudly.
 static SKYRIM_SKYUI_METHODS: &[ScaleformHostMethod] = &[
-    ScaleformHostMethod::command_heuristic("ActivateJoyConStrapInstruction"),
+    ScaleformHostMethod::command("ActivateJoyConStrapInstruction"),
     ScaleformHostMethod::command("AuxButtonPress"),
-    ScaleformHostMethod::command_heuristic("CONTINUE"),
+    ScaleformHostMethod::command("CONTINUE"),
     ScaleformHostMethod::request("CalculateCharge"),
     ScaleformHostMethod::request("CanFadeItemInfo"),
-    ScaleformHostMethod::command_heuristic("Cancel"),
-    ScaleformHostMethod::command_heuristic("ChangeDoubleMorph"),
-    ScaleformHostMethod::command_heuristic("ChangeFaceDetails"),
-    ScaleformHostMethod::command_heuristic("ChangeHairColorPreset"),
-    ScaleformHostMethod::command_heuristic("ChangeHeadPart"),
-    ScaleformHostMethod::command_heuristic("ChangeHeadPreset"),
-    ScaleformHostMethod::command_heuristic("ChangeName"),
-    ScaleformHostMethod::command_heuristic("ChangePreset"),
-    ScaleformHostMethod::command_heuristic("ChangeRace"),
-    ScaleformHostMethod::command_heuristic("ChangeTintingMask"),
-    ScaleformHostMethod::command_heuristic("ChangeUser"),
-    ScaleformHostMethod::command_heuristic("ChangeWeight"),
-    ScaleformHostMethod::command_heuristic("CharacterSelected"),
+    ScaleformHostMethod::command("Cancel"),
+    ScaleformHostMethod::command("ChangeDoubleMorph"),
+    ScaleformHostMethod::command("ChangeFaceDetails"),
+    ScaleformHostMethod::command("ChangeHairColorPreset"),
+    ScaleformHostMethod::command("ChangeHeadPart"),
+    ScaleformHostMethod::command("ChangeHeadPreset"),
+    ScaleformHostMethod::command("ChangeName"),
+    ScaleformHostMethod::command("ChangePreset"),
+    ScaleformHostMethod::command("ChangeRace"),
+    ScaleformHostMethod::command("ChangeTintingMask"),
+    ScaleformHostMethod::command("ChangeUser"),
+    ScaleformHostMethod::command("ChangeWeight"),
+    ScaleformHostMethod::command("CharacterSelected"),
     ScaleformHostMethod::request("CheckForMouseEquip"),
     ScaleformHostMethod::command("ChooseItem"),
     ScaleformHostMethod::command("ClickCallback"),
     ScaleformHostMethod::command("CloseMenu"),
     ScaleformHostMethod::command("CloseTweenMenu"),
-    ScaleformHostMethod::command_heuristic("ConfirmDone"),
+    ScaleformHostMethod::command("ConfirmDone"),
     ScaleformHostMethod::command("CraftButtonPress"),
     ScaleformHostMethod::command("CraftSelectedItem"),
-    ScaleformHostMethod::command_heuristic("CreationClub"),
+    ScaleformHostMethod::command("CreationClub"),
     ScaleformHostMethod::command("CurrentLocationCallback"),
     ScaleformHostMethod::command("DeleteSave"),
     ScaleformHostMethod::command("DisabledItemSelect"),
-    ScaleformHostMethod::command_heuristic("DoDeleteSaveUISanityCheck"),
-    ScaleformHostMethod::command_heuristic("DoLoadDLCPlugins"),
-    ScaleformHostMethod::command_heuristic("DownloadAll"),
+    ScaleformHostMethod::command("DoDeleteSaveUISanityCheck"),
+    ScaleformHostMethod::command("DoLoadDLCPlugins"),
+    ScaleformHostMethod::command("DownloadAll"),
     ScaleformHostMethod::command("EndItemRename"),
-    ScaleformHostMethod::command_heuristic("EndPressStartState"),
+    ScaleformHostMethod::command("EndPressStartState"),
     ScaleformHostMethod::command("EquipItem"),
-    ScaleformHostMethod::command_heuristic("ExecuteCommand"),
-    ScaleformHostMethod::command_heuristic("Exit"),
+    ScaleformHostMethod::command("ExecuteCommand"),
+    ScaleformHostMethod::command("Exit"),
     ScaleformHostMethod::command("FadeDone"),
-    ScaleformHostMethod::command_heuristic("FirstTimeOunceDataTransferCheck"),
-    ScaleformHostMethod::command_heuristic("ForceStopSaveListLoading"),
+    ScaleformHostMethod::command("FirstTimeOunceDataTransferCheck"),
+    ScaleformHostMethod::command("ForceStopSaveListLoading"),
     ScaleformHostMethod::request("GetButtonFromUserEvent"),
-    ScaleformHostMethod::request_heuristic("GetMouseButtonForSetDestination"),
+    ScaleformHostMethod::request("GetMouseButtonForSetDestination"),
     ScaleformHostMethod::request("GetRawDealWarningString"),
-    ScaleformHostMethod::command_heuristic("HELP"),
-    ScaleformHostMethod::command_heuristic("HideComplete"),
-    ScaleformHostMethod::command_heuristic("HighlightMenu"),
+    ScaleformHostMethod::command("HELP"),
+    ScaleformHostMethod::command("HideComplete"),
+    ScaleformHostMethod::command("HighlightMenu"),
     ScaleformHostMethod::command("IsOKtoLoad"),
     ScaleformHostMethod::command("ItemCardListCallback"),
     ScaleformHostMethod::command("ItemDrop"),
@@ -261,35 +269,35 @@ static SKYRIM_SKYUI_METHODS: &[ScaleformHostMethod] = &[
     // name-prefix `Command` exactly as the array doc prescribes.
     ScaleformHostMethod::request("LoadDLC"),
     ScaleformHostMethod::command("LoadGame"),
-    ScaleformHostMethod::command_heuristic("MOD"),
+    ScaleformHostMethod::command("MOD"),
     ScaleformHostMethod::command("MarkerClick"),
-    ScaleformHostMethod::command_heuristic("ModManager"),
-    ScaleformHostMethod::command_heuristic("MoveCamera"),
-    ScaleformHostMethod::command_heuristic("NEW"),
-    ScaleformHostMethod::command_heuristic("OK"),
-    ScaleformHostMethod::command_heuristic("ORBISDeleteSave"),
-    ScaleformHostMethod::command_heuristic("OnDisabledLoadPress"),
-    ScaleformHostMethod::command_heuristic("OnOunceDataTransfer"),
-    ScaleformHostMethod::command_heuristic("OnPS5DataTransfer"),
-    ScaleformHostMethod::command_heuristic("OpenAnimFinished"),
-    ScaleformHostMethod::command_heuristic("OpenHighlightedMenu"),
+    ScaleformHostMethod::command("ModManager"),
+    ScaleformHostMethod::command("MoveCamera"),
+    ScaleformHostMethod::command("NEW"),
+    ScaleformHostMethod::command("OK"),
+    ScaleformHostMethod::command("ORBISDeleteSave"),
+    ScaleformHostMethod::command("OnDisabledLoadPress"),
+    ScaleformHostMethod::command("OnOunceDataTransfer"),
+    ScaleformHostMethod::command("OnPS5DataTransfer"),
+    ScaleformHostMethod::command("OpenAnimFinished"),
+    ScaleformHostMethod::command("OpenHighlightedMenu"),
     ScaleformHostMethod::command("OpenJournalCallback"),
     ScaleformHostMethod::command("OpenKinectTuner"),
-    ScaleformHostMethod::command_heuristic("OpenMarketplace"),
+    ScaleformHostMethod::command("OpenMarketplace"),
     ScaleformHostMethod::command("OptionChange"),
     ScaleformHostMethod::command("PlaySound"),
-    ScaleformHostMethod::command_heuristic("PopulateCharacterList"),
-    ScaleformHostMethod::command_heuristic("PopulateCreationClubTopics"),
+    ScaleformHostMethod::command("PopulateCharacterList"),
+    ScaleformHostMethod::command("PopulateCreationClubTopics"),
     ScaleformHostMethod::command("PopulateHelpTopics"),
     ScaleformHostMethod::command("PrepSaveGameScreenshot"),
     ScaleformHostMethod::command("QuantitySliderOpen"),
-    ScaleformHostMethod::command_heuristic("QuickSave"),
+    ScaleformHostMethod::command("QuickSave"),
     ScaleformHostMethod::command("QuitToDesktop"),
     ScaleformHostMethod::command("QuitToMainMenu"),
-    ScaleformHostMethod::command_heuristic("RegisterHUDComponents"),
-    ScaleformHostMethod::command_heuristic("RememberCurrentTabIndex"),
+    ScaleformHostMethod::command("RegisterHUDComponents"),
+    ScaleformHostMethod::command("RememberCurrentTabIndex"),
     ScaleformHostMethod::command("RequestAudioOptions"),
-    ScaleformHostMethod::command_heuristic("RequestCreationClubText"),
+    ScaleformHostMethod::command("RequestCreationClubText"),
     ScaleformHostMethod::command("RequestDisplayOptions"),
     ScaleformHostMethod::command("RequestGameplayOptions"),
     ScaleformHostMethod::command("RequestHelpText"),
@@ -303,52 +311,52 @@ static SKYRIM_SKYUI_METHODS: &[ScaleformHostMethod] = &[
     ScaleformHostMethod::request("RequestPlayerInfo"),
     ScaleformHostMethod::request("RequestQuestsData"),
     ScaleformHostMethod::command("ResetControlsToDefaults"),
-    ScaleformHostMethod::command_heuristic("ResetControlsToDefaults_Ounce"),
+    ScaleformHostMethod::command("ResetControlsToDefaults_Ounce"),
     ScaleformHostMethod::command("SAVE"),
     ScaleformHostMethod::command("SaveControls"),
     ScaleformHostMethod::command("SaveGame"),
     ScaleformHostMethod::command("SaveIndices"),
     ScaleformHostMethod::command("SaveSettings"),
-    ScaleformHostMethod::command_heuristic("SetAllowTextInput"),
-    ScaleformHostMethod::command_heuristic("SetFadedIn"),
+    ScaleformHostMethod::command("SetAllowTextInput"),
+    ScaleformHostMethod::command("SetFadedIn"),
     ScaleformHostMethod::command("SetLocalMapExtents"),
     ScaleformHostMethod::command("SetSaveDisabled"),
     ScaleformHostMethod::command("SetSelectedCategory"),
     ScaleformHostMethod::command("SetSelectedItem"),
     ScaleformHostMethod::command("SetVersionText"),
     ScaleformHostMethod::request("ShouldShowKinectTunerOption"),
-    ScaleformHostMethod::request_heuristic("ShouldShowMod"),
+    ScaleformHostMethod::request("ShouldShowMod"),
     ScaleformHostMethod::command("ShowItem3D"),
     ScaleformHostMethod::command("ShowShoutFail"),
     ScaleformHostMethod::command("ShowSoulGemList"),
     ScaleformHostMethod::command("ShowTargetOnMap"),
     ScaleformHostMethod::command("ShowTweenMenu"),
-    ScaleformHostMethod::command_heuristic("ShowVirtualKeyboard"),
-    ScaleformHostMethod::command_heuristic("SkipText"),
-    ScaleformHostMethod::command_heuristic("Sky10DLCPressed"),
+    ScaleformHostMethod::command("ShowVirtualKeyboard"),
+    ScaleformHostMethod::command("SkipText"),
+    ScaleformHostMethod::command("Sky10DLCPressed"),
     ScaleformHostMethod::command("SliderClose"),
-    ScaleformHostMethod::command_heuristic("StartCloseMenu"),
+    ScaleformHostMethod::command("StartCloseMenu"),
     ScaleformHostMethod::command("StartMouseRotation"),
     ScaleformHostMethod::command("StartRemapMode"),
-    ScaleformHostMethod::command_heuristic("StartState"),
+    ScaleformHostMethod::command("StartState"),
     ScaleformHostMethod::command("StopMouseRotation"),
     ScaleformHostMethod::command("TakeAllItems"),
     ScaleformHostMethod::command("ToggleMapCallback"),
     ScaleformHostMethod::request("ToggleQuestActiveStatus"),
     ScaleformHostMethod::command("ToggleShowMiscObjectives"),
-    ScaleformHostMethod::command_heuristic("TopicClicked"),
-    ScaleformHostMethod::command_heuristic("Train"),
+    ScaleformHostMethod::command("TopicClicked"),
+    ScaleformHostMethod::command("Train"),
     ScaleformHostMethod::command("UpdateItem3D"),
-    ScaleformHostMethod::command_heuristic("UseCurrentCharacterFilter"),
+    ScaleformHostMethod::command("UseCurrentCharacterFilter"),
     ScaleformHostMethod::command("ZoomItemModel"),
-    ScaleformHostMethod::command_heuristic("ZoomPC"),
-    ScaleformHostMethod::command_heuristic("addHealth"),
-    ScaleformHostMethod::command_heuristic("addMagicka"),
-    ScaleformHostMethod::command_heuristic("addStamina"),
+    ScaleformHostMethod::command("ZoomPC"),
+    ScaleformHostMethod::command("addHealth"),
+    ScaleformHostMethod::command("addMagicka"),
+    ScaleformHostMethod::command("addStamina"),
     ScaleformHostMethod::command("buttonPress"),
-    ScaleformHostMethod::command_heuristic("currentState"),
-    ScaleformHostMethod::command_heuristic("fadeOutStarted"),
-    ScaleformHostMethod::command_heuristic("myLog"),
+    ScaleformHostMethod::command("currentState"),
+    ScaleformHostMethod::command("fadeOutStarted"),
+    ScaleformHostMethod::command("myLog"),
     ScaleformHostMethod::request("updateStats"),
 ];
 
@@ -708,65 +716,65 @@ mod tests {
         assert_eq!(FALLOUT4_BGS_CODE_OBJECT_METHODS.len(), measured + heuristic);
     }
 
-    /// #3103 — the Skyrim array is now the same two-provenance union the FO4
-    /// one is: 74 entries whose `kind` is a measured protocol fact (SkyUI's
-    /// fourth-argument callback test, read off its sources) plus the 68 the
-    /// corpus sweep found that no source snapshot covers, classified by the
-    /// same name-prefix heuristic #2966 used and marked as guesses.
+    /// #3103/#5274 — the Skyrim array is entirely `Measured`: 74 entries
+    /// whose `kind` is a measured protocol fact (SkyUI's fourth-argument
+    /// callback test, read off its sources) plus the 68 the corpus sweep
+    /// found, every one of which #4721's scanner measured at its call
+    /// site (16 four-argument requests, 125 two-argument commands across
+    /// the corpus, no mixed arity). #4720 first promoted the two
+    /// name-coincident four-argument sites; #5274 promoted the rest on
+    /// the same rule over their own measured arities.
     ///
-    /// Pinned exactly rather than as a bound, so neither half can grow
-    /// silently: a new `Measured` entry has to come with a protocol fact, and
-    /// a new heuristic one has to be a sweep result.
+    /// Pinned exactly, so the all-measured state cannot erode silently:
+    /// a new entry has to come with measured evidence, and a revert to
+    /// the name-prefix heuristic for any Skyrim name fails here.
     #[test]
-    fn skyrim_catalog_provenance_split_matches_the_3103_sweep() {
+    fn skyrim_catalog_is_fully_measured() {
+        let total = SKYRIM_SKYUI_METHODS.len();
         let measured = SKYRIM_SKYUI_METHODS
             .iter()
             .filter(|m| m.provenance == ScaleformKindProvenance::Measured)
             .count();
-        let heuristic = SKYRIM_SKYUI_METHODS
-            .iter()
-            .filter(|m| m.provenance == ScaleformKindProvenance::HeuristicNamePrefix)
-            .count();
-        // #4720 — 74 + 68 became 76 + 66 when `LoadDLC` and
-        // `RequestLoadingText` were promoted to `Measured` requests on the
-        // measured four-argument call sites.
-        assert_eq!(measured, 76, "the original SkyUI-sourced entries plus the              two #4720 promotions");
-        assert_eq!(heuristic, 66, "the #3103 corpus-sweep-added entries, minus              the two #4720 promotions");
-        assert_eq!(SKYRIM_SKYUI_METHODS.len(), measured + heuristic);
+        assert_eq!(
+            total, 142,
+            "the 141-entry #3103 sweep plus `SliderClose`"
+        );
+        assert_eq!(
+            measured, 142,
+            "#5274: every sweep entry is typed by its measured arity — the \
+             name-prefix heuristic no longer classifies any Skyrim name"
+        );
     }
 
-    /// The heuristic half must stay a *minority* classification decision: the
-    /// prefix set only recognises queries, so every name it does not match
-    /// becomes a `Command`. Two of the 66 remaining sweep entries matched
-    /// (`GetMouseButtonFor…`, `ShouldShowMod`), and `Cancel` is the
-    /// camelCase-boundary case that must
-    /// NOT match `Can*` — if that boundary rule is ever dropped, `Cancel`,
-    /// `CharacterSelected` and friends silently become requests.
+    /// The names the prefix heuristic used to single out keep the kinds
+    /// their measured arities give them: `GetMouseButtonFor…` and
+    /// `ShouldShowMod` are four-argument requests, and `Cancel` — the
+    /// camelCase-boundary case that must NOT match `Can*` — stays a
+    /// command by its two-argument sites. If a future edit re-introduces
+    /// prefix-based typing and drops the boundary rule, `Cancel`,
+    /// `CharacterSelected` and friends silently become requests; this
+    /// pins the measured outcome against exactly that.
     #[test]
-    fn the_skyrim_prefix_heuristic_respects_camel_case_boundaries() {
-        let heuristic_requests: Vec<&str> = SKYRIM_SKYUI_METHODS
-            .iter()
-            .filter(|m| {
-                m.provenance == ScaleformKindProvenance::HeuristicNamePrefix
-                    && m.kind == ScaleformHostMethodKind::Request
-            })
-            .map(|m| m.name)
-            .collect();
-        assert_eq!(
-            heuristic_requests,
-            ["GetMouseButtonForSetDestination", "ShouldShowMod"],
-            "only these two of the 68 sweep entries match Get*/Is*/Should*/Can*/get* \
-             on a camelCase boundary"
-        );
-        let cancel = SKYRIM_SKYUI_METHODS
-            .iter()
-            .find(|m| m.name == "Cancel")
-            .expect("Cancel is cataloged");
-        assert_eq!(
-            cancel.kind,
-            ScaleformHostMethodKind::Command,
-            "`Cancel` must not false-positive on the `Can*` prefix — the boundary \
-             rule is what keeps it a command"
-        );
+    fn the_skyrim_measured_kinds_match_their_call_site_arities() {
+        for (name, expected) in [
+            ("GetMouseButtonForSetDestination", ScaleformHostMethodKind::Request),
+            ("ShouldShowMod", ScaleformHostMethodKind::Request),
+            ("Cancel", ScaleformHostMethodKind::Command),
+            ("CharacterSelected", ScaleformHostMethodKind::Command),
+        ] {
+            let entry = SKYRIM_SKYUI_METHODS
+                .iter()
+                .find(|m| m.name == name)
+                .unwrap_or_else(|| panic!("{name} is cataloged"));
+            assert_eq!(
+                entry.kind, expected,
+                "{name}: its measured call-site arity types it {expected:?} (#5274)"
+            );
+            assert_eq!(
+                entry.provenance,
+                ScaleformKindProvenance::Measured,
+                "{name}: promoted off the prefix heuristic with the rest of the sweep (#5274)"
+            );
+        }
     }
 }
