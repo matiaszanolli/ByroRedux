@@ -95,7 +95,10 @@ done
 # #4724 — the four per-game HUD smokes honour the same SKIP != PASS
 # contract as m48-menu-load, so a dataless runner measures nothing rather
 # than failing (which is what kept them out of CI entirely).
-for name in m48-menu-load m48-4-oblivion-hud m48-5-fo3-hud m48-6-skyrim-hud m48-7-fo4-hud; do
+# #5276 — m48-5-fnv-hud joined the family in 3536794c3 with the old
+# FAIL-on-missing pattern; the loop could not catch the omission it was
+# not listing.
+for name in m48-menu-load m48-4-oblivion-hud m48-5-fo3-hud m48-5-fnv-hud m48-6-skyrim-hud m48-7-fo4-hud; do
     smoke="$ROOT_DIR/docs/smoke-tests/$name.sh"
     set +e
     output="$(env "${DATA_NEUTRALISE[@]}" "$smoke" 2>&1)"

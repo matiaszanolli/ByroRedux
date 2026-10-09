@@ -27,7 +27,7 @@
 #
 # Usage: docs/smoke-tests/m48-5-fnv-hud.sh
 #
-# Exit: 0 on success, non-zero on any gate failure.
+# Exit: 0 PASS, 77 SKIP (game data absent), non-zero FAIL.
 
 set -euo pipefail
 
@@ -41,9 +41,15 @@ OUT_DIR="$(mktemp -d)"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BIN_DIR="$SCRIPT_DIR/../../target/debug"
 
+# #5276 — the SKIP != PASS contract every other HUD smoke honours (#4724):
+# a dataless runner measures nothing rather than FAILing, which is what
+# kept the HUD smokes out of CI in the first place.
 for f in "FalloutNV.esm" "HonestHearts.esm" "Fallout - Meshes.bsa" \
     "Fallout - Textures.bsa" "Fallout - Textures2.bsa" "Fallout - Misc.bsa"; do
-    [ -f "$DATA/$f" ] || { echo "FAIL: missing $DATA/$f"; exit 1; }
+    if [ ! -f "$DATA/$f" ]; then
+        echo "smoke[m48-5-fnv-hud]: SKIP -- missing $DATA/$f"
+        exit 77
+    fi
 done
 [ -x "$BIN_DIR/byroredux" ] || { echo "FAIL: $BIN_DIR/byroredux not built"; exit 1; }
 
