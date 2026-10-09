@@ -130,6 +130,23 @@ impl Parser {
                     self.advance().unwrap();
                     flags |= ScriptFlags::HIDDEN;
                 }
+                // #5398 — `Conditional` is the standard Skyrim/FO4 script
+                // flag; `BetaOnly` and `Default` are FO4's.
+                Some(Token::KwConditional) => {
+                    self.advance().unwrap();
+                    flags |= ScriptFlags::CONDITIONAL;
+                }
+                Some(Token::KwBetaOnly) => {
+                    self.advance().unwrap();
+                    flags |= ScriptFlags::BETA_ONLY;
+                }
+                // `Default` is contextual, not a lexer keyword, so a
+                // variable named `Default` stays an identifier everywhere
+                // else.
+                Some(Token::Ident(word)) if word.eq_ignore_ascii_case("default") => {
+                    self.advance().unwrap();
+                    flags |= ScriptFlags::DEFAULT;
+                }
                 _ => break,
             }
         }
@@ -238,6 +255,7 @@ impl Parser {
                         initial_value,
                         is_conditional,
                         is_const,
+                        is_hidden: false,
                     }),
                     span,
                 ))
@@ -683,7 +701,7 @@ impl Parser {
                     // #2125 — recover per-member rather than propagating
                     // via `?`, which would discard the whole Struct
                     // (including members parsed fine before/after it).
-                    let var = match self.parse_variable_body() {
+                    let mut var = match self.parse_variable_body() {
                         Ok(var) => var,
                         Err(e) => {
                             self.push_error(e);
@@ -691,6 +709,12 @@ impl Parser {
                             continue;
                         }
                     };
+                    // #5398 — a struct member may be `Hidden`; raw, so a
+                    // flag on the next line is not this member's.
+                    while matches!(self.peek_raw(), Some(Token::KwHidden)) {
+                        self.advance().unwrap();
+                        var.is_hidden = true;
+                    }
                     if let Err(e) = self.expect_eol() {
                         self.push_error(e);
                         self.skip_to_next_line();
@@ -717,6 +741,11 @@ impl Parser {
                 Some(Token::KwCollapsedOnBase) => {
                     self.advance().unwrap();
                     flags |= GroupFlags::COLLAPSED_ON_BASE;
+                }
+                // #5398 — contextual like the header's `Default`.
+                Some(Token::Ident(word)) if word.eq_ignore_ascii_case("collapsed") => {
+                    self.advance().unwrap();
+                    flags |= GroupFlags::COLLAPSED;
                 }
                 _ => break,
             }
@@ -949,6 +978,58 @@ Int Property GoodProp = 5 Auto
         assert_eq!(s.parent.unwrap().node.0, "Quest");
         assert!(s.flags.contains(ScriptFlags::NATIVE));
         assert!(s.flags.contains(ScriptFlags::HIDDEN));
+    }
+
+    /// #5398 (PEX-D4-2026-10-08-01) — the CK script flags the header loop
+    /// rejected: `Conditional` (1,182 vanilla script objects), `BetaOnly`
+    /// and `Default`, each parsing with zero errors and landing in the AST.
+    #[test]
+    fn script_header_accepts_conditional_beta_only_and_default() {
+        let s = parse("ScriptName DialogueFollowerScript extends Quest Conditional\n");
+        assert!(s.flags.contains(ScriptFlags::CONDITIONAL));
+        let s = parse("ScriptName T extends Quest Const Hidden Conditional\n");
+        assert_eq!(
+            s.flags,
+            ScriptFlags::CONST | ScriptFlags::HIDDEN | ScriptFlags::CONDITIONAL
+        );
+        assert!(parse("ScriptName T BetaOnly\n").flags.contains(ScriptFlags::BETA_ONLY));
+        assert!(parse("ScriptName T default\n").flags.contains(ScriptFlags::DEFAULT));
+    }
+
+    /// #5398 — `Default` / `Collapsed` are contextual, so they stay valid
+    /// identifiers outside their flag positions.
+    #[test]
+    fn default_and_collapsed_remain_identifiers() {
+        let s = parse(
+            "ScriptName T\nInt Default = 1\nInt Collapsed\nFunction F()\nCollapsed = Default + 1\nEndFunction\n",
+        );
+        assert!(s.flags.is_empty());
+    }
+
+    /// #5398 — group `Collapsed` and struct-member `Hidden` (FO4 CK *Flag
+    /// Reference*) parse with zero errors.
+    #[test]
+    fn group_collapsed_and_hidden_struct_members_parse() {
+        let s = parse(
+            "ScriptName T\nGroup G Collapsed\nInt Property P Auto\nEndGroup\nStruct S\nFloat a\nFloat b Hidden\nEndStruct\n",
+        );
+        let mut saw_group = false;
+        let mut saw_struct = false;
+        for item in &s.body {
+            match &item.node {
+                ScriptItem::Group(g) => {
+                    saw_group = true;
+                    assert_eq!(g.flags, GroupFlags::COLLAPSED);
+                }
+                ScriptItem::Struct(st) => {
+                    saw_struct = true;
+                    let hidden: Vec<bool> = st.members.iter().map(|m| m.is_hidden).collect();
+                    assert_eq!(hidden, vec![false, true]);
+                }
+                _ => {}
+            }
+        }
+        assert!(saw_group && saw_struct);
     }
 
     #[test]

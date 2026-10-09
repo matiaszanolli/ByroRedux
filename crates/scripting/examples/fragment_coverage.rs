@@ -387,6 +387,7 @@ mod tests {
                 initial_value: None,
                 is_conditional: false,
                 is_const: false,
+                is_hidden: false,
             })),
             "VarDecl"
         );

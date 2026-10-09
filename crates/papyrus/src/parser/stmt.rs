@@ -230,6 +230,7 @@ impl Parser {
                         initial_value,
                         is_conditional: false,
                         is_const: false,
+                        is_hidden: false,
                     }),
                     span,
                 ));
@@ -262,6 +263,7 @@ impl Parser {
             initial_value,
             is_conditional: false,
             is_const: false,
+            is_hidden: false,
         })
     }
 

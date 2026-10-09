@@ -425,6 +425,16 @@ pub fn is_auto_state(object: &crate::model::Object, state: &crate::model::State)
     state.name.eq_ignore_ascii_case(&object.auto_state_name)
 }
 
+/// #5398 — whether `user_flags` has the bit the file's user-flag table
+/// assigns to `name` (case-insensitive; Champollion `Pex::UserFlag`).
+fn has_user_flag(pex: &Pex, user_flags: u32, name: &str) -> bool {
+    pex.user_flags.iter().any(|flag| {
+        flag.name.eq_ignore_ascii_case(name)
+            && flag.flag_index < 32
+            && user_flags & (1 << flag.flag_index) != 0
+    })
+}
+
 pub fn decompile_script(pex: &Pex) -> Result<Script, DecompileError> {
     let object = pex.main_object().ok_or(DecompileError::EmptyPex)?;
     let mut body: Vec<Spanned<ScriptItem>> = Vec::new();
@@ -437,8 +447,11 @@ pub fn decompile_script(pex: &Pex) -> Result<Script, DecompileError> {
             ty: sp(lower_type(&v.type_name)),
             name: ident(&v.name),
             initial_value: None,
-            is_conditional: false,
+            // #5398 — `Int x Conditional` round-trips through the same
+            // user-flag table as the object's own flags.
+            is_conditional: has_user_flag(pex, v.user_flags, "conditional"),
             is_const: v.const_flag != 0,
+            is_hidden: false,
         })));
     }
 
@@ -506,6 +519,18 @@ pub fn decompile_script(pex: &Pex) -> Result<Script, DecompileError> {
     if object.const_flag != 0 {
         flags |= ScriptFlags::CONST;
     }
+    // #5398 — the object's user flags are bit indices named by the file's
+    // own user-flag table; map the ones the `.psc` frontend also parses,
+    // so both frontends produce the same `ScriptFlags`.
+    for (name, flag) in [
+        ("conditional", ScriptFlags::CONDITIONAL),
+        ("hidden", ScriptFlags::HIDDEN),
+        ("default", ScriptFlags::DEFAULT),
+    ] {
+        if has_user_flag(pex, object.user_flags, name) {
+            flags |= flag;
+        }
+    }
 
     Ok(Script {
         name: ident(&object.name),
@@ -554,6 +579,38 @@ mod tests {
                 ..Object::default()
             }],
         }
+    }
+
+    /// #5398 — the object's `conditional` / `hidden` / `default` user flags
+    /// (bit indices named by the file's user-flag table) lower into the
+    /// same `ScriptFlags` the `.psc` frontend parses; a variable's
+    /// `conditional` lowers to `is_conditional`.
+    #[test]
+    fn object_user_flags_lower_into_script_flags() {
+        use crate::model::{UserFlag, Variable as PexVariable};
+        let mut pex = pex_with_function(PexFunction {
+            name: "F".into(),
+            return_type_name: "None".into(),
+            ..PexFunction::default()
+        });
+        pex.user_flags = vec![
+            UserFlag { name: "hidden".into(), flag_index: 0 },
+            UserFlag { name: "conditional".into(), flag_index: 1 },
+            UserFlag { name: "default".into(), flag_index: 2 },
+        ];
+        pex.objects[0].user_flags = 0b010;
+        pex.objects[0].variables = vec![PexVariable {
+            name: "x".into(),
+            type_name: "Int".into(),
+            user_flags: 0b010,
+            ..PexVariable::default()
+        }];
+        let script = decompile_script(&pex).expect("decompiles");
+        assert_eq!(script.flags, ScriptFlags::CONDITIONAL);
+        let conditional_var = script.body.iter().any(|item| {
+            matches!(&item.node, ScriptItem::Variable(v) if v.is_conditional)
+        });
+        assert!(conditional_var, "the variable's conditional user flag lowers");
     }
 
     /// #4477 — the opcode-36 (`Is`) lowering pin: `a is T` arrives as

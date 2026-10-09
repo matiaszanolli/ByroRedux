@@ -47,10 +47,18 @@ pub struct Script {
 bitflags::bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct ScriptFlags: u8 {
-        const NATIVE     = 0x01;
-        const CONST      = 0x02;
-        const DEBUG_ONLY = 0x04;
-        const HIDDEN     = 0x08;
+        const NATIVE      = 0x01;
+        const CONST       = 0x02;
+        const DEBUG_ONLY  = 0x04;
+        const HIDDEN      = 0x08;
+        /// #5398 — the standard Skyrim/FO4 script flag the condition
+        /// system's `GetVMQuestVariable` family requires (1,182 vanilla
+        /// script objects carry it).
+        const CONDITIONAL = 0x10;
+        /// #5398 — FO4 CK *Flag Reference*.
+        const BETA_ONLY   = 0x20;
+        /// #5398 — FO4 CK *Flag Reference*.
+        const DEFAULT     = 0x40;
     }
 }
 
@@ -79,6 +87,9 @@ pub struct Variable {
     pub initial_value: Option<Spanned<Expr>>,
     pub is_conditional: bool,
     pub is_const: bool,
+    /// #5398 — FO4 struct members may be `Hidden` (FO4 CK *Flag
+    /// Reference*). Always `false` outside a `Struct`.
+    pub is_hidden: bool,
 }
 
 // ── Properties ───────────────────────────────────────
@@ -181,6 +192,8 @@ bitflags::bitflags! {
     pub struct GroupFlags: u8 {
         const COLLAPSED_ON_REF  = 0x01;
         const COLLAPSED_ON_BASE = 0x02;
+        /// #5398 — collapsed on both (FO4 CK *Flag Reference*).
+        const COLLAPSED         = 0x04;
     }
 }
 
