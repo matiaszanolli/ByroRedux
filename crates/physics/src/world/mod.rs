@@ -340,8 +340,11 @@ pub struct PhysicsWorld {
     explosive_detaches_total: u64,
     /// Every multibody joint this world built (`build_ragdoll` pushes; the
     /// set has no mutable whole-set iterator and rapier's internal index is
-    /// `pub(crate)`). Stale handles (detached articulations) return `None`
-    /// from `get_mut` and are skipped, so the vector never needs sweeping.
+    /// `pub(crate)`). #5355 — handles whose articulation died (ragdoll
+    /// teardown via `remove_body`, the third-offence detach) are swept by
+    /// the retain at the top of [`Self::clamp_explosive_velocities`], so
+    /// the per-substep DOF walk below stays bounded by live joints instead
+    /// of one `get_mut` miss per joint of every corpse ever built.
     pub(crate) articulation_joints: Vec<rapier3d::prelude::MultibodyJointHandle>,
 }
 
@@ -443,6 +446,14 @@ impl PhysicsWorld {
             // #5161 — the evidence-label dies with the body; the map must
             // not accumulate one stale entry per despawned ragdoll bone.
             self.body_labels.remove(&handle);
+            // #5272 — same discipline for the other per-body #5161/#5246
+            // bookkeeping: the lifetime offence ladder and the log-once
+            // refusal set die with the body, or the maps grow once per
+            // despawned bone for the whole session. Keyed by index +
+            // generation, so a rapier handle reuse can never inherit the
+            // removed body's escalation rung.
+            self.explosion_offences.remove(&handle);
+            self.keyframe_refusals_logged.remove(&handle);
             // Rapier processes neighbour wake-ups from removed colliders during
             // `pipeline.step()`. Re-arm the static-scene fast path so that
             // deferred cleanup and those wake-ups are not stranded when the
@@ -1558,15 +1569,18 @@ mod tests {
         assert_eq!(w.velocity_clamps_total(), 1);
     }
 
-    /// #5246 — the third lifetime burst detaches the body's articulation
-    /// (the invalid-solve restore's own tool), so a persistently exploding
-    /// rig cannot churn clamp → park → wake → explode forever. Driven on a
+    /// #5246/#5356 — the third lifetime burst escalates to the top rung
+    /// (park + articulation detach), but a body with no articulation must
+    /// not count a "detach": `explosive_detaches_total` reads
+    /// "articulations detached", not "bursts past the third". Driven on a
     /// plain dynamic body because a multibody LINK's velocity is
     /// solver-owned — `set_linvel` on it is replaced by forward kinematics
-    /// before the clamp could ever see it; the joint-removal mechanics
-    /// themselves are pinned by the #4687 restore tests.
+    /// before the clamp could ever see it; the real-articulation leg is
+    /// `the_third_burst_detaches_a_live_articulation` below, and the
+    /// joint-removal mechanics themselves are pinned by the #4687 restore
+    /// tests.
     #[test]
-    fn the_third_burst_detaches_the_articulation() {
+    fn the_third_burst_parks_a_jointless_body_without_counting_a_detach() {
         let mut w = PhysicsWorld::new();
         let victim = w.bodies.insert(RigidBodyBuilder::dynamic().build());
         w.dynamic_bodies.push(victim);
@@ -1589,12 +1603,128 @@ mod tests {
         }
         assert_eq!(
             w.explosive_detaches_total(),
-            1,
-            "the third lifetime burst must escalate to a detach"
+            0,
+            "a joint-less body must reach the park rung without counting an \
+             articulation detach (#5356)"
         );
         // And the victim is parked: finite, zeroed, asleep.
         assert!(w.bodies[victim].is_sleeping());
         assert!(w.bodies[victim].linvel().norm() == 0.0);
+    }
+
+    /// #5356 — the positive leg: a body that genuinely belongs to a live
+    /// articulation counts exactly one detach on the third lifetime burst,
+    /// the joint is really gone afterwards, and later bursts on the freed
+    /// body must not recount it. The offence ladder is seeded at 2 and the
+    /// clamp called by hand for the same solver-owned-velocity reason the
+    /// jointless test records above.
+    #[test]
+    fn the_third_burst_detaches_a_live_articulation() {
+        use rapier3d::dynamics::{GenericJoint, GenericJointBuilder, JointAxesMask};
+
+        let mut w = PhysicsWorld::new();
+        let root = w.bodies.insert(RigidBodyBuilder::dynamic().build());
+        let child = w.bodies.insert(RigidBodyBuilder::dynamic().build());
+        let fixed = || -> GenericJoint {
+            GenericJointBuilder::new(
+                JointAxesMask::LIN_X
+                    | JointAxesMask::LIN_Y
+                    | JointAxesMask::LIN_Z
+                    | JointAxesMask::ANG_X
+                    | JointAxesMask::ANG_Y
+                    | JointAxesMask::ANG_Z,
+            )
+            .into()
+        };
+        let jh = w.multibody_joints.insert(root, child, fixed(), true).unwrap();
+        assert!(
+            w.multibody_joints.rigid_body_link(root).is_some(),
+            "the root must start as a live articulation link"
+        );
+        w.dynamic_bodies.push(root);
+        w.explosion_offences.insert(root, 2);
+
+        w.bodies[root].set_linvel(Vector::new(100_000.0, 0.0, 0.0), false);
+        w.clamp_explosive_velocities();
+        assert_eq!(
+            w.explosive_detaches_total(),
+            1,
+            "the third lifetime burst on a live articulation must count the detach"
+        );
+        assert!(
+            w.multibody_joints.get(jh).is_none(),
+            "the articulation must actually be removed, not just counted"
+        );
+        assert!(w.bodies[root].is_sleeping());
+
+        // A fourth burst on the now-free root parks it again but must not
+        // recount the detach.
+        w.bodies[root].set_linvel(Vector::new(100_000.0, 0.0, 0.0), false);
+        w.clamp_explosive_velocities();
+        assert_eq!(
+            w.explosive_detaches_total(),
+            1,
+            "bursts after the articulation is freed must not recount (#5356)"
+        );
+    }
+
+    /// #5355 — `articulation_joints` is swept of dead handles at the top of
+    /// `clamp_explosive_velocities`, so the per-substep DOF walk stays
+    /// bounded by live joints instead of paying one `get_mut` miss per
+    /// joint of every corpse ever built.
+    #[test]
+    fn articulation_joints_are_swept_when_their_articulation_dies() {
+        use rapier3d::dynamics::{GenericJoint, GenericJointBuilder, JointAxesMask};
+
+        let mut w = PhysicsWorld::new();
+        let a = w.bodies.insert(RigidBodyBuilder::dynamic().build());
+        let b = w.bodies.insert(RigidBodyBuilder::dynamic().build());
+        let fixed = || -> GenericJoint {
+            GenericJointBuilder::new(
+                JointAxesMask::LIN_X
+                    | JointAxesMask::LIN_Y
+                    | JointAxesMask::LIN_Z
+                    | JointAxesMask::ANG_X
+                    | JointAxesMask::ANG_Y
+                    | JointAxesMask::ANG_Z,
+            )
+            .into()
+        };
+        let jh = w.multibody_joints.insert(a, b, fixed(), true).unwrap();
+        w.articulation_joints.push(jh);
+
+        // `remove_body` cascades the joint out of the set but (by design,
+        // #5355) not out of the walk index — the sweep owns that.
+        assert!(w.remove_body(a));
+        assert_eq!(w.articulation_joints.len(), 1);
+        assert!(w.multibody_joints.get(jh).is_none());
+        w.clamp_explosive_velocities();
+        assert!(
+            w.articulation_joints.is_empty(),
+            "the dead joint handle must be swept (#5355)"
+        );
+    }
+
+    /// #5272 — `remove_body` retires the body's #5161/#5246 bookkeeping
+    /// with it: the lifetime offence ladder and the log-once refusal set
+    /// die with the body instead of accumulating one stale entry per
+    /// despawned bone for the whole session.
+    #[test]
+    fn remove_body_prunes_the_offence_ladder_and_refusal_set() {
+        let mut w = PhysicsWorld::new();
+        let h = w.bodies.insert(RigidBodyBuilder::dynamic().build());
+        w.explosion_offences.insert(h, 2);
+        w.keyframe_refusals_logged.insert(h);
+
+        assert!(w.remove_body(h));
+        assert!(
+            !w.explosion_offences.contains_key(&h),
+            "the offence ladder must die with the body (#5272)"
+        );
+        assert!(
+            !w.keyframe_refusals_logged.contains(&h),
+            "the log-once refusal set must die with the body (#5272)"
+        );
     }
 
 

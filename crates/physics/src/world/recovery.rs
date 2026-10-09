@@ -276,9 +276,19 @@ impl PhysicsWorld {
     /// [`ANGULAR_VELOCITY_SANITY_CAP_RAD_PER_S`]), called at the end of
     /// every `pipeline.step` substep. See the cap constant's doc for why
     /// this is the only guard that runs *before* an explosion's positions
-    /// reach the broad phase. A body clamped on consecutive substeps is
-    /// parked; a clean substep returns it to watch-list absence.
+    /// reach the broad phase. The offence count is a LIFETIME ladder
+    /// (#5246, never cleared by a clean substep): the first burst clamps,
+    /// the second parks (zeroed, slept), the third detaches the body's
+    /// whole articulation so a persistently exploding rig cannot churn
+    /// clamp → park → wake → explode forever.
     pub(super) fn clamp_explosive_velocities(&mut self) {
+        // #5355 — sweep joints whose articulation died since the last
+        // substep (ragdoll teardown, the third-offence detach, a
+        // `remove_body` cascade). Without this the walk at the bottom pays
+        // one `get_mut` miss per joint of every corpse ever built, every
+        // substep, for the whole session.
+        self.articulation_joints
+            .retain(|j| self.multibody_joints.get(*j).is_some());
         let mut clamped: Vec<(RigidBodyHandle, nalgebra::Vector3<f32>, nalgebra::Vector3<f32>)> =
             Vec::new();
         for &handle in &self.dynamic_bodies {
@@ -362,14 +372,22 @@ impl PhysicsWorld {
                 }
                 // Detaches every multibody joint containing `handle`; a
                 // free body afterwards, so no forward kinematics can
-                // re-teleport it. Idempotent for bodies without joints.
-                self.multibody_joints
-                    .remove_multibody_articulations(handle, false);
-                self.explosive_detaches_total = self.explosive_detaches_total.saturating_add(1);
-                log::error!(
-                    "physics: detached {handle:?} [{label}]'s articulation after \
-                     {offences} solver-explosion bursts (#5246)"
-                );
+                // re-teleport it. #5356 — count (and log) only a detach
+                // that detached something: `rigid_body_link` consults the
+                // same rb2mb map the removal walks, so `None` means
+                // clutter or a rig an earlier burst already freed, where
+                // the removal is a no-op. Otherwise the counter reads
+                // "bursts past the third", not "articulations detached".
+                if self.multibody_joints.rigid_body_link(handle).is_some() {
+                    self.multibody_joints
+                        .remove_multibody_articulations(handle, false);
+                    self.explosive_detaches_total =
+                        self.explosive_detaches_total.saturating_add(1);
+                    log::error!(
+                        "physics: detached {handle:?} [{label}]'s articulation after \
+                         {offences} solver-explosion bursts (#5246)"
+                    );
+                }
             } else if *offences == 2 {
                 // Second burst: the solve is persistently exploding for
                 // this body. Park it the same way the invalid-solve
