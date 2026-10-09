@@ -84,8 +84,17 @@ impl ConsoleCommand for HudValuesCommand {
                 "usage: hud.values <{usage}> (one 0-1 fraction per bar) | auto"
             ));
         }
+        // #5280 — `"nan".parse::<f32>()` succeeds and `f32::clamp(NaN)`
+        // returns NaN, so without the finite check a pinned NaN travels
+        // into the MenuXml bar geometry (the raster's non-finite reject
+        // then draws nothing — the bar vanishes) and into Scaleform as
+        // `Number(NaN)`. Same for ±inf on the heading below.
         let parse = |t: &str| -> Result<f32, ()> {
-            t.parse::<f32>().map(|v| v.clamp(0.0, 1.0)).map_err(|_| ())
+            t.parse::<f32>()
+                .ok()
+                .filter(|v| v.is_finite())
+                .map(|v| v.clamp(0.0, 1.0))
+                .ok_or(())
         };
         let parsed: Vec<Result<f32, ()>> = tokens.iter().map(|t| parse(t)).collect();
         if parsed.iter().any(|p| p.is_err()) {
@@ -127,13 +136,16 @@ impl ConsoleCommand for HudHeadingCommand {
             control.heading = None;
             return CommandOutput::line("hud: compass follows the camera");
         }
+        // #5280 — reject NaN/±inf before rem_euclid (NaN propagates; inf
+        // becomes NaN through it) and before the value reaches the compass
+        // geometry / the Scaleform push.
         match first.parse::<f32>() {
-            Ok(deg) => {
+            Ok(deg) if deg.is_finite() => {
                 let deg = deg.rem_euclid(360.0);
                 control.heading = Some(deg);
                 CommandOutput::line(format!("hud: compass pinned to {deg:.0}°"))
             }
-            Err(_) => CommandOutput::error("hud.heading: degrees 0-360 or 'auto'"),
+            _ => return CommandOutput::error("hud.heading: degrees 0-360 or 'auto'"),
         }
     }
 }
@@ -302,6 +314,12 @@ mod tests {
         assert_error(cmd.execute(&world, "0.1 0.2 0.3 0.4"), "usage");
         // Out of the fraction domain.
         assert_error(cmd.execute(&world, "0.5 oops 0.5"), "0-1 fractions");
+        // #5280 — non-finite values parse as f32 but must be rejected:
+        // clamp(NaN) is NaN and a pinned NaN blanks the bar (the raster's
+        // non-finite reject) instead of pinning it.
+        assert_error(cmd.execute(&world, "nan 0.5 0.5"), "0-1 fractions");
+        assert_error(cmd.execute(&world, "0.5 inf 0.5"), "0-1 fractions");
+        assert_error(cmd.execute(&world, "-inf 0.5 0.5"), "0-1 fractions");
         // Not launched.
         let bare = World::new();
         assert_error(cmd.execute(&bare, "0.5 0.5 0.5"), "not launched");
@@ -325,5 +343,11 @@ mod tests {
 
         assert_error(cmd.execute(&world, ""), "usage");
         assert_error(cmd.execute(&world, "north"), "degrees 0-360");
+        // #5280 — NaN and ±inf parse; rem_euclid turns inf into NaN. Both
+        // must be rejected before the value reaches the compass geometry
+        // or the Scaleform push.
+        assert_error(cmd.execute(&world, "nan"), "degrees 0-360");
+        assert_error(cmd.execute(&world, "inf"), "degrees 0-360");
+        assert_error(cmd.execute(&world, "-inf"), "degrees 0-360");
     }
 }
