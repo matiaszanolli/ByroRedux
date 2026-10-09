@@ -246,7 +246,7 @@ mod tests {
         // intact", FO4 CK SetValue). Pre-#5412 the reroute overwrote the
         // constant-spell layer, so the bonus vanished under a setav and
         // its later removal subtracted it a second time.
-        if let Some(mut avs) = world.get_mut::<ActorValues>(player) {
+        if let Some(avs) = world.get_mut::<ActorValues>(player) {
             avs.mod_permanent(HEALTH, 30.0);
         }
 
