@@ -519,19 +519,73 @@ pub(crate) fn resolve_exterior_climate(
     }
     let fallback = region_climate_for_center(cells, worldspace_key, center_x, center_y, regions)
         .or_else(|| match game {
-            GameKind::Oblivion => named_or_richest_climate(climates, worldspace_key),
+            GameKind::Oblivion => oblivion_climate_rungs(cells, climates, worldspace_key),
             _ => None,
         });
     if fallback.is_some() {
         log::info!(
             "Worldspace '{}' has no WRLD climate — resolved through the \
-             region chain / Oblivion naming convention ({},{})",
+             region chain / Oblivion inheritance rungs ({},{})",
             worldspace_key,
             center_x,
             center_y,
         );
     }
     fallback
+}
+
+/// #5388 — the Oblivion-only climate rungs, in order (each
+/// data-anchored before the next): pre-FO3 inheritance is "child ⟹
+/// inherit everything" (#5374's rule, applied to climate — SEWorld's
+/// children resolve SEWorld's authored `CNAM` = SEWorldClimate, whose
+/// default is SEFog 30); then the CS naming convention along the whole
+/// `WNAM` chain, root included — "<key>Climate" (Tamriel's children
+/// find `TamrielClimate` through the root; vanilla authors no Tamriel
+/// WRLD `CNAM` at all); then, as a LOGGED last resort, the climate
+/// carrying the most authored weathers. Pre-fix the naming rung tested
+/// only the child's own key ("ICMarketDistrictClimate" does not exist)
+/// and every one of the 30 child worldspaces fell to the richest
+/// climate, `AllWeather` — New Sheoth rendered Tamriel's Clear palette
+/// instead of the Shivering Isles fog.
+fn oblivion_climate_rungs(
+    cells: &byroredux_plugin::esm::cell::EsmCellIndex,
+    climates: &HashMap<u32, ClimateRecord>,
+    worldspace_key: &str,
+) -> Option<u32> {
+    let chain = worldspace_name_chain(&cells.worldspaces, worldspace_key);
+    if let Some(form) = chain
+        .iter()
+        .find_map(|key| cells.worldspace_climates.get(key).copied())
+    {
+        return Some(form);
+    }
+    if let Some(form) = chain.iter().find_map(|key| named_climate(climates, key)) {
+        return Some(form);
+    }
+    let richest = climates
+        .iter()
+        .max_by_key(|(fid, climate)| (climate.weathers.len(), std::cmp::Reverse(**fid)))
+        .map(|(fid, _)| *fid);
+    if richest.is_some() {
+        log::warn!(
+            "Worldspace '{}' resolved no climate through inheritance, the \
+             region chain or the CS naming convention — falling back to the \
+             richest-authored climate (a heuristic, not authored data; #5388)",
+            worldspace_key,
+        );
+    }
+    richest
+}
+
+/// The CS naming convention for ONE worldspace key: the climate named
+/// `"<worldspace>Climate"` (case-insensitive — Tamriel →
+/// TamrielClimate, SEWorld → SEWorldClimate).
+fn named_climate(climates: &HashMap<u32, ClimateRecord>, worldspace_key: &str) -> Option<u32> {
+    let convention = format!("{}climate", worldspace_key.to_ascii_lowercase());
+    climates
+        .iter()
+        .find(|(_, climate)| climate.editor_id.to_ascii_lowercase() == convention)
+        .map(|(fid, _)| *fid)
 }
 
 /// The center cell's region-chain climate: walk the `XCLR` FormID list in
@@ -563,29 +617,6 @@ pub(crate) fn region_climate_for_center(
         }
     }
     None
-}
-
-/// The Oblivion no-WRLD-climate fallback (see
-/// [`resolve_exterior_climate`]): the climate the Construction Set names
-/// after this worldspace (`"<worldspace>Climate"`, case-insensitive —
-/// Tamriel → TamrielClimate), else the climate with the most authored
-/// weathers (the provincial default). Ties break on the lowest FormID
-/// for determinism.
-fn named_or_richest_climate(
-    climates: &HashMap<u32, ClimateRecord>,
-    worldspace_key: &str,
-) -> Option<u32> {
-    let convention = format!("{}climate", worldspace_key.to_ascii_lowercase());
-    if let Some((fid, _)) = climates
-        .iter()
-        .find(|(_, climate)| climate.editor_id.to_ascii_lowercase() == convention)
-    {
-        return Some(*fid);
-    }
-    climates
-        .iter()
-        .max_by_key(|(fid, climate)| (climate.weathers.len(), std::cmp::Reverse(**fid)))
-        .map(|(fid, _)| *fid)
 }
 
 /// Resolve the climate in effect for one exterior cell: its own `XCCM`
@@ -5475,6 +5506,146 @@ mod default_weather_rule_tests {
             )),
             Some((0x0004_0000, 60)),
             "the resolvable WLST entry wins; the negative sentinel never does"
+        );
+    }
+}
+
+#[cfg(test)]
+mod oblivion_climate_rung_tests {
+    use super::resolve_exterior_climate;
+    use byroredux_plugin::esm::cell::EsmCellIndex;
+    use byroredux_plugin::esm::reader::GameKind;
+    use byroredux_plugin::esm::records::climate::ClimateRecord;
+    use byroredux_plugin::esm::records::RegnRecord;
+    use byroredux_plugin::esm::cell::WorldspaceRecord;
+    use std::collections::HashMap;
+
+    fn climate(form_id: u32, editor_id: &str, weathers: usize) -> ClimateRecord {
+        ClimateRecord {
+            form_id,
+            editor_id: editor_id.to_owned(),
+            weathers: vec![
+                byroredux_plugin::esm::records::climate::ClimateWeather {
+                    weather_form_id: form_id,
+                    chance: 100,
+                };
+                weathers
+            ],
+            ..Default::default()
+        }
+    }
+
+    fn child_world_index(parent_key: &str, parent: WorldspaceRecord) -> EsmCellIndex {
+        let mut index = EsmCellIndex::default();
+        index.worldspaces.insert(
+            "seworld".to_owned(),
+            WorldspaceRecord {
+                form_id: 0x01,
+                ..Default::default()
+            },
+        );
+        index.worldspaces.insert(
+            parent_key.to_owned(),
+            WorldspaceRecord {
+                form_id: 0x02,
+                parent_worldspace: Some(0x01),
+                ..parent
+            },
+        );
+        index.worldspaces.insert(
+            "sethefringe".to_owned(),
+            WorldspaceRecord {
+                form_id: 0x03,
+                parent_worldspace: Some(0x02),
+                ..Default::default()
+            },
+        );
+        index
+    }
+
+    /// #5388 — the inherit-all rung: an SEWorld child with no own CNAM
+    /// resolves the PARENT's authored `CNAM` (SEWorldClimate), not the
+    /// richest climate. Pre-fix every child fell to `AllWeather` and New
+    /// Sheoth rendered Tamriel's palette.
+    #[test]
+    fn oblivion_child_inherits_the_parent_authored_climate() {
+        let mut index = child_world_index(
+            "seworld",
+            WorldspaceRecord {
+                form_id: 0x02,
+                ..Default::default()
+            },
+        );
+        index.worldspace_climates.insert("seworld".to_owned(), 0x0004_0001);
+        let mut climates = HashMap::new();
+        climates.insert(0x0004_0001, climate(0x0004_0001, "SEWorldClimate", 2));
+        climates.insert(0x0004_00FF, climate(0x0004_00FF, "AllWeather", 7));
+
+        assert_eq!(
+            resolve_exterior_climate(
+                &index, &climates, &HashMap::<u32, RegnRecord>::new(),
+                "sethefringe", 0, 0, GameKind::Oblivion,
+            ),
+            Some(0x0004_0001),
+            "the SE child resolves SEWorldClimate through inherit-all, not the richest"
+        );
+    }
+
+    /// #5388 — the naming rung runs along the WHOLE chain, root
+    /// included: a Tamriel child with no authored CNAM anywhere finds
+    /// `TamrielClimate` through the chain root (vanilla authors no
+    /// Tamriel WRLD CNAM; the CS names the climate after the
+    /// worldspace). Pre-fix the rung tested only the child's own key.
+    #[test]
+    fn oblivion_child_finds_the_named_climate_through_the_chain_root() {
+        let mut index = EsmCellIndex::default();
+        index.worldspaces.insert(
+            "tamriel".to_owned(),
+            WorldspaceRecord { form_id: 0x01, ..Default::default() },
+        );
+        index.worldspaces.insert(
+            "icmarketdistrict".to_owned(),
+            WorldspaceRecord {
+                form_id: 0x02,
+                parent_worldspace: Some(0x01),
+                ..Default::default()
+            },
+        );
+        let mut climates = HashMap::new();
+        climates.insert(0x0004_0002, climate(0x0004_0002, "TamrielClimate", 3));
+        climates.insert(0x0004_00FF, climate(0x0004_00FF, "AllWeather", 7));
+
+        assert_eq!(
+            resolve_exterior_climate(
+                &index, &climates, &HashMap::<u32, RegnRecord>::new(),
+                "icmarketdistrict", 0, 0, GameKind::Oblivion,
+            ),
+            Some(0x0004_0002),
+            "'<root>Climate' resolves through the chain, not the richest heuristic"
+        );
+    }
+
+    /// #5388 — the richest climate stays the LOGGED last resort: with no
+    /// inheritance, region or naming data it still resolves (the
+    /// pre-fix behaviour for genuinely data-less worldspaces) rather
+    /// than dropping the sky to the procedural fallback.
+    #[test]
+    fn richest_climate_is_the_logged_last_resort() {
+        let index = child_world_index(
+            "seworld",
+            WorldspaceRecord { form_id: 0x02, ..Default::default() },
+        );
+        let mut climates = HashMap::new();
+        climates.insert(0x0004_0002, climate(0x0004_0002, "TamrielClimate", 3));
+        climates.insert(0x0004_00FF, climate(0x0004_00FF, "AllWeather", 7));
+
+        assert_eq!(
+            resolve_exterior_climate(
+                &index, &climates, &HashMap::<u32, RegnRecord>::new(),
+                "sethefringe", 0, 0, GameKind::Oblivion,
+            ),
+            Some(0x0004_00FF),
+            "with no anchored rung the richest climate still resolves"
         );
     }
 }
