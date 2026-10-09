@@ -550,6 +550,12 @@ mod system_access_declaration_tests {
     const FRAGMENT_EFFECTS_SRC: &str =
         include_str!("../../../../crates/scripting/src/fragment/effects.rs");
     const SCRIPTING_SCENE_SRC: &str = include_str!("../../../../crates/scripting/src/scene.rs");
+    // #5414 — `apply_selection`'s hops out of npc_dialogue.rs: the voice
+    // resolver lives in dialogue_voice.rs and the AHEL raise in
+    // story_events.rs. Both are invisible to the same-file callee walk,
+    // so they are listed explicitly like every other cross-file hop.
+    const DIALOGUE_VOICE_SRC: &str = include_str!("../../systems/dialogue_voice.rs");
+    const STORY_EVENTS_SRC: &str = include_str!("../../systems/story_events.rs");
 
     /// The nine `add_to_with_access` registrations, each mapped to the
     /// function bodies that make up its acquisition surface.
@@ -1004,6 +1010,13 @@ mod system_access_declaration_tests {
     /// the row declared all three as reads. The scan follows the bin system
     /// into the scripting crate so the row's write declarations can no
     /// longer silently rot back to reads.
+    ///
+    /// #5414 — `apply_selection`'s two cross-file hops are listed too:
+    /// `play_line_voice` (dialogue_voice.rs; SoundCache/AudioWorld writes,
+    /// SoundArchiveProvider/LoadedPluginSet/GlobalTransform reads) and
+    /// `raise_hello_story_event` (story_events.rs; the `StoryEvent` write
+    /// plus the cell-context reads). Without the explicit entries the
+    /// same-file callee walk never sees either and the row can rot again.
     #[test]
     fn npc_dialogue_selection_declares_everything_the_spoken_fragment_path_acquires() {
         assert_declares_everything_it_acquires(
@@ -1012,6 +1025,8 @@ mod system_access_declaration_tests {
                 (FRAGMENT_SYSTEMS_SRC, "apply_spoken_info_fragment"),
                 (FRAGMENT_EFFECTS_SRC, "apply_fragment_guard_free"),
                 (SCRIPTING_SCENE_SRC, "mark_scene_actor_bindings_dirty"),
+                (DIALOGUE_VOICE_SRC, "play_line_voice"),
+                (STORY_EVENTS_SRC, "raise_hello_story_event"),
             ],
             "make_npc_dialogue_selection_system",
         );

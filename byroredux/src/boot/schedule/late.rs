@@ -490,7 +490,23 @@ pub(super) fn register_late_systems(scheduler: &mut Scheduler) {
             // selection) and written (`note_info_spoken` on apply).
             .reads_resource::<byroredux_core::ecs::resources::TotalTime>()
             .writes_resource::<byroredux_scripting::DialogueSpokenInfoForms>()
-            .reads_resource::<byroredux_scripting::DialogueRandomState>(),
+            .reads_resource::<byroredux_scripting::DialogueRandomState>()
+            // #5414 — `apply_selection`'s two cross-file hops. The voice
+            // path (`dialogue_voice.rs` `play_line_voice`, called from
+            // `apply_selection`) takes the sound-archive provider and the
+            // loaded plugin set (reads), writes `SoundCache` and
+            // `AudioWorld`, and reads the speaker's `GlobalTransform`.
+            // The AHEL raise (`story_events.rs` `raise_hello_story_event`,
+            // called in Pass 2) writes the `StoryEvent` marker and reads
+            // the cell-context resources through `resolve_current_lctn`.
+            .reads_resource::<crate::asset_provider::audio::SoundArchiveProvider>()
+            .reads_resource::<crate::cell_loader::LoadedPluginSet>()
+            .writes_resource::<byroredux_audio::SoundCache>()
+            .writes_resource::<byroredux_audio::AudioWorld>()
+            .reads::<byroredux_core::ecs::components::GlobalTransform>()
+            .writes::<byroredux_scripting::story_manager::StoryEvent>()
+            .reads_resource::<crate::cell_loader::CurrentCellContext>()
+            .reads_resource::<crate::cell_loader::CurrentExteriorContext>(),
     );
     scheduler.add_exclusive_with_access(
         Stage::Late,
