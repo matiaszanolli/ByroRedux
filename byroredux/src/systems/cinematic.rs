@@ -712,7 +712,7 @@ pub(crate) fn retry_cinematic_readoption(
     drop(pending);
 
     let mut adopted_entities = 0usize;
-    for (entity, root, subtree) in &adoptions {
+    for (_root_entity, root, subtree) in &adoptions {
         for member in subtree {
             world.insert(*member, CellRoot(*root));
             if let Some(mut idx) = world.try_resource_mut::<CellRootIndex>() {
