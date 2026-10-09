@@ -110,7 +110,9 @@ fn decode_dds_impl(bytes: &[u8]) -> Option<Rgba8> {
             }
         }
     } else {
-        decode_uncompressed(bytes, width, height, bit_count, r_mask, g_mask, b_mask, a_mask)
+        decode_uncompressed(
+            bytes, width, height, bit_count, pf_flags, r_mask, g_mask, b_mask, a_mask,
+        )
     };
     if out.is_none() {
         log::debug!(
@@ -280,12 +282,12 @@ fn decode_uncompressed(
     width: u32,
     height: u32,
     bit_count: u32,
+    pf_flags: u32,
     r_mask: u32,
     g_mask: u32,
     b_mask: u32,
     a_mask: u32,
 ) -> Option<Rgba8> {
-    let mut out = Rgba8::new(width, height);
     let bytes_per_px = match bit_count {
         8 => 1usize,
         24 => 3,
@@ -297,9 +299,16 @@ fn decode_uncompressed(
     };
     let pitch = (width as usize * bytes_per_px).max(1);
     let data = &bytes[128..];
+    // #5377: size the payload before allocating the RGBA canvas — a
+    // 128-byte file claiming 8192² used to reserve 256 MiB before the
+    // first bounds check rejected it.
+    if data.len() < pitch * height as usize {
+        return None;
+    }
+    let mut out = Rgba8::new(width, height);
     let shift_of = |mask: u32| -> (u32, u32) {
         if mask == 0 {
-            return (0, 1);
+            return (0, 0); // absent channel — `chan` guards the use
         }
         let shift = mask.trailing_zeros();
         let bits = 32 - mask.leading_zeros() - shift;
@@ -309,35 +318,55 @@ fn decode_uncompressed(
     let (gs, gb) = shift_of(g_mask);
     let (bs, bb) = shift_of(b_mask);
     let (as_, ab) = shift_of(a_mask);
+    // Normalize a `bits`-wide sample to 8 bits. `bits < 8` replicates the
+    // pattern (0b1 -> 0xFF, 0b10 -> 0xAA) via shift-OR doubling — the
+    // closed form `v >> (2*bits - 8)` underflowed for bits < 4 (#5377).
     let scale = |v: u32, bits: u32| -> u8 {
-        if bits == 0 {
-            return 255;
+        debug_assert!(bits > 0 && bits <= 32);
+        if bits >= 8 {
+            return (v >> (bits - 8)).clamp(0, 255) as u8;
         }
-        // Normalize to 8-bit: replicate high bits for small masks.
-        let v8 = if bits >= 8 { v >> (bits - 8) } else { (v << (8 - bits)) | (v >> (2 * bits - 8).min(bits)) };
+        let mut v8 = v << (8 - bits);
+        let mut shift = bits;
+        while shift < 8 {
+            v8 |= v8 >> shift;
+            shift *= 2;
+        }
         v8.clamp(0, 255) as u8
     };
+    // A zero mask is an absent channel (L8's G/B, A8's RGB), not a 1-bit
+    // channel: decode as 0 and let the luminance/alpha paths fill the
+    // real slots.
+    let chan = |raw: u32, mask: u32, (shift, bits): (u32, u32)| -> u8 {
+        if mask == 0 {
+            0
+        } else {
+            scale((raw & mask) >> shift, bits)
+        }
+    };
+    // DDPF_LUMINANCE (0x20000): 8-bit files carry grey in the lone R
+    // mask slot (`0xFF, 0, 0`). Keying off all-equal masks missed the
+    // standard header and decoded L8 as red-only.
+    const DDPF_LUMINANCE: u32 = 0x2_0000;
+    let luminance = r_mask != 0
+        && g_mask == 0
+        && b_mask == 0
+        && (pf_flags & DDPF_LUMINANCE != 0 || bit_count == 8);
     for y in 0..height as usize {
         for x in 0..width as usize {
             let o = y * pitch + x * bytes_per_px;
-            if o + bytes_per_px > data.len() {
-                return None;
-            }
             let raw = match bytes_per_px {
                 4 => u32::from_le_bytes(data[o..o + 4].try_into().unwrap()),
                 3 => u32::from_le_bytes([data[o], data[o + 1], data[o + 2], 0]),
                 _ => data[o] as u32,
             };
             let p = (y * out.width as usize + x) * 4;
-            let r = scale((raw & r_mask) >> rs, rb);
-            let g = scale((raw & g_mask) >> gs, gb);
-            let b = scale((raw & b_mask) >> bs, bb);
+            let r = chan(raw, r_mask, (rs, rb));
+            let g = chan(raw, g_mask, (gs, gb));
+            let b = chan(raw, b_mask, (bs, bb));
             let a = if a_mask == 0 { 255 } else { scale((raw & a_mask) >> as_, ab) };
-            // Single-channel luminance (L8): all colour masks are the
-            // same or zero — replicate the channel.
-            if r_mask != 0 && r_mask == b_mask && g_mask == r_mask {
-                let l = data[o];
-                out.pixels[p..p + 4].copy_from_slice(&[l, l, l, a]);
+            if luminance {
+                out.pixels[p..p + 4].copy_from_slice(&[r, r, r, a]);
             } else {
                 out.pixels[p..p + 4].copy_from_slice(&[r, g, b, a]);
             }
@@ -354,4 +383,102 @@ pub enum TexError {
     AbsurdDimensions(u32, u32),
     #[error("tex pixel payload truncated: {have} of {expect} bytes")]
     TruncatedPixels { have: usize, expect: usize },
+}
+
+#[cfg(test)]
+mod uncompressed_decode_tests {
+    use super::Rgba8;
+
+    /// Hand-roll an uncompressed DDS header (128 B) + payload. The masks
+    /// are [R, G, B, A] in pixel-format order (abs 92..108).
+    fn dds(
+        width: u32,
+        height: u32,
+        flags: u32,
+        bit_count: u32,
+        masks: [u32; 4],
+        payload: &[u8],
+    ) -> Vec<u8> {
+        let mut b = vec![0u8; 128];
+        b[0..4].copy_from_slice(b"DDS ");
+        b[4..8].copy_from_slice(&124u32.to_le_bytes());
+        b[12..16].copy_from_slice(&height.to_le_bytes());
+        b[16..20].copy_from_slice(&width.to_le_bytes());
+        b[76..80].copy_from_slice(&32u32.to_le_bytes());
+        b[80..84].copy_from_slice(&flags.to_le_bytes());
+        // dwFourCC (abs 84) stays zero; the masks start at abs 92.
+        b[88..92].copy_from_slice(&bit_count.to_le_bytes());
+        for (i, m) in masks.iter().enumerate() {
+            b[92 + i * 4..96 + i * 4].copy_from_slice(&m.to_le_bytes());
+        }
+        b.extend_from_slice(payload);
+        b
+    }
+
+    fn px(img: &Rgba8) -> [u8; 4] {
+        [img.pixels[0], img.pixels[1], img.pixels[2], img.pixels[3]]
+    }
+
+    /// #5377 — the standard L8 header (lone R mask, G/B zero) must decode
+    /// as grey, not `(L, 0, 0)`; a zero colour mask is an absent channel,
+    /// not a 1-bit one, so nothing may underflow either.
+    #[test]
+    fn l8_grey_decodes_as_luminance_not_red() {
+        let img = Rgba8::decode_dds(&dds(1, 1, 0x2_0000, 8, [0xFF, 0, 0, 0], &[0x80])).unwrap();
+        assert_eq!(px(&img), [128, 128, 128, 255]);
+    }
+
+    /// #5377 — A8 (all colour masks zero) decodes black + alpha.
+    #[test]
+    fn a8_decodes_alpha_only() {
+        let img = Rgba8::decode_dds(&dds(1, 1, 0x2, 8, [0, 0, 0, 0xFF], &[0x80])).unwrap();
+        assert_eq!(px(&img), [0, 0, 0, 128]);
+    }
+
+    /// #5377 — a 2-bit alpha channel replicates to full range (0b11 ->
+    /// 255), not the old `3 << 6 = 192` truncation.
+    #[test]
+    fn a2r10g10b10_two_bit_alpha_replicates_to_opaque() {
+        let img = Rgba8::decode_dds(&dds(
+            1,
+            1,
+            0x41,
+            32,
+            [0x0000_03FF, 0x000F_FC00, 0x3FF0_0000, 0xC000_0000],
+            &0xFFFF_FFFFu32.to_le_bytes(),
+        ))
+        .unwrap();
+        assert_eq!(px(&img), [255, 255, 255, 255]);
+    }
+
+    /// The vanilla 32-bpp BGRA layout still decodes through its masks.
+    #[test]
+    fn bgra_32bpp_decodes_through_masks() {
+        let img = Rgba8::decode_dds(&dds(
+            1,
+            1,
+            0x41,
+            32,
+            [0x00FF_0000, 0x0000_FF00, 0x0000_00FF, 0xFF00_0000],
+            &[1, 2, 3, 255],
+        ))
+        .unwrap();
+        assert_eq!(px(&img), [3, 2, 1, 255]);
+    }
+
+    /// #5377 — the payload is sized against `width * height * bpp` before
+    /// the RGBA canvas is allocated, so a header claiming 8192² over a
+    /// 132-byte file is rejected without reserving 256 MiB.
+    #[test]
+    fn truncated_payload_is_rejected_before_allocation() {
+        assert!(Rgba8::decode_dds(&dds(
+            8192,
+            8192,
+            0x41,
+            32,
+            [0x00FF_0000, 0x0000_FF00, 0x0000_00FF, 0xFF00_0000],
+            &[0, 0, 0, 255],
+        ))
+        .is_none());
+    }
 }
