@@ -165,6 +165,13 @@ pub(crate) struct PlayerCharacterTemplate {
     /// make, translated through the same canonical path as NPC spawn.
     spells: Vec<u32>,
     spell_modifiers: Vec<byroredux_scripting::ConstantModifier>,
+    /// #5413 — the racial `SPLO` subset on its own, exactly what
+    /// [`stamp_spell_list`](crate::npc_spawn::stamp_spell_list) stamps on
+    /// NPC placement roots. The scripted `AddRaceSpells`/`RemoveRaceSpells`
+    /// pair reads the [`byroredux_scripting::RaceSpells`] component it
+    /// feeds; without it both were silent no-ops on the player (the only
+    /// actor the #4415 lowering ever targets).
+    racial_spells: Vec<u32>,
 }
 
 impl Resource for PlayerCharacterTemplate {}
@@ -353,6 +360,10 @@ fn build_player_character_template(index: &EsmIndex) -> PlayerCharacterTemplate 
     let resolved = byroredux_plugin::equip::ResolvedNpc::resolve(player, index);
     let factions = crate::npc_spawn::faction_ranks_of(&resolved);
     let spells = byroredux_plugin::equip::resolve_actor_spells(&resolved, index);
+    // #5413 — the racial subset beside the merged list, same pair
+    // `stamp_spell_list` stamps on NPC roots, so the scripted
+    // AddRaceSpells/RemoveRaceSpells pair works on the player too.
+    let racial_spells = byroredux_plugin::equip::resolve_racial_spells(&resolved, index);
     let spell_modifiers: Vec<_> = spells
         .iter()
         .flat_map(|&spell| {
@@ -365,6 +376,7 @@ fn build_player_character_template(index: &EsmIndex) -> PlayerCharacterTemplate 
             factions,
             spells,
             spell_modifiers,
+            racial_spells,
             ..Default::default()
         };
     }
@@ -411,6 +423,7 @@ fn build_player_character_template(index: &EsmIndex) -> PlayerCharacterTemplate 
                 factions,
                 spells,
                 spell_modifiers,
+                racial_spells,
             }
         }
         None => {
@@ -429,6 +442,7 @@ fn build_player_character_template(index: &EsmIndex) -> PlayerCharacterTemplate 
                 factions,
                 spells,
                 spell_modifiers,
+                racial_spells,
             }
         }
     }
@@ -740,6 +754,11 @@ pub(crate) fn attach_to_player(world: &mut World, player: byroredux_core::ecs::E
         world.insert(player, values);
     }
     world.insert(player, byroredux_scripting::SpellList(character.spells));
+    // #5413 — the racial subset beside the list, the same pair
+    // `stamp_spell_list` stamps on NPC placement roots: the scripted
+    // AddRaceSpells/RemoveRaceSpells pair reads this component, and the
+    // player body path is the one placement route that skips the stamp.
+    world.insert(player, byroredux_scripting::RaceSpells(character.racial_spells));
     if let Some(vitals) = character.vitals {
         world.insert(player, vitals);
     }
@@ -3533,6 +3552,42 @@ mod tests {
                 .get::<byroredux_core::ecs::components::FactionRanks>(player)
                 .map(|ranks| ranks.rank(0x1B2A4)),
             Some(Some(0))
+        );
+        // #5413 — the racial SPLO subset rides the attach too, in the same
+        // pair `stamp_spell_list` stamps on NPC roots. Pre-fix the player
+        // (the only actor the #4415 lowering targets) never carried
+        // `RaceSpells`, so both scripted entry points below were silent
+        // no-ops on it — the exact writers-vs-stamps gap of #4458.
+        assert_eq!(
+            world
+                .get::<byroredux_scripting::RaceSpells>(player)
+                .map(|spells| spells.0.clone()),
+            Some(vec![0x0070]),
+            "attach_to_player must stamp the racial subset beside SpellList"
+        );
+        // End to end through the scripted pair, against a player built by
+        // the production path (not one with hand-inserted components).
+        assert!(
+            byroredux_scripting::magic::remove_race_spells(&world, player),
+            "RemoveRaceSpells must clear the attached racial set"
+        );
+        assert_eq!(
+            world
+                .get::<byroredux_scripting::SpellList>(player)
+                .map(|list| list.0.clone()),
+            Some(Vec::new()),
+            "RemoveRaceSpells empties the player's list"
+        );
+        assert!(
+            byroredux_scripting::magic::add_race_spells(&world, player),
+            "AddRaceSpells must re-apply the attached racial set"
+        );
+        assert_eq!(
+            world
+                .get::<byroredux_scripting::SpellList>(player)
+                .map(|list| list.0.clone()),
+            Some(vec![0x0070]),
+            "the round trip restores the player's racial spell"
         );
 
         let values = world
