@@ -328,6 +328,62 @@ fn apply_cdb_material(
         material.bgem_glass = true;
         *touched = true;
     }
+    // #5277 — authored CDB blend state, the Starfield twin of the BGSM
+    // arm's `alpha_blend_mode` forwarding below. Starfield moved blend
+    // state out of NiAlphaProperty into the CDB (884 NiAlphaProperty
+    // blocks against 190,549 BSGeometry — `has_alpha` reaches the
+    // classifier false for effectively every shape), and without this
+    // forward the `bgem_glass` input set just above is dead: the
+    // classifier's no-transparent-coverage early return fires first, and
+    // authored glass renders as an opaque kind-0 dielectric — the exact
+    // symptom #5196 was filed for, surviving its own fix (3,449
+    // glass-named shapes, 23 `has_alpha`). `EffectSettingsComponent.
+    // BlendingMode` is the only live CDB blend signal (the Alpha side's
+    // Blender edge has zero top-level instances, schema probe 2026-10-09).
+    // Explicit arms, no guessing: "AlphaBlend" is standard
+    // SRC_ALPHA / ONE_MINUS_SRC_ALPHA, already `src_blend_mode` /
+    // `dst_blend_mode`'s (6, 7) defaults, so only `has_alpha` needs
+    // setting; any other authored string stays untouched until its
+    // mapping is sourced.
+    if cdb_mat.blending_mode.as_deref() == Some("AlphaBlend") {
+        material.has_alpha = true;
+        *touched = true;
+    }
+    // #5283 — `EmissiveSettingsComponent` is the authored emissive for
+    // the CDB era; without it the SLOT_EMISSIVE texture filled above
+    // binds to a zero-weight role (the stub's 0/0 emissive defaults) and
+    // no Starfield surface glows from its map. Forwarded like the BGSM
+    // arm's `emit_enabled` pair — raw authored values, gated on the
+    // component's own Enabled flag — and tagged `Lighting` (a genuine
+    // emissive scalar, the Starfield-era shader-property slot per
+    // `EmissiveSource`'s contract) through the same
+    // `emissive_contribution_is_authored` predicate the other four
+    // set-sites gate on. `LuminousEmittance` is a physical luminance;
+    // the EV100-metered HDR pipeline consumes linear luminance natively.
+    if cdb_mat.emissive_enabled == Some(true) {
+        let mut changed = false;
+        if let Some(tint) = cdb_mat.emissive_tint {
+            material.emissive_color = tint;
+            changed = true;
+        }
+        if let Some(emittance) = cdb_mat.luminous_emittance {
+            material.emissive_mult = emittance;
+            changed = true;
+        }
+        if changed {
+            // Same predicate shape as the BGEM arm: the values land
+            // unconditionally, the source tag only for a genuine
+            // non-zero contribution.
+            if byroredux_core::ecs::components::material::emissive_contribution_is_authored(
+                material.emissive_color,
+                material.emissive_mult,
+            ) {
+                material.emissive_source =
+                    byroredux_core::ecs::components::material::EmissiveSource::Lighting;
+            }
+            *touched = true;
+        }
+    }
     // #5196 — `UseSSS` stays untranslated until a subsurface-colour source
     // exists. `translucency_subsurface_color` defaults to [0,0,0]; the
     // lighting lobe multiplies by it and evaluates to exactly 0, while the
@@ -1955,6 +2011,120 @@ mod cdb_flat_color_tests {
             !material.thin_glass,
             "thin_glass is an authored thin-shell fact the CDB does not carry"
         );
+    }
+
+    /// #5277 — the end-to-end path #5196's own test never certified:
+    /// `IsGlass` + `AlphaBlend` through the merge and the FULL
+    /// `translate_material` lowering must classify as
+    /// `MATERIAL_KIND_GLASS`. Pre-#5277 the merge forwarded no blend
+    /// state, so the classifier's no-transparent-coverage early return
+    /// fired before the `bgem_glass` input was consulted and authored
+    /// glass rendered as an opaque kind-0 dielectric (Starfield ships
+    /// 884 NiAlphaProperty blocks against 190,549 BSGeometry, so the
+    /// NIF-side `has_alpha` is false for effectively every shape).
+    #[test]
+    fn cdb_is_glass_with_alpha_blend_classifies_as_glass_end_to_end() {
+        let mut material = bare_material();
+        let mut pool = byroredux_core::string::StringPool::new();
+        let mut touched = false;
+        apply_cdb_material(
+            &mut material,
+            &CdbMaterial {
+                is_glass: Some(true),
+                blending_mode: Some("AlphaBlend".to_string()),
+                ..Default::default()
+            },
+            &mut pool,
+            &mut touched,
+            &|_| true,
+        );
+        assert!(touched, "the CDB hit must count as a merge");
+        assert!(material.has_alpha, "authored AlphaBlend must forward to has_alpha");
+
+        let paths = crate::material_translate::ResolvedPaths {
+            textures: Default::default(),
+            material_path: None,
+            source_base_color: None,
+        };
+        let lowered = crate::material_translate::translate_material(&material, None, paths, 0);
+        assert_eq!(
+            lowered.material_kind,
+            byroredux_renderer::MATERIAL_KIND_GLASS,
+            "IsGlass + AlphaBlend must survive the full lowering as glass — the \
+             #5196 pin stopped at the bgem_glass bool and certified a path that \
+             could not fire (#5277)"
+        );
+
+        // The negative: IsGlass WITHOUT blend authoring keeps the
+        // classifier's coverage gate honest — an opaque PawnShopWindow
+        // stays opaque.
+        let mut opaque = bare_material();
+        let mut touched = false;
+        apply_cdb_material(
+            &mut opaque,
+            &CdbMaterial {
+                is_glass: Some(true),
+                ..Default::default()
+            },
+            &mut pool,
+            &mut touched,
+            &|_| true,
+        );
+        assert!(!opaque.has_alpha, "no authored blend, no coverage forward");
+    }
+
+    /// #5283 — the emissive capture weights the SLOT_EMISSIVE texture:
+    /// Enabled + tint + luminous emittance land on the emissive fields,
+    /// tagged `Lighting` through the shared authored-contribution
+    /// predicate. Pre-#5283 the stub's 0/0 defaults multiplied every
+    /// bound emissive map by zero.
+    #[test]
+    fn cdb_emissive_settings_weight_the_emissive_role() {
+        let mut material = bare_material();
+        let mut pool = byroredux_core::string::StringPool::new();
+        let mut touched = false;
+        apply_cdb_material(
+            &mut material,
+            &CdbMaterial {
+                textures: vec![(
+                    byroredux_sfmaterial::SLOT_EMISSIVE,
+                    "Data\\Textures\\widget_glow.DDS".to_string(),
+                )],
+                emissive_enabled: Some(true),
+                emissive_tint: Some([1.0, 0.8, 0.6]),
+                luminous_emittance: Some(432.0),
+                ..Default::default()
+            },
+            &mut pool,
+            &mut touched,
+            &|_| true,
+        );
+        assert!(material.textures.emissive.is_some(), "the map stays bound");
+        assert_eq!(material.emissive_color, [1.0, 0.8, 0.6]);
+        assert_eq!(material.emissive_mult, 432.0);
+        assert_eq!(
+            material.emissive_source,
+            byroredux_core::ecs::components::material::EmissiveSource::Lighting
+        );
+
+        // Enabled == false is authored-off: nothing lands, and the map
+        // (if any) stays zero-weighted rather than glowing unauthored.
+        let mut off = bare_material();
+        let mut touched = false;
+        apply_cdb_material(
+            &mut off,
+            &CdbMaterial {
+                emissive_enabled: Some(false),
+                emissive_tint: Some([1.0, 0.8, 0.6]),
+                luminous_emittance: Some(432.0),
+                ..Default::default()
+            },
+            &mut pool,
+            &mut touched,
+            &|_| true,
+        );
+        assert_eq!(off.emissive_color, [0.0; 3], "authored-off stays off");
+        assert_eq!(off.emissive_mult, 0.0);
     }
 
     /// #5196 — `UseSSS` stays parked until a subsurface-colour source is

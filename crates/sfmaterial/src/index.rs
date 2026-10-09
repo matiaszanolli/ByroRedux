@@ -96,6 +96,19 @@ pub struct CdbMaterial {
     pub use_sss: Option<bool>,
     /// `TranslucencySettings.TransmissiveScale`.
     pub transmissive_scale: Option<f32>,
+    /// `EffectSettingsComponent.BlendingMode` — the authored blend-state
+    /// enum string ("AlphaBlend", "None", …). #5277 — the alpha side's
+    /// `AlphaSettingsComponent.Blender` → `AlphaBlenderSettings` edge has
+    /// ZERO top-level instances in the base CDB (schema probe 2026-10-09
+    /// over the shipped `materialsbeta.cdb`), so this Effect-side string
+    /// is the only live CDB blend signal.
+    pub blending_mode: Option<String>,
+    /// `EmissiveSettingsComponent.Enabled` (#5283).
+    pub emissive_enabled: Option<bool>,
+    /// `EmissiveSettingsComponent.Settings.EmissiveTint` (linear RGB).
+    pub emissive_tint: Option<[f32; 3]>,
+    /// `EmissiveSettingsComponent.Settings.LuminousEmittance`.
+    pub luminous_emittance: Option<f32>,
     /// Enabled `TextureReplacement` colours per texture slot
     /// (`Components.Index`, the same slot space `MRTextureFile` uses) —
     /// Starfield's flat-color materials author a solid colour INSTEAD of
@@ -135,6 +148,12 @@ pub struct MaterialIndex {
     param_floats: std::collections::HashMap<u32, Vec<(u8, f32)>>,
     alpha: std::collections::HashMap<u32, (Option<f32>, Option<bool>)>,
     effect: std::collections::HashMap<u32, Option<bool>>,
+    /// #5277 — per object, `EffectSettingsComponent.BlendingMode`.
+    effect_blend: std::collections::HashMap<u32, Option<String>>,
+    /// #5283 — per object, the `EmissiveSettingsComponent` capture:
+    /// (Enabled, Settings.EmissiveTint rgb, Settings.LuminousEmittance).
+    emissive:
+        std::collections::HashMap<u32, (Option<bool>, Option<[f32; 3]>, Option<f32>)>,
     translucency: std::collections::HashMap<u32, (Option<bool>, Option<f32>)>,
 }
 
@@ -359,6 +378,22 @@ impl MaterialIndex {
                 out.is_glass = *glass;
             }
         }
+        if let Some(blend) = self.effect_blend.get(&obj) {
+            if out.blending_mode.is_none() {
+                out.blending_mode = blend.clone();
+            }
+        }
+        if let Some(emissive) = self.emissive.get(&obj) {
+            if out.emissive_enabled.is_none() {
+                out.emissive_enabled = emissive.0;
+            }
+            if out.emissive_tint.is_none() {
+                out.emissive_tint = emissive.1;
+            }
+            if out.luminous_emittance.is_none() {
+                out.luminous_emittance = emissive.2;
+            }
+        }
         if let Some((sss, scale)) = self.translucency.get(&obj) {
             if out.use_sss.is_none() {
                 out.use_sss = *sss;
@@ -459,7 +494,48 @@ impl MaterialIndex {
                     Some(Value::Bool(v)) => Some(*v),
                     _ => None,
                 };
+                // #5277 — the authored blend-state enum string, the only
+                // live CDB blend signal (the Alpha side's Blender edge has
+                // zero top-level instances in the base CDB, schema probe
+                // 2026-10-09). Consumed at the merge boundary the way the
+                // FO4 BGSM arm consumes `alpha_blend_mode`.
+                let blend = match o.fields.get("BlendingMode") {
+                    Some(Value::String(v)) => Some(v.clone()),
+                    _ => None,
+                };
                 self.effect.entry(row.object).or_insert(glass);
+                self.effect_blend
+                    .entry(row.object)
+                    .and_modify(|e| {
+                        if e.is_none() {
+                            *e = blend.clone();
+                        }
+                    })
+                    .or_insert(blend);
+            }
+            // #5283 — Enabled + the nested EmittanceSettings (tint /
+            // luminous emittance), the authored emissive for the CDB era.
+            // `Settings` is an INLINE nested object (schema probe
+            // 2026-10-09), not a graph edge, so it arrives on the same
+            // instance.
+            "BSMaterial::EmissiveSettingsComponent" => {
+                let enabled = match o.fields.get("Enabled") {
+                    Some(Value::Bool(v)) => Some(*v),
+                    _ => None,
+                };
+                let mut tint = None;
+                let mut emittance = None;
+                if let Some(Value::Object(settings)) = o.fields.get("Settings") {
+                    if let Some(color) = xmcolor4(settings, "EmissiveTint") {
+                        tint = Some([color[0], color[1], color[2]]);
+                    }
+                    if let Some(Value::Float(v)) = settings.fields.get("LuminousEmittance") {
+                        emittance = Some(*v);
+                    }
+                }
+                self.emissive
+                    .entry(row.object)
+                    .or_insert((enabled, tint, emittance));
             }
             "BSMaterial::TranslucencySettings" => {
                 let sss = match o.fields.get("UseSSS") {
@@ -780,6 +856,24 @@ pub mod test_support {
     /// and re-serialize with [`assemble_synthetic_cdb`]. The unmutated
     /// list assembles byte-identical to the pre-refactor fixture.
     pub fn synthetic_cdb_chunks(color_path: &'static str) -> SyntheticCdbChunks {
+        synthetic_cdb_chunks_with(color_path, false)
+    }
+
+    /// #5277/#5283 — the base graph plus the Effect (glass + AlphaBlend)
+    /// and Emissive settings components on the layer material, for tests
+    /// that pin those captures. Opt-in: the shared fixtures (the #5197
+    /// neutral-scalars pin among them) must not silently become glass.
+    pub fn synthetic_material_cdb_with_effect_settings() -> Vec<u8> {
+        assemble_synthetic_cdb(&synthetic_cdb_chunks_with(
+            "Data\\Textures\\widget_color.DDS",
+            true,
+        ))
+    }
+
+    pub fn synthetic_cdb_chunks_with(
+        color_path: &'static str,
+        effect_components: bool,
+    ) -> SyntheticCdbChunks {
     let names = [
         "", // STRT index 0: empty string
         "BSComponentDB2::ID",
@@ -821,6 +915,14 @@ pub mod test_support {
         "Color",
         "Enabled",
         "BSMaterial::TextureReplacement",
+        "BSMaterial::EffectSettingsComponent",
+        "IsGlass",
+        "BlendingMode",
+        "BSMaterial::EmissiveSettingsComponent",
+        "Settings",
+        "BSMaterial::EmittanceSettings",
+        "EmissiveTint",
+        "LuminousEmittance",
     ];
     // STRT offsets (index into the STRT chunk's own table; name i sits
     // at table slot i). parse_class resolves `strings.get(name_offset)`
@@ -905,6 +1007,29 @@ pub mod test_support {
             is_struct,
             &[(g("Color"), t_color, 0, 16), (g("Enabled"), T_BOOL, 16, 1)],
         ),
+        // #5277/#5283 — the effect/emissive component shapes as probed
+        // off the shipped CDB (2026-10-09), minimal field subsets:
+        //   EffectSettingsComponent { IsGlass, BlendingMode }
+        //   EmittanceSettings { EmissiveTint: Color, LuminousEmittance }
+        //   EmissiveSettingsComponent { Enabled, Settings: Emittance }
+        clas(
+            g("BSMaterial::EffectSettingsComponent"),
+            14,
+            is_struct,
+            &[(g("IsGlass"), T_BOOL, 0, 1), (g("BlendingMode"), T_STRING, 1, 4)],
+        ),
+        clas(
+            g("BSMaterial::EmittanceSettings"),
+            15,
+            is_struct,
+            &[(g("EmissiveTint"), t_color, 0, 16), (g("LuminousEmittance"), T_FLOAT, 16, 4)],
+        ),
+        clas(
+            g("BSMaterial::EmissiveSettingsComponent"),
+            16,
+            is_struct,
+            &[(g("Enabled"), T_BOOL, 0, 1), (g("Settings"), g("BSMaterial::EmittanceSettings"), 4, 20)],
+        ),
     ];
 
     let strt_payload = strt(&names);
@@ -948,6 +1073,10 @@ pub mod test_support {
     //                                   a NON-colour-slot replacement that
     //                                   must not tint the albedo)
     //   obj 10: CTName(0)             → instance 10 (noise)
+    //   obj 12: EffectSettings(0)     → instance 11 (#5277 — glass +
+    //                                   AlphaBlend on the LAYER MATERIAL,
+    //                                   where collect_settings reads it)
+    //   obj 12: EmissiveSettings(0)   → instance 12 (#5283)
     let component_rows: &[(u32, u32, u32)] = &[
         (10, 7, 0),
         (11, 8, 0),
@@ -959,10 +1088,15 @@ pub mod test_support {
         (13, 13, 1),
         (10, 6, 0),
     ];
+    let mut component_rows: Vec<(u32, u32, u32)> = component_rows.to_vec();
+    if effect_components {
+        component_rows.push((12, 14, 0));
+        component_rows.push((12, 16, 0));
+    }
     let mut components = Vec::new();
     components.extend_from_slice(&t_cinfo.to_le_bytes());
     components.extend_from_slice(&(component_rows.len() as i32).to_le_bytes());
-    for (obj, ty, index) in component_rows {
+    for (obj, ty, index) in &component_rows {
         components.extend_from_slice(&obj.to_le_bytes());
         components.extend_from_slice(&(*ty as u16).to_le_bytes());
         components.extend_from_slice(&(*index as u16).to_le_bytes());
@@ -1017,6 +1151,26 @@ pub mod test_support {
     }
     texrep_normal.push(1u8); // Enabled
 
+    // #5277 — EffectSettingsComponent on the layer material: glass on,
+    // standard alpha blend authored.
+    let mut effect_objt = Vec::new();
+    effect_objt.extend_from_slice(&g("BSMaterial::EffectSettingsComponent").to_le_bytes());
+    effect_objt.push(1u8); // IsGlass = true
+    let blend = b"AlphaBlend";
+    effect_objt.extend_from_slice(&(blend.len() as u16).to_le_bytes());
+    effect_objt.extend_from_slice(blend);
+    // #5283 — EmissiveSettingsComponent: enabled, warm tint,
+    // luminous emittance 432 (the probed real value).
+    let mut emissive_objt = Vec::new();
+    emissive_objt.extend_from_slice(&g("BSMaterial::EmissiveSettingsComponent").to_le_bytes());
+    emissive_objt.push(1u8); // Enabled = true
+    // Settings (EmittanceSettings): EmissiveTint Color (16 B) then
+    // LuminousEmittance f32 — inline, per the class layout.
+    for f in [1.0f32, 0.8, 0.6, 1.0] {
+        emissive_objt.extend_from_slice(&f.to_le_bytes());
+    }
+    emissive_objt.extend_from_slice(&432.0f32.to_le_bytes());
+
     let mut chunks: SyntheticCdbChunks = vec![
         (b"STRT", strt_payload),
         (b"TYPE", (classes.len() as u32).to_le_bytes().to_vec()),
@@ -1035,6 +1189,10 @@ pub mod test_support {
         (b"OBJT", texrep_normal),
         (b"OBJT", ctname_objt),
     ];
+    if effect_components {
+        chunks.push((b"OBJT", effect_objt));
+        chunks.push((b"OBJT", emissive_objt));
+    }
     // One CLAS per class, right after TYPE.
     chunks.splice(
         2..2,
@@ -1079,7 +1237,8 @@ pub mod test_support {
 #[cfg(test)]
 mod tests {
     use super::test_support::{
-        assemble_synthetic_cdb, synthetic_cdb_chunks, synthetic_material_cdb, SyntheticCdbChunks,
+        assemble_synthetic_cdb, synthetic_cdb_chunks, synthetic_material_cdb,
+        synthetic_material_cdb_with_effect_settings, SyntheticCdbChunks,
     };
     use super::*;
 
@@ -1183,7 +1342,7 @@ mod tests {
 
     #[test]
     fn index_builds_and_resolves_the_full_join_chain() {
-        let cdb = synthetic_material_cdb();
+        let cdb = synthetic_material_cdb_with_effect_settings();
         let index = MaterialIndex::build(&cdb).expect("synthetic CDB indexes");
         assert_eq!(index.material_count(), 1, "one keyed material object");
 
@@ -1210,6 +1369,14 @@ mod tests {
             ],
             "enabled TextureReplacements land per slot, not slot-agnostically"
         );
+        // #5277 — the Effect-side authored blend state rides the same
+        // layer-material settings pass as IsGlass.
+        assert_eq!(mat.is_glass, Some(true));
+        assert_eq!(mat.blending_mode.as_deref(), Some("AlphaBlend"));
+        // #5283 — the nested EmittanceSettings capture.
+        assert_eq!(mat.emissive_enabled, Some(true));
+        assert_eq!(mat.emissive_tint, Some([1.0, 0.8, 0.6]));
+        assert_eq!(mat.luminous_emittance, Some(432.0));
     }
 
     #[test]
