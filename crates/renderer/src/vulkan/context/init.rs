@@ -1808,6 +1808,8 @@ impl VulkanContext {
             },
             prev_caustic_scene_key: 0,
             scene_static_last_build: false,
+            prev_restir_rig_key: crate::vulkan::caustic::caustic_key_seed(),
+            restir_rig_static_last_build: false,
             indirect_upload_ok: true,
         };
 

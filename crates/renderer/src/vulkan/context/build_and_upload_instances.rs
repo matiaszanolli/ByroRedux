@@ -698,6 +698,20 @@ impl VulkanContext {
         // by the streaming-RIS visible set, so this is a short loop.
         caustic_scene_key =
             crate::vulkan::caustic::fold_caustic_key_f32(caustic_scene_key, lights.len() as f32);
+        // #5369 — the ReSTIR shadow-ratio EMA's rig key folds only the
+        // floats that determine a shadow ray's GEOMETRY: position, type,
+        // direction, cone angle, emitter radius (`params.y`) and
+        // visibility mask (`params.z`) — never colour/intensity. The
+        // Heitz ratio estimator divides the shaded estimate by the
+        // current unshadowed sum, so a flickering light cancels in the
+        // ratio and needs no history reset; folding colour here (as the
+        // caustic key above deliberately does) kept every fire-lit or
+        // fluorescent scene pinned at the 0.1 refresh floor — the
+        // permanent penumbra speckle this issue reports.
+        let mut restir_rig_key = crate::vulkan::caustic::fold_light_rig_geometry_key(
+            crate::vulkan::caustic::caustic_key_seed(),
+            lights.len() as f32,
+        );
         for light in lights {
             for v in light
                 .position_radius
@@ -709,6 +723,10 @@ impl VulkanContext {
                 caustic_scene_key =
                     crate::vulkan::caustic::fold_caustic_key_f32(caustic_scene_key, *v);
             }
+            restir_rig_key = crate::vulkan::caustic::fold_light_rig_geometry_key_for(
+                restir_rig_key,
+                light,
+            );
         }
         // The accumulator's history is valid only when nothing that
         // determines a splat's landing point changed: the camera (the
@@ -729,6 +747,21 @@ impl VulkanContext {
             && caustic_scene_key == self.prev_caustic_scene_key;
         self.prev_caustic_scene_key = caustic_scene_key;
         self.scene_static_last_build = caustic_scene_static;
+        // #5369 — same occluder gates (moved rigid, set change, skinned
+        // pose), but the rig key ignores intensity: a flickering light
+        // keeps the direct-light EMA's deep parked history while the
+        // caustic/SVGF accumulators above legitimately re-accumulate.
+        let restir_rig_static = !(rigid_instance_moved
+            || (rigid_history_live
+                && rigid_instance_set_changed(
+                    rigid_instance_first_sight,
+                    self.history.previous_rigid_models.len(),
+                    current_rigid_models.len(),
+                )))
+            && pose_dirty.is_empty()
+            && restir_rig_key == self.prev_restir_rig_key;
+        self.prev_restir_rig_key = restir_rig_key;
+        self.restir_rig_static_last_build = restir_rig_static;
         let caustic_history_valid = camera_static && caustic_scene_static;
 
         // #647 / RP-1 — guard against `gl_InstanceIndex` outrunning

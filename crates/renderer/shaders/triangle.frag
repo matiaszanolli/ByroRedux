@@ -3588,7 +3588,12 @@ void main() {
                     && !isnan(rp.accumR) && !isinf(rp.accumR)) {
                     reprojValid = true;
                     prevAccum = max(vec3(rp.accumR, rp.accumG, rp.accumB), vec3(0.0));
-                    histPrev = clamp(rpHistLen, 0.0, 64.0);
+                    // #5369 — the garbage guard clamps to the deep parked
+                    // cap (computed below from the history mode), not a
+                    // hard 64: the old constant silently defeated
+                    // `historyCap`'s raise and pinned the parked tail at
+                    // ~1/65 no matter what the EMA constants said.
+                    histPrev = clamp(rpHistLen, 0.0, 256.0);
                 }
             }
 
@@ -3869,8 +3874,8 @@ void main() {
             }
 
             // EMA-accumulate the colour estimate with a bounded history. Four
-            // fresh visibility rays already reduce variance per frame. While
-            // the camera moves, keep the short responsive window so animated
+            // fresh visibility rays already reduce variance per frame. While the
+            // camera moves, keep the short responsive window so animated
             // occluders do not leave long illumination ghosts. Once the camera
             // is parked, direct-light noise is the only thing changing on a
             // static receiver, so let the validated per-surface history
@@ -3882,7 +3887,19 @@ void main() {
             // flag: `dofParams.w > 1.5` is "camera parked AND nothing else
             // changed last build" (`restir_history_mode`). A moving occluder,
             // a looted object or a moving light drops the cap back to 16, so
-            // the EMA restarts from there instead of holding a 64-frame tail.
+            // the EMA restarts from there instead of holding a long tail.
+            //
+            // #5369 — mode 3 extends `> 1.5` to "parked with static light
+            // GEOMETRY under intensity flicker": the ratio estimator cancels
+            // intensity changes, so fire-lit and fluorescent scenes (the
+            // Cornell fire lab, the FO4 Institute) keep the deep tail too.
+            // Pre-fix they sat at the 0.1 floor forever — a standing ±10%-of-
+            // sample-noise speckle in every penumbra that read as "never
+            // converging". The parked tail is also deepened here: cap 256 /
+            // floor 0.008 puts the steady-state spatial grain (~sqrt(floor/2)
+            // of the per-frame sample noise) under one perceivable level
+            // instead of ~3, and ghost responsiveness is unchanged because
+            // any geometry-moving change drops out of the deep mode.
             //
             // Where a channel's unshadowed sum is ~0 the ratio is undefined;
             // keep the history's (or "unshadowed") ratio there so a light that
@@ -3897,8 +3914,8 @@ void main() {
             float histLen;
             if (reprojValid) {
                 bool sceneStatic = dofParams.w > 1.5;
-                float historyCap = sceneStatic ? 64.0 : 16.0;
-                float alphaFloor = sceneStatic ? 0.025 : 0.1;
+                float historyCap = sceneStatic ? 256.0 : 16.0;
+                float alphaFloor = sceneStatic ? 0.008 : 0.1;
                 histLen = min(histPrev + 1.0, historyCap);
                 float alpha = max(1.0 / histLen, alphaFloor);
                 accum = mix(prevAccum, ratioFrame, alpha);
@@ -4140,7 +4157,7 @@ void main() {
     if (giTransportEligible && rtLOD < RT_LOD_GI) {
             // GI noise seed. Hold it for 4 frames while the camera MOVES to
             // suppress flicker (SVGF history is short under motion). When the
-            // camera is PARKED (dofParams.w >= 1: history mode 1 or 2), advance the seed
+            // camera is PARKED (dofParams.w >= 1: history mode 1, 2 or 3), advance the seed
             // every frame instead: SVGF's 1/N progressive accumulation absorbs
             // the per-frame change, and the now-decorrelated hemisphere
             // directions converge the dark indirect-lit floor ~4× faster. The

@@ -70,18 +70,38 @@ pub(super) struct CameraAssemblyOutput {
     pub(super) fsr_frame: Option<FsrFrameParameters>,
 }
 
-/// #4942 — `GpuCamera.dof_params.w`: `0.0` while the camera moves, `1.0`
-/// when it is parked, `2.0` when it is parked AND the last build saw no other
-/// change (`caustic_scene_static`, the signal SVGF's progressive mode uses
-/// since #4046). The ReSTIR direct-light EMA took its 64-frame, 0.025-floor
-/// history from the bare camera flag, so an occluder moving, an object being
-/// looted or a light moving in front of a parked player kept direct lighting
-/// on a ~40-frame lag that SVGF's indirect had already dropped.
-pub(super) fn restir_history_mode(camera_static: bool, scene_static: bool) -> f32 {
-    match (camera_static, scene_static) {
-        (false, _) => 0.0,
-        (true, false) => 1.0,
-        (true, true) => 2.0,
+/// #4942/#5369 — `GpuCamera.dof_params.w`, read by `triangle.frag` as two
+/// thresholds only (`> 0.5` = parked: GI seed advances; `> 1.5` = deep
+/// direct-light history):
+///
+/// - `0.0` — camera moving.
+/// - `1.0` — parked, but the last build saw a change that moves shadows
+///   (occluder moved, light moved/re-coloured, set changed).
+/// - `2.0` — parked and fully static (`caustic_scene_static`, the signal
+///   SVGF's progressive mode uses since #4046).
+/// - `3.0` — parked with the light rig's GEOMETRY static but its
+///   intensities flickering (fire, fluorescent hum): the Heitz-2018 ratio
+///   estimator cancels intensity in numerator/denominator, so the
+///   direct-light EMA keeps its deep parked tail (3.0 > 1.5) while the
+///   caustic/SVGF accumulators — which hold raw energy, where flicker is
+///   signal — legitimately re-accumulate. Pre-#5369 these scenes sat at
+///   `1.0`'s 0.1 refresh floor forever: the permanent penumbra speckle of
+///   the Cornell fire lab and the FO4 Institute.
+///
+/// The ReSTIR direct-light EMA took its deep history from the bare camera
+/// flag before #4942, so an occluder moving, an object being looted or a
+/// light moving in front of a parked player kept direct lighting on a
+/// ~40-frame lag that SVGF's indirect had already dropped.
+pub(super) fn restir_history_mode(
+    camera_static: bool,
+    scene_static: bool,
+    rig_static: bool,
+) -> f32 {
+    match (camera_static, scene_static, rig_static) {
+        (false, _, _) => 0.0,
+        (true, true, _) => 2.0,
+        (true, false, true) => 3.0,
+        (true, false, false) => 1.0,
     }
 }
 
@@ -535,15 +555,21 @@ impl VulkanContext {
             // default 0.5). Live-tunable via the `light.atten` console
             // command for the controlled bench.
             // w = history mode (`restir_history_mode`): 0 = camera moving,
-            // 1 = parked, 2 = parked with an unchanged scene. triangle.frag's
-            // GI seed reads `> 0.5` (advance the noise seed every frame when
-            // parked, so the dark indirect-lit floor converges ~4× faster —
-            // TARGET 1); the ReSTIR direct EMA reads `> 1.5` (#4942).
+            // 1 = parked, 2 = parked with an unchanged scene, 3 = parked
+            // with static light geometry under intensity flicker (#5369).
+            // triangle.frag's GI seed reads `> 0.5` (advance the noise seed
+            // every frame when parked, so the dark indirect-lit floor
+            // converges ~4× faster — TARGET 1); the ReSTIR direct EMA reads
+            // `> 1.5` (#4942 — modes 2 and 3 both qualify).
             dof_params: [
                 active_dof.aperture,
                 active_dof.focus_dist,
                 self.light_atten_knee,
-                restir_history_mode(camera_static, self.scene_static_last_build),
+                restir_history_mode(
+                    camera_static,
+                    self.scene_static_last_build,
+                    self.restir_rig_static_last_build,
+                ),
             ],
             // #markarth-precision — camera-relative render origin in xyz.
             // Vertex/deferred shaders add this back to recover the absolute
@@ -762,11 +788,30 @@ mod restir_history_mode_tests {
     #[test]
     fn history_mode_keeps_the_camera_threshold_and_adds_the_scene_one() {
         for scene_static in [false, true] {
-            assert!(restir_history_mode(false, scene_static) < 0.5);
-            assert!(restir_history_mode(true, scene_static) > 0.5);
+            for rig_static in [false, true] {
+                assert!(restir_history_mode(false, scene_static, rig_static) < 0.5);
+                assert!(restir_history_mode(true, scene_static, rig_static) > 0.5);
+            }
         }
-        assert!(restir_history_mode(true, false) < 1.5);
-        assert!(restir_history_mode(true, true) > 1.5);
-        assert!(restir_history_mode(false, true) < 1.5, "a moving camera is never scene-static");
+        assert!(restir_history_mode(true, false, false) < 1.5);
+        assert!(restir_history_mode(true, true, false) > 1.5);
+        assert!(restir_history_mode(false, true, true) < 1.5, "a moving camera is never scene-static");
+    }
+
+    /// #5369 — mode 3: parked with light-rig GEOMETRY static under
+    /// intensity flicker. The ReSTIR EMA's deep tail reads `> 1.5`, so a
+    /// flickering fire or fluorescent hum no longer pins the 0.1 refresh
+    /// floor (the standing penumbra speckle); a genuinely moving light
+    /// (rig geometry changed) or occluder still drops back to mode 1.
+    #[test]
+    fn flicker_only_changes_keep_the_deep_ema_mode() {
+        let mode = restir_history_mode(true, false, true);
+        assert!(mode > 1.5, "flicker-only keeps the deep direct-light tail");
+        assert!(mode < 4.0, "mode stays inside the documented 0..=3 ladder");
+        assert_eq!(mode, 3.0);
+        // The full-static ladder is unchanged, and full scene-static
+        // outranks the rig signal (same deep tail either way).
+        assert_eq!(restir_history_mode(true, true, true), 2.0);
+        assert_eq!(restir_history_mode(true, false, false), 1.0);
     }
 }

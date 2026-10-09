@@ -179,6 +179,39 @@ pub(crate) fn caustic_key_seed() -> u64 {
     CAUSTIC_KEY_BASIS
 }
 
+/// #5369 — fold one light-rig geometry scalar into the ReSTIR rig key.
+/// Same mixer as the caustic key; the two keys differ only in WHAT they
+/// fold (see [`fold_light_rig_geometry_key_for`]).
+#[inline]
+pub(crate) fn fold_light_rig_geometry_key(key: u64, v: f32) -> u64 {
+    fold_caustic_key_f32(key, v)
+}
+
+/// Fold one light's GEOMETRY into the ReSTIR rig key (#5369): position
+/// (xyz), type, direction + cone angle, emitter radius (`params.y`) and
+/// visibility mask (`params.z`) — exactly the inputs of a shadow ray's
+/// target and occlusion set. Deliberately excludes colour/intensity
+/// (`color_type.rgb`) and the attenuation scalars (`params.x`/`.w`):
+/// the Heitz-2018 ratio estimator the direct-light EMA accumulates
+/// divides by the current unshadowed sum, so an intensity change
+/// cancels and the penumbra history stays valid. The caustic key keeps
+/// folding every float — its accumulator holds raw splat energy, where
+/// a dimmed light legitimately moves the pool (#2468).
+pub(crate) fn fold_light_rig_geometry_key_for(key: u64, light: &super::scene_buffer::GpuLight) -> u64 {
+    let mut key = fold_light_rig_geometry_key(key, light.position_radius[0]);
+    key = fold_light_rig_geometry_key(key, light.position_radius[1]);
+    key = fold_light_rig_geometry_key(key, light.position_radius[2]);
+    // Cull radius (`position_radius.w`) scales with intensity-driven
+    // range, not ray geometry — excluded like the colour.
+    key = fold_light_rig_geometry_key(key, light.color_type[3]);
+    for v in light.direction_angle {
+        key = fold_light_rig_geometry_key(key, v);
+    }
+    key = fold_light_rig_geometry_key(key, light.params[1]);
+    key = fold_light_rig_geometry_key(key, light.params[2]);
+    key
+}
+
 #[inline]
 fn caustic_subresource_range() -> vk::ImageSubresourceRange {
     vk::ImageSubresourceRange {
@@ -1887,5 +1920,64 @@ mod skip_clear_mask_pin_tests {
              scope — the slot's prior use is `record_neutral_frame`'s clear on every \
              frame before the TLAS exists (#3647)",
         );
+    }
+    /// #5369 — the ReSTIR rig key is intensity-blind: a light whose
+    /// colour, cull radius or attenuation scalars change (fire flicker,
+    /// fluorescent hum, weather dimming) folds to the SAME key, while any
+    /// geometry-moving change (position, type, direction/cone, emitter
+    /// radius, visibility mask, count) must move it. Pre-fix these scenes
+    /// re-keyed every frame and the direct-light EMA sat at its 0.1
+    /// refresh floor — the permanent penumbra speckle.
+    #[test]
+    fn light_rig_geometry_key_ignores_intensity_but_not_geometry() {
+        use crate::vulkan::scene_buffer::GpuLight;
+        use super::{caustic_key_seed, fold_light_rig_geometry_key_for};
+
+        let base = GpuLight {
+            position_radius: [-10.0, 3.0, 2.0, 512.0],
+            color_type: [1.0, 0.6, 0.2, 0.0],
+            direction_angle: [0.0, -1.0, 0.0, 0.7],
+            params: [2.0, 8.0, 7.0, 0.0],
+        };
+        let key_of = |l: &GpuLight, count: f32| {
+            fold_light_rig_geometry_key_for(
+                super::fold_caustic_key_f32(caustic_key_seed(), count),
+                l,
+            )
+        };
+        let baseline = key_of(&base, 1.0);
+
+        // Intensity-family changes: same key.
+        let mut flicker = base;
+        flicker.color_type[0] *= 0.25;
+        flicker.color_type[1] *= 0.25;
+        flicker.color_type[2] *= 0.25;
+        assert_eq!(key_of(&flicker, 1.0), baseline, "colour flicker re-keys nothing");
+        let mut ranged = base;
+        ranged.position_radius[3] = 768.0; // cull radius
+        ranged.params[0] = 1.5; // attenuation exponent
+        ranged.params[3] = 1.0; // attenuation model discriminant
+        assert_eq!(key_of(&ranged, 1.0), baseline, "range/atten scalars re-key nothing");
+
+        // Geometry-family changes: every one must move the key.
+        let mut moved = base;
+        moved.position_radius[0] += 0.5;
+        assert_ne!(key_of(&moved, 1.0), baseline, "a carried light moves the key");
+        let mut turned = base;
+        turned.direction_angle[2] += 0.1;
+        assert_ne!(key_of(&turned, 1.0), baseline, "a turned spotlight moves the key");
+        let mut widened = base;
+        widened.direction_angle[3] = 0.6; // cone half-angle
+        assert_ne!(key_of(&widened, 1.0), baseline, "a widened cone moves the key");
+        let mut bigger = base;
+        bigger.params[1] = 12.0; // emitter disk radius -> penumbra width
+        assert_ne!(key_of(&bigger, 1.0), baseline, "an emitter-radius change moves the key");
+        let mut remasked = base;
+        remasked.params[2] = 9.0; // visibility mask
+        assert_ne!(key_of(&remasked, 1.0), baseline, "a visibility-mask change moves the key");
+        let mut retyped = base;
+        retyped.color_type[3] = 2.0; // point -> directional
+        assert_ne!(key_of(&retyped, 1.0), baseline, "a type change moves the key");
+        assert_ne!(key_of(&base, 2.0), baseline, "a light entering/leaving the set moves the key");
     }
 }

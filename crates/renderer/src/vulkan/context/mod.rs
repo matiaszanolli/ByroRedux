@@ -686,6 +686,19 @@ pub struct VulkanContext {
     /// direct-light EMA reads it one frame late through `dof_params.w`; see
     /// [`restir_history_mode`](assemble_camera_and_lights::restir_history_mode).
     scene_static_last_build: bool,
+    /// #5369 — the previous build's light-rig GEOMETRY key (positions,
+    /// types, directions, emitter radii, visibility masks, count) — the
+    /// intensity-blind counterpart of `prev_caustic_scene_key`. Feeds
+    /// [`restir_rig_static_last_build`](Self::restir_rig_static_last_build).
+    prev_restir_rig_key: u64,
+    /// #5369 — the previous build's `restir_rig_static`: occluders
+    /// (rigid set/poses) unchanged AND the light rig's geometry
+    /// unchanged, even when intensities flicker (fire, fluorescent
+    /// hum). `restir_history_mode` turns this into history mode 3 —
+    /// the direct-light EMA's deep parked tail stays live under
+    /// flicker, because the Heitz ratio estimator cancels intensity
+    /// changes in its numerator/denominator.
+    restir_rig_static_last_build: bool,
     /// Set each frame right after `upload_indirect_draws` (`true` on
     /// success or a hash-matched skip, `false` on upload failure).
     /// `record_geometry_pass` ANDs this into `use_indirect` so a failed

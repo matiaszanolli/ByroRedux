@@ -541,11 +541,12 @@ pub struct GpuCamera {
     /// point/spot attenuation knee fraction, live-tunable via the
     /// `light.atten` console command and read by
     /// `include/lighting.glsl`'s `kneeFrac` — w = history mode (#4942):
-    /// `0.0` moving, `1.0` parked, `2.0` parked + scene-static, from
-    /// `restir_history_mode`. `triangle.frag` reads it as `> 0.5` (advance
-    /// the GI seed every frame) and `> 1.5` (the long ReSTIR direct-light
-    /// EMA); a reader keyed on `== 1.0` would miss the scene-static parked
-    /// state. Both `z` and `w` are live, NOT reserved —
+    /// `0.0` moving, `1.0` parked, `2.0` parked + scene-static, `3.0`
+    /// parked + light-rig geometry static under intensity flicker
+    /// (#5369), from `restir_history_mode`. `triangle.frag` reads it as
+    /// `> 0.5` (advance the GI seed every frame) and `> 1.5` (the long
+    /// ReSTIR direct-light EMA); a reader keyed on `== 1.0` would miss
+    /// the scene-static parked states. Both `z` and `w` are live, NOT reserved —
     /// see #2750 / REN-D3-2026-08-12-02 (this doc previously said
     /// `zw = reserved (0)`, which invited a future author to repurpose a
     /// lane two consumers already depend on). Written in
