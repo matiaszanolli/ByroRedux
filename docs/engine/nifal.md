@@ -265,6 +265,21 @@ from the code.
 
 ### Lights — **converged**
 
+**Affected-node scope — untranslated for every `NiLight` kind (parked,
+#5282).** Gamebryo scopes every `NiDynamicEffect` to its affected-node
+subtrees — the on-light list, and pre-FO4 the `NiNode.effects` side
+(Oblivion-era content writes the on-light list empty and registers scope
+on the node). The importer parses `NiNode.effects`
+(`crates/nif/src/blocks/node.rs`) but walks it only for texture effects
+(`import/walk/texture_effect.rs`), so `ImportedLight` carries no scope and
+every point/spot/directional NIF light spawns unscoped. The one known
+vanilla artifact is dropped by name at the spawn gate instead —
+`spawn_nif_lights`' `__MAX_Default_Light` allowlist (#5189; 48 Oblivion
+carriers; `cell_loader/spawn.rs`) — a census-backed name skip, NOT a
+scoping translation. No other vanilla population is known; a scoped
+non-artifact light (modded, or an unsurveyed vanilla mesh) would light
+the whole scene. Parked until a consumer demands per-node light scoping.
+
 
 **`NiAmbientLight` — parked by census (2026-09-18, light & shadow campaign W2.9).**
 The subtree-scoped ambient semantic (brighten `affected_nodes` only,
@@ -690,10 +705,20 @@ phase must honour. The Phase-2 **scalar** translations that did land, all in
 `apply_cdb_material`: the `SLOT_COLOR` flat-colour replacement →
 `diffuse_color` (#5190 — replacement-only, never a tint beside a bound
 colour texture), `AlphaTestThreshold` → `alpha_test`/`alpha_threshold` with
-the `HasOpacity = false` guard (#5196), and `IsGlass` → the `bgem_glass`
-classifier input with `thin_glass` deliberately NOT implied (#5196);
-`UseSSS` stays parked until a subsurface-colour source exists — the gate
-alone bought visibility rays for a zero term (#5196). The contract for the
+the `HasOpacity = false` guard (#5196), `IsGlass` → the `bgem_glass`
+classifier input with `thin_glass` deliberately NOT implied (#5196),
+`EffectSettingsComponent.BlendingMode` = "AlphaBlend" → `has_alpha` (#5277 —
+the Starfield twin of the BGSM `alpha_blend_mode` forward; without it the
+classifier's no-coverage early return fired before `bgem_glass` was
+consulted and authored glass rendered opaque; the Alpha-side
+`Blender`→`AlphaBlenderSettings` edge has zero top-level instances in the
+base CDB, schema probe 2026-10-09), and the
+`EmissiveSettingsComponent` capture — Enabled + the nested
+`EmittanceSettings` tint / luminous emittance → `emissive_color` /
+`emissive_mult`, tagged `Lighting` (#5283 — the SLOT_EMISSIVE texture was
+bound to a zero-weight role before it); `UseSSS` stays parked until a
+subsurface-colour source exists — the gate alone bought visibility rays
+for a zero term (#5196). The contract for the
 parked kinds: each lands as a **named** `MaterialTextureSet`
 role with documented channel semantics, a `GpuMaterial` lane (lockstep
 `bindings.glsl` change against the 428 B pin) and a `triangle.frag` consumer —
@@ -876,11 +901,18 @@ The material slice was executed this session as the template. Mechanics:
      on FO4 only — 1,470 FaceCustomization heads + 3 inert dead-path bodies —
      and zero times on Skyrim LE/SE, FO76, FNV, FO3, and Oblivion;
   3. seeds `metalness`/`roughness` from the pre-resolved override (`Some`) or a `NaN`
-     sentinel. For NIF-imported content the keyword classifier already ran at import
-     (`classify_legacy_pbr` in `crates/nif/src/import/mesh/`), so `Some(…)` is always
-     present and `Material::resolve_pbr()` only clamps — its classifier arm (the `NaN`
-     sentinel path) is a backstop for future non-pre-classified sources. The result is
-     the same either way: explicit scalars, no render-time fallback. (#1346 / D7-01)
+     sentinel. Three content classes reach the two arms today. Most NIF import ran
+     the keyword classifier at import (`classify_legacy_pbr`,
+     `crates/nif/src/import/mesh/`) and arrives `Some(…)` — `resolve_pbr` only
+     clamps those. #2707's Starfield material-reference stubs arrive with BOTH
+     overrides `None` (the walker returns before writing any field for a stub),
+     and the BGEM merge deliberately leaves the NaN sentinel: a CDB lookup MISS
+     keeps it, while a CDB HIT stamps `PbrMaterial::NO_SIGNAL_NEUTRAL` (#5197)
+     so the classifier's filename arm cannot fabricate conductors out of asset
+     names. The classifier arm is therefore LIVE — for CDB misses and BGEM
+     content — not a backstop for hypothetical future sources. (#1346 / D7-01;
+     corrected by #5279, the third copy of the stale claim #4441 fixed in
+     rustdoc.)
   4. classifies glass once, alpha-aware
      (`helpers::classify_glass_into_material_with_provenance`), after the PBR
      resolve so the forced glass roughness wins. The classifier consumes two
