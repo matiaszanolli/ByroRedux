@@ -238,9 +238,13 @@ impl Resource for StoryManagerRng {}
 /// Event data each SM-started quest's `FromEvent` aliases fill from,
 /// keyed by quest — written by the dispatcher's start phase, read by the
 /// P4 alias refresh (`refresh_scene_actor_bindings`), which owns the
-/// binding table. Latest fire wins (a re-fired radiant re-fills); an
-/// entry stays for the session so an alias refresh after a cell reload
-/// can still fill, matching how world-candidate fills behave.
+/// binding table. Latest fire wins (a re-fired radiant re-fills).
+/// #5419 — the entries are **session-scoped, not reload-stable**: the
+/// reference slots hold session `EntityId`s, and a cell unload despawns
+/// the referenced actor (a reload gives it a new id this map never
+/// sees). The refresh's FromEvent arm probes liveness/Dead before
+/// binding and leaves the alias unbound — surfaced as
+/// `StoryManagerEventUnavailable` — until a re-fired event re-fills.
 /// `NOT_SAVED_BY_DESIGN`: after a load the quests restart through fresh
 /// events, which rewrite their entries.
 #[derive(Debug, Default)]
@@ -1230,6 +1234,14 @@ fn event_data_killer_condition_gates_the_start() {
     let victim = world.spawn();
     let player_killer = world.spawn();
     let other_killer = world.spawn();
+    // #5419 — the refresh's FromEvent arm probes liveness, so the
+    // event's references model live actors (a transform each).
+    for entity in [victim, player_killer, other_killer] {
+        world.insert(
+            entity,
+            byroredux_core::ecs::components::GlobalTransform::default(),
+        );
+    }
     world.insert(
         player_killer,
         crate::scene::SceneAliasCandidate {

@@ -771,6 +771,32 @@ pub fn refresh_scene_actor_bindings(world: &World) -> usize {
                     if let Some(entity) =
                         event_data_slot(data as u32).and_then(|slot| slots.reference(slot))
                     {
+                        // #5419 — the fill's slots hold session EntityIds.
+                        // A cell unload despawns the referenced actor, and
+                        // a reload gives the same actor a NEW id this path
+                        // never sees, so rebinding the stale id reported
+                        // the alias as filled while it pointed at nothing.
+                        // Candidate fills gate on liveness/Dead; event
+                        // fills now do too: a despawned id (no
+                        // GlobalTransform row) or a Dead actor (unless the
+                        // alias allows dead) leaves the alias unbound —
+                        // `StoryManagerEventUnavailable` — until a re-fired
+                        // event re-fills it.
+                        let alive = world.has::<GlobalTransform>(entity);
+                        let dead_ok =
+                            alias.flags.has(ALIAS_FLAG_ALLOW_DEAD) || !world.has::<Dead>(entity);
+                        if !alive || !dead_ok {
+                            log::debug!(
+                                "#5419: quest {:08X} alias {} FromEvent slot entity {} \
+                                 is no longer {} — leaving the alias unbound until a \
+                                 re-fired event re-fills",
+                                quest.0,
+                                alias.alias_id,
+                                entity,
+                                if alive { "alive (Dead)" } else { "in the world" },
+                            );
+                            continue;
+                        }
                         let allow_reuse = alias.flags.has(ALIAS_FLAG_ALLOW_REUSE);
                         if allow_reuse || !used.contains(&entity) {
                             resolved.insert((*quest, alias.alias_id), entity);

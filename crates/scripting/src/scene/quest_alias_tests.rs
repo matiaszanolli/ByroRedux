@@ -1435,6 +1435,11 @@ fn from_event_alias_fills_from_the_recorded_story_event() {
         .start_quest(QuestFormId(QUEST), None);
     let victim = world.spawn();
     let killer = world.spawn();
+    // #5419 — event references are live world actors; the refresh's
+    // FromEvent arm probes liveness, so the fixture models them with a
+    // transform like every placed actor.
+    world.insert(victim, GlobalTransform::default());
+    world.insert(killer, GlobalTransform::default());
     install_scene_quest_aliases(
         &mut world,
         [QustRecord {
@@ -1519,6 +1524,101 @@ fn from_event_alias_fills_from_the_recorded_story_event() {
             .resource::<SceneActorBindings>()
             .resolve(QuestFormId(QUEST), 1),
         Some(victim)
+    );
+}
+
+/// #5419 — the fill's reference slots are session `EntityId`s. A slot
+/// entity whose cell unloaded (despawned) or a Dead actor (unless the
+/// alias allows dead) must NOT bind: the pre-fix refresh re-inserted the
+/// stale id, reporting the alias as filled while it pointed at nothing
+/// — the opposite of the fill map's old "reload-stable" doc claim, now
+/// corrected to session-scoped.
+#[test]
+fn from_event_alias_skips_stale_and_dead_slot_entities() {
+    let mut world = World::new();
+    crate::register(&mut world);
+    world.insert_resource(QuestStageState::default());
+    world
+        .resource_mut::<QuestStageState>()
+        .start_quest(QuestFormId(QUEST), None);
+
+    let despawned = world.spawn();
+    world.insert(despawned, GlobalTransform::default());
+    let dead = world.spawn();
+    world.insert(dead, GlobalTransform::default());
+    world.insert(dead, byroredux_core::ecs::components::Dead);
+    install_scene_quest_aliases(
+        &mut world,
+        [QustRecord {
+            form_id: QUEST,
+            aliases: vec![
+                QuestAlias {
+                    alias_id: 1,
+                    fill_type: Some(AliasFillType::FromEvent {
+                        event_type: *b"KILL",
+                        data: 0x3152, // "R1"
+                    }),
+                    ..Default::default()
+                },
+                QuestAlias {
+                    alias_id: 2,
+                    fill_type: Some(AliasFillType::FromEvent {
+                        event_type: *b"KILL",
+                        data: 0x3252, // "R2"
+                    }),
+                    ..Default::default()
+                },
+                QuestAlias {
+                    alias_id: 3,
+                    // ALLOW_DEAD: a Dead reference may still fill.
+                    flags: byroredux_plugin::esm::records::AliasFlags(ALIAS_FLAG_ALLOW_DEAD),
+                    fill_type: Some(AliasFillType::FromEvent {
+                        event_type: *b"KILL",
+                        data: 0x3252, // "R2" again
+                    }),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        }],
+    );
+    world.insert_resource(crate::story_manager::StoryEventAliasFill(
+        [(
+            QuestFormId(QUEST),
+            crate::condition::EventDataSlots {
+                reference_1: Some(despawned),
+                reference_2: Some(dead),
+                location_1: None,
+                location_2: None,
+            },
+        )]
+        .into_iter()
+        .collect(),
+    ));
+
+    // The R1 actor's cell unloaded between the event and the refresh.
+    world.despawn(despawned);
+
+    refresh_scene_actor_bindings(&world);
+    let bindings = world.resource::<SceneActorBindings>();
+    assert_eq!(
+        bindings.resolve(QuestFormId(QUEST), 1),
+        None,
+        "a despawned slot entity must not bind — the alias stays unbound \
+         (StoryManagerEventUnavailable) until a re-fired event re-fills"
+    );
+    assert_eq!(
+        bindings.resolve(QuestFormId(QUEST), 2),
+        None,
+        "a Dead slot entity must not bind without ALLOW_DEAD"
+    );
+
+    // ALLOW_DEAD parity with candidate fills: alias 3 reads the same R2
+    // slot as alias 2 and DOES bind the Dead actor.
+    assert_eq!(
+        bindings.resolve(QuestFormId(QUEST), 3),
+        Some(dead),
+        "ALLOW_DEAD + FromEvent binds a Dead reference — candidate parity"
     );
 }
 
