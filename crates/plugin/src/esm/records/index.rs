@@ -245,6 +245,14 @@ pub struct EsmIndex {
     /// `extract_dial_with_info` walker (group_type == 7 Topic
     /// Children sub-GRUPs). See #631.
     pub dialogues: HashMap<u32, DialRecord>,
+    /// #5426 — the load order's generic activation-greeting topic
+    /// (`GREETING` on FO3/FNV, `DialogueGenericHello` on Skyrim),
+    /// resolved ONCE at the end of [`Self::merge_from`] instead of a
+    /// linear scan of `dialogues` (18,215 entries on FNV) per
+    /// conversation open. `None` until a merge runs and on hand-built
+    /// test indexes that insert into `dialogues` directly — consumers
+    /// fall back to the scan there.
+    pub generic_greeting_form: Option<u32>,
     /// Skyrim+ `DLBR` dialogue branches, keyed by form id — the
     /// Top-Level / Blocking structure `DialRecord::branch` points into
     /// (#5037). Empty on Oblivion / FO3 / FNV.
@@ -1271,6 +1279,21 @@ impl EsmIndex {
         // master + DLC that both ship PDCL each surface their skip.
         self.skipped_unconsumed_groups
             .extend(other.skipped_unconsumed_groups);
+
+        // #5426 — resolve the generic greeting once per merged load
+        // order; a per-open linear scan of the whole dialogues map was
+        // 18,215 probes on FNV (5,300 of them on the GREETING record's
+        // own map bucket walk) every time a conversation opened.
+        self.generic_greeting_form = self
+            .dialogues
+            .values()
+            .find(|record| {
+                matches!(
+                    record.editor_id.as_str(),
+                    "GREETING" | "DialogueGenericHello"
+                )
+            })
+            .map(|record| record.form_id);
     }
 }
 
@@ -2388,6 +2411,56 @@ mod tests {
             "B is replaced in place, D lands after its PNAM predecessor B, \
              and the Deleted tombstone removes C"
         );
+    }
+
+    /// #5426 — the merge resolves the generic greeting FormID once, so
+    /// conversation opens stop scanning the whole `dialogues` map
+    /// (18,215 entries on FNV) per open. The Skyrim
+    /// `DialogueGenericHello` spelling is covered too.
+    #[test]
+    fn merge_resolves_the_generic_greeting_form_once() {
+        use super::{DialRecord, InfoRecord};
+
+        let mut master = EsmIndex::default();
+        master.dialogues.insert(
+            0x0000_00C8,
+            DialRecord {
+                form_id: 0x0000_00C8,
+                editor_id: "GREETING".to_string(),
+                infos: vec![InfoRecord::default()],
+                ..Default::default()
+            },
+        );
+        master.dialogues.insert(
+            0x01,
+            DialRecord {
+                form_id: 0x01,
+                editor_id: "SomeQuestTopic".to_string(),
+                ..Default::default()
+            },
+        );
+        assert_eq!(master.generic_greeting_form, None, "no merge ran yet");
+
+        let dlc = EsmIndex::default();
+        master.merge_from(dlc);
+        assert_eq!(
+            master.generic_greeting_form,
+            Some(0x0000_00C8),
+            "the merged load order resolves GREETING once"
+        );
+
+        // The Skyrim spelling resolves too.
+        let mut skyrim = EsmIndex::default();
+        skyrim.dialogues.insert(
+            0x000B_0A1A,
+            DialRecord {
+                form_id: 0x000B_0A1A,
+                editor_id: "DialogueGenericHello".to_string(),
+                ..Default::default()
+            },
+        );
+        skyrim.merge_from(EsmIndex::default());
+        assert_eq!(skyrim.generic_greeting_form, Some(0x000B_0A1A));
     }
 
     /// #5375 — an override that ships a DIAL copy with NO Topic Children

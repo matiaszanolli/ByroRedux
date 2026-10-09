@@ -224,14 +224,14 @@ fn topic_entries(records: &[&DialRecord]) -> Vec<DialogueTopicEntry> {
 /// Speak `record`'s first passing INFO and package it with the list that
 /// follows it: the INFO's passing links, or `fallback_menu` when it links
 /// nowhere. An empty list still shows the spoken topic.
-fn select_on_topic(
-    index: &EsmIndex,
-    record: &DialRecord,
+fn select_on_topic<'a>(
+    index: &'a EsmIndex,
+    record: &'a DialRecord,
     world: &World,
     npc: EntityId,
     player: EntityId,
-    fallback_menu: &[&DialRecord],
-) -> Option<(NpcDialogueTopic, DialRecord)> {
+    fallback_menu: &[&'a DialRecord],
+) -> Option<(NpcDialogueTopic, &'a DialRecord)> {
     let info = select_first_info(record, world, Some(npc), Some(player))?;
     let linked = linked_menu(index, info, world, npc, player);
     let menu: &[&DialRecord] = if !linked.is_empty() {
@@ -261,7 +261,11 @@ fn select_on_topic(
             topics: topic_entries(menu),
             goodbye: info.goodbye(),
         },
-        record.clone(),
+        // #5426 — the record goes back as a borrow; the caller clones
+        // exactly once where ownership is genuinely needed (the registry
+        // copy), instead of every selection paying a whole-DialRecord
+        // clone up front (the FNV GREETING record owns 5,300 INFOs).
+        record,
     ))
 }
 
@@ -273,10 +277,19 @@ fn select_on_topic(
 /// greeting-named DIALs per master are quest-specific and already ride
 /// quest ownership like any owned topic.
 fn generic_greeting_record(index: &EsmIndex) -> Option<&DialRecord> {
+    // #5426 — production reads the FormID the load order resolved once
+    // at merge end (`EsmIndex::generic_greeting_form`); the scan stays
+    // as the fallback for hand-built test indexes that insert into
+    // `dialogues` without a merge.
     index
-        .dialogues
-        .values()
-        .find(|record| matches!(record.editor_id.as_str(), "GREETING" | "DialogueGenericHello"))
+        .generic_greeting_form
+        .and_then(|form_id| index.dialogues.get(&form_id))
+        .or_else(|| {
+            index
+                .dialogues
+                .values()
+                .find(|record| matches!(record.editor_id.as_str(), "GREETING" | "DialogueGenericHello"))
+        })
 }
 
 /// The activation's opening selection (#5037): a qualifying Blocking entry
@@ -286,13 +299,13 @@ fn generic_greeting_record(index: &EsmIndex) -> Option<&DialRecord> {
 /// opens instead — the quest-less-patron hole ("selects nothing") — with
 /// the greeting topic itself as the list (its INFOs typically link
 /// nowhere; the conversation closes from the page or a Goodbye line).
-fn open_conversation(
-    index: &EsmIndex,
-    owned: &[&DialRecord],
+fn open_conversation<'a>(
+    index: &'a EsmIndex,
+    owned: &[&'a DialRecord],
     world: &World,
     npc: EntityId,
     player: EntityId,
-) -> Option<(NpcDialogueTopic, DialRecord)> {
+) -> Option<(NpcDialogueTopic, &'a DialRecord)> {
     let blocking = owned.iter().copied().find(|record| {
         topic_entry(index, record) == TopicEntry::Blocking
             && select_first_info(record, world, Some(npc), Some(player)).is_some()
@@ -316,7 +329,7 @@ fn open_conversation(
 /// spoken line's fragments: the outgoing line's OnEnd (the line stops being
 /// spoken when another replaces it), then the selected line's OnBegin.
 /// Shared by the activation path and the UI's re-selection door.
-fn apply_selection(world: &World, npc: EntityId, topic: NpcDialogueTopic, record: DialRecord) {
+fn apply_selection(world: &World, npc: EntityId, topic: NpcDialogueTopic, record: &DialRecord) {
     // The outgoing line ends before the new one begins (vanilla's OnEnd
     // ordering). One live selection (#5038) means every existing stamp IS
     // the outgoing line.
@@ -350,7 +363,9 @@ fn apply_selection(world: &World, npc: EntityId, topic: NpcDialogueTopic, record
             )
         });
     if let Some(mut registry) = world.try_resource_mut::<DialogueRegistry>() {
-        registry.insert_topic(record);
+        // #5426 — the one whole-record clone a conversation open pays:
+        // the registry's own (Arc-shared) copy.
+        registry.insert_topic(record.clone());
     }
     if let Some(mut topics) = world.query_mut::<NpcDialogueTopic>() {
         // #5038 — one live selection. A previous conversation partner's stamp
@@ -494,14 +509,18 @@ pub(crate) fn forcegreet_open(world: &World, npc: EntityId, topic: Option<u32>) 
     if npc_refuses_dialogue(world, npc).is_some() {
         return false;
     }
+    // #5426 — borrow the record end to end: the only whole-DialRecord
+    // clone on this path is the registry copy inside apply_selection
+    // (was two — the topic-less generic greeting cloned the 5,300-INFO
+    // record once here and once in select_on_topic).
     let record = match topic {
-        Some(form_id) => index.dialogues.get(&form_id).cloned(),
-        None => generic_greeting_record(&index).cloned(),
+        Some(form_id) => index.dialogues.get(&form_id),
+        None => generic_greeting_record(&index),
     };
     let Some(record) = record else {
         return false;
     };
-    let Some((selected, record)) = select_on_topic(&index, &record, world, npc, player, &[])
+    let Some((selected, record)) = select_on_topic(&index, record, world, npc, player, &[])
     else {
         return false;
     };
@@ -699,7 +718,9 @@ fn npc_dialogue_selection_system_inner(world: &World, scratch: &mut NpcDialogueS
         scratch.selections.push(TopicSelection {
             npc,
             topic,
-            record,
+            // #5426 — one clone into the cross-pass scratch (pass 2
+            // applies after all readers drop); apply_selection borrows.
+            record: record.clone(),
         });
     }
     if scratch.selections.is_empty() {
@@ -708,7 +729,7 @@ fn npc_dialogue_selection_system_inner(world: &World, scratch: &mut NpcDialogueS
 
     // ── Pass 2: apply. ──
     for selection in &scratch.selections {
-        apply_selection(world, selection.npc, selection.topic.clone(), selection.record.clone());
+        apply_selection(world, selection.npc, selection.topic.clone(), &selection.record);
         // #5366 Phase 4 — each opened activation conversation raises the
         // hello story event (greeter → R1, player → R2).
         crate::systems::story_events::raise_hello_story_event(world, selection.npc, player);
