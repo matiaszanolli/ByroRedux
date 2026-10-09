@@ -367,12 +367,14 @@ tree itself (rederived from the load order every boot).
    ([`sm1-story-manager.sh`](../smoke-tests/sm1-story-manager.sh)):
    booting the Skyrim profile into WhiterunDragonsreach with a player
    fires CLOC on the initial location-context install, and the
-   dispatcher starts six quests through the canonical lifecycle — the
-   deterministic unconditional target `CRLocationExpansionNode` →
-   `CRHoldExpansion` (QUST flags 0x0, so the start is attributable to
-   nothing but the SM) plus five genuinely condition-gated nodes
-   (`WIGreetingNodeSHARES`, `CWChangeLocationScenes`), read back
-   through byro-dbg as `state: running` with aliases bound same-frame.
+   dispatcher walks the CLOC subtree — #5380 narrowed the boot set to
+   the genuinely-gated nodes: a node gated on an uncatalogued
+   condition function declines (`WIGreetingNodeSHARES`'s fn-145 `== 0`
+   used to pass vacuously through the Unknown→0.0 default and was one
+   of the two asserted starts before the decline landed), while
+   `CWChangeLocationScenes` starts through its newly cataloged
+   `GetQuestRunning(CWFinale) == 0` gate, read back through byro-dbg
+   as `state: running` with aliases bound same-frame.
    The smoke's first run also caught a real defect: holding the
    `QuestStageState` write guard across condition evaluation deadlocks
    against `GetStage`-family reads (lock_tracker); the dispatcher is
@@ -414,10 +416,12 @@ tree itself (rederived from the load order every boot).
    ("the Story Manager will stop as soon as it finishes with that
    node" — keyed on processing per the CK rule text and its
    compatibility warning, not on a quest actually starting). The
-   Phase-1 continue-always placeholder is gone, which changes the live
-   boot set to the authored one: `WIGreetingNodeSHARES` +
-   `CWChangeLocationScenes` (which then consumes; `CRHoldExpansion`
-   below it correctly stays stopped — pinned as the sm1 negative).
+   Phase-1 continue-always placeholder is gone. The live boot set is
+   the authored one minus #5380's declines: `CWChangeLocationScenes`
+   starts through its cataloged fn-56 gate and then consumes
+   (`CRHoldExpansion` below it correctly stays stopped — pinned as
+   the sm1 negative); `WIGreetingNodeSHARES`'s uncatalogued fn-145
+   gate declines (the sm1 decline negative).
    `RNAM` windows gate re-fires through `StoryClock` (synced from
    `GameTimeRes` each frame) with last-fire timestamps in
    `StoryManagerNodeState` — save-registered, so a quickload cannot

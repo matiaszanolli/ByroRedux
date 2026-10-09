@@ -46,7 +46,7 @@ use byroredux_plugin::esm::records::condition::ConditionList;
 use byroredux_plugin::esm::records::{SmNodeKind, SmNodePolicies, SmQuestLink, SmNodeRecord};
 use std::collections::HashMap;
 
-use crate::condition::{evaluate, ConditionContext, EventDataSlots};
+use crate::condition::{evaluate, ConditionContext, ConditionFunction, EventDataSlots};
 use crate::quest_stages::{QuestDefinitionRegistry, QuestFormId, QuestStageState};
 use crate::scene::SceneActorBindings;
 
@@ -661,7 +661,24 @@ fn walk_siblings(
         )
         .with_event_data(&state.slots);
         context.target = Some(state.event.reference_1);
-        if evaluate(&node.conditions, world, &context) {
+        // #5380 — a node gated on a condition the evaluator cannot
+        // model declines: the M47.1 Unknown→0.0 default was designed
+        // for display and selection, and any comparison 0.0 satisfies
+        // (`== 0`, `< 1`, `!= 1`) passed vacuously — 40 quest nodes
+        // under the live-producer events started quests on unmodeled
+        // terms, including both of sm1's original gated boot starts
+        // (`WIGreetingNodeSHARES` fn 145 `== 0`). Declining is also
+        // the honest answer for the fail-closed half: a node whose
+        // gate cannot run neither starts nor consumes.
+        let modeled = node.conditions.iter().all(|condition| {
+            !matches!(
+                ConditionFunction::from_index(
+                    condition.function_index
+                ),
+                ConditionFunction::Unknown(_)
+            )
+        });
+        if modeled && evaluate(&node.conditions, world, &context) {
             let queued_before = state.candidates.len();
             if node.kind == SmNodeKind::Quest {
                 process_quest_node(tree, state, index);
@@ -978,6 +995,126 @@ mod tests {
         story_manager_dispatch_system(&world);
         let stages = world.try_resource::<QuestStageState>().unwrap();
         assert!(!stages.is_started(QuestFormId(0x0999)));
+    }
+
+    /// #5380 — a node gated on a condition function the evaluator
+    /// cannot model declines instead of passing vacuously through the
+    /// Unknown→0.0 default. The original shape: fn 145 `== 0`
+    /// (`WIGreetingNodeSHARES`, the smoke's boot start) read 0.0 ==
+    /// 0.0 and started a quest on nothing. The node must neither
+    /// start the quest nor consume the event — and a fully-modeled
+    /// sibling below it still gets its turn.
+    #[test]
+    fn unknown_condition_function_declines_the_node() {
+        use byroredux_plugin::esm::records::condition::{ComparisonOp, Condition, ConditionValue};
+        let unmodeled = SmNodeRecord {
+            form_id: 20,
+            parent: 10,
+            // A real sibling follows: the walk must continue past the
+            // declined node onto it.
+            next_sibling: 30,
+            kind: SmNodeKind::Quest,
+            quests: vec![SmQuestLink { form_id: 0x666, reset_hours: 0.0 }],
+            conditions: vec![Condition {
+                function_index: 145, // uncatalogued — the vacuous shape
+                comparator: ComparisonOp::Eq,
+                comparand: ConditionValue::Literal(0.0),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let tree = build_story_manager_tree(&records(vec![
+            event_node(10, b"CLOC"),
+            unmodeled,
+            quest_node(30, 10, 0, &[0x777]),
+        ]));
+        let mut world = setup_world();
+        world.insert_resource(tree);
+        world.insert_resource(QuestStageState::default());
+        let actor = world.spawn();
+        if let Some(mut events) = world.query_mut::<StoryEvent>() {
+            events.insert(
+                actor,
+                StoryEvent {
+                    mnemonic: *b"CLOC",
+                    reference_1: actor,
+                    reference_2: None,
+                    location_1: None,
+                    location_2: None,
+                },
+            );
+        }
+        story_manager_dispatch_system(&world);
+        let stages = world.try_resource::<QuestStageState>().unwrap();
+        assert!(
+            !stages.is_started(QuestFormId(0x666)),
+            "a node gated on an uncatalogued function must not start its quest"
+        );
+        assert!(
+            stages.is_started(QuestFormId(0x777)),
+            "the event still walks past the declined node to the modeled sibling"
+        );
+    }
+
+    /// #5380 — `CWChangeLocationScenes`' own gate, now cataloged:
+    /// `GetQuestRunning(CWFinale) == 0` evaluates against real quest
+    /// state instead of the vacuous 0.0 pass. Not running → 0 == 0 →
+    /// starts for the authored reason; running → declines.
+    #[test]
+    fn get_quest_running_gate_evaluates_real_state() {
+        use byroredux_plugin::esm::records::condition::{ComparisonOp, Condition, ConditionValue};
+        let gate = |quest_running: bool| {
+            let node = SmNodeRecord {
+                form_id: 20,
+                parent: 10,
+                next_sibling: 0,
+                kind: SmNodeKind::Quest,
+                quests: vec![SmQuestLink { form_id: 0x888, reset_hours: 0.0 }],
+                conditions: vec![Condition {
+                    function_index: 56, // GetQuestRunning
+                    comparator: ComparisonOp::Eq,
+                    comparand: ConditionValue::Literal(0.0),
+                    param_1: 0x000D_1444, // CWFinale
+                    ..Default::default()
+                }],
+                ..Default::default()
+            };
+            let tree = build_story_manager_tree(&records(vec![event_node(10, b"CLOC"), node]));
+            let mut world = setup_world();
+            world.insert_resource(tree);
+            let mut stages = QuestStageState::default();
+            if quest_running {
+                stages.start_quest(QuestFormId(0x000D_1444), None);
+            }
+            world.insert_resource(stages);
+            let actor = world.spawn();
+            if let Some(mut events) = world.query_mut::<StoryEvent>() {
+                events.insert(
+                    actor,
+                    StoryEvent {
+                        mnemonic: *b"CLOC",
+                        reference_1: actor,
+                        reference_2: None,
+                        location_1: None,
+                        location_2: None,
+                    },
+                );
+            }
+            story_manager_dispatch_system(&world);
+            let started = world
+                .try_resource::<QuestStageState>()
+                .unwrap()
+                .is_started(QuestFormId(0x888));
+            started
+        };
+        assert!(
+            gate(false),
+            "CWFinale not running → GetQuestRunning == 0 passes → the scene starts"
+        );
+        assert!(
+            !gate(true),
+            "CWFinale running → the gate declines the node"
+        );
     }
 
     /// A branch node whose conditions fail gates its whole subtree off.

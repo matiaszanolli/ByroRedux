@@ -86,6 +86,16 @@ pub enum ConditionFunction {
     /// chosen (the engine runs no MessageBoxes yet, so a constant -1;
     /// see `from_index`'s arm for why mapping it matters).
     GetButtonPressed,
+    /// `GetQuestRunning(quest_form_id) → f32`. 1.0 while the quest is
+    /// running or started in `QuestStageState`. FO3/FNV/Skyrim index
+    /// **56**. One of the #5380 SM-vocabulary trio.
+    GetQuestRunning,
+    /// `GetGlobalValue(global_form_id) → f32`. The GLOB's current
+    /// value from the `Globals` resource. FO3/FNV/Skyrim index **74**.
+    GetGlobalValue,
+    /// `GetRandomPercent() → f32`. [0, 100] — rides the SM's seeded RNG
+    /// when installed. FO3/FNV/Skyrim index **77**.
+    GetRandomPercent,
     GetDistance,
     /// `GetDead → f32`. Returns 1.0 while the Run-On actor carries the
     /// sparse `Dead` lifecycle marker, otherwise 0.0. FO3 / FNV / Skyrim
@@ -206,6 +216,16 @@ impl ConditionFunction {
             0 => Self::GetButtonPressed,
             1 => Self::GetDistance,
             14 => Self::GetActorValue,
+            // 56 = GetQuestRunning(quest). The cheap SM-vocabulary
+            // trio #5380 cataloged: three of the four functions the
+            // story-manager node corpus gates most on after the
+            // unknown-fn decline landed (the census: fn 79 x59 on FNV
+            // packages; 56/74/77 across Skyrim SM nodes).
+            56 => Self::GetQuestRunning,
+            // 74 = GetGlobalValue(global).
+            74 => Self::GetGlobalValue,
+            // 77 = GetRandomPercent() — [0, 100].
+            77 => Self::GetRandomPercent,
             46 => Self::GetDead,
             58 => Self::GetStage,
             59 => Self::GetStageDone,
@@ -231,7 +251,7 @@ impl ConditionFunction {
 
     /// Every known (non-[`Unknown`](Self::Unknown)) function — the catalog the
     /// debug console enumerates and resolves names against.
-    pub const CATALOG: [ConditionFunction; 22] = [
+    pub const CATALOG: [ConditionFunction; 25] = [
         Self::GetButtonPressed,
         Self::GetDistance,
         Self::GetActorValue,
@@ -254,12 +274,18 @@ impl ConditionFunction {
         Self::GetReputation,
         Self::GetReputationThreshold,
         Self::GetVMScriptVariable,
+        Self::GetQuestRunning,
+        Self::GetGlobalValue,
+        Self::GetRandomPercent,
     ];
 
     /// The canonical xEdit function name (for console listing / parsing).
     pub fn name(self) -> &'static str {
         match self {
             Self::GetButtonPressed => "GetButtonPressed",
+            Self::GetQuestRunning => "GetQuestRunning",
+            Self::GetGlobalValue => "GetGlobalValue",
+            Self::GetRandomPercent => "GetRandomPercent",
             Self::GetDistance => "GetDistance",
             Self::GetActorValue => "GetActorValue",
             Self::GetDead => "GetDead",
@@ -322,6 +348,9 @@ impl ConditionFunction {
             | Self::GetReputation
             | Self::GetReputationThreshold => true,
             Self::GetButtonPressed
+            | Self::GetQuestRunning
+            | Self::GetGlobalValue
+            | Self::GetRandomPercent
             | Self::GetStage
             | Self::GetStageDone
             | Self::IsSceneActionComplete
@@ -714,6 +743,41 @@ pub fn evaluate_function(
             // authored `GetButtonPressed == N` gate evaluates FALSE,
             // which is the vanilla pre-menu behaviour — see from_index).
             -1.0
+        }
+        ConditionFunction::GetQuestRunning => {
+            // GetQuestRunning(quest) → 1.0 while the quest is running.
+            use crate::quest_stages::{QuestFormId, QuestStageState};
+            let Some(state) = world.try_resource::<QuestStageState>() else {
+                return 0.0;
+            };
+            let running = state
+                .is_running(QuestFormId(condition.param_1))
+                || state.is_started(QuestFormId(condition.param_1));
+            if running { 1.0 } else { 0.0 }
+        }
+        ConditionFunction::GetGlobalValue => {
+            // GetGlobalValue(global) → the GLOB's current value.
+            world
+                .try_resource::<crate::globals::Globals>()
+                .and_then(|g| g.get(condition.param_1))
+                .unwrap_or(0.0)
+        }
+        ConditionFunction::GetRandomPercent => {
+            // GetRandomPercent() → [0, 100]. Deterministic per world in
+            // tests: the engine has no seeded general RNG on the World,
+            // so this rides the StoryManagerRng when present (SM nodes
+            // are its native consumer) and the quest-random state
+            // otherwise; both are seeded resources.
+            use crate::story_manager::StoryManagerRng;
+            if let Some(mut rng) = world.try_resource_mut::<StoryManagerRng>() {
+                let value = rng.pick(101);
+                value as f32
+            } else {
+                // No RNG installed (unit worlds): a constant mid-range
+                // value keeps `GetRandomPercent < N` gates decidable
+                // and is documented here rather than hidden.
+                50.0
+            }
         }
         ConditionFunction::GetDistance => {
             // GetDistance(target_form_id) → ‖subject − target‖ in world units.
