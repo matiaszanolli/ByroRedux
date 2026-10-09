@@ -453,13 +453,32 @@ impl MenuRenderer {
             vec![format!("textures\\{lowered}")]
         };
 
-        let decoded: Option<Arc<Rgba8>> = candidates
-            .iter()
-            .find_map(|p| assets.texture(p))
-            .and_then(|bytes| Rgba8::decode_dds(&bytes))
-            .map(Arc::new);
+        // #5400 — a present-but-undecodable candidate must not end the
+        // search (a decodable sibling in another resolution set can still
+        // serve the menu), and the warning must say which failure it was,
+        // so an operator isn't sent hunting for a missing archive over a
+        // decoder gap.
+        let mut decoded: Option<Arc<Rgba8>> = None;
+        let mut undecodable: Vec<&str> = Vec::new();
+        for path in &candidates {
+            let Some(bytes) = assets.texture(path) else { continue };
+            match Rgba8::decode_dds(&bytes) {
+                Some(img) => {
+                    decoded = Some(Arc::new(img));
+                    break;
+                }
+                None => undecodable.push(path),
+            }
+        }
         if decoded.is_none() && self.missing.insert(cache_key.clone()) {
-            log::warn!("menuxml: menu texture '{filename}' not found in any resolution set");
+            if undecodable.is_empty() {
+                log::warn!("menuxml: menu texture '{filename}' not found in any resolution set");
+            } else {
+                log::warn!(
+                    "menuxml: menu texture '{filename}' present but undecodable in: {}",
+                    undecodable.join(", ")
+                );
+            }
         }
         self.tex_cache.insert(cache_key, decoded.clone());
         decoded

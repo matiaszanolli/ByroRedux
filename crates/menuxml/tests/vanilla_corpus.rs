@@ -194,6 +194,64 @@ fn strings_xml_feeds_selectors() {
     let _ = Scalar::Num(0.0);
 }
 
+/// #5400 — header census of every DDS under `textures\menus\`: the menu
+/// decoder must accept every header the vanilla Oblivion texture archive
+/// ships (the 48 A4R4G4B4 + 1 R5G6B5 files that motivated 16-bpp support
+/// live here). Any undecodable header lists the path and pixel-format
+/// fields so the failure names the layout that needs an arm.
+#[test]
+#[ignore = "needs Oblivion game data on disk"]
+fn menu_texture_header_census_decodes() {
+    let Some(assets) = open_assets() else {
+        return;
+    };
+    let paths: Vec<String> = assets
+        .textures
+        .list_files()
+        .into_iter()
+        .filter(|p| p.to_lowercase().starts_with("textures\\menus\\") && p.to_lowercase().ends_with(".dds"))
+        .map(str::to_string)
+        .collect();
+    assert!(paths.len() > 100, "expected the vanilla menus texture set, got {}", paths.len());
+
+    let mut decoded = 0usize;
+    let mut failures: Vec<String> = Vec::new();
+    for path in &paths {
+        let bytes = assets.textures.extract(path).expect("extract dds");
+        match byroredux_menuxml::Rgba8::decode_dds(&bytes) {
+            Some(_) => decoded += 1,
+            None => {
+                let detail = if bytes.len() >= 128 {
+                    let h = |off: usize| {
+                        u32::from_le_bytes(bytes[4 + off..4 + off + 4].try_into().unwrap())
+                    };
+                    format!(
+                        "fourcc={:?} flags={:#x} bpp={} masks={:#x}/{:#x}/{:#x}/{:#x}",
+                        &bytes[84..88],
+                        h(76),
+                        h(84),
+                        h(88),
+                        h(92),
+                        h(96),
+                        h(100),
+                    )
+                } else {
+                    format!("truncated header ({} B)", bytes.len())
+                };
+                failures.push(format!("{path}: {detail}"));
+            }
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{} of {} menu DDS headers undecodable:\n{}",
+        failures.len(),
+        paths.len(),
+        failures.join("\n")
+    );
+    eprintln!("decoded {decoded} menu DDS headers");
+}
+
 fn dump_png(name: &str, width: u32, height: u32, rgba: &[u8]) {
     let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../target/menuxml");

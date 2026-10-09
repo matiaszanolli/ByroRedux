@@ -3,9 +3,10 @@
 //! Two container formats carry UI pixels:
 //!
 //! * menu art — DDS (DXT1/DXT3/DXT5 and uncompressed masked RGB/RGBA —
-//!   vanilla `textures\menus…` mixes DXT3/DXT5 with raw 32-bit BGRA and
-//!   24-bit BGR files, a wider surface than the `image` crate's DDS
-//!   decoder accepts, so this module implements the format directly);
+//!   vanilla `textures\menus…` mixes DXT3/DXT5 with raw 32-bit BGRA,
+//!   24-bit BGR and 16-bpp A4R4G4B4/R5G6B5 files, a wider surface than
+//!   the `image` crate's DDS decoder accepts, so this module implements
+//!   the format directly);
 //! * font atlases — Bethesda's raw `.tex` (see [`Rgba8::parse_font_tex`]).
 //!
 //! Only the top mip is decoded — menu art authors single-level textures.
@@ -70,7 +71,7 @@ impl Rgba8 {
     }
 
     /// Decode a menu DDS: DXT1 / DXT3 / DXT5 or uncompressed
-    /// (masked 32/24-bit, A8L8/L8-style luminance). Returns `None` with
+    /// (masked 32/24/16-bit, A8L8/L8-style luminance). Returns `None` with
     /// a one-line debug log for anything else.
     pub fn decode_dds(bytes: &[u8]) -> Option<Self> {
         decode_dds_impl(bytes)
@@ -290,6 +291,7 @@ fn decode_uncompressed(
 ) -> Option<Rgba8> {
     let bytes_per_px = match bit_count {
         8 => 1usize,
+        16 => 2,
         24 => 3,
         32 => 4,
         _ => {
@@ -358,6 +360,7 @@ fn decode_uncompressed(
             let raw = match bytes_per_px {
                 4 => u32::from_le_bytes(data[o..o + 4].try_into().unwrap()),
                 3 => u32::from_le_bytes([data[o], data[o + 1], data[o + 2], 0]),
+                2 => u32::from_le_bytes([data[o], data[o + 1], 0, 0]),
                 _ => data[o] as u32,
             };
             let p = (y * out.width as usize + x) * 4;
@@ -480,5 +483,45 @@ mod uncompressed_decode_tests {
             &[0, 0, 0, 255],
         ))
         .is_none());
+    }
+
+    /// #5400 — the vanilla Oblivion A4R4G4B4 layout (flags 0x41, masks
+    /// R 0x0F00 / G 0x00F0 / B 0x000F / A 0xF000; 48 menu textures under
+    /// `textures\menus\`) decodes through the masked path with nibble
+    /// replication: raw 0x842F → A 0x8, R 0x4, G 0x2, B 0xF →
+    /// (0x44, 0x22, 0xFF, 0x88).
+    #[test]
+    fn a4r4g4b4_16bpp_decodes_through_masks() {
+        let img = Rgba8::decode_dds(&dds(
+            1,
+            1,
+            0x41,
+            16,
+            [0x0F00, 0x00F0, 0x000F, 0xF000],
+            &[0x2F, 0x84],
+        ))
+        .unwrap();
+        assert_eq!(px(&img), [0x44, 0x22, 0xFF, 0x88]);
+    }
+
+    /// #5400 — the vanilla Oblivion R5G6B5 layout (flags 0x40, the
+    /// `healthbar3dbw.dds` header): no alpha mask ⇒ opaque, and the
+    /// 5/6-bit channels replicate to full range.
+    #[test]
+    fn r5g6b5_16bpp_decodes_opaque() {
+        let img = Rgba8::decode_dds(&dds(
+            2,
+            1,
+            0x40,
+            16,
+            [0xF800, 0x07E0, 0x001F, 0],
+            &[0x00, 0xF8, 0xE0, 0x07],
+        ))
+        .unwrap();
+        assert_eq!(px(&img), [255, 0, 0, 255]);
+        assert_eq!(
+            [img.pixels[4], img.pixels[5], img.pixels[6], img.pixels[7]],
+            [0, 255, 0, 255]
+        );
     }
 }
