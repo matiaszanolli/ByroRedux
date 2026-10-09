@@ -121,33 +121,44 @@ pub(crate) fn eat_sleep_system(world: &World, dt: f32) {
         let flat = Vec3::new(destination.x - current.x, 0.0, destination.z - current.z);
         if flat.length() > ARRIVE_RADIUS {
             // Still walking — one KCC-backed step toward the destination.
+            // #5373 — the step writes `Transform` (the authoritative
+            // world pose on a propagation root), never
+            // `GlobalTransform`: the derived global is rebuilt from the
+            // local on the next propagation, so writing it erased the
+            // step every frame and the diner never reached its marker.
+            // Same write shape as travel/wander's pass 2.
             let speed = world
                 .get::<crate::components::WalkSpeed>(npc)
                 .map(|speed| speed.0)
                 .unwrap_or(crate::systems::locomotion::LOCOMOTION_WALK_SPEED);
-            let physics_guard = world.try_resource::<byroredux_physics::PhysicsWorld>();
-            let physics = physics_guard.as_deref();
-            let (new_pos, new_rotation) = crate::systems::locomotion::step_toward(
-                current,
-                world
-                    .get::<Transform>(npc)
-                    .map(|transform| transform.rotation)
-                    .unwrap_or_default(),
-                destination,
-                dt,
-                speed,
-                physics,
-            );
-            if let Some(mut transforms) = world.query_mut::<GlobalTransform>() {
+            let rotation = world
+                .get::<Transform>(npc)
+                .map(|transform| transform.rotation)
+                .unwrap_or_default();
+            // #5371 — `PhysicsWorld` is a lock-order sink (nothing
+            // acquired under it, docs/engine/ecs.md): take it in its
+            // own scope for the step computation, then apply the write
+            // after it drops. The single-block shape held the guard
+            // across the `Transform` write, inverting the order
+            // production records.
+            let (new_pos, new_rotation) = {
+                let physics_guard =
+                    world.try_resource::<byroredux_physics::PhysicsWorld>();
+                crate::systems::locomotion::step_toward(
+                    current,
+                    rotation,
+                    destination,
+                    dt,
+                    speed,
+                    physics_guard.as_deref(),
+                )
+            };
+            if let Some(mut transforms) = world.query_mut::<Transform>() {
                 if let Some(transform) = transforms.get_mut(npc) {
                     transform.translation = new_pos;
-                }
-            }
-            if let (Some(new_rotation), Some(mut transforms)) =
-                (new_rotation, world.query_mut::<Transform>())
-            {
-                if let Some(transform) = transforms.get_mut(npc) {
-                    transform.rotation = new_rotation;
+                    if let Some(rotation) = new_rotation {
+                        transform.rotation = rotation;
+                    }
                 }
             }
             continue;
@@ -257,8 +268,10 @@ mod tests {
 
     /// Far from the destination (the behavior's fallback hash-pick is
     /// deterministic by form_id), the actor walks: an `EatSleepState`
-    /// lands on first sight and the actor moves toward the resolved
-    /// point instead of teleporting.
+    /// lands on first sight and the step advances `Transform` — the
+    /// authoritative pose on a propagation root (#5373: the step used
+    /// to write `GlobalTransform`, which the next propagation rebuilt
+    /// from the unmoved local, erasing the walk every frame).
     #[test]
     fn eat_actor_far_from_destination_walks() {
         let (mut world, actor) = setup();
@@ -277,15 +290,60 @@ mod tests {
             destination.x != 0.0 || destination.z != 0.0,
             "the fallback hash-pick resolves a non-origin destination"
         );
-        let moved = world
-            .get::<GlobalTransform>(actor)
-            .expect("transform")
-            .translation;
+        let moved = world.get::<Transform>(actor).expect("transform").translation;
         let before = Vec3::ZERO;
         assert_ne!(moved, before, "the actor takes a step toward the destination");
         assert!(
             (moved - destination).length() < before.distance(destination),
             "the step is toward the resolved destination"
+        );
+        assert!(
+            world.get::<GlobalTransform>(actor).expect("global").translation == before,
+            "the derived global is NOT written directly — propagation owns it"
+        );
+    }
+
+    /// #5373's real-world shape: the system and transform propagation
+    /// alternate every frame. The walk must survive propagation — the
+    /// actor converges on its destination instead of snapping back to
+    /// its spawn point every frame.
+    #[test]
+    fn eat_walk_survives_transform_propagation() {
+        let (mut world, actor) = setup();
+        world.insert(
+            actor,
+            EatBehavior {
+                radius: Some(512.0),
+                target_form_id: None,
+                form_id: 0xAA,
+            },
+        );
+        let mut propagate = byroredux_core::ecs::systems::make_transform_propagation_system();
+        let mut last_distance = f32::MAX;
+        for _ in 0..64 {
+            eat_sleep_system(&world, 0.5);
+            propagate(&world, 0.5);
+            let current = world
+                .get::<GlobalTransform>(actor)
+                .expect("global")
+                .translation;
+            let destination = world
+                .get::<EatSleepState>(actor)
+                .expect("state")
+                .destination;
+            let distance = (current - destination).length();
+            assert!(
+                distance <= last_distance,
+                "propagation must not erase the walk step (distance went                  {last_distance} -> {distance})"
+            );
+            last_distance = distance;
+            if distance <= ARRIVE_RADIUS {
+                break;
+            }
+        }
+        assert!(
+            last_distance <= ARRIVE_RADIUS,
+            "the diner reaches its destination through alternating              system+propagation frames (still {last_distance} away)"
         );
     }
 
@@ -342,6 +400,31 @@ mod tests {
                     reservations.0.contains_key(&(furniture, 0))
                 }),
             "the seat is reserved against double-claim"
+        );
+    }
+
+    /// #5371 — with a real `PhysicsWorld` installed, the walk branch
+    /// must take the physics resource in a scope of its own (a
+    /// lock-order sink: nothing acquired under it). The detector aborts
+    /// on the inverted order under `BYRO_LOCK_ORDER_CHECK=1`; same
+    /// shape as travel.rs's physics regression.
+    #[test]
+    fn eat_walk_with_real_physics_world() {
+        let (mut world, actor) = setup();
+        world.insert_resource(byroredux_physics::PhysicsWorld::new());
+        world.insert(
+            actor,
+            EatBehavior {
+                radius: Some(512.0),
+                target_form_id: None,
+                form_id: 0xAB,
+            },
+        );
+        eat_sleep_system(&world, 1.0);
+        let moved = world.get::<Transform>(actor).expect("transform").translation;
+        assert_ne!(
+            moved, Vec3::ZERO,
+            "the step computed through the physics world"
         );
     }
 
