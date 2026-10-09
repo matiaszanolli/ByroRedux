@@ -63,7 +63,7 @@ pub const DISPATCH_HANDLED_FOURCCS: &[[u8; 4]] = &[
     *b"SMEN", *b"SMQN", *b"SOUN",
     *b"SPEL", *b"STAT", *b"TACT", *b"TERM", *b"TREE", *b"TRNS", *b"TXST", *b"VTYP", *b"WATR",
     *b"WEAP",
-    *b"WRLD", *b"WTHR",
+    *b"WRLD", *b"WTHS", *b"WTHR",
 ];
 
 /// Parse an entire ESM/ESP file in a single pass.
@@ -403,7 +403,7 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
             }
             b"WTHR" | b"CLMT" | b"SCPT" | b"WATR" | b"NAVI" | b"NAVM" | b"REGN" | b"ECZN"
             | b"LGTM" | b"IMGS" | b"HDPT" | b"EYES" | b"HAIR" | b"PACK" | b"QUST" | b"DIAL"
-            | b"DLBR" | b"SCEN" | b"MESG" | b"PERK" | b"SMBN" | b"SMEN" | b"SMQN" => {
+            | b"DLBR" | b"SCEN" | b"MESG" | b"PERK" | b"SMBN" | b"SMEN" | b"SMQN" | b"WTHS" => {
                 dispatch_misc_gameplay_a::dispatch_misc_gameplay_a_group(
                     &label,
                     &mut reader,

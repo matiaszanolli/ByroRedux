@@ -49,6 +49,19 @@ pub(super) fn dispatch_misc_gameplay_a_group(
                     .insert(fid, parse_clmt(fid, subs, game, &clmt_remap));
             })?
         }
+        // #5364 — Starfield's WTHS weather-settings records: the
+        // EDID + BGS-reflection-blob replacement for WTHR. RFDP (the
+        // parent WTHS) is a cross-record FormID, so the remap threads
+        // through like CLMT's WLST above. Only Starfield ships the
+        // label, so no `game` gate is needed.
+        b"WTHS" => {
+            let wths_remap = reader.get_form_id_remap();
+            extract_records(reader, end, b"WTHS", &mut |fid, subs| {
+                index
+                    .weather_settings
+                    .insert(fid, parse_wths(fid, subs, &wths_remap));
+            })?
+        }
         // FO3 / FNV / Oblivion pre-Papyrus SCPT scripts — bytecode
         // blob + source text + local-var table. Pre-#443 the group
         // fell through to the catch-all skip and every NPC / item

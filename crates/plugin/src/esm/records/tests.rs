@@ -1864,7 +1864,10 @@ fn categories_table_row_count_pinned() {
     //   SMQN quest-autostart tree; without a row an SM category wipe would
     //   pass the parse-rate floor silently and 65% of Skyrim's quests would
     //   lose their autostart path invisibly).
-    assert_eq!(EsmIndex::categories().len(), 103);
+    // Bumped 103 → 104 in #5364 (weather_settings — Starfield WTHS, the
+    //   reflection-blob weather; a wipe would pass the parse-rate floor
+    //   silently and every WSLT row would dangle).
+    assert_eq!(EsmIndex::categories().len(), 104);
 }
 
 /// Regression test for #989 — `.STRINGS` companion file resolves lstring
@@ -2937,6 +2940,14 @@ const EXEMPT_JUSTIFIED: &[(&str, &str, &str)] = &[
         "gras.rs",
         "parse_gras",
         "GRAS DATA's u32 is `water_distance_application`, an enum tag.",
+    ),
+    (
+        "weather_settings.rs",
+        "parse_bgs_reflection",
+        "The BGS reflection container's u32s are the BETH version/chunk \
+         count and per-chunk payload sizes — container framing, not \
+         FormIDs. The only cross-record FormID (RFDP) is read by \
+         `parse_wths`, which takes the remap.",
     ),
     (
         "misc/imagespace.rs",

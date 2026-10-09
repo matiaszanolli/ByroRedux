@@ -20,7 +20,7 @@ use super::{
     NaviRecord, NavmRecord,
     NpcRecord, OtftRecord, PackRecord, PerkRecord, ProjRecord, QustRecord, RaceRecord, RegnRecord,
     RepuRecord, ScenRecord, ScriptRecord, SlgmRecord, SmNodeRecord, SounRecord, SpelRecord,
-    TermRecord, TreeRecord, WatrRecord, WeatherRecord,
+    TermRecord, TreeRecord, WatrRecord, WeatherRecord, WeatherSettingsRecord,
 };
 use std::collections::{HashMap, HashSet};
 
@@ -185,6 +185,12 @@ pub struct EsmIndex {
     pub game_settings: HashMap<u32, GameSetting>,
     pub weathers: HashMap<u32, WeatherRecord>,
     pub climates: HashMap<u32, ClimateRecord>,
+    /// #5364 — Starfield's `WTHS` weather-settings records: the
+    /// `EDID` + BGS-reflection-blob replacement for WTHR. 18 root
+    /// templates carry the full `REFL` schema; the other 163 vanilla
+    /// records diff against an `RFDP` parent through `RDIF`. A
+    /// climate's WSLT rows resolve here.
+    pub weather_settings: HashMap<u32, WeatherSettingsRecord>,
     /// FO3 / FNV / Oblivion pre-Papyrus SCPT bytecode records (#443).
     /// Every `SCRI` FormID on NPC_ / CONT / item / ACTI records resolves
     /// here instead of dangling. The bytecode itself (`compiled`) is
@@ -684,6 +690,7 @@ impl EsmIndex {
             map_category!("game_settings", game_settings),
             map_category!("weathers", weathers),
             map_category!("climates", climates),
+            map_category!("weather_settings", weather_settings),
             map_category!("scripts", scripts),
             map_category!("waters", waters),
             map_category!("navi", navi_info),
