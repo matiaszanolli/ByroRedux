@@ -197,15 +197,16 @@ The CK's node-property model (SM Event Node, local wiki) decodes onto
 
 `RNAM` (346 Skyrim `SMQN`s) is the per-quest **Hours until reset** —
 "the Story Manager will not attempt to start this quest again until the
-indicated number of Game Hours has passed" — following its `NNAM`
-(`MQ304SovngardeScenes` pairs 2.4/4.8/4.8 across its three-link pool;
-the `WEBountyCollector*` holds carry 1152.0 = 48 game days; most RNAMs
-are 0.0 = ignored). `0x2` (`MS04/MS06IncreaseLevelNodeSHARES`=`0x20002`;
-candidate: Warn if no child quest started) and `0x40000`
-(`FavorChangeLocation*`=`0x60000`; candidates: the Num-quests-to-run /
-Max-concurrent checkboxes, `QNAM` 0–68 as one of the numbers) stay
-**[open]**, raw in `SmNodeRecord::dnam`. Floored by
-`story_manager_skyrim_node_policy_floor` (`parse_real_esm.rs`).
+indicated number of Game Hours has passed" — following its `NNAM`.
+#5386: the stored float is hours × 24 (xEdit `wbFloat(.., 1/24)` writes
+value / scale); the decode divides, so the dominant raw 576 is 24 h and
+raw 1152 is 48 h (`MQ304SovngardeScenes`'s raw 2.4/4.8/4.8 are the
+0.1/0.2/0.2 h ambient-scene windows; the `WEBountyCollector*` holds
+carry raw 1152 = 48 h; most RNAMs are 0.0 = ignored). `0x2`
+(Warn if no child quest started) and `0x40000` (the Num-quests-to-run
+checkbox) are named from xEdit since #5420, raw in
+`SmNodeRecord::dnam` beside the decoded `SmNodePolicies` bits. Floored
+by `story_manager_skyrim_node_policy_floor` (`parse_real_esm.rs`).
 
 ## 4. Provenance — how every number above was measured
 

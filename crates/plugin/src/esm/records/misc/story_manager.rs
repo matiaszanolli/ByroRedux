@@ -60,10 +60,14 @@ pub enum SmNodeKind {
 /// reset** — "the Story Manager will not attempt to start this quest
 /// again until the indicated number of Game Hours has passed. If this
 /// number is 0.0000, this check is ignored" (SM Event Node, local CK
-/// wiki). It follows its `NNAM` in the subrecord stream (corpus:
-/// `MQ304SovngardeScenes` alternates `NNAM,RNAM=2.4 / NNAM,RNAM=4.8 /
-/// NNAM,RNAM=4.8`; the `WEBountyCollector*` holds carry 1152.0 = 48
-/// game days). `0.0` = no reset check authored.
+/// wiki). #5386 — xEdit declares the field on every game as
+/// `wbFloat(RNAM, 'Hours until reset', cpNormal, False, 1/24)` and
+/// `TwbFloatDef` writes `value / fdScale`, so the STORED float is
+/// hours × 24; the decode divides. The census agrees once scaled: the
+/// dominant raw 576 (250 Skyrim / 180 FO4 links) is 24 h, raw 1152 is
+/// 48 h, and `MQ304SovngardeScenes`'s raw 2.4/4.8 are the 0.1/0.2 h
+/// ambient-scene windows. It follows its `NNAM` in the subrecord
+/// stream. `0.0` = no reset check authored (the scale keeps it 0).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SmQuestLink {
     pub form_id: u32,
@@ -236,7 +240,11 @@ pub fn parse_sm_node(
                 // Per-quest "Hours until reset" for the NNAM it follows
                 // (see `SmQuestLink`). A stray RNAM with no preceding
                 // link is malformed authoring — skip it loudly.
-                let hours = f32::from_le_bytes(sub.data[..4].try_into().unwrap());
+                // #5386 — the stored float is hours × 24 (xEdit
+                // `wbFloat(.., 1/24)` writes value / scale), so the
+                // decode divides. Node-level HNAM carries no scale and
+                // stays raw.
+                let hours = f32::from_le_bytes(sub.data[..4].try_into().unwrap()) / 24.0;
                 match node.quests.last_mut() {
                     Some(link) => link.reset_hours = hours,
                     None => log::warn!(
@@ -443,10 +451,34 @@ mod tests {
         assert_eq!(
             node.quests,
             vec![
-                SmQuestLink { form_id: 0x000E_DF6A, reset_hours: 2.4 },
-                SmQuestLink { form_id: 0x000F_1A41, reset_hours: 4.8 },
+                // #5386 — stored × 24 (xEdit scale 1/24): raw 2.4/4.8 are
+                // the 0.1/0.2 h Sovngarde ambient-scene windows.
+                SmQuestLink { form_id: 0x000E_DF6A, reset_hours: 0.1 },
+                SmQuestLink { form_id: 0x000F_1A41, reset_hours: 0.2 },
                 SmQuestLink { form_id: 0x000F_1A44, reset_hours: 0.0 },
             ]
+        );
+    }
+
+    /// #5386 — the dominant real-data shape: raw 576 (250 Skyrim and 180
+    /// FO4 links) must decode to a 24-hour window, not 24 game days.
+    /// The WEBountyCollector holds' raw 1152 is 48 h.
+    #[test]
+    fn rnam_stored_scale_decodes_to_authored_hours() {
+        let subs = vec![
+            sub(b"NNAM", 0x0001_8245u32.to_le_bytes()),
+            sub(b"RNAM", 576.0_f32.to_le_bytes()),
+            sub(b"NNAM", 0x0001_8246u32.to_le_bytes()),
+            sub(b"RNAM", 1152.0_f32.to_le_bytes()),
+        ];
+        let node = parse_sm_node(SmNodeKind::Quest, 1, &subs, &None);
+        assert_eq!(
+            node.quests,
+            vec![
+                SmQuestLink { form_id: 0x0001_8245, reset_hours: 24.0 },
+                SmQuestLink { form_id: 0x0001_8246, reset_hours: 48.0 },
+            ],
+            "raw hours × 24 decodes to authored hours (#5386)"
         );
     }
     /// FO4/SF tail: `HNAM` (hours-shaped float, raw) and `MNAM` decode
