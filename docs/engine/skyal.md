@@ -418,6 +418,32 @@ it cannot cast moving, position-dependent cloud shadows. The next lighting
 step must sample the same procedural density along each surface-to-sun column
 without duplicating cloud generation in the material shader.
 
+### Sun-disc luminance floor (engine constant — record)
+
+`shaders/include/sky.glsl` (the shared sky implementation, §2.1) lifts the
+authored sun-disc term by a luminance ratio only, floored at
+`local_sky_lum * 1.8 / disc_lum` (never attenuating — `max(1.0, …)`): the
+authored `disc_color × sun_intensity × sun_glare` product reaches the horizon
+glow's own scale only for bright-authored suns (FNV's [1.0, 0.49, 0.16] at
+×3.5), and Skyrim's dim [0.33, 0.10, 0.0] slid under the horizon glow and
+rendered no disc at all — a diffuse bright band with no sun in it. The 1.8
+multiple is an engine calibration choice (documented only in the shader
+comment before this entry): it shapes every golden-hour capture, so a retune
+belongs beside this note. Hue is preserved (the ratio multiplies all
+channels), and noon discs already dominate so the floor never fires there.
+
+### The sunset hold (TOD key chain)
+
+`weather.rs`'s time-of-day key chain holds `TOD_SUNSET` twice: the sun touches
+the horizon at the authored `sunset_end`, and the key chain keeps the sunset
+palette from `sunset_begin` through `sunset_hold_end = sunset_end` (clamped
+inside `(sunset_begin + 0.05, night − 0.05)` so the chain stays strictly
+increasing on broken-data extremes), before `TOD_NIGHT` takes over at
+`night = (sunset_end + 2.0).max(sunset_begin + 0.1)`. Without the hold the
+palette interpolates straight from sunset into night across the sun's own
+descent, halving the golden hour the authored colours describe. Every
+golden-hour capture rides this key shape.
+
 ### Weather-driven cloud morphology (2026-09-14)
 
 The cloud shell now derives continuous morphology from the weather fields

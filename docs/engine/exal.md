@@ -125,17 +125,26 @@ cross-fades them with the cloud simulation rather than snapping the sky. The
 game has no DALC ambient cube", consumed uniformly. **Status: canonical.** EXAL
 only moves the WTHR→`WeatherDataRes`/`SkyParamsRes` decode under the boundary.
 
-Climate resolution has two inputs, both settled at the boundary in
-`env_translate`: the worldspace `CNAM` (chasing the `WNAM` parent chain when the
-`PNAM` climate-inherit bit is set — `resolve_worldspace_climate`, #2450 /
-EXAL-02) and the **per-cell `XCCM` override** (`resolve_cell_climate`, #2451 /
-EXAL-03). The override is re-resolved on each cell-boundary crossing by
+Climate resolution is settled at ONE boundary, `env_translate`
+(#5423 collapsed the rungs that had accreted beside the cell loader into
+`resolve_exterior_climate`): the worldspace `CNAM` (chasing the `WNAM` parent
+chain when the `PNAM` climate-inherit bit is set — `resolve_worldspace_climate`,
+#2450 / EXAL-02), else the region chain (the center cell's `XCLR` → REGN `CNAM`;
+only Oblivion-era regions author one, #5421), else — Oblivion only, table-shaped
+per game — the CS `"<worldspace>Climate"` naming convention or the
+richest-authored climate (vanilla `Oblivion.esm` authors no Tamriel WRLD
+climate at all). The **per-cell `XCCM` override** (`resolve_cell_climate`,
+#2451 / EXAL-03) re-resolves on each cell-boundary crossing through
 `scene::apply_cell_climate_override`, which re-applies sky + weather through the
 same `apply_environment` path a worldspace change uses — so an override
 transition gets the normal 8-second crossfade and the normal sky-texture
 acquire/release, not a snap. An `XCCM` pointing at an unparsed CLMT falls back to
 the worldspace climate (never to the procedural sky), and an override climate
-with no resolvable default weather leaves the current sky in place.
+with no resolvable default weather leaves the current sky in place. Default
+weather itself is ONE rule (`resolve_default_weather`, #5424): the climate's
+highest-chance WTHR, else — while Starfield's WTHS stays undecoded — the
+authored `DefaultWeather` WTHR stands in for WSLT-only climates (#5363), for
+the worldspace resolve and the XCCM re-resolve alike.
 
 ### Water (WATR) — **carved out into [WATAL](watal.md) (its own double-ended layer)**
 
@@ -222,7 +231,21 @@ pub(crate) fn translate_weather(                       // step 3 — WTHR (+clim
 // caller-side patch: the translation stays the single authority for every
 // WeatherDataRes field.
 impl ImageSpaceSources<'_> { fn resolve(&self, weather: Option<&WeatherRecord>)
-    -> [byroredux_scripting::ImageSpace; 4]; }
+    -> [byroredux_scripting::ImageSpace; 6]; }
+
+// The resolve is SIX slots (the NAM0 time-of-day order: Sunrise, Day,
+// Sunset, Night, High Noon, Midnight), not four: the weather's own IMSP
+// (Skyrim/FO4; NULL slot = identity, High Noon/Midnight read Day/Night),
+// else the worldspace's inherited INAM (FO3/FNV, PNAM bit 5), else the
+// identity grade. FO3/FNV then fold the weather's per-slot IMAD
+// (\x00IAD..\x05IAD) over the base at full strength, held at its first
+// key (t = 0) — the per-weather colour grade: the Mojave's amber noon,
+// The Pitt's haze, Anchorage's simulation cast (#1162236fc-era work the
+// commit message does not name). A slot with no IMAD reads Day/Night's.
+// The IMAD cinematic-code channel remap is per game (imagespace.rs):
+// saturation is 0x11 everywhere; brightness is 0x14 on FO3/FNV and 0x12
+// elsewhere; 0x13 is contrast; on FO3/FNV 0x12/0x52 is the contrast
+// PIVOT and is never decoded as a channel.
 
 // Procedural fallback (no climate/weather) — explicit canonical constructors,
 // replacing the old inline hardcoded Mojave block in the render-setup path.
@@ -787,8 +810,10 @@ establish.
 
 Verified against the CLMT/WRLD parsers and the Gamebryo reference SDKs:
 
-- **CLMT** (`crates/plugin/src/esm/records/climate.rs`) carries only WLST (weather
-  list), FNAM (sun texture), and TNAM = `[sunrise_begin, sunrise_end,
+- **CLMT** (`crates/plugin/src/esm/records/climate.rs`) carries WLST (weather
+  list) and — since #5363 — Starfield's WSLT seasonal table (rows referencing
+  WTHS records; 26 of vanilla SF's 47 climates author only WSLT), FNAM (sun
+  texture), and TNAM = `[sunrise_begin, sunrise_end,
   sunset_begin, sunset_end]` in 10-minute units (bytes 4–5, volatility/moon, are
   read-and-dropped). **No sun angle, latitude, or path data.**
 - **WRLD** carries climate/parent/bounds/water/music/map/flags — **no latitude.**
