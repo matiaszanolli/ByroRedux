@@ -643,9 +643,15 @@ mod roster_tests {
             docs.contains(&format!("Currently registered ({count} components)")),
             "debug-cli.md component heading must report {count}"
         );
+        // #5417 — the doc carries the count TWICE (the heading and the
+        // `byro> components` example transcript near the end). A bare
+        // `contains` passed vacuously off the heading while the example
+        // still said 67, so require the second occurrence explicitly.
+        let needle = format!("({count} components)");
         assert!(
-            docs.contains(&format!("({count} components)")),
-            "debug-cli.md example must report {count}"
+            docs.matches(&needle).count() >= 2,
+            "debug-cli.md must report {count} in the example transcript too — \
+             found the heading only"
         );
     }
 }

@@ -1253,7 +1253,7 @@ byro> components
   TextureHandle
   Transform
   WorldBound
-(67 components)
+(70 components)
 
 byro> entities Inventory
   Entity 12 "saadia"
