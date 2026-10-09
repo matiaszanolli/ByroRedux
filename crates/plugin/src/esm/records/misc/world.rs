@@ -825,22 +825,29 @@ pub struct RegionArea {
     pub points: Vec<(f32, f32)>,
 }
 
-/// Region record (`REGN`). Tags a world-space area with a weather type, a
-/// colour tint, one or more bounding polygons, and a priority-ordered chain of
-/// `RDAT` data entries driving ambient sound, weather, objects and map name.
+/// Region record (`REGN`). Tags an area of a worldspace (`WNAM`) with a
+/// colour tint, one or more bounding polygons, and a priority-ordered chain
+/// of `RDAT` data entries driving ambient sound, weather, objects and map
+/// name. The region's weather itself is a `RDAT` Weather entry, not WNAM.
 #[derive(Debug, Clone, Default)]
 pub struct RegnRecord {
     pub form_id: u32,
     pub editor_id: String,
-    /// `WNAM` — weather form that this region enforces. `None` when the
-    /// region inherits from its worldspace.
-    pub weather_form: Option<u32>,
-    /// `CNAM` — climate form. **Oblivion only**: vanilla `Oblivion.esm`
-    /// authors no climate on the Tamriel WRLD (zero `CNAM` bytes in the
-    /// record — the only TamrielClimate references on disk are two
-    /// special-case worldspaces' CNAMs and other REGNs'); Cyrodiil's
-    /// climate reaches cells through the region chain instead: CELL
-    /// `XCLR` → REGN `CNAM` → CLMT. No other game authors REGN CNAM.
+    /// `WNAM` — the WRLD this region belongs to (xEdit TES4/FO3/FNV/TES5:
+    /// `wbFormIDCkNoReach(WNAM, 'Worldspace', [WRLD])`; 210/210 vanilla
+    /// Oblivion REGNs point at a WRLD). #5422/#5421 renamed this from
+    /// `weather_form` — the region's weather is a `RDAT` Weather entry,
+    /// never WNAM. Routed through `remap_fid` by the #3401 post-pass.
+    pub worldspace_form: Option<u32>,
+    /// `CNAM` — climate form. **xEdit defines no REGN `CNAM`** (TES4/FO3/
+    /// FNV/TES5), and the vanilla census (#5421) found **zero** authored
+    /// occurrences: 0 on Oblivion's 211 REGNs (SI merged), 0 on FNV.
+    /// The pre-#5421 doc claimed Cyrodiil's climate reached cells through
+    /// CELL `XCLR` → REGN `CNAM` → CLMT — refuted by a whole-file scan (a
+    /// CLMT FormID appears only in CELL `XCCM`, WRLD `CNAM`, SCPT, PGRD
+    /// and LAND; no REGN references a climate). Kept only for
+    /// mod-authored data, decoded through `remap_fid` like every other
+    /// cross-record form here.
     pub climate_form: Option<u32>,
     /// `RCLR` — RGB region tint for map shading. Stored as raw u8[3];
     /// alpha byte (if any) is ignored.
@@ -975,9 +982,11 @@ pub fn parse_regn(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
     for sub in subs {
         match &sub.sub_type {
             b"WNAM" if sub.data.len() >= 4 => {
-                out.weather_form = SubReader::new(&sub.data).u32().ok();
+                // The owning WRLD, not a weather (see the field doc).
+                out.worldspace_form = SubReader::new(&sub.data).u32().ok();
             }
-            // Oblivion's region→climate link (see [`Self::climate_form`]).
+            // xEdit-undefined, zero vanilla occurrences (see
+            // [`Self::climate_form`]); mod-authored only.
             // `remap_fid` like every other cross-record form on this record.
             b"CNAM" if sub.data.len() >= 4 => {
                 out.climate_form = sub
@@ -1035,7 +1044,7 @@ pub fn parse_regn(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
     // reason `parse_navm` uses one: the `RDAT` payloads are built across
     // several sub-records by `apply_region_payload`, so remapping at the
     // decode sites would mean touching every arm of a growing match.
-    out.weather_form = out.weather_form.map(|f| remap_fid(f, remap));
+    out.worldspace_form = out.worldspace_form.map(|f| remap_fid(f, remap));
     for entry in &mut out.entries {
         match &mut entry.payload {
             RegionDataPayload::Objects(forms) | RegionDataPayload::Imposters(forms) => {
@@ -1872,7 +1881,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_regn_picks_weather_and_color() {
+    fn parse_regn_picks_worldspace_and_color() {
         let subs = vec![
             sub(b"EDID", b"WastelandRegion\0"),
             sub(b"WNAM", 0x0001_B000u32.to_le_bytes()),
@@ -1880,7 +1889,8 @@ mod tests {
         ];
         let r = parse_regn(0xBEEF, &subs, &None);
         assert_eq!(r.editor_id, "WastelandRegion");
-        assert_eq!(r.weather_form, Some(0x0001_B000));
+        // #5421 — WNAM is the owning WRLD (was mis-documented `weather_form`).
+        assert_eq!(r.worldspace_form, Some(0x0001_B000));
         assert_eq!(r.color, Some([128, 96, 64]));
     }
 
@@ -2872,7 +2882,7 @@ mod regn_tests {
         );
         assert_eq!(r.form_id, 7);
         assert_eq!(r.editor_id, "MojaveRegion");
-        assert_eq!(r.weather_form, Some(0x1234));
+        assert_eq!(r.worldspace_form, Some(0x1234));
         assert_eq!(r.color, Some([10, 20, 30]));
     }
 }

@@ -23,7 +23,8 @@ fn main() {
     println!("cells in worldspace: {}", cells.len());
     let mut weather_regions = 0; let mut climate_regions = 0;
     for r in index.regions.values() {
-        if r.weather_form.is_some() || !r.entries_by_priority(byroredux_plugin::esm::records::RegionDataKind::Weather).is_empty() { weather_regions += 1; }
+        // #5421 — a region's weather is its RDAT Weather entry; WNAM is the owning worldspace.
+        if !r.entries_by_priority(byroredux_plugin::esm::records::RegionDataKind::Weather).is_empty() { weather_regions += 1; }
         if r.climate_form.is_some() { climate_regions += 1; }
     }
     println!("regions total={} with-weather-data={} with-climate={}", index.regions.len(), weather_regions, climate_regions);
@@ -51,16 +52,14 @@ fn main() {
                     let climate = region
                         .climate_form
                         .and_then(|fid| index.climates.get(&fid));
-                    let weather = region
-                        .weather_form
-                        .and_then(|fid| index.weathers.get(&fid));
+                    // WNAM names the owning WRLD (xEdit), not a weather.
                     let rdwt: Vec<String> = region
                         .entries_by_priority(byroredux_plugin::esm::records::RegionDataKind::Weather)
                         .iter()
                         .map(|e| format!("{:?}", e))
                         .collect();
                     println!(
-                        "  REGN {:08X} '{}' climate={} wnam={} rdwt={}",
+                        "  REGN {:08X} '{}' climate={} worldspace={:08X?} rdwt={}",
                         region_fid,
                         region.editor_id,
                         climate
@@ -71,9 +70,7 @@ fn main() {
                                 c.weathers.len()
                             ))
                             .unwrap_or_else(|| format!("None (form {:08X?})", region.climate_form)),
-                        weather
-                            .map(|w| format!("Some({} {:08X})", w.editor_id, w.form_id))
-                            .unwrap_or_else(|| format!("None (form {:08X?})", region.weather_form)),
+                        region.worldspace_form,
                         rdwt.join(","),
                     );
                 }

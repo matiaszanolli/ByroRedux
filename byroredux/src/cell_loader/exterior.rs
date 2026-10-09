@@ -1635,7 +1635,7 @@ mod worldspace_selection_tests {
         let region = |climate: Option<u32>| RegnRecord {
             form_id: 0,
             editor_id: String::new(),
-            weather_form: None,
+            worldspace_form: None,
             climate_form: climate,
             color: None,
             areas: Vec::new(),
