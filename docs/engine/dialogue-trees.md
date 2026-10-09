@@ -171,13 +171,20 @@ see §5 phase 5.
    activation-less open (DialogueGenericHello). The SM `ADIA` tie-in
    remains deferred with the ADIA-family decode (#5366 §3.1).
 5. **V — voice. Landed 2026-10-08.** The authored FNV file-name
-   convention is `sound\voice\<plugin>\<voice-type EDID>\<quest
-   EDID>_<topic EDID>_<formid 8-hex>_<n>.ogg` — composed from the
-   owning quest's and topic's EDIDs because INFO records routinely
-   carry none of their own (the live-gated greeting 0x107222 has no
-   EDID; its file is `vcg01_greeting_00107222_1.ogg`). The voice type
-   resolves NPC → `VTCK` → indexed `VTYP` EDID; the plugin segment
-   from the INFO FormID's load-order slot. `Fallout - Voices1.bsa`
+   convention is `sound\voice\<plugin>\<voice-type EDID>\<quest>_<topic>_<local
+   id 8-hex>_<n>.ogg` — composed from the owning quest's and topic's
+   EDIDs because INFO records routinely carry none of their own (the
+   live-gated greeting 0x107222 has no EDID; its file is
+   `vcg01_greeting_00107222_1.ogg`). #5395: the quest EDID is cut to 10
+   characters and the topic so the two total 25
+   (`vdoctors_doctormedical99ye`), with the full-EDID shape kept as the
+   radio fallback; the id is plugin-local (top byte `00`, DLC archives
+   included); `<n>` is each segment's authored response number. The
+   voice type resolves NPC → `VTCK` → indexed `VTYP` EDID; the plugin
+   segment is the INFO's owning plugin through `GlobalFormIdResolver`
+   (#5393 — masters own the low slots). FNV DLC voice ships in
+   `<DLC> - Main.bsa`, which no profile mounts; pass it with
+   `--sounds-bsa`. `Fallout - Voices1.bsa`
    joined the FNV profile's sounds list (105,517 entries — its first
    consumer), and `apply_selection` resolves/decodes/schedules the
    segments sequentially (kira delayed start) at the NPC, with the

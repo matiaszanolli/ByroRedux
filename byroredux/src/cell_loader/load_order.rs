@@ -26,7 +26,7 @@ use std::sync::Arc;
 
 /// Lowercase basename of a plugin path. Used as the global load-order
 /// key (case-insensitive on Bethesda content).
-pub(super) fn plugin_basename_lc(path: &str) -> String {
+pub(crate) fn plugin_basename_lc(path: &str) -> String {
     std::path::Path::new(path)
         .file_name()
         .and_then(|s| s.to_str())

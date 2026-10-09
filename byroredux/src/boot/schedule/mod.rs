@@ -1013,7 +1013,8 @@ mod system_access_declaration_tests {
     ///
     /// #5414 — `apply_selection`'s two cross-file hops are listed too:
     /// `play_line_voice` (dialogue_voice.rs; SoundCache/AudioWorld writes,
-    /// SoundArchiveProvider/LoadedPluginSet/GlobalTransform reads) and
+    /// SoundArchiveProvider/LoadedPluginSet/GlobalFormIdResolver/GlobalTransform
+    /// reads) and
     /// `raise_hello_story_event` (story_events.rs; the `StoryEvent` write
     /// plus the cell-context reads). Without the explicit entries the
     /// same-file callee walk never sees either and the row can rot again.

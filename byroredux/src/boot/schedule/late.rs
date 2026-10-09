@@ -493,14 +493,16 @@ pub(super) fn register_late_systems(scheduler: &mut Scheduler) {
             .reads_resource::<byroredux_scripting::DialogueRandomState>()
             // #5414 — `apply_selection`'s two cross-file hops. The voice
             // path (`dialogue_voice.rs` `play_line_voice`, called from
-            // `apply_selection`) takes the sound-archive provider and the
-            // loaded plugin set (reads), writes `SoundCache` and
+            // `apply_selection`) takes the sound-archive provider, the
+            // loaded plugin set and (#5393) the form resolver that names
+            // the INFO's owning plugin (reads), writes `SoundCache` and
             // `AudioWorld`, and reads the speaker's `GlobalTransform`.
             // The AHEL raise (`story_events.rs` `raise_hello_story_event`,
             // called in Pass 2) writes the `StoryEvent` marker and reads
             // the cell-context resources through `resolve_current_lctn`.
             .reads_resource::<crate::asset_provider::audio::SoundArchiveProvider>()
             .reads_resource::<crate::cell_loader::LoadedPluginSet>()
+            .reads_resource::<crate::cell_loader::load_order::GlobalFormIdResolver>()
             .writes_resource::<byroredux_audio::SoundCache>()
             .writes_resource::<byroredux_audio::AudioWorld>()
             .reads::<byroredux_core::ecs::components::GlobalTransform>()
