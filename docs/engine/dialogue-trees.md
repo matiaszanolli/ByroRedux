@@ -95,9 +95,12 @@ found, with the misses named.
 
 ### L — line lifetime
 
-- **Random**: among *passing* candidates whose Random bit is set,
-  pick uniformly instead of first (vanilla semantics; non-random
-  candidates keep priority order ahead of them).
+- **Random** (#5397): positional, over *passing* candidates in
+  priority/file order. The first passing INFO wins; if it is Random it
+  opens a stack of the immediately following passing Random INFOs,
+  ended by the next passing non-Random INFO (excluded) or a Random End
+  INFO (`Flags 1` bit 5, included), and the stack rolls uniformly (CS
+  wiki *Editing Dialogue*; GECK *Category:Dialogue*).
 - **SayOnce**: a per-save spoken-set keyed by INFO FormID joins the
   save alongside quest state; a spoken SayOnce INFO stops qualifying.
 - **Goodbye**: when the *chosen* line carries the Goodbye bit, the
@@ -134,9 +137,11 @@ see §5 phase 5.
    fresh FNV boot selects the authored `GREETING` line (info 0x107222)
    where pre-#5367 selected nothing.
 2. **L — line lifetime. Landed 2026-10-07.** `select_info` collects
-   every passing candidate: a NON-random passing INFO keeps priority
-   (the P4 route's deterministic quest line — pinned by its own test),
-   an all-Random pool rolls uniformly through a seeded `DialogueRandomState`;
+   every passing candidate: the first one wins, and a Random first
+   candidate rolls within its positional Random stack through a seeded
+   `DialogueRandomState` (#5397 corrected the original rule, under which
+   any passing non-Random INFO outranked an earlier Random set and Random
+   End was ignored);
    spoken Say-Once INFOs are disqualified through the saved
    `DialogueSpokenInfoForms` set (save format v33); a spoken Goodbye
    line ends its conversation when the presentation estimate elapses

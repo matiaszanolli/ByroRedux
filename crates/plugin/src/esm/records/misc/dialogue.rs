@@ -399,10 +399,17 @@ impl InfoDataHeader {
     pub fn goodbye(&self) -> bool {
         self.flags1 & 0x01 != 0
     }
-    /// Among *passing* candidates, this INFO joins the uniform random
-    /// pool instead of file/priority order (the greeting mainstay).
+    /// A passing Random INFO starts (or joins) a Random stack: it and the
+    /// next passing Random INFOs, up to a passing non-Random one or a
+    /// [`Self::random_end`], roll uniformly (the greeting mainstay).
     pub fn random(&self) -> bool {
         self.flags1 & 0x02 != 0
+    }
+    /// #5397 — closes the Random stack after this INFO even when the next
+    /// passing INFO is also Random (bit 5 on TES4/FO3/FNV, xEdit
+    /// `Random End`; vanilla Oblivion authors it on 322 INFOs).
+    pub fn random_end(&self) -> bool {
+        self.flags1 & 0x20 != 0
     }
     /// Spoken once per save: a said line stops qualifying.
     pub fn say_once(&self) -> bool {
@@ -423,6 +430,10 @@ impl InfoRecord {
     /// [`InfoDataHeader::say_once`]; `false` when it authored no `DATA`.
     pub fn say_once(&self) -> bool {
         self.data.as_ref().is_some_and(InfoDataHeader::say_once)
+    }
+    /// [`InfoDataHeader::random_end`]; `false` when it authored no `DATA`.
+    pub fn random_end(&self) -> bool {
+        self.data.as_ref().is_some_and(InfoDataHeader::random_end)
     }
 }
 

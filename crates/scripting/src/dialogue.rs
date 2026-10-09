@@ -345,21 +345,34 @@ fn select_info<'a>(
             .then_some((i, info))
     });
 
-    // #5367 Phase L — Random: a passing NON-random candidate wins in
-    // file/priority order (the deterministic quest line — the P4 route's
-    // contract); only when every passing candidate is Random-flagged do
-    // they form the uniform pool (the greeting mainstay). Deterministic
-    // under a pinned `DialogueRandomState` seed; with no RNG resource
-    // installed (pre-install test worlds) the pool's first candidate
-    // wins, preserving the pre-#5367 contract.
+    // #5367 Phase L / #5397 — the authored positional rule (CS wiki,
+    // GECK `Category:Dialogue`): the first passing INFO in
+    // priority/file order wins. If it is Random it opens a stack: it and
+    // the immediately following passing Random INFOs, ended by the next
+    // passing non-Random INFO (excluded) or by a Random End INFO
+    // (included), roll uniformly. Stacks are built over *passing* INFOs
+    // only — the GECK: Random End "is only necessary if the next
+    // qualifying info is also random". Deterministic under a pinned
+    // `DialogueRandomState` seed; with no RNG resource installed
+    // (pre-install test worlds) the stack's first INFO wins.
     let passing: Vec<(usize, &InfoRecord)> = passing.collect();
-    let pick = match passing.iter().position(|(_, info)| !info.random()) {
-        Some(deterministic) => deterministic,
-        None if passing.is_empty() => return None,
-        None => match world.try_resource_mut::<DialogueRandomState>() {
-            Some(mut state) => xorshift64(&mut state.0) as usize % passing.len(),
-            None => 0,
-        },
+    let (_, first) = *passing.first()?;
+    if !first.random() {
+        return Some(first);
+    }
+    let mut stack = 0;
+    for (_, info) in &passing {
+        if !info.random() {
+            break;
+        }
+        stack += 1;
+        if info.random_end() {
+            break;
+        }
+    }
+    let pick = match world.try_resource_mut::<DialogueRandomState>() {
+        Some(mut state) => xorshift64(&mut state.0) as usize % stack,
+        None => 0,
     };
     passing.get(pick).map(|(_, info)| *info)
 }
@@ -642,23 +655,74 @@ mod tests {
         }
     }
 
-    /// A passing NON-random INFO wins in file order even when Random
-    /// INFOs also pass — the deterministic quest line the P4 route
-    /// gates on.
+    /// #5397 (OBL-2026-10-08-D2-01) — the positional rule: an earlier
+    /// passing Random set is spoken from; the later plain line only ends
+    /// the stack. Pre-fix the plain line won (the inverted rule).
     #[test]
-    fn non_random_candidate_keeps_priority_over_the_random_pool() {
+    fn earlier_random_set_wins_over_a_later_plain_line() {
         let mut world = World::new();
         super::register(&mut world);
         let actor = world.spawn();
         let record = topic(vec![
             flagged_info(0x401, "roll me", 0x02),     // Random
-            flagged_info(0x402, "the fixed line", 0), // plain
+            flagged_info(0x402, "the fixed line", 0), // plain — ends the stack
         ]);
         world.insert_resource(DialogueRandomState(12345));
         for _ in 0..8 {
             let picked = select_first_info(&record, &world, Some(actor), None);
-            assert_eq!(picked.expect("selects").form_id, 0x402);
+            assert_eq!(picked.expect("selects").form_id, 0x401);
         }
+    }
+
+    /// A plain line before any Random INFO wins outright — the
+    /// deterministic quest line the P4 route gates on.
+    #[test]
+    fn earlier_plain_line_wins_over_a_later_random_set() {
+        let mut world = World::new();
+        super::register(&mut world);
+        let actor = world.spawn();
+        let record = topic(vec![
+            flagged_info(0x401, "the fixed line", 0),
+            flagged_info(0x402, "roll me", 0x02),
+            flagged_info(0x403, "or me", 0x02),
+        ]);
+        world.insert_resource(DialogueRandomState(12345));
+        for _ in 0..8 {
+            let picked = select_first_info(&record, &world, Some(actor), None);
+            assert_eq!(picked.expect("selects").form_id, 0x401);
+        }
+    }
+
+    /// #5397 — Random End closes a stack even when the next passing INFO
+    /// is also Random (vanilla's adjacent guard-arrest sets), and a
+    /// non-Random INFO stops later Random INFOs from pooling with the
+    /// first run.
+    #[test]
+    fn random_end_and_plain_lines_bound_the_random_stack() {
+        let mut world = World::new();
+        super::register(&mut world);
+        let actor = world.spawn();
+        let record = topic(vec![
+            flagged_info(0x401, "halt, lawbreaker", 0x02),
+            flagged_info(0x402, "halt, criminal", 0x02 | 0x20), // Random End
+            flagged_info(0x403, "halt, scofflaw", 0x02),        // next set
+            flagged_info(0x404, "plain", 0),
+            flagged_info(0x405, "later random", 0x02),
+        ]);
+        world.insert_resource(DialogueRandomState(0xC0FFEE));
+        let mut distinct = std::collections::HashSet::new();
+        for _ in 0..64 {
+            distinct.insert(
+                select_first_info(&record, &world, Some(actor), None)
+                    .expect("the first set passes")
+                    .form_id,
+            );
+        }
+        assert_eq!(
+            distinct,
+            [0x401, 0x402].into_iter().collect(),
+            "only the first stack (up to and including its Random End) rolls"
+        );
     }
 
     /// An all-Random pool rolls: with a pinned seed the picks vary

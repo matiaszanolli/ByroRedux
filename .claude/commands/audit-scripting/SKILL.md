@@ -309,8 +309,9 @@ The M47.2 MQ101 cart sequence is the first scripted sequence that drives *animat
   as the quest/scene dispatchers (`the_spoken_lines_fragments_advance_the_stage`). Greetings and line
   lifetime (#5367 `14cff35ae`): `open_conversation` falls back to the master's generic greeting topic
   (`GREETING` FO3/FNV, `DialogueGenericHello` Skyrim) when no owned quest topic qualifies; `select_info`
-  collects every passing candidate — a passing non-random INFO keeps priority, an all-Random pool rolls through
-  the seeded `DialogueRandomState`, spoken Say-Once INFOs are disqualified through the saved
+  collects every passing candidate — the first wins, and a Random first INFO rolls within its positional
+  Random stack (ended by the next passing non-Random INFO or a Random End, #5397) through the seeded
+  `DialogueRandomState`, spoken Say-Once INFOs are disqualified through the saved
   `DialogueSpokenInfoForms` ledger (FORMAT_MAJOR 33); a spoken Goodbye closes on the presentation estimate. FO3/FNV
   INFOs honour their own owning quest (QSTI, #5271 `dbc07e8f0`). **Force-greet**
   (`systems/forcegreet.rs`, `ForceGreetDirective` bridge): FO3/FNV Dialogue procedure (`PKDD` topic on
