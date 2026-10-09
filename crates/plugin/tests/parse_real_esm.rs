@@ -426,6 +426,89 @@ fn skyrim_health_resolves_to_authored_avif_form_id() {
     }));
 }
 
+/// #5359 — the per-NPC skin census on vanilla `Skyrim.esm`: 664 of the
+/// 5,118 `NPC_` records author `WNAM` (the issue's byte walk), all six
+/// Alduin records wear `skinDragonAlduin`, and the `SkinDraugrMale05`
+/// population is the largest authored group. The ARMO FormIDs are
+/// resolved by EDID through `index.items`, so the assertion names the
+/// authored armor, not a raw id that could silently drift.
+#[test]
+#[ignore = "needs Skyrim SE game data on disk"]
+fn skyrim_npc_wnam_skin_census_matches_the_byte_walk() {
+    let Some(data) = data_dir(
+        test_paths::SKYRIM_SE_ENV,
+        test_paths::SKYRIM_SE_DEFAULT,
+    ) else {
+        eprintln!("[Skyrim WNAM] skipping: game data unavailable");
+        return;
+    };
+    let bytes = std::fs::read(data.join("Skyrim.esm")).expect("read Skyrim.esm");
+    let index = parse_esm(&bytes).expect("parse Skyrim.esm");
+
+    let authored: Vec<_> = index
+        .npcs
+        .values()
+        .filter(|npc| npc.worn_skin.is_some())
+        .collect();
+    assert!(
+        authored.len() >= 600,
+        "expected ~664 WNAM-authored NPC_ records, got {}",
+        authored.len()
+    );
+
+    // Case-insensitive: Bethesda authors `skinDragonAlduin` with a
+    // lowercase first letter while the Draugr skins use `Skin…`.
+    let armo_by_edid = |edid: &str| {
+        index
+            .items
+            .values()
+            .find(|item| item.common.editor_id.eq_ignore_ascii_case(edid))
+            .map(|item| item.form_id)
+    };
+    let dragon_skin = armo_by_edid("SkinDragonAlduin")
+        .expect("SkinDragonAlduin ARMO indexed from Skyrim.esm");
+    let draugr05_skin =
+        armo_by_edid("SkinDraugrMale05").expect("SkinDraugrMale05 ARMO indexed");
+
+    for alduin in ["AlduinBase", "MQ101Alduin", "MQ106Alduin", "MQ206Alduin", "MQ206AncientAlduin", "MQ304Alduin"] {
+        let npc = index
+            .npcs
+            .values()
+            .find(|npc| npc.editor_id == alduin)
+            .unwrap_or_else(|| panic!("{alduin} NPC_ indexed from Skyrim.esm"));
+        assert_eq!(
+            npc.worn_skin,
+            Some(dragon_skin),
+            "{alduin} must wear SkinDragonAlduin, not the dragon race default"
+        );
+    }
+
+    let draugr05_count = authored
+        .iter()
+        .filter(|npc| npc.worn_skin == Some(draugr05_skin))
+        .count();
+    assert!(
+        draugr05_count >= 60,
+        "expected ~73 NPCs on SkinDraugrMale05, got {draugr05_count}"
+    );
+
+    // Every authored WNAM must name an indexed ARMO — a decode that
+    // resolved to a non-armor record would silently fall back to the
+    // race default downstream.
+    for npc in &authored {
+        let skin = npc.worn_skin.expect("filtered Some above");
+        let resolves_armor = index
+            .items
+            .get(&skin)
+            .is_some_and(|item| matches!(item.kind, byroredux_plugin::esm::records::ItemKind::Armor { .. }));
+        assert!(
+            resolves_armor,
+            "{}'s WNAM {skin:#X} does not resolve to an indexed ARMO",
+            npc.editor_id
+        );
+    }
+}
+
 // ── #3172 — CHARAL rosters, falsified against every shipped master ────────
 //
 // #3095 added one such loop, for `SkillSet::FALLOUT_NV`. The other four
@@ -1219,6 +1302,110 @@ fn starfield_stored_avif_outputs_resolve_on_shipped_master() {
     // instead of hiding it, and flips loudly the moment content changes.
     assert_eq!(index.actor_value_form_id("Health"), Some(0x0000_02D4));
     assert_eq!(index.actor_value_form_id("ActionPoints"), None);
+}
+
+/// #5364 — the WTHS decode census on vanilla `Starfield.esm`: 181
+/// records, 18 roots carrying a full `REFL` whose schema resolves
+/// (root class `BGSWeatherSettingsForm`, named weather parameters like
+/// `FogNear`/`SunGlare`/`pClouds`), children walking `RFDP` chains
+/// that terminate at a root, and every climate `WSLT` row resolving
+/// into the new map — the tie-in #5363 left dangling.
+#[test]
+#[ignore = "needs Starfield game data on disk"]
+fn starfield_wths_reflection_decodes_schema_and_resolves_wslt() {
+    let Some(data) = data_dir(test_paths::STARFIELD_ENV, test_paths::STARFIELD_DEFAULT) else {
+        eprintln!("[Starfield WTHS] skipping: game data unavailable");
+        return;
+    };
+    let bytes = std::fs::read(data.join("Starfield.esm")).expect("read Starfield.esm");
+    let index = parse_esm(&bytes).expect("parse Starfield.esm");
+
+    assert_eq!(index.weather_settings.len(), 181, "the #5364 census count");
+    let roots: Vec<_> = index
+        .weather_settings
+        .values()
+        .filter(|w| w.reflection.is_some())
+        .collect();
+    assert_eq!(roots.len(), 18, "root templates carrying a full REFL");
+    assert!(
+        roots
+            .iter()
+            .any(|w| w.editor_id == "DefaultWeatherSettings"),
+        "the canonical default weather settings is one of the roots"
+    );
+
+    // Schema resolution on a root: the weather parameter class and its
+    // authored field names come out of the string table.
+    let clear = index
+        .weather_settings
+        .values()
+        .find(|w| w.editor_id == "WeatherClearTemplate")
+        .expect("WeatherClearTemplate indexed");
+    let refl = clear.reflection.as_ref().expect("root carries REFL");
+    assert_eq!(refl.version, 4);
+    // BETH + STRT + TYPE + every CLAS + every instance chunk.
+    assert_eq!(
+        refl.chunk_count as usize,
+        3 + refl.classes.len() + refl.instance_chunks.len()
+    );
+    let root = refl.weather_root_class().expect("root class resolves");
+    assert_eq!(root.name, "BGSWeatherSettingsForm");
+    for expected in ["pParent", "pImageSpace", "pClouds", "Colors"] {
+        assert!(
+            root.fields.iter().any(|f| f.name == expected),
+            "root weather parameter '{expected}' missing from the decoded schema"
+        );
+    }
+    // The atmospheric parameters live on the nested ColorSettings class
+    // (the root's `Colors` field), not the root itself.
+    let all_fields = refl.classes.iter().flat_map(|c| c.fields.iter());
+    for expected in ["FogNear", "FogFar", "SunGlare", "Sunlight", "Moonlight"] {
+        assert!(
+            all_fields.clone().any(|f| f.name == expected),
+            "atmospheric parameter '{expected}' missing from the decoded schema"
+        );
+    }
+    assert!(
+        !refl.instance_chunks.is_empty(),
+        "the OBJT/LIST/USER value half is censused even though undecoded"
+    );
+
+    // Child chains: Akila's clear weather diffs against a parent that
+    // terminates at WeatherClearTemplate within two hops.
+    let akila = index
+        .weather_settings
+        .values()
+        .find(|w| w.editor_id == "WeatherUniqueAkila_Clear_C0_Clear")
+        .expect("Akila clear weather indexed");
+    let parent = index
+        .weather_settings
+        .get(&akila.reflection_parent.expect("child carries RFDP"))
+        .expect("RFDP remaps into the index's global space");
+    let grandparent = index
+        .weather_settings
+        .get(&parent.reflection_parent.expect("two-hop chain"))
+        .expect("chain continues");
+    assert_eq!(grandparent.editor_id, "WeatherClearTemplate");
+    assert!(grandparent.reflection.is_some(), "chains terminate at a root");
+    assert!(
+        akila.reflection_diff.as_ref().expect("RDIF decoded").diff_field_indices.is_some(),
+        "the RDIF's DIFF chunk names the overridden fields"
+    );
+
+    // The climate tie-in: every WSLT row from #5363 now resolves into
+    // the weather-settings map instead of dangling.
+    let mut wslt_rows = 0usize;
+    for climate in index.climates.values() {
+        for row in &climate.seasonal_weathers {
+            wslt_rows += 1;
+            assert!(
+                index.weather_settings.contains_key(&row.weather_form_id),
+                "WSLT row {:#010X} does not resolve to an indexed WTHS",
+                row.weather_form_id
+            );
+        }
+    }
+    assert!(wslt_rows > 100, "expected the vanilla WSLT table, got {wslt_rows}");
 }
 
 #[test]

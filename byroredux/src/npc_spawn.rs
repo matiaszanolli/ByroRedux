@@ -1303,8 +1303,16 @@ fn build_npc_equip_state<'a>(
     // doesn't cover a biped region has zero mesh source there — the
     // prebaked path's FaceGeom NIF is head-only (Bethesda FaceGen
     // convention), not "head and body in one mesh."
+    //
+    // #5359 — a per-NPC `NPC_.WNAM` skin (the CK Traits-tab "Skin"
+    // field) overrides the race default as that intrinsic layer. It is
+    // read off the Use-Traits terminal — the flag ("Use Traits",
+    // `0x0001`) governs inheriting it, same as the race itself — so a
+    // templated actor wears its terminal's skin, and 442 vanilla
+    // Skyrim actors (Alduin, every Draugr variant skin, the Falmer
+    // variants…) get their authored body instead of the race default.
     if let Some(race) = index.races.get(&race_form_id) {
-        if let Some(skin_fid) = race.default_skin {
+        if let Some(skin_fid) = resolved.r#traits.worn_skin.or(race.default_skin) {
             if let Some(item) = index.items.get(&skin_fid) {
                 if let ItemKind::Armor { biped_flags, .. } = item.kind {
                     race_skin_mask = Some(biped_flags);

@@ -221,6 +221,18 @@ pub struct NpcRecord {
     /// equip from the inventory list directly). `None` on Skyrim+
     /// when the NPC ships no DOFT — generic settlers etc.
     pub default_outfit: Option<u32>,
+    /// #5359 — per-NPC intrinsic skin ARMO (`NPC_.WNAM`, Skyrim+). The
+    /// CK's Traits-tab **Skin** field: the authored per-actor body that
+    /// overrides the race's `RACE.WNAM` default ([`RaceRecord::
+    /// default_skin`]) — mesh and texture set through the ARMO → ARMA
+    /// chain. 664 of 5,118 vanilla Skyrim `NPC_` records author it
+    /// (every Draugr variant skin, Alduin's `skinDragonAlduin`, the
+    /// Falmer variants, horse hides…); template-flag `0x0001` (Use
+    /// Traits) governs inheriting it, so consumers read it off the
+    /// [`ResolvedNpc`](crate::equip::ResolvedNpc) traits terminal.
+    /// `None` on games whose `NPC_` ships no `WNAM` (Oblivion / FO3 /
+    /// FNV equip from the inventory list) or when the record omits it.
+    pub worn_skin: Option<u32>,
     /// AI packages (`PKID` sub-records, in priority order).
     pub ai_packages: Vec<u32>,
     /// #4414 — the actor's `AIDT` combat disposition, canonical. `None`
@@ -422,6 +434,7 @@ pub fn parse_npc(
         factions: Vec::new(),
         inventory: Vec::new(),
         default_outfit: None,
+        worn_skin: None,
         ai_packages: Vec::new(),
         ai_data: None,
         spells: Vec::new(),
@@ -649,6 +662,18 @@ fn parse_npc_core(
         // presence without ambiguity vs the null-form sentinel.
         b"DOFT" if sub.data.len() >= 4 => {
             record.default_outfit = SubReader::new(&sub.data)
+                .u32()
+                .ok()
+                .map(|raw| remap_fid(raw, remap));
+        }
+        // WNAM — Skyrim+ per-NPC skin ARMO (#5359): the CK Traits-tab
+        // "Skin" field, overriding the race's RACE.WNAM default as the
+        // intrinsic body layer. Pre-Skyrim games never emit NPC_ WNAM,
+        // so no game gate is needed (same posture as DOFT above). Load-
+        // order remapped like every cross-record FormID — the target
+        // lives in `EsmIndex.items`, keyed in global space.
+        b"WNAM" if sub.data.len() >= 4 => {
+            record.worn_skin = SubReader::new(&sub.data)
                 .u32()
                 .ok()
                 .map(|raw| remap_fid(raw, remap));

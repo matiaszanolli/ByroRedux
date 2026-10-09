@@ -1414,6 +1414,89 @@ fn prebaked_equip_state_uses_the_passed_race_form_id_not_the_shells_own() {
     );
 }
 
+/// #5359 — a per-NPC `NPC_.WNAM` skin (the CK Traits-tab "Skin" field)
+/// overrides the race's `RACE.WNAM` default as the intrinsic body layer:
+/// both are authored here and only the WNAM armor may spawn. The
+/// override itself rides the Use-Traits terminal, so a templated shell
+/// (Use Traits set, no WNAM of its own) wears its terminal's skin —
+/// the Alduin / SkinDraugrMale05 authoring shape.
+#[test]
+fn prebaked_npc_wnam_skin_overrides_the_race_default_and_follows_the_traits_terminal() {
+    const RACE: u32 = 0x0100_0050;
+    const RACE_SKIN: u32 = 0x0100_0051;
+    const RACE_SKIN_ARMA: u32 = 0x0100_0052;
+    const WORN: u32 = 0x0100_0053;
+    const WORN_ARMA: u32 = 0x0100_0054;
+    const TORSO_HANDS: u32 = 0x0004 | 0x0010;
+
+    let race = byroredux_plugin::esm::records::RaceRecord {
+        form_id: RACE,
+        base_height: (1.0, 1.0),
+        base_weight: (1.0, 1.0),
+        default_skin: Some(RACE_SKIN),
+        ..Default::default()
+    };
+
+    // Direct authoring: the shell's own WNAM wins over the race default.
+    let mut npc = test_npc(0x0100_0055, "AuthoredSkinNpc");
+    npc.race_form_id = RACE;
+    npc.worn_skin = Some(WORN);
+
+    // Template authoring: the shell carries no WNAM; its Use-Traits
+    // terminal does (the flag governs inheriting the Skin field, same
+    // as the race itself).
+    let mut shell = test_npc(0x0100_0056, "TemplatedSkinNpc");
+    shell.race_form_id = RACE;
+    shell.template_form_id = 0x0100_0057;
+    shell.template_flags = byroredux_plugin::equip::TEMPLATE_FLAG_USE_TRAITS;
+    let mut traits_base = test_npc(0x0100_0057, "TraitsBaseWithSkin");
+    traits_base.race_form_id = RACE;
+    traits_base.worn_skin = Some(WORN);
+
+    let mut index = EsmIndex {
+        game: GameKind::Skyrim,
+        ..Default::default()
+    };
+    index.races.insert(RACE, race);
+    index.npcs.insert(traits_base.form_id, traits_base);
+    index.items.insert(
+        RACE_SKIN,
+        skyrim_armor_item(RACE_SKIN, TORSO_HANDS, vec![RACE_SKIN_ARMA]),
+    );
+    index.armor_addons.insert(
+        RACE_SKIN_ARMA,
+        arma(RACE_SKIN_ARMA, r"actors\character\race_skin.nif"),
+    );
+    index
+        .items
+        .insert(WORN, skyrim_armor_item(WORN, TORSO_HANDS, vec![WORN_ARMA]));
+    index.armor_addons.insert(
+        WORN_ARMA,
+        arma(WORN_ARMA, r"actors\character\worn_skin.nif"),
+    );
+
+    for (label, subject) in [("authored", &npc), ("templated", &shell)] {
+        let state = build_npc_equip_state(
+            &ResolvedNpc::resolve(subject, &index),
+            &index,
+            GameKind::Skyrim,
+            Gender::Male,
+        );
+        let meshes: Vec<&str> = state.armor_to_spawn.iter().map(|a| a.model_path).collect();
+        assert_eq!(
+            meshes,
+            vec![r"actors\character\worn_skin.nif"],
+            "{label}: the WNAM skin must replace the race default as the \
+             intrinsic layer"
+        );
+        assert_eq!(
+            state.armor_to_spawn[0].form_id, WORN,
+            "{label}: the spawned intrinsic armor is the authored WNAM ARMO"
+        );
+        assert!(state.armor_to_spawn[0].intrinsic_skin);
+    }
+}
+
 /// A single race-skin NIF commonly contains several dismember partitions.
 /// Torso armor must hide only the torso partition while the same skin mesh
 /// remains queued to supply uncovered hands.

@@ -685,6 +685,32 @@ fn npc_perk_gate_stays_closed_for_pre_skyrim_games() {
     }
 }
 
+/// #5359 — Skyrim+ `NPC_.WNAM` decodes onto the record as the per-NPC
+/// skin ARMO (the CK Traits-tab "Skin" field overriding the race's
+/// `RACE.WNAM` default), load-order remapped like every cross-record
+/// FormID. Pre-fix the arm did not exist and 442 vanilla Skyrim actors
+/// (Alduin, every Draugr variant skin, the Falmer variants) silently
+/// wore their race's default skin.
+#[test]
+fn npc_skyrim_wnam_skin_decodes_remapped() {
+    let remap = crate::esm::reader::FormIdRemap::regular(2, vec![0]);
+    // Plugin slot 2 self-reference — an ARMO the NPC's own plugin defines.
+    let self_ref = (1u32 << 24) | 0x0001_2C3D;
+    let subs = vec![
+        sub(b"EDID", b"SkinNpc\0"),
+        sub(b"WNAM", self_ref.to_le_bytes()),
+    ];
+    let n = parse_npc(0x000A_0002, &subs, GameKind::Skyrim, &Some(remap));
+    assert_eq!(
+        n.worn_skin,
+        Some((2u32 << 24) | 0x0001_2C3D),
+        "WNAM must resolve to the plugin's global slot, like RNAM/DOFT"
+    );
+    // Absent WNAM stays None — the race default takes over downstream.
+    let plain = parse_npc(0x612, &[sub(b"EDID", b"Plain\0")], GameKind::Skyrim, &None);
+    assert_eq!(plain.worn_skin, None);
+}
+
 /// Mismatched FMRI/FMRS counts truncate to the shorter array
 /// instead of panicking. Defensive against malformed mod records;
 /// vanilla Bethesda content always pairs them 1-to-1.
