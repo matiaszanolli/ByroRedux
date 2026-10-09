@@ -631,6 +631,10 @@ mod tests {
     use super::*;
     use crate::ecs::sparse_set::SparseSetStorage;
     use crate::ecs::storage::Component;
+    // c5113f0d9's lint sweep dropped this while the scenario-5 test below
+    // still constructs a real `World` — restore it or the lib-test build
+    // fails with E0433.
+    use crate::ecs::World;
     use std::any::TypeId;
 
     struct FakeA;
