@@ -50,28 +50,39 @@ enum EatOrSleep {
 /// Registered `add_exclusive(Stage::PostUpdate, …)` beside the other
 /// M42 procedure systems; reads this frame's propagated
 /// `GlobalTransform`s.
+/// One collected actor per tick — the behavior pair is flattened into
+/// a row so the per-actor loop below never holds two behavior storages
+/// at once.
+struct EatSleepActor {
+    npc: EntityId,
+    kind: EatOrSleep,
+    radius: Option<f32>,
+    target_form_id: Option<u32>,
+    form_id: u32,
+}
+
 pub(crate) fn eat_sleep_system(world: &World, dt: f32) {
-    let mut actors: Vec<(EntityId, EatOrSleep, Option<f32>, Option<u32>, u32)> = Vec::new();
+    let mut actors: Vec<EatSleepActor> = Vec::new();
     if let Some(query) = world.query::<EatBehavior>() {
         for (npc, behavior) in query.iter() {
-            actors.push((
+            actors.push(EatSleepActor {
                 npc,
-                EatOrSleep::Eat,
-                behavior.radius,
-                behavior.target_form_id,
-                behavior.form_id,
-            ));
+                kind: EatOrSleep::Eat,
+                radius: behavior.radius,
+                target_form_id: behavior.target_form_id,
+                form_id: behavior.form_id,
+            });
         }
     }
     if let Some(query) = world.query::<SleepBehavior>() {
         for (npc, behavior) in query.iter() {
-            actors.push((
+            actors.push(EatSleepActor {
                 npc,
-                EatOrSleep::Sleep,
-                behavior.radius,
-                behavior.target_form_id,
-                behavior.form_id,
-            ));
+                kind: EatOrSleep::Sleep,
+                radius: behavior.radius,
+                target_form_id: behavior.target_form_id,
+                form_id: behavior.form_id,
+            });
         }
     }
     if actors.is_empty() {
@@ -82,15 +93,24 @@ pub(crate) fn eat_sleep_system(world: &World, dt: f32) {
     // two same-type guards.
     {
         let seated_q = world.query::<Seated>();
-        actors.retain(|(npc, _, _, _, _)| {
-            !seated_q.as_ref().is_some_and(|seated| seated.contains(*npc))
+        actors.retain(|actor| {
+            !seated_q
+                .as_ref()
+                .is_some_and(|seated| seated.contains(actor.npc))
         });
     }
     if actors.is_empty() {
         return;
     }
 
-    for (npc, kind, radius, target_form_id, form_id) in actors {
+    for EatSleepActor {
+        npc,
+        kind,
+        radius,
+        target_form_id,
+        form_id,
+    } in actors
+    {
         // One-shot walk destination: resolve on first sight, reuse
         // after. Inserted through a scoped write so no read guard is
         // held across it.

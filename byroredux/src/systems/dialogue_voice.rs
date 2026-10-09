@@ -232,7 +232,7 @@ mod tests {
         // Quest-less lines (or unindexed quests) author only the bare
         // shape.
         let bare =
-            voice_path_candidates("fallout3.esm", "femaleadult01default", "", "someTopic", 0x0001_AB, 3);
+            voice_path_candidates("fallout3.esm", "femaleadult01default", "", "someTopic", 0x0000_01AB, 3);
         assert_eq!(
             bare,
             vec!["sound\\voice\\fallout3.esm\\femaleadult01default\\000001ab_3.ogg"]

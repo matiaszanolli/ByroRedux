@@ -631,17 +631,20 @@ mod tests {
     use super::*;
     use crate::ecs::sparse_set::SparseSetStorage;
     use crate::ecs::storage::Component;
-    use crate::ecs::World;
     use std::any::TypeId;
 
     struct FakeA;
     struct FakeB;
 
+    /// Type markers exercised through `TypeId` registration only —
+    /// never constructed — so the dead_code lint is silenced per marker.
+    #[allow(dead_code)]
     struct WorldA;
     impl Component for WorldA {
         type Storage = SparseSetStorage<Self>;
     }
 
+    #[allow(dead_code)]
     struct WorldB;
     impl Component for WorldB {
         type Storage = SparseSetStorage<Self>;
@@ -776,14 +779,24 @@ mod tests {
     // colliding with other tests in the workspace that also exercise
     // the same graph.
 
+    // TypeId-only markers (see WorldA's note) — never constructed.
+    #[allow(dead_code)]
     struct Abba1;
+    #[allow(dead_code)]
     struct Abba2;
+    #[allow(dead_code)]
     struct Abba3;
+    #[allow(dead_code)]
     struct Abba4;
+    #[allow(dead_code)]
     struct Abba5;
+    #[allow(dead_code)]
     struct Abba6;
+    #[allow(dead_code)]
     struct Abba7;
+    #[allow(dead_code)]
     struct Recur1;
+    #[allow(dead_code)]
     struct Recur2;
 
     /// Single combined test for the global-graph detector — three

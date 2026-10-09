@@ -1026,17 +1026,17 @@ mod tests {
         pkdt.extend_from_slice(&15u32.to_le_bytes());
         let mut pkdd = Vec::new();
         pkdd.extend_from_slice(&0u32.to_le_bytes());
-        pkdd.extend_from_slice(&0x000C_8Eu32.to_le_bytes());
+        pkdd.extend_from_slice(&0x0000_0C8Eu32.to_le_bytes());
         let with_topic = parse_pack(
             0x1,
-            &vec![sub(b"PKDT", &pkdt), sub(b"PKDD", &pkdd)],
+            &[sub(b"PKDT", &pkdt), sub(b"PKDD", &pkdd)],
             &None,
             GameKind::default(),
         );
         assert_eq!(with_topic.force_greet(), ForceGreetLine::Topic(0xC8E));
         let no_topic = parse_pack(
             0x2,
-            &vec![sub(b"PKDT", &pkdt.clone())],
+            &[sub(b"PKDT", pkdt.clone())],
             &None,
             GameKind::default(),
         );
@@ -1046,7 +1046,7 @@ mod tests {
         travel.extend_from_slice(&6u32.to_le_bytes());
         let travel_pack = parse_pack(
             0x3,
-            &vec![sub(b"PKDT", &travel)],
+            &[sub(b"PKDT", &travel)],
             &None,
             GameKind::default(),
         );
