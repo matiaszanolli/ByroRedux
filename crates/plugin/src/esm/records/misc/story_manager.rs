@@ -8,9 +8,14 @@
 //! `Fallout4.esm`, `Starfield.esm`; provenance in the design doc §4):
 //!
 //! - The tree is encoded by pointers, not nesting: `PNAM` = parent node
-//!   FormID, `SNAM` = next-sibling node FormID. The same-parent test
-//!   passes 441/443 (Skyrim), 218/219 (FO4), 366/366 (Starfield) on
-//!   in-tree `SNAM` targets, and sibling order is the evaluation stack.
+//!   FormID, `SNAM` = **previous**-sibling node FormID (#5385 — xEdit
+//!   `wbFormIDCkNoReach(SNAM, 'Previous Node', …)` on TES5/FO4/FO76/SF1;
+//!   the pre-fix "next" reading walked every stacked sibling group
+//!   bottom-up). The same-parent test passes 441/443 (Skyrim), 218/219
+//!   (FO4), 366/366 (Starfield) on in-tree `SNAM` targets — but it holds
+//!   in both directions, which is why it could not tell next from
+//!   previous; the DLC append shape, FormID age and the CK tutorial's
+//!   KILL head are the direction evidence (story-manager.md §3).
 //!   Every `SMEN` parents to the in-map root `SMBN` `Root` (`0x5B`,
 //!   `PNAM = 0`); FO4+ carry the same node under the `0x01` self-master
 //!   byte the standard FormID remap normalizes.
@@ -133,8 +138,8 @@ impl SmNodePolicies {
 ///
 /// Pointer fields are stored **remapped into global load-order space**
 /// (same contract as every other cross-record FormID the parsers keep),
-/// so a consumer joins `parent` / `next_sibling` / `quest_links` against
-/// `EsmIndex.story_manager_nodes` / `EsmIndex.quests` directly.
+/// so a consumer joins `parent` / `previous_sibling` / `quest_links`
+/// against `EsmIndex.story_manager_nodes` / `EsmIndex.quests` directly.
 #[derive(Debug, Clone, Default)]
 pub struct SmNodeRecord {
     pub form_id: u32,
@@ -144,8 +149,13 @@ pub struct SmNodeRecord {
     /// Absent `PNAM` subrecords (common on SMEN, which parent to the
     /// root by convention) also store `0`.
     pub parent: u32,
-    /// `SNAM` — next-sibling node FormID (`0` = last child).
-    pub next_sibling: u32,
+    /// `SNAM` — **previous**-sibling node FormID (#5385: xEdit
+    /// `wbFormIDCkNoReach(SNAM, 'Previous Node', [SMQN, SMBN, SMEN,
+    /// NULL])` on every game). `0` = first child (the top of the CK
+    /// list); a dangling (cross-plugin, not-yet-loaded) target also
+    /// reads as "nothing above me". The tree fold follows the inverse
+    /// edges to recover the authored top-down evaluation order.
+    pub previous_sibling: u32,
     /// `ENAM` — the 4-byte event mnemonic, `SMEN` only.
     pub event_mnemonic: Option<[u8; 4]>,
     /// `CITC`-counted CTDA/CIS1/CIS2 conditions. Empty = fires
@@ -220,7 +230,7 @@ pub fn parse_sm_node(
                 node.parent = remap_fid(u32::from_le_bytes(sub.data[..4].try_into().unwrap()), remap);
             }
             b"SNAM" if sub.data.len() >= 4 => {
-                node.next_sibling =
+                node.previous_sibling =
                     remap_fid(u32::from_le_bytes(sub.data[..4].try_into().unwrap()), remap);
             }
             b"ENAM" if sub.data.len() >= 4 => {
@@ -323,7 +333,7 @@ mod tests {
         let node = parse_sm_node(SmNodeKind::Event, 0x0003_9D86, &subs, &None);
         assert_eq!(node.event_mnemonic, Some(*b"CRFT"));
         assert_eq!(node.parent, 0x5B);
-        assert_eq!(node.next_sibling, 0);
+        assert_eq!(node.previous_sibling, 0);
         assert_eq!(node.editor_id, "");
         assert!(node.conditions.is_empty());
         assert_eq!(node.dnam, Some(0));
@@ -398,7 +408,7 @@ mod tests {
         ];
         let node = parse_sm_node(SmNodeKind::Quest, 0x0201_4CBA, &subs, &Some(remap));
         assert_eq!(node.parent, 0x0101_7045);
-        assert_eq!(node.next_sibling, 0x0101_7046);
+        assert_eq!(node.previous_sibling, 0x0101_7046);
         assert_eq!(
             node.quests.iter().map(|link| link.form_id).collect::<Vec<_>>(),
             vec![0x0101_7047]

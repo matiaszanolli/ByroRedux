@@ -98,7 +98,7 @@ verification below should be treated as decoded.
 |---|---|---|---|
 | `EDID` | all | editor ID | **[verified]** |
 | `PNAM` u32 | all | parent node FormID; `0x0000005B` on every SMEN = the root sentinel (its Skyrim EDID resolves to literally `Root`) | **[verified]** |
-| `SNAM` u32 | all | next-sibling node FormID (the stack order) | **[verified]** — 441/443 Skyrim, 218/219 FO4, 366/366 Starfield in-tree targets share the source's `PNAM` |
+| `SNAM` u32 | all | **previous**-sibling node FormID (#5385) — the head is the member with `SNAM == 0`, and the fold follows the inverse edges | **[verified]** — xEdit `wbFormIDCkNoReach(SNAM, 'Previous Node', …)` on every game; the same-parent test (441/443 Skyrim, 218/219 FO4, 366/366 Starfield) holds in both directions and could NOT tell next from previous — the direction evidence is the DLC bottom-append shape (7/2/6 FO3-era + 5 FO4 DLC nodes SNAM onto a vanilla node nothing points at, the CK's "below all other entries"), FormID age (the target is older in 302/441 Skyrim, 135/218 FO4, 191/366 Starfield edges), and the CK tutorial's KILL head being `DA08KillFriendNode`, whose `SNAM` is 0 |
 | `ENAM` char[4] | SMEN | event mnemonic; exactly one SMEN per mnemonic per master (24 Skyrim / 17 FO4 / 20 Starfield) | **[verified]** structure; per-mnemonic mapping in §3.1 |
 | `CITC` u32 + `CTDA`×N + `CIS2` | all | node conditions (existing CTDA representation) | **[verified]** shape |
 | `NNAM` u32 | SMQN | the QUST this node starts | **[verified]** — Skyrim 425/448 resolve to QUST records via EDID cross-check (e.g. `MS05KingOlafsFestivalStarter` → its QUST) |

@@ -1922,7 +1922,7 @@ fn story_manager_node_state_survives_save_load_and_still_gates() {
     let node = SmNodeRecord {
         form_id: 30,
         parent: 10,
-        next_sibling: 0,
+        previous_sibling: 0,
         kind: SmNodeKind::Quest,
         quests: vec![
             SmQuestLink {

@@ -83,9 +83,12 @@ screenshot floor, and dismissal after the destination applies, and
 [`sm1-story-manager.sh`](docs/smoke-tests/sm1-story-manager.sh) gates
 Story Manager event dispatch live on Skyrim (#5366 Phases 1–4): the
 boot-time CLOC event must start the authored set through the canonical
-lifecycle (`WIGreetingNodeSHARES`, then the non-sharing
-`CWChangeLocationScenes` which consumes the event — leaving
-`CRHoldExpansion` below it stopped, the shares-consume negative), and
+lifecycle (`WIGreetingNodeSHARES` declines on its uncatalogued fn-145
+gate per #5380; the non-sharing `CWChangeLocationScenes` — which the
+#5385 previous-sibling order puts before every `WI*` node — evaluates
+its fn-56 gate for real, starts its scene quest, and consumes the
+event, leaving `CRHoldExpansion` below it stopped, the shares-consume
+negative), and
 hand-raised `sm.event` KILL events with non-matching event data (no
 killer / player victim) must be refused by the authored R1/R2 node
 conditions, and

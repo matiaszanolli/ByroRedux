@@ -2,7 +2,9 @@
 //!
 //! Folds the parsed `SMBN`/`SMEN`/`SMQN` node map
 //! ([`EsmIndex::story_manager_nodes`]) into an [`SmTree`] whose children
-//! are ordered by the authored `SNAM` sibling chains, then dispatches
+//! are ordered by the authored `SNAM` sibling chains (#5385: `SNAM`
+//! names the PREVIOUS sibling; the head is the `SNAM == 0` member and
+//! the fold follows the inverse edges), then dispatches
 //! raised [`StoryEvent`]s: look up the event mnemonic's `SMEN` root,
 //! walk children in stack order evaluating each node's CTDA set through
 //! the shared M47.1 evaluator, and start a passing quest node's quest
@@ -110,6 +112,9 @@ pub struct SmTreeNode {
     pub conditions: ConditionList,
     /// Authored `SNAM` chain, resolved to arena indices. Sibling order
     /// is the evaluation stack (corpus-verified: #5366 design doc §3).
+    /// The NEXT sibling in authored evaluation order — the INVERSE of
+    /// `SNAM` (which names the PREVIOUS sibling, #5385): computed by the
+    /// tree fold as "the member whose `SNAM` points at me".
     pub next_sibling: Option<usize>,
     /// Chain head among this node's children, computed at build so
     /// dispatch never re-derives ordering.
@@ -295,12 +300,14 @@ impl Resource for StoryEventAliasFill {}
 
 /// Fold the parsed node records into an [`SmTree`].
 ///
-/// Children of each parent are ordered by following the authored
-/// `SNAM` sibling chain from its head — the sibling that no in-group
-/// sibling points *at*. Malformed chains (cycles, headless groups —
-/// none exist in any vanilla master, but a mod can author anything)
-/// fall back to the lowest-index member as head; the walker's visited
-/// bitmap keeps traversal terminating regardless.
+/// #5385 — `SNAM` names the PREVIOUS sibling (xEdit, every game), so
+/// children of each parent are ordered by taking the member with no
+/// previous (`SNAM == 0` or dangling — the TOP of the CK list) as the
+/// head and following the inverse edges (the member whose previous is
+/// me). Malformed chains (cycles, headless groups — none exist in any
+/// vanilla master, but a mod can author anything) fall back to the
+/// lowest-index member as head; the walker's visited bitmap keeps
+/// traversal terminating regardless.
 pub fn build_story_manager_tree(records: &HashMap<u32, SmNodeRecord>) -> SmTree {
     // Sorted by FormID so the arena order is deterministic across
     // HashMap iteration orders.
@@ -324,14 +331,11 @@ pub fn build_story_manager_tree(records: &HashMap<u32, SmNodeRecord>) -> SmTree 
         });
     }
 
-    // Resolve sibling pointers to arena indices; dangling (cross-plugin,
-    // not-yet-loaded) targets stay `None` — the chain simply ends there.
-    for record in records.values() {
-        let Some(&index) = by_form_id.get(&record.form_id) else {
-            continue;
-        };
-        tree.nodes[index].next_sibling = by_form_id.get(&record.next_sibling).copied();
-    }
+    // Resolve SNAM (xEdit: the PREVIOUS sibling, #5385) to arena
+    // indices; dangling (cross-plugin, not-yet-loaded) targets stay
+    // `None` — the member reads as "nothing above me". The evaluation-
+    // order NEXT pointer is derived per parent group below (the inverse:
+    // the member whose previous is me).
 
     // Event roots: one SMEN per mnemonic; a duplicate (a conflicting
     // override that lost the merge) keeps the first and warns.
@@ -365,21 +369,39 @@ pub fn build_story_manager_tree(records: &HashMap<u32, SmNodeRecord>) -> SmTree 
         }
     }
     for (parent, members) in children_by_parent {
-        let mut targeted = vec![false; members.len()];
+        // #5385 — SNAM names the PREVIOUS sibling, so the chain HEAD is
+        // the member with no previous (SNAM == 0 or dangling): the TOP
+        // of the CK list. The pre-fix head ("the member no in-group
+        // sibling points at") is the BOTTOM under this reading, and
+        // following SNAM from it walked every stacked group bottom-up.
+        let previous: HashMap<usize, Option<usize>> = members
+            .iter()
+            .map(|&member| {
+                (
+                    member,
+                    by_form_id
+                        .get(&records[&tree.nodes[member].form_id].previous_sibling)
+                        .copied(),
+                )
+            })
+            .collect();
+        let head = members
+            .iter()
+            .find(|&&member| previous[&member].is_none())
+            .copied()
+            .unwrap_or(members[0]); // malformed: cycle / headless group
+        tree.nodes[by_form_id[&parent]].first_child = Some(head);
+        // Evaluation-order next = the inverse edge. Iterated in arena
+        // order so a malformed double-point (two members claiming the
+        // same previous) resolves deterministically (highest FormID
+        // wins), never by HashMap iteration.
         for &member in &members {
-            if let Some(sibling) = tree.nodes[member].next_sibling {
-                if let Some(position) = members.iter().position(|&m| m == sibling) {
-                    targeted[position] = true;
+            if let Some(prev) = previous[&member] {
+                if members.contains(&prev) {
+                    tree.nodes[prev].next_sibling = Some(member);
                 }
             }
         }
-        let head = members
-            .iter()
-            .zip(&targeted)
-            .find(|(_, targeted)| !**targeted)
-            .map(|(member, _)| *member)
-            .unwrap_or(members[0]);
-        tree.nodes[by_form_id[&parent]].first_child = Some(head);
     }
 
     tree
@@ -922,11 +944,11 @@ mod tests {
         world
     }
 
-    fn branch(form_id: u32, parent: u32, next_sibling: u32) -> SmNodeRecord {
+    fn branch(form_id: u32, parent: u32, previous_sibling: u32) -> SmNodeRecord {
         SmNodeRecord {
             form_id,
             parent,
-            next_sibling,
+            previous_sibling,
             kind: SmNodeKind::Branch,
             ..Default::default()
         }
@@ -942,21 +964,21 @@ mod tests {
         }
     }
 
-    fn quest_node(form_id: u32, parent: u32, next_sibling: u32, quests: &[u32]) -> SmNodeRecord {
-        quest_node_full(form_id, parent, next_sibling, quests, SmNodePolicies::default())
+    fn quest_node(form_id: u32, parent: u32, previous_sibling: u32, quests: &[u32]) -> SmNodeRecord {
+        quest_node_full(form_id, parent, previous_sibling, quests, SmNodePolicies::default())
     }
 
     fn quest_node_full(
         form_id: u32,
         parent: u32,
-        next_sibling: u32,
+        previous_sibling: u32,
         quests: &[u32],
         policies: SmNodePolicies,
     ) -> SmNodeRecord {
         SmNodeRecord {
             form_id,
             parent,
-            next_sibling,
+            previous_sibling,
             kind: SmNodeKind::Quest,
             quests: quests
                 .iter()
@@ -981,11 +1003,14 @@ mod tests {
         // Event KILL (10) with children 1 → 2 → 3 by SNAM, contributed
         // in shuffled map order, plus a mid-chain parent (2) with its
         // own child (4).
+        // #5385 — SNAM is the PREVIOUS sibling: the chain 1 → 2 → 3
+        // authors as 1.prev=0 (head), 2.prev=1, 3.prev=2, contributed in
+        // shuffled map order.
         let tree = build_story_manager_tree(&records(vec![
-            quest_node(3, 10, 0, &[0xAAA]),
+            quest_node(3, 10, 2, &[0xAAA]),
             event_node(10, b"KILL"),
-            quest_node(1, 10, 2, &[0x111]),
-            quest_node(2, 10, 3, &[0x222]),
+            quest_node(1, 10, 0, &[0x111]),
+            quest_node(2, 10, 1, &[0x222]),
             quest_node(4, 2, 0, &[0x444]),
         ]));
         let root = tree.roots_by_mnemonic[b"KILL"];
@@ -999,6 +1024,33 @@ mod tests {
         assert!(tree.nodes[third].next_sibling.is_none());
         // Node 2's child chain head is 4.
         assert_eq!(tree.nodes[second].first_child.map(|i| tree.nodes[i].form_id), Some(4));
+    }
+
+    /// #5385 — the direction pin, mirroring Bethesda's own tutorial
+    /// data: Skyrim's KILL subtree authors `DA08KillFriendNode`
+    /// (0x10FAEF) as the CK tree's FIRST child (the tutorial says
+    /// "expand the node labeled DA08KillFriendNode", and its SNAM is
+    /// 0), with the remaining nine children below it. Under the old
+    /// "next" reading the head was the BOTTOM of the list. A chain
+    /// authored head-first (each SNAM naming the member ABOVE it, the
+    /// DLC-append shape) must evaluate head-first.
+    #[test]
+    fn snam_previous_semantics_walk_head_first() {
+        // KILL with three children authored top-down: 1 (SNAM 0),
+        // 2 (SNAM 1), 3 (SNAM 2) — the CK list order.
+        let tree = build_story_manager_tree(&records(vec![
+            event_node(10, b"KILL"),
+            quest_node(1, 10, 0, &[0x111]),
+            quest_node(2, 10, 1, &[0x222]),
+            quest_node(3, 10, 2, &[0x333]),
+        ]));
+        let root = tree.roots_by_mnemonic[b"KILL"];
+        let head = tree.nodes[root].first_child.unwrap();
+        assert_eq!(tree.nodes[head].form_id, 1, "the SNAM==0 member is the head (the top)");
+        let second = tree.nodes[head].next_sibling.unwrap();
+        let third = tree.nodes[second].next_sibling.unwrap();
+        assert_eq!((tree.nodes[second].form_id, tree.nodes[third].form_id), (2, 3));
+        assert!(tree.nodes[third].next_sibling.is_none());
     }
 
     /// A sibling cycle (2 ⇄ 3, no head) still builds: the lowest-index
@@ -1046,8 +1098,8 @@ mod tests {
         let tree = build_story_manager_tree(&records(vec![
             event_node(10, b"KILL"),
             branch(20, 10, 0),
-            quest_node(30, 20, 31, &[0x000F_0A10]),
-            quest_node(31, 20, 0, &[0x000F_0A11]),
+            quest_node(30, 20, 0, &[0x000F_0A10]),
+            quest_node(31, 20, 30, &[0x000F_0A11]),
         ]));
         let mut world = setup_world();
         world.insert_resource(tree);
@@ -1115,9 +1167,9 @@ mod tests {
         let unmodeled = SmNodeRecord {
             form_id: 20,
             parent: 10,
-            // A real sibling follows: the walk must continue past the
-            // declined node onto it.
-            next_sibling: 30,
+            // Head of the pair: a real sibling follows, and the walk
+            // must continue past the declined node onto it.
+            previous_sibling: 0,
             kind: SmNodeKind::Quest,
             quests: vec![SmQuestLink { form_id: 0x666, reset_hours: 0.0 }],
             conditions: vec![Condition {
@@ -1131,7 +1183,7 @@ mod tests {
         let tree = build_story_manager_tree(&records(vec![
             event_node(10, b"CLOC"),
             unmodeled,
-            quest_node(30, 10, 0, &[0x777]),
+            quest_node(30, 10, 20, &[0x777]),
         ]));
         let mut world = setup_world();
         world.insert_resource(tree);
@@ -1172,7 +1224,7 @@ mod tests {
             let node = SmNodeRecord {
                 form_id: 20,
                 parent: 10,
-                next_sibling: 0,
+                previous_sibling: 0,
                 kind: SmNodeKind::Quest,
                 quests: vec![SmQuestLink { form_id: 0x888, reset_hours: 0.0 }],
                 conditions: vec![Condition {
@@ -1230,7 +1282,7 @@ mod tests {
         let failing = SmNodeRecord {
             form_id: 20,
             parent: 10,
-            next_sibling: 0,
+            previous_sibling: 0,
             kind: SmNodeKind::Branch,
             conditions: vec![Condition {
                 function_index: 14, // GetActorValue
@@ -1309,7 +1361,7 @@ fn event_data_killer_condition_gates_the_start() {
     let killer_node = SmNodeRecord {
         form_id: 30,
         parent: 10,
-        next_sibling: 0,
+        previous_sibling: 0,
         kind: SmNodeKind::Quest,
         quests: vec![SmQuestLink { form_id: 0x555, reset_hours: 0.0 }],
         conditions: vec![Condition {
@@ -1462,7 +1514,7 @@ fn event_data_r1_resolves_and_location_tags_fail_cleanly() {
     let node = |extra: u32| SmNodeRecord {
         form_id: 30,
         parent: 10,
-        next_sibling: 0,
+        previous_sibling: 0,
         kind: SmNodeKind::Quest,
         quests: vec![SmQuestLink { form_id: 0x556, reset_hours: 0.0 }],
         conditions: vec![Condition {
@@ -1725,8 +1777,8 @@ fn event_data_r1_resolves_and_location_tags_fail_cleanly() {
     fn processed_non_sharing_node_consumes_even_without_a_start() {
         let tree = build_story_manager_tree(&records(vec![
             event_node(10, b"KILL"),
-            quest_node(30, 10, 31, &[0x111]),
-            quest_node(31, 10, 0, &[0x222]),
+            quest_node(30, 10, 0, &[0x111]),
+            quest_node(31, 10, 30, &[0x222]),
         ]));
         let mut world = setup_world();
         world.insert_resource(tree);
@@ -1858,7 +1910,7 @@ fn event_data_r1_resolves_and_location_tags_fail_cleanly() {
         let node = SmNodeRecord {
             form_id: 30,
             parent: 10,
-            next_sibling: 0,
+            previous_sibling: 0,
             kind: SmNodeKind::Quest,
             quests: vec![
                 SmQuestLink {
@@ -1951,13 +2003,13 @@ fn event_data_r1_resolves_and_location_tags_fail_cleanly() {
             SmNodeRecord {
                 form_id: 20,
                 parent: 10,
-                next_sibling: 0,
+                previous_sibling: 0,
                 kind: SmNodeKind::Branch,
                 policies: random,
                 ..Default::default()
             },
-            quest_node_full(30, 20, 31, &[0x111], random),
-            quest_node_full(31, 20, 0, &[0x222], random),
+            quest_node_full(30, 20, 0, &[0x111], random),
+            quest_node_full(31, 20, 30, &[0x222], random),
         ]));
         let mut world = setup_world();
         world.insert_resource(tree);

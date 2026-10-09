@@ -5011,13 +5011,13 @@ fn story_manager_skyrim_census_floor() {
         linked_quests.len()
     );
 
-    // Sibling-chain integrity: ≥90% of in-tree next_sibling targets share
+    // Sibling-chain integrity: ≥90% of in-tree previous_sibling targets share
     // the source's parent (measured 441/443).
     let mut in_tree = 0usize;
     let mut same_parent = 0usize;
     for node in &nodes {
-        if node.next_sibling != 0 {
-            if let Some(target) = index.story_manager_nodes.get(&node.next_sibling) {
+        if node.previous_sibling != 0 {
+            if let Some(target) = index.story_manager_nodes.get(&node.previous_sibling) {
                 in_tree += 1;
                 if target.parent == node.parent {
                     same_parent += 1;
