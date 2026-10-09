@@ -1660,10 +1660,20 @@ mod tests {
     fn every_index_map_is_a_category_or_a_recorded_exclusion() {
         /// Maps that are deliberately NOT record counts, each with the reason
         /// a reader would otherwise have to reconstruct.
-        const EXCLUSIONS: &[(&str, &str)] = &[(
-            "record_types",
-            "generic metadata duplicates typed record maps and must not inflate record totals",
-        )];
+        const EXCLUSIONS: &[(&str, &str)] = &[
+            (
+                "record_types",
+                "generic metadata duplicates typed record maps and must not inflate record totals",
+            ),
+            // #5426 — a derived cache, not an independent record map: the
+            // generic greeting's FormID, recomputed from `dialogues` at the
+            // end of every merge_from. Counting it beside `dialogues` would
+            // double-report one record.
+            (
+                "generic_greeting_form",
+                "derived cache of `dialogues` (the greeting topic's FormID, resolved at merge end)",
+            ),
+        ];
 
         // #4084 (ESM-2026-09-09-D7-09) — collections merged by hand in
         // `merge_from` (`EsmIndex::merge_from`, below) rather than through
