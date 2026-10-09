@@ -98,6 +98,14 @@ fn location_hash(parts: &[&str]) -> u64 {
 /// pre-Creation titles this is a no-op (no SM tree installed).
 pub(crate) fn raise_hello_story_event(world: &World, greeter: EntityId, greeted: EntityId) {
     use byroredux_scripting::story_manager::StoryEvent;
+    // #5372 — resolve the location BEFORE taking the StoryEvent write
+    // guard: `resolve_current_lctn` reads `LoadedCellIndex`, and every
+    // dialogue-open call site (forcegreet_open, the selection system's
+    // Pass 2) already holds a `LoadedCellIndex` read of its own. As a
+    // struct-field expression it evaluated under the marker guard and
+    // closed the cycle #5066 predicted (LoadedCellIndex -> StoryEvent
+    // -> LoadedCellIndex).
+    let location_1 = resolve_current_lctn(world);
     let Some(mut events) = world.query_mut::<StoryEvent>() else {
         return;
     };
@@ -107,7 +115,7 @@ pub(crate) fn raise_hello_story_event(world: &World, greeter: EntityId, greeted:
             mnemonic: *b"AHEL",
             reference_1: greeter,
             reference_2: Some(greeted),
-            location_1: resolve_current_lctn(world),
+            location_1,
             location_2: None,
         },
     );

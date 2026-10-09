@@ -475,10 +475,16 @@ fn dispatch_spoken_fragment(
 /// gather-then-apply discipline as the activation path. Returns whether
 /// a line was applied.
 pub(crate) fn forcegreet_open(world: &World, npc: EntityId, topic: Option<u32>) -> bool {
-    let Some(index) = world.try_resource::<LoadedCellIndex>() else {
-        return false;
+    // #5066 / #5372 — scope the guard to the clone. The shadowed
+    // read used to live to the end of the function, and any nested
+    // `LoadedCellIndex` reader under it (raise_hello_story_event,
+    // play_line_voice) closed a lock-order cycle.
+    let index = {
+        let Some(index) = world.try_resource::<LoadedCellIndex>() else {
+            return false;
+        };
+        index.0.clone()
     };
-    let index = index.0.clone();
     let Some(player) = world
         .try_resource::<PlayerEntity>()
         .and_then(|player| player.0)
@@ -649,10 +655,16 @@ fn npc_dialogue_selection_system_inner(world: &World, scratch: &mut NpcDialogueS
     else {
         return;
     };
-    let Some(index) = world.try_resource::<LoadedCellIndex>() else {
-        return;
+    // #5066 / #5372 — scope the guard to the clone. The shadowed
+    // read used to live to the end of the function, and any nested
+    // `LoadedCellIndex` reader under it (raise_hello_story_event,
+    // play_line_voice) closed a lock-order cycle.
+    let index = {
+        let Some(index) = world.try_resource::<LoadedCellIndex>() else {
+            return;
+        };
+        index.0.clone()
     };
-    let index = index.0.clone();
     let events: Vec<(EntityId, EntityId)> = world
         .query::<ActivateEvent>()
         .map(|query| {
@@ -728,10 +740,16 @@ pub(crate) fn select_topic_by_form_id(
     if let Some(reason) = npc_refuses_dialogue(world, npc) {
         return Err(reason.to_string());
     }
-    let Some(index) = world.try_resource::<LoadedCellIndex>() else {
-        return Err("no loaded plugin index".to_string());
+    // #5066 / #5372 — scope the guard to the clone. The shadowed
+    // read used to live to the end of the function, and any nested
+    // `LoadedCellIndex` reader under it (raise_hello_story_event,
+    // play_line_voice) closed a lock-order cycle.
+    let index = {
+        let Some(index) = world.try_resource::<LoadedCellIndex>() else {
+            return Err("no loaded plugin index".to_string());
+        };
+        index.0.clone()
     };
-    let index = index.0.clone();
     let Some(record) = index.dialogues.get(&topic_form_id).cloned() else {
         return Err(format!("no topic {topic_form_id:08X} in the loaded plugins"));
     };
@@ -1226,6 +1244,10 @@ mod tests {
     /// binds `refs` to aliases 1..=n of the running fixture quest.
     fn bound_world(refs: &[(u32, u32)]) -> (World, EntityId, Vec<EntityId>) {
         let mut world = World::new();
+        // #5372 — the real boot registers the SM storages; without them
+        // every hello-raising path silently no-ops and the lock-order
+        // lane sees nothing of the dialogue-open acquisition chain.
+        byroredux_scripting::story_manager::register(&mut world);
         world.register::<ActivateEvent>();
         world.register::<NpcDialogueTopic>();
         world.register::<SceneAliasCandidate>();
