@@ -71,6 +71,15 @@ void main() {
     if (p.x >= int(screen.x) || p.y >= int(screen.y)) return;
 
     vec3 currInd  = texelFetch(currIndirectTex, p, 0).rgb;
+    // #5211 — a non-finite current-frame sample must never enter history.
+    // The firefly clamp below is a `>` comparison, which is FALSE for NaN,
+    // so an indirect NaN would ride `mix(histInd, currInd, alphaC)` (or the
+    // no-history write) straight into this frame's temporal output — which
+    // IS the next frame's history. Zero it: this frame contributes nothing
+    // rather than poisoning the accumulation.
+    if (any(isnan(currInd)) || any(isinf(currInd))) {
+        currInd = vec3(0.0);
+    }
     float currLum = luminance(currInd);
     float currLum2 = currLum * currLum;
     uint currID = texelFetch(currMeshIdTex, p, 0).r;
@@ -213,11 +222,25 @@ void main() {
                 // the bilinear loop just rejected.
                 vec3 nearN = octDecode(texelFetch(prevNormalTex, q, 0).rg);
                 if (stableMeshIdsMatch(nearID, currID) && dot(currN, nearN) >= 0.9) {
+                    vec3 nInd = texelFetch(prevIndirectHistTex, q, 0).rgb;
                     vec4 sMom = texelFetch(prevMomentsHistTex, q, 0);
-                    histInd   = texelFetch(prevIndirectHistTex, q, 0).rgb;
-                    histMom   = sMom.xy;
-                    histAge   = sMom.z;
-                    hasHistory = true;
+                    // #5211 — the same #903 finite rejection the bilinear
+                    // loop applies. This fallback's tap is always one of
+                    // the four taps the loop just tested, and with a
+                    // parked camera (motion ~ 0) it is the pixel's own
+                    // history: an unguarded read here took back the exact
+                    // non-finite texel the loop dropped, and since the
+                    // temporal output IS next frame's history, the NaN
+                    // self-perpetuated for as long as the camera stayed
+                    // parked. hasHistory stays false and the pixel
+                    // restarts accumulation from the sanitized currInd.
+                    if (!(any(isnan(nInd)) || any(isinf(nInd))
+                        || any(isnan(sMom)) || any(isinf(sMom)))) {
+                        histInd   = nInd;
+                        histMom   = sMom.xy;
+                        histAge   = sMom.z;
+                        hasHistory = true;
+                    }
                 }
             }
         }

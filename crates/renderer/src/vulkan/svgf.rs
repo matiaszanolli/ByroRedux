@@ -1661,6 +1661,55 @@ mod tests {
         }
     }
 
+    /// #5211 — both finite-value guards in `svgf_temporal.comp`'s temporal
+    /// pass, pinned at source level (the SPIR-V is pre-compiled, so a
+    /// dropped guard would otherwise ship silently):
+    ///
+    /// 1. the current-frame indirect sample is sanitized before anything
+    ///    derives from it — the firefly clamp's `>` comparison is FALSE for
+    ///    NaN, so without this a NaN rode `mix(histInd, currInd, …)` or the
+    ///    no-history write straight into this frame's output, which IS the
+    ///    next frame's history;
+    /// 2. the sub-pixel-motion nearest-tap fallback applies the same #903
+    ///    rejection the 4-tap bilinear loop applies. Its tap is always one
+    ///    of the four the loop just tested — with a parked camera it is the
+    ///    pixel's own history, and the pre-#5211 unguarded read took the
+    ///    dropped non-finite texel right back, self-perpetuating it for as
+    ///    long as the camera stayed parked.
+    #[test]
+    fn temporal_pass_sanitizes_non_finite_samples_on_every_history_path() {
+        let src = include_str!("../../shaders/svgf_temporal.comp");
+
+        // 1. The sanitize sits before the first derivation of currLum.
+        let sanitize = src.find("if (any(isnan(currInd)) || any(isinf(currInd)))");
+        let first_lum = src.find("float currLum = luminance(currInd);");
+        assert!(
+            sanitize.is_some_and(|at| first_lum.is_some_and(|lum| at < lum)),
+            "currInd must be rejected as non-finite before currLum derives from it (#5211)"
+        );
+
+        // 2. Inside the nearest-tap fallback, the finite check must sit
+        // between the history fetch and the `hasHistory = true` accept.
+        let near_match = src
+            .find("stableMeshIdsMatch(nearID, currID)")
+            .expect("nearest-tap fallback must exist");
+        let block = &src[near_match..];
+        let fetch = block
+            .find("texelFetch(prevIndirectHistTex, q, 0)")
+            .expect("fallback must fetch history");
+        let guard = block
+            .find("any(isnan(nInd))")
+            .expect("fallback must test its tap for NaN (#5211)");
+        let accept = block
+            .find("hasHistory = true")
+            .expect("fallback must accept history somewhere");
+        assert!(
+            fetch < guard && guard < accept,
+            "the fallback's #903 finite rejection must run before it takes the \
+             tap as history (#5211)"
+        );
+    }
+
     /// #2679 / PERF-D3-03 — pins the "SVGF (indirect-lighting denoiser)"
     /// table in `docs/engine/memory-budget.md`. The doc counted
     /// `indirect_history` + `moments_history` and stopped there, so the
