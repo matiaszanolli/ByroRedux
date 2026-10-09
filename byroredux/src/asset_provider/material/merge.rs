@@ -189,13 +189,20 @@ fn fill(
 /// NIFAL boundary: no game branch, no render-time fallback.
 ///
 /// **Texture slots** (measured census, 2026-09-30): 0=color, 1=normal,
-/// 7=emissive and 6=height land in their canonical
-/// `MaterialTextureSet` roles through the same NIF-first [`fill`]
-/// precedence the BGSM/BGEM arms use. Slots 2/3/4/5/8 (opacity,
-/// roughness, metalness, AO, transmissive) are deliberately NOT
-/// forwarded: `MaterialTextureSet` has no such fields, and the five
-/// Starfield kinds stay in nifal.md's parked table under the #4429 XOR
-/// guard until the struct + GPU slots grow them.
+/// 7=emissive land in their canonical `MaterialTextureSet` roles through
+/// the same NIF-first [`fill`] precedence the BGSM/BGEM arms use. Slots
+/// 2/3/4/5/6/8 (opacity, roughness, metalness, AO, height, transmissive)
+/// are deliberately NOT forwarded: `MaterialTextureSet` has no such
+/// fields (beyond the roles below), and those Starfield kinds stay in
+/// nifal.md's parked table under the #4429 XOR guard until the struct +
+/// GPU slots grow them. #5381: slot 6 (`_height`) is a layer
+/// height-*blend* input in the vanilla CDB (consumed by
+/// `AlphaBlenderSettings` / `TerrainSettingsComponent`); the only POM
+/// fields in the 97-class schema live on `ProjectedDecalSettings`.
+/// Forwarding it into the canonical `height` role armed
+/// `parallaxMapIndex` and ray-marched every Starfield surface at the
+/// engine-default scale — an unauthored effect from a wrong role, the
+/// exact near-miss class nifal.md forbids.
 ///
 /// **Scalars**: `MaterialParamFloat` values stay untranslated — which
 /// param index is roughness versus metalness is not yet verified, and a
@@ -262,16 +269,12 @@ fn apply_cdb_material(
                 pool,
                 texture_exists,
             ),
-            byroredux_sfmaterial::SLOT_HEIGHT => fill(
-                &mut material.textures.height,
-                path,
-                touched,
-                pool,
-                texture_exists,
-            ),
-            // Parked slots (opacity/roughness/metal/ao/transmissive):
-            // present in the CDB, no canonical destination yet. See the
-            // nifal.md parked table + the #4429 XOR guard.
+            // Parked slots (opacity/roughness/metal/ao/height/transmissive):
+            // present in the CDB, no canonical destination yet. #5381 moved
+            // height here: a Starfield `_height` map blends alpha layers —
+            // it is not a parallax input, and the canonical `height` role
+            // arms the POM ray-march in `triangle.frag`. See the nifal.md
+            // parked table + the #4429 XOR guard.
             _ => {}
         }
     }
@@ -1871,6 +1874,35 @@ mod cdb_flat_color_tests {
             material.diffuse_color,
             [1.0, 1.0, 1.0],
             "a flat-normal replacement must not tint the albedo"
+        );
+    }
+
+    /// #5381 — a slot-6 `_height` texture must NOT land in the canonical
+    /// `height` role: the render path binds that role to
+    /// `parallaxMapIndex`, and a CDB height map is a layer height-blend
+    /// input, not a POM field (the schema's POM fields live only on
+    /// `ProjectedDecalSettings`). Forwarding it ray-marched every
+    /// Starfield surface at the engine-default scale.
+    #[test]
+    fn slot_height_texture_stays_parked_and_never_arms_parallax() {
+        use byroredux_sfmaterial::SLOT_HEIGHT;
+
+        let mut material = bare_material();
+        let mut pool = byroredux_core::string::StringPool::new();
+        let mut touched = false;
+        apply_cdb_material(
+            &mut material,
+            &CdbMaterial {
+                textures: vec![(SLOT_HEIGHT, "Data\\Textures\\rock_height.DDS".to_string())],
+                ..Default::default()
+            },
+            &mut pool,
+            &mut touched,
+            &|_| true,
+        );
+        assert!(
+            material.textures.height.is_none(),
+            "a CDB slot-6 height map must not arm the parallax-occlusion path"
         );
     }
 
