@@ -1517,12 +1517,14 @@ fn build_npc_equip_state<'a>(
     // is not a displacement; a skin that claims no biped region cannot be
     // displaced out of one, so this filter has no opinion about it.
     //
-    // Measured on real `Skyrim.esm`: 10 of 2,762 ARMOs author `BOD2 == 0` and
-    // every one of them names ARMAs — `SkinDraugr`, `SkinSabrecat`,
-    // `SkinSkeever`, `SkinFrostbiteSpider(Cold)`, `SkinSlaughterfish`, plus
-    // the Draugr hair/beard parts. 7 of 99 races point `WNAM` at one, and
-    // 351 of 5,118 NPC_ records sit on those races (314 of them Draugr).
-    // Every one lost its body mesh here; 170 ended with no mesh source at all.
+    // #5358 — the census this exemption was built on ("10 of 2,762
+    // Skyrim.esm ARMOs author `BOD2 == 0`") was a misread: those 10 author
+    // the pre-BOD2 `BODT` body template, which the parser dropped, so
+    // their real slot claims (0x04 body on the six creature skins, 0x02
+    // hair / 0x10 beard on the four Draugr parts) read as zero. With
+    // `BODT` decoded, no vanilla Skyrim ARMO has a zero mask; the
+    // exemption now guards only genuinely mask-less authored records
+    // (mods), for which the no-opinion semantics above still hold.
     let restore_skin_paths = armor_to_spawn
         .iter()
         .filter(|armor| armor.intrinsic_skin && armor.hidden_biped_mask != 0)

@@ -25,7 +25,7 @@ const PLAYER_NPC_FORM_ID: u32 = 0x0000_0007;
 ///
 /// #3112 — this used to be a bare `Option<u32>` slot mask, with weapons
 /// assigned a "spare" bit 31. There is no spare bit: `EquipmentSlots`
-/// indexes `MAX_BIPED_SLOTS = 32` occupants and Skyrim+ `BOD2` addresses
+/// indexes `MAX_BIPED_SLOTS = 32` occupants and Skyrim+ `BOD2`/`BODT` addresses
 /// all 32 of them (bit 0 = body-part 30, so bit 31 = body-part 61 /
 /// `FX01`), so an authored ARMO in that slot displaced the weapon and
 /// dropped the player to unarmed damage. Modelling the two destinations
@@ -33,7 +33,7 @@ const PLAYER_NPC_FORM_ID: u32 = 0x0000_0007;
 /// relying on a bit nobody authors.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum EquipTarget {
-    /// Authored biped-slot bits (FO3/FNV `BMDT`, Skyrim+ `BOD2`).
+    /// Authored biped-slot bits (FO3/FNV `BMDT`, Skyrim+ `BOD2`/`BODT`).
     BipedSlots(u32),
     /// The wielded-weapon slot, outside the biped occupancy array.
     Weapon,

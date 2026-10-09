@@ -2476,10 +2476,12 @@ fn bannered_mare_npcs_resolve_a_full_equip_state_on_real_skyrim_data() {
     }
 }
 
-/// #3408 — the creature-race guard. #3361's Bannered Mare sweep walks six
-/// humans, all on `NordRace` (`SkinNaked`, `BOD2 != 0`), so it could not
-/// see the zero-mask defect at all: every Draugr, sabrecat, skeever,
-/// frostbite spider and slaughterfish in vanilla Skyrim spawned bodyless.
+/// #3408/#5358 — the creature-race guard. #3361's Bannered Mare sweep walks
+/// six humans, all on `NordRace` (`SkinNaked`, mask != 0), so it could not
+/// see the creature-skin defect at all. The #3408 census ("every Draugr,
+/// sabrecat, skeever, frostbite spider and slaughterfish in vanilla Skyrim
+/// spawned bodyless") turned out to be a `BODT` decode gap, not a zero-mask
+/// authoring pattern: their skins author real masks that the parser dropped.
 ///
 /// One NPC per affected race, FormIDs read from `Skyrim.esm`.
 const CREATURE_RACE_NPCS: &[(&str, u32)] = &[
@@ -2488,9 +2490,13 @@ const CREATURE_RACE_NPCS: &[(&str, u32)] = &[
     ("dunFellglow_WarlockPet", 0x0007_3989),
 ];
 
-/// #3408 — an NPC on a race whose default skin authors `BOD2 == 0` must
-/// resolve at least one mesh. Pre-fix the #2094 occupancy retain dropped
-/// every one of them (measured: 351 skin meshes dropped, 0 kept).
+/// #3408/#5358 — the creature NPCs must resolve at least one mesh, and the
+/// zero-mask population those skins were miscounted into must be EMPTY on
+/// vanilla `Skyrim.esm` now that `BODT` decodes: pre-#5358 the #2094
+/// occupancy retain dropped all 351 of them (their real `BODT` masks read
+/// as 0); with the masks decoding, the only records left in that bucket
+/// would be genuinely mask-less authoring, which vanilla Skyrim has none
+/// of.
 #[test]
 #[ignore = "needs Skyrim SE game data on disk"]
 fn creature_race_npcs_keep_their_skin_mesh_on_real_skyrim_data() {
@@ -2509,15 +2515,16 @@ fn creature_race_npcs_keep_their_skin_mesh_on_real_skyrim_data() {
         let state = build_npc_equip_state(&ResolvedNpc::resolve(npc, &index), &index, GameKind::Skyrim, Gender::Male);
         assert!(
             !state.armor_to_spawn.is_empty(),
-            "{name} ({form_id:08X}) resolved no mesh at all — its race skin \
-             authors BOD2==0 and the #2094 occupancy filter dropped it (#3408)"
+            "{name} ({form_id:08X}) resolved no mesh at all — its race skin's \
+             BODT mask must decode and survive the #2094 filter (#3408/#5358)"
         );
     }
 
-    // Corpus-level floor: sweep every NPC_ whose race points WNAM at a
-    // zero-mask skin. Pre-fix this was 351 dropped / 0 kept.
+    // Corpus-level census (#5358): with BODT decoded, no vanilla Skyrim
+    // race points WNAM at a zero-mask skin. Pre-#5358 this population was
+    // 351 (all dropped); a non-zero count now means either a mask regressed
+    // to unread or vanilla authoring changed under us.
     let mut zero_mask_race_npcs = 0usize;
-    let mut with_mesh = 0usize;
     for npc in index.npcs.values() {
         let Some(race) = index.races.get(&npc.race_form_id) else {
             continue;
@@ -2528,31 +2535,15 @@ fn creature_race_npcs_keep_their_skin_mesh_on_real_skyrim_data() {
         let Some(skin) = index.items.get(&skin_fid) else {
             continue;
         };
-        let ItemKind::Armor { biped_flags: 0, .. } = skin.kind else {
-            continue;
-        };
-        zero_mask_race_npcs += 1;
-        let state = build_npc_equip_state(&ResolvedNpc::resolve(npc, &index), &index, GameKind::Skyrim, Gender::Male);
-        if state
-            .armor_to_spawn
-            .iter()
-            .any(|armor| armor.form_id == skin_fid)
-        {
-            with_mesh += 1;
+        if matches!(&skin.kind, ItemKind::Armor { biped_flags: 0, .. }) {
+            zero_mask_race_npcs += 1;
         }
     }
-    eprintln!("[#3408] zero-mask-skin race NPCs: {zero_mask_race_npcs}, with mesh: {with_mesh}");
-    assert!(
-        zero_mask_race_npcs >= 351,
-        "expected >= 351 NPC_ records on zero-mask-skin races in Skyrim.esm, \
-         got {zero_mask_race_npcs} — the census this guard rests on has moved"
-    );
+    eprintln!("[#5358] zero-mask-skin race NPCs: {zero_mask_race_npcs}");
     assert_eq!(
-        with_mesh,
-        zero_mask_race_npcs,
-        "every NPC on a zero-mask-skin race must keep its skin mesh; \
-         {} of {zero_mask_race_npcs} lost it (#3408)",
-        zero_mask_race_npcs - with_mesh
+        zero_mask_race_npcs, 0,
+        "every vanilla Skyrim race skin must decode a non-zero BODT/BOD2 \
+         mask (#5358) — the pre-fix 351-strong census was the BODT misread"
     );
 }
 

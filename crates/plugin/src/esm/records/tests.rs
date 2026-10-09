@@ -190,6 +190,72 @@ mod real_ruleset_falsifiability {
     }
 }
 
+/// #5358 — Skyrim's `BODT` body-template decode, pinned against the real
+/// master. The issue's byte-walk census found 10 ARMO / 766 ARMA `BODT`
+/// sub-records in `Skyrim.esm` (and zero `BOD2` on ARMA); pre-fix every
+/// one of them decoded as `biped_flags == 0`, which #5034's
+/// `reconcile_worn_gear` then read as "unequipped" — hiding every
+/// Draugr's hair and beard on cell return and on load. House pattern:
+/// skip, not fail, when the on-disk master is absent.
+#[test]
+#[ignore = "needs Skyrim SE game data on disk"]
+fn skyrim_bodt_body_templates_decode_their_biped_masks() {
+    use crate::esm::parse_esm;
+    use crate::esm::test_paths;
+
+    let path = test_paths::skyrim_se_esm();
+    if !path.is_file() {
+        eprintln!("Skipping skyrim_bodt_body_templates: {} not found", path.display());
+        return;
+    }
+    let index = parse_esm(&std::fs::read(&path).unwrap()).unwrap();
+
+    // The 10 BODT ARMOs and their authored masks, straight from the
+    // census table in #5358: the six creature skins claim Body (0x04),
+    // the two Draugr hairs claim Hair (0x02), the two beards claim
+    // 0x10.
+    let expected: &[(&str, u32)] = &[
+        ("SkinDraugr", 0x04),
+        ("SkinSkeever", 0x04),
+        ("SkinSabrecat", 0x04),
+        ("SkinFrostbiteSpider", 0x04),
+        ("SkinFrostbiteSpiderCold", 0x04),
+        ("SkinSlaughterfish", 0x04),
+        ("SkinDraugrHair01", 0x02),
+        ("SkinDraugrHair02", 0x02),
+        ("SkinDraugrBeard01", 0x10),
+        ("SkinDraugrBeard02", 0x10),
+    ];
+    for &(editor_id, mask) in expected {
+        let record = index
+            .items
+            .values()
+            .find(|item| item.common.editor_id == editor_id)
+            .unwrap_or_else(|| panic!("{editor_id} must exist in Skyrim.esm"));
+        match &record.kind {
+            ItemKind::Armor { biped_flags, .. } => assert_eq!(
+                *biped_flags, mask,
+                "{editor_id}'s BODT mask must decode (#5358)"
+            ),
+            _ => panic!("{editor_id} must be an ARMO"),
+        }
+    }
+
+    // ARMA side: 766 BODT bodies and zero BOD2 in the census, so every
+    // non-zero `biped_flags` in the addon table is a BODT decode.
+    let masked = index
+        .armor_addons
+        .values()
+        .filter(|arma| arma.biped_flags != 0)
+        .count();
+    eprintln!("[#5358] Skyrim.esm ARMAs with non-zero biped_flags: {masked}");
+    assert_eq!(
+        masked, 766,
+        "the 766 BODT-authored ARMAs must decode their masks (#5358)"
+    );
+}
+
+
 /// Build a single STAT-style record bytes for the given type code, form ID,
 /// and sub-record list.
 fn build_record(typ: &[u8; 4], form_id: u32, subs: &[(&[u8; 4], Vec<u8>)]) -> Vec<u8> {

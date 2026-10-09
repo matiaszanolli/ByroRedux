@@ -252,17 +252,29 @@ pub fn resolve_armor_meshes<'a>(
     // doesn't already cover is an alternative, so skip it. Measured ARMA
     // `biped_flags` population, whole-master sweeps:
     //
-    //   Skyrim.esm      0 / 766  author bits   → rule is a total no-op
-    //   Starfield.esm   0 / 1106 author bits   → rule is a total no-op
-    //     (both by construction, not by accident: the Skyrim-era ARMA record
-    //      has no per-addon biped-slot field — the mask lives on the owning
-    //      ARMO's `BOD2` — and FO4's ARMA is where one was added.)
-    //   Fallout4.esm  739 / 739  author bits   → 48 ARMOs, 118 redundant
-    //   SeventySix.esm 3011/3026 author bits   → 391 ARMOs, 1480 redundant
+    //   Skyrim.esm     766 /  766 author bits   → 75 ARMOs, 80 redundant
+    //   Starfield.esm    0 / 1106 author bits   → rule is a total no-op
+    //     (Starfield by construction: its ARMA authors no per-addon
+    //      biped-slot field at all. Skyrim's does — see #5358 below.)
+    //   Fallout4.esm  739 /  739  author bits   → 48 ARMOs, 118 redundant
+    //   SeventySix.esm 3011/ 3026 author bits   → 391 ARMOs, 1480 redundant
     //
-    // So this cannot regress #3357 on Skyrim (where every ARMA declares 0 and
-    // the gate never fires — `SkinNaked`'s torso/hands/feet addons all still
-    // resolve), and it is exactly the FO4/FO76 arms that were over-equipping.
+    // #5358 — this comment used to call the rule "a no-op on Skyrim by
+    // construction: the Skyrim-era ARMA record has no per-addon biped-slot
+    // field". That premise was false: the Skyrim-era ARMA carries the
+    // pre-BOD2 `BODT` body template (all 766 Skyrim.esm ARMAs author it),
+    // which the parser dropped, so every mask read 0. With `BODT` decoded
+    // the rule is live on Skyrim and skips 80 redundant same-slot addons
+    // across 75 ARMOs (re-measured race-aware per ARMO×race at #5358; the
+    // bulk is 68 `KhajiitRaceVampire` circlet pairs, where
+    // `Circlet0xArgonianAA` also lists the vampire race so a Khajiit
+    // vampire matched both meshes and stacked them). #3357 is preserved by
+    // construction: complementary addons (torso/hands/feet) each introduce
+    // new bits and are all kept — `SkinNaked`'s set still resolves whole.
+    // Which of two same-slot addons the vanilla engine shows is unsourced
+    // (DNAM priorities tie on the pairs measured); first-wins in authored
+    // order is this rule's existing FO4-proven semantics, kept rather
+    // than guessed at.
     // An ARMA declaring `0` carries no region claim at all, so there is
     // nothing to reason about: it is always accepted, as before.
     let mut out: Vec<&'a str> = Vec::new();
@@ -1280,15 +1292,15 @@ mod tests {
         ArmaRecord {
             form_id,
             editor_id: String::new(),
-            // #3411 — `0`, matching real Skyrim data. Skyrim's ARMA record
-            // has no biped-slot field at all (the mask lives on the owning
-            // ARMO's `BOD2`), and a whole-master sweep confirms it: 0 of
-            // `Skyrim.esm`'s 766 ARMAs carry a non-zero mask, same for all
-            // 1,106 of Starfield's. FO4 is the opposite — its ARMA gained a
-            // per-addon slot field, and 739 of 739 populate it, which is what
-            // makes the duplicate-region gate decidable there and a no-op
-            // here. This fixture used to hardcode `0x0004` on every addon,
-            // which no shipped Skyrim ARMA does.
+            // #3411/#5358 — `0` pins the zero-mask arm on purpose. This
+            // comment used to justify it with "Skyrim's ARMA record has no
+            // biped-slot field at all; 0 of 766 carry a non-zero mask" —
+            // that was the `BODT` misread: all 766 author the pre-BOD2
+            // body template, which the parser dropped. Real Skyrim addons
+            // decode masks now, so masked fixtures for this index shape
+            // should author one; `0` here keeps the "unauthored mask is no
+            // claim, never gated" arm (`zero_mask_armas_are_never_gated`)
+            // exercised alongside them.
             biped_flags: 0,
             general_flags: 0,
             dt: 0,
@@ -2346,11 +2358,15 @@ mod arma_alternative_gate_tests {
         assert_eq!(out.len(), 2);
     }
 
-    /// Skyrim and Starfield author `biped_flags == 0` on every one of their
-    /// ARMAs (0/766 and 0/1106 respectively, whole-master sweeps), so the
-    /// gate must be a total no-op there — an unauthored mask is "no claim",
-    /// not "no regions". This is what keeps #3357's `SkinNaked`
-    /// torso/hands/feet resolution intact.
+    /// An ARMA authoring `biped_flags == 0` declares no region claim, so
+    /// the gate must be a total no-op for it — unauthored is "no claim",
+    /// not "no regions". Starfield's whole ARMA population is exactly that
+    /// (0/1106, whole-master sweep; its ARMA has no per-addon slot field).
+    /// #5358 — this doc used to count Skyrim in (a false "0/766" that was
+    /// the `BODT` misread; all 766 decode masks now), but the zero-mask
+    /// arm itself stays real: mods author mask-less addons, and it is what
+    /// keeps #3357's `SkinNaked` torso/hands/feet resolution intact should
+    /// a mask be absent.
     #[test]
     fn zero_mask_armas_are_never_gated() {
         let mut index = EsmIndex {

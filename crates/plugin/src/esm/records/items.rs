@@ -545,6 +545,24 @@ pub fn parse_armo(
                     armor_type = Some(t);
                 }
             }
+            // BODT (Skyrim's pre-BOD2 body template, xEdit `wbBODTBOD2`):
+            // biped_flags u32 + general_flags u8 + 3 pad, with the
+            // armor_type u32 present only in the 12-byte form. The first
+            // u32 is the same biped mask BOD2 carries. #5358 — Skyrim.esm
+            // authors 10 ARMOs this way (the Draugr hair/beard set and the
+            // creature skins, all with real slot claims), which BOD2-only
+            // decoding read as `biped_flags == 0` — "claims no region".
+            b"BODT" if is_skyrim_or_later && sub.data.len() >= 8 => {
+                let mut r = SubReader::new(&sub.data);
+                biped_flags = r.u32_or_default();
+                slot_mask = (biped_flags & 0xFFFF) as u16;
+                if sub.data.len() >= 12 {
+                    r.skip_or_eof(4); // general_flags u8 + 3 pad
+                    if let Ok(t) = r.u32() {
+                        armor_type = Some(t);
+                    }
+                }
+            }
             b"DATA" => {
                 let mut r = SubReader::new(&sub.data);
                 // #3724 — every branch below is gated on its own measured
@@ -2068,6 +2086,75 @@ mod tests {
                 assert_eq!(dr, 0, "Skyrim ARMO has no DR");
                 assert_eq!(health, 0, "Skyrim ARMO has no health");
             }
+            _ => panic!("expected Armor kind"),
+        }
+    }
+
+    /// #5358 — Skyrim also authors the body template as `BODT` (the
+    /// pre-BOD2 form, xEdit `wbBODTBOD2`): biped mask u32 + general flags
+    /// u8 + 3 pad, with the armor-type u32 present only in the 12-byte
+    /// form. Skyrim.esm's 10 BODT ARMOs are the Draugr hair/beard parts
+    /// and the creature skins — every one with a real slot claim that
+    /// BOD2-only decoding read as `biped_flags == 0`.
+    #[test]
+    fn skyrim_armo_reads_bodt_body_template() {
+        // 12-byte form: SkinDraugrHair01 — Hair (0x02), general flags,
+        // armor type.
+        let bodt12 = [
+            0x0000_0002_u32.to_le_bytes().to_vec(),
+            vec![0x01, 0, 0, 0],
+            1_u32.to_le_bytes().to_vec(),
+        ]
+        .concat();
+        let item = parse_armo(
+            0x0006_7D33,
+            &[sub(b"EDID", b"SkinDraugrHair01\0"), sub(b"BODT", bodt12)],
+            GameKind::Skyrim,
+            &None,
+        );
+        match item.kind {
+            ItemKind::Armor {
+                biped_flags,
+                slot_mask,
+                armor_type,
+                ..
+            } => {
+                assert_eq!(biped_flags, 0x0000_0002, "the leading u32 is the biped mask");
+                assert_eq!(slot_mask, 0x0002);
+                assert_eq!(armor_type, Some(1), "the 12-byte tail carries the armor type");
+            }
+            _ => panic!("expected Armor kind"),
+        }
+
+        // 8-byte form: mask + general flags, no armor-type tail.
+        let bodt8 = [0x0000_0004_u32.to_le_bytes().to_vec(), vec![0x01, 0, 0, 0]].concat();
+        let item = parse_armo(
+            0x0001_0D67,
+            &[sub(b"EDID", b"SkinDraugr\0"), sub(b"BODT", bodt8)],
+            GameKind::Skyrim,
+            &None,
+        );
+        match item.kind {
+            ItemKind::Armor {
+                biped_flags,
+                armor_type,
+                ..
+            } => {
+                assert_eq!(biped_flags, 0x0000_0004, "Body slot");
+                assert_eq!(armor_type, None, "no 12-byte tail, no armor type");
+            }
+            _ => panic!("expected Armor kind"),
+        }
+
+        // Truncated (<8 bytes) BODT stays ignored.
+        let item = parse_armo(
+            1,
+            &[sub(b"BODT", 0x0000_0004_u32.to_le_bytes())],
+            GameKind::Skyrim,
+            &None,
+        );
+        match item.kind {
+            ItemKind::Armor { biped_flags, .. } => assert_eq!(biped_flags, 0),
             _ => panic!("expected Armor kind"),
         }
     }

@@ -163,7 +163,7 @@ impl Component for EquippedWeapon {
 
 /// The number of biped-slot bits an actor's equipment can occupy.
 ///
-/// FO3 / FNV `BMDT.biped_flags` is the low 16 bits; Skyrim+ `BOD2` is
+/// FO3 / FNV `BMDT.biped_flags` is the low 16 bits; Skyrim+ `BOD2`/`BODT`
 /// the full 32. Either fits in this array. The slot's *meaning* (head
 /// vs torso vs eyes etc.) is game-specific and lives near the parser
 /// (`crates/plugin/src/esm/records/items.rs`), not here — this layer
@@ -189,7 +189,7 @@ pub struct EquipmentSlots {
     ///
     /// #3112 — deliberately **not** a bit in `occupants`. Every index in
     /// `0..MAX_BIPED_SLOTS` is addressable by an authored armor mask:
-    /// FO3/FNV `BMDT.biped_flags` reaches the low 16, and Skyrim+ `BOD2`
+    /// FO3/FNV `BMDT.biped_flags` reaches the low 16, and Skyrim+ `BOD2`/`BODT`
     /// reaches all 32 (bit 0 = body-part 30, so bit 31 = body-part 61 /
     /// `FX01`, a real `BSDismemberBodyPartType`). Carving a "spare" bit
     /// out of that array — as the first pass at #3032 did with bit 31 —

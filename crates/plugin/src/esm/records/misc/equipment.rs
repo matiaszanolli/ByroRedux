@@ -103,6 +103,15 @@ pub fn parse_arma(
             b"BOD2" if is_skyrim_or_later && sub.data.len() >= 4 => {
                 out.biped_flags = SubReader::new(&sub.data).u32_or_default();
             }
+            // BODT — Skyrim's pre-BOD2 body template (xEdit `wbBODTBOD2`):
+            // the first u32 is the same biped mask BOD2 carries; then
+            // general_flags u8 + 3 pad (+ armor_type u32 in the 12-byte
+            // form, which the ARMA consumer does not read). #5358 — all
+            // 766 Skyrim.esm ARMAs author BODT, not BOD2, so BOD2-only
+            // decoding left every Skyrim addon claiming no region.
+            b"BODT" if is_skyrim_or_later && sub.data.len() >= 8 => {
+                out.biped_flags = SubReader::new(&sub.data).u32_or_default();
+            }
             b"DNAM" if !is_skyrim_or_later && sub.data.len() >= 4 => {
                 let mut r = SubReader::new(&sub.data);
                 out.dt = r.i16_or_default();
@@ -387,6 +396,40 @@ mod tests {
         assert_eq!(a.general_flags, 0x0000_0001);
         assert_eq!(a.dt, 15);
         assert_eq!(a.dr, 30);
+    }
+
+    /// #5358 — Skyrim's ARMA carries its biped mask in `BODT` (the
+    /// pre-BOD2 body template, xEdit `wbBODTBOD2`), not `BOD2`: all 766
+    /// Skyrim.esm ARMAs author BODT. Both widths decode the same leading
+    /// u32; the 12-byte form's tail (general flags u8 + 3 pad + armor
+    /// type u32) is nothing an ARMA consumer reads.
+    #[test]
+    fn parse_arma_reads_bodt_biped_flags() {
+        // 12-byte form: mask (Hair 0x02), general flags + pad, armor type.
+        let bodt12 = [
+            0x0000_0002_u32.to_le_bytes().to_vec(),
+            vec![0x01, 0, 0, 0],
+            1_u32.to_le_bytes().to_vec(),
+        ]
+        .concat();
+        let subs = vec![sub(b"EDID", b"SkinDraugrHair01\0"), sub(b"BODT", bodt12)];
+        let a = parse_arma(0x0006_7D33, &subs, GameKind::Skyrim, &None);
+        assert_eq!(a.biped_flags, 0x0000_0002);
+
+        // 8-byte form: mask + general flags, no armor-type tail.
+        let bodt8 = [0x0000_0010_u32.to_le_bytes().to_vec(), vec![0x01, 0, 0, 0]].concat();
+        let subs = vec![sub(b"EDID", b"SkinDraugrBeard01\0"), sub(b"BODT", bodt8)];
+        let a = parse_arma(0x0006_7D37, &subs, GameKind::Skyrim, &None);
+        assert_eq!(a.biped_flags, 0x0000_0010);
+
+        // Truncated (<8 bytes) BODT stays ignored, like a truncated BOD2.
+        let a = parse_arma(
+            1,
+            &[sub(b"BODT", 0x0000_0004_u32.to_le_bytes())],
+            GameKind::Skyrim,
+            &None,
+        );
+        assert_eq!(a.biped_flags, 0);
     }
 
     #[test]
