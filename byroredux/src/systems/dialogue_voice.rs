@@ -186,10 +186,13 @@ pub(crate) fn play_line_voice(
     };
     let mut sounds = Vec::with_capacity(responses.len());
     {
-        let provider = world.try_resource::<SoundArchiveProvider>()?;
-        if provider.is_empty() {
-            return None;
-        }
+        // #5383 — cache → provider, `combat_anim`'s order: the loader
+        // reads the archive provider INSIDE `get_or_load`, under the
+        // cache write guard. The pre-fix shape took the provider read
+        // first and the cache write under it — the reverse edge — so the
+        // type-keyed lock-order graph recorded both directions across
+        // the two systems and any detector session covering a voiced
+        // line and a first-time combat sound closed a cycle.
         let mut cache = world.try_resource_mut::<byroredux_audio::SoundCache>()?;
         for (segment, &response) in responses.iter().enumerate() {
             let candidates = voice_path_candidates(
@@ -201,7 +204,13 @@ pub(crate) fn play_line_voice(
                 response,
             );
             let sound = candidates.iter().find_map(|path| {
-                cache.get_or_load(path, || provider.extract(path))
+                cache.get_or_load(path, || {
+                    let provider = world.try_resource::<SoundArchiveProvider>()?;
+                    if provider.is_empty() {
+                        return None;
+                    }
+                    provider.extract(path)
+                })
             });
             let Some(sound) = sound else {
                 log::debug!(
@@ -357,4 +366,89 @@ mod tests {
             path
         );
     }
+    /// #5383 — one process, both `SoundCache` consumers: a first-time
+    /// combat sound (`combat_anim::play_oneshot_cached`) and a voiced
+    /// dialogue line (`play_line_voice`) acquire the cache and the
+    /// archive provider in ONE order (cache → provider, inside
+    /// `get_or_load`). The pre-fix voice path took the provider read
+    /// first and the cache write under it, so the type-keyed lock-order
+    /// graph recorded both directions and any detector session
+    /// (`BYRO_LOCK_ORDER_CHECK=1`) covering both closed a cycle.
+    #[test]
+    fn voice_and_combat_sound_paths_share_one_cache_provider_order() {
+        use crate::cell_loader::load_order::{GlobalFormIdResolver, LoadOrder};
+        use byroredux_plugin::esm::reader::GlobalSlot;
+        use byroredux_plugin::esm::records::MinimalEsmRecord;
+
+        let mut world = World::new();
+        world.insert_resource(byroredux_audio::SoundCache::default());
+        world.insert_resource(crate::asset_provider::audio::SoundArchiveProvider::new());
+        world.insert_resource(byroredux_audio::AudioWorld::headless());
+
+        // The combat-sound consumer: a first-time (cache-miss) path, so
+        // its loader takes the provider guard under the cache write.
+        crate::systems::combat_anim::play_oneshot_cached(
+            &world,
+            r"sound\fx\ui\pipboy\pipboy_mode.wav",
+            byroredux_core::math::Vec3::ZERO,
+        );
+
+        // The dialogue-voice consumer, driven far enough to reach its own
+        // cache write and in-loader provider read.
+        let mut index = byroredux_plugin::esm::records::EsmIndex::default();
+        index.npcs.insert(
+            0x0000_0001,
+            byroredux_plugin::esm::records::NpcRecord {
+                form_id: 0x0000_0001,
+                voice_form_id: 0x0000_0002,
+                ..Default::default()
+            },
+        );
+        index.voice_types.insert(
+            0x0000_0002,
+            MinimalEsmRecord {
+                form_id: 0x0000_0002,
+                editor_id: "MaleUniqueDocMitchell".to_owned(),
+                full_name: String::new(),
+            },
+        );
+        world.insert_resource(crate::cell_loader::LoadedCellIndex(std::sync::Arc::new(index)));
+        world.insert_resource(crate::cell_loader::LoadedPluginSet {
+            masters: vec!["/data/FalloutNV.esm".into()],
+            esm_path: "/data/FalloutNV.esm".into(),
+        });
+        let order = LoadOrder::new(
+            vec!["falloutnv.esm".into()],
+            vec![GlobalSlot::Regular(0)],
+        );
+        world.insert_resource(GlobalFormIdResolver::from_load_order(&order));
+
+        let npc = world.spawn();
+        world.insert(
+            npc,
+            byroredux_core::ecs::components::GlobalTransform::default(),
+        );
+        world.insert(
+            npc,
+            byroredux_scripting::SceneAliasCandidate {
+                reference_form_id: 0x0010_3F2B,
+                base_form_id: 0x0000_0001,
+                linked_refs: Vec::new(),
+                location_ref_types: Vec::new(),
+            },
+        );
+        let info = byroredux_plugin::esm::records::InfoRecord {
+            form_id: 0x0010_7222,
+            ..Default::default()
+        };
+
+        // An empty provider: both loaders still record the acquisition
+        // edge (the guard is taken before the emptiness check), and the
+        // line resolves no sound — the lock order is the assertion.
+        let voiced = play_line_voice(&world, npc, &info, "GREETING", Some(0x0000_0C8C));
+        assert!(voiced.is_none(), "an empty archive voices nothing");
+        // And the pairing does not panic under BYRO_LOCK_ORDER_CHECK=1 —
+        // that is this test's role in the detector lane.
+    }
 }
+

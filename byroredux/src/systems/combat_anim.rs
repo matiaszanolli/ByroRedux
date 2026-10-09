@@ -379,7 +379,7 @@ fn read_skeleton_root(world: &World, actor: EntityId) -> Option<EntityId> {
 /// Lazily decode (or reuse) a one-shot and enqueue it. Headless (no
 /// `AudioWorld`) and archive-less (no provider / decode failure) paths
 /// both collapse to a silent skip — sound is never a hard dependency.
-fn play_oneshot_cached(world: &World, path: &'static str, position: Vec3) {
+pub(crate) fn play_oneshot_cached(world: &World, path: &'static str, position: Vec3) {
     let data = world
         .try_resource_mut::<byroredux_audio::SoundCache>()
         .and_then(|mut cache| {
