@@ -439,7 +439,7 @@ fn mk_pkin_for_scol(form_id: u32, editor_id: &str, contents: Vec<u32>) -> PkinRe
         editor_id: editor_id.to_string(),
         full_name: String::new(),
         contents,
-        vnam_form_id: 0,
+        version: 0,
         flags: 0,
         filter: Vec::new(),
     }

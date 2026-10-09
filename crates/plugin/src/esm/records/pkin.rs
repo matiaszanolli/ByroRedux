@@ -23,9 +23,12 @@
 //!   DLCworkshop03, 46/46 DLCNukaWorld). Vanilla authors typically ship
 //!   a single CNAM per PKIN; we collect every CNAM sub-record so
 //!   authored-multi-child bundles round-trip.
-//! - `VNAM` — optional u32 form ID (workshop / preview marker).
-//!   Semantics not documented by community tools; captured for future
-//!   consumer wiring.
+//! - `VNAM` — optional u32 integer *Version* (xEdit `FO4.pas` PKIN:
+//!   `wbInteger(VNAM, 'Version', itU32)`). NOT a form ID — #5422: the
+//!   pre-fix decode routed it through `remap_fid` and documented it as
+//!   an unknown "workshop / preview marker", the inverse-remap shape
+//!   (a plain integer fed to the FormID remap). Vanilla census: 741/741
+//!   Fallout4.esm carry `0`; DLCRobot ships one `1`. No consumer yet.
 //! - `FNAM` — optional u32 flag bits (bit 1 = "Location Reference
 //!   Type", bit 2 = "Perk" per xEdit comments). Captured verbatim.
 //! - `FLTR` — optional flat u32 array of filter form IDs that gate
@@ -65,10 +68,11 @@ pub struct PkinRecord {
     /// typically carry one CNAM; multi-CNAM records are accepted for
     /// safety.
     pub contents: Vec<u32>,
-    /// Optional `VNAM` form ID — community tools describe this as a
-    /// workshop / preview reference. Kept verbatim for future consumer
-    /// wiring. `0` when the record omits the sub.
-    pub vnam_form_id: u32,
+    /// `VNAM` — the record's integer *Version* (xEdit `FO4.pas`:
+    /// `wbInteger(VNAM, 'Version', itU32)`), stored raw: it is not a
+    /// FormID and must never ride the remap (#5422). `0` when the
+    /// record omits the sub.
+    pub version: u32,
     /// `FNAM` flag bits (xEdit comments: bit 1 = "Location Reference
     /// Type", bit 2 = "Perk"). `0` when the record omits the sub.
     pub flags: u32,
@@ -88,7 +92,7 @@ pub fn parse_pkin(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
     // plugins per #348; helper handles both forms). TD3-203 / #1113.
     let common = CommonNamedFields::from_subs_with_remap(subs, remap);
     let mut contents: Vec<u32> = Vec::new();
-    let mut vnam_form_id = 0u32;
+    let mut version = 0u32;
     let mut flags = 0u32;
     let mut filter: Vec<u32> = Vec::new();
 
@@ -111,8 +115,11 @@ pub fn parse_pkin(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
                 }
             }
             b"VNAM" => {
-                if let Some(form) = read_u32(&sub.data) {
-                    vnam_form_id = remap_fid(form, remap);
+                // #5422 — xEdit's integer Version, not a form ID: keep it
+                // raw, away from remap_fid (the inverse shape #5075/#5076
+                // guarded elsewhere).
+                if let Some(value) = read_u32(&sub.data) {
+                    version = value;
                 }
             }
             b"FNAM" => {
@@ -150,7 +157,7 @@ pub fn parse_pkin(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
         editor_id: common.editor_id,
         full_name: common.full_name,
         contents,
-        vnam_form_id,
+        version,
         flags,
         filter,
     }
@@ -180,7 +187,7 @@ mod tests {
         assert_eq!(rec.form_id, 0x0055_0001);
         assert_eq!(rec.editor_id, "PackIn_WorkbenchLoot");
         assert_eq!(rec.contents, vec![0x0010_1234]);
-        assert_eq!(rec.vnam_form_id, 0x0002_5678);
+        assert_eq!(rec.version, 0x0002_5678);
         assert_eq!(rec.flags, 0x0000_0002);
         assert!(
             rec.filter.is_empty(),
@@ -214,7 +221,7 @@ mod tests {
         assert_eq!(rec.editor_id, "PackIn_EmptyDecl");
         assert_eq!(rec.full_name, "Shell");
         assert!(rec.contents.is_empty());
-        assert_eq!(rec.vnam_form_id, 0);
+        assert_eq!(rec.version, 0);
         assert_eq!(rec.flags, 0);
     }
 
@@ -321,8 +328,31 @@ mod remap_tests {
         let pkin = parse_pkin(0x0200_0001, &subs, &remap);
 
         assert_eq!(pkin.contents, vec![0x0200_1111, 0x0000_2222]);
-        assert_eq!(pkin.vnam_form_id, 0x0200_3333);
         assert_eq!(pkin.filter, vec![0x0200_4444]);
+    }
+
+    /// #5422 — `VNAM` is xEdit's integer Version, not a form ID: it must
+    /// stay RAW under a remap that rewrites every real FormID slot. The
+    /// pre-fix decode routed it through `remap_fid`, so the plugin-local
+    /// `0x0100_3333` "version" would have been rewritten to `0x0200_3333`
+    /// (and a non-zero high byte warned as out-of-range on other shapes).
+    #[test]
+    fn pkin_vnam_version_stays_raw_under_remap() {
+        let remap = Some(FormIdRemap {
+            plugin_slot: GlobalSlot::Regular(0x02),
+            master_slots: vec![GlobalSlot::Regular(0x00)],
+        });
+        let mk = |typ: &[u8; 4], v: u32| SubRecord {
+            sub_type: *typ,
+            data: v.to_le_bytes().to_vec(),
+        };
+        let pkin = parse_pkin(
+            0x0200_0001,
+            &[mk(b"CNAM", 0x0100_1111), mk(b"VNAM", 0x0100_3333)],
+            &remap,
+        );
+        assert_eq!(pkin.version, 0x0100_3333, "the Version never rides the remap");
+        assert_eq!(pkin.contents, vec![0x0200_1111], "CNAM still remaps");
     }
 
     /// Null stays null, and no remap leaves the parse unchanged.
@@ -338,6 +368,6 @@ mod remap_tests {
             &None,
         );
         assert_eq!(pkin.contents, vec![0x0100_1111]);
-        assert_eq!(pkin.vnam_form_id, 0);
+        assert_eq!(pkin.version, 0);
     }
 }

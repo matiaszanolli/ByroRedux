@@ -22,7 +22,7 @@ fn mk_pkin(form_id: u32, editor_id: &str, contents: Vec<u32>) -> PkinRecord {
         editor_id: editor_id.to_string(),
         full_name: String::new(),
         contents,
-        vnam_form_id: 0,
+        version: 0,
         flags: 0,
         // #815 — FLTR (workshop build-mode filter) defaults to
         // empty for the placement-expansion tests; the cell loader
