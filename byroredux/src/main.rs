@@ -1327,7 +1327,30 @@ impl App {
         }
     }
 
+    /// #5409 — the one teardown every path that LEAVES the dialogue page
+    /// runs: the open line's OnEnd fragment dispatches and the selection
+    /// clears ([`end_open_conversation`]). Takes the page flag rather
+    /// than the UI state so the decision is testable headless; callers
+    /// sample it BEFORE their visibility flip — after the flip,
+    /// `dialogue_menu_visible` already reads false and the guard is
+    /// dead. The page's Close button, Escape and the Inventory key all
+    /// funnel through here now.
+    fn leave_dialogue_page(world: &World, dialogue_page_visible: bool) {
+        if dialogue_page_visible {
+            crate::systems::npc_dialogue::end_open_conversation(world);
+        }
+    }
+
     fn toggle_game_menu(&mut self) {
+        // #5409 — closing the modal over the dialogue page (Escape routes
+        // here) must end the open conversation exactly like the page's
+        // Close button; the bare visibility flip used to skip OnEnd and
+        // leave the stale selection on the NPC.
+        let dialogue_page = self
+            .debug_ui
+            .as_ref()
+            .is_some_and(byroredux_debug_ui::DebugUiState::dialogue_menu_visible);
+        Self::leave_dialogue_page(&self.world, dialogue_page);
         let opened = self
             .debug_ui
             .as_mut()
@@ -1340,6 +1363,13 @@ impl App {
     }
 
     fn open_inventory_menu(&mut self) {
+        // #5409 — the Inventory key replaces the dialogue page outright;
+        // the open line ends before the page switch, same as Escape.
+        let dialogue_page = self
+            .debug_ui
+            .as_ref()
+            .is_some_and(byroredux_debug_ui::DebugUiState::dialogue_menu_visible);
+        Self::leave_dialogue_page(&self.world, dialogue_page);
         if let Some(ui) = self.debug_ui.as_mut() {
             ui.open_inventory_menu();
             self.release_world_input_for_ui();
@@ -1368,16 +1398,16 @@ impl App {
     }
 
     fn resume_from_game_menu(&mut self) {
-        // #5152 — the dialogue page closing (its Close button or Escape)
-        // ends the open line: the OnEnd fragment runs and the selection
-        // clears, before the shared close/teardown.
-        if self
+        // #5152/#5409 — the dialogue page closing (its Close button,
+        // Escape, or the Inventory key — all funnelled through
+        // [`Self::leave_dialogue_page`]) ends the open line: the OnEnd
+        // fragment runs and the selection clears, before the shared
+        // close/teardown.
+        let dialogue_page = self
             .debug_ui
             .as_ref()
-            .is_some_and(byroredux_debug_ui::DebugUiState::dialogue_menu_visible)
-        {
-            crate::systems::npc_dialogue::end_open_conversation(&self.world);
-        }
+            .is_some_and(byroredux_debug_ui::DebugUiState::dialogue_menu_visible);
+        Self::leave_dialogue_page(&self.world, dialogue_page);
         if let Some(ui) = self.debug_ui.as_mut() {
             ui.close_game_menu();
         }
@@ -1713,5 +1743,102 @@ fn sync_camera_setting(world: &World) {
         .map(|entry| SettingChange::new(&entry.id, entry.value.clone()));
     if let Some(change) = change {
         apply_camera_setting(world, &change);
+    }
+}
+
+#[cfg(test)]
+mod dialogue_page_leave_tests {
+    use crate::systems::npc_dialogue::{DialogueSurfaceState, NpcDialogueTopic};
+    use byroredux_core::ecs::storage::EntityId;
+    use byroredux_core::ecs::world::World;
+
+    fn world_with_open_conversation() -> (World, EntityId) {
+        let mut world = World::new();
+        let npc = world.spawn();
+        world.insert(
+            npc,
+            NpcDialogueTopic {
+                topic_form_id: 0x0001,
+                topic_editor_id: "GREETING".to_owned(),
+                info_form_id: 0x0002,
+                owning_quest: None,
+                speaker_text: "Hey there.".to_owned(),
+                response_number: 0,
+                emotion_type: 0,
+                topics: Vec::new(),
+                goodbye: false,
+            },
+        );
+        world.insert_resource(DialogueSurfaceState {
+            npc: Some(npc),
+            ..Default::default()
+        });
+        (world, npc)
+    }
+
+    /// #5409 — Escape and the Inventory key leave the dialogue page
+    /// through `toggle_game_menu` / `open_inventory_menu`; both run the
+    /// shared teardown, so the outgoing line's OnEnd dispatches and the
+    /// stale selection clears instead of surviving the page on the NPC
+    /// until a later Goodbye timer fires.
+    #[test]
+    fn leaving_the_dialogue_page_ends_the_open_conversation() {
+        let (world, npc) = world_with_open_conversation();
+        super::App::leave_dialogue_page(&world, true);
+        assert!(
+            world.get::<NpcDialogueTopic>(npc).is_none(),
+            "the selection stamp must clear with the page"
+        );
+        let surface = world
+            .try_resource::<DialogueSurfaceState>()
+            .expect("surface resource");
+        assert_eq!(surface.npc, None, "no conversation stays open");
+        assert_eq!(surface.close_after, None, "no stale Goodbye timer survives");
+    }
+
+    /// The negative half: closing the modal over any other page (pause,
+    /// inventory) leaves a conversation that was never the page's alone.
+    #[test]
+    fn leaving_another_page_keeps_the_conversation() {
+        let (world, npc) = world_with_open_conversation();
+        super::App::leave_dialogue_page(&world, false);
+        assert!(
+            world.get::<NpcDialogueTopic>(npc).is_some(),
+            "only the dialogue page's leave tears the conversation down"
+        );
+        assert_eq!(
+            world
+                .try_resource::<DialogueSurfaceState>()
+                .expect("surface resource")
+                .npc,
+            Some(npc)
+        );
+    }
+
+    /// The routing half of the pin: the three native page-leave paths
+    /// (Escape's `toggle_game_menu`, the Inventory key's
+    /// `open_inventory_menu`, and the Close button's
+    /// `resume_from_game_menu`) each funnel through
+    /// [`App::leave_dialogue_page`] — sampled before their visibility
+    /// flip. Static by necessity (the paths need a live window + UI);
+    /// same convention as the cinematic purge's wiring pin.
+    #[test]
+    fn every_native_page_leave_path_routes_through_the_shared_teardown() {
+        let src = include_str!("main.rs");
+        // Split on this module's own name, not the first #[cfg(test)] —
+        // main.rs carries earlier test-only markers above the call sites.
+        let production = src
+            .split("mod dialogue_page_leave_tests")
+            .next()
+            .expect("this module still exists");
+        assert_eq!(
+            production
+                .matches("Self::leave_dialogue_page(&self.world, dialogue_page);")
+                .count(),
+            3,
+            "expected toggle_game_menu, open_inventory_menu and \
+             resume_from_game_menu to each run the shared dialogue-page \
+             teardown before their flip (#5409)"
+        );
     }
 }
