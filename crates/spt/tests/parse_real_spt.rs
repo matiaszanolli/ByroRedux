@@ -262,8 +262,11 @@ struct BoundaryStats {
 ///
 /// Pre-fix this gate failed on 73 of 159 files (the #3808 desync table:
 /// 86/159 shift-0), with stop words like `0x3f80` (float bits), `768`
-/// (a misaligned payload head) or `0`. The culprits were two dictionary
-/// entries — `10002` (stride 1, now 32) and `13013` (7 bytes, now 4).
+/// (a misaligned payload head) or `0`. The culprits were three dictionary
+/// entries — `10002` (stride 1, now 32), `13013` (7 bytes, now 4), and
+/// `10003` (stride 8, now 32; found only by this stop-word gate, since
+/// its 24 B-per-entry under-consumption is a multiple of 4 and left the
+/// resync shift clean — see format-notes.md "Culprit 3").
 #[test]
 #[ignore = "needs vanilla game data on disk"]
 fn walker_stops_on_true_tlv_boundary() {
