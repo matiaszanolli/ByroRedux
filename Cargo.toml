@@ -120,7 +120,7 @@ wasmtime = { version = "47.0.3", default-features = false, features = ["anyhow",
 wat = "1"
 
 # String interning
-string-interner = "0.17"
+string-interner = "0.20"
 
 # Hashing — FxHash for the render hot-path material/instance dedup
 # keys (#1368). Non-cryptographic + seedless, so it's deterministic:
@@ -135,10 +135,10 @@ uuid = { version = "1", features = ["v5", "serde"] }
 # Serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-toml = "0.8"
+toml = "0.9"
 # Format-preserving edits of user-owned TOML (#5166). Already `toml` 0.8's own
 # parser backend, so this adds no crate to the build.
-toml_edit = "0.22"
+toml_edit = "0.23"
 semver = { version = "1", features = ["serde"] }
 clap = { version = "4.6", features = ["derive"] }
 
@@ -162,7 +162,7 @@ flate2 = "1"
 # controlled for modded content, so this must not be silently switchable by a
 # `default-features = false` elsewhere. This list is byte-identical to 0.11.6's
 # own `default`; changing it is a deliberate security decision.
-lz4_flex = { version = "0.11", default-features = false, features = [
+lz4_flex = { version = "0.14", default-features = false, features = [
     "std",
     "safe-encode",
     "safe-decode",
