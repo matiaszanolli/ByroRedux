@@ -86,7 +86,7 @@ Havok `.hkx` loader for FO4's packfile layout (M41.x, Tier 5) — the
 `crates/hkx` reader that shipped covers Skyrim only (the 2011 release's
 32-bit packfiles and Special Edition's 64-bit ones).
 
-AI / behavior is `~` (M42, Tier 7) — 7 of ~17 `PACK` procedures have a
+AI / behavior is `~` (M42, Tier 7) — 10 of ~17 `PACK` procedures have a
 runtime, and since M42.10 (2026-09-18) they run **by default** (single
 kill-switch: `BYRO_NO_AI_LOCOMOTION=1`): Sandbox, Wander, Travel, Follow,
 Escort, Guard, and Patrol (aliases Wander's algorithm — no patrol-route
@@ -336,7 +336,7 @@ is not registered in the scheduler at all.
 | Havok `.hkx` loader (FO4 / Starfield layouts) | FO4 humanoid actors; Starfield animation | M41.x (Tier 5) |
 | General NPC locomotion from `.hkx` | Skyrim actors animating outside the MQ101 cart-idle catalog | M41.x (Tier 5) |
 | `.btr` terrain normal maps | distant-terrain normal detail on Skyrim SE/FO4. Distance-based multi-band selection is **no longer a gap** — the four-level ladder shipped in #2371 and runs on every quad-based scheme, FO3/FNV included (#3508) | M35 |
-| Remaining `PACK` procedures (Find/Eat/Sleep/Accompany/UseItemAt/Ambush/FleeNotCombat/CastMagic/Dialogue/UseWeapon) | NPCs perform item-use/combat/magic/dialogue behaviors | M42 (Tier 7) |
+| Remaining `PACK` procedures (Find/Accompany/UseItemAt/Ambush/FleeNotCombat/CastMagic/UseWeapon) | NPCs perform item-use/combat/magic behaviors | M42 (Tier 7) |
 | Full Papyrus transpiler (M47.2) | Arbitrary script execution on real content (`.pex` recognizer slice shipped Session 51) | M47.2 (Tier 3) |
 | Script-extender compatibility layer verified against real mods | Confidence that SKSE-family mod scripts (StorageUtil / JContainers / ModEvent consumers) actually run. The layer *exists* — ~23.9k LOC, six provider families, tested in-crate — but no audit pass has exercised it against shipped mod content, so its real-world coverage is unmeasured, not zero and not proven (#3953) | M47.2 follow-up |
 | Full Scaleform menus | In-game UI (method behavior / `_global.gfx`; native menu covers Pause/Settings/Inventory in parallel) | M48 / R4 decision |

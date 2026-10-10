@@ -172,11 +172,14 @@ the FO3/FNV procedure enum's values, only `PROCEDURE_SANDBOX = 12`
 (`pack.rs`), `PROCEDURE_WANDER = 5` (`pack.rs`, M42.3),
 `PROCEDURE_TRAVEL = 6` (`pack.rs`, M42.4), `PROCEDURE_FOLLOW = 1`
 (`pack.rs`, M42.5), `PROCEDURE_ESCORT = 2` (`pack.rs`, M42.6),
-`PROCEDURE_GUARD = 14` (`pack.rs`, M42.7), and `PROCEDURE_PATROL = 13`
-(`pack.rs`, M42.8) have a name and a consumer; the other ~10
-(Find/Eat/Sleep/Accompany/UseItemAt/Ambush/
-FleeNotCombat/CastMagic/Dialogue/UseWeapon) are captured as a raw
-integer and dispatched nowhere. `active_package_is_sandbox`/
+`PROCEDURE_GUARD = 14` (`pack.rs`, M42.7), `PROCEDURE_PATROL = 13`
+(`pack.rs`, M42.8), `PROCEDURE_EAT = 3` and `PROCEDURE_SLEEP = 4`
+(`00f580e09`, dispatched into `eat_sleep_system`), and
+`PROCEDURE_DIALOGUE = 15` (#5367 Phase F, the force-greet bridge —
+modeled player-targeted Conversations only, #5376) have a name and a
+consumer; the other 7 (Find/Accompany/UseItemAt/Ambush/
+FleeNotCombat/CastMagic/UseWeapon) are captured as a raw integer and
+dispatched nowhere. `active_package_is_sandbox`/
 `active_sandbox_location`, `active_package_is_wander`/
 `active_wander_location`, `active_package_is_travel`/
 `active_travel_location`, `active_package_is_follow`/
@@ -516,14 +519,20 @@ animation-clip swap).
 
 ## What's not covered / honest state
 
-- **Seven procedures of ~17 execute.** Sandbox, Wander (M42.3), Travel
+- **Ten procedures of ~17 execute.** Sandbox, Wander (M42.3), Travel
   (M42.4), Follow (M42.5), Escort (M42.6), Guard (M42.7), and Patrol
   (M42.8, which shares Wander's algorithm rather than running a
-  distinct one). No Find/Eat/Sleep/Accompany/UseItemAt/Ambush/
-  FleeNotCombat/CastMagic/Dialogue/UseWeapon runtime exists anywhere in
-  the engine — each needs a subsystem (item/furniture use beyond
-  Sandbox's seat-snap, combat, magic, or dialogue) that doesn't exist in
-  this codebase yet, not just a missing procedure dispatch.
+  distinct one); Eat and Sleep (2026-10-08, `eat_sleep_system` — walk to
+  the PLDT anchor, seat at the nearest matching furniture marker, with
+  the v0 caveats the GAMEPLAY audit records: legacy sit-marker
+  over-match per #5390, In-Cell/NearLinkedRef anchors per
+  GAME-D5-2026-10-09-02, fail-open Dialogue starvation per
+  GAME-D5-2026-10-09-01); and Dialogue (force-greet, #5367 Phase F,
+  modeled player-targeted Conversations only per #5376). No
+  Find/Accompany/UseItemAt/Ambush/FleeNotCombat/CastMagic/UseWeapon
+  runtime exists anywhere in the engine — each needs a subsystem
+  (item use beyond Sandbox's seat-snap, combat, or magic) that doesn't
+  exist in this codebase yet, not just a missing procedure dispatch.
 - **No general AI tick, but package selection does tick.**
   `byroredux/src/systems/` still has no `ai.rs` / `behavior.rs` /
   `npc.rs`. Superseded 2026-09-18 by M42.10: the seven *locomotion*
