@@ -20,7 +20,10 @@
 //!     - `ONAM` = 4 B base form ID of the child (STAT, MSTT, …)
 //!     - `DATA` = repeated 28 B placement records:
 //!       `pos[3 × f32] + rot[3 × f32] + scale[f32]`
-//! - `FLTR` — filter form IDs (unused by the parser, kept optional)
+//! - `FLTR` — CK object-window filter path (zstring; #5493 — xEdit
+//!   `wbFLTR := wbString(FLTR, 'Filter')`. Pre-#5493 this decoded as a
+//!   FormID array and remapped ASCII path bytes, ~2.8k false warnings
+//!   across the FO4 DLCs)
 //!
 //! Every `DATA` block always follows an `ONAM`; a vanilla Fallout4.esm
 //! scan counted 2617 SCOL records × ~6 ONAM/DATA pairs = 15,878 per-
@@ -101,11 +104,12 @@ pub struct ScolRecord {
     /// order. Empty when the record carries no children (rare — a
     /// vanilla FO4 scan found zero such SCOLs).
     pub parts: Vec<ScolPart>,
-    /// FLTR filter form IDs when present. FO4 ships 2244 SCOLs with
-    /// FLTR entries out of 2617 — content the previs system uses to
-    /// exclude the SCOL from certain lighting / shadow passes. We
-    /// only retain the IDs; actual filtering is downstream work.
-    pub filter: Vec<u32>,
+    /// `FLTR` — the CK object-window filter path (zstring, #5493).
+    /// FO4 ships 2,244 SCOLs with FLTR out of 2,617, every one
+    /// NUL-terminated text (`SetDressing\IndustrialMachines\`,
+    /// `DummyObjects\`, `\lights\`). No consumer yet; not a FormID,
+    /// never remapped.
+    pub filter: String,
     /// Localised display name from the FULL sub-record. 124 of 2617
     /// vanilla FO4 SCOLs ship one (e.g. "Cambridge Deco Storefront
     /// 01"); empty on the rest. On localised plugins (master flag
@@ -140,7 +144,7 @@ pub fn parse_scol(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
 
     let mut parts: Vec<ScolPart> = Vec::new();
     let mut current_base: Option<u32> = None;
-    let mut filter: Vec<u32> = Vec::new();
+    let mut filter = String::new();
 
     for sub in subs {
         match sub.sub_type.as_slice() {
@@ -189,25 +193,10 @@ pub fn parse_scol(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
                 }
             }
             b"FLTR" => {
-                // FLTR is a flat array of form IDs — length / 4. Some
-                // records ship one ID, others a list; we just collect
-                // them all.
-                let id_count = sub.data.len() / 4;
-                filter.reserve(id_count);
-                for i in 0..id_count {
-                    let off = i * 4;
-                    if off + 4 <= sub.data.len() {
-                        filter.push(remap_fid(
-                            u32::from_le_bytes([
-                                sub.data[off],
-                                sub.data[off + 1],
-                                sub.data[off + 2],
-                                sub.data[off + 3],
-                            ]),
-                            remap,
-                        ));
-                    }
-                }
+                // #5493 — xEdit's wbFLTR is a zstring (the CK
+                // object-window filter path), not a FormID array; see
+                // the module doc for the false-remap-warning census.
+                filter = crate::esm::records::common::read_zstring(&sub.data);
             }
             _ => {}
         }
@@ -329,15 +318,16 @@ mod tests {
     }
 
     /// Regression: #405 — FLTR is a flat array of form IDs; a single
-    /// record can carry N of them. Verify a 2-id FLTR round-trips.
+    /// #5493 — FLTR is a zstring (the CK object-window filter path),
+    /// not a FormID array.
     #[test]
-    fn parse_scol_fltr_array_collects_every_form_id() {
-        let mut fltr_data = Vec::new();
-        fltr_data.extend_from_slice(&0x0000_1111u32.to_le_bytes());
-        fltr_data.extend_from_slice(&0x0000_2222u32.to_le_bytes());
-        let subs = vec![edid("Filtered"), sub(b"FLTR", fltr_data)];
+    fn parse_scol_fltr_decodes_the_filter_path() {
+        let subs = vec![
+            edid("Filtered"),
+            sub(b"FLTR", b"DummyObjects\\\0".to_vec()),
+        ];
         let rec = parse_scol(0xABCD_0000, &subs, &None);
-        assert_eq!(rec.filter, vec![0x0000_1111, 0x0000_2222]);
+        assert_eq!(rec.filter, "DummyObjects\\");
     }
 
     /// Regression: #405 — a truncated DATA (length not a multiple of
@@ -495,7 +485,8 @@ mod remap_tests {
             scol.parts[1].base_form_id, 0x0000_5678,
             "a master-owned child keeps its slot",
         );
-        assert_eq!(scol.filter, vec![0x0200_9ABC]);
+        // #5493 — FLTR is editor text and stays raw; the remap test's
+        // own FLTR-free fixture covers the FormID slots above.
     }
 
     /// `remap_fid`'s null rule: `0` is "no reference", not object 0 of the

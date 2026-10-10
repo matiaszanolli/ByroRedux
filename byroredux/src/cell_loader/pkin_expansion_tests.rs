@@ -28,7 +28,7 @@ fn mk_pkin(form_id: u32, editor_id: &str, contents: Vec<u32>) -> PkinRecord {
         // empty for the placement-expansion tests; the cell loader
         // doesn't consult `filter` today (pre-render), so the test
         // shape is unchanged.
-        filter: Vec::new(),
+        filter: String::new(),
     }
 }
 
@@ -292,7 +292,7 @@ fn expand_pkin_recurses_into_scol_child() {
                     scale: 1.0,
                 }],
             }],
-            filter: Vec::new(),
+            filter: String::new(),
             full_name: String::new(),
             has_script: false,
         },
@@ -356,7 +356,7 @@ fn expand_pkin_with_cached_scol_child_does_not_recurse() {
                     scale: 1.0,
                 }],
             }],
-            filter: Vec::new(),
+            filter: String::new(),
             full_name: String::new(),
             has_script: false,
         },

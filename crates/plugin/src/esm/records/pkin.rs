@@ -31,13 +31,17 @@
 //!   Fallout4.esm carry `0`; DLCRobot ships one `1`. No consumer yet.
 //! - `FNAM` — optional u32 flag bits (bit 1 = "Location Reference
 //!   Type", bit 2 = "Perk" per xEdit comments). Captured verbatim.
-//! - `FLTR` — optional flat u32 array of filter form IDs that gate
-//!   workshop build-mode visibility. 230 of 872 vanilla Fallout4.esm
-//!   PKINs ship `FLTR`; pre-#815 the parser silently dropped them.
-//!   Layout matches the SCOL-side `FLTR` decode (#405) — kept the
-//!   two parsers byte-for-byte aligned so a future MOVS parser
-//!   (which xEdit also documents as carrying FLTR) can copy the
-//!   same arm without divergence.
+//! - `FLTR` — optional zstring, the CK object-window filter path the
+//!   pack-in is filed under (#5493: xEdit `wbFLTR := wbString(FLTR,
+//!   'Filter')`, `FO4.pas:5274` / `FO76.pas:7040` / `SF1.pas:5697`).
+//!   230 of 872 vanilla Fallout4.esm PKINs ship `FLTR`, every one
+//!   NUL-terminated text (`SetDressing\IndustrialMachines\`,
+//!   `DummyObjects\`, `\lights\`). Pre-#5493 the sub was decoded as a
+//!   flat `u32` FormID array with `remap_fid` per 4-byte slice — ASCII
+//!   path bytes always tripped the remap's "genuinely suspicious"
+//!   warn arm (2,843 false warnings across the FO4 DLCs, 3,857 on
+//!   Shattered Space), and the stored "IDs" were garbage. The quest
+//!   parser's own FLTR (`misc/quest.rs`) was already a zstring.
 //!
 //! Vanilla Fallout4.esm ships 872 PKIN records. Pre-#589 the cell
 //! parser routed PKIN through the MODL-only catch-all at `cell.rs:521`
@@ -76,12 +80,10 @@ pub struct PkinRecord {
     /// `FNAM` flag bits (xEdit comments: bit 1 = "Location Reference
     /// Type", bit 2 = "Perk"). `0` when the record omits the sub.
     pub flags: u32,
-    /// `FLTR` workshop build-mode filter form IDs — flat u32 array,
-    /// authoring order preserved. 230 of 872 vanilla Fallout4.esm
-    /// PKINs ship a non-empty FLTR. Empty when the record omits the
-    /// sub. Layout matches `ScolRecord::filter` (#405) so the two
-    /// parsers stay aligned. See #815.
-    pub filter: Vec<u32>,
+    /// `FLTR` — the CK object-window filter path (zstring, #5493).
+    /// Empty when the record omits the sub. Same decode as
+    /// `ScolRecord::filter`; not a FormID, never remapped.
+    pub filter: String,
 }
 
 /// Parse a PKIN record from its sub-record list. Unknown sub-records
@@ -94,7 +96,7 @@ pub fn parse_pkin(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
     let mut contents: Vec<u32> = Vec::new();
     let mut version = 0u32;
     let mut flags = 0u32;
-    let mut filter: Vec<u32> = Vec::new();
+    let mut filter = String::new();
 
     let read_u32 = |bytes: &[u8]| -> Option<u32> {
         if bytes.len() < 4 {
@@ -128,25 +130,10 @@ pub fn parse_pkin(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
                 }
             }
             b"FLTR" => {
-                // Flat array of u32 form IDs — length / 4. Mirrors
-                // `parse_scol`'s FLTR decode at scol.rs:158-175 so
-                // the two parsers stay aligned (#405 / #815).
-                let id_count = sub.data.len() / 4;
-                filter.reserve(id_count);
-                for i in 0..id_count {
-                    let off = i * 4;
-                    if off + 4 <= sub.data.len() {
-                        filter.push(remap_fid(
-                            u32::from_le_bytes([
-                                sub.data[off],
-                                sub.data[off + 1],
-                                sub.data[off + 2],
-                                sub.data[off + 3],
-                            ]),
-                            remap,
-                        ));
-                    }
-                }
+                // #5493 — xEdit's wbFLTR is a zstring (the CK
+                // object-window filter path), not a FormID array. See
+                // the module doc for the false-remap-warning census.
+                filter = crate::esm::records::common::read_zstring(&sub.data);
             }
             _ => {}
         }
@@ -225,28 +212,23 @@ mod tests {
         assert_eq!(rec.flags, 0);
     }
 
-    /// Regression for #815 / FO4-D4-NEW-03: 230 of 872 vanilla
-    /// `Fallout4.esm` PKIN records ship `FLTR` workshop build-mode
-    /// filter form IDs. Pre-fix the parser silently dropped them.
-    /// Layout matches `parse_scol`'s FLTR decode (#405) — flat u32
-    /// array, length / 4. A 2-id FLTR round-trips with both IDs in
-    /// authoring order.
+    /// Regression for #815 / FO4-D4-NEW-03 / #5493: 230 of 872
+    /// vanilla `Fallout4.esm` PKIN records ship `FLTR` — the CK
+    /// object-window filter path, a zstring. Pre-#815 the parser
+    /// dropped it; pre-#5493 it decoded the text as a FormID array.
     #[test]
-    fn parse_pkin_fltr_round_trips_two_ids() {
-        let mut fltr_data = Vec::new();
-        fltr_data.extend_from_slice(&0x0000_1111u32.to_le_bytes());
-        fltr_data.extend_from_slice(&0x0000_2222u32.to_le_bytes());
+    fn parse_pkin_fltr_round_trips_the_filter_path() {
         let subs = vec![
             edid("PackIn_Filtered"),
             cnam(0x0010_1234),
-            sub(b"FLTR", fltr_data),
+            sub(b"FLTR", b"\\lights\\\0".to_vec()),
         ];
         let rec = parse_pkin(0x0055_0010, &subs, &None);
         assert_eq!(rec.contents, vec![0x0010_1234]);
         assert_eq!(
             rec.filter,
-            vec![0x0000_1111, 0x0000_2222],
-            "FLTR form IDs round-trip in authoring order, mirroring SCOL (#405)",
+            "\\lights\\",
+            "FLTR is the CK filter path, mirroring SCOL (#5493)",
         );
     }
 
@@ -257,28 +239,27 @@ mod tests {
     /// CNAM side.
     #[test]
     fn parse_pkin_fltr_only_yields_empty_contents() {
-        let mut fltr_data = Vec::new();
-        fltr_data.extend_from_slice(&0x0001_2345u32.to_le_bytes());
-        let subs = vec![edid("PackIn_FltrOnly"), sub(b"FLTR", fltr_data)];
+        // #5493 — real-shape payload: a NUL-terminated filter path.
+        let subs = vec![
+            edid("PackIn_FltrOnly"),
+            sub(b"FLTR", b"SetDressing\\IndustrialMachines\\\0".to_vec()),
+        ];
         let rec = parse_pkin(0x0055_0011, &subs, &None);
         assert!(rec.contents.is_empty());
-        assert_eq!(rec.filter, vec![0x0001_2345]);
+        assert_eq!(rec.filter, "SetDressing\\IndustrialMachines\\");
     }
 
-    /// FLTR shorter than 4 bytes is dropped (no surviving id);
-    /// FLTR with a trailing partial id is truncated to the
-    /// well-formed prefix. Mirrors the SCOL-side defensive policy
-    /// for malformed authoring.
+    /// #5493 — an unterminated FLTR still decodes to the whole payload
+    /// (read_zstring's tolerant shape); it is editor text, not a fixed-
+    /// width array, so there is no "partial id" class to drop.
     #[test]
-    fn parse_pkin_fltr_partial_payload_drops_remainder() {
-        // 4 valid bytes + 3 trailing partial bytes → only the
-        // first id should survive (length / 4 = 1 surviving id).
-        let mut fltr_data = Vec::new();
-        fltr_data.extend_from_slice(&0xAABB_CCDDu32.to_le_bytes());
-        fltr_data.extend_from_slice(&[0x11, 0x22, 0x33]); // truncated tail
-        let subs = vec![edid("PackIn_TruncFltr"), sub(b"FLTR", fltr_data)];
+    fn parse_pkin_fltr_unterminated_decodes_whole_payload() {
+        let subs = vec![
+            edid("PackIn_TruncFltr"),
+            sub(b"FLTR", b"DummyObjects".to_vec()),
+        ];
         let rec = parse_pkin(0x0055_0012, &subs, &None);
-        assert_eq!(rec.filter, vec![0xAABB_CCDD]);
+        assert_eq!(rec.filter, "DummyObjects");
     }
 
     /// Truncated CNAM (< 4 bytes) is silently dropped rather than
@@ -322,13 +303,37 @@ mod remap_tests {
             mk(b"CNAM", 0x0100_1111),
             mk(b"CNAM", 0x0000_2222), // master-owned
             mk(b"VNAM", 0x0100_3333),
-            mk(b"FLTR", 0x0100_4444),
         ];
 
         let pkin = parse_pkin(0x0200_0001, &subs, &remap);
 
         assert_eq!(pkin.contents, vec![0x0200_1111, 0x0000_2222]);
-        assert_eq!(pkin.filter, vec![0x0200_4444]);
+    }
+
+    /// #5493 — FLTR is editor text (the CK object-window filter path),
+    /// so a remap that rewrites every real FormID slot must leave it
+    /// untouched. The pre-fix u32 decode fed ASCII slices to
+    /// `remap_fid`, logging a false "genuinely suspicious" warning per
+    /// slice on every DLC load (2,843 on the FO4 DLCs, 3,857 on
+    /// Shattered Space).
+    #[test]
+    fn pkin_fltr_filter_path_stays_raw_under_remap() {
+        let remap = Some(FormIdRemap {
+            plugin_slot: GlobalSlot::Regular(0x02),
+            master_slots: vec![GlobalSlot::Regular(0x00)],
+        });
+        let subs = vec![
+            SubRecord {
+                sub_type: *b"CNAM",
+                data: 0x0100_1111u32.to_le_bytes().to_vec(),
+            },
+            SubRecord {
+                sub_type: *b"FLTR",
+                data: b"\\lights\\\0".to_vec(),
+            },
+        ];
+        let pkin = parse_pkin(0x0200_0001, &subs, &remap);
+        assert_eq!(pkin.filter, "\\lights\\");
     }
 
     /// #5422 — `VNAM` is xEdit's integer Version, not a form ID: it must
