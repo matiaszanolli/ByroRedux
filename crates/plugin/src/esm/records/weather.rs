@@ -265,6 +265,13 @@ pub struct WeatherRecord {
     pub fog_night_near: f32,
     /// Fog night far distance (game units).
     pub fog_night_far: f32,
+    /// Whether the four fog distances above were DECODED from a sub-record
+    /// (FNAM, or the legacy 16-byte HNAM fixture shape) rather than left at
+    /// the decoder's engine-unit defaults (`0` / `10000`). The Starfield
+    /// unit lift (`spatial_units::normalize`) multiplies only authored
+    /// distances: lifting the default would turn "no fog authored" into a
+    /// 700 000-unit far plane (#5301).
+    pub fog_distances_authored: bool,
     /// Skyrim/FO4 FNAM daytime fog-curve power. Defaults to 1 for earlier games.
     pub fog_day_power: f32,
     /// Skyrim/FO4 FNAM nighttime fog-curve power. Defaults to 1 for earlier games.
@@ -377,6 +384,7 @@ impl Default for WeatherRecord {
             fog_day_far: 10000.0,
             fog_night_near: 0.0,
             fog_night_far: 10000.0,
+            fog_distances_authored: false,
             fog_day_power: 1.0,
             fog_night_power: 1.0,
             fog_day_max: 1.0,
@@ -546,6 +554,7 @@ pub fn parse_wthr(
             // independent of weather type. See audit M33-04 / #536.
             b"FNAM" if sub.data.len() >= 16 => {
                 let mut r = SubReader::new(&sub.data);
+                record.fog_distances_authored = true;
                 record.fog_day_near = r.f32().unwrap_or(0.0);
                 record.fog_day_far = r.f32().unwrap_or(10000.0);
                 record.fog_night_near = r.f32().unwrap_or(0.0);
@@ -630,6 +639,7 @@ pub fn parse_wthr(
                 // 56-byte HNAM does NOT clobber FNAM fog) keeps its
                 // counterpart. No vanilla master ships this shape.
                 let mut r = SubReader::new(&sub.data);
+                record.fog_distances_authored = true;
                 record.fog_day_near = r.f32().unwrap_or(0.0);
                 record.fog_day_far = r.f32().unwrap_or(10000.0);
                 record.fog_night_near = r.f32().unwrap_or(0.0);
@@ -984,6 +994,7 @@ fn parse_wthr_skyrim(
             // model). Trailing 4 are day/night fog power + max.
             b"FNAM" if sub.data.len() >= SKYRIM_FNAM_SIZE => {
                 let mut r = SubReader::new(&sub.data);
+                record.fog_distances_authored = true;
                 record.fog_day_near = r.f32().unwrap_or(0.0);
                 record.fog_day_far = r.f32().unwrap_or(10000.0);
                 record.fog_night_near = r.f32().unwrap_or(0.0);

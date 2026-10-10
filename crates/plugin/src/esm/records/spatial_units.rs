@@ -171,11 +171,19 @@ pub(super) fn normalize(index: &mut EsmIndex) {
     // get the same ×70 lift. The two high-density scales are
     // dimensionless and stay untouched, per the same rule that keeps
     // `light_fade`-style ratios out of the lift.
+    // #5301 — only AUTHORED distances are lifted. `parse_wthr` leaves
+    // `fog_{day,night}_far` at the engine-unit default 10 000 when no FNAM
+    // was decoded, and lifting that default would turn "no fog authored"
+    // into a 700 000-unit far plane — the same rule the WATR lanes below
+    // keep ("a short or absent DNAM leaves the decoder's defaults, which
+    // must not be lifted").
     for weather in index.weathers.values_mut() {
-        weather.fog_day_near *= UNITS;
-        weather.fog_day_far *= UNITS;
-        weather.fog_night_near *= UNITS;
-        weather.fog_night_far *= UNITS;
+        if weather.fog_distances_authored {
+            weather.fog_day_near *= UNITS;
+            weather.fog_day_far *= UNITS;
+            weather.fog_night_near *= UNITS;
+            weather.fog_night_far *= UNITS;
+        }
         if let Some(height) = &mut weather.fog_height {
             height.day_near_height_mid *= UNITS;
             height.day_near_height_range *= UNITS;

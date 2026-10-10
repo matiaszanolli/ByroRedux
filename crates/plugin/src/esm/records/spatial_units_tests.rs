@@ -200,6 +200,34 @@ fn starfield_public_index_lifts_wthr_fog_distances() {
     assert_eq!(height.night_far_height_range, 63_000.0);
 }
 
+/// #5301 — a Starfield WTHR that authors NO fog (no FNAM) keeps the
+/// decoder's engine-unit default. `normalize` used to multiply the
+/// unauthored 10 000 default by 70, handing `translate_weather` a
+/// 700 000-unit fog far plane, i.e. no fog at all. The authored-FNAM case
+/// above still lifts.
+#[test]
+fn starfield_wthr_without_fnam_keeps_the_unlifted_fog_defaults() {
+    let mut hedr = 0.96f32.to_le_bytes().to_vec();
+    hedr.extend_from_slice(&[0; 8]);
+    let mut data = build_record(b"TES4", 0, &[(b"HEDR", hedr)]);
+    data.extend(wrap_group(
+        b"WTHR",
+        &build_record(b"WTHR", 0x15E, &[(b"EDID", b"NoFogWeather\0".to_vec())]),
+    ));
+    let index = parse_esm(&data).unwrap();
+    assert_eq!(index.game, GameKind::Starfield);
+    let w = &index.weathers[&0x15E];
+    assert!(!w.fog_distances_authored, "no FNAM was decoded");
+    assert_eq!(w.fog_day_near, 0.0);
+    assert_eq!(w.fog_day_far, 10_000.0, "the engine-unit default must not be lifted");
+    assert_eq!(w.fog_night_near, 0.0);
+    assert_eq!(w.fog_night_far, 10_000.0);
+
+    // The authored case is the one that lifts, and records that it was authored.
+    let authored = parse_esm(&weather_plugin(0.96)).unwrap();
+    assert!(authored.weathers[&0x15E].fog_distances_authored);
+}
+
 /// Companion: every non-Starfield game keeps the authored FNAM values —
 /// the unit lift keys on `GameKind::Starfield` exactly like the rest of
 /// `normalize` (#4837 sibling rule).
