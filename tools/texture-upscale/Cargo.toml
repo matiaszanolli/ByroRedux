@@ -11,7 +11,10 @@ path = "src/main.rs"
 anyhow = { workspace = true }
 byroredux-bsa = { workspace = true }
 clap = { workspace = true }
-image = { workspace = true }
+# Source textures come in as dds/png/tga/bmp/jpg|jpeg (see
+# `accepted_source_extension` in src/lib.rs) — the workspace base only
+# carries png, so name the rest here.
+image = { workspace = true, features = ["bmp", "dds", "jpeg", "tga"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sysinfo = { workspace = true, features = ["disk"] }

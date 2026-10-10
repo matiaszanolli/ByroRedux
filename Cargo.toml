@@ -180,7 +180,11 @@ nalgebra = "0.35"
 rapier3d = "0.36"
 
 # Image loading
-image = "0.25"
+# image: defaults off — 0.25's default format set includes `avif`, which
+# pulls the rav1e AV1 encoder into the graph for a format nothing here
+# touches. Each consumer names what it decodes/encodes (PNG everywhere;
+# tools/texture-upscale adds its source-texture formats).
+image = { version = "0.25", default-features = false, features = ["png"] }
 tempfile = "3"
 walkdir = "2.5"
 
