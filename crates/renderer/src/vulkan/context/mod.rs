@@ -1443,13 +1443,17 @@ impl VulkanContext {
     /// reach the GPU) while keeping only the newest `shapes`/
     /// `pixels_per_point` — the same semantics egui's own multi-frame
     /// integrations use.
-    pub fn submit_egui_frame(&mut self, ctx: egui::Context, output: egui::FullOutput) {
+    pub fn submit_egui_frame(&mut self, ctx: egui::Context, mut output: egui::FullOutput) {
         if self.overlay.egui_pass.is_some() {
             self.overlay.egui_pending_output = Some(merge_egui_pending_output(
                 self.overlay.egui_pending_output.take(),
                 ctx,
                 output,
             ));
+        } else {
+            // No overlay pass to upload into. egui 0.36 debug-asserts that a
+            // dropped `TexturesDelta` was drained, so discard explicitly.
+            output.textures_delta.clear();
         }
     }
 }
@@ -1479,14 +1483,14 @@ mod egui_pending_output_tests {
 
     fn full_output_with_delta(set_id: u64, free_id: u64) -> egui::FullOutput {
         let mut output = egui::FullOutput::default();
-        output.textures_delta.set.push((
+        output.textures_delta.push(
             TextureId::Managed(set_id),
             ImageDelta::full(
                 ColorImage::new([1, 1], vec![Color32::WHITE]),
                 TextureOptions::default(),
             ),
-        ));
-        output.textures_delta.free.push(TextureId::Managed(free_id));
+        );
+        output.textures_delta.free(TextureId::Managed(free_id));
         output
     }
 
@@ -1499,27 +1503,31 @@ mod egui_pending_output_tests {
         let frame_a = full_output_with_delta(1, 10);
         let frame_b = full_output_with_delta(2, 20);
 
-        let (_, merged) = merge_egui_pending_output(
+        let (_, mut merged) = merge_egui_pending_output(
             Some((egui::Context::default(), frame_a)),
             egui::Context::default(),
             frame_b,
         );
 
+        // egui 0.36 keys both halves by id (`set` a map of per-id delta
+        // lists, `free` a set), so the merge is compared as sets.
+        let set: std::collections::BTreeSet<_> =
+            merged.textures_delta.set.keys().copied().collect();
         assert_eq!(
-            merged
-                .textures_delta
-                .set
-                .iter()
-                .map(|(id, _)| *id)
-                .collect::<Vec<_>>(),
-            vec![TextureId::Managed(1), TextureId::Managed(2)],
-            "both frames' texture uploads must survive the merge, oldest first"
+            set,
+            [TextureId::Managed(1), TextureId::Managed(2)].into(),
+            "both frames' texture uploads must survive the merge"
         );
+        let free: std::collections::BTreeSet<_> =
+            merged.textures_delta.free.iter().copied().collect();
         assert_eq!(
-            merged.textures_delta.free,
-            vec![TextureId::Managed(10), TextureId::Managed(20)],
+            free,
+            [TextureId::Managed(10), TextureId::Managed(20)].into(),
             "both frames' texture frees must survive the merge"
         );
+        // The deltas are unapplied test data: drain them, or epaint's
+        // drop-time debug assert fires.
+        merged.textures_delta.clear();
     }
 
     /// No pending output (the common case — every frame is consumed
@@ -1528,9 +1536,11 @@ mod egui_pending_output_tests {
     #[test]
     fn no_pending_output_passes_through_unchanged() {
         let frame = full_output_with_delta(1, 10);
-        let (_, merged) = merge_egui_pending_output(None, egui::Context::default(), frame);
+        let (_, mut merged) = merge_egui_pending_output(None, egui::Context::default(), frame);
         assert_eq!(merged.textures_delta.set.len(), 1);
-        assert_eq!(merged.textures_delta.free, vec![TextureId::Managed(10)]);
+        assert!(merged.textures_delta.free.contains(&TextureId::Managed(10)));
+        assert_eq!(merged.textures_delta.free.len(), 1);
+        merged.textures_delta.clear();
     }
 }
 

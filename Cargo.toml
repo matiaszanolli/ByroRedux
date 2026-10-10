@@ -179,7 +179,7 @@ nalgebra = "0.35"
 rapier3d = "0.36"
 
 # Image loading
-image = "0.24"
+image = "0.25"
 tempfile = "3"
 walkdir = "2.5"
 
@@ -245,14 +245,14 @@ crossterm = "0.29"
 # graph and breaks the FullOutput pass-through. The
 # `gpu-allocator` feature lets egui-ash-renderer share our
 # `SharedAllocator` instead of standing up a parallel allocator.
-egui = "0.33"
+egui = "0.36"
 # Launcher only. `glow` (OpenGL) rather than the wgpu backend: it must run
 # where Vulkan init fails, and the tree already carries wgpu 27 via Ruffle.
-eframe = { version = "0.33", default-features = false, features = ["glow", "default_fonts", "wayland", "x11"] }
+eframe = { version = "0.36", default-features = false, features = ["glow", "default_fonts", "wayland", "x11"] }
 # Launcher only. `xdg-portal` avoids a GTK build dependency on Linux.
-rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "async-std"] }
-egui-winit = { version = "0.33", default-features = false, features = ["links", "wayland", "x11"] }
-egui-ash-renderer = { version = "0.11", features = ["gpu-allocator"] }
+rfd = { version = "0.17", default-features = false, features = ["xdg-portal"] }
+egui-winit = { version = "0.36", default-features = false, features = ["links", "wayland", "x11"] }
+egui-ash-renderer = { version = "0.13", features = ["gpu-allocator"] }
 
 # ── Debug-build optimisation (Phases 12 + 16) ─────────────────
 #

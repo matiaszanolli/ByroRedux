@@ -283,7 +283,7 @@ impl App {
             self.resume_from_game_menu();
         }
         if quit_game {
-            self.shutdown(event_loop);
+            self.shutdown_discarding_egui_frame(event_loop, egui_frame);
             return;
         }
 
@@ -829,6 +829,24 @@ impl App {
         cpu_t.rof_pre_draw_ms = rof_pre_draw_ns as f32 * NS_TO_MS;
         cpu_t.rof_draw_call_ms = rof_draw_call_ns as f32 * NS_TO_MS;
         cpu_t.rof_post_draw_ms = rof_post_draw_ns as f32 * NS_TO_MS;
+    }
+
+    /// The pause menu's Quit, taken mid-frame: the egui frame built this
+    /// tick is never rendered. egui 0.36 debug-asserts that a dropped
+    /// `TexturesDelta` was drained, so its uploads are discarded explicitly
+    /// before shutting down.
+    fn shutdown_discarding_egui_frame(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        egui_frame: Option<(
+            byroredux_debug_ui::egui::Context,
+            byroredux_debug_ui::egui::FullOutput,
+        )>,
+    ) {
+        if let Some((_, mut output)) = egui_frame {
+            output.textures_delta.clear();
+        }
+        self.shutdown(event_loop);
     }
 
     /// #5367 Phase L — a spoken Goodbye line ended its conversation (the

@@ -265,6 +265,13 @@ impl Drop for VulkanContext {
             if let Some(mut pass) = self.overlay.egui_pass.take() {
                 pass.destroy(&self.device);
             }
+            // egui 0.36 debug-asserts that a dropped `TexturesDelta` was
+            // drained. An output submitted after the last drawn frame (a
+            // skipped frame before exit) is never rendered: discard its
+            // uploads on purpose rather than tripping the assert.
+            if let Some((_, mut output)) = self.overlay.egui_pending_output.take() {
+                output.textures_delta.clear();
+            }
             if let Some(mut presentation) = self.post.presentation.take() {
                 presentation.destroy(&self.device);
             }

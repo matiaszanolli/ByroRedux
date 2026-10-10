@@ -8,11 +8,11 @@
 //!
 //! egui texture lifecycle:
 //!
-//! * `free_textures` from the previous frame's `TexturesDelta.free`
-//!   runs first. The fence wait at the top of `draw_frame` already
+//! * `free_texture` for each id in the previous frame's
+//!   `TexturesDelta.free` runs first. The fence wait at the top of `draw_frame` already
 //!   ensures the prior frame's command buffer has fully GPU-
 //!   completed, so the textures pointed to are no longer in use.
-//! * `set_textures` uploads any new / updated textures. The egui-ash-
+//! * `set_texture` uploads any new / updated textures. The egui-ash-
 //!   renderer crate spins up its own one-shot command buffer + waits
 //!   on the supplied queue, so the uploads finish synchronously before
 //!   `cmd_draw` references them. Partial (`pos: Some`) deltas are first
@@ -31,7 +31,7 @@ use anyhow::{anyhow, Result};
 use ash::vk;
 use egui::{epaint::ImageDelta, Context as EguiContext, FullOutput, ImageData, TextureId};
 use rustc_hash::FxHashMap;
-use egui_ash_renderer::{Options, Renderer};
+use egui_ash_renderer::{allocator::GpuAllocator, Options, RenderMode, Renderer};
 use gpu_allocator::vulkan::Allocator;
 
 /// The Vulkan handles [`EguiPass::dispatch`] records and uploads against.
@@ -45,7 +45,7 @@ pub struct EguiDispatchCtx<'a> {
     pub cmd: vk::CommandBuffer,
     /// Graphics queue used for the synchronous egui texture upload. Passed
     /// as the shared `Mutex` (not a bare handle) so `dispatch` can scope
-    /// the lock to just the `set_textures` submit — the tessellate +
+    /// the lock to just the `set_texture` submits — the tessellate +
     /// cmd_draw steps only record into `cmd` and need no queue held.
     /// CONC-D1-01 (#1713).
     pub queue: &'a Mutex<vk::Queue>,
@@ -59,7 +59,7 @@ pub struct EguiPass {
     /// egui-ash-renderer pipeline owner. Holds its own descriptor
     /// pool / set layout / vertex+index buffer pool. Drop is
     /// well-defined; we don't need to call anything explicit on it.
-    renderer: Renderer,
+    renderer: Renderer<GpuAllocator>,
     /// The owning VkRenderPass. Single subpass, single color
     /// attachment, `loadOp = LOAD` so composite's swapchain write is
     /// preserved.
@@ -101,28 +101,33 @@ pub struct EguiPass {
 
 /// #4986 — rewrite egui's texture deltas so every upload is a full one.
 ///
-/// egui-ash-renderer 0.11's partial path (`delta.pos == Some`) records a
+/// egui-ash-renderer's partial path (`delta.pos == Some`; still so in 0.13,
+/// `renderer/vulkan.rs` `Texture::cmd_update`) records a
 /// whole-image `UNDEFINED -> TRANSFER_DST_OPTIMAL` transition with no source
 /// scope and then copies only the patch. `UNDEFINED` as the old layout lets
 /// the implementation discard the image's contents, so every glyph already in
 /// the font atlas outside the patched rect is undefined afterwards. A full
 /// delta instead creates a fresh image (for which `UNDEFINED` is correct) and
-/// retires the old one the same way `free_textures` does — covered by the
+/// retires the old one the same way `free_texture` does — covered by the
 /// all-slots fence wait (rider 14 in `sync.rs`).
 ///
 /// Full deltas refresh the mirror and pass through; partial deltas are
 /// applied to the mirror and replaced by a full delta of it. Several deltas
-/// for one id in a frame collapse into a single upload. A partial delta for
+/// for one id in a frame collapse into a single upload. `set` yields the
+/// deltas in application order per id — egui 0.36's `TexturesDelta::set`
+/// keeps each id's deltas in order (a `SmallVec` per id); the order across
+/// ids never mattered, since each id is its own image. A partial delta for
 /// an id with no mirror (or one that does not fit it) passes through
 /// unchanged, so the crate reports its own `BadTexture` rather than this
 /// silently dropping an update.
-fn promote_partial_deltas(
+fn promote_partial_deltas<'a>(
     mirrors: &mut FxHashMap<TextureId, Arc<egui::ColorImage>>,
-    set: &[(TextureId, ImageDelta)],
+    set: impl IntoIterator<Item = (TextureId, &'a ImageDelta)>,
 ) -> Vec<(TextureId, ImageDelta)> {
-    let mut out: Vec<(TextureId, ImageDelta)> = Vec::with_capacity(set.len());
+    let mut out: Vec<(TextureId, ImageDelta)> = Vec::new();
     let mut slot_of: FxHashMap<TextureId, usize> = FxHashMap::default();
     for (id, delta) in set {
+        let id = &id;
         let ImageData::Color(patch) = &delta.image;
         let promoted = match delta.pos {
             None => {
@@ -227,19 +232,23 @@ impl EguiPass {
             srgb_framebuffer: is_srgb_format(swapchain_format),
         };
 
-        let renderer =
-            match Renderer::with_gpu_allocator(allocator, device.clone(), render_pass, opts) {
-                Ok(renderer) => renderer,
-                Err(e) => {
-                    for fb in framebuffers {
-                        // SAFETY: created by this `device` just above, never
-                        // recorded into a command buffer.
-                        unsafe { device.destroy_framebuffer(fb, None) };
-                    }
-                    destroy_render_pass();
-                    return Err(anyhow!("egui-ash-renderer init failed: {e:?}"));
+        let renderer = match Renderer::with_gpu_allocator(
+            allocator,
+            device.clone(),
+            RenderMode::RenderPass(render_pass),
+            opts,
+        ) {
+            Ok(renderer) => renderer,
+            Err(e) => {
+                for fb in framebuffers {
+                    // SAFETY: created by this `device` just above, never
+                    // recorded into a command buffer.
+                    unsafe { device.destroy_framebuffer(fb, None) };
                 }
-            };
+                destroy_render_pass();
+                return Err(anyhow!("egui-ash-renderer init failed: {e:?}"));
+            }
+        };
 
         Ok(Self {
             renderer,
@@ -273,7 +282,7 @@ impl EguiPass {
     /// not reset across the rebuild, so egui keeps believing its textures
     /// (the font atlas above all) are resident and afterwards only sends
     /// partial grow-deltas — which a fresh renderer answers with
-    /// `BadTexture` on every `set_textures` and `cmd_draw`. The mirrors
+    /// `BadTexture` on every `set_texture` and `cmd_draw`. The mirrors
     /// taken here are what [`Self::reseed_textures`] replays into the
     /// rebuilt pass.
     pub fn take_image_mirrors(&mut self) -> FxHashMap<TextureId, Arc<egui::ColorImage>> {
@@ -298,10 +307,26 @@ impl EguiPass {
             return Ok(());
         }
         let q = queue.lock().unwrap_or_else(|e| e.into_inner());
-        self.renderer
-            .set_textures(*q, upload_command_pool, &set)
-            .map_err(|e| anyhow!("egui reseed set_textures: {e:?}"))?;
+        self.upload_textures(*q, upload_command_pool, &set)
+            .map_err(|e| anyhow!("egui reseed set_texture: {e:?}"))?;
         self.image_mirrors = mirrors;
+        Ok(())
+    }
+
+    /// Upload `set` one texture at a time (egui-ash-renderer 0.13 deprecates
+    /// the batch `set_textures`). Each call submits a one-shot command
+    /// buffer on `queue` and waits for it, so every texture is GPU-resident
+    /// on return.
+    fn upload_textures(
+        &mut self,
+        queue: vk::Queue,
+        upload_command_pool: vk::CommandPool,
+        set: &[(TextureId, ImageDelta)],
+    ) -> std::result::Result<(), egui_ash_renderer::RendererError> {
+        for (id, delta) in set {
+            self.renderer
+                .set_texture(queue, upload_command_pool, *id, delta)?;
+        }
         Ok(())
     }
 
@@ -345,7 +370,7 @@ impl EguiPass {
         ctx: EguiDispatchCtx,
         swapchain_image_index: u32,
         egui_ctx: &EguiContext,
-        output: FullOutput,
+        mut output: FullOutput,
     ) -> Result<()> {
         let EguiDispatchCtx {
             device,
@@ -353,38 +378,45 @@ impl EguiPass {
             queue,
             upload_command_pool,
         } = ctx;
+        // egui 0.36 debug-asserts that a `TexturesDelta` is drained before
+        // it drops. Take both halves up front so an early `?` return below
+        // cannot turn an upload error into that panic.
+        let textures_set = std::mem::take(&mut output.textures_delta.set);
+        let textures_free = std::mem::take(&mut output.textures_delta.free);
         // 1. Process previous frame's deferred frees first — by now
         // the fence at the top of `draw_frame` has waited on the
         // previous frame's command buffer, so the textures aren't
         // referenced any more.
         if !self.pending_free.is_empty() {
             let drained = std::mem::take(&mut self.pending_free);
-            for id in &drained {
-                self.image_mirrors.remove(id);
+            for id in drained {
+                self.image_mirrors.remove(&id);
+                self.renderer
+                    .free_texture(id)
+                    .map_err(|e| anyhow!("egui free_texture: {e:?}"))?;
             }
-            self.renderer
-                .free_textures(&drained)
-                .map_err(|e| anyhow!("egui free_textures: {e:?}"))?;
         }
 
-        // 2. Upload new / updated textures. set_textures uses its
+        // 2. Upload new / updated textures. set_texture uses its
         // own one-shot command buffer on the supplied queue and
         // waits internally before returning, so the textures are
         // GPU-resident by the time cmd_draw reads them.
         //
         // CONC-D1-01 (#1713): scope the queue lock to just this upload.
-        // The submit+wait inside set_textures is one egui-ash-renderer
+        // The submit+wait inside set_texture is one egui-ash-renderer
         // call we can't split, so the lock necessarily spans its internal
         // wait — but no wider. The tessellate + cmd_draw steps below only
         // record into `cmd`, so they run with the queue released.
-        if !output.textures_delta.set.is_empty() {
+        if !textures_set.is_empty() {
             // #4986 — never hand the crate a partial delta (see
             // `image_mirrors`). Built before the queue lock: pure CPU work.
-            let set = promote_partial_deltas(&mut self.image_mirrors, &output.textures_delta.set);
+            let deltas = textures_set
+                .iter()
+                .flat_map(|(id, deltas)| deltas.iter().map(move |delta| (*id, delta)));
+            let set = promote_partial_deltas(&mut self.image_mirrors, deltas);
             let q = queue.lock().unwrap_or_else(|e| e.into_inner());
-            self.renderer
-                .set_textures(*q, upload_command_pool, &set)
-                .map_err(|e| anyhow!("egui set_textures: {e:?}"))?;
+            self.upload_textures(*q, upload_command_pool, &set)
+                .map_err(|e| anyhow!("egui set_texture: {e:?}"))?;
         }
 
         // 3. Tessellate shapes into ClippedPrimitives. egui returns
@@ -430,7 +462,7 @@ impl EguiPass {
         }
 
         // 5. Stash this frame's frees for next frame.
-        self.pending_free = output.textures_delta.free;
+        self.pending_free = textures_free.into_iter().collect();
 
         Ok(())
     }
@@ -447,8 +479,9 @@ impl EguiPass {
         // accounting mismatched at teardown. The device is still alive here,
         // so the frees are valid; errors are ignored on the teardown path.
         if !self.pending_free.is_empty() {
-            let drained = std::mem::take(&mut self.pending_free);
-            let _ = self.renderer.free_textures(&drained);
+            for id in std::mem::take(&mut self.pending_free) {
+                let _ = self.renderer.free_texture(id);
+            }
         }
         // SAFETY: caller contract (called from `VulkanContext::drop` in
         // reverse-construction order) guarantees the device is idle and no
@@ -688,6 +721,15 @@ mod dependency_chain_tests {
 #[cfg(test)]
 mod partial_delta_promotion_tests {
     use super::promote_partial_deltas;
+
+    /// The production caller feeds `(id, &delta)` pairs straight off egui's
+    /// per-id `TexturesDelta::set`; the tests keep owned fixtures.
+    fn promote(
+        mirrors: &mut FxHashMap<TextureId, Arc<egui::ColorImage>>,
+        set: &[(TextureId, ImageDelta)],
+    ) -> Vec<(TextureId, ImageDelta)> {
+        promote_partial_deltas(mirrors, set.iter().map(|(id, delta)| (*id, delta)))
+    }
     use egui::epaint::ImageDelta;
     use egui::{Color32, ColorImage, ImageData, TextureId, TextureOptions};
     use rustc_hash::FxHashMap;
@@ -707,12 +749,12 @@ mod partial_delta_promotion_tests {
         let id = TextureId::Managed(0);
         let mut mirrors = FxHashMap::default();
         let base = ImageDelta::full(image(4, 3, Color32::RED), TextureOptions::LINEAR);
-        let first = promote_partial_deltas(&mut mirrors, &[(id, base)]);
+        let first = promote(&mut mirrors, &[(id, base)]);
         assert_eq!(first.len(), 1);
         assert!(first[0].1.pos.is_none());
 
         let patch = ImageDelta::partial([1, 1], image(2, 1, Color32::BLUE), TextureOptions::LINEAR);
-        let out = promote_partial_deltas(&mut mirrors, &[(id, patch)]);
+        let out = promote(&mut mirrors, &[(id, patch)]);
         assert_eq!(out.len(), 1);
         assert!(out[0].1.pos.is_none(), "the crate must never see a partial delta (#4986)");
         let px = pixels(&out[0].1);
@@ -732,7 +774,7 @@ mod partial_delta_promotion_tests {
         let id = TextureId::Managed(7);
         let mut mirrors = FxHashMap::default();
         mirrors.insert(id, image(2, 2, Color32::BLACK));
-        let out = promote_partial_deltas(
+        let out = promote(
             &mut mirrors,
             &[
                 (id, ImageDelta::partial([0, 0], image(1, 1, Color32::WHITE), TextureOptions::LINEAR)),
@@ -752,7 +794,7 @@ mod partial_delta_promotion_tests {
         let unknown = TextureId::Managed(2);
         let mut mirrors = FxHashMap::default();
         mirrors.insert(known, image(2, 2, Color32::BLACK));
-        let out = promote_partial_deltas(
+        let out = promote(
             &mut mirrors,
             &[
                 (unknown, ImageDelta::partial([0, 0], image(1, 1, Color32::RED), TextureOptions::LINEAR)),

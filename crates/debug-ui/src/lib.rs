@@ -32,6 +32,10 @@
 
 pub mod panels;
 
+/// The egui this crate builds its frames with, so consumers can name the
+/// `FullOutput` that [`DebugUi::take_output`] hands them.
+pub use egui;
+
 use byroredux_core::ecs::Resource;
 use byroredux_core::settings::{SettingChange, SettingValue, SettingsRegistry};
 use egui_winit::winit;

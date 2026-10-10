@@ -302,7 +302,7 @@ impl ConsoleCommand for TexDumpCommand {
             &tex.pixels,
             tex.width,
             tex.height,
-            byroredux_renderer::image::ColorType::Rgba8,
+            byroredux_renderer::image::ExtendedColorType::Rgba8,
         ) {
             return CommandOutput::error(format!("tex.dump: PNG encode: {e}"));
         }

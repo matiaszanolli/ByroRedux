@@ -466,7 +466,7 @@ pub fn draw_game_menu(
             GameMenuPage::Dialogue => egui::vec2(760.0, 560.0),
         })
         .frame(
-            Frame::window(&ctx.style())
+            Frame::window(&ctx.global_style())
                 .fill(Color32::from_rgb(20, 23, 29))
                 .stroke(Stroke::new(1.0_f32, Color32::from_gray(75)))
                 .corner_radius(CornerRadius::same(10))
@@ -932,7 +932,7 @@ pub fn draw(
     .default_height(520.0)
     .resizable(true);
     let window = if studio.is_some() {
-        window.frame(Frame::window(&ctx.style()).fill(Color32::from_black_alpha(240)))
+        window.frame(Frame::window(&ctx.global_style()).fill(Color32::from_black_alpha(240)))
     } else {
         window
     };
@@ -1774,12 +1774,21 @@ fn ratio(used: u64, total: u64) -> f64 {
 mod tests {
     use super::*;
 
+    /// End the pass and drain its texture deltas: these tests read shapes
+    /// and widget state, never upload, and egui 0.36 debug-asserts that a
+    /// dropped `TexturesDelta` was drained.
+    fn end_pass(ctx: &Context) -> egui::FullOutput {
+        let mut output = ctx.end_pass();
+        output.textures_delta.clear();
+        output
+    }
+
     #[test]
     fn original_loading_tip_draws_without_debug_panels() {
         let ctx = Context::default();
         ctx.begin_pass(egui::RawInput::default());
         draw_loading_tip(&ctx, "An original game loading tip");
-        assert!(!ctx.end_pass().shapes.is_empty());
+        assert!(!end_pass(&ctx).shapes.is_empty());
     }
 
     #[test]
@@ -1787,7 +1796,7 @@ mod tests {
         let ctx = Context::default();
         ctx.begin_pass(egui::RawInput::default());
         draw_player_message(&ctx, "Unlocked with key\nTook 9 items");
-        let output = ctx.end_pass();
+        let output = end_pass(&ctx);
         assert!(
             !output.shapes.is_empty(),
             "gameplay feedback must produce renderable geometry"
@@ -1809,7 +1818,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        let output = ctx.end_pass();
+        let output = end_pass(&ctx);
         assert!(
             !output.shapes.is_empty(),
             "a gameplay prompt must generate renderable HUD geometry"
@@ -1827,7 +1836,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        let output = ctx.end_pass();
+        let output = end_pass(&ctx);
         assert!(!output.shapes.is_empty());
     }
 
@@ -1854,7 +1863,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        let output = ctx.end_pass();
+        let output = end_pass(&ctx);
         assert!(
             !output.shapes.is_empty(),
             "vitals bars must generate renderable HUD geometry"
@@ -1877,7 +1886,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        let output = ctx.end_pass();
+        let output = end_pass(&ctx);
         assert!(
             output.shapes.is_empty(),
             "show_vitals=false must suppress the bars entirely, not merely their fill"
@@ -1900,10 +1909,10 @@ mod tests {
         // egui sizes a newly opened area before painting its text contents
         // (same sizing pass the Use-button test below works around), so the
         // label geometry only appears on the second pass.
-        let _ = ctx.end_pass();
+        let _ = end_pass(&ctx);
         ctx.begin_pass(egui::RawInput::default());
         draw_hud(&ctx, &snapshot);
-        let output = ctx.end_pass();
+        let output = end_pass(&ctx);
         assert!(
             !output.shapes.is_empty(),
             "objective text must generate renderable HUD geometry"
@@ -1920,7 +1929,7 @@ mod tests {
         };
         let mut outputs = PanelOutputs::default();
         draw_game_menu(&ctx, &PanelSnapshot::default(), &mut state, &mut outputs);
-        let output = ctx.end_pass();
+        let output = end_pass(&ctx);
         assert!(!output.shapes.is_empty());
         assert!(!outputs.resume_game);
         assert!(!outputs.quit_game);
@@ -1956,7 +1965,7 @@ mod tests {
         };
         let mut outputs = PanelOutputs::default();
         draw_game_menu(&ctx, &snapshot, &mut state, &mut outputs);
-        let output = ctx.end_pass();
+        let output = end_pass(&ctx);
         assert!(!output.shapes.is_empty());
         assert_eq!(state.selected_inventory_category, "All");
         assert_eq!(state.selected_inventory_index, Some(0));
@@ -1994,10 +2003,10 @@ mod tests {
         ctx.begin_pass(egui::RawInput::default());
         draw_game_menu(&ctx, &snapshot, &mut state, &mut outputs);
         // egui sizes a newly opened window before painting its contents.
-        let _ = ctx.end_pass();
+        let _ = end_pass(&ctx);
         ctx.begin_pass(egui::RawInput::default());
         draw_game_menu(&ctx, &snapshot, &mut state, &mut outputs);
-        let frame = ctx.end_pass();
+        let frame = end_pass(&ctx);
         let pos = frame
             .shapes
             .iter()
@@ -2029,7 +2038,7 @@ mod tests {
             ..Default::default()
         });
         draw_game_menu(&ctx, &snapshot, &mut state, &mut outputs);
-        let _ = ctx.end_pass();
+        let _ = end_pass(&ctx);
         assert_eq!(
             outputs.inventory_actions,
             vec![InventoryAction::Consume {
@@ -2072,10 +2081,10 @@ mod tests {
         draw_game_menu(&ctx, &snapshot, &mut state, &mut outputs);
         // egui sizes a newly opened window before painting its contents;
         // the response text asserts on the painted second pass.
-        let _ = ctx.end_pass();
+        let _ = end_pass(&ctx);
         ctx.begin_pass(egui::RawInput::default());
         draw_game_menu(&ctx, &snapshot, &mut state, &mut outputs);
-        let frame = ctx.end_pass();
+        let frame = end_pass(&ctx);
         assert!(
             frame.shapes.iter().any(|shape| {
                 matches!(
@@ -2118,7 +2127,7 @@ mod tests {
             ..Default::default()
         });
         draw_game_menu(&ctx, &snapshot, &mut state, &mut outputs);
-        let _ = ctx.end_pass();
+        let _ = end_pass(&ctx);
         assert_eq!(
             outputs.dialogue_actions,
             vec![DialogueUiAction::SelectTopic {
@@ -2150,10 +2159,10 @@ mod tests {
         let mut outputs = PanelOutputs::default();
         ctx.begin_pass(egui::RawInput::default());
         draw_game_menu(&ctx, &snapshot, &mut state, &mut outputs);
-        let _ = ctx.end_pass();
+        let _ = end_pass(&ctx);
         ctx.begin_pass(egui::RawInput::default());
         draw_game_menu(&ctx, &snapshot, &mut state, &mut outputs);
-        let frame = ctx.end_pass();
+        let frame = end_pass(&ctx);
         let pos = frame
             .shapes
             .iter()
@@ -2185,7 +2194,7 @@ mod tests {
             ..Default::default()
         });
         draw_game_menu(&ctx, &snapshot, &mut state, &mut outputs);
-        let _ = ctx.end_pass();
+        let _ = end_pass(&ctx);
         assert!(
             outputs.resume_game,
             "Close rides the pause menu's shared resume path"
@@ -2230,7 +2239,7 @@ mod tests {
         let mut outputs = PanelOutputs::default();
 
         draw_game_menu(&ctx, &snapshot, &mut state, &mut outputs);
-        let output = ctx.end_pass();
+        let output = end_pass(&ctx);
 
         assert!(!output.shapes.is_empty());
         assert_eq!(state.selected_inventory_category, "Junk");

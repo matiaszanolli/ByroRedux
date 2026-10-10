@@ -148,14 +148,19 @@ impl LauncherApp {
 }
 
 impl eframe::App for LauncherApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    /// eframe calls this before every `ui` pass and also while the window is
+    /// hidden — the engine-polling half belongs here, so a launcher behind a
+    /// running engine still notices it exit.
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll_engine();
         if self.running.is_some() {
             // Keep polling while the engine owns the screen, but do not spin.
             ctx.request_repaint_after(std::time::Duration::from_millis(250));
         }
+    }
 
-        egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        egui::Panel::bottom("status").show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.label(&self.status);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -176,7 +181,7 @@ impl eframe::App for LauncherApp {
             });
         });
 
-        egui::CentralPanel::default().show(ctx, |ui| match self.screen.clone() {
+        egui::CentralPanel::default().show(ui, |ui| match self.screen.clone() {
             Screen::Library => self.draw_library(ui),
             Screen::Details(index) => self.draw_details(ui, index),
             Screen::Failure { code, tail } => self.draw_failure(ui, code, &tail),
