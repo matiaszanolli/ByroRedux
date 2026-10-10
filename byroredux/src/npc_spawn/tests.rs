@@ -613,26 +613,24 @@ fn race_skeletons_match_authored_paths_on_real_skyrim_data() {
 #[test]
 fn body_paths_kf_era_match_each_games_archive() {
     // FO3/FNV: upperbody + the two split hands.
-    for game in [GameKind::Fallout3NV] {
-        let paths = humanoid_body_paths(game, Gender::Male, false);
-        assert_eq!(
-            paths.len(),
-            3,
-            "{game:?} should ship upperbody + 2 hands, got {paths:?}",
-        );
-        assert!(
-            paths.iter().any(|p| p.ends_with("upperbody.nif")),
-            "{game:?} missing upperbody: {paths:?}",
-        );
-        assert!(
-            paths.iter().any(|p| p.ends_with("lefthand.nif")),
-            "{game:?} missing lefthand: {paths:?}",
-        );
-        assert!(
-            paths.iter().any(|p| p.ends_with("righthand.nif")),
-            "{game:?} missing righthand: {paths:?}",
-        );
-    }
+    let paths = humanoid_body_paths(GameKind::Fallout3NV, Gender::Male, false);
+    assert_eq!(
+        paths.len(),
+        3,
+        "FO3/FNV should ship upperbody + 2 hands, got {paths:?}",
+    );
+    assert!(
+        paths.iter().any(|p| p.ends_with("upperbody.nif")),
+        "FO3/FNV missing upperbody: {paths:?}",
+    );
+    assert!(
+        paths.iter().any(|p| p.ends_with("lefthand.nif")),
+        "FO3/FNV missing lefthand: {paths:?}",
+    );
+    assert!(
+        paths.iter().any(|p| p.ends_with("righthand.nif")),
+        "FO3/FNV missing righthand: {paths:?}",
+    );
     // Oblivion: its own four-part table (verified against
     // `Oblivion - Meshes.bsa`; the archive ships no `*lefthand.nif`).
     assert_eq!(

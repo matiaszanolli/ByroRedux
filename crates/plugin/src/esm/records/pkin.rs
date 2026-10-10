@@ -221,7 +221,7 @@ mod tests {
         let subs = vec![
             edid("PackIn_Filtered"),
             cnam(0x0010_1234),
-            sub(b"FLTR", b"\\lights\\\0".to_vec()),
+            sub(b"FLTR", &b"\\lights\\\0"[..]),
         ];
         let rec = parse_pkin(0x0055_0010, &subs, &None);
         assert_eq!(rec.contents, vec![0x0010_1234]);
@@ -242,7 +242,7 @@ mod tests {
         // #5493 — real-shape payload: a NUL-terminated filter path.
         let subs = vec![
             edid("PackIn_FltrOnly"),
-            sub(b"FLTR", b"SetDressing\\IndustrialMachines\\\0".to_vec()),
+            sub(b"FLTR", &b"SetDressing\\IndustrialMachines\\\0"[..]),
         ];
         let rec = parse_pkin(0x0055_0011, &subs, &None);
         assert!(rec.contents.is_empty());
@@ -256,7 +256,7 @@ mod tests {
     fn parse_pkin_fltr_unterminated_decodes_whole_payload() {
         let subs = vec![
             edid("PackIn_TruncFltr"),
-            sub(b"FLTR", b"DummyObjects".to_vec()),
+            sub(b"FLTR", &b"DummyObjects"[..]),
         ];
         let rec = parse_pkin(0x0055_0012, &subs, &None);
         assert_eq!(rec.filter, "DummyObjects");

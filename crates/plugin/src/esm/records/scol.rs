@@ -324,7 +324,7 @@ mod tests {
     fn parse_scol_fltr_decodes_the_filter_path() {
         let subs = vec![
             edid("Filtered"),
-            sub(b"FLTR", b"DummyObjects\\\0".to_vec()),
+            sub(b"FLTR", &b"DummyObjects\\\0"[..]),
         ];
         let rec = parse_scol(0xABCD_0000, &subs, &None);
         assert_eq!(rec.filter, "DummyObjects\\");

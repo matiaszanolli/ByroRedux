@@ -1902,7 +1902,7 @@ fn wav_bytes(frames: usize) -> Vec<u8> {
     b.extend_from_slice(&16u16.to_le_bytes());
     b.extend_from_slice(b"data");
     b.extend_from_slice(&(data_len as u32).to_le_bytes());
-    b.extend(std::iter::repeat(0u8).take(data_len));
+    b.resize(b.len() + data_len, 0u8);
     b
 }
 
