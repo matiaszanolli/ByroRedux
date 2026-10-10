@@ -184,12 +184,28 @@ tempfile = "3"
 walkdir = "2.5"
 
 # Audio (M44 — 3D positional, reverb zones, streaming, attenuation curves)
-# Pinned to 0.10 — game-oriented Rust audio with built-in SpatialScene
-# (per-emitter listener-relative attenuation), reverb effect, and
-# streaming/static sound formats (WAV/OGG/MP3/FLAC). Fallback strategy
-# for CI/headless: AudioWorld holds an Option<AudioManager>; init
-# failure (no audio device) leaves it None and the ECS system no-ops.
-kira = { version = "0.10", features = ["wav", "ogg"] }
+# Game-oriented Rust audio with built-in SpatialScene (per-emitter
+# listener-relative attenuation), reverb effect, and streaming/static
+# sound formats. Fallback strategy for CI/headless: AudioWorld holds an
+# Option<AudioManager>; init failure (no audio device) leaves it None and
+# the ECS system no-ops.
+#
+# Defaults off, set listed explicitly: since 0.12 the format features are
+# Symphonia's 1:1 (a container feature no longer implies its codec — `wav`
+# needs `pcm`, `ogg` needs `vorbis`), and 0.12.2 added `cpal-realtime` +
+# `cpal-realtime-dbus` to the defaults, which link libdbus on Linux (a
+# build dependency CI does not install). This is the 0.10 default set:
+# the cpal backend plus WAV/PCM, OGG/Vorbis (vanilla SFX), MP3 (Oblivion
+# and FO3/FNV music) and FLAC.
+kira = { version = "0.12", default-features = false, features = [
+    "cpal",
+    "wav",
+    "pcm",
+    "ogg",
+    "vorbis",
+    "mp3",
+    "flac",
+] }
 
 # C++ interop
 cxx = "1"
