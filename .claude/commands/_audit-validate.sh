@@ -99,6 +99,7 @@ expand_braces() {
 
 stale_count=0
 checked_count=0
+pathspec_checked_count=0
 shopt -s nullglob
 # Audit skills now live in per-command subdirectories as
 # `.claude/commands/<name>/SKILL.md`; the two shared `_audit-*.md`
@@ -170,6 +171,21 @@ fenced_token_is_checkable() {
     return 0
 }
 
+# #5473 — can a whitespace-separated token lifted out of a backticked
+# `git log` command be checked as a pathspec? Flags (`--since=…`,
+# `--format='…'`), templates and globs name no one path; everything else
+# containing a `/` is a file or directory the command scopes to, and is
+# exactly the class that went stale when the #5092/#5311 splits renamed
+# `streaming.rs` / `world.rs` while a First-step pathspec kept naming the
+# old file (delta rule 2 then let the dimension be skimmed while its code
+# changed).
+pathspec_token_is_checkable() {
+    local t="$1"
+    [[ "$t" == -* ]] && return 1
+    [[ "$t" != */* ]] && return 1
+    fenced_token_is_checkable "$t"
+}
+
 # ---------------------------------------------------------------------------
 # `--selftest` — regression coverage for the skip rules (#3439).
 #
@@ -229,6 +245,25 @@ if [[ "${1:-}" == "--selftest" ]]; then
     expect_fenced ignore "brace list truncated mid-line" "byroredux/src/systems/{animation,"
     expect_fenced ignore "filename stem" "docs/audits/AUDIT_TECH_DEBT_"
 
+    # #5473 — the `git log` pathspec-token filter.
+    expect_spec() {
+        local want="$1" desc="$2" t="$3"
+        if pathspec_token_is_checkable "$t"; then got="check"; else got="ignore"; fi
+        if [[ "$got" != "$want" ]]; then
+            echo "SELFTEST FAIL: pathspec \`$t\` — expected $want, got $got ($desc)"
+            selftest_failures=$((selftest_failures + 1))
+        else
+            echo "ok: pathspec \`$t\` -> $got ($desc)"
+        fi
+    }
+    expect_spec check "file pathspec is checked" "byroredux/src/streaming.rs"
+    expect_spec check "directory pathspec is checked" "byroredux/src/streaming"
+    expect_spec check "brace list pathspec is checked" "crates/renderer/src/vulkan/{sync.rs,context}"
+    expect_spec ignore "flag is not a path" "--since=<date>"
+    expect_spec ignore "flag with quotes is not a path" "--format='%h %s'"
+    expect_spec ignore "separator is not a path" "--"
+    expect_spec ignore "bare word is not a pathspec" "world_setup.rs"
+
     if (( selftest_failures > 0 )); then
         echo "SELFTEST: $selftest_failures failure(s)."
         exit 1
@@ -239,6 +274,28 @@ fi
 
 for skill in "${skill_files[@]}"; do
     [[ -f "$skill" ]] || continue
+    # #5473 — pathspec tokens inside backticked `git log` commands. The
+    # extension-based extraction below only catches a path that STARTS a
+    # backtick span; a pathspec that is a LATER token inside a backticked
+    # command (`git log … -- byroredux/src/streaming.rs`) was never seen,
+    # so the split waves renamed files under live First-step pathspecs
+    # with this gate green.
+    while IFS=: read -r line_num span; do
+        span="${span#\`}"
+        span="${span%\`}"
+        [[ "$span" == "git log"* ]] || continue
+        for token in $span; do
+            pathspec_token_is_checkable "$token" || continue
+            while read -r p; do
+                should_skip "$p" && continue
+                pathspec_checked_count=$((pathspec_checked_count + 1))
+                if ! path_exists "$p"; then
+                    printf 'STALE PATHSPEC: %s:%s: %s\n' "$skill" "$line_num" "$p"
+                    stale_count=$((stale_count + 1))
+                fi
+            done < <(expand_braces "$token")
+        done
+    done < <(grep -noE '`git log[^`]*`' "$skill" || true)
     # Extract backticked tokens that look like file paths. The trailing
     # bracket-set must match a known source/doc extension to keep noise low.
     while IFS=: read -r line_num token; do
