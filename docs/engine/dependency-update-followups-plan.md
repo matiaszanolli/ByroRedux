@@ -21,9 +21,13 @@ throughout) — measured into
 Wave 2.3 landed as `10cddd22e`: egui-winit's unconditional Tab consumption no longer
 reaches the router when no egui surface is showing (`honour_egui_consumed` +
 `DebugUiState::captures_gameplay_input`), with truth-table and source-pin tests; the
-physical-key live A/B was not automatable on this GNOME session (XTEST keyboard does
-not reach Xwayland clients even with `_NET_ACTIVE_WINDOW` confirmed on the engine —
-probed with a self-owned X window), so one human Tab keypress is still owed. Wave 2.2
+XTEST keyboard route is dead on this GNOME session (events do not reach Xwayland
+clients even with `_NET_ACTIVE_WINDOW` confirmed on the engine — probed with a
+self-owned X window), but the live confirm completed 2026-10-10 via a `/dev/uinput`
+virtual keyboard (`input`-group path; kernel-level events bypass XTEST): Tab with no
+overlay opens the inventory (screenshot + world-input release + Escape re-capture),
+Tab with the F3 overlay open stays in egui (overlay retained, no inventory), and
+routing returns to gameplay once the overlay closes. Wave 2.2
 measured 2026-10-10 (FO4 Commonwealth `(0,0)` radius 1 `grid-cross`, 960 frames,
 rapier 0.36.1): the recurring per-crossing broad-phase hitch is **gone** — across 961
 physics frames, crossing registrations peak at 5.11 ms (210 proxies) and step peaks
