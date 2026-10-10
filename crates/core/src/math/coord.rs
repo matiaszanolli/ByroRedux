@@ -35,7 +35,7 @@ use glam::{Quat, Vec3};
 ///
 /// Sole source of truth post-`#1112` / TD3-202; pre-fix the literal
 /// `4096.0` appeared in cell_loader/water.rs, cell_loader/exterior.rs,
-/// cell_loader/spawn.rs, cell_loader/terrain.rs, streaming.rs, and
+/// cell_loader/spawn.rs, cell_loader/terrain.rs, the `streaming/` module, and
 /// crates/plugin/src/esm/cell/mod.rs, with at least one divergent
 /// bug-fix history (TD3-110 Z-flip sign disagreement).
 pub const EXTERIOR_CELL_UNITS: f32 = 4096.0;

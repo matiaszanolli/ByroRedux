@@ -320,7 +320,7 @@ pub(super) fn parse_import_and_merge(
     // only retains the returned `ImportedScene` (this loader's
     // `SceneImportCache`, unlike the cell loader's own `CachedNifImport`)
     // has nowhere else to source them from on a cache hit. Pre-fix, the
-    // two other `import_nif_lights` call sites (`streaming.rs`,
+    // two other `import_nif_lights` call sites (`streaming/pre_parse.rs`,
     // `cell_loader/references/import.rs`) meant every cell-loaded NIF's
     // lights spawned correctly, but a loose-loaded NIF (`cargo run --
     // <mesh>.nif`, and every skeleton/body/hand NPC-part load behind

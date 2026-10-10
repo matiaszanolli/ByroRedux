@@ -300,7 +300,8 @@ call `budget.try_take()`) on the identical shared wall-clock deadline.
 (`MeshRegistry::rebuild_geometry_ssbo`, `crates/renderer/src/mesh.rs:1004-1083`,
 calling `build_geometry_ssbo`, `mesh.rs:921-995`) is a single atomic Vulkan call
 with zero internal yield capability — the only surrounding logic
-(`WorldStreamingState::geometry_batch_in_progress`, `streaming.rs:719-729`,
+(`WorldStreamingState::geometry_batch_in_progress`, `streaming/mod.rs` —
+the cite predates the #5092 split,
 consulted at the sole streaming call site `app_frame.rs:168-182`)
 decides only whether the whole call fires *this frame*, never whether
 it can pause partway through a 600+ MiB copy. This is what the 1.50 s

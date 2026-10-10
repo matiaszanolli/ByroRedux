@@ -92,7 +92,7 @@ pub(crate) const LOD_LEVELS: [i32; 4] = [4, 8, 16, 32];
 /// thrash a whole band's worth of archive loads every step.
 ///
 /// One cell matches the streaming layer's existing hysteresis convention
-/// (`radius_unload == radius_load + 1`, `streaming.rs`) rather than
+/// (`radius_unload == radius_load + 1`, `streaming/`) rather than
 /// introducing a second, unrelated margin.
 pub(crate) const LOD_BAND_HYSTERESIS_CELLS: i32 = 1;
 

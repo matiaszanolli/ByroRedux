@@ -425,7 +425,7 @@ pub struct PlacedRef {
     ///
     /// Not consumed anywhere yet — the engine's only "persistent" concept
     /// today is the worldspace-level persistent CELL
-    /// (`byroredux/src/streaming.rs`), not per-REFR group membership. This
+    /// (`byroredux/src/streaming/`), not per-REFR group membership. This
     /// is the placement metadata a future streaming system (what stays
     /// resident across cell transitions) and a save system (what must be
     /// distinguished on restore) will need. Previously discarded entirely

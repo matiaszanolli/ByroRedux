@@ -209,7 +209,7 @@ as a monolith.
   — explicit `match game` on each record's DATA/DNAM layout.
 - `WTHR` Skyrim split ([`records/weather.rs:278`](../../crates/plugin/src/esm/records/weather.rs#L278))
   — `if matches!(game, GameKind::Skyrim) { return parse_wthr_skyrim(...); }`.
-- `NPC_` Oblivion ATTR/DNAM/VNAM/PNAM/UNAM/XNAM ([`records/actor/mod.rs`](../../crates/plugin/src/esm/records/actor/mod.rs))
+- `NPC_` Oblivion ATTR/DNAM/VNAM/PNAM/UNAM/XNAM ([`records/actor/npc.rs`](../../crates/plugin/src/esm/records/actor/npc.rs))
   — `is_oblivion` cached, used per sub-record.
 
 **Where `GameKind` is completely absent (and should be present):**
@@ -238,9 +238,9 @@ as a monolith.
 - REFR DATA ([`cell/walkers.rs:460`](../../crates/plugin/src/esm/cell/walkers.rs#L460))
   — assumes uniform 24-byte position+rotation across all games. Oblivion
   trailing fields (if any) not validated.
-- `RACE` DATA ([`records/actor/mod.rs`](../../crates/plugin/src/esm/records/actor/mod.rs))
+- `RACE` DATA ([`records/actor/race.rs`](../../crates/plugin/src/esm/records/actor/race.rs))
   — **fixed since this survey was written.** A dedicated Skyrim arm
-  (`records/actor/mod.rs:1225`, gated on `GameKind::Skyrim` + `len` of 128 or
+  (`records/actor/race.rs:401`, gated on `GameKind::Skyrim` + `len` of 128 or
   164) now exists alongside the Oblivion/FO3/FNV 36-byte arm, verified
   byte-for-byte against vanilla `Skyrim.esm` (2026-08-12).
 

@@ -1101,7 +1101,7 @@ mod tests {
     #[test]
     fn no_band_reaches_inside_the_streaming_hysteresis_boundary() {
         let radius_load = 5;
-        let radius_unload = radius_load + 1; // streaming.rs's hysteresis rule
+        let radius_unload = radius_load + 1; // streaming's hysteresis rule (streaming/mod.rs)
                                              // Offset from a quad corner so a level-4 quad lands at exactly
                                              // `radius_unload`: from (2,0), quad (8, 0) is 6 cells out. At an
                                              // exact corner the two gatings are indistinguishable (4-aligned

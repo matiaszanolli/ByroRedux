@@ -116,7 +116,7 @@ pub use transition::{PendingCellTransition, QueueDoorTransitionError, QueuedDoor
 pub(crate) use transition::clear_current_exterior_identity;
 
 // Re-exports — keep the existing `crate::cell_loader::FOO` call sites in
-// main.rs / streaming.rs / commands.rs working without further changes.
+// main.rs / streaming/ / commands.rs working without further changes.
 //
 // #3891 — these used to carry a blanket `#[allow(unused_imports)]`
 // justified by "several only show up in external crates (tests, other

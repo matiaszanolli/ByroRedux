@@ -138,7 +138,7 @@ second target, for two-target procedures like Escort-someone-to-someone)
 is **not parsed** — Escort's own v0 runtime (§9) only ever escorts one
 actor, so no implemented procedure needs it yet.
 `NpcRecord.ai_packages: Vec<u32>`
-(`crates/plugin/src/esm/records/actor/mod.rs:190-191`, from `PKID`
+(`crates/plugin/src/esm/records/actor/npc.rs:237`, from `PKID`
 sub-records) holds the NPC's package list in priority order.
 
 ## 4. Package selection: narrower than "priority stack" suggests

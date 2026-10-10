@@ -40,7 +40,7 @@ use crate::parsed_nif_cache::ParsedNifCache;
 /// route through this one function rather than building the key
 /// inline. Before the fix, the synchronous REFR loader
 /// (`references/synth_child.rs`) prefixed `meshes\` before lowercasing
-/// while the exterior-streaming loader (`streaming.rs`) only
+/// while the exterior-streaming loader (`streaming/`) only
 /// lowercased — so the same asset landed under two different keys,
 /// was parsed and imported twice, and cache-hit telemetry undercounted
 /// reuse. Idempotent: re-applying it to an already-canonical key (e.g.

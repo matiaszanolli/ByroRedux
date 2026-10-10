@@ -66,7 +66,9 @@ crates/physics/src/
 ├── config.rs      ContactConfig resource — TriMesh flags, contact skin, KCC offset
 ├── convert.rs     collision_shape_to_parts + pose_from_trs (engine TRS → Rapier Pose)
 ├── components.rs  RapierHandles (body + collider) + CharacterController (M28.5)
-├── world.rs       PhysicsWorld resource + KCC move_character / cast_ray_down helpers
+├── world/         PhysicsWorld resource + KCC move_character / cast_ray_down
+│   │              helpers (#5311: mod.rs / queries.rs / recovery.rs)
+│   │              (move_character lives in world/queries.rs)
 └── sync.rs        physics_sync_system — the 4-phase per-tick bridge
 ```
 

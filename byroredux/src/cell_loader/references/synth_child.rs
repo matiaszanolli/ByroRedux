@@ -567,11 +567,11 @@ pub(super) fn spawn_synth_child(
     //
     // #3038 — the registry key MUST come from `canonical_model_path_key`,
     // not a bare `.to_ascii_lowercase()` of the (already meshes\-prefixed)
-    // `model_path` above. The exterior-streaming loader (`streaming.rs`)
+    // `model_path` above. The exterior-streaming loader (`streaming/`)
     // builds the same key from the same `canonical_model_path_key` call
     // against the raw `stat.model_path`; two independent inline
     // normalisations (this one used to prefix before lowercasing, the
-    // streaming one didn't) produced two keys for one asset. `streaming.rs`
+    // streaming one didn't) produced two keys for one asset. `streaming/`
     // never builds a key for `.spt` paths (#3735 — it skips them entirely
     // and leaves the whole resolution to this loader), so the `.spt`
     // suffix below cannot desync against that sibling.

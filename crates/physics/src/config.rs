@@ -3,7 +3,7 @@
 //!
 //! 1. `convert.rs::flatten_to_parts` (TriMesh flags)
 //! 2. `sync.rs::register_newcomers` (per-collider contact skin, defaults)
-//! 3. `world.rs::PhysicsWorld::move_character` (KCC offset, autostep mins)
+//! 3. `world/queries.rs`'s `PhysicsWorld::move_character` (KCC offset, autostep mins)
 //!
 //! Promoting these to a `Resource` keeps the rule "all TriMesh statics
 //! get the same contact-generation treatment" enforceable in one place.
@@ -18,7 +18,8 @@
 //! - `default_contact_skin_bu = 1.0` (Rapier collider margin — was 0
 //!   implicitly; now explicit so the narrow phase has a stable gap to
 //!   resolve from).
-//! - `kcc_offset_bu = 4.0` (was `controller.offset` at `world.rs:285`).
+//! - `kcc_offset_bu = 4.0` (was `controller.offset`; the cite predates the
+//!   #5311 world split).
 
 use byroredux_core::ecs::resource::Resource;
 
@@ -153,7 +154,7 @@ mod tests {
     #[test]
     fn default_contact_config_matches_previous_inline_values() {
         let c = ContactConfig::default();
-        assert_eq!(c.kcc_offset_bu, 4.0, "must match world.rs:285 value");
+        assert_eq!(c.kcc_offset_bu, 4.0, "must match the pre-split world.rs:285 value");
         assert!(c.default_contact_skin_bu >= 0.0);
         // #2884 — the damping dial is documented as the biggest "less floppy
         // than Havok" lever, so a stray non-zero default would change every
