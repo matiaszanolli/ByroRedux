@@ -661,6 +661,7 @@ pub(super) fn dof_effective_view_proj(
     render_origin: byroredux_core::math::Vec3,
     pinhole_vp: &[f32; 16],
 ) -> ([f32; 16], [f32; 3]) {
+    use byroredux_core::math::camera::rh::view::look_at_mat4;
     use byroredux_core::math::{Mat4, Vec3};
     if dof.aperture <= 0.0 || dof.focus_dist <= DOF_MIN_FOCUS_DIST {
         return (*pinhole_vp, camera_pos);
@@ -689,7 +690,7 @@ pub(super) fn dof_effective_view_proj(
     // All rays converge at the focal plane (render-relative).
     let focal_pt_rel = rel + dof.focus_dist * fwd;
 
-    let jittered_view = Mat4::look_at_rh(jittered_eye_rel, focal_pt_rel, up);
+    let jittered_view = look_at_mat4(jittered_eye_rel, focal_pt_rel, up);
     let proj = Mat4::from_cols_array(&dof.proj_mat);
     let jvp = (proj * jittered_view).to_cols_array();
     // The returned eye stays ABSOLUTE per this function's contract (the
@@ -2134,13 +2135,14 @@ pub(super) fn origin_corrected_prev_view_proj(
 #[cfg(test)]
 mod prev_view_proj_origin_tests {
     use super::{origin_corrected_prev_view_proj, rebase_model_matrix};
+    use byroredux_core::math::camera::rh::{proj::directx::perspective, view::look_at_mat4};
     use byroredux_core::math::{Mat4, Vec3, Vec4};
 
     /// Build a plausible camera-relative view-projection for an eye near
     /// the origin (the post-#markarth-precision convention).
     fn sample_vp(eye_rel: Vec3) -> Mat4 {
-        let proj = Mat4::perspective_rh(60f32.to_radians(), 16.0 / 9.0, 0.1, 300_000.0);
-        proj * Mat4::look_at_rh(eye_rel, eye_rel + Vec3::new(0.3, -0.1, -1.0), Vec3::Y)
+        let proj = perspective(60f32.to_radians(), 16.0 / 9.0, 0.1, 300_000.0);
+        proj * look_at_mat4(eye_rel, eye_rel + Vec3::new(0.3, -0.1, -1.0), Vec3::Y)
     }
 
     /// Identity case: no grid crossing → the matrix passes through
@@ -2208,10 +2210,11 @@ mod prev_view_proj_origin_tests {
 #[cfg(test)]
 mod dof_view_proj_tests {
     use super::{dof_effective_view_proj, DofView, DOF_MIN_FOCUS_DIST};
-    use byroredux_core::math::{Mat4, Vec3};
+    use byroredux_core::math::camera::rh::proj::directx::perspective;
+    use byroredux_core::math::Vec3;
 
     fn pinhole() -> [f32; 16] {
-        Mat4::perspective_rh(60f32.to_radians(), 16.0 / 9.0, 0.1, 300_000.0).to_cols_array()
+        perspective(60f32.to_radians(), 16.0 / 9.0, 0.1, 300_000.0).to_cols_array()
     }
 
     fn dof_view(aperture: f32, focus_dist: f32) -> DofView {

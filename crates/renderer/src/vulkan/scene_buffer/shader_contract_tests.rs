@@ -6196,7 +6196,8 @@ impl DepthFixture {
         let forward = Vec3::new(0.3, -0.05, -1.0).normalize();
         let right = forward.cross(Vec3::Y).normalize();
         let up = right.cross(forward).normalize();
-        let view = byroredux_core::math::Mat4::look_at_rh(eye, eye + forward, Vec3::Y);
+        let view =
+            byroredux_core::math::camera::rh::view::look_at_mat4(eye, eye + forward, Vec3::Y);
         let view_proj = camera.projection_matrix_with(mapping) * view;
         Self {
             view_proj,

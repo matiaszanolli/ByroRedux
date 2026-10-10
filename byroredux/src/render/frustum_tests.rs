@@ -1,14 +1,15 @@
 use super::camera::FrustumPlanes;
+use byroredux_core::math::camera::rh::{proj::directx::perspective, view::look_at_mat4};
 use byroredux_core::math::{Mat4, Vec3};
 
 fn perspective_vp() -> Mat4 {
-    let proj = Mat4::perspective_rh(
+    let proj = perspective(
         std::f32::consts::FRAC_PI_2, // 90° FOV
         1.0,
         0.1,
         1000.0,
     );
-    let view = Mat4::look_at_rh(Vec3::ZERO, Vec3::NEG_Z, Vec3::Y);
+    let view = look_at_mat4(Vec3::ZERO, Vec3::NEG_Z, Vec3::Y);
     proj * view
 }
 

@@ -3,6 +3,7 @@
 use crate::ecs::resource::Resource;
 use crate::ecs::sparse_set::SparseSetStorage;
 use crate::ecs::storage::{Component, EntityId};
+use crate::math::camera::rh::{proj::directx::perspective, view::look_at_mat4};
 use crate::math::{Mat4, Vec3};
 
 use super::transform::Transform;
@@ -275,7 +276,7 @@ impl Camera {
         } else {
             (self.near, self.far)
         };
-        let mut proj = Mat4::perspective_rh(self.fov_y, self.aspect, z_near, z_far);
+        let mut proj = perspective(self.fov_y, self.aspect, z_near, z_far);
         proj.col_mut(1).y *= -1.0;
         proj
     }
@@ -573,7 +574,7 @@ impl Camera {
         let position = transform.translation;
         let forward = transform.rotation * -Vec3::Z;
         let up = transform.rotation * Vec3::Y;
-        Mat4::look_at_rh(position, position + forward, up)
+        look_at_mat4(position, position + forward, up)
     }
 }
 
@@ -1313,7 +1314,7 @@ mod tests {
             NEAR_PLANE_BU_SCALE,
             DEFAULT_RENDER_DISTANCE,
         );
-        let mut expected = Mat4::perspective_rh(cam.fov_y, cam.aspect, cam.near, cam.far);
+        let mut expected = perspective(cam.fov_y, cam.aspect, cam.near, cam.far);
         expected.col_mut(1).y *= -1.0;
 
         assert_eq!(

@@ -13,6 +13,7 @@ use crate::cell_loader::{LoadedCellIndex, PendingCellTransition};
 use byroredux_core::ecs::components::Children;
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::{MeshHandle, Transform, World};
+use byroredux_core::math::camera::rh::view::look_at_mat4;
 use byroredux_core::math::{coord, Mat4, Quat, Vec3};
 use byroredux_plugin::esm::records::{
     first_backend_load_screen, LoadScreenRecord, LoadScreenTransform, LoadScreenVerdict,
@@ -704,7 +705,7 @@ impl ModelStage {
         if forward.cross(up).length_squared() < 1e-8 {
             up = Vec3::X;
         }
-        let view = Mat4::look_at_rh(self.camera.eye, self.camera.target, up);
+        let view = look_at_mat4(self.camera.eye, self.camera.target, up);
         let proj = Mat4::from_cols_array(&frame.proj_mat);
         frame.view_proj = (proj * view).to_cols_array();
         frame.camera_pos = self.camera.eye.to_array();

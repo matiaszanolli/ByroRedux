@@ -1652,8 +1652,9 @@ mod composite_params_layout_tests {
 
     #[test]
     fn aperture_projection_rejects_offscreen_and_behind_camera_planes() {
-        use byroredux_core::math::{Mat4, Vec3};
-        let projection = Mat4::perspective_rh(1.0, 1.5, 0.1, 1000.0);
+        use byroredux_core::math::camera::rh::proj::directx::perspective;
+        use byroredux_core::math::Vec3;
+        let projection = perspective(1.0, 1.5, 0.1, 1000.0);
         let mut volume = super::super::volumetrics::GpuFogVolume {
             inverse_rotation: [0.0, 0.0, 0.0, 1.0],
             half_extents_extinction: [1.0, 2.0, 0.5, 0.0],
@@ -1674,14 +1675,15 @@ mod composite_params_layout_tests {
 
     #[test]
     fn aperture_screen_bounds_preserve_brute_force_ray_hits() {
-        use byroredux_core::math::{Mat4, Quat, Vec2, Vec3};
+        use byroredux_core::math::camera::rh::{proj::directx::perspective, view::look_at_mat4};
+        use byroredux_core::math::{Quat, Vec2, Vec3};
         let camera = Vec3::new(4100.0, 20.0, 8190.0);
         let render_origin = Vec3::new(4096.0, 0.0, 8192.0);
         let relative_camera = camera - render_origin;
-        let view = Mat4::look_at_rh(relative_camera, relative_camera - Vec3::Z, Vec3::Y);
+        let view = look_at_mat4(relative_camera, relative_camera - Vec3::Z, Vec3::Y);
         let mut hits = 0;
         for y_flip in [1.0, -1.0] {
-            let mut projection = Mat4::perspective_rh(1.0, 1.5, 0.1, 1000.0);
+            let mut projection = perspective(1.0, 1.5, 0.1, 1000.0);
             projection.y_axis.y *= y_flip;
             let vp = projection * view;
             let inverse_vp = vp.inverse();

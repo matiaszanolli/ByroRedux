@@ -11,6 +11,7 @@
 //! per-entity sphere-vs-frustum culling.
 
 use byroredux_core::ecs::{ActiveCamera, Camera, Transform, World};
+use byroredux_core::math::camera::rh::view::look_at_mat4;
 use byroredux_core::math::{Mat4, Vec3, Vec4};
 
 /// 6-plane camera frustum, normalized so a plane-distance comparison
@@ -182,7 +183,7 @@ pub(super) fn assemble_camera(world: &World) -> CameraView {
         let o = byroredux_renderer::vulkan::scene_buffer::snap_render_origin(cam_pos);
         render_origin = o;
         let eye_rel = cam_pos - o;
-        let vp_rel = proj_mat * Mat4::look_at_rh(eye_rel, eye_rel + cam_forward, cam_up);
+        let vp_rel = proj_mat * look_at_mat4(eye_rel, eye_rel + cam_forward, cam_up);
         let frustum = FrustumPlanes::from_view_proj(vp_abs);
         (vp_rel.to_cols_array(), frustum, vp_abs)
     } else {
