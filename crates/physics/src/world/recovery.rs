@@ -66,12 +66,13 @@ fn body_needs_recovery(body: &RigidBody, snapshot: &DynamicBodySnapshot) -> bool
 /// to its own last valid pose, zeroed and DISABLED. A disabled body has no
 /// collider in the broad phase and is never simulated again unless someone
 /// re-enables it — the wrong terminal state for a corpse limb or a crate.
-/// So every one is re-enabled here; a dynamic one is then parked exactly like
-/// a body the displacement check caught (rolled back to the engine's
-/// snapshot when there is one, slept, articulation detached), and a
-/// kinematic one keeps rapier's rolled-back pose, which is the
-/// last-accepted-target behaviour [`PhysicsWorld::accept_keyframe_target`]
-/// gives a refused pose.
+/// A dynamic one is parked here exactly like a body the displacement check
+/// caught (rolled back to the engine's snapshot when there is one, slept,
+/// articulation detached); a kinematic one keeps rapier's rolled-back pose,
+/// which is the last-accepted-target behaviour
+/// [`PhysicsWorld::accept_keyframe_target`] gives a refused pose. Both stay
+/// disabled until the caller re-enables them after the next step (the
+/// `quarantine_cooldown` field doc says why it must not be sooner).
 pub(super) fn restore_invalid_dynamic_bodies(
     bodies: &mut RigidBodySet,
     multibody_joints: &mut MultibodyJointSet,
@@ -81,11 +82,6 @@ pub(super) fn restore_invalid_dynamic_bodies(
 ) -> (usize, Vec<RigidBodyHandle>) {
     let mut restored = 0;
     let mut detached_articulations: Vec<RigidBodyHandle> = Vec::new();
-    for &handle in quarantined {
-        if let Some(body) = bodies.get_mut(handle) {
-            body.set_enabled(true);
-        }
-    }
     // #5161 — the recovery log alone cannot say WHAT went insane. Record the
     // pre-restore state of the first few bodies per event (translation
     // magnitude + velocity magnitude + the body's registered label) so the

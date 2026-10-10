@@ -1853,6 +1853,72 @@ mod tests {
     /// covers rigid bodies only) and teleports its links out of the world in
     /// one step. The DOF clamp must cap it — and
     /// zero non-finite DOFs — before the next substep can integrate it.
+    /// An articulation that blows up while RESTING ON A FLOOR is quarantined
+    /// by rapier (its multibody solve goes non-finite), restored once, and
+    /// stays restored. The P1 smoke run caught the regression this pins: the
+    /// restore re-enabled the bodies in the same frame rapier disabled them,
+    /// so the disable was never processed, the bodies kept their stale
+    /// per-body solver state, and every later step that woke them through
+    /// their floor contact quarantined all of them again — 253 restores in
+    /// ten seconds on a Whiterun corpse, each one forfeiting the frame's
+    /// physics catch-up. In free space (no contact to wake them) the same
+    /// bug is invisible, hence the floor.
+    #[test]
+    fn a_quarantined_rig_resting_on_a_floor_recovers_once() {
+        let mut w = PhysicsWorld::new();
+        let cfg = ContactConfig::DEFAULT;
+        let floor = w.bodies.insert(
+            RigidBodyBuilder::fixed().translation(Vector::new(50.0, 1000.0 - 15.0 - 10.0, 0.0)),
+        );
+        w.colliders.insert_with_parent(
+            ColliderBuilder::cuboid(500.0, 10.0, 500.0).build(),
+            floor,
+            &mut w.bodies,
+        );
+        let spec = RagdollSpec {
+            bodies: vec![
+                ball_body(1, 0.0, 1000.0),
+                ball_body(2, 50.0, 1000.0),
+                ball_body(3, 100.0, 1000.0),
+            ],
+            constraints: vec![loose_ragdoll(0, 1), loose_ragdoll(1, 2)],
+        };
+        let rag = build_ragdoll(&mut w, &spec, &cfg).expect("sane ragdoll seed");
+        for _ in 0..30 {
+            w.wake();
+            w.step(PHYSICS_DT);
+        }
+        assert_eq!(w.recovery_counts().0, 0, "fixture: the rig settles cleanly");
+
+        // 150 rad/s on every DOF: rapier 0.36's multibody solve goes
+        // non-finite inside the step and quarantines all three links.
+        {
+            let (multibody, _) = w.multibody_joints.get_mut(rag.joints[0]).expect("live joint");
+            for v in multibody.generalized_velocity_mut().iter_mut() {
+                *v = 150.0;
+            }
+        }
+        for _ in 0..8 {
+            // Wake the rig every step, as a walking player brushing past
+            // does through the shared contact.
+            for &(_, h, _) in &rag.bodies {
+                w.bodies.get_mut(h).expect("live link").wake_up(true);
+            }
+            w.wake();
+            w.step(PHYSICS_DT);
+        }
+        assert_eq!(
+            w.recovery_counts().0,
+            1,
+            "one explosion, one recovery — a re-quarantine every woken step is the regression"
+        );
+        for &(_, h, _) in &rag.bodies {
+            let body = &w.bodies[h];
+            assert!(body.is_enabled(), "every link is back in the simulation");
+            assert!(body.translation().is_finite() && body.linvel().is_finite());
+        }
+    }
+
     #[test]
     fn exploding_articulation_dofs_are_capped_before_forward_kinematics() {
         let mut w = PhysicsWorld::new();

@@ -374,6 +374,16 @@ pub struct PhysicsWorld {
     /// the per-substep DOF walk below stays bounded by live joints instead
     /// of one `get_mut` miss per joint of every corpse ever built.
     pub(crate) articulation_joints: Vec<rapier3d::prelude::MultibodyJointHandle>,
+    /// Bodies rapier quarantined on the previous substep, parked by the
+    /// restore but still DISABLED. They are re-enabled only after the next
+    /// pipeline step has processed that disable: the disable drops the body
+    /// from the islands, the broad phase and the narrow phase, and the
+    /// re-enable rebuilds it from scratch. Re-enabling in the same frame
+    /// keeps its stale per-body solver state, and rapier re-quarantines it
+    /// on every step it is woken — measured live on a Whiterun corpse
+    /// (P1 smoke, 253 restores in ~10 s) and pinned by
+    /// `ragdoll.rs::a_quarantined_rig_resting_on_a_floor_recovers_once`.
+    quarantine_cooldown: Vec<RigidBodyHandle>,
 }
 
 impl PhysicsWorld {
@@ -427,6 +437,7 @@ impl PhysicsWorld {
             explosion_offences: std::collections::HashMap::new(),
             explosive_detaches_total: 0,
             articulation_joints: Vec::new(),
+            quarantine_cooldown: Vec::new(),
         }
     }
 
@@ -986,11 +997,27 @@ impl PhysicsWorld {
             &(),
         );
         self.accumulator -= PHYSICS_DT;
+        // The previous substep's quarantined bodies: this step processed
+        // their disable, so they come back now, parked (see the
+        // `quarantine_cooldown` field doc), and one more step is armed so the
+        // re-enable is processed even if the scene is otherwise asleep.
+        if !self.quarantine_cooldown.is_empty() {
+            for handle in std::mem::take(&mut self.quarantine_cooldown) {
+                if let Some(body) = self.bodies.get_mut(handle) {
+                    body.set_enabled(true);
+                    if body.is_dynamic() {
+                        body.sleep();
+                    }
+                }
+            }
+            self.wake();
+        }
         // Rapier quarantines a body whose pose or velocity went non-finite
         // during the step: rolled back to its last valid pose, zeroed and
         // DISABLED (no collisions, no simulation). The engine's containment
-        // is to park, not to disable — the restore below re-enables these
-        // and treats them as invalid alongside its own displacement check.
+        // is to park, not to disable — the restore below parks these like
+        // any invalid body, and they rejoin the simulation through
+        // `quarantine_cooldown` after the next step.
         let quarantine = self.pipeline.quarantine();
         let quarantined: Vec<RigidBodyHandle> = quarantine.bodies().to_vec();
         if !quarantine.colliders().is_empty() {
@@ -1007,6 +1034,12 @@ impl PhysicsWorld {
             &quarantined,
             &self.body_labels,
         );
+        if !quarantined.is_empty() {
+            self.quarantine_cooldown.extend_from_slice(&quarantined);
+            // The disable is processed by the next pipeline step; make sure
+            // one runs.
+            self.wake();
+        }
         if restored > 0 {
             log::error!(
                 "physics: restored {restored} dynamic body/bodies after an invalid solve; \
@@ -2348,8 +2381,9 @@ mod tests {
     /// Rapier 0.35+ quarantines a body whose state goes non-finite during
     /// the step: rolled back to its last valid pose, zeroed and DISABLED —
     /// no collider in the broad phase, never simulated again. The engine
-    /// parks instead, so the restore re-enables the body, sleeps it, and
-    /// counts it like any other recovery.
+    /// parks instead: the restore counts it like any other recovery and the
+    /// body comes back — enabled, asleep, at its pre-explosion pose — once
+    /// the next step has processed the disable (`quarantine_cooldown`).
     #[test]
     fn a_quarantined_body_is_re_enabled_and_parked() {
         let mut w = PhysicsWorld::new();
@@ -2372,6 +2406,14 @@ mod tests {
             &[h],
             "fixture: rapier must have quarantined the body"
         );
+        assert_eq!(w.recovery_counts(), (1, 1, 0));
+        assert!(
+            !w.bodies[h].is_enabled(),
+            "the body sits out exactly one step so rapier processes the disable"
+        );
+
+        // The cooldown armed a step even though nothing else is awake.
+        assert_eq!(w.step(PHYSICS_DT), 1);
         let body = &w.bodies[h];
         assert!(
             body.is_enabled(),
@@ -2380,7 +2422,7 @@ mod tests {
         assert!(body.is_sleeping(), "it is parked, not left awake");
         assert!(body_state_is_finite(body));
         assert!((body.translation() - start).length() < 1.0);
-        assert_eq!(w.recovery_counts(), (1, 1, 0));
+        assert_eq!(w.recovery_counts().0, 1, "and it is not quarantined again");
     }
 
     /// #4687(b) — after a restore, the query pipeline must reflect the
