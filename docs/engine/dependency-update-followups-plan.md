@@ -18,7 +18,23 @@ survives rapier 0.36 (recoveries 0, velocity clamps 3, explosive detaches 1 on
 `bip01 neck1`, corpse gate failed at 685.7 BU vs the 512 bound, `finite=true`
 throughout) — measured into
 [#4772](https://github.com/matiaszanolli/ByroRedux/issues/4772#issuecomment-6102913101).
-Wave 2.2 / 2.3 and Wave 3+ remain.
+Wave 2.3 landed as `10cddd22e`: egui-winit's unconditional Tab consumption no longer
+reaches the router when no egui surface is showing (`honour_egui_consumed` +
+`DebugUiState::captures_gameplay_input`), with truth-table and source-pin tests; the
+physical-key live A/B was not automatable on this GNOME session (XTEST keyboard does
+not reach Xwayland clients even with `_NET_ACTIVE_WINDOW` confirmed on the engine —
+probed with a self-owned X window), so one human Tab keypress is still owed. Wave 2.2
+measured 2026-10-10 (FO4 Commonwealth `(0,0)` radius 1 `grid-cross`, 960 frames,
+rapier 0.36.1): the recurring per-crossing broad-phase hitch is **gone** — across 961
+physics frames, crossing registrations peak at 5.11 ms (210 proxies) and step peaks
+at 8.05 ms (2 frames >2 ms total; removals cheap), against the 2026-09-28 52–60 ms
+per-operation MultiSAP hitch. The single surviving spike is the initial
+`collect/register=53.74ms (new=8460)` frame — one-shot collider construction for the
+9-cell readiness batch, not a broad-phase cost. Bench frame p50 16.71 / p95 28.78 /
+max 138.94 ms, wall 54.5 fps, zero SLOW FRAME lines (`SLOW_FRAME_WARN_MS` = 200 —
+it never fires for this class, so the zero is not by itself evidence). The 2026-09-28
+readiness metric (~1.27 s) has no emitting log line in the current build and was not
+re-measured. Wave 3+ remains.
 
 Waves are ordered by what they need, not by size:
 
