@@ -78,7 +78,7 @@ byro-texture-upscale = { path = "tools/texture-upscale" }
 # Vulkan / GPU
 ash = "0.38"
 ash-window = "0.13"
-# Bumped 0.27 → 0.28 to align with egui-ash-renderer 0.11.0's
+# Bumped 0.27 → 0.28 to align with egui-ash-renderer 0.13.0's
 # transitive pin (one allocator copy in the dep graph, not two).
 # 0.27 → 0.28 is a minor API bump — `Allocation::is_null` removed,
 # `Allocator::report` renamed to `generate_report`. The renderer
@@ -160,8 +160,9 @@ flate2 = "1"
 # undersized hint is a heap buffer overflow — UB that the `catch_unwind` in
 # `crates/bsa/src/ba2.rs` cannot intercept. Archive bytes are attacker-
 # controlled for modded content, so this must not be silently switchable by a
-# `default-features = false` elsewhere. This list is byte-identical to 0.11.6's
-# own `default`; changing it is a deliberate security decision.
+# `default-features = false` elsewhere. This list is byte-identical to 0.14.0's
+# own `default` (as it was to 0.11.6's); changing it is a deliberate security
+# decision.
 lz4_flex = { version = "0.14", default-features = false, features = [
     "std",
     "safe-encode",
@@ -219,12 +220,12 @@ cc = "1"
 # path / ECS query churn) shares one version.
 dhat = "0.3"
 
-# Host CPU/RAM sampling for the debug UI's `MetricsSnapshot`. Pinned to
-# 0.30 (last-stable pre-0.31 API churn) so the renderer crate doesn't
-# have to track sysinfo's per-release `global_cpu_info` /
-# `refresh_processes_specifics` rename treadmill. Refresh cadence is
-# user-driven (2 Hz default via `metrics_sample_system`); zero cost
-# when the system is throttled-out.
+# Host CPU/RAM sampling for the debug UI's `MetricsSnapshot`. 0.39
+# (2026-10 dependency refresh) with `default-features = false`: each
+# consumer enables only what it reads — `system` in the engine,
+# `disk` in tools/texture-upscale. Refresh cadence is user-driven
+# (2 Hz default via `metrics_sample_system`); zero cost when the
+# system is throttled-out.
 sysinfo = { version = "0.39", default-features = false }
 nvml-wrapper = "0.13"
 
@@ -239,15 +240,14 @@ ratatui = "0.30"
 crossterm = "0.29"
 
 # Embedded debug-UI overlay (Phase 4 of the debug-UI plan).
-# egui 0.33 + egui-winit 0.33 are the latest series that
-# egui-ash-renderer 0.11.0 pins through its transitive deps —
-# bumping our direct dep to 0.34 puts two copies of `egui` in the
-# graph and breaks the FullOutput pass-through. The
-# `gpu-allocator` feature lets egui-ash-renderer share our
-# `SharedAllocator` instead of standing up a parallel allocator.
+# egui 0.36 + egui-winit 0.36, the series egui-ash-renderer 0.13.0
+# builds against — one copy of `egui` in the graph, no FullOutput
+# pass-through split. The `gpu-allocator` feature lets
+# egui-ash-renderer share our `SharedAllocator` instead of standing
+# up a parallel allocator.
 egui = "0.36"
 # Launcher only. `glow` (OpenGL) rather than the wgpu backend: it must run
-# where Vulkan init fails, and the tree already carries wgpu 27 via Ruffle.
+# where Vulkan init fails, and the tree already carries wgpu 30 via Ruffle.
 eframe = { version = "0.36", default-features = false, features = ["glow", "default_fonts", "wayland", "x11"] }
 # Launcher only. `xdg-portal` avoids a GTK build dependency on Linux.
 rfd = { version = "0.17", default-features = false, features = ["xdg-portal"] }

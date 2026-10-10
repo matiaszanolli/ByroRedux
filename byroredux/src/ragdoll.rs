@@ -313,8 +313,11 @@ fn joint_from_imported(k: &ImportedJointKind) -> RagdollJointSpec {
 /// before anything reaches Rapier. A rejected activation builds nothing:
 /// the actor keeps its last animated pose (its keyframed bone bodies keep
 /// receiving — and the keyframe gate keeps refusing — the insane pushes)
-/// instead of an articulation whose first solve explodes and poisons the
-/// multi-SAP broad phase for the rest of the session.
+/// instead of an articulation whose first solve explodes and leaves its
+/// bones parked by the recovery nets for the rest of the session. (The
+/// bound dates from rapier 0.22, when the same explosion also panicked
+/// the multi-SAP broad phase; the recovery nets still contain the corrupt
+/// state under 0.36's BVH broad phase, just visibly.)
 pub fn activate_ragdoll(world: &World, actor: EntityId) -> Result<usize, String> {
     // 1. Build the world-seeded spec while holding the read guards, then
     //    drop them before taking the PhysicsWorld write lock.

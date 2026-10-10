@@ -98,8 +98,8 @@ pub const MAX_FRAMES_IN_FLIGHT: usize = 2;
 //      `MorphSlot::destroy` immediately free resources for pending unload
 //      victims, so their prior-frame users must have retired first.
 //  14. `egui_pass.rs`'s texture retirement (#4988) — `dispatch` hands the
-//      previous frame's `pending_free` to `free_textures`, and every
-//      `set_textures` full upload for an existing id (all of them since
+//      previous frame's `pending_free` to `free_texture`, and every
+//      `set_texture` full upload for an existing id (all of them since
 //      #4986 promotes partial deltas through `image_mirrors`) destroys the
 //      old image and frees its descriptor set immediately. Frame N-1's
 //      overlay draw may still sample either; the one-frame defer is only a

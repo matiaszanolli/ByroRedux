@@ -1253,12 +1253,16 @@ fn push_kinematic(world: &World) {
                 // A keyframed bone's ECS pose is animation-authored; when the
                 // animation goes insane-but-finite, the kinematic velocity
                 // Rapier derives from the target ((target − current)/dt)
-                // inflates the collider's predictive AABB past the multi-SAP
-                // grid boundary — a broad-phase panic, not a recoverable
-                // solve. The per-substep recovery cannot catch this: it
-                // snapshots Dynamic bodies only, and live actor bones are
-                // keyframed. Leaving the body at its last accepted pose is
-                // the same terminal state the other recovery paths produce.
+                // flings the bone across the world — not a recoverable
+                // solve. (Filed against rapier 0.22, where the same derived
+                // velocity inflated the collider's predictive AABB past the
+                // multi-SAP grid boundary and panicked the broad phase; the
+                // BVH broad phase no longer panics, but the derived velocity
+                // is still insane.) The per-substep recovery cannot catch
+                // this: it snapshots Dynamic bodies only, and live actor
+                // bones are keyframed. Leaving the body at its last accepted
+                // pose is the same terminal state the other recovery paths
+                // produce.
                 if !pw.accept_keyframe_target(body_handle, &target) {
                     continue;
                 }

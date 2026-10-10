@@ -22,13 +22,14 @@ const MAX_SANE_LIMIT: usize = 1 << 30; // 1 GiB
 /// [`MAX_SANE_LIMIT`]: wasmtime's `Config::max_wasm_stack` documents
 /// that when the configured wasm stack exceeds what's actually left on
 /// the calling thread's stack, the process **aborts** rather than
-/// trapping the guest (verified against the vendored wasmtime 47.0.3
+/// trapping the guest (verified against the vendored wasmtime 49.0.2
 /// source — this crate's pinned version) — the exact failure mode this
 /// issue is about.
 ///
-/// This crate has no engine consumer yet and doesn't spawn its own
-/// thread with a known fixed stack size (see `runtime.rs`), so there
-/// is no single "the host thread stack the runtime actually allocates"
+/// The engine consumer (`byroredux/src/extensions/systems.rs`) builds
+/// the host on the engine's own thread rather than a dedicated
+/// fixed-stack thread (see `runtime.rs`), so there is still no single
+/// "the host thread stack the runtime actually allocates"
 /// to derive an exact ceiling from today. Absent that, this uses the
 /// smallest commonly-documented default OS thread stack size (Windows:
 /// 1 MiB, both the process main thread and `CreateThread`'s default)
@@ -38,10 +39,10 @@ const MAX_SANE_LIMIT: usize = 1 << 30; // 1 GiB
 /// limitation of validating this in isolation from the calling thread,
 /// not a claim that a config passing this check can never abort.
 /// Going lower would be an equally unverified guess in the other
-/// direction with no more evidence behind it. When a real engine
-/// consumer lands, it should either spawn a dedicated thread with an
-/// explicit, generous stack size (Rust's own default spawned-thread
-/// stack is 2 MiB) and tighten this ceiling to match precisely, or
+/// direction with no more evidence behind it. If the consumer ever
+/// moves the host onto a dedicated thread with an explicit, generous
+/// stack size (Rust's own default spawned-thread
+/// stack is 2 MiB), tighten this ceiling to match precisely, or
 /// reject configs whose `max_wasm_stack_bytes` exceeds that thread's
 /// own known size directly.
 const MAX_WASM_STACK_BYTES_CEILING: usize = 1024 * 1024; // 1 MiB
@@ -65,7 +66,7 @@ pub struct SandboxConfig {
     /// #3051 (SAFE-2026-08-16-04) — this is the **only pre-emptive bound on
     /// compilation cost** the runtime has, and it is deliberately checked
     /// before the bytes reach `Component::new` (pinned by
-    /// `component_byte_limit_is_checked_before_compilation`). Wasmtime 47.0.3
+    /// `component_byte_limit_is_checked_before_compilation`). Wasmtime 49.0.2
     /// exposes no compile-time fuel, deadline, or cancellation — its
     /// `PoolingAllocationConfig::max_*_per_component` knobs bound
     /// *instantiation*, not compilation — so an in-size component structured

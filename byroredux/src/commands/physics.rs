@@ -201,9 +201,12 @@ impl ConsoleCommand for PhysStatsCommand {
         let (recoveries_total, bodies_restored_last_frame, parked) = pw.recovery_counts();
         // #5161 — keyframe refusals are the keyframed-bone counterpart of the
         // recovery counters above: insane animation-authored targets kept out
-        // of Rapier before they can panic the multi-SAP broad phase. Seed
-        // refusals are the ragdoll-attach counterpart: insane seeds rejected
-        // before `build_ragdoll` creates an articulation on them.
+        // of Rapier before they can fling the bone. (The bound dates from
+        // rapier 0.22, when the same targets panicked the multi-SAP broad
+        // phase; it still contains corrupt data under 0.36's BVH broad
+        // phase.) Seed refusals are the ragdoll-attach counterpart: insane
+        // seeds rejected before `build_ragdoll` creates an articulation on
+        // them.
         let keyframe_refused = pw.keyframe_targets_refused_total();
         let seed_refused = pw.ragdoll_seed_refusals_total();
         let velocity_clamps = pw.velocity_clamps_total();

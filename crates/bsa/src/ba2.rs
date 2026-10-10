@@ -842,18 +842,18 @@ fn decompress_chunk(
         Ba2Compression::Lz4Block => {
             // #2097 / LZ4-01 — `lz4_flex::block::decompress`'s own docs say it
             // "may panic" when the `min_uncompressed_size` hint undershoots the
-            // true decompressed size. Empirical fuzzing against the pinned
-            // 0.11.6 (constructed payloads, undersized from 1 byte down to 0)
-            // found zero panics.
+            // true decompressed size. Empirical fuzzing (constructed payloads,
+            // undersized from 1 byte down to 0) found zero panics on the
+            // then-pinned 0.11.6, and the behavioural test below keeps
+            // checking the current pin on every run.
             //
-            // #3392 — that absence is a property of the `safe-decode` FEATURE,
-            // not of the pinned version: with it on, `decompress` resolves to
-            // `decompress_safe`, which allocates `vec![0; n]` and writes via a
-            // bounds-checked `SliceSink` under `forbid(unsafe_code)`, so an
-            // undersized hint is `Err(OutputTooSmall)` and the documented panic
-            // is structurally impossible. The feature is pinned on at
-            // `Cargo.toml`'s `lz4_flex` entry, which is the actual mitigation
-            // for the undersized-hint case — NOT this guard.
+            // #3392 — that absence is a property of the `safe-decode` FEATURE
+            // (pinned on at `Cargo.toml`'s `lz4_flex` entry, and still the
+            // default in 0.14.0), not of a version: with it on, an undersized
+            // hint comes back as `Err(OutputTooSmall)` — the behaviour the
+            // test pins — so the documented panic is not reachable on the
+            // shipped configuration. The feature is the actual mitigation for
+            // the undersized-hint case — NOT this guard.
             //
             // This `catch_unwind` is kept as cheap defence-in-depth for any
             // residual panic on the safe path (and for a future dependency bump
@@ -2190,9 +2190,10 @@ mod tests {
     /// come back as `Ok` or `Err`, never as an unwind through the caller.
     ///
     /// `lz4_flex::block::decompress` documents itself as "may panic" when the
-    /// hint undershoots the true decompressed size. On the pinned 0.11.6 it
-    /// does not — every case below returns normally — so this test cannot
-    /// fail today on behaviour alone. That is precisely why it is paired with
+    /// hint undershoots the true decompressed size. On the pinned 0.14.0
+    /// (as on 0.11.6 before it) it does not — every case below returns
+    /// normally — so this test cannot fail today on behaviour alone. That
+    /// is precisely why it is paired with
     /// [`lz4_decompress_is_panic_guarded`]: this one exercises the arm and
     /// documents the sizes that were probed, and that one is what actually
     /// fails if the guard is removed.
@@ -2211,7 +2212,7 @@ mod tests {
         // takes the decompress branch whenever `packed_size != 0`. Zero is the
         // most-undersized hint possible, i.e. exactly what this test exists to
         // probe, so excluding it omitted the boundary case. (The safe decoder
-        // handles it: `vec![0; 0]` + `SliceSink` → `Err(OutputTooSmall)`, which
+        // handles it: an undersized hint is `Err(OutputTooSmall)`, which
         // this arm maps to `InvalidData`.) No vanilla archive exercises it — a
         // scan of 19,656 v3 DX10 records found zero such chunks — but the
         // hostile-input case is the point.
@@ -2309,8 +2310,9 @@ mod tests {
     /// #2097 / LZ4-01 — pins that the LZ4 arm still routes through
     /// `catch_unwind`.
     ///
-    /// The behavioural guard above cannot fail on `lz4_flex 0.11.6`, because
-    /// that version simply does not panic on the inputs its own docs warn
+    /// The behavioural guard above cannot fail on the pinned
+    /// `lz4_flex 0.14.0` (nor on 0.11.6 before it), because those versions
+    /// simply do not panic on the inputs their own docs warn
     /// about. So the thing worth guarding is not the behaviour but the
     /// *defence*: delete the `catch_unwind` and this test fails, which is the
     /// only way this fix can be kept from silently regressing on a future

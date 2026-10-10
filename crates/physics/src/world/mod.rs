@@ -325,8 +325,11 @@ pub struct PhysicsWorld {
     bodies_parked_total: u64,
     /// Lifetime count of keyframe targets refused by
     /// [`Self::accept_keyframe_target`] (#5161) — insane-but-finite bone
-    /// transforms that would otherwise panic the multi-SAP broad phase or
-    /// park a live actor's bones out of melee reach. Surfaced via
+    /// transforms refused before they fling the bone (the recovery nets
+    /// would park it out of melee reach). Filed against rapier 0.22,
+    /// where the same transforms also panicked the multi-SAP broad
+    /// phase; the bound still catches corrupt data under 0.36's BVH
+    /// broad phase. Surfaced via
     /// [`Self::keyframe_targets_refused_total`] into `phys.stats`.
     keyframe_targets_refused_total: u64,
     /// Bodies already logged for a refused keyframe target. The refusal
@@ -1623,10 +1626,12 @@ mod tests {
 
     /// #5161 — a solver explosion's velocity is capped at the end of the
     /// substep that produced it, so the next substep's integration cannot
-    /// carry the body's AABB anywhere near the multi-SAP grid boundary; a
-    /// body that keeps exploding on the next substep is parked (zeroed
-    /// velocities, slept) instead of vibrating at the cap. The test
-    /// velocity sits in the clamp-only window — above the sanity cap but
+    /// carry the explosion forward; a body that keeps exploding on the
+    /// next substep is parked (zeroed velocities, slept) instead of
+    /// vibrating at the cap. (The cap predates the rapier 0.35
+    /// broad-phase rework, when an uncapped explosion also drove the
+    /// body's AABB into the multi-SAP grid boundary and panicked it.) The
+    /// test velocity sits in the clamp-only window — above the sanity cap but
     /// under the per-substep displacement the invalid-solve restore would
     /// otherwise claim first (20 000 < 100 000 ≤ 122 880 = 2048·60).
     #[test]
@@ -1693,8 +1698,10 @@ mod tests {
     /// through: NaN fails both the `<=` cap and the `>` rescale
     /// comparisons, so the pre-#5246 clamp counted it without writing
     /// anything — and one integration step later the NaN position reached
-    /// the broad phase, whose grid clamp turns NaN AABBs into corner-
-    /// clamped finite ones that poison the multi-SAP layers.
+    /// the broad phase and every query touching the body. (Under rapier
+    /// 0.22 the broad phase's grid clamp also turned NaN AABBs into
+    /// corner-clamped finite ones that poisoned the multi-SAP layers;
+    /// that clamp is gone since 0.35's BVH rework.)
     #[test]
     fn nan_velocities_are_zeroed_on_the_first_clamp() {
         let mut w = PhysicsWorld::new();
@@ -2285,8 +2292,10 @@ mod tests {
     /// live actor bone's ECS pose is animation-authored; when the animation
     /// emits an insane-but-finite transform, `push_kinematic` must refuse
     /// the target instead of letting Rapier derive an insane kinematic
-    /// velocity from it (whose predictive AABB trips the multi-SAP grid
-    /// bound — a panic the Dynamic-only substep recovery cannot intercept).
+    /// velocity from it — the Dynamic-only substep recovery cannot
+    /// intercept a keyframed bone. (Filed against rapier 0.22, where the
+    /// derived velocity's predictive AABB also tripped the multi-SAP grid
+    /// bound and panicked the broad phase.)
     #[test]
     fn accept_keyframe_target_refuses_insane_but_finite_poses() {
         let mut w = PhysicsWorld::new();

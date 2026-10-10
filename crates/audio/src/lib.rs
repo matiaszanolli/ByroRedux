@@ -174,7 +174,7 @@ const UNDERWATER_CUTOFF_HZ: f64 = 900.0;
 ///
 /// Deliberately NOT raised to a "beyond Nyquist" value to force transparency
 /// (#3179): kira computes `g = tan(pi * clamp(f_c/f_s, 0.0001, 0.5))`
-/// (`kira-0.10.8/src/effect/filter.rs`), so any cutoff at or above half the
+/// (`kira-0.12.5/src/effect/filter.rs`), so any cutoff at or above half the
 /// device rate pins the clamp at `0.5` and gives `tan(pi/2)` ~ 1.6e16, with
 /// `a1 = 1/(1 + g*(g+k))` collapsing to ~3.7e-33. That is a numerically
 /// degenerate filter, not a transparent one.
@@ -189,7 +189,7 @@ const ABOVE_WATER_CUTOFF_HZ: f64 = 20_000.0;
 /// should measure — inventing a plausible-sounding replacement trio
 /// would be exactly the failure this project's no-guessing rule exists to
 /// prevent. They also aren't kira's own `ReverbBuilder::default()`
-/// (`feedback: 0.9, damping: 0.1, stereo_width: 1.0` — kira 0.10.8), so
+/// (`feedback: 0.9, damping: 0.1, stereo_width: 1.0` — kira 0.12.5), so
 /// this was a deliberate choice, just an unrecorded one. Named here
 /// (unlike the bare literals they replace) purely so the next person
 /// tuning interior acoustics (#847) has a greppable, revisitable baseline
@@ -208,7 +208,7 @@ const REVERB_STEREO_WIDTH: f64 = 1.0;
 /// 70 BU/m, declared in `byroredux_core::lighting` and already the authority
 /// for physics and the renderer), so every `GlobalTransform.translation` that
 /// reaches this crate is in BU. kira is metre-scaled — most visibly its
-/// hardcoded `EAR_DISTANCE = 0.1` (`kira-0.10.8/src/track/sub.rs`), which is
+/// hardcoded `EAR_DISTANCE = 0.1` (`kira-0.12.5/src/track/sub.rs`), which is
 /// 10 cm of head width and would otherwise be 10 cm *of Bethesda unit*, i.e.
 /// 1.4 mm of world, collapsing the stereo image.
 ///
@@ -856,7 +856,7 @@ impl AudioWorld {
     /// reverb; `-6.0` is more pronounced; `0.0` is full wet (rare —
     /// the dry-too-wet ratio normally wants the wet attenuated).
     ///
-    /// **Limitation (#847):** kira 0.10's `with_send` is build-time
+    /// **Limitation (#847):** kira 0.12's `with_send` is build-time
     /// only on `SpatialTrackBuilder` — there is no
     /// `SpatialTrackHandle::set_send_volume`, so a level change
     /// cannot retro-apply to already-playing tracks. Long-running
@@ -1147,8 +1147,8 @@ fn update_underwater_filters(audio_world: &mut AudioWorld) {
 /// (third-person camera transition, fly-cam swap, save-load cycle)
 /// the existing handle's pose is updated rather than a fresh
 /// `add_listener` call. This is intentional: kira's
-/// `listener_capacity` is 8 (kira-0.10's manager settings cap),
-/// so a "clear on missing entity → re-add on respawn" simplification
+/// `listener_capacity` is 8 (`kira-0.12.5`'s `ManagerSettings`
+/// default), so a "clear on missing entity → re-add on respawn" simplification
 /// would burn through that capacity on a bursty
 /// debug-fly-cam-destroy-create loop and lock out future spawns.
 /// Future maintainers must keep the `listener` field sticky across
@@ -1617,9 +1617,10 @@ pub fn spawn_oneshot_at(
 
 /// Decode a fully-buffered audio blob into a `StaticSoundData`.
 ///
-/// `bytes` must own its data so kira's `Cursor<T: AsRef<[u8]> + Send +
-/// Sync + 'static>` requirement is satisfied — typically a `Vec<u8>`
-/// extracted from a Bethesda BSA via [`byroredux_bsa::BsaArchive::extract`].
+/// Takes an owned `Vec<u8>` — typically extracted from a Bethesda BSA
+/// via [`byroredux_bsa::BsaArchive::extract`] — though kira 0.12 relaxed
+/// `StaticSoundData::from_cursor` to `T: AsRef<[u8]> + Send + Sync` (no
+/// longer `'static`), since the data is fully decoded during the call.
 ///
 /// Format detection is automatic via symphonia's probe (kira pulls
 /// in symphonia with the `wav`, `ogg`, `mp3`, and `flac` features by

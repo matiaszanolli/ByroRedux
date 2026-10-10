@@ -41,9 +41,10 @@ use url::Url;
 use crate::avm2_host::{inject_into_parsed_movie, ScaleformHostObjectState};
 
 /// #4470 — normalize Starfield's Scaleform SWF dialect before Ruffle sees
-/// it. The pinned `swf` reader (`0dde9813`) rejects a `PlaceObject3` whose
-/// flags carry neither `MOVE` nor `HAS_CHARACTER` — "Invalid PlaceObject
-/// type" — while Scaleform's authoring emits exactly that form as a
+/// it. The pinned `swf` reader (`2edfd97d`) still rejects a `PlaceObject3`
+/// whose flags carry neither `MOVE` nor `HAS_CHARACTER` — "Invalid
+/// PlaceObject type" — while Scaleform's authoring emits exactly that form
+/// as a
 /// place-by-class-name record: byte-verified on the shipped
 /// `interface\hudmenu.swf`, all four PlaceObject3 records (nested in
 /// DefineSprites) carry flags `0x0824` = HAS_MATRIX | HAS_NAME |
@@ -54,8 +55,10 @@ use crate::avm2_host::{inject_into_parsed_movie, ScaleformHostObjectState};
 /// so no tag or stream length is rewritten. The four records degrade to
 /// Modify-at-empty-depth (inert on the first frames they appear in)
 /// instead of failing the whole parse — which is what unblocks menu
-/// loading; the class-instance placement itself remains unmodelled until
-/// an upstream re-pin (#4470 keeps tracking that).
+/// loading; the class-instance placement itself remains unmodelled. The
+/// reader was re-pinned to `2edfd97d` in the 2026-10 dependency refresh
+/// and `swf/src/read.rs` still rejects the neither-MOVE-nor-HAS_CHARACTER
+/// form there, so the shim stays (#4470 keeps tracking that).
 ///
 /// #5479 — the dialect shim owns the prepare path's one decode. On a CWS
 /// movie it inflates ONCE, walks the tags, and ALWAYS returns the full

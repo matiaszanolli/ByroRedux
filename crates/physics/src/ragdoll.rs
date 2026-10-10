@@ -37,9 +37,11 @@ use std::collections::VecDeque;
 /// Authored worldspace coordinates top out around ±3e5 BU, so a seed beyond
 /// [`SEED_SANE_ABS_BOUND_BU`] is corruption with certainty — the same
 /// argument as the keyframe-target bound in `world.rs`
-/// (`KEYFRAME_TARGET_SANE_BOUND_BU`), and the same ~2600× margin under
-/// rapier 0.22's multi-SAP grid boundary (≈2.68e11) that an insane pose
-/// trips through the collider's predictive AABB. The second failure class
+/// (`KEYFRAME_TARGET_SANE_BOUND_BU`). (The bound was sized under rapier
+/// 0.22 for a ~2600× margin under the multi-SAP grid boundary, ≈2.68e11,
+/// which an insane pose tripped through the collider's predictive AABB;
+/// that broad phase is gone since 0.35's BVH rework and the bound now
+/// stands on the corruption argument alone.) The second failure class
 /// is *relative*: bones planted millions of BU from their own actor root
 /// (the "million-unit bone coordinates despite correct actor-root
 /// placement" instability, slice doc §corpse) stay under the absolute bound
