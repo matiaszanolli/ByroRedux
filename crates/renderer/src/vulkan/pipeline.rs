@@ -31,9 +31,11 @@ pub fn load_shader_module(device: &ash::Device, spv: &[u8]) -> Result<vk::Shader
 
     let module = unsafe {
         // SAFETY: `device` is the live logical device; `create_info` borrows
-        // `code`, which outlives this call, and the SPIR-V was 4-byte aligned
-        // by the `chunks_exact(4)` decode above; the returned module is owned
-        // and destroyed by the caller.
+        // `code`, which outlives this call, and holds whole 32-bit words: the
+        // `assert!` above guarantees the byte length is a multiple of 4, so
+        // the `as_chunks::<4>()` decode consumed every byte into an owned,
+        // naturally aligned `Vec<u32>`; the returned module is owned and
+        // destroyed by the caller.
         device
             .create_shader_module(&create_info, None)
             .context("Failed to create shader module")?
