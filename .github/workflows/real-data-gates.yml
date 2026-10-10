@@ -109,7 +109,13 @@ jobs:
         include: ${{ fromJSON(needs.select.outputs.matrix) }}
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      # #5308 / #5478 — rust-toolchain.toml pins 1.96.0 and overrides
+      # this step inside the checkout; naming the same toolchain here
+      # keeps the version output truthful instead of installing an
+      # unused stable.
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.96.0"
       - uses: Swatinem/rust-cache@v2
       - name: Run the ${{ matrix.game }} corpus gates
         env:
@@ -158,7 +164,13 @@ jobs:
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      # #5308 / #5478 — rust-toolchain.toml pins 1.96.0 and overrides
+      # this step inside the checkout; naming the same toolchain here
+      # keeps the version output truthful instead of installing an
+      # unused stable.
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.96.0"
       - uses: Swatinem/rust-cache@v2
       - name: Run each parser crate's real-data suite
         env:

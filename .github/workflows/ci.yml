@@ -135,9 +135,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      # #5308 / #5478 — the toolchain comes from rust-toolchain.toml
+      # (1.96.0 + clippy); naming it here keeps the step's own version
+      # output and cache key honest instead of installing an unused
+      # stable.
+      - uses: dtolnay/rust-toolchain@master
         with:
-          components: clippy
+          toolchain: "1.96.0"
       - uses: Swatinem/rust-cache@v2
       - name: Install native build headers
         run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends libasound2-dev libvulkan-dev
@@ -219,7 +223,13 @@ jobs:
       BYRO_LOCK_ORDER_CHECK: 1
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      # #5308 / #5478 — rust-toolchain.toml pins 1.96.0 and overrides
+      # this step inside the checkout; naming the same toolchain here
+      # keeps the version output truthful instead of installing an
+      # unused stable.
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.96.0"
       - uses: Swatinem/rust-cache@v2
       - name: Install native build headers
         run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends libasound2-dev libvulkan-dev
@@ -314,7 +324,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      # #5308 / #5478 — rust-toolchain.toml pins 1.96.0 and overrides
+      # this step inside the checkout; naming the same toolchain here
+      # keeps the version output truthful instead of installing an
+      # unused stable.
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.96.0"
       - uses: Swatinem/rust-cache@v2
       - name: cargo test (dhat-heap)
         run: |
@@ -351,7 +367,13 @@ jobs:
       BYRO_LOCK_ORDER_CHECK: 1
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      # #5308 / #5478 — rust-toolchain.toml pins 1.96.0 and overrides
+      # this step inside the checkout; naming the same toolchain here
+      # keeps the version output truthful instead of installing an
+      # unused stable.
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.96.0"
       - uses: Swatinem/rust-cache@v2
 
       - name: Install Mesa lavapipe + Vulkan validation layers + xvfb
