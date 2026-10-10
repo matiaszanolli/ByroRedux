@@ -361,7 +361,11 @@ FO76 shares Starfield's DNAM decoder. Its distances are engine units, but its
 absorption triplet is per-metre (five vanilla records author Starfield's exact
 0.3 / 0.075 / 0.01), so `spatial_units::normalize` lifts that lane alone ÷70
 (#5169). Its fourth concentration lane is authored 0.16–75.7 — not a 0..1
-oceanness — and keeps the zero sentinel; what it controls is **OPEN**.
+oceanness — and keeps the zero sentinel; what it controls is **OPEN**. The
+three leading lanes (pigments) are authored 9e-5–0.52, not Starfield's 0–20,
+so they keep the zero sentinel too (`concentration_pigments_are_starfield_scale`,
+#5343) rather than inheriting Starfield's `/ 20` at an unmeasured scale; what
+they control is likewise **OPEN**.
 Its leading DNAM float is carried independently as `depth_amount`; xEdit's
 current Starfield definition names it `Depth Amount`, so it is not reused as
 an above-water fog distance. Creation-2 records retain the canonical fog

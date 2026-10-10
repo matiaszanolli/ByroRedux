@@ -1127,14 +1127,28 @@ fn resolve_water_noise_and_rain(
     // it passes through with only the canonical clamp. The zero sentinel
     // is preserved on every lane (0 / reference = 0).
     let [pigments @ .., oceanness] = rec.params.concentration;
-    for (dst, src) in mat.concentration.iter_mut().zip(pigments) {
-        if src.is_finite() && src > 0.0 {
-            *dst = (src / STARFIELD_WATER_CONCENTRATION_REFERENCE).clamp(0.0, 1.0);
+    if concentration_pigments_are_starfield_scale(game) {
+        for (dst, src) in mat.concentration.iter_mut().zip(pigments) {
+            if src.is_finite() && src > 0.0 {
+                *dst = (src / STARFIELD_WATER_CONCENTRATION_REFERENCE).clamp(0.0, 1.0);
+            }
         }
     }
     if concentration_lane3_is_oceanness(game) && oceanness.is_finite() && oceanness > 0.0 {
         mat.concentration[3] = oceanness.clamp(0.0, 1.0);
     }
+}
+
+/// Whether WATR DNAM's three leading concentration lanes are on Starfield's
+/// 0..20 pigment scale, so `/ STARFIELD_WATER_CONCENTRATION_REFERENCE` yields
+/// the canonical 0..1 fraction. FO76 shares the decoder but authors them at
+/// 9e-5–0.52 (census, #5169): dividing that by 20 applied Starfield's meaning
+/// at an unmeasured scale, and its pigment term reached `water.frag` as a
+/// 0–0.026 value nobody had decided. They keep the zero sentinel until a
+/// source settles what they control — the same rule lane 3 follows below
+/// (#5343). No other game authors them.
+fn concentration_pigments_are_starfield_scale(game: GameKind) -> bool {
+    matches!(game, GameKind::Starfield)
 }
 
 /// Whether WATR DNAM's fourth concentration lane is Starfield's 0..1
@@ -3958,7 +3972,14 @@ mod tests {
         let (sf, _, _, _, _) =
             resolve_water_material(&waters, Some(0x000A_000B), GameKind::Starfield);
         assert_eq!(sf.concentration[3], 1.0);
-        assert_eq!(fo76.concentration[..3], sf.concentration[..3]);
+        // #5343 — the pigment lanes are gated too: FO76 authors them at
+        // 9e-5–0.52, not Starfield's 0–20, so the Starfield division is not
+        // applied to them (zero sentinel), where Starfield still normalises.
+        assert_eq!(fo76.concentration[..3], [0.0, 0.0, 0.0]);
+        assert!(
+            sf.concentration[..3].iter().all(|lane| *lane > 0.0),
+            "fixture: the same record gives Starfield a pigment contribution"
+        );
     }
 
     #[test]
