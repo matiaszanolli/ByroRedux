@@ -16,6 +16,14 @@
 //! taking an already-decoded `SwfBuf` — so a menu open costs two inflates
 //! rather than four, and one tag walk rather than two.
 //!
+//! #5479 — the #4470 dialect shim broke that floor by inflating the raw
+//! bytes a third time (and returning `None` — the conforming-CWS common
+//! case — with the decode discarded). The shim now OWNS the prepare
+//! decode: it inflates once, walks, and always returns the uncompressed
+//! file on CWS input, so `swf::decompress_swf` takes the uncompressed
+//! copy path and `SwfDecodeCounts::decompresses: 1` counts the real
+//! work again.
+//!
 //! #3771 — this is an end-to-end number for `SwfPlayer::from_resource_provider`
 //! (the archive route, and the workspace's only production caller), not a
 //! crate-internal one: `profile` there is `Option<ScaleformProfile>` and
@@ -49,36 +57,49 @@ use crate::avm2_host::{inject_into_parsed_movie, ScaleformHostObjectState};
 /// loading; the class-instance placement itself remains unmodelled until
 /// an upstream re-pin (#4470 keeps tracking that).
 ///
-/// Returns `None` when nothing needed patching (including non-CWS/FWS
-/// containers), so the no-injection fast path can keep the original bytes.
+/// #5479 — the dialect shim owns the prepare path's one decode. On a CWS
+/// movie it inflates ONCE, walks the tags, and ALWAYS returns the full
+/// uncompressed file (FWS signature, length fixed, body byte-identical
+/// apart from any #4470 patches) — patched or not — so the caller's
+/// `swf::decompress_swf` takes the Compression::None copy path instead
+/// of a second whole-stream inflate. On FWS input there is nothing to
+/// inflate: patch in place and return `Some` only when a record
+/// changed, letting the caller decode the original bytes otherwise.
+/// `None` for everything this shim does not own — conforming FWS, ZWS
+/// (LZMA, left to the stock loader), and truncated/foreign containers.
 pub(crate) fn normalize_scaleform_dialect(swf_data: &[u8]) -> Option<Vec<u8>> {
     const DEFINE_SPRITE: u16 = 39;
     const PLACE_OBJECT_3: u16 = 70;
     if swf_data.len() < 8 {
         return None;
     }
-    let signature = &swf_data[0..3];
-    let (mut file, compressed): (Vec<u8>, bool) = match signature {
-        b"CWS" => ( decompress_zlib_after_header(swf_data)?, true),
-        b"FWS" => (swf_data.to_vec(), false),
+    let was_cws = &swf_data[0..3] == b"CWS";
+    let mut file = match &swf_data[0..3] {
+        b"CWS" => decompress_zlib_after_header(swf_data)?,
+        b"FWS" => swf_data.to_vec(),
         // ZWS (LZMA) is not something this shim touches; leave it to the
         // stock loader.
         _ => return None,
     };
     let tags_start = tag_stream_start(&file)?;
     let patched = patch_place_object3_stream(&mut file[tags_start..], DEFINE_SPRITE, PLACE_OBJECT_3);
-    if patched == 0 {
+    if patched > 0 {
+        log::info!(
+            "Scaleform dialect: set MOVE on {patched} PlaceObject3 record(s) with neither MOVE \
+             nor HAS_CHARACTER (Starfield hudmenu class-name places, #4470)"
+        );
+    } else if !was_cws {
+        // #5479 — an FWS movie needed no patch and no inflate happened
+        // here: `None` keeps the caller on the original bytes.
         return None;
     }
-    // Re-emit uncompressed: FWS signature + fixed total length. The tag
-    // stream's own bytes never moved.
-    file[0..3].copy_from_slice(b"FWS");
-    let len = file.len() as u32;
-    file[4..8].copy_from_slice(&len.to_le_bytes());
-    log::info!(
-        "Scaleform dialect: set MOVE on {patched} PlaceObject3 record(s) with neither          MOVE nor HAS_CHARACTER (Starfield hudmenu class-name places, #4470)"
-    );
-    let _ = compressed;
+    if was_cws {
+        // Re-emit uncompressed: FWS signature + fixed total length. The
+        // tag stream's own bytes never moved.
+        file[0..3].copy_from_slice(b"FWS");
+        let len = file.len() as u32;
+        file[4..8].copy_from_slice(&len.to_le_bytes());
+    }
     Some(file)
 }
 
@@ -185,6 +206,11 @@ pub(crate) struct PreparedMovie {
     /// pushes them in at `ScaleformNavigatorRuntime::create`), matching
     /// the non-fatal policy fetch-time and depth-≥1 failures already had.
     pub root_import_errors: Vec<String>,
+    /// #5479 — `decompresses` is the load path's real whole-stream
+    /// decode count: 1 = the dialect shim's zlib inflate (whose output
+    /// the `swf::decompress_swf` step consumes as an uncompressed copy)
+    /// or, on FWS/ZWS input, `swf::decompress_swf`'s own. It stopped
+    /// being a literal that hid the shim's extra inflate.
     pub decode_counts: SwfDecodeCounts,
 }
 
@@ -201,8 +227,13 @@ pub(crate) fn prepare_movie(
     expected_profile: Option<ScaleformProfile>,
     movie_url: Option<&Url>,
 ) -> Result<PreparedMovie, String> {
-    // #4470 — the dialect shim runs before every stage, so detection,
-    // injection and Ruffle's parse all see the same normalized bytes.
+    // #4470 / #5479 — the dialect shim runs before every stage, so
+    // detection, injection and Ruffle's parse all see the same
+    // normalized bytes. On a CWS movie the shim's inflate IS this
+    // path's one decode: it returns the uncompressed file, and the
+    // `swf::decompress_swf` below takes the Compression::None copy path
+    // instead of a second whole-stream inflate. (Ruffle's own decode
+    // inside `SwfMovieData::from_data` is outside this crate's reach.)
     let normalized = normalize_scaleform_dialect(swf_data);
     let swf_data: &[u8] = normalized.as_deref().unwrap_or(swf_data);
     let decompressed =
@@ -470,6 +501,46 @@ mod dialect_tests {
         // A short buffer and a non-SWF signature decline.
         assert!(normalize_scaleform_dialect(b"ZWS\x00\x00").is_none());
         assert!(normalize_scaleform_dialect(b"abc").is_none());
+    }
+
+    /// #5479 — the single-decode contract: a CONFORMING CWS movie (the
+    /// Skyrim/FO4 common case, where the pre-fix shim inflated, found
+    /// nothing and returned `None` with the decode discarded) now comes
+    /// back as `Some` carrying the uncompressed file, body
+    /// byte-identical to the original — so the caller's
+    /// `swf::decompress_swf` takes the Compression::None copy path and
+    /// the shim's inflate is the one counted decode. `SwfDecodeCounts::
+    /// decompresses: 1` therefore measures the real work again.
+    #[test]
+    fn conforming_cws_returns_its_decode_with_an_untouched_body() {
+        use std::io::Write;
+        let file = swf_with_tags(&tag(1, &[])); // ShowFrame — no PlaceObject3
+        let mut encoder =
+            flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder.write_all(&file[8..]).unwrap();
+        let body = encoder.finish().unwrap();
+        let mut cws = file[0..8].to_vec();
+        cws[0..3].copy_from_slice(b"CWS");
+        cws.extend_from_slice(&body);
+
+        let normalized =
+            normalize_scaleform_dialect(&cws).expect("a CWS decode must be handed back (#5479)");
+        assert_eq!(&normalized[0..3], b"FWS");
+        assert_eq!(
+            u32::from_le_bytes(normalized[4..8].try_into().unwrap()) as usize,
+            normalized.len()
+        );
+        assert_eq!(
+            &normalized[8..],
+            &file[8..],
+            "the uncompressed body must be byte-identical — the shim's \
+             decode feeds the prepare path unchanged (#5479)"
+        );
+        // And the reused decode parses to the same movie the original
+        // would have produced.
+        let decompressed = swf::decompress_swf(normalized.as_slice()).expect("copy-path decode");
+        let movie = swf::parse_swf(&decompressed).expect("parse");
+        assert_eq!(movie.tags.len(), 1, "ShowFrame (parse_swf consumes End)");
     }
 
     #[test]
