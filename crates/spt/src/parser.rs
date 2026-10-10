@@ -82,11 +82,11 @@ pub fn best_resync_shift(bytes: &[u8], stop: usize) -> (usize, u32) {
 /// Returns `Err(io::Error)` on five fatal conditions, in two kinds
 /// (matching what the readers actually raise — see `stream.rs`):
 /// `InvalidData` for the magic-header mismatch, `read_string_lp`'s
-/// > 64 KiB length-prefix cap, `read_payload`'s `count × stride`
-/// > 64 KiB array-size cap, and an unrecognized context-sensitive-kind
-/// arm; and `UnexpectedEof` for stream underflow during a
-/// partially-read payload (`SptStream::read_bytes`). All five discard
-/// the whole `SptScene`,
+/// 64-KiB length-prefix cap, `read_payload`'s 64-KiB
+/// `count × stride` array-size cap, and an unrecognized
+/// context-sensitive-kind arm; and `UnexpectedEof` for stream underflow
+/// during a partially-read payload (`SptStream::read_bytes`). All five
+/// discard the whole `SptScene`,
 /// including every `TagEntry` already decoded — unlike an in-range but
 /// unknown tag, which surfaces non-fatally via `SptScene::unknown_tags`
 /// and returns everything decoded so far, with the walker stopping

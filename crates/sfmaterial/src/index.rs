@@ -74,6 +74,10 @@ impl RefKind {
     }
 }
 
+/// Per-object `EmissiveSettingsComponent` capture:
+/// (Enabled, Settings.EmissiveTint rgb, Settings.LuminousEmittance).
+type EmissiveCaptureMap = std::collections::HashMap<u32, (Option<bool>, Option<[f32; 3]>, Option<f32>)>;
+
 /// One resolved material, the lookup result. Field names follow the
 /// spike's class tables; `None`/absent means the walk found no such
 /// component on any visited object.
@@ -152,8 +156,7 @@ pub struct MaterialIndex {
     effect_blend: std::collections::HashMap<u32, Option<String>>,
     /// #5283 — per object, the `EmissiveSettingsComponent` capture:
     /// (Enabled, Settings.EmissiveTint rgb, Settings.LuminousEmittance).
-    emissive:
-        std::collections::HashMap<u32, (Option<bool>, Option<[f32; 3]>, Option<f32>)>,
+    emissive: EmissiveCaptureMap,
     translucency: std::collections::HashMap<u32, (Option<bool>, Option<f32>)>,
 }
 

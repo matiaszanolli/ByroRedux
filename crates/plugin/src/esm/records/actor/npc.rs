@@ -712,7 +712,7 @@ fn parse_npc_core(
         // payload keeps its authored prefix; the missing entries stay 0
         // ("use the default template"), same as an absent sub.
         b"TPTA" => {
-            for (slot, raw) in sub.data.as_chunks::<4>().0.into_iter().take(13).enumerate() {
+            for (slot, raw) in sub.data.as_chunks::<4>().0.iter().take(13).enumerate() {
                 record.template_actors[slot] = remap_fid(u32::from_le_bytes(*raw), remap);
             }
         }

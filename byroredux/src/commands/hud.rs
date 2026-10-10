@@ -145,7 +145,7 @@ impl ConsoleCommand for HudHeadingCommand {
                 control.heading = Some(deg);
                 CommandOutput::line(format!("hud: compass pinned to {deg:.0}°"))
             }
-            _ => return CommandOutput::error("hud.heading: degrees 0-360 or 'auto'"),
+            _ => CommandOutput::error("hud.heading: degrees 0-360 or 'auto'"),
         }
     }
 }

@@ -220,13 +220,10 @@ fn scan_block(code: &[u8], version: u8, pool: &[String]) -> Avm1HostCallInventor
     let mut registers: Vec<StackValue> = vec![StackValue::Opaque; 256];
     let mut reader = Avm1Reader::new(code, version);
 
-    loop {
-        // A malformed or truncated body ends this block rather than the
-        // scan: one unreadable function must not cost a movie every call
-        // site outside it.
-        let Ok(action) = reader.read_action() else {
-            break;
-        };
+    // A malformed or truncated body ends this block rather than the
+    // scan: one unreadable function must not cost a movie every call
+    // site outside it.
+    while let Ok(action) = reader.read_action() {
         match action {
             Action::End => break,
             Action::ConstantPool(constants) => {

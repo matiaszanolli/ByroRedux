@@ -2001,7 +2001,6 @@ pub fn build_exterior_world_context(
 }
 
 /// The climate the center cell's regions carry (Oblivion's region→climate
-
 /// Load a single exterior cell at `(gx, gy)`.
 ///
 /// Stamps its own `cell_root` so the streaming system can unload it

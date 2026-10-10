@@ -770,8 +770,8 @@ fn select_active_package<'a>(
             // the declined one. The scan now continues past such a
             // package to the next eligible one; the fail-open policy is
             // unchanged for every other procedure.
-            && !(package.procedure_type == PROCEDURE_DIALOGUE
-                && !package_conditions_fully_modeled(&package.conditions))
+            && (package.procedure_type != PROCEDURE_DIALOGUE
+                || package_conditions_fully_modeled(&package.conditions))
     })
 }
 

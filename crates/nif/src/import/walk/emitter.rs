@@ -771,6 +771,10 @@ pub(crate) fn extract_emitter_rate(scene: &NifScene, controller_ref: BlockRef) -
 /// carries a depth bounded by `MAX_NIF_NODE_DEPTH`. Pre-fix a
 /// self-referencing `NiNode` recursed forever here: this walker had
 /// neither guard.
+// The satellite-walker signature shape (scene, cursor, transform, name,
+// props, pool, visited, depth, out) mirrors `walk_node_texture_effects`;
+// bundling any pair into a struct would not reduce what the caller holds.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn walk_node_particle_emitters_flat(
     scene: &NifScene,
     block_idx: usize,
