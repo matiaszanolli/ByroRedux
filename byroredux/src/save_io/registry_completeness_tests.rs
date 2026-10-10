@@ -565,6 +565,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         // RigidBodyData: FIXED — registered (#2379 / SAVE-D1-14), no
         // longer allowlisted here.
         ("SandboxBehavior", "active-package-derived config rebuilt at spawn and replaced by ambient_ai_package_system; only read by sandbox_seat_system"),
+        ("CreatureActor", "spawn-derived actor-kind marker stamped from the CREA record in prepare_creature_state (#5495); re-stamped on every spawn and only read by the M42 seat gates"),
         ("EatBehavior", "active-package-derived config rebuilt at spawn and replaced by ambient_ai_package_system; the seated pose it ends in carries via the registered Seated restore"),
         ("SleepBehavior", "active-package-derived config rebuilt at spawn and replaced by ambient_ai_package_system; the seated pose it ends in carries via the registered Seated restore"),
         ("EatSleepState", "one-shot walk destination re-resolved on the next tick after any load from the same PLDT anchor (#5391: a reference or the EditorPlacement resolve to the same point; near-current-location is where the restored actor stands); the arrival it guards is Seated, which is registered"),

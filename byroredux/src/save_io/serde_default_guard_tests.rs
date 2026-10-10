@@ -702,7 +702,11 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // `EventDataSlots` `serde(skip)`-ed, the reference slots' FormIds
     // saved) joined the saved registry as a NEW resource, so a restored
     // Story-Manager quest's `FromEvent` aliases re-fill after a load.
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xf796_4556_41fb_1f2c;
+    // #5495 — refreshed without a bump: the move is the new sibling
+    // `CreatureActor` marker in sandbox.rs (NOT_SAVED_BY_DESIGN), which
+    // changes no registered type's on-disk shape (same file-scope rule as
+    // the #3332 EscortBehavior note below).
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x705a_c800_c0a5_e5b2;
     // ---- earlier refresh history (kept for the false-positive record) ----
     // 2026-09-21 (W2.10 flip) — refreshed WITHOUT a major bump, the same
     // `VisibilityMask` tuple-struct sweep class as the two entries below:
