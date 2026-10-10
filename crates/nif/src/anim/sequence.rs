@@ -11,7 +11,11 @@ use crate::scene::NifScene;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-pub fn import_sequence(scene: &NifScene, seq: &NiControllerSequence) -> AnimationClip {
+pub fn import_sequence(
+    scene: &NifScene,
+    seq: &NiControllerSequence,
+    sampling: &mut super::bspline::BsplineSampling,
+) -> AnimationClip {
     let name = seq
         .name
         .as_deref()
@@ -44,6 +48,14 @@ pub fn import_sequence(scene: &NifScene, seq: &NiControllerSequence) -> Animatio
     let mut bool_channels = Vec::new();
     let mut texture_flip_channels = Vec::new();
 
+    // #5486 — this sequence's span bounds every interpolator it samples:
+    // a sequence with stop_time 1.0 must not pay 1e9-second B-spline
+    // resampling because a shared interpolator claims it. Only a finite
+    // span clamps; the FLT_MAX/FLT_MIN neutral defaults parse to
+    // non-finite differences and leave the interpolator span alone.
+    sampling.seq_span = (seq.start_time.is_finite() && seq.stop_time.is_finite())
+        .then_some((seq.start_time, seq.stop_time));
+
     for cb in &seq.controlled_blocks {
         let resolved_node_name = resolve_cb_string(scene, cb, CbString::NodeName);
         let resolved_ctrl_type = resolve_cb_string(scene, cb, CbString::ControllerType);
@@ -60,18 +72,18 @@ pub fn import_sequence(scene: &NifScene, seq: &NiControllerSequence) -> Animatio
             // that here so a controlled block whose type string resolves to
             // the classic name isn't silently dropped (LC-D5-03 / #1442).
             "NiTransformController" | "NiKeyframeController" => {
-                if let Some(mut channel) = extract_transform_channel(scene, cb) {
+                if let Some(mut channel) = extract_transform_channel(scene, cb, sampling) {
                     channel.priority = cb.priority;
                     channels.insert(Arc::clone(&node_name), channel);
                 }
             }
             "NiMaterialColorController" => {
-                if let Some(ch) = extract_color_channel(scene, cb) {
+                if let Some(ch) = extract_color_channel(scene, cb, sampling) {
                     color_channels.push((Arc::clone(&node_name), ch));
                 }
             }
             "NiAlphaController" => {
-                if let Some(ch) = extract_float_channel(scene, cb, FloatTarget::Alpha) {
+                if let Some(ch) = extract_float_channel(scene, cb, FloatTarget::Alpha, sampling) {
                     float_channels.push((Arc::clone(&node_name), ch));
                 }
             }
@@ -81,7 +93,7 @@ pub fn import_sequence(scene: &NifScene, seq: &NiControllerSequence) -> Animatio
                 }
             }
             "NiTextureTransformController" => {
-                if let Some(ch) = extract_texture_transform_channel(scene, cb) {
+                if let Some(ch) = extract_texture_transform_channel(scene, cb, sampling) {
                     float_channels.push((Arc::clone(&node_name), ch));
                 }
             }
@@ -94,7 +106,7 @@ pub fn import_sequence(scene: &NifScene, seq: &NiControllerSequence) -> Animatio
                     })
                     .map(|c| float_target_from_shader_controller(c.kind))
                     .unwrap_or(FloatTarget::ShaderFloat);
-                if let Some(ch) = extract_float_channel(scene, cb, target) {
+                if let Some(ch) = extract_float_channel(scene, cb, target, sampling) {
                     float_channels.push((Arc::clone(&node_name), ch));
                 }
             }
@@ -107,18 +119,18 @@ pub fn import_sequence(scene: &NifScene, seq: &NiControllerSequence) -> Animatio
             // same reasoning as `entry.rs`'s: no FloatTarget/consumer exists
             // for a camera-FOV animation yet.
             "BSMaterialEmittanceMultController" => {
-                if let Some(ch) = extract_float_channel(scene, cb, FloatTarget::EmissiveMultiple) {
+                if let Some(ch) = extract_float_channel(scene, cb, FloatTarget::EmissiveMultiple, sampling) {
                     float_channels.push((Arc::clone(&node_name), ch));
                 }
             }
             "BSRefractionStrengthController" => {
-                if let Some(ch) = extract_float_channel(scene, cb, FloatTarget::RefractionStrength)
+                if let Some(ch) = extract_float_channel(scene, cb, FloatTarget::RefractionStrength, sampling)
                 {
                     float_channels.push((Arc::clone(&node_name), ch));
                 }
             }
             "BSEffectShaderPropertyColorController" | "BSLightingShaderPropertyColorController" => {
-                if let Some(ch) = extract_shader_color_channel(scene, cb) {
+                if let Some(ch) = extract_shader_color_channel(scene, cb, sampling) {
                     color_channels.push((Arc::clone(&node_name), ch));
                 }
             }
@@ -129,7 +141,7 @@ pub fn import_sequence(scene: &NifScene, seq: &NiControllerSequence) -> Animatio
                 // referenced by the controller. See #262.
                 let target_idx = resolve_morph_target_index(scene, cb).unwrap_or(0);
                 if let Some(ch) =
-                    extract_float_channel(scene, cb, FloatTarget::MorphWeight(target_idx))
+                    extract_float_channel(scene, cb, FloatTarget::MorphWeight(target_idx), sampling)
                 {
                     float_channels.push((Arc::clone(&node_name), ch));
                 }
@@ -137,7 +149,7 @@ pub fn import_sequence(scene: &NifScene, seq: &NiControllerSequence) -> Animatio
             "NiUVController" => {
                 // UV scrolling — maps to UvOffsetU/V float channels.
                 // The default UV scroll is offset U (horizontal scroll).
-                if let Some(ch) = extract_float_channel(scene, cb, FloatTarget::UvOffsetU) {
+                if let Some(ch) = extract_float_channel(scene, cb, FloatTarget::UvOffsetU, sampling) {
                     float_channels.push((Arc::clone(&node_name), ch));
                 }
             }
@@ -155,7 +167,7 @@ pub fn import_sequence(scene: &NifScene, seq: &NiControllerSequence) -> Animatio
                         if source_paths.is_empty() {
                             continue;
                         }
-                        let keys = extract_float_channel(scene, cb, FloatTarget::ShaderFloat)
+                        let keys = extract_float_channel(scene, cb, FloatTarget::ShaderFloat, sampling)
                             .map(|ch| ch.keys)
                             .unwrap_or_default();
                         texture_flip_channels.push((

@@ -26,6 +26,10 @@ use std::sync::Arc;
 pub fn import_kf(scene: &NifScene) -> Vec<AnimationClip> {
     let mut clips = Vec::new();
     let mut seen_indices = std::collections::HashSet::new();
+    // #5486 — one aggregate B-spline key budget across every sequence:
+    // `import_kf` builds them all before the first is chosen, so
+    // per-sequence budgets would still multiply a hostile file's cost.
+    let mut sampling = super::bspline::BsplineSampling::new();
 
     // Path 1: NiControllerManager → follow sequence_refs.
     // This handles .nif files with embedded animations.
@@ -50,7 +54,7 @@ pub fn import_kf(scene: &NifScene) -> Vec<AnimationClip> {
                 continue;
             };
 
-            let clip = import_sequence(scene, seq);
+            let clip = import_sequence(scene, seq, &mut sampling);
             if clip_has_data(&clip) {
                 log::debug!(
                     "Imported sequence '{}' from NiControllerManager (cumulative={})",
@@ -73,7 +77,7 @@ pub fn import_kf(scene: &NifScene) -> Vec<AnimationClip> {
             continue;
         };
 
-        let clip = import_sequence(scene, seq);
+        let clip = import_sequence(scene, seq, &mut sampling);
         if clip_has_data(&clip) {
             clips.push(clip);
         }
@@ -367,6 +371,10 @@ pub fn import_embedded_animations(scene: &NifScene) -> Option<AnimationClip> {
         NiTextureTransformController,
     };
 
+    // #5486 — the embedded path has no owning sequence, so only the
+    // per-channel ceiling and this budget bound its B-spline sampling.
+    let mut sampling = super::bspline::BsplineSampling::new();
+
     let mut clip = AnimationClip {
         name: "embedded".to_string(),
         duration: 0.0,
@@ -464,7 +472,7 @@ pub fn import_embedded_animations(scene: &NifScene) -> Option<AnimationClip> {
                         .downcast_ref::<NiPreSplitDataController>()
                         .and_then(|c| c.base.interpolator_ref.index());
                     if let Some(idx) = interp_idx {
-                        if let Some(ch) = extract_float_channel_at(scene, idx, FloatTarget::Alpha) {
+                        if let Some(ch) = extract_float_channel_at(scene, idx, FloatTarget::Alpha, &mut sampling) {
                             clip.float_channels.push((Arc::clone(&node_name), ch));
                         }
                     }
@@ -495,8 +503,8 @@ pub fn import_embedded_animations(scene: &NifScene) -> Option<AnimationClip> {
                     let interp_idx = any
                         .downcast_ref::<NiPreSplitDataController>()
                         .and_then(|c| c.base.interpolator_ref.index());
-                    if let Some(channel) =
-                        interp_idx.and_then(|idx| extract_transform_channel_at(scene, idx))
+                    if let Some(channel) = interp_idx
+                        .and_then(|idx| extract_transform_channel_at(scene, idx, &mut sampling))
                     {
                         clip.channels.insert(Arc::clone(&node_name), channel);
                     }
@@ -512,8 +520,8 @@ pub fn import_embedded_animations(scene: &NifScene) -> Option<AnimationClip> {
                     let interp_idx = any
                         .downcast_ref::<NiSingleInterpController>()
                         .and_then(|c| c.interpolator_ref.index());
-                    if let Some(channel) =
-                        interp_idx.and_then(|idx| extract_transform_channel_at(scene, idx))
+                    if let Some(channel) = interp_idx
+                        .and_then(|idx| extract_transform_channel_at(scene, idx, &mut sampling))
                     {
                         clip.channels.insert(Arc::clone(&node_name), channel);
                     }
@@ -529,7 +537,7 @@ pub fn import_embedded_animations(scene: &NifScene) -> Option<AnimationClip> {
                         .downcast_ref::<BsNamedFloatInterpController>()
                         .and_then(|c| c.base.interpolator_ref.index());
                     if let Some(ch) = interp_idx.and_then(|idx| {
-                        extract_float_channel_at(scene, idx, FloatTarget::EmissiveMultiple)
+                        extract_float_channel_at(scene, idx, FloatTarget::EmissiveMultiple, &mut sampling)
                     }) {
                         clip.float_channels.push((Arc::clone(&node_name), ch));
                     }
@@ -541,7 +549,7 @@ pub fn import_embedded_animations(scene: &NifScene) -> Option<AnimationClip> {
                         .downcast_ref::<BsNamedFloatInterpController>()
                         .and_then(|c| c.base.interpolator_ref.index());
                     if let Some(ch) = interp_idx.and_then(|idx| {
-                        extract_float_channel_at(scene, idx, FloatTarget::RefractionStrength)
+                        extract_float_channel_at(scene, idx, FloatTarget::RefractionStrength, &mut sampling)
                     }) {
                         clip.float_channels.push((Arc::clone(&node_name), ch));
                     }
@@ -560,7 +568,7 @@ pub fn import_embedded_animations(scene: &NifScene) -> Option<AnimationClip> {
                     if let Some(c) = any.downcast_ref::<NiTextureTransformController>() {
                         let target = float_target_from_operation(c.operation);
                         if let Some(idx) = c.interpolator_ref.index() {
-                            if let Some(ch) = extract_float_channel_at(scene, idx, target) {
+                            if let Some(ch) = extract_float_channel_at(scene, idx, target, &mut sampling) {
                                 clip.float_channels.push((Arc::clone(&node_name), ch));
                             }
                         }
@@ -569,7 +577,7 @@ pub fn import_embedded_animations(scene: &NifScene) -> Option<AnimationClip> {
                 "NiMaterialColorController" => {
                     if let Some(c) = any.downcast_ref::<NiMaterialColorController>() {
                         if let Some(idx) = c.interpolator_ref.index() {
-                            let keys = resolve_color_keys_at(scene, idx);
+                            let keys = resolve_color_keys_at(scene, idx, &mut sampling);
                             if !keys.is_empty() {
                                 let target = color_target_from_target_color(c.target_color);
                                 clip.color_channels
@@ -583,7 +591,7 @@ pub fn import_embedded_animations(scene: &NifScene) -> Option<AnimationClip> {
                     if let Some(c) = any.downcast_ref::<BsShaderController>() {
                         let target = float_target_from_shader_controller(c.kind);
                         if let Some(idx) = c.base.interpolator_ref.index() {
-                            if let Some(ch) = extract_float_channel_at(scene, idx, target) {
+                            if let Some(ch) = extract_float_channel_at(scene, idx, target, &mut sampling) {
                                 clip.float_channels.push((Arc::clone(&node_name), ch));
                             }
                         }
@@ -595,7 +603,7 @@ pub fn import_embedded_animations(scene: &NifScene) -> Option<AnimationClip> {
                         .downcast_ref::<BsShaderController>()
                         .and_then(|c| c.base.interpolator_ref.index());
                     if let Some(idx) = interp_idx {
-                        let keys = resolve_color_keys_at(scene, idx);
+                        let keys = resolve_color_keys_at(scene, idx, &mut sampling);
                         if !keys.is_empty() {
                             clip.color_channels.push((
                                 Arc::clone(&node_name),
@@ -626,7 +634,7 @@ pub fn import_embedded_animations(scene: &NifScene) -> Option<AnimationClip> {
                             .interpolator_ref
                             .index()
                             .and_then(|idx| {
-                                extract_float_channel_at(scene, idx, FloatTarget::ShaderFloat)
+                                extract_float_channel_at(scene, idx, FloatTarget::ShaderFloat, &mut sampling)
                             })
                             .map(|ch| ch.keys)
                             .unwrap_or_default();
@@ -653,7 +661,7 @@ pub fn import_embedded_animations(scene: &NifScene) -> Option<AnimationClip> {
                 "NiLightColorController" => {
                     if let Some(c) = any.downcast_ref::<NiLightColorController>() {
                         if let Some(idx) = c.interpolator_ref.index() {
-                            let keys = resolve_color_keys_at(scene, idx);
+                            let keys = resolve_color_keys_at(scene, idx, &mut sampling);
                             if !keys.is_empty() {
                                 // target_color: 0 = Diffuse, 1 = Ambient
                                 // (per nif.xml line 1241 LightColor enum).
@@ -679,7 +687,7 @@ pub fn import_embedded_animations(scene: &NifScene) -> Option<AnimationClip> {
                             _ => unreachable!(),
                         };
                         if let Some(idx) = c.base.interpolator_ref.index() {
-                            if let Some(ch) = extract_float_channel_at(scene, idx, target) {
+                            if let Some(ch) = extract_float_channel_at(scene, idx, target, &mut sampling) {
                                 clip.float_channels.push((Arc::clone(&node_name), ch));
                             }
                         }

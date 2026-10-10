@@ -183,7 +183,7 @@ fn pre_10_1_0_106_sequence_yields_clamp_cycle_and_finite_duration() {
     );
 
     let scene = NifScene::default();
-    let clip = import_sequence(&scene, &seq);
+    let clip = import_sequence(&scene, &seq, &mut crate::anim::BsplineSampling::new());
 
     assert_eq!(
         clip.cycle_type,

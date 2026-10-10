@@ -174,7 +174,7 @@ fn extract_transform_channel_follows_blend_to_dominant_sub_interp() {
     let mut cb = dummy_controlled_block();
     cb.interpolator_ref = BlockRef(4); // point at the blend
 
-    let channel = extract_transform_channel(&scene, &cb)
+    let channel = extract_transform_channel(&scene, &cb, &mut super::super::bspline::BsplineSampling::new())
         .expect("blend transform interpolator must resolve to the dominant sub-interp");
     assert_eq!(
         channel.scale_keys.len(),
@@ -218,7 +218,7 @@ fn extract_transform_channel_emits_constant_pose_for_null_transform_data() {
     let mut cb = dummy_controlled_block();
     cb.interpolator_ref = BlockRef(0);
 
-    let channel = extract_transform_channel(&scene, &cb)
+    let channel = extract_transform_channel(&scene, &cb, &mut super::super::bspline::BsplineSampling::new())
         .expect("a posed NiTransformInterpolator must not drop the channel");
     assert_eq!(channel.translation_keys.len(), 1);
     assert_eq!(channel.rotation_keys.len(), 1);
@@ -265,7 +265,7 @@ fn posed_transform_interpolator_honours_flt_max_sentinel() {
     let mut cb = dummy_controlled_block();
     cb.interpolator_ref = BlockRef(0);
 
-    let channel = extract_transform_channel(&scene, &cb).expect("channel still emitted");
+    let channel = extract_transform_channel(&scene, &cb, &mut super::super::bspline::BsplineSampling::new()).expect("channel still emitted");
     assert!(
         channel.translation_keys.is_empty(),
         "FLT_MAX translation means no authored pose on that axis"
@@ -317,7 +317,7 @@ fn extract_transform_channel_emits_constant_pose_for_lookat() {
     let mut cb = dummy_controlled_block();
     cb.interpolator_ref = BlockRef(0);
 
-    let channel = extract_transform_channel(&scene, &cb)
+    let channel = extract_transform_channel(&scene, &cb, &mut super::super::bspline::BsplineSampling::new())
         .expect("NiLookAtInterpolator must emit a constant transform channel");
     assert_eq!(channel.translation_keys.len(), 1);
     assert_eq!(channel.rotation_keys.len(), 1);
@@ -388,7 +388,7 @@ fn extract_transform_channel_drops_flt_max_pose_axes_for_lookat() {
     let mut cb = dummy_controlled_block();
     cb.interpolator_ref = BlockRef(0);
 
-    let channel = extract_transform_channel(&scene, &cb)
+    let channel = extract_transform_channel(&scene, &cb, &mut super::super::bspline::BsplineSampling::new())
         .expect("FLT_MAX pose still produces an empty TransformChannel, not None");
     assert!(
         channel.translation_keys.is_empty(),
@@ -522,7 +522,7 @@ fn extract_transform_channel_keeps_authored_axes_when_translation_is_flt_max() {
     let mut cb = dummy_controlled_block();
     cb.interpolator_ref = BlockRef(0);
 
-    let channel = extract_transform_channel(&scene, &cb).expect("mixed pose channel");
+    let channel = extract_transform_channel(&scene, &cb, &mut super::super::bspline::BsplineSampling::new()).expect("mixed pose channel");
     assert!(channel.translation_keys.is_empty());
     assert_eq!(channel.rotation_keys.len(), 1);
     assert_eq!(channel.scale_keys.len(), 1);
@@ -587,7 +587,7 @@ fn extract_transform_channel_emits_path_keys_for_path_interpolator() {
     let mut cb = dummy_controlled_block();
     cb.interpolator_ref = BlockRef(1);
 
-    let channel = extract_transform_channel(&scene, &cb)
+    let channel = extract_transform_channel(&scene, &cb, &mut super::super::bspline::BsplineSampling::new())
         .expect("NiPathInterpolator must emit a translation channel from its NiPosData");
 
     // Three keys round-tripped from path data, Z-up → Y-up:
@@ -635,7 +635,7 @@ fn extract_transform_channel_returns_none_for_empty_path() {
     };
     let mut cb = dummy_controlled_block();
     cb.interpolator_ref = BlockRef(0);
-    assert!(extract_transform_channel(&scene, &cb).is_none());
+    assert!(extract_transform_channel(&scene, &cb, &mut super::super::bspline::BsplineSampling::new()).is_none());
 
     // Case 2 — empty NiPosData.
     let empty_pos = NiPosData {
@@ -659,7 +659,7 @@ fn extract_transform_channel_returns_none_for_empty_path() {
     };
     let mut cb = dummy_controlled_block();
     cb.interpolator_ref = BlockRef(1);
-    assert!(extract_transform_channel(&scene, &cb).is_none());
+    assert!(extract_transform_channel(&scene, &cb, &mut super::super::bspline::BsplineSampling::new()).is_none());
 }
 
 /// The resolver picks the item with the HIGHEST normalized_weight.

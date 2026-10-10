@@ -39,6 +39,92 @@ pub const BSPLINE_TRANS_STRIDE: usize = 3;
 pub const BSPLINE_ROT_STRIDE: usize = 4;
 pub const BSPLINE_SCALE_STRIDE: usize = 1;
 
+/// #5486 — per-channel sample ceiling: 30 Hz × 1 hour. #408's 1 M
+/// ceiling was sized for "usize::MAX slots" and let one interpolator
+/// with an authored-huge `stop_time` cost ~118 MiB per ~29-byte
+/// controlled block (~124 B of TQS keys per sample). Real animations
+/// top out at a few thousand samples even for the longest cinematics;
+/// an hour per channel is already ~400× that.
+pub const BSPLINE_MAX_SAMPLES_PER_CHANNEL: usize = 108_000;
+
+/// #5486 — aggregate B-spline key budget for one whole `import_kf`
+/// pass. Controlled blocks can all reference one shared interpolator,
+/// each producing its own channel, and `import_kf` builds every
+/// sequence before the first is chosen — so per-channel ceilings alone
+/// still allow a ~4 KB file to demand gigabytes. Once the budget is
+/// spent, further B-spline channels fall back to their static pose
+/// (with a warn) instead of allocating. 1 M keys ≈ 124 MB absolute
+/// worst case, ~10× the largest vanilla `.kf`.
+pub const BSPLINE_IMPORT_KEY_BUDGET: usize = 1_000_000;
+
+/// #5486 — per-import B-spline sampling context, threaded through the
+/// channel extractors. Owns the two aggregate bounds the per-channel
+/// ceiling cannot express: the owning sequence's span (a sequence with
+/// `stop_time = 1.0` must not pay for an interpolator that claims
+/// `1e9`) and the cross-sequence key budget.
+pub struct BsplineSampling {
+    /// Owning `NiControllerSequence`'s `[start, stop]`, intersected into
+    /// every interpolator span. `None` on the mesh-embedded controller
+    /// path, where no sequence exists and only the per-channel ceiling
+    /// applies.
+    pub seq_span: Option<(f32, f32)>,
+    remaining_keys: usize,
+    warned: bool,
+}
+
+impl Default for BsplineSampling {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl BsplineSampling {
+    pub fn new() -> Self {
+        Self {
+            seq_span: None,
+            remaining_keys: BSPLINE_IMPORT_KEY_BUDGET,
+            warned: false,
+        }
+    }
+
+    /// Reserve one channel's worth of samples: clamps the interpolator's
+    /// `[start, stop]` into the owning sequence's span, derives the
+    /// bounded sample count, and charges `keys_per_sample × n_samples`
+    /// against the aggregate budget. `None` when the budget is spent —
+    /// the caller falls back to the interpolator's static pose.
+    pub fn reserve(
+        &mut self,
+        interp_start: f32,
+        interp_stop: f32,
+        keys_per_sample: usize,
+    ) -> Option<(f32, f32, usize)> {
+        let (mut start, mut stop) = (interp_start, interp_stop);
+        if let Some((seq_start, seq_stop)) = self.seq_span {
+            start = start.max(seq_start);
+            stop = stop.min(seq_stop);
+        }
+        let duration = (stop - start).max(0.0);
+        // Non-finite spans saturate the cast to usize::MAX and then
+        // clamp to the ceiling (Rust's float→int `as` is saturating).
+        let n_samples = ((duration * BSPLINE_SAMPLE_HZ).ceil() as usize)
+            .clamp(2, BSPLINE_MAX_SAMPLES_PER_CHANNEL);
+        let cost = n_samples.saturating_mul(keys_per_sample);
+        if cost > self.remaining_keys {
+            if !self.warned {
+                log::warn!(
+                    "B-spline import key budget ({}) exhausted — further \
+                     B-spline channels fall back to their static pose (#5486)",
+                    BSPLINE_IMPORT_KEY_BUDGET,
+                );
+                self.warned = true;
+            }
+            return None;
+        }
+        self.remaining_keys -= cost;
+        Some((start, stop, n_samples))
+    }
+}
+
 /// Dequantize a single compact control point to an f32.
 #[inline]
 pub fn dequant(raw: i16, offset: f32, half_range: f32) -> f32 {
@@ -171,6 +257,7 @@ pub fn extract_float_channel_bspline(
     scene: &NifScene,
     interp: &NiBSplineCompFloatInterpolator,
     target: FloatTarget,
+    sampling: &mut BsplineSampling,
 ) -> Option<FloatChannel> {
     // Single-key static fallback used by every "no usable spline data"
     // branch below (null refs, missing data blocks, under-defined basis,
@@ -222,20 +309,26 @@ pub fn extract_float_channel_bspline(
         return static_fallback();
     };
 
-    let duration = (interp.stop_time - interp.start_time).max(0.0);
-    let n_samples_f = (duration * BSPLINE_SAMPLE_HZ).ceil();
-    let n_samples = (n_samples_f as usize).clamp(2, 1_000_000);
+    // #5486 — the sampled span is the interpolator's own ∩ the owning
+    // sequence's, bounded by the per-channel ceiling and the per-import
+    // aggregate budget. Budget exhaustion takes the static pose.
+    let Some((start_time, stop_time, n_samples)) =
+        sampling.reserve(interp.start_time, interp.stop_time, 1)
+    else {
+        return static_fallback();
+    };
+    let duration = (stop_time - start_time).max(0.0);
     let u_max = (n_cp - BSPLINE_DEGREE) as f32;
 
     let mut keys = Vec::with_capacity(n_samples);
     for i in 0..n_samples {
         let t = if n_samples > 1 {
-            interp.start_time + duration * (i as f32 / (n_samples - 1) as f32)
+            start_time + duration * (i as f32 / (n_samples - 1) as f32)
         } else {
-            interp.start_time
+            start_time
         };
         let u = if duration > f32::EPSILON {
-            ((t - interp.start_time) / duration) * u_max
+            ((t - start_time) / duration) * u_max
         } else {
             0.0
         };
@@ -261,6 +354,7 @@ pub fn extract_float_channel_bspline(
 pub fn extract_transform_channel_bspline(
     scene: &NifScene,
     interp: &NiBSplineCompTransformInterpolator,
+    sampling: &mut BsplineSampling,
 ) -> Option<TransformChannel> {
     let basis_idx = interp.basis_data_ref.index()?;
     let basis = scene.get_as::<NiBSplineBasisData>(basis_idx)?;
@@ -274,14 +368,10 @@ pub fn extract_transform_channel_bspline(
         return Some(static_transform_channel(interp));
     }
 
-    // Determine number of samples from the animation duration.
-    // #408 — clamp to a 1 M sample ceiling per channel (~9 hours of
-    // animation at 30 Hz) so a malicious or corrupt `stop_time` can't
-    // request `usize::MAX` slots and OOM the importer. Real anims top
-    // out at a few thousand samples even for the longest cinematics.
-    let duration = (interp.stop_time - interp.start_time).max(0.0);
-    let n_samples_f = (duration * BSPLINE_SAMPLE_HZ).ceil();
-    let n_samples = (n_samples_f as usize).clamp(2, 1_000_000);
+    // #5486 — the sampled span is the interpolator's own ∩ the owning
+    // sequence's, bounded by the per-channel ceiling and the per-import
+    // aggregate budget. Budget exhaustion takes the static pose (same
+    // fallback as an under-defined basis below).
 
     // Per-channel setup. Each handle is an offset in i16 units into
     // `data.compact_control_points` where that channel's run of
@@ -311,6 +401,13 @@ pub fn extract_transform_channel_bspline(
         interp.scale_half_range,
     );
 
+    // A transform channel emits three key vectors (T/R/S) per sample.
+    let Some((start_time, stop_time, n_samples)) =
+        sampling.reserve(interp.start_time, interp.stop_time, 3)
+    else {
+        return Some(static_transform_channel(interp));
+    };
+    let duration = (stop_time - start_time).max(0.0);
     let u_max = (n_cp - BSPLINE_DEGREE) as f32;
 
     let mut translation_keys = Vec::with_capacity(n_samples);
@@ -319,13 +416,13 @@ pub fn extract_transform_channel_bspline(
 
     for i in 0..n_samples {
         let t = if n_samples > 1 {
-            interp.start_time + duration * (i as f32 / (n_samples - 1) as f32)
+            start_time + duration * (i as f32 / (n_samples - 1) as f32)
         } else {
-            interp.start_time
+            start_time
         };
         // Parameter u in [0, n-d] corresponding to t in [start, stop].
         let u = if duration > f32::EPSILON {
-            ((t - interp.start_time) / duration) * u_max
+            ((t - start_time) / duration) * u_max
         } else {
             0.0
         };

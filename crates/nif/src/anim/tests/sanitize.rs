@@ -246,7 +246,7 @@ mod sanitize_keyframe_streams {
             ..NifScene::default()
         };
         let channel =
-            extract_float_channel_at(&scene, 1, FloatTarget::Alpha).expect("one clean key remains");
+            extract_float_channel_at(&scene, 1, FloatTarget::Alpha, &mut crate::anim::BsplineSampling::new()).expect("one clean key remains");
         assert_eq!(channel.keys.len(), 1);
         assert_eq!(channel.keys[0].value, 0.5);
     }
@@ -282,7 +282,7 @@ mod sanitize_keyframe_streams {
             blocks: vec![Box::new(data), Box::new(interp)],
             ..NifScene::default()
         };
-        let keys = resolve_color_keys_at(&scene, 1);
+        let keys = resolve_color_keys_at(&scene, 1, &mut crate::anim::BsplineSampling::new());
         assert_eq!(keys.len(), 1, "only the clean RGB key survives");
         assert_eq!(keys[0].value, [0.1, 0.2, 0.3]);
     }

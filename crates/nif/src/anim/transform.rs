@@ -14,8 +14,9 @@ use crate::scene::NifScene;
 pub fn extract_transform_channel(
     scene: &NifScene,
     cb: &ControlledBlock,
+    sampling: &mut super::bspline::BsplineSampling,
 ) -> Option<TransformChannel> {
-    extract_transform_channel_at(scene, cb.interpolator_ref.index()?)
+    extract_transform_channel_at(scene, cb.interpolator_ref.index()?, sampling)
 }
 
 /// `ControlledBlock`-free TRS extraction, keyed directly on an interpolator
@@ -30,6 +31,7 @@ pub fn extract_transform_channel(
 pub fn extract_transform_channel_at(
     scene: &NifScene,
     mut interp_idx: usize,
+    sampling: &mut super::bspline::BsplineSampling,
 ) -> Option<TransformChannel> {
     // #334 (AR-08) — NIFs with embedded controller managers commonly
     // bind a `NiBlendTransformInterpolator` between the ControlledBlock
@@ -85,7 +87,7 @@ pub fn extract_transform_channel_at(
     // See issue #155. The B-spline is evaluated at BSPLINE_SAMPLE_HZ and
     // emitted as linear-interpolated TQS keys.
     if let Some(interp) = scene.get_as::<NiBSplineCompTransformInterpolator>(interp_idx) {
-        return extract_transform_channel_bspline(scene, interp);
+        return extract_transform_channel_bspline(scene, interp, sampling);
     }
 
     // #604 — NiLookAtInterpolator carries a static `transform`

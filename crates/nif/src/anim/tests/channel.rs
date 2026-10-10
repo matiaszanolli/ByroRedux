@@ -763,7 +763,7 @@ fn extract_float_channel_at_samples_bspline_comp_float() {
         ..NifScene::default()
     };
 
-    let ch = extract_float_channel_at(&scene, 2, FloatTarget::Alpha)
+    let ch = extract_float_channel_at(&scene, 2, FloatTarget::Alpha, &mut super::super::bspline::BsplineSampling::new())
         .expect("BSpline-comp float channel must surface keys");
     assert!(
         ch.keys.len() >= 2,
@@ -809,7 +809,7 @@ fn extract_float_channel_at_emits_static_key_for_invalid_handle() {
         ..NifScene::default()
     };
 
-    let ch = extract_float_channel_at(&scene, 0, FloatTarget::Alpha)
+    let ch = extract_float_channel_at(&scene, 0, FloatTarget::Alpha, &mut super::super::bspline::BsplineSampling::new())
         .expect("static-handle BSpline-comp float must surface a single-key channel");
     assert_eq!(ch.keys.len(), 1, "exactly one static key");
     assert_eq!(ch.keys[0].time, 0.5);
@@ -857,7 +857,7 @@ fn resolve_color_keys_at_samples_bspline_comp_point3() {
         ..NifScene::default()
     };
 
-    let keys = resolve_color_keys_at(&scene, 2);
+    let keys = resolve_color_keys_at(&scene, 2, &mut super::super::bspline::BsplineSampling::new());
     assert!(
         keys.len() >= 2,
         "BSpline-comp Point3 must surface sampled color keys, got {}",
@@ -1269,7 +1269,7 @@ fn null_data_float_interpolator_emits_its_pose_value() {
         ..NifScene::default()
     };
 
-    let channel = extract_float_channel_at(&scene, 0, FloatTarget::Alpha)
+    let channel = extract_float_channel_at(&scene, 0, FloatTarget::Alpha, &mut super::super::bspline::BsplineSampling::new())
         .expect("a posed float interpolator must still yield a channel (#3328)");
     assert_eq!(channel.target, FloatTarget::Alpha);
     assert_eq!(channel.keys.len(), 1, "a pose is exactly one key");
@@ -1294,7 +1294,7 @@ fn sentinel_valued_float_interpolator_still_yields_no_channel() {
             ..NifScene::default()
         };
         assert!(
-            extract_float_channel_at(&scene, 0, FloatTarget::Alpha).is_none(),
+            extract_float_channel_at(&scene, 0, FloatTarget::Alpha, &mut super::super::bspline::BsplineSampling::new()).is_none(),
             "{bad} is the 'no pose' encoding, not a constant (#3328)"
         );
     }
@@ -1332,7 +1332,7 @@ fn float_interpolator_with_only_insane_keys_falls_back_to_its_pose() {
         ..NifScene::default()
     };
 
-    let channel = extract_float_channel_at(&scene, 1, FloatTarget::Alpha).expect("pose fallback");
+    let channel = extract_float_channel_at(&scene, 1, FloatTarget::Alpha, &mut super::super::bspline::BsplineSampling::new()).expect("pose fallback");
     assert_eq!(channel.keys.len(), 1);
     assert_eq!(channel.keys[0].value, 0.75);
 }
@@ -1354,7 +1354,7 @@ fn null_data_color_interpolator_emits_its_pose_value() {
         ..NifScene::default()
     };
 
-    let keys = resolve_color_keys_at(&scene, 0);
+    let keys = resolve_color_keys_at(&scene, 0, &mut super::super::bspline::BsplineSampling::new());
     assert_eq!(
         keys.len(),
         1,
@@ -1379,7 +1379,7 @@ fn null_data_point3_interpolator_emits_its_pose_value() {
         })],
         ..NifScene::default()
     };
-    assert_eq!(resolve_color_keys_at(&scene, 0)[0].value, [1.0, 0.5, 0.0]);
+    assert_eq!(resolve_color_keys_at(&scene, 0, &mut super::super::bspline::BsplineSampling::new())[0].value, [1.0, 0.5, 0.0]);
 
     // Sentinel components still mean "nothing here".
     let scene = NifScene {
@@ -1389,5 +1389,5 @@ fn null_data_point3_interpolator_emits_its_pose_value() {
         })],
         ..NifScene::default()
     };
-    assert!(resolve_color_keys_at(&scene, 0).is_empty());
+    assert!(resolve_color_keys_at(&scene, 0, &mut super::super::bspline::BsplineSampling::new()).is_empty());
 }

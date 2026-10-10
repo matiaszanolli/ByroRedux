@@ -122,13 +122,21 @@ fn import_sequence_dispatches_keyframe_controller_alias() {
     };
 
     // Baseline: the modern controller name resolves to a channel.
-    let modern = import_sequence(&scene, &make_seq("NiTransformController"));
+    let modern = import_sequence(
+        &scene,
+        &make_seq("NiTransformController"),
+        &mut crate::anim::BsplineSampling::new(),
+    );
     assert!(
         modern.channels.contains_key("Bip01"),
         "NiTransformController must produce a transform channel"
     );
     // Fix under test: the classic alias must ALSO dispatch, not drop.
-    let classic = import_sequence(&scene, &make_seq("NiKeyframeController"));
+    let classic = import_sequence(
+        &scene,
+        &make_seq("NiKeyframeController"),
+        &mut crate::anim::BsplineSampling::new(),
+    );
     assert!(
         classic.channels.contains_key("Bip01"),
         "NiKeyframeController alias must dispatch to transform extraction (#1442)"
@@ -203,7 +211,11 @@ fn import_sequence_dispatches_bs_named_float_controllers() {
             FloatTarget::RefractionStrength,
         ),
     ] {
-        let clip = import_sequence(&scene, &make_seq(ctrl_type));
+        let clip = import_sequence(
+            &scene,
+            &make_seq(ctrl_type),
+            &mut crate::anim::BsplineSampling::new(),
+        );
         assert_eq!(
             clip.float_channels.len(),
             1,
@@ -244,7 +256,7 @@ fn import_sequence_carries_authored_phase() {
         anim_note_refs: Vec::new(),
     };
 
-    let clip = import_sequence(&scene, &seq);
+    let clip = import_sequence(&scene, &seq, &mut crate::anim::BsplineSampling::new());
     assert!((clip.phase - 0.6).abs() < 1e-6);
 }
 

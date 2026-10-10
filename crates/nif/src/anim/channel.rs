@@ -34,9 +34,10 @@ pub fn extract_float_channel(
     scene: &NifScene,
     cb: &ControlledBlock,
     target: FloatTarget,
+    sampling: &mut super::bspline::BsplineSampling,
 ) -> Option<FloatChannel> {
     let interp_idx = cb.interpolator_ref.index()?;
-    extract_float_channel_at(scene, interp_idx, target)
+    extract_float_channel_at(scene, interp_idx, target, sampling)
 }
 
 /// ControlledBlock-free core used by both the KF import path
@@ -46,6 +47,7 @@ pub fn extract_float_channel_at(
     scene: &NifScene,
     mut interp_idx: usize,
     target: FloatTarget,
+    sampling: &mut super::bspline::BsplineSampling,
 ) -> Option<FloatChannel> {
     // #334 — follow a NiBlendFloatInterpolator to its dominant sub-
     // interpolator. See `resolve_blend_interpolator_target` for why.
@@ -103,7 +105,7 @@ pub fn extract_float_channel_at(
     // emit linearly-interpolated keys — same pattern as the transform
     // path in `extract_transform_channel_bspline`.
     if let Some(interp) = scene.get_as::<NiBSplineCompFloatInterpolator>(interp_idx) {
-        return extract_float_channel_bspline(scene, interp, target);
+        return extract_float_channel_bspline(scene, interp, target, sampling);
     }
 
     None
@@ -151,11 +153,15 @@ pub fn resolve_flip_source_paths(
 /// (`value: [f32; 3]`) — color animations on alpha channels were not
 /// supported pre-#431 either and callers that need alpha should drive
 /// a separate `NiAlphaController` float channel.
-pub fn resolve_color_keys(scene: &NifScene, cb: &ControlledBlock) -> Vec<AnimColorKey> {
+pub fn resolve_color_keys(
+    scene: &NifScene,
+    cb: &ControlledBlock,
+    sampling: &mut super::bspline::BsplineSampling,
+) -> Vec<AnimColorKey> {
     let Some(interp_idx) = cb.interpolator_ref.index() else {
         return Vec::new();
     };
-    resolve_color_keys_at(scene, interp_idx)
+    resolve_color_keys_at(scene, interp_idx, sampling)
 }
 
 /// ControlledBlock-free core of [`resolve_color_keys`]. Reused by the
@@ -173,7 +179,11 @@ fn static_color_pose(r: f32, g: f32, b: f32) -> Vec<AnimColorKey> {
     }]
 }
 
-pub fn resolve_color_keys_at(scene: &NifScene, mut interp_idx: usize) -> Vec<AnimColorKey> {
+pub fn resolve_color_keys_at(
+    scene: &NifScene,
+    mut interp_idx: usize,
+    sampling: &mut super::bspline::BsplineSampling,
+) -> Vec<AnimColorKey> {
     // #334 — follow NiBlendPoint3Interpolator. See resolver docs.
     if let Some(resolved) = resolve_blend_interpolator_target(scene, interp_idx) {
         interp_idx = resolved;
@@ -247,7 +257,7 @@ pub fn resolve_color_keys_at(scene: &NifScene, mut interp_idx: usize) -> Vec<Ani
     // controller landed on the compact-Point3 variant silently dropped
     // its keys.
     if let Some(interp) = scene.get_as::<NiBSplineCompPoint3Interpolator>(interp_idx) {
-        return sample_color_keys_bspline_point3(scene, interp);
+        return sample_color_keys_bspline_point3(scene, interp, sampling);
     }
 
     Vec::new()
@@ -260,6 +270,7 @@ pub fn resolve_color_keys_at(scene: &NifScene, mut interp_idx: usize) -> Vec<Ani
 pub fn sample_color_keys_bspline_point3(
     scene: &NifScene,
     interp: &NiBSplineCompPoint3Interpolator,
+    sampling: &mut super::bspline::BsplineSampling,
 ) -> Vec<AnimColorKey> {
     // Single-key static fallback. FLT_MAX-encoded axes mean "no static
     // pose for this axis" — emit nothing if any axis is sentinel-valued.
@@ -307,20 +318,26 @@ pub fn sample_color_keys_bspline_point3(
         return static_fallback();
     };
 
-    let duration = (interp.stop_time - interp.start_time).max(0.0);
-    let n_samples_f = (duration * BSPLINE_SAMPLE_HZ).ceil();
-    let n_samples = (n_samples_f as usize).clamp(2, 1_000_000);
+    // #5486 — span ∩ owning sequence + ceiling + aggregate budget. The
+    // color sampler takes the static fallback on exhaustion, same as an
+    // invalid handle.
+    let Some((start_time, stop_time, n_samples)) =
+        sampling.reserve(interp.start_time, interp.stop_time, 1)
+    else {
+        return static_fallback();
+    };
+    let duration = (stop_time - start_time).max(0.0);
     let u_max = (n_cp - BSPLINE_DEGREE) as f32;
 
     let mut keys = Vec::with_capacity(n_samples);
     for i in 0..n_samples {
         let t = if n_samples > 1 {
-            interp.start_time + duration * (i as f32 / (n_samples - 1) as f32)
+            start_time + duration * (i as f32 / (n_samples - 1) as f32)
         } else {
-            interp.start_time
+            start_time
         };
         let u = if duration > f32::EPSILON {
-            ((t - interp.start_time) / duration) * u_max
+            ((t - start_time) / duration) * u_max
         } else {
             0.0
         };
@@ -351,8 +368,12 @@ pub fn color_target_from_target_color(target_color: u16) -> ColorTarget {
 /// Extract a color channel from a material-color controller interpolator
 /// chain. Used by `NiMaterialColorController`. Accepts both color-
 /// interpolator shapes via [`resolve_color_keys`].
-pub fn extract_color_channel(scene: &NifScene, cb: &ControlledBlock) -> Option<ColorChannel> {
-    let keys = resolve_color_keys(scene, cb);
+pub fn extract_color_channel(
+    scene: &NifScene,
+    cb: &ControlledBlock,
+    sampling: &mut super::bspline::BsplineSampling,
+) -> Option<ColorChannel> {
+    let keys = resolve_color_keys(scene, cb, sampling);
     if keys.is_empty() {
         return None;
     }
@@ -376,8 +397,9 @@ pub fn extract_color_channel(scene: &NifScene, cb: &ControlledBlock) -> Option<C
 pub fn extract_shader_color_channel(
     scene: &NifScene,
     cb: &ControlledBlock,
+    sampling: &mut super::bspline::BsplineSampling,
 ) -> Option<ColorChannel> {
-    let keys = resolve_color_keys(scene, cb);
+    let keys = resolve_color_keys(scene, cb, sampling);
     if keys.is_empty() {
         return None;
     }
@@ -482,6 +504,7 @@ pub fn float_target_from_shader_controller(
 pub fn extract_texture_transform_channel(
     scene: &NifScene,
     cb: &ControlledBlock,
+    sampling: &mut super::bspline::BsplineSampling,
 ) -> Option<FloatChannel> {
     // Determine target from the controller's operation field.
     let target = cb
@@ -493,7 +516,7 @@ pub fn extract_texture_transform_channel(
         .map(|ctrl| float_target_from_operation(ctrl.operation))
         .unwrap_or(FloatTarget::UvOffsetU);
 
-    extract_float_channel(scene, cb, target)
+    extract_float_channel(scene, cb, target, sampling)
 }
 
 /// Bethesda's KF authoring tool stores `±FLT_MAX` (≈3.4028235e38) in

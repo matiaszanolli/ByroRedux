@@ -328,3 +328,161 @@ fn bspline_static_pose_drops_nan_overflow_and_sentinel_components() {
     assert!(sentinel.rotation_keys.is_empty());
     assert!(sentinel.scale_keys.is_empty());
 }
+
+/// #5486 — the aggregate-amplification regression family.
+///
+/// Pre-fix, every B-spline channel was resampled at 30 Hz over the
+/// *interpolator's own* `[start, stop]` span with a 1 M per-channel
+/// ceiling and no aggregate bound. One shared interpolator with
+/// `stop_time = 1e9` and N controlled blocks (each ~29 B on disk) cost
+/// ~118 MiB per block — ~15 GB from a ~4 KB file, an allocation failure
+/// that aborts the stream worker (`catch_unwind` cannot intercept it).
+mod amplification_tests {
+    use super::super::super::bspline::{
+        BsplineSampling, BSPLINE_IMPORT_KEY_BUDGET, BSPLINE_MAX_SAMPLES_PER_CHANNEL,
+    };
+
+    #[test]
+    fn sampled_span_is_clamped_to_the_owning_sequence() {
+        let mut sampling = BsplineSampling::new();
+        sampling.seq_span = Some((0.0, 1.0));
+        // The audit repro's numbers: interpolator claims 1e9 s, the
+        // owning sequence is 1 s. Pre-fix: 30 M samples (clamped to 1 M).
+        let (start, stop, n) = sampling
+            .reserve(0.0, 1.0e9, 3)
+            .expect("well within budget");
+        assert_eq!((start, stop), (0.0, 1.0));
+        assert_eq!(n, 30, "1 s at 30 Hz");
+    }
+
+    #[test]
+    fn per_channel_ceiling_is_one_hour_at_30_hz() {
+        let mut sampling = BsplineSampling::new();
+        // No owning sequence (embedded-controller path): only the
+        // ceiling bounds the span.
+        let (_, _, n) = sampling
+            .reserve(0.0, 1.0e9, 1)
+            .expect("within budget");
+        assert_eq!(n, BSPLINE_MAX_SAMPLES_PER_CHANNEL);
+        assert_eq!(n, 108_000, "30 Hz × 1 h (#5486 sizing)");
+    }
+
+    #[test]
+    fn aggregate_budget_declines_once_spent() {
+        let mut sampling = BsplineSampling::new();
+        // A degenerate (0-span) channel still reserves the 2-sample
+        // minimum per key vector, so each reserve(…, k) costs 2k.
+        // Drain with small reservations until one is declined. Each
+        // costs 2 samples × 2 key vectors = 4 keys, so the loop is
+        // bounded well under BUDGET/4 iterations.
+        let mut declined = false;
+        for _ in 0..(BSPLINE_IMPORT_KEY_BUDGET / 4 + 2) {
+            if sampling.reserve(0.0, 0.0, 2).is_none() {
+                declined = true;
+                break;
+            }
+        }
+        assert!(declined, "the budget must run out eventually");
+        // Once declined, even the smallest channel stays declined — a
+        // shared interpolator can no longer multiply the cost past it.
+        assert!(sampling.reserve(0.0, 0.0, 1).is_none());
+        assert!(sampling.reserve(0.0, 100.0, 3).is_none());
+    }
+
+    /// The audit's end-to-end repro through the public `import_kf`:
+    /// one `NiBSplineCompTransformInterpolator` with `stop_time = 1e9`
+    /// shared by 8 controlled blocks of a sequence whose own span is
+    /// 1 s. Pre-fix: ~118 MiB per block (3 M keys each). Post-fix: 30
+    /// samples per block, and the import returns promptly.
+    #[test]
+    fn import_kf_bounds_a_shared_huge_span_interpolator() {
+        use crate::blocks::controller::{ControlledBlock, NiControllerSequence};
+        use crate::blocks::interpolator::{
+            NiBSplineBasisData, NiBSplineCompTransformInterpolator, NiBSplineData,
+        };
+        use crate::scene::NifScene;
+        use crate::types::BlockRef;
+        use std::sync::Arc;
+
+        let interp = NiBSplineCompTransformInterpolator {
+            start_time: 0.0,
+            stop_time: 1.0e9,
+            spline_data_ref: BlockRef(2),
+            basis_data_ref: BlockRef(1),
+            transform: Default::default(),
+            // INVALID handles + empty spline data: every sample falls
+            // back to the static pose, which is exactly the audit's
+            // "costs the allocation with no data at all" shape.
+            translation_handle: u32::MAX,
+            rotation_handle: u32::MAX,
+            scale_handle: u32::MAX,
+            translation_offset: 0.0,
+            translation_half_range: 1.0,
+            rotation_offset: 0.0,
+            rotation_half_range: 1.0,
+            scale_offset: 0.0,
+            scale_half_range: 1.0,
+        };
+        let blocks: Vec<Box<dyn crate::NiObject>> = vec![
+            Box::new(interp),
+            Box::new(NiBSplineBasisData {
+                num_control_points: 4,
+            }),
+            Box::new(NiBSplineData {
+                float_control_points: Vec::new(),
+                compact_control_points: Vec::new(),
+            }),
+        ];
+        let mut scene = NifScene::default();
+        for b in blocks {
+            scene.blocks.push(b);
+        }
+        let seq = NiControllerSequence {
+            name: Some(Arc::from("Amp")),
+            controlled_blocks: (0..8)
+                .map(|i| ControlledBlock {
+                    interpolator_ref: BlockRef(0),
+                    controller_ref: BlockRef::NULL,
+                    priority: 0,
+                    node_name: Some(Arc::from(format!("Bone{i}").as_str())),
+                    property_type: None,
+                    controller_type: Some(Arc::from("NiTransformController")),
+                    controller_id: None,
+                    interpolator_id: None,
+                    string_palette_ref: BlockRef::NULL,
+                    node_name_offset: 0,
+                    property_type_offset: 0,
+                    controller_type_offset: 0,
+                    controller_id_offset: 0,
+                    interpolator_id_offset: 0,
+                })
+                .collect(),
+            array_grow_by: 0,
+            weight: 1.0,
+            text_keys_ref: BlockRef::NULL,
+            cycle_type: 2,
+            frequency: 1.0,
+            phase: 0.0,
+            start_time: 0.0,
+            stop_time: 1.0,
+            manager_ref: BlockRef::NULL,
+            accum_root_name: None,
+            anim_note_refs: Vec::new(),
+        };
+        scene.blocks.push(Box::new(seq));
+        scene.root_index = Some(3);
+
+        let clips = super::super::super::import_kf(&scene);
+        assert_eq!(clips.len(), 1, "the one sequence imports");
+        let clip = &clips[0];
+        assert_eq!(clip.channels.len(), 8, "every controlled block channels");
+        for channel in clip.channels.values() {
+            assert_eq!(
+                channel.translation_keys.len(),
+                30,
+                "span must clamp to the sequence's 1 s at 30 Hz, not the \
+                 interpolator's 1e9 s (pre-fix: 1 M keys ≈ 118 MiB/block)"
+            );
+        }
+    }
+}
