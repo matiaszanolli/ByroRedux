@@ -24,6 +24,10 @@ pub(super) const MAX_DYNAMIC_SUBSTEP_DISPLACEMENT: f32 = 2_048.0;
 /// #5161 — sanity cap on angular speed (≈16 rev/s); explosions reach 1e10+.
 const ANGULAR_VELOCITY_SANITY_CAP_RAD_PER_S: f32 = 100.0;
 
+/// DOF count of a dynamic multibody root: rapier's free joint, linear
+/// DOFs first then angular (#5353).
+const FREE_ROOT_DOFS: usize = 6;
+
 /// #5161 — sanity bound for a keyframed body target pushed from an ECS
 /// GlobalTransform. Authored worldspace coordinates top out around ±3e5 BU,
 /// so a translation beyond 1e8 is corruption with certainty. Accepting it
@@ -463,14 +467,26 @@ impl PhysicsWorld {
             let Some((multibody, _)) = self.multibody_joints.get_mut(joint) else {
                 continue;
             };
+            // #5353 — a dynamic root is rapier's 6-DOF free joint at offset
+            // 0: three linear DOFs (BU/s) then three angular (rad/s)
+            // (`Multibody::update_root_type`, `MultibodyJoint::integrate`).
+            // Those are body speeds, not authored joint axes, so they take
+            // the body-level caps: the joint-axis cap held every falling
+            // ragdoll to 100 BU/s against 686.7 BU/s² of gravity.
+            let free_root = multibody.root().joint().ndofs() == FREE_ROOT_DOFS;
             let mut vels = multibody.generalized_velocity_mut();
             for i in 0..vels.len() {
+                let cap = match (free_root, i) {
+                    (true, 0..=2) => VELOCITY_SANITY_CAP_BU_PER_S,
+                    (true, 3..=5) => ANGULAR_VELOCITY_SANITY_CAP_RAD_PER_S,
+                    _ => ARTICULATION_DOF_SANITY_CAP,
+                };
                 let v = vels[i];
                 if !v.is_finite() {
                     vels[i] = 0.0;
                     clamped_dofs += 1;
-                } else if v.abs() > ARTICULATION_DOF_SANITY_CAP {
-                    vels[i] = v.signum() * ARTICULATION_DOF_SANITY_CAP;
+                } else if v.abs() > cap {
+                    vels[i] = v.signum() * cap;
                     clamped_dofs += 1;
                 }
             }

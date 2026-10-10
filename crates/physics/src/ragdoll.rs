@@ -1238,6 +1238,43 @@ mod tests {
         );
     }
 
+    /// #5353 — a free ragdoll falls at gravity. The articulation-DOF clamp
+    /// (#5161) walks every generalized-velocity entry, and a dynamic root's
+    /// first six entries are its free joint — three linear BU/s, then three
+    /// angular rad/s — not authored joint axes. Capping them at the
+    /// joint-axis limit of 100 held every falling corpse to 100 BU/s
+    /// (gravity is 686.7 BU/s², so it hit the cap within 0.15 s) and counted
+    /// a clamp on every substep.
+    #[test]
+    fn a_free_ragdoll_falls_at_gravity_without_tripping_the_dof_clamp() {
+        let mut pw = PhysicsWorld::new();
+        let spec = RagdollSpec {
+            bodies: vec![ball_body(1, 0.0, 1000.0), ball_body(2, 50.0, 1000.0)],
+            constraints: vec![loose_ragdoll(0, 1)],
+        };
+        let rag = build_ragdoll(&mut pw, &spec, &ContactConfig::DEFAULT).expect("sane ragdoll seed");
+        let root = rag.bodies[0].1;
+        let start = body_translation(&pw, root).unwrap().y;
+
+        // Half a second of free fall: v = g·t ≈ 343 BU/s, far past the old cap.
+        for _ in 0..30 {
+            pw.step(PHYSICS_DT);
+        }
+
+        let speed = -pw.bodies[root].linvel().y;
+        assert!(
+            speed > 300.0,
+            "a free-falling ragdoll root must reach gravity speed, got {speed} BU/s"
+        );
+        let fallen = start - body_translation(&pw, root).unwrap().y;
+        assert!(fallen > 60.0, "the root should have fallen ~86 BU, fell {fallen}");
+        assert_eq!(
+            pw.velocity_clamps_total(),
+            0,
+            "ordinary free fall is not a solver explosion"
+        );
+    }
+
     /// A 1-DOF sliding rail along X with pivots ±25, so the rail coordinate
     /// is zero when the bodies sit 50 apart. `travel` bounds the authored
     /// `min_distance`/`max_distance`.
@@ -1917,6 +1954,35 @@ mod tests {
             assert!(body.is_enabled(), "every link is back in the simulation");
             assert!(body.translation().is_finite() && body.linvel().is_finite());
         }
+    }
+
+    /// #5353 — the free root's linear DOFs still have a ceiling: the
+    /// body-level `VELOCITY_SANITY_CAP_BU_PER_S`, not the 100 of the joint
+    /// axes. A root launched past it is clamped and counted.
+    #[test]
+    fn an_exploding_free_root_dof_is_capped_at_the_body_speed_cap() {
+        use crate::world::VELOCITY_SANITY_CAP_BU_PER_S;
+        let mut w = PhysicsWorld::new();
+        let spec = RagdollSpec {
+            bodies: vec![ball_body(1, 0.0, 1000.0), ball_body(2, 50.0, 1000.0)],
+            constraints: vec![loose_ragdoll(0, 1)],
+        };
+        let rag = build_ragdoll(&mut w, &spec, &ContactConfig::DEFAULT).expect("sane ragdoll seed");
+        // Root linear X: over the body cap (20 000) but under rapier's
+        // in-step cap (28 000), so it survives the step to reach the clamp.
+        let launched = VELOCITY_SANITY_CAP_BU_PER_S * 1.25;
+        {
+            let (multibody, _) = w.multibody_joints.get_mut(rag.joints[0]).expect("live joint");
+            multibody.generalized_velocity_mut()[0] = launched;
+        }
+        w.step(PHYSICS_DT);
+        assert!(w.velocity_clamps_total() >= 1, "the exploding root DOF must be clamped and counted");
+        let (multibody, _) = w.multibody_joints.get_mut(rag.joints[0]).expect("live joint");
+        let root_x = multibody.generalized_velocity_mut()[0];
+        assert!(
+            root_x.abs() <= VELOCITY_SANITY_CAP_BU_PER_S,
+            "the root's linear DOF must end the substep at or under the body cap, got {root_x}"
+        );
     }
 
     #[test]
