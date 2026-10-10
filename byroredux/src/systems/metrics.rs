@@ -23,7 +23,7 @@ use byroredux_core::ecs::{
     TotalTime, World,
 };
 use byroredux_renderer::vulkan::allocator::{AllocatorResource, GpuMemoryBudget};
-use sysinfo::{Pid, System};
+use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
 
 /// Default 2 Hz cadence. Tuned so the debug UI updates fast enough to
 /// read like a live dashboard without burning CPU on per-frame
@@ -173,11 +173,16 @@ pub fn metrics_sample_system(world: &World, _dt: f32) {
         let mut sys = state.sys.lock().unwrap_or_else(|e| e.into_inner());
         sys.refresh_cpu_usage();
         sys.refresh_memory();
-        let cpu = sys.global_cpu_info().cpu_usage();
+        let cpu = sys.global_cpu_usage();
         let ram_used = sys.used_memory();
         let ram_total = sys.total_memory();
         let proc_ram = if let Some(pid) = pid {
-            sys.refresh_process(pid);
+            // Memory is the only process figure read, so refresh only it.
+            sys.refresh_processes_specifics(
+                ProcessesToUpdate::Some(&[pid]),
+                true,
+                ProcessRefreshKind::nothing().with_memory(),
+            );
             sys.process(pid).map(|p| p.memory()).unwrap_or(0)
         } else {
             0

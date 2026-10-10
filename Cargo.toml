@@ -108,7 +108,7 @@ env_logger = "0.11"
 # default builds don't pull them in.
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter", "registry"] }
-tracing-tracy = { version = "0.11", default-features = false, features = ["enable", "system-tracing"] }
+tracing-tracy = { version = "0.12", default-features = false, features = ["enable", "system-tracing"] }
 
 # Error handling
 anyhow = "1"
@@ -225,8 +225,8 @@ dhat = "0.3"
 # `refresh_processes_specifics` rename treadmill. Refresh cadence is
 # user-driven (2 Hz default via `metrics_sample_system`); zero cost
 # when the system is throttled-out.
-sysinfo = { version = "0.30", default-features = false }
-nvml-wrapper = "0.11"
+sysinfo = { version = "0.39", default-features = false }
+nvml-wrapper = "0.13"
 
 # Terminal UI for `byro-dbg --tui` (Phase 3 of the debug-UI plan).
 # ratatui 0.30 pairs with crossterm 0.29; both are pinned at the
