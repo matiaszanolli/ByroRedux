@@ -7,8 +7,18 @@ See [dependencies.md](dependencies.md) for the current pins.
 
 **Scope**: what the new versions let us fix, simplify or build, found by reading each
 upstream changelog against our code. Every claim below was checked against both our
-source and the upstream crate source in `~/.cargo/registry`. Nothing in this plan has
-been implemented yet.
+source and the upstream crate source in `~/.cargo/registry`.
+
+**Status (2026-10-10, same day)**: Wave 1.1–1.5 landed — `04cb6333d` (1.1 geometric-mean
+combine rule), `f4c2b9931` (1.2 stale-comment sweep), `14d02a694` (1.3 image codecs),
+`9046b5ac5` (1.4 wasmtime fuel pins), `738ab7391` (1.5 KCC at-rest pin + #3799
+re-homing); full workspace suite green after each. 1.6 is drafted, awaiting the #5530
+owner's disposition. Wave 2.1 measured on FO3 — branch 4: the restore explosion
+survives rapier 0.36 (recoveries 0, velocity clamps 3, explosive detaches 1 on
+`bip01 neck1`, corpse gate failed at 685.7 BU vs the 512 bound, `finite=true`
+throughout) — measured into
+[#4772](https://github.com/matiaszanolli/ByroRedux/issues/4772#issuecomment-6102913101).
+Wave 2.2 / 2.3 and Wave 3+ remain.
 
 Waves are ordered by what they need, not by size:
 
