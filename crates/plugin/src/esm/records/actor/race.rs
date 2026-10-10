@@ -74,6 +74,17 @@ pub struct RaceRecord {
     /// texture for the head — the head NIF's own texture is the male
     /// default, so without it female heads rendered with male skin.
     pub head_part_textures: Vec<(u32, String, Option<u8>)>,
+    /// #5487 — body-section `ICON` skins, `(INDX, path, gender section)`.
+    /// The section past `NAM1` restarts `INDX` at 0 for the body
+    /// vocabulary: 0 UpperBody, 1 Leg, 2 Hand, 3 Foot, 4 Tail (xEdit
+    /// `wbRaceBodyTextureIndex`). Oblivion authors per-race, per-gender
+    /// skins here (`Characters\Argonian\Male\UpperBodyMale.dds`, …) while
+    /// the body NIFs themselves all author the Imperial skin — pre-fix
+    /// the section was dropped wholesale (the `ICON` arm gated on
+    /// `in_head_section`), so every beast and mer torso rendered human.
+    /// FO3 / FNV author body textures in the head-section table instead;
+    /// this list is empty there and on Skyrim+.
+    pub body_part_textures: Vec<(u32, String, Option<u8>)>,
     /// Default body height per gender, from DATA — `(male, female)`.
     /// Vanilla values run ~0.8..1.2 (Skyrim `NordRace` is 1.03; FO4
     /// `HumanChildRace` is 0.825). Decoded for Oblivion / FO3 / FNV
@@ -288,6 +299,7 @@ pub fn parse_race(
         skeleton_models: Default::default(),
         head_parts: Vec::new(),
         head_part_textures: Vec::new(),
+        body_part_textures: Vec::new(),
         base_height: (1.0, 1.0),
         base_weight: (1.0, 1.0),
         race_flags: 0,
@@ -508,6 +520,17 @@ pub fn parse_race(
                 if let Some(idx) = icon_indx.take() {
                     record
                         .head_part_textures
+                        .push((idx, read_zstring(&sub.data), gender_section));
+                }
+            }
+            // #5487 — the body section's own ICON run (0 UpperBody…
+            // 4 Tail, per-gender). `icon_indx` is armed by the same
+            // INDX arm above; NAM1 resets it, so the first body ICON
+            // only lands here after its own INDX.
+            b"ICON" if !in_head_section && !in_skeleton_section => {
+                if let Some(idx) = icon_indx.take() {
+                    record
+                        .body_part_textures
                         .push((idx, read_zstring(&sub.data), gender_section));
                 }
             }

@@ -627,6 +627,26 @@ pub fn humanoid_body_paths(
     is_child: bool,
 ) -> &'static [&'static str] {
     match (game, gender, is_child) {
+        // #5487 — Oblivion ships exactly `upperbody / lowerbody / hand /
+        // foot` (+ `female*` twins) under `characters\_male`, and does
+        // NOT ship `lefthand.nif` / `righthand.nif` (those are FO3/FNV
+        // names; the only `*hand*.nif` Oblivion ships are creature
+        // parts). Pre-fix this arm shared the Fallout table, so the two
+        // hand requests missed silently at `debug` and the lower body
+        // and feet were never requested at all — most Oblivion
+        // humanoids rendered handless, and partly-dressed ones legless.
+        (GameKind::Oblivion, Gender::Female, _) => &[
+            r"meshes\characters\_male\femaleupperbody.nif",
+            r"meshes\characters\_male\femalelowerbody.nif",
+            r"meshes\characters\_male\femalehand.nif",
+            r"meshes\characters\_male\femalefoot.nif",
+        ],
+        (GameKind::Oblivion, Gender::Male, _) => &[
+            r"meshes\characters\_male\upperbody.nif",
+            r"meshes\characters\_male\lowerbody.nif",
+            r"meshes\characters\_male\hand.nif",
+            r"meshes\characters\_male\foot.nif",
+        ],
         (GameKind::Fallout3NV, Gender::Male, true) => &[
             r"meshes\characters\_male\childupperbody.nif",
             r"meshes\characters\_male\lefthand.nif",
@@ -637,12 +657,12 @@ pub fn humanoid_body_paths(
             r"meshes\characters\_male\femalelefthand.nif",
             r"meshes\characters\_male\femalerighthand.nif",
         ],
-        (GameKind::Oblivion | GameKind::Fallout3NV, Gender::Female, _) => &[
+        (GameKind::Fallout3NV, Gender::Female, _) => &[
             r"meshes\characters\_male\femaleupperbody.nif",
             r"meshes\characters\_male\femalelefthand.nif",
             r"meshes\characters\_male\femalerighthand.nif",
         ],
-        (GameKind::Oblivion | GameKind::Fallout3NV, Gender::Male, _) => &[
+        (GameKind::Fallout3NV, Gender::Male, _) => &[
             r"meshes\characters\_male\upperbody.nif",
             r"meshes\characters\_male\lefthand.nif",
             r"meshes\characters\_male\righthand.nif",
@@ -657,7 +677,9 @@ pub fn humanoid_body_paths(
 
 /// Biped slots represented by one loose KF-era naked-body mesh.
 /// Fallout splits left/right hands into distinct slots; Oblivion has one
-/// shared Hand bit even though its archive also stores two hand NIFs.
+/// shared Hand bit for its single `hand.nif`, plus Lower Body (`0x08`)
+/// and Foot (`0x20`) bits for the meshes its archive actually ships
+/// (#5487 — pre-fix there was no arm that could request them).
 fn humanoid_body_path_biped_mask(game: GameKind, path: &str) -> u32 {
     if path.ends_with("upperbody.nif") {
         return 1 << 2;
@@ -665,10 +687,32 @@ fn humanoid_body_path_biped_mask(game: GameKind, path: &str) -> u32 {
     match game {
         GameKind::Fallout3NV if path.ends_with("lefthand.nif") => 1 << 3,
         GameKind::Fallout3NV if path.ends_with("righthand.nif") => 1 << 4,
-        GameKind::Oblivion if path.ends_with("lefthand.nif") || path.ends_with("righthand.nif") => {
-            1 << 4
-        }
+        GameKind::Oblivion if path.ends_with("hand.nif") => 1 << 4,
+        GameKind::Oblivion if path.ends_with("lowerbody.nif") => 1 << 3,
+        GameKind::Oblivion if path.ends_with("foot.nif") => 1 << 5,
         _ => 0,
+    }
+}
+
+/// #5487 — the RACE body-section `ICON` index a loose body mesh takes
+/// its skin from (0 UpperBody, 1 Leg, 2 Hand, 3 Foot; 4 Tail has no
+/// mesh in the arm). `None` for the FO3/FNV paths, whose body ICONs
+/// ride the head-section table instead and whose naked meshes keep
+/// their own NIF-authored skin.
+pub(crate) fn humanoid_body_path_icon_index(game: GameKind, path: &str) -> Option<u32> {
+    if game != GameKind::Oblivion {
+        return None;
+    }
+    if path.ends_with("upperbody.nif") {
+        Some(0)
+    } else if path.ends_with("lowerbody.nif") {
+        Some(1)
+    } else if path.ends_with("hand.nif") {
+        Some(2)
+    } else if path.ends_with("foot.nif") {
+        Some(3)
+    } else {
+        None
     }
 }
 

@@ -604,13 +604,16 @@ fn race_skeletons_match_authored_paths_on_real_skyrim_data() {
     }
 }
 
-/// Regression test for #793: kf-era humanoids must surface
-/// `lefthand.nif` and `righthand.nif` alongside `upperbody.nif`.
-/// Pre-fix the resolver returned a single path and every NPC
-/// rendered handless because the hand mesh was never loaded.
+/// Regression test for #793 / #5487: kf-era humanoids must surface the
+/// hand meshes each game's archive actually ships. FO3/FNV split hands
+/// into `lefthand.nif` / `righthand.nif`; Oblivion ships one shared
+/// `hand.nif` plus `lowerbody.nif` / `foot.nif` (pre-#5487 it shared the
+/// Fallout table, so both hand requests missed the archive silently and
+/// the lower body and feet were never requested at all).
 #[test]
-fn body_paths_kf_era_include_separate_hand_meshes() {
-    for game in [GameKind::Oblivion, GameKind::Fallout3NV] {
+fn body_paths_kf_era_match_each_games_archive() {
+    // FO3/FNV: upperbody + the two split hands.
+    for game in [GameKind::Fallout3NV] {
         let paths = humanoid_body_paths(game, Gender::Male, false);
         assert_eq!(
             paths.len(),
@@ -630,6 +633,17 @@ fn body_paths_kf_era_include_separate_hand_meshes() {
             "{game:?} missing righthand: {paths:?}",
         );
     }
+    // Oblivion: its own four-part table (verified against
+    // `Oblivion - Meshes.bsa`; the archive ships no `*lefthand.nif`).
+    assert_eq!(
+        humanoid_body_paths(GameKind::Oblivion, Gender::Male, false),
+        &[
+            r"meshes\characters\_male\upperbody.nif",
+            r"meshes\characters\_male\lowerbody.nif",
+            r"meshes\characters\_male\hand.nif",
+            r"meshes\characters\_male\foot.nif",
+        ],
+    );
 }
 
 #[test]
@@ -660,13 +674,15 @@ fn body_paths_kf_era_select_gender_and_child_variants() {
     );
 
     // Oblivion shares FO3/FNV's historical `_male` directory and female
-    // filename prefix, but DATA bit 2 means BeastRace there, not Child.
+    // filename prefix, but DATA bit 2 means BeastRace there, not Child,
+    // and its female body is the four `female*` parts (#5487).
     assert_eq!(
         humanoid_body_paths(GameKind::Oblivion, Gender::Female, false),
         &[
             r"meshes\characters\_male\femaleupperbody.nif",
-            r"meshes\characters\_male\femalelefthand.nif",
-            r"meshes\characters\_male\femalerighthand.nif",
+            r"meshes\characters\_male\femalelowerbody.nif",
+            r"meshes\characters\_male\femalehand.nif",
+            r"meshes\characters\_male\femalefoot.nif",
         ],
     );
 }
@@ -685,14 +701,88 @@ fn kf_body_piece_masks_follow_each_games_hand_layout() {
         humanoid_body_path_biped_mask(GameKind::Fallout3NV, r"x\righthand.nif"),
         1 << 4
     );
+    // #5487 — Oblivion's own table: shared Hand bit, plus Lower Body
+    // and Foot, which had no mesh arm at all pre-fix.
     assert_eq!(
-        humanoid_body_path_biped_mask(GameKind::Oblivion, r"x\lefthand.nif"),
+        humanoid_body_path_biped_mask(GameKind::Oblivion, r"x\hand.nif"),
         1 << 4
     );
     assert_eq!(
-        humanoid_body_path_biped_mask(GameKind::Oblivion, r"x\righthand.nif"),
-        1 << 4
+        humanoid_body_path_biped_mask(GameKind::Oblivion, r"x\femalelowerbody.nif"),
+        1 << 3
     );
+    assert_eq!(
+        humanoid_body_path_biped_mask(GameKind::Oblivion, r"x\foot.nif"),
+        1 << 5
+    );
+    // The ICON slot each Oblivion body mesh skins from (0..=4 body
+    // vocabulary: UpperBody / Leg / Hand / Foot / Tail).
+    assert_eq!(
+        crate::npc_spawn::humanoid_body_path_icon_index(GameKind::Oblivion, r"x\upperbody.nif"),
+        Some(0)
+    );
+    assert_eq!(
+        crate::npc_spawn::humanoid_body_path_icon_index(GameKind::Oblivion, r"x\lowerbody.nif"),
+        Some(1)
+    );
+    assert_eq!(
+        crate::npc_spawn::humanoid_body_path_icon_index(GameKind::Oblivion, r"x\hand.nif"),
+        Some(2)
+    );
+    assert_eq!(
+        crate::npc_spawn::humanoid_body_path_icon_index(GameKind::Oblivion, r"x\foot.nif"),
+        Some(3)
+    );
+    assert_eq!(
+        crate::npc_spawn::humanoid_body_path_icon_index(GameKind::Fallout3NV, r"x\lefthand.nif"),
+        None,
+        "FO3/FNV body skins ride the head-section table, not body ICONs"
+    );
+}
+
+/// #5487 — real-data pin: every path the Oblivion arm returns must exist
+/// in `Oblivion - Meshes.bsa`. The pre-fix table requested
+/// `lefthand.nif` / `righthand.nif`, which the archive does not ship
+/// (the only `*hand*.nif` files are creature parts), and never requested
+/// `lowerbody.nif` / `foot.nif` at all — two unit tests asserted the
+/// nonexistent paths, so the gap was pinned rather than guarded.
+/// Self-skips without the game installed, like the other corpus sweeps
+/// in this tree; set `BYROREDUX_OBLIVION_DATA` to override the path.
+#[test]
+#[ignore = "needs Oblivion game data on disk"]
+fn installed_oblivion_body_paths_exist_in_the_meshes_archive() {
+    let data = std::env::var("BYROREDUX_OBLIVION_DATA")
+        .unwrap_or_else(|_| "/mnt/data/SteamLibrary/steamapps/common/Oblivion/Data".to_string());
+    let bsa_path = std::path::Path::new(&data).join("Oblivion - Meshes.bsa");
+    let Ok(archive) = byroredux_bsa::BsaArchive::open(&bsa_path) else {
+        eprintln!(
+            "skipping installed_oblivion_body_paths_exist_in_the_meshes_archive: \
+             {bsa_path:?} not available"
+        );
+        return;
+    };
+    let names: std::collections::HashSet<String> = archive
+        .list_files()
+        .into_iter()
+        .map(|name| name.to_ascii_lowercase())
+        .collect();
+    for gender in [Gender::Male, Gender::Female] {
+        for path in humanoid_body_paths(GameKind::Oblivion, gender, false) {
+            assert!(
+                names.contains(&path.to_ascii_lowercase()),
+                "#5487: Oblivion {gender:?} body path {path} is not in the archive"
+            );
+        }
+    }
+    // The names the pre-fix shared table asked for must stay absent, so a
+    // future regression back to the Fallout table fails the loop above
+    // rather than silently missing again.
+    for missing in ["lefthand.nif", "righthand.nif"] {
+        assert!(
+            !names.iter().any(|name| name.ends_with(missing)),
+            "fixture premise drifted: {missing} is now shipped?"
+        );
+    }
 }
 
 #[test]
@@ -1179,6 +1269,7 @@ fn prebaked_race_skin_remains_intrinsic_through_equip_and_corpse_loot() {
         body_models: Vec::new(),
         skeleton_models: Default::default(),
         head_part_textures: Vec::new(),
+        body_part_textures: Vec::new(),
         head_parts: Vec::new(),
         base_height: (1.0, 1.0),
         base_weight: (1.0, 1.0),
@@ -1519,6 +1610,7 @@ fn prebaked_equip_state_marks_only_partially_displaced_skin_slots() {
         body_models: Vec::new(),
         skeleton_models: Default::default(),
         head_part_textures: Vec::new(),
+        body_part_textures: Vec::new(),
         head_parts: Vec::new(),
         base_height: (1.0, 1.0),
         base_weight: (1.0, 1.0),
@@ -1597,6 +1689,7 @@ fn prebaked_equip_state_keeps_zero_mask_race_skin() {
         body_models: Vec::new(),
         skeleton_models: Default::default(),
         head_part_textures: Vec::new(),
+        body_part_textures: Vec::new(),
         head_parts: Vec::new(),
         base_height: (1.0, 1.0),
         base_weight: (1.0, 1.0),
@@ -1673,6 +1766,7 @@ fn zero_mask_exemption_does_not_disable_the_occupancy_filter() {
         body_models: Vec::new(),
         skeleton_models: Default::default(),
         head_part_textures: Vec::new(),
+        body_part_textures: Vec::new(),
         head_parts: Vec::new(),
         base_height: (1.0, 1.0),
         base_weight: (1.0, 1.0),
@@ -1753,6 +1847,7 @@ fn facegen_mask_fixture(helmet_bits: u32, skin_bits: u32) -> u32 {
         body_models: Vec::new(),
         skeleton_models: Default::default(),
         head_part_textures: Vec::new(),
+        body_part_textures: Vec::new(),
         head_parts: Vec::new(),
         base_height: (1.0, 1.0),
         base_weight: (1.0, 1.0),
@@ -1875,6 +1970,7 @@ fn prebaked_equip_state_drops_skin_mesh_fully_displaced_by_gear() {
         body_models: Vec::new(),
         skeleton_models: Default::default(),
         head_part_textures: Vec::new(),
+        body_part_textures: Vec::new(),
         head_parts: Vec::new(),
         base_height: (1.0, 1.0),
         base_weight: (1.0, 1.0),

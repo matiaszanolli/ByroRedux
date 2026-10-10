@@ -31,6 +31,12 @@ pub(super) struct RuntimeNpcState {
     pub(super) gender: Gender,
     pub(super) is_child: bool,
     pub(super) body_paths: Vec<String>,
+    /// #5487 — RACE body-section `ICON` skin per entry of `body_paths`
+    /// (parallel, `None` = keep the NIF's own texture). Oblivion authors
+    /// per-race/per-gender body skins there; the NIFs all ship the
+    /// Imperial skin, so without the override every beast and mer torso
+    /// renders human and the neck seam blends against the wrong tone.
+    pub(super) body_textures: Vec<Option<String>>,
     pub(super) head_path: Option<String>,
     /// The race / gender head `ICON` (e.g. FO3 `Characters\Female\HeadHuman.dds`),
     /// replacing the head NIF's own (male default) base texture.
@@ -222,34 +228,51 @@ pub(super) fn prepare_runtime_state(
         .map(|path| RestorePart::body(path))
         .collect();
     let is_child = crate::npc_spawn::is_child_race(game, race.map(|race| race.race_flags));
-    let body_paths = humanoid_body_paths(game, gender, is_child)
-        .iter()
-        .filter(|path| {
-            let body_piece_mask = humanoid_body_path_biped_mask(game, path);
-            let covered = if path.ends_with("upperbody.nif") {
-                equip.main_body_covered(game)
-            } else {
-                equip.covers_biped_mask(body_piece_mask)
-            };
-            let keep = !covered;
-            if !keep {
-                appearance.parts.push(RestorePart::body(path));
-                log::info!(
-                    "NPC {:08X} ({}): equipped armor covers body mask {body_piece_mask:#06X} — skipping {}",
-                    npc.form_id,
-                    npc.editor_id,
-                    path,
-                );
-            }
-            keep
-        })
-        .map(|path| (*path).to_owned())
-        .collect();
-
     let want_gender_tag = match gender {
         Gender::Male => 0,
         Gender::Female => 1,
     };
+    // #5487 — pair each mesh with the race's body-section ICON skin for
+    // its slot (Oblivion only; FO3/FNV body skins ride the head table).
+    let body_skin = |path: &str| -> Option<String> {
+        let icon_idx = crate::npc_spawn::humanoid_body_path_icon_index(game, path)?;
+        race.and_then(|race| {
+            race.body_part_textures
+                .iter()
+                .find(|(idx, texture, section)| {
+                    *idx == icon_idx
+                        && !texture.is_empty()
+                        && section.is_none_or(|tag| tag == want_gender_tag)
+                })
+                .map(|(_, texture, _)| texture.clone())
+        })
+        .filter(|texture| !texture.is_empty())
+    };
+    let (body_paths, body_textures): (Vec<String>, Vec<Option<String>>) =
+        humanoid_body_paths(game, gender, is_child)
+            .iter()
+            .map(|path| ((*path).to_owned(), body_skin(path)))
+            .filter(|(path, _)| {
+                let body_piece_mask = humanoid_body_path_biped_mask(game, path);
+                let covered = if path.ends_with("upperbody.nif") {
+                    equip.main_body_covered(game)
+                } else {
+                    equip.covers_biped_mask(body_piece_mask)
+                };
+                let keep = !covered;
+                if !keep {
+                    appearance.parts.push(RestorePart::body(path));
+                    log::info!(
+                        "NPC {:08X} ({}): equipped armor covers body mask {body_piece_mask:#06X} — skipping {}",
+                        npc.form_id,
+                        npc.editor_id,
+                        path,
+                    );
+                }
+                keep
+            })
+            .unzip();
+
     // #3418 — the head is the `head_part::Role::Head` entry of the RACE
     // head section, picked for this actor's gender. It used to be
     // `body_models.first()`, an append-ordered list of *every* `MODL`
@@ -363,6 +386,7 @@ pub(super) fn prepare_runtime_state(
         idle_kf_path: None,
         walk_kf_path: None,
         body_paths,
+        body_textures,
         head_path,
         head_texture,
         hair_path,
@@ -461,6 +485,9 @@ pub(super) fn prepare_creature_state(
         // Creatures have no child race split (the FO3/FNV RACE flag gate is
         // humanoid-only; `is_child` is computed against the resolved race).
         is_child: false,
+        // Creatures take no body-section ICON override; compute before
+        // the `body_paths` move below.
+        body_textures: vec![None; body_paths.len()],
         body_paths,
         head_path: None,
         head_texture: None,
@@ -576,22 +603,37 @@ pub(super) fn advance_runtime_unit(
             };
             match tex_provider.extract_mesh(body_path) {
                 Some(body_data) => {
-                    // Hands carry the wrist cut; they are the only body part
-                    // blended on a private copy of the cached import. The torso
-                    // and legs stay shared and untouched.
+                    // #5487 — the race's body-section ICON replaces the
+                    // NIF's own (Imperial-default) base texture. Hands
+                    // additionally carry the wrist cut; they are the only
+                    // body part blended on a private copy of the cached
+                    // import. The torso and legs stay shared and untouched
+                    // apart from the texture swap, which happens at spawn
+                    // time, not in the shared cache.
+                    let body_texture = state.body_textures.get(index).cloned().flatten();
+                    let body_texture_id = body_texture.as_ref().map(|texture| {
+                        let mut pool = world.resource_mut::<StringPool>();
+                        pool.intern(texture)
+                    });
                     let hand_seams = state
                         .seam_context
                         .clone()
                         .filter(|_| is_hand_part(body_path));
                     let mut tone_sampler = super::seam_blend::ToneSampler::new(world, tex_provider);
                     let mut blend_hand = |scene: &mut byroredux_nif::import::ImportedScene| {
+                        if let Some(texture) = body_texture_id {
+                            for mesh in &mut scene.meshes {
+                                mesh.material.textures.base_color = Some(texture);
+                            }
+                        }
                         let Some(context) = hand_seams.as_deref() else {
                             return;
                         };
                         let source = body_path.to_ascii_lowercase();
                         for (index, mesh) in scene.meshes.iter_mut().enumerate() {
-                            let own_texture =
-                                context.textures.get(&(source.clone(), index)).cloned();
+                            let own_texture = body_texture
+                                .clone()
+                                .or_else(|| context.textures.get(&(source.clone(), index)).cloned());
                             let stats = super::seam_blend::blend_part_seams(
                                 mesh,
                                 &source,
@@ -610,7 +652,9 @@ pub(super) fn advance_runtime_unit(
                     };
                     let pre_spawn: Option<
                         &mut dyn FnMut(&mut byroredux_nif::import::ImportedScene),
-                    > = if state.seam_context.is_some() && is_hand_part(body_path) {
+                    > = if body_texture.is_some()
+                        || (state.seam_context.is_some() && is_hand_part(body_path))
+                    {
                         Some(&mut blend_hand)
                     } else {
                         None
@@ -1257,23 +1301,33 @@ pub(super) fn build_seam_context(
             );
         }
     }
-    let sources = state
+    // #5487 — body meshes enter with the race's body-section ICON as
+    // their spawn-time base texture, so the neighbour lookup must see
+    // that skin, not the NIF's own Imperial default (the head seam's
+    // tone ratio is computed against these textures).
+    let owned = state
         .body_paths
         .iter()
-        .chain(state.armor.iter().map(|armor| &armor.model_path));
-    for path in sources {
-        let Some(scene) = crate::scene::peek_or_parse_scene(world, path, tex_provider, mat_provider.as_deref_mut()) else {
+        .zip(state.body_textures.iter())
+        .map(|(path, texture)| (path.to_owned(), texture.clone()));
+    let sources = owned
+        .chain(state.armor.iter().map(|armor| {
+            (armor.model_path.to_owned(), None::<String>)
+        }));
+    for (path, override_texture) in sources {
+        let Some(scene) = crate::scene::peek_or_parse_scene(world, &path, tex_provider, mat_provider.as_deref_mut()) else {
             continue;
         };
         let source = path.to_ascii_lowercase();
         let pool = world.resource::<StringPool>();
         for (index, mesh) in scene.meshes.iter().enumerate() {
-            let Some(texture) = mesh
-                .material
-                .textures
-                .base_color
-                .and_then(|symbol| pool.resolve(symbol))
-                .map(str::to_owned)
+            let Some(texture) = override_texture.clone().or_else(|| {
+                mesh.material
+                    .textures
+                    .base_color
+                    .and_then(|symbol| pool.resolve(symbol))
+                    .map(str::to_owned)
+            })
             else {
                 continue;
             };
