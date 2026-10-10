@@ -24,8 +24,9 @@ dimension whose Paths have no commits since the last report
 
 Paths: `crates/core/src/ecs/{world,lock_tracker,query,resource}.rs`
 First step: `cargo test -p byroredux-core lock_tracker` then `BYRO_LOCK_ORDER_CHECK=1 cargo test -p byroredux-core`
-AND `BYRO_LOCK_ORDER_CHECK=1 cargo test -p byroredux` (or read the last main run's `ABBA lock-order detector`
-job conclusion via `gh run view <id> --json jobs`). **Never skip this step on a delta-scoped run**, even when
+AND `BYRO_LOCK_ORDER_CHECK=1 cargo test -p byroredux-scripting` AND `BYRO_LOCK_ORDER_CHECK=1 cargo test -p byroredux --bin byroredux`
+(rustc ≥ 1.96 toolchain — wasmtime 49's MSRV since 15a6b1d2d) — or read the last main run's `ABBA lock-order detector`
+job conclusion via `gh run view <id> --json jobs`. **Never skip this step on a delta-scoped run**, even when
 this dimension's Paths are unchanged: the process-wide graph is built by every *caller*, and the cycles live in
 the binary's graph, not core's — core stayed green through the whole 2026-09-22..28 red streak (#4985, #4982).
 A `&mut World` function still records edges the detector cannot tell apart from `&World` ones, so hoisting
@@ -74,8 +75,8 @@ First step: `grep -rn 'type Storage = PackedStorage' crates byroredux --include=
 - **Change tracking** (`Component::TRACK_CHANGES`, default `false`): ON for NINE
   components — `Transform`, `GlobalTransform`, `Parent`, `Children`, plus `LocalBound`
   (since ad012f9d6), `Material` and `ParticleEmitter` (both since 1d56758ba /
-  #3836), and `CollisionShape` + `RapierHandles` (`crates/physics`, since 88c23887b). The sparse
-  ones get only a `structural_generation` bump and no dirty set — #3836's `SceneEffectSoftCache`,
+  #3836), and `CollisionShape` (`crates/core/src/ecs/components/collision.rs`) + `RapierHandles`
+  (`crates/physics`), both since 88c23887b. The sparse ones get only a `structural_generation` bump and no dirty set — #3836's `SceneEffectSoftCache`,
   the incremental world-bound propagation, and `physics_sync_system`'s unregistered-shape absence
   cache (`sync.rs`) consume them.
   `PackedStorage` keeps a dirty set (may hold duplicates —
@@ -112,6 +113,11 @@ First step: `grep -n 'unsafe' crates/core/src/ecs/query.rs` (expect exactly 4 de
 - `HierarchyTraversalGuard` (`crates/core/src/ecs/hierarchy.rs`) bounds every parent/children walk to
   `entities + child refs + 1` steps; transform propagation and bounds use it. A new hierarchy walk
   without it, or without a visited set, is an unbounded-loop hazard on a cyclic `Parent` graph.
+  Known-open #5513 (cite, don't re-file): the #5384 adoption-subtree walk in `retry_cinematic_readoption`
+  (`byroredux/src/systems/cinematic.rs`) and `collect_stage_mesh_handles` / `collect_subtree`
+  (`byroredux/src/loading_screen.rs`) have neither; other hand-rolled walks (`cinematic_retained_entities`,
+  `release_finished_tethers`, `subtree_entities_under`) dedupe but carry no budget. Once a shared guarded
+  collector lands in `crates/core/src/ecs/hierarchy.rs`, check every new subtree walk routes through it.
 
 ### 4. Resources & World-Level State
 
@@ -163,7 +169,8 @@ stage's parallel batch), not a stage. Registered per stage in `register_{early,u
   type is missing from its `Access`; `the_parallel_system_table_covers_every_parallel_registration`
   fails when an `add_to_with_access` lands outside the table; four exclusive fns are covered too
   (`npc_combat_ai_system`, `papyrus_provider_system`, `legacy_obscript_load_order_system`,
-  `npc_dialogue_selection_system` — #5307), and
+  `npc_dialogue_selection_system` — #5307, plus its `play_line_voice` / `raise_hello_story_event`
+  cross-file hops since #5414 `9d8fd4cc9`), and
   `cross_file_hops_and_get_forms_reach_their_acquisitions` pins that the table's cross-file hops and the
   `get` forms actually surface types (#4994).
   Sibling gates in `scheduler_access_tests.rs`: `scheduler_access_invariants_hold_on_the_real_schedule`
@@ -213,7 +220,11 @@ First step: `cargo test -p byroredux-core ecs::systems`
   system may write `GlobalTransform` on a `LocalBound`-bearing entity (its `WorldBound` lags a frame;
   billboards are the one accepted exception). A new Late `GlobalTransform` writer must make that call.
   Same rule for `Transform` writers feeding propagation: `player_body_facing_system` moved Late → Update
-  (#4995, `player_body_facing_runs_in_update_before_propagation`).
+  (#4995, `player_body_facing_runs_in_update_before_propagation`). **A mover writes `Transform`, never
+  `GlobalTransform` alone, on a propagation root** — the next propagation rebuilds the global from the unmoved
+  local and erases the step (#5373 `f0c683ef1`: the force-greet and eat/sleep walk arms turned in place
+  forever; pinned per system by `forcegreet_walk_survives_transform_propagation` /
+  `eat_walk_survives_transform_propagation`). Nothing mechanical guards a new mover — check it by hand.
 - **Animation scratch** (`byroredux/src/systems/animation.rs`): the `NameIndex.map` refill is in place
   (`clear` + reserve + reinsert; a fresh map costs a ~3 ms stream-in spike, #824); `SubtreeCache` clears
   only when the `Name` count changes (#278); `events` / `seen_labels` scratch is hoisted and
@@ -225,13 +236,30 @@ First step: `cargo test -p byroredux-core ecs::systems`
 
 ### 7. Component Lifecycles (load/unload, transient, idempotency)
 
-Paths: `byroredux/src/{streaming,npc_spawn}*`, `byroredux/src/cell_loader/unload.rs`, `crates/core/src/ecs/components/`, `crates/scripting/src/{events,timer,cleanup}.rs`, `crates/core/src/animation/registry.rs`
-First step: `cargo test -p byroredux rapier_release` then read `git log --since=<last-report-date> -- crates/core/src/ecs/components`
+Paths: `byroredux/src/{streaming,npc_spawn}*`, `byroredux/src/cell_loader/{unload,load,exterior}.rs`, `byroredux/src/systems/cinematic.rs`, `crates/core/src/ecs/components/`, `crates/scripting/src/{events,timer,cleanup}.rs`, `crates/core/src/animation/registry.rs`
+First step: `cargo test -p byroredux --bin byroredux -- rapier_release persistent_cell_stamp_tests detach_tests cinematic_retention_tests` (rustc ≥ 1.96) then read `git log --since=<last-report-date> -- crates/core/src/ecs/components`
 
 - **Cell load/unload symmetry** (`streaming/`, `cell_loader/unload.rs`): every component/resource row a
   cell load attaches is removed on unload (no orphan `CharacterController`, `LightFlicker`,
   `RapierHandles`, animation players, `SeatReservations` claims whose furniture or claimant is gone).
   Spawn dispatch is idempotent — one REFR FormId never spawns twice.
+- **`CellRoot` stamp discipline** (`stamp_cell_root_range`, `cell_loader/load.rs`): every resumable applier
+  stamps only the `[first, last)` range captured inside its own `advance`; a cursor that spans frames claims
+  whatever spawned in between. #5483 `5a68e983e`: the persistent-CELL job seeded once and gave the camera,
+  player rig and foreground cell to the persistent root — it now reseeds per advance (`begin_advance`,
+  `entities_spawned_between_advances_are_not_claimed`). Defence in depth: `unload_cell_inner` refuses any
+  victim in `player_owned_entities` (`PlayerEntity`, `ActiveCamera`, the `PlayerBodyRootEntity` subtree),
+  stripping the stray `CellRoot` with a warn — that warn is always a producer bug.
+- **Cinematic re-adoption** (`retry_cinematic_readoption`): only parentless released-convoy members queue on
+  `CinematicReAdoption`; a root's adoption stamps its whole `Children` subtree with the same `CellRoot`
+  (#5384 `faf8e5682`, `parented_subtree_rides_the_roots_adoption`), and the player subtree is never queued or
+  adopted (#5379 `203be9ed4`, `player_rider_is_never_queued_or_cell_adopted`). Known-open #5490: the
+  session-replace purge's bare `despawn_batch` removes only those pending roots — subtrees orphan, GPU/Rapier
+  release is skipped.
+- **Detach pass**: `detach_victims_from_surviving_parents` reads every victim's `Parent` under one guard
+  (dropped before the `Children` write) and tests membership by binary search over a sorted slice (#5418
+  `9bbe9304e`, source-pinned by `detach_victims_takes_one_parent_guard_for_the_whole_sweep`); a per-victim
+  `world.get::<Parent>` is the regression.
 - **Behavior components stay sparse**: every AI-procedure `*Behavior` / `*State` / terminal marker is
   `SparseSetStorage`. The roster is pinned in the debug registry by
   `roster_tests::every_ai_procedure_behavior_component_is_registered`
@@ -313,5 +341,6 @@ blending, root-motion split and text-key dispatch, driven by an ECS system.
 
 1. Scope: run each dimension's `First step:`; skim dimensions whose Paths are unchanged.
 2. `cargo test -p byroredux-core --features inspect` and `cargo test -p byroredux` (counts live in
-   ROADMAP.md; do not pin a number).
+   ROADMAP.md; do not pin a number). Every `-p byroredux` invocation here needs the rustc ≥ 1.96
+   toolchain recipe in CLAUDE.md (#4466); the default toolchain gives no feedback.
 3. Save the report to `docs/audits/AUDIT_ECS_<TODAY>.md`.

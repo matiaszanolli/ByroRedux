@@ -5,7 +5,7 @@ argument-hint: "--focus <dimensions> --game <name> --depth shallow|deep"
 
 # ESM / Plugin Parser Audit
 
-Audit `crates/plugin/` (~68k LOC in `src/`) as a parser: GRUP walker, sub-record byte
+Audit `crates/plugin/` (~69k LOC in `src/`) as a parser: GRUP walker, sub-record byte
 accounting, per-record schema dispatch, FormID load-order remap, CELL/WRLD walkers, and
 the `EsmIndex` → ECS handoff. Per-game audits (`/audit-fnv`, `/audit-skyrim`, …) each
 sample one game's slice; this skill owns the parser itself.
@@ -22,7 +22,8 @@ shared protocol (dedup, methodology, finding format). Do not duplicate them here
 `esm/records/` (`parse.rs` = the top-level GRUP walker `parse_esm[_with_load_order]`;
 `mod.rs` is a re-export barrel; `index.rs` `EsmIndex`; eight `dispatch_*.rs` routers;
 `grup_walker.rs`; per-type decoders incl. `actor/`, `items.rs`, `items/consumable.rs`,
-`container.rs`, `condition.rs`, `weather.rs`, `load_screen.rs`, `misc/*.rs` incl. `story_manager.rs`),
+`container.rs`, `condition.rs`, `weather.rs`, `weather_settings.rs` (Starfield `WTHS`), `load_screen.rs`,
+`pkin.rs`, `misc/*.rs` incl. `story_manager.rs`),
 `esm/cell/` (`walkers.rs`, `support.rs`, `wrld.rs`, `helpers.rs`, `mod.rs` data types),
 `esm/strings_table.rs`, `equip.rs`, and the Redux-native tier
 (`datastore`/`manifest`/`record`/`resolver`).
@@ -75,7 +76,10 @@ Accounting (Oblivion `LVLO`/`LVLD`, FO4 `TERM`, `LTEX.GNAM`) and Header/GRUP (in
 ceiling, skip-arm clamp), all found by Dim 8's real-data census — run it, don't skip it.
 The 2026-09-29 report's MEDIUM/LOWs were again Byte Accounting + FormID: non-FormID `u32`s
 fed to the remap (FO4 `TRDA` `FFFF` sentinel, Oblivion `EFID` char4 codes), fixed in
-`9b099b31f` (#5075/#5076) — see Dim 3 shape (4).
+`9b099b31f` (#5075/#5076) — see Dim 3 shape (4). The 2026-10-08/10-09 MEDIUMs were decodes that
+contradict their own `wbDefinitions*.pas` entry (SM `SNAM`/`RNAM`, REGN `WNAM`, PKIN `VNAM`,
+SCOL/PKIN `FLTR`, `PKDD` Dialogue Type offset) — open the xEdit definition for every decoder
+touched since the last report rather than trusting its doc comment.
 
 ## Phase 2: Dimensions
 
@@ -173,8 +177,11 @@ against, a raw plugin-local id. **Inverse shape (4)** — a non-FormID `u32` rou
 plugin with masters): xEdit `wbFormIDCk([…, FFFF])` fields go through
 `remap_fid_or_sentinel`, and Oblivion `EFID` (a `wbChar4` effect code resolved via
 `magic_effects_by_code`) through the game-gated `remap_efid` (`records/common.rs`;
-`9b099b31f`, #5075/#5076). A new sentinel-bearing field or char4 code calling `remap_fid`
-inline is the regression.
+`9b099b31f`, #5075/#5076); PKIN `VNAM` is xEdit's integer *Version*, stored raw as
+`PkinRecord.version` (`0d436e642`, #5422, pinned by `pkin_vnam_version_stays_raw_under_remap`).
+A new sentinel-bearing field, char4 code or plain integer calling `remap_fid` inline is the
+regression. Known open in this shape: SCOL/PKIN `FLTR` is a `wbString` filter path still
+decoded as a remapped `u32` array (#5493).
 **Checklist**:
 - `GlobalSlot::Regular` keeps 24 bits; `GlobalSlot::Light` (`0xFE` space) packs a 12-bit
   sub-index and keeps only the low **12** object-id bits (`0x0FFF` masks on both sides);
@@ -208,7 +215,9 @@ First step: `cargo test -p byroredux-plugin -- dispatch_handled_fourccs every_in
 (`DISPATCH_HANDLED_FOURCCS` ↔ the live match in `parse.rs`; era-gated arms count as
 handled, `PDCL` is deliberately absent, LCTN has no top-level arm);
 `index::tests::every_index_map_is_a_category_or_a_recorded_exclusion` (every `EsmIndex`
-map is a `categories()` row or a reasoned exclusion); `cell::plugin_loading_doc_pin_tests::the_documented_esm_cell_index_lists_every_field` and
+map is a `categories()` row — `map_category!` or a hand-written row recognized by its count
+closure, like `dialogues` — or a reasoned exclusion: `record_types`, the derived
+`generic_greeting_form` cache); `cell::plugin_loading_doc_pin_tests::the_documented_esm_cell_index_lists_every_field` and
 `…::the_audio_record_split_matches_the_dispatcher` (docs ↔ code).
 **Checklist**:
 - Build the live matrix per record type: typed decode / minimal stub
@@ -217,8 +226,10 @@ map is a `categories()` row or a reasoned exclusion); `cell::plugin_loading_doc_
   *record_type_catalog* as coverage, not bugs. A stub must advance the reader correctly;
   the unknown-record path skips by declared size and never `warn`s per record on a vanilla
   master.
-- Per-game schema splits within one record (`ARMO/WEAP/AMMO DATA`, `BOD2` vs `BMDT`,
-  `SCOL/PKIN/TXST`, FO76 `LVLO`) switch on `GameKind`. **`ACRE` is not Oblivion-only**
+- Per-game schema splits within one record (`ARMO/WEAP/AMMO DATA`, `BOD2` vs `BMDT` vs
+  Skyrim's pre-BOD2 `BODT` — 8 or 12 B, same leading biped mask, read in both `ARMO` and
+  `ARMA` since `479414ffe` (#5358; every Skyrim.esm ARMA authors it, so BOD2-only decoding
+  zeroed all 766 masks), `SCOL/PKIN/TXST`, FO76 `LVLO`) switch on `GameKind`. **`ACRE` is not Oblivion-only**
   (FO3 ships 3,349 `ACRE` vs 2,154 `ACHR`) — flag any new per-game gate on it.
 - **Consumables / items decode contract** (decode only; consumption is `/audit-gameplay`):
   `ALCH` effect chains via `parse_alch_for_game`; `MgefRecord.instant_restoration_av` via
@@ -236,6 +247,11 @@ map is a `categories()` row or a reasoned exclusion); `cell::plugin_loading_doc_
 - `EsmIndex::merge_from`: last-write-wins matches Bethesda override semantics; `game` is
   only adopted when `other.total() > 0` (a failed-parse `EsmIndex::default()` must not
   relabel the load order as FO3/FNV, #3403); `character_rules` is first-non-`NONE` wins.
+  **Exception — `dialogues`** (`168b81322`, #5375): an override DIAL replaces only the
+  header fields and folds its INFOs into the master's list by FormID (same id in place, new
+  id after its `PNAM` predecessor), and the prune arm drops Deleted-INFO tombstones from every
+  topic; whole-record `extend` erased 8.5–9.9k FNV INFOs per DLC. Known open: `PNAM == 0`
+  heads insert at index 0, reversing an override's own chain heads (#5494).
   Top-level maps merge through `categories()`; `EsmCellIndex::merge_from` destructures
   exhaustively (#4904 — a `..` there is the regression that dropped `landscape_grasses`).
 - `actor_value_derive.rs` is the CHARAL feed — formulas belong to `/audit-character`.
@@ -243,7 +259,7 @@ map is a `categories()` row or a reasoned exclusion); `cell::plugin_loading_doc_
   `CREA CNAM` is not a class (#3383); `FACT` rank ladder (#3338); `ARMO` contributes every
   race-matching `ARMA` (#3357), `MOD3` is the female mesh (#3414); a `REFR` tombstone
   removes the placement wherever it lives (#3362); FO76 `HEDR` is patch-dependent — 279.0 on the 2026-09-20 patch, never pin it (#3405, #4643);
-  DIAL quest ownership reads `QSTI` **or** `QNAM` (Skyrim authors `QNAM`; `parse_dial`); FO3/FNV/Oblivion INFOs also carry their **own** owning quest in `InfoRecord.quest` (`QSTI`, remapped, 23,247/23,247 FNV INFOs; `dbc07e8f0`, #5271 — Skyrim+/FO4 author none, `0` = use the topic's ownership); INFO `DATA` is typed `InfoDataHeader` (info_type / next_speaker / flags1 / flags2; Goodbye = Flags 1 bit 0) and Skyrim's 8-byte `DATA` lands raw in `skyrim_data` (`25b678106`, #5295); `SMBN`/`SMEN`/`SMQN` decode into `story_manager_nodes` (`misc/story_manager.rs`, #5366).
+  DIAL quest ownership reads `QSTI` **or** `QNAM` (Skyrim authors `QNAM`; `parse_dial`); FO3/FNV/Oblivion INFOs also carry their **own** owning quest in `InfoRecord.quest` (`QSTI`, remapped, 23,247/23,247 FNV INFOs; `dbc07e8f0`, #5271 — Skyrim+/FO4 author none, `0` = use the topic's ownership); INFO `DATA` is typed `InfoDataHeader` (info_type / next_speaker / flags1 / flags2; Goodbye = Flags 1 bit 0) and Skyrim's 8-byte `DATA` lands raw in `skyrim_data` (`25b678106`, #5295); `SMBN`/`SMEN`/`SMQN` decode into `story_manager_nodes` (`misc/story_manager.rs`, #5366 closed — the SM dispatches live): `SNAM` is the **previous** sibling (xEdit *Previous Node*; `846e4a6dd`, #5385 — the same-parent census holds in both directions and cannot settle it), `SMQN` `RNAM` is stored hours × 24 and decoded ÷ 24 (xEdit scale `1/24`; `a621d5352`, #5386 — node `HNAM` stays raw), and `XNAM`/`MNAM`/`HNAM`/`QNAM`/`FNAM`/`UNAM` + `DNAM` `0x2`/`0x40000` are named from xEdit (`5489cbe65`, #5420; per-quest `FNAM`/`UNAM` stored node-level is open #5515); INFO Flags 1 bit 5 = Random End (`random_end`, `0436bea5c`, #5397); REGN `WNAM` is the owning **worldspace** (`worldspace_form`, remapped), never a weather, and REGN `CNAM` is xEdit-undefined with zero vanilla occurrences (`bd052048a`, #5421); `NPC_.WNAM` is the per-NPC skin ARMO (`worn_skin`, remapped, no game gate — pre-Skyrim ships none; `edb5fbdfe`, #5359); Oblivion `RACE`'s body-section `ICON` run (INDX restarts at 0 past `NAM1`) lands in `body_part_textures` (`1b45763fa`, #5487); Starfield `WTHS` decodes the REFL/RDIF reflection *schema* only, not instance values (`weather_settings.rs`, #5364; `DIFF` mis-decode open #5514).
 - `equip.rs::main_body_bit` FO76/Starfield arms are a **provisional inference**
   (`PROVISIONAL (#4074)`, pinned by `fo76_and_starfield_arms_are_marked_provisional`) —
   known and marked; report only if the marker is removed without an xEdit citation.
@@ -279,7 +295,12 @@ First step: `git log --since=<last report> --format='%h %cs %s' -- crates/plugin
   SF height-fog (#5002), WTHR fog distances + height-fog tail (#5001/#5134), water heights,
   WATR `DNAM` lengths ×70 and per-metre absorption ÷70 — only for offsets the record
   authored (#5151, `24cb577d2`), LAND heights, NAVM vertices, XRGD ragdoll-pose offsets (`5f1a862be`, #5299; Euler stays wire-valued). FO76 is BU-native except the
-  shared-decoder WATR absorption lane, its only lift (#5169). Check new Starfield distance
+  shared-decoder WATR absorption lane, its only lift (#5169). Three Starfield WATR `DNAM` lane
+  families (noise-UV tiles, displacement simulator, normal falloff) are deliberately **not**
+  lifted — unit unsettled, pinned by `starfield_watr_defers_the_unclassified_dnam_lanes`; the
+  LGTM + cell-XCLL lift is pinned through `parse_esm` by
+  `starfield_index_lifts_lgtm_and_xcll_lighting_distances` (`2dab4ff48`, #5170/#5171,
+  `records/spatial_units_tests.rs`). Check new Starfield distance
   fields join it, dimensionless fields (XSCL, Euler) stay out, decoder defaults for an
   unauthored field are never lifted, and no path normalizes an index twice.
 - Lighting-template inheritance is per-field; "absent" and "authored zero" stay distinct.
@@ -299,11 +320,20 @@ First step: `git log --since=<last report> --format='%h %cs %s' -- crates/plugin
   `INT_MIN` / `FLT_MAX` sentinel → suppress (`gated_water_height` in `esm/cell/helpers.rs` +
   `water_height_is_explicit`; `docs/engine/watal.md`).
 - Exterior grid `XCLC`, worldspace parenting and selective-inheritance flags (`wrld.rs`):
-  a child inherits only the flagged categories.
+  a child inherits only the flagged categories. Oblivion authors no `PNAM`, so
+  `parse_wrld_group` stamps land/LOD/water/climate inherit bits on every Oblivion child
+  (`67afa4b95`, #5374 — pre-FO3 "child ⟹ inherit all"); an authored zero `PNAM` on FO3+
+  must stay zero.
 - `parse_land_record`: quadrant/layer counts and splat rows are fixed-stride. An `ATXT`
   with no following `VTXT` must flush with `alpha: None` (`pending_atxt`, #4078;
   measured 14× on `Oblivion.esm`). `LTEX.GNAM` is an **array** of grasses, kept in
   authored order into `landscape_grasses` by `parse_ltex_group` (#4642; last-wins was the bug).
+- FO4 precombine CELL sub-records (`CellSubrecordFields::absorb`): the `XCRI` tail is
+  `ref_count / 2` × (ref FormID, bake hash) pairs → `CellData.absorbed_ref_bakes` (the skip
+  set); `XPRI` is the disjoint previs list, validated and **not** stored (`777351ec1`,
+  #5484 — the two were inverted, double-drawing every baked STAT/SCOL). Guards
+  `parse_cell_xcri_pairs_remap_and_keep_their_bake_hash`,
+  `parse_wrld_exterior_cell_captures_precombined_xcri_xpri`.
 - Starfield `TXST`: an unmodelled slot warns once (#4438), not per record.
 - Navmesh: classic `NVTR`/`NVEX` and packed `NVNM` (`decode_nvnm`, `NVNM_MAX_DIVISOR`)
   yield the same `NavmRecord` through shared row decoders; the cursor refuses to pass the

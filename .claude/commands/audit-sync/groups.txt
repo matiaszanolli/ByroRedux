@@ -7,7 +7,8 @@ renderer: renderer performance
 safety: safety concurrency tech-debt
 esm: esm legacy-compat regression
 nif: nif nifal speedtree parsers
-ecs: ecs character save scripting papyrus
+ecs: ecs save
+scripting: scripting papyrus character
 gameplay: gameplay physics audio
 exterior: exterior runtime
 fnv: fnv

@@ -56,8 +56,9 @@ artifact). "This barrier looks wrong" is a HYPOTHESIS row, not a fix.
 
 ## Phase 1: Setup
 
-1. Parse `$ARGUMENTS`. 2. `mkdir -p /tmp/audit/concurrency`. Toolchain: every `cargo test -p byroredux`
-   step below needs rustc >= 1.94 — rustup cargo per `docs/contributing.md` § Toolchain note (#4466) — or the bin crate gives no feedback.
+1. Parse `$ARGUMENTS`. 2. `mkdir -p /tmp/audit/concurrency`. Toolchain: every `cargo test -p byroredux` / `--workspace`
+   step below needs rustc >= 1.96 (wasmtime 49 / cranelift 0.136 MSRV since 15a6b1d2d; it was 1.94 under #4466) —
+   rustup cargo per `docs/contributing.md` § Toolchain note — or the bin crate gives no feedback.
 3. `gh issue list --repo matiaszanolli/ByroRedux --limit 200 --json number,title,state,labels > /tmp/audit/concurrency/issues.json`
 
 ## Phase 2: Launch Dimension Agents
@@ -161,7 +162,7 @@ First step: `git log --since=<last-report-date> --format='%h %s' -- crates/rende
 
 ### Dimension 3: ECS Lock Ordering & Deadlock (system level)
 Paths: `crates/core/src/ecs/{world,lock_tracker}.rs`, `byroredux/src/systems/`, `byroredux/src/extensions/`, `.github/workflows/ci.yml`
-First step: `BYRO_LOCK_ORDER_CHECK=1 cargo test -p byroredux` — the binary's graph is where every recent cycle lived (#4982–#4984, #5025; core alone stays green) — then CI's `lock-order-check` form, `cargo test --workspace --no-fail-fast --exclude byroredux-ui`. A nonzero failure count is a hard regression
+First step: `BYRO_LOCK_ORDER_CHECK=1 cargo test -p byroredux` — the binary's graph is where every recent cycle lived (#4982–#4984, #5025, #5371, #5372; core alone stays green) — then CI's `lock-order-check` form, `cargo test --workspace --no-fail-fast --exclude byroredux-ui`. A nonzero failure count is a hard regression
 Machinery — TypeId-sorted pairs, tracker-scope arming, `lock_tracker` internals (check-before-insert,
 `GRAPH` poison recovery, recursive-read warning) and poison resolution — is `/audit-ecs` Dim 1; do not
 re-audit it here. This dimension owns how *systems* use it.
@@ -181,13 +182,19 @@ re-audit it here. This dimension owns how *systems* use it.
   and `vulkan_validation_job_resolves_lavapipe_and_fails_on_init_failure` in
   `byroredux/src/scheduler_access_tests.rs`). Since #4987 (6d5d8fa5f) the lane hard-fails unless the bench
   log carries the `Selected GPU:` line (`vulkan_validation_job_requires_a_selected_device`), so a green run
-  did reach a device — but it drives a 5-frame `--bench-frames` run of the default no-game-data scene, and a
-  green run proves only what it exercised. Its `[Vulkan]` gate matches every level the log filter admits,
-  and the renderer crate rides at info for that gate, so WARN-level performance warnings
-  (`WARNING-Shader-OutputNotConsumed`) redden it too — read which severity fired before calling a red run a hazard.
+  did reach a device, and since #5261 (59115f54c) on an `rt-integrity: … rt_flag=1 … tlas_build=1` line, so the RT
+  consumers ran (`vulkan_validation_job_requires_live_rt`, #5416) — but it drives a 5-frame `--bench-frames` run of
+  the default no-game-data scene, and a green run proves only what it exercised. Its `[Vulkan]` grep is
+  severity-blind, so the log lift is scoped to `byroredux_renderer::vulkan::device` (#5263, a88100975; asserted in
+  `vulkan_validation_job_requires_a_selected_device`): the messenger stays at the error floor, and a red `[Vulkan]`
+  run is an ERROR, not a WARN-level performance warning. A crate-wide `byroredux_renderer=info` lift is the regression.
 - **The graph cannot tell `&mut World` from `&World`.** A function holding several read guards at once under
   `&mut World` cannot deadlock but still records edges and reddens the lane (#4982, the unload capture
   passes). The fix is the same snapshot-then-acquire shape, not an exemption.
+- **A fixture records only the edges its storages allow.** #5372 (1c15a2270) closed
+  `LoadedCellIndex → StoryEvent → LoadedCellIndex` (the hello location resolved under the `StoryEvent` guard), which the
+  lane never saw because the dialogue fixture lacked the Story Manager storages and `raise_hello_story_event` returned
+  at its first line. A test world that skips the boot's registrations hides that chain from the detector, so check it.
 - **Canonical order.** `docs/engine/ecs.md` § Lock-ordering policy is the arbiter for hand-ordered
   holds (`StringPool` is a sink: acquired last, nothing beneath it). New multi-lock code follows it.
 - **Guard lifetime in system bodies.** No `query_mut` / `resource_mut` guard held across a call that
@@ -216,7 +223,8 @@ The access model and the mechanical declaration guard (`system_access_declaratio
   within a listed file but cross-file hops only where `PARALLEL_SYSTEMS` lists them (#4994,
   `cross_file_hops_and_get_forms_reach_their_acquisitions`); closures and macros; exclusive systems (four are
   scanned — `npc_combat_ai_system`, `papyrus_provider_system`, `legacy_obscript_load_order_system`, and
-  `npc_dialogue_selection_system`, whose scan follows the spoken-INFO fragment path into the scripting crate, #5307;
+  `npc_dialogue_selection_system`, whose scan follows the spoken-INFO fragment path into the scripting crate, #5307,
+  and `apply_selection`'s voice / AHEL hops `play_line_voice` + `raise_hello_story_event`, #5414 9d8fd4cc9;
   others only by the non-empty-access tests). The table and these scans live in `system_access_declaration_tests`
   (`byroredux/src/boot/schedule/mod.rs`).
   An under-declared parallel system makes `known_conflict_count() == 0` unsound (the same-session
@@ -228,7 +236,9 @@ The access model and the mechanical declaration guard (`system_access_declaratio
   the previous frame's wind by design, #3111/#4186), `billboard_runs_after_camera_follow_in_late`,
   `footstep_runs_after_camera_follow_in_late`, `submersion_runs_after_camera_follow_and_before_water_audio`
   (#3652/#3180/#4185 — each was a real one-frame-stale bug), `player_body_facing_runs_in_update_before_propagation`
-  (#4995), and the spoken-INFO path in Stage::Late must not claim the fragment journal cursor
+  (#4995), `story_dispatch_and_forcegreet_update_ordering_is_pinned` (#5415, a9f94455d: CLOC producer → Story
+  Manager dispatch → `quest_alias_refresh_system`, and `ambient_ai_package_system` → `forcegreet_system` → Late
+  dialogue selection), and the spoken-INFO path in Stage::Late must not claim the fragment journal cursor
   its same-frame `QuestStageAdvancedBatch` drains unread (#5297, 68a06509a). For any NEW single-writer / multi-reader resource,
   check writer-stage ≤ reader-stage and that a test like these pins it; fix by moving the *consumer* to
   a Late exclusive after the writer, not by moving the writer.
@@ -237,7 +247,7 @@ The access model and the mechanical declaration guard (`system_access_declaratio
 **Output**: `/tmp/audit/concurrency/dim_4.md`
 
 ### Dimension 5: RwLock Patterns — Resource↔Storage & Physics Step
-Paths: `crates/physics/src/{sync,components,config}.rs`, `crates/physics/src/world/`, `byroredux/src/cell_loader/unload.rs`, `byroredux/src/systems/character.rs`, `byroredux/src/ragdoll.rs`
+Paths: `crates/physics/src/{sync,components,config}.rs`, `crates/physics/src/world/`, `byroredux/src/cell_loader/unload.rs`, `byroredux/src/systems/{character,forcegreet,eat_sleep}.rs`, `byroredux/src/ragdoll.rs`
 First step: `cargo test -p byroredux-physics sync` and `BYRO_LOCK_ORDER_CHECK=1 cargo test -p byroredux-physics`
 **Checklist**:
 - **TypeId sorting does not cover Resource↔Storage.** A `resource_mut` and a `query`/`query_mut` are an
@@ -261,7 +271,10 @@ First step: `cargo test -p byroredux-physics sync` and `BYRO_LOCK_ORDER_CHECK=1 
 - **Helper order.** `set_linear_velocity` / `set_kinematic_translation` read `RapierHandles` via
   `world.query::<RapierHandles>()…copied()` (guard drops with the expression), *then* take
   `resource_mut::<PhysicsWorld>()`; callers (e.g. `character_controller_system`) must not already hold a
-  `PhysicsWorld` guard.
+  `PhysicsWorld` guard. `PhysicsWorld` is a sink like `StringPool` (last, nothing taken under it — `docs/engine/ecs.md`):
+  #5371 (f0c683ef1) was `forcegreet_system` / `eat_sleep_system` holding it across storage reads and the dialogue open,
+  closing `Transform → PhysicsWorld → Transform` against `ragdoll_writeback_system`; pinned by
+  `forcegreet_walk_with_real_physics_world` and `eat_walk_with_real_physics_world` under the detector.
 - **`ContactConfig`** is read via `try_resource` and snapshotted once per batch in `register_newcomers`, not re-locked per newcomer.
 - **Cell-unload teardown (#1520).** `release_victim_rapier_bodies` (`unload.rs`) collects victims'
   `RapierHandles` under the read guard, drops it, then removes bodies from `PhysicsWorld`, before the despawn loop drops the handles.
@@ -320,8 +333,8 @@ First step: `grep -rnE 'thread::(spawn|Builder)|rayon::|mpsc::' --include='*.rs'
   volumetrics, SSAO, scene buffers, etc.; no holder keeps it locked across a queue submit or a
   fence wait. The egui pass takes the queue as a `Mutex` so its lock scopes to the `set_textures` submit (#1713).
 - **`Send + Sync` bounds.** Component/Resource storage is reached only through World guards; no raw
-  pointer crosses threads; the Ruffle/wgpu device (`crates/ui`) is `Send` but not `Sync` and stays on one
-  thread; kira runs its own audio thread behind `AudioWorld` — no ECS guard is held across a kira call.
+  pointer crosses threads; Ruffle's `Player` (`crates/ui`, owned by `UiManager`) is not `Send` (non-`Send` video /
+  audio backends), so it lives in the main loop outside the ECS and stays on one thread; kira runs its own audio thread behind `AudioWorld` — no ECS guard is held across a kira call.
 - **Other rayon fan-outs.** `build_render_data` (`byroredux/src/render/mod.rs`) runs nested `rayon::join`
   branches that take ECS guards on pool threads — every branch must be read-only, or a write in one branch vs.
   a read in another is a cross-thread ABBA no CI lane drives. The plugin load-order walk

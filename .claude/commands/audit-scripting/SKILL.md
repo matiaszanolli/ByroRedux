@@ -25,7 +25,7 @@ analogue of NIFAL's no-fabrication rule).
 
 ## Scope
 
-`crates/scripting/src/` (~45k LOC): `translate/` (`mod`, `source`, `archetype`, `compose`, `effects`, `tables`,
+`crates/scripting/src/` (~49k LOC): `translate/` (`mod`, `source`, `archetype`, `compose`, `effects`, `tables`,
 `recognizers/{quest_stage_gate,rumble,two_state_activator}`); `fragment.rs` + `fragment/{effects,populate,
 state,systems}.rs`; `quest_stages.rs`, `globals.rs`, `vm_state.rs`, `events.rs`, `cleanup.rs`, `timer.rs`,
 `recurring_update.rs`, `condition.rs`, `trigger.rs`, `player_control.rs`, `equipment.rs`, `registry.rs`;
@@ -45,9 +45,10 @@ Object fills, true `LCTN`, reference collections, unloaded-world search, injecte
 packages/spells/keywords overlays — real gaps, don't re-file as discoveries), crate docstrings
 (`translate/mod.rs`, `fragment.rs`, `cleanup.rs` marker house rules).
 
-**Known-open — cite, don't re-file** (verified 2026-10-08 with `gh issue view`): none owned here. #4113/#4115
-are open but live in `crates/papyrus`/`crates/pex` (`/audit-papyrus`). Closed: #3817 (cinematic retention reversible, `63bf3347f`), #4415 (magic runtime incl. the racial pair, `9813af435`), #5366 Phases 0-4 (Story Manager), #4334 (once-only
-persistence, `ReferenceScriptState`), #4190, #4116.
+**Known-open — cite, don't re-file** (verified 2026-10-10 with `gh issue view`): none owned here. #4113/#4115
+are open but live in `crates/papyrus`/`crates/pex` (`/audit-papyrus`). Closed: #3817 (cinematic retention reversible, `63bf3347f`), #4415 (magic runtime incl. the racial pair, `9813af435`), #5366 (Story Manager, Phases 0-4 all shipped), #5367 (dialogue
+trees: greeting/line lifetime/FO3-FNV force-greet `14cff35ae`, Skyrim force-greet `287214103`) and its #5397
+Random-stack follow-up (`0436bea5c`), #4334 (once-only persistence, `ReferenceScriptState`), #4190, #4116.
 Not gaps: the M47.1 condition resolvers and fragment lowerer are implemented and live-verified; `MoveTo`
 default-materialized shapes lower (#3487); the QUST VMAD property table is wired.
 
@@ -74,7 +75,7 @@ HIGH; panic/OOB/unbounded alloc or recursion on mod-supplied bytes → HIGH; `fe
 read the newest `docs/audits/AUDIT_SCRIPTING_*.md` (older reports use the pre-split 8-dimension numbering:
 old 5→Dim 1/2, old 6→Dims 2/3, old 7→Dim 4, old 8→Dim 5) and diff against it; read `translate/mod.rs`,
 `fragment.rs`, `cleanup.rs` docstrings and `m47-2-design.md` §"Risks & mitigations" to separate designed
-declines from defects. Delta-first: `git log --since=<last report> --format='%h %cs %s' -- crates/scripting byroredux/src/cell_loader/references byroredux/src/asset_provider/script.rs byroredux/src/systems/cinematic.rs`.
+declines from defects. Delta-first: `git log --since=<last report> --format='%h %cs %s' -- crates/scripting byroredux/src/cell_loader/references byroredux/src/asset_provider/script.rs byroredux/src/systems/cinematic.rs byroredux/src/systems/npc_dialogue.rs byroredux/src/systems/forcegreet.rs byroredux/src/systems/story_events.rs`.
 Run `cargo test -p byroredux-scripting` and `cargo test -p byroredux --bin byroredux boot::schedule`.
 
 ## Phase 2: Dimensions
@@ -103,7 +104,7 @@ they cannot see:
   non-literal for a default-only parameter, is a finding; the pattern is "accept only the literal-default form,
   decline the rest" (`MoveTo`: ≤ `MOVE_TO_MAX_ARGS`=6 with offsets `0.0`, rotation flags at defaults;
   `AddItem`: literal `abSilent`). Post-2026-09-19 primitives to hold to this: `StopCombat`, `AddSpell` (accepts
-  and drops a literal `abVerbose`), `RemoveSpell` (#4414/#4415), `AddRaceSpells`/`RemoveRaceSpells` (unqualified argless call onto the player; apply re-applies/clears exactly the spawn-stamped `RaceSpells` set, a scripted `AddSpell` survives the clear, `9813af435`), `SetUnconscious` (`prim_set_unconscious`,
+  and drops a literal `abVerbose`), `RemoveSpell` (#4414/#4415), `AddRaceSpells`/`RemoveRaceSpells` (unqualified argless call onto the player; apply re-applies/clears exactly the stamped `RaceSpells` set, a scripted `AddSpell` survives the clear, `9813af435`; the player's own stamp is `attach_to_player`'s, #5413 `212a71dba` — before it both were silent no-ops on the only actor they target), `SetUnconscious` (`prim_set_unconscious`,
   `[abUnconscious = true]`, player receiver declines; #5017 `3c08cfe50`).
 - **Receiver/hole binding never defaults to form-id 0**: `QuestRef::{OwningQuest, SelfRef, Property}` must
   fully resolve (`OwningQuest` needs `ctx.owning_quest`; `SelfRef` on a REFR declines); `ObjectRef` has no
@@ -210,10 +211,16 @@ Guards: `cleanup.rs::every_drained_marker_is_a_documented_pattern_a_marker`, `cl
 - **CTDA OR-precedence** (`condition.rs::evaluate`): consecutive `or_next` conditions form a block that binds
   tighter than the AND chain (`A AND B OR C AND D` = `A AND (B OR C) AND D`); empty list → `true`; guards
   `or_precedence_quirk_*`, `and_chain_short_circuits_on_first_false`. Function catalog per the module-doc
-  table (indices verified against TES5Edit); `GetIsID` compares the Run-On's **base** object
+  table (indices verified against TES5Edit; `CATALOG` is 25 since #5380 `395d2d831` added 56 `GetQuestRunning`,
+  74 `GetGlobalValue`, 77 `GetRandomPercent` — the last rides `StoryManagerRng`, a documented 50.0 with none
+  installed; fn 0 `GetButtonPressed` is a constant −1, no MessageBox runtime, so `== N` is honestly false rather
+  than fail-open, `00f580e09`); `GetIsID` compares the Run-On's **base** object
   (`SceneAliasCandidate::base_form_id`), not the placed ref (#5041 `1816bbc14`,
   `get_is_id_matches_run_on_base_object_not_placed_reference`); `GetActorValue` reads through
-  `CharacterRuleset::actor_value` (the shared derived+modifier composer, #5042 — `/audit-character` Dim 4); unknown functions return the documented safe default, `RunOn`
+  `CharacterRuleset::actor_value` (the shared derived+modifier composer, #5042 — `/audit-character` Dim 4); unknown functions return the documented safe default — a
+  display/selection default only: a consumer that *acts* on a pass must decline on any `Unknown` term first
+  (Story Manager nodes, #5380; the ambient force-greet install's `package_conditions_fully_modeled`, #5376), and
+  a new intrusive consumer that trusts the fail-open pass is the finding; `RunOn`
   resolution declines (condition fails) on an unresolvable target rather than defaulting to the subject; a
   wrong sentinel flips a condition. `crates/plugin/src/consumables.rs` borrows fn-586 semantics by profile
   (`/audit-character` Dim 1).
@@ -256,7 +263,8 @@ Untrusted-Input: Yes — `.pex` bytes come from possibly-modded archives.
   `materialize_scene_actor_alias_stubs` in `asset_provider/script.rs` — go through
   `spawn_logical_quest_reference_with_scripts` (attaches once per `reference_form_id`, #4112/#4331; a source
   pin rejects the bare spelling). Residual (documented in the helper): a stub followed by the home cell
-  streaming in leaves scripts on both — stub/real reconciliation (#2664's half) is unbuilt. New spawn paths
+  streaming in leaves scripts on both — stub/real reconciliation is unbuilt and untracked (the helper doc calls it
+  *#2664's half*, but #2664 closed on the stamping/`Transform` half; no open issue owns it). New spawn paths
   that call the bare spawner are the recurrence.
 - **Canonical identity stamping** (`stamp_quest_reference`: `FormIdComponent` + `SceneAliasCandidate` +
   `mark_scene_actor_bindings_dirty`) is applied at every synthetic REFR path, gated on the primary synth child
@@ -280,8 +288,8 @@ Untrusted-Input: Yes — `.pex` bytes come from possibly-modded archives.
 **Output**: `/tmp/audit/scripting/dim_4.md`
 
 ### Dimension 5: Scene / Package / Dialogue / Cinematic Playback
-Paths: `crates/scripting/src/{scene.rs,scene/**,package.rs,dialogue.rs,cinematic.rs}`, `byroredux/src/systems/{cinematic,npc_dialogue}.rs`, `byroredux/src/cell_loader/unload.rs`, `byroredux/src/asset_provider/animation.rs`
-First step: `cargo test -p byroredux-scripting -- scene:: package:: dialogue:: cinematic::`; `cargo test -p byroredux --bin byroredux -- cinematic strip_ active_tether`
+Paths: `crates/scripting/src/{scene.rs,scene/**,package.rs,dialogue.rs,cinematic.rs,story_manager.rs}`, `byroredux/src/systems/{cinematic,npc_dialogue,forcegreet,story_events}.rs`, `byroredux/src/cell_loader/unload.rs`, `byroredux/src/asset_provider/animation.rs`
+First step: `cargo test -p byroredux-scripting -- scene:: package:: dialogue:: cinematic:: story_manager::`; `cargo test -p byroredux --bin byroredux -- cinematic strip_ active_tether npc_dialogue forcegreet story_dispatch_and_forcegreet`
 The M47.2 MQ101 cart sequence is the first scripted sequence that drives *animation*, not just ECS state.
 - **Scene alias substrate**: `SceneActorBindings` `(quest, alias) → EntityId` is what `resolve_object`,
   `RunOn::QuestAlias`, and `SceneShowCommand` all resolve through (one entry point — a debug view must not use
@@ -306,35 +314,69 @@ The M47.2 MQ101 cart sequence is the first scripted sequence that drives *animat
   ownership. **Spoken-line fragments** (#5152, `c59600138`): `DialogueInfoFragments` (TIF_ INFO VMAD, rebuilt
   from plugin data, unsaved) dispatches the line's OnBegin at selection and the outgoing line's OnEnd on
   selection change / close via `apply_spoken_info_fragment` — the same guard-free executor + journal polling
-  as the quest/scene dispatchers (`the_spoken_lines_fragments_advance_the_stage`). Greetings and line
+  as the quest/scene dispatchers (`the_spoken_lines_fragments_advance_the_stage`); every native leave path
+  (Close, Escape, the Inventory key) funnels through `App::leave_dialogue_page` → `end_open_conversation`, so
+  the OnEnd dispatches on all of them (#5409 `14b0d33f2`). Greetings and line
   lifetime (#5367 `14cff35ae`): `open_conversation` falls back to the master's generic greeting topic
-  (`GREETING` FO3/FNV, `DialogueGenericHello` Skyrim) when no owned quest topic qualifies; `select_info`
+  (`GREETING` Oblivion/FO3/FNV, `DialogueGenericHello` Skyrim — resolved once per load order onto
+  `EsmIndex::generic_greeting_form`, the map scan kept only as the hand-built-index fallback, #5426
+  `411d0eeaf`) when no owned quest topic qualifies; `select_info`
   collects every passing candidate — the first wins, and a Random first INFO rolls within its positional
-  Random stack (ended by the next passing non-Random INFO or a Random End, #5397) through the seeded
-  `DialogueRandomState`, spoken Say-Once INFOs are disqualified through the saved
-  `DialogueSpokenInfoForms` ledger (FORMAT_MAJOR 33); a spoken Goodbye closes on the presentation estimate. FO3/FNV
+  Random stack (ended by the next passing non-Random INFO or a Random End, #5397 `0436bea5c`) through the seeded
+  `DialogueRandomState`; position is the merged INFO chain (override INFOs fold by FormID after their PNAM
+  predecessor, #5375 `168b81322` — the merge itself is `/audit-esm`). Spoken Say-Once INFOs are disqualified
+  through the saved `DialogueSpokenInfoForms` ledger (column added at FORMAT_MAJOR 33); a spoken Goodbye closes on
+  the presentation estimate. FO3/FNV
   INFOs honour their own owning quest (QSTI, #5271 `dbc07e8f0`). **Force-greet**
   (`systems/forcegreet.rs`, `ForceGreetDirective` bridge): FO3/FNV Dialogue procedure (`PKDD` topic on
   `PackRecord::dialogue_topic`) and the Skyrim `ForceGreet` procedure-tree leaf (#5367 `287214103`) walk the NPC
-  to the player and open the topic through the same selection path without activation; vanilla installs these from
-  quest scripts, so `dialogue.forcegreet` is the only installer today (smoke `dt1`/`dt2`). Every opened
-  conversation raises an `AHEL` story event. Talk-candidate filtering (`populate_candidates`, `byroredux/src/interaction.rs`)
+  to the player and open the topic through the same selection path without activation. Two installers: the
+  `dialogue.forcegreet` console door (any Dialogue package, unconditionally — the drivable one, smoke `dt1`/`dt2`)
+  and FO3/FNV ambient package selection, which installs only from a fully-modeled, player-targeted (PTDT 0x14 or
+  none) Conversation (`PackRecord::dialogue_type` 0) — #5376 `4e58f241d`, `AmbientBehavior::from_package` in
+  `byroredux/src/npc_spawn/ai_package.rs` (`/audit-gameplay`), pinned by `dialogue_ambient_install_declines_unmodeled_offtarget_sayto`;
+  the Skyrim tree dialect has no ambient installer. A failed open consumes the directive (no per-frame retry);
+  `forcegreet_system` holds every directive while `player_can_act` is false and holds one while the player talks
+  to another NPC (consumed if already talking to the greeter) — #5392 `16544d4c9`,
+  `dead_player_holds_the_forcegreet_directive`, `open_conversation_holds_or_consumes_the_forcegreet_directive`.
+  Walk steps write `Transform` (not `GlobalTransform`) and `PhysicsWorld` is held for the step alone (#5373/#5371
+  `f0c683ef1`). Every opened conversation raises an `AHEL` story event; `raise_hello_story_event` resolves the
+  location *before* taking the `StoryEvent` guard and the open sites scope their `LoadedCellIndex` read to a clone
+  (#5372 `1c15a2270` — the `LoadedCellIndex → StoryEvent → LoadedCellIndex` cycle). The `npc_dialogue_selection`
+  Access row declares the cross-file voice and AHEL hops, and the declaration scan lists `dialogue_voice.rs` and
+  `story_events.rs` explicitly (#5414 `9d8fd4cc9` — the same-file callee walk cannot follow a hop into another
+  file). Talk-candidate filtering (`populate_candidates`, `byroredux/src/interaction.rs`)
   takes each alias-resource guard alone and builds bulk sets per storage (`running_quest_bound_entities`;
   #5025 `2a1a7a362` closed two ABBA cycles, #5109 `83d52707e`) — a guard nest reintroduced there reddens the
   lock-order lane. The egui response page itself is `/audit-tooling`.
 - **Story Manager** (`story_manager.rs`, `docs/engine/story-manager.md`; #5366 Phases 0-4, live gate `docs/smoke-tests/sm1-story-manager.sh`):
-  `install_story_manager` folds the parsed `SMBN`/`SMEN`/`SMQN` map into an `SmTree` (children in authored `SNAM`
-  chain order; a sibling cycle must still terminate — `sibling_cycle_builds_and_dispatch_terminates`).
+  `install_story_manager` folds the parsed `SMBN`/`SMEN`/`SMQN` map into an `SmTree`. `SNAM` names the
+  **previous** sibling (xEdit): the head is the `SNAM == 0` (or dangling) member and the fold follows the inverse
+  edges, authored top-down (#5385 `846e4a6dd`, `snam_previous_semantics_walk_head_first`; the earlier same-parent
+  check held in both directions, so a direction pin must be asymmetric); a sibling cycle must still terminate
+  (`sibling_cycle_builds_and_dispatch_terminates`).
   `story_manager_dispatch_system` (exclusive, Update; `StoryClock` synced from `GameTimeRes` first) drains the
-  `StoryEvent` marker (Pattern B) and walks the event mnemonic's `SMEN` root: node CTDA via the shared M47.1
+  `StoryEvent` marker (Pattern B) and walks the event mnemonic's `SMEN` root: a node whose CTDA set holds any
+  uncatalogued function **declines before evaluation** — neither starts nor consumes, the walk continues to its
+  siblings (#5380 `395d2d831`, `unknown_condition_function_declines_the_node`; the Unknown→0.0 default once
+  passed `== 0` gates vacuously) — otherwise node CTDA runs through the shared M47.1
   evaluator with `RunOn::EventData` resolved over the positional R1/R2/L1/L2 slots, a passing quest node starts
   through the canonical `QuestStageState` lifecycle (never a private start path), `FromEvent` aliases fill from
-  the slots via `StoryEventAliasFill` consumed by `refresh_scene_actor_bindings`. `DNAM` policies: random parents
+  the slots via `StoryEventAliasFill` consumed by `refresh_scene_actor_bindings`, which probes slot liveness
+  (despawned id, or `Dead` without ALLOW_DEAD → `StoryManagerEventUnavailable`, never a stale bind; #5419
+  `1dfdeb4f9`, `from_event_alias_skips_stale_and_dead_slot_entities`). `DNAM` policies: random parents
   shuffle (`StoryManagerRng`), a processed node without Shares Event consumes the event, pools round-robin with
-  `RNAM` reset windows in `StoryManagerNodeState` — the only saved SM resource (`SmTree`/cursors/clock/RNG are
-  not-saved-by-design, so a quickload cannot re-fire spent radiants). Producers: `KILL` (combat death site),
+  `RNAM` reset windows (hours, decoded through xEdit's 1/24 scale, #5386) in `StoryManagerNodeState`. Saved SM
+  resources: `StoryManagerNodeState` and `StoryEventAliasFill` (#5394 `03e51dfad`, column added at FORMAT_MAJOR 35 — the R1/R2
+  slots persist as reference FormIds and re-resolve among resident candidates, session `EntityId`s serde-skipped;
+  `story_event_alias_fill_survives_save_load_as_reference_forms`); `SmTree`/cursors/clock/RNG are
+  not-saved-by-design, so a quickload cannot re-fire spent radiants. Update ordering (CLOC producer → dispatcher →
+  `quest_alias_refresh_system`, ambient installer → `forcegreet_system`) is pinned by
+  `story_dispatch_and_forcegreet_update_ordering_is_pinned` (`byroredux/src/scheduler_access_tests.rs`, #5415).
+  Producers: `KILL` (combat death site),
   `CLOC` (`systems/story_events.rs`, LCTN-granularity key), `AHEL` (every opened conversation), `sm.event` console;
-  `SCPT`/crime/crafting families have no producer (documented gaps, not findings).
+  `SCPT`/crime/crafting families have no producer, and `MNAM`/`XNAM` (Num quests to run / Max concurrent, named
+  #5420) are unconsumed — one quest starts per node (documented gaps in `story-manager.md` §8, not findings).
 - **Marker patterns** for this domain (Pattern B, drained at consumer head): `Scene{Start,Stop}Request`,
   `SceneActionCompletionBatch`, `DialoguePresentationEventBatch`, `DialogueLineCompletionBatch`,
   `ScenePackage*Batch`, `EvaluatePackageRequest`, `MotionTypeChangeRequest` (tail-drains exactly what it
@@ -364,9 +406,15 @@ The M47.2 MQ101 cart sequence is the first scripted sequence that drives *animat
   orphans an entity from indexes that expect a `CellRoot`; the retention set's lifetime is bounded since
   #3817 `63bf3347f`: `cinematic_horse_route_system` releases the tether at the XLKR chain's terminal marker, and
   released entities that lost their `CellRoot` to a mid-tether unload queue on `CinematicReAdoption` (unsaved,
-  session-local ids) for the streaming step to stamp onto the loaded exterior cell root containing them — un-rooted
-  entities are despawn-immune, so a non-draining list is residency leak. Pinned by two lifecycle tests in
-  `systems/cinematic.rs`; a release path that strips `vehicle`/`cart_seat` would break the awaited-event exit.
+  session-local ids) for the streaming step (`retry_cinematic_readoption`) to stamp onto the loaded exterior cell
+  root containing them — un-rooted entities are despawn-immune, so a non-draining list is residency leak. Only
+  **parentless** members queue and a root's adoption stamps its whole `Children` subtree (a local `Transform` is
+  not a world position, #5384 `faf8e5682`); the player's subtree is never queued or cell-owned, and
+  `purge_cinematic_retention_state` despawns the still-pending list at session replacement (#5379 `203be9ed4`).
+  Pins: `systems/cinematic.rs` (the #3817 lifecycle pair plus `parented_subtree_rides_the_roots_adoption`,
+  `player_rider_is_never_queued_or_cell_adopted`) and `cell_loader/unload.rs`
+  (`purge_despawns_pending_readoption_entities`); a release path
+  that strips `vehicle`/`cart_seat` would break the awaited-event exit.
 - Player `CinematicPresentationState`/`PlayerControlState` flags are saved; a flag a consumer never reads is
   a placeholder (Dim 1) — `disable_saving` is read by `SaveCommand`; `hud_cart_mode` had no reader at #4372.
 **Output**: `/tmp/audit/scripting/dim_5.md`
@@ -416,7 +464,7 @@ SCTX frontend (`ScriptSource::Obscript` placeholder).
 ### Dimension 7: Provider / Extender-Compatibility Layer (SKSE, JContainers, StorageUtil, ModEvent seam)
 Paths: `crates/scripting/src/{papyrus_provider/**,compatibility.rs}`, `crates/scripting/tests/extender_compat_e2e.rs`, `byroredux/src/extensions/`, `crates/pex/src/call_sites.rs` (consumer)
 First step: `cargo test -p byroredux-scripting -- papyrus_provider compatibility`; `cargo test -p byroredux --bin byroredux -- boot::schedule::system_access_declaration_tests`
-This layer (~10k LOC scripting-side incl. tests) was a reported coverage gap through 2026-09-14 (only its *seams* were
+This layer (~7.5k LOC scripting-side: `papyrus_provider/` + `compatibility.rs`, incl. tests) was a reported coverage gap through 2026-09-14 (only its *seams* were
 audited). Its SDK half (`crates/sdk`: StorageUtil/JContainers verbs, typed script values, limits, manifests)
 is `/audit-tooling`; audit here the runtime that consumes it.
 - **Untrusted-input**: preflight/lowering run on `.pex`-derived data and provider manifests. `compatibility`

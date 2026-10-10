@@ -20,8 +20,8 @@ See `.claude/commands/_audit-common.md` for layout, crate roster, methodology, d
 format. Young code has had the fewest sweeps — find it with
 `git log --diff-filter=A --since=<last-report-date> --name-only --format= -- 'crates/*/Cargo.toml' 'tools/*/Cargo.toml'`
 plus the crates the last report never names (`for c in crates/*/; do grep -q "$c" <last-report> || echo "$c"; done`;
-the 2026-09-29 report named none of `sdk`, `mod-runtime`, `menuxml`, `scripting`, `save`, `hkx`, `spt`, `pex`,
-`sfmaterial`, `audio`, `debug-ui`, `game-detect`, nor `tools/`). File real findings there; do not
+the 2026-10-08 report still named none of `sdk`, `mod-runtime`, `menuxml`, `save`, `hkx`, `spt`, `pex`,
+`sfmaterial`, `audio`, `debug-ui`, `game-detect` — 21 crates in all — nor three of the four `tools/`). File real findings there; do not
 just note the crate is young. `crates/cxx-bridge` and `crates/platform` are deliberate placeholders owned here:
 check they have not grown a second job or silent consumers, not that they are small.
 
@@ -78,11 +78,14 @@ Tech-debt findings default to **LOW** (see `_audit-severity.md`). Promote only o
      echo "test files >2000 total LOC (lower priority, separate bucket): $(find crates byroredux tools -name '*.rs' -not -path 'tools/nifskope/*' -exec wc -l {} + | awk '$1>2000 && $2!="total"' | wc -l)"
    } > /tmp/audit/tech-debt/baseline.txt
    ```
-   Measured 2026-10-08 (diff direction only, re-run, never quote): markers 24 (15 are `XXXX` false positives),
-   `allow(dead_code)` 34, `unimplemented!/todo!()` **0** (a fresh hit is notable), `#[ignore]` 281 (265 on 2026-10-05;
-   tools-inclusive — earlier reports scoped to `crates`+`byroredux` read lower), production >2000 LOC: **3**
-   (`shader_constants_data.rs` is a data table, Dim 1; `byroredux/src/components.rs`; `crates/scripting/src/fragment/effects.rs`;
-   5 on 2026-10-05; watch-list within 5%: `crates/nif/src/import/types.rs`, `byroredux/src/save_io.rs`), test-heavy >2000: 69.
+   Measured 2026-10-10 (diff direction only, re-run, never quote): markers 24 (15 are `XXXX` false positives, 2 the
+   FO4 `HACK` FourCC — Dim 5), `allow(dead_code)` 45 (34 on 2026-10-08; the +11 are `cfg(test)` TypeId-only markers in
+   `crates/core/src/ecs/lock_tracker.rs`, c5113f0d9 — not debt), `unimplemented!/todo!()` **0** (a fresh hit is notable),
+   `#[ignore]` 287 (281 on 2026-10-08; tools-inclusive — earlier reports scoped to `crates`+`byroredux` read lower),
+   production >2000 LOC: **4** (`shader_constants_data.rs` is a data table, Dim 1; `byroredux/src/env_translate.rs`, new —
+   1881 → 2097 since 2026-10-08 on the #5374/#5388/#5423/#5424 climate/LOD fixes; `byroredux/src/components.rs`;
+   `crates/scripting/src/fragment/effects.rs`; watch-list within 5%: `crates/nif/src/import/types.rs` (1997),
+   `byroredux/src/save_io.rs`, `crates/audio/src/lib.rs`, `crates/scripting/examples/mq101_conformance.rs`), test-heavy >2000: 72.
    A raw whole-repo grep for `#[ignore]` also matches markdown prose — keep `--include='*.rs'`.
 
 ## Phase 2: Dimension Agents
@@ -182,7 +185,7 @@ Stale baselines actively misdirect future audits.
   drift has been the single most repeated finding here.
 - "Existing: #NNN" / "open issue" callouts in skills where the issue is now CLOSED: `gh issue view N --json state`.
 - Dimension cross-references between skills ("`/audit-x` Dim N") that no longer name that dimension.
-- `docs/audits/` reports older than 90 days whose CRITICAL/HIGH findings have no GitHub trace. Known-open: reports
+- `docs/audits/` reports older than 90 days whose CRITICAL/HIGH findings have no GitHub trace. Caveat: reports
   dated before 2026-06-07 predate `/audit-publish`, so a missing issue is *not* evidence a finding is open (#3875,
   `_audit-common.md` Deduplication) — verify against code and say which you checked.
 - Do NOT flag `.claude/issues/<N>/ISSUE.md` "Status: Open" drift: local issue files are immutable snapshots (TD10-001 / #1156);
@@ -203,7 +206,8 @@ does it name a milestone now complete per ROADMAP.md; a `// TODO: implement` on 
 promotes (severity table).
 **False positives**: `XXXX`, the ESM extended-size sub-record tag (key on comment content — "references the ESM `XXXX`
 escape" — not a file list; `reader.rs`, `cell/wrld.rs`, the `b"XXXX"` test sentinels in `records/misc/magic.rs` and the
-FourCC table doc in `sdk/src/compatibility/storage_util/mod.rs` all qualify); a `// FIXME` quoting a reference implementation's
+FourCC table doc in `sdk/src/compatibility/storage_util/mod.rs` all qualify); `HACK`, the FO4 terminal-record FourCC
+(`crates/plugin/tests/parse_real_esm.rs`); a `// FIXME` quoting a reference implementation's
 own FIXME (`crates/bgsm/src/bgem.rs`, `bs_geometry.rs`) documents upstream; a `TBD` that records an unresolved format
 semantic together with its own resolution (the FNV `WEAP` `DNAM` arm in `crates/plugin/src/esm/records/items.rs`) is a
 documented unknown, not a stale marker.
@@ -256,8 +260,10 @@ cargo machete 2>/dev/null || echo "cargo machete not installed — scan Cargo.to
   renderer-only `undocumented_unsafe_blocks` re-lint, #5121; the toolchain is pinned at 1.96.0 by `rust-toolchain.toml` since #5308 (b24cb46b6) after floating
   `stable` let rustc 1.99's *chunks_exact_to_as_chunks* wave turn the gate red for four days — rustc 1.96 (800802516) and 1.98
   (530c9e7aa) raised lints on untouched code too; a toolchain bump is now a deliberate commit, and the distro cargo ignores
-  the pin). A red gate is a finding: list each failing lint and
-  file. Run `--all-targets --keep-going` too; test/example-target lints are outside the CI gate — report them as a
+  the pin; wasmtime 49's MSRV is exactly 1.96.0, 15a6b1d2d, so the pin can rise but not fall). A red gate is a finding:
+  list each failing lint and file, plus the crates it left unlinted — `--keep-going` lints every crate that still
+  compiles, but a crate red under clippy leaves its dependents unchecked (a red `byroredux-nif` skips the bin).
+  Run `--all-targets --keep-going` too; test/example-target lints are outside the CI gate — report them as a
   lower-priority bucket (the workspace example build itself went red once, the #3894 class, 530c9e7aa). Check every
   `#[allow(clippy::…)]` carries a reason comment (the house style for `too_many_arguments`).
 - Each `#[allow(dead_code)]`: called now or still dead? Delete if dead. `pub fn` in a private module nobody imports (`cargo +nightly rustc -p <crate> -- -W unused`);
@@ -286,7 +292,7 @@ grep -RInE '^[[:space:]]*#\[ignore' --include='*.rs' crates byroredux tools | gr
   `println!` without an assert.
 - **Feature gates vs CI lanes**: enumerate `[features]` (`grep -A6 '^\[features\]' crates/*/Cargo.toml byroredux/Cargo.toml`)
   and compare with `.github/workflows/ci.yml` — non-default states run only where a lane names them (today: `core`
-  `inspect`/`save` via workspace unification, `byroredux-spt --features recon`, `byroredux` without `debug-server` / with
+  `inspect`/`save` and `scripting` `save` via workspace unification, `byroredux-spt --features recon`, `byroredux` without `debug-server` / with
   `tracing-tracy` / with `dhat-heap`, `byroredux-nif --features dhat-heap`). A feature or `required-features` target with no
   lane can rot silently (the class #3894 / #4387 / #4390 closed).
 - `byroredux/tests/golden_frames.rs` (opts into `--ignored`) — still runnable, golden images current.

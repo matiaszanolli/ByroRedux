@@ -30,7 +30,7 @@ The script writes the following into `$SCRATCH`:
 
 It also prints each group's weight: the changed files routed to it through `_audit-owners.md`, and the cited issues closed since the base. It exits non-zero if `groups.txt` misses an `audit-*` directory or lists one twice. A newly added audit skill must go into a group first.
 
-Look at the printed weights. If one group carries well over ~2× the median of either number, split it in `groups.txt` before fanning out. Ten agents was the right size for ~300 commits.
+Look at the printed weights. If one group carries well over ~2× the median of either number, split it in `groups.txt` before fanning out. Ten agents was the right size for ~300 commits. Two skills' routed counts are inflated by churn, not code: `regression` (every `.claude/issues/` note) and `tech-debt` (the `docs/audits/` reports, other `docs/` edits, `.claude/commands/`). Discount those two before splitting.
 
 ## Phase 2: Fan out
 
@@ -70,10 +70,11 @@ Skill-reading tests: rerun any whose matched text was touched.
 |---|---|---|
 | `gpu_material_size_claims` (4 tests) | every `.claude/commands` file | `cargo test -p byroredux-renderer --lib gpu_material_size_claims` |
 | `the_audit_skill_does_not_claim_the_rt_integrity_chain_is_unread` | `audit-renderer` | bin crate, below |
-| `documented_texture_role_list_matches_the_struct` | `audit-nifal`, `_audit-common.md` | bin crate, below |
-| `skin_offsets_is_fx_hashed_at_every_site` and its siblings | `_audit-common.md` | bin crate, below |
+| `documented_texture_role_list_matches_the_struct` | `audit-nifal`, `audit-fo4`, `_audit-common.md` | bin crate, below |
 
-The bin crate needs rustc ≥ 1.94 (CLAUDE.md, #4466):
+To re-derive the list: `git grep -n '\.claude/commands' -- '*.rs'`, keeping the non-comment hits. The `skin_offsets_hasher_tests.rs` guards pin `_audit-common.md`'s hot-path rule in code but never read the file.
+
+The bin crate needs rustc ≥ 1.96 (wasmtime 49's MSRV since 15a6b1d2d; #4466 set the earlier 1.94 floor):
 `TC=$(rustup which --toolchain 1.96.0 cargo); PATH="$(dirname "$TC"):$PATH" "$TC" test -p byroredux --bin byroredux -- <filter>`.
 
 ## Phase 5: Close

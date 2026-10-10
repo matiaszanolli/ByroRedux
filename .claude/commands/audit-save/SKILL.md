@@ -36,7 +36,8 @@ order: `capture_player_pose` → `step_player_save_actions` → `step_save_loads
 `app_frame.rs::render_one_frame`), `byroredux/src/extensions/` (SDK extension-state capture/preflight/
 restore layered around the save/reload — the extension *API* is `/audit-tooling`),
 `byroredux/src/cell_loader/reference_state.rs` (`PersistentReferenceStates`, `without_parked_state`),
-`cell_loader/{transition,spawn}.rs`, `crates/core/src/{atomic_file.rs,string/mod.rs,ecs/world.rs}`,
+`cell_loader/{transition,spawn,unload}.rs` (`unload.rs`: `purge_cinematic_retention_state`, the
+`player_owned_entities` teardown refusal), `crates/core/src/{atomic_file.rs,string/mod.rs,ecs/world.rs}`,
 `crates/physics/src/sync.rs`. Companion doc: `docs/engine/save-load-roundtrip.md` (numbers the extension preflight/restore
 steps as 1b/3b).
 
@@ -65,7 +66,7 @@ finds >0 items, and it fails when the invariant is broken.
 | `live_reload_tests::{saved_resources_are_restored_before_the_cell_reload, pre_reload_restore_must_not_install_saved_item_instance_pool_early}` | pre-reload resource subset, #4135 |
 | `command_queue_tests::{a_save_taken_mid_cell_transition_is_refused_not_written, a_save_taken_while_chargen_disables_saving_is_refused_not_written, quicksave_ring_cursor_does_not_advance_on_validation_abort, player_save_actions_wait_for_the_quiescent_fifo_drain, quickload_empty_errors_and_corrupt_newest_falls_back}` | save-side refusal gates, ring, quiescent drain |
 | `app_step.rs::the_save_drain_publishes_the_transition_flag_before_draining` | `CellTransitionInFlight` published before the drain |
-| `*_survives_save_load_round_trip` (`round_trip_tests.rs`, `consumable_tests.rs`) | per-type round trips incl. lock/enable ledgers, fragment/provider queues, cinematic trio, `Perks`/timed restorations |
+| `*_survives_save_load*` (`round_trip_tests.rs`, `consumable_tests.rs`) | per-type round trips incl. lock/enable ledgers, fragment/provider queues, cinematic trio, `Perks`/timed restorations, SM node state + `StoryEventAliasFill` reference FormIds |
 
 Not covered by any guard (the audit's real work): the **two-list drift** between registry and
 `MUTABLE_DELTA_COLUMNS`; staleness of `NOT_SAVED_BY_DESIGN` *reasons*; whether a baseline refresh
@@ -104,7 +105,12 @@ First step: `git log -p -S'register_' --since=<last report> -- byroredux/src/sav
   "no production mutator" claim after new gameplay commits land (P3 loot/consumables/pickups, perks, timed
   restorations, hardcore mode, persistent reference state were all new saved state; `PlayerNotifications`
   and `PickedUp` are correctly transient — the durable half of a pickup is the `PersistentReferenceStates`
-  tombstone).
+  tombstone). Recent false reasons, since fixed: `StoryEventAliasFill` ("quests restart
+  through fresh events" — now registered, #5394 `03e51dfad`), `EatSleepState` ("`resolve_destination` is
+  idempotent" — restated per PLDT anchor, #5391 `42aab4c09`), `CinematicReAdoption` ("the teardown handles
+  them" — the purge now despawns them, #5379 `203be9ed4`). Known-open (cite, don't re-file): #5458 (the Eat/Sleep
+  rows still claim a "registered Seated restore", but `Seated` is not overlaid — `restore_world`-only) and
+  #5435 (`StoryLocationCursor` survives an in-process load).
 - **Removed-from-allowlist stays registered**: `CharacterController` (fractional breath/drowning carry),
   `RigidBodyData`, `Material`, `RumbleOnActivate`, `FragmentExecutionQueue`, the cinematic trio — verify none
   regressed out of `build_save_registry`, and no re-added `NOT_SAVED_BY_DESIGN` entry re-excludes them.
@@ -125,7 +131,9 @@ First step: `git log -p -S'register_' --since=<last report> -- byroredux/src/sav
   disposition, this dimension judges whether "NoReconcilerNeeded" reasons are true (carrier destroyed by
   the cell reload?) and whether a new persisted fact (disable, pickup, lock) chose the marker-plus-
   reconciler or FormID-keyed-ledger model (`ReferenceEnableState`, `ReferenceLockState`,
-  `PersistentReferenceStates` — resources keyed by FormID survive cell unload; a component would not).
+  `PersistentReferenceStates` — resources keyed by FormID survive cell unload; a component would not). A saved
+  resource that needs session `EntityId`s takes the `StoryEventAliasFill` shape (#5394): `StoryEventFill`
+  `serde(skip)`s its `EventDataSlots` and saves the R1/R2 reference FormIds, which the alias refresh re-resolves.
   The overlay emits no `EquipmentEventBatch`: presentation derived from an overlaid column is re-derived by
   `reconcile_worn_gear` (`byroredux/src/npc_spawn/loot_appearance.rs`, #5034 `20717d5b7`) — run on the player after
   `apply_deltas` and on NPCs from `reference_state::restore`; it diffs live roots against restored slots
@@ -143,7 +151,8 @@ First step: `git log -p -S'register_' --since=<last report> -- byroredux/src/sav
 - **Determinism** (the `Snapshot` doc claims reproducible CRCs at equal state): `Snapshot` maps are
   `BTreeMap` and component rows are sorted by entity id (`registry.rs`), but saved **resources** serialize
   as-is — at 2026-09-19 `Globals(HashMap<u32, f32>)`, `QuestStageState`, `ReferenceEnableState` (`HashSet`),
-  `ReferenceLockState` and `PersistentReferenceStates::pair_rows` all emit hash-iteration order, so two saves
+  `ReferenceLockState` and `PersistentReferenceStates::pair_rows` all emit hash-iteration order (since joined by
+  `DialogueSpokenInfoForms` (`HashSet`) and `StoryEventAliasFill` (`HashMap`)), so two saves
   of equal state can differ in bytes/CRC. #4748 is closed as a doc fix: the `Snapshot` doc in `snapshot.rs` now
   says the payload "is not guaranteed deterministic for equal logical state" (`Globals` is still a `HashMap`, by
   design of that resolution). A new claim of reproducible CRCs, or a consumer that diffs/hashes saves, reopens
@@ -156,9 +165,11 @@ First step: `git log -p -S'register_' --since=<last report> -- byroredux/src/sav
 ### Dimension 2: Format & Schema Discipline (registry fidelity + `FORMAT_MAJOR`)
 Paths: `crates/save/src/{snapshot,registry}.rs`, `save_io/serde_default_guard_tests.rs`, `crates/save/Cargo.toml`, `crates/core/Cargo.toml`
 First step: `cargo test -p byroredux --bin byroredux serde_default_guard` ; `git log --since=<last report> --format='%h %cs %s' -- crates/save/src/snapshot.rs`
-- **Bump rule** (read the `FORMAT_MAJOR` doc comment in `snapshot.rs`, 33 as of 2026-10-08 — v31 #5042
+- **Bump rule** (read the `FORMAT_MAJOR` doc comment in `snapshot.rs`, 35 as of 2026-10-10 — v31 #5042
   `ActorValue.base_authored`, v32 #5017 `ActorControlState.unconscious` + the parked `ReferenceState` control
-  state, v33 #5367 `14cff35ae` new saved resource `DialogueSpokenInfoForms` (Say-Once ledger); do not hardcode the number elsewhere): intra-type shape changes need a bump because `schema_fingerprint` hashes
+  state, v33 #5367 `14cff35ae` new saved resource `DialogueSpokenInfoForms` (Say-Once ledger; the doc has no
+  v32→v33 entry, known-open #5459), v34 #5412 `a614eb273` `ActorValue.set_override`, v35 #5394 `03e51dfad` new
+  saved resource `StoryEventAliasFill`; do not hardcode the number elsewhere): intra-type shape changes need a bump because `schema_fingerprint` hashes
   only column keys (+ replacing policy). A new required field, retyped field, or new `Option` in a saved
   type bumps; `#[serde(default)]` is forbidden as a compatibility mechanism (guard) — even where the default
   would be correct for every old save. Read-compatible changes move the shape baseline **without** a bump:
@@ -177,7 +188,9 @@ First step: `cargo test -p byroredux --bin byroredux serde_default_guard` ; `git
   refresh-without-bump was not hiding a real field change to a registered type.
 - **Guard blind spots**: manual `impl Serialize` (no derive) types; a nested payload type of a plain-`derive`
   registered type (the `byroredux/src` pattern) defined in another file is outside `save_type_sources()` unless
-  added to its explicit list; a new `Option<T>` field is hashed but
+  added to its explicit list (known-open #5059: `LightSource.emitter`, the `crates/sdk` payloads); a save derive
+  that is not the *last* `#[…]` attribute before the declaration is skipped (known-open #5403:
+  `StoryManagerNodeState`, `SmNodeRuntime`); a new `Option<T>` field is hashed but
   looks like a routine baseline bump — confirm it got the bump; `serde(alias)` must never coexist with a
   dropped value semantic change.
 - **Second payload — extension state** (`Snapshot.resources["ByroExtensionState"]`, written by
@@ -257,7 +270,7 @@ First step: `grep -n 'fn validate_\|validate_[a-z_]*(world' crates/save/src/vali
 **Output**: `/tmp/audit/save/dim_4.md`
 
 ### Dimension 5: Live Load-Apply & Frame Boundary
-Paths: `byroredux/src/save_io.rs` (`execute_pending_save_loads`, `reload_*_session`, `apply_player_pose`), `crates/save/src/driver.rs`, `byroredux/src/{app_events,app_step,app_frame}.rs`, `cell_loader/{transition,reference_state}.rs`
+Paths: `byroredux/src/save_io.rs` (`execute_pending_save_loads`, `reload_*_session`, `apply_player_pose`), `crates/save/src/driver.rs`, `byroredux/src/{app_events,app_step,app_frame}.rs`, `byroredux/src/cell_loader/{transition,reference_state,unload}.rs`
 First step: read `execute_pending_save_loads` top to bottom against the sequence below; `git log --since=<last report> --format='%h %cs %s' -- byroredux/src/save_io.rs`
 - **Strict apply sequence**: drain slot → `validate_snapshot_types` (abort, session kept) →
   `preflight_extension_state` (abort) → `restore_resources_subset(PRE_RELOAD_RESOURCES)` (only resources
@@ -266,18 +279,25 @@ First step: read `execute_pending_save_loads` top to bottom against the sequence
   `without_parked_state` wraps the reload (outgoing session's `PersistentReferenceStates` and
   `StreamStateSnapshots` are set aside and restored on failure) → teardown + reload (`validate_cell_loadable`
   preflight first, so a missing ESM/cell keeps the live session; then `purge_cinematic_retention_state`
-  drops every `ActorCinematicState`/`HorseTetherState` row (and the unsaved `CinematicReAdoption` list, #3817) so the convoy is not retained across the teardown
+  drops every `ActorCinematicState`/`HorseTetherState` row so the convoy is not retained across the teardown
   as a ghost twin sharing a `FormIdPair` — #5056 `a197e8563`, both reload arms + both debug-load paths, never
-  ordinary cell transitions) → `restore_extension_state` → wholesale
+  ordinary cell transitions (`purge_wiring_tests`) — and despawns + clears the unsaved `CinematicReAdoption`
+  pending list, whose un-rooted entities the `CellRootIndex` teardown cannot enumerate (#5379 `203be9ed4`).
+  Known-open #5490: since #5384 that list holds roots only, so the bare `despawn_batch` orphans their subtrees
+  (after which `validate_world` refuses every later save) and skips GPU/Rapier release. The teardown never
+  despawns the player rig: `unload_cell_inner` refuses `player_owned_entities`, #5483 `5a68e983e`)
+  → `restore_extension_state` → wholesale
   `restore_resources` **again** (idempotent; re-asserts `CurrentCellContext`/`PlayerPose`; the second call is
   not redundant) → `restore_resident` (parked rows for resident placements, #4695) → `drop_entity_bound_continuations` on `PapyrusProviderContinuationQueue` (session-local
   `EntityRef` handles must not resume, #4139) → `reseat_ambient_packages_after_restore` (re-pick packages
-  against the restored clock *before* the overlay, #4815) → `build_form_id_remap` → park the snapshot rows
+  against the restored clock *before* the overlay, #4815; neither it nor `restore_resident` has a source-order
+  pin, known-open #5060) → `build_form_id_remap` → park the snapshot rows
   whose `FormIdPair` did not resolve (`unresolved_form_id_pairs` → `park_unresolved_snapshot_rows` into
   `PersistentReferenceStates`, #5054 `17e720430` — the exterior reload streams only `radius_load`, so the
   save's hysteresis-band rows were dropped and their loot duplicated; `unresolved_snapshot_rows_are_parked_for_the_next_respawn`)
-  → `apply_deltas(MUTABLE_DELTA_COLUMNS)` → dead/equipped-weapon reconcilers, `reconcile_worn_gear`,
-  `reset_player_factions_to_record` → diagnostic `validate_world` → `apply_player_pose` LAST (after the
+  → `apply_deltas(MUTABLE_DELTA_COLUMNS)` → dead/equipped-weapon reconcilers, `reconcile_worn_gear` (called
+  twice back-to-back, known-open #5460), `reset_player_factions_to_record` → diagnostic `validate_world` →
+  `apply_player_pose` LAST (after the
   overlay of `CharacterController`, whose motion fields pose-restore then zeroes; a new field on either
   side needs an explicit decision). Any failure after the reload returns immediately, never falling through
   into pose-restore on a partial overlay. Idempotency: teardown is unconditional, so a second load of the same

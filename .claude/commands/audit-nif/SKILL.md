@@ -51,7 +51,7 @@ constraint CInfo decode is a NIF seam).
    nightly per title in `.github/workflows/real-data-gates.yml` (`BYROREDUX_REQUIRE_GAME_DATA=1`,
    so an absent corpus is a failed job). Locally: one title at a time,
    `BYROREDUX_<GAME>_DATA=<Data dir> cargo test -p byroredux-nif --test per_block_baselines <game> -- --ignored --nocapture`.
-   Still true 2026-10-05: the workflow parses since d98769436 (#4619, closed), but no
+   Still true 2026-10-10: the workflow parses since d98769436 (#4619, closed), but no
    `byroredux-game-data` self-hosted runner is registered (repo runner count 0) — every scheduled
    run queues and is cancelled at 24 h, so **no nightly result exists**. A green default
    `cargo test` says nothing about parse rates; run the gate locally.
@@ -166,7 +166,11 @@ First step: `cargo run -p byroredux-nif --release --example nif_stats -- <archiv
   regenerates after an intentional change. `run_baseline` compares each TSV's own `total=` header
   (`baseline_corpus_total`) against the walked corpus *before* the per-type comparator, so an
   install that grew or shrank fails naming the corpus drift rather than reading as parser loss
-  (#4628).
+  (#4628). Known-open harness gaps (dedup, do not re-file): the #5260 `total_blocks` pin
+  measures parser output, so a truncation regression reads as "corpus drift" (#5438);
+  `open_mesh_archive` and the Oblivion drift corpus still treat present-but-unopenable as
+  absent (#5439); the #5259 scan only matches the `ends_with(".nif")` spelling, so `nif_stats`'
+  directory mode still walks `.nif` only (#5440).
 - `kfm.rs` (KFM binary catalog, v1.2.0.0–2.2.0.0, transcribed from `NiKFMTool::ReadBinary`)
   has no engine consumer today — audit for version-gate fidelity and `allocate_vec` bounds
   only (its `read_cstring` bounds the `i32` length against remaining bytes and
@@ -185,6 +189,14 @@ This is the *parse → ECS* handoff; per-game material classification is `/audit
   `coord.rs`) applied consistently to positions, normals, rotations. `compose_transforms`
   neutralises an overflowed (finite-input, non-finite-product) result through the #4549
   sanitiser (#4633, `compose_transforms_overflowing_products_are_neutralized`).
+- **Walker bounds**: `NiNode.children` holds raw `BlockRef`s never verified to form a tree, so
+  all five scene-graph walkers (hierarchical, flat, and the lights / texture-effect /
+  particle-emitter satellites) thread one per-walk visited bitset (`new_visited`) through
+  `revisit_guard` (`import/walk/mod.rs`): a repeat reference is skipped and depth is capped at
+  `MAX_NIF_NODE_DEPTH` (128). #1269's depth cap alone left self-reference / diamond fan-out
+  exponential (fixed in cf8730adc, #5485; pinned by the `*_walker_survives_a_self_reference`
+  family + `walkers_survive_a_mutual_cycle` in `import/walk/tests.rs`). A new walker that
+  recurses without the guard is the regression; vanilla has zero multi-parent children.
 - Per-game geometry path: classic `NiTriShape` (Oblivion/FO3/FNV) vs Skyrim SE+ packed-half
   `BSTriShape` vs Starfield `BSGeometry` (bulk-read via `read_u16_array` + unpack; import
   extractor in `import/mesh/bs_geometry.rs`). Each decodes its own stride and index format.
@@ -201,9 +213,15 @@ This is the *parse → ECS* handoff; per-game material classification is `/audit
   partition-local. Regression = re-applying a partition palette to the packed channel (the
   deleted *remap_bs_tri_shape_bone_indices* behaviour) or `vertex_map` to triangles.
   `sse_recon::try_reconstruct_sse_geometry` and `skin::*` consume the right counts.
-  Starfield `BSGeometry` skin weights are bounded the same way: `convert_bs_geometry_skin_weights`
-  declines the whole weight set (bind pose, never a clamp) when any bone index >= the skin's bone
-  count (#4268, 0abc86c8b; the palette bound in `render/skinned.rs` is a producer-upheld invariant).
+  Every skin producer declines the whole weight set (bind pose, never a clamp) when any bone
+  index >= the skin's own bone count: Starfield `BSGeometry` in `convert_bs_geometry_skin_weights`
+  (#4268, 0abc86c8b), and the `BSTriShape` inline + SSE global-buffer packed channel and classic
+  `NiSkinData` via `decline_unbounded_packed_indices` (`import/mesh/skin.rs`; fixed in cf9dec258,
+  #5389 — #4268's "siblings already bound" premise was false). The palette bound in
+  `render/skinned.rs` is a producer-upheld invariant, so a new producer without the decline is
+  the regression. Known-open #5524 (LOW): the FO4 `BsSkinInstance` arm has no decline test, the
+  classic arm's warning says "BSTriShape", and the insertion orphaned
+  `widen_packed_bone_indices`' doc comment.
 - **Particle emitters**: `NiPSysEmitter`/`NiPSysEmitterCtlr`/`NiPSysEmitterCtlrData`/
   `NiPSysGrowFadeModifier` are typed (`blocks/particle.rs`); params flow
   `extract_emitter_params` / `extract_emitter_rate` (`import/walk/emitter.rs`) →
@@ -269,8 +287,9 @@ parses then silently drops collision; *nif_shape_dispatch_resolve_parity*);
   `starfield_tail` to `block_size`. The material-reference stub gate is `!name.is_empty()`
   for `bsver >= STARFIELD` (stubs are `.mat` names; the only suffix-less ones are the bare
   `Materials\` directory, not content hashes — #4439) but the suffix-aware
-  `is_material_reference` for FO76 (155..171 — the stopcond is `bsver >= FO76`; a "152..171"
-  in the `effect.rs` comment is wrong); `BSEffectShaderProperty` and
+  `is_material_reference` for FO76 (155..171 — the stopcond is `bsver >= FO76`, not the 152
+  `FO76_SF2_CRCS` shader-flag threshold; the `effect.rs` comment was corrected in 2be7c7c0b,
+  #5082); `BSEffectShaderProperty` and
   `BSLightingShaderProperty::parse_fo76_plus` must stay in lockstep (`parse_bs_effect_starfield_suffixless_name_stubs`).
 - Starfield shader-type translation is keyed at the **parser** boundary
   (`parse_with_size` routes every `bsver >= 155` through `parse_fo76_plus`), not the
@@ -293,7 +312,7 @@ parses then silently drops collision; *nif_shape_dispatch_resolve_parity*);
 **Output**: `/tmp/audit/nif/dim_5.md`
 
 ### Dimension 6: Allocation Hygiene (PERF)
-Paths: `crates/nif/src/stream.rs`, `blocks/**/*.rs` callers, `crates/nif/tests/heap_allocation_bounds*.rs`, `byroredux/src/streaming/pre_parse.rs` (`pre_parse_cell`)
+Paths: `crates/nif/src/stream.rs`, `blocks/**/*.rs` callers, `crates/nif/src/anim/bspline.rs`, `crates/nif/tests/heap_allocation_bounds*.rs`, `byroredux/src/streaming/pre_parse.rs` (`pre_parse_cell`)
 First step: `cargo test -p byroredux-nif --features dhat-heap --test heap_allocation_bounds` (CI job `nif-heap-allocation-bounds` runs the three heap files, each its own process)
 **Guards**: the dhat-gated `heap_allocation_bounds.rs` (a `harness = false` sequential main since
 #5050 — libtest's own threads polluted its exact `total_blocks == 1` pin; single node, FO4 packed vertices,
@@ -322,9 +341,20 @@ exactly for a `VF_TANGENTS | VF_NORMALS` descriptor and not otherwise, both pack
   input, admitted first against `STREAM_PARSE_INPUT_BYTES` (64 MiB) by the archive-declared size
   (`mesh_declared_size`) so nothing is allocated before admission; cells with < 8 fresh inputs
   keep a serial fast path. A coordinator-side extract-all barrier returning is the regression
-  (its doc comment was corrected to the per-task extract in 3deda6bb7, #5063).
+  (its doc comment was corrected to the per-task extract in 3deda6bb7, #5063). Known-open #5442:
+  the #5092 `streaming.rs` split dropped #1171's compile-time `PartialNifImport: Send`
+  assertion (still enforced at the channel send).
 - `NifStream` caps any single file-driven allocation (256 MB); confirm new readers route
   through the capped helpers, not raw `vec![0; n]`.
+- **B-spline resampling** (`anim/bspline.rs`) is import-side allocation the stream cap never
+  sees: each interpolator span is intersected with the owning `NiControllerSequence`'s span,
+  capped per channel at `BSPLINE_MAX_SAMPLES_PER_CHANNEL` (108 k = 30 Hz × 1 h), and charged
+  against one `BsplineSampling` budget (`BSPLINE_IMPORT_KEY_BUDGET`, 1 M keys) per `import_kf`
+  pass (`import_embedded_animations` gets its own, with no sequence span); a spent budget takes
+  the static-pose fallback with a warn (fixed in 0c4d4af08, #5486; pins in
+  `anim/tests/bspline.rs`). Sampling from the interpolator's own `stop_time`, or a per-channel
+  `BsplineSampling::new()`, is the regression — the allocation abort it allows is not caught by
+  `parse_one_nif`'s `catch_unwind`.
 **Output**: `/tmp/audit/nif/dim_6.md`
 
 ## Phase 3: Merge

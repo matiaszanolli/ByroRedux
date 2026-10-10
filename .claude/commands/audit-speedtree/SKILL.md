@@ -107,9 +107,11 @@ fixed size, so one wrong size desyncs everything after it.
 - `read_string_lp` and `ArrayBytes` cap at 64 KiB on the **byte count** (count × stride), not
   just `count`, and return `Err` rather than OOM.
 - `parse_spt` has **five** fatal `Err` conditions (its docstring lists them: magic mismatch,
-  mid-payload underflow, string cap, array cap, unrecognized context-sensitive kind); all discard
-  the whole `SptScene`. In-range-but-unknown tags are non-fatal — the contract the placeholder
-  relies on. A new fatal path is HIGH (it kills the cell-loader fallback).
+  mid-payload underflow, string cap, array cap, unrecognized context-sensitive kind) in two kinds —
+  underflow raises `UnexpectedEof` (`SptStream::read_bytes`), the other four `InvalidData` (the
+  docstring said all-`InvalidData` until 86cd60621, #5361); all discard the whole `SptScene`.
+  In-range-but-unknown tags are non-fatal — the contract the placeholder relies on. A new fatal
+  path is HIGH (it kills the cell-loader fallback).
 - Little-endian, unconditional (every `.spt` is `__IdvSpt_02_`); flag any host-endian read.
 - A walk stop whose word is outside the tail band, or a non-zero resync shift, is a mis-sized
   dictionary entry — pair the shift with the last decoded tag (`spt_tail --culprit`). The shift
@@ -134,7 +136,9 @@ First step: `cargo test -p byroredux-spt placeholder`
   next tier; a bare `f32::clamp` is NaN-transparent and lets a NaN BNAM reach the quad, bounds and
   BLAS build, #3529). OBND beats BNAM on purpose (BNAM clamps tall trees). Measured: vanilla
   Oblivion has BNAM on 142/142 TREE records and no OBND, so the MODB tier is reached by 0 vanilla
-  records; whether Oblivion should size from BNAM or MODB is an open format question (#3740).
+  records; whether Oblivion should size from BNAM or MODB is an unanswered format question with
+  no tracking issue (#3740 closed 2026-08-31 for its comment half only; still unanswered as of the
+  2026-10-05 audit) — a finding needs a source, not a re-file.
 - Winding: front-face normal is `-Z`, indices `[0, 3, 2, 2, 1, 0]`, because the billboard system
   rotates via `Quat::from_rotation_arc(-Z, look_dir)`; `bs_bound` Z-up→Y-up swap uses
   `zup_to_yup_pos` with half-extents `(hx, hz, hy)`.
@@ -151,6 +155,9 @@ First step: `cargo test -p byroredux parse_and_import_spt` and, with data, `carg
 `tree_icon_resolves_bare_filenames_under_the_measured_directory`),
 `parse_and_import_spt_surfaces_billboard_mode_on_mesh`, `malformed_spt_still_produces_placeholder`;
 `systems/water.rs` pins the billboard system's `SpeedTreeWind` query shape by source text.
+Live end-to-end gate: `docs/smoke-tests/m-trees.sh [fnv|fo3|obl|all]` (per-game entity + `Billboard`
+floors; byro-dbg's `(no entities)` reads as a real zero so a broken `.spt` route is not blamed on
+the attach, 811499b65, #5360; exits 0 on SKIP without data — run and reported via `/audit-runtime`).
 **Checklist**:
 - The `.spt` route fires when the TREE base's MODL ends in `.spt`; the TREE record comes from
   `record_index.trees`; mixed `.nif` + `.spt` REFRs coexist.

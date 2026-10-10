@@ -31,7 +31,7 @@ changes gameplay silently — no crash, no validation error, no failing test unl
   actor_value_derive.rs`, `crates/plugin/src/esm/records/actor/mod.rs` (`effective_actor_level`),
   `crates/plugin/src/equip.rs` (`resolve_inherited_*`), `byroredux/src/cell_loader/references/`,
   `byroredux/src/inventory.rs` (`attach_to_player` stamps the player's `ActorValues`/`ActorVitals`/`CharacterLevel`/
-  `Background` and reads `CharacterRulesProfile::vital_pools`), `byroredux/src/combat.rs` (`melee_damage_charal_bonus`),
+  `Background`/`SpellList`/`RaceSpells` and reads `CharacterRulesProfile::vital_pools`), `byroredux/src/combat.rs` (`melee_damage_charal_bonus`),
   `byroredux/src/commands/{actor_value,condition}.rs`.
 - Handoff: gameplay writers of `ActorValues` (consumables, restoration, combat — `byroredux/src/
   {inventory,combat}.rs`, `systems/restoration.rs`) belong to `/audit-gameplay`; CHARAL owns only whether
@@ -54,7 +54,7 @@ ruleset.md` — **the authority for every constant**; a coefficient no capture s
   event (Dim 5 doc sweep).
 - Oblivion `RulesetBuilder::None` is deliberate (no AVIF pre-FO3 → no resolver); pinned by
   `oblivion_still_has_no_runtime_ruleset_and_that_is_deliberate`. FO76/Starfield: captures, no builders.
-- Open (verified 2026-10-08) — cite, do not re-file: #4137 (six `template_flags` bits with no consumer),
+- Open (verified 2026-10-10) — cite, do not re-file: #4137 (six `template_flags` bits with no consumer),
   #4232 (`effective_actor_level` returns 0 verbatim). #4415 (magic runtime) is closed (`9813af435`). The 2026-09-19 report's
   #4452-#4457/#4459-#4463 are all closed — regression checks now. Verify with `gh issue view` before citing.
 
@@ -175,14 +175,18 @@ First step: `cargo test -p byroredux --bin byroredux resolve_inherited_call_site
 - **Writers vs stamps (silent no-op class)**: for every writer that gates on a component
   (`consume_item`/`restoration_system`/drowning gate on player `ActorValues`+`ActorVitals`), find a
   *production* insert of that component on the entity class the writer targets; unit tests hand-insert and
-  hide the gap (#4458: fixed by `attach_to_player`). The player now carries `CharacterLevel`/`Background`
+  hide the gap (#4458: fixed by `attach_to_player`; recurred as #5413 `212a71dba` — the player body path skips
+  `stamp_spell_list`, so `RaceSpells` was absent and the scripted `AddRaceSpells`/`RemoveRaceSpells` pair no-oped
+  until `attach_to_player` stamped it from `resolve_racial_spells`). The player now carries `CharacterLevel`/`Background`
   from the resolved Player record (#4678); `CharacterLevel` is still unsaved, so the first XP writer trips
   `validate_progression_state` (`/audit-save`). The player's `FactionRanks` is re-derived from the record
   (Use-Factions terminal) on load, not saved (#5058 `be3cd9468`) — a scripted rank edit is lost on load by
   design, exactly as for a respawned NPC.
 - **Magic modifiers (#4415, closed)**: `byroredux_scripting::magic::apply_constant_modifiers` adds constant-spell
   amounts to an `ActorValues` *permanent modifier* at spawn and on `AddSpell`/`RemoveSpell`. Check it never
-  writes base and that add/remove are symmetric. **Derived-value composition** (#5042 `c9254beb8`):
+  writes base, that add/remove are symmetric, and that no other writer *overwrites* `permanent_mod`
+  (`set_permanent` replaces the whole constant-spell sum — the pre-#5412 `SetBase` reroute did exactly that).
+  Composition is `current = base + set_override + permanent + temporary − damage`. **Derived-value composition** (#5042 `c9254beb8`):
   `CharacterRuleset::actor_value` is the one composer — an authored carried base (`ActorValue::base_authored`,
   set only by `set_base`) wins; otherwise an actor-general `Absolute` row supplies the base and the entry's
   modifier + damage layers compose on top (a modifier-only placeholder entry once read as the bare modifier:
@@ -192,7 +196,7 @@ First step: `cargo test -p byroredux --bin byroredux resolve_inherited_call_site
   formula, refreshed by `CharacterRuleset::refresh_player_only_bases` (allocation-free) at stamping, after
   `attach_to_player`'s constant spells, and every frame by `player_derived_stats_system`
   (`byroredux/src/systems/character.rs`, Update) — the one documented exception to computed-on-demand
-  (`docs/engine/charal.md` §6); a refresh must preserve the damage and modifier layers.
+  (`docs/engine/charal.md` §6); a refresh must preserve the damage, `set_override` and modifier layers.
 - `build_character_ruleset` returns `None` for Oblivion/FO76/Starfield; every caller must treat `None` as
   "no CHARAL for this game", never "use the default ruleset" (Fallout formulas on a TES actor).
 - `resolve` = `index.actor_value_form_id(editor_id)`: an unresolved EditorID skips its formula
@@ -210,9 +214,13 @@ First step: `cargo test -p byroredux --bin byroredux resolve_inherited_call_site
   only itself. The capture's class/level term is deferred and must be disclosed in place (#4454).
 - `setav`/`modav` write the *base* component, not a derived output the next tick recomputes — except the
   player's `PlayerOnly` derived pools: `setav`/SDK `SetBase` there route through
-  `CharacterRuleset::is_player_derived_pool` into the permanent modifier layer (`set_permanent`, composed total =
-  formula base + value), because `refresh_player_only_bases` would revert a base write in one tick (#5239
-  `2464a52d7`; matches the GECK SetActorValue note). Non-player targets and actor-general stats keep `set_base`.
+  `CharacterRuleset::is_player_derived_pool` into the `set_override` layer (`ActorValues::set_override`, composed
+  total = formula base + value + any constant-spell modifier), because `refresh_player_only_bases` would revert a
+  base write in one tick (#5239 `2464a52d7`; re-layered by #5412 `a614eb273` — the first destination,
+  `set_permanent`, erased carried ability bonuses and made their removal subtract twice;
+  `set_override_survives_the_player_refresh_and_keeps_permanent_mod`). Sourcing per `charal.md` §6: the Oblivion
+  CS SetActorValue note (FO3/FNV inherit it unverified) plus the FO4 CK `SetValue` "modifiers are left intact".
+  Non-player targets and actor-general stats keep `set_base`.
 **Output**: `/tmp/audit/character/dim_4.md`
 
 ### Dimension 5: Coverage, Documentation & Doctrine Drift — second-highest yield

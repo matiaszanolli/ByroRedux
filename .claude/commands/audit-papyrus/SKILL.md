@@ -138,7 +138,11 @@ First step: `cargo test -p byroredux-pex -- decompile::`; with game data: `cargo
   matter only if a recognizer keys on the lost info: statement-shaped node as sub-expression → `NoneLit`
   (should be unreachable), `is` → `Cast`, `StructCreate` → `New` size 0, `lower_binary_op` default arm →
   `Eq` (a real unknown op silently becomes `==`).
-- **Script assembly**: synthetic `::` variables dropped; **script scope = the empty-named state's functions**;
+- **Script assembly**: synthetic `::` variables dropped; the object's `conditional`/`hidden`/`default` user
+  flags (bit indices named by the file's own user-flag table, `has_user_flag` — shift guarded by
+  `flag_index < 32` on untrusted bytes) lower into the same `ScriptFlags` the `.psc` header parses, and a
+  variable's `conditional` into `is_conditional` (#5398 `ce90b481c`, `object_user_flags_lower_into_script_flags`);
+  **script scope = the empty-named state's functions**;
   every named state → a `State` item; exactly one (the first case-insensitive `is_auto_state` match against
   `auto_state_name`) is `is_auto` (#4473, `case_colliding_state_names_mark_exactly_one_auto`) — keying scope on the auto match inverted 983 vanilla scripts (#4319;
   `named_auto_state_stays_an_auto_state_and_the_empty_state_is_script_scope`). Event iff (`on`-prefixed AND
@@ -196,7 +200,12 @@ First step: `cargo test -p byroredux-papyrus -- depth chain the_two_parser_depth
   `/audit-scripting` Dim 3 — `.psc` operators are standard.)
 - **`preprocess`**: `\`+`\n`/`\r\n`/lone `\r` elided (2/3/2 bytes) with exact `OffsetMap` counts (a wrong count
   drifts every later span); a trailing `\` at EOF is emitted, not swallowed. Keywords are
-  `ignore(ascii_case)` and win over the `Ident` regex. Lone CR is a line terminator and CRLF one `Newline`
+  `ignore(case)` (logos 0.16 dropped *ascii_case*, `15a6b1d2d` — Unicode folding, which differs only for the few
+  non-ASCII letters that fold onto ASCII, e.g. U+017F, U+212A, invalid Papyrus either way) and win over the
+  `Ident` regex. CK flags matched **contextually** stay out of the lexer: `Default` (script header) and
+  `Collapsed` (group) are identifiers checked in their flag position (#5398 `ce90b481c`,
+  `default_and_collapsed_remain_identifiers`) — expressions accept only `Token::Ident`, so promoting either to a
+  keyword breaks every variable of that name. Lone CR is a line terminator and CRLF one `Newline`
   (`bare_cr_is_a_newline_and_crlf_is_one_newline`, #4479 — a CR-only file once lexed to zero newlines); a `;`
   line comment likewise stops at the first `\r` *or* `\n` (`line_comment_ends_at_a_bare_cr`, #5019 `a75c7dc33` —
   it once searched only `\n`, swallowing a CR-only file to EOF with zero errors);

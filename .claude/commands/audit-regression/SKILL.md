@@ -29,11 +29,11 @@ base=$(git rev-list -1 --before="$D 23:59" HEAD)
 git diff --name-only "$base"..HEAD -- '*.rs' '*.glsl' '*.comp' '*.frag' '*.vert' > /tmp/audit/churn.txt
 # earlier fix commits on the files that changed since, ranked by overlap:
 xargs -a /tmp/audit/churn.txt -I{} git log "$base" --format=%s -- {} \
-  | grep -oiE '(fix|fixes|fixed|close[sd]?|resolve[sd]?) #[0-9]+(( *(,|\+|&|and) *| )#[0-9]+)*' \
+  | grep -oiE '(fix|fixes|fixed|close[sd]?|resolve[sd]?) #[0-9]+(( *(,|\+|&|/|and) *| )#[0-9]+)*' \
   | grep -oE '[0-9]+' | sort | uniq -c | sort -rn | head -"${LIMIT:-40}" > /tmp/audit/candidates.txt
 ```
 
-The `(…#N)*` tail is load-bearing: multi-issue subjects (`Fix #5075 + #5076: …`, `Fix #5215, #5216: …`) are common, and a single-`#N` pattern drops every issue after the first — 11 of 279 fixed issues in the 2026-09-29 → 10-05 window. Issue numbers cited later in a subject (`… catches up with #5154`) are deliberately not matched.
+The `(…#N)*` tail is load-bearing: multi-issue subjects (`Fix #5075 + #5076: …`, `Fix #5215, #5216: …`, `Fix #1297 / #1298`) are common, and a single-`#N` pattern drops every issue after the first — 11 of 279 fixed issues in the 2026-09-29 → 10-05 window. A repeated keyword (`Fix #5393, Fix #5395`) matches as two hits; a range (`Fix #5371-5381 batch`) yields only its first number, and nothing is lost — the two range subjects in history are batch follow-ups, and each of #5371–#5381 has its own `Fix #N` commit. Issue numbers cited later in a subject (`… catches up with #5154`) are deliberately not matched.
 
 Take the top candidates, then `gh issue view <N> --repo matiaszanolli/ByroRedux --json number,title,body,closedAt,labels` for each. If the churn list is empty or short, top up with `gh issue list --repo matiaszanolli/ByroRedux --state closed --label bug --limit 50 --json number,title,body,closedAt,labels`. Never trust a hand-typed closed-issue count; ask the API.
 
@@ -68,7 +68,11 @@ For each issue, work the fix → guard-test chain:
      `*_tests.rs` siblings of the fix file.
 4. **Run the guard** to prove it still passes. Crate packages are named
    `byroredux-<crate>` (e.g. `cargo test -p byroredux-nif <test_name>`,
-   `cargo test -p byroredux-renderer`, `cargo test -p byroredux-core`).
+   `cargo test -p byroredux-renderer`, `cargo test -p byroredux-core --features inspect`
+   — without `inspect` the animation-serialization guards silently drop, #3895).
+   The `byroredux` bin crate (and any workspace-resolving call) needs rustc ≥ 1.96 —
+   rustup cargo per `docs/contributing.md` § Toolchain note (#4466). Never run
+   `--ignored` on `byroredux-plugin` (real-master tests OOM past 20 GB).
 
 ## Step 3 — Assign a status
 

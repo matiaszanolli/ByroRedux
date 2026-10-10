@@ -19,13 +19,15 @@ a dimension whose Paths have no commits since the last `AUDIT_SAFETY_*` report.
 ## Scale of the surface (re-measure; do not trust these figures)
 
 Census recipe: `grep -rwo unsafe <crate>/src | wc -l` for tokens, `grep -rnE 'unsafe[[:space:]]*\{' <crate>/src`
-for blocks — **read the hits**: substring counts also match identifiers (`byroredux` reports 3 tokens and
-only 1 real block). Measured 2026-10-08 (unchanged since 2026-10-05; 116 commits added no `unsafe`):
+for blocks — **read the hits**: word counts also match prose (`byroredux` reports 5 tokens and
+only 2 real blocks). Measured 2026-10-10 (99 commits since 2026-10-08 added no `unsafe`; #5273 removed five):
 
-- `crates/renderer/src`: **939** word tokens (948 by the substring recipe; 946 on 2026-09-29) — 720 `unsafe {`
-  blocks (733), 96 declared `unsafe fn` (the loose `grep 'unsafe fn'` reads ~144: prose and source-scan
-  strings), 35 `unsafe impl` (new: `NoUninit for ModelPush`), ~816 `SAFETY` mentions. First net shrink: the
-  #4599 poison-policy extraction cut `vulkan/buffer.rs` 40 → 19 blocks; `vulkan/groundcover.rs` split into
+- `crates/renderer/src`: **935** word tokens (944 by the substring recipe; 939 on 2026-10-08) — 715 `unsafe {`
+  blocks (720), 96 declared `unsafe fn` (the loose `grep 'unsafe fn'` reads ~145: prose and source-scan
+  strings), 35 `unsafe impl` (newest: `NoUninit for ModelPush`), ~811 `SAFETY` mentions. Net shrinks: the
+  #4599 poison-policy extraction cut `vulkan/buffer.rs` 40 → 19 blocks; #5273 (74ed66f0a) replaced the five
+  `CStr::from_ptr` device/extension-name blocks in `vulkan/device.rs` with ash's bounded `*_as_c_str()` accessors
+  (pinned by `device_names_read_through_bounded_accessors`); `vulkan/groundcover.rs` split into
   `vulkan/groundcover/{construct,frame}.rs` (18 + 12). Densest files: `vulkan/gpu_timers.rs` (62),
   `vulkan/groundcover_bench.rs` and `vulkan/acceleration/blas_static.rs` (29 each). Compare against the previous
   report, not this text.
@@ -98,7 +100,8 @@ First step: `grep -rnE 'transmute|from_raw_parts|set_len|from_utf8_unchecked|uns
 - **LZ4 `safe-decode` pin** (`Cargo.toml`, `byroredux-bsa` the sole dependent, #3392): with the feature on,
   `lz4_flex::decompress` is bounds-checked; **off**, a short hint is a heap overflow no `catch_unwind` can
   catch. The workspace entry is `default-features = false` *with an explicit feature list* that names
-  `safe-decode` — that shape is the pin, not a finding. Verify it survives dependency bumps; `safe-decode`
+  `safe-decode` — that shape is the pin, not a finding. Verify it survives dependency bumps (it held through 0.14,
+  20ad630a6); `safe-decode`
   dropped from the list, or a dependent declaring `lz4_flex` outside `workspace = true`, is HIGH.
   The archive size ceilings themselves are `/audit-parsers`.
 - Stack-overflow risk: no unbounded recursion in block-walk / scene-graph traversal (ESM GRUP walkers bounded
@@ -153,7 +156,7 @@ First step: `grep -rn undocumented_unsafe_blocks crates` (expect the one `deny` 
   its own closure, so an upstream crate's new-toolchain clippy failure can no longer disarm the gate — confirm both survive. Confirm the `deny` is
   present and unescaped. The lint sees `unsafe {}` blocks only: `unsafe fn` bodies and the 35 renderer `unsafe impl`s
   need a justification found by reading. Crates outside the renderer have no such lint — sweep comment-less blocks
-  there by hand (at 2026-10-08 all commented in `fsr3-sys`, `nif`, `core`, `pex`, `byro-launcher` and `byroredux`); a
+  there by hand (at 2026-10-10 all commented in `fsr3-sys`, `nif`, `core`, `pex`, `byro-launcher` and `byroredux`); a
   comment-less block is MEDIUM.
 - The audit's value is therefore the *truth* of each invariant, not its presence: for each new or changed block, does the
   stated precondition (device live, handles from this device, not in flight, pointer valid for the call) hold at THIS call
@@ -164,7 +167,7 @@ First step: `grep -rn undocumented_unsafe_blocks crates` (expect the one `deny` 
 
 ### 5. Vulkan Spec Compliance (HIGH — flag what `cargo test` can't see)
 Paths: `crates/renderer/src/vulkan/`
-First step: CI job `vulkan-validation` (lavapipe, `.github/workflows/ci.yml`) fails on any `[Vulkan]` line; locally `BYRO_VALIDATION=1`. Since #4987 (6d5d8fa5f) the lane globs the lavapipe manifest, goes red on "Vulkan init failed", and requires the `Selected GPU:` line (`vulkan_validation_job_resolves_lavapipe_and_fails_on_init_failure`, `vulkan_validation_job_requires_a_selected_device`). It boots only the 5-frame default scene, and lifting the renderer log to info for that gate also admits WARN-level `[Vulkan]` performance warnings — read the severity of what fired; never cite a green run as coverage of a game-data path
+First step: CI job `vulkan-validation` (lavapipe, `.github/workflows/ci.yml`) fails on any `[Vulkan]` line; locally `BYRO_VALIDATION=1`. Since #4987 (6d5d8fa5f) the lane globs the lavapipe manifest, goes red on "Vulkan init failed", and requires the `Selected GPU:` line (`vulkan_validation_job_resolves_lavapipe_and_fails_on_init_failure`, `vulkan_validation_job_requires_a_selected_device`), and since #5261 (59115f54c) requires an `rt-integrity: … rt_flag=1 … tlas_build=1` line, so a silent RT-off is red (`vulkan_validation_job_requires_live_rt`, #5416). Only `byroredux_renderer::vulkan::device` rides at info (#5263, a88100975), so the messenger stays at the error floor and every `[Vulkan]` line it prints is an ERROR. It boots only the 5-frame default scene — never cite a green run as coverage of a game-data path
 
 Render-pass / barrier / pipeline-state claims invisible to `cargo test` are "needs validation-layer or RenderDoc
 verification" (`/audit-concurrency` guardrail); report emitted validation errors verbatim.
@@ -245,9 +248,10 @@ First step: `cargo tree -p byroredux-mod-runtime | grep -i wasi` (must print not
 (~10.8k LOC, `unsafe`-free) is reached from `main.rs` (`load_requested_extensions`, `queue_session_event`) and
 `app_events.rs` (`shutdown_extension_host`, `extension_ui_menu_sync`). Audit it as a live path.
 
-- **Absence, not promise**: the crate doc says no WASI is linked; `wasmtime` is declared with
+- **Absence, not promise**: the crate doc says no WASI is linked; `wasmtime` (49.0.2 since 15a6b1d2d) is declared with
   `default-features = false, features = [anyhow, component-model, cranelift, runtime, std]`. A `wasi` feature pulled
-  in transitively turns the claim false.
+  in transitively turns the claim false (the `wasi` / `wasip2` entries in `Cargo.lock` are *mio* / *getrandom*
+  wasm-target deps — the First-step `cargo tree -p` is the check, not a lockfile grep).
 - **Capability gating**: authority types live in `crates/sdk/src/identity.rs` (`CapabilitySet`, `CapabilityId`;
   `Principal` stays in `crates/mod-runtime/src/identity.rs`); the 28 `*_CAPABILITY` constants are in
   `crates/sdk/src/service.rs`. Gating is centralised in `crates/mod-runtime/src/runtime/capabilities.rs` (`require_*`
@@ -271,7 +275,9 @@ First step: `cargo tree -p byroredux-mod-runtime | grep -i wasi` (must print not
 
 ## Procedure
 
-1. Census (`Scale of the surface`); note new unsafe files since the last report.
+1. Census (`Scale of the surface`); note new unsafe files since the last report. The `cargo test -p byroredux …`
+   first steps (Dims 3, 7) need rustc ≥ 1.96 (wasmtime 49's MSRV) through the rustup cargo — `docs/contributing.md`
+   § Toolchain note.
 2. Dims 1–2 first (live FFI, UB); then leaks/drop order (3), unsafe sweep (4), Vulkan spec (5), GPU layout (6), GPU-fed
    data (7), mod-runtime (8).
 3. Dedup against open/closed issues (`_audit-common` Deduplication) — most items are regression guards; report an

@@ -12,7 +12,7 @@ This skill owns no audit logic: it **selects** audits and fans them out as backg
 ## Modes
 
 1. **`--preset <name>`** — a curated list (below).
-2. **`--area <path…>`** — derive the set: `git ls-files <path…> | .claude/commands/_audit-route.sh` → owners of those files, plus the *neighbors* of each owner from the table below. No hand-maintained preset to drift.
+2. **`--area <path…>`** — derive the set: `git ls-files <path…> | .claude/commands/_audit-route.sh` → owners of those files, plus the *neighbors* of each owner from the table below. No hand-maintained preset to drift. A `per-game` owner expands to all six per-game audits, so a `byroredux/src/cell_loader/` area fans out ~17 audits (2026-10-09 `streaming-deep`). Say so before launching.
 3. **`--changed <scope>`** — same, from `git diff <scope> --name-only` (scope forms as in `/audit-incremental`). Fans out whole owner audits; use `/audit-incremental` when you only want hunk-level checks.
 
 Each audit delta-scopes itself (`_audit-common.md` § Delta-first scoping), so a suite over a code area costs roughly what changed there. Pass `--focus <dimensions>` to one audit only when the user names it; never bake dimension numbers into a preset — they drift on every renumbering.
@@ -76,7 +76,7 @@ Each is just `--area` over these paths (neighbors apply):
 
 1. Parse the mode. Unknown preset → list the tables above and stop. `mkdir -p /tmp/audit`.
 2. Launch each audit as a **background agent**, max 3 concurrent — they read the tree and write distinct reports, so there is no ordering dependency.
-3. **Orchestration hazard**: an agent that fans out its own sub-agents cannot receive their completion notices and will drop real findings from its report (seen on the 2026-08-03 `comprehensive` run: three real findings — incl. a HIGH ragdoll double-compose — were reported "clean"). Tell every launched audit up front to analyse dimensions synchronously or to write `/tmp/audit/<name>/dim_N.md` scratch files. Before accepting "no findings" for a dimension, check that scratch file against the written report. Also tell each audit to **skip its final `rm -rf /tmp/audit/<name>`**; the suite deletes those directories itself once the reconciliation is done.
+3. **Orchestration hazard**: an agent that fans out its own sub-agents cannot receive their completion notices and will drop real findings from its report (seen on the 2026-08-03 `comprehensive` run: three real findings — incl. a HIGH ragdoll double-compose — were reported "clean"). Tell every launched audit up front to analyse dimensions synchronously or to write `/tmp/audit/<name>/dim_N.md` scratch files. Before accepting "no findings" for a dimension, check that scratch file against the written report. Also tell each audit to **skip its final `rm -rf /tmp/audit/<name>`**; the suite deletes those directories itself once the reconciliation is done. Put these rules in one shared file (`/tmp/audit/SUITE_RULES.md`, as on the 2026-10-08/09 runs) together with one open-issue snapshot, and forward each finished audit's IDs to the agents still running (SendMessage) so they dedup mid-run. **Cargo targets**: have agents build in the repo `target/` and name any private target dir in their final message. Per-agent targets reached ~16 GB on the 2026-10-09 run.
 4. Each audit writes `docs/audits/AUDIT_<TYPE>_<TODAY>.md` (`_audit-common.md` § Report Finalization). Verify each exists with real content, not a placeholder.
 5. Merge into a summary; warn prominently if any CRITICAL:
 
