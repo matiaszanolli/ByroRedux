@@ -43,6 +43,14 @@ const FREE_ROOT_DOFS: usize = 6;
 /// no longer has.)
 const KEYFRAME_TARGET_SANE_BOUND_BU: f32 = 1.0e8;
 
+/// A dynamic body's state immediately before one Rapier substep.
+///
+/// A malformed contact must never turn a valid saved scene into a permanent
+/// broken island. Keeping this snapshot at the physics boundary lets us retain
+/// the last known-good pose if Rapier returns non-finite values or a physically
+/// impossible contact/constraint jump. It is intentionally per-substep: a
+/// long catch-up frame must not roll a body back farther than the one solve
+/// that corrupted it.
 #[derive(Clone)]
 pub(super) struct DynamicBodySnapshot {
     pub(super) handle: RigidBodyHandle,

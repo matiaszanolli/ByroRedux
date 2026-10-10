@@ -9,6 +9,10 @@ use rapier3d::prelude::*;
 
 use super::{NearbyCollider, PhysicsRayHit, PhysicsWorld, solid_probe_filter};
 
+/// Result of a [`PhysicsWorld::move_character`] step. Mirrors Rapier's
+/// `EffectiveCharacterMovement` but with engine-side types so callers
+/// don't pull in `rapier3d::prelude::*`. See M28.5.
+#[derive(Debug, Clone, Copy)]
 pub struct CharacterMoveResult {
     /// Effective translation in engine world-space (Y-up). Apply this
     /// to the character body's Transform + queue as the kinematic

@@ -826,8 +826,8 @@ impl PhysicsWorld {
         // "~8-10 ms/step × 5 substeps" figure in the present tense and
         // attributed it to `pipeline.step()`, which is wrong twice over: the
         // number predates its own commit, and the per-substep rebuild it
-        // measured is removed forty lines below (`None` is passed for the
-        // query pipeline).
+        // measured was removed by that same commit (under rapier 0.36 there
+        // is no separate query pipeline left to rebuild — see below).
         //
         // WHERE THE COST ACTUALLY IS, today: nowhere near here. #4685
         // (PHYS-D6-2026-09-21-02) measured the next suspect on rapier 0.22 —
@@ -2764,6 +2764,12 @@ mod tests {
             "the pre-fix per-step figure must not be restated as current cost \
              (#2890) — it predates the commit that removed the rebuild it \
              measured"
+        );
+        assert!(
+            !rationale.contains("`None` is passed"),
+            "the rationale must not claim the query pipeline is still passed \
+             as `None` — it was reworked in #4685 and no longer exists under \
+             rapier 0.36 (#5453)"
         );
         assert!(
             rationale.contains("6e55b492"),
