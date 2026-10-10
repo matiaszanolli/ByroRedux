@@ -1619,15 +1619,15 @@ mod tests {
         // Ground truth first — the doc sentence is only right while this holds.
         // Stage 1 (RENDERING-PLAN.md): exposure is sampled from the per-frame
         // `exposureTex` (the same texel FSR normalized against) and applied
-        // inside the display-transform dispatch, which selects ACES or AgX.
-        // #5154 — the tonemapper input is `compressed`, the graded colour
-        // after the meter-lift chroma compress; the exposure multiply and
-        // the display transform are unchanged.
+        // in presentation ahead of the display-transform dispatch, which
+        // selects ACES or AgX. #5482 — the multiply moved ahead of the
+        // cinematic grade (its contrast pivot is in exposed units); it is
+        // still this shader's, and still the only one.
         assert!(
-            presentation.contains("tonemap(compressed * exposure)"),
-            "presentation.frag no longer applies the sampled exposure inside \
-             the display transform; the FSR plan's phase-3 attribution needs \
-             re-checking (#4026, Stage 1)",
+            presentation.contains("vec3 exposed = scene.rgb * exposure;"),
+            "presentation.frag no longer applies the sampled exposure to the \
+             scene; the FSR plan's phase-3 attribution needs re-checking \
+             (#4026, Stage 1)",
         );
         assert!(
             presentation.contains("texelFetch(exposureTex"),

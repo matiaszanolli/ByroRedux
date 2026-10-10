@@ -29,7 +29,10 @@
 /// emits them into the generated `shader_constants.glsl`, and the shader
 /// compares against `TONEMAP_OP_AGX` instead of a hand-typed literal.
 pub use crate::shader_constants::{TONEMAP_OP_ACES, TONEMAP_OP_AGX};
-use crate::shader_constants::{ADAPTATION_SAT_FALLOFF, EXPOSURE_METER_NEUTRAL, LUMA_REC709};
+use crate::shader_constants::{
+    ADAPTATION_SAT_FALLOFF, EXPOSURE_METER_NEUTRAL, GRADE_CONTRAST_PIVOT, GRADE_CONTRAST_TOE,
+    LUMA_REC709,
+};
 
 /// Display-transform selection. `RendererConfig` carries this (an `Eq` enum,
 /// not a float — see that struct's docs for why), the console can flip it
@@ -185,9 +188,102 @@ pub fn adaptation_chroma_compress(color: [f32; 3], exposure: f32) -> [f32; 3] {
     ]
 }
 
+/// #5482 — the IMGS/IMAD cinematic contrast, the Rust mirror of
+/// `presentation.frag`'s `gradeContrast`, applied per channel to EXPOSED
+/// radiance.
+///
+/// A linear stretch about [`GRADE_CONTRAST_PIVOT`] that hands over, below
+/// [`GRADE_CONTRAST_TOE`], to `pivot * (x / pivot)^contrast` — a curve that
+/// approaches black instead of crossing it. The plain linear stretch floored
+/// every shade under `pivot * (1 - 1/contrast)` to zero; at Skyrim's weather
+/// contrast of 1.3 that took out all the ambient-only exterior terrain.
+pub fn grade_contrast(x: [f32; 3], contrast: f32) -> [f32; 3] {
+    x.map(|c| {
+        let stretched = (c - GRADE_CONTRAST_PIVOT) * contrast + GRADE_CONTRAST_PIVOT;
+        let toe = GRADE_CONTRAST_PIVOT * (c / GRADE_CONTRAST_PIVOT).max(1.0e-6).powf(contrast);
+        let w = (toe / GRADE_CONTRAST_TOE).clamp(0.0, 1.0);
+        toe + (stretched - toe) * w
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #5482 — Skyrim's Tamriel weather grades at contrast 1.3. Exterior
+    /// terrain lit only by ambient sat at ~0.03-0.04 exposed, under the
+    /// linear stretch's `0.18 * (1 - 1/1.3) = 0.0415` floor, so it presented
+    /// as exactly zero (52-67 % of the frame). The toe keeps every positive
+    /// shade positive and the ramp strictly increasing, without moving the
+    /// pivot or the highlight stretch.
+    #[test]
+    fn contrast_keeps_shadows_above_black_and_monotone() {
+        let contrast = 1.3;
+        let floor = GRADE_CONTRAST_PIVOT * (1.0 - 1.0 / contrast);
+        let mut previous = 0.0f32;
+        for i in 1..=400 {
+            let x = i as f32 * 0.0025;
+            let y = grade_contrast([x; 3], contrast)[0];
+            assert!(y > 0.0, "shade {x} graded to {y}");
+            assert!(y > previous, "ramp not increasing at {x}");
+            previous = y;
+            if x < floor {
+                // The pre-fix linear stretch would have floored this shade.
+                assert!((x - GRADE_CONTRAST_PIVOT) * contrast + GRADE_CONTRAST_PIVOT < 0.0);
+            }
+        }
+        // The terrain the report measured keeps a usable shade.
+        assert!(grade_contrast([0.03; 3], contrast)[0] > 0.01);
+        // Above the toe, the grade is the authored linear stretch.
+        let pivot = grade_contrast([GRADE_CONTRAST_PIVOT; 3], contrast)[0];
+        assert!((pivot - GRADE_CONTRAST_PIVOT).abs() < 1.0e-6);
+        let bright = grade_contrast([1.0; 3], contrast)[0];
+        assert!((bright - ((1.0 - GRADE_CONTRAST_PIVOT) * contrast + GRADE_CONTRAST_PIVOT)).abs() < 1.0e-6);
+    }
+
+    /// Unity contrast is the identity on the visible range, and zero
+    /// contrast is the authored flat grey — the two ends the CK documents.
+    #[test]
+    fn contrast_identity_and_flat_ends() {
+        for x in [0.001f32, 0.02, 0.18, 0.5, 4.0] {
+            let y = grade_contrast([x; 3], 1.0)[0];
+            assert!((y - x).abs() <= x * 1.0e-5, "{x} -> {y}");
+            let flat = grade_contrast([x; 3], 0.0)[0];
+            assert!((flat - GRADE_CONTRAST_PIVOT).abs() < 1.0e-6);
+        }
+    }
+
+    /// The shader must grade EXPOSED radiance with the mirrored curve:
+    /// exposure multiply → contrast → tonemap, with no surviving raw-radiance
+    /// pivot. Pre-#5482 the pivot sat at 0.18 of pre-exposure radiance, i.e.
+    /// 0.36 of the metered image whenever the meter hit its 2× ceiling.
+    #[test]
+    fn presentation_grades_exposed_radiance_with_the_mirrored_contrast() {
+        let frag = include_str!("../shaders/presentation.frag");
+        let header = include_str!("../shaders/include/shader_constants.glsl");
+        assert!(header.contains("#define GRADE_CONTRAST_PIVOT 0.18"));
+        assert!(header.contains("#define GRADE_CONTRAST_TOE 0.1"));
+        let curve = frag
+            .split_once("vec3 gradeContrast(vec3 x, float contrast)")
+            .expect("GLSL gradeContrast")
+            .1
+            .split_once("\n}")
+            .expect("gradeContrast terminator")
+            .0;
+        assert!(curve.contains("(x - vec3(GRADE_CONTRAST_PIVOT)) * contrast + vec3(GRADE_CONTRAST_PIVOT)"));
+        assert!(curve.contains("pow(max(x / GRADE_CONTRAST_PIVOT, vec3(1.0e-6)), vec3(contrast))"));
+        assert!(curve.contains("clamp(toe / GRADE_CONTRAST_TOE, 0.0, 1.0)"));
+        let main = frag.split_once("void main()").expect("main").1;
+        let exposed = main
+            .find("vec3 exposed = scene.rgb * exposure;")
+            .expect("the exposure multiply");
+        let contrast = main
+            .find("gradeContrast(graded, max(params.grade.z, 0.0))")
+            .expect("the contrast call");
+        let tonemap_call = main.find("tonemap(compressed)").expect("the tonemap call");
+        assert!(exposed < contrast && contrast < tonemap_call);
+        assert!(!main.contains("vec3(0.18)"), "a raw-radiance contrast pivot came back");
+    }
 
     /// Grey in must stay grey out for both operators — a channel skew here
     /// would tint every neutral surface in the game. Tolerance is
@@ -555,7 +651,7 @@ mod tests {
             .find("exp2(-ADAPTATION_SAT_FALLOFF * lift_stops)")
             .expect("the chroma compress expression");
         let tonemap_call = main
-            .find("tonemap(compressed * exposure)")
+            .find("tonemap(compressed)")
             .expect("the compressed tonemap call");
         assert!(
             exposure < compress && compress < tonemap_call,

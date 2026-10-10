@@ -198,6 +198,21 @@ vec3 normalizedLegacyColor(vec3 color) {
     return max(max(color.r, color.g), color.b) > 1.0 ? color / 255.0 : color;
 }
 
+// #5482 — IMGS/IMAD cinematic contrast on EXPOSED radiance. Linear stretch
+// about middle grey, handing over below GRADE_CONTRAST_TOE to a power law
+// that approaches black instead of crossing it — the Community Shaders
+// ISHDR "crushed shadows" form (see shader_constants_data.rs). The plain
+// linear stretch floored every shade under `pivot * (1 - 1/contrast)` to
+// exactly zero: at Skyrim's weather contrast 1.3 that was all ambient-only
+// exterior terrain, which read as black holes in the ground. The Rust
+// mirror and behaviour pins live in tonemap.rs (`grade_contrast`).
+vec3 gradeContrast(vec3 x, float contrast) {
+    vec3 stretched = (x - vec3(GRADE_CONTRAST_PIVOT)) * contrast + vec3(GRADE_CONTRAST_PIVOT);
+    vec3 toe = GRADE_CONTRAST_PIVOT
+        * pow(max(x / GRADE_CONTRAST_PIVOT, vec3(1.0e-6)), vec3(contrast));
+    return mix(toe, stretched, clamp(toe / GRADE_CONTRAST_TOE, 0.0, 1.0));
+}
+
 void main() {
     // Sample the raw texel for the health check, *before* the lens/blur path
     // mixes neighbours together — a single NaN would otherwise smear across
@@ -230,9 +245,17 @@ void main() {
     }
 
     vec4 scene = sampleImageSpace(fragUV);
-    float luminance = dot(scene.rgb, LUMA_REC709);
-    vec3 graded = mix(vec3(luminance), scene.rgb, max(params.grade.x, 0.0));
-    graded = (graded - vec3(0.18)) * max(params.grade.z, 0.0) + vec3(0.18);
+    // #5482 — expose BEFORE the grade. Saturation, brightness and tint are
+    // scale-invariant, but the contrast pivot is not: pivoting raw radiance
+    // at 0.18 put it at 0.18 × exposure in the metered image (2× the key
+    // with the meter at its ceiling), so dark-metered exteriors lost far
+    // more of the frame to the stretch than bright ones. Vanilla ISHDR
+    // also applies its adaptation first and grades after.
+    float exposure = texelFetch(exposureTex, ivec2(0), 0).r;
+    vec3 exposed = scene.rgb * exposure;
+    float luminance = dot(exposed, LUMA_REC709);
+    vec3 graded = mix(vec3(luminance), exposed, max(params.grade.x, 0.0));
+    graded = gradeContrast(graded, max(params.grade.z, 0.0));
     graded *= max(params.grade.y, 0.0);
     // Cinematic tint: blend toward the graded luminance carried in the tint
     // hue. Both CK wikis (GECK + Creation Kit, "ImageSpace Modifiers" /
@@ -246,7 +269,6 @@ void main() {
         vec3(dot(graded, LUMA_REC709)) * normalizedLegacyColor(params.tintColor.rgb),
         clamp(params.tintColor.a, 0.0, 1.0)
     );
-    float exposure = texelFetch(exposureTex, ivec2(0), 0).r;
     // #5154 — EV-dependent chroma compress between the meter and the
     // tonemapper. When the eye adapts to low light, the exposure lift
     // pushes mid-tones into the tone curve's steep region, where
@@ -256,15 +278,14 @@ void main() {
     // 2^(-falloff * lift), lift measured in stops above the meter's
     // neutral output (EV100 = 0 -> 1.2): one stop of adaptation costs a
     // quarter stop of chroma — about 0.88 chroma at the 2× envelope cap
-    // (#5158); `exposure ev` compensation can lift further. Desat
-    // before the multiply — chroma ratios are scale-invariant, so this is
-    // the same value the post-multiply chroma would carry. The Rust mirror
-    // and behaviour pins live in tonemap.rs.
+    // (#5158); `exposure ev` compensation can lift further. `graded` is
+    // already exposed (#5482), and chroma ratios are scale-invariant
+    // anyway. The Rust mirror and behaviour pins live in tonemap.rs.
     float lift_stops = max(log2(max(exposure, 1.0e-6) / EXPOSURE_METER_NEUTRAL), 0.0);
     float chroma = exp2(-ADAPTATION_SAT_FALLOFF * lift_stops);
     float graded_luma = dot(graded, LUMA_REC709);
     vec3 compressed = mix(vec3(graded_luma), graded, chroma);
-    vec3 presented = tonemap(compressed * exposure);
+    vec3 presented = tonemap(compressed);
 
     if (params.underwater.w > 0.0) {
         // The app packs the authored WATR fog ramp into this channel as a

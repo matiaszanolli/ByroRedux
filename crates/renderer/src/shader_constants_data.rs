@@ -37,6 +37,20 @@ pub const LUMA_REC709: [f32; 3] = [0.2126, 0.7152, 0.0722];
 pub const EXPOSURE_METER_NEUTRAL: f32 = 1.2;
 pub const ADAPTATION_SAT_FALLOFF: f32 = 0.25;
 
+// #5482 — the IMGS/IMAD cinematic contrast (presentation.frag's
+// `gradeContrast` + `tonemap.rs`'s `grade_contrast` mirror). The pivot is
+// middle grey in EXPOSED units — the meter's own output scale — so contrast
+// stretches around the metered key whatever the adaptation. Below
+// `GRADE_CONTRAST_TOE` the linear stretch hands over to a power law that
+// approaches black instead of crossing it: the decompiled vanilla ISHDR
+// pass's `lerp(avg, color, contrast)` floors every shade under
+// `pivot * (1 - 1/contrast)` to zero, and Skyrim Community Shaders'
+// `ISHDR.hlsl` ("Contrast modified to fix crushed shadows") blends in
+// `pivot * (color/pivot)^contrast` by `saturate(power / 0.1)`; the toe is
+// that 0.1.
+pub const GRADE_CONTRAST_PIVOT: f32 = 0.18;
+pub const GRADE_CONTRAST_TOE: f32 = 0.1;
+
 // #5254 — the EV100 meter calibration, Frostbite §5.6: `EV100 =
 // log2(L * S / K)` with the reflected-light meter constant K = 12.5
 // (ISO 2720) and sensor sensitivity S = 100 (ISO 100). `vulkan/exposure.rs`
@@ -2356,6 +2370,8 @@ pub const SHADER_DEFINES: &[HeaderLine] = &[
     HeaderLine::Define("SENSOR_SENSITIVITY_S", ShaderValue::Float(SENSOR_SENSITIVITY_S)),
     HeaderLine::Define("EXPOSURE_METER_S_OVER_K", ShaderValue::Float(EXPOSURE_METER_S_OVER_K)),
     HeaderLine::Define("ADAPTATION_SAT_FALLOFF", ShaderValue::Float(ADAPTATION_SAT_FALLOFF)),
+    HeaderLine::Define("GRADE_CONTRAST_PIVOT", ShaderValue::Float(GRADE_CONTRAST_PIVOT)),
+    HeaderLine::Define("GRADE_CONTRAST_TOE", ShaderValue::Float(GRADE_CONTRAST_TOE)),
     HeaderLine::Define("FOG_VOLUME_SHAPE_SPHERE", ShaderValue::Uint(FOG_VOLUME_SHAPE_SPHERE)),
     HeaderLine::Define("FOG_VOLUME_SHAPE_ELLIPSOID", ShaderValue::Uint(FOG_VOLUME_SHAPE_ELLIPSOID)),
     HeaderLine::Define("FOG_VOLUME_SHAPE_BOX", ShaderValue::Uint(FOG_VOLUME_SHAPE_BOX)),
