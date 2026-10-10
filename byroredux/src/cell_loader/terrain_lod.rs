@@ -446,7 +446,13 @@ pub(crate) fn stream_lod_blocks(
     // keep the heightmap-synth geometry, but EXAL can now supply their
     // authored NIF-era diffuse quads to that common path (#3100).
     let game = wctx.record_index.game;
-    let worldspace_key = wctx.worldspace_key.as_str();
+    // #5496 — every distant-ring key resolves on the LOD source
+    // worldspace (the PNAM "Use LOD Data" ancestor for an inheriting
+    // child): the quad index, the `.btr` paths, the generated distant
+    // textures and the worldspace form id that keys them. The
+    // `cells_map` above stays on the child — it feeds the finest band's
+    // full-detail hole mask and per-cell LTEX.
+    let worldspace_key = wctx.lod_worldspace_key();
     // Worldspace form id — keys the baked `landscapelod\generated` distant-LOD
     // textures (Tamriel = 60). Small worlds (AnvilWorld) ship none, so their
     // synth blocks resolve no texture and are suppressed (#1745).

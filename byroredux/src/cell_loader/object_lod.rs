@@ -206,7 +206,9 @@ pub(crate) fn stream_object_lod_blocks(
         // partition distance; only the enumeration is authored.
         let authored = input
             .legacy_lod_quads
-            .map(|index| index.objects_for(wctx.worldspace_key.as_str()))
+            // #5496 — a LOD-inheriting child owns no quads; the distant
+            // objects come from the "Use LOD Data" ancestor.
+            .map(|index| index.objects_for(wctx.lod_worldspace_key()))
             .unwrap_or_default();
         lod_bands::select_authored_lod_quads(
             &authored,
@@ -223,7 +225,7 @@ pub(crate) fn stream_object_lod_blocks(
                 *available_cache.entry((level, qx, qy)).or_insert_with(|| {
                     tex_provider.has_mesh(&object_lod_archive_path(
                         scheme,
-                        &wctx.worldspace_key,
+                        wctx.lod_worldspace_key(),
                         level,
                         qx,
                         qy,

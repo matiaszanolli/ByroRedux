@@ -260,12 +260,18 @@ pub(crate) fn default_water_for_worldspace(
 /// worldspaces — so a consumer must not substitute one pair for the other.
 /// #2449 / EXAL-01.
 ///
-/// # Parent inheritance (#2735)
+/// # Parent inheritance (#2735 / #5496)
 ///
 /// `NAM3`/`NAM4` resolve up the `WNAM` chain under `PNAM` bit `0x02`, which
 /// correlates exactly with their absence on 7 Skyrim, 4 FO3 and 3 FO4 child
 /// worldspaces. Both fields share the one bit — the data shows them always
-/// authored and always omitted together.
+/// authored and always omitted together. The bit is the GECK's whole-LOD
+/// "Use LOD Data" checkbox: the same walk keys the distant terrain/object
+/// rings themselves on the inheriting ancestor
+/// ([`lod_source_worldspace`], #5496) — the bit-inheriting children ship
+/// no LOD of their own, so keying the rings on the child left Statesman
+/// Hotel's roof, GNR's roof, and Skyrim's walled cities with no distant
+/// land or buildings at all, with inherited LOD water drawing alone.
 pub(crate) fn translate_lod_water(
     worldspaces: &HashMap<String, WorldspaceRecord>,
     worldspace_key: &str,
@@ -281,6 +287,61 @@ pub(crate) fn translate_lod_water(
             w.lod_water_form
         }),
     )
+}
+
+/// #5496 — the worldspace the distant LOD rings are authored on: the
+/// child itself, or the nearest `WNAM` ancestor reached while the child
+/// chain sets `PNAM` bit `0x02`.
+///
+/// The GECK's checkbox is whole-LOD inheritance — "Use LOD Data: Check
+/// this box to inherit LOD data from the parent world space"
+/// (`geck-uesp-wiki/Category/World Spaces.wiki:17-22`; LOD water height
+/// and type are sub-fields of that group). Every child that sets the bit
+/// ships no LOD of its own (all four FO3 roof/vista children and all
+/// seven bit-setting Skyrim children author zero quads and have no
+/// `meshes\terrain\<world>` folder), so the walk needs no "has own
+/// LOD" predicate: the first worldspace up the chain that does NOT set
+/// the bit is the one authoring the LOD. Returns the start key when no
+/// ancestor qualifies (no bit, no parent, unknown parent, or a cycle —
+/// the same guards [`inherit_up_chain`] logs).
+pub(crate) fn lod_source_worldspace<'a>(
+    worldspaces: &'a HashMap<String, WorldspaceRecord>,
+    start_key: &'a str,
+) -> &'a str {
+    let mut current = start_key;
+    let mut visited = std::collections::HashSet::new();
+    while let Some(record) = worldspaces.get(current) {
+        if record.parent_flags & pnam::INHERIT_LOD == 0 {
+            return current;
+        }
+        if !visited.insert(current) {
+            log::warn!(
+                "lod_source_worldspace: cyclic WNAM chain from '{start_key}' (revisited \
+                 '{current}') while resolving PNAM bit {:#06X} — LOD stays on '{start_key}'",
+                pnam::INHERIT_LOD,
+            );
+            return start_key;
+        }
+        let Some(parent_fid) = record.parent_worldspace else {
+            log::warn!(
+                "lod_source_worldspace: '{current}' sets the LOD-inherit bit but authors \
+                 no WNAM parent — LOD stays on '{start_key}'",
+            );
+            return start_key;
+        };
+        let Some((parent_key, _)) = worldspaces
+            .iter()
+            .find(|(_, worldspace)| worldspace.form_id == parent_fid)
+        else {
+            log::warn!(
+                "lod_source_worldspace: '{current}'s WNAM parent {parent_fid:08X} is not \
+                 among parsed worldspaces — LOD stays on '{start_key}'",
+            );
+            return start_key;
+        };
+        current = parent_key;
+    }
+    start_key
 }
 
 /// `PNAM` parent-use flags — which fields a child worldspace takes from its
@@ -311,7 +372,12 @@ pub(crate) fn translate_lod_water(
 mod pnam {
     /// `DNAM` — land data, which carries the default water *height*.
     pub(super) const INHERIT_LAND: u16 = 0x01;
-    /// `NAM3`/`NAM4` — the distant LOD ring's water type and height.
+    /// The GECK's whole-LOD inheritance ("Use LOD Data"): the distant
+    /// terrain and object quads — and the `NAM3`/`NAM4` LOD water type
+    /// and height, which are sub-fields of that checkbox's group — come
+    /// from the `WNAM` parent. #2735 wired the water half;
+    /// `lod_source_worldspace` (#5496) keys the rings themselves on the
+    /// same bit.
     pub(super) const INHERIT_LOD: u16 = 0x02;
     /// `ICON` — worldspace map texture. Parsed but currently unconsumed, so
     /// deliberately not wired; add a resolver alongside its first consumer.
@@ -5668,5 +5734,93 @@ mod oblivion_climate_rung_tests {
             Some(0x0004_00FF),
             "with no anchored rung the richest climate still resolves"
         );
+    }
+
+    /// #5496 — the distant-LOD source walk: the first worldspace up the
+    /// WNAM chain that does NOT set the "Use LOD Data" bit authors the
+    /// rings. The corpus shapes: FO3's StatesmanRoofWorld / GNRroofWorld
+    /// (bit set, zero own quads) inherit Wasteland; MegatonWorld (bit
+    /// clear, no quads) inherits nothing; DCworld01 (bit clear) keeps its
+    /// own; Skyrim's walled cities chain to Tamriel.
+    mod lod_source_tests {
+        use super::super::lod_source_worldspace;
+        use super::super::pnam::INHERIT_LOD;
+        use std::collections::HashMap;
+
+        fn world(form_id: u32, parent: Option<u32>, flags: u16) -> super::WorldspaceRecord {
+            super::WorldspaceRecord {
+                form_id,
+                parent_worldspace: parent,
+                parent_flags: flags,
+                ..Default::default()
+            }
+        }
+
+        fn chain() -> HashMap<String, super::WorldspaceRecord> {
+            let mut map = HashMap::new();
+            map.insert("wasteland".to_string(), world(0x01, None, 0x00));
+            map.insert("statesmanroofworld".to_string(), world(0x02, Some(0x01), 0xC6));
+            map.insert("megatonworld".to_string(), world(0x03, Some(0x01), 0xC5));
+            map.insert("dcworld01".to_string(), world(0x04, Some(0x01), 0xC4));
+            map.insert("whiterunworld".to_string(), world(0x05, Some(0x06), 0x7F));
+            map.insert("tamriel".to_string(), world(0x06, None, 0x00));
+            map
+        }
+
+        #[test]
+        fn inheriting_child_resolves_to_the_parent() {
+            let map = chain();
+            assert_eq!(lod_source_worldspace(&map, "statesmanroofworld"), "wasteland");
+            assert_eq!(lod_source_worldspace(&map, "whiterunworld"), "tamriel");
+        }
+
+        #[test]
+        fn child_without_the_bit_keeps_itself() {
+            let map = chain();
+            assert_eq!(lod_source_worldspace(&map, "dcworld01"), "dcworld01");
+            // MegatonWorld: bit clear, ships no LOD, inherits none — the
+            // source is itself either way (an empty distant ring).
+            assert_eq!(lod_source_worldspace(&map, "megatonworld"), "megatonworld");
+        }
+
+        #[test]
+        fn unknown_parent_or_cycle_stays_on_the_start() {
+            let mut map = chain();
+            map.insert(
+                "orphanworld".to_string(),
+                world(0x07, Some(0xFF), INHERIT_LOD),
+            );
+            assert_eq!(lod_source_worldspace(&map, "orphanworld"), "orphanworld");
+
+            // A two-node cycle under the bit must terminate, not hang.
+            let mut cycle = HashMap::new();
+            cycle.insert("a".to_string(), world(0x10, Some(0x11), INHERIT_LOD));
+            cycle.insert("b".to_string(), world(0x11, Some(0x10), INHERIT_LOD));
+            assert_eq!(lod_source_worldspace(&cycle, "a"), "a");
+        }
+
+        /// Real-data pin: the FO3 chain on the installed master.
+        /// StatesmanRoofWorld's PNAM is 0xC6 (bit set) with WNAM
+        /// Wasteland — the Reilly's Rangers vista whose distant ring was
+        /// empty pre-fix.
+        #[test]
+        #[ignore = "needs FO3 game data on disk"]
+        fn installed_fo3_statesman_roof_inherits_wasteland_lod() {
+            let esm = std::fs::read(byroredux_plugin::esm::test_paths::fo3_esm())
+                .expect("read Fallout3.esm");
+            let index = byroredux_plugin::esm::records::parse_esm(&esm)
+                .expect("parse");
+            let worldspaces = &index.cells.worldspaces;
+            assert_eq!(
+                lod_source_worldspace(worldspaces, "statesmanroofworld"),
+                "wasteland",
+                "the roof vista must draw Wasteland's distant rings (#5496)"
+            );
+            assert_eq!(
+                lod_source_worldspace(worldspaces, "megatonworld"),
+                "megatonworld",
+                "MegatonWorld clears the bit and owns (no) LOD itself"
+            );
+        }
     }
 }

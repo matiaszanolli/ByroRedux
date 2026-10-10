@@ -151,10 +151,15 @@ pub(crate) fn worldspace_lod_grid_origin(wctx: &ExteriorWorldContext) -> (i32, i
 pub(crate) fn worldspace_cell_bounds(
     wctx: &ExteriorWorldContext,
 ) -> Option<((i32, i32), (i32, i32))> {
+    // #5496 — the band bounds describe the distant ring, which is
+    // authored on the LOD source worldspace: an inheriting child's own
+    // cell extent (a rooftop, a walled city) would clip the parent's
+    // quads out of every band.
+    let lod_key = wctx.lod_worldspace_key();
     let cells = &wctx.record_index.cells;
     if let Some(bounds) = cells
         .worldspaces
-        .get(&wctx.worldspace_key)
+        .get(lod_key)
         .and_then(|worldspace| worldspace.usable_cell_bounds())
     {
         return Some(bounds);
@@ -162,7 +167,7 @@ pub(crate) fn worldspace_cell_bounds(
 
     cells
         .exterior_cells
-        .get(&wctx.worldspace_key)
+        .get(lod_key)
         .and_then(|world_cells| {
             world_cells.keys().copied().map(|c| (c, c)).reduce(|a, b| {
                 (

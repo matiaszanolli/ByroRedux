@@ -167,6 +167,22 @@ impl ExteriorForegroundReadiness {
 }
 
 impl ExteriorWorldContext {
+    /// #5496 — the worldspace the distant LOD rings are authored on
+    /// (`lod_source_worldspace`): the child itself, or the nearest
+    /// `WNAM` ancestor reached while the chain sets the PNAM "Use LOD
+    /// Data" bit. Every distant-ring key — the legacy quad index, the
+    /// `.btr`/`.bto` archive paths, the generated distant textures and
+    /// their worldspace form id, the atlas paths, and the band bounds —
+    /// resolves on THIS key; only the full-detail residency (the child's
+    /// own cells and their exclusion masks) stays on
+    /// [`Self::worldspace_key`].
+    pub fn lod_worldspace_key(&self) -> &str {
+        crate::env_translate::lod_source_worldspace(
+            &self.record_index.cells.worldspaces,
+            &self.worldspace_key,
+        )
+    }
+
     /// Inspect the requested tile without loading it. Suggestions are sorted
     /// by Chebyshev distance, then Manhattan distance and grid coordinate, so
     /// diagnostics never depend on `HashMap` iteration order.
