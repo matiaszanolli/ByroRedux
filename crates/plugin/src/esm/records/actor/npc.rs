@@ -357,6 +357,22 @@ pub struct NpcRecord {
     ///     Data, `0x0200` Script, `0x0400` Def Pack List — parsed and
     ///     stored for the dispatcher; no consumer yet.
     pub template_flags: u16,
+    /// #5498 — FO4 `TPTA` "Template Actors": 13 per-flag template
+    /// FormIDs, one per `template_flags` bit in xEdit's
+    /// `wbTemplateFlags` order (Traits, Stats, Factions, Spell List,
+    /// AI Data, AI Packages, Model/Animation, Base Data, Inventory,
+    /// Script, Def Package List, Attack Data, Keywords —
+    /// `wbDefinitionsFO4.pas:10350-10369`). `TPLT` stays the *default*
+    /// template; a non-zero `tpta[bit]` overrides it for that one flag
+    /// ("The FO4 CK Templates tab has a Template Form per flag; a null
+    /// entry falls back to the default template"). Remapped into global
+    /// load-order space like every cross-record FormID. FO4-only data;
+    /// all-zero elsewhere, so the resolution needs no game branch. The
+    /// census: 763 `Fallout4.esm` records have a per-flag override that
+    /// differs from their TPLT (Traits 464, Inventory 249, Stats 136…),
+    /// 1,157 across all seven masters — pre-fix every one resolved
+    /// through TPLT and spawned with the wrong gear, stats, AI, or race.
+    pub template_actors: [u32; 13],
     /// FO4+ `PRPS` "Properties" — the actor's actor values stored as
     /// `(AVIF FormID, value)` pairs (8 bytes each on the wire; xEdit
     /// `wbObjectProperty`). SPECIAL is here as the Strength..Luck AVIF
@@ -453,6 +469,7 @@ pub fn parse_npc(
         runtime_facegen: None,
         template_form_id: 0,
         template_flags: 0,
+        template_actors: [0; 13],
         actor_value_props: Vec::new(),
         calculated_health: 0,
         calculated_action_points: 0,
@@ -689,6 +706,15 @@ fn parse_npc_core(
         b"TPLT" if sub.data.len() >= 4 => {
             let raw = SubReader::new(&sub.data).u32_or_default();
             record.template_form_id = remap_fid(raw, remap);
+        }
+        // #5498 — FO4 TPTA 'Template Actors': 13 per-flag template
+        // FormIDs in wbTemplateFlags order (see the field doc). A short
+        // payload keeps its authored prefix; the missing entries stay 0
+        // ("use the default template"), same as an absent sub.
+        b"TPTA" => {
+            for (slot, raw) in sub.data.as_chunks::<4>().0.into_iter().take(13).enumerate() {
+                record.template_actors[slot] = remap_fid(u32::from_le_bytes(*raw), remap);
+            }
         }
         // Oblivion ACBS (NPC_ / CREA Configuration) is a fixed
         // 16-byte layout with NO disposition or template-flags field:

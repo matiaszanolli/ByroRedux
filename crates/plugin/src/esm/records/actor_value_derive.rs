@@ -1167,7 +1167,8 @@ mod tests {
             form_id: 0x0010_0000,
             actor_value_props: vec![(0x3EA, 1.0)],
             template_form_id: 0x0010_0001,
-            template_flags: 0, // Use Stats NOT set
+            template_flags: 0,
+            template_actors: [0; 13], // Use Stats NOT set
             ..Default::default()
         };
 

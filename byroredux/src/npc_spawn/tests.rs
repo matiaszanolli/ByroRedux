@@ -888,6 +888,7 @@ fn test_npc(form_id: u32, edid: &str) -> NpcRecord {
         runtime_facegen: None,
         template_form_id: 0,
         template_flags: 0,
+            template_actors: [0; 13],
         ..Default::default()
     }
 }

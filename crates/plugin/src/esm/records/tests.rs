@@ -1807,6 +1807,7 @@ fn esm_index_total_counts_all_categories() {
             runtime_facegen: None,
             template_form_id: 0,
             template_flags: 0,
+            template_actors: [0; 13],
             ..Default::default()
         },
     );

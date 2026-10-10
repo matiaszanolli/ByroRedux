@@ -566,7 +566,20 @@ fn walk_inherited_records<'a>(
         );
         return npc;
     }
-    if npc.template_flags & flag == 0 || npc.template_form_id == 0 {
+    // #5498 — FO4's per-flag Template Actors: a non-zero TPTA entry for
+    // THIS flag's bit overrides the default TPLT for this one edge. All
+    // consumed TEMPLATE_FLAG_* are single bits in wbTemplateFlags order,
+    // which is the TPTA member order, so the bit index is the slot. The
+    // gate admits the walk when either edge is authored — a record can
+    // carry a per-flag template with no TPLT at all (1 vanilla FO4
+    // record; pre-fix it inherited nothing).
+    let tpta_slot = flag.trailing_zeros() as usize;
+    let tpta_target = if flag.is_power_of_two() && tpta_slot < 13 {
+        npc.template_actors[tpta_slot]
+    } else {
+        0
+    };
+    if npc.template_flags & flag == 0 || (npc.template_form_id == 0 && tpta_target == 0) {
         return npc;
     }
     // NPC_/CREA templates may route through nested LVLN/LVLC lists, not
@@ -575,7 +588,11 @@ fn walk_inherited_records<'a>(
     // second list incorrectly used its shell's placeholder FoxRace.
     // Count list edges against the same budget as NPC edges so list-only
     // and mixed NPC/list cycles cannot reset the recursion limit.
-    let mut target = npc.template_form_id;
+    let mut target = if tpta_target != 0 {
+        tpta_target
+    } else {
+        npc.template_form_id
+    };
     for target_depth in (depth + 1)..=TPLT_MAX_DEPTH {
         if let Some(base) = index
             .npcs
@@ -1947,6 +1964,7 @@ mod tests {
             runtime_facegen: None,
             template_form_id: 0,
             template_flags: 0,
+            template_actors: [0; 13],
             ..Default::default()
         }
     }
@@ -1962,6 +1980,109 @@ mod tests {
         let inv = resolve_inherited_inventory(&npc, 1, &idx);
         assert_eq!(inv.len(), 1);
         assert_eq!(inv[0].item_form_id, 0xAAAA);
+    }
+
+    /// #5498 — FO4 TPTA: a non-zero per-flag Template Actor overrides the
+    /// default TPLT for that one flag. The census shape: 763 Fallout4.esm
+    /// records (e.g. `EncBoSSoldier07PowerArmorLegendary`, Inventory →
+    /// `EncBoS_PowerArmor_Auto_Template` instead of the non-PA
+    /// `EncBoSSoldierTemplate`) resolved through TPLT and spawned with the
+    /// wrong gear.
+    #[test]
+    fn tpta_entry_overrides_tplt_for_its_flag() {
+        let mut shell = npc_with(0x0100_0001, "EncShell");
+        shell.template_form_id = 0x0100_0002; // TPLT: the default template
+        shell.template_flags = TEMPLATE_FLAG_USE_INVENTORY | TEMPLATE_FLAG_USE_STATS;
+        // Inventory (bit 8) overridden to the PA template; Stats (bit 1)
+        // keeps the default.
+        shell.template_actors[8] = 0x0100_0003;
+
+        let mut default_tpl = npc_with(0x0100_0002, "DefaultTemplate");
+        default_tpl.inventory.push(NpcInventoryEntry {
+            item_form_id: 0xDDDD,
+            count: 1,
+        });
+        default_tpl.level = 10;
+        let mut pa_tpl = npc_with(0x0100_0003, "PowerArmorTemplate");
+        pa_tpl.inventory.push(NpcInventoryEntry {
+            item_form_id: 0xBBBB,
+            count: 2,
+        });
+        pa_tpl.level = 5;
+
+        let mut idx = empty_index();
+        idx.npcs.insert(default_tpl.form_id, default_tpl);
+        idx.npcs.insert(pa_tpl.form_id, pa_tpl);
+
+        let inv = resolve_inherited_inventory(&shell, 1, &idx);
+        assert_eq!(
+            inv.iter().map(|e| e.item_form_id).collect::<Vec<_>>(),
+            vec![0xBBBB],
+            "the Inventory flag must resolve through its TPTA entry"
+        );
+        let resolved = ResolvedNpc::resolve(&shell, &idx);
+        assert_eq!(
+            resolved.stats.level, 10,
+            "an un-overridden flag keeps the default TPLT"
+        );
+    }
+
+    /// #5498 — a record can author a per-flag template with no TPLT at
+    /// all (1 vanilla FO4 record). Pre-fix the `template_form_id == 0`
+    /// gate meant it inherited nothing.
+    #[test]
+    fn tpta_entry_without_tplt_still_inherits() {
+        let mut shell = npc_with(0x0100_0011, "TptaOnly");
+        shell.template_form_id = 0;
+        shell.template_flags = TEMPLATE_FLAG_USE_INVENTORY;
+        shell.template_actors[8] = 0x0100_0012;
+
+        let mut base = npc_with(0x0100_0012, "Base");
+        base.inventory.push(NpcInventoryEntry {
+            item_form_id: 0xEEEE,
+            count: 1,
+        });
+        let mut idx = empty_index();
+        idx.npcs.insert(base.form_id, base);
+
+        let inv = resolve_inherited_inventory(&shell, 1, &idx);
+        assert_eq!(inv.len(), 1);
+        assert_eq!(inv[0].item_form_id, 0xEEEE);
+    }
+
+    /// #5498 real-data pin — `EncBoSSoldier07PowerArmorLegendary` authors
+    /// TPTA Inventory = `EncBoS_PowerArmor_Auto_Template` (the PA gear)
+    /// while TPLT is the non-PA `EncBoSSoldierTemplate`; pre-fix the
+    /// legendary spawned without power armor. Gated on the installed
+    /// FO4 data.
+    #[test]
+    #[ignore = "needs FO4 game data on disk"]
+    fn installed_fo4_tpta_resolves_the_power_armor_inventory() {
+        let bytes = std::fs::read(crate::esm::test_paths::fo4_esm()).expect("read Fallout4.esm");
+        let index = crate::esm::records::parse_esm(&bytes).expect("parse");
+        let shell = index
+            .npcs
+            .values()
+            .find(|npc| npc.editor_id == "EncBoSSoldier07PowerArmorLegendary")
+            .expect("record exists")
+            .clone();
+        // The record's own TPTA Inventory slot must name the PA template.
+        assert_ne!(
+            shell.template_actors[8], 0,
+            "fixture premise: TPTA Inventory entry is authored"
+        );
+        let resolved = ResolvedNpc::resolve(&shell, &index);
+        assert_eq!(
+            resolved.inventory.form_id, shell.template_actors[8],
+            "Inventory must resolve through the TPTA entry, not TPLT"
+        );
+        let tpl = index.npcs.get(&shell.template_actors[8]);
+        assert!(
+            tpl.is_some_and(|tpl| tpl
+                .editor_id
+                .contains("PowerArmor")),
+            "the TPTA target is the PA template"
+        );
     }
 
     #[test]
