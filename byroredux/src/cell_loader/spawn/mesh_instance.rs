@@ -104,6 +104,11 @@ pub(super) fn resolve_mesh_paths_with_pre_merge(
             // fires, `shape_ov` stays `None` and behaviour is identical to
             // pre-#973.
             let mut shape_ov: Option<RefrTextureOverlay> = None;
+            // #5497 — the fired entry's CNAM "Color Remapping Index":
+            // the greyscale-to-palette row this placement samples the
+            // remap LUT at. Later-wins with the entry order, like the
+            // path itself.
+            let mut mswp_remap_row: Option<f32> = None;
             if let Some(refr_ov) = ov {
                 if !refr_ov.material_swaps.is_empty() {
                     let base_path_sym = refr_ov.material_path.or(mesh.material.material_path);
@@ -135,10 +140,19 @@ pub(super) fn resolve_mesh_paths_with_pre_merge(
                             // `build_refr_texture_overlay` loop, which
                             // already compared against a fixed value.
                             for entry in &refr_ov.material_swaps {
-                                if entry.source.eq_ignore_ascii_case(&current)
-                                    && !entry.target.is_empty()
-                                {
-                                    swapped = entry.target.clone();
+                                if entry.source.eq_ignore_ascii_case(&current) {
+                                    if !entry.target.is_empty() {
+                                        swapped = entry.target.clone();
+                                    }
+                                    // The row rides any matching entry —
+                                    // including an identity swap whose
+                                    // only payload is the CNAM (the top
+                                    // vanilla shape: MachineKitGray01's
+                                    // 6,684 REFRs swap nothing but the
+                                    // row).
+                                    if let Some(row) = entry.color_remap_index {
+                                        mswp_remap_row = Some(row);
+                                    }
                                 }
                             }
                             if swapped != current {
@@ -162,7 +176,7 @@ pub(super) fn resolve_mesh_paths_with_pre_merge(
             // the target merged over it would keep the source's values. Merge
             // the target onto the pre-merge snapshot instead: the same
             // precedence rule (NIF-authored fields win), the swapped sidecar.
-            let swapped_material = ov
+            let mut swapped_material = ov
                 .and_then(|o| o.material_path)
                 .filter(|&target| Some(target) != mesh.material.material_path)
                 .and_then(|target| {
@@ -188,6 +202,29 @@ pub(super) fn resolve_mesh_paths_with_pre_merge(
                     );
                     Some(material)
                 });
+            // #5497 — stamp the swap's palette row AFTER the target BGSM
+            // merge (which forwards the BGSM's own default row, #1455)
+            // and before `translate_material`, exactly like the
+            // precombine half's `apply_instance_palette_row`. A
+            // non-finite authored row keeps the material's row.
+            if let Some(row) = mswp_remap_row.filter(|row| row.is_finite()) {
+                let stamped = match swapped_material.as_mut() {
+                    Some(material) => {
+                        material.grayscale_to_palette_scale = row;
+                        None
+                    }
+                    // Identity swap (or CNAM-only entry): the rendered
+                    // material is the cached one as-is; clone to stamp.
+                    None => {
+                        let mut material = mesh.material.clone();
+                        material.grayscale_to_palette_scale = row;
+                        Some(material)
+                    }
+                };
+                if let Some(material) = stamped {
+                    swapped_material = Some(material);
+                }
+            }
             let material = swapped_material.as_ref().unwrap_or(&mesh.material);
 
             // #4400 — seed from the SWAPPED material, not the pre-swap
@@ -2295,7 +2332,7 @@ mod tests {
         esm::records::MaterialSwapEntry {
             source: source.to_string(),
             target: target.to_string(),
-            color_intensity: None,
+            color_remap_index: None,
         }
     }
 
@@ -2345,6 +2382,48 @@ mod tests {
             "the arm shape's own authored material must ALSO swap — pre-fix this was left \
              on its NIF-authored BGSM because build_refr_texture_overlay only ever \
              substitutes one shared material_path"
+        );
+    }
+
+    /// #5497 — an identity MSWP entry (the top vanilla shape:
+    /// `MachineKitGray01`'s 6,684 REFRs swap nothing but the row) carries
+    /// only the CNAM "Color Remapping Index", the greyscale-to-palette
+    /// row the shader samples the remap LUT at. It must land on the
+    /// material even though the path did not change; pre-fix the entry
+    /// never fired and the placement rendered the BGSM's default row.
+    #[test]
+    fn mswp_identity_entry_stamps_its_palette_row() {
+        let mut pool = StringPool::new();
+        let kit = pool.intern(r"materials\kit\machinekitquad03.bgsm");
+        let mut world = World::new();
+        world.insert_resource(pool);
+
+        let mut mesh = empty_mesh();
+        mesh.material.material_path = Some(kit);
+        mesh.material.grayscale_to_palette_scale = 1.0;
+
+        let mut entry = swap_entry(
+            r"materials\kit\machinekitquad03.bgsm",
+            r"materials\kit\machinekitquad03.bgsm",
+        );
+        entry.color_remap_index = Some(0.805);
+        let overlay = RefrTextureOverlay {
+            material_swaps: vec![entry],
+            ..Default::default()
+        };
+
+        let meshes = vec![mesh.clone()];
+        let resolved = resolve_mesh_paths(&mut world, &meshes, Some(&overlay), None, None);
+        assert_eq!(
+            resolved[0].material_path.as_deref(),
+            Some(r"materials\kit\machinekitquad03.bgsm"),
+            "an identity swap keeps the authored path"
+        );
+        assert_eq!(
+            resolved[0].material(&mesh).grayscale_to_palette_scale,
+            0.805,
+            "the CNAM row overrides the BGSM default (1.0) — pre-fix the \
+             entry never fired (#5497)"
         );
     }
 

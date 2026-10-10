@@ -270,7 +270,7 @@ fn mswp(swaps: Vec<(&str, &str)>, filter: Option<&str>) -> MaterialSwapRecord {
             .map(|(s, t)| MaterialSwapEntry {
                 source: s.into(),
                 target: t.into(),
-                color_intensity: None,
+                color_remap_index: None,
             })
             .collect(),
     }

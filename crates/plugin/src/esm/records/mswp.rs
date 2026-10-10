@@ -51,14 +51,20 @@ pub struct MaterialSwapEntry {
     pub source: String,
     /// Replacement material path. Empty means "fall back to the
     /// authored material" — vanilla MSWPs occasionally ship that
-    /// shape with a CNAM-only intensity override.
+    /// shape with a CNAM-only palette-row override.
     pub target: String,
-    /// Optional intensity / colour multiplier (f32 in `[0.0, 1.0]`
-    /// for vanilla content, but unbounded by the file format). When
-    /// `None`, the swap is a straight target-replaces-source. When
-    /// `Some(v)`, the renderer-side consumer treats `v` as a
-    /// brightness or tint factor on top of the swap.
-    pub color_intensity: Option<f32>,
+    /// #5497 — the optional `CNAM` "Color Remapping Index"
+    /// (`wbDefinitionsFO4.pas:12448`): the greyscale-to-palette ROW
+    /// this placement samples the remap LUT at
+    /// (`grayscale_to_palette_scale`), overriding the BGSM's own
+    /// default. The old doc called this an "intensity / colour
+    /// multiplier" — wrong: `triangle.frag` samples the LUT at this
+    /// value, and the row selects the colour VARIANT (0.805 is
+    /// MachineKitGray01, 0.711 MachineKitBlack01, 0.945 the red —
+    /// 12,302 Fallout4.esm REFRs point at a CNAM-carrying swap, and
+    /// the top swaps are identity swaps whose ONLY payload is the
+    /// row). `None` = keep the material's row.
+    pub color_remap_index: Option<f32>,
 }
 
 /// A parsed MSWP record. Stored on
@@ -102,7 +108,7 @@ pub fn parse_mswp(form_id: u32, subs: &[SubRecord]) -> MaterialSwapRecord {
                 swaps.push(MaterialSwapEntry {
                     source: read_zstring(&sub.data),
                     target: String::new(),
-                    color_intensity: None,
+                    color_remap_index: None,
                 });
             }
             b"SNAM" => {
@@ -121,7 +127,7 @@ pub fn parse_mswp(form_id: u32, subs: &[SubRecord]) -> MaterialSwapRecord {
                 if let Some(entry) = swaps.last_mut() {
                     if sub.data.len() >= 4 {
                         let bytes = [sub.data[0], sub.data[1], sub.data[2], sub.data[3]];
-                        entry.color_intensity = Some(f32::from_le_bytes(bytes));
+                        entry.color_remap_index = Some(f32::from_le_bytes(bytes));
                     }
                 }
             }
@@ -137,7 +143,7 @@ pub fn parse_mswp(form_id: u32, subs: &[SubRecord]) -> MaterialSwapRecord {
     // colour is None — those are placeholders the parser produced
     // when defensively handling a stray CNAM/SNAM with no preceding
     // BNAM. Keeps the swap list clean for the cell-loader consumer.
-    swaps.retain(|e| !(e.source.is_empty() && e.target.is_empty() && e.color_intensity.is_none()));
+    swaps.retain(|e| !(e.source.is_empty() && e.target.is_empty() && e.color_remap_index.is_none()));
 
     MaterialSwapRecord {
         form_id,
@@ -189,7 +195,7 @@ mod tests {
             rec.swaps[0].target,
             "Vehicles\\Automotive\\StationWagon_Postwar_Cheap04.bgsm"
         );
-        assert!(rec.swaps[0].color_intensity.is_none());
+        assert!(rec.swaps[0].color_remap_index.is_none());
     }
 
     /// FNAM filter + multiple swap pairs — Vault damage theme shape.
@@ -247,10 +253,10 @@ mod tests {
         ];
         let rec = parse_mswp(0x0023_CD5F, &subs);
         assert_eq!(rec.swaps.len(), 2);
-        assert!(rec.swaps[0].color_intensity.is_some());
-        let c0 = rec.swaps[0].color_intensity.unwrap();
+        assert!(rec.swaps[0].color_remap_index.is_some());
+        let c0 = rec.swaps[0].color_remap_index.unwrap();
         assert!((c0 - 0.617).abs() < 1e-5, "CNAM round-trip: got {c0}");
-        let c1 = rec.swaps[1].color_intensity.unwrap();
+        let c1 = rec.swaps[1].color_remap_index.unwrap();
         assert!((c1 - 0.617).abs() < 1e-5);
     }
 
@@ -268,7 +274,7 @@ mod tests {
         ];
         let rec = parse_mswp(0xDEADBEEF, &subs);
         assert_eq!(rec.swaps.len(), 1);
-        assert!(rec.swaps[0].color_intensity.is_none());
+        assert!(rec.swaps[0].color_remap_index.is_none());
     }
 
     /// Defensive: a stray SNAM before any BNAM is ignored — keeps
