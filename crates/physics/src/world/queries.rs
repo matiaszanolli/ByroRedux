@@ -692,8 +692,12 @@ impl PhysicsWorld {
 /// overlap queries only need `&dyn Shape`, so the stack `Capsule` replaces
 /// `SharedShape::capsule_y`, whose `Arc` was one heap allocation + free per
 /// call: per walking NPC per tick since M42.10, plus the player and every
-/// ground probe. Also the one place the degenerate-extent floor lives, for
-/// #4134's clamp to extend.
+/// ground probe. Also the one place the capsule's extents are sanitised:
+/// the same [`clamp_shape_extent`](crate::convert::clamp_shape_extent) every
+/// collider primitive goes through, so a non-finite or absurdly large
+/// extent (`CharacterController` is a saved component, so a corrupt save
+/// reaches this) cannot hand parry an infinite segment (#4134).
 pub(super) fn character_capsule(half_height: f32, radius: f32) -> rapier3d::parry::shape::Capsule {
-    rapier3d::parry::shape::Capsule::new_y(half_height.max(1e-3), radius.max(1e-3))
+    use crate::convert::clamp_shape_extent;
+    rapier3d::parry::shape::Capsule::new_y(clamp_shape_extent(half_height), clamp_shape_extent(radius))
 }

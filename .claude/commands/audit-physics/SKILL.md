@@ -19,7 +19,7 @@ Audits whether the simulation is *correct*, not just locked/unsafe: `crates/phys
 
 **Known-open register** (dated 2026-10-10; check the owning doc/issue before re-filing):
 - Skyrim mass=0 Dynamic bodies are reclassified Static (*tes_grounding_zero_mass_dynamic_fix*, #1832 closed). Remaining door-threshold spawn gap is a content/collision-import question, unchanged in `AUDIT_PHYSICS_2026-09-11.md`. A direct interior load spawns via `cell_loader/interior_spawn.rs`'s ladder: `COCMarkerHeading` REFR, then the linked door partner's `XTEL`, then the door/bbox fallback (*interior_spawn_point_fix*).
-- Open (verified 2026-10-10): #4134 (KCC/ground-probe capsules in `world/mod.rs` and `world/queries.rs` use a floor-only `.max(1e-3)` instead of `clamp_shape_extent`; #4614's stack capsule kept it). #3477 closed (regression guard: `registered_shape_generations` structural-generation cache, `newcomer_cache_detects_membership_changes_even_when_counts_match`). `BhkPlaneShape` produces no collider by design and is counted in the spawn census (#4407, #4408 both closed).
+- Open (verified 2026-10-10): none from the capsule clamp — #4134 is fixed (`character_capsule` in `world/queries.rs` routes through `clamp_shape_extent`; guard `character_capsule_sanitises_non_finite_and_absurd_extents`). #3477 closed (regression guard: `registered_shape_generations` structural-generation cache, `newcomer_cache_detects_membership_changes_even_when_counts_match`). `BhkPlaneShape` produces no collider by design and is counted in the spawn census (#4407, #4408 both closed).
 - Water-walking and freezing are unbuilt (`docs/engine/watal.md`).
 - #5161/#5246 contain ragdoll solver explosions at the physics boundary (Dim 2); the *upstream* instability of mass-inverted rigs (palms heavier than the spine, authored restitution 0.8) stays open as root cause with no issue of its own (5ae7f8ad4).
 - Ball-and-socket / stiff-spring / chain constraints are decoded (#4212) but have no canonical joint kind, so `extract_ragdoll` declines them like `Other` (`docs/engine/physal.md` §3 table). By-design gap; a finding needs occupancy-census evidence that shipped content uses them.
@@ -45,7 +45,7 @@ Audits whether the simulation is *correct*, not just locked/unsafe: `crates/phys
 - Every `CollisionShape` variant the importer emits has a translation arm (list variants vs arms, report the delta; same trap as *nif_shape_dispatch_resolve_parity*). A silently dropped shape is an invisible hole.
 - Compound/transform children compose in authored order; non-uniform parent scale is rejected, converted to TriMesh, or documented, never averaged.
 - Scale is applied exactly once, at the Rapier sink (`docs/engine/physal.md`: producers must not bake scale into vertices/primitives, else scale²).
-- Every primitive routes through `clamp_shape_extent` (floor 1e-3, ceiling `MAX_SANE_SHAPE_EXTENT`, non-finite → floor); a new variant with a local `.max(1e-3)` regresses this. #4134 is the known open instance in the controller/probe capsules (Existing).
+- Every primitive routes through `clamp_shape_extent` (floor 1e-3, ceiling `MAX_SANE_SHAPE_EXTENT`, non-finite → floor); a new variant with a local `.max(1e-3)` regresses this — #4134 was exactly that in the controller/probe capsules (`character_capsule`), now routed through the shared clamp.
 - `default_contact_skin_bu` (1.0 BU) is applied to every collider kind, not just TriMesh. Degenerate input (zero-area triangles, empty vertex sets, NaN transforms) is rejected before Rapier builds a BVH.
 **Output**: `/tmp/audit/physics/dim_1.md`
 

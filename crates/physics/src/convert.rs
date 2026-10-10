@@ -25,7 +25,7 @@ const MAX_SANE_SHAPE_EXTENT: f32 = 1_048_576.0;
 /// primitive uses the same floor for degenerate geometry and the same finite
 /// ceiling for corrupt-but-representable authored values (#3238).
 #[inline]
-fn clamp_shape_extent(value: f32) -> f32 {
+pub(crate) fn clamp_shape_extent(value: f32) -> f32 {
     if value.is_finite() {
         value.clamp(1e-3, MAX_SANE_SHAPE_EXTENT)
     } else {

@@ -1101,6 +1101,33 @@ mod tests {
     use byroredux_core::ecs::components::collision::CollisionShape;
     use byroredux_core::math::{Quat, Vec3};
 
+    /// #4134 — the character / ground-probe capsule goes through the same
+    /// extent clamp as every collider primitive. The old floor-only
+    /// `.max(1e-3)` let `INFINITY` straight through to parry, and a value
+    /// like 1e12 was kept as a (finite but absurd) 1e12-BU capsule.
+    #[test]
+    fn character_capsule_sanitises_non_finite_and_absurd_extents() {
+        for (half_height, radius) in [
+            (f32::INFINITY, 18.0),
+            (46.0, f32::NAN),
+            (f32::NEG_INFINITY, f32::INFINITY),
+            (1.0e12, 1.0e12),
+        ] {
+            let capsule = character_capsule(half_height, radius);
+            assert!(
+                capsule.segment.a.is_finite() && capsule.segment.b.is_finite() && capsule.radius.is_finite(),
+                "({half_height}, {radius}) must produce a finite capsule"
+            );
+            assert!(
+                capsule.radius <= 1_048_576.0 && capsule.segment.b.y <= 1_048_576.0,
+                "({half_height}, {radius}) must be bounded by the shared extent ceiling"
+            );
+        }
+        // Ordinary extents are untouched.
+        let normal = character_capsule(46.0, 18.0);
+        assert_eq!((normal.segment.b.y, normal.radius), (46.0, 18.0));
+    }
+
     /// #4614 — the stack capsule is the same shape the `SharedShape` form
     /// built (same segment and radius, same `1e-3` floor for degenerate
     /// extents), and no production query goes back to the per-call `Arc`.
