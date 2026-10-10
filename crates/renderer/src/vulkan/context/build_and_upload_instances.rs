@@ -707,11 +707,11 @@ impl VulkanContext {
         // ratio and needs no history reset; folding colour here (as the
         // caustic key above deliberately does) kept every fire-lit or
         // fluorescent scene pinned at the 0.1 refresh floor — the
-        // permanent penumbra speckle this issue reports.
-        let mut restir_rig_key = crate::vulkan::caustic::fold_light_rig_geometry_key(
-            crate::vulkan::caustic::caustic_key_seed(),
-            lights.len() as f32,
-        );
+        // permanent penumbra speckle this issue reports. The key is
+        // order-independent (#5507): `lights` is sorted by an
+        // intensity-derived score, so a flicker that swaps two lights must
+        // not re-key the rig.
+        let restir_rig_key = crate::vulkan::caustic::light_rig_geometry_key(lights);
         for light in lights {
             for v in light
                 .position_radius
@@ -723,10 +723,6 @@ impl VulkanContext {
                 caustic_scene_key =
                     crate::vulkan::caustic::fold_caustic_key_f32(caustic_scene_key, *v);
             }
-            restir_rig_key = crate::vulkan::caustic::fold_light_rig_geometry_key_for(
-                restir_rig_key,
-                light,
-            );
         }
         // The accumulator's history is valid only when nothing that
         // determines a splat's landing point changed: the camera (the

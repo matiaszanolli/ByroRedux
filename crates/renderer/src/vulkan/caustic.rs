@@ -212,6 +212,25 @@ pub(crate) fn fold_light_rig_geometry_key_for(key: u64, light: &super::scene_buf
     key
 }
 
+/// The ReSTIR rig key for a whole light set (#5369), independent of the
+/// order the lights arrive in (#5507).
+///
+/// The set is sorted by an intensity-derived score (`light_history.rs`),
+/// so two near-identical fluorescents swap places whenever their flicker
+/// crosses — and a sequential fold over that order re-keys on a swap that
+/// moved no ray's target or occluder, dropping the direct-light EMA from its
+/// deep parked history to the refresh floor exactly in the flickering
+/// scenes #5369 set out to protect. Each light is therefore hashed on its
+/// own from the seed and the hashes are combined with a wrapping add
+/// (commutative; unlike XOR two identical lights do not cancel), with the
+/// count folded in so a light entering or leaving the set still moves it.
+pub(crate) fn light_rig_geometry_key(lights: &[super::scene_buffer::GpuLight]) -> u64 {
+    let count = fold_light_rig_geometry_key(caustic_key_seed(), lights.len() as f32);
+    lights.iter().fold(count, |key, light| {
+        key.wrapping_add(fold_light_rig_geometry_key_for(caustic_key_seed(), light))
+    })
+}
+
 #[inline]
 fn caustic_subresource_range() -> vk::ImageSubresourceRange {
     vk::ImageSubresourceRange {
@@ -1979,5 +1998,54 @@ mod skip_clear_mask_pin_tests {
         retyped.color_type[3] = 2.0; // point -> directional
         assert_ne!(key_of(&retyped, 1.0), baseline, "a type change moves the key");
         assert_ne!(key_of(&base, 2.0), baseline, "a light entering/leaving the set moves the key");
+    }
+
+    /// #5507 — the rig key must not depend on the order the lights arrive
+    /// in. The light array is sorted by an intensity-derived score while a
+    /// flicker writes colour, so two identical fluorescents swap places
+    /// whenever their flicker crosses; a sequential fold re-keyed on every
+    /// swap (mode 3 -> 1, parked tail 256 -> 16), reintroducing the
+    /// speckle #5369 removed for exactly these scenes.
+    #[test]
+    fn light_rig_geometry_key_is_independent_of_light_order() {
+        use crate::vulkan::scene_buffer::GpuLight;
+        use super::{caustic_key_seed, fold_light_rig_geometry_key, fold_light_rig_geometry_key_for, light_rig_geometry_key};
+
+        let tube = |x: f32| GpuLight {
+            position_radius: [x, 3.0, 2.0, 512.0],
+            color_type: [1.0, 0.9, 0.8, 0.0],
+            direction_angle: [0.0, -1.0, 0.0, 0.0],
+            params: [2.0, 8.0, 7.0, 0.0],
+        };
+        let (a, b, c) = (tube(-10.0), tube(0.0), tube(10.0));
+
+        // The premise: the pre-#5507 sequential fold IS order-sensitive.
+        let sequential = |lights: &[GpuLight]| {
+            lights.iter().fold(
+                fold_light_rig_geometry_key(caustic_key_seed(), lights.len() as f32),
+                fold_light_rig_geometry_key_for,
+            )
+        };
+        assert_ne!(sequential(&[a, b, c]), sequential(&[b, a, c]), "fixture: a swap re-keys the old fold");
+
+        // Every permutation of the set keys the same.
+        let key = light_rig_geometry_key(&[a, b, c]);
+        for order in [[a, c, b], [b, a, c], [b, c, a], [c, a, b], [c, b, a]] {
+            assert_eq!(light_rig_geometry_key(&order), key, "the key must not depend on light order");
+        }
+
+        // It still separates different rigs: a moved light, a missing light,
+        // and a duplicated light (identical hashes must not cancel).
+        let mut moved = c;
+        moved.position_radius[0] += 0.5;
+        assert_ne!(light_rig_geometry_key(&[a, b, moved]), key, "a carried light moves the key");
+        assert_ne!(light_rig_geometry_key(&[a, b]), key, "a light leaving moves the key");
+        assert_ne!(light_rig_geometry_key(&[a, a]), light_rig_geometry_key(&[]), "a duplicated pair must not cancel to the empty rig");
+        assert_ne!(light_rig_geometry_key(&[a, a, b]), light_rig_geometry_key(&[b]), "duplicates must not cancel");
+
+        // Intensity-blindness (#5369) survives the new combiner.
+        let mut dimmed = b;
+        dimmed.color_type[0] *= 0.25;
+        assert_eq!(light_rig_geometry_key(&[a, dimmed, c]), key, "a flickering light re-keys nothing");
     }
 }
