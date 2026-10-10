@@ -454,8 +454,13 @@ impl ApplicationHandler for App {
             self.release_world_input_for_ui();
             return;
         }
-        if egui_consumed && !matches!(event, WindowEvent::CloseRequested | WindowEvent::Resized(_))
-        {
+        if honour_egui_consumed(
+            egui_consumed,
+            self.debug_ui
+                .as_ref()
+                .is_some_and(byroredux_debug_ui::DebugUiState::captures_gameplay_input),
+            matches!(event, WindowEvent::CloseRequested | WindowEvent::Resized(_)),
+        ) {
             return;
         }
         if self.route_scaleform_window_event(&event) {
@@ -1696,6 +1701,35 @@ impl ApplicationHandler for App {
     }
 }
 
+/// Whether the input router must skip the rest of its dispatch because
+/// egui consumed the event.
+///
+/// egui-winit consumes the **Tab** key unconditionally ("When
+/// pressing the Tab key, egui focuses the first focusable element, hence
+/// Tab always consumes" — egui-winit 0.36 `lib.rs:416-419`), and the
+/// `DebugUiState` exists for the whole session, so a router that trusts
+/// `consumed` outright eats the Tab→Inventory binding on every frame the
+/// engine ever runs. `consumed` is therefore honoured only while an
+/// interactive egui surface is actually showing —
+/// [`byroredux_debug_ui::DebugUiState::captures_gameplay_input`]: the F3
+/// overlay (whose tabs include Studio and the embedded console) or any
+/// player menu page (pause, settings, inventory, dialogue). A hidden
+/// overlay, a closed menu, and the passive player toast all report
+/// `false`, so gameplay keys flow. egui's own event forwarding stays
+/// unconditional — only the *act* on `consumed` is gated, so
+/// modifier/focus/viewport bookkeeping is never lost across a visibility
+/// toggle (#2831's rule).
+///
+/// `lifecycle_event` (CloseRequested / Resized) always runs its normal
+/// handlers regardless — egui doesn't care about those.
+fn honour_egui_consumed(
+    egui_consumed: bool,
+    interactive_surface_showing: bool,
+    lifecycle_event: bool,
+) -> bool {
+    egui_consumed && interactive_surface_showing && !lifecycle_event
+}
+
 // Moved here with the `resumed` arm it pins (#2731); see the note in
 // `app_frame.rs` for why the `include_str!` target has to follow the code.
 /// A deterministic bench must remember the scene/CLI camera before the
@@ -2076,5 +2110,65 @@ mod allocator_teardown_order_tests {
         let main = include_str!("main.rs");
         let drop_impl = body(main, &format!("impl {} for App {{", "Drop"), "");
         assert_allocator_released_before_renderer(drop_impl, "Drop for App");
+    }
+}
+
+/// egui-winit consumes the Tab key unconditionally, and the
+/// `DebugUiState` exists for the whole session, so the input router may
+/// only honour `consumed` while an interactive egui surface is showing.
+#[cfg(test)]
+mod egui_consumed_gate_tests {
+    use super::*;
+
+    /// The routing predicate's truth table. The first row is the reported
+    /// bug: egui claims Tab, nothing is on screen, and the press must
+    /// reach the Tab→Inventory binding. The second row is the other half
+    /// of the contract: with a surface up (overlay, or any player menu
+    /// page) egui keeps the key even without a focused text field.
+    #[test]
+    fn consumed_is_only_honoured_while_an_interactive_surface_shows() {
+        // egui claims the key, nothing on screen → gameplay gets it.
+        assert!(!honour_egui_consumed(true, false, false));
+        // Overlay open (debug panels / Studio / console tabs), or any
+        // player menu page (pause, settings, inventory, dialogue) →
+        // `captures_gameplay_input` is true and egui owns the event.
+        assert!(honour_egui_consumed(true, true, false));
+        // egui not claiming it → nothing to honour either way.
+        assert!(!honour_egui_consumed(false, true, false));
+        assert!(!honour_egui_consumed(false, false, false));
+        // Lifecycle events always run their normal handlers.
+        assert!(!honour_egui_consumed(true, true, true));
+        assert!(!honour_egui_consumed(true, false, true));
+    }
+
+    /// Source pin (#2831 precedent): `window_event` must route the gate
+    /// through [`super::honour_egui_consumed`] with
+    /// `captures_gameplay_input` as the surface operand, and the old bare
+    /// `if egui_consumed { return; }` must not come back.
+    #[test]
+    fn window_event_gates_consumed_through_the_predicate() {
+        let source = include_str!("app_events.rs");
+        let (router, predicate) = source
+            .split_once("fn honour_egui_consumed(")
+            .expect("the honour_egui_consumed predicate must exist");
+        assert!(
+            router.contains("honour_egui_consumed("),
+            "window_event must call honour_egui_consumed"
+        );
+        assert!(
+            router.contains("captures_gameplay_input"),
+            "the surface operand must be DebugUiState::captures_gameplay_input"
+        );
+        assert!(
+            !source.contains(&format!("if {} && !matches!(event", "egui_consumed")),
+            "the bare egui_consumed gate regressed — Tab→Inventory dies again"
+        );
+        assert!(
+            predicate.contains(&format!(
+                "{} && {} && !{}",
+                "egui_consumed", "interactive_surface_showing", "lifecycle_event"
+            )),
+            "the predicate's conjunction changed — re-check the truth-table test"
+        );
     }
 }
