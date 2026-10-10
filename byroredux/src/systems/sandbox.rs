@@ -101,7 +101,7 @@ pub(crate) fn is_sit_marker(m: &FurnitureMarker) -> bool {
 /// approximation) sat actors 90° sideways on the chair. Degenerate near-zero
 /// XZ (marker at the furniture pivot) → inherit furniture facing. The exact
 /// per-marker `Orientation` decode is deferred to Phase C.
-fn seat_world_transform(furn: &GlobalTransform, m: &FurnitureMarker) -> GlobalTransform {
+pub(crate) fn seat_world_transform(furn: &GlobalTransform, m: &FurnitureMarker) -> GlobalTransform {
     let seat_local = Vec3::from_array(m.local_offset);
     let facing = match m.heading_z_radians {
         Some(h) => Quat::from_rotation_y(h),

@@ -84,15 +84,16 @@ pub(super) fn stamp_quest_reference(
         .get::<byroredux_core::ecs::components::Inventory>(entity)
         .is_some()
     {
-        let authored_position = world
+        let (authored_position, authored_rotation) = world
             .get::<byroredux_core::ecs::Transform>(entity)
-            .map(|transform| transform.translation)
+            .map(|transform| (transform.translation, transform.rotation))
             .unwrap_or_default();
         crate::cell_loader::stream_snapshot::restore_actor_snapshot(
             world,
             entity,
             placed_ref.form_id,
             authored_position,
+            authored_rotation,
         );
         crate::cell_loader::reference_state::restore(world, entity);
     }

@@ -30,7 +30,7 @@ pub(crate) mod npc_dialogue;
 mod particle;
 mod patrol;
 pub(crate) mod restoration;
-mod sandbox;
+pub(crate) mod sandbox;
 // #5367 Phase F — force-greet (Dialogue AI package procedure).
 pub(crate) mod forcegreet;
 // #5366 — Story Manager event producers (CLOC via the cell-loader

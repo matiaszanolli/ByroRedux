@@ -43,12 +43,12 @@
 //! Papyrus VM locals are out of scope for the reasons §4 records (the
 //! latter is already owned by the real save registry).
 
-use byroredux_core::ecs::components::{FormIdComponent, Transform};
+use byroredux_core::ecs::components::{FormIdComponent, Furniture, GlobalTransform, Transform};
 use byroredux_core::ecs::resource::Resource;
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::World;
 use byroredux_core::form_id::{FormId, FormIdPool};
-use byroredux_core::math::Vec3;
+use byroredux_core::math::{Quat, Vec3};
 use std::collections::HashMap;
 
 use crate::components::AmbientPackageRuntime;
@@ -75,6 +75,11 @@ pub(crate) const POSITION_DIVERGENCE_EPSILON: f32 = 8.0;
 pub(crate) struct ActorStreamSnapshot {
     /// Where the actor actually was when its tile was evicted.
     pub(crate) position: Vec3,
+    /// #5501 — the root's rotation at eviction. §4's keep-set says
+    /// "live position/orientation"; pre-#5501 only the position was
+    /// carried, so a seated actor (snapped to the furniture heading)
+    /// came back on its authored REFR heading.
+    pub(crate) rotation: Quat,
     /// `AmbientPackageRuntime.active_package_form_id` — a FormID, so
     /// trivially safe to carry.
     pub(crate) active_package_form_id: Option<u32>,
@@ -102,6 +107,12 @@ pub(crate) struct ActorStreamSnapshot {
     /// the exact frozen-in-a-chair failure #3333 fixed. No `EntityId` in
     /// here, so it carries verbatim.
     pub(crate) seated_animation_restore: Option<SeatedAnimationRestore>,
+    /// #5501 — the marker's index within the furniture, captured from the
+    /// `SeatReservations` claimant entry. Without it the restore could not
+    /// re-reserve the marker (its id is `(furniture entity, index)`), so a
+    /// seated actor came back unreserved and a second actor could be
+    /// snapped onto the same seat.
+    pub(crate) seated_marker_idx: Option<u32>,
 }
 
 impl ActorStreamSnapshot {
@@ -197,17 +208,19 @@ pub(crate) fn capture_actor_snapshots(world: &mut World, victims: &[EntityId]) {
         let mut rows: Vec<(EntityId, FormId, ActorStreamSnapshot)> = Vec::new();
         if let Some(xform_q) = world.query::<Transform>() {
             rows.extend(raw.into_iter().filter_map(|(victim, fid)| {
-                let position = xform_q.get(victim)?.translation;
+                let transform = xform_q.get(victim)?;
                 Some((
                     victim,
                     fid,
                     ActorStreamSnapshot {
-                        position,
+                        position: transform.translation,
+                        rotation: transform.rotation,
                         active_package_form_id: None,
                         travel_destination: None,
                         traveled: false,
                         seated_furniture_form_id: None,
                         seated_animation_restore: None,
+                        seated_marker_idx: None,
                     },
                 ))
             }));
@@ -222,6 +235,25 @@ pub(crate) fn capture_actor_snapshots(world: &mut World, victims: &[EntityId]) {
         if let Some(form_q) = world.query::<FormIdComponent>() {
             for (seat, slot) in seated.iter().zip(&mut furniture_fids) {
                 *slot = seat.and_then(|seat| form_q.get(seat.furniture).map(|c| c.0));
+            }
+        }
+        // #5501 — the seated marker's index, from the claimant side of
+        // the reservation map (the `Seated` component carries only the
+        // furniture entity). One reverse pass; reservations are few.
+        if let Some(seat_map) = world.try_resource::<crate::components::SeatReservations>() {
+            let by_claimant: Vec<((EntityId, u32), EntityId)> = seat_map
+                .0
+                .iter()
+                .map(|(seat_id, claimant)| (*seat_id, *claimant))
+                .collect();
+            for ((victim, _, snapshot), seat) in rows.iter_mut().zip(&seated) {
+                let Some(seat) = seat else { continue };
+                if let Some(((furniture, idx), _)) = by_claimant
+                    .iter()
+                    .find(|((furniture, _), claimant)| *claimant == *victim && *furniture == seat.furniture)
+                {
+                    snapshot.seated_marker_idx = Some(*idx);
+                }
             }
         }
         if let Some(package_q) = world.query::<AmbientPackageRuntime>() {
@@ -259,6 +291,12 @@ pub(crate) fn capture_actor_snapshots(world: &mut World, victims: &[EntityId]) {
                 .seated_furniture_form_id
                 .and(seat)
                 .map(|seat| seat.animation_restore);
+            // A furniture FormID with no resolvable marker index cannot be
+            // re-reserved; the restore falls back to letting the package
+            // re-seat the actor.
+            if snapshot.seated_marker_idx.is_some() && snapshot.seated_furniture_form_id.is_none() {
+                snapshot.seated_marker_idx = None;
+            }
             if snapshot.has_package_state() {
                 captured.push((form_id, snapshot));
             }
@@ -303,6 +341,7 @@ pub(crate) fn restore_actor_snapshot(
     entity: EntityId,
     form_id: u32,
     authored_position: Vec3,
+    authored_rotation: Quat,
 ) -> bool {
     let Some(snapshot) = world
         .try_resource_mut::<StreamStateSnapshots>()
@@ -313,10 +352,29 @@ pub(crate) fn restore_actor_snapshot(
 
     let mut restored = false;
 
-    if snapshot.position.distance(authored_position) > POSITION_DIVERGENCE_EPSILON {
+    // #5501 — orientation is in §4's keep-set beside the position, with
+    // the same divergence rule: same-ish facing (dot ≥ cos of ~1°)
+    // costs nothing and accumulates no drift.
+    // glam's `Quat::dot` returns f32 directly; NaN (degenerate capture)
+    // counts as divergent.
+    let rotation_diverged = !(snapshot
+        .rotation
+        .dot(authored_rotation)
+        .is_finite()
+        && snapshot.rotation.dot(authored_rotation) >= 0.999_85);
+    if snapshot.position.distance(authored_position) > POSITION_DIVERGENCE_EPSILON
+        || rotation_diverged
+    {
         if let Some(mut transforms) = world.query_mut::<Transform>() {
             if let Some(transform) = transforms.get_mut(entity) {
-                transform.translation = snapshot.position;
+                if snapshot.position.distance(authored_position)
+                    > POSITION_DIVERGENCE_EPSILON
+                {
+                    transform.translation = snapshot.position;
+                }
+                if rotation_diverged {
+                    transform.rotation = snapshot.rotation;
+                }
                 restored = true;
             }
         }
@@ -350,27 +408,79 @@ pub(crate) fn restore_actor_snapshot(
         // never recycled, so a verbatim restore would name a dead or wrong
         // entity (#372).
         //
-        // An unresolvable furniture means the seat's own tile is not
-        // resident. Dropping the `Seated` restore is the correct outcome
-        // there: re-seating is what `sandbox_seat_system` does when the
-        // furniture comes back, and a `Seated` pointing at nothing would be
-        // a one-shot terminal marker gating an actor forever.
-        if let Some(furniture) = byroredux_scripting::condition::resolve_entity_by_global_form_id(
-            world,
-            furniture_form_id,
-        ) {
-            // Reconstructed, not corrected: the respawn path re-seats
-            // nothing, so the actor arrives with no `Seated` component at
-            // all and there is nothing here to merely fix up.
-            let animation_restore = snapshot.seated_animation_restore.unwrap_or_default();
-            if let Some(mut seats) = world.query_mut::<Seated>() {
-                seats.insert(
-                    entity,
-                    Seated {
-                        furniture,
-                        animation_restore,
-                    },
+        // #5501 — an unresolvable furniture, a missing marker index, or a
+        // clip-less cell all drop the `Seated` restore deliberately: the
+        // bare marker the pre-#5501 restore wrote gated
+        // `sandbox_seat_system` / `eat_sleep_system` forever without any of
+        // the state seating actually applies (no parked sit pose, no seat
+        // rotation, no `SeatReservations` entry), leaving the actor
+        // standing inside its chair while a second actor could be snapped
+        // onto the same marker. Without the marker the actor simply re-seats
+        // through its own package when the furniture is resident.
+        let restorable = snapshot.seated_marker_idx.is_some()
+            && world
+                .try_resource::<crate::components::SandboxSitClip>()
+                .is_some_and(|clip| clip.0.is_some());
+        if restorable {
+            if let Some(furniture) =
+                byroredux_scripting::condition::resolve_entity_by_global_form_id(
+                    world,
+                    furniture_form_id,
+                )
+            {
+                let marker_idx = snapshot
+                    .seated_marker_idx
+                    .unwrap_or_default();
+                let seat = {
+                    let Some(furn_q) = world.query::<Furniture>() else {
+                        return restored;
+                    };
+                    let Some(furn) = furn_q.get(furniture) else {
+                        return restored;
+                    };
+                    let Some(marker) = furn.markers.get(marker_idx as usize) else {
+                        return restored;
+                    };
+                    let Some(gq) = world.query::<GlobalTransform>() else {
+                        return restored;
+                    };
+                    let Some(furn_g) = gq.get(furniture) else {
+                        return restored;
+                    };
+                    crate::systems::sandbox::seat_world_transform(furn_g, marker)
+                };
+                let (sit_handle, hold_time) = world
+                    .try_resource::<crate::components::SandboxSitClip>()
+                    .and_then(|clip| clip.0)
+                    .unwrap_or_default();
+                // The full write half of the seating path: transform snap
+                // (position + furniture heading), sit pose parked at its
+                // final frame, `Seated` tagged. Runs on the fresh entity,
+                // so the animation restore it captures is the respawn's
+                // own standing idle — then the carried pre-eviction
+                // restore, when present, is the truer un-seat target.
+                crate::systems::sandbox::apply_seat_assignments(
+                    world,
+                    sit_handle,
+                    hold_time,
+                    &[(entity, furniture, seat)],
                 );
+                // Re-reserve the exact marker: the eviction dropped the
+                // old claimant's entry, and `pick_nearest_seat` consults
+                // reservations — without this, a second actor can be
+                // assigned the same marker and snapped on top.
+                if let Some(mut reservations) =
+                    world.try_resource_mut::<crate::components::SeatReservations>()
+                {
+                    reservations.0.insert((furniture, marker_idx), entity);
+                }
+                if let Some(carried) = snapshot.seated_animation_restore {
+                    if let Some(mut seats) = world.query_mut::<Seated>() {
+                        if let Some(seated) = seats.get_mut(entity) {
+                            seated.animation_restore = carried;
+                        }
+                    }
+                }
                 restored = true;
             }
         }
@@ -382,6 +492,8 @@ pub(crate) fn restore_actor_snapshot(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use byroredux_core::animation::AnimationPlayer;
+    use byroredux_core::ecs::components::furniture::{FurnitureMarker, FurnitureMarkerKind};
     use byroredux_core::ecs::components::sandbox::SeatedAnimationRestore;
     use byroredux_core::ecs::components::wander::{WanderPhase, WanderState};
     use byroredux_core::form_id::{FormIdPair, LocalFormId, PluginId};
@@ -409,6 +521,10 @@ mod tests {
         world.register::<Traveled>();
         world.register::<Seated>();
         world.register::<WanderState>();
+        // #5501 — the seated restore runs the full seating write path.
+        world.register::<AnimationPlayer>();
+        world.register::<Furniture>();
+        world.register::<GlobalTransform>();
         world
     }
 
@@ -454,7 +570,11 @@ mod tests {
         assert_ne!(respawned, actor);
 
         assert!(restore_actor_snapshot(
-            &mut world, respawned, ACTOR, authored
+            &mut world,
+            respawned,
+            ACTOR,
+            authored,
+            Quat::IDENTITY,
         ));
 
         assert_eq!(
@@ -487,9 +607,30 @@ mod tests {
         const CHAIR: u32 = 0x0001_9003;
 
         let mut world = fixture();
+        // #5501 — the full restore needs the per-cell sit clip and a
+        // reservation naming the marker; the production capture reads the
+        // marker index off the claimant entry.
+        world.insert_resource(crate::components::SandboxSitClip(Some((5, 1.25))));
+        world.insert_resource(crate::components::SeatReservations::default());
         let chair = spawn_with_form_id(&mut world, CHAIR);
+        world.insert(chair, GlobalTransform::default());
+        world.insert(
+            chair,
+            Furniture {
+                markers: vec![FurnitureMarker {
+                    local_offset: [2.0, 0.0, 0.0],
+                    heading_z_radians: Some(1.0),
+                    animation_type: 0,
+                    kind: FurnitureMarkerKind::Sit,
+                }],
+            },
+        );
         let actor = spawn_with_form_id(&mut world, ACTOR);
         at(&mut world, actor, Vec3::new(10.0, 0.0, 0.0));
+        let mut player = AnimationPlayer::new(7);
+        player.local_time = 0.5;
+        player.prev_time = 0.4;
+        world.insert(actor, player);
         world.insert(
             actor,
             Seated {
@@ -503,6 +644,10 @@ mod tests {
                 },
             },
         );
+        world
+            .resource_mut::<crate::components::SeatReservations>()
+            .0
+            .insert((chair, 0), actor);
 
         capture_actor_snapshots(&mut world, &[actor]);
 
@@ -515,8 +660,25 @@ mod tests {
         world.despawn(chair);
 
         // Respawn both, in an order that guarantees fresh ids for each.
+        // The furniture re-materialises its markers, as the real respawn
+        // path does from the REFR.
         let respawned_chair = spawn_with_form_id(&mut world, CHAIR);
+        world.insert(respawned_chair, GlobalTransform::default());
+        world.insert(
+            respawned_chair,
+            Furniture {
+                markers: vec![FurnitureMarker {
+                    local_offset: [2.0, 0.0, 0.0],
+                    heading_z_radians: Some(1.0),
+                    animation_type: 0,
+                    kind: FurnitureMarkerKind::Sit,
+                }],
+            },
+        );
         let respawned_actor = spawn_with_form_id(&mut world, ACTOR);
+        let mut player = AnimationPlayer::new(7);
+        player.local_time = 0.5;
+        world.insert(respawned_actor, player);
         at(&mut world, respawned_actor, Vec3::new(10.0, 0.0, 0.0));
         // The spawn path re-seats nothing, so the actor comes back with NO
         // `Seated` at all. Pre-seating it here would let a restore that
@@ -529,7 +691,8 @@ mod tests {
             &mut world,
             respawned_actor,
             ACTOR,
-            Vec3::new(10.0, 0.0, 0.0)
+            Vec3::new(10.0, 0.0, 0.0),
+            Quat::IDENTITY,
         ));
 
         assert_eq!(
@@ -559,6 +722,30 @@ mod tests {
                 speed: 1.0,
             }),
             "the pre-seat animation snapshot must survive the round trip"
+        );
+        // #5501 — the restore runs the seating write path, not a bare
+        // marker: the sit pose is parked at its final frame and the exact
+        // marker is re-reserved under the respawned furniture id, so a
+        // second actor cannot be snapped onto the same seat.
+        let player = world
+            .get::<AnimationPlayer>(respawned_actor)
+            .expect("player present");
+        assert_eq!(player.clip_handle, 5, "parked on the per-cell sit clip");
+        assert!(!player.playing, "the sit pose is parked, not playing");
+        assert_eq!(
+            world
+                .resource::<crate::components::SeatReservations>()
+                .0
+                .get(&(respawned_chair, 0)),
+            Some(&respawned_actor),
+            "the marker must be re-reserved under the NEW furniture id"
+        );
+        let rotation = world
+            .get::<Transform>(respawned_actor)
+            .map(|t| t.rotation);
+        assert!(
+            rotation.is_some_and(|facing| facing.angle_between(Quat::from_rotation_y(1.0)) < 0.01),
+            "the root must be snapped to the seat heading, not the REFR heading"
         );
     }
 
@@ -622,7 +809,7 @@ mod tests {
 
         let respawned = spawn_with_form_id(&mut world, ACTOR);
         at(&mut world, respawned, authored);
-        restore_actor_snapshot(&mut world, respawned, ACTOR, authored);
+        restore_actor_snapshot(&mut world, respawned, ACTOR, authored, Quat::IDENTITY);
 
         assert_eq!(
             world.get::<Transform>(respawned).map(|t| t.translation),
@@ -648,7 +835,7 @@ mod tests {
 
         let respawned = spawn_with_form_id(&mut world, ACTOR);
         at(&mut world, respawned, Vec3::ZERO);
-        restore_actor_snapshot(&mut world, respawned, ACTOR, Vec3::ZERO);
+        restore_actor_snapshot(&mut world, respawned, ACTOR, Vec3::ZERO, Quat::IDENTITY);
         assert!(
             world.resource::<StreamStateSnapshots>().is_empty(),
             "a restored row must be consumed — a second visit to the same \
