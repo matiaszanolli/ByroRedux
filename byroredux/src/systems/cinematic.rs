@@ -468,8 +468,14 @@ pub(crate) fn cinematic_horse_route_system(world: &World, dt: f32) {
 /// cart leaves every transform exactly where it was. The cart keeps its
 /// keyframed motion type (a parked cart cannot slide, matching vanilla's
 /// settled cart), riders keep `cart_seat` / `vehicle_local_*` so a later
-/// scripted exit animation still resolves, and the exit-cart path is
-/// `awaited_event`-driven — it never reads `vehicle`.
+/// scripted exit animation still resolves. Release clears the rider's
+/// `vehicle`, so `Effect::ExitCart` — which reads `vehicle` +
+/// `vehicle_local_rotation` to derive the exit root-motion heading —
+/// takes its fallback and uses the rider's own `Transform.rotation`. That
+/// is the same heading only because `vehicle_attachment_system` last wrote
+/// the rider's rotation as `vehicle.rotation * vehicle_local_rotation`;
+/// `released_rider_exit_heading_matches_the_attached_heading` pins that
+/// equivalence.
 ///
 /// Re-adoption covers the half the #3254 fix deferred: an entity that
 /// lost its `CellRoot` to a mid-tether home-cell unload has no owner and
@@ -2098,6 +2104,88 @@ mod tests {
                     .is_some_and(|owned| owned.contains(&cart) && owned.contains(&rider)))
                 .unwrap_or(false),
             "the re-adoption must be registered in the unload index, or the              next cell unload cannot find them"
+        );
+    }
+
+    /// #5461 — `Effect::ExitCart` derives the exit root-motion heading from
+    /// `vehicle.rotation * vehicle_local_rotation` while the rider is
+    /// attached, and from the rider's own `Transform.rotation` once release
+    /// has cleared `vehicle`. Those are the same heading only if the
+    /// attachment system left the rider's rotation composed that way on the
+    /// last tethered tick; nothing pinned it, and the release doc claimed the
+    /// opposite of what the code does. Uses a non-trivial cart heading and
+    /// seat rotation so an identity-everywhere coincidence cannot pass.
+    #[test]
+    fn released_rider_exit_heading_matches_the_attached_heading() {
+        use byroredux_core::math::{Quat, Vec3};
+
+        let mut world = World::new();
+        world.register::<Transform>();
+        world.register::<HorseTetherState>();
+        world.register::<ActorCinematicState>();
+        world.register::<CellRoot>();
+        world.register::<Children>();
+        world.insert_resource(CinematicReAdoption::default());
+        world.insert_resource(CellRootIndex::new());
+
+        let horse_rotation = Quat::from_rotation_y(0.7);
+        let cart_local_rotation = Quat::from_rotation_y(0.3);
+        let seat_rotation = Quat::from_rotation_y(-0.4) * Quat::from_rotation_x(0.2);
+        let horse = world.spawn();
+        let cart = world.spawn();
+        let rider = world.spawn();
+        world.insert(horse, Transform::new(Vec3::new(10.0, 0.0, -10.0), horse_rotation, 1.0));
+        world.insert(cart, Transform::IDENTITY);
+        world.insert(rider, Transform::IDENTITY);
+        world.insert(
+            cart,
+            HorseTetherState {
+                horse,
+                horse_local_translation: Vec3::ZERO,
+                horse_local_rotation: cart_local_rotation,
+                route_target_form_id: None,
+            },
+        );
+        world.insert(
+            rider,
+            ActorCinematicState {
+                vehicle: Some(cart),
+                vehicle_local_translation: Some(Vec3::new(0.0, 2.0, 0.0)),
+                vehicle_local_rotation: Some(seat_rotation),
+                cart_seat: Some(2),
+                ..Default::default()
+            },
+        );
+
+        // The last tethered tick: the cart follows the horse, the rider
+        // follows the cart.
+        vehicle_attachment_system(&world, 0.0);
+
+        // The heading `ExitCart` derives while the rider is still attached.
+        let attached = {
+            let state = world.get::<ActorCinematicState>(rider).unwrap();
+            let cart_rotation = world.get::<Transform>(cart).unwrap().rotation;
+            cart_rotation * state.vehicle_local_rotation.expect("attached rider")
+        };
+        assert!(
+            attached.angle_between(Quat::IDENTITY) > 0.3,
+            "fixture: a non-trivial heading, so an identity coincidence cannot pass"
+        );
+
+        release_finished_tethers(&world, &[(cart, horse)]);
+        assert_eq!(
+            world.get::<ActorCinematicState>(rider).unwrap().vehicle,
+            None,
+            "fixture: release clears the rider's vehicle, which is what sends \
+             ExitCart down its fallback branch"
+        );
+
+        // The heading `ExitCart` derives after release: the rider's own rotation.
+        let released = world.get::<Transform>(rider).unwrap().rotation;
+        assert!(
+            attached.angle_between(released) < 1.0e-4,
+            "release must leave the rider's rotation at vehicle.rotation * \
+             vehicle_local_rotation, or ExitCart's fallback changes the exit heading"
         );
     }
 
