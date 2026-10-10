@@ -757,6 +757,21 @@ fn select_active_package<'a>(
     let context = ConditionContext::for_subject(actor);
     byroredux_plugin::esm::records::active_package(packages, game_hour, |package| {
         package_conditions_pass(&package.conditions, world, &context)
+            // #5499 — #5376's install gates decline a Dialogue package
+            // whose conditions pass only through fail-open (any
+            // uncatalogued CTDA function passes the list), but selection
+            // still crowned it winner and recorded the FormID, so every
+            // later minute tick re-selected the same package and the
+            // actor ran NO ambient procedure for as long as the schedule
+            // covered the hour — 56 FNV and 57 FO3 NPC bases standing at
+            // their spawn point around the clock (Goodsprings' Sunny,
+            // Primm's troopers, the Boomer gate guards), each with a
+            // runnable Eat/Sleep/Sandbox/Travel package scheduled below
+            // the declined one. The scan now continues past such a
+            // package to the next eligible one; the fail-open policy is
+            // unchanged for every other procedure.
+            && !(package.procedure_type == PROCEDURE_DIALOGUE
+                && !package_conditions_fully_modeled(&package.conditions))
     })
 }
 
@@ -1245,6 +1260,29 @@ mod tests {
         assert!(
             !world.has::<crate::systems::forcegreet::ForceGreetDirective>(actor),
             "a Say-To package is a spoken line, not a player conversation"
+        );
+
+        // #5499 — the decline is now a *selection* decision: a fail-open
+        // Dialogue package above a runnable package no longer starves the
+        // whole stack. The dominant corpus shape (fn 79 GetQuestVariable
+        // heads over a Sandbox/Eat/Sleep fallback) ran nothing at all.
+        let mut starving = pack(0x610, PROCEDURE_DIALOGUE, None);
+        starving.conditions = vec![Condition {
+            function_index: 79,
+            comparator: ComparisonOp::Eq,
+            comparand: ConditionValue::Literal(0.0),
+            ..Default::default()
+        }];
+        let fallback = pack(0x611, PROCEDURE_SANDBOX, None);
+        let (world, actor) = setup_actor(12.0, vec![starving, fallback]);
+        assert!(
+            world.has::<byroredux_core::ecs::components::SandboxBehavior>(actor),
+            "the scan must continue past a fail-open Dialogue decline to the \
+             scheduled Sandbox below it (#5499)"
+        );
+        assert!(
+            !world.has::<crate::systems::forcegreet::ForceGreetDirective>(actor),
+            "the declined Dialogue still installs nothing"
         );
 
         // The player reference (0x14) still installs.
