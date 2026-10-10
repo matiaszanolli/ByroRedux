@@ -332,12 +332,12 @@ fn nested_xclc_less_cell_does_not_replace_worldspace_persistent_cell() {
     assert_eq!(kept.references[0].form_id, persistent_ref);
 }
 
-/// #1220 / D3-NEW-01 regression — exterior CELL XCRI + XPRI sub-records
-/// must populate `precombined_mesh_hashes` + `absorbed_refs`. Pre-fix
-/// the exterior walker hardcoded both to empty on the wrong premise
-/// that FO4 precombines are interior-only. The fix lifts the same
-/// match arms used by the interior walker; this test pins the
-/// behaviour against drift.
+/// #1220 / D3-NEW-01 / #5484 regression — exterior CELL XCRI sub-records
+/// must populate `precombined_mesh_hashes` + `absorbed_ref_bakes`, and XPRI
+/// must populate nothing. Pre-#1220 the exterior walker hardcoded both to
+/// empty on the wrong premise that FO4 precombines are interior-only;
+/// pre-#5484 the skip set was fed from XPRI (the previs participant list)
+/// instead of the XCRI pair tail (the actual baked refs).
 #[test]
 fn parse_wrld_exterior_cell_captures_precombined_xcri_xpri() {
     let wrld_fid: u32 = 0x0000_003C;
@@ -350,23 +350,24 @@ fn parse_wrld_exterior_cell_captures_precombined_xcri_xpri() {
         v.extend_from_slice(&0i32.to_le_bytes());
         v
     };
-    // XCRI: 2 mesh hashes + 3 visibility-group refs. Layout matches
-    // `CellSubrecordFields::absorb`'s XCRI arm exactly (helpers.rs):
-    // u32 mesh_count + u32 ref_count + mesh_count × u32 hashes +
-    // ref_count × u32 visibility refs (tail intentionally NOT consumed
-    // into absorbed_refs).
+    // XCRI: 2 mesh hashes + 2×(ref formid, bake hash) pairs. Layout
+    // matches `CellSubrecordFields::absorb`'s XCRI arm exactly
+    // (helpers.rs): u32 mesh_count + u32 ref_count (2 members/entry,
+    // per xEdit's wbCELLCombinedRefsCounter) + mesh_count × u32 hashes
+    // + (ref_count/2) pairs.
     let xcri = {
-        let mut v = Vec::with_capacity(8 + 2 * 4 + 3 * 4);
+        let mut v = Vec::with_capacity(8 + 2 * 4 + 2 * 8);
         v.extend_from_slice(&2u32.to_le_bytes()); // mesh_count
-        v.extend_from_slice(&3u32.to_le_bytes()); // ref_count (visibility group)
+        v.extend_from_slice(&4u32.to_le_bytes()); // ref_count (2 entries × 2 members)
         v.extend_from_slice(&0xDEAD_BEEF_u32.to_le_bytes()); // hash 0
         v.extend_from_slice(&0xCAFE_BABE_u32.to_le_bytes()); // hash 1
-        v.extend_from_slice(&0x0100_1001_u32.to_le_bytes()); // vis-group ref (NOT absorbed)
-        v.extend_from_slice(&0x0100_1002_u32.to_le_bytes());
-        v.extend_from_slice(&0x0100_1003_u32.to_le_bytes());
+        v.extend_from_slice(&0x0100_1001_u32.to_le_bytes()); // baked ref → bake 0
+        v.extend_from_slice(&0xDEAD_BEEF_u32.to_le_bytes());
+        v.extend_from_slice(&0x0100_1002_u32.to_le_bytes()); // baked ref → bake 1
+        v.extend_from_slice(&0xCAFE_BABE_u32.to_le_bytes());
         v
     };
-    // XPRI: 2 REFR formids that MUST land in absorbed_refs.
+    // XPRI: 2 previs participants that MUST NOT land in the baked set.
     let xpri = {
         let mut v = Vec::with_capacity(2 * 4);
         v.extend_from_slice(&0x0100_0001_u32.to_le_bytes());
@@ -420,21 +421,19 @@ fn parse_wrld_exterior_cell_captures_precombined_xcri_xpri() {
         "exterior XCRI must populate precombined_mesh_hashes (pre-#1220 was always empty)",
     );
     assert_eq!(
-        cell.absorbed_refs.len(),
-        2,
-        "exterior XPRI must populate absorbed_refs (pre-#1220 was always empty)",
+        cell.absorbed_ref_bakes,
+        vec![(0x0200_1001, 0xDEAD_BEEF), (0x0200_1002, 0xCAFE_BABE)],
+        "exterior XCRI pairs must land remapped in absorbed_ref_bakes, \
+         each keyed by its bake hash (#5484)",
     );
-    assert!(cell.absorbed_refs.contains(&0x0200_0001));
-    assert!(cell.absorbed_refs.contains(&0x0200_0002));
-    // Visibility-group refs (XCRI tail) must NOT leak into absorbed_refs —
-    // that was the regression from #1188 first-iteration where Dugout
-    // Inn's bar / couch / lamps went invisible.
-    assert!(!cell.absorbed_refs.contains(&0x0100_1001));
-    assert!(!cell.absorbed_refs.contains(&0x0100_1002));
-    assert!(!cell.absorbed_refs.contains(&0x0100_1003));
-    assert!(!cell.absorbed_refs.contains(&0x0200_1001));
-    assert!(!cell.absorbed_refs.contains(&0x0200_1002));
-    assert!(!cell.absorbed_refs.contains(&0x0200_1003));
+    assert!(
+        !cell
+            .absorbed_ref_bakes
+            .iter()
+            .any(|(fid, _)| *fid == 0x0100_0001 || *fid == 0x0100_0002),
+        "XPRI entries are previs participants, not baked refs — pre-#5484 \
+         treated them as absorbed and deleted ~9.9k vanilla statics"
+    );
 }
 
 #[test]

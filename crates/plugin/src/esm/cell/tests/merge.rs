@@ -46,7 +46,7 @@ fn make_interior_cell(form_id: u32, edid: &str) -> CellData {
         ownership: None,
         regional_color_override: None,
         precombined_mesh_hashes: Vec::new(),
-        absorbed_refs: std::collections::HashSet::new(),
+        absorbed_ref_bakes: Vec::new(),
         navmeshes: Vec::new(),
         pathgrids: Vec::new(),
         deleted_refs: Vec::new(),
@@ -567,7 +567,7 @@ fn merge_from_partial_exterior_override_preserves_authored_payloads() {
         ..Default::default()
     }];
     base.precombined_mesh_hashes = vec![0xDEAD_BEEF];
-    base.absorbed_refs.insert(0x200);
+    base.absorbed_ref_bakes.push((0x200, 0xDEAD_BEEF));
 
     let mut master = EsmCellIndex::default();
     master
@@ -584,7 +584,7 @@ fn merge_from_partial_exterior_override_preserves_authored_payloads() {
         version: 2,
         ..Default::default()
     });
-    over.absorbed_refs.insert(0x201);
+    over.absorbed_ref_bakes.push((0x201, 0xDEAD_BEEF));
     let mut child = EsmCellIndex::default();
     child
         .exterior_cells
@@ -612,7 +612,11 @@ fn merge_from_partial_exterior_override_preserves_authored_payloads() {
         vec![0x100, 0x101],
     );
     assert_eq!(merged.precombined_mesh_hashes, vec![0xDEAD_BEEF]);
-    assert_eq!(merged.absorbed_refs, [0x200, 0x201].into_iter().collect());
+    assert_eq!(
+        merged.absorbed_ref_bakes,
+        vec![(0x201, 0xDEAD_BEEF), (0x200, 0xDEAD_BEEF)],
+        "override's own bakes first, base's inherited after (#5484 shape)"
+    );
 }
 
 /// #2911 — CELL identity is the FormID, while EDID is an optional alias. An

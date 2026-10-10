@@ -186,7 +186,7 @@ fn print_cell_report(
             *resolved_by_type
                 .entry(obj.record_type.as_str().to_string())
                 .or_default() += 1;
-            if cell.absorbed_refs.contains(&r.form_id) {
+            if cell.absorbed_ref_bakes.iter().any(|(fid, _)| *fid == r.form_id) {
                 *absorbed_by_type
                     .entry(obj.record_type.as_str().to_string())
                     .or_default() += 1;

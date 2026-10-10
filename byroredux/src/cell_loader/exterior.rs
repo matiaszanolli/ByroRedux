@@ -608,7 +608,7 @@ mod resolve_persistent_cell_tests {
             ownership: None,
             regional_color_override: None,
             precombined_mesh_hashes: Vec::new(),
-            absorbed_refs: std::collections::HashSet::new(),
+            absorbed_ref_bakes: Vec::new(),
             navmeshes: Vec::new(),
             pathgrids: Vec::new(),
             deleted_refs: Vec::new(),
@@ -785,7 +785,7 @@ mod persistent_root_survives_crossing_tests {
                 ownership: None,
                 regional_color_override: None,
                 precombined_mesh_hashes: Vec::new(),
-                absorbed_refs: std::collections::HashSet::new(),
+                absorbed_ref_bakes: Vec::new(),
                 navmeshes: Vec::new(),
                 pathgrids: Vec::new(),
                 deleted_refs: Vec::new(),
@@ -1055,7 +1055,7 @@ mod persistent_cell_identity_unchanged_tests {
             ownership: None,
             regional_color_override: None,
             precombined_mesh_hashes: Vec::new(),
-            absorbed_refs: std::collections::HashSet::new(),
+            absorbed_ref_bakes: Vec::new(),
             navmeshes: Vec::new(),
             pathgrids: Vec::new(),
             deleted_refs: Vec::new(),
@@ -1335,7 +1335,10 @@ pub(crate) struct ExteriorCellApplyJob {
     cell_root: EntityId,
     terrain_center: Option<Vec3>,
     precombined: Option<super::precombined::PrecombinedSpawnJob>,
-    precombined_spawned: Option<usize>,
+    /// #5484 — hashes whose `_oc.nif` bake drew geometry (`None` until
+    /// the precombined phase completes). Keys
+    /// `CellData::absorbed_ref_bakes` at the reference gate.
+    baked_hashes: Option<Vec<u32>>,
     references: Option<Box<ReferenceLoadJob>>,
 }
 
@@ -1708,7 +1711,7 @@ mod worldspace_selection_tests {
             ownership: None,
             regional_color_override: None,
             precombined_mesh_hashes: Vec::new(),
-            absorbed_refs: std::collections::HashSet::new(),
+            absorbed_ref_bakes: Vec::new(),
             navmeshes: Vec::new(),
             pathgrids: Vec::new(),
             deleted_refs: Vec::new(),
@@ -2214,7 +2217,7 @@ impl ExteriorCellApplyJob {
             &wctx.plugin_path,
             &load_order_paths,
         );
-        let precombined_spawned = precombined.is_none().then_some(0);
+        let baked_hashes = precombined.is_none().then(Vec::new);
 
         // Mid-cell terrain ground point — only meaningful for the
         // initial-load camera-positioning path used by the bulk loader.
@@ -2241,7 +2244,7 @@ impl ExteriorCellApplyJob {
             cell_root,
             terrain_center,
             precombined,
-            precombined_spawned,
+            baked_hashes,
             references: None,
         }))
     }
@@ -2263,7 +2266,7 @@ impl ExteriorCellApplyJob {
             .get(&wctx.worldspace_key)
             .and_then(|cells| cells.get(&(self.gx, self.gy)))
             .expect("exterior cell existed when its apply job began");
-        if self.precombined_spawned.is_none() {
+        if self.baked_hashes.is_none() {
             let job = self
                 .precombined
                 .take()
@@ -2295,8 +2298,8 @@ impl ExteriorCellApplyJob {
                     flush_pending_cell_textures_on_yield(ctx);
                     return ExteriorCellApplyProgress::Pending(self);
                 }
-                super::precombined::PrecombinedSpawnProgress::Complete { spawned, .. } => {
-                    self.precombined_spawned = Some(spawned);
+                super::precombined::PrecombinedSpawnProgress::Complete { baked_hashes, .. } => {
+                    self.baked_hashes = Some(baked_hashes);
                     stamp_cell_root_range(
                         world,
                         self.cell_root,
@@ -2310,9 +2313,10 @@ impl ExteriorCellApplyJob {
                 return ExteriorCellApplyProgress::Pending(self);
             }
         }
-        let absorbed = super::precombined::absorbed_refs_or_empty(
-            &cell.absorbed_refs,
-            self.precombined_spawned
+        let absorbed = super::precombined::effective_absorbed_refs(
+            &cell.absorbed_ref_bakes,
+            self.baked_hashes
+                .as_deref()
                 .expect("precombined apply completed before reference loading"),
         );
         let label = format!("exterior({},{})", self.gx, self.gy);
@@ -2329,7 +2333,7 @@ impl ExteriorCellApplyJob {
             mat_provider,
             &label,
             wctx.load_order.as_ref(),
-            absorbed,
+            &absorbed,
             self.references.take(),
             budget,
         );

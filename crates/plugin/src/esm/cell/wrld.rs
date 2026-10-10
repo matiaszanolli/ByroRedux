@@ -447,7 +447,7 @@ fn parse_wrld_children_inner(
                     ownership_global: _,
                     regional_color_override,
                     precombined_mesh_hashes,
-                    absorbed_refs,
+                    absorbed_ref_bakes,
                 } = fields;
 
                 let cell = CellData {
@@ -476,20 +476,20 @@ fn parse_wrld_children_inner(
                     regional_color_override,
                     // #1220 / D3-NEW-01 — FO4+ PreCombined Mesh
                     // refs on exterior cells. The cell loader's
-                    // conditional-absorption gate ties XPRI
-                    // honour-vs-ignore to the precombined-spawn
-                    // count; exterior call-site wiring landed
+                    // conditional-absorption gate ties XCRI
+                    // honour-vs-ignore to the per-bake spawn set;
+                    // exterior call-site wiring landed
                     // under #1221/#1222 ("third leg") and the gate
                     // was later shared between the interior and
                     // exterior loaders under #2063 (see
                     // `byroredux::cell_loader::precombined::
-                    // absorbed_refs_or_empty`). Live today: when
-                    // the precombine spawns, these fields suppress
-                    // per-REFR rendering of the baked REFRs on
+                    // effective_absorbed_refs`). Live today: when
+                    // a cell's XCRI bake loads, these fields suppress
+                    // per-REFR rendering of that bake's refs on
                     // exterior cells the same way they already did
-                    // on interior ones.
+                    // on interior ones (#5484).
                     precombined_mesh_hashes,
-                    absorbed_refs,
+                    absorbed_ref_bakes,
                     navmeshes: Vec::new(),
                     pathgrids: Vec::new(),
                     deleted_refs: Vec::new(),

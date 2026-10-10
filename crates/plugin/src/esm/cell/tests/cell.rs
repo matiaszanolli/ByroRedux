@@ -435,11 +435,14 @@ fn parse_cell_skyrim_extended_subrecords() {
     assert_eq!(cell.water_height, None);
 }
 
-/// #2698 — interior CELL XPRI entries must be promoted into the same global
-/// FormID space as the REFR record headers they suppress. Raw self index 1 is
-/// loaded at slot 2 so an identity-only implementation fails this fixture.
+/// #2698 / #5484 — interior CELL XCRI pair entries must be promoted into
+/// the same global FormID space as the REFR record headers they suppress,
+/// and each pair must keep its combined-mesh hash (the per-bake un-skip
+/// key). Raw self index 1 is loaded at slot 2 so an identity-only
+/// implementation fails this fixture. The XPRI sibling stays empty: XPRI
+/// is the previs participant list, not the baked-ref list (#5484).
 #[test]
-fn parse_cell_xpri_absorbed_refs_remap_to_global_space() {
+fn parse_cell_xcri_pairs_remap_and_keep_their_bake_hash() {
     let mut sub_data = Vec::new();
     let edid = b"DlcPrecombineInterior\0";
     sub_data.extend_from_slice(b"EDID");
@@ -448,10 +451,20 @@ fn parse_cell_xpri_absorbed_refs_remap_to_global_space() {
     sub_data.extend_from_slice(b"DATA");
     sub_data.extend_from_slice(&1u16.to_le_bytes());
     sub_data.push(0x01); // interior
+    // XCRI: 1 mesh hash, 2×1 entries (xEdit counts both struct members).
+    sub_data.extend_from_slice(b"XCRI");
+    let xcri_len = 8 + 4 + 8;
+    sub_data.extend_from_slice(&(xcri_len as u16).to_le_bytes());
+    sub_data.extend_from_slice(&1u32.to_le_bytes()); // mesh count
+    sub_data.extend_from_slice(&2u32.to_le_bytes()); // ref count (2 members/entry)
+    sub_data.extend_from_slice(&0x0000_0BEEu32.to_le_bytes()); // mesh hash
+    sub_data.extend_from_slice(&0x0100_0101u32.to_le_bytes()); // ref form id
+    sub_data.extend_from_slice(&0x0000_0BEEu32.to_le_bytes()); // its bake hash
+    // XPRI names a previs participant — must NOT land in the baked set.
     sub_data.extend_from_slice(b"XPRI");
     sub_data.extend_from_slice(&8u16.to_le_bytes());
-    sub_data.extend_from_slice(&0x0100_0101u32.to_le_bytes());
     sub_data.extend_from_slice(&0x0100_0102u32.to_le_bytes());
+    sub_data.extend_from_slice(&0x0100_0103u32.to_le_bytes());
 
     let mut buf = Vec::new();
     buf.extend_from_slice(b"CELL");
@@ -474,9 +487,31 @@ fn parse_cell_xpri_absorbed_refs_remap_to_global_space() {
     .unwrap();
 
     let cell = cells.get("dlcprecombineinterior").expect("CELL indexed");
-    assert!(cell.absorbed_refs.contains(&0x0200_0101));
-    assert!(cell.absorbed_refs.contains(&0x0200_0102));
-    assert!(!cell.absorbed_refs.contains(&0x0100_0101));
+    assert_eq!(
+        cell.precombined_mesh_hashes,
+        vec![0x0000_0BEE],
+        "the XCRI mesh half must decode",
+    );
+    assert_eq!(
+        cell.absorbed_ref_bakes,
+        vec![(0x0200_0101, 0x0000_0BEE)],
+        "the XCRI pair must remap its ref into global space and keep \
+         its bake hash un-remapped (it is a mesh key, not a FormID)",
+    );
+    assert!(
+        !cell
+            .absorbed_ref_bakes
+            .iter()
+            .any(|(fid, _)| *fid == 0x0100_0101),
+        "un-remapped local form id must not appear"
+    );
+    assert!(
+        !cell
+            .absorbed_ref_bakes
+            .iter()
+            .any(|(fid, _)| *fid == 0x0100_0102 || *fid == 0x0100_0103),
+        "XPRI entries are previs participants, not baked refs (#5484)"
+    );
 }
 
 /// Regression for #624 / SK-D6-NEW-02. Skyrim cells DO ship FULL —

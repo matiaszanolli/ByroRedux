@@ -66,14 +66,28 @@ pub(super) struct CellSubrecordFields {
     /// None and lets modded post-Oblivion cells still surface the
     /// override.
     pub(super) regional_color_override: Option<[u8; 3]>,
-    /// #1188 / #1220 — FO4+ PreCombined Mesh references. XCRI holds
-    /// (u32 mesh_count + u32 ref_count + N×u32 hashes + M×u32
-    /// absorbed-refr formids). XPRI holds the additional list of refr
-    /// formids absorbed by the precombines. Empirically decoded against
-    /// vanilla `DmndDugoutInn01` (form 0x00001E5D, 39 hashes / 962 XCRI
-    /// refs / 102 XPRI refs) — see the audit memory.
+    /// #1188 / #1220 / #5484 — FO4+ PreCombined Mesh references. XCRI
+    /// holds `u32 mesh_count + u32 ref_count + N×u32 mesh hashes +
+    /// (ref_count/2) × (ref FormID, combined-mesh hash) pairs` — xEdit's
+    /// `wbDefinitionsFO4.pas` counts both struct members in
+    /// `ref_count`, which is why the `8 + mc*4 + rc*4` size check
+    /// passes for the pair tail. XPRI is the disjoint previs
+    /// participant list and is deliberately not stored (see the XPRI
+    /// arm). Semantics established by the #5484 census over
+    /// `Fallout4.esm` + DLCs: XCRI refs are exactly the placements the
+    /// CK folded into the `_oc.nif` bakes (959,238 refs, 100%
+    /// STAT/SCOL; every pair's second member is one of the mesh hashes;
+    /// geometry probe: Switchboard 2,343/2,344 refs coincide with bake
+    /// instances), while XPRI refs are *not* baked (XCRI ∩ XPRI = 0;
+    /// probe: 0 XPRI refs coincide) — pre-fix the engine had the two
+    /// inverted, double-drawing every baked STAT/SCOL and deleting
+    /// ~9.9k XPRI statics.
     pub(super) precombined_mesh_hashes: Vec<u32>,
-    pub(super) absorbed_refs: std::collections::HashSet<u32>,
+    /// (remapped REFR form id, combined-mesh hash) pairs from the XCRI
+    /// tail. The hash keys into [`Self::precombined_mesh_hashes`], so a
+    /// consumer that knows which bakes actually loaded can un-skip only
+    /// the refs of a missing bake (#5484).
+    pub(super) absorbed_ref_bakes: Vec<(u32, u32)>,
 }
 
 impl CellSubrecordFields {
@@ -116,19 +130,20 @@ impl CellSubrecordFields {
             b"XCMO" => self.music_type_form = read_form_id(reader, &sub.data),
             // LTMP — lighting-template FormID (SK-D6-02 / #566).
             b"LTMP" => self.lighting_template_form = read_form_id(reader, &sub.data),
-            // #1188 / #1220 — XCRI: FO4+ PreCombined Mesh references.
+            // #1188 / #1220 / #5484 — XCRI: FO4+ PreCombined Mesh
+            // references.
             //   `u32 mesh_count + u32 ref_count
-            //    + mesh_count × u32 hashes
-            //    + ref_count × u32 visibility-group refs`
+            //    + mesh_count × u32 mesh hashes
+            //    + (ref_count / 2) × (u32 refr formid, u32 combined-mesh hash)`
             // For each hash, the precombined NIF file lives at
             // `meshes\precombined\<cell_fid:08x>_<hash:08x>_oc.nif`.
             //
-            // The `ref_count`-sized tail is the **visibility group** for
-            // the precombines — refs participating in the combined-cull
-            // bake. It is NOT "refs to skip individual spawn" (the Dmnd
-            // Dugout Inn first iteration regressed the bar / couch /
-            // lamps because we treated these as absorbed). Skip-placement
-            // is XPRI's job, below.
+            // The pair tail names the references the CK *combined* into
+            // those bakes, each keyed by its bake's hash — Switchboard:
+            // 2,344 pairs, 100% STAT/SCOL, every second member one of
+            // the 60 hashes, and every ref's DATA position coincides
+            // (< 0.01 u) with a decoded bake instance (#5484 probe).
+            // These are the refs to skip: the bake already draws them.
             b"XCRI" if sub.data.len() >= 8 => {
                 let mesh_count =
                     u32::from_le_bytes(sub.data[0..4].try_into().unwrap()) as usize;
@@ -154,31 +169,35 @@ impl CellSubrecordFields {
                         self.precombined_mesh_hashes.push(h);
                         off += 4;
                     }
-                    // We intentionally do NOT consume the ref_count tail
-                    // into `absorbed_refs`. See XPRI below for the
-                    // skip-placement source of truth.
+                    // xEdit counts both struct members in `ref_count`
+                    // (`wbCELLCombinedRefsCounter`), so entries = rc / 2.
+                    let entries = ref_count / 2;
+                    self.absorbed_ref_bakes.reserve(entries);
+                    for _ in 0..entries {
+                        let fid =
+                            u32::from_le_bytes(sub.data[off..off + 4].try_into().unwrap());
+                        let hash =
+                            u32::from_le_bytes(sub.data[off + 4..off + 8].try_into().unwrap());
+                        self.absorbed_ref_bakes
+                            .push((reader.remap_form_id(fid), hash));
+                        off += 8;
+                    }
                 }
             }
-            // #1188 / #1220 — XPRI: list of REFR formids absorbed into
-            // precombines (~100 entries for FO4 interiors; matches the
-            // architecture-only shell). For the STAT/SCOL subset the cell
-            // loader skips individual placement — their geometry is baked
-            // into the `_oc.nif` files referenced by
-            // `precombined_mesh_hashes`. Non-STAT/SCOL members (FURN,
-            // CONT, ACTI, TERM, MSTT — 141 on Switchboard alone, 21 769
-            // across 232 cells) are deliberately NOT skipped: whether the
-            // bake carries their geometry is unsettled (see
-            // `byroredux`'s `precombine_can_replace_record` for the
-            // measurement and the inconclusive mesh-name control),
-            // and suppressing wrongly deletes authored content. Format:
-            // pure `N × u32`.
-            b"XPRI" if sub.data.len().is_multiple_of(4) => {
-                self.absorbed_refs.reserve(sub.data.len() / 4);
-                for chunk in sub.data.as_chunks::<4>().0 {
-                    let fid = u32::from_le_bytes(*chunk);
-                    self.absorbed_refs.insert(reader.remap_form_id(fid));
-                }
-            }
+            // #5484 — XPRI ('PreVis Reference Index'): the *previs
+            // participant* list, NOT a baked-ref list. The census is
+            // unambiguous: XPRI is disjoint from XCRI (0 shared form ids
+            // across Fallout4.esm + every DLC) and its refs' positions do
+            // not coincide with any bake instance (Switchboard: STAT
+            // 0/33, CONT 0/41, FURN 0/27; #2699's own measurement found
+            // the XPRI meshes absent from the bakes and misread that as a
+            // failed control). Pre-fix the engine treated XPRI as the
+            // skip set, which double-drew every baked STAT/SCOL and
+            // deleted ~9.9k XPRI statics outright. The arm stays (pure
+            // `N × u32`, validated) so a future previs/visibility
+            // consumer has its anchor, but nothing is stored: these
+            // placements must spawn individually.
+            b"XPRI" if sub.data.len().is_multiple_of(4) => {}
             // #693 / O3-N-05 — XCMT pre-Skyrim music enum (Oblivion /
             // FO3 / FNV). 1-byte payload. Rare on exterior cells (most
             // use the worldspace default music) but pinned for

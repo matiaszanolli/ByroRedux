@@ -510,15 +510,15 @@ pub fn load_cell_with_masters(
     );
 
     // 3a. FO4+ PreCombined Mesh spawn (#1188). Run BEFORE REFR
-    // loading so the spawn count decides whether `cell.absorbed_refs`
-    // is honored. The shared-variant `_oc.nif` files are resolved via
+    // loading so the per-bake spawn set decides which of the cell's
+    // `absorbed_ref_bakes` are honored (#5484). The shared-variant `_oc.nif` files are resolved via
     // `Fallout4 - Geometry.csg` (M49 complete). If spawn succeeds,
     // the absorption gate suppresses per-REFR rendering of the original
     // architecture (which is flagged XPRI). Empty on non-FO4 cells
     // or when CSG resolution fails — fallback via the conditional
     // gate in load_cell_with_masters.
     let phase_started = Instant::now();
-    let (pc_spawned, _pc_misses) = super::precombined::spawn_precombined_meshes(
+    let (_pc_spawned, _pc_misses, baked_hashes) = super::precombined::spawn_precombined_meshes(
         cell,
         // Interior cells: cell origin IS the world origin, so the
         // bake's cell-local coords already are world coords. #1222.
@@ -611,10 +611,11 @@ pub fn load_cell_with_masters(
         }
     }
 
-    // 3b. Load placed references. The absorbed-REFR gate (honour
-    // `cell.absorbed_refs` only when the precombine actually spawned)
-    // lives in the shared helper so interior + exterior can't drift.
-    let absorbed = super::precombined::absorbed_refs_or_empty(&cell.absorbed_refs, pc_spawned);
+    // 3b. Load placed references. The absorbed-REFR gate (honour a ref's
+    // XCRI bake only when that bake actually spawned) lives in the shared
+    // helper so interior + exterior can't drift (#5484).
+    let absorbed =
+        super::precombined::effective_absorbed_refs(&cell.absorbed_ref_bakes, &baked_hashes);
     let phase_started = Instant::now();
     let result = load_references(
         &cell.references,
@@ -628,7 +629,7 @@ pub fn load_cell_with_masters(
         mat_provider,
         &cell.editor_id,
         &load_order,
-        absorbed,
+        &absorbed,
     );
     phases.references = phase_started.elapsed();
     let phase_started = Instant::now();
@@ -820,7 +821,9 @@ pub(crate) struct InteriorCellApplyJob {
     index: esm::records::EsmIndex,
     load_order: LoadOrder,
     cell_root: EntityId,
-    pc_spawned: usize,
+    /// #5484 — hashes whose `_oc.nif` bake drew geometry. Keys
+    /// `CellData::absorbed_ref_bakes` at the reference gate.
+    baked_hashes: Vec<u32>,
     references: Option<Box<ReferenceLoadJob>>,
     phases: CellLoadPhaseTimings,
 }
@@ -916,7 +919,7 @@ impl InteriorCellApplyJob {
         let prefix_first = world.next_entity_id();
 
         let phase_started = Instant::now();
-        let (pc_spawned, _pc_misses) = super::precombined::spawn_precombined_meshes(
+        let (_pc_spawned, _pc_misses, baked_hashes) = super::precombined::spawn_precombined_meshes(
             cell,
             Vec3::ZERO,
             world,
@@ -966,7 +969,7 @@ impl InteriorCellApplyJob {
             index,
             load_order,
             cell_root,
-            pc_spawned,
+            baked_hashes,
             references: None,
             phases,
         })
@@ -990,7 +993,7 @@ impl InteriorCellApplyJob {
             .get(&cell_key)
             .expect("interior cell existed when its apply job began");
         let absorbed =
-            super::precombined::absorbed_refs_or_empty(&cell.absorbed_refs, self.pc_spawned);
+            super::precombined::effective_absorbed_refs(&cell.absorbed_ref_bakes, &self.baked_hashes);
         let first_entity = world.next_entity_id();
         let phase_started = Instant::now();
         let progress = super::references::load_references_budgeted(
@@ -1005,7 +1008,7 @@ impl InteriorCellApplyJob {
             mat_provider,
             &self.cell_editor_id,
             &self.load_order,
-            absorbed,
+            &absorbed,
             self.references.take(),
             budget,
         );

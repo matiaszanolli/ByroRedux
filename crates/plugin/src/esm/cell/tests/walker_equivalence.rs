@@ -21,13 +21,15 @@ fn shared_subs() -> Vec<(&'static [u8; 4], Vec<u8>)> {
     forms3.extend(form(0x0000_0201));
     forms3.extend(form(0x0000_0202));
     forms3.extend(form(0x0000_0203));
-    // XCRI: mesh_count=2, ref_count=1, 2 hashes + 1 visibility-group ref.
+    // XCRI: mesh_count=2, ref_count=2 (1 entry × 2 members per xEdit),
+    // 2 hashes + 1 (ref, bake-hash) pair.
     let mut xcri = Vec::new();
     xcri.extend(form(2));
-    xcri.extend(form(1));
+    xcri.extend(form(2));
     xcri.extend(form(0x0000_AAAA));
     xcri.extend(form(0x0000_BBBB));
-    xcri.extend(form(0x0000_CCCC));
+    xcri.extend(form(0x0000_0301));
+    xcri.extend(form(0x0000_AAAA));
     let mut xpri = Vec::new();
     xpri.extend(form(0x0000_0301));
     xpri.extend(form(0x0000_0302));
@@ -147,11 +149,8 @@ fn interior_and_exterior_walkers_decode_the_same_shared_sub_records_identically(
         "precombine hashes must decode identically on both walkers"
     );
     assert_eq!(interior.precombined_mesh_hashes, vec![0xAAAA, 0xBBBB]);
-    assert_eq!(interior.absorbed_refs, exterior.absorbed_refs);
-    assert_eq!(
-        interior.absorbed_refs,
-        [0x0301, 0x0302].into_iter().collect::<std::collections::HashSet<_>>()
-    );
+    assert_eq!(interior.absorbed_ref_bakes, exterior.absorbed_ref_bakes);
+    assert_eq!(interior.absorbed_ref_bakes, vec![(0x0301, 0xAAAA)]);
     // Sanity: the shared decode actually fired (a silently-skipped list
     // would make the equivalence asserts vacuously true).
     assert_eq!(exterior.ownership.as_ref().unwrap().owner_form_id, 0x109);

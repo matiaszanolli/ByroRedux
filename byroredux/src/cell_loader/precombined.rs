@@ -1,14 +1,15 @@
 //! FO4+ PreCombined Mesh loader (#1188).
 //!
 //! Bethesda's CK / GECK bakes individual architecture STAT placements
-//! (walls, floors, ceilings, ductwork, etc.) — and, per XPRI, at least some
-//! non-STAT placements whose exact membership is unsettled (#2699; see
-//! `precombine_can_replace_record` for the measurement and what it did not
-//! resolve) — into a single
+//! (walls, floors, ceilings, ductwork, etc.) — and, per the XCRI pair tail,
+//! exactly the STAT/SCOL placements and nothing else (#5484's census: 100%
+//! of 959,238 refs across Fallout4.esm + DLCs; the #2699 "is the furniture
+//! baked?" question is closed — it is not, XPRI is the disjoint previs
+//! participant list) — into a single
 //! `meshes\precombined\<cell_formid:08x>_<hash:08x>_oc.nif` file per
 //! cell-tile. Those individual REFRs are then **absorbed** — the cell
-//! record's REFR list still carries them, but with the XPRI sub-record
-//! flagging them as precombined. The runtime spawns the combined NIF
+//! record's REFR list still carries them, with the XCRI pair tail flagging
+//! each one by its bake's hash. The runtime spawns the combined NIF
 //! instead.
 //!
 //! **Current state** (M49 — complete): this loader reads each `_oc.nif`
@@ -25,8 +26,8 @@
 //! `RenderLayer::Architecture`. Every populated LOD band is decoded (#4234;
 //! see `fo4-csg-format.md` §"Triangles and LOD selection").
 //! Absorption gate in [`super::load::load_cell_with_masters`] (conditional on
-//! spawn count) honors the cell's `absorbed_refs` list, suppressing per-REFR
-//! rendering of baked REFRs.
+//! which bakes spawned) honors the cell's `absorbed_ref_bakes` list,
+//! suppressing per-REFR rendering of baked REFRs.
 //!
 //! Deferred sub-items (M49 Stage B):
 //! - Collision — the sibling file is `<cell_formid:08x>_physics.nif`
@@ -103,29 +104,33 @@ use crate::asset_provider::{MaterialProvider, TextureProvider};
 const _: () =
     assert!(byroredux_bsa::UVD_CELL_UNITS == byroredux_core::math::coord::EXTERIOR_CELL_UNITS);
 
-/// Resolve the effective absorbed-REFR set for a cell load's per-REFR pass.
+/// Resolve the effective absorbed-REFR set for a cell load's per-REFR pass
+/// (#5484).
 ///
-/// When the precombine actually spawned geometry (`pc_spawned > 0`), the
-/// cell's `absorbed_refs` list suppresses per-REFR rendering of the baked
-/// REFRs (the combined NIF already carries them). When nothing spawned,
-/// those XPRI-flagged REFRs are the only carrier of the architecture and
-/// must load normally, so the effective set is empty — the same fallback
-/// real Bethesda games take under `bUseCombinedObjects=0` (#1188).
+/// `bakes` is the cell's XCRI `(ref, bake hash)` pair list;
+/// `baked_hashes` is what the precombine spawn actually loaded and drew
+/// from. A REFR is suppressed only when *its own* bake loaded — the hash
+/// key is what lets one missing `_oc.nif` un-skip exactly its own refs
+/// instead of the pre-#5484 all-or-nothing `pc_spawned > 0` gate. When
+/// nothing spawned, the baked REFRs are the only carrier of the
+/// architecture and must load normally — the same fallback real Bethesda
+/// games take under `bUseCombinedObjects=0` (#1188).
 ///
 /// Shared by the interior (`load.rs`) and exterior (`exterior.rs`) loaders
-/// so the gate cannot drift between them (TD2-104 / #2063). The empty set
-/// is a process-lifetime singleton, so the borrow is valid for any caller.
-pub(crate) fn absorbed_refs_or_empty(
-    absorbed_refs: &std::collections::HashSet<u32>,
-    pc_spawned: usize,
-) -> &std::collections::HashSet<u32> {
-    static EMPTY_ABSORBED: std::sync::OnceLock<std::collections::HashSet<u32>> =
-        std::sync::OnceLock::new();
-    if pc_spawned > 0 {
-        absorbed_refs
-    } else {
-        EMPTY_ABSORBED.get_or_init(std::collections::HashSet::new)
+/// so the gate cannot drift between them (TD2-104 / #2063).
+pub(crate) fn effective_absorbed_refs(
+    bakes: &[(u32, u32)],
+    baked_hashes: &[u32],
+) -> std::collections::HashSet<u32> {
+    if baked_hashes.is_empty() {
+        return std::collections::HashSet::new();
     }
+    let baked: std::collections::HashSet<u32> = baked_hashes.iter().copied().collect();
+    bakes
+        .iter()
+        .filter(|(_, hash)| baked.contains(hash))
+        .map(|(fid, _)| *fid)
+        .collect()
 }
 
 /// Resumable cursor over one cell's precombined hashes.
@@ -158,6 +163,10 @@ pub(super) struct PrecombinedSpawnJob {
     /// job cost the main thread in total, not only its worst hash.
     prepare_total: Duration,
     spawn_total: Duration,
+    /// #5484 — hashes whose bake loaded and drew geometry. Feeds
+    /// [`effective_absorbed_refs`], so only these hashes' XCRI refs are
+    /// suppressed in the per-REFR pass.
+    baked_hashes: Vec<u32>,
     /// Main-thread texture archive reads charged while this job ran.
     texture_extract: crate::asset_provider::ResolveExtractTotals,
 }
@@ -183,7 +192,13 @@ struct CsgRouting {
 #[allow(clippy::large_enum_variant)]
 pub(super) enum PrecombinedSpawnProgress {
     Pending(PrecombinedSpawnJob),
-    Complete { spawned: usize, misses: usize },
+    Complete {
+        spawned: usize,
+        misses: usize,
+        /// #5484 — the hashes that actually drew geometry, keyed the same
+        /// as the cell's `absorbed_ref_bakes` pair list.
+        baked_hashes: Vec<u32>,
+    },
 }
 
 impl PrecombinedSpawnJob {
@@ -221,6 +236,7 @@ impl PrecombinedSpawnJob {
             max_spawn_group: Duration::ZERO,
             prepare_total: Duration::ZERO,
             spawn_total: Duration::ZERO,
+            baked_hashes: Vec::new(),
             texture_extract: Default::default(),
         })
     }
@@ -512,6 +528,12 @@ impl PrecombinedSpawnJob {
                 self.max_total_hash = hash;
             }
             self.spawned += count;
+            // #5484 — a bake that drew nothing (zero-mesh `_oc.nif`,
+            // CSG-deferred fallback) is not a carrier of its refs'
+            // geometry; only a spawning bake suppresses them.
+            if count > 0 {
+                self.baked_hashes.push(hash);
+            }
             self.next_hash += 1;
         }
 
@@ -555,6 +577,7 @@ impl PrecombinedSpawnJob {
         PrecombinedSpawnProgress::Complete {
             spawned: self.spawned,
             misses: self.misses,
+            baked_hashes: self.baked_hashes,
         }
     }
 
@@ -659,9 +682,11 @@ pub(super) fn spawn_precombined_meshes(
     mut mat_provider: Option<&mut MaterialProvider>,
     plugin_path: &str,
     load_order_paths: &[&str],
-) -> (usize, usize) {
+    // (entities spawned, bake misses, hashes that drew geometry) — the
+    // third element keys `CellData::absorbed_ref_bakes` (#5484).
+) -> (usize, usize, Vec<u32>) {
     let Some(mut job) = PrecombinedSpawnJob::new(cell, plugin_path, load_order_paths) else {
-        return (0, 0);
+        return (0, 0, Vec::new());
     };
     let mut budget = FrameTimeBudget::unlimited();
     loop {
@@ -674,8 +699,12 @@ pub(super) fn spawn_precombined_meshes(
             mat_provider.as_deref_mut(),
             &mut budget,
         ) {
-            PrecombinedSpawnProgress::Complete { spawned, misses } => {
-                return (spawned, misses);
+            PrecombinedSpawnProgress::Complete {
+                spawned,
+                misses,
+                baked_hashes,
+            } => {
+                return (spawned, misses, baked_hashes);
             }
             PrecombinedSpawnProgress::Pending(next) => {
                 // Only finite exterior budgets apply the BLAS mesh-count cap;
@@ -1030,6 +1059,39 @@ mod tests {
     use super::*;
     use byroredux_bsa::Ba2Archive;
     use std::path::PathBuf;
+
+    /// #5484 — the absorption gate must un-skip per bake, not per cell.
+    ///
+    /// Pre-fix the gate was all-or-nothing (`pc_spawned > 0` ⇒ every
+    /// absorbed ref skipped), so one missing `_oc.nif` silently deleted
+    /// every baked REFR of the whole cell — the refs of the *missing*
+    /// bake most of all. The XCRI pair hash is the key that scopes the
+    /// skip to the bakes that actually drew geometry.
+    #[test]
+    fn effective_absorbed_refs_un_skips_only_the_missing_bakes_refs() {
+        let bakes = [
+            (0x0100_0001u32, 0xAAAAu32),
+            (0x0100_0002, 0xAAAA),
+            (0x0100_0003, 0xBBBB), // its bake is missing
+            (0x0100_0004, 0xCCCC),
+        ];
+
+        // Every bake loaded: all refs suppressed.
+        let all = effective_absorbed_refs(&bakes, &[0xAAAA, 0xBBBB, 0xCCCC]);
+        assert_eq!(all.len(), 4);
+
+        // One bake missing: only that bake's refs come back.
+        let partial = effective_absorbed_refs(&bakes, &[0xAAAA, 0xCCCC]);
+        assert!(!partial.contains(&0x0100_0003), "missing bake's ref must spawn");
+        assert!(partial.contains(&0x0100_0001));
+        assert!(partial.contains(&0x0100_0002));
+        assert!(partial.contains(&0x0100_0004));
+        assert_eq!(partial.len(), 3);
+
+        // Nothing baked (non-FO4 / CSG missing): the baked REFRs are the
+        // only carrier — the `bUseCombinedObjects=0` fallback (#1188).
+        assert!(effective_absorbed_refs(&bakes, &[]).is_empty());
+    }
 
     /// #5101 — `merge_precombine_materials` (the #1619 blend restore,
     /// factored out of the spawn job by e593770f0) had no test on either of

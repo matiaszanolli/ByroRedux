@@ -477,7 +477,7 @@ fn parse_cell_group_inner(
                     ownership_global: _,
                     regional_color_override,
                     precombined_mesh_hashes,
-                    absorbed_refs,
+                    absorbed_ref_bakes,
                 } = fields;
 
                 if is_interior {
@@ -510,7 +510,7 @@ fn parse_cell_group_inner(
                             ownership,
                             regional_color_override,
                             precombined_mesh_hashes,
-                            absorbed_refs,
+                            absorbed_ref_bakes,
                             navmeshes: Vec::new(),
                             pathgrids: Vec::new(),
                             deleted_refs: Vec::new(),

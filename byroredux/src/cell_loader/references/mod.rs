@@ -168,38 +168,14 @@ pub(crate) const RT_ABSOLUTE_PRECISION_CEILING: f32 = 1_048_576.0; // 2^20
 /// preserve, so dropping the REFR costs their gameplay identity. SCOL is also
 /// render-only once expanded into its baked static geometry.
 ///
-/// # The unsettled half (#2699)
-///
-/// This gate keeps the entity. It does **not** suppress the entity's mesh, and
-/// whether it should is an open question this comment must not pretend to
-/// answer — an earlier revision claimed dropping the REFR "drops both their
-/// visuals and their gameplay identity", which contradicted
-/// `esm/cell/walkers.rs`'s XPRI note and this crate's own
-/// `cell_loader/precombined.rs` header. Both cannot be right, and nothing here
-/// established which is.
-///
-/// Measured on vanilla `Fallout4.esm` (2026-09-08), so the scale is not in
-/// doubt even though the contract is:
-/// - `Switchboard`: 174 absorbed REFRs, **141** non-STAT/SCOL — the figure the
-///   previous comment quoted, confirmed.
-/// - **232** interior cells carry at least one non-STAT/SCOL absorbed REFR,
-///   **21 769** in total. `InstituteConcourse` alone has 571, `Vault75` 477,
-///   `MedTekResearch01` 378. If these are duplicated geometry, it is a
-///   whole-game issue, not one cell's.
-///
-/// What was tried and did NOT settle it: comparing each absorbed REFR's base
-/// mesh name against the `CLONE <mesh>` node names inside the cell's 60
-/// `_oc.nif` bakes. Zero of the 141 non-STAT meshes appear there — but zero of
-/// the 5 absorbed STAT meshes do either, and those are the ones the bake is
-/// known to contain. The control fails, so the comparison is inconclusive in
-/// both directions rather than evidence of absence. Settling it needs
-/// per-object identity the `.csg`/`_oc.nif` pair does not carry, or a visual
-/// A/B of one cell.
-///
-/// Until then the renderable is deliberately left in place: spawning a
-/// duplicate mesh is a visible artefact, while suppressing one that is not
-/// actually baked silently deletes authored furniture from 232 cells, and
-/// `cargo test` cannot see either outcome.
+/// #2699 is closed by the #5484 census: the skip set is now the XCRI pair
+/// tail, and it is 100% STAT/SCOL (959,238 refs across Fallout4.esm + DLCs;
+/// XCRI ∩ XPRI = 0). Interactive types never enter it, so the "is the
+/// furniture baked?" question this gate used to hedge — and the pre-#5484
+/// XPRI-fed skip set that DID suppress 21,769 interactive REFRs' statics
+/// wrongly — cannot arise from this data. The type filter stays as defence
+/// in depth: a mod hand-authoring an XCRI entry for a FURN keeps its
+/// runtime identity and merely double-draws.
 fn precombine_can_replace_record(record_type: Option<byroredux_plugin::RecordType>) -> bool {
     matches!(
         record_type,
@@ -273,12 +249,14 @@ pub(super) fn load_references(
     mat_provider: Option<&mut MaterialProvider>,
     label: &str,
     load_order: &LoadOrder,
-    // #1188 — FO4+ PreCombined absorbed REFR form IDs. Skip placement
-    // for any REFR in this set: the CK's bake tool already folded
-    // its geometry into a `meshes\precombined\<cell>_<hash>_oc.nif`
-    // file that the precombined spawn step (later in this load) will
-    // bring in. Spawning here would produce double geometry +
-    // z-fighting on every wall / floor / ceiling.
+    // #1188 / #5484 — FO4+ PreCombined baked REFR form IDs (the XCRI
+    // pair refs whose `_oc.nif` bake actually spawned; see
+    // `effective_absorbed_refs`). Skip placement for any REFR in this
+    // set: the CK's bake tool already folded its geometry into a
+    // `meshes\precombined\<cell>_<hash>_oc.nif` file that the
+    // precombined spawn step (earlier in this load) brought in.
+    // Spawning here would produce double geometry + z-fighting on
+    // every wall / floor / ceiling.
     absorbed_refs: &std::collections::HashSet<u32>,
 ) -> RefLoadResult {
     let mut budget = FrameTimeBudget::unlimited();
@@ -408,10 +386,10 @@ pub(super) fn load_references_budgeted(
         // comment on `RefLoadResult`/`CellLoadResult`.
         let door_pos: Option<Vec3> = None;
         let enable_skipped = 0u32;
-        // #1188 — count REFRs skipped because the CK absorbed them into a
+        // #1188 — count REFRs skipped because the CK baked them into a
         // precombined `_oc.nif`. Surfaced in the end-of-cell summary so an
         // operator can spot a missing precombined-spawn step (would manifest
-        // as "absorbed=N but precombined_spawned=0" pair below).
+        // as "absorbed=N but baked=0" in the summary below).
         let absorbed_skipped = 0u32;
         let absorbed_interactive_retained = 0u32;
         // `npc_pending` was the Phase 0/2 telemetry for pre-baked-FaceGen
@@ -533,11 +511,11 @@ pub(super) fn load_references_budgeted(
             }
         }
 
-        // #1188 — FO4+ PreCombined absorption skip. The bake tool
-        // already folded this REFR's geometry into one of the
-        // `meshes\precombined\<cell>_<hash>_oc.nif` files; the
-        // precombined-spawn pass will bring those in as single
-        // entities. Filtering here prevents double geometry.
+        // #1188 / #5484 — FO4+ PreCombined absorption skip. This REFR's
+        // XCRI pair says the bake tool folded its geometry into the
+        // `_oc.nif` for that pair's hash, and the precombined-spawn pass
+        // (earlier in this load) confirmed that bake drew geometry.
+        // Filtering here prevents double geometry.
         if absorbed_refs.contains(&placed_ref.form_id) {
             let record_type = index
                 .statics

@@ -1619,7 +1619,7 @@ mod tests {
             ownership: None,
             regional_color_override: None,
             precombined_mesh_hashes: Vec::new(),
-            absorbed_refs: std::collections::HashSet::new(),
+            absorbed_ref_bakes: Vec::new(),
             navmeshes: Vec::new(),
             pathgrids: Vec::new(),
             deleted_refs: Vec::new(),

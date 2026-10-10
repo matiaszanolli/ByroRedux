@@ -93,7 +93,7 @@ fn cell(editor_id: &str, references: Vec<PlacedRef>) -> CellData {
         regions: Vec::new(),
         regional_color_override: None,
         precombined_mesh_hashes: Vec::new(),
-        absorbed_refs: std::collections::HashSet::new(),
+        absorbed_ref_bakes: Vec::new(),
         lighting_template_form: None,
         ownership: None,
         navmeshes: Vec::new(),

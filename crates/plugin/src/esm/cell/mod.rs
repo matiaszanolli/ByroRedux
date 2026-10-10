@@ -315,24 +315,25 @@ pub struct CellData {
     /// pre-FO4 cells and FO4 cells that don't use the precombined
     /// optimization (debug cells, some mod content).
     ///
-    /// XCRI format (#1188, empirically decoded against vanilla
-    /// `DmndDugoutInn01`): `u32 mesh_hash_count + u32 absorbed_refr_count
-    /// + N × u32 hashes + M × u32 refr_form_ids`. The hashes here are
-    /// the first half; the REFR list is unioned into [`absorbed_refs`].
+    /// XCRI format (#1188 / #5484, per xEdit `wbDefinitionsFO4.pas`):
+    /// `u32 mesh_count + u32 ref_count + N × u32 hashes +
+    /// (ref_count / 2) × (u32 refr formid, u32 combined-mesh hash)`.
+    /// The hashes here are the first half; the pair tail is
+    /// [`absorbed_ref_bakes`].
     pub precombined_mesh_hashes: Vec<u32>,
-    /// FO4+ REFRs absorbed into the cell's precombined meshes —
-    /// union of the XCRI ref-list (962 entries on Dugout Inn) and the
-    /// XPRI sub-record (additional 102 form IDs). For the STAT/SCOL
-    /// subset the cell loader skips individual placement (their
-    /// geometry is baked into the `_oc.nif` files referenced by
-    /// [`precombined_mesh_hashes`]; spawning it individually would
-    /// double-draw and z-fight). Non-STAT/SCOL members are retained
-    /// and spawned in full: whether the bake carries their geometry is
-    /// unsettled (#2699 — see `byroredux`'s `precombine_can_replace_record`
-    /// for the measurement and the inconclusive mesh-name control), and
-    /// suppressing wrongly would delete authored furniture from 232
-    /// cells. Empty for non-FO4 cells. #1188.
-    pub absorbed_refs: std::collections::HashSet<u32>,
+    /// FO4+ REFRs the CK combined into the cell's precombined meshes —
+    /// the XCRI pair tail, as (remapped REFR form id, combined-mesh
+    /// hash). For the STAT/SCOL subset the cell loader skips individual
+    /// placement *when that ref's bake actually spawned* (the hash key
+    /// is what lets one missing `_oc.nif` un-skip only its own refs,
+    /// #5484); spawning a baked ref individually would double-draw and
+    /// z-fight. Non-STAT/SCOL types never appear in XCRI (the #5484
+    /// census: 959,238 refs across Fallout4.esm + DLCs, 100% STAT/SCOL),
+    /// so the #2699 "is the furniture baked?" question is closed: it is
+    /// not — XPRI is the disjoint previs participant list and those
+    /// placements always spawn individually (see the XPRI arm in
+    /// `helpers.rs`). Empty for non-FO4 cells. #1188 / #5484.
+    pub absorbed_ref_bakes: Vec<(u32, u32)>,
     /// Per-cell navmesh records (`NAVM`) collected from the cell's
     /// `Cell Persistent Children` (group_type 8) and `Cell Temporary
     /// Children` (group_type 9) GRUPs — both reached through the type-6
@@ -363,7 +364,7 @@ pub struct CellData {
     /// override round that produced it (a later plugin re-declaring the
     /// same FormID as a live REFR is a legitimate un-delete, not a bug),
     /// so `merge_cell_override` deliberately does NOT extend it forward
-    /// the way it does `absorbed_refs`. Consumed by
+    /// the way it does `absorbed_ref_bakes`. Consumed by
     /// `merge_placed_references`, which removes any matching FormID from
     /// the base cell's inherited `references` before folding this
     /// plugin's own additions/changes in. Empty for a cell no plugin in
@@ -402,7 +403,7 @@ pub struct PlacedRef {
     /// Distinct from [`base_form_id`] (which is the STAT / FURN /
     /// LIGH base record this REFR points at). Used by the FO4+
     /// PreCombined Mesh filter (#1188) to skip REFRs absorbed into
-    /// `_oc.nif` files; the absorbed-refr list in `CellData::absorbed_refs`
+    /// `_oc.nif` files; the baked-ref list in `CellData::absorbed_ref_bakes`
     /// is keyed on this field, NOT [`base_form_id`]. Defaults to 0
     /// on legacy fixtures that pre-date the field.
     pub form_id: u32,
@@ -1538,8 +1539,8 @@ fn merge_cell_override(base: &CellData, over: &mut CellData) {
         over.precombined_mesh_hashes
             .clone_from(&base.precombined_mesh_hashes);
     }
-    over.absorbed_refs
-        .extend(base.absorbed_refs.iter().copied());
+    over.absorbed_ref_bakes
+        .extend(base.absorbed_ref_bakes.iter().copied());
     merge_navmeshes(&base.navmeshes, &mut over.navmeshes);
 }
 
