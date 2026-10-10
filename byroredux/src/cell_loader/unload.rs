@@ -3,7 +3,7 @@
 use byroredux_core::ecs::components::{CellRoot, Children, Inventory, ItemInstanceId, Parent};
 use byroredux_core::ecs::resources::ItemInstancePool;
 use byroredux_core::ecs::storage::EntityId;
-use byroredux_core::ecs::{AnimatedTextureFlip, MeshHandle, TextureHandle, World};
+use byroredux_core::ecs::{ActiveCamera, AnimatedTextureFlip, MeshHandle, TextureHandle, World};
 use byroredux_renderer::VulkanContext;
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
@@ -47,6 +47,45 @@ fn cinematic_retained_entities(world: &World) -> HashSet<EntityId> {
         }
     }
     retained
+}
+
+/// #5483 defence in depth — the player rig must never be a cell-teardown
+/// victim, whatever stamped it into a cell's range.
+///
+/// The player body is intentionally not cell-owned (see `PlayerEntity`'s
+/// doc): it and the camera survive live cell reloads by design. A stamp
+/// producer that wrongly adopts them (the pre-#5483 persistent-apply
+/// cursor was the live one; #5379's cinematic re-adoption another) would
+/// otherwise have `drain_cell_victims` hand them to the despawn batch,
+/// and `PlayerEntity` / `ActiveCamera` / `PlayerBodyRootEntity` would
+/// name dead ids for the rest of the session. Same shape as
+/// [`cinematic_retained_entities`]: the set is tiny and only consulted
+/// when non-empty.
+fn player_owned_entities(world: &World) -> HashSet<EntityId> {
+    let mut protected = HashSet::new();
+    if let Some(player) = world.try_resource::<crate::systems::PlayerEntity>() {
+        if let Some(entity) = player.0 {
+            protected.insert(entity);
+        }
+    }
+    if let Some(camera) = world.try_resource::<ActiveCamera>() {
+        protected.insert(camera.0);
+    }
+    if let Some(body) = world.try_resource::<crate::player_body::PlayerBodyRootEntity>() {
+        if let Some(root) = body.0 {
+            // Cycle-safe subtree walk, matching `cinematic_retained_entities`.
+            let mut stack = vec![root];
+            while let Some(entity) = stack.pop() {
+                if !protected.insert(entity) {
+                    continue;
+                }
+                if let Some(row) = world.get::<Children>(entity) {
+                    stack.extend(row.0.iter().copied());
+                }
+            }
+        }
+    }
+    protected
 }
 
 /// Drop every live `ActorCinematicState` / `HorseTetherState` row, emptying
@@ -229,7 +268,8 @@ impl UnloadPhaseTimings {
 #[tracing::instrument(name = "unload_cell", skip_all, fields(cell_root = ?cell_root))]
 pub fn unload_cell(world: &mut World, ctx: &mut VulkanContext, cell_root: EntityId) {
     let retained = cinematic_retained_entities(world);
-    let _ = unload_cell_inner(world, ctx, cell_root, &retained);
+    let protected = player_owned_entities(world);
+    let _ = unload_cell_inner(world, ctx, cell_root, &retained, &protected);
     let _ = finish_unload_batch(world, ctx);
 }
 
@@ -240,11 +280,12 @@ pub fn unload_cell(world: &mut World, ctx: &mut VulkanContext, cell_root: Entity
 /// final victim set. Exterior hysteresis normally evicts three cells at once;
 /// repeating those global passes per cell only multiplies the boundary hitch.
 ///
-/// The cinematic-retention set (see [`cinematic_retained_entities`]) is a
-/// whole-world property that can't change across this batch's roots, so it
-/// is computed once here — not once per root — per #3690. What each root
-/// does with it (strip `CellRoot` only from *its own* retained victims,
-/// #3254) still happens per root, inside [`unload_cell_inner`].
+/// The cinematic-retention set (see [`cinematic_retained_entities`]) and the
+/// #5483 player-protection set (see [`player_owned_entities`]) are
+/// whole-world properties that can't change across this batch's roots, so
+/// they are computed once here — not once per root — per #3690. What each
+/// root does with them (strip `CellRoot` only from *its own* retained
+/// victims, #3254) still happens per root, inside [`unload_cell_inner`].
 #[tracing::instrument(name = "unload_cells", skip_all, fields(cell_count = cell_roots.len()))]
 pub fn unload_cells(
     world: &mut World,
@@ -257,9 +298,10 @@ pub fn unload_cells(
     }
     let phase_started = Instant::now();
     let retained = cinematic_retained_entities(world);
+    let protected = player_owned_entities(world);
     timings.ownership_index = phase_started.elapsed();
     for &cell_root in cell_roots {
-        timings.absorb(unload_cell_inner(world, ctx, cell_root, &retained));
+        timings.absorb(unload_cell_inner(world, ctx, cell_root, &retained, &protected));
     }
     timings.finalization = finish_unload_batch(world, ctx);
     timings
@@ -306,11 +348,18 @@ pub(super) fn drain_cell_victims(world: &mut World, cell_root: EntityId) -> Vec<
 /// compute it once per batch, not once per cell (#3690); applying it —
 /// via [`strip_retained_cell_root`], scoped to each cell's own victims
 /// (#3254) — still happens once per root, here.
+///
+/// `protected`: the #5483 player-protection set (see
+/// [`player_owned_entities`]), same batch-once discipline. A victim in it
+/// is released from cell ownership and spared from the despawn batch, with
+/// a warn naming it — the player rig landing in a victim list is always a
+/// producer bug, and the warn is how the next one gets found.
 fn unload_cell_inner(
     world: &mut World,
     ctx: &mut VulkanContext,
     cell_root: EntityId,
     retained: &HashSet<EntityId>,
+    protected: &HashSet<EntityId>,
 ) -> UnloadPhaseTimings {
     let mut timings = UnloadPhaseTimings::default();
     let phase_started = Instant::now();
@@ -328,6 +377,22 @@ fn unload_cell_inner(
         // was wrong.
         strip_retained_cell_root(world, &victims, retained);
         victims.retain(|entity| !retained.contains(entity));
+    }
+    if !protected.is_empty() {
+        // #5483 — strip the wrong CellRoot off the spared victims so the
+        // ownership layer heals too (GetInCell resolves through it), not
+        // just the despawn batch.
+        strip_retained_cell_root(world, &victims, protected);
+        let before = victims.len();
+        victims.retain(|entity| !protected.contains(entity));
+        if victims.len() != before {
+            log::warn!(
+                "Cell unload refused {} player-owned victim(s) stamped into cell_root {} — \
+                 the player/camera survived, but a stamp producer claimed them (#5483)",
+                before - victims.len(),
+                cell_root,
+            );
+        }
     }
     timings.ownership_index = phase_started.elapsed();
 
@@ -1444,6 +1509,42 @@ mod victim_drain_tests {
             !world.resource::<CellRootIndex>().map.contains_key(&root),
             "the drain must take the entry, not copy it",
         );
+    }
+
+    /// #5483 — the player-protection set the unload batch refuses to
+    /// despawn must cover the three process-lifetime pointers: the
+    /// `PlayerEntity` actor, the `ActiveCamera`, and the whole
+    /// `PlayerBodyRootEntity` subtree (nested children included), and it
+    /// must be empty in a world that registers none of them (the common
+    /// fixture shape, so the guard is free).
+    #[test]
+    fn player_owned_entities_covers_the_rig_and_its_subtree() {
+        use byroredux_core::ecs::components::{ActiveCamera, Children};
+        use crate::systems::PlayerEntity;
+        use crate::player_body::PlayerBodyRootEntity;
+
+        let bare = World::new();
+        assert!(
+            player_owned_entities(&bare).is_empty(),
+            "no player resources registered — the guard must cost nothing",
+        );
+
+        let mut world = World::new();
+        let player = world.spawn();
+        let camera = world.spawn();
+        let body_root = world.spawn();
+        let body_part = world.spawn();
+        let body_leaf = world.spawn();
+        world.insert(body_root, Children(vec![body_part]));
+        world.insert(body_part, Children(vec![body_leaf]));
+        world.insert_resource(PlayerEntity(Some(player)));
+        world.insert_resource(ActiveCamera(camera));
+        world.insert_resource(PlayerBodyRootEntity(Some(body_root)));
+
+        let protected = player_owned_entities(&world);
+        for expected in [player, camera, body_root, body_part, body_leaf] {
+            assert!(protected.contains(&expected), "{expected} must be protected");
+        }
     }
 
     /// An unregistered resource or an untracked cell yields an empty set

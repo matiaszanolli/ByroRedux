@@ -1086,12 +1086,12 @@ impl ApplicationHandler for App {
         // menu's canonical apply_action on the main thread.
         crate::inventory::drain_pending_inventory_actions(&mut self.world);
 
-        // Persistent-cell apply owns a cross-frame entity-range cursor;
-        // don't let it claim appearance entities belonging to another cell.
-        if self.interior_transition.is_none()
-            && !self.loading_screen.active()
-            && self.streaming.as_ref().is_none_or(|stream| stream.persistent_apply.is_none())
-        {
+        // Not while a transition/loading screen is remaking the scene —
+        // mid-life appearance imports would race the teardown. (A
+        // persistent-cell apply in flight is no longer a reason to pause:
+        // #5483 reseeded its stamp cursor per advance, so it can no
+        // longer claim appearance entities belonging to another cell.)
+        if self.interior_transition.is_none() && !self.loading_screen.active() {
             if let Some(ctx) = self.renderer.as_mut() {
                 self.loot_appearance_loader.step(&mut self.world, ctx, &mut self.appearance_providers);
                 self.gear_import_loader.step(&mut self.world, ctx, &mut self.appearance_providers);

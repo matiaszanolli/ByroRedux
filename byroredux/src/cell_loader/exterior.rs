@@ -220,8 +220,15 @@ pub(crate) struct PersistentCellApplyJob {
     /// The sibling [`ExteriorCellApplyJob`] never had the bug: it takes a
     /// fresh `world.next_entity_id()` at the top of each work unit.
     ///
-    /// Seeded at construction rather than at first `advance` so entities
-    /// spawned between the two are still covered by the first stamp.
+    /// #5483 — the cursor is *reseeded* to `world.next_entity_id()` at
+    /// the top of every `advance` ([`Self::begin_advance`]), matching
+    /// that sibling's discipline. Within one `advance` call only this
+    /// job's own loaders spawn, so stamps cover exactly what the job
+    /// created. A construction-time seed (the pre-#5483 shape) instead
+    /// spanned every inter-frame gap: in `ForegroundFirst` boot the job
+    /// sits un-advanced while the bootstrap spawns the arrival cell, the
+    /// camera and the player, and the first stamp then claimed — and the
+    /// worldspace teardown later despawned — all of them.
     stamp_cursor: EntityId,
     local_refs: Vec<byroredux_plugin::esm::cell::PlacedRef>,
     remote_actor_refs: Vec<byroredux_plugin::esm::cell::PlacedRef>,
@@ -261,6 +268,22 @@ impl PersistentCellApplyJob {
         self.stamp_cursor = last;
     }
 
+    /// Reseed [`Self::stamp_cursor`] to *now*, at the top of every
+    /// `advance` (#5483).
+    ///
+    /// Between two `advance` calls the job is parked in the streaming
+    /// state while the rest of the frame runs, and anything may spawn —
+    /// the bootstrap's camera and player, a crossing frame's LOD rings,
+    /// the appearance loaders. None of those belong to the persistent
+    /// CELL, so each `advance` starts a fresh range exactly like
+    /// [`ExteriorCellApplyJob`]'s per-work-unit `next_entity_id()`. Only
+    /// what this job's own loaders create inside the call is stamped.
+    /// Split out of `advance` so the stamp tests can drive it without a
+    /// `VulkanContext`.
+    fn begin_advance(&mut self, world: &World) {
+        self.stamp_cursor = world.next_entity_id();
+    }
+
     /// Release the ECS-side state an unfinished persistent apply is
     /// holding, ahead of the drain's `unload_cell(persistent_root)`
     /// (#3377).
@@ -289,6 +312,7 @@ impl PersistentCellApplyJob {
         mat_provider: Option<&mut MaterialProvider>,
         budget: &mut FrameTimeBudget,
     ) -> PersistentCellApplyProgress {
+        self.begin_advance(world);
         if self.reference_entity_count.is_none() {
             let result = load_references_budgeted(
                 &self.local_refs,
@@ -904,22 +928,35 @@ mod persistent_cell_stamp_tests {
         }
     }
 
-    /// The cursor starts at construction, not at the first
-    /// `stamp_slice`, so entities spawned between the two are still
-    /// covered — the gap the "fresh local at the top of each work unit"
-    /// shape would have opened for this job.
+    /// #5483 — the cursor is reseeded at the top of every `advance`, so
+    /// an entity spawned while the job is parked between advances (the
+    /// bootstrap's camera/player, a crossing frame's LOD rings) is never
+    /// claimed. Pre-fix the cursor was seeded at construction and spanned
+    /// every inter-frame gap, so the first stamp adopted the camera, the
+    /// player capsule and the arrival cell into the persistent CELL —
+    /// and the worldspace teardown later despawned them.
     #[test]
-    fn entities_spawned_before_the_first_slice_are_still_covered() {
+    fn entities_spawned_between_advances_are_not_claimed() {
         let mut world = World::new();
         world.insert_resource(CellRootIndex::new());
         let cell_root = world.spawn();
         let mut job = job(&mut world, cell_root);
 
-        let early = world.spawn();
+        // Foreign spawn while the job is parked (construction → first
+        // advance, or any yield → next advance).
+        let foreign = world.spawn();
+        job.begin_advance(&world);
+        // The job's own spawn inside the advance.
+        let own = world.spawn();
         job.stamp_slice(&mut world);
 
         let idx = world.resource::<CellRootIndex>();
-        assert!(idx.map[&cell_root].contains(&early));
+        let entry = &idx.map[&cell_root];
+        assert!(
+            !entry.contains(&foreign),
+            "a foreign entity was claimed by the persistent CELL: {entry:?}",
+        );
+        assert!(entry.contains(&own), "the job's own entity was never stamped");
     }
 
     /// #3377 — cancelling an unfinished persistent apply must release
@@ -1170,6 +1207,11 @@ pub(crate) fn begin_worldspace_persistent_cell(
     let cell_root = world.spawn();
     register_cell_root(world, cell_root);
     world.insert(cell_root, CellFormId(cell.form_id));
+    // Placeholder only — `advance` reseeds the cursor at its top (#5483),
+    // so the constructor value never reaches a stamp. Kept as
+    // `next_entity_id()` rather than `cell_root` purely so an accidental
+    // future stamp before the first advance claims nothing (an empty
+    // range) instead of a foreign one.
     let first_entity = world.next_entity_id();
     Some(PersistentCellApplyJob {
         cell_root,
