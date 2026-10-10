@@ -2,7 +2,7 @@
 
 use anyhow::{anyhow, Result};
 #[cfg(test)]
-use ruffle_core::tag_utils::SwfMovie;
+use ruffle_core::tag_utils::SwfMovieData;
 
 /// The Scaleform/ActionScript generation used by a Bethesda UI.
 ///
@@ -31,7 +31,7 @@ impl ScaleformProfile {
     ///
     /// `is_action_script_3()` reads the `FileAttributes` tag the SWF header
     /// extension carries, which `decompress_swf` has already recovered — the
-    /// full `SwfMovie::from_data` this used to go through inflates the whole
+    /// full `SwfMovieData::from_data` this used to go through inflates the whole
     /// stream just to answer the same one-bit question.
     pub(crate) fn from_header(header: &swf::HeaderExt) -> Self {
         if header.is_action_script_3() {
@@ -42,10 +42,10 @@ impl ScaleformProfile {
     }
 
     /// Profile of a movie Ruffle already holds. Only the host-bridge tests
-    /// still start from a `SwfMovie`; the load path detects from the header
+    /// still start from a `SwfMovieData`; the load path detects from the header
     /// it decompressed once (#2968).
     #[cfg(test)]
-    pub(crate) fn from_movie(movie: &SwfMovie) -> Self {
+    pub(crate) fn from_movie(movie: &SwfMovieData) -> Self {
         if movie.is_action_script_3() {
             Self::Fallout4Avm2
         } else {

@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 
 use byroredux_bsa::{Ba2Archive, BsaArchive};
 use ruffle_core::external::Value as ExternalValue;
-use ruffle_core::tag_utils::SwfMovie;
+use ruffle_core::tag_utils::SwfMovieData;
 use ruffle_core::{FloatDuration, LoadBehavior, Player, PlayerBuilder};
 
 use super::{ScaleformHostBridge, ScaleformHostDispatch, ScaleformValue};
@@ -58,8 +58,13 @@ fn run_movie(
     bytes: &[u8],
     bridge: ScaleformHostBridge,
 ) -> (Arc<Mutex<Player>>, ScaleformHostBridge) {
-    let movie = SwfMovie::from_data(bytes, "file:///external-interface.swf".to_string(), None)
-        .expect("SWF must parse");
+    let movie = SwfMovieData::from_data(
+        bytes,
+        "file:///external-interface.swf".to_string(),
+        None,
+        None,
+    )
+    .expect("SWF must parse");
     assert_eq!(ScaleformProfile::from_movie(&movie), bridge.profile());
 
     let player = PlayerBuilder::new()

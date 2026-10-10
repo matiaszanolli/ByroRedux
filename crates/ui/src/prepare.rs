@@ -2,7 +2,7 @@
 //!
 //! `SwfPlayer`'s constructors used to hand raw bytes to four independent
 //! stages — profile detection, host-object injection, `ImportAssets`
-//! extraction, and Ruffle's own `SwfMovie::from_data` — each of which began by
+//! extraction, and Ruffle's own `SwfMovieData::from_data` — each of which began by
 //! inflating the whole compressed stream again, and two of which then walked
 //! every tag. On Fallout 4's multi-megabyte `hudmenu.swf` / `pipboymenu.swf`
 //! that was four zlib inflates and two full tag walks per menu open, run
@@ -12,7 +12,7 @@
 //!
 //! [`prepare_movie`] does the decompress once and the tag parse at most once,
 //! then hands each stage what it actually wanted. The final
-//! `SwfMovie::from_data` still decompresses — Ruffle exposes no constructor
+//! `SwfMovieData::from_data` still decompresses — Ruffle exposes no constructor
 //! taking an already-decoded `SwfBuf` — so a menu open costs two inflates
 //! rather than four, and one tag walk rather than two.
 //!
@@ -166,7 +166,7 @@ pub(crate) struct SwfDecodeCounts {
     pub tag_parses: usize,
 }
 
-/// A movie decoded once and readied for `SwfMovie::from_data`.
+/// A movie decoded once and readied for `SwfMovieData::from_data`.
 pub(crate) struct PreparedMovie {
     pub profile: ScaleformProfile,
     pub host_object_state: ScaleformHostObjectState,
@@ -316,7 +316,7 @@ mod tests {
     /// #2968 — the property, not just "it still loads". A menu open decodes
     /// the movie ONCE inside preparation; before this the archive route ran
     /// `decompress_swf` three times here (detect, inject, import-scan) plus a
-    /// fourth inside `SwfMovie::from_data`, and walked every tag twice.
+    /// fourth inside `SwfMovieData::from_data`, and walked every tag twice.
     #[test]
     fn an_archive_menu_open_decompresses_and_parses_once() {
         let url = Url::parse("file:///interface/hudmenu.swf").unwrap();

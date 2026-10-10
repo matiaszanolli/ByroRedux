@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use ruffle_core::external::Value as ExternalValue;
 use ruffle_core::limits::ExecutionLimit;
-use ruffle_core::tag_utils::SwfMovie;
+use ruffle_core::tag_utils::SwfMovieData;
 use ruffle_core::{FloatDuration, LoadBehavior, Player, PlayerBuilder};
 use ruffle_render_wgpu::backend::{
     create_wgpu_instance, request_adapter_and_device, WgpuRenderBackend,
@@ -103,8 +103,11 @@ pub(crate) fn vulkan_adapter_available() -> bool {
     use std::sync::OnceLock;
     static AVAILABLE: OnceLock<bool> = OnceLock::new();
     *AVAILABLE.get_or_init(|| {
-        let instance =
-            create_wgpu_instance(wgpu::Backends::VULKAN, wgpu::BackendOptions::default());
+        let instance = create_wgpu_instance(
+            wgpu::Backends::VULKAN,
+            wgpu::BackendOptions::default(),
+            None,
+        );
         futures::executor::block_on(request_adapter_and_device(
             wgpu::Backends::VULKAN,
             &instance,
@@ -119,8 +122,11 @@ fn shared_descriptors() -> Result<Arc<Descriptors>> {
     static SHARED: OnceLock<Arc<Descriptors>> = OnceLock::new();
 
     get_or_try_init(&SHARED, || {
-        let instance =
-            create_wgpu_instance(wgpu::Backends::VULKAN, wgpu::BackendOptions::default());
+        let instance = create_wgpu_instance(
+            wgpu::Backends::VULKAN,
+            wgpu::BackendOptions::default(),
+            None,
+        );
         let (adapter, device, queue) = futures::executor::block_on(request_adapter_and_device(
             wgpu::Backends::VULKAN,
             &instance,
@@ -209,8 +215,9 @@ impl SwfPlayer {
         // #2968 — one decode drives detection, injection and Ruffle's parse.
         let prepared = prepare_movie(swf_data, None, None)
             .map_err(|error| anyhow!("Failed to prepare Scaleform movie: {error}"))?;
-        let movie = SwfMovie::from_data(&prepared.data, "file:///menu.swf".to_string(), None)
-            .map_err(|e| anyhow!("Failed to parse SWF: {e}"))?;
+        let movie =
+            SwfMovieData::from_data(&prepared.data, "file:///menu.swf".to_string(), None, None)
+                .map_err(|e| anyhow!("Failed to parse SWF: {e}"))?;
         Self::from_movie(
             movie,
             width,
@@ -232,8 +239,9 @@ impl SwfPlayer {
         // work, now off the same decode that answers it.
         let prepared =
             prepare_movie(swf_data, Some(profile), None).map_err(|error| anyhow!("{error}"))?;
-        let movie = SwfMovie::from_data(&prepared.data, "file:///menu.swf".to_string(), None)
-            .map_err(|e| anyhow!("Failed to parse SWF: {e}"))?;
+        let movie =
+            SwfMovieData::from_data(&prepared.data, "file:///menu.swf".to_string(), None, None)
+                .map_err(|e| anyhow!("Failed to parse SWF: {e}"))?;
         Self::from_movie(
             movie,
             width,
@@ -282,7 +290,7 @@ impl SwfPlayer {
                 .map_err(|error| {
                     anyhow!("Failed to configure Scaleform archive loading: {error}")
                 })?;
-        let movie = SwfMovie::from_data(&prepared.data, movie_url, None)
+        let movie = SwfMovieData::from_data(&prepared.data, movie_url, None, None)
             .map_err(|e| anyhow!("Failed to parse SWF: {e}"))?;
         // #3771 — `prepared.profile` is the actually-detected value, correct
         // whether `profile` above was `Some` (guaranteed equal, past the
@@ -328,7 +336,7 @@ impl SwfPlayer {
     }
 
     fn from_movie(
-        movie: SwfMovie,
+        movie: SwfMovieData,
         width: u32,
         height: u32,
         profile: ScaleformProfile,
