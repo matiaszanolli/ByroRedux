@@ -5,7 +5,8 @@
 //! distance" cells each height claims versus the single worldspace-default
 //! sheet the current annulus draws.
 //!
-//! Scratch probe for the W2 LOD-coverage investigation — not a gate.
+//! Investigation probe (not a smoke gate) — kept for the next WATAL
+//! LOD-coverage pass; the census above is the payload.
 //!
 //! Usage:
 //!   cargo run --release -p byroredux-plugin --example xclw_census -- <ESM> [WORLD_SUBSTR] [GRID]

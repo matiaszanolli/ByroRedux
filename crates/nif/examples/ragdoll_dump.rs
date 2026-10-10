@@ -1,4 +1,4 @@
-//! Scratch: parse a NIF and dump its imported ragdoll verbatim — bodies
+//! Diagnostic probe: parse a NIF and dump its imported ragdoll verbatim — bodies
 //! (mass/damping/friction/restitution/shape/offset) and constraints (kind,
 //! pivots, axes, limits) — for physics-stability investigation (#5161).
 //!

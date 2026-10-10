@@ -1,4 +1,4 @@
-//! Scratch: dump every NiAlphaProperty's blend flags in a NIF.
+//! Diagnostic probe: dump every NiAlphaProperty's blend flags in a NIF.
 //! F-godray investigation (2026-05-27) — verify what blend mode FO4
 //! light-shaft effect meshes author.
 

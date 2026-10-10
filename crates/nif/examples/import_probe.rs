@@ -1,4 +1,4 @@
-//! Scratch: parse + import a NIF and dump counts of meshes /
+//! Diagnostic probe: parse + import a NIF and dump counts of meshes /
 //! collisions / lights extracted. Used to investigate F4
 //! (FO4 NIF parse/import failure rate, 2026-05-26).
 

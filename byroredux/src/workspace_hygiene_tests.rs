@@ -53,7 +53,23 @@ fn collect_self_described_disposable_examples(
     // audit's regex — prose that merely mentions the words mid-sentence
     // ("hundreds of one-off values", spt_tail.rs) is describing data, not
     // the file, and must not trip the guard.
-    const LINE_START_MARKERS: &[&str] = &["throwaway", "one-off", "temp scratch"];
+    //
+    // #5475 / #5330 — the marker list is the class, not the commit: the
+    // M42 `cond_dump.rs` probe landed as `//! TEMP:` and three census
+    // examples as `//! Scratch:` while the guard only knew "temp
+    // scratch" (one phrase). "temp:" / "temp " / "scratch" cover the
+    // spellings that have actually shipped; a word merely *containing*
+    // them ("temporal") does not match — every entry is a prefix of the
+    // trimmed doc text, so "temporal" fails "temp " (no space) and
+    // "temp:" (no colon).
+    const LINE_START_MARKERS: &[&str] = &[
+        "throwaway",
+        "one-off",
+        "temp scratch",
+        "temp:",
+        "temp ",
+        "scratch",
+    ];
     // Stronger than anything the audit named — the file itself says it
     // never belonged in the tree — so it matches anywhere in the doc.
     const ANYWHERE_MARKERS: &[&str] = &["not for commit"];
@@ -280,10 +296,10 @@ fn no_committed_example_self_describes_as_disposable() {
     assert!(
         found.is_empty(),
         "found {} committed example(s) whose module doc self-describes as \
-         throwaway / one-off / TEMP scratch / \"not for commit\" — either \
+         throwaway / one-off / TEMP / Scratch / \"not for commit\" — either \
          delete them or give them a real documented purpose like \
          watr_wind_census.rs (a probe that states what it measures and \
-         why it stays), and drop the self-description (#5114):\n{}",
+         why it stays), and drop the self-description (#5114, #5475):\n{}",
         found.len(),
         found
             .iter()
@@ -291,6 +307,62 @@ fn no_committed_example_self_describes_as_disposable() {
             .collect::<Vec<_>>()
             .join("\n"),
     );
+}
+
+/// #5475 / #5330 — the classifier knows the marker spellings that have
+/// actually shipped (`//! TEMP:`, `//! Scratch:`), not just the one
+/// phrase the #5114 guard debuted with, and still leaves prose that
+/// merely contains a marker word ("temporal", a cited historic doc)
+/// alone. Fixture lives in a process-temp dir — the guard's other tests
+/// scan the real tree, which cannot contain the flagged shapes (their
+/// own assertions forbid it).
+#[test]
+fn disposable_example_classifier_knows_the_shipped_marker_spellings() {
+    let root = std::env::temp_dir().join(format!(
+        "byro-hygiene-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&root).expect("temp fixture dir");
+    let write = |name: &str, doc: &str| {
+        std::fs::write(root.join(name), format!("{doc}\nfn main() {{}}\n"))
+            .expect("temp fixture file")
+    };
+    write("temp_colon.rs", "//! TEMP: dump one PACK's conditions.");
+    write("scratch.rs", "//! Scratch: dump every NiAlphaProperty.");
+    write("temp_word.rs", "//! One-off probe with a temp scratch prefix.");
+    write("keeper.rs", "//! Census of XCLW heights; kept for WATAL follow-ups.");
+    // A keeper whose LATER comment cites the historic marker wording —
+    // only the leading `//!` block is scanned.
+    write(
+        "provenance.rs",
+        "//! Census probe; the payload above is the point.\n//! (The old doc said \"Scratch:\" — provenance note only.)\nfn main() {}",
+    );
+
+    let mut found = Vec::new();
+    collect_self_described_disposable_examples(&root, &mut found);
+    let mut names: Vec<String> = found
+        .iter()
+        .map(|p| p.file_name().unwrap_or_default().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+
+    // Drop the trailing-slash root naming variance by comparing basenames.
+    assert_eq!(
+        names,
+        vec![
+            "scratch.rs".to_string(),
+            "temp_colon.rs".to_string(),
+            "temp_word.rs".to_string(),
+        ],
+        "TEMP:/Scratch:/temp-scratch doc lines must flag; prose and \
+         provenance notes must not (#5475/#5330)"
+    );
+
+    std::fs::remove_dir_all(&root).expect("temp fixture cleanup");
 }
 
 /// #3869 — every mention of the deleted render-time `Material::classify_pbr`

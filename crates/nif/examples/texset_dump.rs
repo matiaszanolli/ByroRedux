@@ -1,5 +1,6 @@
-//! Scratch: run the full material import for a NIF and print each mesh's
-//! resolved normal-map path, to chase the `textures/\bnor` missing report.
+//! Diagnostic probe: run the full material import for a NIF and print
+//! each mesh's resolved normal-map path, to chase the `textures/\bnor`
+//! missing report.
 use byroredux_core::string::StringPool;
 
 fn main() {

@@ -1,5 +1,6 @@
-//! Scratch: dump every BSShaderNoLightingProperty's file_name in a NIF.
-//! Used to investigate F2 (Fallout material plumbing gap, 2026-05-26).
+//! Diagnostic probe: dump every BSShaderNoLightingProperty's file_name
+//! in a NIF. Used to investigate F2 (Fallout material plumbing gap,
+//! 2026-05-26).
 
 use byroredux_nif::blocks::shader::{
     BSShaderNoLightingProperty, BSShaderPPLightingProperty, BSShaderTextureSet,
