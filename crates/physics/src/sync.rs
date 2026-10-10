@@ -1123,10 +1123,14 @@ fn register_newcomers(world: &World, newcomers: Vec<Newcomer>) {
             rapier3d::prelude::InteractionGroups::all()
         };
         for (iso, shape) in parts {
+            // Havok-parity coefficient combine: see
+            // `config::CONTACT_COEFFICIENT_COMBINE_RULE`.
             let collider = ColliderBuilder::new(shape)
                 .position(iso)
                 .friction(n.body_data.friction)
                 .restitution(n.body_data.restitution)
+                .friction_combine_rule(crate::config::CONTACT_COEFFICIENT_COMBINE_RULE)
+                .restitution_combine_rule(crate::config::CONTACT_COEFFICIENT_COMBINE_RULE)
                 .mass(part_mass)
                 .contact_skin(contact_skin)
                 .collision_groups(groups)

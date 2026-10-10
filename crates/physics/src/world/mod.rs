@@ -1562,6 +1562,65 @@ mod tests {
         assert!(y < 1000.0, "ball did not fall; y = {}", y);
     }
 
+    /// Havok-parity contact coefficients —
+    /// [`crate::config::CONTACT_COEFFICIENT_COMBINE_RULE`] (geometric
+    /// mean): a restitution-0 body must not bounce off a restitution-0.8
+    /// floor. Under rapier's default `Average` rule the pair combines to
+    /// 0.4 and this drop rebounds to ~1.9 BU above the floor — the
+    /// observable difference the rule pin exists to prevent. Non-vacuous:
+    /// flip the rule to `Average` and this test fails.
+    #[test]
+    fn restitution_zero_body_does_not_bounce_on_restitution_floor() {
+        let mut w = PhysicsWorld::new();
+        let rule = crate::config::CONTACT_COEFFICIENT_COMBINE_RULE;
+        // Floor slab with its top surface at y = 0.
+        w.colliders.insert(
+            ColliderBuilder::cuboid(200.0, 10.0, 200.0)
+                .translation(Vector::new(0.0, -10.0, 0.0))
+                .restitution(0.8)
+                .friction_combine_rule(rule)
+                .restitution_combine_rule(rule)
+                .build(),
+        );
+        // A 0.5-BU ball dropped from y = 9.0 contacts when its centre
+        // reaches y = 0.5.
+        let body = w.bodies.insert(
+            RigidBodyBuilder::dynamic()
+                .translation(Vector::new(0.0, 9.0, 0.0))
+                .build(),
+        );
+        w.colliders.insert_with_parent(
+            ColliderBuilder::ball(0.5)
+                .restitution(0.0)
+                .friction_combine_rule(rule)
+                .restitution_combine_rule(rule)
+                .build(),
+            body,
+            &mut w.bodies,
+        );
+
+        let mut touched = false;
+        let mut apex_after_touch = f32::MIN;
+        for _ in 0..300 {
+            w.step(PHYSICS_DT);
+            let y = w.bodies[body].translation().y;
+            if !touched && y <= 0.55 {
+                touched = true;
+            }
+            if touched {
+                apex_after_touch = apex_after_touch.max(y);
+            }
+        }
+        assert!(touched, "ball never reached the floor — fixture is wrong");
+        // GeometricMean: no rebound at all (rest centre ≈ 0.5).
+        assert!(
+            apex_after_touch < 1.2,
+            "restitution-0 ball bounced off a restitution-0.8 floor: apex y = \
+             {apex_after_touch} — the contact coefficients are not combining \
+             as a geometric mean"
+        );
+    }
+
     /// #5161 — a solver explosion's velocity is capped at the end of the
     /// substep that produced it, so the next substep's integration cannot
     /// carry the body's AABB anywhere near the multi-SAP grid boundary; a

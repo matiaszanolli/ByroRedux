@@ -397,6 +397,25 @@ parry 0.19's change: `FIX_INTERNAL_EDGES` no longer implies `ORIENTED`,
 so the default names both (`FIX_INTERNAL_EDGES | ORIENTED`) to keep every
 collision mesh built exactly as before.
 
+### Contact coefficient combine rule
+
+Rapier decides the effective friction / restitution of a contact pair
+per collider, via a combine rule. Both engine collider producers —
+`sync.rs::register_newcomers` and the ragdoll bone builders — set
+`config::CONTACT_COEFFICIENT_COMBINE_RULE` =
+`CoefficientCombineRule::GeometricMean`, matching Havok, which combines
+both coefficients as a geometric mean `sqrt(a * b)`
+(`hkpMaterial::getFrictionCombineRule` /
+`getRestitutionCombineRule`, `havok-2013/Physics2012/Dynamics/Common/hkpMaterial.inl:49-57`).
+Rapier's default `Average` rule would let a restitution-0 object bounce
+off a restitution-0.8 floor at an effective 0.4 (and a friction-0
+surface slide under any partner); the geometric mean gives 0. Because
+`GeometricMean` has rapier's highest combine-rule priority, any pair
+with one engine-built collider uses it whatever the other collider asks
+for. Pinned by
+`restitution_zero_body_does_not_bounce_on_restitution_floor`
+(`world/mod.rs` tests).
+
 ## NIF collision extraction
 
 `crates/nif/src/import/collision/mod.rs` walks the bhk shape tree and

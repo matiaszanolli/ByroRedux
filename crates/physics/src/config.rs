@@ -22,6 +22,7 @@
 //!   #5311 world split).
 
 use byroredux_core::ecs::resource::Resource;
+use rapier3d::prelude::CoefficientCombineRule;
 
 /// TriMesh flag set as plain bits so `core` types don't need to alias
 /// rapier types. Matches `rapier3d::parry::shape::TriMeshFlags` (u16)
@@ -53,6 +54,27 @@ impl Default for TriMeshFlagBits {
         Self::DEFAULT
     }
 }
+
+/// How a collider's friction / restitution combine with the other side's
+/// when two colliders touch. Havok combines both coefficients as a
+/// geometric mean, `sqrt(a * b)` — `hkpMaterial`'s
+/// `getFrictionCombineRule` / `getRestitutionCombineRule`
+/// (`havok-2013/Physics2012/Dynamics/Common/hkpMaterial.inl:49-57`; the
+/// 2007 SDK's copy agrees at `hkpMaterial.inl:38-46`). Rapier's default is
+/// `Average`, under which a restitution-0 object bounces off a
+/// restitution-0.8 floor at an effective 0.4 — Havok never bounces it. The
+/// same holds for friction-0 surfaces. `GeometricMean` also carries
+/// rapier's highest combine-rule priority, so any pair with one
+/// engine-built collider uses it whatever the other collider asks for.
+///
+/// Applied at both collider producers — `sync.rs::register_newcomers`
+/// (every streamed or imported collider, including the synthesized terrain
+/// and architecture trimeshes) and the ragdoll bone builders in
+/// `ragdoll.rs` — so they cannot drift apart. Pinned by
+/// `restitution_zero_body_does_not_bounce_on_restitution_floor` in
+/// `world/mod.rs`.
+pub const CONTACT_COEFFICIENT_COMBINE_RULE: CoefficientCombineRule =
+    CoefficientCombineRule::GeometricMean;
 
 /// Engine-wide physics tunables. A bug fix to TriMesh contact
 /// generation, KCC offset, or default collider margin lands here and

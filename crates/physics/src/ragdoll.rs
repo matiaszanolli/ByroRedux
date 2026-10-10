@@ -433,10 +433,14 @@ pub fn build_ragdoll(
         } = *pw;
         let mut first_collider = None;
         for (iso, shape) in parts {
+            // Havok-parity coefficient combine: see
+            // `config::CONTACT_COEFFICIENT_COMBINE_RULE`.
             let col = ColliderBuilder::new(shape)
                 .position(iso)
                 .friction(b.friction.max(0.0))
                 .restitution(b.restitution.clamp(0.0, 1.0))
+                .friction_combine_rule(crate::config::CONTACT_COEFFICIENT_COMBINE_RULE)
+                .restitution_combine_rule(crate::config::CONTACT_COEFFICIENT_COMBINE_RULE)
                 .mass(part_mass)
                 .contact_skin(contact_skin)
                 .build();
