@@ -69,9 +69,16 @@ pub struct LauncherState {
 
 impl LauncherState {
     /// Read the registry, find the games, check them.
+    ///
+    /// #5476 — the registry comes from the SAME file this state was given
+    /// (`load_with_user_path`), not from this process's own environment
+    /// or home: a `[profiles.<key>]` block that exists only in the
+    /// `--profiles` file must validate as known here, and the engine the
+    /// launcher spawns — which gets `$BYRO_PROFILES` pointed at that
+    /// file — must agree.
     pub fn load(profiles_path: impl Into<PathBuf>) -> Self {
         let profiles_path = profiles_path.into();
-        let registry = detect::profiles::load_default();
+        let registry = detect::profiles::load_with_user_path(Some(&profiles_path));
         let entries = build_entries(&registry, &detect::detect_all(&profiles_path));
         Self {
             registry,
@@ -87,7 +94,7 @@ impl LauncherState {
             .selected
             .and_then(|index| self.entries.get(index))
             .map(|entry| entry.candidate.profile.clone());
-        self.registry = detect::profiles::load_default();
+        self.registry = detect::profiles::load_with_user_path(Some(&self.profiles_path));
         self.entries = build_entries(&self.registry, &detect::detect_all(&self.profiles_path));
         self.selected = selected_profile.and_then(|profile| {
             self.entries

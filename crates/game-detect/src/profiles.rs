@@ -252,7 +252,20 @@ fn apply_root_overrides(
     }
 }
 
+/// [`load_default`] with the per-user layer named explicitly — the seam
+/// the launcher and `byro-detect` use (#5476) so the registry they
+/// validate against comes from the SAME file they were pointed at,
+/// rather than from this process's own environment/home. `load_default`
+/// delegates with the selected user path.
+pub fn load_with_user_path(user_path: Option<&std::path::Path>) -> GameProfileRegistry {
+    load_default_from(user_path)
+}
+
 pub fn load_default() -> GameProfileRegistry {
+    load_default_from(selected_user_path().as_deref())
+}
+
+fn load_default_from(user_path: Option<&std::path::Path>) -> GameProfileRegistry {
     let mut out: BTreeMap<String, GameProfileEntry> = BTreeMap::new();
 
     // Shipped defaults: try CWD-relative first (cargo run from
@@ -271,8 +284,9 @@ pub fn load_default() -> GameProfileRegistry {
     }
 
     // Per-user override (#5294 — $BYRO_PROFILES when the launcher pointed
-    // the engine at a different file, else the home default).
-    if let Some(user_path) = selected_user_path() {
+    // the engine at a different file, else the home default; #5476 —
+    // this is the layer `load_with_user_path` names explicitly).
+    if let Some(user_path) = user_path {
         if user_path.exists() {
             merge_from(&user_path, &mut out);
         }
@@ -331,11 +345,20 @@ fn merge_from(path: &Path, out: &mut BTreeMap<String, GameProfileEntry>) {
 }
 
 /// The ordered config files to read, shipped-first then per-user
-/// override: `[assets/debug_profiles.toml (CWD or exe-parent),
-/// ~/.byroredux/profiles.toml]`, filtered to those that exist. Both
-/// `load_default` (profiles) and [`load_launch_defaults`] consume this
-/// so the two stay in lockstep on which files contribute.
+/// override: `[assets/debug_profiles.toml (CWD or exe-parent), <selected
+/// per-user file>]`, filtered to those that exist. Both `load_default`
+/// (profiles) and [`load_launch_defaults`] consume this so the two stay
+/// in lockstep on which files contribute — and (#5476, completing
+/// #5294) the per-user layer follows the SAME `selected_user_path()`
+/// selector the profile merge uses, so `$BYRO_PROFILES` redirects
+/// `[defaults]` too instead of leaving it on the home file.
 fn ordered_config_paths() -> Vec<PathBuf> {
+    ordered_config_paths_with(selected_user_path().as_deref())
+}
+
+/// [`ordered_config_paths`] with the per-user layer injected — the test
+/// seam for the #5476 redirect.
+fn ordered_config_paths_with(user_path: Option<&std::path::Path>) -> Vec<PathBuf> {
     let mut paths = Vec::new();
     for shipped in [
         PathBuf::from(DEFAULT_PROFILES_PATH),
@@ -349,10 +372,9 @@ fn ordered_config_paths() -> Vec<PathBuf> {
             break;
         }
     }
-    if let Some(home) = home_dir() {
-        let user_path = home.join(".byroredux").join("profiles.toml");
+    if let Some(user_path) = user_path {
         if user_path.exists() {
-            paths.push(user_path);
+            paths.push(user_path.to_path_buf());
         }
     }
     paths
@@ -364,8 +386,14 @@ fn ordered_config_paths() -> Vec<PathBuf> {
 /// behaviour). Parse failures log a warning and are skipped — never an
 /// error, so a typo in the config can't brick the launch.
 pub fn load_launch_defaults() -> LaunchDefaults {
+    load_launch_defaults_from(selected_user_path().as_deref())
+}
+
+/// [`load_launch_defaults`] with the per-user layer named explicitly
+/// (the #5476 test seam; production callers go through the selector).
+fn load_launch_defaults_from(user_path: Option<&std::path::Path>) -> LaunchDefaults {
     let mut out = LaunchDefaults::default();
-    for path in ordered_config_paths() {
+    for path in ordered_config_paths_with(user_path) {
         let contents = match std::fs::read_to_string(&path) {
             Ok(s) => s,
             Err(e) => {
@@ -427,6 +455,43 @@ fn selected_user_path_from(env: Option<std::ffi::OsString>) -> Option<PathBuf> {
 mod tests {
     use super::*;
     use std::io::Write;
+
+    /// #5476 — `[defaults]` follows the selected per-user file, not the
+    /// home default: `load_launch_defaults` consumes
+    /// `ordered_config_paths`, whose per-user layer now runs through the
+    /// same `selected_user_path()` selector the profile merge uses.
+    /// Pre-fix an engine started with `BYRO_PROFILES=X` took profiles and
+    /// `[roots]` from X but `game`/`games_root`/light defaults from
+    /// `~/.byroredux/profiles.toml`.
+    #[test]
+    fn launch_defaults_follow_the_selected_user_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let selected = dir.path().join("selected.toml");
+        std::fs::write(
+            &selected,
+            "[defaults]\ngame = \"starfield\"\ngames_root = \"/selected/root\"\n",
+        )
+        .unwrap();
+        let home_file = dir.path().join("home-profiles.toml");
+        std::fs::write(
+            &home_file,
+            "[defaults]\ngame = \"fallout4\"\ngames_root = \"/home/root\"\n",
+        )
+        .unwrap();
+
+        // The selected file wins even though a home file exists.
+        let defaults = load_launch_defaults_from(Some(&selected));
+        assert_eq!(defaults.game.as_deref(), Some("starfield"));
+        assert_eq!(
+            defaults.games_root.as_deref(),
+            Some("/selected/root"),
+            "[defaults] must come from the selected file, not the home default (#5476)"
+        );
+
+        // Unset → the home default (unchanged behaviour).
+        let defaults = load_launch_defaults_from(Some(&home_file));
+        assert_eq!(defaults.game.as_deref(), Some("fallout4"));
+    }
 
     /// #5294 — `$BYRO_PROFILES` selects the per-user file `load_default`
     /// reads (profile merge and both `[roots]` passes); unset falls back

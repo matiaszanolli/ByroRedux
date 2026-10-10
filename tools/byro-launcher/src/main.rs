@@ -75,7 +75,14 @@ fn parse_args(args: Vec<String>) -> Result<Option<Options>, String> {
                     .next()
                     .filter(|value| !value.starts_with('-'))
                     .ok_or("--profiles needs a path")?;
-                if options.profiles.replace(PathBuf::from(value)).is_some() {
+                // #5476 — absolutise against the launcher's cwd: the
+                // engine is spawned with `current_dir(engine.parent())`,
+                // so a relative path would otherwise resolve against the
+                // ENGINE's directory (for both the boot request and
+                // `$BYRO_PROFILES`) and every Play would fail with a
+                // confusing boot-request error.
+                let path = absolutise_against_cwd(&value);
+                if options.profiles.replace(path).is_some() {
                     return Err("--profiles given more than once".to_string());
                 }
             }
@@ -83,6 +90,19 @@ fn parse_args(args: Vec<String>) -> Result<Option<Options>, String> {
         }
     }
     Ok(Some(options))
+}
+
+/// #5476 — resolve `value` against the current directory when relative.
+/// `current_dir` failing leaves the value untouched; the downstream
+/// error message then names what was actually attempted.
+fn absolutise_against_cwd(value: &str) -> PathBuf {
+    let value = PathBuf::from(value);
+    if value.is_absolute() {
+        return value;
+    }
+    std::env::current_dir()
+        .map(|cwd| cwd.join(&value))
+        .unwrap_or(value)
 }
 
 fn print_usage() {
@@ -152,6 +172,17 @@ mod tests {
             }))
         );
         assert_eq!(parse_args(args(&[])), Ok(Some(Options::default())));
+
+        // #5476 — a relative path is absolutised against the launcher's
+        // cwd: the engine spawns with current_dir(engine.parent()), so a
+        // bare name would otherwise resolve (boot request AND
+        // $BYRO_PROFILES) against the engine's directory.
+        let relative = parse_args(args(&["--profiles", "alt.toml"])).unwrap().unwrap();
+        let path = relative.profiles.expect("profiles set");
+        assert!(
+            path.is_absolute() && path.ends_with("alt.toml"),
+            "a relative --profiles must come back absolute against the cwd, got {path:?}"
+        );
 
         // Typos and missing values are errors, not silent defaults.
         assert!(parse_args(args(&["--profile", "/tmp/alt.toml"])).is_err());

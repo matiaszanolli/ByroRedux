@@ -52,7 +52,9 @@ fn main() -> ExitCode {
         }
     };
 
-    let registry = detect::profiles::load_default();
+    // #5476 — the registry from the SAME file this run was pointed at,
+    // so a custom `[profiles.<key>]` block is known here.
+    let registry = detect::profiles::load_with_user_path(Some(&profiles_path));
     let candidates = detect::detect_all(&profiles_path);
 
     if candidates.is_empty() {
@@ -171,7 +173,10 @@ fn parse_args(args: &[String]) -> Result<Option<Options>, String> {
                     .next()
                     .filter(|value| !value.starts_with('-'))
                     .ok_or("--profiles needs a path")?;
-                if options.profiles.replace(PathBuf::from(value)).is_some() {
+                // #5476 — same absolutisation as the launcher: this
+                // tool's cwd is not where its outputs resolve later.
+                let path = absolutise_against_cwd(&value);
+                if options.profiles.replace(path).is_some() {
                     return Err("--profiles given more than once".to_string());
                 }
             }
@@ -179,6 +184,17 @@ fn parse_args(args: &[String]) -> Result<Option<Options>, String> {
         }
     }
     Ok(Some(options))
+}
+
+/// #5476 — resolve `value` against the current directory when relative.
+fn absolutise_against_cwd(value: &str) -> PathBuf {
+    let value = PathBuf::from(value);
+    if value.is_absolute() {
+        return value;
+    }
+    std::env::current_dir()
+        .map(|cwd| cwd.join(&value))
+        .unwrap_or(value)
 }
 
 fn print_usage() {
@@ -221,6 +237,18 @@ mod tests {
             }))
         );
         assert_eq!(parse(&["--write", "--help"]), Ok(None));
+    }
+
+    /// #5476 — a relative `--profiles` is absolutised against the cwd,
+    /// mirroring the launcher.
+    #[test]
+    fn a_relative_profiles_path_comes_back_absolute() {
+        let parsed = parse(&["--profiles", "alt.toml"]).unwrap().unwrap();
+        let path = parsed.profiles.expect("profiles set");
+        assert!(
+            path.is_absolute() && path.ends_with("alt.toml"),
+            "relative --profiles must be absolutised against the cwd, got {path:?}"
+        );
     }
 
     /// #5167 — a typo must not fall back to writing the default file.
