@@ -1137,6 +1137,91 @@ fn oversized_memory_component() -> String {
     )
 }
 
+/// One instruction that fills 768 pages (48 MiB) — more bytes than the
+/// default `fuel_per_entry` (10 M) — plus the standard scaffolding. See
+/// `memory_fill_is_charged_per_byte_and_quarantines`.
+fn memory_fill_component() -> String {
+    format!(
+        r#"(component
+            {IMPORTS}
+            (core module $guest
+                (memory 768)
+                (func (export "initialize")
+                    (memory.fill (i32.const 0) (i32.const 0) (i32.const 50331648)))
+                (func (export "shutdown"))
+                {ON_ACTIVATE_CORE}
+                {ON_CELL_LOAD_CORE}
+                {ON_HIT_CORE}
+                {ON_EQUIPMENT_CORE}
+                {ON_INPUT_CORE}
+                {ON_SESSION_CORE}
+                {ON_CUSTOM_EVENT_CORE}
+                {ON_UPDATE_CORE}
+                {ON_CONSOLE_CORE}
+            )
+            (core instance $guest-instance (instantiate $guest))
+            (func (export "initialize")
+                (canon lift (core func $guest-instance "initialize")))
+            (func (export "shutdown")
+                (canon lift (core func $guest-instance "shutdown")))
+            {ON_ACTIVATE_LIFT}
+            {ON_CELL_LOAD_LIFT}
+            {ON_HIT_LIFT}
+            {ON_EQUIPMENT_LIFT}
+            {ON_INPUT_LIFT}
+            {ON_SESSION_LIFT}
+            {ON_CUSTOM_EVENT_LIFT}
+            {ON_UPDATE_LIFT}
+            {ON_CONSOLE_LIFT}
+        )"#
+    )
+}
+
+/// An infinite loop whose body is a `call_ref` to an immediately
+/// returning function — the GHSA-m63x-6p34-q65x shape, with a flat stack
+/// so the only thing that can stop it is the fuel guard. See
+/// `call_ref_loop_cannot_evade_the_fuel_guard`.
+fn call_ref_loop_component() -> String {
+    format!(
+        r#"(component
+            {IMPORTS}
+            (core module $guest
+                (type $t (func))
+                (func $f (type $t) nop)
+                (elem declare func $f)
+                (func (export "initialize")
+                    (loop $again
+                        (call_ref $t (ref.func $f))
+                        br $again))
+                (func (export "shutdown"))
+                {ON_ACTIVATE_CORE}
+                {ON_CELL_LOAD_CORE}
+                {ON_HIT_CORE}
+                {ON_EQUIPMENT_CORE}
+                {ON_INPUT_CORE}
+                {ON_SESSION_CORE}
+                {ON_CUSTOM_EVENT_CORE}
+                {ON_UPDATE_CORE}
+                {ON_CONSOLE_CORE}
+            )
+            (core instance $guest-instance (instantiate $guest))
+            (func (export "initialize")
+                (canon lift (core func $guest-instance "initialize")))
+            (func (export "shutdown")
+                (canon lift (core func $guest-instance "shutdown")))
+            {ON_ACTIVATE_LIFT}
+            {ON_CELL_LOAD_LIFT}
+            {ON_HIT_LIFT}
+            {ON_EQUIPMENT_LIFT}
+            {ON_INPUT_LIFT}
+            {ON_SESSION_LIFT}
+            {ON_CUSTOM_EVENT_LIFT}
+            {ON_UPDATE_LIFT}
+            {ON_CONSOLE_LIFT}
+        )"#
+    )
+}
+
 fn component_with_wasi_import() -> String {
     format!(
         r#"(component
@@ -2071,6 +2156,48 @@ fn fuel_exhaustion_quarantines_runaway_guest() {
     };
     let runtime = runtime(config);
     let compiled = compile_wat(&runtime, &looping_component());
+    let mut instance = runtime
+        .instantiate(&compiled, &manifest(), CapabilitySet::new())
+        .unwrap();
+
+    let error = instance.initialize().unwrap_err();
+    assert!(matches!(error, SandboxError::GuestFault { .. }));
+    assert!(matches!(instance.status(), InstanceStatus::Quarantined(_)));
+    assert_eq!(instance.fuel_remaining(), 0);
+}
+
+/// wasmtime 48 (upstream #13931) charges variable-length operations by
+/// size: `memory.fill`, `memory.copy` and `memory.init` cost one fuel
+/// unit per byte by default. On 47 the same single instruction cost one
+/// unit, so a guest could move gigabytes of memory inside a compute
+/// budget sized for a few million instructions. One 48 MiB fill against
+/// the default 10 M `fuel_per_entry` must therefore end quarantined —
+/// that is the pin for the per-byte charge (and for `fuel_per_entry`
+/// now bounding bytes moved, not just instructions).
+#[test]
+fn memory_fill_is_charged_per_byte_and_quarantines() {
+    let runtime = runtime(SandboxConfig::default());
+    let compiled = compile_wat(&runtime, &memory_fill_component());
+    let mut instance = runtime
+        .instantiate(&compiled, &manifest(), CapabilitySet::new())
+        .unwrap();
+
+    let error = instance.initialize().unwrap_err();
+    assert!(matches!(error, SandboxError::GuestFault { .. }));
+    assert!(matches!(instance.status(), InstanceStatus::Quarantined(_)));
+    assert_eq!(instance.fuel_remaining(), 0);
+}
+
+/// GHSA-m63x-6p34-q65x (fixed in wasmtime 48.0.3 / 49.0.1): fuel spend
+/// accrued by callees of `call_ref` used to be dropped on return, so a
+/// guest looping through `call_ref` never made its budget move. Function
+/// references are on by default in this engine's config, so the loop is
+/// exactly the shape that must still exhaust: it must end quarantined
+/// with its fuel spent.
+#[test]
+fn call_ref_loop_cannot_evade_the_fuel_guard() {
+    let runtime = runtime(SandboxConfig::default());
+    let compiled = compile_wat(&runtime, &call_ref_loop_component());
     let mut instance = runtime
         .instantiate(&compiled, &manifest(), CapabilitySet::new())
         .unwrap();

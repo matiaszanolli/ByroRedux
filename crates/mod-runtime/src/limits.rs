@@ -56,6 +56,14 @@ const MAX_WASM_STACK_BYTES_CEILING: usize = 1024 * 1024; // 1 MiB
 /// guards against. Same "no legitimate use needs this much headroom
 /// above the default" reasoning: 1e12 is 100,000x the default
 /// `fuel_per_entry` (10e6).
+///
+/// Since wasmtime 48 (upstream #13931) the budget also covers **bytes
+/// moved**, not just instructions: `memory.fill` / `memory.copy` /
+/// `memory.init` cost one fuel unit per byte by default, including
+/// passive data-segment initialisation during instantiation. Pinned by
+/// `memory_fill_is_charged_per_byte_and_quarantines` (per-byte charge)
+/// and `call_ref_loop_cannot_evade_the_fuel_guard` (GHSA-m63x-6p34-q65x,
+/// the fixed-in-48.0.3 `call_ref` fuel-drop) in `tests.rs`.
 const MAX_FUEL_PER_ENTRY: u64 = 1_000_000_000_000;
 
 /// Effective ceilings applied independently to every component instance.
