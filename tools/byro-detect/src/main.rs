@@ -175,7 +175,7 @@ fn parse_args(args: &[String]) -> Result<Option<Options>, String> {
                     .ok_or("--profiles needs a path")?;
                 // #5476 — same absolutisation as the launcher: this
                 // tool's cwd is not where its outputs resolve later.
-                let path = absolutise_against_cwd(&value);
+                let path = absolutise_against_cwd(value);
                 if options.profiles.replace(path).is_some() {
                     return Err("--profiles given more than once".to_string());
                 }

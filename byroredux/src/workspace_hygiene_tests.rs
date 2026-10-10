@@ -427,7 +427,7 @@ fn no_string_literal_embeds_a_space_run() {
         let Ok(path) = path.canonicalize() else {
             return;
         };
-        if exempt.iter().any(|exempt_path| path == *exempt_path) {
+        if exempt.contains(&path) {
             return;
         }
         for (index, line) in contents.lines().enumerate() {

@@ -81,7 +81,7 @@ fn parse_args(args: Vec<String>) -> Result<Option<Options>, String> {
                 // ENGINE's directory (for both the boot request and
                 // `$BYRO_PROFILES`) and every Play would fail with a
                 // confusing boot-request error.
-                let path = absolutise_against_cwd(&value);
+                let path = absolutise_against_cwd(value);
                 if options.profiles.replace(path).is_some() {
                     return Err("--profiles given more than once".to_string());
                 }

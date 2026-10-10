@@ -288,7 +288,7 @@ fn load_default_from(user_path: Option<&std::path::Path>) -> GameProfileRegistry
     // this is the layer `load_with_user_path` names explicitly).
     if let Some(user_path) = user_path {
         if user_path.exists() {
-            merge_from(&user_path, &mut out);
+            merge_from(user_path, &mut out);
         }
     }
 
@@ -346,18 +346,14 @@ fn merge_from(path: &Path, out: &mut BTreeMap<String, GameProfileEntry>) {
 
 /// The ordered config files to read, shipped-first then per-user
 /// override: `[assets/debug_profiles.toml (CWD or exe-parent), <selected
-/// per-user file>]`, filtered to those that exist. Both `load_default`
-/// (profiles) and [`load_launch_defaults`] consume this so the two stay
-/// in lockstep on which files contribute — and (#5476, completing
-/// #5294) the per-user layer follows the SAME `selected_user_path()`
-/// selector the profile merge uses, so `$BYRO_PROFILES` redirects
-/// `[defaults]` too instead of leaving it on the home file.
-fn ordered_config_paths() -> Vec<PathBuf> {
-    ordered_config_paths_with(selected_user_path().as_deref())
-}
-
-/// [`ordered_config_paths`] with the per-user layer injected — the test
-/// seam for the #5476 redirect.
+/// per-user file>]`, filtered to those that exist. [`load_launch_defaults`]
+/// consumes this so the `[defaults]` layer stays in lockstep with the
+/// profile merge's file selection — and (#5476, completing #5294) the
+/// per-user layer follows the SAME `selected_user_path()` selector the
+/// profile merge uses, so `$BYRO_PROFILES` redirects `[defaults]` too
+/// instead of leaving it on the home file. `user_path` is the injected
+/// per-user layer (the test seam; production callers pass
+/// `selected_user_path().as_deref()`).
 fn ordered_config_paths_with(user_path: Option<&std::path::Path>) -> Vec<PathBuf> {
     let mut paths = Vec::new();
     for shipped in [
