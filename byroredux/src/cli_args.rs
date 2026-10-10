@@ -98,7 +98,7 @@ pub(crate) fn equals_form_diagnostic(args: &[String], flag: &str) -> Option<Stri
     args.iter().find(|a| a.starts_with(&prefix)).map(|found| {
         let value = &found[prefix.len()..];
         format!(
-            "`{found}` was ignored — this CLI takes `{flag} {value}`              (space-separated); the `{flag}=value` form is not recognised"
+            "`{found}` was ignored — this CLI takes `{flag} {value}` (space-separated); the `{flag}=value` form is not recognised"
         )
     })
 }

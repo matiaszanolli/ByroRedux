@@ -97,7 +97,7 @@ fn main() -> anyhow::Result<()> {
     diffs.sort_by(|a, b| b.3.partial_cmp(&a.3).unwrap_or(std::cmp::Ordering::Equal));
 
     println!("\n=== SUMMARY ===");
-    println!("total REFRs:              {}", cell.references.len());
+    println!("total REFRs: {}", cell.references.len());
     println!(
         "multi-axis Euler (≥2 nonzero):  {} ({:.1}%)",
         multi_axis,

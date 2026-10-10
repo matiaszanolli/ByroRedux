@@ -109,9 +109,9 @@ fn main() -> anyhow::Result<()> {
             }
         );
         println!("  absent XCLW (inherit): {absent}");
-        println!("  dry sentinel:          {dry_sentinel}");
+        println!("  dry sentinel: {dry_sentinel}");
         if overrides.is_empty() {
-            println!("  overrides:             none");
+            println!("  overrides: none");
         } else {
             println!("  overrides:");
             for (h, n) in &overrides {

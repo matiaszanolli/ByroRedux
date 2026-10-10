@@ -2314,7 +2314,7 @@ mod upload_geometry_guard_tests {
             .expect("upload_scene_mesh must still feed the global pool");
         assert!(
             guard < accumulate,
-            "the degenerate-geometry guard must precede the global-pool              accumulate, or a zero-index mesh reserves SSBO space it will              never draw from (#3402)",
+            "the degenerate-geometry guard must precede the global-pool accumulate, or a zero-index mesh reserves SSBO space it will never draw from (#3402)",
         );
     }
 }
@@ -2351,7 +2351,7 @@ mod memory_budget_doc_pin_tests {
         let section = BUDGET_MD
             .split_once("### Global geometry SSBO rebuild")
             .expect(
-                "memory-budget.md must carry a geometry-rebuild row — the resumable path                  holds TWO full generations and the page's pool rows are single-generation                  figures (#3463)",
+                "memory-budget.md must carry a geometry-rebuild row — the resumable path holds TWO full generations and the page's pool rows are single-generation figures (#3463)",
             )
             .1;
         let section = section

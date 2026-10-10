@@ -2262,7 +2262,7 @@ mod texture_source_provenance_tests {
             assert_eq!(
                 *source,
                 ImportedTextureSource::Bgsm,
-                "role `{role}` was filled by the merge but kept its default                  provenance — the walk skipped it"
+                "role `{role}` was filled by the merge but kept its default provenance — the walk skipped it"
             );
             seen += 1;
         }
@@ -2352,7 +2352,7 @@ mod size_pin_tests {
         let measured = function_line_count(include_str!("merge.rs"), "fn merge_bgsm_arm(");
         assert!(
             measured <= MERGE_BGSM_ARM_LINE_PIN,
-            "`merge_bgsm_arm` carries {measured} lines (pin {MERGE_BGSM_ARM_LINE_PIN})              — move the new merge arm into a helper and record the decision, rather              than raising the pin (#5096)"
+            "`merge_bgsm_arm` carries {measured} lines (pin {MERGE_BGSM_ARM_LINE_PIN}) — move the new merge arm into a helper and record the decision, rather than raising the pin (#5096)"
         );
     }
 }

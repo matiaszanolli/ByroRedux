@@ -1040,7 +1040,7 @@ mod tests {
         let expected = if a == b { 1 } else { 2 };
         assert_eq!(
             band.distinct_codes, expected,
-            "100 samples carrying {expected} distinct code(s) must report              {expected} — duplicates collapse and order is irrelevant",
+            "100 samples carrying {expected} distinct code(s) must report {expected} — duplicates collapse and order is irrelevant",
         );
     }
 

@@ -1469,7 +1469,7 @@ mod bright_pass_tests {
             let gain = uniform_region_gain(sky);
             assert!(
                 gain < 1.05,
-                "sky at {sky} still takes a {gain}x broadband lift — the knee is not                  separating the diffuse sky from highlights",
+                "sky at {sky} still takes a {gain}x broadband lift — the knee is not separating the diffuse sky from highlights",
             );
         }
     }
@@ -1574,7 +1574,7 @@ mod bright_pass_tests {
             .0;
         assert!(
             body.contains("bright_pass: [bright_pass_enable(i), 0.0, 0.0, 0.0]"),
-            "the down-chain param write must derive the bright-pass enable from the              level index — a literal here silently thresholds every level or none",
+            "the down-chain param write must derive the bright-pass enable from the level index — a literal here silently thresholds every level or none",
         );
     }
 
@@ -1592,7 +1592,7 @@ mod bright_pass_tests {
         ] {
             assert!(
                 src.contains(fragment),
-                "bloom_downsample.comp no longer contains `{fragment}` — the host-side                  mirror `bright_pass_scale` is now pinning a curve the GPU does not run",
+                "bloom_downsample.comp no longer contains `{fragment}` — the host-side mirror `bright_pass_scale` is now pinning a curve the GPU does not run",
             );
         }
         assert!(

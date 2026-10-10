@@ -1227,7 +1227,7 @@ fn per_frame_driver_functions_stay_within_their_size_pins() {
         let measured = function_line_count(source, declaration);
         assert!(
             measured <= pin,
-            "`{declaration}` carries {measured} lines (pin {pin}) — move the new              work into a helper or module and record the decision, rather than              raising the pin (#5096)"
+            "`{declaration}` carries {measured} lines (pin {pin}) — move the new work into a helper or module and record the decision, rather than raising the pin (#5096)"
         );
     }
 }

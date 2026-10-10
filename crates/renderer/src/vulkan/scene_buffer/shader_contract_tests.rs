@@ -2366,10 +2366,10 @@ fn perturb_normal_grad_path2_guards_raw_and_projected_lengths() {
         .expect("Path 2 must normalize the raw numerator only after the guard");
     let projected = body
         .find("if (dot(T, T) < 1e-8)")
-        .expect("Path 2 must keep a post-projection length guard (a non-zero                  raw T parallel to N projects to zero)");
+        .expect("Path 2 must keep a post-projection length guard (a non-zero raw T parallel to N projects to zero)");
     assert!(
         raw < first_norm && first_norm < projected,
-        "the raw-length guard must precede the first normalize() — after it          the 0/0 has already happened (#5199) — and the post-projection guard must follow the projection"
+        "the raw-length guard must precede the first normalize() — after it the 0/0 has already happened (#5199) — and the post-projection guard must follow the projection"
     );
 
     // The old Path-1 comment claimed Path 2 "needs no equivalent guard";

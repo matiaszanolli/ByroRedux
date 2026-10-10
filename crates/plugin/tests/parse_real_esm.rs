@@ -5552,7 +5552,7 @@ fn story_manager_skyrim_node_policy_floor() {
     assert!(with_reset >= 70, "RNAM reset floor (measured 75 nodes with a nonzero window): {with_reset}");
     assert!(
         shares_named_without_bit.is_empty(),
-        "every *SHARES*-named quest node carries the shares bit:          {shares_named_without_bit:?}"
+        "every *SHARES*-named quest node carries the shares bit: {shares_named_without_bit:?}"
     );
     assert_eq!(
         event_with_policy, 0,

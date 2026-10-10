@@ -629,7 +629,7 @@ mod tests {
             let distance = (current - destination).length();
             assert!(
                 distance <= last_distance,
-                "propagation must not erase the walk step (distance went                  {last_distance} -> {distance})"
+                "propagation must not erase the walk step (distance went {last_distance} -> {distance})"
             );
             last_distance = distance;
             if distance <= ARRIVE_RADIUS {
@@ -638,7 +638,7 @@ mod tests {
         }
         assert!(
             last_distance <= ARRIVE_RADIUS,
-            "the diner reaches its destination through alternating              system+propagation frames (still {last_distance} away)"
+            "the diner reaches its destination through alternating system+propagation frames (still {last_distance} away)"
         );
     }
 

@@ -1014,7 +1014,7 @@ fn spawn_nif_mesh(
     // 9 -> 23); it just has no business reaching the allocator.
     if mesh.indices.is_empty() {
         log::debug!(
-            "NIF mesh '{}' has {} vertices and no triangles — every partition is                  covered by equipped gear, or the shape is index-less. Nothing to draw;                  skipping upload (#3402).",
+            "NIF mesh '{}' has {} vertices and no triangles — every partition is covered by equipped gear, or the shape is index-less. Nothing to draw; skipping upload (#3402).",
             mesh_name,
             mesh.positions.len(),
         );

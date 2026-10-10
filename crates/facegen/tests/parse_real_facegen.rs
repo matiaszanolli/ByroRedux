@@ -330,7 +330,7 @@ fn parse_vanilla_headhuman_egm_oblivion() {
         );
     }
     eprintln!(
-        "[Oblivion] headhuman.egm: {} verts, {morphs} morphs (record these          in the EXPECT table)",
+        "[Oblivion] headhuman.egm: {} verts, {morphs} morphs (record these in the EXPECT table)",
         egm.num_vertices
     );
 }

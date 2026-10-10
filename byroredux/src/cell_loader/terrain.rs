@@ -1867,7 +1867,7 @@ mod tests {
             assert_eq!(
                 component,
                 [vertex[0], vertex[2]],
-                "TerrainCellOrigin disagrees with the (row 0, col 0) vertex at                  grid ({grid_x}, {grid_y})"
+                "TerrainCellOrigin disagrees with the (row 0, col 0) vertex at grid ({grid_x}, {grid_y})"
             );
             // …and it is the LARGEST z in the cell, since rows run toward -Z.
             let last_row = zup_to_yup_pos([

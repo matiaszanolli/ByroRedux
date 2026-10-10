@@ -356,7 +356,7 @@ fn parse_rate_fo76_materials_corpus() {
     }
 
     eprintln!(
-        "[FO76] parsed {}/{} material files clean; {} JSON-text (allowed);          failures: {}",
+        "[FO76] parsed {}/{} material files clean; {} JSON-text (allowed); failures: {}",
         stats.clean,
         stats.total,
         stats.json_text,

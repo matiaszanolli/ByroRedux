@@ -932,7 +932,7 @@ mod tests {
         assert_eq!(
             slot_to_role(context, 7),
             Some(TextureRole::SmoothSpec),
-            "FO4 slot 7 is the BGSM smooth_spec file itself, and must not              depend on Model_Space_Normals (#2998 evidence, #4424 rerouting)"
+            "FO4 slot 7 is the BGSM smooth_spec file itself, and must not depend on Model_Space_Normals (#2998 evidence, #4424 rerouting)"
         );
     }
 

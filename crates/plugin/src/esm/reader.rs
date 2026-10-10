@@ -881,7 +881,7 @@ impl<'a> EsmReader<'a> {
             let ceiling = record_inflation_ceiling(compressed_len);
             ensure!(
                 decompressed_size <= ceiling,
-                "Compressed record {:08X} declares {} uncompressed bytes from {}                  compressed — over the {} ceiling; plugin is corrupt or hostile",
+                "Compressed record {:08X} declares {} uncompressed bytes from {} compressed — over the {} ceiling; plugin is corrupt or hostile",
                 header.form_id,
                 decompressed_size,
                 compressed_len,
@@ -943,7 +943,7 @@ impl<'a> EsmReader<'a> {
             }
             ensure!(
                 decompressed.len() <= decompressed_size,
-                "Compressed record {:08X} inflated past its declared {} bytes                  — plugin is corrupt or hostile (decompression bomb)",
+                "Compressed record {:08X} inflated past its declared {} bytes — plugin is corrupt or hostile (decompression bomb)",
                 header.form_id,
                 decompressed_size,
             );

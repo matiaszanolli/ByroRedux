@@ -1367,7 +1367,7 @@ mod tests {
         assert_eq!(
             latches.len(),
             2,
-            "expected exactly two dispatch-failure latch sites (absent frame              params, rejected dispatch); found {}",
+            "expected exactly two dispatch-failure latch sites (absent frame params, rejected dispatch); found {}",
             latches.len()
         );
         for tail in latches {

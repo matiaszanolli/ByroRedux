@@ -851,7 +851,7 @@ fn capture_db_file_index(o: &byroredux_sfmaterial::ObjectInstance, idx: &mut DbI
             other => {
                 if idx.field_misses.insert(format!("(list) {other}")) {
                     eprintln!(
-                        "[join-probe] DBFileIndex field {other:?}: List of {}                          (not captured)",
+                        "[join-probe] DBFileIndex field {other:?}: List of {} (not captured)",
                         items.len()
                     );
                 }

@@ -559,7 +559,7 @@ impl AccelerationManager {
                 static ADMISSION_WARNED: std::sync::Once = std::sync::Once::new();
                 ADMISSION_WARNED.call_once(|| {
                     log::warn!(
-                        "Static BLAS batch declined at {idx}/{} meshes: {:.1} MB resident                          + {:.1} MB in-batch is past the {:.1} MB budget and eviction has                          no candidates left. Ray-traced shadows / reflections / GI will                          miss the declined tail; raster is unaffected.",
+                        "Static BLAS batch declined at {idx}/{} meshes: {:.1} MB resident + {:.1} MB in-batch is past the {:.1} MB budget and eviction has no candidates left. Ray-traced shadows / reflections / GI will miss the declined tail; raster is unaffected.",
                         meshes.len(),
                         self.resident_static_blas_bytes() as f64 / (1024.0 * 1024.0),
                         pending_bytes as f64 / (1024.0 * 1024.0),

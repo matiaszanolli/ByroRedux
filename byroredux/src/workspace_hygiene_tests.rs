@@ -365,6 +365,166 @@ fn disposable_example_classifier_knows_the_shipped_marker_spellings() {
     std::fs::remove_dir_all(&root).expect("temp fixture cleanup");
 }
 
+/// #5470 — no string literal embeds a run of 6+ spaces. A Rust `"…\⏎
+///    …"` continuation strips the newline and the leading whitespace,
+/// but prose literals were authored (or re-flowed) as one physical line
+/// with the continuation's indentation left inside — rendered text
+/// reading `stamped onto loaded              exterior cell roots`. The
+/// sweep collapsed every prose run; this gate keeps the class out.
+///
+/// Exemptions, each a real shape this scan must not touch:
+/// - content containing `\n` — source-scan needles, whose spaces match
+///   aligned code (`.find("pub fn new(\n        buffer: …")`);
+/// - literals on a `.contains(` / `.find(` line — output-matching
+///   needles against rendered or aligned text;
+/// - the aligned-table files below — column-aligned help/output tables
+///   where the run IS the formatting (the audit's `display.rs` /
+///   `nif_stats.rs` / `probe_form.rs` trio, plus the same shape
+///   elsewhere).
+#[test]
+fn no_string_literal_embeds_a_space_run() {
+    let exempt: Vec<std::path::PathBuf> = [
+        "tools/byro-dbg/src/display.rs",
+        "crates/nif/examples/nif_stats.rs",
+        "crates/plugin/examples/probe_form.rs",
+        "byroredux/src/commands/assets.rs",
+        "byroredux/src/commands/scene.rs",
+        "byroredux/src/commands/world_info.rs",
+        "byroredux/src/commands/view.rs",
+        "byroredux/src/commands/depth.rs",
+        "byroredux/src/commands_tests.rs",
+        "byroredux/src/sf_smoke.rs",
+        "byroredux/src/main.rs",
+        "crates/renderer/src/vulkan/groundcover.rs",
+        "crates/renderer/src/vulkan/groundcover/construct.rs",
+        "crates/nif/examples/ambient_light_census.rs",
+        "crates/nif/examples/d5_coverage.rs",
+        "crates/nif/examples/import_probe.rs",
+        "crates/plugin/examples/dump_navmesh.rs",
+        "crates/plugin/examples/obl_info_probe.rs",
+        "crates/plugin/examples/sf_smoke.rs",
+        "crates/scripting/examples/mq101_conformance.rs",
+        "crates/scripting/examples/quest_fragment_populate.rs",
+        "tools/byro-detect/src/main.rs",
+        "tools/byro-launcher/src/main.rs",
+    ]
+    .iter()
+    .map(|rel| {
+        // Canonicalise: `visit` receives `..`-free paths from the walks,
+        // and a textual `byroredux/../byroredux/...` never compares equal.
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join(rel)
+            .canonicalize()
+            .unwrap_or_else(|_| std::path::PathBuf::from(rel))
+    })
+    .collect();
+
+    let mut offenders: Vec<String> = Vec::new();
+    let mut visit = |path: &std::path::Path, contents: &str| {
+        // Both sides canonicalised: the walks build `..`-bearing paths
+        // (`byroredux/../crates/…`), which never compare equal textually.
+        let Ok(path) = path.canonicalize() else {
+            return;
+        };
+        if exempt.iter().any(|exempt_path| path == *exempt_path) {
+            return;
+        }
+        for (index, line) in contents.lines().enumerate() {
+            if line.contains(".contains(\"") || line.contains(".find(\"") {
+                continue;
+            }
+            for span in string_literal_spans(line) {
+                if span.contains("\\n") || span.starts_with(' ') {
+                    continue;
+                }
+                if let Some(start) = embedded_space_run(&span) {
+                    offenders.push(format!(
+                        "{}:{}: …{}…",
+                        path.display(),
+                        index + 1,
+                        &span[start.0..start.1],
+                    ));
+                }
+            }
+        }
+    };
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    visit_workspace_rs_files(&manifest.join("src"), &mut visit);
+    visit_workspace_rs_files(&manifest.join("examples"), &mut visit);
+    visit_workspace_rs_files(&manifest.join("tests"), &mut visit);
+    for root in [
+        manifest.join("../crates"),
+        manifest.join("../tools"),
+    ] {
+        let Ok(entries) = std::fs::read_dir(&root) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                visit_workspace_rs_files(&path, &mut visit);
+            } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
+                if let Ok(contents) = std::fs::read_to_string(&path) {
+                    visit(&path, &contents);
+                }
+            }
+        }
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "found {} string literal(s) embedding a run of 6+ spaces — the \
+         collapsed-continuation shape of #5470. Re-wrap the literal with a \
+         backslash line continuation; if the run is column-aligned table \
+         formatting, extend the exemption list with the file and a one-line \
+         reason:\n{}",
+        offenders.len(),
+        offenders.join("\n"),
+    );
+}
+
+/// Byte range of a run of 6+ spaces with a non-space on both sides,
+/// inside one string-literal body. `None` when no such run exists.
+fn embedded_space_run(span: &str) -> Option<(usize, usize)> {
+    let bytes = span.as_bytes();
+    let mut run_start = None;
+    for (i, byte) in bytes.iter().enumerate() {
+        if *byte == b' ' {
+            if run_start.is_none() {
+                run_start = Some(i);
+            }
+        } else if let Some(start) = run_start {
+            if i - start >= 6 && start > 0 {
+                return Some((start, i));
+            }
+            run_start = None;
+        }
+    }
+    None
+}
+
+/// The double-quoted spans of one source line. Single-file helper for
+/// [`no_string_literal_embeds_a_space_run`] — no escape handling beyond
+/// a closing quote, which no scanned literal pairs mid-span.
+fn string_literal_spans(line: &str) -> Vec<String> {
+    let mut spans = Vec::new();
+    let bytes = line.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'"' {
+            if let Some(end) = line[i + 1..].find('"') {
+                spans.push(line[i + 1..i + 1 + end].to_string());
+                i += end + 2;
+                continue;
+            }
+            break;
+        }
+        i += 1;
+    }
+    spans
+}
+
 /// #3869 — every mention of the deleted render-time `Material::classify_pbr`
 /// must be framed as historic.
 ///

@@ -962,7 +962,7 @@ mod record_geometry_pass_size_pin_tests {
         );
         assert!(
             measured <= RECORD_GEOMETRY_PASS_LINE_PIN,
-            "`record_geometry_pass` carries {measured} lines (pin              {RECORD_GEOMETRY_PASS_LINE_PIN}) — move the new work into a helper              and record the decision, rather than raising the pin (#5096)"
+            "`record_geometry_pass` carries {measured} lines (pin {RECORD_GEOMETRY_PASS_LINE_PIN}) — move the new work into a helper and record the decision, rather than raising the pin (#5096)"
         );
     }
 }

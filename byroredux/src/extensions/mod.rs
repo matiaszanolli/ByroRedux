@@ -532,7 +532,7 @@ mod delivery_plumbing_shape_tests {
         let occurrences = src.match_indices(&literal).count();
         assert_eq!(
             occurrences, 2,
-            "expected exactly two `{literal}` in production — the macro body              and `apply_delivery_result`'s destructuring — found {occurrences}.              A hand-written literal is back; use `delivery_commit_context!` so              a new pending-command queue stays a one-line change."
+            "expected exactly two `{literal}` in production — the macro body and `apply_delivery_result`'s destructuring — found {occurrences}. A hand-written literal is back; use `delivery_commit_context!` so a new pending-command queue stays a one-line change."
         );
     }
 
@@ -562,7 +562,7 @@ mod delivery_plumbing_shape_tests {
         assert_eq!(
             src.match_indices(&legacy).count(),
             2,
-            "`{legacy}` must be called only from `enter_guest` and the              instantiation seed in `load`"
+            "`{legacy}` must be called only from `enter_guest` and the instantiation seed in `load`"
         );
         assert!(
             src.contains("fn enter_guest("),

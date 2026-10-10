@@ -165,8 +165,8 @@ fn main() {
     }
 
     println!("\n=== SUMMARY ===");
-    println!("files parsed:          {}", stats.files);
-    println!("parse failures:        {}", stats.parse_fail);
+    println!("files parsed: {}", stats.files);
+    println!("parse failures: {}", stats.parse_fail);
     println!("AV blocks examined:    {}", stats.av_blocks);
     println!(
         "uniform-scale matrices:    {} ({:.2}%)",
@@ -179,7 +179,7 @@ fn main() {
         pct(stats.nonuniform_scale, stats.av_blocks)
     );
     println!(
-        "sheared matrices:          {} ({:.2}%)",
+        "sheared matrices: {} ({:.2}%)",
         stats.shear,
         pct(stats.shear, stats.av_blocks)
     );

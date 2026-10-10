@@ -736,7 +736,7 @@ pub(crate) fn retry_cinematic_readoption(
     }
     if dropped > 0 {
         log::info!(
-            "cinematic re-adoption: {dropped} pending entit(y/ies) were despawned              outside cell teardown and dropped (#3817)"
+            "cinematic re-adoption: {dropped} pending entit(y/ies) were despawned outside cell teardown and dropped (#3817)"
         );
     }
     if adopted > 0 || dropped > 0 {
@@ -2045,7 +2045,7 @@ mod tests {
         }
         assert!(
             released,
-            "the tether must release once the authored route terminal is              reached — retention would otherwise be permanent (#3817)"
+            "the tether must release once the authored route terminal is reached — retention would otherwise be permanent (#3817)"
         );
 
         // (b) rider detachment: attachment gone, seat bookkeeping kept so
@@ -2103,7 +2103,7 @@ mod tests {
                     .get(&cell_root)
                     .is_some_and(|owned| owned.contains(&cart) && owned.contains(&rider)))
                 .unwrap_or(false),
-            "the re-adoption must be registered in the unload index, or the              next cell unload cannot find them"
+            "the re-adoption must be registered in the unload index, or the next cell unload cannot find them"
         );
     }
 

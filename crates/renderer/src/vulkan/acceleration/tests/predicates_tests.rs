@@ -440,7 +440,7 @@ fn blas_admission_exhausted_only_closes_once_eviction_is_out_of_candidates() {
     // few frames later, so the batch must keep going.
     assert!(
         !blas_admission_exhausted(1_200_000_000, 0, budget, true),
-        "the gate must not close while eviction still has candidates — that          would decline batches the next eviction pass could have made room for"
+        "the gate must not close while eviction still has candidates — that would decline batches the next eviction pass could have made room for"
     );
 
     // Same state, eviction reclaimed nothing: no further iteration can bring
@@ -1575,7 +1575,7 @@ fn the_reservation_covers_both_extents_and_the_upscaler_sdk() {
     );
     assert!(
         upscaled > render_only,
-        "a 1080p output over a 720p render must reserve more than a 720p          output does — the upscale outputs live at the OUTPUT extent (#3988)"
+        "a 1080p output over a 720p render must reserve more than a 720p output does — the upscale outputs live at the OUTPUT extent (#3988)"
     );
     assert_eq!(
         upscaled - render_only,

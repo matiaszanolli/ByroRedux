@@ -1335,7 +1335,7 @@ mod tests {
         let preserved = prismatic_separation_after_one_step(10.0, 0.6, 100.0);
         assert!(
             (preserved - 60.0).abs() < 1e-2,
-            "the seeded 10-unit slide must survive the first step — got              {preserved}. The pre-fix code seeded 0.6 (the twist in radians)              and produced ~50.6."
+            "the seeded 10-unit slide must survive the first step — got {preserved}. The pre-fix code seeded 0.6 (the twist in radians) and produced ~50.6."
         );
 
         // The control that makes the assertion above load-bearing: with no
@@ -1344,7 +1344,7 @@ mod tests {
         let untwisted = prismatic_separation_after_one_step(10.0, 0.0, 100.0);
         assert!(
             (untwisted - 60.0).abs() < 1e-2,
-            "the slide must be seeded from the pose regardless of twist —              got {untwisted}"
+            "the slide must be seeded from the pose regardless of twist — got {untwisted}"
         );
     }
 

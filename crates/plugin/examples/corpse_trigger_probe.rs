@@ -82,7 +82,7 @@ fn main() -> anyhow::Result<()> {
             }
         );
         println!(
-            "placements with XLKR: {linked_placements}; linked targets resolved to              npc/crea records: {linked_positive} (raw set {})",
+            "placements with XLKR: {linked_placements}; linked targets resolved to npc/crea records: {linked_positive} (raw set {})",
             linked_targets.len()
         );
         for cell in index

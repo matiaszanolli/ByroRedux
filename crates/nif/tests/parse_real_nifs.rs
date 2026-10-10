@@ -226,7 +226,7 @@ fn run_game(game: Game, limit: Option<usize>) {
     assert_eq!(
         totals.guessed_recoveries,
         0,
-        "[{}] {} block(s) were skipped by an inferred distance (Oblivion-era          median size cache / oblivion_skip_sizes) rather than one the file          declares. Every shipped corpus measures zero here, so this is an          upstream parser bug being papered over, not a recovery: find the          block type that started failing (RUST_LOG=byroredux_nif=info names          it) rather than raising this bound (#3926)",
+        "[{}] {} block(s) were skipped by an inferred distance (Oblivion-era median size cache / oblivion_skip_sizes) rather than one the file declares. Every shipped corpus measures zero here, so this is an upstream parser bug being papered over, not a recovery: find the block type that started failing (RUST_LOG=byroredux_nif=info names it) rather than raising this bound (#3926)",
         game.label(),
         totals.guessed_recoveries,
     );
@@ -855,7 +855,7 @@ fn real_archive_torch_meshes_surface_particle_emitters() {
         let n = *emitters as f64;
         if (*params as f64) < n * MIN_PARAMS_FRACTION {
             magnitude_failures.push(format!(
-                "{}: only {}/{} emitters decoded finite positive                  initial_radius+life_span (floor {:.0}%)",
+                "{}: only {}/{} emitters decoded finite positive initial_radius+life_span (floor {:.0}%)",
                 game.label(),
                 params,
                 emitters,
@@ -864,7 +864,7 @@ fn real_archive_torch_meshes_surface_particle_emitters() {
         }
         if (*budget as f64) < n * MIN_BUDGET_FRACTION {
             magnitude_failures.push(format!(
-                "{}: only {}/{} emitters decoded a non-zero BS Max Vertices                  budget (floor {:.0}%)",
+                "{}: only {}/{} emitters decoded a non-zero BS Max Vertices budget (floor {:.0}%)",
                 game.label(),
                 budget,
                 emitters,

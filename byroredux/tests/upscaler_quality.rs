@@ -193,7 +193,7 @@ fn fsr_presets_on_game_content_report_only() {
         std::env::var("BYROREDUX_QUALITY_CELL"),
     ) else {
         eprintln!(
-            "skipped: set BYROREDUX_QUALITY_GAME and BYROREDUX_QUALITY_CELL              (e.g. fo4 / DmndDugoutInn01) to score real game content"
+            "skipped: set BYROREDUX_QUALITY_GAME and BYROREDUX_QUALITY_CELL (e.g. fo4 / DmndDugoutInn01) to score real game content"
         );
         return;
     };

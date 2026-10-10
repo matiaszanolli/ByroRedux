@@ -949,7 +949,7 @@ fn save_type_discovery_walks_every_workspace_crate() {
         let root_str = normalize(&root);
         assert!(
             candidates.iter().any(|c| normalize(c).starts_with(&root_str)),
-            "scan root {root_str} yielded no candidate file — save_type_sources              is not walking every discovered root"
+            "scan root {root_str} yielded no candidate file — save_type_sources is not walking every discovered root"
         );
     }
 

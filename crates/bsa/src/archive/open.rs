@@ -129,7 +129,7 @@ impl BsaArchive {
                 ));
             }
             log::debug!(
-                "BSA folder table starts at {folders_offset}, not the usual {HEADER_LEN} —                  seeking (extended/padded header)"
+                "BSA folder table starts at {folders_offset}, not the usual {HEADER_LEN} — seeking (extended/padded header)"
             );
             reader.seek(SeekFrom::Start(folders_offset))?;
         }
@@ -442,7 +442,7 @@ impl BsaArchive {
                 .map(|(p, _)| p.as_str())
                 .unwrap_or("<none>");
             log::debug!(
-                "BSA: unknown size-word flag (bit 31 / 0x80000000) set on {} of {}                  file record(s), e.g. '{}'. Its meaning is unsourced, so it is                  ignored — the embedded-name skip follows the archive-level                  0x100 flag alone. See #3367.",
+                "BSA: unknown size-word flag (bit 31 / 0x80000000) set on {} of {} file record(s), e.g. '{}'. Its meaning is unsourced, so it is ignored — the embedded-name skip follows the archive-level 0x100 flag alone. See #3367.",
                 unknown_flag_count,
                 files.len(),
                 example,

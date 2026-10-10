@@ -1358,7 +1358,7 @@ mod tests {
             selected
                 .iter()
                 .any(|&(_, _qx, qy)| qy.rem_euclid(4) == 2),
-            "a y-residue-2 lattice is unreachable from any origin derivation —              the #5222 population"
+            "a y-residue-2 lattice is unreachable from any origin derivation — the #5222 population"
         );
         // The player's own ground is covered by SOME selected quad.
         assert!(
@@ -1392,7 +1392,7 @@ mod tests {
             selected
                 .iter()
                 .any(|&(level, qx, qy)| level == 8 && quad_min_chebyshev(qx, qy, 8, player) < 16),
-            "with no finer level authored, the near band is the level-8              quads' own — the 8..15-cell hollow must not exist (#5222/#3502)"
+            "with no finer level authored, the near band is the level-8 quads' own — the 8..15-cell hollow must not exist (#5222/#3502)"
         );
     }
 
@@ -1424,7 +1424,7 @@ mod tests {
                 for x in qx..qx + level {
                     assert!(
                         covered.insert((x, y)),
-                        "cell ({x}, {y}) covered twice by level-{level} quad                          ({qx}, {qy}) — the seam suppression failed"
+                        "cell ({x}, {y}) covered twice by level-{level} quad ({qx}, {qy}) — the seam suppression failed"
                     );
                 }
             }

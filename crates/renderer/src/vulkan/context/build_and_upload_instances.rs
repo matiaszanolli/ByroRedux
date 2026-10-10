@@ -1845,7 +1845,7 @@ mod rigid_history_suppression_tests {
         );
         assert!(
             draw.contains(".mark_dispatch_completed(fsr_reset_delivered);"),
-            "a completed dispatch may only clear the reset THIS frame delivered —              clearing unconditionally swallows a reset raised later in the frame,              which is exactly where both record_post_passes callers signal from"
+            "a completed dispatch may only clear the reset THIS frame delivered — clearing unconditionally swallows a reset raised later in the frame, which is exactly where both record_post_passes callers signal from"
         );
     }
 }

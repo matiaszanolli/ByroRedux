@@ -29,7 +29,7 @@ impl ConsoleCommand for DepthStatsCommand {
     }
 
     fn description(&self) -> &str {
-        "Capture the depth buffer and report measured vs analytic depth resolution          (#3308); `depth.stats reversed` decodes a reversed-Z capture"
+        "Capture the depth buffer and report measured vs analytic depth resolution (#3308); `depth.stats reversed` decodes a reversed-Z capture"
     }
 
     fn execute(&self, world: &World, args: &str) -> CommandOutput {
