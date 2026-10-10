@@ -1596,40 +1596,45 @@ pub(crate) fn integrate_vertical(
 /// Resolve one controller tick's ground-contact bit, and the vertical
 /// velocity that follows from it.
 ///
-/// #3799 — `result.grounded` alone is not a usable answer for a capsule
-/// that is already at rest. The grounded branch of
-/// [`character_controller_system`] asks the KCC for the *exact* gap to the
-/// support surface (#2857, so a convex floor can't be tunnelled), and a
-/// capsule already sitting at resting contact makes that gap ~0. A
-/// zero-length sweep is precisely the input for which Rapier's KCC cannot
-/// observe contact, so it answers `grounded = false` — gravity unlocks, the
-/// next frame requests a real ~0.9 BU descent, that sweep *does* hit the
-/// floor, and the writeback re-grounds. The result was a two-frame limit
-/// cycle on a body that never moved: `is_grounded` alternating every frame
-/// forever, `vertical_velocity` sawtoothing between ~-25 and ~-60, jump
-/// input (which gates on `is_grounded`) silently dropped on half of all
+/// #3799 — when this landed, `result.grounded` alone was not a usable
+/// answer for a capsule already at rest: rapier 0.22's KCC could not
+/// observe contact on a zero-length sweep, and a capsule sitting at
+/// resting contact made the grounded branch's exact-gap request (#2857,
+/// so a convex floor can't be tunnelled) exactly that. The KCC answered
+/// `grounded = false` — gravity unlocked, the next frame requested a real
+/// ~0.9 BU descent, that sweep *did* hit the floor, and the writeback
+/// re-grounded. The result was a two-frame limit cycle on a body that
+/// never moved: `is_grounded` alternating every frame forever,
+/// `vertical_velocity` sawtoothing between ~-25 and ~-60, jump input
+/// (which gates on `is_grounded`) silently dropped on half of all
 /// frames, and the M28.5 diagnostic firing on 58% of them.
 ///
-/// The fix is to stop discarding an answer already paid for: when the
-/// grounded branch's downward capsule sweep found a support surface within
-/// `step_height + offset`, the capsule *is* standing on something, whatever
-/// a degenerate sweep reports. `probe_found_support` is false whenever that
-/// probe didn't run — see [`support_probe_enabled`], which owns the three
-/// suppressions (airborne, swimming, jump-launch frame) and is pinned
-/// separately under #3972 — so this can neither keep a falling character
-/// grounded nor re-ground a jump on its launch frame.
+/// rapier 0.36 closed that hole — its grounded branch calls the grounded
+/// check explicitly when the move is below 1e-5
+/// (`control/character_controller.rs`), pinned by
+/// `kcc_reports_grounded_for_a_capsule_at_rest` in the physics crate —
+/// so the OR below is no longer a workaround for a rapier bug. It stays
+/// as a defence, and because the probe still does two jobs the KCC
+/// verdict cannot: the grounded branch's surface correction rides on the
+/// probe's hit (the exact gap the #2857 policy clamps), so dropping the
+/// probe would reintroduce the 0.05 BU/frame creep on inclined
+/// TriMeshes; and — #3971 — `probe_found_support` requires a **walkable**
+/// hit normal (`scene::min_walkable_normal_y`), while rapier's
+/// `result.grounded` accepts anything within 89.94° of up — before #3971
+/// an exterior rock face steeper than `max_slope_climb_deg` set
+/// `grounded` — and therefore enabled jump — on a slope
+/// `plan_character_spawn` refuses to stand the player on at all. The OR
+/// means this operand can only ever ADD ground contact the KCC missed,
+/// so it must stay at least as strict as the engine's own standability
+/// policy. Consumers this bit grows (fall damage, footsteps, locomotion
+/// state) inherit that discipline rather than having to know about it.
 ///
-/// #3971 — `probe_found_support` additionally requires a **walkable** hit
-/// normal (`scene::min_walkable_normal_y`), while the probe's own vertical
-/// correction still uses the raw hit. The OR below means this operand can
-/// only ever ADD ground contact the KCC missed, so it must be at least as
-/// strict as the engine's own standability policy: rapier's `result.grounded`
-/// accepts anything within 89.94° of up, and before #3971 an exterior rock
-/// face steeper than `max_slope_climb_deg` set `grounded` — and therefore
-/// enabled jump — on a slope `plan_character_spawn` refuses to stand the
-/// player on at all. Consumers this bit grows (fall damage, footsteps,
-/// locomotion state) inherit that discipline rather than having to know about
-/// it.
+/// The probe's answer is still only trusted when the probe actually ran:
+/// `probe_found_support` is false whenever that probe didn't run — see
+/// [`support_probe_enabled`], which owns the three suppressions
+/// (airborne, swimming, jump-launch frame) and is pinned separately under
+/// #3972 — so this can neither keep a falling character grounded nor
+/// re-ground a jump on its launch frame.
 /// Whether the per-frame downward support probe runs this frame.
 ///
 /// #3972 / PHYS-D5-2026-09-06-02 — extracted from
@@ -2564,13 +2569,17 @@ mod tests {
     }
 
     /// #3799 — a capsule standing still must stay grounded. Models the
-    /// production two-frame cycle exactly: while `is_grounded` holds, the
-    /// controller asks the KCC for the (~zero) gap to the support surface
-    /// that #2857 clamped it to, and the KCC cannot observe contact on a
-    /// degenerate sweep — so its verdict is `false` on every grounded
-    /// frame, forever. Pre-fix the writeback took that verdict at face
-    /// value and the state alternated every frame; the support probe's own
-    /// answer has to carry it.
+    /// two-frame cycle that rapier 0.22 produced: while `is_grounded`
+    /// held, the controller asked the KCC for the (~zero) gap to the
+    /// support surface that #2857 clamped it to, and that KCC could not
+    /// observe contact on a degenerate sweep — so its verdict was `false`
+    /// on every grounded frame, forever. Pre-fix the writeback took that
+    /// verdict at face value and the state alternated every frame; the
+    /// support probe's own answer has to carry it. (rapier 0.36 answers
+    /// `grounded` correctly for a capsule at rest — pinned by
+    /// `kcc_reports_grounded_for_a_capsule_at_rest` in the physics crate —
+    /// so the literal here models the historical input the OR must keep
+    /// surviving, not today's KCC.)
     ///
     /// The constants come from the preset rather than literals — #2886.
     #[test]

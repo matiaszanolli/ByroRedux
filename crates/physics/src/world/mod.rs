@@ -3088,6 +3088,66 @@ mod tests {
         assert!(!w.add_force(dead, up, true), "dead handle must be a no-op");
     }
 
+    /// #3799 re-check against rapier 0.36: a capsule resting at the KCC
+    /// offset above a floor, driven with ~zero desired translation, must
+    /// report `grounded` on every frame. rapier 0.22 could not observe
+    /// contact on a zero-length move — "a zero-length sweep is precisely
+    /// the input for which Rapier's KCC cannot observe contact", the
+    /// original reason the engine-side support probe ORs into the KCC
+    /// verdict. rapier 0.36's grounded branch calls the grounded check
+    /// explicitly when the move is below 1e-5
+    /// (`control/character_controller.rs`), and since 0.35 snap-to-ground
+    /// fires on any movement that is not upward. The probe stays for its
+    /// other two jobs — slope-drift correction and the #3971
+    /// unwalkable-slope screen — but this pins which case the OR is no
+    /// longer needed for. The existing #3799 tests feed the KCC verdict
+    /// in as a literal; this one exercises real rapier.
+    #[test]
+    fn kcc_reports_grounded_for_a_capsule_at_rest() {
+        let mut w = PhysicsWorld::new();
+        // Floor slab with its top surface at y = 0.
+        let floor = w.bodies.insert(RigidBodyBuilder::fixed().build());
+        w.colliders.insert_with_parent(
+            ColliderBuilder::cuboid(200.0, 10.0, 200.0)
+                .translation(Vector::new(0.0, -10.0, 0.0))
+                .build(),
+            floor,
+            &mut w.bodies,
+        );
+        w.update_query_pipeline();
+
+        // Production `CharacterController::HUMAN` extents and KCC
+        // settings (half-height 46, radius 18; offset 4 BU, snap 32,
+        // autostep 32/8, climb 50°). The capsule rests with its bottom
+        // `kcc_offset_bu` above the floor: centre y = 46 + 18 + 4 = 68.
+        let params = |pos: Vec3| CharacterMoveParams {
+            capsule_half_height: 46.0,
+            capsule_radius: 18.0,
+            position: pos,
+            desired_translation: Vec3::ZERO,
+            dt: PHYSICS_DT,
+            max_slope_climb_deg: 50.0,
+            step_height: 32.0,
+            step_min_width: 8.0,
+            snap_to_ground: 32.0,
+            exclude_collider: None,
+            filter_groups: None,
+            kcc_offset_bu: 4.0,
+        };
+
+        let mut pos = Vec3::new(0.0, 68.0, 0.0);
+        for frame in 0..60 {
+            let result = w.move_character(params(pos));
+            assert!(
+                result.grounded,
+                "frame {frame}: KCC lost grounded for a capsule at rest \
+                 (centre y = {})",
+                pos.y
+            );
+            pos += result.translation;
+        }
+    }
+
     /// Test helper: a 100×40×4 BU wall at `pos`, optionally a sensor.
     /// Mirrors what `register_newcomers` builds for a Havok layer-15
     /// (`*_NONCOLLIDABLE`) body since #2549.
