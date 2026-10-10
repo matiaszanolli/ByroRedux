@@ -9,22 +9,32 @@ use crate::types::NiTransform;
 use super::super::coord::{zup_matrix_to_yup_quat, zup_point_to_yup};
 use super::super::transform::compose_transforms;
 use super::node_attrs::is_editor_marker;
-use super::{as_ni_node, resolve_affected_node_names, switch_active_children};
+use super::{as_ni_node, resolve_affected_node_names, revisit_guard, switch_active_children};
 
 /// Recursively walk the scene graph accumulating world-space transforms
 /// and collecting any `NiTextureEffect` block encountered. Mirrors
 /// [`walk_node_lights`] one-for-one — the only difference is the
 /// downcast type and the data captured at the leaf. See #891.
+///
+/// #5485 — `visited` (from [`new_visited`], one bitset per entry point)
+/// bounds the walk to one visit per block, and the recursion carries a
+/// depth bounded by `MAX_NIF_NODE_DEPTH`. Pre-fix a self-referencing
+/// `NiNode` recursed forever here: this walker had neither guard.
 pub(crate) fn walk_node_texture_effects(
     scene: &NifScene,
     block_idx: usize,
     parent_transform: &NiTransform,
+    visited: &mut Vec<bool>,
+    depth: u32,
     pool: &mut byroredux_core::string::StringPool,
     out: &mut Vec<crate::import::ImportedTextureEffect>,
 ) {
     let Some(block) = scene.get(block_idx) else {
         return;
     };
+    if !revisit_guard(visited, block_idx, depth, "walk_node_texture_effects") {
+        return;
+    }
 
     // NiSwitchNode / NiLODNode: only walk the active children (#718).
     if let Some((node, active_children)) = switch_active_children(block) {
@@ -36,7 +46,7 @@ pub(crate) fn walk_node_texture_effects(
         }
         let world_transform = compose_transforms(parent_transform, &node.av.transform);
         for idx in active_children {
-            walk_node_texture_effects(scene, idx, &world_transform, pool, out);
+            walk_node_texture_effects(scene, idx, &world_transform, visited, depth + 1, pool, out);
         }
         return;
     }
@@ -51,7 +61,7 @@ pub(crate) fn walk_node_texture_effects(
         let world_transform = compose_transforms(parent_transform, &node.av.transform);
         for child_ref in &node.children {
             if let Some(idx) = child_ref.index() {
-                walk_node_texture_effects(scene, idx, &world_transform, pool, out);
+                walk_node_texture_effects(scene, idx, &world_transform, visited, depth + 1, pool, out);
             }
         }
         return;

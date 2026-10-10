@@ -81,6 +81,8 @@ pub fn import_nif_particle_emitters(scene: &NifScene) -> Vec<ImportedParticleEmi
     };
     let mut inherited_props = Vec::new();
     let mut pool = StringPool::new();
+    // #5485 — one revisit bitset per entry point bounds hostile graphs.
+    let mut visited = walk::new_visited(scene);
     walk::walk_node_particle_emitters_flat(
         scene,
         root_idx,
@@ -88,6 +90,8 @@ pub fn import_nif_particle_emitters(scene: &NifScene) -> Vec<ImportedParticleEmi
         None,
         &mut inherited_props,
         &mut pool,
+        &mut visited,
+        0,
         &mut out,
     );
     let scale = units::length_scale(scene);
@@ -183,6 +187,7 @@ fn import_nif_scene_impl(
         pool,
         resolver,
         inherited_billboard: None,
+        visited: &mut walk::new_visited(scene),
     };
     walk::walk_node_hierarchical(&mut hier_ctx, root_idx, None, 0);
 
@@ -439,6 +444,7 @@ fn import_nif_impl(
         pool,
         resolver,
         inherited_billboard: None,
+        visited: &mut walk::new_visited(scene),
     };
     walk::walk_node_flat(&mut flat_ctx, root_idx, &NiTransform::default(), 0);
     units::meshes(scene, &mut meshes);
@@ -511,7 +517,9 @@ pub fn import_nif_lights(scene: &NifScene) -> Vec<ImportedLight> {
     let Some(root_idx) = scene.root_index else {
         return lights;
     };
-    walk::walk_node_lights(scene, root_idx, &NiTransform::default(), &mut lights);
+    // #5485 — one revisit bitset per entry point bounds hostile graphs.
+    let mut visited = walk::new_visited(scene);
+    walk::walk_node_lights(scene, root_idx, &NiTransform::default(), &mut visited, 0, &mut lights);
     let scale = units::length_scale(scene);
     if scale != 1.0 {
         for light in &mut lights {
@@ -543,7 +551,17 @@ pub fn import_nif_texture_effects(
     let Some(root_idx) = scene.root_index else {
         return effects;
     };
-    walk::walk_node_texture_effects(scene, root_idx, &NiTransform::default(), pool, &mut effects);
+    // #5485 — one revisit bitset per entry point bounds hostile graphs.
+    let mut visited = walk::new_visited(scene);
+    walk::walk_node_texture_effects(
+        scene,
+        root_idx,
+        &NiTransform::default(),
+        &mut visited,
+        0,
+        pool,
+        &mut effects,
+    );
     let scale = units::length_scale(scene);
     if scale != 1.0 {
         for effect in &mut effects {
@@ -599,6 +617,7 @@ fn import_nif_with_collision_impl(
         pool,
         resolver,
         inherited_billboard: None,
+        visited: &mut walk::new_visited(scene),
     };
     walk::walk_node_flat(&mut flat_ctx, root_idx, &NiTransform::default(), 0);
     units::meshes(scene, &mut meshes);

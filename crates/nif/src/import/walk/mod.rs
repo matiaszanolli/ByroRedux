@@ -252,11 +252,62 @@ pub(super) fn particle_system_is_culled(
         })
 }
 
-/// Maximum recursion depth for `walk_node_hierarchical` and
-/// `walk_node_flat`. Bethesda-shipped NIFs nest at most a few dozen
-/// nodes deep; the cap stops a malformed or adversarial file from
-/// crashing the parser via stack overflow (#1269 / SAFE-DIM3-NEW-01).
+/// Maximum recursion depth for the node walkers. Bethesda-shipped NIFs
+/// nest at most a few dozen nodes deep; the cap stops a malformed or
+/// adversarial file from crashing the parser via stack overflow
+/// (#1269 / SAFE-DIM3-NEW-01). #5485 extended it to the three
+/// satellite walkers, which had no bound at all — a single
+/// self-referencing `NiNode` recursed forever there even after #1269.
 pub(crate) const MAX_NIF_NODE_DEPTH: u32 = 128;
+
+/// #5485 — fresh per-walk "already visited" bitset, one bit per block.
+///
+/// `NiNode.children` holds raw on-disk `BlockRef`s and nothing checks
+/// the graph is a tree: a child can name the node itself or an
+/// ancestor, and shared children make the walk visit 2^depth paths even
+/// with no cycle. The 128,377-file vanilla census (FNV / Oblivion / SSE
+/// / FO4 / Starfield) found zero multi-parent and zero self-referenced
+/// children, so "each block at most once" changes no vanilla import —
+/// it only bounds hostile or corrupt files. Both node walkers carry the
+/// bitset in their ctx; the three satellites take it as a parameter.
+pub(crate) fn new_visited(scene: &NifScene) -> Vec<bool> {
+    vec![false; scene.blocks.len()]
+}
+
+/// #5485 — shared revisit + depth guard for every walker entry. Marks
+/// `block_idx` visited on first contact (even if the caller then drops
+/// the block as culled/editor-marker — a repeat reference must not
+/// re-walk it), and enforces the [`MAX_NIF_NODE_DEPTH`] stack bound.
+/// `walker` names the site in the bail logs.
+pub(crate) fn revisit_guard(
+    visited: &mut [bool],
+    block_idx: usize,
+    depth: u32,
+    walker: &str,
+) -> bool {
+    if depth > MAX_NIF_NODE_DEPTH {
+        log::warn!(
+            "{walker}: depth cap {} hit at block {} — aborting subtree (#1269)",
+            MAX_NIF_NODE_DEPTH,
+            block_idx,
+        );
+        return false;
+    }
+    match visited.get_mut(block_idx) {
+        Some(seen) => {
+            if *seen {
+                log::debug!(
+                    "{walker}: block {} already walked — skipping repeat reference (#5485)",
+                    block_idx,
+                );
+                return false;
+            }
+            *seen = true;
+            true
+        }
+        None => true, // out-of-table index; the caller's scene.get handles it
+    }
+}
 
 /// Long-lived context threaded through [`walk_node_hierarchical`]'s
 /// recursion: the read-only scene + resolver and the mutable output /
@@ -281,6 +332,9 @@ pub(super) struct HierWalkCtx<'a> {
     /// camera. Save/restore around recursion in the `as_ni_node` branch,
     /// same stack discipline as `inherited_props`.
     pub inherited_billboard: Option<u16>,
+    /// #5485 — per-walk revisit guard (see [`new_visited`]). One bitset
+    /// per entry point, shared across the whole recursion.
+    pub visited: &'a mut Vec<bool>,
 }
 
 /// Recursively walk the scene graph, preserving hierarchy.
@@ -293,18 +347,12 @@ pub(super) fn walk_node_hierarchical(
 ) {
     let scene = ctx.scene;
     let resolver = ctx.resolver;
-    if depth > MAX_NIF_NODE_DEPTH {
-        log::warn!(
-            "walk_node_hierarchical: depth cap {} hit at block {} — \
-             aborting subtree (#1269)",
-            MAX_NIF_NODE_DEPTH,
-            block_idx,
-        );
-        return;
-    }
     let Some(block) = scene.get(block_idx) else {
         return;
     };
+    if !revisit_guard(ctx.visited, block_idx, depth, "walk_node_hierarchical") {
+        return;
+    }
 
     // NiSwitchNode / NiLODNode: only walk the active child, not all
     // children. Must be checked BEFORE as_ni_node() since these types
@@ -727,6 +775,9 @@ pub(super) struct FlatWalkCtx<'a> {
     /// save/restore it around a recursive descent exactly like
     /// `inherited_props`'s push/truncate, just without the `Vec`.
     pub inherited_billboard: Option<u16>,
+    /// #5485 — per-walk revisit guard (see [`new_visited`]). One bitset
+    /// per entry point, shared across the whole recursion.
+    pub visited: &'a mut Vec<bool>,
 }
 
 /// Recursively walk the scene graph, accumulating world-space transforms (flat, no hierarchy).
@@ -738,18 +789,12 @@ pub(super) fn walk_node_flat(
 ) {
     let scene = ctx.scene;
     let resolver = ctx.resolver;
-    if depth > MAX_NIF_NODE_DEPTH {
-        log::warn!(
-            "walk_node_flat: depth cap {} hit at block {} — \
-             aborting subtree (#1269)",
-            MAX_NIF_NODE_DEPTH,
-            block_idx,
-        );
-        return;
-    }
     let Some(block) = scene.get(block_idx) else {
         return;
     };
+    if !revisit_guard(ctx.visited, block_idx, depth, "walk_node_flat") {
+        return;
+    }
 
     // NiSwitchNode / NiLODNode: only walk the active child (#212).
     if let Some((node, active_children)) = switch_active_children(block) {

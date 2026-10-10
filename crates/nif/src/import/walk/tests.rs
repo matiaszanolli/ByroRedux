@@ -493,7 +493,7 @@ mod switch_node_walker_tests {
         scene.root_index = Some(0);
 
         let mut lights = Vec::new();
-        walk_node_lights(&scene, 0, &NiTransform::default(), &mut lights);
+        walk_node_lights(&scene, 0, &NiTransform::default(), &mut new_visited(&scene), 0, &mut lights);
 
         assert_eq!(
             lights.len(),
@@ -520,7 +520,7 @@ mod switch_node_walker_tests {
         scene.root_index = Some(0);
 
         let mut lights = Vec::new();
-        walk_node_lights(&scene, 0, &NiTransform::default(), &mut lights);
+        walk_node_lights(&scene, 0, &NiTransform::default(), &mut new_visited(&scene), 0, &mut lights);
 
         assert_eq!(lights.len(), 1, "NiLODNode must expose its LOD-0 light");
     }
@@ -562,7 +562,7 @@ mod switch_node_walker_tests {
         scene.blocks.push(block);
         scene.root_index = Some(0);
         let mut lights = Vec::new();
-        walk_node_lights(&scene, 0, &NiTransform::default(), &mut lights);
+        walk_node_lights(&scene, 0, &NiTransform::default(), &mut new_visited(&scene), 0, &mut lights);
         assert_eq!(lights.len(), 1);
         lights.remove(0)
     }
@@ -686,6 +686,7 @@ mod recursion_depth_tests {
             pool: &mut pool,
             resolver: None,
             inherited_billboard: None,
+            visited: &mut new_visited(&scene),
         };
         walk_node_hierarchical(&mut ctx, 0, None, 0);
         // We imported some prefix of the chain but not the whole thing —
@@ -718,6 +719,7 @@ mod recursion_depth_tests {
             pool: &mut pool,
             resolver: None,
             inherited_billboard: None,
+            visited: &mut new_visited(&scene),
         };
         walk_node_flat(&mut ctx, 0, &NiTransform::default(), 0);
         // Nothing to assert on the mesh side (chain has no geometry);
@@ -740,9 +742,235 @@ mod recursion_depth_tests {
             pool: &mut pool,
             resolver: None,
             inherited_billboard: None,
+            visited: &mut new_visited(&scene),
         };
         walk_node_hierarchical(&mut ctx, 0, None, 0);
         assert_eq!(imported.nodes.len() as u32, chain_len);
+    }
+}
+
+/// #5485 — self-referencing and diamond scene graphs. `NiNode.children`
+/// is raw on-disk `BlockRef`s, so a child can name its own node (or an
+/// ancestor, or a sibling twice). Pre-fix the three satellite walkers
+/// had no bound at all (one self-child = stack overflow abort), and
+/// the two #1269 depth-capped walkers fanned out as 2^depth on a
+/// two-self-child node. Vanilla content is a strict tree (0
+/// multi-parent / 0 self-referenced children in the 128,377-file
+/// census), so "each block at most once" is purely defensive.
+#[cfg(test)]
+mod revisit_tests {
+    use super::super::*;
+    use crate::blocks::base::{NiAVObjectData, NiObjectNETData};
+    use crate::blocks::node::NiNode;
+    use crate::types::{BlockRef, NiTransform};
+    use byroredux_core::string::StringPool;
+
+    fn node(children: &[u32]) -> Box<dyn NiObject> {
+        Box::new(NiNode {
+            av: NiAVObjectData {
+                net: NiObjectNETData {
+                    name: None,
+                    extra_data_refs: Vec::new(),
+                    controller_ref: BlockRef::NULL,
+                },
+                flags: 0,
+                transform: NiTransform::default(),
+                properties: Vec::new(),
+                collision_ref: BlockRef::NULL,
+            },
+            children: children.iter().map(|c| BlockRef(*c)).collect(),
+            effects: Vec::new(),
+        })
+    }
+
+    /// Root listing itself `fan` times as its own children.
+    fn self_referencing_scene(fan: usize) -> NifScene {
+        let mut scene = NifScene::default();
+        scene.blocks.push(node(&vec![0u32; fan]));
+        scene.root_index = Some(0);
+        scene
+    }
+
+    fn empty_imported_scene() -> crate::import::ImportedScene {
+        crate::import::ImportedScene {
+            nodes: Vec::new(),
+            meshes: Vec::new(),
+            particle_emitters: Vec::new(),
+            bsx_flags: None,
+            bs_bound: None,
+            phantom_bounds: None,
+            attach_points: None,
+            child_attach_connections: None,
+            furniture_markers: Vec::new(),
+            embedded_clip: None,
+            ragdoll: None,
+            lights: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn hierarchical_walker_survives_a_self_reference() {
+        for fan in [1usize, 2] {
+            let scene = self_referencing_scene(fan);
+            let mut imported = empty_imported_scene();
+            let mut pool = StringPool::new();
+            let mut props_stack: Vec<BlockRef> = Vec::new();
+            let mut ctx = HierWalkCtx {
+                scene: &scene,
+                inherited_props: &mut props_stack,
+                out: &mut imported,
+                pool: &mut pool,
+                resolver: None,
+                inherited_billboard: None,
+                visited: &mut new_visited(&scene),
+            };
+            walk_node_hierarchical(&mut ctx, 0, None, 0);
+            // Pre-fix: fan=1 recursed to the 128 cap (129 nodes);
+            // fan=2 pushed 2^128 ImportedNodes — an OOM abort.
+            assert_eq!(
+                imported.nodes.len(),
+                1,
+                "fan={fan}: the root must import exactly once"
+            );
+        }
+    }
+
+    #[test]
+    fn flat_walker_survives_a_self_reference() {
+        for fan in [1usize, 2] {
+            let scene = self_referencing_scene(fan);
+            let mut meshes = Vec::new();
+            let mut pool = StringPool::new();
+            let mut props_stack: Vec<BlockRef> = Vec::new();
+            let mut ctx = FlatWalkCtx {
+                scene: &scene,
+                inherited_props: &mut props_stack,
+                out: &mut meshes,
+                collisions: None,
+                pool: &mut pool,
+                resolver: None,
+                inherited_billboard: None,
+                visited: &mut new_visited(&scene),
+            };
+            // Pre-fix: fan=2 was still walking at the 30 s timeout
+            // (2^129 visits). Success = returns promptly.
+            walk_node_flat(&mut ctx, 0, &NiTransform::default(), 0);
+        }
+    }
+
+    #[test]
+    fn lights_walker_survives_a_self_reference() {
+        for fan in [1usize, 2] {
+            let scene = self_referencing_scene(fan);
+            let mut lights = Vec::new();
+            // Pre-fix: stack-overflow abort on the 2 MiB rayon worker.
+            walk_node_lights(
+                &scene,
+                0,
+                &NiTransform::default(),
+                &mut new_visited(&scene),
+                0,
+                &mut lights,
+            );
+            assert!(lights.is_empty());
+        }
+    }
+
+    #[test]
+    fn texture_effects_walker_survives_a_self_reference() {
+        for fan in [1usize, 2] {
+            let scene = self_referencing_scene(fan);
+            let mut effects = Vec::new();
+            let mut pool = StringPool::new();
+            // Pre-fix: stack-overflow abort on the 2 MiB rayon worker.
+            walk_node_texture_effects(
+                &scene,
+                0,
+                &NiTransform::default(),
+                &mut new_visited(&scene),
+                0,
+                &mut pool,
+                &mut effects,
+            );
+            assert!(effects.is_empty());
+        }
+    }
+
+    #[test]
+    fn particle_emitters_walker_survives_a_self_reference() {
+        for fan in [1usize, 2] {
+            let scene = self_referencing_scene(fan);
+            let mut out = Vec::new();
+            let mut inherited_props = Vec::new();
+            let mut pool = StringPool::new();
+            // Pre-fix: stack-overflow abort on the 2 MiB rayon worker.
+            walk_node_particle_emitters_flat(
+                &scene,
+                0,
+                &NiTransform::default(),
+                None,
+                &mut inherited_props,
+                &mut pool,
+                &mut new_visited(&scene),
+                0,
+                &mut out,
+            );
+            assert!(out.is_empty());
+        }
+    }
+
+    /// A diamond (shared child, no cycle) must also visit each block
+    /// once — the fan-out shape that defeated the depth-only cap.
+    #[test]
+    fn hierarchical_walker_visits_a_diamond_child_once() {
+        let mut scene = NifScene::default();
+        scene.blocks.push(node(&[1, 2])); // root
+        scene.blocks.push(node(&[3])); // left
+        scene.blocks.push(node(&[3])); // right
+        scene.blocks.push(node(&[])); // shared leaf
+        scene.root_index = Some(0);
+        let mut imported = empty_imported_scene();
+        let mut pool = StringPool::new();
+        let mut props_stack: Vec<BlockRef> = Vec::new();
+        let mut ctx = HierWalkCtx {
+            scene: &scene,
+            inherited_props: &mut props_stack,
+            out: &mut imported,
+            pool: &mut pool,
+            resolver: None,
+            inherited_billboard: None,
+            visited: &mut new_visited(&scene),
+        };
+        walk_node_hierarchical(&mut ctx, 0, None, 0);
+        assert_eq!(
+            imported.nodes.len(),
+            4,
+            "each of the 4 blocks imports exactly once (pre-fix: the \
+             shared leaf imported once per path)"
+        );
+    }
+
+    /// A two-node cycle (A → B → A) — the ancestor-cycle shape.
+    #[test]
+    fn walkers_survive_a_mutual_cycle() {
+        let mut scene = NifScene::default();
+        scene.blocks.push(node(&[1])); // A
+        scene.blocks.push(node(&[0])); // B → A
+        scene.root_index = Some(0);
+        let mut imported = empty_imported_scene();
+        let mut pool = StringPool::new();
+        let mut props_stack: Vec<BlockRef> = Vec::new();
+        let mut ctx = HierWalkCtx {
+            scene: &scene,
+            inherited_props: &mut props_stack,
+            out: &mut imported,
+            pool: &mut pool,
+            resolver: None,
+            inherited_billboard: None,
+            visited: &mut new_visited(&scene),
+        };
+        walk_node_hierarchical(&mut ctx, 0, None, 0);
+        assert_eq!(imported.nodes.len(), 2, "A and B each import once");
     }
 }
 
@@ -830,6 +1058,8 @@ mod particle_local_transform_tests {
             None,
             &mut inherited_props,
             &mut pool,
+            &mut new_visited(&scene),
+            0,
             &mut out,
         );
         assert_eq!(
@@ -929,6 +1159,8 @@ mod particle_local_transform_tests {
                 None,
                 &mut inherited_props,
                 &mut pool,
+                &mut new_visited(&scene),
+                0,
                 &mut out,
             );
             assert_eq!(out.len(), 1);
@@ -953,6 +1185,8 @@ mod particle_local_transform_tests {
             None,
             &mut inherited_props,
             &mut pool,
+            &mut new_visited(&scene),
+            0,
             &mut out,
         );
         assert_eq!(out[0].local_rotation, [0.0, 0.0, 0.0, 1.0]);
@@ -987,6 +1221,7 @@ mod particle_local_transform_tests {
             pool: &mut pool,
             resolver: None,
             inherited_billboard: None,
+            visited: &mut new_visited(&scene),
         };
         walk_node_hierarchical(&mut ctx, 0, None, 0);
         assert_eq!(

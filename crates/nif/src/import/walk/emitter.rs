@@ -765,6 +765,12 @@ pub(crate) fn extract_emitter_rate(scene: &NifScene, controller_ref: BlockRef) -
 /// per renderable particle block (`NiParticleSystem` and friends). Used
 /// by the cell loader, which spawns one entity per emitter at the
 /// composed REFR-times-host-NIF-local world position. See #401.
+///
+/// #5485 — `visited` (from [`super::new_visited`], one bitset per entry
+/// point) bounds the walk to one visit per block, and the recursion
+/// carries a depth bounded by `MAX_NIF_NODE_DEPTH`. Pre-fix a
+/// self-referencing `NiNode` recursed forever here: this walker had
+/// neither guard.
 pub(crate) fn walk_node_particle_emitters_flat(
     scene: &NifScene,
     block_idx: usize,
@@ -772,11 +778,16 @@ pub(crate) fn walk_node_particle_emitters_flat(
     parent_node_name: Option<std::sync::Arc<str>>,
     inherited_props: &mut Vec<BlockRef>,
     pool: &mut StringPool,
+    visited: &mut Vec<bool>,
+    depth: u32,
     out: &mut Vec<crate::import::ImportedParticleEmitterFlat>,
 ) {
     let Some(block) = scene.get(block_idx) else {
         return;
     };
+    if !super::revisit_guard(visited, block_idx, depth, "walk_node_particle_emitters_flat") {
+        return;
+    }
 
     // NiSwitchNode / NiLODNode: only walk the active children (#718).
     if let Some((node, active_children)) = switch_active_children(block) {
@@ -795,6 +806,8 @@ pub(crate) fn walk_node_particle_emitters_flat(
                 new_parent_name.clone(),
                 inherited_props,
                 pool,
+                visited,
+                depth + 1,
                 out,
             );
         }
@@ -822,6 +835,8 @@ pub(crate) fn walk_node_particle_emitters_flat(
                     new_parent_name.clone(),
                     inherited_props,
                     pool,
+                    visited,
+                    depth + 1,
                     out,
                 );
             }
