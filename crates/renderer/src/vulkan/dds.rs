@@ -25,6 +25,7 @@ const D3D10_RESOURCE_MISC_TEXTURECUBE: u32 = 0x4;
 // DDS_PIXELFORMAT flags
 const DDPF_FOURCC: u32 = 0x4;
 const DDPF_RGB: u32 = 0x40;
+const DDPF_LUMINANCE: u32 = 0x2_0000;
 
 // FourCC values
 const FOURCC_DXT1: u32 = u32::from_le_bytes(*b"DXT1");
@@ -111,14 +112,17 @@ pub enum TextureColorSpace {
     Linear,
 }
 
-/// Source pixel layout for an uncompressed `DDPF_RGB` DDS that needs CPU
-/// expansion to R8G8B8A8 (#1542, #5378). The channel masks come straight
-/// from DDS_PIXELFORMAT, so any ordering — 16-bpp A1R5G5B5 / A4R4G4B4 /
-/// R5G6B5, 24-bpp R8G8B8 / B8G8R8, 32-bpp X8R8G8B8 — decodes from the
-/// masks alone without enumerating named formats.
+/// Source pixel layout for an uncompressed `DDPF_RGB` or `DDPF_LUMINANCE`
+/// DDS that needs CPU expansion to R8G8B8A8 (#1542, #5378, #5402). The
+/// channel masks come straight from DDS_PIXELFORMAT, so any ordering —
+/// 16-bpp A1R5G5B5 / A4R4G4B4 / R5G6B5, 24-bpp R8G8B8 / B8G8R8, 32-bpp
+/// X8R8G8B8 — decodes from the masks alone without enumerating named
+/// formats. A luminance file (8-bpp L8, 16-bpp L8A8 / L16) carries its one
+/// channel in the red mask; it is expanded with that mask on all three of
+/// R, G and B.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RgbExpand {
-    /// Source bits per pixel — 16 or 24.
+    /// Source bits per pixel — 8 (luminance), 16, 24 or 32.
     pub src_bpp: u32,
     pub r_mask: u32,
     pub g_mask: u32,
@@ -568,6 +572,24 @@ pub fn parse_dds(data: &[u8]) -> Result<DdsMetadata> {
         } else {
             bail!("Unsupported uncompressed DDS: {bpp} bpp (RGB masks; expected 16/24/32)");
         }
+    } else if pf_flags & DDPF_LUMINANCE != 0 {
+        // #5402 — an L8 / L8A8 / L16 file (Oblivion's glow maps for Mehrunes
+        // Dagon and the Oblivion gates) has no RGB masks: the single
+        // luminance channel sits in dwRBitMask and dwABitMask carries alpha
+        // when present. Expand it like any other mask layout, with the
+        // luminance mask on all three colour channels (grey, opaque unless
+        // the file has an alpha mask).
+        let bpp = pf_rgb_bit_count;
+        ensure!(
+            bpp == 8 || bpp == 16,
+            "Unsupported luminance DDS: {bpp} bpp (expected 8 or 16)",
+        );
+        let luminance_mask = read_u32(data, 92);
+        let a_mask = read_u32(data, 104);
+        uncompressed_expand_meta(
+            data, width, height, mip_count, legacy_cubemap, bpp,
+            luminance_mask, luminance_mask, luminance_mask, a_mask,
+        )
     } else {
         bail!("Unsupported DDS pixel format (flags={:#x})", pf_flags);
     }
@@ -687,7 +709,7 @@ fn format_for_color_space(format: vk::Format, color_space: TextureColorSpace) ->
     }
 }
 
-/// Expand a 16/24/32-bpp uncompressed `DDPF_RGB` DDS (whose masks are not
+/// Expand an 8/16/24/32-bpp uncompressed `DDPF_RGB` / `DDPF_LUMINANCE` DDS (whose masks are not
 /// a canonical zero-copy order) to a contiguous
 /// R8G8B8A8 buffer covering all mips, laid out mip-0-first to match what
 /// the upload path expects for `block_size = 4` (#1542).
@@ -1343,6 +1365,69 @@ pub(crate) mod tests {
         assert_eq!(ex.src_bpp, 16);
         assert_eq!(ex.r_mask, 0x7C00);
         assert_eq!(ex.a_mask, 0x8000);
+    }
+
+    /// Single-mip `DDPF_LUMINANCE` header (#5402): the luminance channel is
+    /// `dwRBitMask`, `dwABitMask` carries alpha for L8A8 (and the
+    /// `DDPF_ALPHAPIXELS` bit with it).
+    fn make_luminance_header(
+        width: u32,
+        height: u32,
+        bpp: u32,
+        luminance_mask: u32,
+        a_mask: u32,
+        pixels: &[u8],
+    ) -> Vec<u8> {
+        let mut buf = make_rgb_header(width, height, bpp, [luminance_mask, 0, 0, a_mask], pixels);
+        let flags = DDPF_LUMINANCE | if a_mask != 0 { DDPF_ALPHAPIXELS } else { 0 };
+        buf[80..84].copy_from_slice(&flags.to_le_bytes());
+        buf
+    }
+
+    /// #5402 — an L8 DDS (Oblivion's glow maps for Mehrunes Dagon and the
+    /// Oblivion gates) used to bail with "Unsupported DDS pixel format", so
+    /// the glow role lost its map. It expands grey and opaque.
+    #[test]
+    fn parse_and_expand_l8_luminance() {
+        let data = make_luminance_header(2, 2, 8, 0xFF, 0, &[0, 64, 128, 255]);
+        let meta = parse_dds(&data).expect("L8 must parse");
+        assert_eq!(meta.format, vk::Format::R8G8B8A8_SRGB);
+        assert!(!meta.compressed);
+        let ex = meta.expand.expect("L8 is CPU-expanded");
+        assert_eq!((ex.src_bpp, ex.r_mask, ex.g_mask, ex.b_mask, ex.a_mask), (8, 0xFF, 0xFF, 0xFF, 0));
+        assert_eq!(
+            expand_uncompressed_rgb(&meta, &data),
+            [
+                0, 0, 0, 255, //
+                64, 64, 64, 255, //
+                128, 128, 128, 255, //
+                255, 255, 255, 255,
+            ],
+            "luminance goes to R, G and B; no alpha mask means opaque"
+        );
+    }
+
+    /// L8A8: luminance in the low byte, alpha in the high byte.
+    #[test]
+    fn parse_and_expand_l8a8_luminance_with_alpha() {
+        let data = make_luminance_header(2, 1, 16, 0x00FF, 0xFF00, &[10, 200, 90, 30]);
+        let meta = parse_dds(&data).expect("L8A8 must parse");
+        let ex = meta.expand.expect("L8A8 is CPU-expanded");
+        assert_eq!((ex.src_bpp, ex.a_mask), (16, 0xFF00));
+        assert_eq!(
+            expand_uncompressed_rgb(&meta, &data),
+            [10, 10, 10, 200, 90, 90, 90, 30]
+        );
+    }
+
+    /// Only 8- and 16-bit luminance exist; a truncated payload is refused
+    /// like every other expanded layout (#4835), not expanded into black.
+    #[test]
+    fn luminance_dds_rejects_unsupported_depth_and_truncation() {
+        assert!(parse_dds(&make_luminance_header(1, 1, 24, 0xFF, 0, &[0, 0, 0])).is_err());
+        let mut truncated = make_luminance_header(4, 4, 8, 0xFF, 0, &[0u8; 16]);
+        truncated.truncate(HEADER_SIZE + 4);
+        assert!(parse_dds(&truncated).is_err(), "a short L8 payload must be refused");
     }
 
     #[test]
