@@ -891,15 +891,29 @@ pub(super) fn build_precombine_meshes(
         // geometry, which is the premise the dedup rests on.
         let representative = meshes.len() as u32;
         for inst in &geom.instances {
-            let mesh = decoded
+            let mut mesh = decoded
                 .clone()
                 .into_imported_mesh(&inst.transform, geom.material.clone());
+            apply_instance_palette_row(&mut mesh.material, inst.grayscale_to_palette_scale);
             meshes.push(mesh);
             geometry_dedup.push(representative);
         }
     }
     debug_assert_eq!(meshes.len(), geometry_dedup.len());
     (meshes, geometry_dedup)
+}
+
+/// #5497 — give a precombine instance its own palette row. The CK bakes the
+/// placement's effective `grayscale_to_palette_scale` (the material-swap
+/// `CNAM` "Color Remapping Index", or the BGSM default) into every
+/// `BSPackedGeomDataCombined`; `into_imported_mesh` only carries the
+/// transform, so without this every instance of an object renders the one
+/// row the owning shape's material resolves to. A non-finite value is a
+/// corrupt blob: the material's own row is kept.
+fn apply_instance_palette_row(material: &mut byroredux_nif::import::ImportedMaterial, row: f32) {
+    if row.is_finite() {
+        material.grayscale_to_palette_scale = row;
+    }
 }
 
 /// Decode an `_oc.nif`'s shared-geometry objects out of the blobs in
@@ -942,6 +956,10 @@ pub(crate) fn decode_precombine_csg(
 /// restore the pre-merge (NIF-shape) alpha-blend state so opaque precombine
 /// architecture stays opaque.
 ///
+/// The instance's palette row (`grayscale_to_palette_scale`) is restored the
+/// same way (#5497): the CK bakes the placement's effective row into each
+/// precombine instance, the BGSM merge would replace it with the BGSM's own.
+///
 /// Shared by the main-thread job and the streaming drain
 /// (`finish_partial_import`) so both apply the same restore.
 pub(super) fn merge_precombine_materials(
@@ -956,6 +974,10 @@ pub(super) fn merge_precombine_materials(
             mesh.material.src_blend_mode,
             mesh.material.dst_blend_mode,
         );
+        // #5497 — the instance's palette row (stamped by
+        // `build_precombine_meshes`) is the placement's effective row; the
+        // BGSM merge would overwrite it with the BGSM's own default.
+        let palette_row = mesh.material.grayscale_to_palette_scale;
         // #2709 (SF-D9-03) — outcome discarded deliberately; this path
         // already selectively reverts part of the merge (the blend restore
         // below) and has no per-cell material tally to feed.
@@ -970,6 +992,7 @@ pub(super) fn merge_precombine_materials(
             mesh.material.src_blend_mode,
             mesh.material.dst_blend_mode,
         ) = blend;
+        mesh.material.grayscale_to_palette_scale = palette_row;
     }
 }
 
@@ -1169,6 +1192,73 @@ mod tests {
         assert!(
             (merged.alpha_threshold - 128.0 / 255.0).abs() < 1e-6,
             "the authored alpha_test_ref lands as the threshold"
+        );
+    }
+
+    /// #5497 — the instance's row replaces the material's, and a corrupt
+    /// (non-finite) row leaves the material's own row alone.
+    #[test]
+    fn apply_instance_palette_row_stamps_finite_rows_only() {
+        let mut mesh = ImportedMesh::from_geometry(
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        );
+        assert_eq!(mesh.material.grayscale_to_palette_scale, 1.0, "fixture: material default");
+        apply_instance_palette_row(&mut mesh.material, 0.805);
+        assert_eq!(mesh.material.grayscale_to_palette_scale, 0.805);
+        apply_instance_palette_row(&mut mesh.material, f32::NAN);
+        apply_instance_palette_row(&mut mesh.material, f32::INFINITY);
+        assert_eq!(mesh.material.grayscale_to_palette_scale, 0.805, "non-finite rows are ignored");
+    }
+
+    /// #5497 — a precombine instance carries its own palette row
+    /// (`BSPackedGeomDataCombined.grayscale_to_palette_scale`), the value the
+    /// CK baked from the placement's material swap (an MSWP `CNAM` "Color
+    /// Remapping Index") or the BGSM default. The BGSM merge forwards the
+    /// BGSM's own row unconditionally, which is the same value only when no
+    /// swap applied: 65 526 of 119 299 palette-enabled instances in the
+    /// vanilla `_oc.nif`s author a different row (`cratelarge01.bgsm` 1.0
+    /// vs 0.493), so every one of them rendered the BGSM default colour.
+    /// The instance row must survive the merge, like the blend triple.
+    #[test]
+    fn merge_precombine_materials_keeps_the_instance_palette_row() {
+        use byroredux_bgsm::template::ResolvedMaterial;
+        use byroredux_bgsm::BgsmFile;
+
+        let mut pool = StringPool::new();
+        let path = "materials/tests/cratelarge01.bgsm";
+        let mut provider = MaterialProvider::new();
+        provider.insert_bgsm_for_test(
+            path,
+            ResolvedMaterial {
+                file: BgsmFile {
+                    grayscale_to_palette_scale: 1.0,
+                    ..Default::default()
+                },
+                parent: None,
+            },
+        );
+        let mut mesh = ImportedMesh::from_geometry(
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        );
+        mesh.material.material_path = Some(pool.intern(path));
+        mesh.material.grayscale_to_palette_scale = 0.493;
+
+        let mut meshes = vec![mesh];
+        merge_precombine_materials(&mut meshes, &mut provider, &mut pool, &|_| false);
+
+        assert_eq!(
+            meshes[0].material.grayscale_to_palette_scale, 0.493,
+            "the instance's palette row must survive the BGSM merge (BGSM default is 1.0)"
         );
     }
 
