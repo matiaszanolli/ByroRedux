@@ -515,6 +515,101 @@ mod tests {
         );
     }
 
+    /// Mount a one-shape part (root authoring `root_rotation`, shape
+    /// authoring `shape_rotation`) under the head bone of a rotated actor the
+    /// way `spawn_shared_skeleton_part` does, and return the shape's world
+    /// rotation next to the actor's.
+    fn mounted_shape_rotation(
+        root_rotation: byroredux_core::math::Quat,
+        shape_rotation: byroredux_core::math::Quat,
+    ) -> (byroredux_core::math::Quat, byroredux_core::math::Quat) {
+        use byroredux_core::ecs::{Children, GlobalTransform, MeshHandle};
+        use byroredux_core::math::{Quat, Vec3};
+        let mut world = World::new();
+        world.register::<Transform>();
+        world.register::<GlobalTransform>();
+        world.register::<Parent>();
+        world.register::<Children>();
+        world.register::<MeshHandle>();
+
+        let placement = world.spawn();
+        world.insert(
+            placement,
+            Transform::new(Vec3::new(500.0, 20.0, -300.0), Quat::from_rotation_y(0.6), 1.0),
+        );
+        let head = world.spawn();
+        world.insert(
+            head,
+            Transform::new(
+                Vec3::new(0.0, 112.8, 0.0),
+                Quat::from_rotation_y(std::f32::consts::FRAC_PI_2),
+                1.0,
+            ),
+        );
+        world.insert(head, Parent(placement));
+        add_child(&mut world, placement, head);
+
+        let part_root = world.spawn();
+        world.insert(part_root, Transform::new(Vec3::ZERO, root_rotation, 1.0));
+        let shape = world.spawn();
+        world.insert(shape, Transform::new(Vec3::ZERO, shape_rotation, 1.0));
+        world.insert(shape, MeshHandle(1));
+        world.insert(shape, Parent(part_root));
+        add_child(&mut world, part_root, shape);
+
+        let bind =
+            bind_transform_relative_to(&world, head, placement).expect("head reaches placement");
+        align_part_root_to_actor_axes(&mut world, part_root, bind);
+        world.insert(part_root, Parent(head));
+        add_child(&mut world, head, part_root);
+        for entity in [placement, head, part_root, shape] {
+            world.insert(entity, GlobalTransform::IDENTITY);
+        }
+        byroredux_core::ecs::make_transform_propagation_system()(&world, 0.0);
+        let shape_rotation = world.get::<GlobalTransform>(shape).unwrap().rotation;
+        let actor_rotation = world.get::<GlobalTransform>(placement).unwrap().rotation;
+        (shape_rotation, actor_rotation)
+    }
+
+    /// Regression (#5157): 36 of the 67 FNV hair NIFs (female, child, ghoul)
+    /// author a 180° root and the same 180° on every shape — root × shape is
+    /// identity and the vertices are already in the actor's axes (measured:
+    /// `hairbun.nif` Y -0.4..14.9, like male `hairmessy02.nif`). Replacing the
+    /// root alone left the shapes' 180° in place, which swaps up and forward:
+    /// the hair floated in front of the face.
+    #[test]
+    fn female_hair_with_cancelling_root_and_shape_rotations_keeps_actor_axes() {
+        use byroredux_core::math::{Quat, Vec3};
+        // The authored rotation, as imported (Y-up): 180° about (0, 1, -1).
+        let flip = Quat::from_axis_angle(Vec3::new(0.0, 1.0, -1.0).normalize(), std::f32::consts::PI);
+        let (shape, actor) = mounted_shape_rotation(flip, flip);
+        assert!(
+            shape.angle_between(actor) < 1.0e-3,
+            "a 180° root with a 180° shape is net identity and must stay in the actor's axes"
+        );
+    }
+
+    /// The male-hair authoring (identity root, identity shape) is unchanged.
+    #[test]
+    fn male_hair_with_identity_root_and_shape_keeps_actor_axes() {
+        use byroredux_core::math::Quat;
+        let (shape, actor) = mounted_shape_rotation(Quat::IDENTITY, Quat::IDENTITY);
+        assert!(shape.angle_between(actor) < 1.0e-3);
+    }
+
+    /// A shape rotation that does not cancel the root's is an intentional
+    /// tilt, not the female-hair authoring: it must survive the mount.
+    #[test]
+    fn an_intentional_shape_tilt_survives_the_head_mount() {
+        use byroredux_core::math::Quat;
+        let tilt = Quat::from_rotation_x(0.5);
+        let (shape, actor) = mounted_shape_rotation(Quat::IDENTITY, tilt);
+        assert!(
+            shape.angle_between(actor * tilt) < 1.0e-3,
+            "an authored tilt under an identity root must not be divided out"
+        );
+    }
+
     /// Regression: FO3 / FNV female heads rendered with the head NIF's male
     /// default skin against a female body. The race `ICON` for the head role
     /// is selected per gender; Oblivion's untagged entry serves both.

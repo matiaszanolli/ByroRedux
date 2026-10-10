@@ -1261,10 +1261,14 @@ pub(super) fn spawn_shared_skeleton_part(
             Some(head) => {
                 // `Bip01 Head`'s bind basis is rotated 90° (its local X points
                 // up). Eye / mouth / teeth roots author the inverse of that
-                // basis themselves; hair and brow roots are identity. Setting
-                // the root to the inverse head bind rotation serves both, so
-                // every part keeps the actor's axes at bind pose while still
-                // inheriting head animation.
+                // basis themselves; male hair and brow roots are identity;
+                // female / child / ghoul hair authors a 180° root and the
+                // same 180° on every shape (net identity, #5157). The vertices
+                // are in the actor's axes in all of them, so the root is set
+                // to the inverse head bind rotation (plus the inverse of any
+                // shape rotation that cancels against the authored root),
+                // which keeps every part in the actor's axes at bind pose
+                // while still inheriting head animation.
                 if let Some(bind) = bind_transform_relative_to(world, head, state.placement_root) {
                     align_part_root_to_actor_axes(world, root, bind);
                 }
@@ -1420,13 +1424,60 @@ pub(super) fn bind_transform_relative_to(
     Some(relative)
 }
 
+/// Rotation (relative to `part_root`) that every renderable shape in its
+/// subtree authors, or `None` when there is no shape below the root or the
+/// shapes disagree.
+fn common_shape_rotation(world: &World, part_root: EntityId) -> Option<Quat> {
+    let meshes = world.query::<byroredux_core::ecs::MeshHandle>()?;
+    let children = world.query::<byroredux_core::ecs::Children>()?;
+    let mut guard =
+        byroredux_core::ecs::HierarchyTraversalGuard::new(world.next_entity_id() as usize, 0);
+    let mut seen = std::collections::HashSet::new();
+    let mut stack = vec![part_root];
+    let mut common: Option<Quat> = None;
+    while let Some(entity) = stack.pop() {
+        if !seen.insert(entity) {
+            continue;
+        }
+        if !guard.step() {
+            return None;
+        }
+        if meshes.get(entity).is_some() {
+            let rotation = bind_transform_relative_to(world, entity, part_root)?.rotation;
+            match common {
+                Some(first) if first.angle_between(rotation) > SHAPE_ROTATION_EPSILON => {
+                    return None;
+                }
+                Some(_) => {}
+                None => common = Some(rotation),
+            }
+        }
+        if let Some(kids) = children.get(entity) {
+            stack.extend(kids.0.iter().copied());
+        }
+    }
+    common
+}
+
+/// Angular tolerance (radians, ≈0.06°) for treating two authored rotations
+/// as equal when deciding whether a part's shape rotation cancels its root's.
+const SHAPE_ROTATION_EPSILON: f32 = 1.0e-3;
+
 /// Set `part_root`'s rotation to the inverse of `bind`'s and divide out its
 /// scale, so a part authored in the placement root's axes and parented under
 /// a bone whose bind transform is `bind` keeps those axes at bind pose. The
 /// authored root rotation is replaced, not composed: on FO3 / FNV head parts
-/// it is either identity (hair, brows) or already this same inverse (eyes,
-/// mouth, teeth), so composing would double-cancel the latter. The authored
-/// translation is kept as an offset in the placement root's axes.
+/// it is either identity (male hair, brows) or already this same inverse
+/// (eyes, mouth, teeth), so composing would double-cancel the latter. The
+/// authored translation is kept as an offset in the placement root's axes.
+///
+/// One more authoring shape needs the shapes' own rotation: 36 of the 67
+/// FNV hair NIFs (female, child, ghoul) author a 180° root and the same 180°
+/// on every shape, so root × shape is identity and the vertices are in the
+/// actor's axes. Replacing the root alone would leave the shapes' 180° in
+/// place and swap up with forward (#5157). When the shapes share one rotation
+/// that cancels the authored root's, it is divided out too. A shape rotation
+/// that does NOT cancel the root (an intentional tilt) is left untouched.
 pub(super) fn align_part_root_to_actor_axes(world: &mut World, part_root: EntityId, bind: Transform) {
     let inverse_rotation = bind.rotation.inverse();
     let inverse_scale = if bind.scale.abs() > f32::EPSILON {
@@ -1434,11 +1485,20 @@ pub(super) fn align_part_root_to_actor_axes(world: &mut World, part_root: Entity
     } else {
         1.0
     };
+    let cancelled_shape = world
+        .get::<Transform>(part_root)
+        .map(|root| root.rotation)
+        .zip(common_shape_rotation(world, part_root))
+        .and_then(|(root, shape)| {
+            let is_identity = |q: Quat| q.angle_between(Quat::IDENTITY) <= SHAPE_ROTATION_EPSILON;
+            (!is_identity(shape) && is_identity(root * shape)).then_some(shape)
+        });
+    let root_rotation = cancelled_shape.map_or(inverse_rotation, |shape| inverse_rotation * shape.inverse());
     if let Some(mut transforms) = world.query_mut::<Transform>() {
         if let Some(local) = transforms.get_mut(part_root) {
             *local = Transform::new(
                 inverse_rotation * (local.translation * inverse_scale),
-                inverse_rotation,
+                root_rotation,
                 inverse_scale * local.scale,
             );
         }
