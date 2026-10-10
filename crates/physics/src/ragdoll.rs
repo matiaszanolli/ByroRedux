@@ -24,7 +24,7 @@
 
 use crate::components::Ragdoll;
 use crate::config::ContactConfig;
-use crate::convert::{collision_shape_to_parts, iso_from_trs, quat_from_na, vec3_from_na};
+use crate::convert::{collision_shape_to_parts, pose_from_trs};
 use crate::world::PhysicsWorld;
 use byroredux_core::ecs::components::collision::CollisionShape;
 use byroredux_core::ecs::storage::EntityId;
@@ -367,6 +367,8 @@ pub fn build_ragdoll(
     }
     // 1. Rigid bodies + colliders.
     let mut handles: Vec<RigidBodyHandle> = Vec::with_capacity(spec.bodies.len());
+    // Every collider built here, queued for the scene-query BVH below (#3968).
+    let mut ragdoll_colliders: Vec<ColliderHandle> = Vec::new();
     // #3492 — the buoyancy scan cannot recover either of these from the ECS:
     // ragdoll bodies never get a `RapierHandles` row, and `activate_ragdoll`
     // deletes the bone entities' `RigidBodyData` under #1772. Record them
@@ -381,7 +383,7 @@ pub fn build_ragdoll(
         let effective_angular_damping =
             b.angular_damping.max(0.0) + cfg.ragdoll_extra_angular_damping.max(0.0);
         let body = RigidBodyBuilder::dynamic()
-            .position(iso_from_trs(b.translation, b.rotation))
+            .pose(pose_from_trs(b.translation, b.rotation))
             // Authored humanoid mass ratios, joint limits, and simultaneous
             // floor contacts need more than the default four iterations:
             // the FNV restore fixture diverged on a single flat floor at
@@ -440,6 +442,7 @@ pub fn build_ragdoll(
                 .build();
             let ch = colliders.insert_with_parent(col, h, bodies);
             first_collider.get_or_insert(ch);
+            ragdoll_colliders.push(ch);
         }
         // `collision_shape_to_parts` never yields zero parts (see #3067 and
         // its own `out.is_empty()` fallback), so this is the first of at
@@ -484,11 +487,11 @@ pub fn build_ragdoll(
     //    multibody from BFS order; the root is the multibody base).
     let mut joints = Vec::with_capacity(oriented.len());
     for edge in &oriented {
-        let parent_seed = iso_from_trs(
+        let parent_seed = pose_from_trs(
             spec.bodies[edge.parent].translation,
             spec.bodies[edge.parent].rotation,
         );
-        let child_seed = iso_from_trs(
+        let child_seed = pose_from_trs(
             spec.bodies[edge.child].translation,
             spec.bodies[edge.child].rotation,
         );
@@ -537,15 +540,15 @@ pub fn build_ragdoll(
     }
 
     // #3968 — `wake()` does not guarantee a substep (the `accumulator >=
-    // PHYSICS_DT` gate is independent), and `mark_colliders_dirty()` is the
-    // only mechanism that reaches the query pipeline on a no-substep frame
+    // PHYSICS_DT` gate is independent), and `queue_query_refresh` is the
+    // only mechanism that reaches the query BVH on a no-substep frame
     // (#2864). Without this, a ragdoll built on a >60 fps frame is absent
     // from the query BVH for up to one banked tick. The behaviour was
     // historically safe only by accident — `activate_ragdoll`'s #1772
     // keyframed teardown calls `remove_body` per bone, which marks dirty as
     // a side effect — and that accident has a hole: the teardown is guarded
     // by `if !bone_handles.is_empty()`.
-    pw.mark_colliders_dirty();
+    pw.queue_query_refresh(ragdoll_colliders);
     pw.wake();
 
     Ok(Ragdoll {
@@ -665,8 +668,8 @@ fn build_joint(j: &RagdollJointSpec, flip: bool) -> GenericJoint {
             };
             let cone = cone_max.abs();
             GenericJointBuilder::new(lin_locked())
-                .local_frame1(iso_from_trs(pv1, frame_rot(t1, p1)))
-                .local_frame2(iso_from_trs(pv2, frame_rot(t2, p2)))
+                .local_frame1(pose_from_trs(pv1, frame_rot(t1, p1)))
+                .local_frame2(pose_from_trs(pv2, frame_rot(t2, p2)))
                 .limits(JointAxis::AngX, [tmin, tmax]) // twist
                 .limits(JointAxis::AngY, [-cone, cone]) // swing
                 .limits(JointAxis::AngZ, [-cone, cone]) // swing
@@ -704,8 +707,8 @@ fn build_joint(j: &RagdollJointSpec, flip: bool) -> GenericJoint {
             // to a synthesized perpendicular only for a degenerate (zero /
             // parallel) input — e.g. Oblivion's zeroed `perp_axis_in_b1`.
             GenericJointBuilder::new(lin_locked() | JointAxesMask::ANG_Y | JointAxesMask::ANG_Z)
-                .local_frame1(iso_from_trs(pv1, frame_rot(a1, p1)))
-                .local_frame2(iso_from_trs(pv2, frame_rot(a2, p2)))
+                .local_frame1(pose_from_trs(pv1, frame_rot(a1, p1)))
+                .local_frame2(pose_from_trs(pv2, frame_rot(a2, p2)))
                 .limits(JointAxis::AngX, [amin, amax])
                 .build()
         }
@@ -749,8 +752,8 @@ fn build_joint(j: &RagdollJointSpec, flip: bool) -> GenericJoint {
             // `JointAxis::LinX` is the one DOF `prismatic_locked` leaves
             // out — free but bounded by the authored travel range.
             GenericJointBuilder::new(prismatic_locked())
-                .local_frame1(iso_from_trs(pv1, frame_rot(a1, p1)))
-                .local_frame2(iso_from_trs(pv2, frame_rot(a2, p2)))
+                .local_frame1(pose_from_trs(pv1, frame_rot(a1, p1)))
+                .local_frame2(pose_from_trs(pv2, frame_rot(a2, p2)))
                 .limits(JointAxis::LinX, [dmin, dmax])
                 .build()
         }
@@ -782,20 +785,20 @@ fn build_joint(j: &RagdollJointSpec, flip: bool) -> GenericJoint {
 fn seed_joint_from_body_poses(
     joint: &mut MultibodyJoint,
     spec: &RagdollJointSpec,
-    parent_pose: Isometry<Real>,
-    child_pose: Isometry<Real>,
+    parent_pose: Pose,
+    child_pose: Pose,
 ) {
     let parent_to_child = parent_pose.inverse() * child_pose;
     // Rotation and translation of one isometry product — the rotation half is
     // bit-for-bit the quantity the pre-#3962 code computed.
     let joint_transform =
         joint.data.local_frame1.inverse() * parent_to_child * joint.data.local_frame2;
-    let angular_displacement = joint_transform.rotation.scaled_axis();
+    let angular_displacement = crate::convert::rotation_scaled_axis(joint_transform.rotation);
 
     match spec {
         // Local angular X/Y/Z are all free.
         RagdollJointSpec::Ragdoll { .. } => {
-            joint.apply_displacement(angular_displacement.as_slice())
+            joint.apply_displacement(&angular_displacement.to_array())
         }
         // Only local angular X is free.
         RagdollJointSpec::LimitedHinge { .. } => {
@@ -805,7 +808,7 @@ fn seed_joint_from_body_poses(
         // sliding axis onto it. The correct seed is the along-rail
         // component of the same joint transform.
         RagdollJointSpec::Prismatic { .. } => {
-            let mut slide = joint_transform.translation.vector.x;
+            let mut slide = joint_transform.translation.x;
             // `apply_displacement` does not clamp against the joint's own
             // limits (`MultibodyJoint::integrate` has no clamp), and an
             // authored bind pose can legitimately sit outside the authored
@@ -869,7 +872,7 @@ impl PhysicsWorld {
 
 /// Helper for callers/tests: a body's current world translation, if live.
 pub fn body_translation(pw: &PhysicsWorld, h: RigidBodyHandle) -> Option<Vec3> {
-    pw.bodies.get(h).map(|b| vec3_from_na(*b.translation()))
+    pw.bodies.get(h).map(|b| b.translation())
 }
 
 /// Helper for the per-frame writeback: a body's current world
@@ -878,8 +881,8 @@ pub fn body_pose(pw: &PhysicsWorld, h: RigidBodyHandle) -> Option<(Vec3, Quat)> 
     pw.bodies.get(h).map(|b| {
         let iso = b.position();
         (
-            vec3_from_na(iso.translation.vector),
-            quat_from_na(iso.rotation),
+            iso.translation,
+            iso.rotation,
         )
     })
 }
@@ -1118,10 +1121,10 @@ mod tests {
 
     /// #3968 — a ragdoll built on a >60 fps frame (`step` runs zero
     /// substeps: `wake()` armed, `accumulator < PHYSICS_DT`) must still be
-    /// queryable: `mark_colliders_dirty()` is the only mechanism that
-    /// reaches the query pipeline on a no-substep frame (#2864), and
-    /// pre-fix `build_ragdoll` relied on `activate_ragdoll`'s teardown
-    /// marking dirty as a side effect — an accident with a hole
+    /// queryable: `queue_query_refresh()` is the only mechanism that
+    /// reaches the query BVH on a no-substep frame (#2864), and pre-fix
+    /// `build_ragdoll` relied on `activate_ragdoll`'s teardown marking the
+    /// colliders dirty as a side effect — an accident with a hole
     /// (`bone_handles.is_empty()` skips the teardown).
     #[test]
     fn build_ragdoll_is_queryable_on_a_zero_substep_frame() {
@@ -1263,7 +1266,7 @@ mod tests {
     /// from a zero angular X and the bug is invisible.
     fn prismatic_separation_after_one_step(slide: f32, twist: f32, travel: f32) -> f32 {
         let mut pw = PhysicsWorld::new();
-        pw.gravity = Vector::zeros();
+        pw.gravity = Vector::ZERO;
         let mut child = ball_body(2, 50.0 + slide, 1000.0);
         child.rotation = Quat::from_rotation_x(twist);
         let spec = RagdollSpec {
@@ -1330,7 +1333,7 @@ mod tests {
     #[test]
     fn prismatic_seed_clamps_to_the_authored_travel_range() {
         let mut pw = PhysicsWorld::new();
-        pw.gravity = Vector::zeros();
+        pw.gravity = Vector::ZERO;
         let mut child = ball_body(2, 1050.0, 1000.0);
         child.rotation = Quat::from_rotation_x(0.6);
         let spec = RagdollSpec {
@@ -1359,7 +1362,7 @@ mod tests {
     #[test]
     fn first_step_preserves_seeded_child_pose() {
         let mut pw = PhysicsWorld::new();
-        pw.gravity = Vector::zeros();
+        pw.gravity = Vector::ZERO;
 
         let root = ball_body(1, 0.0, 1000.0);
         let mut child = ball_body(2, 25.0, 1025.0);
@@ -1406,7 +1409,7 @@ mod tests {
     fn scaled_pivots_preserve_a_scaled_actors_seeded_separation() {
         fn separation_after_one_step(joint: RagdollJointSpec) -> f32 {
             let mut pw = PhysicsWorld::new();
-            pw.gravity = Vector::zeros();
+            pw.gravity = Vector::ZERO;
             let spec = RagdollSpec {
                 bodies: vec![ball_body(1, 0.0, 1000.0), ball_body(2, 100.0, 1000.0)],
                 constraints: vec![RagdollConstraintSpec {
@@ -1497,7 +1500,7 @@ mod tests {
     #[test]
     fn ragdoll_self_contacts_are_disabled_but_world_contacts_remain() {
         let mut pw = PhysicsWorld::new();
-        pw.gravity = Vector::zeros();
+        pw.gravity = Vector::ZERO;
 
         let mut root = ball_body(1, 0.0, 1000.0);
         root.shape = CollisionShape::Ball { radius: 30.0 };
@@ -1525,7 +1528,7 @@ mod tests {
         // broad collision-group mask on every ragdoll collider.
         let floor_body = pw.bodies.insert(
             RigidBodyBuilder::fixed()
-                .translation(vector![0.0, 970.0, 0.0])
+                .translation(Vector::new(0.0, 970.0, 0.0))
                 .build(),
         );
         let floor_collider = pw.colliders.insert_with_parent(
@@ -1539,7 +1542,7 @@ mod tests {
         let self_contact_active = pw
             .narrow_phase
             .contact_pair(root_collider, child_collider)
-            .is_some_and(|pair| pair.has_any_active_contact);
+            .is_some_and(|pair| pair.has_any_active_contact());
         assert!(
             !self_contact_active,
             "overlapping links in one ragdoll generated an active self-contact"
@@ -1547,7 +1550,7 @@ mod tests {
         let world_contact_active = pw
             .narrow_phase
             .contact_pair(root_collider, floor_collider)
-            .is_some_and(|pair| pair.has_any_active_contact);
+            .is_some_and(|pair| pair.has_any_active_contact());
         assert!(
             world_contact_active,
             "self-contact suppression must not disable ragdoll/world contacts"
@@ -1721,7 +1724,7 @@ mod tests {
             false,
         );
 
-        let built_rotation = quat_from_na(joint.local_frame1.rotation);
+        let built_rotation = joint.local_frame1.rotation;
         let expected = frame_rot(axis, authored_perp);
         let synthesized = frame_rot(axis, any_perp(axis));
 
@@ -1846,8 +1849,9 @@ mod tests {
     }
     /// #5161 — an articulation's exploding REDUCED-COORDINATE velocity is
     /// invisible to the body-speed cap (forward kinematics integrates it
-    /// before any body-level clamp runs) and teleports its links through
-    /// the broad-phase grid in one step. The DOF clamp must cap it — and
+    /// before any body-level clamp runs, and rapier's in-step speed cap
+    /// covers rigid bodies only) and teleports its links out of the world in
+    /// one step. The DOF clamp must cap it — and
     /// zero non-finite DOFs — before the next substep can integrate it.
     #[test]
     fn exploding_articulation_dofs_are_capped_before_forward_kinematics() {
@@ -1866,19 +1870,21 @@ mod tests {
 
         // Inject an explosive generalized velocity straight into the
         // multibody state — the same state forward kinematics integrates.
-        // 600 rad/s at the ~50-BU limb radius swings a link ~500 BU in one
-        // substep: over the DOF cap, under the invalid-solve restore's
-        // 2 048-BU displacement bound (which would claim the body first
-        // and sleep it), so the clamp is the guard under test.
+        // ONE DOF (the leaf joint's last axis) at 600 rad/s: over the DOF
+        // cap, and finite through the step. Writing 600 rad/s into EVERY
+        // DOF of this chain is a different case under rapier 0.36 — its
+        // multibody solve goes non-finite inside the step and the bodies are
+        // quarantined, which the restore path owns
+        // (`world::tests::a_quarantined_body_is_re_enabled_and_parked`) — so
+        // it would not reach the clamp under test at all.
         {
             let (multibody, _) = w
                 .multibody_joints
                 .get_mut(rag.joints[0])
                 .expect("live joint");
             let mut vels = multibody.generalized_velocity_mut();
-            for v in vels.iter_mut() {
-                *v = 600.0;
-            }
+            let leaf_dof = vels.len() - 1;
+            vels[leaf_dof] = 600.0;
         }
 
         // The first substep still integrates the pre-clamp value — the

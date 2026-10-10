@@ -7,9 +7,8 @@
 //!
 //! # Crate layout
 //!
-//! - [`broad_phase`] — Rapier's broad phase without fixed-on-fixed pairs
 //! - [`config`] — `ContactConfig` resource (engine-wide tunables)
-//! - [`convert`] — glam ↔ nalgebra conversions + `collision_shape_to_parts`
+//! - [`convert`] — `CollisionShape` → Rapier shape parts (`collision_shape_to_parts`)
 //! - [`components`] — `RapierHandles`, `CharacterController`
 //! - [`world`] — `PhysicsWorld` resource (pipeline, sets, accumulator)
 //! - [`water`] — WATAL physics sink: `PhysicsWaterConstants` + `buoyancy_force`
@@ -18,7 +17,6 @@
 //! The crate is additive: if `PhysicsWorld` is not inserted into the
 //! world, nothing happens. The loose-NIF demo path opts out this way.
 
-pub mod broad_phase;
 pub mod components;
 pub mod config;
 pub mod convert;

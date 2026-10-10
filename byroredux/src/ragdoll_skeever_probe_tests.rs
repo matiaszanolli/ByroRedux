@@ -1,10 +1,20 @@
 //! #5161 isolation probe — the BleakFallsBarrow01 skeever-corpse ragdoll
 //! (`meshes\Actors\Skeever\Character Assets\skeleton.nif`, 21 bodies)
 //! explodes its multibody solve to |t|=2.7e13 within one substep at
-//! load-settle, poisoning the multi-SAP broad phase; a later proxy
-//! insertion then panics `sap_axis.rs`. This probe replays the exact
-//! live spec: seed poses captured from the failing engine run, shapes,
-//! masses and joints straight from the authored NIF.
+//! load-settle. Under rapier 0.22 that poisoned the multi-SAP broad phase
+//! and a later proxy insertion panicked `sap_axis.rs` (#5161, #5488); the
+//! BVH broad phase of rapier 0.27+ has no such failure mode, so the probe
+//! now pins the containment instead (the counters line per 30 ticks: the
+//! clamp → park → detach ladder, and restore events). This probe replays
+//! the exact live spec: seed poses captured from the failing engine run,
+//! shapes, masses and joints straight from the authored NIF.
+//!
+//! Measured on the rapier 0.36 upgrade against the same probe on 0.22:
+//! with the floor at the seed (`BYRO_PROBE_PENETRATION` unset) both settle
+//! in place (0.22: 3 clamps; 0.36: 1); at `BYRO_PROBE_PENETRATION=20` both
+//! detach the articulation within 30 ticks and the freed capsules fall
+//! through the 10-BU floor they start inside (worst |t| at tick 599: 2.5e4
+//! on 0.22, 2.9e4 on 0.36). Neither panics.
 //!
 //! Needs the extracted skeleton on disk:
 //!   cargo run --release -p byroredux-bsa --example bsa_extract_one -- \
@@ -156,6 +166,18 @@ fn skeever_ragdoll_survives_six_hundred_floor_ticks() {
         };
         if tick % 30 == 0 || tick > 590 {
             println!("tick {tick}: worst |t| = {worst:.3e} (entity {worst_body})");
+            let pw = world.resource::<PhysicsWorld>();
+            let joints_alive = rag
+                .joints
+                .iter()
+                .filter(|j| pw.multibody_joints.get(**j).is_some())
+                .count();
+            println!(
+                "tick {tick}: containment recov={:?} clamps={} detaches={} joints_alive={joints_alive}",
+                pw.recovery_counts(),
+                pw.velocity_clamps_total(),
+                pw.explosive_detaches_total(),
+            );
         }
         if tick == 0 || tick == 15 || tick == 30 || tick == 60 || tick == 120 {
             let pw = world.resource::<PhysicsWorld>();

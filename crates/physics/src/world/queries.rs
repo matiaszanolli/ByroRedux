@@ -79,23 +79,78 @@ pub struct CharacterMoveParams {
 }
 
 impl PhysicsWorld {
-    /// Rebuild the `QueryPipeline` BVH from the current `ColliderSet`.
-    ///
-    /// `pipeline.step()` updates the query pipeline as a side-effect of
-    /// each physics tick, but newly-inserted colliders are invisible to
-    /// `cast_ray` / `intersection_with_shape` / etc. until the next
-    /// step runs. M28.5 character spawn needs to ray-cast the floor
-    /// BEFORE the first physics tick (the spawn position depends on
-    /// the result), so we call this explicitly after newcomer
-    /// registration to flush the BVH.
-    pub fn update_query_pipeline(&mut self) {
-        self.query_pipeline.update(&self.colliders);
-        self.colliders_dirty = false;
+    /// A scene-query view over the broad phase's BVH, restricted by
+    /// `filter`. Since rapier 0.27 the query pipeline is this borrowed view,
+    /// not a separately-maintained tree: it sees exactly the colliders the
+    /// broad phase indexes — everything as of the last step, plus whatever
+    /// [`Self::update_query_pipeline`] / the queued-leaf refresh inserted
+    /// since.
+    pub fn queries<'a>(&'a self, filter: QueryFilter<'a>) -> QueryPipeline<'a> {
+        self.broad_phase.as_query_pipeline(
+            self.narrow_phase.query_dispatcher(),
+            &self.bodies,
+            &self.colliders,
+            filter,
+        )
     }
 
-    /// Defer the query-pipeline rebuild until the next physics boundary.
-    pub fn mark_colliders_dirty(&mut self) {
-        self.colliders_dirty = true;
+    /// Bring scene queries up to date with the whole `ColliderSet`.
+    ///
+    /// `pipeline.step()` maintains the query BVH as a side-effect of each
+    /// physics tick, but newly-inserted colliders are invisible to
+    /// `cast_ray` / `intersect_shape` / etc. until the next step runs. M28.5
+    /// character spawn needs to ray-cast the floor BEFORE the first physics
+    /// tick (the spawn position depends on the result), so this is called
+    /// explicitly after newcomer registration.
+    ///
+    /// Inserts (or refreshes) every enabled collider's leaf through
+    /// `BroadPhaseBvh::set_aabb`, which leaves an unchanged leaf alone, so it
+    /// is correct after any mutation — including tests that insert colliders
+    /// straight into the set. Per-frame registration uses the targeted
+    /// [`Self::queue_query_refresh`] instead.
+    pub fn update_query_pipeline(&mut self) {
+        let handles: Vec<ColliderHandle> = self.colliders.iter_enabled().map(|(h, _)| h).collect();
+        for handle in handles {
+            self.set_query_leaf(handle);
+        }
+        self.pending_query_leaves.clear();
+    }
+
+    /// Queue freshly-inserted colliders for the scene-query BVH. The next
+    /// pipeline step inserts them as part of its broad-phase update; a frame
+    /// that steps nothing inserts exactly these at the end of
+    /// [`Self::step`] (#2864: registration never pays for the whole set).
+    pub fn queue_query_refresh(&mut self, colliders: impl IntoIterator<Item = ColliderHandle>) {
+        self.pending_query_leaves.extend(colliders);
+    }
+
+    /// Insert the queued leaves (see [`Self::queue_query_refresh`]).
+    pub(super) fn insert_pending_query_leaves(&mut self) {
+        let pending = std::mem::take(&mut self.pending_query_leaves);
+        for &handle in &pending {
+            self.set_query_leaf(handle);
+        }
+        // Hand the allocation back for the next streaming frame.
+        self.pending_query_leaves = pending;
+        self.pending_query_leaves.clear();
+    }
+
+    /// Write one collider's current AABB into the broad phase's BVH, the
+    /// same AABB the step's own broad-phase update would compute. A removed,
+    /// disabled or non-finite collider is skipped: the BVH must never hold a
+    /// NaN leaf, and rapier drops removed/disabled leaves at its next update.
+    pub(super) fn set_query_leaf(&mut self, handle: ColliderHandle) {
+        let Some(collider) = self.colliders.get(handle) else {
+            return;
+        };
+        if !collider.is_enabled() {
+            return;
+        }
+        let aabb = collider.compute_broad_phase_aabb(&self.integration_parameters, &self.bodies);
+        if aabb.mins.is_finite() && aabb.maxs.is_finite() {
+            self.broad_phase
+                .set_aabb(&self.integration_parameters, handle, aabb);
+        }
     }
 
     /// Cast a downward ray from `origin` and return the Y-coordinate
@@ -108,9 +163,9 @@ impl PhysicsWorld {
     /// Ranges over fixed (static) colliders only. `max_distance` is
     /// in BU; pass the AABB height + slack.
     ///
-    /// **Caller must have called [`update_query_pipeline`]** since the
-    /// last collider insertion, otherwise the BVH is stale and the ray
-    /// will report no hits even when colliders exist.
+    /// **Caller must have called [`update_query_pipeline`](Self::update_query_pipeline)**
+    /// (or stepped) since the last collider insertion, otherwise the BVH
+    /// lacks those colliders and the ray reports no hit on them.
     ///
     /// Returns the world-space Y of the hit; the caller adds capsule
     /// `half_height + offset` to place the capsule centre above the
@@ -137,10 +192,7 @@ impl PhysicsWorld {
         excluded_body: Option<rapier3d::prelude::RigidBodyHandle>,
     ) -> Option<f32> {
         use rapier3d::prelude::*;
-        let ray = Ray::new(
-            point![origin.x, origin.y, origin.z],
-            vector![0.0, -1.0, 0.0],
-        );
+        let ray = Ray::new(origin, Vector::NEG_Y);
         // Restrict to fixed, non-sensor geometry — we don't want to spawn the
         // player standing on a dropped barrel, nor on a non-collidable marker
         // (#3116). See `solid_probe_filter`.
@@ -148,15 +200,8 @@ impl PhysicsWorld {
         if let Some(body) = excluded_body {
             filter = filter.exclude_rigid_body(body);
         }
-        self.query_pipeline
-            .cast_ray(
-                &self.bodies,
-                &self.colliders,
-                &ray,
-                max_distance,
-                /* solid = */ true,
-                filter,
-            )
+        self.queries(filter)
+            .cast_ray(&ray, max_distance, /* solid = */ true)
             .map(|(_handle, toi)| origin.y - toi)
     }
 
@@ -182,23 +227,13 @@ impl PhysicsWorld {
             return None;
         }
 
-        let ray = Ray::new(
-            point![origin.x, origin.y, origin.z],
-            vector![direction.x, direction.y, direction.z],
-        );
+        let ray = Ray::new(origin, direction);
         let mut filter = QueryFilter::default().exclude_sensors();
         if let Some(body) = excluded_body {
             filter = filter.exclude_rigid_body(body);
         }
-        self.query_pipeline
-            .cast_ray(
-                &self.bodies,
-                &self.colliders,
-                &ray,
-                max_distance,
-                /* solid = */ true,
-                filter,
-            )
+        self.queries(filter)
+            .cast_ray(&ray, max_distance, /* solid = */ true)
             .map(|(collider, distance)| PhysicsRayHit {
                 body: self.colliders.get(collider).and_then(|hit| hit.parent()),
                 distance,
@@ -240,17 +275,15 @@ impl PhysicsWorld {
         use rapier3d::parry::query::ShapeCastOptions;
         use rapier3d::prelude::*;
         let shape = Ball::new(corridor_radius);
-        let pos = Isometry::translation(origin.x, origin.y, origin.z);
+        let pos = Pose::from_translation(origin);
         let mut filter = QueryFilter::default().exclude_sensors();
         if let Some(body) = excluded_body {
             filter = filter.exclude_rigid_body(body);
         }
-        self.query_pipeline
+        self.queries(filter)
             .cast_shape(
-                &self.bodies,
-                &self.colliders,
                 &pos,
-                &Vector::new(direction.x, direction.y, direction.z),
+                direction,
                 &shape,
                 ShapeCastOptions {
                     target_distance: 0.0,
@@ -258,7 +291,6 @@ impl PhysicsWorld {
                     max_time_of_impact: max_distance,
                     compute_impact_geometry_on_penetration: false,
                 },
-                filter,
             )
             .map(|(collider, hit)| PhysicsRayHit {
                 body: self.colliders.get(collider).and_then(|hit| hit.parent()),
@@ -289,23 +321,13 @@ impl PhysicsWorld {
             return false;
         }
         let direction = delta / distance;
-        let ray = Ray::new(
-            point![from.x, from.y, from.z],
-            vector![direction.x, direction.y, direction.z],
-        );
+        let ray = Ray::new(from, direction);
         let mut filter = solid_probe_filter();
         if let Some(body) = excluded_body {
             filter = filter.exclude_rigid_body(body);
         }
-        self.query_pipeline
-            .cast_ray(
-                &self.bodies,
-                &self.colliders,
-                &ray,
-                distance,
-                /* solid = */ true,
-                filter,
-            )
+        self.queries(filter)
+            .cast_ray(&ray, distance, /* solid = */ true)
             .is_some()
     }
 
@@ -408,17 +430,15 @@ impl PhysicsWorld {
         use rapier3d::parry::query::ShapeCastOptions;
         use rapier3d::prelude::*;
         let shape = character_capsule(capsule_half_height, capsule_radius);
-        let pos = Isometry::translation(origin.x, origin.y, origin.z);
+        let pos = Pose::from_translation(origin);
         let mut filter = solid_probe_filter();
         if let Some(body) = excluded_body {
             filter = filter.exclude_rigid_body(body);
         }
-        self.query_pipeline
+        self.queries(filter)
             .cast_shape(
-                &self.bodies,
-                &self.colliders,
                 &pos,
-                &-Vector::y_axis(),
+                Vector::NEG_Y,
                 &shape,
                 ShapeCastOptions {
                     target_distance: 0.0,
@@ -426,7 +446,6 @@ impl PhysicsWorld {
                     max_time_of_impact: max_distance,
                     compute_impact_geometry_on_penetration: true,
                 },
-                filter,
             )
             .map(|(_handle, hit)| {
                 (
@@ -449,14 +468,14 @@ impl PhysicsWorld {
         excluded_body: Option<RigidBodyHandle>,
     ) -> bool {
         let shape = character_capsule(half_height, radius);
-        let pos = Isometry::translation(center.x, center.y, center.z);
+        let pos = Pose::from_translation(center);
         let mut filter = solid_probe_filter();
         if let Some(body) = excluded_body {
             filter = filter.exclude_rigid_body(body);
         }
-        self.query_pipeline
-            .intersection_with_shape(&self.bodies, &self.colliders, &pos, &shape, filter)
-            .is_some()
+        let queries = self.queries(filter);
+        let overlaps = queries.intersect_shape(pos, &shape).next().is_some();
+        overlaps
     }
 
     /// Diagnostic — compute the AABB of all static colliders in the
@@ -551,6 +570,7 @@ impl PhysicsWorld {
                     RigidBodyType::Dynamic => "Dynamic",
                     RigidBodyType::KinematicPositionBased => "KinematicPos",
                     RigidBodyType::KinematicVelocityBased => "KinematicVel",
+                    RigidBodyType::SoftFrame => "SoftFrame",
                 })
                 .unwrap_or("orphan");
             out.push(NearbyCollider {
@@ -609,7 +629,7 @@ impl PhysicsWorld {
         // the slope is steeper than this, the controller starts
         // sliding the character down instead of trying to hold pose.
         let controller = KinematicCharacterController {
-            up: Vector::y_axis(),
+            up: Vector::Y,
             offset: CharacterLength::Absolute(params.kcc_offset_bu.max(0.0)),
             slide: true,
             autostep: Some(CharacterAutostep {
@@ -628,19 +648,15 @@ impl PhysicsWorld {
         };
 
         let shape = character_capsule(params.capsule_half_height, params.capsule_radius);
-        let pos = Isometry::translation(params.position.x, params.position.y, params.position.z);
-        let desired = Vector::new(
-            params.desired_translation.x,
-            params.desired_translation.y,
-            params.desired_translation.z,
-        );
+        let pos = Pose::from_translation(params.position);
+        let desired = params.desired_translation;
 
-        // #3116 — sensors must be excluded here too. Rapier 0.22's
+        // #3116 — sensors must be excluded here too. Rapier's
         // `KinematicCharacterController` does not add the flag for you: the
         // only mutation it makes to the caller's filter is
-        // `filter.flags |= QueryFilterFlags::EXCLUDE_DYNAMIC`
-        // (`control/character_controller.rs:670`), and the sweep passes that
-        // same filter straight into `queries.cast_shape`. Without this, every
+        // `filter.flags |= QueryFilterFlags::EXCLUDE_DYNAMIC` (rapier 0.36
+        // `control/character_controller.rs:758`), and the sweep runs on the
+        // query pipeline it is handed, filter included. Without this, every
         // Havok layer-15 body registered as a sensor since #2549 still walls
         // off the player — for the character controller that change was a
         // no-op, which is the exact bug #2549 was filed to fix.
@@ -657,22 +673,15 @@ impl PhysicsWorld {
 
         let result = controller.move_shape(
             params.dt.max(1e-6),
-            &self.bodies,
-            &self.colliders,
-            &self.query_pipeline,
+            &self.queries(filter),
             &shape,
             &pos,
             desired,
-            filter,
             |_| {},
         );
 
         CharacterMoveResult {
-            translation: byroredux_core::math::Vec3::new(
-                result.translation.x,
-                result.translation.y,
-                result.translation.z,
-            ),
+            translation: result.translation,
             grounded: result.grounded,
             is_sliding_down_slope: result.is_sliding_down_slope,
         }

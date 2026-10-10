@@ -217,12 +217,10 @@ fn check_fo3_bind_pose(environment: Environment) {
             for (bone, handle, _) in &rag.bodies {
                 let body = &physics.bodies[*handle];
                 assert!(
-                    body.translation()
-                        .iter()
-                        .chain(body.rotation().coords.iter())
-                        .chain(body.linvel().iter())
-                        .chain(body.angvel().iter())
-                        .all(|v| v.is_finite()),
+                    body.translation().is_finite()
+                        && body.rotation().is_finite()
+                        && body.linvel().is_finite()
+                        && body.angvel().is_finite(),
                     "yaw={yaw} step={step} bone={bone}"
                 );
                 if environment != Environment::FreeFall {

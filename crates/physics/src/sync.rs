@@ -45,7 +45,7 @@ use std::sync::OnceLock;
 use crate::components::{ActorBoneCollider, RapierHandles};
 use crate::config::ContactConfig;
 use crate::convert::{
-    collision_shape_to_parts, iso_from_trs, quat_from_na, vec3_from_translation, vec3_to_na,
+    collision_shape_to_parts, pose_from_trs,
 };
 use crate::world::PhysicsWorld;
 
@@ -65,7 +65,7 @@ pub fn set_linear_velocity(world: &World, entity: EntityId, velocity: glam::Vec3
     let Some(body) = pw.bodies.get_mut(handles.body) else {
         return false;
     };
-    body.set_linvel(vec3_to_na(velocity), nonzero);
+    body.set_linvel(velocity, nonzero);
     if nonzero {
         // Re-engage the pipeline step this frame so the velocity integrates
         // even if the scene was otherwise asleep (the static-scene fast path).
@@ -96,13 +96,13 @@ pub fn set_kinematic_translation(world: &World, entity: EntityId, translation: g
     let Some(body) = pw.bodies.get_mut(handles.body) else {
         return false;
     };
-    let target = vec3_to_na(translation);
+    let target = translation;
     // Only wake on actual movement. The character controller pushes the
     // player capsule every frame to track the camera — even in fly mode and
     // even when standing still — so an unconditional wake here pins the
     // simulation awake forever (the static-scene fast path never engages).
     // A no-op re-target leaves the body's kinematic velocity at zero anyway.
-    let moved = (target - *body.translation()).norm_squared() > 1e-4;
+    let moved = (target - body.translation()).length_squared() > 1e-4;
     body.set_next_kinematic_translation(target);
     if moved {
         pw.wake();
@@ -343,7 +343,11 @@ fn dump_awake_fallers(world: &World) {
     // opposite order (#2136).
     let body_snapshots: Vec<(RigidBodyHandle, f32, f32)> = {
         let pw = world.resource::<PhysicsWorld>();
-        let awake: Vec<RigidBodyHandle> = pw.islands.active_dynamic_bodies().to_vec();
+        let awake: Vec<RigidBodyHandle> = pw
+            .islands
+            .active_bodies()
+            .filter(|h| pw.bodies.get(*h).is_some_and(|b| b.is_dynamic()))
+            .collect();
         if awake.len() < AWAKE_FALLER_DUMP_FLOOR {
             return; // not a storm yet — don't consume the one-shot
         }
@@ -1063,7 +1067,7 @@ fn register_newcomers(world: &World, newcomers: Vec<Newcomer>) {
         let lock_rotations = n.lock_rotations();
 
         let mut body_builder = RigidBodyBuilder::new(body_type)
-            .position(iso_from_trs(n.global.translation, n.global.rotation))
+            .pose(pose_from_trs(n.global.translation, n.global.rotation))
             .linear_damping(n.body_data.linear_damping)
             .angular_damping(n.body_data.angular_damping);
         if lock_rotations {
@@ -1104,6 +1108,7 @@ fn register_newcomers(world: &World, newcomers: Vec<Newcomer>) {
         let part_mass = n.body_data.mass.max(0.0) / parts.len() as f32;
         let contact_skin = cfg.default_contact_skin_bu.max(0.0);
         let mut first_collider_handle: Option<rapier3d::prelude::ColliderHandle> = None;
+        let mut inserted: Vec<rapier3d::prelude::ColliderHandle> = Vec::with_capacity(parts.len());
         // #2873 — label a live actor's ragdoll-bone colliders so downward
         // floor probes can mask them out. Membership only: the filter half
         // stays `Group::ALL`, so the bones still collide with everything
@@ -1112,6 +1117,7 @@ fn register_newcomers(world: &World, newcomers: Vec<Newcomer>) {
             rapier3d::prelude::InteractionGroups::new(
                 crate::ACTOR_BONE_GROUP,
                 rapier3d::prelude::Group::ALL,
+                rapier3d::prelude::InteractionTestMode::And,
             )
         } else {
             rapier3d::prelude::InteractionGroups::all()
@@ -1138,7 +1144,9 @@ fn register_newcomers(world: &World, newcomers: Vec<Newcomer>) {
             if first_collider_handle.is_none() {
                 first_collider_handle = Some(handle);
             }
+            inserted.push(handle);
         }
+        pw.queue_query_refresh(inserted);
 
         registered.push((
             n.entity,
@@ -1152,13 +1160,10 @@ fn register_newcomers(world: &World, newcomers: Vec<Newcomer>) {
         ));
     }
 
-    // Defer the query-pipeline BVH rebuild until the physics boundary. The
-    // step path performs exactly one full rebuild after any substep (or on a
-    // no-step dirty fast path), avoiding duplicate O(all colliders) work on
-    // streaming frames (#2864).
-    if !registered.is_empty() {
-        pw.mark_colliders_dirty();
-    }
+    // The new colliders reach the scene-query BVH at the physics boundary:
+    // the step's broad-phase update inserts them, or — on a frame that steps
+    // nothing — `step` inserts exactly the leaves queued above. Never a pass
+    // over the whole collider set on a streaming frame (#2864).
 
     drop(pw);
 
@@ -1219,7 +1224,7 @@ fn push_kinematic(world: &World) {
         let Some(g) = global_q.get(entity) else {
             continue;
         };
-        targets.push((handles.body, iso_from_trs(g.translation, g.rotation)));
+        targets.push((handles.body, pose_from_trs(g.translation, g.rotation)));
     }
     drop(handles_q);
     drop(body_q);
@@ -1237,8 +1242,8 @@ fn push_kinematic(world: &World) {
             // whole simulation awake. Skipping the no-op push leaves its
             // velocity at exactly zero (the solver skips it) and lets the
             // static-scene fast path engage. See `PhysicsWorld::step`.
-            let dt = (cur.translation.vector - target.translation.vector).norm();
-            let dr = cur.rotation.angle_to(&target.rotation);
+            let dt = (cur.translation - target.translation).length();
+            let dr = cur.rotation.angle_between(target.rotation);
             if dt * dt > 1e-6 || dr > 1e-5 {
                 // #5161 — refuse an insane target before it reaches Rapier.
                 // A keyframed bone's ECS pose is animation-authored; when the
@@ -1314,8 +1319,8 @@ fn pull_dynamic(world: &World) {
             let iso = *body.position();
             body_states.push((
                 entity,
-                vec3_from_translation(iso.translation),
-                quat_from_na(iso.rotation),
+                iso.translation,
+                iso.rotation,
                 body.is_sleeping(),
             ));
         }

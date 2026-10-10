@@ -11,8 +11,10 @@
 //! becomes a single field write, not a hunt through three crates.
 //!
 //! Defaults match the values that were inline before the unification:
-//! - `trimesh_flags = FIX_INTERNAL_EDGES` (which transitively ORs in
-//!   `ORIENTED | MERGE_DUPLICATE_VERTICES` — see parry3d-0.17.6/src/shape/trimesh.rs:276).
+//! - `trimesh_flags = FIX_INTERNAL_EDGES | ORIENTED` (plus the
+//!   `MERGE_DUPLICATE_VERTICES` that `FIX_INTERNAL_EDGES` implies) — the set
+//!   parry 0.17's `FIX_INTERNAL_EDGES` stood for on its own; see
+//!   [`TriMeshFlagBits::DEFAULT`].
 //! - `default_contact_skin_bu = 1.0` (Rapier collider margin — was 0
 //!   implicitly; now explicit so the narrow phase has a stable gap to
 //!   resolve from).
@@ -24,10 +26,6 @@ use byroredux_core::ecs::resource::Resource;
 /// rapier types. Matches `rapier3d::parry::shape::TriMeshFlags` (u16)
 /// 1:1 — the physics crate consumes this via
 /// `TriMeshFlags::from_bits_truncate`.
-///
-/// `FIX_INTERNAL_EDGES`'s definition includes `ORIENTED` and
-/// `MERGE_DUPLICATE_VERTICES` transitively (parry3d:276), so the default
-/// here gives all three.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TriMeshFlagBits(pub u16);
 
@@ -37,10 +35,16 @@ impl TriMeshFlagBits {
     /// Mirrors `rapier3d::parry::shape::TriMeshFlags::MERGE_DUPLICATE_VERTICES`.
     pub const MERGE_DUPLICATE_VERTICES: u16 = 1 << 4;
     /// Mirrors `rapier3d::parry::shape::TriMeshFlags::FIX_INTERNAL_EDGES`,
-    /// which transitively ORs in `ORIENTED | MERGE_DUPLICATE_VERTICES`.
-    pub const FIX_INTERNAL_EDGES: u16 = (1 << 7) | Self::ORIENTED | Self::MERGE_DUPLICATE_VERTICES;
+    /// which transitively ORs in `MERGE_DUPLICATE_VERTICES`.
+    pub const FIX_INTERNAL_EDGES: u16 = (1 << 7) | Self::MERGE_DUPLICATE_VERTICES;
 
-    pub const DEFAULT: Self = Self(Self::FIX_INTERNAL_EDGES);
+    /// The engine default: `FIX_INTERNAL_EDGES | ORIENTED`. Until parry 0.19
+    /// `FIX_INTERNAL_EDGES` implied `ORIENTED`; it no longer does (the
+    /// pseudo-normals are still computed, but the mesh stops being treated
+    /// as closed and outward-facing for inside/outside tests). Naming
+    /// `ORIENTED` explicitly keeps every collision mesh exactly as it was
+    /// built under rapier 0.22, rather than letting the upgrade change it.
+    pub const DEFAULT: Self = Self(Self::FIX_INTERNAL_EDGES | Self::ORIENTED);
 }
 
 impl Default for TriMeshFlagBits {
@@ -55,8 +59,7 @@ impl Default for TriMeshFlagBits {
 #[derive(Debug, Clone, Copy)]
 pub struct ContactConfig {
     /// Flags applied to every `CollisionShape::TriMesh` at collider
-    /// creation. Default: `FIX_INTERNAL_EDGES` (which transitively ORs
-    /// in `ORIENTED | MERGE_DUPLICATE_VERTICES`).
+    /// creation. Default: [`TriMeshFlagBits::DEFAULT`].
     pub trimesh_flags: TriMeshFlagBits,
 
     /// Per-collider contact skin (Rapier collider margin), in BU. The
@@ -135,7 +138,15 @@ mod tests {
         assert_eq!(
             f.0 & TriMeshFlagBits::FIX_INTERNAL_EDGES,
             TriMeshFlagBits::FIX_INTERNAL_EDGES,
-            "FIX_INTERNAL_EDGES (and its transitive ORIENTED + MERGE_DUPLICATE_VERTICES) must be on by default"
+            "FIX_INTERNAL_EDGES (and its transitive MERGE_DUPLICATE_VERTICES) must be on by default"
+        );
+        // parry 0.19 stopped implying ORIENTED from FIX_INTERNAL_EDGES; the
+        // default names it so the meshes built before the rapier 0.36
+        // upgrade are built the same way after it.
+        assert_eq!(
+            f.0 & TriMeshFlagBits::ORIENTED,
+            TriMeshFlagBits::ORIENTED,
+            "ORIENTED must stay on by default"
         );
     }
 

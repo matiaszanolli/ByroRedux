@@ -22,7 +22,7 @@ Source: [`crates/physics/src/`](../../crates/physics/src/)
 
 | | |
 |---|---|
-| Backend             | [Rapier3D 0.22](https://rapier.rs) (`simd-stable`) over parry3d 0.17.6 |
+| Backend             | [Rapier3D 0.36](https://rapier.rs) over parry3d 0.31 (glam 0.33 math, BVH broad phase) |
 | Fixed tick rate     | 60 Hz with a sub-step accumulator, capped at 5 substeps/frame (`PHYSICS_DT`, `MAX_SUBSTEPS`) |
 | Gravity             | −686.7 BU/s² (≈ −9.81 m/s² scaled to Bethesda units, 1 m ≈ 70 BU) |
 | Units               | Bethesda units throughout — Rapier never sees metres |
@@ -63,17 +63,18 @@ below.)
 ```
 crates/physics/src/
 ├── lib.rs         Crate root, re-exports
-├── broad_phase.rs FixedPairFilterBroadPhase — Rapier's broad phase without fixed-on-fixed pairs
 ├── config.rs      ContactConfig resource — TriMesh flags, contact skin, KCC offset
-├── convert.rs     glam ↔ nalgebra conversions + collision_shape_to_parts
+├── convert.rs     collision_shape_to_parts + pose_from_trs (engine TRS → Rapier Pose)
 ├── components.rs  RapierHandles (body + collider) + CharacterController (M28.5)
 ├── world.rs       PhysicsWorld resource + KCC move_character / cast_ray_down helpers
 └── sync.rs        physics_sync_system — the 4-phase per-tick bridge
 ```
 
-All Rapier types are confined to this crate. Engine code talks glam;
-`convert.rs` does the Vec3 / Quat / Isometry3 translation at the
-boundary and never leaks nalgebra types outside the crate. The handful
+All Rapier types are confined to this crate. Since rapier 0.32 Rapier
+speaks glam too — its `Vector` / `Rotation` are the workspace's glam 0.33
+`Vec3` / `Quat` — so vectors cross the boundary unchanged and
+`convert.rs` only builds a `Pose` from an engine translation + rotation
+(`pose_from_trs`, which renormalizes the quaternion). The handful
 of helpers that *must* surface a Rapier handle (the KCC's
 `exclude_collider`) keep it behind a `CharacterMoveParams` field so
 callers still don't `use rapier3d::prelude::*`.
@@ -106,7 +107,7 @@ the `PhysicsWorld` + `RapierHandles` write locks are taken). For each:
   `motion_type_to_rapier`: `Static → Fixed`, `Keyframed →
   KinematicPositionBased`, `Dynamic → Dynamic`, `CharacterKinematic →
   KinematicPositionBased`.
-- Set initial position from `GlobalTransform` via `iso_from_trs`, and
+- Set initial position from `GlobalTransform` via `pose_from_trs`, and
   apply `linear_damping` / `angular_damping` from `RigidBodyData`.
   `CharacterKinematic` bodies additionally lock rotations (so the player
   stays upright); everything else follows the body data verbatim.
@@ -183,20 +184,35 @@ when more than one substep ran.
 sub-tick time before one full tick is due. A `0` return is not "the
 simulation is idle" (#2879).
 
-The pipeline runs over `FixedPairFilterBroadPhase` (`broad_phase.rs`)
-rather than Rapier's `DefaultBroadPhase` directly. Rapier 0.22 turns
-every broad-phase overlap into a narrow-phase graph edge and discards
-fixed-on-fixed pairs only as it walks those edges each step; static
-placements overlap densely, so the wrapper withholds such pairs up front.
-A pair is reported only once, when the overlap begins, so a body that
-leaves the fixed type (`PhysicsWorld::set_motion_type`, Papyrus
-`SetMotionType`) has its overlaps with fixed colliders reported again on
-the next step.
+The pipeline runs over Rapier's BVH broad phase (`BroadPhaseBvh`), which
+is also the scene-query index: `PhysicsWorld::queries(filter)` borrows its
+tree, so there is no separate query pipeline to rebuild. It never creates
+a pair that no `ActiveCollisionTypes` admits — static placements overlap
+densely, and fixed-on-fixed pairs never reach the narrow phase — and a
+body that leaves the fixed type (`PhysicsWorld::set_motion_type`, Papyrus
+`SetMotionType`) has its colliders re-inserted, so its overlaps with fixed
+colliders are reported on the next step. (Under rapier 0.22 the engine
+wrapped the MultiSAP broad phase in `FixedPairFilterBroadPhase` for both;
+`world/broad_phase_tests.rs` keeps the regression guards.)
+
+Colliders registered on a frame that steps nothing — the static-scene fast
+path, or a sub-tick frame — are queued (`queue_query_refresh`) and inserted
+into that BVH at the end of `step` via `BroadPhaseBvh::set_aabb`, so a
+streaming frame never touches the whole collider set.
+
+Explosion containment layers, outermost first: rapier's per-internal-substep
+speed cap (`IN_STEP_LINEAR_SPEED_CAP_BU_PER_S`, 28 000 BU/s — rigid bodies
+only; multibody links integrate outside it); rapier's NaN quarantine, which
+the engine converts from "disabled" into "parked" (re-enabled, rolled back,
+slept, articulation detached); the per-substep displacement restore; and
+the end-of-substep sanity clamp with its lifetime clamp → park → detach
+ladder. The rapier 0.22 `sap_axis.rs` broad-phase panic (#5161, #5488) has
+no counterpart in the BVH broad phase.
 
 **Phase 4 — Pull dynamic transforms back.** For every `RapierHandles`
 entity whose `RigidBodyData.motion_type == Dynamic`, read the
-`Isometry3` out of Rapier and write it back into the local `Transform`
-via `quat_from_na` / `vec3_from_translation`. Static / keyframed /
+`Pose` out of Rapier and write its translation and rotation back into the
+local `Transform`. Static / keyframed /
 character bodies are driven the *other* way (engine → Rapier) so they
 never flow back. Updates are collected into a `Vec` before the
 `Transform` write lock is taken.
@@ -306,9 +322,10 @@ Two subtleties worth keeping in mind when reading the controller:
 
 Because the player must spawn on real architecture, `setup_scene` runs
 one early `physics_sync_system(world, 0.0)` (register-only, no step),
-calls `PhysicsWorld::update_query_pipeline()` to flush the BVH (the
-query pipeline otherwise only learns about new colliders as a
-side-effect of `pipeline.step()`), then picks a spawn position in
+calls `PhysicsWorld::update_query_pipeline()` to insert every collider
+into the query BVH (scene queries otherwise only learn about new
+colliders as a side-effect of `pipeline.step()`), then picks a spawn
+position in
 precedence order:
 
 1. **Door teleporter** — the `Transform` of any `DoorTeleport` (XTEL)
@@ -373,7 +390,10 @@ offset). Defaults match the pre-unification inline values:
 `TriMeshFlagBits` mirrors `rapier3d::parry::shape::TriMeshFlags` (u16)
 1:1, with pin tests in `config.rs` asserting the bit values against
 parry's definitions so a Rapier upgrade can't silently change what gets
-applied at collider creation.
+applied at collider creation. That is how the 0.36 upgrade surfaced
+parry 0.19's change: `FIX_INTERNAL_EDGES` no longer implies `ORIENTED`,
+so the default names both (`FIX_INTERNAL_EDGES | ORIENTED`) to keep every
+collision mesh built exactly as before.
 
 ## NIF collision extraction
 

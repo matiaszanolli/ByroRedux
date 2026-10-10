@@ -1,12 +1,14 @@
-//! glam ↔ nalgebra conversions and `CollisionShape` → Rapier shape mapping.
+//! `CollisionShape` → Rapier shape mapping.
 //!
-//! Engine code speaks glam. Rapier speaks nalgebra. Keep the adapter
-//! confined here so the rest of the crate never sees nalgebra types.
+//! Engine code and Rapier share glam (0.33 — rapier speaks it through glamx
+//! since 0.32), so `Vec3`/`Quat` cross the boundary unchanged and a body or
+//! collider pose is a `Pose` built by [`pose_from_trs`]. The nalgebra adapter
+//! this module used to hold went away with rapier 0.22.
 
 use crate::config::ContactConfig;
 use byroredux_core::ecs::components::collision::CollisionShape;
 use byroredux_core::math::{Quat, Vec3};
-use nalgebra::{Isometry3, Point3, UnitQuaternion, Vector3};
+use rapier3d::math::Pose;
 use rapier3d::prelude::SharedShape;
 
 /// Upper bound on a single shape-primitive extent/half-extent this crate
@@ -47,43 +49,26 @@ fn sanitize_scale(scale: f32) -> f32 {
     }
 }
 
-// ── glam ↔ nalgebra ─────────────────────────────────────────────────────
+// ── Pose ────────────────────────────────────────────────────────────────
 
+/// A Rapier pose from an engine translation + rotation. The rotation is
+/// renormalized, as nalgebra's `UnitQuaternion::new_normalize` did on the
+/// rapier 0.22 path: transforms composed through the ECS drift off unit
+/// length, and rapier assumes a unit quaternion everywhere.
 #[inline]
-pub fn vec3_to_na(v: Vec3) -> Vector3<f32> {
-    Vector3::new(v.x, v.y, v.z)
+pub fn pose_from_trs(translation: Vec3, rotation: Quat) -> Pose {
+    Pose::from_parts(translation, rotation.normalize())
 }
 
+/// The rotation vector (axis × angle) of `rotation`, with the angle in
+/// `[0, π]` — the short way round, as nalgebra's `UnitQuaternion::scaled_axis`
+/// gave it. glam's `Quat::to_scaled_axis` does not canonicalize the double
+/// cover: for `w < 0` it returns the same rotation as an angle in `(π, 2π]`,
+/// which is the wrong joint coordinate for a limited DOF.
 #[inline]
-pub fn vec3_to_point(v: Vec3) -> Point3<f32> {
-    Point3::new(v.x, v.y, v.z)
-}
-
-#[inline]
-pub fn vec3_from_na(v: Vector3<f32>) -> Vec3 {
-    Vec3::new(v.x, v.y, v.z)
-}
-
-#[inline]
-pub fn vec3_from_translation(t: nalgebra::Translation3<f32>) -> Vec3 {
-    Vec3::new(t.x, t.y, t.z)
-}
-
-#[inline]
-pub fn quat_to_na(q: Quat) -> UnitQuaternion<f32> {
-    // glam stores quats as (x, y, z, w); nalgebra's Quaternion::new takes (w, i, j, k).
-    UnitQuaternion::new_normalize(nalgebra::Quaternion::new(q.w, q.x, q.y, q.z))
-}
-
-#[inline]
-pub fn quat_from_na(q: UnitQuaternion<f32>) -> Quat {
-    let c = q.into_inner().coords; // (i, j, k, w)
-    Quat::from_xyzw(c.x, c.y, c.z, c.w)
-}
-
-#[inline]
-pub fn iso_from_trs(translation: Vec3, rotation: Quat) -> Isometry3<f32> {
-    Isometry3::from_parts(vec3_to_na(translation).into(), quat_to_na(rotation))
+pub fn rotation_scaled_axis(rotation: Quat) -> Vec3 {
+    let short = if rotation.w < 0.0 { -rotation } else { rotation };
+    short.to_scaled_axis()
 }
 
 // ── CollisionShape → Rapier ─────────────────────────────────────────────
@@ -108,14 +93,13 @@ pub fn iso_from_trs(translation: Vec3, rotation: Quat) -> Isometry3<f32> {
 /// - `ConvexHull` → `SharedShape::convex_hull` (falls back to a tiny
 ///   ball if the hull is degenerate — Rapier rejects fewer than 4
 ///   non-coplanar points).
-/// - `TriMesh` → `SharedShape::trimesh` (falls back to a tiny ball on an
-///   empty vertex/index buffer, a non-finite vertex, or an index buffer
-///   with no in-range triangle left after filtering). There is no
-///   "construction failed" fallback and there cannot be one:
-///   `SharedShape::trimesh_with_flags` returns `Self`, not a `Result`, and
-///   `TriMesh::with_flags` *panics* on an empty index buffer and indexes
-///   `vertices[idx]` unchecked thereafter — so every condition that would
-///   "fail construction" has to be rejected before the call (#2878).
+/// - `TriMesh` → `SharedShape::trimesh_with_flags` (falls back to a tiny
+///   ball on an empty vertex/index buffer, a non-finite vertex, an index
+///   buffer with no in-range triangle left after filtering, or a
+///   construction error). The input checks stay ahead of the call (#2878):
+///   under rapier 0.22 `TriMesh::with_flags` *panicked* on an empty index
+///   buffer and indexed `vertices[idx]` unchecked. parry 0.31 returns a
+///   `Result` instead, and its `Err` takes the same fallback.
 /// - `Compound` → depth-first flatten, composing transforms.
 ///
 /// An empty compound with no viable leaves emits a single tiny-ball
@@ -146,24 +130,23 @@ pub fn iso_from_trs(translation: Vec3, rotation: Quat) -> Isometry3<f32> {
 ///
 /// `cfg` carries the engine-wide TriMesh flags. The default
 /// (`ContactConfig::DEFAULT`) preserves the pre-unification behaviour
-/// (`FIX_INTERNAL_EDGES`, which transitively ORs in `ORIENTED |
-/// MERGE_DUPLICATE_VERTICES`); callers that need to override per-shape
+/// ([`crate::TriMeshFlagBits::DEFAULT`]); callers that need to override per-shape
 /// can pass a `ContactConfig` with a different `trimesh_flags`.
 pub fn collision_shape_to_parts(
     shape: &CollisionShape,
     scale: f32,
     cfg: &ContactConfig,
-) -> Vec<(Isometry3<f32>, SharedShape)> {
-    let mut out: Vec<(Isometry3<f32>, SharedShape)> = Vec::new();
+) -> Vec<(Pose, SharedShape)> {
+    let mut out: Vec<(Pose, SharedShape)> = Vec::new();
     flatten_to_parts(
         shape,
-        Isometry3::identity(),
+        Pose::IDENTITY,
         sanitize_scale(scale),
         cfg,
         &mut out,
     );
     if out.is_empty() {
-        out.push((Isometry3::identity(), SharedShape::ball(1e-3)));
+        out.push((Pose::IDENTITY, SharedShape::ball(1e-3)));
     }
     out
 }
@@ -185,10 +168,10 @@ pub fn collision_shape_to_parts(
 /// kept its authored size, opening literal gaps between adjacent colliders.
 fn flatten_to_parts(
     shape: &CollisionShape,
-    parent_iso: Isometry3<f32>,
+    parent_iso: Pose,
     scale: f32,
     cfg: &ContactConfig,
-    out: &mut Vec<(Isometry3<f32>, SharedShape)>,
+    out: &mut Vec<(Pose, SharedShape)>,
 ) {
     match shape {
         CollisionShape::Compound { children } => {
@@ -213,7 +196,7 @@ fn flatten_to_parts(
                 // clamp above (#2543).
                 let safe_t = if t.is_finite() { *t } else { Vec3::ZERO };
                 let safe_r = if r.is_finite() { *r } else { Quat::IDENTITY };
-                let composed = parent_iso * iso_from_trs(safe_t * scale, safe_r);
+                let composed = parent_iso * pose_from_trs(safe_t * scale, safe_r);
                 flatten_to_parts(child, composed, scale, cfg, out);
             }
         }
@@ -278,8 +261,8 @@ fn flatten_to_parts(
             ));
         }
         CollisionShape::ConvexHull { vertices } => {
-            let pts: Vec<Point3<f32>> =
-                vertices.iter().map(|v| vec3_to_point(*v * scale)).collect();
+            let pts: Vec<Vec3> =
+                vertices.iter().map(|v| *v * scale).collect();
             // #3066 / #2551 — classify the point set BEFORE parry sees it.
             // `convex_hull` has two distinct failure modes on untrusted NIF
             // data, and only one of them is recoverable by the caller:
@@ -327,8 +310,8 @@ fn flatten_to_parts(
                 out.push((parent_iso, SharedShape::ball(1e-3)));
                 return;
             }
-            let pts: Vec<Point3<f32>> =
-                vertices.iter().map(|v| vec3_to_point(*v * scale)).collect();
+            let pts: Vec<Vec3> =
+                vertices.iter().map(|v| *v * scale).collect();
             // #2878 — the index-range guard belongs HERE, at the choke point
             // the comment above claims, not only in each producer. Both of
             // today's producers carry their own copy (`finish_trimesh`,
@@ -354,17 +337,26 @@ fn flatten_to_parts(
             }
             // M28.5 follow-up — TriMesh contact-normal treatment is
             // owned by `ContactConfig::trimesh_flags`. The default
-            // (`FIX_INTERNAL_EDGES`, which transitively ORs in
-            // `ORIENTED | MERGE_DUPLICATE_VERTICES`) fixes per-edge
-            // normal flips at shared triangle seams — without it a
-            // kinematic capsule sliding across a closed interior shell
-            // can pick up a normal pointing the wrong way at the seam
-            // and get pushed *through* the wall instead of along it.
-            // See parry3d-0.17.6/src/shape/trimesh.rs:270-276 and the
-            // pin tests in `crate::config`.
+            // (`FIX_INTERNAL_EDGES | ORIENTED`, with the
+            // `MERGE_DUPLICATE_VERTICES` that `FIX_INTERNAL_EDGES` implies)
+            // fixes per-edge normal flips at shared triangle seams —
+            // without it a kinematic capsule sliding across a closed
+            // interior shell can pick up a normal pointing the wrong way at
+            // the seam and get pushed *through* the wall instead of along
+            // it. See parry3d 0.31 `TriMeshFlags` and the pin tests in
+            // `crate::config`.
             use rapier3d::parry::shape::TriMeshFlags;
             let flags = TriMeshFlags::from_bits_truncate(cfg.trimesh_flags.0);
-            out.push((parent_iso, SharedShape::trimesh_with_flags(pts, idx, flags)));
+            match SharedShape::trimesh_with_flags(pts, idx, flags) {
+                Ok(mesh) => out.push((parent_iso, mesh)),
+                // Every input parry rejects outright (empty/out-of-range
+                // indices) is filtered above; what is left is a topology
+                // failure on a mesh that passed those checks.
+                Err(err) => {
+                    log::warn!("collision: TriMesh rejected by parry ({err:?}); using the tiny-ball fallback");
+                    out.push((parent_iso, SharedShape::ball(1e-3)));
+                }
+            }
         }
     }
 }
@@ -384,8 +376,8 @@ enum HullDegeneracy {
     Pointlike,
     /// Extent along one axis only. `parry` returns `None` for these.
     Collinear {
-        start: Point3<f32>,
-        end: Point3<f32>,
+        start: Vec3,
+        end: Vec3,
     },
     /// Anything `convex_hull` can actually work with — including coplanar
     /// sets, which build a flat `ConvexPolyhedron` without complaint.
@@ -404,7 +396,7 @@ enum HullDegeneracy {
 /// Note this is *not* the "fewer than four non-coplanar points" precondition
 /// parry documents: measured against parry 0.17.6, coplanar triangles, quads
 /// and n-gons all build fine. Only extent is decisive.
-fn hull_degeneracy(pts: &[Point3<f32>]) -> HullDegeneracy {
+fn hull_degeneracy(pts: &[Vec3]) -> HullDegeneracy {
     let Some(origin) = pts.first().copied() else {
         return HullDegeneracy::Pointlike;
     };
@@ -414,7 +406,7 @@ fn hull_degeneracy(pts: &[Point3<f32>]) -> HullDegeneracy {
     // vertices happen to be near-coincident.
     let (mut far, mut span) = (origin, 0.0f32);
     for p in pts {
-        let len = (p - origin).norm();
+        let len = (p - origin).length();
         if len > span {
             (far, span) = (*p, len);
         }
@@ -428,7 +420,7 @@ fn hull_degeneracy(pts: &[Point3<f32>]) -> HullDegeneracy {
     // 10 m shape is collinear, the same 1 mm in a 5 mm shape is not.
     let off_axis = pts
         .iter()
-        .map(|p| axis.cross(&(p - origin)).norm())
+        .map(|p| axis.cross(p - origin).length())
         .fold(0.0f32, f32::max);
     if off_axis > span * 1e-4 {
         return HullDegeneracy::Buildable;
@@ -438,7 +430,7 @@ fn hull_degeneracy(pts: &[Point3<f32>]) -> HullDegeneracy {
     // endpoint — it need not be, so take the real projection range.
     let (mut lo, mut hi) = (0.0f32, 0.0f32);
     for p in pts {
-        let t = (p - origin).dot(&axis);
+        let t = (p - origin).dot(axis);
         lo = lo.min(t);
         hi = hi.max(t);
     }
@@ -455,43 +447,43 @@ mod tests {
 
     /// Test helper — call `collision_shape_to_parts` with the default
     /// `ContactConfig` so existing assertions stay shape-agnostic.
-    fn parts(shape: &CollisionShape) -> Vec<(Isometry3<f32>, SharedShape)> {
+    fn parts(shape: &CollisionShape) -> Vec<(Pose, SharedShape)> {
         collision_shape_to_parts(shape, 1.0, &ContactConfig::DEFAULT)
     }
 
+    /// `pose_from_trs` renormalizes like nalgebra's `new_normalize` did on
+    /// the rapier 0.22 path: a drifted ECS rotation must reach rapier as a
+    /// unit quaternion.
     #[test]
-    fn vec3_roundtrip() {
-        let v = Vec3::new(1.0, -2.5, 3.25);
-        assert_eq!(vec3_from_na(vec3_to_na(v)), v);
+    fn pose_from_trs_renormalizes_the_rotation() {
+        let drifted = Quat::from_xyzw(0.0, 0.8, 0.0, 0.7); // |q| ≈ 1.063
+        let pose = pose_from_trs(Vec3::new(1.0, -2.5, 3.25), drifted);
+        assert_eq!(pose.translation, Vec3::new(1.0, -2.5, 3.25));
+        assert!((pose.rotation.length() - 1.0).abs() < 1e-6);
+        assert!((pose.rotation - drifted.normalize()).length() < 1e-6);
     }
 
+    /// `rotation_scaled_axis` takes the short way round, as nalgebra's
+    /// `scaled_axis` did: the `w < 0` cover of a 30° turn is 30° about the
+    /// same axis, never 330° about the opposite one — the ragdoll joint seed
+    /// feeds this straight into a limited DOF.
     #[test]
-    fn quat_roundtrip_identity() {
-        let q = Quat::IDENTITY;
-        let back = quat_from_na(quat_to_na(q));
-        assert!((back.w - 1.0).abs() < 1e-6);
-    }
-
-    #[test]
-    fn quat_roundtrip_rotation() {
-        let q = Quat::from_rotation_y(1.234);
-        let back = quat_from_na(quat_to_na(q));
-        // Component-wise with a loose tolerance (normalize may flip sign).
-        let same = (back.x - q.x).abs() < 1e-5
-            && (back.y - q.y).abs() < 1e-5
-            && (back.z - q.z).abs() < 1e-5
-            && (back.w - q.w).abs() < 1e-5;
-        let flipped = (back.x + q.x).abs() < 1e-5
-            && (back.y + q.y).abs() < 1e-5
-            && (back.z + q.z).abs() < 1e-5
-            && (back.w + q.w).abs() < 1e-5;
+    fn rotation_scaled_axis_takes_the_short_way_round() {
+        let q = Quat::from_rotation_y(30f32.to_radians());
+        let expected = Vec3::Y * 30f32.to_radians();
+        assert!((rotation_scaled_axis(q) - expected).length() < 1e-5);
         assert!(
-            same || flipped,
-            "quat roundtrip mismatch: {q:?} -> {back:?}"
+            (rotation_scaled_axis(-q) - expected).length() < 1e-5,
+            "the negated cover must canonicalize to the same rotation vector"
+        );
+        assert!(
+            ((-q).to_scaled_axis() - expected).length() > 1.0,
+            "glam's own to_scaled_axis must still take the long way for w < 0, \
+             or this test no longer guards anything"
         );
     }
 
-    fn shape_type_of(parts: &[(Isometry3<f32>, SharedShape)], i: usize) -> ShapeType {
+    fn shape_type_of(parts: &[(Pose, SharedShape)], i: usize) -> ShapeType {
         parts[i].1.shape_type()
     }
 
@@ -501,7 +493,7 @@ mod tests {
         assert_eq!(parts.len(), 1);
         assert_eq!(shape_type_of(&parts, 0), ShapeType::Ball);
         assert_eq!(parts[0].1.as_ball().unwrap().radius, 2.0);
-        assert_eq!(parts[0].0.translation.vector, Vector3::zeros());
+        assert_eq!(parts[0].0.translation, Vec3::ZERO);
     }
 
     #[test]
@@ -703,9 +695,9 @@ mod tests {
         assert_eq!(parts.len(), 1, "the child ball must still come through");
         let iso = parts[0].0;
         assert!(
-            iso.translation.vector.x.is_finite()
-                && iso.translation.vector.y.is_finite()
-                && iso.translation.vector.z.is_finite(),
+            iso.translation.x.is_finite()
+                && iso.translation.y.is_finite()
+                && iso.translation.z.is_finite(),
             "non-finite compound child translation must not reach Rapier: {:?}",
             iso.translation
         );
@@ -819,7 +811,7 @@ mod tests {
 
         let parts = parts(&outer);
         assert_eq!(parts.len(), 1);
-        let actual = parts[0].0.translation.vector;
+        let actual = parts[0].0.translation;
 
         // parent-then-child: a +90° yaw maps +X to −Z, so (4,0,0) lands at
         // (0,5,−4).
@@ -844,11 +836,11 @@ mod tests {
         // The child's own orientation is the parent's, since the child
         // authored identity: a reversed compose would leave it identity.
         let rot = parts[0].0.rotation;
-        let expected_rot = quat_to_na(parent_r);
+        let expected_rot = parent_r.normalize();
         assert!(
-            (rot.i - expected_rot.i).abs() < 1e-5
-                && (rot.j - expected_rot.j).abs() < 1e-5
-                && (rot.k - expected_rot.k).abs() < 1e-5
+            (rot.x - expected_rot.x).abs() < 1e-5
+                && (rot.y - expected_rot.y).abs() < 1e-5
+                && (rot.z - expected_rot.z).abs() < 1e-5
                 && (rot.w - expected_rot.w).abs() < 1e-5,
             "composed rotation must carry the parent yaw; got {rot:?}"
         );
@@ -1219,9 +1211,9 @@ mod tests {
             )],
         };
         let parts = collision_shape_to_parts(&outer, 3.0, &ContactConfig::DEFAULT);
-        let t = parts[0].0.translation.vector;
+        let t = parts[0].0.translation;
         assert!(
-            (t.norm() - 30.0).abs() < 1e-4,
+            (t.length() - 30.0).abs() < 1e-4,
             "rotated child must sit at 10 × 3 from the origin, got {t:?}"
         );
     }
@@ -1274,7 +1266,7 @@ mod tests {
         let c = parts[0].1.as_capsule().unwrap();
         assert_eq!(c.radius, 2.0);
         assert!((c.half_height() - 7.0).abs() < 1e-6);
-        assert_eq!(parts[0].0.translation.vector, Vector3::new(1.0, 2.0, 3.0));
+        assert_eq!(parts[0].0.translation, Vec3::new(1.0, 2.0, 3.0));
     }
 
     #[test]

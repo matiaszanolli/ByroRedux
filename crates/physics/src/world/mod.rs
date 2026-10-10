@@ -9,8 +9,6 @@ use byroredux_core::ecs::components::MotionType;
 use byroredux_core::ecs::resource::Resource;
 use rapier3d::prelude::*;
 
-use crate::broad_phase::FixedPairFilterBroadPhase;
-
 // #5311 (TD1-2026-10-05-01) — the query/KCC impl and the explosion
 // recovery/containment cluster live in child modules; `step` consumes
 // the recovery entry points directly.
@@ -71,33 +69,47 @@ pub const BU_PER_METER: f32 = byroredux_core::lighting::BETHESDA_UNITS_PER_METER
 /// [`PhysicsWorld::step`].
 pub const KILL_PLANE_Y: f32 = -25_000.0;
 
-/// #5161 — sanity cap on a dynamic body's speed. The real-cell P2 route
-/// proved the missing guard class: a ragdoll articulation kicked by deep
-/// floor penetration (authored-capsule-vs-rock geometry mismatch) explodes
-/// the constraint solve within ONE `pipeline.step` call to |v|≈7.7e15 BU/s;
-/// the *next* call's position integration then places its AABB near rapier
-/// 0.22's multi-SAP grid boundary (≈2.68e11) and poisons the broad-phase
-/// layer structure — irrecoverably, since the collider proxy ids are
-/// `pub(crate)` — and a later proxy insertion panics `sap_axis.rs`. The
-/// per-substep snapshot restore only sees the explosion after it already
-/// happened. Clamping every dynamic body's velocity at the end of each
-/// substep bounds the worst position change to [`Self::clamp`]·dt ≈ 333 BU
-/// — 6× under [`MAX_DYNAMIC_SUBSTEP_DISPLACEMENT`] and nine orders of
-/// magnitude under the grid boundary. No engine-driven dynamic body moves
-/// legitimately at 20 000 BU/s (~285 m/s): the fastest authored motion
-/// class (arrows) sits near 6 000. Escalation is by LIFETIME burst count
-/// (see `explosion_offences`): 1 = clamp, 2 = park (velocities zeroed,
-/// slept — the invalid-solve restore's containment), 3 = detach the
-/// body's whole articulation (#5246).
+/// #5161 — sanity cap on a dynamic body's speed, applied at the end of each
+/// of [`PhysicsWorld::step`]'s substeps by `clamp_explosive_velocities`.
+/// No engine-driven dynamic body moves legitimately at 20 000 BU/s
+/// (~285 m/s): the fastest authored motion class (arrows) sits near 6 000.
+/// A body found above it is exploding (the real-cell P2 route measured a
+/// ragdoll articulation kicked by deep floor penetration at |v|≈7.7e15
+/// BU/s), and escalation is by LIFETIME burst count (see
+/// `explosion_offences`): 1 = clamp, 2 = park (velocities zeroed, slept —
+/// the invalid-solve restore's containment), 3 = detach the body's whole
+/// articulation (#5246).
+///
+/// This is the escalation policy, not the in-step bound: one
+/// `pipeline.step` runs several internal substeps, so an explosion born in
+/// it is integrated before this clamp can run (#5488). Rapier bounds that
+/// itself — see [`IN_STEP_LINEAR_SPEED_CAP_BU_PER_S`].
 pub const VELOCITY_SANITY_CAP_BU_PER_S: f32 = 20_000.0;
+/// Rapier's own per-internal-substep speed cap, in BU/s
+/// (`IntegrationParameters::normalized_max_linear_velocity` × length unit;
+/// rapier 0.35+, ~45°/substep for rotation). This is the guard #5488 found
+/// missing: it runs INSIDE `pipeline.step`, so a solve that blows up on an
+/// early internal substep can move a body at most this far per second
+/// before any engine code sees it — ≈467 BU per 60 Hz tick, a quarter of
+/// [`MAX_DYNAMIC_SUBSTEP_DISPLACEMENT`]. The value is rapier's default (400
+/// m/s) at the Bethesda scale, pinned here so it is a decision rather than
+/// an accident. It sits deliberately ABOVE [`VELOCITY_SANITY_CAP_BU_PER_S`]:
+/// a body rapier had to cap leaves the step faster than the sanity cap, so
+/// the end-of-substep clamp still sees — and counts — the explosion.
+///
+/// Under rapier 0.22 the same explosion was fatal: the multi-SAP broad
+/// phase panicked (`sap_axis.rs`) once an AABB neared its ≈2.68e11 grid
+/// boundary. The BVH broad phase (rapier 0.27+) has no such grid and skips
+/// non-finite AABBs, so that panic class no longer exists.
+pub const IN_STEP_LINEAR_SPEED_CAP_BU_PER_S: f32 = 28_000.0;
 /// #5161 — sanity cap on one articulation DOF's generalized velocity
 /// (rad/s for the ragdoll/hinge joints' angular axes, BU/s for the
 /// prismatic rail; every authored class moves far slower than this). The
 /// body-speed cap above cannot see these: articulation links integrate
 /// their reduced-coordinate DOF velocities (`Multibody::velocities`)
 /// through forward kinematics BEFORE the body-level clamp can matter, so
-/// an exploding DOF teleports its links through the broad-phase grid in
-/// one step even with every rigid body capped. Non-finite DOFs are zeroed.
+/// an exploding DOF teleports its links out of the world in one step even
+/// with every rigid body capped. Non-finite DOFs are zeroed.
 pub(crate) const ARTICULATION_DOF_SANITY_CAP: f32 = 100.0;
 
 
@@ -130,8 +142,10 @@ pub const ACTOR_BONE_GROUP: rapier3d::prelude::Group = rapier3d::prelude::Group:
 /// to provide.
 #[inline]
 fn ground_probe_groups() -> rapier3d::prelude::InteractionGroups {
-    use rapier3d::prelude::{Group, InteractionGroups};
-    InteractionGroups::new(Group::ALL, Group::ALL & !ACTOR_BONE_GROUP)
+    use rapier3d::prelude::{Group, InteractionGroups, InteractionTestMode};
+    // `And`: the pre-0.31 rule (each side's filter must admit the other's
+    // memberships), which rapier now asks for explicitly.
+    InteractionGroups::new(Group::ALL, Group::ALL & !ACTOR_BONE_GROUP, InteractionTestMode::And)
 }
 
 /// M42.10 — the interaction-group mask a *walking actor's* KCC sweep
@@ -200,6 +214,7 @@ pub struct NearbyCollider {
     /// `RapierHandles`. `None` for a parentless (orphan) collider.
     pub body: Option<rapier3d::prelude::RigidBodyHandle>,
     /// `"Fixed"` / `"Dynamic"` / `"KinematicPos"` / `"KinematicVel"` /
+    /// `"SoftFrame"` (a rapier soft-body proxy; the engine builds none) /
     /// `"orphan"`.
     pub body_type: &'static str,
     /// Sensors (trigger volumes) never generate contacts — a sensor sitting
@@ -230,14 +245,23 @@ pub struct PhysicsWorld {
     pub colliders: ColliderSet,
     pub impulse_joints: ImpulseJointSet,
     pub multibody_joints: MultibodyJointSet,
+    /// Rapier 0.36's soft bodies (ropes, cloth). The engine authors none;
+    /// the set exists because `PhysicsPipeline::step` and
+    /// `RigidBodySet::remove` take it.
+    pub soft_bodies: SoftBodySet,
     pub islands: IslandManager,
-    pub broad_phase: FixedPairFilterBroadPhase,
+    /// Rapier's BVH broad phase. Since rapier 0.27 it is also the scene-query
+    /// index: [`Self::queries`] borrows its tree, so there is no separate
+    /// query pipeline to keep in sync. It never pairs two colliders that no
+    /// `ActiveCollisionTypes` admits (fixed-on-fixed, by default), and a body
+    /// that changes type has its colliders re-inserted so the pairs it was
+    /// denied are reported afresh (rapier 0.35+).
+    pub broad_phase: BroadPhaseBvh,
     pub narrow_phase: NarrowPhase,
     pub ccd_solver: CCDSolver,
-    pub query_pipeline: QueryPipeline,
     pub pipeline: PhysicsPipeline,
     pub integration_parameters: IntegrationParameters,
-    pub gravity: Vector<Real>,
+    pub gravity: Vector,
     /// Seconds of unsimulated time left over from the last frame.
     pub accumulator: f32,
     /// Per-frame wall-clock budget for catch-up substeps (seconds). See
@@ -254,10 +278,14 @@ pub struct PhysicsWorld {
     /// pipeline run for a fully-asleep scene without missing the first
     /// frame of newly-introduced motion. See the static-scene fast path.
     pending_wake: bool,
-    /// Collider-set mutation awaiting a query-pipeline rebuild. Registration
-    /// defers this O(all colliders) work until after the physics step so a
-    /// streaming frame does not rebuild the BVH twice (#2864).
-    colliders_dirty: bool,
+    /// Colliders inserted since the last pipeline step, which the broad
+    /// phase's BVH — the scene-query index — does not hold yet. Registration
+    /// queues them ([`Self::queue_query_refresh`]); a frame that steps
+    /// inserts them through the step's own broad-phase update, and a frame
+    /// that does not (the static-scene fast path, a sub-tick frame) inserts
+    /// exactly these leaves via `BroadPhaseBvh::set_aabb` at its end, so a
+    /// streaming frame never pays for the whole collider set (#2864, #4685).
+    pending_query_leaves: Vec<ColliderHandle>,
     /// Index of dynamic-body handles for the per-substep recovery snapshot
     /// (#4682 / PHYS-D2-2026-09-21-01). Maintained at the three production
     /// mutation points — newcomer registration (`physics_sync_system`),
@@ -363,6 +391,7 @@ impl PhysicsWorld {
             // which on its own pins the static-scene fast path awake. See
             // `BU_PER_METER`.
             length_unit: BU_PER_METER,
+            normalized_max_linear_velocity: IN_STEP_LINEAR_SPEED_CAP_BU_PER_S / BU_PER_METER,
             ..Default::default()
         };
 
@@ -371,11 +400,11 @@ impl PhysicsWorld {
             colliders: ColliderSet::new(),
             impulse_joints: ImpulseJointSet::new(),
             multibody_joints: MultibodyJointSet::new(),
+            soft_bodies: SoftBodySet::new(),
             islands: IslandManager::new(),
-            broad_phase: FixedPairFilterBroadPhase::new(),
+            broad_phase: BroadPhaseBvh::new(),
             narrow_phase: NarrowPhase::new(),
             ccd_solver: CCDSolver::new(),
-            query_pipeline: QueryPipeline::new(),
             pipeline: PhysicsPipeline::new(),
             integration_parameters,
             gravity: Vector::new(0.0, -686.7, 0.0),
@@ -384,7 +413,7 @@ impl PhysicsWorld {
             // Step once on the first frame so any bodies present at startup
             // settle / populate the island state.
             pending_wake: true,
-            colliders_dirty: false,
+            pending_query_leaves: Vec::new(),
             dynamic_bodies: Vec::new(),
             registered_shape_generations: None,
             recoveries_total: 0,
@@ -439,6 +468,7 @@ impl PhysicsWorld {
                 &mut self.colliders,
                 &mut self.impulse_joints,
                 &mut self.multibody_joints,
+                &mut self.soft_bodies,
                 /* remove_attached_colliders = */ true,
             )
             .is_some();
@@ -457,33 +487,49 @@ impl PhysicsWorld {
             // Rapier processes neighbour wake-ups from removed colliders during
             // `pipeline.step()`. Re-arm the static-scene fast path so that
             // deferred cleanup and those wake-ups are not stranded when the
-            // scene is otherwise asleep (#2863).
+            // scene is otherwise asleep (#2863). The removed colliders' BVH
+            // leaves need no refresh here: the next step's broad-phase update
+            // drops them, and until then a query reaching one resolves its
+            // slot to nothing (or to the collider now occupying it, whose own
+            // leaf is queued at insertion).
             self.wake();
-            self.colliders_dirty = true;
         }
         removed
     }
 
-    /// `(awake dynamic bodies, live kinematic bodies)` from the last step's
+    /// `(awake dynamic bodies, active kinematic bodies)` from the last step's
     /// island state — diagnostic for the static-scene fast path.
     ///
-    /// **The second element is not an awake count** (#3975). Rapier's
-    /// dynamic active set is genuinely drained every step and re-populated
-    /// only with bodies that failed the sleep test — the first element is
-    /// exactly "awake". The kinematic active set is never drained: a body
-    /// enters it once, when it becomes kinematic or its position/colliders
-    /// change, and leaves only on removal or a type change. So the second
-    /// element counts every *live* kinematic body, asleep or not — see the
-    /// static-scene fast path's own rationale a few hundred lines below,
-    /// which already knew this and deliberately does not gate on this set
-    /// for exactly that reason. Named `active_island_counts`, not
-    /// `awake_counts`, so the name stops implying a claim the second half
-    /// doesn't make.
+    /// **The second element is not an awake count** (#3975). Rapier's active
+    /// set holds the awake *island* — every dynamic body that failed the
+    /// sleep test — plus the kinematic bodies, which rapier does not put to
+    /// sleep on a sleep test the way it does dynamics. So the first element
+    /// is exactly "awake", while the second counts kinematic bodies whether
+    /// or not anything moved them — see the static-scene fast path's own
+    /// rationale a few hundred lines below, which already knew this and
+    /// deliberately does not gate on kinematics for exactly that reason.
+    /// Named `active_island_counts`, not `awake_counts`, so the name stops
+    /// implying a claim the second half doesn't make.
     pub fn active_island_counts(&self) -> (usize, usize) {
-        (
-            self.islands.active_dynamic_bodies().len(),
-            self.islands.active_kinematic_bodies().len(),
-        )
+        self.islands
+            .active_bodies()
+            .filter_map(|h| self.bodies.get(h))
+            .fold((0, 0), |(dynamic, kinematic), body| {
+                if body.is_dynamic() {
+                    (dynamic + 1, kinematic)
+                } else {
+                    (dynamic, kinematic + body.is_kinematic() as usize)
+                }
+            })
+    }
+
+    /// Whether the last step left any dynamic body awake. Rapier's active set
+    /// mixes dynamics with kinematics (which never leave it), so emptiness of
+    /// the set itself says nothing — only its dynamic members do.
+    fn has_awake_dynamics(&self) -> bool {
+        self.islands
+            .active_bodies()
+            .any(|h| self.bodies.get(h).is_some_and(|b| b.is_dynamic()))
     }
 
     /// Mark the simulation as needing at least one pipeline step on the next
@@ -499,7 +545,7 @@ impl PhysicsWorld {
     /// caller). `sync::register_newcomers` builds dynamic bodies
     /// `sleeping(true)` on purpose (the EXTERIOR-FREEZE FIX: a Skyrim
     /// exterior streaming frame measured `atw_scheduler=3005ms` with ~3000
-    /// awake dynamics) and announces itself with `mark_colliders_dirty()`
+    /// awake dynamics) and announces itself with `queue_query_refresh()`
     /// alone, which the fast path below honours without arming a step.
     /// Consumers that need first-frame visibility of a newcomer take it as
     /// an explicit argument instead — see `water.rs`'s
@@ -511,7 +557,7 @@ impl PhysicsWorld {
     /// That reintroduces the measured multi-second streaming stall and
     /// simultaneously makes `had_newcomers` look redundant, inviting its
     /// removal. A new body-creating path should follow `register_newcomers`
-    /// (spawn asleep + `mark_colliders_dirty`) and hand first-frame
+    /// (spawn asleep + `queue_query_refresh`) and hand first-frame
     /// visibility to its consumers explicitly.
     #[inline]
     pub fn wake(&mut self) {
@@ -577,7 +623,7 @@ impl PhysicsWorld {
     ) -> bool {
         if let Some(b) = self.bodies.get_mut(handle) {
             if b.body_type() == RigidBodyType::Dynamic {
-                b.add_force(vector![force.x, force.y, force.z], wake_up);
+                b.add_force(force, wake_up);
                 if wake_up {
                     self.wake();
                 }
@@ -609,7 +655,7 @@ impl PhysicsWorld {
     ) -> bool {
         if let Some(b) = self.bodies.get_mut(handle) {
             if b.body_type() == RigidBodyType::Dynamic {
-                b.apply_impulse(vector![impulse.x, impulse.y, impulse.z], true);
+                b.apply_impulse(impulse, true);
                 self.wake();
                 return true;
             }
@@ -659,14 +705,12 @@ impl PhysicsWorld {
         let Some(body) = self.bodies.get_mut(handle) else {
             return false;
         };
-        let was_fixed = body.body_type() == RigidBodyType::Fixed;
+        // A body leaving the fixed type needs its overlaps with fixed
+        // colliders reported — the broad phase never paired them while both
+        // were fixed. Rapier does it: a type change re-inserts the body's
+        // colliders into the BVH as new leaves, which re-reports every pair
+        // the `ActiveCollisionTypes` filter withheld.
         body.set_body_type(body_type, wake_up);
-        // The broad phase withholds pairs of two fixed bodies and reports an
-        // overlap only once, so a body leaving the fixed type has to have
-        // its overlaps with fixed colliders reported again.
-        if was_fixed && body_type != RigidBodyType::Fixed {
-            self.broad_phase.body_left_fixed(body.colliders());
-        }
         if wake_up {
             self.wake();
         }
@@ -774,30 +818,25 @@ impl PhysicsWorld {
         // measured is removed forty lines below (`None` is passed for the
         // query pipeline).
         //
-        // WHERE THE COST ACTUALLY IS, today: nowhere near here — #4685
-        // (PHYS-D6-2026-09-21-02). The design used to pass `None` for the
-        // query pipeline inside the step and pay ONE full
-        // `QueryPipeline::update` (a QBVH `clear_and_rebuild` over every
-        // collider) after the substep loop; on a 95 k-collider world that
-        // rebuild measured 9.6 ms/frame against 0.10 ms for the
-        // incremental path, because rapier 0.22's `PhysicsPipeline::step`
-        // never performs a full update on a pipeline it is handed — it
-        // calls `update_incremental` (dirty leaves only) once per step.
-        // The step now receives `Some(&mut self.query_pipeline)` and the
-        // post-loop full rebuild runs only on collider-dirty frames that
-        // step nothing. Historical attribution, kept for its method: the
-        // `6e55b492`-era proxy (release build, 30 000 fixed cuboids + 1
-        // awake dynamic body, 20 iterations after warmup) measured the
-        // then-design at ≈ 2.1-2.4 ms/frame with ≈ 2.1 ms of it the bare
-        // post-loop rebuild — the same "the rebuild, not the solver"
-        // conclusion the incremental handoff now removes entirely.
-        // Caveat, still true: all-cuboid with one moving body is not a
-        // real cell — real content is TriMesh-heavy with real contact
-        // work, so solver costs go up on both designs.
+        // WHERE THE COST ACTUALLY IS, today: nowhere near here. #4685
+        // (PHYS-D6-2026-09-21-02) measured the next suspect on rapier 0.22 —
+        // a full query-QBVH `clear_and_rebuild` after the substep loop,
+        // 9.6 ms/frame on a 95 k-collider world against 0.10 ms incremental.
+        // Since rapier 0.27 there is no separate query tree to rebuild: scene
+        // queries borrow the broad phase's BVH (`Self::queries`), which the
+        // step maintains incrementally, and a frame that steps nothing only
+        // inserts the leaves registration queued (`pending_query_leaves`).
+        // Historical attribution, kept for its method: the `6e55b492`-era
+        // proxy (release build, 30 000 fixed cuboids + 1 awake dynamic body,
+        // 20 iterations after warmup) measured the then-design at ≈ 2.1-2.4
+        // ms/frame with ≈ 2.1 ms of it the bare post-loop rebuild — "the
+        // rebuild, not the solver". Caveat, still true: all-cuboid with one
+        // moving body is not a real cell — real content is TriMesh-heavy
+        // with real contact work, so solver costs go up on both designs.
         //
         // Skip conditions:
         //
-        //   * No awake dynamic body (`active_dynamic_bodies()` reflects the
+        //   * No awake dynamic body (rapier's active set reflects the
         //     previous step; a body can only newly wake via a contact, which
         //     requires something else to have moved — covered by `wake()`).
         //   * Nothing was explicitly woken this frame (`pending_wake`): a
@@ -806,23 +845,20 @@ impl PhysicsWorld {
         //     clear and spawns dynamics asleep (see `wake`'s doc for why, and
         //     for the consumer-side `had_newcomers` contract that depends on
         //     it). A streaming frame with no other motion therefore lands
-        //     HERE, in the fast path, and is served by the `colliders_dirty`
-        //     rebuild just below rather than by a pipeline step (#3969).
+        //     HERE, in the fast path, and is served by the queued-leaf
+        //     insertion just below rather than by a pipeline step (#3969).
         //
-        // NOTE: we deliberately do NOT gate on `active_kinematic_bodies()`.
-        // Rapier keeps every kinematic body in that set structurally for its
-        // whole life (idle ones are just skipped in the solver via a
-        // zero-velocity check), so it's never empty in a cell with authored-
-        // keyframed clutter — testing it would defeat the fast path entirely.
+        // NOTE: we deliberately do NOT gate on kinematic bodies. Rapier keeps
+        // kinematic bodies in its active set without a sleep test (idle ones
+        // are just skipped in the solver via a zero-velocity check), so the
+        // set is never empty in a cell with authored-keyframed clutter —
+        // testing it would defeat the fast path entirely.
         // Real kinematic *motion* is captured by `pending_wake` instead
         // (`push_kinematic` / `set_kinematic_translation` call `wake()`).
         self.bodies_restored_last_frame = 0;
         self.recover_pre_broken_bodies();
-        if self.islands.active_dynamic_bodies().is_empty() && !self.pending_wake {
-            if self.colliders_dirty {
-                self.query_pipeline.update(&self.colliders);
-                self.colliders_dirty = false;
-            }
+        if !self.has_awake_dynamics() && !self.pending_wake {
+            self.insert_pending_query_leaves();
             self.accumulator = 0.0;
             return 0;
         }
@@ -873,36 +909,31 @@ impl PhysicsWorld {
         if steps > 0 {
             let fallen: Vec<_> = self
                 .islands
-                .active_dynamic_bodies()
-                .iter()
-                .copied()
+                .active_bodies()
                 .filter(|h| {
                     self.bodies
                         .get(*h)
-                        .is_some_and(|b| b.translation().y < KILL_PLANE_Y)
+                        .is_some_and(|b| b.is_dynamic() && b.translation().y < KILL_PLANE_Y)
                 })
                 .collect();
             for h in fallen {
                 if let Some(b) = self.bodies.get_mut(h) {
-                    b.set_linvel(Vector::zeros(), false);
-                    b.set_angvel(Vector::zeros(), false);
+                    b.set_linvel(Vector::ZERO, false);
+                    b.set_angvel(AngVector::ZERO, false);
                     b.sleep();
                 }
             }
         }
 
-        // Query-pipeline refresh, post-substeps. #4685 — a frame that
-        // stepped needs NO full rebuild here: `pipeline.step` already
-        // advanced the query pipeline incrementally (it drains rapier's
-        // modified/removed collider sets once per step). Only a frame that
-        // mutated colliders but ran no substep — the static-scene fast
-        // path with fresh registration (#2864's deferred rebuild) — still
-        // pays the full O(all-colliders) `clear_and_rebuild`.
+        // Scene-query refresh, post-substeps. A frame that stepped needs
+        // nothing here: the step's broad-phase update inserted every queued
+        // collider into the BVH the queries read. A frame that registered
+        // colliders but ran no substep (accumulator below one tick) inserts
+        // just those leaves (#2864's deferred registration).
         if steps > 0 {
-            self.colliders_dirty = false;
-        } else if self.colliders_dirty {
-            self.query_pipeline.update(&self.colliders);
-            self.colliders_dirty = false;
+            self.pending_query_leaves.clear();
+        } else {
+            self.insert_pending_query_leaves();
         }
         steps
     }
@@ -940,7 +971,7 @@ impl PhysicsWorld {
             })
             .collect();
         self.pipeline.step(
-            &self.gravity,
+            self.gravity,
             &self.integration_parameters,
             &mut self.islands,
             &mut self.broad_phase,
@@ -949,32 +980,31 @@ impl PhysicsWorld {
             &mut self.colliders,
             &mut self.impulse_joints,
             &mut self.multibody_joints,
+            &mut self.soft_bodies,
             &mut self.ccd_solver,
-            // #4685 (PHYS-D6-2026-09-21-02) — hand the pipeline our
-            // query pipeline so it advances INCREMENTALLY inside the
-            // step: rapier 0.22's `PhysicsPipeline::step` never calls
-            // the O(all-colliders) `QueryPipeline::update`; it calls
-            // `update_incremental` once per step (on the last substep),
-            // re-inserting only the colliders this step marked
-            // modified/removed. The old `None` here was defending
-            // against a full-rebuild-per-substep cost that does not
-            // exist — and forced the O(all-colliders) full rebuild in
-            // the post-loop below instead (measured 9.6 ms/frame on a
-            // 95 k-collider world vs 0.10 ms incremental). #2890's
-            // real history (a genuine in-substep full rebuild at every
-            // substep) was fixed by `6e55b492` removing that design,
-            // not by starving the pipeline of incremental updates.
-            // Explicit `update_query_pipeline` call sites — e.g. the
-            // spawn ground-snap — are unaffected.
-            Some(&mut self.query_pipeline),
             &(),
             &(),
         );
         self.accumulator -= PHYSICS_DT;
+        // Rapier quarantines a body whose pose or velocity went non-finite
+        // during the step: rolled back to its last valid pose, zeroed and
+        // DISABLED (no collisions, no simulation). The engine's containment
+        // is to park, not to disable — the restore below re-enables these
+        // and treats them as invalid alongside its own displacement check.
+        let quarantine = self.pipeline.quarantine();
+        let quarantined: Vec<RigidBodyHandle> = quarantine.bodies().to_vec();
+        if !quarantine.colliders().is_empty() {
+            log::error!(
+                "physics: rapier disabled {} collider(s) whose geometry went non-finite: {:?}",
+                quarantine.colliders().len(),
+                quarantine.colliders()
+            );
+        }
         let (restored, invalid_handles) = restore_invalid_dynamic_bodies(
             &mut self.bodies,
             &mut self.multibody_joints,
             snapshots,
+            &quarantined,
             &self.body_labels,
         );
         if restored > 0 {
@@ -1029,7 +1059,7 @@ impl Resource for PhysicsWorld {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::convert::{collision_shape_to_parts, iso_from_trs};
+    use crate::convert::{collision_shape_to_parts, pose_from_trs};
     use byroredux_core::ecs::components::collision::CollisionShape;
     use byroredux_core::math::{Quat, Vec3};
 
@@ -1093,7 +1123,7 @@ mod tests {
                 half_extents: Vec3::new(8.0, 9.0, 8.0),
             });
             let body = RigidBodyBuilder::kinematic_position_based()
-                .position(iso_from_trs(Vec3::new(x, 50.0, 100.0), Quat::IDENTITY))
+                .pose(pose_from_trs(Vec3::new(x, 50.0, 100.0), Quat::IDENTITY))
                 .build();
             let handle = w.bodies.insert(body);
             w.colliders.insert_with_parent(
@@ -1152,7 +1182,7 @@ mod tests {
         let player = world.bodies.insert(RigidBodyBuilder::fixed().build());
         world.colliders.insert_with_parent(
             ColliderBuilder::cuboid(5.0, 5.0, 5.0)
-                .translation(vector![0.0, 0.0, -10.0])
+                .translation(Vector::new(0.0, 0.0, -10.0))
                 .build(),
             player,
             &mut world.bodies,
@@ -1160,7 +1190,7 @@ mod tests {
         let wall = world.bodies.insert(RigidBodyBuilder::fixed().build());
         world.colliders.insert_with_parent(
             ColliderBuilder::cuboid(20.0, 20.0, 2.0)
-                .translation(vector![0.0, 0.0, -100.0])
+                .translation(Vector::new(0.0, 0.0, -100.0))
                 .build(),
             wall,
             &mut world.bodies,
@@ -1185,7 +1215,7 @@ mod tests {
         let trigger = world.bodies.insert(RigidBodyBuilder::fixed().build());
         world.colliders.insert_with_parent(
             ColliderBuilder::cuboid(20.0, 20.0, 2.0)
-                .translation(vector![0.0, 0.0, -20.0])
+                .translation(Vector::new(0.0, 0.0, -20.0))
                 .sensor(true)
                 .build(),
             trigger,
@@ -1210,7 +1240,7 @@ mod tests {
         } else {
             RigidBodyBuilder::fixed()
         }
-        .position(iso_from_trs(pos, Quat::IDENTITY))
+        .pose(pose_from_trs(pos, Quat::IDENTITY))
         .build();
         let h = w.bodies.insert(body);
         w.colliders
@@ -1232,7 +1262,10 @@ mod tests {
             None,
         );
 
-        assert_eq!(hit, Some(1.0));
+        // parry 0.31's capsule cast stops a hair short of the face
+        // (0.99992 here): compare within its tolerance, not bit-exact.
+        let surface = hit.expect("the walkable floor must be accepted");
+        assert!((surface - 1.0).abs() < 1e-3, "surface y = {surface}");
     }
 
     #[test]
@@ -1267,7 +1300,7 @@ mod tests {
         );
         w.colliders.insert_with_parent(
             ColliderBuilder::cuboid(20.0, 100.0, 20.0)
-                .collision_groups(InteractionGroups::new(ACTOR_BONE_GROUP, Group::ALL))
+                .collision_groups(InteractionGroups::new(ACTOR_BONE_GROUP, Group::ALL, InteractionTestMode::And))
                 .build(),
             body,
             &mut w.bodies,
@@ -1291,7 +1324,7 @@ mod tests {
         let body = RigidBodyBuilder::fixed()
             // This steep panel crosses the capsule column as Y decreases, so
             // the downward cast meets its wall-like face before any floor.
-            .position(iso_from_trs(Vec3::ZERO, Quat::IDENTITY))
+            .pose(pose_from_trs(Vec3::ZERO, Quat::IDENTITY))
             .build();
         let handle = w.bodies.insert(body);
         w.colliders
@@ -1448,7 +1481,7 @@ mod tests {
         // Spawn a dynamic ball at y = 1000 BU, well above any floor.
         let shape = single_shape(&CollisionShape::Ball { radius: 10.0 });
         let body = RigidBodyBuilder::dynamic()
-            .position(iso_from_trs(Vec3::new(0.0, 1000.0, 0.0), Quat::IDENTITY))
+            .pose(pose_from_trs(Vec3::new(0.0, 1000.0, 0.0), Quat::IDENTITY))
             .build();
         let handle = w.bodies.insert(body);
         let collider = ColliderBuilder::new(shape).build();
@@ -1482,7 +1515,7 @@ mod tests {
         w.bodies[handle]
             .set_linvel(Vector::new(100_000.0, 0.0, 0.0), false);
         w.step(PHYSICS_DT);
-        let speed = w.bodies[handle].linvel().norm();
+        let speed = w.bodies[handle].linvel().length();
         assert!(
             speed <= VELOCITY_SANITY_CAP_BU_PER_S,
             "explosive speed must be capped, got {speed}"
@@ -1498,7 +1531,7 @@ mod tests {
             w.bodies[handle].is_sleeping(),
             "a second consecutive clamped substep must park the body"
         );
-        assert_eq!(w.bodies[handle].linvel().norm(), 0.0);
+        assert_eq!(w.bodies[handle].linvel().length(), 0.0);
     }
 
     /// #5246 — the offence count is LIFETIME, not cleared by clean substeps:
@@ -1556,14 +1589,14 @@ mod tests {
         // break-on-restore skipped.
         w.clamp_explosive_velocities();
 
-        let linvel = *w.bodies[handle].linvel();
-        let angvel = *w.bodies[handle].angvel();
+        let linvel = w.bodies[handle].linvel();
+        let angvel = w.bodies[handle].angvel();
         assert!(
-            linvel.iter().all(|v| v.is_finite()) && linvel.norm() <= 1.0,
+            linvel.is_finite() && linvel.length() <= 1.0,
             "NaN linear velocity must be zeroed, got {linvel:?}"
         );
         assert!(
-            angvel.iter().all(|v| v.is_finite()),
+            angvel.is_finite(),
             "NaN angular velocity must be zeroed, got {angvel:?}"
         );
         assert_eq!(w.velocity_clamps_total(), 1);
@@ -1587,8 +1620,13 @@ mod tests {
         w.set_body_label(victim, "actor 295 bone bip01 neck1".to_owned());
 
         for burst in 1..=3 {
+            // A re-explosion starts with the parked body being woken (a
+            // contact, a hit). Rapier 0.36 does not carry a velocity written
+            // into a sleeping island into the step, so the fixture wakes the
+            // body with it; rapier's in-step cap then bounds it to
+            // `IN_STEP_LINEAR_SPEED_CAP_BU_PER_S`, still over the sanity cap.
             w.bodies[victim]
-                .set_linvel(Vector::new(100_000.0, 0.0, 0.0), false);
+                .set_linvel(Vector::new(100_000.0, 0.0, 0.0), true);
             // Re-arm the world: a parked rig sleeps, the static-scene fast
             // path takes zero substeps unless the wake flag is armed —
             // exactly the wake-and-re-explosion cycle the escalation
@@ -1609,7 +1647,7 @@ mod tests {
         );
         // And the victim is parked: finite, zeroed, asleep.
         assert!(w.bodies[victim].is_sleeping());
-        assert!(w.bodies[victim].linvel().norm() == 0.0);
+        assert!(w.bodies[victim].linvel().length() == 0.0);
     }
 
     /// #5356 — the positive leg: a body that genuinely belongs to a live
@@ -1747,7 +1785,7 @@ mod tests {
         // Dynamic ball at y = 200.
         let ball_shape = single_shape(&CollisionShape::Ball { radius: 10.0 });
         let ball = RigidBodyBuilder::dynamic()
-            .position(iso_from_trs(Vec3::new(0.0, 200.0, 0.0), Quat::IDENTITY))
+            .pose(pose_from_trs(Vec3::new(0.0, 200.0, 0.0), Quat::IDENTITY))
             .build();
         let bh = w.bodies.insert(ball);
         w.colliders.insert_with_parent(
@@ -1797,7 +1835,7 @@ mod tests {
         let shape = single_shape(&CollisionShape::Ball { radius: 10.0 });
         let h = w.bodies.insert(
             RigidBodyBuilder::dynamic()
-                .position(iso_from_trs(Vec3::new(0.0, 1000.0, 0.0), Quat::IDENTITY))
+                .pose(pose_from_trs(Vec3::new(0.0, 1000.0, 0.0), Quat::IDENTITY))
                 .build(),
         );
         w.colliders
@@ -2019,7 +2057,7 @@ mod tests {
         let mut w = PhysicsWorld::new();
         let fh = w
             .bodies
-            .insert(RigidBodyBuilder::fixed().translation(vector![0.0, -1.0, 0.0]).build());
+            .insert(RigidBodyBuilder::fixed().translation(Vector::new(0.0, -1.0, 0.0)).build());
         w.colliders.insert_with_parent(
             ColliderBuilder::cuboid(500.0, 1.0, 500.0).build(),
             fh,
@@ -2027,7 +2065,7 @@ mod tests {
         );
         let bh = w
             .bodies
-            .insert(RigidBodyBuilder::dynamic().translation(vector![0.0, 40.0, 0.0]).build());
+            .insert(RigidBodyBuilder::dynamic().translation(Vector::new(0.0, 40.0, 0.0)).build());
         w.colliders.insert_with_parent(
             ColliderBuilder::ball(2.0).build(),
             bh,
@@ -2085,15 +2123,15 @@ mod tests {
         assert!(!body_state_is_finite(&bodies[handle]));
 
         assert_eq!(
-            restore_invalid_dynamic_bodies(&mut bodies, &mut MultibodyJointSet::new(), [snapshot], &std::collections::HashMap::new())
+            restore_invalid_dynamic_bodies(&mut bodies, &mut MultibodyJointSet::new(), [snapshot], &[], &std::collections::HashMap::new())
                 .0,
             1
         );
         let body = &bodies[handle];
         assert!(body_state_is_finite(body));
-        assert_eq!(body.translation(), &Vector::new(12.0, 34.0, 56.0));
-        assert_eq!(body.linvel(), &Vector::zeros());
-        assert_eq!(body.angvel(), &Vector::zeros());
+        assert_eq!(body.translation(), Vector::new(12.0, 34.0, 56.0));
+        assert_eq!(body.linvel(), Vector::ZERO);
+        assert_eq!(body.angvel(), Vector::ZERO);
         assert!(body.is_sleeping());
     }
 
@@ -2111,11 +2149,11 @@ mod tests {
         );
 
         assert_eq!(
-            restore_invalid_dynamic_bodies(&mut bodies, &mut MultibodyJointSet::new(), [snapshot], &std::collections::HashMap::new())
+            restore_invalid_dynamic_bodies(&mut bodies, &mut MultibodyJointSet::new(), [snapshot], &[], &std::collections::HashMap::new())
                 .0,
             1
         );
-        assert_eq!(bodies[handle].translation(), &Vector::zeros());
+        assert_eq!(bodies[handle].translation(), Vector::ZERO);
         assert!(bodies[handle].is_sleeping());
     }
 
@@ -2133,7 +2171,7 @@ mod tests {
         // A sane worldspace pose is accepted unchanged.
         assert!(w.accept_keyframe_target(
             handle,
-            &iso_from_trs(Vec3::new(-67_763.0, 8_386.0, -3_567.0), Quat::IDENTITY)
+            &pose_from_trs(Vec3::new(-67_763.0, 8_386.0, -3_567.0), Quat::IDENTITY)
         ));
         assert_eq!(w.keyframe_targets_refused_total(), 0);
 
@@ -2142,7 +2180,7 @@ mod tests {
         // `set_next_kinematic_position` before the broad-phase panic.
         assert!(!w.accept_keyframe_target(
             handle,
-            &iso_from_trs(
+            &pose_from_trs(
                 Vec3::new(268_435_460_000.0, 0.0, 0.0),
                 Quat::IDENTITY
             )
@@ -2150,7 +2188,7 @@ mod tests {
         // Non-finite components in either part are refused too.
         assert!(!w.accept_keyframe_target(
             handle,
-            &iso_from_trs(Vec3::ZERO, Quat::from_xyzw(f32::NAN, 0.0, 0.0, 1.0))
+            &pose_from_trs(Vec3::ZERO, Quat::from_xyzw(f32::NAN, 0.0, 0.0, 1.0))
         ));
         // Every refusal counts; the once-per-body log dedup does not.
         assert_eq!(w.keyframe_targets_refused_total(), 2);
@@ -2159,7 +2197,7 @@ mod tests {
         // target for the same body is accepted (the animation recovered).
         assert!(w.accept_keyframe_target(
             handle,
-            &iso_from_trs(Vec3::new(0.0, 3_456.0, 884.0), Quat::IDENTITY)
+            &pose_from_trs(Vec3::new(0.0, 3_456.0, 884.0), Quat::IDENTITY)
         ));
     }
 
@@ -2172,17 +2210,17 @@ mod tests {
         let mut w = PhysicsWorld::new();
         let h = w
             .bodies
-            .insert(RigidBodyBuilder::dynamic().translation(vector![5.0, 6.0, 7.0]).build());
+            .insert(RigidBodyBuilder::dynamic().translation(Vector::new(5.0, 6.0, 7.0)).build());
         w.dynamic_bodies.push(h);
         w.bodies
             .get_mut(h)
             .unwrap()
-            .set_linvel(vector![f32::NAN, 0.0, 0.0], true);
+            .set_linvel(Vector::new(f32::NAN, 0.0, 0.0), true);
         w.wake();
         assert!(w.step(PHYSICS_DT) >= 1);
         let body = w.bodies.get(h).unwrap();
         assert!(
-            body.linvel().iter().all(|v| v.is_finite()),
+            body.linvel().is_finite(),
             "the NaN velocity must be zeroed: {:?}",
             body.linvel()
         );
@@ -2195,6 +2233,17 @@ mod tests {
         assert_eq!(w.recovery_counts().2, 1);
     }
 
+    /// Lift rapier's in-step speed cap ([`IN_STEP_LINEAR_SPEED_CAP_BU_PER_S`])
+    /// so a velocity-driven "explosion" on a plain rigid body can jump past
+    /// the restore's displacement bound in one tick. Under rapier 0.36 that
+    /// cap stops a rigid body first; what still reaches the restore uncapped
+    /// is multibody link motion (forward kinematics integrates outside the
+    /// solver's per-body cap). These fixtures stand in for that motion with
+    /// the simplest body that can carry it.
+    fn uncap_rigid_body_speed(w: &mut PhysicsWorld) {
+        w.integration_parameters.normalized_max_linear_velocity = Real::MAX;
+    }
+
     /// #4683 — the recovery counter increments through a REAL substep
     /// explosion (a 1e9 BU/s solve jumps the body past the displacement
     /// bound in one tick), the per-frame body count resets on the next
@@ -2202,14 +2251,15 @@ mod tests {
     #[test]
     fn recovery_counter_counts_a_real_substep_explosion() {
         let mut w = PhysicsWorld::new();
+        uncap_rigid_body_speed(&mut w);
         let h = w
             .bodies
-            .insert(RigidBodyBuilder::dynamic().translation(vector![0.0, 10.0, 0.0]).build());
+            .insert(RigidBodyBuilder::dynamic().translation(Vector::new(0.0, 10.0, 0.0)).build());
         w.dynamic_bodies.push(h);
         w.bodies
             .get_mut(h)
             .unwrap()
-            .set_linvel(vector![1.0e9, 0.0, 0.0], true);
+            .set_linvel(Vector::new(1.0e9, 0.0, 0.0), true);
         w.wake();
         assert_eq!(w.recovery_counts(), (0, 0, 0));
 
@@ -2235,15 +2285,16 @@ mod tests {
     #[test]
     fn multi_body_recovery_counts_one_event_and_every_restored_body() {
         let mut w = PhysicsWorld::new();
+        uncap_rigid_body_speed(&mut w);
         for z in [0.0, 50.0] {
             let h = w
                 .bodies
-                .insert(RigidBodyBuilder::dynamic().translation(vector![0.0, 10.0, z]).build());
+                .insert(RigidBodyBuilder::dynamic().translation(Vector::new(0.0, 10.0, z)).build());
             w.dynamic_bodies.push(h);
             w.bodies
                 .get_mut(h)
                 .unwrap()
-                .set_linvel(vector![1.0e9, 0.0, 0.0], true);
+                .set_linvel(Vector::new(1.0e9, 0.0, 0.0), true);
         }
         w.wake();
 
@@ -2255,28 +2306,106 @@ mod tests {
         );
     }
 
+    /// #5488 — rapier 0.36's in-step speed cap is the guard that runs INSIDE
+    /// `pipeline.step`, where the explosion is born: a rigid body launched at
+    /// 1e9 BU/s moves at most `IN_STEP_LINEAR_SPEED_CAP_BU_PER_S × dt` in the
+    /// tick, so there is nothing for the restore to roll back, and the
+    /// end-of-substep ladder still sees — and counts — the burst, because
+    /// the in-step cap sits above `VELOCITY_SANITY_CAP_BU_PER_S`.
+    #[test]
+    fn in_step_speed_cap_bounds_an_explosion_inside_one_step() {
+        let mut w = PhysicsWorld::new();
+        let start = Vector::new(0.0, 10.0, 0.0);
+        let h = w
+            .bodies
+            .insert(RigidBodyBuilder::dynamic().translation(start).build());
+        w.dynamic_bodies.push(h);
+        w.bodies
+            .get_mut(h)
+            .unwrap()
+            .set_linvel(Vector::new(1.0e9, 0.0, 0.0), true);
+        w.wake();
+
+        assert_eq!(w.step(PHYSICS_DT), 1);
+        let moved = (w.bodies[h].translation() - start).length();
+        assert!(
+            moved <= IN_STEP_LINEAR_SPEED_CAP_BU_PER_S * PHYSICS_DT * 1.01,
+            "rapier's cap must bound the tick's travel: moved {moved} BU"
+        );
+        assert!(moved < MAX_DYNAMIC_SUBSTEP_DISPLACEMENT);
+        assert_eq!(
+            w.recovery_counts(),
+            (0, 0, 0),
+            "a capped burst leaves nothing for the restore"
+        );
+        assert_eq!(
+            w.velocity_clamps_total(),
+            1,
+            "the escalation ladder must still count the burst"
+        );
+    }
+
+    /// Rapier 0.35+ quarantines a body whose state goes non-finite during
+    /// the step: rolled back to its last valid pose, zeroed and DISABLED —
+    /// no collider in the broad phase, never simulated again. The engine
+    /// parks instead, so the restore re-enables the body, sleeps it, and
+    /// counts it like any other recovery.
+    #[test]
+    fn a_quarantined_body_is_re_enabled_and_parked() {
+        let mut w = PhysicsWorld::new();
+        let start = Vector::new(0.0, 10.0, 0.0);
+        let h = w
+            .bodies
+            .insert(RigidBodyBuilder::dynamic().translation(start).build());
+        w.colliders
+            .insert_with_parent(ColliderBuilder::ball(2.0).build(), h, &mut w.bodies);
+        w.dynamic_bodies.push(h);
+        // A non-finite force passes every check the engine runs before the
+        // step (they inspect pose and velocity) and turns the velocity NaN
+        // during integration — where rapier's end-of-step quarantine
+        // catches it.
+        assert!(w.add_force(h, Vec3::new(f32::NAN, 0.0, 0.0), true));
+
+        assert_eq!(w.step(PHYSICS_DT), 1);
+        assert_eq!(
+            w.pipeline.quarantine().bodies(),
+            &[h],
+            "fixture: rapier must have quarantined the body"
+        );
+        let body = &w.bodies[h];
+        assert!(
+            body.is_enabled(),
+            "a quarantined body must not be left disabled"
+        );
+        assert!(body.is_sleeping(), "it is parked, not left awake");
+        assert!(body_state_is_finite(body));
+        assert!((body.translation() - start).length() < 1.0);
+        assert_eq!(w.recovery_counts(), (1, 1, 0));
+    }
+
     /// #4687(b) — after a restore, the query pipeline must reflect the
     /// RESTORED pose within the same frame, not the exploded pose the step
     /// itself had just indexed.
     ///
-    /// #5126 — driven through a REAL recovery in `step`: rapier's final
-    /// substep refits the tree to the exploded AABB, which is exactly the
-    /// state the refresh has to undo. The pre-#5126 guard staged the
-    /// "explosion" with a non-refitting `update_incremental(…, false)`, so
-    /// its tree never held the exploded AABB and it stayed green with the
+    /// #5126 — driven through a REAL recovery in `step`: the step's
+    /// broad-phase update leaves the tree holding the exploded AABB, which is
+    /// exactly the state the refresh has to undo. The pre-#5126 guard staged
+    /// the "explosion" by hand on rapier 0.22's separate query tree, so its
+    /// tree never held the exploded AABB and it stayed green with the
     /// production refresh deleted.
     #[test]
     fn restored_pose_is_visible_to_ray_queries_same_frame() {
         let mut w = PhysicsWorld::new();
+        uncap_rigid_body_speed(&mut w);
         // Floor whose top face is y = 0, under the ball.
         w.colliders.insert(
             ColliderBuilder::cuboid(500.0, 1.0, 500.0)
-                .translation(vector![100.0, -1.0, 0.0])
+                .translation(Vector::new(100.0, -1.0, 0.0))
                 .build(),
         );
         let h = w
             .bodies
-            .insert(RigidBodyBuilder::dynamic().translation(vector![100.0, 50.0, 0.0]).build());
+            .insert(RigidBodyBuilder::dynamic().translation(Vector::new(100.0, 50.0, 0.0)).build());
         w.colliders.insert_with_parent(
             ColliderBuilder::ball(2.0).build(),
             h,
@@ -2290,12 +2419,12 @@ mod tests {
         w.bodies
             .get_mut(h)
             .unwrap()
-            .set_linvel(vector![3.0e5, 0.0, 0.0], true);
+            .set_linvel(Vector::new(3.0e5, 0.0, 0.0), true);
         w.wake();
         assert!(w.step(PHYSICS_DT) >= 1);
         assert_eq!(w.recovery_counts().0, 1, "the explosion must be recovered");
         assert!(
-            (w.bodies.get(h).unwrap().translation() - vector![100.0, 50.0, 0.0]).norm() < 1e-3,
+            (w.bodies.get(h).unwrap().translation() - Vector::new(100.0, 50.0, 0.0)).length() < 1e-3,
             "the body must be back at its snapshot pose"
         );
 
@@ -2355,11 +2484,11 @@ mod tests {
         );
         let snapshots = [a, c].map(|handle| DynamicBodySnapshot {
             handle,
-            position: Isometry::identity(),
+            position: Pose::IDENTITY,
         });
 
         let (restored, detached) =
-            restore_invalid_dynamic_bodies(&mut bodies, &mut multibody_joints, snapshots, &std::collections::HashMap::new());
+            restore_invalid_dynamic_bodies(&mut bodies, &mut multibody_joints, snapshots, &[], &std::collections::HashMap::new());
         assert_eq!(restored, 2);
         assert!(
             detached.contains(&a) && detached.contains(&c),
@@ -2384,7 +2513,7 @@ mod tests {
         let shape = single_shape(&CollisionShape::Ball { radius: 10.0 });
         let h = w.bodies.insert(
             RigidBodyBuilder::dynamic()
-                .position(iso_from_trs(Vec3::new(0.0, 1000.0, 0.0), Quat::IDENTITY))
+                .pose(pose_from_trs(Vec3::new(0.0, 1000.0, 0.0), Quat::IDENTITY))
                 .build(),
         );
         w.colliders
@@ -2408,7 +2537,7 @@ mod tests {
         let shape = single_shape(&CollisionShape::Ball { radius: 10.0 });
         let h = w.bodies.insert(
             RigidBodyBuilder::dynamic()
-                .position(iso_from_trs(
+                .pose(pose_from_trs(
                     Vec3::new(0.0, KILL_PLANE_Y - 10_000.0, 0.0),
                     Quat::IDENTITY,
                 ))
@@ -2456,7 +2585,7 @@ mod tests {
         let shape = single_shape(&CollisionShape::Ball { radius: 10.0 });
         let h = w.bodies.insert(
             RigidBodyBuilder::dynamic()
-                .position(iso_from_trs(Vec3::new(0.0, 1000.0, 0.0), Quat::IDENTITY))
+                .pose(pose_from_trs(Vec3::new(0.0, 1000.0, 0.0), Quat::IDENTITY))
                 .sleeping(true) // the new spawn state for dynamic newcomers
                 .build(),
         );
@@ -2501,12 +2630,15 @@ mod tests {
     /// present tense and attributed it to `pipeline.step()`. Both halves were
     /// wrong: the figure predates `6e55b492` (the commit that introduced it,
     /// which also removed the per-substep query-pipeline rebuild the number
-    /// measured), and the dominant cost today is the once-per-frame
-    /// `QueryPipeline::update`, not the solver.
+    /// measured).
     ///
-    /// Also pinned: `QueryPipeline::update` is a full QBVH
-    /// `clear_and_rebuild`, so calling it a "refit" understates it as
-    /// incremental. Source-inspection guard, since neither claim is
+    /// #4685 then moved the remaining cost: on rapier 0.22 the post-loop
+    /// full query-QBVH rebuild (9.6 ms on a 95 k world). Since the rapier 0.36
+    /// upgrade there is no separate query tree at all — queries borrow the
+    /// broad phase's BVH — so the guard now pins that `step` never walks the
+    /// whole collider set: a stepped frame drops the queued leaves (the
+    /// step's broad-phase update inserted them), a frame that steps nothing
+    /// inserts only those. Source-inspection guard, since neither claim is
     /// observable from behaviour.
     #[test]
     fn step_cost_rationale_is_scoped_to_history_and_names_the_real_cost_centre() {
@@ -2527,25 +2659,25 @@ mod tests {
             "the rationale must attribute its historical numbers to the \
              commit they came from, so the next reader can date them"
         );
-        // #4685 — the step hands the query pipeline to rapier so the tree
-        // advances INCREMENTALLY; the full rebuild is reserved for
-        // collider-dirty frames that step nothing.
         assert!(
-            src.contains("Some(&mut self.query_pipeline),"),
-            "the step must pass the query pipeline to rapier's incremental \
-             update path (#4685) — passing `None` forced the post-loop full \
-             rebuild the audit measured at 9.6 ms on a 95 k world"
+            rationale.contains("Self::queries"),
+            "the rationale must say where scene queries read from now — the \
+             broad phase's BVH — or the next reader goes looking for a query \
+             tree to rebuild"
+        );
+        let step_start = src.find("    pub fn step(&mut self, frame_dt: f32) -> u32 {").expect("step");
+        let step_end = src[step_start..].find("\n    }\n").expect("step's end") + step_start;
+        let step_body = &src[step_start..step_end];
+        assert!(
+            step_body.contains("self.pending_query_leaves.clear();")
+                && step_body.contains("self.insert_pending_query_leaves();"),
+            "a stepped frame must drop the queued leaves and a no-step frame \
+             insert only them (#2864, #4685)"
         );
         assert!(
-            rationale.contains("update_incremental"),
-            "the rationale must name the incremental path the step now uses \
-             (#4685)"
-        );
-        assert!(
-            src.contains("} else if self.colliders_dirty {"),
-            "the full QueryPipeline rebuild must be reserved for collider-dirty \
-             frames that ran no substep (#2864's deferred registration; #4685 \
-             removed it from stepped frames)"
+            !step_body.contains("update_query_pipeline"),
+            "the whole-set refresh must never run from `step` — it is the \
+             explicit cold-start/test entry point, O(all colliders)"
         );
         assert!(
             !rationale.contains("the rebuild accounts for essentially all of it"),
@@ -2556,7 +2688,7 @@ mod tests {
 
     /// Regression for #3975. `active_island_counts`'s doc and the
     /// static-scene fast path's own rationale (the "deliberately do NOT
-    /// gate on `active_kinematic_bodies()`" note) must keep making the
+    /// gate on kinematic bodies" note) must keep making the
     /// same claim about what the kinematic count means — the accessor's
     /// doc drifted from that rationale once already (it called the count
     /// "awake" for a set Rapier never drains). Source-inspection guard,
@@ -2581,7 +2713,7 @@ mod tests {
         );
 
         let rationale_start = src
-            .find("// NOTE: we deliberately do NOT gate on `active_kinematic_bodies()`")
+            .find("// NOTE: we deliberately do NOT gate on kinematic bodies.")
             .expect("the fast-path rationale is still here");
         let rationale = &src[rationale_start..rationale_start + 500];
         assert!(
@@ -2666,7 +2798,7 @@ mod tests {
         let shape = single_shape(&CollisionShape::Ball { radius: 10.0 });
         let h = w.bodies.insert(
             RigidBodyBuilder::dynamic()
-                .position(iso_from_trs(Vec3::new(0.0, y, 0.0), Quat::IDENTITY))
+                .pose(pose_from_trs(Vec3::new(0.0, y, 0.0), Quat::IDENTITY))
                 .build(),
         );
         w.colliders
@@ -2778,7 +2910,7 @@ mod tests {
         use rapier3d::prelude::*;
         let body = w.bodies.insert(
             RigidBodyBuilder::fixed()
-                .position(iso_from_trs(pos, Quat::IDENTITY))
+                .pose(pose_from_trs(pos, Quat::IDENTITY))
                 .build(),
         );
         w.colliders.insert_with_parent(
@@ -2859,13 +2991,13 @@ mod tests {
             use rapier3d::prelude::*;
             let body = w.bodies.insert(
                 RigidBodyBuilder::kinematic_position_based()
-                    .position(iso_from_trs(Vec3::new(0.0, 0.0, 0.0), Quat::IDENTITY))
+                    .pose(pose_from_trs(Vec3::new(0.0, 0.0, 0.0), Quat::IDENTITY))
                     .build(),
             );
             w.colliders.insert_with_parent(
                 ColliderBuilder::cuboid(50.0, 20.0, 2.0)
                     .collision_groups(
-                        InteractionGroups::new(crate::ACTOR_BONE_GROUP, Group::ALL),
+                        InteractionGroups::new(crate::ACTOR_BONE_GROUP, Group::ALL, InteractionTestMode::And),
                     )
                     .build(),
                 body,
@@ -2928,7 +3060,7 @@ mod tests {
         // A sensor slab where a floor would be.
         let body = w.bodies.insert(
             rapier3d::prelude::RigidBodyBuilder::fixed()
-                .position(iso_from_trs(Vec3::ZERO, Quat::IDENTITY))
+                .pose(pose_from_trs(Vec3::ZERO, Quat::IDENTITY))
                 .build(),
         );
         w.colliders.insert_with_parent(
@@ -3014,7 +3146,7 @@ mod audit_2026_08_13_regressions {
         let half_thickness = 4.0;
         let body = w.bodies.insert(
             RigidBodyBuilder::fixed()
-                .translation(vector![0.0, top_y - half_thickness, 0.0])
+                .translation(Vector::new(0.0, top_y - half_thickness, 0.0))
                 .build(),
         );
         w.colliders.insert_with_parent(
@@ -3030,7 +3162,7 @@ mod audit_2026_08_13_regressions {
     fn player_capsule(w: &mut PhysicsWorld, centre: Vec3) -> RigidBodyHandle {
         let body = w.bodies.insert(
             RigidBodyBuilder::kinematic_position_based()
-                .translation(vector![centre.x, centre.y, centre.z])
+                .translation(Vector::new(centre.x, centre.y, centre.z))
                 .build(),
         );
         w.colliders.insert_with_parent(
@@ -3160,11 +3292,11 @@ mod audit_2026_08_13_regressions {
         use rapier3d::prelude::{Group, InteractionGroups};
         let body = w.bodies.insert(
             RigidBodyBuilder::kinematic_position_based()
-                .translation(vector![centre.x, centre.y, centre.z])
+                .translation(Vector::new(centre.x, centre.y, centre.z))
                 .build(),
         );
         let groups = if tagged {
-            InteractionGroups::new(ACTOR_BONE_GROUP, Group::ALL)
+            InteractionGroups::new(ACTOR_BONE_GROUP, Group::ALL, InteractionTestMode::And)
         } else {
             InteractionGroups::all()
         };
@@ -3234,7 +3366,7 @@ mod audit_2026_08_13_regressions {
         let mut w = PhysicsWorld::new();
         let body = w.bodies.insert(
             RigidBodyBuilder::kinematic_position_based()
-                .translation(vector![0.0, 0.0, 0.0])
+                .translation(Vector::new(0.0, 0.0, 0.0))
                 .build(),
         );
         w.colliders.insert_with_parent(
@@ -3438,7 +3570,7 @@ mod audit_2026_08_13_regressions {
 /// "spawning a body" as one of the three mutations that must call it. Two of
 /// the three were true; the third was false for the path that spawns
 /// essentially every body in the engine. `sync::register_newcomers` calls
-/// only `mark_colliders_dirty()`, and builds its dynamic bodies
+/// only `queue_query_refresh()`, and builds its dynamic bodies
 /// `sleeping(true)` on purpose (the EXTERIOR-FREEZE FIX — a measured
 /// `atw_scheduler=3005ms` on a Skyrim exterior streaming frame with ~3000
 /// awake dynamics). The crate contained both the false claim and its own
@@ -3487,9 +3619,9 @@ mod wake_contract_tests {
              needs re-deciding, not just re-documenting (#3969)"
         );
         assert!(
-            body.contains("pw.mark_colliders_dirty();"),
+            body.contains("pw.queue_query_refresh(inserted);"),
             "fixture precondition: the spawn path still announces itself with \
-             mark_colliders_dirty alone (#3969)"
+             queue_query_refresh alone (#3969)"
         );
         assert!(
             !body.contains(".wake()"),
@@ -3566,3 +3698,6 @@ mod wake_contract_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod broad_phase_tests;

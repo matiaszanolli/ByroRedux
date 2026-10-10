@@ -799,7 +799,7 @@ fn apply_buoyancy_with_scratch(
                 if body.body_type() != RigidBodyType::Dynamic {
                     continue;
                 }
-                *body.translation()
+                body.translation()
             };
 
             // #3490 / #3973 (PHYS-D6-2026-08-27b-01, extended) — the
@@ -1086,8 +1086,8 @@ fn apply_buoyancy_with_scratch(
             }
         }
 
-        // A body woken on a dry→wet transition is NOT yet in
-        // `active_dynamic_bodies` (that island list reflects the prior step),
+        // A body woken on a dry→wet transition is NOT yet in rapier's
+        // active set (that island state reflects the prior step),
         // so the static-scene step fast-path (`world.rs::step`) would skip this
         // frame unless `pending_wake` is armed — leaving the freshly-woken
         // float un-integrated until something else pokes the sim. Arm it once
@@ -1128,7 +1128,7 @@ fn apply_buoyancy_with_scratch(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::convert::iso_from_trs;
+    use crate::convert::pose_from_trs;
     use crate::world::{PhysicsWorld, PHYSICS_DT};
     use byroredux_core::ecs::components::water::WaterCurrentVolume;
     use byroredux_core::math::{Quat, Vec3};
@@ -1571,7 +1571,7 @@ mod tests {
         // still proving it rises (it starts fully under at y=-50).
         let h = w.bodies.insert(
             RigidBodyBuilder::dynamic()
-                .position(iso_from_trs(Vec3::new(0.0, -50.0, 0.0), Quat::IDENTITY))
+                .pose(pose_from_trs(Vec3::new(0.0, -50.0, 0.0), Quat::IDENTITY))
                 .build(),
         );
         w.colliders
@@ -1947,7 +1947,7 @@ mod tests {
     /// At `frame_dt < PHYSICS_DT` the dry→wet transition frame runs **zero**
     /// substeps. Pre-#2856 `step` consumed `pending_wake` anyway; the next
     /// frame then saw `prior_wet == true` (so buoyancy raised no new wake),
-    /// an empty `active_dynamic_bodies` (the island lists only update inside
+    /// no awake dynamic in rapier's active set (the island state only updates inside
     /// `pipeline.step`), and `pending_wake == false` — which satisfies BOTH
     /// the buoyancy quiesced guard and the static-scene step fast path. The
     /// latter zeroes the accumulator, so the banked sub-tick time could never

@@ -171,10 +171,12 @@ lz4_flex = { version = "0.11", default-features = false, features = [
 ] }
 
 # Linear algebra (robust SVD for degenerate NIF matrices)
-nalgebra = "0.33"
+nalgebra = "0.35"
 
-# Physics (nalgebra 0.33 ABI matches the workspace pin above)
-rapier3d = { version = "0.22", features = ["simd-stable"] }
+# Physics. rapier 0.32+ speaks glam (0.33, via glamx) rather than nalgebra,
+# so its `Vector`/`Rotation`/`Pose` are the workspace glam types above.
+# SIMD is always on since 0.35 (the old `simd-stable` feature is gone).
+rapier3d = "0.36"
 
 # Image loading
 image = "0.24"

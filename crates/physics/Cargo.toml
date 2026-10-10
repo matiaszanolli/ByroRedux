@@ -7,7 +7,6 @@ edition.workspace = true
 byroredux-core = { workspace = true }
 glam = { workspace = true }
 log = { workspace = true }
-nalgebra = { workspace = true }
 rapier3d = { workspace = true }
 rayon = { workspace = true }
 serde = { workspace = true }

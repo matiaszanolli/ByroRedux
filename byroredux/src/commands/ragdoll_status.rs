@@ -68,14 +68,13 @@ fn status(world: &World, args: &str) -> Result<String, &'static str> {
             continue;
         };
         live += 1;
-        let position = body.translation();
-        let distance = Vec3::new(position.x, position.y, position.z).distance(origin);
-        let speed = body.linvel().norm();
+        let distance = body.translation().distance(origin);
+        let speed = body.linvel().length();
         finite &= distance.is_finite()
             && speed.is_finite()
             && scale.is_finite()
-            && body.rotation().coords.iter().all(|v| v.is_finite())
-            && body.angvel().iter().all(|v| v.is_finite());
+            && body.rotation().is_finite()
+            && body.angvel().is_finite();
         max_distance = max_distance.max(distance);
         max_speed = max_speed.max(speed);
     }

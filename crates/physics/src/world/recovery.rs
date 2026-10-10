@@ -26,42 +26,66 @@ const ANGULAR_VELOCITY_SANITY_CAP_RAD_PER_S: f32 = 100.0;
 
 /// #5161 — sanity bound for a keyframed body target pushed from an ECS
 /// GlobalTransform. Authored worldspace coordinates top out around ±3e5 BU,
-/// so a translation beyond 1e8 is corruption with certainty — while still
-/// ~2600× below rapier 0.22's multi-SAP grid boundary (≈2.68e11), which an
-/// insane kinematic target's derived velocity (`(target − current)/dt`) can
-/// trip through the collider's predictive AABB as a broad-phase panic. The
-/// substep recovery only snapshots `Dynamic` bodies, and live actor skeleton
-/// bones are keyframed (`keyframe_live_ragdoll_bones`) — so this boundary
-/// check in `accept_keyframe_target` is the only guard they have.
+/// so a translation beyond 1e8 is corruption with certainty. Accepting it
+/// would park a live actor's bone collider somewhere no melee sweep, ray or
+/// contact can reach, and its derived velocity (`(target − current)/dt`)
+/// would fling whatever it touched on the way. Rapier's own quarantine only
+/// catches NON-finite poses, the substep recovery only snapshots `Dynamic`
+/// bodies, and live actor skeleton bones are keyframed
+/// (`keyframe_live_ragdoll_bones`) — so this boundary check in
+/// `accept_keyframe_target` is the only guard a finite-but-insane target
+/// meets. (Under rapier 0.22 it also kept that velocity's predictive AABB
+/// off the multi-SAP grid boundary, a broad-phase panic the BVH broad phase
+/// no longer has.)
 const KEYFRAME_TARGET_SANE_BOUND_BU: f32 = 1.0e8;
 
 #[derive(Clone)]
 pub(super) struct DynamicBodySnapshot {
     pub(super) handle: RigidBodyHandle,
-    pub(super) position: Isometry<Real>,
+    pub(super) position: Pose,
 }
 
 pub(super) fn body_state_is_finite(body: &RigidBody) -> bool {
-    body.translation().iter().all(|v| v.is_finite())
-        && body.rotation().coords.iter().all(|v| v.is_finite())
-        && body.linvel().iter().all(|v| v.is_finite())
-        && body.angvel().iter().all(|v| v.is_finite())
+    body.translation().is_finite()
+        && body.rotation().is_finite()
+        && body.linvel().is_finite()
+        && body.angvel().is_finite()
 }
 
 fn body_needs_recovery(body: &RigidBody, snapshot: &DynamicBodySnapshot) -> bool {
     !body_state_is_finite(body)
-        || (body.translation() - snapshot.position.translation.vector).norm()
+        || (body.translation() - snapshot.position.translation).length()
             > MAX_DYNAMIC_SUBSTEP_DISPLACEMENT
 }
 
+/// Roll back every snapshotted dynamic body the substep invalidated, and
+/// take over the bodies rapier quarantined.
+///
+/// `quarantined` is `PhysicsPipeline::quarantine().bodies()` for the same
+/// step: bodies whose state went non-finite, which rapier (0.35+) rolled back
+/// to its own last valid pose, zeroed and DISABLED. A disabled body has no
+/// collider in the broad phase and is never simulated again unless someone
+/// re-enables it — the wrong terminal state for a corpse limb or a crate.
+/// So every one is re-enabled here; a dynamic one is then parked exactly like
+/// a body the displacement check caught (rolled back to the engine's
+/// snapshot when there is one, slept, articulation detached), and a
+/// kinematic one keeps rapier's rolled-back pose, which is the
+/// last-accepted-target behaviour [`PhysicsWorld::accept_keyframe_target`]
+/// gives a refused pose.
 pub(super) fn restore_invalid_dynamic_bodies(
     bodies: &mut RigidBodySet,
     multibody_joints: &mut MultibodyJointSet,
     snapshots: impl IntoIterator<Item = DynamicBodySnapshot>,
+    quarantined: &[RigidBodyHandle],
     body_labels: &std::collections::HashMap<RigidBodyHandle, String>,
 ) -> (usize, Vec<RigidBodyHandle>) {
     let mut restored = 0;
     let mut detached_articulations: Vec<RigidBodyHandle> = Vec::new();
+    for &handle in quarantined {
+        if let Some(body) = bodies.get_mut(handle) {
+            body.set_enabled(true);
+        }
+    }
     // #5161 — the recovery log alone cannot say WHAT went insane. Record the
     // pre-restore state of the first few bodies per event (translation
     // magnitude + velocity magnitude + the body's registered label) so the
@@ -69,11 +93,14 @@ pub(super) fn restore_invalid_dynamic_bodies(
     // articulation produced it — straight off the log instead of
     // re-instrumenting.
     let mut evidence = Vec::new();
+    let mut snapshotted: Vec<RigidBodyHandle> = Vec::new();
     for snapshot in snapshots {
+        snapshotted.push(snapshot.handle);
         let Some(body) = bodies.get(snapshot.handle) else {
             continue;
         };
-        if !body_needs_recovery(body, &snapshot) {
+        let was_quarantined = quarantined.contains(&snapshot.handle);
+        if !was_quarantined && !body_needs_recovery(body, &snapshot) {
             continue;
         }
         if evidence.len() < 3 {
@@ -81,11 +108,14 @@ pub(super) fn restore_invalid_dynamic_bodies(
                 .get(&snapshot.handle)
                 .map(String::as_str)
                 .unwrap_or("unlabelled");
+            // A quarantined body already reads rapier's rolled-back, zeroed
+            // state here; the tag says why its numbers look sane.
+            let tag = if was_quarantined { " quarantined" } else { "" };
             evidence.push(format!(
-                "{:?} [{label}] at |t|={:.3e} |v|={:.3e}",
+                "{:?} [{label}]{tag} at |t|={:.3e} |v|={:.3e}",
                 snapshot.handle,
-                body.translation().norm(),
-                body.linvel().norm(),
+                body.translation().length(),
+                body.linvel().length(),
             ));
         }
         // Rapier's get_mut marks a body modified even when the caller only
@@ -107,6 +137,30 @@ pub(super) fn restore_invalid_dynamic_bodies(
         // one more forfeited backlog per extra articulation). A repeat
         // handle is a no-op — removal is per-articulation and idempotent.
         detached_articulations.push(snapshot.handle);
+        restored += 1;
+    }
+    // Quarantined dynamics the snapshot did not cover (already non-finite at
+    // substep entry, or never indexed): rapier's rollback pose is the only
+    // valid one left, so park them there.
+    for &handle in quarantined {
+        if snapshotted.contains(&handle) {
+            continue;
+        }
+        let Some(body) = bodies.get_mut(handle) else {
+            continue;
+        };
+        if !body.is_dynamic() {
+            continue;
+        }
+        body.sleep();
+        if evidence.len() < 3 {
+            let label = body_labels
+                .get(&handle)
+                .map(String::as_str)
+                .unwrap_or("unlabelled");
+            evidence.push(format!("{handle:?} [{label}] quarantined, no snapshot"));
+        }
+        detached_articulations.push(handle);
         restored += 1;
     }
     for handle in &detached_articulations {
@@ -143,30 +197,29 @@ impl PhysicsWorld {
 
     /// #4687(b) (PHYS-D2-2026-09-21-02) — `set_position` defers collider
     /// sync to the next pipeline step, so straight after a restore the
-    /// query pipeline (just advanced incrementally by the step above)
-    /// indexes the restored bodies' colliders at their EXPLODED or NaN
-    /// pose: one frame of ray/shape queries against geometry that was
-    /// already rolled back. Propagate the restored poses into the
-    /// colliders and refresh exactly those leaves.
+    /// broad phase's BVH — the scene-query index, just updated by the step
+    /// above — holds the restored bodies' colliders at their EXPLODED pose:
+    /// one frame of ray/shape queries against geometry that was already
+    /// rolled back. Propagate the restored poses into the colliders and
+    /// re-insert exactly those leaves.
     ///
-    /// #5126 — `refit_and_rebalance` MUST be `true`. In rapier 0.22 the
-    /// `false` form only marks the leaves dirty (`pre_update_or_insert`);
-    /// leaf AABBs are refit only under `true`, which `PhysicsPipeline::step`
-    /// passes on its final substep — so the tree we inherit holds the
-    /// EXPLODED AABB, and a dirty-but-unrefit leaf left the restored body
-    /// invisible to every ray/KCC/LOS query until the next frame's step.
-    /// The refit + rebalance runs only on recovery frames.
+    /// #5126 found the rapier 0.22 form of this (`update_incremental` with
+    /// `refit = false` only marked leaves dirty, so the restored body was
+    /// invisible to queries until the next step). `BroadPhaseBvh::set_aabb`
+    /// applies the leaf immediately; the guard
+    /// `restored_pose_is_visible_to_ray_queries_same_frame` drives a real
+    /// recovery through `step` and asserts it.
     pub(super) fn refresh_query_geometry_after_restore(&mut self, invalid_handles: &[RigidBodyHandle]) {
         self.bodies
             .propagate_modified_body_positions_to_colliders(&mut self.colliders);
-        let mut touched_colliders: Vec<ColliderHandle> = Vec::new();
-        for &h in invalid_handles {
-            if let Some(body) = self.bodies.get(h) {
-                touched_colliders.extend(body.colliders().iter().copied());
-            }
+        let touched: Vec<ColliderHandle> = invalid_handles
+            .iter()
+            .filter_map(|&h| self.bodies.get(h))
+            .flat_map(|body| body.colliders().iter().copied())
+            .collect();
+        for c in touched {
+            self.set_query_leaf(c);
         }
-        self.query_pipeline
-            .update_incremental(&self.colliders, &touched_colliders, &[], true);
     }
 
     /// #4687(a) (PHYS-D2-2026-09-21-02) — put dynamics that are ALREADY
@@ -198,8 +251,8 @@ impl PhysicsWorld {
                 .bodies
                 .get_mut(handle)
                 .expect("pre-broken body was just read under exclusive set access");
-            body.set_linvel(Vector::zeros(), false);
-            body.set_angvel(Vector::zeros(), false);
+            body.set_linvel(Vector::ZERO, false);
+            body.set_angvel(AngVector::ZERO, false);
             body.sleep();
             parked += 1;
         }
@@ -218,22 +271,20 @@ impl PhysicsWorld {
     /// records the refusal) when the target is non-finite or its
     /// translation lies beyond [`KEYFRAME_TARGET_SANE_BOUND_BU`]: live
     /// actor bones are keyframed, the per-substep recovery only covers
-    /// `Dynamic` bodies, and an insane kinematic target's derived velocity
-    /// (`(target − current)/dt`) trips rapier's multi-SAP grid boundary as
-    /// a broad-phase panic — the class that killed the live Skyrim P2
-    /// fight. The body is left at its last accepted pose; the
+    /// `Dynamic` bodies, and rapier's quarantine only catches non-finite
+    /// state — see [`KEYFRAME_TARGET_SANE_BOUND_BU`] for what a finite but
+    /// insane target would do. The body is left at its last accepted pose; the
     /// animation-side source of the broken transform stays visible (and
     /// open) as the rendering-side corruption it already is.
     pub fn accept_keyframe_target(
         &mut self,
         handle: RigidBodyHandle,
-        target: &Isometry<Real>,
+        target: &Pose,
     ) -> bool {
-        let t = target.translation.vector;
-        let q = target.rotation.coords;
-        let sane = [t.x, t.y, t.z].into_iter().all(|v| {
-            v.is_finite() && v.abs() <= KEYFRAME_TARGET_SANE_BOUND_BU
-        }) && q.iter().all(|v| v.is_finite());
+        let t = target.translation;
+        let sane = t.is_finite()
+            && t.abs().max_element() <= KEYFRAME_TARGET_SANE_BOUND_BU
+            && target.rotation.is_finite();
         if sane {
             return true;
         }
@@ -274,9 +325,10 @@ impl PhysicsWorld {
     /// #5161 — cap every dynamic body's speed at
     /// [`VELOCITY_SANITY_CAP_BU_PER_S`] (and spin at
     /// [`ANGULAR_VELOCITY_SANITY_CAP_RAD_PER_S`]), called at the end of
-    /// every `pipeline.step` substep. See the cap constant's doc for why
-    /// this is the only guard that runs *before* an explosion's positions
-    /// reach the broad phase. The offence count is a LIFETIME ladder
+    /// every `pipeline.step` substep. Rapier's in-step cap
+    /// ([`super::IN_STEP_LINEAR_SPEED_CAP_BU_PER_S`]) already bounded how far
+    /// the body could travel inside the step; this is the escalation
+    /// policy on top of it. The offence count is a LIFETIME ladder
     /// (#5246, never cleared by a clean substep): the first burst clamps,
     /// the second parks (zeroed, slept), the third detaches the body's
     /// whole articulation so a persistently exploding rig cannot churn
@@ -289,33 +341,29 @@ impl PhysicsWorld {
         // substep, for the whole session.
         self.articulation_joints
             .retain(|j| self.multibody_joints.get(*j).is_some());
-        let mut clamped: Vec<(RigidBodyHandle, nalgebra::Vector3<f32>, nalgebra::Vector3<f32>)> =
-            Vec::new();
+        let mut clamped: Vec<(RigidBodyHandle, Vector, AngVector)> = Vec::new();
         for &handle in &self.dynamic_bodies {
             let (linvel, angvel) = {
                 let Some(body) = self.bodies.get(handle) else {
                     continue;
                 };
-                (*body.linvel(), *body.angvel())
+                (body.linvel(), body.angvel())
             };
-            // #5246 — NaN is the containment hole's fingerprint: rapier's
-            // broad-phase clamps a NaN-positioned collider's AABB to the
-            // multi-SAP grid corners (na::clamp(NaN, ±max) lands finite),
-            // and those corner AABBs pass the finite rejection and poison
-            // the layer structure. A NaN velocity therefore must never be
-            // *passed through* — one integration step later it is a NaN
-            // position inside pipeline.step, before any of this code can
-            // run again. Classify non-finite as maximally explosive and
-            // zero it outright.
-            let lin_finite = linvel.iter().all(|v| v.is_finite());
-            let ang_finite = angvel.iter().all(|v| v.is_finite());
+            // #5246 — a NaN velocity must never be *passed through*: one
+            // integration step later it is a NaN position inside
+            // pipeline.step, before any of this code can run again. Rapier
+            // 0.35+ quarantines (and disables) such a body there, which the
+            // restore then has to undo; zeroing it here keeps the body
+            // simulated. Classify non-finite as maximally explosive.
+            let lin_finite = linvel.is_finite();
+            let ang_finite = angvel.is_finite();
             let speed = if lin_finite {
-                linvel.norm()
+                linvel.length()
             } else {
                 f32::INFINITY
             };
             let spin = if ang_finite {
-                angvel.norm()
+                angvel.length()
             } else {
                 f32::INFINITY
             };
@@ -325,14 +373,14 @@ impl PhysicsWorld {
                 continue;
             }
             let capped_linvel = if !lin_finite {
-                nalgebra::zero()
+                Vector::ZERO
             } else if speed > VELOCITY_SANITY_CAP_BU_PER_S {
                 linvel * (VELOCITY_SANITY_CAP_BU_PER_S / speed)
             } else {
                 linvel
             };
             let capped_angvel = if !ang_finite {
-                nalgebra::zero()
+                Vector::ZERO
             } else if spin > ANGULAR_VELOCITY_SANITY_CAP_RAD_PER_S {
                 angvel * (ANGULAR_VELOCITY_SANITY_CAP_RAD_PER_S / spin)
             } else {
@@ -366,8 +414,8 @@ impl PhysicsWorld {
                 .unwrap_or("unlabelled");
             if *offences >= 3 {
                 if let Some(body) = self.bodies.get_mut(handle) {
-                    body.set_linvel(nalgebra::zero(), false);
-                    body.set_angvel(nalgebra::zero(), false);
+                    body.set_linvel(Vector::ZERO, false);
+                    body.set_angvel(Vector::ZERO, false);
                     body.sleep();
                 }
                 // Detaches every multibody joint containing `handle`; a
@@ -395,8 +443,8 @@ impl PhysicsWorld {
                 // (still sane, cap-bounded) pose — instead of letting it
                 // vibrate at the cap forever.
                 if let Some(body) = self.bodies.get_mut(handle) {
-                    body.set_linvel(nalgebra::zero(), false);
-                    body.set_angvel(nalgebra::zero(), false);
+                    body.set_linvel(Vector::ZERO, false);
+                    body.set_angvel(Vector::ZERO, false);
                     body.sleep();
                 }
                 log::error!(
@@ -412,8 +460,8 @@ impl PhysicsWorld {
         }
         // Articulation DOFs: forward kinematics integrates these BEFORE any
         // body-level clamp can matter, so an exploding reduced-coordinate
-        // velocity teleports its links through the broad-phase grid in one
-        // step even with every rigid body capped above (#5161).
+        // velocity teleports its links out of the world in one step even
+        // with every rigid body capped above (#5161).
         let mut clamped_dofs = 0usize;
         for &joint in &self.articulation_joints {
             let Some((multibody, _)) = self.multibody_joints.get_mut(joint) else {
