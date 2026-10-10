@@ -100,7 +100,7 @@ pub use render_layer::{
     SMALL_STATIC_RADIUS_UNITS,
 };
 pub use eat_sleep::{EatBehavior, EatSleepLocation, EatSleepState, EditorPlacement, SleepBehavior};
-pub use sandbox::{SandboxBehavior, Seated, SeatedAnimationRestore};
+pub use sandbox::{CreatureActor, SandboxBehavior, Seated, SeatedAnimationRestore};
 pub use scene_flags::SceneFlags;
 pub use skinned_mesh::{SkinnedMesh, MAX_BONES_PER_MESH};
 pub use texture::TextureHandle;

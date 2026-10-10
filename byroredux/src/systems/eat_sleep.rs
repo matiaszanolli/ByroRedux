@@ -242,6 +242,16 @@ fn cell_is_resident(world: &World, cell_form_id: u32) -> bool {
 /// Seat one arrived actor at its procedure's marker kind, reusing the
 /// sandbox seating path (reservation, root snap, sit-enter park).
 fn seat_at_marker(world: &World, npc: EntityId, kind: EatOrSleep, radius: Option<f32>) {
+    // #5495 — creatures never take furniture: the per-cell sit clip's
+    // channels are human-rig bones, so seating a creature freezes it in
+    // a human pose at the marker for the life of the cell. The actor has
+    // already walked to the authored location; it just stands there.
+    if world
+        .get::<byroredux_core::ecs::components::CreatureActor>(npc)
+        .is_some()
+    {
+        return;
+    }
     // No sit-enter clip → no seating path (Skyrim+/Havok games, or the
     // clip wasn't archived) — the actor has already walked to the
     // authored location and simply stands there, the same posture as a

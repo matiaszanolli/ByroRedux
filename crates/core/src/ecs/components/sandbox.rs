@@ -44,6 +44,28 @@ impl Component for SandboxBehavior {
     type Storage = SparseSetStorage<Self>;
 }
 
+/// #5495 — marks an actor spawned from a `CREA` (or an `ACHR` whose base
+/// resolved to one, #2567). Stamped once on the placement root in
+/// `prepare_creature_state`; nothing removes it.
+///
+/// The M42 seating paths consult it: furniture seating is a humanoid
+/// activity — the per-cell sit clip's channel names are human-rig bones,
+/// so seating a creature either plays nothing or drives shared `Bip01`
+/// channels into a human pose, freezing it inside the furniture for the
+/// life of the cell (`Seated` is a one-shot guard). On FNV that posed 59
+/// placed creatures in 14 cells (Vault 11's mantises, REPCONN's ghouls,
+/// and friendly Primm Slim), each also holding a `SeatReservations`
+/// entry a sandboxing NPC could never take. Creatures keep Sandbox's
+/// wander/idle half and never take furniture, matching the vanilla
+/// engine, which has no creature sit idles for human furniture.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
+pub struct CreatureActor;
+
+impl Component for CreatureActor {
+    type Storage = SparseSetStorage<Self>;
+}
+
 /// Marks a [`SandboxBehavior`] actor that has taken a furniture seat.
 /// The wrapped `EntityId` is the furniture entity it occupies — kept so a
 /// future stand-up / reservation-release path can free the seat. Its

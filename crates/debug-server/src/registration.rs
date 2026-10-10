@@ -215,6 +215,8 @@ pub fn register_all(registry: &mut ComponentRegistry) {
     // the seat system has placed in furniture.
     register_component::<SandboxBehavior>(registry, "SandboxBehavior", vec![]);
     register_component::<Seated>(registry, "Seated", vec!["furniture"]);
+    // #5495 — creature-kind marker consulted by both M42 seating paths.
+    register_component::<CreatureActor>(registry, "CreatureActor", vec![]);
     // #4063 — the other six M42 procedure runtimes. Sandbox landed with
     // M42 and got a registration above; M42.3-M42.8 each added a
     // Behavior/State pair and none extended this file, so `byro-dbg` could

@@ -49,7 +49,8 @@ use std::collections::HashMap;
 
 use byroredux_core::animation::AnimationPlayer;
 use byroredux_core::ecs::components::{
-    Furniture, FurnitureMarker, FurnitureMarkerKind, GlobalTransform, SandboxBehavior, Seated,
+    CreatureActor, Furniture, FurnitureMarker, FurnitureMarkerKind, GlobalTransform, SandboxBehavior,
+    Seated,
     SeatedAnimationRestore, Transform,
 };
 use byroredux_core::ecs::{EntityId, World};
@@ -307,10 +308,16 @@ fn sandbox_seat_system_inner(world: &World, _dt: f32, scratch: &mut SandboxScrat
             return;
         };
         let seated_q = world.query::<Seated>();
+        // #5495 — creatures never take furniture (see CreatureActor's
+        // doc): skip them before any seat scan or reservation write.
+        let creature_q = world.query::<CreatureActor>();
         let mut reservations = world.resource_mut::<SeatReservations>();
         for (npc, behavior) in sandbox_q.iter() {
             if seated_q.as_ref().is_some_and(|s| s.contains(npc)) {
                 continue; // already seated (one-shot guard)
+            }
+            if creature_q.as_ref().is_some_and(|c| c.contains(npc)) {
+                continue; // creature — furniture is a humanoid activity
             }
             let Some(npc_g) = gq.get(npc) else {
                 continue;
@@ -498,6 +505,74 @@ mod tests {
         assert!(
             scratch.seats.is_empty(),
             "a fully-seated world must not rebuild the seat table (#3354)"
+        );
+    }
+
+    /// #5495 — a creature-marked actor never takes furniture. Creatures
+    /// reach `sandbox_seat_system_inner` like any SandboxBehavior actor
+    /// (their CREA PKID list parses through the shared actor walk), but
+    /// seating them snaps the root to the marker and parks the humanoid
+    /// sit clip on a rig that either lacks the clip's bones (plays
+    /// nothing) or shares `Bip01` names (human seated pose) — 59 FNV
+    /// placements frozen inside furniture, each holding a reservation no
+    /// NPC could take. The gate skips the creature before any reservation
+    /// write; the marker-carrying actor stays unseated and the seat
+    /// stays free for the humanoid control actor in the same world.
+    #[test]
+    fn a_creature_actor_never_takes_furniture() {
+        use crate::components::{SandboxSitClip, SeatReservations};
+        use byroredux_core::ecs::components::{CreatureActor, Furniture, GlobalTransform, Seated};
+
+        let mut world = World::new();
+        world.register::<SandboxBehavior>();
+        world.register::<Seated>();
+        world.register::<CreatureActor>();
+        world.register::<Furniture>();
+        world.register::<GlobalTransform>();
+        world.register::<AnimationPlayer>();
+        world.insert_resource(SandboxSitClip(Some((1, 2.0))));
+        world.insert_resource(SeatReservations::default());
+
+        let furn = world.spawn();
+        world.insert(furn, GlobalTransform::default());
+        world.insert(
+            furn,
+            Furniture {
+                markers: vec![marker([0.0, 0.0, 0.0], None, 0)],
+            },
+        );
+
+        let creature = world.spawn();
+        world.insert(creature, GlobalTransform::default());
+        world.insert(creature, CreatureActor);
+        world.insert(
+            creature,
+            SandboxBehavior {
+                search_radius: Some(1000.0),
+            },
+        );
+
+        let mut scratch = SandboxScratch::default();
+        sandbox_seat_system_inner(&world, 0.0, &mut scratch);
+        assert!(
+            world.query::<Seated>().is_none_or(|q| !q.contains(creature)),
+            "a creature must never be seated (#5495)"
+        );
+        assert!(
+            world.resource::<SeatReservations>().0.is_empty(),
+            "a creature must not hold a seat reservation"
+        );
+
+        // Control: strip the marker and the same actor seats — the gate
+        // is the marker, not something else about the fixture.
+        world.remove::<CreatureActor>(creature);
+        let mut scratch = SandboxScratch::default();
+        sandbox_seat_system_inner(&world, 0.0, &mut scratch);
+        assert!(
+            world
+                .query::<Seated>()
+                .is_some_and(|q| q.contains(creature)),
+            "control: the same actor without CreatureActor seats normally"
         );
     }
 
