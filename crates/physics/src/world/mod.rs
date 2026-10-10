@@ -1052,12 +1052,17 @@ impl PhysicsWorld {
             // Do not spend further catch-up substeps on the same
             // freshly-invalidated contact island this frame.
             self.accumulator = 0.0;
+            // #5352 — the restore only claims non-finite or
+            // impossibly-displaced bodies. A neighbour at 100 000 BU/s is
+            // neither (1 667 BU in one substep), so it would carry that
+            // speed into the next frame's first step; the clamp bounds it
+            // here. The restored bodies are already zeroed and slept, so
+            // for them the clamp is a no-op.
+            self.clamp_explosive_velocities();
             return SubstepOutcome::Stop;
         }
         // #5161 — caps velocities before they can be integrated into an
-        // insane position. The restore branch above already sanitises
-        // its bodies (rolled back + slept), so skipping the clamp there
-        // loses nothing.
+        // insane position.
         self.clamp_explosive_velocities();
         // Budget check AFTER the step so at least one substep always
         // runs (a slow frame must still advance the sim). When physics
@@ -2309,6 +2314,43 @@ mod tests {
         w.wake();
         w.step(PHYSICS_DT);
         assert_eq!(w.recovery_counts(), (1, 0, 0));
+    }
+
+    /// #5352 — a recovery substep returned before `clamp_explosive_velocities`,
+    /// so every body the restore did NOT claim carried its exploded velocity
+    /// into the next step. The restore claims only non-finite or
+    /// impossibly-displaced bodies; a neighbour moving at 100 000 BU/s covers
+    /// 1 667 BU in one substep — under the 2 048 displacement bound, over the
+    /// 20 000 BU/s sanity cap — and must still be clamped on that substep.
+    #[test]
+    fn a_restore_substep_still_clamps_the_bodies_it_did_not_claim() {
+        let mut w = PhysicsWorld::new();
+        uncap_rigid_body_speed(&mut w);
+        let claimed = w
+            .bodies
+            .insert(RigidBodyBuilder::dynamic().translation(Vector::new(0.0, 10.0, 0.0)).build());
+        let unclaimed = w
+            .bodies
+            .insert(RigidBodyBuilder::dynamic().translation(Vector::new(0.0, 10.0, 500.0)).build());
+        for h in [claimed, unclaimed] {
+            w.dynamic_bodies.push(h);
+        }
+        w.bodies[claimed].set_linvel(Vector::new(1.0e9, 0.0, 0.0), true);
+        w.bodies[unclaimed].set_linvel(Vector::new(100_000.0, 0.0, 0.0), true);
+        w.wake();
+
+        assert!(w.step(PHYSICS_DT) >= 1);
+        assert_eq!(w.recovery_counts().0, 1, "fixture: the 1e9 body triggers the restore");
+        assert!(
+            !w.bodies[unclaimed].is_sleeping(),
+            "fixture: the restore did not claim the 100 000 BU/s neighbour"
+        );
+        let speed = w.bodies[unclaimed].linvel().length();
+        assert!(
+            speed <= VELOCITY_SANITY_CAP_BU_PER_S,
+            "the unclaimed neighbour must be clamped on the recovery substep, got {speed} BU/s"
+        );
+        assert_eq!(w.velocity_clamps_total(), 1);
     }
 
     /// #5127 — the two recovery counters have different units: the total
