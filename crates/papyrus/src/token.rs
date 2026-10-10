@@ -128,120 +128,120 @@ pub enum Token {
     DocComment(String),
 
     // ── Keywords (case-insensitive) ──
-    #[token("ScriptName", ignore(ascii_case))]
+    #[token("ScriptName", ignore(case))]
     KwScriptName,
-    #[token("Extends", ignore(ascii_case))]
+    #[token("Extends", ignore(case))]
     KwExtends,
-    #[token("Native", ignore(ascii_case))]
+    #[token("Native", ignore(case))]
     KwNative,
-    #[token("Const", ignore(ascii_case))]
+    #[token("Const", ignore(case))]
     KwConst,
-    #[token("DebugOnly", ignore(ascii_case))]
+    #[token("DebugOnly", ignore(case))]
     KwDebugOnly,
-    #[token("BetaOnly", ignore(ascii_case))]
+    #[token("BetaOnly", ignore(case))]
     KwBetaOnly,
-    #[token("Hidden", ignore(ascii_case))]
+    #[token("Hidden", ignore(case))]
     KwHidden,
-    #[token("Conditional", ignore(ascii_case))]
+    #[token("Conditional", ignore(case))]
     KwConditional,
 
-    #[token("Import", ignore(ascii_case))]
+    #[token("Import", ignore(case))]
     KwImport,
 
-    #[token("Function", ignore(ascii_case))]
+    #[token("Function", ignore(case))]
     KwFunction,
-    #[token("EndFunction", ignore(ascii_case))]
+    #[token("EndFunction", ignore(case))]
     KwEndFunction,
-    #[token("Event", ignore(ascii_case))]
+    #[token("Event", ignore(case))]
     KwEvent,
-    #[token("EndEvent", ignore(ascii_case))]
+    #[token("EndEvent", ignore(case))]
     KwEndEvent,
 
-    #[token("Property", ignore(ascii_case))]
+    #[token("Property", ignore(case))]
     KwProperty,
-    #[token("EndProperty", ignore(ascii_case))]
+    #[token("EndProperty", ignore(case))]
     KwEndProperty,
-    #[token("Auto", ignore(ascii_case))]
+    #[token("Auto", ignore(case))]
     KwAuto,
-    #[token("AutoReadOnly", ignore(ascii_case))]
+    #[token("AutoReadOnly", ignore(case))]
     KwAutoReadOnly,
-    #[token("Mandatory", ignore(ascii_case))]
+    #[token("Mandatory", ignore(case))]
     KwMandatory,
 
-    #[token("State", ignore(ascii_case))]
+    #[token("State", ignore(case))]
     KwState,
-    #[token("EndState", ignore(ascii_case))]
+    #[token("EndState", ignore(case))]
     KwEndState,
 
-    #[token("Struct", ignore(ascii_case))]
+    #[token("Struct", ignore(case))]
     KwStruct,
-    #[token("EndStruct", ignore(ascii_case))]
+    #[token("EndStruct", ignore(case))]
     KwEndStruct,
 
-    #[token("CustomEvent", ignore(ascii_case))]
+    #[token("CustomEvent", ignore(case))]
     KwCustomEvent,
 
-    #[token("Group", ignore(ascii_case))]
+    #[token("Group", ignore(case))]
     KwGroup,
-    #[token("EndGroup", ignore(ascii_case))]
+    #[token("EndGroup", ignore(case))]
     KwEndGroup,
-    #[token("CollapsedOnRef", ignore(ascii_case))]
+    #[token("CollapsedOnRef", ignore(case))]
     KwCollapsedOnRef,
-    #[token("CollapsedOnBase", ignore(ascii_case))]
+    #[token("CollapsedOnBase", ignore(case))]
     KwCollapsedOnBase,
 
-    #[token("Global", ignore(ascii_case))]
+    #[token("Global", ignore(case))]
     KwGlobal,
 
-    #[token("If", ignore(ascii_case))]
+    #[token("If", ignore(case))]
     KwIf,
-    #[token("ElseIf", ignore(ascii_case))]
+    #[token("ElseIf", ignore(case))]
     KwElseIf,
-    #[token("Else", ignore(ascii_case))]
+    #[token("Else", ignore(case))]
     KwElse,
-    #[token("EndIf", ignore(ascii_case))]
+    #[token("EndIf", ignore(case))]
     KwEndIf,
 
-    #[token("While", ignore(ascii_case))]
+    #[token("While", ignore(case))]
     KwWhile,
-    #[token("EndWhile", ignore(ascii_case))]
+    #[token("EndWhile", ignore(case))]
     KwEndWhile,
 
-    #[token("Return", ignore(ascii_case))]
+    #[token("Return", ignore(case))]
     KwReturn,
 
-    #[token("As", ignore(ascii_case))]
+    #[token("As", ignore(case))]
     KwAs,
 
-    #[token("Is", ignore(ascii_case))]
+    #[token("Is", ignore(case))]
     KwIs,
 
-    #[token("New", ignore(ascii_case))]
+    #[token("New", ignore(case))]
     KwNew,
 
-    #[token("Parent", ignore(ascii_case))]
+    #[token("Parent", ignore(case))]
     KwParent,
-    #[token("Self", ignore(ascii_case))]
+    #[token("Self", ignore(case))]
     KwSelf,
 
     // ── Type keywords ──
-    #[token("Bool", ignore(ascii_case))]
+    #[token("Bool", ignore(case))]
     KwBool,
-    #[token("Int", ignore(ascii_case))]
+    #[token("Int", ignore(case))]
     KwInt,
-    #[token("Float", ignore(ascii_case))]
+    #[token("Float", ignore(case))]
     KwFloat,
-    #[token("String", ignore(ascii_case))]
+    #[token("String", ignore(case))]
     KwString,
-    #[token("Var", ignore(ascii_case))]
+    #[token("Var", ignore(case))]
     KwVar,
 
     // ── Literal keywords ──
-    #[token("True", ignore(ascii_case))]
+    #[token("True", ignore(case))]
     KwTrue,
-    #[token("False", ignore(ascii_case))]
+    #[token("False", ignore(case))]
     KwFalse,
-    #[token("None", ignore(ascii_case))]
+    #[token("None", ignore(case))]
     KwNone,
 
     // ── Literals ──

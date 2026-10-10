@@ -116,7 +116,7 @@ thiserror = "2"
 
 # Sandboxed executable mods. Keep the feature surface deliberately narrow:
 # component execution with Cranelift, but no ambient WASI host implementation.
-wasmtime = { version = "47.0.3", default-features = false, features = ["anyhow", "component-model", "cranelift", "runtime", "std"] }
+wasmtime = { version = "49.0.2", default-features = false, features = ["anyhow", "component-model", "cranelift", "runtime", "std"] }
 wat = "1"
 
 # String interning
