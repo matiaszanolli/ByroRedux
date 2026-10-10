@@ -813,7 +813,7 @@ a new claim without one.
 | `byroredux-debug-protocol`    | Wire types + component registry for debug CLI                                                                    |
 | `byroredux-debug-server`      | TCP debug server (Late-stage exclusive system)                                                                   |
 | `byroredux-cxx-bridge`        | C++ interop via cxx                                                                                              |
-| `byroredux-audio`             | 3D spatial audio via kira 0.10 (spatial sub-tracks, reverb send, streaming music — M44)                          |
+| `byroredux-audio`             | 3D spatial audio via kira 0.12 (spatial sub-tracks, reverb send, streaming music — M44)                          |
 | `byroredux` (binary)          | Game loop, cell loader, fly camera, animation system, render data collection, NIFAL translation boundary         |
 | `tools/byro-dbg`              | Standalone debug CLI (TCP client, REPL)                                                                          |
 | `tools/texture-upscale`       | Offline BSA/BA2 texture-set discovery and reference-guided semantic-map upscaling                                |

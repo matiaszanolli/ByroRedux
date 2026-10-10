@@ -65,16 +65,14 @@ requirement does not hold, which is precisely where it must open to say *why*.
 
 ### 0.2 Dependency isolation
 
-`wgpu 27` is already in the tree, pulled by `ruffle_render_wgpu`
-([`crates/ui/Cargo.toml:17`](../../crates/ui/Cargo.toml)). The workspace pins
-`egui 0.33` because that is the newest series `egui-ash-renderer 0.11` admits
-without a second `egui` in the tree
-([`Cargo.toml:206-214`](../../Cargo.toml)). `eframe 0.33` on the wgpu backend
-would pull a *third* GPU stack at a different wgpu major. `eframe 0.33` on
-`glow` shares the `egui 0.33` pin, adds no wgpu, and links no Vulkan. Confirmed
-after the fact: with the launcher in the workspace, the lockfile still holds one
-`egui` (0.33.3) and one `wgpu` (27.0.1), and `cargo tree -p byro-launcher -i
-wgpu` finds nothing.
+A `wgpu` is already in the tree, pulled by `ruffle_render_wgpu`
+([`crates/ui/Cargo.toml`](../../crates/ui/Cargo.toml)). The workspace's `egui`
+series is whatever `egui-ash-renderer` admits without a second `egui` in the
+tree (0.36 with `egui-ash-renderer` 0.13 since the 2026-10 dependency update).
+`eframe` on the wgpu backend would pull a *third* GPU stack at a different wgpu
+major; `eframe` on `glow` shares the `egui` pin, adds no wgpu, and links no
+Vulkan. Re-confirmed on that update: the lockfile holds one `egui` (0.36.2) and
+one `wgpu` (30.0.1), and `cargo tree -p byro-launcher -i wgpu` finds nothing.
 
 **One cost this did not avoid, found by building it.** eframe hard-codes
 `egui-winit`'s `clipboard` feature with no way to opt out, and Cargo unifies

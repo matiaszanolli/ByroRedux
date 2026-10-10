@@ -5,11 +5,11 @@ under `[workspace.dependencies]` and are consumed by individual crates via
 `{ workspace = true }`. The internal crate graph is documented in
 [Architecture Overview](architecture.md#crate-dependency-graph).
 
-> Last reconciled against the tree on **2026-08-25** (Session 72 closeout).
-> The workspace now contains **24 crates under `crates/`** plus the
-> `byroredux` binary and two tools since the Session 7 (2026-04-09)
-> revision of this doc — the dependency surface below reflects the current
-> `Cargo.toml` files, not the early-April snapshot.
+> Versions last reconciled against the tree on **2026-10-10** (the
+> 2026-10 dependency update: every external crate moved to its latest
+> release that fits the pinned 1.96.0 toolchain; the hold-backs are listed
+> under "Notable version notes"). The crate inventory itself was last
+> reconciled on 2026-08-25 (Session 72 closeout).
 
 ## External Dependencies
 
@@ -28,54 +28,54 @@ internal graph are not repeated).
 | winit              | 0.30     | platform, debug-ui, byroredux                 | Cross-platform windowing                                      |
 | raw-window-handle  | 0.6      | platform, renderer                            | Platform-agnostic window handle traits                        |
 | **Math**           |          |                                               |                                                               |
-| glam               | 0.29 (`mint`) | core, physics, audio, save               | Linear algebra (Vec, Mat, Quat); `mint` feeds kira's spatial API |
-| nalgebra           | 0.33     | nif, physics                                  | SVD for degenerate NIF rotation repair; ABI match for rapier3d |
+| glam               | 0.33 (`mint`) | core, physics, audio, save               | Linear algebra (Vec, Mat, Quat) — the same glam rapier and kira use, so their `Vec3`/`Quat` are ours |
+| nalgebra           | 0.35     | nif                                           | SVD for degenerate NIF rotation repair (rapier pulls the same copy) |
 | **Physics**        |          |                                               |                                                               |
-| rapier3d           | 0.22 (`simd-stable`) | physics                            | Rigid-body / collision sim (kinematic character controller, M28.5) |
+| rapier3d           | 0.36     | physics                                       | Rigid-body / collision sim — BVH broad phase, multibody ragdolls, kinematic character controller (M28.5) |
 | **Sandboxed mods** |          |                                               |                                                               |
-| wasmtime           | 47.0.3 (minimal Component Model + Cranelift features) | mod-runtime | Isolated WebAssembly Component compilation, linking, resource limits, and fuel interruption |
+| wasmtime           | 49.0.2 (minimal Component Model + Cranelift features) | mod-runtime | Isolated WebAssembly Component compilation, linking, resource limits, and fuel interruption |
 | wat                | 1        | mod-runtime (dev)                             | Assemble readable Component Model test fixtures               |
 | **Audio**          |          |                                               |                                                               |
-| kira               | 0.10     | audio                                         | 3D spatial audio — SpatialScene, reverb, streaming (M44)      |
+| kira               | 0.12 (defaults off: `cpal`, `wav`/`pcm`, `ogg`/`vorbis`, `mp3`, `flac`) | audio | 3D spatial audio — SpatialScene, reverb, streaming (M44) |
 | **Parallelism**    |          |                                               |                                                               |
 | rayon              | 1        | core (`parallel-scheduler`), byroredux        | Parallel system dispatch (M27) + draw-command sort            |
 | **Strings**        |          |                                               |                                                               |
-| string-interner    | 0.17     | core                                          | O(1) string equality via interning                           |
+| string-interner    | 0.20     | core                                          | O(1) string equality via interning                           |
 | **Identity**       |          |                                               |                                                               |
 | uuid               | 1 (`v5`, `serde`) | core, plugin                         | Plugin identity (`v5` content hashing)                       |
 | semver             | 1 (`serde`) | plugin                                     | Plugin version constraints                                    |
 | **Serialization**  |          |                                               |                                                               |
 | serde              | 1 (`derive`) | save, plugin, physics, scripting (optional), debug-protocol, debug-server, byroredux, core (`inspect`), texture-upscale | Save data, manifests, debug wire, and profile serialization |
 | serde_json         | 1        | save, debug-protocol, debug-server, byro-dbg, byroredux, core (`inspect`), texture-upscale | Save payloads, JSON protocol, and upscale provenance reports |
-| toml               | 0.8      | plugin, byroredux, texture-upscale            | Plugin, game-profile, and texture-set manifests               |
+| toml               | 0.9      | plugin, byroredux, texture-upscale            | Plugin, game-profile, and texture-set manifests               |
 | clap               | 4.6 (`derive`) | texture-upscale                         | Offline texture-workbench CLI                                 |
 | crc32fast          | 1        | save                                          | Save-container payload checksum                               |
 | **Compression**    |          |                                               |                                                               |
 | flate2             | 1        | bsa, plugin                                   | Zlib decompression for BSA + BA2 + ESM records                |
-| lz4_flex           | 0.11     | bsa                                           | LZ4 frame (BSA v105) + LZ4 block (BA2 v3 / Starfield) decompression |
+| lz4_flex           | 0.14     | bsa                                           | LZ4 frame (BSA v105) + LZ4 block (BA2 v3 / Starfield) decompression |
 | **Image**          |          |                                               |                                                               |
-| image              | 0.24     | renderer, byroredux (dev — golden frames), texture-upscale | Image I/O plus BC1/BC2/BC3 DDS decode for the upscale workbench |
+| image              | 0.25     | renderer, byroredux (dev — golden frames), texture-upscale | Image I/O plus BC1/BC2/BC3 DDS decode for the upscale workbench |
 | tempfile           | 3        | texture-upscale, byroredux (dev)              | Isolated external-upscaler files and profile-loader fixtures   |
 | walkdir            | 2.5      | texture-upscale                               | Recursive loose-texture source indexing                       |
 | rustc-hash         | 2        | core, renderer, byroredux                     | Fast non-cryptographic maps and sets on hot paths              |
 | **Profiling**      |          |                                               |                                                               |
 | tracing            | 0.1      | byroredux                                     | Wall-clock span ladder for the cell-load critical path (#886) |
 | tracing-subscriber | 0.3      | byroredux                                     | `fmt` + `env-filter` span output                              |
-| tracing-tracy      | 0.11     | byroredux (`tracing-tracy` feature, opt-in)   | Pipe spans into a Tracy capture session                       |
+| tracing-tracy      | 0.12     | byroredux (`tracing-tracy` feature, opt-in)   | Pipe spans into a Tracy capture session                       |
 | dhat               | 0.3      | nif (`dhat-heap` feature, opt-in)             | Heap-allocation regression gate for NIF-PERF / #408 pins (#1247) |
-| sysinfo            | 0.30     | byroredux, texture-upscale                    | Host CPU/RAM sampling plus offline texture-workbench disk-space preflight |
+| sysinfo            | 0.39 (defaults off; bin `system`, texture-upscale `disk`) | byroredux, texture-upscale | Host CPU/RAM sampling plus offline texture-workbench disk-space preflight |
 | **Debug UI**       |          |                                               |                                                               |
-| egui               | 0.33     | renderer, debug-ui                            | CPU-side immediate-mode UI for the embedded overlay (Phase 4) |
-| egui-winit         | 0.33     | debug-ui                                      | winit event → egui input bridge                               |
-| egui-ash-renderer  | 0.11 (`gpu-allocator`) | renderer, debug-ui                | GPU pipeline for tessellated egui primitives; shares `SharedAllocator` |
-| ratatui            | 0.28     | byro-dbg                                       | Terminal UI for `byro-dbg --tui` (Phase 3)                    |
-| crossterm          | 0.28     | byro-dbg                                       | Terminal backend for ratatui                                  |
+| egui               | 0.36     | renderer, debug-ui, byro-launcher             | CPU-side immediate-mode UI for the embedded overlay (Phase 4) and the launcher |
+| egui-winit         | 0.36     | debug-ui                                      | winit event → egui input bridge                               |
+| egui-ash-renderer  | 0.13 (`gpu-allocator`) | renderer                          | GPU pipeline for tessellated egui primitives; shares `SharedAllocator` |
+| ratatui            | 0.30     | byro-dbg                                       | Terminal UI for `byro-dbg --tui` (Phase 3)                    |
+| crossterm          | 0.29     | byro-dbg                                       | Terminal backend for ratatui                                  |
 | **C++ interop**    |          |                                               |                                                               |
 | cxx                | 1        | cxx-bridge                                     | Type-safe C++ FFI                                            |
 | cxx-build          | 1 (build)| cxx-bridge build script                       | C++ compilation for the cxx bridge                            |
 | cc                 | 1 (build)| fsr3-sys build script                         | FidelityFX SDK C/C++ compilation                              |
 | **Parsing**        |          |                                               |                                                               |
-| logos              | 0.15     | papyrus                                        | Lexer derive for the Papyrus tokenizer (M30)                  |
+| logos              | 0.16     | papyrus                                        | Lexer derive for the Papyrus tokenizer (M30)                  |
 | bitflags           | 2        | papyrus                                        | Bitflag types in the Papyrus AST                              |
 | async-channel      | 2        | ui                                             | Host/player coordination around the Ruffle render worker       |
 | url                | 2        | ui                                             | URL handling for Ruffle content                               |
@@ -92,14 +92,15 @@ A few crates pin their own versions outside the workspace table, because the
 dependency is only ever consumed by that one crate:
 
 - **`byroredux-ui`** vendors the **Ruffle** Flash player from git (pinned to
-  rev `0dde9813…`, nightly-2026-03-28): `ruffle_core`, `ruffle_render`,
+  rev `2edfd97d…`, nightly-2026-10-10): `ruffle_core`, `ruffle_render`,
   `ruffle_render_wgpu`, `ruffle_video_software`, and `swf`. It also pulls
-  **`wgpu` 27** (re-exported by `ruffle_render_wgpu` but needed for type
-  references), **`futures` 0.3** (async executor for wgpu device creation),
-  and its own **`image` 0.25** (`default-features = false`, for `RgbaImage`
-  from `capture_frame` readback). This is the one place the workspace runs a
-  second `image` major series and a wgpu-backed render path — it stays inside
-  the UI crate so the main Vulkan renderer never links wgpu.
+  **`wgpu` 30** (the version that Ruffle commit builds against; re-exported
+  by `ruffle_render_wgpu` but needed for type references) and **`futures`
+  0.3** (async executor for wgpu device creation). This is the one
+  wgpu-backed render path — it stays inside the UI crate so the main Vulkan
+  renderer never links wgpu. Ruffle's `flash-lso` pins exact versions of
+  `thiserror`, `enumset` and `nom`, which holds those three a few patch
+  releases back workspace-wide.
 - **`byroredux-debug-protocol`** pins `serde_json = "1"` directly rather than
   via the workspace alias; everywhere else `serde_json` is workspace-managed.
 - **`byroredux`** (binary) carries a **dev-dependency on `tempfile` 3** for
@@ -108,20 +109,24 @@ dependency is only ever consumed by that one crate:
 
 ### Notable version notes (carried from the root `Cargo.toml` comments)
 
-- **gpu-allocator 0.27 → 0.28** was bumped to align with
-  `egui-ash-renderer 0.11`'s transitive pin so the dep graph holds one
-  allocator copy, not two. The minor API bump (`Allocation::is_null`
-  removed, `Allocator::report` → `generate_report`) is source-compatible —
-  the renderer already used `generate_report`.
-- **egui / egui-winit pinned at 0.33** (not 0.34) because 0.33 is the latest
-  series `egui-ash-renderer 0.11.0` pins transitively; bumping the direct dep
-  to 0.34 would put two copies of `egui` in the graph and break the
-  `FullOutput` pass-through.
-- **sysinfo pinned at 0.30** (last stable pre-0.31 API churn) to dodge the
-  per-release `global_cpu_info` / `refresh_processes_specifics` rename
-  treadmill.
-- **rapier3d / nalgebra ABI match**: rapier3d 0.22 is selected so its
-  internal nalgebra matches the workspace `nalgebra 0.33` pin (one copy).
+- **glam stays at 0.33**, not 0.34: 0.33 is what rapier 0.36 (via glamx
+  0.3) and kira 0.12 are built on, which is what lets their math types be
+  the engine's own. Move it together with them.
+- **rapier3d 0.36** replaced the multi-SAP broad phase whose `sap_axis.rs`
+  panic killed exploding-ragdoll sessions (#5488) with a BVH broad phase
+  that also serves scene queries. See [Physics](physics.md).
+- **kira defaults off**: since 0.12 the format features are Symphonia's 1:1
+  (a container needs its codec feature too), and 0.12.2's defaults add
+  `cpal-realtime-dbus`, which links libdbus on Linux. The explicit set is
+  kira 0.10's default set.
+- **sysinfo defaults off** with per-consumer features (0.31 moved each API
+  area behind a feature).
+- **egui 0.36** debug-asserts that a `TexturesDelta` is drained before it
+  drops, so every path that discards an unrendered egui frame clears it
+  explicitly (egui pass, `submit_egui_frame`, renderer teardown, the pause
+  menu's mid-frame quit).
+- **gpu-allocator 0.28** is the version `egui-ash-renderer` 0.13 pins, so the
+  graph holds one allocator copy.
 
 ## Internal Crate Dependencies
 
@@ -179,10 +184,9 @@ their corpus-parse regression tests.
   (Ruffle/wgpu/futures in `ui`, `tempfile` dev-dep in `byroredux`) are
   deliberate exceptions where the dependency is single-consumer.
 - **Mostly no duplicates.** Each capability is generally covered by exactly
-  one crate (one math library, one log facade, one allocator). The sole
-  intentional split is `image`: `0.24` workspace-wide for the Vulkan renderer
-  and golden-frame tests, `0.25` inside `byroredux-ui` to match Ruffle's
-  expectations.
+  one crate (one math library, one log facade, one allocator, one `image`
+  series). Since rapier 0.32 moved to glam, nalgebra is only the NIF SVD
+  helper's (and rapier's own internal SIMD/multibody code's) — one copy.
 - **Leaf crates first.** `byroredux-core`, `byroredux-bsa`, `byroredux-bgsm`,
   `byroredux-sfmaterial`, `byroredux-facegen`, `byroredux-hkx`,
   `byroredux-papyrus`, `byroredux-cxx-bridge`, `byroredux-fsr3-sys`,
