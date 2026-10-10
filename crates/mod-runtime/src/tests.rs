@@ -223,8 +223,8 @@ fn custom_event_publisher_component() -> String {
             (core instance $libc (instantiate $libc))
             (core func $publish-lower
                 (canon lower (func $publish)
-                    (memory $libc "memory")
-                    (realloc (func $libc "realloc")))
+                    (memory (core memory $libc "memory"))
+                    (realloc (core func $libc "realloc")))
             )
             (core module $guest
                 (import "libc" "memory" (memory 1))
@@ -299,13 +299,13 @@ fn persistent_collections_component() -> String {
             (core instance $libc (instantiate $libc))
             (core func $array-push-lower
                 (canon lower (func $array-push)
-                    (memory $libc "memory") (realloc (func $libc "realloc"))))
+                    (memory (core memory $libc "memory")) (realloc (core func $libc "realloc"))))
             (core func $map-set-lower
                 (canon lower (func $map-set)
-                    (memory $libc "memory") (realloc (func $libc "realloc"))))
+                    (memory (core memory $libc "memory")) (realloc (core func $libc "realloc"))))
             (core func $set-insert-lower
                 (canon lower (func $set-insert)
-                    (memory $libc "memory") (realloc (func $libc "realloc"))))
+                    (memory (core memory $libc "memory")) (realloc (core func $libc "realloc"))))
             (core module $guest
                 (import "libc" "memory" (memory 1))
                 (import "host" "array-push"
@@ -380,8 +380,8 @@ fn console_component() -> String {
             (core func $args-len-lower (canon lower (func $args-len)))
             (core func $write-line-lower
                 (canon lower (func $write-line)
-                    (memory $libc "memory")
-                    (realloc (func $libc "realloc"))))
+                    (memory (core memory $libc "memory"))
+                    (realloc (core func $libc "realloc"))))
             (core module $guest
                 (import "libc" "memory" (memory 1))
                 (import "host" "args-len" (func $args-len (result i32)))
@@ -730,8 +730,8 @@ fn principal_storage_increment_component() -> String {
             (core instance $libc (instantiate $libc))
             (core func $increment-lower
                 (canon lower (func $increment)
-                    (memory $libc "memory")
-                    (realloc (func $libc "realloc")))
+                    (memory (core memory $libc "memory"))
+                    (realloc (core func $libc "realloc")))
             )
             (core module $guest
                 (import "libc" "memory" (memory 1))
@@ -1010,8 +1010,8 @@ fn logging_component() -> String {
             (core instance $libc (instantiate $libc))
             (core func $log-lower
                 (canon lower (func $log)
-                    (memory $libc "memory")
-                    (realloc (func $libc "realloc")))
+                    (memory (core memory $libc "memory"))
+                    (realloc (core func $libc "realloc")))
             )
             (core module $guest
                 (import "libc" "memory" (memory 1))

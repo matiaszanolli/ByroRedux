@@ -209,8 +209,8 @@ const STORAGE_COMPONENT: &str = r#"
   (core instance $libc (instantiate $libc))
   (core func $increment-lower
     (canon lower (func $increment)
-      (memory $libc "memory")
-      (realloc (func $libc "realloc")))
+      (memory (core memory $libc "memory"))
+      (realloc (core func $libc "realloc")))
   )
   (core module $guest
     (import "libc" "memory" (memory 1))
