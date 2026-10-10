@@ -1985,6 +1985,43 @@ mod tests {
         );
     }
 
+    /// #5531 — the DOF clamp names the rig it clamped. The warning used to
+    /// carry only a count, so a per-substep flood could not be traced to a
+    /// body; the walk now reports `(root link body, clamped DOFs)` once per
+    /// multibody (a rig's joints all resolve to the same multibody), and the
+    /// root body is the key into the labels the body-level clamp already uses.
+    #[test]
+    fn the_dof_clamp_attributes_each_rig_by_its_root_body() {
+        use crate::world::VELOCITY_SANITY_CAP_BU_PER_S;
+        let mut w = PhysicsWorld::new();
+        let spec = RagdollSpec {
+            bodies: vec![
+                ball_body(1, 0.0, 1000.0),
+                ball_body(2, 50.0, 1000.0),
+                ball_body(3, 100.0, 1000.0),
+            ],
+            constraints: vec![loose_ragdoll(0, 1), loose_ragdoll(1, 2)],
+        };
+        let rag = build_ragdoll(&mut w, &spec, &ContactConfig::DEFAULT).expect("sane ragdoll seed");
+        assert_eq!(rag.joints.len(), 2, "fixture: two joints, one multibody");
+        assert!(w.clamp_articulation_dofs().is_empty(), "a rig at rest clamps nothing");
+
+        {
+            let (multibody, _) = w.multibody_joints.get_mut(rag.joints[0]).expect("live joint");
+            multibody.generalized_velocity_mut()[0] = VELOCITY_SANITY_CAP_BU_PER_S * 1.25;
+        }
+        let clamped = w.clamp_articulation_dofs();
+        assert_eq!(
+            clamped,
+            vec![(rag.bodies[0].1, 1)],
+            "one multibody, attributed to its root link, with the one DOF it clamped"
+        );
+        assert!(
+            w.clamp_articulation_dofs().is_empty(),
+            "the clamp is idempotent: nothing is left to report"
+        );
+    }
+
     #[test]
     fn exploding_articulation_dofs_are_capped_before_forward_kinematics() {
         let mut w = PhysicsWorld::new();

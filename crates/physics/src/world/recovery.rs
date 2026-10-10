@@ -462,11 +462,43 @@ impl PhysicsWorld {
         // body-level clamp can matter, so an exploding reduced-coordinate
         // velocity teleports its links out of the world in one step even
         // with every rigid body capped above (#5161).
-        let mut clamped_dofs = 0usize;
+        let clamped = self.clamp_articulation_dofs();
+        if !clamped.is_empty() {
+            self.velocity_clamps_total = self.velocity_clamps_total.saturating_add(1);
+            // #5531 — name the rig. Several per-substep floods were
+            // unattributable ("clamped 6 ... DOF velocities") because the
+            // warning carried no body label, unlike the body-level clamp.
+            for (root, dofs) in &clamped {
+                let label = self
+                    .body_labels
+                    .get(root)
+                    .map_or("unlabelled", String::as_str);
+                log::warn!(
+                    "physics: clamped {dofs} exploding articulation DOF velocities on \
+                     {root:?} [{label}] to the sanity cap (#5161)"
+                );
+            }
+        }
+    }
+
+    /// Cap the generalized velocities of every live articulation and return
+    /// `(root link body, clamped DOF count)` for each multibody that needed
+    /// it. A non-finite DOF is zeroed and counted.
+    ///
+    /// `articulation_joints` holds every joint of every rig (~17 for a
+    /// humanoid), and they all resolve to the same multibody, so each
+    /// multibody is walked once, keyed by its root body (#5531).
+    pub(crate) fn clamp_articulation_dofs(&mut self) -> Vec<(RigidBodyHandle, usize)> {
+        let mut visited = std::collections::HashSet::new();
+        let mut clamped = Vec::new();
         for &joint in &self.articulation_joints {
             let Some((multibody, _)) = self.multibody_joints.get_mut(joint) else {
                 continue;
             };
+            let root = multibody.root().rigid_body_handle();
+            if !visited.insert(root) {
+                continue;
+            }
             // #5353 — a dynamic root is rapier's 6-DOF free joint at offset
             // 0: three linear DOFs (BU/s) then three angular (rad/s)
             // (`Multibody::update_root_type`, `MultibodyJoint::integrate`).
@@ -475,6 +507,7 @@ impl PhysicsWorld {
             // ragdoll to 100 BU/s against 686.7 BU/s² of gravity.
             let free_root = multibody.root().joint().ndofs() == FREE_ROOT_DOFS;
             let mut vels = multibody.generalized_velocity_mut();
+            let mut dofs = 0usize;
             for i in 0..vels.len() {
                 let cap = match (free_root, i) {
                     (true, 0..=2) => VELOCITY_SANITY_CAP_BU_PER_S,
@@ -484,20 +517,17 @@ impl PhysicsWorld {
                 let v = vels[i];
                 if !v.is_finite() {
                     vels[i] = 0.0;
-                    clamped_dofs += 1;
+                    dofs += 1;
                 } else if v.abs() > cap {
                     vels[i] = v.signum() * cap;
-                    clamped_dofs += 1;
+                    dofs += 1;
                 }
             }
+            if dofs > 0 {
+                clamped.push((root, dofs));
+            }
         }
-        if clamped_dofs > 0 {
-            self.velocity_clamps_total = self.velocity_clamps_total.saturating_add(1);
-            log::warn!(
-                "physics: clamped {clamped_dofs} exploding articulation DOF velocities to the \
-                 sanity cap (#5161)"
-            );
-        }
+        clamped
     }
 
     /// Lifetime velocity-clamp count, for `phys.stats` (#5161).
