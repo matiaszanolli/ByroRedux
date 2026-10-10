@@ -32,14 +32,24 @@ use crate::math::Vec3;
 pub enum EatSleepLocation {
     /// Location type 0 — the reference's live position.
     NearReference(u32),
-    /// Location type 1 — any marker within the radius while this CELL is
-    /// the resident interior; the actor idles otherwise.
+    /// Location type 1 — the resident CELL is the location: the GECK
+    /// greys out Radius for it ("If 'In Cell' is selected, Radius is
+    /// greyed out"), so the seat search spans the whole cell rather than
+    /// a radius around wherever the actor stands (#5500 — all 70 FNV
+    /// In-Cell Eat/Sleep packages author radius 0). The actor idles
+    /// while the cell is not the resident interior.
     InCell(u32),
     /// Location type 3 — the actor's [`EditorPlacement`].
     NearEditorLocation,
+    /// #5500 — location type 6 (Near Linked Reference): the target of
+    /// the actor's own XLKR edge, resolved through the
+    /// `PackageTargetRegistry`. Unresolved until the link (or its
+    /// position) is resident — retried next tick, never cached as the
+    /// actor's current position.
+    NearLinkedReference,
     /// Location type 2, and every type with no resolvable anchor here
-    /// (4 Object ID, 5 Object Type, 6 Linked Ref, 7 Package Location, no
-    /// `PLDT`): where the actor stands when the package takes over.
+    /// (4 Object ID, 5 Object Type, 7 Package Location, no `PLDT`):
+    /// where the actor stands when the package takes over.
     #[default]
     NearCurrentLocation,
 }

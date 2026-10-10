@@ -42,6 +42,8 @@ use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::World;
 use byroredux_core::math::Vec3;
 
+use byroredux_scripting::PackageTargetRegistry;
+
 use crate::components::{SandboxSitClip, SeatReservations};
 
 /// The one-shot walk destination's arrival threshold (world units) —
@@ -188,22 +190,48 @@ pub(crate) fn eat_sleep_system(world: &World, dt: f32) {
         }
         // Arrived: seat at the nearest matching marker. Sleep prefers
         // sleep markers, falling back to sit markers when the cell's
-        // beds author none; Eat sits.
-        seat_at_marker(world, npc, kind, radius);
+        // beds author none; Eat sits. #5500 — an In-Cell package's
+        // location IS the resident cell (the GECK greys out its radius),
+        // so its search spans the whole cell rather than 512 BU of
+        // wherever the actor happens to stand: every one of the 70 FNV
+        // In-Cell packages authors radius 0, and a sleeper whose bed sat
+        // further than the default radius took the nearest chair or
+        // nothing.
+        let search_radius = match location {
+            EatSleepLocation::InCell(_) => f32::INFINITY,
+            _ => radius.unwrap_or(super::sandbox::SEAT_SEARCH_RADIUS),
+        };
+        seat_at_marker(world, npc, kind, Some(search_radius));
     }
 }
 
 /// #5391 — the walk destination for one actor's `PLDT` anchor, resolved
-/// once. `None` only for an `InCell` package whose cell is not the
-/// resident interior.
+/// once. `None` means "not resolvable yet": the actor idles and the next
+/// tick retries — an `InCell` package whose cell is not the resident
+/// interior, or (#5500) a reference anchor whose target is not loaded
+/// yet. A budgeted cell load spawns references in authored order, so a
+/// spawn-time Eat/Sleep winner can be asked before its marker exists
+/// (163 FNV actor/target pairs place the target after the actor); the
+/// old code cached the actor's then-current position for the life of
+/// the package and froze the diner at its spawn point.
 fn resolve_anchor(world: &World, npc: EntityId, location: EatSleepLocation) -> Option<Vec3> {
     let current = world.get::<GlobalTransform>(npc)?.translation;
     match location {
-        // An unresolvable reference (not loaded) keeps the actor where it
-        // is rather than inventing a point.
-        EatSleepLocation::NearReference(form_id) => Some(
-            super::travel::resolve_near_reference_target(world, Some(form_id)).unwrap_or(current),
-        ),
+        // #5500 — an unresolvable reference (not loaded yet) resolves
+        // again next tick rather than freezing the actor's current
+        // position as the destination.
+        EatSleepLocation::NearReference(form_id) => {
+            super::travel::resolve_near_reference_target(world, Some(form_id))
+        }
+        // #5500 — the target of the actor's own XLKR edge, through the
+        // same registry the scene runtime reads (keyword 0 = the default
+        // link, preferred over named edges).
+        EatSleepLocation::NearLinkedReference => {
+            let actor_form_id = entity_global_form_id(world, npc)?;
+            let registry = world.try_resource::<PackageTargetRegistry>()?;
+            let linked = registry.linked_reference(actor_form_id)?;
+            registry.position(linked)
+        }
         EatSleepLocation::InCell(cell_form_id) => {
             cell_is_resident(world, cell_form_id).then_some(current)
         }
@@ -215,6 +243,17 @@ fn resolve_anchor(world: &World, npc: EntityId, location: EatSleepLocation) -> O
         ),
         EatSleepLocation::NearCurrentLocation => Some(current),
     }
+}
+
+/// An entity's global (load-order) form id, or `None` when it carries no
+/// `FormIdComponent` or the pool cannot resolve it — the same keying
+/// `resolve_entity_by_global_form_id` searches (#3278's helper shape).
+fn entity_global_form_id(world: &World, entity: EntityId) -> Option<u32> {
+    use byroredux_core::ecs::components::FormIdComponent;
+    use byroredux_core::form_id::FormIdPool;
+    let component = world.get::<FormIdComponent>(entity)?;
+    let pool = world.try_resource::<FormIdPool>()?;
+    pool.resolve(component.0).map(|pair| pair.local.0)
 }
 
 /// Whether `cell_form_id` is the interior currently loaded. Exterior
@@ -356,6 +395,158 @@ mod tests {
         );
         world.insert(actor, Transform::default());
         (world, actor)
+    }
+
+    /// #5500 — type 6 (Near Linked Reference) anchors on the actor's own
+    /// XLKR edge: the registry's linked target position is the walk
+    /// destination. Pre-fix the classification dumped type 6 into
+    /// NearCurrentLocation and the actor dined wherever it stood.
+    #[test]
+    fn linked_reference_package_walks_to_the_actor_own_xlkr_target() {
+        use byroredux_core::ecs::components::FormIdComponent;
+        use byroredux_core::form_id::{FormIdPair, LocalFormId, PluginId};
+
+        let (mut world, actor) = setup();
+        world.register::<FormIdComponent>();
+        let mut pool = byroredux_core::form_id::FormIdPool::default();
+        let fid = pool.intern(FormIdPair {
+            plugin: PluginId::from_filename("FalloutNV.esm"),
+            local: LocalFormId(0x0100_0042),
+        });
+        world.insert_resource(pool);
+        world.insert(actor, FormIdComponent(fid));
+        byroredux_scripting::install_package_linked_references(
+            &mut world,
+            vec![(0x0100_0042, vec![(0, 0x0100_0099)])],
+        );
+        byroredux_scripting::install_package_target_positions(
+            &mut world,
+            vec![(0x0100_0099, Vec3::new(400.0, 0.0, 0.0))],
+        );
+        world.insert(
+            actor,
+            EatBehavior {
+                radius: Some(512.0),
+                location: EatSleepLocation::NearLinkedReference,
+                form_id: 0xAB,
+            },
+        );
+
+        eat_sleep_system(&world, 1.0);
+        let state = world.get::<EatSleepState>(actor).expect("state inserted");
+        assert_eq!(
+            state.destination,
+            Vec3::new(400.0, 0.0, 0.0),
+            "the anchor is the XLKR target's position, not the actor's own"
+        );
+    }
+
+    /// #5500 — an unresolved NearReference anchor must NOT cache the
+    /// actor's current position: the target may spawn later in the same
+    /// budgeted load (references walk in authored order), so the retry
+    /// next tick is the correct behaviour. Pre-fix the diner froze at its
+    /// spawn point for the life of the package.
+    #[test]
+    fn unresolved_near_reference_waits_instead_of_caching_the_spawn_point() {
+        let (mut world, actor) = setup();
+        world.insert(
+            actor,
+            EatBehavior {
+                radius: Some(512.0),
+                // No entity carries this form id yet.
+                location: EatSleepLocation::NearReference(0x0200_7777),
+                form_id: 0xAC,
+            },
+        );
+        eat_sleep_system(&world, 1.0);
+        assert!(
+            world.get::<EatSleepState>(actor).is_none(),
+            "an unresolvable anchor caches nothing — it retries next tick"
+        );
+    }
+
+    /// #5500 — an In-Cell package searches the whole resident cell, not
+    /// 512 BU of the actor: the GECK greys out the radius for In Cell and
+    /// every FNV In-Cell package authors radius 0.
+    #[test]
+    fn in_cell_seat_search_spans_the_cell_not_the_default_radius() {
+        use crate::cell_loader::{CurrentCellContext, LoadedCellIndex};
+        use byroredux_core::ecs::components::Seated;
+        use byroredux_plugin::esm::cell::CellData;
+
+        let (mut world, actor) = setup();
+        world.insert_resource(SandboxSitClip(Some((3, 1.0))));
+        // A resident interior whose form id matches the package.
+        let mut cell = CellData {
+            form_id: 0x0001_2345,
+            editor_id: String::new(),
+            display_name: None,
+            references: Vec::new(),
+            is_interior: true,
+            show_sky: None,
+            grid: None,
+            lighting: None,
+            landscape: None,
+            water_height: None,
+            water_height_is_explicit: false,
+            image_space_form: None,
+            water_type_form: None,
+            acoustic_space_form: None,
+            music_type_form: None,
+            music_type_enum: None,
+            climate_override: None,
+            location_form: None,
+            encounter_zone_form: None,
+            regions: Vec::new(),
+            lighting_template_form: None,
+            ownership: None,
+            regional_color_override: None,
+            precombined_mesh_hashes: Vec::new(),
+            absorbed_ref_bakes: Vec::new(),
+            navmeshes: Vec::new(),
+            pathgrids: Vec::new(),
+            deleted_refs: Vec::new(),
+        };
+        cell.editor_id = "GSProspectorSaloonInterior".to_string();
+        let mut loaded = byroredux_plugin::esm::records::EsmIndex::default();
+        loaded.cells.cells.insert(
+            "gsprospectorsalooninterior".to_string(),
+            cell,
+        );
+        world.insert_resource(LoadedCellIndex(std::sync::Arc::new(loaded)));
+        world.insert_resource(CurrentCellContext {
+            cell_editor_id: "GSProspectorSaloonInterior".to_string(),
+            esm_path: String::new(),
+            masters: Vec::new(),
+        });
+        // A bed 2,000 BU away — far outside the 512 BU default radius.
+        let bed = world.spawn();
+        world.insert(bed, GlobalTransform::default());
+        world.insert(
+            bed,
+            Furniture {
+                markers: vec![FurnitureMarker {
+                    local_offset: [2000.0, 0.0, 0.0],
+                    heading_z_radians: None,
+                    animation_type: 2,
+                    kind: FurnitureMarkerKind::Sleep,
+                }],
+            },
+        );
+        world.insert(
+            actor,
+            SleepBehavior {
+                radius: Some(0.0),
+                location: EatSleepLocation::InCell(0x0001_2345),
+                form_id: 0xAD,
+            },
+        );
+
+        eat_sleep_system(&world, 1.0);
+        assert!(
+            world.get::<Seated>(actor).is_some(),
+            "an In-Cell package reaches a bed beyond the default radius (#5500)"
+        );
     }
 
     /// Far from the destination (a "near editor location" package whose

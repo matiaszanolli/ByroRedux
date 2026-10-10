@@ -154,6 +154,11 @@ fn eat_sleep_location(package: &PackRecord) -> EatSleepLocation {
             PackLocationTarget::Other(_) if location.location_type == 3 => {
                 EatSleepLocation::NearEditorLocation
             }
+            // #5500 — type 6 (Linked Ref) is resolvable: the actor's own
+            // XLKR edge, held by `PackageTargetRegistry`.
+            PackLocationTarget::Other(_) if location.location_type == 6 => {
+                EatSleepLocation::NearLinkedReference
+            }
             _ => EatSleepLocation::NearCurrentLocation,
         },
         None => EatSleepLocation::NearCurrentLocation,

@@ -248,7 +248,7 @@ pub(crate) fn capture_actor_snapshots(world: &mut World, victims: &[EntityId]) {
                 .collect();
             for ((victim, _, snapshot), seat) in rows.iter_mut().zip(&seated) {
                 let Some(seat) = seat else { continue };
-                if let Some(((furniture, idx), _)) = by_claimant
+                if let Some(((_, idx), _)) = by_claimant
                     .iter()
                     .find(|((furniture, _), claimant)| *claimant == *victim && *furniture == seat.furniture)
                 {
