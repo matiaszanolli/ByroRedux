@@ -92,19 +92,48 @@ macro_rules! cell_category {
 /// directly after its `PNAM` (`previous_info`) predecessor when that
 /// INFO is already in the list — the chain order Bethesda serializes
 /// the Topic Children group in, which the dialogue selection's
-/// file-order tie-break consumes. A `PNAM` of 0 is the chain head, so a
-/// brand-new head goes first; a predecessor this side of the merge has
-/// not seen yet falls back to append.
-fn fold_info_into_topic(infos: &mut Vec<InfoRecord>, info: InfoRecord) {
+/// file-order tie-break consumes.
+///
+/// #5494 — a run of `PNAM == 0` heads from one override composes in the
+/// plugin's own file order: the first INFO of the run goes to the front
+/// and each later head lands after the previous INFO this override
+/// contributed (head or follower alike — authored runs interleave head
+/// chains, so the cursor follows contributions, not just heads). Pre-fix
+/// every head went to index 0, composing the run in REVERSE file order —
+/// and since a plugin authors its catch-all fallback LAST in its group,
+/// the fallback came out first, where `select_info`'s file-order rule
+/// takes the first passing INFO: on The Pitt's GREETING the
+/// unconditional "Go away." goodbye shadowed all 92 conditioned Downtown
+/// greetings for every speaker. Where an override's head run sits
+/// relative to the master's own heads (ahead of them, here) is an
+/// unsourced engine choice — no dump or doc pins it; only the run's
+/// internal order is observable in authored data. `last_from_plugin` is
+/// per-override state keyed by FormID, not position, so interleaved
+/// inserts cannot skew it.
+fn fold_info_into_topic(
+    infos: &mut Vec<InfoRecord>,
+    info: InfoRecord,
+    last_from_plugin: &mut Option<u32>,
+) {
     if let Some(position) = infos
         .iter()
         .position(|existing| existing.form_id == info.form_id)
     {
+        // A re-authored INFO keeps its master position but still counts
+        // as this plugin's latest contribution, so the next new head
+        // composes after it in authored order.
+        *last_from_plugin = Some(info.form_id);
         infos[position] = info;
         return;
     }
     let insert_at = if info.previous_info == 0 {
-        Some(0)
+        match *last_from_plugin {
+            Some(prev) => infos
+                .iter()
+                .position(|existing| existing.form_id == prev)
+                .map(|position| position + 1),
+            None => Some(0),
+        }
     } else {
         infos
             .iter()
@@ -112,7 +141,10 @@ fn fold_info_into_topic(infos: &mut Vec<InfoRecord>, info: InfoRecord) {
             .map(|position| position + 1)
     };
     match insert_at {
-        Some(at) => infos.insert(at, info),
+        Some(at) => {
+            *last_from_plugin = Some(info.form_id);
+            infos.insert(at, info);
+        }
         None => infos.push(info),
     }
 }
@@ -731,8 +763,16 @@ impl EsmIndex {
                                 target.dialogues.insert(form_id, override_dial);
                             }
                             Some(master) => {
+                                // #5494 — one contribution cursor per
+                                // override, so its PNAM-less head run
+                                // composes in file order.
+                                let mut last_from_plugin = None;
                                 for info in std::mem::take(&mut override_dial.infos) {
-                                    fold_info_into_topic(&mut master.infos, info);
+                                    fold_info_into_topic(
+                                        &mut master.infos,
+                                        info,
+                                        &mut last_from_plugin,
+                                    );
                                 }
                                 master.editor_id = override_dial.editor_id;
                                 master.full_name = override_dial.full_name;
@@ -2427,6 +2467,72 @@ mod tests {
             ],
             "B is replaced in place, D lands after its PNAM predecessor B, \
              and the Deleted tombstone removes C"
+        );
+    }
+
+    /// #5494 — an override's run of `PNAM == 0` heads composes in the
+    /// plugin's own file order, ahead of the master's infos. Pre-fix every
+    /// head inserted at index 0, composing the run in REVERSE — which put
+    /// a plugin's authored-last catch-all fallback FIRST, where
+    /// `select_info`'s file-order rule takes it for every speaker (The
+    /// Pitt GREETING: the unconditional "Go away." goodbye shadowed 92
+    /// conditioned Downtown greetings).
+    #[test]
+    fn dialogue_override_head_run_composes_in_file_order() {
+        use super::{DialRecord, InfoRecord};
+
+        const TOPIC: u32 = 0x0000_00C8; // FNV's GREETING form id
+        let info = |form_id: u32, previous: u32, text: &str| InfoRecord {
+            form_id,
+            previous_info: previous,
+            response_text: text.to_string(),
+            ..Default::default()
+        };
+
+        // Master: one chain A -> B.
+        let mut master = EsmIndex::default();
+        master.dialogues.insert(
+            TOPIC,
+            DialRecord {
+                form_id: TOPIC,
+                editor_id: "GREETING".to_string(),
+                infos: vec![info(0xA, 0, "a"), info(0xB, 0xA, "b")],
+                ..Default::default()
+            },
+        );
+
+        // DLC override in authored file order: two parallel head chains
+        // (H1 with follower f1, then H2 with f2) — the shape Anchorage
+        // and The Pitt author at scale (866/866 Anchorage INFOs carry no
+        // PNAM at all, so file order is the only order they have).
+        let mut dlc = EsmIndex::default();
+        dlc.dialogues.insert(
+            TOPIC,
+            DialRecord {
+                form_id: TOPIC,
+                editor_id: "GREETING".to_string(),
+                infos: vec![
+                    info(0x101, 0, "h1"),
+                    info(0x111, 0x101, "f1"),
+                    info(0x102, 0, "h2"),
+                    info(0x112, 0x102, "f2"),
+                ],
+                ..Default::default()
+            },
+        );
+
+        master.merge_from(dlc);
+
+        let ids: Vec<u32> = master.dialogues[&TOPIC]
+            .infos
+            .iter()
+            .map(|i| i.form_id)
+            .collect();
+        assert_eq!(
+            ids,
+            vec![0x101, 0x111, 0x102, 0x112, 0xA, 0xB],
+            "the override's head run composes in its own file order \
+             (pre-fix: [0x102, 0x112, 0x101, 0x111, 0xA, 0xB])"
         );
     }
 
