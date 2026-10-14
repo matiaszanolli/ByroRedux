@@ -405,6 +405,21 @@ pub const GROUNDCOVER_REGION_UNITS: f32 = 4000.0;
 /// moves density within [0.65, 1.0] — visible as one meadow being richer than
 /// the next, never as a hard regional boundary.
 pub const GROUNDCOVER_REGION_AMPLITUDE: f32 = 0.35;
+/// Mean of the raw clump field (`byroGcClumpRaw`: Worley cells x regional fBm).
+/// MEASURED, not chosen: a Rust port of the noise averages 0.468 over two
+/// 54 km x 54 km areas 3e6 units apart, and the
+/// `the_clump_mean_constant_matches_the_measured_field` test fails if a clump
+/// constant is retuned without updating this. The shader divides the raw field
+/// by it, so clumping REDISTRIBUTES the authored density without changing its
+/// average (until now the raw field was multiplied in as-is, silently thinning
+/// every sward to ~47% of its authored density).
+pub const GROUNDCOVER_CLUMP_MEAN: f32 = 0.468;
+/// Per-clump variation, drawn from the id of the clump's nearest Worley feature
+/// (so a clump is internally coherent and neighbouring clumps differ): blade
+/// height varies by +-`HEIGHT_VARIATION` and colour is shifted warm/cool by
+/// `TINT_VARIATION`. Art direction, recorded as such.
+pub const GROUNDCOVER_CLUMP_HEIGHT_VARIATION: f32 = 0.20;
+pub const GROUNDCOVER_CLUMP_TINT_VARIATION: f32 = 0.08;
 
 /// `distance_fade` — tier 0's outer range and where the fade begins (§6).
 ///
@@ -2452,6 +2467,9 @@ pub const SHADER_DEFINES: &[HeaderLine] = &[
     HeaderLine::Define("GROUNDCOVER_CLUMP_FLOOR", ShaderValue::Float(GROUNDCOVER_CLUMP_FLOOR)),
     HeaderLine::Define("GROUNDCOVER_REGION_UNITS", ShaderValue::Float(GROUNDCOVER_REGION_UNITS)),
     HeaderLine::Define("GROUNDCOVER_REGION_AMPLITUDE", ShaderValue::Float(GROUNDCOVER_REGION_AMPLITUDE)),
+    HeaderLine::Define("GROUNDCOVER_CLUMP_MEAN", ShaderValue::Float(GROUNDCOVER_CLUMP_MEAN)),
+    HeaderLine::Define("GROUNDCOVER_CLUMP_HEIGHT_VARIATION", ShaderValue::Float(GROUNDCOVER_CLUMP_HEIGHT_VARIATION)),
+    HeaderLine::Define("GROUNDCOVER_CLUMP_TINT_VARIATION", ShaderValue::Float(GROUNDCOVER_CLUMP_TINT_VARIATION)),
     HeaderLine::Define("GROUNDCOVER_FADE_START", ShaderValue::Float(GROUNDCOVER_FADE_START)),
     HeaderLine::Define("CLOUD_REF_WIDTH", ShaderValue::Float(CLOUD_REF_WIDTH)),
     HeaderLine::Define("CLOUD_TILE_SCALE_LAYER_0", ShaderValue::Float(CLOUD_TILE_SCALE_LAYER_0)),

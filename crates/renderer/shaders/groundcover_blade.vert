@@ -189,6 +189,9 @@ layout(location = 20) flat out uint vTerrainTileSlot;
 /// The cell's BTXT base diffuse handle, 0 when unresolved — the coupling's
 /// substrate on cells with no terrain tile (a base and no ATXT paint, #5174).
 layout(location = 21) flat out uint vTerrainBaseIndex;
+/// [0,1) tone of the clump this blade belongs to (warm <-> cool), constant over
+/// the clump — the colour half of the per-clump variation.
+layout(location = 22) out float vClumpTone;
 
 // The scene set already binds CameraUBO at set 1 / binding 1.  Only the
 // leading fields through `jitter` are declared here; the descriptor's full
@@ -374,8 +377,15 @@ void main() {
     vColourJitter = gcSeedStream(seed, 5u);
 
     GroundCoverSpecies sp = gcSpecies[vSpecies];
+    // Per-clump variation: every blade of a clump shares the clump's height
+    // scale and tone, so a clump reads as one patch (taller here, paler there)
+    // instead of every blade differing independently — the sprinkled-evenly look.
+    uint clumpSeed = uint(byroGcClumpId(base.xz) * 16777216.0);
+    float clumpHeight = 1.0 + GROUNDCOVER_CLUMP_HEIGHT_VARIATION
+        * (2.0 * gcSeedStream(clumpSeed, 11u) - 1.0);
+    vClumpTone = gcSeedStream(clumpSeed, 12u);
     float height = mix(sp.sizeRange.x, sp.sizeRange.y, gcSeedStream(seed, 0u))
-        * chunk.entryProgress;
+        * clumpHeight * chunk.entryProgress;
     float width = mix(sp.sizeRange.z, sp.sizeRange.w, gcSeedStream(seed, 1u));
     float stiffness = clamp(sp.baseColour.a, 0.0, 1.0);
 

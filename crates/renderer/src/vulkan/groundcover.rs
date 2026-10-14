@@ -892,6 +892,18 @@ mod tests {
     #[test]
     fn the_clump_term_is_not_stubbed() {
         let src = include_str!("../../shaders/include/groundcover_density.glsl");
+        let raw = src
+            .split_once("float byroGcClumpRaw(")
+            .expect("the density field must still define byroGcClumpRaw")
+            .1
+            .split_once("\n}")
+            .expect("unterminated function")
+            .0;
+        assert!(
+            raw.contains("byroGcWorleyCell(") && raw.contains("byroGcFbm("),
+            "byroGcClumpRaw must evaluate both octaves §3 specifies — a Worley \
+             field at the clump scale times a regional fBm"
+        );
         let clump = src
             .split_once("float byroGcClump(")
             .expect("the density field must still define byroGcClump")
@@ -900,9 +912,9 @@ mod tests {
             .expect("unterminated function")
             .0;
         assert!(
-            clump.contains("byroGcWorley(") && clump.contains("byroGcFbm("),
-            "byroGcClump must evaluate both octaves §3 specifies — a Worley \
-             field at the clump scale times a regional fBm"
+            clump.contains("byroGcClumpRaw(") && clump.contains("GROUNDCOVER_CLUMP_MEAN"),
+            "byroGcClump must be the raw field divided by its measured mean, so \
+             clumping redistributes the authored density rather than thinning it"
         );
         assert!(
             src.contains("f.clump = byroGcClump(worldXZ);")
@@ -1496,5 +1508,161 @@ mod segment_lod_tests {
         ] {
             assert!(vert.contains(needle), "groundcover_blade.vert lost `{needle}`");
         }
+    }
+}
+
+/// The clump term's statistics, from a Rust port of the (integer-hash) noise in
+/// `include/groundcover_density.glsl`. Clumping must REDISTRIBUTE the authored
+/// density, never change its average, so the shader divides the raw field by its
+/// mean (`GROUNDCOVER_CLUMP_MEAN`); this measures that mean so the constant is
+/// data and a retune of the clump constants cannot silently thin the sward.
+#[cfg(test)]
+mod clump_statistics_tests {
+    use crate::shader_constants::{
+        GROUNDCOVER_CLUMP_CELL_UNITS, GROUNDCOVER_CLUMP_CONTRAST, GROUNDCOVER_CLUMP_FLOOR,
+        GROUNDCOVER_CLUMP_MEAN, GROUNDCOVER_REGION_AMPLITUDE, GROUNDCOVER_REGION_UNITS,
+    };
+
+    fn hash2(cell: [f32; 2]) -> [f32; 2] {
+        let cx = (cell[0].floor() as i32).wrapping_add(0x8000) as u32;
+        let cy = (cell[1].floor() as i32).wrapping_add(0x8000) as u32;
+        let mut h = cx.wrapping_mul(0x27D4_EB2D) ^ cy.wrapping_mul(0x9E37_79B9);
+        h ^= h >> 15;
+        h = h.wrapping_mul(0x85EB_CA6B);
+        h ^= h >> 13;
+        let mut h2 = h.wrapping_mul(0xC2B2_AE35);
+        h2 ^= h2 >> 16;
+        [(h & 0xFFFF) as f32 / 65536.0, (h2 & 0xFFFF) as f32 / 65536.0]
+    }
+
+    fn worley(p: [f32; 2]) -> f32 {
+        let base = [p[0].floor(), p[1].floor()];
+        let frac = [p[0] - base[0], p[1] - base[1]];
+        let mut best = 8.0_f32;
+        for dy in -1..=1 {
+            for dx in -1..=1 {
+                let off = [dx as f32, dy as f32];
+                let h = hash2([base[0] + off[0], base[1] + off[1]]);
+                let f = [off[0] + h[0] - frac[0], off[1] + h[1] - frac[1]];
+                best = best.min(f[0] * f[0] + f[1] * f[1]);
+            }
+        }
+        best.sqrt().min(1.0)
+    }
+
+    fn fbm(mut p: [f32; 2]) -> f32 {
+        let mut total = 0.0;
+        let mut amplitude = 0.5;
+        for _ in 0..2 {
+            let base = [p[0].floor(), p[1].floor()];
+            let fr = [p[0] - base[0], p[1] - base[1]];
+            let w = fr.map(|f| f * f * f * (f * (f * 6.0 - 15.0) + 10.0));
+            let a = hash2(base)[0];
+            let b = hash2([base[0] + 1.0, base[1]])[0];
+            let c = hash2([base[0], base[1] + 1.0])[0];
+            let d = hash2([base[0] + 1.0, base[1] + 1.0])[0];
+            let top = a + (b - a) * w[0];
+            let bottom = c + (d - c) * w[0];
+            total += amplitude * (top + (bottom - top) * w[1]);
+            p = [p[0] * 2.03, p[1] * 2.03];
+            amplitude *= 0.5;
+        }
+        total / 0.75
+    }
+
+    /// The Worley clump term alone (`byroGcClumpRaw`'s `cellular`), which is
+    /// what REDISTRIBUTES blades inside an area; the regional fBm is the
+    /// authored "one meadow richer than the next" and varies the average on
+    /// purpose.
+    fn cellular_clump(x: f32, z: f32) -> f32 {
+        let cellular = 1.0
+            - worley([x / GROUNDCOVER_CLUMP_CELL_UNITS, z / GROUNDCOVER_CLUMP_CELL_UNITS]);
+        let cellular = cellular.clamp(0.0, 1.0).powf(GROUNDCOVER_CLUMP_CONTRAST);
+        GROUNDCOVER_CLUMP_FLOOR + (1.0 - GROUNDCOVER_CLUMP_FLOOR) * cellular
+    }
+
+    /// The raw (un-normalised) clump density, `byroGcClump` before the mean.
+    fn raw_clump(x: f32, z: f32) -> f32 {
+        let cellular = 1.0
+            - worley([x / GROUNDCOVER_CLUMP_CELL_UNITS, z / GROUNDCOVER_CLUMP_CELL_UNITS]);
+        let cellular = cellular.clamp(0.0, 1.0).powf(GROUNDCOVER_CLUMP_CONTRAST);
+        let cellular = GROUNDCOVER_CLUMP_FLOOR + (1.0 - GROUNDCOVER_CLUMP_FLOOR) * cellular;
+        let regional = fbm([x / GROUNDCOVER_REGION_UNITS, z / GROUNDCOVER_REGION_UNITS])
+            .clamp(0.0, 1.0);
+        let regional = (1.0 - GROUNDCOVER_REGION_AMPLITUDE)
+            + GROUNDCOVER_REGION_AMPLITUDE * regional;
+        (cellular * regional).clamp(0.0, 1.0)
+    }
+
+    /// Mean of the raw field over an area spanning many regional cycles, on an
+    /// irrational-stride lattice (no alignment with the noise lattices).
+    fn measured_mean(origin: [f32; 2]) -> f64 {
+        let (n, step) = (700_u32, 77.13_f32);
+        let mut sum = 0.0_f64;
+        for i in 0..n {
+            for j in 0..n {
+                sum += raw_clump(origin[0] + i as f32 * step, origin[1] + j as f32 * step) as f64;
+            }
+        }
+        sum / (n * n) as f64
+    }
+
+    #[test]
+    fn the_clump_mean_constant_matches_the_measured_field() {
+        let a = measured_mean([0.0, 0.0]);
+        let b = measured_mean([1.0e6, -3.0e6]);
+        eprintln!("[clump] mean {a:.4} / {b:.4}");
+        assert!(
+            (a - b).abs() < 0.01,
+            "the field is statistically stationary: {a} vs {b}"
+        );
+        assert!(
+            (a - GROUNDCOVER_CLUMP_MEAN as f64).abs() < 0.01,
+            "GROUNDCOVER_CLUMP_MEAN ({GROUNDCOVER_CLUMP_MEAN}) must equal the measured mean \
+             {a:.4} of the raw clump field — retune the constant with the clump parameters"
+        );
+    }
+
+    /// "Clumping preserves the average density per tile": after dividing by the
+    /// field mean, the clump redistribution term averages ~1 over every
+    /// exterior-cell-sized area (4096 units, ~46 clump cells across), so it moves
+    /// blades into clumps without changing how many an area carries. Measured
+    /// over a 12 x 12 block of cells away from the origin lattice.
+    #[test]
+    fn clumping_preserves_the_average_density_per_cell_area() {
+        let cellular_mean = {
+            let (n, step) = (600_u32, 83.7_f32);
+            let mut sum = 0.0_f64;
+            for i in 0..n {
+                for j in 0..n {
+                    sum += cellular_clump(i as f32 * step + 1.0e5, j as f32 * step - 2.0e5) as f64;
+                }
+            }
+            sum / (n * n) as f64
+        };
+        let (mut worst, mut count) = (0.0_f64, 0);
+        for cx in 0..12 {
+            for cz in 0..12 {
+                let (n, step) = (48_u32, 4096.0 / 48.0 * 0.997);
+                let mut sum = 0.0_f64;
+                for i in 0..n {
+                    for j in 0..n {
+                        sum += cellular_clump(
+                            cx as f32 * 4096.0 + i as f32 * step + 7.0e4,
+                            cz as f32 * 4096.0 + j as f32 * step + 9.0e4,
+                        ) as f64;
+                    }
+                }
+                let relative = (sum / (n * n) as f64 / cellular_mean - 1.0).abs();
+                worst = worst.max(relative);
+                count += 1;
+            }
+        }
+        eprintln!("[clump] cellular mean {cellular_mean:.4}; worst per-cell deviation {worst:.4} over {count} cells");
+        assert!(
+            worst < 0.08,
+            "the clump term must redistribute within an area, not change its average: \
+             worst 4096-unit cell deviates {worst:.3} from the global mean"
+        );
     }
 }

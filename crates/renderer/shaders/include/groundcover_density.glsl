@@ -58,25 +58,37 @@ float byroGcHash1(vec2 cell) {
     return byroGcHash2(cell).x;
 }
 
-/// Worley (cellular) F1 distance over a unit lattice, normalised to ~[0,1].
+/// Worley (cellular) F1 distance over a unit lattice, normalised to ~[0,1],
+/// and the lattice cell that owns the nearest feature point (`featureCell`) —
+/// the stable identity of the clump the point sits in.
 ///
 /// Clump structure comes from *inverted* F1: near a feature point the distance
 /// is small, and that is where a clump sits. 3x3 neighbourhood is exact for
 /// jittered points confined to their own cell.
-float byroGcWorley(vec2 p) {
+float byroGcWorleyCell(vec2 p, out vec2 featureCell) {
     vec2 base = floor(p);
     vec2 frac = p - base;
     float best = 8.0;
+    featureCell = base;
     for (int dy = -1; dy <= 1; ++dy) {
         for (int dx = -1; dx <= 1; ++dx) {
             vec2 offset = vec2(float(dx), float(dy));
             vec2 feature = offset + byroGcHash2(base + offset);
-            best = min(best, dot(feature - frac, feature - frac));
+            float d2 = dot(feature - frac, feature - frac);
+            if (d2 < best) {
+                best = d2;
+                featureCell = base + offset;
+            }
         }
     }
     // sqrt once, at the end. The maximum F1 for jittered-grid points is ~1.0,
     // so this lands in [0,1] without a further scale.
     return min(sqrt(best), 1.0);
+}
+
+float byroGcWorley(vec2 p) {
+    vec2 featureCell;
+    return byroGcWorleyCell(p, featureCell);
 }
 
 /// Value-noise fBm, two octaves. Only used for the ~4000-unit regional term,
@@ -188,18 +200,14 @@ float byroGcShelter(float laplacian) {
     return clamp(1.0 + shaped * GROUNDCOVER_SHELTER_STRENGTH, 0.0, 1.0 + GROUNDCOVER_SHELTER_STRENGTH);
 }
 
-/// `clump(noise)` — the organic term, and the only one with authority above
-/// ~128 units.
-///
-/// §3: the splat authority is a 17x17 alpha grid per 2048-unit quadrant.
-/// Bilinear sampling makes it continuous rather than stepped, which fixes the
-/// hard step, but it cannot manufacture detail finer than the grid. Stub this
-/// to 1.0 "for now" and the result reproduces the vanilla patch look exactly —
-/// which is why it is a `float`, not a `#define`, and why it is here rather
-/// than deferred to a later phase.
-float byroGcClump(vec2 worldXZ) {
+/// The raw clump field: Worley clump cells x a slow regional fBm, in [0,1] and
+/// with mean `GROUNDCOVER_CLUMP_MEAN`. `clumpId` is the stable [0,1) identity of
+/// the clump (its nearest Worley feature) for per-clump variation.
+float byroGcClumpRaw(vec2 worldXZ, out float clumpId) {
     // Worley at the clump scale, inverted so feature points are clump centres.
-    float cellular = 1.0 - byroGcWorley(worldXZ / GROUNDCOVER_CLUMP_CELL_UNITS);
+    vec2 featureCell;
+    float cellular = 1.0 - byroGcWorleyCell(worldXZ / GROUNDCOVER_CLUMP_CELL_UNITS, featureCell);
+    clumpId = byroGcHash1(featureCell + vec2(31.0, 17.0));
     cellular = pow(clamp(cellular, 0.0, 1.0), GROUNDCOVER_CLUMP_CONTRAST);
     // The floor keeps the gaps between clumps thin rather than bare: clumping
     // should read as density variation, not as holes punched in the sward.
@@ -210,6 +218,35 @@ float byroGcClump(vec2 worldXZ) {
     regional = mix(1.0 - GROUNDCOVER_REGION_AMPLITUDE, 1.0, clamp(regional, 0.0, 1.0));
 
     return clamp(cellular * regional, 0.0, 1.0);
+}
+
+/// `clump(noise)` — the organic term, and the only one with authority above
+/// ~128 units.
+///
+/// §3: the splat authority is a 17x17 alpha grid per 2048-unit quadrant.
+/// Bilinear sampling makes it continuous rather than stepped, which fixes the
+/// hard step, but it cannot manufacture detail finer than the grid. Stub this
+/// to 1.0 "for now" and the result reproduces the vanilla patch look exactly —
+/// which is why it is a `float`, not a `#define`, and why it is here rather
+/// than deferred to a later phase.
+///
+/// **Mean 1.** The raw field's mean is `GROUNDCOVER_CLUMP_MEAN` (0.468,
+/// measured), and multiplying it into the density as-is thinned every sward to
+/// that fraction of its authored value. Dividing by the mean makes clumping a
+/// pure REDISTRIBUTION: denser inside clumps (up to ~2x), sparser between them,
+/// the same average over an area. Where the product with the other factors
+/// would exceed 1 the combine clamps it, which is the only mass lost.
+float byroGcClump(vec2 worldXZ) {
+    float clumpId;
+    return byroGcClumpRaw(worldXZ, clumpId) * (1.0 / GROUNDCOVER_CLUMP_MEAN);
+}
+
+/// The stable [0,1) identity of the clump at `worldXZ`, for the blade shader's
+/// per-clump height and tint.
+float byroGcClumpId(vec2 worldXZ) {
+    float clumpId;
+    byroGcClumpRaw(worldXZ, clumpId);
+    return clumpId;
 }
 
 /// Discrete Laplacian of the heightfield at `worldXZ`, sampled one terrain

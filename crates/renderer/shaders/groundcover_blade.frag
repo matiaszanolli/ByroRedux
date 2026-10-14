@@ -49,6 +49,7 @@ layout(location = 18) in vec4 vTerrainSplat0;
 layout(location = 19) in vec4 vTerrainSplat1;
 layout(location = 20) flat in uint vTerrainTileSlot;
 layout(location = 21) flat in uint vTerrainBaseIndex;
+layout(location = 22) in float vClumpTone;
 
 layout(location = 0) out vec4 outColor;
 layout(location = 2) out vec2 outMotion;
@@ -189,6 +190,9 @@ void main() {
         GROUNDCOVER_COLOUR_JITTER_MIN,
         GROUNDCOVER_COLOUR_JITTER_MAX,
         vColourJitter);
+    // Per-clump tone: a warm <-> cool shift shared by every blade of the clump.
+    float clumpShift = GROUNDCOVER_CLUMP_TINT_VARIATION * (2.0 * vClumpTone - 1.0);
+    albedo *= vec3(1.0 + clumpShift, 1.0, 1.0 - clumpShift);
     vec3 transmissionColour = sp.transmissionSheen.rgb;
     float sheen = max(sp.transmissionSheen.a, 0.0);
 
