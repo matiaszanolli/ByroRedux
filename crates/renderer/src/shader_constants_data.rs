@@ -438,14 +438,17 @@ pub const GROUNDCOVER_CLUMP_TINT_VARIATION: f32 = 0.08;
 pub const CLOUD_REF_WIDTH: f32 = 512.0;
 pub const CLOUD_TILE_SCALE_LAYER_0: f32 = 0.15;
 
-// A 3,000-BU field still fits the existing 256 fixed GPU chunk slabs: its
-// conservative square residency needs 15×15 = 225 slots.  The old 2,000-BU
-// limit left a conspicuous bare belt between the blade field and the terrain
-// detail layer even though the arena had room for it.  Keep the fade's 70%
-// start ratio, so the added reach thins stochastically over the same relative
-// portion of the field instead of exchanging one hard horizon for another.
-pub const GROUNDCOVER_FADE_START: f32 = 2100.0;
-pub const GROUNDCOVER_DRAW_DISTANCE: f32 = 3000.0;
+// The grass fade follows the games' own defaults: Skyrim's shipped
+// `fGrassStartFadeDistance` (SkyrimPrefs / Ultra / High) and its
+// `fGrassMaxStartFadeDistance` are 7000, and the fade range is
+// `fGrassFadeRange` = 1000 (Fallout 3 / New Vegas `Fallout_default.ini`;
+// Skyrim's own INI does not list it, so the sibling title's value is used).
+// Every game gets Skyrim's distances: fade starts at 7000, gone at 8000.
+// Only chunks in front of the camera are ever resident (a view wedge, see
+// `render/groundcover.rs`), which is what makes this reach affordable: the
+// ring holds `GROUNDCOVER_MAX_CHUNKS` wedge chunks, not a full disc of them.
+pub const GROUNDCOVER_FADE_START: f32 = 7000.0;
+pub const GROUNDCOVER_DRAW_DISTANCE: f32 = 8000.0;
 
 /// Scatter dispatch shape. One workgroup per visible chunk, mirroring
 /// `cluster_cull.comp` (§4).
@@ -478,21 +481,20 @@ pub const GROUNDCOVER_CANDIDATES_PER_THREAD: u32 = 256;
 /// two tuning constants above cannot be edited out of step with it.
 pub const GROUNDCOVER_MAX_BLADES_PER_CHUNK: u32 =
     GROUNDCOVER_SCATTER_WORKGROUP * GROUNDCOVER_CANDIDATES_PER_THREAD;
-/// Ceiling on chunks dispatched in one frame. At 512 units a chunk and the
-/// 3000-unit draw distance the chunks within reach bound at ~167 (the binary's
-/// `chunk_cap_covers_every_chunk_in_reach`, a disc of radius draw distance +
-/// two chunk bound radii; the cull's conservative square residency needs
-/// 15×15 = 225 slots), so 256 covers the bound while holding the blade buffer
-/// at `256 × 16,384 × 16 B` = 64 MiB — the size the candidate budget's rise to
-/// 256 per thread (2026-09-16) took it to from the 16 MB it had held at
-/// 1,024 chunks × 1,024 and then 256 × 4,096 blades.
+/// Ceiling on chunks resident in one frame: the chunks of the VIEW WEDGE, not a
+/// disc. Only chunks in front of the camera (the horizontal field of view plus
+/// a cache margin, capped at `VIEW_MAX_HALF_ANGLE`) and a small all-round disc
+/// are ever resident, so the 8000-unit reach needs a sector of ~475 chunks at
+/// the widest wedge the binary allows (a 180-degree sector) rather than the ~830 a full disc would —
+/// bounded by the binary's `chunk_cap_covers_every_chunk_in_reach`. 512 holds
+/// the blade buffer at `512 x 16,384 x 16 B` = 128 MiB (it was 64 MiB for a
+/// 3000-unit disc of 256 slots).
 ///
 /// The headroom is enforced rather than argued: the binary's
-/// `chunk_cap_covers_every_chunk_in_reach` bounds the chunks the distance cull
-/// can keep from this file's chunk size and draw distance, so a §11.2 sweep
-/// that outgrows the cap fails a test instead of silently dropping chunks at
-/// runtime (#4338).
-pub const GROUNDCOVER_MAX_CHUNKS: u32 = 256;
+/// `chunk_cap_covers_every_chunk_in_reach` bounds the wedge from this file's
+/// chunk size and draw distance, so a retune that outgrows the cap fails a test
+/// instead of silently dropping chunks at runtime (#4338).
+pub const GROUNDCOVER_MAX_CHUNKS: u32 = 512;
 /// Density-histogram buckets (§11.3). The scatter tallies `d_ground` per
 /// candidate so the field can be calibrated against real cells rather than
 /// against a mirrored Rust function that would not be the thing shipping.
@@ -539,7 +541,7 @@ pub const GROUNDCOVER_LOD_MORPH_UNITS: f32 = 200.0;
 /// stays level instead of stepping at one hard radius — the "bright dense band"
 /// where density dropped while the blades' pixel-floor widening kept growing
 /// their footprint. The authored-model tier keeps `GROUNDCOVER_FADE_START`.
-pub const GROUNDCOVER_BLADE_FADE_START: f32 = 1400.0;
+pub const GROUNDCOVER_BLADE_FADE_START: f32 = 7000.0;
 /// Largest widening a blade takes to pay back distance thinning, and the
 /// largest total widening (LOD blade-count reduction x thinning) a blade may
 /// take; coverage falls off gracefully past either (the terrain's own detail

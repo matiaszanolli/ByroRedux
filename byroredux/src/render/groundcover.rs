@@ -42,6 +42,55 @@ use crate::components::{TerrainCellOrigin, TerrainCoverInputs};
 /// far edge of the field.
 const CHUNK_BOUND_RADIUS: f32 = GROUNDCOVER_CHUNK_UNITS * std::f32::consts::FRAC_1_SQRT_2;
 
+/// Chunks closer than this are resident whatever the camera faces: the ground
+/// at the player's feet, which the bottom of the frame shows when looking down
+/// and which a quick turn reaches first. Deliberately small — grass behind the
+/// camera is never drawn.
+const VIEW_NEAR_RADIUS: f32 = 1.5 * CHUNK_BOUND_RADIUS;
+/// Extra half-angle past the horizontal field of view a chunk may sit at and
+/// still be resident. This is the cache: a small turn finds its chunks already
+/// scattered (and past their grow-in) instead of placing them in view. Kept
+/// narrow on purpose — every degree of margin is scatter work for grass nobody
+/// is looking at.
+const VIEW_MARGIN_RADIANS: f32 = 20.0 * std::f32::consts::PI / 180.0;
+/// Widest half-angle the wedge may take whatever the FOV (an ultrawide or a
+/// user-raised FOV), so the resident set is bounded by `GROUNDCOVER_MAX_CHUNKS`
+/// (`chunk_cap_covers_every_chunk_in_reach`). Past it the lateral edge of a
+/// very wide view loses its far grass rather than the ring overflowing.
+const VIEW_MAX_HALF_ANGLE: f32 = 90.0 * std::f32::consts::PI / 180.0;
+/// When the camera looks (nearly) straight up or down its horizontal facing is
+/// meaningless; every chunk inside this radius is wanted instead (a downward
+/// view sees only the ground near the player, an upward one none at all).
+const VIEW_VERTICAL_RADIUS: f32 = 2500.0;
+/// `|forward.xz|` below this counts as looking vertically.
+const VIEW_VERTICAL_FORWARD_XZ: f32 = 0.25;
+
+/// Is a chunk in the camera's view wedge?
+///
+/// `forward_xz` is the camera's forward projected onto the ground plane (any
+/// length), `to_chunk` the horizontal offset to the chunk's centre and
+/// `half_fov_x` the horizontal half field of view. A chunk is wanted when its
+/// bearing is within `half_fov_x + VIEW_MARGIN_RADIANS` (capped at
+/// `VIEW_MAX_HALF_ANGLE`) of forward, widened by the angle the chunk's own
+/// bounding disc subtends so a chunk with one corner in view is kept; and
+/// always when inside `VIEW_NEAR_RADIUS`.
+fn chunk_in_view_wedge(forward_xz: [f32; 2], to_chunk: [f32; 2], half_fov_x: f32) -> bool {
+    let distance = (to_chunk[0] * to_chunk[0] + to_chunk[1] * to_chunk[1]).sqrt();
+    if distance <= VIEW_NEAR_RADIUS {
+        return true;
+    }
+    let forward_len = (forward_xz[0] * forward_xz[0] + forward_xz[1] * forward_xz[1]).sqrt();
+    if forward_len < VIEW_VERTICAL_FORWARD_XZ {
+        return distance <= VIEW_VERTICAL_RADIUS;
+    }
+    let cos_bearing =
+        (forward_xz[0] * to_chunk[0] + forward_xz[1] * to_chunk[1]) / (forward_len * distance);
+    let bearing = cos_bearing.clamp(-1.0, 1.0).acos();
+    let allowance = (half_fov_x + VIEW_MARGIN_RADIANS).min(VIEW_MAX_HALF_ANGLE);
+    let chunk_half_width = (CHUNK_BOUND_RADIUS / distance).min(1.0).asin();
+    bearing <= allowance + chunk_half_width
+}
+
 /// A chunk that survived the distance and behind-camera culls, before the
 /// per-frame caps are applied.
 #[derive(Clone, Copy)]
@@ -55,6 +104,12 @@ pub(crate) struct ChunkCandidate {
     base_xz: [f32; 2],
     /// Horizontal camera distance to the chunk centre, as the cull measured it.
     horizontal: f32,
+    /// Whether a freshly placed slot grows in from zero height. True only when
+    /// the chunk's terrain cell was NOT resident last frame (a streamed-in cell
+    /// or a teleport, where grass popping in is the artefact being masked); a
+    /// chunk that merely turns into the view wedge in an already-resident cell
+    /// appears at full height.
+    grow_in: bool,
 }
 
 /// Identity of a resident chunk.  The base coordinate is integral in normal
@@ -105,15 +160,10 @@ impl GroundCoverResidency {
     }
 
     fn ensure_slot_count(&mut self) {
-        let radius_chunks = ((GROUNDCOVER_DRAW_DISTANCE + CHUNK_BOUND_RADIUS)
-            / GROUNDCOVER_CHUNK_UNITS)
-            .ceil() as usize;
-        // A square is a conservative allocation for the circular desired
-        // ring.  It is derived solely from the draw radius and chunk extent,
-        // not an independently tuned cap.
-        let side = radius_chunks * 2 + 1;
-        let required = side * side;
-        debug_assert!(required <= GROUNDCOVER_MAX_CHUNKS as usize);
+        // The ring holds the VIEW WEDGE's chunks, not a disc: its size is the
+        // fixed GPU arena's slot count, bounded against the widest wedge by
+        // `chunk_cap_covers_every_chunk_in_reach`.
+        let required = GROUNDCOVER_MAX_CHUNKS as usize;
         self.slots.resize(required, None);
         self.entry_progress.resize(required, 0.0);
     }
@@ -184,9 +234,9 @@ impl GroundCoverResidency {
                 break;
             }
             if slot.is_none() {
-                if let Some((key, _)) = pending.next() {
+                if let Some((key, candidate)) = pending.next() {
                     *slot = Some(key);
-                    self.entry_progress[slot_index] = 0.0;
+                    self.entry_progress[slot_index] = if candidate.grow_in { 0.0 } else { 1.0 };
                     placed += 1;
                 } else {
                     break;
@@ -289,6 +339,11 @@ pub(crate) struct GroundCoverCollectScratch {
     ///
     /// [`AuthoredCover`]: byroredux_core::ecs::components::groundcover::AuthoredCover
     pub(crate) cover_form_ids: Vec<u32>,
+    /// Terrain-cell origins (bit patterns) resident on the previous frame, and
+    /// this frame's being built — a chunk grows in only in a cell that was not
+    /// there before (`ChunkCandidate::grow_in`).
+    pub(crate) previous_cells: FxHashSet<[u32; 2]>,
+    pub(crate) current_cells: FxHashSet<[u32; 2]>,
 }
 
 /// #4906 — the authored records one cell's ground lists, as the model
@@ -346,7 +401,8 @@ pub(crate) fn collect_groundcover_frame(
     world: &World,
     mesh_registry: &MeshRegistry,
     camera_pos: Vec3,
-    _camera_forward: Vec3,
+    camera_forward: Vec3,
+    half_fov_x: f32,
     delta_seconds: f32,
     residency: &mut GroundCoverResidency,
     scratch: &mut GroundCoverCollectScratch,
@@ -385,6 +441,7 @@ pub(crate) fn collect_groundcover_frame(
         world.query::<TerrainCoverInputs>(),
         world.query::<MeshHandle>(),
     ) else {
+        scratch.previous_cells.clear();
         return 0;
     };
 
@@ -422,7 +479,12 @@ pub(crate) fn collect_groundcover_frame(
     resident.sort_by(|a, b| a.1[0].total_cmp(&b.1[0]).then(a.1[1].total_cmp(&b.1[1])));
 
     let max_dist = GROUNDCOVER_DRAW_DISTANCE + CHUNK_BOUND_RADIUS;
+    let forward_xz = [camera_forward.x, camera_forward.z];
+    scratch.current_cells.clear();
     for (cell_ordinal, (cell, _)) in resident.iter().enumerate() {
+        let cell_key = [cell.origin_xz[0].to_bits(), cell.origin_xz[1].to_bits()];
+        scratch.current_cells.insert(cell_key);
+        let grow_in = !scratch.previous_cells.contains(&cell_key);
         for cz in 0..GROUNDCOVER_CHUNKS_PER_CELL_SIDE {
             for cx in 0..GROUNDCOVER_CHUNKS_PER_CELL_SIDE {
                 // +X and −Z from the cell origin, matching the terrain grid's
@@ -446,11 +508,17 @@ pub(crate) fn collect_groundcover_frame(
                 if horizontal > max_dist {
                     continue;
                 }
+                // Only what is in front of the camera: a chunk behind it is not
+                // scattered, slotted or drawn.
+                if !chunk_in_view_wedge(forward_xz, [to_chunk.x, to_chunk.z], half_fov_x) {
+                    continue;
+                }
                 candidates.push(ChunkCandidate {
                     order: candidates.len(),
                     cell: cell_ordinal,
                     base_xz,
                     horizontal,
+                    grow_in,
                 });
             }
         }
@@ -545,6 +613,8 @@ pub(crate) fn collect_groundcover_frame(
     debug_assert!(cells.len() <= MAX_GROUNDCOVER_CELLS);
     let _ = CHUNKS_PER_CELL;
     residency.restore_placements(residents);
+    // This frame's resident cells are next frame's "already there" set.
+    std::mem::swap(&mut scratch.previous_cells, &mut scratch.current_cells);
     truncated
 }
 
@@ -1497,25 +1567,102 @@ mod tests {
         }
     }
 
-    /// #4338 — the chunk cap must hold every chunk the distance cull can keep
-    /// at the shipped chunk size and draw distance. A kept chunk's centre lies
-    /// within `GROUNDCOVER_DRAW_DISTANCE + CHUNK_BOUND_RADIUS` horizontally, so
-    /// its whole footprint lies within one more bound radius; footprints do
-    /// not overlap, so that disc's area over one footprint bounds the count
-    /// (167 today). §11.2's 256-unit chunk sweep bounds at ~268, and fails here
-    /// rather than silently dropping chunks at runtime.
+    /// #4338 — the chunk cap must hold every chunk the view-wedge cull can
+    /// keep at the shipped chunk size and draw distance. The widest wedge the
+    /// cull allows is `VIEW_MAX_HALF_ANGLE` either side of forward (a sector of
+    /// radius reach = draw distance + two chunk bound radii) plus the all-round
+    /// near disc; footprints do not overlap, so area over one footprint bounds
+    /// the count (~475 today). It fails here rather than silently dropping
+    /// chunks at runtime.
     #[test]
     fn chunk_cap_covers_every_chunk_in_reach() {
         let reach = GROUNDCOVER_DRAW_DISTANCE + 2.0 * CHUNK_BOUND_RADIUS;
-        let bound = (std::f32::consts::PI * reach * reach
-            / (GROUNDCOVER_CHUNK_UNITS * GROUNDCOVER_CHUNK_UNITS))
-            .ceil() as u32;
+        let footprint = GROUNDCOVER_CHUNK_UNITS * GROUNDCOVER_CHUNK_UNITS;
+        let sector = VIEW_MAX_HALF_ANGLE * reach * reach / footprint; // 2θ/2 · r²
+        let near_disc = std::f32::consts::PI
+            * (VIEW_NEAR_RADIUS + 2.0 * CHUNK_BOUND_RADIUS).powi(2)
+            / footprint;
+        let bound = (sector + near_disc).ceil() as u32;
         assert!(
             bound <= GROUNDCOVER_MAX_CHUNKS,
-            "up to {bound} chunks can survive the distance cull, but \
+            "up to {bound} chunks can survive the view-wedge cull, but \
              GROUNDCOVER_MAX_CHUNKS is {GROUNDCOVER_MAX_CHUNKS} — raise the cap (and \
-             the blade buffer with it) alongside the chunk size or draw distance"
+             the blade buffer with it) alongside the chunk size, draw distance or \
+             widest wedge"
         );
+        // The wedge is the point: a full disc at this reach would not fit.
+        let disc = (std::f32::consts::PI * reach * reach / footprint).ceil() as u32;
+        assert!(
+            disc > GROUNDCOVER_MAX_CHUNKS,
+            "the ring is sized for a wedge; if a full disc fits, the wedge cull is \
+             no longer what bounds it"
+        );
+    }
+
+    /// The view wedge keeps what is in front and drops what is behind.
+    #[test]
+    fn view_wedge_keeps_front_and_drops_behind() {
+        let forward = [0.0, 1.0]; // +Z
+        let half_fov = 50.0_f32.to_radians();
+        // Straight ahead at any distance.
+        assert!(chunk_in_view_wedge(forward, [0.0, 3000.0], half_fov));
+        assert!(chunk_in_view_wedge(forward, [0.0, 7900.0], half_fov));
+        // Directly behind, beyond the feet disc.
+        assert!(!chunk_in_view_wedge(forward, [0.0, -3000.0], half_fov));
+        assert!(!chunk_in_view_wedge(forward, [200.0, -2000.0], half_fov));
+        // The feet disc is wanted whatever the camera faces.
+        assert!(chunk_in_view_wedge(forward, [0.0, -(VIEW_NEAR_RADIUS - 1.0)], half_fov));
+        // Just past the frustum edge, inside the cache margin: resident.
+        let at = |deg: f32, d: f32| [d * deg.to_radians().sin(), d * deg.to_radians().cos()];
+        assert!(chunk_in_view_wedge(forward, at(50.0 + 10.0, 4000.0), half_fov));
+        // Well past edge + margin (and the chunk's own width): dropped.
+        assert!(!chunk_in_view_wedge(forward, at(50.0 + 20.0 + 15.0, 4000.0), half_fov));
+        assert!(!chunk_in_view_wedge(forward, at(120.0, 4000.0), half_fov));
+    }
+
+    /// An ultrawide / raised FOV may not grow the wedge past the capped
+    /// half-angle, or the resident set would outgrow the ring.
+    #[test]
+    fn view_wedge_is_capped_for_very_wide_views() {
+        let half_fov = 150.0_f32.to_radians();
+        let at = |deg: f32, d: f32| [d * deg.to_radians().sin(), d * deg.to_radians().cos()];
+        let cap = VIEW_MAX_HALF_ANGLE.to_degrees();
+        assert!(chunk_in_view_wedge([0.0, 1.0], at(cap - 1.0, 6000.0), half_fov));
+        assert!(!chunk_in_view_wedge([0.0, 1.0], at(cap + 12.0, 6000.0), half_fov));
+    }
+
+    /// Looking straight up or down the horizontal facing is meaningless: the
+    /// near ground is wanted all round, and nothing far.
+    #[test]
+    fn view_wedge_falls_back_to_a_disc_when_looking_vertically() {
+        let half_fov = 50.0_f32.to_radians();
+        let down = [0.0, 0.0];
+        assert!(chunk_in_view_wedge(down, [-1500.0, -1500.0], half_fov));
+        assert!(!chunk_in_view_wedge(down, [0.0, VIEW_VERTICAL_RADIUS + 300.0], half_fov));
+    }
+
+    /// A chunk grows in only when its cell is new; one that turns into view in
+    /// an already-resident cell appears at full height.
+    #[test]
+    fn only_chunks_of_new_cells_grow_in() {
+        let mut ring = GroundCoverResidency::default();
+        let candidate = |order: usize, grow_in: bool| ChunkCandidate {
+            order,
+            cell: 0,
+            base_xz: [order as f32 * 512.0, 0.0],
+            horizontal: order as f32,
+            grow_in,
+        };
+        let placed = ring.reconcile(&[candidate(0, true), candidate(1, false)], 0.0);
+        let progress = |order: usize| {
+            let slot = placed
+                .iter()
+                .find_map(|(slot, c)| (c.order == order).then_some(*slot))
+                .unwrap();
+            ring.entry_progress(slot)
+        };
+        assert_eq!(progress(0), 0.0, "a new cell's chunk grows in");
+        assert_eq!(progress(1), 1.0, "a chunk turning into view does not regrow");
     }
 
     /// #4338 — over the cap, the farthest chunks go, and the survivors keep
@@ -1527,6 +1674,7 @@ mod tests {
             cell,
             base_xz: [order as f32, 0.0],
             horizontal,
+            grow_in: true,
         };
         // Walk order is cell origin, so a west-side cell's far chunks come
         // first when the camera stands to the east — exactly what a walk-order
@@ -1565,6 +1713,7 @@ mod tests {
             cell: 0,
             base_xz: [order as f32 * GROUNDCOVER_CHUNK_UNITS, 0.0],
             horizontal,
+            grow_in: true,
         };
         let candidates: Vec<_> = (0..60)
             .map(|order| candidate(order, order as f32))
@@ -1591,6 +1740,7 @@ mod tests {
             cell: 0,
             base_xz: [order as f32 * GROUNDCOVER_CHUNK_UNITS, 0.0],
             horizontal: order as f32,
+            grow_in: true,
         };
         let candidates: Vec<_> = (0..25).map(candidate).collect();
         let mut ring = GroundCoverResidency::default();
@@ -1613,14 +1763,10 @@ mod tests {
     }
 
     #[test]
-    fn residency_ring_capacity_is_derived_from_draw_radius() {
+    fn residency_ring_capacity_is_the_wedge_arena() {
         let mut ring = GroundCoverResidency::default();
         ring.ensure_slot_count();
-        let radius_chunks = ((GROUNDCOVER_DRAW_DISTANCE + CHUNK_BOUND_RADIUS)
-            / GROUNDCOVER_CHUNK_UNITS)
-            .ceil() as usize;
-        assert_eq!(ring.slots.len(), (radius_chunks * 2 + 1).pow(2));
-        assert!(ring.slots.len() <= GROUNDCOVER_MAX_CHUNKS as usize);
+        assert_eq!(ring.slots.len(), GROUNDCOVER_MAX_CHUNKS as usize);
     }
 
     /// The cull radius has to bound the chunk, not its centre: a chunk whose

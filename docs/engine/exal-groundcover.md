@@ -1893,6 +1893,22 @@ links. Consequence: blades follow the authored layers, so a texture that lists
 no grass grows none (FNV Goodsprings' dirt) and a landscape mod that links a
 texture to a grass grows blades there.
 
+**Distance and view wedge.** Every game now uses Skyrim's grass distances: the
+fade starts at 7000 (Skyrim's shipped `fGrassStartFadeDistance` / `fGrassMax...`
+and FO4's Ultra) and ends at 8000 (start + `fGrassFadeRange` 1000, the FO3/FNV
+value; Skyrim's INI does not list the range). Only chunks in FRONT of the camera
+are ever resident (`render/groundcover.rs::chunk_in_view_wedge`): the horizontal
+half field of view plus a 20-degree cache margin (so a small turn finds its
+chunks already scattered), capped at a 90-degree half-angle, plus a small
+all-round disc at the feet and a 2500-unit disc when looking straight up or
+down. Nothing behind the camera is scattered, slotted or drawn, and a chunk that
+turns into the wedge in an already-resident cell appears at full height (only
+chunks of newly streamed cells grow in). The arena is sized for the widest wedge
+(512 chunk slots, 128 MiB; a full disc at this reach would need ~830) —
+`chunk_cap_covers_every_chunk_in_reach` bounds it. The distance is still a
+compile-time constant; making it a user setting needs the ring capacity and the
+shader fade bounds to become runtime values.
+
 **Not done / open.** (a) GRAS `min/max slope` and `distance_from_water` still
 reach only the authored-model tier; the blade tier keeps its engine slope gate
 (`smoothstep` on the terrain normal) and moisture falloff, which are smooth but

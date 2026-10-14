@@ -38,7 +38,7 @@ use crate::{bench_frame_distribution, bench_gpu_inactive_token};
 /// (#4610). Split out of `about_to_wait` (#5096).
 fn groundcover_collect_scratch_rows(
     gc: &crate::render::groundcover::GroundCoverCollectScratch,
-) -> [ScratchRow; 7] {
+) -> [ScratchRow; 9] {
     [
         vec_row("groundcover_collect_scratch.resident_cells", &gc.resident_cells),
         vec_row("groundcover_collect_scratch.candidates", &gc.candidates),
@@ -49,6 +49,10 @@ fn groundcover_collect_scratch_rows(
         // FormID index.
         vec_row("groundcover_collect_scratch.cell_covers", &gc.cell_covers),
         vec_row("groundcover_collect_scratch.cover_form_ids", &gc.cover_form_ids),
+        // The view wedge's grow-in policy: the resident-cell sets of the
+        // previous and the current frame.
+        set_row("groundcover_collect_scratch.previous_cells", &gc.previous_cells),
+        set_row("groundcover_collect_scratch.current_cells", &gc.current_cells),
     ]
 }
 

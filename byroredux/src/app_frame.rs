@@ -1019,11 +1019,17 @@ fn collect_and_prepare_groundcover(
 ) {
     if ctx.groundcover.is_some() && !gc.off {
         let groundcover_dt = world.try_resource::<DeltaTime>().map_or(0.0, |dt| dt.0);
+        // The horizontal half field of view the view wedge is cut from:
+        // `tan(h/2) = tan(v/2) * aspect`.
+        let (render_width, render_height) = ctx.swapchain_extent();
+        let aspect = render_width as f32 / (render_height as f32).max(1.0);
+        let half_fov_x = ((frame.camera_fov_y * 0.5).tan() * aspect).atan();
         let chunks_truncated = crate::render::groundcover::collect_groundcover_frame(
             world,
             &ctx.mesh_registry,
             byroredux_core::math::Vec3::from_array(frame.camera_pos),
             byroredux_core::math::Vec3::from_array(frame.cam_forward),
+            half_fov_x,
             groundcover_dt,
             gc.residency,
             gc.collect,
