@@ -150,6 +150,10 @@ void main() {
     // base alone, so no root-colour step appears at its border (#5174).
     vec2 terrainUvDx = dFdx(vTerrainUv);
     vec2 terrainUvDy = dFdy(vTerrainUv);
+    // The terrain's own colour at the blade root, when it could be resolved;
+    // the luminance anchor below reads it once the branches have run.
+    vec3 rootGroundAlbedo = vec3(0.0);
+    bool haveRootGround = false;
     if (vCard == 0u && vTerrainTileSlot != GROUNDCOVER_NO_TERRAIN_TILE) {
         GpuTerrainTile groundTile = terrainTiles[nonuniformEXT(vTerrainTileSlot)];
         // #4907 — the ground colour is the TERRAIN's composition, not a
@@ -168,6 +172,8 @@ void main() {
                 vTerrainSplat0, vTerrainSplat1, groundTile);
             float coupling = clamp(sp.tipColour.a, 0.0, 1.0) * (1.0 - vBladeT);
             albedo = mix(albedo, groundAlbedo, coupling);
+            rootGroundAlbedo = groundAlbedo;
+            haveRootGround = true;
         } else {
             // Base unresolved (BTXT missing and no default land): the
             // painted-layer average is the best remaining estimate.
@@ -188,6 +194,8 @@ void main() {
             if (weightSum > 0.0) {
                 float coupling = clamp(sp.tipColour.a, 0.0, 1.0) * (1.0 - vBladeT);
                 albedo = mix(albedo, groundAlbedo / weightSum, coupling);
+                rootGroundAlbedo = groundAlbedo / weightSum;
+                haveRootGround = true;
             }
         }
     } else if (vCard == 0u && vTerrainBaseIndex != 0u) {
@@ -198,6 +206,24 @@ void main() {
             vTerrainUv, terrainUvDx, terrainUvDy).rgb;
         float coupling = clamp(sp.tipColour.a, 0.0, 1.0) * (1.0 - vBladeT);
         albedo = mix(albedo, groundAlbedo, coupling);
+        rootGroundAlbedo = groundAlbedo;
+        haveRootGround = true;
+    }
+
+    // ── Luminance anchor to the terrain ─────────────────────────────────
+    //
+    // The hue is the species'; the brightness is the ground's. Without this the
+    // palette's linear albedo (0.3-0.5) is lit by the SAME terrain GI as dirt
+    // that is 0.05-0.15, so every blade returns several times the terrain's
+    // radiance — in sun and in a rock's shadow alike, which is the "self-lit"
+    // look (the direct terms are not the cause: removing them leaves it).
+    // See `GROUNDCOVER_BASE_LUMA_RATIO`.
+    if (haveRootGround) {
+        float groundLuma = dot(rootGroundAlbedo, LUMA_REC709);
+        float bladeLuma = max(dot(albedo, LUMA_REC709), 1.0e-4);
+        float wanted = groundLuma * mix(
+            GROUNDCOVER_BASE_LUMA_RATIO, GROUNDCOVER_TIP_LUMA_RATIO, vBladeT);
+        albedo *= min(wanted / bladeLuma, GROUNDCOVER_LUMA_ANCHOR_MAX_GAIN);
     }
 
     // Per-blade colour jitter. A field of identically-coloured blades reads as

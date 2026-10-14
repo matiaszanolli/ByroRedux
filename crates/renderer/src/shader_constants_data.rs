@@ -690,6 +690,21 @@ pub const GROUNDCOVER_MAX_WIDTH_MULTIPLIER: f32 = 4.0;
 /// retune by #4378; its empirical status is recorded in EXAL §12.12.
 pub const GROUNDCOVER_COLOUR_JITTER_MIN: f32 = 0.82;
 pub const GROUNDCOVER_COLOUR_JITTER_MAX: f32 = 1.18;
+/// Luminance anchor of a blade's albedo to the terrain it grows from (#5719's
+/// grass overhaul, lighting phase). Measured cause of "blades glow": the arid
+/// and temperate palettes carry *linear* albedos of 0.3-0.5 while the splat
+/// terrain under them is a dark 0.05-0.15, and composite lights both with the
+/// same terrain GI (`indirect * outAlbedo`), so a blade returned 3-6x the
+/// terrain's radiance in sun and in shadow alike. The blade's HUE still comes
+/// from the species palette; its LUMINANCE is the terrain's own at the root,
+/// times these ratios (base, tip). They are art-direction defaults, not
+/// sourced values: a blade is not darker than its soil at the root (sheath
+/// shading is §12.1's job) and rises a little toward the sky-facing tip.
+pub const GROUNDCOVER_BASE_LUMA_RATIO: f32 = 0.75;
+pub const GROUNDCOVER_TIP_LUMA_RATIO: f32 = 1.10;
+/// Bound on the anchor's brightening gain (a near-black ground sample must not
+/// blow a palette hue up to white).
+pub const GROUNDCOVER_LUMA_ANCHOR_MAX_GAIN: f32 = 4.0;
 
 // ── The light response (§12.1, §12.2, §12.5, §12.6; #4057) ──────────────
 //
@@ -2419,6 +2434,9 @@ pub const SHADER_DEFINES: &[HeaderLine] = &[
     HeaderLine::Define("GROUNDCOVER_MAX_WIDTH_MULTIPLIER", ShaderValue::Float(GROUNDCOVER_MAX_WIDTH_MULTIPLIER)),
     HeaderLine::Define("GROUNDCOVER_COLOUR_JITTER_MIN", ShaderValue::Float(GROUNDCOVER_COLOUR_JITTER_MIN)),
     HeaderLine::Define("GROUNDCOVER_COLOUR_JITTER_MAX", ShaderValue::Float(GROUNDCOVER_COLOUR_JITTER_MAX)),
+    HeaderLine::Define("GROUNDCOVER_BASE_LUMA_RATIO", ShaderValue::Float(GROUNDCOVER_BASE_LUMA_RATIO)),
+    HeaderLine::Define("GROUNDCOVER_TIP_LUMA_RATIO", ShaderValue::Float(GROUNDCOVER_TIP_LUMA_RATIO)),
+    HeaderLine::Define("GROUNDCOVER_LUMA_ANCHOR_MAX_GAIN", ShaderValue::Float(GROUNDCOVER_LUMA_ANCHOR_MAX_GAIN)),
     HeaderLine::Blank,
     HeaderLine::Comment("Ground-cover light response (§12.1/12.2/12.5/12.6, #4057)"),
     HeaderLine::Define("GROUNDCOVER_CANOPY_EXTINCTION_K", ShaderValue::Float(GROUNDCOVER_CANOPY_EXTINCTION_K)),
