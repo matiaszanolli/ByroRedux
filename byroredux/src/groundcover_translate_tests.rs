@@ -406,7 +406,7 @@ fn authored_cover_keeps_placeable_records_in_form_id_order() {
     .map(|g| (g.form_id, g))
     .collect();
 
-    let cover = resolve_authored_cover(&grasses, GameKind::Skyrim, Climate::Temperate)
+    let cover = resolve_authored_cover(&grasses, &HashMap::new(), GameKind::Skyrim, Climate::Temperate)
         .expect("placeable records");
     assert_eq!(cover.grid_spacing, 20.0);
     let ids: Vec<u32> = cover.records.iter().map(|r| r.form_id).collect();
@@ -424,7 +424,7 @@ fn authored_cover_keeps_placeable_records_in_form_id_order() {
     assert!(kelp.climate_weight.wetland > kelp.climate_weight.temperate);
 
     // A game with no measured grid spacing leaves the tier off.
-    assert!(resolve_authored_cover(&grasses, GameKind::Starfield, Climate::Temperate).is_none());
+    assert!(resolve_authored_cover(&grasses, &HashMap::new(), GameKind::Starfield, Climate::Temperate).is_none());
 }
 
 /// #4413 — every game's candidate grid fits one chunk's placement slab, so

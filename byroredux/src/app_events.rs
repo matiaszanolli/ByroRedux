@@ -34,6 +34,24 @@ use crate::systems::toggle_player_mode;
 use crate::App;
 use crate::{bench_frame_distribution, bench_gpu_inactive_token};
 
+/// `GroundCoverCollectScratch`'s containers, named `<App field>.<its field>`
+/// (#4610). Split out of `about_to_wait` (#5096).
+fn groundcover_collect_scratch_rows(
+    gc: &crate::render::groundcover::GroundCoverCollectScratch,
+) -> [ScratchRow; 7] {
+    [
+        vec_row("groundcover_collect_scratch.resident_cells", &gc.resident_cells),
+        vec_row("groundcover_collect_scratch.candidates", &gc.candidates),
+        map_row("groundcover_collect_scratch.emitted", &gc.emitted),
+        vec_row("groundcover_collect_scratch.disturber_found", &gc.disturber_found),
+        vec_row("groundcover_collect_scratch.layout_order", &gc.layout_order),
+        // #4906 — the model tier's per-cell cover masks and the cover's record
+        // FormID index.
+        vec_row("groundcover_collect_scratch.cell_covers", &gc.cell_covers),
+        vec_row("groundcover_collect_scratch.cover_form_ids", &gc.cover_form_ids),
+    ]
+}
+
 /// One [`ScratchRow`] for a `Vec`. The element type is inferred from the field,
 /// so a row cannot report a size for a type the field no longer has.
 #[allow(clippy::ptr_arg)] // `capacity()` is the whole point; a slice has none.
@@ -875,7 +893,7 @@ impl ApplicationHandler for App {
                 vec_row("draw_commands", &self.draw_commands),
                 vec_row("cover_template_draws", &self.cover_template_draws),
                 vec_row("groundcover_model_records", &self.groundcover_model_records),
-                vec_row("groundcover_model_table", &self.groundcover_model_table),
+                vec_row("groundcover_model_selection", &self.groundcover_model_selection),
                 vec_row("water_commands", &self.water_commands),
                 vec_row("gpu_lights", &self.gpu_lights),
                 vec_row("light_ids", &self.light_ids),
@@ -888,25 +906,13 @@ impl ApplicationHandler for App {
                 vec_row("groundcover_species", &self.groundcover_species),
                 vec_row("groundcover_species_table", &self.groundcover_species_table),
                 vec_row("groundcover_disturbers", &self.groundcover_disturbers),
-                // `GroundCoverCollectScratch`'s five containers, named
-                // `<App field>.<its field>`.
-                vec_row(
-                    "groundcover_collect_scratch.resident_cells",
-                    &gc.resident_cells,
-                ),
-                vec_row("groundcover_collect_scratch.candidates", &gc.candidates),
-                map_row("groundcover_collect_scratch.emitted", &gc.emitted),
-                vec_row(
-                    "groundcover_collect_scratch.disturber_found",
-                    &gc.disturber_found,
-                ),
-                vec_row(
-                    "groundcover_collect_scratch.layout_order",
-                    &gc.layout_order,
-                ),
+                // `GroundCoverCollectScratch`'s containers, one row each.
+                // They live in `groundcover_collect_scratch_rows` so
+                // `about_to_wait` stays inside its size pin (#5096).
                 set_row("in_use_mesh_scratch", &self.in_use_mesh_scratch),
                 set_row("in_use_tex_scratch", &self.in_use_tex_scratch),
             ]);
+            tlm.rows.extend(groundcover_collect_scratch_rows(gc));
         }
 
         // EX-05 / #2736 — mirror the pre-tonemap non-finite pixel counters so
@@ -1890,6 +1896,15 @@ mod app_scratch_telemetry_coverage_tests {
             .expect("about_to_wait must publish the App scratch rows");
         let rows = &production[rows_start..];
         let rows = &rows[..rows.find("]);").expect("the row list is closed")];
+        // The ground-cover collect scratch's rows live in a helper so
+        // `about_to_wait` stays inside its size pin (#5096); they are rows
+        // all the same.
+        let helper_start = production
+            .find("fn groundcover_collect_scratch_rows(")
+            .expect("the ground-cover collect scratch rows helper");
+        let helper = &production[helper_start..];
+        let helper = &helper[..helper.find("\n}\n").expect("the helper is closed")];
+        let rows = format!("{rows}\n{helper}");
 
         // Liveness: a parser that stopped matching would pass vacuously.
         let names: Vec<&str> = app_fields.iter().map(|(n, _)| n.as_str()).collect();

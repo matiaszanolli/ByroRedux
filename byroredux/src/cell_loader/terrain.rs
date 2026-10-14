@@ -1106,6 +1106,12 @@ pub(super) fn spawn_terrain_mesh(
         base_texture_path,
     ));
     let authored_grass = authored_grass_for_splat_layers(&splat_layers.layers, landscape_grasses);
+    // #4906 — the base LTEX's grass list, so unpainted ground grows what its
+    // own texture lists.
+    let base_authored_grass = base_ltex
+        .and_then(|ltex_id| landscape_grasses.get(&ltex_id))
+        .cloned()
+        .unwrap_or_default();
     let cover_water_y =
         water_y.unwrap_or(byroredux_core::ecs::components::groundcover::NO_WATER_HEIGHT);
     // #4057 — §12.5's canopy slab thickness for this tile: the resolved
@@ -1242,6 +1248,7 @@ pub(super) fn spawn_terrain_mesh(
             base_affinity,
             water_y: cover_water_y,
             authored_grass,
+            base_authored_grass,
             // #4056 — the slot §12.3's ground-colour coupling reads the
             // cell's layer diffuse indices from. The core sentinel (not 0)
             // when there is no splat terrain: a valid slot can be 0.

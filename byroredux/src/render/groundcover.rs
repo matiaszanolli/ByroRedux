@@ -24,7 +24,8 @@ use byroredux_renderer::shader_constants::{
     GROUNDCOVER_BLADES_PER_POINT, GROUNDCOVER_CHUNKS_PER_CELL_SIDE, GROUNDCOVER_CHUNK_UNITS, GROUNDCOVER_DETAIL_ATLAS_EDGE,
     GROUNDCOVER_DRAW_DISTANCE, GROUNDCOVER_INTERACTION_MAX_DISTURBERS,
     GROUNDCOVER_INTERACTION_HALF_LIFE_SECONDS, GROUNDCOVER_INTERACTION_UNITS,
-    GROUNDCOVER_MAX_CHUNKS, TERRAIN_SPLAT_LAYERS,
+    GROUNDCOVER_MAX_CHUNKS, GROUNDCOVER_MODEL_COVER_CELL_WORDS, GROUNDCOVER_MODEL_COVER_MASK_WORDS,
+    GROUNDCOVER_MODEL_COVER_REGION, GROUNDCOVER_MODEL_MAX_RECORDS, TERRAIN_SPLAT_LAYERS,
 };
 use byroredux_renderer::vulkan::groundcover::{
     GpuGroundCoverCell, GpuGroundCoverChunk, GpuGroundCoverDisturber, GpuGroundCoverSpecies,
@@ -277,6 +278,58 @@ pub(crate) struct GroundCoverCollectScratch {
     /// #5176 — (horizontal camera distance, slot) per chunk record, sorted
     /// into [`GpuGroundCoverChunk::layout_order`].
     pub(crate) layout_order: Vec<(f32, u32)>,
+    /// #4906 — the model tier's cover masks, one entry per emitted cell, in
+    /// the same order as the `cells` output (the shader indexes both with
+    /// `GroundCoverChunk.cellIndex`).
+    pub(crate) cell_covers: Vec<CellCoverMasks>,
+    /// #4906 — the installed [`AuthoredCover`]'s record FormIDs (FormID
+    /// order, capped at the tier's record limit), so the per-cell mask build
+    /// resolves a `GNAM` FormID to a record index without holding the
+    /// resource.
+    ///
+    /// [`AuthoredCover`]: byroredux_core::ecs::components::groundcover::AuthoredCover
+    pub(crate) cover_form_ids: Vec<u32>,
+}
+
+/// #4906 — the authored records one cell's ground lists, as the model
+/// shader's per-lane bitsets.
+///
+/// `form_ids` is the installed cover's record FormIDs in record order (FormID
+/// order, so a binary search resolves a `GNAM` entry to its record index);
+/// lane 0 takes the BTXT base's list and lane `i + 1` splat layer `i`'s —
+/// the order the vertex splat lanes use. A `GNAM` entry that names no placeable
+/// record (a `GRAS` the translate dropped, or past the tier's record limit)
+/// sets nothing.
+///
+/// When the load order authors no texture→grass link at all (`localised ==
+/// false`) every lane names every record, which makes the shader's choice the
+/// climate-only global mix rather than growing nothing.
+pub(crate) fn cover_masks_for_cell(
+    form_ids: &[u32],
+    localised: bool,
+    base: &[u32],
+    layers: &[Vec<u32>; TERRAIN_SPLAT_LAYERS as usize],
+) -> CellCoverMasks {
+    const WORDS: usize = GROUNDCOVER_MODEL_COVER_MASK_WORDS as usize;
+    let mut masks: CellCoverMasks = [0; GROUNDCOVER_MODEL_COVER_CELL_WORDS as usize];
+    let count = form_ids.len().min(GROUNDCOVER_MODEL_MAX_RECORDS as usize);
+    if !localised {
+        for lane in masks.chunks_exact_mut(WORDS) {
+            for record in 0..count {
+                lane[record / 32] |= 1 << (record % 32);
+            }
+        }
+        return masks;
+    }
+    let lists = std::iter::once(base).chain(layers.iter().map(Vec::as_slice));
+    for (lane, list) in masks.chunks_exact_mut(WORDS).zip(lists) {
+        for grass in list {
+            if let Ok(record) = form_ids[..count].binary_search(grass) {
+                lane[record / 32] |= 1 << (record % 32);
+            }
+        }
+    }
+    masks
 }
 
 /// Collect this frame's ground-cover scatter input.
@@ -302,6 +355,26 @@ pub(crate) fn collect_groundcover_frame(
 ) -> u32 {
     cells.clear();
     chunks.clear();
+    scratch.cell_covers.clear();
+    // #4906 — copy the cover's FormID index out under a short-lived resource
+    // guard, before any component query is taken, so no lock nests.
+    let localised = {
+        scratch.cover_form_ids.clear();
+        match world.try_resource::<byroredux_core::ecs::components::groundcover::AuthoredCover>() {
+            Some(authored) => {
+                scratch.cover_form_ids.extend(
+                    authored
+                        .records
+                        .iter()
+                        .take(GROUNDCOVER_MODEL_MAX_RECORDS as usize)
+                        .map(|record| record.form_id),
+                );
+                authored.localised
+            }
+            None => false,
+        }
+    };
+    let cover_form_ids = &scratch.cover_form_ids;
     let resident = &mut scratch.resident_cells;
     let candidates = &mut scratch.candidates;
     resident.clear();
@@ -336,6 +409,12 @@ pub(crate) fn collect_groundcover_frame(
                 base_affinity: cover.base_affinity,
                 terrain_tile_slot: cover.terrain_tile_slot,
                 base_diffuse_index: cover.base_diffuse_index,
+                cover_masks: cover_masks_for_cell(
+                    cover_form_ids,
+                    localised,
+                    &cover.base_authored_grass,
+                    &cover.authored_grass,
+                ),
             },
             origin.origin_xz,
         ));
@@ -444,6 +523,7 @@ pub(crate) fn collect_groundcover_frame(
                     // tile (a base and no ATXT paint).
                     base_diffuse_index: cell.base_diffuse_index,
                 });
+                scratch.cell_covers.push(cell.cover_masks);
                 let index = (cells.len() - 1) as u32;
                 emitted.insert(candidate.cell, index);
                 index
@@ -580,7 +660,16 @@ pub(crate) struct EntityCell {
     terrain_tile_slot: u32,
     /// The BTXT base diffuse handle, 0 when unresolved (#5174).
     base_diffuse_index: u32,
+    /// #4906 — which authored records each lane's textures list; the model
+    /// tier's per-cell slice of the selection buffer.
+    cover_masks: CellCoverMasks,
 }
+
+/// One cell's authored-record masks, laid out exactly as the model shader
+/// reads them from the selection buffer: `GROUNDCOVER_MODEL_COVER_LANES`
+/// lanes (the BTXT base, then each splat layer) of
+/// `GROUNDCOVER_MODEL_COVER_MASK_WORDS` words, bit `r` naming record `r`.
+pub(crate) type CellCoverMasks = [u32; GROUNDCOVER_MODEL_COVER_CELL_WORDS as usize];
 
 /// CPU payload for the bindless Tier-3 detail atlas. Its rows are generated
 /// from the active engine species rather than guessed from GRAS card assets:
@@ -964,19 +1053,12 @@ pub(crate) fn collect_groundcover_model_records(
             pad2: 0,
         }
     }));
-    // #4906 / EXT-D3-2026-10-02-01 — the selection table carries each
-    // record's climate-weighted DENSITY (`weight × density`, placeable
-    // records only), and one common accept rate rides every record. The
-    // scatter picks one record per lattice candidate from the table, then
-    // accepts at `density × field × fade`: a record's coverage is
-    // `share × accept`. With `share ∝ weight × density` and a common
-    // `accept`, the species MIX is exactly the authored `weight × density`
-    // ratio (a sparse Strip grass stays sparse next to dominant wasteland
-    // grass) and the TOTAL is the independent-grids union
-    // (`1 - Π(1 - d_i)`), so adding a record neither dilutes the others nor
-    // — as the first `density / share` bake did — saturates every record at
-    // its share and erases the authored density.
-    let (weights, accept) = selection_weights_and_accept_rate(
+    // #4906 — the shader picks a record per lattice candidate from the ones
+    // the ground there lists (`gcPickLocalRecord`), so the host's share of the
+    // selection is each record's climate-weighted DENSITY, placeable records
+    // only. The authored density itself stays in the record: the shader forms
+    // each lane's union rate from it.
+    let weights = record_selection_weights(
         used.iter().map(|record| {
             (
                 record.climate_weight.weight_for(cover.climate),
@@ -985,34 +1067,29 @@ pub(crate) fn collect_groundcover_model_records(
         }),
         |index| placeable >> index & 1 != 0,
     );
-    let selection = species_selection_table(&weights);
-    for record in records.iter_mut() {
-        record.density = accept;
+    table.resize(GROUNDCOVER_MODEL_COVER_REGION as usize, 0);
+    for (slot, weight) in table.iter_mut().zip(weights) {
+        *slot = weight.to_bits();
     }
-    table.extend_from_slice(&selection);
     *key = Some(current);
     Some(cover.grid_spacing)
 }
 
-/// EXT-D3-2026-10-02-01 (on #4906) — the selection-table weights and the
-/// common accept rate for one cover.
+/// #4906 — the per-record selection weights for one cover.
 ///
 /// `records` yields `(climate_weight, authored_density)` per record in cover
 /// order; `can_place(index)` says whether that record's model drew this
 /// frame. The weight is `climate × density` for placeable records with both
-/// positive, else 0 — an unplaceable record must not keep a table share
-/// (#4906), and a zero-density record must not take one. The accept rate is
-/// the independent-grids union `1 - Π(1 - d_i)` over the records that hold a
-/// share, so the uploaded coverage matches what each record's own grid would
-/// have produced. When no record holds a share (a climate that says nothing,
-/// or nothing placeable yet) the weights are all zero — `species_selection_
-/// table` then falls back to a uniform table — and the union runs over every
-/// positive density, the neutral outcome the scatter had before weights were
-/// read.
-pub(crate) fn selection_weights_and_accept_rate(
+/// positive, else 0 — an unplaceable record must not take a share of what the
+/// ground lists (a model that failed to load would thin every record that
+/// does place), and a zero-density record must not take one either. When no
+/// record holds a share (a climate that says nothing about any of them) the
+/// weight falls back to the density alone, the neutral outcome the scatter
+/// had before climate was read.
+pub(crate) fn record_selection_weights(
     records: impl Iterator<Item = (f32, f32)>,
     can_place: impl Fn(usize) -> bool,
-) -> (Vec<f32>, f32) {
+) -> Vec<f32> {
     let records: Vec<(f32, f32)> = records.collect();
     let valid = |x: f32| x.is_finite() && x > 0.0;
     let weights: Vec<f32> = records
@@ -1026,14 +1103,20 @@ pub(crate) fn selection_weights_and_accept_rate(
             }
         })
         .collect();
-    let any_share = weights.iter().any(|&w| w > 0.0);
-    let miss: f64 = records
+    if weights.iter().any(|&w| w > 0.0) {
+        return weights;
+    }
+    records
         .iter()
-        .zip(&weights)
-        .filter(|&(&(_, density), &weight)| valid(density) && (weight > 0.0 || !any_share))
-        .map(|(&(_, density), _)| 1.0 - f64::from(density).min(1.0))
-        .product();
-    (weights, (1.0 - miss) as f32)
+        .enumerate()
+        .map(|(index, &(_, density))| {
+            if can_place(index) && valid(density) {
+                density
+            } else {
+                0.0
+            }
+        })
+        .collect()
 }
 
 /// Quantise relative weights into the scatter's fixed-size selection table.
@@ -1223,6 +1306,7 @@ mod tests {
             }],
             grid_spacing: 80.0,
             climate: Climate::Temperate,
+            localised: false,
             generation: AuthoredCover::next_generation(),
         };
         let mut world = World::new();
@@ -1262,63 +1346,118 @@ mod tests {
         assert!(records.is_empty() && table.is_empty() && key.is_none());
     }
 
-    /// EXT-D3-2026-10-02-01 — under pick-then-accept a record's coverage is
-    /// `share × accept`. The mix must stay `weight × density` and the total
-    /// the independent-grids union, for the audit's own FNV figures: arid
-    /// grass at 0.40 / 0.25 and the Strip's deliberately sparse 0.03 / 0.04
-    /// must not be flattened to a common share.
+    /// The weights are `climate × authored density`, so the authored MIX
+    /// survives (EXT-D3-2026-10-02-01's FNV figures): arid grass at 0.40 /
+    /// 0.25 and the Strip's deliberately sparse 0.03 / 0.04 must not be
+    /// flattened to a common share.
     #[test]
-    fn selection_keeps_the_authored_mix_and_the_union_total() {
-        // (climate, density): two dominant wasteland grasses, two sparse
-        // Strip grasses, one temperate lawn the arid climate down-weights.
+    fn weights_keep_the_authored_climate_density_mix() {
         let records = [(2.0, 0.40), (2.0, 0.25), (2.0, 0.03), (2.0, 0.04), (0.4, 0.20)];
-        let (weights, accept) =
-            selection_weights_and_accept_rate(records.iter().copied(), |_| true);
+        let weights = record_selection_weights(records.iter().copied(), |_| true);
         let total: f32 = weights.iter().sum();
         let share = |i: usize| weights[i] / total;
-        // The authored ratio survives: 0.40 : 0.03 stays 13.3 : 1, not 1 : 1.
+        // 0.40 : 0.03 stays 13.3 : 1, not 1 : 1.
         assert!((weights[0] / weights[2] - 0.40 / 0.03).abs() < 1.0e-3);
         assert!(share(0) > share(1) && share(1) > share(3) && share(3) > share(2));
-        // Total coverage is the union 1 - Π(1 - d), not the sum and not 1.0
-        // per record.
-        let expected = 1.0 - (0.6f32 * 0.75 * 0.97 * 0.96 * 0.80);
-        assert!((accept - expected).abs() < 1.0e-6, "accept {accept}");
-        // Per-record coverage = share × accept; a sparse record covers far
-        // less than a dominant one.
-        assert!(share(2) * accept < 0.2 * share(0) * accept);
     }
 
-    /// Ten equal 0.3-cover records (the original dilution case) cover the
-    /// independent-grids 1 - 0.7^10, split evenly, whatever the count.
+    /// Unplaceable, zero-density, zero-climate and non-finite records hold no
+    /// weight; a cover where none does falls back to the placeable densities.
     #[test]
-    fn equal_records_split_the_union_evenly() {
-        let records = std::iter::repeat_n((1.0, 0.3), 10);
-        let (weights, accept) = selection_weights_and_accept_rate(records, |_| true);
-        assert!((accept - (1.0 - 0.7f32.powi(10))).abs() < 1.0e-6);
-        assert!(weights.iter().all(|&w| (w - weights[0]).abs() < 1.0e-9));
-    }
-
-    /// Unplaceable, zero-density and zero-climate records hold no share and
-    /// do not contribute to the union; a lone record keeps its authored
-    /// density as its accept rate; a degenerate cover (no share anywhere)
-    /// falls back to the positive densities.
-    #[test]
-    fn records_without_a_share_neither_dilute_nor_inflate() {
+    fn records_without_a_share_hold_no_weight() {
         let records = [(1.0, 0.5), (1.0, 0.9), (0.0, 0.9), (1.0, 0.0), (1.0, f32::NAN)];
-        let (weights, accept) =
-            selection_weights_and_accept_rate(records.iter().copied(), |i| i != 1);
+        let weights = record_selection_weights(records.iter().copied(), |i| i != 1);
         assert_eq!(weights, vec![0.5, 0.0, 0.0, 0.0, 0.0]);
-        assert!((accept - 0.5).abs() < 1.0e-6, "only record 0 holds a share");
 
-        // Nothing placeable: no shares (uniform-table fallback), neutral union.
-        let (weights, accept) =
-            selection_weights_and_accept_rate(records.iter().copied(), |_| false);
+        // No record has a climate share: density alone, placeable only.
+        let flat = [(0.0, 0.5), (0.0, 0.25), (0.0, 0.0)];
+        let weights = record_selection_weights(flat.iter().copied(), |i| i != 1);
+        assert_eq!(weights, vec![0.5, 0.0, 0.0]);
+
+        // Nothing placeable: nothing weighs anything.
+        let weights = record_selection_weights(records.iter().copied(), |_| false);
         assert!(weights.iter().all(|&w| w == 0.0));
-        let expected = 1.0 - 0.5 * 0.1 * 0.1;
-        assert!((accept - expected).abs() < 1.0e-6, "accept {accept}");
-        // Out-of-range densities cap at certainty rather than going negative.
-        let (_, accept) = selection_weights_and_accept_rate([(1.0, 7.0)].into_iter(), |_| true);
-        assert_eq!(accept, 1.0);
+    }
+
+    /// #4906 — a `GNAM` FormID resolves to its record's bit in the lane that
+    /// lists it: base is lane 0, splat layer `i` is lane `i + 1`. Entries
+    /// that name no placeable record set nothing.
+    #[test]
+    fn cover_masks_put_each_lists_records_in_that_lanes_bits() {
+        const WORDS: usize = GROUNDCOVER_MODEL_COVER_MASK_WORDS as usize;
+        // FormID-sorted, as `resolve_authored_cover` keeps them; record 40
+        // lands in the mask's second word.
+        let mut form_ids: Vec<u32> = (0..40).map(|i| 0x100 + i).collect();
+        form_ids.push(0x9000);
+        let mut layers: [Vec<u32>; TERRAIN_SPLAT_LAYERS as usize] = Default::default();
+        layers[2] = vec![0x101, 0x9000, 0xDEAD]; // 0xDEAD is no record
+        let masks = cover_masks_for_cell(&form_ids, true, &[0x100], &layers);
+
+        let lane = |n: usize| &masks[n * WORDS..(n + 1) * WORDS];
+        assert_eq!(lane(0), &[1, 0, 0, 0], "base lists record 0");
+        assert_eq!(lane(3), &[1 << 1, 1 << (40 - 32), 0, 0], "layer 2 is lane 3");
+        for empty in [1, 2, 4, 5, 6, 7, 8] {
+            assert!(lane(empty).iter().all(|&w| w == 0), "lane {empty}");
+        }
+    }
+
+    /// A load order with no texture→grass links places every record by
+    /// climate everywhere: every lane names every record, none past the count.
+    #[test]
+    fn unlocalised_cover_masks_name_every_record_in_every_lane() {
+        const WORDS: usize = GROUNDCOVER_MODEL_COVER_MASK_WORDS as usize;
+        let form_ids: Vec<u32> = (0..33).collect();
+        let layers: [Vec<u32>; TERRAIN_SPLAT_LAYERS as usize] = Default::default();
+        let masks = cover_masks_for_cell(&form_ids, false, &[], &layers);
+        for lane in masks.chunks_exact(WORDS) {
+            assert_eq!(lane, &[u32::MAX, 1, 0, 0]);
+        }
+        // Records past the tier limit never get a bit.
+        let many: Vec<u32> = (0..300).collect();
+        let masks = cover_masks_for_cell(&many, false, &[], &layers);
+        assert!(masks.chunks_exact(WORDS).all(|lane| lane == [u32::MAX; WORDS]));
+    }
+
+    /// The shader's per-candidate arithmetic (`gcPickLocalRecord`), mirrored
+    /// on the CPU to pin the intended coverage: each lane contributes its
+    /// share of the ground times the independent-grids union of its records'
+    /// densities, split between its records by weight. Not the shader — a
+    /// change there must be made here too — but the numbers it must produce.
+    fn local_coverage(lanes: &[(f32, &[(f32, f32)])]) -> (f32, Vec<f32>) {
+        // lanes: (ground share, [(weight, density)] per listed record)
+        let mut accept = 0.0;
+        let mut per_record = Vec::new();
+        for &(share, records) in lanes {
+            let total: f32 = records.iter().map(|r| r.0).sum();
+            let miss: f32 = records.iter().map(|r| 1.0 - r.1).product();
+            let rate = if total > 0.0 { share * (1.0 - miss) } else { 0.0 };
+            accept += rate;
+            per_record.extend(records.iter().map(|r| rate * r.0 / total));
+        }
+        (accept, per_record)
+    }
+
+    #[test]
+    fn local_selection_follows_the_ground_and_the_authored_union() {
+        // Pure ground listing two 30 % grasses grows the union, 51 %, split
+        // by weight.
+        let two = [(1.0, 0.3), (1.0, 0.3)];
+        let (accept, parts) = local_coverage(&[(1.0, &two)]);
+        assert!((accept - 0.51).abs() < 1.0e-6);
+        assert!((parts[0] - 0.255).abs() < 1.0e-6 && (parts[1] - 0.255).abs() < 1.0e-6);
+
+        // Half the ground painted over a texture that lists nothing grows
+        // half that, and the unlisted half's grass cannot bleed in.
+        let (accept, _) = local_coverage(&[(0.5, &two), (0.5, &[])]);
+        assert!((accept - 0.255).abs() < 1.0e-6);
+
+        // Ground that lists nothing grows no authored plants at all.
+        let (accept, parts) = local_coverage(&[(1.0, &[])]);
+        assert_eq!((accept, parts.len()), (0.0, 0));
+
+        // A lone record keeps exactly its authored density on pure ground.
+        let (accept, _) = local_coverage(&[(1.0, &[(1.0, 0.4)])]);
+        assert!((accept - 0.4).abs() < 1.0e-6);
     }
 
     /// The table is sized to the scatter's 8 hash bits; anything else leaves

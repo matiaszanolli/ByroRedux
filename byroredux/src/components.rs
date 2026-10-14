@@ -544,13 +544,14 @@ pub(crate) struct TerrainCoverInputs {
     /// lanes as `layer_affinity` — each lane carries its LTEX's
     /// full `GNAM` array in authored order (#4642), empty when the layer
     /// has no `LTEX.GNAM` link (or is the executable's default land
-    /// texture). The lists stay on the terrain entity because
-    /// authored-model residency is a streaming concern, not a parameter
-    /// for the procedural density shader.
-    // Kept at the terrain/streaming boundary for the authored-card tier;
-    // procedural ground-cover intentionally does not consume these IDs.
-    #[allow(dead_code)]
+    /// texture). #4906 — the authored-model tier's cell cover masks are
+    /// built from these (`render::groundcover::cover_masks_for_cell`), so a
+    /// record grows only on ground whose textures list it.
     pub(crate) authored_grass: [Vec<u32>; TERRAIN_SPLAT_LAYERS as usize],
+    /// The BTXT base LTEX's own `GNAM` list (#4906) — the grasses of the
+    /// ground wherever no splat layer paints, like `base_affinity` for the
+    /// density field.
+    pub(crate) base_authored_grass: Vec<u32>,
 }
 impl Component for TerrainCoverInputs {
     type Storage = SparseSetStorage<Self>;

@@ -491,7 +491,7 @@ struct App {
     /// says which one they were derived from.
     groundcover_model_records:
         Vec<byroredux_renderer::vulkan::groundcover_models::GpuGroundCoverModelRecord>,
-    groundcover_model_table: Vec<u32>,
+    groundcover_model_selection: Vec<u32>,
     groundcover_model_records_key: Option<crate::render::groundcover::GroundCoverModelRecordsKey>,
     /// #4180 — the cooperative work deadline `step_streaming` computed this
     /// iteration, handed on to `step_static_blas_restore` so both between-
@@ -1144,7 +1144,7 @@ impl App {
             draw_commands: Vec::new(),
             cover_template_draws: Vec::new(),
             groundcover_model_records: Vec::new(),
-            groundcover_model_table: Vec::new(),
+            groundcover_model_selection: Vec::new(),
             groundcover_model_records_key: None,
             frame_work_deadline: None,
             water_commands: Vec::new(),

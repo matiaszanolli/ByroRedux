@@ -467,7 +467,8 @@ impl App {
                     ctx,
                     &mut self.cover_template_draws,
                     &mut self.groundcover_model_records,
-                    &mut self.groundcover_model_table,
+                    &mut self.groundcover_model_selection,
+                    &self.groundcover_collect_scratch.cell_covers,
                     &mut self.groundcover_model_records_key,
                     self.groundcover_off,
                 );
@@ -957,6 +958,7 @@ fn prepare_groundcover_models(
     template_draws: &mut [(u32, byroredux_renderer::vulkan::context::DrawCommand)],
     records: &mut Vec<byroredux_renderer::vulkan::groundcover_models::GpuGroundCoverModelRecord>,
     table: &mut Vec<u32>,
+    cell_covers: &[crate::render::groundcover::CellCoverMasks],
     records_key: &mut Option<crate::render::groundcover::GroundCoverModelRecordsKey>,
     off: bool,
 ) {
@@ -981,12 +983,22 @@ fn prepare_groundcover_models(
             records_key,
         )
     };
+    // #4906 — `table` is the tier's selection buffer: the per-record weights
+    // (cached with the records) then this frame's per-cell cover masks, in
+    // `gcCells[]` order. Rebuilt past the weights every frame, because the
+    // resident cell set is not part of the records' key.
+    table.truncate(byroredux_renderer::shader_constants::GROUNDCOVER_MODEL_COVER_REGION as usize);
+    if spacing.is_some() {
+        for masks in cell_covers {
+            table.extend_from_slice(masks);
+        }
+    }
     // Shapes grouped by record, each record's shapes in spawn order. Passed
     // to the tier as is — no per-frame adapter Vec (#4922).
     template_draws.sort_unstable_by_key(|(record, draw)| (*record, draw.entity_id));
     ctx.prepare_groundcover_models(&GroundCoverModelFrame {
         records,
-        record_table: table,
+        selection: table,
         shapes: if spacing.is_some() { template_draws } else { &[] },
         grid_spacing: spacing.unwrap_or(0.0),
     });

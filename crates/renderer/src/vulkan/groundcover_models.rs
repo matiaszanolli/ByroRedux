@@ -25,7 +25,7 @@
 //! ## Frame
 //!
 //! 1. [`GroundCoverModelTier::prepare`] uploads the records, the selection
-//!    table and the shapes (each resolved from its template's `DrawCommand`,
+//!    selection buffer and the shapes (each resolved from its template's `DrawCommand`,
 //!    re-read every frame because `MeshRegistry` compacts).
 //! 2. [`GroundCoverModelTier::record`] runs the three compute phases (see the
 //!    shader's header) against the blade scatter's chunk and cell records.
@@ -43,7 +43,7 @@ use crate::shader_constants::{
     GROUNDCOVER_MODEL_MAX_SHAPES, GROUNDCOVER_MODEL_PHASE_EMIT, GROUNDCOVER_MODEL_PHASE_LAYOUT,
     GROUNDCOVER_MODEL_PHASE_PLACE, GROUNDCOVER_MODEL_POINTS_PER_CHUNK,
     GROUNDCOVER_MODEL_SHAPE_FLAG_NON_UNIFORM, GROUNDCOVER_MODEL_STATS_REGION,
-    GROUNDCOVER_MODEL_STATS_WORDS, GROUNDCOVER_SPECIES_TABLE_SIZE,
+    GROUNDCOVER_MODEL_SELECTION_WORDS, GROUNDCOVER_MODEL_STATS_WORDS,
 };
 
 const MODELS_SPV: &[u8] = include_bytes!("../../shaders/groundcover_models.comp.spv");
@@ -147,8 +147,11 @@ unsafe impl NoUninit for ModelPush {}
 /// Everything the tier needs from the host for one frame.
 pub struct GroundCoverModelFrame<'a> {
     pub records: &'a [GpuGroundCoverModelRecord],
-    /// Record index per selection-table entry, in proportion to climate weight.
-    pub record_table: &'a [u32],
+    /// The selection buffer (#4906): per-record weights as `f32` bits, then
+    /// each resident cell's per-lane record bitsets. Layout in
+    /// `shader_constants_data.rs` ("Authored-model selection buffer"); a
+    /// shorter slice leaves the rest zero, which places nothing.
+    pub selection: &'a [u32],
     /// One entry per template shape, sorted by record: the record it belongs
     /// to and its fully built `DrawCommand` (material interned, mesh and
     /// texture resolved, `model_matrix` = the shape's model-root-local
@@ -189,7 +192,7 @@ pub struct GroundCoverModelTier {
     descriptor_pool: vk::DescriptorPool,
     sets: Vec<vk::DescriptorSet>,
     record_buffers: Vec<GpuBuffer>,
-    table_buffers: Vec<GpuBuffer>,
+    selection_buffers: Vec<GpuBuffer>,
     shape_buffers: Vec<GpuBuffer>,
     stats_readback: Vec<GpuBuffer>,
     point_buffer: Option<GpuBuffer>,
@@ -216,7 +219,7 @@ pub struct GroundCoverModelTier {
 /// Bytes every buffer the tier allocates, for `memory-budget.md`.
 struct ModelBufferBytes {
     records: u64,
-    table: u64,
+    selection: u64,
     shapes: u64,
     stats: u64,
     points: u64,
@@ -229,7 +232,7 @@ impl ModelBufferBytes {
         Self {
             records: GROUNDCOVER_MODEL_MAX_RECORDS as u64
                 * std::mem::size_of::<GpuGroundCoverModelRecord>() as u64,
-            table: GROUNDCOVER_SPECIES_TABLE_SIZE as u64 * 4,
+            selection: GROUNDCOVER_MODEL_SELECTION_WORDS as u64 * 4,
             shapes: GROUNDCOVER_MODEL_MAX_SHAPES as u64
                 * std::mem::size_of::<GpuGroundCoverModelShape>() as u64,
             stats: STATS_WORDS * 4,
@@ -243,14 +246,14 @@ impl ModelBufferBytes {
 }
 
 /// Every buffer the authored-model tier allocates, in bytes: the per-slot
-/// host-visible record / table / shape uploads and stats readback ×
+/// host-visible record / selection / shape uploads and stats readback ×
 /// `MAX_FRAMES_IN_FLIGHT`, plus the shared device-local placement slab,
 /// counters and indirect draws. The instance-tail growth it causes in the
 /// main instance SSBOs is ledgered with those. Ledgered in
 /// `docs/engine/memory-budget.md`.
 pub const fn groundcover_model_resident_bytes() -> u64 {
     let b = ModelBufferBytes::new();
-    MAX_FRAMES_IN_FLIGHT as u64 * (b.records + b.table + b.shapes + b.stats)
+    MAX_FRAMES_IN_FLIGHT as u64 * (b.records + b.selection + b.shapes + b.stats)
         + b.points
         + b.counts
         + b.draws
@@ -305,7 +308,7 @@ impl GroundCoverModelTier {
             descriptor_pool: vk::DescriptorPool::null(),
             sets: Vec::new(),
             record_buffers: Vec::new(),
-            table_buffers: Vec::new(),
+            selection_buffers: Vec::new(),
             shape_buffers: Vec::new(),
             stats_readback: Vec::new(),
             point_buffer: None,
@@ -345,10 +348,10 @@ impl GroundCoverModelTier {
                 bytes.records,
                 host,
             )?);
-            self.table_buffers.push(GpuBuffer::create_host_visible(
+            self.selection_buffers.push(GpuBuffer::create_host_visible(
                 device,
                 allocator,
-                bytes.table,
+                bytes.selection,
                 host,
             )?);
             self.shape_buffers.push(GpuBuffer::create_host_visible(
@@ -477,7 +480,7 @@ impl GroundCoverModelTier {
         Ok(())
     }
 
-    /// Upload the frame's records, table and shapes, resolving each shape's
+    /// Upload the frame's records, selection buffer and shapes, resolving each shape's
     /// mesh through the live registry. Returns whether the tier has anything
     /// to place this frame.
     pub fn prepare(
@@ -587,12 +590,12 @@ impl GroundCoverModelTier {
             });
         }
         let ready = !shapes.is_empty() && {
-            let mut table = [0u32; GROUNDCOVER_SPECIES_TABLE_SIZE as usize];
-            let len = input.record_table.len().min(table.len());
-            table[..len].copy_from_slice(&input.record_table[..len]);
+            let mut selection = [0u32; GROUNDCOVER_MODEL_SELECTION_WORDS as usize];
+            let len = input.selection.len().min(selection.len());
+            selection[..len].copy_from_slice(&input.selection[..len]);
             let uploads = self.record_buffers[frame]
                 .write_mapped(device, &records)
-                .and_then(|()| self.table_buffers[frame].write_mapped(device, &table))
+                .and_then(|()| self.selection_buffers[frame].write_mapped(device, &selection))
                 .and_then(|()| self.shape_buffers[frame].write_mapped(device, &shapes));
             if let Err(error) = &uploads {
                 log::warn!("ground-cover model tier: upload failed: {error}");
@@ -728,7 +731,7 @@ impl GroundCoverModelTier {
             (1, info(scatter.cell_buffer)),
             (2, info(scatter.vertex_buffer)),
             (4, info(self.record_buffers[frame].buffer)),
-            (5, info(self.table_buffers[frame].buffer)),
+            (5, info(self.selection_buffers[frame].buffer)),
             (6, info(self.shape_buffers[frame].buffer)),
             (7, info(points.buffer)),
             (8, info(counts.buffer)),
@@ -901,7 +904,7 @@ impl GroundCoverModelTier {
         for buffer in self
             .record_buffers
             .iter_mut()
-            .chain(self.table_buffers.iter_mut())
+            .chain(self.selection_buffers.iter_mut())
             .chain(self.shape_buffers.iter_mut())
             .chain(self.stats_readback.iter_mut())
             .chain(self.point_buffer.iter_mut())
@@ -911,7 +914,7 @@ impl GroundCoverModelTier {
             buffer.destroy(device, allocator);
         }
         self.record_buffers.clear();
-        self.table_buffers.clear();
+        self.selection_buffers.clear();
         self.shape_buffers.clear();
         self.stats_readback.clear();
         self.point_buffer = None;

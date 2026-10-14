@@ -1635,20 +1635,33 @@ Phases:
   the points inside its footprint (#4919): 512 is not a multiple of FO3/FNV's
   80, and a grid restarted per chunk put 7 × 7 candidates where 6.4 × 6.4
   belong, a denser band along every chunk border. Each candidate picks
-  a record from the selection table — weighted `climate × authored density`
-  and built over **placeable records only** (#4906/#5175: a record whose model
-  produced no draws this frame is out of the table, so shapes streaming in
-  re-derive it) — and is accepted with probability `accept × affinity × slope
-  × shelter × clump × distance_fade`, where `accept` is ONE common rate for
-  every record: the independent-grids union `1 − Π(1 − d_i)` over the records
-  that hold a table share (EXT-D3-2026-10-02-01). A record's coverage is
-  `share × accept`, so the species MIX is the authored `climate × density`
-  ratio (the Strip's sparse 3–4 % grasses stay sparse next to dominant
-  wasteland grass) and the total matches what each record's own grid would
-  have produced; adding a record neither dilutes the others (the pre-#4906
-  `share × density` form) nor erases the authored density (the first
-  `density / share` bake, which saturated 22 of 24 FNV records at their
-  share).
+  a record from the ones **the ground under it lists** (#4906): every
+  landscape texture names its grasses (`LTEX.GNAM`), the host turns each
+  resident cell's base and splat-layer lists into a record bitset per lane
+  (`cover_masks_for_cell`, uploaded in the selection buffer), and the shader
+  weighs the lanes by what the terrain diffuse chain shows there — the BTXT
+  base keeps `Π(1 − αᵢ)`, layer `i` gets `αᵢ · Π(j>i)(1 − αⱼ)`. Within a lane
+  records are weighted `climate × authored density` and built over **placeable
+  records only** (#5175: a record whose model produced no draws this frame
+  is out of the weights, so shapes streaming in re-derive them). The
+  candidate is accepted with probability `accept × affinity × slope × shelter
+  × clump × distance_fade`, where `accept` is the lane-weighted
+  independent-grids union `Σ share · (1 − Π(1 − d))` of the densities the
+  ground lists (EXT-D3-2026-10-02-01's union, now taken locally). A lane's
+  coverage is its ground share times that union, split between its records
+  by weight, so the species MIX within a texture is the authored
+  `climate × density` ratio (the Strip's sparse 3–4 % grasses stay sparse
+  next to dominant wasteland grass), a lone record keeps its authored
+  density on pure ground, and adding a record neither dilutes the others
+  (the pre-#4906 `share × density` form) nor erases the authored density
+  (the first `density / share` bake). Ground whose textures list no
+  placeable record grows no authored plants, and a record grows nowhere its
+  textures do not name it — Tamriel's Reach grass stays out of the tundra,
+  and a DLC's grass stays out of the base worldspace. The record is picked
+  from the splat at the lattice point and the jitter is applied after,
+  because the jitter radius is the record's own. A load order that authors
+  no texture→grass link at all (`AuthoredCover::localised == false`) falls
+  back to every lane naming every record, the climate-only global mix.
   The
   moisture factor is replaced by the record's own water rule, which is what
   lets kelp grow below the water plane. The blade tier's cover ray keeps
@@ -1692,13 +1705,16 @@ Phases:
 | `position_range` | jitter radius around the grid point, units | Authored 7–90 | **Interpretation** |
 | Water rule | xEdit zero-based "Unit from water type" 0–5 | `gras.rs` census: only 0/2/3 used; 2 is always kelp, coral or seaweed | Sourced numbering |
 
-**Known limitation.** Selection is by climate alone, as this section
-specifies, so within one worldspace every region draws from the same
-weighted mix. Tamriel's Reach grass and its tundra grass both appear around
-Whiterun. Vanilla keys `GRAS` to a landscape texture (`LTEX.GNAM`). Weighting
-the selection by the local splat layers' own `GRAS` lists would localise
-species without reintroducing the boundary artifact of §1, and is the
-natural next refinement.
+**Localisation (#4906).** Vanilla keys `GRAS` to a landscape texture
+(`LTEX.GNAM`; 151 of 184 grass-bearing vanilla LTEXs author 2–4 grasses), and
+the model tier now places each record only on ground whose textures list it.
+Two interpretations remain: weighting a lane by its *displayed* share
+(`byroGcAffinity`'s ordered mix) rather than by a threshold on the splat
+alpha, and splitting a lane's union rate between its records by
+`climate × density`. Neither is sourced; both follow the same continuous
+gradient §3 uses so the cover has no hard edge where the paint feathers. The
+procedural blade tier is unchanged — it still follows the keyword affinity
+and the worldspace climate.
 
 Until Phase B supplies sourced blade dimensions, the legacy procedural-shape
 inputs `wind_flow_floor`, `wind_stiffness_attenuation`, `rest_lean`,

@@ -419,6 +419,12 @@ pub struct AuthoredCover {
     pub grid_spacing: f32,
     /// The worldspace climate the records are weighted for.
     pub climate: Climate,
+    /// Whether the load order's landscape textures name any of `records`
+    /// (`LTEX.GNAM`, #4906). When they do, a record grows only on ground
+    /// whose textures list it; when none does — a load order that authors no
+    /// texture→grass links at all — the cover falls back to placing every
+    /// record by climate everywhere rather than growing nothing.
+    pub localised: bool,
     /// Process-unique identity of this translation, from
     /// [`AuthoredCover::next_generation`]. Consumers that derive per-frame
     /// data from the records key their cache on it instead of re-deriving

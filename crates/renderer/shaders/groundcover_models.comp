@@ -11,8 +11,10 @@
 //
 // Every `GRAS` record draws its own model: grass cards, rocks, ferns, leaf
 // decals and kelp alike. Candidates sit on the game's own grass grid
-// (`iMinGrassSize`), each picks a record by climate weight, and is accepted
-// by the record's authored density times the §3 field. Accepted plants are
+// (`iMinGrassSize`). Each picks a record from the ones the landscape textures
+// under it list (`LTEX.GNAM`, weighted by how much of each texture the
+// terrain shows there — #4906) and is accepted at the lane-weighted union of
+// those records' authored densities times the §3 field. Accepted plants are
 // written as ordinary `GpuInstance`s into the tail of the main instance
 // buffer, so the main geometry pass draws them with the shared material
 // shading — cards alpha-test, rocks shade as rock — and receive shadows like
@@ -142,10 +144,15 @@ layout(set = 0, binding = 3) uniform accelerationStructureEXT gcTopLevelAS;
 layout(std430, set = 0, binding = 4) readonly buffer GcModelRecords {
     GcModelRecord gcRecords[];
 };
-/// `GROUNDCOVER_SPECIES_TABLE_SIZE` record indices, filled in proportion to
-/// each record's weight in the worldspace climate.
-layout(std430, set = 0, binding = 5) readonly buffer GcModelTable {
-    uint gcRecordTable[];
+/// #4906 — the selection inputs, in one host-written buffer (layout in
+/// `shader_constants_data.rs`, "Authored-model selection buffer"):
+/// `[0, MAX_RECORDS)` per-record weights as `f32` bits (climate × authored
+/// density; 0 for a record that cannot place this frame), then
+/// `GROUNDCOVER_MODEL_COVER_CELL_WORDS` words per resident cell in
+/// `gcCells[]` order — a record bitset per lane (lane 0 the BTXT base, lane
+/// `i + 1` splat layer `i`) naming the records that lane's `LTEX.GNAM` lists.
+layout(std430, set = 0, binding = 5) readonly buffer GcModelSelection {
+    uint gcSelection[];
 };
 layout(std430, set = 0, binding = 6) readonly buffer GcModelShapes {
     GcModelShape gcShapes[];
@@ -248,6 +255,119 @@ bool gcCovered(TerrainSample s, vec2 worldXZ, float reach) {
     return rayQueryGetIntersectionTypeEXT(q, true) != gl_RayQueryCommittedIntersectionNoneEXT;
 }
 
+/// A placeable record's selection weight, or 0.
+float gcRecordWeight(uint record) {
+    return record < pc.recordCount ? uintBitsToFloat(gcSelection[record]) : 0.0;
+}
+
+uint gcCoverWord(uint cellIdx, uint lane, uint word) {
+    return gcSelection[GROUNDCOVER_MODEL_COVER_REGION
+        + cellIdx * GROUNDCOVER_MODEL_COVER_CELL_WORDS
+        + lane * GROUNDCOVER_MODEL_COVER_MASK_WORDS + word];
+}
+
+struct GcLocalPick {
+    uint record;
+    /// Probability the candidate grows anything at all: the lane-weighted
+    /// union of the authored densities of the records the ground lists.
+    float accept;
+};
+
+/// #4906 — pick a record for the candidate at `s` from what the landscape
+/// textures there list, and the rate at which that candidate grows.
+///
+/// The lane weights are the ones the terrain diffuse chain shows
+/// (`byroGcAffinity`'s ordered mix): the BTXT base starts, each splat layer
+/// mixes over it by its own alpha, so lane `i`'s share of the ground is
+/// `alpha_i × Π_{j>i}(1 − alpha_j)` and the base keeps `Π(1 − alpha)`.
+///
+/// Each lane contributes the independent-grids union of its records'
+/// authored densities (`1 − Π(1 − d_r)`, the rate the engine's per-record
+/// grids would produce — §12.12's register), scaled by its share of the
+/// ground, and splits that rate between its records in proportion to their
+/// weights. So a texture that lists two 30 % grasses over pure ground grows
+/// 51 % of its candidates, split by weight; half of it painted over a
+/// texture listing nothing grows half that. A lane with no listed placeable
+/// record contributes nothing, so ground whose textures name no grass grows
+/// no authored plants. `u` in [0, 1) picks within the total.
+GcLocalPick gcPickLocalRecord(uint cellIdx, TerrainSample s, float u) {
+    float laneShare[GROUNDCOVER_MODEL_COVER_LANES];
+    float carry = 1.0;
+    for (uint i = TERRAIN_SPLAT_LAYERS; i > 0u; --i) {
+        uint layer = i - 1u;
+        float alpha = clamp(
+            layer < TERRAIN_SPLAT_LANES_PER_WORD
+                ? s.splat0[layer]
+                : s.splat1[layer - TERRAIN_SPLAT_LANES_PER_WORD],
+            0.0, 1.0);
+        laneShare[i] = alpha * carry;
+        carry *= 1.0 - alpha;
+    }
+    laneShare[0] = carry;
+
+    float laneRate[GROUNDCOVER_MODEL_COVER_LANES];
+    float laneWeight[GROUNDCOVER_MODEL_COVER_LANES];
+    float accept = 0.0;
+    for (uint lane = 0u; lane < GROUNDCOVER_MODEL_COVER_LANES; ++lane) {
+        laneRate[lane] = 0.0;
+        laneWeight[lane] = 0.0;
+        if (laneShare[lane] <= 0.0) {
+            continue;
+        }
+        float miss = 1.0;
+        float total = 0.0;
+        for (uint word = 0u; word < GROUNDCOVER_MODEL_COVER_MASK_WORDS; ++word) {
+            uint bits = gcCoverWord(cellIdx, lane, word);
+            while (bits != 0u) {
+                uint record = word * 32u + uint(findLSB(bits));
+                bits &= bits - 1u;
+                float weight = gcRecordWeight(record);
+                if (weight > 0.0) {
+                    total += weight;
+                    miss *= 1.0 - clamp(gcRecords[record].density, 0.0, 1.0);
+                }
+            }
+        }
+        if (total > 0.0) {
+            laneWeight[lane] = total;
+            laneRate[lane] = laneShare[lane] * (1.0 - miss);
+            accept += laneRate[lane];
+        }
+    }
+
+    GcLocalPick pick;
+    pick.record = 0u;
+    pick.accept = accept;
+    if (accept <= 0.0) {
+        return pick;
+    }
+    float target = u * accept;
+    float running = 0.0;
+    for (uint lane = 0u; lane < GROUNDCOVER_MODEL_COVER_LANES; ++lane) {
+        if (laneWeight[lane] <= 0.0) {
+            continue;
+        }
+        float perWeight = laneRate[lane] / laneWeight[lane];
+        for (uint word = 0u; word < GROUNDCOVER_MODEL_COVER_MASK_WORDS; ++word) {
+            uint bits = gcCoverWord(cellIdx, lane, word);
+            while (bits != 0u) {
+                uint record = word * 32u + uint(findLSB(bits));
+                bits &= bits - 1u;
+                float weight = gcRecordWeight(record);
+                if (weight > 0.0) {
+                    running += perWeight * weight;
+                    pick.record = record;
+                    if (target < running) {
+                        return pick;
+                    }
+                }
+            }
+        }
+    }
+    // Rounding left `target` at the very top of the range: the last record.
+    return pick;
+}
+
 shared uint sRecordCount[GROUNDCOVER_MODEL_MAX_RECORDS];
 shared uint sAccepted[GROUNDCOVER_MODEL_WORKGROUP];
 shared uint sRecord[GROUNDCOVER_MODEL_WORKGROUP];
@@ -283,7 +403,8 @@ void place(uint chunkIdx, uint lane) {
         ? min(perAxis.x * perAxis.y, GROUNDCOVER_MODEL_POINTS_PER_CHUNK)
         : 0u;
     uint seed = chunk.seed ^ GROUNDCOVER_MODEL_SEED_SALT;
-    GroundCoverCell cell = gcCells[chunk.slotActive != 0u ? chunk.cellIndex : 0u];
+    uint cellIdx = chunk.slotActive != 0u ? chunk.cellIndex : 0u;
+    GroundCoverCell cell = gcCells[cellIdx];
 
     for (uint batch = 0u; batch < candidates; batch += GROUNDCOVER_MODEL_WORKGROUP) {
         uint candidate = batch + lane;
@@ -292,42 +413,56 @@ void place(uint chunkIdx, uint lane) {
         GcModelPoint point;
         if (candidate < candidates) {
             uint h = gcModelHash(seed, candidate);
-            record = min(gcRecordTable[h >> 24], pc.recordCount - 1u);
-            GcModelRecord rec = gcRecords[record];
             uint gx = candidate % perAxis.x;
             uint gz = candidate / perAxis.x;
-            vec2 jitter = vec2(
-                gcUnit(gcModelHash(h, 1u)),
-                gcUnit(gcModelHash(h, 2u))) * 2.0 - 1.0;
-            // Chunk-local, +X and +Z-down like the terrain grid. Jitter that
-            // would leave the chunk is reflected back inside it: a point
-            // pushed across a cell edge would sample no terrain and be lost,
-            // thinning a stripe along every cell border.
+            // #4906 — the record is picked from the ground under the lattice
+            // point itself, before any jitter: the jitter radius is the
+            // record's own, so it cannot be known until the record is.
+            // Chunk-local, +X and +Z-down like the terrain grid.
             vec2 lattice = (vec2(latticeFirst + ivec2(gx, gz)) + 0.5) * spacing;
-            vec2 local = lattice - chunkUV + jitter * rec.positionRange;
-            local = abs(local);
-            local = GROUNDCOVER_CHUNK_UNITS - abs(GROUNDCOVER_CHUNK_UNITS - local);
-            vec2 worldXZ = vec2(chunk.baseXZ.x + local.x, chunk.baseXZ.y - local.y);
-            TerrainSample s = byroSampleTerrain(cell.vertexOffset, cell.originXZ, worldXZ);
-            if (s.valid) {
-                float laplacian = byroGcLaplacian(
-                    cell.vertexOffset, cell.originXZ, worldXZ, s.height);
-                GroundCoverFactors f = byroGcDensityFactors(
-                    s, worldXZ, cell.affinity0, cell.affinity1, cell.baseAffinity,
-                cell.waterY, laplacian);
-                float field = clamp(f.affinity * f.slope * f.shelter * f.clump, 0.0, 1.0);
-                vec3 world = vec3(worldXZ.x, s.height, worldXZ.y);
-                float fade = byroGcDistanceFade(distance(world, pc.cameraPos.xyz));
-                if (gcUnit(gcModelHash(h, 3u)) < rec.density * field * fade
-                    && gcWaterAdmits(rec, s.height, cell.waterY)
-                    && !gcCovered(s, worldXZ, rec.coverReach)) {
-                    accepted = true;
-                    point.position = vec4(world, 0.0);
-                    point.meta = uvec4(
-                        record | (candidate << GROUNDCOVER_MODEL_RECORD_BITS),
-                        0u,
-                        packSnorm2x16(s.normal.xz),
-                        h);
+            vec2 anchor = lattice - chunkUV;
+            vec2 anchorXZ = vec2(chunk.baseXZ.x + anchor.x, chunk.baseXZ.y - anchor.y);
+            TerrainSample ground = byroSampleTerrain(cell.vertexOffset, cell.originXZ, anchorXZ);
+            GcLocalPick pick;
+            pick.record = 0u;
+            pick.accept = 0.0;
+            if (ground.valid) {
+                pick = gcPickLocalRecord(cellIdx, ground, gcUnit(gcModelHash(h, 4u)));
+            }
+            record = min(pick.record, pc.recordCount - 1u);
+            if (pick.accept > 0.0) {
+                GcModelRecord rec = gcRecords[record];
+                vec2 jitter = vec2(
+                    gcUnit(gcModelHash(h, 1u)),
+                    gcUnit(gcModelHash(h, 2u))) * 2.0 - 1.0;
+                // Jitter that would leave the chunk is reflected back inside it:
+                // a point pushed across a cell edge would sample no terrain and be
+                // lost, thinning a stripe along every cell border.
+                vec2 local = anchor + jitter * rec.positionRange;
+                local = abs(local);
+                local = GROUNDCOVER_CHUNK_UNITS - abs(GROUNDCOVER_CHUNK_UNITS - local);
+                vec2 worldXZ = vec2(chunk.baseXZ.x + local.x, chunk.baseXZ.y - local.y);
+                TerrainSample s = byroSampleTerrain(cell.vertexOffset, cell.originXZ, worldXZ);
+                if (s.valid) {
+                    float laplacian = byroGcLaplacian(
+                        cell.vertexOffset, cell.originXZ, worldXZ, s.height);
+                    GroundCoverFactors f = byroGcDensityFactors(
+                        s, worldXZ, cell.affinity0, cell.affinity1, cell.baseAffinity,
+                    cell.waterY, laplacian);
+                    float field = clamp(f.affinity * f.slope * f.shelter * f.clump, 0.0, 1.0);
+                    vec3 world = vec3(worldXZ.x, s.height, worldXZ.y);
+                    float fade = byroGcDistanceFade(distance(world, pc.cameraPos.xyz));
+                    if (gcUnit(gcModelHash(h, 3u)) < pick.accept * field * fade
+                        && gcWaterAdmits(rec, s.height, cell.waterY)
+                        && !gcCovered(s, worldXZ, rec.coverReach)) {
+                        accepted = true;
+                        point.position = vec4(world, 0.0);
+                        point.meta = uvec4(
+                            record | (candidate << GROUNDCOVER_MODEL_RECORD_BITS),
+                            0u,
+                            packSnorm2x16(s.normal.xz),
+                            h);
+                    }
                 }
             }
         }

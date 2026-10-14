@@ -2184,6 +2184,8 @@ fn every_shader_struct_is_classified() {
             "GcDrawIndexed",
             Guarded("name_diverging_glsl_rust_mirrors_stay_in_lockstep"),
         ),
+        // #4906 — `gcPickLocalRecord`'s return bundle, never stored or uploaded.
+        ("GcLocalPick", ShaderLocal),
         ("TerrainSample", ShaderLocal),
         ("LocalMedium", ShaderLocal),
         ("DisneyDiffuseSplit", ShaderLocal),

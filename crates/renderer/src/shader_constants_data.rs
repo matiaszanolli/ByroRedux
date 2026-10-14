@@ -598,6 +598,33 @@ pub const GROUNDCOVER_MODEL_STATS_REGION: u32 =
     GROUNDCOVER_MODEL_SHAPE_REGION + 2 * GROUNDCOVER_MODEL_MAX_SHAPES;
 pub const GROUNDCOVER_MODEL_STATS_WORDS: u32 = 4;
 
+// ── Authored-model selection buffer (#4906) ─────────────────────────────
+
+/// Resident terrain cells the ground-cover cell table can hold. Mirrors the
+/// #4052 bench's cap: `--radius 3` resides 49 cells and this leaves room for
+/// a wider ring without sizing every buffer for one nobody runs.
+pub const GROUNDCOVER_MAX_CELLS: u32 = 128;
+/// Lanes a cell's authored-cover masks carry: the BTXT base, then each splat
+/// layer in the vertex splat lanes' order. Lane 0 is the base; lane `i + 1`
+/// is splat layer `i`.
+pub const GROUNDCOVER_MODEL_COVER_LANES: u32 = TERRAIN_SPLAT_LAYERS + 1;
+/// 32-bit words of one lane's record bitset: bit `r` names record `r`.
+pub const GROUNDCOVER_MODEL_COVER_MASK_WORDS: u32 = GROUNDCOVER_MODEL_MAX_RECORDS / 32;
+/// Words one cell takes in the selection buffer's cover region.
+pub const GROUNDCOVER_MODEL_COVER_CELL_WORDS: u32 =
+    GROUNDCOVER_MODEL_COVER_LANES * GROUNDCOVER_MODEL_COVER_MASK_WORDS;
+/// `gcSelection` layout: [`GROUNDCOVER_MODEL_MAX_RECORDS`] per-record weights
+/// (`f32` bits: climate × authored density, 0 for a record that cannot place),
+/// then the cover masks, `GROUNDCOVER_MODEL_COVER_CELL_WORDS` per resident
+/// cell in `gcCells[]` order.
+pub const GROUNDCOVER_MODEL_COVER_REGION: u32 = GROUNDCOVER_MODEL_MAX_RECORDS;
+pub const GROUNDCOVER_MODEL_SELECTION_WORDS: u32 = GROUNDCOVER_MODEL_COVER_REGION
+    + GROUNDCOVER_MAX_CELLS * GROUNDCOVER_MODEL_COVER_CELL_WORDS;
+const _: () = assert!(
+    GROUNDCOVER_MODEL_MAX_RECORDS % 32 == 0,
+    "the cover masks bitset the records in whole 32-bit words"
+);
+
 /// Wavelength of the wind flow-noise field, world units.
 ///
 /// §8's requirement is that neighbouring blades sample a *continuous* field at
@@ -2441,6 +2468,12 @@ pub const SHADER_DEFINES: &[HeaderLine] = &[
     HeaderLine::Define("GROUNDCOVER_MODEL_CHUNK_TOTAL_REGION", ShaderValue::Uint(GROUNDCOVER_MODEL_CHUNK_TOTAL_REGION)),
     HeaderLine::Define("GROUNDCOVER_MODEL_SHAPE_REGION", ShaderValue::Uint(GROUNDCOVER_MODEL_SHAPE_REGION)),
     HeaderLine::Define("GROUNDCOVER_MODEL_STATS_REGION", ShaderValue::Uint(GROUNDCOVER_MODEL_STATS_REGION)),
+    HeaderLine::Define("GROUNDCOVER_MAX_CELLS", ShaderValue::Uint(GROUNDCOVER_MAX_CELLS)),
+    HeaderLine::Define("GROUNDCOVER_MODEL_SELECTION_WORDS", ShaderValue::Uint(GROUNDCOVER_MODEL_SELECTION_WORDS)),
+    HeaderLine::Define("GROUNDCOVER_MODEL_COVER_LANES", ShaderValue::Uint(GROUNDCOVER_MODEL_COVER_LANES)),
+    HeaderLine::Define("GROUNDCOVER_MODEL_COVER_MASK_WORDS", ShaderValue::Uint(GROUNDCOVER_MODEL_COVER_MASK_WORDS)),
+    HeaderLine::Define("GROUNDCOVER_MODEL_COVER_CELL_WORDS", ShaderValue::Uint(GROUNDCOVER_MODEL_COVER_CELL_WORDS)),
+    HeaderLine::Define("GROUNDCOVER_MODEL_COVER_REGION", ShaderValue::Uint(GROUNDCOVER_MODEL_COVER_REGION)),
     HeaderLine::Define("GROUNDCOVER_HISTOGRAM_BUCKETS", ShaderValue::Uint(GROUNDCOVER_HISTOGRAM_BUCKETS)),
     HeaderLine::Blank,
     HeaderLine::Comment("Ground-cover blade geometry guards"),

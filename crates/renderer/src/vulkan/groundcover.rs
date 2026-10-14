@@ -56,7 +56,7 @@ use crate::shader_constants::{
     GROUNDCOVER_CHUNKS_PER_CELL_SIDE, GROUNDCOVER_INTERACTION_MAX_DISTURBERS,
     GROUNDCOVER_INTERACTION_TEXELS, GROUNDCOVER_INTERACTION_UNITS,
     GROUNDCOVER_INTERACTION_WORKGROUP, GROUNDCOVER_MAX_BLADES_PER_CHUNK, GROUNDCOVER_MAX_CHUNKS,
-    GROUNDCOVER_SPECIES_TABLE_SIZE, GROUNDCOVER_VERTS_PER_SEGMENT,
+    GROUNDCOVER_MAX_CELLS, GROUNDCOVER_SPECIES_TABLE_SIZE, GROUNDCOVER_VERTS_PER_SEGMENT,
 };
 
 const SCATTER_SPV: &[u8] = include_bytes!("../../shaders/groundcover_scatter.comp.spv");
@@ -80,7 +80,7 @@ pub const CHUNKS_PER_CELL: usize =
 /// Array capacity for resident terrain cells. Mirrors the #4052 bench's cap
 /// for the same reason: `--radius 3` resides 49 cells and this leaves room for
 /// a wider ring without sizing every buffer for one nobody runs.
-pub const MAX_GROUNDCOVER_CELLS: usize = 128;
+pub const MAX_GROUNDCOVER_CELLS: usize = GROUNDCOVER_MAX_CELLS as usize;
 
 /// One resident exterior terrain cell. Mirrors `GroundCoverCell` in
 /// `include/groundcover_scene.glsl`.

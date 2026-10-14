@@ -354,8 +354,13 @@ pub fn grass_grid_spacing(game: GameKind) -> Option<f32> {
 ///
 /// Records are ordered by FormID so the placement selection table, and so
 /// every instance's record, is stable across sessions.
+///
+/// `landscape_grasses` is the load order's `LTEX` FormID → `GNAM` grass list
+/// map. It decides [`AuthoredCover::localised`] (#4906): localisation is on
+/// when any list names a kept record.
 pub fn resolve_authored_cover(
     grasses: &HashMap<u32, GrasRecord>,
+    landscape_grasses: &HashMap<u32, Vec<u32>>,
     game: GameKind,
     climate: Climate,
 ) -> Option<AuthoredCover> {
@@ -366,10 +371,17 @@ pub fn resolve_authored_cover(
         .into_iter()
         .filter_map(|form_id| authored_cover_record(&grasses[&form_id]))
         .collect();
+    // `records` is FormID-sorted, so the membership test is a binary search.
+    let localised = landscape_grasses.values().flatten().any(|grass| {
+        records
+            .binary_search_by_key(grass, |record| record.form_id)
+            .is_ok()
+    });
     (!records.is_empty()).then(|| AuthoredCover {
         records,
         grid_spacing,
         climate,
+        localised,
         generation: AuthoredCover::next_generation(),
     })
 }

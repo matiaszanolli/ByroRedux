@@ -705,17 +705,23 @@ fn install_ground_cover(world: &mut World, wctx: &cell_loader::ExteriorWorldCont
     // model, weighted for the same climate the blade palette resolved.
     match crate::groundcover_translate::resolve_authored_cover(
         &wctx.record_index.grasses,
+        &wctx.record_index.cells.landscape_grasses,
         wctx.record_index.game,
         palette.climate,
     ) {
         Some(cover) => {
             log::info!(
                 target: "engine::groundcover",
-                "Authored ground cover for '{}': {} of {} GRAS records placeable, grid {} units",
+                "Authored ground cover for '{}': {} of {} GRAS records placeable, grid {} units, {}",
                 wctx.worldspace_key,
                 cover.records.len(),
                 wctx.record_index.grasses.len(),
                 cover.grid_spacing,
+                if cover.localised {
+                    "placed on the textures that list them (LTEX.GNAM)"
+                } else {
+                    "no LTEX.GNAM links: placed by climate everywhere"
+                },
             );
             world.insert_resource(cover);
         }
