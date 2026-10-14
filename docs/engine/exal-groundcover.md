@@ -1815,6 +1815,98 @@ with the main geometry pass.
 
 ---
 
+### 12.15 The 2026-10 overhaul: curve blades, chunk LOD, terrain-matched light, authored density
+
+What changed, and what the cause of each visual problem actually was. Each item
+was measured on an FNV Goodsprings ground pose and a Skyrim Whiterun pose,
+captured with wall-clock dt. **Do not capture with `--bench-mode renderer-static`
+for visual review**: its zero time step never adapts auto-exposure and produces
+the flat ~170/255 "veil" §11.5 recorded (that was never the grass).
+
+**Lighting (the glow).** Zeroing every direct term (transmission, sheen
+ambient, sun) left the blades just as bright: the cause was composite's
+`indirect * outAlbedo`. The palettes carried *linear* albedos of 0.3-0.5 (arid
+tip 0.52/0.46/0.24) while the soil under them is 0.05-0.15, and both are lit by
+the same terrain GI, so a blade returned several times the terrain's radiance in
+sun and in a rock's shadow alike. Two fixes: (1) the palette colours are
+display-space values and are now sRGB-decoded at the GPU boundary
+(`render/groundcover.rs::srgb_to_linear`; the detail atlas stores the display
+value and the sRGB texture decodes it, so blades and the terrain's detail layer
+share one colour); (2) the blade's luminance is anchored to the terrain at the
+root — the splat texture mixed toward the species detail colour by `d_ground`,
+exactly what `triangle.frag` shows — times a base->tip ratio
+(`GROUNDCOVER_BASE/TIP_LUMA_RATIO`, art direction). The hue stays the species'.
+The rounded-normal fold (§12.10) and the base occlusion (§12.1) were already in
+place. **Ray tracing stays as §5 decided: receive-only.** Blades are not in the
+BLAS/TLAS, so they cast and appear in no ray; they receive the traced sun shadow
+from terrain and placed objects, and the closed-form canopy stands in for
+grass-on-grass occlusion. Animated per-frame blade geometry in an RT-only engine
+would add rebuild cost for no visible gain.
+
+**Geometry (the spikes).** The Bezier control point was the exact chord
+midpoint, so every blade was a straight stick tilted about its root. It now stays
+over the root along the up axis and carries 5-30% of the lean per blade
+(`GROUNDCOVER_BEZIER_BEND_CARRY_*`), so the blade rises vertically and bows
+toward its tip. Wind, lean and interaction still act on the control point and tip
+only, at both clock samples. Default blades are 1.5x taller (temperate 9-21,
+arid 6-13.5 units).
+
+**LOD (§6 is superseded where it differs).** A 512-unit chunk draws at exactly one
+tier chosen from the camera distance to its centre (`include/groundcover_lod.glsl`,
+shared by the scatter and the blade shader): 3 segments (7-vertex strip, 15
+listed vertices, 4 blades/point) to 600 units, 2 segments (9 vertices, 2
+blades/point) to 1400, then a single triangle (3 vertices, 1 blade/point).
+Across the 200 units before each edge every vertex of the outgoing level slides
+onto the next level's polyline (a function of CHUNK distance, so a chunk reaches
+the switch on one frame) and the blades the next tier drops fade to zero width
+while the survivors widen by `4 / sum(weights)`: the tuft's ribbon width is
+constant through every tier and morph (unit-tested), so the stream switch changes
+nothing visible. There is no stochastic cross-fade, no FSR reactive exception and
+no clump-card tier (it only engaged below 0.5 px, which a 10-unit blade never
+reaches inside the 3000-unit draw distance). Previously every blade was run
+through every tier's vertex stream and discarded per fragment; on the baseline
+pose the grass-heavy main render fell from 3.89 to 2.82 ms GPU.
+
+**The bright dense band.** Two couplings were missing: thinning (the accept
+test's distance fade) was not paid back by widening, while the pixel-floor
+widening kept growing coverage. The blade tier now has its own long fade
+(`GROUNDCOVER_BLADE_FADE_START` 1400 -> 3000) whose thinning is repaid by
+widening the survivors, capped (`GROUNDCOVER_FADE_COVERAGE_MAX_GAIN`,
+`..._COVERAGE_MAX_WIDEN`); the luminance anchor above removes the brightness
+step. Not verified with a camera dolly yet (see the open list below).
+
+**Distribution.** The clump term was multiplied into the density as-is but its
+mean is 0.468 (measured with a Rust port of the integer-hash noise, stationary
+over 54 km areas), so every sward carried ~47% of its authored density. It is now
+divided by `GROUNDCOVER_CLUMP_MEAN`: clumping only redistributes (tests: the mean
+matches the constant; the Worley term's mean is the same over every 4096-unit
+cell, worst of 144 cells 4.2%). The nearest Worley feature's id identifies the
+clump, and every blade of it shares a height scale (+-20%) and a warm/cool tone
+(+-8%) on top of the per-blade variation.
+
+**Authored density.** Where a load order carries `LTEX.GNAM` links
+(`AuthoredCover::localised`), each splat layer's and the BTXT base's blade
+affinity is the union density of the GRAS records it lists
+(`AuthoredCover::union_density`, the same lane rate the authored-model tier
+uses). The keyword table remains only the fallback for a load order with no
+links. Consequence: blades follow the authored layers, so a texture that lists
+no grass grows none (FNV Goodsprings' dirt) and a landscape mod that links a
+texture to a grass grows blades there.
+
+**Not done / open.** (a) GRAS `min/max slope` and `distance_from_water` still
+reach only the authored-model tier; the blade tier keeps its engine slope gate
+(`smoothstep` on the terrain normal) and moisture falloff, which are smooth but
+not the authored limits (they would need per-lane limits in `GroundCoverCell`).
+(b) `colour_range` is decoded but unused. (c) GRAS `height_range` is a scale
+variance, not an elevation limit — there is no authored elevation range to use.
+(d) A `VK_EXT_mesh_shader` generation path was not built: the renderer has no
+mesh-shader support today, the compute scatter + indirect draw it would replace
+is ~1 ms on the baseline pose, and the LOD rewrite removed the vertex cost the
+mesh path was meant to attack. (e) No slow-dolly capture through the LOD bands
+has been taken: the geomorph is pinned by tests (endpoints coincide with the
+next tier's polyline; coverage conserved) but not eyeballed in motion, and the
+fixed-dt dolly bench mode cannot be viewed (exposure veil above).
+
 ## 13. References
 
 Every external source this document or its shaders draw on. Where a detail
