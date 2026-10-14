@@ -5237,7 +5237,6 @@ fn blue_noise_ranks_is_declared_exactly_once() {
     let header = include_str!("../../../shaders/include/blue_noise.glsl");
     let composite = include_str!("../../../shaders/composite.frag");
     let volumetrics = include_str!("../../../shaders/volumetrics_inject.comp");
-    let blade = include_str!("../../../shaders/groundcover_blade.frag");
 
     assert!(
         header.contains("const uint BLUE_NOISE_RANKS[64]"),
@@ -5251,7 +5250,6 @@ fn blue_noise_ranks_is_declared_exactly_once() {
     for (name, src) in [
         ("composite.frag", composite),
         ("volumetrics_inject.comp", volumetrics),
-        ("groundcover_blade.frag", blade),
     ] {
         assert!(
             !src.contains("const uint BLUE_NOISE_RANKS[64]"),
@@ -7374,7 +7372,7 @@ fn blade_ground_colour_uses_the_shared_terrain_splat_chain() {
 
     let blade = include_str!("../../../shaders/groundcover_blade.frag");
     let coupling = blade
-        .split("if (vCard == 0u && vTerrainTileSlot != GROUNDCOVER_NO_TERRAIN_TILE) {")
+        .split("if (vTerrainTileSlot != GROUNDCOVER_NO_TERRAIN_TILE) {")
         .nth(1)
         .expect("blade.frag keeps its ground-colour coupling block")
         // Up to the closing of the outer if: enough span for both arms.
@@ -7401,7 +7399,7 @@ fn blade_ground_colour_uses_the_shared_terrain_splat_chain() {
     // Its blades still couple to the base, from the cell record, or a root
     // colour step appears along every border with a painted cell.
     let no_tile_arm = blade
-        .split("} else if (vCard == 0u && vTerrainBaseIndex != 0u) {")
+        .split("} else if (vTerrainBaseIndex != 0u) {")
         .nth(1)
         .expect("blade.frag couples tile-less cells to their BTXT base (#5174)")
         .split("\n    }")

@@ -41,14 +41,6 @@ layout(location = 6) flat in float vBladeHeight;
 layout(location = 7) in float vBladeWidth;
 layout(location = 8) in vec4 vCurrClipPos;
 layout(location = 9) in vec4 vPrevClipPos;
-layout(location = 10) flat in uint vBladeSeed;
-layout(location = 11) flat in uint vLodTier;
-layout(location = 12) flat in uint vFrameSerial;
-layout(location = 13) in float vLodMidWeight;
-layout(location = 14) in vec2 vCardUv;
-layout(location = 15) flat in uint vCard;
-layout(location = 16) in float vCardWeight;
-
 // §12.3 ground-colour coupling (#4056): the blade-base terrain sample the
 // vertex shader captured — splat weights, the rebuilt diffuse UV and the
 // terrain-tile slot naming the layer diffuse textures. See the blend below.
@@ -74,53 +66,22 @@ layout(location = 7) out float outFsrTransparency;
 #include "include/shadow_transport.glsl"
 #include "include/lighting.glsl"
 #include "include/groundcover_light.glsl"
-#include "include/blue_noise.glsl"
 
 layout(std430, set = 2, binding = 6) readonly buffer GcSpeciesBuffer {
     GroundCoverSpecies gcSpecies[];
 };
 
 void main() {
-    // The two geometric streams cover complementary samples of one 8×8 blue
-    // noise tile. The tile rotates per blade and per replayable frame serial,
-    // preventing a fixed screen-door pattern while preserving exact coverage
-    // at either end of the projected-pixel transition.
-    // `blueNoiseRankAt` reads only the tile bits, so the per-blade offsets need
-    // no pre-masking: the low bits select the X shift, the next ones the Y.
-    ivec2 tilePixel = ivec2(
-        uvec2(gl_FragCoord.xy)
-        + uvec2(vBladeSeed, vBladeSeed >> 3u)
-        + vFrameSerial * uvec2(5u, 3u)
-    );
-    float rank = blueNoiseRankAt(tilePixel);
-    float keep = vLodTier == 0u
-        ? 1.0 - vLodMidWeight
-        : vLodMidWeight * (1.0 - vCardWeight);
-    if (vCard == 0u && rank >= keep) {
-        discard;
-    }
+    // No LOD discard: the segment tier is chosen per chunk and geomorphed in the
+    // vertex shader, so every fragment that arrives here belongs to the one
+    // representation of its blade (`groundcover_lod.glsl`).
     GroundCoverSpecies sp = gcSpecies[vSpecies];
-    vec4 cardSample = vec4(1.0);
-    if (vCard != 0u) {
-        if (sp.cardAtlas.x == 0u) {
-            discard;
-        }
-        vec2 atlasSize = vec2(textureSize(textures[nonuniformEXT(sp.cardAtlas.x)], 0));
-        float atlasY = (float(vSpecies * GROUNDCOVER_DETAIL_ATLAS_EDGE)
-            + vCardUv.y * float(GROUNDCOVER_DETAIL_ATLAS_EDGE - 1u) + 0.5) / atlasSize.y;
-        cardSample = texture(textures[nonuniformEXT(sp.cardAtlas.x)], vec2(vCardUv.x, atlasY));
-        if (cardSample.a <= 0.0) {
-            discard;
-        }
-    }
 
     // §7's colour gradient: base → tip. Post-#4057 this is the plant's own
     // colour variation and nothing else — the dark base it used to bake as a
     // stand-in for self-shadowing is now §12.1's job, and leaving both in
     // would compound them until the base went black.
-    vec3 albedo = vCard != 0u
-        ? cardSample.rgb
-        : mix(sp.baseColour.rgb, sp.tipColour.rgb, vBladeT);
+    vec3 albedo = mix(sp.baseColour.rgb, sp.tipColour.rgb, vBladeT);
 
     // ── §12.3 ground-colour coupling (#4056) ────────────────────────────
     //
@@ -130,10 +91,6 @@ void main() {
     // and ground disagree the grass reads as a layer resting *on* the
     // terrain rather than as part of it. The weight fades to zero at the
     // tip — the coupling roots the plant, it does not dye the whole blade.
-    //
-    // Cards skip this: their colour already comes from the same
-    // palette-generated atlas the terrain detail layer samples, so they
-    // cannot drift from the ground in the first place.
     //
     // The layer loop mirrors `triangle.frag`'s splat blend, with two
     // differences that are both load-bearing. The `continue` branches below
@@ -154,7 +111,7 @@ void main() {
     // the luminance anchor below reads it once the branches have run.
     vec3 rootGroundAlbedo = vec3(0.0);
     bool haveRootGround = false;
-    if (vCard == 0u && vTerrainTileSlot != GROUNDCOVER_NO_TERRAIN_TILE) {
+    if (vTerrainTileSlot != GROUNDCOVER_NO_TERRAIN_TILE) {
         GpuTerrainTile groundTile = terrainTiles[nonuniformEXT(vTerrainTileSlot)];
         // #4907 — the ground colour is the TERRAIN's composition, not a
         // renormalised average of the overlays: the BTXT base under an
@@ -198,7 +155,7 @@ void main() {
                 haveRootGround = true;
             }
         }
-    } else if (vCard == 0u && vTerrainBaseIndex != 0u) {
+    } else if (vTerrainBaseIndex != 0u) {
         // #5174 — no tile: the terrain draws its base alone (no ATXT paint,
         // or the tile table was full), so the base is the ground colour.
         vec3 groundAlbedo = textureGrad(
@@ -357,15 +314,9 @@ void main() {
     vec2 prevNDC = vPrevClipPos.xy / vPrevClipPos.w;
     outMotion = (currNDC - prevNDC) * 0.5;
 
-    // Outside the transition this remains ordinary opaque, depth-writing
-    // geometry. Inside it the stochastic complementary coverage can change
-    // composition at a pixel even when blade motion is correct, so expose a
-    // bounded reactive term rather than poisoning the whole grass field.
-    float midTransition = 4.0 * vLodMidWeight * (1.0 - vLodMidWeight);
-    float cardTransition = 4.0 * vCardWeight * (1.0 - vCardWeight);
-    // Cards have a stable alpha silhouette, but the Tier-1 coverage that
-    // hands off to them is stochastic.  Flag either crossover (not the whole
-    // field) so the upscaler avoids treating a changing composition as motion.
-    outFsrReactive = 0.9 * max(midTransition, cardTransition);
+    // Ordinary opaque, depth-writing geometry at every distance: the segment
+    // tiers geomorph into one another instead of cross-fading, so there is no
+    // changing composition for the upscaler to mistake for motion.
+    outFsrReactive = 0.0;
     outFsrTransparency = 0.0;
 }

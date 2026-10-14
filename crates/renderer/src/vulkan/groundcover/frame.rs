@@ -948,25 +948,29 @@ mod tests {
         );
     }
 
-    /// Tier changes are draw representations, not residency changes. Pin both
-    /// streams to the one arena and make the shader publish a no-op command
-    /// for both of an inactive ring slot.
+    /// Tier changes are draw representations, not residency changes. Every
+    /// stream addresses the one arena (its own first-vertex stride over the same
+    /// slab), the scatter publishes a no-op command for every non-selected tier
+    /// and for an inactive ring slot, and the chunk's tier comes from the shared
+    /// distance helper the vertex shader's geomorph reads too.
     #[test]
     fn tiered_indirect_streams_preserve_fixed_blade_slabs() {
         let scatter = include_str!("../../../shaders/groundcover_scatter.comp");
         let blade = include_str!("../../../shaders/groundcover_blade.vert");
         let module = crate::source_scan::production_text(include_str!("frame.rs"));
         assert_eq!(GROUNDCOVER_INDIRECT_STREAMS, 3);
-        assert!(scatter.contains("uint midIndex = chunkIdx + GROUNDCOVER_MAX_CHUNKS;"));
-        assert!(scatter.contains("gcDraws[midIndex].firstVertex = sliceBase * midVertsPerPoint;"));
-        assert!(scatter.contains("gcDraws[midIndex].instanceCount = 0u;"));
-        assert!(scatter.contains("uint cardIndex = chunkIdx + 2u * GROUNDCOVER_MAX_CHUNKS;"));
-        assert!(scatter.contains("gcDraws[cardIndex].firstVertex = (sliceBase / cardCluster)"));
-        assert!(scatter.contains("uint midVertsPerPoint = GROUNDCOVER_BLADE_SEGMENTS_MID\n                * GROUNDCOVER_VERTS_PER_SEGMENT;"));
-        assert!(blade.contains("GC_DEBUG_POINTS == 1u || GC_LOD_TIER == 1u || cardTier"));
-        assert!(blade.contains("halfWidth * float(GROUNDCOVER_BLADES_PER_POINT)"));
+        assert!(scatter.contains("uint draw = chunkIdx + tier * GROUNDCOVER_MAX_CHUNKS;"));
+        assert!(scatter.contains("gcDraws[draw].firstVertex = sliceBase * vertsPerPoint;"));
+        assert!(scatter.contains("gcDraws[draw].instanceCount = drawn ? 1u : 0u;"));
+        assert!(scatter.contains("gcDraws[draw].instanceCount = 0u;"));
+        assert!(scatter.contains("bool drawn = tier == lodTier && accepted > 0u;"));
+        assert!(scatter.contains(
+            "byroGcLodTier(byroGcChunkLodDistance(chunk, cell, pc.cameraPos.xyz))"
+        ));
+        assert!(blade.contains("uint tier = GC_LOD_TIER;"));
+        assert!(blade.contains("byroGcChunkLodDistance(chunk, cell, GC_CAMERA_POS)"));
+        assert!(blade.contains("float morph = GC_DEBUG_POINTS == 1u ? 0.0 : byroGcLodMorph(tier, lodDistance);"));
         assert!(blade.contains("width * GROUNDCOVER_MAX_WIDTH_MULTIPLIER"));
-        assert!(blade.contains("bool cardTier = GC_LOD_TIER == 2u;"));
         assert!(module.contains("tier * GROUNDCOVER_MAX_CHUNKS as u64 * GC_DRAW_INDIRECT_STRIDE"));
     }
 }

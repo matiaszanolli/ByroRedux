@@ -126,6 +126,7 @@ layout(push_constant) uniform GcScatterPush {
 
 #include "include/terrain_sample.glsl"
 #include "include/groundcover_density.glsl"
+#include "include/groundcover_lod.glsl"
 // `offsetRayOrigin` steps in camera-relative space against a global named
 // `renderOrigin`; the scatter carries it in its push block.
 #define renderOrigin pc.renderOriginEnable
@@ -175,6 +176,13 @@ float gcLaplacian(GroundCoverCell cell, vec2 worldXZ, float centreHeight) {
     return byroGcLaplacian(cell.vertexOffset, cell.originXZ, worldXZ, centreHeight);
 }
 
+/// Listed vertices one scatter point emits at `tier`: its blades' strips as a
+/// triangle list. Tier 0's figure is the host's `vertsPerBlade` push (the tuft
+/// product), which the vertex shader divides `gl_VertexIndex` by.
+uint gcTierVertsPerPoint(uint tier) {
+    return GROUNDCOVER_LIST_VERTS(byroGcSegmentsForTier(tier)) * byroGcBladesForTier(tier);
+}
+
 void main() {
     uint chunkIdx = gl_WorkGroupID.x;
     if (chunkIdx >= pc.chunkCount) {
@@ -188,24 +196,13 @@ void main() {
     // hole instead of compacting later chunks into a different blade slab.
     if (chunk.slotActive == 0u) {
         if (lane == 0u) {
-            gcDraws[chunkIdx].vertexCount = 0u;
-            gcDraws[chunkIdx].instanceCount = 0u;
-            gcDraws[chunkIdx].firstVertex = sliceBase * pc.vertsPerBlade;
-            gcDraws[chunkIdx].firstInstance = 0u;
-            uint midIndex = chunkIdx + GROUNDCOVER_MAX_CHUNKS;
-            uint midVertsPerPoint = GROUNDCOVER_BLADE_SEGMENTS_MID
-                * GROUNDCOVER_VERTS_PER_SEGMENT;
-            gcDraws[midIndex].vertexCount = 0u;
-            gcDraws[midIndex].instanceCount = 0u;
-            gcDraws[midIndex].firstVertex = sliceBase * midVertsPerPoint;
-            gcDraws[midIndex].firstInstance = 0u;
-            uint cardCluster = GROUNDCOVER_BLADES_PER_POINT * GROUNDCOVER_BLADES_PER_POINT;
-            uint cardIndex = chunkIdx + 2u * GROUNDCOVER_MAX_CHUNKS;
-            gcDraws[cardIndex].vertexCount = 0u;
-            gcDraws[cardIndex].instanceCount = 0u;
-            gcDraws[cardIndex].firstVertex = (sliceBase / cardCluster)
-                * GROUNDCOVER_VERTS_PER_SEGMENT;
-            gcDraws[cardIndex].firstInstance = 0u;
+            for (uint tier = 0u; tier < GROUNDCOVER_LOD_TIERS; ++tier) {
+                uint draw = chunkIdx + tier * GROUNDCOVER_MAX_CHUNKS;
+                gcDraws[draw].vertexCount = 0u;
+                gcDraws[draw].instanceCount = 0u;
+                gcDraws[draw].firstVertex = sliceBase * gcTierVertsPerPoint(tier);
+                gcDraws[draw].firstInstance = 0u;
+            }
         }
         return;
     }
@@ -251,7 +248,7 @@ void main() {
             atomicMin(gcCounters[SLOT_MIN_VIEWDIST], uint(viewDist));
             atomicMax(gcCounters[SLOT_MAX_VIEWDIST], uint(viewDist));
 
-            float dDraw = dGround * byroGcDistanceFade(viewDist);
+            float dDraw = dGround * byroGcBladeDistanceFade(viewDist);
             uint hash = gcHash(chunk.seed, seqIndex);
             float accept = float(hash & 0xFFFFFFu) * (1.0 / 16777216.0);
             if (dGround > 0.0 && accept < dDraw) {
@@ -348,30 +345,23 @@ void main() {
     memoryBarrierBuffer();
     if (lane == 0u) {
         uint accepted = min(gcCounters[chunkIdx], pc.bladesPerChunk);
-        gcDraws[chunkIdx].vertexCount = accepted * pc.vertsPerBlade;
-        gcDraws[chunkIdx].instanceCount = accepted > 0u ? 1u : 0u;
-        gcDraws[chunkIdx].firstVertex = sliceBase * pc.vertsPerBlade;
-        gcDraws[chunkIdx].firstInstance = 0u;
-        // Tier 1 keeps one widened representative ribbon per accepted root,
-        // rather than all four near-tuft blades. The root and fixed slab stay
-        // stable while the stream reduces vertex work 12x (3 segments × four
-        // tuft blades) from tier 0.
-        uint midIndex = chunkIdx + GROUNDCOVER_MAX_CHUNKS;
-        uint midVertsPerPoint = GROUNDCOVER_BLADE_SEGMENTS_MID
-            * GROUNDCOVER_VERTS_PER_SEGMENT;
-        gcDraws[midIndex].vertexCount = accepted * midVertsPerPoint;
-        gcDraws[midIndex].instanceCount = accepted > 0u ? 1u : 0u;
-        gcDraws[midIndex].firstVertex = sliceBase * midVertsPerPoint;
-        gcDraws[midIndex].firstInstance = 0u;
-        // Tier 2 represents a deterministic 4×4 group of the tier-1 roots
-        // with one card. `MAX_BLADES_PER_CHUNK` is divisible by that derived
-        // cluster size, so `firstVertex` remains a fixed-slab mapping.
-        uint cardCluster = GROUNDCOVER_BLADES_PER_POINT * GROUNDCOVER_BLADES_PER_POINT;
-        uint cardIndex = chunkIdx + 2u * GROUNDCOVER_MAX_CHUNKS;
-        uint cards = (accepted + cardCluster - 1u) / cardCluster;
-        gcDraws[cardIndex].vertexCount = cards * GROUNDCOVER_VERTS_PER_SEGMENT;
-        gcDraws[cardIndex].instanceCount = cards > 0u ? 1u : 0u;
-        gcDraws[cardIndex].firstVertex = (sliceBase / cardCluster) * GROUNDCOVER_VERTS_PER_SEGMENT;
-        gcDraws[cardIndex].firstInstance = 0u;
+        // One tier per chunk, chosen from the camera's distance to its centre
+        // (`groundcover_lod.glsl`): every blade is processed by exactly one
+        // stream. The other tiers publish an empty command over the SAME
+        // slab, so an LOD change never re-addresses a neighbouring chunk. The
+        // debug-points view (one vertex per accepted point) is always tier 0.
+        bool debugPoints = pc.vertsPerBlade == 1u;
+        uint lodTier = debugPoints
+            ? 0u
+            : byroGcLodTier(byroGcChunkLodDistance(chunk, cell, pc.cameraPos.xyz));
+        for (uint tier = 0u; tier < GROUNDCOVER_LOD_TIERS; ++tier) {
+            uint vertsPerPoint = tier == 0u && debugPoints ? 1u : gcTierVertsPerPoint(tier);
+            uint draw = chunkIdx + tier * GROUNDCOVER_MAX_CHUNKS;
+            bool drawn = tier == lodTier && accepted > 0u;
+            gcDraws[draw].vertexCount = drawn ? accepted * vertsPerPoint : 0u;
+            gcDraws[draw].instanceCount = drawn ? 1u : 0u;
+            gcDraws[draw].firstVertex = sliceBase * vertsPerPoint;
+            gcDraws[draw].firstInstance = 0u;
+        }
     }
 }

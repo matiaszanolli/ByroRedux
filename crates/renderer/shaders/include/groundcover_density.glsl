@@ -313,4 +313,12 @@ float byroGcDistanceFade(float viewDistance) {
     return 1.0 - smoothstep(GROUNDCOVER_FADE_START, GROUNDCOVER_DRAW_DISTANCE, viewDistance);
 }
 
+/// The procedural blade tier's own, longer fade (see
+/// `GROUNDCOVER_BLADE_FADE_START`). The accept test thins points by this, and
+/// the blade vertex shader widens the survivors by its inverse (capped) so
+/// coverage stays level while density falls.
+float byroGcBladeDistanceFade(float viewDistance) {
+    return 1.0 - smoothstep(GROUNDCOVER_BLADE_FADE_START, GROUNDCOVER_DRAW_DISTANCE, viewDistance);
+}
+
 #endif // BYRO_GROUNDCOVER_DENSITY_GLSL

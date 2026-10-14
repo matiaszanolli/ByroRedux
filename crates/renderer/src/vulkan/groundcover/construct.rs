@@ -791,15 +791,10 @@ mod tests {
         assert!(
             frag.contains("layout(location = 2) out vec2 outMotion;")
                 && frag.contains("outMotion = (currNDC - prevNDC) * 0.5;")
-                && frag.contains("blueNoiseRankAt(")
-                && frag.contains("vLodMidWeight * (1.0 - vCardWeight)")
-                && frag
-                    .contains("float midTransition = 4.0 * vLodMidWeight * (1.0 - vLodMidWeight);")
-                && frag.contains("float cardTransition = 4.0 * vCardWeight * (1.0 - vCardWeight);")
-                && frag.contains("outFsrReactive = 0.9 * max(midTransition, cardTransition);")
+                && frag.contains("outFsrReactive = 0.0;")
                 && frag.contains("outFsrTransparency = 0.0;"),
-            "blade ribbons must write real velocity, use complementary blue-noise \
-             coverage for both LOD bands, and keep reactive output bounded"
+            "blade ribbons must write real velocity and no FSR exception: the \
+             segment tiers geomorph, so there is no stochastic handoff left to flag"
         );
         let production =
             crate::source_scan::production_text(include_str!("construct.rs"));

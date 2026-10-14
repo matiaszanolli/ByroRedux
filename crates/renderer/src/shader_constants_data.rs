@@ -485,16 +485,52 @@ pub const GROUNDCOVER_HISTOGRAM_BUCKETS: u32 = 16;
 
 // ── Blade geometry + wind (§4 "Blade geometry", §8, #4055) ──────────────
 
-/// Segments in a tier-0 blade. §4: a quadratic Bezier ribbon — base point, a
-/// control point displaced by the bend, and a tip — with `gl_VertexIndex`
-/// selecting the segment and the side. Segment count comes from the LOD tier,
-/// so the same shader emits a 3-segment near blade and a 1-segment far blade
-/// branching only on a per-chunk constant.
+/// Segments in a tier-0 (near) blade. §4: a quadratic Bezier ribbon — base
+/// point, a control point displaced by the bend, and a tip — drawn as one
+/// triangle strip of `2N + 1` vertices, listed as `2N - 1` triangles
+/// (`GROUNDCOVER_LIST_VERTS`). Three segments is the 7-vertex near blade.
 pub const GROUNDCOVER_BLADE_SEGMENTS_NEAR: u32 = 3;
-/// Segments in a tier-1 blade, specified by the credibility track's Step 4
-/// tier ladder. The fixed blade arena is drawn twice during the projected-size
-/// cross-fade; only the indirect vertex stride changes.
-pub const GROUNDCOVER_BLADE_SEGMENTS_MID: u32 = 1;
+/// Segment-LOD tiers (near / mid / far) — one indirect stream each.
+pub const GROUNDCOVER_LOD_TIERS: u32 = 3;
+/// Segments in a tier-1 (mid) blade: the 5-vertex strip.
+pub const GROUNDCOVER_BLADE_SEGMENTS_MID: u32 = 2;
+/// Segments in a tier-2 (far) blade: one triangle, 3 vertices.
+pub const GROUNDCOVER_BLADE_SEGMENTS_FAR: u32 = 1;
+/// Blades per scatter point at each tier. The roots are the same fixed slab at
+/// every tier; the far tiers keep a prefix of the near tuft (blades 0..k, which
+/// share seeds with the near blades) and the vertex shader widens the survivors
+/// so ground coverage is conserved (see `groundcover_lod.glsl`).
+pub const GROUNDCOVER_BLADES_PER_POINT_MID: u32 = 2;
+pub const GROUNDCOVER_BLADES_PER_POINT_FAR: u32 = 1;
+/// Distance bands of the segment LOD, from the camera to the CHUNK centre (the
+/// LOD unit is the 512-unit chunk, so a whole chunk changes level and morphs
+/// together). Near blades (3 segments) up to `NEAR_END`, mid (2) up to
+/// `MID_END`, far (1) beyond. Across the last `MORPH_UNITS` before each edge
+/// the outgoing level's intermediate vertices slide onto the next level's
+/// polyline, so the level switch (at exactly the edge) changes nothing visible.
+///
+/// Art direction, not sourced values: chosen so that a ~10-unit blade (the
+/// arid/temperate palette heights are 4-14) is still ~15 px tall at the near
+/// edge and ~7 px at the mid edge for a 1080p, 60-degree view, below which a
+/// third/second segment stops being resolvable. Distance-keyed by design: the
+/// level is a vertex-count decision, and the resolution-dependent anti-aliasing
+/// floor stays pixel-keyed in the blade shader.
+pub const GROUNDCOVER_LOD_NEAR_END: f32 = 600.0;
+pub const GROUNDCOVER_LOD_MID_END: f32 = 1400.0;
+pub const GROUNDCOVER_LOD_MORPH_UNITS: f32 = 200.0;
+/// The blade tier's own density fade. Long on purpose: the stochastic thinning
+/// of far points starts well inside the draw distance and is paid back by
+/// widening the survivors (`GROUNDCOVER_FADE_COVERAGE_MAX_GAIN`), so coverage
+/// stays level instead of stepping at one hard radius — the "bright dense band"
+/// where density dropped while the blades' pixel-floor widening kept growing
+/// their footprint. The authored-model tier keeps `GROUNDCOVER_FADE_START`.
+pub const GROUNDCOVER_BLADE_FADE_START: f32 = 1400.0;
+/// Largest widening a blade takes to pay back distance thinning, and the
+/// largest total widening (LOD blade-count reduction x thinning) a blade may
+/// take; coverage falls off gracefully past either (the terrain's own detail
+/// layer carries the colour there).
+pub const GROUNDCOVER_FADE_COVERAGE_MAX_GAIN: f32 = 3.0;
+pub const GROUNDCOVER_COVERAGE_MAX_WIDEN: f32 = 6.0;
 /// Where the quadratic Bézier's control point sits along the blade's UP axis:
 /// half-way to the tip. This is geometry, not a visual tuning knob.
 pub const GROUNDCOVER_BEZIER_CONTROL_FRACTION: f32 = 0.5;
@@ -511,10 +547,6 @@ pub const GROUNDCOVER_BEZIER_BEND_CARRY_MAX: f32 = 0.30;
 /// Numerical guards for zero-length blade/wind vectors; not artistic tuning.
 pub const GROUNDCOVER_BLADE_VECTOR_EPSILON: f32 = 1.0e-4;
 pub const GROUNDCOVER_PROJECTED_DEPTH_EPSILON: f32 = 1.0e-3;
-/// Two triangles per segment, non-indexed. The tip ring collapses to zero
-/// width, so the last segment degenerates into a triangle without needing a
-/// special case in the vertex shader.
-pub const GROUNDCOVER_VERTS_PER_SEGMENT: u32 = 6;
 /// Blades the vertex shader grows from each accepted scatter point.
 ///
 /// Outerra, "Procedural grass rendering" (2012): "At the most detailed level
@@ -2468,7 +2500,16 @@ pub const SHADER_DEFINES: &[HeaderLine] = &[
     HeaderLine::Define("GROUNDCOVER_INTERACTION_WORKGROUP", ShaderValue::UintPlain(GROUNDCOVER_INTERACTION_WORKGROUP)),
     HeaderLine::Define("GROUNDCOVER_BLADE_SEGMENTS_NEAR", ShaderValue::Uint(GROUNDCOVER_BLADE_SEGMENTS_NEAR)),
     HeaderLine::Define("GROUNDCOVER_BLADE_SEGMENTS_MID", ShaderValue::Uint(GROUNDCOVER_BLADE_SEGMENTS_MID)),
-    HeaderLine::Define("GROUNDCOVER_VERTS_PER_SEGMENT", ShaderValue::Uint(GROUNDCOVER_VERTS_PER_SEGMENT)),
+    HeaderLine::Define("GROUNDCOVER_LOD_TIERS", ShaderValue::Uint(GROUNDCOVER_LOD_TIERS)),
+    HeaderLine::Define("GROUNDCOVER_BLADE_SEGMENTS_FAR", ShaderValue::Uint(GROUNDCOVER_BLADE_SEGMENTS_FAR)),
+    HeaderLine::Define("GROUNDCOVER_BLADES_PER_POINT_MID", ShaderValue::Uint(GROUNDCOVER_BLADES_PER_POINT_MID)),
+    HeaderLine::Define("GROUNDCOVER_BLADES_PER_POINT_FAR", ShaderValue::Uint(GROUNDCOVER_BLADES_PER_POINT_FAR)),
+    HeaderLine::Define("GROUNDCOVER_LOD_NEAR_END", ShaderValue::Float(GROUNDCOVER_LOD_NEAR_END)),
+    HeaderLine::Define("GROUNDCOVER_LOD_MID_END", ShaderValue::Float(GROUNDCOVER_LOD_MID_END)),
+    HeaderLine::Define("GROUNDCOVER_LOD_MORPH_UNITS", ShaderValue::Float(GROUNDCOVER_LOD_MORPH_UNITS)),
+    HeaderLine::Define("GROUNDCOVER_BLADE_FADE_START", ShaderValue::Float(GROUNDCOVER_BLADE_FADE_START)),
+    HeaderLine::Define("GROUNDCOVER_FADE_COVERAGE_MAX_GAIN", ShaderValue::Float(GROUNDCOVER_FADE_COVERAGE_MAX_GAIN)),
+    HeaderLine::Define("GROUNDCOVER_COVERAGE_MAX_WIDEN", ShaderValue::Float(GROUNDCOVER_COVERAGE_MAX_WIDEN)),
     HeaderLine::Define("GROUNDCOVER_BLADES_PER_POINT", ShaderValue::Uint(GROUNDCOVER_BLADES_PER_POINT)),
     HeaderLine::Define("GROUNDCOVER_SPECIES_TABLE_SIZE", ShaderValue::Uint(GROUNDCOVER_SPECIES_TABLE_SIZE)),
     HeaderLine::Define("GROUNDCOVER_CANDIDATES_PER_THREAD", ShaderValue::Uint(GROUNDCOVER_CANDIDATES_PER_THREAD)),

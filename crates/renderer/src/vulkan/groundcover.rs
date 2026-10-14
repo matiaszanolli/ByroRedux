@@ -56,7 +56,7 @@ use crate::shader_constants::{
     GROUNDCOVER_CHUNKS_PER_CELL_SIDE, GROUNDCOVER_INTERACTION_MAX_DISTURBERS,
     GROUNDCOVER_INTERACTION_TEXELS, GROUNDCOVER_INTERACTION_UNITS,
     GROUNDCOVER_INTERACTION_WORKGROUP, GROUNDCOVER_MAX_BLADES_PER_CHUNK, GROUNDCOVER_MAX_CHUNKS,
-    GROUNDCOVER_MAX_CELLS, GROUNDCOVER_SPECIES_TABLE_SIZE, GROUNDCOVER_VERTS_PER_SEGMENT,
+    GROUNDCOVER_MAX_CELLS, GROUNDCOVER_SPECIES_TABLE_SIZE, GROUNDCOVER_LOD_TIERS, GROUNDCOVER_BLADE_SEGMENTS_FAR,
 };
 
 const SCATTER_SPV: &[u8] = include_bytes!("../../shaders/groundcover_scatter.comp.spv");
@@ -315,14 +315,20 @@ pub struct GroundCoverFrame<'a> {
 /// fill and before the dispatch.
 const EXTREMA_MIN_SEED: u32 = u32::MAX;
 
-/// Vertices one tier-0 blade emits.
-pub const VERTS_PER_BLADE_NEAR: u32 =
-    GROUNDCOVER_BLADE_SEGMENTS_NEAR * GROUNDCOVER_VERTS_PER_SEGMENT;
-/// Vertices one tier-1 blade emits. Both representations index the same fixed
-/// blade slab; their independent indirect streams carry their own stride.
-pub const VERTS_PER_BLADE_MID: u32 = GROUNDCOVER_BLADE_SEGMENTS_MID * GROUNDCOVER_VERTS_PER_SEGMENT;
-/// Near ribbons, reduced mid ribbons, and far clump cards.
-const GROUNDCOVER_INDIRECT_STREAMS: u64 = 3;
+/// Listed vertices of an `N`-segment blade: its `2N + 1`-vertex triangle strip
+/// as `2N - 1` triangles (`GROUNDCOVER_LIST_VERTS` in `groundcover_lod.glsl`).
+pub const fn strip_list_verts(segments: u32) -> u32 {
+    3 * (2 * segments - 1)
+}
+/// Vertices one tier-0 (near, 3-segment) blade emits.
+pub const VERTS_PER_BLADE_NEAR: u32 = strip_list_verts(GROUNDCOVER_BLADE_SEGMENTS_NEAR);
+/// Vertices one tier-1 (mid, 2-segment) blade emits.
+pub const VERTS_PER_BLADE_MID: u32 = strip_list_verts(GROUNDCOVER_BLADE_SEGMENTS_MID);
+/// Vertices one tier-2 (far, 1-segment) blade emits: a single triangle.
+pub const VERTS_PER_BLADE_FAR: u32 = strip_list_verts(GROUNDCOVER_BLADE_SEGMENTS_FAR);
+/// Near, mid and far segment tiers — one indirect stream each. A chunk draws in
+/// exactly one of them (chosen by the scatter from its camera distance).
+const GROUNDCOVER_INDIRECT_STREAMS: u64 = GROUNDCOVER_LOD_TIERS as u64;
 /// Bytes per blade-tier indirect command: `groundcover_scatter.comp`'s
 /// `GcDrawIndirect` is a `VkDrawIndirectCommand`. Sizes the indirect buffer
 /// and strides every `cmd_draw_indirect`; the GLSL struct's std430 size is
@@ -523,7 +529,7 @@ mod tests {
         );
         assert!(
             scatter.contains("if (chunk.slotActive == 0u)")
-                && scatter.contains("gcDraws[chunkIdx].instanceCount = 0u;"),
+                && scatter.contains("gcDraws[draw].instanceCount = 0u;"),
             "scatter must turn a vacant slot into a no-op indirect draw before reading its cell"
         );
     }
@@ -574,7 +580,7 @@ mod tests {
             .map(str::trim)
             .filter(|line| line.starts_with("gl_Position ="))
             .collect();
-        assert_eq!(positions.len(), 3, "one gl_Position write per blade path");
+        assert_eq!(positions.len(), 2, "one gl_Position write per blade path (points, ribbon)");
         assert!(
             positions
                 .iter()
@@ -727,13 +733,16 @@ mod tests {
         );
     }
 
-    /// A tier-0 blade is 3 Bezier segments of two triangles each. The scatter
+    /// A tier-0 blade is a 3-segment, 7-vertex strip (5 triangles). The scatter
     /// writes `accepted * verts_per_blade` into the indirect `vertexCount`, so
     /// this factor being wrong truncates or overruns every blade in the frame.
     #[test]
     fn tier_zero_blade_vertex_count() {
-        assert_eq!(VERTS_PER_BLADE_NEAR, 18);
-        assert_eq!(VERTS_PER_BLADE_MID, 6);
+        // `2N + 1`-vertex strips listed as `2N - 1` triangles: 7 / 5 / 3 strip
+        // vertices are 15 / 9 / 3 listed vertices.
+        assert_eq!(VERTS_PER_BLADE_NEAR, 15);
+        assert_eq!(VERTS_PER_BLADE_MID, 9);
+        assert_eq!(VERTS_PER_BLADE_FAR, 3);
         assert_eq!(crate::shader_constants::GROUNDCOVER_SCATTER_WORKGROUP, 64);
     }
 
@@ -921,7 +930,7 @@ mod tests {
             .find("accept < dDraw")
             .expect("the accept test must read d_draw");
         let fade = src
-            .find("byroGcDistanceFade(")
+            .find("byroGcBladeDistanceFade(")
             .expect("d_draw must come from the distance fade");
         assert!(fade < accept, "d_draw must be computed before it is tested");
     }
@@ -1264,6 +1273,228 @@ mod memory_budget_ledger_tests {
                  {} B: {row}",
                 grouped(bytes)
             );
+        }
+    }
+}
+
+/// The segment LOD's math (`include/groundcover_lod.glsl` and the geomorph in
+/// `groundcover_blade.vert`), ported to Rust so its invariants are testable
+/// without a device: the morph reaches the next tier's polyline exactly at the
+/// tier switch, and a tuft's ribbon coverage is conserved at every distance.
+/// Source pins keep the ports honest against the shaders.
+#[cfg(test)]
+mod segment_lod_tests {
+    use crate::shader_constants::{
+        GROUNDCOVER_BLADES_PER_POINT, GROUNDCOVER_BLADES_PER_POINT_FAR,
+        GROUNDCOVER_BLADES_PER_POINT_MID, GROUNDCOVER_BLADE_SEGMENTS_FAR,
+        GROUNDCOVER_BLADE_SEGMENTS_MID, GROUNDCOVER_BLADE_SEGMENTS_NEAR, GROUNDCOVER_LOD_MID_END,
+        GROUNDCOVER_LOD_MORPH_UNITS, GROUNDCOVER_LOD_NEAR_END,
+    };
+
+    type V3 = [f32; 3];
+
+    fn lerp(a: V3, b: V3, t: f32) -> V3 {
+        [0, 1, 2].map(|i| a[i] + (b[i] - a[i]) * t)
+    }
+
+    fn bezier(p0: V3, p1: V3, p2: V3, t: f32) -> V3 {
+        let omt = 1.0 - t;
+        [0, 1, 2].map(|i| omt * omt * p0[i] + 2.0 * omt * t * p1[i] + t * t * p2[i])
+    }
+
+    fn half_width(width: f32, t: f32) -> f32 {
+        0.5 * width * (1.0 - t * t)
+    }
+
+    fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
+        let t = ((x - e0) / (e1 - e0)).clamp(0.0, 1.0);
+        t * t * (3.0 - 2.0 * t)
+    }
+
+    fn segments(tier: u32) -> u32 {
+        match tier {
+            0 => GROUNDCOVER_BLADE_SEGMENTS_NEAR,
+            1 => GROUNDCOVER_BLADE_SEGMENTS_MID,
+            _ => GROUNDCOVER_BLADE_SEGMENTS_FAR,
+        }
+    }
+
+    fn blades(tier: u32) -> u32 {
+        match tier {
+            0 => GROUNDCOVER_BLADES_PER_POINT,
+            1 => GROUNDCOVER_BLADES_PER_POINT_MID,
+            _ => GROUNDCOVER_BLADES_PER_POINT_FAR,
+        }
+    }
+
+    fn morph(tier: u32, d: f32) -> f32 {
+        match tier {
+            0 => smoothstep(GROUNDCOVER_LOD_NEAR_END - GROUNDCOVER_LOD_MORPH_UNITS, GROUNDCOVER_LOD_NEAR_END, d),
+            1 => smoothstep(GROUNDCOVER_LOD_MID_END - GROUNDCOVER_LOD_MORPH_UNITS, GROUNDCOVER_LOD_MID_END, d),
+            _ => 0.0,
+        }
+    }
+
+    fn blade_weight(tier: u32, sub_blade: u32, morph: f32) -> f32 {
+        if tier >= 2 {
+            return 1.0;
+        }
+        if sub_blade < blades(tier + 1) { 1.0 } else { 1.0 - morph }
+    }
+
+    fn coverage_widen(tier: u32, morph: f32) -> f32 {
+        let total: f32 = (0..blades(tier)).map(|j| blade_weight(tier, j, morph)).sum();
+        GROUNDCOVER_BLADES_PER_POINT as f32 / total.max(1.0e-3)
+    }
+
+    /// The shader's morphed vertex at strip `level` of an `n`-segment blade.
+    fn morphed(p: [V3; 3], width: f32, n: u32, level: u32, m: f32) -> (V3, f32) {
+        let t = level as f32 / n as f32;
+        let mut pos = bezier(p[0], p[1], p[2], t);
+        let mut hw = half_width(width, t);
+        if m > 0.0 && n > 1 {
+            let lower = (n - 1) as f32;
+            let u = t * lower;
+            let seg = u.floor().min(lower - 1.0);
+            let f = u - seg;
+            let (ta, tb) = (seg / lower, (seg + 1.0) / lower);
+            let a = bezier(p[0], p[1], p[2], ta);
+            let b = bezier(p[0], p[1], p[2], tb);
+            pos = lerp(pos, lerp(a, b, f), m);
+            hw += (half_width(width, ta) + (half_width(width, tb) - half_width(width, ta)) * f - hw) * m;
+        }
+        (pos, hw)
+    }
+
+    fn dist_to_segment(p: V3, a: V3, b: V3) -> f32 {
+        let ab = [0, 1, 2].map(|i| b[i] - a[i]);
+        let ap = [0, 1, 2].map(|i| p[i] - a[i]);
+        let len2: f32 = ab.iter().map(|x| x * x).sum();
+        let t = (ap.iter().zip(&ab).map(|(x, y)| x * y).sum::<f32>() / len2).clamp(0.0, 1.0);
+        let q = lerp(a, b, t);
+        (0..3).map(|i| (p[i] - q[i]).powi(2)).sum::<f32>().sqrt()
+    }
+
+    /// At `morph == 1` an `N`-segment strip IS the `N-1`-segment strip: every
+    /// vertex sits on the lower tier's polyline through the same Bezier, with
+    /// the lower tier's width there. That is what makes the stream switch (at
+    /// exactly the edge) invisible.
+    #[test]
+    fn a_fully_morphed_tier_is_the_next_tiers_polyline() {
+        let curve = [[0.0, 0.0, 0.0], [0.4, 5.0, 0.1], [3.0, 9.0, 0.5]];
+        let width = 1.2;
+        for tier in 0..2u32 {
+            let n = segments(tier);
+            let lower = n - 1;
+            for level in 0..=n {
+                let (pos, hw) = morphed(curve, width, n, level, 1.0);
+                // On the lower polyline's segment containing this vertex.
+                let t = level as f32 / n as f32;
+                let u = t * lower as f32;
+                let seg = u.floor().min(lower as f32 - 1.0);
+                let a = bezier(curve[0], curve[1], curve[2], seg / lower as f32);
+                let b = bezier(curve[0], curve[1], curve[2], (seg + 1.0) / lower as f32);
+                assert!(
+                    dist_to_segment(pos, a, b) < 1.0e-5,
+                    "tier {tier} level {level} left the lower polyline"
+                );
+                // The width follows the lower polyline's linear interpolation.
+                let f = u - seg;
+                let w_lo = half_width(width, seg / lower as f32);
+                let w_hi = half_width(width, (seg + 1.0) / lower as f32);
+                assert!((hw - (w_lo + (w_hi - w_lo) * f)).abs() < 1.0e-5);
+            }
+            // The lower tier's own vertices (levels k of `lower`) are exactly
+            // the morphed strip's vertices at the same parameters.
+            for k in 0..=lower {
+                let own = bezier(curve[0], curve[1], curve[2], k as f32 / lower as f32);
+                let on_path = (0..=n).any(|level| {
+                    let (pos, _) = morphed(curve, width, n, level, 1.0);
+                    (0..3).all(|i| (pos[i] - own[i]).abs() < 1.0e-5)
+                });
+                // Levels 0 and N are shared; interior lower vertices are the
+                // polyline's corners, which the morphed strip passes through.
+                assert!(on_path || k > 0 && k < lower, "tier {tier} lost an endpoint");
+            }
+        }
+        // And at morph == 0 nothing moves.
+        let (p0, w0) = morphed(curve, width, 3, 1, 0.0);
+        assert_eq!(p0, bezier(curve[0], curve[1], curve[2], 1.0 / 3.0));
+        assert_eq!(w0, half_width(width, 1.0 / 3.0));
+    }
+
+    /// A tuft's ribbon coverage (survivor weights x widening) is exactly the
+    /// near tuft's `GROUNDCOVER_BLADES_PER_POINT` at every tier and morph, so
+    /// thinning the population with distance never thins the sward.
+    #[test]
+    fn coverage_is_conserved_through_every_tier_and_morph() {
+        for tier in 0..3u32 {
+            for step in 0..=20 {
+                let m = if tier == 2 { 0.0 } else { step as f32 / 20.0 };
+                let covered: f32 = (0..blades(tier))
+                    .map(|j| blade_weight(tier, j, m) * coverage_widen(tier, m))
+                    .sum();
+                assert!(
+                    (covered - GROUNDCOVER_BLADES_PER_POINT as f32).abs() < 1.0e-4,
+                    "tier {tier} morph {m}: coverage {covered}"
+                );
+            }
+        }
+        // The hand-off is seamless: a fully morphed tier equals the next
+        // tier's own un-morphed state (same widening).
+        for tier in 0..2u32 {
+            assert!(
+                (coverage_widen(tier, 1.0) - coverage_widen(tier + 1, 0.0)).abs() < 1.0e-5,
+                "tier {tier} -> {} widening differs at the switch",
+                tier + 1
+            );
+        }
+    }
+
+    /// The band layout: each morph completes exactly at its tier edge, the mid
+    /// tier has a stable interval between its own morph-in and morph-out edges,
+    /// and a chunk's morph is a function of distance alone.
+    #[test]
+    fn morph_bands_complete_at_the_tier_edges() {
+        assert!(GROUNDCOVER_LOD_MORPH_UNITS > 0.0);
+        assert!(GROUNDCOVER_LOD_NEAR_END - GROUNDCOVER_LOD_MORPH_UNITS > 0.0);
+        assert!(
+            GROUNDCOVER_LOD_MID_END - GROUNDCOVER_LOD_MORPH_UNITS > GROUNDCOVER_LOD_NEAR_END,
+            "the mid tier must have a stable interval between the near edge and its own morph"
+        );
+        assert_eq!(morph(0, GROUNDCOVER_LOD_NEAR_END), 1.0);
+        assert_eq!(morph(0, GROUNDCOVER_LOD_NEAR_END - GROUNDCOVER_LOD_MORPH_UNITS), 0.0);
+        assert_eq!(morph(1, GROUNDCOVER_LOD_MID_END), 1.0);
+        assert_eq!(morph(1, GROUNDCOVER_LOD_NEAR_END), 0.0);
+        let mut last = 0.0_f32;
+        for d in 0..=GROUNDCOVER_LOD_NEAR_END as u32 {
+            let m = morph(0, d as f32);
+            assert!(m >= last, "the near morph must be monotonic");
+            last = m;
+        }
+    }
+
+    /// The Rust ports above are only evidence about the shaders while the
+    /// shaders still contain these expressions.
+    #[test]
+    fn the_shaders_still_implement_the_ported_math() {
+        let lod = include_str!("../../shaders/include/groundcover_lod.glsl");
+        let vert = include_str!("../../shaders/groundcover_blade.vert");
+        for needle in [
+            "return subBlade < kept ? 1.0 : 1.0 - morph;",
+            "return float(GROUNDCOVER_BLADES_PER_POINT) / max(total, 1.0e-3);",
+            "#define GROUNDCOVER_LIST_VERTS(N) (3u * (2u * (N) - 1u))",
+            "GROUNDCOVER_LOD_NEAR_END - GROUNDCOVER_LOD_MORPH_UNITS",
+        ] {
+            assert!(lod.contains(needle), "groundcover_lod.glsl lost `{needle}`");
+        }
+        for needle in [
+            "float u = t * lowerSegments;",
+            "float seg = min(floor(u), lowerSegments - 1.0);",
+            "pos = mix(pos, mix(a, b, f), morph);",
+            "return 0.5 * width * (1.0 - t * t);",
+        ] {
+            assert!(vert.contains(needle), "groundcover_blade.vert lost `{needle}`");
         }
     }
 }
