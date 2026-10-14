@@ -489,6 +489,82 @@ fn script_function_component() -> String {
     )
 }
 
+/// A script function returning `ELEMENTS` strings of `STRING_BYTES` each via
+/// `set-result-string-array` — the largest `list<string>` the SDK accepts when
+/// both are the SDK caps (#5718). Every list entry points at one shared
+/// string, which the lift neither forbids nor deduplicates.
+fn string_array_result_component(elements: usize, string_bytes: usize) -> String {
+    const TABLE_AT: usize = 0;
+    const DATA_AT: usize = 8192;
+    let pages = (DATA_AT + string_bytes).div_ceil(65536).max(1);
+    let entry = {
+        let word = |value: usize| -> String {
+            value
+                .to_le_bytes()[..4]
+                .iter()
+                .map(|byte| format!("\\{byte:02x}"))
+                .collect()
+        };
+        format!("{}{}", word(DATA_AT), word(string_bytes))
+    };
+    let table = entry.repeat(elements);
+    let text = "x".repeat(string_bytes);
+    format!(
+        r#"(component
+            {IMPORTS}
+            (import "byro:mod-host/script-functions@0.1.0" (instance $functions
+                (export "set-result-string-array" (func (param "value" (list string))))
+            ))
+            (alias export $functions "set-result-string-array" (func $set-result))
+            (core module $libc
+                (memory (export "memory") {pages})
+            )
+            (core instance $libc (instantiate $libc))
+            (core func $set-result-lower
+                (canon lower (func $set-result) (memory (core memory $libc "memory"))))
+            (core module $guest
+                (import "libc" "memory" (memory {pages}))
+                (import "host" "set-result" (func $set-result (param i32 i32)))
+                (data (i32.const {TABLE_AT}) "{table}")
+                (data (i32.const {DATA_AT}) "{text}")
+                (func (export "initialize"))
+                (func (export "shutdown"))
+                {ON_ACTIVATE_CORE}
+                {ON_CELL_LOAD_CORE}
+                {ON_HIT_CORE}
+                {ON_EQUIPMENT_CORE}
+                {ON_INPUT_CORE}
+                {ON_SESSION_CORE}
+                {ON_CUSTOM_EVENT_CORE}
+                {ON_UPDATE_CORE}
+                (func (export "on-console-command") (param i32))
+                (func (export "on-script-function") (param $index i32)
+                    i32.const {TABLE_AT}
+                    i32.const {elements}
+                    call $set-result)
+            )
+            (core instance $guest-instance (instantiate $guest
+                (with "libc" (instance $libc))
+                (with "host" (instance
+                    (export "set-result" (func $set-result-lower))))
+            ))
+            (func (export "initialize")
+                (canon lift (core func $guest-instance "initialize")))
+            (func (export "shutdown")
+                (canon lift (core func $guest-instance "shutdown")))
+            {ON_ACTIVATE_LIFT}
+            {ON_CELL_LOAD_LIFT}
+            {ON_HIT_LIFT}
+            {ON_EQUIPMENT_LIFT}
+            {ON_INPUT_LIFT}
+            {ON_SESSION_LIFT}
+            {ON_CUSTOM_EVENT_LIFT}
+            {ON_UPDATE_LIFT}
+            {ON_CONSOLE_LIFT}
+        )"#
+    )
+}
+
 fn console_manifest() -> ExtensionManifest {
     let mut manifest = manifest();
     manifest.capabilities = vec![CapabilityRequest {
@@ -2082,6 +2158,116 @@ fn invalid_guest_script_result_quarantines_and_discards_commands() {
             if fault.phase == LifecyclePhase::ScriptFunction
                 && fault.kind == FaultKind::Guest
     ));
+}
+
+/// Runs a one-function string-array component under `config` and returns the
+/// instance after its first (and only) script-function call.
+fn call_string_array_result(
+    config: SandboxConfig,
+    elements: usize,
+    string_bytes: usize,
+) -> (
+    Result<(ScriptValue, Vec<byroredux_sdk::storage::HostCommand>), SandboxError>,
+    crate::runtime::ModInstance,
+) {
+    let runtime = SandboxRuntime::new(config).unwrap();
+    let mut manifest = script_function_manifest(ScriptValueType::StringArray);
+    manifest.script_functions[0].parameters.clear();
+    let component = ComponentId::new("runtime").unwrap();
+    let bytes = wat::parse_str(string_array_result_component(elements, string_bytes)).unwrap();
+    let compiled = runtime.compile(&manifest, &component, &bytes).unwrap();
+    let mut grants = CapabilitySet::new();
+    grants.grant(SCRIPT_FUNCTIONS_REGISTER_CAPABILITY).unwrap();
+    let mut instance = runtime.instantiate(&compiled, &manifest, grants).unwrap();
+    instance.initialize().unwrap();
+    let result = instance.on_script_function(0, &[]);
+    (result, instance)
+}
+
+/// #5718 — a `list<string>` result at the SDK's own caps is a legitimate
+/// ~2 MiB lift. The hostcall budget used to be `max_log_message_bytes +
+/// 1 KiB` (17,408 B by default), so it trapped and quarantined a mod that
+/// stayed inside the SDK contract — and a config that lowered the log cap
+/// starved even the 4 KiB console / script-string caps.
+#[test]
+fn string_array_result_at_the_sdk_caps_clears_the_hostcall_budget() {
+    use byroredux_sdk::script_function::{MAX_SCRIPT_ARRAY_ELEMENTS, MAX_SCRIPT_STRING_BYTES};
+    for config in [
+        SandboxConfig::default(),
+        // A tight log cap must not shrink the budget below the SDK's payloads.
+        SandboxConfig {
+            max_log_message_bytes: 1024,
+            ..SandboxConfig::default()
+        },
+    ] {
+        let (result, instance) =
+            call_string_array_result(config, MAX_SCRIPT_ARRAY_ELEMENTS, MAX_SCRIPT_STRING_BYTES);
+        let (value, _) = result.expect("a result inside the SDK caps must not trap");
+        let ScriptValue::StringArray(values) = value else {
+            panic!("expected a string array result");
+        };
+        assert_eq!(values.len(), MAX_SCRIPT_ARRAY_ELEMENTS);
+        assert!(values.iter().all(|v| v.len() == MAX_SCRIPT_STRING_BYTES));
+        assert_eq!(instance.status(), &InstanceStatus::Active);
+    }
+}
+
+/// #5718 — the budget still bites: a lift past it traps at wasmtime's
+/// boundary, before the host function (and its allocation) runs. One
+/// element over the SDK's own array cap, at full string size, exceeds the
+/// budget; the host's element-count check would also refuse it, but only
+/// AFTER the whole list was lifted.
+#[test]
+fn a_lift_past_the_hostcall_budget_traps_before_the_host_runs() {
+    use byroredux_sdk::script_function::MAX_SCRIPT_STRING_BYTES;
+    let config = SandboxConfig::default();
+    let budget = config.hostcall_fuel();
+    let elements = budget / MAX_SCRIPT_STRING_BYTES + 8;
+    let (result, instance) = call_string_array_result(config, elements, MAX_SCRIPT_STRING_BYTES);
+    let error = result.expect_err("a lift past the budget must trap");
+    assert!(
+        error.to_string().to_lowercase().contains("fuel"),
+        "expected wasmtime's hostcall-fuel trap, got: {error}"
+    );
+    assert!(matches!(instance.status(), InstanceStatus::Quarantined(_)));
+}
+
+/// #5718 — `set_hostcall_fuel` must stay wired: wasmtime's default (128 MiB)
+/// would let a single `write-line` make the host allocate the guest's whole
+/// memory before the 4 KiB line check runs. Dropping or mis-ordering the call
+/// restores that default and fails here.
+#[test]
+fn the_store_carries_the_derived_hostcall_budget_not_wasmtimes_default() {
+    let config = SandboxConfig::default();
+    let expected = config.hostcall_fuel();
+    let runtime = SandboxRuntime::new(config).unwrap();
+    let compiled = compile_wat(&runtime, &logging_component());
+    let instance = runtime
+        .instantiate(&compiled, &manifest(), CapabilitySet::new())
+        .unwrap();
+    assert_eq!(instance.store.hostcall_fuel(), expected);
+    assert!(expected < 128 * 1024 * 1024 / 8, "far below wasmtime's default");
+}
+
+/// #5718 — the derivation, pinned: the floor clears the SDK's largest
+/// legitimate lift whatever the log cap, and a raised log cap is honoured.
+#[test]
+fn hostcall_budget_floor_and_log_cap_interplay() {
+    use byroredux_sdk::script_function::{MAX_SCRIPT_ARRAY_ELEMENTS, MAX_SCRIPT_STRING_BYTES};
+    let tight = SandboxConfig {
+        max_log_message_bytes: 1,
+        ..SandboxConfig::default()
+    };
+    assert!(
+        tight.hostcall_fuel() >= MAX_SCRIPT_ARRAY_ELEMENTS * MAX_SCRIPT_STRING_BYTES,
+        "the budget must clear a full string array whatever the log cap"
+    );
+    let generous = SandboxConfig {
+        max_log_message_bytes: 64 * 1024 * 1024,
+        max_log_bytes: 128 * 1024 * 1024,
+        ..SandboxConfig::default()
+    };
+    assert_eq!(generous.hostcall_fuel(), 64 * 1024 * 1024 + 1024);
 }
 
 #[test]

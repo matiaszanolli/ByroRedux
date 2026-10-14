@@ -1,4 +1,5 @@
 use crate::{Result, SandboxError};
+use byroredux_sdk::script_function::{MAX_SCRIPT_ARRAY_ELEMENTS, MAX_SCRIPT_STRING_BYTES};
 
 // ── #3049 (SAFE-2026-08-16-02) — validate() ceilings ────────────────
 //
@@ -17,6 +18,30 @@ use crate::{Result, SandboxError};
 /// [`MAX_WASM_STACK_BYTES_CEILING`]) and `fuel_per_entry` (a different
 /// unit entirely — see [`MAX_FUEL_PER_ENTRY`]).
 const MAX_SANE_LIMIT: usize = 1 << 30; // 1 GiB
+
+/// Per-element charge wasmtime adds for a lifted `list<T>` on top of the
+/// elements' own payload: `len × size_of::<T>()` of the HOST type
+/// (wasmtime-49.0.2 `component/func/typed.rs`, `consume_fuel_array`). A host
+/// `String` is 24 bytes on a 64-bit target; 32 keeps a margin without
+/// pretending to the exact figure.
+const HOSTCALL_LIST_ELEMENT_CHARGE_BYTES: usize = 32;
+
+/// Slack for the rest of a call's argument lifting (keys, handles, option
+/// tags) beside its one big payload.
+const HOSTCALL_ARGUMENT_SLACK_BYTES: usize = 1024;
+
+/// The most one guest→host call may legitimately make wasmtime lift (#5718).
+/// That is `set-result-string-array` at the SDK caps —
+/// [`MAX_SCRIPT_ARRAY_ELEMENTS`] strings of up to [`MAX_SCRIPT_STRING_BYTES`]
+/// each, ~2 MiB — which dwarfs every other interface's argument (console
+/// lines 4 KiB, custom-event payloads 4 KiB, storage strings 16 KiB and
+/// blobs 64 KiB by default). wasmtime's budget is per host call, so this is
+/// the floor the store's `hostcall_fuel` must clear for the SDK's own
+/// contract to be callable at all; a lower value traps (and quarantines) a
+/// mod that stayed inside the SDK limits.
+pub(crate) const MAX_HOSTCALL_LIFT_BYTES: usize = MAX_SCRIPT_ARRAY_ELEMENTS
+    * (MAX_SCRIPT_STRING_BYTES + HOSTCALL_LIST_ELEMENT_CHARGE_BYTES)
+    + HOSTCALL_ARGUMENT_SLACK_BYTES;
 
 /// `max_wasm_stack_bytes` needs a MUCH tighter ceiling than
 /// [`MAX_SANE_LIMIT`]: wasmtime's `Config::max_wasm_stack` documents
@@ -120,6 +145,22 @@ impl Default for SandboxConfig {
 }
 
 impl SandboxConfig {
+    /// The store's wasmtime `hostcall_fuel`: how much guest data a single host
+    /// call may lift before it traps. Wasmtime lifts a `string` / `list`
+    /// argument into host memory BEFORE the per-interface size checks run,
+    /// so this is what keeps a guest from making the host allocate its whole
+    /// linear memory for one message that is then refused. It is the larger
+    /// of the SDK's own largest legitimate payload
+    /// ([`MAX_HOSTCALL_LIFT_BYTES`]) and the configured log-message cap (plus
+    /// slack), so lowering `max_log_message_bytes` can never starve a
+    /// payload the SDK accepts, and raising it is honoured (#5718).
+    pub(crate) fn hostcall_fuel(&self) -> usize {
+        MAX_HOSTCALL_LIFT_BYTES.max(
+            self.max_log_message_bytes
+                .saturating_add(HOSTCALL_ARGUMENT_SLACK_BYTES),
+        )
+    }
+
     pub fn validate(&self) -> Result<()> {
         if self.max_component_bytes == 0 {
             return Err(SandboxError::InvalidConfig(

@@ -406,15 +406,14 @@ impl SandboxRuntime {
             .set_fuel(self.config.fuel_per_entry)
             .map_err(|error| SandboxError::Instantiate(error.to_string()))?;
         // wasmtime's default hostcall fuel is 128 MiB — the amount of
-        // guest data a host call may lift per call. The `String` args of
-        // the WIT interfaces (log's message, console's write_line) are
-        // lifted into host memory BEFORE the per-message size checks run,
-        // so an unbounded guest could make the host allocate its whole
-        // memory for one message the 16 KiB check then rejects.
-        // max_log_message_bytes is the largest guest→host payload any
-        // interface accepts (console lines cap at 4 KiB); +1 KiB covers
-        // the rest of a call's argument-lifting overhead.
-        store.set_hostcall_fuel(self.config.max_log_message_bytes + 1024);
+        // guest data a host call may lift per call. The `String`/`list`
+        // args of the WIT interfaces are lifted into host memory BEFORE the
+        // per-interface size checks run, so an unbounded guest could make
+        // the host allocate its whole memory for one message the check
+        // then rejects. The budget is sized by `SandboxConfig::hostcall_fuel`
+        // from the SDK's largest legitimate payload (a string-array
+        // script result, ~2 MiB), not from the log cap (#5718).
+        store.set_hostcall_fuel(self.config.hostcall_fuel());
 
         let bindings = Extension::instantiate(&mut store, &compiled.component, &self.linker)
             .map_err(|error| SandboxError::Instantiate(format!("{error:#}")))?;
