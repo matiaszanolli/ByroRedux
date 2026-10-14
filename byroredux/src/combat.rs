@@ -1037,10 +1037,29 @@ pub(crate) fn reconcile_dead_actor(world: &World, actor: EntityId) -> String {
     {
         return "; ragdoll already active".to_owned();
     }
+    // #5015 — an authored corpse is posed before its bodies are seeded, so it
+    // lies where the plugin placed it instead of collapsing from the spawn
+    // pose. One-shot: the pose is consumed whether or not it applies, and a
+    // refused pose (an unfamiliar skeleton) falls back to the collapse.
+    let posed = remove_component_taking::<crate::ragdoll_pose::AuthoredRagdollPose>(world, actor)
+        .map(|pose| crate::ragdoll_pose::pose_skeleton(world, skeleton_root, &pose.0));
+    let pose_note = match posed {
+        Some(Ok(bones)) => format!("; posed {bones} bones from XRGD"),
+        Some(Err(reason)) => {
+            log::debug!("actor {actor}: XRGD pose not applied: {reason}");
+            format!("; XRGD pose not applied ({reason})")
+        }
+        None => String::new(),
+    };
     match crate::ragdoll::activate_ragdoll(world, skeleton_root) {
-        Ok(body_count) => format!("; ragdoll activated ({body_count} bodies)"),
-        Err(error) => format!("; ragdoll unavailable: {error}"),
+        Ok(body_count) => format!("{pose_note}; ragdoll activated ({body_count} bodies)"),
+        Err(error) => format!("{pose_note}; ragdoll unavailable: {error}"),
     }
+}
+
+/// Remove `T` from `entity` and hand it back (`remove_component` discards it).
+fn remove_component_taking<T: Component>(world: &World, entity: EntityId) -> Option<T> {
+    world.query_mut::<T>()?.remove(entity)
 }
 
 /// M47.2 — `Game.RewardPlayerXP`'s XP modifier (FO4): `fXPModBase +

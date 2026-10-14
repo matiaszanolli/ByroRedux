@@ -46,6 +46,7 @@ mod ownership_sample;
 mod parsed_nif_cache;
 mod player_body;
 mod ragdoll;
+mod ragdoll_pose;
 mod render;
 mod save_io;
 mod scene;

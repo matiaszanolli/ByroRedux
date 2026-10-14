@@ -12,7 +12,7 @@ mod expression;
 mod packfile;
 
 pub use animation::{
-    decode_skeleton, decode_spline_animation, HkxAnimation, HkxAnnotation, HkxBone, HkxSkeleton,
+    decode_skeleton, decode_skeletons, decode_spline_animation, HkxAnimation, HkxAnnotation, HkxBone, HkxSkeleton,
     HkxTransform, ReferenceFrame,
 };
 

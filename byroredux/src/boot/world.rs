@@ -309,6 +309,7 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     // `Some` even before any actor has been ragdolled.
     world.register::<byroredux_physics::Ragdoll>();
     world.register::<crate::ragdoll::RagdollTemplate>();
+    world.register::<crate::ragdoll_pose::AuthoredRagdollPose>();
     world.register::<crate::npc_spawn::NpcEquipmentPart>();
     // P3 mid-life gear import — retained spawn bone map + body class, and
     // the equip→import handoff slot the GearImportLoader drains.

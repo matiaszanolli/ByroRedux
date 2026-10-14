@@ -297,6 +297,23 @@ pub fn decode_skeleton(bytes: &[u8]) -> Result<HkxSkeleton> {
     let pack = Packfile::parse(bytes)?;
     let layout = Layout::new(pack.pointer_size());
     let object = pack.object("hkaSkeleton")?;
+    decode_skeleton_at(&pack, &layout, object)
+}
+
+/// Decode **every** `hkaSkeleton` in a packfile, in file order. A Skyrim
+/// character's `skeleton.hkx` carries two: the animation rig and, second, the
+/// ragdoll's own skeleton (#5015) — the bone list the `XRGD` pose entries
+/// index.
+pub fn decode_skeletons(bytes: &[u8]) -> Result<Vec<HkxSkeleton>> {
+    let pack = Packfile::parse(bytes)?;
+    let layout = Layout::new(pack.pointer_size());
+    pack.objects_of("hkaSkeleton")
+        .into_iter()
+        .map(|object| decode_skeleton_at(&pack, &layout, object))
+        .collect()
+}
+
+fn decode_skeleton_at(pack: &Packfile<'_>, layout: &Layout, object: usize) -> Result<HkxSkeleton> {
     let name = pack
         .local_target(object + layout.skeleton_name)
         .map(|offset| pack.cstr(offset, "skeleton name"))

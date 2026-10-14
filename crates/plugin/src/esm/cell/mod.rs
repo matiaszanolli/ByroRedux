@@ -677,9 +677,10 @@ pub struct PlacedRef {
     /// `Skyrim.esm` and 1,090 in `Fallout4.esm`; FO3/FNV corpses are covered
     /// by #5005. On REFRs it is the settled pose of multi-body clutter such
     /// as books, misc items and moveable statics: 7,420 REFRs in Skyrim and
-    /// 7,829 in FO4. Decode only: posing a corpse skeleton from it is still
-    /// open, because the entry→ragdoll-body mapping and the rotation
-    /// convention are not sourced (see [`RagdollPoseBone`]).
+    /// 7,829 in FO4. The engine poses a humanoid corpse's skeleton from it
+    /// before its ragdoll activates (`byroredux/src/ragdoll_pose.rs`, #5015;
+    /// the layout is derived, not sourced — see [`RagdollPoseBone`]); other
+    /// skeletons and the FO4 corpses are not posed yet.
     pub ragdoll_pose: Vec<RagdollPoseBone>,
     /// M47.2 — a map marker's `FNAM` flags (`0x01` Visible, `0x02` Can
     /// Travel To, `0x04` "Show All" Hidden — xEdit's REFR *Map Marker*
@@ -753,7 +754,13 @@ impl PlacedRef {
 /// - Positions are parent-relative bone offsets (thigh→calf ≈ 31, calf→foot
 ///   ≈ 28), not world or ref-relative coordinates. The bone axis is +X on
 ///   FO3/FNV and +Z on Skyrim.
-/// - The Euler order and the id→skeleton-body mapping are undocumented.
+/// - The Euler order and the entry→skeleton-body mapping are undocumented, but
+///   were recovered from the Skyrim corpus for the humanoid ragdoll
+///   (`byroredux/src/ragdoll_pose.rs`, #5015): entry `k` is the skeleton NIF's
+///   ragdoll body `k` (`bone_id` is not that order), the rotation is the
+///   Gamebryo XYZ product with negated angles, and entry 0 is the centre of
+///   mass at the placement. A trailing `(0, 17, 10)` entry with zero rotation
+///   is not a body. Those are interpretations, not a source.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RagdollPoseBone {
     pub bone_id: u8,

@@ -762,6 +762,17 @@ pub(super) fn load_references_budgeted(
                                     || npc.starts_dead
                                     || script_killed_corpses.contains(&placed_ref.form_id)
                                 {
+                                    // #5015 — an authored corpse lies as
+                                    // posed: park the `XRGD` pose for the
+                                    // death reconciliation to apply.
+                                    if placed_ref.starts_dead && !placed_ref.ragdoll_pose.is_empty() {
+                                        world.insert(
+                                            root,
+                                            crate::ragdoll_pose::AuthoredRagdollPose(
+                                                placed_ref.ragdoll_pose.clone(),
+                                            ),
+                                        );
+                                    }
                                     super::reference_state::apply_starts_dead(world, root);
                                 }
                                 // #5017 — FO4+ dormant robots and turrets.
