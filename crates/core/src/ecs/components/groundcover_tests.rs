@@ -179,3 +179,41 @@ fn degenerate_direction_falls_back_to_east_not_nan() {
         [1.0, 0.0]
     );
 }
+
+fn record(form_id: u32, density: f32) -> AuthoredCoverRecord {
+    AuthoredCoverRecord {
+        form_id,
+        editor_id: String::new(),
+        model_path: String::new(),
+        climate_weight: ClimateWeights::UNIFORM,
+        density,
+        water_rule: CoverWaterRule::AboveAtLeast,
+        water_distance: 0.0,
+        height_range: 0.0,
+        position_range: 0.0,
+        uniform_scaling: true,
+        fit_to_slope: false,
+        nominal_height: None,
+    }
+}
+
+/// A layer's authored density is the union of its listed records' densities —
+/// the number the blade tier's per-layer affinity now comes from (#5719-era
+/// grass overhaul): empty is "no grass", one record is its own density, two are
+/// `1 - (1-a)(1-b)`, and unplaceable (absent) records contribute nothing.
+#[test]
+fn union_density_combines_the_listed_records() {
+    let cover = AuthoredCover {
+        records: vec![record(10, 0.30), record(20, 0.50), record(30, 1.0)],
+        grid_spacing: 80.0,
+        climate: Climate::Arid,
+        localised: true,
+        generation: 1,
+    };
+    assert_eq!(cover.union_density(&[]), 0.0);
+    assert!((cover.union_density(&[10]) - 0.30).abs() < 1.0e-6);
+    assert!((cover.union_density(&[10, 20]) - 0.65).abs() < 1.0e-6);
+    assert_eq!(cover.union_density(&[99]), 0.0, "an unplaceable record adds nothing");
+    assert!((cover.union_density(&[20, 99]) - 0.50).abs() < 1.0e-6);
+    assert_eq!(cover.union_density(&[10, 30]), 1.0);
+}

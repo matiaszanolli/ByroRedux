@@ -1112,6 +1112,30 @@ pub(super) fn spawn_terrain_mesh(
         .and_then(|ltex_id| landscape_grasses.get(&ltex_id))
         .cloned()
         .unwrap_or_default();
+    // The procedural blade tier's density comes from the AUTHORED vegetation
+    // data wherever a load order carries it: each landscape texture's affinity
+    // is the union density of the GRAS records it lists (`LTEX.GNAM`), so a
+    // landscape mod that links a texture to a grass grows blades there and an
+    // authored "no grass" texture grows none. The keyword table (an
+    // editor-ID heuristic) stays only as the fallback for a load order with no
+    // texture->grass links at all (`AuthoredCover::localised` false), so games
+    // without that data are unchanged. The same lane rate the authored-model
+    // tier uses, so both read one authored truth.
+    let mut layer_affinity = layer_affinity;
+    let mut base_affinity = base_affinity;
+    if let Some(cover) = world
+        .try_resource::<byroredux_core::ecs::components::groundcover::AuthoredCover>()
+        .filter(|cover| cover.localised)
+    {
+        for (affinity, grasses) in layer_affinity
+            .iter_mut()
+            .zip(authored_grass.iter())
+            .take(splat_layers.layers.len())
+        {
+            *affinity = cover.union_density(grasses);
+        }
+        base_affinity = cover.union_density(&base_authored_grass);
+    }
     let cover_water_y =
         water_y.unwrap_or(byroredux_core::ecs::components::groundcover::NO_WATER_HEIGHT);
     // #4057 — §12.5's canopy slab thickness for this tile: the resolved

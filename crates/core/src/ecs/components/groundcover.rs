@@ -445,6 +445,27 @@ impl AuthoredCover {
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     }
+    /// The authored density of the ground a landscape texture lists
+    /// (`LTEX.GNAM`): the chance that at least one of its placeable `GRAS`
+    /// records grows at a point, `1 - prod(1 - density_r)` — the same union the
+    /// authored-model tier's lane rate uses, so both tiers read one authored
+    /// truth. Records that are not placeable (no `DATA`, no model, a water rule
+    /// that drops them, zero density) do not appear in `records` and so
+    /// contribute nothing; an empty list is `0.0` — authored "no grass here".
+    ///
+    /// `records` is FormID-sorted, so each membership test is a binary search.
+    pub fn union_density(&self, grasses: &[u32]) -> f32 {
+        let none_grow: f32 = grasses
+            .iter()
+            .filter_map(|form_id| {
+                self.records
+                    .binary_search_by_key(form_id, |record| record.form_id)
+                    .ok()
+            })
+            .map(|at| 1.0 - self.records[at].density.clamp(0.0, 1.0))
+            .product();
+        (1.0 - none_grow).clamp(0.0, 1.0)
+    }
 }
 
 impl Resource for AuthoredCover {}
