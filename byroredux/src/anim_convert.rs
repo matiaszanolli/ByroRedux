@@ -1,7 +1,7 @@
 //! NIF animation clip conversion and subtree name map building.
 
 use byroredux_core::animation::{
-    AnimBoolKey, AnimColorKey, AnimFloatKey, AnimationClip, BoolChannel, ColorChannel, ColorTarget,
+    AnimBoolKey, AnimColorKey, AnimFloatKey, AnimationClip, AnimationClipRegistry, BoolChannel, ColorChannel, ColorTarget,
     CycleType, FloatChannel, FloatTarget, KeyType, RotationKey, ScaleKey, TextureFlipChannel,
     TransformChannel, TranslationKey,
 };
@@ -64,6 +64,58 @@ pub(crate) fn build_subtree_name_map(
     }
 
     map
+}
+
+/// Attach the non-transform sinks (`Animated*` components) for the clip
+/// registered under `clip_handle` (#2221), reading its channels out of the
+/// `AnimationClipRegistry` first.
+///
+/// The three spawn sites (loose NIF, KF, cell REFR) each cloned the four
+/// non-transform channel vectors out of the registry — so the read guard is
+/// released before [`attach_animation_sinks`] takes `&mut World` — and then
+/// called the attach with identical arguments (#5590). A handle the registry
+/// does not hold attaches nothing. Every production caller holds both `ctx`
+/// and `tex_provider`, so they are required here.
+pub(crate) fn attach_clip_sinks(
+    world: &mut World,
+    clip_handle: u32,
+    ctx: &mut VulkanContext,
+    tex_provider: &TextureProvider,
+    root: EntityId,
+) {
+    let channels = {
+        let registry = world.resource::<AnimationClipRegistry>();
+        registry.get(clip_handle).map(|clip| {
+            (
+                clip.bool_channels.clone(),
+                clip.float_channels.clone(),
+                clip.color_channels.clone(),
+                clip.texture_flip_channels.clone(),
+            )
+        })
+    };
+    if let Some((bools, floats, colors, texture_flips)) = channels {
+        attach_animation_sinks(
+            world,
+            &bools,
+            &floats,
+            &colors,
+            &texture_flips,
+            Some(ctx),
+            Some(tex_provider),
+            root,
+        );
+    }
+}
+
+/// The clip's authored start-phase offset (#3345), `0.0` for an unknown
+/// handle. Feed it to `AnimationPlayer::with_phase`.
+pub(crate) fn clip_start_phase(world: &World, clip_handle: u32) -> f32 {
+    world
+        .resource::<AnimationClipRegistry>()
+        .get(clip_handle)
+        .map(|clip| clip.phase)
+        .unwrap_or(0.0)
 }
 
 /// Insert the `Animated*` sink components a clip's non-transform
@@ -1519,5 +1571,31 @@ mod canonical_animation_completeness_harness {
         assert_eq!(clip.bool_channels.len(), 1, "bool channels");
         assert_eq!(clip.texture_flip_channels.len(), 1, "texture flip channels");
         assert_eq!(clip.text_keys.len(), 2, "text keys");
+    }
+}
+
+/// #5590 — "clone the clip's channels, attach the sinks, read the phase" lives
+/// in `attach_clip_sinks` / `clip_start_phase`; the three NIF animation spawn
+/// sites route through them instead of pasting the sequence.
+#[cfg(test)]
+mod spawn_site_hygiene_tests {
+    #[test]
+    fn spawn_sites_use_the_shared_sink_helpers() {
+        for (name, src) in [
+            ("scene.rs", include_str!("scene.rs")),
+            ("scene/nif_loader.rs", include_str!("scene/nif_loader.rs")),
+            ("cell_loader/spawn.rs", include_str!("cell_loader/spawn.rs")),
+        ] {
+            let src = byroredux_core::source_scan::production_text_or_whole(src);
+            assert!(
+                !src.contains("texture_flip_channels.clone()"),
+                "{name} hand-clones the clip's channels again — use \
+                 `anim_convert::attach_clip_sinks` (#5590)"
+            );
+            assert!(
+                src.contains("attach_clip_sinks(") && src.contains("clip_start_phase("),
+                "{name} no longer routes through the shared animation-sink helpers (#5590)"
+            );
+        }
     }
 }

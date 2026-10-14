@@ -882,37 +882,11 @@ pub(super) fn spawn_placed_instances(
         // their target entity and then discard every sampled value.
         // Channels are cloned out so the registry guard drops before
         // `attach_animation_sinks` takes `&mut World`.
-        let channels = {
-            let registry = world.resource::<byroredux_core::animation::AnimationClipRegistry>();
-            registry.get(handle).map(|clip| {
-                (
-                    clip.bool_channels.clone(),
-                    clip.float_channels.clone(),
-                    clip.color_channels.clone(),
-                    clip.texture_flip_channels.clone(),
-                )
-            })
-        };
-        if let Some((bools, floats, colors, texture_flips)) = channels {
-            crate::anim_convert::attach_animation_sinks(
-                world,
-                &bools,
-                &floats,
-                &colors,
-                &texture_flips,
-                Some(ctx),
-                Some(tex_provider),
-                placement_root,
-            );
-        }
+        crate::anim_convert::attach_clip_sinks(world, handle, ctx, tex_provider, placement_root);
 
         let player_entity = world.spawn();
         // #3345 — start at the clip's authored phase offset.
-        let phase = world
-            .resource::<byroredux_core::animation::AnimationClipRegistry>()
-            .get(handle)
-            .map(|c| c.phase)
-            .unwrap_or(0.0);
+        let phase = crate::anim_convert::clip_start_phase(world, handle);
         let mut player = byroredux_core::animation::AnimationPlayer::new(handle).with_phase(phase);
         player.root_entity = Some(placement_root);
         world.insert(player_entity, player);

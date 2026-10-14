@@ -743,40 +743,20 @@ fn start_cli_animation(
                         if let Some(root) = nif_root {
                             let last_handle = first_handle + nif_clips.len() as u32;
                             for handle in first_handle..last_handle {
-                                let channels = {
-                                    let registry = world.resource::<AnimationClipRegistry>();
-                                    registry.get(handle).map(|clip| {
-                                        (
-                                            clip.bool_channels.clone(),
-                                            clip.float_channels.clone(),
-                                            clip.color_channels.clone(),
-                                            clip.texture_flip_channels.clone(),
-                                        )
-                                    })
-                                };
-                                if let Some((bools, floats, colors, texture_flips)) = channels {
-                                    crate::anim_convert::attach_animation_sinks(
-                                        world,
-                                        &bools,
-                                        &floats,
-                                        &colors,
-                                        &texture_flips,
-                                        Some(ctx),
-                                        Some(&kf_provider),
-                                        root,
-                                    );
-                                }
+                                crate::anim_convert::attach_clip_sinks(
+                                    world,
+                                    handle,
+                                    ctx,
+                                    &kf_provider,
+                                    root,
+                                );
                             }
                         }
 
                         // Spawn an AnimationPlayer scoped to the NIF subtree.
                         let player_entity = world.spawn();
                         // #3345 — start at the clip's authored phase offset.
-                        let phase = world
-                            .resource::<AnimationClipRegistry>()
-                            .get(first_handle)
-                            .map(|c| c.phase)
-                            .unwrap_or(0.0);
+                        let phase = crate::anim_convert::clip_start_phase(world, first_handle);
                         let mut player = AnimationPlayer::new(first_handle).with_phase(phase);
                         if let Some(root) = nif_root {
                             player.root_entity = Some(root);

@@ -604,37 +604,11 @@ pub(crate) fn load_nif_bytes_with_skeleton(
         // `animation_system` writes into existing components only, so an
         // unattached sink silently swallows every sampled value.
         if let Some(root) = root {
-            let channels = {
-                let registry = world.resource::<AnimationClipRegistry>();
-                registry.get(clip_handle).map(|clip| {
-                    (
-                        clip.bool_channels.clone(),
-                        clip.float_channels.clone(),
-                        clip.color_channels.clone(),
-                        clip.texture_flip_channels.clone(),
-                    )
-                })
-            };
-            if let Some((bools, floats, colors, texture_flips)) = channels {
-                crate::anim_convert::attach_animation_sinks(
-                    world,
-                    &bools,
-                    &floats,
-                    &colors,
-                    &texture_flips,
-                    Some(ctx),
-                    Some(tex_provider),
-                    root,
-                );
-            }
+            crate::anim_convert::attach_clip_sinks(world, clip_handle, ctx, tex_provider, root);
         }
 
         // #3345 — start at the clip's authored phase offset.
-        let phase = world
-            .resource::<AnimationClipRegistry>()
-            .get(clip_handle)
-            .map(|c| c.phase)
-            .unwrap_or(0.0);
+        let phase = crate::anim_convert::clip_start_phase(world, clip_handle);
         let player = AnimationPlayer::new(clip_handle).with_phase(phase);
         spawn_embedded_animation_player(world, player, root);
         log::info!(
