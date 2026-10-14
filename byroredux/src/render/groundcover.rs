@@ -745,8 +745,11 @@ pub(crate) fn build_groundcover_detail_atlas(world: &World) -> GroundCoverDetail
                             * bit
                 });
                 let texel = ((species_index * edge + y) * edge + x) * 4;
+                // The palette is display-space, so the 8-bit texel IS the value;
+                // the sRGB texture format decodes it on sample, giving the same
+                // linear albedo the blade species table is uploaded with.
                 for channel in 0..3 {
-                    pixels[texel + channel] = linear_to_srgb8(colour[channel]);
+                    pixels[texel + channel] = (colour[channel].clamp(0.0, 1.0) * 255.0).round() as u8;
                 }
                 // Tier 2 samples this same immutable atlas as a clump card.
                 // Four narrow full-height strokes are derived from Outerra's
@@ -772,14 +775,18 @@ pub(crate) fn build_groundcover_detail_atlas(world: &World) -> GroundCoverDetail
     }
 }
 
-fn linear_to_srgb8(value: f32) -> u8 {
+/// sRGB electro-optical transfer: decode a display-space palette channel to
+/// linear light. The palette colours are authored the way an artist picks them
+/// (see `GroundCoverSpecies::colour_gradient`), so every GPU-bound use goes
+/// through this — the blade species table here and, via the sRGB atlas format,
+/// the terrain's grass-detail layer.
+pub(crate) fn srgb_to_linear(value: f32) -> f32 {
     let value = value.clamp(0.0, 1.0);
-    let encoded = if value <= 0.003_130_8 {
-        value * 12.92
+    if value <= 0.040_45 {
+        value / 12.92
     } else {
-        1.055 * value.powf(1.0 / 2.4) - 0.055
-    };
-    (encoded * 255.0).round() as u8
+        ((value + 0.055) / 1.055).powf(2.4)
+    }
 }
 
 /// Scramble seed for a chunk's candidate sequence.
@@ -844,23 +851,23 @@ pub(crate) fn collect_groundcover_species(
                 s.width_range.1,
             ],
             base_colour: [
-                s.colour_gradient[0][0] * k,
-                s.colour_gradient[0][1] * k,
-                s.colour_gradient[0][2] * k,
+                srgb_to_linear(s.colour_gradient[0][0]) * k,
+                srgb_to_linear(s.colour_gradient[0][1]) * k,
+                srgb_to_linear(s.colour_gradient[0][2]) * k,
                 s.bend_stiffness,
             ],
             tip_colour: [
-                s.colour_gradient[1][0] * k,
-                s.colour_gradient[1][1] * k,
-                s.colour_gradient[1][2] * k,
+                srgb_to_linear(s.colour_gradient[1][0]) * k,
+                srgb_to_linear(s.colour_gradient[1][1]) * k,
+                srgb_to_linear(s.colour_gradient[1][2]) * k,
                 // §12.3's ground-coupling weight. Landed with the canonical
                 // type in #4056; older palettes read the type's default.
                 s.ground_coupling,
             ],
             transmission_sheen: [
-                s.transmission_colour[0] * k,
-                s.transmission_colour[1] * k,
-                s.transmission_colour[2] * k,
+                srgb_to_linear(s.transmission_colour[0]) * k,
+                srgb_to_linear(s.transmission_colour[1]) * k,
+                srgb_to_linear(s.transmission_colour[2]) * k,
                 // §12.6's sheen amount is a *lobe strength*, not a colour —
                 // the dimmer must not scale it, or an overcast weather would
                 // also flatten the silvering that overcast light produces.
@@ -1953,5 +1960,45 @@ mod tests {
                  at world {wx},{wz}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod palette_decode_tests {
+    use super::srgb_to_linear;
+
+    /// The palette is display-space; the decode is the standard sRGB EOTF.
+    #[test]
+    fn palette_channels_decode_with_the_srgb_transfer() {
+        assert_eq!(srgb_to_linear(0.0), 0.0);
+        assert!((srgb_to_linear(1.0) - 1.0).abs() < 1.0e-6);
+        // The arid tip's green, 0.46, was used raw as albedo (2-3x real grass
+        // reflectance); decoded it is ~0.179.
+        assert!((srgb_to_linear(0.46) - 0.1790).abs() < 1.0e-3);
+        assert!((srgb_to_linear(0.5) - 0.2140).abs() < 1.0e-3);
+        // The linear segment near black.
+        assert!((srgb_to_linear(0.02) - 0.02 / 12.92).abs() < 1.0e-7);
+        // Out-of-range input is clamped, never NaN into the GPU table.
+        assert_eq!(srgb_to_linear(-1.0), 0.0);
+        assert!((srgb_to_linear(7.0) - 1.0).abs() < 1.0e-6);
+    }
+
+    /// The detail atlas texel is the display value itself (the sRGB texture
+    /// decodes it on sample), so the terrain's grass layer and the blades end
+    /// up with the same linear colour.
+    #[test]
+    fn detail_atlas_texels_store_display_values() {
+        use byroredux_core::ecs::World;
+        let atlas = super::build_groundcover_detail_atlas(&World::new());
+        let temperate = byroredux_core::ecs::components::groundcover::GroundCoverSpecies::DEFAULT_TEMPERATE;
+        let base = temperate.colour_gradient[0];
+        let tip = temperate.colour_gradient[1];
+        let expected = |c: [f32; 3]| c.map(|v| (v * 255.0).round() as u8);
+        let texels: std::collections::HashSet<[u8; 3]> = atlas
+            .pixels
+            .chunks_exact(4)
+            .map(|p| [p[0], p[1], p[2]])
+            .collect();
+        assert!(texels.contains(&expected(base)) && texels.contains(&expected(tip)));
     }
 }

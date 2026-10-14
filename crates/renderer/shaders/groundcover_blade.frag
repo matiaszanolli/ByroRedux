@@ -177,7 +177,14 @@ void main() {
     // look (the direct terms are not the cause: removing them leaves it).
     // See `GROUNDCOVER_BASE_LUMA_RATIO`.
     if (haveRootGround) {
-        float groundLuma = dot(rootGroundAlbedo, LUMA_REC709);
+        // What the terrain shows at the root is its splat texture mixed toward
+        // the species grass-detail colour by the SAME `d_ground` the blade
+        // carries (`triangle.frag`'s detail layer), not the texture alone: in a
+        // dense sward the ground is palette-coloured, and anchoring to the bare
+        // soil texture there turned the blades black.
+        vec3 paletteMid = 0.5 * (sp.baseColour.rgb + sp.tipColour.rgb);
+        vec3 terrainAlbedo = mix(rootGroundAlbedo, paletteMid, clamp(vDGround, 0.0, 1.0));
+        float groundLuma = dot(terrainAlbedo, LUMA_REC709);
         float bladeLuma = max(dot(albedo, LUMA_REC709), 1.0e-4);
         float wanted = groundLuma * mix(
             GROUNDCOVER_BASE_LUMA_RATIO, GROUNDCOVER_TIP_LUMA_RATIO, vBladeT);

@@ -153,6 +153,11 @@ pub struct GroundCoverSpecies {
     /// to what a grass sheath actually is — slightly paler and warmer than the
     /// lamina, not three stops darker.
     pub colour_gradient: [Rgb; 2],
+    // NOTE: these are display-space (sRGB-encoded) colours as an artist picks
+    // them, NOT linear albedo; the renderer decodes them at the GPU boundary
+    // (`render/groundcover.rs`). Used raw as linear albedo a 0.5 tip is ~2x
+    // brighter than real grass reflectance (~0.05-0.15), which is what made
+    // blades glow against the terrain.
     /// Colour of light **transmitted through** the blade (§12.2, #4057).
     ///
     /// Cannot be derived from [`Self::colour_gradient`]: chlorophyll absorbs
@@ -201,16 +206,18 @@ impl GroundCoverSpecies {
     /// Guarantees that a game supplying no vegetation data at all still renders
     /// organic ground cover, which is the stated "generic" requirement (§7
     /// precedence 3). Sizes are in Gamebryo units, where an exterior cell is
-    /// 4096 across and a human is ~128 tall — so a 6–14 unit blade is
-    /// ankle-height, which is what vanilla grass reads as.
+    /// 4096 across and a human is ~128 tall — so a 9–21 unit blade is
+    /// shin-height. (It was 6–14, ankle-height, and read as stubble; raised
+    /// 1.5x on review, with the width raised 1.25x so the taller blade does not
+    /// turn into a needle.)
     pub const DEFAULT_TEMPERATE: Self = Self {
         // The earlier 6–14 BU envelope made the fully populated near field
         // read as isolated sprouts at player height. A temperate sward needs
         // enough vertical and projected area for its four-ribbon tuft to
         // The fallback stays deliberately short: isolated procedural ribbons
         // must resolve as cover before the authored card LOD takes over.
-        height_range: (6.0, 14.0),
-        width_range: (0.7, 1.4),
+        height_range: (9.0, 21.0),
+        width_range: (0.9, 1.75),
         // Base is the sheath: paler and a touch warmer than the lamina. It is
         // NOT a darkened tip — see the field's doc and §12.1. Keep the
         // fallback deliberately olive rather than the old saturated yellow
@@ -233,8 +240,8 @@ impl GroundCoverSpecies {
 
     /// Sparse arid scrub — shorter, wider, stiffer, and yellowed.
     pub const DEFAULT_ARID: Self = Self {
-        height_range: (4.0, 9.0),
-        width_range: (0.9, 1.8),
+        height_range: (6.0, 13.5),
+        width_range: (1.1, 2.25),
         colour_gradient: [[0.40, 0.36, 0.14], [0.52, 0.46, 0.24]],
         transmission_colour: [0.62, 0.46, 0.12],
         // Dry standing grass is most of what silvers in a low sun; a green
