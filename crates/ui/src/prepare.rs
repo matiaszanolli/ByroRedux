@@ -107,15 +107,35 @@ pub(crate) fn normalize_scaleform_dialect(swf_data: &[u8]) -> Option<Vec<u8>> {
     Some(file)
 }
 
+/// Absolute ceiling on an inflated CWS body (#5719). The header's declared
+/// length bounds a stream that lies about a SMALL size, but that field is
+/// attacker-controlled (`0xFFFF_FFFF` is a legal value), so on its own it
+/// lets a ~4 MB bomb grow the buffer toward 4 GiB. Measured against the
+/// archived corpus (every `.swf` in Skyrim SE, FO4, FO76 and Starfield):
+/// the largest declared length is 65,902,267 B — FO76's CJK
+/// `fonts_zhhant.swf`, a font container; the largest menu is under 20 MB.
+/// 128 MiB is about twice the largest shipped movie.
+const MAX_SWF_BODY_BYTES: u64 = 128 * 1024 * 1024;
+
 /// Inflate a CWS body, bounded by the header's declared uncompressed length
 /// (`u32` at `[4..8]`, counting the 8-byte header) so a hostile stream
-/// cannot balloon past what it claims (#5456). A body that overruns its
-/// own header is malformed: `None` hands the movie to the stock loader,
-/// exactly what happened before the shim owned the decode.
+/// cannot balloon past what it claims (#5456), and by [`MAX_SWF_BODY_BYTES`]
+/// so a header cannot claim its way past any sane size (#5719). A body that
+/// overruns either is malformed: `None` hands the movie to the stock
+/// loader, exactly what happened before the shim owned the decode.
 fn decompress_zlib_after_header(swf_data: &[u8]) -> Option<Vec<u8>> {
+    decompress_zlib_after_header_capped(swf_data, MAX_SWF_BODY_BYTES)
+}
+
+fn decompress_zlib_after_header_capped(swf_data: &[u8], ceiling: u64) -> Option<Vec<u8>> {
     use std::io::Read;
     let declared_body =
         u64::from(u32::from_le_bytes(swf_data[4..8].try_into().ok()?).saturating_sub(8));
+    if declared_body > ceiling {
+        // The claim alone is past any shipped movie: decline before
+        // inflating a single byte.
+        return None;
+    }
     let mut out = swf_data[0..8].to_vec();
     // One byte past the declared length is enough to detect an overrun
     // without ever materializing the rest.
@@ -641,6 +661,54 @@ mod dialect_tests {
         cws[0..3].copy_from_slice(b"CWS");
         cws.extend_from_slice(&body);
         assert!(normalize_scaleform_dialect(&cws).is_none());
+    }
+
+    /// #5719 — a header may claim any `u32`; the claim must not size the
+    /// inflate. A 4 MiB zero stream (a few KiB compressed) behind a
+    /// `u32::MAX` header is declined by the ceiling without the body ever
+    /// being inflated past it.
+    #[test]
+    fn cws_header_claiming_u32_max_over_a_bomb_is_declined() {
+        use std::io::Write;
+        let mut encoder =
+            flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::best());
+        encoder.write_all(&vec![0u8; 4 * 1024 * 1024]).unwrap();
+        let body = encoder.finish().unwrap();
+        assert!(body.len() < 16 * 1024, "fixture: the bomb is tiny on disk");
+        let mut cws = b"CWS\x0f".to_vec();
+        cws.extend_from_slice(&u32::MAX.to_le_bytes());
+        cws.extend_from_slice(&body);
+        // Production ceiling: the claim itself is far past it.
+        assert!(decompress_zlib_after_header(&cws).is_none());
+        // A ceiling under the bomb's real size with an in-range claim: the
+        // declared-length bound still holds.
+        let mut under_claim = cws.clone();
+        under_claim[4..8].copy_from_slice(&(1024u32 + 8).to_le_bytes());
+        assert!(decompress_zlib_after_header_capped(&under_claim, 1 << 20).is_none());
+    }
+
+    /// #5719 — the ceiling sits above every shipped movie (largest measured
+    /// declared length: 65,902,267 B, FO76 `fonts_zhhant.swf`) and well
+    /// under the 4 GiB a `u32` header could claim.
+    #[test]
+    fn swf_body_ceiling_clears_the_corpus_and_stops_short_of_u32() {
+        assert!(MAX_SWF_BODY_BYTES > 65_902_267);
+        assert!(MAX_SWF_BODY_BYTES < u64::from(u32::MAX) / 8);
+    }
+
+    /// A declared length at the ceiling still inflates normally.
+    #[test]
+    fn cws_within_the_ceiling_inflates() {
+        use std::io::Write;
+        let file = swf_with_tags(&sprite(&tag(70, &starfield_place3())));
+        let mut encoder =
+            flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder.write_all(&file[8..]).unwrap();
+        let mut cws = file[0..8].to_vec();
+        cws[0..3].copy_from_slice(b"CWS");
+        cws.extend_from_slice(&encoder.finish().unwrap());
+        let out = decompress_zlib_after_header_capped(&cws, file.len() as u64).expect("at ceiling");
+        assert_eq!(&out[8..], &file[8..]);
     }
 
     #[test]
