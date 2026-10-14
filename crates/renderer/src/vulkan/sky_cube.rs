@@ -26,6 +26,7 @@ use super::descriptors::{
 use super::image::{GpuImage, GpuImageDesc};
 use super::reflect::{validate_set_layout, ReflectedShader};
 use crate::shader_constants::{WORKGROUP_X, WORKGROUP_Y};
+use crate::vulkan::descriptors::compute_binding;
 use anyhow::{Context, Result};
 use ash::vk;
 
@@ -231,36 +232,25 @@ impl SkyCubePipeline {
             sampler: vk::Sampler::null(),
         };
 
-        macro_rules! try_or_cleanup {
-            ($expr:expr) => {
-                match $expr {
-                    Ok(v) => v,
-                    Err(e) => {
-                        // SAFETY: `partial` holds only handles created by this
-                        // device earlier in this initializer; none has been bound
-                        // to an in-flight command buffer, so tearing them down in
-                        // reverse creation order is sound.
-                        unsafe { partial.destroy(device, allocator) };
-                        return Err(e.into());
-                    }
-                }
-            };
-        }
-
         for _ in 0..max_frames {
-            let cube = try_or_cleanup!(GpuImage::create(
+            let cube = try_or_cleanup!(
+                partial,
                 device,
                 allocator,
-                &GpuImageDesc {
-                    mip_levels: SKY_CUBE_MIP_LEVELS,
-                    ..GpuImageDesc::color_cube(
-                        "sky cubemap",
-                        SKY_CUBE_FACE_SIZE,
-                        SKY_CUBE_FORMAT,
-                        vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::SAMPLED,
-                    )
-                },
-            ));
+                GpuImage::create(
+                    device,
+                    allocator,
+                    &GpuImageDesc {
+                        mip_levels: SKY_CUBE_MIP_LEVELS,
+                        ..GpuImageDesc::color_cube(
+                            "sky cubemap",
+                            SKY_CUBE_FACE_SIZE,
+                            SKY_CUBE_FORMAT,
+                            vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::SAMPLED,
+                        )
+                    },
+                )
+            );
             // The sampled `CUBE` view over the same six layers. Created
             // after the image is pushed so the cleanup path owns the image
             // even if this call fails.
@@ -270,7 +260,7 @@ impl SkyCubePipeline {
             // just created, with `CUBE_FACES` array layers and the full mip chain —
             // exactly the range the create info names; the view is owned by
             // `partial` from the push below onward.
-            let view = try_or_cleanup!(unsafe {
+            let view = try_or_cleanup!(partial, device, allocator, unsafe {
                 device
                     .create_image_view(
                         &vk::ImageViewCreateInfo::default()
@@ -294,7 +284,7 @@ impl SkyCubePipeline {
 
         // SAFETY: fully-populated create info; the handle is owned by
         // `partial` from the assignment onward.
-        partial.sampler = try_or_cleanup!(unsafe {
+        partial.sampler = try_or_cleanup!(partial, device, allocator, unsafe {
             device
                 .create_sampler(
                     &vk::SamplerCreateInfo::default()
@@ -311,37 +301,18 @@ impl SkyCubePipeline {
         });
 
         let param_size = std::mem::size_of::<SkyCubeParams>() as vk::DeviceSize;
-        for _ in 0..max_frames {
-            let buf = try_or_cleanup!(GpuBuffer::create_host_visible(
-                device,
-                allocator,
-                param_size,
-                vk::BufferUsageFlags::UNIFORM_BUFFER,
-            ));
-            partial.param_buffers.push(buf);
-        }
+        partial.param_buffers = try_or_cleanup!(
+            partial,
+            device,
+            allocator,
+            GpuBuffer::create_per_frame_uniforms::<SkyCubeParams>(device, allocator, max_frames)
+        );
 
         let bindings = [
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(0)
-                .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(1)
-                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(2)
-                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(3)
-                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            compute_binding(0, vk::DescriptorType::STORAGE_IMAGE),
+            compute_binding(1, vk::DescriptorType::UNIFORM_BUFFER),
+            compute_binding(2, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
+            compute_binding(3, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
         ];
         validate_set_layout(
             0,
@@ -356,7 +327,7 @@ impl SkyCubePipeline {
         .expect("sky cubemap descriptor layout drifted against sky_cube.comp (see #427)");
 
         // SAFETY: `bindings` is validated against the shader above.
-        partial.descriptor_set_layout = try_or_cleanup!(unsafe {
+        partial.descriptor_set_layout = try_or_cleanup!(partial, device, allocator, unsafe {
             device
                 .create_descriptor_set_layout(
                     &vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings),
@@ -377,7 +348,7 @@ impl SkyCubePipeline {
         // SAFETY: set 0's layout was just created above; `bindless_layout`
         // is caller-owned and outlives this pipeline. The borrow lives only
         // for this call.
-        partial.pipeline_layout = try_or_cleanup!(unsafe {
+        partial.pipeline_layout = try_or_cleanup!(partial, device, allocator, unsafe {
             device
                 .create_pipeline_layout(
                     &vk::PipelineLayoutCreateInfo::default().set_layouts(&set_layouts),
@@ -386,25 +357,32 @@ impl SkyCubePipeline {
                 .context("sky cubemap pipeline layout")
         });
 
-        partial.pipeline = try_or_cleanup!(super::pipeline::create_compute_pipeline(
+        partial.pipeline = try_or_cleanup!(
+            partial,
             device,
-            pipeline_cache,
-            SKY_CUBE_COMP_SPV,
-            partial.pipeline_layout,
-            "sky cubemap",
-        ));
+            allocator,
+            super::pipeline::create_compute_pipeline(
+                device,
+                pipeline_cache,
+                SKY_CUBE_COMP_SPV,
+                partial.pipeline_layout,
+                "sky cubemap",
+            )
+        );
 
-        partial.descriptor_pool = try_or_cleanup!(DescriptorPoolBuilder::from_layout_bindings(
-            &bindings,
-            max_frames as u32,
-        )
-        .max_sets(max_frames as u32)
-        .build(device, "sky cubemap descriptor pool"));
+        partial.descriptor_pool = try_or_cleanup!(
+            partial,
+            device,
+            allocator,
+            DescriptorPoolBuilder::from_layout_bindings(&bindings, max_frames as u32,)
+                .max_sets(max_frames as u32)
+                .build(device, "sky cubemap descriptor pool")
+        );
 
         let layouts = vec![partial.descriptor_set_layout; max_frames];
         // SAFETY: the pool was just created with capacity for `max_frames`
         // sets of exactly this layout.
-        partial.descriptor_sets = try_or_cleanup!(unsafe {
+        partial.descriptor_sets = try_or_cleanup!(partial, device, allocator, unsafe {
             device
                 .allocate_descriptor_sets(
                     &vk::DescriptorSetAllocateInfo::default()
@@ -447,19 +425,24 @@ impl SkyCubePipeline {
             unsafe { device.update_descriptor_sets(&writes, &[]) };
         }
 
-        partial.filter = Some(try_or_cleanup!(filter::SkyFilter::new(
-            device,
-            pipeline_cache,
-            &partial.cubes,
-            partial.sampler,
-        )));
-        partial.irradiance = Some(try_or_cleanup!(irradiance::SkyIrradiance::new(
+        partial.filter = Some(try_or_cleanup!(
+            partial,
             device,
             allocator,
-            pipeline_cache,
-            &partial.cubes,
-            partial.sampler,
-        )));
+            filter::SkyFilter::new(device, pipeline_cache, &partial.cubes, partial.sampler,)
+        ));
+        partial.irradiance = Some(try_or_cleanup!(
+            partial,
+            device,
+            allocator,
+            irradiance::SkyIrradiance::new(
+                device,
+                allocator,
+                pipeline_cache,
+                &partial.cubes,
+                partial.sampler,
+            )
+        ));
         Ok(partial)
     }
 

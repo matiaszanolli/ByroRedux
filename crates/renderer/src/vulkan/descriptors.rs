@@ -84,6 +84,37 @@ pub fn write_storage_image<'a>(
         .image_info(info)
 }
 
+// ── DescriptorSetLayoutBinding helpers ───────────────────────────────
+
+/// One single-descriptor layout binding: `binding` of type `ty`, visible to
+/// `stages`. The layout-side twin of the `write_*` helpers below (#5593) —
+/// before it, ~150 passes restated the same five-line chain, and a copied
+/// layout is exactly the drift `reflect::validate_set_layout` (#427) exists to
+/// catch after the fact. Generic over the lifetime so a caller may still chain
+/// `.immutable_samplers(..)` onto the result.
+#[inline]
+pub fn layout_binding<'a>(
+    binding: u32,
+    ty: vk::DescriptorType,
+    stages: vk::ShaderStageFlags,
+) -> vk::DescriptorSetLayoutBinding<'a> {
+    vk::DescriptorSetLayoutBinding::default()
+        .binding(binding)
+        .descriptor_type(ty)
+        .descriptor_count(1)
+        .stage_flags(stages)
+}
+
+/// [`layout_binding`] for the compute-only bindings that make up most pass
+/// layouts (112 of the original ~150 hand-written blocks).
+#[inline]
+pub fn compute_binding<'a>(
+    binding: u32,
+    ty: vk::DescriptorType,
+) -> vk::DescriptorSetLayoutBinding<'a> {
+    layout_binding(binding, ty, vk::ShaderStageFlags::COMPUTE)
+}
+
 /// `STORAGE_BUFFER` write.
 #[inline]
 pub fn write_storage_buffer<'a>(
@@ -865,5 +896,69 @@ mod tests {
             4,
             "the new binding must lift the derived pool size automatically"
         );
+    }
+}
+
+/// #5593 / #5594 / #5595 — the layout-side builders, the shared partial-teardown
+/// macro and the `write_*` helpers are the only spellings: a pass that
+/// restates its layout, redefines `try_or_cleanup!` or hand-rolls a descriptor
+/// write is the copy-drift these helpers were made to end.
+#[cfg(test)]
+mod hand_rolled_descriptor_code_tests {
+    fn rust_sources(dir: &std::path::Path, out: &mut Vec<(String, String)>) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                rust_sources(&path, out);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                let text = std::fs::read_to_string(&path).unwrap();
+                out.push((path.to_string_lossy().into_owned(), text));
+            }
+        }
+    }
+
+    fn renderer_sources() -> Vec<(String, String)> {
+        let mut out = Vec::new();
+        rust_sources(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+            &mut out,
+        );
+        out
+    }
+
+    /// Needles are composed at run time so this test's own text cannot match.
+    #[test]
+    fn passes_build_layouts_writes_and_teardown_through_the_shared_helpers() {
+        let layout = format!("{}{}", "DescriptorSetLayoutBinding::", "default()");
+        let write = format!("{}{}", "WriteDescriptorSet::", "default()");
+        let macro_def = format!("{}{}", "macro_rules! try_or_", "cleanup");
+        for (path, text) in renderer_sources() {
+            let production = crate::source_scan::production_text_or_whole(&text);
+            let is_descriptors = path.ends_with("vulkan/descriptors.rs");
+            // The bindless texture-array layout is the one non-uniform
+            // binding (descriptor count + binding flags), and `reflect.rs`'s
+            // single hit is a test fixture; both sit outside the builders.
+            let layout_exempt = is_descriptors || path.ends_with("texture_registry/mod.rs");
+            if !layout_exempt {
+                assert!(
+                    !production.contains(&layout),
+                    "{path} hand-writes a layout binding — use descriptors::layout_binding / \
+                     compute_binding (#5593)"
+                );
+            }
+            if !is_descriptors {
+                assert!(
+                    !production.contains(&write),
+                    "{path} hand-rolls a WriteDescriptorSet — use the descriptors::write_* \
+                     helpers (#5595)"
+                );
+            }
+            if !path.ends_with("vulkan/mod.rs") {
+                assert!(
+                    !production.contains(&macro_def),
+                    "{path} redefines try_or_cleanup! — use the shared one in vulkan/mod.rs (#5594)"
+                );
+            }
+        }
     }
 }

@@ -1081,6 +1081,37 @@ impl GpuBuffer {
         Ok(this)
     }
 
+    /// `frames` host-visible uniform buffers, each sized for one `T` — the
+    /// per-frame-in-flight parameter UBO every compute/post pass keeps (#5594).
+    /// Seven pass constructors restated the same create-and-push loop; a failure
+    /// part-way destroys the buffers already made, so the caller's own partial
+    /// teardown only ever sees the whole set or none of it.
+    pub fn create_per_frame_uniforms<T>(
+        device: &ash::Device,
+        allocator: &SharedAllocator,
+        frames: usize,
+    ) -> Result<Vec<Self>> {
+        let size = std::mem::size_of::<T>() as vk::DeviceSize;
+        let mut buffers = Vec::with_capacity(frames);
+        for _ in 0..frames {
+            match Self::create_host_visible(
+                device,
+                allocator,
+                size,
+                vk::BufferUsageFlags::UNIFORM_BUFFER,
+            ) {
+                Ok(buffer) => buffers.push(buffer),
+                Err(error) => {
+                    for buffer in &mut buffers {
+                        buffer.destroy(device, allocator);
+                    }
+                    return Err(error);
+                }
+            }
+        }
+        Ok(buffers)
+    }
+
     /// Create a host-visible buffer for device→host **readback**.
     ///
     /// #2752 / REN-D4-05 — the readback sibling of [`Self::create_host_visible`],

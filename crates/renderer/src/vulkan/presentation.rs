@@ -14,6 +14,7 @@ use super::descriptors::{
 };
 use super::reflect::{validate_set_layout, ReflectedShader};
 use super::sync::MAX_FRAMES_IN_FLIGHT;
+use crate::vulkan::descriptors::layout_binding;
 use anyhow::{Context, Result};
 use ash::vk;
 
@@ -27,21 +28,21 @@ const PRESENTATION_FRAG_SPV: &[u8] = include_bytes!("../../shaders/presentation.
 /// texel.
 fn presentation_set_bindings() -> [vk::DescriptorSetLayoutBinding<'static>; 3] {
     [
-        vk::DescriptorSetLayoutBinding::default()
-            .binding(0)
-            .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-            .descriptor_count(1)
-            .stage_flags(vk::ShaderStageFlags::FRAGMENT),
-        vk::DescriptorSetLayoutBinding::default()
-            .binding(1)
-            .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-            .descriptor_count(1)
-            .stage_flags(vk::ShaderStageFlags::FRAGMENT),
-        vk::DescriptorSetLayoutBinding::default()
-            .binding(2)
-            .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-            .descriptor_count(1)
-            .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+        layout_binding(
+            0,
+            vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+            vk::ShaderStageFlags::FRAGMENT,
+        ),
+        layout_binding(
+            1,
+            vk::DescriptorType::STORAGE_BUFFER,
+            vk::ShaderStageFlags::FRAGMENT,
+        ),
+        layout_binding(
+            2,
+            vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+            vk::ShaderStageFlags::FRAGMENT,
+        ),
     ]
 }
 

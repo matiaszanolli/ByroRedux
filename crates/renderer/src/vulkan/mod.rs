@@ -1,3 +1,28 @@
+/// Early-return from a pass constructor that is building a `partial` value
+/// field by field: on `Err`, tear the partial state down in reverse creation
+/// order and return the error (#5594). Twelve constructors each defined this
+/// macro locally (identical but for the name of the partial and a SAFETY
+/// comment); a change to the partial-teardown contract was a twelve-site edit.
+///
+/// `$partial.destroy($device, $allocator)` is called with whatever the
+/// constructor has created so far. Defined before the `mod` declarations so
+/// it is in textual scope for every pass module below.
+macro_rules! try_or_cleanup {
+    ($partial:ident, $device:expr, $allocator:expr, $expr:expr) => {
+        match $expr {
+            Ok(v) => v,
+            Err(e) => {
+                // SAFETY: `$partial` holds only handles created by this device
+                // earlier in the calling initializer; on this error path none
+                // has been bound to an in-flight command buffer yet, so tearing
+                // them down in reverse creation order is sound.
+                unsafe { $partial.destroy($device, $allocator) };
+                return Err(e.into());
+            }
+        }
+    };
+}
+
 pub mod acceleration;
 pub mod allocator;
 pub mod bloom;

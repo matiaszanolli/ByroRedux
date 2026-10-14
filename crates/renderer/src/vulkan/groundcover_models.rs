@@ -31,6 +31,7 @@
 //!    shader's header) against the blade scatter's chunk and cell records.
 //! 3. The geometry pass draws [`GroundCoverModelTier::shape_draws`].
 
+use crate::vulkan::descriptors::layout_binding;
 use anyhow::{Context, Result};
 use ash::vk;
 
@@ -269,15 +270,15 @@ fn set_layout_bindings() -> Vec<vk::DescriptorSetLayoutBinding<'static>> {
     let compute = vk::ShaderStageFlags::COMPUTE;
     (0..12)
         .map(|binding| {
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(binding)
-                .descriptor_type(if binding == 3 {
+            layout_binding(
+                binding,
+                if binding == 3 {
                     vk::DescriptorType::ACCELERATION_STRUCTURE_KHR
                 } else {
                     vk::DescriptorType::STORAGE_BUFFER
-                })
-                .descriptor_count(1)
-                .stage_flags(compute)
+                },
+                compute,
+            )
         })
         .collect()
 }
@@ -747,11 +748,7 @@ impl GroundCoverModelTier {
             crate::vulkan::descriptors::write_acceleration_structure(set, 3, &mut accel_write);
         // #4922 — a fixed array: this runs every frame the tier draws.
         let writes: [vk::WriteDescriptorSet; 12] = std::array::from_fn(|i| match buffers.get(i) {
-            Some((binding, info)) => vk::WriteDescriptorSet::default()
-                .dst_set(set)
-                .dst_binding(*binding)
-                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                .buffer_info(info),
+            Some((binding, info)) => crate::vulkan::descriptors::write_storage_buffer(set, *binding, info),
             None => tlas_write,
         });
         // SAFETY: every info outlives the call, and only slot `frame`'s set is

@@ -1,6 +1,7 @@
 //! Diffuse sky convolution into nine RGB spherical-harmonic coefficients.
 use super::*;
 use crate::shader_constants::SKY_SH_COEFFICIENTS;
+use crate::vulkan::descriptors::compute_binding;
 use crate::vulkan::descriptors::write_storage_buffer;
 
 const SPV: &[u8] = include_bytes!("../../../shaders/sky_irradiance.comp.spv");
@@ -44,16 +45,8 @@ impl SkyIrradiance {
         sampler: vk::Sampler,
     ) -> Result<()> {
         let bindings = [
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(0)
-                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(1)
-                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            compute_binding(0, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
+            compute_binding(1, vk::DescriptorType::STORAGE_BUFFER),
         ];
         validate_set_layout(
             0,

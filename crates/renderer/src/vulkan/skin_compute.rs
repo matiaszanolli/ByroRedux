@@ -17,6 +17,7 @@
 //! per-vertex layout (matches `vertex.rs::Vertex`, 26 floats / 104 B;
 //! RGBA colour at 3..6 and tangent at 22..25).
 
+use crate::vulkan::descriptors::compute_binding;
 use super::allocator::SharedAllocator;
 use super::buffer::GpuBuffer;
 use super::descriptors::{write_storage_buffer, DescriptorPoolBuilder};
@@ -413,21 +414,9 @@ impl SkinComputePipeline {
         // sizes for `max_slots × MAX_FRAMES_IN_FLIGHT × 3` storage
         // buffer descriptors total.
         let bindings = [
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(0)
-                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(1)
-                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(2)
-                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            compute_binding(0, vk::DescriptorType::STORAGE_BUFFER),
+            compute_binding(1, vk::DescriptorType::STORAGE_BUFFER),
+            compute_binding(2, vk::DescriptorType::STORAGE_BUFFER),
         ];
         // Cross-check the layout against SPIR-V reflection so a future
         // shader edit that reorders / renames bindings fails the build
@@ -1056,21 +1045,9 @@ impl SkinPaletteComputePipeline {
         // Three storage-buffer bindings: bone_world (in), bind_inverses
         // (in), palette (out). All COMPUTE-only.
         let bindings = [
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(0)
-                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(1)
-                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(2)
-                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            compute_binding(0, vk::DescriptorType::STORAGE_BUFFER),
+            compute_binding(1, vk::DescriptorType::STORAGE_BUFFER),
+            compute_binding(2, vk::DescriptorType::STORAGE_BUFFER),
         ];
         validate_set_layout(
             0,

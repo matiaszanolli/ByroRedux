@@ -12,6 +12,7 @@ use super::sync::MAX_FRAMES_IN_FLIGHT;
 use crate::shader_constants::{
     CLUSTER_SLICES_Z, CLUSTER_TILES_X, CLUSTER_TILES_Y, MAX_LIGHTS_PER_CLUSTER, TOTAL_CLUSTERS,
 };
+use crate::vulkan::descriptors::compute_binding;
 use anyhow::{Context, Result};
 use ash::vk;
 
@@ -105,25 +106,12 @@ impl ClusterCullPipeline {
             scene_light_index_buffers: Vec::new(),
         };
 
-        macro_rules! try_or_cleanup {
-            ($expr:expr) => {
-                match $expr {
-                    Ok(v) => v,
-                    Err(e) => {
-                        // SAFETY: `partial` is still under construction — no
-                        // handle in it has been submitted to any queue, so
-                        // `destroy`'s "not in use by an in-flight command
-                        // buffer" contract holds trivially.
-                        unsafe { partial.destroy(device, allocator) };
-                        return Err(e.into());
-                    }
-                }
-            };
-        }
-
         // Create per-frame buffers.
         for _ in 0..MAX_FRAMES_IN_FLIGHT {
             partial.cluster_grid_buffers.push(try_or_cleanup!(
+                partial,
+                device,
+                allocator,
                 GpuBuffer::create_device_local_uninit(
                     device,
                     allocator,
@@ -132,6 +120,9 @@ impl ClusterCullPipeline {
                 )
             ));
             partial.light_index_buffers.push(try_or_cleanup!(
+                partial,
+                device,
+                allocator,
                 GpuBuffer::create_device_local_uninit(
                     device,
                     allocator,
@@ -139,43 +130,26 @@ impl ClusterCullPipeline {
                     vk::BufferUsageFlags::STORAGE_BUFFER,
                 )
             ));
-            partial
-                .telemetry_buffers
-                .push(try_or_cleanup!(GpuBuffer::create_host_readback(
+            partial.telemetry_buffers.push(try_or_cleanup!(
+                partial,
+                device,
+                allocator,
+                GpuBuffer::create_host_readback(
                     device,
                     allocator,
                     std::mem::size_of::<ClusterCullTelemetryGpu>() as vk::DeviceSize,
                     vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
-                )));
+                )
+            ));
         }
 
         // Compute descriptor set layout.
         let bindings = [
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(0)
-                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(1)
-                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(2)
-                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(3)
-                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(4)
-                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            compute_binding(0, vk::DescriptorType::STORAGE_BUFFER),
+            compute_binding(1, vk::DescriptorType::UNIFORM_BUFFER),
+            compute_binding(2, vk::DescriptorType::STORAGE_BUFFER),
+            compute_binding(3, vk::DescriptorType::STORAGE_BUFFER),
+            compute_binding(4, vk::DescriptorType::STORAGE_BUFFER),
         ];
         validate_set_layout(
             0,
@@ -190,7 +164,7 @@ impl ClusterCullPipeline {
         .expect("cluster_cull layout drifted against cluster_cull.comp (see #427)");
         // SAFETY: `device` is live; the create-info borrows only `bindings`,
         // which outlives this call.
-        partial.descriptor_set_layout = try_or_cleanup!(unsafe {
+        partial.descriptor_set_layout = try_or_cleanup!(partial, device, allocator, unsafe {
             device
                 .create_descriptor_set_layout(
                     &vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings),
@@ -201,7 +175,7 @@ impl ClusterCullPipeline {
 
         // SAFETY: `device` is live; `partial.descriptor_set_layout` was just
         // created above and outlives this call.
-        partial.pipeline_layout = try_or_cleanup!(unsafe {
+        partial.pipeline_layout = try_or_cleanup!(partial, device, allocator, unsafe {
             device
                 .create_pipeline_layout(
                     &vk::PipelineLayoutCreateInfo::default()
@@ -213,27 +187,34 @@ impl ClusterCullPipeline {
 
         // Load + build the compute pipeline (#1751 shared helper — see
         // `pipeline::create_compute_pipeline`'s doc comment).
-        partial.pipeline = try_or_cleanup!(super::pipeline::create_compute_pipeline(
+        partial.pipeline = try_or_cleanup!(
+            partial,
             device,
-            pipeline_cache,
-            CLUSTER_CULL_COMP_SPV,
-            partial.pipeline_layout,
-            "cluster cull",
-        ));
+            allocator,
+            super::pipeline::create_compute_pipeline(
+                device,
+                pipeline_cache,
+                CLUSTER_CULL_COMP_SPV,
+                partial.pipeline_layout,
+                "cluster cull",
+            )
+        );
 
         // Descriptor pool + sets — sizes derived from `bindings`
         // (#1030 / REN-D10-NEW-09).
-        partial.descriptor_pool = try_or_cleanup!(DescriptorPoolBuilder::from_layout_bindings(
-            &bindings,
-            MAX_FRAMES_IN_FLIGHT as u32,
-        )
-        .max_sets(MAX_FRAMES_IN_FLIGHT as u32)
-        .build(device, "Failed to create cluster cull descriptor pool"));
+        partial.descriptor_pool = try_or_cleanup!(
+            partial,
+            device,
+            allocator,
+            DescriptorPoolBuilder::from_layout_bindings(&bindings, MAX_FRAMES_IN_FLIGHT as u32,)
+                .max_sets(MAX_FRAMES_IN_FLIGHT as u32)
+                .build(device, "Failed to create cluster cull descriptor pool")
+        );
 
         let layouts = vec![partial.descriptor_set_layout; MAX_FRAMES_IN_FLIGHT];
         // SAFETY: `partial.descriptor_pool` was just created above with
         // capacity for exactly `layouts.len()` sets of `descriptor_set_layout`.
-        partial.descriptor_sets = try_or_cleanup!(unsafe {
+        partial.descriptor_sets = try_or_cleanup!(partial, device, allocator, unsafe {
             device
                 .allocate_descriptor_sets(
                     &vk::DescriptorSetAllocateInfo::default()

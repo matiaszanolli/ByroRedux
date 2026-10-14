@@ -53,6 +53,7 @@
 //! lifetime — same pattern as SVGF / volumetrics, simpler than
 //! flipping layouts between passes.
 
+use crate::vulkan::descriptors::compute_binding;
 use super::allocator::SharedAllocator;
 use super::buffer::GpuBuffer;
 use super::descriptors::{
@@ -297,26 +298,10 @@ impl BloomPipeline {
             extent: screen_extent,
         };
 
-        macro_rules! try_or_cleanup {
-            ($expr:expr) => {
-                match $expr {
-                    Ok(v) => v,
-                    Err(e) => {
-                        // SAFETY: `destroy` is an unsafe fn; on this error path
-                        // the device is still live and no bloom command buffers
-                        // are in flight (we are mid-construction), so tearing
-                        // down the partially-built pipeline is sound.
-                        unsafe { partial.destroy(device, allocator) };
-                        return Err(e.into());
-                    }
-                }
-            };
-        }
-
         // ── 1. Sampler ────────────────────────────────────────────────
         // SAFETY: trivial ash create call; `device` is live and the
         // SamplerCreateInfo is fully initialized for the duration of the call.
-        partial.sampler = try_or_cleanup!(unsafe {
+        partial.sampler = try_or_cleanup!(partial, device, allocator, unsafe {
             device
                 .create_sampler(
                     &vk::SamplerCreateInfo::default()
@@ -333,21 +318,9 @@ impl BloomPipeline {
         // ── 2. Descriptor set layouts ─────────────────────────────────
         // Downsample: 0=src sampler, 1=dst storage, 2=params UBO.
         let down_bindings = [
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(0)
-                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(1)
-                .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(2)
-                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            compute_binding(0, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
+            compute_binding(1, vk::DescriptorType::STORAGE_IMAGE),
+            compute_binding(2, vk::DescriptorType::UNIFORM_BUFFER),
         ];
         validate_set_layout(
             0,
@@ -362,7 +335,7 @@ impl BloomPipeline {
         .expect("bloom downsample layout drifted against bloom_downsample.comp (see #427)");
         // SAFETY: trivial ash create call; `device` is live and `down_bindings`
         // outlives the create info borrowed by this call.
-        partial.downsample_dsl = try_or_cleanup!(unsafe {
+        partial.downsample_dsl = try_or_cleanup!(partial, device, allocator, unsafe {
             device
                 .create_descriptor_set_layout(
                     &vk::DescriptorSetLayoutCreateInfo::default().bindings(&down_bindings),
@@ -374,26 +347,10 @@ impl BloomPipeline {
         // Upsample: 0=smaller sampler, 1=same sampler, 2=dst storage,
         // 3=params UBO.
         let up_bindings = [
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(0)
-                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(1)
-                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(2)
-                .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(3)
-                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            compute_binding(0, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
+            compute_binding(1, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
+            compute_binding(2, vk::DescriptorType::STORAGE_IMAGE),
+            compute_binding(3, vk::DescriptorType::UNIFORM_BUFFER),
         ];
         validate_set_layout(
             0,
@@ -408,7 +365,7 @@ impl BloomPipeline {
         .expect("bloom upsample layout drifted against bloom_upsample.comp (see #427)");
         // SAFETY: trivial ash create call; `device` is live and `up_bindings`
         // outlives the create info borrowed by this call.
-        partial.upsample_dsl = try_or_cleanup!(unsafe {
+        partial.upsample_dsl = try_or_cleanup!(partial, device, allocator, unsafe {
             device
                 .create_descriptor_set_layout(
                     &vk::DescriptorSetLayoutCreateInfo::default().bindings(&up_bindings),
@@ -420,16 +377,8 @@ impl BloomPipeline {
         // #2796 / REN-D16-01 — apply: 0=scene storage (read-modify-write),
         // 1=bloom output sampler.
         let apply_bindings = [
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(0)
-                .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(1)
-                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            compute_binding(0, vk::DescriptorType::STORAGE_IMAGE),
+            compute_binding(1, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
         ];
         validate_set_layout(
             0,
@@ -444,7 +393,7 @@ impl BloomPipeline {
         .expect("bloom apply layout drifted against bloom_apply.comp (see #427)");
         // SAFETY: trivial ash create call; `device` is live and `apply_bindings`
         // outlives the create info borrowed by this call.
-        partial.apply_dsl = try_or_cleanup!(unsafe {
+        partial.apply_dsl = try_or_cleanup!(partial, device, allocator, unsafe {
             device
                 .create_descriptor_set_layout(
                     &vk::DescriptorSetLayoutCreateInfo::default().bindings(&apply_bindings),
@@ -456,7 +405,7 @@ impl BloomPipeline {
         // ── 3. Pipeline layouts ───────────────────────────────────────
         // SAFETY: trivial ash create call; `device` is live and
         // `partial.downsample_dsl` was just created by us and is still live.
-        partial.downsample_pipeline_layout = try_or_cleanup!(unsafe {
+        partial.downsample_pipeline_layout = try_or_cleanup!(partial, device, allocator, unsafe {
             device
                 .create_pipeline_layout(
                     &vk::PipelineLayoutCreateInfo::default()
@@ -467,7 +416,7 @@ impl BloomPipeline {
         });
         // SAFETY: trivial ash create call; `device` is live and
         // `partial.upsample_dsl` was just created by us and is still live.
-        partial.upsample_pipeline_layout = try_or_cleanup!(unsafe {
+        partial.upsample_pipeline_layout = try_or_cleanup!(partial, device, allocator, unsafe {
             device
                 .create_pipeline_layout(
                     &vk::PipelineLayoutCreateInfo::default()
@@ -478,7 +427,7 @@ impl BloomPipeline {
         });
         // SAFETY: trivial ash create call; `device` is live and
         // `partial.apply_dsl` was just created by us and is still live.
-        partial.apply_pipeline_layout = try_or_cleanup!(unsafe {
+        partial.apply_pipeline_layout = try_or_cleanup!(partial, device, allocator, unsafe {
             device
                 .create_pipeline_layout(
                     &vk::PipelineLayoutCreateInfo::default()
@@ -489,21 +438,21 @@ impl BloomPipeline {
         });
 
         // ── 4. Compute pipelines ──────────────────────────────────────
-        partial.downsample_pipeline = try_or_cleanup!(super::pipeline::create_compute_pipeline(
+        partial.downsample_pipeline = try_or_cleanup!(partial, device, allocator, super::pipeline::create_compute_pipeline(
             device,
             pipeline_cache,
             BLOOM_DOWNSAMPLE_COMP_SPV,
             partial.downsample_pipeline_layout,
             "bloom downsample",
         ));
-        partial.upsample_pipeline = try_or_cleanup!(super::pipeline::create_compute_pipeline(
+        partial.upsample_pipeline = try_or_cleanup!(partial, device, allocator, super::pipeline::create_compute_pipeline(
             device,
             pipeline_cache,
             BLOOM_UPSAMPLE_COMP_SPV,
             partial.upsample_pipeline_layout,
             "bloom upsample",
         ));
-        partial.apply_pipeline = try_or_cleanup!(super::pipeline::create_compute_pipeline(
+        partial.apply_pipeline = try_or_cleanup!(partial, device, allocator, super::pipeline::create_compute_pipeline(
             device,
             pipeline_cache,
             BLOOM_APPLY_COMP_SPV,
@@ -521,7 +470,7 @@ impl BloomPipeline {
         let up_sets = MAX_FRAMES_IN_FLIGHT * (BLOOM_MIP_COUNT - 1);
         let apply_sets = MAX_FRAMES_IN_FLIGHT;
         let total_sets = down_sets + up_sets + apply_sets;
-        partial.descriptor_pool = try_or_cleanup!(DescriptorPoolBuilder::from_layout_bindings(
+        partial.descriptor_pool = try_or_cleanup!(partial, device, allocator, DescriptorPoolBuilder::from_layout_bindings(
             &down_bindings,
             down_sets as u32,
         )
@@ -532,7 +481,7 @@ impl BloomPipeline {
 
         // ── 6. Per-frame mip pyramids + descriptor sets ───────────────
         for frame_idx in 0..MAX_FRAMES_IN_FLIGHT {
-            let frame = try_or_cleanup!(BloomFrame::new(
+            let frame = try_or_cleanup!(partial, device, allocator, BloomFrame::new(
                 device,
                 allocator,
                 screen_extent,
@@ -556,7 +505,7 @@ impl BloomPipeline {
         // build and every resize — there is no separate "on resize"
         // path to keep in sync.
         for frame_idx in 0..MAX_FRAMES_IN_FLIGHT {
-            try_or_cleanup!(partial.upload_params(device, frame_idx));
+            try_or_cleanup!(partial, device, allocator, partial.upload_params(device, frame_idx));
         }
 
         log::info!(

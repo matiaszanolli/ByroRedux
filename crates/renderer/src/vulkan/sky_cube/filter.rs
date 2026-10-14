@@ -1,6 +1,7 @@
 //! Per-mip GGX convolution. Reads a base-only cube view while writing
 //! disjoint mip views, then exposes the complete chain to fragment shaders.
 use super::*;
+use crate::vulkan::descriptors::compute_binding;
 
 const SPV: &[u8] = include_bytes!("../../../shaders/sky_prefilter.comp.spv");
 
@@ -41,16 +42,8 @@ impl SkyFilter {
         sampler: vk::Sampler,
     ) -> Result<()> {
         let bindings = [
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(0)
-                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(1)
-                .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            compute_binding(0, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
+            compute_binding(1, vk::DescriptorType::STORAGE_IMAGE),
         ];
         validate_set_layout(
             0,

@@ -47,6 +47,7 @@ use super::svgf::should_force_history_reset;
 use super::sync::MAX_FRAMES_IN_FLIGHT;
 use super::GpuUploadCtx;
 use crate::shader_constants::{WORKGROUP_X, WORKGROUP_Y};
+use crate::vulkan::descriptors::compute_binding;
 use anyhow::{Context, Result};
 use ash::vk;
 
@@ -245,39 +246,25 @@ impl TaaPipeline {
             dispatched_this_frame: false,
         };
 
-        // SAFETY (inside macro below): `partial` is local to this fn and
-        // not yet referenced by any command buffer / descriptor set —
-        // cleanup-on-error closes the partial state before returning.
-        macro_rules! try_or_cleanup {
-            ($expr:expr) => {
-                match $expr {
-                    Ok(v) => v,
-                    Err(e) => {
-                        // SAFETY: `partial` holds only handles created by this device
-                        // earlier in this initializer; on this error path none has been
-                        // bound to an in-flight command buffer yet, so tearing them down
-                        // in reverse creation order is sound.
-                        unsafe { partial.destroy(device, allocator) };
-                        return Err(e.into());
-                    }
-                }
-            };
-        }
-
         for i in 0..MAX_FRAMES_IN_FLIGHT {
-            let slot = try_or_cleanup!(Self::create_history_image(
+            let slot = try_or_cleanup!(
+                partial,
                 device,
                 allocator,
-                width,
-                height,
-                &format!("taa_history_{i}"),
-            ));
+                Self::create_history_image(
+                    device,
+                    allocator,
+                    width,
+                    height,
+                    &format!("taa_history_{i}"),
+                )
+            );
             partial.history.push(slot);
         }
 
         // SAFETY: SamplerCreateInfo populated above; handle owned by
         // `partial.linear_sampler`, freed by destroy().
-        partial.linear_sampler = try_or_cleanup!(unsafe {
+        partial.linear_sampler = try_or_cleanup!(partial, device, allocator, unsafe {
             device
                 .create_sampler(
                     &vk::SamplerCreateInfo::default()
@@ -291,7 +278,7 @@ impl TaaPipeline {
                 .context("TAA linear sampler")
         });
         // SAFETY: same contract as `linear_sampler` above.
-        partial.point_sampler = try_or_cleanup!(unsafe {
+        partial.point_sampler = try_or_cleanup!(partial, device, allocator, unsafe {
             device
                 .create_sampler(
                     &vk::SamplerCreateInfo::default()
@@ -305,68 +292,28 @@ impl TaaPipeline {
                 .context("TAA point sampler")
         });
 
-        let param_size = std::mem::size_of::<TaaParams>() as vk::DeviceSize;
-        for _ in 0..MAX_FRAMES_IN_FLIGHT {
-            let buf = try_or_cleanup!(GpuBuffer::create_host_visible(
+        partial.param_buffers = try_or_cleanup!(
+            partial,
+            device,
+            allocator,
+            GpuBuffer::create_per_frame_uniforms::<TaaParams>(
                 device,
                 allocator,
-                param_size,
-                vk::BufferUsageFlags::UNIFORM_BUFFER,
-            ));
-            partial.param_buffers.push(buf);
-        }
+                MAX_FRAMES_IN_FLIGHT
+            )
+        );
 
         let bindings = [
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(0)
-                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(1)
-                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(2)
-                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(3)
-                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(4)
-                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(5)
-                .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(6)
-                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(7)
-                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(8)
-                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(9)
-                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            compute_binding(0, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
+            compute_binding(1, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
+            compute_binding(2, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
+            compute_binding(3, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
+            compute_binding(4, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
+            compute_binding(5, vk::DescriptorType::STORAGE_IMAGE),
+            compute_binding(6, vk::DescriptorType::UNIFORM_BUFFER),
+            compute_binding(7, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
+            compute_binding(8, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
+            compute_binding(9, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
         ];
         validate_set_layout(
             0,
@@ -381,7 +328,7 @@ impl TaaPipeline {
         .expect("taa descriptor layout drifted against taa.comp (see #427)");
         // SAFETY: `bindings` was validated above by `validate_set_layout`
         // against taa.comp; layout handle owned by `partial`.
-        partial.descriptor_set_layout = try_or_cleanup!(unsafe {
+        partial.descriptor_set_layout = try_or_cleanup!(partial, device, allocator, unsafe {
             device
                 .create_descriptor_set_layout(
                     &vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings),
@@ -392,7 +339,7 @@ impl TaaPipeline {
 
         // SAFETY: descriptor_set_layout just created above; slice-from-ref
         // borrow lives only for this call.
-        partial.pipeline_layout = try_or_cleanup!(unsafe {
+        partial.pipeline_layout = try_or_cleanup!(partial, device, allocator, unsafe {
             device
                 .create_pipeline_layout(
                     &vk::PipelineLayoutCreateInfo::default()
@@ -405,27 +352,34 @@ impl TaaPipeline {
         // Shared builder (#1751); frees the shader module immediately —
         // its SPIR-V is already baked into `partial.pipeline` by the time
         // this returns, so there's no live consumer to keep it around for.
-        partial.pipeline = try_or_cleanup!(super::pipeline::create_compute_pipeline(
+        partial.pipeline = try_or_cleanup!(
+            partial,
             device,
-            pipeline_cache,
-            TAA_COMP_SPV,
-            partial.pipeline_layout,
-            "TAA",
-        ));
+            allocator,
+            super::pipeline::create_compute_pipeline(
+                device,
+                pipeline_cache,
+                TAA_COMP_SPV,
+                partial.pipeline_layout,
+                "TAA",
+            )
+        );
 
         // Pool sizes derived from `bindings` (#1030 / REN-D10-NEW-09).
-        partial.descriptor_pool = try_or_cleanup!(DescriptorPoolBuilder::from_layout_bindings(
-            &bindings,
-            MAX_FRAMES_IN_FLIGHT as u32,
-        )
-        .max_sets(MAX_FRAMES_IN_FLIGHT as u32)
-        .build(device, "TAA descriptor pool"));
+        partial.descriptor_pool = try_or_cleanup!(
+            partial,
+            device,
+            allocator,
+            DescriptorPoolBuilder::from_layout_bindings(&bindings, MAX_FRAMES_IN_FLIGHT as u32,)
+                .max_sets(MAX_FRAMES_IN_FLIGHT as u32)
+                .build(device, "TAA descriptor pool")
+        );
 
         let set_layouts = vec![partial.descriptor_set_layout; MAX_FRAMES_IN_FLIGHT];
         // SAFETY: pool was just sized for MAX_FRAMES_IN_FLIGHT sets;
         // `set_layouts` is a length-MAX_FRAMES_IN_FLIGHT vec of the same
         // descriptor_set_layout handle.
-        partial.descriptor_sets = try_or_cleanup!(unsafe {
+        partial.descriptor_sets = try_or_cleanup!(partial, device, allocator, unsafe {
             device
                 .allocate_descriptor_sets(
                     &vk::DescriptorSetAllocateInfo::default()
@@ -985,7 +939,7 @@ mod tests {
         );
 
         let production = crate::source_scan::production_text(include_str!("taa.rs"));
-        assert!(production.contains(".binding(9)"));
+        assert!(production.contains("compute_binding(9,"));
         assert!(production.contains("write_combined_image_sampler(set, 9, &reactive)"));
         assert!(production.contains(".image_view(reactive_views[f])"));
     }

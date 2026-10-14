@@ -65,6 +65,7 @@
 //! compacts, and a stale vertex offset would silently point into another
 //! mesh's vertices.
 
+use crate::vulkan::descriptors::layout_binding;
 use anyhow::{Context, Result};
 use ash::vk;
 
@@ -72,6 +73,7 @@ use super::allocator::SharedAllocator;
 use super::buffer::GpuBuffer;
 use super::descriptors::{
     image_barrier_general_to_shader_read_layers, image_barrier_to_general_write_layers,
+    write_combined_image_sampler, write_storage_buffer, write_storage_image,
 };
 use super::gpu_timers::GpuPerFrameTimers;
 use super::image::{GpuImage, GpuImageDesc};
@@ -462,28 +464,32 @@ impl GroundcoverBench {
             dropped_cells: 0,
         };
 
-        macro_rules! try_or_cleanup {
-            ($expr:expr) => {
-                match $expr {
-                    Ok(v) => v,
-                    Err(e) => {
-                        // SAFETY: `this` is still under construction — nothing
-                        // in it has been submitted to any queue, so `destroy`'s
-                        // "not in use by an in-flight command buffer" contract
-                        // holds trivially.
-                        unsafe { this.destroy(device, allocator) };
-                        return Err(e.into());
-                    }
-                }
-            };
-        }
-
-        try_or_cleanup!(this.create_buffers(device, allocator));
-        try_or_cleanup!(this.create_images(device, allocator));
-        try_or_cleanup!(this.create_layouts(device));
-        try_or_cleanup!(this.create_descriptors(device));
-        try_or_cleanup!(this.create_pipelines(device, pipeline_cache));
-        try_or_cleanup!(this.create_raster_target(device, allocator));
+        try_or_cleanup!(
+            this,
+            device,
+            allocator,
+            this.create_buffers(device, allocator)
+        );
+        try_or_cleanup!(
+            this,
+            device,
+            allocator,
+            this.create_images(device, allocator)
+        );
+        try_or_cleanup!(this, device, allocator, this.create_layouts(device));
+        try_or_cleanup!(this, device, allocator, this.create_descriptors(device));
+        try_or_cleanup!(
+            this,
+            device,
+            allocator,
+            this.create_pipelines(device, pipeline_cache)
+        );
+        try_or_cleanup!(
+            this,
+            device,
+            allocator,
+            this.create_raster_target(device, allocator)
+        );
         Ok(this)
     }
 
@@ -570,33 +576,16 @@ impl GroundcoverBench {
 /// one layout so a variant cannot win by binding less than its opposite.
 fn sample_bindings() -> [vk::DescriptorSetLayoutBinding<'static>; 7] {
     let both = vk::ShaderStageFlags::COMPUTE | vk::ShaderStageFlags::VERTEX;
-    let ssbo = |binding: u32| {
-        vk::DescriptorSetLayoutBinding::default()
-            .binding(binding)
-            .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-            .descriptor_count(1)
-            .stage_flags(both)
-    };
-    let tex = |binding: u32| {
-        vk::DescriptorSetLayoutBinding::default()
-            .binding(binding)
-            .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-            .descriptor_count(1)
-            .stage_flags(both)
-    };
+    let ssbo = |binding: u32| layout_binding(binding, vk::DescriptorType::STORAGE_BUFFER, both);
+    let tex =
+        |binding: u32| layout_binding(binding, vk::DescriptorType::COMBINED_IMAGE_SAMPLER, both);
     [ssbo(0), ssbo(1), ssbo(2), ssbo(3), tex(4), tex(5), tex(6)]
 }
 
 /// Bake-set bindings, in `groundcover_bench_bake.comp`'s order.
 fn bake_bindings() -> [vk::DescriptorSetLayoutBinding<'static>; 5] {
     let stage = vk::ShaderStageFlags::COMPUTE;
-    let entry = |binding: u32, ty: vk::DescriptorType| {
-        vk::DescriptorSetLayoutBinding::default()
-            .binding(binding)
-            .descriptor_type(ty)
-            .descriptor_count(1)
-            .stage_flags(stage)
-    };
+    let entry = |binding: u32, ty: vk::DescriptorType| layout_binding(binding, ty, stage);
     [
         entry(0, vk::DescriptorType::STORAGE_BUFFER),
         entry(1, vk::DescriptorType::STORAGE_BUFFER),
@@ -1126,54 +1115,19 @@ impl GroundcoverBench {
 
         let set = self.sample_sets[frame];
         let bake_set = self.bake_sets[frame];
-        fn buffer_write<'a>(
-            set: vk::DescriptorSet,
-            binding: u32,
-            info: &'a [vk::DescriptorBufferInfo],
-        ) -> vk::WriteDescriptorSet<'a> {
-            vk::WriteDescriptorSet::default()
-                .dst_set(set)
-                .dst_binding(binding)
-                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                .buffer_info(info)
-        }
         let writes = [
-            buffer_write(set, 0, &chunk_info),
-            buffer_write(set, 1, &cell_info),
-            buffer_write(set, 2, &vertex_info),
-            buffer_write(set, 3, &result_info),
-            vk::WriteDescriptorSet::default()
-                .dst_set(set)
-                .dst_binding(4)
-                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .image_info(&attr_info),
-            vk::WriteDescriptorSet::default()
-                .dst_set(set)
-                .dst_binding(5)
-                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .image_info(&splat0_info),
-            vk::WriteDescriptorSet::default()
-                .dst_set(set)
-                .dst_binding(6)
-                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .image_info(&splat1_info),
-            buffer_write(bake_set, 0, &cell_info),
-            buffer_write(bake_set, 1, &vertex_info),
-            vk::WriteDescriptorSet::default()
-                .dst_set(bake_set)
-                .dst_binding(2)
-                .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
-                .image_info(&attr_storage),
-            vk::WriteDescriptorSet::default()
-                .dst_set(bake_set)
-                .dst_binding(3)
-                .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
-                .image_info(&splat0_storage),
-            vk::WriteDescriptorSet::default()
-                .dst_set(bake_set)
-                .dst_binding(4)
-                .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
-                .image_info(&splat1_storage),
+            write_storage_buffer(set, 0, &chunk_info),
+            write_storage_buffer(set, 1, &cell_info),
+            write_storage_buffer(set, 2, &vertex_info),
+            write_storage_buffer(set, 3, &result_info),
+            write_combined_image_sampler(set, 4, &attr_info),
+            write_combined_image_sampler(set, 5, &splat0_info),
+            write_combined_image_sampler(set, 6, &splat1_info),
+            write_storage_buffer(bake_set, 0, &cell_info),
+            write_storage_buffer(bake_set, 1, &vertex_info),
+            write_storage_image(bake_set, 2, &attr_storage),
+            write_storage_image(bake_set, 3, &splat0_storage),
+            write_storage_image(bake_set, 4, &splat1_storage),
         ];
         // SAFETY: every `*_info` slice outlives the call. Only slot `frame`'s
         // sets are touched, and the caller has already waited that slot's

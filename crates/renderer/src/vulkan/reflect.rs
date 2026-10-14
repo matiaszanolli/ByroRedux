@@ -26,6 +26,8 @@
 //! an `OpTypeRuntimeArray` (bindless); the Vulkan layout can declare any
 //! count in that case.
 
+#[cfg(test)]
+use crate::vulkan::descriptors::compute_binding;
 use anyhow::{anyhow, bail, Result};
 use ash::vk;
 use rspirv::binary;
@@ -1233,21 +1235,9 @@ mod tests {
     #[test]
     fn validate_ssao_layout_matches() {
         let expected = [
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(0)
-                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(1)
-                .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(2)
-                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            compute_binding(0, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
+            compute_binding(1, vk::DescriptorType::STORAGE_IMAGE),
+            compute_binding(2, vk::DescriptorType::UNIFORM_BUFFER),
         ];
         validate_set_layout(
             0,
@@ -1267,21 +1257,13 @@ mod tests {
         // Swap binding 1 from STORAGE_IMAGE to STORAGE_BUFFER — the synthetic
         // mismatch the issue calls for.
         let mismatched = [
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(0)
-                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            compute_binding(0, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
             vk::DescriptorSetLayoutBinding::default()
                 .binding(1)
                 .descriptor_type(vk::DescriptorType::STORAGE_BUFFER) // wrong
                 .descriptor_count(1)
                 .stage_flags(vk::ShaderStageFlags::COMPUTE),
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(2)
-                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            compute_binding(2, vk::DescriptorType::UNIFORM_BUFFER),
         ];
         let err = validate_set_layout(
             0,
@@ -1314,16 +1296,8 @@ mod tests {
     fn validate_rejects_missing_layout_entry() {
         // Layout drops binding 2 — shader still declares it.
         let short = [
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(0)
-                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(1)
-                .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            compute_binding(0, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
+            compute_binding(1, vk::DescriptorType::STORAGE_IMAGE),
         ];
         let err = validate_set_layout(
             0,

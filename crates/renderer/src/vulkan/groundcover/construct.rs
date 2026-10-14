@@ -2,6 +2,7 @@
 //! `groundcover.rs`, which retains the struct, the GPU record types and
 //! every constant): buffer allocation, the descriptor-set layout contracts,
 //! and pipeline building. The per-frame half lives in `frame.rs`.
+use crate::vulkan::descriptors::layout_binding;
 use super::*;
 
 impl GroundCoverPipeline {
@@ -55,24 +56,10 @@ impl GroundCoverPipeline {
             frame_cover_reach: 0.0,
             frame_push: BladePush::default(),
         };
-        macro_rules! try_or_cleanup {
-            ($expr:expr) => {
-                match $expr {
-                    Ok(v) => v,
-                    Err(e) => {
-                        // SAFETY: `this` is still under construction — nothing
-                        // in it has reached a queue, so `destroy`'s "not in use
-                        // by an in-flight command buffer" contract is trivial.
-                        unsafe { this.destroy(device, allocator) };
-                        return Err(e.into());
-                    }
-                }
-            };
-        }
-        try_or_cleanup!(this.create_buffers(device, allocator));
-        try_or_cleanup!(this.create_layouts(device, texture_set_layout, scene_set_layout));
-        try_or_cleanup!(this.create_descriptors(device));
-        try_or_cleanup!(this.create_pipelines(device, pipeline_cache, render_pass));
+        try_or_cleanup!(this, device, allocator, this.create_buffers(device, allocator));
+        try_or_cleanup!(this, device, allocator, this.create_layouts(device, texture_set_layout, scene_set_layout));
+        try_or_cleanup!(this, device, allocator, this.create_descriptors(device));
+        try_or_cleanup!(this, device, allocator, this.create_pipelines(device, pipeline_cache, render_pass));
         Ok(this)
     }
 
@@ -351,11 +338,7 @@ fn set_layout_contracts() -> [SetLayoutContract; 3] {
         .collect();
     scatter.push(storage_binding(7, compute));
     scatter.push(
-        vk::DescriptorSetLayoutBinding::default()
-            .binding(6)
-            .descriptor_type(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)
-            .descriptor_count(1)
-            .stage_flags(compute),
+        layout_binding(6, vk::DescriptorType::ACCELERATION_STRUCTURE_KHR, compute),
     );
     // §12.4's own set: the field, its header, and the frame's disturbers.
     let interaction = (0..3)
@@ -406,11 +389,7 @@ fn storage_binding(
     binding: u32,
     stages: vk::ShaderStageFlags,
 ) -> vk::DescriptorSetLayoutBinding<'static> {
-    vk::DescriptorSetLayoutBinding::default()
-        .binding(binding)
-        .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-        .descriptor_count(1)
-        .stage_flags(stages)
+    layout_binding(binding, vk::DescriptorType::STORAGE_BUFFER, stages)
 }
 
 impl GroundCoverPipeline {

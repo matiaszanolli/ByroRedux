@@ -21,6 +21,7 @@ use super::descriptors::{
 };
 use super::reflect::{validate_set_layout, ReflectedShader};
 use super::sync::MAX_FRAMES_IN_FLIGHT;
+use crate::vulkan::descriptors::compute_binding;
 use anyhow::{Context, Result};
 use ash::vk;
 
@@ -72,25 +73,10 @@ impl ExposureMeterPipeline {
             param_buffers: Vec::new(),
         };
 
-        macro_rules! try_or_cleanup {
-            ($expr:expr) => {
-                match $expr {
-                    Ok(v) => v,
-                    Err(e) => {
-                        // SAFETY: `destroy` is unsafe; on this error path the
-                        // device is live and no meter command buffers are in
-                        // flight (mid-construction).
-                        unsafe { partial.destroy(device, allocator) };
-                        return Err(e.into());
-                    }
-                }
-            };
-        }
-
         // Any valid sampler — the shader reads via texelFetch, which ignores
         // sampler state; the binding type just requires one.
         // SAFETY: trivial ash create; `device` live, create-info outlives call.
-        partial.sampler = try_or_cleanup!(unsafe {
+        partial.sampler = try_or_cleanup!(partial, device, allocator, unsafe {
             device
                 .create_sampler(
                     &vk::SamplerCreateInfo::default()
@@ -105,21 +91,9 @@ impl ExposureMeterPipeline {
         });
 
         let bindings = [
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(0)
-                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(1)
-                .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(2)
-                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            compute_binding(0, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
+            compute_binding(1, vk::DescriptorType::STORAGE_IMAGE),
+            compute_binding(2, vk::DescriptorType::UNIFORM_BUFFER),
         ];
         validate_set_layout(
             0,
@@ -133,7 +107,7 @@ impl ExposureMeterPipeline {
         )
         .expect("exposure meter layout drifted against exposure_meter.comp");
         // SAFETY: `bindings` outlives the call; the returned layout is owned.
-        partial.dsl = try_or_cleanup!(unsafe {
+        partial.dsl = try_or_cleanup!(partial, device, allocator, unsafe {
             device
                 .create_descriptor_set_layout(
                     &vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings),
@@ -143,7 +117,7 @@ impl ExposureMeterPipeline {
         });
 
         // SAFETY: `partial.dsl` just created and live.
-        partial.pipeline_layout = try_or_cleanup!(unsafe {
+        partial.pipeline_layout = try_or_cleanup!(partial, device, allocator, unsafe {
             device
                 .create_pipeline_layout(
                     &vk::PipelineLayoutCreateInfo::default()
@@ -153,24 +127,31 @@ impl ExposureMeterPipeline {
                 .context("exposure meter pipeline layout")
         });
 
-        partial.pipeline = try_or_cleanup!(super::pipeline::create_compute_pipeline(
+        partial.pipeline = try_or_cleanup!(
+            partial,
             device,
-            pipeline_cache,
-            EXPOSURE_METER_COMP_SPV,
-            partial.pipeline_layout,
-            "exposure meter",
-        ));
+            allocator,
+            super::pipeline::create_compute_pipeline(
+                device,
+                pipeline_cache,
+                EXPOSURE_METER_COMP_SPV,
+                partial.pipeline_layout,
+                "exposure meter",
+            )
+        );
 
-        partial.descriptor_pool = try_or_cleanup!(DescriptorPoolBuilder::from_layout_bindings(
-            &bindings,
-            MAX_FRAMES_IN_FLIGHT as u32,
-        )
-        .max_sets(MAX_FRAMES_IN_FLIGHT as u32)
-        .build(device, "exposure meter descriptor pool"));
+        partial.descriptor_pool = try_or_cleanup!(
+            partial,
+            device,
+            allocator,
+            DescriptorPoolBuilder::from_layout_bindings(&bindings, MAX_FRAMES_IN_FLIGHT as u32,)
+                .max_sets(MAX_FRAMES_IN_FLIGHT as u32)
+                .build(device, "exposure meter descriptor pool")
+        );
 
         let layouts = vec![partial.dsl; MAX_FRAMES_IN_FLIGHT];
         // SAFETY: pool + layout are live and owned here.
-        partial.descriptor_sets = try_or_cleanup!(unsafe {
+        partial.descriptor_sets = try_or_cleanup!(partial, device, allocator, unsafe {
             device
                 .allocate_descriptor_sets(
                     &vk::DescriptorSetAllocateInfo::default()
@@ -181,15 +162,16 @@ impl ExposureMeterPipeline {
         });
 
         let param_size = std::mem::size_of::<MeterParams>() as vk::DeviceSize;
-        for _ in 0..MAX_FRAMES_IN_FLIGHT {
-            let buffer = try_or_cleanup!(GpuBuffer::create_host_visible(
+        partial.param_buffers = try_or_cleanup!(
+            partial,
+            device,
+            allocator,
+            GpuBuffer::create_per_frame_uniforms::<MeterParams>(
                 device,
                 allocator,
-                param_size,
-                vk::BufferUsageFlags::UNIFORM_BUFFER,
-            ));
-            partial.param_buffers.push(buffer);
-        }
+                MAX_FRAMES_IN_FLIGHT
+            )
+        );
         // Write the internally-owned UBO binding now; 0/1 are per-dispatch.
         for frame in 0..MAX_FRAMES_IN_FLIGHT {
             let ubo_info = [vk::DescriptorBufferInfo {

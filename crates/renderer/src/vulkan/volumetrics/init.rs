@@ -16,6 +16,7 @@
 //! methods and no call site outside this crate moved with them.
 
 use super::*;
+use crate::vulkan::descriptors::compute_binding;
 // The relocated code addressed these as `super::<mod>` while it lived one
 // level up in `volumetrics.rs`. Importing them by name — rather than
 // re-spelling six call sites as `super::super::<mod>` — keeps every moved
@@ -128,119 +129,144 @@ impl VolumetricsPipeline {
             boundary_geometry_written: [false; MAX_FRAMES_IN_FLIGHT],
         };
 
-        macro_rules! try_or_cleanup {
-            ($expr:expr) => {
-                match $expr {
-                    Ok(v) => v,
-                    Err(e) => {
-                        // SAFETY: cleanup path on construction failure; `partial` owns only
-                        // objects created so far in this fn, none submitted to the GPU, and
-                        // `device`/`allocator` outlive this call.
-                        unsafe { partial.destroy(device, allocator) };
-                        return Err(e.into());
-                    }
-                }
-            };
-        }
-
         // ── 1. Allocate per-frame-in-flight froxel volumes ────────────
         // Six volumes per frame: lighting (injection output → integration
         // input), integrated (integration output → composite read), scalar
         // emission provenance, and three transported-combustion history fields.
         for i in 0..MAX_FRAMES_IN_FLIGHT {
-            let slot = try_or_cleanup!(Self::create_volume(
+            let slot = try_or_cleanup!(
+                partial,
                 device,
                 allocator,
-                &format!("volumetrics_lighting_{i}"),
-                extent,
-                FROXEL_FORMAT,
-                vk::ImageUsageFlags::STORAGE
-                    | vk::ImageUsageFlags::SAMPLED
-                    | vk::ImageUsageFlags::TRANSFER_DST,
-            ));
+                Self::create_volume(
+                    device,
+                    allocator,
+                    &format!("volumetrics_lighting_{i}"),
+                    extent,
+                    FROXEL_FORMAT,
+                    vk::ImageUsageFlags::STORAGE
+                        | vk::ImageUsageFlags::SAMPLED
+                        | vk::ImageUsageFlags::TRANSFER_DST,
+                )
+            );
             partial.lighting_volumes.push(slot);
-            let emission_history = try_or_cleanup!(Self::create_volume(
+            let emission_history = try_or_cleanup!(
+                partial,
                 device,
                 allocator,
-                &format!("volumetrics_emission_history_{i}"),
-                extent,
-                EMISSION_HISTORY_FORMAT,
-                vk::ImageUsageFlags::STORAGE
-                    | vk::ImageUsageFlags::SAMPLED
-                    | vk::ImageUsageFlags::TRANSFER_DST,
-            ));
+                Self::create_volume(
+                    device,
+                    allocator,
+                    &format!("volumetrics_emission_history_{i}"),
+                    extent,
+                    EMISSION_HISTORY_FORMAT,
+                    vk::ImageUsageFlags::STORAGE
+                        | vk::ImageUsageFlags::SAMPLED
+                        | vk::ImageUsageFlags::TRANSFER_DST,
+                )
+            );
             partial.emission_history_volumes.push(emission_history);
-            let combustion_state = try_or_cleanup!(Self::create_volume(
+            let combustion_state = try_or_cleanup!(
+                partial,
                 device,
                 allocator,
-                &format!("volumetrics_combustion_state_{i}"),
-                extent,
-                COMBUSTION_FIELD_FORMAT,
-                vk::ImageUsageFlags::STORAGE
-                    | vk::ImageUsageFlags::SAMPLED
-                    | vk::ImageUsageFlags::TRANSFER_DST,
-            ));
+                Self::create_volume(
+                    device,
+                    allocator,
+                    &format!("volumetrics_combustion_state_{i}"),
+                    extent,
+                    COMBUSTION_FIELD_FORMAT,
+                    vk::ImageUsageFlags::STORAGE
+                        | vk::ImageUsageFlags::SAMPLED
+                        | vk::ImageUsageFlags::TRANSFER_DST,
+                )
+            );
             partial.combustion_state_volumes.push(combustion_state);
-            let combustion_dynamics = try_or_cleanup!(Self::create_volume(
+            let combustion_dynamics = try_or_cleanup!(
+                partial,
                 device,
                 allocator,
-                &format!("volumetrics_combustion_dynamics_{i}"),
-                extent,
-                COMBUSTION_FIELD_FORMAT,
-                vk::ImageUsageFlags::STORAGE
-                    | vk::ImageUsageFlags::SAMPLED
-                    | vk::ImageUsageFlags::TRANSFER_DST,
-            ));
+                Self::create_volume(
+                    device,
+                    allocator,
+                    &format!("volumetrics_combustion_dynamics_{i}"),
+                    extent,
+                    COMBUSTION_FIELD_FORMAT,
+                    vk::ImageUsageFlags::STORAGE
+                        | vk::ImageUsageFlags::SAMPLED
+                        | vk::ImageUsageFlags::TRANSFER_DST,
+                )
+            );
             partial
                 .combustion_dynamics_volumes
                 .push(combustion_dynamics);
-            let combustion_optical = try_or_cleanup!(Self::create_volume(
+            let combustion_optical = try_or_cleanup!(
+                partial,
                 device,
                 allocator,
-                &format!("volumetrics_combustion_optical_{i}"),
-                extent,
-                COMBUSTION_FIELD_FORMAT,
-                vk::ImageUsageFlags::STORAGE
-                    | vk::ImageUsageFlags::SAMPLED
-                    | vk::ImageUsageFlags::TRANSFER_DST,
-            ));
+                Self::create_volume(
+                    device,
+                    allocator,
+                    &format!("volumetrics_combustion_optical_{i}"),
+                    extent,
+                    COMBUSTION_FIELD_FORMAT,
+                    vk::ImageUsageFlags::STORAGE
+                        | vk::ImageUsageFlags::SAMPLED
+                        | vk::ImageUsageFlags::TRANSFER_DST,
+                )
+            );
             partial.combustion_optical_volumes.push(combustion_optical);
-            let integrated = try_or_cleanup!(Self::create_volume(
+            let integrated = try_or_cleanup!(
+                partial,
                 device,
                 allocator,
-                &format!("volumetrics_integrated_{i}"),
-                extent,
-                FROXEL_FORMAT,
-                vk::ImageUsageFlags::STORAGE
-                    | vk::ImageUsageFlags::SAMPLED
-                    | vk::ImageUsageFlags::TRANSFER_DST,
-            ));
+                Self::create_volume(
+                    device,
+                    allocator,
+                    &format!("volumetrics_integrated_{i}"),
+                    extent,
+                    FROXEL_FORMAT,
+                    vk::ImageUsageFlags::STORAGE
+                        | vk::ImageUsageFlags::SAMPLED
+                        | vk::ImageUsageFlags::TRANSFER_DST,
+                )
+            );
             partial.integrated_volumes.push(integrated);
         }
-        partial.base_noise_volume = Some(try_or_cleanup!(Self::create_volume(
+        partial.base_noise_volume = Some(try_or_cleanup!(
+            partial,
             device,
             allocator,
-            "volumetrics_base_noise",
-            vk::Extent3D {
-                width: BASE_NOISE_SIZE,
-                height: BASE_NOISE_SIZE,
-                depth: BASE_NOISE_SIZE,
-            },
-            DENSITY_NOISE_FORMAT,
-            vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_DST,
-        )));
-        partial.detail_noise_volume = Some(try_or_cleanup!(Self::create_volume(
+            Self::create_volume(
+                device,
+                allocator,
+                "volumetrics_base_noise",
+                vk::Extent3D {
+                    width: BASE_NOISE_SIZE,
+                    height: BASE_NOISE_SIZE,
+                    depth: BASE_NOISE_SIZE,
+                },
+                DENSITY_NOISE_FORMAT,
+                vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_DST,
+            )
+        ));
+        partial.detail_noise_volume = Some(try_or_cleanup!(
+            partial,
             device,
             allocator,
-            "volumetrics_detail_noise",
-            vk::Extent3D {
-                width: DETAIL_NOISE_SIZE,
-                height: DETAIL_NOISE_SIZE,
-                depth: DETAIL_NOISE_SIZE,
-            },
-            DENSITY_NOISE_FORMAT,
-            vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_DST,
-        )));
+            Self::create_volume(
+                device,
+                allocator,
+                "volumetrics_detail_noise",
+                vk::Extent3D {
+                    width: DETAIL_NOISE_SIZE,
+                    height: DETAIL_NOISE_SIZE,
+                    depth: DETAIL_NOISE_SIZE,
+                },
+                DENSITY_NOISE_FORMAT,
+                vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_DST,
+            )
+        ));
 
         // History must never filter across XY froxel boundaries: adjacent
         // columns can be separated by opaque structure. The shader performs
@@ -250,7 +276,7 @@ impl VolumetricsPipeline {
         // SAFETY: `device` is live; the create info contains no borrowed
         // extension chain, and the resulting sampler is owned by `partial`
         // until construction rollback or `destroy`.
-        partial.history_sampler = try_or_cleanup!(unsafe {
+        partial.history_sampler = try_or_cleanup!(partial, device, allocator, unsafe {
             device
                 .create_sampler(
                     &vk::SamplerCreateInfo::default()
@@ -271,7 +297,7 @@ impl VolumetricsPipeline {
         // chemistry field is continuous; raw radiance history deliberately
         // keeps its separate nearest-column sampler to avoid wall bleeding.
         // SAFETY: same ownership/lifetime contract as `history_sampler`.
-        partial.transport_sampler = try_or_cleanup!(unsafe {
+        partial.transport_sampler = try_or_cleanup!(partial, device, allocator, unsafe {
             device
                 .create_sampler(
                     &vk::SamplerCreateInfo::default()
@@ -291,7 +317,7 @@ impl VolumetricsPipeline {
         // SAFETY: `device` is live, the create info has no extension chain,
         // and the sampler handle is owned by `partial` until rollback or
         // explicit pipeline destruction.
-        partial.density_noise_sampler = try_or_cleanup!(unsafe {
+        partial.density_noise_sampler = try_or_cleanup!(partial, device, allocator, unsafe {
             device
                 .create_sampler(
                     &vk::SamplerCreateInfo::default()
@@ -309,31 +335,45 @@ impl VolumetricsPipeline {
         // ── 2. Per-frame parameter UBOs ───────────────────────────────
         let param_size = std::mem::size_of::<VolumetricsParams>() as vk::DeviceSize;
         for _ in 0..MAX_FRAMES_IN_FLIGHT {
-            let buf = try_or_cleanup!(GpuBuffer::create_host_visible(
+            let buf = try_or_cleanup!(
+                partial,
                 device,
                 allocator,
-                param_size,
-                vk::BufferUsageFlags::UNIFORM_BUFFER,
-            ));
+                GpuBuffer::create_host_visible(
+                    device,
+                    allocator,
+                    param_size,
+                    vk::BufferUsageFlags::UNIFORM_BUFFER,
+                )
+            );
             partial.param_buffers.push(buf);
-            partial
-                .fog_volume_buffers
-                .push(try_or_cleanup!(GpuBuffer::create_host_visible(
+            partial.fog_volume_buffers.push(try_or_cleanup!(
+                partial,
+                device,
+                allocator,
+                GpuBuffer::create_host_visible(
                     device,
                     allocator,
                     std::mem::size_of::<GpuFogVolumeUpload>() as vk::DeviceSize,
                     vk::BufferUsageFlags::STORAGE_BUFFER,
-                )));
-            partial
-                .fog_cluster_buffers
-                .push(try_or_cleanup!(GpuBuffer::create_host_visible(
+                )
+            ));
+            partial.fog_cluster_buffers.push(try_or_cleanup!(
+                partial,
+                device,
+                allocator,
+                GpuBuffer::create_host_visible(
                     device,
                     allocator,
                     std::mem::size_of::<[GpuFogClusterEntry; FOG_VOLUME_CLUSTER_COUNT]>()
                         as vk::DeviceSize,
                     vk::BufferUsageFlags::STORAGE_BUFFER,
-                )));
+                )
+            ));
             partial.fog_cluster_index_buffers.push(try_or_cleanup!(
+                partial,
+                device,
+                allocator,
                 GpuBuffer::create_host_visible(
                     device,
                     allocator,
@@ -341,17 +381,27 @@ impl VolumetricsPipeline {
                     vk::BufferUsageFlags::STORAGE_BUFFER,
                 )
             ));
-            let mut moment_buffer = try_or_cleanup!(GpuBuffer::create_host_readback(
+            let mut moment_buffer = try_or_cleanup!(
+                partial,
                 device,
                 allocator,
-                std::mem::size_of::<[GpuCombustionLightMoment; COMBUSTION_LIGHT_GRID_COUNT]>()
-                    as vk::DeviceSize,
-                vk::BufferUsageFlags::STORAGE_BUFFER,
-            ));
-            try_or_cleanup!((|| -> Result<()> {
-                moment_buffer.mapped_slice_mut()?.fill(0);
-                moment_buffer.flush_if_needed(device)
-            })());
+                GpuBuffer::create_host_readback(
+                    device,
+                    allocator,
+                    std::mem::size_of::<[GpuCombustionLightMoment; COMBUSTION_LIGHT_GRID_COUNT]>()
+                        as vk::DeviceSize,
+                    vk::BufferUsageFlags::STORAGE_BUFFER,
+                )
+            );
+            try_or_cleanup!(
+                partial,
+                device,
+                allocator,
+                (|| -> Result<()> {
+                    moment_buffer.mapped_slice_mut()?.fill(0);
+                    moment_buffer.flush_if_needed(device)
+                })()
+            );
             partial.combustion_light_moment_buffers.push(moment_buffer);
             // #4784 — per-slot coarse transport-occupancy mask on the 16³
             // fog-cluster grid. Host-visible because `dispatch` zeroes it and
@@ -359,40 +409,38 @@ impl VolumetricsPipeline {
             // all-slots fence wait at the top of `draw_frame` has retired its
             // previous reader); the inject pass then accumulates GPU marks
             // into it, and the NEXT frame's inject reads it as the skip gate.
-            let mut occupancy_buffer = try_or_cleanup!(GpuBuffer::create_host_visible(
+            let mut occupancy_buffer = try_or_cleanup!(
+                partial,
                 device,
                 allocator,
-                std::mem::size_of::<[u32; FOG_VOLUME_CLUSTER_COUNT]>() as vk::DeviceSize,
-                vk::BufferUsageFlags::STORAGE_BUFFER,
-            ));
-            try_or_cleanup!((|| -> Result<()> {
-                occupancy_buffer.mapped_slice_mut()?.fill(0);
-                occupancy_buffer.flush_if_needed(device)
-            })());
+                GpuBuffer::create_host_visible(
+                    device,
+                    allocator,
+                    std::mem::size_of::<[u32; FOG_VOLUME_CLUSTER_COUNT]>() as vk::DeviceSize,
+                    vk::BufferUsageFlags::STORAGE_BUFFER,
+                )
+            );
+            try_or_cleanup!(
+                partial,
+                device,
+                allocator,
+                (|| -> Result<()> {
+                    occupancy_buffer.mapped_slice_mut()?.fill(0);
+                    occupancy_buffer.flush_if_needed(device)
+                })()
+            );
             partial.combustion_occupancy_buffers.push(occupancy_buffer);
         }
 
         // ── 3. Descriptor set layout ──────────────────────────────────
         let bindings = [
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(0)
-                .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(1)
-                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            compute_binding(0, vk::DescriptorType::STORAGE_IMAGE),
+            compute_binding(1, vk::DescriptorType::UNIFORM_BUFFER),
             // 2: scene TLAS (Phase 2c). Updated each frame via
             // `write_tlas` from `draw_frame` before dispatch — same flow
             // as `CausticPipeline::write_tlas`. Used by the injection
             // shader's shadow visibility ray query.
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(2)
-                .descriptor_type(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            compute_binding(2, vk::DescriptorType::ACCELERATION_STRUCTURE_KHR),
             // 3/4/5: Phase 2b point/spot light injection — the same
             // per-frame lights SSBO + cluster grid + light-index list
             // `ClusterCullPipeline` already builds for the fragment
@@ -403,145 +451,53 @@ impl VolumetricsPipeline {
             // (same deferred-write flow as `write_tlas`, since the
             // buffer *contents* are rebuilt every frame even though the
             // handles are frame-in-flight-stable).
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(3)
-                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(4)
-                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(5)
-                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            compute_binding(3, vk::DescriptorType::STORAGE_BUFFER),
+            compute_binding(4, vk::DescriptorType::STORAGE_BUFFER),
+            compute_binding(5, vk::DescriptorType::STORAGE_BUFFER),
             // 6: previous frame's raw V-buffer for temporal reprojection.
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(6)
-                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            compute_binding(6, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
             // 7/8/9: analytic local fog primitives and their camera-centered
             // 16^3 world-space clustered cull list.
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(7)
-                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(8)
-                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(9)
-                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            compute_binding(7, vk::DescriptorType::STORAGE_BUFFER),
+            compute_binding(8, vk::DescriptorType::STORAGE_BUFFER),
+            compute_binding(9, vk::DescriptorType::STORAGE_BUFFER),
             // Immutable boot-generated Perlin-Worley base density and
             // higher-frequency erosion detail.
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(10)
-                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(11)
-                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            compute_binding(10, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
+            compute_binding(11, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
             // 12/13: current write + previous sampled scalar emission share.
             // This provenance cannot be reconstructed from the RGBA V-buffer
             // after thermal emission and stochastic lighting are combined.
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(12)
-                .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(13)
-                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            compute_binding(12, vk::DescriptorType::STORAGE_IMAGE),
+            compute_binding(13, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
             // 14/15: current write + previous sampled canonical chemistry
             // `(fuel, temperature, soot extinction, radiance calibration)`.
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(14)
-                .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(15)
-                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            compute_binding(14, vk::DescriptorType::STORAGE_IMAGE),
+            compute_binding(15, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
             // 16/17: current write + previous sampled canonical dynamics
             // `(world-space velocity xyz, specific overpressure)`.
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(16)
-                .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(17)
-                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            compute_binding(16, vk::DescriptorType::STORAGE_IMAGE),
+            compute_binding(17, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
             // 18: fixed-point transported-field radiant moments. GPU writes
             // this slot; the host drains it only after the slot fence.
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(18)
-                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            compute_binding(18, vk::DescriptorType::STORAGE_BUFFER),
             // 19/20/21: current GpuInstance table plus canonical global
             // vertex/index SSBOs. A TLAS committed hit's custom index lands
             // directly in binding 19, and its primitive index addresses the
             // matching rigid triangle in bindings 20/21.
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(19)
-                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(20)
-                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(21)
-                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            compute_binding(19, vk::DescriptorType::STORAGE_BUFFER),
+            compute_binding(20, vk::DescriptorType::STORAGE_BUFFER),
+            compute_binding(21, vk::DescriptorType::STORAGE_BUFFER),
             // 22/23: current write + previous sampled spectral scattering
             // coefficient. Keeping optics separate leaves bindings 14-17 as
             // single-purpose thermochemical and kinematic state.
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(22)
-                .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(23)
-                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            compute_binding(22, vk::DescriptorType::STORAGE_IMAGE),
+            compute_binding(23, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
             // 24/25: #4784 — this frame's transport-occupancy mask (GPU
             // atomicOr marks) and the previous frame's (the read-side skip
             // gate). Same per-FIF previous-rotation as bindings 14-23.
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(24)
-                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(25)
-                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            compute_binding(24, vk::DescriptorType::STORAGE_BUFFER),
+            compute_binding(25, vk::DescriptorType::STORAGE_BUFFER),
         ];
         validate_set_layout(
             0,
@@ -556,7 +512,7 @@ impl VolumetricsPipeline {
         .expect("volumetrics descriptor layout drifted against volumetrics_inject.comp (see #427)");
         // SAFETY: `device` is live; `bindings` outlives the call; the layout
         // is owned by `partial` and destroyed on the error path / in destroy().
-        partial.descriptor_set_layout = try_or_cleanup!(unsafe {
+        partial.descriptor_set_layout = try_or_cleanup!(partial, device, allocator, unsafe {
             device
                 .create_descriptor_set_layout(
                     &vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings),
@@ -567,7 +523,7 @@ impl VolumetricsPipeline {
 
         // SAFETY: `device` is live; the referenced descriptor set layout was
         // just created above and is still live; result owned by `partial`.
-        partial.pipeline_layout = try_or_cleanup!(unsafe {
+        partial.pipeline_layout = try_or_cleanup!(partial, device, allocator, unsafe {
             device
                 .create_pipeline_layout(
                     &vk::PipelineLayoutCreateInfo::default()
@@ -581,27 +537,34 @@ impl VolumetricsPipeline {
         // load-module → create → destroy-module centralized in
         // pipeline::create_compute_pipeline (#1751); try_or_cleanup! adds the
         // partial-struct rollback on error.
-        partial.pipeline = try_or_cleanup!(pipeline::create_compute_pipeline(
+        partial.pipeline = try_or_cleanup!(
+            partial,
             device,
-            pipeline_cache,
-            VOLUMETRICS_INJECT_COMP_SPV,
-            partial.pipeline_layout,
-            "Volumetrics injection",
-        ));
+            allocator,
+            pipeline::create_compute_pipeline(
+                device,
+                pipeline_cache,
+                VOLUMETRICS_INJECT_COMP_SPV,
+                partial.pipeline_layout,
+                "Volumetrics injection",
+            )
+        );
 
         // ── 5. Descriptor pool + sets ─────────────────────────────────
         // Pool sizes derived from `bindings` (#1030 / REN-D10-NEW-09).
-        partial.descriptor_pool = try_or_cleanup!(DescriptorPoolBuilder::from_layout_bindings(
-            &bindings,
-            MAX_FRAMES_IN_FLIGHT as u32,
-        )
-        .max_sets(MAX_FRAMES_IN_FLIGHT as u32)
-        .build(device, "Volumetrics descriptor pool"));
+        partial.descriptor_pool = try_or_cleanup!(
+            partial,
+            device,
+            allocator,
+            DescriptorPoolBuilder::from_layout_bindings(&bindings, MAX_FRAMES_IN_FLIGHT as u32,)
+                .max_sets(MAX_FRAMES_IN_FLIGHT as u32)
+                .build(device, "Volumetrics descriptor pool")
+        );
 
         let layouts = vec![partial.descriptor_set_layout; MAX_FRAMES_IN_FLIGHT];
         // SAFETY: `device` is live; `partial.descriptor_pool` was just built and
         // `layouts` (clones of the live set layout) outlive the call.
-        partial.descriptor_sets = try_or_cleanup!(unsafe {
+        partial.descriptor_sets = try_or_cleanup!(partial, device, allocator, unsafe {
             device
                 .allocate_descriptor_sets(
                     &vk::DescriptorSetAllocateInfo::default()
@@ -746,38 +709,36 @@ impl VolumetricsPipeline {
             ],
         };
         for _ in 0..MAX_FRAMES_IN_FLIGHT {
-            let mut buffer = try_or_cleanup!(GpuBuffer::create_host_visible(
+            let mut buffer = try_or_cleanup!(
+                partial,
                 device,
                 allocator,
-                int_param_size,
-                vk::BufferUsageFlags::UNIFORM_BUFFER,
-            ));
-            try_or_cleanup!(buffer
-                .write_mapped(device, std::slice::from_ref(&int_params))
-                .context("write integration params"));
+                GpuBuffer::create_host_visible(
+                    device,
+                    allocator,
+                    int_param_size,
+                    vk::BufferUsageFlags::UNIFORM_BUFFER,
+                )
+            );
+            try_or_cleanup!(
+                partial,
+                device,
+                allocator,
+                buffer
+                    .write_mapped(device, std::slice::from_ref(&int_params))
+                    .context("write integration params")
+            );
             partial.integration_param_buffers.push(buffer);
         }
 
         // ── 8. Integration descriptor set layout ──────────────────────
         let int_bindings = [
             // 0: read-only injection volume
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(0)
-                .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            compute_binding(0, vk::DescriptorType::STORAGE_IMAGE),
             // 1: write-only integrated volume
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(1)
-                .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            compute_binding(1, vk::DescriptorType::STORAGE_IMAGE),
             // 2: dt UBO
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(2)
-                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            compute_binding(2, vk::DescriptorType::UNIFORM_BUFFER),
         ];
         validate_set_layout(
             0,
@@ -794,18 +755,19 @@ impl VolumetricsPipeline {
         );
         // SAFETY: `device` is live; `int_bindings` outlives the call; result is
         // owned by `partial` and destroyed on error / in destroy().
-        partial.integration_descriptor_set_layout = try_or_cleanup!(unsafe {
-            device
-                .create_descriptor_set_layout(
-                    &vk::DescriptorSetLayoutCreateInfo::default().bindings(&int_bindings),
-                    None,
-                )
-                .context("Volumetrics integration descriptor set layout")
-        });
+        partial.integration_descriptor_set_layout =
+            try_or_cleanup!(partial, device, allocator, unsafe {
+                device
+                    .create_descriptor_set_layout(
+                        &vk::DescriptorSetLayoutCreateInfo::default().bindings(&int_bindings),
+                        None,
+                    )
+                    .context("Volumetrics integration descriptor set layout")
+            });
 
         // SAFETY: `device` is live; the integration descriptor set layout was
         // just created above and is still live; result owned by `partial`.
-        partial.integration_pipeline_layout = try_or_cleanup!(unsafe {
+        partial.integration_pipeline_layout = try_or_cleanup!(partial, device, allocator, unsafe {
             device
                 .create_pipeline_layout(
                     &vk::PipelineLayoutCreateInfo::default().set_layouts(std::slice::from_ref(
@@ -818,28 +780,38 @@ impl VolumetricsPipeline {
 
         // ── 9. Integration compute pipeline ───────────────────────────
         // Shared builder (#1751); try_or_cleanup! rolls back `partial` on error.
-        partial.integration_pipeline = try_or_cleanup!(pipeline::create_compute_pipeline(
+        partial.integration_pipeline = try_or_cleanup!(
+            partial,
             device,
-            pipeline_cache,
-            VOLUMETRICS_INTEGRATE_COMP_SPV,
-            partial.integration_pipeline_layout,
-            "Volumetrics integration",
-        ));
+            allocator,
+            pipeline::create_compute_pipeline(
+                device,
+                pipeline_cache,
+                VOLUMETRICS_INTEGRATE_COMP_SPV,
+                partial.integration_pipeline_layout,
+                "Volumetrics integration",
+            )
+        );
 
         // ── 10. Integration descriptor pool + sets ────────────────────
         // Pool sizes derived from `int_bindings` (#1030 / REN-D10-NEW-09).
         partial.integration_descriptor_pool =
-            try_or_cleanup!(DescriptorPoolBuilder::from_layout_bindings(
-                &int_bindings,
-                MAX_FRAMES_IN_FLIGHT as u32,
-            )
-            .max_sets(MAX_FRAMES_IN_FLIGHT as u32)
-            .build(device, "Volumetrics integration descriptor pool"));
+            try_or_cleanup!(
+                partial,
+                device,
+                allocator,
+                DescriptorPoolBuilder::from_layout_bindings(
+                    &int_bindings,
+                    MAX_FRAMES_IN_FLIGHT as u32,
+                )
+                .max_sets(MAX_FRAMES_IN_FLIGHT as u32)
+                .build(device, "Volumetrics integration descriptor pool")
+            );
 
         let int_layouts = vec![partial.integration_descriptor_set_layout; MAX_FRAMES_IN_FLIGHT];
         // SAFETY: `device` is live; the integration descriptor pool was just
         // built and `int_layouts` (clones of the live set layout) outlive the call.
-        partial.integration_descriptor_sets = try_or_cleanup!(unsafe {
+        partial.integration_descriptor_sets = try_or_cleanup!(partial, device, allocator, unsafe {
             device
                 .allocate_descriptor_sets(
                     &vk::DescriptorSetAllocateInfo::default()

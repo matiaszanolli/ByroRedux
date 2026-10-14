@@ -4,6 +4,7 @@
 //! constants and the struct live in `groundcover.rs`; construction lives
 //! in `construct.rs`.
 use super::*;
+use crate::vulkan::descriptors::write_storage_buffer;
 
 impl GroundCoverPipeline {
     /// Upload the frame's chunk / cell / species records and rebind the
@@ -243,37 +244,26 @@ impl GroundCoverPipeline {
         let field_state_info = info(self.field_state_buffers[frame].buffer);
         let disturber_info = info(self.disturber_buffers[frame].buffer);
 
-        fn write<'a>(
-            set: vk::DescriptorSet,
-            binding: u32,
-            info: &'a [vk::DescriptorBufferInfo],
-        ) -> vk::WriteDescriptorSet<'a> {
-            vk::WriteDescriptorSet::default()
-                .dst_set(set)
-                .dst_binding(binding)
-                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                .buffer_info(info)
-        }
         let scatter = self.scatter_sets[frame];
         let draw = self.draw_sets[frame];
         let writes = [
-            write(scatter, 0, &chunk_info),
-            write(scatter, 1, &cell_info),
-            write(scatter, 2, &vertex_info),
-            write(scatter, 3, &blade_info),
-            write(scatter, 4, &indirect_info),
-            write(scatter, 5, &counter_info),
-            write(scatter, 7, &species_table_info),
-            write(draw, 0, &chunk_info),
-            write(draw, 1, &cell_info),
-            write(draw, 2, &vertex_info),
-            write(draw, 3, &blade_info),
-            write(draw, 6, &species_info),
-            write(draw, 7, &field_info),
-            write(draw, 8, &field_state_info),
-            write(self.interaction_sets[frame], 0, &field_info),
-            write(self.interaction_sets[frame], 1, &field_state_info),
-            write(self.interaction_sets[frame], 2, &disturber_info),
+            write_storage_buffer(scatter, 0, &chunk_info),
+            write_storage_buffer(scatter, 1, &cell_info),
+            write_storage_buffer(scatter, 2, &vertex_info),
+            write_storage_buffer(scatter, 3, &blade_info),
+            write_storage_buffer(scatter, 4, &indirect_info),
+            write_storage_buffer(scatter, 5, &counter_info),
+            write_storage_buffer(scatter, 7, &species_table_info),
+            write_storage_buffer(draw, 0, &chunk_info),
+            write_storage_buffer(draw, 1, &cell_info),
+            write_storage_buffer(draw, 2, &vertex_info),
+            write_storage_buffer(draw, 3, &blade_info),
+            write_storage_buffer(draw, 6, &species_info),
+            write_storage_buffer(draw, 7, &field_info),
+            write_storage_buffer(draw, 8, &field_state_info),
+            write_storage_buffer(self.interaction_sets[frame], 0, &field_info),
+            write_storage_buffer(self.interaction_sets[frame], 1, &field_state_info),
+            write_storage_buffer(self.interaction_sets[frame], 2, &disturber_info),
         ];
         // SAFETY: every `*_info` slice outlives the call, and only slot
         // `frame`'s sets are touched — the caller has waited that slot's

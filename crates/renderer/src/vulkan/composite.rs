@@ -34,6 +34,7 @@ use super::image::{GpuImage, GpuImageDesc};
 use super::reflect::{validate_set_layout, ReflectedShader};
 use super::sync::MAX_FRAMES_IN_FLIGHT;
 use super::upscaling::FrameExtentSet;
+use crate::vulkan::descriptors::layout_binding;
 use anyhow::{Context, Result};
 use ash::vk;
 
@@ -415,42 +416,27 @@ impl CompositePipeline {
             render_extent: extents.render,
         };
 
-        // Macro to clean up partial state on any fallible call.
-        // SAFETY (inside macro): `partial` is local to this fn and not
-        // yet referenced by any command buffer / descriptor set;
-        // cleanup-on-error closes the partial state before returning.
-        macro_rules! try_or_cleanup {
-            ($expr:expr) => {
-                match $expr {
-                    Ok(v) => v,
-                    Err(e) => {
-                        // SAFETY: `partial` holds only handles created by this device
-                        // earlier in this initializer; on this error path none has been
-                        // bound to an in-flight command buffer yet, so tearing them down
-                        // in reverse creation order is sound.
-                        unsafe { partial.destroy(device, allocator) };
-                        return Err(e.into());
-                    }
-                }
-            };
-        }
-
         // ── 1. Create HDR images (one per frame-in-flight) ───────────
         for i in 0..MAX_FRAMES_IN_FLIGHT {
             // #3860 — was ~85 lines of create → allocate → bind → view with a
             // three-arm cleanup, times two (the scene loop below was the same
             // body again).
-            let image = try_or_cleanup!(GpuImage::create(
+            let image = try_or_cleanup!(
+                partial,
                 device,
                 allocator,
-                &GpuImageDesc::color_2d(
-                    &format!("composite hdr {i}"),
-                    extents.render.width,
-                    extents.render.height,
-                    HDR_FORMAT,
-                    vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED,
-                ),
-            ));
+                GpuImage::create(
+                    device,
+                    allocator,
+                    &GpuImageDesc::color_2d(
+                        &format!("composite hdr {i}"),
+                        extents.render.width,
+                        extents.render.height,
+                        HDR_FORMAT,
+                        vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED,
+                    ),
+                )
+            );
             partial.hdr.push(image);
         }
 
@@ -465,27 +451,32 @@ impl CompositePipeline {
             // built FROM this same image, so the sky/GI/caustics composite adds
             // actually receive bloom instead of the pre-composite raw HDR that
             // never contained them. `TRANSFER_SRC` is the native-bridge blit.
-            let image = try_or_cleanup!(GpuImage::create(
+            let image = try_or_cleanup!(
+                partial,
                 device,
                 allocator,
-                &GpuImageDesc::color_2d(
-                    &format!("composite scene {i}"),
-                    extents.render.width,
-                    extents.render.height,
-                    HDR_FORMAT,
-                    vk::ImageUsageFlags::COLOR_ATTACHMENT
-                        | vk::ImageUsageFlags::SAMPLED
-                        | vk::ImageUsageFlags::TRANSFER_SRC
-                        | vk::ImageUsageFlags::STORAGE,
-                ),
-            ));
+                GpuImage::create(
+                    device,
+                    allocator,
+                    &GpuImageDesc::color_2d(
+                        &format!("composite scene {i}"),
+                        extents.render.width,
+                        extents.render.height,
+                        HDR_FORMAT,
+                        vk::ImageUsageFlags::COLOR_ATTACHMENT
+                            | vk::ImageUsageFlags::SAMPLED
+                            | vk::ImageUsageFlags::TRANSFER_SRC
+                            | vk::ImageUsageFlags::STORAGE,
+                    ),
+                )
+            );
             partial.scene.push(image);
         }
 
         // ── 2. HDR sampler (linear filter for slight bilinear smoothing) ──
         // SAFETY: `device` is live for this call; the new sampler handle is
         // stored in `partial.hdr_sampler`, freed by `destroy` on later error.
-        partial.hdr_sampler = try_or_cleanup!(unsafe {
+        partial.hdr_sampler = try_or_cleanup!(partial, device, allocator, unsafe {
             device
                 .create_sampler(
                     &vk::SamplerCreateInfo::default()
@@ -506,7 +497,7 @@ impl CompositePipeline {
         //   don't expose FILTER_LINEAR (VUID-vkCmdDraw-magFilter-04553).
         // SAFETY: `device` is live for this call; the new sampler handle is
         // stored in `partial.nearest_sampler`, freed by `destroy` on later error.
-        partial.nearest_sampler = try_or_cleanup!(unsafe {
+        partial.nearest_sampler = try_or_cleanup!(partial, device, allocator, unsafe {
             device
                 .create_sampler(
                     &vk::SamplerCreateInfo::default()
@@ -651,7 +642,7 @@ impl CompositePipeline {
         // SAFETY: `rp_info` references local `attachments`/`subpasses`/`dependencies`
         // arrays that outlive the call; the new render-pass handle is stored in
         // `partial.composite_render_pass`, freed by `destroy` on later error.
-        partial.composite_render_pass = try_or_cleanup!(unsafe {
+        partial.composite_render_pass = try_or_cleanup!(partial, device, allocator, unsafe {
             device
                 .create_render_pass(&rp_info, None)
                 .context("composite render pass")
@@ -673,7 +664,7 @@ impl CompositePipeline {
             // SAFETY: `fb_info` references `partial.composite_render_pass` (live)
             // and the scene `view` owned by `partial`; the new framebuffer is
             // owned by `partial.composite_framebuffers`.
-            let fb = try_or_cleanup!(unsafe {
+            let fb = try_or_cleanup!(partial, device, allocator, unsafe {
                 device
                     .create_framebuffer(&fb_info, None)
                     .context("composite framebuffer")
@@ -683,15 +674,16 @@ impl CompositePipeline {
 
         // ── 5. Per-frame parameter UBOs ──────────────────────────────
         let param_size = std::mem::size_of::<CompositeParams>() as vk::DeviceSize;
-        for _ in 0..MAX_FRAMES_IN_FLIGHT {
-            let buf = try_or_cleanup!(GpuBuffer::create_host_visible(
+        partial.param_buffers = try_or_cleanup!(
+            partial,
+            device,
+            allocator,
+            GpuBuffer::create_per_frame_uniforms::<CompositeParams>(
                 device,
                 allocator,
-                param_size,
-                vk::BufferUsageFlags::UNIFORM_BUFFER,
-            ));
-            partial.param_buffers.push(buf);
-        }
+                MAX_FRAMES_IN_FLIGHT
+            )
+        );
 
         // ── 6. Descriptor set layout + pipeline layout ───────────────
         // 11 bindings — HDR, indirect, albedo, params UBO, depth,
@@ -699,82 +691,82 @@ impl CompositePipeline {
         // caustic accumulator (#1257), SKYAL cloud density base + detail
         // (9, 10) — see per-binding comments below.
         let ds_bindings = [
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(0)
-                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(1)
-                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(2)
-                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(3)
-                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(4)
-                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+            layout_binding(
+                0,
+                vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+                vk::ShaderStageFlags::FRAGMENT,
+            ),
+            layout_binding(
+                1,
+                vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+                vk::ShaderStageFlags::FRAGMENT,
+            ),
+            layout_binding(
+                2,
+                vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+                vk::ShaderStageFlags::FRAGMENT,
+            ),
+            layout_binding(
+                3,
+                vk::DescriptorType::UNIFORM_BUFFER,
+                vk::ShaderStageFlags::FRAGMENT,
+            ),
+            layout_binding(
+                4,
+                vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+                vk::ShaderStageFlags::FRAGMENT,
+            ),
             // 5: caustic accumulator as usampler2D — R32_UINT sampled view.
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(5)
-                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+            layout_binding(
+                5,
+                vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+                vk::ShaderStageFlags::FRAGMENT,
+            ),
             // 6: volumetric froxel volume as sampler3D (M55 Phase 4).
             // Shader ray-marches this volume per fragment to add
             // inscattered light + extinction modulation.
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(6)
-                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+            layout_binding(
+                6,
+                vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+                vk::ShaderStageFlags::FRAGMENT,
+            ),
             // 7: bloom output mip 0 (M58). #2796 / REN-D16-01 — no longer
             // read by composite.frag (bloom now dispatches AFTER this
             // pass and adds itself via `bloom.rs::apply_to_scene`
             // instead); kept declared here, unread, so `bloom_views`
             // stays wired through the existing descriptor-set plumbing
             // rather than renumbering every binding after it.
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(7)
-                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+            layout_binding(
+                7,
+                vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+                vk::ShaderStageFlags::FRAGMENT,
+            ),
             // 8: water-side caustic accumulator (#1257 / Phase E of
             // #1210). R32_UINT sampled view, NEAREST filter required
             // per the existing integer-format-sampling rule (binding 5
             // sibling). Composite sums this alongside binding 5 so
             // both caustic writers (caustic_splat.comp + water.frag)
             // contribute to the same direct-light caustic term.
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(8)
-                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+            layout_binding(
+                8,
+                vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+                vk::ShaderStageFlags::FRAGMENT,
+            ),
             // 9, 10: SKYAL cloud density volumes (sampler3D), for the
             // volumetric cloud body `sky_radiance` marches per clear-depth
             // pixel. Owned by `CloudNoiseVolumes`, not by this pipeline:
             // they are resolution-independent and shared with the sky-cube
             // bake, and this pipeline is rebuilt on every resize.
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(9)
-                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(10)
-                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+            layout_binding(
+                9,
+                vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+                vk::ShaderStageFlags::FRAGMENT,
+            ),
+            layout_binding(
+                10,
+                vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+                vk::ShaderStageFlags::FRAGMENT,
+            ),
         ];
         validate_set_layout(
             0,
@@ -796,7 +788,7 @@ impl CompositePipeline {
         // SAFETY: the create-info references local `ds_bindings` (outlives the
         // call); the new layout handle is stored in `partial.descriptor_set_layout`,
         // freed by `destroy` on later error.
-        partial.descriptor_set_layout = try_or_cleanup!(unsafe {
+        partial.descriptor_set_layout = try_or_cleanup!(partial, device, allocator, unsafe {
             device
                 .create_descriptor_set_layout(
                     &vk::DescriptorSetLayoutCreateInfo::default().bindings(&ds_bindings),
@@ -814,7 +806,7 @@ impl CompositePipeline {
         // `partial.descriptor_set_layout` (live) and caller-borrowed
         // `bindless_layout` (live); the new layout is stored in
         // `partial.pipeline_layout`.
-        partial.pipeline_layout = try_or_cleanup!(unsafe {
+        partial.pipeline_layout = try_or_cleanup!(partial, device, allocator, unsafe {
             device
                 .create_pipeline_layout(
                     &vk::PipelineLayoutCreateInfo::default().set_layouts(&set_layouts),
@@ -829,18 +821,20 @@ impl CompositePipeline {
         // (#1030 / REN-D10-NEW-09). One set per frame-in-flight; the
         // descriptor counts inside each binding are 1, so the total
         // per type is `bindings.count(type) * MAX_FRAMES_IN_FLIGHT`.
-        partial.descriptor_pool = try_or_cleanup!(DescriptorPoolBuilder::from_layout_bindings(
-            &ds_bindings,
-            MAX_FRAMES_IN_FLIGHT as u32
-        )
-        .max_sets(MAX_FRAMES_IN_FLIGHT as u32)
-        .build(device, "composite descriptor pool"));
+        partial.descriptor_pool = try_or_cleanup!(
+            partial,
+            device,
+            allocator,
+            DescriptorPoolBuilder::from_layout_bindings(&ds_bindings, MAX_FRAMES_IN_FLIGHT as u32)
+                .max_sets(MAX_FRAMES_IN_FLIGHT as u32)
+                .build(device, "composite descriptor pool")
+        );
 
         let set_layouts = vec![partial.descriptor_set_layout; MAX_FRAMES_IN_FLIGHT];
         // SAFETY: allocate-info references `partial.descriptor_pool` (live) and
         // local `set_layouts` (outlives the call); sets are owned by
         // `partial.descriptor_sets`, reclaimed when the pool is destroyed.
-        partial.descriptor_sets = try_or_cleanup!(unsafe {
+        partial.descriptor_sets = try_or_cleanup!(partial, device, allocator, unsafe {
             device
                 .allocate_descriptor_sets(
                     &vk::DescriptorSetAllocateInfo::default()
@@ -932,14 +926,18 @@ impl CompositePipeline {
         }
 
         // ── 8. Shader modules ────────────────────────────────────────
-        partial.vert_module = try_or_cleanup!(super::pipeline::load_shader_module(
+        partial.vert_module = try_or_cleanup!(
+            partial,
             device,
-            COMPOSITE_VERT_SPV
-        ));
-        partial.frag_module = try_or_cleanup!(super::pipeline::load_shader_module(
+            allocator,
+            super::pipeline::load_shader_module(device, COMPOSITE_VERT_SPV)
+        );
+        partial.frag_module = try_or_cleanup!(
+            partial,
             device,
-            COMPOSITE_FRAG_SPV
-        ));
+            allocator,
+            super::pipeline::load_shader_module(device, COMPOSITE_FRAG_SPV)
+        );
 
         // ── 9. Graphics pipeline ─────────────────────────────────────
         let entry_point = c"main";

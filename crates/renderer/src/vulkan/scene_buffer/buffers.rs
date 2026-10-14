@@ -4,6 +4,7 @@
 //! allocation chain; the upload + descriptor-write methods live in their own
 //! siblings.
 
+use crate::vulkan::descriptors::layout_binding;
 use byroredux_core::ecs::components::MAX_BONES_PER_MESH;
 
 use super::super::allocator::SharedAllocator;
@@ -257,100 +258,80 @@ pub struct SceneBuffers {
 /// unreachable and was removed (#4894).
 pub(crate) fn build_scene_descriptor_bindings() -> Vec<vk::DescriptorSetLayoutBinding<'static>> {
     let mut bindings = vec![
-        vk::DescriptorSetLayoutBinding::default()
-            .binding(0)
-            .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-            .descriptor_count(1)
-            .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+        layout_binding(
+            0,
+            vk::DescriptorType::STORAGE_BUFFER,
+            vk::ShaderStageFlags::FRAGMENT,
+        ),
         // Camera UBO is read by both vertex (viewProj) and fragment (cameraPos, sceneFlags).
-        vk::DescriptorSetLayoutBinding::default()
-            .binding(1)
-            .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-            .descriptor_count(1)
-            .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT),
+        layout_binding(
+            1,
+            vk::DescriptorType::UNIFORM_BUFFER,
+            vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+        ),
     ];
-    bindings.push(
-        vk::DescriptorSetLayoutBinding::default()
-            .binding(2)
-            .descriptor_type(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)
-            .descriptor_count(1)
-            .stage_flags(vk::ShaderStageFlags::FRAGMENT),
-    );
+    bindings.push(layout_binding(
+        2,
+        vk::DescriptorType::ACCELERATION_STRUCTURE_KHR,
+        vk::ShaderStageFlags::FRAGMENT,
+    ));
     // Binding 3: bone palette for raster skinning and secondary-hit frames.
-    bindings.push(
-        vk::DescriptorSetLayoutBinding::default()
-            .binding(3)
-            .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-            .descriptor_count(1)
-            .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT),
-    );
+    bindings.push(layout_binding(
+        3,
+        vk::DescriptorType::STORAGE_BUFFER,
+        vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+    ));
     // Binding 4: instance data SSBO (vertex + fragment — instanced drawing + PBR materials).
-    bindings.push(
-        vk::DescriptorSetLayoutBinding::default()
-            .binding(4)
-            .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-            .descriptor_count(1)
-            .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT),
-    );
+    bindings.push(layout_binding(
+        4,
+        vk::DescriptorType::STORAGE_BUFFER,
+        vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+    ));
     // Binding 5: cluster grid SSBO (fragment shader — clustered lighting).
-    bindings.push(
-        vk::DescriptorSetLayoutBinding::default()
-            .binding(5)
-            .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-            .descriptor_count(1)
-            .stage_flags(vk::ShaderStageFlags::FRAGMENT),
-    );
+    bindings.push(layout_binding(
+        5,
+        vk::DescriptorType::STORAGE_BUFFER,
+        vk::ShaderStageFlags::FRAGMENT,
+    ));
     // Binding 6: cluster light indices SSBO (fragment shader — clustered lighting).
-    bindings.push(
-        vk::DescriptorSetLayoutBinding::default()
-            .binding(6)
-            .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-            .descriptor_count(1)
-            .stage_flags(vk::ShaderStageFlags::FRAGMENT),
-    );
+    bindings.push(layout_binding(
+        6,
+        vk::DescriptorType::STORAGE_BUFFER,
+        vk::ShaderStageFlags::FRAGMENT,
+    ));
     // Binding 7: SSAO texture (fragment shader — ambient occlusion).
-    bindings.push(
-        vk::DescriptorSetLayoutBinding::default()
-            .binding(7)
-            .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-            .descriptor_count(1)
-            .stage_flags(vk::ShaderStageFlags::FRAGMENT),
-    );
+    bindings.push(layout_binding(
+        7,
+        vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+        vk::ShaderStageFlags::FRAGMENT,
+    ));
     // Binding 8: global vertex SSBO (fragment shader — RT reflection UV lookup).
-    bindings.push(
-        vk::DescriptorSetLayoutBinding::default()
-            .binding(8)
-            .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-            .descriptor_count(1)
-            .stage_flags(vk::ShaderStageFlags::FRAGMENT),
-    );
+    bindings.push(layout_binding(
+        8,
+        vk::DescriptorType::STORAGE_BUFFER,
+        vk::ShaderStageFlags::FRAGMENT,
+    ));
     // Binding 9: global index SSBO (fragment shader — RT reflection UV lookup).
-    bindings.push(
-        vk::DescriptorSetLayoutBinding::default()
-            .binding(9)
-            .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-            .descriptor_count(1)
-            .stage_flags(vk::ShaderStageFlags::FRAGMENT),
-    );
+    bindings.push(layout_binding(
+        9,
+        vk::DescriptorType::STORAGE_BUFFER,
+        vk::ShaderStageFlags::FRAGMENT,
+    ));
     // Binding 10: terrain tile SSBO (fragment shader — LAND splat layer
     // texture indices, one entry per terrain entity). #470.
-    bindings.push(
-        vk::DescriptorSetLayoutBinding::default()
-            .binding(10)
-            .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-            .descriptor_count(1)
-            .stage_flags(vk::ShaderStageFlags::FRAGMENT),
-    );
+    bindings.push(layout_binding(
+        10,
+        vk::DescriptorType::STORAGE_BUFFER,
+        vk::ShaderStageFlags::FRAGMENT,
+    ));
     // Binding 11: RT mipmap ray budget counter (fragment shader — u32 atomic).
     // The CPU zeroes this before each render pass; Phase-3 glass fragments
     // atomicAdd to claim a budget slot and skip IOR refraction once exhausted.
-    bindings.push(
-        vk::DescriptorSetLayoutBinding::default()
-            .binding(11)
-            .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-            .descriptor_count(1)
-            .stage_flags(vk::ShaderStageFlags::FRAGMENT),
-    );
+    bindings.push(layout_binding(
+        11,
+        vk::DescriptorType::STORAGE_BUFFER,
+        vk::ShaderStageFlags::FRAGMENT,
+    ));
     // Binding 12: previous-frame bone palette SSBO (vertex shader —
     // skinned-vertex motion vectors, SH-3 / #641). Bound to the OTHER
     // slot in the `bone_buffers` frame-in-flight ring, so reading it
@@ -363,49 +344,41 @@ pub(crate) fn build_scene_descriptor_bindings() -> Vec<vk::DescriptorSetLayoutBi
     // binding 3, so the per-mesh bone offset stamped on the
     // `GpuInstance` still resolves correctly as long as the offset
     // assignment is stable across the two frames.
-    bindings.push(
-        vk::DescriptorSetLayoutBinding::default()
-            .binding(12)
-            .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-            .descriptor_count(1)
-            .stage_flags(vk::ShaderStageFlags::VERTEX),
-    );
+    bindings.push(layout_binding(
+        12,
+        vk::DescriptorType::STORAGE_BUFFER,
+        vk::ShaderStageFlags::VERTEX,
+    ));
     // Binding 13: material table SSBO (fragment — R1 Phase 4).
     // The fragment stage reads `materials[instance.materialId]`
     // for migrated per-material fields. Vertex stage isn't a
     // consumer today; widen the stage mask if a future migration
     // (e.g. M29.5 GPU skinning) needs material data in the vertex
     // pipeline.
-    bindings.push(
-        vk::DescriptorSetLayoutBinding::default()
-            .binding(13)
-            .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-            .descriptor_count(1)
-            .stage_flags(vk::ShaderStageFlags::FRAGMENT),
-    );
+    bindings.push(layout_binding(
+        13,
+        vk::DescriptorType::STORAGE_BUFFER,
+        vk::ShaderStageFlags::FRAGMENT,
+    ));
     // Binding 14: DALC ambient cube UBO (fragment — #993 / REN-AMBIENT-DALC).
     // 6-axis directional ambient sourced from Skyrim WTHR.DALC,
     // axis-swapped + per-TOD-lerped engine-side. `GpuDalcCube.flags.x`
     // gates use; when zero, triangle.frag falls back to the legacy
     // AMBIENT_AO_FLOOR path so non-Skyrim cells render unchanged.
-    bindings.push(
-        vk::DescriptorSetLayoutBinding::default()
-            .binding(14)
-            .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-            .descriptor_count(1)
-            .stage_flags(vk::ShaderStageFlags::FRAGMENT),
-    );
+    bindings.push(layout_binding(
+        14,
+        vk::DescriptorType::UNIFORM_BUFFER,
+        vk::ShaderStageFlags::FRAGMENT,
+    ));
     // Binding 15: soft-particle depth-history texture (fragment shader —
     // effect-shader FX feather their alpha against last frame's opaque
     // depth). PARTIALLY_BOUND (binding >= 5), so it's valid even on the
     // first frames before `write_depth_history` runs.
-    bindings.push(
-        vk::DescriptorSetLayoutBinding::default()
-            .binding(15)
-            .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-            .descriptor_count(1)
-            .stage_flags(vk::ShaderStageFlags::FRAGMENT),
-    );
+    bindings.push(layout_binding(
+        15,
+        vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+        vk::ShaderStageFlags::FRAGMENT,
+    ));
     // Bindings 16/17: ReSTIR-DI direct-shadow reservoir SSBOs (fragment —
     // Bitterli 2020). 16 = current frame's write target, 17 = previous
     // frame's read (temporal history); ping-ponged across the
@@ -414,39 +387,31 @@ pub(crate) fn build_scene_descriptor_bindings() -> Vec<vk::DescriptorSetLayoutBi
     // `write_reservoir_buffers` (the SSAO / depth-history precedent). The
     // fragment shader gates use on `!DBG_DISABLE_RESTIR`; the legacy WRS
     // path stays compiled for live A/B.
-    bindings.push(
-        vk::DescriptorSetLayoutBinding::default()
-            .binding(16)
-            .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-            .descriptor_count(1)
-            .stage_flags(vk::ShaderStageFlags::FRAGMENT),
-    );
-    bindings.push(
-        vk::DescriptorSetLayoutBinding::default()
-            .binding(17)
-            .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-            .descriptor_count(1)
-            .stage_flags(vk::ShaderStageFlags::FRAGMENT),
-    );
+    bindings.push(layout_binding(
+        16,
+        vk::DescriptorType::STORAGE_BUFFER,
+        vk::ShaderStageFlags::FRAGMENT,
+    ));
+    bindings.push(layout_binding(
+        17,
+        vk::DescriptorType::STORAGE_BUFFER,
+        vk::ShaderStageFlags::FRAGMENT,
+    ));
     // Binding 18: previous rigid-instance model matrices (vertex shader).
     // Entries align with binding 4's current-frame instance array after
     // sorting/batching, so gl_InstanceIndex addresses both without relying on
     // last frame's unstable draw order.
-    bindings.push(
-        vk::DescriptorSetLayoutBinding::default()
-            .binding(18)
-            .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-            .descriptor_count(1)
-            .stage_flags(vk::ShaderStageFlags::VERTEX),
-    );
+    bindings.push(layout_binding(
+        18,
+        vk::DescriptorType::STORAGE_BUFFER,
+        vk::ShaderStageFlags::VERTEX,
+    ));
     // Binding 19: one bounded selected-light visibility-ray probe record.
-    bindings.push(
-        vk::DescriptorSetLayoutBinding::default()
-            .binding(19)
-            .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-            .descriptor_count(1)
-            .stage_flags(vk::ShaderStageFlags::FRAGMENT),
-    );
+    bindings.push(layout_binding(
+        19,
+        vk::DescriptorType::STORAGE_BUFFER,
+        vk::ShaderStageFlags::FRAGMENT,
+    ));
     // Binding 20: SKYAL baked sky cubemap (fragment — `raytrace.glsl`
     // resolves a shading ray that escapes the BVH against it instead of
     // against one flat colour). Owned by `SkyCubePipeline`, written in via
@@ -454,22 +419,18 @@ pub(crate) fn build_scene_descriptor_bindings() -> Vec<vk::DescriptorSetLayoutBi
     // optional pass, so PARTIALLY_BOUND (binding >= 5) applies and the
     // shader gates every read on `exteriorSkyTint.w` rather than on the
     // binding being present.
-    bindings.push(
-        vk::DescriptorSetLayoutBinding::default()
-            .binding(20)
-            .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-            .descriptor_count(1)
-            .stage_flags(vk::ShaderStageFlags::FRAGMENT),
-    );
+    bindings.push(layout_binding(
+        20,
+        vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+        vk::ShaderStageFlags::FRAGMENT,
+    ));
     // Binding 21: E/PI spherical-harmonic sky projection. Same optional
     // ownership and readiness contract as the cube at binding 20.
-    bindings.push(
-        vk::DescriptorSetLayoutBinding::default()
-            .binding(21)
-            .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-            .descriptor_count(1)
-            .stage_flags(vk::ShaderStageFlags::FRAGMENT),
-    );
+    bindings.push(layout_binding(
+        21,
+        vk::DescriptorType::STORAGE_BUFFER,
+        vk::ShaderStageFlags::FRAGMENT,
+    ));
     bindings
 }
 

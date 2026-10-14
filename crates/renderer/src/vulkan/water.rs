@@ -61,6 +61,7 @@
 //!      they reuse the same per-instance model matrix the rest of the scene
 //!      uses). Neither step disturbs the bindings from step 1.
 
+use crate::vulkan::descriptors::layout_binding;
 use super::allocator::SharedAllocator;
 use super::buffer::GpuBuffer;
 use super::descriptors::{write_storage_buffer, write_storage_image, DescriptorPoolBuilder};
@@ -359,16 +360,12 @@ pub(super) const WATER_PIPELINE_DYNAMIC_STATES: [vk::DynamicState; 6] = [
 /// both water stages read the params.
 fn water_set_2_bindings() -> [vk::DescriptorSetLayoutBinding<'static>; 2] {
     [
-        vk::DescriptorSetLayoutBinding::default()
-            .binding(0)
-            .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
-            .descriptor_count(1)
-            .stage_flags(vk::ShaderStageFlags::FRAGMENT),
-        vk::DescriptorSetLayoutBinding::default()
-            .binding(1)
-            .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-            .descriptor_count(1)
-            .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT),
+        layout_binding(0, vk::DescriptorType::STORAGE_IMAGE, vk::ShaderStageFlags::FRAGMENT),
+        layout_binding(
+            1,
+            vk::DescriptorType::STORAGE_BUFFER,
+            vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+        ),
     ]
 }
 

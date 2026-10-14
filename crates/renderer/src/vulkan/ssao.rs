@@ -16,6 +16,7 @@ use super::descriptors::{
 use super::image::{GpuImage, GpuImageDesc};
 use super::reflect::{validate_set_layout, ReflectedShader};
 use crate::shader_constants::{WORKGROUP_X, WORKGROUP_Y};
+use crate::vulkan::descriptors::compute_binding;
 use anyhow::{Context, Result};
 use ash::vk;
 
@@ -156,29 +157,10 @@ impl SsaoPipeline {
             partial.ao.push(ao);
         }
 
-        // Macro to clean up partial state on error and return.
-        // SAFETY (inside macro): `partial` is local to the enclosing
-        // function; cleanup-on-error before any GPU work references it.
-        macro_rules! try_or_cleanup {
-            ($expr:expr) => {
-                match $expr {
-                    Ok(v) => v,
-                    Err(e) => {
-                        // SAFETY: `partial` holds only handles created by this device
-                        // earlier in this initializer; on this error path none has been
-                        // bound to an in-flight command buffer yet, so tearing them down
-                        // in reverse creation order is sound.
-                        unsafe { partial.destroy(device, allocator) };
-                        return Err(e.into());
-                    }
-                }
-            };
-        }
-
         // Samplers.
         // SAFETY: SamplerCreateInfo is fully populated above; handle
         // ownership transfers to `partial.depth_sampler`, freed by destroy().
-        partial.depth_sampler = try_or_cleanup!(unsafe {
+        partial.depth_sampler = try_or_cleanup!(partial, device, allocator, unsafe {
             device
                 .create_sampler(
                     &vk::SamplerCreateInfo::default()
@@ -192,7 +174,7 @@ impl SsaoPipeline {
         });
 
         // SAFETY: same contract as `depth_sampler` above.
-        partial.ao_sampler = try_or_cleanup!(unsafe {
+        partial.ao_sampler = try_or_cleanup!(partial, device, allocator, unsafe {
             device
                 .create_sampler(
                     &vk::SamplerCreateInfo::default()
@@ -207,33 +189,18 @@ impl SsaoPipeline {
 
         // Parameter UBOs.
         let param_size = std::mem::size_of::<SsaoParams>() as vk::DeviceSize;
-        for _ in 0..max_frames {
-            let buf = try_or_cleanup!(GpuBuffer::create_host_visible(
-                device,
-                allocator,
-                param_size,
-                vk::BufferUsageFlags::UNIFORM_BUFFER,
-            ));
-            partial.param_buffers.push(buf);
-        }
+        partial.param_buffers = try_or_cleanup!(
+            partial,
+            device,
+            allocator,
+            GpuBuffer::create_per_frame_uniforms::<SsaoParams>(device, allocator, max_frames)
+        );
 
         // Descriptor set layout.
         let bindings = [
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(0)
-                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(1)
-                .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(2)
-                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            compute_binding(0, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
+            compute_binding(1, vk::DescriptorType::STORAGE_IMAGE),
+            compute_binding(2, vk::DescriptorType::UNIFORM_BUFFER),
         ];
         validate_set_layout(
             0,
@@ -248,7 +215,7 @@ impl SsaoPipeline {
         .expect("ssao descriptor layout drifted against ssao.comp (see #427)");
         // SAFETY: bindings array (above) is validated against ssao.comp
         // by `validate_set_layout`. Layout handle owned by `partial`.
-        partial.descriptor_set_layout = try_or_cleanup!(unsafe {
+        partial.descriptor_set_layout = try_or_cleanup!(partial, device, allocator, unsafe {
             device
                 .create_descriptor_set_layout(
                     &vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings),
@@ -259,7 +226,7 @@ impl SsaoPipeline {
 
         // SAFETY: `partial.descriptor_set_layout` just created above; the
         // slice-from-ref borrow lives only for this call.
-        partial.pipeline_layout = try_or_cleanup!(unsafe {
+        partial.pipeline_layout = try_or_cleanup!(partial, device, allocator, unsafe {
             device
                 .create_pipeline_layout(
                     &vk::PipelineLayoutCreateInfo::default()
@@ -272,28 +239,35 @@ impl SsaoPipeline {
         // Compute pipeline — the load-module → create → destroy-module dance
         // lives in `pipeline::create_compute_pipeline` (#1751); `try_or_cleanup!`
         // adds the partial-struct rollback on error.
-        partial.pipeline = try_or_cleanup!(super::pipeline::create_compute_pipeline(
+        partial.pipeline = try_or_cleanup!(
+            partial,
             device,
-            pipeline_cache,
-            SSAO_COMP_SPV,
-            partial.pipeline_layout,
-            "SSAO",
-        ));
+            allocator,
+            super::pipeline::create_compute_pipeline(
+                device,
+                pipeline_cache,
+                SSAO_COMP_SPV,
+                partial.pipeline_layout,
+                "SSAO",
+            )
+        );
 
         // Descriptor pool + sets — sizes derived from `bindings`
         // (#1030 / REN-D10-NEW-09).
-        partial.descriptor_pool = try_or_cleanup!(DescriptorPoolBuilder::from_layout_bindings(
-            &bindings,
-            max_frames as u32,
-        )
-        .max_sets(max_frames as u32)
-        .build(device, "SSAO descriptor pool"));
+        partial.descriptor_pool = try_or_cleanup!(
+            partial,
+            device,
+            allocator,
+            DescriptorPoolBuilder::from_layout_bindings(&bindings, max_frames as u32,)
+                .max_sets(max_frames as u32)
+                .build(device, "SSAO descriptor pool")
+        );
 
         let layouts = vec![partial.descriptor_set_layout; max_frames];
         // SAFETY: `partial.descriptor_pool` was just created with enough
         // capacity for `max_frames` sets; `layouts` is a length-`max_frames`
         // vec of the same descriptor_set_layout handle.
-        partial.descriptor_sets = try_or_cleanup!(unsafe {
+        partial.descriptor_sets = try_or_cleanup!(partial, device, allocator, unsafe {
             device
                 .allocate_descriptor_sets(
                     &vk::DescriptorSetAllocateInfo::default()

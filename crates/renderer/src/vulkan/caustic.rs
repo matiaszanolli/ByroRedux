@@ -42,6 +42,7 @@
 //! | 9       | GlobalVertices     | SSBO (mesh registry, current)       |
 //! | 10      | GlobalIndices      | SSBO (mesh registry, current)       |
 
+use crate::vulkan::descriptors::compute_binding;
 use super::allocator::SharedAllocator;
 use super::buffer::GpuBuffer;
 use super::descriptors::{
@@ -406,28 +407,9 @@ impl CausticPipeline {
             geometry_bound: std::array::from_fn(|_| AtomicBool::new(false)),
         };
 
-        // SAFETY (inside macro): `partial` is local to this fn and not
-        // yet referenced by any command buffer / descriptor set;
-        // cleanup-on-error closes the partial state before returning.
-        macro_rules! try_or_cleanup {
-            ($expr:expr) => {
-                match $expr {
-                    Ok(v) => v,
-                    Err(e) => {
-                        // SAFETY: `partial` holds only handles created by this
-                        // device earlier in `new`; on this init error path none
-                        // has been bound to an in-flight command buffer yet, so
-                        // destroying them in reverse creation order is sound.
-                        unsafe { partial.destroy(device, allocator) };
-                        return Err(e.into());
-                    }
-                }
-            };
-        }
-
         // ── 1. Accumulator images ─────────────────────────────────────
         for i in 0..MAX_FRAMES_IN_FLIGHT {
-            let slot = try_or_cleanup!(Self::create_slot(
+            let slot = try_or_cleanup!(partial, device, allocator, Self::create_slot(
                 device,
                 allocator,
                 width,
@@ -440,7 +422,7 @@ impl CausticPipeline {
         // ── 2. Sampler ────────────────────────────────────────────────
         // SAFETY: SamplerCreateInfo fully populated above; handle owned
         // by `partial.point_sampler`, freed by destroy().
-        partial.point_sampler = try_or_cleanup!(unsafe {
+        partial.point_sampler = try_or_cleanup!(partial, device, allocator, unsafe {
             device
                 .create_sampler(
                     &vk::SamplerCreateInfo::default()
@@ -455,87 +437,39 @@ impl CausticPipeline {
         });
 
         // ── 3. Parameter UBOs ─────────────────────────────────────────
-        let param_size = std::mem::size_of::<CausticParams>() as vk::DeviceSize;
-        for _ in 0..MAX_FRAMES_IN_FLIGHT {
-            let buf = try_or_cleanup!(GpuBuffer::create_host_visible(
-                device,
-                allocator,
-                param_size,
-                vk::BufferUsageFlags::UNIFORM_BUFFER,
-            ));
-            partial.param_buffers.push(buf);
-        }
+        partial.param_buffers = try_or_cleanup!(
+        partial,
+        device,
+        allocator,
+        GpuBuffer::create_per_frame_uniforms::<CausticParams>(device, allocator, MAX_FRAMES_IN_FLIGHT)
+    );
 
         // ── 4. Descriptor set layout ──────────────────────────────────
         let bindings = [
             // 0 depth
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(0)
-                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            compute_binding(0, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
             // 1 normal
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(1)
-                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            compute_binding(1, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
             // 2 mesh_id
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(2)
-                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            compute_binding(2, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
             // 3 lights
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(3)
-                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            compute_binding(3, vk::DescriptorType::STORAGE_BUFFER),
             // 4 camera UBO
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(4)
-                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            compute_binding(4, vk::DescriptorType::UNIFORM_BUFFER),
             // 5 instances
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(5)
-                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            compute_binding(5, vk::DescriptorType::STORAGE_BUFFER),
             // 6 TLAS
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(6)
-                .descriptor_type(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            compute_binding(6, vk::DescriptorType::ACCELERATION_STRUCTURE_KHR),
             // 7 output
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(7)
-                .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            compute_binding(7, vk::DescriptorType::STORAGE_IMAGE),
             // 8 params
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(8)
-                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            compute_binding(8, vk::DescriptorType::UNIFORM_BUFFER),
             // 9 global vertices. Written per frame because streaming can
             // replace the mesh registry's backing buffer.
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(9)
-                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            compute_binding(9, vk::DescriptorType::STORAGE_BUFFER),
             // 10 global indices. Paired with binding 9 for committed-hit
             // triangle reconstruction in caustic_splat.comp.
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(10)
-                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            compute_binding(10, vk::DescriptorType::STORAGE_BUFFER),
         ];
         validate_set_layout(
             0,
@@ -549,7 +483,7 @@ impl CausticPipeline {
         )
         .expect("caustic descriptor layout drifted against caustic_splat.comp (see #427)");
         // SAFETY: `bindings` validated against caustic_splat.comp above.
-        partial.descriptor_set_layout = try_or_cleanup!(unsafe {
+        partial.descriptor_set_layout = try_or_cleanup!(partial, device, allocator, unsafe {
             device
                 .create_descriptor_set_layout(
                     &vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings),
@@ -565,7 +499,7 @@ impl CausticPipeline {
             .offset(0)
             .size(8);
         // SAFETY: descriptor_set_layout just created above.
-        partial.pipeline_layout = try_or_cleanup!(unsafe {
+        partial.pipeline_layout = try_or_cleanup!(partial, device, allocator, unsafe {
             device
                 .create_pipeline_layout(
                     &vk::PipelineLayoutCreateInfo::default()
@@ -580,7 +514,7 @@ impl CausticPipeline {
         // Shared builder (#1751); frees the shader module immediately —
         // its SPIR-V is already baked into `partial.pipeline` by the time
         // this returns, so there's no live consumer to keep it around for.
-        partial.pipeline = try_or_cleanup!(super::pipeline::create_compute_pipeline(
+        partial.pipeline = try_or_cleanup!(partial, device, allocator, super::pipeline::create_compute_pipeline(
             device,
             pipeline_cache,
             CAUSTIC_SPLAT_COMP_SPV,
@@ -590,7 +524,7 @@ impl CausticPipeline {
 
         // ── 6. Descriptor pool + sets ─────────────────────────────────
         // Pool sizes derived from `bindings` (#1030 / REN-D10-NEW-09).
-        partial.descriptor_pool = try_or_cleanup!(DescriptorPoolBuilder::from_layout_bindings(
+        partial.descriptor_pool = try_or_cleanup!(partial, device, allocator, DescriptorPoolBuilder::from_layout_bindings(
             &bindings,
             MAX_FRAMES_IN_FLIGHT as u32,
         )
@@ -600,7 +534,7 @@ impl CausticPipeline {
         let set_layouts = vec![partial.descriptor_set_layout; MAX_FRAMES_IN_FLIGHT];
         // SAFETY: pool just sized for MAX_FRAMES_IN_FLIGHT sets with the
         // same descriptor_set_layout handle.
-        partial.descriptor_sets = try_or_cleanup!(unsafe {
+        partial.descriptor_sets = try_or_cleanup!(partial, device, allocator, unsafe {
             device
                 .allocate_descriptor_sets(
                     &vk::DescriptorSetAllocateInfo::default()

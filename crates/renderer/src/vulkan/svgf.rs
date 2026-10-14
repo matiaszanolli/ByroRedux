@@ -65,6 +65,7 @@ use super::reflect::{validate_set_layout, ReflectedShader};
 use super::sync::MAX_FRAMES_IN_FLIGHT;
 use super::GpuUploadCtx;
 use crate::shader_constants::{WORKGROUP_X, WORKGROUP_Y};
+use crate::vulkan::descriptors::compute_binding;
 use anyhow::{Context, Result};
 use ash::vk;
 
@@ -477,56 +478,52 @@ impl SvgfPipeline {
             atrous_color: Vec::new(),
         };
 
-        macro_rules! try_or_cleanup {
-            // SAFETY (inside macro): `partial` is local to this fn and
-            // not yet referenced by any command buffer / descriptor set;
-            // cleanup-on-error closes the partial state before returning.
-            ($expr:expr) => {
-                match $expr {
-                    Ok(v) => v,
-                    Err(e) => {
-                        // SAFETY: `partial` holds only handles created by this device
-                        // earlier in this initializer; on this error path none has been
-                        // bound to an in-flight command buffer yet, so tearing them down
-                        // in reverse creation order is sound.
-                        unsafe { partial.destroy(device, allocator) };
-                        return Err(e.into());
-                    }
-                }
-            };
-        }
-
         // ── 1. Allocate history images (per frame-in-flight) ──────────
         for i in 0..MAX_FRAMES_IN_FLIGHT {
-            let ind = try_or_cleanup!(Self::create_history_image(
+            let ind = try_or_cleanup!(
+                partial,
                 device,
                 allocator,
-                width,
-                height,
-                INDIRECT_HIST_FORMAT,
-                &format!("svgf_indirect_{i}"),
-            ));
-            partial.indirect_history.push(ind);
-            let mom = try_or_cleanup!(Self::create_history_image(
-                device,
-                allocator,
-                width,
-                height,
-                MOMENTS_HIST_FORMAT,
-                &format!("svgf_moments_{i}"),
-            ));
-            partial.moments_history.push(mom);
-            // À-trous ping-pong colour buffers (2 per frame-in-flight),
-            // same packed format as the indirect history.
-            for pp in 0..ATROUS_PING_PONG_IMAGES as usize {
-                let at = try_or_cleanup!(Self::create_history_image(
+                Self::create_history_image(
                     device,
                     allocator,
                     width,
                     height,
                     INDIRECT_HIST_FORMAT,
-                    &format!("svgf_atrous_{i}_{pp}"),
-                ));
+                    &format!("svgf_indirect_{i}"),
+                )
+            );
+            partial.indirect_history.push(ind);
+            let mom = try_or_cleanup!(
+                partial,
+                device,
+                allocator,
+                Self::create_history_image(
+                    device,
+                    allocator,
+                    width,
+                    height,
+                    MOMENTS_HIST_FORMAT,
+                    &format!("svgf_moments_{i}"),
+                )
+            );
+            partial.moments_history.push(mom);
+            // À-trous ping-pong colour buffers (2 per frame-in-flight),
+            // same packed format as the indirect history.
+            for pp in 0..ATROUS_PING_PONG_IMAGES as usize {
+                let at = try_or_cleanup!(
+                    partial,
+                    device,
+                    allocator,
+                    Self::create_history_image(
+                        device,
+                        allocator,
+                        width,
+                        height,
+                        INDIRECT_HIST_FORMAT,
+                        &format!("svgf_atrous_{i}_{pp}"),
+                    )
+                );
                 partial.atrous_color.push(at);
             }
         }
@@ -534,7 +531,7 @@ impl SvgfPipeline {
         // ── 2. Sampler ────────────────────────────────────────────────
         // SAFETY: SamplerCreateInfo fully populated above; handle owned
         // by `partial.point_sampler`, freed by destroy().
-        partial.point_sampler = try_or_cleanup!(unsafe {
+        partial.point_sampler = try_or_cleanup!(partial, device, allocator, unsafe {
             device
                 .create_sampler(
                     &vk::SamplerCreateInfo::default()
@@ -549,86 +546,42 @@ impl SvgfPipeline {
         });
 
         // ── 3. Parameter UBOs ─────────────────────────────────────────
-        let param_size = std::mem::size_of::<SvgfTemporalParams>() as vk::DeviceSize;
-        for _ in 0..MAX_FRAMES_IN_FLIGHT {
-            let buf = try_or_cleanup!(GpuBuffer::create_host_visible(
+        partial.param_buffers = try_or_cleanup!(
+            partial,
+            device,
+            allocator,
+            GpuBuffer::create_per_frame_uniforms::<SvgfTemporalParams>(
                 device,
                 allocator,
-                param_size,
-                vk::BufferUsageFlags::UNIFORM_BUFFER,
-            ));
-            partial.param_buffers.push(buf);
-        }
+                MAX_FRAMES_IN_FLIGHT
+            )
+        );
 
         // ── 4. Descriptor set layout ──────────────────────────────────
         let bindings = [
             // 0: curr indirect (sampler2D)
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(0)
-                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            compute_binding(0, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
             // 1: motion
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(1)
-                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            compute_binding(1, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
             // 2: curr mesh_id (usampler2D)
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(2)
-                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            compute_binding(2, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
             // 3: prev mesh_id
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(3)
-                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            compute_binding(3, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
             // 4: prev indirect history
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(4)
-                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            compute_binding(4, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
             // 5: prev moments history
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(5)
-                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            compute_binding(5, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
             // 6: out indirect
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(6)
-                .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            compute_binding(6, vk::DescriptorType::STORAGE_IMAGE),
             // 7: out moments
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(7)
-                .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            compute_binding(7, vk::DescriptorType::STORAGE_IMAGE),
             // 8: params UBO
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(8)
-                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            compute_binding(8, vk::DescriptorType::UNIFORM_BUFFER),
             // 9: curr normal (sampler2D, octahedral RG16_SNORM) — #650
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(9)
-                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            compute_binding(9, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
             // 10: prev normal (other frame-in-flight slot of the same
             // G-buffer normal attachment) — #650
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(10)
-                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            compute_binding(10, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
         ];
         validate_set_layout(
             0,
@@ -642,7 +595,7 @@ impl SvgfPipeline {
         )
         .expect("svgf descriptor layout drifted against svgf_temporal.comp (see #427)");
         // SAFETY: `bindings` validated against svgf_temporal.comp above.
-        partial.descriptor_set_layout = try_or_cleanup!(unsafe {
+        partial.descriptor_set_layout = try_or_cleanup!(partial, device, allocator, unsafe {
             device
                 .create_descriptor_set_layout(
                     &vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings),
@@ -653,7 +606,7 @@ impl SvgfPipeline {
 
         // SAFETY: descriptor_set_layout just created above; slice-from-ref
         // borrow lives only for this call.
-        partial.pipeline_layout = try_or_cleanup!(unsafe {
+        partial.pipeline_layout = try_or_cleanup!(partial, device, allocator, unsafe {
             device
                 .create_pipeline_layout(
                     &vk::PipelineLayoutCreateInfo::default()
@@ -688,17 +641,19 @@ impl SvgfPipeline {
         // automatically lifts the pool size (#1030 / REN-D10-NEW-10).
         // Today's contents: 8 COMBINED_IMAGE_SAMPLER + 2 STORAGE_IMAGE
         // + 1 UNIFORM_BUFFER per set, MAX_FRAMES_IN_FLIGHT sets.
-        partial.descriptor_pool = try_or_cleanup!(DescriptorPoolBuilder::from_layout_bindings(
-            &bindings,
-            MAX_FRAMES_IN_FLIGHT as u32,
-        )
-        .max_sets(MAX_FRAMES_IN_FLIGHT as u32)
-        .build(device, "SVGF descriptor pool"));
+        partial.descriptor_pool = try_or_cleanup!(
+            partial,
+            device,
+            allocator,
+            DescriptorPoolBuilder::from_layout_bindings(&bindings, MAX_FRAMES_IN_FLIGHT as u32,)
+                .max_sets(MAX_FRAMES_IN_FLIGHT as u32)
+                .build(device, "SVGF descriptor pool")
+        );
 
         let set_layouts = vec![partial.descriptor_set_layout; MAX_FRAMES_IN_FLIGHT];
         // SAFETY: pool just sized for MAX_FRAMES_IN_FLIGHT sets with the
         // same descriptor_set_layout.
-        partial.descriptor_sets = try_or_cleanup!(unsafe {
+        partial.descriptor_sets = try_or_cleanup!(partial, device, allocator, unsafe {
             device
                 .allocate_descriptor_sets(
                     &vk::DescriptorSetAllocateInfo::default()
@@ -718,14 +673,19 @@ impl SvgfPipeline {
         );
 
         // ── 8. SVGF spatial à-trous pass (Schied 2017 §4.3) ───────────
-        try_or_cleanup!(partial.create_atrous_resources(
+        try_or_cleanup!(
+            partial,
             device,
-            pipeline_cache,
-            normal_views,
-            mesh_id_views,
-            albedo_views,
-            depth_view,
-        ));
+            allocator,
+            partial.create_atrous_resources(
+                device,
+                pipeline_cache,
+                normal_views,
+                mesh_id_views,
+                albedo_views,
+                depth_view,
+            )
+        );
 
         // #2679 / PERF-D3-03 — attributing telemetry, same mechanism #1814
         // established for the ReSTIR reservoirs. Reports the whole
@@ -861,47 +821,19 @@ impl SvgfPipeline {
         // Binding layout — see svgf_atrous.comp.
         let bindings = [
             // 0: in colour (sampler2D) — temporal output, then ping-pong
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(0)
-                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            compute_binding(0, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
             // 1: moments (sampler2D) — variance source (μ2 − μ1²)
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(1)
-                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            compute_binding(1, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
             // 2: normal (sampler2D, octahedral)
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(2)
-                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            compute_binding(2, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
             // 3: mesh_id (usampler2D)
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(3)
-                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            compute_binding(3, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
             // 4: out colour (storage image)
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(4)
-                .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            compute_binding(4, vk::DescriptorType::STORAGE_IMAGE),
             // 5: albedo (sampler2D)
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(5)
-                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            compute_binding(5, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
             // 6: depth (sampler2D)
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(6)
-                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            compute_binding(6, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
         ];
         validate_set_layout(
             0,
