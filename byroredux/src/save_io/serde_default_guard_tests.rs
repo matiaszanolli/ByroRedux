@@ -109,6 +109,15 @@ fn save_type_sources() -> Vec<PathBuf> {
         manifest.join("../crates/core/src/ecs/components/form_id.rs"),
         manifest.join("../crates/core/src/string/mod.rs"),
         manifest.join("../crates/plugin/src/esm/records/script_instance.rs"),
+        // #5059 — nested payloads of registered columns whose defining files
+        // match neither filter arm: `core` derives are `inspect`-gated (not
+        // `save`-gated) and define no registered name. `lighting.rs` holds
+        // `LightSource.emitter`'s `Emitter` tree; the `sdk` files hold
+        // `FormRef` (`FactionRelations`) and `ScriptValue`
+        // (`PapyrusProviderContinuationQueue`).
+        manifest.join("../crates/core/src/lighting.rs"),
+        manifest.join("../crates/sdk/src/identity.rs"),
+        manifest.join("../crates/sdk/src/script_function.rs"),
     ]);
     candidates.sort();
     candidates.dedup();
@@ -233,6 +242,39 @@ fn serde_attr_declares_unsafe_default(line: &str) -> bool {
     // `skip` fields do not exist in the on-disk shape. Serde requires a
     // construction default for them, but that cannot mask schema drift.
     keys.contains(&"default") && !keys.contains(&"skip")
+}
+
+/// Declarations that share a scanned source file with a saved payload but
+/// are never held by a registered column (#5059): `crates/sdk/src/
+/// script_function.rs` carries the `ScriptValue` payload of
+/// `PapyrusProviderContinuationQueue` next to the extension-manifest
+/// function declarations, whose `serde(default)` fields are manifest
+/// compatibility, not save data. Whole-file scoping is why they need naming
+/// here; [`not_saved_serde_default_exemptions_are_still_declared`] keeps the
+/// list from going stale.
+const NOT_SAVED_SERDE_DEFAULT_DECLARATIONS: &[&str] = &[
+    "ScriptParameterDeclaration",
+    "ScriptResultDeclaration",
+    "ScriptFunctionDeclaration",
+];
+
+/// Name of the nearest `struct`/`enum` declaration at or before `offset`.
+fn enclosing_declaration(source: &str, offset: usize) -> Option<&str> {
+    source[..offset].lines().rev().find_map(|line| {
+        let line = line.trim_start();
+        let line = line
+            .strip_prefix("pub(crate) ")
+            .or_else(|| line.strip_prefix("pub(super) "))
+            .or_else(|| line.strip_prefix("pub "))
+            .unwrap_or(line);
+        let rest = line
+            .strip_prefix("struct ")
+            .or_else(|| line.strip_prefix("enum "))?;
+        let end = rest
+            .find(|c: char| !(c.is_alphanumeric() || c == '_'))
+            .unwrap_or(rest.len());
+        Some(&rest[..end])
+    })
 }
 
 fn normalized_serialized_shapes() -> Vec<String> {
@@ -1032,7 +1074,12 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // `AnimationLayer::bone_weights` and `AnimationStack::bone_index` (a layered
     // blend's per-bone masks) are runtime-only `serde(skip)` fields the behavior
     // graph rebuilds every frame; a save's JSON for both types is byte-identical.
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xf9f9_1d11_fd1a_1b0f;
+    // 2026-10-14 (#5059) — refreshed WITHOUT a major bump: the guard's scan
+    // widened to `core/src/lighting.rs` (`LightSource.emitter`'s tree) and
+    // `sdk/src/{identity,script_function}.rs` (`FormRef`, `ScriptValue`), so
+    // the file-scoped hash now covers shapes it always should have. No
+    // serialized field changed; a save's JSON is byte-identical.
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xe958_88aa_0964_7f12;
     // ---- earlier refresh history (kept for the false-positive record) ----
     // 2026-09-21 (W2.10 flip) — refreshed WITHOUT a major bump, the same
     // `VisibilityMask` tuple-struct sweep class as the two entries below:
@@ -1243,6 +1290,11 @@ fn serde_default_on_saved_struct_requires_format_major_bump() {
             if serde_attr_declares_unsafe_default(attribute) {
                 let relative = path.strip_prefix(manifest).unwrap_or(&path);
                 let offset = attribute.as_ptr() as usize - src.as_ptr() as usize;
+                if enclosing_declaration(&src, offset)
+                    .is_some_and(|name| NOT_SAVED_SERDE_DEFAULT_DECLARATIONS.contains(&name))
+                {
+                    continue;
+                }
                 let line = src[..offset].bytes().filter(|&b| b == b'\n').count() + 1;
                 offenders.push(format!("{}:{line}", relative.display()));
             }
@@ -1257,6 +1309,29 @@ fn serde_default_on_saved_struct_requires_format_major_bump() {
 }
 
 #[test]
+fn not_saved_serde_default_exemptions_are_still_declared() {
+    let sources = save_type_sources();
+    for name in NOT_SAVED_SERDE_DEFAULT_DECLARATIONS {
+        assert!(
+            sources.iter().any(|path| {
+                std::fs::read_to_string(path).is_ok_and(|src| defines_type(&src, name))
+            }),
+            "NOT_SAVED_SERDE_DEFAULT_DECLARATIONS names {name}, which no scanned file \
+             declares any more — drop the stale exemption"
+        );
+    }
+}
+
+#[test]
+fn enclosing_declaration_names_the_owning_type() {
+    let src = "pub struct A {\n    #[serde(default)]\n    x: u8,\n}\n\nenum B {\n    #[serde(default)]\n    V,\n}\n";
+    let a = src.find("#[serde").unwrap();
+    assert_eq!(enclosing_declaration(src, a), Some("A"));
+    let b = src.rfind("#[serde").unwrap();
+    assert_eq!(enclosing_declaration(src, b), Some("B"));
+}
+
+#[test]
 fn source_discovery_follows_registry_and_nested_save_modules() {
     let sources = save_type_sources();
     assert!(sources.iter().any(|path| path.ends_with("save_io.rs")));
@@ -1268,6 +1343,9 @@ fn source_discovery_follows_registry_and_nested_save_modules() {
         "core/src/ecs/components/form_id.rs",
         "core/src/string/mod.rs",
         "plugin/src/esm/records/script_instance.rs",
+        "core/src/lighting.rs",
+        "sdk/src/identity.rs",
+        "sdk/src/script_function.rs",
     ] {
         assert!(
             sources.iter().any(|path| path.ends_with(suffix)),
