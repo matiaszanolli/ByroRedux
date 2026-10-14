@@ -2,7 +2,8 @@
 //!
 //! `load_cell_with_masters` is the interior entry point — drives the
 //! REFR walk, BLAS build, water plane, lighting resolution, and
-//! cell-root stamping. The exterior entry point lives in
+//! cell-root stamping (by running [`InteriorCellApplyJob`] to completion,
+//! #5589). The exterior entry point lives in
 //! [`super::exterior`] and shares this module's `stamp_cell_root`
 //! helper. `CellLoadResult` is the shape returned to the engine
 //! caller.
@@ -19,7 +20,6 @@ use crate::asset_provider::{MaterialProvider, TextureProvider};
 use crate::components::{CellLightingRes, CellRootIndex};
 
 use super::load_order::{parse_record_indexes_in_load_order, LoadOrder};
-use super::references::load_references;
 use super::references::{ReferenceLoadJob, ReferenceLoadProgress};
 use super::water;
 use super::FrameTimeBudget;
@@ -416,43 +416,53 @@ pub fn load_cell_with_masters(
     tex_provider: &TextureProvider,
     mut mat_provider: Option<&mut MaterialProvider>,
 ) -> anyhow::Result<CellLoadResult> {
-    // Mark the high-water entity id before loading. Everything spawned
-    // by this load (including the designated cell_root at the end) gets
-    // CellRoot stamped on it for later unload. See #372.
-    let first_entity = world.next_entity_id();
+    // The synchronous load is the resumable job run to completion under an
+    // unlimited budget (#5589). It used to be a ~54% line-for-line twin of
+    // `InteriorCellApplyJob` — plugin chaining, cell lookup, precombined,
+    // water, reference load, lighting, spawn pose, region music, resolver
+    // install, phase log — and every interior-load fix (#4416, #4909, #5484)
+    // had to land in both copies. `load_references` was already an
+    // unlimited-budget wrapper over the budgeted loader the job drives, so
+    // the shared path is the same reference loader either way.
+    let mut job = InteriorCellApplyJob::begin(
+        masters,
+        esm_path,
+        cell_editor_id,
+        world,
+        ctx,
+        tex_provider,
+        mat_provider.as_deref_mut(),
+    )?;
+    loop {
+        let mut budget = FrameTimeBudget::unlimited();
+        match job.advance(
+            world,
+            ctx,
+            tex_provider,
+            mat_provider.as_deref_mut(),
+            &mut budget,
+        ) {
+            InteriorCellApplyProgress::Complete(result) => return Ok(result),
+            // An unlimited budget never yields; looping keeps this correct
+            // (rather than `unreachable!`) if that ever changes.
+            InteriorCellApplyProgress::Pending(pending) => job = pending,
+        }
+    }
+}
 
-    // 1. Parse the ESM(s) into a single merged cell index. Empty
-    //    `masters` list reduces to single-plugin behaviour (FormIDs
-    //    pass through unchanged via the remap's self-reference path).
-    let plugin_paths: Vec<&str> = masters
-        .iter()
-        .map(|s| s.as_str())
-        .chain(std::iter::once(esm_path))
-        .collect();
-    // SK-D6-02 / #566 — use the full-record parser so the LGTM
-    // lighting-template fallback can resolve through
-    // `EsmIndex.lighting_templates`. Pre-#566 this path only loaded the
-    // cell index, which couldn't see LGTM records and silently dropped
-    // the XCLL-absent fallback. The cost is bounded: ~1 s extra to
-    // parse the surrounding categories on FNV / Skyrim, paid once per
-    // cell load.
-    let mut phases = CellLoadPhaseTimings::default();
-    let phase_started = Instant::now();
-    let (index, load_order) = parse_record_indexes_in_load_order(&plugin_paths)?;
-    phases.esm_parse = phase_started.elapsed();
-
-    // 2. Find the cell.
+/// The interior cell `cell_editor_id` names, or a self-diagnosing error.
+///
+/// Phase 20.2 — when the requested cell doesn't exist, the error lists the
+/// cells whose editor ID contains the requested name (case-insensitive), which
+/// turns "cell not found" into a typo/suffix diagnostic; failing that, a
+/// 4-character prefix match (the prefix right, the suffix wrong — `InstAdvSys01`
+/// for `InstSRBLab02`); failing that, the first 20 cells.
+fn find_interior_cell<'a>(
+    index: &'a esm::records::EsmIndex,
+    cell_editor_id: &str,
+) -> anyhow::Result<&'a esm::cell::CellData> {
     let cell_key = cell_editor_id.to_ascii_lowercase();
-    let cell = index.cells.cells.get(&cell_key).ok_or_else(|| {
-        // Phase 20.2 — when the requested cell doesn't exist,
-        // filter the suggestion list to cells whose editor ID
-        // contains the requested name as a substring (case-
-        // insensitive). Turns "cell not found" into a
-        // self-diagnostic: a typo or off-by-one suffix shows
-        // every close match in the error message instead of
-        // a random 20-cell sample that's rarely close to what
-        // the user wanted. Falls back to the random sample only
-        // when no substring match exists.
+    index.cells.cells.get(&cell_key).ok_or_else(|| {
         let needle = cell_key.as_str();
         let matches: Vec<&str> = index
             .cells
@@ -463,10 +473,6 @@ pub fn load_cell_with_masters(
             .map(|c| c.editor_id.as_str())
             .collect();
         let (label, examples) = if matches.is_empty() {
-            // Also try a 4-char prefix match — handles cases
-            // where the user got the prefix right but the
-            // suffix wrong (e.g. `InstAdvSys01` when the cell
-            // is `InstSRBLab02`).
             let prefix_len = needle.len().min(4);
             let prefix = &needle[..prefix_len];
             let prefix_matches: Vec<&str> = index
@@ -500,310 +506,6 @@ pub fn load_cell_with_masters(
             examples.len(),
             examples,
         )
-    })?;
-
-    log::info!(
-        "Loading cell '{}' (form {:08X}): {} placed references",
-        cell.editor_id,
-        cell.form_id,
-        cell.references.len(),
-    );
-
-    // 3a. FO4+ PreCombined Mesh spawn (#1188). Run BEFORE REFR
-    // loading so the per-bake spawn set decides which of the cell's
-    // `absorbed_ref_bakes` are honored (#5484). The shared-variant `_oc.nif` files are resolved via
-    // `Fallout4 - Geometry.csg` (M49 complete). If spawn succeeds,
-    // the absorption gate suppresses per-REFR rendering of the original
-    // architecture (which is flagged XPRI). Empty on non-FO4 cells
-    // or when CSG resolution fails — fallback via the conditional
-    // gate in load_cell_with_masters.
-    let phase_started = Instant::now();
-    let (_pc_spawned, _pc_misses, baked_hashes) = super::precombined::spawn_precombined_meshes(
-        cell,
-        // Interior cells: cell origin IS the world origin, so the
-        // bake's cell-local coords already are world coords. #1222.
-        Vec3::ZERO,
-        world,
-        ctx,
-        tex_provider,
-        mat_provider.as_deref_mut(),
-        // M49 — the active plugin provides the Data dir + CSG fallback; the
-        // owning plugin (per cell form-id) selects the actual
-        // `<Plugin> - Geometry.csg` and the `_oc.nif` path. #1590.
-        esm_path,
-        &plugin_paths,
-    );
-    phases.precombined = phase_started.elapsed();
-
-    // 3a. Interior water plane from XCLW / XCWT — flooded ruins,
-    // sewers, named indoor pools. The cell parser captured the
-    // height directly; the water material comes from the global
-    // WATR record table.
-    //
-    // #3320 — this MUST stay above `load_references`. `spawn_water_plane`
-    // calls `resolve_texture` on the WATR `NNAM` normal map, and
-    // `resolve_texture` does not upload: it reserves a bindless slot and
-    // points the descriptor at the fallback checkerboard until a batched
-    // flush. There are only two `flush_pending_uploads` call sites in the
-    // engine and no per-frame flush, so a texture resolved after the one at
-    // `load_references`' tail stays bound to the checkerboard for the life
-    // of the cell — fed into the water pipeline as a *tangent-space normal
-    // map*, which reads as broken chrome noise rather than water. Running
-    // the spawn first folds the water texture into that same single flush,
-    // and matches the exterior route, where `ExteriorCellApplyJob::begin`
-    // already spawns terrain + water before `advance` loads references.
-    // Re-entry never healed it either: unload drops the handle to refcount
-    // 0 and purges the path map, so every reload re-reserved a fresh
-    // unflushed slot. 21 of FNV's 39 real-water interiors are affected, and
-    // the same shape applies to Oblivion / FO3 / Skyrim / FO4.
-    // #3548 — an XCLW of exactly 0.0 is Skyrim+/FO4's inert Creation-Kit
-    // default, NOT a water surface. Interior XCLW census over the five
-    // shipped masters, every interior cell that authors the sub-record:
-    //
-    //   Skyrim   240 authored — 240 are exactly 0.0,   0 are anything else
-    //   FO4      324 authored — 324 are exactly 0.0,   0 are anything else
-    //   FNV       39 authored —   0 are 0.0,          39 are real heights
-    //   FO3        1 authored —   0 are 0.0,           1 is a real height
-    //   Oblivion 118 authored —   0 are 0.0,         118 are real heights
-    //
-    // The split is total and falls on the engine generation, so this is one
-    // data-derived rule rather than a per-game branch: on the titles that
-    // author 0.0 it is *always* inert, and on the titles that author real
-    // interior water 0.0 never occurs, so nothing real is lost.
-    //
-    // Without the gate every such cell got a plane at renderer y = 0, above
-    // an interior floor that sits below it — flooding 240 of Skyrim's 590
-    // interiors (40.7%) and 324 of FO4's 1,195 (27.1%). `WhiterunDragonsreach`
-    // logged `submersion: ENTER underwater — depth=253.1` in its own throne
-    // hall. Latent until `4b0a0418` widened the plane from a fixed default to
-    // the cell's whole REFR bounding box, which is what made it cover the room
-    // and surfaced it as RT-2's draw-batch split.
-    if let Some(water_height) = water::interior_water_height(cell.water_height) {
-        let (water_center, water_half_extent) = water::interior_water_placement(
-            cell.references.iter().map(|reference| reference.position),
-        );
-        // #1855 — same SIBLING gap as the exterior route: `spawn_water_plane`
-        // already `log::warn!`s a mesh-upload failure, but without cell
-        // context (it doesn't take a cell identifier). Add the correlation
-        // here so a flooded interior that renders dry is diagnosable from
-        // this cell's own log lines.
-        if water::spawn_water_plane(
-            world,
-            ctx,
-            tex_provider,
-            &index.waters,
-            water_height,
-            cell.water_type_form,
-            // Interior water is authored in the same local frame as REFR
-            // placements. Use the bounded reference-derived estimate so
-            // offset pools do not remain stranded at world origin.
-            water_center,
-            water_half_extent,
-            None,
-            index.game,
-        )
-        .is_none()
-        {
-            log::warn!(
-                "  Cell '{}': water plane spawn failed — no water will render",
-                cell.editor_id
-            );
-        }
-    }
-
-    // 3b. Load placed references. The absorbed-REFR gate (honour a ref's
-    // XCRI bake only when that bake actually spawned) lives in the shared
-    // helper so interior + exterior can't drift (#5484).
-    let absorbed =
-        super::precombined::effective_absorbed_refs(&cell.absorbed_ref_bakes, &baked_hashes);
-    let phase_started = Instant::now();
-    let result = load_references(
-        &cell.references,
-        &index.cells,
-        &index,
-        &index.races,
-        index.game,
-        world,
-        ctx,
-        tex_provider,
-        mat_provider,
-        &cell.editor_id,
-        &load_order,
-        &absorbed,
-    );
-    phases.references = phase_started.elapsed();
-    let phase_started = Instant::now();
-
-    // SK-D6-02 / #566 — LGTM lighting-template fallback. Vanilla
-    // Skyrim ships interior cells (Solitude inn cluster, Dragonsreach
-    // throne room, Markarth cells) that omit XCLL and rely on this
-    // template chain. Pre-#566 the LTMP FormID was unparsed, so the
-    // fallback never fired and these cells rendered with the engine
-    // default ambient.
-    let resolved_lighting = resolve_cell_lighting(cell, &index);
-    let image_space = cell_image_space(cell, &index);
-    let show_sky = cell.show_sky.unwrap_or(false);
-    log::info!("Cell lighting: {:?}", resolved_lighting);
-
-    // EX-16 item 2 (#2372) — make this cell's NAVM tiles resident. Must
-    // run before `last_entity` is captured below so the spawned entities
-    // land inside the stamped range and get reclaimed on unload for free.
-    crate::components::spawn_navmesh_tiles(world, &cell.navmeshes);
-
-    // Reserve a dedicated root entity and stamp CellRoot on every
-    // entity in [first_entity, last_entity). The stamp is sparse-set
-    // backed, so entities that never received any component simply
-    // don't show up in the CellRoot storage — fine. The returned root
-    // entity is only consumed by the interior-unload path; today no
-    // caller exercises it (interior cells loaded at startup live
-    // until process exit) so it's discarded here. Re-add the field
-    // when a real interior-unload consumer materialises.
-    let last_entity = world.next_entity_id();
-    let cell_root = world.spawn();
-    stamp_cell_root(world, cell_root, first_entity, last_entity);
-    // #4699 — CELL `XOWN` for placements with no ownership of their own.
-    crate::inventory::stamp_cell_ownership(
-        world,
-        cell.ownership.as_ref(),
-        first_entity,
-        last_entity,
-    );
-    world.insert(cell_root, CellFormId(cell.form_id));
-
-    // SCEN players are global quest runtime entities, not cell-owned content.
-    // Install them only after capturing/stamping the cell entity range so an
-    // interior unload cannot despawn a running cross-cell scene.
-    crate::asset_provider::populate_scene_runtime(world, &index);
-    crate::asset_provider::populate_idle_clip_runtime(world, &index, tex_provider);
-    crate::asset_provider::populate_object_graphs(world, tex_provider);
-    crate::asset_provider::populate_skyrim_walk_clip(world, &index, tex_provider);
-    crate::asset_provider::populate_archetype_idles(world, &index, tex_provider);
-    // P2 combat tail — the --cell route must install the combat family
-    // too: the P2 gate smoke drives exactly this route, and both spawn
-    // finalizes (runtime and, since #4700, pre-baked) insert the
-    // DraugrCombatAnim marker regardless of route (#4551).
-    crate::asset_provider::populate_draugr_combat_clips(world, &index, tex_provider);
-
-    // Capture the cell's editor_id BEFORE the `index.cells` move below
-    // — `cell` borrows from `index.cells.cells`, so the borrow has to
-    // end before the move consumes the parent map.
-    let cell_name = cell.editor_id.clone();
-    let entity_count = result.entity_count;
-    let (center, spawn_pose) = super::interior_spawn::resolve_interior_spawn(
-        &cell.references,
-        &index.cells,
-        result.center,
-        &cell_name,
-    );
-    // EX-16 item 1 (#2372) — same "capture before the move" constraint as
-    // `cell_name` above: `cell.regions` borrows from `index.cells`, and
-    // `index.regions` (a sibling field, untouched by the move) is what
-    // resolves it against.
-    let region_ambient =
-        crate::components::RegionAmbientRes::resolve(&cell.regions, &index.regions);
-    // EX-16 item 5 (#2372) — dispatch (or stop) REGN ambient music here,
-    // BEFORE the caller overwrites the live `RegionAmbientRes` resource
-    // with `result.region_ambient` (that happens after this function
-    // returns, at the same three call sites that apply lighting). At
-    // this point the resource still holds the *previous* cell's
-    // directive, which is exactly the comparison `dispatch_region_
-    // ambient_music` needs to avoid restarting an unchanged track.
-    let previous_music_form = world
-        .try_resource::<crate::components::RegionAmbientRes>()
-        .and_then(|r| r.music_form);
-    if previous_music_form != region_ambient.music_form {
-        crate::asset_provider::dispatch_region_ambient_music(
-            world,
-            &index.sounds,
-            region_ambient.music_form,
-        );
-    }
-
-    // #1668 — surface GLOB runtime values so CTDA "Use Global" comparands
-    // resolve. Keyed in global load-order space (EsmIndex remaps record
-    // FormIDs at parse), matching the comparand's remapped space. Built
-    // before the `index.cells` move below — `globals` is a sibling field.
-    ensure_globals_resource(world, &index.globals);
-
-    // M40 Phase 2 Stage 1 — surface the parsed index as a World resource so
-    // `&World` readers (door.teleport console command, the F-key activate
-    // system) can resolve XTEL destination FormIDs back to their parent
-    // cells without re-parsing the ESM. Replaces any prior load's index
-    // wholesale. #3415 widened the payload from `index.cells` to the whole
-    // `index` so the exterior arm can share its existing `Arc` instead of
-    // deep-cloning the cell maps — see `LoadedCellIndex`'s own doc. This is
-    // a move, not a clone, so the interior cost is unchanged.
-    let form_resolver =
-        super::load_order::GlobalFormIdResolver::from_load_order_with_records_and_factions(
-            &load_order,
-            &index.record_types,
-            &index.factions,
-        );
-    world.insert_resource(super::LoadedCellIndex(std::sync::Arc::new(index)));
-    super::load_order::install_form_resolver(world, form_resolver, std::sync::Arc::new(load_order));
-
-    // M40 Phase 2 Stage 3 — record the just-spawned cell root so the
-    // transition orchestrator can unload it on the next swap. Cleared
-    // by `transition::execute_pending` before each load; the exterior
-    // streaming entry points leave this as `None` (they track their
-    // own `state.loaded` map). Insert wholesale on every interior load
-    // so a transition from one interior to another updates the tracker
-    // even when the resource was already present from the prior load.
-    world.insert_resource(super::CurrentCellRoot(Some(cell_root)));
-
-    // M45.1 — record the cell identity + plugin set so a save taken here
-    // is self-describing: `load` re-issues this exact interior load before
-    // applying saved deltas. Replaces any prior load's context wholesale.
-    world.insert_resource(super::CurrentCellContext {
-        cell_editor_id: cell_editor_id.to_string(),
-        esm_path: esm_path.to_string(),
-        masters: masters.to_vec(),
-    });
-
-    // #3320 — the ordering invariant this function now depends on, checked
-    // rather than merely commented. Everything that calls `resolve_texture`
-    // during an interior load (references, precombines, and the water plane
-    // moved above them) has to land before `load_references`' tail flush;
-    // nothing after it may reserve a bindless slot, because there is no
-    // per-frame flush to rescue one. A future insert that resolves a texture
-    // below the reference load trips this in debug/test builds instead of
-    // silently rendering the fallback checkerboard for the life of the cell.
-    debug_assert_eq!(
-        ctx.texture_registry.pending_dds_upload_count(),
-        0,
-        "interior cell load left DDS uploads unflushed — a resolve_texture \
-         call has moved below load_references' flush (#3320)"
-    );
-
-    phases.finalization = phase_started.elapsed();
-    // #3559 — logged at info so the blocking first frame is attributable
-    // from any ordinary run, not only a `--features tracing-tracy` build.
-    // The dominant-phase share is the number that decides what to chunk or
-    // move off-thread first.
-    log::info!(
-        "Cell load phases: esm_parse={:.3}s precombined={:.3}s references={:.3}s \
-         finalization={:.3}s total={:.3}s dominant={}",
-        phases.esm_parse.as_secs_f32(),
-        phases.precombined.as_secs_f32(),
-        phases.references.as_secs_f32(),
-        phases.finalization.as_secs_f32(),
-        phases.total().as_secs_f32(),
-        phases
-            .dominant()
-            .map(|(name, share)| format!("{name} ({:.0}%)", share * 100.0))
-            .unwrap_or_else(|| "none".to_string()),
-    );
-
-    Ok(CellLoadResult {
-        cell_name,
-        entity_count,
-        center,
-        spawn_pose,
-        lighting: resolved_lighting,
-        show_sky,
-        image_space,
-        region_ambient,
-        phases,
     })
 }
 
@@ -858,52 +560,7 @@ impl InteriorCellApplyJob {
         let (index, load_order) = parse_record_indexes_in_load_order(&plugin_paths)?;
         phases.esm_parse = phase_started.elapsed();
 
-        let cell_key = cell_editor_id.to_ascii_lowercase();
-        let cell = index.cells.cells.get(&cell_key).ok_or_else(|| {
-            let needle = cell_key.as_str();
-            let matches: Vec<&str> = index
-                .cells
-                .cells
-                .values()
-                .filter(|c| c.editor_id.to_ascii_lowercase().contains(needle))
-                .take(20)
-                .map(|c| c.editor_id.as_str())
-                .collect();
-            let (label, examples) = if matches.is_empty() {
-                let prefix_len = needle.len().min(4);
-                let prefix = &needle[..prefix_len];
-                let prefix_matches: Vec<&str> = index
-                    .cells
-                    .cells
-                    .values()
-                    .filter(|c| c.editor_id.to_ascii_lowercase().starts_with(prefix))
-                    .take(20)
-                    .map(|c| c.editor_id.as_str())
-                    .collect();
-                if prefix_matches.is_empty() {
-                    let any: Vec<&str> = index
-                        .cells
-                        .cells
-                        .values()
-                        .take(20)
-                        .map(|c| c.editor_id.as_str())
-                        .collect();
-                    ("first 20 cells", any)
-                } else {
-                    ("cells matching prefix", prefix_matches)
-                }
-            } else {
-                ("cells containing substring", matches)
-            };
-            anyhow::anyhow!(
-                "Cell '{}' not found. {} interior cells available. {} ({}): {:?}",
-                cell_editor_id,
-                index.cells.cells.len(),
-                label,
-                examples.len(),
-                examples,
-            )
-        })?;
+        let cell = find_interior_cell(&index, cell_editor_id)?;
 
         log::info!(
             "Loading cell '{}' (form {:08X}): {} placed references",
@@ -1399,7 +1056,9 @@ mod tests {
     /// bare installer names also covers the exterior route
     /// (`scene/world_setup.rs`), whose call sites spell their arguments
     /// differently. The per-file floor is today's real production count:
-    /// two interior sites in `load.rs`, one in world setup.
+    /// one interior site in `load.rs` — `InteriorCellApplyJob::finish`, which
+    /// the synchronous `load_cell_with_masters` now shares (#5589) — and one in
+    /// world setup.
     #[test]
     fn every_animation_route_installs_the_combat_family_too() {
         let production = |name: &str, src: &'static str| -> &'static str {
@@ -1410,7 +1069,7 @@ mod tests {
                 })
         };
         for (name, whole_file, floor) in [
-            ("cell_loader/load.rs", include_str!("load.rs"), 2),
+            ("cell_loader/load.rs", include_str!("load.rs"), 1),
             (
                 "scene/world_setup.rs",
                 include_str!("../scene/world_setup.rs"),
@@ -1474,26 +1133,67 @@ mod tests {
     /// magenta checkerboard for the whole life of the cell.
     ///
     /// The runtime guard for this is the `debug_assert_eq!` on
-    /// `pending_dds_upload_count()` at the end of `load_cell_with_masters`,
+    /// `pending_dds_upload_count()` at the end of `InteriorCellApplyJob::finish`
+    /// (the one interior path, #5589),
     /// but nothing in `cargo test` loads a cell (it needs a Vulkan device and
     /// on-disk game data), so that assertion never executes in CI. This is
-    /// the CI-reachable half: it reads the function's own source and requires
-    /// the water spawn to still precede the reference load. It is a coarse
-    /// check by design — it exists because the alternative is no check at all.
+    /// the CI-reachable half: it reads the production source and requires
+    /// the water spawn (in `begin`) to still precede the reference load (in
+    /// `advance`). It is a coarse check by design — it exists because the
+    /// alternative is no check at all. Scanned over production text only: the
+    /// needles below would otherwise match this test's own body.
     #[test]
     fn interior_water_spawns_before_the_reference_load_flush() {
-        let source = include_str!("load.rs");
+        let source = byroredux_core::source_scan::production_text(include_str!("load.rs"));
         let water = source
             .find("water::spawn_water_plane(")
             .expect("load.rs must still spawn an interior water plane");
         let references = source
-            .find("let result = load_references(")
+            .find("load_references_budgeted(")
             .expect("load.rs must still load placed references");
         assert!(
             water < references,
-            "the interior water plane is spawned after `load_references`, whose \
+            "the interior water plane is spawned after the reference load, whose \
              tail carries the cell load's only texture flush — its WATR normal \
              map will render as the fallback checkerboard (#3320)"
+        );
+    }
+
+    /// #5589 — the synchronous interior load is `InteriorCellApplyJob` run to
+    /// completion, not a second copy of it: plugin chaining, the cell lookup
+    /// and its suggestion error, precombined, water, references, lighting,
+    /// spawn pose, region music and resolver install each live in ONE place.
+    #[test]
+    fn the_synchronous_interior_load_runs_the_apply_job() {
+        let source = byroredux_core::source_scan::production_text(include_str!("load.rs"));
+        let start = source
+            .find("pub fn load_cell_with_masters(")
+            .expect("load_cell_with_masters must exist");
+        let end = source[start..]
+            .find("\n}\n")
+            .map(|i| start + i)
+            .expect("the function body must close");
+        let body = &source[start..end];
+        assert!(
+            body.contains("InteriorCellApplyJob::begin(") && body.contains(".advance("),
+            "load_cell_with_masters must drive InteriorCellApplyJob (#5589)"
+        );
+        for twin in [
+            "spawn_precombined_meshes(",
+            "spawn_water_plane(",
+            "resolve_cell_lighting(",
+            "install_form_resolver(",
+        ] {
+            assert!(
+                !body.contains(twin),
+                "load_cell_with_masters calls `{twin}` itself again — that step belongs to \
+                 InteriorCellApplyJob only (#5589)"
+            );
+        }
+        assert_eq!(
+            source.matches("interior cells available").count(),
+            1,
+            "the cell-not-found diagnostic lives only in `find_interior_cell` (#5589)"
         );
     }
 
