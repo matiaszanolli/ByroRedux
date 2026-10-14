@@ -60,6 +60,7 @@ use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::World;
 use byroredux_core::math::{Quat, Vec3};
 
+use byroredux_scripting::condition::entity_global_form_id;
 use byroredux_scripting::PackageTargetRegistry;
 use std::collections::HashMap;
 
@@ -451,17 +452,6 @@ fn resolve_anchor(
     }
 }
 
-/// An entity's global (load-order) form id, or `None` when it carries no
-/// `FormIdComponent` or the pool cannot resolve it — the same keying
-/// `resolve_entity_by_global_form_id` searches (#3278's helper shape).
-fn entity_global_form_id(world: &World, entity: EntityId) -> Option<u32> {
-    use byroredux_core::ecs::components::FormIdComponent;
-    use byroredux_core::form_id::FormIdPool;
-    let component = world.get::<FormIdComponent>(entity)?;
-    let pool = world.try_resource::<FormIdPool>()?;
-    pool.resolve(component.0).map(|pair| pair.local.0)
-}
-
 /// Whether `cell_form_id` is the interior currently loaded. Exterior
 /// `InCell` targets are not resolved (v0) and read as not resident.
 fn cell_is_resident(world: &World, cell_form_id: u32) -> bool {
@@ -585,6 +575,26 @@ mod tests {
     use super::*;
     use byroredux_core::ecs::components::Furniture;
     use byroredux_core::ecs::components::GlobalTransform;
+
+    /// #5588 — the entity → global-form-id accessor is the scripting crate's
+    /// `condition::entity_global_form_id` (the inverse of
+    /// `resolve_entity_by_global_form_id`, keyed the same way); no crate keeps
+    /// a private copy.
+    #[test]
+    fn entity_global_form_id_has_one_definition() {
+        for (name, src) in [
+            ("systems/eat_sleep.rs", include_str!("eat_sleep.rs")),
+            ("interaction.rs", include_str!("../interaction.rs")),
+            ("systems/trap_hits.rs", include_str!("trap_hits.rs")),
+        ] {
+            let src = byroredux_core::source_scan::production_text_or_whole(src);
+            assert!(
+                !src.contains("fn entity_global_form_id("),
+                "{name} redefines entity_global_form_id — use \
+                 byroredux_scripting::condition::entity_global_form_id (#5588)"
+            );
+        }
+    }
 
     /// One tick with a fresh scratch — no retry clock carries over, so a
     /// call behaves like the system's first tick. The retry cadence is

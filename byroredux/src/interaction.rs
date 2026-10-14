@@ -1437,13 +1437,7 @@ fn unlock_with_carried_key(world: &World, target: EntityId) -> bool {
     let form = world
         .get::<byroredux_scripting::SceneAliasCandidate>(target)
         .map(|identity| identity.reference_form_id)
-        .or_else(|| {
-            let id = world.get::<FormIdComponent>(target).map(|id| id.0)?;
-            world
-                .try_resource::<byroredux_core::form_id::FormIdPool>()?
-                .resolve(id)
-                .map(|pair| pair.local.0)
-        });
+        .or_else(|| byroredux_scripting::condition::entity_global_form_id(world, target));
     // Do not unlock a placed reference if its persistent outcome cannot be
     // recorded. The live engine registers this resource before scene loading.
     if form.is_some()
