@@ -82,6 +82,7 @@ pub(crate) mod stream_snapshot;
 mod terrain;
 mod terrain_lod;
 mod terrain_lod_btr;
+mod tree_lod;
 mod terrain_seam;
 mod transition;
 pub(crate) mod unload;
@@ -175,6 +176,7 @@ pub(crate) use object_lod::{
     ObjectLodScheme,
 };
 pub(crate) use partial::finish_partial_import;
+pub(crate) use tree_lod::{stream_tree_lod_blocks, TreeLodRing};
 pub(crate) use placement_lod::{
     stream_placement_lod_blocks, unload_placement_lod_block, PlacementLodBlock,
 };

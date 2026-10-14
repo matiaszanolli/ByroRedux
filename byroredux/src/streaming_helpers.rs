@@ -198,12 +198,25 @@ pub(crate) fn reconcile_lod_rings(
         &mut placement_budget,
     );
 
-    let attempted = terrain_budget.spent() + object_budget.spent() + placement_budget.spent();
+    // #4913 — Skyrim's distant tree billboards ride their own allowance too.
+    let mut tree_budget = make_budget();
+    let tree_complete = cell_loader::stream_tree_lod_blocks(
+        world,
+        ctx,
+        &input,
+        &mut state.tree_lod,
+        &mut tree_budget,
+    );
+
+    let attempted = terrain_budget.spent()
+        + object_budget.spent()
+        + placement_budget.spent()
+        + tree_budget.spent();
     if attempted > 0 {
         flush_pending_lod_textures(ctx);
     }
 
-    let complete = terrain_complete && object_complete && placement_complete;
+    let complete = terrain_complete && object_complete && placement_complete && tree_complete;
     // #3688 — `update_lod_coverage` and `update_terrain_seam_stats` recompute
     // from scratch (two O(n²) rect scans between them) even on frames where
     // nothing they read changed; their only two console-command readers
@@ -568,6 +581,7 @@ pub fn drain_streaming_state(
     state.lod_terrain_available.clear();
     state.lod_object_available.clear();
 
+    let tree_lod_blocks = state.tree_lod.drain();
     let (lod_blocks, object_lod_blocks, placement_lod_blocks, lod_water) =
         drain_lod_reclaim_targets(
             &mut state.lod_blocks,
@@ -624,6 +638,10 @@ pub fn drain_streaming_state(
     }
     for block in &placement_lod_blocks {
         cell_loader::unload_placement_lod_block(world, ctx, block);
+    }
+    // #4913 — the tree billboards carry no `CellRoot` either.
+    for block in &tree_lod_blocks {
+        cell_loader::unload_object_lod_block(world, ctx, block);
     }
     // #2449 / EXAL-01 — the worldspace-wide LOD water quad carries no
     // `CellRoot` either (same reclaim gap `lod_blocks` had pre-#1536); its

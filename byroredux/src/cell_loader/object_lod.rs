@@ -26,11 +26,10 @@
 //! consume.** Vanilla `.bto` macro-meshes carry no trees: the tree LOD is
 //! 386 `.btt` quad billboards (`meshes\terrain\<world>\trees\`, level 4
 //! only) + 9 `.lst` species lists (`Meshes1.bsa`) + the `treelod` atlases
-//! (Textures5/6/7 on the SE install), all counted by
-//! `probe_lod_corpus`. FO4/FO76 bake their trees into the `.bto`, so
-//! distant Skyrim forests render empty while the terrain behind them keeps
-//! drawing; the `.btt`+`.lst` instanced-billboard consumer is open work on
-//! this ring's quad residency.
+//! (Textures5/6/7 on the SE install), all counted by `probe_lod_corpus`.
+//! FO4/FO76 bake their trees into the `.bto`. The family has its own ring in
+//! [`super::tree_lod`]; this module owns its path naming
+//! ([`tree_lod_archive_path`] and friends) beside the `.bto` family's.
 //!
 //! **This module was documented as Skyrim/FO4-only until #3321**, on the
 //! strength of #2086's conclusion that "FO3/FNV ship neither LOD scheme for
@@ -101,7 +100,7 @@ impl ObjectLodBlock {
     /// Sentinel for a quad that has no baked `.bto` (most do not). Inserted
     /// so the streaming reconcile does not re-extract a missing archive entry
     /// on every cell-boundary crossing.
-    fn empty() -> Self {
+    pub(super) fn empty() -> Self {
         Self {
             entities: Vec::new(),
             mesh_handles: Vec::new(),
@@ -794,8 +793,8 @@ pub(crate) fn object_lod_archive_path(
     }
 }
 
-/// #4913 — Skyrim's distant-**tree** family: registered naming, consumer
-/// open.
+/// #4913 — Skyrim's distant-**tree** family: naming and layout, consumed by
+/// [`super::tree_lod`].
 ///
 /// Vanilla `.bto` macro-meshes bake no trees; the tree tier is its own
 /// family on the same quad residency — 386 level-4 `.btt` quad files under
@@ -825,21 +824,26 @@ pub(crate) fn object_lod_archive_path(
 /// per-object ids — #3307's "baked quads carry no per-object ids" premise
 /// holds for `.bto` but not here; revisit when VWD culling is designed.
 /// `exal.md`'s LOD section already states the `.btt`+`.lst` pairing.
-#[cfg_attr(not(test), allow(dead_code))] // #4913: the consumer is open work
 pub(crate) fn tree_lod_supported(game: GameKind) -> bool {
     matches!(game, GameKind::Skyrim)
 }
 
 /// Archive path of one quad's baked tree-LOD billboards (#4913). Level 4 is
 /// the only level the vanilla corpus ships.
-#[cfg_attr(not(test), allow(dead_code))] // #4913: the consumer is open work
 pub(crate) fn tree_lod_archive_path(worldspace_key: &str, qx: i32, qy: i32) -> String {
     let w = worldspace_key.to_ascii_lowercase();
     format!("meshes\\terrain\\{w}\\trees\\{w}.4.{qx}.{qy}.btt")
 }
 
+/// A worldspace's tree species list (#4913) — the `.lst` that sizes every
+/// `.btt` billboard and locates it in the atlas. One per worldspace, beside
+/// its `.btt` files.
+pub(crate) fn tree_lod_list_path(worldspace_key: &str) -> String {
+    let w = worldspace_key.to_ascii_lowercase();
+    format!("meshes\\terrain\\{w}\\trees\\{w}.lst")
+}
+
 /// The per-worldspace tree-LOD atlas the `.btt` billboards sample (#4913).
-#[cfg_attr(not(test), allow(dead_code))] // #4913: the consumer is open work
 pub(crate) fn tree_lod_atlas_path(worldspace_key: &str) -> String {
     let w = worldspace_key.to_ascii_lowercase();
     format!("textures\\terrain\\{w}\\trees\\{w}treelod.dds")
@@ -1481,6 +1485,7 @@ mod lod_mesh_provenance_tests {
         ("placement_lod.rs", include_str!("placement_lod.rs")),
         ("terrain_lod.rs", include_str!("terrain_lod.rs")),
         ("terrain_lod_btr.rs", include_str!("terrain_lod_btr.rs")),
+        ("tree_lod.rs", include_str!("tree_lod.rs")),
     ];
 
     #[test]

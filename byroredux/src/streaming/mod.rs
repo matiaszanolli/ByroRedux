@@ -357,6 +357,10 @@ pub struct WorldStreamingState {
     pub(crate) terrain_lod_churn: crate::cell_loader::ChurnTracker,
     /// Same as `terrain_lod_churn`, for `object_lod_blocks`.
     pub(crate) object_lod_churn: crate::cell_loader::ChurnTracker,
+    /// #4913 — Skyrim's distant tree billboards (`.btt` + `.lst`): resident
+    /// level-4 quads, the worldspace's quad list and its species list. Empty
+    /// on every other game.
+    pub(crate) tree_lod: crate::cell_loader::TreeLodRing,
     /// Distant **object** LOD cells for Oblivion's placement scheme, keyed
     /// by cell `(x, y)`. Each entry is the cell's
     /// `DistantLOD\*.lod` instanced `_far.nif` meshes (or an empty sentinel
@@ -531,6 +535,7 @@ impl WorldStreamingState {
             terrain_lod_churn: crate::cell_loader::ChurnTracker::default(),
             object_lod_churn: crate::cell_loader::ChurnTracker::default(),
             placement_lod_blocks: HashMap::new(),
+            tree_lod: Default::default(),
             lod_water: None,
             authored_cover_root: None,
             pending: HashMap::new(),

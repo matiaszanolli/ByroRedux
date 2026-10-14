@@ -26,6 +26,7 @@
 //! | `fBlockLevel1Distance` | 90000 | 90000 |
 //! | `fBlockLevel2Distance` | *(absent)* | 110000 |
 //! | `fBlockMaximumDistance` | 250000 | 250000 |
+//! | `fTreeLoadDistance` | 75000 | *(absent)* |
 //!
 //! `fBlockLevel<i>Distance` is the distance beyond which level-`LOD_LEVELS[i]`
 //! quads are replaced by the next coarser level — i.e. it is the *refine*
@@ -108,6 +109,22 @@ fn cells_from_bu(bu: f32) -> i32 {
 const SKYRIM_ULTRA_REFINE_BU: &[f32] = &[60_000.0, 90_000.0];
 const FALLOUT4_ULTRA_REFINE_BU: &[f32] = &[60_000.0, 90_000.0, 110_000.0];
 const ULTRA_MAX_DISTANCE_BU: f32 = 250_000.0;
+
+/// Skyrim's `[TerrainManager] fTreeLoadDistance` in BU — how far the distant
+/// tree billboards (`.btt`, #4913) draw. 75000 in `Ultra.ini`, `High.ini` and
+/// `Medium.ini` alike (12500 at `Low`); the same Ultra tier the ladder above
+/// is read from. FO4 and FO76 bake their trees into the `.bto` and author no
+/// such setting.
+const SKYRIM_ULTRA_TREE_LOAD_BU: f32 = 75_000.0;
+
+/// How many cells out the distant tree-billboard ring reaches (#4913), or
+/// `None` where the game has no separate tree tier.
+pub(crate) fn tree_load_cells(game: GameKind) -> Option<i32> {
+    match game {
+        GameKind::Skyrim => Some(cells_from_bu(SKYRIM_ULTRA_TREE_LOAD_BU)),
+        _ => None,
+    }
+}
 
 // Fallout 3's shipped `VeryHigh.ini` uses the legacy terrain-manager names:
 // `fBlockLoadDistanceLow=50000`, `fSplitDistanceMult=1.5`, and
