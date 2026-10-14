@@ -9,7 +9,7 @@ use super::*;
 
 use byroredux_bgsm::template::ResolvedMaterial;
 use byroredux_sfmaterial::CdbMaterial;
-use byroredux_bgsm::{BgemFile, TemplateCache, TemplateResolver};
+use byroredux_bgsm::{BgemFile, ParseDiagnostics, TemplateCache, TemplateResolver};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
@@ -99,6 +99,45 @@ pub(crate) fn build_material_provider(args: &[String]) -> MaterialProvider {
         i += 1;
     }
     provider
+}
+
+/// The warnings a parse's [`ParseDiagnostics`] warrants — one per signal,
+/// empty for a clean file (#4672, #4664). `kind` is `"BGSM"` or `"BGEM"`.
+///
+/// Separate from [`warn_parse_diagnostics`] so the wording and the
+/// clean-file-is-silent contract are testable without a logger.
+pub(crate) fn parse_diagnostic_messages(kind: &str, path: &str, diag: &ParseDiagnostics) -> Vec<String> {
+    let mut out = Vec::new();
+    if diag.lossy_strings {
+        out.push(format!(
+            "{kind} '{path}': one or more string fields contained non-UTF-8 bytes \
+             and decoded with replacement (lossy, matching the reference \
+             Material-Editor)"
+        ));
+    }
+    if diag.unconsumed_bytes > 0 {
+        out.push(format!(
+            "{kind} '{path}': {} byte(s) left unconsumed after parse — layout drift \
+             or a version decoded against the wrong shape (#4664)",
+            diag.unconsumed_bytes
+        ));
+    }
+    if let Some(version) = diag.version_over_ceiling {
+        out.push(format!(
+            "{kind} '{path}': version {version} exceeds the newest layout this crate \
+             knows ({}); fields may be wrong (#4664)",
+            byroredux_bgsm::NEWEST_KNOWN_VERSION
+        ));
+    }
+    out
+}
+
+/// Log [`parse_diagnostic_messages`] — the bgsm crate has no logger of its
+/// own, so the provider owns this for every BGSM/BGEM it parses.
+fn warn_parse_diagnostics(kind: &str, path: &str, diag: &ParseDiagnostics) {
+    for message in parse_diagnostic_messages(kind, path, diag) {
+        log::warn!("{message}");
+    }
 }
 
 /// BGSM/BGEM material file resolver backed by Materials BA2 archives.
@@ -368,6 +407,12 @@ impl MaterialProvider {
                 // `extract_from_archives`.
                 extract_first(self.archives.iter().rev(), &normalized)
             }
+
+            // #5010 — every file in the chain (leaf and templates), not just
+            // the depth-limit recovery arm below.
+            fn parsed(&mut self, path: &str, diagnostics: &ParseDiagnostics) {
+                warn_parse_diagnostics("BGSM", path, diagnostics);
+            }
         }
         let mut reader = ArchiveReader {
             archives: &self.archives,
@@ -402,31 +447,7 @@ impl MaterialProvider {
                 let (parsed, diag) = byroredux_bgsm::parse_bgsm_diag(&bytes);
                 let file = match parsed {
                     Ok(f) => {
-                        if diag.lossy_strings {
-                            log::warn!(
-                                "BGSM '{}': one or more string fields contained \
-                                 non-UTF-8 bytes and decoded with replacement (lossy, \
-                                 matching the reference Material-Editor)",
-                                key
-                            );
-                        }
-                        if diag.unconsumed_bytes > 0 {
-                            log::warn!(
-                                "BGSM '{}': {} byte(s) left unconsumed after parse — \
-                                 layout drift or a version decoded against the wrong \
-                                 shape (#4664)",
-                                key,
-                                diag.unconsumed_bytes
-                            );
-                        }
-                        if let Some(version) = diag.version_over_ceiling {
-                            log::warn!(
-                                "BGSM '{}': version {version} exceeds the newest layout \
-                                 this crate knows ({}); fields may be wrong (#4664)",
-                                key,
-                                byroredux_bgsm::NEWEST_KNOWN_VERSION
-                            );
-                        }
+                        warn_parse_diagnostics("BGSM", &key, &diag);
                         f
                     }
                     Err(parse_err) => {
@@ -630,30 +651,7 @@ impl MaterialProvider {
         let (parsed, diag) = byroredux_bgsm::parse_bgem_diag(&bytes);
         match parsed {
             Ok(parsed) => {
-                if diag.lossy_strings {
-                    log::warn!(
-                        "BGEM '{}': one or more string fields contained non-UTF-8 \
-                         bytes and decoded with replacement (lossy, matching the \
-                         reference Material-Editor)",
-                        path
-                    );
-                }
-                if diag.unconsumed_bytes > 0 {
-                    log::warn!(
-                        "BGEM '{}': {} byte(s) left unconsumed after parse — layout \
-                         drift or a version decoded against the wrong shape (#4664)",
-                        path,
-                        diag.unconsumed_bytes
-                    );
-                }
-                if let Some(version) = diag.version_over_ceiling {
-                    log::warn!(
-                        "BGEM '{}': version {version} exceeds the newest layout this \
-                         crate knows ({}); fields may be wrong (#4664)",
-                        path,
-                        byroredux_bgsm::NEWEST_KNOWN_VERSION
-                    );
-                }
+                warn_parse_diagnostics("BGEM", path, &diag);
                 let arc = Arc::new(parsed);
                 // #951 / SAFE-26 / #1430 — half-eviction on cap: remove the
                 // oldest N/2 entries by insertion order so the recent

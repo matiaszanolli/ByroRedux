@@ -6,6 +6,7 @@
 
 mod archive_precedence;
 mod archive_siblings;
+mod bgsm_diagnostics;
 mod bgsm_merge;
 mod facegen_texture_fallback;
 mod fo4_palette_corpus;

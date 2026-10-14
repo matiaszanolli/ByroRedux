@@ -42,6 +42,10 @@ pub(crate) use merge::{merge_external_material, MergeOutcome};
 // that same width so the eviction tests in `tests/starfield_mat.rs` keep
 // reaching it without widening the surface.
 pub(crate) use provider::{build_material_provider, MaterialProvider};
+// Test-only (#5010): the diagnostic wording/silence contract, reached from
+// `tests/bgsm_diagnostics.rs`.
+#[cfg(test)]
+pub(super) use provider::parse_diagnostic_messages;
 
 /// Every source file this module was split across, concatenated (#3857).
 ///

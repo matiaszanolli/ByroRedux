@@ -24,7 +24,7 @@
 //! // cache.resolve(&mut resolver, "materials/foo.bgsm"); // returns Arc<ResolvedMaterial>
 //! ```
 
-use crate::{parse_bgsm, BgsmFile};
+use crate::{parse_bgsm_diag, BgsmFile, ParseDiagnostics};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -37,6 +37,17 @@ pub trait TemplateResolver {
     /// returns the empty body as `Some(vec![])` if the archive does
     /// contain an empty file.
     fn read(&mut self, path: &str) -> Option<Vec<u8>>;
+
+    /// Called once per file the cache actually parses — leaf and every
+    /// template above it — with that file's [`ParseDiagnostics`] (#5010).
+    ///
+    /// This crate has no logger, so lossy strings, unconsumed bytes and
+    /// over-ceiling versions (#4672, #4664) reach the caller here or not at
+    /// all. Cache hits are not re-reported. `path` is the lowercase key the
+    /// file was read under. The default does nothing.
+    fn parsed(&mut self, path: &str, diagnostics: &ParseDiagnostics) {
+        let _ = (path, diagnostics);
+    }
 }
 
 /// A fully-resolved BGSM — if the parsed file had a non-empty
@@ -254,10 +265,12 @@ impl TemplateCache {
             .read(&key)
             .ok_or_else(|| ResolveError::NotFound { path: key.clone() })?;
 
-        let file = parse_bgsm(&bytes).map_err(|source| ResolveError::Parse {
+        let (parsed, diagnostics) = parse_bgsm_diag(&bytes);
+        let file = parsed.map_err(|source| ResolveError::Parse {
             path: key.clone(),
             source,
         })?;
+        resolver.parsed(&key, &diagnostics);
 
         // Capture the parent path BEFORE moving `file` into the Arc.
         let parent_path = file.root_material_path.clone();
@@ -762,5 +775,50 @@ mod tests {
         assert_eq!(r.depth(), 3);
         let chain: Vec<_> = r.walk().collect();
         assert!(chain[2].parent.is_none(), "grandparent terminates cleanly");
+    }
+
+    /// A stub that also records every `parsed` callback.
+    struct RecordingResolver {
+        inner: StubResolver,
+        seen: Vec<(String, ParseDiagnostics)>,
+    }
+
+    impl TemplateResolver for RecordingResolver {
+        fn read(&mut self, path: &str) -> Option<Vec<u8>> {
+            self.inner.read(path)
+        }
+
+        fn parsed(&mut self, path: &str, diagnostics: &ParseDiagnostics) {
+            self.seen.push((path.to_string(), *diagnostics));
+        }
+    }
+
+    /// #5010 — the chain resolver used to parse with the non-diagnostic
+    /// `parse_bgsm`, so a leaf or template with trailing bytes decoded
+    /// silently on the production path. Every file the cache parses must
+    /// now reach the resolver's `parsed` hook with its own diagnostics.
+    #[test]
+    fn resolve_reports_per_file_parse_diagnostics() {
+        let mut inner = StubResolver::new();
+        let mut leaf = bgsm_with_template("tmpl.bgsm");
+        leaf.extend_from_slice(&[0xAA; 3]); // trailing junk on the leaf only
+        inner.add("leaf.bgsm", leaf);
+        inner.add("tmpl.bgsm", bgsm_with_template(""));
+        let mut resolver = RecordingResolver {
+            inner,
+            seen: Vec::new(),
+        };
+
+        let mut cache = TemplateCache::new(16);
+        cache.resolve(&mut resolver, "leaf.bgsm").unwrap();
+
+        let by_path: HashMap<_, _> = resolver.seen.iter().cloned().collect();
+        assert_eq!(resolver.seen.len(), 2, "one report per parsed file");
+        assert_eq!(by_path["leaf.bgsm"].unconsumed_bytes, 3);
+        assert_eq!(by_path["tmpl.bgsm"], ParseDiagnostics::default());
+
+        // A cache hit parses nothing, so it reports nothing new.
+        cache.resolve(&mut resolver, "leaf.bgsm").unwrap();
+        assert_eq!(resolver.seen.len(), 2, "cache hits are not re-reported");
     }
 }
