@@ -68,29 +68,6 @@ const MAX_RECORDED_RESOURCE_ERRORS: usize = 64;
 /// no matter how many times it repeats.
 const MAX_RECORDED_RESOURCE_LOADS: usize = 64;
 
-/// Process-wide Ruffle GPU bundle, created on first menu load (#2733).
-///
-/// Pre-fix every [`SwfPlayer`] built its own wgpu instance, adapter, device
-/// and queue, synchronously via `block_on` on the winit main-loop thread.
-/// That meant a second live Vulkan device per menu — and because
-/// `UiManager::install_player` only assigns `self.player` once the new
-/// player is fully built, a menu swap transiently held *two* Ruffle devices
-/// alongside the engine's, with a visible hitch on every menu load.
-///
-/// Sharing is the model Ruffle itself uses: `WgpuRenderBackend::new` takes
-/// an `Arc<Descriptors>` precisely so several players can render against one
-/// device, each with its own `TextureTarget`. Nothing here is per-player.
-///
-/// **What this trades.** The device now outlives any single player and
-/// lives for the process, instead of being released with each one. That
-/// is the point — a menu can reopen at any time, and paying the device-
-/// creation hitch once beats paying it per open — but it does mean one idle
-/// logical device is retained after the last menu's player is dropped.
-///
-/// A failed creation is deliberately **not** cached, so a transient failure
-/// doesn't permanently disable the UI. First creation is serialized: wgpu
-/// device construction is process-wide work, and racing several Vulkan
-/// device requests from parallel menu/test loads can crash some drivers.
 /// #4595 — true when a Vulkan wgpu adapter exists in this process.
 /// CI's ubuntu-latest runners have no GPU, and the eight SwfPlayer tests
 /// that build a real Ruffle device panic with "Ruffle requires hardware
@@ -118,6 +95,29 @@ pub(crate) fn vulkan_adapter_available() -> bool {
     })
 }
 
+/// Process-wide Ruffle GPU bundle, created on first menu load (#2733).
+///
+/// Pre-fix every [`SwfPlayer`] built its own wgpu instance, adapter, device
+/// and queue, synchronously via `block_on` on the winit main-loop thread.
+/// That meant a second live Vulkan device per menu — and because
+/// `UiManager::install_player` only assigns `self.player` once the new
+/// player is fully built, a menu swap transiently held *two* Ruffle devices
+/// alongside the engine's, with a visible hitch on every menu load.
+///
+/// Sharing is the model Ruffle itself uses: `WgpuRenderBackend::new` takes
+/// an `Arc<Descriptors>` precisely so several players can render against one
+/// device, each with its own `TextureTarget`. Nothing here is per-player.
+///
+/// **What this trades.** The device now outlives any single player and
+/// lives for the process, instead of being released with each one. That
+/// is the point — a menu can reopen at any time, and paying the device-
+/// creation hitch once beats paying it per open — but it does mean one idle
+/// logical device is retained after the last menu's player is dropped.
+///
+/// A failed creation is deliberately **not** cached, so a transient failure
+/// doesn't permanently disable the UI. First creation is serialized: wgpu
+/// device construction is process-wide work, and racing several Vulkan
+/// device requests from parallel menu/test loads can crash some drivers.
 fn shared_descriptors() -> Result<Arc<Descriptors>> {
     static SHARED: OnceLock<Arc<Descriptors>> = OnceLock::new();
 
