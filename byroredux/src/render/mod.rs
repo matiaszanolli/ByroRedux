@@ -561,6 +561,30 @@ fn apply_fog_overrides(near: f32, far: f32) -> (f32, f32, bool) {
     )
 }
 
+/// `BYRO_INTERIOR_AMBIENT_SCALE` diagnostic override of
+/// [`INTERIOR_AMBIENT_SCALE`], for ambient sweeps against a reference
+/// capture. Parsed once and cached like [`apply_fog_overrides`]; unset,
+/// unparseable or negative keeps the constant.
+fn interior_ambient_scale() -> f32 {
+    use std::sync::OnceLock;
+    static SCALE: OnceLock<f32> = OnceLock::new();
+    *SCALE.get_or_init(|| {
+        match std::env::var("BYRO_INTERIOR_AMBIENT_SCALE")
+            .ok()
+            .and_then(|s| s.trim().parse::<f32>().ok())
+            .filter(|v| v.is_finite() && *v >= 0.0)
+        {
+            Some(v) => {
+                log::info!(
+                    "BYRO_INTERIOR_AMBIENT_SCALE override active: {v} (default {INTERIOR_AMBIENT_SCALE})"
+                );
+                v
+            }
+            None => INTERIOR_AMBIENT_SCALE,
+        }
+    })
+}
+
 /// Daytime peak of `SkyParamsRes::sun_intensity` (per `systems.rs:1446`,
 /// hours 7..=17). Used by [`compute_directional_upload`] to normalise
 /// the 0..4 ramp into a 0..1 contribution multiplier.
@@ -1326,7 +1350,8 @@ pub(crate) fn build_render_data(
         .as_ref()
         .map(|l| {
             if l.is_interior {
-                l.ambient.map(|channel| channel * INTERIOR_AMBIENT_SCALE)
+                let scale = interior_ambient_scale();
+                l.ambient.map(|channel| channel * scale)
             } else {
                 l.ambient
             }
@@ -1335,7 +1360,14 @@ pub(crate) fn build_render_data(
     // Retain the authored fog color and legacy ramp for diagnostics and
     // compatibility UBOs. The active path consumes `fog_medium`; exterior
     // weather updates all of these values together in `weather_system`.
-    let fog_color = cell_lit.as_ref().map(|l| l.fog_color).unwrap_or([0.0; 3]);
+    // The renderer consumes the fog colour as in-scattered radiance; the
+    // authored value is a display-space blend target, so decode it here — the
+    // single place it becomes renderer input (`CellLightingRes` keeps the
+    // authored value for `light.dump` / `env.health`). See
+    // `fog::fog_colour_radiance`.
+    let fog_color = crate::fog::fog_colour_radiance(
+        cell_lit.as_ref().map(|l| l.fog_color).unwrap_or([0.0; 3]),
+    );
     // CLMT-authored fog_near can be negative. Clamp only the retained legacy
     // value; the canonical medium was already fit from the original ramp at
     // translation time. This keeps the camera and composite UBOs aligned.

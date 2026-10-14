@@ -37,6 +37,32 @@ const SMOKE_FALLBACK_ALBEDO: [f32; 3] = [0.72, 0.67, 0.61];
 /// behaviour are exactly the authored ones.
 pub(crate) const BASE_FOG_STRENGTH: f32 = 0.8;
 
+/// Authored fog colour → the radiance the medium in-scatters.
+///
+/// The legacy fog stage blended the finished pixel toward the fog colour in
+/// display space: a 0.16 grey (FNV `FreesideAtomicWrangler`'s XCLL fog) reached
+/// the screen as ~41/255. The volumetric pipeline treats the fog colour as the
+/// medium's equilibrium radiance and integrates `L_fog · (1 - T)` in linear
+/// HDR, which the output then sRGB-encodes — so the raw value read as ~112/255,
+/// a ~2.7× brighter veil over every interior while the fitted density matched
+/// the legacy ramp. Decoding the authored value with the sRGB EOTF makes the
+/// encoded output land back on the legacy display value.
+///
+/// This is deliberately limited to fog. Light, ambient and material colours
+/// stay raw (`imported_light_from_base`'s "raw floats in monitor space"): those
+/// MULTIPLY an sRGB-decoded texture, whereas fog is an ADDITIVE display-space
+/// target with no texture to carry the transfer function.
+pub(crate) fn fog_colour_radiance(authored: [f32; 3]) -> [f32; 3] {
+    authored.map(|c| {
+        let c = if c.is_finite() { c.max(0.0) } else { 0.0 };
+        if c <= 0.040_45 {
+            c / 12.92
+        } else {
+            ((c + 0.055) / 1.055).powf(2.4)
+        }
+    })
+}
+
 /// Canonical, game-independent fog parameters stored on cell/weather runtime
 /// resources. No legacy near/far distances participate in volumetric shading.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -1487,6 +1513,29 @@ pub(crate) fn has_fog_token(value: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn fog_colour_radiance_encodes_back_to_the_authored_display_value() {
+        // The output pass sRGB-encodes linear radiance; the decoded fog
+        // colour must come back out as the authored display value.
+        let encode = |v: f32| {
+            if v <= 0.003_130_8 {
+                v * 12.92
+            } else {
+                1.055 * v.powf(1.0 / 2.4) - 0.055
+            }
+        };
+        for authored in [[0.16, 0.17, 0.19], [0.0, 0.5, 1.0], [0.02, 0.04045, 0.9]] {
+            let radiance = super::fog_colour_radiance(authored);
+            for (a, r) in authored.iter().zip(radiance) {
+                assert!(r <= *a, "decoded fog must not brighten: {a} -> {r}");
+                assert!((encode(r) - a).abs() < 1.0e-4, "{a} -> {r} -> {}", encode(r));
+            }
+        }
+        // FNV Atomic Wrangler XCLL fog 0.16 → ~0.022 linear (≈41/255 on screen).
+        assert!((super::fog_colour_radiance([0.16; 3])[0] - 0.0222).abs() < 5.0e-4);
+        assert_eq!(super::fog_colour_radiance([f32::NAN, -1.0, 0.0]), [0.0; 3]);
+    }
     use super::*;
 
     #[test]
