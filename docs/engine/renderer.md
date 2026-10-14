@@ -821,7 +821,10 @@ The operator-facing path is `render.debug <mode>` rather than a compound flag
 word. Modes are `final`, `shadow_visibility`, `selected_light`, `direct_only`,
 `indirect_only`, `material_lobe`, `composite_term`, `rt_lod`, `material_role`,
 `volumetric_term`, `water_term`, `water_normal`, `terrain_lod`, `water_refl`,
-`facing_ratio`, and `restir_light`; the legacy
+`facing_ratio`, `restir_light`, and `restir_history` (the direct-light
+shadow-ratio history: grey = length over the active cap, green tint = the deep
+scene-static tail, red = rejected this frame, blue = a blended decal borrowing
+its surface's history); the legacy
 bitmask remains for orthogonal feature ablations. Appending `<x> <y>` (render
 pixels, upper-left origin), or using `render.debug probe <x> <y>`, arms one
 bounded selected-ray record. A later no-argument `render.debug` prints whether

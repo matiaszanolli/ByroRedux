@@ -213,6 +213,7 @@ void main() {
     bool viewMaterialRole = debugMode == RENDER_DEBUG_MATERIAL_ROLE;
     bool viewFacingRatio = debugMode == RENDER_DEBUG_FACING_RATIO;
     bool viewRestirLight = debugMode == RENDER_DEBUG_RESTIR_LIGHT;
+    bool viewRestirHistory = debugMode == RENDER_DEBUG_RESTIR_HISTORY;
     // The water oracles are drawn by water.frag; everything else recedes.
     bool viewWaterDebug = debugMode == RENDER_DEBUG_WATER_TERM
         || debugMode == RENDER_DEBUG_WATER_NORMAL
@@ -3200,6 +3201,8 @@ void main() {
         const float RESTIR_LUMA_Z = LUMA_REC709.z;
         const float RESTIR_M_CAP = 20.0; // bound temporal history → limit ghosting
         uint  restirY = 0xFFFFFFFFu;     // selected light index
+        // RESTIR_HISTORY view colour, set by the finalize (black = no ReSTIR).
+        vec3  restirHistoryDebug = vec3(0.0);
         // Keep the selected sample's current-surface evaluation live through
         // finalize. Fresh, temporal, and spatial candidates already evaluate
         // this radiance to compute pHat; recomputing it after visibility was
@@ -3599,6 +3602,55 @@ void main() {
                 }
             }
 
+            // Blended decals (floor stains, grime, dirt cards) keep no history
+            // of their own: they never pass `stableTemporalSurface`, and TAA
+            // passes blended pixels straight through. Their own estimate is
+            // therefore one binary shadow ray per frame, unfiltered. A decal
+            // lying ON an opaque surface sees exactly that surface's lights
+            // and occluders, so it takes the surface's converged shadow ratio
+            // instead — the way a deferred decal shares its receiver's
+            // lighting. The surface is the reprojected reservoir (only the
+            // visible stable surface writes one, see the write below),
+            // accepted when the decal lies within a few units of the surface's
+            // PLANE and shares its orientation; a
+            // blend that does not lie on it (a particle, a pane across the
+            // room) fails and keeps its per-frame ratio. The plane distance is
+            // the view-ray distance difference times |N·V|: comparing the raw
+            // ray distances (the temporal gate's test) rejected every decal
+            // seen at a grazing angle, where half a unit of authored hover
+            // reads as several units along the ray — the FNV Atomic Wrangler's
+            // floor stain and side-wall cracks stayed raw. The tolerance is
+            // wider than the temporal gate's 2 units because decals are
+            // authored hovering: that floor stain sits 4-6 units above the
+            // floor (measured with a banded plane-distance view), and visibility
+            // that close to a surface is the surface's own. |N·V| is floored
+            // at 0.1 so an edge-on decal cannot reach a surface far down its
+            // ray. Glass is excluded: its transmission is not the surface's
+            // visibility.
+            bool substrateValid = false;
+            vec3 substrateAccum = vec3(0.0);
+            if (useTemporal && isAlphaBlend && !isGlass
+                && prevFrag.x >= 0.0 && prevFrag.y >= 0.0
+                && prevFrag.x < screen.x && prevFrag.y < screen.y) {
+                Reservoir rs = reservoirsPrev[uint(prevFrag.y) * scrW + uint(prevFrag.x)];
+                vec2 rsHistoryDepth = unpackHalf2x16(floatBitsToUint(rs.histLenAndDepth));
+                vec3 rsGeomN = octDecode(unpackSnorm2x16(floatBitsToUint(rs.pad0)));
+                float substrateDepthTolerance = max(
+                    8.0,
+                    max(worldDist, rsHistoryDepth.y) * 0.005);
+                float substratePlaneDist = abs(rsHistoryDepth.y - min(worldDist, 65504.0))
+                    * max(abs(dot(geomN, V)), 0.1);
+                vec3 rsAccum = vec3(rs.accumR, rs.accumG, rs.accumB);
+                if (rsHistoryDepth.x > 0.0
+                    && !isnan(rsHistoryDepth.x) && !isinf(rsHistoryDepth.x)
+                    && substratePlaneDist <= substrateDepthTolerance
+                    && dot(geomN, rsGeomN) >= 0.906 // cos 25°, TEMPORAL_NORMAL_COS
+                    && !any(isnan(rsAccum)) && !any(isinf(rsAccum))) {
+                    substrateValid = true;
+                    substrateAccum = max(rsAccum, vec3(0.0));
+                }
+            }
+
             // ── ReSTIR-DI spatial reuse (ReSTIR "P2", Bitterli 2020 §5) ──────
             // Spatial reuse pulls selected LIGHT CANDIDATES from nearby
             // reservoirs and re-evaluates them at this surface. It deliberately
@@ -3934,9 +3986,19 @@ void main() {
                 histLen = min(histPrev + 1.0, historyCap);
                 float alpha = max(1.0 / histLen, alphaFloor);
                 accum = mix(prevAccum, ratioFrame, alpha);
+            } else if (substrateValid) {
+                histLen = 1.0;
+                accum = substrateAccum;
             } else {
                 histLen = 1.0;
                 accum = ratioFrame;
+            }
+            if (reprojValid) {
+                bool deepTail = dofParams.w > HISTORY_MODE_SCENE_STATIC - 0.5;
+                float h = histLen / (deepTail ? RESTIR_HISTORY_CAP_PARKED : RESTIR_HISTORY_CAP_MOVING);
+                restirHistoryDebug = deepTail ? vec3(0.3 * h, h, 0.3 * h) : vec3(h);
+            } else {
+                restirHistoryDebug = substrateValid ? vec3(0.1, 0.3, 1.0) : vec3(1.0, 0.0, 0.0);
             }
             Lo += restirUnshadowedSum * accum;
 
@@ -3960,13 +4022,44 @@ void main() {
             // reject on high-frequency normal-mapped detail.
             rc.pad0 = uintBitsToFloat(
                 packSnorm2x16(octEncode(normalize(fragNormalEffective))));
-            reservoirsCurr[pixelIdx] = rc;
+            // Only the VISIBLE surface may own the pixel's reservoir; any other
+            // writer replaces it, so next frame the surface reads a foreign
+            // surface id, drops its history and shows one raw shadow ray.
+            //
+            // 1. Blended and glass fragments never read their own history, so
+            //    they never write — before this, every decal clobbered the
+            //    floor under it (the speckled floor stains).
+            // 2. Draws through the late-test module (alpha-tested cutouts,
+            //    decals, non-standard depth state) run this shader BEFORE the
+            //    depth test, so a cutout fragment hidden behind the visible
+            //    surface still reached this write — measured on the FO4
+            //    Third Rail: 26% of lit pixels lost their history every frame,
+            //    whole props at a time. `begin_frame` zero-fills this buffer,
+            //    so a non-zero history length marks a slot already claimed this
+            //    frame, and its packed distance orders the claim: the nearer
+            //    fragment keeps it whatever the draw order. Distances compare
+            //    after the same half-float packing the slot stores.
+            if (stableTemporalSurface) {
+                vec2 claimed = unpackHalf2x16(
+                    floatBitsToUint(reservoirsCurr[pixelIdx].histLenAndDepth));
+                float packedDist = unpackHalf2x16(
+                    floatBitsToUint(rc.histLenAndDepth)).y;
+                if (claimed.x <= 0.0 || packedDist <= claimed.y) {
+                    reservoirsCurr[pixelIdx] = rc;
+                }
+            }
         }
         // ReSTIR-selected light per pixel: stable categorical hue from the
         // light index (IQ cosine palette over a golden-ratio hue walk), so
         // a light-leak patch names the light responsible; near-black = no
         // selection this pixel. Placed after finalize so `restirY` is the
         // surviving selection.
+        if (viewRestirHistory) {
+            outColor = vec4(restirHistoryDebug, 1.0);
+            outRawIndirect = vec4(0.0);
+            outAlbedo = vec4(1.0);
+            return;
+        }
         if (viewRestirLight) {
             vec3 lightColor = vec3(0.0);
             if (useRestir && restirY != 0xFFFFFFFFu) {

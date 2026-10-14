@@ -1638,7 +1638,12 @@ pub const RENDER_DEBUG_WATER_REFL: u32 = 13;
 // name the light responsible.
 pub const RENDER_DEBUG_FACING_RATIO: u32 = 14;
 pub const RENDER_DEBUG_RESTIR_LIGHT: u32 = 15;
-pub const RENDER_DEBUG_MODE_MAX: u32 = RENDER_DEBUG_RESTIR_LIGHT;
+// `RESTIR_HISTORY` paints the direct-light shadow-ratio history per pixel:
+// grey = history length over the active cap (white = full window), green
+// tint = the deep scene-static tail, RED = history rejected this frame (one
+// raw shadow ray), BLUE = a blended decal borrowing its surface's history.
+pub const RENDER_DEBUG_RESTIR_HISTORY: u32 = 16;
+pub const RENDER_DEBUG_MODE_MAX: u32 = RENDER_DEBUG_RESTIR_HISTORY;
 pub const RENDER_DEBUG_LEGACY_FLAGS: u32 = u32::MAX;
 
 pub const RENDER_DEBUG_MODES: &[(&str, u32)] = &[
@@ -1661,6 +1666,7 @@ pub const RENDER_DEBUG_MODES: &[(&str, u32)] = &[
     ("RENDER_DEBUG_WATER_REFL", RENDER_DEBUG_WATER_REFL),
     ("RENDER_DEBUG_FACING_RATIO", RENDER_DEBUG_FACING_RATIO),
     ("RENDER_DEBUG_RESTIR_LIGHT", RENDER_DEBUG_RESTIR_LIGHT),
+    ("RENDER_DEBUG_RESTIR_HISTORY", RENDER_DEBUG_RESTIR_HISTORY),
     ("RENDER_DEBUG_MODE_MAX", RENDER_DEBUG_MODE_MAX),
     ("RENDER_DEBUG_LEGACY_FLAGS", RENDER_DEBUG_LEGACY_FLAGS),
 ];
@@ -2711,6 +2717,7 @@ pub const SHADER_DEFINES: &[HeaderLine] = &[
     HeaderLine::Define("RENDER_DEBUG_WATER_REFL", ShaderValue::Uint(RENDER_DEBUG_WATER_REFL)),
     HeaderLine::Define("RENDER_DEBUG_FACING_RATIO", ShaderValue::Uint(RENDER_DEBUG_FACING_RATIO)),
     HeaderLine::Define("RENDER_DEBUG_RESTIR_LIGHT", ShaderValue::Uint(RENDER_DEBUG_RESTIR_LIGHT)),
+    HeaderLine::Define("RENDER_DEBUG_RESTIR_HISTORY", ShaderValue::Uint(RENDER_DEBUG_RESTIR_HISTORY)),
     HeaderLine::Define("RENDER_DEBUG_MODE_MAX", ShaderValue::Uint(RENDER_DEBUG_MODE_MAX)),
     HeaderLine::Define("RENDER_DEBUG_LEGACY_FLAGS", ShaderValue::Uint(RENDER_DEBUG_LEGACY_FLAGS)),
     HeaderLine::Blank,

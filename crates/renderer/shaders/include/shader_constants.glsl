@@ -445,7 +445,8 @@
 #define RENDER_DEBUG_WATER_REFL 13u
 #define RENDER_DEBUG_FACING_RATIO 14u
 #define RENDER_DEBUG_RESTIR_LIGHT 15u
-#define RENDER_DEBUG_MODE_MAX 15u
+#define RENDER_DEBUG_RESTIR_HISTORY 16u
+#define RENDER_DEBUG_MODE_MAX 16u
 #define RENDER_DEBUG_LEGACY_FLAGS 4294967295u
 
 // Debug-viz bit flags (set via console for renderer bisects).
