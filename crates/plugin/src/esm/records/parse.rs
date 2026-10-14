@@ -545,6 +545,7 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
         packins,
         movables,
         material_swaps,
+        ..Default::default()
     };
     super::spatial_units::normalize(&mut index);
 

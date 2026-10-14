@@ -3,13 +3,14 @@
 //! A PKIN names one **template CELL** (`CNAM`) whose references are the
 //! pack-in's contents: a level designer drops the pack-in in the CK and
 //! the CK *bakes* that CELL's placements into ordinary REFRs at placement
-//! time. Vanilla data carries **no PKIN-based REFR** (census, #5231:
-//! 0 across Fallout4.esm and every DLC), so the pack-in never round-trips
-//! through a shipped plugin — the baked REFRs do. The expander's
-//! content-base fan-out below therefore only ever fires on mod-authored
-//! PKIN REFRs; a CELL-typed CNAM (every vanilla one) is logged as an
-//! explicit miss instead, because instancing a template CELL's references
-//! under an outer transform is unimplemented (#5231).
+//! time. **Vanilla Fallout 4 data carries no PKIN-based REFR** (census,
+//! #5231: 0 across Fallout4.esm and every DLC), so there the pack-in never
+//! round-trips through a shipped plugin — the baked REFRs do, and the
+//! expander's content-base fan-out only fires on mod-authored PKIN REFRs.
+//! **Starfield does not bake**: 97,981 of its REFRs keep a PKIN as their
+//! base and the game instances the template cell's references under the
+//! REFR's transform, which the cell loader's expander does the same way
+//! (#5489).
 //!
 //! **Sub-record layout** (per FO4 xEdit v4.2 / UESP `Fallout4Mod:PKIN`):
 //!
@@ -66,9 +67,11 @@ pub struct PkinRecord {
     /// Form IDs resolved from `CNAM` sub-records. **Every vanilla CNAM is
     /// the pack-in's template CELL** (#5231) — the CK bakes that CELL's
     /// placements into ordinary REFRs at drop time, which is why vanilla
-    /// carries no PKIN-based REFR. A base-record (LVLI/CONT/STAT/…)
+    /// FO4 carries no PKIN-based REFR (Starfield instances the template
+    /// cell at spawn instead, #5489). A base-record (LVLI/CONT/STAT/…)
     /// CNAM is a mod-authored shape; the spawn-time expander fans those
-    /// out and logs CELL-typed CNAMs as an explicit miss. Vanilla records
+    /// out at the outer transform and instances CELL-typed CNAMs'
+    /// references. Vanilla records
     /// typically carry one CNAM; multi-CNAM records are accepted for
     /// safety.
     pub contents: Vec<u32>,

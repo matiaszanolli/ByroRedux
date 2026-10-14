@@ -8,12 +8,14 @@
 //! were silently dropped.
 //!
 //! #5231 corrected the model the fixtures below encode: every vanilla
-//! CNAM is the pack-in's template CELL, and vanilla carries zero
+//! CNAM is the pack-in's template CELL, and vanilla FO4 carries zero
 //! PKIN-based REFRs (the CK bakes pack-ins into ordinary REFRs), so the
-//! base-record fan-out shape is the MOD-authored case. The CELL-typed
-//! CNAM behaviour is pinned separately at the bottom.
+//! base-record fan-out shape is the MOD-authored case there. Starfield
+//! does not bake: its PKIN REFRs instance the template cell (#5489) —
+//! the CELL-typed CNAM behaviour is pinned at the bottom.
 use super::*;
-use byroredux_plugin::esm::cell::{CellData, EsmCellIndex};
+use byroredux_plugin::esm::cell::{CellData, EsmCellIndex, PlacedRef};
+use super::refr_texture_overlay_tests::empty_placed_ref;
 use byroredux_plugin::esm::records::{PkinRecord, ScolPart, ScolPlacement, ScolRecord};
 
 fn mk_pkin(form_id: u32, editor_id: &str, contents: Vec<u32>) -> PkinRecord {
@@ -34,7 +36,7 @@ fn mk_pkin(form_id: u32, editor_id: &str, contents: Vec<u32>) -> PkinRecord {
 
 /// A minimal CELL with the given form ID — the CNAM target shape of
 /// every vanilla PKIN (#5231). Keyed under any canonical-id string: the
-/// expander's CELL scan reads `form_id` off the values, not the key.
+/// expander's CELL lookup reads `form_id` off the values, not the key.
 fn template_cell(form_id: u32, edid: &str) -> (String, CellData) {
     (
         edid.to_ascii_lowercase(),
@@ -352,12 +354,12 @@ fn expand_pkin_with_cached_scol_child_does_not_recurse() {
 // ── #5231 — CELL-typed CNAMs (every vanilla PKIN) ──────────────────
 
 /// A CNAM that resolves to a CELL is the pack-in's template cell, not a
-/// placeable base: it must be an explicit miss (warn + skip) rather than
-/// a synthetic placement that silently fails every base lookup. An
-/// all-CELL contents list — every vanilla PKIN — returns `None` so the
-/// outer REFR reaches the default single-entry path's miss accounting.
+/// placeable base: it must never become a synthetic placement that
+/// silently fails every base lookup. A template with nothing placeable
+/// (no references) leaves the contents list empty, so `None` sends the
+/// outer REFR to the default single-entry path's miss accounting.
 #[test]
-fn expand_pkin_cell_typed_cnam_is_an_explicit_miss() {
+fn expand_pkin_empty_template_cell_places_nothing() {
     let mut index = EsmCellIndex::default();
     let pkin_id = 0x0069_0001;
     let template_cell_id = 0x000A_0BCD;
@@ -377,10 +379,10 @@ fn expand_pkin_cell_typed_cnam_is_an_explicit_miss() {
 }
 
 /// Mixed contents (the mod-authored shape alongside a template CELL):
-/// the CELL child is skipped with the explicit miss; the base-record
-/// children still fan out at the outer transform.
+/// an empty template contributes nothing; the base-record children still
+/// fan out at the outer transform.
 #[test]
-fn expand_pkin_skips_the_cell_child_but_fans_out_base_children() {
+fn expand_pkin_empty_template_leaves_the_base_children_fanning_out() {
     let mut index = EsmCellIndex::default();
     let pkin_id = 0x0069_0002;
     let template_cell_id = 0x000A_0BCE;
@@ -398,4 +400,221 @@ fn expand_pkin_skips_the_cell_child_but_fans_out_base_children() {
     assert_eq!(synths.len(), 1, "only the non-CELL child is emitted");
     assert_eq!(synths[0].0, stat_id);
     assert_eq!(synths[0].1, outer_pos);
+}
+
+// ── #5489 — Starfield: a PKIN REFR instances its template cell ─────
+
+/// One template-cell child: a REFR of `base` at Z-up `position`, Euler
+/// `rotation` (radians) and `scale`.
+fn template_child(base: u32, position: [f32; 3], rotation: [f32; 3], scale: f32) -> PlacedRef {
+    let mut placed = empty_placed_ref(base);
+    placed.position = position;
+    placed.rotation = rotation;
+    placed.scale = scale;
+    placed
+}
+
+/// The reported bug: Starfield keeps the PKIN as the REFR's base and the game
+/// instances the template cell's references under the REFR's transform. The
+/// expander skipped every CELL-typed CNAM, so the REFR spawned nothing and
+/// Cydonia lost 12,218 template placements. Each child must land at the outer
+/// transform composed with its own, and the outer PKIN's own entry stays
+/// FIRST so the REFR keeps its identity on the primary synthetic child.
+#[test]
+fn expand_pkin_instances_its_template_cell_under_the_outer_transform() {
+    let mut index = EsmCellIndex::default();
+    let pkin_id = 0x0070_0001;
+    let template_id = 0x0070_00A0;
+    let (stat_a, stat_b) = (0x0071_0001, 0x0071_0002);
+    index
+        .packins
+        .insert(pkin_id, mk_pkin(pkin_id, "SCOL_StructKit_Truss03", vec![template_id]));
+    let (key, mut cell) = template_cell(template_id, "SCOL_StructKit_Truss03_Template");
+    cell.references = vec![
+        template_child(stat_a, [10.0, 20.0, 30.0], [0.0; 3], 1.0),
+        template_child(stat_b, [-4.0, 0.0, 8.0], [0.0; 3], 2.0),
+    ];
+    index.cells.insert(key, cell);
+
+    let outer_pos = Vec3::new(100.0, 5.0, -50.0);
+    let outer_rot = Quat::from_rotation_y(0.5);
+    let outer_scale = 1.5;
+    let synths = expand_pkin_placements(pkin_id, outer_pos, outer_rot, outer_scale, &index)
+        .expect("a PKIN REFR with a populated template cell must expand");
+
+    assert_eq!(synths.len(), 3, "the outer entry + the two template children");
+    assert_eq!(
+        synths[0],
+        (pkin_id, outer_pos, outer_rot, outer_scale),
+        "the outer PKIN stays the primary synthetic child"
+    );
+    // Z-up (x, y, z) -> Y-up (x, z, -y), then composed under the outer
+    // transform: outer_pos + outer_rot * (outer_scale * local).
+    let compose = |local: Vec3, local_scale: f32| {
+        (
+            outer_pos + outer_rot * (outer_scale * local),
+            outer_scale * local_scale,
+        )
+    };
+    let (pos_a, scale_a) = compose(Vec3::new(10.0, 30.0, -20.0), 1.0);
+    let (pos_b, scale_b) = compose(Vec3::new(-4.0, 8.0, 0.0), 2.0);
+    assert_eq!(synths[1].0, stat_a);
+    assert!(synths[1].1.abs_diff_eq(pos_a, 1e-4), "{:?} vs {pos_a:?}", synths[1].1);
+    assert!(synths[1].2.abs_diff_eq(outer_rot, 1e-5), "no local rotation");
+    assert!((synths[1].3 - scale_a).abs() < 1e-6);
+    assert_eq!(synths[2].0, stat_b);
+    assert!(synths[2].1.abs_diff_eq(pos_b, 1e-4), "{:?} vs {pos_b:?}", synths[2].1);
+    assert!((synths[2].3 - scale_b).abs() < 1e-6);
+}
+
+/// The child's own rotation composes UNDER the outer rotation
+/// (`outer_rot * local_rot`), through the same Euler convention every REFR uses.
+#[test]
+fn expand_pkin_template_child_rotation_composes_under_the_outer_rotation() {
+    let mut index = EsmCellIndex::default();
+    let (pkin_id, template_id, stat) = (0x0070_0002, 0x0070_00A1, 0x0071_0003);
+    index
+        .packins
+        .insert(pkin_id, mk_pkin(pkin_id, "Rotated", vec![template_id]));
+    let (key, mut cell) = template_cell(template_id, "RotatedTemplate");
+    cell.references = vec![template_child(stat, [0.0; 3], [0.0, 0.0, 1.0], 1.0)];
+    index.cells.insert(key, cell);
+
+    let outer_rot = Quat::from_rotation_y(0.75);
+    let synths = expand_pkin_placements(pkin_id, Vec3::ZERO, outer_rot, 1.0, &index).unwrap();
+    let local = euler_zup_to_quat_yup_refr(0.0, 0.0, 1.0);
+    assert!(synths[1].2.abs_diff_eq(outer_rot * local, 1e-5));
+    assert!(
+        !synths[1].2.abs_diff_eq(outer_rot, 1e-3),
+        "fixture: the local rotation must be non-trivial"
+    );
+}
+
+/// Template children that are initially disabled are not placed; an empty
+/// outcome (only disabled children) falls back to the default path.
+#[test]
+fn expand_pkin_template_skips_initially_disabled_children() {
+    // The CELL lookup is built on first use, so every fixture goes in first.
+    let mut index = EsmCellIndex::default();
+    let (pkin_id, template_id) = (0x0070_0003, 0x0070_00A2);
+    let (live, hidden) = (0x0071_0004, 0x0071_0005);
+    index
+        .packins
+        .insert(pkin_id, mk_pkin(pkin_id, "Gated", vec![template_id]));
+    let mut disabled = template_child(hidden, [1.0, 1.0, 1.0], [0.0; 3], 1.0);
+    disabled.initially_disabled = true;
+    let (key, mut cell) = template_cell(template_id, "GatedTemplate");
+    cell.references = vec![template_child(live, [0.0; 3], [0.0; 3], 1.0), disabled.clone()];
+    index.cells.insert(key, cell);
+    // A pack-in whose template holds only a disabled child.
+    let only_hidden = 0x0070_0004;
+    let template_b = 0x0070_00A3;
+    index
+        .packins
+        .insert(only_hidden, mk_pkin(only_hidden, "AllHidden", vec![template_b]));
+    let (key, mut cell) = template_cell(template_b, "AllHiddenTemplate");
+    cell.references = vec![disabled];
+    index.cells.insert(key, cell);
+
+    let synths = expand_pkin_placements(pkin_id, Vec3::ZERO, Quat::IDENTITY, 1.0, &index).unwrap();
+    let bases: Vec<u32> = synths.iter().map(|s| s.0).collect();
+    assert_eq!(bases, vec![pkin_id, live]);
+    assert!(
+        expand_pkin_placements(only_hidden, Vec3::ZERO, Quat::IDENTITY, 1.0, &index).is_none(),
+        "nothing placeable falls back to the default path"
+    );
+}
+
+/// Starfield template cells nest pack-ins (40 of Cydonia's 12,218 children are
+/// PKINs). A nested PKIN expands under the composed child transform and adds
+/// no second "outer" entry of its own; a self-referential template terminates.
+#[test]
+fn expand_pkin_template_nests_pack_ins_and_survives_a_cycle() {
+    let mut index = EsmCellIndex::default();
+    let (outer, inner) = (0x0070_0005, 0x0070_0006);
+    let (outer_cell, inner_cell) = (0x0070_00A4, 0x0070_00A5);
+    let leaf = 0x0071_0006;
+    index
+        .packins
+        .insert(outer, mk_pkin(outer, "Outer", vec![outer_cell]));
+    index
+        .packins
+        .insert(inner, mk_pkin(inner, "Inner", vec![inner_cell]));
+    let (key, mut cell) = template_cell(outer_cell, "OuterTemplate");
+    cell.references = vec![template_child(inner, [10.0, 0.0, 0.0], [0.0; 3], 1.0)];
+    index.cells.insert(key, cell);
+    let (key, mut cell) = template_cell(inner_cell, "InnerTemplate");
+    cell.references = vec![template_child(leaf, [0.0, 5.0, 0.0], [0.0; 3], 1.0)];
+    index.cells.insert(key, cell);
+
+    // The cycle fixture goes in before the first expansion (the CELL lookup is
+    // built on first use).
+    let cyc = 0x0070_0007;
+    let cyc_cell = 0x0070_00A6;
+    index.packins.insert(cyc, mk_pkin(cyc, "Cycle", vec![cyc_cell]));
+    let (key, mut cell) = template_cell(cyc_cell, "CycleTemplate");
+    cell.references = vec![template_child(cyc, [1.0, 0.0, 0.0], [0.0; 3], 1.0)];
+    index.cells.insert(key, cell);
+
+    let synths = expand_pkin_placements(outer, Vec3::ZERO, Quat::IDENTITY, 1.0, &index).unwrap();
+    let bases: Vec<u32> = synths.iter().map(|s| s.0).collect();
+    assert_eq!(bases, vec![outer, leaf], "outer self-entry, then the nested leaf");
+    // outer child at (10, 0, 0) Y-up; leaf at Z-up (0,5,0) -> Y-up (0,0,-5).
+    assert!(synths[1].1.abs_diff_eq(Vec3::new(10.0, 0.0, -5.0), 1e-4), "{:?}", synths[1].1);
+
+    // A template whose only child is its own PKIN: bounded by the depth cap.
+    let synths = expand_pkin_placements(cyc, Vec3::ZERO, Quat::IDENTITY, 1.0, &index)
+        .expect("a self-referential template must still terminate with a result");
+    assert!(synths.len() <= 2 * 4, "{}", synths.len());
+}
+
+/// #5489 real-data gate: on vanilla `Starfield.esm`, `citycydoniamainlevel`
+/// places 370 pack-ins whose template cells hold 12,218 child REFRs (audit
+/// `SF-2026-10-09-D4-01`, GRUP-walk census). Every one of those placements must
+/// now expand to its template's children (nested pack-ins expanding further,
+/// so the total can only exceed the one-level census).
+/// Run with `-- --ignored`.
+#[test]
+#[ignore = "needs Starfield game data on disk"]
+fn starfield_cydonia_pack_ins_instance_their_template_cells() {
+    let data = std::env::var("BYROREDUX_STARFIELD_DATA")
+        .unwrap_or_else(|_| "/mnt/data/SteamLibrary/steamapps/common/Starfield/Data".into());
+    let path = std::path::Path::new(&data).join("Starfield.esm");
+    let Ok(bytes) = std::fs::read(&path) else {
+        eprintln!("[Starfield PKIN] skipping: {path:?} unavailable");
+        return;
+    };
+    let index = byroredux_plugin::esm::records::parse_esm(&bytes).expect("parse Starfield.esm");
+    let cell = index
+        .cells
+        .cells
+        .get("citycydoniamainlevel")
+        .expect("the reference cell parses");
+    let (mut pack_in_refs, mut expanded_children, mut unexpanded) = (0usize, 0usize, 0usize);
+    for placed in &cell.references {
+        if !index.cells.packins.contains_key(&placed.base_form_id) {
+            continue;
+        }
+        pack_in_refs += 1;
+        match expand_pkin_placements(
+            placed.base_form_id,
+            Vec3::ZERO,
+            Quat::IDENTITY,
+            1.0,
+            &index.cells,
+        ) {
+            // Minus the outer pack-in's own identity entry.
+            Some(synths) => expanded_children += synths.len() - 1,
+            None => unexpanded += 1,
+        }
+    }
+    eprintln!(
+        "[Starfield PKIN] Cydonia: {pack_in_refs} pack-in REFRs, {expanded_children} instanced \
+         template children, {unexpanded} left to the default path"
+    );
+    assert_eq!(pack_in_refs, 370, "audit census (SF-2026-10-09-D4-01)");
+    assert!(
+        expanded_children >= 12_218,
+        "the template cells hold 12,218 children one level deep: {expanded_children}"
+    );
 }

@@ -817,3 +817,36 @@ fn a_replacement_in_the_same_or_a_later_plugin_survives_the_sweep() {
         "a later plugin re-placing a deleted FormID un-deletes it"
     );
 }
+
+/// #5489 — a form-ID reference to a CELL (a PKIN's `CNAM` template cell)
+/// resolves in O(1) wherever the CELL is filed, and `merge_from` invalidates
+/// the lookup so a later plugin's cells are found too.
+#[test]
+fn cell_by_form_id_finds_interior_exterior_and_persistent_cells() {
+    let mut index = EsmCellIndex::default();
+    index
+        .cells
+        .insert("interior_a".into(), make_interior_cell(0x0A, "InteriorA"));
+    index
+        .exterior_cells
+        .entry("tamriel".into())
+        .or_default()
+        .insert((3, -4), make_interior_cell(0x0B, "Tile"));
+    index
+        .worldspace_persistent_cells
+        .insert("tamriel".into(), make_interior_cell(0x0C, "Persistent"));
+
+    assert_eq!(index.cell_by_form_id(0x0A).unwrap().editor_id, "InteriorA");
+    assert_eq!(index.cell_by_form_id(0x0B).unwrap().editor_id, "Tile");
+    assert_eq!(index.cell_by_form_id(0x0C).unwrap().editor_id, "Persistent");
+    assert!(index.cell_by_form_id(0x0D).is_none());
+
+    // The lookup was built above; a merge must rebuild it.
+    let mut later = EsmCellIndex::default();
+    later
+        .cells
+        .insert("interior_b".into(), make_interior_cell(0x0D, "InteriorB"));
+    index.merge_from(later);
+    assert_eq!(index.cell_by_form_id(0x0D).unwrap().editor_id, "InteriorB");
+    assert_eq!(index.cell_by_form_id(0x0A).unwrap().editor_id, "InteriorA");
+}

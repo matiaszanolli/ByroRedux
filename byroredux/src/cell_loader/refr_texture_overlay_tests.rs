@@ -21,7 +21,7 @@ fn resolved(pool: &StringPool, sym: Option<FixedString>) -> Option<&str> {
     sym.and_then(|s| pool.resolve(s))
 }
 
-fn empty_placed_ref(base_form_id: u32) -> PlacedRef {
+pub(super) fn empty_placed_ref(base_form_id: u32) -> PlacedRef {
     PlacedRef {
         form_id: 0,
         base_form_id,

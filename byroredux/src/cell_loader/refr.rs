@@ -529,19 +529,30 @@ const MAX_PKIN_DEPTH: u32 = 4;
 
 /// Expand a PKIN (Pack-In) REFR into synthetic children.
 ///
-/// #5231 (FO4-D4-02) corrected the data model: every vanilla PKIN `CNAM`
-/// names the pack-in's **template CELL**, not a content base — the CK
-/// bakes that CELL's placements into ordinary REFRs at drop time, so
-/// vanilla data contains **zero PKIN-based REFRs** and this expander only
-/// ever runs on mod-authored placements. A CNAM that resolves to a CELL
-/// is logged as an explicit miss and skipped (instancing a template
-/// CELL's references under the outer transform is unimplemented); the
-/// fan-out below is the mod-authored base-record shape, kept from #589.
+/// A PKIN's `CNAM` names its **template CELL** (#5231): the pack-in's
+/// contents are that CELL's references. Fallout 4's CK *bakes* those
+/// placements into ordinary REFRs when the pack-in is dropped, so vanilla
+/// FO4 data carries zero PKIN-based REFRs. **Starfield does not bake**: 97,981
+/// of its 3,291,860 REFRs (3,557 cells) keep the PKIN as their base, and
+/// the game instances the template cell's references under the REFR's
+/// transform (#5489 — on `citycydoniamainlevel`, 370 pack-ins carry 12,218
+/// template children, none of them baked elsewhere). A CELL-typed `CNAM` is
+/// therefore instanced here: each of the template cell's references is
+/// composed under the outer transform exactly as a SCOL part is
+/// (`GlobalTransform::compose_trs`), nested PKIN / SCOL children expanding
+/// recursively under [`MAX_PKIN_DEPTH`]. Template children flagged
+/// initially-disabled are skipped (a scripted `Enable()` is not modelled for
+/// them; the same dropped state as every other synthetic child).
 ///
-/// The parser captures every `CNAM` sub-record into `PkinRecord::contents`
-/// at ESM-load time; this helper fans the REFR out into one synthetic
-/// placement per content entry — all at the SAME outer transform (PKIN
-/// carries no per-child placement data, unlike SCOL).
+/// The outer PKIN's own `(base, outer transform)` stays FIRST in the result
+/// whenever a template was instanced, so the REFR keeps its identity (quest
+/// reference, VMAD, trigger primitive) on the primary synthetic child, as it
+/// did when it fell through to the default path. Its base is the nominal
+/// empty-model static `parse_pkin_group` registers, so it spawns no mesh.
+///
+/// The fan-out of base-record `CNAM`s at the SAME outer transform is the
+/// mod-authored base-record shape, kept from #589 (PKIN carries no per-child
+/// placement data of its own, unlike SCOL).
 ///
 /// PKIN-of-PKIN nesting is resolved recursively up to [`MAX_PKIN_DEPTH`]
 /// levels (#635 / FNV-D3-06) so a child PKIN's contents fan out instead
@@ -554,8 +565,8 @@ const MAX_PKIN_DEPTH: u32 = 4;
 /// (#386).
 ///
 /// Returns `None` when the outer REFR's base isn't a PKIN, when the
-/// PKIN's `contents` list is empty, or when every child was skipped as a
-/// CELL-typed CNAM (the caller then runs the outer REFR through the
+/// PKIN's `contents` list is empty, or when nothing was placeable (an
+/// empty template cell; the caller then runs the outer REFR through the
 /// default single-entry path, whose miss accounting names it).
 ///
 /// Pre-#589 all 872 vanilla Fallout4.esm PKIN records silently produced
@@ -584,88 +595,98 @@ fn expand_pkin_placements_with_depth(
         return None;
     }
     let mut out = Vec::with_capacity(pkin.contents.len());
+    let mut instanced_template = false;
     for &child_form_id in &pkin.contents {
-        // #5231 — a CNAM that resolves to a CELL is the pack-in's template
-        // cell (every vanilla CNAM), not a placeable base. Instancing its
-        // references under the outer transform is unimplemented; skip it
-        // with an explicit miss instead of emitting a synthetic placement
-        // that silently fails every base lookup downstream.
-        if index_resolves_to_cell(index, child_form_id) {
-            log::warn!(
-                "PKIN {base_form_id:#010x} ('{}') CNAM {child_form_id:#010x} is its template \
-                 CELL — pack-in instancing is unimplemented, skipping the synthetic \
-                 placement (#5231)",
-                pkin.editor_id,
-            );
+        // #5489 — the CNAM is the pack-in's template CELL: instance its
+        // references under the outer transform.
+        if let Some(template) = index.cell_by_form_id(child_form_id) {
+            let before = out.len();
+            for placed in &template.references {
+                if placed.initially_disabled {
+                    continue;
+                }
+                let local_pos =
+                    Vec3::from_array(byroredux_core::math::coord::zup_to_yup_pos(placed.position));
+                let local_rot = euler_zup_to_quat_yup_refr(
+                    placed.rotation[0],
+                    placed.rotation[1],
+                    placed.rotation[2],
+                );
+                let (pos, rot, scale) = GlobalTransform::compose_trs(
+                    outer_pos,
+                    outer_rot,
+                    outer_scale,
+                    local_pos,
+                    local_rot,
+                    placed.scale,
+                );
+                push_expanded_child(&mut out, placed.base_form_id, pos, rot, scale, index, depth);
+            }
+            instanced_template |= out.len() > before;
             continue;
         }
-        // Recurse into nested PKINs up to the depth cap. Past the cap,
-        // fall through to the leaf path so the synthetic placement at
-        // least gets logged via `stat_miss` accounting (matches pre-#635
-        // truncation but bounded — safe against accidental cycles).
-        if depth + 1 < MAX_PKIN_DEPTH && index.packins.contains_key(&child_form_id) {
-            if let Some(nested) = expand_pkin_placements_with_depth(
-                child_form_id,
-                outer_pos,
-                outer_rot,
-                outer_scale,
-                index,
-                depth + 1,
-            ) {
-                out.extend(nested);
-                continue;
-            }
-        }
-        // #1180 / FO4-D4-003 — when a PKIN child resolves to a SCOL,
-        // fan the SCOL out via its own expander. Otherwise modded
-        // PKINs containing SCOL form IDs emit base-form-only
-        // placements and silently drop the SCOL's child tree. The
-        // SCOL expander applies its own SCOL-of-SCOL recursion gate
-        // (#1182), bounded by the shared `MAX_PKIN_DEPTH`. LVLI
-        // children are still single-level — unimplemented per #386.
-        if depth + 1 < MAX_PKIN_DEPTH && index.scols.contains_key(&child_form_id) {
-            let nested = expand_scol_placements_with_depth(
-                child_form_id,
-                outer_pos,
-                outer_rot,
-                outer_scale,
-                index,
-                depth + 1,
-            );
-            if !nested.is_empty() {
-                out.extend(nested);
-                continue;
-            }
-        }
-        out.push((child_form_id, outer_pos, outer_rot, outer_scale));
+        push_expanded_child(
+            &mut out,
+            child_form_id,
+            outer_pos,
+            outer_rot,
+            outer_scale,
+            index,
+            depth,
+        );
     }
-    // #5231 — an all-CELL contents list (every vanilla PKIN) leaves
-    // nothing placeable; return `None` so the caller runs the outer REFR
-    // through the default single-entry path instead of spawning nothing
-    // without a trace.
+    // Nothing placeable (an empty template cell, or an empty contents
+    // list): `None` runs the outer REFR through the default single-entry
+    // path instead of spawning nothing without a trace.
     if out.is_empty() {
         return None;
+    }
+    if instanced_template && depth == 0 {
+        // The REFR's own identity rides the primary synthetic child; the
+        // template's contents follow it (see the doc above).
+        out.insert(0, (base_form_id, outer_pos, outer_rot, outer_scale));
     }
     Some(out)
 }
 
-/// #5231 — does `form_id` resolve to a CELL record in this index? No
-/// form-id-keyed CELL map exists (`cells` is keyed by canonical lookup ID,
-/// exterior cells by worldspace+grid), so this scans the three CELL maps.
-/// The expander is a cold path — vanilla data carries zero PKIN-based
-/// REFRs, because the CK bakes pack-in contents into ordinary REFRs at
-/// placement time — so a linear scan per child beats carrying a dedicated
-/// CELL-form-id index for a population vanilla never produces.
-fn index_resolves_to_cell(index: &esm::cell::EsmCellIndex, form_id: u32) -> bool {
-    index.cells.values().any(|c| c.form_id == form_id)
-        || index
-            .exterior_cells
-            .values()
-            .any(|grid| grid.values().any(|c| c.form_id == form_id))
-        || index
-            .worldspace_persistent_cells
-            .values()
-            .any(|c| c.form_id == form_id)
+/// Append one PKIN child placement, expanding it first when it is itself a
+/// PKIN or a SCOL (bounded by [`MAX_PKIN_DEPTH`]); anything else — or a
+/// nested expansion that placed nothing — is a leaf placement, so it at
+/// least reaches the loader's `stat_miss` accounting (bounded against
+/// accidental cycles).
+fn push_expanded_child(
+    out: &mut Vec<(u32, Vec3, Quat, f32)>,
+    child_form_id: u32,
+    pos: Vec3,
+    rot: Quat,
+    scale: f32,
+    index: &esm::cell::EsmCellIndex,
+    depth: u32,
+) {
+    // Recurse into nested PKINs up to the depth cap (#635).
+    if depth + 1 < MAX_PKIN_DEPTH && index.packins.contains_key(&child_form_id) {
+        if let Some(nested) =
+            expand_pkin_placements_with_depth(child_form_id, pos, rot, scale, index, depth + 1)
+        {
+            out.extend(nested);
+            return;
+        }
+    }
+    // #1180 / FO4-D4-003 — when a PKIN child resolves to a SCOL, fan the
+    // SCOL out via its own expander. Otherwise modded PKINs containing SCOL
+    // form IDs emit base-form-only placements and silently drop the SCOL's
+    // child tree. The SCOL expander applies its own SCOL-of-SCOL recursion
+    // gate (#1182), bounded by the shared `MAX_PKIN_DEPTH`. LVLI children
+    // are still single-level — unimplemented per #386.
+    if depth + 1 < MAX_PKIN_DEPTH && index.scols.contains_key(&child_form_id) {
+        let nested =
+            expand_scol_placements_with_depth(child_form_id, pos, rot, scale, index, depth + 1);
+        if !nested.is_empty() {
+            out.extend(nested);
+            return;
+        }
+    }
+    out.push((child_form_id, pos, rot, scale));
 }
 
 /// Produce the list of `(base_form_id, composed_pos, composed_rot,

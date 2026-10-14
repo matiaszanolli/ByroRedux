@@ -1549,6 +1549,20 @@ pub struct EsmCellIndex {
     /// Vanilla `Fallout4.esm` ships ~2,500 MSWP records — see audit
     /// FO4-DIM6-05 / #590.
     pub material_swaps: HashMap<u32, super::records::MaterialSwapRecord>,
+    /// CELL form ID → where that cell lives in the three CELL maps above,
+    /// built on first use by [`EsmCellIndex::cell_by_form_id`] and cleared
+    /// by [`EsmCellIndex::merge_from`] (#5489). Crate-private: it is derived
+    /// state, so it is neither parsed nor documented as index content.
+    pub(crate) cell_form_id_lookup: std::sync::OnceLock<HashMap<u32, CellLocator>>,
+}
+
+/// Where one CELL sits in an [`EsmCellIndex`] (see
+/// [`EsmCellIndex::cell_by_form_id`]).
+#[derive(Debug)]
+pub(crate) enum CellLocator {
+    Interior(String),
+    Exterior(String, (i32, i32)),
+    WorldspacePersistent(String),
 }
 
 /// Merge an override cell's REFRs onto its base in place: start from the
@@ -1714,6 +1728,47 @@ fn merge_cell_override(base: &CellData, over: &mut CellData) {
 }
 
 impl EsmCellIndex {
+    /// The CELL record with `form_id`, wherever it is filed (interior,
+    /// exterior grid tile, or a worldspace's persistent cell), in O(1).
+    ///
+    /// No CELL map is keyed by form ID — `cells` is keyed by canonical lookup
+    /// ID, `exterior_cells` by worldspace + grid — so a form-ID reference to
+    /// a CELL (a PKIN's `CNAM` template cell, #5489) used to cost a scan of
+    /// every CELL per lookup. The first call builds the lookup; it is stale
+    /// if the CELL maps are edited afterwards, so build the index first
+    /// ([`Self::merge_from`] clears it).
+    pub fn cell_by_form_id(&self, form_id: u32) -> Option<&CellData> {
+        let lookup = self.cell_form_id_lookup.get_or_init(|| {
+            let mut map = HashMap::with_capacity(
+                self.cells.len()
+                    + self.exterior_cells.values().map(HashMap::len).sum::<usize>()
+                    + self.worldspace_persistent_cells.len(),
+            );
+            for (key, cell) in &self.cells {
+                map.insert(cell.form_id, CellLocator::Interior(key.clone()));
+            }
+            for (world, grid) in &self.exterior_cells {
+                for (&xy, cell) in grid {
+                    map.insert(cell.form_id, CellLocator::Exterior(world.clone(), xy));
+                }
+            }
+            for (world, cell) in &self.worldspace_persistent_cells {
+                map.insert(
+                    cell.form_id,
+                    CellLocator::WorldspacePersistent(world.clone()),
+                );
+            }
+            map
+        });
+        match lookup.get(&form_id)? {
+            CellLocator::Interior(key) => self.cells.get(key),
+            CellLocator::Exterior(world, xy) => self.exterior_cells.get(world)?.get(xy),
+            CellLocator::WorldspacePersistent(world) => {
+                self.worldspace_persistent_cells.get(world)
+            }
+        }
+    }
+
     /// Merge `other` into `self` with last-write-wins semantics on
     /// every map. Mirrors `EsmIndex::merge_from`'s contract — the
     /// caller parses plugins in load order and folds each into the
@@ -1774,7 +1829,11 @@ impl EsmCellIndex {
             packins,
             movables,
             material_swaps,
+            cell_form_id_lookup: _,
         } = other;
+        // The lookup is derived from the cell maps this merge is about to
+        // change; rebuild it on next use.
+        self.cell_form_id_lookup = std::sync::OnceLock::new();
         // #3362 — a REFR is a globally-unique FormID: deleting it removes the
         // object wherever it lives, and the CELL GRUP the tombstone happens
         // to be authored under is not part of its identity.
