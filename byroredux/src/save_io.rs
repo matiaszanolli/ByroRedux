@@ -850,8 +850,6 @@ pub fn capture_player_pose(world: &World) {
 /// the camera when Character mode was saved but no player body is live
 /// (e.g. a `--fly` reload), so the look direction is at least honoured.
 pub fn apply_player_pose(world: &mut World, pose: &PlayerPose) {
-    use byroredux_core::ecs::{GlobalTransform, Transform};
-
     if let Some(mut input) = world.try_resource_mut::<crate::components::InputState>() {
         input.yaw = pose.yaw;
         input.pitch = pose.pitch;
@@ -897,28 +895,10 @@ pub fn apply_player_pose(world: &mut World, pose: &PlayerPose) {
                     .unwrap_or(52.0);
                 pos - Vec3::Y * eye_height
             };
-            if let Some(mut tq) = world.query_mut::<Transform>() {
-                if let Some(t) = tq.get_mut(body) {
-                    t.translation = body_pos;
-                }
-            }
-            if let Some(mut gq) = world.query_mut::<GlobalTransform>() {
-                if let Some(g) = gq.get_mut(body) {
-                    g.translation = body_pos;
-                }
-            }
-            // Clear momentum so the body doesn't carry stale free-fall
-            // velocity into the reloaded cell; gravity re-engages next tick.
-            if let Some(mut cq) = world.query_mut::<byroredux_physics::CharacterController>() {
-                if let Some(c) = cq.get_mut(body) {
-                    c.vertical_velocity = 0.0;
-                    c.is_grounded = false;
-                    c.wants_jump = false;
-                }
-            }
-            // Sync the kinematic Rapier body so the KCC's next collide-and-
-            // slide starts from the restored spot (no-op without handles).
-            byroredux_physics::set_kinematic_translation(world, body, body_pos);
+            // Momentum is cleared inside, so the body carries no stale free-fall
+            // velocity into the reloaded cell; the kinematic Rapier body is synced
+            // so the KCC's next collide-and-slide starts from the restored spot.
+            crate::systems::place_character_body(world, body, body_pos, None);
             return;
         }
     }

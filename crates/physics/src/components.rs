@@ -154,6 +154,18 @@ pub struct CharacterController {
 }
 
 impl CharacterController {
+    /// Drop the momentum state a teleport must not carry: the stale
+    /// free-fall velocity, the grounded latch, and a pending jump. Gravity
+    /// re-engages on the next controller tick, settling the body onto
+    /// whatever floor lies beneath its new position. Every "put the player
+    /// body somewhere" path clears the same three fields (#5591); a new
+    /// momentum-carrying field belongs here.
+    pub fn clear_momentum(&mut self) {
+        self.vertical_velocity = 0.0;
+        self.is_grounded = false;
+        self.wants_jump = false;
+    }
+
     /// Vanilla-Skyrim-sized humanoid character — 128 BU tall, 36 BU
     /// wide (matches CommonLib's `bhkCharController` for a Nord male),
     /// 50° slope, 32 BU step, 220 BU/sec walk speed (~3.14 m/s,

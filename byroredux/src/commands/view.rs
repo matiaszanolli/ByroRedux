@@ -460,14 +460,18 @@ impl ConsoleCommand for CombatApproachCommand {
         let (yaw, pitch) = look_at_yaw_pitch(camera_pos, aim_pos);
         let camera_rotation = crate::systems::camera_look_rotation(yaw, pitch);
 
+        let Some(physics_synced) = crate::systems::place_character_body(
+            world,
+            player,
+            body_pos,
+            Some(Quat::IDENTITY),
+        ) else {
+            return CommandOutput::line("combat.approach: Transform storage unavailable");
+        };
         {
             let Some(mut transforms) = world.query_mut::<Transform>() else {
                 return CommandOutput::line("combat.approach: Transform storage unavailable");
             };
-            if let Some(player_transform) = transforms.get_mut(player) {
-                player_transform.translation = body_pos;
-                player_transform.rotation = Quat::IDENTITY;
-            }
             let Some(camera_transform) = transforms.get_mut(camera) else {
                 return CommandOutput::line(format!(
                     "combat.approach: camera entity {camera} has no Transform"
@@ -476,18 +480,10 @@ impl ConsoleCommand for CombatApproachCommand {
             camera_transform.translation = camera_pos;
             camera_transform.rotation = camera_rotation;
         }
-        if let Some(mut controllers) = world.query_mut::<byroredux_physics::CharacterController>() {
-            if let Some(controller) = controllers.get_mut(player) {
-                controller.vertical_velocity = 0.0;
-                controller.is_grounded = false;
-                controller.wants_jump = false;
-            }
-        }
         if let Some(mut input) = world.try_resource_mut::<InputState>() {
             input.yaw = yaw;
             input.pitch = pitch;
         }
-        let physics_synced = byroredux_physics::set_kinematic_translation(world, player, body_pos);
 
         CommandOutput::lines(vec![
             format!(

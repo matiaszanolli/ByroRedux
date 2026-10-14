@@ -899,33 +899,54 @@ pub fn snap_character_body_to_camera(world: &byroredux_core::ecs::World) -> bool
         (pos, height)
     };
     let body_pos = cam_pos - Vec3::Y * eye_height;
+    // Momentum is cleared so the body doesn't carry a stale free-fall
+    // velocity from before the snap; gravity re-engages on the next tick.
+    place_character_body(world, player, body_pos, Some(Quat::IDENTITY)).is_some()
+}
+
+/// Put the player capsule at `pos`: `Transform` (and `GlobalTransform`, which
+/// the transition and load paths run too early for propagation to refresh),
+/// the controller's momentum cleared, and the kinematic Rapier body synced so
+/// the KCC's next collide-and-slide starts from the new spot rather than the
+/// pre-move one. `rotation` of `None` leaves the body's facing alone.
+///
+/// The single home of "teleport the player body" (#5591): the camera snap, the
+/// transition arrival grounding, the save-restore and `combat.approach` all
+/// route here, each keeping its own camera handling. Each store is written in
+/// its own short scope, so no two component locks are ever held together
+/// (the #2134 lock-order note).
+///
+/// Returns `None` when `Transform` storage is unavailable, else whether a
+/// kinematic Rapier body existed to sync (`false` without physics handles).
+pub(crate) fn place_character_body(
+    world: &byroredux_core::ecs::World,
+    body: EntityId,
+    pos: Vec3,
+    rotation: Option<Quat>,
+) -> Option<bool> {
     {
-        let Some(mut tq) = world.query_mut::<Transform>() else {
-            return false;
-        };
-        if let Some(t) = tq.get_mut(player) {
-            t.translation = body_pos;
-            t.rotation = Quat::IDENTITY;
+        let mut tq = world.query_mut::<Transform>()?;
+        if let Some(t) = tq.get_mut(body) {
+            t.translation = pos;
+            if let Some(rotation) = rotation {
+                t.rotation = rotation;
+            }
         }
     }
-    {
-        let Some(mut cq) = world.query_mut::<byroredux_physics::CharacterController>() else {
-            return false;
-        };
-        if let Some(c) = cq.get_mut(player) {
-            // Clear momentum so the body doesn't carry a stale
-            // free-fall velocity from before the snap. Gravity
-            // re-engages on the next controller tick.
-            c.vertical_velocity = 0.0;
-            c.is_grounded = false;
-            c.wants_jump = false;
+    if let Some(mut gq) = world.query_mut::<GlobalTransform>() {
+        if let Some(g) = gq.get_mut(body) {
+            g.translation = pos;
+            if let Some(rotation) = rotation {
+                g.rotation = rotation;
+            }
         }
     }
-    // Sync the kinematic Rapier body to the new transform so the
-    // KCC's next-frame collide-and-slide query starts from the
-    // correct position rather than the pre-snap frozen one.
-    byroredux_physics::set_kinematic_translation(world, player, body_pos);
-    true
+    if let Some(mut cq) = world.query_mut::<byroredux_physics::CharacterController>() {
+        if let Some(c) = cq.get_mut(body) {
+            c.clear_momentum();
+        }
+    }
+    Some(byroredux_physics::set_kinematic_translation(world, body, pos))
 }
 
 /// Carry the player capsule to wherever the active camera was just moved —
@@ -1036,26 +1057,9 @@ pub fn ground_character_body_at(world: &byroredux_core::ecs::World, destination:
         destination.y,
     );
 
-    {
-        let Some(mut tq) = world.query_mut::<Transform>() else {
-            return false;
-        };
-        if let Some(t) = tq.get_mut(player) {
-            t.translation = body_pos;
-            t.rotation = Quat::IDENTITY;
-        }
+    if place_character_body(world, player, body_pos, Some(Quat::IDENTITY)).is_none() {
+        return false;
     }
-    {
-        let Some(mut cq) = world.query_mut::<byroredux_physics::CharacterController>() else {
-            return false;
-        };
-        if let Some(c) = cq.get_mut(player) {
-            c.vertical_velocity = 0.0;
-            c.is_grounded = false;
-            c.wants_jump = false;
-        }
-    }
-    byroredux_physics::set_kinematic_translation(world, player, body_pos);
     pin_camera_above_body(world, body_pos, cc.eye_height);
     true
 }
@@ -1734,6 +1738,54 @@ pub(crate) fn resolve_ground_contact(
 mod tests {
     use super::*;
     use byroredux_core::ecs::components::water::WaterKind;
+
+    /// #5591 — every teleport path goes through `place_character_body`: the
+    /// body lands on `Transform` and `GlobalTransform`, its stale free-fall
+    /// momentum is cleared, and `rotation: None` leaves its facing alone.
+    #[test]
+    fn place_character_body_moves_both_transforms_and_clears_momentum() {
+        let mut world = World::new();
+        let body = world.spawn();
+        let facing = Quat::from_rotation_y(0.7);
+        world.insert(body, Transform::new(Vec3::ZERO, facing, 1.0));
+        world.insert(body, GlobalTransform::new(Vec3::ZERO, facing, 1.0));
+        let mut controller = byroredux_physics::CharacterController::HUMAN;
+        controller.vertical_velocity = -900.0;
+        controller.is_grounded = true;
+        controller.wants_jump = true;
+        world.insert(body, controller);
+
+        let pos = Vec3::new(10.0, 20.0, 30.0);
+        // No physics world in this fixture: the kinematic sync reports false.
+        assert_eq!(place_character_body(&world, body, pos, None), Some(false));
+        assert_eq!(world.get::<Transform>(body).unwrap().translation, pos);
+        assert_eq!(world.get::<Transform>(body).unwrap().rotation, facing);
+        assert_eq!(world.get::<GlobalTransform>(body).unwrap().translation, pos);
+        let c = *world.get::<byroredux_physics::CharacterController>(body).unwrap();
+        assert_eq!((c.vertical_velocity, c.is_grounded, c.wants_jump), (0.0, false, false));
+
+        // An explicit rotation lands on both transforms.
+        place_character_body(&world, body, pos, Some(Quat::IDENTITY));
+        assert_eq!(world.get::<Transform>(body).unwrap().rotation, Quat::IDENTITY);
+        assert_eq!(world.get::<GlobalTransform>(body).unwrap().rotation, Quat::IDENTITY);
+    }
+
+    /// #5591 — no site hand-clears the controller's momentum any more.
+    #[test]
+    fn momentum_is_cleared_through_one_method() {
+        for (name, src) in [
+            ("systems/character.rs", include_str!("character.rs")),
+            ("save_io.rs", include_str!("../save_io.rs")),
+            ("commands/view.rs", include_str!("../commands/view.rs")),
+        ] {
+            let src = byroredux_core::source_scan::production_text_or_whole(src);
+            assert!(
+                !src.contains("wants_jump = false"),
+                "{name} clears controller momentum by hand — use \
+                 CharacterController::clear_momentum (#5591)"
+            );
+        }
+    }
 
     /// #3260 — recreate the two established sides of the production lock
     /// triangle, then drive the real camera system. Under the CI lock-order
