@@ -156,6 +156,23 @@ pub(super) fn enter_guest(
     principal
 }
 
+/// Move a guest's buffered log entries into the host's diagnostics, tagged
+/// with the component that wrote them — the block every delivery path ran
+/// right after the guest returned (#5592).
+pub(super) fn drain_logs(diagnostics: &mut Vec<ExtensionDiagnostic>, hosted: &mut HostedComponent) {
+    diagnostics.extend(
+        hosted
+            .instance
+            .take_logs()
+            .into_iter()
+            .map(|entry| ExtensionDiagnostic::Log {
+                extension: hosted.extension.clone(),
+                component: hosted.component.clone(),
+                entry,
+            }),
+    );
+}
+
 pub(super) fn apply_delivery_result(
     hosted: &mut HostedComponent,
     result: Result<Vec<HostCommand>, SandboxError>,

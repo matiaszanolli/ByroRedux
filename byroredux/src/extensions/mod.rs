@@ -180,7 +180,7 @@ pub(in crate::extensions) use capture::{
 pub(crate) use capture::{RawActivation, RawCellLoad, RawEquipmentChange, RawHit};
 pub(crate) use commands::animation_event;
 pub(in crate::extensions) use commands::{
-    apply_delivery_result, apply_pending_world_commands, enter_guest,
+    apply_delivery_result, apply_pending_world_commands, drain_logs, enter_guest,
 };
 pub(crate) use install::load_requested_extensions;
 pub(crate) use persist::{
@@ -567,6 +567,34 @@ mod delivery_plumbing_shape_tests {
         assert!(
             src.contains("fn enter_guest("),
             "enter_guest must exist — the dispatch prologue has no other home"
+        );
+    }
+
+    /// #5592 — the delivery body (eligibility gate, guest entry, log drain,
+    /// commit) lives in `ExtensionHost::deliver`; the eight `dispatch_*`
+    /// families only say which components they select and which callback they
+    /// run. The grant + status predicate must stay in ONE place, or a family
+    /// that drifts delivers to a revoked component.
+    #[test]
+    fn the_delivery_gate_and_log_drain_live_only_in_deliver() {
+        let src = production_text(EXTENSIONS_RS);
+        let gate = format!("{}{}", ".contains(EVENTS_SUBSCRIBE_", "CAPABILITY)");
+        assert_eq!(
+            src.match_indices(&gate).count(),
+            1,
+            "the events-subscribe gate must be spelled only in `deliver`"
+        );
+        // The log-entry literal: `drain_logs`, plus the staged-instantiation
+        // drain in `load` (no `HostedComponent` exists yet there).
+        let take = format!("{}{}", "take_", "logs()");
+        assert_eq!(
+            src.match_indices(&take).count(),
+            2,
+            "guest logs are drained only by `drain_logs` and the staged drain in `load`"
+        );
+        assert!(
+            src.contains("fn deliver<T>("),
+            "ExtensionHost::deliver must exist — it is the one delivery body"
         );
     }
 

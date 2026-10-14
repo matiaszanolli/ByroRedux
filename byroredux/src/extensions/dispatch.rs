@@ -50,14 +50,7 @@ impl ExtensionHost {
         let result = hosted
             .instance
             .on_script_function(route.declaration_index, arguments);
-        self.diagnostics
-            .extend(hosted.instance.take_logs().into_iter().map(|entry| {
-                ExtensionDiagnostic::Log {
-                    extension: hosted.extension.clone(),
-                    component: hosted.component.clone(),
-                    entry,
-                }
-            }));
+        drain_logs(&mut self.diagnostics, hosted);
         let (value, commands) = result.map_err(|error| {
             self.diagnostics.push(ExtensionDiagnostic::Fault {
                 extension: hosted.extension.clone(),
@@ -248,42 +241,13 @@ impl ExtensionHost {
                 ));
             }
 
-            for hosted in &mut self.components {
-                if !hosted.receives_activate
-                    || !hosted
-                        .instance
-                        .grants()
-                        .contains(EVENTS_SUBSCRIBE_CAPABILITY)
-                    || hosted.instance.status() != &InstanceStatus::Active
-                {
-                    continue;
-                }
-                stats.deliveries += 1;
-                let principal =
-                    enter_guest(hosted, &self.principal_storage, &self.legacy_containers);
-                hosted
-                    .instance
-                    .set_entity_projections(entity_projections.clone());
-                let result = hosted
-                    .instance
-                    .on_activate(ActivationEvent { subject, activator });
-                self.diagnostics
-                    .extend(hosted.instance.take_logs().into_iter().map(|entry| {
-                        ExtensionDiagnostic::Log {
-                            extension: hosted.extension.clone(),
-                            component: hosted.component.clone(),
-                            entry,
-                        }
-                    }));
-
-                apply_delivery_result(
-                    hosted,
-                    result,
-                    LifecyclePhase::Activate,
-                    &principal,
-                    delivery_commit_context!(self, stats),
-                );
-            }
+            self.deliver(
+                LifecyclePhase::Activate,
+                &mut stats,
+                Some(&entity_projections),
+                |hosted| hosted.receives_activate.then_some(()),
+                |hosted, ()| hosted.instance.on_activate(ActivationEvent { subject, activator }),
+            );
         }
         stats
     }
@@ -319,39 +283,13 @@ impl ExtensionHost {
                 raw_projections.get(&cell_load.subject),
             )];
 
-            for hosted in &mut self.components {
-                if !hosted.receives_cell_load
-                    || !hosted
-                        .instance
-                        .grants()
-                        .contains(EVENTS_SUBSCRIBE_CAPABILITY)
-                    || hosted.instance.status() != &InstanceStatus::Active
-                {
-                    continue;
-                }
-                stats.deliveries += 1;
-                let principal =
-                    enter_guest(hosted, &self.principal_storage, &self.legacy_containers);
-                hosted
-                    .instance
-                    .set_entity_projections(entity_projections.clone());
-                let result = hosted.instance.on_cell_load(CellLoadEvent { subject });
-                self.diagnostics
-                    .extend(hosted.instance.take_logs().into_iter().map(|entry| {
-                        ExtensionDiagnostic::Log {
-                            extension: hosted.extension.clone(),
-                            component: hosted.component.clone(),
-                            entry,
-                        }
-                    }));
-                apply_delivery_result(
-                    hosted,
-                    result,
-                    LifecyclePhase::CellLoad,
-                    &principal,
-                    delivery_commit_context!(self, stats),
-                );
-            }
+            self.deliver(
+                LifecyclePhase::CellLoad,
+                &mut stats,
+                Some(&entity_projections),
+                |hosted| hosted.receives_cell_load.then_some(()),
+                |hosted, ()| hosted.instance.on_cell_load(CellLoadEvent { subject }),
+            );
         }
         stats
     }
@@ -387,43 +325,19 @@ impl ExtensionHost {
                 raw_projections.get(&change.wearer),
             )];
 
-            for hosted in &mut self.components {
-                if !hosted.receives_equipment
-                    || !hosted
-                        .instance
-                        .grants()
-                        .contains(EVENTS_SUBSCRIBE_CAPABILITY)
-                    || hosted.instance.status() != &InstanceStatus::Active
-                {
-                    continue;
-                }
-                stats.deliveries += 1;
-                let principal =
-                    enter_guest(hosted, &self.principal_storage, &self.legacy_containers);
-                hosted
-                    .instance
-                    .set_entity_projections(entity_projections.clone());
-                let result = hosted.instance.on_equipment_change(EquipmentEvent {
-                    wearer,
-                    item: change.item,
-                    equipped: change.equipped,
-                });
-                self.diagnostics
-                    .extend(hosted.instance.take_logs().into_iter().map(|entry| {
-                        ExtensionDiagnostic::Log {
-                            extension: hosted.extension.clone(),
-                            component: hosted.component.clone(),
-                            entry,
-                        }
-                    }));
-                apply_delivery_result(
-                    hosted,
-                    result,
-                    LifecyclePhase::Equipment,
-                    &principal,
-                    delivery_commit_context!(self, stats),
-                );
-            }
+            self.deliver(
+                LifecyclePhase::Equipment,
+                &mut stats,
+                Some(&entity_projections),
+                |hosted| hosted.receives_equipment.then_some(()),
+                |hosted, ()| {
+                    hosted.instance.on_equipment_change(EquipmentEvent {
+                        wearer,
+                        item: change.item,
+                        equipped: change.equipped,
+                    })
+                },
+            );
         }
         stats
     }
@@ -443,42 +357,22 @@ impl ExtensionHost {
         let mut stats = ExtensionDispatchStats::default();
         for event in events {
             stats.events += 1;
-            for hosted in &mut self.components {
-                if !hosted.receives_input
-                    || (!hosted.input_actions.is_empty()
-                        && !hosted.input_actions.contains(&event.action))
-                    || !hosted
-                        .instance
-                        .grants()
-                        .contains(EVENTS_SUBSCRIBE_CAPABILITY)
-                    || !hosted
-                        .instance
-                        .grants()
-                        .contains(INPUT_ACTIONS_SUBSCRIBE_CAPABILITY)
-                    || hosted.instance.status() != &InstanceStatus::Active
-                {
-                    continue;
-                }
-                stats.deliveries += 1;
-                let principal =
-                    enter_guest(hosted, &self.principal_storage, &self.legacy_containers);
-                let result = hosted.instance.on_input_action(event);
-                self.diagnostics
-                    .extend(hosted.instance.take_logs().into_iter().map(|entry| {
-                        ExtensionDiagnostic::Log {
-                            extension: hosted.extension.clone(),
-                            component: hosted.component.clone(),
-                            entry,
-                        }
-                    }));
-                apply_delivery_result(
-                    hosted,
-                    result,
-                    LifecyclePhase::Input,
-                    &principal,
-                    delivery_commit_context!(self, stats),
-                );
-            }
+            self.deliver(
+                LifecyclePhase::Input,
+                &mut stats,
+                None,
+                |hosted| {
+                    (hosted.receives_input
+                        && (hosted.input_actions.is_empty()
+                            || hosted.input_actions.contains(&event.action))
+                        && hosted
+                            .instance
+                            .grants()
+                            .contains(INPUT_ACTIONS_SUBSCRIBE_CAPABILITY))
+                    .then_some(())
+                },
+                |hosted, ()| hosted.instance.on_input_action(event),
+            );
         }
         stats
     }
@@ -498,38 +392,18 @@ impl ExtensionHost {
         let mut stats = ExtensionDispatchStats::default();
         for event in events {
             stats.events += 1;
-            for hosted in &mut self.components {
-                if !hosted.receives_session
-                    || (!hosted.session_phases.is_empty()
-                        && !hosted.session_phases.contains(&event.phase))
-                    || !hosted
-                        .instance
-                        .grants()
-                        .contains(EVENTS_SUBSCRIBE_CAPABILITY)
-                    || hosted.instance.status() != &InstanceStatus::Active
-                {
-                    continue;
-                }
-                stats.deliveries += 1;
-                let principal =
-                    enter_guest(hosted, &self.principal_storage, &self.legacy_containers);
-                let result = hosted.instance.on_session_event(event);
-                self.diagnostics
-                    .extend(hosted.instance.take_logs().into_iter().map(|entry| {
-                        ExtensionDiagnostic::Log {
-                            extension: hosted.extension.clone(),
-                            component: hosted.component.clone(),
-                            entry,
-                        }
-                    }));
-                apply_delivery_result(
-                    hosted,
-                    result,
-                    LifecyclePhase::Session,
-                    &principal,
-                    delivery_commit_context!(self, stats),
-                );
-            }
+            self.deliver(
+                LifecyclePhase::Session,
+                &mut stats,
+                None,
+                |hosted| {
+                    (hosted.receives_session
+                        && (hosted.session_phases.is_empty()
+                            || hosted.session_phases.contains(&event.phase)))
+                    .then_some(())
+                },
+                |hosted, ()| hosted.instance.on_session_event(event),
+            );
         }
         stats
     }
@@ -548,36 +422,13 @@ impl ExtensionHost {
         let mut stats = ExtensionDispatchStats::default();
         for event in events {
             stats.events += 1;
-            for hosted in &mut self.components {
-                if !hosted.custom_subscriptions.contains(&event.event)
-                    || !hosted
-                        .instance
-                        .grants()
-                        .contains(EVENTS_SUBSCRIBE_CAPABILITY)
-                    || hosted.instance.status() != &InstanceStatus::Active
-                {
-                    continue;
-                }
-                stats.deliveries += 1;
-                let principal =
-                    enter_guest(hosted, &self.principal_storage, &self.legacy_containers);
-                let result = hosted.instance.on_custom_event(event.clone());
-                self.diagnostics
-                    .extend(hosted.instance.take_logs().into_iter().map(|entry| {
-                        ExtensionDiagnostic::Log {
-                            extension: hosted.extension.clone(),
-                            component: hosted.component.clone(),
-                            entry,
-                        }
-                    }));
-                apply_delivery_result(
-                    hosted,
-                    result,
-                    LifecyclePhase::CustomEvent,
-                    &principal,
-                    delivery_commit_context!(self, stats),
-                );
-            }
+            self.deliver(
+                LifecyclePhase::CustomEvent,
+                &mut stats,
+                None,
+                |hosted| hosted.custom_subscriptions.contains(&event.event).then_some(()),
+                |hosted, ()| hosted.instance.on_custom_event(event.clone()),
+            );
         }
         stats
     }
@@ -658,49 +509,25 @@ impl ExtensionHost {
                 })
                 .collect::<Vec<_>>();
 
-            for hosted in &mut self.components {
-                if !hosted.receives_hit
-                    || !hosted
-                        .instance
-                        .grants()
-                        .contains(EVENTS_SUBSCRIBE_CAPABILITY)
-                    || hosted.instance.status() != &InstanceStatus::Active
-                {
-                    continue;
-                }
-                stats.deliveries += 1;
-                let principal =
-                    enter_guest(hosted, &self.principal_storage, &self.legacy_containers);
-                hosted
-                    .instance
-                    .set_entity_projections(entity_projections.clone());
-                let result = hosted.instance.on_hit(HitEvent {
-                    subject,
-                    aggressor,
-                    source,
-                    projectile,
-                    damage: hit.damage,
-                    power_attack: hit.power_attack,
-                    sneak_attack: hit.sneak_attack,
-                    bash_attack: hit.bash_attack,
-                    blocked: hit.blocked,
-                });
-                self.diagnostics
-                    .extend(hosted.instance.take_logs().into_iter().map(|entry| {
-                        ExtensionDiagnostic::Log {
-                            extension: hosted.extension.clone(),
-                            component: hosted.component.clone(),
-                            entry,
-                        }
-                    }));
-                apply_delivery_result(
-                    hosted,
-                    result,
-                    LifecyclePhase::Hit,
-                    &principal,
-                    delivery_commit_context!(self, stats),
-                );
-            }
+            self.deliver(
+                LifecyclePhase::Hit,
+                &mut stats,
+                Some(&entity_projections),
+                |hosted| hosted.receives_hit.then_some(()),
+                |hosted, ()| {
+                    hosted.instance.on_hit(HitEvent {
+                        subject,
+                        aggressor,
+                        source,
+                        projectile,
+                        damage: hit.damage,
+                        power_attack: hit.power_attack,
+                        sneak_attack: hit.sneak_attack,
+                        bash_attack: hit.bash_attack,
+                        blocked: hit.blocked,
+                    })
+                },
+            );
         }
         stats
     }
@@ -722,6 +549,46 @@ impl ExtensionHost {
             stats.faults = 1;
             return stats;
         }
+        let delivered = self.deliver(
+            LifecyclePhase::Update,
+            &mut stats,
+            None,
+            |hosted| {
+                hosted
+                    .recurring_update
+                    .as_mut()
+                    .and_then(|cadence| cadence.advance(dt))
+            },
+            |hosted, elapsed_seconds| hosted.instance.on_update(UpdateEvent { elapsed_seconds }),
+        );
+        stats.events += delivered;
+        stats
+    }
+
+    /// The delivery body every `dispatch_*` family shares (#5592): for each
+    /// hosted component that holds the events-subscribe grant and is `Active`
+    /// AND that `select` picks (the per-family subscription test; its value is
+    /// handed to `call`), enter the guest, optionally install the event's
+    /// entity projections, run the one `on_*` callback, drain the guest's logs
+    /// into the diagnostics, and commit the returned command batch.
+    ///
+    /// The grant + status gate lives here ONCE, so it cannot drift in one
+    /// family and silently deliver to a revoked component. Returns the number
+    /// of deliveries (each also counted in `stats.deliveries`).
+    ///
+    /// A method on `&mut self` whose closures capture only event data: the
+    /// loop splits `self` field-wise (`components` vs the stores and
+    /// diagnostics `enter_guest` / `delivery_commit_context!` borrow), which
+    /// a helper taking `&mut hosted` could not.
+    fn deliver<T>(
+        &mut self,
+        phase: LifecyclePhase,
+        stats: &mut ExtensionDispatchStats,
+        projections: Option<&[EntityProjection]>,
+        mut select: impl FnMut(&mut HostedComponent) -> Option<T>,
+        mut call: impl FnMut(&mut HostedComponent, T) -> Result<Vec<HostCommand>, SandboxError>,
+    ) -> usize {
+        let mut delivered = 0;
         for hosted in &mut self.components {
             if !hosted
                 .instance
@@ -731,34 +598,26 @@ impl ExtensionHost {
             {
                 continue;
             }
-            let Some(elapsed_seconds) = hosted
-                .recurring_update
-                .as_mut()
-                .and_then(|cadence| cadence.advance(dt))
-            else {
+            let Some(selected) = select(hosted) else {
                 continue;
             };
-            stats.events += 1;
             stats.deliveries += 1;
+            delivered += 1;
             let principal = enter_guest(hosted, &self.principal_storage, &self.legacy_containers);
-            let result = hosted.instance.on_update(UpdateEvent { elapsed_seconds });
-            self.diagnostics
-                .extend(hosted.instance.take_logs().into_iter().map(|entry| {
-                    ExtensionDiagnostic::Log {
-                        extension: hosted.extension.clone(),
-                        component: hosted.component.clone(),
-                        entry,
-                    }
-                }));
+            if let Some(projections) = projections {
+                hosted.instance.set_entity_projections(projections.to_vec());
+            }
+            let result = call(hosted, selected);
+            drain_logs(&mut self.diagnostics, hosted);
             apply_delivery_result(
                 hosted,
                 result,
-                LifecyclePhase::Update,
+                phase,
                 &principal,
-                delivery_commit_context!(self, stats),
+                delivery_commit_context!(self, *stats),
             );
         }
-        stats
+        delivered
     }
 
     pub(super) fn record_host_fault(&mut self, message: String) {

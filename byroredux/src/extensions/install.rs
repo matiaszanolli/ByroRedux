@@ -329,14 +329,7 @@ impl ExtensionHost {
         let result = hosted
             .instance
             .on_console_command(route.declaration_index, args);
-        self.diagnostics
-            .extend(hosted.instance.take_logs().into_iter().map(|entry| {
-                ExtensionDiagnostic::Log {
-                    extension: hosted.extension.clone(),
-                    component: hosted.component.clone(),
-                    entry,
-                }
-            }));
+        drain_logs(&mut self.diagnostics, hosted);
         let (output, commands) = match result {
             Ok(result) => result,
             Err(error) => {
@@ -693,14 +686,7 @@ impl ExtensionHost {
                     message: error.to_string(),
                 });
             }
-            self.diagnostics
-                .extend(hosted.instance.take_logs().into_iter().map(|entry| {
-                    ExtensionDiagnostic::Log {
-                        extension: hosted.extension.clone(),
-                        component: hosted.component.clone(),
-                        entry,
-                    }
-                }));
+            drain_logs(&mut self.diagnostics, hosted);
         }
     }
 
