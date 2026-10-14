@@ -494,14 +494,16 @@ fn fnv_voices_bsa_resolves_greeting_line_voice() {
     assert_eq!(&bytes[..4], b"OggS", "an Ogg Vorbis stream");
 }
 
-/// #5367 Phase V classification — Skyrim SE's voice container. The
-/// `Skyrim - Voices_en0.bsa` (v105) holds `.fuz` files; this test pins
-/// the container shape the doc records: a `FUZE`-magic wrapper whose
-/// body carries the `.lip` phoneme data followed by the audio stream
-/// (XMA2 on LE; SE's codec confirmed by the bytes below). Decoding
-/// XMA2 is its own project — the Phase V runtime is the Ogg path
-/// (FO3/FNV); this test exists so the V2 scope statement cites bytes,
-/// not folklore.
+/// #5367 Phase V classification — Skyrim's voice container (#5464). Both
+/// `Skyrim - Voices_en0.bsa` (v105, SE) and LE's `Skyrim - Voices.bsa`
+/// hold `.fuz` files with one layout: magic `FUZE`, `u32` version,
+/// `u32` lip size, then the raw `.lip` bytes (not a RIFF), then the audio
+/// — a `RIFF` of form type `XWMA`. The codec is xWMA (WMA v2 / WMA Pro in
+/// RIFF), not XMA2 (the Xbox 360 codec, which no PC file carries), so the
+/// V2 voice runtime needs an xWMA decoder. The audit census measured
+/// 3,000 / 3,000 sampled files on SE and on LE matching this layout.
+/// Phase V's runtime is the Ogg path (FO3/FNV); this test exists so the
+/// V2 scope statement cites bytes, not folklore.
 #[test]
 #[ignore = "needs Skyrim SE game data on disk"]
 fn skyrim_fuz_container_shape() {
@@ -517,24 +519,43 @@ fn skyrim_fuz_container_shape() {
     };
     let archive = BsaArchive::open(data.join("Skyrim - Voices_en0.bsa"))
         .unwrap_or_else(|e| panic!("open Voices_en0.bsa failed: {e}"));
-    let fuz = archive
+    let fuzzes: Vec<String> = archive
         .list_files()
         .into_iter()
-        .find(|p| p.ends_with(".fuz"))
-        .expect("the archive holds .fuz entries")
-        .to_owned();
-    let bytes = archive
-        .extract(&fuz)
-        .unwrap_or_else(|e| panic!("extract {fuz} failed: {e}"));
-    assert_eq!(&bytes[..4], b"FUZE", "the FUZ container magic");
-    // FUZE layout: magic, version u32, then a WAV chunk ("RIFX"/"RIFF")
-    // carrying the lip data, then the audio chunk. Record the shape.
-    let riff_at = bytes
-        .windows(4)
-        .position(|w| w == b"RIFX" || w == b"RIFF")
-        .expect("a RIFF lip chunk inside the FUZ");
+        .filter(|p| p.ends_with(".fuz"))
+        .take(64)
+        .map(str::to_owned)
+        .collect();
+    assert!(!fuzzes.is_empty(), "the archive holds .fuz entries");
+    for fuz in &fuzzes {
+        let bytes = archive
+            .extract(fuz)
+            .unwrap_or_else(|e| panic!("extract {fuz} failed: {e}"));
+        assert_eq!(&bytes[..4], b"FUZE", "{fuz}: the FUZ container magic");
+        let version = u32::from_le_bytes(bytes[4..8].try_into().unwrap());
+        assert_eq!(version, 1, "{fuz}: FUZE version");
+        let lip_size = u32::from_le_bytes(bytes[8..12].try_into().unwrap()) as usize;
+        // The audio chunk starts right after the lip data: a RIFF of form
+        // type XWMA (offset 8 of the RIFF header).
+        let audio_at = 12 + lip_size;
+        assert!(
+            bytes.len() >= audio_at + 12,
+            "{fuz}: {} bytes cannot hold lip_size {lip_size} + an audio header",
+            bytes.len()
+        );
+        assert_eq!(
+            &bytes[audio_at..audio_at + 4],
+            b"RIFF",
+            "{fuz}: audio RIFF at 12 + lip_size ({audio_at})"
+        );
+        assert_eq!(
+            &bytes[audio_at + 8..audio_at + 12],
+            b"XWMA",
+            "{fuz}: the audio codec is xWMA, not XMA2"
+        );
+    }
     eprintln!(
-        "[fuz] {fuz}: {} bytes, FUZE ok, RIFF lip chunk at {riff_at}",
-        bytes.len()
+        "[fuz] {} sampled .fuz files: FUZE v1 + raw lip + RIFF/XWMA at 12 + lip_size",
+        fuzzes.len()
     );
 }

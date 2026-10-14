@@ -44,8 +44,8 @@
 //! has no authored shape (the bare `<formid>_<n>.ogg` form matched zero
 //! files in either archive) and stays silent. The voice-type EDID
 //! resolves through the NPC's `VTCK` → the indexed `VTYP` records.
-//! `.fuz` (Skyrim+) is a different container — not handled here, see
-//! the design doc's Phase V notes. FNV DLC voice ships inside
+//! `.fuz` (Skyrim+) is a different container (FUZE + raw lip + RIFF
+//! xWMA, #5464) — not handled here, see the design doc's Phase V notes. FNV DLC voice ships inside
 //! `<DLC> - Main.bsa`, which the profile does not mount: pass it with
 //! `--sounds-bsa` for a voiced DLC session.
 //!
