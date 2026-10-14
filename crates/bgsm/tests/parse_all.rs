@@ -39,7 +39,9 @@
 //!
 //! See `docs/audits/AUDIT_FO4_2026-04-17.md` Dim 6 + issue #491.
 
-use byroredux_bgsm::{parse, MaterialFile};
+use byroredux_bgsm::{
+    parse_bgem_diag, parse_bgsm_diag, Error, MaterialFile, ParseDiagnostics, NEWEST_KNOWN_VERSION,
+};
 use byroredux_bsa::Ba2Archive;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -64,12 +66,62 @@ impl Variant {
     }
 }
 
+/// `"BGSM"` / `"BGEM"` read as little-endian u32 (the crate keeps its own
+/// constants `pub(crate)`).
+const BGSM_MAGIC: u32 = u32::from_le_bytes(*b"BGSM");
+const BGEM_MAGIC: u32 = u32::from_le_bytes(*b"BGEM");
+
+/// `parse` with the #4664/#4672 diagnostics kept: dispatches on the magic
+/// exactly like `byroredux_bgsm::parse`, but through `parse_bgsm_diag` /
+/// `parse_bgem_diag` (#5011 — the sweeps called `parse()` and counted `Ok`
+/// only, so a gating regression that reads the wrong fields but consumes
+/// every byte, or leaves bytes over without erroring, stayed green).
+fn parse_diag(bytes: &[u8]) -> (Result<MaterialFile, Error>, ParseDiagnostics) {
+    let magic = bytes
+        .get(..4)
+        .map(|m| u32::from_le_bytes([m[0], m[1], m[2], m[3]]));
+    match magic {
+        Some(BGSM_MAGIC) => {
+            let (r, d) = parse_bgsm_diag(bytes);
+            (r.map(MaterialFile::Bgsm), d)
+        }
+        Some(BGEM_MAGIC) => {
+            let (r, d) = parse_bgem_diag(bytes);
+            (r.map(MaterialFile::Bgem), d)
+        }
+        // Too short or unknown magic: let `parse` produce the real error.
+        _ => (
+            byroredux_bgsm::parse(bytes),
+            ParseDiagnostics::default(),
+        ),
+    }
+}
+
+/// The #4664 drift signals — leftover bytes or a version past the newest
+/// layout the crate knows. Lossy strings (#4672) are tallied separately:
+/// they are a content fact, not a layout one.
+fn drift_description(d: &ParseDiagnostics) -> Option<String> {
+    let mut parts = Vec::new();
+    if d.unconsumed_bytes > 0 {
+        parts.push(format!("{} unconsumed byte(s)", d.unconsumed_bytes));
+    }
+    if let Some(v) = d.version_over_ceiling {
+        parts.push(format!("version {v} > {NEWEST_KNOWN_VERSION}"));
+    }
+    (!parts.is_empty()).then(|| parts.join(", "))
+}
+
 #[derive(Default)]
 struct VariantStats {
     total: usize,
     clean: usize,
     /// Error-message first-line → (count, up-to-5 filenames).
     buckets: HashMap<String, (usize, Vec<String>)>,
+    /// Files that parsed `Ok` but tripped a #4664 drift signal (#5011).
+    drift: Vec<(String, String)>,
+    /// Files with at least one lossily-decoded string (#4672); reported,
+    /// not gated.
+    lossy_strings: usize,
 }
 
 impl VariantStats {
@@ -88,6 +140,27 @@ impl VariantStats {
         entry.0 += 1;
         if entry.1.len() < 5 {
             entry.1.push(path.to_string());
+        }
+    }
+
+    /// Record a successful parse's diagnostics (#5011).
+    fn note_diagnostics(&mut self, path: &str, d: &ParseDiagnostics) {
+        if let Some(what) = drift_description(d) {
+            self.drift.push((path.to_string(), what));
+        }
+        if d.lossy_strings {
+            self.lossy_strings += 1;
+        }
+    }
+
+    fn print_drift(&self, label: &str) {
+        eprintln!(
+            "[{label}] {} file(s) with layout drift; {} with lossy strings",
+            self.drift.len(),
+            self.lossy_strings
+        );
+        for (path, what) in self.drift.iter().take(10) {
+            eprintln!("  DRIFT {path}: {what}");
         }
     }
 
@@ -239,9 +312,16 @@ fn walk_variant(archive: &Ba2Archive, expect: Variant) -> VariantStats {
                 continue;
             }
         };
-        match parse(&bytes) {
-            Ok(MaterialFile::Bgsm(_)) if expect == Variant::Bgsm => stats.record_ok(),
-            Ok(MaterialFile::Bgem(_)) if expect == Variant::Bgem => stats.record_ok(),
+        let (parsed, diag) = parse_diag(&bytes);
+        match parsed {
+            Ok(MaterialFile::Bgsm(_)) if expect == Variant::Bgsm => {
+                stats.record_ok();
+                stats.note_diagnostics(path, &diag);
+            }
+            Ok(MaterialFile::Bgem(_)) if expect == Variant::Bgem => {
+                stats.record_ok();
+                stats.note_diagnostics(path, &diag);
+            }
             Ok(other) => {
                 let got = match other {
                     MaterialFile::Bgsm(_) => "BGSM",
@@ -268,7 +348,19 @@ fn run_variant(expect: Variant) {
     };
     let stats = walk_variant(&archive, expect);
     stats.print_summary(expect.label());
+    stats.print_drift(expect.label());
 
+    // #5011 / #4664 — vanilla is measured zero-noise (0/36,888 files with
+    // leftover bytes; only v2 and v22 in use), so any drift is a gating
+    // regression that still returns `Ok`.
+    assert!(
+        stats.drift.is_empty(),
+        "[{}] {} file(s) parsed but left bytes unconsumed or exceeded the \
+         known version ceiling: {:?}",
+        expect.label(),
+        stats.drift.len(),
+        &stats.drift[..stats.drift.len().min(5)]
+    );
     assert!(
         stats.total > 0,
         "[{}] expected at least one {} file in the Materials archive",
@@ -324,6 +416,8 @@ fn parse_rate_fo76_materials_corpus() {
         json_text: usize,
         json_examples: Vec<String>,
         failures: Vec<(String, String)>,
+        /// #5011 — parsed `Ok` but tripped a #4664 drift signal.
+        drift: Vec<(String, String)>,
     }
     let mut stats = Stats::default();
     for path in archive.list_files() {
@@ -348,8 +442,12 @@ fn parse_rate_fo76_materials_corpus() {
             }
             continue;
         }
-        if parse(&bytes).is_ok() {
+        let (parsed, diag) = parse_diag(&bytes);
+        if parsed.is_ok() {
             stats.clean += 1;
+            if let Some(what) = drift_description(&diag) {
+                stats.drift.push((path.to_string(), what));
+            }
         } else {
             stats.failures.push((path.to_string(), "parse failed".to_string()));
         }
@@ -372,6 +470,16 @@ fn parse_rate_fo76_materials_corpus() {
     // The audit measured 29,989/29,991 OK with exactly 2 known JSON files;
     // both exceptions are accounted for above, so the remainder must be
     // spotless.
+    for (path, what) in stats.drift.iter().take(10) {
+        eprintln!("  DRIFT {path}: {what}");
+    }
+    assert!(
+        stats.drift.is_empty(),
+        "{} FO76 material file(s) parsed but drifted (unconsumed bytes / version \
+         over the ceiling): {:?}",
+        stats.drift.len(),
+        &stats.drift[..stats.drift.len().min(5)]
+    );
     assert!(
         stats.failures.is_empty(),
         "{} FO76 material file(s) failed to parse: {:?}",
@@ -382,4 +490,27 @@ fn parse_rate_fo76_materials_corpus() {
         stats.clean + stats.json_text == stats.total,
         "every file must be clean-parse or accounted JSON"
     );
+}
+
+/// #5011 — the gate's own predicate, runnable without game data: clean and
+/// lossy-only parses are not drift; leftover bytes and an over-ceiling
+/// version each are.
+#[test]
+fn drift_predicate_flags_only_layout_signals() {
+    assert!(drift_description(&ParseDiagnostics::default()).is_none());
+    assert!(drift_description(&ParseDiagnostics {
+        lossy_strings: true,
+        ..Default::default()
+    })
+    .is_none());
+    assert!(drift_description(&ParseDiagnostics {
+        unconsumed_bytes: 1,
+        ..Default::default()
+    })
+    .is_some());
+    assert!(drift_description(&ParseDiagnostics {
+        version_over_ceiling: Some(NEWEST_KNOWN_VERSION + 1),
+        ..Default::default()
+    })
+    .is_some());
 }

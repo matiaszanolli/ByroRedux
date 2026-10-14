@@ -205,6 +205,34 @@ fn for_each_game(what: &str, body: impl Fn(Game, &Expected, Vec<u8>)) {
 const NV_EGM_NON_FINITE: usize = 0;
 const FO3_EGM_NON_FINITE: usize = 0;
 
+/// Count of non-finite delta components across every morph. #4653 — the EGM
+/// deltas are scaled INT16s, so a correct decode yields none.
+fn non_finite_components(egm: &EgmFile) -> usize {
+    egm.fggs_morphs
+        .iter()
+        .chain(egm.fgga_morphs.iter())
+        .map(|m| m.deltas.iter().flatten().filter(|c| !c.is_finite()).count())
+        .sum()
+}
+
+/// #4653 — int16 deltas are always finite, and the SDK's full-range
+/// quantisation means every morph peaks at |m| near 32767 (relative to the
+/// morph's own scale). Shared by every game's EGM case (#5011).
+#[track_caller]
+fn assert_egm_int16_quantised(g: &str, egm: &EgmFile) {
+    let mut max_raw = 0.0f32;
+    for morph in egm.fggs_morphs.iter().chain(egm.fgga_morphs.iter()) {
+        for d in morph.deltas.iter().flatten() {
+            max_raw = max_raw.max(d.abs());
+        }
+    }
+    assert!(
+        (30_000.0..=32_768.0).contains(&max_raw),
+        "[{g}] every morph should quantise to near-full-range int16 \
+         (expected peak ~32767, got {max_raw})"
+    );
+}
+
 #[test]
 #[ignore = "needs FNV/FO3 game data on disk"]
 fn parse_vanilla_headhuman_egm() {
@@ -236,37 +264,8 @@ fn parse_vanilla_headhuman_egm() {
                     "[{g}] every morph must carry one delta per vertex"
                 );
             }
-            // NaN sentinel deltas DO appear in vanilla `headhuman.egm` —
-            // FaceGen's authoring pipeline stores "no displacement" as
-            // a half-float NaN bit-pattern on some entries (verified by
-            // dumping non-finite indices on 2026-04-29). The Phase 3b
-            // morph evaluator must guard against NaN propagation when
-            // it sums `weight * delta` per vertex; the parser layer
-            // preserves the on-disk bytes verbatim.
-            let nan_count: usize = egm
-                .fggs_morphs
-                .iter()
-                .chain(egm.fgga_morphs.iter())
-                .map(|m| m.deltas.iter().flatten().filter(|c| !c.is_finite()).count())
-                .sum();
-            // #4653 — int16 deltas are always finite, and the SDK's
-            // full-range quantisation means every morph peaks at |m|
-            // near 32767 (relative to the morph's own scale).
-            let mut max_raw = 0.0f32;
-            for morph in egm
-                .fggs_morphs
-                .iter()
-                .chain(egm.fgga_morphs.iter())
-            {
-                for d in morph.deltas.iter().flatten() {
-                    max_raw = max_raw.max(d.abs());
-                }
-            }
-            assert!(
-                (30_000.0..=32_768.0).contains(&max_raw),
-                "[{g}] every morph should quantise to near-full-range int16 \
-                 (expected peak ~32767, got {max_raw})"
-            );
+            let nan_count = non_finite_components(&egm);
+            assert_egm_int16_quantised(g, &egm);
             // #4665 (PAR-D4-2026-09-21-03) — this used to be an
             // eprintln, which could never catch a decode regression; the
             // PAR-D5-2026-09-21-01 EGM bug is exactly what it existed to
@@ -286,53 +285,81 @@ fn parse_vanilla_headhuman_egm() {
     );
 }
 
-/// #4665 — Oblivion ships 141 EGMs and had no test at all. This case
-/// pins the same structural facts the FNV/FO3 EGM test pins (parse,
-/// vertex count, per-morph delta coverage). The baseline numbers are
-/// measured on first run and recorded in the EXPECT table like every
-/// other real-data fact here.
+/// #4665 — Oblivion ships 141 EGMs and had no test at all. #5011 — it used
+/// to resolve its data dir by hand and `return` on a miss, so it was green
+/// in the strict lane having touched nothing, and it pinned only `> 0`
+/// counts. It now goes through the same `require_*` gates as the FNV/FO3
+/// cases and pins the measured baseline plus the #4653 int16 checks.
+///
+/// Oblivion keeps the head sidecars under the race folder, not
+/// `characters\head` like FNV/FO3, and its data dir is not a `Game` variant
+/// (its other head assets differ), so the resolution is spelled out here.
 #[test]
 #[ignore = "needs Oblivion game data on disk"]
 fn parse_vanilla_headhuman_egm_oblivion() {
-    let data = if let Ok(v) = std::env::var("BYROREDUX_OBLIVION_DATA") {
-        PathBuf::from(v)
+    const ENV_VAR: &str = "BYROREDUX_OBLIVION_DATA";
+    const DEFAULT: &str = "/mnt/data/SteamLibrary/steamapps/common/Oblivion/Data";
+    // Measured 2026-10-14 against unmodded Oblivion GOTY.
+    const EXPECT_BYTES: usize = 833_664;
+    const EXPECT_VERTICES: u32 = 1736;
+    const EXPECT_SYM_MORPHS: usize = 50;
+    const EXPECT_ASYM_MORPHS: usize = 30;
+
+    let data = if let Some(v) = std::env::var(ENV_VAR).ok().filter(|s| !s.is_empty()) {
+        // An explicitly-set override is binding (#3850).
+        let p = PathBuf::from(v);
+        assert!(p.is_dir(), "{ENV_VAR} points to {p:?}, which is not a directory");
+        p
     } else {
-        PathBuf::from("/mnt/data/SteamLibrary/steamapps/common/Oblivion/Data")
+        let p = PathBuf::from(DEFAULT);
+        if !p.is_dir() {
+            require_game_data(ENV_VAR, &p);
+            eprintln!("skipping: Oblivion data not found");
+            return;
+        }
+        p
     };
-    if !data.is_dir() {
-        eprintln!("skipping: Oblivion data not found");
+    let archive_path = data.join("Oblivion - Meshes.bsa");
+    if !archive_path.is_file() {
+        require_archive(&archive_path);
         return;
     }
-    let archive_path = data.join("Oblivion - Meshes.bsa");
-    let archive = byroredux_bsa::BsaArchive::open(&archive_path)
+    let archive = BsaArchive::open(&archive_path)
         .unwrap_or_else(|e| panic!("open Oblivion - Meshes.bsa: {e:?}"));
     let entry = archive
         .list_files()
         .into_iter()
-        // Oblivion keeps the head sidecars under the race folder, not
-        // `characters\head` like FNV/FO3.
-        .find(|p| {
-            p.to_lowercase() == "meshes\\characters\\imperial\\headhuman.egm"
-        })
+        .find(|p| p.to_lowercase() == "meshes\\characters\\imperial\\headhuman.egm")
         .unwrap_or_else(|| panic!("headhuman.egm not in Oblivion - Meshes.bsa"));
     let bytes = archive
         .extract(entry)
         .unwrap_or_else(|e| panic!("extract headhuman.egm: {e:?}"));
     let egm = EgmFile::parse(&bytes).unwrap_or_else(|e| panic!("parse: {e:?}"));
-    assert!(egm.num_vertices > 0, "Oblivion headhuman.egm vertex count");
-    let morphs = egm.fggs_morphs.len() + egm.fgga_morphs.len();
-    assert!(morphs > 0, "Oblivion headhuman.egm carries morphs");
+    let g = "Oblivion";
+    eprintln!(
+        "[{g}] headhuman.egm: {} bytes, {} verts, {} sym + {} asym morphs",
+        bytes.len(),
+        egm.num_vertices,
+        egm.fggs_morphs.len(),
+        egm.fgga_morphs.len()
+    );
+    assert_eq!(bytes.len(), EXPECT_BYTES, "[{g}] vanilla headhuman.egm baseline byte count drifted");
+    assert_eq!(egm.num_vertices, EXPECT_VERTICES, "[{g}] egm vertices");
+    assert_eq!(egm.fggs_morphs.len(), EXPECT_SYM_MORPHS, "[{g}] egm symmetric morphs");
+    assert_eq!(egm.fgga_morphs.len(), EXPECT_ASYM_MORPHS, "[{g}] egm asymmetric morphs");
     for morph in egm.fggs_morphs.iter().chain(egm.fgga_morphs.iter()) {
         assert_eq!(
             morph.deltas.len(),
             egm.num_vertices as usize,
-            "every morph must carry one delta per vertex"
+            "[{g}] every morph must carry one delta per vertex"
         );
     }
-    eprintln!(
-        "[Oblivion] headhuman.egm: {} verts, {morphs} morphs (record these in the EXPECT table)",
-        egm.num_vertices
+    assert_eq!(
+        non_finite_components(&egm),
+        0,
+        "[{g}] non-finite delta component count drifted — an int16 decode change"
     );
+    assert_egm_int16_quantised(g, &egm);
 }
 
 #[test]
