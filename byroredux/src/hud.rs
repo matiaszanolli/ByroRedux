@@ -40,10 +40,8 @@ use crate::asset_provider::{extract_first, open_with_numeric_siblings, Archive};
 use crate::inventory::PlayerVitals;
 use crate::systems::PlayerEntity;
 
-/// Skyrim-profile AVIF keys the engine already stamps (`0x3E8` Health,
-/// `0x3E9` Magicka, `0x3EA` Stamina). Oblivion's index-based actor
-/// values are not yet stamped onto the player capsule, so the Oblivion
-/// HUD reads these opportunistically and falls back to full bars.
+/// One HUD bar's source: a label plus the AVIF editor id its fraction
+/// derives from.
 ///
 /// Bar keys are canonical AVIF **editor ids** (`"Health"`,
 /// `"ActionPoints"`, …) resolved per load through `PlayerVitals` —
@@ -780,15 +778,16 @@ impl MenuXmlHud {
     }
 }
 
-/// Bar fractions for the HUD: pinned debug values win, then any stamped
-/// actor values on an actor entity, else full bars.
+/// Bar fractions for the HUD: pinned debug values win, then the player's
+/// own actor values, else full bars.
 ///
-/// Oblivion NPCs do not yet carry AVIF-keyed `ActorValues` (the
-/// index-keyed Oblivion actor-value profile is future work), so today
-/// the Oblivion profile reads the Skyrim-keyed values that *are*
-/// stamped in the Skyrim flow; FO3/FNV read their own AVIF keys.
-/// `hud.values` drives everything deterministically for smokes either
-/// way.
+/// Every profile resolves its bar editor ids through the per-load
+/// `PlayerVitals` table and reads `PlayerEntity`'s `ActorValues` only
+/// (#4675) — no literal FormIDs, no scan of other actors. Oblivion
+/// resolves no ids today (`build_player_vitals`, #3768/#4679: its
+/// index-keyed actor-value profile is not built), so its bars stay full
+/// unless pinned. `hud.values` drives everything deterministically for
+/// smokes either way.
 fn bar_fractions(world: &World, control: &HudControl, profile: &HudGameProfile) -> [f32; 3] {
     // #4675 — editor ids resolve through the per-load `PlayerVitals`
     // table (the same resolution `build_player_vitals` performs), never
@@ -809,9 +808,10 @@ fn bar_fractions(world: &World, control: &HudControl, profile: &HudGameProfile) 
     out
 }
 
-/// One bar's fraction: pinned debug value wins, then any stamped actor
-/// value, else full. Shared with the Scaleform HUD driver (Skyrim uses
-/// the same AVIF keys and the same pin semantics).
+/// One bar's fraction: pinned debug value wins, then the player's actor
+/// value for `av` (a resolved AVIF FormID), else full. Shared with the
+/// Scaleform HUD driver, which uses the same `PlayerVitals` resolution and
+/// pin semantics.
 pub(crate) fn fraction(world: &World, av: Option<u32>, pinned: Option<f32>) -> f32 {
     pinned.map(|v| v.clamp(0.0, 1.0)).unwrap_or_else(|| {
         let av = match av {
