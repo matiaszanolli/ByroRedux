@@ -35,7 +35,7 @@
 //! (WATAL §7 Phase 2).
 
 use byroredux_core::ecs::components::collision::{MotionType, RigidBodyData};
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 use byroredux_core::ecs::components::groundcover::WindField;
 use byroredux_core::ecs::components::water::{
     WaterContact, WaterCurrentVolume, WaterFlow, WaterKind, WaterMaterial, WaterPlane, WaterSurfaceMesh,
@@ -150,7 +150,15 @@ pub struct WaterContactScratch {
     /// the water, and is swept of despawned bodies after each full scan. A
     /// load simply re-derives it on the first asleep scan (worst case: the
     /// body settles at its current depth).
-    rest_depth: HashMap<EntityId, f32>,
+    ///
+    /// Each value is `(depth, scan stamp)`: the stamp is `scan_generation`
+    /// as of the last scan that saw the body asleep and wet, so the
+    /// despawn sweep is one O(latched) `retain` on the stamp instead of an
+    /// O(latched × targets) search (#5709). `FxHashMap`, not SipHash: the
+    /// keyspace is per wet body per frame (#2923).
+    rest_depth: FxHashMap<EntityId, (f32, u32)>,
+    /// Bumped once per scan; the stamp `rest_depth` entries are refreshed to.
+    scan_generation: u32,
 }
 
 /// How far a sleeping float's depth may drift from its settled depth before
@@ -730,7 +738,10 @@ fn apply_buoyancy_with_scratch(
         in_current_prev,
         in_current_now,
         rest_depth,
+        scan_generation,
     } = scratch;
+    *scan_generation = scan_generation.wrapping_add(1);
+    let generation = *scan_generation;
     surfaces.clear();
     current_volumes.clear();
     targets.clear();
@@ -1111,7 +1122,11 @@ fn apply_buoyancy_with_scratch(
                                 rest_depth.remove(&t.entity);
                                 true
                             } else if b.is_sleeping() {
-                                let rest = *rest_depth.entry(t.entity).or_insert(depth_now);
+                                let latch = rest_depth
+                                    .entry(t.entity)
+                                    .or_insert((depth_now, generation));
+                                latch.1 = generation;
+                                let rest = latch.0;
                                 let drifted = (depth_now - rest).abs() > WAVE_WAKE_DEPTH_DELTA;
                                 if drifted {
                                     rest_depth.remove(&t.entity);
@@ -1339,8 +1354,10 @@ fn apply_buoyancy_with_scratch(
         in_current_now.sort_unstable();
         std::mem::swap(in_current_prev, in_current_now);
         if !rest_depth.is_empty() {
-            // Despawned bodies leave no dry branch to clear them.
-            rest_depth.retain(|entity, _| targets.iter().any(|t| t.entity == *entity));
+            // Despawned bodies leave no dry branch to clear them — and
+            // neither refresh their stamp, which every live asleep-wet body
+            // does each scan. Every other arm removes its own latch.
+            rest_depth.retain(|_, (_, stamp)| *stamp == generation);
         }
     }
 
@@ -2731,6 +2748,125 @@ mod tests {
         );
     }
 
+    /// #5709 — the settled-depth latch of a float that despawns while asleep
+    /// is swept by the scan stamp (no dry branch ever clears it), and a live
+    /// sleeper's latch survives every scan.
+    #[test]
+    fn a_despawned_sleeper_leaves_no_rest_depth_latch() {
+        use crate::{physics_sync_system, RapierHandles};
+        use byroredux_core::ecs::components::collision::{
+            CollisionShape, MotionType, RigidBodyData,
+        };
+        use byroredux_core::ecs::components::water::{
+            WaterContact, WaterKind, WaterMaterial, WaterPlane, WaterVolume,
+        };
+        use byroredux_core::ecs::components::{GlobalTransform, Transform};
+        use byroredux_core::ecs::resources::TotalTime;
+        use byroredux_core::ecs::World;
+
+        let mut world = World::new();
+        world.insert_resource(PhysicsWorld::new());
+        world.insert_resource(PhysicsWaterConstants {
+            buoyancy_density_ratio: 1.02,
+            ..PhysicsWaterConstants::default()
+        });
+        world.insert_resource(WaterContactScratch::default());
+        world.insert_resource(TotalTime(0.0));
+        world.register::<RapierHandles>();
+        world.register::<WaterContact>();
+
+        let water = world.spawn();
+        world.insert(
+            water,
+            WaterPlane {
+                kind: WaterKind::Calm,
+                material: WaterMaterial::default(),
+                damage_per_second: 0.0,
+            },
+        );
+        world.insert(
+            water,
+            WaterVolume {
+                min: [-500.0, -200.0, -500.0],
+                max: [500.0, 0.0, 500.0],
+            },
+        );
+        let body = world.spawn();
+        world.insert(body, CollisionShape::Ball { radius: 15.0 });
+        world.insert(
+            body,
+            RigidBodyData {
+                motion_type: MotionType::Dynamic,
+                mass: 20.0,
+                friction: 0.5,
+                restitution: 0.0,
+                linear_damping: 0.0,
+                angular_damping: 0.0,
+                collidable: true,
+                surface_material: 0,
+                part_surface_materials: Box::new([]),
+                havok_layer: 0,
+            },
+        );
+        world.insert(
+            body,
+            GlobalTransform::new(Vec3::new(0.0, -5.0, 0.0), Quat::IDENTITY, 1.0),
+        );
+        world.insert(body, Transform::from_translation(Vec3::new(0.0, -5.0, 0.0)));
+
+        for _ in 0..4000 {
+            physics_sync_system(&world, PHYSICS_DT);
+            if world.resource::<PhysicsWorld>().active_island_counts().0 == 0 {
+                break;
+            }
+        }
+        assert_eq!(
+            world.resource::<PhysicsWorld>().active_island_counts().0,
+            0,
+            "fixture: the float must sleep"
+        );
+        // A few more asleep scans: the latch must persist (stamp refreshed).
+        for _ in 0..5 {
+            physics_sync_system(&world, PHYSICS_DT);
+        }
+        assert_eq!(
+            world.resource::<WaterContactScratch>().rest_depth.len(),
+            1,
+            "a live sleeping float keeps its settled-depth latch across scans"
+        );
+
+        // The sweep runs on a full scan; a newcomer forces one (an all-asleep
+        // scene takes the quiesced fast path and sweeps nothing).
+        world.despawn(body);
+        let newcomer = world.spawn();
+        world.insert(newcomer, CollisionShape::Ball { radius: 5.0 });
+        world.insert(
+            newcomer,
+            RigidBodyData {
+                motion_type: MotionType::Dynamic,
+                mass: 1.0,
+                friction: 0.5,
+                restitution: 0.0,
+                linear_damping: 0.0,
+                angular_damping: 0.0,
+                collidable: true,
+                surface_material: 0,
+                part_surface_materials: Box::new([]),
+                havok_layer: 0,
+            },
+        );
+        world.insert(
+            newcomer,
+            GlobalTransform::new(Vec3::new(0.0, 400.0, 0.0), Quat::IDENTITY, 1.0),
+        );
+        world.insert(newcomer, Transform::from_translation(Vec3::new(0.0, 400.0, 0.0)));
+        physics_sync_system(&world, PHYSICS_DT);
+        assert!(
+            world.resource::<WaterContactScratch>().rest_depth.is_empty(),
+            "the despawned float's latch must be swept"
+        );
+    }
+
     /// Settle a thin float released slightly below equilibrium; returns
     /// (peak-to-peak y over the last 3 s, asleep at the end).
     fn thin_float_settle(height: f32, fps: f32) -> (f32, bool) {
@@ -3788,6 +3924,40 @@ mod ragdoll_stale_contact_tests {
         assert!(
             drift_v1.abs() < 0.45 * drift_v0.abs(),
             "the authored link damping must decay the drift: {drift_v0:.1} -> {drift_v1:.1}"
+        );
+    }
+}
+
+/// #5709 — the water pass's per-frame, per-body latches stay on the Fx hasher
+/// (hot-path rule #2923; modelled on `skin_slot_pool_maps_are_not_siphash`).
+#[cfg(test)]
+mod water_latch_hasher_tests {
+    use byroredux_core::source_scan::production_text;
+
+    #[test]
+    fn water_scan_latches_are_not_siphash() {
+        let water = production_text(include_str!("water.rs"));
+        let world = production_text(include_str!("world/mod.rs"));
+        for (src, decl) in [
+            (water, "rest_depth: FxHashMap<EntityId, (f32, u32)>,"),
+            (world, "water_force_targets: FxHashSet<RigidBodyHandle>,"),
+        ] {
+            assert!(
+                src.contains(decl),
+                "`{decl}` is gone — the buoyancy scan probes it once per wet \
+                 dynamic body per frame, which is what makes SipHash-1-3 the \
+                 wrong default here (#2923, #5709)",
+            );
+        }
+        // The prune must not regress to the O(latched × targets) search.
+        assert!(
+            !water.contains("targets.iter().any(|t| t.entity == *entity)"),
+            "rest_depth is swept by scan stamp, not by searching `targets` (#5709)"
+        );
+        assert!(
+            !water.contains("std::collections::HashMap")
+                && !water.contains("use std::collections::HashMap"),
+            "water.rs reaches for std SipHash maps again (#5709)"
         );
     }
 }

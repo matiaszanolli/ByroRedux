@@ -8,6 +8,7 @@
 use byroredux_core::ecs::components::MotionType;
 use byroredux_core::ecs::resource::Resource;
 use rapier3d::prelude::*;
+use rustc_hash::FxHashSet;
 
 // #5311 (TD1-2026-10-05-01) — the query/KCC impl and the explosion
 // recovery/containment cluster live in child modules; `step` consumes
@@ -265,7 +266,7 @@ pub struct PhysicsWorld {
     /// user-force accumulation is reset-then-add per owner, and a second
     /// reset would discard the water forces. Cleared at the top of every
     /// `apply_buoyancy` run.
-    pub(crate) water_force_targets: std::collections::HashSet<RigidBodyHandle>,
+    pub(crate) water_force_targets: FxHashSet<RigidBodyHandle>,
     /// Bodies whose buoyancy lift is re-derived at every fixed tick rather
     /// than held for the whole render frame (#5547) — see
     /// [`crate::water::WaterLift`]. Refilled by each `apply_buoyancy` run.
@@ -484,7 +485,7 @@ impl PhysicsWorld {
             colliders: ColliderSet::new(),
             impulse_joints: ImpulseJointSet::new(),
             multibody_joints: MultibodyJointSet::new(),
-            water_force_targets: std::collections::HashSet::new(),
+            water_force_targets: FxHashSet::default(),
             water_lift: Vec::new(),
             soft_bodies: SoftBodySet::new(),
             islands: IslandManager::new(),
@@ -967,9 +968,8 @@ impl PhysicsWorld {
         let pending = std::mem::take(&mut self.spawn_sleep_pending);
         // #5700 — a set, not a Vec: every buffered event is tested
         // against it, and on a large grid load events ≈ newcomers.
-        let mut settled_colliders: std::collections::HashSet<
-            rapier3d::prelude::ColliderHandle,
-        > = std::collections::HashSet::new();
+        let mut settled_colliders: FxHashSet<rapier3d::prelude::ColliderHandle> =
+            FxHashSet::default();
         for (handle, spawn_pos) in pending {
             // The water pass's deliberate dry→wet / current wakes are
             // not the begin-touch strong-wake — those bodies must

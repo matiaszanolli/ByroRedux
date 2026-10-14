@@ -9,4 +9,5 @@ glam = { workspace = true }
 log = { workspace = true }
 rapier3d = { workspace = true }
 rayon = { workspace = true }
+rustc-hash = { workspace = true }
 serde = { workspace = true }
