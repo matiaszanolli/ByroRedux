@@ -300,7 +300,7 @@ vec3 byroGcWindBend(
 
 void byroGcControlPoints(
     vec3 base, vec3 up, float height, vec3 windBend, vec2 disturbance,
-    out vec3 p1, out vec3 p2
+    float bendCarry, out vec3 p1, out vec3 p2
 ) {
     float disturbAmount = min(length(disturbance), 1.0);
     vec3 bend = windBend;
@@ -317,8 +317,13 @@ void byroGcControlPoints(
     // different fictional length.
     float bendFraction = min(length(bend) / max(height, GROUNDCOVER_BLADE_VECTOR_EPSILON), 1.0);
     float uprightScale = sqrt(max(1.0 - bendFraction * bendFraction, 0.0));
+    // The control point stays over the root (`up` axis) and carries only
+    // `bendCarry` of the lean, so the blade rises vertically and bows toward
+    // its tip instead of being a straight stick tilted about the root. At
+    // `bendCarry = 0.5` this is the old collinear chord. The same carry is
+    // used at both clock samples so motion vectors stay consistent.
     p1 = base + up * (height * GROUNDCOVER_BEZIER_CONTROL_FRACTION * uprightScale)
-        + bend * GROUNDCOVER_BEZIER_CONTROL_FRACTION;
+        + bend * bendCarry;
     p2 = base + up * (height * uprightScale) + bend;
 }
 
@@ -473,8 +478,15 @@ void main() {
     vec3 p2;
     vec3 prevP1;
     vec3 prevP2;
-    byroGcControlPoints(base, up, height, bend, disturbance, p1, p2);
-    byroGcControlPoints(base, up, height, prevBend, previousDisturbance, prevP1, prevP2);
+    // Stream 10: no other per-blade attribute reads it (0-6 are taken, and the
+    // sub-blade seeds above draw 7-9 from the PARENT seed, not this one).
+    float bendCarry = mix(
+        GROUNDCOVER_BEZIER_BEND_CARRY_MIN,
+        GROUNDCOVER_BEZIER_BEND_CARRY_MAX,
+        gcSeedStream(seed, 10u));
+    byroGcControlPoints(base, up, height, bend, disturbance, bendCarry, p1, p2);
+    byroGcControlPoints(
+        base, up, height, prevBend, previousDisturbance, bendCarry, prevP1, prevP2);
 
     if (cardTier) {
         const uint QUAD[6] = uint[6](0u, 1u, 2u, 2u, 1u, 3u);

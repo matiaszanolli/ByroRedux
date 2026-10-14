@@ -495,9 +495,19 @@ pub const GROUNDCOVER_BLADE_SEGMENTS_NEAR: u32 = 3;
 /// tier ladder. The fixed blade arena is drawn twice during the projected-size
 /// cross-fade; only the indirect vertex stride changes.
 pub const GROUNDCOVER_BLADE_SEGMENTS_MID: u32 = 1;
-/// Quadratic Bézier control points sit half-way along each end-point chord.
-/// This is geometry, not a visual tuning knob.
+/// Where the quadratic Bézier's control point sits along the blade's UP axis:
+/// half-way to the tip. This is geometry, not a visual tuning knob.
 pub const GROUNDCOVER_BEZIER_CONTROL_FRACTION: f32 = 0.5;
+/// How much of the tip's horizontal bend the control point carries, per blade
+/// (min..max by seed). The control point of a straight blade carries exactly
+/// half (it is the chord midpoint) — which is what every blade was before: a
+/// rigid stick tilted about its root. A smaller carry keeps the blade vertical
+/// at the root and lets it bow progressively toward its leaning tip (the offset
+/// at parameter t is `t² · bend` at carry 0, `t · bend` at carry 0.5), the
+/// curvature a real blade has. The range is art direction, recorded as such;
+/// the spread gives neighbouring blades different arcs.
+pub const GROUNDCOVER_BEZIER_BEND_CARRY_MIN: f32 = 0.05;
+pub const GROUNDCOVER_BEZIER_BEND_CARRY_MAX: f32 = 0.30;
 /// Numerical guards for zero-length blade/wind vectors; not artistic tuning.
 pub const GROUNDCOVER_BLADE_VECTOR_EPSILON: f32 = 1.0e-4;
 pub const GROUNDCOVER_PROJECTED_DEPTH_EPSILON: f32 = 1.0e-3;
@@ -2496,6 +2506,8 @@ pub const SHADER_DEFINES: &[HeaderLine] = &[
     HeaderLine::Blank,
     HeaderLine::Comment("Ground-cover blade geometry guards"),
     HeaderLine::Define("GROUNDCOVER_BEZIER_CONTROL_FRACTION", ShaderValue::Float(GROUNDCOVER_BEZIER_CONTROL_FRACTION)),
+    HeaderLine::Define("GROUNDCOVER_BEZIER_BEND_CARRY_MIN", ShaderValue::Float(GROUNDCOVER_BEZIER_BEND_CARRY_MIN)),
+    HeaderLine::Define("GROUNDCOVER_BEZIER_BEND_CARRY_MAX", ShaderValue::Float(GROUNDCOVER_BEZIER_BEND_CARRY_MAX)),
     HeaderLine::Define("GROUNDCOVER_BLADE_VECTOR_EPSILON", ShaderValue::Float(GROUNDCOVER_BLADE_VECTOR_EPSILON)),
     HeaderLine::Define("GROUNDCOVER_PROJECTED_DEPTH_EPSILON", ShaderValue::Float(GROUNDCOVER_PROJECTED_DEPTH_EPSILON)),
     HeaderLine::Blank,
