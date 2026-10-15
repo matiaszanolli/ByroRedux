@@ -28,6 +28,10 @@ pub mod water;
 pub mod world;
 
 pub use rapier3d::prelude::RigidBodyHandle;
+
+/// #5743 — the footstep surface probe's named reach (see
+/// `world::queries::FOOTSTEP_SURFACE_PROBE_REACH`).
+pub use world::FOOTSTEP_SURFACE_PROBE_REACH;
 pub use components::{
     ActorBoneCollider, ActorColliderOwner, CharacterController, Ragdoll, RapierHandles,
 };

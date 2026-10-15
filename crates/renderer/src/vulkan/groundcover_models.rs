@@ -31,7 +31,7 @@
 //!    shader's header) against the blade scatter's chunk and cell records.
 //! 3. The geometry pass draws [`GroundCoverModelTier::shape_draws`].
 
-use crate::vulkan::descriptors::layout_binding;
+use crate::vulkan::descriptors::{layout_binding, DescriptorPoolBuilder};
 use anyhow::{Context, Result};
 use ash::vk;
 
@@ -417,25 +417,12 @@ impl GroundCoverModelTier {
         };
 
         let frames = MAX_FRAMES_IN_FLIGHT as u32;
-        let sizes = [
-            vk::DescriptorPoolSize::default()
-                .ty(vk::DescriptorType::STORAGE_BUFFER)
-                .descriptor_count(11 * frames),
-            vk::DescriptorPoolSize::default()
-                .ty(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)
-                .descriptor_count(frames),
-        ];
-        // SAFETY: `sizes` outlives the call; the pool is owned here.
-        self.descriptor_pool = unsafe {
-            device
-                .create_descriptor_pool(
-                    &vk::DescriptorPoolCreateInfo::default()
-                        .pool_sizes(&sizes)
-                        .max_sets(frames),
-                    None,
-                )
-                .context("create ground-cover model descriptor pool")?
-        };
+        // #5845 — pool sizing derives from the layout (the old hand-typed
+        // "11 storage + 1 TLAS per frame" lagged any binding change).
+        let bindings = set_layout_bindings();
+        self.descriptor_pool = DescriptorPoolBuilder::from_layout_bindings(&bindings, frames)
+            .max_sets(frames)
+            .build(device, "ground-cover model descriptor pool")?;
         let set_layouts = vec![self.set_layout; MAX_FRAMES_IN_FLIGHT];
         // SAFETY: the pool was sized for these sets; the slice outlives the call.
         self.sets = unsafe {

@@ -96,6 +96,12 @@ const MAX_ARRAY_ELEMENTS: usize = byroredux_sdk::script_function::MAX_SCRIPT_ARR
 /// Bytes in one string result — `s = s + s` doubles per statement and would
 /// reach terabytes long before `MAX_STEPS` bites.
 const MAX_STRING_BYTES: usize = byroredux_sdk::script_function::MAX_SCRIPT_STRING_BYTES;
+/// Hops a "follow the linked-ref chain" native walks (#5844). The CK
+/// documents `iMaxExpectedLinkedRefs` with default 100 — the documented
+/// value is the ceiling for every chain walk (loop guard, caller-supplied
+/// limits, and `GetNthLinkedRef`'s hop count), so the three spellings that
+/// used to disagree (256 / 100 / 64) are one concept.
+const MAX_LINK_CHAIN_HOPS: usize = 100;
 
 /// A Papyrus value.
 #[derive(Debug, Clone)]
@@ -2908,7 +2914,7 @@ impl Vm<'_> {
                 let mut seen = std::collections::HashSet::new();
                 let mut current = self.linked_ref(*start, keyword);
                 while let Some(link) = current {
-                    if !seen.insert(link) || seen.len() > 256 {
+                    if !seen.insert(link) || seen.len() > MAX_LINK_CHAIN_HOPS {
                         break;
                     }
                     self.deferred.reference_enable_changes.push((link, enabled));
@@ -3260,7 +3266,11 @@ impl Vm<'_> {
                     Some(Value::Form(keyword)) => *keyword,
                     _ => 0,
                 };
-                let limit = values.get(1).and_then(Value::number).map_or(100, |max| max.max(0.0) as usize);
+                let limit = values
+                    .get(1)
+                    .and_then(Value::number)
+                    .map_or(MAX_LINK_CHAIN_HOPS as f32, |max| max.max(0.0))
+                    .min(MAX_LINK_CHAIN_HOPS as f32) as usize;
                 let mut seen = vec![*form];
                 let mut current = *form;
                 while seen.len() - 1 < limit {
@@ -3700,7 +3710,7 @@ impl Vm<'_> {
                     Some(Value::Form(keyword)) => *keyword,
                     _ => 0,
                 };
-                let cap = values.get(1).and_then(Value::number).map_or(100, |max| max as i64);
+                let cap = values.get(1).and_then(Value::number).map_or(MAX_LINK_CHAIN_HOPS as f32, |max| max as f32).min(MAX_LINK_CHAIN_HOPS as f32) as i64;
                 let mut count = 0i64;
                 let mut current = Some(*form);
                 while let Some(here) = current {
@@ -3740,7 +3750,12 @@ impl Vm<'_> {
                     _ => 0,
                 };
                 let mut current = Some(*form);
-                for _ in 0..(hops.max(0.0) as usize).min(64) {
+                // #5844 — past the ceiling there is no Nth link: return
+                // None rather than silently the 100th.
+                if hops.max(0.0) as usize > MAX_LINK_CHAIN_HOPS {
+                    return Ok(Some(Value::None));
+                }
+                for _ in 0..(hops.max(0.0) as usize).min(MAX_LINK_CHAIN_HOPS) {
                     current = current.and_then(|form| self.linked_ref(form, keyword));
                 }
                 Some(current.map_or(Value::None, Value::Form))

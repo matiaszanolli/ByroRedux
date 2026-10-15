@@ -438,7 +438,7 @@ bool rayHitHasCoverage(
             mat.decalMap2Index,
             mat.decalMap3Index
         );
-        for (int decalIndex = 0; decalIndex < 4; ++decalIndex) {
+        for (int decalIndex = 0; decalIndex < MATERIAL_DECAL_SLOTS; ++decalIndex) {
             uint handle = rayDecals[decalIndex];
             if (handle == 0u) {
                 continue;
@@ -513,7 +513,7 @@ vec3 rayHitAlbedo(GpuMaterial mat, vec2 uv, vec3 baseRgb, float lod, uint dbgFla
         mat.decalMap2Index,
         mat.decalMap3Index
     );
-    for (int decalIndex = 0; decalIndex < 4; ++decalIndex) {
+    for (int decalIndex = 0; decalIndex < MATERIAL_DECAL_SLOTS; ++decalIndex) {
         uint handle = decals[decalIndex];
         if (handle == 0u) {
             continue;

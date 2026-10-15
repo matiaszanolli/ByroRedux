@@ -378,7 +378,7 @@ void main() {
         mat.decalMap2Index,
         mat.decalMap3Index
     );
-    for (int decalIndex = 0; decalIndex < 4; ++decalIndex) {
+    for (int decalIndex = 0; decalIndex < MATERIAL_DECAL_SLOTS; ++decalIndex) {
         uint handle = materialDecals[decalIndex];
         if (handle != 0u) {
             vec4 decalSample = texture(textures[nonuniformEXT(handle)], sampleUV);
@@ -4344,6 +4344,10 @@ void main() {
             // budget, so illumination can cross polished metal or a closed
             // bottle/pane before reaching a diffuse receiver. Segment and
             // locally-lit-hit caps keep worst-case ray-query work unchanged.
+            // #5848 — shader-local by design: a per-segment walk-shape
+            // ceiling, deliberately NOT one of the budget-table entries
+            // (MAX_PATH_SEGMENTS / MAX_SHADED_HITS bound the work; this
+            // bounds one segment's event-chain shape).
             const int MAX_DIFFUSE_BOUNCES = 2;
             int pathSegmentLimit = int(clamp(rayBudget.maxPathSegments, 1u, uint(MAX_PATH_SEGMENTS)));
             int shadedHitLimit = int(clamp(rayBudget.maxShadedHits, 1u, uint(MAX_SHADED_HITS)));

@@ -28,6 +28,15 @@ pub struct CharacterMoveResult {
     pub is_sliding_down_slope: bool,
 }
 
+    /// #5743 — downward reach the Wave-4 footstep consumer passes, started
+    /// at the walker's capsule *centre*: comfortably past the player
+    /// capsule's centre height (`capsule_y(46.0, 18.0)` → 64 BU above the
+    /// feet) so the ray reaches the floor. A taller capsule or a different
+    /// kinematic origin silently reads `None` and takes the default sound;
+    /// `footstep_probe_reach_clears_the_player_capsule_centre` pins the
+    /// margin. (`byroredux/src/systems/audio.rs` is the production caller.)
+    pub const FOOTSTEP_SURFACE_PROBE_REACH: f32 = 128.0;
+
 /// Movement-step parameters for [`PhysicsWorld::move_character`]. Pure
 /// data so the engine-side controller stays decoupled from
 /// `rapier3d::control::KinematicCharacterController` field layout.

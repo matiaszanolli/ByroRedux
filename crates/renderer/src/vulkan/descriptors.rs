@@ -734,6 +734,34 @@ mod tests {
     /// bindings; deriving from the array must produce exactly those
     /// two entries with the right per-set count.
     #[test]
+    /// #5845 — the ground-cover family's pool sizes must derive from the
+    /// layout bindings (`from_layout_bindings`), never hand-typed frame
+    /// arithmetic: a `descriptor_count(<n> * frames)` silently lags any
+    /// binding added to its layout and exhausts the pool at
+    /// `allocate_descriptor_sets` on drivers that enforce limits.
+    #[test]
+    fn groundcover_pools_carry_no_hand_typed_frame_counts() {
+        for (name, src) in [
+            (
+                "construct.rs",
+                include_str!("groundcover/construct.rs"),
+            ),
+            (
+                "groundcover_models.rs",
+                include_str!("groundcover_models.rs"),
+            ),
+            (
+                "groundcover_bench.rs",
+                include_str!("groundcover_bench.rs"),
+            ),
+        ] {
+            assert!(
+                !src.contains("descriptor_count("),
+                "{name}: pool sizes must come from DescriptorPoolBuilder::from_layout_bindings"
+            );
+        }
+    }
+
     fn from_layout_bindings_aggregates_per_type() {
         let bindings: Vec<vk::DescriptorSetLayoutBinding> = (0..7u32)
             .map(|b| {

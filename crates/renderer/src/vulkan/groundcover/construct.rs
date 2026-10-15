@@ -2,7 +2,7 @@
 //! `groundcover.rs`, which retains the struct, the GPU record types and
 //! every constant): buffer allocation, the descriptor-set layout contracts,
 //! and pipeline building. The per-frame half lives in `frame.rs`.
-use crate::vulkan::descriptors::layout_binding;
+use crate::vulkan::descriptors::{layout_binding, DescriptorPoolBuilder};
 use super::*;
 
 impl GroundCoverPipeline {
@@ -395,27 +395,17 @@ fn storage_binding(
 impl GroundCoverPipeline {
     fn create_descriptors(&mut self, device: &ash::Device) -> Result<()> {
         let frames = MAX_FRAMES_IN_FLIGHT as u32;
-        // 7 scatter + 7 draw + 3 interaction storage bindings per
-        // frame-in-flight, plus the scatter's TLAS.
-        let sizes = [
-            vk::DescriptorPoolSize::default()
-                .ty(vk::DescriptorType::STORAGE_BUFFER)
-                .descriptor_count(17 * frames),
-            vk::DescriptorPoolSize::default()
-                .ty(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)
-                .descriptor_count(frames),
-        ];
-        // SAFETY: `sizes` outlives the call; the pool is owned here.
-        self.descriptor_pool = unsafe {
-            device
-                .create_descriptor_pool(
-                    &vk::DescriptorPoolCreateInfo::default()
-                        .pool_sizes(&sizes)
-                        .max_sets(3 * frames),
-                    None,
-                )
-                .context("create ground-cover descriptor pool")?
-        };
+        // #5845 — the layout lists are the single source of truth for pool
+        // sizing (same move #5593 made for the sibling passes): the old
+        // hand-typed "17 storage + 1 TLAS per frame" comment-arithmetic
+        // exhausted the pool at `allocate_descriptor_sets` the moment a
+        // binding was added without touching the pool.
+        let [scatter, interaction, draw] = set_layout_contracts();
+        self.descriptor_pool = DescriptorPoolBuilder::from_layout_bindings(&scatter.bindings, frames)
+            .add_layout_bindings(&interaction.bindings, frames)
+            .add_layout_bindings(&draw.bindings, frames)
+            .max_sets(3 * frames)
+            .build(device, "ground-cover descriptor pool")?;
         let scatter_layouts = vec![self.scatter_set_layout; MAX_FRAMES_IN_FLIGHT];
         // SAFETY: the pool was sized for these sets; the slice outlives the call.
         self.scatter_sets = unsafe {

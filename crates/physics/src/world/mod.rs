@@ -17,6 +17,7 @@ mod queries;
 mod recovery;
 
 pub use queries::{CharacterMoveParams, CharacterMoveResult};
+pub use queries::FOOTSTEP_SURFACE_PROBE_REACH;
 use recovery::{body_state_is_finite, restore_invalid_dynamic_bodies, DynamicBodySnapshot};
 #[cfg(test)]
 use recovery::MAX_DYNAMIC_SUBSTEP_DISPLACEMENT;
@@ -4128,6 +4129,18 @@ mod tests {
     /// when nothing solid is in range — the footstep consumer falls back
     /// to its default sound there.
     #[test]
+    /// #5743 — the footstep probe reaches past the player capsule's centre
+    /// (46 half-height + 18 radius = 64 BU above the feet), with margin for
+    /// crouch-stand interpolation and stepped terrain.
+    #[test]
+    fn footstep_probe_reach_clears_the_player_capsule_centre() {
+        const PLAYER_CAPSULE_CENTRE_HEIGHT: f32 = 46.0 + 18.0;
+        assert!(
+            super::queries::FOOTSTEP_SURFACE_PROBE_REACH > PLAYER_CAPSULE_CENTRE_HEIGHT * 1.5,
+            "the probe must comfortably clear the capsule centre"
+        );
+    }
+
     fn surface_material_under_reads_the_hit_colliders_material() {
         let mut w = PhysicsWorld::new();
         let floor = w.bodies.insert(RigidBodyBuilder::fixed().build());

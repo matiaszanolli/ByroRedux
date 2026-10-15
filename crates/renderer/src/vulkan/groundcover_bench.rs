@@ -65,7 +65,7 @@
 //! compacts, and a stale vertex offset would silently point into another
 //! mesh's vertices.
 
-use crate::vulkan::descriptors::layout_binding;
+use crate::vulkan::descriptors::{layout_binding, DescriptorPoolBuilder};
 use anyhow::{Context, Result};
 use ash::vk;
 
@@ -690,29 +690,15 @@ impl GroundcoverBench {
 
     fn create_descriptors(&mut self, device: &ash::Device) -> Result<()> {
         let frames = MAX_FRAMES_IN_FLIGHT as u32;
-        let sizes = [
-            vk::DescriptorPoolSize::default()
-                .ty(vk::DescriptorType::STORAGE_BUFFER)
-                .descriptor_count(4 * frames + 2 * frames),
-            vk::DescriptorPoolSize::default()
-                .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count(3 * frames),
-            vk::DescriptorPoolSize::default()
-                .ty(vk::DescriptorType::STORAGE_IMAGE)
-                .descriptor_count(3 * frames),
-        ];
-        // SAFETY: `sizes` outlives the call; `device` is live and the pool is
-        // owned by this struct until `destroy`.
-        self.descriptor_pool = unsafe {
-            device
-                .create_descriptor_pool(
-                    &vk::DescriptorPoolCreateInfo::default()
-                        .pool_sizes(&sizes)
-                        .max_sets(2 * frames),
-                    None,
-                )
-                .context("create groundcover bench descriptor pool")?
-        };
+        // #5845 — pool sizing derives from the two layouts (the old
+        // hand-typed "4+2 storage, 3 sampler, 3 storage-image per frame"
+        // lagged any binding change).
+        let sample = sample_bindings();
+        let bake = bake_bindings();
+        self.descriptor_pool = DescriptorPoolBuilder::from_layout_bindings(&sample, frames)
+            .add_layout_bindings(&bake, frames)
+            .max_sets(2 * frames)
+            .build(device, "groundcover bench descriptor pool")?;
 
         let sample_layouts = vec![self.sample_set_layout; MAX_FRAMES_IN_FLIGHT];
         // SAFETY: the pool was created with capacity for these sets and the

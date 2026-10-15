@@ -926,6 +926,14 @@ pub const SKIN_WORKGROUP_SIZE: u32 = 64;
 // value mirrored here too — see its doc comment in constants.rs (#2770 /
 // REN-D1-03) for why it needs the same GLSL lockstep as the high-range
 // engine-classified kinds below.
+/// Decal slots per material — four named `GpuMaterial` fields
+/// (`decalMap0Index`..`decalMap3Index`) built from the four decal indices,
+/// matching `MaterialTextureSet::decals: [T; 4]` and the NIF importer's
+/// `MAX_DECAL_SLOTS`. The three GLSL decal loops
+/// (`ray_hit.glsl` ×2, `triangle.frag`) iterate `MATERIAL_DECAL_SLOTS` so
+/// the count exists once per side of the shader boundary (#5848, the
+/// #3879 lockstep class one level down).
+pub const MATERIAL_DECAL_SLOTS: u32 = 4;
 pub const MATERIAL_KIND_MULTI_LAYER_PARALLAX: u32 = 11;
 pub const MATERIAL_KIND_GLASS: u32 = 100;
 pub const MATERIAL_KIND_EFFECT_SHADER: u32 = 101;
@@ -1133,8 +1141,10 @@ const _: () = {
 
 // Glass / IOR ray-work telemetry. GLASS_RAY_COST is the tier-0 estimate
 // (one optional reflection + three refraction queries); the shader records
-// two more estimated queries per adaptive quality tier as its interface
-// allowance grows from 2 to 8. GLASS_RAY_BUDGET is the tier-3 ceiling that
+// two more estimated queries per adaptive quality tier as the budgeted
+// march count grows (tiers grant 2→8 ray-pair opportunities; a single
+// shadow-transport march's interface depth stays fixed at
+// shadow_transport.glsl's shader-local MAX_GLASS_INTERFACES = 4 — #5848). GLASS_RAY_BUDGET is the tier-3 ceiling that
 // `AdaptiveRayBudget::settings_for_tier` (ray_budget.rs) derives every
 // tier's `glass_ray_limit` from (tiers 0-2 are /8, /4, /2 of this value) —
 // #2686 / SAFE-D7-01 closed the prior state where the tier table was four
@@ -2579,6 +2589,8 @@ pub const SHADER_DEFINES: &[HeaderLine] = &[
     HeaderLine::Comment("Material kind enum (`GpuMaterial.materialKind`)."),
     HeaderLine::Comment("Authoritative values: scene_buffer/constants.rs. #1401."),
     HeaderLine::Define("MATERIAL_KIND_MULTI_LAYER_PARALLAX", ShaderValue::Uint(MATERIAL_KIND_MULTI_LAYER_PARALLAX)),
+    HeaderLine::Comment("Decal slots per material — the GpuMaterial decal quartet (#5848)"),
+    HeaderLine::Define("MATERIAL_DECAL_SLOTS", ShaderValue::Uint(MATERIAL_DECAL_SLOTS)),
     HeaderLine::Define("MATERIAL_KIND_GLASS", ShaderValue::Uint(MATERIAL_KIND_GLASS)),
     HeaderLine::Define("MATERIAL_KIND_EFFECT_SHADER", ShaderValue::Uint(MATERIAL_KIND_EFFECT_SHADER)),
     HeaderLine::Define("MATERIAL_KIND_NO_LIGHTING", ShaderValue::Uint(MATERIAL_KIND_NO_LIGHTING)),

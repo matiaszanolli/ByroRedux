@@ -80,6 +80,25 @@ pub struct ReferenceFrame {
 /// from the census at 8× the measured maximum.
 const MAX_TRANSFORM_SAMPLES: usize = 1_000_000;
 
+// ── #5847 — the hostile-input plausibility ceilings that used to be five
+// anonymous `4096`s. None is a format limit; each is a backstop far above
+// the vanilla census maximum (SE Animations.bsa, #5316: 201 tracks, 101
+// skeleton bones, the largest spline ~4k control points). Named so the
+// census tests can cite them and a future Starfield/FO76 rig that trips
+// one gets an explained error, and so the skeleton ceiling is visibly
+// looser than behavior.rs's MAX_BONES = 1024 (a skeleton this reader
+// accepts may still be unusable by the graph reader — both gates stand).
+/// Skeleton bone count (`hkaSkeleton` bones array).
+const MAX_SKELETON_BONES: usize = 4096;
+/// Tracks in one `hkaInterleavedUncompressedAnimation` transform array.
+const MAX_TRANSFORM_TRACKS: usize = 4096;
+/// Float channels in the same block.
+const MAX_FLOAT_TRACKS: usize = 4096;
+/// `hkaSplineCompressedAnimation` blocks.
+const MAX_SPLINE_BLOCKS: usize = 4096;
+/// Control points in one spline track.
+const MAX_SPLINE_CONTROL_POINTS: usize = 4096;
+
 /// #5006 (PAR-D1-2026-09-29-01) — ceiling on a clip's declared
 /// `max_frames_per_block`. 256 is the Havok compressor's default and the
 /// measured vanilla maximum (SE Animations.bsa census,
@@ -329,7 +348,7 @@ fn decode_skeleton_at(pack: &Packfile<'_>, layout: &Layout, object: usize) -> Re
     )? as usize;
     let pose_count = pack.u32(object + layout.skeleton_pose.count, "skeleton pose count")? as usize;
     if bone_count == 0
-        || bone_count > 4096
+        || bone_count > MAX_SKELETON_BONES
         || parent_count != bone_count
         || pose_count != bone_count
     {
@@ -411,12 +430,12 @@ pub fn decode_spline_animation(bytes: &[u8]) -> Result<HkxAnimation> {
         || !frame_duration.is_finite()
         || frame_duration <= 0.0
         || transform_count == 0
-        || transform_count > 4096
-        || float_count > 4096
+        || transform_count > MAX_TRANSFORM_TRACKS
+        || float_count > MAX_FLOAT_TRACKS
         || num_frames == 0
         || sample_count > MAX_TRANSFORM_SAMPLES
         || num_blocks == 0
-        || num_blocks > 4096
+        || num_blocks > MAX_SPLINE_BLOCKS
         || !(2..=MAX_FRAMES_PER_BLOCK as u32).contains(&max_frames_per_block)
         // #4655 (PAR-D1-2026-09-21-02) — frames must fit in the blocks the
         // file ACTUALLY carries: each block's frames cost real bytes on
@@ -978,7 +997,7 @@ fn read_spline_header(data: &[u8], cursor: &mut usize) -> Result<(usize, Vec<u8>
     let control_count = last_control
         .checked_add(1)
         .ok_or(HkxError::InvalidData("spline control-point count overflow"))?;
-    if degree == 0 || degree > 8 || control_count <= degree || control_count > 4096 {
+    if degree == 0 || degree > 8 || control_count <= degree || control_count > MAX_SPLINE_CONTROL_POINTS {
         return Err(HkxError::InvalidData(
             "invalid spline degree or control-point count",
         ));

@@ -96,6 +96,12 @@ vec3 traceShadowTransmittanceDetailed(
                 opaqueOrigin, opaqueRemaining, direction, hitT)) break;
     }
 
+    // #5848 — shader-local by design (no CPU-side value clamps against
+    // it): the glass-interface allowance of one shadow-transport march.
+    // The GLASS_RAY_BUDGET table entry scales how often the march runs,
+    // not how deep one march goes; telemetry that speaks of an interface
+    // allowance "growing per tier" means the march frequency, not this
+    // fixed depth.
     const int MAX_GLASS_INTERFACES = 4;
     vec3 transmission = vec3(1.0);
     if ((visibilityMask & VISIBILITY_LAYER_GLASS) == 0u) return transmission;

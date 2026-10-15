@@ -179,6 +179,9 @@ pub fn parse_proj(
     out.model_path = common.model_path;
     for sub in subs {
         match &sub.sub_type {
+            // #5846 — one sequential SubReader pass: offsets and their
+            // length gates can no longer drift apart (this used to re-slice
+            // `&sub.data[N..]` behind a hand-typed `len() >= N+4` per field).
             b"DATA" if sub.data.len() >= 12 => {
                 let mut r = SubReader::new(&sub.data);
                 out.flags = r.u32_or_default();
@@ -186,17 +189,18 @@ pub fn parse_proj(
                 out.muzzle_speed = r.f32_or_default();
                 out.range = r.f32_or_default();
                 // Offsets 16..36 are lights, tracer chance and the alt-trigger
-                // proximity / timer; then explosion at 36.
-                if sub.data.len() >= 40 {
-                    let mut r = SubReader::new(&sub.data[36..]);
-                    let explosion = r.u32_or_default();
-                    out.explosion = if explosion == 0 { 0 } else { remap_fid(explosion, remap) };
-                }
-                if sub.data.len() >= 56 {
-                    out.impact_force = SubReader::new(&sub.data[52..]).f32_or_default();
-                }
-                // The tail past offset 68 differs by era: Skyrim+ authors collision
-                // radius and lifetime there (xEdit TES5 `wbPROJ`), FO3/FNV a rotation.
+                // proximity / timer.
+                r.skip_or_eof(20);
+                let explosion = r.u32_or_default();
+                out.explosion = if explosion == 0 { 0 } else { remap_fid(explosion, remap) };
+                // 40..52 are the impact-force pair's neighbours (sound
+                // level, fade distances); impact force itself at 52.
+                r.skip_or_eof(12);
+                out.impact_force = r.f32_or_default();
+                // 56..72 are decals / collision-anchored fields; the tail
+                // past 68 differs by era: Skyrim+ authors collision radius
+                // and lifetime there (xEdit TES5 `wbPROJ`), FO3/FNV a
+                // rotation.
                 let skyrim_plus = matches!(
                     game,
                     crate::esm::reader::GameKind::Skyrim
@@ -204,9 +208,10 @@ pub fn parse_proj(
                         | crate::esm::reader::GameKind::Fallout76
                         | crate::esm::reader::GameKind::Starfield
                 );
-                if skyrim_plus && sub.data.len() >= 80 {
-                    out.collision_radius = SubReader::new(&sub.data[72..]).f32_or_default();
-                    out.lifetime = SubReader::new(&sub.data[76..]).f32_or_default();
+                if skyrim_plus {
+                    r.skip_or_eof(16);
+                    out.collision_radius = r.f32_or_default();
+                    out.lifetime = r.f32_or_default();
                 }
             }
             _ => {}
