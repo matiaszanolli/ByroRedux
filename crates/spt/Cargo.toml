@@ -25,7 +25,6 @@ byroredux-core = { workspace = true }
 
 [dev-dependencies]
 byroredux-bsa = { workspace = true }
-env_logger = { workspace = true }
 
 [features]
 # Reverse-engineering harness: corpus stat sweep + per-file dumps.

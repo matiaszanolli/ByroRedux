@@ -119,21 +119,13 @@ impl GroundCoverPipeline {
                 input.gust_frequency,
                 input.time_seconds - input.delta_seconds.max(0.0),
                 species.len() as f32,
-                // Packed `(frame serial << 2) | tier`. It keeps the push
-                // block compact; the shift is two bits because the tier
-                // field encodes the three geomorphing segment levels of
-                // af8323881's chunk LOD (3/2/1 segments per 512-unit chunk)
-                // plus padding.
-                //
-                // The serial is masked to `GROUNDCOVER_FRAME_SERIAL_BITS`
-                // before the ×stride so the word stays f32-exact for the life
-                // of the process: past 2^24 the f32 spacing widens to 2 and
-                // `record_draw`'s odd-tier `+ 1.0` rounds away (#4498). The
-                // serial only seeds a wrapping tile rotation, so the 22-bit
-                // period costs nothing.
-                (((input.time_seconds.max(0.0) * 60.0).floor() as u64)
-                    & GROUNDCOVER_FRAME_SERIAL_MASK) as f32
-                    * GROUNDCOVER_LOD_TIER_STRIDE as f32,
+                // The packed LOD word's base: `record_draw` adds the
+                // per-stream tier in f32 (`+ tier as f32`). #5852 removed
+                // the frame-serial term — its only consumer (the blue-noise
+                // tile rotation) went with af8323881's segment ladder, and
+                // the #4498 f32-exactness concern with it (the word is now
+                // a tier index, 0..=2, exactly representable forever).
+                0.0,
             ],
         };
         true

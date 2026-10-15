@@ -612,7 +612,6 @@ name = "byroredux-bgsm"
 version = "0.1.0"
 dependencies = [
  "byroredux-bsa",
- "env_logger",
  "thiserror 2.0.18",
 ]
 
@@ -696,7 +695,6 @@ name = "byroredux-facegen"
 version = "0.1.0"
 dependencies = [
  "byroredux-bsa",
- "env_logger",
  "thiserror 2.0.18",
 ]
 
@@ -760,7 +758,6 @@ version = "0.1.0"
 dependencies = [
  "byroredux-bsa",
  "byroredux-core",
- "byroredux-facegen",
  "dhat",
  "env_logger",
  "log",
@@ -772,7 +769,6 @@ name = "byroredux-papyrus"
 version = "0.1.0"
 dependencies = [
  "bitflags 2.13.2",
- "env_logger",
  "logos",
 ]
 
@@ -782,7 +778,6 @@ version = "0.1.0"
 dependencies = [
  "byroredux-bsa",
  "byroredux-papyrus",
- "env_logger",
  "thiserror 2.0.18",
 ]
 
@@ -903,7 +898,6 @@ name = "byroredux-sfmaterial"
 version = "0.1.0"
 dependencies = [
  "byroredux-bsa",
- "env_logger",
  "log",
  "thiserror 2.0.18",
 ]
@@ -915,7 +909,6 @@ dependencies = [
  "byroredux-bsa",
  "byroredux-core",
  "byroredux-nif",
- "env_logger",
 ]
 
 [[package]]

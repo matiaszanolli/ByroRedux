@@ -142,7 +142,7 @@ pub(crate) fn graph_locomotion_system(world: &World, dt: f32) {
     if observed.is_empty() {
         return;
     }
-    let known = |entity| world.query::<GraphLocomotion>().and_then(|q| q.get(entity).map(|state| *state));
+    let known = |entity| world.query::<GraphLocomotion>().and_then(|q| q.get(entity).copied());
     let mut next: Vec<(EntityId, GraphLocomotion)> = Vec::with_capacity(observed.len());
     for actor in observed {
         let Some(mut state) = known(actor.entity) else {
@@ -341,7 +341,7 @@ mod tests {
         assert!((at(Vec3::NEG_X, 0.0) - 0.75).abs() < 1e-5);
         // Turned a quarter (yaw +90 degrees takes -Z to -X): walking along -X is ahead.
         let ahead = at(Vec3::NEG_X, std::f32::consts::FRAC_PI_2);
-        assert!(ahead < 1e-5 || ahead > 1.0 - 1e-5, "{ahead}");
+        assert!(!(1e-5..=1.0 - 1e-5).contains(&ahead), "{ahead}");
     }
 
     /// A moving actor feeds its graph the speed it walks and starts the move state; a
@@ -356,7 +356,7 @@ mod tests {
         assert!((speed - 100.0).abs() < 2.0, "smoothed to the walked speed, got {speed}");
         assert_eq!(variable(&world, actor, "SpeedSmoothed"), speed);
         let direction = variable(&world, actor, "Direction");
-        assert!(direction < 0.01 || direction > 0.99, "walking along its facing: {direction}");
+        assert!(!(0.01..=0.99).contains(&direction), "walking along its facing: {direction}");
         let graphs = world.query::<ObjectAnimationGraph>().unwrap();
         assert_eq!(graphs.get(actor).unwrap().state(), 1, "moveStart moved the graph to its move state");
         drop(graphs);

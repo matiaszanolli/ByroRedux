@@ -20,9 +20,9 @@ fn main() {
         if !lower.contains(&filter) || !lower.ends_with(".hkx") {
             continue;
         }
-        let Ok(bytes) = archive.extract(&path) else { continue };
+        let Ok(bytes) = archive.extract(path) else { continue };
         if let Some(dir) = &save_dir {
-            let name = path.rsplit('\\').next().unwrap_or(&path);
+            let name = path.rsplit('\\').next().unwrap_or(path);
             std::fs::write(std::path::Path::new(dir).join(name), &bytes).expect("write");
         }
         let Ok(graph) = decode_behavior_graph(&bytes) else { continue };

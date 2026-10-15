@@ -388,7 +388,7 @@ pub(super) fn scene_satellites(
 ) -> SceneSatellites {
     // M47.2 — an animated prop keeps its NiNode tree (see `graph_nodes`).
     let behavior_graph_file: Option<Arc<str>> =
-        byroredux_nif::import::extract_behavior_graph_file(&scene).map(Into::into);
+        byroredux_nif::import::extract_behavior_graph_file(scene).map(Into::into);
     let graph_nodes = behavior_graph_file.as_ref().and_then(|_| {
         super::graph_nodes::build(
             scene,

@@ -2053,7 +2053,7 @@ mod tests {
             param_2: KEYWORD,
             ..Default::default()
         };
-        let mut other_keyword = at_location.clone();
+        let mut other_keyword = at_location;
         other_keyword.param_2 = KEYWORD + 1;
         assert!(!evaluate_condition(&at_location, &world, &ctx(subject)));
         world.resource_mut::<crate::LocationKeywordData>().set(LOCATION, KEYWORD, 10.0);

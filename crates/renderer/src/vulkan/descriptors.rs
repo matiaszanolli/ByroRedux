@@ -733,7 +733,6 @@ mod tests {
     /// post-#1030 has 7 `COMBINED_IMAGE_SAMPLER` + 1 `UNIFORM_BUFFER`
     /// bindings; deriving from the array must produce exactly those
     /// two entries with the right per-set count.
-    #[test]
     /// #5845 — the ground-cover family's pool sizes must derive from the
     /// layout bindings (`from_layout_bindings`), never hand-typed frame
     /// arithmetic: a `descriptor_count(<n> * frames)` silently lags any
@@ -762,6 +761,7 @@ mod tests {
         }
     }
 
+    #[test]
     fn from_layout_bindings_aggregates_per_type() {
         let bindings: Vec<vk::DescriptorSetLayoutBinding> = (0..7u32)
             .map(|b| {

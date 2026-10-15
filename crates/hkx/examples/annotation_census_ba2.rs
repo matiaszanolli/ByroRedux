@@ -22,7 +22,7 @@ fn main() {
         if !lower.ends_with(".hkx") || lower.contains("\\behaviors\\") || !lower.contains(&filter) {
             continue;
         }
-        let Ok(bytes) = archive.extract(&path) else { continue };
+        let Ok(bytes) = archive.extract(path) else { continue };
         let Ok(animation) = decode_spline_animation(&bytes) else { continue };
         clips += 1;
         let mut syncs: Vec<(f32, &str)> = Vec::new();
@@ -41,7 +41,7 @@ fn main() {
     println!("sync points per clip: {sync_counts:?}");
     println!("sync label orders: {order:?}");
     let mut by_count: Vec<_> = labels.into_iter().collect();
-    by_count.sort_by(|a, b| b.1.cmp(&a.1));
+    by_count.sort_by_key(|(_, count)| std::cmp::Reverse(*count));
     for (label, count) in by_count.iter().take(25) {
         println!("{count:6} {label}");
     }

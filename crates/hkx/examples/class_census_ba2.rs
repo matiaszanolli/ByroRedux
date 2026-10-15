@@ -19,7 +19,7 @@ fn main() {
         if !lower.contains("\\behaviors\\") || !lower.ends_with(".hkx") || filter.as_ref().is_some_and(|f| !lower.contains(f)) {
             continue;
         }
-        let Ok(bytes) = archive.extract(&path) else { continue };
+        let Ok(bytes) = archive.extract(path) else { continue };
         let Ok(census) = byroredux_hkx::class_census(&bytes) else { continue };
         graphs += 1;
         for (class, count) in census {

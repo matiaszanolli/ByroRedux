@@ -197,7 +197,8 @@ pub fn run_quest_game_mode(
         script: &script,
     };
     let outcome = program.run_block(0, &mut state, &mut host);
-    drop(host);
+    // `host` holds no guard (Drop is not implemented) — the borrow ends
+    // here by scope, which is what the old `drop(host)` extended.
     if let Some(mut locals) = world.try_resource_mut::<ObScriptQuestLocals>() {
         locals.store(quest_form_id, &state.locals);
     }

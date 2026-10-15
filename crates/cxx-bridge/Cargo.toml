@@ -8,3 +8,9 @@ cxx = { workspace = true }
 
 [build-dependencies]
 cxx-build = { workspace = true }
+
+# cargo-machete false positive (#5851): cxx-build is a [build-dependencies]
+# entry consumed from build.rs, which --with-metadata's source scan does not
+# read.
+[package.metadata.cargo-machete]
+ignored = ["cxx-build"]

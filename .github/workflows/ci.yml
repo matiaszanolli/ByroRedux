@@ -70,14 +70,19 @@ jobs:
     #
     # It has known blind spots (macro-only and re-export-only usage), which
     # is why a finding is a prompt to verify by hand before deleting, not an
-    # automatic delete. It does not produce false negatives for the plain
-    # declared-but-never-referenced case this gate exists to catch.
+    # automatic delete. #5851 closed the dev-dependencies blind spot: plain
+    # `cargo machete` does not flag a `{ workspace = true }` entry under
+    # `[dev-dependencies]`, which is where four dead deps sat invisible —
+    # `--with-metadata` sees both tables. Its one false positive
+    # (`cxx-build`, used from cxx-bridge's build.rs) is ignored inline.
     steps:
       - uses: actions/checkout@v4
       - name: Install cargo-machete
         run: cargo install cargo-machete --locked
       - name: Reject declared-but-unreferenced dependencies
-        run: cargo machete
+        run: |
+          cargo machete --with-metadata
+          git diff --exit-code Cargo.lock
 
   playable-smoke-contracts:
     name: Playable smoke gate contracts

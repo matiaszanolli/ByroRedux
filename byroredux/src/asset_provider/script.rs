@@ -189,10 +189,12 @@ const ALIAS_CHECKS_PER_FRAME: usize = 4;
 /// of the whole load order would cost a second of load for the quests nothing
 /// ever starts.
 pub(crate) fn check_running_quest_alias_scripts(world: &byroredux_core::ecs::world::World) {
-    let pending: Vec<(
+    // (quest, the quest's VMAD script table keyed by index)
+    type PendingScript = (
         byroredux_scripting::QuestFormId,
         std::sync::Arc<Vec<(i16, byroredux_plugin::esm::records::script_instance::ScriptInstance)>>,
-    )> = {
+    );
+    let pending: Vec<PendingScript> = {
         let Some(alias_scripts) = world.try_resource::<byroredux_scripting::QuestAliasScripts>() else {
             return;
         };

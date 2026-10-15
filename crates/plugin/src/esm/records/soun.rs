@@ -182,7 +182,7 @@ mod tests {
             edid("UIHammer"),
             zstring(b"ANAM", "fx\\ui\\hammer_a.wav"),
             zstring(b"ANAM", "fx\\ui\\hammer_b.wav"),
-            crate::esm::records::test_support::sub(b"LNAM", &[0, 8, 0, 0]),
+            crate::esm::records::test_support::sub(b"LNAM", [0, 8, 0, 0]),
         ];
         let s = parse_sndr(0x0010_0001, &subs);
         assert_eq!(s.editor_id, "UIHammer");

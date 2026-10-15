@@ -13,15 +13,17 @@
 //!   Level` (0 = none) caps a higher one. A reference's zone is its own `XEZN`,
 //!   else its cell's; one in neither stands at the player's level.
 //! - **The difficulty** (CK *LeveledCharacter*, "Leveled Character
-//!   References"): Easy / Medium / Hard / Very Hard are the `fLeveledActorMultEasy`
-//!   / `Medium` / `Hard` / `VeryHard` game settings (0.33, 0.67, 1.0, 1.25 in
-//!   Skyrim.esm and Fallout4.esm) of the resolved level, "without exceeding"
-//!   it; `None` is the resolved level itself.
+//!   References"): Easy / Medium / Hard / Very Hard are the
+//!   `fLeveledActorMultEasy` / `Medium` / `Hard` / `VeryHard` game
+//!   settings (0.33, 0.67, 1.0, 1.25 in Skyrim.esm and Fallout4.esm) of
+//!   the resolved level, "without exceeding" it; `None` is the resolved
+//!   level itself.
 //!
-//! Engine policy where the CK is silent: the scaled level rounds down (the
-//! CK's "without exceeding" wording) and never drops below 1 — levels start at
-//! 1. A game whose load order lacks a multiplier setting cannot scale by that
-//! difficulty, and the call stays unsupported rather than guess one.
+//! Engine policy where the CK is silent: the scaled level rounds down
+//! (the CK's "without exceeding" wording) and never drops below 1 —
+//! levels start at 1. A game whose load order lacks a multiplier
+//! setting cannot scale by that difficulty, and the call stays
+//! unsupported rather than guess one.
 
 use std::collections::HashMap;
 

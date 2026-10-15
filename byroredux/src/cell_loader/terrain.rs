@@ -1121,8 +1121,7 @@ pub(super) fn spawn_terrain_mesh(
     // texture->grass links at all (`AuthoredCover::localised` false), so games
     // without that data are unchanged. The same lane rate the authored-model
     // tier uses, so both read one authored truth.
-    let mut layer_affinity = layer_affinity;
-    let mut base_affinity = base_affinity;
+    let (mut layer_affinity, mut base_affinity) = (layer_affinity, base_affinity);
     if let Some(cover) = world
         .try_resource::<byroredux_core::ecs::components::groundcover::AuthoredCover>()
         .filter(|cover| cover.localised)

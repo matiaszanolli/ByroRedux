@@ -92,7 +92,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         let mut ranked: Vec<_> = census.into_iter().collect();
-        ranked.sort_by(|a, b| b.1.cmp(&a.1));
+        ranked.sort_by_key(|(_, count)| std::cmp::Reverse(*count));
         println!("events of scripts with no delivered event: {:?}", &ranked[..ranked.len().min(25)]);
     }
     println!(
@@ -101,11 +101,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         100.0 * running as f64 / total.max(1) as f64
     );
     let mut handled: Vec<_> = handlers.into_iter().collect();
-    handled.sort_by(|a, b| b.1.cmp(&a.1));
+    handled.sort_by_key(|(_, count)| std::cmp::Reverse(*count));
     println!("events handled by running instances: {handled:?}");
     if std::env::var("VM_REASONS").is_ok() {
         let mut ranked: Vec<_> = reasons.into_iter().collect();
-        ranked.sort_by(|a, b| b.1.cmp(&a.1));
+        ranked.sort_by_key(|(_, count)| std::cmp::Reverse(*count));
         for (reason, count) in ranked.into_iter().take(40) {
             println!("{count:>6}  {reason}");
         }

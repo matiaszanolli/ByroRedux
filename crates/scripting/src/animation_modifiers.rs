@@ -118,11 +118,14 @@ impl ModifierState {
         }
         self.active = now;
         for node in fresh {
-            self.activate(&node, vars, events);
+            self.activate(&node, vars);
         }
     }
 
-    fn activate(&mut self, node: &Arc<ModifierNode>, vars: &mut Vars, events: &mut Vec<i32>) {
+    // `events` is deliberately absent: no activate arm pushes one (the
+    // event modifiers fire on deactivate / timer ticks), so threading it
+    // here was clippy's only-used-in-recursion catch.
+    fn activate(&mut self, node: &Arc<ModifierNode>, vars: &mut Vars) {
         let runtime = self.runtime.entry(node.id).or_default();
         *runtime = Runtime::default();
         match &node.kind {
@@ -134,11 +137,14 @@ impl ModifierState {
                     vars.set(*variable, *value as f32);
                 }
             }
-            Modifier::ModifyOnce { on_activate, .. } => {
-                if let Some(inner) = on_activate {
-                    self.activate(inner, vars, events);
-                }
-            }
+            Modifier::ModifyOnce {
+                on_activate: Some(inner),
+                ..
+            } => self.activate(inner, vars),
+            Modifier::ModifyOnce {
+                on_activate: None,
+                ..
+            } => {}
             Modifier::EvaluateExpression { expressions } => {
                 runtime.expressions = expressions
                     .iter()
@@ -147,13 +153,15 @@ impl ModifierState {
             }
             Modifier::EventDriven { active_by_default, inner, .. } => {
                 runtime.enabled = *active_by_default;
-                if let (true, Some(inner)) = (*active_by_default, inner) {
-                    self.activate(inner, vars, events);
+                if *active_by_default {
+                    if let Some(inner) = inner {
+                        self.activate(inner, vars);
+                    }
                 }
             }
             Modifier::List(items) => {
                 for item in items {
-                    self.activate(item, vars, events);
+                    self.activate(item, vars);
                 }
             }
             Modifier::RandomAlarm { min_seconds, max_seconds, .. } => {
@@ -170,11 +178,14 @@ impl ModifierState {
     fn deactivate(&mut self, node: &Arc<ModifierNode>, vars: &mut Vars, events: &mut Vec<i32>) {
         match &node.kind {
             Modifier::EventOnDeactivate { event } => push_event(events, *event),
-            Modifier::ModifyOnce { on_deactivate, .. } => {
-                if let Some(inner) = on_deactivate {
-                    self.activate(inner, vars, events);
-                }
-            }
+            Modifier::ModifyOnce {
+                on_deactivate: Some(inner),
+                ..
+            } => self.activate(inner, vars),
+            Modifier::ModifyOnce {
+                on_deactivate: None,
+                ..
+            } => {}
             Modifier::EventDriven { inner, .. } => {
                 let enabled = self.runtime.get(&node.id).is_some_and(|runtime| runtime.enabled);
                 if let (true, Some(inner)) = (enabled, inner) {
@@ -207,7 +218,7 @@ impl ModifierState {
                 if event == *activate && !enabled {
                     self.runtime.entry(node.id).or_default().enabled = true;
                     if let Some(inner) = inner {
-                        self.activate(inner, vars, events);
+                        self.activate(inner, vars);
                     }
                 } else if event == *deactivate && enabled {
                     if let Some(inner) = inner {

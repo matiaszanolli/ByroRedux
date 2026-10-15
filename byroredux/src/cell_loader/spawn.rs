@@ -1464,7 +1464,10 @@ fn spawn_node_collisions(
 }
 
 /// Spawn standalone collision entities from the NIF's bhk shapes.
-/// Split out of `spawn_placed_instances` (#2057).
+/// Split out of `spawn_placed_instances` (#2057). The argument list is the
+/// caller's placement frame (position/rotation/scale + the two ids) in the
+/// order `spawn_placed_instances` already holds them.
+#[allow(clippy::too_many_arguments)]
 fn spawn_collision_shapes(
     world: &mut World,
     collisions: &[byroredux_nif::import::ImportedCollision],

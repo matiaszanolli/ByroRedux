@@ -7,10 +7,13 @@ use super::*;
 
 /// Deliver queued fragment activations as `ActivateEvent` markers.
 ///
+/// One queued `(target_entity, native_entity)` activation handoff.
+type FragmentActivations = Vec<(EntityId, EntityId)>;
+
 /// Must be scheduled in `Stage::Update` **before** every `ActivateEvent`
 /// consumer; see [`PendingFragmentActivations`].
 pub fn fragment_activation_flush_system(world: &World, _dt: f32) {
-    let (pending, native): (Vec<(EntityId, EntityId)>, Vec<(EntityId, EntityId)>) = {
+    let (pending, native): (FragmentActivations, FragmentActivations) = {
         let Some(mut queue) = world.try_resource_mut::<PendingFragmentActivations>() else {
             return;
         };

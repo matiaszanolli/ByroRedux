@@ -26,7 +26,7 @@ fn main() {
         if filter.as_ref().is_some_and(|f| !lower.contains(f)) {
             continue;
         }
-        let Ok(bytes) = archive.extract(&path) else { continue };
+        let Ok(bytes) = archive.extract(path) else { continue };
         match decode_behavior_graph(&bytes) {
             Ok(graph) => {
                 ok += 1;

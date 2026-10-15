@@ -665,6 +665,10 @@ pub(super) fn finish_actor(
 /// One armor-phase step shared by both resumable paths: spawn the queued
 /// unit or log the archive miss. The enum-specific phase transition stays
 /// in the caller (`PrebakedPhase::Armor` / `RuntimePhase::Armor`).
+// The argument list mirrors `spawn_armor_unit` plus the logging identity
+// (npc); folding them into a struct would split one armor step across two
+// shapes for the two call sites (#5794).
+#[allow(clippy::too_many_arguments)]
 pub(super) fn spawn_armor_or_log(
     world: &mut World,
     ctx: &mut VulkanContext,

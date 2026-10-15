@@ -336,29 +336,6 @@ const GROUNDCOVER_INDIRECT_STREAMS: u64 = GROUNDCOVER_LOD_TIERS as u64;
 pub(crate) const GC_DRAW_INDIRECT_STRIDE: u64 =
     std::mem::size_of::<vk::DrawIndirectCommand>() as u64;
 
-/// The multiplier the frame serial is scaled by before the tier index is added
-/// into `BladePush::gust_and_timing[3]`, i.e. `1 << tier_bits`.
-///
-/// It must be a power of two strictly greater than the largest tier index, so
-/// that the shader's `& (stride - 1)` recovers the tier and `>> tier_bits`
-/// recovers the serial. Sized from `GROUNDCOVER_INDIRECT_STREAMS` rather than
-/// written as a literal so adding a stream widens the field instead of
-/// silently carrying into the serial — the #4056 bug.
-const GROUNDCOVER_LOD_TIER_STRIDE: u64 = GROUNDCOVER_INDIRECT_STREAMS.next_power_of_two();
-
-/// Bits of frame serial the packed LOD word can carry: f32 represents
-/// integers exactly only to 2^24, and the word is packed as a float — so
-/// `serial * stride + tier` must stay below 2^24 for the per-stream
-/// `+ tier as f32` in `record_draw` to survive rounding. Masking the serial
-/// to `24 − tier_bits` bits before packing guarantees that forever; without
-/// it the odd tiers round away after `2^24 / stride` frames (~19.4 h at 60
-/// fps) and the mid stream decodes as tier 0 while drawing mid geometry —
-/// the #4498 corruption. The blue-noise tile rotation the serial feeds
-/// (`vFrameSerial * uvec2(5u, 3u)`) wraps by construction, so the period is
-/// free. The vertex shader masks its unpack to match.
-const GROUNDCOVER_FRAME_SERIAL_BITS: u32 = 24 - GROUNDCOVER_LOD_TIER_STRIDE.trailing_zeros();
-const GROUNDCOVER_FRAME_SERIAL_MASK: u64 = (1 << GROUNDCOVER_FRAME_SERIAL_BITS) - 1;
-
 pub struct GroundCoverPipeline {
     scatter_set_layout: vk::DescriptorSetLayout,
     scatter_pipeline_layout: vk::PipelineLayout,
@@ -759,15 +736,19 @@ mod tests {
     /// tuft blades and desynchronised that stream's rank; the tier word now
     /// encodes the segment ladder, but the packing lesson stands).
     ///
-    /// Recomputing both halves here from `GROUNDCOVER_INDIRECT_STREAMS` is
-    /// what keeps a fourth stream from reintroducing it silently. The f32
-    /// half is the clock-bounded variant of the same shape: past
-    /// `2^24 / stride / 60` seconds (~19.4 h at 60 fps) the unmasked serial ×
-    /// stride exceeds f32's exact-integer range, the spacing widens to 2, and
-    /// `record_draw`'s per-stream `+ tier as f32` rounds every odd tier away.
+    /// Recomputing the tier field here from `GROUNDCOVER_INDIRECT_STREAMS`
+    /// keeps a fourth stream from reintroducing the #4056 carry silently.
+    /// #5852 — the frame-serial half is gone (its only consumer, the
+    /// blue-noise tile rotation, died with af8323881); the word the host
+    /// packs is now the bare tier `record_draw` adds, exactly representable
+    /// in f32 for every tier value.
     #[test]
     fn lod_tier_field_is_wide_enough_for_every_indirect_stream() {
         let blade = include_str!("../../shaders/groundcover_blade.vert");
+        // The tier field's stride: one power-of-two past the last stream so
+        // a tier index cannot carry into its neighbour (#4056's bug shape).
+        const GROUNDCOVER_LOD_TIER_STRIDE: u64 =
+            GROUNDCOVER_INDIRECT_STREAMS.next_power_of_two();
         let stride = GROUNDCOVER_LOD_TIER_STRIDE;
         assert!(
             stride.is_power_of_two() && stride > GROUNDCOVER_INDIRECT_STREAMS - 1,
@@ -782,55 +763,12 @@ mod tests {
             )),
             "GC_LOD_TIER must mask {bits} bits"
         );
-        assert!(
-            blade.contains(&format!(
-                "#define GC_FRAME_SERIAL     ((GC_LOD_WORD >> {bits}u) & 0x{:X}u)",
-                GROUNDCOVER_FRAME_SERIAL_MASK
-            )),
-            "GC_FRAME_SERIAL must shift past the {bits}-bit tier field and mask \
-             the serial to the {} bits the host packed",
-            GROUNDCOVER_FRAME_SERIAL_BITS
-        );
-        assert_eq!(GROUNDCOVER_FRAME_SERIAL_BITS, 24 - bits);
-        // Every tier the draw loop dispatches must round-trip through the
-        // packing the host actually writes.
-        for serial in [0_u64, 1, 12_345] {
-            for tier in 0..GROUNDCOVER_INDIRECT_STREAMS {
-                let word = serial * stride + tier;
-                assert_eq!(word & (stride - 1), tier);
-                assert_eq!(word >> bits, serial);
-            }
-        }
-        // #4498 — a serial from beyond the f32 horizon (t > 2^24 / stride /
-        // 60 s), through exactly the arithmetic the two sides perform: the
-        // pack masks, scales in f32; `record_draw` adds the tier in f32 per
-        // stream; the shader masks the serial back out. The blue-noise tile
-        // rotation the truncated serial feeds wraps by construction.
-        let horizon_seconds = ((1_u64 << 24) / stride / 60) as f32;
-        let t = horizon_seconds + 100.0; // any f32-exact second past it
-        let raw_serial = (t.max(0.0) * 60.0).floor() as u64;
-        assert!(
-            raw_serial * stride > 1_u64 << 24,
-            "the case must sit past the horizon where serial*stride stops \
-             being f32-exact"
-        );
-        // The shape of the corruption the mask prevents, at that very
-        // serial: unmasked, an odd tier rounds away into the word itself.
-        assert_eq!(
-            (raw_serial * stride) as f32 + 1.0,
-            (raw_serial * stride) as f32
-        );
-        let masked = raw_serial & GROUNDCOVER_FRAME_SERIAL_MASK;
+        // Every tier the draw loop dispatches round-trips exactly through
+        // the packing arithmetic the two sides perform (record_draw's f32
+        // `+ tier as f32`; the shader's mask).
         for tier in 0..GROUNDCOVER_INDIRECT_STREAMS {
-            let packed = (masked as f32) * stride as f32;
-            let word = packed + tier as f32;
-            assert_eq!(
-                word as u64,
-                masked * stride + tier,
-                "tier {tier} rounded away past the horizon"
-            );
-            assert_eq!((word as u64) & (stride - 1), tier);
-            assert_eq!((word as u64) >> bits, masked);
+            let word = 0.0_f32 + tier as f32;
+            assert_eq!(word as u64 & (stride - 1), tier);
         }
     }
 
@@ -1468,12 +1406,15 @@ mod segment_lod_tests {
     /// and a chunk's morph is a function of distance alone.
     #[test]
     fn morph_bands_complete_at_the_tier_edges() {
-        assert!(GROUNDCOVER_LOD_MORPH_UNITS > 0.0);
-        assert!(GROUNDCOVER_LOD_NEAR_END - GROUNDCOVER_LOD_MORPH_UNITS > 0.0);
-        assert!(
-            GROUNDCOVER_LOD_MID_END - GROUNDCOVER_LOD_MORPH_UNITS > GROUNDCOVER_LOD_NEAR_END,
-            "the mid tier must have a stable interval between the near edge and its own morph"
-        );
+        const _: () = {
+            assert!(GROUNDCOVER_LOD_MORPH_UNITS > 0.0);
+            assert!(GROUNDCOVER_LOD_NEAR_END - GROUNDCOVER_LOD_MORPH_UNITS > 0.0);
+            assert!(
+                GROUNDCOVER_LOD_MID_END - GROUNDCOVER_LOD_MORPH_UNITS
+                    > GROUNDCOVER_LOD_NEAR_END,
+                "the mid tier must have a stable interval between the near edge and its own morph"
+            );
+        };
         assert_eq!(morph(0, GROUNDCOVER_LOD_NEAR_END), 1.0);
         assert_eq!(morph(0, GROUNDCOVER_LOD_NEAR_END - GROUNDCOVER_LOD_MORPH_UNITS), 0.0);
         assert_eq!(morph(1, GROUNDCOVER_LOD_MID_END), 1.0);

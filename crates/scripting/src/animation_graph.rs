@@ -721,7 +721,7 @@ impl ObjectAnimationGraph {
     /// new pose is returned as a restart.
     pub fn pose_now(&mut self, dt: f32) -> Option<PoseUpdate> {
         // Nothing moves a pose between events except the variables and a synced phase.
-        if !self.dirty && !(self.blend_active && self.synced_pose) {
+        if !self.dirty && (!self.blend_active || !self.synced_pose) {
             return None;
         }
         self.dirty = false;
@@ -1838,7 +1838,7 @@ mod tests {
         // Between events, the variables retarget the newest layers.
         graph.set_variable("Speed", 370.0);
         let pose = layers_of(graph.pose_now(0.0));
-        update_pose(&mut world.get_mut::<AnimationStack>(3).unwrap(), &pose);
+        update_pose(world.get_mut::<AnimationStack>(3).unwrap(), &pose);
         let stack = world.get::<AnimationStack>(3).unwrap();
         assert_eq!(stack.layers[1].blend_in_target, 0.0, "no longer the walk");
         assert_eq!(stack.layers[2].clip_handle, 20, "run_forward");

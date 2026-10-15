@@ -137,7 +137,9 @@ pub(crate) fn populate_object_graphs(world: &mut World, provider: &TextureProvid
             .map(|(entity, reference)| (entity, Arc::clone(&reference.0)))
             .collect()
     };
-    let pending: Vec<(EntityId, Arc<str>, Arc<Vec<(String, GraphClip)>>)> = {
+    // (entity, clip path, the decoded sequences named by that path)
+    type PendingClip = (EntityId, Arc<str>, Arc<Vec<(String, GraphClip)>>);
+    let pending: Vec<PendingClip> = {
         let sequences = world.query::<byroredux_scripting::GraphSequences>();
         wanting
             .into_iter()

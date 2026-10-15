@@ -82,7 +82,8 @@ layout(push_constant) uniform GcBladePush {
     /// xy = unit wind direction, z = speed, w = gust amplitude.
     vec4 wind;
 /// x = gust frequency, y = previous shared wind-clock sample, z = species
-/// count. `w` packs `(frame serial << 2) | tier`; the fixed blade arena and
+/// count. `w` packs the tier index (the frame-serial half went with
+/// af8323881, #5852); the fixed blade arena and
 /// segment counts are generated shader constants, not per-frame tuning state.
 ///
 /// The tier field is **two** bits because af8323881's chunk LOD geomorphs
@@ -101,12 +102,6 @@ layout(push_constant) uniform GcBladePush {
 #define GC_SPECIES_COUNT    uint(pc.gustAndCounts.z)
 #define GC_LOD_WORD         uint(pc.gustAndCounts.w)
 #define GC_LOD_TIER         (GC_LOD_WORD & 3u)
-// The host masks the serial to these 22 bits before packing so the word
-// stays exactly representable in f32 for the life of the process (#4498);
-// masking the unpack to match keeps the two sides from drifting apart. The
-// serial only rotates the blue-noise tile, which wraps by construction, so
-// the truncated period is free.
-#define GC_FRAME_SERIAL     ((GC_LOD_WORD >> 2u) & 0x3FFFFFu)
 
 #include "include/terrain_sample.glsl"
 #include "include/groundcover_density.glsl"

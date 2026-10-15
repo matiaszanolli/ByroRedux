@@ -625,7 +625,7 @@ fn collect_deliveries(world: &World) -> Vec<Delivery> {
         let activator = activations
             .as_ref()
             .and_then(|q| q.get(entity))
-            .filter(|_| !native.as_ref().is_some_and(|marks| marks.get(entity).is_some()))
+            .filter(|_| native.as_ref().is_none_or(|marks| marks.get(entity).is_none()))
             .map(|event| event.activator);
         let triggerers: Vec<EntityId> = triggers
             .as_ref()

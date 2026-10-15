@@ -85,7 +85,7 @@ fn main() -> anyhow::Result<()> {
         println!("not-exact samples: {:08X?}", inexact_samples);
     }
     let mut ranked: Vec<_> = names.into_iter().collect();
-    ranked.sort_by(|a, b| b.1.cmp(&a.1));
+    ranked.sort_by_key(|(_, count)| std::cmp::Reverse(*count));
     for (name, count) in ranked.into_iter().take(top) {
         println!("{count:>6}  {name}");
     }

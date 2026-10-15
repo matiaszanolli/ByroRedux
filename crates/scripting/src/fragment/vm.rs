@@ -2836,7 +2836,7 @@ impl Vm<'_> {
             // follower favor system.
             (Value::Form(reference), "setnofavorallowed") if args.len() <= 1 => {
                 let values = self.eval_args(frame, args)?;
-                let no_favor = values.first().map_or(true, Value::truthy);
+                let no_favor = values.first().is_none_or(Value::truthy);
                 self.deferred
                     .reference_flag_changes
                     .push(crate::ReferenceFlagChange::NoFavor { reference: *reference, no_favor });
@@ -2846,7 +2846,7 @@ impl Vm<'_> {
             // (default True) recorded for the systems that will read them.
             (Value::Form(reference), "ignorefriendlyhits" | "setcandocommand") if args.len() <= 1 => {
                 let values = self.eval_args(frame, args)?;
-                let on = values.first().map_or(true, Value::truthy);
+                let on = values.first().is_none_or(Value::truthy);
                 let flag = if name == "ignorefriendlyhits" {
                     crate::ReferenceFlag::IgnoreFriendlyHits
                 } else {
@@ -3710,7 +3710,7 @@ impl Vm<'_> {
                     Some(Value::Form(keyword)) => *keyword,
                     _ => 0,
                 };
-                let cap = values.get(1).and_then(Value::number).map_or(MAX_LINK_CHAIN_HOPS as f32, |max| max as f32).min(MAX_LINK_CHAIN_HOPS as f32) as i64;
+                let cap = values.get(1).and_then(Value::number).map_or(MAX_LINK_CHAIN_HOPS as f32, |max| max).min(MAX_LINK_CHAIN_HOPS as f32) as i64;
                 let mut count = 0i64;
                 let mut current = Some(*form);
                 while let Some(here) = current {
@@ -5314,11 +5314,10 @@ impl<'l> Checker<'l> {
             }
         }
         // `<MusicType>.Add()` / `.Remove()` as a statement (see the runtime arm).
-        if matches!(name.as_str(), "add" | "remove") && statement && arg_kinds.is_empty() {
-            if receiver.is_some_and(|receiver| declares_music_type(&frame.script, receiver)) {
+        if matches!(name.as_str(), "add" | "remove") && statement && arg_kinds.is_empty()
+            && receiver.is_some_and(|receiver| declares_music_type(&frame.script, receiver)) {
                 return Some(Kind::None);
             }
-        }
         // The frame's own script function.
         if receiver.is_none()
             || receiver.is_some_and(|r| matches!(r, Expr::Ident(id) if id.0.eq_ignore_ascii_case("self")))

@@ -1737,8 +1737,7 @@ mod tests {
         let transition = |event, to_state| Transition { event, to_state, priority: 0, flags: 0, ..Default::default() };
         let mut child_state = state_of(0, Some("Animations\\Idle.hkt"), StateContent::default());
         child_state.transitions = vec![transition(1, 1)]; // "C" in the child's own table
-        let mut child_wildcard = Vec::new();
-        child_wildcard.push(transition(0, 0)); // "B"
+        let child_wildcard = vec![transition(0, 0)]; // "B"
         let child = BehaviorGraph {
             variables: Vec::new(),
             events: vec!["B".into(), "C".into()],

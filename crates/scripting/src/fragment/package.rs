@@ -84,7 +84,7 @@ impl<E> FragmentTable<E> {
 /// Install `record`'s fragments from its decompiled fragment `script`: the
 /// `bindings` whose function the VM's check accepts, with the scripts their
 /// runs need handed to `install`. Returns how many installed.
-pub fn populate_fragments<E: Copy>(
+pub fn populate_fragments<E>(
     frags: &mut FragmentTable<E>,
     record: u32,
     vmad: Option<&ScriptInstanceData>,
@@ -94,7 +94,7 @@ pub fn populate_fragments<E: Copy>(
     install: &mut dyn FnMut(Arc<Script>),
 ) -> usize
 where
-    E: Clone,
+    E: Copy,
 {
     let mut fragments = Vec::new();
     for (event, function) in bindings {

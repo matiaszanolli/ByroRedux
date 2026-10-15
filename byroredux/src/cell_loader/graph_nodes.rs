@@ -221,11 +221,11 @@ pub(super) fn spawn_nodes(
     // by recursion so an out-of-order file still works.
     let mut entities: HashMap<usize, EntityId> = HashMap::new();
     let mut worlds: HashMap<usize, (Vec3, Quat, f32)> = HashMap::new();
+    #[allow(clippy::too_many_arguments)]
     fn make(
         index: usize,
         world: &mut World,
         graph: &GraphNodes,
-        needed: &[bool],
         placement_root: EntityId,
         root_world: (Vec3, Quat, f32),
         entities: &mut HashMap<usize, EntityId>,
@@ -238,7 +238,7 @@ pub(super) fn spawn_nodes(
         // The root node is the placement root itself; nodes under it start there.
         let (parent_entity, parent_world) = match node.parent {
             Some(parent) if graph.nodes[parent].parent.is_some() => {
-                let entity = make(parent, world, graph, needed, placement_root, root_world, entities, worlds)?;
+                let entity = make(parent, world, graph, placement_root, root_world, entities, worlds)?;
                 (entity, worlds[&parent])
             }
             _ => (placement_root, root_world),
@@ -264,13 +264,12 @@ pub(super) fn spawn_nodes(
         worlds.insert(index, (pos, rot, scale));
         Some(entity)
     }
-    for index in 0..graph.nodes.len() {
-        if needed[index] && graph.nodes[index].parent.is_some() {
+    for (index, is_needed) in needed.iter().enumerate() {
+        if *is_needed && graph.nodes[index].parent.is_some() {
             make(
                 index,
                 world,
                 graph,
-                &needed,
                 placement_root,
                 (ref_pos, ref_rot, ref_scale),
                 &mut entities,

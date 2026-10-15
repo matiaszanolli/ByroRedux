@@ -406,7 +406,10 @@ fn root_node(scene: &NifScene) -> Option<&crate::blocks::node::NiNode> {
         .downcast_ref::<crate::blocks::node::NiNode>()
 }
 
-/// Backward-compatible flat import (used by cell loader where hierarchy is unnecessary).
+/// Flat import — harness/example entry point (#5853): production code (the
+/// cell loader, streaming) uses `import_nif_scene*` /
+/// `import_nif_with_collision_and_resolver`; this flat form is reached from
+/// `byroredux/examples/*`, the corpus tests and `#[cfg(test)]` code.
 ///
 /// Returns one `ImportedMesh` per NiTriShape with world-space transforms
 /// (parent chain composed). Meshes have `parent_node: None`.
@@ -588,7 +591,9 @@ pub fn import_nif_texture_effects(
     effects
 }
 
-/// Flat import with collision data.
+/// Flat import with collision data — harness/example/test entry point
+/// (#5853); production collision extraction runs
+/// `import_nif_with_collision_and_resolver`.
 ///
 /// Like `import_nif()`, returns world-space meshes (flat, no hierarchy).
 /// Additionally extracts collision shapes from NiNodes, returning them

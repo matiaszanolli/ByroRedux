@@ -692,8 +692,10 @@ mod dialect_tests {
     /// under the 4 GiB a `u32` header could claim.
     #[test]
     fn swf_body_ceiling_clears_the_corpus_and_stops_short_of_u32() {
-        assert!(MAX_SWF_BODY_BYTES > 65_902_267);
-        assert!(MAX_SWF_BODY_BYTES < u64::from(u32::MAX) / 8);
+        const _: () = {
+            assert!(MAX_SWF_BODY_BYTES > 65_902_267);
+            assert!(MAX_SWF_BODY_BYTES < (u32::MAX as u64) / 8);
+        };
     }
 
     /// A declared length at the ceiling still inflates normally.

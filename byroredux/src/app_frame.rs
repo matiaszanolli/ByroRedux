@@ -952,6 +952,10 @@ struct GroundCoverScratch<'a> {
 /// #4413 — hand the ground-cover model tier this frame's records, selection
 /// table and template shapes. Runs every frame the tier exists, so a frame
 /// without authored cover (an interior, `--groundcover-off`) clears it.
+// One caller (render_one_frame) handing its own locals through; the
+// arguments are the frame's mutable ground-cover state in slot order and
+// a struct would only rename them (#5849).
+#[allow(clippy::too_many_arguments)]
 fn prepare_groundcover_models(
     world: &byroredux_core::ecs::World,
     ctx: &mut byroredux_renderer::vulkan::context::VulkanContext,

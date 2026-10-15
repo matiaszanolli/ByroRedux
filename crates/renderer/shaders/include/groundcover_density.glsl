@@ -86,11 +86,6 @@ float byroGcWorleyCell(vec2 p, out vec2 featureCell) {
     return min(sqrt(best), 1.0);
 }
 
-float byroGcWorley(vec2 p) {
-    vec2 featureCell;
-    return byroGcWorleyCell(p, featureCell);
-}
-
 /// Value-noise fBm, two octaves. Only used for the ~4000-unit regional term,
 /// where the requirement is "slowly varying and non-repeating", not detail.
 float byroGcFbm(vec2 p) {

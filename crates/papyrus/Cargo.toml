@@ -8,4 +8,3 @@ logos = "0.16"
 bitflags = "2"
 
 [dev-dependencies]
-env_logger = { workspace = true }
