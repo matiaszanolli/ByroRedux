@@ -68,7 +68,7 @@ use crate::components::IsLodTerrain;
 use super::exterior::ExteriorWorldContext;
 use super::lod_bands::{self, quad_min_chebyshev, LodBandLadder, LodBandSelection};
 use super::lod_support::{
-    lod_source_cell_exists, release_lod_gpu_resources, worldspace_cell_bounds, LodReconcileInput, LodWorkBudget,
+    lod_source_cell_exists, release_lod_gpu_resources, retain_resident, worldspace_cell_bounds, LodReconcileInput, LodWorkBudget,
 };
 
 /// One streamed object-LOD quad: the `.bto` macro-mesh imports to several
@@ -267,14 +267,11 @@ pub(crate) fn stream_object_lod_blocks(
     // nothing to free). A band switch shows up here as the old
     // `(level, qx, qy)` key vanishing from `desired_set`, so the coarser or
     // finer replacement can never double-draw the ground it covers.
-    blocks.retain(|coord, blk| {
-        if desired_set.contains(coord) {
+    unloaded += retain_resident(&mut *blocks, &desired_set, |blk| {
+        if !blk.entities.is_empty() {
+            unload_object_lod_block(world, ctx, blk);
             true
         } else {
-            if !blk.entities.is_empty() {
-                unload_object_lod_block(world, ctx, blk);
-                unloaded += 1;
-            }
             false
         }
     });

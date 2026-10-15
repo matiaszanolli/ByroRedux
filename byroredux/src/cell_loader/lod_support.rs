@@ -312,6 +312,38 @@ pub(crate) fn sort_lod_coords_nearest(
     coords.sort_unstable_by_key(|&(x, y)| (distance((x, y)), y, x));
 }
 
+/// #5820 — the "drop what left the ring, count unloads" step every
+/// streaming-ring reconciler runs between computing its desired set and
+/// spending its spawn budget. `unload` frees one evicted block and
+/// returns whether it freed anything: the object/placement/tree rings
+/// return `false` for an empty sentinel (nothing to free, but the block
+/// still leaves the map); terrain has no sentinels and always returns
+/// `true`. Keeping that policy inside the closure is what lets one body
+/// serve all four rings — the empty-sentinel rule stays per-ring, while
+/// the retain shape itself (and the leak-fix class of #863/#4986, a
+/// change to how eviction frees GPU resources) lands in one place.
+pub(crate) fn retain_resident<K, B>(
+    blocks: &mut std::collections::HashMap<K, B>,
+    desired: &HashSet<K>,
+    mut unload: impl FnMut(&mut B) -> bool,
+) -> usize
+where
+    K: std::hash::Hash + Eq,
+{
+    let mut unloaded = 0usize;
+    blocks.retain(|coord, blk| {
+        if desired.contains(coord) {
+            true
+        } else {
+            if unload(blk) {
+                unloaded += 1;
+            }
+            false
+        }
+    });
+    unloaded
+}
+
 /// Convert an [`ImportedMesh`]'s parallel per-vertex arrays into renderer
 /// [`Vertex`]es, applying the LOD fallback defaults (opaque white colour,
 /// +Y normal, zero UV) for any array shorter than `positions` and copying
@@ -365,6 +397,54 @@ mod tests {
     use byroredux_plugin::esm::records::EsmIndex;
     use std::sync::Arc;
     use std::time::Duration;
+
+    /// #5820 — the shared drop-what-left-the-ring step: keeps desired
+    /// keys, evicts the rest, counts only closures that freed something,
+    /// and still drops a non-freeing (empty-sentinel) block.
+    #[test]
+    fn retain_resident_evicts_counts_and_honours_sentinels() {
+        let mut blocks: std::collections::HashMap<(i32, i32), Vec<u8>> = [
+            ((0, 0), vec![1u8]),
+            ((1, 0), vec![2u8]),
+            ((2, 0), Vec::new()), // empty sentinel: dropped, not counted
+        ]
+        .into_iter()
+        .collect();
+        let desired: HashSet<(i32, i32)> = [(0, 0)].into_iter().collect();
+        let unloaded = retain_resident(&mut blocks, &desired, |blk| {
+            let had = !blk.is_empty();
+            blk.clear();
+            had
+        });
+        assert_eq!(blocks.keys().copied().collect::<Vec<_>>(), vec![(0, 0)]);
+        assert_eq!(unloaded, 1, "only the non-empty eviction counts");
+    }
+
+    /// #5820 — every streaming-ring reconciler routes its eviction
+    /// through [`retain_resident`], so the empty-sentinel rule and any
+    /// future eviction-policy change stay per-ring while the retain
+    /// shape has one home. A fifth ring re-growing the inline
+    /// `blocks.retain(|coord, blk| { … desired … unload … false })`
+    /// loop is the duplication class this closed four copies of.
+    #[test]
+    fn every_lod_ring_routes_eviction_through_retain_resident() {
+        for ring in ["object_lod", "placement_lod", "terrain_lod", "tree_lod"] {
+            let path = format!(
+                "{}/src/cell_loader/{ring}.rs",
+                env!("CARGO_MANIFEST_DIR")
+            );
+            let source = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("cannot read {path}: {e}"));
+            assert!(
+                source.matches("retain_resident(").count() >= 1,
+                "{ring} must evict through lod_support::retain_resident (#5820)"
+            );
+            assert!(
+                !source.contains(".retain(|coord, blk|"),
+                "{ring} re-grew an inline eviction retain loop (#5820)"
+            );
+        }
+    }
 
     fn exterior_context(index: EsmIndex, worldspace_key: &str) -> ExteriorWorldContext {
         ExteriorWorldContext {

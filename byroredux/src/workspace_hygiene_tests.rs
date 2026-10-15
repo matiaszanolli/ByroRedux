@@ -847,6 +847,43 @@ fn no_production_code_opens_archives_outside_the_provider_layer() {
     );
 }
 
+/// #5818 / #5596 — little-endian reads in the bin crate go through
+/// `byroredux_core::bytes` (`le_u32_at` and friends), whose slice bound
+/// cannot overflow the way a hand-rolled `bytes.get(at..at + 4)` or a
+/// raw `from_le_bytes` fed by a file-declared offset can. tree_lod.rs
+/// re-grew the raw form three days after #5596 swept it; this keeps the
+/// class out. (Crates below the bin may use `from_le_bytes` where they
+/// own fixed-size header buffers — `core::bytes` itself is the seam.)
+#[test]
+fn no_production_code_reads_le_ints_by_hand() {
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let needle = ["from_", "le_bytes("].concat();
+    let mut found = Vec::new();
+    visit_workspace_rs_files(&manifest.join("src"), &mut |path, contents| {
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        let in_test_dir = path.components().any(|c| c.as_os_str() == "tests");
+        if name.ends_with("_tests.rs") || name == "tests.rs" || in_test_dir {
+            return;
+        }
+        let production = byroredux_core::source_scan::production_text_or_whole(contents);
+        for (idx, line) in production.lines().enumerate() {
+            if line.trim_start().starts_with("//") {
+                continue;
+            }
+            if line.contains(&needle) {
+                found.push(format!("{}:{}  {}", path.display(), idx + 1, line.trim()));
+            }
+        }
+    });
+    assert!(
+        found.is_empty(),
+        "raw from_le_bytes read in bin-crate production code — use the \
+         byroredux_core::bytes::le_*_at helpers so a file-declared offset \
+         near usize::MAX is a miss, not an overflow (#5596/#5818):\n{}",
+        found.join("\n"),
+    );
+}
+
 /// #5856 — count a crate's example *targets* the way cargo discovers them:
 /// every top-level `examples/*.rs` plus every `examples/<name>/main.rs`.
 /// Non-target files (`examples/common/archives.rs`, a shared module) are
@@ -905,7 +942,6 @@ fn example_targets_hold_their_per_crate_ceilings() {
         ("sfmaterial", 2, 1094),
         ("spt", 6, 1561),
     ];
-    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let by_entry = |root: &std::path::Path| {
         // `crates/<name>/examples` or `byroredux/examples` → crate name.
         root.parent()

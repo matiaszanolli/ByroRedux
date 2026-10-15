@@ -67,7 +67,9 @@ use crate::components::{IsLodTerrain, TwoSided};
 
 use super::exterior::ExteriorWorldContext;
 use super::lod_bands::{quad_min_chebyshev, tree_load_cells, LOD_BAND_HYSTERESIS_CELLS};
-use super::lod_support::{release_lod_gpu_resources, LodReconcileInput, LodWorkBudget};
+use super::lod_support::{
+    release_lod_gpu_resources, retain_resident, LodReconcileInput, LodWorkBudget,
+};
 use super::object_lod::{
     tree_lod_archive_path, tree_lod_atlas_path, tree_lod_list_path, tree_lod_supported,
     unload_object_lod_block, ObjectLodBlock,
@@ -108,18 +110,22 @@ impl std::fmt::Display for TreeLodError {
     }
 }
 
+/// #5818 — the checked LE read goes through `core::bytes::le_u32_at`
+/// (the #5596 boundary): its slice bound cannot overflow the way an
+/// unchecked `at + 4` can when `at` comes from a file-declared count
+/// near `usize::MAX`.
 fn u32_at(bytes: &[u8], at: usize) -> Result<u32, TreeLodError> {
-    bytes
-        .get(at..at + 4)
-        .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
-        .ok_or(TreeLodError::Truncated {
-            needed: at + 4,
-            have: bytes.len(),
-        })
+    byroredux_core::bytes::le_u32_at(bytes, at).ok_or(TreeLodError::Truncated {
+        needed: at.saturating_add(4),
+        have: bytes.len(),
+    })
 }
 
 fn f32_at(bytes: &[u8], at: usize) -> Result<f32, TreeLodError> {
-    u32_at(bytes, at).map(f32::from_bits)
+    byroredux_core::bytes::le_f32_at(bytes, at).ok_or(TreeLodError::Truncated {
+        needed: at.saturating_add(4),
+        have: bytes.len(),
+    })
 }
 
 /// One `.lst` entry: a tree species' billboard.
@@ -402,15 +408,13 @@ pub(crate) fn stream_tree_lod_blocks(
             .collect();
 
     let mut unloaded = 0usize;
-    ring.blocks.retain(|key, block| {
-        if keep.contains(key) {
-            return true;
-        }
+    unloaded += retain_resident(&mut ring.blocks, &keep, |block| {
         if !block.entities.is_empty() {
             unload_object_lod_block(world, ctx, block);
-            unloaded += 1;
+            true
+        } else {
+            false
         }
-        false
     });
 
     let candidates: Vec<(i32, i32)> = tree_quads_in_range(&all_quads, input.player_grid, range)

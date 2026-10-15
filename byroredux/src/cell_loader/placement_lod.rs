@@ -66,7 +66,8 @@ use crate::components::IsLodTerrain;
 use super::euler::euler_zup_to_quat_yup_refr;
 use super::exterior::ExteriorWorldContext;
 use super::lod_support::{
-    release_lod_gpu_resources, sort_lod_coords_nearest, LodReconcileInput, LodWorkBudget,
+    release_lod_gpu_resources, retain_resident, sort_lod_coords_nearest, LodReconcileInput,
+    LodWorkBudget,
 };
 
 /// Object-LOD ring radius in **cells** (Chebyshev) for the placement
@@ -357,14 +358,11 @@ pub(crate) fn stream_placement_lod_blocks(
     let mut unloaded = 0usize;
 
     // Unload cells that left the ring (skip empty sentinels — nothing to free).
-    blocks.retain(|coord, blk| {
-        if desired_set.contains(coord) {
+    unloaded += retain_resident(&mut *blocks, &desired_set, |blk| {
+        if !blk.entities.is_empty() {
+            unload_placement_lod_block(world, ctx, blk);
             true
         } else {
-            if !blk.entities.is_empty() {
-                unload_placement_lod_block(world, ctx, blk);
-                unloaded += 1;
-            }
             false
         }
     });

@@ -47,7 +47,7 @@ use crate::streaming::LodBlock;
 use super::lod_bands::{self, quad_min_chebyshev, LodBandLadder, LodBandSelection};
 use super::lod_support::{
     combined_lod_supported, legacy_landscape_lod_supported, lod_source_cell_exists,
-    worldspace_cell_bounds,
+    retain_resident, worldspace_cell_bounds,
     LodReconcileInput, LodWorkBudget,
 };
 
@@ -547,15 +547,11 @@ pub(crate) fn stream_lod_blocks(
     let mut invalidated = 0usize;
     let mut unloaded = 0usize;
 
-    // Unload blocks that left the ring or changed band.
-    lod_blocks.retain(|coord, block| {
-        if desired_set.contains(coord) {
-            true
-        } else {
-            unload_lod_block(world, ctx, block);
-            unloaded += 1;
-            false
-        }
+    // Unload blocks that left the ring or changed band. No empty
+    // sentinels on this ring — every evicted block carries resources.
+    unloaded += retain_resident(&mut *lod_blocks, &desired_set, |block| {
+        unload_lod_block(world, ctx, block);
+        true
     });
     missing_blocks.retain(|coord, _| desired_set.contains(coord));
 
