@@ -11,7 +11,6 @@
 //! [`Capabilities::verdict`] are pure functions of what the probe found, and
 //! are.
 
-use std::ffi::CStr;
 
 /// The engine's floor, from `crates/renderer/src/vulkan/instance.rs`.
 const REQUIRED_API_MAJOR: u32 = 1;
@@ -225,16 +224,22 @@ unsafe fn describe(instance: &ash::Instance, device: ash::vk::PhysicalDevice) ->
     let extensions = instance
         .enumerate_device_extension_properties(device)
         .unwrap_or_default();
+    // #5717 — ash's bounded accessors (`from_bytes_until_nul` over the
+    // fixed arrays, no unsafe). The launcher runs on arbitrary user
+    // machines before the engine and its own checks; soundness here must
+    // not rest on the driver NUL-terminating its strings.
     let has = |wanted: &str| {
         extensions.iter().any(|extension| {
-            CStr::from_ptr(extension.extension_name.as_ptr())
-                .to_str()
-                .is_ok_and(|name| name == wanted)
+            extension
+                .extension_name_as_c_str()
+                .is_ok_and(|name| name.to_str() == Ok(wanted))
         })
     };
 
     Capabilities {
-        device_name: CStr::from_ptr(properties.device_name.as_ptr())
+        device_name: properties
+            .device_name_as_c_str()
+            .unwrap_or_default()
             .to_string_lossy()
             .into_owned(),
         kind: DeviceKind::from_vk(properties.device_type),

@@ -1226,6 +1226,29 @@ mod caps_tests {
              instead — the unbounded form reads past `properties` on a \
              non-conforming driver name (#5273/#5120)"
         );
+        // #5717 — the same fixed-array driver strings are read the same
+        // way one file over (instance.rs validation layers) and in the
+        // launcher preflight, which runs on arbitrary machines before
+        // the engine. A from_ptr in either reads past the properties
+        // struct on a non-conforming driver.
+        let instance = crate::source_scan::production_text_or_whole(include_str!("instance.rs"));
+        for (name, source) in [("device.rs", &production), ("instance.rs", &instance)] {
+            assert!(
+                !source.contains(&banned),
+                "{name}: use ash's *_as_c_str() bounded accessors instead \
+                 of an unbounded CStr::from_ptr (#5273/#5717)"
+            );
+        }
+        let preflight = std::fs::read_to_string(format!(
+            "{}/../../tools/byro-launcher/src/preflight.rs",
+            env!("CARGO_MANIFEST_DIR")
+        ))
+        .expect("launcher preflight source");
+        assert!(
+            !preflight.contains(&banned),
+            "preflight.rs: use ash's *_as_c_str() bounded accessors instead \
+             of an unbounded CStr::from_ptr (#5717)"
+        );
     }
 
     /// #4895 — every feature `create_logical_device` enables with a literal

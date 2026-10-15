@@ -122,11 +122,10 @@ fn check_validation_layer_support(entry: &ash::Entry) -> Result<()> {
 
     for required in VALIDATION_LAYERS {
         let found = available.iter().any(|layer| {
-            // SAFETY: VkLayerProperties::layerName is a null-terminated [c_char; 256]
-            // array per the Vulkan spec. The pointer is valid for the lifetime of
-            // `layer` (borrowed from the `available` Vec for this iteration).
-            let name = unsafe { CStr::from_ptr(layer.layer_name.as_ptr()) };
-            name == *required
+            // #5717 — ash's bounded accessor (`from_bytes_until_nul` over
+            // the fixed [c_char; 256] array, no unsafe): soundness no
+            // longer rests on the driver NUL-terminating layerName.
+            layer.layer_name_as_c_str().unwrap_or_default() == *required
         });
         if !found {
             anyhow::bail!(
