@@ -377,6 +377,10 @@ impl DeferredFragmentEffects {
         self.apply_at_depth(world, 0)
     }
 
+    /// Apply one cascade level of the queued effects (#5803): the flush
+    /// methods below run in the original queue order — that order is
+    /// behaviour — followed by the provider-step tail, which recurses at
+    /// `depth + 1` and consumes `self`.
     fn apply_at_depth(mut self, world: &World, depth: usize) -> Vec<QuestStageAdvanced> {
         // #3946 — the barrier cap used to be tested here, and returned
         // before the four non-provider flushes below. That was partial
@@ -393,546 +397,56 @@ impl DeferredFragmentEffects {
             depth < MAX_PROVIDER_FRAGMENT_BARRIERS,
             "recursion is gated before descending; depth {depth} should be unreachable"
         );
-        for message in std::mem::take(&mut self.messages) {
-            match message {
-                PendingMessage::Show(form_id, args) => {
-                    if !crate::messages::show_message(world, form_id, &args) {
-                        log::debug!("fragment Show skipped: no message {form_id:08X}");
-                    }
-                }
-                PendingMessage::Notify(text) => crate::messages::notify(world, text),
-            }
-        }
-        for form_id in std::mem::take(&mut self.deletions) {
-            let created = world
-                .try_resource_mut::<crate::CreatedReferences>()
-                .is_some_and(|mut created| created.delete_when_able(form_id));
-            if !created {
-                // CK *Delete*: "Only references created in game can actually
-                // be deleted."
-                log::debug!("fragment DeleteWhenAble: {form_id:08X} is not a created reference");
-            }
-        }
-        if let Some(vendor) = self.barter.take() {
-            crate::menus::request_barter(world, vendor);
-        }
-        for (object, keyword, change) in std::mem::take(&mut self.keyword_changes) {
-            if !crate::keywords::change_keyword(world, object, keyword, change) {
-                log::debug!("fragment {change:?}Keyword skipped: the reference has no FormID");
-            }
-        }
-        if !self.reference_variables.is_empty() {
-            if let Some(mut variables) = world.query_mut::<crate::vm_state::ScriptVariables>() {
-                for (entity, variable, value) in std::mem::take(&mut self.reference_variables) {
-                    if variables.get_mut(entity).is_none() {
-                        variables.insert(entity, crate::vm_state::ScriptVariables::default());
-                    }
-                    variables
-                        .get_mut(entity)
-                        .expect("present or inserted")
-                        .set_by_name(&variable, value);
-                }
-            }
-        }
-        if !self.event_requests.is_empty() {
-            if let Some(mut registrations) = world.try_resource_mut::<super::EventRegistrations>() {
-                for (owner, script, request) in self.event_requests.drain(..) {
-                    registrations.request(owner, &script, &request);
-                }
-            }
-            self.event_requests.clear();
-        }
-        if !self.alias_collections.is_empty() {
-            if let Some(mut collections) = world.try_resource_mut::<crate::AliasCollections>() {
-                for (key, members) in self.alias_collections.drain(..) {
-                    collections.set(key, members);
-                }
-            }
-            self.alias_collections.clear();
-        }
-        if !self.location_keyword_changes.is_empty() {
-            if let Some(mut data) = world.try_resource_mut::<crate::LocationKeywordData>() {
-                for (location, keyword, value) in self.location_keyword_changes.drain(..) {
-                    data.set(location, keyword, value);
-                }
-            }
-            self.location_keyword_changes.clear();
-        }
-        if !self.reference_flag_changes.is_empty() {
-            if let Some(mut flags) = world.try_resource_mut::<crate::ReferenceFlags>() {
-                for change in self.reference_flag_changes.drain(..) {
-                    flags.apply(change);
-                }
-            }
-            self.reference_flag_changes.clear();
-        }
-        if !self.owner_changes.is_empty() {
-            if let Some(mut owners) = world.try_resource_mut::<crate::OwnerOverrides>() {
-                for (reference, owner) in self.owner_changes.drain(..) {
-                    owners.set(reference, owner);
-                }
-            }
-            self.owner_changes.clear();
-        }
-        if !self.crime_gold_changes.is_empty() {
-            if let Some(mut gold) = world.try_resource_mut::<crate::FactionCrimeGold>() {
-                for change in self.crime_gold_changes.drain(..) {
-                    gold.apply(change);
-                }
-            }
-            self.crime_gold_changes.clear();
-        }
-        if !self.camera_shakes.is_empty() || !self.controller_shakes.is_empty() {
-            let player = crate::papyrus_demo::PapyrusPlayerEntity::get(world);
-            if let Some(player) = player {
-                if let Some(mut shakes) = world.query_mut::<crate::papyrus_demo::CameraShakeCommand>() {
-                    if let Some(shake) = self.camera_shakes.last() {
-                        shakes.insert(player, *shake);
-                    }
-                }
-                if let Some(mut shakes) = world.query_mut::<crate::papyrus_demo::ControllerRumbleCommand>() {
-                    if let Some(shake) = self.controller_shakes.last() {
-                        shakes.insert(player, *shake);
-                    }
-                }
-            }
-            self.camera_shakes.clear();
-            self.controller_shakes.clear();
-        }
-        if !self.trap_hits.is_empty() {
-            if let Some(mut events) = world.query_mut::<crate::HitEvent>() {
-                for (target, trap, damage) in self.trap_hits.drain(..) {
-                    events.insert(
-                        target,
-                        crate::HitEvent {
-                            aggressor: trap,
-                            source: trap,
-                            projectile: 0,
-                            damage,
-                            power_attack: false,
-                            sneak_attack: false,
-                            bash_attack: false,
-                            blocked: false,
-                        },
-                    );
-                }
-            }
-            self.trap_hits.clear();
-        }
-        if !self.sound_plays.is_empty() {
-            if let Some(mut pending) = world.try_resource_mut::<crate::PendingSoundPlays>() {
-                pending.0.append(&mut self.sound_plays);
-            }
-            self.sound_plays.clear();
-        }
-        if !self.hit_requests.is_empty() {
-            if let Some(mut registrations) = world.try_resource_mut::<super::HitRegistrations>() {
-                for (owner, script, request) in self.hit_requests.drain(..) {
-                    registrations.request(owner, &script, &request);
-                }
-            }
-            self.hit_requests.clear();
-        }
-        if !self.animation_event_requests.is_empty() {
-            if let Some(mut registrations) = world.try_resource_mut::<super::AnimationEventRegistrations>() {
-                for (owner, script, request) in self.animation_event_requests.drain(..) {
-                    registrations.request(owner, &script, &request);
-                }
-            }
-            self.animation_event_requests.clear();
-        }
-        if !self.distance_requests.is_empty() {
-            if let Some(mut watches) = world.try_resource_mut::<super::DistanceWatches>() {
-                for (owner, script, request) in self.distance_requests.drain(..) {
-                    watches.request(owner, &script, request);
-                }
-            }
-            self.distance_requests.clear();
-        }
-        if !self.follower_changes.is_empty() {
-            if let Some(mut state) = world.try_resource_mut::<crate::FollowerState>() {
-                for (actor, change) in self.follower_changes.drain(..) {
-                    match change {
-                        FollowerChange::Teammate { teammate, can_do_favor } => {
-                            state.set_teammate(actor, teammate, can_do_favor)
-                        }
-                        FollowerChange::DoingFavor(doing) => state.set_doing_favor(actor, doing),
-                    }
-                }
-            }
-            self.follower_changes.clear();
-        }
-        if !self.created_references.is_empty() {
-            match world.try_resource_mut::<crate::CreatedReferences>() {
-                Some(mut created) => {
-                    for (form_id, base, at, delete_when_able) in self.created_references.drain(..) {
-                        created.create_scripted(form_id, base, at, delete_when_able);
-                    }
-                }
-                None => log::debug!("PlaceAtMe dropped: CreatedReferences is unavailable"),
-            }
-        }
-        if !self.linked_ref_changes.is_empty() {
-            if let Some(mut links) = world.try_resource_mut::<crate::LinkedRefOverrides>() {
-                for (source, keyword, target) in self.linked_ref_changes.drain(..) {
-                    links.set(source, keyword, target);
-                }
-            }
-            self.linked_ref_changes.clear();
-        }
-        if !self.crime_faction_changes.is_empty() {
-            if let Some(mut overrides) = world.try_resource_mut::<crate::CrimeFactionOverrides>() {
-                for (actor, faction) in self.crime_faction_changes.drain(..) {
-                    overrides.set(actor, faction);
-                }
-            }
-            self.crime_faction_changes.clear();
-        }
-        if !self.speechcraft_changes.is_empty() {
-            if let Some(mut outcomes) = world.try_resource_mut::<crate::SpeechcraftOutcomes>() {
-                for (actor, outcome, flagged) in self.speechcraft_changes.drain(..) {
-                    outcomes.set(actor, outcome, flagged);
-                }
-            }
-            self.speechcraft_changes.clear();
-        }
-        if !self.scanned_changes.is_empty() {
-            if let Some(mut scanned) = world.try_resource_mut::<crate::ScannedReferences>() {
-                for (reference, flagged) in self.scanned_changes.drain(..) {
-                    scanned.set(reference, flagged);
-                }
-            }
-            self.scanned_changes.clear();
-        }
-        if !self.anim_archetype_changes.is_empty() {
-            if let Some(mut overrides) = world.try_resource_mut::<crate::AnimArchetypeOverrides>() {
-                for (actor, keyword) in self.anim_archetype_changes.drain(..) {
-                    overrides.set(actor, keyword);
-                }
-            }
-            self.anim_archetype_changes.clear();
-        }
-        if !self.form_list_changes.is_empty() {
-            if let Some(mut additions) = world.try_resource_mut::<crate::FormListAdditions>() {
-                for change in self.form_list_changes.drain(..) {
-                    additions.apply(change);
-                }
-            }
-            self.form_list_changes.clear();
-        }
-        if !self.loc_ref_type_changes.is_empty() {
-            if let Some(mut types) = world.try_resource_mut::<crate::LocRefTypeOverrides>() {
-                for (reference, ref_type) in self.loc_ref_type_changes.drain(..) {
-                    types.set(reference, ref_type);
-                }
-            }
-            self.loc_ref_type_changes.clear();
-            // An alias may now fill by the new type.
-            crate::scene::mark_scene_actor_bindings_dirty(world);
-        }
-        if !self.skill_advances.is_empty() {
-            if let Some(mut pending) = world.try_resource_mut::<crate::PendingSkillAdvances>() {
-                pending.0.append(&mut self.skill_advances);
-            }
-            self.skill_advances.clear();
-        }
-        if !self.achievements.is_empty() {
-            if let Some(mut awarded) = world.try_resource_mut::<crate::Achievements>() {
-                for id in self.achievements.drain(..) {
-                    if awarded.award(id) {
-                        log::info!("achievement {id} awarded");
-                    }
-                }
-            }
-            self.achievements.clear();
-        }
-        if !self.misc_stats.is_empty() {
-            if let Some(mut stats) = world.try_resource_mut::<crate::MiscStats>() {
-                for (stat, amount) in self.misc_stats.drain(..) {
-                    stats.increment(&stat, amount);
-                }
-            }
-            self.misc_stats.clear();
-        }
-        if !self.player_xp.is_empty() {
-            if let Some(mut pending) =
-                world.try_resource_mut::<crate::story_manager::PendingPlayerXp>()
-            {
-                pending.0.append(&mut self.player_xp);
-            }
-        }
-        if !self.kills.is_empty() {
-            if let Some(mut pending) =
-                world.try_resource_mut::<crate::story_manager::PendingScriptKills>()
-            {
-                pending.0.append(&mut self.kills);
-            }
-        }
-        if !self.story_events.is_empty() {
-            if let Some(mut pending) =
-                world.try_resource_mut::<crate::story_manager::PendingScriptStoryEvents>()
-            {
-                pending.0.append(&mut self.story_events);
-            }
-        }
-        if !self.star_map_changes.is_empty() {
-            if let Some(mut markers) = world.try_resource_mut::<crate::MapMarkers>() {
-                for (marker, visible) in self.star_map_changes.drain(..) {
-                    markers.set_star_map_visible(marker, visible);
-                }
-            }
-            self.star_map_changes.clear();
-        }
-        if !self.map_markers.is_empty() {
-            if let Some(mut markers) = world.try_resource_mut::<crate::MapMarkers>() {
-                for (marker, fast_travel) in std::mem::take(&mut self.map_markers) {
-                    markers.add(marker, fast_travel);
-                }
-            }
-        }
-        if !self.relationship_changes.is_empty() {
-            if let Some(mut ranks) = world.try_resource_mut::<crate::ScriptedRelationships>() {
-                for (pair, rank) in std::mem::take(&mut self.relationship_changes) {
-                    ranks.0.insert(pair, rank);
-                }
-            }
-        }
-        if !self.base_protection.is_empty() {
-            if let Some(mut overrides) = world.try_resource_mut::<crate::ActorBaseProtectionOverrides>()
-            {
-                for (base, protected, value) in std::mem::take(&mut self.base_protection) {
-                    overrides.set(base, protected, value);
-                }
-            }
-        }
-        if !self.location_clears.is_empty() {
-            if let Some(mut state) = world.try_resource_mut::<crate::LocationClearState>() {
-                for (location, cleared) in std::mem::take(&mut self.location_clears) {
-                    state.set_cleared(location, cleared);
-                }
-            }
-        }
-        if !self.activation_blocks.is_empty() {
-            if let Some(mut blocks) = world.try_resource_mut::<super::ReferenceActivationBlocks>() {
-                for (reference, blocked) in std::mem::take(&mut self.activation_blocks) {
-                    blocks.set_blocked(reference, blocked);
-                }
-            }
-        }
-        if !self.alias_overrides.is_empty() {
-            if let Some(mut overrides) = world.try_resource_mut::<crate::AliasOverrides>() {
-                for (quest, alias_id, value) in std::mem::take(&mut self.alias_overrides) {
-                    overrides.set(quest, alias_id, value);
-                }
-            }
-        }
-        if self.scene_actor_bindings_dirty {
-            crate::scene::mark_scene_actor_bindings_dirty(world);
-        }
-        if !self.activations.is_empty() || !self.native_activations.is_empty() {
-            match world.try_resource_mut::<PendingFragmentActivations>() {
-                Some(mut pending) => {
-                    pending.0.append(&mut self.activations);
-                    pending.1.append(&mut self.native_activations);
-                }
-                None => log::debug!(
-                    "fragment Activate dropped: PendingFragmentActivations is unavailable"
-                ),
-            }
-        }
-        if !self.reference_enable_changes.is_empty() {
-            if let Some(mut state) = world.try_resource_mut::<ReferenceEnableState>() {
-                for (form_id, enabled) in self.reference_enable_changes.drain(..) {
-                    state.set_enabled(form_id, enabled);
-                }
-            }
-        }
-        if !self.reference_lock_changes.is_empty() {
-            match world.try_resource_mut::<crate::ReferenceLockState>() {
-                Some(mut state) => {
-                    for (form_id, change) in self.reference_lock_changes.drain(..) {
-                        match change {
-                            DeferredLockChange::Locked {
-                                lock_level,
-                                key_form_id,
-                            } => state.set_locked(form_id, lock_level, key_form_id),
-                            DeferredLockChange::Unlocked => state.set_unlocked(form_id),
-                        }
-                    }
-                }
-                None => log::debug!(
-                    "fragment lock change dropped from the persistent ledger: \
-                     ReferenceLockState is unavailable — the live component still \
-                     changed, but the change will not survive a cell reload (#4136)"
-                ),
-            }
-        }
-        if !self.cinematic_presentation.is_empty() {
-            if let Some(mut state) = world.try_resource_mut::<crate::CinematicPresentationState>() {
-                for effect in self.cinematic_presentation.drain(..) {
-                    match effect {
-                        DeferredCinematicPresentationEffect::SetSittingRotation(degrees) => {
-                            state.sitting_rotation_degrees = degrees;
-                        }
-                        DeferredCinematicPresentationEffect::RegisterPlayerAnimationEvent {
-                            event,
-                            quest,
-                            image_space_modifiers,
-                        } => {
-                            state.register_player_animation_event(
-                                event,
-                                quest,
-                                image_space_modifiers,
-                            );
-                        }
-                        DeferredCinematicPresentationEffect::SetInChargen {
-                            disable_saving,
-                            disable_waiting,
-                            show_controls_disabled_message,
-                        } => {
-                            state.set_in_chargen(
-                                disable_saving,
-                                disable_waiting,
-                                show_controls_disabled_message,
-                            );
-                        }
-                        DeferredCinematicPresentationEffect::ShowRaceMenu => {
-                            state.show_race_menu();
-                        }
-                        DeferredCinematicPresentationEffect::RequestSave { auto } => {
-                            state.request_save(auto);
-                        }
-                    }
-                }
-            }
-        }
-        if !self.faction_changes.is_empty() {
-            let player = crate::papyrus_demo::PapyrusPlayerEntity::get(world);
-            for (actor, faction, change) in std::mem::take(&mut self.faction_changes) {
-                // `RemoveFromAllFactions` names no faction: the ledger records
-                // each one the actor was in as removed.
-                let left: Vec<u32> = match change {
-                    crate::FactionChange::RemoveAll => world
-                        .get::<byroredux_core::ecs::components::FactionRanks>(actor)
-                        .map(|ranks| ranks.0.iter().map(|(faction, _)| *faction).collect())
-                        .unwrap_or_default(),
-                    _ => Vec::new(),
-                };
-                let rank = {
-                    let Some(mut storage) =
-                        world.query_mut::<byroredux_core::ecs::components::FactionRanks>()
-                    else {
-                        log::debug!("faction change skipped: FactionRanks never registered");
-                        continue;
-                    };
-                    if storage.get_mut(actor).is_none() {
-                        storage.insert(actor, byroredux_core::ecs::components::FactionRanks::new());
-                    }
-                    change.apply(storage.get_mut(actor).expect("present or inserted"), faction)
-                };
-                // The ledger key: PlayerRef for the player, else the placed
-                // reference's FormID. An actor with neither keeps the live
-                // edit only (nothing re-derives it under a stable identity).
-                let reference = if player == Some(actor) {
-                    Some(crate::PLAYER_REFERENCE)
-                } else {
-                    entity_global_form_id(world, actor)
-                };
-                match reference {
-                    Some(reference) => {
-                        if let Some(mut ledger) = world.try_resource_mut::<crate::ScriptedFactionChanges>() {
-                            if change == crate::FactionChange::RemoveAll {
-                                for faction in left {
-                                    ledger.record(reference, faction, None);
-                                }
-                            } else {
-                                ledger.record(reference, faction, rank);
-                            }
-                        }
-                    }
-                    None => log::debug!(
-                        "faction change on {actor:?} not persisted: the actor has no reference identity"
-                    ),
-                }
-            }
-        }
-        if !self.quest_variables.is_empty() {
-            match world.try_resource_mut::<crate::QuestScriptVariables>() {
-                Some(mut variables) => {
-                    for (quest, variable, value) in self.quest_variables.drain(..) {
-                        variables.set(quest, variable, value);
-                    }
-                }
-                None => {
-                    log::debug!(
-                        "{} quest-variable write(s) dropped: QuestScriptVariables not installed",
-                        self.quest_variables.len()
-                    );
-                    self.quest_variables.clear();
-                }
-            }
-        }
-        if !self.quest_objects.is_empty() {
-            match world.try_resource_mut::<crate::QuestScriptObjects>() {
-                Some(mut objects) => {
-                    for (quest, variable, value) in self.quest_objects.drain(..) {
-                        objects.set(quest, variable, value);
-                    }
-                }
-                None => {
-                    log::debug!("object script-variable writes dropped: QuestScriptObjects not installed");
-                    self.quest_objects.clear();
-                }
-            }
-        }
-        if !self.script_updates.is_empty() {
-            match world.try_resource_mut::<super::ScriptUpdates>() {
-                Some(mut updates) => {
-                    for (owner, script, request) in self.script_updates.drain(..) {
-                        updates.request(owner, &script, request);
-                    }
-                }
-                None => {
-                    log::debug!("update registrations dropped: ScriptUpdates not installed");
-                    self.script_updates.clear();
-                }
-            }
-        }
-        if !self.faction_relations.is_empty() {
-            // #4414 — the relation is saved, so it is keyed by portable
-            // identity. Resolve under the identity guard alone, then take
-            // the relations guard: never both held at once.
-            let resolved = match world.try_resource::<crate::LoadOrderIdentity>() {
-                Some(identity) => self
-                    .faction_relations
-                    .drain(..)
-                    .filter_map(|(faction, other, reaction, other_reaction)| {
-                        let pair = identity.form_ref(faction).zip(identity.form_ref(other));
-                        if pair.is_none() {
-                            log::warn!(
-                                "SetEnemy/SetAlly {faction:08X} -> {other:08X} dropped: a \
-                                 faction has no owning plugin in the load order"
-                            );
-                        }
-                        pair.map(|(faction, other)| (faction, other, reaction, other_reaction))
-                    })
-                    .collect::<Vec<_>>(),
-                None => {
-                    log::warn!(
-                        "{} SetEnemy/SetAlly call(s) dropped: no LoadOrderIdentity",
-                        self.faction_relations.len()
-                    );
-                    self.faction_relations.clear();
-                    Vec::new()
-                }
-            };
-            if let Some(mut relations) = world.try_resource_mut::<crate::FactionRelations>() {
-                for (faction, other, reaction, other_reaction) in resolved {
-                    relations.set_reaction(faction, other, reaction);
-                    relations.set_reaction(other, faction, other_reaction);
-                }
-            }
-        }
+        self.flush_messages(world);
+        self.flush_deletions(world);
+        self.flush_barter(world);
+        self.flush_keyword_changes(world);
+        self.flush_reference_variables(world);
+        self.flush_event_requests(world);
+        self.flush_alias_collections(world);
+        self.flush_location_keyword_changes(world);
+        self.flush_reference_flag_changes(world);
+        self.flush_owner_changes(world);
+        self.flush_crime_gold_changes(world);
+        self.flush_shakes(world);
+        self.flush_trap_hits(world);
+        self.flush_sound_plays(world);
+        self.flush_hit_requests(world);
+        self.flush_animation_event_requests(world);
+        self.flush_distance_requests(world);
+        self.flush_follower_changes(world);
+        self.flush_created_references(world);
+        self.flush_linked_ref_changes(world);
+        self.flush_crime_faction_changes(world);
+        self.flush_speechcraft_changes(world);
+        self.flush_scanned_changes(world);
+        self.flush_anim_archetype_changes(world);
+        self.flush_form_list_changes(world);
+        self.flush_loc_ref_type_changes(world);
+        self.flush_skill_advances(world);
+        self.flush_achievements(world);
+        self.flush_misc_stats(world);
+        self.flush_player_xp(world);
+        self.flush_kills(world);
+        self.flush_story_events(world);
+        self.flush_star_map_changes(world);
+        self.flush_map_markers(world);
+        self.flush_relationship_changes(world);
+        self.flush_base_protection(world);
+        self.flush_location_clears(world);
+        self.flush_activation_blocks(world);
+        self.flush_alias_overrides(world);
+        self.flush_scene_actor_bindings_dirty(world);
+        self.flush_activations(world);
+        self.flush_reference_enable_changes(world);
+        self.flush_reference_lock_changes(world);
+        self.flush_cinematic_presentation(world);
+        self.flush_faction_changes(world);
+        self.flush_quest_variables(world);
+        self.flush_quest_objects(world);
+        self.flush_script_updates(world);
+        self.flush_faction_relations(world);
+
         if self.provider_steps.is_empty() {
             return Vec::new();
         }
@@ -993,6 +507,693 @@ impl DeferredFragmentEffects {
             advances.extend(deferred.apply_at_depth(world, depth + 1));
         }
         advances
+    }
+
+    fn flush_messages(&mut self, world: &World) {
+        for message in std::mem::take(&mut self.messages) {
+            match message {
+                PendingMessage::Show(form_id, args) => {
+                    if !crate::messages::show_message(world, form_id, &args) {
+                        log::debug!("fragment Show skipped: no message {form_id:08X}");
+                    }
+                }
+                PendingMessage::Notify(text) => crate::messages::notify(world, text),
+            }
+        }
+    }
+
+    fn flush_deletions(&mut self, world: &World) {
+        for form_id in std::mem::take(&mut self.deletions) {
+            let created = world
+                .try_resource_mut::<crate::CreatedReferences>()
+                .is_some_and(|mut created| created.delete_when_able(form_id));
+            if !created {
+                // CK *Delete*: "Only references created in game can actually
+                // be deleted."
+                log::debug!("fragment DeleteWhenAble: {form_id:08X} is not a created reference");
+            }
+        }
+    }
+
+    fn flush_barter(&mut self, world: &World) {
+        if let Some(vendor) = self.barter.take() {
+            crate::menus::request_barter(world, vendor);
+        }
+    }
+
+    fn flush_keyword_changes(&mut self, world: &World) {
+        for (object, keyword, change) in std::mem::take(&mut self.keyword_changes) {
+            if !crate::keywords::change_keyword(world, object, keyword, change) {
+                log::debug!("fragment {change:?}Keyword skipped: the reference has no FormID");
+            }
+        }
+    }
+
+    fn flush_reference_variables(&mut self, world: &World) {
+        if !self.reference_variables.is_empty() {
+            if let Some(mut variables) = world.query_mut::<crate::vm_state::ScriptVariables>() {
+                for (entity, variable, value) in std::mem::take(&mut self.reference_variables) {
+                    if variables.get_mut(entity).is_none() {
+                        variables.insert(entity, crate::vm_state::ScriptVariables::default());
+                    }
+                    variables
+                        .get_mut(entity)
+                        .expect("present or inserted")
+                        .set_by_name(&variable, value);
+                }
+            }
+        }
+    }
+
+    fn flush_event_requests(&mut self, world: &World) {
+        if !self.event_requests.is_empty() {
+            if let Some(mut registrations) = world.try_resource_mut::<super::EventRegistrations>() {
+                for (owner, script, request) in self.event_requests.drain(..) {
+                    registrations.request(owner, &script, &request);
+                }
+            }
+            self.event_requests.clear();
+        }
+    }
+
+    fn flush_alias_collections(&mut self, world: &World) {
+        if !self.alias_collections.is_empty() {
+            if let Some(mut collections) = world.try_resource_mut::<crate::AliasCollections>() {
+                for (key, members) in self.alias_collections.drain(..) {
+                    collections.set(key, members);
+                }
+            }
+            self.alias_collections.clear();
+        }
+    }
+
+    fn flush_location_keyword_changes(&mut self, world: &World) {
+        if !self.location_keyword_changes.is_empty() {
+            if let Some(mut data) = world.try_resource_mut::<crate::LocationKeywordData>() {
+                for (location, keyword, value) in self.location_keyword_changes.drain(..) {
+                    data.set(location, keyword, value);
+                }
+            }
+            self.location_keyword_changes.clear();
+        }
+    }
+
+    fn flush_reference_flag_changes(&mut self, world: &World) {
+        if !self.reference_flag_changes.is_empty() {
+            if let Some(mut flags) = world.try_resource_mut::<crate::ReferenceFlags>() {
+                for change in self.reference_flag_changes.drain(..) {
+                    flags.apply(change);
+                }
+            }
+            self.reference_flag_changes.clear();
+        }
+    }
+
+    fn flush_owner_changes(&mut self, world: &World) {
+        if !self.owner_changes.is_empty() {
+            if let Some(mut owners) = world.try_resource_mut::<crate::OwnerOverrides>() {
+                for (reference, owner) in self.owner_changes.drain(..) {
+                    owners.set(reference, owner);
+                }
+            }
+            self.owner_changes.clear();
+        }
+    }
+
+    fn flush_crime_gold_changes(&mut self, world: &World) {
+        if !self.crime_gold_changes.is_empty() {
+            if let Some(mut gold) = world.try_resource_mut::<crate::FactionCrimeGold>() {
+                for change in self.crime_gold_changes.drain(..) {
+                    gold.apply(change);
+                }
+            }
+            self.crime_gold_changes.clear();
+        }
+    }
+
+    fn flush_shakes(&mut self, world: &World) {
+        if !self.camera_shakes.is_empty() || !self.controller_shakes.is_empty() {
+            let player = crate::papyrus_demo::PapyrusPlayerEntity::get(world);
+            if let Some(player) = player {
+                if let Some(mut shakes) = world.query_mut::<crate::papyrus_demo::CameraShakeCommand>() {
+                    if let Some(shake) = self.camera_shakes.last() {
+                        shakes.insert(player, *shake);
+                    }
+                }
+                if let Some(mut shakes) = world.query_mut::<crate::papyrus_demo::ControllerRumbleCommand>() {
+                    if let Some(shake) = self.controller_shakes.last() {
+                        shakes.insert(player, *shake);
+                    }
+                }
+            }
+            self.camera_shakes.clear();
+            self.controller_shakes.clear();
+        }
+    }
+
+    fn flush_trap_hits(&mut self, world: &World) {
+        if !self.trap_hits.is_empty() {
+            if let Some(mut events) = world.query_mut::<crate::HitEvent>() {
+                for (target, trap, damage) in self.trap_hits.drain(..) {
+                    events.insert(
+                        target,
+                        crate::HitEvent {
+                            aggressor: trap,
+                            source: trap,
+                            projectile: 0,
+                            damage,
+                            power_attack: false,
+                            sneak_attack: false,
+                            bash_attack: false,
+                            blocked: false,
+                        },
+                    );
+                }
+            }
+            self.trap_hits.clear();
+        }
+    }
+
+    fn flush_sound_plays(&mut self, world: &World) {
+        if !self.sound_plays.is_empty() {
+            if let Some(mut pending) = world.try_resource_mut::<crate::PendingSoundPlays>() {
+                pending.0.append(&mut self.sound_plays);
+            }
+            self.sound_plays.clear();
+        }
+    }
+
+    fn flush_hit_requests(&mut self, world: &World) {
+        if !self.hit_requests.is_empty() {
+            if let Some(mut registrations) = world.try_resource_mut::<super::HitRegistrations>() {
+                for (owner, script, request) in self.hit_requests.drain(..) {
+                    registrations.request(owner, &script, &request);
+                }
+            }
+            self.hit_requests.clear();
+        }
+    }
+
+    fn flush_animation_event_requests(&mut self, world: &World) {
+        if !self.animation_event_requests.is_empty() {
+            if let Some(mut registrations) = world.try_resource_mut::<super::AnimationEventRegistrations>() {
+                for (owner, script, request) in self.animation_event_requests.drain(..) {
+                    registrations.request(owner, &script, &request);
+                }
+            }
+            self.animation_event_requests.clear();
+        }
+    }
+
+    fn flush_distance_requests(&mut self, world: &World) {
+        if !self.distance_requests.is_empty() {
+            if let Some(mut watches) = world.try_resource_mut::<super::DistanceWatches>() {
+                for (owner, script, request) in self.distance_requests.drain(..) {
+                    watches.request(owner, &script, request);
+                }
+            }
+            self.distance_requests.clear();
+        }
+    }
+
+    fn flush_follower_changes(&mut self, world: &World) {
+        if !self.follower_changes.is_empty() {
+            if let Some(mut state) = world.try_resource_mut::<crate::FollowerState>() {
+                for (actor, change) in self.follower_changes.drain(..) {
+                    match change {
+                        FollowerChange::Teammate { teammate, can_do_favor } => {
+                            state.set_teammate(actor, teammate, can_do_favor)
+                        }
+                        FollowerChange::DoingFavor(doing) => state.set_doing_favor(actor, doing),
+                    }
+                }
+            }
+            self.follower_changes.clear();
+        }
+    }
+
+    fn flush_created_references(&mut self, world: &World) {
+        if !self.created_references.is_empty() {
+            match world.try_resource_mut::<crate::CreatedReferences>() {
+                Some(mut created) => {
+                    for (form_id, base, at, delete_when_able) in self.created_references.drain(..) {
+                        created.create_scripted(form_id, base, at, delete_when_able);
+                    }
+                }
+                None => log::debug!("PlaceAtMe dropped: CreatedReferences is unavailable"),
+            }
+        }
+    }
+
+    fn flush_linked_ref_changes(&mut self, world: &World) {
+        if !self.linked_ref_changes.is_empty() {
+            if let Some(mut links) = world.try_resource_mut::<crate::LinkedRefOverrides>() {
+                for (source, keyword, target) in self.linked_ref_changes.drain(..) {
+                    links.set(source, keyword, target);
+                }
+            }
+            self.linked_ref_changes.clear();
+        }
+    }
+
+    fn flush_crime_faction_changes(&mut self, world: &World) {
+        if !self.crime_faction_changes.is_empty() {
+            if let Some(mut overrides) = world.try_resource_mut::<crate::CrimeFactionOverrides>() {
+                for (actor, faction) in self.crime_faction_changes.drain(..) {
+                    overrides.set(actor, faction);
+                }
+            }
+            self.crime_faction_changes.clear();
+        }
+    }
+
+    fn flush_speechcraft_changes(&mut self, world: &World) {
+        if !self.speechcraft_changes.is_empty() {
+            if let Some(mut outcomes) = world.try_resource_mut::<crate::SpeechcraftOutcomes>() {
+                for (actor, outcome, flagged) in self.speechcraft_changes.drain(..) {
+                    outcomes.set(actor, outcome, flagged);
+                }
+            }
+            self.speechcraft_changes.clear();
+        }
+    }
+
+    fn flush_scanned_changes(&mut self, world: &World) {
+        if !self.scanned_changes.is_empty() {
+            if let Some(mut scanned) = world.try_resource_mut::<crate::ScannedReferences>() {
+                for (reference, flagged) in self.scanned_changes.drain(..) {
+                    scanned.set(reference, flagged);
+                }
+            }
+            self.scanned_changes.clear();
+        }
+    }
+
+    fn flush_anim_archetype_changes(&mut self, world: &World) {
+        if !self.anim_archetype_changes.is_empty() {
+            if let Some(mut overrides) = world.try_resource_mut::<crate::AnimArchetypeOverrides>() {
+                for (actor, keyword) in self.anim_archetype_changes.drain(..) {
+                    overrides.set(actor, keyword);
+                }
+            }
+            self.anim_archetype_changes.clear();
+        }
+    }
+
+    fn flush_form_list_changes(&mut self, world: &World) {
+        if !self.form_list_changes.is_empty() {
+            if let Some(mut additions) = world.try_resource_mut::<crate::FormListAdditions>() {
+                for change in self.form_list_changes.drain(..) {
+                    additions.apply(change);
+                }
+            }
+            self.form_list_changes.clear();
+        }
+    }
+
+    fn flush_loc_ref_type_changes(&mut self, world: &World) {
+        if !self.loc_ref_type_changes.is_empty() {
+            if let Some(mut types) = world.try_resource_mut::<crate::LocRefTypeOverrides>() {
+                for (reference, ref_type) in self.loc_ref_type_changes.drain(..) {
+                    types.set(reference, ref_type);
+                }
+            }
+            self.loc_ref_type_changes.clear();
+            // An alias may now fill by the new type.
+            crate::scene::mark_scene_actor_bindings_dirty(world);
+        }
+    }
+
+    fn flush_skill_advances(&mut self, world: &World) {
+        if !self.skill_advances.is_empty() {
+            if let Some(mut pending) = world.try_resource_mut::<crate::PendingSkillAdvances>() {
+                pending.0.append(&mut self.skill_advances);
+            }
+            self.skill_advances.clear();
+        }
+    }
+
+    fn flush_achievements(&mut self, world: &World) {
+        if !self.achievements.is_empty() {
+            if let Some(mut awarded) = world.try_resource_mut::<crate::Achievements>() {
+                for id in self.achievements.drain(..) {
+                    if awarded.award(id) {
+                        log::info!("achievement {id} awarded");
+                    }
+                }
+            }
+            self.achievements.clear();
+        }
+    }
+
+    fn flush_misc_stats(&mut self, world: &World) {
+        if !self.misc_stats.is_empty() {
+            if let Some(mut stats) = world.try_resource_mut::<crate::MiscStats>() {
+                for (stat, amount) in self.misc_stats.drain(..) {
+                    stats.increment(&stat, amount);
+                }
+            }
+            self.misc_stats.clear();
+        }
+    }
+
+    fn flush_player_xp(&mut self, world: &World) {
+        if !self.player_xp.is_empty() {
+            if let Some(mut pending) =
+                world.try_resource_mut::<crate::story_manager::PendingPlayerXp>()
+            {
+                pending.0.append(&mut self.player_xp);
+            }
+        }
+    }
+
+    fn flush_kills(&mut self, world: &World) {
+        if !self.kills.is_empty() {
+            if let Some(mut pending) =
+                world.try_resource_mut::<crate::story_manager::PendingScriptKills>()
+            {
+                pending.0.append(&mut self.kills);
+            }
+        }
+    }
+
+    fn flush_story_events(&mut self, world: &World) {
+        if !self.story_events.is_empty() {
+            if let Some(mut pending) =
+                world.try_resource_mut::<crate::story_manager::PendingScriptStoryEvents>()
+            {
+                pending.0.append(&mut self.story_events);
+            }
+        }
+    }
+
+    fn flush_star_map_changes(&mut self, world: &World) {
+        if !self.star_map_changes.is_empty() {
+            if let Some(mut markers) = world.try_resource_mut::<crate::MapMarkers>() {
+                for (marker, visible) in self.star_map_changes.drain(..) {
+                    markers.set_star_map_visible(marker, visible);
+                }
+            }
+            self.star_map_changes.clear();
+        }
+    }
+
+    fn flush_map_markers(&mut self, world: &World) {
+        if !self.map_markers.is_empty() {
+            if let Some(mut markers) = world.try_resource_mut::<crate::MapMarkers>() {
+                for (marker, fast_travel) in std::mem::take(&mut self.map_markers) {
+                    markers.add(marker, fast_travel);
+                }
+            }
+        }
+    }
+
+    fn flush_relationship_changes(&mut self, world: &World) {
+        if !self.relationship_changes.is_empty() {
+            if let Some(mut ranks) = world.try_resource_mut::<crate::ScriptedRelationships>() {
+                for (pair, rank) in std::mem::take(&mut self.relationship_changes) {
+                    ranks.0.insert(pair, rank);
+                }
+            }
+        }
+    }
+
+    fn flush_base_protection(&mut self, world: &World) {
+        if !self.base_protection.is_empty() {
+            if let Some(mut overrides) = world.try_resource_mut::<crate::ActorBaseProtectionOverrides>()
+            {
+                for (base, protected, value) in std::mem::take(&mut self.base_protection) {
+                    overrides.set(base, protected, value);
+                }
+            }
+        }
+    }
+
+    fn flush_location_clears(&mut self, world: &World) {
+        if !self.location_clears.is_empty() {
+            if let Some(mut state) = world.try_resource_mut::<crate::LocationClearState>() {
+                for (location, cleared) in std::mem::take(&mut self.location_clears) {
+                    state.set_cleared(location, cleared);
+                }
+            }
+        }
+    }
+
+    fn flush_activation_blocks(&mut self, world: &World) {
+        if !self.activation_blocks.is_empty() {
+            if let Some(mut blocks) = world.try_resource_mut::<super::ReferenceActivationBlocks>() {
+                for (reference, blocked) in std::mem::take(&mut self.activation_blocks) {
+                    blocks.set_blocked(reference, blocked);
+                }
+            }
+        }
+    }
+
+    fn flush_alias_overrides(&mut self, world: &World) {
+        if !self.alias_overrides.is_empty() {
+            if let Some(mut overrides) = world.try_resource_mut::<crate::AliasOverrides>() {
+                for (quest, alias_id, value) in std::mem::take(&mut self.alias_overrides) {
+                    overrides.set(quest, alias_id, value);
+                }
+            }
+        }
+    }
+
+    fn flush_scene_actor_bindings_dirty(&mut self, world: &World) {
+        if self.scene_actor_bindings_dirty {
+            crate::scene::mark_scene_actor_bindings_dirty(world);
+        }
+    }
+
+    fn flush_activations(&mut self, world: &World) {
+        if !self.activations.is_empty() || !self.native_activations.is_empty() {
+            match world.try_resource_mut::<PendingFragmentActivations>() {
+                Some(mut pending) => {
+                    pending.0.append(&mut self.activations);
+                    pending.1.append(&mut self.native_activations);
+                }
+                None => log::debug!(
+                    "fragment Activate dropped: PendingFragmentActivations is unavailable"
+                ),
+            }
+        }
+    }
+
+    fn flush_reference_enable_changes(&mut self, world: &World) {
+        if !self.reference_enable_changes.is_empty() {
+            if let Some(mut state) = world.try_resource_mut::<ReferenceEnableState>() {
+                for (form_id, enabled) in self.reference_enable_changes.drain(..) {
+                    state.set_enabled(form_id, enabled);
+                }
+            }
+        }
+    }
+
+    fn flush_reference_lock_changes(&mut self, world: &World) {
+        if !self.reference_lock_changes.is_empty() {
+            match world.try_resource_mut::<crate::ReferenceLockState>() {
+                Some(mut state) => {
+                    for (form_id, change) in self.reference_lock_changes.drain(..) {
+                        match change {
+                            DeferredLockChange::Locked {
+                                lock_level,
+                                key_form_id,
+                            } => state.set_locked(form_id, lock_level, key_form_id),
+                            DeferredLockChange::Unlocked => state.set_unlocked(form_id),
+                        }
+                    }
+                }
+                None => log::debug!(
+                    "fragment lock change dropped from the persistent ledger: \
+                     ReferenceLockState is unavailable — the live component still \
+                     changed, but the change will not survive a cell reload (#4136)"
+                ),
+            }
+        }
+    }
+
+    fn flush_cinematic_presentation(&mut self, world: &World) {
+        if !self.cinematic_presentation.is_empty() {
+            if let Some(mut state) = world.try_resource_mut::<crate::CinematicPresentationState>() {
+                for effect in self.cinematic_presentation.drain(..) {
+                    match effect {
+                        DeferredCinematicPresentationEffect::SetSittingRotation(degrees) => {
+                            state.sitting_rotation_degrees = degrees;
+                        }
+                        DeferredCinematicPresentationEffect::RegisterPlayerAnimationEvent {
+                            event,
+                            quest,
+                            image_space_modifiers,
+                        } => {
+                            state.register_player_animation_event(
+                                event,
+                                quest,
+                                image_space_modifiers,
+                            );
+                        }
+                        DeferredCinematicPresentationEffect::SetInChargen {
+                            disable_saving,
+                            disable_waiting,
+                            show_controls_disabled_message,
+                        } => {
+                            state.set_in_chargen(
+                                disable_saving,
+                                disable_waiting,
+                                show_controls_disabled_message,
+                            );
+                        }
+                        DeferredCinematicPresentationEffect::ShowRaceMenu => {
+                            state.show_race_menu();
+                        }
+                        DeferredCinematicPresentationEffect::RequestSave { auto } => {
+                            state.request_save(auto);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn flush_faction_changes(&mut self, world: &World) {
+        if !self.faction_changes.is_empty() {
+            let player = crate::papyrus_demo::PapyrusPlayerEntity::get(world);
+            for (actor, faction, change) in std::mem::take(&mut self.faction_changes) {
+                // `RemoveFromAllFactions` names no faction: the ledger records
+                // each one the actor was in as removed.
+                let left: Vec<u32> = match change {
+                    crate::FactionChange::RemoveAll => world
+                        .get::<byroredux_core::ecs::components::FactionRanks>(actor)
+                        .map(|ranks| ranks.0.iter().map(|(faction, _)| *faction).collect())
+                        .unwrap_or_default(),
+                    _ => Vec::new(),
+                };
+                let rank = {
+                    let Some(mut storage) =
+                        world.query_mut::<byroredux_core::ecs::components::FactionRanks>()
+                    else {
+                        log::debug!("faction change skipped: FactionRanks never registered");
+                        continue;
+                    };
+                    if storage.get_mut(actor).is_none() {
+                        storage.insert(actor, byroredux_core::ecs::components::FactionRanks::new());
+                    }
+                    change.apply(storage.get_mut(actor).expect("present or inserted"), faction)
+                };
+                // The ledger key: PlayerRef for the player, else the placed
+                // reference's FormID. An actor with neither keeps the live
+                // edit only (nothing re-derives it under a stable identity).
+                let reference = if player == Some(actor) {
+                    Some(crate::PLAYER_REFERENCE)
+                } else {
+                    entity_global_form_id(world, actor)
+                };
+                match reference {
+                    Some(reference) => {
+                        if let Some(mut ledger) = world.try_resource_mut::<crate::ScriptedFactionChanges>() {
+                            if change == crate::FactionChange::RemoveAll {
+                                for faction in left {
+                                    ledger.record(reference, faction, None);
+                                }
+                            } else {
+                                ledger.record(reference, faction, rank);
+                            }
+                        }
+                    }
+                    None => log::debug!(
+                        "faction change on {actor:?} not persisted: the actor has no reference identity"
+                    ),
+                }
+            }
+        }
+    }
+
+    fn flush_quest_variables(&mut self, world: &World) {
+        if !self.quest_variables.is_empty() {
+            match world.try_resource_mut::<crate::QuestScriptVariables>() {
+                Some(mut variables) => {
+                    for (quest, variable, value) in self.quest_variables.drain(..) {
+                        variables.set(quest, variable, value);
+                    }
+                }
+                None => {
+                    log::debug!(
+                        "{} quest-variable write(s) dropped: QuestScriptVariables not installed",
+                        self.quest_variables.len()
+                    );
+                    self.quest_variables.clear();
+                }
+            }
+        }
+    }
+
+    fn flush_quest_objects(&mut self, world: &World) {
+        if !self.quest_objects.is_empty() {
+            match world.try_resource_mut::<crate::QuestScriptObjects>() {
+                Some(mut objects) => {
+                    for (quest, variable, value) in self.quest_objects.drain(..) {
+                        objects.set(quest, variable, value);
+                    }
+                }
+                None => {
+                    log::debug!("object script-variable writes dropped: QuestScriptObjects not installed");
+                    self.quest_objects.clear();
+                }
+            }
+        }
+    }
+
+    fn flush_script_updates(&mut self, world: &World) {
+        if !self.script_updates.is_empty() {
+            match world.try_resource_mut::<super::ScriptUpdates>() {
+                Some(mut updates) => {
+                    for (owner, script, request) in self.script_updates.drain(..) {
+                        updates.request(owner, &script, request);
+                    }
+                }
+                None => {
+                    log::debug!("update registrations dropped: ScriptUpdates not installed");
+                    self.script_updates.clear();
+                }
+            }
+        }
+    }
+
+    fn flush_faction_relations(&mut self, world: &World) {
+        if !self.faction_relations.is_empty() {
+            // #4414 — the relation is saved, so it is keyed by portable
+            // identity. Resolve under the identity guard alone, then take
+            // the relations guard: never both held at once.
+            let resolved = match world.try_resource::<crate::LoadOrderIdentity>() {
+                Some(identity) => self
+                    .faction_relations
+                    .drain(..)
+                    .filter_map(|(faction, other, reaction, other_reaction)| {
+                        let pair = identity.form_ref(faction).zip(identity.form_ref(other));
+                        if pair.is_none() {
+                            log::warn!(
+                                "SetEnemy/SetAlly {faction:08X} -> {other:08X} dropped: a \
+                                 faction has no owning plugin in the load order"
+                            );
+                        }
+                        pair.map(|(faction, other)| (faction, other, reaction, other_reaction))
+                    })
+                    .collect::<Vec<_>>(),
+                None => {
+                    log::warn!(
+                        "{} SetEnemy/SetAlly call(s) dropped: no LoadOrderIdentity",
+                        self.faction_relations.len()
+                    );
+                    self.faction_relations.clear();
+                    Vec::new()
+                }
+            };
+            if let Some(mut relations) = world.try_resource_mut::<crate::FactionRelations>() {
+                for (faction, other, reaction, other_reaction) in resolved {
+                    relations.set_reaction(faction, other, reaction);
+                    relations.set_reaction(other, faction, other_reaction);
+                }
+            }
+        }
     }
 }
 
