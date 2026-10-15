@@ -90,7 +90,10 @@ AI / behavior is `~` (M42, Tier 7) — 10 of ~17 `PACK` procedures have a
 runtime, and since M42.10 (2026-09-18) they run **by default** (single
 kill-switch: `BYRO_NO_AI_LOCOMOTION=1`): Sandbox, Wander, Travel, Follow,
 Escort, Guard, and Patrol (aliases Wander's algorithm — no patrol-route
-data is decoded anywhere in this codebase). Walking NPCs are animated
+data is decoded anywhere in this codebase), plus Eat/Sleep v0
+(`eat_sleep_system`, walk to the PLDT anchor then seat at the nearest
+furniture marker) and Dialogue (the force-greet bridge, #5367 Phase F).
+Walking NPCs are animated
 (authored per-body-class walk clips — KF games plus the Skyrim humanoid
 HKX path; FO4+ still slides) and their steps are physics-backed through
 Rapier's kinematic character controller, at each actor's authored stride
@@ -99,10 +102,10 @@ speed (M42.11). v0 scope limits still apply: package selection (schedule
 in-game minute by `ambient_ai_package_system` (M42.9 / #2652) — not per
 frame — and movement remains straight-line within a single resident NAVM
 tile. Their shared walk-to-point step routes through NAVM A*
-(`byroredux/src/systems/navmesh_path.rs`, #2372). The remaining 10
-procedures (Find/Eat/Sleep/Accompany/UseItemAt/Ambush/FleeNotCombat/
-CastMagic/Dialogue/UseWeapon) are parse-only — each blocked on a subsystem
-(item/furniture-use beyond Sandbox's seat-snap, magic, dialogue) that doesn't
+(`byroredux/src/systems/navmesh_path.rs`, #2372). The remaining 7
+procedures (Find/Accompany/UseItemAt/Ambush/FleeNotCombat/
+CastMagic/UseWeapon) are parse-only — each blocked on a subsystem
+(item use beyond Sandbox's seat-snap, magic) that doesn't
 exist in the engine yet, or (UseWeapon) on `PACK` not yet driving combat:
 both the P2 melee slice and the MQ101 `npc_combat_ai_system` are
 player- or script-initiated, never package-selected (see Gameplay/Combat
