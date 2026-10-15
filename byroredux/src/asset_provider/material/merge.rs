@@ -516,13 +516,13 @@ pub(crate) fn merge_external_material(
     // discovered once at provider init by `discover_starfield_cdbs`, which
     // header-probes each payload through `probe_starfield_cdb`.
     //
-    // Phase 1 (this commit): flip `material.is_pbr = true` so
+    // The fallback flips `material.is_pbr = true` so
     // `pack_imported_material_flags` packs `MAT_FLAG_PBR_BSDF` and
     // `triangle.frag` routes Starfield content through the Disney BSDF
     // path instead of the legacy Lambert + simple-GGX path (the audit
-    // FAIL closure). Defaults for metalness / roughness / textures
-    // stay at the NIF-derived values — better than Lambert but still
-    // approximate; Phase 2 will walk the CDB to extract authored values.
+    // FAIL closure). A CDB hit then overlays the authored fields the
+    // lookup supplies (`apply_cdb_material`); scalar extraction beyond
+    // that stays parked on #3398.
     //
     // The CDB-presence check prevents accidental PBR routing for modded
     // sidecars against non-Starfield archives. Starfield's shipped NIFs use
@@ -672,9 +672,11 @@ pub(crate) fn merge_external_material(
         }
     } else {
         // Unknown extension — most likely a Starfield .mat JSON path that
-        // SF-D3-01's suffix gate now correctly routes here. The .mat format
-        // is not yet parsed (tracked in #4277). Log once per path so the
-        // absence of material data is visible without spamming every frame.
+        // SF-D3-01's suffix gate now correctly routes here. A loose `.mat`
+        // decodes through `loose_mat` (#4277) and a CDB hit resolves it, so
+        // only an extension no resolver handles reaches this arm. Log once
+        // per path so the absence of material data is visible without
+        // spamming every frame.
         //
         // A `.mat` path only falls through to this generic arm when the
         // CDB-presence gate above (`has_starfield_cdb`) found no CDB

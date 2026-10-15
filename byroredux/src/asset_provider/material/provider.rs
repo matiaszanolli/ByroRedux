@@ -190,27 +190,23 @@ pub(crate) struct MaterialProvider {
     /// `* - Main.ba2`. `0` for non-Starfield content.
     /// #1289 / SF-D3-NEW-01, multi-CDB discovery #1571 / SF-D3-03.
     ///
-    /// Phase 1 (today): presence-only — [`merge_external_material`]'s `.mat`
-    /// arm only needs confirmation that Starfield material authoring is
-    /// loaded before flipping `is_pbr`, so discovery runs a header-only
-    /// probe ([`ComponentDatabaseFile::probe_header`]) and records the
-    /// count. It deliberately does NOT retain the full parsed tree: the
-    /// vanilla CDB materialises ~1.44M typed entries (multi-second parse,
-    /// hundreds of MB–GB of RAM) that nothing reads today.
-    /// SF-D3-AUDIT-01 / #2100.
-    /// Phase 2 (future, #3398): an **indexed / streaming** CDB reader —
-    /// NOT a full re-`parse`. The Phase-2 spike
-    /// (`docs/audits/SF_CDB_PHASE2_SPIKE_2026-08-29.md` §3) measured
-    /// `parse` at ~9.19 GB materialised per full-size CDB (~18 GB across
-    /// the 13 discovered) and concluded that calling `parse` on the
-    /// cell-load path is not viable; the indexed reader IS the project.
-    /// The reader walks instance trees in load order to build ONE
-    /// `material_path → MaterialFields` lookup (DLC last-wins) so
-    /// per-material metalness / roughness / texture paths flow into
-    /// `ImportedMaterial` (mirrors the FO4 BGSM `resolve_bgsm` per-field
-    /// translation already wired below) — a single index, no second
-    /// per-game material path (CANONICAL-BOUNDARY). Archive order is
-    /// preserved in `self.archives`, so re-discovery reproduces load order.
+    /// Discovery runs a header-only probe
+    /// ([`ComponentDatabaseFile::probe_header`]) and records the count —
+    /// [`merge_external_material`]'s `.mat` arm needs only confirmation that
+    /// Starfield material authoring is loaded before flipping `is_pbr`. It
+    /// deliberately does NOT retain the full parsed tree: the vanilla CDB
+    /// materialises ~1.44M typed entries (multi-second parse, hundreds of
+    /// MB–GB of RAM). SF-D3-AUDIT-01 / #2100.
+    /// Per-material data comes from the **indexed / streaming** CDB reader
+    /// (#3398, the lazily built `MaterialIndex`), NOT a full re-`parse`:
+    /// the Phase-2 spike (`docs/audits/SF_CDB_PHASE2_SPIKE_2026-08-29.md`
+    /// §3) measured `parse` at ~9.19 GB materialised per full-size CDB
+    /// (~18 GB across the 13 discovered) and concluded that calling it on
+    /// the cell-load path is not viable. The reader builds ONE
+    /// `material_path → MaterialFields` lookup (DLC last-wins) — a single
+    /// index, no second per-game material path (CANONICAL-BOUNDARY).
+    /// Archive order is preserved in `self.archives`, so re-discovery
+    /// reproduces load order.
     pub(crate) sf_cdb_count: usize,
     /// #3398 Phase 2 — `(archive source, in-archive path)` for every
     /// discovered CDB, in load order (base first, then DLC/Creations).

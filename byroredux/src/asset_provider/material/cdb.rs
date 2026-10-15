@@ -4,8 +4,9 @@
 //! Starfield ships its materials in one multi-gigabyte component database
 //! rather than per-material sidecars, so the lookup path is entirely
 //! different from the BGSM/BGEM one: discover the archive, probe its header,
-//! memoise the answer, and — until the full parse lands — apply a PBR
-//! fallback so `.mat` materials are not silently untranslated.
+//! memoise the answer, and — on a lookup miss — apply a PBR fallback so
+//! `.mat` materials are not silently untranslated. The per-material lookup
+//! itself is the lazily built `MaterialIndex` (see `provider.rs`).
 
 use super::*;
 
@@ -320,8 +321,7 @@ pub(crate) fn probe_starfield_cdb(bytes: &[u8], source: &str) -> Option<CdbHeade
             log::info!(
                 "Starfield CDB '{source}' present: {} chunks ({} bytes, header-only probe). \
                  `.mat` material paths on NIFs will route through Disney BSDF \
-                 (Phase 1 — full parse + per-field extraction is the deferred \
-                 Phase 2 follow-up).",
+                 (the material index is built lazily on the first lookup).",
                 info.chunk_count,
                 bytes.len(),
             );
@@ -387,10 +387,12 @@ pub(crate) fn unresolved_material_warning(path: &str, has_starfield_cdb: bool) -
 /// distinct entry points:
 ///
 /// * The `.mat` arm calls it **directly**, and still early-returns. That is
-///   correct and not a shortcut: Starfield ships no `.mat` sidecar files at
-///   all (a census of all 129 vanilla + Creation archives found zero loose
-///   `.bgsm`/`.bgem` and only 20 `.mat`, all third-party), so there is no
-///   resolver for a `.mat` path to miss.
+///   correct and not a shortcut: Starfield ships no `.bgsm`/`.bgem` sidecar
+///   files at all, and the only loose `.mat` files are 20 third-party
+///   Creation JSON exports (a census of all 129 vanilla + Creation
+///   archives), which the arm decodes through `loose_mat` (#4277) before
+///   reaching this fallback; a `.mat` path with no decodable file resolves
+///   through the CDB, so nothing remains for a resolver to miss.
 /// * `.bgsm`/`.bgem` names reach it **only after** `resolve_bgsm` /
 ///   `resolve_bgem` has actually missed.
 ///
