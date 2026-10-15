@@ -463,7 +463,7 @@ fn json_value_is_all_f64(value: &serde_json::Value) -> bool {
 #[test]
 fn weather_sky_walk_covers_every_float_field_of_the_structs() {
     let declared = declared_field_names(
-        include_str!("../components.rs"),
+        include_str!("../components/environment.rs"),
         "WeatherSkyState",
     );
     assert!(
