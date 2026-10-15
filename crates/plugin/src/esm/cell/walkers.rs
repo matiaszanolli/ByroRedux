@@ -423,68 +423,24 @@ fn parse_cell_group_inner(
                     }
                 }
 
-                let ownership = fields.ownership();
-                let super::helpers::CellSubrecordFields {
-                    editor_id,
-                    display_name,
-                    water_height,
-                    water_height_is_explicit,
-                    image_space_form,
-                    water_type_form,
-                    acoustic_space_form,
-                    music_type_form,
-                    music_type_enum,
-                    climate_override,
-                    sky_region,
-                    location_form,
-                    encounter_zone_form,
-                    regions,
-                    lighting_template_form,
-                    ownership_owner: _,
-                    ownership_rank: _,
-                    ownership_global: _,
-                    regional_color_override,
-                    precombined_mesh_hashes,
-                    absorbed_ref_bakes,
-                } = fields;
-
                 if is_interior {
-                    let canonical_id = canonical_interior_cell_id(header.form_id, &editor_id);
-                    let key = canonical_id.to_ascii_lowercase();
-                    cells.insert(
-                        key.clone(),
-                        CellData {
-                            form_id: header.form_id,
-                            editor_id: canonical_id,
-                            display_name: display_name.clone(),
-                            references: Vec::new(),
-                            is_interior: true,
-                            show_sky,
-                            grid: None,
-                            lighting: lighting.clone(),
-                            landscape: None,
-                            water_height,
-                            water_height_is_explicit,
-                            image_space_form,
-                            water_type_form,
-                            acoustic_space_form,
-                            music_type_form,
-                            music_type_enum,
-                            climate_override,
-                            sky_region,
-                            location_form,
-                            encounter_zone_form,
-                            regions: regions.clone(),
-                            lighting_template_form,
-                            ownership,
-                            regional_color_override,
-                            precombined_mesh_hashes,
-                            absorbed_ref_bakes,
-                            navmeshes: Vec::new(),
-                            pathgrids: Vec::new(),
-                            deleted_refs: Vec::new(),
-                        },
+                    // #5815 — the shared CellData build; the interior
+                    // walker canonicalises its editor id (the save/game
+                    // lookup key) first.
+                    let canonical_id = canonical_interior_cell_id(
+                        header.form_id,
+                        &fields.editor_id,
                     );
+                    let key = canonical_id.to_ascii_lowercase();
+                    let cell = fields.into_cell(
+                        header.form_id,
+                        canonical_id,
+                        true,
+                        show_sky,
+                        None,
+                        lighting.clone(),
+                    );
+                    cells.insert(key.clone(), cell);
                     current_cell = Some(key);
                 } else {
                     current_cell = None;

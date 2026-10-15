@@ -257,6 +257,76 @@ impl CellSubrecordFields {
             global_var_form_id: self.ownership_global,
         })
     }
+
+    /// #5815 — the `CellData` build both CELL walkers repeat field by
+    /// field: everything except `form_id`, the canonicalised `editor_id`,
+    /// the walker-specific quartet (`is_interior` / `show_sky` / `grid` /
+    /// `lighting`) and the empty per-cell collections is this struct's
+    /// payload moved across. A new CELL sub-record (#5309's absorb arms)
+    /// extends this struct and this one build instead of two hand-synced
+    /// literals.
+    pub(super) fn into_cell(
+        self,
+        form_id: u32,
+        editor_id: String,
+        is_interior: bool,
+        show_sky: Option<bool>,
+        grid: Option<(i32, i32)>,
+        lighting: Option<super::CellLighting>,
+    ) -> super::CellData {
+        let ownership = self.ownership();
+        let Self {
+            display_name,
+            water_height,
+            water_height_is_explicit,
+            image_space_form,
+            water_type_form,
+            acoustic_space_form,
+            music_type_form,
+            music_type_enum,
+            climate_override,
+            sky_region,
+            location_form,
+            encounter_zone_form,
+            regions,
+            lighting_template_form,
+            regional_color_override,
+            precombined_mesh_hashes,
+            absorbed_ref_bakes,
+            ..
+        } = self;
+        super::CellData {
+            form_id,
+            editor_id,
+            display_name,
+            references: Vec::new(),
+            is_interior,
+            show_sky,
+            grid,
+            lighting,
+            landscape: None,
+            water_height,
+            water_height_is_explicit,
+            image_space_form,
+            water_type_form,
+            acoustic_space_form,
+            music_type_form,
+            music_type_enum,
+            climate_override,
+            sky_region,
+            location_form,
+            encounter_zone_form,
+            regions,
+            lighting_template_form,
+            ownership,
+            regional_color_override,
+            precombined_mesh_hashes,
+            absorbed_ref_bakes,
+            navmeshes: Vec::new(),
+            pathgrids: Vec::new(),
+            deleted_refs: Vec::new(),
+        }
+    }
 }
 
 /// Read a 4-byte FormID from a sub-record payload. Returns `None` when

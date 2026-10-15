@@ -426,76 +426,14 @@ fn parse_wrld_children_inner(
                     }
                 }
 
-                let ownership = fields.ownership();
-                let super::helpers::CellSubrecordFields {
-                    editor_id,
-                    display_name,
-                    water_height,
-                    water_height_is_explicit,
-                    image_space_form,
-                    water_type_form,
-                    acoustic_space_form,
-                    music_type_form,
-                    music_type_enum,
-                    climate_override,
-                    sky_region,
-                    location_form,
-                    encounter_zone_form,
-                    regions,
-                    lighting_template_form,
-                    ownership_owner: _,
-                    ownership_rank: _,
-                    ownership_global: _,
-                    regional_color_override,
-                    precombined_mesh_hashes,
-                    absorbed_ref_bakes,
-                } = fields;
-
-                let cell = CellData {
-                    form_id: header.form_id,
-                    editor_id,
-                    display_name,
-                    references: Vec::new(),
-                    is_interior: false,
-                    show_sky: None,
-                    grid,
-                    lighting: None,
-                    landscape: None,
-                    water_height,
-                    water_height_is_explicit,
-                    image_space_form,
-                    water_type_form,
-                    acoustic_space_form,
-                    music_type_form,
-                    music_type_enum,
-                    climate_override,
-                    sky_region,
-                    location_form,
-                    encounter_zone_form,
-                    regions,
-                    lighting_template_form,
-                    ownership,
-                    regional_color_override,
-                    // #1220 / D3-NEW-01 — FO4+ PreCombined Mesh
-                    // refs on exterior cells. The cell loader's
-                    // conditional-absorption gate ties XCRI
-                    // honour-vs-ignore to the per-bake spawn set;
-                    // exterior call-site wiring landed
-                    // under #1221/#1222 ("third leg") and the gate
-                    // was later shared between the interior and
-                    // exterior loaders under #2063 (see
-                    // `byroredux::cell_loader::precombined::
-                    // effective_absorbed_refs`). Live today: when
-                    // a cell's XCRI bake loads, these fields suppress
-                    // per-REFR rendering of that bake's refs on
-                    // exterior cells the same way they already did
-                    // on interior ones (#5484).
-                    precombined_mesh_hashes,
-                    absorbed_ref_bakes,
-                    navmeshes: Vec::new(),
-                    pathgrids: Vec::new(),
-                    deleted_refs: Vec::new(),
-                };
+                // #5815 — the shared CellData build (see
+                // `CellSubrecordFields::into_cell`). Exterior cells carry
+                // the walker-parsed grid; #1220 / D3-NEW-01 — the FO4+
+                // PreCombined Mesh refs suppress per-REFR rendering of a
+                // loaded XCRI bake's refs on exterior cells the same way
+                // they already did on interior ones (#5484).
+                let editor_id = std::mem::take(&mut fields.editor_id);
+                let cell = fields.into_cell(header.form_id, editor_id, false, None, grid, None);
                 if force_persistent {
                     if persistent_cell.is_none() {
                         *persistent_cell = Some(cell);
