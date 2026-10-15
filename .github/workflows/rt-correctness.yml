@@ -1,6 +1,13 @@
 name: RT Correctness Gates
 
+# #5854 — the golden-frame lane is scheduled nightly (offset from
+# real-data-gates' 04:17 so the two lanes don't contend for the same
+# self-hosted runner). The other gates stay dispatch-only: their
+# `inputs.gate` conditions are empty on a scheduled event, so a
+# schedule names exactly the golden job.
 on:
+  schedule:
+    - cron: '43 5 * * *'
   workflow_dispatch:
     inputs:
       gate:
@@ -71,7 +78,7 @@ jobs:
 
   golden:
     name: Golden frames + FSR upscaler quality
-    if: inputs.gate == 'golden' || inputs.gate == 'all'
+    if: github.event_name == 'schedule' || inputs.gate == 'golden' || inputs.gate == 'all'
     runs-on: [self-hosted, linux, x64, byroredux-rt]
     timeout-minutes: 45
     steps:
