@@ -11,8 +11,9 @@
 //! is not loaded yet asks for it, and the next [`populate_actor_graphs`] pass decodes
 //! it and restarts the graphs that were waiting.
 //!
-//! Not evaluated, as for props: blend weights and variables, transition blends and
-//! conditions, and the graph's modifiers.
+//! Evaluated exactly as for props: blend weights and variables, transition
+//! blends and conditions, and the graph-level modifiers (the pose
+//! modifiers stay parked — `animation_modifiers.rs`'s list).
 
 use super::animation::convert_hkx_clip;
 use super::TextureProvider;

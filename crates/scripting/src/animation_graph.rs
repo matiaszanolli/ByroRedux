@@ -22,9 +22,12 @@
 //! weighted from the graph's variables each frame, and a transition with a blending
 //! effect fades the old pose out as the new one fades in, and a transition gated on a
 //! condition (`iSyncIdleLocomotion == 1`, `!IsPlayer`) fires only while it holds over
-//! the variables. Not run: layered (non-parametric, bone-masked) blenders, which keep
-//! their first child; modifiers; root motion; and the sound events (`SoundPlay.*`) the
-//! triggers carry.
+//! the variables. Layered (non-parametric) blenders blend by their
+//! bone-weight masks, and the modifiers that act on the graph itself run
+//! (`animation_modifiers.rs`). Not run: root motion; the pose modifiers
+//! (look-at, twist, foot IK, ragdoll, jiggle) and the modifiers whose
+//! formula the files do not give; and the `SoundPlayAt.<name>.<node>`
+//! node-attached sound form (plain `SoundPlay.<name>` plays).
 //!
 //! The CK's results apply: `PlayAnimation` returns true when the graph accepted
 //! the event; `PlayAnimationAndWait` suspends until the named event is raised

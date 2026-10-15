@@ -374,11 +374,16 @@ recorded so it is not re-proposed.
 Four tiers, each blending into the next. The distances are starting points to
 be tuned against real worldspaces, not derived constants:
 
+*(Superseded by af8323881's geomorphing segment ladder — see the "LOD"
+paragraph in §12.14's 2026-10 update below. The table records the design
+the chunk rewrite replaced; the tier word's bits still count three
+levels.)*
+
 | Tier | Range (units) | Form |
 |---|---|---|
 | 0 | 0 – 2 000 | 3-segment blades, full density |
 | 1 | 2 000 – 6 000 | 1-segment ribbons; density thinning and compensating width follow the geometric crossover |
-| 2 | 6 000 – 15 000 | clump cards — a few crossed quads per clump, from a baked atlas |
+| 2 | 6 000 – 15 000 | clump cards — a few crossed quads per clump, from a baked atlas *(removed)* |
 | 3 | 15 000+ | terrain detail layer only |
 
 Two rules make this continuous rather than three visible thresholds:
@@ -412,6 +417,11 @@ This is the single most important item in the document for the stated goal.
 Tier 3 is not "where grass stops"; it is where grass stops being geometry.
 
 ### Current geometric LOD implementation
+
+*(Superseded — this subsection describes the pre-af8323881 blue-noise
+cross-fade and clump-card tier. The live design is the geomorphing
+segment ladder documented in §12.14's 2026-10 "LOD" paragraph: no
+stochastic handoff, no FSR reactive band, no card tier.)*
 
 The first geometric crossover is now driven by projected blade height rather
 than the table's indicative world-distance ranges. Its band is derived from
@@ -1780,7 +1790,7 @@ and the blade buffer 16 → 64 MiB. `GROUNDCOVER_MAX_CHUNKS` stayed 256; the
 draw distance is 3000 units (~167-chunk bound, ~1.5× headroom). The size-pin
 test and `memory-budget.md` ledger row moved with it in the same commit.
 
-### 12.14 Upscaler contract (2026-09-15)
+### 12.14 Upscaler contract (2026-09-15; reactive paragraph superseded 2026-10-14)
 
 The opaque ribbon tier is ordinary temporal geometry, not a global FSR mask
 exception. `groundcover_blade.vert` evaluates the complete blade pose twice:
@@ -1791,11 +1801,11 @@ the scene's origin-corrected `prevViewProj`, then `groundcover_blade.frag`
 writes `0.5 * (current_ndc - previous_ndc)` into the normal motion attachment.
 
 The ribbon tier is depth-writing and opaque, so its transparency/composition
-mask is `0.0`. Its reactive mask is not: since `fd0cd577c` (which replaced
-the era when both masks were blanket `1.0`) `groundcover_blade.frag` writes
-the transition-driven value
-`0.9 * max(midTransition, cardTransition)` — zero at the opaque LOD
-endpoints, rising only across either stochastic LOD/card handoff
+mask is `0.0`. Its reactive mask is too — `0.0` unconditionally since
+af8323881: the geomorphing segment ladder has no handoff to flag reactive
+(superseding `fd0cd577c`'s transition-driven
+`0.9 * max(midTransition, cardTransition)`, which covered the removed
+stochastic LOD/card crossovers
 (`4·w·(1−w)` for the mid-tier weight and the card weight respectively).
 It is material-driven and bounded by `0.9`; it must not regress to a blanket
 `1.0` mask. Pinned by

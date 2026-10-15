@@ -8,8 +8,11 @@
 //!   from the NPC's class/level, per the documented GECK auto-calculate
 //!   model, and resolves each to its `AVIF` FormID (the original #1663 path,
 //!   below).
-//! - **Skyrim (race + offset):** seeds Health from the race's starting
-//!   Health plus the NPC's signed TES5 ACBS Health offset.
+//! - **Skyrim (race + offset + class skills):** seeds Health, Magicka and
+//!   Stamina each from its race's `RACE.DATA` starting value plus the
+//!   NPC's signed `ACBS` offset, and all 18 skills by the UESP `CLAS`
+//!   formula (`derive_skyrim_skills`); a non-auto-calc NPC keeps its
+//!   authored `DNAM` values as written.
 //! - **FO4+ (stored):** FO4 stores actor values rather than deriving them
 //!   — the `NPC_` `PRPS` property array already *is* `(AVIF FormID, value)`
 //!   pairs, with baked `Calculated Health`/`Action Points` in `DNAM`. The

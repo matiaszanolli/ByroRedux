@@ -82,15 +82,13 @@ layout(push_constant) uniform GcBladePush {
     /// xy = unit wind direction, z = speed, w = gust amplitude.
     vec4 wind;
 /// x = gust frequency, y = previous shared wind-clock sample, z = species
-/// count. `w` packs `(frame serial << 2) | lod tier` for the blue-noise LOD
-/// cross-fade; the fixed blade arena and segment counts are generated shader
-/// constants, not per-frame tuning state.
+/// count. `w` packs `(frame serial << 2) | tier`; the fixed blade arena and
+/// segment counts are generated shader constants, not per-frame tuning state.
 ///
-/// The tier field is **two** bits because three streams are dispatched (tier 0
-/// tuft, tier 1 ribbon, tier 2 clump card). A one-bit field cannot represent
-/// tier 2 at all: `2 & 1 == 0`, so the card stream decoded as tier 0 and drew
-/// card-strided vertices as three-segment tuft blades, while the carry into
-/// the serial desynchronised that stream's blue-noise rank.
+/// The tier field is **two** bits because af8323881's chunk LOD geomorphs
+/// between three segment levels (3/2/1 segments per 512-unit chunk). A
+/// one-bit field cannot represent the third level (`2 & 1 == 0`), which is
+/// exactly the packing bug #4498 pinned when the third stream shipped.
     vec4 gustAndCounts;
 } pc;
 

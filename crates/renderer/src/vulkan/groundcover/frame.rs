@@ -119,12 +119,11 @@ impl GroundCoverPipeline {
                 input.gust_frequency,
                 input.time_seconds - input.delta_seconds.max(0.0),
                 species.len() as f32,
-                // Packed `(frame serial << 2) | lod tier`. It keeps the push
-                // block compact and makes the blue-noise transition
-                // repeat under a replayed simulation clock. The shift is two
-                // bits, not one, because `GROUNDCOVER_INDIRECT_STREAMS` is 3:
-                // a one-bit tier field cannot encode the clump-card tier, and
-                // its value carried into the serial instead.
+                // Packed `(frame serial << 2) | tier`. It keeps the push
+                // block compact; the shift is two bits because the tier
+                // field encodes the three geomorphing segment levels of
+                // af8323881's chunk LOD (3/2/1 segments per 512-unit chunk)
+                // plus padding.
                 //
                 // The serial is masked to `GROUNDCOVER_FRAME_SERIAL_BITS`
                 // before the ×stride so the word stays f32-exact for the life

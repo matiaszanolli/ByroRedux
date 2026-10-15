@@ -114,7 +114,7 @@ it is **AUTHORED in the game's own data**, not engine-hardcoded.
 | Tier | What it is | Where it lives | Rule |
 |---|---|---|---|
 | **Raw / `Imported*`** | A faithful decode of per-game character authoring: NPC SPECIAL / class / level / skills / perks (`NPC_`), class base attributes (`CLAS`), race bonuses (`RACE`), the AV set (`AVIF`), formula constants (`GMST`), perk gates (`PERK`). **Allowed to be messy.** | `crates/plugin/src/esm/records/` (`actor`, `class`, `avif`, …) | Decode only; never the source of truth. |
-| **`derive()` boundary** | The per-game **ruleset** applied: auto-calc (SPECIAL→skills), derived-stat formulas, level scaling, perk-gate resolution. Exactly **one** site per concern. | `crates/plugin/.../actor_value_derive.rs` (today: FNV/FO3) → a per-game ruleset module set | One producer; no duplicate derivation. |
+| **`derive()` boundary** | The per-game **ruleset** applied: auto-calc (SPECIAL→skills), derived-stat formulas, level scaling, perk-gate resolution. Exactly **one** site per concern. | `crates/plugin/.../actor_value_derive.rs` (FNV/FO3 auto-calc, Skyrim pools+skills, FO4 stored) → a per-game ruleset module set | One producer; no duplicate derivation. |
 | **Canonical** | The game-agnostic components the runtime reasons about: `ActorValues` (built) + `CharacterLevel` + `Perks` + `Background`. | `crates/core/src/ecs/components/` | The single source of truth. |
 | **Runtime** | Gameplay reads canonical state identically. `GetActorValue` already reads `ActorValues` (`crates/scripting/src/condition.rs`). | conditions / combat / dialogue / leveling | No per-game branches. |
 

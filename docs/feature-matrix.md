@@ -155,7 +155,7 @@ layouts); see the gaps table below.
 | Per-cell reverb send (`-12 dB` interior / silent exterior) | ✓ |
 | Underwater low-pass (submersion-driven, 900 Hz wet / dry bypass) | ✓ |
 | Water-surface splash + ripple one-shots (WATAL events) | ✓ |
-| Per-material footsteps (FOOT records) | ✗ |
+| Per-material footsteps (FOOT records) | ◐ mechanism shipped (`select_footstep_sound` + surface-material probe); no authored data yet — the FOOT→IPDS material table awaits decode |
 | Region ambient (REGN) — background music | ◐ dispatch mechanism ✓; no supported game's `music_form` currently resolves to a decodable SOUN path; playback awaits #3816 (MUSC/MUST/MSET/RDMD decode) |
 | Region ambient (REGN) — incidental/loop sounds | ✗ |
 
@@ -182,7 +182,8 @@ layouts); see the gaps table below.
 | ECS-native event hooks (M47.0) — `OnCellLoad`, `OnActivate`, `OnHit` | ✓ |
 | CTDA condition evaluation with OR-precedence (M47.1) | ✓ 48 functions |
 | `script.activate` console command wired | ✓ |
-| Full Papyrus transpiler (M47.2) | ✓ `.pex` recognizer slice (CFG→lift→short-circuit→control-flow→lower); full transpiler deferred |
+| Full Papyrus transpiler (M47.2) | ✓ `.pex` recognizer slice (CFG→lift→short-circuit→control-flow→lower); full transpiler deferred | 
+| Papyrus VM (bounded interpreter, decline-fallback) | ✓ reference/alias/update/event + quest-fragment scripts run what the static lowering declines, under a per-frame budget (#5763); structs + array methods |
 | Script-extender compatibility layer (SKSE-family) | ◐ **vertical slice, unaudited** — six built-in provider families registered in the Papyrus provider catalog (Game, Input, UI, StorageUtil, JContainers, ModEvent), plus an ObScript runtime. ~23.9k LOC across [`crates/sdk/src/`](../crates/sdk/src/) (14 245), [`crates/scripting/src/papyrus_provider/`](../crates/scripting/src/papyrus_provider/) (6 377) and `compatibility.rs` + `obscript*.rs` (3 294), measured 2026-09-10. No dedicated audit pass has run over it — treat the status as "exists and is tested in-crate", not "verified against real mod content". Design: [`docs/engine/sdk-v0.1-development-plan.md`](engine/sdk-v0.1-development-plan.md). |
 
 ---
@@ -204,7 +205,7 @@ layouts); see the gaps table below.
 | Authored alias metadata without an owning subsystem | ~ exposed as runtime overlays, not fabricated results |
 | Scene (`SCEN`) playback + PACK scene-package actions | ✓ MQ101 vertical slice |
 | Console observability — `quest.show`, `quest.aliases`, `quest.start`/`stop`/`setstage` | ✓ M43.1 |
-| Story Manager event payload / search | ✗ |
+| Story Manager event payload / search | ✓ Phases 0–4 (SMBN/SMEN/SMQN decode, dispatcher, R1/R2/L1/L2 payload slots, policy bits, KILL/CLOC/AHEL producers, `sm1-story-manager.sh`); SCPT/LEVL/SKIL producers remain |
 | Reference collections; true LCTN / unloaded-world alias queries | ✗ |
 | Created-object spawning from aliases | ✗ |
 | Dialogue tree + dialogue UI integration | ~ single-level topic selection + native response surface (P4, ab31cfefe/766e1746e — live in MarkarthWarrens); full tree + dialogue UI open |
@@ -265,7 +266,7 @@ scheduler registration), not just present as a buildable function.
 | Feature | Oblivion | FO3 | FNV | Skyrim SE | FO4 | FO76 | Starfield |
 |---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
 | Ruleset wired (`CharacterRuleset`: derived-stat formulas + leveling model) | ~ built, unwired | ✓ | ✓ | ✓ | ✓ | ✗ | ✗ |
-| NPC actor-value population at spawn | ✗ | ✓ class auto-calc | ✓ class auto-calc | ✓ Health+Magicka+Stamina | ✓ stored `PRPS`+`DNAM` | ✗ wire layout uncaptured (#4453) | ✗ wire layout uncaptured (#4453) |
+| NPC actor-value population at spawn | ✗ | ✓ class auto-calc | ✓ class auto-calc | ✓ pools + 18 skills | ✓ stored `PRPS`+`DNAM` | ✗ wire layout uncaptured (#4453) | ✗ wire layout uncaptured (#4453) |
 | Creature (`CREA`) actor-value population at spawn | ✗ `CREA.DATA` layout unsourced | ✓ SPECIAL + Health | ✓ SPECIAL + Health | n/a (no `CREA`) | n/a | n/a | n/a |
 | Runtime leveling (XP grant / level-up) | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ |
 | Pool regen tick (Fatigue/Magicka — Health deliberately unmodelled, Stamina has no row; #4463) | ✗ inert | ✗ inert | ✗ inert | ✗ inert | ✗ inert | ✗ inert | ✗ inert |
@@ -295,8 +296,9 @@ Nothing arms combat ambiently, though, so most creatures still never attack.
 
 Skyrim's NPC population derives Health, Magicka and Stamina, each
 independently from its own `RACE.DATA` starting value plus its own signed
-`ACBS` offset (`derive_skyrim_actor_values`, landed `1d0c5d4b` 2026-08-24,
-verified against `Skyrim.esm`) — no other actor values or skills. FO4 is the
+`ACBS` offset, and all 18 skills by the UESP `CLAS` formula
+(`derive_skyrim_actor_values` + `derive_skyrim_skills`, `7c740eca0`;
+a non-auto-calc NPC keeps its authored `DNAM` skill values). FO4 is the
 only game whose "stored" mechanism populates actors (`NPC_` `PRPS` property
 pairs pass through verbatim, plus baked `DNAM` Health/Action Points),
 exercised against real content. FO76/Starfield still run the `PRPS`/`DNAM`
@@ -340,7 +342,7 @@ is not registered in the scheduler at all.
 | General NPC locomotion from `.hkx` | Skyrim actors animating outside the MQ101 cart-idle catalog | M41.x (Tier 5) |
 | `.btr` terrain normal maps | distant-terrain normal detail on Skyrim SE/FO4. Distance-based multi-band selection is **no longer a gap** — the four-level ladder shipped in #2371 and runs on every quad-based scheme, FO3/FNV included (#3508) | M35 |
 | Remaining `PACK` procedures (Find/Accompany/UseItemAt/Ambush/FleeNotCombat/CastMagic/UseWeapon) | NPCs perform item-use/combat/magic behaviors | M42 (Tier 7) |
-| Full Papyrus transpiler (M47.2) | Arbitrary script execution on real content (`.pex` recognizer slice shipped Session 51) | M47.2 (Tier 3) |
+| Full Papyrus transpiler (M47.2) + VM | Arbitrary script execution on real content — the recognizer slice ships the static path and the bounded VM (`fragment/vm.rs`) runs the scripts the lowering declines | M47.2 (Tier 3) |
 | Script-extender compatibility layer verified against real mods | Confidence that SKSE-family mod scripts (StorageUtil / JContainers / ModEvent consumers) actually run. The layer *exists* — ~23.9k LOC, six provider families, tested in-crate — but no audit pass has exercised it against shipped mod content, so its real-world coverage is unmeasured, not zero and not proven (#3953) | M47.2 follow-up |
 | Full Scaleform menus | In-game UI (method behavior / `_global.gfx`; native menu covers Pause/Settings/Inventory in parallel) | M48 / R4 decision |
 | UV scroll animated materials | Animated terminals / displays | audited, not prioritised |

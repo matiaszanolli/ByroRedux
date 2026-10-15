@@ -1472,8 +1472,9 @@ on the object's `AnimationPlayer`: single play holds the last pose, looping loop
 clip is held at its authored fraction. The clip's trigger events are scheduled in real time
 (`(clip time − start time) / speed`, end-relative ones from the clip's length) and raised by
 `object_graph_step_system`, so a lever that finishes `PullDown` raises `Pulled` and settles in the
-"Pulled" state with no script involved. Transitions are instantaneous (no blends), and the blend weights of a
-blender are not kept: a state's generator may also be a *Gamebryo sequence* (a `NiControllerSequence`
+"Pulled" state with no script involved. A blender keeps its blend weights (weighted from the graph's variables
+each frame), and a transition with a blending effect cross-fades the old
+pose out as the new one fades in: a state's generator may also be a *Gamebryo sequence* (a `NiControllerSequence`
 of the object's own NIF, by name), a *nested state machine*, or a *blender* over such children, and
 the decoder flattens those into `State::content` (`examples/graph_dump.rs` prints a decoded graph;
 169 of the 420 vanilla graphs carry a clip in a root state and 251 do not, most of them actor and
@@ -1491,8 +1492,8 @@ blender over two nested machines, `Behavior01` swinging the `Trigger` clip (`Sta
 Falls Barrow, stepping on trigger `00086018` relays the activation to the three blades, their
 `PlayAnimation('Single')` is accepted by the nested machine, and the `Blade01` node sweeps from
 +54 degrees through -54 and back. The blender's weights, transition blends and effects, and
-transition conditions and variables are not evaluated, and only the motion leaf plays at a time (a
-blender that mixes two moving clips shows one of them).
+transition conditions and variables are all evaluated (layered blenders blend by their
+bone-weight masks); a blender that mixes two moving clips shows the blend.
 
 **The natives.** `PlayAnimation` returns whether the graph took the event. `PlayAnimationAndWait`
 is a latent statement: the schedule is deterministic, so the seconds until the named event is
@@ -1519,9 +1520,11 @@ unloading", not for a manual unregister). A `SoundPlay.<name>` event
 a graph raises plays the sound descriptor with that editor id from the object, through the same
 queue as `Sound.Play`: 120 distinct `SoundPlay.*` names occur in the vanilla Skyrim graphs, 77 of
 them descriptors of Skyrim.esm (the rest are in the DLC masters), and the lever and pull-chain
-graphs play live. The node-attached `SoundPlayAt.<name>.<node>` form is not played. Not modelled:
-actors' graphs (none runs). `UnregisterForAnimationEvent` removes the
-registration; `SetAnimationVariable*` have no graph variable to act on and do nothing.
+graphs play live. The node-attached `SoundPlayAt.<name>.<node>` form is not played. Actors'
+graphs run too (FO4 actors carry the same `ObjectAnimationGraph` component
+the object system drains, driven from their CLKT and skeleton).
+`UnregisterForAnimationEvent` removes the registration;
+`SetAnimationVariable*` write the graph variables the transitions read.
 
 **Animated nodes.** The cell loader flattens a placed NIF to one entity per mesh, but the graph's
 skeleton bones are NiNodes (`Lever01`). A NIF with a behavior graph keeps its node tree

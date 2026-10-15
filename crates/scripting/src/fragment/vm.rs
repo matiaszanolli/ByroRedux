@@ -47,7 +47,9 @@
 //! A call or member access through a cast or a typed variable reaches the
 //! script the VM runs on another reference, as that reference's.
 //!
-//! Not modelled: structs.
+//! Structs and array methods run (`Value::Struct`, 20cbfd7b7). What is
+//! genuinely not modelled: a struct or array held across `Utility.Wait` —
+//! the saved continuation stores scalars only (scripting.md § continuations).
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};

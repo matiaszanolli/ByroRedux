@@ -519,11 +519,11 @@ special cases.
 Ground cover's opaque ribbon tier follows this table directly: it emits an
 unjittered current-to-previous velocity from its shared-clock wind and
 displacement samples, and its transparency/composition mask stays zero.
-Its reactive mask is not zero: since `fd0cd577c` the ribbon writes
-`0.9 × max(midTransition, cardTransition)` — a transition-driven value that
-is zero at the opaque LOD endpoints and rises only across either stochastic
-LOD/card handoff, never a blanket mask (pinned by
-`blade_motion_and_fsr_mask_contract_stay_material_driven`). Its detailed
+Its reactive mask is zero too, unconditionally since `af8323881`: the
+geomorphing segment ladder has no stochastic handoff left to flag
+(pre-`af8323881` it carried `fd0cd577c`'s transition-driven value).
+Both masks being zero is pinned by
+`blade_motion_and_fsr_mask_contract_stay_material_driven`. Its detailed
 contract is documented in
 [EXAL ground cover §12.14](exal-groundcover.md#1214-upscaler-contract-2026-09-15).
 

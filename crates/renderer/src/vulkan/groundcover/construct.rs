@@ -773,10 +773,10 @@ fn shader_module(device: &ash::Device, spirv: &[u8], name: &str) -> Result<vk::S
 mod tests {
     use super::*;
 
-    /// #4297 / LOD tiers 1–2 — the opaque endpoints retain real
-    /// wind/displacement velocity and zero FSR masks; only either stochastic
-    /// projected-size handoff raises a bounded reactive contribution. Shader
-    /// text catches a future pipeline mask or output regression without a GPU.
+    /// #4297 — the opaque endpoints retain real wind/displacement velocity
+    /// and zero FSR masks: since af8323881 the segment tiers geomorph, so
+    /// no handoff is flagged reactive at all. Shader text catches a future
+    /// pipeline mask or output regression without a GPU.
     #[test]
     fn blade_motion_and_fsr_mask_contract_stay_material_driven() {
         let vert = include_str!("../../../shaders/groundcover_blade.vert");

@@ -821,7 +821,8 @@ pub(crate) fn build_groundcover_detail_atlas(world: &World) -> GroundCoverDetail
                 for channel in 0..3 {
                     pixels[texel + channel] = (colour[channel].clamp(0.0, 1.0) * 255.0).round() as u8;
                 }
-                // Tier 2 samples this same immutable atlas as a clump card.
+                // (Historically the removed clump-card tier sampled this
+                // atlas; af8323881's segment ladder no longer does.)
                 // Four narrow full-height strokes are derived from Outerra's
                 // already-cited `GROUNDCOVER_BLADES_PER_POINT`, so the alpha
                 // lane is a deterministic grass silhouette rather than the

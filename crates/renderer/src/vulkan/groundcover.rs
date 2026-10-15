@@ -156,9 +156,9 @@ pub struct GpuGroundCoverSpecies {
     pub tip_colour: [f32; 4],
     /// Transmission colour RGB (§12.2) + sheen amount (§12.6). #4057.
     pub transmission_sheen: [f32; 4],
-    /// Bindless palette-generated clump-card atlas (§6 Tier 2), in x. The
-    /// remaining lanes reserve the std430 vec4 and keep card sampling
-    /// per-species rather than in the per-draw push block.
+    /// Legacy Tier-2 clump-card atlas handle in x — unused since af8323881
+    /// replaced the card tier with the geomorphing segment ladder (no
+    /// ground-cover shader samples it; kept for the std430 layout).
     pub card_atlas: [u32; 4],
 }
 // SAFETY: 64 bytes of `f32` plus one fully initialised `uvec4`, no padding.
@@ -753,11 +753,11 @@ mod tests {
     /// The host packs `(serial * stride) + tier` into one float and the vertex
     /// shader unpacks it with a mask and a shift. Those three numbers are
     /// written in two languages and were not derived from each other: the mask
-    /// was `1u` while three streams were dispatched, so the clump-card tier
-    /// decoded as `2 & 1 == 0`. Tier 2 drew its card-strided indirect command
-    /// as three-segment tuft blades — wrong geometry addressing a chunk slab
-    /// it does not own — and the dropped bit carried into the serial, moving
-    /// that stream's blue-noise rank a frame out of step with the others.
+    /// was `1u` while three streams were dispatched, so the third tier
+    /// decoded as `2 & 1 == 0` (in the pre-af8323881 design that tier was
+    /// the clump card, which drew card-strided vertices as three-segment
+    /// tuft blades and desynchronised that stream's rank; the tier word now
+    /// encodes the segment ladder, but the packing lesson stands).
     ///
     /// Recomputing both halves here from `GROUNDCOVER_INDIRECT_STREAMS` is
     /// what keeps a fourth stream from reintroducing it silently. The f32

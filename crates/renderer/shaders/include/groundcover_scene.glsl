@@ -134,9 +134,8 @@ struct GroundCoverSpecies {
     /// and an invented scalar in a canonical type is how a placeholder becomes
     /// the value nobody revisits.
     vec4 transmissionSheen;
-    /// x = bindless palette-generated atlas for the Tier-2 clump card.
-    /// Kept per species so card sampling follows the same palette selection as
-    /// blades, rather than receiving an unrelated global material.
+    /// x = the legacy clump-card atlas handle — unused since af8323881
+    /// removed the card tier; kept for the std430 layout.
     uvec4 cardAtlas;
 };
 

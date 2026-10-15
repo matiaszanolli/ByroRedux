@@ -17,9 +17,11 @@
 //! fire as it plays. [`animation_event_system`] drains each graph's raised
 //! events and queues the `OnAnimationEvent` of every registration for that
 //! reference and event, as a separate run, like a custom event's receivers.
-//! Not modelled: `OnAnimationEventUnregistered` (a graph unloading drops the
-//! registration silently), actors' graphs (none runs), and the sound events
-//! (`SoundPlay.*`) an animation notifies.
+//! A graph unloading with its cell sends each registration
+//! `OnAnimationEventUnregistered` ([`unregister_unloaded`]), a
+//! `SoundPlay.<name>` notify plays that editor id's descriptor
+//! (`SoundPlayAt.<name>.<node>` is not played), and FO4 actors run their
+//! own `ObjectAnimationGraph` — the same component this system drains.
 
 use super::*;
 use crate::translate::effects::VmStored;
