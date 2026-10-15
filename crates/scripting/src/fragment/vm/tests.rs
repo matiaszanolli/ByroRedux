@@ -4945,6 +4945,91 @@ fn script_variable_arrays_persist_between_runs() {
     assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 30, "and the third read the second's Remove");
 }
 
+/// Runs `body` as Fragment_1 (which ends with `Marker.Enable()`) and reports
+/// whether the marker was enabled — false means the run was stopped first.
+fn run_body_enables_marker(body: &str) -> bool {
+    let script = parsed_source(&format!(
+        "ScriptName QF_VmCap extends Quest\n\
+         ObjectReference Property Marker Auto\n\
+         Function Fragment_1()\n\
+         {body}\
+           Marker.Enable()\n\
+         EndFunction\n",
+    ));
+    let world = world_with_fragment(script);
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    crate::fragment::reference_enabled(&world, MARKER)
+}
+
+/// `new T[n]` is capped at the SDK's `MAX_SCRIPT_ARRAY_ELEMENTS` — `n` is a
+/// runtime value here, so `new Int[6000000000]` must stop the run, not
+/// allocate (#5791).
+#[test]
+fn vm_array_new_is_capped() {
+    assert!(
+        !run_body_enables_marker("Int[] tooBig = new Int[600]\n"),
+        "a 600-element array stops the run"
+    );
+    assert!(
+        run_body_enables_marker("Int[] atCap = new Int[512]\n"),
+        "512 is the documented ceiling and stays legal"
+    );
+}
+
+/// `Array.Add(x, count)` is capped on `len + count`, so one call cannot push
+/// billions of elements (#5791).
+#[test]
+fn vm_array_add_count_is_capped() {
+    assert!(
+        !run_body_enables_marker("Int[] a = new Int[0]\n  a.Add(1, 600)\n"),
+        "adding 600 at once stops the run"
+    );
+    assert!(
+        run_body_enables_marker("Int[] a = new Int[510]\n  a.Add(1, 2)\n"),
+        "512 total stays legal"
+    );
+}
+
+/// `Array.Insert` past the ceiling is refused like `Add` (#5791).
+#[test]
+fn vm_array_insert_is_capped() {
+    assert!(
+        !run_body_enables_marker(
+            "Int[] a = new Int[0]\n\
+             Int i = 0\n\
+             While i < 512\n\
+               a.Add(7)\n\
+               i = i + 1\n\
+             EndWhile\n\
+             a.Insert(0, 5)\n"
+        ),
+        "inserting into a full 512-element array stops the run"
+    );
+}
+
+/// String concatenation is capped at the SDK's `MAX_SCRIPT_STRING_BYTES`:
+/// `s = s + s` doubles per statement and would reach terabytes long before
+/// `MAX_STEPS` bites (#5791).
+#[test]
+fn vm_string_concat_is_capped() {
+    assert!(
+        !run_body_enables_marker(
+            "String s = \"xxxx\"\n\
+             Int i = 0\n\
+             While i < 13\n\
+               s = s + s\n\
+               i = i + 1\n\
+             EndWhile\n"
+        ),
+        "doubling past 4096 bytes stops the run"
+    );
+    assert!(
+        run_body_enables_marker("String s = \"ab\" + \"cd\"\n"),
+        "short concatenations stay legal"
+    );
+}
+
 /// A script-filled `RefCollectionAlias`: `AddRef` / `AddArray` / `RemoveRef`
 /// / `RemoveAll` change it, `GetCount` / `GetAt` / `Find` read it, across
 /// runs; a collection the quest fills by conditions is refused.

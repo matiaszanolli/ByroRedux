@@ -87,6 +87,13 @@ const STARFIELD_CREDITS: u32 = 0x0F;
 const MAX_STEPS: usize = 100_000;
 /// Script-function nesting.
 const MAX_DEPTH: usize = 16;
+/// Elements one array may hold — matches the static lowering's ceiling
+/// (`papyrus_provider/lower_call.rs` declines `new T[n]` past this), so a
+/// script the lowering accepts cannot be stopped here for size.
+const MAX_ARRAY_ELEMENTS: usize = byroredux_sdk::script_function::MAX_SCRIPT_ARRAY_ELEMENTS;
+/// Bytes in one string result — `s = s + s` doubles per statement and would
+/// reach terabytes long before `MAX_STEPS` bites.
+const MAX_STRING_BYTES: usize = byroredux_sdk::script_function::MAX_SCRIPT_STRING_BYTES;
 
 /// A Papyrus value.
 #[derive(Debug, Clone)]
@@ -2038,9 +2045,15 @@ impl Vm<'_> {
             }
             Expr::New { ty, size } => {
                 let size = self.eval(frame, &size.node)?.number().unwrap_or(0.0).max(0.0) as usize;
+                if size > MAX_ARRAY_ELEMENTS {
+                    return stop(format!("array size {size} over {MAX_ARRAY_ELEMENTS}"));
+                }
                 Value::Array(Rc::new(RefCell::new(vec![Value::default_for(&ty.node); size])))
             }
             Expr::ArrayLit(items) => {
+                if items.len() > MAX_ARRAY_ELEMENTS {
+                    return stop(format!("array literal over {MAX_ARRAY_ELEMENTS} elements"));
+                }
                 let mut values = Vec::with_capacity(items.len());
                 for item in items {
                     values.push(self.eval(frame, &item.node)?);
@@ -2314,12 +2327,19 @@ impl Vm<'_> {
             "add" => {
                 // "in the case of adding structs, they will all point at the
                 // same struct" — the value is shared, not copied.
-                for _ in 0..int(1, 1).max(0) {
+                let count = int(1, 1).max(0) as usize;
+                if count > MAX_ARRAY_ELEMENTS.saturating_sub(items.len()) {
+                    return stop(format!("array Add over {MAX_ARRAY_ELEMENTS} elements"));
+                }
+                for _ in 0..count {
                     items.push(wanted.clone());
                 }
                 Value::None
             }
             "insert" => {
+                if items.len() >= MAX_ARRAY_ELEMENTS {
+                    return stop(format!("array Insert over {MAX_ARRAY_ELEMENTS} elements"));
+                }
                 let index = int(1, 0).clamp(0, len) as usize;
                 items.insert(index, wanted);
                 Value::None
@@ -4337,7 +4357,7 @@ fn cast(value: Value, ty: &Type) -> Value {
 
 fn arithmetic(op: BinaryOp, l: &Value, r: &Value) -> Run<Value> {
     if op == BinaryOp::Add && (matches!(l, Value::Str(_)) || matches!(r, Value::Str(_))) {
-        return Ok(Value::Str(format!("{}{}", l.text(), r.text())));
+        return concat_texts(l, r);
     }
     let (Some(a), Some(b)) = (l.number(), r.number()) else {
         return stop(format!("arithmetic on {} and {}", l.text(), r.text()));
@@ -4392,9 +4412,19 @@ fn binary(op: BinaryOp, l: &Value, r: &Value) -> Run<Value> {
                 _ => ordering.is_ge(),
             })
         }
-        BinaryOp::StrCat => Value::Str(format!("{}{}", l.text(), r.text())),
+        BinaryOp::StrCat => concat_texts(l, r)?,
         op => arithmetic(op, l, r)?,
     })
+}
+
+/// String concatenation under the sandbox's byte ceiling, so one statement
+/// cannot more than double a string past `MAX_STRING_BYTES`.
+fn concat_texts(l: &Value, r: &Value) -> Run<Value> {
+    let (a, b) = (l.text(), r.text());
+    if a.len().saturating_add(b.len()) > MAX_STRING_BYTES {
+        return stop(format!("string result over {MAX_STRING_BYTES} bytes"));
+    }
+    Ok(Value::Str(format!("{a}{b}")))
 }
 
 // ── Ahead-of-time check ──────────────────────────────────────────────
