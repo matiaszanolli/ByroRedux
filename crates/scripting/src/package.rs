@@ -835,6 +835,7 @@ pub fn scene_package_system(world: &World, dt: f32) {
 
 #[cfg(test)]
 mod tests {
+    use crate::papyrus_demo::PapyrusPlayerEntity;
     use super::*;
     use crate::scene::SceneActionCompletionBatch;
     use byroredux_core::math::Vec3;

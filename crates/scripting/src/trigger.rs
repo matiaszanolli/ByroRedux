@@ -566,6 +566,7 @@ fn player_world_position(world: &World, player: EntityId) -> Option<Vec3> {
 
 #[cfg(test)]
 mod tests {
+    use crate::papyrus_demo::PapyrusPlayerEntity;
 
     /// #3954 — the router and the gate diverged on cross-quest waits.
     /// The gate filtered scenes to the owning quest; the router collected

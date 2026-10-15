@@ -1434,6 +1434,7 @@ pub fn quest_terminal_stage_system(world: &World, _dt: f32) {
 
 #[cfg(test)]
 mod tests {
+    use crate::papyrus_demo::PapyrusPlayerEntity;
     use super::*;
 
     /// #5812 — the one stop-with-shut-down-stage lifecycle the StopQuest

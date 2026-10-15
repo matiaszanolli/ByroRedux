@@ -790,6 +790,7 @@ impl Resource for DialogueSurfaceState {}
 
 #[cfg(test)]
 mod tests {
+    use crate::papyrus_demo::PapyrusPlayerEntity;
     use super::*;
     use crate::scene::SceneActionCompletionBatch;
     use byroredux_plugin::esm::records::{ScenRecord, SceneAction, ScenePhase};

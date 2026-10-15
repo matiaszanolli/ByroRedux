@@ -240,6 +240,37 @@ pub(crate) struct FragmentProviderScope<'a> {
     vm_scripts: Option<&'a std::cell::RefCell<Vec<std::sync::Arc<Script>>>>,
 }
 
+/// #5811 — the per-binding tail all three fragment families share: the
+/// M47.2 interpret fallback for a fragment the family's lowering
+/// declined, then provider-call attribution. Each loop keeps its body
+/// lookup (log labels differ), its `lower_*` call, its VM-script sink
+/// and its insert.
+fn finish_lowered_fragment(
+    lowered: Option<Vec<Effect>>,
+    interpret_fallback_result: impl FnOnce() -> Option<Vec<Effect>>,
+    principal: Option<&byroredux_sdk::identity::PrincipalId>,
+) -> Option<Vec<Effect>> {
+    let mut effects = lowered.or_else(interpret_fallback_result)?;
+    if let Some(principal) = principal {
+        crate::translate::effects::attribute_provider_calls(&mut effects, principal);
+    }
+    Some(effects)
+}
+
+/// #5811 — the OwnedFragmentProviders → FragmentProviderScope widening
+/// the owned-* entry points repeat (principal becomes Some, the rest
+/// move). One conversion, not one per family.
+impl<'a> From<OwnedFragmentProviders<'a>> for FragmentProviderScope<'a> {
+    fn from(providers: OwnedFragmentProviders<'a>) -> Self {
+        Self {
+            catalog: providers.catalog,
+            principal: Some(providers.principal),
+            library: providers.library,
+            vm_scripts: providers.vm_scripts,
+        }
+    }
+}
+
 /// M47.2 — a fragment the lowering declines, installed for the Papyrus VM
 /// when its ahead-of-time check passes; `install` takes each script the run
 /// needs.
@@ -276,12 +307,7 @@ pub fn populate_owned_quest_fragments_from_pex_detailed_with_providers(
         quest,
         pex_bytes,
         bindings,
-        Some(FragmentProviderScope {
-            catalog: providers.catalog,
-            principal: Some(providers.principal),
-            library: providers.library,
-            vm_scripts: providers.vm_scripts,
-        }),
+        Some(FragmentProviderScope::from(providers)),
     )
 }
 
@@ -366,12 +392,7 @@ pub fn populate_owned_quest_fragments_from_script_with_providers(
         quest,
         script,
         bindings,
-        Some(FragmentProviderScope {
-            catalog: providers.catalog,
-            principal: Some(providers.principal),
-            library: providers.library,
-            vm_scripts: providers.vm_scripts,
-        }),
+        Some(FragmentProviderScope::from(providers)),
     )
 }
 
@@ -419,21 +440,22 @@ fn populate_quest_fragments_from_script_internal(
             &argless_functions,
             providers.map(|scope| scope.catalog),
             providers.and_then(|scope| scope.library),
-        )
-        .or_else(|| {
-            // M47.2 — a fragment the lowering declines runs on the Papyrus VM
-            // when its ahead-of-time check passes.
-            interpret_fallback(
-                script,
-                fragment_name,
-                providers.and_then(|scope| scope.library),
-                &mut |needed| frags.insert_vm_script(needed),
-            )
-        });
-        if let Some(mut effects) = lowered {
-            if let Some(principal) = providers.and_then(|scope| scope.principal) {
-                crate::translate::effects::attribute_provider_calls(&mut effects, principal);
-            }
+        );
+        // #5811 — the shared decline→interpret→attribute tail.
+        let lowered = finish_lowered_fragment(lowered,
+            || {
+                // M47.2 — a fragment the lowering declines runs on the Papyrus VM
+                // when its ahead-of-time check passes.
+                interpret_fallback(
+                    script,
+                    fragment_name,
+                    providers.and_then(|scope| scope.library),
+                    &mut |needed| frags.insert_vm_script(needed),
+                )
+            },
+            providers.and_then(|scope| scope.principal),
+        );
+        if let Some(effects) = lowered {
             if !effects.is_empty() {
                 if !effects_by_stage.contains_key(stage) {
                     stage_order.push(*stage);
@@ -513,12 +535,7 @@ pub fn populate_owned_scene_fragments_from_pex_detailed_with_providers(
         vmad,
         pex_bytes,
         bindings,
-        Some(FragmentProviderScope {
-            catalog: providers.catalog,
-            principal: Some(providers.principal),
-            library: providers.library,
-            vm_scripts: providers.vm_scripts,
-        }),
+        Some(FragmentProviderScope::from(providers)),
     )
 }
 
@@ -624,12 +641,7 @@ pub fn populate_owned_scene_fragments_from_script_with_providers(
         vmad,
         script,
         bindings,
-        Some(FragmentProviderScope {
-            catalog: providers.catalog,
-            principal: Some(providers.principal),
-            library: providers.library,
-            vm_scripts: providers.vm_scripts,
-        }),
+        Some(FragmentProviderScope::from(providers)),
     )
 }
 
@@ -661,17 +673,18 @@ fn populate_scene_fragments_from_script_internal(
             &argless_functions,
             providers.map(|scope| scope.catalog),
             providers.and_then(|scope| scope.library),
-        )
-        .or_else(|| {
-            let sink = providers.and_then(|scope| scope.vm_scripts)?;
-            interpret_fallback(script, fragment_name, providers.and_then(|scope| scope.library), &mut |needed| {
-                sink.borrow_mut().push(needed)
-            })
-        });
-        if let Some(mut effects) = lowered {
-            if let Some(principal) = providers.and_then(|scope| scope.principal) {
-                crate::translate::effects::attribute_provider_calls(&mut effects, principal);
-            }
+        );
+        // #5811 — the shared decline→interpret→attribute tail.
+        let lowered = finish_lowered_fragment(lowered,
+            || {
+                let sink = providers.and_then(|scope| scope.vm_scripts)?;
+                interpret_fallback(script, fragment_name, providers.and_then(|scope| scope.library), &mut |needed| {
+                    sink.borrow_mut().push(needed)
+                })
+            },
+            providers.and_then(|scope| scope.principal),
+        );
+        if let Some(effects) = lowered {
             if !effects.is_empty() {
                 frags.insert(scene_form_id, *event, context, vmad.cloned(), effects);
                 inserted += 1;
@@ -768,20 +781,20 @@ fn populate_info_fragments_from_script_internal(
             &argless_functions,
             providers.map(|scope| scope.catalog),
             providers.and_then(|scope| scope.library),
-        )
-        .or_else(|| {
-            // The run binds the speaker parameter to the line's speaker.
-            let sink = providers.and_then(|scope| scope.vm_scripts)?;
-            interpret_fallback(script, fragment_name, providers.and_then(|scope| scope.library), &mut |needed| {
-                sink.borrow_mut().push(needed)
-            })
-        });
-        let Some(mut effects) = lowered else {
+        );
+        // #5811 — the shared decline→interpret→attribute tail. The run
+        // binds the speaker parameter to the line's speaker.
+        let Some(effects) = finish_lowered_fragment(lowered,
+            || {
+                let sink = providers.and_then(|scope| scope.vm_scripts)?;
+                interpret_fallback(script, fragment_name, providers.and_then(|scope| scope.library), &mut |needed| {
+                    sink.borrow_mut().push(needed)
+                })
+            },
+            providers.and_then(|scope| scope.principal),
+        ) else {
             continue;
         };
-        if let Some(principal) = providers.and_then(|scope| scope.principal) {
-            crate::translate::effects::attribute_provider_calls(&mut effects, principal);
-        }
         if effects.is_empty() {
             continue;
         }
