@@ -105,7 +105,7 @@ use crate::scene::SceneActorBindings;
 pub enum ConditionFunction {
     /// `GetActorValue(avif_form_id) → f32`. Reads the Run-On's composed value
     /// for the `param_1` actor value from its `ActorValues` component
-    /// (base + permanent + temporary − damage), or 0.0 when the actor carries
+    /// (`ActorValue::current`), or 0.0 when the actor carries
     /// no such value (#1663). `param_1` is the global-space AVIF FormID.
     /// FO3 / FNV / Skyrim function index **14**.
     GetActorValue,
@@ -1359,7 +1359,7 @@ fn evaluate_contextual(
 /// Which layers of an actor value a read keeps.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActorValueView {
-    /// `base + permanent + temporary − damage`: `GetActorValue` / `GetValue`.
+    /// `ActorValue::current` (every layer): `GetActorValue` / `GetValue`.
     Current,
     /// The base alone, no modifiers or damage: `GetBaseValue` /
     /// `GetBaseActorValue`.
@@ -1374,7 +1374,7 @@ pub enum ActorValueView {
 /// formula value either way.
 pub fn actor_value_view(world: &World, entity: EntityId, avif: u32, view: ActorValueView) -> f32 {
     // GetActorValue(avif_form_id) → the Run-On actor's composed value
-    // for that actor value (base + permanent + temporary − damage), or
+    // for that actor value (`ActorValue::current`, every layer), or
     // 0.0 when the actor carries no `ActorValues` (or hasn't that value
     // set — Bethesda's absent-AV default). `param_1` is the AVIF FormID,
     // already promoted to global load-order space at parse time

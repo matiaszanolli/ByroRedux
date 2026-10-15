@@ -83,7 +83,7 @@ user-provided data — §5 defines the intake shape.)*
 
 - **All character state is numeric** → it all lands in **`ActorValues`** (built).
   SPECIAL, skills, resistances, Health / AP / Magicka / Stamina, every derived
-  value — one component, one composition (`base + permanent + temporary − damage`),
+  value — one component, one composition (`ActorValue::current`; the layer list lives in `actor_values.rs`),
   keyed by AVIF FormID. No per-game numeric type.
 - **Every character has a level + a progress metric** → **`CharacterLevel`** (even
   TES, where the level is *driven* by skill use, still *has* a level and an
@@ -160,7 +160,7 @@ ENGINE-SUPPLIED half is sourced from the user's public data or cited research.
 ### 4.1 `ActorValues` — **BUILT** (the numeric substrate)
 
 All numeric character state: SPECIAL, skills, resistances, derived pools — every
-AVIF-keyed value, layered `base + permanent + temporary − damage`
+AVIF-keyed value, layered (`ActorValue::current` / `undamaged` own the layer list)
 (`crates/core/src/ecs/components/actor_values.rs`, #1663). CHARAL **reuses** this
 as-is; it adds population and derivation around it, not a new numeric type.
 
