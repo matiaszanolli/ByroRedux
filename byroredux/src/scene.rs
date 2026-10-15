@@ -1367,7 +1367,6 @@ fn launch_archive_menu(
                     Ok(()) => {
                         let profile = ui.menu_profile();
                         let pixels = vec![0u8; (w * h * 4) as usize];
-                        let allocator = ctx.allocator.as_ref().unwrap();
                         let upload_ctx = byroredux_renderer::upload_ctx!(ctx);
                         match ctx
                             .texture_registry
@@ -1427,7 +1426,6 @@ fn launch_archive_menu(
                         Ok(()) => {
                             // Create the initial UI texture (transparent black).
                             let pixels = vec![0u8; (w * h * 4) as usize];
-                            let allocator = ctx.allocator.as_ref().unwrap();
                             let upload_ctx = byroredux_renderer::upload_ctx!(ctx);
                             match ctx
                                 .texture_registry

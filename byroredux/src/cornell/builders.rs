@@ -143,7 +143,6 @@ pub(super) fn fire_refraction(distortion_strength: f32) -> Material {
 pub(super) fn synthesize_wavy_normal_map(ctx: &mut VulkanContext) -> u32 {
     const SIZE: u32 = 16;
     let pixels = wavy_normal_map_pixels(SIZE);
-    let alloc = ctx.allocator.as_ref().unwrap();
     let upload_ctx = byroredux_renderer::upload_ctx!(ctx);
     ctx.texture_registry
         .register_rgba(upload_ctx, SIZE, SIZE, &pixels)

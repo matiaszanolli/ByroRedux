@@ -1255,10 +1255,10 @@ fn check_scene_linkage(
 
 /// Spawn a `SceneAliasCandidate` for every placed NPC reference in the
 /// given cells — the indexed input the alias resolver binds against.
-fn spawn_alias_candidates(
+fn spawn_alias_candidates<'a>(
     world: &mut World,
     npcs: &HashMap<u32, NpcRecord>,
-    cells: impl Iterator<Item = &CellData>,
+    cells: impl Iterator<Item = &'a CellData>,
 ) {
     for cell in cells {
         for placed in &cell.references {

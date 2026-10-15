@@ -5,10 +5,6 @@ use byroredux_plugin::esm::records::condition::{
     ComparisonOp, Condition, ConditionValue, RunOn,
 };
 
-use super::*;
-use byroredux_core::ecs::world::World;
-use byroredux_plugin::esm::records::condition::{ComparisonOp, RunOn};
-
 #[test]
 fn hardcore_condition_reads_the_live_mode_flag() {
     use byroredux_core::ecs::resources::HardcoreMode;

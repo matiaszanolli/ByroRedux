@@ -29,7 +29,7 @@ use super::*;
 /// mistake for `ItemInstancePool`, and is the reason this is an explicit
 /// allowlist (mirroring [`MUTABLE_DELTA_COLUMNS`]'s pattern) rather than
 /// "everything except a denylist".
-const PRE_RELOAD_RESOURCES: &[&str] = &[
+pub(super) const PRE_RELOAD_RESOURCES: &[&str] = &[
     "ReferenceEnableState",
     "ReferenceLockState",
     "ReferenceScriptState",
@@ -342,7 +342,7 @@ fn reload_exterior_session(
 /// exterior reload returns. The full radius must therefore be resident before
 /// `build_form_id_remap` scans the world; foreground-first would permanently
 /// drop saved rows belonging to still-pending peripheral cells (#3280).
-fn exterior_reload_bootstrap_mode() -> crate::scene::ExteriorBootstrapMode {
+pub(super) fn exterior_reload_bootstrap_mode() -> crate::scene::ExteriorBootstrapMode {
     crate::scene::ExteriorBootstrapMode::FullRadius
 }
 
@@ -359,7 +359,10 @@ fn exterior_reload_bootstrap_mode() -> crate::scene::ExteriorBootstrapMode {
 /// revealed for the loaded slots, with nothing re-importing it. The
 /// restored `Inventory`/`EquipmentSlots` are the authority; the next
 /// genuine equip/leaves transfer re-queues whichever half applies.
-fn clear_player_gear_handoff_scratch(world: &mut World, player: byroredux_core::ecs::EntityId) {
+pub(super) fn clear_player_gear_handoff_scratch(
+    world: &mut World,
+    player: byroredux_core::ecs::EntityId,
+) {
     world.remove::<crate::npc_spawn::PendingGearImport>(player);
     world.remove::<crate::npc_spawn::PendingGearRelease>(player);
 }
@@ -373,7 +376,7 @@ fn clear_player_gear_handoff_scratch(world: &mut World, player: byroredux_core::
 /// whose `L1` is empty and `L2` is the loaded location — arriving in a
 /// location by loading is a location change, and the loaded game was never
 /// anywhere before it.
-fn reset_story_location_cursor(world: &World) {
+pub(super) fn reset_story_location_cursor(world: &World) {
     if let Some(mut cursor) =
         world.try_resource_mut::<byroredux_scripting::StoryLocationCursor>()
     {
@@ -389,7 +392,7 @@ fn reset_story_location_cursor(world: &World) {
 /// session-local `EntityId`s that the reload has just invalidated (and may
 /// have reused for unrelated entities); dispatching it would fire a story
 /// event about the previous session's actors in the loaded one.
-fn discard_pending_story_events(world: &World) {
+pub(super) fn discard_pending_story_events(world: &World) {
     let Some(mut events) = world.query_mut::<byroredux_scripting::story_manager::StoryEvent>()
     else {
         return;

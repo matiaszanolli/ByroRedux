@@ -17,7 +17,6 @@ use byroredux_core::ecs::components::groundcover::{GroundCoverDimmer, WindField}
 use byroredux_core::ecs::{DebugStats, DeltaTime, ScratchTelemetry};
 use byroredux_renderer::shader_constants::GROUNDCOVER_DETAIL_ATLAS_EDGE;
 use byroredux_renderer::vulkan::context::FrameInputs;
-use byroredux_renderer::vulkan::GpuUploadCtx;
 use byroredux_renderer::ImageSpaceModifier;
 use byroredux_ui::{ScaleformHostDispatch, MAX_DISTINCT_HOST_METHOD_NAMES};
 use std::time::Instant;
@@ -59,10 +58,9 @@ fn publish_groundcover_detail_atlas(
     let atlas = crate::render::groundcover::build_groundcover_detail_atlas(world);
     let edge = GROUNDCOVER_DETAIL_ATLAS_EDGE;
     let height = edge * atlas.species_count.max(1);
-    let allocator = match ctx.allocator.as_ref() {
-        Some(allocator) => allocator,
-        None => return,
-    };
+    if ctx.allocator.is_none() {
+        return;
+    }
     let upload_ctx = byroredux_renderer::upload_ctx!(ctx);
     let handle = match *atlas_state {
         Some((handle, signature)) if signature == atlas.signature => handle,
@@ -1339,7 +1337,6 @@ fn tick_ui_overlay(
         match ui.render() {
             byroredux_ui::UiFrame::Fresh(pixels) => {
                 if let Some(handle) = ui_state.texture_handle {
-                    let allocator = ctx.allocator.as_ref().unwrap();
                     let upload_ctx = byroredux_renderer::upload_ctx!(ctx);
                     if let Err(e) = ctx
                         .texture_registry

@@ -15,7 +15,6 @@ use byroredux_core::form_id::{FormIdPair, FormIdPool};
 use byroredux_core::math::coord::EXTERIOR_CELL_UNITS;
 use byroredux_core::math::{Quat, Vec3};
 use byroredux_plugin::esm;
-use byroredux_renderer::vulkan::GpuUploadCtx;
 use byroredux_renderer::{MeshUploadSource, SceneMeshUpload, VulkanContext};
 use std::time::{Duration, Instant};
 

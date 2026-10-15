@@ -57,7 +57,7 @@ mod live_load;
 mod player;
 mod registry;
 
-pub use commands::{LoadCommand, SaveCommand, SaveInfoCommand, queue_load_slot, queue_startup_load};
+pub use commands::{LoadCommand, SaveCommand, SaveInfoCommand, queue_startup_load};
 pub use live_load::execute_pending_save_loads;
 pub use player::{
     PendingPlayerSaveActions, PlayerPose, PlayerSaveAction, apply_player_pose,
@@ -65,7 +65,7 @@ pub use player::{
     snapshot_exterior_context, snapshot_player_pose,
 };
 pub use registry::{
-    SAVE_DIR_ENV, PendingSaveLoadSlot, SaveState, build_save_registry, discover_save_dir,
+    PendingSaveLoadSlot, SaveState, build_save_registry, discover_save_dir,
 };
 pub(crate) use commands::{command_output_is_failure, execute_pending_player_save_actions};
 // Same-width re-exports for the items that were module-private before the

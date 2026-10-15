@@ -19,7 +19,6 @@ use byroredux_core::ecs::{
 };
 use byroredux_core::math::{Mat4, Quat, Vec3};
 use byroredux_core::string::StringPool;
-use byroredux_renderer::vulkan::GpuUploadCtx;
 use byroredux_renderer::{SceneMeshUpload, Vertex, VulkanContext};
 
 use crate::asset_provider::{
@@ -1086,7 +1085,6 @@ fn spawn_nif_mesh(
         })
         .collect();
 
-    let alloc = ctx.allocator.as_ref().unwrap();
     let upload_ctx = byroredux_renderer::upload_ctx!(ctx);
     // Effect surfaces remain ray-visible for reflection/refraction and GI.
     // Their dedicated TLAS visibility layer keeps them out of opaque

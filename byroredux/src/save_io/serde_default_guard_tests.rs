@@ -1081,7 +1081,12 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // `sdk/src/{identity,script_function}.rs` (`FormRef`, `ScriptValue`), so
     // the file-scoped hash now covers shapes it always should have. No
     // serialized field changed; a save's JSON is byte-identical.
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x1176_8525_b9b7_609f;
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x00d2_53e9_e76c_3dad;
+    // 2026-10-15 (#5585) — refreshed WITHOUT a major bump: the `save_io.rs`
+    // split (d7c47d741) moved `PlayerPose` to `save_io/player.rs`. The hash
+    // keys each shape by its file, so the move alone shifted it; a dump of
+    // both sides with paths stripped is identical, so a save's JSON is
+    // byte-identical.
     // 2026-10-15 (#5610) — refreshed WITHOUT a major bump: the orphan
     // `PerkList` component (zero production write sites; its save-registry
     // exemption row went with it) was deleted. No v104 snapshot can carry

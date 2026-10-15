@@ -243,12 +243,6 @@ pub(super) fn attach_quest_reference_script(
     }
 }
 
-/// Dispatch one synthetic child placement (SCOL/PKIN-expanded or the lone
-/// default) by record kind — NPC actor, invisible trigger volume, light-only
-/// LIGH, marker/FX skip, or the main static-mesh spawn — accumulating its
-/// telemetry into `accum`. Split verbatim out of [`load_references`] (#2058);
-/// each former `continue` (skip this child) is now an early `return`.
-#[allow(clippy::too_many_arguments)]
 /// #5740 — the ESM LIGH → `LightSource` translation the LIGH-only and
 /// fxlight branches below shared verbatim: geometry via `translate_light`
 /// (#2439 / NIFAL-D2-01), the per-game falloff / shadow canonicalizers
@@ -281,6 +275,12 @@ fn attach_esm_light(
     attach_light_flicker_if_needed(world, entity, ld, ref_pos, animation_flags);
 }
 
+/// Dispatch one synthetic child placement (SCOL/PKIN-expanded or the lone
+/// default) by record kind — NPC actor, invisible trigger volume, light-only
+/// LIGH, marker/FX skip, or the main static-mesh spawn — accumulating its
+/// telemetry into `accum`. Split verbatim out of [`load_references`] (#2058);
+/// each former `continue` (skip this child) is now an early `return`.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn spawn_synth_child(
     accum: &mut RefLoadAccum,
     world: &mut World,

@@ -2426,18 +2426,20 @@ mod tests {
     /// equals the parent-only sum.
     #[test]
     fn gpu_pass_sum_excludes_nested_child_brackets() {
-        let rows = vec![
+        let rows: std::collections::BTreeMap<String, Option<f32>> = [
             ("svgf".to_string(), Some(0.5)),
             ("volumetrics".to_string(), Some(1.0)),
             ("volumetrics_inject".to_string(), Some(0.6)),
             ("volumetrics_integrate".to_string(), Some(0.3)),
             ("ssao".to_string(), None),
-        ];
+        ]
+        .into_iter()
+        .collect();
         assert_eq!(gpu_pass_upper_bound_ms(&rows), 1.5);
-        let parents_only: Vec<_> = rows
+        let parents_only: std::collections::BTreeMap<_, _> = rows
             .iter()
             .filter(|(n, _)| !n.starts_with("volumetrics_"))
-            .cloned()
+            .map(|(n, v)| (n.clone(), *v))
             .collect();
         assert_eq!(
             gpu_pass_upper_bound_ms(&rows),

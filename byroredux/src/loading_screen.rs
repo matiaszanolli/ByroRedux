@@ -19,7 +19,6 @@ use byroredux_plugin::esm::records::{
     ResolvedLoadScreenModel,
 };
 use byroredux_renderer::vulkan::context::DrawCommand;
-use byroredux_renderer::vulkan::GpuUploadCtx;
 use byroredux_renderer::{GpuLight, SkyParams, VulkanContext};
 
 use crate::render::RenderFrameView;
@@ -253,9 +252,9 @@ impl LoadingScreen {
                 log::warn!("loading.screen: missing original artwork {}", screen.icon);
                 return false;
             };
-            let Some(allocator) = ctx.allocator.as_ref() else {
+            if ctx.allocator.is_none() {
                 return false;
-            };
+            }
             let upload = byroredux_renderer::upload_ctx!(ctx);
             let texture = match ctx.texture_registry.load_dds_with_clamp(
                 upload,

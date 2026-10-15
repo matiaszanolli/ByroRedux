@@ -34,7 +34,6 @@ use byroredux_core::ecs::components::RenderLayer;
 use byroredux_core::ecs::{EntityId, GlobalTransform, MeshHandle, Transform, World};
 use byroredux_core::math::{Quat, Vec3};
 use byroredux_plugin::esm;
-use byroredux_renderer::vulkan::GpuUploadCtx;
 use byroredux_renderer::{SceneMeshUpload, Vertex, VulkanContext};
 use std::collections::HashMap;
 
@@ -400,7 +399,7 @@ pub(super) fn spawn_water_plane(
     let (mut material, kind, flow, normal_texture_path, noise_texture_paths) =
         crate::env_translate::resolve_water_material(waters, xcwt_form, game);
 
-    let allocator = ctx.allocator.as_ref()?;
+    ctx.allocator.as_ref()?;
 
     // ── Build the tessellated full-detail water mesh ──
     // The entity's Transform places the grid at `xclw_height` and scales it
@@ -1022,7 +1021,7 @@ pub(crate) fn spawn_lod_water_plane(
     let (material, kind, flow, normal_texture_path, noise_texture_paths) =
         crate::env_translate::resolve_water_material(waters, lod_water_form, game);
 
-    let allocator = ctx.allocator.as_ref()?;
+    ctx.allocator.as_ref()?;
 
     // Track the terrain LOD ring's own reach, which since #2371 depends on
     // whether the game bakes a quadtree (Skyrim/FO4 reach their vanilla
@@ -1221,10 +1220,9 @@ pub(crate) fn rebuild_lod_water_mesh(
     log::info!(
         "LOD water mesh rebuilt: {quads} quads, reach={reach} cells @ grid {player_grid:?}"
     );
-    let allocator = match ctx.allocator.as_ref() {
-        Some(a) => a,
-        None => return false,
-    };
+    if ctx.allocator.is_none() {
+        return false;
+    }
     // #5289 — the batched path: identical mesh representation (per-mesh
     // buffers + global-pool offsets) as `upload_scene_mesh`, but the vertex
     // and index copies share ONE submit + fence wait through the registry's
