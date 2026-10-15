@@ -252,6 +252,43 @@ pub(super) fn particle_system_is_culled(
         })
 }
 
+/// #5792 — the shape-cull gate every geometry arm opens with, spelled
+/// once. Bit 0 of `NiAVObject.flags` is APP_CULLED (hidden); a shape
+/// carrying it is not imported unless something will un-hide it.
+/// Editor-marker filtering runs as a sibling check so shape-level editor
+/// markers (common on Skyrim+ MapMarker geometry where the flag rides on
+/// the shape, not the containing node) don't render as untextured debug
+/// pyramids (#165 / audit N26-4-06).
+///
+/// Pre-#332 the mask was `0x21` (APP_CULLED + bit 5). Bit 5 is
+/// DISPLAY_OBJECT_MASK per Gamebryo `NiAVObject.h` — the occlusion-display
+/// helper that SHOULD still render. The conflation was harmless on vanilla
+/// Bethesda content (which doesn't set that bit) but dropped modded
+/// geometry and anything authored with a Gamebryo-native tool.
+///
+/// #3640 — a live NiVisController targeting this shape gets a chance to
+/// un-hide it at runtime instead of the shape never existing for it to act
+/// on; see `has_live_visibility_controller`'s doc for why this clause is
+/// shape-scoped only (the node gate below deliberately omits it).
+///
+/// History pins why this must be one function: #332 changed the mask,
+/// #3640 added the controller clause, and #4561 found the two particle
+/// arms outside the copy set — each rule change was a hand-applied
+/// per-arm edit and one arm family stayed wrong for months.
+pub(super) fn shape_is_culled(scene: &NifScene, av: &crate::blocks::base::NiAVObjectData) -> bool {
+    if is_editor_marker(av.net.name.as_deref()) {
+        return true;
+    }
+    av.flags & 0x01 != 0 && !has_live_visibility_controller(scene, av.net.controller_ref)
+}
+
+/// The node half of the same gate. No NiVisController clause: #3640's
+/// un-hide path is shape-scoped, so a hidden node hides its subtree
+/// unconditionally.
+pub(super) fn node_is_culled(av: &crate::blocks::base::NiAVObjectData) -> bool {
+    av.flags & 0x01 != 0 || is_editor_marker(av.net.name.as_deref())
+}
+
 /// Maximum recursion depth for the node walkers. Bethesda-shipped NIFs
 /// nest at most a few dozen nodes deep; the cap stops a malformed or
 /// adversarial file from crashing the parser via stack overflow
@@ -358,10 +395,7 @@ pub(super) fn walk_node_hierarchical(
     // children. Must be checked BEFORE as_ni_node() since these types
     // are no longer unwrapped there. See #212.
     if let Some((node, active_children)) = switch_active_children(block) {
-        if node.av.flags & 0x01 != 0 {
-            return;
-        }
-        if is_editor_marker(node.av.net.name.as_deref()) {
+        if node_is_culled(&node.av) {
             return;
         }
         let t = &node.av.transform.translation;
@@ -448,10 +482,7 @@ pub(super) fn walk_node_hierarchical(
     }
 
     if let Some(node) = as_ni_node(block) {
-        if node.av.flags & 0x01 != 0 {
-            return;
-        }
-        if is_editor_marker(node.av.net.name.as_deref()) {
+        if node_is_culled(&node.av) {
             return;
         }
 
@@ -523,28 +554,7 @@ pub(super) fn walk_node_hierarchical(
     }
 
     if let Some(shape) = block.as_any().downcast_ref::<NiTriShape>() {
-        // bit 0 = APP_CULLED (hidden). Editor-marker filtering runs
-        // as a sibling check below so shape-level editor markers
-        // (common on Skyrim+ MapMarker geometry where the flag rides
-        // on the shape, not the containing node) don't render as
-        // untextured debug pyramids. See #165 / audit N26-4-06.
-        //
-        // Pre-#332 the mask was `0x21` (APP_CULLED + bit 5). Bit 5 is
-        // DISPLAY_OBJECT_MASK per Gamebryo `NiAVObject.h` — the
-        // occlusion-display helper that SHOULD still render. The
-        // conflation was harmless on vanilla Bethesda content (which
-        // doesn't set that bit) but dropped modded geometry and
-        // anything authored with a Gamebryo-native tool.
-        // #3640 — a live NiVisController targeting this shape gets a
-        // chance to un-hide it at runtime instead of the shape never
-        // existing for it to act on. See `has_live_visibility_controller`'s
-        // doc for why this is shape-scoped only.
-        if shape.av.flags & 0x01 != 0
-            && !has_live_visibility_controller(scene, shape.av.net.controller_ref)
-        {
-            return;
-        }
-        if is_editor_marker(shape.av.net.name.as_deref()) {
+        if shape_is_culled(scene, &shape.av) {
             return;
         }
 
@@ -576,28 +586,7 @@ pub(super) fn walk_node_hierarchical(
     }
 
     if let Some(shape) = block.as_any().downcast_ref::<BsTriShape>() {
-        // bit 0 = APP_CULLED (hidden). Editor-marker filtering runs
-        // as a sibling check below so shape-level editor markers
-        // (common on Skyrim+ MapMarker geometry where the flag rides
-        // on the shape, not the containing node) don't render as
-        // untextured debug pyramids. See #165 / audit N26-4-06.
-        //
-        // Pre-#332 the mask was `0x21` (APP_CULLED + bit 5). Bit 5 is
-        // DISPLAY_OBJECT_MASK per Gamebryo `NiAVObject.h` — the
-        // occlusion-display helper that SHOULD still render. The
-        // conflation was harmless on vanilla Bethesda content (which
-        // doesn't set that bit) but dropped modded geometry and
-        // anything authored with a Gamebryo-native tool.
-        // #3640 — a live NiVisController targeting this shape gets a
-        // chance to un-hide it at runtime instead of the shape never
-        // existing for it to act on. See `has_live_visibility_controller`'s
-        // doc for why this is shape-scoped only.
-        if shape.av.flags & 0x01 != 0
-            && !has_live_visibility_controller(scene, shape.av.net.controller_ref)
-        {
-            return;
-        }
-        if is_editor_marker(shape.av.net.name.as_deref()) {
+        if shape_is_culled(scene, &shape.av) {
             return;
         }
 
@@ -630,16 +619,7 @@ pub(super) fn walk_node_hierarchical(
     // had no import arm and were silently dropped (#988 / SK-D5-NEW-09).
     if let Some(lod) = block.as_any().downcast_ref::<NiLodTriShape>() {
         let shape = &lod.base;
-        // #3640 — a live NiVisController targeting this shape gets a
-        // chance to un-hide it at runtime instead of the shape never
-        // existing for it to act on. See `has_live_visibility_controller`'s
-        // doc for why this is shape-scoped only.
-        if shape.av.flags & 0x01 != 0
-            && !has_live_visibility_controller(scene, shape.av.net.controller_ref)
-        {
-            return;
-        }
-        if is_editor_marker(shape.av.net.name.as_deref()) {
+        if shape_is_culled(scene, &shape.av) {
             return;
         }
         // Mirror of the NiTriShape branch above — see NIF-D4-NEW-04.
@@ -669,16 +649,7 @@ pub(super) fn walk_node_hierarchical(
     }
 
     if let Some(shape) = block.as_any().downcast_ref::<BSGeometry>() {
-        // #3640 — a live NiVisController targeting this shape gets a
-        // chance to un-hide it at runtime instead of the shape never
-        // existing for it to act on. See `has_live_visibility_controller`'s
-        // doc for why this is shape-scoped only.
-        if shape.av.flags & 0x01 != 0
-            && !has_live_visibility_controller(scene, shape.av.net.controller_ref)
-        {
-            return;
-        }
-        if is_editor_marker(shape.av.net.name.as_deref()) {
+        if shape_is_culled(scene, &shape.av) {
             return;
         }
         // Mirror of the NiTriShape branch above — see NIF-D4-NEW-04.
@@ -798,10 +769,7 @@ pub(super) fn walk_node_flat(
 
     // NiSwitchNode / NiLODNode: only walk the active child (#212).
     if let Some((node, active_children)) = switch_active_children(block) {
-        if node.av.flags & 0x01 != 0 {
-            return;
-        }
-        if is_editor_marker(node.av.net.name.as_deref()) {
+        if node_is_culled(&node.av) {
             return;
         }
         let world_transform = compose_transforms(parent_transform, &node.av.transform);
@@ -845,10 +813,7 @@ pub(super) fn walk_node_flat(
     }
 
     if let Some(node) = as_ni_node(block) {
-        if node.av.flags & 0x01 != 0 {
-            return;
-        }
-        if is_editor_marker(node.av.net.name.as_deref()) {
+        if node_is_culled(&node.av) {
             return;
         }
         let world_transform = compose_transforms(parent_transform, &node.av.transform);
@@ -923,28 +888,7 @@ pub(super) fn walk_node_flat(
     }
 
     if let Some(shape) = block.as_any().downcast_ref::<NiTriShape>() {
-        // bit 0 = APP_CULLED (hidden). Editor-marker filtering runs
-        // as a sibling check below so shape-level editor markers
-        // (common on Skyrim+ MapMarker geometry where the flag rides
-        // on the shape, not the containing node) don't render as
-        // untextured debug pyramids. See #165 / audit N26-4-06.
-        //
-        // Pre-#332 the mask was `0x21` (APP_CULLED + bit 5). Bit 5 is
-        // DISPLAY_OBJECT_MASK per Gamebryo `NiAVObject.h` — the
-        // occlusion-display helper that SHOULD still render. The
-        // conflation was harmless on vanilla Bethesda content (which
-        // doesn't set that bit) but dropped modded geometry and
-        // anything authored with a Gamebryo-native tool.
-        // #3640 — a live NiVisController targeting this shape gets a
-        // chance to un-hide it at runtime instead of the shape never
-        // existing for it to act on. See `has_live_visibility_controller`'s
-        // doc for why this is shape-scoped only.
-        if shape.av.flags & 0x01 != 0
-            && !has_live_visibility_controller(scene, shape.av.net.controller_ref)
-        {
-            return;
-        }
-        if is_editor_marker(shape.av.net.name.as_deref()) {
+        if shape_is_culled(scene, &shape.av) {
             return;
         }
         let world_transform = compose_transforms(parent_transform, &shape.av.transform);
@@ -967,28 +911,7 @@ pub(super) fn walk_node_flat(
     }
 
     if let Some(shape) = block.as_any().downcast_ref::<BsTriShape>() {
-        // bit 0 = APP_CULLED (hidden). Editor-marker filtering runs
-        // as a sibling check below so shape-level editor markers
-        // (common on Skyrim+ MapMarker geometry where the flag rides
-        // on the shape, not the containing node) don't render as
-        // untextured debug pyramids. See #165 / audit N26-4-06.
-        //
-        // Pre-#332 the mask was `0x21` (APP_CULLED + bit 5). Bit 5 is
-        // DISPLAY_OBJECT_MASK per Gamebryo `NiAVObject.h` — the
-        // occlusion-display helper that SHOULD still render. The
-        // conflation was harmless on vanilla Bethesda content (which
-        // doesn't set that bit) but dropped modded geometry and
-        // anything authored with a Gamebryo-native tool.
-        // #3640 — a live NiVisController targeting this shape gets a
-        // chance to un-hide it at runtime instead of the shape never
-        // existing for it to act on. See `has_live_visibility_controller`'s
-        // doc for why this is shape-scoped only.
-        if shape.av.flags & 0x01 != 0
-            && !has_live_visibility_controller(scene, shape.av.net.controller_ref)
-        {
-            return;
-        }
-        if is_editor_marker(shape.av.net.name.as_deref()) {
+        if shape_is_culled(scene, &shape.av) {
             return;
         }
         let world_transform = compose_transforms(parent_transform, &shape.av.transform);
@@ -1008,16 +931,7 @@ pub(super) fn walk_node_flat(
     // Flat-walk path identical to NiTriShape but delegating via .base (#988).
     if let Some(lod) = block.as_any().downcast_ref::<NiLodTriShape>() {
         let shape = &lod.base;
-        // #3640 — a live NiVisController targeting this shape gets a
-        // chance to un-hide it at runtime instead of the shape never
-        // existing for it to act on. See `has_live_visibility_controller`'s
-        // doc for why this is shape-scoped only.
-        if shape.av.flags & 0x01 != 0
-            && !has_live_visibility_controller(scene, shape.av.net.controller_ref)
-        {
-            return;
-        }
-        if is_editor_marker(shape.av.net.name.as_deref()) {
+        if shape_is_culled(scene, &shape.av) {
             return;
         }
         let world_transform = compose_transforms(parent_transform, &shape.av.transform);
@@ -1042,16 +956,7 @@ pub(super) fn walk_node_flat(
     }
 
     if let Some(shape) = block.as_any().downcast_ref::<BSGeometry>() {
-        // #3640 — a live NiVisController targeting this shape gets a
-        // chance to un-hide it at runtime instead of the shape never
-        // existing for it to act on. See `has_live_visibility_controller`'s
-        // doc for why this is shape-scoped only.
-        if shape.av.flags & 0x01 != 0
-            && !has_live_visibility_controller(scene, shape.av.net.controller_ref)
-        {
-            return;
-        }
-        if is_editor_marker(shape.av.net.name.as_deref()) {
+        if shape_is_culled(scene, &shape.av) {
             return;
         }
         let world_transform = compose_transforms(parent_transform, &shape.av.transform);

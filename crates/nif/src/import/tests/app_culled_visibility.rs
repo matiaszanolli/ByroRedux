@@ -146,3 +146,35 @@ fn hierarchical_walker_still_drops_culled_shape_with_no_visibility_controller() 
         "unconditional drop must be unchanged (hierarchical walker)"
     );
 }
+
+/// #5792 — the cull gate is one function per family, not twelve inline
+/// copies. Every rule change (#332's mask, #3640's controller clause) had
+/// to be hand-applied per arm, and the particle arms sat outside the copy
+/// set until #4561 — an emitter authored hidden spawned for months. The
+/// counts pin the consolidation: exactly three gate spellings exist in the
+/// walker (shape_is_culled, node_is_culled, particle_system_is_culled),
+/// each owning one APP_CULLED bit test and one editor-marker test.
+#[test]
+fn the_shape_cull_gate_is_spelled_once() {
+    let src = include_str!("../walk/mod.rs");
+    assert_eq!(
+        src.matches("0x01 != 0").count(),
+        3,
+        "APP_CULLED bit tests must live only in the three gate functions"
+    );
+    assert_eq!(
+        src.matches("is_editor_marker(").count(),
+        3,
+        "editor-marker tests must live only in the three gate functions"
+    );
+    assert_eq!(
+        src.matches("shape_is_culled(").count(),
+        9,
+        "the definition plus eight geometry arms route through shape_is_culled"
+    );
+    assert_eq!(
+        src.matches("node_is_culled(").count(),
+        5,
+        "the definition plus four node arms route through node_is_culled"
+    );
+}
