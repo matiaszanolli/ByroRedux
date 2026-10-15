@@ -482,6 +482,10 @@ fn post_reload_drain_steps_keep_their_order() {
         "ai_package::reseat_ambient_packages_after_restore(world)",
         "byroredux_save::build_form_id_remap(world, &registry, &snapshot)",
         "byroredux_save::apply_deltas(world, &registry, &snapshot, &remap,",
+        // #5460 — the worn-gear reconcile lives in the apply_deltas
+        // reconciler arm and must run exactly once (a merge slip had left
+        // it doubled; `matches().count() == 1` below pins that).
+        "loot_appearance::reconcile_worn_gear(world, player)",
     ];
     let positions: Vec<usize> = steps
         .iter()
