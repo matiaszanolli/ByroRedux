@@ -13,9 +13,10 @@ use super::super::material::GpuMaterial;
 use super::super::pipeline::PipelineKey;
 use super::super::scene_buffer::{
     self, GpuInstance, GpuTerrainTile, INSTANCE_FLAG_ALPHA_BLEND, INSTANCE_FLAG_CAUSTIC_SOURCE,
-    INSTANCE_FLAG_DIFFUSE_ALPHA, INSTANCE_FLAG_FLAT_SHADING, INSTANCE_FLAG_LOD_BLOCK, INSTANCE_FLAG_MOVED_THIS_FRAME, INSTANCE_FLAG_NON_UNIFORM_SCALE,
-    INSTANCE_FLAG_TERRAIN_SPLAT, INSTANCE_RENDER_LAYER_MASK, INSTANCE_RENDER_LAYER_SHIFT,
-    INSTANCE_TERRAIN_TILE_MASK, INSTANCE_TERRAIN_TILE_SHIFT,
+    INSTANCE_FLAG_DIFFUSE_ALPHA, INSTANCE_FLAG_FLAT_SHADING, INSTANCE_FLAG_LOD_BLOCK,
+    INSTANCE_FLAG_MOVED_THIS_FRAME, INSTANCE_FLAG_NON_UNIFORM_SCALE, INSTANCE_FLAG_TERRAIN_SPLAT,
+    INSTANCE_RENDER_LAYER_MASK, INSTANCE_RENDER_LAYER_SHIFT, INSTANCE_TERRAIN_TILE_MASK,
+    INSTANCE_TERRAIN_TILE_SHIFT,
 };
 use super::frame_params::{
     CompositeParamsInputs, DrawBatch, build_composite_params, build_sky_cube_params,
@@ -740,17 +741,23 @@ impl VulkanContext {
         // key), rigid instances (the compare in the loop above) or the
         // rigid instance SET (#4943: spawn/despawn/enable/disable, loot
         // pickup), or skinned poses (`pose_dirty` — a walking NPC's torch
-        // shadow). SVGF reuses this signal (#4046), so a set change also
-        // drops its parked-camera long history.
-        let caustic_scene_static = !(rigid_instance_moved
-            || (rigid_history_live
-                && rigid_instance_set_changed(
-                    rigid_instance_first_sight,
-                    self.history.previous_rigid_models.len(),
-                    current_rigid_models.len(),
-                )))
+        // shadow).
+        let rigid_set_changed = rigid_history_live
+            && rigid_instance_set_changed(
+                rigid_instance_first_sight,
+                self.history.previous_rigid_models.len(),
+                current_rigid_models.len(),
+            );
+        let caustic_key_static = caustic_scene_key == self.prev_caustic_scene_key;
+        let caustic_scene_static = !(rigid_instance_moved || rigid_set_changed)
             && pose_dirty.is_empty()
-            && caustic_scene_key == self.prev_caustic_scene_key;
+            && caustic_key_static;
+        // SVGF's progressive gate (#4046) keeps the light-rig / caustic-key
+        // and instance-SET terms but not the scene-wide motion terms: an NPC
+        // idling anywhere dirtied a pose every frame, which held every
+        // pixel's indirect at the 0.2 alpha floor with the camera parked.
+        // A mover's own pixels still reject history by mesh ID.
+        let svgf_scene_static = !rigid_set_changed && caustic_key_static;
         self.prev_caustic_scene_key = caustic_scene_key;
         self.scene_static_last_build = caustic_scene_static;
         // #5369 — the rig key ignores intensity: a flickering light keeps
@@ -765,16 +772,11 @@ impl VulkanContext {
         // pixels whose shadow ray hits them (`INSTANCE_FLAG_MOVED_THIS_FRAME`,
         // read in triangle.frag). A set change stays scene-wide: an instance
         // that vanished can no longer be hit.
-        let restir_rig_static = !(rigid_history_live
-            && rigid_instance_set_changed(
-                rigid_instance_first_sight,
-                self.history.previous_rigid_models.len(),
-                current_rigid_models.len(),
-            ))
-            && restir_rig_key == self.prev_restir_rig_key;
+        let restir_rig_static = !rigid_set_changed && restir_rig_key == self.prev_restir_rig_key;
         self.prev_restir_rig_key = restir_rig_key;
         self.restir_rig_static_last_build = restir_rig_static;
         let caustic_history_valid = camera_static && caustic_scene_static;
+        let svgf_history_valid = camera_static && svgf_scene_static;
 
         // #647 / RP-1 — guard against `gl_InstanceIndex` outrunning
         // the `MAX_INSTANCES` SSBO allocation. Post-#992 the mesh_id
@@ -1166,7 +1168,7 @@ impl VulkanContext {
                 // its knee still gets the bare camera flag above).
                 let decision = crate::vulkan::svgf::next_svgf_temporal_alpha(
                     self.svgf_recovery_frames,
-                    caustic_history_valid,
+                    svgf_history_valid,
                 );
                 self.svgf_recovery_frames = decision.next_recovery_frames;
                 // SAFETY: `svgf`'s host-visible param buffer for `frame` is live and not in use by an in-flight frame (the fence wait at frame start guarantees the prior use of this slot completed); the host write is made visible to the compute pass by the bulk HOST->COMPUTE barrier below.
@@ -1893,13 +1895,20 @@ mod svgf_scene_static_signal_tests {
              to justify reusing it for SVGF instead of re-ANDing"
         );
 
+        assert!(
+            src.contains("let svgf_history_valid = camera_static && svgf_scene_static;")
+                && src
+                    .contains("let svgf_scene_static = !rigid_set_changed && caustic_key_static;"),
+            "SVGF's gate must AND the camera with the light-rig/caustic key and the \
+             instance-set compare — only the scene-wide motion terms are dropped"
+        );
         let call_site = src
             .find("crate::vulkan::svgf::next_svgf_temporal_alpha(")
             .expect("the SVGF temporal-alpha call site must still exist under this name");
         let call = &src[call_site..call_site + 200];
         assert!(
-            call.contains("caustic_history_valid"),
-            "next_svgf_temporal_alpha must be called with caustic_history_valid \
+            call.contains("svgf_history_valid"),
+            "next_svgf_temporal_alpha must be called with svgf_history_valid \
              (camera AND light rig both unchanged), not the bare camera_static flag — \
              regressing this drops GI convergence back to lagging a light-rig change \
              by up to the ~4s 1/(histAge+1) time constant (#4046)"
@@ -1908,9 +1917,9 @@ mod svgf_scene_static_signal_tests {
 
     /// #4943 (REN-D7-2026-09-27-02) — the signal must also see the rigid
     /// instance SET change, not only instances moving: first sight is
-    /// recorded at the history lookup, and the set compare is folded into
-    /// `caustic_scene_static` (which SVGF reuses above) while rigid history
-    /// was live.
+    /// recorded at the history lookup, and the set compare (taken while
+    /// rigid history was live) is folded into the caustic, SVGF and ReSTIR
+    /// gates.
     #[test]
     fn scene_static_signal_sees_rigid_instance_set_changes() {
         let src =
@@ -1919,20 +1928,31 @@ mod svgf_scene_static_signal_tests {
             src.contains("rigid_instance_first_sight |= previous.is_none();"),
             "a rigid draw with no previous model must be recorded as first sight (#4943)"
         );
-        let fold = src
-            .split_once("let caustic_scene_static = !(rigid_instance_moved")
-            .expect("the scene-static fold must still start from rigid_instance_moved")
+        let set_change = src
+            .split_once("let rigid_set_changed = rigid_history_live")
+            .expect("the rigid instance set compare must still be one shared binding")
             .1
             .split_once(';')
             .unwrap()
             .0;
         assert!(
-            fold.contains("rigid_instance_set_changed(")
-                && fold.contains("rigid_instance_first_sight")
-                && fold.contains("previous_rigid_models.len()")
-                && fold.contains("current_rigid_models.len()"),
-            "caustic_scene_static must fold in the rigid instance set change (#4943):\n{fold}"
+            set_change.contains("rigid_instance_set_changed(")
+                && set_change.contains("rigid_instance_first_sight")
+                && set_change.contains("previous_rigid_models.len()")
+                && set_change.contains("current_rigid_models.len()"),
+            "the set compare must see first sight and both model counts (#4943):\n{set_change}"
         );
+        // Every scene-static gate folds the set change in.
+        for gate in [
+            "let caustic_scene_static = !(rigid_instance_moved || rigid_set_changed)",
+            "let svgf_scene_static = !rigid_set_changed",
+            "let restir_rig_static = !rigid_set_changed",
+        ] {
+            assert!(
+                src.contains(gate),
+                "missing set-change fold: `{gate}` (#4943)"
+            );
+        }
     }
 }
 
