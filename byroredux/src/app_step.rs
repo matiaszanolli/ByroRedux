@@ -893,52 +893,6 @@ impl App {
         crate::loading_screen::retire_stage(&mut self.world, ctx, *stage);
     }
 
-    /// Drain any queued [`cell_loader::PendingCellTransition`] and
-    /// dispatch the orchestrator. Runs once per frame after
-    /// `step_streaming`. No-op on frames with no pending transition.
-    ///
-    /// Dispatches on the destination variant:
-    ///
-    /// * `Interior` — tear down any active exterior streaming state
-    ///   (drain `state.loaded`, shutdown the worker thread), then start an
-    ///   App-owned `InteriorCellApply` cursor for the destination. The
-    ///   reference/NPC phase advances on later frames.
-    /// * `Exterior` — tear down current interior (if any), tear down
-    ///   existing streaming state, build a fresh `ExteriorWorldContext` +
-    ///   `WorldStreamingState` for the destination worldspace,
-    ///   stream initial radius, reposition camera.
-    ///
-    /// Provider construction is per-transition (here, the door cover's
-    /// `LoadingScreen::begin*`, and `save_io`): the `build_*_provider`
-    /// calls rebuild from CLI args, matching the boot-time
-    /// `scene::setup_scene` pattern.
-    ///
-    /// ## #2039 / #5288 — what a rebuild costs now
-    ///
-    /// The expensive part of a rebuild was re-opening every `--bsa` /
-    /// `--textures-bsa` / `--materials-ba2` archive (file-table parse, the
-    /// #3637 shadow-count walk, and Starfield's CDB path scan) — measured
-    /// ~125 ms per texture + material pair on FO4 with a warm page cache, and
-    /// paid twice per door (cover + destination apply). Interactive doors
-    /// (the deferral's trigger) have shipped, so that is now removed at the
-    /// archive layer: `Archive::open_shared` keeps the opened handles in a
-    /// process-wide registry validated by file length + mtime, and a repeat
-    /// `build_*_provider` over the same archives is ~0.1 ms. That also covers
-    /// every other rebuild site without threading an App-owned provider slot
-    /// through `InteriorCellApply` / `assemble_exterior_streaming` (which take
-    /// the providers by value).
-    ///
-    /// What a rebuild still discards is the *derived* state: the
-    /// BGSM/BGEM template cache and `MaterialProvider::csg_cache` start cold.
-    /// Those refill lazily per material, which is cheap next to the archive
-    /// tables; an App-owned provider keyed on the plugin-set identity (the
-    /// design this note used to sketch) is only worth it if that warm-up
-    /// shows up in a measurement.
-    ///
-    /// #2706 (SF-D3-02) — the Starfield CDB byte cache
-    /// (`asset_provider::material::sf_cdb_cache`, #2705) and the built
-    /// material indexes (`sf_cdb_index_cache`, #5291) are module-scope for
-    /// the same reason: they survive every rebuild.
     /// M47.2 — drain a fragment's `Game.GetPlayer().MoveTo(<reference>)`.
     /// A resident destination moves the player in place (camera, then the
     /// body grounded under it, as the transition apply does); any other
@@ -1091,6 +1045,52 @@ impl App {
         self.world.insert_resource(provider);
     }
 
+    /// Drain any queued [`cell_loader::PendingCellTransition`] and
+    /// dispatch the orchestrator. Runs once per frame after
+    /// `step_streaming`. No-op on frames with no pending transition.
+    ///
+    /// Dispatches on the destination variant:
+    ///
+    /// * `Interior` — tear down any active exterior streaming state
+    ///   (drain `state.loaded`, shutdown the worker thread), then start an
+    ///   App-owned `InteriorCellApply` cursor for the destination. The
+    ///   reference/NPC phase advances on later frames.
+    /// * `Exterior` — tear down current interior (if any), tear down
+    ///   existing streaming state, build a fresh `ExteriorWorldContext` +
+    ///   `WorldStreamingState` for the destination worldspace,
+    ///   stream initial radius, reposition camera.
+    ///
+    /// Provider construction is per-transition (here, the door cover's
+    /// `LoadingScreen::begin*`, and `save_io`): the `build_*_provider`
+    /// calls rebuild from CLI args, matching the boot-time
+    /// `scene::setup_scene` pattern.
+    ///
+    /// ## #2039 / #5288 — what a rebuild costs now
+    ///
+    /// The expensive part of a rebuild was re-opening every `--bsa` /
+    /// `--textures-bsa` / `--materials-ba2` archive (file-table parse, the
+    /// #3637 shadow-count walk, and Starfield's CDB path scan) — measured
+    /// ~125 ms per texture + material pair on FO4 with a warm page cache, and
+    /// paid twice per door (cover + destination apply). Interactive doors
+    /// (the deferral's trigger) have shipped, so that is now removed at the
+    /// archive layer: `Archive::open_shared` keeps the opened handles in a
+    /// process-wide registry validated by file length + mtime, and a repeat
+    /// `build_*_provider` over the same archives is ~0.1 ms. That also covers
+    /// every other rebuild site without threading an App-owned provider slot
+    /// through `InteriorCellApply` / `assemble_exterior_streaming` (which take
+    /// the providers by value).
+    ///
+    /// What a rebuild still discards is the *derived* state: the
+    /// BGSM/BGEM template cache and `MaterialProvider::csg_cache` start cold.
+    /// Those refill lazily per material, which is cheap next to the archive
+    /// tables; an App-owned provider keyed on the plugin-set identity (the
+    /// design this note used to sketch) is only worth it if that warm-up
+    /// shows up in a measurement.
+    ///
+    /// #2706 (SF-D3-02) — the Starfield CDB byte cache
+    /// (`asset_provider::material::sf_cdb_cache`, #2705) and the built
+    /// material indexes (`sf_cdb_index_cache`, #5291) are module-scope for
+    /// the same reason: they survive every rebuild.
     pub(crate) fn step_cell_transition(&mut self) {
         // M47.2 — a fragment's player `MoveTo` becomes an in-place move or
         // a queued transition this same call dispatches.

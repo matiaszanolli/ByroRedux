@@ -746,20 +746,6 @@ pub(crate) fn merge_external_material(
     outcome
 }
 
-/// The BGSM (shader-material) arm of [`merge_external_material`] (#3857).
-///
-/// `Some(outcome)` means the merge is finished and the caller returns it
-/// verbatim — the two resolve-failure paths; `None` means the arm merged what
-/// it had and the caller continues to the shared tail.
-///
-/// The ~16 `set_*` sentinels move in here with it. The issue proposed lifting
-/// them into a `MergeSentinels` struct threaded through both arms, on the
-/// assumption they were shared state — they are not. Every one is written and
-/// read only within this arm (the BGEM arm has its own `authored_*` locals),
-/// so they are plain locals and the struct is unnecessary. They track "has a
-/// BGSM in THIS resolver chain already claimed this slot", which is why they
-/// cannot be inferred from the field values: the NIF side defaults several of
-/// them to concrete values.
 /// #5735 — the BGSM texture-slot group of the template walk, one chain
 /// step per call. Verbatim move out of `merge_bgsm_arm`'s loop body: the
 /// ten `fill` calls plus the greyscale-LUT interlock (#2108/#3898/#4402),
@@ -1178,6 +1164,20 @@ fn apply_bgsm_alpha_and_addressing(
     }
 }
 
+/// The BGSM (shader-material) arm of [`merge_external_material`] (#3857).
+///
+/// `Some(outcome)` means the merge is finished and the caller returns it
+/// verbatim — the two resolve-failure paths; `None` means the arm merged what
+/// it had and the caller continues to the shared tail.
+///
+/// The ~16 `set_*` sentinels move in here with it. The issue proposed lifting
+/// them into a `MergeSentinels` struct threaded through both arms, on the
+/// assumption they were shared state — they are not. Every one is written and
+/// read only within this arm (the BGEM arm has its own `authored_*` locals),
+/// so they are plain locals and the struct is unnecessary. They track "has a
+/// BGSM in THIS resolver chain already claimed this slot", which is why they
+/// cannot be inferred from the field values: the NIF side defaults several of
+/// them to concrete values.
 fn merge_bgsm_arm(
     material: &mut ImportedMaterial,
     provider: &mut MaterialProvider,
