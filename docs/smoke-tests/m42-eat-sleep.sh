@@ -95,8 +95,8 @@ if grep -Fq "Entity $entity" "$LOG_DIR/baseline.log"; then
 fi
 echo "smoke[m42-eat-sleep]: baseline PASS — no SleepBehavior at the boot hour"
 
-# ── The Sleep window: selection hands her the behavior, then the
-#    walk-then-seat runtime seats her at the bed ─────────────────────
+# ── The Sleep window: selection hands him the behavior; a non-resident
+#    In-Cell package then idles (#5391) instead of walking or seating ──
 debug_command "time.set 23" "$LOG_DIR/timeset.log" || fail 'time.set unavailable'
 deadline=$((SECONDS + TIMEOUT))
 until grep -Fq "Entity $entity" "$LOG_DIR/sleep.log" 2>/dev/null; do

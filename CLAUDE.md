@@ -105,8 +105,9 @@ a topic-less package greets generically, opening with no activation.
 gates the M42 Eat/Sleep behavior components live on FNV
 (GSProspectorSaloonInterior): the settler must be awake at the boot
 hour, `time.set 23` inside his 22:00–08:00 window must hand him
-`SleepBehavior`, and the walk-then-seat runtime must seat HIM at the
-bed (the seat leg is scoped to the found entity).
+`SleepBehavior`, and — because his In-Cell package targets another cell
+(#5391) — he must idle with no `Seated`; the seat runtime itself is
+unit-gated.
 [`m47-2-bleedout.sh`](docs/smoke-tests/m47-2-bleedout.sh) gates
 essential-actor bleedout live on Skyrim (RiverwoodSleepingGiantInn):
 real swings put the essential Delphine into bleedout instead of

@@ -208,7 +208,7 @@ jobs:
         if: success() || failure()
         continue-on-error: true
         run: cargo clippy --workspace --all-targets --keep-going -- -D warnings
-      # #5121 / #4595 — the renderer's 733 `unsafe` blocks are guarded by its
+      # #5121 / #4595 — the renderer's `unsafe` blocks are guarded by its
       # crate-level `#![deny(clippy::undocumented_unsafe_blocks)]`, but that
       # gate only exists while clippy actually reaches the crate: rustc 1.98
       # lint errors in `byroredux-sdk`/`byroredux-nif` stopped scheduling

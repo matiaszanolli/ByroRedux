@@ -440,16 +440,14 @@ single file crosses 3 500 lines, a struct crosses 50 fields, or a context
 struct crosses 60 fields, treat it as a signal to investigate before adding,
 not a stat to report.
 
-**Tripwire today** (measured 2026-10-10; the counts include inline test
-modules, but not dedicated test files). Over the line:
-`byroredux/src/env_translate.rs` 5 826,
-`byroredux/src/material_translate.rs` 4 422,
-`crates/renderer/src/vulkan/volumetrics.rs` 4 168,
-`crates/physics/src/world/mod.rs` 4 149 (its #5311 split left `mod.rs`
-larger than the old `world.rs`), `byroredux/src/inventory.rs` 4 075 and
-`crates/scripting/src/translate/effects.rs` 4 022.
-Before splitting one, grep for `include_str!` source-shape tests that read
-it.
+**Tripwire today** (re-measured 2026-10-15; counts include inline test
+modules, not dedicated test files). Over the line:
+`crates/scripting/src/translate/effects.rs` 10 117, `crates/scripting/src/fragment/vm.rs` 6 215,
+`crates/physics/src/world/mod.rs` 5 209 (#5311's split left `mod.rs` larger than the old `world.rs`),
+`byroredux/src/material_translate.rs` 4 422, `byroredux/src/inventory.rs` 4 202,
+`crates/renderer/src/vulkan/volumetrics.rs` 4 168, `crates/physics/src/water.rs` 3 963,
+`crates/scripting/src/condition.rs` 3 691, `crates/plugin/src/esm/records/misc/world.rs` 3 508.
+Before splitting one, grep for `include_str!` source-shape tests that read it.
 
 ### Pacing discipline
 
