@@ -145,9 +145,9 @@ impl CharacterRuleset {
     ///   `current()`.
     /// * Otherwise, when this game derives the stat for any actor
     ///   (`ActorGeneral` + `Absolute`, the #2933 contract), the formula output
-    ///   is the base: `derived_value + permanent + temporary − damage` of
+    ///   is the base: `derived_value` plus every non-base layer of
     ///   whatever modifier-only entry a constant spell, `modav` or the SDK
-    ///   left. Such an entry's `0.0` base is a placeholder, so treating it as
+    ///   left (the layer list lives on `ActorValue::current`). Such an entry's `0.0` base is a placeholder, so treating it as
     ///   carried returned the bare modifier (FNV Finesse CritChance `5`, not
     ///   `Luck + 5`).
     /// * Anything else — an authored AV this game does not derive, a
@@ -165,9 +165,10 @@ impl CharacterRuleset {
             return avs.current(avif);
         }
         let base = self.derived_value(avif, avs, level).unwrap_or(0.0);
-        let layers = carried.map_or(0.0, |value| {
-            value.permanent_mod + value.temporary_mod - value.damage
-        });
+        // Every layer but the base, derived from the entry so a layer added
+        // to `ActorValue::current` (`set_override`, #5412) cannot be missed
+        // here (#5508's hand-summed-readers rule).
+        let layers = carried.map_or(0.0, |value| value.current() - value.base);
         base + layers
     }
 
@@ -329,6 +330,19 @@ mod tests {
         // alone.
         avs.apply_damage(AV_CARRY, 20.0);
         assert_eq!(rs.actor_value(AV_CARRY, &avs, 1), 500.0);
+    }
+
+    /// #5706 — the layers composed onto the formula are every non-base layer
+    /// of the entry, `set_override` included, not a hand-written subset.
+    #[test]
+    fn set_override_composes_onto_the_formula() {
+        let rs = fo4_ruleset();
+        let mut avs = ActorValues::from_pairs([(STR, 7.0)]);
+        avs.mod_permanent(AV_CARRY, 140.0);
+        avs.set_override(AV_CARRY, 50.0);
+        avs.apply_damage(AV_CARRY, 20.0);
+        // 200 + 10·7 = 270, + 50 override + 140 permanent − 20 damage.
+        assert_eq!(rs.actor_value(AV_CARRY, &avs, 1), 440.0);
     }
 
     /// #5042 — an authored base still wins over the formula (FO4 companions
