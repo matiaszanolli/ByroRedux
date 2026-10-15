@@ -782,3 +782,103 @@ fn readme_and_roadmap_hold_their_line_ceilings() {
          trim before committing (#5332)"
     );
 }
+
+/// #5856 — count a crate's example *targets* the way cargo discovers them:
+/// every top-level `examples/*.rs` plus every `examples/<name>/main.rs`.
+/// Non-target files (`examples/common/archives.rs`, a shared module) are
+/// not counted and not linked.
+fn count_example_targets(root: &std::path::Path) -> (usize, usize) {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return (0, 0);
+    };
+    let (mut files, mut loc) = (0, 0);
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let is_target = if path.is_dir() {
+            path.join("main.rs").is_file()
+        } else {
+            path.extension().and_then(|e| e.to_str()) == Some("rs")
+        };
+        if !is_target {
+            continue;
+        }
+        let source = path.join("main.rs");
+        let source = if source.is_file() { source } else { path };
+        if let Ok(contents) = std::fs::read_to_string(&source) {
+            files += 1;
+            loc += contents.lines().count();
+        }
+    }
+    (files, loc)
+}
+
+/// #5856 (TD9-2026-10-15-04) — 44 one-liner examples accreted in three
+/// days (+35%) because the disposable-probe guards (#3746/#5114) only see
+/// the `tmp_` prefix and throwaway markers, not purposeful-but-tiny
+/// duplicates. The fix folded each crate's open-archive-print-one-thing
+/// family into one `inspect.rs` with subcommands; these measured ceilings
+/// (files / LOC per crate, at the fold commit) keep accretion from
+/// silently recurring — the same per-commit contract as the README /
+/// ROADMAP ceilings above (#5332). A new one-liner belongs in the crate's
+/// `inspect.rs` subcommand table; a genuinely new multi-page census raises
+/// its ceiling here, re-measured, in the same commit.
+///
+/// Crates are listed by their `crates/<name>` directory (or the bin's
+/// `byroredux`); a crate whose `examples/` appears with no entry fails —
+/// add the measured pair.
+#[test]
+fn example_targets_hold_their_per_crate_ceilings() {
+    const CEILINGS: &[(&str, usize, usize)] = &[
+        ("byroredux", 3, 660),
+        ("bsa", 15, 1099),
+        ("fsr3-sys", 1, 284),
+        ("hkx", 14, 863),
+        ("menuxml", 1, 197),
+        ("nif", 38, 4289),
+        ("pex", 3, 1189),
+        ("plugin", 64, 7788),
+        ("scripting", 12, 3794),
+        ("sfmaterial", 2, 1094),
+        ("spt", 6, 1561),
+    ];
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let by_entry = |root: &std::path::Path| {
+        // `crates/<name>/examples` or `byroredux/examples` → crate name.
+        root.parent()
+            .and_then(|c| c.file_name())
+            .and_then(|n| n.to_str())
+            .unwrap_or("?")
+            .to_string()
+    };
+    let mut measured: Vec<(String, usize, usize)> = Vec::new();
+    for root in hygiene_scan_roots() {
+        if !root.is_dir() {
+            continue;
+        }
+        let (files, loc) = count_example_targets(&root);
+        measured.push((by_entry(&root), files, loc));
+    }
+    let mut failures = Vec::new();
+    for (name, files, loc) in &measured {
+        let Some(&(_, file_cap, loc_cap)) = CEILINGS.iter().find(|(n, _, _)| n == name) else {
+            failures.push(format!(
+                "{name}: no ceiling entry (measured {files} files / {loc} LOC) — \
+                 add the measured pair to CEILINGS (#5856)"
+            ));
+            continue;
+        };
+        if *files > file_cap || *loc > loc_cap {
+            failures.push(format!(
+                "{name}: {files} files / {loc} LOC exceeds ceiling \
+                 {file_cap} files / {loc_cap} LOC — fold the new one-liner \
+                 into this crate's inspect.rs subcommands, or re-measure and \
+                 raise the ceiling here in the same commit (#5856)"
+            ));
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "example-target ceilings breached:\n{}",
+        failures.join("\n"),
+    );
+}
