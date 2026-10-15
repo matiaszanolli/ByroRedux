@@ -164,7 +164,7 @@ impl ConsoleCommand for QuestForceAliasCommand {
             return CommandOutput::error("quest.force: bad quest or alias id");
         };
         // `0x…` names the placed reference by FormID; anything else is an entity id.
-        let entity = if let Some(reference) = entity_token.strip_prefix("0x").and(parse_console_u32(entity_token)) {
+        let entity = if let Some(reference) = entity_token.strip_prefix("0x").and_then(parse_console_form_id) {
             let found = world.query::<byroredux_scripting::SceneAliasCandidate>().and_then(|candidates| {
                 candidates
                     .iter()

@@ -1496,3 +1496,35 @@ mod lock_order_pin_tests {
         );
     }
 }
+
+/// #5817 — FormID-shaped console arguments parse through the one
+/// hex-with-optional-prefix parser, so the same token cannot mean
+/// different things across commands (`inv.add 10` and `quest.force 10`
+/// used to address 0x10 and 10 respectively).
+#[test]
+fn form_id_arguments_parse_hex_through_one_spelling() {
+    use super::shared::parse_console_form_id;
+    // Bare digits are hex (kit convention); 0x/0X prefixes strip.
+    assert_eq!(parse_console_form_id("10"), Some(0x10));
+    assert_eq!(parse_console_form_id("0x10"), Some(0x10));
+    assert_eq!(parse_console_form_id("0X10"), Some(0x10));
+    assert_eq!(parse_console_form_id("00014"), Some(0x14));
+    assert_eq!(parse_console_form_id("DEADBEEF"), Some(0xDEAD_BEEF));
+    assert_eq!(parse_console_form_id(""), None);
+    assert_eq!(parse_console_form_id("0x"), None);
+    // Decimal-first rule contrast: the same bare token means 10 here.
+    assert_eq!(super::shared::parse_console_u32("10"), Some(10));
+    // The three gameplay sites route through the shared parser — no
+    // hand-rolled from_str_radix hex chains remain in the command tree.
+    for file in ["gameplay", "script_var"] {
+        let source = std::fs::read_to_string(format!(
+            "{}/src/commands/{file}.rs",
+            env!("CARGO_MANIFEST_DIR")
+        ))
+        .expect("command source");
+        assert!(
+            !source.contains("from_str_radix"),
+            "{file}.rs hand-rolls a FormID parse — use shared::parse_console_form_id (#5817)"
+        );
+    }
+}

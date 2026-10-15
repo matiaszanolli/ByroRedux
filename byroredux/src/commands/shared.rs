@@ -85,6 +85,22 @@ pub(crate) fn parse_console_u32(tok: &str) -> Option<u32> {
         tok.parse::<u32>().ok()
     }
 }
+
+/// Parse a **hex** FormID console argument: bare digits are hex (the
+/// kit convention — `inv.add 10` means form 0x10) and an optional
+/// `0x`/`0X` prefix is accepted and stripped. #5817: the three gameplay
+/// commands used to hand-roll this (dropping `0X`, and reading the same
+/// bare token differently from `parse_console_u32`'s decimal-first
+/// rule), so `inv.add 10` addressed form 0x10 while `quest.force 10`
+/// addressed form 10. Every FormID-shaped argument goes through this
+/// one parser.
+pub(crate) fn parse_console_form_id(tok: &str) -> Option<u32> {
+    let hex = tok
+        .strip_prefix("0x")
+        .or_else(|| tok.strip_prefix("0X"))
+        .unwrap_or(tok);
+    u32::from_str_radix(hex, 16).ok()
+}
 /// Pure formatter — kept separate from the command impl so the test
 /// can drive it without standing up a `ConsoleCommand` dispatcher.
 pub(crate) fn format_skin_dump(world: &World, entity: u32, skin: &SkinnedMesh) -> Vec<String> {

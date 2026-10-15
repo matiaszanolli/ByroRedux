@@ -56,7 +56,7 @@ impl ConsoleCommand for InvAddCommand {
         let mut parts = args.split_whitespace();
         let Some(form_id) = parts
             .next()
-            .and_then(|raw| u32::from_str_radix(raw.trim_start_matches("0x"), 16).ok())
+            .and_then(parse_console_form_id)
         else {
             return CommandOutput::error("usage: inv.add <form_id_hex> [count=1]");
         };
@@ -94,7 +94,7 @@ impl ConsoleCommand for InvEquipCommand {
     }
 
     fn execute(&self, world: &World, args: &str) -> CommandOutput {
-        let Some(form_id) = u32::from_str_radix(args.trim().trim_start_matches("0x"), 16).ok()
+        let Some(form_id) = parse_console_form_id(args.trim())
         else {
             return CommandOutput::error("usage: inv.equip <form_id_hex>");
         };
@@ -433,7 +433,7 @@ impl ConsoleCommand for LevelUpCommand {
             Some("perk") => {
                 let Some(perk) = parts
                     .next()
-                    .and_then(|raw| u32::from_str_radix(raw.trim_start_matches("0x"), 16).ok())
+                    .and_then(parse_console_form_id)
                 else {
                     return CommandOutput::error("usage: levelup perk <perk_hex>");
                 };

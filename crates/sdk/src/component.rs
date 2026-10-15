@@ -465,6 +465,62 @@ impl ExtensionComponentStore {
         Ok(())
     }
 
+    /// #5816 — the schema + field lookup both write arms of
+    /// [`Self::apply_batch`] share. One home, so a third command variant
+    /// (JContainers-style collection ops) cannot copy it and drift.
+    fn field_declaration(
+        &self,
+        principal: &PrincipalId,
+        schema: &ComponentSchemaId,
+        field: &ComponentFieldId,
+    ) -> Result<&ComponentFieldDeclaration, ComponentStoreError> {
+        let schema_key = (principal.clone(), schema.clone());
+        let declaration = self
+            .schemas
+            .get(&schema_key)
+            .ok_or_else(|| ComponentStoreError::UnknownSchema {
+                principal: principal.clone(),
+                schema: schema.clone(),
+            })?;
+        declaration
+            .fields
+            .iter()
+            .find(|candidate| candidate.id == *field)
+            .ok_or_else(|| ComponentStoreError::UnknownField {
+                schema: schema.clone(),
+                field: field.clone(),
+            })
+    }
+
+    /// #5816 — the row staging both write arms share: the row key build,
+    /// the per-principal row budget (`existing + new` may not exceed the
+    /// cap — a security quota, so it lives once, not per arm), and the
+    /// staged-or-cloned row handout.
+    fn stage_row<'a>(
+        &self,
+        staged: &'a mut BTreeMap<RowKey, ComponentRow>,
+        new_rows: &mut BTreeSet<RowKey>,
+        existing_rows: usize,
+        principal: &PrincipalId,
+        schema: &ComponentSchemaId,
+        entity: EntityRef,
+    ) -> Result<&'a mut ComponentRow, ComponentStoreError> {
+        let row_key = (principal.clone(), schema.clone(), entity);
+        let row_exists = self.rows.contains_key(&row_key);
+        if !row_exists
+            && new_rows.insert(row_key.clone())
+            && existing_rows + new_rows.len() > self.limits.max_rows_per_principal
+        {
+            return Err(ComponentStoreError::RowBudgetExceeded {
+                principal: principal.clone(),
+                maximum: self.limits.max_rows_per_principal,
+            });
+        }
+        Ok(staged
+            .entry(row_key.clone())
+            .or_insert_with(|| self.rows.get(&row_key).cloned().unwrap_or_default()))
+    }
+
     /// Apply one callback's commands atomically under its authenticated owner.
     pub fn apply_batch(
         &mut self,
@@ -494,21 +550,8 @@ impl ExtensionComponentStore {
                     field,
                     value,
                 } => {
-                    let schema_key = (principal.clone(), schema.clone());
-                    let declaration = self.schemas.get(&schema_key).ok_or_else(|| {
-                        ComponentStoreError::UnknownSchema {
-                            principal: principal.clone(),
-                            schema: schema.clone(),
-                        }
-                    })?;
-                    let field_declaration = declaration
-                        .fields
-                        .iter()
-                        .find(|candidate| candidate.id == *field)
-                        .ok_or_else(|| ComponentStoreError::UnknownField {
-                            schema: schema.clone(),
-                            field: field.clone(),
-                        })?;
+                    let field_declaration =
+                        self.field_declaration(principal, schema, field)?;
                     let actual = value.value_type();
                     if field_declaration.value_type != actual {
                         return Err(ComponentStoreError::TypeMismatch {
@@ -538,20 +581,9 @@ impl ExtensionComponentStore {
                         });
                     }
 
-                    let row_key = (principal.clone(), schema.clone(), *entity);
-                    let row_exists = self.rows.contains_key(&row_key);
-                    if !row_exists
-                        && new_rows.insert(row_key.clone())
-                        && existing_rows + new_rows.len() > self.limits.max_rows_per_principal
-                    {
-                        return Err(ComponentStoreError::RowBudgetExceeded {
-                            principal: principal.clone(),
-                            maximum: self.limits.max_rows_per_principal,
-                        });
-                    }
-                    let row = staged
-                        .entry(row_key.clone())
-                        .or_insert_with(|| self.rows.get(&row_key).cloned().unwrap_or_default());
+                    let row =
+                        self.stage_row(&mut staged, &mut new_rows, existing_rows,
+                                       principal, schema, *entity)?;
                     row.0.insert(field.clone(), value.clone());
                 }
                 ExtensionCommand::IncrementI64 {
@@ -560,21 +592,8 @@ impl ExtensionComponentStore {
                     field,
                     delta,
                 } => {
-                    let schema_key = (principal.clone(), schema.clone());
-                    let declaration = self.schemas.get(&schema_key).ok_or_else(|| {
-                        ComponentStoreError::UnknownSchema {
-                            principal: principal.clone(),
-                            schema: schema.clone(),
-                        }
-                    })?;
-                    let field_declaration = declaration
-                        .fields
-                        .iter()
-                        .find(|candidate| candidate.id == *field)
-                        .ok_or_else(|| ComponentStoreError::UnknownField {
-                            schema: schema.clone(),
-                            field: field.clone(),
-                        })?;
+                    let field_declaration =
+                        self.field_declaration(principal, schema, field)?;
                     if field_declaration.value_type != ExtensionValueType::I64 {
                         return Err(ComponentStoreError::TypeMismatch {
                             schema: schema.clone(),
@@ -584,20 +603,9 @@ impl ExtensionComponentStore {
                         });
                     }
 
-                    let row_key = (principal.clone(), schema.clone(), *entity);
-                    let row_exists = self.rows.contains_key(&row_key);
-                    if !row_exists
-                        && new_rows.insert(row_key.clone())
-                        && existing_rows + new_rows.len() > self.limits.max_rows_per_principal
-                    {
-                        return Err(ComponentStoreError::RowBudgetExceeded {
-                            principal: principal.clone(),
-                            maximum: self.limits.max_rows_per_principal,
-                        });
-                    }
-                    let row = staged
-                        .entry(row_key.clone())
-                        .or_insert_with(|| self.rows.get(&row_key).cloned().unwrap_or_default());
+                    let row =
+                        self.stage_row(&mut staged, &mut new_rows, existing_rows,
+                                       principal, schema, *entity)?;
                     let current = match row.0.get(field) {
                         Some(ExtensionValue::I64(value)) => *value,
                         Some(value) => {
