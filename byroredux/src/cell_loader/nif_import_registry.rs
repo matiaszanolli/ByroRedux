@@ -359,7 +359,122 @@ pub(crate) struct CachedNifImport {
     // exists on cell-loaded entities.
 }
 
+
+/// #5795 — the scene-derived satellites of a parsed NIF, extracted in one
+/// place for both cache-fill paths (synchronous `parse_and_import_nif` and
+/// the streaming `partial.rs` rebuild). The two paths used to spell this
+/// extraction and the struct literal twice, and the streaming copy lagged
+/// twice on exactly this seam (#3072 furniture, #3074 attach-light — both
+/// hard-coded `None` citing a blocker that was false).
+pub(super) struct SceneSatellites {
+    pub(super) collision_authoring:
+        byroredux_nif::import::collision::CollisionAuthoringSummary,
+    pub(super) attach_light_offset: Option<[f32; 3]>,
+    pub(super) projectile_offset: Option<[f32; 3]>,
+    pub(super) furniture: Option<byroredux_core::ecs::components::Furniture>,
+    pub(super) behavior_graph_file: Option<Arc<str>>,
+    pub(super) graph_nodes: Option<Arc<super::graph_nodes::GraphNodes>>,
+    pub(super) graph_sequences: Vec<byroredux_nif::anim::AnimationClip>,
+    pub(super) phantom_bounds: Option<([f32; 3], [f32; 3])>,
+}
+
+/// Extract [`SceneSatellites`] from a parsed scene. `meshes` /
+/// `collisions` are the already-imported geometry (the behavior-graph
+/// node tree indexes them).
+pub(super) fn scene_satellites(
+    scene: &byroredux_nif::scene::NifScene,
+    meshes: &[byroredux_nif::import::ImportedMesh],
+    collisions: &[byroredux_nif::import::ImportedCollision],
+) -> SceneSatellites {
+    // M47.2 — an animated prop keeps its NiNode tree (see `graph_nodes`).
+    let behavior_graph_file: Option<Arc<str>> =
+        byroredux_nif::import::extract_behavior_graph_file(&scene).map(Into::into);
+    let graph_nodes = behavior_graph_file.as_ref().and_then(|_| {
+        super::graph_nodes::build(
+            scene,
+            meshes,
+            collisions,
+            &mut byroredux_core::string::StringPool::new(),
+        )
+    });
+    let graph_sequences = if behavior_graph_file.is_some() {
+        byroredux_nif::anim::import_kf(scene)
+    } else {
+        Vec::new()
+    };
+    // M41.5 Phase B — lift `BSFurnitureMarker` sit/sleep/lean positions
+    // to the `Furniture` ECS component. `None` for the dominant
+    // non-furniture case.
+    let furniture = {
+        let markers = byroredux_nif::import::extract_furniture_markers(scene);
+        if markers.is_empty() {
+            None
+        } else {
+            Some(super::references::furniture_component(&markers))
+        }
+    };
+    SceneSatellites {
+        collision_authoring:
+            byroredux_nif::import::collision::summarize_collision_authoring(scene),
+        attach_light_offset: byroredux_nif::import::find_attach_light_offset(scene),
+        projectile_offset: byroredux_nif::import::find_projectile_node_offset(scene),
+        furniture,
+        behavior_graph_file,
+        graph_nodes,
+        graph_sequences,
+        phantom_bounds: byroredux_nif::import::collision::extract_phantom_bounds(scene),
+    }
+}
+
 impl CachedNifImport {
+    /// #5795 — the one constructor both NIF cache-fill paths build
+    /// through, so a satellite extracted from the scene cannot land on
+    /// only one path again. `attach_points` /
+    /// `child_attach_connections` stay `None` here by design: the sync
+    /// path materializes the FO4+ attach graph after construction (it
+    /// needs the `StringPool`), and the streaming partial keeps `None`
+    /// (#1594 — cell-streamed REFRs are architecture / clutter, not
+    /// modular weapons).
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn from_scene(
+        meshes: Vec<byroredux_nif::import::ImportedMesh>,
+        collisions: Vec<byroredux_nif::import::ImportedCollision>,
+        lights: Vec<byroredux_nif::import::ImportedLight>,
+        particle_emitters: Vec<byroredux_nif::import::ImportedParticleEmitterFlat>,
+        embedded_clip: Option<byroredux_nif::anim::AnimationClip>,
+        bsx_flags: u32,
+        root_flags: u32,
+        satellites: SceneSatellites,
+        pre_merge_materials: Vec<Option<byroredux_nif::import::ImportedMaterial>>,
+    ) -> Self {
+        Self {
+            meshes,
+            beam_volumes: Default::default(),
+            geometry_dedup: Vec::new(),
+            collisions,
+            collision_authoring: satellites.collision_authoring,
+            lights,
+            particle_emitters,
+            embedded_clip,
+            graph_sequences: satellites.graph_sequences,
+            // Both NIF routes leave root billboard / SpeedTree wind to
+            // their own producers (see the field docs: #994, #3190).
+            placement_root_billboard: None,
+            speedtree_wind: None,
+            bsx_flags,
+            behavior_graph_file: satellites.behavior_graph_file,
+            graph_nodes: satellites.graph_nodes,
+            phantom_bounds: satellites.phantom_bounds,
+            root_flags,
+            attach_light_offset: satellites.attach_light_offset,
+            projectile_offset: satellites.projectile_offset,
+            attach_points: None,
+            child_attach_connections: None,
+            furniture: satellites.furniture,
+            pre_merge_materials,
+        }
+    }
+
     /// Texture paths a placement of this model resolves when no REFR overlay
     /// applies: every mesh's merged material slot, plus the normal map the
     /// spawn pre-pass derives when a mesh authors none

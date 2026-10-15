@@ -18,7 +18,7 @@ use crate::asset_provider::MaterialProvider;
 use crate::cell_loader::nif_import_registry::CachedNifImport;
 
 use super::attach::{
-    attach_points_component, child_attach_connections_component, furniture_component,
+    attach_points_component, child_attach_connections_component,
 };
 
 /// Parse + import a NIF scene once. Returns `None` on parse failure
@@ -80,9 +80,6 @@ pub(super) fn parse_and_import_nif(
     // Root-node NiAVObject.flags — surfaced for the placement-root
     // SceneFlags row. See #1235 / LC-D1-NEW-01.
     let root_flags = byroredux_nif::import::extract_root_flags(&scene);
-    let phantom_bounds = byroredux_nif::import::collision::extract_phantom_bounds(&scene);
-    let collision_authoring =
-        byroredux_nif::import::collision::summarize_collision_authoring(&scene);
 
     let (mut meshes, collisions) =
         byroredux_nif::import::import_nif_with_collision_and_resolver(&scene, pool, mesh_resolver);
@@ -154,77 +151,32 @@ pub(super) fn parse_and_import_nif(
             label,
         );
     }
-    // Where the model's light belongs: its `AttachLight` node, composed
-    // root-local at parse time because the node array does not survive into
-    // `CachedNifImport`. The spawn site parents the ESM-fallback light there.
-    let attach_light_offset = byroredux_nif::import::find_attach_light_offset(&scene);
-    let projectile_offset = byroredux_nif::import::find_projectile_node_offset(&scene);
-
+    let satellites =
+        super::super::nif_import_registry::scene_satellites(&scene, &meshes, &collisions);
+    let mut cached = CachedNifImport::from_scene(
+        meshes,
+        collisions,
+        lights,
+        particle_emitters,
+        embedded_clip,
+        bsx,
+        root_flags,
+        satellites,
+        pre_merge_materials,
+    );
     // #985 / #1594 — materialize the FO4+ weapon-mod attach graph. The flat
     // import drops the node array, so pull the `BSConnectPoint` blocks
     // straight off the parsed scene (the transforms are already Y-up — the
     // extractor converts) and intern them into the ECS components here,
     // where the StringPool lives. The spawn site stamps them onto the
-    // placement root. `None` for the dominant non-modular case.
-    let attach_points = byroredux_nif::import::extract_attach_points(&scene)
+    // placement root. `None` for the dominant non-modular case. (The
+    // streaming partial deliberately keeps these `None` — see
+    // `CachedNifImport::from_scene`.)
+    cached.attach_points = byroredux_nif::import::extract_attach_points(&scene)
         .map(|pts| attach_points_component(&pts, pool));
-    let child_attach_connections = byroredux_nif::import::extract_child_attach_connections(&scene)
+    cached.child_attach_connections = byroredux_nif::import::extract_child_attach_connections(&scene)
         .map(|c| child_attach_connections_component(&c, pool));
-
-    // M41.5 Phase B — lift `BSFurnitureMarker` sit/sleep/lean positions to
-    // the `Furniture` ECS component (the node array doesn't survive into
-    // `CachedNifImport`). `None` for the dominant non-furniture case.
-    let furniture = {
-        let markers = byroredux_nif::import::extract_furniture_markers(&scene);
-        if markers.is_empty() {
-            None
-        } else {
-            Some(furniture_component(&markers))
-        }
-    };
-
-    // M47.2 — an animated prop keeps its NiNode tree (see `graph_nodes`).
-    let behavior_graph_file: Option<Arc<str>> =
-        byroredux_nif::import::extract_behavior_graph_file(&scene).map(Into::into);
-    let graph_nodes = behavior_graph_file.as_ref().and_then(|_| {
-        crate::cell_loader::graph_nodes::build(&scene, &meshes, &collisions, &mut byroredux_core::string::StringPool::new())
-    });
-    let graph_sequences = if behavior_graph_file.is_some() { byroredux_nif::anim::import_kf(&scene) } else { Vec::new() };
-    Some(Arc::new(CachedNifImport {
-        meshes,
-        beam_volumes: Default::default(),
-        geometry_dedup: Vec::new(),
-        collisions,
-        collision_authoring,
-        lights,
-        particle_emitters,
-        embedded_clip,
-        graph_sequences,
-        // NIF cell-loader path leaves billboard wiring to a follow-up —
-        // imported.nodes here represent the whole scene graph, not the
-        // placement root, so we'd need a "which node corresponds to the
-        // REFR placement" heuristic. Tracked alongside #994.
-        placement_root_billboard: None,
-        speedtree_wind: None,
-        // #1214 / D1-NEW-03 — surface the BSXFlags bits on the cache
-        // entry so the spawn site can attach a `BSXFlags` ECS row on
-        // the placement root. Bit 5 rides through as marker-presence /
-        // MultiBound metadata; the walker has already culled individual
-        // editor-marker children without discarding their real siblings.
-        bsx_flags: bsx,
-        behavior_graph_file,
-        graph_nodes,
-        phantom_bounds,
-        // #1235 / LC-D1-NEW-01 — root-node NiAVObject.flags for
-        // placement-root SceneFlags parity with the loose-NIF loader.
-        root_flags,
-        attach_light_offset,
-        projectile_offset,
-        attach_points,
-        child_attach_connections,
-        furniture,
-        pre_merge_materials,
-    }))
+    Some(Arc::new(cached))
 }
 
 /// Candidate directories a bare `TREE.ICON` filename resolves against, in

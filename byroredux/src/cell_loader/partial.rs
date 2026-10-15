@@ -15,7 +15,6 @@ use std::sync::Arc;
 use crate::asset_provider::MaterialProvider;
 
 use super::nif_import_registry::{canonical_model_path_key, CachedNifImport, NifImportRegistry};
-use super::references::furniture_component;
 
 pub(crate) fn finish_partial_import(
     world: &mut World,
@@ -94,9 +93,6 @@ pub(crate) fn finish_partial_import(
         return;
     }
 
-    let collision_authoring =
-        byroredux_nif::import::collision::summarize_collision_authoring(&scene);
-
     let mut meshes = {
         let mut pool = world.resource_mut::<byroredux_core::string::StringPool>();
         reintern_imported_meshes(&mut meshes, &worker_pool, &mut pool);
@@ -126,76 +122,29 @@ pub(crate) fn finish_partial_import(
         clip_reg.add(clip)
     });
 
-    // The model's `AttachLight` anchor, computed the same way the
-    // synchronous `parse_and_import_nif` path does. #3074: the stated
-    // blocker for leaving this `None` here was that the helper needs
-    // `&ImportedScene` — false, it takes `&NifScene`, which `scene`
-    // (destructured above) already is.
-    let attach_light_offset = byroredux_nif::import::find_attach_light_offset(&scene);
-    let projectile_offset = byroredux_nif::import::find_projectile_node_offset(&scene);
-
-    // M41.5 Phase B — lift `BSFurnitureMarker` sit/sleep/lean positions
-    // to the `Furniture` ECS component, mirroring the synchronous path
-    // (`references/import.rs`). #3072: this used to hardcode `None`,
-    // citing the same (false) blocker as `attach_light_offset` above —
-    // `scene` is a `&NifScene` here too.
-    let furniture = {
-        let markers = byroredux_nif::import::extract_furniture_markers(&scene);
-        if markers.is_empty() {
-            None
-        } else {
-            Some(furniture_component(&markers))
-        }
-    };
-
-    // M47.2 — an animated prop keeps its NiNode tree (see `graph_nodes`).
-    let behavior_graph_file: Option<Arc<str>> =
-        byroredux_nif::import::extract_behavior_graph_file(&scene).map(Into::into);
-    let graph_nodes = behavior_graph_file.as_ref().and_then(|_| {
-        super::graph_nodes::build(&scene, &meshes, &collisions, &mut byroredux_core::string::StringPool::new())
-    });
-    let graph_sequences = if behavior_graph_file.is_some() { byroredux_nif::anim::import_kf(&scene) } else { Vec::new() };
-    let cached = Arc::new(CachedNifImport {
+    let satellites = super::nif_import_registry::scene_satellites(&scene, &meshes, &collisions);
+    let cached = Arc::new(CachedNifImport::from_scene(
         meshes,
-        beam_volumes: Default::default(),
-        geometry_dedup: Vec::new(),
         collisions,
-        collision_authoring,
         lights,
         particle_emitters,
         embedded_clip,
-        graph_sequences,
-        // Partial NIFs are decoded from streamed bytes — no SpeedTree
-        // placeholder path runs through here, so no billboard mode.
-        placement_root_billboard: None,
-        speedtree_wind: None,
         // #1214 / #3036 — BSXFlags surfaced from the streaming partial.
         // Bit 5 means marker children are present on classic content (and
         // MultiBound metadata on later content), never that the whole NIF
         // is a marker. The shared walker culls marker children individually.
-        bsx_flags: bsx,
-        behavior_graph_file,
-        graph_nodes,
-        phantom_bounds: byroredux_nif::import::collision::extract_phantom_bounds(&scene),
+        bsx,
         // #1235 / LC-D1-NEW-01 — root NiAVObject.flags surfaced from
         // the streaming partial for placement-root SceneFlags parity.
         root_flags,
-        attach_light_offset,
-        projectile_offset,
-        // #1594 — the streaming-partial path keeps the FO4+ weapon-mod
-        // attach graph `None`; the sync `parse_and_import_nif` path
-        // materializes it. Unlike `attach_light_offset` / `furniture`
-        // above (#3072 / #3074, both blocked on nothing — the data was
-        // sitting in `scene` the whole time), this one is a deliberate
-        // scope decision: cell-streamed REFRs are architecture / clutter,
-        // not modular weapons, so this is a near-zero-loss follow-up
-        // rather than a bug.
-        attach_points: None,
-        child_attach_connections: None,
-        furniture,
+        satellites,
         pre_merge_materials,
-    });
-
+    ));
+    // #1594 — the FO4+ weapon-mod attach graph stays `None` on the
+    // streaming partial (a deliberate scope decision, unlike the
+    // #3072/#3074 satellites, which now extract in the shared
+    // `scene_satellites`): cell-streamed REFRs are architecture /
+    // clutter, not modular weapons.
     insert_cached_import(world, cache_key, cached, clip_handle);
 }
 
