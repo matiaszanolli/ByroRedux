@@ -415,6 +415,68 @@ impl Default for WaterParams {
     }
 }
 
+
+/// #5796 — the per-game layout of the legacy `WATR` head every pre-FO4
+/// decoder shares: the fog pair's float offsets and the byte-colour
+/// block's base differ per carrier, and so does the authored policy for
+/// the degrees field at offset 4 (#4931 — Oblivion genuinely varies it,
+/// the others gate on the legacy dead-default rule).
+struct HeadLayout {
+    fog_near: usize,
+    colors: usize,
+    wind_direction_authored: fn(f32) -> bool,
+}
+
+/// The shared legacy head: wind speed (0), wind direction in degrees (4,
+/// #3144), wave amplitude (8) / frequency (12), sun specular power (16),
+/// reflectivity (20), Fresnel (24), the fog pair at `layout.fog_near`
+/// (+4), and the shallow/deep/reflection byte colours at
+/// `layout.colors` (+4 each). Every read is finite-filtered
+/// (`read_f32_at`), short buffers leave canonical defaults, and the
+/// clamps (`specular 1..=2048`, `reflectivity/fresnel 0..=1`,
+/// `fog_far > fog_near`) are spelled once — each of #3105, #3107, #3144,
+/// #3146 and #4931 had to be hand-applied to N copies of exactly this
+/// block.
+fn decode_legacy_head(p: &mut WaterParams, data: &[u8], layout: &HeadLayout) {
+    if let Some(value) = read_f32_at(data, 0) {
+        p.wind_speed = value;
+    }
+    if let Some(degrees) = read_f32_at(data, 4) {
+        p.wind_direction = degrees.to_radians();
+        p.wind_direction_authored = (layout.wind_direction_authored)(degrees);
+    }
+    if let Some(value) = read_f32_at(data, 8) {
+        p.wave_amplitude = value;
+    }
+    if let Some(value) = read_f32_at(data, 12) {
+        p.wave_frequency = value;
+    }
+    if let Some(value) = read_f32_at(data, 16) {
+        p.sun_specular_power = value.clamp(1.0, 2048.0);
+    }
+    if let Some(value) = read_f32_at(data, 20) {
+        p.reflectivity = value.clamp(0.0, 1.0);
+    }
+    if let Some(value) = read_f32_at(data, 24) {
+        p.fresnel = value.clamp(0.0, 1.0);
+    }
+    if let Some(value) = read_f32_at(data, layout.fog_near) {
+        p.fog_near = value.max(0.0);
+    }
+    if let Some(value) = read_f32_at(data, layout.fog_near + 4) {
+        p.fog_far = value.max(p.fog_near + 1.0);
+    }
+    for (dst, offset) in [
+        (&mut p.shallow_color, layout.colors),
+        (&mut p.deep_color, layout.colors + 4),
+        (&mut p.reflection_color, layout.colors + 8),
+    ] {
+        if let Some(color) = read_rgb_at(data, offset) {
+            *dst = color;
+        }
+    }
+}
+
 /// Decode an 8-bit unsigned colour component into the engine's
 /// linear-RGB working space. Gamebryo colours are raw monitor-space
 /// floats — no sRGB curve to invert (see [`feedback_color_space`]).
@@ -497,64 +559,24 @@ fn decode_data(data: &[u8]) -> WaterParams {
 /// here too, structurally unreachable behind the `len >= 186` delegation
 /// above and assigning offsets that contradicted the long decoder for the
 /// same fields (#3146).
+///
+/// #5796 — the head itself now lives in [`decode_legacy_head`]; this
+/// decoder only states the short layout.
 fn decode_data_short(data: &[u8]) -> WaterParams {
     let mut p = WaterParams::default();
-    let mut r = SubReader::new(data);
-    if let Ok(v) = r.f32_finite() {
-        p.wind_speed = v;
-    }
-    if let Ok(v) = r.f32_finite() {
-        // Degrees on the wire (#3144) — see `WaterParams::wind_direction`.
-        p.wind_direction = v.to_radians();
-        p.wind_direction_authored = legacy_wind_direction_authored(v);
-    }
-    if let Ok(v) = r.f32_finite() {
-        p.wave_amplitude = v;
-    }
-    if let Ok(v) = r.f32_finite() {
-        p.wave_frequency = v;
-    }
-    if let Ok(v) = r.f32_finite() {
-        p.sun_specular_power = v.clamp(1.0, 2048.0);
-    }
-    if let Ok(v) = r.f32_finite() {
-        p.reflectivity = v.clamp(0.0, 1.0);
-    }
-    if let Ok(v) = r.f32_finite() {
-        p.fresnel = v.clamp(0.0, 1.0);
-    }
-    if let Ok(v) = r.f32_finite() {
-        p.fog_near = v.max(0.0);
-    }
-    if let Ok(v) = r.f32_finite() {
-        p.fog_far = v.max(p.fog_near + 1.0);
-    }
-    // The colour block starts at 36 here. The 186-byte FO3/FNV record has an
-    // extra fog-distance f32 at offset 36 that shifts it to 40 (#1778), but
-    // that record never reaches this function — `decode_data` delegates it —
-    // so the base is a constant, not a per-game branch (#3146).
-    const COLOR_BASE: usize = 36;
-    if data.len() >= COLOR_BASE + 4 {
-        p.shallow_color = [
-            u8_to_linear(data[COLOR_BASE]),
-            u8_to_linear(data[COLOR_BASE + 1]),
-            u8_to_linear(data[COLOR_BASE + 2]),
-        ];
-    }
-    if data.len() >= COLOR_BASE + 8 {
-        p.deep_color = [
-            u8_to_linear(data[COLOR_BASE + 4]),
-            u8_to_linear(data[COLOR_BASE + 5]),
-            u8_to_linear(data[COLOR_BASE + 6]),
-        ];
-    }
-    if data.len() >= COLOR_BASE + 12 {
-        p.reflection_color = [
-            u8_to_linear(data[COLOR_BASE + 8]),
-            u8_to_linear(data[COLOR_BASE + 9]),
-            u8_to_linear(data[COLOR_BASE + 10]),
-        ];
-    }
+    // The colour block starts at 36 here (fog pair at 28/32 — seven head
+    // floats, no gap). The 186-byte FO3/FNV record has an extra fog-distance
+    // f32 that shifts both (+4), but that record never reaches this function
+    // — `decode_data` delegates it (#3146).
+    decode_legacy_head(
+        &mut p,
+        data,
+        &HeadLayout {
+            fog_near: 28,
+            colors: 36,
+            wind_direction_authored: legacy_wind_direction_authored,
+        },
+    );
     p
 }
 
@@ -569,54 +591,27 @@ fn decode_data_short(data: &[u8]) -> WaterParams {
 /// size/falloff/dampener controls for canonical ripple motion when present.
 fn decode_data_oblivion(data: &[u8]) -> WaterParams {
     let mut p = WaterParams::default();
-    for (dst, offset) in [
-        (&mut p.wind_speed, 0usize),
-        (&mut p.wave_amplitude, 8usize),
-        (&mut p.wave_frequency, 12usize),
-    ] {
-        if let Some(value) = read_f32_at(data, offset) {
-            *dst = value;
-        }
-    }
-    // Degrees on the wire (#3144) — see `WaterParams::wind_direction`. Lifted
-    // out of the bare copy loop above because it is the one field in the
-    // prefix that needs a unit conversion.
-    if let Some(degrees) = read_f32_at(data, 4) {
-        p.wind_direction = degrees.to_radians();
-        // #4931 — Oblivion genuinely varies this field (0° included), so
-        // presence is authorship; no dead-default rule on this arm.
-        p.wind_direction_authored = degrees.is_finite();
-    }
-    if let Some(value) = read_f32_at(data, 16) {
-        p.sun_specular_power = value.clamp(1.0, 2048.0);
-    }
-    if let Some(value) = read_f32_at(data, 20) {
-        p.reflectivity = value.clamp(0.0, 1.0);
-    }
-    if let Some(value) = read_f32_at(data, 24) {
-        p.fresnel = value.clamp(0.0, 1.0);
-    }
+    decode_legacy_head(
+        &mut p,
+        data,
+        &HeadLayout {
+            // TES4 inserts its two scroll-speed floats at 28/32, pushing the
+            // fog pair to 36/40 and the colours to 44.
+            fog_near: 36,
+            colors: 44,
+            // #4931 — Oblivion genuinely varies the degrees field (0°
+            // included), so presence is authorship; no dead-default rule on
+            // this arm (`read_f32_at` is finite-filtered, so presence
+            // implies finite).
+            wind_direction_authored: |_| true,
+        },
+    );
     // TES4 stores the editor's scroll speeds independently of the wind
     // direction. Preserve them as the first two visual normal-layer vectors.
     if let (Some(x), Some(y)) = (read_f32_at(data, 28), read_f32_at(data, 32)) {
         if x.is_finite() && y.is_finite() {
             p.noise_wind_speeds[0] = (x * x + y * y).sqrt();
             p.noise_wind_directions[0] = y.atan2(x);
-        }
-    }
-    if let Some(value) = read_f32_at(data, 36) {
-        p.fog_near = value.max(0.0);
-    }
-    if let Some(value) = read_f32_at(data, 40) {
-        p.fog_far = value.max(p.fog_near + 1.0);
-    }
-    for (dst, offset) in [
-        (&mut p.shallow_color, 44usize),
-        (&mut p.deep_color, 48usize),
-        (&mut p.reflection_color, 52usize),
-    ] {
-        if let Some(color) = read_rgb_at(data, offset) {
-            *dst = color;
         }
     }
     // The complete displacement simulator ends at byte 100. Oblivion's
@@ -680,43 +675,17 @@ fn decode_data_oblivion(data: &[u8]) -> WaterParams {
 /// tail entries when those bytes are present.
 fn decode_data_fo3nv(data: &[u8]) -> WaterParams {
     let mut p = WaterParams::default();
-    for (dst, offset) in [
-        (&mut p.wind_speed, 0usize),
-        (&mut p.wave_amplitude, 8usize),
-        (&mut p.wave_frequency, 12usize),
-    ] {
-        if let Some(value) = read_f32_at(data, offset).filter(|value| value.is_finite()) {
-            *dst = value;
-        }
-    }
-    if let Some(degrees) = read_f32_at(data, 4).filter(|value| value.is_finite()) {
-        p.wind_direction = degrees.to_radians();
-        p.wind_direction_authored = legacy_wind_direction_authored(degrees);
-    }
-    if let Some(value) = read_f32_at(data, 16) {
-        p.sun_specular_power = value.clamp(1.0, 2048.0);
-    }
-    if let Some(value) = read_f32_at(data, 20) {
-        p.reflectivity = value.clamp(0.0, 1.0);
-    }
-    if let Some(value) = read_f32_at(data, 24) {
-        p.fresnel = value.clamp(0.0, 1.0);
-    }
-    if let Some(value) = read_f32_at(data, 32) {
-        p.fog_near = value.max(0.0);
-    }
-    if let Some(value) = read_f32_at(data, 36) {
-        p.fog_far = value.max(p.fog_near + 1.0);
-    }
-    for (dst, offset) in [
-        (&mut p.shallow_color, 40usize),
-        (&mut p.deep_color, 44usize),
-        (&mut p.reflection_color, 48usize),
-    ] {
-        if let Some(color) = read_rgb_at(data, offset) {
-            *dst = color;
-        }
-    }
+    // The 186-byte layout: an unnamed float at 28 sits between Fresnel and
+    // the fog pair (32/36), shifting the RGBA colours to 40/44/48 (#1778).
+    decode_legacy_head(
+        &mut p,
+        data,
+        &HeadLayout {
+            fog_near: 32,
+            colors: 40,
+            wind_direction_authored: legacy_wind_direction_authored,
+        },
+    );
     apply_fo3nv_tail(&mut p, data);
     p
 }
@@ -863,68 +832,26 @@ fn apply_fo3nv_tail(p: &mut WaterParams, data: &[u8]) {
 /// every field falls back to its canonical default.
 fn decode_dnam_pre_fo4(data: &[u8]) -> WaterParams {
     let mut p = WaterParams::default();
-    // xEdit's TES5 definition starts the shared wind/wave prefix at byte 0.
-    // An unnamed float at byte 28 (between Fresnel and fog-near), not a
-    // leading version word, is what shifts the colour block to byte 40.
     if data.len() < 52 {
         return p;
     }
-    let mut r = SubReader::new(data);
-    if let Ok(v) = r.f32_finite() {
-        p.wind_speed = v;
-    }
-    if let Ok(v) = r.f32_finite() {
-        // Degrees on the wire (#3144) — see `WaterParams::wind_direction`.
-        // Skyrim overwrites this in `apply_skyrim_dnam_tail` from the
-        // already-converted noise layer 1, so this conversion is only
-        // observable on the FO3/FNV arm and on short Skyrim fixtures.
-        p.wind_direction = v.to_radians();
-        p.wind_direction_authored = legacy_wind_direction_authored(v);
-    }
-    if let Ok(v) = r.f32_finite() {
-        p.wave_amplitude = v;
-    }
-    if let Ok(v) = r.f32_finite() {
-        p.wave_frequency = v;
-    }
-    if let Ok(v) = r.f32_finite() {
-        p.sun_specular_power = v.clamp(1.0, 2048.0);
-    }
-    if let Ok(v) = r.f32_finite() {
-        p.reflectivity = v.clamp(0.0, 1.0);
-    }
-    if let Ok(v) = r.f32_finite() {
-        p.fresnel = v.clamp(0.0, 1.0);
-    }
-    // Unnamed/unused float at 28..32 in the TES5 record definition.
-    r.skip_or_eof(4);
-    if let Ok(v) = r.f32_finite() {
-        p.fog_near = v.max(0.0);
-    }
-    if let Ok(v) = r.f32_finite() {
-        p.fog_far = v.max(p.fog_near + 1.0);
-    }
-    if data.len() >= 44 {
-        p.shallow_color = [
-            u8_to_linear(data[40]),
-            u8_to_linear(data[41]),
-            u8_to_linear(data[42]),
-        ];
-    }
-    if data.len() >= 48 {
-        p.deep_color = [
-            u8_to_linear(data[44]),
-            u8_to_linear(data[45]),
-            u8_to_linear(data[46]),
-        ];
-    }
-    if data.len() >= 52 {
-        p.reflection_color = [
-            u8_to_linear(data[48]),
-            u8_to_linear(data[49]),
-            u8_to_linear(data[50]),
-        ];
-    }
+    // xEdit's TES5 definition starts the shared wind/wave prefix at byte 0.
+    // An unnamed float at byte 28 (between Fresnel and fog-near), not a
+    // leading version word, is what shifts the fog pair to 32/36 and the
+    // colour block to byte 40.
+    decode_legacy_head(
+        &mut p,
+        data,
+        &HeadLayout {
+            fog_near: 32,
+            colors: 40,
+            // Degrees on the wire (#3144). Skyrim overwrites this in
+            // `apply_skyrim_dnam_tail` from the already-converted noise
+            // layer 1, so this conversion is only observable on the FO3/FNV
+            // arm and on short Skyrim fixtures.
+            wind_direction_authored: legacy_wind_direction_authored,
+        },
+    );
     p
 }
 
@@ -1576,6 +1503,94 @@ pub fn watr_to_params(record: &WatrRecord) -> WaterParams {
 mod tests {
     use super::*;
     use crate::esm::records::test_support::sub;
+
+
+    /// #5796 — the four legacy decoders route their shared head through
+    /// `decode_legacy_head`; this pins that every layout decodes the same
+    /// field pipeline, with only the fog pair's and colour block's offsets
+    /// (and Oblivion's always-authored direction rule, #4931) differing.
+    /// A field added to the head lands on all games at once — the property
+    /// whose absence made #3105/#3107/#3144/#3146/#4931 per-copy fixes.
+    #[test]
+    fn legacy_head_decodes_every_layout_through_one_pipeline() {
+        let layouts = [
+            (
+                "short (28/36)",
+                HeadLayout {
+                    fog_near: 28,
+                    colors: 36,
+                    wind_direction_authored: legacy_wind_direction_authored,
+                },
+                false,
+            ),
+            (
+                "oblivion (36/44)",
+                HeadLayout {
+                    fog_near: 36,
+                    colors: 44,
+                    wind_direction_authored: |_| true,
+                },
+                true,
+            ),
+            (
+                "fo3nv + dnam (32/40)",
+                HeadLayout {
+                    fog_near: 32,
+                    colors: 40,
+                    wind_direction_authored: legacy_wind_direction_authored,
+                },
+                false,
+            ),
+        ];
+        for (name, layout, authored) in layouts {
+            let mut data = vec![0u8; 56];
+            let put = |data: &mut Vec<u8>, off: usize, v: f32| {
+                data[off..off + 4].copy_from_slice(&v.to_le_bytes());
+            };
+            put(&mut data, 0, 3.5);
+            put(&mut data, 4, 90.0);
+            put(&mut data, 8, 0.25);
+            put(&mut data, 12, 1.5);
+            put(&mut data, 16, 512.0);
+            put(&mut data, 20, 0.4);
+            put(&mut data, 24, 0.6);
+            put(&mut data, layout.fog_near, 120.0);
+            put(&mut data, layout.fog_near + 4, 340.0);
+            for (delta, rgb) in [(0usize, [200u8, 150, 100]), (4, [90, 60, 30]), (8, [10, 10, 60])] {
+                data[layout.colors + delta..layout.colors + delta + 3].copy_from_slice(&rgb);
+            }
+            let mut p = WaterParams::default();
+            decode_legacy_head(&mut p, &data, &layout);
+            assert_eq!(p.wind_speed, 3.5, "{name}");
+            assert!(
+                (p.wind_direction - std::f32::consts::FRAC_PI_2).abs() < 1e-6,
+                "{name}: degrees convert to radians (#3144)"
+            );
+            assert_eq!(p.wind_direction_authored, authored, "{name}: #4931 policy");
+            assert_eq!(p.wave_amplitude, 0.25, "{name}");
+            assert_eq!(p.wave_frequency, 1.5, "{name}");
+            assert_eq!(p.sun_specular_power, 512.0, "{name}");
+            assert_eq!(p.reflectivity, 0.4, "{name}");
+            assert_eq!(p.fresnel, 0.6, "{name}");
+            assert_eq!(p.fog_near, 120.0, "{name}");
+            assert_eq!(p.fog_far, 340.0, "{name}");
+            assert_eq!(
+                p.shallow_color,
+                [u8_to_linear(200), u8_to_linear(150), u8_to_linear(100)],
+                "{name}"
+            );
+            assert_eq!(
+                p.deep_color,
+                [u8_to_linear(90), u8_to_linear(60), u8_to_linear(30)],
+                "{name}"
+            );
+            assert_eq!(
+                p.reflection_color,
+                [u8_to_linear(10), u8_to_linear(10), u8_to_linear(60)],
+                "{name}"
+            );
+        }
+    }
 
     #[test]
     fn parse_watr_picks_edid_full_nnam() {
