@@ -30,7 +30,6 @@ pub mod mesh;
 pub mod name;
 pub mod particle;
 pub mod patrol;
-pub mod perk_list;
 pub mod physics_source;
 pub mod precombine;
 pub mod render_layer;
@@ -92,7 +91,6 @@ pub use particle::{
     EmitterShape, ParticleEmitter, ParticleForceField, ParticleSoA, MAX_PARTICLES_CEILING,
 };
 pub use patrol::{PatrolBehavior, PatrolState};
-pub use perk_list::PerkList;
 pub use physics_source::PhysicsSourceForm;
 pub use precombine::PrecombinedMesh;
 pub use render_layer::{

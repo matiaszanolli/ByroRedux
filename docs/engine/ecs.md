@@ -535,7 +535,7 @@ one module per domain (see `components/mod.rs`). Grouped by domain:
 | Volumetrics / water | `FogVolume` (+ `FogBounds`, `FogShape`, `FogSource`) for clustered authored local media in the froxel driver; `WaterPlane`, `WaterVolume`, `WaterMaterial`, `WaterFlow`, `WaterKind`, `SubmersionState` (M38) |
 | Skinning | `SkinnedMesh` (+ `MAX_BONES_PER_MESH`) — GPU pre-skinning bone palette / weights / partition data (M29) |
 | Particles | `ParticleEmitter`, `ParticleSoA`, `ParticleForceField`, `EmitterShape` |
-| Attach points | `AttachPoint`, `AttachPoints`, `ChildAttachConnections` (BSConnectPoint, #985) |
+| Attach points | `AttachPoint`, `AttachPoints`, `ChildAttachConnections` (BSConnectPoint, #985) — imported and stamped but **unconsumed**: the FO4 OMOD equip reader does not exist yet |
 | Inventory | `Inventory`, `InventoryIndex`, `ItemStack`, `ItemInstanceId`, `EquipmentSlots`, `MAX_BIPED_SLOTS` |
 | Animation outputs | `AnimatedVisibility`, `AnimatedAlpha`, `AnimatedDiffuseColor`, `AnimatedAmbientColor`, `AnimatedSpecularColor`, `AnimatedEmissiveColor`, `AnimatedShaderColor`, `AnimatedShaderFloat`, `AnimatedUvTransform`, `AnimatedMorphWeights` |
 | Physics | `CollisionShape`, `MotionType`, `RigidBodyData` (`collision`) — Havok-derived shape + motion class (`MotionType::CharacterKinematic` is one variant). The Rapier-backed runtime lives in the `byroredux-physics` crate (`ContactConfig`, `CharacterController`); the ECS-facing component data stays in `core`. |

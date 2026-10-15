@@ -1,9 +1,9 @@
 //! Inventory + equipment ECS components.
 //!
-//! Architectural model (settled 2026-05-07): base records live in
-//! [`DataStore`](../../../../../../crates/plugin/src/datastore.rs) as a
-//! Resource keyed by `FormId`. Per-instance state, where it diverges
-//! from the base record, lives in
+//! Architectural model (settled 2026-05-07): base records live in the
+//! loaded `EsmIndex` (the Redux-native `DataStore` layer it was first
+//! sketched against has no production caller, #5609). Per-instance
+//! state, where it diverges from the base record, lives in
 //! [`ItemInstancePool`](crate::ecs::resources::ItemInstancePool). The
 //! `Inventory` Component on each container / actor / world ref carries
 //! the actual stack list.

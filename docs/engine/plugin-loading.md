@@ -6,6 +6,14 @@ lives in [`crates/plugin/`](../../crates/plugin/).
 
 ---
 
+> **Status (#5609): the manifest → `DataStore` → `DependencyResolver`
+> pipeline this doc describes has no production caller. The live path is
+> `parse_esm_with_load_order` + `FormIdRemap`/`GlobalSlot`
+> (`byroredux/src/cell_loader/load_order.rs`); this document describes
+> the designed Redux-native layer, kept as the surface a future loader
+> grows into (ROADMAP's Owed list tracks it).**
+
+
 ## Overview
 
 ```

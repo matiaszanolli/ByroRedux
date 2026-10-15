@@ -129,10 +129,8 @@ impl Perks {
         true
     }
 
-    /// Revoke a perk if held. Returns `true` when removed. Mirrors
-    /// [`crate::ecs::components::PerkList::remove`] (#2944) — the
-    /// ECS-level "does this actor hold perk X" list has one; this
-    /// rank-tracking component didn't.
+    /// Revoke a perk if held. Returns `true` when removed (#2944's
+    /// shape: the caller distinguishes held from absent).
     pub fn remove(&mut self, perk_form_id: u32) -> bool {
         if let Some(i) = self
             .entries
@@ -343,8 +341,7 @@ mod tests {
         assert_eq!(p.rank(0x100), 5);
     }
 
-    /// #2944 — mirrors `PerkList::remove`'s shape: `true` iff something was
-    /// actually removed.
+    /// #2944 — `true` iff something was actually removed.
     #[test]
     fn remove_reports_whether_held() {
         let mut p = Perks::default();

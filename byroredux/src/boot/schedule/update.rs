@@ -607,6 +607,13 @@ pub(super) fn register_update_systems(scheduler: &mut Scheduler) {
     // PostUpdate transform pass propagates the chain through actor skeletons.
     scheduler.add_exclusive(Stage::Update, crate::systems::vehicle_attachment_system);
     scheduler.add_exclusive(Stage::Update, dlc2_ttr4a_on_init_dispatch);
+    // #5842 — the demo dispatchers below (dlc2_ttr4a, mg07) and
+    // `recurring_update_tick_system` run every frame with nothing to do
+    // in production: nothing spawns their components (they are test
+    // surface / living evidence per scripting.md's R5 section), and no
+    // recognizer emits `RecurringUpdate`. They stay scheduler-wired so
+    // the demos' fixture tests drive the real schedule shape.
+    //
     // `recurring_update_tick_system` ticks `RecurringUpdate` and emits
     // `OnUpdateEvent`. It sits between the demo's OnInit (which
     // subscribes via `RegisterForUpdate`) and its OnUpdate consumer so

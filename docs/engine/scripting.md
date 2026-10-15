@@ -113,8 +113,8 @@ scripting systems in this order:
 
 1. **Tick systems** (Update stage): `timer_tick_system`,
    `recurring_update_tick_system` count down their components and emit
-   `TimerExpired` / `OnUpdateEvent` markers. (Only the `RecurringUpdate`
-   half has producers today — see [Timers and recurring
+   `TimerExpired` / `OnUpdateEvent` markers. (Both halves are dormant in
+   production — see [Timers and recurring
    updates](#timers-and-recurring-updates); the M47.2 VM's update
    registrations tick in `script_update_system` instead.)
 2. **Handler systems** (exclusive, Update stage): the `papyrus_demo` dispatchers
@@ -1016,7 +1016,8 @@ Not modelled yet:
 
 `crates/scripting/src/fragment/updates.rs` implements the CK's *RegisterForUpdate -
 Form* family for scripts the VM runs. The older `RecurringUpdate` component
-above serves only the hand-written recognizer path.
+above is dormant: no recognizer emits it, and its only writer is the
+unspawned `dlc2_ttr4a` demo.
 - `RegisterForUpdate(s)` is periodic, and `RegisterForSingleUpdate(s)` fires once.
   Each replaces the script's earlier registration of its own kind; the two kinds
   don't interfere.
@@ -2500,14 +2501,15 @@ watch.)
 ### Mechanism 3: Timer/Condition Components (scheduled events)
 
 Components with countdown or condition data, checked by systems each tick.
-Covers ~15 events. `RecurringUpdate` is **shipped** (the recognizer path);
-the Papyrus timer events ship through the update-registration registry
-(§[Update registrations](#update-registrations-m472)). The rest are planned.
+Covers ~15 events. The Papyrus timer events ship through the
+update-registration registry (§[Update
+registrations](#update-registrations-m472)); `RecurringUpdate` is dormant
+(only the unspawned `dlc2_ttr4a` demo writes it). The rest are planned.
 
 | Papyrus Event | Component | System Behavior |
 |---|---|---|
 | `OnTimer(aiTimerID)` | `UpdateRegistration { timer: Some(id) }` ✓ shipped | `script_update_system` delivers `OnTimer` when due; the dormant `ScriptTimer`/`TimerExpired` pair is not on this path (#5608) |
-| `OnUpdate` (`RegisterForUpdate`) | `RecurringUpdate { interval_secs, seconds_until_next }` ✓ shipped (recognizer path); `UpdateRegistration` ✓ shipped (VM path) | Tick, fire `OnUpdateEvent` / deliver `OnUpdate`, re-arm |
+| `OnUpdate` (`RegisterForUpdate`) | `UpdateRegistration` ✓ shipped (the M47.2 VM path); `RecurringUpdate` dormant (only the unspawned `dlc2_ttr4a` demo writes it) | Tick, fire `OnUpdateEvent` / deliver `OnUpdate`, re-arm |
 | `OnTimerGameTime` | `UpdateRegistration { clock: GameTime, timer }` ✓ shipped | Game-hours due check in `script_update_system` |
 | `OnDistanceLessThan` / `GreaterThan` | `DistanceWatch { target, threshold }` (planned) | Check distance each frame |
 | `OnGainLOS` / `OnLostLOS` | `LOSWatch { target, had_los }` (planned) | Raycast check |

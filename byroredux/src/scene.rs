@@ -1287,7 +1287,7 @@ fn spawn_player_body(
     // Build the global geometry SSBO for RT reflection ray UV lookups.
     // StagingPool reuse lives on `MeshRegistry.geometry_staging_pool` —
     // lazy-init on first call, reused across cell loads + frame-loop
-    // rebuilds. Closes the #242 consumer-side TODO (#1055).
+    // rebuilds. Closes #242's consumer side (#1055).
     if let Err(e) = ctx.mesh_registry.build_geometry_ssbo(
         &ctx.device,
         ctx.allocator.as_ref().unwrap(),

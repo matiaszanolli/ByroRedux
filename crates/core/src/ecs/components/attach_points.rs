@@ -11,12 +11,20 @@
 //!   `CON_Grip` attach points via `BSConnectPoint::Parents`.
 //! - A reflex-sight accessory mesh references `CON_Scope` via
 //!   `BSConnectPoint::Children`.
-//! - The equip system composes the world transform as
+//! - A future equip system will compose the world transform as
 //!   `parent_world * attach_point.local_transform * accessory.local`.
 //!
 //! Without the graph reaching the ECS, every modular FO4 weapon imports
 //! as a base mesh with no discoverable attach surface — the weapon-mod
 //! system can't function. See #985 / NIF-D5-ORPHAN-A3.
+//!
+//! **No consumer yet** (#5843): #985/#1594 landed only the import → ECS
+//! half — the NIF extractors, the `CachedNifImport` fields and the
+//! spawn-time stamp. No system queries either component; FO4 OMOD-driven
+//! weapon-mod assembly (the reader) is unimplemented, so both are inert
+//! write-once data on every modular-weapon placement until it lands.
+//! The save ledger already records them as write-once with no runtime
+//! mutator (`registry_completeness_tests.rs`).
 //!
 //! Both components are `SparseSetStorage` because only modular items
 //! carry them (a tiny fraction of entities).

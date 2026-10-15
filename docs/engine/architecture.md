@@ -280,7 +280,7 @@ Where each major capability lives:
 | Form IDs and plugin identity | `core` | [crates/core/src/form_id.rs](../../crates/core/src/form_id.rs) |
 | Animation engine (clips, players, blending, controllers) | `core` | [crates/core/src/animation/](../../crates/core/src/animation/) |
 | String interning | `core` | [crates/core/src/string/](../../crates/core/src/string/) |
-| Plugin manifests + DataStore | `plugin` | [crates/plugin/src/](../../crates/plugin/src/) |
+| Plugin manifests + DataStore (designed, no production caller — #5609) | `plugin` | [crates/plugin/src/](../../crates/plugin/src/) |
 | ESM cell + record parsing | `plugin` | [crates/plugin/src/esm/](../../crates/plugin/src/esm/) |
 | NIF binary parser | `nif` | [crates/nif/src/blocks/](../../crates/nif/src/blocks/) |
 | NIF→ECS scene import (NIFAL) | `nif` | [crates/nif/src/import/](../../crates/nif/src/import/) |

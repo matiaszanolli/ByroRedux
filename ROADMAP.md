@@ -93,6 +93,9 @@ top-of-frame all-slots fence wait that dominates GPU-bound frames
   Skyrim/FO4 `hudmenu.swf` via `--hud` (M48.4–M48.7).
 
 **What doesn't work yet.**
+- Redux-native plugin loading: the manifest → `DataStore` →
+  `DependencyResolver` layer (`crates/plugin`) has no production caller —
+  the live path is `parse_esm_with_load_order` (#5609).
 - AI beyond locomotion: 7 of ~17 package procedures need subsystems that do
   not exist (item use, package combat, magic). NAVM pathfinding
   covers the five pre-FO4 games including cross-tile joins (#3802); FO4's

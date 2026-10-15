@@ -570,7 +570,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("OneShotSound", "one-frame dispatch marker removed immediately after audio playback begins"),
         ("SoundCache", "decoded audio asset cache repopulated on demand"),
         ("VoiceSoundCache", "byte-budgeted voice decode LRU (#5382) — decodes repopulate on demand and eviction resets recency, neither of which a save should freeze"),
-        ("DataStore", "immutable resolved plugin-record database rebuilt from manifests/plugins at boot"),
+        ("DataStore", "defined, never inserted: the Redux-native manifest/DataStore loader has no production caller (#5609)"),
         // ── crates/core/src/ecs/components/ ─────────────────────────
         ("ActiveCamera", "set once at scene/cell setup (scene.rs), no gameplay mutator reassigns it"),
         ("AnimatedAlpha", "per-frame output re-derived every tick from saved AnimationPlayer/AnimationStack"),
@@ -611,7 +611,6 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("MeshHandle", "GPU MeshRegistry index, explicitly named in this file's own exclusion doc, rebuilt from the mesh path every reload"),
         ("ParticleEmitter", "per-particle simulation state (positions/velocities/ages) is purely cosmetic VFX with no gameplay/script hooks; re-seeds from static rate/shape config within under a second of reload"),
         ("PatrolBehavior", "active-package-derived config rebuilt at spawn and replaced by ambient_ai_package_system; mutable companion PatrolState is registered"),
-        ("PerkList", "zero production write sites exist anywhere (only #[cfg(test)]); do not confuse with the unrelated, already-tracked Perks character component"),
         ("PhysicsSourceForm", "write-once at bhk-shape spawn; its own doc says \"read only by diagnostics\", never mutated"),
         ("PrecombinedMesh", "write-once at precombine spawn (EX-15 / #2369), idempotent across reloads of the same cell — same category as CellRoot/RenderLayer, split out purely so world.owners can track precombine geometry as its own reclaim class"),
         ("RenderDebugControl", "operator-only renderer diagnostics and one-frame probe handoff state; deliberately resets to the default view on process start/load"),

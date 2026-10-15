@@ -176,11 +176,13 @@ impl ActorValues {
         self.values.entry(avif_form_id).or_default().set_override = value;
     }
 
-    /// Set the permanent-modifier layer outright — the `modav` counterpart
-    /// that replaces instead of adding. #5412: this is the CONSTANT-SPELL
-    /// layer; the player `SetBase` reroute no longer lands here (an
-    /// overwrite discarded every active ability bonus on the pool — see
-    /// [`Self::set_override`]).
+    /// Set the permanent-modifier layer outright — the replace-instead-of-add
+    /// counterpart of `mod_permanent`. #5412: the player `SetBase` reroute no
+    /// longer lands here (an overwrite discarded every active ability bonus
+    /// on the pool — see [`Self::set_override`]). Live caller: the condition
+    /// evaluator's ruleset composition peels the permanent layer off a
+    /// private copy for a `Base`-view read (`condition.rs`, M47.2
+    /// `GetBaseValue`).
     pub fn set_permanent(&mut self, avif_form_id: u32, value: f32) {
         self.values.entry(avif_form_id).or_default().permanent_mod = value;
     }
