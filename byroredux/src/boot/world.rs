@@ -550,7 +550,7 @@ mod ai_storage_registration_tests {
             .nth(1)
             .expect("build_world must exist in boot/world.rs");
         let build_world = after_fn
-            .split_once("#[cfg(test)]")
+            .split_once("\n#[cfg(test)]\nmod ")
             .map_or(after_fn, |(body, _)| body);
 
         // Collect the *actual* `register::<Path::To::T>()` calls and reduce

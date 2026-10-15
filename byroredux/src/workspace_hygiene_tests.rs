@@ -715,6 +715,10 @@ fn no_source_scan_cuts_with_the_weak_cfg_test_needle() {
         format!("find(\"{attr}\")"),
         format!("rfind(\"{attr}\")"),
         format!("split(\"{attr}\")"),
+        // #5824 — the bare (no leading newline) split_once was the 18-site
+        // survivor spelling: it truncates at a `#[cfg(test)] fn` / `use`
+        // too, which is the hazard the strong needle exists to avoid.
+        format!("split_once(\"{attr}\")"),
         format!("split_once(\"\\n{attr}\")"),
     ]
     .to_vec();

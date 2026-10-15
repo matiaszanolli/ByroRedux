@@ -1713,7 +1713,7 @@ mod tests {
     fn params_w_is_documented_as_the_progressive_accumulation_decision() {
         let bare = concat!("camera", "_static");
         let module = include_str!("svgf.rs");
-        let production = module.split_once("#[cfg(test)]").expect("tests follow").0;
+        let production = byroredux_core::source_scan::production_text(module);
         let upload = production
             .split_once("pub unsafe fn upload_params(")
             .expect("upload_params")
@@ -2050,9 +2050,7 @@ mod unsubmitted_dispatch_tests {
     #[test]
     fn record_post_passes_has_no_error_propagation_after_the_svgf_latch() {
         const POST_PASSES_RS: &str = include_str!("context/post_passes.rs");
-        let production = POST_PASSES_RS
-            .split_once("#[cfg(test)]")
-            .map_or(POST_PASSES_RS, |(before, _)| before);
+        let production = byroredux_core::source_scan::production_text_or_whole(POST_PASSES_RS);
         let after_svgf = production
             .split_once("self.svgf")
             .expect("record_post_passes no longer dispatches SVGF")

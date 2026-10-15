@@ -1050,8 +1050,9 @@ mod tests {
     /// world setup.
     #[test]
     fn every_animation_route_installs_the_combat_family_too() {
+        // #5824 — the strong shared cut (asserts the test module shape).
         let production = |name: &str, src: &'static str| -> &'static str {
-            src.split_once("#[cfg(test)]")
+            src.split_once("\n#[cfg(test)]\nmod ")
                 .map(|(prod, _)| prod)
                 .unwrap_or_else(|| {
                     panic!("{name} lost its `#[cfg(test)]` cut point — the meta-guard needs it")

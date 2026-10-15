@@ -1518,9 +1518,7 @@ mod tests {
     #[test]
     fn anisotropic_rationale_matches_what_the_source_formats_carry() {
         let src = include_str!("material_translate.rs");
-        let (prod, _) = src
-            .split_once("#[cfg(test)]")
-            .expect("material_translate.rs must have a test module");
+        let prod = byroredux_core::source_scan::production_text(src);
 
         // The claim: an enable bit exists, a strength scalar does not.
         assert!(

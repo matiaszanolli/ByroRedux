@@ -612,9 +612,7 @@ mod tests {
     /// as |z|.
     #[test]
     fn btr_spawner_forwards_the_authored_msn_flag_and_resolves_the_z_source() {
-        let (prod, _) = include_str!("terrain_lod_btr.rs")
-            .split_once("#[cfg(test)]")
-            .expect("terrain_lod_btr.rs must keep its test module");
+        let prod = byroredux_core::source_scan::production_text(include_str!("terrain_lod_btr.rs"));
         assert!(
             prod.contains("mesh.material.model_space_normals"),
             "the spawner must read the authored model_space_normals bit off \

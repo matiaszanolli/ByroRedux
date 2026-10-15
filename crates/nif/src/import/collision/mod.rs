@@ -786,7 +786,7 @@ mod dispatch_coverage_tests {
         // #4411 — production prefix only: `blocks/mod.rs`'s `#[cfg(test)]`
         // modules (and comments) must not be able to satisfy this scan.
         let src = include_str!("../../blocks/mod.rs");
-        let src = src.split_once("#[cfg(test)]").map(|(prod, _)| prod).unwrap_or(src);
+        let src = byroredux_core::source_scan::production_text_or_whole(src);
         let lines: Vec<&str> = src.lines().collect();
         let mut out = HashSet::new();
         for (i, line) in lines.iter().enumerate() {
@@ -830,7 +830,7 @@ mod dispatch_coverage_tests {
     /// deleted. An absent `resolve_shape_inner` yields an empty set so the
     /// guard fails loudly instead of passing vacuously.
     fn resolved_shape_structs_in(src: &str) -> HashSet<String> {
-        let src = src.split_once("#[cfg(test)]").map(|(prod, _)| prod).unwrap_or(src);
+        let src = byroredux_core::source_scan::production_text_or_whole(src);
         let Some((start, _)) = src
             .match_indices("fn resolve_shape_inner(")
             .find(|&(i, _)| i == 0 || src.as_bytes()[i - 1] == b'\n')

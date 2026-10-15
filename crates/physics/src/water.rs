@@ -1400,9 +1400,7 @@ mod tests {
     fn cpu_wave_phase_a_travels_along_dir_a_in_lockstep_with_the_shader() {
         // Scan only the production half so this test's own literals cannot
         // satisfy the scan (the established meta-guard shape).
-        let (prod, _) = include_str!("water.rs")
-            .split_once("#[cfg(test)]")
-            .expect("water.rs must keep its test module");
+        let prod = byroredux_core::source_scan::production_text(include_str!("water.rs"));
         assert!(
             prod.contains("- time_secs * frequency * rate_a * std::f32::consts::TAU"),
             "phase_a must use the −t sign so its crest travels along +dir_a \

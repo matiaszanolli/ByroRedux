@@ -466,10 +466,7 @@ mod roster_tests {
     /// evidence.
     #[test]
     fn every_ai_procedure_behavior_component_is_registered() {
-        let registrations = include_str!("registration.rs")
-            .split_once("#[cfg(test)]")
-            .expect("this file has a test module")
-            .0;
+        let registrations = byroredux_core::source_scan::production_text(include_str!("registration.rs"));
 
         let components_dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../core/src/ecs/components");
         let mut behaviors: Vec<String> = Vec::new();
@@ -514,10 +511,7 @@ mod roster_tests {
 
     #[test]
     fn requested_gameplay_components_are_registered() {
-        let registrations = include_str!("registration.rs")
-            .split_once("#[cfg(test)]")
-            .expect("this file has a test module")
-            .0;
+        let registrations = byroredux_core::source_scan::production_text(include_str!("registration.rs"));
         let requested = [
             "ActorValues",
             "ActorVitals",
@@ -559,10 +553,7 @@ mod roster_tests {
     /// `requested_gameplay_components_are_registered`.
     #[test]
     fn every_inspectable_component_is_registered() {
-        let registrations = include_str!("registration.rs")
-            .split_once("#[cfg(test)]")
-            .expect("this file has a test module")
-            .0;
+        let registrations = byroredux_core::source_scan::production_text(include_str!("registration.rs"));
 
         // Recursive walk: inspect-carrying components live in
         // `ecs/components/`, `character/`, and `animation/`, and the
@@ -644,10 +635,7 @@ mod roster_tests {
 
     #[test]
     fn debug_cli_component_counts_match_the_registry() {
-        let production = include_str!("registration.rs")
-            .split_once("#[cfg(test)]")
-            .expect("this file has a test module")
-            .0;
+        let production = byroredux_core::source_scan::production_text(include_str!("registration.rs"));
         let count = production.matches("register_component::<").count()
             + production.matches("register_faction_reputation(registry);").count();
         let docs = include_str!("../../../docs/engine/debug-cli.md");

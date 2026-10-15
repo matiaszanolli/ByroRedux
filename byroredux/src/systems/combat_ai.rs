@@ -686,7 +686,7 @@ mod tests {
             .split_once("fn npc_combat_ai_system_inner(")
             .expect("npc_combat_ai_system_inner definition")
             .1
-            .split_once("#[cfg(test)]")
+            .split_once("\n#[cfg(test)]\nmod ")
             .expect("test module marker")
             .0;
         let last_read = body.rfind("world.query::<").expect("the storage read pass");

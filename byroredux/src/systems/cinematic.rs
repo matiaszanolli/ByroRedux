@@ -2086,7 +2086,7 @@ mod tests {
             .split_once("fn scene_trigger_actor_approach_system_inner")
             .expect("scene_trigger_actor_approach_system_inner definition")
             .1
-            .split_once("#[cfg(test)]")
+            .split_once("\n#[cfg(test)]\nmod ")
             .expect("test module marker")
             .0;
         assert!(

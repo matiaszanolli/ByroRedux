@@ -262,7 +262,7 @@ mod light_dispatch_coverage_tests {
         // arm were deleted. All `#[cfg(test)]` blocks in `blocks/mod.rs` are
         // file-terminal, so the prefix is the whole production half.
         let src = include_str!("../../blocks/mod.rs");
-        let src = src.split_once("#[cfg(test)]").map(|(prod, _)| prod).unwrap_or(src);
+        let src = byroredux_core::source_scan::production_text_or_whole(src);
         let lines: Vec<&str> = src.lines().collect();
         let mut out = HashSet::new();
         for (i, line) in lines.iter().enumerate() {
@@ -315,7 +315,7 @@ mod light_dispatch_coverage_tests {
     /// to be part of the scanned text, so a comment (or a test) could mark a
     /// light resolved whose production arm was gone.
     fn resolved_light_structs_in(src: &str) -> HashSet<String> {
-        let src = src.split_once("#[cfg(test)]").map(|(prod, _)| prod).unwrap_or(src);
+        let src = byroredux_core::source_scan::production_text_or_whole(src);
         src.split("downcast_ref::<")
             .skip(1)
             .filter_map(|part| {

@@ -913,10 +913,7 @@ mod tests {
         // Scan the production half only: the negative assertions below spell
         // the forbidden casts literally, so scanning the whole file (this test
         // included) would always self-match.
-        let src = include_str!("presentation.rs")
-            .split_once("#[cfg(test)]")
-            .expect("presentation.rs must have a test module")
-            .0;
+        let src = byroredux_core::source_scan::production_text(include_str!("presentation.rs"));
         let decl = src
             .split_once("struct PresentationPushConstants {")
             .expect("PresentationPushConstants must exist")
