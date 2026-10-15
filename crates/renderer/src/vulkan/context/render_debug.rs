@@ -38,6 +38,33 @@ impl VulkanContext {
         self.render_debug_mode
     }
 
+    /// Replace the `DBG_*` bit mask at runtime (`r.dbg`), which until now
+    /// only `BYROREDUX_RENDER_DEBUG` set, at launch. Every consumer reads
+    /// the field per frame. Crossing the raw-output boundary resets temporal
+    /// history exactly as [`Self::set_render_debug_mode`] does.
+    pub fn set_render_debug_flags(&mut self, flags: u32) {
+        if self.render_debug_flags != flags {
+            log::info!(
+                "render debug flags: {:#x} -> {:#x}",
+                self.render_debug_flags,
+                flags
+            );
+            let mode = self.render_debug_mode.shader_value();
+            let crosses = crate::shader_constants::render_debug_requires_raw_output(
+                self.render_debug_flags,
+                mode,
+            ) != crate::shader_constants::render_debug_requires_raw_output(flags, mode);
+            self.render_debug_flags = flags;
+            if crosses {
+                self.signal_temporal_discontinuity(RAW_OUTPUT_TOGGLE_RECOVERY_FRAMES);
+            }
+        }
+    }
+
+    pub fn render_debug_flags(&self) -> u32 {
+        self.render_debug_flags
+    }
+
     /// Queue one bounded selected-light visibility-ray capture.
     ///
     /// Coordinates are render-resolution pixels with the same upper-left

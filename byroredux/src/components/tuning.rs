@@ -85,6 +85,10 @@ impl Default for ExposureTuning {
 pub(crate) struct RenderDebugControl {
     pub(crate) active_mode: byroredux_renderer::RenderDebugMode,
     pub(crate) pending_mode: Option<byroredux_renderer::RenderDebugMode>,
+    /// `DBG_*` mask the renderer had at the last frame boundary.
+    pub(crate) active_flags: u32,
+    /// `r.dbg` request applied at the next frame boundary.
+    pub(crate) pending_flags: Option<RenderDebugFlagsOp>,
     pub(crate) pending_probe_pixel: Option<[u32; 2]>,
     pub(crate) pending_probe_generation: Option<u32>,
     pub(crate) last_probe: Option<byroredux_renderer::SelectedRayProbeResult>,
@@ -92,3 +96,21 @@ pub(crate) struct RenderDebugControl {
 }
 
 impl Resource for RenderDebugControl {}
+
+/// An `r.dbg` edit of the renderer's `DBG_*` mask.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RenderDebugFlagsOp {
+    Set(u32),
+    Add(u32),
+    Remove(u32),
+}
+
+impl RenderDebugFlagsOp {
+    pub(crate) fn apply(self, flags: u32) -> u32 {
+        match self {
+            Self::Set(bits) => bits,
+            Self::Add(bits) => flags | bits,
+            Self::Remove(bits) => flags & !bits,
+        }
+    }
+}

@@ -334,7 +334,7 @@ commands were unreachable from `byro-dbg` because `tex.missing` parsed as
 
 The console commands are registered in `byroredux/src/commands/mod.rs`
 (`build_command_registry()`) plus the save/load implementations in
-`byroredux/src/save_io.rs`. Current registered commands (**117**) grouped by
+`byroredux/src/save_io.rs`. Current registered commands (**118**) grouped by
 purpose:
 
 ```
@@ -474,6 +474,7 @@ rt.integrity                → ray-tracing structure integrity checks
 lod.coverage                → current LOD coverage diagnostics
 terrain.seams               → terrain seam diagnostics
 render.debug                → renderer debug-mode control
+r.dbg [0xMASK|+0xB|-0xB]    → read / set / add / clear the DBG_* bit mask at runtime
 env.health                  → validate live lighting/sky environment state
 world.owners                → report owner-tagged world resources
 

@@ -1155,6 +1155,55 @@ fn format_selected_ray_probe(probe: byroredux_renderer::SelectedRayProbeResult) 
     lines
 }
 
+/// `r.dbg [<0xMASK> | +<0xBITS> | -<0xBITS>]` — read or edit the renderer's
+/// `DBG_*` mask at runtime, which `BYROREDUX_RENDER_DEBUG` could only set at
+/// launch. Bit values: `shaders/include/shader_constants.glsl`.
+pub(crate) struct RenderDebugFlagsCommand;
+impl ConsoleCommand for RenderDebugFlagsCommand {
+    fn name(&self) -> &str {
+        "r.dbg"
+    }
+
+    fn description(&self) -> &str {
+        "Renderer DBG_* mask: r.dbg [0xMASK | +0xBITS | -0xBITS]"
+    }
+
+    fn execute(&self, world: &World, args: &str) -> CommandOutput {
+        let Some(mut control) = world.try_resource_mut::<crate::components::RenderDebugControl>()
+        else {
+            return CommandOutput::line("RenderDebugControl resource not present");
+        };
+        let arg = args.trim();
+        if arg.is_empty() {
+            return CommandOutput::line(format!(
+                "DBG flags {:#010x}{}",
+                control.active_flags,
+                control
+                    .pending_flags
+                    .map_or(String::new(), |op| format!(" (pending {op:?})"))
+            ));
+        }
+        let (make, digits): (fn(u32) -> crate::components::RenderDebugFlagsOp, &str) =
+            if let Some(rest) = arg.strip_prefix('+') {
+                (crate::components::RenderDebugFlagsOp::Add, rest)
+            } else if let Some(rest) = arg.strip_prefix('-') {
+                (crate::components::RenderDebugFlagsOp::Remove, rest)
+            } else {
+                (crate::components::RenderDebugFlagsOp::Set, arg)
+            };
+        let Some(bits) = parse_console_u32(digits) else {
+            return CommandOutput::line(format!("r.dbg: not a u32: {digits:?} (use 0x for hex)"));
+        };
+        let op = make(bits);
+        control.pending_flags = Some(op);
+        CommandOutput::line(format!(
+            "queued {op:?}: {:#010x} -> {:#010x} (applies next frame)",
+            control.active_flags,
+            op.apply(control.active_flags)
+        ))
+    }
+}
+
 /// `world.owners` — cross-subsystem ownership accounting for the EX-08
 /// exterior soak (#2374).
 ///

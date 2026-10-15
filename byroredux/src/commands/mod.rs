@@ -176,6 +176,7 @@ pub(crate) fn build_command_registry() -> CommandRegistry {
     registry.register(TerrainSeamsCommand);
     registry.register(CellOwnersCommand);
     registry.register(RenderDebugCommand);
+    registry.register(RenderDebugFlagsCommand);
     registry.register(EnvHealthCommand);
     registry.register(LightDumpCommand);
     registry.register(LightAttenCommand);
