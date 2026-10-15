@@ -663,16 +663,14 @@ impl AudioWorld {
     /// is bounded at 256 entries via FIFO drop-oldest as a safety
     /// net against a runaway producer (256 = ~8 s of footsteps
     /// at 32 Hz; real gameplay never approaches it).
-    pub fn play_oneshot(
-        &mut self,
-        sound: Arc<StaticSoundData>,
-        position: Vec3,
-        attenuation: Attenuation,
-        volume: f32,
-    ) {
+    /// #5738 — the shared `play_oneshot*` prologue: the requested-count
+    /// bump, the inactive-manager gate, and the 256-entry FIFO cap
+    /// (O(1) front-pop — `Vec::remove(0)` was O(n); see #852). Returns
+    /// whether the caller should push its entry.
+    fn oneshot_slot_ready(&mut self) -> bool {
         self.oneshots_requested = self.oneshots_requested.saturating_add(1);
         if self.manager.is_none() {
-            return;
+            return false;
         }
         const MAX_PENDING: usize = 256;
         if self.pending_oneshots.len() >= MAX_PENDING {
@@ -681,9 +679,20 @@ impl AudioWorld {
                  audio_system may not be running, or the queue is being filled \
                  faster than it's drained."
             );
-            // O(1) front-pop — `Vec::remove(0)` was O(n) shift-down
-            // for the 256-element queue. See #852.
             self.pending_oneshots.pop_front();
+        }
+        true
+    }
+
+    pub fn play_oneshot(
+        &mut self,
+        sound: Arc<StaticSoundData>,
+        position: Vec3,
+        attenuation: Attenuation,
+        volume: f32,
+    ) {
+        if !self.oneshot_slot_ready() {
+            return;
         }
         self.pending_oneshots.push_back(PendingOneShot {
             sound,
@@ -713,18 +722,8 @@ impl AudioWorld {
         attenuation: Attenuation,
         volume: f32,
     ) {
-        self.oneshots_requested = self.oneshots_requested.saturating_add(1);
-        if self.manager.is_none() {
+        if !self.oneshot_slot_ready() {
             return;
-        }
-        const MAX_PENDING: usize = 256;
-        if self.pending_oneshots.len() >= MAX_PENDING {
-            log::warn!(
-                "M44: pending one-shot queue at cap ({MAX_PENDING}); dropping oldest. \
-                 audio_system may not be running, or the queue is being filled \
-                 faster than it's drained."
-            );
-            self.pending_oneshots.pop_front();
         }
         self.pending_oneshots.push_back(PendingOneShot {
             sound,
@@ -1236,6 +1235,36 @@ fn sync_listener_pose(world: &World, audio_world: &mut AudioWorld) {
 /// associated `EntityId`. Logs at WARN if a single tick drains more
 /// than 32 items — that's footstep-tempo gone wrong, audible signal
 /// that something upstream is firing per-frame instead of per-stride.
+/// #5738 — the shared spatial one-shot start both dispatch loops run:
+/// the distance-windowed builder, the Phase-6 reverb send, the
+/// underwater filter and the kira sub-track. Each new send/filter
+/// (underwater #3086, reverb Phase 6) had to be added to both loops by
+/// hand; now it lands here once. The play itself stays at the call
+/// sites — the emitter path needs `loop_region(..)` before it. `Err`
+/// is a pre-localised message the callers log with their own context.
+fn build_spatial_track(
+    mgr: &mut AudioManager,
+    listener_id: kira::listener::ListenerId,
+    position: byroredux_core::math::Vec3,
+    attenuation: Attenuation,
+    reverb: Option<&SendTrackHandle>,
+    reverb_db: f32,
+    underwater: bool,
+) -> Result<(SpatialTrackHandle, FilterHandle), String> {
+    // kira's `SpatialTrackBuilder::distances` accepts a
+    // `RangeInclusive<f32>`; the values are min..=max **metres**
+    // (#3178 — the position handed to kira alongside them is converted
+    // from BU by `bu_to_audio_space`), falloff between is linear.
+    let track_builder = SpatialTrackBuilder::new().distances(attenuation.distance_range());
+    let track_builder = apply_reverb_send(track_builder, reverb, reverb_db);
+    let mut track_builder = track_builder;
+    let underwater_filter = apply_underwater_filter(&mut track_builder, underwater);
+    let track = mgr
+        .add_spatial_sub_track(listener_id, bu_to_audio_space(position), track_builder)
+        .map_err(|e| format!("add_spatial_sub_track failed: {e}"))?;
+    Ok((track, underwater_filter))
+}
+
 fn drain_pending_oneshots(audio_world: &mut AudioWorld) {
     let Some(listener_id) = audio_world.listener.as_ref().map(|l| l.id()) else {
         return;
@@ -1284,28 +1313,26 @@ fn drain_pending_oneshots(audio_world: &mut AudioWorld) {
     // exactly that substring, and writing it here would make the test
     // match its own describing comment instead of real code.
     for p in audio_world.pending_oneshots.drain(..) {
-        let track_builder = SpatialTrackBuilder::new().distances(p.attenuation.distance_range());
-        // Phase 6: route a fraction of this track's signal to the
-        // global reverb send, if one exists and the level isn't muted.
-        let track_builder = apply_reverb_send(
-            track_builder,
+        // #5738 — the shared track build + sends, then the queue path's
+        // straight play (no loop region on this branch).
+        let (mut track, underwater_filter) = match build_spatial_track(
+            mgr,
+            listener_id,
+            p.position,
+            p.attenuation,
             audio_world.reverb_send.as_ref(),
             audio_world.reverb_send_db,
-        );
-        let mut track_builder = track_builder;
-        let underwater = audio_world.underwater;
-        let underwater_filter = apply_underwater_filter(&mut track_builder, underwater);
-        let mut track = match mgr.add_spatial_sub_track(
-            listener_id,
-            bu_to_audio_space(p.position),
-            track_builder,
+            audio_world.underwater,
         ) {
-            Ok(t) => t,
+            Ok(built) => built,
             Err(e) => {
-                log::warn!("M44 Phase 3.5: add_spatial_sub_track failed: {e}");
+                log::warn!("M44 Phase 3.5: {e}");
                 continue;
             }
         };
+        // kira reasons about gain in decibels; gameplay reasons in linear
+        // amplitude. `linear_volume_to_db` does the conversion + silence
+        // clamp; `volume()` returns a fresh settings value, not new audio.
         let db = linear_volume_to_db(p.volume);
         let sound = (*p.sound).clone().volume(db);
         let handle = match track.play(sound) {
@@ -1326,7 +1353,7 @@ fn drain_pending_oneshots(audio_world: &mut AudioWorld) {
             // first tick the speaker has moved.
             last_position: Some(bu_to_audio_space(p.position)),
             underwater_filter,
-            underwater,
+            underwater: audio_world.underwater,
             // Queue-driven sounds carry no emitter lifecycle — `Detached`
             // runs to natural termination as `play_oneshot`'s documented
             // contract requires, and `Anchored` stops only through
@@ -1416,30 +1443,18 @@ fn dispatch_new_oneshots(world: &World, audio_world: &mut AudioWorld) {
     // failed dispatch never pushed an `ActiveSound`.
     let mut consumed: Vec<EntityId> = Vec::with_capacity(pending.len());
     for p in pending {
-        // kira's `SpatialTrackBuilder::distances` accepts a
-        // `RangeInclusive<f32>` (or `(f32, f32)` / `[f32; 2]`); the
-        // exclusive `..` range we use elsewhere doesn't impl
-        // `Into<SpatialTrackDistances>`. The values are min..=max
-        // **metres** (#3178 — the position handed to kira alongside
-        // them is converted from BU by `bu_to_audio_space`), falloff
-        // between is linear (kira default).
-        let track_builder = SpatialTrackBuilder::new().distances(p.attenuation.distance_range());
-        // Phase 6: route a fraction of this track's signal to the
-        // global reverb send, if one exists and the level isn't muted.
-        let track_builder = apply_reverb_send(
-            track_builder,
+        // #5738 — the shared track build + sends; the play follows the
+        // loop-region decision below.
+        let (mut track, underwater_filter) = match build_spatial_track(
+            mgr,
+            listener_id,
+            p.position,
+            p.attenuation,
             audio_world.reverb_send.as_ref(),
             audio_world.reverb_send_db,
-        );
-        let mut track_builder = track_builder;
-        let underwater = audio_world.underwater;
-        let underwater_filter = apply_underwater_filter(&mut track_builder, underwater);
-        let mut track = match mgr.add_spatial_sub_track(
-            listener_id,
-            bu_to_audio_space(p.position),
-            track_builder,
+            audio_world.underwater,
         ) {
-            Ok(t) => t,
+            Ok(built) => built,
             Err(e) => {
                 log::warn!(
                     "M44 Phase 3: add_spatial_sub_track failed for entity {:?}: {e}",
@@ -1484,7 +1499,7 @@ fn dispatch_new_oneshots(world: &World, audio_world: &mut AudioWorld) {
             // follow pass is a comparison per tick, not a command (#3086).
             last_position: Some(bu_to_audio_space(p.position)),
             underwater_filter,
-            underwater,
+            underwater: audio_world.underwater,
             unload_fade_ms: p.unload_fade_ms,
             stop_issued: false,
         });

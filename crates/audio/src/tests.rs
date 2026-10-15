@@ -1492,12 +1492,13 @@ fn every_kira_position_site_goes_through_the_unit_seam() {
              expected `{needle}` (#3178)"
         );
     }
-    // Both dispatch paths (queue + entity).
+    // #5738 — the BU -> metres conversion for both dispatch paths lives in
+    // the one shared track build.
     assert_eq!(
         lib_rs
-            .matches("add_spatial_sub_track( listener_id, bu_to_audio_space(p.position")
+            .matches("add_spatial_sub_track(listener_id, bu_to_audio_space(position)")
             .count(),
-        2,
+        1,
         "expected both spatial dispatch paths to convert BU -> metres (#3178)"
     );
     assert!(
@@ -1616,12 +1617,20 @@ fn both_dispatch_paths_build_the_filter_through_one_call_site() {
         "the underwater filter is constructed in more than one place — route \
          both dispatch paths through apply_underwater_filter (#3179 / #2405)"
     );
+    // #5738 — both dispatch paths now call build_spatial_track, which is
+    // the single apply_underwater_filter site; the old count-2 shape WAS
+    // the duplication this closed.
     assert_eq!(
         lib_rs
             .matches("apply_underwater_filter(&mut track_builder, underwater)")
             .count(),
-        2,
-        "expected both dispatch paths to call the shared filter helper (#3179)"
+        1,
+        "the underwater filter helper must be called from exactly the one          shared track build (#3179, #5738)"
+    );
+    assert_eq!(
+        lib_rs.matches("build_spatial_track(").count(),
+        3, // definition + both dispatch loops
+        "both dispatch paths must build their spatial track through          build_spatial_track (#5738)"
     );
 }
 
