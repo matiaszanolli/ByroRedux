@@ -112,6 +112,17 @@ pub(crate) const SOURCES: &str = concat!(
     include_str!("fragment/budget.rs"),
     include_str!("fragment/state.rs"),
     include_str!("fragment/effects.rs"),
+    include_str!("fragment/effects/ai_combat.rs"),
+    include_str!("fragment/effects/deferred.rs"),
+    include_str!("fragment/effects/evaluate.rs"),
+    include_str!("fragment/effects/inventory.rs"),
+    include_str!("fragment/effects/lock.rs"),
+    include_str!("fragment/effects/placement.rs"),
+    include_str!("fragment/effects/player_control.rs"),
+    include_str!("fragment/effects/quest_scoped.rs"),
+    include_str!("fragment/effects/resolve.rs"),
+    include_str!("fragment/effects/scene.rs"),
+    include_str!("fragment/effects/vehicle_cinematic.rs"),
     include_str!("fragment/distance.rs"),
     include_str!("fragment/events.rs"),
     include_str!("fragment/hits.rs"),
@@ -176,6 +187,30 @@ mod sources_completeness {
         assert!(
             checked >= 4,
             "expected at least the four post-#3854 submodules, walked {checked}"
+        );
+
+        // #5468 — `effects.rs` split into `effects/*.rs`; the same rule
+        // applies one level down, or a scan would silently narrow to the
+        // parent file's remainder.
+        let effects_dir = dir.join("effects");
+        let mut effect_files = 0usize;
+        for entry in std::fs::read_dir(&effects_dir).expect("fragment/effects/ must exist") {
+            let path = entry.expect("readable dir entry").path();
+            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            if !name.ends_with(".rs") {
+                continue;
+            }
+            assert!(
+                concat.contains(&format!("include_str!(\"fragment/effects/{name}\")")),
+                "fragment/effects/{name} is missing from the SOURCES concat!."
+            );
+            effect_files += 1;
+        }
+        assert!(
+            effect_files >= 10,
+            "expected the post-#5468 effects/ submodules, walked {effect_files}"
         );
     }
 }

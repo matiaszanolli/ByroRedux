@@ -617,8 +617,23 @@ mod system_access_declaration_tests {
     const NPC_DIALOGUE_SRC: &str = include_str!("../../systems/npc_dialogue.rs");
     const FRAGMENT_SYSTEMS_SRC: &str =
         include_str!("../../../../crates/scripting/src/fragment/systems.rs");
-    const FRAGMENT_EFFECTS_SRC: &str =
-        include_str!("../../../../crates/scripting/src/fragment/effects.rs");
+    // #5468 — effects.rs is split into effects/*; the scan walks the
+    // callees of `apply_fragment_guard_free` (in `deferred.rs`) across the
+    // family files, so it reads the whole directory, not one fragment.
+    const FRAGMENT_EFFECTS_SRC: &str = concat!(
+        include_str!("../../../../crates/scripting/src/fragment/effects.rs"),
+        include_str!("../../../../crates/scripting/src/fragment/effects/ai_combat.rs"),
+        include_str!("../../../../crates/scripting/src/fragment/effects/deferred.rs"),
+        include_str!("../../../../crates/scripting/src/fragment/effects/evaluate.rs"),
+        include_str!("../../../../crates/scripting/src/fragment/effects/inventory.rs"),
+        include_str!("../../../../crates/scripting/src/fragment/effects/lock.rs"),
+        include_str!("../../../../crates/scripting/src/fragment/effects/placement.rs"),
+        include_str!("../../../../crates/scripting/src/fragment/effects/player_control.rs"),
+        include_str!("../../../../crates/scripting/src/fragment/effects/quest_scoped.rs"),
+        include_str!("../../../../crates/scripting/src/fragment/effects/resolve.rs"),
+        include_str!("../../../../crates/scripting/src/fragment/effects/scene.rs"),
+        include_str!("../../../../crates/scripting/src/fragment/effects/vehicle_cinematic.rs"),
+    );
     const SCRIPTING_SCENE_SRC: &str = include_str!("../../../../crates/scripting/src/scene.rs");
     // #5414 — `apply_selection`'s hops out of npc_dialogue.rs: the voice
     // resolver lives in dialogue_voice.rs and the AHEL raise in
