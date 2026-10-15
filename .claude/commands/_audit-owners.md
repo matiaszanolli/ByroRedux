@@ -17,6 +17,7 @@ Rules: rows are **path prefixes**; the FIRST matching row routes a changed file,
 | `crates/renderer/src/vulkan/acceleration/` | renderer, safety, concurrency | HIGH |
 | `crates/renderer/src/vulkan/scene_buffer/` | renderer, nifal | HIGH |
 | `crates/renderer/src/vulkan/material` | renderer, nifal | HIGH |
+| `crates/renderer/src/vulkan/descriptors.rs` | renderer, safety, concurrency, performance, tech-debt Dim 2 | HIGH |
 | `crates/renderer/src/vulkan/frame_upscaler.rs` | renderer Dim 11, safety Dim 1 | HIGH |
 | `crates/renderer/src/vulkan/upscaling.rs` | renderer Dim 11, safety Dim 1 | HIGH |
 | `crates/renderer/src/vulkan/presentation.rs` | renderer Dim 11, ui Dim 5 | HIGH |
@@ -66,6 +67,7 @@ Rules: rows are **path prefixes**; the FIRST matching row routes a changed file,
 | `crates/menuxml/` | ui, parsers | MEDIUM |
 | `crates/spt/` | speedtree | MEDIUM |
 | `crates/physics/` | physics, safety | HIGH |
+| `crates/scripting/src/fragment/{vm,budget,reference}.rs` | scripting, concurrency, performance Dim 1, tech-debt Dim 1 | HIGH |
 | `crates/scripting/src/magic.rs` | scripting, gameplay, character | MEDIUM |
 | `crates/scripting/src/load_order.rs` | scripting, save | MEDIUM |
 | `crates/scripting/src/{bleedout,bribe,speechcraft,crime_faction,crime_gold,destruction,detection_events,followers,map_markers,ownership,encounter_level}.rs` | scripting, gameplay | MEDIUM |
@@ -212,6 +214,7 @@ Rules: rows are **path prefixes**; the FIRST matching row routes a changed file,
 | `docs/smoke-tests/sm1-story-manager.sh` | runtime, scripting | LOW |
 | `docs/smoke-tests/dt1-dialogue-layers.sh` | runtime, gameplay, scripting; fnv, fo3 | LOW |
 | `docs/smoke-tests/dt2-skyrim-forcegreet.sh` | runtime, gameplay, scripting; skyrim | LOW |
+| `docs/smoke-tests/m47-2-bleedout.sh` | runtime, gameplay; skyrim | LOW |
 | `docs/smoke-tests/m42-eat-sleep.sh` | runtime, gameplay; fnv | LOW |
 | `docs/smoke-tests/m-trees.sh` | runtime, speedtree; fnv, fo3 | LOW |
 | `docs/smoke-tests/` | runtime | LOW |
