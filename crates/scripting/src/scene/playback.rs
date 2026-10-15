@@ -22,7 +22,6 @@ use byroredux_plugin::esm::records::{
 
 use super::{refresh_scene_actor_bindings, SceneActorBindings, SceneRegistry};
 use crate::condition::{evaluate, ConditionContext};
-use crate::papyrus_demo::PapyrusPlayerEntity;
 use crate::quest_stages::{
     QuestFormId, QuestStageAdvancedBatch, QuestStageState, SCENE_QUEST_EVENT_SUBSCRIBER,
 };

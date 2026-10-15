@@ -276,12 +276,7 @@ pub(crate) fn launch(
 
     let handle = {
         let allocator = ctx.allocator.as_ref().unwrap();
-        let upload_ctx = byroredux_renderer::vulkan::GpuUploadCtx {
-            device: &ctx.device,
-            allocator,
-            queue: &ctx.graphics_queue,
-            command_pool: ctx.transfer_pool,
-        };
+        let upload_ctx = byroredux_renderer::upload_ctx!(ctx);
         ctx.texture_registry
             .register_rgba(upload_ctx, w, h, &vec![0u8; (w * h * 4) as usize])
     };

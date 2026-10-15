@@ -89,16 +89,7 @@ impl VulkanContext {
             // Remove a dead weak entry before replacing it so a long session
             // that revisits meshes does not retain stale cache keys.
             self.morph_delta_cache.remove(&mesh_handle);
-            let allocator = self
-                .allocator
-                .as_ref()
-                .context("renderer allocator missing")?;
-            let upload_ctx = crate::vulkan::GpuUploadCtx {
-                device: &self.device,
-                allocator,
-                queue: &self.graphics_queue,
-                command_pool: self.transfer_pool,
-            };
+            let upload_ctx = crate::upload_ctx!(self);
             (
                 Arc::new(super::super::morph_compute::MorphDelta::create(
                     upload_ctx, deltas,
@@ -328,7 +319,6 @@ impl VulkanContext {
         let Some(ref mut accel) = self.accel_manager else {
             return 0;
         };
-        let allocator = self.allocator.as_ref().expect("allocator missing");
 
         // Gather raw sources for the batch — ordinary meshes use their
         // dedicated RT-capable buffers at byte offset zero.
@@ -350,6 +340,7 @@ impl VulkanContext {
                 })
             })
             .collect();
+let allocator = self.allocator.as_ref().expect("allocator missing");
 
         match accel.build_blas_batched(
             &self.device,
@@ -524,12 +515,12 @@ impl VulkanContext {
         if sources.is_empty() {
             return 0;
         }
-        let allocator = self.allocator.as_ref().expect("allocator missing");
         let requested = sources.len();
         // #4180 — the restore is synchronous, so its wall time is a stall on
         // whatever thread runs it. Reported next to the count so a frame-time
         // spike can be attributed from the log alone.
         let started = std::time::Instant::now();
+        let allocator = self.allocator.as_ref().expect("allocator missing");
         let mut restored = 0usize;
         let mut next = 0usize;
         let mut chunk = 1usize;
@@ -579,14 +570,8 @@ impl VulkanContext {
     /// Call this once after creating the context.
     pub fn register_ui_quad(&mut self) -> Result<()> {
         let (vertices, indices) = crate::mesh::fullscreen_quad_ui_vertices();
-        let allocator = self.allocator.as_ref().expect("allocator missing");
         let handle = self.mesh_registry.upload(
-            crate::vulkan::GpuUploadCtx {
-                device: &self.device,
-                allocator,
-                queue: &self.graphics_queue,
-                command_pool: self.transfer_pool,
-            },
+            crate::upload_ctx!(self),
             &vertices,
             &indices,
             false, // UI quad doesn't need RT
@@ -604,14 +589,8 @@ impl VulkanContext {
     /// that needs to participate in shadow / GI ray queries.
     pub fn register_particle_quad(&mut self) -> Result<()> {
         let (vertices, indices) = crate::mesh::quad_vertices();
-        let allocator = self.allocator.as_ref().expect("allocator missing");
         let handle = self.mesh_registry.upload(
-            crate::vulkan::GpuUploadCtx {
-                device: &self.device,
-                allocator,
-                queue: &self.graphics_queue,
-                command_pool: self.transfer_pool,
-            },
+            crate::upload_ctx!(self),
             &vertices,
             &indices,
             false, // particles skip TLAS

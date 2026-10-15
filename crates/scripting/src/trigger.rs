@@ -21,7 +21,6 @@
 //! correct for the static volumes that triggers always are.
 
 use crate::events::OnTriggerEnterEvent;
-use crate::papyrus_demo::PapyrusPlayerEntity;
 use byroredux_core::ecs::components::GlobalTransform;
 use byroredux_core::ecs::sparse_set::SparseSetStorage;
 use byroredux_core::ecs::storage::{Component, EntityId};

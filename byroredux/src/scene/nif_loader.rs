@@ -1087,12 +1087,7 @@ fn spawn_nif_mesh(
         .collect();
 
     let alloc = ctx.allocator.as_ref().unwrap();
-    let upload_ctx = GpuUploadCtx {
-        device: &ctx.device,
-        allocator: alloc,
-        queue: &ctx.graphics_queue,
-        command_pool: ctx.transfer_pool,
-    };
+    let upload_ctx = byroredux_renderer::upload_ctx!(ctx);
     // Effect surfaces remain ray-visible for reflection/refraction and GI.
     // Their dedicated TLAS visibility layer keeps them out of opaque
     // shadow traversal without erasing authored glass contents.

@@ -22,7 +22,6 @@ use byroredux_plugin::esm::records::{
 };
 
 use crate::condition::{evaluate, resolve_entity_by_global_form_id, ConditionContext};
-use crate::papyrus_demo::PapyrusPlayerEntity;
 use crate::quest_stages::QuestFormId;
 use crate::scene::{
     append_scene_completions, drain, snapshot, SceneActorBindings, SceneEvent, SceneEventBatch,

@@ -90,3 +90,21 @@ pub struct GpuUploadCtx<'a> {
     /// Command pool the one-time command buffer is allocated from.
     pub command_pool: ash::vk::CommandPool,
 }
+
+/// #5823 — the one spelling of the 7-line `GpuUploadCtx` literal that
+/// 22 call sites hand-built. Expands to exactly the literal it replaces
+/// (same field order, same borrows), so every existing surrounding
+/// borrow shape — a following `&mut ctx.texture_registry`, a pre-bound
+/// `alloc` local — keeps compiling unchanged. A fifth handle on the
+/// upload path (e.g. a timeline semaphore) is now a macro edit, not 22.
+#[macro_export]
+macro_rules! upload_ctx {
+    ($ctx:expr) => {
+        $crate::vulkan::GpuUploadCtx {
+            device: &$ctx.device,
+            allocator: $ctx.allocator.as_ref().unwrap(),
+            queue: &$ctx.graphics_queue,
+            command_pool: $ctx.transfer_pool,
+        }
+    };
+}

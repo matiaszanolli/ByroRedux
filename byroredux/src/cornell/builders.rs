@@ -144,12 +144,7 @@ pub(super) fn synthesize_wavy_normal_map(ctx: &mut VulkanContext) -> u32 {
     const SIZE: u32 = 16;
     let pixels = wavy_normal_map_pixels(SIZE);
     let alloc = ctx.allocator.as_ref().unwrap();
-    let upload_ctx = GpuUploadCtx {
-        device: &ctx.device,
-        allocator: alloc,
-        queue: &ctx.graphics_queue,
-        command_pool: ctx.transfer_pool,
-    };
+    let upload_ctx = byroredux_renderer::upload_ctx!(ctx);
     ctx.texture_registry
         .register_rgba(upload_ctx, SIZE, SIZE, &pixels)
         .expect("Cornell normal-map synth upload failed")

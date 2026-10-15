@@ -416,12 +416,7 @@ pub(super) fn spawn_water_plane(
         return Some(0);
     }
 
-    let upload_ctx = GpuUploadCtx {
-        device: &ctx.device,
-        allocator,
-        queue: &ctx.graphics_queue,
-        command_pool: ctx.transfer_pool,
-    };
+    let upload_ctx = byroredux_renderer::upload_ctx!(ctx);
     let mesh_handle = match ctx.mesh_registry.upload_scene_mesh(
         upload_ctx, &vertices, &indices,
         // Water meshes do NOT need BLAS — they're skipped from TLAS
@@ -1054,12 +1049,7 @@ pub(crate) fn spawn_lod_water_plane(
         height_histogram,
     } = geometry;
 
-    let upload_ctx = GpuUploadCtx {
-        device: &ctx.device,
-        allocator,
-        queue: &ctx.graphics_queue,
-        command_pool: ctx.transfer_pool,
-    };
+    let upload_ctx = byroredux_renderer::upload_ctx!(ctx);
     let mesh_handle = match ctx
         .mesh_registry
         .upload_scene_mesh(upload_ctx, &vertices, &indices, false, None)
@@ -1240,12 +1230,7 @@ pub(crate) fn rebuild_lod_water_mesh(
     // and index copies share ONE submit + fence wait through the registry's
     // staging pool instead of one blocking round-trip each, on the
     // boundary-cross frame.
-    let upload_ctx = GpuUploadCtx {
-        device: &ctx.device,
-        allocator,
-        queue: &ctx.graphics_queue,
-        command_pool: ctx.transfer_pool,
-    };
+    let upload_ctx = byroredux_renderer::upload_ctx!(ctx);
     let transfer_fence = std::sync::Arc::clone(&ctx.transfer_fence);
     let new_handle = match ctx.mesh_registry.upload_scene_meshes_batched(
         upload_ctx,

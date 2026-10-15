@@ -47,7 +47,6 @@ use byroredux_plugin::esm::records::{
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
-use crate::papyrus_demo::PapyrusPlayerEntity;
 
 /// Typed wrapper around a quest's `FormId` (u32). Same shape as the
 /// raw `form_id: u32` field on `QustRecord`; the wrapper exists so

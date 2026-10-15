@@ -19,7 +19,6 @@ use byroredux_plugin::esm::records::condition::ConditionList;
 use byroredux_plugin::esm::records::{DialRecord, InfoRecord, SceneActionType};
 
 use crate::condition::{evaluate, ConditionContext};
-use crate::papyrus_demo::PapyrusPlayerEntity;
 use crate::quest_stages::{QuestFormId, QuestStageState};
 use crate::scene::{
     append_scene_completions, drain, snapshot, SceneAliasCandidate, SceneEvent, SceneEventBatch,

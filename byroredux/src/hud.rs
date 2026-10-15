@@ -568,12 +568,7 @@ pub(crate) fn launch_hud(
             // the composite quad exists before the first rasterized frame.
             let registered = {
                 let allocator = ctx.allocator.as_ref().unwrap();
-                let upload_ctx = byroredux_renderer::vulkan::GpuUploadCtx {
-                    device: &ctx.device,
-                    allocator,
-                    queue: &ctx.graphics_queue,
-                    command_pool: ctx.transfer_pool,
-                };
+                let upload_ctx = byroredux_renderer::upload_ctx!(ctx);
                 ctx.texture_registry
                     .register_rgba(upload_ctx, w, h, &vec![0u8; (w * h * 4) as usize])
             };
@@ -728,12 +723,7 @@ impl MenuXmlHud {
         pixels: &[u8],
     ) -> u32 {
         let allocator = ctx.allocator.as_ref().unwrap();
-        let upload_ctx = byroredux_renderer::vulkan::GpuUploadCtx {
-            device: &ctx.device,
-            allocator,
-            queue: &ctx.graphics_queue,
-            command_pool: ctx.transfer_pool,
-        };
+        let upload_ctx = byroredux_renderer::upload_ctx!(ctx);
         let (w, h) = self.frame_size();
         if let Err(error) = ctx.texture_registry.write_rgba_inplace(
             upload_ctx,

@@ -861,12 +861,7 @@ pub(super) fn prepare_mesh_upload_range(
         })
         .collect::<Vec<_>>();
     let allocator = ctx.allocator.as_ref().expect("renderer allocator missing");
-    let upload_ctx = GpuUploadCtx {
-        device: &ctx.device,
-        allocator,
-        queue: &ctx.graphics_queue,
-        command_pool: ctx.transfer_pool,
-    };
+    let upload_ctx = byroredux_renderer::upload_ctx!(ctx);
     let transfer_fence = std::sync::Arc::clone(&ctx.transfer_fence);
     match ctx.mesh_registry.upload_scene_meshes_batched(
         upload_ctx,
@@ -916,12 +911,7 @@ pub(super) fn prepare_mesh_upload_range(
             for fresh_mesh in &fresh {
                 let mesh = &imported[fresh_mesh.sub_mesh_index];
                 let allocator = ctx.allocator.as_ref().expect("renderer allocator missing");
-                let upload_ctx = GpuUploadCtx {
-                    device: &ctx.device,
-                    allocator,
-                    queue: &ctx.graphics_queue,
-                    command_pool: ctx.transfer_pool,
-                };
+                let upload_ctx = byroredux_renderer::upload_ctx!(ctx);
                 let upload_result = match pc.mesh_cache_key {
                     Some(key) => ctx.mesh_registry.register_scene_mesh_keyed(
                         upload_ctx,

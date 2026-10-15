@@ -63,12 +63,7 @@ fn publish_groundcover_detail_atlas(
         Some(allocator) => allocator,
         None => return,
     };
-    let upload_ctx = GpuUploadCtx {
-        device: &ctx.device,
-        allocator,
-        queue: &ctx.graphics_queue,
-        command_pool: ctx.transfer_pool,
-    };
+    let upload_ctx = byroredux_renderer::upload_ctx!(ctx);
     let handle = match *atlas_state {
         Some((handle, signature)) if signature == atlas.signature => handle,
         Some((handle, _)) => {
@@ -1345,12 +1340,7 @@ fn tick_ui_overlay(
             byroredux_ui::UiFrame::Fresh(pixels) => {
                 if let Some(handle) = ui_state.texture_handle {
                     let allocator = ctx.allocator.as_ref().unwrap();
-                    let upload_ctx = GpuUploadCtx {
-                        device: &ctx.device,
-                        allocator,
-                        queue: &ctx.graphics_queue,
-                        command_pool: ctx.transfer_pool,
-                    };
+                    let upload_ctx = byroredux_renderer::upload_ctx!(ctx);
                     if let Err(e) = ctx
                         .texture_registry
                         .update_rgba(upload_ctx, handle, ui_w, ui_h, pixels)

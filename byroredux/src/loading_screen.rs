@@ -256,12 +256,7 @@ impl LoadingScreen {
             let Some(allocator) = ctx.allocator.as_ref() else {
                 return false;
             };
-            let upload = GpuUploadCtx {
-                device: &ctx.device,
-                allocator,
-                queue: &ctx.graphics_queue,
-                command_pool: ctx.transfer_pool,
-            };
+            let upload = byroredux_renderer::upload_ctx!(ctx);
             let texture = match ctx.texture_registry.load_dds_with_clamp(
                 upload,
                 &format!("loading-screen@{key}"),

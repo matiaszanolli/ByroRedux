@@ -26,7 +26,6 @@ use crate::condition::{
     evaluate, subject_requirement, ConditionContext, ConditionFunction, IdentityTest,
     SubjectRequirement,
 };
-use crate::papyrus_demo::PapyrusPlayerEntity;
 use crate::quest_stages::{QuestFormId, QuestRevision, QuestStageState};
 
 /// Operator-facing explanation of one quest alias's current fill state.
