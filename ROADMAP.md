@@ -20,18 +20,17 @@ commit. Live state only: when something closes, it becomes a one-liner under
 
 ## Status
 
-**Last session close:** Session 99, 2026-10-13, HEAD `a3a7a43b0`. Workspace
+**Last session close:** Session 100, 2026-10-15, HEAD `d7c47d741` + closeout fixes. Workspace
 numbers (tests, LOC, files, issue dirs) live in [Project Stats](#project-stats)
 only.
 
 **Gates.** `rust-toolchain.toml` pins rustc 1.96.0 (#5308), which is also the
 bin crate's MSRV since wasmtime 49. On it, the CI form `cargo clippy
---workspace -- -D warnings` is **clean** (re-run 2026-10-13; `--all-targets`
-is not, Known Issues). The ABBA lock-order lane ran clean locally (9848 tests,
-no cycle). All 9963 tests pass.
-The bench-of-record below was taken at
-`a3a7a43b0`, this close's HEAD. Its one open
-regression, **R6a-regress-22**, turned out to be
+--workspace -- -D warnings` is **clean** (re-run 2026-10-15; `--all-targets`
+is not, Known Issues). All 10 321 tests pass — after the Session 100 close
+repaired four test-target compile breaks the 10-15 split commits left. The
+ABBA lane was not re-run. The bench-of-record below (`a3a7a43b0`) is 233
+commits stale (R6a-stale-29). Its one open regression, **R6a-regress-22**, turned out to be
 the bench camera moving with `b9e961eeb`'s interior spawn ladder, not
 renderer code (#5128, 2026-09-30); a small residual stays open — the
 top-of-frame all-slots fence wait that dominates GPU-bound frames
@@ -42,8 +41,8 @@ top-of-frame all-slots fence wait that dominates GPU-bound frames
   data for Oblivion, FO3, FNV, Skyrim SE and FO4, plus a walkable Starfield
   Cydonia interior, all through one `cell_loader`. Exterior grids load with
   LAND terrain and splatting, stream as the player moves (M40), and draw
-  distant LOD: `.btr`/`.bto` with a per-game band ladder on Skyrim/FO4,
-  `_far.nif` on Oblivion/FO3/FNV (M35). FO4 precombines decode from CSG (M49).
+  distant LOD: `.btr`/`.bto` with a per-game band ladder on Skyrim/FO4, Skyrim
+  `.btt` tree LOD (#4913), `_far.nif` on Oblivion/FO3/FNV (M35). FO4 precombines decode from CSG (M49).
 - **Parsers.** NIF parses across seven games, 100% recoverable everywhere; the
   [compatibility matrix](#compatibility-matrix) is the single home for rates.
   Archives: BSA v103/v104/v105, BA2 v1/v2/v3/v7/v8. ESM record totals come
@@ -100,8 +99,8 @@ top-of-frame all-slots fence wait that dominates GPU-bound frames
   not exist (item use, package combat, magic). NAVM pathfinding
   covers the five pre-FO4 games including cross-tile joins (#3802); FO4's
   compressed `NVNM` body is still undecoded.
-- FO4/FO76/Starfield actors have no walk-clip source; their ragdolls wait on
-  the `BhkSystemBinary` blob decoder.
+- FO76/Starfield actors have no walk-clip source (FO4's run through its Havok
+  2014 behavior graphs); FO4+ ragdolls wait on the `BhkSystemBinary` decoder.
 - Dialogue: Skyrim+ `.fuz` voice. The greeting, line-lifetime, force-greet
   and FO3/FNV voice layers are live (#5367,
   [`dialogue-trees.md`](docs/engine/dialogue-trees.md)). Story Manager
@@ -574,18 +573,18 @@ it; the full list as it stood on 2026-09-29 (open and closed) is in
 
 ### Performance and measurement
 
-- [ ] **Papyrus interpreter: what the frame budget does not bound** (#5764;
-  #5763 fixed the three unbounded paths, 2026-10-13). All four interpreter systems run exclusive in `Update`
-  and now share a 10 000-statement frame allowance: a runaway frame fell from
-  13.6 ms to 1.4 ms, and a handler that never ends is killed at the old
-  100 000 statements, spread over ~10 frames. `script_update_system` no longer
-  scans the attached scripts (0.07 µs flat, was 6.9 ms at 20 000). Left: a
-  burst still pays ~0.8 µs a delivery to be deferred (5 000 references: 14.9 →
-  6.9 ms in its first frame, 1 000: 1.7 ms); a function called for its value,
-  or a frame holding an array or struct local, cannot suspend and runs whole
-  (capped at 100 000 statements, charged to the allowance);
-  `reference_script_event_system` still walks the attached scripts, 2.8 ns
-  each. Numbers: `docs/audits/BENCH_vm-cost_after-5763.txt`.
+- [ ] **R6a-stale-29 — bench-of-record 233 commits stale** (`a3a7a43b0`). The
+  window rewrote ReSTIR reservoir ownership (`c2647d468`), GI hemisphere
+  sampling (`0b56f1133`) and ground cover (which no default scene runs,
+  R6a-groundcover-1). Re-run with a same-machine control of `a3a7a43b0`.
+- [ ] **Papyrus interpreter: what the frame budget does not bound** (#5764).
+  #5763 gave the four exclusive `Update` systems a shared 10 000-statement
+  frame allowance (runaway frame 13.6 → 1.4 ms; a never-ending handler dies at
+  100 000 statements over ~10 frames). Left: a burst pays ~0.8 µs a delivery
+  to be deferred (5 000 references: 6.9 ms in the first frame); a value-called
+  function or a frame holding an array/struct local cannot suspend;
+  `reference_script_event_system` still walks the attached scripts (2.8 ns
+  each). Numbers: `docs/audits/BENCH_vm-cost_after-5763.txt`.
 - [ ] **R6a-regress-22 — residual after the camera move** (filed 2026-09-28,
   re-stated 2026-09-30 by #5128). The original reading ("FO4 frame time
   doubled between `4c9a5b36` and `99933f87b`, content unchanged") was a
@@ -643,6 +642,10 @@ performance finding. The measured knob table is in
   total size`, ~20 times in multi-minute `--bench-hold` sessions and 0 in
   short ones. Suspected cause: a `dds::mip_size` rounding gap. Needs a
   targeted repro plus an allocation assert.
+- [ ] **The ReSTIR reservoir claim reads a `writeonly` binding** (#5765, HIGH):
+  `c2647d468`'s nearer-surface claim loads `reservoirsCurr` (SPIR-V
+  `NonReadable`) with no memory dependency. Correct on the dev NVIDIA card,
+  undefined elsewhere; `BYRO_VALIDATION=1` cannot see it.
 - [ ] **FO76 `GeneratedMeshes` truncation tail** (2026-08-29): `02` 0.00%
   clean (all 2 049 truncate), `01` 95.03%, all recoverable. The suspected
   gap (#3461) has closed but the sweep was not re-run; then raise the `0.0`
@@ -688,14 +691,10 @@ performance finding. The measured knob table is in
 
 ### Infrastructure and tooling
 
-- [x] **Clippy `--all-targets` is red** (2026-10-13): about a dozen lints in
-  test and example targets of `scripting` and `byroredux` (#5621, #5744). The
-  CI form without `--all-targets` is clean; it went red twice in three days
-  (10-12, 10-13), each time from a sweep of new code. **Re-zeroed same day**:
-  all 18 lints fixed and both gates green at the fix commit; #5744's HKX
-  deny-level error included. The lane now runs in CI as a non-blocking step
-  (`continue-on-error`), so drift is visible without gating merges; the plain
-  `cargo clippy --workspace` form stays the blocking gate.
+- [ ] **Clippy `--all-targets` carries 6 lints** (2026-10-15): test/example
+  targets of `scripting` (3), `plugin` (2) and the bin (1). The lane is a
+  non-blocking CI step (#5621); the blocking `cargo clippy --workspace -- -D
+  warnings` form is clean.
 - [ ] **Offline texture-set upscale finalization.** `tools/texture-upscale`
   works end-to-end: set discovery, TOML manifests, an external ESRGAN-family
   pass, companion-map upsampling and provenance. Remaining: per-game/per-role
@@ -706,17 +705,17 @@ performance finding. The measured knob table is in
 
 ## Project Stats
 
-Ground-truth as of 2026-10-13 (session close, HEAD `a3a7a43b0`, refreshed after #5763). Every
-figure in this table was measured at that HEAD, not carried forward.
+Ground-truth as of 2026-10-15 (Session 100 close, HEAD `d7c47d741` + closeout fixes). Every
+figure in this table was measured at that tree, not carried forward.
 
 | Metric                                  | Value                        |
 |-----------------------------------------|------------------------------|
-| Rust source lines (`src/` dirs)         | ~757 360                      |
-| Rust total lines (all `.rs`, excl. `target/`) | ~810 405                 |
-| Source files (`.rs`, excl. `target/`)   | 1289 total · 1196 outside `tests/` dirs (+45 / +43 since the 2026-10-12 close) |
+| Rust source lines (`src/` dirs)         | ~789 470                      |
+| Rust total lines (all `.rs`, excl. `target/`) | ~842 970                 |
+| Source files (`.rs`, excl. `target/`)   | 1415 total · 1320 outside `tests/` dirs (+126 / +124 since the 2026-10-13 close; mostly module splits) |
 | Workspace members                       | 34 (count the `[workspace] members` block only; 29 crates + `byroredux` binary + 4 tools — `tools/nifskope` is on disk but not a member) |
-| Tests                                   | **9963 passing, 0 failing** (`cargo test --workspace --no-fail-fast` on rustc 1.96.0, 2026-10-13; 312 ignored; the lock-order detector is off in this count — a `BYRO_LOCK_ORDER_CHECK=1` run without `byroredux-ui` passed 9848). Always pass `--no-fail-fast` for the ground-truth count — without it, `cargo test --workspace` stops after the first binary with a failure and silently omits every crate queued behind it (Session 77 saw 1836 vs the true 6905) — and beware shell pipes: `cargo test … | tail` reports the *pipe's* exit code. |
-| Open issue directories                  | 5724 (`.claude/issues/`)     |
+| Tests                                   | **10 321 passing, 0 failing** (`cargo test --workspace --no-fail-fast` on rustc 1.96.0, 2026-10-15; 322 ignored; the lock-order detector is off in this count). Always pass `--no-fail-fast` for the ground-truth count — without it, `cargo test --workspace` stops after the first binary with a failure and silently omits every crate queued behind it (Session 77 saw 1836 vs the true 6905) — and beware shell pipes: `cargo test … | tail` reports the *pipe's* exit code. |
+| Open issue directories                  | 5818 (`.claude/issues/`)     |
 | NIFs in per-game integration sweeps     | **562 069** across eight games (Skyrim SE re-measured 2026-09-29 at 33 468 over 8 archives, #3712 added Animations; FO76's tail closed by #3461 and the 2026-10-03 re-measure (#4628) swept 102 980 over 5 of its 20 mesh-bearing archives; Skyrim LE 22 466 gated since fb8173fe0; earlier widenings #3369/#3466, Oblivion DLC #3925, Starfield #4440). Oblivion 9 612 · FO3 17 172 · FNV 20 746 · Skyrim SE 33 468 · Skyrim LE 22 466 · FO4 235 082 · FO76 102 980 · Starfield 120 543. |
 | Per-game NIF clean-parse rate           | See the [compatibility matrix](#compatibility-matrix) — it is the single home for per-game parse rates, sweep dates and residual truncation tails. Summary only: 100% clean on all eight titles (Starfield re-measured 2026-09-24 #4440; FO76's `GeneratedMeshes` truncation tail closed by #3461 and re-measured 2026-09-29). |
 | Supported archive formats               | BSA v103/v104/v105, BA2 v1/v2/v3/v7/v8 |

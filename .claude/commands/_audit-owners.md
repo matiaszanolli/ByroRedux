@@ -40,7 +40,7 @@ Rules: rows are **path prefixes**; the FIRST matching row routes a changed file,
 | `crates/core/src/ecs/components/inventory.rs` | gameplay | MEDIUM |
 | `crates/core/src/ecs/components/lock.rs` | gameplay | MEDIUM |
 | `crates/core/src/ecs/components/{sandbox,wander,travel,follow,escort,guard,patrol,eat_sleep}.rs` | gameplay | MEDIUM |
-| `crates/core/src/ecs/components/{actor_values,perk_list,faction_ranks}.rs` | character, ecs, save, concurrency | HIGH |
+| `crates/core/src/ecs/components/{actor_values,faction_ranks}.rs` | character, ecs, save, concurrency | HIGH |
 | `crates/core/src/lighting.rs` | renderer, nifal | MEDIUM |
 | `crates/core/src/atomic_file.rs` | save, tooling | MEDIUM |
 | `crates/core/src/bytes.rs` | parsers, ecs | HIGH |

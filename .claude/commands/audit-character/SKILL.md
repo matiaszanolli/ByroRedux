@@ -23,7 +23,7 @@ changes gameplay silently — no crash, no validation error, no failing test unl
   `RulesetBuilder`), `derived.rs` (`DerivedStatFormula`/`DerivedInput`/`DerivedOutput`/`DerivedScope`/
   `RoundMode`), `leveling.rs`, `attribute.rs`/`skill.rs`, `fallout.rs`/`tes.rs`/`skyrim.rs` (per-family
   ruleset builders), `regen.rs`, `affliction.rs`/`resistance.rs`, `reputation.rs`, `components.rs`.
-  Substrate: `crates/core/src/ecs/components/{actor_values,perk_list,faction_ranks}.rs`.
+  Substrate: `crates/core/src/ecs/components/{actor_values,faction_ranks}.rs`.
 - CHARAL-adjacent (not submodules): `crates/core/src/combat.rs` (Oblivion damage math),
   `crates/core/src/stealth.rs` (FO3/FNV sneak detection) — consumer-less or thin today; verify anyway.
 - **Population boundary**: `byroredux/src/npc_spawn.rs` (`build_character_ruleset`, the only ruleset

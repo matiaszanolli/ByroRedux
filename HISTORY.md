@@ -26,6 +26,44 @@ Commits hold that record.
 
 ---
 
+## Session 100 — "Raiders of the Lost Ark": M47.2's native wave arms the traps and runs Fallout 4's behavior graphs, the grass gets Skyrim's reach, and four audits feed a hygiene fix wave that left the test build broken until the close  (2026-10-13 → 2026-10-15, `4afa43db..d7c47d74` + closeout, 231 commits)
+
+Session 99 closed with a bounded Papyrus interpreter behind the fragment lowering and its cost census open. This session first bounded that cost (#5763), then spent ~80 commits adding the natives the interpreter still declined. That work drove scripts into subsystems the engine did not yet have: behavior graphs, projectiles, trap physics. A renderer, an ECS and an Oblivion audit on 10-14 and a tech-debt audit on 10-15 then fed a ~60-commit fix wave. The wave's last three commits (a `save_io` / `esm/cell` / `condition.rs` split, an `upload_ctx!` sweep and a metrics-snapshot dedup) landed with the bin, `debug-ui` and `scripting` test targets failing to compile, which nobody saw until this close.
+
+- **Papyrus interpreter, bounded.** #5763 gives the four interpreter systems a shared 10 000-statement frame allowance. A run that has not started yet is deferred, and one in progress yields, so a runaway frame fell from 13.6 ms to 1.4 ms (`195e3b4ef`). #5791 caps VM arrays at 512 elements and strings at 4 KiB, closing the tech-debt audit's one HIGH (`5c3c5758d`). #5681 caps `Utility.Wait` on the fragment path.
+- **M47.2 natives.** Quest-alias scripts run on the VM (`caa81f212`). Further natives cover distance, custom, remote and hit events, `PlaceAtMe`, `SetLinkedRef`, `RefCollectionAlias`, `AdvanceSkill`, crime factions, ownership, help messages, `InputEnableLayer`, and terminal and perk fragments. Skyrim NPC and player skills are populated from the UESP CLAS formula (`7c740eca0`). Fallout 4 and Starfield quest-stage fragments bind through the VMAD version-6 walker: 7 150 fragments on FO4 and 10 202 on Starfield (`b649087ef`). With namespaced script resolution, Starfield's FC05 runs live (`e5c0bac60`). Scripted Skyrim references that run a script went 52.9% → 75.4% (`e2a234c6e`). The snapshot format went `FORMAT_MAJOR` 71 → 104.
+- **Traps, projectiles, behavior graphs.** `Weapon.Fire` launches a PROJ-driven projectile that sweeps and hurts (`9e6c44cea`). Dart traps, bear traps and the swinging blade run, through trap hits, activate-parent wiring and node colliders that follow animated nodes (`6db3805a5`, `745d64830`, `fa1473e25`). HitEvent consumers now run after every producer (`ee6468fd1`). The `hkx` reader decodes Fallout 4's Havok 2014 data: all 328 behavior graphs, 13 133 of 14 000 clips and all 121 skeletons (`60082cc55`, `a7bbba273`). The graph runtime evaluates the full generator tree: blenders, sync groups, nested machines and modifiers (`49529db7c`). FO4 actors stand in their archetype idle, run `PlayAnimation` through their graph, and move by the reference-frame root motion (`3bb6806b5`, `df6ad0410`, `e8026e737`). A Skyrim humanoid corpse is posed from its XRGD before its ragdoll activates (#5015, partial, `18b3d87a7`).
+- **Exterior.** The grass overhaul has eight commits:
+  - every game gets Skyrim's 7000–8000 fade, and only chunks in the view wedge stay resident (`b731b01f5`);
+  - per-chunk 3/2/1-segment LOD with geomorphing (`af8323881`);
+  - the blade tier takes its density from authored GRAS data (`592f31b87`);
+  - authored models grow only where LTEX lists them (#4906).
+
+  Skyrim's distant forests draw from the `.btt`/`.lst` tree-LOD family, 43 333 trees on Tamriel (#4913). Starfield pack-ins instance their template cell, which restores 12 218 placements on Cydonia (#5489).
+- **Renderer.** The visible surface alone owns the ReSTIR shadow-ratio reservoir. On FO4's Third Rail, 26% of lit pixels had been losing their history each frame (`c2647d468`). The 10-14 renderer audit then found this fix reads a `writeonly` binding (#5765, HIGH, open). GI hemisphere sampling moved to a dithered sequence (`0b56f1133`).
+- **Audit fix wave.** The 10-14 audits filed renderer 1H/1M/11L, ECS 0H/1M/1L and Oblivion 0H/1M/12L. The 10-15 tech-debt audit filed 1H/8M/62L (#5804–#5857). The fixes:
+  - duplication consolidated into one home each, #5587–#5593 and #5792–#5823 (NIF shape-cull gate, tangent synthesizers, NPC finalize tail, WATR decode, Papyrus dispatch tails, `upload_ctx!`, `EsmReader::for_each_record`);
+  - monolith splits: `effects.rs` (#5468), `components.rs` (#5467), and `save_io.rs`, `esm/cell` and `condition.rs` (`d7c47d741`);
+  - doc and skill rot (#5825–#5840);
+  - bare literals named (#5844–#5848);
+  - gates: the combustion-lab golden regenerated and its lane scheduled nightly (#5854), closed-HIGH real-data pins run nightly (#5799), one-liner examples folded into `inspect.rs` (#5856).
+
+  Older tails closed too: #5009, #5010, #5011, #5029, #5033, #5059, #5460–#5471, #5705–#5709, #5718/#5719, and Skyrim `.fuz` re-identified as xWMA (#5464).
+- **Closeout repairs.** HEAD `d7c47d741` did not build its tests:
+  - f64a299ec changed `gpu_pass_upper_bound_ms` to take a `BTreeMap`, but its test still passed a `Vec`;
+  - the `save_io` split made five `live_load` items private while the hub still re-exported them to tests;
+  - the `condition/tests.rs` split duplicated its imports;
+  - an MQ101 example needed a named lifetime.
+
+  The `upload_ctx!` sweep also left 22 bin warnings: dead `allocator` bindings, kept as `is_none()` guards where they were early returns. And `c528f4dc3` had slid a helper between `spawn_synth_child` and its `#[allow(clippy::too_many_arguments)]`, which turned the blocking clippy gate red. Two guards were red behind the compile errors:
+  - the save shape fingerprint moved only because `PlayerPose` changed files. A path-stripped dump at both commits is identical, so the baseline was refreshed without a bump;
+  - the scripting example ceiling had been passed by the MQ101 restructure, so it was re-measured.
+- **Closeout.** 139 issues closed in the window. 43 had no closing-keyword commit: 38 were bare siblings in `Fix #A #B` lines and already carried close comments, and five got one now (#5469, #5606, #5741, #5742, #5784). The orphan audit found #5585 and #5805 fixed by the split without a keyword, now closed. #5804 is half done (split landed, catalog `ROWS` table not) and stays open. The audit-skill path gate lost `perk_list.rs` with #5610 and was re-pointed.
+
+Net: tests 9963 → 10 321 (+358; 322 ignored), Rust LOC non-test 757 360 → 789 469 (+32 109), total 810 405 → 842 969 (+32 564), files 1289 → 1415 (1196 → 1320 outside `tests/`), issue dirs 5724 → 5818; no bench re-run (R6a-stale-29, 233 commits).
+
+---
+
 ## Session 99 — "Short Circuit": the audit tail drains, and M47.2 puts a bounded Papyrus interpreter behind the fragment lowering and runs reference scripts on it  (2026-10-12 → 2026-10-13, `9b2f1318..a3a7a43b`, 134 commits)
 
 Session 98 closed with the 10-11/10-12 audit bundle mostly fixed and M47.2 (the full scripting runtime) still on the board. This session finished the bundle's tail (49 issues behind `Fix #N` commits), then spent 80 commits on M47.2. The milestone was closed against its design checklist on 10-12. A follow-up pass over 10-12/13 then did the thing the checklist had parked: it interpreted the Papyrus the recognizer chain declines, instead of dropping it.
