@@ -4,14 +4,16 @@ top	CELL	1	261100738	0	1	0
 top	GBFM	1	22181719	356	0	0
 top	PERS	1	17763702	1	0	0
 top	RFGP	1	1412010	22693	0	0
-top	LCTN	1	1104691	779	0	0
+top	LCTN	1	1104691	779	1	0
 top	NAVI	1	93342	1	1	0
 leaf	ACHR	81	0	0	0	0
 leaf	CELL	779	0	0	1	0
 leaf	GBFM	356	0	0	0	0
-leaf	LCTN	779	0	0	0	0
+leaf	LCTN	779	0	0	1	0
 leaf	NAVI	1	0	0	1	0
 leaf	NAVM	439	0	0	1	0
 leaf	PERS	1	0	0	0	0
 leaf	REFR	1478203	0	0	0	0
 leaf	RFGP	22693	0	0	0	0
+# regenerated 2026-10-15 (#5758): dispatch arms AOPF/DLBR/OMOD/SCEN/SECH/SMBN/SMQN/SMEN/TRNS/WTHS now
+# read handled=1; byte totals from the installed 2026-07-01 Starfield build.

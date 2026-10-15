@@ -3296,6 +3296,69 @@ fn dispatch_handled_fourccs_matches_the_live_dispatch_arms() {
     );
 }
 
+/// #5758 — the checked-in `.claude/audit-baselines/sf-esm/*.tsv` files
+/// predate ten dispatch arms, so every `handled` flag they recorded for
+/// those FourCCs was wrong and the audit skill's "diff against the
+/// baseline" first step showed 20 expected diffs — enough noise for a
+/// genuinely dropped arm to hide in. This default-lane test reads the
+/// committed TSVs (no game data needed) and pins the `handled` column
+/// against [`DISPATCH_HANDLED_FOURCCS`] in both directions: a top-level
+/// row may not claim `handled=1` for an unlisted FourCC, and a listed
+/// FourCC that appears as a top-level row may not read `handled=0` — the
+/// latter is the tripwire that turns "new dispatch arm landed without
+/// regenerating the baseline" red instead of silent. Regenerate with
+/// `cargo run --release -p byroredux-plugin --example sf_smoke --
+/// <Starfield>/Data/<name>.esm --tsv --recurse` (leaf rows repeat the
+/// top-level flags and are not checked).
+#[test]
+fn sf_esm_baseline_handled_column_tracks_the_dispatch_list() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let baselines = [
+        "Starfield",
+        "BlueprintShips-Starfield",
+        "Constellation",
+        "OldMars",
+        "ShatteredSpace",
+    ];
+    let listed: Vec<String> = DISPATCH_HANDLED_FOURCCS
+        .iter()
+        .map(|f| String::from_utf8_lossy(f).into_owned())
+        .collect();
+    let mut failures = Vec::new();
+    for name in baselines {
+        let path = root
+            .join(".claude/audit-baselines/sf-esm")
+            .join(format!("{name}.tsv"));
+        let tsv = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
+        for line in tsv.lines().filter(|l| !l.starts_with('#')) {
+            let cols: Vec<&str> = line.split('\t').collect();
+            // columns: scope fourcc grup_count bytes_total immediate_records handled byte_error
+            if cols.first() != Some(&"top") || cols.len() < 7 {
+                continue;
+            }
+            let (fourcc, handled) = (cols[1], cols[5]);
+            let is_listed = listed.iter().any(|l| l == fourcc);
+            match (handled, is_listed) {
+                ("1", false) => failures.push(format!(
+                    "{name}: {fourcc} claims handled=1 but has no dispatch arm"
+                )),
+                (_, true) if handled != "1" => failures.push(format!(
+                    "{name}: {fourcc} is a dispatched arm but the baseline still reads \
+                     handled={handled} — regenerate the TSV (see this test's doc)"
+                )),
+                _ => {}
+            }
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "sf-esm baseline `handled` column is stale against the dispatch list \
+         (#5758):\n{}",
+        failures.join("\n"),
+    );
+}
+
 /// #4175 — a parser that has a real `FormIdRemap` in scope must never
 /// hand `&None` to `CommonNamedFields`/`CommonItemFields`, which would
 /// decode that record's `SCRI`/`VMAD` FormIDs in plugin-local space and
