@@ -240,12 +240,17 @@ pub(crate) fn pending_session_events(world: &World) -> Vec<SessionEvent> {
         .unwrap_or_default()
 }
 
-/// Drain the custom-event queue at the start of the extension dispatch pass.
-///
-/// Boot registers this before every producer-facing extension adapter. Any
-/// event published later in the frame therefore waits for the next Late pass.
-pub(crate) fn extension_custom_event_dispatch_system(world: &World, _dt: f32) {
-    let spatial_snapshot = Arc::new(capture_spatial_snapshot(world));
+/// #5810 — the shared dispatch tail every extension adapter runs: acquire
+/// the host slot, take the mutex, run the one `dispatch_*` call, apply
+/// pending world commands, take diagnostics, drop the lock (#5535:
+/// nothing ECS-shaped may be held across the mutex), then emit and
+/// fault-warn. Each system keeps only its event capture and its one
+/// dispatch call; the drop-before-emit ordering is stated once.
+fn with_extension_host(
+    world: &World,
+    label: &str,
+    dispatch: impl FnOnce(&mut ExtensionHost) -> ExtensionDispatchStats,
+) {
     let host = {
         let Some(slot) = world.try_resource::<ExtensionHostSlot>() else {
             return;
@@ -258,29 +263,45 @@ pub(crate) fn extension_custom_event_dispatch_system(world: &World, _dt: f32) {
     let mut host = host
         .lock()
         .expect("ExtensionHost mutex poisoned by a host panic");
-    host.set_spatial_snapshot(spatial_snapshot);
-    let papyrus_mod_events = host
-        .pending_custom_events
-        .iter()
-        .filter(|event| is_legacy_skse_mod_event_id(&event.event))
-        .cloned()
-        .collect::<Vec<_>>();
-    let stats = host.dispatch_pending_custom_events();
+    let stats = dispatch(&mut host);
     apply_pending_world_commands(world, &mut host);
     let diagnostics = host.take_diagnostics();
     drop(host);
-    for event in papyrus_mod_events {
-        byroredux_scripting::queue_papyrus_mod_event(world, event);
-    }
     emit_diagnostics(diagnostics);
     if stats.faults > 0 {
         log::warn!(
-            "extension custom-event dispatch: events={} deliveries={} commands={} faults={}",
+            "extension {label} dispatch: events={} deliveries={} commands={} faults={}",
             stats.events,
             stats.deliveries,
             stats.commands_applied,
             stats.faults
         );
+    }
+}
+
+/// Drain the custom-event queue at the start of the extension dispatch pass.
+///
+/// Boot registers this before every producer-facing extension adapter. Any
+/// event published later in the frame therefore waits for the next Late pass.
+pub(crate) fn extension_custom_event_dispatch_system(world: &World, _dt: f32) {
+    let spatial_snapshot = Arc::new(capture_spatial_snapshot(world));
+    // #5810 — the shared tail, with this system's extra step kept outside
+    // the host mutex: the legacy SKSE mod events are collected under the
+    // lock (they read the pre-dispatch queue) but queued to the Papyrus
+    // world only after it drops (#5535's nothing-ECS-under-the-mutex rule).
+    let mut papyrus_mod_events = Vec::new();
+    with_extension_host(world, "custom-event", |host| {
+        host.set_spatial_snapshot(spatial_snapshot);
+        papyrus_mod_events.extend(
+            host.pending_custom_events
+                .iter()
+                .filter(|event| is_legacy_skse_mod_event_id(&event.event))
+                .cloned(),
+        );
+        host.dispatch_pending_custom_events()
+    });
+    for event in papyrus_mod_events {
+        byroredux_scripting::queue_papyrus_mod_event(world, event);
     }
 }
 
@@ -579,32 +600,9 @@ pub(crate) fn extension_activation_dispatch_system(world: &World, _dt: f32) {
             activator_form: activator.and_then(|entity| form_bindings.get(&entity).copied()),
         });
 
-    let host = {
-        let Some(slot) = world.try_resource::<ExtensionHostSlot>() else {
-            return;
-        };
-        slot.host()
-    };
-    let Some(host) = host else {
-        return;
-    };
-    let mut host = host
-        .lock()
-        .expect("ExtensionHost mutex poisoned by a host panic");
-    let stats = host.dispatch_activations_with_projections(activations, &projections);
-    apply_pending_world_commands(world, &mut host);
-    let diagnostics = host.take_diagnostics();
-    drop(host);
-    emit_diagnostics(diagnostics);
-    if stats.faults > 0 {
-        log::warn!(
-            "extension activation dispatch: events={} deliveries={} commands={} faults={}",
-            stats.events,
-            stats.deliveries,
-            stats.commands_applied,
-            stats.faults
-        );
-    }
+    with_extension_host(world, "activation", |host| {
+        host.dispatch_activations_with_projections(activations, &projections)
+    });
 }
 
 /// Late-stage adapter from cell-load markers to sandbox callbacks.
@@ -633,32 +631,9 @@ pub(crate) fn extension_cell_load_dispatch_system(world: &World, _dt: f32) {
         subject_form: form_bindings.get(&subject).copied(),
     });
 
-    let host = {
-        let Some(slot) = world.try_resource::<ExtensionHostSlot>() else {
-            return;
-        };
-        slot.host()
-    };
-    let Some(host) = host else {
-        return;
-    };
-    let mut host = host
-        .lock()
-        .expect("ExtensionHost mutex poisoned by a host panic");
-    let stats = host.dispatch_cell_loads_with_projections(cell_loads, &projections);
-    apply_pending_world_commands(world, &mut host);
-    let diagnostics = host.take_diagnostics();
-    drop(host);
-    emit_diagnostics(diagnostics);
-    if stats.faults > 0 {
-        log::warn!(
-            "extension cell-load dispatch: events={} deliveries={} commands={} faults={}",
-            stats.events,
-            stats.deliveries,
-            stats.commands_applied,
-            stats.faults
-        );
-    }
+    with_extension_host(world, "cell-load", |host| {
+        host.dispatch_cell_loads_with_projections(cell_loads, &projections)
+    });
 }
 
 /// Late-stage adapter from ordered equipment mutation batches to sandbox callbacks.
@@ -712,32 +687,9 @@ pub(crate) fn extension_equipment_dispatch_system(world: &World, _dt: f32) {
         return;
     }
 
-    let host = {
-        let Some(slot) = world.try_resource::<ExtensionHostSlot>() else {
-            return;
-        };
-        slot.host()
-    };
-    let Some(host) = host else {
-        return;
-    };
-    let mut host = host
-        .lock()
-        .expect("ExtensionHost mutex poisoned by a host panic");
-    let stats = host.dispatch_equipment_changes_with_projections(changes, &projections);
-    apply_pending_world_commands(world, &mut host);
-    let diagnostics = host.take_diagnostics();
-    drop(host);
-    emit_diagnostics(diagnostics);
-    if stats.faults > 0 {
-        log::warn!(
-            "extension equipment dispatch: events={} deliveries={} commands={} faults={}",
-            stats.events,
-            stats.deliveries,
-            stats.commands_applied,
-            stats.faults
-        );
-    }
+    with_extension_host(world, "equipment", |host| {
+        host.dispatch_equipment_changes_with_projections(changes, &projections)
+    });
 }
 
 /// Late-stage adapter from rebinding-independent gameplay action edges.
@@ -766,32 +718,9 @@ pub(crate) fn extension_input_dispatch_system(world: &World, _dt: f32) {
     if events.is_empty() {
         return;
     }
-    let host = {
-        let Some(slot) = world.try_resource::<ExtensionHostSlot>() else {
-            return;
-        };
-        slot.host()
-    };
-    let Some(host) = host else {
-        return;
-    };
-    let mut host = host
-        .lock()
-        .expect("ExtensionHost mutex poisoned by a host panic");
-    let stats = host.dispatch_input_actions_inner(events);
-    apply_pending_world_commands(world, &mut host);
-    let diagnostics = host.take_diagnostics();
-    drop(host);
-    emit_diagnostics(diagnostics);
-    if stats.faults > 0 {
-        log::warn!(
-            "extension input dispatch: events={} deliveries={} commands={} faults={}",
-            stats.events,
-            stats.deliveries,
-            stats.commands_applied,
-            stats.faults
-        );
-    }
+    with_extension_host(world, "input", |host| {
+        host.dispatch_input_actions_inner(events)
+    });
 }
 
 /// Late-stage delivery of committed save/load/new-game transitions.
@@ -805,32 +734,9 @@ pub(crate) fn extension_session_dispatch_system(world: &World, _dt: f32) {
     if events.is_empty() {
         return;
     }
-    let host = {
-        let Some(slot) = world.try_resource::<ExtensionHostSlot>() else {
-            return;
-        };
-        slot.host()
-    };
-    let Some(host) = host else {
-        return;
-    };
-    let mut host = host
-        .lock()
-        .expect("ExtensionHost mutex poisoned by a host panic");
-    let stats = host.dispatch_session_events_inner(events);
-    apply_pending_world_commands(world, &mut host);
-    let diagnostics = host.take_diagnostics();
-    drop(host);
-    emit_diagnostics(diagnostics);
-    if stats.faults > 0 {
-        log::warn!(
-            "extension session dispatch: events={} deliveries={} commands={} faults={}",
-            stats.events,
-            stats.deliveries,
-            stats.commands_applied,
-            stats.faults
-        );
-    }
+    with_extension_host(world, "session", |host| {
+        host.dispatch_session_events_inner(events)
+    });
 }
 
 /// Late-stage adapter from combat hit markers to sandbox callbacks.
@@ -905,62 +811,16 @@ pub(crate) fn extension_hit_dispatch_system(world: &World, _dt: f32) {
         },
     );
 
-    let host = {
-        let Some(slot) = world.try_resource::<ExtensionHostSlot>() else {
-            return;
-        };
-        slot.host()
-    };
-    let Some(host) = host else {
-        return;
-    };
-    let mut host = host
-        .lock()
-        .expect("ExtensionHost mutex poisoned by a host panic");
-    let stats = host.dispatch_hits_with_projections(hits, &projections);
-    apply_pending_world_commands(world, &mut host);
-    let diagnostics = host.take_diagnostics();
-    drop(host);
-    emit_diagnostics(diagnostics);
-    if stats.faults > 0 {
-        log::warn!(
-            "extension hit dispatch: events={} deliveries={} commands={} faults={}",
-            stats.events,
-            stats.deliveries,
-            stats.commands_applied,
-            stats.faults
-        );
-    }
+    with_extension_host(world, "hit", |host| {
+        host.dispatch_hits_with_projections(hits, &projections)
+    });
 }
 
 /// Late-stage owner of manifest-declared recurring extension callbacks.
 pub(crate) fn extension_update_dispatch_system(world: &World, dt: f32) {
-    let host = {
-        let Some(slot) = world.try_resource::<ExtensionHostSlot>() else {
-            return;
-        };
-        slot.host()
-    };
-    let Some(host) = host else {
-        return;
-    };
-    let mut host = host
-        .lock()
-        .expect("ExtensionHost mutex poisoned by a host panic");
-    let stats = host.dispatch_recurring_updates(dt);
-    apply_pending_world_commands(world, &mut host);
-    let diagnostics = host.take_diagnostics();
-    drop(host);
-    emit_diagnostics(diagnostics);
-    if stats.faults > 0 {
-        log::warn!(
-            "extension update dispatch: events={} deliveries={} commands={} faults={}",
-            stats.events,
-            stats.deliveries,
-            stats.commands_applied,
-            stats.faults
-        );
-    }
+    with_extension_host(world, "update", |host| {
+        host.dispatch_recurring_updates(dt)
+    });
 }
 
 pub(super) fn emit_diagnostics(diagnostics: Vec<ExtensionDiagnostic>) {
