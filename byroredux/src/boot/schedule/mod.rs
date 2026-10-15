@@ -650,7 +650,19 @@ mod system_access_declaration_tests {
     // walk), and its dispatcher reads a dozen storages/resources the row
     // never declared — including the `StoryManagerRng` write
     // `GetRandomPercent` takes.
-    const CONDITION_SRC: &str = include_str!("../../../../crates/scripting/src/condition.rs");
+    // #5804 — condition.rs is now a hub; the evaluator family it held lives
+    // in condition/{eval,context,catalog,requirement}.rs. The concat keeps
+    // the callee walk whole across the split (same rule as
+    // SCRIPTING_FRAGMENT_SRC above): pointing it at any single file would
+    // silently narrow the scan to whichever fragment landed there. catalog.rs
+    // goes LAST because its trailing `#[cfg(test)]` rows-walk module is where
+    // `production()` splits the text — everything the walk needs precedes it.
+    const CONDITION_SRC: &str = concat!(
+        include_str!("../../../../crates/scripting/src/condition/eval.rs"),
+        include_str!("../../../../crates/scripting/src/condition/context.rs"),
+        include_str!("../../../../crates/scripting/src/condition/requirement.rs"),
+        include_str!("../../../../crates/scripting/src/condition/catalog.rs"),
+    );
 
     /// The nine `add_to_with_access` registrations, each mapped to the
     /// function bodies that make up its acquisition surface.

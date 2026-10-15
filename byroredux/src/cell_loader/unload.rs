@@ -1416,9 +1416,10 @@ mod retention_hoisting_tests {
 /// no test fixture, so — matching this crate's convention
 /// (`retention_hoisting_tests` above) — the contract is a static source
 /// scan. Unlike `retention_hoisting_tests`, no truncation at the first
-/// `#[cfg(test)]`: `save_io.rs` carries a test module above the reload
-/// fns, and none of these needles appear in that module's tests (they are
-/// all in this module, in `unload.rs`).
+/// `#[cfg(test)]`: `save_io/live_load.rs` (#5585, formerly `save_io.rs`)
+/// carries a test module above the reload fns, and none of these needles
+/// appear in that module's tests (they are all in this module, in
+/// `unload.rs`).
 #[cfg(test)]
 mod purge_wiring_tests {
     fn source_of(path: &str) -> String {
@@ -1473,7 +1474,9 @@ mod purge_wiring_tests {
 
     #[test]
     fn save_load_interior_reload_purges_before_teardown() {
-        let src = source_of("save_io.rs");
+        // #5585 — the reload fns moved from `save_io.rs` to
+        // `save_io/live_load.rs`; the fn window keeps its shape.
+        let src = source_of("save_io/live_load.rs");
         let body = fn_window(
             &src,
             "fn reload_interior_session(",
@@ -1485,7 +1488,9 @@ mod purge_wiring_tests {
 
     #[test]
     fn save_load_exterior_reload_purges_before_teardown() {
-        let src = source_of("save_io.rs");
+        // #5585 — the reload fns moved from `save_io.rs` to
+        // `save_io/live_load.rs`; the fn window keeps its shape.
+        let src = source_of("save_io/live_load.rs");
         let body = fn_window(
             &src,
             "fn reload_exterior_session(",

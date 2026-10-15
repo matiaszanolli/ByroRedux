@@ -31,7 +31,5 @@ pub fn take_barter_request(world: &World) -> Option<EntityId> {
 }
 
 pub fn register(world: &mut World) {
-    if world.try_resource::<PendingBarterMenu>().is_none() {
-        world.insert_resource(PendingBarterMenu::default());
-    }
+    world.init_resource::<PendingBarterMenu>();
 }

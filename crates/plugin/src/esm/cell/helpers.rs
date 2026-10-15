@@ -149,10 +149,8 @@ impl CellSubrecordFields {
             // (< 0.01 u) with a decoded bake instance (#5484 probe).
             // These are the refs to skip: the bake already draws them.
             b"XCRI" if sub.data.len() >= 8 => {
-                let mesh_count =
-                    u32::from_le_bytes(sub.data[0..4].try_into().unwrap()) as usize;
-                let ref_count =
-                    u32::from_le_bytes(sub.data[4..8].try_into().unwrap()) as usize;
+                let mesh_count = u32::from_le_bytes(sub.data[0..4].try_into().unwrap()) as usize;
+                let ref_count = u32::from_le_bytes(sub.data[4..8].try_into().unwrap()) as usize;
                 let expected = 8 + mesh_count.saturating_mul(4) + ref_count.saturating_mul(4);
                 if expected != sub.data.len() {
                     log::warn!(
@@ -168,8 +166,7 @@ impl CellSubrecordFields {
                     self.precombined_mesh_hashes.reserve(mesh_count);
                     let mut off = 8;
                     for _ in 0..mesh_count {
-                        let h =
-                            u32::from_le_bytes(sub.data[off..off + 4].try_into().unwrap());
+                        let h = u32::from_le_bytes(sub.data[off..off + 4].try_into().unwrap());
                         self.precombined_mesh_hashes.push(h);
                         off += 4;
                     }
@@ -178,8 +175,7 @@ impl CellSubrecordFields {
                     let entries = ref_count / 2;
                     self.absorbed_ref_bakes.reserve(entries);
                     for _ in 0..entries {
-                        let fid =
-                            u32::from_le_bytes(sub.data[off..off + 4].try_into().unwrap());
+                        let fid = u32::from_le_bytes(sub.data[off..off + 4].try_into().unwrap());
                         let hash =
                             u32::from_le_bytes(sub.data[off + 4..off + 8].try_into().unwrap());
                         self.absorbed_ref_bakes
@@ -358,7 +354,8 @@ pub(super) fn read_form_id(reader: &EsmReader, data: &[u8]) -> Option<u32> {
 /// bytes that don't make a full FormID are silently dropped — they're
 /// always alignment padding rather than a partial entry.
 pub(super) fn read_form_id_array(reader: &EsmReader, data: &[u8]) -> Vec<u32> {
-    data.as_chunks::<4>().0
+    data.as_chunks::<4>()
+        .0
         .iter()
         .map(|c| reader.remap_form_id(u32::from_le_bytes([c[0], c[1], c[2], c[3]])))
         .collect()
@@ -431,7 +428,8 @@ pub(super) fn decode_ragdoll_pose(data: &[u8]) -> Vec<super::RagdollPoseBone> {
             data.len()
         );
     }
-    data.as_chunks::<ENTRY>().0
+    data.as_chunks::<ENTRY>()
+        .0
         .iter()
         .map(|entry| {
             let float =

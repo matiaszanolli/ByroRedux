@@ -1,0 +1,1591 @@
+use super::*;
+use byroredux_core::ecs::storage::EntityId;
+use byroredux_core::ecs::world::World;
+use byroredux_plugin::esm::records::condition::{
+    ComparisonOp, Condition, ConditionValue, RunOn,
+};
+
+use super::*;
+use byroredux_core::ecs::world::World;
+use byroredux_plugin::esm::records::condition::{ComparisonOp, RunOn};
+
+#[test]
+fn hardcore_condition_reads_the_live_mode_flag() {
+    use byroredux_core::ecs::resources::HardcoreMode;
+    let mut world = World::new();
+    let actor = world.spawn();
+    let condition = cond(586, ComparisonOp::Eq, 1.0, false);
+    assert!(!evaluate_condition(&condition, &world, &ctx(actor)));
+    world.insert_resource(HardcoreMode { enabled: true });
+    assert!(evaluate_condition(&condition, &world, &ctx(actor)));
+    world.resource_mut::<HardcoreMode>().enabled = false;
+    assert!(!evaluate_condition(&condition, &world, &ctx(actor)));
+}
+
+/// CK *GetPlayerTeammate*: "Returns 1 if an actor is currently set as a player
+/// teammate via the Papyrus SetPlayerTeammate() function, 0 if not."
+#[test]
+fn get_player_teammate_reads_the_follower_flags() {
+    use byroredux_core::ecs::components::FormIdComponent;
+    use byroredux_core::form_id::{FormIdPair, FormIdPool, LocalFormId, PluginId};
+    let mut world = World::new();
+    crate::register(&mut world);
+    world.register::<FormIdComponent>();
+    let mut pool = FormIdPool::default();
+    let id = pool.intern(FormIdPair {
+        plugin: PluginId::from_filename("Skyrim.esm"),
+        local: LocalFormId(0x0001_0F90),
+    });
+    world.insert_resource(pool);
+    let actor = world.spawn();
+    world.insert(actor, FormIdComponent(id));
+    let condition = cond(453, ComparisonOp::Eq, 1.0, false);
+    assert!(!evaluate_condition(&condition, &world, &ctx(actor)));
+    world.resource_mut::<crate::FollowerState>().set_teammate(0x0001_0F90, true, false);
+    assert!(evaluate_condition(&condition, &world, &ctx(actor)));
+    world.resource_mut::<crate::FollowerState>().set_teammate(0x0001_0F90, false, false);
+    assert!(!evaluate_condition(&condition, &world, &ctx(actor)));
+}
+
+/// CK *GetKeywordDataForLocation*: "returns this value, if any. It otherwise
+/// returns 0."
+#[test]
+fn keyword_data_conditions_read_the_stored_float() {
+    const LOCATION: u32 = 0x0001_0F93;
+    const KEYWORD: u32 = 0x0001_0F94;
+    let mut world = World::new();
+    crate::register(&mut world);
+    let subject = world.spawn();
+    let at_location = Condition {
+        function_index: 606,
+        comparator: ComparisonOp::Eq,
+        comparand: ConditionValue::Literal(10.0),
+        param_1: LOCATION,
+        param_2: KEYWORD,
+        ..Default::default()
+    };
+    let mut other_keyword = at_location;
+    other_keyword.param_2 = KEYWORD + 1;
+    assert!(!evaluate_condition(&at_location, &world, &ctx(subject)));
+    world.resource_mut::<crate::LocationKeywordData>().set(LOCATION, KEYWORD, 10.0);
+    assert!(evaluate_condition(&at_location, &world, &ctx(subject)));
+    assert!(!evaluate_condition(&other_keyword, &world, &ctx(subject)), "another keyword reads 0");
+}
+
+fn ctx(subject: EntityId) -> ConditionContext<'static> {
+    ConditionContext::for_subject(subject)
+}
+
+fn cond(
+    function_index: u32,
+    comparator: ComparisonOp,
+    comparand: f32,
+    or_next: bool,
+) -> Condition {
+    Condition {
+        function_index,
+        comparator,
+        comparand: ConditionValue::Literal(comparand),
+        run_on: RunOn::Subject,
+        or_next,
+        ..Default::default()
+    }
+}
+
+#[test]
+fn empty_condition_list_returns_true() {
+    let world = World::new();
+    let result = evaluate(&Vec::new(), &world, &ctx(0));
+    assert!(result, "no conditions = always fires");
+}
+
+#[test]
+fn single_true_condition_returns_true() {
+    use crate::quest_stages::{QuestFormId, QuestStageState};
+    let mut world = World::new();
+    crate::register(&mut world);
+    let mut state = QuestStageState::default();
+    state.set_stage(QuestFormId(0xAA), 42);
+    world.insert_resource(state);
+
+    // GetStage(0xAA) == 42
+    let list = vec![cond(58, ComparisonOp::Eq, 42.0, false).with_param_1(0xAA)];
+    assert!(evaluate(&list, &world, &ctx(0)));
+}
+
+#[test]
+fn single_false_condition_returns_false() {
+    use crate::quest_stages::{QuestFormId, QuestStageState};
+    let mut world = World::new();
+    crate::register(&mut world);
+    let mut state = QuestStageState::default();
+    state.set_stage(QuestFormId(0xAA), 42);
+    world.insert_resource(state);
+
+    // GetStage(0xAA) == 99 (actual is 42)
+    let list = vec![cond(58, ComparisonOp::Eq, 99.0, false).with_param_1(0xAA)];
+    assert!(!evaluate(&list, &world, &ctx(0)));
+}
+
+#[test]
+fn unknown_function_index_returns_zero_and_satisfies_eq_zero() {
+    // Bethesda's "unknown function safe-default" — function returns
+    // 0.0, so a `== 0` comparator matches.
+    let world = World::new();
+    let list = vec![cond(99999, ComparisonOp::Eq, 0.0, false)];
+    assert!(evaluate(&list, &world, &ctx(0)));
+}
+
+#[test]
+fn and_chain_short_circuits_on_first_false() {
+    // [false, true, true] = AND chain — first failure ends scan.
+    let world = World::new();
+    let list = vec![
+        cond(99999, ComparisonOp::Ne, 0.0, false), // false (Unknown→0, !=0 fails)
+        cond(99999, ComparisonOp::Eq, 0.0, false), // would be true
+    ];
+    assert!(!evaluate(&list, &world, &ctx(0)));
+}
+
+#[test]
+fn or_block_returns_true_when_any_member_true() {
+    // [c0 OR c1 OR c2] — c0 false, c1 true short-circuits the block.
+    let world = World::new();
+    let list = vec![
+        cond(99999, ComparisonOp::Ne, 0.0, true),  // false, or_next
+        cond(99999, ComparisonOp::Eq, 0.0, true),  // true (block hit)
+        cond(99999, ComparisonOp::Ne, 0.0, false), // would be false; block already true
+    ];
+    assert!(evaluate(&list, &world, &ctx(0)));
+}
+
+#[test]
+fn or_precedence_quirk_a_and_b_or_c_and_d_groups_b_or_c() {
+    // The load-bearing test: `A AND B OR C AND D` evaluates as
+    // `A AND (B OR C) AND D`, NOT `(A AND B) OR (C AND D)`.
+    //
+    // We construct:
+    //   A: false (failing condition)
+    //   B: true, or_next=true   ┐
+    //   C: true, or_next=false  ┘  → (B OR C) = true
+    //   D: true
+    //
+    // Standard interpretation `(A AND B) OR (C AND D)` would be
+    // `(false AND true) OR (true AND true)` = false OR true = true.
+    // OR-precedence interpretation `A AND (B OR C) AND D` is
+    // `false AND true AND true` = false.
+    //
+    // Expecting the OR-precedence interpretation → false.
+    let world = World::new();
+    let list = vec![
+        cond(99999, ComparisonOp::Ne, 0.0, false), // A: false
+        cond(99999, ComparisonOp::Eq, 0.0, true),  // B: true, or_next
+        cond(99999, ComparisonOp::Eq, 0.0, false), // C: true (no or_next: end of OR block)
+        cond(99999, ComparisonOp::Eq, 0.0, false), // D: true
+    ];
+    assert!(
+        !evaluate(&list, &world, &ctx(0)),
+        "OR-precedence: A AND (B OR C) AND D = false AND (true OR true) AND true = false"
+    );
+}
+
+#[test]
+fn or_precedence_quirk_swap_test_a_true() {
+    // Flip A to true so the AND chain succeeds — proves the
+    // OR-precedence grouping isn't just always-false.
+    //
+    //   A: true
+    //   B: false, or_next=true   ┐
+    //   C: true,  or_next=false  ┘  → (B OR C) = true
+    //   D: true
+    //
+    // → true AND (false OR true) AND true = true
+    let world = World::new();
+    let list = vec![
+        cond(99999, ComparisonOp::Eq, 0.0, false), // A: true (Unknown=0, ==0)
+        cond(99999, ComparisonOp::Ne, 0.0, true),  // B: false, or_next
+        cond(99999, ComparisonOp::Eq, 0.0, false), // C: true
+        cond(99999, ComparisonOp::Eq, 0.0, false), // D: true
+    ];
+    assert!(evaluate(&list, &world, &ctx(0)));
+}
+
+/// SCR-D6-NEW-01: a single condition whose `or_next` is set (a
+/// malformed/truncated CTDA tail leaving the OR bit on the FINAL
+/// member). The block-discovery loop walks the index to `len`; without
+/// the clamp the inclusive range indexes one past the end and panics
+/// when no earlier member short-circuits true. With the only member
+/// false, evaluation must reach the clamp and return `false`, not panic.
+#[test]
+fn trailing_or_next_on_final_condition_does_not_panic() {
+    let world = World::new();
+    let list = vec![cond(99999, ComparisonOp::Ne, 0.0, true)]; // false, or_next
+    assert!(
+        !evaluate(&list, &world, &ctx(0)),
+        "a trailing or_next on the final condition must clamp, not panic",
+    );
+}
+
+/// SCR-D6-NEW-01, multi-member block: every OR member is false and the
+/// LAST still carries `or_next`. The whole block is false, so the clamp
+/// must be reached for all members (no short-circuit to mask the OOB).
+#[test]
+fn trailing_or_next_block_all_false_returns_false() {
+    let world = World::new();
+    let list = vec![
+        cond(99999, ComparisonOp::Ne, 0.0, true), // false, or_next
+        cond(99999, ComparisonOp::Ne, 0.0, true), // false, or_next (final → meaningless)
+    ];
+    assert!(
+        !evaluate(&list, &world, &ctx(0)),
+        "an all-false OR block ending in or_next must return false, not panic",
+    );
+}
+
+#[test]
+fn get_stage_returns_quest_state_stage() {
+    use crate::quest_stages::{QuestFormId, QuestStageState};
+    let mut world = World::new();
+    crate::register(&mut world);
+    let mut state = QuestStageState::default();
+    state.set_stage(QuestFormId(0xAA), 42);
+    world.insert_resource(state);
+
+    // GetStage(0xAA) == 42
+    let list = vec![cond(58, ComparisonOp::Eq, 42.0, false).with_param_1(0xAA)];
+    assert!(evaluate(&list, &world, &ctx(0)));
+    // GetStage(0xAA) < 100
+    let list = vec![cond(58, ComparisonOp::Lt, 100.0, false).with_param_1(0xAA)];
+    assert!(evaluate(&list, &world, &ctx(0)));
+    // GetStage(0xAA) > 50 (false — actually 42)
+    let list = vec![cond(58, ComparisonOp::Gt, 50.0, false).with_param_1(0xAA)];
+    assert!(!evaluate(&list, &world, &ctx(0)));
+}
+
+// ── GetIsID (#1666) ─────────────────────────────────────────────────
+
+/// #5041 — the param is the Run-On's base `NPC_`, not the placed ACHR:
+/// an actor whose base is `param_1` passes even though its own
+/// (reference) FormID differs, and naming the reference id fails.
+#[test]
+fn get_is_id_matches_run_on_base_object_not_placed_reference() {
+    use byroredux_core::ecs::components::FormIdComponent;
+    use byroredux_core::form_id::{FormIdPair, FormIdPool, LocalFormId, PluginId};
+
+    const ACHR: u32 = 0x0001_4D8A;
+    const NPC: u32 = 0x0000_A1B2;
+    let mut world = World::new();
+    let mut pool = FormIdPool::new();
+    let fid = pool.intern(FormIdPair {
+        plugin: PluginId::from_filename("FalloutNV.esm"),
+        local: LocalFormId(ACHR),
+    });
+    world.insert_resource(pool);
+    let actor = world.spawn();
+    world.insert(actor, FormIdComponent(fid));
+    world.insert(
+        actor,
+        crate::scene::SceneAliasCandidate {
+            reference_form_id: ACHR,
+            base_form_id: NPC,
+            ..Default::default()
+        },
+    );
+
+    let list = vec![cond(72, ComparisonOp::Eq, 1.0, false).with_param_1(NPC)];
+    assert!(evaluate(&list, &world, &ctx(actor)));
+    let list = vec![cond(72, ComparisonOp::Eq, 0.0, false).with_param_1(ACHR)];
+    assert!(
+        evaluate(&list, &world, &ctx(actor)),
+        "GetIsID must not match the placed reference's own FormID"
+    );
+    let list = vec![cond(72, ComparisonOp::Eq, 0.0, false).with_param_1(0x0001_9999)];
+    assert!(evaluate(&list, &world, &ctx(actor)));
+}
+
+#[test]
+fn get_is_id_zero_without_identity() {
+    // No SceneAliasCandidate → GetIsID returns 0.0.
+    let world = World::new();
+    let actor: EntityId = 7;
+    let list = vec![cond(72, ComparisonOp::Eq, 0.0, false).with_param_1(0x0001_4D8A)];
+    assert!(evaluate(&list, &world, &ctx(actor)));
+}
+
+#[test]
+fn get_vm_script_variable_reads_cis2_named_state_from_reference() {
+    use byroredux_core::ecs::components::FormIdComponent;
+    use byroredux_core::form_id::{FormIdPair, FormIdPool, LocalFormId, PluginId};
+    use byroredux_plugin::esm::records::condition::ConditionStringId;
+
+    const GATE: u32 = 0x0009_0A05;
+    let mut world = World::new();
+    crate::register(&mut world);
+    let mut pool = FormIdPool::new();
+    let gate_form_id = pool.intern(FormIdPair {
+        plugin: PluginId::from_filename("Skyrim.esm"),
+        local: LocalFormId(GATE),
+    });
+    world.insert_resource(pool);
+    let subject = world.spawn();
+    let gate = world.spawn();
+    world.insert(gate, FormIdComponent(gate_form_id));
+    let mut variables = crate::ScriptVariables::default();
+    variables.set_by_name("::isOpen_var", 1.0);
+    world.insert(gate, variables);
+    let mut condition = cond(630, ComparisonOp::Eq, 1.0, false).with_param_1(GATE);
+    condition.param_2_text = Some(ConditionStringId::from_text("::isOpen_var"));
+
+    assert!(evaluate(&vec![condition], &world, &ctx(subject)));
+}
+
+/// M47.2 — `GetVMQuestVariable` (629) reads the named quest variable:
+/// the scripted write, else the VMAD-authored value, else 0. A condition
+/// without its CIS2 name reads 0.
+#[test]
+fn get_vm_quest_variable_reads_writes_then_authored_values() {
+    use crate::quest_variables::{install_quest_script_variables, QuestScriptVariables};
+    use crate::QuestFormId;
+    use byroredux_plugin::esm::records::condition::ConditionStringId;
+    use byroredux_plugin::esm::records::script_instance::{
+        PropertyValue, ScriptInstance, ScriptInstanceData, ScriptProperty,
+    };
+
+    const MS11: u32 = 0x0004_4B4B;
+    let mut world = World::new();
+    let subject = world.spawn();
+    install_quest_script_variables(
+        &mut world,
+        [(
+            MS11,
+            &ScriptInstanceData {
+            version: 5,
+            object_format: 2,
+            scripts: vec![ScriptInstance {
+                name: "MS11QuestScript".into(),
+                status: 0,
+                properties: vec![ScriptProperty {
+                    name: "FriendsKilled".into(),
+                    status: 1,
+                    value: PropertyValue::Int32(2),
+                }],
+            }],
+            },
+        )],
+    );
+    let gate = |variable: &str, comparand: f32| {
+        let mut condition = cond(629, ComparisonOp::Eq, comparand, false).with_param_1(MS11);
+        condition.param_2_text = Some(ConditionStringId::from_text(variable));
+        vec![condition]
+    };
+
+    assert!(evaluate(&gate("::FriendsKilled_var", 2.0), &world, &ctx(subject)));
+    assert!(evaluate(&gate("::Unwritten_var", 0.0), &world, &ctx(subject)));
+    world
+        .resource_mut::<QuestScriptVariables>()
+        .set(QuestFormId(MS11), QuestScriptVariables::property_key("FriendsKilled"), 5.0);
+    assert!(evaluate(&gate("::FriendsKilled_var", 5.0), &world, &ctx(subject)));
+    assert!(!evaluate(&gate("::FriendsKilled_var", 2.0), &world, &ctx(subject)));
+
+    let mut nameless = cond(629, ComparisonOp::Eq, 0.0, false).with_param_1(MS11);
+    nameless.param_2_text = None;
+    assert!(evaluate(&vec![nameless], &world, &ctx(subject)));
+}
+
+// ── GetDead / GetInCell (MQ101 scene gates) ─────────────────────────
+
+#[test]
+fn get_dead_tracks_sparse_actor_lifecycle_marker() {
+    use byroredux_core::ecs::components::Dead;
+
+    let mut world = World::new();
+    let alive = world.spawn();
+    let dead = world.spawn();
+    world.insert(dead, Dead);
+
+    let condition = vec![cond(46, ComparisonOp::Eq, 1.0, false)];
+    assert!(!evaluate(&condition, &world, &ctx(alive)));
+    assert!(evaluate(&condition, &world, &ctx(dead)));
+}
+
+#[test]
+fn get_in_cell_resolves_authored_identity_through_cell_root() {
+    use byroredux_core::ecs::components::{CellFormId, CellRoot};
+
+    const HELGEN_KEEP: u32 = 0x000A_6A7D;
+    let mut world = World::new();
+    let root = world.spawn();
+    let actor = world.spawn();
+    let unowned = world.spawn();
+    world.insert(root, CellRoot(root));
+    world.insert(root, CellFormId(HELGEN_KEEP));
+    world.insert(actor, CellRoot(root));
+
+    let in_helgen = vec![cond(67, ComparisonOp::Eq, 1.0, false).with_param_1(HELGEN_KEEP)];
+    assert!(evaluate(&in_helgen, &world, &ctx(actor)));
+    assert!(evaluate(&in_helgen, &world, &ctx(root)));
+    assert!(!evaluate(&in_helgen, &world, &ctx(unowned)));
+
+    let in_other_cell = vec![cond(67, ComparisonOp::Eq, 1.0, false).with_param_1(0x0000_1234)];
+    assert!(!evaluate(&in_other_cell, &world, &ctx(actor)));
+}
+
+// ── HasPerk (#1667) ─────────────────────────────────────────────────
+
+#[test]
+fn has_perk_checks_actor_perks() {
+    use byroredux_core::character::Perks;
+
+    let mut world = World::new();
+    let actor = world.spawn();
+    let mut perks = Perks::default();
+    perks.set_rank(0x0005_8F80, 1);
+    world.insert(actor, perks);
+
+    // HasPerk(0x00058F80) == 1 — the actor holds it.
+    let list = vec![cond(449, ComparisonOp::Eq, 1.0, false).with_param_1(0x0005_8F80)];
+    assert!(evaluate(&list, &world, &ctx(actor)));
+
+    // HasPerk(0x00058F81) == 0 — not held.
+    let list = vec![cond(449, ComparisonOp::Eq, 0.0, false).with_param_1(0x0005_8F81)];
+    assert!(evaluate(&list, &world, &ctx(actor)));
+}
+
+#[test]
+fn has_perk_zero_without_perks() {
+    // No Perks component → HasPerk returns 0.0.
+    let world = World::new();
+    let actor: EntityId = 3;
+    let list = vec![cond(449, ComparisonOp::Eq, 0.0, false).with_param_1(0x0005_8F80)];
+    assert!(evaluate(&list, &world, &ctx(actor)));
+}
+
+#[test]
+fn catalog_names_round_trip_and_match_indices() {
+    // Every catalog entry resolves by name (case-insensitively) back to
+    // itself, and no entry is `Unknown`.
+    for f in ConditionFunction::CATALOG {
+        assert_ne!(f.name(), "Unknown");
+        assert_eq!(ConditionFunction::from_name(f.name()), Some(f));
+        assert_eq!(
+            ConditionFunction::from_name(&f.name().to_lowercase()),
+            Some(f)
+        );
+    }
+    assert_eq!(ConditionFunction::from_name("nope"), None);
+    // The console-facing name maps to the same variant `from_index` yields.
+    assert_eq!(
+        ConditionFunction::from_name("GetReputationThreshold"),
+        Some(ConditionFunction::from_index(575))
+    );
+}
+
+/// #5431 — CTDA fn 0 is not a catalogued function. It was briefly mapped
+/// to a constant-`-1` `GetButtonPressed`, but xEdit has index 0 as
+/// `GetWantBlocking` on TES5/FO4 and no index 0 on TES4/FO3/FNV, so that
+/// mapping relabelled Skyrim's IDLE combat predicates. It must stay
+/// `Unknown` (fail-open) until it is mapped from xEdit's table.
+#[test]
+fn function_index_zero_is_not_catalogued() {
+    assert_eq!(ConditionFunction::from_index(0), ConditionFunction::Unknown(0));
+    assert_eq!(ConditionFunction::from_name("GetButtonPressed"), None);
+}
+
+/// #5431 — rustdoc attaches a doc comment to the next item, so a variant
+/// inserted between a doc comment and its variant silently re-homes the
+/// doc (the same defect class as #5269). Pin `GetDistance`'s doc to it.
+#[test]
+fn get_distance_variant_keeps_its_doc_comment() {
+    let src = include_str!("catalog.rs");
+    let at = src
+        .find("    GetDistance,\n")
+        .expect("the GetDistance variant declaration");
+    let doc_line = src[..at]
+        .lines()
+        .last()
+        .expect("a line precedes the variant");
+    assert!(
+        doc_line.contains("FO3 / FNV / Skyrim index **1**"),
+        "GetDistance's doc comment must sit directly above the variant, \
+         found {doc_line:?}"
+    );
+}
+
+// ── GetLevel / GetIsClass / GetIsRace / GetXPForNextLevel (CHARAL) ──
+
+#[test]
+fn get_level_reads_character_level() {
+    use byroredux_core::character::CharacterLevel;
+    let mut world = World::new();
+    let actor = world.spawn();
+    world.insert(actor, CharacterLevel { level: 12, xp: 40 });
+    // GetLevel == 12.
+    let list = vec![cond(80, ComparisonOp::Eq, 12.0, false)];
+    assert!(evaluate(&list, &world, &ctx(actor)));
+    // Absent component → 0.
+    let bare: EntityId = 9;
+    let list = vec![cond(80, ComparisonOp::Eq, 0.0, false)];
+    assert!(evaluate(&list, &world, &ctx(bare)));
+}
+
+#[test]
+fn get_equipped_resolves_occupied_inventory_item() {
+    use byroredux_core::ecs::components::{EquipmentSlots, Inventory, ItemStack};
+
+    const WORN: u32 = 0x0001_2E49;
+    const CARRIED: u32 = 0x0001_2EB7;
+    let mut world = World::new();
+    let actor = world.spawn();
+    let mut inventory = Inventory::new();
+    let worn = inventory.push(ItemStack::new(WORN, 1));
+    inventory.push(ItemStack::new(CARRIED, 1));
+    let mut equipment = EquipmentSlots::new();
+    equipment.equip(1 << 2, worn);
+    world.insert(actor, inventory);
+    world.insert(actor, equipment);
+
+    assert!(evaluate(
+        &vec![cond(182, ComparisonOp::Eq, 1.0, false).with_param_1(WORN)],
+        &world,
+        &ctx(actor),
+    ));
+    assert!(evaluate(
+        &vec![cond(182, ComparisonOp::Eq, 0.0, false).with_param_1(CARRIED)],
+        &world,
+        &ctx(actor),
+    ));
+}
+
+#[test]
+fn has_loaded_3d_tracks_live_spatial_component() {
+    use byroredux_core::ecs::components::GlobalTransform;
+
+    let mut world = World::new();
+    let loaded = world.spawn();
+    let not_loaded = world.spawn();
+    world.insert(loaded, GlobalTransform::default());
+
+    let condition = vec![cond(555, ComparisonOp::Eq, 1.0, false)];
+    assert!(evaluate(&condition, &world, &ctx(loaded)));
+    assert!(!evaluate(&condition, &world, &ctx(not_loaded)));
+}
+
+#[test]
+fn get_is_class_and_race_match_background() {
+    use byroredux_core::character::Background;
+    const RACE: u32 = 0x0004_4C07;
+    const CLASS: u32 = 0x0001_38B9;
+    let mut world = World::new();
+    let actor = world.spawn();
+    world.insert(
+        actor,
+        Background {
+            race_form_id: RACE,
+            class_form_id: CLASS,
+        },
+    );
+    // GetIsRace(RACE) == 1, wrong race == 0.
+    assert!(evaluate(
+        &vec![cond(69, ComparisonOp::Eq, 1.0, false).with_param_1(RACE)],
+        &world,
+        &ctx(actor)
+    ));
+    assert!(evaluate(
+        &vec![cond(69, ComparisonOp::Eq, 0.0, false).with_param_1(0x9999)],
+        &world,
+        &ctx(actor)
+    ));
+    // GetIsClass(CLASS) == 1.
+    assert!(evaluate(
+        &vec![cond(68, ComparisonOp::Eq, 1.0, false).with_param_1(CLASS)],
+        &world,
+        &ctx(actor)
+    ));
+    // No Background → 0.
+    assert!(evaluate(
+        &vec![cond(68, ComparisonOp::Eq, 0.0, false).with_param_1(CLASS)],
+        &world,
+        &ctx(123)
+    ));
+}
+
+#[test]
+fn get_xp_for_next_level_uses_leveling_model() {
+    use byroredux_core::character::{CharacterLevel, CharacterRuleset, LevelingModel};
+    let mut world = World::new();
+    // FNV curve: xp_to_next(L) = 150·L + 50 → L10 = 1550.
+    world.insert_resource(CharacterRuleset::new(LevelingModel::FNV));
+    let actor = world.spawn();
+    world.insert(actor, CharacterLevel { level: 10, xp: 0 });
+    let list = vec![cond(533, ComparisonOp::Eq, 1550.0, false)];
+    assert!(evaluate(&list, &world, &ctx(actor)));
+    // No ruleset resource → 0.0.
+    let bare = World::new();
+    let list = vec![cond(533, ComparisonOp::Eq, 0.0, false)];
+    assert!(evaluate(&list, &bare, &ctx(1)));
+}
+
+// ── GetReputation / GetReputationThreshold (FNV, indices 573 / 575) ──
+
+#[test]
+fn get_reputation_reads_fame_and_infamy_by_axis() {
+    use byroredux_core::character::FactionReputation;
+    // Boomers — the vanilla FNV REPU FormID (top byte 00 = master slot).
+    const BOOMERS: u32 = 0x000F_FAE8;
+
+    let mut world = World::new();
+    let actor = world.spawn();
+    let mut rep = FactionReputation::default();
+    rep.add_fame(BOOMERS, 30);
+    rep.add_infamy(BOOMERS, 8);
+    world.insert(actor, rep);
+
+    // GetReputation(Boomers, axis=1=Fame) == 30.
+    let list = vec![cond(573, ComparisonOp::Eq, 30.0, false)
+        .with_param_1(BOOMERS)
+        .with_param_2(1)];
+    assert!(evaluate(&list, &world, &ctx(actor)));
+    // axis=0=Infamy == 8.
+    let list = vec![cond(573, ComparisonOp::Eq, 8.0, false)
+        .with_param_1(BOOMERS)
+        .with_param_2(0)];
+    assert!(evaluate(&list, &world, &ctx(actor)));
+}
+
+#[test]
+fn get_reputation_threshold_classifies_range() {
+    use byroredux_core::character::FactionReputation;
+    const BOOMERS: u32 = 0x000F_FAE8; // thresholds 0 / 8 / 25 / 50
+
+    let mut world = World::new();
+    let actor = world.spawn();
+    let mut rep = FactionReputation::default();
+    rep.add_fame(BOOMERS, 30); // 30 ≥ 25 → Range 2
+    world.insert(actor, rep);
+
+    // GetReputationThreshold(Boomers, Fame) == 2.
+    let list = vec![cond(575, ComparisonOp::Eq, 2.0, false)
+        .with_param_1(BOOMERS)
+        .with_param_2(1)];
+    assert!(evaluate(&list, &world, &ctx(actor)));
+    // Infamy 0 → Range 0.
+    let list = vec![cond(575, ComparisonOp::Eq, 0.0, false)
+        .with_param_1(BOOMERS)
+        .with_param_2(0)];
+    assert!(evaluate(&list, &world, &ctx(actor)));
+}
+
+#[test]
+fn get_reputation_zero_without_component_or_unknown_faction() {
+    use byroredux_core::character::FactionReputation;
+    // No FactionReputation component → 0.0.
+    let world = World::new();
+    let actor: EntityId = 7;
+    let list = vec![cond(573, ComparisonOp::Eq, 0.0, false)
+        .with_param_1(0x000F_FAE8)
+        .with_param_2(1)];
+    assert!(evaluate(&list, &world, &ctx(actor)));
+
+    // Component present but faction has no captured thresholds → Range 0.
+    let mut world = World::new();
+    let actor = world.spawn();
+    world.insert(actor, FactionReputation::default());
+    let list = vec![cond(575, ComparisonOp::Eq, 0.0, false)
+        .with_param_1(0xDEAD_BEEF)
+        .with_param_2(1)];
+    assert!(evaluate(&list, &world, &ctx(actor)));
+}
+
+// ── GetActorValue (#1663) ───────────────────────────────────────────
+
+#[test]
+fn get_actor_value_reads_composed_value() {
+    use byroredux_core::ecs::components::ActorValues;
+    // Stand-in global-space AVIF FormIDs (real ids come from
+    // `EsmIndex::actor_values`; the evaluator keys on whatever `param_1`
+    // resolves to).
+    const AV_HEALTH: u32 = 0x0000_02C9;
+    const AV_SNEAK: u32 = 0x0000_02E1;
+
+    let mut world = World::new();
+    let actor = world.spawn();
+    let mut av = ActorValues::new();
+    av.set_base(AV_HEALTH, 100.0);
+    av.mod_permanent(AV_HEALTH, 20.0); // +20 perk
+    av.apply_damage(AV_HEALTH, 30.0); // −30 damage → current 90
+    world.insert(actor, av);
+
+    // GetActorValue(Health) == 90 (the composed value, not the base).
+    let list = vec![cond(14, ComparisonOp::Eq, 90.0, false).with_param_1(AV_HEALTH)];
+    assert!(evaluate(&list, &world, &ctx(actor)));
+
+    // GetActorValue(Health) > 50 — a typical gate passes on the composite.
+    let list = vec![cond(14, ComparisonOp::Gt, 50.0, false).with_param_1(AV_HEALTH)];
+    assert!(evaluate(&list, &world, &ctx(actor)));
+
+    // An actor value the actor doesn't carry composes to 0.0.
+    let list = vec![cond(14, ComparisonOp::Eq, 0.0, false).with_param_1(AV_SNEAK)];
+    assert!(evaluate(&list, &world, &ctx(actor)));
+}
+
+#[test]
+fn get_actor_value_derives_actor_general_stat_from_ruleset() {
+    use byroredux_core::character::fallout4_ruleset;
+    use byroredux_core::ecs::components::ActorValues;
+
+    // Stand-in AVIF FormIDs the FO4 ruleset resolves against.
+    let resolve = |id: &str| match id {
+        "Strength" => Some(0x05u32),
+        "Endurance" => Some(0x07),
+        "Agility" => Some(0x0A),
+        "CarryWeight" => Some(0x2D1),
+        "Health" => Some(0x2C9),
+        "ActionPoints" => Some(0x2D0),
+        "MeleeDamage" => Some(0x2D2),
+        _ => None,
+    };
+    let mut world = World::new();
+    world.insert_resource(fallout4_ruleset(resolve));
+    let actor = world.spawn();
+    // Carries Strength 7, but NOT Carry Weight or Health.
+    world.insert(actor, ActorValues::from_pairs([(0x05, 7.0)]));
+
+    // Carry Weight is actor-general → derived on demand: 200 + 10·7 = 270.
+    let list = vec![cond(14, ComparisonOp::Eq, 270.0, false).with_param_1(0x2D1)];
+    assert!(
+        evaluate(&list, &world, &ctx(actor)),
+        "Carry Weight derived from SPECIAL"
+    );
+
+    // Health is player-only → NOT computed for an NPC; absent default 0.
+    let list = vec![cond(14, ComparisonOp::Eq, 0.0, false).with_param_1(0x2C9)];
+    assert!(
+        evaluate(&list, &world, &ctx(actor)),
+        "Health stays 0 (player-only)"
+    );
+}
+
+/// #5042 — FNV `PerkFinesse` shape: a constant CritChance +5 on an NPC
+/// whose derivation carries no CritChance. The modifier-only entry used
+/// to take the carried fast path and read the bare `5`; the reading is
+/// the formula (`1·Luck`) plus the modifier.
+#[test]
+fn get_actor_value_composes_a_modifier_only_entry_onto_the_formula() {
+    use byroredux_core::character::falloutnv_ruleset;
+    use byroredux_core::ecs::components::ActorValues;
+
+    const LUCK: u32 = 0x0B;
+    const CRIT: u32 = 0x2D5;
+    let resolve = |id: &str| match id {
+        "Luck" => Some(LUCK),
+        "CritChance" => Some(CRIT),
+        _ => None,
+    };
+    let mut world = World::new();
+    world.insert_resource(falloutnv_ruleset(resolve));
+    let actor = world.spawn();
+    let mut values = ActorValues::from_pairs([(LUCK, 4.0)]);
+    values.mod_permanent(CRIT, 5.0); // `stamp_spell_list` / `modav`
+    world.insert(actor, values);
+
+    let list = vec![cond(14, ComparisonOp::Eq, 9.0, false).with_param_1(CRIT)];
+    assert!(
+        evaluate(&list, &world, &ctx(actor)),
+        "Luck 4 + Finesse 5, not the bare modifier"
+    );
+
+    // An authored CritChance still wins over the formula.
+    world
+        .get_mut::<ActorValues>(actor)
+        .unwrap()
+        .set_base(CRIT, 1.0);
+    let list = vec![cond(14, ComparisonOp::Eq, 6.0, false).with_param_1(CRIT)];
+    assert!(evaluate(&list, &world, &ctx(actor)), "authored 1 + 5");
+}
+
+/// `GetBaseValue` / `GetValuePercentage` read the same value with the
+/// modifiers (and damage) dropped, for a derived stat as well as an
+/// authored one.
+#[test]
+fn actor_value_views_drop_modifiers_and_damage() {
+    use byroredux_core::character::falloutnv_ruleset;
+    use byroredux_core::ecs::components::ActorValues;
+
+    const LUCK: u32 = 0x0B;
+    const CRIT: u32 = 0x2D5;
+    let resolve = |id: &str| match id {
+        "Luck" => Some(LUCK),
+        "CritChance" => Some(CRIT),
+        _ => None,
+    };
+    let mut world = World::new();
+    world.insert_resource(falloutnv_ruleset(resolve));
+    let actor = world.spawn();
+    let mut values = ActorValues::from_pairs([(LUCK, 4.0)]);
+    values.mod_permanent(CRIT, 5.0);
+    values.mod_temporary(CRIT, 2.0);
+    values.apply_damage(CRIT, 3.0);
+    world.insert(actor, values);
+    // Derived CritChance: formula 4 (Luck) plus the layers.
+    let read = |world: &World, avif, view| actor_value_view(world, actor, avif, view);
+    assert_eq!(read(&world, CRIT, ActorValueView::Current), 4.0 + 5.0 + 2.0 - 3.0);
+    assert_eq!(read(&world, CRIT, ActorValueView::Undamaged), 4.0 + 5.0 + 2.0);
+    assert_eq!(read(&world, CRIT, ActorValueView::Base), 4.0);
+    // Authored Luck with a modifier and damage.
+    {
+        let avs = world.get_mut::<ActorValues>(actor).unwrap();
+        avs.mod_permanent(LUCK, 2.0);
+        avs.apply_damage(LUCK, 1.0);
+    }
+    assert_eq!(read(&world, LUCK, ActorValueView::Current), 5.0);
+    assert_eq!(read(&world, LUCK, ActorValueView::Undamaged), 6.0);
+    assert_eq!(read(&world, LUCK, ActorValueView::Base), 4.0);
+}
+
+/// #3441 — `pool_regen_tick_system` and `melee_damage_charal_bonus` both
+/// acquire `CharacterRuleset` → `ActorValues` (the former for write), so
+/// the `GetActorValue` read must not hold its `ActorValues` guard across
+/// the ruleset acquire. `lock_tracker` keys storages and resources into
+/// one `TypeId` graph, so the reverse hold is a real 2-cycle.
+#[test]
+fn get_actor_value_does_not_hold_actor_values_across_ruleset() {
+    let src = include_str!("eval.rs");
+    let arm_start = src
+        .find("pub fn actor_value_view(")
+        .expect("the GetActorValue read must exist");
+    let arm = &src[arm_start..];
+    let arm = &arm[..arm
+        .find("/// Dispatch one of the M47.1-catalog functions")
+        .expect("evaluate_function must follow the actor value read")];
+
+    let snapshot = arm
+        .find("avs.clone()")
+        .expect("the arm must snapshot ActorValues instead of holding the guard");
+    let level = arm
+        .find("world.get::<CharacterLevel>")
+        .expect("the arm must read CharacterLevel");
+    let ruleset = arm
+        .find("try_resource::<CharacterRuleset>()")
+        .expect("the arm must consult the ruleset");
+    assert!(
+        snapshot < ruleset,
+        "ActorValues must be cloned and its guard dropped before CharacterRuleset is acquired"
+    );
+    assert!(
+        level < ruleset,
+        "CharacterLevel must be read before CharacterRuleset is acquired"
+    );
+
+    // Under the opt-in detector, drive the real evaluator after the
+    // production hold order has been observed: a surviving reverse hold
+    // panics inside `record_and_check`.
+    if std::env::var_os("BYRO_LOCK_ORDER_CHECK").as_deref() != Some(std::ffi::OsStr::new("1")) {
+        return;
+    }
+    use byroredux_core::character::fallout4_ruleset;
+    use byroredux_core::ecs::components::ActorValues;
+
+    let resolve = |id: &str| match id {
+        "Strength" => Some(0x05u32),
+        "Endurance" => Some(0x07),
+        "Agility" => Some(0x0A),
+        "CarryWeight" => Some(0x2D1),
+        _ => None,
+    };
+    let mut world = World::new();
+    world.insert_resource(fallout4_ruleset(resolve));
+    let actor = world.spawn();
+    world.insert(actor, ActorValues::from_pairs([(0x05, 7.0)]));
+
+    // CharacterRuleset → ActorValues (W) — `pool_regen_tick_system`'s order.
+    {
+        let _rs = world
+            .try_resource::<byroredux_core::character::CharacterRuleset>()
+            .unwrap();
+        let _avs = world.query_mut::<ActorValues>().unwrap();
+    }
+    // Carry Weight is absent → the arm falls through to the ruleset branch.
+    let list = vec![cond(14, ComparisonOp::Eq, 270.0, false).with_param_1(0x2D1)];
+    assert!(evaluate(&list, &world, &ctx(actor)));
+}
+
+#[test]
+fn get_actor_value_zero_without_component() {
+    // No `ActorValues` component on the Run-On → GetActorValue returns 0.0
+    // (the honest absent-data default — now a real component miss, not a
+    // hardcoded stub).
+    let world = World::new();
+    let actor: EntityId = 7;
+    let list = vec![cond(14, ComparisonOp::Eq, 0.0, false).with_param_1(0x0000_02C9)];
+    assert!(evaluate(&list, &world, &ctx(actor)));
+}
+
+// ── GetDistance (#1664) ─────────────────────────────────────────────
+
+#[test]
+fn get_distance_measures_subject_to_target() {
+    use byroredux_core::ecs::components::{FormIdComponent, GlobalTransform};
+    use byroredux_core::form_id::{FormIdPair, FormIdPool, LocalFormId, PluginId};
+    use byroredux_core::math::{Quat, Vec3};
+
+    let mut world = World::new();
+    let mut pool = FormIdPool::new();
+    // Target carries global FormID 0x000159E2 (cell loader stores the
+    // full global id as the LocalFormId).
+    let target_fid = pool.intern(FormIdPair {
+        plugin: PluginId::from_filename("FalloutNV.esm"),
+        local: LocalFormId(0x0001_59E2),
+    });
+    world.insert_resource(pool);
+
+    let subject = world.spawn();
+    world.insert(
+        subject,
+        GlobalTransform::new(Vec3::new(0.0, 0.0, 0.0), Quat::IDENTITY, 1.0),
+    );
+    let target = world.spawn();
+    world.insert(target, FormIdComponent(target_fid));
+    world.insert(
+        target,
+        GlobalTransform::new(Vec3::new(3.0, 4.0, 0.0), Quat::IDENTITY, 1.0),
+    );
+
+    // GetDistance(0x000159E2) < 10 → 5.0 < 10 → true.
+    let mut lt = cond(1, ComparisonOp::Lt, 10.0, false).with_param_1(0x0001_59E2);
+    lt.comparand = ConditionValue::Literal(10.0);
+    assert!(evaluate(&vec![lt], &world, &ctx(subject)));
+
+    // GetDistance(0x000159E2) < 4 → 5.0 < 4 → false.
+    let lt = cond(1, ComparisonOp::Lt, 4.0, false).with_param_1(0x0001_59E2);
+    assert!(!evaluate(&vec![lt], &world, &ctx(subject)));
+}
+
+#[test]
+fn get_distance_unresolved_target_is_far() {
+    use byroredux_core::ecs::components::GlobalTransform;
+    use byroredux_core::form_id::FormIdPool;
+    use byroredux_core::math::{Quat, Vec3};
+
+    let mut world = World::new();
+    world.insert_resource(FormIdPool::new());
+    let subject = world.spawn();
+    world.insert(
+        subject,
+        GlobalTransform::new(Vec3::ZERO, Quat::IDENTITY, 1.0),
+    );
+
+    // No entity carries 0x000159E2 → distance is f32::MAX, so a
+    // proximity gate `GetDistance < 100` fails.
+    let lt = cond(1, ComparisonOp::Lt, 100.0, false).with_param_1(0x0001_59E2);
+    assert!(!evaluate(&vec![lt], &world, &ctx(subject)));
+}
+
+// ── RunOn::Reference (#2123) ─────────────────────────────────────────
+
+#[test]
+fn run_on_reference_resolves_the_entity_carrying_the_form_id() {
+    use byroredux_core::ecs::components::FormIdComponent;
+    use byroredux_core::form_id::{FormIdPair, FormIdPool, LocalFormId, PluginId};
+
+    let mut world = World::new();
+    let mut pool = FormIdPool::new();
+    let referenced_fid = pool.intern(FormIdPair {
+        plugin: PluginId::from_filename("FalloutNV.esm"),
+        local: LocalFormId(0x0002_ABCD),
+    });
+    world.insert_resource(pool);
+
+    let subject = world.spawn();
+    let referenced = world.spawn();
+    world.insert(referenced, FormIdComponent(referenced_fid));
+
+    let mut condition = cond(0, ComparisonOp::Eq, 0.0, false);
+    condition.run_on = RunOn::Reference;
+    condition.reference_form_id = 0x0002_ABCD;
+
+    let resolved = ctx(subject).resolve(RunOn::Reference, &condition, &world);
+    assert_eq!(
+        resolved,
+        Some(referenced),
+        "RunOn::Reference must resolve to the entity whose FormIdComponent \
+         maps to reference_form_id via the FormIdPool (#2123)"
+    );
+}
+
+#[test]
+fn run_on_reference_unresolved_form_id_is_none() {
+    use byroredux_core::form_id::FormIdPool;
+
+    let mut world = World::new();
+    world.insert_resource(FormIdPool::new());
+    let subject = world.spawn();
+
+    let mut condition = cond(0, ComparisonOp::Eq, 0.0, false);
+    condition.run_on = RunOn::Reference;
+    condition.reference_form_id = 0x0002_ABCD;
+
+    // No entity carries this FormID — must decline (None), not panic
+    // or fall back to subject.
+    assert_eq!(
+        ctx(subject).resolve(RunOn::Reference, &condition, &world),
+        None
+    );
+}
+
+// ── GetFactionRank (#1665) ──────────────────────────────────────────
+
+#[test]
+fn get_faction_rank_reads_membership() {
+    use byroredux_core::ecs::components::FactionRanks;
+
+    let mut world = World::new();
+    let actor = world.spawn();
+    world.insert(
+        actor,
+        FactionRanks::from_pairs([(0x0001_38B8, 2), (0x0001_5FFB, 0)]),
+    );
+
+    // GetFactionRank(0x000138B8) == 2.
+    let eq = cond(73, ComparisonOp::Eq, 2.0, false).with_param_1(0x0001_38B8);
+    assert!(evaluate(&vec![eq], &world, &ctx(actor)));
+
+    // GetFactionRank(non-member) == -1.
+    let eq = cond(73, ComparisonOp::Eq, -1.0, false).with_param_1(0x0009_9999);
+    assert!(evaluate(&vec![eq], &world, &ctx(actor)));
+}
+
+#[test]
+fn get_faction_rank_minus_one_without_component() {
+    // No FactionRanks component → -1.0 (not-in-faction sentinel).
+    let world = World::new();
+    let actor: EntityId = 4;
+    let eq = cond(73, ComparisonOp::Eq, -1.0, false).with_param_1(0x0001_38B8);
+    assert!(evaluate(&vec![eq], &world, &ctx(actor)));
+}
+
+// ── Global comparand (#1668) ────────────────────────────────────────
+
+#[test]
+fn global_comparand_resolves_from_globals_resource() {
+    use crate::globals::Globals;
+    use crate::quest_stages::{QuestFormId, QuestStageState};
+
+    let mut world = World::new();
+    crate::register(&mut world);
+    let mut state = QuestStageState::default();
+    state.set_stage(QuestFormId(0xAA), 5);
+    world.insert_resource(state);
+
+    let mut globals = Globals::new();
+    globals.set(0x0100_0042, 5.0); // a GLOB whose value is 5
+    world.insert_resource(globals);
+
+    // GetStage(0xAA) == Global(0x01000042) → 5 == 5 → true.
+    let mut eq = cond(58, ComparisonOp::Eq, 0.0, false).with_param_1(0xAA);
+    eq.comparand = ConditionValue::Global(0x0100_0042);
+    assert!(evaluate(&vec![eq], &world, &ctx(0)));
+
+    // GetStage(0xAA) > Global(0x01000042) → 5 > 5 → false.
+    let mut gt = cond(58, ComparisonOp::Gt, 0.0, false).with_param_1(0xAA);
+    gt.comparand = ConditionValue::Global(0x0100_0042);
+    assert!(!evaluate(&vec![gt], &world, &ctx(0)));
+}
+
+#[test]
+fn global_comparand_defaults_to_zero_when_unresolved() {
+    use crate::quest_stages::{QuestFormId, QuestStageState};
+
+    let mut world = World::new();
+    crate::register(&mut world);
+    let mut state = QuestStageState::default();
+    state.set_stage(QuestFormId(0xAA), 0);
+    world.insert_resource(state);
+
+    // No Globals resource at all → comparand defaults to 0.0.
+    // GetStage(0xAA) == Global(missing) → 0 == 0 → true.
+    let mut eq = cond(58, ComparisonOp::Eq, 0.0, false).with_param_1(0xAA);
+    eq.comparand = ConditionValue::Global(0x0100_0099);
+    assert!(evaluate(&vec![eq], &world, &ctx(0)));
+}
+
+// ── CTDA remap table drift guard (#5637) ───────────────────────────
+
+/// The plugin crate's `param1_is_form_id` mirrors this catalog by raw
+/// index (it cannot depend on this crate). Walk every index the catalog
+/// claims and require the two to agree, so a function catalogued
+/// without its remap row — GetQuestRunning / GetInFaction /
+/// GetGlobalValue were — fails here instead of silently reading the
+/// "absent" default on every plugin whose masters are not a load-order
+/// prefix.
+#[test]
+fn param1_form_id_table_matches_the_condition_catalog() {
+    use byroredux_plugin::esm::records::condition::param1_is_form_id;
+    let mut covered = 0usize;
+    for index in 0..2048u32 {
+        let function = ConditionFunction::from_index(index);
+        if matches!(function, ConditionFunction::Unknown(_)) {
+            continue;
+        }
+        covered += 1;
+        assert_eq!(
+            param1_is_form_id(index),
+            function.first_param_is_form_id(),
+            "fn {index} ({}): plugin remap table and catalog disagree on \
+             whether param_1 is a FormID",
+            function.name()
+        );
+    }
+    // 24 catalog entries, HasPerk answering to two indices.
+    assert_eq!(covered, ConditionFunction::CATALOG.len() + 1);
+}
+
+// ── GetQuestRunning (#5636) ────────────────────────────────────────
+
+/// A quest that has been started and then stopped (or completed /
+/// failed) is not running: `GetQuestRunning` must read 0.0 for it, not
+/// the "has ever entered the lifecycle" membership bit.
+#[test]
+fn get_quest_running_is_false_for_stopped_completed_and_failed_quests() {
+    use crate::quest_stages::{QuestFormId, QuestStageState};
+    // Fresh world per case: `setup` drives the quest through its
+    // lifecycle, then `GetQuestRunning(0xA1) == 1` is evaluated.
+    let running = |setup: &dyn Fn(&mut QuestStageState)| {
+        let mut world = World::new();
+        crate::register(&mut world);
+        let mut state = QuestStageState::default();
+        setup(&mut state);
+        world.insert_resource(state);
+        let eq1 = cond(56, ComparisonOp::Eq, 1.0, false).with_param_1(0xA1);
+        evaluate(&vec![eq1], &world, &ctx(0))
+    };
+    let q = QuestFormId(0xA1);
+
+    assert!(!running(&|_| {}), "never started");
+    assert!(
+        running(&|s| {
+            s.start_quest(q, None);
+        }),
+        "started → running"
+    );
+    assert!(
+        !running(&|s| {
+            s.start_quest(q, None);
+            s.stop(q);
+            // Map membership stays true after a stop — the bit the
+            // old `|| is_started` arm leaked into the answer.
+            assert!(s.is_started(q));
+        }),
+        "stopped → not running"
+    );
+    assert!(
+        !running(&|s| {
+            s.start_quest(q, None);
+            s.complete(q);
+        }),
+        "completed → not running"
+    );
+    assert!(
+        !running(&|s| {
+            s.start_quest(q, None);
+            s.fail(q);
+        }),
+        "failed → not running"
+    );
+}
+
+// ── subject_requirement ────────────────────────────────────────────
+
+/// Subjects that differ in everything the shapes below read, and the
+/// condition shapes: identity tests that do and don't fail on 0.0, a
+/// subject-dependent non-identity test, and unknown functions (a
+/// constant 0.0) that are false and true for every subject.
+fn requirement_fixture() -> (World, Vec<EntityId>, Vec<Condition>) {
+    use byroredux_core::character::Background;
+    use byroredux_core::ecs::components::{Dead, FormIdComponent};
+    use byroredux_core::form_id::{FormIdPair, FormIdPool, LocalFormId, PluginId};
+
+    let mut world = World::new();
+    let mut pool = FormIdPool::new();
+    let mut form_id = |local| {
+        FormIdComponent(pool.intern(FormIdPair {
+            plugin: PluginId::from_filename("Fallout4.esm"),
+            local: LocalFormId(local),
+        }))
+    };
+    let subjects: Vec<EntityId> = (0..4).map(|_| world.spawn()).collect();
+    let (a0, a1) = (form_id(0xA0), form_id(0xA1));
+    world.insert(subjects[0], a0);
+    world.insert(subjects[1], a1);
+    world.insert(subjects[2], a0);
+    world.insert_resource(pool);
+    world.insert(
+        subjects[0],
+        Background {
+            race_form_id: 0x10,
+            class_form_id: 0x20,
+        },
+    );
+    world.insert(
+        subjects[1],
+        Background {
+            race_form_id: 0x11,
+            class_form_id: 0x20,
+        },
+    );
+    world.insert(
+        subjects[3],
+        Background {
+            race_form_id: 0x10,
+            class_form_id: 0x21,
+        },
+    );
+    world.insert(subjects[1], Dead);
+
+    let shapes = vec![
+        cond(69, ComparisonOp::Eq, 1.0, false).with_param_1(0x10),
+        cond(69, ComparisonOp::Ne, 0.0, false).with_param_1(0x11),
+        cond(69, ComparisonOp::Eq, 0.0, false).with_param_1(0x10),
+        cond(68, ComparisonOp::Ge, 1.0, false).with_param_1(0x20),
+        cond(72, ComparisonOp::Eq, 1.0, false).with_param_1(0xA0),
+        cond(46, ComparisonOp::Eq, 1.0, false),
+        // An out-of-catalog index (GetInFaction claimed 71 in
+        // #5366 Phase 2; pick one no master authors anywhere).
+        cond(990, ComparisonOp::Eq, 1.0, false),
+        cond(74, ComparisonOp::Eq, 0.0, false),
+    ];
+    (world, subjects, shapes)
+}
+
+/// Every list of one to three shapes, under every `or_next` pattern
+/// (trailing flag included): a requirement must never rule out a subject
+/// `evaluate` passes, so an alias scan narrowed by it binds exactly what
+/// the full scan would.
+#[test]
+fn subject_requirement_never_excludes_a_passing_subject() {
+    let (world, subjects, shapes) = requirement_fixture();
+    let mut lists = Vec::new();
+    for len in 1..=3u32 {
+        for picks in 0..shapes.len().pow(len) {
+            for ors in 0..1u32 << len {
+                let list: Vec<Condition> = (0..len)
+                    .map(|slot| {
+                        let pick = picks / shapes.len().pow(slot) % shapes.len();
+                        let mut condition = shapes[pick];
+                        condition.or_next = ors >> slot & 1 == 1;
+                        condition
+                    })
+                    .collect();
+                lists.push(list);
+            }
+        }
+    }
+
+    let (mut unsatisfiable, mut narrowed) = (0, 0);
+    for list in &lists {
+        let requirement = subject_requirement(list, &world, &ctx(EntityId::MAX));
+        for &subject in &subjects {
+            if !evaluate(list, &world, &ctx(subject)) {
+                continue;
+            }
+            match &requirement {
+                SubjectRequirement::Unsatisfiable => {
+                    panic!("{list:?} is unsatisfiable yet passes subject {subject}")
+                }
+                SubjectRequirement::IdentityBlocks(blocks) => {
+                    for block in blocks {
+                        assert!(
+                            block.iter().any(|test| {
+                                test.function.run_on_identity(subject, &world) == Some(test.id)
+                            }),
+                            "{list:?} passes subject {subject} outside block {block:?}"
+                        );
+                    }
+                }
+            }
+        }
+        match requirement {
+            SubjectRequirement::Unsatisfiable => unsatisfiable += 1,
+            SubjectRequirement::IdentityBlocks(blocks) if !blocks.is_empty() => narrowed += 1,
+            SubjectRequirement::IdentityBlocks(_) => {}
+        }
+    }
+    // Not vacuous: plenty of lists exercise both outcomes.
+    assert!(
+        unsatisfiable > 100 && narrowed > 100,
+        "{unsatisfiable} / {narrowed}"
+    );
+}
+
+/// #5645 — `GetRandomPercent` is stochastic: it is never folded into a
+/// once-for-everyone value, never narrows a block, and the pre-filter
+/// leaves the generator untouched. Whatever a subject's own `evaluate`
+/// draws, the requirement must not have excluded it.
+#[test]
+fn a_random_percent_gate_neither_narrows_nor_consumes_the_rng() {
+    use crate::story_manager::StoryManagerRng;
+    assert!(!ConditionFunction::GetRandomPercent.is_deterministic());
+    assert!(ConditionFunction::CATALOG
+        .iter()
+        .filter(|f| **f != ConditionFunction::GetRandomPercent)
+        .all(|f| f.is_deterministic()));
+
+    let (mut world, subjects, shapes) = requirement_fixture();
+    world.insert_resource(StoryManagerRng { state: 0x5EED });
+    let gate = cond(77, ComparisonOp::Lt, 50.0, false);
+    let mut gated_or = gate;
+    gated_or.or_next = true;
+    let lists = [
+        vec![gate],
+        vec![gate, shapes[0]],
+        vec![gated_or, shapes[0]],
+        vec![shapes[0], gate],
+    ];
+    let race = IdentityTest {
+        function: ConditionFunction::GetIsRace,
+        id: 0x10,
+    };
+    let expected = [
+        SubjectRequirement::IdentityBlocks(vec![]),
+        SubjectRequirement::IdentityBlocks(vec![vec![race]]),
+        SubjectRequirement::IdentityBlocks(vec![]),
+        SubjectRequirement::IdentityBlocks(vec![vec![race]]),
+    ];
+    for (list, expected) in lists.iter().zip(expected) {
+        for round in 0..64u64 {
+            world.resource_mut::<StoryManagerRng>().state = round * 0x9E37 + 1;
+            let before = world.resource::<StoryManagerRng>().state;
+            let requirement = subject_requirement(list, &world, &ctx(EntityId::MAX));
+            assert_eq!(
+                world.resource::<StoryManagerRng>().state,
+                before,
+                "the pre-filter must not consume the RNG"
+            );
+            assert_eq!(requirement, expected, "{list:?}");
+            // Whatever this subject's own draw is, it was not excluded.
+            for &subject in &subjects {
+                if evaluate(list, &world, &ctx(subject)) {
+                    assert_ne!(requirement, SubjectRequirement::Unsatisfiable);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn subject_requirement_reports_what_each_block_demands() {
+    let (world, _, shapes) = requirement_fixture();
+    let race = |id| IdentityTest {
+        function: ConditionFunction::GetIsRace,
+        id,
+    };
+    let judge = |list: Vec<Condition>| subject_requirement(&list, &world, &ctx(EntityId::MAX));
+    let or = |mut condition: Condition| {
+        condition.or_next = true;
+        condition
+    };
+
+    // An unknown function is 0.0 for everyone: `== 1` fails them all.
+    assert_eq!(
+        judge(vec![shapes[6]]),
+        SubjectRequirement::Unsatisfiable
+    );
+    // `== 0` passes them all, leaving the identity block to narrow by.
+    assert_eq!(
+        judge(vec![shapes[7], shapes[0]]),
+        SubjectRequirement::IdentityBlocks(vec![vec![race(0x10)]])
+    );
+    // An OR block of identity tests admits either identity.
+    assert_eq!(
+        judge(vec![or(shapes[0]), shapes[1]]),
+        SubjectRequirement::IdentityBlocks(vec![vec![race(0x10), race(0x11)]])
+    );
+    // A test that passes on 0.0, or a non-identity member, leaves its
+    // block unconstrained.
+    assert_eq!(
+        judge(vec![shapes[2]]),
+        SubjectRequirement::IdentityBlocks(vec![])
+    );
+    assert_eq!(
+        judge(vec![or(shapes[0]), shapes[5]]),
+        SubjectRequirement::IdentityBlocks(vec![])
+    );
+}
+
+// ── Helper: chainable param_1 setter for compact test construction ──
+
+trait CondBuilder {
+    fn with_param_1(self, p: u32) -> Self;
+    fn with_param_2(self, p: u32) -> Self;
+}
+impl CondBuilder for Condition {
+    fn with_param_1(mut self, p: u32) -> Self {
+        self.param_1 = p;
+        self
+    }
+    fn with_param_2(mut self, p: u32) -> Self {
+        self.param_2 = p;
+        self
+    }
+}
+
+/// Regression for #2933 — `GetActorValue` must honour BOTH contract fields
+/// on `DerivedStatFormula`, not just `scope`.
+///
+/// A `DerivedOutput::Multiplier` row's `eval` returns a *ratio* meant for a
+/// combat/XP consumer to multiply by. FO4's Melee Damage is
+/// `x(1 + 0.1*STR)` and actor-general, so it passed the scope check and
+/// leaked a bare 1.0..=2.0 where Bethesda's own `GetActorValue` yields an
+/// actor-value reading — small enough to satisfy `> 0` gates and fail
+/// realistic thresholds, with nothing crashing and no test failing.
+#[test]
+fn get_actor_value_skips_multiplier_kind_rows() {
+    use byroredux_core::character::derived::{DerivedInput, DerivedStatFormula};
+    use byroredux_core::character::leveling::LevelingModel;
+    use byroredux_core::character::CharacterRuleset;
+    use byroredux_core::ecs::components::ActorValues;
+
+    const STRENGTH: u32 = 0x20;
+    const MELEE_DAMAGE: u32 = 0x21;
+    const CARRY_WEIGHT: u32 = 0x22;
+
+    let mut rs = CharacterRuleset::new(LevelingModel::FO4);
+    // FO4 Melee Damage: x(1 + 0.1*STR), actor-general + MULTIPLIER.
+    rs.push_derived(
+        MELEE_DAMAGE,
+        DerivedStatFormula::affine(DerivedInput::actor_value(STRENGTH), 0.1, 1.0)
+            .as_multiplier(),
+    );
+    // A control row of the same scope but ABSOLUTE kind, so the test
+    // proves the gate keys on `kind` and not on "derived rows are skipped".
+    rs.push_derived(
+        CARRY_WEIGHT,
+        DerivedStatFormula::affine(DerivedInput::actor_value(STRENGTH), 10.0, 25.0),
+    );
+
+    let mut world = World::new();
+    world.insert_resource(rs);
+    let e = world.spawn();
+    world.insert(e, ActorValues::from_pairs([(STRENGTH, 5.0)]));
+
+    let multiplier = evaluate_function(
+        ConditionFunction::GetActorValue,
+        &Condition {
+            param_1: MELEE_DAMAGE,
+            ..cond(14, ComparisonOp::Eq, 0.0, false)
+        },
+        e,
+        &world,
+    );
+    assert_eq!(
+        multiplier, 0.0,
+        "a Multiplier-kind row must fall through to the absent-AV default, \
+         exactly as a player-only row already does — returning 1.5 here is \
+         the #2933 leak"
+    );
+
+    let absolute = evaluate_function(
+        ConditionFunction::GetActorValue,
+        &Condition {
+            param_1: CARRY_WEIGHT,
+            ..cond(14, ComparisonOp::Eq, 0.0, false)
+        },
+        e,
+        &world,
+    );
+    assert_eq!(
+        absolute, 75.0,
+        "absolute actor-general rows must still resolve (10*5 + 25) — the \
+         gate keys on `kind`, not on derived-ness"
+    );
+}
+
+/// #5366 Phase 2 — `RunOn::EventData` resolves the R1/R2 tag in the
+/// CTDA tail against the context's event slots; L-tags and unknown
+/// tags fail the condition; a context without event data fails it
+/// exactly as before Phase 2.
+#[test]
+fn event_data_run_on_resolves_reference_tags_only() {
+    use byroredux_core::ecs::components::FactionRanks;
+    use byroredux_plugin::esm::records::condition::{event_data_slot, EventDataSlot};
+
+    let tag = |bytes: &[u8; 2]| u32::from(bytes[0]) | (u32::from(bytes[1]) << 8);
+    assert_eq!(event_data_slot(tag(b"R1")), Some(EventDataSlot::Reference1));
+    assert_eq!(event_data_slot(tag(b"R2")), Some(EventDataSlot::Reference2));
+    assert_eq!(event_data_slot(tag(b"L1")), Some(EventDataSlot::Location1));
+    assert_eq!(event_data_slot(tag(b"L2")), Some(EventDataSlot::Location2));
+    assert_eq!(event_data_slot(0x00FF_00FF), None);
+
+    let mut world = World::new();
+    let subject = world.spawn();
+    let r1 = world.spawn();
+    let r2 = world.spawn();
+    // GetInFaction(0xF00D) == 1 on the tagged slot — true for r2 only.
+    world.insert(r2, FactionRanks::from_pairs([(0xF00D, 0)]));
+    let condition = |extra: u32| Condition {
+        function_index: 71,
+        comparator: ComparisonOp::Eq,
+        comparand: ConditionValue::Literal(1.0),
+        param_1: 0xF00D,
+        run_on: RunOn::EventData,
+        extra_data_id: extra,
+        ..Default::default()
+    };
+    let slots = EventDataSlots {
+        reference_1: Some(r1),
+        reference_2: Some(r2),
+        location_1: Some(0x18A49),
+        location_2: Some(0x18A56),
+        ..Default::default()
+    };
+    let ctx = ConditionContext::for_subject(subject).with_event_data(&slots);
+    assert!(
+        evaluate_condition(&condition(tag(b"R2")), &world, &ctx),
+        "R2 is in the faction"
+    );
+    assert!(
+        !evaluate_condition(&condition(tag(b"R1")), &world, &ctx),
+        "R1 is not"
+    );
+    assert!(
+        !evaluate_condition(&condition(tag(b"L2")), &world, &ctx),
+        "location tags have no entity to run on"
+    );
+    assert!(
+        !evaluate_condition(&condition(0x00FF_00FF), &world, &ctx),
+        "unknown tags fail"
+    );
+    assert!(
+        !evaluate_condition(
+            &condition(tag(b"R2")),
+            &world,
+            &ConditionContext::for_subject(subject)
+        ),
+        "no event data in the context — fails as in Phase 1"
+    );
+}
+
+/// GetInFaction (Skyrim 71) — membership collapses the same
+/// `FactionRanks` read GetFactionRank does.
+#[test]
+fn get_in_faction_reads_membership() {
+    use byroredux_core::ecs::components::FactionRanks;
+    let mut world = World::new();
+    let member = world.spawn();
+    world.insert(member, FactionRanks::from_pairs([(0xF00D, 2), (0xBAAD, 0)]));
+    let outsider = world.spawn();
+    world.insert(outsider, FactionRanks::from_pairs([(0xBAAD, 3)]));
+    let condition = Condition {
+        function_index: 71,
+        comparator: ComparisonOp::Eq,
+        comparand: ConditionValue::Literal(1.0),
+        param_1: 0xF00D,
+        ..Default::default()
+    };
+    assert!(evaluate_condition(&condition, &world, &ctx(member)));
+    assert!(!evaluate_condition(&condition, &world, &ctx(outsider)));
+    let bare = world.spawn();
+    assert!(
+        !evaluate_condition(&condition, &world, &ctx(bare)),
+        "no FactionRanks — not in the faction"
+    );
+}

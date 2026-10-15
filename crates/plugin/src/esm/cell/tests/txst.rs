@@ -606,14 +606,14 @@ fn parse_txst_dodt_only_record_is_preserved() {
 /// either one sees it.
 ///
 /// NOTE for future editors: this test's own doc comment deliberately
-/// never spells out the stale claim's literal text — `mod.rs`'s own
-/// corrective doc (above the struct now) also describes the mistake in
-/// general terms rather than quoting it, for the same reason: quoting it
-/// anywhere in `mod.rs` would make the `.contains()` check below match
-/// the describing prose instead of a real regression.
+/// never spells out the stale claim's literal text — `base_objects.rs`'s
+/// own corrective doc (above the struct now) also describes the mistake
+/// in general terms rather than quoting it, for the same reason: quoting
+/// it anywhere in `base_objects.rs` would make the `.contains()` check
+/// below match the describing prose instead of a real regression.
 #[test]
 fn decal_data_doc_does_not_claim_a_nonexistent_m28_decal_milestone() {
-    let src = include_str!("../mod.rs");
+    let src = include_str!("../base_objects.rs");
 
     assert!(
         !src.contains("the M28 decal pipeline extension"),
@@ -768,7 +768,10 @@ fn ltex_gnam_array_survives_decode_in_authored_order() {
         Some("LFieldGrass01NoGrass"),
         "#4899 — the LTEX editor ID must be captured for the cover-affinity table"
     );
-    assert!(!editor_ids.contains_key(&0x0000_2002), "an absent EDID stays absent");
+    assert!(
+        !editor_ids.contains_key(&0x0000_2002),
+        "an absent EDID stays absent"
+    );
 
     assert_eq!(
         ltex_to_grass.get(&0x0000_2001),

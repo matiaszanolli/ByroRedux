@@ -121,15 +121,9 @@ impl Component for StoryEvent {
 /// silent no-op on a fresh world.
 pub fn register(world: &mut World) {
     world.register::<StoryEvent>();
-    if world.try_resource::<PendingScriptStoryEvents>().is_none() {
-        world.insert_resource(PendingScriptStoryEvents::default());
-    }
-    if world.try_resource::<PendingScriptKills>().is_none() {
-        world.insert_resource(PendingScriptKills::default());
-    }
-    if world.try_resource::<PendingPlayerXp>().is_none() {
-        world.insert_resource(PendingPlayerXp::default());
-    }
+    world.init_resource::<PendingScriptStoryEvents>();
+    world.init_resource::<PendingScriptKills>();
+    world.init_resource::<PendingPlayerXp>();
 }
 
 /// Script-raised story events (M47.2, `Keyword.SendStoryEvent`) waiting for
@@ -619,23 +613,13 @@ pub fn install_story_manager(world: &mut World, records: &HashMap<u32, SmNodeRec
     let tree = build_story_manager_tree(records);
     let count = tree.nodes.len();
     world.insert_resource(tree);
-    if world.try_resource::<StoryLocationCursor>().is_none() {
-        world.insert_resource(StoryLocationCursor::default());
-    }
-    if world.try_resource::<StoryEventAliasFill>().is_none() {
-        world.insert_resource(StoryEventAliasFill::default());
-    }
+    world.init_resource::<StoryLocationCursor>();
+    world.init_resource::<StoryEventAliasFill>();
     // Phase 3 — node-policy state (saved), the game-hours clock the
     // engine syncs from GameTimeRes, and the selection RNG.
-    if world.try_resource::<StoryManagerNodeState>().is_none() {
-        world.insert_resource(StoryManagerNodeState::default());
-    }
-    if world.try_resource::<StoryClock>().is_none() {
-        world.insert_resource(StoryClock::default());
-    }
-    if world.try_resource::<StoryManagerRng>().is_none() {
-        world.insert_resource(StoryManagerRng::default());
-    }
+    world.init_resource::<StoryManagerNodeState>();
+    world.init_resource::<StoryClock>();
+    world.init_resource::<StoryManagerRng>();
     count
 }
 

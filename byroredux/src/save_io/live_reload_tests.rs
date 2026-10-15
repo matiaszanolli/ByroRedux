@@ -411,9 +411,12 @@ fn quest_alias_inventory_grant_ledger_survives_live_reload_with_new_entity_id() 
 #[test]
 fn saved_resources_are_restored_before_the_cell_reload() {
     // No production/test split needed: this module lives in its own file,
-    // and `save_io.rs`'s inline test module contains none of the tokens
+    // and `live_load.rs`'s inline test module contains none of the tokens
     // matched below.
-    let source = include_str!("../save_io.rs");
+    // #5585 — the drain moved from `save_io.rs` to `save_io/live_load.rs`;
+    // the fn and its tail stayed together, so the scan-to-EOF window
+    // keeps its meaning.
+    let source = include_str!("live_load.rs");
     let start = source
         .find("pub fn execute_pending_save_loads(")
         .expect("the live-load drain must exist");
@@ -468,7 +471,8 @@ fn saved_resources_are_restored_before_the_cell_reload() {
 ///   package change.
 #[test]
 fn post_reload_drain_steps_keep_their_order() {
-    let source = include_str!("../save_io.rs");
+    // #5585 — the drain moved from `save_io.rs` to `save_io/live_load.rs`.
+    let source = include_str!("live_load.rs");
     let start = source
         .find("pub fn execute_pending_save_loads(")
         .expect("the live-load drain must exist");
@@ -650,7 +654,8 @@ fn load_reset_makes_the_first_cloc_independent_of_the_outgoing_session() {
 /// `VulkanContext`, so what is checkable is that the call is there.
 #[test]
 fn live_load_drain_resets_the_story_location_cursor() {
-    let source = include_str!("../save_io.rs");
+    // #5585 — the drain moved from `save_io.rs` to `save_io/live_load.rs`.
+    let source = include_str!("live_load.rs");
     let start = source
         .find("pub fn execute_pending_save_loads(")
         .expect("the live-load drain must exist");

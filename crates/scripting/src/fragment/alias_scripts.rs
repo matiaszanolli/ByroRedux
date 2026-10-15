@@ -146,12 +146,8 @@ pub fn install_quest_alias_scripts(world: &mut World, index: &byroredux_plugin::
         checked: HashMap::new(),
     });
     // The stores an alias script's variables and state live in.
-    if world.try_resource::<crate::QuestScriptVariables>().is_none() {
-        world.insert_resource(crate::QuestScriptVariables::default());
-    }
-    if world.try_resource::<crate::QuestScriptObjects>().is_none() {
-        world.insert_resource(crate::QuestScriptObjects::default());
-    }
+    world.init_resource::<crate::QuestScriptVariables>();
+    world.init_resource::<crate::QuestScriptObjects>();
     count
 }
 

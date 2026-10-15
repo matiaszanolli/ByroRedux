@@ -155,18 +155,10 @@ pub fn install_quest_scripts(
     if installed == 0 {
         return;
     }
-    if world.try_resource::<QuestScriptTable>().is_none() {
-        world.insert_resource(QuestScriptTable::default());
-    }
-    if world.try_resource::<ObScriptQuestTimers>().is_none() {
-        world.insert_resource(ObScriptQuestTimers::default());
-    }
-    if world.try_resource::<ObScriptQuestLocals>().is_none() {
-        world.insert_resource(ObScriptQuestLocals::default());
-    }
-    if world.try_resource::<ObScriptEffectLog>().is_none() {
-        world.insert_resource(ObScriptEffectLog::default());
-    }
+    world.init_resource::<QuestScriptTable>();
+    world.init_resource::<ObScriptQuestTimers>();
+    world.init_resource::<ObScriptQuestLocals>();
+    world.init_resource::<ObScriptEffectLog>();
     world.insert_resource(table);
     log::info!("Installed {installed} ObScript quest scripts");
 }

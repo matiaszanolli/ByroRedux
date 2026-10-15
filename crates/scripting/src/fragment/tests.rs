@@ -6058,9 +6058,7 @@ fn set_linked_ref_overrides_and_clears_links() {
             ..Default::default()
         },
     );
-    if world.try_resource::<crate::LinkedRefOverrides>().is_none() {
-        world.insert_resource(crate::LinkedRefOverrides::default());
-    }
+    world.init_resource::<crate::LinkedRefOverrides>();
     assert_eq!(crate::linked_ref(&world, SOURCE, LINK_GATE), Some(AUTHORED));
     let vmad = object_property_vmad(&[
         ("Source", SOURCE),

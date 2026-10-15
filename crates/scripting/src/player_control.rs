@@ -253,9 +253,7 @@ pub fn update_actor_control(
 
 pub fn register(world: &mut World) {
     world.register::<ActorControlState>();
-    if world.try_resource::<PlayerControlState>().is_none() {
-        world.insert_resource(PlayerControlState::default());
-    }
+    world.init_resource::<PlayerControlState>();
 }
 
 #[cfg(test)]

@@ -139,12 +139,8 @@ pub fn install_quest_script_variables<'a>(
         count += 1;
     }
     world.insert_resource(defaults);
-    if world.try_resource::<QuestScriptVariables>().is_none() {
-        world.insert_resource(QuestScriptVariables::default());
-    }
-    if world.try_resource::<QuestScriptObjects>().is_none() {
-        world.insert_resource(QuestScriptObjects::default());
-    }
+    world.init_resource::<QuestScriptVariables>();
+    world.init_resource::<QuestScriptObjects>();
     count
 }
 

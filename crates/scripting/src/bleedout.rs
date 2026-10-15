@@ -265,9 +265,7 @@ pub fn bleedout_system(world: &World, dt: f32) {
 pub fn register(world: &mut World) {
     world.register::<ActorProtection>();
     world.register::<Bleedout>();
-    if world.try_resource::<ActorBaseProtectionOverrides>().is_none() {
-        world.insert_resource(ActorBaseProtectionOverrides::default());
-    }
+    world.init_resource::<ActorBaseProtectionOverrides>();
 }
 
 #[cfg(test)]

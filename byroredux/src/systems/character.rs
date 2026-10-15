@@ -1775,7 +1775,9 @@ mod tests {
     fn momentum_is_cleared_through_one_method() {
         for (name, src) in [
             ("systems/character.rs", include_str!("character.rs")),
-            ("save_io.rs", include_str!("../save_io.rs")),
+            // #5585 — `apply_player_pose` (the body-placement site this
+            // scan watches) moved from `save_io.rs` to `save_io/player.rs`.
+            ("save_io/player.rs", include_str!("../save_io/player.rs")),
             ("commands/view.rs", include_str!("../commands/view.rs")),
         ] {
             let src = byroredux_core::source_scan::production_text_or_whole(src);

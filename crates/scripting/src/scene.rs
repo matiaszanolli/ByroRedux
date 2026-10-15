@@ -141,23 +141,13 @@ pub fn register(world: &mut World) {
     world.register::<SceneActionCompletionBatch>();
     world.register::<SceneEventBatch>();
     world.register::<SceneFragmentInvocationBatch>();
-    if world.try_resource::<SceneRegistry>().is_none() {
-        world.insert_resource(SceneRegistry::default());
-    }
-    if world.try_resource::<SceneActorBindings>().is_none() {
-        world.insert_resource(SceneActorBindings::default());
-    }
+    world.init_resource::<SceneRegistry>();
+    world.init_resource::<SceneActorBindings>();
     // #5293 — the per-frame bound-set memo. Absent in ad-hoc test worlds,
     // which then always rebuild (the pre-#5293 behavior).
-    if world.try_resource::<quest_alias::RunningQuestBoundCache>().is_none() {
-        world.insert_resource(quest_alias::RunningQuestBoundCache::default());
-    }
-    if world.try_resource::<SceneQuestAliasRegistry>().is_none() {
-        world.insert_resource(SceneQuestAliasRegistry::default());
-    }
-    if world.try_resource::<QuestAliasInjectionState>().is_none() {
-        world.insert_resource(QuestAliasInjectionState::default());
-    }
+    world.init_resource::<quest_alias::RunningQuestBoundCache>();
+    world.init_resource::<SceneQuestAliasRegistry>();
+    world.init_resource::<QuestAliasInjectionState>();
 }
 
 /// Install parsed definitions and create one persistent scene-player entity

@@ -47,9 +47,7 @@ pub fn install_relationships(world: &mut World, index: &EsmIndex) -> usize {
         .collect();
     let count = ranks.len();
     world.insert_resource(AuthoredRelationships(ranks));
-    if world.try_resource::<ScriptedRelationships>().is_none() {
-        world.insert_resource(ScriptedRelationships::default());
-    }
+    world.init_resource::<ScriptedRelationships>();
     count
 }
 

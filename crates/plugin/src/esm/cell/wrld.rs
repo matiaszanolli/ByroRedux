@@ -4,8 +4,8 @@
 
 use super::helpers::{read_form_id, read_zstring};
 use super::walkers::parse_refr_group;
-use crate::esm::reader::GameKind;
 use super::*;
+use crate::esm::reader::GameKind;
 
 /// Walk the WRLD group hierarchy to find exterior cells and their placed references.
 ///
@@ -50,7 +50,14 @@ pub(crate) fn parse_wrld_group(
                         // WRLD's structurally persistent CELL. It can still
                         // author XCLC=(0,0), so topology—not XCLC absence—
                         // distinguishes it from the streamed tile at (0,0).
-                        parse_wrld_children(reader, sub_end, cells, &mut persistent_cell, true, game)?;
+                        parse_wrld_children(
+                            reader,
+                            sub_end,
+                            cells,
+                            &mut persistent_cell,
+                            true,
+                            game,
+                        )?;
                         if let Some(cell) = persistent_cell {
                             all_persistent_cells.insert(key, cell);
                         }
@@ -185,8 +192,7 @@ pub(crate) fn parse_wrld_group(
                             // its plane straight to the GPU, so a NaN or
                             // sentinel height must decode to "no LOD water"
                             // rather than NaN vertex Y positions (#4487).
-                            record.lod_water_height =
-                                super::helpers::gated_water_height(&sub.data);
+                            record.lod_water_height = super::helpers::gated_water_height(&sub.data);
                         }
                         // OFST — per-cell offset table. Deliberately NOT
                         // captured: #1849 stored the raw u32 words for a

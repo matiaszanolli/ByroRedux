@@ -291,24 +291,14 @@ pub fn register(world: &mut World) {
     world.register::<DialoguePlayback>();
     world.register::<DialoguePresentationEventBatch>();
     world.register::<DialogueLineCompletionBatch>();
-    if world.try_resource::<DialogueRegistry>().is_none() {
-        world.insert_resource(DialogueRegistry::default());
-    }
-    if world.try_resource::<DialogueQuestPriorities>().is_none() {
-        world.insert_resource(DialogueQuestPriorities::default());
-    }
+    world.init_resource::<DialogueRegistry>();
+    world.init_resource::<DialogueQuestPriorities>();
     // #5734 — the quest-level dialogue gate beside the priorities it
     // orders against.
-    if world.try_resource::<DialogueQuestConditions>().is_none() {
-        world.insert_resource(DialogueQuestConditions::default());
-    }
+    world.init_resource::<DialogueQuestConditions>();
     // #5367 Phase L — Say-Once bookkeeping and the selection RNG.
-    if world.try_resource::<DialogueSpokenInfoForms>().is_none() {
-        world.insert_resource(DialogueSpokenInfoForms::default());
-    }
-    if world.try_resource::<DialogueRandomState>().is_none() {
-        world.insert_resource(DialogueRandomState::default());
-    }
+    world.init_resource::<DialogueSpokenInfoForms>();
+    world.init_resource::<DialogueRandomState>();
 }
 
 /// Install parsed DIAL/INFO records. Re-installation refreshes definitions by

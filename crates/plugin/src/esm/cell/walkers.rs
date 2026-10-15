@@ -5,7 +5,7 @@
 use super::*;
 use crate::esm::reader::GameKind;
 use crate::esm::records::script_instance::ScriptInstanceData;
-use crate::esm::records::{parse_navm, NavmRecord};
+use crate::esm::records::{NavmRecord, parse_navm};
 use crate::esm::sub_reader::SubReader;
 
 /// Canonical XCLL sub-record sizes per game era. Pinned here so the
@@ -353,9 +353,7 @@ fn parse_cell_group_inner(
                             let ambient_cube_layout = sub.data.len() >= 92
                                 && matches!(
                                     game,
-                                    GameKind::Skyrim
-                                        | GameKind::Fallout4
-                                        | GameKind::Fallout76
+                                    GameKind::Skyrim | GameKind::Fallout4 | GameKind::Fallout76
                                 );
                             let (
                                 directional_ambient,
@@ -427,10 +425,8 @@ fn parse_cell_group_inner(
                     // #5815 — the shared CellData build; the interior
                     // walker canonicalises its editor id (the save/game
                     // lookup key) first.
-                    let canonical_id = canonical_interior_cell_id(
-                        header.form_id,
-                        &fields.editor_id,
-                    );
+                    let canonical_id =
+                        canonical_interior_cell_id(header.form_id, &fields.editor_id);
                     let key = canonical_id.to_ascii_lowercase();
                     let cell = fields.into_cell(
                         header.form_id,

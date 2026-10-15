@@ -365,15 +365,9 @@ pub fn install_location_table(world: &mut World, index: &EsmIndex) -> usize {
     let table = LocationTable::from_index(index);
     let count = table.locations.len();
     world.insert_resource(table);
-    if world.try_resource::<PlayerLocation>().is_none() {
-        world.insert_resource(PlayerLocation::default());
-    }
-    if world.try_resource::<LocationAliasBindings>().is_none() {
-        world.insert_resource(LocationAliasBindings::default());
-    }
-    if world.try_resource::<LocationClearState>().is_none() {
-        world.insert_resource(LocationClearState::default());
-    }
+    world.init_resource::<PlayerLocation>();
+    world.init_resource::<LocationAliasBindings>();
+    world.init_resource::<LocationClearState>();
     count
 }
 

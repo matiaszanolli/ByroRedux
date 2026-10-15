@@ -70,8 +70,12 @@ pub(crate) fn build_static_object_from_subs(
             // flag (u8) and two unknown bytes; each `DSTD` opens with health %
             // (u8), index (u8), model damage stage (u8) and flags (u8).
             b"DEST" if sub.data.len() >= 4 => {
-                let health = i32::from_le_bytes([sub.data[0], sub.data[1], sub.data[2], sub.data[3]]);
-                destruction = Some(DestructionData { health, stages: Vec::new() });
+                let health =
+                    i32::from_le_bytes([sub.data[0], sub.data[1], sub.data[2], sub.data[3]]);
+                destruction = Some(DestructionData {
+                    health,
+                    stages: Vec::new(),
+                });
             }
             b"DSTD" if sub.data.len() >= 4 => {
                 if let Some(data) = destruction.as_mut() {
@@ -633,11 +637,7 @@ fn parse_txst_group_inner(
                 // Helper: extract a non-empty zstring path for one slot.
                 let extract = |bytes: &[u8]| -> Option<String> {
                     let s = read_zstring(bytes);
-                    if s.is_empty() {
-                        None
-                    } else {
-                        Some(s)
-                    }
+                    if s.is_empty() { None } else { Some(s) }
                 };
                 match sub.sub_type.as_slice() {
                     b"TX00" => set.diffuse = extract(&sub.data),
@@ -715,9 +715,10 @@ fn parse_txst_group_inner(
                     // for them yet (SF-D3-01), so capture nothing but make
                     // the drop visible: warn once per FourCC rather than
                     // once per record.
-                    sub_type if sub_type.starts_with(b"TX")
-                        && sub_type.len() == 4
-                        && warn_unmodelled_txst_slot(sub_type) =>
+                    sub_type
+                        if sub_type.starts_with(b"TX")
+                            && sub_type.len() == 4
+                            && warn_unmodelled_txst_slot(sub_type) =>
                     {
                         log::warn!(
                             "TXST sub-record {} has no modelled slot; texture path \
@@ -1100,7 +1101,7 @@ mod ligh_dat2_tests {
         d[10] = rgb[2]; //         B
         d[11] = 255; //  A (unused for color)
         d[12..14].copy_from_slice(&flags.to_le_bytes()); // {12} U16 Flags
-                                                         // {14} Unused(2)
+        // {14} Unused(2)
         d[16..20].copy_from_slice(&2.0f32.to_le_bytes()); // {16} Falloff Exponent
         d[20..24].copy_from_slice(&90.0f32.to_le_bytes()); // {20} FOV
         d[28..32].copy_from_slice(&1.5f32.to_le_bytes()); // {28} Flicker Period
@@ -1183,7 +1184,7 @@ mod ligh_dat2_tests {
         data[9] = 200;
         data[10] = 128;
         data[16..20].copy_from_slice(&2.0f32.to_le_bytes()); // falloff exponent
-                                                             // Bytes 24-27: Value (u32) — an ordinary nonzero game-gold value.
+        // Bytes 24-27: Value (u32) — an ordinary nonzero game-gold value.
         data[24..28].copy_from_slice(&50u32.to_le_bytes());
         // Bytes 28-31: Weight (f32) — an ordinary nonzero encumbrance
         // value. Pre-fix this was misread as `period_secs`.

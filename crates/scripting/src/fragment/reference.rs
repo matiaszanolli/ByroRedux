@@ -170,12 +170,8 @@ pub fn attach_reference_script(
         }
     }
     // The stores the script's state lives in.
-    if world.try_resource::<crate::QuestScriptVariables>().is_none() {
-        world.insert_resource(crate::QuestScriptVariables::default());
-    }
-    if world.try_resource::<crate::QuestScriptObjects>().is_none() {
-        world.insert_resource(crate::QuestScriptObjects::default());
-    }
+    world.init_resource::<crate::QuestScriptVariables>();
+    world.init_resource::<crate::QuestScriptObjects>();
     world.register::<PapyrusReferenceScripts>();
     let script = ReferenceScript {
         script: instance.name.clone(),
@@ -195,9 +191,7 @@ pub fn attach_reference_script(
             }
         }
     }
-    if world.try_resource::<ReferenceScriptIndex>().is_none() {
-        world.insert_resource(ReferenceScriptIndex::default());
-    }
+    world.init_resource::<ReferenceScriptIndex>();
     world.resource_mut::<ReferenceScriptIndex>().note_attached();
 }
 

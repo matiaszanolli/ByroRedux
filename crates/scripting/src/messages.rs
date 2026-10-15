@@ -113,9 +113,7 @@ pub fn install_message_catalog(world: &mut World, index: &EsmIndex) -> usize {
     let catalog = MessageCatalog::from_index(index);
     let count = catalog.messages.len();
     world.insert_resource(catalog);
-    if world.try_resource::<PendingScriptMessages>().is_none() {
-        world.insert_resource(PendingScriptMessages::default());
-    }
+    world.init_resource::<PendingScriptMessages>();
     count
 }
 
@@ -368,12 +366,8 @@ pub fn notify(world: &World, text: String) {
 }
 
 pub fn register(world: &mut World) {
-    if world.try_resource::<PendingScriptMessages>().is_none() {
-        world.insert_resource(PendingScriptMessages::default());
-    }
-    if world.try_resource::<ButtonPresses>().is_none() {
-        world.insert_resource(ButtonPresses::default());
-    }
+    world.init_resource::<PendingScriptMessages>();
+    world.init_resource::<ButtonPresses>();
 }
 
 #[cfg(test)]

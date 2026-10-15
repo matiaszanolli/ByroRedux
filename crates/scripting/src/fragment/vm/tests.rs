@@ -4337,9 +4337,7 @@ fn vm_cost_us<F: FnMut()>(iters: u32, mut f: F) -> f64 {
 fn census_mode(world: &mut World, budgeted: bool) {
     if budgeted {
         world.insert_resource(crate::VmFrameBudget::default());
-        if world.try_resource::<crate::FragmentExecutionQueue>().is_none() {
-            world.insert_resource(crate::FragmentExecutionQueue::default());
-        }
+        world.init_resource::<crate::FragmentExecutionQueue>();
     } else {
         world.remove_resource::<crate::VmFrameBudget>();
     }
@@ -4477,9 +4475,7 @@ fn vm_cost_idle_burst_polling_runaway() {
 
 fn budgeted(world: &mut World, limit: usize) {
     world.insert_resource(crate::VmFrameBudget::with_limit(limit));
-    if world.try_resource::<crate::FragmentExecutionQueue>().is_none() {
-        world.insert_resource(crate::FragmentExecutionQueue::default());
-    }
+    world.init_resource::<crate::FragmentExecutionQueue>();
 }
 
 /// A new frame as the schedule sees it: the end-of-frame cleanup renews the

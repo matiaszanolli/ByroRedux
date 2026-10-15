@@ -95,15 +95,12 @@ fn interior_and_exterior_walkers_decode_the_same_shared_sub_records_identically(
     //    persistent CELL. ──
     let mut exterior_subs = vec![
         (b"EDID", b"EquivalenceCell\0".to_vec()),
-        (
-            b"XCLC",
-            {
-                let mut g = Vec::new();
-                g.extend(3_i32.to_le_bytes());
-                g.extend((-2_i32).to_le_bytes());
-                g
-            },
-        ),
+        (b"XCLC", {
+            let mut g = Vec::new();
+            g.extend(3_i32.to_le_bytes());
+            g.extend((-2_i32).to_le_bytes());
+            g
+        }),
     ];
     exterior_subs.extend(shared_subs());
 
@@ -146,8 +143,7 @@ fn interior_and_exterior_walkers_decode_the_same_shared_sub_records_identically(
     // The #1220 regression: the exterior walker hardcoded the precombine
     // pair empty after the interior one gained them.
     assert_eq!(
-        interior.precombined_mesh_hashes,
-        exterior.precombined_mesh_hashes,
+        interior.precombined_mesh_hashes, exterior.precombined_mesh_hashes,
         "precombine hashes must decode identically on both walkers"
     );
     assert_eq!(interior.precombined_mesh_hashes, vec![0xAAAA, 0xBBBB]);

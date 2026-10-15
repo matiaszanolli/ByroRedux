@@ -375,9 +375,7 @@ pub fn install_image_space_modifiers(
     world: &mut World,
     records: impl IntoIterator<Item = ImadRecord>,
 ) -> usize {
-    if world.try_resource::<CinematicPresentationState>().is_none() {
-        world.insert_resource(CinematicPresentationState::default());
-    }
+    world.init_resource::<CinematicPresentationState>();
     let catalog: HashMap<_, _> = records
         .into_iter()
         .map(|record| (record.form_id, record))
@@ -669,9 +667,7 @@ pub fn register(world: &mut World) {
     world.register::<crate::BehaviorGraphRef>();
     world.register::<crate::GraphSequences>();
     world.register::<crate::ObjectAnimationGraph>();
-    if world.try_resource::<CinematicPresentationState>().is_none() {
-        world.insert_resource(CinematicPresentationState::default());
-    }
+    world.init_resource::<CinematicPresentationState>();
 }
 
 #[cfg(test)]

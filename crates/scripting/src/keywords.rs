@@ -83,9 +83,7 @@ pub fn install_keyword_table(world: &mut World, index: &EsmIndex) -> usize {
     let table = KeywordTable::from_index(index);
     let count = table.0.len();
     world.insert_resource(table);
-    if world.try_resource::<ScriptedKeywords>().is_none() {
-        world.insert_resource(ScriptedKeywords::default());
-    }
+    world.init_resource::<ScriptedKeywords>();
     count
 }
 
@@ -176,9 +174,7 @@ pub fn change_keyword(world: &World, entity: EntityId, keyword: u32, change: Key
 }
 
 pub fn register(world: &mut World) {
-    if world.try_resource::<ScriptedKeywords>().is_none() {
-        world.insert_resource(ScriptedKeywords::default());
-    }
+    world.init_resource::<ScriptedKeywords>();
 }
 
 #[cfg(test)]

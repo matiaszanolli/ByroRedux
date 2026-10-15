@@ -1049,12 +1049,8 @@ pub fn resolve_quest_targets(world: &World, quest: QuestFormId) -> Vec<EntityId>
 /// definitions or live event batches.
 pub fn register(world: &mut World) {
     world.register::<QuestStageAdvancedBatch>();
-    if world.try_resource::<StartGameQuestRegistry>().is_none() {
-        world.insert_resource(StartGameQuestRegistry::default());
-    }
-    if world.try_resource::<QuestDefinitionRegistry>().is_none() {
-        world.insert_resource(QuestDefinitionRegistry::default());
-    }
+    world.init_resource::<StartGameQuestRegistry>();
+    world.init_resource::<QuestDefinitionRegistry>();
     if world
         .try_resource::<QuestAliasReadinessGateRegistry>()
         .is_none()

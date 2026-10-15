@@ -115,9 +115,7 @@ impl Component for TriggerVolume {
 /// Register the [`TriggerVolume`] storage. Called from [`crate::register`].
 pub fn register(world: &mut World) {
     world.register::<TriggerVolume>();
-    if world.try_resource::<TriggerOccupancyState>().is_none() {
-        world.insert_resource(TriggerOccupancyState::default());
-    }
+    world.init_resource::<TriggerOccupancyState>();
 }
 
 /// Previous-frame occupancy for non-player quest/scene references. Player

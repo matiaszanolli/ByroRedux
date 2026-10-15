@@ -230,12 +230,8 @@ pub fn register(world: &mut World) {
     world.register::<ScenePackageEventBatch>();
     world.register::<ScenePackageCompletionBatch>();
     world.register::<EvaluatePackageRequest>();
-    if world.try_resource::<PackageRegistry>().is_none() {
-        world.insert_resource(PackageRegistry::default());
-    }
-    if world.try_resource::<PackageTargetRegistry>().is_none() {
-        world.insert_resource(PackageTargetRegistry::default());
-    }
+    world.init_resource::<PackageRegistry>();
+    world.init_resource::<PackageTargetRegistry>();
 }
 
 pub fn install_package_records(

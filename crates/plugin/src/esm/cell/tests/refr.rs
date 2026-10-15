@@ -534,7 +534,7 @@ fn parse_refr_extracts_position_and_scale() {
     sub_data.extend_from_slice(&0.0f32.to_le_bytes()); // rot x
     sub_data.extend_from_slice(&1.57f32.to_le_bytes()); // rot y
     sub_data.extend_from_slice(&0.0f32.to_le_bytes()); // rot z
-                                                       // XSCL
+    // XSCL
     sub_data.extend_from_slice(b"XSCL");
     sub_data.extend_from_slice(&4u16.to_le_bytes());
     sub_data.extend_from_slice(&2.0f32.to_le_bytes());
@@ -1426,16 +1426,32 @@ fn xrgd_decodes_the_authored_ragdoll_pose() {
     assert_eq!(
         corpse.ragdoll_pose,
         vec![
-            RagdollPoseBone { bone_id: 2, position: [0.0, 0.0, 0.0], rotation: [-1.276, 0.507, -1.424] },
-            RagdollPoseBone { bone_id: 8, position: [0.4, -0.1, 6.9], rotation: [-3.11, 0.549, 2.94] },
-            RagdollPoseBone { bone_id: 2, position: [1.5, 0.0, 6.2], rotation: [1.438, -0.166, 1.646] },
+            RagdollPoseBone {
+                bone_id: 2,
+                position: [0.0, 0.0, 0.0],
+                rotation: [-1.276, 0.507, -1.424]
+            },
+            RagdollPoseBone {
+                bone_id: 8,
+                position: [0.4, -0.1, 6.9],
+                rotation: [-3.11, 0.549, 2.94]
+            },
+            RagdollPoseBone {
+                bone_id: 2,
+                position: [1.5, 0.0, 6.2],
+                rotation: [1.438, -0.166, 1.646]
+            },
         ]
     );
 
     let mut truncated = xrgd_entry(1, [5.6, 0.0, 0.0], [0.1, 0.2, 0.3]);
     truncated.extend_from_slice(&[7u8; 27]);
     let partial = parse_one_refr(&build_refr_with_subs(0x1234, &[(b"XRGD", &truncated)]));
-    assert_eq!(partial.ragdoll_pose.len(), 1, "a trailing partial entry is dropped");
+    assert_eq!(
+        partial.ragdoll_pose.len(),
+        1,
+        "a trailing partial entry is dropped"
+    );
 
     let live = parse_one_refr(&build_refr_with_subs(0x1234, &[]));
     assert!(live.ragdoll_pose.is_empty());

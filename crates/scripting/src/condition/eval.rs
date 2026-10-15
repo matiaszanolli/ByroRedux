@@ -1,0 +1,901 @@
+//! #5804 — the condition evaluator, split out of `condition.rs` (see that
+//! hub's module docs for the OR-precedence semantics): `evaluate_function`
+//! and its per-family helpers, `evaluate_contextual`, and the
+//! [`evaluate`] list walk.
+
+use std::ops::RangeInclusive;
+
+use byroredux_core::ecs::storage::EntityId;
+use byroredux_core::ecs::world::World;
+use byroredux_plugin::esm::records::condition::{
+    Condition, ConditionList, ConditionValue, RunOn,
+};
+
+use super::catalog::ConditionFunction;
+use super::context::ConditionContext;
+use crate::quest_stages::QuestFormId;
+
+/// Evaluate a single [`Condition`] against world state + the
+/// resolution context.
+///
+/// Returns the boolean result. Used internally by [`evaluate`]; exposed
+/// for tests + diagnostic dumps.
+pub fn evaluate_condition(condition: &Condition, world: &World, ctx: &ConditionContext) -> bool {
+    // Resolve Run-On to a concrete entity. `None` → condition fails
+    // (Bethesda: "missing reference fails the predicate").
+    let Some(entity) = ctx.resolve(condition.run_on, condition, world) else {
+        return false;
+    };
+
+    // Run the function — returns the f32 the comparator works against.
+    let function = ConditionFunction::from_index(condition.function_index);
+    if function == ConditionFunction::GetQuestVariable && !uses_obscript_quest_variables(world) {
+        // Index 79 is another function (or a string-named variable) outside the
+        // pre-Papyrus games: pass it, as every uncatalogued function does.
+        return true;
+    }
+    let function_result = if function.reads_context() {
+        let subject = match (condition.run_on, ctx.location_subject) {
+            (RunOn::Subject, Some(location)) => LocationSubject::Location(location),
+            _ => LocationSubject::Reference(entity),
+        };
+        evaluate_contextual(function, condition, subject, world, ctx)
+    } else {
+        evaluate_function(function, condition, entity, world)
+    };
+
+    condition
+        .comparator
+        .apply(function_result, comparand_value(condition, world))
+}
+
+/// Whether the load order's game is one whose index-79 `GetQuestVariable` reads an
+/// ObScript quest script's local (Oblivion, Fallout 3 and New Vegas).
+pub fn uses_obscript_quest_variables(world: &World) -> bool {
+    use byroredux_plugin::esm::reader::GameKind;
+    world
+        .try_resource::<crate::ScriptGame>()
+        .is_some_and(|game| matches!(game.0, GameKind::Oblivion | GameKind::Fallout3NV))
+}
+
+/// Whether the evaluator can really evaluate `condition` in this world: its
+/// function is catalogued, and an index that is a different function in another
+/// game (79) is catalogued for the loaded one. The fail-closed gates (dialogue
+/// quest gates, Story Manager nodes, perk entries, intrusive packages) decline a
+/// condition for which this is `false`.
+pub fn is_modeled(world: &World, condition: &Condition) -> bool {
+    match ConditionFunction::from_index(condition.function_index) {
+        ConditionFunction::Unknown(_) => false,
+        ConditionFunction::GetQuestVariable => uses_obscript_quest_variables(world),
+        _ => true,
+    }
+}
+
+/// The value a condition's function result is compared against.
+///
+/// Globals route through the `Globals` resource (mirrored from
+/// `EsmIndex.globals`, #1668). `form_id` is already in global load-order
+/// space (remapped at CTDA parse time), matching the resource's key space. A
+/// missing resource or unknown GLOB resolves to 0.0 — Bethesda's "missing
+/// GLOB defaults to 0".
+pub(crate) fn comparand_value(condition: &Condition, world: &World) -> f32 {
+    match condition.comparand {
+        ConditionValue::Literal(v) => v,
+        ConditionValue::Global(form_id) => world
+            .try_resource::<crate::globals::Globals>()
+            .and_then(|g| g.get(form_id))
+            .unwrap_or(0.0),
+    }
+}
+
+/// Resolve a global-load-order FormID to the entity that carries it.
+///
+/// `World::find_by_form_id` keys by an interned [`FormId`] handle; a remapped
+/// CTDA `param_1` is a raw global `u32`, so this resolves through the
+/// [`FormIdPool`] instead — an entity matches when its `FormIdComponent`
+/// resolves to a pair whose `local` equals `form_id` (the cell loader stores
+/// the full global FormID as the `LocalFormId`). O(n) over entities carrying
+/// a `FormIdComponent`, which is fine for the rare condition-eval path.
+/// Find the live entity whose `FormIdComponent` resolves (through the
+/// `FormIdPool`) to `form_id` in global-plugin space. `O(n)` over every
+/// `FormIdComponent`-tagged entity — fine for the occasional resolution
+/// this and `travel_system` (M42.4) perform, not a per-frame hot path.
+pub fn resolve_entity_by_global_form_id(world: &World, form_id: u32) -> Option<EntityId> {
+    use byroredux_core::ecs::components::FormIdComponent;
+    use byroredux_core::form_id::FormIdPool;
+    // FormIdComponent before FormIdPool — matches the order established
+    // elsewhere (save registry/driver, physics sync) for this pair (#313).
+    // #4694 (GAME-D5-2026-09-21-01) — PlayerRef (`0x14`) is Bethesda's
+    // "the player" sentinel, not a placed reference: no cell authors an
+    // `0x14` ACHR, and the player body's `FormIdComponent` resolves to
+    // `PLAYER_FORM_ID_PAIR` (local 1), so the scan below could never
+    // return the player. Every caller of this function needs PlayerRef to
+    // mean the player — the ambient movers' Follow/Escort/Travel/Guard
+    // targeting, `GetDistance`, `RunOn::Reference`, fragment object
+    // properties, quest stages — so the special case lives here (the same
+    // identity `package.rs` used to special-case locally at two sites).
+    // Bethesda's conventional PlayerRef sentinel (never a placed record).
+    const PLAYER_REF_SENTINEL: u32 = 0x14;
+    if form_id == PLAYER_REF_SENTINEL {
+        return crate::papyrus_demo::PapyrusPlayerEntity::get(world);
+    }
+    let q = world.query::<FormIdComponent>()?;
+    let pool = world.try_resource::<FormIdPool>()?;
+    let found = q
+        .iter()
+        .find(|(_, fid)| pool.resolve(fid.0).is_some_and(|p| p.local.0 == form_id))
+        .map(|(eid, _)| eid);
+    found
+}
+
+/// The global form ID of a live entity — the inverse of
+/// [`resolve_entity_by_global_form_id`], and keyed the same way
+/// (`FormIdPool::resolve(..).local.0`) so the two agree.
+///
+/// #3278 — needed by `Effect::Disable`, whose sink (`ReferenceEnableState`)
+/// is deliberately FormID-keyed rather than entity-keyed so a disable
+/// survives its reference's cell being unloaded; the location runtime keys
+/// a reference's editor location the same way.
+pub fn entity_global_form_id(world: &World, entity: EntityId) -> Option<u32> {
+    use byroredux_core::ecs::components::FormIdComponent;
+    use byroredux_core::form_id::FormIdPool;
+    let component = world.get::<FormIdComponent>(entity)?;
+    let pool = world.try_resource::<FormIdPool>()?;
+    pool.resolve(component.0).map(|pair| pair.local.0)
+}
+
+/// What a context-reading condition runs on: a reference, or — Run On
+/// Subject during a location-alias fill — the candidate location itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LocationSubject {
+    Reference(EntityId),
+    Location(u32),
+}
+
+fn truth(value: bool) -> f32 {
+    if value {
+        1.0
+    } else {
+        0.0
+    }
+}
+
+/// The [`ConditionFunction::reads_context`] functions (M47.2): the quest's
+/// aliases and the location hierarchy. Semantics are the CK wiki's condition
+/// function pages; a missing location (an untagged cell, an unbound alias, no
+/// [`crate::location::LocationTable`]) fails the test.
+fn evaluate_contextual(
+    function: ConditionFunction,
+    condition: &Condition,
+    subject: LocationSubject,
+    world: &World,
+    ctx: &ConditionContext,
+) -> f32 {
+    use crate::location::{current_location, editor_location, LocationTable};
+    let alias_id = condition.param_1 as i32;
+    // Each location is resolved before the table guard is taken —
+    // `current_location` / `editor_location` take it themselves.
+    let within = |location: Option<u32>, ancestor: Option<u32>| {
+        let (Some(location), Some(ancestor)) = (location, ancestor) else {
+            return false;
+        };
+        world
+            .try_resource::<LocationTable>()
+            .is_some_and(|table| table.is_within(location, ancestor))
+    };
+    let parent = |location: u32| {
+        world
+            .try_resource::<LocationTable>()
+            .and_then(|table| table.parent(location))
+    };
+    match function {
+        ConditionFunction::GetIsAliasRef => match subject {
+            LocationSubject::Reference(entity) => {
+                truth(ctx.alias_entity(world, alias_id) == Some(entity))
+            }
+            LocationSubject::Location(_) => 0.0,
+        },
+        ConditionFunction::LocAliasIsLocation => {
+            truth(ctx.alias_location(world, alias_id) == Some(condition.param_2))
+        }
+        ConditionFunction::GetInCurrentLoc | ConditionFunction::GetInCurrentLocAlias => {
+            let ancestor = if function == ConditionFunction::GetInCurrentLoc {
+                Some(condition.param_1)
+            } else {
+                ctx.alias_location(world, alias_id)
+            };
+            // "If run on a location, returns 1 if the parent of the location
+            // is (or has a parent location of) the supplied location."
+            let location = match subject {
+                LocationSubject::Reference(entity) => current_location(world, entity),
+                LocationSubject::Location(location) => parent(location),
+            };
+            truth(within(location, ancestor))
+        }
+        ConditionFunction::GetIsEditorLocation | ConditionFunction::GetIsEditorLocAlias => {
+            let ancestor = if function == ConditionFunction::GetIsEditorLocation {
+                Some(condition.param_1)
+            } else {
+                ctx.alias_location(world, alias_id)
+            };
+            // A location has no editor location; the CK defines these on
+            // references only.
+            let LocationSubject::Reference(entity) = subject else {
+                return 0.0;
+            };
+            truth(within(editor_location(world, entity), ancestor))
+        }
+        ConditionFunction::LocationHasKeyword => {
+            let location = match subject {
+                LocationSubject::Reference(entity) => current_location(world, entity),
+                LocationSubject::Location(location) => Some(location),
+            };
+            truth(location.is_some_and(|location| {
+                world
+                    .try_resource::<LocationTable>()
+                    .is_some_and(|table| table.has_keyword(location, condition.param_1))
+            }))
+        }
+        ConditionFunction::LocationHasRefType => {
+            let location = match subject {
+                LocationSubject::Reference(entity) => current_location(world, entity),
+                LocationSubject::Location(location) => Some(location),
+            };
+            let Some(location) = location else {
+                return 0.0;
+            };
+            let tagged: Vec<u32> = world
+                .try_resource::<LocationTable>()
+                .map(|table| table.refs_of_type(location, condition.param_1).collect())
+                .unwrap_or_default();
+            // "Returns false if the ref type is dead or disabled": a scripted
+            // disable is FormID-keyed and visible here. Death is not — an
+            // unloaded actor's death state lives with the cell streamer — so,
+            // like the missing cleared state, every tagged ref counts as alive.
+            let enabled = world.try_resource::<crate::fragment::ReferenceEnableState>();
+            truth(tagged.iter().any(|&reference| {
+                enabled
+                    .as_ref()
+                    .is_none_or(|state| state.override_for(reference) != Some(false))
+            }))
+        }
+        ConditionFunction::HasSameEditorLocAsRefAlias => {
+            let Some(other) = ctx
+                .alias_entity(world, alias_id)
+                .and_then(|entity| editor_location(world, entity))
+            else {
+                return 0.0;
+            };
+            let keyword = (condition.param_2 != 0).then_some(condition.param_2);
+            let own = match subject {
+                LocationSubject::Reference(entity) => match editor_location(world, entity) {
+                    Some(own) => Some(own),
+                    None => return 0.0,
+                },
+                LocationSubject::Location(_) => None,
+            };
+            let Some(table) = world.try_resource::<LocationTable>() else {
+                return 0.0;
+            };
+            truth(match (subject, own) {
+                (LocationSubject::Reference(_), Some(own)) => match keyword {
+                    None => own == other,
+                    Some(keyword) => table
+                        .with_keyword(own, keyword)
+                        .is_some_and(|level| table.with_keyword(other, keyword) == Some(level)),
+                },
+                // "Filled with a location having the keyword type and that is
+                // (or is the parent location of) the parameter reference's
+                // editor location."
+                (LocationSubject::Location(location), _) => {
+                    keyword.is_none_or(|keyword| table.has_keyword(location, keyword))
+                        && table.is_within(other, location)
+                }
+                (LocationSubject::Reference(_), None) => false,
+            })
+        }
+        ConditionFunction::GetLocationAliasCleared => truth(
+            ctx.alias_location(world, alias_id)
+                .is_some_and(|location| crate::location::location_cleared(world, location)),
+        ),
+        ConditionFunction::GetKeywordDataForAlias => ctx
+            .alias_location(world, alias_id)
+            .map_or(0.0, |location| crate::location_keyword_data(world, location, condition.param_2)),
+        ConditionFunction::GetKeywordDataForCurrentLocation => {
+            let location = match subject {
+                LocationSubject::Reference(entity) => current_location(world, entity),
+                LocationSubject::Location(location) => Some(location),
+            };
+            location.map_or(0.0, |location| crate::location_keyword_data(world, location, condition.param_1))
+        }
+        ConditionFunction::GetEventData => {
+            let Some(event) = ctx.event_data else {
+                return 0.0;
+            };
+            let member = (condition.param_1 >> 16) as u16;
+            let member = member.to_le_bytes();
+            let form = match &member {
+                b"K1" => event.keyword,
+                b"L1" => event.location_1,
+                b"L2" => event.location_2,
+                _ => None,
+            };
+            match condition.param_1 & 0xFFFF {
+                // GetIsID — the member is this form.
+                0 => truth(form.is_some_and(|form| form == condition.param_2)),
+                // GetValue — V1 / V2.
+                2 => match &member {
+                    b"V1" => event.values[0] as f32,
+                    b"V2" => event.values[1] as f32,
+                    _ => 0.0,
+                },
+                // HasKeyword — a location member carries the keyword.
+                3 => truth(matches!(&member, b"L1" | b"L2") && form.is_some_and(|location| {
+                    world
+                        .try_resource::<LocationTable>()
+                        .is_some_and(|table| table.has_keyword(location, condition.param_2))
+                })),
+                // IsInList / GetItemValue (form lists, item values) are not
+                // modelled.
+                _ => 0.0,
+            }
+        }
+        // Only `reads_context` functions are routed here.
+        _ => 0.0,
+    }
+}
+
+/// Which layers of an actor value a read keeps.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActorValueView {
+    /// `ActorValue::current` (every layer): `GetActorValue` / `GetValue`.
+    Current,
+    /// The base alone, no modifiers or damage: `GetBaseValue` /
+    /// `GetBaseActorValue`.
+    Base,
+    /// The ceiling `GetValuePercentage` divides by: everything but damage.
+    Undamaged,
+}
+
+/// `entity`'s `avif` actor value as `view` keeps its layers. The current
+/// view is the `GetActorValue` condition; the others compose the same way
+/// from a copy with the dropped layers cleared, so a derived stat takes its
+/// formula value either way.
+pub fn actor_value_view(world: &World, entity: EntityId, avif: u32, view: ActorValueView) -> f32 {
+    // GetActorValue(avif_form_id) → the Run-On actor's composed value
+    // for that actor value (`ActorValue::current`, every layer), or
+    // 0.0 when the actor carries no `ActorValues` (or hasn't that value
+    // set — Bethesda's absent-AV default). `param_1` is the AVIF FormID,
+    // already promoted to global load-order space at parse time
+    // (function 14 is in the CTDA form-id-param list, #1666), the same
+    // space `ActorValues` is keyed in — a direct lookup, no FormIdPool
+    // hop (the key IS the AV's id, not the actor's identity). #1663.
+    use byroredux_core::character::{CharacterLevel, CharacterRuleset};
+    use byroredux_core::ecs::components::ActorValues;
+    // #3441 — the `ActorValues` storage guard must NOT stay live
+    // across the `CharacterRuleset` resource acquire below.
+    // `pool_regen_tick_system` (`character/regen.rs`) and
+    // `melee_damage_charal_bonus` (`combat.rs`) both take the pair the
+    // other way round (`CharacterRuleset` → `ActorValues`, the write
+    // side in the former), so holding the guard here closes a 2-cycle
+    // in the `BYRO_LOCK_ORDER_CHECK` graph — `lock_tracker` keys
+    // storages and resources into one `TypeId` map. Snapshot what the
+    // ruleset branch needs and drop the guard first; the clone only
+    // happens on the fall-through (the authored-value fast path
+    // returns while the guard is still the cheap borrow).
+    let avs = {
+        let Some(avs) = world.get::<ActorValues>(entity) else {
+            return 0.0; // no `ActorValues` → absent-AV default
+        };
+        // An authored carried value wins — populated SPECIAL/skills,
+        // baked NPC Health/AP, the player's stamped pools (#4674,
+        // kept current by #5039's refresh). #5042 — a modifier-only
+        // entry (a constant spell, `modav` or the SDK on a stat the
+        // actor does not carry) is NOT authored: its `0.0` base is a
+        // placeholder, so it falls through to the ruleset composer.
+        if let Some(value) = avs.get(avif).filter(|value| value.base_authored) {
+            return match view {
+                ActorValueView::Current => value.current(),
+                ActorValueView::Base => value.base + value.set_override,
+                ActorValueView::Undamaged => value.undamaged(),
+            };
+        }
+        let mut avs = avs.clone();
+        // The layers the view drops come off the copy, so the ruleset
+        // composes the same value it would for a read of that view.
+        if let Some(value) = avs.get(avif).copied() {
+            if view == ActorValueView::Base {
+                avs.set_permanent(avif, 0.0);
+                avs.mod_temporary(avif, -value.temporary_mod);
+            }
+            if view != ActorValueView::Current {
+                avs.restore(avif, value.damage);
+            }
+        }
+        avs
+    };
+    // `CharacterLevel` too: read it before the ruleset so the surviving
+    // direction stays `CharacterRuleset` → (nothing).
+    let level = world.get::<CharacterLevel>(entity).map_or(0, |l| l.level);
+    // The one composer `melee_damage_charal_bonus` shares (#5042):
+    // formula + modifier layers for an actor-general Absolute row;
+    // the carried composition for everything else — including
+    // `PlayerOnly` rows on an NPC (the derived player answer must
+    // not leak onto an NPC that lacks the key) and `Multiplier` rows,
+    // whose `eval` is a ratio, not an actor-value reading (#2933).
+    match world.try_resource::<CharacterRuleset>() {
+        Some(rs) => rs.actor_value(avif, &avs, level),
+        None => avs.current(avif),
+    }
+}
+
+/// Dispatch one of the M47.1-catalog functions against the supplied
+/// entity. Returns `0.0` for unknown indices (Bethesda safe-default)
+/// or when the function's backing ECS storage isn't registered.
+pub fn evaluate_function(
+    function: ConditionFunction,
+    condition: &Condition,
+    entity: EntityId,
+    world: &World,
+) -> f32 {
+    if function.reads_context() {
+        return evaluate_contextual(
+            function,
+            condition,
+            LocationSubject::Reference(entity),
+            world,
+            &ConditionContext::for_subject(entity),
+        );
+    }
+    match function {
+        ConditionFunction::GetActorValue => {
+            actor_value_view(world, entity, condition.param_1, ActorValueView::Current)
+        }
+        ConditionFunction::GetQuestRunning => {
+            // GetQuestRunning(quest) → 1.0 while the quest is running.
+            use crate::quest_stages::{QuestFormId, QuestStageState};
+            let Some(state) = world.try_resource::<QuestStageState>() else {
+                return 0.0;
+            };
+            // `is_running` alone — the predicate ObScript's `GetQuestRunning`,
+            // dialogue ownership, SM pool eligibility and alias refresh all
+            // use. `is_started` is plain map membership, so it stays true
+            // after `Quest.Stop()` and after Complete/Fail; folding it in
+            // made every `GetQuestRunning(X) == 0` gate permanently false
+            // once X had run and stopped (#5636).
+            let running = state.is_running(QuestFormId(condition.param_1));
+            if running { 1.0 } else { 0.0 }
+        }
+        ConditionFunction::GetGlobalValue => {
+            // GetGlobalValue(global) → the GLOB's current value.
+            world
+                .try_resource::<crate::globals::Globals>()
+                .and_then(|g| g.get(condition.param_1))
+                .unwrap_or(0.0)
+        }
+        ConditionFunction::GetRandomPercent => {
+            // GetRandomPercent() → [0, 100]. Deterministic per world in
+            // tests: the engine has no seeded general RNG on the World,
+            // so this rides the StoryManagerRng when present (SM nodes
+            // are its native consumer) and the quest-random state
+            // otherwise; both are seeded resources.
+            use crate::story_manager::StoryManagerRng;
+            if let Some(mut rng) = world.try_resource_mut::<StoryManagerRng>() {
+                let value = rng.pick(101);
+                value as f32
+            } else {
+                // No RNG installed (unit worlds): a constant mid-range
+                // value keeps `GetRandomPercent < N` gates decidable
+                // and is documented here rather than hidden.
+                50.0
+            }
+        }
+        ConditionFunction::GetDistance => {
+            // GetDistance(target_form_id) → ‖subject − target‖ in world units.
+            // `param_1` is the target FormID, already remapped to global
+            // load-order space at parse time (#1666) — the same space entity
+            // `FormIdComponent`s resolve to — so the resolve is exact.
+            use byroredux_core::ecs::components::GlobalTransform;
+            let Some(target) = resolve_entity_by_global_form_id(world, condition.param_1) else {
+                // Target not currently spawned (e.g. in an unloaded cell).
+                // Model an absent target as infinitely far so a proximity
+                // gate (`GetDistance < N`) correctly fails rather than
+                // reading a missing ref as "right here" (a 0.0 would).
+                return f32::MAX;
+            };
+            let Some(subject_pos) = world.get::<GlobalTransform>(entity).map(|t| t.translation)
+            else {
+                return f32::MAX;
+            };
+            // First `get` borrow has been dropped (translation is Copy) before
+            // the second — avoids holding two read guards on one storage lock.
+            let Some(target_pos) = world.get::<GlobalTransform>(target).map(|t| t.translation)
+            else {
+                return f32::MAX;
+            };
+            (subject_pos - target_pos).length()
+        }
+        ConditionFunction::GetRelationshipRank => {
+            match resolve_entity_by_global_form_id(world, condition.param_1) {
+                Some(other) => f32::from(crate::relationships::relationship_rank(world, entity, other)),
+                None => 0.0,
+            }
+        }
+        ConditionFunction::GetIsGhost => truth(crate::is_ghost(world, entity)),
+        ConditionFunction::HasKeyword => {
+            truth(crate::keywords::has_keyword(world, entity, condition.param_1))
+        }
+        ConditionFunction::IsEssential => truth(crate::bleedout::is_essential(world, entity)),
+        ConditionFunction::IsProtected => truth(crate::bleedout::is_protected(world, entity)),
+        ConditionFunction::IsBleedingOut => {
+            truth(crate::bleedout::is_bleeding_out(world, entity))
+        }
+        ConditionFunction::GetPlayerTeammate => {
+            let form = if crate::papyrus_demo::PapyrusPlayerEntity::get(world).is_some_and(|player| player == entity)
+            {
+                Some(crate::PLAYER_REFERENCE)
+            } else {
+                entity_global_form_id(world, entity)
+            };
+            truth(form.is_some_and(|form| {
+                world
+                    .try_resource::<crate::FollowerState>()
+                    .is_some_and(|state| state.read(form, crate::FollowerFlag::Teammate))
+            }))
+        }
+        ConditionFunction::GetDead => {
+            // Death is a sparse lifecycle marker: absence is the overwhelmingly
+            // common alive state, while combat/scripts/resurrection can share
+            // one explicit component with authored CTDA checks.
+            use byroredux_core::ecs::components::Dead;
+            if world.has::<Dead>(entity) {
+                1.0
+            } else {
+                0.0
+            }
+        }
+        ConditionFunction::GetQuestVariable => {
+            // GetQuestVariable(quest, variable): the quest script's local in its
+            // 1-based `SLSD` slot (`param_2`), 0 until a GameMode run assigns it.
+            world
+                .try_resource::<crate::obscript_quests::ObScriptQuestLocals>()
+                .map_or(0.0, |locals| locals.get(condition.param_1, condition.param_2 as u16))
+        }
+        ConditionFunction::GetStage => {
+            // GetStage(quest_form_id). The current quest stage lives
+            // in the [`crate::quest_stages::QuestStageState`] resource.
+            // `param_1` is the quest FormID.
+            use crate::quest_stages::{QuestFormId, QuestStageState};
+            let Some(state) = world.try_resource::<QuestStageState>() else {
+                return 0.0;
+            };
+            state.get_stage(QuestFormId(condition.param_1)) as f32
+        }
+        ConditionFunction::GetStageDone => {
+            // GetStageDone(quest_form_id, stage). param_1 = quest
+            // FormID, param_2 = stage. Returns 1.0 when the stage
+            // has been reached, 0.0 otherwise. The Bethesda
+            // idempotency primitive — "this milestone fired before."
+            use crate::quest_stages::{QuestFormId, QuestStageState};
+            let Some(state) = world.try_resource::<QuestStageState>() else {
+                return 0.0;
+            };
+            let quest = QuestFormId(condition.param_1);
+            let stage = condition.param_2 as u16;
+            if state.get_stage_done(quest, stage) {
+                1.0
+            } else {
+                0.0
+            }
+        }
+        ConditionFunction::GetInCell => {
+            // Cell ownership is stamped on every loaded entity. The global
+            // authored CELL FormID lives once on its root, avoiding duplicate
+            // identity data across every mesh, actor, and child entity.
+            use byroredux_core::ecs::components::{CellFormId, CellRoot};
+            let cell_root = world.get::<CellRoot>(entity).map_or(entity, |root| root.0);
+            world.get::<CellFormId>(cell_root).map_or(0.0, |cell| {
+                if cell.0 == condition.param_1 {
+                    1.0
+                } else {
+                    0.0
+                }
+            })
+        }
+        ConditionFunction::GetFactionRank => {
+            // GetFactionRank(faction_form_id) → the Run-On actor's rank in
+            // `param_1`'s faction, or -1.0 (Bethesda's "not in faction"
+            // sentinel) when the actor has no `FactionRanks` or isn't a
+            // member. Faction ids are compared in the NPC's source space —
+            // identity-equal to a remapped `param_1` in single-plugin loads
+            // (see `FactionRanks` docs).
+            use byroredux_core::ecs::components::FactionRanks;
+            world
+                .get::<FactionRanks>(entity)
+                .and_then(|f| f.rank(condition.param_1))
+                .map_or(-1.0, |rank| rank as f32)
+        }
+        ConditionFunction::GetInFaction => {
+            // GetInFaction(faction_form_id) → 1.0 when the Run-On actor
+            // holds any rank in `param_1`'s faction, 0.0 otherwise. Same
+            // `FactionRanks` read and the same source-space faction-id
+            // compare as `GetFactionRank` above, collapsed to membership.
+            use byroredux_core::ecs::components::FactionRanks;
+            if world
+                .get::<FactionRanks>(entity)
+                .is_some_and(|f| f.rank(condition.param_1).is_some())
+            {
+                1.0
+            } else {
+                0.0
+            }
+        }
+        ConditionFunction::GetLevel => {
+            // GetLevel → the Run-On actor's character level (0.0 when the
+            // actor carries no `CharacterLevel`).
+            use byroredux_core::character::CharacterLevel;
+            world
+                .get::<CharacterLevel>(entity)
+                .map_or(0.0, |l| f32::from(l.level))
+        }
+        ConditionFunction::GetEquipped => {
+            // `EquipmentSlots` stores inventory indices rather than item
+            // FormIDs. Resolve each occupied index through the actor's
+            // Inventory and compare its base record with param_1.
+            use byroredux_core::ecs::components::{EquipmentSlots, Inventory};
+            // #3112 — `equipped_indices()` spans the biped occupants AND the
+            // wielded weapon, which lives outside the occupancy array. A bare
+            // `occupants` scan reports every equipped weapon as unequipped.
+            //
+            // #3580 — collect the indices and DROP the `EquipmentSlots` guard
+            // before taking `Inventory`. Holding the two overlapped recorded
+            // `EquipmentSlots -> Inventory`, while the fragment runtime
+            // reaches the same pair through
+            // `query_2_mut_mut::<Inventory, EquipmentSlots>`, which acquires
+            // in TypeId order. One of the two orders is then always wrong,
+            // and the cycle detector aborted whichever ran second. Not
+            // overlapping the guards makes this site order-independent.
+            let Some(equipped_indices) = world
+                .get::<EquipmentSlots>(entity)
+                .map(|slots| slots.equipped_indices().collect::<Vec<_>>())
+            else {
+                return 0.0;
+            };
+            let Some(inventory) = world.get::<Inventory>(entity) else {
+                return 0.0;
+            };
+            let equipped = equipped_indices.into_iter().any(|index| {
+                inventory
+                    .get(index)
+                    .is_some_and(|stack| stack.count > 0 && stack.base_form_id == condition.param_1)
+            });
+            if equipped {
+                1.0
+            } else {
+                0.0
+            }
+        }
+        ConditionFunction::GetXPForNextLevel => {
+            // GetXPForNextLevel → XP required for the actor's next level, from
+            // the per-game `LevelingModel` in the `CharacterRuleset` resource.
+            // 0.0 without the ruleset (the leveling curve is game-supplied).
+            use byroredux_core::character::{CharacterLevel, CharacterRuleset};
+            let Some(rs) = world.try_resource::<CharacterRuleset>() else {
+                return 0.0;
+            };
+            let level = world.get::<CharacterLevel>(entity).map_or(0, |l| l.level);
+            rs.leveling.xp_to_next(level)
+        }
+        ConditionFunction::IsSceneActionComplete => {
+            // param_1 is a global-space SCEN FormID and param_2 is the
+            // authored action index. The runtime retains completion history
+            // until the next start because completed actions are removed from
+            // the active set when their end phase closes.
+            use crate::scene::{ScenePlayer, SceneRegistry};
+            let Some(scene_entity) = world
+                .try_resource::<SceneRegistry>()
+                .and_then(|registry| registry.scene_entity(condition.param_1))
+            else {
+                return 0.0;
+            };
+            world
+                .get::<ScenePlayer>(scene_entity)
+                .map_or(0.0, |player| {
+                    if player.completed_actions.contains(&condition.param_2)
+                        || player.active_actions.iter().any(|action| {
+                            action.action_index == condition.param_2 && action.completed
+                        })
+                    {
+                        1.0
+                    } else {
+                        0.0
+                    }
+                })
+        }
+        ConditionFunction::GetIsClass
+        | ConditionFunction::GetIsRace
+        | ConditionFunction::GetIsID => {
+            if function.run_on_identity(entity, world) == Some(condition.param_1) {
+                1.0
+            } else {
+                0.0
+            }
+        }
+        ConditionFunction::HasLoaded3D => {
+            // A loaded reference has joined the spatial ECS and therefore
+            // carries a GlobalTransform. Cell unload removes that component,
+            // making stale alias bindings correctly report false.
+            use byroredux_core::ecs::components::GlobalTransform;
+            if world.get::<GlobalTransform>(entity).is_some() {
+                1.0
+            } else {
+                0.0
+            }
+        }
+        ConditionFunction::IsHardcore => {
+            if world.try_resource::<byroredux_core::ecs::resources::HardcoreMode>()
+                .is_some_and(|mode| mode.enabled) { 1.0 } else { 0.0 }
+        }
+        ConditionFunction::HasPerk => {
+            // 1.0 iff the Run-On actor's canonical ranked `Perks` component
+            // owns `param_1`. Spawned NPCs carry this component; the legacy
+            // `PerkList` projection is not populated by production code.
+            use byroredux_core::character::Perks;
+            let Some(perks) = world.get::<Perks>(entity) else {
+                return 0.0;
+            };
+            if perks.rank(condition.param_1) > 0 {
+                1.0
+            } else {
+                0.0
+            }
+        }
+        ConditionFunction::GetReputation => {
+            // GetReputation(repu_form_id, axis) → the Run-On actor's raw
+            // Fame/Infamy with `param_1`. `param_2` is the axis selector
+            // (Bethesda console convention: 1 = Fame, 0 = Infamy). 0.0 when the
+            // actor carries no `FactionReputation` or the faction is unknown.
+            // `param_1` is the global-space `REPU` FormID (#1666 remap).
+            use byroredux_core::character::FactionReputation;
+            let Some(rep) = world.get::<FactionReputation>(entity) else {
+                return 0.0;
+            };
+            let points = if condition.param_2 == 1 {
+                rep.fame(condition.param_1)
+            } else {
+                rep.infamy(condition.param_1)
+            };
+            f32::from(points)
+        }
+        ConditionFunction::GetReputationThreshold => {
+            // GetReputationThreshold(repu_form_id, axis) → the Range 0..=3 band
+            // the chosen axis falls into for `param_1`'s thresholds. Uses the
+            // vanilla FNV threshold table as the fallback source until the live
+            // faction/REPU record path supplies per-faction thresholds; an
+            // unknown faction yields Range 0 (the safe "Neutral" default).
+            use byroredux_core::character::reputation::fnv_faction_thresholds;
+            use byroredux_core::character::FactionReputation;
+            let Some(rep) = world.get::<FactionReputation>(entity) else {
+                return 0.0;
+            };
+            let points = if condition.param_2 == 1 {
+                rep.fame(condition.param_1)
+            } else {
+                rep.infamy(condition.param_1)
+            };
+            fnv_faction_thresholds::thresholds_for(condition.param_1)
+                .map_or(0.0, |t| f32::from(t.range(u32::from(points))))
+        }
+        ConditionFunction::GetVMScriptVariable => {
+            // Unlike most CTDAs, the object being inspected is an explicit
+            // function parameter rather than the Run-On entity. CIS2 carries
+            // the variable name; the numeric CTDA param_2 bytes are an
+            // editor/runtime artifact and must not be interpreted as an id.
+            let Some(target) = resolve_entity_by_global_form_id(world, condition.param_1) else {
+                return 0.0;
+            };
+            let Some(variable) = condition.param_2_text else {
+                return 0.0;
+            };
+            world
+                .get::<crate::vm_state::ScriptVariables>(target)
+                .and_then(|variables| variables.get(variable))
+                .unwrap_or(0.0)
+        }
+        ConditionFunction::GetVMQuestVariable => {
+            // The quest is an explicit parameter (remapped to global space at
+            // parse, #1666); CIS2 names the variable.
+            let Some(variable) = condition.param_2_text else {
+                return 0.0;
+            };
+            crate::quest_variables::quest_variable(world, QuestFormId(condition.param_1), variable)
+                .unwrap_or(0.0)
+        }
+        // Answered by `evaluate_contextual` above.
+        ConditionFunction::GetInCurrentLoc
+        | ConditionFunction::GetInCurrentLocAlias
+        | ConditionFunction::LocationHasKeyword
+        | ConditionFunction::GetKeywordDataForCurrentLocation
+        | ConditionFunction::GetIsEditorLocation
+        | ConditionFunction::GetIsAliasRef
+        | ConditionFunction::GetIsEditorLocAlias
+        | ConditionFunction::LocAliasIsLocation
+        | ConditionFunction::LocationHasRefType
+        | ConditionFunction::HasSameEditorLocAsRefAlias
+        | ConditionFunction::GetEventData
+        | ConditionFunction::GetLocationAliasCleared
+        | ConditionFunction::GetKeywordDataForAlias => 0.0,
+        ConditionFunction::GetLocationCleared => {
+            truth(crate::location::location_cleared(world, condition.param_1))
+        }
+        ConditionFunction::GetKeywordDataForLocation => {
+            crate::location_keyword_data(world, condition.param_1, condition.param_2)
+        }
+        ConditionFunction::Unknown(index) => {
+            log::trace!(
+                "M47.1: condition function index {index} not in M47.1 catalog — \
+                 evaluates to 0.0 (Bethesda safe-default)",
+            );
+            0.0
+        }
+    }
+}
+
+/// Evaluate a full [`ConditionList`] with OR-precedence semantics.
+///
+/// Empty lists return `true` (Bethesda contract: "no conditions =
+/// always fires"). Otherwise, walks the list grouping consecutive
+/// ORs into a single "OR block" — the block evaluates `true` if ANY
+/// of its members evaluate `true`. The list then AND-combines the
+/// per-block results.
+///
+/// Walked formally: `[c0, c1, c2, c3, …]` with `or_next` flags
+/// `[true, true, false, …]` groups as `[c0 OR c1 OR c2] AND [c3 OR …]`.
+/// A block continues as long as the PREVIOUS condition's `or_next`
+/// is set; the LAST condition's `or_next` is meaningless (no `next`).
+///
+/// Short-circuits: any AND-block returning `false` terminates the
+/// scan early. Any OR-block returning `true` finishes the block and
+/// moves on without evaluating the remaining OR members.
+pub fn evaluate(conditions: &ConditionList, world: &World, ctx: &ConditionContext) -> bool {
+    // An empty list has no blocks: "no conditions = always fires". A false
+    // block fails the whole AND chain; within a block, single-condition
+    // blocks (no preceding OR flag) reduce to one evaluation and
+    // multi-condition blocks are OR-combined with short-circuit.
+    or_blocks(conditions).all(|block| {
+        conditions[block]
+            .iter()
+            .any(|condition| evaluate_condition(condition, world, ctx))
+    })
+}
+
+/// The OR blocks of `conditions`, in order, as index ranges — the units
+/// [`evaluate`] AND-combines.
+pub(crate) fn or_blocks(
+    conditions: &[Condition],
+) -> impl Iterator<Item = RangeInclusive<usize>> + '_ {
+    let mut i = 0usize;
+    std::iter::from_fn(move || {
+        if i >= conditions.len() {
+            return None;
+        }
+        // Discover the end of the current OR block. A block extends
+        // while the CURRENT condition's `or_next` flag is set.
+        let block_start = i;
+        while i < conditions.len() && conditions[i].or_next {
+            i += 1;
+        }
+        // `i` now points at the LAST condition of the block (its
+        // `or_next` is false). Block = [block_start ..= i].
+        //
+        // Clamp: if the FINAL condition has `or_next == true` (a
+        // malformed/truncated CTDA tail leaves the OR bit set), the inner
+        // loop walks `i` to `len`, which the inclusive range would index
+        // out of bounds. A trailing OR flag is meaningless (no `next`), so
+        // terminate the block at its last real member — `i < len` held on
+        // entry, so `len >= 1` and the subtraction can't underflow.
+        let block_end_inclusive = i.min(conditions.len() - 1);
+        i += 1; // step past the block for next iteration
+        Some(block_start..=block_end_inclusive)
+    })
+}

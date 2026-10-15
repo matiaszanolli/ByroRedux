@@ -92,9 +92,7 @@ pub fn emit_item_transfers(
 }
 
 pub(crate) fn register(world: &mut World) {
-    if world.try_resource::<EquipItemCatalog>().is_none() {
-        world.insert_resource(EquipItemCatalog::default());
-    }
+    world.init_resource::<EquipItemCatalog>();
 }
 
 #[cfg(test)]

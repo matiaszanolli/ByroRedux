@@ -352,11 +352,13 @@ fn parse_cell_without_rclr_leaves_regional_color_override_none() {
         crate::esm::reader::GameKind::Fallout3NV,
     )
     .unwrap();
-    assert!(cells
-        .get("norclrcell")
-        .unwrap()
-        .regional_color_override
-        .is_none());
+    assert!(
+        cells
+            .get("norclrcell")
+            .unwrap()
+            .regional_color_override
+            .is_none()
+    );
 }
 
 #[test]
@@ -806,7 +808,7 @@ fn parse_cell_skyrim_xcll_extracts_directional_ambient_cube() {
     // Bytes 0-7: Ambient RGBA + Directional RGBA (just need valid bytes).
     xcll.extend_from_slice(&[80, 82, 85, 0]); // ambient
     xcll.extend_from_slice(&[200, 195, 180, 0]); // directional
-                                                 // Bytes 8-11: Fog color RGBA (fog_near color).
+    // Bytes 8-11: Fog color RGBA (fog_near color).
     xcll.extend_from_slice(&[50, 55, 60, 0]);
     // Byte 11 == 0 is the alpha; already appended above.
     // Bytes 12-15: fog near (f32).
@@ -1283,7 +1285,8 @@ fn parse_cell_non_canonical_92plus_xcll_on_pre_skyrim_games_stays_out_of_the_amb
         let mut cells = HashMap::new();
         parse_cell_group(&mut reader, end, &mut cells, game).unwrap();
 
-        let cell = cells.get(&edid[..edid.len() - 1].to_ascii_lowercase())
+        let cell = cells
+            .get(&edid[..edid.len() - 1].to_ascii_lowercase())
             .expect("interior CELL present");
         let lit = cell.lighting.as_ref().expect("XCLL populated");
         assert!(
@@ -1291,10 +1294,19 @@ fn parse_cell_non_canonical_92plus_xcll_on_pre_skyrim_games_stays_out_of_the_amb
             "{game:?}: a 92+ XCLL must not read the ambient cube on a game \
              whose canonical set has no such shape"
         );
-        assert!(lit.specular_color.is_none(), "{game:?}: specular tail unparsed");
-        assert!(lit.fresnel_power.is_none(), "{game:?}: fresnel tail unparsed");
+        assert!(
+            lit.specular_color.is_none(),
+            "{game:?}: specular tail unparsed"
+        );
+        assert!(
+            lit.fresnel_power.is_none(),
+            "{game:?}: fresnel tail unparsed"
+        );
         // Base fields intact.
-        assert!((lit.ambient[0] - 30.0 / 255.0).abs() < 1e-6, "{game:?}: ambient R");
+        assert!(
+            (lit.ambient[0] - 30.0 / 255.0).abs() < 1e-6,
+            "{game:?}: ambient R"
+        );
     }
 }
 
@@ -1592,7 +1604,10 @@ fn cell_data_default_is_the_absent_everything_cell() {
     assert!(cell.editor_id.is_empty());
     assert!(cell.display_name.is_none());
     assert!(!cell.is_interior);
-    assert_eq!(cell.show_sky, None, "absent DATA must inherit, not force a flag");
+    assert_eq!(
+        cell.show_sky, None,
+        "absent DATA must inherit, not force a flag"
+    );
     assert!(cell.grid.is_none());
     assert!(cell.lighting.is_none() && cell.lighting_template_form.is_none());
     assert!(cell.landscape.is_none());

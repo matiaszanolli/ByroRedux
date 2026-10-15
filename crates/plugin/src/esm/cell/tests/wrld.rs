@@ -246,7 +246,11 @@ pub(super) fn build_world_children_group(wrld_form_id: u32, payload: &[u8]) -> V
     group
 }
 
-pub(super) fn build_cell_children_group(cell_form_id: u32, group_type: u32, payload: &[u8]) -> Vec<u8> {
+pub(super) fn build_cell_children_group(
+    cell_form_id: u32,
+    group_type: u32,
+    payload: &[u8],
+) -> Vec<u8> {
     let mut group = Vec::new();
     group.extend_from_slice(b"GRUP");
     group.extend_from_slice(&((24 + payload.len()) as u32).to_le_bytes());
@@ -980,10 +984,7 @@ fn world_children_group_cannot_overrun_its_top_level_parent() {
 fn overrunning_child_grup_in_a_skip_arm_seeks_to_parent_end() {
     // A WRLD record to index, then an unexpected-type child GRUP whose
     // declared total_size claims far more than the parent has left.
-    let wrld = build_wrld_record(
-        0x0003_0405,
-        &[(b"EDID", b"SkipArmClampWorld".to_vec())],
-    );
+    let wrld = build_wrld_record(0x0003_0405, &[(b"EDID", b"SkipArmClampWorld".to_vec())]);
     // Child GRUP, group_type 99 (no arm), total_size deliberately
     // overruns the enclosing group: header (24) + declared content.
     let mut child = Vec::new();
@@ -1043,7 +1044,10 @@ fn overrunning_child_grup_in_a_skip_arm_seeks_to_parent_end() {
 fn oblivion_child_gets_the_inherit_all_stamp_and_eras_stay_real() {
     let parent = build_wrld_record(
         0x0000_0100,
-        &[(b"EDID", b"Tamriel\0".to_vec()), (b"NAM2", 0x0000_00ABu32.to_le_bytes().to_vec())],
+        &[
+            (b"EDID", b"Tamriel\0".to_vec()),
+            (b"NAM2", 0x0000_00ABu32.to_le_bytes().to_vec()),
+        ],
     );
     let child = build_wrld_record(
         0x0000_0200,

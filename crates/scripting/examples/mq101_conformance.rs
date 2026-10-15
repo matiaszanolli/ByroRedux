@@ -21,14 +21,17 @@ use std::path::{Path, PathBuf};
 
 use byroredux_bsa::BsaArchive;
 use byroredux_core::ecs::World;
-use byroredux_papyrus::ast::{CallArg, Event, Expr, Script, ScriptItem, Stmt};
+use byroredux_papyrus::ast::{CallArg, Event, Expr, Function, Script, ScriptItem, Stmt};
 use byroredux_papyrus::span::Spanned;
 use byroredux_pex::{decompile::decompile_script, parse};
 use byroredux_plugin::esm::records::condition::RunOn;
 use byroredux_plugin::esm::records::script_instance::SceneFragmentEvent;
 use byroredux_plugin::esm::records::{
-    SceneActionType, QUEST_FLAG_START_GAME_ENABLED, SCENE_BEGIN_ON_QUEST_START,
+    NpcRecord, PackDataInput, PackDataTargetKind, PackDataValue, PackLocationTarget,
+    PackProcedure, PackRecord, QustRecord, SceneAction, SceneActionType, ScenRecord,
+    QUEST_FLAG_START_GAME_ENABLED, SCENE_BEGIN_ON_QUEST_START, EsmIndex,
 };
+use byroredux_plugin::esm::CellData;
 use byroredux_scripting::fragment::{populate_quest_fragments_from_script, quest_property_names};
 use byroredux_scripting::papyrus_demo::quest_advance::{ActivatorGate, QuestAdvanceOnActivate};
 use byroredux_scripting::papyrus_demo::PapyrusPlayerEntity;
@@ -417,6 +420,29 @@ fn run() -> Result<Checks, Box<dyn Error>> {
         return Ok(checks);
     };
 
+    // Stage order mirrors the authored data flow: QUST record -> SCEN
+    // records and runtime plans -> per-scene structural analysis ->
+    // alias/linkage resolution -> BSA script ingress -> fragment and
+    // callback contracts -> IMAD runtime -> quest-fragment lowering ->
+    // animation/voice archives -> workload inventory.
+    check_quest_record(&mut checks, &index, quest);
+    let scenes = check_scene_runtime(&mut checks, &index, quest);
+    let mut inventory = check_scene_structure(&mut checks, &index, quest, &scenes);
+    check_scene_linkage(&mut checks, &index, quest, &scenes, &mut inventory);
+    let corpus = check_scripts(&mut checks, &index, &scripts_path, &inventory)?;
+    check_fragments(&mut checks, &scenes, &corpus);
+    check_imad_runtime(&mut checks, &index, quest);
+    check_two_state_gate(&mut checks, &index, &corpus.scripts);
+    check_quest_fragments(&mut checks, quest, &corpus.scripts);
+    check_animations(&mut checks, &animations_path)?;
+    check_voice(&mut checks, &data_dir)?;
+    print_inventory(quest, &scenes, &inventory, &corpus);
+    Ok(checks)
+}
+
+/// Stage 1 — the indexed QUST record itself: EDID, flags, aliases, stage
+/// bindings, and the attached VMAD script/property counts.
+fn check_quest_record(checks: &mut Checks, index: &EsmIndex, quest: &QustRecord) {
     let opening_cells: Vec<String> = OPENING_REFERENCES
         .iter()
         .map(|(form_id, name)| {
@@ -489,7 +515,23 @@ fn run() -> Result<Checks, Box<dyn Error>> {
         attached_scripts > 0 && attached_properties > 0,
         format!("{attached_scripts} attached script(s), {attached_properties} properties"),
     );
+}
 
+/// Quest-owned SCEN records plus the primary MQ101Scene1 reference, shared
+/// by the structural-analysis, linkage, fragment, and inventory stages.
+struct SceneSet<'a> {
+    scenes: Vec<&'a ScenRecord>,
+    primary: Option<&'a ScenRecord>,
+}
+
+/// Stage 2 — scene records, the runtime registry/player/dialogue plans the
+/// live cell loader constructs, and the new-game bootstrap through the
+/// engine-start quest path.
+fn check_scene_runtime<'a>(
+    checks: &mut Checks,
+    index: &'a EsmIndex,
+    quest: &QustRecord,
+) -> SceneSet<'a> {
     let mut mq101_scenes: Vec<_> = index
         .scenes
         .values()
@@ -591,8 +633,7 @@ fn run() -> Result<Checks, Box<dyn Error>> {
         .sum();
     checks.record(
         "dialogue runtime plan",
-        runtime_dialogue_registry.len() == mq101_topic_ids.len()
-            && mq101_info_count > 0,
+        runtime_dialogue_registry.len() == mq101_topic_ids.len() && mq101_info_count > 0,
         format!(
             "{} unique scene DIAL topics expose {mq101_info_count} authored INFO responses; {} empty placeholder(s) use fail-safe completion{}",
             runtime_dialogue_registry.len(),
@@ -646,442 +687,500 @@ fn run() -> Result<Checks, Box<dyn Error>> {
         ),
     );
 
+    SceneSet {
+        scenes: mq101_scenes,
+        primary: primary_scene,
+    }
+}
+
+/// Counters and backlog lists accumulated by the per-scene structural
+/// analysis; consumed by the linkage checks, the script-ingress stage, and
+/// the closing workload inventory.
+#[derive(Default)]
+struct SceneInventory {
+    total_scene_phases: usize,
+    total_scene_actions: usize,
+    total_scene_fragments: usize,
+    dialogue_actions: usize,
+    package_actions: usize,
+    timer_actions: usize,
+    package_actions_with_phase_completion_conditions: usize,
+    unknown_actions: Vec<String>,
+    invalid_ranges: Vec<String>,
+    unresolved_aliases: Vec<String>,
+    unresolved_action_actors: Vec<String>,
+    unresolved_topics: Vec<String>,
+    unresolved_packages: Vec<String>,
+    unresolved_package_templates: Vec<String>,
+    unresolved_movement_targets: Vec<String>,
+    invalid_fragment_phases: Vec<String>,
+    scene_fragment_scripts: HashSet<String>,
+    package_action_stacks: BTreeMap<usize, usize>,
+    package_procedures: BTreeMap<u32, usize>,
+    package_procedure_samples: BTreeMap<u32, Vec<String>>,
+    package_templates: BTreeMap<String, usize>,
+    package_tree_procedures: BTreeMap<String, usize>,
+    package_tree_procedure_samples: BTreeMap<String, Vec<String>>,
+    package_execution_kinds: BTreeMap<String, usize>,
+    scene_condition_functions: BTreeMap<u32, usize>,
+    unsupported_scene_condition_functions: BTreeMap<u32, usize>,
+    unsupported_scene_condition_sites: BTreeMap<u32, Vec<String>>,
+    quest_alias_conditions: usize,
+}
+
+/// Stage 3 — walk every quest-owned SCEN record and audit its structure:
+/// action typing, phase ranges, actor/topic/package linkage, CTDA function
+/// coverage, and VMAD fragment bindings.
+fn check_scene_structure(
+    checks: &mut Checks,
+    index: &EsmIndex,
+    quest: &QustRecord,
+    scenes: &SceneSet,
+) -> SceneInventory {
+    let mut inventory = SceneInventory::default();
     let quest_alias_ids: HashSet<i32> = quest.aliases.iter().map(|alias| alias.alias_id).collect();
-    let mut dialogue_actions = 0usize;
-    let mut package_actions = 0usize;
-    let mut package_action_stacks = BTreeMap::<usize, usize>::new();
-    let mut package_procedures = BTreeMap::<u32, usize>::new();
-    let mut package_procedure_samples = BTreeMap::<u32, Vec<String>>::new();
-    let mut package_templates = BTreeMap::<String, usize>::new();
-    let mut package_tree_procedures = BTreeMap::<String, usize>::new();
-    let mut package_tree_procedure_samples = BTreeMap::<String, Vec<String>>::new();
-    let mut unresolved_package_templates = Vec::new();
-    let mut package_execution_kinds = BTreeMap::<String, usize>::new();
-    let mut unresolved_movement_targets = Vec::new();
-    let mut package_actions_with_phase_completion_conditions = 0usize;
-    let mut timer_actions = 0usize;
-    let mut unknown_actions = Vec::new();
-    let mut invalid_ranges = Vec::new();
-    let mut unresolved_aliases = Vec::new();
-    let mut unresolved_action_actors = Vec::new();
-    let mut unresolved_topics = Vec::new();
-    let mut unresolved_packages = Vec::new();
-    let mut invalid_fragment_phases = Vec::new();
-    let mut scene_fragment_scripts = HashSet::new();
-    let mut total_scene_phases = 0usize;
-    let mut total_scene_actions = 0usize;
-    let mut total_scene_fragments = 0usize;
-    let mut scene_condition_functions = BTreeMap::<u32, usize>::new();
-    let mut unsupported_scene_condition_functions = BTreeMap::<u32, usize>::new();
-    let mut unsupported_scene_condition_sites = BTreeMap::<u32, Vec<String>>::new();
-    let mut quest_alias_conditions = 0usize;
-
-    for scene in &mq101_scenes {
-        total_scene_phases += scene.phases.len();
-        total_scene_actions += scene.actions.len();
-        total_scene_fragments += scene.fragments.len();
-
-        let mut record_condition =
-            |scope: String, condition: &byroredux_plugin::esm::records::condition::Condition| {
-                *scene_condition_functions
-                    .entry(condition.function_index)
-                    .or_default() += 1;
-                if matches!(
-                    ConditionFunction::from_index(condition.function_index),
-                    ConditionFunction::Unknown(_)
-                ) {
-                    *unsupported_scene_condition_functions
-                        .entry(condition.function_index)
-                        .or_default() += 1;
-                    unsupported_scene_condition_sites
-                        .entry(condition.function_index)
-                        .or_default()
-                        .push(format!(
-                            "{} {scope} run={:?} p1={:08X} p2={} extra={}",
-                            scene.editor_id,
-                            condition.run_on,
-                            condition.param_1,
-                            condition.param_2,
-                            condition.extra_data_id,
-                        ));
-                }
-                if condition.run_on == RunOn::QuestAlias {
-                    quest_alias_conditions += 1;
-                }
-            };
-        for condition in &scene.conditions {
-            record_condition("scene-start".to_owned(), condition);
-        }
-        for (phase_index, phase) in scene.phases.iter().enumerate() {
-            for condition in &phase.start_conditions {
-                record_condition(format!("phase-{phase_index}-start"), condition);
-            }
-            for condition in &phase.completion_conditions {
-                record_condition(format!("phase-{phase_index}-completion"), condition);
-            }
-        }
-
-        let actor_ids: HashSet<i32> = scene
-            .actors
-            .iter()
-            .map(|actor| actor.actor_id as i32)
-            .collect();
-        for actor in &scene.actors {
-            if !quest_alias_ids.contains(&(actor.actor_id as i32)) {
-                unresolved_aliases.push(format!("{}:alias{}", scene.editor_id, actor.actor_id));
-            }
-        }
-
-        for action in &scene.actions {
-            match action.action_type {
-                SceneActionType::Dialogue => dialogue_actions += 1,
-                SceneActionType::Package => {
-                    package_actions += 1;
-                    *package_action_stacks
-                        .entry(action.packages.len())
-                        .or_default() += 1;
-                    if scene
-                        .phases
-                        .get(action.end_phase as usize)
-                        .is_some_and(|phase| !phase.completion_conditions.is_empty())
-                    {
-                        package_actions_with_phase_completion_conditions += 1;
-                    }
-                    for package_form_id in &action.packages {
-                        if let Some(package) = index.packages.get(package_form_id) {
-                            *package_procedures
-                                .entry(package.procedure_type)
-                                .or_default() += 1;
-                            let samples = package_procedure_samples
-                                .entry(package.procedure_type)
-                                .or_default();
-                            if samples.len() < 5 {
-                                samples.push(format!(
-                                    "{}:{} {}",
-                                    scene.editor_id, action.index, package.editor_id
-                                ));
-                            }
-                            let procedure_tree = match package.package_template_form_id {
-                                Some(template_form_id) => {
-                                    match index.packages.get(&template_form_id) {
-                                        Some(template) => {
-                                            *package_templates
-                                                .entry(format!(
-                                                    "{:08X} {}",
-                                                    template.form_id, template.editor_id
-                                                ))
-                                                .or_default() += 1;
-                                            Some(template)
-                                        }
-                                        None => {
-                                            unresolved_package_templates.push(format!(
-                                                "{}:{} {} -> {template_form_id:08X}",
-                                                scene.editor_id, action.index, package.editor_id
-                                            ));
-                                            None
-                                        }
-                                    }
-                                }
-                                None if !package.procedures.is_empty() => Some(package),
-                                None => {
-                                    unresolved_package_templates.push(format!(
-                                        "{}:{} {} has no template/tree",
-                                        scene.editor_id, action.index, package.editor_id
-                                    ));
-                                    None
-                                }
-                            };
-                            if let Some(tree) = procedure_tree {
-                                for procedure in &tree.procedures {
-                                    *package_tree_procedures
-                                        .entry(procedure.procedure_type.clone())
-                                        .or_default() += 1;
-                                    let samples = package_tree_procedure_samples
-                                        .entry(procedure.procedure_type.clone())
-                                        .or_default();
-                                    if samples.len() < 5 {
-                                        samples.push(format!(
-                                            "{}:{} {} via {}{}",
-                                            scene.editor_id,
-                                            action.index,
-                                            package.editor_id,
-                                            tree.editor_id,
-                                            if procedure.success_completes_package() {
-                                                " [completes]"
-                                            } else {
-                                                ""
-                                            }
-                                        ));
-                                    }
-                                }
-                                if let Some(procedure) = tree
-                                    .procedures
-                                    .iter()
-                                    .find(|procedure| procedure.success_completes_package())
-                                    .or_else(|| tree.procedures.first())
-                                {
-                                    let kind = match procedure.procedure_type.as_str() {
-                                        "Travel" | "Patrol" | "Escort" | "FollowTo" => {
-                                            let target = procedure
-                                                .data_input_indexes
-                                                .iter()
-                                                .filter_map(|index| {
-                                                    package
-                                                        .data_inputs
-                                                        .iter()
-                                                        .find(|input| input.index == *index)
-                                                })
-                                                .find_map(|input| match input.value {
-                                                    byroredux_plugin::esm::records::PackDataValue::Location(location) => match location.target {
-                                                        byroredux_plugin::esm::records::PackLocationTarget::NearReference(form_id) => Some(form_id),
-                                                        _ => None,
-                                                    },
-                                                    byroredux_plugin::esm::records::PackDataValue::Target(target) => match target.target {
-                                                        byroredux_plugin::esm::records::PackDataTargetKind::SpecificReference(form_id)
-                                                        | byroredux_plugin::esm::records::PackDataTargetKind::LinkedReference(form_id) => Some(form_id),
-                                                        _ => None,
-                                                    },
-                                                    _ => None,
-                                                });
-                                            if let Some(target) = target {
-                                                if target == 0x14 {
-                                                    "move-dynamic"
-                                                } else {
-                                                    let resolved =
-                                                        index.cells.cells.values().any(|cell| {
-                                                            cell.references.iter().any(|placed| {
-                                                                placed.form_id == target
-                                                            })
-                                                        }) || index
-                                                            .cells
-                                                            .exterior_cells
-                                                            .values()
-                                                            .any(|grids| {
-                                                                grids.values().any(|cell| {
-                                                                    cell.references.iter().any(
-                                                                        |placed| {
-                                                                            placed.form_id == target
-                                                                        },
-                                                                    )
-                                                                })
-                                                            })
-                                                            || index
-                                                                .cells
-                                                                .worldspace_persistent_cells
-                                                                .values()
-                                                                .any(|cell| {
-                                                                    cell.references.iter().any(
-                                                                        |placed| {
-                                                                            placed.form_id == target
-                                                                        },
-                                                                    )
-                                                                });
-                                                    if resolved {
-                                                        "move-to"
-                                                    } else {
-                                                        unresolved_movement_targets.push(format!(
-                                                            "{}:{} {} {} -> {target:08X}",
-                                                            scene.editor_id,
-                                                            action.index,
-                                                            package.editor_id,
-                                                            procedure.procedure_type,
-                                                        ));
-                                                        "await-target"
-                                                    }
-                                                }
-                                            } else {
-                                                let dynamic = procedure
-                                                    .data_input_indexes
-                                                    .iter()
-                                                    .filter_map(|index| {
-                                                        package.data_inputs.iter().find(|input| input.index == *index)
-                                                    })
-                                                    .any(|input| match input.value {
-                                                        byroredux_plugin::esm::records::PackDataValue::Location(location) => matches!(location.location_type, 2 | 3 | 8 | 9),
-                                                        byroredux_plugin::esm::records::PackDataValue::Target(target) => matches!(
-                                                            target.target,
-                                                            byroredux_plugin::esm::records::PackDataTargetKind::ReferenceAlias(_)
-                                                                | byroredux_plugin::esm::records::PackDataTargetKind::SelfTarget
-                                                        ),
-                                                        _ => false,
-                                                    });
-                                                if dynamic {
-                                                    "move-dynamic"
-                                                } else {
-                                                    unresolved_movement_targets.push(format!(
-                                                        "{}:{} {} {} has no resolvable target input",
-                                                        scene.editor_id,
-                                                        action.index,
-                                                        package.editor_id,
-                                                        procedure.procedure_type,
-                                                    ));
-                                                    "await-target"
-                                                }
-                                            }
-                                        }
-                                        "Acquire" | "Activate" | "Shout" | "Sit"
-                                        | "UseIdleMarker" | "UseWeapon" => "interaction",
-                                        _ => "await-external",
-                                    };
-                                    *package_execution_kinds.entry(kind.to_owned()).or_default() +=
-                                        1;
-                                }
-                            }
-                        }
-                    }
-                }
-                SceneActionType::Timer => timer_actions += 1,
-                SceneActionType::Unknown(raw) => {
-                    unknown_actions
-                        .push(format!("{}:{} type {raw}", scene.editor_id, action.index));
-                }
-            }
-            if action.start_phase > action.end_phase
-                || action.end_phase as usize >= scene.phases.len()
-            {
-                invalid_ranges.push(format!(
-                    "{}:{} {}..{} of {}",
-                    scene.editor_id,
-                    action.index,
-                    action.start_phase,
-                    action.end_phase,
-                    scene.phases.len()
-                ));
-            }
-            if action.actor_id >= 0 && !actor_ids.contains(&action.actor_id) {
-                unresolved_action_actors.push(format!(
-                    "{}:{} actor {}",
-                    scene.editor_id, action.index, action.actor_id
-                ));
-            }
-            if let Some(topic) = action.topic_form_id {
-                if !index.dialogues.contains_key(&topic) {
-                    unresolved_topics.push(format!(
-                        "{}:{} DIAL {topic:08X}",
-                        scene.editor_id, action.index
-                    ));
-                }
-            }
-            for package in &action.packages {
-                if !index.packages.contains_key(package) {
-                    unresolved_packages.push(format!(
-                        "{}:{} PACK {package:08X}",
-                        scene.editor_id, action.index
-                    ));
-                }
-            }
-        }
-
-        for fragment in &scene.fragments {
-            scene_fragment_scripts.insert(fragment.script_name.to_ascii_lowercase());
-            let phase_index = match fragment.event {
-                SceneFragmentEvent::PhaseStart { phase_index }
-                | SceneFragmentEvent::PhaseCompletion { phase_index }
-                | SceneFragmentEvent::UnknownPhase { phase_index, .. } => Some(phase_index),
-                _ => None,
-            };
-            if phase_index.is_some_and(|index| index as usize >= scene.phases.len()) {
-                invalid_fragment_phases.push(format!("{}:{:?}", scene.editor_id, fragment.event));
-            }
-        }
+    for scene in scenes.scenes.iter().copied() {
+        analyze_scene(index, scene, &quest_alias_ids, &mut inventory);
     }
 
     checks.record(
         "scene action structure",
-        total_scene_actions > 0 && unknown_actions.is_empty() && invalid_ranges.is_empty(),
+        inventory.total_scene_actions > 0
+            && inventory.unknown_actions.is_empty()
+            && inventory.invalid_ranges.is_empty(),
         format!(
-            "{total_scene_actions} actions ({dialogue_actions} dialogue, {package_actions} package, {timer_actions} timer); {} unknown, {} invalid ranges",
-            unknown_actions.len(),
-            invalid_ranges.len()
+            "{ts} actions ({d} dialogue, {p} package, {t} timer); {u} unknown, {r} invalid ranges",
+            ts = inventory.total_scene_actions,
+            d = inventory.dialogue_actions,
+            p = inventory.package_actions,
+            t = inventory.timer_actions,
+            u = inventory.unknown_actions.len(),
+            r = inventory.invalid_ranges.len()
         ),
     );
     checks.record(
         "scene condition coverage",
-        unsupported_scene_condition_functions.is_empty(),
-        if unsupported_scene_condition_functions.is_empty() {
+        inventory.unsupported_scene_condition_functions.is_empty(),
+        if inventory.unsupported_scene_condition_functions.is_empty() {
             format!(
                 "all {} authored CTDAs map to runtime functions",
-                scene_condition_functions.values().sum::<usize>()
+                inventory.scene_condition_functions.values().sum::<usize>()
             )
         } else {
-            format!("unsupported: {unsupported_scene_condition_functions:?}")
+            format!(
+                "unsupported: {:?}",
+                inventory.unsupported_scene_condition_functions
+            )
         },
     );
     checks.record(
         "scene actor linkage",
-        unresolved_aliases.is_empty() && unresolved_action_actors.is_empty(),
-        if unresolved_aliases.is_empty() && unresolved_action_actors.is_empty() {
+        inventory.unresolved_aliases.is_empty() && inventory.unresolved_action_actors.is_empty(),
+        if inventory.unresolved_aliases.is_empty()
+            && inventory.unresolved_action_actors.is_empty()
+        {
             "all scene actors resolve through MQ101 aliases and action rosters".to_owned()
         } else {
-            let mut failures = unresolved_aliases;
-            failures.extend(unresolved_action_actors);
+            let mut failures = std::mem::take(&mut inventory.unresolved_aliases);
+            failures.append(&mut inventory.unresolved_action_actors);
             format!("{} unresolved: {}", failures.len(), preview(&failures, 8))
         },
     );
+    inventory
+}
+
+/// Per-scene half of the structural analysis: conditions, actor rosters,
+/// actions (with package trees), and VMAD fragments.
+fn analyze_scene(
+    index: &EsmIndex,
+    scene: &ScenRecord,
+    quest_alias_ids: &HashSet<i32>,
+    inventory: &mut SceneInventory,
+) {
+    inventory.total_scene_phases += scene.phases.len();
+    inventory.total_scene_actions += scene.actions.len();
+    inventory.total_scene_fragments += scene.fragments.len();
+
+    collect_scene_conditions(scene, inventory);
+
+    let actor_ids: HashSet<i32> = scene
+        .actors
+        .iter()
+        .map(|actor| actor.actor_id as i32)
+        .collect();
+    for actor in &scene.actors {
+        if !quest_alias_ids.contains(&(actor.actor_id as i32)) {
+            inventory
+                .unresolved_aliases
+                .push(format!("{}:alias{}", scene.editor_id, actor.actor_id));
+        }
+    }
+
+    for action in &scene.actions {
+        match action.action_type {
+            SceneActionType::Dialogue => inventory.dialogue_actions += 1,
+            SceneActionType::Package => analyze_package_action(index, scene, action, inventory),
+            SceneActionType::Timer => inventory.timer_actions += 1,
+            SceneActionType::Unknown(raw) => {
+                inventory
+                    .unknown_actions
+                    .push(format!("{}:{} type {raw}", scene.editor_id, action.index));
+            }
+        }
+        if action.start_phase > action.end_phase || action.end_phase as usize >= scene.phases.len() {
+            inventory.invalid_ranges.push(format!(
+                "{}:{} {}..{} of {}",
+                scene.editor_id,
+                action.index,
+                action.start_phase,
+                action.end_phase,
+                scene.phases.len()
+            ));
+        }
+        if action.actor_id >= 0 && !actor_ids.contains(&action.actor_id) {
+            inventory
+                .unresolved_action_actors
+                .push(format!("{}:{} actor {}", scene.editor_id, action.index, action.actor_id));
+        }
+        if let Some(topic) = action.topic_form_id {
+            if !index.dialogues.contains_key(&topic) {
+                inventory
+                    .unresolved_topics
+                    .push(format!("{}:{} DIAL {topic:08X}", scene.editor_id, action.index));
+            }
+        }
+        for package in &action.packages {
+            if !index.packages.contains_key(package) {
+                inventory
+                    .unresolved_packages
+                    .push(format!("{}:{} PACK {package:08X}", scene.editor_id, action.index));
+            }
+        }
+    }
+
+    for fragment in &scene.fragments {
+        inventory
+            .scene_fragment_scripts
+            .insert(fragment.script_name.to_ascii_lowercase());
+        let phase_index = match fragment.event {
+            SceneFragmentEvent::PhaseStart { phase_index }
+            | SceneFragmentEvent::PhaseCompletion { phase_index }
+            | SceneFragmentEvent::UnknownPhase { phase_index, .. } => Some(phase_index),
+            _ => None,
+        };
+        if phase_index.is_some_and(|index| index as usize >= scene.phases.len()) {
+            inventory
+                .invalid_fragment_phases
+                .push(format!("{}:{:?}", scene.editor_id, fragment.event));
+        }
+    }
+}
+
+/// Tally scene-start and phase CTDA functions, flagging functions the
+/// runtime does not know yet.
+fn collect_scene_conditions(scene: &ScenRecord, inventory: &mut SceneInventory) {
+    let mut record_condition =
+        |scope: String, condition: &byroredux_plugin::esm::records::condition::Condition| {
+            *inventory
+                .scene_condition_functions
+                .entry(condition.function_index)
+                .or_default() += 1;
+            if matches!(
+                ConditionFunction::from_index(condition.function_index),
+                ConditionFunction::Unknown(_)
+            ) {
+                *inventory
+                    .unsupported_scene_condition_functions
+                    .entry(condition.function_index)
+                    .or_default() += 1;
+                inventory
+                    .unsupported_scene_condition_sites
+                    .entry(condition.function_index)
+                    .or_default()
+                    .push(format!(
+                        "{} {scope} run={:?} p1={:08X} p2={} extra={}",
+                        scene.editor_id,
+                        condition.run_on,
+                        condition.param_1,
+                        condition.param_2,
+                        condition.extra_data_id,
+                    ));
+            }
+            if condition.run_on == RunOn::QuestAlias {
+                inventory.quest_alias_conditions += 1;
+            }
+        };
+    for condition in &scene.conditions {
+        record_condition("scene-start".to_owned(), condition);
+    }
+    for (phase_index, phase) in scene.phases.iter().enumerate() {
+        for condition in &phase.start_conditions {
+            record_condition(format!("phase-{phase_index}-start"), condition);
+        }
+        for condition in &phase.completion_conditions {
+            record_condition(format!("phase-{phase_index}-completion"), condition);
+        }
+    }
+}
+
+/// Audit one Package scene action: its stack depth, phase completion
+/// coupling, procedure trees, and the execution kind each tree resolves to.
+fn analyze_package_action(
+    index: &EsmIndex,
+    scene: &ScenRecord,
+    action: &SceneAction,
+    inventory: &mut SceneInventory,
+) {
+    inventory.package_actions += 1;
+    *inventory
+        .package_action_stacks
+        .entry(action.packages.len())
+        .or_default() += 1;
+    if scene
+        .phases
+        .get(action.end_phase as usize)
+        .is_some_and(|phase| !phase.completion_conditions.is_empty())
+    {
+        inventory.package_actions_with_phase_completion_conditions += 1;
+    }
+    for package_form_id in &action.packages {
+        let Some(package) = index.packages.get(package_form_id) else {
+            continue;
+        };
+        *inventory
+            .package_procedures
+            .entry(package.procedure_type)
+            .or_default() += 1;
+        push_sample(
+            &mut inventory.package_procedure_samples,
+            package.procedure_type,
+            format!(
+                "{}:{} {}",
+                scene.editor_id, action.index, package.editor_id
+            ),
+        );
+        let Some(tree) = resolve_package_template(index, scene, action, package, inventory) else {
+            continue;
+        };
+        for procedure in &tree.procedures {
+            *inventory
+                .package_tree_procedures
+                .entry(procedure.procedure_type.clone())
+                .or_default() += 1;
+            push_sample(
+                &mut inventory.package_tree_procedure_samples,
+                procedure.procedure_type.clone(),
+                format!(
+                    "{}:{} {} via {}{}",
+                    scene.editor_id,
+                    action.index,
+                    package.editor_id,
+                    tree.editor_id,
+                    if procedure.success_completes_package() {
+                        " [completes]"
+                    } else {
+                        ""
+                    }
+                ),
+            );
+        }
+        if let Some(procedure) = tree
+            .procedures
+            .iter()
+            .find(|procedure| procedure.success_completes_package())
+            .or_else(|| tree.procedures.first())
+        {
+            let kind = package_execution_kind(index, scene, action, package, procedure, inventory);
+            *inventory
+                .package_execution_kinds
+                .entry(kind.to_owned())
+                .or_default() += 1;
+        }
+    }
+}
+
+/// Resolve the procedure tree a package executes: its template PACK when
+/// authored, its own procedures when it is a custom tree, else backlog.
+fn resolve_package_template<'a>(
+    index: &'a EsmIndex,
+    scene: &ScenRecord,
+    action: &SceneAction,
+    package: &'a PackRecord,
+    inventory: &mut SceneInventory,
+) -> Option<&'a PackRecord> {
+    match package.package_template_form_id {
+        Some(template_form_id) => match index.packages.get(&template_form_id) {
+            Some(template) => {
+                *inventory
+                    .package_templates
+                    .entry(format!("{:08X} {}", template.form_id, template.editor_id))
+                    .or_default() += 1;
+                Some(template)
+            }
+            None => {
+                inventory.unresolved_package_templates.push(format!(
+                    "{}:{} {} -> {template_form_id:08X}",
+                    scene.editor_id, action.index, package.editor_id
+                ));
+                None
+            }
+        },
+        None if !package.procedures.is_empty() => Some(package),
+        None => {
+            inventory.unresolved_package_templates.push(format!(
+                "{}:{} {} has no template/tree",
+                scene.editor_id, action.index, package.editor_id
+            ));
+            None
+        }
+    }
+}
+
+/// Bucket a procedure tree's dominant procedure into the runtime execution
+/// plan vocabulary.
+fn package_execution_kind(
+    index: &EsmIndex,
+    scene: &ScenRecord,
+    action: &SceneAction,
+    package: &PackRecord,
+    procedure: &PackProcedure,
+    inventory: &mut SceneInventory,
+) -> &'static str {
+    match procedure.procedure_type.as_str() {
+        "Travel" | "Patrol" | "Escort" | "FollowTo" => {
+            travel_execution_kind(index, scene, action, package, procedure, inventory)
+        }
+        "Acquire" | "Activate" | "Shout" | "Sit" | "UseIdleMarker" | "UseWeapon" => "interaction",
+        _ => "await-external",
+    }
+}
+
+/// Classify a travel-family procedure by whether its movement target
+/// resolves to a known reference, the player, or a dynamic alias input.
+fn travel_execution_kind(
+    index: &EsmIndex,
+    scene: &ScenRecord,
+    action: &SceneAction,
+    package: &PackRecord,
+    procedure: &PackProcedure,
+    inventory: &mut SceneInventory,
+) -> &'static str {
+    let target = procedure_data_inputs(package, procedure).find_map(package_target_form_id);
+    let Some(target) = target else {
+        if procedure_data_inputs(package, procedure).any(package_target_is_dynamic) {
+            return "move-dynamic";
+        }
+        inventory.unresolved_movement_targets.push(format!(
+            "{}:{} {} {} has no resolvable target input",
+            scene.editor_id,
+            action.index,
+            package.editor_id,
+            procedure.procedure_type,
+        ));
+        return "await-target";
+    };
+    if target == 0x14 {
+        return "move-dynamic";
+    }
+    if reference_resolves(index, target) {
+        return "move-to";
+    }
+    inventory.unresolved_movement_targets.push(format!(
+        "{}:{} {} {} -> {target:08X}",
+        scene.editor_id,
+        action.index,
+        package.editor_id,
+        procedure.procedure_type,
+    ));
+    "await-target"
+}
+
+/// The package data inputs a procedure's sparse PDTO indexes select.
+fn procedure_data_inputs<'a>(
+    package: &'a PackRecord,
+    procedure: &'a PackProcedure,
+) -> impl Iterator<Item = &'a PackDataInput> {
+    procedure
+        .data_input_indexes
+        .iter()
+        .filter_map(move |index| package.data_inputs.iter().find(|input| input.index == *index))
+}
+
+/// FormID of a statically targeted input, when it carries one.
+fn package_target_form_id(input: &PackDataInput) -> Option<u32> {
+    match input.value {
+        PackDataValue::Location(location) => match location.target {
+            PackLocationTarget::NearReference(form_id) => Some(form_id),
+            _ => None,
+        },
+        PackDataValue::Target(target) => match target.target {
+            PackDataTargetKind::SpecificReference(form_id)
+            | PackDataTargetKind::LinkedReference(form_id) => Some(form_id),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Whether an input targets the actor's current location or an alias slot
+/// the runtime fills at execution time.
+fn package_target_is_dynamic(input: &PackDataInput) -> bool {
+    match input.value {
+        PackDataValue::Location(location) => matches!(location.location_type, 2 | 3 | 8 | 9),
+        PackDataValue::Target(target) => matches!(
+            target.target,
+            PackDataTargetKind::ReferenceAlias(_) | PackDataTargetKind::SelfTarget
+        ),
+        _ => false,
+    }
+}
+
+/// Whether a FormID matches any placed reference the ESM index knows.
+fn reference_resolves(index: &EsmIndex, target: u32) -> bool {
+    index.cells.cells.values().any(|cell| {
+        cell.references.iter().any(|placed| placed.form_id == target)
+    }) || index
+        .cells
+        .exterior_cells
+        .values()
+        .any(|grids| grids.values().any(|cell| cell.references.iter().any(|placed| placed.form_id == target)))
+        || index
+            .cells
+            .worldspace_persistent_cells
+            .values()
+            .any(|cell| cell.references.iter().any(|placed| placed.form_id == target))
+}
+
+/// Keep at most five example strings per sample bucket.
+fn push_sample<K: Ord>(samples: &mut BTreeMap<K, Vec<String>>, key: K, text: String) {
+    let bucket = samples.entry(key).or_default();
+    if bucket.len() < 5 {
+        bucket.push(text);
+    }
+}
+
+/// Stage 4 — resolve MQ101Scene1's actor aliases against the indexed NPC
+/// references, then check DIAL/PACK/fragment linkage for every scene.
+fn check_scene_linkage(
+    checks: &mut Checks,
+    index: &EsmIndex,
+    quest: &QustRecord,
+    scenes: &SceneSet,
+    inventory: &mut SceneInventory,
+) {
     let mut alias_world = World::new();
     byroredux_scripting::register(&mut alias_world);
-    for cell in index.cells.cells.values() {
-        for placed in &cell.references {
-            if index.npcs.contains_key(&placed.base_form_id) {
-                let entity = alias_world.spawn();
-                alias_world.insert(
-                    entity,
-                    SceneAliasCandidate {
-                        reference_form_id: placed.form_id,
-                        base_form_id: placed.base_form_id,
-                        linked_refs: placed
-                            .linked_refs
-                            .iter()
-                            .map(|link| (link.keyword, link.target))
-                            .collect(),
-                        location_ref_types: placed.location_ref_types.clone(),
-                    },
-                );
-            }
-        }
-    }
-    for grids in index.cells.exterior_cells.values() {
-        for cell in grids.values() {
-            for placed in &cell.references {
-                if index.npcs.contains_key(&placed.base_form_id) {
-                    let entity = alias_world.spawn();
-                    alias_world.insert(
-                        entity,
-                        SceneAliasCandidate {
-                            reference_form_id: placed.form_id,
-                            base_form_id: placed.base_form_id,
-                            linked_refs: placed
-                                .linked_refs
-                                .iter()
-                                .map(|link| (link.keyword, link.target))
-                                .collect(),
-                            location_ref_types: placed.location_ref_types.clone(),
-                        },
-                    );
-                }
-            }
-        }
-    }
-    for cell in index.cells.worldspace_persistent_cells.values() {
-        for placed in &cell.references {
-            if index.npcs.contains_key(&placed.base_form_id) {
-                let entity = alias_world.spawn();
-                alias_world.insert(
-                    entity,
-                    SceneAliasCandidate {
-                        reference_form_id: placed.form_id,
-                        base_form_id: placed.base_form_id,
-                        linked_refs: placed
-                            .linked_refs
-                            .iter()
-                            .map(|link| (link.keyword, link.target))
-                            .collect(),
-                        location_ref_types: placed.location_ref_types.clone(),
-                    },
-                );
-            }
-        }
-    }
+    spawn_alias_candidates(&mut alias_world, &index.npcs, index.cells.cells.values());
+    spawn_alias_candidates(
+        &mut alias_world,
+        &index.npcs,
+        index.cells.exterior_cells.values().flat_map(|grids| grids.values()),
+    );
+    spawn_alias_candidates(
+        &mut alias_world,
+        &index.npcs,
+        index.cells.worldspace_persistent_cells.values(),
+    );
     let persistent_reference_count: usize = index
         .cells
         .worldspace_persistent_cells
@@ -1090,7 +1189,8 @@ fn run() -> Result<Checks, Box<dyn Error>> {
         .sum();
     install_scene_quest_aliases(&mut alias_world, [quest.clone()]);
     let resolved_alias_count = refresh_scene_actor_bindings(&alias_world);
-    let unresolved_primary_aliases: Vec<String> = primary_scene
+    let unresolved_primary_aliases: Vec<String> = scenes
+        .primary
         .into_iter()
         .flat_map(|scene| &scene.actors)
         .filter(|actor| {
@@ -1106,11 +1206,11 @@ fn run() -> Result<Checks, Box<dyn Error>> {
         .collect();
     checks.record(
         "primary alias resolution",
-        primary_scene.is_some() && unresolved_primary_aliases.is_empty(),
+        scenes.primary.is_some() && unresolved_primary_aliases.is_empty(),
         if unresolved_primary_aliases.is_empty() {
             format!(
                 "all {} MQ101Scene1 actor slots bind from ACHR identity/XLRT ({resolved_alias_count} MQ101 aliases resolved total)",
-                primary_scene.map_or(0, |scene| scene.actors.len()),
+                scenes.primary.map_or(0, |scene| scene.actors.len()),
             )
         } else {
             format!(
@@ -1123,35 +1223,82 @@ fn run() -> Result<Checks, Box<dyn Error>> {
     );
     checks.record(
         "scene record linkage",
-        unresolved_topics.is_empty()
-            && unresolved_packages.is_empty()
-            && unresolved_package_templates.is_empty(),
-        if unresolved_topics.is_empty()
-            && unresolved_packages.is_empty()
-            && unresolved_package_templates.is_empty()
+        inventory.unresolved_topics.is_empty()
+            && inventory.unresolved_packages.is_empty()
+            && inventory.unresolved_package_templates.is_empty(),
+        if inventory.unresolved_topics.is_empty()
+            && inventory.unresolved_packages.is_empty()
+            && inventory.unresolved_package_templates.is_empty()
         {
             format!(
                 "all action DIAL/PACK FormIDs and {} custom package trees resolve",
-                package_templates.len()
+                inventory.package_templates.len()
             )
         } else {
-            let mut failures = unresolved_topics;
-            failures.extend(unresolved_packages);
-            failures.extend(unresolved_package_templates);
+            let mut failures = std::mem::take(&mut inventory.unresolved_topics);
+            failures.append(&mut inventory.unresolved_packages);
+            failures.append(&mut inventory.unresolved_package_templates);
             format!("{} unresolved: {}", failures.len(), preview(&failures, 8))
         },
     );
     checks.record(
         "scene VMAD fragments",
-        total_scene_fragments > 0 && invalid_fragment_phases.is_empty(),
+        inventory.total_scene_fragments > 0 && inventory.invalid_fragment_phases.is_empty(),
         format!(
-            "{total_scene_fragments} event bindings across {} compiled scene scripts; {} invalid phase indices",
-            scene_fragment_scripts.len(),
-            invalid_fragment_phases.len()
+            "{total} event bindings across {scripts} compiled scene scripts; {invalid} invalid phase indices",
+            total = inventory.total_scene_fragments,
+            scripts = inventory.scene_fragment_scripts.len(),
+            invalid = inventory.invalid_fragment_phases.len()
         ),
     );
+}
 
-    let scripts = BsaArchive::open(&scripts_path)?;
+/// Spawn a `SceneAliasCandidate` for every placed NPC reference in the
+/// given cells — the indexed input the alias resolver binds against.
+fn spawn_alias_candidates(
+    world: &mut World,
+    npcs: &HashMap<u32, NpcRecord>,
+    cells: impl Iterator<Item = &CellData>,
+) {
+    for cell in cells {
+        for placed in &cell.references {
+            if npcs.contains_key(&placed.base_form_id) {
+                let entity = world.spawn();
+                world.insert(
+                    entity,
+                    SceneAliasCandidate {
+                        reference_form_id: placed.form_id,
+                        base_form_id: placed.base_form_id,
+                        linked_refs: placed
+                            .linked_refs
+                            .iter()
+                            .map(|link| (link.keyword, link.target))
+                            .collect(),
+                        location_ref_types: placed.location_ref_types.clone(),
+                    },
+                );
+            }
+        }
+    }
+}
+
+/// The opened script archive plus corpus counts the inventory reports.
+struct ScriptCorpus {
+    scripts: BsaArchive,
+    mq101_pex_count: usize,
+    scene_count: usize,
+    package_count: usize,
+}
+
+/// Stage 5 — BSA script ingress: the stage-22 specific-actor trigger, the
+/// MQ101 PEX corpus, and SCEN-bound script-name linkage.
+fn check_scripts(
+    checks: &mut Checks,
+    index: &EsmIndex,
+    scripts_path: &Path,
+    inventory: &SceneInventory,
+) -> Result<ScriptCorpus, Box<dyn Error>> {
+    let scripts = BsaArchive::open(scripts_path)?;
     let stage22_trigger = index
         .cells
         .cells
@@ -1231,7 +1378,8 @@ fn run() -> Result<Checks, Box<dyn Error>> {
         scene_count > 0,
         format!("{scene_count} SF_MQ101*.pex files"),
     );
-    let mut missing_scene_fragment_scripts: Vec<String> = scene_fragment_scripts
+    let mut missing_scene_fragment_scripts: Vec<String> = inventory
+        .scene_fragment_scripts
         .iter()
         .filter_map(|script_name| {
             let path = format!("scripts\\{script_name}.pex");
@@ -1245,7 +1393,7 @@ fn run() -> Result<Checks, Box<dyn Error>> {
         if missing_scene_fragment_scripts.is_empty() {
             format!(
                 "all {} SCEN-bound script names resolve to PEX assets",
-                scene_fragment_scripts.len()
+                inventory.scene_fragment_scripts.len()
             )
         } else {
             format!(
@@ -1255,7 +1403,21 @@ fn run() -> Result<Checks, Box<dyn Error>> {
             )
         },
     );
-    let scene_1_end_effects = mq101_scenes
+    Ok(ScriptCorpus {
+        mq101_pex_count: mq101_pex.len(),
+        scene_count,
+        package_count,
+        scripts,
+    })
+}
+
+/// Stage 6 — fragment and callback contracts: the Scene1 end handoff
+/// lowering, critical-script presence, and the decompiled
+/// MQ101PlayerScript animation-event contract.
+fn check_fragments(checks: &mut Checks, scenes: &SceneSet, corpus: &ScriptCorpus) {
+    let scripts = &corpus.scripts;
+    let scene_1_end_effects = scenes
+        .scenes
         .iter()
         .find(|scene| scene.form_id == 0x000B_ECD4)
         .and_then(|scene| {
@@ -1307,8 +1469,8 @@ fn run() -> Result<Checks, Box<dyn Error>> {
     );
     checks.record(
         "package fragment assets",
-        package_count > 0,
-        format!("{package_count} PF_MQ101*.pex files"),
+        corpus.package_count > 0,
+        format!("{} PF_MQ101*.pex files", corpus.package_count),
     );
 
     let missing_scripts: Vec<String> = CRITICAL_SCRIPTS
@@ -1342,7 +1504,11 @@ fn run() -> Result<Checks, Box<dyn Error>> {
             .is_some_and(mq101_player_callback_contract),
         "PlayImod => IMAD x2 + stage 145; IdleFurnitureExit => stage 160; both one-shot",
     );
+}
 
+/// Stage 7 — image-space modifier linkage, authored curves, and the
+/// PlayImod dispatch through the cinematic presentation state.
+fn check_imad_runtime(checks: &mut Checks, index: &EsmIndex, quest: &QustRecord) {
     let callback_vmad = quest
         .script_instance
         .as_ref()
@@ -1439,7 +1605,11 @@ fn run() -> Result<Checks, Box<dyn Error>> {
             sampled_imad.saturation
         ),
     );
+}
 
+/// Stage 8 — the opening two-state gate recognized from the vanilla
+/// default2StateActivator PEX against its placed VMAD instance.
+fn check_two_state_gate(checks: &mut Checks, index: &EsmIndex, scripts: &BsaArchive) {
     let gate_script_instance = index
         .cells
         .cells
@@ -1461,270 +1631,360 @@ fn run() -> Result<Checks, Box<dyn Error>> {
             |recognized| format!("{} recognized from vanilla PEX", recognized.archetype),
         ),
     );
+}
 
+/// Stage 9 — decompile the QF_MQ101 quest-fragment script and audit the
+/// authored per-stage fragments against the production lowering path.
+fn check_quest_fragments(checks: &mut Checks, quest: &QustRecord, scripts: &BsaArchive) {
+    let Some(script) = decompile_qf_script(checks, scripts) else {
+        return;
+    };
+    let functions: HashMap<String, _> = script
+        .body
+        .iter()
+        .filter_map(|item| match &item.node {
+            ScriptItem::Function(function) => {
+                Some((function.name.node.0.to_ascii_lowercase(), function))
+            }
+            _ => None,
+        })
+        .collect();
+    // #2658 (SCR-D5-NEW11-03) — computed once per script,
+    // matching the production caller
+    // (`populate_quest_fragments_from_script`), and fed to
+    // `lower_fragment_with_quest_properties` at both call
+    // sites below so this conformance gate measures the
+    // SAME lowering path production runs.
+    let quest_properties = quest_property_names(&script);
+
+    let coverage = analyze_fragment_bindings(checks, quest, &functions, &quest_properties);
+    check_stage_zero_handoff(checks, &functions, &quest_properties);
+    check_stage_zero_runtime_chain(checks, quest, &script);
+    check_cart_init_fragment(checks, &functions, &quest_properties);
+    check_stage_thirty_handoff(checks, &functions, &quest_properties);
+    print_fragment_coverage(&coverage);
+}
+
+/// Extract, parse, and decompile the QF script, recording the first
+/// failing stage under the shared "QF decompile" check name.
+fn decompile_qf_script(checks: &mut Checks, scripts: &BsaArchive) -> Option<Script> {
     let qf_path = CRITICAL_SCRIPTS[0];
-    match scripts.extract(qf_path) {
-        Err(error) => checks.record("QF decompile", false, format!("extract failed: {error}")),
-        Ok(bytes) => match parse(&bytes) {
-            Err(error) => checks.record(
+    let bytes = match scripts.extract(qf_path) {
+        Err(error) => {
+            checks.record("QF decompile", false, format!("extract failed: {error}"));
+            return None;
+        }
+        Ok(bytes) => bytes,
+    };
+    let pex = match parse(&bytes) {
+        Err(error) => {
+            checks.record("QF decompile", false, format!("PEX parse failed: {error:?}"));
+            return None;
+        }
+        Ok(pex) => pex,
+    };
+    let decompiled =
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| decompile_script(&pex)));
+    match decompiled {
+        Err(_) => {
+            checks.record("QF decompile", false, "decompiler panicked");
+            None
+        }
+        Ok(Err(error)) => {
+            checks.record(
                 "QF decompile",
                 false,
-                format!("PEX parse failed: {error:?}"),
-            ),
-            Ok(pex) => {
-                let decompiled = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    decompile_script(&pex)
-                }));
-                match decompiled {
-                    Err(_) => checks.record("QF decompile", false, "decompiler panicked"),
-                    Ok(Err(error)) => checks.record(
-                        "QF decompile",
-                        false,
-                        format!("AST lowering failed: {error:?}"),
-                    ),
-                    Ok(Ok(script)) => {
-                        let functions: HashMap<String, _> = script
-                            .body
-                            .iter()
-                            .filter_map(|item| match &item.node {
-                                ScriptItem::Function(function) => {
-                                    Some((function.name.node.0.to_ascii_lowercase(), function))
-                                }
-                                _ => None,
-                            })
-                            .collect();
-                        // #2658 (SCR-D5-NEW11-03) — computed once per script,
-                        // matching the production caller
-                        // (`populate_quest_fragments_from_script`), and fed to
-                        // `lower_fragment_with_quest_properties` at both call
-                        // sites below so this conformance gate measures the
-                        // SAME lowering path production runs.
-                        let quest_properties = quest_property_names(&script);
+                format!("AST lowering failed: {error:?}"),
+            );
+            None
+        }
+        Ok(Ok(script)) => Some(script),
+    }
+}
 
-                        let mut missing_bindings = Vec::new();
-                        let mut no_op = 0usize;
-                        let mut behavioral = 0usize;
-                        let mut lowered = 0usize;
-                        // #4328 — see `Effect::is_placeholder`.
-                        let mut lowered_with_placeholder = 0usize;
-                        let mut effects = BTreeMap::<&'static str, usize>::new();
-                        let mut declined_shapes = BTreeMap::<String, usize>::new();
-                        let mut declined_samples = Vec::new();
+/// Effect-lowering coverage tallies for the informational report.
+#[derive(Default)]
+struct FragmentCoverage {
+    no_op: usize,
+    behavioral: usize,
+    lowered: usize,
+    lowered_with_placeholder: usize,
+    effects: BTreeMap<&'static str, usize>,
+    declined_shapes: BTreeMap<String, usize>,
+    declined_samples: Vec<String>,
+}
 
-                        for binding in &quest.fragments {
-                            let key = binding.fragment_name.to_ascii_lowercase();
-                            let Some(function) = functions.get(&key) else {
-                                missing_bindings.push(binding.fragment_name.clone());
-                                continue;
-                            };
-                            if function.body.is_empty() {
-                                no_op += 1;
-                                continue;
-                            }
-                            behavioral += 1;
-                            if let Some(fragment_effects) = lower_fragment_with_quest_properties(
-                                &function.body,
-                                &quest_properties,
-                            ) {
-                                lowered += 1;
-                                if fragment_effects.iter().any(Effect::is_placeholder) {
-                                    lowered_with_placeholder += 1;
-                                }
-                                for effect in &fragment_effects {
-                                    *effects.entry((effect).kind()).or_default() += 1;
-                                }
-                            } else {
-                                let shape = function
-                                    .body
-                                    .iter()
-                                    .map(|statement| statement_shape(&statement.node))
-                                    .collect::<Vec<_>>()
-                                    .join(";");
-                                *declined_shapes.entry(shape.clone()).or_default() += 1;
-                                if declined_samples.len() < 16 {
-                                    declined_samples
-                                        .push(format!("{} {}", binding.fragment_name, shape));
-                                }
-                            }
-                        }
+/// Lower every QUST-bound fragment, tallying no-op/behavioral/lowered
+/// counts and the declined top-level statement shapes.
+fn analyze_fragment_bindings(
+    checks: &mut Checks,
+    quest: &QustRecord,
+    functions: &HashMap<String, &Function>,
+    quest_properties: &HashSet<String>,
+) -> FragmentCoverage {
+    let mut missing_bindings = Vec::new();
+    // #4328 — see `Effect::is_placeholder`.
+    let mut coverage = FragmentCoverage::default();
 
-                        checks.record(
-                            "QF decompile",
-                            true,
-                            format!("{} callable functions recovered", functions.len()),
-                        );
-                        checks.record(
-                            "fragment linkage",
-                            missing_bindings.is_empty(),
-                            if missing_bindings.is_empty() {
-                                format!(
-                                    "all {} QUST bindings resolve in the QF PEX",
-                                    quest.fragments.len()
-                                )
-                            } else {
-                                format!(
-                                    "{} missing: {}",
-                                    missing_bindings.len(),
-                                    preview(&missing_bindings, 8)
-                                )
-                            },
-                        );
-                        let startup_effects = functions.get("fragment_2").and_then(|function| {
-                            lower_fragment_with_quest_properties(&function.body, &quest_properties)
-                        });
-                        let startup_ok = matches!(
-                            startup_effects.as_deref(),
-                            Some([
-                                Effect::SetGlobalValue { global, value },
-                                Effect::SetStage { quest: QuestRef::SelfRef, stage: 10 },
-                            ]) if global.property_name().eq_ignore_ascii_case("GameHour")
-                                && matches!(value, ValueExpr::Literal(v) if (*v - 7.0).abs() <= f32::EPSILON)
-                        );
-                        checks.record(
-                            "stage 0 handoff",
-                            startup_ok,
-                            startup_effects.map_or_else(
-                                || "Fragment_2 did not lower".to_owned(),
-                                |effects| format!("Fragment_2 lowered to {effects:?}"),
-                            ),
-                        );
-                        let bindings = quest
-                            .fragments
-                            .iter()
-                            .map(|binding| (binding.stage, binding.fragment_name.as_str()))
-                            .collect::<Vec<_>>();
-                        let mut runtime_fragments = QuestStageFragments::default();
-                        populate_quest_fragments_from_script(
-                            &mut runtime_fragments,
-                            QuestFormId(MQ101_FORM_ID),
-                            &script,
-                            &bindings,
-                        );
-                        let runtime_stage_zero = runtime_fragments
-                            .get(QuestFormId(MQ101_FORM_ID), 0)
-                            .unwrap_or_default();
-                        let runtime_handoff_ok = runtime_stage_zero.windows(2).any(|pair| {
-                            matches!(
-                                pair,
-                                [
-                                    Effect::SetGlobalValue { global, value },
-                                    Effect::SetStage {
-                                        quest: QuestRef::SelfRef,
-                                        stage: 10,
-                                    },
-                                ] if global.property_name().eq_ignore_ascii_case("GameHour")
-                                    && matches!(value, ValueExpr::Literal(v) if (*v - 7.0).abs() <= f32::EPSILON)
-                            )
-                        });
-                        checks.record(
-                            "stage 0 runtime chain",
-                            runtime_handoff_ok,
-                            format!(
-                                "{} aggregate effects from duplicate stage bindings",
-                                runtime_stage_zero.len()
-                            ),
-                        );
-                        let cart_init_effects =
-                            functions.get("fragment_175").and_then(|function| {
-                                lower_fragment_with_quest_properties(
-                                    &function.body,
-                                    &quest_properties,
-                                )
-                            });
-                        let cart_init_kinds = cart_init_effects.as_ref().map(|effects| {
-                            let mut kinds = BTreeMap::<&'static str, usize>::new();
-                            for effect in effects {
-                                *kinds.entry((effect).kind()).or_default() += 1;
-                            }
-                            kinds
-                        });
-                        let cart_init_actor_gate_count =
-                            cart_init_effects.as_ref().and_then(|effects| {
-                                effects.iter().find_map(|effect| match effect {
-                                    Effect::WaitForActors3DLoaded { actors, .. } => {
-                                        Some(actors.len())
-                                    }
-                                    _ => None,
-                                })
-                            });
-                        let cart_init_ok = cart_init_kinds.as_ref().is_some_and(|kinds| {
-                            cart_init_actor_gate_count == Some(9)
-                                && kinds.get("WaitForActors3DLoaded") == Some(&1)
-                                && kinds.get("TetherToHorse") == Some(&2)
-                                && kinds.get("Wait") == Some(&1)
-                                && kinds.get("SetVehicle") == Some(&10)
-                                && kinds.get("PlayIdle") == Some(&10)
-                                && kinds.get("EquipItem") == Some(&1)
-                        });
-                        checks.record(
-                            "cart init fragment",
-                            cart_init_ok,
-                            cart_init_kinds.map_or_else(
-                                || "Fragment_175 did not lower".to_owned(),
-                                |kinds| {
-                                    format!(
-                                        "{} effects, {:?} actors gated: {kinds:?}",
-                                        cart_init_effects.unwrap().len(),
-                                        cart_init_actor_gate_count
-                                    )
-                                },
-                            ),
-                        );
-                        let stage_30_effects = functions.get("fragment_111").and_then(|function| {
-                            lower_fragment_with_quest_properties(&function.body, &quest_properties)
-                        });
-                        let stage_30_ok = matches!(
-                            stage_30_effects.as_deref(),
-                            Some([
-                                Effect::Disable { object, fade_out: false },
-                                Effect::SetStage { quest: QuestRef::SelfRef, stage: 27 },
-                                Effect::EvaluatePackage { actor: ActorRef::Object(horse_1) },
-                                Effect::EvaluatePackage { actor: ActorRef::Object(horse_2) },
-                            ]) if object.property_name().eq_ignore_ascii_case("CiviliansOutsideHelgenMarker")
-                                && horse_1.property_name().eq_ignore_ascii_case("Alias_CartHorse1")
-                                && horse_2.property_name().eq_ignore_ascii_case("Alias_CartHorse2")
-                        );
-                        checks.record(
-                            "stage 30 handoff",
-                            stage_30_ok,
-                            stage_30_effects.map_or_else(
-                                || "Fragment_111 did not lower".to_owned(),
-                                |effects| format!("Fragment_111 lowered to {effects:?}"),
-                            ),
-                        );
-                        let pct = if behavioral == 0 {
-                            0.0
-                        } else {
-                            100.0 * lowered as f64 / behavioral as f64
-                        };
-                        println!();
-                        println!("-- current MQ101 quest-fragment coverage (informational) --");
-                        println!("bound no-op fragments:       {no_op}");
-                        println!("bound behavioral fragments: {behavioral}");
-                        println!("fully lowered today:         {lowered} ({pct:.1}%)");
-                        println!(
-                            "  via a placeholder effect:   {lowered_with_placeholder} \
-                             (counter-only stub inside)"
-                        );
-                        println!("declined/backlog:            {}", behavioral - lowered);
-                        if !effects.is_empty() {
-                            println!("effects emitted:");
-                            for (kind, count) in effects {
-                                println!("  {kind:<24} {count}");
-                            }
-                            println!("declined top-level shapes:");
-                            for (shape, count) in declined_shapes.iter().take(20) {
-                                println!("  {count:>3} {shape}");
-                            }
-                            println!("declined samples: {}", declined_samples.join(", "));
-                        }
-                    }
-                }
+    for binding in &quest.fragments {
+        let key = binding.fragment_name.to_ascii_lowercase();
+        let Some(function) = functions.get(&key) else {
+            missing_bindings.push(binding.fragment_name.clone());
+            continue;
+        };
+        if function.body.is_empty() {
+            coverage.no_op += 1;
+            continue;
+        }
+        coverage.behavioral += 1;
+        if let Some(fragment_effects) =
+            lower_fragment_with_quest_properties(&function.body, quest_properties)
+        {
+            coverage.lowered += 1;
+            if fragment_effects.iter().any(Effect::is_placeholder) {
+                coverage.lowered_with_placeholder += 1;
             }
-        },
+            for effect in &fragment_effects {
+                *coverage.effects.entry((effect).kind()).or_default() += 1;
+            }
+        } else {
+            let shape = function
+                .body
+                .iter()
+                .map(|statement| statement_shape(&statement.node))
+                .collect::<Vec<_>>()
+                .join(";");
+            *coverage.declined_shapes.entry(shape.clone()).or_default() += 1;
+            if coverage.declined_samples.len() < 16 {
+                coverage
+                    .declined_samples
+                    .push(format!("{} {}", binding.fragment_name, shape));
+            }
+        }
     }
 
-    let animations = BsaArchive::open(&animations_path)?;
+    checks.record(
+        "QF decompile",
+        true,
+        format!("{} callable functions recovered", functions.len()),
+    );
+    checks.record(
+        "fragment linkage",
+        missing_bindings.is_empty(),
+        if missing_bindings.is_empty() {
+            format!(
+                "all {} QUST bindings resolve in the QF PEX",
+                quest.fragments.len()
+            )
+        } else {
+            format!(
+                "{} missing: {}",
+                missing_bindings.len(),
+                preview(&missing_bindings, 8)
+            )
+        },
+    );
+    coverage
+}
+
+/// The authored stage-0 handoff (Fragment_2): set GameHour, then start the
+/// quest at stage 10.
+fn check_stage_zero_handoff(
+    checks: &mut Checks,
+    functions: &HashMap<String, &Function>,
+    quest_properties: &HashSet<String>,
+) {
+    let startup_effects = functions.get("fragment_2").and_then(|function| {
+        lower_fragment_with_quest_properties(&function.body, quest_properties)
+    });
+    let startup_ok = matches!(
+        startup_effects.as_deref(),
+        Some([
+            Effect::SetGlobalValue { global, value },
+            Effect::SetStage { quest: QuestRef::SelfRef, stage: 10 },
+        ]) if global.property_name().eq_ignore_ascii_case("GameHour")
+            && matches!(value, ValueExpr::Literal(v) if (*v - 7.0).abs() <= f32::EPSILON)
+    );
+    checks.record(
+        "stage 0 handoff",
+        startup_ok,
+        startup_effects.map_or_else(
+            || "Fragment_2 did not lower".to_owned(),
+            |effects| format!("Fragment_2 lowered to {effects:?}"),
+        ),
+    );
+}
+
+/// The same stage-0 handoff aggregated through the production
+/// `populate_quest_fragments_from_script` runtime path.
+fn check_stage_zero_runtime_chain(
+    checks: &mut Checks,
+    quest: &QustRecord,
+    script: &Script,
+) {
+    let bindings = quest
+        .fragments
+        .iter()
+        .map(|binding| (binding.stage, binding.fragment_name.as_str()))
+        .collect::<Vec<_>>();
+    let mut runtime_fragments = QuestStageFragments::default();
+    populate_quest_fragments_from_script(
+        &mut runtime_fragments,
+        QuestFormId(MQ101_FORM_ID),
+        script,
+        &bindings,
+    );
+    let runtime_stage_zero = runtime_fragments
+        .get(QuestFormId(MQ101_FORM_ID), 0)
+        .unwrap_or_default();
+    let runtime_handoff_ok = runtime_stage_zero.windows(2).any(|pair| {
+        matches!(
+            pair,
+            [
+                Effect::SetGlobalValue { global, value },
+                Effect::SetStage {
+                    quest: QuestRef::SelfRef,
+                    stage: 10,
+                },
+            ] if global.property_name().eq_ignore_ascii_case("GameHour")
+                && matches!(value, ValueExpr::Literal(v) if (*v - 7.0).abs() <= f32::EPSILON)
+        )
+    });
+    checks.record(
+        "stage 0 runtime chain",
+        runtime_handoff_ok,
+        format!(
+            "{} aggregate effects from duplicate stage bindings",
+            runtime_stage_zero.len()
+        ),
+    );
+}
+
+/// The cart-init fragment (Fragment_175): actor 3D-load gate, horse
+/// tethers, vehicle assignment, and idle playback.
+fn check_cart_init_fragment(
+    checks: &mut Checks,
+    functions: &HashMap<String, &Function>,
+    quest_properties: &HashSet<String>,
+) {
+    let cart_init_effects = functions.get("fragment_175").and_then(|function| {
+        lower_fragment_with_quest_properties(&function.body, quest_properties)
+    });
+    let cart_init_kinds = cart_init_effects.as_ref().map(|effects| {
+        let mut kinds = BTreeMap::<&'static str, usize>::new();
+        for effect in effects {
+            *kinds.entry((effect).kind()).or_default() += 1;
+        }
+        kinds
+    });
+    let cart_init_actor_gate_count =
+        cart_init_effects.as_ref().and_then(|effects| {
+            effects.iter().find_map(|effect| match effect {
+                Effect::WaitForActors3DLoaded { actors, .. } => {
+                    Some(actors.len())
+                }
+                _ => None,
+            })
+        });
+    let cart_init_ok = cart_init_kinds.as_ref().is_some_and(|kinds| {
+        cart_init_actor_gate_count == Some(9)
+            && kinds.get("WaitForActors3DLoaded") == Some(&1)
+            && kinds.get("TetherToHorse") == Some(&2)
+            && kinds.get("Wait") == Some(&1)
+            && kinds.get("SetVehicle") == Some(&10)
+            && kinds.get("PlayIdle") == Some(&10)
+            && kinds.get("EquipItem") == Some(&1)
+    });
+    checks.record(
+        "cart init fragment",
+        cart_init_ok,
+        cart_init_kinds.map_or_else(
+            || "Fragment_175 did not lower".to_owned(),
+            |kinds| {
+                format!(
+                    "{} effects, {:?} actors gated: {kinds:?}",
+                    cart_init_effects.unwrap().len(),
+                    cart_init_actor_gate_count
+                )
+            },
+        ),
+    );
+}
+
+/// The stage-30 handoff (Fragment_111): disable the civilians marker,
+/// advance to stage 27, and re-evaluate both cart horses' packages.
+fn check_stage_thirty_handoff(
+    checks: &mut Checks,
+    functions: &HashMap<String, &Function>,
+    quest_properties: &HashSet<String>,
+) {
+    let stage_30_effects = functions.get("fragment_111").and_then(|function| {
+        lower_fragment_with_quest_properties(&function.body, quest_properties)
+    });
+    let stage_30_ok = matches!(
+        stage_30_effects.as_deref(),
+        Some([
+            Effect::Disable { object, fade_out: false },
+            Effect::SetStage { quest: QuestRef::SelfRef, stage: 27 },
+            Effect::EvaluatePackage { actor: ActorRef::Object(horse_1) },
+            Effect::EvaluatePackage { actor: ActorRef::Object(horse_2) },
+        ]) if object.property_name().eq_ignore_ascii_case("CiviliansOutsideHelgenMarker")
+            && horse_1.property_name().eq_ignore_ascii_case("Alias_CartHorse1")
+            && horse_2.property_name().eq_ignore_ascii_case("Alias_CartHorse2")
+    );
+    checks.record(
+        "stage 30 handoff",
+        stage_30_ok,
+        stage_30_effects.map_or_else(
+            || "Fragment_111 did not lower".to_owned(),
+            |effects| format!("Fragment_111 lowered to {effects:?}"),
+        ),
+    );
+}
+
+/// Informational (non-gating) per-fragment lowering coverage report.
+fn print_fragment_coverage(coverage: &FragmentCoverage) {
+    let pct = if coverage.behavioral == 0 {
+        0.0
+    } else {
+        100.0 * coverage.lowered as f64 / coverage.behavioral as f64
+    };
+    println!();
+    println!("-- current MQ101 quest-fragment coverage (informational) --");
+    println!("bound no-op fragments:       {}", coverage.no_op);
+    println!("bound behavioral fragments: {}", coverage.behavioral);
+    println!(
+        "fully lowered today:         {} ({pct:.1}%)",
+        coverage.lowered
+    );
+    println!(
+        "  via a placeholder effect:   {} \
+         (counter-only stub inside)",
+        coverage.lowered_with_placeholder
+    );
+    println!(
+        "declined/backlog:            {}",
+        coverage.behavioral - coverage.lowered
+    );
+    if !coverage.effects.is_empty() {
+        println!("effects emitted:");
+        for (kind, count) in &coverage.effects {
+            println!("  {kind:<24} {count}");
+        }
+        println!("declined top-level shapes:");
+        for (shape, count) in coverage.declined_shapes.iter().take(20) {
+            println!("  {count:>3} {shape}");
+        }
+        println!(
+            "declined samples: {}",
+            coverage.declined_samples.join(", ")
+        );
+    }
+}
+
+/// Stage 10 — the critical cart HKX animations in the animations archive.
+fn check_animations(checks: &mut Checks, animations_path: &Path) -> Result<(), Box<dyn Error>> {
+    let animations = BsaArchive::open(animations_path)?;
     let cart_animation_count = animations
         .list_files()
         .into_iter()
@@ -1750,8 +2010,12 @@ fn run() -> Result<Checks, Box<dyn Error>> {
             format!("missing: {}", preview(&missing_animations, 5))
         },
     );
+    Ok(())
+}
 
-    match find_voice_archive(&data_dir) {
+/// Stage 11 — MQ101 FUZ voice lines in the voices archive.
+fn check_voice(checks: &mut Checks, data_dir: &Path) -> Result<(), Box<dyn Error>> {
+    match find_voice_archive(data_dir) {
         None => checks.record(
             "MQ101 voice assets",
             false,
@@ -1776,54 +2040,76 @@ fn run() -> Result<Checks, Box<dyn Error>> {
             );
         }
     }
+    Ok(())
+}
 
+/// Closing authored-workload inventory (informational).
+fn print_inventory(
+    quest: &QustRecord,
+    scenes: &SceneSet,
+    inventory: &SceneInventory,
+    corpus: &ScriptCorpus,
+) {
     println!();
     println!("-- authored workload inventory --");
     println!("quest aliases:          {}", quest.aliases.len());
     println!("quest stage bindings:   {}", quest.fragments.len());
-    println!("MQ101 scene records:    {}", mq101_scenes.len());
-    println!("scene phases:           {total_scene_phases}");
-    println!("scene actions:          {total_scene_actions}");
+    println!("MQ101 scene records:    {}", scenes.scenes.len());
+    println!("scene phases:           {}", inventory.total_scene_phases);
+    println!("scene actions:          {}", inventory.total_scene_actions);
     println!(
         "package action stacks:  {:?} ({} end on phases with completion CTDAs)",
-        package_action_stacks, package_actions_with_phase_completion_conditions
+        inventory.package_action_stacks, inventory.package_actions_with_phase_completion_conditions
     );
-    println!("package procedures:     {package_procedures:?}");
-    for (procedure, samples) in &package_procedure_samples {
+    println!("package procedures:     {:?}", inventory.package_procedures);
+    for (procedure, samples) in &inventory.package_procedure_samples {
         println!("  {procedure}: {}", samples.join(", "));
     }
-    println!("package templates:      {} unique", package_templates.len());
-    for (template, count) in &package_templates {
+    println!(
+        "package templates:      {} unique",
+        inventory.package_templates.len()
+    );
+    for (template, count) in &inventory.package_templates {
         println!("  {template}: {count}");
     }
-    println!("procedure-tree leaves:  {package_tree_procedures:?}");
-    for (procedure, samples) in &package_tree_procedure_samples {
+    println!(
+        "procedure-tree leaves:  {:?}",
+        inventory.package_tree_procedures
+    );
+    for (procedure, samples) in &inventory.package_tree_procedure_samples {
         println!("  {procedure}: {}", samples.join(", "));
     }
-    println!("package execution plan: {package_execution_kinds:?}");
-    if !unresolved_movement_targets.is_empty() {
+    println!(
+        "package execution plan: {:?}",
+        inventory.package_execution_kinds
+    );
+    if !inventory.unresolved_movement_targets.is_empty() {
         println!(
             "movement targets awaiting richer resolution: {}: {}",
-            unresolved_movement_targets.len(),
-            preview(&unresolved_movement_targets, 12)
+            inventory.unresolved_movement_targets.len(),
+            preview(&inventory.unresolved_movement_targets, 12)
         );
     }
-    println!("scene event bindings:   {total_scene_fragments}");
     println!(
-        "scene CTDAs:             {} across {} functions ({quest_alias_conditions} RunOn::QuestAlias)",
-        scene_condition_functions.values().sum::<usize>(),
-        scene_condition_functions.len(),
+        "scene event bindings:   {}",
+        inventory.total_scene_fragments
     );
-    if !unsupported_scene_condition_functions.is_empty() {
+    println!(
+        "scene CTDAs:             {} across {} functions ({} RunOn::QuestAlias)",
+        inventory.scene_condition_functions.values().sum::<usize>(),
+        inventory.scene_condition_functions.len(),
+        inventory.quest_alias_conditions,
+    );
+    if !inventory.unsupported_scene_condition_functions.is_empty() {
         println!(
             "unsupported scene CTDA functions: {:?}",
-            unsupported_scene_condition_functions
+            inventory.unsupported_scene_condition_functions
         );
-        for (function, sites) in &unsupported_scene_condition_sites {
+        for (function, sites) in &inventory.unsupported_scene_condition_sites {
             println!("  {function}: {}", preview(sites, 8));
         }
     }
-    if let Some(scene) = primary_scene {
+    if let Some(scene) = scenes.primary {
         println!("primary scene actor aliases:");
         for actor in &scene.actors {
             let alias = quest
@@ -1839,11 +2125,9 @@ fn run() -> Result<Checks, Box<dyn Error>> {
             }
         }
     }
-    println!("MQ101 compiled scripts: {}", mq101_pex.len());
-    println!("scene fragment scripts: {scene_count}");
-    println!("package fragment scripts: {package_count}");
-
-    Ok(checks)
+    println!("MQ101 compiled scripts: {}", corpus.mq101_pex_count);
+    println!("scene fragment scripts: {}", corpus.scene_count);
+    println!("package fragment scripts: {}", corpus.package_count);
 }
 
 fn main() {

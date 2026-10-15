@@ -125,9 +125,7 @@ pub fn install_map_markers(world: &mut World, index: &EsmIndex) -> usize {
     let markers = AuthoredMapMarkers::from_index(index);
     let count = markers.visible.len();
     world.insert_resource(markers);
-    if world.try_resource::<MapMarkers>().is_none() {
-        world.insert_resource(MapMarkers::default());
-    }
+    world.init_resource::<MapMarkers>();
     count
 }
 

@@ -129,7 +129,7 @@ fn parse_ligh_captures_fo4_xpwr_power_circuit_ref() {
     sub_data.extend_from_slice(&256u32.to_le_bytes()); // radius
     sub_data.extend_from_slice(&[0xFF, 0xC0, 0x80, 0x00]); // warm RGB + pad
     sub_data.extend_from_slice(&0u32.to_le_bytes()); // flags
-                                                     // XPWR — 4-byte FormID.
+    // XPWR — 4-byte FormID.
     sub_data.extend_from_slice(b"XPWR");
     sub_data.extend_from_slice(&4u16.to_le_bytes());
     sub_data.extend_from_slice(&0x0011_AABBu32.to_le_bytes());

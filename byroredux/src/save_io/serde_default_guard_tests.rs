@@ -84,7 +84,9 @@ fn save_scan_candidates() -> Vec<PathBuf> {
 /// remembered to widen a second list.
 fn save_type_sources() -> Vec<PathBuf> {
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let registry_source = include_str!("../save_io.rs");
+    // #5585 — `build_save_registry` moved from `save_io.rs` to
+    // `save_io/registry.rs`; the register-row scan follows it.
+    let registry_source = include_str!("registry.rs");
     let registered = registered_type_names(registry_source);
     let mut candidates = save_scan_candidates();
 
@@ -1338,7 +1340,12 @@ fn enclosing_declaration_names_the_owning_type() {
 #[test]
 fn source_discovery_follows_registry_and_nested_save_modules() {
     let sources = save_type_sources();
-    assert!(sources.iter().any(|path| path.ends_with("save_io.rs")));
+    // #5585 — the monolithic `save_io.rs` (which declared the registered
+    // `PlayerPose`) became a re-export hub; `player.rs` declares that type
+    // now, so it is the file this discovery must keep reaching. The
+    // registry rows themselves are read from `save_io/registry.rs` in
+    // `save_type_sources` above.
+    assert!(sources.iter().any(|path| path.ends_with("save_io/player.rs")));
     assert!(sources
         .iter()
         .any(|path| path.ends_with("scene/quest_alias.rs")));

@@ -373,7 +373,10 @@ fn vtxt_nonfinite_and_out_of_range_opacity_is_gated() {
     let layers = &land.quadrants[0].layers;
     assert_eq!(layers.len(), 1);
     let alpha = layers[0].alpha.as_ref().expect("VTXT must populate alpha");
-    assert_eq!(alpha[0], 0.0, "NaN opacity must drop to 0.0, not poison coverage ranking");
+    assert_eq!(
+        alpha[0], 0.0,
+        "NaN opacity must drop to 0.0, not poison coverage ranking"
+    );
     assert_eq!(
         alpha[1], 0.0,
         "+Inf is non-finite and must drop to 0.0, not clamp to 1.0"

@@ -257,9 +257,7 @@ fn reaction_raw(reaction: CombatReaction) -> u32 {
 
 pub fn register(world: &mut World) {
     world.register::<AiCombatState>();
-    if world.try_resource::<FactionRelations>().is_none() {
-        world.insert_resource(FactionRelations::default());
-    }
+    world.init_resource::<FactionRelations>();
 }
 
 #[cfg(test)]

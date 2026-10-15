@@ -202,7 +202,9 @@ fn delta_columns_removed_at_runtime_have_a_load_reconciler() {
         ),
     ];
 
-    let save_io = include_str!("../save_io.rs");
+    // #5585 — the reconciler call sites ride `execute_pending_save_loads`,
+    // which moved from `save_io.rs` to `save_io/live_load.rs`.
+    let save_io = include_str!("live_load.rs");
     for (column, disposition) in RECONCILED {
         assert!(
             MUTABLE_DELTA_COLUMNS.contains(column),
@@ -213,8 +215,8 @@ fn delta_columns_removed_at_runtime_have_a_load_reconciler() {
                 assert!(
                     save_io.contains(reconciler),
                     "{column} is removed at runtime but `{reconciler}` is not called from \
-                     save_io.rs — the additive-only overlay would leave the live component \
-                     standing after a load (#3488)"
+                     save_io/live_load.rs — the additive-only overlay would leave the live \
+                     component standing after a load (#3488)"
                 );
             }
             RemovalDisposition::NoReconcilerNeeded(reason) => {
