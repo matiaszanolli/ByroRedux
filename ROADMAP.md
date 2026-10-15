@@ -58,7 +58,8 @@ top-of-frame all-slots fence wait that dominates GPU-bound frames
   Exposure is auto-metered by default (`a070baaad`), with ACES or AgX. BLAS
   compaction and LRU eviction, TLAS refit, GPU skinning.
 - **Actors.** NPCs spawn with skeleton, body, FaceGen head and outfit (M41).
-  Seven AI package procedures run by default, with authored walk clips and
+  Ten AI package procedures run by default (locomotion seven + Eat/Sleep +
+  Dialogue + graph locomotion), with authored walk clips and
   KCC-backed steps (M42). Faction hostility starts combat on sight and
   disengages after a grace period (#4414, #4816). FNV-era ragdolls run on
   Rapier (M41.x).
@@ -92,8 +93,8 @@ top-of-frame all-slots fence wait that dominates GPU-bound frames
   Skyrim/FO4 `hudmenu.swf` via `--hud` (M48.4–M48.7).
 
 **What doesn't work yet.**
-- AI beyond locomotion: 10 of ~17 package procedures need subsystems that do
-  not exist (item use, package combat, magic, dialogue). NAVM pathfinding
+- AI beyond locomotion: 7 of ~17 package procedures need subsystems that do
+  not exist (item use, package combat, magic). NAVM pathfinding
   covers the five pre-FO4 games including cross-tile joins (#3802); FO4's
   compressed `NVNM` body is still undecoded.
 - FO4/FO76/Starfield actors have no walk-clip source; their ragdolls wait on

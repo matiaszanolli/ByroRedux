@@ -28,11 +28,13 @@ a green run that omitted precisely the tests covering the field they were editin
 
 ### Binary-crate toolchain (rustc ≥ 1.96 required, #4466)
 
-wasmtime 49 / cranelift 0.136 (via `mod-runtime`) set an MSRV of 1.96; the
-default distro rustc here is 1.93.1, so the `byroredux` bin crate — and any
-workspace-wide cargo call — fails resolution on the default toolchain and
-gets **no compile/test feedback**. `cargo +1.96.0` does NOT work (distro
-cargo shadows the rustup shims); invoke the toolchain's cargo directly:
+wasmtime 49 / cranelift 0.136 (via `mod-runtime`) set an MSRV of 1.96, and
+the repo pins 1.96.0 via `rust-toolchain.toml`. Re-verified 2026-10-15:
+this machine's default toolchain is 1.97.1 (≥ MSRV), so a bare `cargo
+test -p byroredux --bin byroredux` resolves and builds directly — the
+1.93-era "distro cargo shadows the rustup shims" failure no longer holds
+here. If your PATH does put an older distro cargo first (the original
+#4466 symptom), invoke the pinned toolchain's cargo directly:
 
 ```bash
 TC=$(rustup which --toolchain 1.96.0 cargo)   # 1.96.0 is installed here
@@ -129,7 +131,9 @@ byroredux/              Binary — game loop, scene setup, systems
   src/app_events.rs        ApplicationHandler — winit resumed/window/device/about_to_wait (#2731)
   src/app_frame.rs         App::render_one_frame — per-frame render driver (#2731)
   src/app_step.rs          Per-tick streaming / debug-load / save / cell-transition steppers
-  src/components.rs        Marker components (Spinning, AlphaBlend, TwoSided, Decal) + app resources
+  src/components/          Marker components + app resources, split by domain
+                           (render, terrain, environment, indices, input, audio,
+                           tuning, ai_anim, navmesh — #6ef8976f2's hub ~30 LOC)
   src/systems.rs           ECS systems: fly camera, animation, transform propagation, spin, stats
   src/scene.rs             Scene setup, NIF loading (load_nif_bytes, load_nif_from_args)
   src/asset_provider/      BSA/BA2-backed texture and mesh extraction
@@ -311,6 +315,14 @@ crates/
     src/timer.rs             ScriptTimer component + timer_tick_system
     src/cleanup.rs           event_cleanup_system (end-of-frame marker removal)
   menuxml/                   Oblivion/FO3/FNV MenuXml UI (M48.4/M48.5 legacy-UI track)
+  mod-runtime/               WASM sandbox runtime (wasmtime 49, hostcall fuel #5718)
+  pex/                       Compiled Papyrus (.pex) reader
+  physics/                   Rapier physics world, water, footstep surface probe
+  save/                      Save-file serialisation (shape-guarded)
+  sdk/                       Script-extender SDK surface (script_function, hostcalls)
+  settings-io/               profiles.toml + settings persistence
+  sfmaterial/                Starfield .cdb material reader
+  spt/                       SpeedTree (.spt) reader
     src/parse.rs             Tolerant XML scanner (vanilla quirks, <include> prefabs)
     src/eval.rs              Per-frame trait FOLD language + selectors + overrides
     src/layout.rs            Locus chains, depth sort, clipwindow scissor
@@ -329,12 +341,20 @@ crates/
     src/parser/              Recursive descent parser
       mod.rs                 Parser struct, token access, type parsing
       expr.rs                Pratt expression parser (precedence climbing)
+  audio/                     Audio playback (descriptors, spatial tracks, one-shots)
+  bgsm/                      Bethesda GS material (.bgsm/.bgem) reader
+  boot-request/              Engine boot handshake types
   cxx-bridge/                C++ interop (cxx crate)
   debug-protocol/            Wire types + component registry for debug CLI
     src/lib.rs               DebugRequest, DebugResponse, EntityInfo
     src/wire.rs              Length-prefixed JSON encode/decode
     src/registry.rs          ComponentDescriptor, ComponentRegistry (type-erased accessors)
   debug-server/              TCP debug server embedded in engine
+  debug-ui/                  Dear ImGui-style debug overlay types
+  facegen/                   EGM/EGT FaceGen morph + texture readers
+  fsr3-sys/                  FSR3 upscaler native bindings
+  game-detect/               Installed-game discovery (registry / Steam library)
+  hkx/                       Havok .hkx behavior-graph + clip reader
     src/lib.rs               start() entry point, SystemList re-export
     src/listener.rs          TcpListener, per-client threads, command queue
     src/system.rs            DebugDrainSystem (Late-stage exclusive), screenshot flow
@@ -344,6 +364,10 @@ crates/
                              rather than trusting a number here — it moves with every component added)
 tools/
   byro-dbg/                  Standalone debug CLI binary
+  byro-detect/               Game-install detection CLI (shares game-detect)
+  byro-launcher/             Profile launcher CLI (shares the --profiles parser)
+  nifskope/                  NIF inspection tooling (vendored; out of LOC scans)
+  texture-upscale/           Offline texture upscaling tool
     src/main.rs              TCP client, REPL loop, shorthand commands
     src/display.rs           Pretty-print responses (entities, JSON, stats)
 docs/

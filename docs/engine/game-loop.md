@@ -152,7 +152,7 @@ The live schedule built in `App::new` is:
 | `Update` | `player_body_facing_system` | exclusive + declared | Third-person body facing from the shared yaw accumulator (#4995); Update placement so PostUpdate propagation resolves it same-frame |
 | `PostUpdate` | `make_transform_propagation_system()` | declared | Parent→child `GlobalTransform` (BFS) |
 | `PostUpdate` | `particle_system` | exclusive + declared | Needs final emitter world origin (#401); consumes `ParticleEmitter::rate` one frame after Late's submersion write (#3653) |
-| `PostUpdate` | sandbox/wander/travel/follow/escort/guard/patrol + `make_npc_walk_animation_system()` | exclusive | **Default-on since M42.10** — `BYRO_NO_AI_LOCOMOTION=1` is the single kill-switch; walk playback registers **last** because it classifies motion from this frame's final position |
+| `PostUpdate` | sandbox/wander/travel/follow/escort/guard/patrol + `make_eat_sleep_system()` + `graph_locomotion_system()` + `console_walk_system()` + `make_npc_walk_animation_system()` | exclusive | **Default-on since M42.10** — `BYRO_NO_AI_LOCOMOTION=1` is the single kill-switch; walk playback registers **last** because it classifies motion from this frame's final position |
 | `PostUpdate` | `make_combat_feedback_system()` | exclusive | Attack/hit/death clip takes + combat sounds; deliberately outside the kill-switch (#4709), after walk playback when registered |
 | `PostUpdate` | `make_world_bound_propagation_system()` | exclusive + declared | Runs last so it sees final PostUpdate world transforms (#217); billboard rotations moved to Late (#3652) |
 | `Physics` | `physics_sync_system` | declared | Rapier step → `Transform` writeback |

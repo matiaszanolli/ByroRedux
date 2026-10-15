@@ -335,13 +335,15 @@ mod bench_frame_distribution_tests {
         let blocked = bench_frame_max_over_p95([15.88, 16.77, 29164.91]);
         assert!(
             blocked > 1000.0,
-            "a single blocking frame must stand out by orders of magnitude,              got {blocked}"
+            "a single blocking frame must stand out by orders of magnitude, \
+             got {blocked}"
         );
         // Skyrim: a genuinely heavy tail, no blocking frame.
         let heavy = bench_frame_max_over_p95([8.58, 11.55, 41.11]);
         assert!(
             heavy < 5.0,
-            "an ordinary heavy tail must not read as a blocking frame, got              {heavy}"
+            "an ordinary heavy tail must not read as a blocking frame, got \
+             {heavy}"
         );
         // Degenerate runs report no signal rather than an infinity that
         // would parse as a spurious alarm.
@@ -412,7 +414,8 @@ mod bench_frame_distribution_tests {
             let token = format!("gpu_{key}={{:.3}}");
             assert!(
                 APP_EVENTS_RS.contains(&token),
-                "`{token}` is missing from the bench line's format string —                  BENCH_GPU_KEYS names a bracket the line never prints (#3629)",
+                "`{token}` is missing from the bench line's format string — \
+                 BENCH_GPU_KEYS names a bracket the line never prints (#3629)",
             );
         }
 
@@ -420,7 +423,9 @@ mod bench_frame_distribution_tests {
         // device-side bracket now that both are on the line.
         assert!(
             APP_EVENTS_RS.contains("cpu_tlas_ms={:.2}"),
-            "the FrameTimings TLAS cost must print as `cpu_tlas_ms=`, not a              bare `tlas_ms=`, now that `gpu_tlas_build=` shares the line              (#3629)",
+            "the FrameTimings TLAS cost must print as `cpu_tlas_ms=`, not a \
+             bare `tlas_ms=`, now that `gpu_tlas_build=` shares the line \
+             (#3629)",
         );
     }
 }

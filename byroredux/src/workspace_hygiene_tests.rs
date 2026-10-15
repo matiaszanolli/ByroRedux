@@ -394,7 +394,6 @@ fn no_string_literal_embeds_a_space_run() {
         "byroredux/src/commands/depth.rs",
         "byroredux/src/commands_tests.rs",
         "byroredux/src/sf_smoke.rs",
-        "byroredux/src/main.rs",
         "crates/renderer/src/vulkan/groundcover.rs",
         "crates/renderer/src/vulkan/groundcover/construct.rs",
         "crates/nif/examples/ambient_light_census.rs",

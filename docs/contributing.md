@@ -124,7 +124,9 @@ development loop.
 
 The engine binary depends on wasmtime 49 and cranelift 0.136 (via
 `mod-runtime`), whose MSRV is 1.96 (1.94 before the 2026-10 wasmtime 47 → 49
-bump). If the default `cargo`/`rustc` on PATH is older (e.g. a
+bump); the repo pins 1.96.0 via `rust-toolchain.toml`. As of 2026-10-15 the
+reference machine's default toolchain (1.97.1) satisfies the MSRV and bare
+`cargo` works. If the default `cargo`/`rustc` on PATH is older (e.g. a
 distro 1.93.1), every `cargo` invocation that resolves the full workspace —
 including `cargo check` and `cargo test -p byroredux-core`'s workspace
 walk — fails at dependency resolution with a wall of

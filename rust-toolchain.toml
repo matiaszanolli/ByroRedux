@@ -6,9 +6,10 @@
 # deliberately — run the full gate locally, then commit the bump — so
 # toolchain drift shows up in a controlled change, not in CI.
 #
-# Local note: the distro cargo shadows the rustup shims and ignores this
-# file; the documented `rustup which --toolchain` workaround in
-# docs/contributing.md §Tests is unaffected (see AGENTS.md / #4466).
+# Local note (re-checked 2026-10-15): the distro toolchain is 1.97.1 and
+# satisfies this MSRV, so bare cargo works here. On a machine whose distro
+# cargo is older and shadows the rustup shims, use the `rustup which
+# --toolchain` form from docs/contributing.md §Tests (see AGENTS.md / #4466).
 [toolchain]
 channel = "1.96.0"
 components = ["clippy"]

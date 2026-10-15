@@ -6,9 +6,11 @@ Fourth in the cross-cutting series alongside [Pipeline Overview](pipeline-overvi
 record from cell-load spawn through AI package selection to an actor
 actually running behavior — and it's the most incomplete of the four.
 Say that up front rather than let the prose imply otherwise: of the
-~17-value FO3/FNV package-procedure enum, **exactly seven procedures
-execute anything at runtime.** This doc documents what's real, not
-what's planned.
+~17-value FO3/FNV package-procedure enum, **ten procedures execute
+something at runtime** (the seven locomotion procedures, plus Eat/Sleep
+from M42, Dialogue from #5367's greeting work, and the graph-locomotion
+and console-walk systems registered beside them). This doc documents
+what's real, not what's planned.
 
 > **Currency note.** Verified against the tree as of 2026-07-15. One
 > stale comment found and fixed: `boot.rs`'s inline comment gating
