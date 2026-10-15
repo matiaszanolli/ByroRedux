@@ -3562,6 +3562,55 @@ void main() {
                 bool sameSurface = rpSurfaceId == surfaceId
                     && temporalDepthCompatible
                     && dot(geomN, rpGeomN) >= TEMPORAL_NORMAL_COS;
+                // Silhouette search. A parked camera still jitters every
+                // frame, so an edge moves by up to half a pixel: the surface
+                // that owns this pixel now (a stool leg, a railing) owned the
+                // NEIGHBOURING pixel last frame, the single reprojected pixel
+                // fails the surface test, and every silhouette re-rolled its
+                // shadow each frame (red outlines under `restir_history`).
+                // When the reprojected pixel fails, take the 3x3 neighbour
+                // that passes the same surface/plane/normal gates with the
+                // nearest plane. Interior pixels pass the first read, so the
+                // extra reads happen only along edges.
+                if (!sameSurface) {
+                    ivec2 prevPix = ivec2(prevFrag);
+                    float bestPlane = 1e30;
+                    Reservoir best = rp;
+                    for (int dy = -1; dy <= 1; dy++) {
+                        for (int dx = -1; dx <= 1; dx++) {
+                            ivec2 q = prevPix + ivec2(dx, dy);
+                            if ((dx == 0 && dy == 0) || q.x < 0 || q.y < 0
+                                || q.x >= int(screen.x) || q.y >= int(screen.y)) {
+                                continue;
+                            }
+                            Reservoir rq = reservoirsPrev[uint(q.y) * scrW + uint(q.x)];
+                            if (reservoirSurfaceId(rq.lightAndSurface) != surfaceId) {
+                                continue;
+                            }
+                            vec2 rqHistoryDepth = unpackHalf2x16(
+                                floatBitsToUint(rq.histLenAndDepth));
+                            float rqPlane = abs(rqHistoryDepth.y - min(worldDist, 65504.0))
+                                * max(abs(dot(geomN, V)), 0.1);
+                            vec3 rqGeomN = octDecode(
+                                unpackSnorm2x16(floatBitsToUint(rq.pad0)));
+                            if (rqPlane <= temporalDepthTolerance && rqPlane < bestPlane
+                                && dot(geomN, rqGeomN) >= TEMPORAL_NORMAL_COS) {
+                                bestPlane = rqPlane;
+                                best = rq;
+                            }
+                        }
+                    }
+                    if (bestPlane < 1e30) {
+                        rp = best;
+                        rpLightIndex = remapReservoirLight(rp.lightAndSurface);
+                        rpSurfaceId = surfaceId;
+                        rpHistoryDepth = unpackHalf2x16(floatBitsToUint(rp.histLenAndDepth));
+                        rpHistLen = rpHistoryDepth.x;
+                        rpGeomN = octDecode(unpackSnorm2x16(floatBitsToUint(rp.pad0)));
+                        temporalDepthCompatible = true;
+                        sameSurface = true;
+                    }
+                }
                 // Selection reuse: guard against first-frame / garbage
                 // contents (surface identity + geometric normal + light index
                 // in range + finite-positive weight). The final visibility ray

@@ -271,7 +271,19 @@ impl VulkanContext {
             }
             super::super::upscaling::UpscalerMode::Fsr3(_) => {
                 if !self.is_fsr_dispatch_active() {
-                    (0.0, 0.0, None, false)
+                    // TEMP noise-bisection override — remove before commit.
+                    if std::env::var_os("BYRO_TMP_JITTER_IN_DEBUG").is_some() {
+                        let (jx, jy) = taa_jitter(
+                            true,
+                            false,
+                            self.frame_counter,
+                            self.frame_extents.render.width as f32,
+                            self.frame_extents.render.height as f32,
+                        );
+                        (jx, jy, None, false)
+                    } else {
+                        (0.0, 0.0, None, false)
+                    }
                 } else {
                     let fsr = self
                         .post
