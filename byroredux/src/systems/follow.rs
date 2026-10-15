@@ -179,11 +179,9 @@ fn follow_system_inner(world: &World, dt: f32, scratch: &mut FollowScratch) {
             let Some(transform) = transform_q.get(entity) else {
                 continue;
             };
-            let speed = walk_speed_q
-                .as_ref()
-                .and_then(|q| q.get(entity))
-                .map(|s| s.0)
-                .unwrap_or(super::locomotion::LOCOMOTION_WALK_SPEED);
+            let speed = crate::components::WalkSpeed::or_default(
+                walk_speed_q.as_ref().and_then(|q| q.get(entity)),
+            );
             let existing_state = state_q.as_ref().and_then(|q| q.get(entity)).copied();
             let (target_entity, state_to_insert) = match existing_state {
                 Some(s) => (s.target_entity, None),

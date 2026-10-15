@@ -46,7 +46,9 @@ use byroredux_core::ecs::World;
 /// used when `PatrolBehavior.patrol_radius` is `None` (no PLDT / radius
 /// 0). Same value as `wander.rs::WANDER_DEFAULT_RADIUS` — the two
 /// procedures share the same v0 algorithm, so they share the same default.
-const PATROL_DEFAULT_RADIUS: f32 = 512.0;
+/// The value itself is the one shared fact
+/// `locomotion::AI_PACKAGE_DEFAULT_RADIUS` (#5587).
+const PATROL_DEFAULT_RADIUS: f32 = super::locomotion::AI_PACKAGE_DEFAULT_RADIUS;
 
 /// Patrol's component pair on the shared oscillating-walk system (#5580):
 /// the gather, the step, the `NavPath` cache and the write-back are

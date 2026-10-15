@@ -87,7 +87,9 @@ use std::collections::VecDeque;
 /// Reuses `sandbox.rs::SEAT_SEARCH_RADIUS`'s scale for consistency — both
 /// are "how far does this ambient behavior reach without an authored
 /// radius" defaults for the same class of FNV-interior/yard-scale content.
-const WANDER_DEFAULT_RADIUS: f32 = 512.0;
+/// The value itself is the one shared fact
+/// `locomotion::AI_PACKAGE_DEFAULT_RADIUS` (#5587).
+const WANDER_DEFAULT_RADIUS: f32 = super::locomotion::AI_PACKAGE_DEFAULT_RADIUS;
 
 /// Pause duration range (seconds) between walks. Engine default.
 const WANDER_PAUSE_MIN: f32 = 3.0;
@@ -396,11 +398,9 @@ pub(crate) fn oscillating_walk_system_inner<B: OscillatingWalkProcedure>(
                 .and_then(|q| q.get(entity))
                 .map(|t| t.secs)
                 .unwrap_or(0.0);
-            let speed = walk_speed_q
-                .as_ref()
-                .and_then(|q| q.get(entity))
-                .map(|s| s.0)
-                .unwrap_or(super::locomotion::LOCOMOTION_WALK_SPEED);
+            let speed = crate::components::WalkSpeed::or_default(
+                walk_speed_q.as_ref().and_then(|q| q.get(entity)),
+            );
 
             // EX-16 item 3 Phase 4: only bother resolving a path while
             // actually walking this leg — mirrors `guard_system`'s same

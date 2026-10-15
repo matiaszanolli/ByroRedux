@@ -27,7 +27,7 @@ pub(crate) mod faction_hostility;
 mod follow;
 mod guard;
 mod light_anim;
-mod locomotion;
+pub(crate) mod locomotion;
 mod metrics;
 pub(crate) mod navmesh_path;
 pub(crate) mod npc_dialogue;

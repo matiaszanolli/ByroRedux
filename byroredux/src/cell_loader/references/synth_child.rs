@@ -249,6 +249,38 @@ pub(super) fn attach_quest_reference_script(
 /// telemetry into `accum`. Split verbatim out of [`load_references`] (#2058);
 /// each former `continue` (skip this child) is now an early `return`.
 #[allow(clippy::too_many_arguments)]
+/// #5740 — the ESM LIGH → `LightSource` translation the LIGH-only and
+/// fxlight branches below shared verbatim: geometry via `translate_light`
+/// (#2439 / NIFAL-D2-01), the per-game falloff / shadow canonicalizers
+/// (#4514's lane), and the flicker attach. The NIFAL light boundary is
+/// where a per-game change lands; with the build in one home, it is one
+/// edit, not one per branch.
+fn attach_esm_light(
+    world: &mut World,
+    entity: EntityId,
+    ld: &byroredux_plugin::esm::cell::LightData,
+    game: byroredux_plugin::esm::reader::GameKind,
+    ref_pos: Vec3,
+    ref_rot: Quat,
+) {
+    let geometry = crate::systems::translate_light(ld, game, ref_rot);
+    world.insert(
+        entity,
+        LightSource::from_legacy_world_units(
+            light_radius_or_default(ld.radius),
+            ld.color,
+            ld.flags,
+            crate::systems::canonical_light_falloff_exponent(game, ld.falloff_exponent),
+            geometry.kind,
+            geometry.direction,
+            geometry.outer_angle,
+            crate::systems::canonical_light_shadow_flags(game, ld.flags, ld.starfield_light_type),
+        ),
+    );
+    let animation_flags = crate::systems::canonical_light_animation_flags(game, ld.flags);
+    attach_light_flicker_if_needed(world, entity, ld, ref_pos, animation_flags);
+}
+
 pub(super) fn spawn_synth_child(
     accum: &mut RefLoadAccum,
     world: &mut World,
@@ -401,25 +433,7 @@ pub(super) fn spawn_synth_child(
             let entity = world.spawn();
             world.insert(entity, Transform::new(ref_pos, ref_rot, ref_scale));
             world.insert(entity, GlobalTransform::new(ref_pos, ref_rot, ref_scale));
-            // #2439 / NIFAL-D2-01 — geometry half (kind/direction/
-            // outer_angle) of the same translation boundary the shadow
-            // flags below already route through.
-            let geometry = crate::systems::translate_light(ld, game, ref_rot);
-            world.insert(
-                entity,
-                LightSource::from_legacy_world_units(
-                    light_radius_or_default(ld.radius),
-                    ld.color,
-                    ld.flags,
-                    crate::systems::canonical_light_falloff_exponent(game, ld.falloff_exponent),
-                    geometry.kind,
-                    geometry.direction,
-                    geometry.outer_angle,
-                    crate::systems::canonical_light_shadow_flags(game, ld.flags, ld.starfield_light_type),
-                ),
-            );
-            let animation_flags = crate::systems::canonical_light_animation_flags(game, ld.flags);
-            attach_light_flicker_if_needed(world, entity, ld, ref_pos, animation_flags);
+            attach_esm_light(world, entity, ld, game, ref_pos, ref_rot);
             // #3016 — `stamp_quest_reference` (outer-REFR identity, #2026)
             // stays gated to the first synthetic child, but the script
             // attach below is NOT: `child_form_id`'s own base-record
@@ -504,28 +518,12 @@ pub(super) fn spawn_synth_child(
             let entity = world.spawn();
             world.insert(entity, Transform::from_translation(ref_pos));
             world.insert(entity, GlobalTransform::new(ref_pos, Quat::IDENTITY, 1.0));
-            // #2439 / NIFAL-D2-01 — geometry half of the translation
-            // boundary. Uses the REFR's OWN authored `ref_rot`, not the
-            // `Quat::IDENTITY` this fxlight sprite entity's own transform
-            // carries above — the light's cone direction follows the
-            // authored placement rotation regardless of how the visual
-            // effect sprite is oriented.
-            let geometry = crate::systems::translate_light(ld, game, ref_rot);
-            world.insert(
-                entity,
-                LightSource::from_legacy_world_units(
-                    light_radius_or_default(ld.radius),
-                    ld.color,
-                    ld.flags,
-                    crate::systems::canonical_light_falloff_exponent(game, ld.falloff_exponent),
-                    geometry.kind,
-                    geometry.direction,
-                    geometry.outer_angle,
-                    crate::systems::canonical_light_shadow_flags(game, ld.flags, ld.starfield_light_type),
-                ),
-            );
-            let animation_flags = crate::systems::canonical_light_animation_flags(game, ld.flags);
-            attach_light_flicker_if_needed(world, entity, ld, ref_pos, animation_flags);
+            // #2439 / NIFAL-D2-01 — `attach_esm_light` uses the REFR's OWN
+            // authored `ref_rot`, not the `Quat::IDENTITY` this fxlight
+            // sprite entity's own transform carries above — the light's
+            // cone direction follows the authored placement rotation
+            // regardless of how the visual effect sprite is oriented.
+            attach_esm_light(world, entity, ld, game, ref_pos, ref_rot);
             // #3016 — same split as the LIGH-only branch above: outer-REFR
             // identity stays gated to the first synthetic child, the
             // per-child base-record script attach does not.

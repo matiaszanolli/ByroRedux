@@ -26,7 +26,7 @@
 //!   `HitEvent` at [`crate::combat::attack_damage`]'s resolved value —
 //!   the same fields the player's own unarmed swing leaves `false`.
 
-use super::locomotion::{step_toward, LOCOMOTION_WALK_SPEED};
+use super::locomotion::step_toward;
 use byroredux_core::ecs::components::{Dead, Transform};
 use byroredux_core::ecs::{EntityId, World};
 use byroredux_core::math::{Quat, Vec3};
@@ -187,12 +187,12 @@ fn npc_combat_ai_system_inner(world: &World, dt: f32, scratch: &mut CombatAiScra
                 );
                 // M42.11 — chase at the actor's authored stride when a
                 // walk clip derived one; engine default otherwise.
-                let speed = world
-                    .query::<crate::components::WalkSpeed>()
-                    .as_ref()
-                    .and_then(|q| q.get(entity))
-                    .map(|s| s.0)
-                    .unwrap_or(LOCOMOTION_WALK_SPEED);
+                let speed = crate::components::WalkSpeed::or_default(
+                    world
+                        .query::<crate::components::WalkSpeed>()
+                        .as_ref()
+                        .and_then(|q| q.get(entity)),
+                );
                 steps.push((
                     decisions.len(),
                     actor_translation,

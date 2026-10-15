@@ -74,7 +74,9 @@ use std::collections::VecDeque;
 /// Fallback leash tolerance (world units) around a guard's anchor, used
 /// when `GuardBehavior.radius` is `None` (no PLDT / radius 0). Same scale
 /// as `travel.rs::TRAVEL_DEFAULT_RADIUS`/`wander.rs::WANDER_DEFAULT_RADIUS`.
-const GUARD_DEFAULT_RADIUS: f32 = 512.0;
+/// The value itself is the one shared fact
+/// `locomotion::AI_PACKAGE_DEFAULT_RADIUS` (#5587).
+const GUARD_DEFAULT_RADIUS: f32 = super::locomotion::AI_PACKAGE_DEFAULT_RADIUS;
 
 /// Resolve this actor's guard anchor once, on first sight: delegates the
 /// `NearReference`-type PLDT FormID resolve to
@@ -221,11 +223,9 @@ fn guard_system_inner(world: &World, dt: f32, scratch: &mut GuardScratch) {
                 None => VecDeque::new(),
             };
 
-            let speed = walk_speed_q
-                .as_ref()
-                .and_then(|q| q.get(entity))
-                .map(|s| s.0)
-                .unwrap_or(super::locomotion::LOCOMOTION_WALK_SPEED);
+            let speed = crate::components::WalkSpeed::or_default(
+                walk_speed_q.as_ref().and_then(|q| q.get(entity)),
+            );
             scratch.pending.push(GuardPending {
                 entity,
                 speed,

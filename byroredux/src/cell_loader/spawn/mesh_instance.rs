@@ -1899,25 +1899,28 @@ mod tests {
             "spawn_placed_instances must not read the raw LIGH record field (#4514)"
         );
 
-        // Sites 1 + 2 — the LIGH-only and fxlight branches in synth_child,
-        // plus the lane producer feeding `spawn_placed_instances`: three
-        // canonicalizer calls for two direct sites and one lane.
+        // Sites 1 + 2 — the LIGH-only and fxlight branches in synth_child
+        // build their `LightSource` through the one `attach_esm_light`
+        // helper (#5740), plus the lane producer feeding
+        // `spawn_placed_instances`: two canonicalizer calls for one shared
+        // build site and one lane.
         assert_eq!(
             synth
                 .matches("canonical_light_falloff_exponent(game, ld.falloff_exponent)")
                 .count(),
-            3,
-            "both synth_child from_legacy_world_units sites and the \
+            2,
+            "synth_child's shared attach_esm_light build and the \
              spawn_placed_instances lane must route through the \
-             canonicalizer (#4514)"
+             canonicalizer (#4514, #5740)"
         );
         assert_eq!(
             synth
                 .matches("LightSource::from_legacy_world_units(")
                 .count(),
-            2,
-            "the synth_child site census drifted — re-classify any new \
-             ESM-light spawn site before extending this guard (#4514)"
+            1,
+            "the LIGH-only and fxlight branches must share one build site — \
+             attach_esm_light; re-classify any new ESM-light spawn site \
+             before extending this guard (#4514, #5740)"
         );
         assert_eq!(
             spawn

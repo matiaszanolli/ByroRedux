@@ -65,7 +65,7 @@
 //!   that would be Follow's job (a different, unimplemented procedure).
 //! - **Ground-snapped, not physically simulated**, same as Wander.
 
-use super::locomotion::{step_along_waypoints, LOCOMOTION_ARRIVAL_EPSILON, LOCOMOTION_WALK_SPEED};
+use super::locomotion::{step_along_waypoints, LOCOMOTION_ARRIVAL_EPSILON};
 use super::navmesh_path::resolve_cached_waypoints;
 use super::wander::pick_wander_target;
 use crate::components::{NavPath, NavmeshTile};
@@ -82,7 +82,9 @@ use std::collections::VecDeque;
 /// the target didn't resolve. Same scale as `wander.rs::WANDER_DEFAULT_RADIUS`
 /// — both are "how far does this ambient behavior reach without an
 /// authored radius" defaults for the same class of content.
-const TRAVEL_DEFAULT_RADIUS: f32 = 512.0;
+/// The value itself is the one shared fact
+/// `locomotion::AI_PACKAGE_DEFAULT_RADIUS` (#5587).
+const TRAVEL_DEFAULT_RADIUS: f32 = super::locomotion::AI_PACKAGE_DEFAULT_RADIUS;
 
 /// Resolve a `NearReference`-type PLDT FormID to the live target entity's
 /// current world position — `None` if there's no FormID, it doesn't
@@ -262,11 +264,9 @@ fn travel_system_inner(world: &World, dt: f32, scratch: &mut TravelScratch) {
                 residency_generation,
             );
 
-            let speed = walk_speed_q
-                .as_ref()
-                .and_then(|q| q.get(entity))
-                .map(|s| s.0)
-                .unwrap_or(LOCOMOTION_WALK_SPEED);
+            let speed = crate::components::WalkSpeed::or_default(
+                walk_speed_q.as_ref().and_then(|q| q.get(entity)),
+            );
             scratch.pending.push(TravelPending {
                 entity,
                 current,

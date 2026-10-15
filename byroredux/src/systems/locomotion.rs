@@ -33,6 +33,15 @@ use std::collections::VecDeque;
 /// tuning, not a value derived from game content.
 pub(crate) const LOCOMOTION_WALK_SPEED: f32 = 100.0;
 
+/// #5587 — the fallback radius (world units) every M42 AI procedure uses
+/// when its `PACK` data authors no radius (a missing PLDT or radius 0):
+/// "how far does this ambient behavior reach without an authored radius"
+/// for FNV-interior/yard-scale content. One fact — it was copied as five
+/// per-procedure `*_DEFAULT_RADIUS` constants that cross-referenced each
+/// other in prose to stay in step; wander/patrol/travel/guard/escort all
+/// point here now, and a retune moves them together.
+pub(crate) const AI_PACKAGE_DEFAULT_RADIUS: f32 = 512.0;
+
 /// Distance (world units) within which an actor is considered to have
 /// arrived at its target.
 pub(crate) const LOCOMOTION_ARRIVAL_EPSILON: f32 = 8.0;
@@ -397,6 +406,46 @@ pub(crate) fn step_along_waypoints_detailed(
 #[cfg(test)]
 mod stuck_tests {
     use super::advance_stuck_repick;
+
+    /// #5587 — the v0 fallback radius and the walk-speed fallback are one
+    /// fact each, not per-procedure copies: the `512.0` literal lives only
+    /// in `AI_PACKAGE_DEFAULT_RADIUS` (the five procedure consts alias it),
+    /// `64.0` repath thresholds exist only in `follow.rs`, and every
+    /// walk-speed read goes through `WalkSpeed::or_default` instead of a
+    /// hand-rolled `.map(|s| s.0).unwrap_or(LOCOMOTION_WALK_SPEED)` chain.
+    #[test]
+    fn ai_package_defaults_have_one_home_each() {
+        let procedures = [
+            "wander", "patrol", "travel", "guard", "escort", "follow",
+            "forcegreet", "eat_sleep", "combat_ai",
+        ];
+        for name in procedures {
+            let path = format!("{}/src/systems/{name}.rs", env!("CARGO_MANIFEST_DIR"));
+            let src = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("cannot read {path}: {e}"));
+            assert!(
+                !src.contains(": f32 = 512.0"),
+                "{name}.rs re-declares the 512.0 default radius — alias \
+                 locomotion::AI_PACKAGE_DEFAULT_RADIUS instead (#5587)"
+            );
+            assert!(
+                !src.contains(".map(|s| s.0)\n")
+                    || !src.contains("LOCOMOTION_WALK_SPEED"),
+                "{name}.rs hand-rolls the walk-speed fallback chain — use \
+                 WalkSpeed::or_default (#5587)"
+            );
+            // A 64.0 that is not a repath threshold (eat_sleep's
+            // ARRIVE_RADIUS) is a different fact and stays.
+            assert!(
+                !src.contains("REPATH_THRESHOLD: f32 = 64.0") || name == "follow",
+                "{name}.rs re-declares the 64.0 repath threshold — import \
+                 follow.rs::FOLLOW_REPATH_THRESHOLD (#5587)"
+            );
+        }
+        // The shared homes themselves exist and keep their values.
+        assert_eq!(super::AI_PACKAGE_DEFAULT_RADIUS, 512.0);
+        assert_eq!(super::LOCOMOTION_WALK_SPEED, 100.0);
+    }
 
     #[test]
     fn blocked_ticks_accumulate_and_fire_repick_once_at_the_threshold() {

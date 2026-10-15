@@ -37,11 +37,11 @@
 //!   `travel_system`'s frozen-goal `crate::components::NavPath` caching
 //!   exactly (`0.0` repath threshold); the collect phase reuses
 //!   `follow_system`'s live-goal caching exactly
-//!   ([`ESCORT_COLLECT_REPATH_THRESHOLD`], a separate constant at the
-//!   same scale as `follow.rs::FOLLOW_REPATH_THRESHOLD` rather than
-//!   importing it — same "own tuning constant per procedure,
-//!   cross-referenced not shared" convention `ESCORT_COLLECT_DISTANCE`
-//!   already follows for `FOLLOW_DEFAULT_DISTANCE`). One `NavPath` per
+//!   ([`ESCORT_COLLECT_REPATH_THRESHOLD`] — #5587 made it the imported
+//!   `follow.rs::FOLLOW_REPATH_THRESHOLD` rather than a same-valued
+//!   second declaration; `ESCORT_COLLECT_DISTANCE` stays its own
+//!   constant because it genuinely differs from
+//!   `FOLLOW_DEFAULT_DISTANCE`). One `NavPath` per
 //!   actor serves both phases in sequence — the collect→lead transition
 //!   naturally invalidates it (the destination is a different goal than
 //!   the collect target's last position), no special-casing needed.
@@ -91,12 +91,14 @@ const ESCORT_COLLECT_DISTANCE: f32 = 128.0;
 /// used when `EscortBehavior.destination_radius` is `None` (no PLDT /
 /// radius 0) *and* `destination_form_id` doesn't resolve. Same scale as
 /// `travel.rs::TRAVEL_DEFAULT_RADIUS`.
-const ESCORT_DEFAULT_RADIUS: f32 = 512.0;
+/// The value itself is the one shared fact
+/// `locomotion::AI_PACKAGE_DEFAULT_RADIUS` (#5587).
+const ESCORT_DEFAULT_RADIUS: f32 = super::locomotion::AI_PACKAGE_DEFAULT_RADIUS;
 
-/// Collect-phase repath threshold (EX-16 item 3 Phase 4) — same value
-/// and reasoning as `follow.rs::FOLLOW_REPATH_THRESHOLD`, kept as its
-/// own constant rather than imported (see this module's doc).
-const ESCORT_COLLECT_REPATH_THRESHOLD: f32 = 64.0;
+/// Collect-phase repath threshold (EX-16 item 3 Phase 4) — #5587: the
+/// same fact as `follow.rs::FOLLOW_REPATH_THRESHOLD`, imported rather
+/// than re-declared, so a retune of one moves both.
+use super::follow::FOLLOW_REPATH_THRESHOLD as ESCORT_COLLECT_REPATH_THRESHOLD;
 
 /// Resolve this actor's Escort target once, on first sight. Mirrors
 /// `follow.rs::resolve_follow_target`.
@@ -250,11 +252,9 @@ fn escort_system_inner(world: &World, dt: f32, scratch: &mut EscortScratch) {
             let Some(transform) = transform_q.get(entity) else {
                 continue;
             };
-            let speed = walk_speed_q
-                .as_ref()
-                .and_then(|q| q.get(entity))
-                .map(|s| s.0)
-                .unwrap_or(super::locomotion::LOCOMOTION_WALK_SPEED);
+            let speed = crate::components::WalkSpeed::or_default(
+                walk_speed_q.as_ref().and_then(|q| q.get(entity)),
+            );
             let current = transform.translation;
             let existing_state = state_q.as_ref().and_then(|q| q.get(entity)).copied();
 

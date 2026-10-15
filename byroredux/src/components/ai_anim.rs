@@ -117,6 +117,17 @@ impl Component for WalkSpeed {
     type Storage = SparseSetStorage<Self>;
 }
 
+impl WalkSpeed {
+    /// #5587 — the walk-speed-or-engine-default read every locomotion
+    /// procedure needs. An actor without a walk clip carries no
+    /// `WalkSpeed` component and keeps the engine default; this is the
+    /// one spelling of that fallback (it was hand-rolled at nine call
+    /// sites, each a chance to pick a different default).
+    pub(crate) fn or_default(walk_speed: Option<&Self>) -> f32 {
+        walk_speed.map_or(crate::systems::locomotion::LOCOMOTION_WALK_SPEED, |s| s.0)
+    }
+}
+
 /// #4413 — one shape of an authored ground-cover model's template: the
 /// `GRAS` record's model, spawned once per worldspace through the normal
 /// mesh path so its material resolves exactly as a placed object's would.
