@@ -266,6 +266,35 @@ impl QuestStageState {
         changed
     }
 
+    /// #5812 — the stop-with-authored-shut-down-stage tail the
+    /// `StopQuest` and `StopScene` effect arms shared verbatim: only a
+    /// running quest advances to its shut-down stage (emitting the
+    /// `QuestStageAdvanced` event), and the stop itself runs either way.
+    /// Returns whether the stop changed anything (the caller's
+    /// scene-bindings dirty flag) plus the stage event.
+    pub fn stop_with_shutdown(
+        &mut self,
+        quest: QuestFormId,
+        shut_down_stage: Option<u16>,
+    ) -> (bool, Option<QuestStageAdvanced>) {
+        let event = self
+            .is_running(quest)
+            .then(|| {
+                shut_down_stage.map(|stage| {
+                    let previous_stage = self.set_stage(quest, stage);
+                    QuestStageAdvanced {
+                        quest,
+                        previous_stage,
+                        new_stage: stage,
+                        stage_set: true,
+                    }
+                })
+            })
+            .flatten();
+        let stopped = self.stop(quest);
+        (stopped, event)
+    }
+
     /// Papyrus `Quest.CompleteQuest()`.
     pub fn complete(&mut self, quest: QuestFormId) -> bool {
         self.revision.bump();
@@ -1413,6 +1442,36 @@ pub fn quest_terminal_stage_system(world: &World, _dt: f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #5812 — the one stop-with-shut-down-stage lifecycle the StopQuest
+    /// and StopScene arms share: a running quest advances to its
+    /// shut-down stage (event with `stage_set`), a non-running one emits
+    /// nothing, and the stop reports whether it changed anything.
+    #[test]
+    fn stop_with_shutdown_advances_only_a_running_quest() {
+        let mut state = QuestStageState::default();
+        let quest = QuestFormId(0x2000);
+        state.start_quest(quest, Some(10)).expect("start");
+
+        let (stopped, event) = state.stop_with_shutdown(quest, Some(255));
+        assert!(stopped, "a running quest's stop changes state");
+        let event = event.expect("running quest emits its shut-down stage");
+        assert_eq!(event.previous_stage, 10);
+        assert_eq!(event.new_stage, 255);
+        assert!(event.stage_set);
+        assert!(!state.is_running(quest));
+
+        // Stopping again: no event (not running), and the second stop
+        // reports no change.
+        let (stopped_again, event_again) = state.stop_with_shutdown(quest, Some(255));
+        assert!(!stopped_again);
+        assert!(event_again.is_none());
+        // No shut-down stage authored: the stop still runs, no event.
+        state.start_quest(quest, None).expect("restart");
+        let (stopped_bare, event_bare) = state.stop_with_shutdown(quest, None);
+        assert!(stopped_bare);
+        assert!(event_bare.is_none());
+    }
 
     #[test]
     fn fresh_state_returns_zero_for_unknown_quest() {

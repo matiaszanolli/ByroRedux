@@ -64,21 +64,10 @@ pub(super) fn apply_scene_effect(
                 }
                 event
             } else {
-                let event = stages
-                    .is_running(quest)
-                    .then(|| {
-                        shut_down_stage.map(|stage| {
-                            let previous_stage = stages.set_stage(quest, stage);
-                            QuestStageAdvanced {
-                                quest,
-                                previous_stage,
-                                new_stage: stage,
-                                stage_set: true,
-                            }
-                        })
-                    })
-                    .flatten();
-                if stages.stop(quest) {
+                // #5812 — the shared stop lifecycle (running-only
+                // shut-down stage advance + the stop itself).
+                let (stopped, event) = stages.stop_with_shutdown(quest, shut_down_stage);
+                if stopped {
                     deferred.scene_actor_bindings_dirty = true;
                 }
                 event
