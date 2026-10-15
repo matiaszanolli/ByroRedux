@@ -731,12 +731,13 @@ pipeline. Defined in
 | 1 | 13 | `STORAGE_BUFFER` | Material table (`GpuMaterial[]`) | triangle, water (`materials[inst.materialId]` in the secondary-ray hit path) |
 | 1 | 14 | `UNIFORM_BUFFER` | DALC cube (6-axis ambient) | triangle |
 | 1 | 15 | `COMBINED_IMAGE_SAMPLER` | Depth history texture (previous frame, D32) | triangle (soft-particle feather) |
-| 1 | 16 | `STORAGE_BUFFER` | ReSTIR reservoir buffer (current frame) | triangle (Session-49 ReSTIR) |
+| 1 | 16 | `STORAGE_BUFFER` (`writeonly`) | ReSTIR reservoir buffer (current frame). Never loaded through: which fragment stores is decided by binding 22 (#5765) | triangle (Session-49 ReSTIR) |
 | 1 | 17 | `STORAGE_BUFFER` | ReSTIR reservoir buffer (previous frame) | triangle (Session-49 ReSTIR) |
 | 1 | 18 | `STORAGE_BUFFER` | Previous-frame rigid instance model matrices (rigid motion vectors). Entries align **index-for-index** with binding 4's current-frame `GpuInstance[]` after sorting/batching, so `gl_InstanceIndex` addresses both without depending on last frame's draw order | triangle (vertex stage) |
 | 1 | 19 | `STORAGE_BUFFER` (`coherent`) | `SelectedRayProbeBuffer` — the debug ray-probe readback for the currently-selected pixel: control (generation, state, pixel xy), ids (light index, mask, hit instance, flags), origin+tMin, direction+tMax, hit distance + averaged visibility | triangle (debug ray-probe path) |
 | 1 | 20 | `COMBINED_IMAGE_SAMPLER` | SKYAL baked sky cubemap (`samplerCube skyCube`, GGX-prefiltered mip chain), one per frame in flight, written by `write_sky_cube`. `PARTIALLY_BOUND` and never written when `SkyCubePipeline` fails to initialise, so every read goes through `exteriorSkyRadianceOr`, gated on `exteriorSkyTint.w` | triangle (incl. `raytrace.glsl` / `lighting.glsl`), water |
 | 1 | 21 | `STORAGE_BUFFER` | `SkyDiffuseBuffer` — the baked sky's 9 spherical-harmonic E/π coefficients (`sky_irradiance.comp`). Same optional ownership and `exteriorSkyTint.w` gate as binding 20, read through `exteriorSkyDiffuseOr` | triangle, groundcover_blade |
+| 1 | 22 | `STORAGE_BUFFER` | `ReservoirClaimBuffer` — one `uint` per pixel, the tail of binding 16's buffer (`ReservoirBuffers::claim_offset`). `begin_frame` fills it with `0xFFFFFFFF`; a stable opaque fragment `atomicMin`s its camera-distance bits in and stores its reservoir only if it won, so the nearest fragment owns the slot whatever the draw order (#5765) | triangle |
 | 2 | 0 | `STORAGE_IMAGE` (`R32_UINT`) | Water caustic accumulator | water.frag (atomic add) |
 | 2 | 1 | `STORAGE_BUFFER` (std430, growable) | Unsized `GpuWaterParams[]` table, 368 B per active water draw | water.vert, water.frag |
 

@@ -1239,13 +1239,7 @@ impl VulkanContext {
             render_extent.height,
         )?;
         for i in 0..n_frames {
-            scene_buffers.write_reservoir_buffers(
-                &device,
-                i,
-                reservoir_buffers.curr_buffer(i),
-                reservoir_buffers.prev_buffer(i),
-                reservoir_buffers.buffer_size(),
-            );
+            scene_buffers.write_reservoir_buffers(&device, i, &reservoir_buffers);
         }
 
         // Composite samples SVGF's accumulated indirect (GENERAL layout)

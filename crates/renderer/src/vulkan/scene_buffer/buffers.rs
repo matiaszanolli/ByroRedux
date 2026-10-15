@@ -431,6 +431,14 @@ pub(crate) fn build_scene_descriptor_bindings() -> Vec<vk::DescriptorSetLayoutBi
         vk::DescriptorType::STORAGE_BUFFER,
         vk::ShaderStageFlags::FRAGMENT,
     ));
+    // Binding 22: ReSTIR reservoir ownership claim words (fragment —
+    // `atomicMin`, #5765). The tail of binding 16's buffer, owned by
+    // `ReservoirBuffers` and written in by `write_reservoir_buffers`.
+    bindings.push(layout_binding(
+        22,
+        vk::DescriptorType::STORAGE_BUFFER,
+        vk::ShaderStageFlags::FRAGMENT,
+    ));
     bindings
 }
 

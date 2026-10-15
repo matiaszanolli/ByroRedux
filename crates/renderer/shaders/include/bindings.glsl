@@ -613,11 +613,22 @@ struct Reservoir {
 // writeonly (#5062): triangle.frag only ever stores this frame's reservoirs;
 // reads come through ReservoirPrevBuffer next frame. Keeps sync validation
 // from classifying binding 16 as a fragment SHADER_STORAGE_READ interface.
+// Never load through it (#5765): which fragment may store is decided by the
+// claim word at binding 22, not by reading the slot back.
 layout(std430, set = 1, binding = 16) writeonly buffer ReservoirCurrBuffer {
     Reservoir reservoirsCurr[];
 };
 layout(std430, set = 1, binding = 17) readonly buffer ReservoirPrevBuffer {
     Reservoir reservoirsPrev[];
+};
+// #5765 — per-pixel ownership claim for this frame's reservoir slot: the
+// float bits of the nearest claiming fragment's camera distance (positive
+// floats order as their bits). `begin_frame` fills it with 0xFFFFFFFF; a
+// fragment stores its reservoir only when atomicMin reports it is at least as
+// near as every earlier claimant. Lives in the tail of the same per-frame
+// buffer as binding 16 (`ReservoirBuffers::claim_offset`).
+layout(std430, set = 1, binding = 22) buffer ReservoirClaimBuffer {
+    uint reservoirClaim[];
 };
 
 // One bounded selected-light visibility-ray record per frame-in-flight.

@@ -165,36 +165,42 @@ impl super::buffers::SceneBuffers {
     /// Write the ReSTIR-DI reservoir SSBOs into the scene descriptor set for
     /// a given frame: binding 16 = this frame's write target (`curr`),
     /// binding 17 = the previous frame's slot read as temporal history
-    /// (`prev`). Ping-pong is owned by the caller (`ReservoirBuffers`), which
-    /// passes the correct curr/prev buffers per frame. Called at init and
-    /// re-called after a swapchain resize recreates the buffers. Mirrors
-    /// `write_cluster_buffers`. See `vulkan::restir`.
+    /// (`prev`). Ping-pong is owned by `ReservoirBuffers`, which
+    /// resolves the curr/prev buffers per frame. Binding 22 is the per-pixel
+    /// ownership claim (#5765), the claim words in the tail of `curr`.
+    /// Called at init and re-called after a swapchain resize recreates the
+    /// buffers. Mirrors `write_cluster_buffers`. See `vulkan::restir`.
     pub fn write_reservoir_buffers(
         &self,
         device: &ash::Device,
         frame_index: usize,
-        curr_buffer: vk::Buffer,
-        prev_buffer: vk::Buffer,
-        size: vk::DeviceSize,
+        reservoirs: &crate::vulkan::restir::ReservoirBuffers,
     ) {
+        let curr_buffer = reservoirs.curr_buffer(frame_index);
         let curr_info = [vk::DescriptorBufferInfo {
             buffer: curr_buffer,
             offset: 0,
-            range: size,
+            range: reservoirs.buffer_size(),
         }];
         let prev_info = [vk::DescriptorBufferInfo {
-            buffer: prev_buffer,
+            buffer: reservoirs.prev_buffer(frame_index),
             offset: 0,
-            range: size,
+            range: reservoirs.buffer_size(),
+        }];
+        let claim_info = [vk::DescriptorBufferInfo {
+            buffer: curr_buffer,
+            offset: reservoirs.claim_offset(),
+            range: reservoirs.claim_size(),
         }];
         let set = self.descriptor_sets[frame_index];
         let writes = [
             write_storage_buffer(set, 16, &curr_info),
             write_storage_buffer(set, 17, &prev_info),
+            write_storage_buffer(set, 22, &claim_info),
         ];
         unsafe {
-            // SAFETY: `device` is live; `set` is device-allocated and live; the two
-            // `writes` borrow `curr_info`/`prev_info`, whose reservoir buffers are
+            // SAFETY: `device` is live; `set` is device-allocated and live; the
+            // `writes` borrow `curr_info`/`prev_info`/`claim_info`, whose reservoir buffers are
             // caller-owned live handles, and stay valid for the whole call. No copies.
             device.update_descriptor_sets(&writes, &[]);
         }

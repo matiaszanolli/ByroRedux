@@ -4034,17 +4034,20 @@ void main() {
             //    depth test, so a cutout fragment hidden behind the visible
             //    surface still reached this write — measured on the FO4
             //    Third Rail: 26% of lit pixels lost their history every frame,
-            //    whole props at a time. `begin_frame` zero-fills this buffer,
-            //    so a non-zero history length marks a slot already claimed this
-            //    frame, and its packed distance orders the claim: the nearer
-            //    fragment keeps it whatever the draw order. Distances compare
-            //    after the same half-float packing the slot stores.
+            //    whole props at a time. The claim word orders it: the nearer
+            //    fragment keeps the slot whatever the draw order.
+            //
+            // #5765 — the claim is an atomicMin on its own binding. Reading
+            // the slot back through binding 16 is undefined (it is writeonly,
+            // SPIR-V NonReadable) and a load-then-store races overlapping
+            // fragments. A farther fragment whose store still lands after a
+            // nearer winner's leaves a slot whose surface id and distance the
+            // next frame's temporal/spatial gates reject: one history reset,
+            // never another surface's history.
             if (stableTemporalSurface) {
-                vec2 claimed = unpackHalf2x16(
-                    floatBitsToUint(reservoirsCurr[pixelIdx].histLenAndDepth));
-                float packedDist = unpackHalf2x16(
-                    floatBitsToUint(rc.histLenAndDepth)).y;
-                if (claimed.x <= 0.0 || packedDist <= claimed.y) {
+                uint claimKey = floatBitsToUint(max(worldDist, 0.0));
+                uint priorClaim = atomicMin(reservoirClaim[pixelIdx], claimKey);
+                if (claimKey <= priorClaim) {
                     reservoirsCurr[pixelIdx] = rc;
                 }
             }

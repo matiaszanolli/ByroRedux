@@ -708,9 +708,7 @@ impl VulkanContext {
                 self.scene_buffers.write_reservoir_buffers(
                     &self.device,
                     i,
-                    self.reservoir_buffers.curr_buffer(i),
-                    self.reservoir_buffers.prev_buffer(i),
-                    self.reservoir_buffers.buffer_size(),
+                    &self.reservoir_buffers,
                 );
             }
         }

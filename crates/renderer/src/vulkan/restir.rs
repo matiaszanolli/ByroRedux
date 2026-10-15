@@ -15,6 +15,14 @@
 //! scene descriptor set itself stays content-sized and is not recreated on
 //! resize — only the reservoir descriptor writes are refreshed.
 //!
+//! ## Ownership claim (#5765)
+//!
+//! Each slot's buffer also carries one `u32` claim word per pixel, after the
+//! reservoirs at [`ReservoirBuffers::claim_offset`] (set 1, binding 22). The
+//! fragment shader `atomicMin`s its camera distance into it and stores its
+//! reservoir only if it won, so binding 16 stays `writeonly` (#5062) and the
+//! shader never loads through it.
+//!
 //! ## Ping-pong
 //!
 //! With `MAX_FRAMES_IN_FLIGHT == 2`, frame N writes slot N and reads slot
@@ -34,10 +42,22 @@ use ash::vk;
 /// [`tests::reservoir_stride_matches_shader`].
 pub const RESERVOIR_STRIDE: vk::DeviceSize = 32;
 
+/// Bytes per pixel claim word (`uint reservoirClaim[]`, binding 22).
+const CLAIM_STRIDE: vk::DeviceSize = 4;
+
+/// Start of the claim region inside a slot's buffer is rounded up to this:
+/// the Vulkan spec caps `minStorageBufferOffsetAlignment` at 256, so a
+/// descriptor offset aligned to it is valid on every device.
+const CLAIM_OFFSET_ALIGN: vk::DeviceSize = 256;
+
+/// The claim word a slot starts each frame with: farther than any distance,
+/// so the first claiming fragment always wins its `atomicMin`.
+const UNCLAIMED: u32 = u32::MAX;
+
 /// Screen-sized, per-frame-in-flight reservoir storage buffers.
 pub struct ReservoirBuffers {
-    /// One GPU-only STORAGE buffer per frame-in-flight, sized
-    /// `width * height * RESERVOIR_STRIDE`.
+    /// One GPU-only STORAGE buffer per frame-in-flight: the reservoirs,
+    /// then the claim words at [`Self::claim_offset`].
     buffers: Vec<GpuBuffer>,
     width: u32,
     height: u32,
@@ -57,7 +77,7 @@ impl ReservoirBuffers {
             buffers.push(GpuBuffer::create_device_local_uninit(
                 device,
                 allocator,
-                Self::byte_size(width, height),
+                Self::total_size(width, height),
                 // TRANSFER_DST for the zero-fill below (#2152 / CHAIN-D2-05).
                 vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
             )?);
@@ -79,9 +99,9 @@ impl ReservoirBuffers {
             "ReSTIR reservoir buffers created: {}x{}, {:.1} MB/slot × {} slots = {:.1} MB total",
             width,
             height,
-            Self::byte_size(width, height) as f64 / (1024.0 * 1024.0),
+            Self::total_size(width, height) as f64 / (1024.0 * 1024.0),
             MAX_FRAMES_IN_FLIGHT,
-            (Self::byte_size(width, height) * MAX_FRAMES_IN_FLIGHT as vk::DeviceSize) as f64
+            (Self::total_size(width, height) * MAX_FRAMES_IN_FLIGHT as vk::DeviceSize) as f64
                 / (1024.0 * 1024.0),
         );
         Ok(Self {
@@ -93,6 +113,18 @@ impl ReservoirBuffers {
 
     fn byte_size(width: u32, height: u32) -> vk::DeviceSize {
         (width as vk::DeviceSize) * (height as vk::DeviceSize) * RESERVOIR_STRIDE
+    }
+
+    fn claim_offset_for(width: u32, height: u32) -> vk::DeviceSize {
+        Self::byte_size(width, height).next_multiple_of(CLAIM_OFFSET_ALIGN)
+    }
+
+    fn claim_size_for(width: u32, height: u32) -> vk::DeviceSize {
+        (width as vk::DeviceSize) * (height as vk::DeviceSize) * CLAIM_STRIDE
+    }
+
+    fn total_size(width: u32, height: u32) -> vk::DeviceSize {
+        Self::claim_offset_for(width, height) + Self::claim_size_for(width, height)
     }
 
     /// The reservoir buffer this frame writes (set-1 binding 16).
@@ -111,14 +143,26 @@ impl ReservoirBuffers {
         self.buffers[(frame + MAX_FRAMES_IN_FLIGHT - 1) % MAX_FRAMES_IN_FLIGHT].buffer
     }
 
-    /// Byte size of one reservoir buffer (for the descriptor range).
+    /// Byte size of one slot's reservoir array (bindings 16/17 range).
     pub fn buffer_size(&self) -> vk::DeviceSize {
         Self::byte_size(self.width, self.height)
     }
 
+    /// Byte offset of the claim words inside [`Self::curr_buffer`]
+    /// (binding 22's descriptor offset).
+    pub fn claim_offset(&self) -> vk::DeviceSize {
+        Self::claim_offset_for(self.width, self.height)
+    }
+
+    /// Byte size of the claim words (binding 22's descriptor range).
+    pub fn claim_size(&self) -> vk::DeviceSize {
+        Self::claim_size_for(self.width, self.height)
+    }
+
     /// Start a fresh history image. Pixels with no eligible fragment this
     /// frame must not retain an older light index: the remap describes only
-    /// the immediately preceding frame. Also publish its shader writes.
+    /// the immediately preceding frame. Also publish its shader writes, and
+    /// reset every claim word to [`UNCLAIMED`] (#5765).
     pub fn begin_frame(&self, device: &ash::Device, cmd: vk::CommandBuffer, frame: usize) {
         let buffer_barrier = |buffer| {
             vk::BufferMemoryBarrier::default()
@@ -126,7 +170,7 @@ impl ReservoirBuffers {
                 .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
                 .buffer(buffer)
                 .offset(0)
-                .size(self.buffer_size())
+                .size(vk::WHOLE_SIZE)
         };
         let before = [
             buffer_barrier(self.curr_buffer(frame))
@@ -156,7 +200,14 @@ impl ReservoirBuffers {
                 &before,
                 &[],
             );
-            device.cmd_fill_buffer(cmd, self.curr_buffer(frame), 0, vk::WHOLE_SIZE, 0);
+            device.cmd_fill_buffer(cmd, self.curr_buffer(frame), 0, self.buffer_size(), 0);
+            device.cmd_fill_buffer(
+                cmd,
+                self.curr_buffer(frame),
+                self.claim_offset(),
+                self.claim_size(),
+                UNCLAIMED,
+            );
             device.cmd_pipeline_barrier(
                 cmd,
                 vk::PipelineStageFlags::TRANSFER,
@@ -197,7 +248,7 @@ impl ReservoirBuffers {
             self.buffers.push(GpuBuffer::create_device_local_uninit(
                 device,
                 allocator,
-                Self::byte_size(width, height),
+                Self::total_size(width, height),
                 vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
             )?);
         }
@@ -210,9 +261,9 @@ impl ReservoirBuffers {
             "ReSTIR reservoir buffers recreated: {}x{}, {:.1} MB/slot × {} slots = {:.1} MB total",
             width,
             height,
-            Self::byte_size(width, height) as f64 / (1024.0 * 1024.0),
+            Self::total_size(width, height) as f64 / (1024.0 * 1024.0),
             MAX_FRAMES_IN_FLIGHT,
-            (Self::byte_size(width, height) * MAX_FRAMES_IN_FLIGHT as vk::DeviceSize) as f64
+            (Self::total_size(width, height) * MAX_FRAMES_IN_FLIGHT as vk::DeviceSize) as f64
                 / (1024.0 * 1024.0),
         );
         Ok(())
