@@ -2221,33 +2221,15 @@ mod interior_gate_tests {
         const INTERIOR_FOG_NEAR: f32 = 64.0;
         const INTERIOR_FOG_FAR: f32 = 4000.0;
 
-        world.insert_resource(CellLightingRes {
-            ambient: [0.1, 0.1, 0.1],
-            directional_color: [0.3, 0.3, 0.3],
-            directional_dir: [0.0, 1.0, 0.0],
+        world.insert_resource(CellLightingRes::bare(
+            [0.1, 0.1, 0.1],
+            [0.3, 0.3, 0.3],
+            [0.0, 1.0, 0.0],
             is_interior,
-            fog_color: INTERIOR_FOG_COLOR,
-            fog_near: INTERIOR_FOG_NEAR,
-            fog_far: INTERIOR_FOG_FAR,
-            fog_medium: crate::fog::FogMedium::from_legacy_ramp(
-                INTERIOR_FOG_NEAR,
-                INTERIOR_FOG_FAR,
-                None,
-            ),
-            // Test fixture — extended XCLL fields not exercised here.
-            directional_fade: None,
-            fog_clip: None,
-            fog_power: None,
-            fog_far_color: None,
-            fog_max: None,
-            light_fade_begin: None,
-            light_fade_end: None,
-            directional_ambient: None,
-            specular_color: None,
-            specular_alpha: None,
-            fresnel_power: None,
-            inheritance_flags: None,
-        });
+            INTERIOR_FOG_COLOR,
+            INTERIOR_FOG_NEAR,
+            INTERIOR_FOG_FAR,
+        ));
 
         // Mid-day so the TOD slot is unambiguous; freeze the clock so dt
         // advances are no-ops.
@@ -2526,26 +2508,18 @@ mod no_wthr_fallback_tests {
         // into the exterior render. Pure black so an assertion on
         // "ambient != black" reliably catches the bug.
         world.insert_resource(CellLightingRes {
-            ambient: [0.0, 0.0, 0.0],
-            directional_color: [0.0, 0.0, 0.0],
-            directional_dir: [0.0, 1.0, 0.0],
-            is_interior,
-            fog_color: [0.0, 0.0, 0.0],
-            fog_near: 0.0,
-            fog_far: 0.0,
+            // #5814 — bare() base (all-zero stale values), medium
+            // explicitly disabled for this fixture.
             fog_medium: crate::fog::FogMedium::DISABLED,
-            directional_fade: None,
-            fog_clip: None,
-            fog_power: None,
-            fog_far_color: None,
-            fog_max: None,
-            light_fade_begin: None,
-            light_fade_end: None,
-            directional_ambient: None,
-            specular_color: None,
-            specular_alpha: None,
-            fresnel_power: None,
-            inheritance_flags: None,
+            ..CellLightingRes::bare(
+                [0.0, 0.0, 0.0],
+                [0.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                is_interior,
+                [0.0, 0.0, 0.0],
+                0.0,
+                0.0,
+            )
         });
         world.insert_resource(GameTimeRes::frozen_at(12.0));
         // NB: no WeatherDataRes — that's the case under test.
@@ -2954,28 +2928,16 @@ mod hnam_dimmer_tests {
                 done: false,
             });
         }
-        world.insert_resource(CellLightingRes {
-            ambient: [0.1, 0.1, 0.1],
-            directional_color: [0.0, 0.0, 0.0],
-            directional_dir: [0.0, 1.0, 0.0],
-            is_interior: false,
-            fog_color: [0.0, 0.0, 0.0],
-            fog_near: 100.0,
-            fog_far: 60000.0,
-            fog_medium: crate::fog::FogMedium::from_legacy_ramp(100.0, 60000.0, None),
-            directional_fade: None,
-            fog_clip: None,
-            fog_power: None,
-            fog_far_color: None,
-            fog_max: None,
-            light_fade_begin: None,
-            light_fade_end: None,
-            directional_ambient: None,
-            specular_color: None,
-            specular_alpha: None,
-            fresnel_power: None,
-            inheritance_flags: None,
-        });
+        // #5814 — the shared no-tail build.
+        world.insert_resource(CellLightingRes::bare(
+            [0.1, 0.1, 0.1],
+            [0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            false,
+            [0.0, 0.0, 0.0],
+            100.0,
+            60000.0,
+        ));
         world
     }
 
@@ -3164,28 +3126,16 @@ mod sun_arc_crossfade_tests {
                 done: false,
             });
         }
-        world.insert_resource(CellLightingRes {
-            ambient: [0.1; 3],
-            directional_color: [0.0; 3],
-            directional_dir: [0.0, 1.0, 0.0],
-            is_interior: false,
-            fog_color: [0.0; 3],
-            fog_near: 100.0,
-            fog_far: 60000.0,
-            fog_medium: crate::fog::FogMedium::from_legacy_ramp(100.0, 60000.0, None),
-            directional_fade: None,
-            fog_clip: None,
-            fog_power: None,
-            fog_far_color: None,
-            fog_max: None,
-            light_fade_begin: None,
-            light_fade_end: None,
-            directional_ambient: None,
-            specular_color: None,
-            specular_alpha: None,
-            fresnel_power: None,
-            inheritance_flags: None,
-        });
+        // #5814 — the shared no-tail build.
+        world.insert_resource(CellLightingRes::bare(
+            [0.1; 3],
+            [0.0; 3],
+            [0.0, 1.0, 0.0],
+            false,
+            [0.0; 3],
+            100.0,
+            60000.0,
+        ));
         world.insert_resource(crate::env_translate::procedural_fallback_sky(
             [0.0, 1.0, 0.0],
         ));

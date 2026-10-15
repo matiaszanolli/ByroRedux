@@ -1399,28 +1399,16 @@ mod reverb_tests {
     /// — the system only reads `is_interior`, so the rest is
     /// irrelevant.
     fn cell_lit(is_interior: bool) -> CellLightingRes {
-        CellLightingRes {
-            ambient: [0.1, 0.1, 0.1],
-            directional_color: [1.0, 1.0, 1.0],
-            directional_dir: [0.0, 1.0, 0.0],
+        // #5814 — the shared no-tail build.
+        CellLightingRes::bare(
+            [0.1, 0.1, 0.1],
+            [1.0, 1.0, 1.0],
+            [0.0, 1.0, 0.0],
             is_interior,
-            fog_color: [0.5, 0.5, 0.5],
-            fog_near: 100.0,
-            fog_far: 1000.0,
-            fog_medium: crate::fog::FogMedium::from_legacy_ramp(100.0, 1000.0, None),
-            directional_fade: None,
-            fog_clip: None,
-            fog_power: None,
-            fog_far_color: None,
-            fog_max: None,
-            light_fade_begin: None,
-            light_fade_end: None,
-            directional_ambient: None,
-            specular_color: None,
-            specular_alpha: None,
-            fresnel_power: None,
-            inheritance_flags: None,
-        }
+            [0.5, 0.5, 0.5],
+            100.0,
+            1000.0,
+        )
     }
 
     /// Interior cell flips the reverb send to a subtle wet level.

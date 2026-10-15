@@ -143,28 +143,17 @@ pub struct CellLoadResult {
 const ENGINE_DEFAULT_INTERIOR_AMBIENT: [f32; 3] = [0.15, 0.15, 0.15];
 
 fn engine_default_interior_lighting() -> CellLightingRes {
-    CellLightingRes {
-        ambient: ENGINE_DEFAULT_INTERIOR_AMBIENT,
-        directional_color: [0.0, 0.0, 0.0],
-        directional_dir: [0.0, -1.0, 0.0],
-        is_interior: true,
-        fog_color: ENGINE_DEFAULT_INTERIOR_AMBIENT,
-        fog_near: 100_000.0,
-        fog_far: 1_000_000.0,
-        fog_medium: crate::fog::FogMedium::from_legacy_ramp(100_000.0, 1_000_000.0, None),
-        directional_fade: None,
-        fog_clip: None,
-        fog_power: None,
-        fog_far_color: None,
-        fog_max: None,
-        light_fade_begin: None,
-        light_fade_end: None,
-        directional_ambient: None,
-        specular_color: None,
-        specular_alpha: None,
-        fresnel_power: None,
-        inheritance_flags: None,
-    }
+    // #5814 — the shared no-tail build; the ten None fields and the
+    // medium fit live in CellLightingRes::bare.
+    CellLightingRes::bare(
+        ENGINE_DEFAULT_INTERIOR_AMBIENT,
+        [0.0, 0.0, 0.0],
+        [0.0, -1.0, 0.0],
+        true,
+        ENGINE_DEFAULT_INTERIOR_AMBIENT,
+        100_000.0,
+        1_000_000.0,
+    )
 }
 
 /// Apply a freshly-loaded interior cell's resolved
@@ -1346,28 +1335,16 @@ mod tests {
         let mut world = World::new();
         // Simulate walking in from an exterior cell: a stale, non-interior
         // resource with a live directional sun is already installed.
-        world.insert_resource(CellLightingRes {
-            ambient: [0.5, 0.5, 0.6],
-            directional_color: [1.0, 0.95, 0.8],
-            directional_dir: [0.3, -0.8, 0.5],
-            is_interior: false,
-            fog_color: [0.6, 0.6, 0.7],
-            fog_near: 1000.0,
-            fog_far: 50_000.0,
-            fog_medium: crate::fog::FogMedium::from_legacy_ramp(1000.0, 50_000.0, None),
-            directional_fade: None,
-            fog_clip: None,
-            fog_power: None,
-            fog_far_color: None,
-            fog_max: None,
-            light_fade_begin: None,
-            light_fade_end: None,
-            directional_ambient: None,
-            specular_color: None,
-            specular_alpha: None,
-            fresnel_power: None,
-            inheritance_flags: None,
-        });
+        // #5814 — the shared no-tail build.
+        world.insert_resource(CellLightingRes::bare(
+            [0.5, 0.5, 0.6],
+            [1.0, 0.95, 0.8],
+            [0.3, -0.8, 0.5],
+            false,
+            [0.6, 0.6, 0.7],
+            1000.0,
+            50_000.0,
+        ));
 
         apply_interior_cell_lighting(&mut world, None, false, Default::default());
 

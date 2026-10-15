@@ -84,6 +84,46 @@ pub(crate) struct CellLightingRes {
 }
 
 impl CellLightingRes {
+    /// #5814 — the seven-field "no extended XCLL tail" build: every
+    /// optional tail field `None`, the participating medium fitted once
+    /// from the near/far ramp. Five production sites and eleven test
+    /// fixtures spelled all 25 fields by hand (each ending in the same
+    /// ten `None`s); a forgotten field compiles and silently means
+    /// `None`. Sites with authored tail values use this as the
+    /// `..bare(..)` base and override.
+    pub(crate) fn bare(
+        ambient: [f32; 3],
+        directional_color: [f32; 3],
+        directional_dir: [f32; 3],
+        is_interior: bool,
+        fog_color: [f32; 3],
+        fog_near: f32,
+        fog_far: f32,
+    ) -> Self {
+        Self {
+            ambient,
+            directional_color,
+            directional_dir,
+            is_interior,
+            fog_color,
+            fog_near,
+            fog_far,
+            fog_medium: crate::fog::FogMedium::from_legacy_ramp(fog_near, fog_far, None),
+            directional_fade: None,
+            fog_clip: None,
+            fog_power: None,
+            fog_far_color: None,
+            fog_max: None,
+            light_fade_begin: None,
+            light_fade_end: None,
+            directional_ambient: None,
+            specular_color: None,
+            specular_alpha: None,
+            fresnel_power: None,
+            inheritance_flags: None,
+        }
+    }
+
     /// Construct a `CellLightingRes` from a fully-resolved
     /// [`byroredux_plugin::esm::cell::CellLighting`] (the plugin
     /// layer's parser output) plus the renderer-facing direction

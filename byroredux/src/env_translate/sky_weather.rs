@@ -82,15 +82,9 @@ pub(crate) fn translate_exterior_cell_lighting(
 ) -> CellLightingRes {
     use byroredux_plugin::esm::records::weather::{SKY_AMBIENT, SKY_FOG, SKY_SUNLIGHT, TOD_DAY};
     CellLightingRes {
-        ambient: wthr.sky_colors[SKY_AMBIENT][TOD_DAY].to_rgb_f32(),
-        directional_color: wthr.sky_colors[SKY_SUNLIGHT][TOD_DAY].to_rgb_f32(),
-        directional_dir: sun_dir,
-        is_interior: false,
-        fog_color: wthr.sky_colors[SKY_FOG][TOD_DAY].to_rgb_f32(),
-        fog_near: wthr.fog_day_near,
-        fog_far: wthr.fog_day_far,
         // #3956 — day-TOD snapshot, so the day height profile, matching the
-        // `fog_day_*` distance ramp beside it.
+        // `fog_day_*` distance ramp beside it. Overrides `bare`'s
+        // no-height-profile medium fit.
         fog_medium: {
             let medium = crate::fog::FogMedium::from_legacy_ramp(
                 wthr.fog_day_near,
@@ -103,12 +97,15 @@ pub(crate) fn translate_exterior_cell_lighting(
             }
         },
         // WTHR-driven exterior lighting; the extended XCLL tail applies to
-        // interior cells (and not-yet-wired exterior lighting overrides). #861.
-        directional_fade: None,
-        // #3957 — `fog_clip` stays `None` for a different reason than its
-        // neighbours: WTHR has no clip-distance field at all. It is XCLL-only,
-        // so there is nothing to forward here, now or later.
-        fog_clip: None,
+        // interior cells (and not-yet-wired exterior lighting overrides).
+        // #861 / #5814 — `..bare(..)` supplies every optional tail field
+        // as None; the one authored value below overrides.
+        //
+        // #3957 — `fog_clip` (a `bare` None) stays `None` for a different
+        // reason than its neighbours: WTHR has no clip-distance field at
+        // all. It is XCLL-only, so there is nothing to forward here, now
+        // or later.
+        //
         // #3957 — WTHR *does* carry its own falloff power on Skyrim, FO4 and
         // FO76 (`parse_wthr`'s `FNAM` arm decodes it), and this is the
         // day-TOD snapshot, so the day value is the consistent pick alongside
@@ -121,15 +118,15 @@ pub(crate) fn translate_exterior_cell_lighting(
         // interior-scoped composite branch lands beats one that has to be
         // rediscovered then.
         fog_power: Some(wthr.fog_day_power),
-        fog_far_color: None,
-        fog_max: None,
-        light_fade_begin: None,
-        light_fade_end: None,
-        directional_ambient: None,
-        specular_color: None,
-        specular_alpha: None,
-        fresnel_power: None,
-        inheritance_flags: None,
+        ..CellLightingRes::bare(
+            wthr.sky_colors[SKY_AMBIENT][TOD_DAY].to_rgb_f32(),
+            wthr.sky_colors[SKY_SUNLIGHT][TOD_DAY].to_rgb_f32(),
+            sun_dir,
+            false,
+            wthr.sky_colors[SKY_FOG][TOD_DAY].to_rgb_f32(),
+            wthr.fog_day_near,
+            wthr.fog_day_far,
+        )
     }
 }
 

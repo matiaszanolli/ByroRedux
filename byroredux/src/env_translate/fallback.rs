@@ -52,28 +52,15 @@ const FB_FOG_FAR: f32 = 80000.0;
 
 /// Procedural-fallback exterior lighting (no plugin data → engine defaults).
 pub(crate) fn procedural_fallback_cell_lighting(sun_dir: [f32; 3]) -> CellLightingRes {
-    CellLightingRes {
-        ambient: FB_AMBIENT,
-        directional_color: FB_SUNLIGHT,
-        directional_dir: sun_dir,
-        is_interior: false,
-        fog_color: FB_FOG_COLOR,
-        fog_near: FB_FOG_NEAR,
-        fog_far: FB_FOG_FAR,
-        fog_medium: crate::fog::FogMedium::from_legacy_ramp(FB_FOG_NEAR, FB_FOG_FAR, None),
-        directional_fade: None,
-        fog_clip: None,
-        fog_power: None,
-        fog_far_color: None,
-        fog_max: None,
-        light_fade_begin: None,
-        light_fade_end: None,
-        directional_ambient: None,
-        specular_color: None,
-        specular_alpha: None,
-        fresnel_power: None,
-        inheritance_flags: None,
-    }
+    CellLightingRes::bare(
+        FB_AMBIENT,
+        FB_SUNLIGHT,
+        sun_dir,
+        false,
+        FB_FOG_COLOR,
+        FB_FOG_NEAR,
+        FB_FOG_FAR,
+    )
 }
 
 /// Procedural-fallback sky (no clouds, procedural sun disc).

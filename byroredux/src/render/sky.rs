@@ -270,19 +270,22 @@ mod tests {
             fog_color: [0.0; 3],
             fog_near: 0.0,
             fog_far: 0.0,
+            // #5814 — bare() base with this fixture's authored
+            // specular triple and explicitly disabled medium.
             fog_medium: crate::fog::FogMedium::DISABLED,
-            directional_fade: None,
-            fog_clip: None,
-            fog_power: None,
-            fog_far_color: None,
-            fog_max: None,
-            light_fade_begin: None,
-            light_fade_end: None,
             directional_ambient,
             specular_color: Some([0.2, 0.4, 0.6]),
             specular_alpha: Some(0.0),
             fresnel_power: Some(1.5),
-            inheritance_flags: None,
+            ..CellLightingRes::bare(
+                [0.0; 3],
+                [0.0; 3],
+                [0.0, -1.0, 0.0],
+                true,
+                [0.0; 3],
+                0.0,
+                0.0,
+            )
         }
     }
 

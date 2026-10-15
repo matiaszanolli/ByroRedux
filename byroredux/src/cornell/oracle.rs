@@ -350,28 +350,18 @@ pub(crate) fn setup_cornell_oracle_scene(
     }
     let expected_unshadowed = manifest.expected_unshadowed_direct([1.0; 3]);
     world.insert_resource(CellLightingRes {
-        ambient: [0.0; 3],
-        directional_color: manifest.directional_radiance,
-        directional_dir: manifest.direction_toward_source,
-        is_interior: true,
-        fog_color: [0.0; 3],
-        fog_near: 100_000.0,
-        fog_far: 1_000_000.0,
-        fog_medium: crate::fog::FogMedium::from_legacy_ramp(100_000.0, 1_000_000.0, None),
         // Preserve the manifest's radiance exactly instead of applying the
         // legacy 0.6 XCLL fallback calibration.
         directional_fade: Some(1.0),
-        fog_clip: None,
-        fog_power: None,
-        fog_far_color: None,
-        fog_max: None,
-        light_fade_begin: None,
-        light_fade_end: None,
-        directional_ambient: None,
-        specular_color: None,
-        specular_alpha: None,
-        fresnel_power: None,
-        inheritance_flags: None,
+        ..CellLightingRes::bare(
+            [0.0; 3],
+            manifest.directional_radiance,
+            manifest.direction_toward_source,
+            true,
+            [0.0; 3],
+            100_000.0,
+            1_000_000.0,
+        )
     });
 
     if matches!(rung, CornellOracleRung::L1SkinnedShared) {

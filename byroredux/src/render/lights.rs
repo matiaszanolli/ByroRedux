@@ -369,28 +369,16 @@ mod directional_source_contract_tests {
     use crate::components::{CellLightingRes, SkyParamsRes};
 
     fn interior_cell_lit(directional_color: [f32; 3]) -> CellLightingRes {
-        CellLightingRes {
-            ambient: [0.1, 0.1, 0.1],
+        // #5814 — the shared no-tail build.
+        CellLightingRes::bare(
+            [0.1, 0.1, 0.1],
             directional_color,
-            directional_dir: [0.0, -1.0, 0.0],
-            is_interior: true,
-            fog_color: [0.05, 0.06, 0.08],
-            fog_near: 64.0,
-            fog_far: 4000.0,
-            fog_medium: crate::fog::FogMedium::from_legacy_ramp(64.0, 4000.0, None),
-            directional_fade: None,
-            fog_clip: None,
-            fog_power: None,
-            fog_far_color: None,
-            fog_max: None,
-            light_fade_begin: None,
-            light_fade_end: None,
-            directional_ambient: None,
-            specular_color: None,
-            specular_alpha: None,
-            fresnel_power: None,
-            inheritance_flags: None,
-        }
+            [0.0, -1.0, 0.0],
+            true,
+            [0.05, 0.06, 0.08],
+            64.0,
+            4000.0,
+        )
     }
 
     fn exterior_cell_lit(directional_color: [f32; 3]) -> CellLightingRes {
@@ -863,28 +851,16 @@ mod gi_light_priority_tests {
         use crate::components::CellLightingRes;
 
         let mut world = World::new();
-        world.insert_resource(CellLightingRes {
-            ambient: [0.1, 0.1, 0.1],
-            directional_color: [0.8, 0.7, 0.5],
-            directional_dir: [0.0, -1.0, 0.0],
-            is_interior: false,
-            fog_color: [0.05, 0.06, 0.08],
-            fog_near: 64.0,
-            fog_far: 4000.0,
-            fog_medium: crate::fog::FogMedium::from_legacy_ramp(64.0, 4000.0, None),
-            directional_fade: None,
-            fog_clip: None,
-            fog_power: None,
-            fog_far_color: None,
-            fog_max: None,
-            light_fade_begin: None,
-            light_fade_end: None,
-            directional_ambient: None,
-            specular_color: None,
-            specular_alpha: None,
-            fresnel_power: None,
-            inheritance_flags: None,
-        });
+        // #5814 — the shared no-tail build.
+        world.insert_resource(CellLightingRes::bare(
+            [0.1, 0.1, 0.1],
+            [0.8, 0.7, 0.5],
+            [0.0, -1.0, 0.0],
+            false,
+            [0.05, 0.06, 0.08],
+            64.0,
+            4000.0,
+        ));
         // A point light far brighter than the directional source.
         spawn_point_light(&mut world, [5.0, 0.0, 0.0], [1.0, 1.0, 1.0], 5000.0);
 
